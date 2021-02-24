@@ -289,7 +289,8 @@ HEAP_XMAX_IS_KEYSHR_LOCKED(int16 infomask)
  * information stored in t_infomask2:
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-/* bits 0x1800 are available */
+#define HEAP_PHOT_UPDATED		0x0800	/* tuple what PHOT-updated */
+#define HEAP_PHOT_TUPLE			0x1000	/* this is a partial heap-only tuple */
 #define HEAP_KEYS_UPDATED		0x2000	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */
@@ -574,10 +575,52 @@ HeapTupleHeaderClearHeapOnly(HeapTupleHeaderData *tup)
 	tup->t_infomask2 &= ~HEAP_ONLY_TUPLE;
 }
 
-/*
- * These are used with both HeapTuple and MinimalTuple, so they must be
- * macros.
- */
+#define HeapTupleHeaderIsPartialHotUpdated(tup) \
+( \
+  ((tup)->t_infomask2 & HEAP_PHOT_UPDATED) != 0 && \
+  ((tup)->t_infomask & HEAP_XMAX_INVALID) == 0 && \
+  !HeapTupleHeaderXminInvalid(tup) \
+)
+
+#define HeapTupleHeaderSetPartialHotUpdated(tup) \
+( \
+  (tup)->t_infomask2 |= HEAP_PHOT_UPDATED \
+)
+
+#define HeapTupleHeaderClearPartialHotUpdated(tup) \
+( \
+  (tup)->t_infomask2 &= ~HEAP_PHOT_UPDATED \
+)
+
+#define HeapTupleHeaderIsPartialHeapOnly(tup) \
+( \
+  ((tup)->t_infomask2 & HEAP_PHOT_TUPLE) != 0 \
+)
+
+#define HeapTupleHeaderSetPartialHeapOnly(tup) \
+( \
+  (tup)->t_infomask2 |= HEAP_PHOT_TUPLE \
+)
+
+#define HeapTupleHeaderClearPartialHeapOnly(tup) \
+( \
+  (tup)->t_infomask2 &= ~HEAP_PHOT_TUPLE \
+)
+
+#define HeapTupleHeaderHasMatch(tup) \
+( \
+  ((tup)->t_infomask2 & HEAP_TUPLE_HAS_MATCH) != 0 \
+)
+
+#define HeapTupleHeaderSetMatch(tup) \
+( \
+  (tup)->t_infomask2 |= HEAP_TUPLE_HAS_MATCH \
+)
+
+#define HeapTupleHeaderClearMatch(tup) \
+( \
+  (tup)->t_infomask2 &= ~HEAP_TUPLE_HAS_MATCH \
+)
 
 #define HeapTupleHeaderGetNatts(tup) \
 	((tup)->t_infomask2 & HEAP_NATTS_MASK)
@@ -804,6 +847,24 @@ HeapTupleClearHeapOnly(const HeapTupleData *tuple)
 {
 	HeapTupleHeaderClearHeapOnly(tuple->t_data);
 }
+
+#define HeapTupleIsPartialHotUpdated(tuple) \
+		HeapTupleHeaderIsPartialHotUpdated((tuple)->t_data)
+
+#define HeapTupleSetPartialHotUpdated(tuple) \
+		HeapTupleHeaderSetPartialHotUpdated((tuple)->t_data)
+
+#define HeapTupleClearPartialHotUpdated(tuple) \
+		HeapTupleHeaderClearPartialHotUpdated((tuple)->t_data)
+
+#define HeapTupleIsPartialHeapOnly(tuple) \
+		HeapTupleHeaderIsPartialHeapOnly((tuple)->t_data)
+
+#define HeapTupleSetPartialHeapOnly(tuple) \
+		HeapTupleHeaderSetPartialHeapOnly((tuple)->t_data)
+
+#define HeapTupleClearPartialHeapOnly(tuple) \
+		HeapTupleHeaderClearPartialHeapOnly((tuple)->t_data)
 
 /* prototypes for functions in common/heaptuple.c */
 extern Size heap_compute_data_size(TupleDesc tupleDesc,
