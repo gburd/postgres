@@ -7252,6 +7252,7 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 		frz->t_infomask &= ~HEAP_XMAX_BITS;
 		frz->t_infomask |= HEAP_XMAX_INVALID;
 		frz->t_infomask2 &= ~HEAP_HOT_UPDATED;
+		frz->t_infomask2 &= ~HEAP_PHOT_UPDATED;
 		frz->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 	}
 
