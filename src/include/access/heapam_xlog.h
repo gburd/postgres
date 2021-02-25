@@ -46,10 +46,10 @@
  */
 #define XLOG_HEAP_INIT_PAGE		0x80
 /*
- * We ran out of opcodes, so heapam.c now has a second RmgrId.  These opcodes
- * are associated with RM_HEAP2_ID, but are not logically different from
- * the ones above associated with RM_HEAP_ID.  XLOG_HEAP_OPMASK applies to
- * these, too.
+ * We ran out of opcodes, so heapam.c now has a second and third RmgrId.  These
+ * opcodes are associated with RM_HEAP2_ID and RM_HEAP3_ID, but are not
+ * logically different from the ones above associated with RM_HEAP_ID.
+ * XLOG_HEAP_OPMASK applies to these, too.
  *
  * There's no difference between XLOG_HEAP2_PRUNE_ON_ACCESS,
  * XLOG_HEAP2_PRUNE_VACUUM_SCAN and XLOG_HEAP2_PRUNE_VACUUM_CLEANUP records.
@@ -64,6 +64,9 @@
 #define XLOG_HEAP2_MULTI_INSERT 0x50
 #define XLOG_HEAP2_LOCK_UPDATED 0x60
 #define XLOG_HEAP2_NEW_CID		0x70
+
+#define XLOG_HEAP3_PHOT_UPDATE	0x00
+/* 0x01 through 0x70 are available for RM_HEAP3_ID */
 
 /*
  * xl_heap_insert/xl_heap_multi_insert flag values, 8 bits are available.
@@ -104,6 +107,13 @@
 #define XLH_DELETE_CONTAINS_OLD_KEY				(1<<2)
 #define XLH_DELETE_IS_SUPER						(1<<3)
 #define XLH_DELETE_IS_PARTITION_MOVE			(1<<4)
+
+/*
+ * update information flags for heap_xlog_update(), 32 bits are available
+ */
+#define HXU_REGULAR								(1<<0)
+#define HXU_HEAP_ONLY							(1<<1)
+#define HXU_PARTIAL_HEAP_ONLY					(1<<2)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_DELETE_CONTAINS_OLD						\
@@ -490,6 +500,9 @@ extern void heap_mask(char *pagedata, BlockNumber blkno);
 extern void heap2_redo(XLogReaderState *record);
 extern void heap2_desc(StringInfo buf, XLogReaderState *record);
 extern const char *heap2_identify(uint8 info);
+extern void heap3_redo(XLogReaderState *record);
+extern void heap3_desc(StringInfo buf, XLogReaderState *record);
+extern const char *heap3_identify(uint8 info);
 extern void heap_xlog_logical_rewrite(XLogReaderState *r);
 
 extern XLogRecPtr log_heap_visible(Relation rel, Buffer heap_buffer,
