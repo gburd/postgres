@@ -384,6 +384,26 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec->cmin, xlrec->cmax, xlrec->combocid);
 	}
 }
+void
+heap3_desc(StringInfo buf, XLogReaderState *record)
+{
+	char	   *rec = XLogRecGetData(record);
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	if (info == XLOG_HEAP3_PHOT_UPDATE)
+	{
+		xl_heap_update *xlrec = (xl_heap_update *) rec;
+
+		appendStringInfo(buf, "off %u xmax %u flags 0x%02X ",
+						 xlrec->old_offnum,
+						 xlrec->old_xmax,
+						 xlrec->flags);
+		out_infobits(buf, xlrec->old_infobits_set);
+		appendStringInfo(buf, "; new off %u xmax %u",
+						 xlrec->new_offnum,
+						 xlrec->new_xmax);
+	}
+}
 
 const char *
 heap_identify(uint8 info)
@@ -463,6 +483,24 @@ heap2_identify(uint8 info)
 			break;
 		case XLOG_HEAP2_REWRITE:
 			id = "REWRITE";
+			break;
+	}
+
+	return id;
+}
+
+const char *
+heap3_identify(uint8 info)
+{
+	const char *id = NULL;
+
+	switch (info & ~XLR_INFO_MASK)
+	{
+		case XLOG_HEAP3_PHOT_UPDATE:
+			id = "PHOT_UPDATE";
+			break;
+		case XLOG_HEAP3_PHOT_UPDATE | XLOG_HEAP_INIT_PAGE:
+			id = "PHOT_UPDATE+INIT";
 			break;
 	}
 
