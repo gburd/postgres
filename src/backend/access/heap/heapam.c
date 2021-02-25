@@ -8825,6 +8825,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 
 	if (HeapTupleIsHeapOnly(newtup))
 		info = XLOG_HEAP_HOT_UPDATE;
+	else if (HeapTupleIsPartialHeapOnly(newtup))
+		info = XLOG_HEAP3_PHOT_UPDATE;
 	else
 		info = XLOG_HEAP_UPDATE;
 
@@ -9010,7 +9012,15 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-	recptr = XLogInsert(RM_HEAP_ID, info);
+	/*
+	 * The PHOT opcode lives under the third RmgrId, so use that one for PHOT
+	 * updates.  The other update opcodes live under the first RmgrId, so that
+	 * once should be used for everything else.
+	 */
+	if (info & XLOG_HEAP3_PHOT_UPDATE)
+		recptr = XLogInsert(RM_HEAP3_ID, info);
+	else
+		recptr = XLogInsert(RM_HEAP_ID, info);
 
 	return recptr;
 }

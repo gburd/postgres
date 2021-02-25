@@ -80,20 +80,24 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 	{
 		Page		page = (Page) BufferGetPage(buffer);
 		OffsetNumber *redirected;
+		OffsetNumber *redirected_data;
 		OffsetNumber *nowdead;
 		OffsetNumber *nowunused;
 		int			nredirected;
+		int			nredirected_data;
 		int			ndead;
 		int			nunused;
 		int			nplans;
 		Size		datalen;
 		xlhp_freeze_plan *plans;
 		OffsetNumber *frz_offsets;
+		bits8	  **redirect_data = NULL; // XXX: get this into the record!!!
 		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 
 		heap_xlog_deserialize_prune_and_freeze(dataptr, xlrec.flags,
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
+											   &nredirected_data, &redirected_data,
 											   &ndead, &nowdead,
 											   &nunused, &nowunused);
 
@@ -101,10 +105,12 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		 * Update all line pointers per the record, and repair fragmentation
 		 * if needed.
 		 */
-		if (nredirected > 0 || ndead > 0 || nunused > 0)
+		if (nredirected > 0 || nredirected_data || ndead > 0 || nunused > 0)
 			heap_page_prune_execute(buffer,
 									(xlrec.flags & XLHP_CLEANUP_LOCK) == 0,
 									redirected, nredirected,
+									redirected_data, nredirected_data,
+									redirect_data,
 									nowdead, ndead,
 									nowunused, nunused);
 
@@ -681,7 +687,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
  * Replay XLOG_HEAP_UPDATE and XLOG_HEAP_HOT_UPDATE records.
  */
 static void
-heap_xlog_update(XLogReaderState *record, bool hot_update)
+heap_xlog_update(XLogReaderState *record, uint32 info)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_update *xlrec = (xl_heap_update *) XLogRecGetData(record);
@@ -717,8 +723,8 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &newblk);
 	if (XLogRecGetBlockTagExtended(record, 1, NULL, NULL, &oldblk, NULL))
 	{
-		/* HOT updates are never done across pages */
-		Assert(!hot_update);
+		/* HOT and PHOT updates are never done across pages */
+		Assert((info & (HXU_HEAP_ONLY | HXU_PARTIAL_HEAP_ONLY)) == 0);
 	}
 	else
 		oldblk = newblk;
@@ -770,10 +776,14 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;
-		if (hot_update)
+		if (info & HXU_HEAP_ONLY)
 			HeapTupleHeaderSetHotUpdated(htup);
-		else
+		else if (info & HXU_PARTIAL_HEAP_ONLY)
+			HeapTupleHeaderSetPartialHotUpdated(htup);
+		else if (info & HXU_REGULAR)
 			HeapTupleHeaderClearHotUpdated(htup);
+		else
+			elog(PANIC, "invalid update type");
 		fix_infomask_from_infobits(xlrec->old_infobits_set, &htup->t_infomask,
 								   &htup->t_infomask2);
 		HeapTupleHeaderSetXmax(htup, xlrec->old_xmax);
@@ -938,7 +948,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * Arbitrarily, our definition of "low" is less than 20%. We can't do much
 	 * better than that without knowing the fill-factor for the table.
 	 *
-	 * However, don't update the FSM on HOT updates, because after crash
+	 * However, don't update the FSM on HOT or PHOT updates, because after crash
 	 * recovery, either the old or the new tuple will certainly be dead and
 	 * prunable. After pruning, the page will have roughly as much free space
 	 * as it did before the update, assuming the new tuple is about the same
@@ -948,7 +958,9 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	 * don't bother to update the FSM in that case, it doesn't need to be
 	 * totally accurate anyway.
 	 */
-	if (newaction == BLK_NEEDS_REDO && !hot_update && freespace < BLCKSZ / 5)
+	if (newaction == BLK_NEEDS_REDO &&
+		(info & (HXU_HEAP_ONLY | HXU_PARTIAL_HEAP_ONLY)) == 0 &&
+		freespace < BLCKSZ / 5)
 		XLogRecordPageWithFreeSpace(rlocator, newblk, freespace);
 }
 
@@ -1197,7 +1209,7 @@ heap_redo(XLogReaderState *record)
 			heap_xlog_delete(record);
 			break;
 		case XLOG_HEAP_UPDATE:
-			heap_xlog_update(record, false);
+			heap_xlog_update(record, HXU_REGULAR);
 			break;
 		case XLOG_HEAP_TRUNCATE:
 
@@ -1208,7 +1220,7 @@ heap_redo(XLogReaderState *record)
 			 */
 			break;
 		case XLOG_HEAP_HOT_UPDATE:
-			heap_xlog_update(record, true);
+			heap_xlog_update(record, HXU_HEAP_ONLY);
 			break;
 		case XLOG_HEAP_CONFIRM:
 			heap_xlog_confirm(record);
@@ -1257,6 +1269,24 @@ heap2_redo(XLogReaderState *record)
 			break;
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);
+	}
+}
+
+/*
+ * XXX: document for PHOT
+ */
+void
+heap3_redo(XLogReaderState *record)
+{
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	switch (info & XLOG_HEAP_OPMASK)
+	{
+		case XLOG_HEAP3_PHOT_UPDATE:
+			heap_xlog_update(record, HXU_PARTIAL_HEAP_ONLY);
+			break;
+		default:
+			elog(PANIC, "heap3_redo: unknown op code %u", info);
 	}
 }
 
