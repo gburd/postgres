@@ -463,6 +463,37 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
+ * Handle rmgr HEAP3_ID records for LogicalDecodingProcessRecord().
+ */
+static void
+heap3_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		 info = XLogRecGetInfo(buf->record) & XLOG_HEAP_OPMASK;
+	TransactionId xid = XLogRecGetXid(buf->record);
+	SnapBuild	*builder = ctx->snapshot_builder;
+
+	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
+
+	/*
+	 * If we don't have snapshot or we are just fast-forwarding, there is no
+	 * point in decoding data changes.
+	 */
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT ||
+		ctx->fast_forward)
+		return;
+
+	switch (info)
+	{
+		case XLOG_HEAP3_PHOT_UPDATE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr))
+				DecodeUpdate(ctx, buf);
+			break;
+		default:
+			elog(ERROR, "unexpected RM_HEAP3_ID record type: %u", info);
+	}
+}
+
+/*
  * Handle rmgr HEAP_ID records for LogicalDecodingProcessRecord().
  */
 void
