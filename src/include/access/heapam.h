@@ -85,6 +85,9 @@ typedef struct IndexFetchHeapData
 {
 	IndexFetchTableData xs_base;	/* AM independent part of the descriptor */
 
+	/* indexed attrs for following PHOT chains */
+	Bitmapset *indexed_attrs;
+
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
 } IndexFetchHeapData;
@@ -136,7 +139,8 @@ extern bool heap_fetch(Relation relation, Snapshot snapshot,
 					   HeapTuple tuple, Buffer *userbuf, bool keep_buf);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
-								   bool *all_dead, bool first_call);
+								   bool *all_dead, bool first_call,
+								   Bitmapset *interesting_attrs);
 
 extern void heap_get_latest_tid(TableScanDesc scan, ItemPointer tid);
 
@@ -186,7 +190,7 @@ extern void simple_heap_delete(Relation relation, ItemPointer tid);
 extern void simple_heap_update(Relation relation, ItemPointer otid,
 							   HeapTuple tup);
 
-extern TransactionId heap_index_delete_tuples(Relation rel,
+extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
 
 /* in heap/pruneheap.c */

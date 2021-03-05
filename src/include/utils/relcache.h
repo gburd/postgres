@@ -80,6 +80,8 @@ extern void RelationBuildPublicationDesc(Relation relation,
 
 extern void RelationInitTableAccessMethod(Relation relation);
 
+extern Bitmapset *IndexGetAttrBitmap(Relation irel);
+
 /*
  * Routines to support ereport() reports of relation-related errors
  */
