@@ -79,6 +79,8 @@ extern struct PublicationActions *GetRelationPublicationActions(Relation relatio
 
 extern void RelationInitTableAccessMethod(Relation relation);
 
+extern Bitmapset *IndexGetAttrBitmap(Relation irel);
+
 /*
  * Routines to support ereport() reports of relation-related errors
  */
