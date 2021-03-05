@@ -1501,7 +1501,7 @@ _bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
 	BTVacuumPosting updatable[MaxIndexTuplesPerPage];
 
 	/* Use tableam interface to determine which tuples to delete first */
-	latestRemovedXid = table_index_delete_tuples(heapRel, delstate);
+	latestRemovedXid = table_index_delete_tuples(rel, heapRel, delstate);
 
 	/* Should not WAL-log latestRemovedXid unless it's required */
 	if (!XLogStandbyInfoActive() || !RelationNeedsWAL(rel))
