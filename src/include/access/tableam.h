@@ -414,7 +414,8 @@ typedef struct TableAmRoutine
 	 *
 	 * Tuples for an index scan can then be fetched via index_fetch_tuple.
 	 */
-	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel);
+	struct IndexFetchTableData *(*index_fetch_begin) (Relation irel,
+													  Relation rel);
 
 	/*
 	 * Reset index fetch. Typically this will release cross index fetch
@@ -491,7 +492,7 @@ typedef struct TableAmRoutine
 											 Snapshot snapshot);
 
 	/* see table_index_delete_tuples() */
-	TransactionId (*index_delete_tuples) (Relation rel,
+	TransactionId (*index_delete_tuples) (Relation irel, Relation rel,
 										  TM_IndexDeleteOp *delstate);
 
 
@@ -1149,9 +1150,9 @@ table_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
  * Tuples for an index scan can then be fetched via table_index_fetch_tuple().
  */
 static inline IndexFetchTableData *
-table_index_fetch_begin(Relation rel)
+table_index_fetch_begin(Relation irel, Relation rel)
 {
-	return rel->rd_tableam->index_fetch_begin(rel);
+	return rel->rd_tableam->index_fetch_begin(irel, rel);
 }
 
 /*
@@ -1223,7 +1224,8 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
  * entry.  This likely is only useful to verify if there's a conflict in a
  * unique index.
  */
-extern bool table_index_fetch_tuple_check(Relation rel,
+extern bool table_index_fetch_tuple_check(Relation irel,
+										  Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
 										  bool *all_dead);
@@ -1313,9 +1315,9 @@ table_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
  * index deletion operation might be required on the standby.
  */
 static inline TransactionId
-table_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
+table_index_delete_tuples(Relation irel, Relation rel, TM_IndexDeleteOp *delstate)
 {
-	return rel->rd_tableam->index_delete_tuples(rel, delstate);
+	return rel->rd_tableam->index_delete_tuples(irel, rel, delstate);
 }
 
 

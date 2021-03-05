@@ -79,12 +79,14 @@ heapam_slot_callbacks(Relation relation)
  */
 
 static IndexFetchTableData *
-heapam_index_fetch_begin(Relation rel)
+heapam_index_fetch_begin(Relation irel, Relation rel)
 {
 	IndexFetchHeapData *hscan = palloc0(sizeof(IndexFetchHeapData));
 
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
+
+	hscan->indexed_attrs = IndexGetAttrBitmap(irel);
 
 	return &hscan->xs_base;
 }
@@ -108,6 +110,7 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 
 	heapam_index_fetch_reset(scan);
 
+	bms_free(hscan->indexed_attrs);
 	pfree(hscan);
 }
 
@@ -149,7 +152,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											snapshot,
 											&bslot->base.tupdata,
 											all_dead,
-											!*call_again);
+											!*call_again,
+											hscan->indexed_attrs);
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 
@@ -2550,7 +2554,34 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
 									   &heapTuple, NULL, true))
-				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+			{
+				OffsetNumber ipon = ItemPointerGetOffsetNumber(&tid);
+				int i;
+
+				/*
+				 * In the above call to heap_hot_search_buffer, we followed any
+				 * PHOT chains like they were regular HOT chains.  To avoid
+				 * returning duplicates, we must check that the offset number
+				 * was not already added to the list.  Furthermore, we need to
+				 * turn on rechecking since there is no guarantee the indexed
+				 * columns haven't changed somewhere in the chain.
+				 *
+				 * XXX: It may be possible to avoid some of this work if we know
+				 * that there are no PHOT chains on the page.  It is not yet
+				 * clear whether the current behavior results in a significant
+				 * perfomance impact.
+				 */
+				for (i = 0; i < ntup; i++)
+				{
+					if (hscan->rs_vistuples[i] == ipon)
+						break;
+				}
+
+				if (i >= ntup)
+					hscan->rs_vistuples[ntup++] = ipon;
+
+				tbmres->recheck = true;
+			}
 		}
 	}
 	else

@@ -87,6 +87,15 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	slot = table_slot_create(trigdata->tg_relation, NULL);
 
 	/*
+	 * Open the index, acquiring a RowExclusiveLock, just as if we were going
+	 * to update it.  (This protected against possible changes of the index
+	 * schema, not against concurrent updates.)
+	 */
+	indexRel = index_open(trigdata->tg_trigger->tgconstrindid,
+						  RowExclusiveLock);
+	indexInfo = BuildIndexInfo(indexRel);
+
+	/*
 	 * If the row pointed at by checktid is now dead (ie, inserted and then
 	 * deleted within our transaction), we can skip the check.  However, we
 	 * have to be careful, because this trigger gets queued only in response
@@ -106,7 +115,8 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 */
 	tmptid = checktid;
 	{
-		IndexFetchTableData *scan = table_index_fetch_begin(trigdata->tg_relation);
+		IndexFetchTableData *scan = table_index_fetch_begin(indexRel,
+															trigdata->tg_relation);
 		bool		call_again = false;
 
 		if (!table_index_fetch_tuple(scan, &tmptid, SnapshotSelf, slot,
@@ -122,15 +132,6 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 		}
 		table_index_fetch_end(scan);
 	}
-
-	/*
-	 * Open the index, acquiring a RowExclusiveLock, just as if we were going
-	 * to update it.  (This protects against possible changes of the index
-	 * schema, not against concurrent updates.)
-	 */
-	indexRel = index_open(trigdata->tg_trigger->tgconstrindid,
-						  RowExclusiveLock);
-	indexInfo = BuildIndexInfo(indexRel);
 
 	/*
 	 * Typically the index won't have expressions, but if it does we need an

@@ -335,7 +335,7 @@ index_compute_xid_horizon_for_tuples(Relation irel,
 	}
 
 	/* determine the actual xid horizon */
-	snapshotConflictHorizon = table_index_delete_tuples(hrel, &delstate);
+	snapshotConflictHorizon = table_index_delete_tuples(irel, hrel, &delstate);
 
 	/* assert tableam agrees that all items are deletable */
 	Assert(delstate.ndeltids == nitems);
