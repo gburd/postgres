@@ -1523,7 +1523,7 @@ _bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
 	BTVacuumPosting updatable[MaxIndexTuplesPerPage];
 
 	/* Use tableam interface to determine which tuples to delete first */
-	snapshotConflictHorizon = table_index_delete_tuples(heapRel, delstate);
+	snapshotConflictHorizon = table_index_delete_tuples(rel, heapRel, delstate);
 	isCatalogRel = RelationIsAccessibleInLogicalDecoding(heapRel);
 
 	/* Should not WAL-log snapshotConflictHorizon unless it's required */
