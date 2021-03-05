@@ -1686,22 +1686,32 @@ heap_fetch(Relation relation,
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
+ * If interesting_attrs is not NULL, we use it to determine whether we should
+ * continue following PHOT chains.  Specifically, if we detect a modified column
+ * that is a member of interesting_attrs, we stop following the PHOT chain.  If
+ * interesting_attrs is NULL, we follow PHOT chains just like we do HOT chains.
+ * In this case, the caller is responsible for resolving duplicates and applying
+ * recheck conditions to ensure the return tuple matches.
+ *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
  */
 bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call)
+					   bool *all_dead, bool first_call,
+					   Bitmapset *interesting_attrs)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
 	BlockNumber blkno;
 	OffsetNumber offnum;
+	OffsetNumber prev_offnum = InvalidOffsetNumber;
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
 	GlobalVisState *vistest = NULL;
+	HeapTupleData prev_tup;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
@@ -1769,11 +1779,47 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			break;
 
 		/*
+		 * If this tuple was a PHOT update, make sure that we should keep
+		 * following it based on the modified attributes.
+		 *
+		 * If interesting_attrs is NULL, we follow this just like we do HOT
+		 * chains.  The caller is responsible for handling the return value
+		 * appropriately (e.g., rechecking, deduplication).
+		 */
+		if (OffsetNumberIsValid(prev_offnum) &&
+			HeapTupleIsPartialHeapOnly(heapTuple) &&
+			interesting_attrs)
+		{
+			Bitmapset *modified_attrs;
+			Bitmapset *attrs;
+			bool index_attrs_modified;
+
+			/*
+			 * HeapDetermineModifiedColumns destructively modifies the input
+			 * bitmapset, so we need to copy it.
+			 */
+			attrs = bms_copy(interesting_attrs);
+			modified_attrs = HeapDetermineModifiedColumns(relation, attrs,
+														  &prev_tup, heapTuple);
+			index_attrs_modified = !bms_is_empty(modified_attrs);
+
+			bms_free(attrs);
+			bms_free(modified_attrs);
+
+			if (index_attrs_modified)
+				break;
+		}
+
+		/*
 		 * When first_call is true (and thus, skip is initially false) we'll
 		 * return the first tuple we find.  But on later passes, heapTuple
 		 * will initially be pointing to the tuple we returned last time.
 		 * Returning it again would be incorrect (and would loop forever), so
 		 * we skip it and return the next match we find.
+		 *
+		 * XXX: Can we support non-MVCC snapshots with PHOT?  Perhaps we need to
+		 * add a bunch more parameters to track the information we need for
+		 * this.
 		 */
 		if (!skip)
 		{
@@ -1815,13 +1861,16 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * Check to see if HOT chain continues past this tuple; if so fetch
 		 * the next offnum and loop around.
 		 */
-		if (HeapTupleIsHotUpdated(heapTuple))
+		if (HeapTupleIsHotUpdated(heapTuple) ||
+			HeapTupleIsPartialHotUpdated(heapTuple))
 		{
 			Assert(ItemPointerGetBlockNumber(&heapTuple->t_data->t_ctid) ==
 				   blkno);
+			prev_offnum = offnum;
 			offnum = ItemPointerGetOffsetNumber(&heapTuple->t_data->t_ctid);
 			at_chain_start = false;
 			prev_xmax = HeapTupleHeaderGetUpdateXid(heapTuple->t_data);
+			memcpy(&prev_tup, heapTuple, sizeof(HeapTupleData));
 		}
 		else
 			break;				/* end of chain */
@@ -8080,7 +8129,7 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
  * the same heap block.
  */
 TransactionId
-heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
+heap_index_delete_tuples(Relation irel, Relation rel, TM_IndexDeleteOp *delstate)
 {
 	/* Initial assumption is that earlier pruning took care of conflict */
 	TransactionId snapshotConflictHorizon = InvalidTransactionId;
@@ -8103,8 +8152,12 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 				lastfreespace = 0,
 				actualfreespace = 0;
 	bool		bottomup_final_block = false;
+	Bitmapset  *indexed_attrs;
 
 	InitNonVacuumableSnapshot(SnapshotNonVacuumable, GlobalVisTestFor(rel));
+
+	/* bitmap of indexed attrs used for following PHOT chains */
+	indexed_attrs = IndexGetAttrBitmap(irel);
 
 	/* Sort caller's deltids array by TID for further processing */
 	index_delete_sort(delstate);
@@ -8277,7 +8330,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 
 			/* Are any tuples from this HOT chain non-vacuumable? */
 			if (heap_hot_search_buffer(&tmp, rel, buf, &SnapshotNonVacuumable,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, indexed_attrs))
 				continue;		/* can't delete entry */
 
 			/* Caller will delete, since whole HOT chain is vacuumable */
@@ -8381,6 +8434,8 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	 */
 	Assert(finalndeltids > 0 || delstate->bottomup);
 	delstate->ndeltids = finalndeltids;
+
+	bms_free(indexed_attrs);
 
 	return snapshotConflictHorizon;
 }

@@ -6031,6 +6031,37 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
 }
 
 /*
+ * IndexGetAttrBitmap
+ *
+ * Get a palloc'd bitmap of the attributes an index indexes.  Caller is
+ * responsible for ensuring that the index relation is locked with
+ * AccessShareLock or stronger.
+ */
+Bitmapset *
+IndexGetAttrBitmap(Relation irel)
+{
+	Bitmapset *attrs = NULL;
+	Form_pg_index indexStruct;
+
+	/* XXX: Do we need a stronger lock for this to be safe? */
+	Assert(RelationIsValid(irel));
+	Assert(CheckRelationLockedByMe(irel, AccessShareLock, true));
+
+	indexStruct = irel->rd_index;
+	for (int i = 0; i < indexStruct->indnatts; i++)
+	{
+		int attr;
+
+		attr = indexStruct->indkey.values[i];
+		attr -= FirstLowInvalidHeapAttributeNumber;
+
+		attrs = bms_add_member(attrs, attr);
+	}
+
+	return attrs;
+}
+
+/*
  * Routines to support ereport() reports of relation-related errors
  *
  * These could have been put into elog.c, but it seems like a module layering
