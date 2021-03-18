@@ -560,8 +560,15 @@ compactify_tuples(itemIdCompact itemidbase, int nitems, Page page, bool presorte
 			/* point the copy_head to the start of this tuple */
 			copy_head = itemidptr->itemoff;
 
-			/* update the line pointer to reference the new offset */
-			lp->lp_off = upper;
+			/*
+			 * Update the line pointer to reference the new offset.  If this is
+			 * a redirected line pointer with storage, the offset will be stored
+			 * in lp_len since lp_off points to the next line pointer.
+			 */
+			if (ItemIdIsRedirected(lp))
+				lp->lp_len = upper;
+			else
+				lp->lp_off = upper;
 		}
 
 		/* move the remaining tuples. */
@@ -665,8 +672,15 @@ compactify_tuples(itemIdCompact itemidbase, int nitems, Page page, bool presorte
 			/* point the copy_head to the start of this tuple */
 			copy_head = itemidptr->itemoff;
 
-			/* update the line pointer to reference the new offset */
-			lp->lp_off = upper;
+			/*
+			 * Update the line pointer to reference the new offset.  If this is
+			 * a redirected line pointer with storage, the offset will be stored
+			 * in lp_len since lp_off points to the next line pointer.
+			 */
+			if (ItemIdIsRedirected(lp))
+				lp->lp_len = upper;
+			else
+				lp->lp_off = upper;
 		}
 
 		/* Copy the remaining chunk */
@@ -744,7 +758,15 @@ PageRepairFragmentation(Page page)
 			if (ItemIdHasStorage(lp))
 			{
 				itemidptr->offsetindex = i - 1;
-				itemidptr->itemoff = ItemIdGetOffset(lp);
+
+				/*
+				 * The offset for storage for redirected line pointers is stored
+				 * in lp_len (lp_off stores the redirect offset).
+				 */
+				if (ItemIdIsRedirected(lp))
+					itemidptr->itemoff = ItemIdGetLength(lp);
+				else
+					itemidptr->itemoff = ItemIdGetOffset(lp);
 
 				if (last_offset > itemidptr->itemoff)
 					last_offset = itemidptr->itemoff;
@@ -757,7 +779,16 @@ PageRepairFragmentation(Page page)
 							(errcode(ERRCODE_DATA_CORRUPTED),
 							 errmsg("corrupted line pointer: %u",
 									itemidptr->itemoff)));
-				itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp));
+
+				/*
+				 * If this is a redirected line pointer that has storage, must
+				 * search the page to determine the storage length.
+				 */
+				if (ItemIdIsRedirected(lp))
+					itemidptr->alignedlen = MAXALIGN(ItemIdGetRedirectDataLength(page, lp));
+				else
+					itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp));
+
 				totallen += itemidptr->alignedlen;
 				itemidptr++;
 			}

@@ -98,6 +98,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
 											   &nredirected_data, &redirected_data,
+											   redirect_data,
 											   &ndead, &nowdead,
 											   &nunused, &nowunused);
 
