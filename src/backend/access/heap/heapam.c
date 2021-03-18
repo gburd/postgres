@@ -87,11 +87,6 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
 #endif
-static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
-										   Bitmapset *interesting_cols,
-										   Bitmapset *external_cols,
-										   HeapTuple oldtup, HeapTuple newtup,
-										   bool *has_external);
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
@@ -1500,6 +1495,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	bool		has_prev_tup = false;
 	GlobalVisState *vistest = NULL;
 	HeapTupleData prev_tup;
 
@@ -1530,16 +1526,36 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* check for unused, dead, or redirected items */
 		if (!ItemIdIsNormal(lp))
 		{
-			/* We should only see a redirect at start of chain */
-			if (ItemIdIsRedirected(lp) && at_chain_start)
+			if (ItemIdIsPartialHotRedirected(dp, lp))
 			{
-				/* Follow the redirect */
-				offnum = ItemIdGetRedirect(lp);
-				at_chain_start = false;
-				continue;
+				bits8 *rdata;
+				Bitmapset *attrs;
+				bool found = false;
+				int attr;
+
+				rdata = (bits8 *) ItemIdGetRedirectData(dp, lp);
+				attrs = bms_copy(interesting_attrs);
+				while (!found && (attr = bms_first_member(attrs)) != -1)
+				{
+					attr += FirstLowInvalidHeapAttributeNumber;
+					if (rdata[attr / 8] & (1 << (attr % 8)))
+						found = true;
+				}
+				bms_free(attrs);
+
+				if (found)
+					break;
+				else
+					offnum = ItemIdGetRedirect(lp);
 			}
-			/* else must be end of chain */
-			break;
+			else if (ItemIdIsRedirected(lp))
+				offnum = ItemIdGetRedirect(lp);
+			else
+				break;
+
+			has_prev_tup = false;
+			at_chain_start = false;
+			continue;
 		}
 
 		/*
@@ -1578,7 +1594,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 */
 		if (OffsetNumberIsValid(prev_offnum) &&
 			HeapTupleIsPartialHeapOnly(heapTuple) &&
-			interesting_attrs)
+			interesting_attrs &&
+			has_prev_tup)
 		{
 			Bitmapset *modified_attrs;
 			Bitmapset *attrs;
@@ -1661,6 +1678,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			at_chain_start = false;
 			prev_xmax = HeapTupleHeaderGetUpdateXid(heapTuple->t_data);
 			memcpy(&prev_tup, heapTuple, sizeof(HeapTupleData));
+			has_prev_tup = true;
 		}
 		else
 			break;				/* end of chain */
@@ -9241,19 +9259,26 @@ heap_xlog_prune(XLogReaderState *record)
 		Page		page = (Page) BufferGetPage(buffer);
 		OffsetNumber *end;
 		OffsetNumber *redirected;
+		OffsetNumber *redirected_data;
 		OffsetNumber *nowdead;
 		OffsetNumber *nowunused;
 		int			nredirected;
+		int			nredirected_data;
 		int			ndead;
 		int			nunused;
 		Size		datalen;
+		bits8	  **redirect_data = NULL;
+
+		// TODO: get redirect_data into record!!!
 
 		redirected = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
 
 		nredirected = xlrec->nredirected;
+		nredirected_data = xlrec->nredirected_data;
 		ndead = xlrec->ndead;
 		end = (OffsetNumber *) ((char *) redirected + datalen);
-		nowdead = redirected + (nredirected * 2);
+		redirected_data = redirected + (nredirected * 2);
+		nowdead = redirected + (nredirected * 2) + (nredirected_data * 2);
 		nowunused = nowdead + ndead;
 		nunused = (end - nowunused);
 		Assert(nunused >= 0);
@@ -9261,6 +9286,8 @@ heap_xlog_prune(XLogReaderState *record)
 		/* Update all line pointers per the record, and repair fragmentation */
 		heap_page_prune_execute(buffer,
 								redirected, nredirected,
+								redirected_data, nredirected_data,
+								redirect_data,
 								nowdead, ndead,
 								nowunused, nunused);
 

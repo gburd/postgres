@@ -244,16 +244,18 @@ typedef struct xl_heap_update
  *	* for each redirected item: the item offset, then the offset redirected to
  *	* for each now-dead item: the item offset
  *	* for each now-unused item: the item offset
- * The total number of OffsetNumbers is therefore 2*nredirected+ndead+nunused.
+ * The total number of OffsetNumbers is therefore 2*nredirected+2*nredirected_data+ndead+nunused.
  * Note that nunused is not explicitly stored, but may be found by reference
  * to the total record length.
  *
  * Acquires a full cleanup lock.
+ * XXX: Need to track bitmaps for redirected-with-data!
  */
 typedef struct xl_heap_prune
 {
 	TransactionId snapshotConflictHorizon;
 	uint16		nredirected;
+	uint16		nredirected_data;
 	uint16		ndead;
 	bool		isCatalogRel;	/* to handle recovery conflict during logical
 								 * decoding on standby */
