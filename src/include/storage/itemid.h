@@ -37,7 +37,7 @@ typedef ItemIdData *ItemId;
  */
 #define LP_UNUSED		0		/* unused (should always have lp_len=0) */
 #define LP_NORMAL		1		/* used (should always have lp_len>0) */
-#define LP_REDIRECT		2		/* HOT redirect (should have lp_len=0) */
+#define LP_REDIRECT		2		/* (P)HOT redirect, may have storage */
 #define LP_DEAD			3		/* dead, may or may not have storage */
 
 /*
@@ -47,6 +47,30 @@ typedef ItemIdData *ItemId;
 typedef uint16 ItemOffset;
 typedef uint16 ItemLength;
 
+/*
+ * If lp_flags is LP_REDIRECT and lp_len > 0, this line pointer has some amount
+ * of special information stored on the page.  In this case, lp_len actually
+ * refers to the offset of this special storage since lp_off will hold the
+ * offset number for the next line pointer.
+ *
+ * The first couple of bytes of data at the offset referred to by lp_len is a
+ * header that provides more information.  This includes the type of special
+ * data and its length (which includes the length of the header).  The special
+ * data is stored immediately after this header.
+ */
+typedef struct RedirectHeaderData
+{
+	uint16		rlp_type:4,		/* type of redirect data */
+				rlp_len:12;		/* byte length of data, including header */
+} RedirectHeaderData;
+
+typedef RedirectHeaderData *RedirectHeader;
+
+/*
+ * rlp_type has these possible states.  The maximum type identifier is 15, which
+ * means we can support 16 total.
+ */
+#define RLP_PHOT		0		/* bitmap of modified columns for partial HOT */
 
 /* ----------------
  *		support macros
@@ -79,6 +103,25 @@ typedef uint16 ItemLength;
    ((itemId)->lp_off)
 
 /*
+ *		ItemIdGetRedirectDataLength
+ * In a REDIRECT pointer, lp_len holds offset to special data, which has the
+ * length information.
+ */
+#define ItemIdGetRedirectDataLength(page, itemId) \
+	(((RedirectHeader) ((char *) (page) + (itemId)->lp_len))->rlp_len)
+
+/*
+ *		ItemIdGetRedirectHeader
+ */
+#define ItemIdGetRedirectHeader(page, itemId) \
+	(((RedirectHeader) ((char *) (page) + (itemId)->lp_len)))
+
+/*
+ *		ItemIdGetRedirectData
+ */
+#define ItemIdGetRedirectData(page, itemId) \
+	((char *) (page) + (itemId)->lp_len + sizeof(RedirectHeader))
+/*
  * ItemIdIsValid
  *		True iff item identifier is valid.
  *		This is a pretty weak test, probably useful only in Asserts.
@@ -105,6 +148,18 @@ typedef uint16 ItemLength;
  */
 #define ItemIdIsRedirected(itemId) \
 	((itemId)->lp_flags == LP_REDIRECT)
+
+/*
+ * ItemIdIsPartialHotRedirected
+ *
+ * 		True iff item identifier is in state REDIRECT and rlp_type is RLP_PHOT.
+ */
+#define ItemIdIsPartialHotRedirected(page, itemId) \
+( \
+	(itemId)->lp_flags == LP_REDIRECT && \
+	(itemId)->lp_len != 0 && \
+	((RedirectHeader) ((char *) (page) + (itemId)->lp_len))->rlp_type == RLP_PHOT \
+)
 
 /*
  * ItemIdIsDead
@@ -154,6 +209,19 @@ typedef uint16 ItemLength;
 	(itemId)->lp_flags = LP_REDIRECT, \
 	(itemId)->lp_off = (link), \
 	(itemId)->lp_len = 0 \
+)
+
+/*
+ * ItemIdSetRedirectWithData
+ * 		Set the item identifier to be REDIRECT, with the specified link and
+ * 		redirect data offset (stored in lp_len).  Beware of multiple evaluations
+ * 		of itemId!
+ */
+#define ItemIdSetRedirectWithData(itemId, link) \
+( \
+	(itemId)->lp_flags = LP_REDIRECT, \
+	(itemId)->lp_len = (itemId)->lp_off, \
+	(itemId)->lp_off = (link) \
 )
 
 /*

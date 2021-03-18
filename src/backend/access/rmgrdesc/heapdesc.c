@@ -105,7 +105,10 @@ void
 heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
 									   int *nplans, xlhp_freeze_plan **plans,
 									   OffsetNumber **frz_offsets,
-									   int *nredirected, OffsetNumber **redirected,
+									   int *nredirected,
+									   OffsetNumber **redirected,
+									   int *nredirected_data,
+									   OffsetNumber **redirected_data,
 									   int *ndead, OffsetNumber **nowdead,
 									   int *nunused, OffsetNumber **nowunused)
 {
@@ -175,6 +178,23 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
 	{
 		*nunused = 0;
 		*nowunused = NULL;
+	}
+
+	if (flags & XLHP_HAS_REDIRECTION_DATA)
+	{
+		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
+
+		*nredirected_data = subrecord->ntargets;
+		Assert(*nredirected_data > 0);
+		*redirected_data = &subrecord->data[0];
+
+		cursor += offsetof(xlhp_prune_items, data);
+		cursor += sizeof(OffsetNumber[2]) * *nredirected_data;
+	}
+	else
+	{
+		*nredirected_data = 0;
+		*redirected_data = NULL;
 	}
 
 	*frz_offsets = (OffsetNumber *) cursor;
@@ -290,9 +310,11 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 		{
 			Size		datalen;
 			OffsetNumber *redirected;
+			OffsetNumber *redirected_data;
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
 			int			nredirected;
+			int			nredirected_data;
 			int			nunused;
 			int			ndead;
 			int			nplans;
@@ -304,6 +326,8 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			heap_xlog_deserialize_prune_and_freeze(cursor, xlrec->flags,
 												   &nplans, &plans, &frz_offsets,
 												   &nredirected, &redirected,
+												   &nredirected_data,
+												   &redirected_data,
 												   &ndead, &nowdead,
 												   &nunused, &nowunused);
 
