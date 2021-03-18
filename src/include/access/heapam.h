@@ -335,7 +335,8 @@ extern TM_Result heap_update(Relation relation, ItemPointer otid,
 							 HeapTuple newtup,
 							 CommandId cid, Snapshot crosscheck, bool wait,
 							 struct TM_FailureData *tmfd, LockTupleMode *lockmode,
-							 TU_UpdateIndexes *update_indexes);
+							 TU_UpdateIndexes *update_indexes,
+							 struct TM_FailureData *tmfd, LockTupleMode *lockmode, Bitmapset **modified_attrs);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -374,6 +375,11 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 
 extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
+extern static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
+												  Bitmapset *interesting_cols,
+												  Bitmapset *external_cols,
+												  HeapTuple oldtup, HeapTuple newtup,
+												  bool *has_external);
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;
@@ -389,6 +395,9 @@ extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 									   MultiXactId *new_relmin_mxid);
 extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *redirected, int nredirected,
+									OffsetNumber *redirected_data,
+									int nredirected_data,
+									bits8 **redirect_data,
 									OffsetNumber *nowdead, int ndead,
 									OffsetNumber *nowunused, int nunused);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
@@ -398,6 +407,8 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  PruneReason reason,
 									  HeapTupleFreeze *frozen, int nfrozen,
 									  OffsetNumber *redirected, int nredirected,
+									  OffsetNumber *redirected_data,
+									  int nredirected_data,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused);
 

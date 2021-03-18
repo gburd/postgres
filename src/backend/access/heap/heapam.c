@@ -65,11 +65,6 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
 #endif
-static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
-										   Bitmapset *interesting_cols,
-										   Bitmapset *external_cols,
-										   HeapTuple oldtup, HeapTuple newtup,
-										   bool *has_external);
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
@@ -1642,6 +1637,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	bool		has_prev_tup = false;
 	GlobalVisState *vistest = NULL;
 	HeapTupleData prev_tup;
 
@@ -1672,16 +1668,36 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* check for unused, dead, or redirected items */
 		if (!ItemIdIsNormal(lp))
 		{
-			/* We should only see a redirect at start of chain */
-			if (ItemIdIsRedirected(lp) && at_chain_start)
+			if (ItemIdIsPartialHotRedirected(dp, lp))
 			{
-				/* Follow the redirect */
-				offnum = ItemIdGetRedirect(lp);
-				at_chain_start = false;
-				continue;
+				bits8 *rdata;
+				Bitmapset *attrs;
+				bool found = false;
+				int attr;
+
+				rdata = (bits8 *) ItemIdGetRedirectData(dp, lp);
+				attrs = bms_copy(interesting_attrs);
+				while (!found && (attr = bms_first_member(attrs)) != -1)
+				{
+					attr += FirstLowInvalidHeapAttributeNumber;
+					if (rdata[attr / 8] & (1 << (attr % 8)))
+						found = true;
+				}
+				bms_free(attrs);
+
+				if (found)
+					break;
+				else
+					offnum = ItemIdGetRedirect(lp);
 			}
-			/* else must be end of chain */
-			break;
+			else if (ItemIdIsRedirected(lp))
+				offnum = ItemIdGetRedirect(lp);
+			else
+				break;
+
+			has_prev_tup = false;
+			at_chain_start = false;
+			continue;
 		}
 
 		/*
@@ -1720,7 +1736,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 */
 		if (OffsetNumberIsValid(prev_offnum) &&
 			HeapTupleIsPartialHeapOnly(heapTuple) &&
-			interesting_attrs)
+			interesting_attrs &&
+			has_prev_tup)
 		{
 			Bitmapset *modified_attrs;
 			Bitmapset *attrs;
@@ -1803,6 +1820,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			at_chain_start = false;
 			prev_xmax = HeapTupleHeaderGetUpdateXid(heapTuple->t_data);
 			memcpy(&prev_tup, heapTuple, sizeof(HeapTupleData));
+			has_prev_tup = true;
 		}
 		else
 			break;				/* end of chain */
@@ -3193,7 +3211,8 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes)
+			TU_UpdateIndexes *update_indexes,
+			Bitmapset **modified_attrs)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3202,7 +3221,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
-	Bitmapset  *modified_attrs;
 	ItemId		lp;
 	HeapTupleData oldtup;
 	HeapTuple	heaptup;
@@ -3222,6 +3240,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		iscombo;
 	bool		use_hot_update = false;
 	bool		summarized_update = false;
+	bool		use_phot_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3322,9 +3341,9 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * new tuple so we must include it as part of the old_key_tuple.  See
 	 * ExtractReplicaIdentity.
 	 */
-	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
-											  id_attrs, &oldtup,
-											  newtup, &id_has_external);
+	*modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
+											   id_attrs, &oldtup,
+											   newtup, &id_has_external);
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -3337,7 +3356,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * is updates that don't manipulate key columns, not those that
 	 * serendipitously arrive at the same key values.
 	 */
-	if (!bms_overlap(modified_attrs, key_attrs))
+	if (!bms_overlap(*modified_attrs, key_attrs))
 	{
 		*lockmode = LockTupleNoKeyExclusive;
 		mxact_status = MultiXactStatusNoKeyUpdate;
@@ -3598,7 +3617,6 @@ l2:
 		bms_free(sum_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
-		bms_free(modified_attrs);
 		bms_free(interesting_attrs);
 		return result;
 	}
@@ -3917,20 +3935,32 @@ l2:
 		 * to do a HOT update.  Check if any of the index columns have been
 		 * changed.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
-		{
+		if (!bms_overlap(*modified_attrs, hot_attrs))
 			use_hot_update = true;
 
-			/*
-			 * If none of the columns that are used in hot-blocking indexes
-			 * were updated, we can apply HOT, but we do still need to check
-			 * if we need to update the summarizing indexes, and update those
-			 * indexes if the columns were updated, or we may fail to detect
-			 * e.g. value bound changes in BRIN minmax indexes.
-			 */
-			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = true;
+		/*
+		 * If HOT won't work, maybe PHOT will.
+		 */
+		if (hot_attrs_checked && !use_hot_update && !IsCatalogRelation(relation))
+		{
+			Bitmapset *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
+			bool updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
+
+			use_phot_update = !updated_all_indexed_attrs;
+
+			bms_free(updated_indexed_attrs);
 		}
+
+		/*
+		 * If none of the columns that are used in hot-blocking indexes
+		 * were updated, we can apply HOT, but we do still need to check
+		 * if we need to update the summarizing indexes, and update those
+		 * indexes if the columns were updated, or we may fail to detect
+		 * e.g. value bound changes in BRIN minmax indexes.
+		 */
+		if ((use_hot_update || use_phot_update) &&
+			bms_overlap(modified_attrs, sum_attrs))
+			summarized_update = true;
 	}
 	else
 	{
@@ -3946,7 +3976,7 @@ l2:
 	 * columns are modified or it has external data.
 	 */
 	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
-										   bms_overlap(modified_attrs, id_attrs) ||
+										   bms_overlap(*modified_attrs, id_attrs) ||
 										   id_has_external,
 										   &old_key_copied);
 
@@ -3967,6 +3997,13 @@ l2:
 	 */
 	PageSetPrunable(page, xid);
 
+	HeapTupleClearHotUpdated(&oldtup);
+	HeapTupleClearHeapOnly(heaptup);
+	HeapTupleClearHeapOnly(newtup);
+	HeapTupleClearPartialHotUpdated(&oldtup);
+	HeapTupleClearPartialHeapOnly(heaptup);
+	HeapTupleClearPartialHeapOnly(newtup);
+
 	if (use_hot_update)
 	{
 		/* Mark the old tuple as HOT-updated */
@@ -3976,12 +4013,15 @@ l2:
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
 	}
-	else
+
+	if (use_phot_update)
 	{
-		/* Make sure tuples are correctly marked as not-HOT */
-		HeapTupleClearHotUpdated(&oldtup);
-		HeapTupleClearHeapOnly(heaptup);
-		HeapTupleClearHeapOnly(newtup);
+		/* Mark the old tuple as PHOT-updated */
+		HeapTupleSetPartialHotUpdated(&oldtup);
+		/* And mark the new tuple as partial heap-only */
+		HeapTupleSetPartialHeapOnly(heaptup);
+		/* Mark the caller's copy too, in case different from heaptup */
+		HeapTupleSetPartialHeapOnly(newtup);
 	}
 
 	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
@@ -4113,7 +4153,6 @@ l2:
 	bms_free(sum_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
-	bms_free(modified_attrs);
 	bms_free(interesting_attrs);
 
 	return TM_Ok;
@@ -4393,11 +4432,14 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
 	TM_Result	result;
 	TM_FailureData tmfd;
 	LockTupleMode lockmode;
+	Bitmapset *modified_attrs; /* unused */
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes);
+						 &tmfd, &lockmode, update_indexes, &modified_attrs);
+	bms_free(modified_attrs);
+
 	switch (result)
 	{
 		case TM_SelfModified:
