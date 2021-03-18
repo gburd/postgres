@@ -281,6 +281,10 @@ typedef struct xl_heap_update
  *		uint16				nunused
  *		OffsetNumber		nowunused[nunused]
  *
+ *	xlhp_prune_items
+ *		uint16				nredirected_data
+ *		OffsetNumber		redirected_data[2 * nredirected_data]
+ *
  *	OffsetNumber			frz_offsets[sum([plan.ntuples for plan in plans])]
  *-----------------------------------------------------------------------------
  *
@@ -340,6 +344,7 @@ typedef struct xl_heap_prune
 #define		XLHP_HAS_REDIRECTIONS		(1 << 5)
 #define		XLHP_HAS_DEAD_ITEMS	        (1 << 6)
 #define		XLHP_HAS_NOW_UNUSED_ITEMS   (1 << 7)
+#define		XLHP_HAS_REDIRECTION_DATA	(1 << 8)
 
 /*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
@@ -382,8 +387,8 @@ typedef struct xlhp_freeze_plans
  * Generic sub-record type contained in block reference 0 of an xl_heap_prune
  * record and used for redirect, dead, and unused items if any of
  * XLHP_HAS_REDIRECTIONS/XLHP_HAS_DEAD_ITEMS/XLHP_HAS_NOW_UNUSED_ITEMS are
- * set.  Note that in the XLHP_HAS_REDIRECTIONS variant, there are actually 2
- * * length number of OffsetNumbers in the data.
+ * set.  Note that in the XLHP_HAS_REDIRECTIONS and XLHP_HAS_REDIRECTION_DATA
+ * variants, there are actually 2 * length number of OffsetNumbers in the data.
  */
 typedef struct xlhp_prune_items
 {

@@ -2888,6 +2888,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  PRUNE_VACUUM_CLEANUP,
 								  NULL, 0,	/* frozen */
 								  NULL, 0,	/* redirected */
+								  NULL, 0,	/* redirected_data */
 								  NULL, 0,	/* dead */
 								  unused, nunused);
 	}
