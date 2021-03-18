@@ -243,14 +243,17 @@ typedef struct xl_heap_update
  *	* for each redirected item: the item offset, then the offset redirected to
  *	* for each now-dead item: the item offset
  *	* for each now-unused item: the item offset
- * The total number of OffsetNumbers is therefore 2*nredirected+ndead+nunused.
+ * The total number of OffsetNumbers is therefore 2*nredirected+2*nredirected_data+ndead+nunused.
  * Note that nunused is not explicitly stored, but may be found by reference
  * to the total record length.
+ *
+ * XXX: Need to track bitmaps for redirected-with-data!
  */
 typedef struct xl_heap_clean
 {
 	TransactionId latestRemovedXid;
 	uint16		nredirected;
+	uint16		nredirected_data;
 	uint16		ndead;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_heap_clean;
