@@ -192,6 +192,11 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 
 extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
+extern static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
+												  Bitmapset *interesting_cols,
+												  Bitmapset *external_cols,
+												  HeapTuple oldtup, HeapTuple newtup,
+												  bool *has_external);
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;
@@ -205,6 +210,8 @@ extern int	heap_page_prune(Relation relation, Buffer buffer,
 							OffsetNumber *off_loc);
 extern void heap_page_prune_execute(Buffer buffer,
 									OffsetNumber *redirected, int nredirected,
+									OffsetNumber *redirected_data, int nredirected_data,
+									bits8 **redirect_data,
 									OffsetNumber *nowdead, int ndead,
 									OffsetNumber *nowunused, int nunused);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
