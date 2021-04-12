@@ -321,7 +321,8 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
+					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes,
+					bool *update_modified_indexes, Bitmapset **modified_attrs)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -332,7 +333,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode, update_indexes);
+						 tmfd, lockmode, update_indexes, modified_attrs);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
@@ -350,11 +351,12 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		Assert(*update_indexes == TU_None);
 		*update_indexes = TU_None;
 	}
-	else if (!HeapTupleIsHeapOnly(tuple))
+	else if (!(HeapTupleIsHeapOnly(tuple) || HeapTupleIsPartialHeapOnly(tuple)))
 		Assert(*update_indexes == TU_All);
 	else
 		Assert((*update_indexes == TU_Summarizing) ||
 			   (*update_indexes == TU_None));
+	*update_modified_indexes = result == TM_Ok && HeapTupleIsPartialHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);

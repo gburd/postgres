@@ -120,6 +120,8 @@ typedef struct ModifyTableContext
  */
 typedef struct UpdateContext
 {
+	bool		updateModifiedIndexes;	/* were modified indexes updated? */
+	Bitmapset  *modifiedAttrs;	/* what attributes were modified? */
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
 	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
 
@@ -1199,7 +1201,7 @@ ExecInsert(ModifyTableContext *context,
 												   slot, estate, false, true,
 												   &specConflict,
 												   arbiterIndexes,
-												   false);
+												   false, false, NULL);
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -1239,7 +1241,7 @@ ExecInsert(ModifyTableContext *context,
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
 													   false, NULL, NIL,
-													   false);
+													   false, false, NULL);
 		}
 	}
 
@@ -2303,7 +2305,9 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes);
+								&updateCxt->updateIndexes,
+								&updateCxt->updateModifiedIndexes,
+								&updateCxt->modifiedAttrs);
 
 	return result;
 }
@@ -2323,12 +2327,16 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0 &&
+		((updateCxt->updateIndexes != TU_None) || updateCxt->updateModifiedIndexes))
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing));
+											   (updateCxt->updateIndexes == TU_Summarizing),
+											   context->updateModifiedIndexes,
+											   context->modifiedAttrs);
+	bms_free(context->modifiedAttrs);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
