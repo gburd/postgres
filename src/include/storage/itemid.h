@@ -120,7 +120,8 @@ typedef RedirectHeaderData *RedirectHeader;
  *		ItemIdGetRedirectData
  */
 #define ItemIdGetRedirectData(page, itemId) \
-	((char *) (page) + (itemId)->lp_len + sizeof(RedirectHeader))
+	((char *) (page) + (itemId)->lp_len + sizeof(RedirectHeaderData))
+
 /*
  * ItemIdIsValid
  *		True iff item identifier is valid.

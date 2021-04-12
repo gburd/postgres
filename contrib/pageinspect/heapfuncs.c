@@ -206,24 +206,57 @@ heap_page_items(PG_FUNCTION_ARGS)
 		 * data outside the page passed to us. The page could be corrupt in
 		 * many other ways, but at least we won't crash.
 		 */
-		if (ItemIdHasStorage(id) &&
-			lp_len >= MinHeapTupleSize &&
-			lp_offset == MAXALIGN(lp_offset) &&
-			lp_offset + lp_len <= raw_page_size)
+		if (ItemIdHasStorage(id)) // &&
+			//lp_len >= MinHeapTupleSize &&
+			//lp_offset == MAXALIGN(lp_offset) &&
+			//lp_offset + lp_len <= raw_page_size)
 		{
 			HeapTupleHeader tuphdr;
+			bytea	   *tuple_data_bytea;
+			int			tuple_data_len;
+			bool		phot_redirect = ItemIdIsPartialHotRedirected(page, id);
 
 			/* Extract information from the tuple header */
 			tuphdr = (HeapTupleHeader) PageGetItem(page, id);
 
-			values[4] = UInt32GetDatum(HeapTupleHeaderGetRawXmin(tuphdr));
-			values[5] = UInt32GetDatum(HeapTupleHeaderGetRawXmax(tuphdr));
-			/* shared with xvac */
-			values[6] = UInt32GetDatum(HeapTupleHeaderGetRawCommandId(tuphdr));
-			values[7] = PointerGetDatum(&tuphdr->t_ctid);
-			values[8] = UInt32GetDatum(tuphdr->t_infomask2);
-			values[9] = UInt32GetDatum(tuphdr->t_infomask);
-			values[10] = UInt8GetDatum(tuphdr->t_hoff);
+			if (phot_redirect)
+			{
+				nulls[4] = true;
+				nulls[5] = true;
+				nulls[6] = true;
+				nulls[7] = true;
+				nulls[8] = true;
+				nulls[9] = true;
+				nulls[10] = true;
+			}
+			else
+			{
+				values[4] = UInt32GetDatum(HeapTupleHeaderGetRawXmin(tuphdr));
+				values[5] = UInt32GetDatum(HeapTupleHeaderGetRawXmax(tuphdr));
+				/* shared with xvac */
+				values[6] = UInt32GetDatum(HeapTupleHeaderGetRawCommandId(tuphdr));
+				values[7] = PointerGetDatum(&tuphdr->t_ctid);
+				values[8] = UInt32GetDatum(tuphdr->t_infomask2);
+				values[9] = UInt32GetDatum(tuphdr->t_infomask);
+				values[10] = UInt8GetDatum(tuphdr->t_hoff);
+			}
+
+			/* Copy raw tuple data into bytea attribute */
+			if (phot_redirect)
+				tuple_data_len = ItemIdGetRedirectDataLength(page, id);
+			else
+				tuple_data_len = lp_len - tuphdr->t_hoff;
+			tuple_data_bytea = (bytea *) palloc(tuple_data_len + VARHDRSZ);
+			SET_VARSIZE(tuple_data_bytea, tuple_data_len + VARHDRSZ);
+			if (phot_redirect)
+				memcpy(VARDATA(tuple_data_bytea),
+					   (char *) ItemIdGetRedirectHeader(page, id),
+					   tuple_data_len);
+			else
+				memcpy(VARDATA(tuple_data_bytea),
+					   (char *) tuphdr + tuphdr->t_hoff,
+					   tuple_data_len);
+			values[13] = PointerGetDatum(tuple_data_bytea);
 
 			/*
 			 * We already checked that the item is completely within the raw
@@ -231,7 +264,8 @@ heap_page_items(PG_FUNCTION_ARGS)
 			 * But t_hoff could be out of range, so check it before relying on
 			 * it to fetch additional info.
 			 */
-			if (tuphdr->t_hoff >= SizeofHeapTupleHeader &&
+			if (!phot_redirect &&
+				tuphdr->t_hoff >= SizeofHeapTupleHeader &&
 				tuphdr->t_hoff <= lp_len &&
 				tuphdr->t_hoff == MAXALIGN(tuphdr->t_hoff))
 			{

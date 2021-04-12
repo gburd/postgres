@@ -1390,11 +1390,11 @@ process_chain:
 												 keyitems[nkeys - 1],
 												 natts, intermediate);
 			keyitems[nkeys++] = chainitems[i];
+			modified_attrs = bms_union(modified_attrs, modified);
 			bms_free(intermediate);
 			intermediate = modified;
-			modified_attrs = bms_union(modified_attrs, modified);
-			chain_dead = bms_equal(modified_attrs, interesting_attrs);
 			modified = NULL;
+			chain_dead = bms_equal(modified_attrs, interesting_attrs);
 		}
 
 		/*
@@ -1454,7 +1454,6 @@ heap_prune_record_redirect_with_data(PruneState *prstate,
 	prstate->nredirected_data++;
 	Assert(!prstate->marked[offnum]);
 	prstate->marked[offnum] = true;
-	Assert(!prstate->marked[rdoffnum]);
 	prstate->marked[rdoffnum] = true;
 }
 
@@ -2512,7 +2511,7 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		 * modifies it.
 		 */
 		interesting_copy = bms_copy(interesting_attrs);
-		modified = HeapDetermineModifiedColumns(rel, interesting_attrs,
+		modified = HeapDetermineModifiedColumns(rel, interesting_copy,
 												&oldtup, &newtup);
 		bms_free(interesting_copy);
 	}
@@ -2563,8 +2562,8 @@ StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 	((RedirectHeader) *bits)->rlp_type = RLP_PHOT;
 	((RedirectHeader) *bits)->rlp_len = len;
 
-	/* Scooch forward to the data portion */
-	*bits += sizeof(RedirectHeaderData);
+	/* Scooch forward to the bitmap portion */
+	*bits = (bits8 *) ((char *) *bits + sizeof(RedirectHeaderData));
 
 	/* Store the bitmap */
 	while ((attr = bms_first_member(data)) != -1)
@@ -2573,6 +2572,6 @@ StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 		(*bits)[attr / 8] |= (1 << (attr % 8));
 	}
 
-	/* Reset the pointer to the header */
-	*bits -= sizeof(RedirectHeaderData);
+	/* Reset the pointer back to the header */
+	*bits = (bits8 *) ((char *) *bits - sizeof(RedirectHeaderData));
 }
