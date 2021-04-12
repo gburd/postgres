@@ -606,7 +606,8 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 												   slot, estate, false,
 												   conflictindexes ? true : false,
 												   &conflict,
-												   conflictindexes, false);
+												   conflictindexes, false,
+												   false, NULL);
 
 		/*
 		 * Checks the conflict indexes to fetch the conflicting local tuple
@@ -680,6 +681,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
+		bool		update_modified_indexes;
+		Bitmapset  *modified_attrs;
 
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
@@ -694,7 +697,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+								  &update_indexes, &update_modified_indexes, &modified_attrs);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
@@ -703,7 +706,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
 												   &conflict, conflictindexes,
-												   (update_indexes == TU_Summarizing));
+												   (update_indexes == TU_Summarizing),
+												   update_modified_indexes, modified_attrs);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
@@ -721,6 +725,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 							 recheckIndexes, NULL, false);
 
 		list_free(recheckIndexes);
+		bms_free(modified_attrs);
 	}
 }
 
