@@ -453,7 +453,7 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, false, false,
-												   NULL, NIL);
+												   NULL, NIL, false, NULL);
 
 		/* AFTER ROW INSERT Triggers */
 		ExecARInsertTriggers(estate, resultRelInfo, slot,
@@ -506,6 +506,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	{
 		List	   *recheckIndexes = NIL;
 		bool		update_indexes;
+		bool		update_modified_indexes;
+		Bitmapset  *modified_attrs;
 
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
@@ -520,12 +522,12 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+								  &update_indexes, &update_modified_indexes, &modified_attrs);
 
-		if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
+		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes || update_modified_indexes))
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, true, false,
-												   NULL, NIL);
+												   NULL, NIL, update_modified_indexes, modified_attrs);
 
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
@@ -533,6 +535,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 							 recheckIndexes, NULL);
 
 		list_free(recheckIndexes);
+		bms_free(modified_attrs);
 	}
 }
 
