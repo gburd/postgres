@@ -318,7 +318,8 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, bool *update_indexes)
+					LockTupleMode *lockmode, bool *update_indexes,
+					bool *update_modified_indexes, Bitmapset **modified_attrs)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -329,7 +330,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode);
+						 tmfd, lockmode, modified_attrs);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
@@ -340,7 +341,8 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 *
 	 * If it's a HOT update, we mustn't insert new index entries.
 	 */
-	*update_indexes = result == TM_Ok && !HeapTupleIsHeapOnly(tuple);
+	*update_indexes = result == TM_Ok && !(HeapTupleIsHeapOnly(tuple) || HeapTupleIsPartialHeapOnly(tuple));
+	*update_modified_indexes = result == TM_Ok && HeapTupleIsPartialHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);
