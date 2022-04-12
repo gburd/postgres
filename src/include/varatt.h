@@ -38,6 +38,30 @@ typedef struct varatt_external
 	Oid			va_toastrelid;	/* RelID of TOAST table containing it */
 } varatt_external;
 
+typedef struct uint32align16
+{
+	uint16		hi;
+	uint16		lo;
+}			uint32align16;
+
+#define set_uint32align16(p, v)	\
+	( \
+		(p)->hi = (v) >> 16, \
+		(p)->lo = (v) & 0xffff \
+	)
+
+#define get_uint32align16(p)	\
+	(((uint32)((p)->hi)) << 16 | ((uint32)((p)->lo)))
+
+/* varatt_custom uses 16bit aligment */
+typedef struct varatt_custom
+{
+	uint16		va_toasterdatalen;	/* total size of toast pointer, < BLCKSZ */
+	uint32align16 va_rawsize;	/* Original data size (includes header) */
+	uint32align16 va_toasterid; /* Toaster ID, actually Oid */
+	char		va_toasterdata[FLEXIBLE_ARRAY_MEMBER];	/* Custom toaster data */
+}			varatt_custom;
+
 /*
  * These macros define the "saved size" portion of va_extinfo.  Its remaining
  * two high-order bits identify the compression method.
@@ -86,6 +110,7 @@ typedef enum vartag_external
 	VARTAG_INDIRECT = 1,
 	VARTAG_EXPANDED_RO = 2,
 	VARTAG_EXPANDED_RW = 3,
+	VARTAG_CUSTOM = 4,
 	VARTAG_ONDISK = 18
 } vartag_external;
 
@@ -107,6 +132,8 @@ VARTAG_SIZE(vartag_external tag)
 		return sizeof(varatt_expanded);
 	else if (tag == VARTAG_ONDISK)
 		return sizeof(varatt_external);
+	else if (tag == VARTAG_CUSTOM)
+		return offsetof(varatt_custom, va_toasterdata);
 	else
 	{
 		Assert(false);
@@ -276,6 +303,8 @@ typedef struct
 #define VARHDRSZ_EXTERNAL		offsetof(varattrib_1b_e, va_data)
 #define VARHDRSZ_COMPRESSED		offsetof(varattrib_4b, va_compressed.va_data)
 #define VARHDRSZ_SHORT			offsetof(varattrib_1b, va_data)
+#define VARHDRSZ_CUSTOM			offsetof(varattrib_1b_e, va_data)
+
 #define VARATT_SHORT_MAX		0x7F
 
 /*
@@ -384,6 +413,13 @@ VARATT_IS_EXTERNAL_EXPANDED_RW(const void *PTR)
 	return VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_EXPANDED_RW;
 }
 
+/* Is varlena datum a custom TOAST pointer? */
+static inline bool
+VARATT_IS_CUSTOM(const void *PTR)
+{
+	return VARATT_IS_EXTERNAL(PTR) && VARTAG_EXTERNAL(PTR) == VARTAG_CUSTOM;
+}
+
 /* Is varlena datum either type of pointer to an expanded object? */
 static inline bool
 VARATT_IS_EXTERNAL_EXPANDED(const void *PTR)
@@ -411,6 +447,36 @@ VARATT_IS_EXTENDED(const void *PTR)
 {
 	return !VARATT_IS_4B_U(PTR);
 }
+
+/* Custom Toast pointer */
+#define VARATT_CUSTOM_GET_TOASTPOINTER(PTR) \
+	((varatt_custom *) VARDATA_EXTERNAL(PTR))
+
+#define VARATT_CUSTOM_GET_TOASTERID(PTR) \
+	(get_uint32align16(&VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_toasterid))
+
+#define VARATT_CUSTOM_SET_TOASTERID(PTR, V) \
+	(set_uint32align16(&VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_toasterid, (V)))
+
+#define VARATT_CUSTOM_GET_DATA_RAW_SIZE(PTR) \
+	(get_uint32align16(&VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_rawsize))
+
+#define VARATT_CUSTOM_SET_DATA_RAW_SIZE(PTR, V) \
+	(set_uint32align16(&VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_rawsize, (V)))
+
+#define VARATT_CUSTOM_GET_DATA_SIZE(PTR) \
+	((int32) VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_toasterdatalen)
+
+#define VARATT_CUSTOM_SET_DATA_SIZE(PTR, V) \
+	(VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_toasterdatalen = (V))
+
+#define VARATT_CUSTOM_GET_DATA(PTR) \
+	(VARATT_CUSTOM_GET_TOASTPOINTER(PTR)->va_toasterdata)
+
+#define VARATT_CUSTOM_SIZE(datalen) \
+	((Size) VARHDRSZ_EXTERNAL + offsetof(varatt_custom, va_toasterdata) + (datalen))
+
+#define VARSIZE_CUSTOM(PTR)	VARATT_CUSTOM_SIZE(VARATT_CUSTOM_GET_DATA_SIZE(PTR))
 
 /* Is varlena datum short enough to convert to short-header format? */
 static inline bool

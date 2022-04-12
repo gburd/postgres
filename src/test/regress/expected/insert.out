@@ -163,11 +163,11 @@ create rule irule3 as on insert to inserttest2 do also
   insert into inserttest (f4[1].if1, f4[1].if2[2])
   select new.f1, new.f2;
 \d+ inserttest2
-                                Table "public.inserttest2"
- Column |  Type  | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+--------+-----------+----------+---------+----------+--------------+-------------
- f1     | bigint |           |          |         | plain    |              | 
- f2     | text   |           |          |         | extended |              | 
+                                      Table "public.inserttest2"
+ Column |  Type  | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+--------+-----------+----------+---------+----------+------------+--------------+-------------
+ f1     | bigint |           |          |         | plain    |            |              | 
+ f2     | text   |           |          |         | extended | deftoaster |              | 
 Rules:
     irule1 AS
     ON INSERT TO inserttest2 DO  INSERT INTO inserttest (f3.if2[1], f3.if2[2])
@@ -584,10 +584,10 @@ drop table hash_parted;
 create table list_parted (a int) partition by list (a);
 create table part_default partition of list_parted default;
 \d+ part_default
-                               Table "public.part_default"
- Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
---------+---------+-----------+----------+---------+---------+--------------+-------------
- a      | integer |           |          |         | plain   |              | 
+                                    Table "public.part_default"
+ Column |  Type   | Collation | Nullable | Default | Storage | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |         |              | 
 Partition of: list_parted DEFAULT
 No partition constraint
 

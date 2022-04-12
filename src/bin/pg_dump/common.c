@@ -26,6 +26,7 @@
 #include "catalog/pg_proc_d.h"
 #include "catalog/pg_publication_d.h"
 #include "catalog/pg_subscription_d.h"
+#include "catalog/pg_toaster_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/hashfn.h"
 #include "pg_backup_utils.h"
@@ -175,6 +176,9 @@ getSchemaData(Archive *fout, int *numTablesPtr)
 
 	pg_log_info("reading default privileges");
 	getDefaultACLs(fout);
+
+	pg_log_info("reading user-defined toasters");
+	getToasters(fout);
 
 	pg_log_info("reading user-defined collations");
 	getCollations(fout);
@@ -980,6 +984,24 @@ findCollationByOid(Oid oid)
 	dobj = findObjectByCatalogId(catId);
 	Assert(dobj == NULL || dobj->objType == DO_COLLATION);
 	return (CollInfo *) dobj;
+}
+
+/*
+ * findToasterByOid
+ *	  finds the DumpableObject for the toaster with the given oid
+ *	  returns NULL if not found
+ */
+ToasterInfo *
+findToasterByOid(Oid oid)
+{
+	CatalogId	catId;
+	DumpableObject *dobj;
+
+	catId.tableoid = ToasterRelationId;
+	catId.oid = oid;
+	dobj = findObjectByCatalogId(catId);
+	Assert(dobj == NULL || dobj->objType == DO_TOASTER);
+	return (ToasterInfo *) dobj;
 }
 
 /*

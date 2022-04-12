@@ -1759,12 +1759,12 @@ SELECT relname, conname, contype, conislocal, coninhcount, connoinherit
 
 -- child does not inherit NO INHERIT constraints
 \d+ fd_pt1
-                                   Table "public.fd_pt1"
- Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+---------+-----------+----------+---------+----------+--------------+-------------
- c1     | integer |           | not null |         | plain    | 10000        | 
- c2     | text    |           |          |         | extended |              | 
- c3     | date    |           |          |         | plain    |              | 
+                                         Table "public.fd_pt1"
+ Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+------------+--------------+-------------
+ c1     | integer |           | not null |         | plain    |            | 10000        | 
+ c2     | text    |           |          |         | extended | deftoaster |              | 
+ c3     | date    |           |          |         | plain    |            |              | 
 Check constraints:
     "fd_pt1chk1" CHECK (c1 > 0) NO INHERIT
     "fd_pt1chk2" CHECK (c2 <> ''::text)
@@ -1813,12 +1813,12 @@ ALTER FOREIGN TABLE ft2 ADD CONSTRAINT fd_pt1chk2 CHECK (c2 <> '');
 ALTER FOREIGN TABLE ft2 INHERIT fd_pt1;
 -- child does not inherit NO INHERIT constraints
 \d+ fd_pt1
-                                   Table "public.fd_pt1"
- Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+---------+-----------+----------+---------+----------+--------------+-------------
- c1     | integer |           | not null |         | plain    | 10000        | 
- c2     | text    |           |          |         | extended |              | 
- c3     | date    |           |          |         | plain    |              | 
+                                         Table "public.fd_pt1"
+ Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+------------+--------------+-------------
+ c1     | integer |           | not null |         | plain    |            | 10000        | 
+ c2     | text    |           |          |         | extended | deftoaster |              | 
+ c3     | date    |           |          |         | plain    |            |              | 
 Check constraints:
     "fd_pt1chk1" CHECK (c1 > 0) NO INHERIT
     "fd_pt1chk2" CHECK (c2 <> ''::text)
@@ -2171,12 +2171,12 @@ ALTER TABLE fd_pt2 ATTACH PARTITION fd_pt2_1 FOR VALUES IN (1);
 ALTER TABLE fd_pt2 DETACH PARTITION fd_pt2_1;
 ALTER TABLE fd_pt2 ADD CONSTRAINT fd_pt2chk1 CHECK (c1 > 0);
 \d+ fd_pt2
-                             Partitioned table "public.fd_pt2"
- Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+---------+-----------+----------+---------+----------+--------------+-------------
- c1     | integer |           | not null |         | plain    |              | 
- c2     | text    |           | not null |         | extended |              | 
- c3     | date    |           |          |         | plain    |              | 
+                                   Partitioned table "public.fd_pt2"
+ Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+------------+--------------+-------------
+ c1     | integer |           | not null |         | plain    |            |              | 
+ c2     | text    |           | not null |         | extended | deftoaster |              | 
+ c3     | date    |           |          |         | plain    |            |              | 
 Partition key: LIST (c1)
 Check constraints:
     "fd_pt2chk1" CHECK (c1 > 0)

@@ -28,6 +28,7 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_toaster.h"
 #include "catalog/pg_type.h"
 #include "common/link-canary.h"
 #include "miscadmin.h"
@@ -83,57 +84,58 @@ struct typinfo
 	bool		byval;
 	char		align;
 	char		storage;
+	Oid			toaster;
 	Oid			collation;
 	Oid			inproc;
 	Oid			outproc;
 };
 
 static const struct typinfo TypInfo[] = {
-	{"bool", BOOLOID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid,
+	{"bool", BOOLOID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_BOOLIN, F_BOOLOUT},
-	{"bytea", BYTEAOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"bytea", BYTEAOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_BYTEAIN, F_BYTEAOUT},
-	{"char", CHAROID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid,
+	{"char", CHAROID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_CHARIN, F_CHAROUT},
-	{"cstring", CSTRINGOID, 0, -2, false, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid,
+	{"cstring", CSTRINGOID, 0, -2, false, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_CSTRING_IN, F_CSTRING_OUT},
-	{"int2", INT2OID, 0, 2, true, TYPALIGN_SHORT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int2", INT2OID, 0, 2, true, TYPALIGN_SHORT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_INT2IN, F_INT2OUT},
-	{"int4", INT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int4", INT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_INT4IN, F_INT4OUT},
-	{"int8", INT8OID, 0, 8, true, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int8", INT8OID, 0, 8, true, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_INT8IN, F_INT8OUT},
-	{"float4", FLOAT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"float4", FLOAT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_FLOAT4IN, F_FLOAT4OUT},
-	{"float8", FLOAT8OID, 0, 8, true, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid,
+	{"float8", FLOAT8OID, 0, 8, true, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_FLOAT8IN, F_FLOAT8OUT},
-	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, C_COLLATION_OID,
+	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid, C_COLLATION_OID,
 	F_NAMEIN, F_NAMEOUT},
-	{"regproc", REGPROCOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"regproc", REGPROCOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_REGPROCIN, F_REGPROCOUT},
-	{"text", TEXTOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"text", TEXTOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, DEFAULT_COLLATION_OID,
 	F_TEXTIN, F_TEXTOUT},
-	{"jsonb", JSONBOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"jsonb", JSONBOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_JSONB_IN, F_JSONB_OUT},
-	{"oid", OIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"oid", OIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_OIDIN, F_OIDOUT},
-	{"aclitem", ACLITEMOID, 0, 16, false, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid,
+	{"aclitem", ACLITEMOID, 0, 16, false, TYPALIGN_DOUBLE, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_ACLITEMIN, F_ACLITEMOUT},
-	{"pg_node_tree", PG_NODE_TREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"pg_node_tree", PG_NODE_TREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, DEFAULT_COLLATION_OID,
 	F_PG_NODE_TREE_IN, F_PG_NODE_TREE_OUT},
-	{"int2vector", INT2VECTOROID, INT2OID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int2vector", INT2VECTOROID, INT2OID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_INT2VECTORIN, F_INT2VECTOROUT},
-	{"oidvector", OIDVECTOROID, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"oidvector", OIDVECTOROID, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid, InvalidOid,
 	F_OIDVECTORIN, F_OIDVECTOROUT},
-	{"_int4", INT4ARRAYOID, INT4OID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_int4", INT4ARRAYOID, INT4OID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_text", TEXTARRAYOID, TEXTOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"_text", TEXTARRAYOID, TEXTOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, DEFAULT_COLLATION_OID,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_oid", OIDARRAYOID, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_oid", OIDARRAYOID, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_char", CHARARRAYOID, CHAROID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_char", CHARARRAYOID, CHAROID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_aclitem", ACLITEMARRAYOID, ACLITEMOID, -1, false, TYPALIGN_DOUBLE, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_aclitem", ACLITEMARRAYOID, ACLITEMOID, -1, false, TYPALIGN_DOUBLE, TYPSTORAGE_EXTENDED, DEFAULT_TOASTER_OID, InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT}
 };
 
@@ -585,6 +587,9 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 		attrtypes[attnum]->attbyval = Ap->am_typ.typbyval;
 		attrtypes[attnum]->attalign = Ap->am_typ.typalign;
 		attrtypes[attnum]->attstorage = Ap->am_typ.typstorage;
+		attrtypes[attnum]->atttoaster =
+			(Ap->am_typ.typstorage == TYPSTORAGE_PLAIN) ?
+			InvalidOid : DEFAULT_TOASTER_OID;
 		attrtypes[attnum]->attcompression = InvalidCompressionMethod;
 		attrtypes[attnum]->attcollation = Ap->am_typ.typcollation;
 		/* if an array type, assume 1-dimensional attribute */
@@ -600,6 +605,7 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 		attrtypes[attnum]->attbyval = TypInfo[typeoid].byval;
 		attrtypes[attnum]->attalign = TypInfo[typeoid].align;
 		attrtypes[attnum]->attstorage = TypInfo[typeoid].storage;
+		attrtypes[attnum]->atttoaster = TypInfo[typeoid].toaster;
 		attrtypes[attnum]->attcompression = InvalidCompressionMethod;
 		attrtypes[attnum]->attcollation = TypInfo[typeoid].collation;
 		/* if an array type, assume 1-dimensional attribute */

@@ -428,12 +428,12 @@ Inherits:
 CREATE TABLE ctlt13_like (LIKE ctlt3 INCLUDING CONSTRAINTS INCLUDING INDEXES INCLUDING COMMENTS INCLUDING STORAGE) INHERITS (ctlt1);
 NOTICE:  merging column "a" with inherited definition
 \d+ ctlt13_like
-                               Table "public.ctlt13_like"
- Column | Type | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+------+-----------+----------+---------+----------+--------------+-------------
- a      | text |           | not null |         | main     |              | A3
- b      | text |           |          |         | extended |              | 
- c      | text |           |          |         | external |              | C
+                                     Table "public.ctlt13_like"
+ Column | Type | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+------+-----------+----------+---------+----------+------------+--------------+-------------
+ a      | text |           | not null |         | main     | deftoaster |              | A3
+ b      | text |           |          |         | extended | deftoaster |              | 
+ c      | text |           |          |         | external | deftoaster |              | C
 Indexes:
     "ctlt13_like_expr_idx" btree ((a || c))
 Check constraints:
@@ -455,11 +455,11 @@ SELECT description FROM pg_description, pg_constraint c WHERE classoid = 'pg_con
 
 CREATE TABLE ctlt_all (LIKE ctlt1 INCLUDING ALL);
 \d+ ctlt_all
-                                Table "public.ctlt_all"
- Column | Type | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+------+-----------+----------+---------+----------+--------------+-------------
- a      | text |           | not null |         | main     |              | A
- b      | text |           |          |         | extended |              | B
+                                       Table "public.ctlt_all"
+ Column | Type | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+------+-----------+----------+---------+----------+------------+--------------+-------------
+ a      | text |           | not null |         | main     | deftoaster |              | A
+ b      | text |           |          |         | extended | deftoaster |              | B
 Indexes:
     "ctlt_all_pkey" PRIMARY KEY, btree (a)
     "ctlt_all_b_idx" btree (b)
@@ -499,11 +499,11 @@ DETAIL:  MAIN versus EXTENDED
 -- Check that LIKE isn't confused by a system catalog of the same name
 CREATE TABLE pg_attrdef (LIKE ctlt1 INCLUDING ALL);
 \d+ public.pg_attrdef
-                               Table "public.pg_attrdef"
- Column | Type | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+------+-----------+----------+---------+----------+--------------+-------------
- a      | text |           | not null |         | main     |              | A
- b      | text |           |          |         | extended |              | B
+                                      Table "public.pg_attrdef"
+ Column | Type | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+------+-----------+----------+---------+----------+------------+--------------+-------------
+ a      | text |           | not null |         | main     | deftoaster |              | A
+ b      | text |           |          |         | extended | deftoaster |              | B
 Indexes:
     "pg_attrdef_pkey" PRIMARY KEY, btree (a)
     "pg_attrdef_b_idx" btree (b)
@@ -525,11 +525,11 @@ CREATE SCHEMA ctl_schema;
 SET LOCAL search_path = ctl_schema, public;
 CREATE TABLE ctlt1 (LIKE ctlt1 INCLUDING ALL);
 \d+ ctlt1
-                                Table "ctl_schema.ctlt1"
- Column | Type | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+------+-----------+----------+---------+----------+--------------+-------------
- a      | text |           | not null |         | main     |              | A
- b      | text |           |          |         | extended |              | B
+                                      Table "ctl_schema.ctlt1"
+ Column | Type | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+------+-----------+----------+---------+----------+------------+--------------+-------------
+ a      | text |           | not null |         | main     | deftoaster |              | A
+ b      | text |           |          |         | extended | deftoaster |              | B
 Indexes:
     "ctlt1_pkey" PRIMARY KEY, btree (a)
     "ctlt1_b_idx" btree (b)

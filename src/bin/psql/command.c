@@ -1145,7 +1145,7 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 				success = describeRoles(pattern, show_verbose, show_system);
 				break;
 			case 'l':
-				success = listLargeObjects(show_verbose);
+				success = do_lo_list();
 				break;
 			case 'L':
 				success = listLanguages(pattern, show_verbose, show_system);

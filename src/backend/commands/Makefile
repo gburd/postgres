@@ -61,6 +61,7 @@ OBJS = \
 	tablespace.o \
 	trigger.o \
 	tsearchcmds.o \
+	toastercmds.o \
 	typecmds.o \
 	user.o \
 	vacuum.o \
