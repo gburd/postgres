@@ -831,12 +831,12 @@ logicalrep_write_tuple(StringInfo out, Relation rel, TupleTableSlot *slot,
 			elog(ERROR, "cache lookup failed for type %u", att->atttypid);
 		typclass = (Form_pg_type) GETSTRUCT(typtup);
 
-		if (att->attlen == -1 && VARATT_IS_EXTERNAL_INDIRECT(values[i]))
+		if (att->attlen == -1 && VARATT_IS_EXTERNAL_INDIRECT(DatumGetPointer(values[i])))
 		{
 			struct varatt_indirect redirect;
 			struct varlena *attr;
 
-			VARATT_EXTERNAL_GET_POINTER(redirect, values[i]);
+			VARATT_EXTERNAL_GET_POINTER(redirect, DatumGetPointer(values[i]));
 			attr = (struct varlena *) redirect.pointer;
 
 			/* Send type diff, if it is a custom pointer. */

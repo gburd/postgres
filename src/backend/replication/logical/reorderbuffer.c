@@ -175,19 +175,6 @@ typedef struct ReorderBufferIterTXNState
 	ReorderBufferIterTXNEntry entries[FLEXIBLE_ARRAY_MEMBER];
 } ReorderBufferIterTXNState;
 
-/* toast datastructures */
-typedef struct ReorderBufferToastEnt
-{
-	Oid			chunk_id;		/* toast_table.chunk_id */
-	int32		last_chunk_seq; /* toast_table.chunk_seq of the last chunk we
-								 * have seen */
-	Size		num_chunks;		/* number of chunks we've already seen */
-	Size		size;			/* combined size of chunks seen */
-	dlist_head	chunks;			/* linked list of chunks */
-	varlena    *reconstructed;	/* reconstructed varlena now pointed to in
-								 * main tup */
-} ReorderBufferToastEnt;
-
 /* Disk serialization support datastructures */
 typedef struct ReorderBufferDiskChange
 {
@@ -5090,7 +5077,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	/* no toast tuples changed */
 	if (!change->data.tp.newtuple ||
-		!HeapTupleHasExternal(&change->data.tp.newtuple->tuple))
+		!HeapTupleHasExternal(change->data.tp.newtuple))
 	{
 		return;
 	}
@@ -5152,7 +5139,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			continue;
 
 		/* ok, we know we have a toast datum */
-		varlena_pointer = (varlena *) DatumGetPointer(attrs[natt]);
+		varlena = (struct varlena *) DatumGetPointer(attrs[natt]);
 
 		/* no need to do anything if the tuple isn't external */
 		if (!VARATT_IS_EXTERNAL_ONDISK(varlena) &&

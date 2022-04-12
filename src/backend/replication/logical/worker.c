@@ -2979,7 +2979,7 @@ apply_handle_update_internal(ApplyExecutionData *edata,
 
 			/* Store the new tuple for conflict reporting */
 			newslot = table_slot_create(localrel, &estate->es_tupleTable);
-			slot_store_data(newslot, relmapentry, newtup);
+			slot_store_data(newslot, relmapentry, newtup, false);
 
 			conflicttuple.slot = localslot;
 
@@ -3021,7 +3021,7 @@ apply_handle_update_internal(ApplyExecutionData *edata,
 			type = CT_UPDATE_MISSING;
 
 		/* Store the new tuple for conflict reporting */
-		slot_store_data(newslot, relmapentry, newtup);
+		slot_store_data(newslot, relmapentry, newtup, false);
 
 		/*
 		 * The tuple to be updated could not be found or was deleted.  Do
@@ -3516,7 +3516,7 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 						type = CT_UPDATE_MISSING;
 
 					/* Store the new tuple for conflict reporting */
-					slot_store_data(newslot, part_entry, newtup);
+					slot_store_data(newslot, part_entry, newtup, false);
 
 					/*
 					 * The tuple to be updated could not be found or was
@@ -3542,7 +3542,7 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 
 					/* Store the new tuple for conflict reporting */
 					newslot = table_slot_create(partrel, &estate->es_tupleTable);
-					slot_store_data(newslot, part_entry, newtup);
+					slot_store_data(newslot, part_entry, newtup, false);
 
 					conflicttuple.slot = localslot;
 

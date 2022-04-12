@@ -54,6 +54,10 @@
 #include "access/toast_compression.h"
 #include "replication/reorderbuffer.h"
 
+#ifdef USE_LZ4
+#include <lz4.h>
+#endif
+
 /*
  * Callback function signatures --- see toaster.sgml for more info.
  */
@@ -669,12 +673,12 @@ generic_toaster_reconstruct(Relation toastrel, struct varlena *varlena,
 	{
 		bool		isnull;
 		ReorderBufferChange *cchange;
-		ReorderBufferTupleBuf *ctup;
+		HeapTuple	ctup;
 		Pointer		chunk;
 
 		cchange = dlist_container(ReorderBufferChange, node, it.cur);
 		ctup = cchange->data.tp.newtuple;
-		chunk = DatumGetPointer(fastgetattr(&ctup->tuple, 3, toast_desc, &isnull));
+		chunk = DatumGetPointer(fastgetattr(ctup, 3, toast_desc, &isnull));
 
 		Assert(!isnull);
 		Assert(!VARATT_IS_EXTERNAL(chunk));
