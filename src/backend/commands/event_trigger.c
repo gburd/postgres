@@ -2183,6 +2183,7 @@ stringify_grant_objtype(ObjectType objtype)
 		case OBJECT_STATISTIC_EXT:
 		case OBJECT_SUBSCRIPTION:
 		case OBJECT_TABCONSTRAINT:
+		case OBJECT_TOASTER:
 		case OBJECT_TRANSFORM:
 		case OBJECT_TRIGGER:
 		case OBJECT_TSCONFIGURATION:
@@ -2267,6 +2268,7 @@ stringify_adefprivs_objtype(ObjectType objtype)
 		case OBJECT_STATISTIC_EXT:
 		case OBJECT_SUBSCRIPTION:
 		case OBJECT_TABCONSTRAINT:
+		case OBJECT_TOASTER:
 		case OBJECT_TRANSFORM:
 		case OBJECT_TRIGGER:
 		case OBJECT_TSCONFIGURATION:
