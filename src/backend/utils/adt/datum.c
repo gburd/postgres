@@ -42,14 +42,13 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
-#include "catalog/pg_type_d.h"
+#include "access/toasterapi.h"
 #include "common/hashfn.h"
 #include "fmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/expandeddatum.h"
-
+#include "access/toast_helper.h"
 
 /*-------------------------------------------------------------------------
  * datumGetSize

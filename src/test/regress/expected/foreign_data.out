@@ -1409,7 +1409,7 @@ CREATE FOREIGN TABLE ft2 () INHERITS (fd_pt1)
  c1     | integer |           | not null |         | plain    |            |              | 
  c2     | text    |           |          |         | extended | deftoaster |              | 
  c3     | date    |           |          |         | plain    |            |              | 
-Child tables: ft2
+Child tables: ft2, FOREIGN
 
 \d+ ft2
                                        Foreign table "public.ft2"
@@ -1454,7 +1454,7 @@ ALTER FOREIGN TABLE ft2 INHERIT fd_pt1;
  c1     | integer |           | not null |         | plain    |            |              | 
  c2     | text    |           |          |         | extended | deftoaster |              | 
  c3     | date    |           |          |         | plain    |            |              | 
-Child tables: ft2
+Child tables: ft2, FOREIGN
 
 \d+ ft2
                                        Foreign table "public.ft2"
@@ -1527,7 +1527,7 @@ ALTER TABLE fd_pt1 ADD COLUMN c8 integer;
  c6     | integer |           |          |         | plain    |            |              | 
  c7     | integer |           | not null |         | plain    |            |              | 
  c8     | integer |           |          |         | plain    |            |              | 
-Child tables: ft2
+Child tables: ft2, FOREIGN
 
 \d+ ft2
                                        Foreign table "public.ft2"
@@ -1601,7 +1601,7 @@ ALTER TABLE fd_pt1 ALTER COLUMN c8 SET STORAGE EXTERNAL;
  c6     | integer |           | not null |         | plain    |            |              | 
  c7     | integer |           |          |         | plain    |            |              | 
  c8     | text    |           |          |         | external | deftoaster |              | 
-Child tables: ft2
+Child tables: ft2, FOREIGN
 
 \d+ ft2
                                        Foreign table "public.ft2"
@@ -1634,7 +1634,7 @@ ALTER TABLE fd_pt1 DROP COLUMN c8;
  c1     | integer |           | not null |         | plain    |            | 10000        | 
  c2     | text    |           |          |         | extended | deftoaster |              | 
  c3     | date    |           |          |         | plain    |            |              | 
-Child tables: ft2
+Child tables: ft2, FOREIGN
 
 \d+ ft2
                                        Foreign table "public.ft2"
