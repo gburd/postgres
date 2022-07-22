@@ -24,7 +24,7 @@
  *	  section	description
  *	  -------	------------------------------------------------
  *		1)		Datum type + support functions
- *      2)      variable-length datatypes (TOAST support)
+ *		2)		variable-length datatypes (TOAST support)
  *		3)		miscellaneous
  *
  *	 NOTES
@@ -672,6 +672,7 @@ typedef enum vartag_external
 	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) : \
 	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
 	 (tag) == VARTAG_ONDISK ? sizeof(varatt_external) : \
+	 (tag) == VARTAG_CUSTOM ? offsetof(varatt_custom, va_toasterdata)	: \
 	 (AssertMacro(false), 0))
 
 /*

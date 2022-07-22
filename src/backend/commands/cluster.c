@@ -56,6 +56,8 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/tuplesort.h"
+#include "catalog/toasting.h"
 
 /*
  * This struct is used to pass around the information on tables to be
