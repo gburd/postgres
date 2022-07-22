@@ -6205,7 +6205,7 @@ am_type:
 /*****************************************************************************
  *
  *		QUERY:
- *				CREATE TOASTER name HANDLER	handler_name
+ *				CREATE TOASTER name HANDLER	handler_name 
  *
  *****************************************************************************/
 

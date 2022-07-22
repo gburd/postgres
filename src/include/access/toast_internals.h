@@ -16,7 +16,13 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
-
+#include "utils/rel.h"
+#include "access/toasterapi.h"
+#include "access/table.h"
+#include "access/tableam.h"
+#include "common/int.h"
+#include "common/pg_lzcompress.h"
+#include "utils/expandeddatum.h"
 /*
  *	The information at the start of the compressed toast data.
  */
@@ -51,6 +57,16 @@ extern Oid	toast_get_valid_index(Oid toastoid, LOCKMODE lock);
 extern void toast_delete_datum(Relation rel, Datum value, bool is_speculative);
 extern Datum toast_save_datum(Relation rel, Datum value,
 							  varlena *oldexternal, int options);
+
+extern struct varlena *toast_fetch_datum(struct varlena *attr);
+extern struct varlena *toast_fetch_datum_slice(struct varlena *attr,
+											   int32 sliceoffset,
+											   int32 slicelength);
+
+extern void toast_fetch_toast_slice(Relation toastrel, Oid valueid,
+									struct varlena *attr, int32 attrsize,
+									int32 sliceoffset, int32 slicelength,
+									struct varlena *result);
 
 extern int	toast_open_indexes(Relation toastrel,
 							   LOCKMODE lock,

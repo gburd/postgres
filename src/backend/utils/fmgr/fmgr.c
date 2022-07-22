@@ -15,7 +15,8 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
+#include "access/toast_helper.h"
 #include "access/htup_details.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"

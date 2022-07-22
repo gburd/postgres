@@ -14,7 +14,8 @@
  */
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
+#include "access/toast_helper.h"
 #include "commands/vacuum.h"
 #include "utils/array.h"
 #include "utils/datum.h"

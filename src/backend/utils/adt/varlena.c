@@ -17,7 +17,8 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
+#include "access/toast_helper.h"
 #include "access/toast_compression.h"
 #include "access/tupmacs.h"
 #include "catalog/pg_collation.h"

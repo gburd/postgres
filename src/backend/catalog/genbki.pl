@@ -163,8 +163,16 @@ foreach my $header (@ARGV)
 	foreach my $syscache (@{ $catalog->{syscaches} })
 	{
 		my $index = $indexes{ $syscache->{index_name} };
+		unless (defined $index)
+		{
+			die "syscache $syscache->{syscache_name} references unknown index $syscache->{index_name} in catalog $catname\n";
+		}
 		my $tblname = $index->{table_name};
 		my $key = $index->{index_decl};
+		unless (defined $key)
+		{
+			die "index $syscache->{index_name} has no index_decl in catalog $catname\n";
+		}
 		$key =~ s/^\w+\(//;
 		$key =~ s/\)$//;
 		$key =~ s/(\w+)\s+\w+/Anum_${tblname}_$1/g;

@@ -983,27 +983,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		ofTypeId = InvalidOid;
 
 	/*
-	 * If the statement hasn't specified an access method, but we're defining
-	 * a type of relation that needs one, use the default.
-	 */
-	if (stmt->accessMethod != NULL)
-	{
-		accessMethod = stmt->accessMethod;
-
-		if (partitioned)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("specifying a table access method is not supported on a partitioned table")));
-
-	}
-	else if (RELKIND_HAS_TABLE_AM(relkind))
-		accessMethod = default_table_access_method;
-
-	/* look up the access method, verify it is for a table */
-	if (accessMethod != NULL)
-		accessMethodId = get_table_am_oid(accessMethod, false);
-
-	/*
 	 * Look up inheritance ancestors and generate relation schema, including
 	 * inherited attributes.  (Note that stmt->tableElts is destructively
 	 * modified by MergeAttributes.)
@@ -1093,6 +1072,19 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 		if (RELKIND_HAS_TABLE_AM(relkind) && !OidIsValid(accessMethodId))
 			accessMethodId = get_table_am_oid(default_table_access_method, false);
+	}
+
+	/*
+	 * Validate toaster assignments now that we know the access method.
+	 */
+	for (int i = 0; i < descriptor->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(descriptor, i);
+
+		if (OidIsValid(att->atttoaster))
+			validateToaster(att->atttoaster, att->atttypid,
+							att->attstorage, att->attcompression,
+							accessMethodId, false);
 	}
 
 	/*
@@ -7530,6 +7522,12 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	CheckAttributeType(NameStr(attribute->attname), attribute->atttypid, attribute->attcollation,
 					   list_make1_oid(rel->rd_rel->reltype),
 					   (attribute->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ? CHKATYPE_IS_VIRTUAL : 0));
+
+	/* Validate toaster if set */
+	if (OidIsValid(attribute->atttoaster))
+		validateToaster(attribute->atttoaster, attribute->atttypid,
+						attribute->attstorage, attribute->attcompression,
+						rel->rd_rel->relam, false);
 
 	InsertPgAttributeTuples(attrdesc, tupdesc, myrelid, NULL, NULL);
 
@@ -22670,6 +22668,12 @@ getAttributesList(Relation parent_rel)
 				pstrdup(GetCompressionMethodName(attribute->attcompression));
 		else
 			def->compression = NULL;
+
+		/* Copy toaster. */
+		if (OidIsValid(attribute->atttoaster))
+			def->toaster = get_toaster_name(attribute->atttoaster);
+		else
+			def->toaster = NULL;
 
 		/* Add to column list. */
 		colList = lappend(colList, def);

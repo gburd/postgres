@@ -17,6 +17,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/toast_compression.h"
+#include "access/toasterapi.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
@@ -32,12 +33,13 @@
 #include "nodes/makefuncs.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 static void CheckAndCreateToastTable(Oid relOid, Datum reloptions,
 									 LOCKMODE lockmode, bool check,
 									 Oid OIDOldToast);
-static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
+bool		create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 							   Datum reloptions, LOCKMODE lockmode, bool check,
 							   Oid OIDOldToast);
 static bool needs_toast_table(Relation rel);
@@ -80,12 +82,38 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 						 bool check, Oid OIDOldToast)
 {
 	Relation	rel;
+	int			i;
+	TupleDesc	tupDesc;
+	List	   *tsrOids = NIL;
 
+	elog(DEBUG1, "CheckAndCreateToastTable: relOid=%u", relOid);
 	rel = table_open(relOid, lockmode);
 
-	/* create_toast_table does all the work */
-	(void) create_toast_table(rel, InvalidOid, InvalidOid, reloptions, lockmode,
-							  check, OIDOldToast);
+	tupDesc = RelationGetDescr(rel);
+	elog(DEBUG1, "CheckAndCreateToastTable: natts=%d", tupDesc->natts);
+
+	/*
+	 * Create toaster data storage (heap table for generic toaster), once per
+	 * table for each toster.
+	 */
+	for (i = 0; i < tupDesc->natts; i++)
+	{
+		FormData_pg_attribute *attr = TupleDescAttr(tupDesc, i);
+		TsrRoutine *tsr;
+
+		if (attr->attisdropped || !OidIsValid(attr->atttoaster))
+			continue;
+
+		/* such toaster is already created its storage */
+		if (list_member_oid(tsrOids, attr->atttoaster))
+			continue;
+
+		tsr = SearchTsrCache(attr->atttoaster);
+
+		tsr->init(rel, InvalidOid, InvalidOid, reloptions, lockmode, check, OIDOldToast);
+
+		tsrOids = lappend_oid(tsrOids, attr->atttoaster);
+	}
 
 	table_close(rel, NoLock);
 }
@@ -99,6 +127,8 @@ void
 BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 {
 	Relation	rel;
+	TupleDesc	tupDesc;
+	List	   *tsrOids = NIL;
 
 	rel = table_openrv(makeRangeVar(NULL, relName, -1), AccessExclusiveLock);
 
@@ -108,23 +138,48 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 			 relName);
 
 	/* create_toast_table does all the work */
+	tupDesc = RelationGetDescr(rel);
+	for (int i = 0; i < tupDesc->natts; i++)
+	{
+		FormData_pg_attribute *attr = TupleDescAttr(tupDesc, i);
+		TsrRoutine *tsr;
+
+		if (attr->attisdropped || !OidIsValid(attr->atttoaster))
+			continue;
+
+		/* such toaster is already created its storage */
+		if (list_member_oid(tsrOids, attr->atttoaster))
+			continue;
+
+		tsr = SearchTsrCache(attr->atttoaster);
+
+		if (!tsr)
+			elog(ERROR, "\"%s\" does not require a toast table", relName);
+		else
+			tsr->init(rel, toastOid, toastIndexOid, (Datum) 0,
+					  AccessExclusiveLock, false, InvalidOid);
+
+		tsrOids = lappend_oid(tsrOids, attr->atttoaster);
+	}
+
+/*
 	if (!create_toast_table(rel, toastOid, toastIndexOid, (Datum) 0,
 							AccessExclusiveLock, false, InvalidOid))
 		elog(ERROR, "\"%s\" does not require a toast table",
 			 relName);
-
+*/
 	table_close(rel, NoLock);
 }
 
 
 /*
- * create_toast_table --- internal workhorse
+ * create_toast_table --- do main work
  *
  * rel is already opened and locked
  * toastOid and toastIndexOid are normally InvalidOid, but during
  * bootstrap they can be nonzero to specify hand-assigned OIDs
  */
-static bool
+bool
 create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				   Datum reloptions, LOCKMODE lockmode, bool check,
 				   Oid OIDOldToast)
@@ -431,4 +486,50 @@ needs_toast_table(Relation rel)
 
 	/* Otherwise, let the AM decide. */
 	return table_relation_needs_toast_table(rel);
+}
+
+/* ----------
+ * toast_get_valid_index
+ *
+ *	Get OID of valid index associated to given toast relation. A toast
+ *	relation can have only one valid index at the same time.
+ */
+
+
+/* ----------
+ * init_toast_snapshot
+ *
+ *	Initialize an appropriate TOAST snapshot.  We must use an MVCC snapshot
+ *	to initialize the TOAST snapshot; since we don't know which one to use,
+ *	just use the oldest one.  This is safe: at worst, we will get a "snapshot
+ *	too old" error that might have been avoided otherwise.
+ */
+void
+init_toast_snapshot(Snapshot toast_snapshot)
+{
+	/*
+	 * Initialize the TOAST snapshot. In PostgreSQL 18, TOAST uses a special
+	 * snapshot type that doesn't track xmin/xmax in the traditional way. The
+	 * actual snapshot used for TOAST fetching is SnapshotToastData, which is
+	 * a global defined in snapmgr.c.
+	 */
+	toast_snapshot->snapshot_type = SNAPSHOT_TOAST;
+	toast_snapshot->xmin = InvalidTransactionId;
+	toast_snapshot->xmax = InvalidTransactionId;
+	toast_snapshot->xip = NULL;
+	toast_snapshot->xcnt = 0;
+	toast_snapshot->subxip = NULL;
+	toast_snapshot->subxcnt = 0;
+	toast_snapshot->suboverflowed = false;
+	toast_snapshot->takenDuringRecovery = false;
+	toast_snapshot->copied = false;
+	toast_snapshot->curcid = InvalidCommandId;
+	toast_snapshot->speculativeToken = 0;
+	toast_snapshot->vistest = NULL;
+	toast_snapshot->active_count = 0;
+	toast_snapshot->regd_count = 0;
+	toast_snapshot->ph_node.first_child = NULL;
+	toast_snapshot->ph_node.next_sibling = NULL;
+	toast_snapshot->ph_node.prev_or_parent = NULL;
+	toast_snapshot->snapXactCompletionCount = 0;
 }

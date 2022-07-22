@@ -772,6 +772,7 @@ typedef struct TableAmRoutine
 	 * for more details.
 	 */
 	void		(*relation_fetch_toast_slice) (Relation toastrel, Oid valueid,
+											   struct varlena *attr,
 											   int32 attrsize,
 											   int32 sliceoffset,
 											   int32 slicelength,
@@ -1962,11 +1963,12 @@ table_relation_toast_am(Relation rel)
  */
 static inline void
 table_relation_fetch_toast_slice(Relation toastrel, Oid valueid,
-								 int32 attrsize, int32 sliceoffset,
-								 int32 slicelength, varlena *result)
+								 struct varlena *attr, int32 attrsize,
+								 int32 sliceoffset, int32 slicelength,
+								 varlena *result)
 {
 	toastrel->rd_tableam->relation_fetch_toast_slice(toastrel, valueid,
-													 attrsize,
+													 attr, attrsize,
 													 sliceoffset, slicelength,
 													 result);
 }

@@ -13,12 +13,13 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/table.h"
 #include "access/toast_internals.h"
+#include "catalog/toasting.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
@@ -617,6 +618,320 @@ toast_close_indexes(Relation *toastidxs, int num_indexes, LOCKMODE lock)
 	for (i = 0; i < num_indexes; i++)
 		index_close(toastidxs[i], lock);
 	pfree(toastidxs);
+}
+
+/* ----------
+ * toast_fetch_toast_slice -
+ *
+ *	Fetch a slice of a TOAST value from the toast relation.
+ *
+ * toastrel is the toast relation containing the chunks.
+ * valueid is the OID of the TOAST value to fetch.
+ * attr is the original TOAST pointer (containing compression info, etc).
+ * attrsize is the total uncompressed size of the TOAST value.
+ * sliceoffset is the byte offset within the TOAST value from which to fetch.
+ * slicelength is the number of bytes to be fetched from the TOAST value.
+ * result is the varlena into which the results should be written.
+ */
+void
+toast_fetch_toast_slice(Relation toastrel, Oid valueid,
+						struct varlena *attr, int32 attrsize,
+						int32 sliceoffset, int32 slicelength,
+						struct varlena *result)
+{
+	Relation   *toastidxs;
+	ScanKeyData toastkey[3];
+	TupleDesc	toasttupDesc = toastrel->rd_att;
+	int			nscankeys;
+	SysScanDesc toastscan;
+	HeapTuple	ttup;
+	int32		expectedchunk;
+	int32		totalchunks = ((attrsize - 1) / TOAST_MAX_CHUNK_SIZE) + 1;
+	int			startchunk;
+	int			endchunk;
+	int			num_indexes;
+	int			validIndex;
+	SnapshotData SnapshotToast;
+
+	/* Look for the valid index of toast relation */
+	validIndex = toast_open_indexes(toastrel,
+									AccessShareLock,
+									&toastidxs,
+									&num_indexes);
+
+	startchunk = sliceoffset / TOAST_MAX_CHUNK_SIZE;
+	endchunk = (sliceoffset + slicelength - 1) / TOAST_MAX_CHUNK_SIZE;
+	Assert(endchunk <= totalchunks);
+
+	/* Set up a scan key to fetch from the index. */
+	ScanKeyInit(&toastkey[0],
+				(AttrNumber) 1,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(valueid));
+
+	/*
+	 * No additional condition if fetching all chunks. Otherwise, use an
+	 * equality condition for one chunk, and a range condition otherwise.
+	 */
+	if (startchunk == 0 && endchunk == totalchunks - 1)
+		nscankeys = 1;
+	else if (startchunk == endchunk)
+	{
+		ScanKeyInit(&toastkey[1],
+					(AttrNumber) 2,
+					BTEqualStrategyNumber, F_INT4EQ,
+					Int32GetDatum(startchunk));
+		nscankeys = 2;
+	}
+	else
+	{
+		ScanKeyInit(&toastkey[1],
+					(AttrNumber) 2,
+					BTGreaterEqualStrategyNumber, F_INT4GE,
+					Int32GetDatum(startchunk));
+		ScanKeyInit(&toastkey[2],
+					(AttrNumber) 2,
+					BTLessEqualStrategyNumber, F_INT4LE,
+					Int32GetDatum(endchunk));
+		nscankeys = 3;
+	}
+
+	/* Prepare for scan */
+	init_toast_snapshot(&SnapshotToast);
+	toastscan = systable_beginscan_ordered(toastrel, toastidxs[validIndex],
+										   &SnapshotToast, nscankeys, toastkey);
+
+	/*
+	 * Read the chunks by index
+	 *
+	 * The index is on (valueid, chunkidx) so they will come in order
+	 */
+	expectedchunk = startchunk;
+	while ((ttup = systable_getnext_ordered(toastscan, ForwardScanDirection)) != NULL)
+	{
+		int32		curchunk;
+		Pointer		chunk;
+		bool		isnull;
+		char	   *chunkdata;
+		int32		chunksize;
+		int32		expected_size;
+		int32		chcpystrt;
+		int32		chcpyend;
+
+		/*
+		 * Have a chunk, extract the sequence number and the data
+		 */
+		curchunk = DatumGetInt32(fastgetattr(ttup, 2, toasttupDesc, &isnull));
+		Assert(!isnull);
+		chunk = DatumGetPointer(fastgetattr(ttup, 3, toasttupDesc, &isnull));
+		Assert(!isnull);
+		if (!VARATT_IS_EXTENDED(chunk))
+		{
+			chunksize = VARSIZE(chunk) - VARHDRSZ;
+			chunkdata = VARDATA(chunk);
+		}
+		else if (VARATT_IS_SHORT(chunk))
+		{
+			/* could happen due to heap_form_tuple doing its thing */
+			chunksize = VARSIZE_SHORT(chunk) - VARHDRSZ_SHORT;
+			chunkdata = VARDATA_SHORT(chunk);
+		}
+		else
+		{
+			/* should never happen */
+			elog(ERROR, "found toasted toast chunk for toast value %u in %s",
+				 valueid, RelationGetRelationName(toastrel));
+			chunksize = 0;		/* keep compiler quiet */
+			chunkdata = NULL;
+		}
+
+		/*
+		 * Some checks on the data we've found
+		 */
+		if (curchunk != expectedchunk)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg_internal("unexpected chunk number %d (expected %d) for toast value %u in %s",
+									 curchunk, expectedchunk, valueid,
+									 RelationGetRelationName(toastrel))));
+		if (curchunk > endchunk)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg_internal("unexpected chunk number %d (out of range %d..%d) for toast value %u in %s",
+									 curchunk,
+									 startchunk, endchunk, valueid,
+									 RelationGetRelationName(toastrel))));
+		expected_size = curchunk < totalchunks - 1 ? TOAST_MAX_CHUNK_SIZE
+			: attrsize - ((totalchunks - 1) * TOAST_MAX_CHUNK_SIZE);
+		if (chunksize != expected_size)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg_internal("unexpected chunk size %d (expected %d) in chunk %d of %d for toast value %u in %s",
+									 chunksize, expected_size,
+									 curchunk, totalchunks, valueid,
+									 RelationGetRelationName(toastrel))));
+
+		/*
+		 * Copy the data into proper place in our result
+		 */
+		chcpystrt = 0;
+		chcpyend = chunksize - 1;
+		if (curchunk == startchunk)
+			chcpystrt = sliceoffset % TOAST_MAX_CHUNK_SIZE;
+		if (curchunk == endchunk)
+			chcpyend = (sliceoffset + slicelength - 1) % TOAST_MAX_CHUNK_SIZE;
+
+		memcpy(VARDATA(result) +
+			   (curchunk * TOAST_MAX_CHUNK_SIZE - sliceoffset) + chcpystrt,
+			   chunkdata + chcpystrt,
+			   (chcpyend - chcpystrt) + 1);
+
+		expectedchunk++;
+	}
+
+	/*
+	 * Final checks that we successfully fetched the datum
+	 */
+	if (expectedchunk != (endchunk + 1))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg_internal("missing chunk number %d for toast value %u in %s",
+								 expectedchunk, valueid,
+								 RelationGetRelationName(toastrel))));
+
+	/* End scan and close indexes. */
+	systable_endscan_ordered(toastscan);
+	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
+}
+
+/* ----------
+ * toast_fetch_datum -
+ *
+ *	Reconstruct an in memory Datum from the chunks saved
+ *	in the toast relation
+ * ----------
+ */
+struct varlena *
+toast_fetch_datum(struct varlena *attr)
+{
+	Relation	toastrel;
+	struct varlena *result;
+	struct varatt_external toast_pointer;
+	int32		attrsize;
+
+	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
+		elog(ERROR, "toast_fetch_datum shouldn't be called for non-ondisk datums");
+
+	/* Must copy to access aligned fields */
+	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+
+	attrsize = VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer);
+
+	result = (struct varlena *) palloc(attrsize + VARHDRSZ);
+
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
+		SET_VARSIZE_COMPRESSED(result, attrsize + VARHDRSZ);
+	else
+		SET_VARSIZE(result, attrsize + VARHDRSZ);
+
+	if (attrsize == 0)
+		return result;			/* Probably shouldn't happen, but just in
+								 * case. */
+
+	/*
+	 * Open the toast relation and its indexes
+	 */
+	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
+
+	/* Fetch all chunks */
+	toast_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+							attr, attrsize, 0, attrsize, result);
+
+	/* Close toast table */
+	table_close(toastrel, AccessShareLock);
+
+	return result;
+}
+
+/* ----------
+ * toast_fetch_datum_slice -
+ *
+ *	Reconstruct a segment of a Datum from the chunks saved
+ *	in the toast relation
+ *
+ *	Note that this function supports non-compressed external datums
+ *	and compressed external datums (in which case the requested slice
+ *	has to be a prefix, i.e. sliceoffset has to be 0).
+ * ----------
+ */
+struct varlena *
+toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
+						int32 slicelength)
+{
+	Relation	toastrel;
+	struct varlena *result;
+	struct varatt_external toast_pointer;
+	int32		attrsize;
+
+	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
+		elog(ERROR, "toast_fetch_datum_slice shouldn't be called for non-ondisk datums");
+
+	/* Must copy to access aligned fields */
+	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
+
+	/*
+	 * It's nonsense to fetch slices of a compressed datum unless when it's a
+	 * prefix -- this isn't lo_* we can't return a compressed datum which is
+	 * meaningful to toast later.
+	 */
+	Assert(!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) || 0 == sliceoffset);
+
+	attrsize = VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer);
+
+	if (sliceoffset >= attrsize)
+	{
+		sliceoffset = 0;
+		slicelength = 0;
+	}
+
+	/*
+	 * When fetching a prefix of a compressed external datum, account for the
+	 * space required by va_tcinfo, which is stored at the beginning as an
+	 * int32 value.
+	 */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) && slicelength > 0)
+		slicelength = slicelength + sizeof(int32);
+
+	/*
+	 * Adjust length request if needed.  (Note: our sole caller,
+	 * detoast_attr_slice, protects us against sliceoffset + slicelength
+	 * overflowing.)
+	 */
+	if (((sliceoffset + slicelength) > attrsize) || slicelength < 0)
+		slicelength = attrsize - sliceoffset;
+
+	result = (struct varlena *) palloc(slicelength + VARHDRSZ);
+
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
+		SET_VARSIZE_COMPRESSED(result, slicelength + VARHDRSZ);
+	else
+		SET_VARSIZE(result, slicelength + VARHDRSZ);
+
+	if (slicelength == 0)
+		return result;			/* Can save a lot of work at this point! */
+
+	/* Open the toast relation */
+	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
+
+	/* Fetch all chunks */
+	toast_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+							attr, attrsize, sliceoffset, slicelength,
+							result);
+
+	/* Close toast table */
+	table_close(toastrel, AccessShareLock);
+
+	return result;
 }
 
 /* ----------

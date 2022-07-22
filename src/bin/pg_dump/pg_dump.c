@@ -5760,8 +5760,8 @@ dumpToaster(Archive *fout, const ToasterInfo * tsrinfo)
 	PQExpBuffer delq;
 	char	   *qtsrname;
 
-	/* Do nothing in data-only dump */
-	if (dopt->dataOnly)
+	/* Do nothing if not dumping schema */
+	if (!dopt->dumpSchema)
 		return;
 
 	q = createPQExpBuffer();

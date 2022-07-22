@@ -42,7 +42,8 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
+#include "access/toast_helper.h"
 #include "common/hashfn.h"
 #include "fmgr.h"
 #include "utils/datum.h"

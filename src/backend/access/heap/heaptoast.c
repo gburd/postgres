@@ -24,14 +24,14 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/toasterapi.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/toast_helper.h"
-#include "access/toast_internals.h"
+#include "catalog/toasting.h"
 #include "utils/fmgroids.h"
-
+#include "access/toasterapi.h"
 
 /* ----------
  * heap_toast_delete -
@@ -73,6 +73,51 @@ heap_toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
 	toast_delete_external(rel, toast_values, toast_isnull, is_speculative);
 }
 
+/*
+ * heap_compute_data_size_without_attr
+ *   Calculate data size if attribite attno is minimal.
+ */
+static int
+heap_compute_data_size_without_attr(TupleDesc tupleDesc,
+									Datum *toast_values,
+									bool *toast_isnull, int attno)
+{
+	struct varlena tmp = {0};
+	int			size;
+	Datum	   *pvalue = &toast_values[attno];
+	Datum		old_value = *pvalue;
+
+	*pvalue = PointerGetDatum(&tmp);
+	SET_VARSIZE(DatumGetPointer(*pvalue), sizeof(struct varlena));
+
+	size = heap_compute_data_size(tupleDesc, toast_values, toast_isnull);
+
+	*pvalue = old_value;
+
+	return size;
+}
+
+/*
+ * heap_toast_tuple_externalize
+ *  Externalize attribute attno to fit maxDataLen. Custom toaster could use
+ *  different strategies and keep part of value in toaster pointer
+ */
+static void
+heap_toast_tuple_externalize(ToastTupleContext *ttc, int attno,
+							 int maxDataLen, int options)
+{
+	int			max_inline_size;
+	int			size;
+
+	size = heap_compute_data_size_without_attr(ttc->ttc_rel->rd_att,
+											   ttc->ttc_values,
+											   ttc->ttc_isnull,
+											   attno);
+
+	max_inline_size = Max(0, maxDataLen - size);
+
+	toast_tuple_externalize(ttc, attno, max_inline_size, options);
+}
 
 /* ----------
  * heap_toast_insert_or_update -
@@ -214,7 +259,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		 */
 		if (toast_attr[biggest_attno].tai_size > maxDataLen &&
 			rel->rd_rel->reltoastrelid != InvalidOid)
-			toast_tuple_externalize(&ttc, biggest_attno, options);
+			heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
 
 	/*
@@ -231,7 +276,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		biggest_attno = toast_tuple_find_biggest_attribute(&ttc, false, false);
 		if (biggest_attno < 0)
 			break;
-		toast_tuple_externalize(&ttc, biggest_attno, options);
+		heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
 
 	/*
@@ -267,7 +312,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		if (biggest_attno < 0)
 			break;
 
-		toast_tuple_externalize(&ttc, biggest_attno, options);
+		heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
 
 	/*
@@ -617,13 +662,15 @@ toast_build_flattened_tuple(TupleDesc tupleDesc,
  *
  * toastrel is the relation from which chunks are to be fetched.
  * valueid identifies the TOAST value from which chunks are being fetched.
+ * attr is the external toast datum.
  * attrsize is the total size of the TOAST value.
  * sliceoffset is the byte offset within the TOAST value from which to fetch.
  * slicelength is the number of bytes to be fetched from the TOAST value.
  * result is the varlena into which the results should be written.
  */
 void
-heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
+heap_fetch_toast_slice(Relation toastrel, Oid valueid,
+					   struct varlena *attr, int32 attrsize,
 					   int32 sliceoffset, int32 slicelength,
 					   varlena *result)
 {
