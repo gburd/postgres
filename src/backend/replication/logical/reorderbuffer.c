@@ -92,6 +92,7 @@
 #include "access/toasterapi.h"
 #include "access/heapam.h"
 #include "access/rewriteheap.h"
+#include "access/toast_helper.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -5083,14 +5084,16 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	bool	   *free;
 	HeapTuple	tmphtup;
 	Relation	toast_rel;
-	TupleDesc	toast_desc;
 	MemoryContext oldcontext;
 	HeapTuple	newtup;
 	Size		old_size;
 
 	/* no toast tuples changed */
-	if (txn->toast_hash == NULL)
+	if (!change->data.tp.newtuple ||
+		!HeapTupleHasExternal(&change->data.tp.newtuple->tuple))
+	{
 		return;
+	}
 
 	/*
 	 * We're going to modify the size of the change. So, to make sure the
@@ -5116,8 +5119,6 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		elog(ERROR, "could not open toast relation with OID %u (base relation \"%s\")",
 			 relation->rd_rel->reltoastrelid, RelationGetRelationName(relation));
 
-	toast_desc = RelationGetDescr(toast_rel);
-
 	/* should we allocate from stack instead? */
 	attrs = palloc0_array(Datum, desc->natts);
 	isnull = palloc0_array(bool, desc->natts);
@@ -5129,17 +5130,15 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	for (natt = 0; natt < desc->natts; natt++)
 	{
-		CompactAttribute *attr = TupleDescCompactAttr(desc, natt);
-		ReorderBufferToastEnt *ent;
-		varlena    *varlena_pointer;
+		Form_pg_attribute attr = TupleDescAttr(desc, natt);
+		TsrRoutine *toaster;
+		struct varlena *varlena;
 
 		/* va_rawsize is the size of the original datum -- including header */
-		varatt_external toast_pointer;
-		varatt_indirect redirect_pointer;
-		varlena    *new_datum = NULL;
-		varlena    *reconstructed;
-		dlist_iter	it;
-		Size		data_done = 0;
+		struct varatt_indirect redirect_pointer;
+		struct varlena *new_datum = NULL;
+		struct varlena *reconstructed;
+		bool		need_free;
 
 		if (attr->attisdropped)
 			continue;
@@ -5156,68 +5155,40 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		varlena_pointer = (varlena *) DatumGetPointer(attrs[natt]);
 
 		/* no need to do anything if the tuple isn't external */
-		if (!VARATT_IS_EXTERNAL(varlena_pointer))
+		if (!VARATT_IS_EXTERNAL_ONDISK(varlena) &&
+			!VARATT_IS_CUSTOM(varlena))
 			continue;
 
-		VARATT_EXTERNAL_GET_POINTER(toast_pointer, varlena_pointer);
-
-		/*
-		 * Check whether the toast tuple changed, replace if so.
-		 */
-		ent = (ReorderBufferToastEnt *)
-			hash_search(txn->toast_hash,
-						&toast_pointer.va_valueid,
-						HASH_FIND,
-						NULL);
-		if (ent == NULL)
-			continue;
-
-		new_datum =
-			(varlena *) palloc0(INDIRECT_POINTER_SIZE);
-
-		free[natt] = true;
-
-		reconstructed = palloc0(toast_pointer.va_rawsize);
-
-		ent->reconstructed = reconstructed;
-
-		/* stitch toast tuple back together from its parts */
-		dlist_foreach(it, &ent->chunks)
+		toaster = SearchTsrCache(attr->atttoaster);
+		if (toaster->reconstruct)
 		{
-			bool		cisnull;
-			ReorderBufferChange *cchange;
-			HeapTuple	ctup;
-			Pointer		chunk;
-
-			cchange = dlist_container(ReorderBufferChange, node, it.cur);
-			ctup = cchange->data.tp.newtuple;
-			chunk = DatumGetPointer(fastgetattr(ctup, 3, toast_desc, &cisnull));
-
-			Assert(!cisnull);
-			Assert(!VARATT_IS_EXTERNAL(chunk));
-			Assert(!VARATT_IS_SHORT(chunk));
-
-			memcpy(VARDATA(reconstructed) + data_done,
-				   VARDATA(chunk),
-				   VARSIZE(chunk) - VARHDRSZ);
-			data_done += VARSIZE(chunk) - VARHDRSZ;
+			reconstructed = (struct varlena *) DatumGetPointer(
+															   toaster->reconstruct(toast_rel, varlena, txn->toast_hash, &need_free));
 		}
-		Assert(data_done == VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer));
-
-		/* make sure its marked as compressed or not */
-		if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
-			SET_VARSIZE_COMPRESSED(reconstructed, data_done + VARHDRSZ);
 		else
-			SET_VARSIZE(reconstructed, data_done + VARHDRSZ);
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("TOASTER does not support reconstruction of values")));
+		}
+
+		if (!reconstructed)
+			continue;
+
+		if (need_free)
+			txn->toast_reconstructed = lappend(txn->toast_reconstructed, reconstructed);
 
 		memset(&redirect_pointer, 0, sizeof(redirect_pointer));
 		redirect_pointer.pointer = reconstructed;
+
+		new_datum = (struct varlena *) palloc0(INDIRECT_POINTER_SIZE);
 
 		SET_VARTAG_EXTERNAL(new_datum, VARTAG_INDIRECT);
 		memcpy(VARDATA_EXTERNAL(new_datum), &redirect_pointer,
 			   sizeof(redirect_pointer));
 
 		attrs[natt] = PointerGetDatum(new_datum);
+		free[natt] = true;
 	}
 
 	/*
@@ -5264,6 +5235,9 @@ ReorderBufferToastReset(ReorderBuffer *rb, ReorderBufferTXN *txn)
 {
 	HASH_SEQ_STATUS hstat;
 	ReorderBufferToastEnt *ent;
+
+	list_free_deep(txn->toast_reconstructed);
+	txn->toast_reconstructed = NIL;
 
 	if (txn->toast_hash == NULL)
 		return;

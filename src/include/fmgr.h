@@ -761,6 +761,12 @@ extern Datum OidReceiveFunctionCall(Oid functionId, StringInfo buf,
 extern bytea *SendFunctionCall(FmgrInfo *flinfo, Datum val);
 extern bytea *OidSendFunctionCall(Oid functionId, Datum val);
 
+extern Datum ApplyDiffFunctionCall(FmgrInfo *flinfo,
+								   struct varlena *oldval,
+								   void *diff);
+extern Datum OidApplyDiffFunctionCall(Oid functionId,
+									  struct varlena *oldval,
+									  StringInfo diff);
 
 /*
  * Routines in fmgr.c

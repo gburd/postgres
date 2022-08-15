@@ -15,6 +15,7 @@
 #include "access/genam.h"
 #include "catalog/pg_toaster.h"
 #include "nodes/nodes.h"
+#include "utils/hsearch.h"
 
 /*
  * Macro to fetch the possibly-unaligned contents of an EXTERNAL datum
@@ -84,7 +85,11 @@ typedef Datum (*detoast_function) (Datum toast_ptr,
 /* Delete toast function */
 typedef void (*del_toast_function) (Datum value, bool is_speculative);
 
-
+/* Reconstruct function necessary for replication */
+typedef Datum (*reconstruct_toast_function) (Relation toastrel,
+											 struct varlena *varlena,
+											 HTAB *toast_hash,
+											 bool *need_free);
 
 /* Return virtual table of functions, optional */
 typedef void *(*get_vtable_function) (Datum toast_ptr);
@@ -110,6 +115,7 @@ typedef struct TsrRoutine
 	detoast_function detoast;
 	del_toast_function deltoast;
 	get_vtable_function get_vtable;
+	reconstruct_toast_function reconstruct;
 	toastervalidate_function toastervalidate;
 }			TsrRoutine;
 
