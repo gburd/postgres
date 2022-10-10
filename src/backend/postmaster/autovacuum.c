@@ -77,6 +77,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/toasting.h"
 #include "commands/dbcommands.h"
 #include "commands/vacuum.h"
 #include "lib/ilist.h"
@@ -2044,6 +2045,9 @@ do_autovacuum(void)
 	bool		did_vacuum = false;
 	bool		found_concurrent_worker = false;
 	int			i;
+	Datum		*reltoasterids;
+	Datum		*reltoastrelids;
+	int		ntoasters;
 
 	/*
 	 * StartTransactionCommand and CommitTransactionCommand will automatically
@@ -2189,13 +2193,22 @@ do_autovacuum(void)
 		 * this whether or not the table is going to be vacuumed, because we
 		 * don't automatically vacuum toast tables along the parent table.
 		 */
-		if (OidIsValid(classForm->reltoastrelid))
+		ntoasters = ExtractRelToastInfo(RelationGetDescr(classRel),
+			tuple,
+			&reltoasterids,
+			&reltoastrelids);
+
+		for (i = 0; i < ntoasters; i++)
 		{
 			av_relation *hentry;
-			bool		found;
+			bool	found;
+			Oid	reltoasterid = DatumGetObjectId(reltoastrelids[i]);
+
+			if (!OidIsValid(reltoasterid))
+				continue;
 
 			hentry = hash_search(table_toast_map,
-								 &classForm->reltoastrelid,
+								 &reltoastrelids,
 								 HASH_ENTER, &found);
 
 			if (!found)
@@ -2210,6 +2223,12 @@ do_autovacuum(void)
 						   sizeof(AutoVacOpts));
 				}
 			}
+		}
+
+		if (ntoasters > 0)
+		{
+			pfree(reltoasterids);
+			pfree(reltoastrelids);
 		}
 	}
 
