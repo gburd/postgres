@@ -70,6 +70,7 @@ catalog_headers = [
   'pg_subscription.h',
   'pg_subscription_rel.h',
   'pg_toaster.h',
+  'pg_toastrel.h',
 ]
 
 # The .dat files we need can just be listed alphabetically.

@@ -55,6 +55,7 @@
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_toaster.h"
+#include "catalog/pg_toastrel.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_ts_config.h"
@@ -4039,13 +4040,10 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				}
 
 				appendStringInfo(&buffer, _("toaster %s"),
-								 NameStr(((Form_pg_toaster) GETSTRUCT(tup))->tsrname));
+								 NameStr(((Form_pg_toaster) GETSTRUCT(tup))->toastentname));
 				ReleaseSysCache(tup);
 				break;
 			}
-
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
 	}
 
 	/* an empty buffer is equivalent to no object found */
@@ -4578,11 +4576,8 @@ getObjectTypeDescription(const ObjectAddress *object, bool missing_ok)
 			break;
 
 		case ToasterRelationId:
-			appendStringInfoString(&buffer, "toaster");
+			appendStringInfoString(&buffer, "toastrel");
 			break;
-
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
 	}
 
 	/* the result can never be empty */
@@ -5944,9 +5939,6 @@ getObjectIdentityParts(const ObjectAddress *object,
 					*objname = list_make1(tsrname);
 			}
 			break;
-
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
 	}
 
 	if (!missing_ok)

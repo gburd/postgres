@@ -74,6 +74,7 @@ enum dbObjectTypePriorities
 	PRIO_FDW,
 	PRIO_FOREIGN_SERVER,
 	PRIO_TOASTER,
+	PRIO_TOASTREL,
 	PRIO_TABLE,
 	PRIO_TABLE_ATTACH,
 	PRIO_DUMMY_TYPE,
@@ -1486,6 +1487,11 @@ describeDumpableObject(DumpableObject *obj, char *buf, int bufsize)
 					 "TOASTER %s  (ID %d OID %u)",
 					 obj->name, obj->dumpId, obj->catId.oid);
 			return;
+/*		case DO_TOASTREL:
+			snprintf(buf, bufsize,
+					 "TOASTREL %s  (ID %d OID %u)",
+					 obj->name, obj->dumpId, obj->catId.oid);
+			return; */
 		case DO_PRE_DATA_BOUNDARY:
 			snprintf(buf, bufsize,
 					 "PRE-DATA BOUNDARY  (ID %d)",

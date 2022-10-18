@@ -50,6 +50,7 @@ typedef enum
 	DO_COLLATION,
 	DO_CONVERSION,
 	DO_TOASTER,
+/*	DO_TOASTREL, */
 	DO_TABLE,
 	DO_TABLE_ATTACH,
 	DO_ATTRDEF,
@@ -704,6 +705,24 @@ typedef struct _ToasterInfo
 } ToasterInfo;
 
 /*
+ * The ToastrelInfo struct is used to represent TOAST relation dependency
+ */
+typedef struct _ToastrelInfo
+{
+	DumpableObject dobj;
+	Oid			oid;
+   Oid			toasteroid;
+   Oid			relid;
+   Oid			toastentid;
+   int16			attnum;
+   int16       version;
+   NameData	   relname;
+   NameData	   toastentname;
+   char		   description;
+	char		   toastoptions;
+} ToastrelInfo;
+
+/*
  *	common utility functions
  */
 
@@ -726,6 +745,7 @@ extern FuncInfo *findFuncByOid(Oid oid);
 extern OprInfo *findOprByOid(Oid oid);
 extern CollInfo *findCollationByOid(Oid oid);
 extern ToasterInfo *findToasterByOid(Oid oid);
+extern ToastrelInfo *findToastrelByOid(Oid oid);
 extern NamespaceInfo *findNamespaceByOid(Oid oid);
 extern ExtensionInfo *findExtensionByOid(Oid oid);
 extern PublicationInfo *findPublicationByOid(Oid oid);
@@ -791,5 +811,6 @@ extern void getPublicationTables(Archive *fout, TableInfo tblinfo[],
 extern void getSubscriptions(Archive *fout);
 extern void getSubscriptionTables(Archive *fout);
 extern ToasterInfo *getToasters(Archive *fout, int *numToasters);
+extern ToastrelInfo *getToastrels(Archive *fout, int *numToastrels);
 
 #endif							/* PG_DUMP_H */
