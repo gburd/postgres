@@ -72,6 +72,9 @@
 #include "utils/regproc.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "access/toasterapi.h"
+#include "catalog/pg_toastrel.h"
+#include "catalog/pg_toastrel_d.h"
 
 
 /* non-export function prototypes */
@@ -3470,6 +3473,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 				 * toast indexes.
 				 */
 				Relation	heapRelation;
+				List *tlist = NIL;
 
 				/* Save the list of relation OIDs in private context */
 				oldcontext = MemoryContextSwitchTo(private_context);
@@ -3544,17 +3548,25 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 				}
 
 				/* Also add the toast indexes */
-				if (OidIsValid(heapRelation->rd_rel->reltoastrelid))
+
+				tlist = (List *) DatumGetPointer(GetFullToastrelList(tlist, heapRelation->rd_id, 0, AccessShareLock));
+
+				foreach(lc, tlist)
 				{
-					Oid			toastOid = heapRelation->rd_rel->reltoastrelid;
-					Relation	toastRelation = table_open(toastOid,
+/*					HeapTuple	ttup; */
+					Toastrel trel;
+					Relation	toastRelation;
+/*					Form_pg_toastrel tform; */
+
+					trel = (Toastrel)lfirst(lc);
+/*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
+/*					tform = (Form_pg_toastrel) GETSTRUCT(ttup); */
+
+/*					trel = (Toastrel)lfirst(lc); */
+					toastRelation = table_open(trel->toastentid,
 														   ShareUpdateExclusiveLock);
-
-					/* Save the list of relation OIDs in private context */
 					oldcontext = MemoryContextSwitchTo(private_context);
-
-					/* Track this relation for session locks */
-					heapRelationIds = lappend_oid(heapRelationIds, toastOid);
+					heapRelationIds = lappend_oid(heapRelationIds, trel->toastentid);
 
 					MemoryContextSwitchTo(oldcontext);
 
@@ -3579,13 +3591,69 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 							 * Save the list of relation OIDs in private
 							 * context
 							 */
+
 							oldcontext = MemoryContextSwitchTo(private_context);
 
 							idx = palloc_object(ReindexIndexInfo);
 							idx->indexId = cellOid;
 							indexIds = lappend(indexIds, idx);
+
 							/* other fields set later */
 
+							MemoryContextSwitchTo(oldcontext);
+						}
+
+						index_close(indexRelation, NoLock);
+					}
+					table_close(toastRelation, NoLock);
+				}
+
+/*
+				if (OidIsValid(heapRelation->rd_rel->reltoastrelid))
+				{
+					Oid			toastOid = heapRelation->rd_rel->reltoastrelid;
+					Relation	toastRelation = table_open(toastOid,
+														   ShareUpdateExclusiveLock);
+*/
+					/* Save the list of relation OIDs in private context */
+/*
+					oldcontext = MemoryContextSwitchTo(private_context);
+*/
+					/* Track this relation for session locks */
+/*
+					heapRelationIds = lappend_oid(heapRelationIds, toastOid);
+
+					MemoryContextSwitchTo(oldcontext);
+
+					foreach(lc2, RelationGetIndexList(toastRelation))
+					{
+						Oid			cellOid = lfirst_oid(lc2);
+						Relation	indexRelation = index_open(cellOid,
+															   ShareUpdateExclusiveLock);
+
+						if (!indexRelation->rd_index->indisvalid)
+							ereport(WARNING,
+									(errcode(ERRCODE_INDEX_CORRUPTED),
+									 errmsg("cannot reindex invalid index \"%s.%s\" concurrently, skipping",
+											get_namespace_name(get_rel_namespace(cellOid)),
+											get_rel_name(cellOid))));
+						else
+						{
+							ReindexIndexInfo *idx;
+*/
+							/*
+							 * Save the list of relation OIDs in private
+							 * context
+							 */
+/*
+							oldcontext = MemoryContextSwitchTo(private_context);
+
+							idx = palloc_object(ReindexIndexInfo);
+							idx->indexId = cellOid;
+							indexIds = lappend(indexIds, idx);
+*/
+							/* other fields set later */
+/*
 							MemoryContextSwitchTo(oldcontext);
 						}
 
@@ -3594,7 +3662,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 
 					table_close(toastRelation, NoLock);
 				}
-
+*/
 				table_close(heapRelation, NoLock);
 				break;
 			}

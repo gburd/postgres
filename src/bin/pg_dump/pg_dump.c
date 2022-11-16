@@ -8893,7 +8893,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	int			i_atttypname;
 	int			i_attstattarget;
 	int			i_attstorage;
-	int			i_atttoaster;
+//	int			i_atttoaster;
 	int			i_typstorage;
 	int			i_attidentity;
 	int			i_attgenerated;
@@ -8956,6 +8956,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	 * collation is different from their type's default, we use a CASE here to
 	 * suppress uninteresting attcollations cheaply.
 	 */
+/*						 "a.atttoaster,\n"*/
 	appendPQExpBufferStr(q,
 						 "SELECT\n"
 						 "a.attrelid,\n"
@@ -8963,7 +8964,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "a.attname,\n"
 						 "a.attstattarget,\n"
 						 "a.attstorage,\n"
-						 "a.atttoaster,\n"
 						 "t.typstorage,\n"
 						 "a.attnotnull,\n"
 						 "a.atthasdef,\n"
@@ -9031,7 +9031,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	i_atttypname = PQfnumber(res, "atttypname");
 	i_attstattarget = PQfnumber(res, "attstattarget");
 	i_attstorage = PQfnumber(res, "attstorage");
-	i_atttoaster = PQfnumber(res, "atttoaster");
+//	i_atttoaster = PQfnumber(res, "atttoaster");
 	i_typstorage = PQfnumber(res, "typstorage");
 	i_attidentity = PQfnumber(res, "attidentity");
 	i_attgenerated = PQfnumber(res, "attgenerated");
@@ -9092,7 +9092,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		tbinfo->atttypnames = (char **) pg_malloc(numatts * sizeof(char *));
 		tbinfo->attstattarget = (int *) pg_malloc(numatts * sizeof(int));
 		tbinfo->attstorage = (char *) pg_malloc(numatts * sizeof(char));
-		tbinfo->atttoaster = (Oid *) pg_malloc(numatts * sizeof(Oid));
+//		tbinfo->atttoaster = (Oid *) pg_malloc(numatts * sizeof(Oid));
 		tbinfo->typstorage = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attidentity = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attgenerated = (char *) pg_malloc(numatts * sizeof(char));
@@ -9122,7 +9122,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			else
 				tbinfo->attstattarget[j] = atoi(PQgetvalue(res, r, i_attstattarget));
 			tbinfo->attstorage[j] = *(PQgetvalue(res, r, i_attstorage));
-			tbinfo->atttoaster[j] = atooid(PQgetvalue(res, r, i_atttoaster));
+//			tbinfo->atttoaster[j] = atooid(PQgetvalue(res, r, i_atttoaster));
 			tbinfo->typstorage[j] = *(PQgetvalue(res, r, i_typstorage));
 			tbinfo->attidentity[j] = *(PQgetvalue(res, r, i_attidentity));
 			tbinfo->attgenerated[j] = *(PQgetvalue(res, r, i_attgenerated));
@@ -16841,12 +16841,36 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			}
 
 			/* check toastability of type, not column! */
-			if (tbinfo->typstorage[j] != TYPSTORAGE_PLAIN &&
-				tbinfo->atttoaster[j] != DEFAULT_TOASTER_OID)
+			if (tbinfo->typstorage[j] != TYPSTORAGE_PLAIN) /* &&
+				tbinfo->atttoaster[j] != DEFAULT_TOASTER_OID) */
 			{
 				ToasterInfo   *tsr;
+				Oid				tsrId = DEFAULT_TOASTER_OID;
+				PQExpBuffer query = createPQExpBuffer();
+				PGresult   *res;
 
-				tsr = findToasterByOid(tbinfo->atttoaster[j]);
+				reltypename = "FOREIGN TABLE";
+
+				/* retrieve name of foreign server and generic options */
+				appendPQExpBuffer(query,
+									  "SELECT trel.toasteroid AS toasterid "
+									  "FROM pg_catalog.pg_toastrel trel "
+									  "JOIN %s ", qualrelname);
+				appendPQExpBufferStr(query, "\n  ON trel.relid = ");
+				appendStringLiteralAH(query, qualrelname, fout);
+				appendPQExpBufferStr(query, "::pg_catalog.regclass;\n");
+				appendPQExpBuffer(query, "\n  AND trel.attnum = %u ", (j+1));
+				appendPQExpBufferStr(query, "\n  ORDER BY trel.version DESC LIMIT 1 ");
+
+				res = ExecuteSqlQueryForSingleRow(fout, query->data);
+				tsrId = PQfnumber(res, "toasterid");
+//				srvname = pg_strdup(PQgetvalue(res, 0, i_srvname));
+				PQclear(res);
+				destroyPQExpBuffer(query);
+
+//				tsrId = GetLastToasterId(tbinfo->dobj.catId.oid, j+1);
+
+				tsr = findToasterByOid(tsrId); //tbinfo->atttoaster[j]);
 				if (tsr)
 					appendPQExpBuffer(q, "ALTER TABLE %s ALTER COLUMN %s SET TOASTER %s;\n",
 									  qualrelname,

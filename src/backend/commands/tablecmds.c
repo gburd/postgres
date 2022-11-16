@@ -946,6 +946,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	{
 		ColumnDef  *colDef = lfirst(listptr);
 		Form_pg_attribute attr;
+		Oid tsroid = InvalidOid;
 
 		attnum++;
 		attr = TupleDescAttr(descriptor, attnum - 1);
@@ -1039,6 +1040,43 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 */
 	CommandCounterIncrement();
 
+/* Add PG_TOASTREL rows for table */
+	attnum = 0;
+	foreach(listptr, stmt->tableElts)
+	{
+		Oid tsroid = InvalidOid;
+		NameData	relnamedata;
+		NameData	trelnamedata;
+		ColumnDef  *colDef = lfirst(listptr);
+		Form_pg_attribute attr;
+
+		attnum++;
+		attr = TupleDescAttr(descriptor, attnum - 1);
+
+		tsroid = DatumGetObjectId(GetInheritedToaster(stmt->tableElts, inheritOids,
+						stmt->relation->relpersistence,
+						stmt->partbound != NULL,
+						&old_constraints, accessMethodId, attr->attname, attr->atttypid));
+
+		if (colDef->toaster)
+			tsroid = get_toaster_oid(colDef->toaster, false);
+		else if (OidIsValid(tsroid) && (TypeIsToastable(attr->atttypid)))
+			tsroid = DEFAULT_TOASTER_OID;
+		else
+			tsroid = InvalidOid;
+
+		if (OidIsValid(tsroid))
+		{
+			validateToaster(tsroid, attr->atttypid,
+							attr->attstorage, attr->attcompression,
+							accessMethodId, false);
+			namestrcpy(&relnamedata, relname);
+			namestrcpy(&trelnamedata, "");
+
+			InsertToastRelation(tsroid, relationId, InvalidOid, attnum,
+				0, relnamedata, trelnamedata, 0, RowExclusiveLock);
+		}
+	}
 	/*
 	 * Open the new relation and acquire exclusive lock on it.  This isn't
 	 * really necessary for locking out other backends (since they can't see
@@ -2169,7 +2207,7 @@ ExecuteTruncateGuts(List *explicit_rels,
 		else
 		{
 			Oid			heap_relid;
-			Oid			toast_relid;
+/*			Oid			toast_relid; */
 			ReindexParams reindex_params = {0};
 
 			/*
@@ -2194,6 +2232,30 @@ ExecuteTruncateGuts(List *explicit_rels,
 			/*
 			 * The same for the toast table, if any.
 			 */
+
+			if(HasToastrel(rel->rd_id, 0, AccessShareLock))
+			{
+				List *trelids = NIL;
+				ListCell *lc;
+
+				trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+			// XXX PG_TOASTREL
+				foreach(lc, trelids)
+				{
+					Toastrel trel = (Toastrel) (lfirst(lc));
+					if (OidIsValid(trel->toastentid))
+					{
+						Relation	toastrel = relation_open(trel->toastentid,
+													 		AccessExclusiveLock);
+
+						RelationSetNewRelfilenumber(toastrel,
+													toastrel->rd_rel->relpersistence);
+						table_close(toastrel, NoLock);
+					}
+				}
+			}
+
+/*
 			toast_relid = rel->rd_rel->reltoastrelid;
 			if (OidIsValid(toast_relid))
 			{
@@ -2204,7 +2266,7 @@ ExecuteTruncateGuts(List *explicit_rels,
 											toastrel->rd_rel->relpersistence);
 				table_close(toastrel, NoLock);
 			}
-
+*/
 			/*
 			 * Reconstruct the indexes to match, and we're done.
 			 */
@@ -2770,6 +2832,7 @@ MergeAttributes(List *columns, const List *supers, char relpersistence,
 			}
 			else
 			{
+				Oid			defTsrId;
 				/*
 				 * Now, create a new inherited column
 				 */
@@ -5264,21 +5327,25 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode,
 	}
 
 	/* Check to see if a toast table must be added. */
+/* XXX PG_TOASTREL
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
-
+*/
 		/*
 		 * If the table is source table of ATTACH PARTITION command, we did
 		 * not modify anything about it that will change its toasting
 		 * requirement, so no need to check.
 		 */
+/*		elog(NOTICE, "ATRewriteCatalogs");*/
+		/*
 		if (((tab->relkind == RELKIND_RELATION ||
 			  tab->relkind == RELKIND_PARTITIONED_TABLE) &&
 			 tab->partition_constraint == NULL) ||
 			tab->relkind == RELKIND_MATVIEW)
 			AlterTableCreateToastTable(tab->relid, (Datum) 0, lockmode);
-	}
+			*/
+/*	} */
 }
 
 /*
@@ -8895,8 +8962,30 @@ SetIndexStorageProperties(Relation rel, Relation attrelation,
 			if (setcompression)
 				attrtuple->attcompression = newcompression;
 
-			if (settoaster)
-				attrtuple->atttoaster = toasterOid;
+			if (settoaster && TypeIsToastable(attrtuple->atttypid))
+			{
+/* Add PG_TOASTREL rows for table */
+				NameData	relnamedata;
+				NameData	trelnamedata;
+				Oid treloid = InvalidOid;
+
+				validateToaster(toasterOid, attrtuple->atttypid,
+					attrtuple->attstorage, attrtuple->attcompression,
+					rel->rd_rel->relam, false);
+				namestrcpy(&relnamedata, RelationGetRelationName(rel));
+				namestrcpy(&trelnamedata, "");
+
+				treloid = DatumGetObjectId(GetActualToastrel(toasterOid, rel->rd_id, attrtuple->attnum, AccessShareLock));
+
+			elog(NOTICE, "SetIndexStorageProperties toasteroid %u relid %u attnum %u",
+			 toasterOid,
+			 indrel->rd_id,
+			 attrtuple->attnum);
+
+				InsertToastRelation(toasterOid, indrel->rd_id, treloid, attrtuple->attnum,
+					0, relnamedata, trelnamedata, 0, RowExclusiveLock);
+			}
+			//	attrtuple->atttoaster = toasterOid;
 
 			CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
 
@@ -8983,6 +9072,10 @@ ATExecSetToaster(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	Form_pg_attribute attrtuple;
 	AttrNumber	attnum;
 	ObjectAddress address;
+	NameData relname;
+	NameData trelname;
+	Toastkey tkey;
+	Oid treloid = InvalidOid;
 
 	Assert(IsA(newValue, String));
 
@@ -9005,7 +9098,7 @@ ATExecSetToaster(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
-
+/*
 	attrtuple->atttoaster = newToaster;
 	if (OidIsValid(newToaster))
 		validateToaster(attrtuple->atttoaster, attrtuple->atttypid,
@@ -9016,7 +9109,7 @@ ATExecSetToaster(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("column data type %s should use toaster",
 						format_type_be(attrtuple->atttypid))));
-
+*/
 	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
@@ -9036,6 +9129,29 @@ ATExecSetToaster(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 							  lockmode);
 
 	table_close(attrelation, RowExclusiveLock);
+/* Insert new relation into PG_TOASTREL */
+	treloid = DatumGetObjectId(GetActualToastrel(newToaster, rel->rd_id, attnum, AccessShareLock));
+	elog(NOTICE, "ATExecSetToaster tsr %u relid %u attnum %u", newToaster, rel->rd_id, attnum);
+	if(treloid == InvalidOid)
+	{
+		TsrRoutine *tsr = SearchTsrCache(newToaster);
+		
+		treloid = DatumGetObjectId(tsr->init(rel, newToaster, InvalidOid, InvalidOid, (Datum) 0, attnum,
+						AccessExclusiveLock, false, InvalidOid));
+	}
+	
+	namestrcpy(&relname, RelationGetRelationName(rel));
+	namestrcpy(&trelname, "");
+			elog(NOTICE, "ATExecSetToaster toasteroid %u relid %u attnum %u",
+			 newToaster,
+			 rel->rd_id,
+			 attnum);
+
+	InsertToastRelation(newToaster, rel->rd_id, treloid, attnum,
+		0, relname, trelname, 0, RowExclusiveLock);
+
+	tkey = (Toastkey) DatumGetPointer(InsertOrReplaceToastrelCache(treloid, newToaster, rel->rd_id, treloid, attnum, 0));
+	pfree(tkey);
 
 	ObjectAddressSubSet(address, RelationRelationId,
 						RelationGetRelid(rel), attnum);
@@ -13480,21 +13596,53 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 				errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				errmsg("too many array dimensions"));
 	attTup->attndims = list_length(typeName->arrayBounds);
-	attTup->attlen = tform->typlen;
+	attTup->attlen = tform ->typlen;
 	attTup->attbyval = tform->typbyval;
 	attTup->attalign = tform->typalign;
 	attTup->attstorage = tform->typstorage;
 	attTup->attcompression = InvalidCompressionMethod;
 
 	/* set default toaster for toastable type */
-	if (tform->typstorage == TYPSTORAGE_PLAIN)
+/*	if (tform->typstorage == TYPSTORAGE_PLAIN)
 		attTup->atttoaster = InvalidOid;
 	else
 	{
-		attTup->atttoaster = DEFAULT_TOASTER_OID;
-		validateToaster(attTup->atttoaster, attTup->atttypid,
+*/
+	if (tform->typstorage != TYPSTORAGE_PLAIN)
+	{
+/*		attTup->atttoaster = DEFAULT_TOASTER_OID; */
+/* Add PG_TOASTREL rows for table */
+		Oid tsroid = DEFAULT_TOASTER_OID;
+		Oid treloid = InvalidOid;
+		NameData	relnamedata;
+		NameData	trelnamedata;
+
+		validateToaster(tsroid, attTup->atttypid,
 						attTup->attstorage, attTup->attcompression,
 						rel->rd_rel->relam, false);
+
+		treloid = DatumGetObjectId(GetActualToastrel(tsroid, rel->rd_id, attnum, AccessShareLock));
+
+		if(treloid == InvalidOid)
+		{
+			TsrRoutine *tsr = SearchTsrCache(tsroid);
+
+			elog(NOTICE, "Create new TOAST table for %u", rel->rd_id);
+		
+			treloid = DatumGetObjectId(tsr->init(rel, tsroid, InvalidOid, InvalidOid, (Datum) 0, attnum,
+						AccessExclusiveLock, false, InvalidOid));
+		}
+
+		namestrcpy(&relnamedata, RelationGetRelationName(rel));
+		namestrcpy(&trelnamedata, "");
+
+			elog(NOTICE, "ATExecAlterColumnType toasteroid %u relid %u attnum %u",
+			 tsroid,
+			 rel->rd_id,
+			 attTup->attnum);
+
+		InsertToastRelation(tsroid, rel->rd_id, treloid, attTup->attnum,
+			0, relnamedata, trelnamedata, 0, RowExclusiveLock);
 	}
 
 	ReleaseSysCache(typeTuple);
@@ -14779,6 +14927,29 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 		}
 
 		/* If it has a toast table, recurse to change its ownership */
+
+		if(HasToastrel(relationOid, 0, AccessShareLock))
+		{
+			List *trelids = NIL;
+			ListCell *lc;
+
+			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, relationOid, 0, AccessShareLock));
+		// XXX PG_TOASTREL
+			foreach(lc, trelids)
+			{
+				Toastrel trel = (Toastrel) (lfirst(lc));
+				if (OidIsValid(trel->toastentid))
+				{
+					Relation	toastrel = relation_open(trel->toastentid,
+												 		AccessExclusiveLock);
+
+					RelationSetNewRelfilenumber(toastrel,
+												toastrel->rd_rel->relpersistence);
+					table_close(toastrel, NoLock);
+				}
+			}
+		}
+
 		if (tuple_class->reltoastrelid != InvalidOid)
 			ATExecChangeOwner(tuple_class->reltoastrelid, newOwnerId,
 							  true, lockmode);
@@ -15268,30 +15439,103 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	ReleaseSysCache(tuple);
 
 	/* repeat the whole exercise for the toast table, if there's one */
+
+	if(HasToastrel(rel->rd_id, 0, AccessShareLock))
+	{
+		List *trelids = NIL;
+		ListCell *lc;
+
+		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+		// XXX PG_TOASTREL
+		foreach(lc, trelids)
+		{
+			Toastrel trel = (Toastrel) (lfirst(lc));
+			if (OidIsValid(trel->toastentid))
+			{
+				Relation	toastrel;
+				Oid			toastid = trel->toastentid;
+				
+				toastrel = table_open(toastid, lockmode);
+				tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(toastid));
+				if (!HeapTupleIsValid(tuple))
+					elog(ERROR, "cache lookup failed for relation %u", toastid);
+
+				if (operation == AT_ReplaceRelOptions)
+				{
+					datum = (Datum) 0;
+					isnull = true;
+				}
+				else
+				{
+					datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
+											&isnull);
+				}
+
+				newOptions = transformRelOptions(isnull ? (Datum) 0 : datum,
+										 defList, "toast", validnsps, false,
+										 operation == AT_ResetRelOptions);
+
+				(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
+
+				memset(repl_val, 0, sizeof(repl_val));
+				memset(repl_null, false, sizeof(repl_null));
+				memset(repl_repl, false, sizeof(repl_repl));
+
+				if (newOptions != (Datum) 0)
+					repl_val[Anum_pg_class_reloptions - 1] = newOptions;
+				else
+					repl_null[Anum_pg_class_reloptions - 1] = true;
+
+				repl_repl[Anum_pg_class_reloptions - 1] = true;
+
+				newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass),
+									 repl_val, repl_null, repl_repl);
+
+				CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
+
+				InvokeObjectPostAlterHookArg(RelationRelationId,
+									 RelationGetRelid(toastrel), 0,
+									 InvalidOid, true);
+
+				heap_freetuple(newtuple);
+
+				ReleaseSysCache(tuple);
+
+				table_close(toastrel, NoLock);
+			}
+		}
+	}
+
+/*
 	if (OidIsValid(rel->rd_rel->reltoastrelid))
 	{
 		Relation	toastrel;
 		Oid			toastid = rel->rd_rel->reltoastrelid;
 
 		toastrel = table_open(toastid, lockmode);
-
+*/
 		/* Fetch heap tuple */
+/*
 		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(toastid));
 		if (!HeapTupleIsValid(tuple))
 			elog(ERROR, "cache lookup failed for relation %u", toastid);
 
 		if (operation == AT_ReplaceRelOptions)
 		{
+*/
 			/*
 			 * If we're supposed to replace the reloptions list, we just
 			 * pretend there were none before.
 			 */
+/*
 			datum = (Datum) 0;
 			isnull = true;
 		}
 		else
 		{
+*/
 			/* Get the old reloptions */
+/*
 			datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
 									&isnull);
 		}
@@ -15328,9 +15572,10 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 
 		table_close(toastrel, NoLock);
 	}
-
+*/
 	table_close(pgclass, RowExclusiveLock);
 }
+
 
 /*
  * Execute ALTER TABLE SET TABLESPACE for cases where there is no tuple
@@ -15340,7 +15585,7 @@ static void
 ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 {
 	Relation	rel;
-	Oid			reltoastrelid;
+/*	Oid			reltoastrelid; */
 	RelFileNumber newrelfilenumber;
 	RelFileLocator newrlocator;
 	List	   *reltoastidxids = NIL;
@@ -15360,8 +15605,30 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 		return;
 	}
 
+/*
 	reltoastrelid = rel->rd_rel->reltoastrelid;
+*/
 	/* Fetch the list of indexes on toast relation if necessary */
+	if(HasToastrel(rel->rd_id, 0, AccessShareLock))
+	{
+		List *trelids = NIL;
+
+		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+	// XXX PG_TOASTREL
+		foreach(lc, trelids)
+		{
+			Toastrel trel = (Toastrel) (lfirst(lc));
+			if (OidIsValid(trel->toastentid))
+			{
+				Relation	toastRel = relation_open(trel->toastentid, lockmode);
+
+				reltoastidxids = RelationGetIndexList(toastRel);
+				relation_close(toastRel, lockmode);
+			}
+		}
+	}
+
+/*
 	if (OidIsValid(reltoastrelid))
 	{
 		Relation	toastRel = relation_open(reltoastrelid, lockmode);
@@ -15369,7 +15636,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 		reltoastidxids = RelationGetIndexList(toastRel);
 		relation_close(toastRel, lockmode);
 	}
-
+*/
 	/*
 	 * Relfilenumbers are not unique in databases across tablespaces, so we
 	 * need to allocate a new one in the new tablespace.
@@ -15413,8 +15680,24 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	CommandCounterIncrement();
 
 	/* Move associated toast relation and/or indexes, too */
+	if(HasToastrel(rel->rd_id, 0, AccessShareLock))
+	{
+		List *trelids = NIL;
+
+		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+	// XXX PG_TOASTREL
+		foreach(lc, trelids)
+		{
+			Toastrel trel = (Toastrel) (lfirst(lc));
+			if (OidIsValid(trel->toastentid))
+				ATExecSetTableSpace(trel->toastentid, newTableSpace, lockmode);
+		}
+	}
+
+/*
 	if (OidIsValid(reltoastrelid))
 		ATExecSetTableSpace(reltoastrelid, newTableSpace, lockmode);
+*/
 	foreach(lc, reltoastidxids)
 		ATExecSetTableSpace(lfirst_oid(lc), newTableSpace, lockmode);
 

@@ -336,7 +336,7 @@ typedef struct _tableInfo
 	char	  **atttypnames;	/* attribute type names */
 	int		   *attstattarget;	/* attribute statistics targets */
 	char	   *attstorage;		/* attribute storage scheme */
-	Oid		   *atttoaster;		/* attribute toaster */
+/*	Oid		   *atttoaster;*/		/* attribute toaster */
 	char	   *typstorage;		/* type storage scheme */
 	bool	   *attisdropped;	/* true if attr is dropped; don't dump it */
 	char	   *attidentity;
