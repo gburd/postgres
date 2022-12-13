@@ -199,6 +199,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_DropStmt:
 		case T_DropSubscriptionStmt:
 		case T_DropTableSpaceStmt:
+		case T_DropToasterStmt:
 		case T_DropUserMappingStmt:
 		case T_DropdbStmt:
 		case T_GrantRoleStmt:
@@ -1844,6 +1845,10 @@ ProcessUtilitySlow(ParseState *pstate,
 				address = CreateToaster((CreateToasterStmt *) parsetree);
 				break;
 
+			case T_DropToasterStmt:
+				DropToaster((DropToasterStmt *) parsetree);
+				break;
+
 			case T_CreatePublicationStmt:
 				address = CreatePublication(pstate, (CreatePublicationStmt *) parsetree);
 				break;
@@ -3054,6 +3059,10 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_CREATE_TOASTER;
 			break;
 
+		case T_DropToasterStmt:
+			tag = CMDTAG_DROP_TOASTER;
+			break;
+
 		case T_CreatePublicationStmt:
 			tag = CMDTAG_CREATE_PUBLICATION;
 			break;
@@ -3672,6 +3681,10 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_CreateToasterStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_DropToasterStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

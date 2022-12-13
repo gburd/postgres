@@ -1970,7 +1970,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	Relation	rel;
 	LockRelId	lockrelid;
 	Oid			priv_relid;
-	Oid			toast_relid;
+/*	Oid			toast_relid; */
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
@@ -2191,21 +2191,19 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
 		(params->options & VACOPT_FULL) == 0)
 	{
-		if(HasToastrel(relid, 0, AccessShareLock))
+		if(HasToastrel(InvalidOid, relid, 0, AccessShareLock))
 		{
-/*			int i = 0; */
+			int i = 0;
 			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, relid, 0, AccessShareLock));
 	// XXX PG_TOASTREL
-/*
+
 			foreach(lc, trelids)
 			{
 				Oid trel = (lfirst_oid(lc));
-				elog(NOTICE, "run %u oid %u", i, trel);
 				t_arr[i] = trel;
 				t_arr_rowcount++;
 				i++;
 			}
-*/
 		}
 	}
 
@@ -2276,7 +2274,6 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
 		(params->options & VACOPT_FULL) == 0)
 	{
-
 		VacuumParams toast_vacuum_params;
 
 		/*
@@ -2291,40 +2288,35 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 
 		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);
 
-		if(HasToastrel(relid, 0, AccessShareLock))
+	// FIXME - list is lost during context switching XXX PG_TOASTREL
+		if(HasToastrel(relid, 0, AccessShareLock) && t_arr_rowcount > 0)
 		{
-	// XXX PG_TOASTREL
-			foreach(lc, trelids)
+			for(int i = 0; i < t_arr_rowcount; i++)
 			{
-				vacuum_rel(lfirst_oid(lc), NULL, &toast_vacuum_params, bstrategy);
+					vacuum_rel(t_arr[i], NULL, &toast_vacuum_params, bstrategy);
 			}
 		}
-	}
 /*
-	if(t_arr_rowcount > 0)
-	{
-		for(int i = 0; i < t_arr_rowcount; i++)
+		if(t_arr_rowcount > 0)
 		{
-				vacuum_rel(t_arr[i], NULL, params);
+			foreach(lc, trelids)
+			{
+				vacuum_rel((lfirst_oid(lc)), NULL, params);
+			}
 		}
-	}
 */
+	}
 /*
 	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
 		(params->options & VACOPT_FULL) == 0
 		&&  trelids)
 	{
 		int i = 0;
-		elog(NOTICE, "foreach init");
 		foreach(lc, trelids)
 		{
 			Oid trel = (lfirst_oid(lc));
-			elog(NOTICE, "run %u", i);
 			if (OidIsValid(trel))
-			{
-				elog(NOTICE, "vacuum_rel TOAST rel %u", trel);
 				vacuum_rel(trel, NULL, params);
-			}
 			i++;
 		}
 	}
