@@ -320,7 +320,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
-		CreateToasterStmt
+		CreateToasterStmt DropToasterStmt
 
 %type <node>	select_no_parens select_with_parens select_clause
 				simple_select values_clause
@@ -1053,6 +1053,7 @@ stmt:
 			| DropSubscriptionStmt
 			| DropTableSpaceStmt
 			| DropTransformStmt
+			| DropToasterStmt
 			| DropRoleStmt
 			| DropUserMappingStmt
 			| DropdbStmt
@@ -5824,6 +5825,30 @@ CreateToasterStmt:
 			CreateToasterStmt *n = makeNode(CreateToasterStmt);
 			n->tsrname = $3;
 			n->handler_name = $5;
+			n->if_not_exists = false;
+			$$ = (Node *) n;
+		}
+		;
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *				DROP TOASTER name
+ *
+ *****************************************************************************/
+
+DropToasterStmt:
+	DROP TOASTER IF_P EXISTS name
+		{
+			DropToasterStmt *n = makeNode(DropToasterStmt);
+			n->if_not_exists = true;
+			n->tsrname = $5;
+			$$ = (Node *) n;
+		}
+	| DROP TOASTER name
+		{
+			DropToasterStmt *n = makeNode(DropToasterStmt);
+			n->tsrname = $3;
 			n->if_not_exists = false;
 			$$ = (Node *) n;
 		}
