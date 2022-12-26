@@ -919,12 +919,11 @@ sub morph_row_for_pgattr
 	# Copy the type data from pg_type, and add some type-dependent items
 	my $type = $types{$atttype};
 
-	$row->{atttypid} = $type->{oid};
-	$row->{attlen} = $type->{typlen};
-	$row->{attbyval} = $type->{typbyval};
-	$row->{attalign} = $type->{typalign};
-	$row->{attstorage} = $type->{typstorage};
-	$row->{atttoaster} = ($row->{attstorage} ne 'p') ? $DEFAULT_TOASTER_OID : 0;
+	$row->{atttypid}       = $type->{oid};
+	$row->{attlen}         = $type->{typlen};
+	$row->{attbyval}       = $type->{typbyval};
+	$row->{attalign}       = $type->{typalign};
+	$row->{attstorage}     = $type->{typstorage};
 
 	# set attndims if it's an array type
 	$row->{attndims} = $type->{typcategory} eq 'A' ? '1' : '0';

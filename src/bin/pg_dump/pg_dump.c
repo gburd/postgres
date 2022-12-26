@@ -8612,7 +8612,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	int			i_atttypname;
 	int			i_attstattarget;
 	int			i_attstorage;
-//	int			i_atttoaster;
 	int			i_typstorage;
 	int			i_attidentity;
 	int			i_attgenerated;
@@ -8675,7 +8674,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	 * collation is different from their type's default, we use a CASE here to
 	 * suppress uninteresting attcollations cheaply.
 	 */
-/*						 "a.atttoaster,\n"*/
 	appendPQExpBufferStr(q,
 						 "SELECT\n"
 						 "a.attrelid,\n"
@@ -8750,7 +8748,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	i_atttypname = PQfnumber(res, "atttypname");
 	i_attstattarget = PQfnumber(res, "attstattarget");
 	i_attstorage = PQfnumber(res, "attstorage");
-//	i_atttoaster = PQfnumber(res, "atttoaster");
 	i_typstorage = PQfnumber(res, "typstorage");
 	i_attidentity = PQfnumber(res, "attidentity");
 	i_attgenerated = PQfnumber(res, "attgenerated");
@@ -8811,7 +8808,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		tbinfo->atttypnames = (char **) pg_malloc(numatts * sizeof(char *));
 		tbinfo->attstattarget = (int *) pg_malloc(numatts * sizeof(int));
 		tbinfo->attstorage = (char *) pg_malloc(numatts * sizeof(char));
-//		tbinfo->atttoaster = (Oid *) pg_malloc(numatts * sizeof(Oid));
 		tbinfo->typstorage = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attidentity = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attgenerated = (char *) pg_malloc(numatts * sizeof(char));
@@ -8838,7 +8834,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			tbinfo->atttypnames[j] = pg_strdup(PQgetvalue(res, r, i_atttypname));
 			tbinfo->attstattarget[j] = atoi(PQgetvalue(res, r, i_attstattarget));
 			tbinfo->attstorage[j] = *(PQgetvalue(res, r, i_attstorage));
-//			tbinfo->atttoaster[j] = atooid(PQgetvalue(res, r, i_atttoaster));
 			tbinfo->typstorage[j] = *(PQgetvalue(res, r, i_typstorage));
 			tbinfo->attidentity[j] = *(PQgetvalue(res, r, i_attidentity));
 			tbinfo->attgenerated[j] = *(PQgetvalue(res, r, i_attgenerated));
@@ -16470,8 +16465,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			}
 
 			/* check toastability of type, not column! */
-			if (tbinfo->typstorage[j] != TYPSTORAGE_PLAIN) /* &&
-				tbinfo->atttoaster[j] != DEFAULT_TOASTER_OID) */
+			if (tbinfo->typstorage[j] != TYPSTORAGE_PLAIN)
 			{
 				ToasterInfo   *tsr;
 				Oid				tsrId = DEFAULT_TOASTER_OID;
@@ -16493,18 +16487,18 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 
 				res = ExecuteSqlQueryForSingleRow(fout, query->data);
 				tsrId = PQfnumber(res, "toasterid");
-//				srvname = pg_strdup(PQgetvalue(res, 0, i_srvname));
 				PQclear(res);
 				destroyPQExpBuffer(query);
 
-//				tsrId = GetLastToasterId(tbinfo->dobj.catId.oid, j+1);
-
-				tsr = findToasterByOid(tsrId); //tbinfo->atttoaster[j]);
-				if (tsr)
-					appendPQExpBuffer(q, "ALTER TABLE %s ALTER COLUMN %s SET TOASTER %s;\n",
+				if(tsrId != DEFAULT_TOASTER_OID)
+				{
+					tsr = findToasterByOid(tsrId);
+					if (tsr)
+						appendPQExpBuffer(q, "ALTER TABLE %s ALTER COLUMN %s SET TOASTER %s;\n",
 									  qualrelname,
 									  fmtId(tbinfo->attnames[j]),
 									  tsr->dobj.name);
+				}
 			}
 
 
