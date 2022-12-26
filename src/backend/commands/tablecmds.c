@@ -9004,7 +9004,6 @@ SetIndexStorageProperties(Relation rel, Relation attrelation,
 				InsertToastRelation(toasterOid, indrel->rd_id, treloid, attrtuple->attnum,
 					0, relnamedata, trelnamedata, 0, RowExclusiveLock);
 			}
-			//	attrtuple->atttoaster = toasterOid;
 
 			CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
 
@@ -9117,18 +9116,6 @@ ATExecSetToaster(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
-/*
-	attrtuple->atttoaster = newToaster;
-	if (OidIsValid(newToaster))
-		validateToaster(attrtuple->atttoaster, attrtuple->atttypid,
-						attrtuple->attstorage, attrtuple->attcompression,
-						rel->rd_rel->relam, false);
-	else if (TypeIsToastable(attrtuple->atttypid))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("column data type %s should use toaster",
-						format_type_be(attrtuple->atttypid))));
-*/
 	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
@@ -13616,14 +13603,8 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	attTup->attcompression = InvalidCompressionMethod;
 
 	/* set default toaster for toastable type */
-/*	if (tform->typstorage == TYPSTORAGE_PLAIN)
-		attTup->atttoaster = InvalidOid;
-	else
-	{
-*/
 	if (tform->typstorage != TYPSTORAGE_PLAIN)
 	{
-/*		attTup->atttoaster = DEFAULT_TOASTER_OID; */
 /* Add PG_TOASTREL rows for table */
 		Oid tsroid = DEFAULT_TOASTER_OID;
 		Oid treloid = InvalidOid;
