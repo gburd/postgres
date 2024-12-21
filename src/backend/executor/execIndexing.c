@@ -307,7 +307,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes,
-					  bool onlySummarizing)
+					  bool onlySummarizing) //GSB how about a bitmap of Index Oids that require update
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -367,7 +367,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * Skip processing of non-summarizing indexes if we only update
 		 * summarizing indexes
 		 */
-		if (onlySummarizing && !indexInfo->ii_Summarizing)
+		if (onlySummarizing && !indexInfo->ii_Summarizing) //GSB
 			continue;
 
 		/* Check for partial index */
@@ -437,7 +437,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		indexUnchanged = update && index_unchanged_by_update(resultRelInfo,
 															 estate,
 															 indexInfo,
-															 indexRelation);
+															 indexRelation); //GSB
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
@@ -446,7 +446,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 						 tupleid,	/* tid of heap tuple */
 						 heapRelation,	/* heap relation */
 						 checkUnique,	/* type of uniqueness check to do */
-						 indexUnchanged,	/* UPDATE without logical change? */
+						 indexUnchanged,	/* UPDATE without logical change? */ //GSB
 						 indexInfo);	/* index AM may need this */
 
 		/*

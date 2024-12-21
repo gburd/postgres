@@ -4050,7 +4050,7 @@ l2:
 	if (use_hot_update)
 	{
 		if (summarized_update)
-			*update_indexes = TU_Summarizing;
+			*update_indexes = TU_Summarizing; //GSB
 		else
 			*update_indexes = TU_None;
 	}
