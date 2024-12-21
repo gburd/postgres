@@ -2143,7 +2143,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing));
+											   (updateCxt->updateIndexes == TU_Summarizing)); //GSB
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
@@ -4139,7 +4139,7 @@ ExecModifyTable(PlanState *pstate)
 
 				/* Initialize projection info if first time for this table */
 				if (unlikely(!resultRelInfo->ri_projectNewInfoValid))
-					ExecInitUpdateProjection(node, resultRelInfo);
+					ExecInitUpdateProjection(node, resultRelInfo); //GSB
 
 				/*
 				 * Make the new tuple by combining plan's output tuple with

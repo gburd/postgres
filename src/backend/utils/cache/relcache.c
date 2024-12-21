@@ -5347,7 +5347,7 @@ restart:
 		 * may still need to update it (if the attributes were modified). So
 		 * decide which bitmap we'll update in the following loop.
 		 */
-		if (indexDesc->rd_indam->amsummarizing)
+		if (indexDesc->rd_indam->amsummarizing) //GSB
 			attrs = &summarizedattrs;
 		else
 			attrs = &hotblockingattrs;
