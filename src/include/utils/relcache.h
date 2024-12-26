@@ -45,6 +45,8 @@ extern void RelationClose(Relation relation);
  */
 extern List *RelationGetFKeyList(Relation relation);
 extern List *RelationGetIndexList(Relation relation);
+extern List *RelationGetIndexInfoList(Relation relation);
+extern List *RelationGetIndexAttrBitmapList(Relation relation);
 extern List *RelationGetStatExtList(Relation relation);
 extern Oid	RelationGetPrimaryKeyIndex(Relation relation, bool deferrable_ok);
 extern Oid	RelationGetReplicaIndex(Relation relation);
@@ -61,7 +63,6 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_KEY,
 	INDEX_ATTR_BITMAP_PRIMARY_KEY,
 	INDEX_ATTR_BITMAP_IDENTITY_KEY,
-	INDEX_ATTR_BITMAP_HOT_BLOCKING,
 	INDEX_ATTR_BITMAP_SUMMARIZED,
 } IndexAttrBitmapKind;
 

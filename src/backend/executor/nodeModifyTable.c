@@ -3858,6 +3858,7 @@ ExecModifyTable(PlanState *pstate)
 
 	/* Preload local variables */
 	resultRelInfo = node->resultRelInfo + node->mt_lastResultIndex;
+	resultRelInfo->ri_RelationDesc->rd_estate = (void *)estate;
 	subplanstate = outerPlanState(node);
 
 	/* Set global context */

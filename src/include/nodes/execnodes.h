@@ -164,7 +164,7 @@ typedef struct ExprState
  *		UniqueProcs
  *		UniqueStrats
  *		Unique				is it a unique index?
- *		OpclassOptions		opclass-specific options, or NULL if none
+ *		OpclassDataTypes	opclass-specific data-types
  *		ReadyForInserts		is it valid for inserts?
  *		CheckedUnchanged	IndexUnchanged status determined yet?
  *		IndexUnchanged		aminsert hint, cached for retail inserts
@@ -197,6 +197,7 @@ typedef struct IndexInfo
 	Oid		   *ii_UniqueProcs; /* array with one entry per column */
 	uint16	   *ii_UniqueStrats;	/* array with one entry per column */
 	bool		ii_Unique;
+	Oid		   *ii_OpclassDataTypes; /* list of data-types per column */
 	bool		ii_NullsNotDistinct;
 	bool		ii_ReadyForInserts;
 	bool		ii_CheckedUnchanged;

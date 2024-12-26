@@ -2418,8 +2418,9 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  *
  * IndexInfo stores the information about the index that's needed by
  * FormIndexDatum, which is used for both index_build() and later insertion
- * of individual index tuples.  Normally we build an IndexInfo for an index
- * just once per command, and then use it for (potentially) many tuples.
+ * of individual index tuples as well as RemoveUnchangedProjectionIndexes().
+ * Normally we build an IndexInfo for an index just once per command, and then
+ * use it for (potentially) many tuples.
  * ----------------
  */
 IndexInfo *
@@ -2464,6 +2465,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
+
+	ii->ii_OpclassDataTypes = index->rd_opcintype;
 
 	return ii;
 }

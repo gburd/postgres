@@ -42,14 +42,18 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
+#include "catalog/index.h"
 #include "commands/vacuum.h"
+#include "executor/executor.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
+#include "stdio.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "utils/datum.h"
 #include "utils/inval.h"
+#include "utils/lsyscache.h"
 #include "utils/spccache.h"
 
 
@@ -102,7 +106,7 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
-
+static List *HeapDetermineModifiedIndexes(Relation relation, HeapTuple oldtup, HeapTuple newtup, Bitmapset *modified_attrs);
 
 /*
  * Each tuple lock mode has a corresponding heavyweight lock, and one or two
@@ -3222,8 +3226,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * Note that we get copies of each bitmap, so we need not worry about
 	 * relcache flush happening midway through.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
@@ -3868,7 +3870,11 @@ l2:
 		 * to do a HOT update.  Check if any of the index columns have been
 		 * changed.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
+		List *index_list = RelationGetIndexList(relation);
+		List *modified_indexes = HeapDetermineModifiedIndexes(relation, &oldtup, newtup, modified_attrs);
+
+		/* Avoid HOT update only when we're updating all indexes. */
+		if (list_length(index_list) != list_length(modified_indexes))
 		{
 			use_hot_update = true;
 
@@ -3880,7 +3886,7 @@ l2:
 			 * e.g. value bound changes in BRIN minmax indexes.
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = true;
+				summarized_update = true; //GSB
 		}
 	}
 	else
@@ -4235,6 +4241,85 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 		att = TupleDescCompactAttr(tupdesc, attrnum - 1);
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
+}
+
+/*
+ * Return a bitmap of indexes on this relation that require updates.
+ * GSB
+ */
+static List *
+HeapDetermineModifiedIndexes(Relation relation, HeapTuple oldtup, HeapTuple newtup, Bitmapset *modified_attrs)
+{
+	ListCell	   *lc;
+	List		   *indexoidlist = RelationGetIndexList(relation);
+	List		   *indexattrmaplist = RelationGetIndexAttrBitmapList(relation);
+	List		   *indexinfolist;
+	EState		   *estate;
+	ExprContext	   *econtext;
+	TupleDesc		tupledesc;
+	TupleTableSlot *slot;
+	Datum			old_values[INDEX_MAX_KEYS];
+	bool			old_isnull[INDEX_MAX_KEYS];
+	Datum			new_values[INDEX_MAX_KEYS];
+	bool			new_isnull[INDEX_MAX_KEYS];
+	List		   *result;
+
+	foreach(lc, indexoidlist)
+	{
+		int			i;
+		IndexInfo  *indexinfo = list_nth(indexinfolist, foreach_current_index(lc));
+		Bitmapset  *indexattrs = list_nth(indexattrmaplist, foreach_current_index(lc));
+
+		if (!indexinfo->ii_Expressions) //GSB move this to separate function
+		{
+			if (bms_overlap(modified_attrs, indexattrs))
+				result = lappend_oid(result, lfirst_oid(lc));
+		}
+		else
+		{
+			/* Assume the index is changed when we don't have an estate context to use. */
+			if (!relation->rd_estate)
+			{
+				result = lappend_oid(result, lfirst_oid(lc));
+				continue;
+			}
+
+			estate = (EState *)relation->rd_estate;
+			econtext = GetPerTupleExprContext(estate);
+			indexinfolist = RelationGetIndexInfoList(relation);
+			tupledesc = RelationGetDescr(relation);
+			slot = MakeSingleTupleTableSlot(tupledesc, &TTSOpsHeapTuple);
+			econtext->ecxt_scantuple = slot;
+			indexinfo->ii_ExpressionsState = NIL;
+
+			ResetExprContext(econtext);
+			ExecStoreHeapTuple(oldtup, slot, InvalidBuffer);
+			FormIndexDatum(indexinfo, slot, estate, old_values, old_isnull);
+
+			ExecStoreHeapTuple(newtup, slot, InvalidBuffer);
+			FormIndexDatum(indexinfo, slot, estate, new_values, new_isnull);
+
+			/* Determine if any of the attributes used by this index have changed. */
+			for (i = 0; i < indexinfo->ii_NumIndexAttrs; i++)
+			{
+				if (old_isnull[i] != new_isnull[i])
+					break;
+				if (!old_isnull[i])
+				{
+					int16 elmlen;
+					bool elmbyval;
+					get_typlenbyval(indexinfo->ii_OpclassDataTypes[i], &elmlen, &elmbyval);
+					if (!datumIsEqual(old_values[i], new_values[i], elmbyval, elmlen))
+						break;
+				}
+			}
+			if (i < indexinfo->ii_NumIndexAttrs)
+				result = lappend_oid(result, lfirst_oid(lc));
+			ExecDropSingleTupleTableSlot(slot);
+		}
+	}
+
+	return result;
 }
 
 /*
