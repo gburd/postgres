@@ -114,6 +114,9 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
+#include "unistd.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
@@ -140,7 +143,8 @@ static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *new_values);
 static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
 									  EState *estate, IndexInfo *indexInfo,
-									  Relation indexRelation);
+									  Relation indexRelation, HeapTuple oldtuple,
+									  Datum *new_values, bool *new_isnull);
 static bool index_expression_changed_walker(Node *node,
 											Bitmapset *allUpdatedCols);
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
@@ -269,7 +273,8 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		into all the relations indexing the result relation
  *		when a heap tuple is inserted into the result relation.
  *
- *		When 'update' is true and 'onlySummarizing' is false,
+ *		GSB update comment
+ *      When 'update' is true and 'onlySummarizing' is false,
  *		executor is performing an UPDATE that could not use an
  *		optimization like heapam's HOT (in more general terms a
  *		call to table_tuple_update() took place and set
@@ -284,7 +289,7 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		HOT has been applied and any updated columns are indexed
  *		only by summarizing indexes (or in more general terms a
  *		call to table_tuple_update() took place and set
- *		'update_indexes' to TUUI_Summarizing). We can (and must)
+ *		'update_indexes' to TU_Summarizing). We can (and must)
  *		therefore only update the indexes that have
  *		'amsummarizing' = true.
  *
@@ -307,7 +312,8 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes,
-					  bool onlySummarizing) //GSB how about a bitmap of Index Oids that require update
+					  HeapTuple oldtuple,
+					  bool onlySome)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -351,7 +357,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		IndexInfo  *indexInfo;
 		bool		applyNoDupErr;
 		IndexUniqueCheck checkUnique;
-		bool		indexUnchanged;
+		bool		indexUnchanged = false;
 		bool		satisfiesConstraint;
 
 		if (indexRelation == NULL)
@@ -367,7 +373,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * Skip processing of non-summarizing indexes if we only update
 		 * summarizing indexes
 		 */
-		if (onlySummarizing && !indexInfo->ii_Summarizing) //GSB
+		if (onlySome && !(indexInfo->ii_Summarizing || indexInfo->ii_Expressions))
 			continue;
 
 		/* Check for partial index */
@@ -434,10 +440,18 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * index.  If we're being called as part of an UPDATE statement,
 		 * consider if the 'indexUnchanged' = true hint should be passed.
 		 */
-		indexUnchanged = update && index_unchanged_by_update(resultRelInfo,
-															 estate,
-															 indexInfo,
-															 indexRelation); //GSB
+		if (update)
+		{
+			indexUnchanged = index_unchanged_by_update(resultRelInfo,
+													   estate,
+													   indexInfo,
+													   indexRelation,
+													   oldtuple,
+													   values,
+													   isnull);
+			if (indexInfo->ii_IndexUnchanged)
+				continue;
+		}
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
@@ -446,7 +460,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 						 tupleid,	/* tid of heap tuple */
 						 heapRelation,	/* heap relation */
 						 checkUnique,	/* type of uniqueness check to do */
-						 indexUnchanged,	/* UPDATE without logical change? */ //GSB
+						 indexUnchanged,	/* UPDATE without logical change? */
 						 indexInfo);	/* index AM may need this */
 
 		/*
@@ -996,7 +1010,8 @@ index_recheck_constraint(Relation index, const Oid *constr_procs,
  */
 static bool
 index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
-						  IndexInfo *indexInfo, Relation indexRelation)
+						  IndexInfo *indexInfo, Relation indexRelation,
+						  HeapTuple oldtup, Datum *new_values, bool *new_isnull)
 {
 	Bitmapset  *updatedCols;
 	Bitmapset  *extraUpdatedCols;
@@ -1089,8 +1104,52 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 
 	if (hasexpression)
 	{
-		indexInfo->ii_IndexUnchanged = false;
-		return false;
+		int				i;
+		bool			unchanged = true;
+		TupleDesc		tupledesc;
+		TupleTableSlot *slot;
+		Datum			old_values[INDEX_MAX_KEYS];
+		bool			old_isnull[INDEX_MAX_KEYS];
+
+		if (oldtup == NULL)
+		{
+			indexInfo->ii_IndexUnchanged = false;
+			return false;
+		}
+
+		tupledesc = RelationGetDescr(indexRelation);
+		slot = MakeSingleTupleTableSlot(tupledesc, &TTSOpsHeapTuple);
+
+		ExecStoreHeapTuple(oldtup, slot, InvalidBuffer);
+		FormIndexDatum(indexInfo,
+					   slot,
+					   estate,
+					   old_values,
+					   old_isnull);
+		for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+		{
+			if (old_isnull[i] != new_isnull[i])
+			{
+				unchanged = false;
+				break;
+			}
+			else if (!old_isnull[i])
+			{
+				int16 elmlen;
+				bool elmbyval;
+				get_typlenbyval(indexInfo->ii_OpClassDataTypes[i], &elmlen, &elmbyval);
+				if (!datumIsEqual(old_values[i], new_values[i], elmbyval, elmlen))
+				{
+					unchanged = false;
+					break;
+				}
+			}
+			if (!unchanged)
+				break;
+		}
+		ExecDropSingleTupleTableSlot(slot);
+		indexInfo->ii_IndexUnchanged = unchanged;
+		return unchanged;
 	}
 
 	/*

@@ -83,7 +83,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		onlySummarized = (updateIndexes == TU_Summarizing);
+	bool		onlySome = (updateIndexes == TU_Some);
 
 	/*
 	 * HOT update does not require index inserts. But with asserts enabled we
@@ -91,12 +91,12 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	 * table/index.
 	 */
 #ifndef USE_ASSERT_CHECKING
-	if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
+	if (HeapTupleIsHeapOnly(heapTuple) && !onlySome)
 		return;
 #endif
 
 	/* When only updating summarized indexes, the tuple has to be HOT. */
-	Assert((!onlySummarized) || HeapTupleIsHeapOnly(heapTuple));
+	Assert((!onlySome) || HeapTupleIsHeapOnly(heapTuple));
 
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
@@ -140,7 +140,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 
 		/* see earlier check above */
 #ifdef USE_ASSERT_CHECKING
-		if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
+		if (HeapTupleIsHeapOnly(heapTuple) && !onlySome)
 		{
 			Assert(!ReindexIsProcessingIndex(RelationGetRelid(index)));
 			continue;
@@ -148,10 +148,10 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 #endif							/* USE_ASSERT_CHECKING */
 
 		/*
-		 * Skip insertions into non-summarizing indexes if we only need to
-		 * update summarizing indexes.
+		 * Skip insertions into non-summarizing/expresssion indexes if we only need to
+		 * update summarizing/expression indexes.
 		 */
-		if (onlySummarized && !indexInfo->ii_Summarizing)
+		if (onlySome && !(indexInfo->ii_Summarizing || indexInfo->ii_Expressions))
 			continue;
 
 		/*

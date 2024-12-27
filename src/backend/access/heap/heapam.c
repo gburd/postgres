@@ -3150,6 +3150,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
 	Bitmapset  *sum_attrs;
+	Bitmapset  *exp_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3173,6 +3174,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		iscombo;
 	bool		use_hot_update = false;
 	bool		summarized_update = false;
+	bool		expression_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3226,12 +3228,15 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	exp_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_EXPRESSION);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
 	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, exp_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
 
@@ -3543,10 +3548,10 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
@@ -3881,6 +3886,8 @@ l2:
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
 				summarized_update = true;
+			if (bms_overlap(modified_attrs, exp_attrs))
+				expression_update = true;
 		}
 	}
 	else
@@ -4049,8 +4056,8 @@ l2:
 	 */
 	if (use_hot_update)
 	{
-		if (summarized_update)
-			*update_indexes = TU_Summarizing; //GSB
+		if (summarized_update || expression_update)
+			*update_indexes = TU_Some;
 		else
 			*update_indexes = TU_None;
 	}
@@ -4062,6 +4069,7 @@ l2:
 
 	bms_free(hot_attrs);
 	bms_free(sum_attrs);
+	bms_free(exp_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(modified_attrs);

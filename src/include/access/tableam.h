@@ -121,8 +121,8 @@ typedef enum TU_UpdateIndexes
 	/* A non-summarizing indexed column was updated, or the TID has changed */
 	TU_All,
 
-	/* Only summarized columns were updated, TID is unchanged */
-	TU_Summarizing,
+	/* Only summarized or expression columns were updated, TID is unchanged */
+	TU_Some,
 } TU_UpdateIndexes;
 
 /*

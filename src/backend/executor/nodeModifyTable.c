@@ -1108,6 +1108,7 @@ ExecInsert(ModifyTableContext *context,
 												   slot, estate, false, true,
 												   &specConflict,
 												   arbiterIndexes,
+												   NULL,
 												   false);
 
 			/* adjust the tuple's state accordingly */
@@ -1147,7 +1148,7 @@ ExecInsert(ModifyTableContext *context,
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
-													   false, NULL, NIL,
+													   false, NULL, NIL, NULL,
 													   false);
 		}
 	}
@@ -2143,7 +2144,8 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing)); //GSB
+											   oldtuple,
+											   (updateCxt->updateIndexes == TU_Some));
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
@@ -4139,7 +4141,7 @@ ExecModifyTable(PlanState *pstate)
 
 				/* Initialize projection info if first time for this table */
 				if (unlikely(!resultRelInfo->ri_projectNewInfoValid))
-					ExecInitUpdateProjection(node, resultRelInfo); //GSB
+					ExecInitUpdateProjection(node, resultRelInfo);
 
 				/*
 				 * Make the new tuple by combining plan's output tuple with

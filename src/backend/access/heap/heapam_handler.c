@@ -345,7 +345,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	else if (!HeapTupleIsHeapOnly(tuple))
 		Assert(*update_indexes == TU_All);
 	else
-		Assert((*update_indexes == TU_Summarizing) ||
+		Assert((*update_indexes == TU_Some) ||
 			   (*update_indexes == TU_None));
 
 	if (shouldFree)
