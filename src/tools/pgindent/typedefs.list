@@ -4109,6 +4109,7 @@ ssize_t
 standard_qp_extra
 stemmer_module
 stmtCacheEntry
+storage_type
 storeInfo
 storeRes_func
 stream_stop_callback

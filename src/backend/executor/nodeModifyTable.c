@@ -2335,9 +2335,9 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   true, false,
 											   NULL, NIL,
 											   (updateCxt->updateIndexes == TU_Summarizing),
-											   context->updateModifiedIndexes,
-											   context->modifiedAttrs);
-	bms_free(context->modifiedAttrs);
+											   updateCxt->updateModifiedIndexes,
+											   updateCxt->modifiedAttrs);
+	bms_free(updateCxt->modifiedAttrs);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,

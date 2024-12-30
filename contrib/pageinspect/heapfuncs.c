@@ -206,14 +206,12 @@ heap_page_items(PG_FUNCTION_ARGS)
 		 * data outside the page passed to us. The page could be corrupt in
 		 * many other ways, but at least we won't crash.
 		 */
-		if (ItemIdHasStorage(id)) // &&
-			//lp_len >= MinHeapTupleSize &&
-			//lp_offset == MAXALIGN(lp_offset) &&
-			//lp_offset + lp_len <= raw_page_size)
+		if (ItemIdHasStorage(id))
 		{
 			HeapTupleHeader tuphdr;
 			bytea	   *tuple_data_bytea;
 			int			tuple_data_len;
+			char	   *tuple_data;
 			bool		phot_redirect = ItemIdIsPartialHotRedirected(page, id);
 
 			/* Extract information from the tuple header */
@@ -243,19 +241,18 @@ heap_page_items(PG_FUNCTION_ARGS)
 
 			/* Copy raw tuple data into bytea attribute */
 			if (phot_redirect)
+			{
 				tuple_data_len = ItemIdGetRedirectDataLength(page, id);
+				tuple_data = ItemIdGetRedirectHeader(page, id);
+			}
 			else
+			{
 				tuple_data_len = lp_len - tuphdr->t_hoff;
+				tuple_data = (char *) tuphdr + tuphdr->t_hoff;
+			}
 			tuple_data_bytea = (bytea *) palloc(tuple_data_len + VARHDRSZ);
 			SET_VARSIZE(tuple_data_bytea, tuple_data_len + VARHDRSZ);
-			if (phot_redirect)
-				memcpy(VARDATA(tuple_data_bytea),
-					   (char *) ItemIdGetRedirectHeader(page, id),
-					   tuple_data_len);
-			else
-				memcpy(VARDATA(tuple_data_bytea),
-					   (char *) tuphdr + tuphdr->t_hoff,
-					   tuple_data_len);
+			memcpy(VARDATA(tuple_data_bytea), tuple_data, tuple_data_len);
 			values[13] = PointerGetDatum(tuple_data_bytea);
 
 			/*

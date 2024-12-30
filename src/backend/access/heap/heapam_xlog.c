@@ -91,14 +91,13 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		Size		datalen;
 		xlhp_freeze_plan *plans;
 		OffsetNumber *frz_offsets;
-		bits8	  **redirect_data = NULL; // XXX: get this into the record!!!
+		bits8	  **redirect_data = NULL;	/* XXX: get this into the record */
 		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 
 		heap_xlog_deserialize_prune_and_freeze(dataptr, xlrec.flags,
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
 											   &nredirected_data, &redirected_data,
-											   redirect_data,
 											   &ndead, &nowdead,
 											   &nunused, &nowunused);
 
@@ -948,11 +947,11 @@ heap_xlog_update(XLogReaderState *record, uint32 info)
 	 * Arbitrarily, our definition of "low" is less than 20%. We can't do much
 	 * better than that without knowing the fill-factor for the table.
 	 *
-	 * However, don't update the FSM on HOT or PHOT updates, because after crash
-	 * recovery, either the old or the new tuple will certainly be dead and
-	 * prunable. After pruning, the page will have roughly as much free space
-	 * as it did before the update, assuming the new tuple is about the same
-	 * size as the old one.
+	 * However, don't update the FSM on HOT or PHOT updates, because after
+	 * crash recovery, either the old or the new tuple will certainly be dead
+	 * and prunable. After pruning, the page will have roughly as much free
+	 * space as it did before the update, assuming the new tuple is about the
+	 * same size as the old one.
 	 *
 	 * XXX: Don't do this if the page was restored from full page image. We
 	 * don't bother to update the FSM in that case, it doesn't need to be
@@ -1272,9 +1271,6 @@ heap2_redo(XLogReaderState *record)
 	}
 }
 
-/*
- * XXX: document for PHOT
- */
 void
 heap3_redo(XLogReaderState *record)
 {

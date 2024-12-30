@@ -465,12 +465,12 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 /*
  * Handle rmgr HEAP3_ID records for LogicalDecodingProcessRecord().
  */
-static void
+void
 heap3_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
-	uint8		 info = XLogRecGetInfo(buf->record) & XLOG_HEAP_OPMASK;
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_HEAP_OPMASK;
 	TransactionId xid = XLogRecGetXid(buf->record);
-	SnapBuild	*builder = ctx->snapshot_builder;
+	SnapBuild  *builder = ctx->snapshot_builder;
 
 	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
 
