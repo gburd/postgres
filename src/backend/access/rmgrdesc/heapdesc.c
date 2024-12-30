@@ -422,7 +422,7 @@ heap3_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec->old_offnum,
 						 xlrec->old_xmax,
 						 xlrec->flags);
-		out_infobits(buf, xlrec->old_infobits_set);
+		infobits_desc(buf, xlrec->old_infobits_set, "infobits");
 		appendStringInfo(buf, "; new off %u xmax %u",
 						 xlrec->new_offnum,
 						 xlrec->new_xmax);
