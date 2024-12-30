@@ -3943,7 +3943,7 @@ l2:
 		/*
 		 * If HOT won't work, maybe PHOT will.
 		 */
-		if (hot_attrs_checked && !use_hot_update && !IsCatalogRelation(relation))
+		if (!use_hot_update && !IsCatalogRelation(relation))
 		{
 			Bitmapset *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
 			bool updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
