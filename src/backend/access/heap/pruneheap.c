@@ -82,8 +82,7 @@ typedef struct
 } PruneState;
 
 /* Local functions */
-static HTSV_Result heap_prune_satisfies_vacuum(Relation relation,
-											   PruneState *prstate,
+static HTSV_Result heap_prune_satisfies_vacuum(PruneState *prstate,
 											   HeapTuple tup,
 											   Buffer buffer);
 static int	heap_prune_chain(Buffer buffer,
@@ -392,7 +391,7 @@ heap_page_prune(Relation relation, Buffer buffer,
 			continue;
 
 		/* Process this item or chain of items */
-		ndeleted += heap_prune_chain(relation, buffer, offnum, &prstate);
+		ndeleted += heap_prune_chain(buffer, offnum, &prstate);
 	}
 
 	/* Clear the offset information once we have processed the given page. */
@@ -633,8 +632,7 @@ heap_prune_satisfies_vacuum(PruneState *prstate, HeapTuple tup, Buffer buffer)
  * TODO: Update this description for PHOT.
  */
 static int
-heap_prune_chain(Relation rel, Buffer buffer, OffsetNumber rootoffnum,
-				 PruneState *prstate)
+heap_prune_chain(Buffer buffer, OffsetNumber rootoffnum, PruneState *prstate)
 {
 	int			ndeleted = 0;
 	Page		dp = (Page) BufferGetPage(buffer);
@@ -889,7 +887,7 @@ heap_prune_chain(Relation rel, Buffer buffer, OffsetNumber rootoffnum,
 		Bitmapset  *intermediate = NULL;
 		Bitmapset  *modified = NULL;
 		OffsetNumber keyitems[MaxHeapTuplesPerPage];
-		int			natts = RelationGetNumberOfAttributes(rel);
+		int			natts = RelationGetNumberOfAttributes(prstate->rel);
 		int			lastoff = chainitems[nchain - 1];
 		int			nkeys = 0;
 		bool		has_phot = phot_items[nchain - 1];
@@ -918,7 +916,7 @@ heap_prune_chain(Relation rel, Buffer buffer, OffsetNumber rootoffnum,
 			interesting_attrs = bms_add_range(NULL,
 											  1 - FirstLowInvalidHeapAttributeNumber,
 											  natts - FirstLowInvalidHeapAttributeNumber);
-			intermediate = GetModifiedColumnsBitmap(rel, buffer, dp,
+			intermediate = GetModifiedColumnsBitmap(prstate->rel, buffer, dp,
 													chainitems[nchain - 2],
 													lastoff,
 													true, interesting_attrs);
@@ -979,7 +977,7 @@ heap_prune_chain(Relation rel, Buffer buffer, OffsetNumber rootoffnum,
 			 * the current tuple and the preceding one in the chain.
 			 */
 			bms_free(modified);
-			modified = GetModifiedColumnsBitmap(rel, buffer, dp,
+			modified = GetModifiedColumnsBitmap(prstate->rel, buffer, dp,
 												chainitems[i - 1],
 												chainitems[i],
 												phot_items[i],
@@ -1536,6 +1534,7 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		HeapTupleData	oldtup;
 		HeapTupleData	newtup;
 		Bitmapset	   *interesting_copy;
+		bool			has_external = false;
 
 		/* if the old LP is normal, the new one better be, too */
 		Assert(ItemIdIsNormal(newid));
@@ -1558,8 +1557,8 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		 * modifies it.
 		 */
 		interesting_copy = bms_copy(interesting_attrs);
-		modified = HeapDetermineModifiedColumns(rel, interesting_copy,
-												&oldtup, &newtup);
+		modified = HeapDetermineColumnsInfo(rel, interesting_copy, NULL,
+											&oldtup, &newtup, &has_external);
 		bms_free(interesting_copy);
 	}
 	else
