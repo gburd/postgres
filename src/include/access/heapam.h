@@ -193,11 +193,11 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 
 extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
-extern static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
-												  Bitmapset *interesting_cols,
-												  Bitmapset *external_cols,
-												  HeapTuple oldtup, HeapTuple newtup,
-												  bool *has_external);
+extern Bitmapset *HeapDetermineColumnsInfo(Relation relation,
+										   Bitmapset *interesting_cols,
+										   Bitmapset *external_cols,
+										   HeapTuple oldtup, HeapTuple newtup,
+										   bool *has_external);
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;
