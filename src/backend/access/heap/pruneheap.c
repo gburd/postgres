@@ -1879,7 +1879,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	}
 
 	offnum = redirected_data;
-	for (i = 0; i < nredirected_data; i++)
+	for (int i = 0; i < nredirected_data; i++)
 	{
 		OffsetNumber fromoff = *offnum++;
 		OffsetNumber tooff = *offnum++;
