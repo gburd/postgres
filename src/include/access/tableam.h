@@ -2006,7 +2006,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
 									  TU_UpdateIndexes *update_indexes,
-									  bool *update_indexes, bool *update_modified_indexes,
+									  bool *update_modified_indexes,
 									  Bitmapset **modified_attrs);
 
 

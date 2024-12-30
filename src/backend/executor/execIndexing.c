@@ -372,18 +372,20 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * If the indexed attributes were not modified and this is a partial-HOT
-		 * update, skip it.
+		 * If the indexed attributes were not modified and this is a
+		 * partial-HOT update, skip it.
 		 */
 		if (update_modified_indexes)
 		{
-			bool should_update = false;
-			int j;
+			bool		should_update = false;
+			int			j;
 
 			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
 			{
-				if (bms_is_member(indexInfo->ii_IndexAttrNumbers[j] - FirstLowInvalidHeapAttributeNumber,
-							modified_attrs))
+				AttrNumber	attrnum = indexInfo->ii_IndexAttrNumbers[j]
+					- FirstLowInvalidHeapAttributeNumber;
+
+				if (bms_is_member(attrnum, modified_attrs))
 				{
 					should_update = true;
 					break;
@@ -401,7 +403,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		if (onlySummarizing && !indexInfo->ii_Summarizing)
 			continue;
 
-		 /* Check for partial index */
+		/* Check for partial index */
 		if (indexInfo->ii_Predicate != NIL)
 		{
 			ExprState  *predicate;

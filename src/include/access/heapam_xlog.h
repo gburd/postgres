@@ -520,6 +520,7 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
 												   int *nplans, xlhp_freeze_plan **plans,
 												   OffsetNumber **frz_offsets,
 												   int *nredirected, OffsetNumber **redirected,
+												   int *nredirected_data, OffsetNumber **redirected_data,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused);
 

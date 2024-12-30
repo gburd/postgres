@@ -641,14 +641,14 @@ tbm_intersect_page(TIDBitmap *a, PagetableEntry *apage, const TIDBitmap *b)
 
 			/*
 			 * Since each tuple may refer to different parts of the same PHOT
-			 * chain, we must OR the bitmaps together.  Later on, we'll use the
-			 * recheck condition and tuple offset deduplication once we've
+			 * chain, we must OR the bitmaps together.  Later on, we'll use
+			 * the recheck condition and tuple offset deduplication once we've
 			 * followed the chains.
 			 *
 			 * XXX: It may be possible to avoid some of this work if we know
 			 * that there are no PHOT chains on the page.  It is not yet clear
-			 * whether the current behavior results in a significant performance
-			 * impact.
+			 * whether the current behavior results in a significant
+			 * performance impact.
 			 */
 			for (wordnum = 0; wordnum < WORDS_PER_PAGE; wordnum++)
 				apage->words[wordnum] |= bpage->words[wordnum];

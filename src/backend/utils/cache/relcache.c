@@ -5433,11 +5433,11 @@ restart:
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
 		{
-			int			attrnum = indexDesc->rd_index->indkey.values[i];
+			int			attridx = indexDesc->rd_index->indkey.values[i];
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
-			 * handle them accurately here. non-key columns must be added into
+			 * handle them accurately here. Non-key columns must be added into
 			 * hotblockingattrs or summarizedattrs, since they are in index,
 			 * and update shouldn't miss them.
 			 *
@@ -5449,22 +5449,20 @@ restart:
 			 * key or identity key. Hence we do not include them into
 			 * uindexattrs, pkindexattrs and idindexattrs bitmaps.
 			 */
-			if (attrnum != 0)
+			if (attridx != 0)
 			{
-				*attrs = bms_add_member(*attrs,
-										attrnum - FirstLowInvalidHeapAttributeNumber);
+				AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
+
+				*attrs = bms_add_member(*attrs, attrnum);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
-					uindexattrs = bms_add_member(uindexattrs,
-												 attrnum - FirstLowInvalidHeapAttributeNumber);
+					uindexattrs = bms_add_member(uindexattrs, attrnum);
 
 				if (isPK && i < indexDesc->rd_index->indnkeyatts)
-					pkindexattrs = bms_add_member(pkindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					pkindexattrs = bms_add_member(pkindexattrs, attrnum);
 
 				if (isIDKey && i < indexDesc->rd_index->indnkeyatts)
-					idindexattrs = bms_add_member(idindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					idindexattrs = bms_add_member(idindexattrs, attrnum);
 			}
 		}
 
@@ -6038,19 +6036,19 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
  * AccessShareLock or stronger.
  */
 Bitmapset *
-IndexGetAttrBitmap(Relation irel)
+IndexGetAttrBitmap(Relation relation)
 {
-	Bitmapset *attrs = NULL;
+	Bitmapset  *attrs = NULL;
 	Form_pg_index indexStruct;
 
 	/* XXX: Do we need a stronger lock for this to be safe? */
-	Assert(RelationIsValid(irel));
-	Assert(CheckRelationLockedByMe(irel, AccessShareLock, true));
+	Assert(RelationIsValid(relation));
+	Assert(CheckRelationLockedByMe(relation, AccessShareLock, true));
 
-	indexStruct = irel->rd_index;
+	indexStruct = relation->rd_index;
 	for (int i = 0; i < indexStruct->indnatts; i++)
 	{
-		int attr;
+		int			attr;
 
 		attr = indexStruct->indkey.values[i];
 		attr -= FirstLowInvalidHeapAttributeNumber;
