@@ -1739,17 +1739,19 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			interesting_attrs &&
 			has_prev_tup)
 		{
-			Bitmapset *modified_attrs;
-			Bitmapset *attrs;
-			bool index_attrs_modified;
+			Bitmapset	*modified_attrs;
+			Bitmapset	*attrs;
+			bool		index_attrs_modified;
+			bool		id_has_external = false;
 
 			/*
-			 * HeapDetermineModifiedColumns destructively modifies the input
+			 * HeapDetermineColumnsInfo destructively modifies the input
 			 * bitmapset, so we need to copy it.
 			 */
 			attrs = bms_copy(interesting_attrs);
-			modified_attrs = HeapDetermineModifiedColumns(relation, attrs,
-														  &prev_tup, heapTuple);
+			modified_attrs = HeapDetermineColumnsInfo(relation, attrs, NULL,
+													  &prev_tup, heapTuple,
+													  &id_has_external);
 			index_attrs_modified = !bms_is_empty(modified_attrs);
 
 			bms_free(attrs);
@@ -4335,7 +4337,7 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  * listed as interesting) of the old tuple is a member of external_cols and is
  * stored externally.
  */
-static Bitmapset *
+Bitmapset *
 HeapDetermineColumnsInfo(Relation relation,
 						 Bitmapset *interesting_cols,
 						 Bitmapset *external_cols,
