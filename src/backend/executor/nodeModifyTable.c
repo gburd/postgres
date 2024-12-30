@@ -2132,9 +2132,9 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   context->updateModifiedIndexes,
-											   context->modifiedAttrs);
-	bms_free(context->modifiedAttrs);
+											   updateCxt->updateModifiedIndexes,
+											   updateCxt->modifiedAttrs);
+	bms_free(updateCxt->modifiedAttrs);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
