@@ -156,8 +156,7 @@ typedef struct
 } PruneState;
 
 /* Local functions */
-static HTSV_Result heap_prune_satisfies_vacuum(Relation relation,
-											   PruneState *prstate,
+static HTSV_Result heap_prune_satisfies_vacuum(PruneState *prstate,
 											   HeapTuple tup,
 											   Buffer buffer);
 static inline HTSV_Result htsv_get_valid_status(int status);
@@ -2489,6 +2488,7 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		HeapTupleData	oldtup;
 		HeapTupleData	newtup;
 		Bitmapset	   *interesting_copy;
+		bool			has_external = false;
 
 		/* If the old LP is normal, the new one better be, too */
 		Assert(ItemIdIsNormal(newid));
@@ -2511,8 +2511,8 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		 * modifies it.
 		 */
 		interesting_copy = bms_copy(interesting_attrs);
-		modified = HeapDetermineModifiedColumns(rel, interesting_copy,
-												&oldtup, &newtup);
+		modified = HeapDetermineColumnsInfo(rel, interesting_copy, NULL,
+											&oldtup, &newtup, &has_external);
 		bms_free(interesting_copy);
 	}
 	else
