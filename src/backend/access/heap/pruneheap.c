@@ -156,8 +156,7 @@ typedef struct
 } PruneState;
 
 /* Local functions */
-static HTSV_Result heap_prune_satisfies_vacuum(Relation relation,
-											   PruneState *prstate,
+static HTSV_Result heap_prune_satisfies_vacuum(PruneState *prstate,
 											   HeapTuple tup,
 											   Buffer buffer);
 static inline HTSV_Result htsv_get_valid_status(int status);
@@ -168,7 +167,8 @@ static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid);
 static void heap_prune_record_redirect_with_data(PruneState *prstate,
 												 OffsetNumber offnum,
 												 OffsetNumber rdoffnum,
-												 int natts, Bitmapset *data);
+												 int natts, Bitmapset *data,
+												 bool was_normal);
 static void heap_prune_record_redirect(PruneState *prstate,
 									   OffsetNumber offnum, OffsetNumber rdoffnum,
 									   bool was_normal);
@@ -184,7 +184,8 @@ static void heap_prune_record_unchanged_lp_dead(Page page, PruneState *prstate, 
 static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
 
 static void page_verify_redirects(Page page);
-static Bitmapset *GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
+static Bitmapset *GetModifiedColumnsBitmap(Relation relation, Page page,
+										   BlockNumber blockno,
 										   OffsetNumber oldlp, OffsetNumber newlp,
 										   bool newlp_is_phot,
 										   Bitmapset *interesting_attrs);
@@ -615,10 +616,10 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		/*
 		 * If the tuple is DEAD and doesn't chain to anything else, mark it
 		 * unused or dead immediately.  Heap-only tuples can be marked unused
-		 * because there will be no index entries that point to it, but partial
-		 * heap-only tuples can only be marked dead since there might be
-		 * associated index tuples.  (If it does chain, we can only remove it
-		 * as part of pruning its chain.)
+		 * because there will be no index entries that point to it, but
+		 * partial heap-only tuples can only be marked dead since there might
+		 * be associated index tuples.  (If it does chain, we can only remove
+		 * it as part of pruning its chain.)
 		 *
 		 * We need this primarily to handle aborted HOT updates, that is,
 		 * XMIN_INVALID heap-only tuples.  Those might not be linked to by any
@@ -649,11 +650,11 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 			{
 				/*
 				 * This tuple should've been processed and removed as part of
-				 * a (P)HOT chain, so something's wrong.  To preserve evidence,
-				 * we don't dare to remove it.  We cannot leave behind a DEAD
-				 * tuple either, because that will cause VACUUM to error out.
-				 * Throwing an error with a distinct error message seems like
-				 * the least bad option.
+				 * a (P)HOT chain, so something's wrong.  To preserve
+				 * evidence, we don't dare to remove it.  We cannot leave
+				 * behind a DEAD tuple either, because that will cause VACUUM
+				 * to error out. Throwing an error with a distinct error
+				 * message seems like the least bad option.
 				 */
 				elog(ERROR, "dead heap-only tuple (%u, %d) is not linked to from any HOT chain",
 					 blockno, offnum);
@@ -809,6 +810,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		{
 			heap_page_prune_execute(buffer, false,
 									prstate.redirected, prstate.nredirected,
+									prstate.redirected_data,
 									prstate.nredirected_data,
 									prstate.redirect_data,
 									prstate.nowdead, prstate.ndead,
@@ -998,19 +1000,36 @@ htsv_get_valid_status(int status)
  *
  * Tuple visibility information is provided in prstate->htsv.
  *
- * If the item is an index-referenced tuple (i.e. not a heap-only tuple),
- * the HOT chain is pruned by removing all DEAD tuples at the start of the HOT
- * chain.  We also prune any RECENTLY_DEAD tuples preceding a DEAD tuple.
- * This is OK because a RECENTLY_DEAD tuple preceding a DEAD tuple is really
- * DEAD, our visibility test is just too coarse to detect it.
+ * If the item is an index-referenced tuple (i.e. not a heap-only or partial
+ * heap-only tuple), the HOT chain is pruned by removing all DEAD tuples at
+ * the start of the HOT chain.  We also prune any RECENTLY_DEAD tuples
+ * preceding a DEAD tuple. This is OK because a RECENTLY_DEAD tuple preceding
+ * a DEAD tuple is really DEAD, our visibility test is just too coarse to
+ * detect it.
  *
  * Pruning must never leave behind a DEAD tuple that still has tuple storage.
  * VACUUM isn't prepared to deal with that case.
  *
- * The root line pointer is redirected to the tuple immediately after the
- * latest DEAD tuple.  If all tuples in the chain are DEAD, the root line
- * pointer is marked LP_DEAD.  (This includes the case of a DEAD simple
- * tuple, which we treat as a chain of length 1.)
+ * When pruning a HOT chain the root line pointer is redirected to the tuple
+ * immediately after the latest DEAD tuple.  If all tuples in the chain are
+ * DEAD, the root line pointer is marked LP_DEAD.  (This includes the case of
+ * a DEAD simple tuple, which we treat as a chain of length 1.)
+ *
+ * PHOT pruning has more restrictions and is more complex than HOT.  The
+ * strategy cleanup is as follows:
+ * 1) Starting at the root of the PHOT chain, create an OR'd bitmap of the
+ * modified columns in the chain until you reach a tuple that is not visible
+ * to all snapshots.
+ * 2) Walk backwards, OR-ing the modified column bitmaps. Stop when the
+ * bitmaped matches the one from step (1). While walking backwards, identify
+ * "key" tuples, which are tuples where the OR'd bitmap changes as you walk
+ * backwards. If the OR'd bitmap does not include all indexed columns for the
+ * table, also include the root of the PHOT chain as a key tuple.
+ * 3) Redirect each key tuple to the next key tuple.
+ * 4)Mark all line pointers for all non-key tuples as dead. Storage can be
+ * removed for all tuples except the last one, but we must leave around the
+ * modified columns bitmaps for all key tuples except the first one (i.e.,
+ * the new root of the chain).
  *
  * We don't actually change the page here. We just add entries to the arrays in
  * prstate showing the changes to be made.  Items to be redirected are added
@@ -1023,8 +1042,6 @@ htsv_get_valid_status(int status)
  * fate of each tuple, ie. whether it's going to be removed, redirected or
  * left unchanged, and the heap_prune_record_*() subroutines update PruneState
  * based on that outcome.
- *
- * XXX: Update this description for PHOT.
  */
 static void
 heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
@@ -1035,9 +1052,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 	ItemId		rootlp;
 	OffsetNumber offnum;
 	OffsetNumber chainitems[MaxHeapTuplesPerPage];
-	bool		phot_items[MaxHeapTuplesPerPage];
-
-	memset(phot_items, false, sizeof(phot_items));
+	bool		phot_items[MaxHeapTuplesPerPage] = {false};
 
 	/*
 	 * After traversing the HOT chain, ndeadchain is the index in chainitems
@@ -1083,11 +1098,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		Assert(!ItemIdIsDead(lp));
 
 		/*
-		 * If we are looking at the redirected root line pointer, jump to the
-		 * first normal tuple in the chain.  If we find a redirect somewhere
-		 * else, stop --- it must not be same chain.
-		 *
-		 * XXX: update this comment for PHOT
+		 * Create a record of the partially redirected items in the chain.
 		 */
 		if (ItemIdIsRedirected(lp))
 		{
@@ -1095,11 +1106,12 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 			offnum = ItemIdGetRedirect(lp);
 
 			if (rootlp == lp)
-				phot_items[nchain] = ItemIdIsPartialHotRedirected(dp, lp);
+				phot_items[nchain] = ItemIdIsPartialHotRedirected(page, lp);
 			else
 			{
-				ItemId prev = PageGetItemId(dp, chainitems[nchain - 2]);
-				phot_items[nchain] = ItemIdIsPartialHotRedirected(dp, prev);
+				ItemId		prev = PageGetItemId(page, chainitems[nchain - 2]);
+
+				phot_items[nchain] = ItemIdIsPartialHotRedirected(page, prev);
 			}
 
 			nchain++;
@@ -1111,7 +1123,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
 		/*
-		 * Check the tuple XMIN against prior XMAX, if any
+		 * Check the tuple XMIN against prior XMAX, if any.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!TransactionIdEquals(HeapTupleHeaderGetXmin(htup), priorXmax))
@@ -1131,11 +1143,11 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		{
 			case HEAPTUPLE_DEAD:
 
-				/* Remember the last DEAD tuple seen */
+				/* Remember the last DEAD tuple seen. */
 				ndeadchain = nchain;
 				HeapTupleHeaderAdvanceConflictHorizon(htup,
 													  &prstate->latest_xid_removed);
-				/* Advance to next chain member */
+				/* Advance to next chain member. */
 				break;
 
 			case HEAPTUPLE_RECENTLY_DEAD:
@@ -1170,10 +1182,10 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 
 		/*
 		 * If the tuple is not (P)HOT-updated, then we are at the end of this
-		 * (P)HOT-update chain.
+		 * chain.
 		 */
 		if (!HeapTupleHeaderIsHotUpdated(htup) &&
-			!HeapTupleHeaderIsNotPartialHotUpdated(htup))
+			!HeapTupleHeaderIsPartialHotUpdated(htup))
 			goto process_chain;
 
 		/* (P)HOT implies it can't have moved to different partition */
@@ -1217,7 +1229,10 @@ process_chain:
 			i++;
 		}
 		for (; i < nchain; i++)
-			heap_prune_record_unchanged_lp_normal(page, prstate, chainitems[i]);
+			if (ItemIdIsRedirected(PageGetItemId(page, chainitems[i])))
+				heap_prune_record_unchanged_lp_redirect(prstate, chainitems[i]);
+			else
+				heap_prune_record_unchanged_lp_normal(page, prstate, chainitems[i]);
 	}
 	else if (ndeadchain == nchain)
 	{
@@ -1243,12 +1258,12 @@ process_chain:
 		int			lastoff = chainitems[nchain - 1];
 		int			nkeys = 0;
 		bool		has_phot = phot_items[nchain - 1];
-		bool		chain_dead = (lastoff == chainitems[ndeadchain - 1]);
+		bool		chain_dead = false;
 
 		/*
-		 * Consider the last tuple in the chain first, we know it isn't
-		 * dead but is it PHOT?  If it is, we'll need to record a few things
-		 * for later on.
+		 * Consider the last tuple in the chain first, we know it isn't dead
+		 * but is it PHOT?  If it is, we'll need to record a few things for
+		 * later on.
 		 */
 		if (!chain_dead && has_phot && nchain > 1)
 		{
@@ -1256,8 +1271,8 @@ process_chain:
 			interesting_attrs =
 				bms_add_range(NULL,
 							  1 - FirstLowInvalidHeapAttributeNumber,
-			   				  natts - FirstLowInvalidHeapAttributeNumber);
-			intermediate = GetModifiedColumnsBitmap(relation, buffer, dp,
+							  natts - FirstLowInvalidHeapAttributeNumber);
+			intermediate = GetModifiedColumnsBitmap(relation, page, blockno,
 													chainitems[nchain - 2],
 													lastoff, true,
 													interesting_attrs);
@@ -1270,35 +1285,38 @@ process_chain:
 		for (int i = nchain - 2; i > 0; i--)
 		{
 			/*
-			 * If the rest of the chain is dead or we've only seen HOT items so
-			 * far, just mark the item as dead/unused and move on.  We are
+			 * If the rest of the chain is dead or we've only seen HOT items
+			 * so far, just mark the item as dead/unused and move on.  We are
 			 * careful to do this before GetModifiedColumnsBitmap() so that we
-			 * avoid the expense of that call whenever possible.  Presumably we
-			 * could also mark PHOT items as unused if we knew they no longer
-			 * had index entries, but that is not strictly necessary, and the
-			 * benefit might outweigh the expense.
+			 * avoid the expense of that call whenever possible.  Presumably
+			 * we could also mark PHOT items as unused if we knew they no
+			 * longer had index entries, but that is not strictly necessary,
+			 * and the benefit might outweigh the expense.
 			 */
 			if (chain_dead || (!has_phot && !phot_items[i]))
 			{
 				if (phot_items[i])
 					heap_prune_record_dead(prstate, chainitems[i], true);
 				else
+				{
 					if (i >= ndeadchain)
 						/* These are normal, unchanged tuples */
 						heap_prune_record_unchanged_lp_normal(page, prstate, chainitems[i]);
 					else
 						heap_prune_record_unused(prstate, chainitems[i], true);
+				}
 				continue;
 			}
 
 			/*
 			 * We wait until the last minute to generate the bitmap of indexed
-			 * attributes so that we don't incur the expense in the fast paths.
+			 * attributes so that we don't incur the expense in the fast
+			 * paths.
 			 *
 			 * Ideally we'd be able to use RelationGetIndexAttrBitmap() to get
-			 * just the indexed columns here.  However, there's a deadlock risk
-			 * with the buffer lock we already have.  If we did use such a
-			 * function, we'd also have to prepare for the possibility that
+			 * just the indexed columns here.  However, there's a deadlock
+			 * risk with the buffer lock we already have.  If we did use such
+			 * a function, we'd also have to prepare for the possibility that
 			 * this bitmap will be empty.
 			 */
 			if (interesting_attrs == NULL)
@@ -1312,7 +1330,7 @@ process_chain:
 			 * the current tuple and the preceding one in the chain.
 			 */
 			bms_free(modified);
-			modified = GetModifiedColumnsBitmap(relation, buffer, dp,
+			modified = GetModifiedColumnsBitmap(relation, page, blockno,
 												chainitems[i - 1],
 												chainitems[i],
 												phot_items[i],
@@ -1322,8 +1340,8 @@ process_chain:
 			 * If there are definitely no index entries pointing to this item,
 			 * then we can just mark it unused.  This is unlikely to ever be
 			 * true for now, but in the future we might set interesting_attrs
-			 * to the set of indexed columns (in which case it will be far more
-			 * likely).
+			 * to the set of indexed columns (in which case it will be far
+			 * more likely).
 			 */
 			if (bms_is_empty(modified))
 			{
@@ -1336,14 +1354,15 @@ process_chain:
 			}
 
 			/*
-			 * If this is the first PHOT item that we've encountered that still
-			 * has corresponding index entries, redirect it to the last item in
-			 * the chain (which must be heap-only).  This item must also be a
-			 * key item for PHOT, too.
+			 * If this is the first PHOT item that we've encountered that
+			 * still has corresponding index entries, redirect it to the last
+			 * item in the chain (which must be heap-only).  This item must
+			 * also be a key item for PHOT, too.
 			 */
 			if (phot_items[i] && !has_phot)
 			{
-				heap_prune_record_redirect(prstate, chainitems[i], lastoff);
+				heap_prune_record_redirect(prstate, chainitems[i], lastoff,
+										   ItemIdIsNormal(rootlp));
 				keyitems[nkeys++] = chainitems[i];
 				intermediate = modified;
 				modified_attrs = bms_copy(modified);
@@ -1368,11 +1387,11 @@ process_chain:
 			}
 
 			/*
-			 * At this point, we know that we've found a PHOT item somewhere in
-			 * the middle of a chain that we already know has PHOT items.  If
-			 * the set of modified columns between this item and the preceding
-			 * item fit within our top-level modified columns bitmap for the
-			 * chain, we don't need to keep the item around.
+			 * At this point, we know that we've found a PHOT item somewhere
+			 * in the middle of a chain that we already know has PHOT items.
+			 * If the set of modified columns between this item and the
+			 * preceding item fit within our top-level modified columns bitmap
+			 * for the chain, we don't need to keep the item around.
 			 */
 			if (bms_is_subset(modified, modified_attrs))
 			{
@@ -1382,13 +1401,14 @@ process_chain:
 			}
 
 			/*
-			 * If all else has failed, we must have a new key item.  Mark it as
-			 * redirected-with-data and store the modified-columns bitmap in the
-			 * tuple storage.
+			 * If all else has failed, we must have a new key item.  Mark it
+			 * as redirected-with-data and store the modified-columns bitmap
+			 * in the tuple storage.
 			 */
 			heap_prune_record_redirect_with_data(prstate, chainitems[i],
 												 keyitems[nkeys - 1],
-												 natts, intermediate);
+												 natts, intermediate,
+												 ItemIdIsNormal(rootlp));
 			keyitems[nkeys++] = chainitems[i];
 			modified_attrs = bms_union(modified_attrs, modified);
 			bms_free(intermediate);
@@ -1408,7 +1428,8 @@ process_chain:
 		else if (nkeys > 0)
 			heap_prune_record_redirect_with_data(prstate, rootoffnum,
 												 keyitems[nkeys - 1], natts,
-												 intermediate);
+												 intermediate,
+												 ItemIdIsNormal(rootlp));
 		else
 			heap_prune_record_redirect(prstate, rootoffnum,
 									   chainitems[ndeadchain],
@@ -1441,10 +1462,16 @@ heap_prune_record_prunable(PruneState *prstate, TransactionId xid)
 static void
 heap_prune_record_redirect_with_data(PruneState *prstate,
 									 OffsetNumber offnum, OffsetNumber rdoffnum,
-									 int natts, Bitmapset *data)
+									 int natts, Bitmapset *data, bool was_normal)
 {
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
+	prstate->processed[rdoffnum] = true;
+
+	/*
+	 * Do not mark the redirect target here.  It needs to be counted
+	 * separately as an unchanged tuple.
+	 */
 
 	Assert(prstate->nredirected_data < MaxHeapTuplesPerPage);
 	prstate->redirected_data[prstate->nredirected_data * 2] = offnum;
@@ -1452,9 +1479,16 @@ heap_prune_record_redirect_with_data(PruneState *prstate,
 	StoreModifiedColumnsBitmap(data, natts,
 							   &prstate->redirect_data[prstate->nredirected_data]);
 	prstate->nredirected_data++;
-	Assert(!prstate->marked[offnum]);
-	prstate->marked[offnum] = true;
-	prstate->marked[rdoffnum] = true;
+
+	/*
+	 * If the root entry had been a normal tuple, we are deleting it, so count
+	 * it in the result.  But changing a redirect (even to DEAD state) doesn't
+	 * count.
+	 */
+	if (was_normal)
+		prstate->ndeleted++;
+
+	prstate->hastup = true;
 }
 
 /* Record line pointer to be redirected */
@@ -1817,10 +1851,12 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
 
 	/* Shouldn't be called unless there's something to do */
-	Assert(nredirected > 0 || ndead > 0 || nunused > 0);
+	Assert(nredirected > 0 || nredirected_data > 0 || ndead > 0 ||
+		   nunused > 0);
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
-	Assert(!lp_truncate_only || (nredirected == 0 && ndead == 0));
+	Assert(!lp_truncate_only || (nredirected == 0 && nredirected_data == 0 &&
+								 ndead == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -1879,14 +1915,68 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		ItemIdSetRedirect(fromlp, tooff);
 	}
 
+	/* Update all redirected with data line pointers used in PHOT chains */
 	offnum = redirected_data;
-	for (i = 0; i < nredirected_data; i++)
+	for (int i = 0; i < nredirected_data; i++)
 	{
 		OffsetNumber fromoff = *offnum++;
 		OffsetNumber tooff = *offnum++;
 		ItemId		fromlp = PageGetItemId(page, fromoff);
 		OffsetNumber origoff = ItemIdGetOffset(fromlp);
+		ItemId		tolp PG_USED_FOR_ASSERTS_ONLY;
 
+		if (!ItemIdHasStorage(fromlp))
+		{
+			ItemId		intermediate = PageGetItemId(page, origoff);
+
+			origoff = ItemIdGetOffset(intermediate);
+			fromlp->lp_off = origoff;
+		}
+
+#ifdef USE_ASSERT_CHECKING
+
+		/*
+		 * Any existing item that we set as an LP_REDIRECT (any 'from' item)
+		 * must be the first item from a HOT chain.
+		 */
+
+		if (!ItemIdIsRedirected(fromlp))
+		{
+			/*
+			 * Setup a LP_REDIRECT from a normal tuple to the new partial
+			 * heap-only tuple.
+			 */
+			Assert(ItemIdHasStorage(fromlp) && ItemIdIsNormal(fromlp));
+			htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+			Assert(!HeapTupleHeaderIsHeapOnly(htup));
+		}
+		else
+		{
+			/* We shouldn't need to redundantly set the redirect */
+			Assert(ItemIdGetRedirect(fromlp) != tooff);
+
+			if (ItemIdHasStorage(fromlp))
+			{
+
+				htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+				Assert(!HeapTupleHeaderIsPartialHeapOnly(htup));
+			}
+		}
+
+		/*
+		 * The item that we're about to set as an LP_REDIRECT (the 'from'
+		 * item) will point to an existing item (the 'to' item) that is either
+		 * a heap-only tuple, or a partial heap-only tuple.
+		 *
+		 * This check may miss problems, e.g. the target of a redirect could
+		 * be marked as unused subsequently. The page_verify_redirects() check
+		 * below will catch such problems.
+		 */
+		tolp = PageGetItemId(page, tooff);
+		Assert(ItemIdHasStorage(tolp) && ItemIdIsNormal(tolp));
+		htup = (HeapTupleHeader) PageGetItem(page, tolp);
+		Assert(HeapTupleHeaderIsPartialHeapOnly(htup));
+#endif
 		ItemIdSetRedirectWithData(fromlp, tooff);
 
 		memcpy((char *) page + origoff,
@@ -1910,7 +2000,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		 * heap-only tuple item, though. (It's not clear how much of a problem
 		 * that would be, but there is no reason to allow it.)
 		 */
-		if (ItemIdHasStorage(lp))
+		if (ItemIdHasStorage(lp) && !ItemIdIsPartialHotRedirected(page, lp))
 		{
 			Assert(ItemIdIsNormal(lp));
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
@@ -1954,7 +2044,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			{
 				Assert(ItemIdHasStorage(lp) && ItemIdIsNormal(lp));
 				htup = (HeapTupleHeader) PageGetItem(page, lp);
-				Assert(HeapTupleHeaderIsHeapOnly(htup));
+				Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+					   HeapTupleHeaderIsPartialHeapOnly(htup));
 			}
 			else
 				Assert(ItemIdIsUsed(lp));
@@ -2021,10 +2112,14 @@ page_verify_redirects(Page page)
 		targitem = PageGetItemId(page, targoff);
 
 		Assert(ItemIdIsUsed(targitem));
-		Assert(ItemIdIsNormal(targitem));
-		Assert(ItemIdHasStorage(targitem));
-		htup = (HeapTupleHeader) PageGetItem(page, targitem);
-		Assert(HeapTupleHeaderIsHeapOnly(htup));
+		if (!ItemIdIsPartialHotRedirected(page, targitem))
+		{
+			Assert(ItemIdIsNormal(targitem));
+			Assert(ItemIdHasStorage(targitem));
+			htup = (HeapTupleHeader) PageGetItem(page, targitem);
+			Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+				   HeapTupleHeaderIsPartialHeapOnly(htup));
+		}
 	}
 #endif
 }
@@ -2444,14 +2539,28 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	recptr = XLogInsert(RM_HEAP2_ID, info);
 
 	PageSetLSN(BufferGetPage(buffer), recptr);
+}
 
 /*
- * GetModifiedColumnsBitmap
+ * Determine the set of columns that were modified between two tuples.
  *
- * XXX: document this
+ * The PHOT update path needs to know what changed between tuples in order to
+ * update only the indexes that need it. This function will either create a
+ * bitmap by examining the old and new tuples or return a bitmap that was
+ * previously stored in the page.
+ *
+ * When the new tuple is heap-only and the previous was redirected it is not
+ * possible to determine what columns were modified. In this case, the function
+ * returns an empty bitmap (NULL) which should be okay because in this case the
+ * PHOT path does not require the modified columns data.
+ *
+ * The other two cases are a) when the old tuple is normal and b) when the old
+ * tuple redirected-with-data. When the old tuple is normal we construct a new
+ * bitmap using HeapDetermineColumnsInfo. When the old tuple is redirected-with-
+ * data we simply return the bitmap that was stored in the page.
  */
 static Bitmapset *
-GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
+GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 						 OffsetNumber oldlp, OffsetNumber newlp,
 						 bool newlp_is_phot,
 						 Bitmapset *interesting_attrs)
@@ -2460,12 +2569,10 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 	ItemId		oldid;
 	ItemId		newid;
 	Oid			relid;
-	BlockNumber	blkno;
 
-	relid = RelationGetRelid(rel);
-	oldid = PageGetItemId(dp, oldlp);
-	newid = PageGetItemId(dp, newlp);
-	blkno = BufferGetBlockNumber(buffer);
+	relid = RelationGetRelid(relation);
+	oldid = PageGetItemId(page, oldlp);
+	newid = PageGetItemId(page, newlp);
 
 	/*
 	 * If all the indexes are gone, there's no way that there are any modified
@@ -2477,33 +2584,34 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 	/*
 	 * If the new tuple is a heap-only tuple but the previous one was already
 	 * redirected, there's no way to get the modified columns data between the
-	 * two.  This should be alright because we cannot get into a situation where
-	 * this missing data would be necessary for PHOT, even if we just created a
-	 * new index for a previously unindexed column.
+	 * two.  This should be alright because we cannot get into a situation
+	 * where this missing data would be necessary for PHOT, even if we just
+	 * created a new index for a previously unindexed column.
 	 */
 	if (!newlp_is_phot && !ItemIdIsNormal(oldid))
 		return NULL;
 
 	if (ItemIdIsNormal(oldid))
 	{
-		HeapTupleData	oldtup;
-		HeapTupleData	newtup;
-		Bitmapset	   *interesting_copy;
+		HeapTupleData oldtup;
+		HeapTupleData newtup;
+		Bitmapset  *interesting_copy;
+		bool		has_external = false;
 
 		/* If the old LP is normal, the new one better be, too */
 		Assert(ItemIdIsNormal(newid));
 
 		/* Prepare old tuple */
 		oldtup.t_tableOid = relid;
-		oldtup.t_data = (HeapTupleHeader) PageGetItem(dp, oldid);
+		oldtup.t_data = (HeapTupleHeader) PageGetItem(page, oldid);
 		oldtup.t_len = ItemIdGetLength(oldid);
-		ItemPointerSet(&oldtup.t_self, blkno, oldlp);
+		ItemPointerSet(&oldtup.t_self, blockno, oldlp);
 
 		/* Prepare new tuple */
 		newtup.t_tableOid = relid;
-		newtup.t_data = (HeapTupleHeader) PageGetItem(dp, newid);
+		newtup.t_data = (HeapTupleHeader) PageGetItem(page, newid);
 		newtup.t_len = ItemIdGetLength(newid);
-		ItemPointerSet(&newtup.t_self, blkno, newlp);
+		ItemPointerSet(&newtup.t_self, blockno, newlp);
 
 		/*
 		 * Build the return Bitmapset.  Note that we must make a copy of
@@ -2511,29 +2619,29 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 		 * modifies it.
 		 */
 		interesting_copy = bms_copy(interesting_attrs);
-		modified = HeapDetermineModifiedColumns(rel, interesting_copy,
-												&oldtup, &newtup);
+		modified = HeapDetermineColumnsInfo(relation, interesting_copy, NULL,
+											&oldtup, &newtup, &has_external);
 		bms_free(interesting_copy);
 	}
 	else
 	{
-		bits8  *bits;
-		int		len;
+		bits8	   *bits;
+		int			len;
 
 		/* If the old LP isn't normal, it better be redirected-with-data */
-		Assert(ItemIdIsPartialHotRedirected(dp, oldid));
+		Assert(ItemIdIsPartialHotRedirected(page, oldid));
 
 		/* Find the bitmap on the page */
-		len = ItemIdGetRedirectDataLength(dp, oldid);
+		len = ItemIdGetRedirectDataLength(page, oldid);
 		len -= sizeof(RedirectHeaderData);
-		bits = (bits8 *)ItemIdGetRedirectData(dp, oldid);
+		bits = (bits8 *) ItemIdGetRedirectData(page, oldid);
 
 		/* Build the return Bitmapset */
 		for (int i = 0; i < len * 8; i++)
 		{
 			if (bits[i / 8] & (1 << (i % 8)))
 				modified = bms_add_member(modified,
-							   i - FirstLowInvalidHeapAttributeNumber);
+										  i - FirstLowInvalidHeapAttributeNumber);
 		}
 
 		/* The indexed columns might've changed */
@@ -2544,32 +2652,32 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 }
 
 /*
- * StoreModifiedColumnsBitmap
- *
- * TODO: describe and WAL-log!
+ * Encode the bitmap of modified columns into a format that can be stored in
+ * the page.  This format is only decoded in GetModifiedColumnsBitmap.
  */
 static void
 StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 {
-	int		attr;
-	int		len;
+	int			attridx = -1;
+	int			len;
 
 	/* Prepare some memory */
 	len = sizeof(RedirectHeaderData) + ((natts + 7) / 8);
 	*bits = (bits8 *) palloc0(len);
 
 	/* Adjust the header */
-	((RedirectHeader) *bits)->rlp_type = RLP_PHOT;
-	((RedirectHeader) *bits)->rlp_len = len;
+	((RedirectHeader) * bits)->rlp_type = RLP_PHOT;
+	((RedirectHeader) * bits)->rlp_len = len;
 
 	/* Scooch forward to the bitmap portion */
 	*bits = (bits8 *) ((char *) *bits + sizeof(RedirectHeaderData));
 
 	/* Store the bitmap */
-	while ((attr = bms_first_member(data)) != -1)
+	while ((attridx = bms_next_member(data, attridx)) >= 0)
 	{
-		attr += FirstLowInvalidHeapAttributeNumber;
-		(*bits)[attr / 8] |= (1 << (attr % 8));
+		AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
+
+		(*bits)[attrnum / 8] |= (1 << (attrnum % 8));
 	}
 
 	/* Reset the pointer back to the header */

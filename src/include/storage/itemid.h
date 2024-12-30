@@ -62,9 +62,9 @@ typedef struct RedirectHeaderData
 {
 	uint16		rlp_type:4,		/* type of redirect data */
 				rlp_len:12;		/* byte length of data, including header */
-} RedirectHeaderData;
+}			RedirectHeaderData;
 
-typedef RedirectHeaderData *RedirectHeader;
+typedef RedirectHeaderData * RedirectHeader;
 
 /*
  * rlp_type has these possible states.  The maximum type identifier is 15, which

@@ -386,9 +386,9 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
  * count a tuple update
  */
 void
-pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
+pgstat_count_heap_update(Relation rel, bool hot, bool phot, bool newpage)
 {
-	Assert(!(hot && newpage));
+	Assert(!((hot || phot) && newpage));
 
 	if (pgstat_should_count_relation(rel))
 	{
@@ -401,7 +401,7 @@ pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
 		 * tuples_hot_updated and tuples_newpage_updated counters are
 		 * nontransactional, so just advance them
 		 */
-		if (hot)
+		if (hot || phot)
 			pgstat_info->counts.tuples_hot_updated++;
 		else if (newpage)
 			pgstat_info->counts.tuples_newpage_updated++;

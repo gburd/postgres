@@ -206,10 +206,7 @@ heap_page_items(PG_FUNCTION_ARGS)
 		 * data outside the page passed to us. The page could be corrupt in
 		 * many other ways, but at least we won't crash.
 		 */
-		if (ItemIdHasStorage(id)) // &&
-			//lp_len >= MinHeapTupleSize &&
-			//lp_offset == MAXALIGN(lp_offset) &&
-			//lp_offset + lp_len <= raw_page_size)
+		if (ItemIdHasStorage(id))
 		{
 			HeapTupleHeader tuphdr;
 			bytea	   *tuple_data_bytea;
@@ -269,9 +266,6 @@ heap_page_items(PG_FUNCTION_ARGS)
 				tuphdr->t_hoff <= lp_len &&
 				tuphdr->t_hoff == MAXALIGN(tuphdr->t_hoff))
 			{
-				int			tuple_data_len;
-				bytea	   *tuple_data_bytea;
-
 				/* Copy null bitmask and OID, if present */
 				if (tuphdr->t_infomask & HEAP_HASNULL)
 				{

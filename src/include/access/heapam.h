@@ -116,7 +116,7 @@ typedef struct IndexFetchHeapData
 	IndexFetchTableData xs_base;	/* AM independent part of the descriptor */
 
 	/* indexed attrs for following PHOT chains */
-	Bitmapset *indexed_attrs;
+	Bitmapset  *indexed_attrs;
 
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
@@ -335,7 +335,7 @@ extern TM_Result heap_update(Relation relation, ItemPointer otid,
 							 CommandId cid, Snapshot crosscheck, bool wait,
 							 struct TM_FailureData *tmfd, LockTupleMode *lockmode,
 							 TU_UpdateIndexes *update_indexes,
-							 struct TM_FailureData *tmfd, LockTupleMode *lockmode, Bitmapset **modified_attrs);
+							 Bitmapset **modified_attrs);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -374,11 +374,11 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 
 extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
-extern static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
-												  Bitmapset *interesting_cols,
-												  Bitmapset *external_cols,
-												  HeapTuple oldtup, HeapTuple newtup,
-												  bool *has_external);
+extern Bitmapset *HeapDetermineColumnsInfo(Relation relation,
+										   Bitmapset *interesting_cols,
+										   Bitmapset *external_cols,
+										   HeapTuple oldtup, HeapTuple newtup,
+										   bool *has_external);
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;

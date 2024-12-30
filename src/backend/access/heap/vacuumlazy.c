@@ -3616,10 +3616,15 @@ heap_page_is_all_visible(LVRelState *vacrel, Buffer buf,
 	*visibility_cutoff_xid = InvalidTransactionId;
 	*all_frozen = true;
 
+	/*
+	 * The intentionally similar logic in heap_page_prune_and_freeze() walks
+	 * the list of item pointers backwards so as to exploit the benefits of
+	 * CPU cache prefetching, mimic that here for consistency.
+	 */
 	maxoff = PageGetMaxOffsetNumber(page);
-	for (offnum = FirstOffsetNumber;
-		 offnum <= maxoff && all_visible;
-		 offnum = OffsetNumberNext(offnum))
+	for (offnum = maxoff;
+		 offnum >= FirstOffsetNumber && all_visible;
+		 offnum = OffsetNumberPrev(offnum))
 	{
 		ItemId		itemid;
 		HeapTupleData tuple;
@@ -3634,8 +3639,6 @@ heap_page_is_all_visible(LVRelState *vacrel, Buffer buf,
 		/* Unused or redirect line pointers are of no interest */
 		if (!ItemIdIsUsed(itemid) || ItemIdIsRedirected(itemid))
 			continue;
-
-		ItemPointerSet(&(tuple.t_self), blockno, offnum);
 
 		/*
 		 * Dead line pointers can have index pointers pointing to them. So
@@ -3653,6 +3656,7 @@ heap_page_is_all_visible(LVRelState *vacrel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(vacrel->rel);
+		ItemPointerSet(&(tuple.t_self), blockno, offnum);
 
 		switch (HeapTupleSatisfiesVacuum(&tuple, vacrel->cutoffs.OldestXmin,
 										 buf))
@@ -3661,7 +3665,12 @@ heap_page_is_all_visible(LVRelState *vacrel, Buffer buf,
 				{
 					TransactionId xmin;
 
-					/* Check comments in lazy_scan_prune. */
+					if (HeapTupleHeaderIsPartialHeapOnly(tuple.t_data) ||
+						(!HeapTupleHeaderIsHeapOnly(tuple.t_data) &&
+						 HeapTupleHeaderIsPartialHotUpdated(tuple.t_data)))
+						continue;
+
+					/* Check comments in heap_page_prune_and_freeze(). */
 					if (!HeapTupleHeaderXminCommitted(tuple.t_data))
 					{
 						all_visible = false;
