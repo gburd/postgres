@@ -1,0 +1,156 @@
+-- Create a function to measure HOT updates
+CREATE OR REPLACE FUNCTION check_hot_updates(
+    expected INT,
+    p_table_name TEXT DEFAULT 't',
+    p_schema_name TEXT DEFAULT current_schema()
+)
+RETURNS TABLE (
+    total_updates BIGINT,
+    hot_updates BIGINT,
+    hot_update_percentage NUMERIC,
+    matches_expected BOOLEAN
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_relid oid;
+    v_qualified_name TEXT;
+    v_hot_updates BIGINT;
+    v_updates BIGINT;
+    v_xact_hot_updates BIGINT;
+    v_xact_updates BIGINT;
+BEGIN
+
+    -- We need to wait for statistics to update
+    PERFORM pg_stat_force_next_flush();
+
+    -- Construct qualified name
+    v_qualified_name := quote_ident(p_schema_name) || '.' || quote_ident(p_table_name);
+
+    -- Get the OID using regclass
+    v_relid := v_qualified_name::regclass;
+
+    IF v_relid IS NULL THEN
+        RAISE EXCEPTION 'Table %.% not found', p_schema_name, p_table_name;
+    END IF;
+
+    -- Get cumulative stats
+    v_hot_updates := COALESCE(pg_stat_get_tuples_hot_updated(v_relid), 0);
+    v_updates := COALESCE(pg_stat_get_tuples_updated(v_relid), 0);
+
+    -- Get current transaction stats
+    v_xact_hot_updates := COALESCE(pg_stat_get_xact_tuples_hot_updated(v_relid), 0);
+    v_xact_updates := COALESCE(pg_stat_get_xact_tuples_updated(v_relid), 0);
+
+    -- Combine stats
+    v_hot_updates := v_hot_updates + v_xact_hot_updates;
+    v_updates := v_updates + v_xact_updates;
+
+    RETURN QUERY
+    SELECT
+        v_updates::BIGINT as total_updates,
+        v_hot_updates::BIGINT as hot_updates,
+        CASE
+            WHEN v_updates > 0 THEN
+                ROUND((v_hot_updates::numeric / v_updates::numeric * 100)::numeric, 2)
+            ELSE 0
+        END as hot_update_percentage,
+        (v_hot_updates = expected)::BOOLEAN as matches_expected;
+END;
+$$;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+CREATE TABLE t(a INT, b INT, c INT) WITH (autovacuum_enabled = off, fillfactor = 70);
+INSERT INTO t VALUES (1, 1, 1);
+SET SESSION enable_seqscan = OFF;
+SET SESSION enable_bitmapscan = OFF;
+-- No indexes on the relation yet, this update should not be HOT.
+UPDATE t SET a = 2;
+SELECT * FROM check_hot_updates(0);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             1 |           0 |                  0.00 | t
+(1 row)
+
+-- Add an index.
+CREATE INDEX t_a_idx ON t(a);
+-- Update and change the indexed value, should not be HOT.
+UPDATE t SET a = 3;
+SELECT * FROM check_hot_updates(0);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             2 |           0 |                  0.00 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE a = 3;
+          QUERY PLAN           
+-------------------------------
+ Index Scan using t_a_idx on t
+   Index Cond: (a = 3)
+(2 rows)
+
+SELECT * FROM t WHERE a = 3;
+ a | b | c 
+---+---+---
+ 3 | 1 | 1
+(1 row)
+
+-- Add an index.
+CREATE INDEX t_b_idx ON t(a, b);
+-- All indexes will appear to have changed, so not a HOT update.
+UPDATE t SET a = 4;
+SELECT * FROM check_hot_updates(0);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             3 |           0 |                  0.00 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE a = 4 AND b = 1;
+             QUERY PLAN              
+-------------------------------------
+ Index Scan using t_b_idx on t
+   Index Cond: ((a = 4) AND (b = 1))
+(2 rows)
+
+SELECT * FROM t WHERE a = 4 AND b = 1;
+ a | b | c 
+---+---+---
+ 4 | 1 | 1
+(1 row)
+
+-- No indexes modified, so finally a HOT update.
+UPDATE t SET c = a;
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             4 |           1 |                 25.00 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE a = 4 AND b = 1;
+             QUERY PLAN              
+-------------------------------------
+ Index Scan using t_b_idx on t
+   Index Cond: ((a = 4) AND (b = 1))
+(2 rows)
+
+SELECT * FROM t WHERE a = 4 AND b = 1;
+ a | b | c 
+---+---+---
+ 4 | 1 | 4
+(1 row)
+
+-- One index modified, a partially HOT (PHOT) update.
+UPDATE t SET b = a;
+SELECT * FROM check_hot_updates(2);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             5 |           2 |                 20.00 | t
+(1 row)
+
+VACUUM ANALYZE t;
+DROP TABLE t;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- Clean up
+DROP FUNCTION check_hot_updates(int, text, text);

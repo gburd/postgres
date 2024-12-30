@@ -558,7 +558,7 @@ HeapTupleHeaderClearHotUpdated(HeapTupleHeaderData *tup)
 }
 
 static inline bool
-HeapTupleHeaderIsHeapOnly(const HeapTupleHeaderData *tup) \
+HeapTupleHeaderIsHeapOnly(const HeapTupleHeaderData *tup)
 {
 	return (tup->t_infomask2 & HEAP_ONLY_TUPLE) != 0;
 }
@@ -575,52 +575,48 @@ HeapTupleHeaderClearHeapOnly(HeapTupleHeaderData *tup)
 	tup->t_infomask2 &= ~HEAP_ONLY_TUPLE;
 }
 
-#define HeapTupleHeaderIsPartialHotUpdated(tup) \
-( \
-  ((tup)->t_infomask2 & HEAP_PHOT_UPDATED) != 0 && \
-  ((tup)->t_infomask & HEAP_XMAX_INVALID) == 0 && \
-  !HeapTupleHeaderXminInvalid(tup) \
-)
+static inline bool
+HeapTupleHeaderIsPartialHotUpdated(HeapTupleHeaderData *tup)
+{
+	return (tup->t_infomask2 & HEAP_PHOT_UPDATED) != 0 &&
+		(tup->t_infomask & HEAP_XMAX_INVALID) == 0 &&
+		!HeapTupleHeaderXminInvalid(tup);
+}
 
-#define HeapTupleHeaderSetPartialHotUpdated(tup) \
-( \
-  (tup)->t_infomask2 |= HEAP_PHOT_UPDATED \
-)
+static inline void
+HeapTupleHeaderSetPartialHotUpdated(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 |= HEAP_PHOT_UPDATED;
+}
 
-#define HeapTupleHeaderClearPartialHotUpdated(tup) \
-( \
-  (tup)->t_infomask2 &= ~HEAP_PHOT_UPDATED \
-)
+static inline void
+HeapTupleHeaderClearPartialHotUpdated(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 &= ~HEAP_PHOT_UPDATED;
+}
 
-#define HeapTupleHeaderIsPartialHeapOnly(tup) \
-( \
-  ((tup)->t_infomask2 & HEAP_PHOT_TUPLE) != 0 \
-)
+static inline bool
+HeapTupleHeaderIsPartialHeapOnly(HeapTupleHeaderData *tup)
+{
+	return (tup->t_infomask2 & HEAP_PHOT_TUPLE) != 0;
+}
 
-#define HeapTupleHeaderSetPartialHeapOnly(tup) \
-( \
-  (tup)->t_infomask2 |= HEAP_PHOT_TUPLE \
-)
+static inline void
+HeapTupleHeaderSetPartialHeapOnly(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 |= HEAP_PHOT_TUPLE;
+}
 
-#define HeapTupleHeaderClearPartialHeapOnly(tup) \
-( \
-  (tup)->t_infomask2 &= ~HEAP_PHOT_TUPLE \
-)
+static inline void
+HeapTupleHeaderClearPartialHeapOnly(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 &= ~HEAP_PHOT_TUPLE;
+}
 
-#define HeapTupleHeaderHasMatch(tup) \
-( \
-  ((tup)->t_infomask2 & HEAP_TUPLE_HAS_MATCH) != 0 \
-)
-
-#define HeapTupleHeaderSetMatch(tup) \
-( \
-  (tup)->t_infomask2 |= HEAP_TUPLE_HAS_MATCH \
-)
-
-#define HeapTupleHeaderClearMatch(tup) \
-( \
-  (tup)->t_infomask2 &= ~HEAP_TUPLE_HAS_MATCH \
-)
+/*
+ * These are used with both HeapTuple and MinimalTuple, so they must be
+ * macros.
+ */
 
 #define HeapTupleHeaderGetNatts(tup) \
 	((tup)->t_infomask2 & HEAP_NATTS_MASK)
@@ -848,23 +844,41 @@ HeapTupleClearHeapOnly(const HeapTupleData *tuple)
 	HeapTupleHeaderClearHeapOnly(tuple->t_data);
 }
 
-#define HeapTupleIsPartialHotUpdated(tuple) \
-		HeapTupleHeaderIsPartialHotUpdated((tuple)->t_data)
+static inline bool
+HeapTupleIsPartialHotUpdated(const HeapTupleData *tuple)
+{
+	return HeapTupleHeaderIsPartialHotUpdated(tuple->t_data);
+}
 
-#define HeapTupleSetPartialHotUpdated(tuple) \
-		HeapTupleHeaderSetPartialHotUpdated((tuple)->t_data)
+static inline void
+HeapTupleSetPartialHotUpdated(const HeapTupleData *tuple)
+{
+	HeapTupleHeaderSetPartialHotUpdated(tuple->t_data);
+}
 
-#define HeapTupleClearPartialHotUpdated(tuple) \
-		HeapTupleHeaderClearPartialHotUpdated((tuple)->t_data)
+static inline void
+HeapTupleClearPartialHotUpdated(const HeapTupleData *tuple)
+{
+	HeapTupleHeaderClearPartialHotUpdated(tuple->t_data);
+}
 
-#define HeapTupleIsPartialHeapOnly(tuple) \
-		HeapTupleHeaderIsPartialHeapOnly((tuple)->t_data)
+static inline bool
+HeapTupleIsPartialHeapOnly(const HeapTupleData *tuple)
+{
+	return HeapTupleHeaderIsPartialHeapOnly(tuple->t_data);
+}
 
-#define HeapTupleSetPartialHeapOnly(tuple) \
-		HeapTupleHeaderSetPartialHeapOnly((tuple)->t_data)
+static inline void
+HeapTupleSetPartialHeapOnly(const HeapTupleData *tuple)
+{
+	HeapTupleHeaderSetPartialHeapOnly(tuple->t_data);
+}
 
-#define HeapTupleClearPartialHeapOnly(tuple) \
-		HeapTupleHeaderClearPartialHeapOnly((tuple)->t_data)
+static inline void
+HeapTupleClearPartialHeapOnly(const HeapTupleData *tuple)
+{
+	HeapTupleHeaderClearPartialHeapOnly(tuple->t_data);
+}
 
 /* prototypes for functions in common/heaptuple.c */
 extern Size heap_compute_data_size(TupleDesc tupleDesc,
