@@ -1683,16 +1683,16 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* check for unused, dead, or redirected items */
 		if (!ItemIdIsNormal(lp))
 		{
-			if (ItemIdIsPartialHotRedirected(dp, lp))
+			if (ItemIdIsPartialHotRedirected(page, lp))
 			{
 				bits8 *rdata;
 				Bitmapset *attrs;
 				bool found = false;
-				int attr;
+				int attr = -1;
 
-				rdata = (bits8 *) ItemIdGetRedirectData(dp, lp);
+				rdata = (bits8 *) ItemIdGetRedirectData(page, lp);
 				attrs = bms_copy(interesting_attrs);
-				while (!found && (attr = bms_first_member(attrs)) != -1)
+				while (!found && (attr =  bms_next_member(attrs, attr)) >= 0)
 				{
 					attr += FirstLowInvalidHeapAttributeNumber;
 					if (rdata[attr / 8] & (1 << (attr % 8)))
@@ -3976,7 +3976,7 @@ l2:
 		 * e.g. value bound changes in BRIN minmax indexes.
 		 */
 		if ((use_hot_update || use_phot_update) &&
-			bms_overlap(modified_attrs, sum_attrs))
+			bms_overlap(*modified_attrs, sum_attrs))
 			summarized_update = true;
 	}
 	else
