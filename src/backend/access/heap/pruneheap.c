@@ -1597,7 +1597,7 @@ GetModifiedColumnsBitmap(Relation rel, Buffer buffer, Page dp,
 static void
 StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 {
-	int		attr;
+	int		attr = -1;
 	int		len;
 
 	/* prepare some memory */
@@ -1612,7 +1612,7 @@ StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 	*bits = (bits8 *) ((char *) *bits + sizeof(RedirectHeaderData));
 
 	/* store the bitmap */
-	while ((attr = bms_first_member(data)) != -1)
+	while ((attr = bms_next_member(data, attr)) >= 0)
 	{
 		attr += FirstLowInvalidHeapAttributeNumber;
 		(*bits)[attr / 8] |= (1 << (attr % 8));
