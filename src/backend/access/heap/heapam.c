@@ -1679,8 +1679,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				attrs = bms_copy(interesting_attrs);
 				while (!found && (attr =  bms_next_member(attrs, attr)) >= 0)
 				{
-					attr += FirstLowInvalidHeapAttributeNumber;
-					if (rdata[attr / 8] & (1 << (attr % 8)))
+					int a = attr + FirstLowInvalidHeapAttributeNumber;
+					if (rdata[a / 8] & (1 << (a % 8)))
 						found = true;
 				}
 				bms_free(attrs);
