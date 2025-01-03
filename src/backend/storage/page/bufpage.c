@@ -782,7 +782,7 @@ PageRepairFragmentation(Page page)
 									itemidptr->itemoff, itemidptr->itemoff, pd_upper, pd_special)));
 
 				/*
-				 * If this is a redirected line pointer that has storage, must
+				 * If this is a redirected line pointer that has storage, we must
 				 * search the page to determine the storage length.
 				 */
 				if (ItemIdIsRedirected(lp))
