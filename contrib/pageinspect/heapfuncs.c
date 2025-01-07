@@ -205,10 +205,7 @@ heap_page_items(PG_FUNCTION_ARGS)
 		 * data outside the page passed to us. The page could be corrupt in
 		 * many other ways, but at least we won't crash.
 		 */
-		if (ItemIdHasStorage(id)) // &&
-			//lp_len >= MinHeapTupleSize &&
-			//lp_offset == MAXALIGN(lp_offset) &&
-			//lp_offset + lp_len <= raw_page_size)
+		if (ItemIdHasStorage(id))
 		{
 			HeapTupleHeader tuphdr;
 			bytea	   *tuple_data_bytea;
