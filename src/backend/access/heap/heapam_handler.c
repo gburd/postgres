@@ -2228,20 +2228,20 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 									   &heapTuple, NULL, true, NULL))
 			{
 				OffsetNumber ipon = ItemPointerGetOffsetNumber(&tid);
-				int i;
+				int			i;
 
 				/*
-				 * In the above call to heap_hot_search_buffer, we followed any
-				 * PHOT chains like they were regular HOT chains.  To avoid
-				 * returning duplicates, we must check that the offset number
-				 * was not already added to the list.  Furthermore, we need to
-				 * turn on rechecking since there is no guarantee the indexed
-				 * columns haven't changed somewhere in the chain.
+				 * In the above call to heap_hot_search_buffer, we followed
+				 * any PHOT chains like they were regular HOT chains.  To
+				 * avoid returning duplicates, we must check that the offset
+				 * number was not already added to the list.  Furthermore, we
+				 * need to turn on rechecking since there is no guarantee the
+				 * indexed columns haven't changed somewhere in the chain.
 				 *
-				 * XXX: It may be possible to avoid some of this work if we know
-				 * that there are no PHOT chains on the page.  It is not yet
-				 * clear whether the current behavior results in a significant
-				 * perfomance impact.
+				 * XXX: It may be possible to avoid some of this work if we
+				 * know that there are no PHOT chains on the page.  It is not
+				 * yet clear whether the current behavior results in a
+				 * significant perfomance impact.
 				 */
 				for (i = 0; i < ntup; i++)
 				{

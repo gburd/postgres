@@ -1670,16 +1670,17 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		{
 			if (ItemIdIsPartialHotRedirected(page, lp))
 			{
-				bits8 *rdata;
-				Bitmapset *attrs;
-				bool found = false;
-				int attridx = -1;
+				bits8	   *rdata;
+				Bitmapset  *attrs;
+				bool		found = false;
+				int			attridx = -1;
 
 				rdata = (bits8 *) ItemIdGetRedirectData(page, lp);
 				attrs = bms_copy(interesting_attrs);
-				while (!found && (attridx =  bms_next_member(attrs, attridx)) >= 0)
+				while (!found && (attridx = bms_next_member(attrs, attridx)) >= 0)
 				{
 					AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
+
 					if (rdata[attrnum / 8] & (1 << (attrnum % 8)))
 						found = true;
 				}
@@ -1739,8 +1740,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			interesting_attrs &&
 			has_prev_tup)
 		{
-			Bitmapset	*modified_attrs;
-			Bitmapset	*attrs;
+			Bitmapset  *modified_attrs;
+			Bitmapset  *attrs;
 			bool		index_attrs_modified;
 			bool		id_has_external = false;
 
@@ -1768,8 +1769,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * Returning it again would be incorrect (and would loop forever), so
 		 * we skip it and return the next match we find.
 		 *
-		 * XXX: Can we support non-MVCC snapshots with PHOT?  Perhaps we need to
-		 * add a bunch more parameters to track the information we need for
+		 * XXX: Can we support non-MVCC snapshots with PHOT?  Perhaps we need
+		 * to add a bunch more parameters to track the information we need for
 		 * this.
 		 */
 		if (!skip)
@@ -3945,8 +3946,8 @@ l2:
 		 */
 		if (!use_hot_update && !IsCatalogRelation(relation))
 		{
-			Bitmapset *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
-			bool updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
+			Bitmapset  *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
+			bool		updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
 
 			use_phot_update = !updated_all_indexed_attrs;
 
@@ -3954,11 +3955,11 @@ l2:
 		}
 
 		/*
-		 * If none of the columns that are used in hot-blocking indexes
-		 * were updated, we can apply HOT, but we do still need to check
-		 * if we need to update the summarizing indexes, and update those
-		 * indexes if the columns were updated, or we may fail to detect
-		 * e.g. value bound changes in BRIN minmax indexes.
+		 * If none of the columns that are used in hot-blocking indexes were
+		 * updated, we can apply HOT, but we do still need to check if we need
+		 * to update the summarizing indexes, and update those indexes if the
+		 * columns were updated, or we may fail to detect e.g. value bound
+		 * changes in BRIN minmax indexes.
 		 */
 		if ((use_hot_update || use_phot_update) &&
 			bms_overlap(*modified_attrs, sum_attrs))
@@ -4441,7 +4442,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
 	TM_Result	result;
 	TM_FailureData tmfd;
 	LockTupleMode lockmode;
-	Bitmapset *modified_attrs; /* unused */
+	Bitmapset  *modified_attrs; /* unused */
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
