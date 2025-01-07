@@ -376,8 +376,9 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 
 			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
 			{
-				if (bms_is_member(indexInfo->ii_IndexAttrNumbers[j] - FirstLowInvalidHeapAttributeNumber,
-							modified_attrs))
+				AttrNumber attrnum = indexInfo->ii_IndexAttrNumbers[j]
+										- FirstLowInvalidHeapAttributeNumber;
+				if (bms_is_member(attrnum, modified_attrs))
 				{
 					should_update = true;
 					break;

@@ -1288,11 +1288,13 @@ process_chain:
 				if (phot_items[i])
 					heap_prune_record_dead(prstate, chainitems[i], true);
 				else
+				{
 					if (i >= ndeadchain)
 						/* These are normal, unchanged tuples */
 						heap_prune_record_unchanged_lp_normal(page, prstate, chainitems[i]);
 					else
 						heap_prune_record_unused(prstate, chainitems[i], true);
+				}
 				continue;
 			}
 
