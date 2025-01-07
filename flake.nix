@@ -28,7 +28,7 @@
             cmake
             meson
             ninja
-            direnv
+            #(perl.withPackages(ps: [ ps.PerlTidy ])) # 20230309
 
             #clang
             clang-tools
