@@ -2252,7 +2252,7 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 				if (i >= ntup)
 					hscan->rs_vistuples[ntup++] = ipon;
 
-				tbmres->recheck = true;
+				*recheck = true;
 			}
 		}
 	}

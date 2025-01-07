@@ -2578,7 +2578,7 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 static void
 StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 {
-	int		attr = -1;
+	int		attridx = -1;
 	int		len;
 
 	/* Prepare some memory */
@@ -2593,10 +2593,10 @@ StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 	*bits = (bits8 *) ((char *) *bits + sizeof(RedirectHeaderData));
 
 	/* Store the bitmap */
-	while ((attr = bms_next_member(data, attr)) >= 0)
+	while ((attridx = bms_next_member(data, attridx)) >= 0)
 	{
-		int a = attr + FirstLowInvalidHeapAttributeNumber;
-		(*bits)[a / 8] |= (1 << (a % 8));
+		AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
+		(*bits)[attrnum / 8] |= (1 << (attrnum % 8));
 	}
 
 	/* Reset the pointer back to the header */
