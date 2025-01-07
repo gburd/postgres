@@ -1673,14 +1673,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				bits8 *rdata;
 				Bitmapset *attrs;
 				bool found = false;
-				int attr = -1;
+				int attridx = -1;
 
 				rdata = (bits8 *) ItemIdGetRedirectData(page, lp);
 				attrs = bms_copy(interesting_attrs);
-				while (!found && (attr =  bms_next_member(attrs, attr)) >= 0)
+				while (!found && (attridx =  bms_next_member(attrs, attridx)) >= 0)
 				{
-					int a = attr + FirstLowInvalidHeapAttributeNumber;
-					if (rdata[a / 8] & (1 << (a % 8)))
+					AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
+					if (rdata[attrnum / 8] & (1 << (attrnum % 8)))
 						found = true;
 				}
 				bms_free(attrs);
@@ -4015,8 +4015,7 @@ l2:
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
 	}
-
-	if (use_phot_update)
+	else if (use_phot_update)
 	{
 		/* Mark the old tuple as PHOT-updated */
 		HeapTupleSetPartialHotUpdated(&oldtup);
@@ -4144,6 +4143,13 @@ l2:
 			*update_indexes = TU_Summarizing;
 		else
 			*update_indexes = TU_None;
+	}
+	else if (use_phot_update)
+	{
+		if (summarized_update)
+			*update_indexes = TU_Summarizing;
+		else
+			*update_indexes = TU_All;
 	}
 	else
 		*update_indexes = TU_All;
