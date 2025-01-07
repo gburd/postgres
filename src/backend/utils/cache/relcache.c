@@ -5374,6 +5374,7 @@ restart:
 			if (attridx != 0)
 			{
 				AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
+
 				*attrs = bms_add_member(*attrs, attrnum);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
@@ -5959,7 +5960,7 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
 Bitmapset *
 IndexGetAttrBitmap(Relation irel)
 {
-	Bitmapset *attrs = NULL;
+	Bitmapset  *attrs = NULL;
 	Form_pg_index indexStruct;
 
 	/* XXX: Do we need a stronger lock for this to be safe? */
@@ -5969,7 +5970,7 @@ IndexGetAttrBitmap(Relation irel)
 	indexStruct = irel->rd_index;
 	for (int i = 0; i < indexStruct->indnatts; i++)
 	{
-		int attr;
+		int			attr;
 
 		attr = indexStruct->indkey.values[i];
 		attr -= FirstLowInvalidHeapAttributeNumber;

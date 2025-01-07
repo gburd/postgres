@@ -117,7 +117,7 @@ typedef struct IndexFetchHeapData
 	IndexFetchTableData xs_base;	/* AM independent part of the descriptor */
 
 	/* indexed attrs for following PHOT chains */
-	Bitmapset *indexed_attrs;
+	Bitmapset  *indexed_attrs;
 
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */

@@ -616,10 +616,10 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		/*
 		 * If the tuple is DEAD and doesn't chain to anything else, mark it
 		 * unused or dead immediately.  Heap-only tuples can be marked unused
-		 * because there will be no index entries that point to it, but partial
-		 * heap-only tuples can only be marked dead since there might be
-		 * associated index tuples.  (If it does chain, we can only remove it
-		 * as part of pruning its chain.)
+		 * because there will be no index entries that point to it, but
+		 * partial heap-only tuples can only be marked dead since there might
+		 * be associated index tuples.  (If it does chain, we can only remove
+		 * it as part of pruning its chain.)
 		 *
 		 * We need this primarily to handle aborted HOT updates, that is,
 		 * XMIN_INVALID heap-only tuples.  Those might not be linked to by any
@@ -650,11 +650,11 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 			{
 				/*
 				 * This tuple should've been processed and removed as part of
-				 * a (P)HOT chain, so something's wrong.  To preserve evidence,
-				 * we don't dare to remove it.  We cannot leave behind a DEAD
-				 * tuple either, because that will cause VACUUM to error out.
-				 * Throwing an error with a distinct error message seems like
-				 * the least bad option.
+				 * a (P)HOT chain, so something's wrong.  To preserve
+				 * evidence, we don't dare to remove it.  We cannot leave
+				 * behind a DEAD tuple either, because that will cause VACUUM
+				 * to error out. Throwing an error with a distinct error
+				 * message seems like the least bad option.
 				 */
 				elog(ERROR, "dead heap-only tuple (%u, %d) is not linked to from any HOT chain",
 					 blockno, offnum);
@@ -1100,7 +1100,8 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 				phot_items[nchain] = ItemIdIsPartialHotRedirected(page, lp);
 			else
 			{
-				ItemId prev = PageGetItemId(page, chainitems[nchain - 2]);
+				ItemId		prev = PageGetItemId(page, chainitems[nchain - 2]);
+
 				phot_items[nchain] = ItemIdIsPartialHotRedirected(page, prev);
 			}
 
@@ -1251,9 +1252,9 @@ process_chain:
 		bool		chain_dead = (lastoff == chainitems[ndeadchain - 1]);
 
 		/*
-		 * Consider the last tuple in the chain first, we know it isn't
-		 * dead but is it PHOT?  If it is, we'll need to record a few things
-		 * for later on.
+		 * Consider the last tuple in the chain first, we know it isn't dead
+		 * but is it PHOT?  If it is, we'll need to record a few things for
+		 * later on.
 		 */
 		if (!chain_dead && has_phot && nchain > 1)
 		{
@@ -1261,7 +1262,7 @@ process_chain:
 			interesting_attrs =
 				bms_add_range(NULL,
 							  1 - FirstLowInvalidHeapAttributeNumber,
-			   				  natts - FirstLowInvalidHeapAttributeNumber);
+							  natts - FirstLowInvalidHeapAttributeNumber);
 			intermediate = GetModifiedColumnsBitmap(relation, page, blockno,
 													chainitems[nchain - 2],
 													lastoff, true,
@@ -1275,13 +1276,13 @@ process_chain:
 		for (int i = nchain - 2; i > 0; i--)
 		{
 			/*
-			 * If the rest of the chain is dead or we've only seen HOT items so
-			 * far, just mark the item as dead/unused and move on.  We are
+			 * If the rest of the chain is dead or we've only seen HOT items
+			 * so far, just mark the item as dead/unused and move on.  We are
 			 * careful to do this before GetModifiedColumnsBitmap() so that we
-			 * avoid the expense of that call whenever possible.  Presumably we
-			 * could also mark PHOT items as unused if we knew they no longer
-			 * had index entries, but that is not strictly necessary, and the
-			 * benefit might outweigh the expense.
+			 * avoid the expense of that call whenever possible.  Presumably
+			 * we could also mark PHOT items as unused if we knew they no
+			 * longer had index entries, but that is not strictly necessary,
+			 * and the benefit might outweigh the expense.
 			 */
 			if (chain_dead || (!has_phot && !phot_items[i]))
 			{
@@ -1300,12 +1301,13 @@ process_chain:
 
 			/*
 			 * We wait until the last minute to generate the bitmap of indexed
-			 * attributes so that we don't incur the expense in the fast paths.
+			 * attributes so that we don't incur the expense in the fast
+			 * paths.
 			 *
 			 * Ideally we'd be able to use RelationGetIndexAttrBitmap() to get
-			 * just the indexed columns here.  However, there's a deadlock risk
-			 * with the buffer lock we already have.  If we did use such a
-			 * function, we'd also have to prepare for the possibility that
+			 * just the indexed columns here.  However, there's a deadlock
+			 * risk with the buffer lock we already have.  If we did use such
+			 * a function, we'd also have to prepare for the possibility that
 			 * this bitmap will be empty.
 			 */
 			if (interesting_attrs == NULL)
@@ -1329,8 +1331,8 @@ process_chain:
 			 * If there are definitely no index entries pointing to this item,
 			 * then we can just mark it unused.  This is unlikely to ever be
 			 * true for now, but in the future we might set interesting_attrs
-			 * to the set of indexed columns (in which case it will be far more
-			 * likely).
+			 * to the set of indexed columns (in which case it will be far
+			 * more likely).
 			 */
 			if (bms_is_empty(modified))
 			{
@@ -1343,10 +1345,10 @@ process_chain:
 			}
 
 			/*
-			 * If this is the first PHOT item that we've encountered that still
-			 * has corresponding index entries, redirect it to the last item in
-			 * the chain (which must be heap-only).  This item must also be a
-			 * key item for PHOT, too.
+			 * If this is the first PHOT item that we've encountered that
+			 * still has corresponding index entries, redirect it to the last
+			 * item in the chain (which must be heap-only).  This item must
+			 * also be a key item for PHOT, too.
 			 */
 			if (phot_items[i] && !has_phot)
 			{
@@ -1376,11 +1378,11 @@ process_chain:
 			}
 
 			/*
-			 * At this point, we know that we've found a PHOT item somewhere in
-			 * the middle of a chain that we already know has PHOT items.  If
-			 * the set of modified columns between this item and the preceding
-			 * item fit within our top-level modified columns bitmap for the
-			 * chain, we don't need to keep the item around.
+			 * At this point, we know that we've found a PHOT item somewhere
+			 * in the middle of a chain that we already know has PHOT items.
+			 * If the set of modified columns between this item and the
+			 * preceding item fit within our top-level modified columns bitmap
+			 * for the chain, we don't need to keep the item around.
 			 */
 			if (bms_is_subset(modified, modified_attrs))
 			{
@@ -1390,9 +1392,9 @@ process_chain:
 			}
 
 			/*
-			 * If all else has failed, we must have a new key item.  Mark it as
-			 * redirected-with-data and store the modified-columns bitmap in the
-			 * tuple storage.
+			 * If all else has failed, we must have a new key item.  Mark it
+			 * as redirected-with-data and store the modified-columns bitmap
+			 * in the tuple storage.
 			 */
 			heap_prune_record_redirect_with_data(prstate, chainitems[i],
 												 keyitems[nkeys - 1],
@@ -1844,7 +1846,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
 	Assert(!lp_truncate_only || (nredirected == 0 && nredirected_data == 0 &&
-		   ndead == 0));
+								 ndead == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -2505,19 +2507,19 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 	/*
 	 * If the new tuple is a heap-only tuple but the previous one was already
 	 * redirected, there's no way to get the modified columns data between the
-	 * two.  This should be alright because we cannot get into a situation where
-	 * this missing data would be necessary for PHOT, even if we just created a
-	 * new index for a previously unindexed column.
+	 * two.  This should be alright because we cannot get into a situation
+	 * where this missing data would be necessary for PHOT, even if we just
+	 * created a new index for a previously unindexed column.
 	 */
 	if (!newlp_is_phot && !ItemIdIsNormal(oldid))
 		return NULL;
 
 	if (ItemIdIsNormal(oldid))
 	{
-		HeapTupleData	oldtup;
-		HeapTupleData	newtup;
-		Bitmapset	   *interesting_copy;
-		bool			has_external = false;
+		HeapTupleData oldtup;
+		HeapTupleData newtup;
+		Bitmapset  *interesting_copy;
+		bool		has_external = false;
 
 		/* If the old LP is normal, the new one better be, too */
 		Assert(ItemIdIsNormal(newid));
@@ -2546,8 +2548,8 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 	}
 	else
 	{
-		bits8  *bits;
-		int		len;
+		bits8	   *bits;
+		int			len;
 
 		/* If the old LP isn't normal, it better be redirected-with-data */
 		Assert(ItemIdIsPartialHotRedirected(page, oldid));
@@ -2555,14 +2557,14 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 		/* Find the bitmap on the page */
 		len = ItemIdGetRedirectDataLength(page, oldid);
 		len -= sizeof(RedirectHeaderData);
-		bits = (bits8 *)ItemIdGetRedirectData(page, oldid);
+		bits = (bits8 *) ItemIdGetRedirectData(page, oldid);
 
 		/* Build the return Bitmapset */
 		for (int i = 0; i < len * 8; i++)
 		{
 			if (bits[i / 8] & (1 << (i % 8)))
 				modified = bms_add_member(modified,
-							   i - FirstLowInvalidHeapAttributeNumber);
+										  i - FirstLowInvalidHeapAttributeNumber);
 		}
 
 		/* The indexed columns might've changed */
@@ -2580,16 +2582,16 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 static void
 StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 {
-	int		attridx = -1;
-	int		len;
+	int			attridx = -1;
+	int			len;
 
 	/* Prepare some memory */
 	len = sizeof(RedirectHeaderData) + ((natts + 7) / 8);
 	*bits = (bits8 *) palloc0(len);
 
 	/* Adjust the header */
-	((RedirectHeader) *bits)->rlp_type = RLP_PHOT;
-	((RedirectHeader) *bits)->rlp_len = len;
+	((RedirectHeader) * bits)->rlp_type = RLP_PHOT;
+	((RedirectHeader) * bits)->rlp_len = len;
 
 	/* Scooch forward to the bitmap portion */
 	*bits = (bits8 *) ((char *) *bits + sizeof(RedirectHeaderData));
@@ -2598,6 +2600,7 @@ StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)
 	while ((attridx = bms_next_member(data, attridx)) >= 0)
 	{
 		AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
+
 		(*bits)[attrnum / 8] |= (1 << (attrnum % 8));
 	}
 
