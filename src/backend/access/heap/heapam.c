@@ -8089,7 +8089,7 @@ heap_index_delete_tuples(Relation irel, Relation rel, TM_IndexDeleteOp *delstate
 
 	InitNonVacuumableSnapshot(SnapshotNonVacuumable, GlobalVisTestFor(rel));
 
-	/* bitmap of indexed attrs used for following PHOT chains */
+	/* Bitmap of indexed attrs used for following PHOT chains */
 	indexed_attrs = IndexGetAttrBitmap(irel);
 
 	/* Sort caller's deltids array by TID for further processing */

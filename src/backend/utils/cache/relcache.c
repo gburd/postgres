@@ -5958,16 +5958,16 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
  * AccessShareLock or stronger.
  */
 Bitmapset *
-IndexGetAttrBitmap(Relation irel)
+IndexGetAttrBitmap(Relation relation)
 {
 	Bitmapset  *attrs = NULL;
 	Form_pg_index indexStruct;
 
 	/* XXX: Do we need a stronger lock for this to be safe? */
-	Assert(RelationIsValid(irel));
-	Assert(CheckRelationLockedByMe(irel, AccessShareLock, true));
+	Assert(RelationIsValid(relation));
+	Assert(CheckRelationLockedByMe(relation, AccessShareLock, true));
 
-	indexStruct = irel->rd_index;
+	indexStruct = relation->rd_index;
 	for (int i = 0; i < indexStruct->indnatts; i++)
 	{
 		int			attr;
