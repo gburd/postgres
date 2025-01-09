@@ -1110,7 +1110,7 @@ ExecInsert(ModifyTableContext *context,
 												   slot, estate, false, true,
 												   &specConflict,
 												   arbiterIndexes,
-												   false, false, NULL);
+												   false, false, NULL, NULL);
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -1150,7 +1150,8 @@ ExecInsert(ModifyTableContext *context,
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
 													   false, NULL, NIL,
-													   false, false, NULL);
+													   false, false, NULL,
+													   NULL);
 		}
 	}
 
@@ -2150,7 +2151,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   NULL, NIL,
 											   (updateCxt->updateIndexes == TU_Summarizing),
 											   updateCxt->updateModifiedIndexes,
-											   updateCxt->modifiedAttrs);
+											   updateCxt->modifiedAttrs, oldtuple);
 	bms_free(updateCxt->modifiedAttrs);
 
 	/* AFTER ROW UPDATE Triggers */
