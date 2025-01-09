@@ -316,9 +316,9 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
-					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes,
-					bool *update_modified_indexes, Bitmapset **modified_attrs)
+					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
+					int num_indexes, IndexInfo **index_infos,
+					Bitmapset **modified_indexes)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -329,30 +329,26 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode, update_indexes, modified_attrs);
+						 tmfd, lockmode, num_indexes,
+						 index_infos, modified_indexes);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
 	 * Note: heap_update returns the tid (location) of the new tuple in the
 	 * t_self field.
 	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
+	 * If the update is HOT, we don't update indexes on the relation unless
+	 * modified_indexes is not NULL in which case it will only reference the
+	 * summarized indexes which require updated index entries.
+	 *
+	 * If the update is PHOT, we are going to update the set of indexes listed
+	 * in modified_indexes only which may or may not include summarized
+	 * indexes, updated expression indexes, or other indexes on the relation.
+	 *
+	 * If the update is neither HOT nor PHOT meaning that either there are no
+	 * secondary indexes on the relation or all indexed values were modified
+	 * during this update expect modified_indexes to be NULL.
 	 */
-	if (result != TM_Ok)
-	{
-		Assert(*update_indexes == TU_None);
-		*update_indexes = TU_None;
-	}
-	else if (!HeapTupleIsHeapOnly(tuple))
-		Assert(*update_indexes == TU_All);
-	else
-		Assert((*update_indexes == TU_Summarizing) ||
-			   (*update_indexes == TU_None));
-	*update_modified_indexes = result == TM_Ok && HeapTupleIsPartialHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);

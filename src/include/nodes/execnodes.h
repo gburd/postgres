@@ -208,6 +208,7 @@ typedef struct IndexInfo
 	int			ii_ParallelWorkers;
 	Oid			ii_Am;
 	void	   *ii_AmCache;
+	Oid		   *ii_OpClassDataTypes;
 	MemoryContext ii_Context;
 } IndexInfo;
 

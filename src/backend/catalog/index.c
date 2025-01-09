@@ -2466,6 +2466,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionStrats);
 	}
 
+	ii->ii_OpClassDataTypes = index->rd_opcintype;
+
 	return ii;
 }
 
