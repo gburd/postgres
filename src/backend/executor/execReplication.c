@@ -601,7 +601,7 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 												   conflictindexes ? true : false,
 												   &conflict,
 												   conflictindexes, false,
-												   false, NULL);
+												   false, NULL, NULL);
 
 		/*
 		 * Checks the conflict indexes to fetch the conflicting local tuple
@@ -701,7 +701,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 												   conflictindexes ? true : false,
 												   &conflict, conflictindexes,
 												   (update_indexes == TU_Summarizing),
-												   update_modified_indexes, modified_attrs);
+												   update_modified_indexes, modified_attrs,
+												   NULL);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in

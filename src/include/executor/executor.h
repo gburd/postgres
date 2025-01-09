@@ -652,7 +652,8 @@ extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 								   bool noDupErr,
 								   bool *specConflict, List *arbiterIndexes,
 								   bool onlySummarizing,
-								   bool update_modified_indexes, Bitmapset *modified_attrs);
+								   bool update_modified_indexes, Bitmapset *modified_attrs,
+								   HeapTuple oldtuple);
 extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
 									  TupleTableSlot *slot,
 									  EState *estate, ItemPointer conflictTid,

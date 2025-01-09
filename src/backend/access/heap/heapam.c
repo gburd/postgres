@@ -3225,6 +3225,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
 	Bitmapset  *sum_attrs;
+	Bitmapset  *exp_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3247,6 +3248,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		iscombo;
 	bool		use_hot_update = false;
 	bool		summarized_update = false;
+	bool		expression_update = false;
 	bool		use_phot_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
@@ -3301,12 +3303,15 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	exp_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_EXPRESSION);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
 	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, exp_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
 
@@ -3618,10 +3623,10 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(interesting_attrs);
@@ -3935,7 +3940,7 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (newbuf == buffer)
+	if (newbuf == buffer && !IsCatalogRelation(relation))
 	{
 		/*
 		 * Since the new tuple is going into the same page, we might be able
@@ -3948,7 +3953,7 @@ l2:
 		/*
 		 * If HOT won't work, maybe PHOT will.
 		 */
-		if (!use_hot_update && !IsCatalogRelation(relation))
+		if (!use_hot_update)
 		{
 			Bitmapset  *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
 			bool		updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
@@ -3958,16 +3963,21 @@ l2:
 			bms_free(updated_indexed_attrs);
 		}
 
-		/*
-		 * If none of the columns that are used in hot-blocking indexes were
-		 * updated, we can apply HOT, but we do still need to check if we need
-		 * to update the summarizing indexes, and update those indexes if the
-		 * columns were updated, or we may fail to detect e.g. value bound
-		 * changes in BRIN minmax indexes.
-		 */
-		if ((use_hot_update || use_phot_update) &&
-			bms_overlap(*modified_attrs, sum_attrs))
-			summarized_update = true;
+		if (use_hot_update || use_phot_update)
+		{
+			if (bms_overlap(*modified_attrs, exp_attrs))
+				expression_update = true;
+
+			/*
+			 * If none of the columns that are used in hot-blocking indexes
+			 * were updated, we can apply HOT, but we do still need to check
+			 * if we need to update the summarizing indexes, and update those
+			 * indexes if the columns were updated, or we may fail to detect
+			 * e.g. value bound changes in BRIN minmax indexes.
+			 */
+			if (bms_overlap(*modified_attrs, sum_attrs))
+				summarized_update = true;
+		}
 	}
 	else
 	{
@@ -4145,14 +4155,14 @@ l2:
 	 */
 	if (use_hot_update)
 	{
-		if (summarized_update)
+		if (summarized_update || expression_update)
 			*update_indexes = TU_Summarizing;
 		else
 			*update_indexes = TU_None;
 	}
 	else if (use_phot_update)
 	{
-		if (summarized_update)
+		if (summarized_update || expression_update)
 			*update_indexes = TU_Summarizing;
 		else
 			*update_indexes = TU_All;
@@ -4165,6 +4175,7 @@ l2:
 
 	bms_free(hot_attrs);
 	bms_free(sum_attrs);
+	bms_free(exp_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(interesting_attrs);
