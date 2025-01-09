@@ -42,6 +42,7 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
+#include "catalog/index.h"
 #include "commands/vacuum.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
@@ -53,6 +54,8 @@
 #include "utils/inval.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
+#include "utils/lsyscache.h"
+#include "executor/executor.h"
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
@@ -100,7 +103,6 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
-
 
 /*
  * Each tuple lock mode has a corresponding heavyweight lock, and one or two
@@ -1801,7 +1803,24 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 		/*
 		 * If this tuple was a PHOT update, make sure that we should keep
-		 * following it based on the modified attributes.
+		 * following the redirect chain based on the modified attributes.
+		 *
+		 * The idea here is that when walking a PHOT chain, some index entries
+		 * may be stale meaning they should be ignored because a newer index
+		 * entry has been created.
+		 *
+		 * Using indexed attributes would suffice were it not for the fact
+		 * that it is now possible to have indexes on the same attribute in
+		 * updates where some of the indexes are updated and some are not.
+		 *
+		 * This means that for some walks of the PHOT chain we need to know to
+		 * stop because the index was updated and we can expect another TID
+		 * from the index and in other cases we need to keep going because the
+		 * index was not updated.
+		 *
+		 * Put another way, just because the current and previous tuple differ
+		 * when examining the indexed attributes does not mean that the index
+		 * was actually updated.
 		 *
 		 * If indexed_attrs is NULL, we follow this just like we do HOT
 		 * chains.  The caller is responsible for handling the return value
@@ -1809,22 +1828,38 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 */
 		if (OffsetNumberIsValid(prev_offnum) &&
 			HeapTupleIsPartialHeapOnly(heapTuple) &&
-			indexed_attrs &&
 			has_prev_tup)
 		{
+			Bitmapset  *expr_attrs = IndexGetExprAttrBitmap(relation);
+			Bitmapset  *expr_only_attrs = bms_del_members(expr_attrs, indexed_attrs);
 			Bitmapset  *modified_attrs;
 			Bitmapset  *attrs;
 			bool		index_attrs_modified;
 			bool		id_has_external = false;
 
+			attrs = bms_difference(indexed_attrs, expr_only_attrs);
+			bms_free(expr_attrs);
+			bms_free(expr_only_attrs);
+
 			/*
 			 * HeapDetermineColumnsInfo destructively modifies the input
 			 * bitmapset, so we need to copy it.
 			 */
-			attrs = bms_copy(indexed_attrs);
 			modified_attrs = HeapDetermineColumnsInfo(relation, attrs, NULL,
 													  &prev_tup, heapTuple,
 													  &id_has_external);
+
+			/*
+			 * The assumption here is that if any indexed attributes were
+			 * modified between the previous and the current tuple in the HOT
+			 * chain that we can assume a new index entry was created and that
+			 * this one is stale/out-of-date/pending vacuum.
+			 *
+			 * However, this may not be true with an expression index such as
+			 * is the case with JSONB.  It would be possible to modify a
+			 * non-indexed field within the document but record that the
+			 * indexed attribute was modified without issuing an index update.
+			 */
 			index_attrs_modified = !bms_is_empty(modified_attrs);
 
 			bms_free(attrs);
@@ -3285,17 +3320,17 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes,
-			Bitmapset **modified_attrs)
+			TM_FailureData *tmfd, UpdateContext *updateCxt)
 {
 	TM_Result	result;
+	LockTupleMode *lockmode = &updateCxt->lockmode;
+	int			num_indexes = list_length(relation->rd_indexlist);
 	TransactionId xid = GetCurrentTransactionId();
-	Bitmapset  *hot_attrs;
-	Bitmapset  *sum_attrs;
+	Bitmapset  *idx_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
+	Bitmapset  *modified_attrs;
 	ItemId		lp;
 	HeapTupleData oldtup;
 	HeapTuple	heaptup;
@@ -3314,7 +3349,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
-	bool		summarized_update = false;
 	bool		use_phot_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
@@ -3365,16 +3399,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * Note that we get copies of each bitmap, so we need not worry about
 	 * relcache flush happening midway through.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
-	sum_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
-	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
-	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, idx_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
 
@@ -3430,10 +3460,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
-		*update_indexes = TU_None;
 
-		bms_free(hot_attrs);
-		bms_free(sum_attrs);
+		bms_free(idx_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		/* modified_attrs not yet initialized */
@@ -3461,9 +3489,9 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * new tuple so we must include it as part of the old_key_tuple.  See
 	 * ExtractReplicaIdentity.
 	 */
-	*modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
-											   id_attrs, &oldtup,
-											   newtup, &id_has_external);
+	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
+											  id_attrs, &oldtup,
+											  newtup, &id_has_external);
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -3476,7 +3504,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * is updates that don't manipulate key columns, not those that
 	 * serendipitously arrive at the same key values.
 	 */
-	if (!bms_overlap(*modified_attrs, key_attrs))
+	if (!bms_overlap(modified_attrs, key_attrs))
 	{
 		*lockmode = LockTupleNoKeyExclusive;
 		mxact_status = MultiXactStatusNoKeyUpdate;
@@ -3731,10 +3759,8 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
 
-		bms_free(hot_attrs);
-		bms_free(sum_attrs);
+		bms_free(idx_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(interesting_attrs);
@@ -4042,45 +4068,81 @@ l2:
 	CheckForSerializableConflictIn(relation, &oldtup.t_self,
 								   BufferGetBlockNumber(buffer));
 
+
 	/*
 	 * At this point newbuf and buffer are both pinned and locked, and newbuf
 	 * has enough space for the new tuple.  If they are the same buffer, only
-	 * one pin is held.
+	 * one pin is held.  It's important not to consider HOT updates when there
+	 * are no indexes on the relation.
 	 */
-
-	if (newbuf == buffer)
+	if (newbuf == buffer && num_indexes > 0)
 	{
 		/*
-		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed.
+		 * The new tuple fits into the same page as the existing one, this
+		 * means we can use the heap-only tuple path for this update.  What's
+		 * left is to determine if we're on the HOT or parital HOT (PHOT) path
+		 * by finding the set of indexes that should be updated if any.
 		 */
-		if (!bms_overlap(*modified_attrs, hot_attrs))
-			use_hot_update = true;
-
-		/*
-		 * If HOT won't work, maybe PHOT will.
-		 */
-		if (!use_hot_update && !IsCatalogRelation(relation))
+		if (!bms_overlap(idx_attrs, modified_attrs))
 		{
-			Bitmapset  *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
-			bool		updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
-
-			use_phot_update = !updated_all_indexed_attrs;
-
-			bms_free(updated_indexed_attrs);
+			/* No indexed attributes modified, HOT update is appropriate. */
+			updateCxt->modifiedIndexes = bms_make_singleton(num_indexes);
+			use_hot_update = true;
 		}
+		else
+		{
+			/*
+			 * There is at least one index with attributes that have been
+			 * modified, so we need to check which indexes are affected.
+			 */
+			updateCxt->modifiedIndexes =
+				ExecIndexesRequiringUpdates(relation,
+											updateCxt->rri,
+											modified_attrs,
+											updateCxt->estate,
+											&updateCxt->onlySummarized);
 
-		/*
-		 * If none of the columns that are used in hot-blocking indexes were
-		 * updated, we can apply HOT, but we do still need to check if we need
-		 * to update the summarizing indexes, and update those indexes if the
-		 * columns were updated, or we may fail to detect e.g. value bound
-		 * changes in BRIN minmax indexes.
-		 */
-		if ((use_hot_update || use_phot_update) &&
-			bms_overlap(*modified_attrs, sum_attrs))
-			summarized_update = true;
+			/*
+			 * NULL modifiedIndexes indicates that all indexes are modified in
+			 * which case we don't use the (P)HOT path and we break the
+			 * redirect chain and allow for pruning/defrag in the heap page
+			 * later, set the hint bit.
+			 */
+			if (updateCxt->modifiedIndexes != NULL)
+			{
+				int			idx;
+
+				if (bms_get_singleton_member(updateCxt->modifiedIndexes, &idx) &&
+					num_indexes == idx)
+				{
+					/*
+					 * Despite having overlapping attributes between the
+					 * update and the indexes we've determined that none of
+					 * the indexes were materially impacted by this change and
+					 * so the HOT update is the most appropriate path.
+					 */
+					use_hot_update = true;
+				}
+				else if (updateCxt->onlySummarized)
+				{
+					/*
+					 * We choose the HOT path when we find that only
+					 * summarizing indexes were modified.
+					 */
+					use_hot_update = true;
+				}
+				else
+				{
+					/*
+					 * If the number of modified indexes is less than the
+					 * total number of indexes, we use the partial HOT update
+					 * path.
+					 */
+					Assert(bms_num_members(updateCxt->modifiedIndexes) < num_indexes);
+					use_phot_update = true;
+				}
+			}
+		}
 	}
 	else
 	{
@@ -4096,7 +4158,7 @@ l2:
 	 * columns are modified or it has external data.
 	 */
 	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
-										   bms_overlap(*modified_attrs, id_attrs) ||
+										   bms_overlap(modified_attrs, id_attrs) ||
 										   id_has_external,
 										   &old_key_copied);
 
@@ -4250,36 +4312,13 @@ l2:
 		heap_freetuple(heaptup);
 	}
 
-	/*
-	 * If it is a HOT update, the update may still need to update summarized
-	 * indexes, lest we fail to update those summaries and get incorrect
-	 * results (for example, minmax bounds of the block may change with this
-	 * update).
-	 */
-	if (use_hot_update)
-	{
-		if (summarized_update)
-			*update_indexes = TU_Summarizing;
-		else
-			*update_indexes = TU_None;
-	}
-	else if (use_phot_update)
-	{
-		if (summarized_update)
-			*update_indexes = TU_Summarizing;
-		else
-			*update_indexes = TU_All;
-	}
-	else
-		*update_indexes = TU_All;
-
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
 
-	bms_free(hot_attrs);
-	bms_free(sum_attrs);
+	bms_free(idx_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
+	bms_free(modified_attrs);
 	bms_free(interesting_attrs);
 
 	return TM_Ok;
@@ -4554,18 +4593,15 @@ HeapDetermineColumnsInfo(Relation relation,
  */
 void
 simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
-	LockTupleMode lockmode;
-	Bitmapset  *modified_attrs; /* unused */
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes, &modified_attrs);
-	bms_free(modified_attrs);
+						 &tmfd, updateCxt);
 
 	switch (result)
 	{

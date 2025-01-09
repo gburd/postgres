@@ -320,9 +320,7 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
-					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes,
-					bool *update_modified_indexes, Bitmapset **modified_attrs)
+					bool wait, TM_FailureData *tmfd, UpdateContext *updateCxt)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -333,30 +331,13 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode, update_indexes, modified_attrs);
+						 tmfd, updateCxt);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
 	 * Note: heap_update returns the tid (location) of the new tuple in the
 	 * t_self field.
-	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
 	 */
-	if (result != TM_Ok)
-	{
-		Assert(*update_indexes == TU_None);
-		*update_indexes = TU_None;
-	}
-	else if (!HeapTupleIsHeapOnly(tuple))
-		Assert(*update_indexes == TU_All);
-	else
-		Assert((*update_indexes == TU_Summarizing) ||
-			   (*update_indexes == TU_None));
-	*update_modified_indexes = result == TM_Ok && HeapTupleIsPartialHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);
@@ -2552,26 +2533,27 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			OffsetNumber offnum = offsets[curslot];
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
+			bool		all_dead;
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true))
+									   &heapTuple, &all_dead, true, NULL))
 			{
 				OffsetNumber ipon = ItemPointerGetOffsetNumber(&tid);
-				int i;
+				int			i;
 
 				/*
-				 * In the above call to heap_hot_search_buffer, we followed any
-				 * PHOT chains like they were regular HOT chains.  To avoid
-				 * returning duplicates, we must check that the offset number
-				 * was not already added to the list.  Furthermore, we need to
-				 * turn on rechecking since there is no guarantee the indexed
-				 * columns haven't changed somewhere in the chain.
+				 * In the above call to heap_hot_search_buffer, we followed
+				 * any PHOT chains like they were regular HOT chains.  To
+				 * avoid returning duplicates, we must check that the offset
+				 * number was not already added to the list.  Furthermore, we
+				 * need to turn on rechecking since there is no guarantee the
+				 * indexed columns haven't changed somewhere in the chain.
 				 *
-				 * XXX: It may be possible to avoid some of this work if we know
-				 * that there are no PHOT chains on the page.  It is not yet
-				 * clear whether the current behavior results in a significant
-				 * perfomance impact.
+				 * XXX: It may be possible to avoid some of this work if we
+				 * know that there are no PHOT chains on the page.  It is not
+				 * yet clear whether the current behavior results in a
+				 * significant perfomance impact.
 				 */
 				for (i = 0; i < ntup; i++)
 				{

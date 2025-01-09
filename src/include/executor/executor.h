@@ -760,14 +760,14 @@ extern Bitmapset *ExecGetAllUpdatedCols(ResultRelInfo *relinfo, EState *estate);
  * prototypes from functions in execIndexing.c
  */
 extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
+extern void ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool update);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 								   TupleTableSlot *slot, EState *estate,
 								   bool update,
 								   bool noDupErr,
 								   bool *specConflict, List *arbiterIndexes,
-								   bool onlySummarizing,
-								   bool update_modified_indexes, Bitmapset *modified_attrs);
+								   Bitmapset *modifiedIndexes);
 extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
 									  TupleTableSlot *slot,
 									  EState *estate, ItemPointer conflictTid,
@@ -778,6 +778,11 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
 									   ItemPointer tupleid,
 									   const Datum *values, const bool *isnull,
 									   EState *estate, bool newIndex);
+extern Bitmapset *ExecIndexesRequiringUpdates(Relation relation,
+											  ResultRelInfo *resultRelInfo,
+											  Bitmapset *modified_attrs,
+											  EState *estate,
+											  bool *only_summarizing);
 
 /*
  * prototypes from functions in execReplication.c

@@ -115,23 +115,6 @@ typedef struct ModifyTableContext
 	TupleTableSlot *cpUpdateReturningSlot;
 } ModifyTableContext;
 
-/*
- * Context struct containing output data specific to UPDATE operations.
- */
-typedef struct UpdateContext
-{
-	bool		updateModifiedIndexes;	/* were modified indexes updated? */
-	Bitmapset  *modifiedAttrs;	/* what attributes were modified? */
-	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
-
-	/*
-	 * Lock mode to acquire on the latest tuple version before performing
-	 * EvalPlanQual on it
-	 */
-	LockTupleMode lockmode;
-} UpdateContext;
-
 
 static void ExecBatchInsert(ModifyTableState *mtstate,
 							ResultRelInfo *resultRelInfo,
@@ -1201,7 +1184,7 @@ ExecInsert(ModifyTableContext *context,
 												   slot, estate, false, true,
 												   &specConflict,
 												   arbiterIndexes,
-												   false, false, NULL);
+												   NULL);
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -1240,8 +1223,7 @@ ExecInsert(ModifyTableContext *context,
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
-													   false, NULL, NIL,
-													   false, false, NULL);
+													   false, NULL, NIL, NULL);
 		}
 	}
 
@@ -2106,7 +2088,7 @@ ExecUpdatePrologue(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	 */
 	if (resultRelationDesc->rd_rel->relhasindex &&
 		resultRelInfo->ri_IndexRelationDescs == NULL)
-		ExecOpenIndices(resultRelInfo, false);
+		ExecOpenIndicesForUpdate(resultRelInfo, false, true);
 
 	/* BEFORE ROW UPDATE triggers */
 	if (resultRelInfo->ri_TrigDesc &&
@@ -2304,10 +2286,8 @@ lreplace:
 								estate->es_snapshot,
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
-								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes,
-								&updateCxt->updateModifiedIndexes,
-								&updateCxt->modifiedAttrs);
+								&context->tmfd,
+								updateCxt);
 
 	return result;
 }
@@ -2326,17 +2306,16 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	ModifyTableState *mtstate = context->mtstate;
 	List	   *recheckIndexes = NIL;
 
-	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 &&
-		((updateCxt->updateIndexes != TU_None) || updateCxt->updateModifiedIndexes))
+	/* insert index entries for tuple */
+	if (resultRelInfo->ri_NumIndices > 0)
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 											   slot, context->estate,
-											   true, false,
+											   true,
+											   false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing),
-											   updateCxt->updateModifiedIndexes,
-											   updateCxt->modifiedAttrs);
-	bms_free(updateCxt->modifiedAttrs);
+											   updateCxt->modifiedIndexes);
+
+	bms_free(updateCxt->modifiedIndexes);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
@@ -2471,6 +2450,9 @@ ExecUpdate(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	UpdateContext updateCxt = {0};
 	TM_Result	result;
+
+	updateCxt.estate = estate;
+	updateCxt.rri = resultRelInfo;
 
 	/*
 	 * abort the operation if not running transactions
