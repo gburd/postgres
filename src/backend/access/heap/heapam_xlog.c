@@ -91,10 +91,8 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		Size		datalen;
 		xlhp_freeze_plan *plans;
 		OffsetNumber *frz_offsets;
-		bits8	  **redirect_data = NULL;
-
-//XXX:	get this into the record ! !!
-			char *dataptr = XLogRecGetBlockData(record, 0, &datalen);
+		bits8	  **redirect_data = NULL;	/* XXX: get this into the record */
+		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 
 		heap_xlog_deserialize_prune_and_freeze(dataptr, xlrec.flags,
 											   &nplans, &plans, &frz_offsets,
@@ -1274,9 +1272,6 @@ heap2_redo(XLogReaderState *record)
 	}
 }
 
-/*
- * XXX: document for PHOT
- */
 void
 heap3_redo(XLogReaderState *record)
 {
