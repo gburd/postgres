@@ -169,6 +169,12 @@ typedef struct IndexInfo
 	int			ii_NumIndexAttrs;
 	/* number of key columns in index */
 	int			ii_NumIndexKeyAttrs;
+	/* bitmap of index attributes */
+	Bitmapset  *ii_IndexAttrs;
+	/* index key attribute length */
+	uint16		ii_IndexAttrLen[INDEX_MAX_KEYS];
+	/* set if key attribute is by value */
+	Bitmapset  *ii_IndexAttrByVal;
 
 	/*
 	 * Underlying-rel attribute numbers used as keys (zeroes indicate
@@ -178,11 +184,15 @@ typedef struct IndexInfo
 
 	/* expr trees for expression entries, or NIL if none */
 	List	   *ii_Expressions; /* list of Expr */
+	/* set if the attribute is referenced by an expression index */
+	Bitmapset  *ii_ExpressionAttrs;
 	/* exec state for expressions, or NIL if none */
 	List	   *ii_ExpressionsState;	/* list of ExprState */
 
 	/* partial-index predicate, or NIL if none */
 	List	   *ii_Predicate;	/* list of Expr */
+	/* set if the attribute is referenced by an predicate expression */
+	Bitmapset  *ii_PredicateAttrs;
 	/* exec state for expressions, or NIL if none */
 	ExprState  *ii_PredicateState;
 

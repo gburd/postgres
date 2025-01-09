@@ -117,6 +117,8 @@
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -159,6 +161,24 @@ static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum at
 void
 ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 {
+	ExecOpenIndicesForUpdate(resultRelInfo, speculative, false);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecOpenIndicesForUpdate
+ *
+ *		Find the indices associated with a result relation, open them,
+ *		and save information about them in the result ResultRelInfo
+ *		including potentially information useful for informing HOT
+ *		updates in the heapam.
+ *
+ *		At entry, caller has already opened and locked
+ *		resultRelInfo->ri_RelationDesc.
+ * ----------------------------------------------------------------
+ */
+void
+ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool update)
+{
 	Relation	resultRelation = resultRelInfo->ri_RelationDesc;
 	List	   *indexoidlist;
 	ListCell   *l;
@@ -169,7 +189,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 
 	resultRelInfo->ri_NumIndices = 0;
 
-	/* fast path if no indexes */
+	/* Fast path if no indexes */
 	if (!RelationGetForm(resultRelation)->relhasindex)
 		return;
 
@@ -185,7 +205,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	Assert(resultRelInfo->ri_IndexRelationDescs == NULL);
 
 	/*
-	 * allocate space for result arrays
+	 * Allocate space for result arrays
 	 */
 	relationDescs = (RelationPtr) palloc(len * sizeof(Relation));
 	indexInfoArray = (IndexInfo **) palloc(len * sizeof(IndexInfo *));
@@ -219,6 +239,20 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		 */
 		if (speculative && ii->ii_Unique && !indexDesc->rd_index->indisexclusion)
 			BuildSpeculativeIndexInfo(indexDesc, ii);
+
+		/*
+		 * If the index uses expressions then let's populate the additional
+		 * information nessaary to evaluate them for changes during updates.
+		 */
+		if (update && (ii->ii_Expressions || ii->ii_Predicate))
+			BuildExpressionIndexInfo(indexDesc, ii);
+
+		/*
+		 * If we did extract attributes from expressions then combine to form
+		 * set of attributes referenced by this index.
+		 */
+		ii->ii_IndexAttrs = bms_add_members(ii->ii_IndexAttrs, ii->ii_ExpressionAttrs);
+		ii->ii_IndexAttrs = bms_add_members(ii->ii_IndexAttrs, ii->ii_PredicateAttrs);
 
 		relationDescs[i] = indexDesc;
 		indexInfoArray[i] = ii;
@@ -313,9 +347,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes,
-					  bool onlySummarizing,
-					  bool update_modified_indexes,
-					  Bitmapset *modified_attrs)
+					  Bitmapset *modifiedIndexes)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -372,35 +404,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * If the indexed attributes were not modified and this is a
-		 * partial-HOT update, skip it.
+		 * Only update indexes marked as modified or all when modifedIndexes
+		 * is NULL.
 		 */
-		if (update_modified_indexes)
-		{
-			bool		should_update = false;
-			int			j;
-
-			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
-			{
-				AttrNumber	attrnum = indexInfo->ii_IndexAttrNumbers[j]
-					- FirstLowInvalidHeapAttributeNumber;
-
-				if (bms_is_member(attrnum, modified_attrs))
-				{
-					should_update = true;
-					break;
-				}
-			}
-
-			if (!should_update)
-				continue;
-		}
-
-		/*
-		 * Skip processing of non-summarizing indexes if we only update
-		 * summarizing indexes
-		 */
-		if (onlySummarizing && !indexInfo->ii_Summarizing)
+		if (update && modifiedIndexes && !bms_is_member(i, modifiedIndexes))
 			continue;
 
 		/* Check for partial index */
@@ -1122,6 +1129,9 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 
 	if (hasexpression)
 	{
+		if (indexInfo->ii_IndexUnchanged)
+			return true;
+
 		indexInfo->ii_IndexUnchanged = false;
 		return false;
 	}
@@ -1198,4 +1208,257 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 				(errcode(ERRCODE_CHECK_VIOLATION),
 				 errmsg("empty WITHOUT OVERLAPS value found in column \"%s\" in relation \"%s\"",
 						NameStr(attname), RelationGetRelationName(rel))));
+}
+
+
+/*
+ * Determine which indexes to include when calling ExecIndexInsertTuple().
+ *
+ * This will first determine if the index has a predicate and if so if the
+ * update satisfies that or not.  Then, if necessary, we compare old and
+ * new values of the indexed expression and help determine if it is possible
+ * to use a HOT update or not.
+ *
+ * 'resultRelInfo' refers to the table with the indexes we should examine.
+ * 'modified_attrs' is the set of attributes that are modified by the update.
+ * 'estate' is the executor state for the update.
+ * 'only_summarizing' (out) true when all updated indexes are summarizing.
+ *
+ * When the changes in new tuple impact a value stored in an index we add it
+ * to the bitmapset.
+ *
+ * The same is true when an index has a predicate that is not satisfied by
+ * either the new or old tuples then that index is unchanged.
+ *
+ * When all indexes are updated the bitmapset should be a singleton with only
+ * the value of num_indexes.
+ *
+ * When all indexes are updated the bitmapset returned should be NULL.
+ */
+Bitmapset *
+ExecIndexesRequiringUpdates(Relation relation,
+							ResultRelInfo *resultRelInfo,
+							Bitmapset *modified_attrs,
+							EState *estate,
+							bool *only_summarizing)
+{
+	bool		expression_checks = RelationGetExpressionChecks(relation);
+	int			num_summarizing = 0;
+	int			num_changed = 0;
+	IndexInfo  *indexInfo;
+	TupleTableSlot *save_scantuple;
+	ExprContext *econtext = NULL;
+	TupleTableSlot *old_tts;
+	TupleTableSlot *new_tts;
+	Bitmapset  *result = NULL;
+
+	*only_summarizing = false;
+
+	/*
+	 * Without the information in IndexInfo found in ResultRelInfo there isn't
+	 * much we can do.  Return NULL to indicate that all indexes need to be
+	 * updated.
+	 */
+	if (resultRelInfo == NULL)
+		return NULL;
+
+	old_tts = resultRelInfo->ri_oldTupleSlot;
+	new_tts = resultRelInfo->ri_newTupleSlot;
+
+	Assert(estate != NULL);
+	Assert(new_tts != NULL);
+
+	/*
+	 * When the reloption is disabled we skip using the estate to evaluate
+	 * expressions.  This is an option for someone concerned with the overhead
+	 * of evaluating the expression contexts multiple times.  In this case we
+	 * can still potentially reduce the set of indexes to update by checking
+	 * the index attributes against the modified attributes.
+	 */
+	if (!expression_checks)
+	{
+		for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
+		{
+			indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+			{
+				result = bms_add_member(result, i);
+				num_changed++;
+
+				if (indexInfo->ii_Summarizing)
+					num_summarizing++;
+			}
+		}
+		goto finished;
+	}
+
+	econtext = GetPerTupleExprContext(estate);
+
+	/*
+	 * Examine each index on this relation to see if it is affected by the
+	 * change from old to new tuple.  Record the index of each index that is
+	 * changed, these indexes will be updated.
+	 */
+	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
+	{
+		indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
+
+		/* Skip indexes that don't reference modified attributes. */
+		if (!bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+			continue;
+
+		/*
+		 * Summarizing indexes don't prevent HOT updates, but do require that
+		 * they are updated when there is any overlap with modified attributes
+		 */
+		if (indexInfo->ii_Summarizing)
+		{
+			result = bms_add_member(result, i);
+			num_summarizing++;
+			num_changed++;
+			continue;
+		}
+
+		/*
+		 * If this is a partial index it has a predicate, evaluate the
+		 * expression to determine if we need to include it or not.
+		 */
+		if (bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
+		{
+			ExprState  *predicate;
+			bool		old_tuple_qualifies,
+						new_tuple_qualifies;
+
+			if (IsolationIsSerializable())
+			{
+				result = bms_add_member(result, i);
+				num_changed++;
+			}
+			else
+			{
+				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+				/*
+				 * Here the term "qualifies" means "satisfies the predicate
+				 * condition of the partial index".
+				 */
+				save_scantuple = econtext->ecxt_scantuple;
+				econtext->ecxt_scantuple = old_tts;
+				old_tuple_qualifies = ExecQual(predicate, econtext);
+
+				econtext->ecxt_scantuple = new_tts;
+				new_tuple_qualifies = ExecQual(predicate, econtext);
+				econtext->ecxt_scantuple = save_scantuple;
+
+				/*
+				 * If neither the old nor the new tuples satisfy the predicate
+				 * we can be sure that this index doesn't need updating,
+				 * continue to the next index.
+				 */
+				if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
+					continue;
+
+				/*
+				 * If there is a transition between indexed and not indexed,
+				 * that's enough to require that this index is updated.
+				 */
+				if (new_tuple_qualifies != old_tuple_qualifies)
+				{
+					result = bms_add_member(result, i);
+					num_changed++;
+					continue;
+				}
+
+				/*
+				 * Otherwise the old and new values exist in the index, but
+				 * did they get updated?  We don't yet know, so proceed with
+				 * the next statement in the loop to find out.
+				 */
+			}
+		}
+
+		/*
+		 * Indexes with expressions may or may not have changed, it is
+		 * impossible to know without exercising their expression and
+		 * reviewing index tuple state for changes.  This is a lot of work,
+		 * but because all indexes on JSONB columns fall into this category it
+		 * can be worth it to avoid index updates and remain on the HOT update
+		 * path when possible.
+		 */
+		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modified_attrs))
+		{
+			Datum		old_values[INDEX_MAX_KEYS];
+			bool		old_isnull[INDEX_MAX_KEYS];
+			Datum		new_values[INDEX_MAX_KEYS];
+			bool		new_isnull[INDEX_MAX_KEYS];
+			bool		changed = false;
+
+			save_scantuple = econtext->ecxt_scantuple;
+			econtext->ecxt_scantuple = old_tts;
+			FormIndexDatum(indexInfo,
+						   old_tts,
+						   estate,
+						   old_values,
+						   old_isnull);
+			econtext->ecxt_scantuple = new_tts;
+			FormIndexDatum(indexInfo,
+						   new_tts,
+						   estate,
+						   new_values,
+						   new_isnull);
+			econtext->ecxt_scantuple = save_scantuple;
+
+			for (int j = 0; j < indexInfo->ii_NumIndexKeyAttrs; j++)
+			{
+				if (old_isnull[j] != new_isnull[j])
+				{
+					changed = true;
+					break;
+				}
+				else if (!old_isnull[j])
+				{
+					int16		elmlen = indexInfo->ii_IndexAttrLen[j];
+					bool		elmbyval = bms_is_member(j, indexInfo->ii_IndexAttrByVal);
+
+					if (!datum_image_eq(old_values[j], new_values[j],
+										elmbyval, elmlen))
+					{
+						changed = true;
+						break;
+					}
+				}
+			}
+
+			if (changed)
+			{
+				result = bms_add_member(result, i);
+				num_changed++;
+			}
+
+			continue;
+		}
+
+		/*
+		 * We know we're referencing modified attributes and we're not an
+		 * expression or summarizing index and if there was a partial index
+		 * predicate we satisify it, so this index must be updated.
+		 */
+		result = bms_add_member(result, i);
+		num_changed++;
+	}
+
+finished:;
+	if (num_changed == 0 && resultRelInfo->ri_NumIndices > 0)
+	{
+		result = bms_make_singleton(resultRelInfo->ri_NumIndices);
+	}
+	else if (num_changed == resultRelInfo->ri_NumIndices)
+	{
+		bms_free(result);
+		result = NULL;
+	}
+
+	*only_summarizing = (num_changed > 0 && num_summarizing == num_changed);
+
+	return result;
 }

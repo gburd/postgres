@@ -2480,8 +2480,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_keyattr);
 	bms_free(relation->rd_pkattr);
 	bms_free(relation->rd_idattr);
-	bms_free(relation->rd_hotblockingattr);
-	bms_free(relation->rd_summarizedattr);
+	bms_free(relation->rd_indexedattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5305,8 +5304,7 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *uindexattrs;	/* columns in unique indexes */
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
-	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
-	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
+	Bitmapset  *indexedattrs;	/* columns with HOT blocking indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5325,10 +5323,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_pkattr);
 			case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 				return bms_copy(relation->rd_idattr);
-			case INDEX_ATTR_BITMAP_HOT_BLOCKING:
-				return bms_copy(relation->rd_hotblockingattr);
-			case INDEX_ATTR_BITMAP_SUMMARIZED:
-				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_INDEXED:
+				return bms_copy(relation->rd_indexedattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5371,8 +5367,7 @@ restart:
 	uindexattrs = NULL;
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
-	hotblockingattrs = NULL;
-	summarizedattrs = NULL;
+	indexedattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5385,7 +5380,6 @@ restart:
 		bool		isKey;		/* candidate key */
 		bool		isPK;		/* primary key */
 		bool		isIDKey;	/* replica identity index */
-		Bitmapset **attrs;
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -5423,16 +5417,6 @@ restart:
 		/* Is this index the configured (or default) replica identity? */
 		isIDKey = (indexOid == relreplindex);
 
-		/*
-		 * If the index is summarizing, it doesn't block HOT updates, but we
-		 * may still need to update it (if the attributes were modified). So
-		 * decide which bitmap we'll update in the following loop.
-		 */
-		if (indexDesc->rd_indam->amsummarizing)
-			attrs = &summarizedattrs;
-		else
-			attrs = &hotblockingattrs;
-
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
 		{
@@ -5441,8 +5425,8 @@ restart:
 			/*
 			 * Since we have covering indexes with non-key columns, we must
 			 * handle them accurately here. Non-key columns must be added into
-			 * hotblockingattrs or summarizedattrs, since they are in index,
-			 * and update shouldn't miss them.
+			 * indexedattrs or summarizedattrs, since they are in index, and
+			 * update shouldn't miss them.
 			 *
 			 * Summarizing indexes do not block HOT, but do need to be updated
 			 * when the column value changes, thus require a separate
@@ -5456,7 +5440,7 @@ restart:
 			{
 				AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
 
-				*attrs = bms_add_member(*attrs, attrnum);
+				indexedattrs = bms_add_member(indexedattrs, attrnum);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
 					uindexattrs = bms_add_member(uindexattrs, attrnum);
@@ -5469,11 +5453,11 @@ restart:
 			}
 		}
 
-		/* Collect all attributes used in expressions, too */
-		pull_varattnos(indexExpressions, 1, attrs);
+		/* Separately collect all attributes used in expressions */
+		pull_varattnos(indexExpressions, 1, &indexedattrs);
 
 		/* Collect all attributes in the index predicate, too */
-		pull_varattnos(indexPredicate, 1, attrs);
+		pull_varattnos(indexPredicate, 1, &indexedattrs);
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -5501,8 +5485,7 @@ restart:
 		bms_free(uindexattrs);
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
-		bms_free(hotblockingattrs);
-		bms_free(summarizedattrs);
+		bms_free(indexedattrs);
 
 		goto restart;
 	}
@@ -5515,10 +5498,8 @@ restart:
 	relation->rd_pkattr = NULL;
 	bms_free(relation->rd_idattr);
 	relation->rd_idattr = NULL;
-	bms_free(relation->rd_hotblockingattr);
-	relation->rd_hotblockingattr = NULL;
-	bms_free(relation->rd_summarizedattr);
-	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_indexedattr);
+	relation->rd_indexedattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5531,8 +5512,7 @@ restart:
 	relation->rd_keyattr = bms_copy(uindexattrs);
 	relation->rd_pkattr = bms_copy(pkindexattrs);
 	relation->rd_idattr = bms_copy(idindexattrs);
-	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
-	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_indexedattr = bms_copy(indexedattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5545,10 +5525,8 @@ restart:
 			return pkindexattrs;
 		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 			return idindexattrs;
-		case INDEX_ATTR_BITMAP_HOT_BLOCKING:
-			return hotblockingattrs;
-		case INDEX_ATTR_BITMAP_SUMMARIZED:
-			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_INDEXED:
+			return indexedattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
@@ -6039,27 +6017,62 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
  * AccessShareLock or stronger.
  */
 Bitmapset *
-IndexGetAttrBitmap(Relation relation)
+IndexGetAttrBitmap(Relation index)
 {
 	Bitmapset  *attrs = NULL;
-	Form_pg_index indexStruct;
 
-	/* XXX: Do we need a stronger lock for this to be safe? */
-	Assert(RelationIsValid(relation));
-	Assert(CheckRelationLockedByMe(relation, AccessShareLock, true));
+	Assert(RelationIsValid(index));
+	Assert(CheckRelationLockedByMe(index, AccessShareLock, true));
 
-	indexStruct = relation->rd_index;
-	for (int i = 0; i < indexStruct->indnatts; i++)
+	for (int i = 0; i < index->rd_index->indnkeyatts; i++)
 	{
-		int			attr;
+		int			attridx = index->rd_index->indkey.values[i];
 
-		attr = indexStruct->indkey.values[i];
-		attr -= FirstLowInvalidHeapAttributeNumber;
+		/* Skip expression columns */
+		if (attridx > 0)
+		{
+			AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
 
-		attrs = bms_add_member(attrs, attr);
+			attrs = bms_add_member(attrs, attrnum);
+		}
 	}
 
 	return attrs;
+}
+
+Bitmapset *
+IndexGetExprAttrBitmap(Relation relation)
+{
+	List	   *indexoidlist;
+	ListCell   *l;
+	Bitmapset  *expr_attrs = NULL;
+
+	Assert(RelationIsValid(relation));
+	Assert(CheckRelationLockedByMe(relation, AccessShareLock, true));
+	indexoidlist = RelationGetIndexList(relation);
+
+	/* Fast path if definitely no indexes */
+	if (!RelationGetForm(relation)->relhasindex)
+		return NULL;
+
+	/* Fall out if no indexes (but relhasindex was set) */
+	if (indexoidlist == NIL)
+		return NULL;
+
+	foreach(l, indexoidlist)
+	{
+		Node	   *expr;
+		Oid			indexOid = lfirst_oid(l);
+		Relation	indexDesc;
+
+		indexDesc = index_open(indexOid, AccessShareLock);
+
+		expr = (Node *) RelationGetIndexExpressions(indexDesc);
+
+		pull_varattnos(expr, 1, &expr_attrs);
+		index_close(indexDesc, AccessShareLock);
+	}
+	return expr_attrs;
 }
 
 /*

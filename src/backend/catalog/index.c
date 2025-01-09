@@ -2456,7 +2456,12 @@ BuildIndexInfo(Relation index)
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
+	{
+		ii->ii_IndexAttrs =
+			bms_add_member(ii->ii_IndexAttrs,
+						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
 		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+	}
 
 	/* fetch exclusion constraint info if any */
 	if (indexStruct->indisexclusion)
@@ -2466,6 +2471,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
+
+	ii->ii_IndexAttrByVal = NULL;
 
 	return ii;
 }
@@ -2705,6 +2712,43 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 				 index->rd_opcintype[i], index->rd_opfamily[i]);
 		ii->ii_UniqueProcs[i] = get_opcode(ii->ii_UniqueOps[i]);
 	}
+}
+
+/* ----------------
+ *		BuildExpressionIndexInfo
+ *			Add extra state to IndexInfo record
+ *
+ * For expression indexes updates may not change the indexed value allowing
+ * for a HOT update.  Add information to the IndexInfo to allow for checking
+ * if the indexed value has changed.
+ *
+ * Do this processing here rather than in BuildIndexInfo() to not incur the
+ * overhead in the common non-expression cases.
+ * ----------------
+ */
+void
+BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
+{
+	int			i;
+
+	/* Expressions are not allowed on non-key attributes. */
+	for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
+
+		/* collect attribute len and if they are by value */
+		ii->ii_IndexAttrLen[i] = attr->attlen;
+		if (attr->attbyval)
+			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
+	}
+
+	/* collect attributes used in the expression */
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate */
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 }
 
 /* ----------------

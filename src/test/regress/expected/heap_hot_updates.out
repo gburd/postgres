@@ -1,0 +1,600 @@
+-- Create a function to measure HOT updates
+CREATE OR REPLACE FUNCTION check_hot_updates(
+    expected INT,
+    p_table_name TEXT DEFAULT 't',
+    p_schema_name TEXT DEFAULT current_schema()
+)
+RETURNS TABLE (
+    total_updates BIGINT,
+    hot_updates BIGINT,
+    hot_update_percentage NUMERIC,
+    matches_expected BOOLEAN
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_relid oid;
+    v_qualified_name TEXT;
+    v_hot_updates BIGINT;
+    v_updates BIGINT;
+    v_xact_hot_updates BIGINT;
+    v_xact_updates BIGINT;
+BEGIN
+
+    -- We need to wait for statistics to update
+    PERFORM pg_stat_force_next_flush();
+
+    -- Construct qualified name
+    v_qualified_name := quote_ident(p_schema_name) || '.' || quote_ident(p_table_name);
+
+    -- Get the OID using regclass
+    v_relid := v_qualified_name::regclass;
+
+    IF v_relid IS NULL THEN
+        RAISE EXCEPTION 'Table %.% not found', p_schema_name, p_table_name;
+    END IF;
+
+    -- Get cumulative stats
+    v_hot_updates := COALESCE(pg_stat_get_tuples_hot_updated(v_relid), 0);
+    v_updates := COALESCE(pg_stat_get_tuples_updated(v_relid), 0);
+
+    -- Get current transaction stats
+    v_xact_hot_updates := COALESCE(pg_stat_get_xact_tuples_hot_updated(v_relid), 0);
+    v_xact_updates := COALESCE(pg_stat_get_xact_tuples_updated(v_relid), 0);
+
+    -- Combine stats
+    v_hot_updates := v_hot_updates + v_xact_hot_updates;
+    v_updates := v_updates + v_xact_updates;
+
+    RETURN QUERY
+    SELECT
+        v_updates::BIGINT as total_updates,
+        v_hot_updates::BIGINT as hot_updates,
+        CASE
+            WHEN v_updates > 0 THEN
+                ROUND((v_hot_updates::numeric / v_updates::numeric * 100)::numeric, 2)
+            ELSE 0
+        END as hot_update_percentage,
+        (v_hot_updates = expected)::BOOLEAN as matches_expected;
+END;
+$$;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+CREATE TABLE t(docs JSONB) WITH (autovacuum_enabled = off, fillfactor = 70);
+INSERT INTO t VALUES ('{"name": "john", "id": "1"}');
+SET SESSION enable_seqscan = OFF;
+SET SESSION enable_bitmapscan = OFF;
+-- No indexes on the relation yet, this update should not be HOT.
+UPDATE t SET docs='{"name": "john", "id": "2"}';
+SELECT * FROM check_hot_updates(0);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             1 |           0 |                  0.00 | t
+(1 row)
+
+-- Add an expression index.
+CREATE INDEX t_docs_name_idx ON t((docs->>'name'));
+-- Update without changing the indexed value, should be HOT.
+UPDATE t SET docs='{"name": "john", "id": "3"}';
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             2 |           1 |                 50.00 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'name') = 'john';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Scan using t_docs_name_idx on t
+   Index Cond: ((docs ->> 'name'::text) = 'john'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'name') = 'john';
+            docs             
+-----------------------------
+ {"id": "3", "name": "john"}
+(1 row)
+
+-- Disable potentially expensive expression checks on the relation.
+ALTER TABLE t SET (expression_checks = false);
+SELECT reloptions FROM pg_class WHERE relname = 't';
+                           reloptions                           
+----------------------------------------------------------------
+ {autovacuum_enabled=off,fillfactor=70,expression_checks=false}
+(1 row)
+
+-- All indexes will appear to have changed, so not a HOT update.
+UPDATE t SET docs='{"name": "john", "id": "4"}';
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             3 |           1 |                 33.33 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'name') = 'john';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Scan using t_docs_name_idx on t
+   Index Cond: ((docs ->> 'name'::text) = 'john'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'name') = 'john';
+            docs             
+-----------------------------
+ {"id": "4", "name": "john"}
+(1 row)
+
+-- Re-enable expression checks on the relation.
+ALTER TABLE t SET (expression_checks = true);
+SELECT reloptions FROM pg_class WHERE relname = 't';
+                          reloptions                           
+---------------------------------------------------------------
+ {autovacuum_enabled=off,fillfactor=70,expression_checks=true}
+(1 row)
+
+-- All indexes have changed, so not a HOT update.
+UPDATE t SET docs='{"name": "bill", "id": "5"}';
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             4 |           1 |                 25.00 | t
+(1 row)
+
+-- See what we find using the index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'name') = 'bill';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Scan using t_docs_name_idx on t
+   Index Cond: ((docs ->> 'name'::text) = 'bill'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'name') = 'bill';
+            docs             
+-----------------------------
+ {"id": "5", "name": "bill"}
+(1 row)
+
+-- Add a second index.
+CREATE INDEX t_docs_id_idx ON t((docs->>'id'));
+-- Disable potentially expensive expression checks on the relation.
+ALTER TABLE t SET (expression_checks = false);
+SELECT reloptions FROM pg_class WHERE relname = 't';
+                           reloptions                           
+----------------------------------------------------------------
+ {autovacuum_enabled=off,fillfactor=70,expression_checks=false}
+(1 row)
+
+-- Without the ability to check expressions both indexes will
+-- need to be updated.  Not PHOT where it could have been.
+UPDATE t SET docs='{"name": "bill", "id": "6"}';
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             5 |           1 |                 20.00 | t
+(1 row)
+
+-- See what we find using the name index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'name') = 'bill';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Scan using t_docs_name_idx on t
+   Index Cond: ((docs ->> 'name'::text) = 'bill'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'name') = 'bill';
+            docs             
+-----------------------------
+ {"id": "6", "name": "bill"}
+(1 row)
+
+-- See what we find using the new index on id.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'id') = '6';
+                    QUERY PLAN                     
+---------------------------------------------------
+ Index Scan using t_docs_id_idx on t
+   Index Cond: ((docs ->> 'id'::text) = '6'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'id') = '6';
+            docs             
+-----------------------------
+ {"id": "6", "name": "bill"}
+(1 row)
+
+-- Re-enable expression checks on the relation.
+ALTER TABLE t SET (expression_checks = true);
+SELECT reloptions FROM pg_class WHERE relname = 't';
+                          reloptions                           
+---------------------------------------------------------------
+ {autovacuum_enabled=off,fillfactor=70,expression_checks=true}
+(1 row)
+
+--With checks re-enabled we'll note that only one indexed value
+-- changed and the other didn't, so we can use the PHOT path.
+UPDATE t SET docs='{"name": "bill", "id": "7"}';
+SELECT * FROM check_hot_updates(2);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             6 |           2 |                 33.33 | t
+(1 row)
+
+-- See what we find using the name index.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'name') = 'bill';
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Index Scan using t_docs_name_idx on t
+   Index Cond: ((docs ->> 'name'::text) = 'bill'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'name') = 'bill';
+            docs             
+-----------------------------
+ {"id": "7", "name": "bill"}
+(1 row)
+
+-- See what we find using the new index on id.
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'id') = '7';
+                    QUERY PLAN                     
+---------------------------------------------------
+ Index Scan using t_docs_id_idx on t
+   Index Cond: ((docs ->> 'id'::text) = '7'::text)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'id') = '7';
+            docs             
+-----------------------------
+ {"id": "7", "name": "bill"}
+(1 row)
+
+VACUUM t;
+SELECT * FROM t;
+            docs             
+-----------------------------
+ {"id": "7", "name": "bill"}
+(1 row)
+
+DROP TABLE t;
+SET SESSION enable_seqscan = ON;
+SET SESSION enable_bitmapscan = ON;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- This table is the similar to the previous one but it has three indexes.
+-- The index 'colindex' isn't an expression index, it indexes the entire value
+-- in the docs column.  There are still only two indexed attributes for this
+-- relation, the same two as before.  The presence of an index on the entire
+-- value of the docs column should prevent HOT updates for any updates to any
+-- portion of JSONB content in that column.
+CREATE TABLE  t(id INT PRIMARY KEY, docs JSONB);
+CREATE INDEX t_docs_name_idx ON t((docs->>'name'));
+CREATE INDEX t_docs_idx ON t(docs);
+INSERT INTO t VALUES (1, '{"name": "john", "data": "some data"}');
+-- This update doesn't change the value of the expression index, but it does
+-- change the content of the docs column and so should be PHOT because one of
+-- the three indexes changed as a result of the update so only one should be
+-- updated with a new index entry.
+UPDATE t SET docs='{"name": "john", "data": "some other data"}' where id=1;
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             1 |           1 |                100.00 | t
+(1 row)
+
+-- This update changes the primary key index but not the other index on name
+-- within the docs column, it is a PHOT update (1 of 3 indexes updated).
+UPDATE t SET id=100, docs='{"name": "john", "data": "some more data here"}' WHERE id=1;
+SELECT * FROM check_hot_updates(2);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             2 |           2 |                100.00 | t
+(1 row)
+
+-- This update changes the primary key index and the index on name within
+-- the info column, it is not HOT because it updated all three indexes.
+UPDATE t SET id=1, docs='{"name": "smith", "data": "some more data"}' WHERE id=100;
+SELECT * FROM check_hot_updates(2);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             3 |           2 |                 66.67 | t
+(1 row)
+
+VACUUM t;
+DROP TABLE t;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- This table has one column and two indexes.  They are both expression
+-- indexes referencing the same column attribute (docs) but one is a partial
+-- index.
+CREATE TABLE t (docs JSONB) WITH (autovacuum_enabled = off, fillfactor = 60);
+INSERT INTO t (docs) VALUES ('{"a": 0, "b": 0}');
+INSERT INTO t (docs) SELECT jsonb_build_object('b', n) FROM generate_series(100, 10000) as n;
+CREATE INDEX t_docs_a_idx ON t ((docs->>'a'));
+CREATE INDEX t_docs_b_idx ON t ((docs->>'b')) WHERE (docs->>'b')::numeric > 9;
+-- Leave 'a' unchanged but modify 'b' to a value outside of the index predicate.
+-- This should be a HOT update because neither index is changed.
+UPDATE t SET docs = jsonb_build_object('a', 0, 'b', 1) WHERE (docs->>'a')::numeric = 0;
+SELECT * FROM check_hot_updates(1);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             1 |           1 |                100.00 | t
+(1 row)
+
+-- Let's check to make sure that the index does not contain a value for 'b'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Bitmap Heap Scan on t
+   Recheck Cond: (((docs ->> 'b'::text))::numeric > '9'::numeric)
+   Filter: (((docs ->> 'b'::text))::numeric < '100'::numeric)
+   ->  Bitmap Index Scan on t_docs_b_idx
+(4 rows)
+
+SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+ docs 
+------
+(0 rows)
+
+-- Let's check again, using the BTREE index we know exists
+SET SESSION enable_seqscan = OFF;
+SET SESSION enable_bitmapscan = OFF;
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using t_docs_b_idx on t
+   Filter: (((docs ->> 'b'::text))::numeric < '100'::numeric)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+ docs 
+------
+(0 rows)
+
+-- Leave 'a' unchanged but modify 'b' to a value within the index predicate.
+-- This represents a change for field 'b' from unindexed to indexed and so
+-- this should take the PHOT path.
+UPDATE t SET docs = jsonb_build_object('a', 0, 'b', 10) WHERE (docs->>'a')::numeric = 0;
+VACUUM ANALYZE t;
+SELECT * FROM check_hot_updates(2);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             2 |           2 |                100.00 | t
+(1 row)
+
+-- Let's check to make sure that the index contains the new value of 'b'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using t_docs_b_idx on t
+   Filter: (((docs ->> 'b'::text))::numeric < '100'::numeric)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+       docs        
+-------------------
+ {"a": 0, "b": 10}
+(1 row)
+
+-- This update modifies the value of 'a', an indexed field, so again this is
+-- a PHOT update.
+UPDATE t SET docs = jsonb_build_object('a', 1, 'b', 10) WHERE (docs->>'b')::numeric = 10;
+VACUUM ANALYZE t;
+SELECT * FROM check_hot_updates(3);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             3 |           3 |                100.00 | t
+(1 row)
+
+-- This update changes both 'a' and 'b' to new values so all indexes require
+-- updates, this should not use the HOT or PHOT path.
+UPDATE t SET docs = jsonb_build_object('a', 2, 'b', 12) WHERE (docs->>'b')::numeric = 10;
+VACUUM ANALYZE t;
+SELECT * FROM check_hot_updates(3);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             4 |           3 |                 75.00 | t
+(1 row)
+
+-- Let's check to make sure that the index contains the new value of 'b'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using t_docs_b_idx on t
+   Filter: (((docs ->> 'b'::text))::numeric < '100'::numeric)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+       docs        
+-------------------
+ {"a": 2, "b": 12}
+(1 row)
+
+-- This update changes 'b' to a value outside its predicate requiring that
+-- we remove it from the index.  That's a transition for the index and so
+-- this should be a PHOT update.
+UPDATE t SET docs = jsonb_build_object('a', 2, 'b', 1) WHERE (docs->>'b')::numeric = 12;
+VACUUM ANALYZE t;
+SELECT * FROM check_hot_updates(4);
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             5 |           4 |                 80.00 | t
+(1 row)
+
+-- Let's check to make sure that the index no longer contains the value of 'b'
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using t_docs_b_idx on t
+   Filter: (((docs ->> 'b'::text))::numeric < '100'::numeric)
+(2 rows)
+
+SELECT * FROM t WHERE (docs->>'b')::numeric > 9 AND (docs->>'b')::numeric < 100;
+       docs       
+------------------
+ {"a": 2, "b": 1}
+(1 row)
+
+VACUUM ANALYZE t;
+SET SESSION enable_seqscan = ON;
+SET SESSION enable_bitmapscan = ON;
+DROP TABLE t;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- Tests to ensure that HOT updates are not performed when multiple indexed
+-- attributes are updated.
+CREATE TABLE t(a INT, b INT) WITH (autovacuum_enabled = off, fillfactor = 60);
+SELECT reset_table_stats('t');
+ERROR:  function reset_table_stats(unknown) does not exist
+LINE 1: SELECT reset_table_stats('t');
+               ^
+HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+CREATE INDEX t_idx_a ON t(a);
+CREATE INDEX t_idx_b ON t(abs(b));
+INSERT INTO t VALUES (1, -1);
+-- Both are updated, the second is an expression index with an unchanged
+-- index value.  The change to the index on a should prevent HOT updates.
+UPDATE t SET a = 2, b = 1 WHERE a = 1;
+SELECT * FROM check_hot_updates(0, 't');
+ total_updates | hot_updates | hot_update_percentage | matches_expected 
+---------------+-------------+-----------------------+------------------
+             1 |           1 |                100.00 | f
+(1 row)
+
+VACUUM ANALYZE t;
+DROP TABLE t;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- Clean up
+DROP FUNCTION check_hot_updates(int, text, text);
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+SELECT * FROM ex WHERE (_v->>'b')::numeric > 9 AND (_v->>'b')::numeric < 100;
+ _v 
+----
+(0 rows)
+
+VACUUM ANALYZE ex;
+-- Let's make sure we're recording HOT updates for our 'ex' relation properly in the system
+-- table pg_stat_user_tables.  Note that statistics are stored within a transaction context
+-- first (xact) and then later into the global statistics for a relation.
+SELECT
+    c.relname AS table_name,
+    -- Transaction statistics
+    pg_stat_get_xact_tuples_updated(c.oid) AS xact_updates,
+    pg_stat_get_xact_tuples_hot_updated(c.oid) AS xact_hot_updates,
+    ROUND((
+	pg_stat_get_xact_tuples_hot_updated(c.oid)::float /
+	NULLIF(pg_stat_get_xact_tuples_updated(c.oid), 0) * 100
+    )::numeric, 2) AS xact_hot_update_percentage,
+    -- Cumulative statistics
+    s.n_tup_upd AS total_updates,
+    s.n_tup_hot_upd AS hot_updates,
+    ROUND((
+	s.n_tup_hot_upd::float /
+	NULLIF(s.n_tup_upd, 0) * 100
+    )::numeric, 2) AS total_hot_update_percentage
+FROM pg_class c
+LEFT JOIN pg_stat_user_tables s ON c.relname = s.relname
+WHERE c.relname = 'ex'
+AND c.relnamespace = 'public'::regnamespace;
+ table_name | xact_updates | xact_hot_updates | xact_hot_update_percentage | total_updates | hot_updates | total_hot_update_percentage 
+------------+--------------+------------------+----------------------------+---------------+-------------+-----------------------------
+ ex         |            5 |                4 |                      80.00 |             0 |           0 |                            
+(1 row)
+
+-- expect: 5 xact updates with 4 xact hot update
+DROP TABLE public.ex;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- This table has a single column 'email' and a unique constraint on it that
+-- should preclude HOT updates.
+CREATE TABLE users (
+    user_id serial primary key,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    EXCLUDE USING btree (lower(email) WITH =)
+);
+-- Add some data to the table and then update it in ways that should and should
+-- not be HOT updates.
+INSERT INTO users (name, email) VALUES
+('user1', 'user1@example.com'),
+('user2', 'user2@example.com'),
+('taken', 'taken@EXAMPLE.com'),
+('you', 'you@domain.com'),
+('taken', 'taken@domain.com');
+-- Should fail because of the unique constraint on the email column.
+UPDATE users SET email = 'user1@example.com' WHERE email = 'user2@example.com';
+ERROR:  conflicting key value violates exclusion constraint "users_lower_excl"
+DETAIL:  Key (lower(email::text))=(user1@example.com) conflicts with existing key (lower(email::text))=(user1@example.com).
+SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 0 rows, no new HOT updates
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   0
+(1 row)
+
+-- Should succeed because the email column is not being updated and should go HOT.
+UPDATE users SET name = 'foo' WHERE email = 'user1@example.com';
+SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 1 row, a single new HOT update
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   1
+(1 row)
+
+-- Create a partial index on the email column, updates 
+CREATE INDEX idx_users_email_no_example ON users (lower(email)) WHERE lower(email) LIKE '%@example.com%';
+-- An update that changes the email column but not the indexed portion of it and falls outside the constraint.
+-- Shouldn't be a HOT update because of the exclusion constraint.
+UPDATE users SET email = 'you+2@domain.com' WHERE name = 'you';
+SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 1 row, no new HOT updates
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   1
+(1 row)
+
+-- An update that changes the email column but not the indexed portion of it and falls within the constraint.
+-- Again, should fail constraint and fail to be a HOT update.
+UPDATE users SET email = 'taken@domain.com' WHERE name = 'you';
+ERROR:  conflicting key value violates exclusion constraint "users_lower_excl"
+DETAIL:  Key (lower(email::text))=(taken@domain.com) conflicts with existing key (lower(email::text))=(taken@domain.com).
+SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 1 row, no new HOT updates
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   1
+(1 row)
+
+DROP TABLE users;
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- Another test of constraints spoiling HOT updates, this time with a range.
+CREATE TABLE events (
+    id serial primary key,
+    name VARCHAR(255) NOT NULL,
+    event_time tstzrange,
+    constraint no_screening_time_overlap exclude using gist (
+        event_time WITH &&
+    )
+);
+-- Add two non-overlapping events.
+INSERT INTO events (id, event_time, name)
+VALUES
+    (1, '["2023-01-01 19:00:00", "2023-01-01 20:45:00"]', 'event1'),
+    (2, '["2023-01-01 21:00:00", "2023-01-01 21:45:00"]', 'event2');
+-- Update the first event to overlap with the second, should fail the constraint and not be HOT.
+UPDATE events SET event_time = '["2023-01-01 20:00:00", "2023-01-01 21:45:00"]' WHERE id = 1;
+ERROR:  conflicting key value violates exclusion constraint "no_screening_time_overlap"
+DETAIL:  Key (event_time)=(["Sun Jan 01 20:00:00 2023 PST","Sun Jan 01 21:45:00 2023 PST"]) conflicts with existing key (event_time)=(["Sun Jan 01 21:00:00 2023 PST","Sun Jan 01 21:45:00 2023 PST"]).
+SELECT pg_stat_get_xact_tuples_hot_updated('events'::regclass); -- expect: 0 row, no new HOT updates
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   0
+(1 row)
+
+-- Update the first event to not overlap with the second, again not HOT due to the constraint.
+UPDATE events SET event_time = '["2023-01-01 22:00:00", "2023-01-01 22:45:00"]' WHERE id = 1;
+SELECT pg_stat_get_xact_tuples_hot_updated('events'::regclass); -- expect: 0 row, no new HOT updates
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   0
+(1 row)
+
+-- Update the first event to not overlap with the second, this time we're HOT because we don't overlap with the constraint.
+UPDATE events SET name = 'new name here' WHERE id = 1;
+SELECT pg_stat_get_xact_tuples_hot_updated('events'::regclass); -- expect: 1 row, one new HOT update
+ pg_stat_get_xact_tuples_hot_updated 
+-------------------------------------
+                                   1
+(1 row)
+
+DROP TABLE events;

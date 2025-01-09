@@ -542,7 +542,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 
 		if (ItemIdIsRedirected(itemid))
 		{
-			/* This is the start of a HOT chain */
+			/* This is the start of a (P)HOT chain */
 			prstate.root_items[prstate.nroot_items++] = offnum;
 			continue;
 		}
@@ -1052,7 +1052,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 	ItemId		rootlp;
 	OffsetNumber offnum;
 	OffsetNumber chainitems[MaxHeapTuplesPerPage];
-	bool		phot_items[MaxHeapTuplesPerPage];
+	bool		phot_items[MaxHeapTuplesPerPage] = {false};
 
 	/*
 	 * After traversing the HOT chain, ndeadchain is the index in chainitems
@@ -1060,8 +1060,6 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 	 */
 	int			ndeadchain = 0,
 				nchain = 0;
-
-	memset(phot_items, false, sizeof(phot_items));
 
 	rootlp = PageGetItemId(page, rootoffnum);
 
@@ -1125,7 +1123,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
 		/*
-		 * Check the tuple XMIN against prior XMAX, if any
+		 * Check the tuple XMIN against prior XMAX, if any.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!TransactionIdEquals(HeapTupleHeaderGetXmin(htup), priorXmax))
@@ -1145,11 +1143,11 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		{
 			case HEAPTUPLE_DEAD:
 
-				/* Remember the last DEAD tuple seen */
+				/* Remember the last DEAD tuple seen. */
 				ndeadchain = nchain;
 				HeapTupleHeaderAdvanceConflictHorizon(htup,
 													  &prstate->latest_xid_removed);
-				/* Advance to next chain member */
+				/* Advance to next chain member. */
 				break;
 
 			case HEAPTUPLE_RECENTLY_DEAD:
@@ -1260,7 +1258,7 @@ process_chain:
 		int			lastoff = chainitems[nchain - 1];
 		int			nkeys = 0;
 		bool		has_phot = phot_items[nchain - 1];
-		bool		chain_dead = (lastoff == chainitems[ndeadchain - 1]);
+		bool		chain_dead = false;
 
 		/*
 		 * Consider the last tuple in the chain first, we know it isn't dead
@@ -1468,6 +1466,7 @@ heap_prune_record_redirect_with_data(PruneState *prstate,
 {
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
+	prstate->processed[rdoffnum] = true;
 
 	/*
 	 * Do not mark the redirect target here.  It needs to be counted
@@ -1924,7 +1923,59 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		OffsetNumber tooff = *offnum++;
 		ItemId		fromlp = PageGetItemId(page, fromoff);
 		OffsetNumber origoff = ItemIdGetOffset(fromlp);
+		ItemId		tolp PG_USED_FOR_ASSERTS_ONLY;
 
+		if (!ItemIdHasStorage(fromlp))
+		{
+			ItemId		intermediate = PageGetItemId(page, origoff);
+
+			origoff = ItemIdGetOffset(intermediate);
+			fromlp->lp_off = origoff;
+		}
+
+#ifdef USE_ASSERT_CHECKING
+
+		/*
+		 * Any existing item that we set as an LP_REDIRECT (any 'from' item)
+		 * must be the first item from a HOT chain.
+		 */
+
+		if (!ItemIdIsRedirected(fromlp))
+		{
+			/*
+			 * Setup a LP_REDIRECT from a normal tuple to the new partial
+			 * heap-only tuple.
+			 */
+			Assert(ItemIdHasStorage(fromlp) && ItemIdIsNormal(fromlp));
+			htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+			Assert(!HeapTupleHeaderIsHeapOnly(htup));
+		}
+		else
+		{
+			/* We shouldn't need to redundantly set the redirect */
+			Assert(ItemIdGetRedirect(fromlp) != tooff);
+
+			if (ItemIdHasStorage(fromlp))
+			{
+				htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+				Assert(!HeapTupleHeaderIsPartialHeapOnly(htup));
+			}
+		}
+
+		/*
+		 * The item that we're about to set as an LP_REDIRECT (the 'from'
+		 * item) will point to an existing item (the 'to' item) that is either
+		 * a heap-only tuple, or a partial heap-only tuple.
+		 *
+		 * This check may miss problems, e.g. the target of a redirect could
+		 * be marked as unused subsequently. The page_verify_redirects() check
+		 * below will catch such problems.
+		 */
+		tolp = PageGetItemId(page, tooff);
+		Assert(ItemIdHasStorage(tolp) && ItemIdIsNormal(tolp));
+		htup = (HeapTupleHeader) PageGetItem(page, tolp);
+		Assert(HeapTupleHeaderIsPartialHeapOnly(htup));
+#endif
 		ItemIdSetRedirectWithData(fromlp, tooff);
 
 		memcpy((char *) page + origoff,
@@ -1948,7 +1999,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		 * heap-only tuple item, though. (It's not clear how much of a problem
 		 * that would be, but there is no reason to allow it.)
 		 */
-		if (ItemIdHasStorage(lp))
+		if (ItemIdHasStorage(lp) && !ItemIdIsPartialHotRedirected(page, lp))
 		{
 			Assert(ItemIdIsNormal(lp));
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
@@ -1992,7 +2043,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			{
 				Assert(ItemIdHasStorage(lp) && ItemIdIsNormal(lp));
 				htup = (HeapTupleHeader) PageGetItem(page, lp);
-				Assert(HeapTupleHeaderIsHeapOnly(htup));
+				Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+					   HeapTupleHeaderIsPartialHeapOnly(htup));
 			}
 			else
 				Assert(ItemIdIsUsed(lp));
