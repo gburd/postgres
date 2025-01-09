@@ -1613,10 +1613,10 @@ heap_fetch(Relation relation,
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
- * If interesting_attrs is not NULL, we use it to determine whether we should
+ * If indexed_attrs is not NULL, we use it to determine whether we should
  * continue following PHOT chains.  Specifically, if we detect a modified column
- * that is a member of interesting_attrs, we stop following the PHOT chain.  If
- * interesting_attrs is NULL, we follow PHOT chains just like we do HOT chains.
+ * that is a member of indexed_attrs, we stop following the PHOT chain.  If
+ * indexed_attrs is NULL, we follow PHOT chains just like we do HOT chains.
  * In this case, the caller is responsible for resolving duplicates and applying
  * recheck conditions to ensure the return tuple matches.
  *
@@ -1627,7 +1627,7 @@ bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
 					   bool *all_dead, bool first_call,
-					   Bitmapset *interesting_attrs)
+					   Bitmapset *indexed_attrs)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -1668,15 +1668,17 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* check for unused, dead, or redirected items */
 		if (!ItemIdIsNormal(lp))
 		{
+			/* A partial redirect can be mid-chain */
 			if (ItemIdIsPartialHotRedirected(page, lp))
 			{
+				/* Follow the redirect */
 				bits8	   *rdata;
 				Bitmapset  *attrs;
 				bool		found = false;
 				int			attridx = -1;
 
 				rdata = (bits8 *) ItemIdGetRedirectData(page, lp);
-				attrs = bms_copy(interesting_attrs);
+				attrs = bms_copy(indexed_attrs);
 				while (!found && (attridx = bms_next_member(attrs, attridx)) >= 0)
 				{
 					AttrNumber	attrnum = attridx + FirstLowInvalidHeapAttributeNumber;
@@ -1691,9 +1693,11 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				else
 					offnum = ItemIdGetRedirect(lp);
 			}
-			else if (ItemIdIsRedirected(lp))
+			/* We should only see a redirect at start of chain */
+			else if (ItemIdIsRedirected(lp) && at_chain_start)
 				offnum = ItemIdGetRedirect(lp);
 			else
+				/* else must be end of chain */
 				break;
 
 			has_prev_tup = false;
@@ -1731,13 +1735,13 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * If this tuple was a PHOT update, make sure that we should keep
 		 * following it based on the modified attributes.
 		 *
-		 * If interesting_attrs is NULL, we follow this just like we do HOT
+		 * If indexed_attrs is NULL, we follow this just like we do HOT
 		 * chains.  The caller is responsible for handling the return value
 		 * appropriately (e.g., rechecking, deduplication).
 		 */
 		if (OffsetNumberIsValid(prev_offnum) &&
 			HeapTupleIsPartialHeapOnly(heapTuple) &&
-			interesting_attrs &&
+			indexed_attrs &&
 			has_prev_tup)
 		{
 			Bitmapset  *modified_attrs;
@@ -1749,7 +1753,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			 * HeapDetermineColumnsInfo destructively modifies the input
 			 * bitmapset, so we need to copy it.
 			 */
-			attrs = bms_copy(interesting_attrs);
+			attrs = bms_copy(indexed_attrs);
 			modified_attrs = HeapDetermineColumnsInfo(relation, attrs, NULL,
 													  &prev_tup, heapTuple,
 													  &id_has_external);

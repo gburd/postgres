@@ -1000,19 +1000,36 @@ htsv_get_valid_status(int status)
  *
  * Tuple visibility information is provided in prstate->htsv.
  *
- * If the item is an index-referenced tuple (i.e. not a heap-only tuple),
- * the HOT chain is pruned by removing all DEAD tuples at the start of the HOT
- * chain.  We also prune any RECENTLY_DEAD tuples preceding a DEAD tuple.
- * This is OK because a RECENTLY_DEAD tuple preceding a DEAD tuple is really
- * DEAD, our visibility test is just too coarse to detect it.
+ * If the item is an index-referenced tuple (i.e. not a heap-only or partial
+ * heap-only tuple), the HOT chain is pruned by removing all DEAD tuples at
+ * the start of the HOT chain.  We also prune any RECENTLY_DEAD tuples
+ * preceding a DEAD tuple. This is OK because a RECENTLY_DEAD tuple preceding
+ * a DEAD tuple is really DEAD, our visibility test is just too coarse to
+ * detect it.
  *
  * Pruning must never leave behind a DEAD tuple that still has tuple storage.
  * VACUUM isn't prepared to deal with that case.
  *
- * The root line pointer is redirected to the tuple immediately after the
- * latest DEAD tuple.  If all tuples in the chain are DEAD, the root line
- * pointer is marked LP_DEAD.  (This includes the case of a DEAD simple
- * tuple, which we treat as a chain of length 1.)
+ * When pruning a HOT chain the root line pointer is redirected to the tuple
+ * immediately after the latest DEAD tuple.  If all tuples in the chain are
+ * DEAD, the root line pointer is marked LP_DEAD.  (This includes the case of
+ * a DEAD simple tuple, which we treat as a chain of length 1.)
+ *
+ * PHOT pruning has more restrictions and is more complex than HOT.  The
+ * strategy cleanup is as follows:
+ * 1) Starting at the root of the PHOT chain, create an OR'd bitmap of the
+ * modified columns in the chain until you reach a tuple that is not visible
+ * to all snapshots.
+ * 2) Walk backwards, OR-ing the modified column bitmaps. Stop when the
+ * bitmaped matches the one from step (1). While walking backwards, identify
+ * "key" tuples, which are tuples where the OR'd bitmap changes as you walk
+ * backwards. If the OR'd bitmap does not include all indexed columns for the
+ * table, also include the root of the PHOT chain as a key tuple.
+ * 3) Redirect each key tuple to the next key tuple.
+ * 4)Mark all line pointers for all non-key tuples as dead. Storage can be
+ * removed for all tuples except the last one, but we must leave around the
+ * modified columns bitmaps for all key tuples except the first one (i.e.,
+ * the new root of the chain).
  *
  * We don't actually change the page here. We just add entries to the arrays in
  * prstate showing the changes to be made.  Items to be redirected are added
@@ -1025,8 +1042,6 @@ htsv_get_valid_status(int status)
  * fate of each tuple, ie. whether it's going to be removed, redirected or
  * left unchanged, and the heap_prune_record_*() subroutines update PruneState
  * based on that outcome.
- *
- * XXX: Update this description for PHOT.
  */
 static void
 heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
@@ -1085,11 +1100,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		Assert(!ItemIdIsDead(lp));
 
 		/*
-		 * If we are looking at the redirected root line pointer, jump to the
-		 * first normal tuple in the chain.  If we find a redirect somewhere
-		 * else, stop --- it must not be same chain.
-		 *
-		 * XXX: update this comment for PHOT
+		 * Create a record of the partially redirected items in the chain.
 		 */
 		if (ItemIdIsRedirected(lp))
 		{
@@ -1173,7 +1184,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 
 		/*
 		 * If the tuple is not (P)HOT-updated, then we are at the end of this
-		 * (P)HOT-update chain.
+		 * chain.
 		 */
 		if (!HeapTupleHeaderIsHotUpdated(htup) &&
 			!HeapTupleHeaderIsPartialHotUpdated(htup))
@@ -2478,9 +2489,22 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 }
 
 /*
- * GetModifiedColumnsBitmap
+ * Determine the set of columns that were modified between two tuples.
  *
- * XXX: document this
+ * The PHOT update path needs to know what changed between tuples in order to
+ * update only the indexes that need it. This function will either create a
+ * bitmap by examining the old and new tuples or return a bitmap that was
+ * previously stored in the page.
+ *
+ * When the new tuple is heap-only and the previous was redirected it is not
+ * possible to determine what columns were modified. In this case, the function
+ * returns an empty bitmap (NULL) which should be okay because in this case the
+ * PHOT path does not require the modified columns data.
+ *
+ * The other two cases are a) when the old tuple is normal and b) when the old
+ * tuple redirected-with-data. When the old tuple is normal we construct a new
+ * bitmap using HeapDetermineColumnsInfo. When the old tuple is redirected-with-
+ * data we simply return the bitmap that was stored in the page.
  */
 static Bitmapset *
 GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
@@ -2575,9 +2599,8 @@ GetModifiedColumnsBitmap(Relation relation, Page page, BlockNumber blockno,
 }
 
 /*
- * StoreModifiedColumnsBitmap
- *
- * TODO: describe and WAL-log!
+ * Encode the bitmap of modified columns into a format that can be stored in
+ * the page.  This format is only decoded in GetModifiedColumnsBitmap.
  */
 static void
 StoreModifiedColumnsBitmap(Bitmapset *data, int natts, bits8 **bits)

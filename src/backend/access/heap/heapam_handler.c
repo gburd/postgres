@@ -2241,7 +2241,7 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 				 * XXX: It may be possible to avoid some of this work if we
 				 * know that there are no PHOT chains on the page.  It is not
 				 * yet clear whether the current behavior results in a
-				 * significant perfomance impact.
+				 * significant performance impact.
 				 */
 				for (i = 0; i < ntup; i++)
 				{
