@@ -1008,6 +1008,20 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_expression_checks", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the ability to examine expression indexes for "
+						 "changes during updates."),
+			gettext_noop("Evaluates the expression provided on the index three times "
+						 "rather than once to determine if the expressed value has "
+						 "changed.  This allows for heap-only tuple (HOT) updates on "
+						 "only those indexes that have changes."),
+			GUC_EXPLAIN
+		},
+		&enable_expression_checks,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "

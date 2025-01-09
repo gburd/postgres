@@ -84,6 +84,10 @@ s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
 s1: NOTICE:  acquiring advisory lock on 2
 s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
 s1: NOTICE:  acquiring advisory lock on 2
+s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 2
+s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 2
 step s1_upsert: <... completed>
 step controller_show: SELECT * FROM upserttest;
 key|data                               
@@ -172,6 +176,10 @@ pg_advisory_unlock
 t                 
 (1 row)
 
+s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
+s2: NOTICE:  acquiring advisory lock on 2
+s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
+s2: NOTICE:  acquiring advisory lock on 2
 s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
 s2: NOTICE:  acquiring advisory lock on 2
 s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
@@ -369,6 +377,10 @@ key|data
 step s1_commit: COMMIT;
 s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
 s2: NOTICE:  acquiring advisory lock on 2
+s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
+s2: NOTICE:  acquiring advisory lock on 2
+s2: NOTICE:  blurt_and_lock_123() called for k1 in session 2
+s2: NOTICE:  acquiring advisory lock on 2
 step s2_upsert: <... completed>
 step controller_show: SELECT * FROM upserttest;
 key|data       
@@ -530,6 +542,14 @@ isolation/insert-conflict-specconflict/s2|transactionid|ExclusiveLock|t
 step s2_commit: COMMIT;
 s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
 s1: NOTICE:  acquiring advisory lock on 2
+s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 2
+s1: NOTICE:  blurt_and_lock_123() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 2
+s1: NOTICE:  blurt_and_lock_4() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 4
+s1: NOTICE:  blurt_and_lock_4() called for k1 in session 1
+s1: NOTICE:  acquiring advisory lock on 4
 step s1_upsert: <... completed>
 step s1_noop: 
 step controller_show: SELECT * FROM upserttest;

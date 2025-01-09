@@ -284,7 +284,7 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		HOT has been applied and any updated columns are indexed
  *		only by summarizing indexes (or in more general terms a
  *		call to table_tuple_update() took place and set
- *		'update_indexes' to TUUI_Summarizing). We can (and must)
+ *		'update_indexes' to TU_Summarizing). We can (and must)
  *		therefore only update the indexes that have
  *		'amsummarizing' = true.
  *
@@ -307,9 +307,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes,
-					  bool onlySummarizing,
-					  bool update_modified_indexes,
-					  Bitmapset *modified_attrs)
+					  Bitmapset *modified_indexes)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -366,35 +364,12 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * If the indexed attributes were not modified and this is a
-		 * partial-HOT update, skip it.
+		 * If modified_indexes is NULL, we're not in a (P)HOT update, so we
+		 * should update all indexes.  If it's not NULL, we should only update
+		 * the listed indexes.  This list will include any summarizing indexes
+		 * that require updates on the HOT path as well.
 		 */
-		if (update_modified_indexes)
-		{
-			bool		should_update = false;
-			int			j;
-
-			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
-			{
-				AttrNumber	attrnum = indexInfo->ii_IndexAttrNumbers[j]
-					- FirstLowInvalidHeapAttributeNumber;
-
-				if (bms_is_member(attrnum, modified_attrs))
-				{
-					should_update = true;
-					break;
-				}
-			}
-
-			if (!should_update)
-				continue;
-		}
-
-		/*
-		 * Skip processing of non-summarizing indexes if we only update
-		 * summarizing indexes
-		 */
-		if (onlySummarizing && !indexInfo->ii_Summarizing)
+		if (update && modified_indexes && !bms_is_member(i, modified_indexes))
 			continue;
 
 		/* Check for partial index */
@@ -1116,6 +1091,9 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 
 	if (hasexpression)
 	{
+		if (indexInfo->ii_IndexUnchanged)
+			return true;
+
 		indexInfo->ii_IndexUnchanged = false;
 		return false;
 	}
