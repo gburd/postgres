@@ -1052,7 +1052,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 	ItemId		rootlp;
 	OffsetNumber offnum;
 	OffsetNumber chainitems[MaxHeapTuplesPerPage];
-	bool		phot_items[MaxHeapTuplesPerPage];
+	bool		phot_items[MaxHeapTuplesPerPage] = {false};
 
 	/*
 	 * After traversing the HOT chain, ndeadchain is the index in chainitems
@@ -1060,8 +1060,6 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 	 */
 	int			ndeadchain = 0,
 				nchain = 0;
-
-	memset(phot_items, false, sizeof(phot_items));
 
 	rootlp = PageGetItemId(page, rootoffnum);
 

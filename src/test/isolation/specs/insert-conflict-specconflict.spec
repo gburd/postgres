@@ -5,6 +5,11 @@
 # insertions. By waiting when building the index keys, it's possible
 # to schedule concurrent INSERT ON CONFLICTs so that there will always
 # be a speculative conflict.
+#
+# Note: The expression index would be called three times, not once, when
+# checking expression indexes to determine if the (P)HOT update path is
+# possible.  This changes the expected state transitions in this test, so
+# we disable that feature.
 
 setup
 {
