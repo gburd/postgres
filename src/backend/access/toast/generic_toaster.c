@@ -51,8 +51,7 @@
 #include "access/toast_helper.h"
 #include "utils/fmgroids.h"
 #include "access/generic_toaster.h"
-#include "catalog/pg_toastrel.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel.h"
 
 /*
  * Callback function signatures --- see toaster.sgml for more info.

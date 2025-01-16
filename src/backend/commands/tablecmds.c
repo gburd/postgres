@@ -371,6 +371,7 @@ static void RangeVarCallbackForTruncate(const RangeVar *relation,
 static List *MergeAttributes(List *columns, const List *supers, char relpersistence,
 							 bool is_partition, List **supconstr,
 							 Oid accessMethodId);
+static void MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel, bool ispartition);
 static void MergeChildAttribute(List *inh_columns, int exist_attno, int newcol_attno, const ColumnDef *newdef);
 static ColumnDef *MergeInheritedAttribute(List *inh_columns, int exist_attno, const ColumnDef *newdef);
 static void MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel);
@@ -676,6 +677,7 @@ static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 static char GetAttributeCompression(Oid atttypid, const char *compression);
 static char GetAttributeStorage(Oid atttypid, const char *storagemode);
+static List *MergeCheckConstraint(List *constraints, const char *name, Node *expr);
 static Oid GetAttributeToaster(Oid atttypid, const char *toaster);
 
 
@@ -720,6 +722,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	Oid			ofTypeId;
 	ObjectAddress address;
 	LOCKMODE	parentLockmode;
+	const char *accessMethod = NULL;
 	Oid			accessMethodId = InvalidOid;
 
 	/*
@@ -982,6 +985,22 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			cookedDefaults = lappend(cookedDefaults, cooked);
 			attr->atthasdef = true;
 		}
+
+	if (colDef->toaster)
+		tsroid = DatumGetObjectId(GetInheritedToaster(stmt->tableElts, inheritOids,
+													  stmt->relation->relpersistence,
+													  stmt->partbound == NULL,
+													  &old_constraints, accessMethodId, attr->attname, attr->atttypid));
+	else if (TypeIsToastable(attr->atttypid))
+		tsroid = DEFAULT_TOASTER_OID;
+	else
+		tsroid = InvalidOid;
+
+	if (OidIsValid(tsroid))
+		validateToaster(tsroid, attr->atttypid,
+						attr->attstorage, attr->attcompression,
+						accessMethodId, false);
+
 	}
 
 	/*
@@ -1077,6 +1096,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 				0, relnamedata, trelnamedata, 0, RowExclusiveLock);
 		}
 	}
+
 	/*
 	 * Open the new relation and acquire exclusive lock on it.  This isn't
 	 * really necessary for locking out other backends (since they can't see
@@ -1421,17 +1441,20 @@ BuildDescForRelation(const List *columns)
 		att->attidentity = entry->identity;
 		att->attgenerated = entry->generated;
 		att->attcompression = GetAttributeCompression(att->atttypid, entry->compression);
-		att->atttoaster = GetAttributeToaster(att->atttypid, entry->toaster);
 
 		if (entry->storage)
 			att->attstorage = entry->storage;
 		else if (entry->storage_name)
 			att->attstorage = GetAttributeStorage(att->atttypid, entry->storage_name);
 
+		/*
+		  att->atttoaster = GetAttributeToaster(att->atttypid, entry->toaster);
+
 		if (OidIsValid(att->atttoaster))
 			validateToaster(att->atttoaster, att->atttypid,
 							att->attstorage, att->attcompression,
 							InvalidOid, false);
+		*/
 	}
 
 	if (has_not_null)
@@ -2774,6 +2797,7 @@ MergeAttributes(List *columns, const List *supers, char relpersistence,
 			int			exist_attno;
 			ColumnDef  *newdef;
 			ColumnDef  *mergeddef;
+			Oid defTsrId;
 
 			/*
 			 * Ignore dropped columns in the parent.
@@ -2792,12 +2816,27 @@ MergeAttributes(List *columns, const List *supers, char relpersistence,
 			if (CompressionMethodIsValid(attribute->attcompression))
 				newdef->compression =
 					pstrdup(GetCompressionMethodName(attribute->attcompression));
-			if (OidIsValid(attribute->atttoaster))
+
+			defTsrId = DatumGetObjectId(GetLastToaster(relation->rd_id, attribute->attnum, AccessShareLock));
+			if (newdef->toaster)
 			{
-				validateToaster(attribute->atttoaster, attribute->atttypid,
+				if (get_toaster_oid(newdef->toaster, false) != defTsrId)
+				{
+					ereport(ERROR,
+							(errcode(ERRCODE_DATATYPE_MISMATCH),
+							 errmsg("inherited column \"%s\" has a toaster conflict",
+									attributeName),
+							 errdetail("%s versus %s",
+									   (newdef->toaster),
+									   get_toaster_name(defTsrId))));
+				}
+			}
+			if (OidIsValid(defTsrId))
+			{
+				validateToaster(defTsrId, attribute->atttypid,
 								attribute->attstorage, attribute->attcompression,
 								accessMethodId, false);
-				newdef->toaster = get_toaster_name(attribute->atttoaster);
+				newdef->toaster = get_toaster_name(defTsrId);
 			}
 			else
 				newdef->toaster = NULL;
@@ -2832,12 +2871,23 @@ MergeAttributes(List *columns, const List *supers, char relpersistence,
 			}
 			else
 			{
-				Oid			defTsrId;
 				/*
 				 * Now, create a new inherited column
 				 */
 				newdef->inhcount = 1;
 				newdef->is_local = false;
+
+				defTsrId = DatumGetObjectId(GetLastToaster(relation->rd_id, attribute->attnum, AccessShareLock));
+				if (OidIsValid(defTsrId))
+				{
+					newdef->toaster = get_toaster_name(defTsrId);
+					validateToaster(defTsrId, attribute->atttypid,
+								attribute->attstorage, attribute->attcompression,
+								accessMethodId, false);
+				}
+				else
+					newdef->toaster = NULL;
+
 				inh_columns = lappend(inh_columns, newdef);
 
 				newattmap->attnums[parent_attno - 1] = ++child_attno;
@@ -3290,6 +3340,21 @@ MergeChildAttribute(List *inh_columns, int exist_attno, int newcol_attno, const 
 						   storage_name(newdef->storage))));
 
 	/*
+	 * Copy toaster parameter
+	 */
+	if (inhdef->toaster == NULL)
+		inhdef->toaster = newdef->toaster;
+	else if (newdef->toaster != NULL)
+	{
+		if (strcmp(inhdef->toaster, newdef->toaster) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("column \"%s\" has a toaster method conflict",
+							attributeName),
+					 errdetail("%s versus %s", inhdef->toaster, newdef->toaster)));
+	}
+
+	/*
 	 * Copy compression parameter
 	 */
 	if (inhdef->compression == NULL)
@@ -3466,7 +3531,7 @@ MergeInheritedAttribute(List *inh_columns,
 	 */
 	if (prevdef->toaster == NULL)
 		prevdef->toaster = newdef->toaster;
-	else if (strcmp(prevdef->toaster, newdev->toaster) != 0)
+	else if (strcmp(prevdef->toaster, newdef->toaster) != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("inherited column \"%s\" has a toaster conflict",
@@ -7314,20 +7379,20 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 		if (colDef->toaster)
 			tsroid = get_toaster_oid(colDef->toaster, false);
-		else if (TypeIsToastable(attribute.atttypid))
+		else if (TypeIsToastable(attribute->atttypid))
 			tsroid = DEFAULT_TOASTER_OID;
 		else
 			tsroid = InvalidOid;
 
 		if (OidIsValid(tsroid))
 		{
-			validateToaster(tsroid, attribute.atttypid,
-							attribute.attstorage, attribute.attcompression,
+			validateToaster(tsroid, attribute->atttypid,
+							attribute->attstorage, attribute->attcompression,
 							rel->rd_rel->relam, false);
 			namestrcpy(&relnamedata, RelationGetRelationName(rel));
 			namestrcpy(&trelnamedata, "");
 /* XXX PG_TOASTREL */
-			InsertToastRelation(tsroid, myrelid, InvalidOid, attribute.attnum,
+			InsertToastRelation(tsroid, myrelid, InvalidOid, attribute->attnum,
 				0, relnamedata, trelnamedata, 0, RowExclusiveLock);
 		}
 	}
@@ -13473,7 +13538,6 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	 * get confused.
 	 */
 	RememberAllDependentForRebuilding(tab, AT_AlterColumnType, rel, attnum, colName);
-)
 
 	/*
 	 * Now scan for dependencies of this column on other things.  The only

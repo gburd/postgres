@@ -1916,7 +1916,7 @@ describeOneTableDetails(const char *schemaname,
 /*			appendPQExpBufferStr(&buf, ",\n  (SELECT tsrname FROM pg_toaster "
 				"WHERE oid = a.atttoaster) AS atttoaster");
 */
-			appendPQExpBuffer(&buf, ",\n  (SELECT tsr.tsrname FROM pg_toaster tsr, pg_toastrel trel "
+			appendPQExpBuffer(&buf, ",\n  (SELECT tsr.tsrname FROM pg_toaster tsr, pg_toast_rel trel "
 				"WHERE tsr.oid = trel.toasteroid AND trel.relid = '%s' and trel.attnum = a.attnum ORDER BY trel.version DESC LIMIT 1) AS atttoaster",	oid);
 			atttoaster_col = cols++;
 		}

@@ -57,8 +57,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
-#include "catalog/pg_toastrel.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel.h"
 
 /*
  * This struct is used to pass around the information on tables to be
@@ -1113,6 +1112,7 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				relfilenumber2;
 	RelFileNumber swaptemp;
 	char		swptmpchr;
+	Oid relam1, relam2;
 	List		*r1trel = NIL;
 	List		*r2trel = NIL;
 	ListCell	*lc;
@@ -1168,7 +1168,7 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 
 		if (!swap_toast_by_content)
 		{
-/* XXX PG_TOASTREL swap pg_toastrel records
+/* XXX PG_TOASTREL swap pg_toast_rel records
 			swaptemp = relform1->reltoastrelid;
 			relform1->reltoastrelid = relform2->reltoastrelid;
 			relform2->reltoastrelid = swaptemp;
@@ -1176,10 +1176,10 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			foreach(lc, r1trel)
 			{
 				HeapTuple	ttup;
-				Form_pg_toastrel tform;
+				Form_pg_toast_rel tform;
 				trel = (Toastrel)lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-				tform = (Form_pg_toastrel) GETSTRUCT(ttup);
+				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
 				trel = (Toastrel)lfirst(lc);
 				InsertToastRelation(trel->toasteroid, r2, trel->toastentid, trel->attnum, 0, relform2->relname, tform->relname, 0, AccessExclusiveLock);
@@ -1187,10 +1187,10 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			foreach(lc, r2trel)
 			{
 				HeapTuple	ttup;
-				Form_pg_toastrel tform;
+				Form_pg_toast_rel tform;
 				trel = (Toastrel)lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-				tform = (Form_pg_toastrel) GETSTRUCT(ttup);
+				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
 				trel = (Toastrel)lfirst(lc);
 				InsertToastRelation(trel->toasteroid, r1, trel->toastentid, trel->attnum, 0, relform1->relname, tform->relname, 0, AccessExclusiveLock);
@@ -1388,23 +1388,23 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup1; */
-/*					Form_pg_toastrel tform1; */
+/*					Form_pg_toast_rel tform1; */
 					Toastrel		trel1;
 					ListCell		*lc2;
 					
 					trel1 = (Toastrel)lfirst(lc);
 /*					ttup1 = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel1->toastentid)); */
-/*					tform1 = (Form_pg_toastrel) GETSTRUCT(ttup1); */
+/*					tform1 = (Form_pg_toast_rel) GETSTRUCT(ttup1); */
 
 					foreach(lc2, r2trel)
 					{
 /*						HeapTuple	ttup2;
-						Form_pg_toastrel tform2; */
+						Form_pg_toast_rel tform2; */
 						Toastrel		trel2;
 
 						trel2 = (Toastrel)lfirst(lc2);
 /*						ttup2 = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel2->toastentid));
-						tform2 = (Form_pg_toastrel) GETSTRUCT(ttup2); */
+						tform2 = (Form_pg_toast_rel) GETSTRUCT(ttup2); */
 
 						if(trel1->attnum == trel2->attnum)
 						{
@@ -1479,11 +1479,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup;
-					Form_pg_toastrel tform; */
+					Form_pg_toast_rel tform; */
 					
 					trel = (Toastrel)lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-					tform = (Form_pg_toastrel) GETSTRUCT(ttup); */
+					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
 					
 					count = deleteDependencyRecordsFor(RelationRelationId,
 												   trel->toastentid,
@@ -1521,11 +1521,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup; */
-/*					Form_pg_toastrel tform; */
+/*					Form_pg_toast_rel tform; */
 					
 					trel = (Toastrel)lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
-/*					tform = (Form_pg_toastrel) GETSTRUCT(ttup); */
+/*					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
 					
 					count = deleteDependencyRecordsFor(RelationRelationId,
 												   trel->toastentid,
@@ -1545,11 +1545,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			foreach(lc, r1trel)
 			{
 				HeapTuple	ttup;
-				Form_pg_toastrel tform;
+				Form_pg_toast_rel tform;
 					
 				trel = (Toastrel)lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-				tform = (Form_pg_toastrel) GETSTRUCT(ttup);
+				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 					
 				baseobject.classId = RelationRelationId;
 				baseobject.objectSubId = 0;
@@ -1565,11 +1565,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			foreach(lc, r2trel)
 			{
 				HeapTuple	ttup;
-				Form_pg_toastrel tform;
+				Form_pg_toast_rel tform;
 					
 				trel = (Toastrel)lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-				tform = (Form_pg_toastrel) GETSTRUCT(ttup);
+				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 					
 				baseobject.classId = RelationRelationId;
 				baseobject.objectSubId = 0;
@@ -1796,11 +1796,11 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 		foreach(lc, tlist)
 		{
 			HeapTuple	ttup;
-			Form_pg_toastrel tform;
+			Form_pg_toast_rel tform;
 			Toastrel trel;
 			trel = (Toastrel)lfirst(lc);
 			ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
-			tform = (Form_pg_toastrel) GETSTRUCT(ttup);
+			tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
 			trel = (Toastrel)lfirst(lc);
 			InsertToastRelation(trel->toasteroid, newrel->rd_id, trel->toastentid, trel->attnum, 0, newrel->rd_rel->relname, tform->relname, 0, AccessExclusiveLock);

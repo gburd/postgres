@@ -30,6 +30,7 @@
 #include "catalog/toasting.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -135,7 +136,7 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 
 		if(trel != InvalidOid)
 		{
-		/* XXX insert record into pg_toastrel */
+		/* XXX insert record into pg_toast_rel */
 			namestrcpy(&relname, RelationGetRelationName(rel));
 			snprintf(toast_relname, sizeof(toast_relname),
 				 "pg_toast_%u", rel->rd_id);
@@ -198,7 +199,7 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 			trel = DatumGetObjectId(tsr->init(rel, DEFAULT_TOASTER_OID, toastOid, toastIndexOid, (Datum) 0, attr->attnum,
 								AccessExclusiveLock, false, InvalidOid));
 
-		/* XXX insert record into pg_toastrel */
+		/* XXX insert record into pg_toast_rel */
 		if(trel != InvalidOid)
 		{
 			namestrcpy(&relname, relName);
@@ -249,7 +250,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 	/*
 	 * Is it already toasted?
 	 */
-	
+
 	if(IsBootstrapProcessingMode())
 	{
 		if(HasToastrel(toasteroid, rel->rd_id, attnum, AccessShareLock))
@@ -265,7 +266,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 		return rel->rd_rel->reltoastrelid;
 */
 	}
-	
+
 	/*
 	 * Check to see whether the table actually needs a TOAST table.
 	 */

@@ -73,8 +73,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "access/toasterapi.h"
-#include "catalog/pg_toastrel.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel.h"
 
 
 /* non-export function prototypes */
@@ -3556,11 +3555,11 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 /*					HeapTuple	ttup; */
 					Toastrel trel;
 					Relation	toastRelation;
-/*					Form_pg_toastrel tform; */
+/*					Form_pg_toast_rel tform; */
 
 					trel = (Toastrel)lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
-/*					tform = (Form_pg_toastrel) GETSTRUCT(ttup); */
+/*					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
 
 /*					trel = (Toastrel)lfirst(lc); */
 					toastRelation = table_open(trel->toastentid,

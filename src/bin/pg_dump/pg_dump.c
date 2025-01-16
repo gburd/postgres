@@ -10264,7 +10264,7 @@ getToasters(Archive *fout, int *numToasters)
 
 /*
  * getToastrels:
- *	  read all existing TOAST dependencies in pg_toastrel and return
+ *	  read all existing TOAST dependencies in pg_toast_rel and return
  *	  them in the ToastrelInfo* structure
  *
  *	numAccessMethods is set to the number of access methods read in
@@ -10300,11 +10300,11 @@ getToastrels(Archive *fout, int *numToastrels)
 
 	query = createPQExpBuffer();
 
-	/* Select all toast dependencies from pg_toastrel table */
+	/* Select all toast dependencies from pg_toast_rel table */
 	appendPQExpBufferStr(query, "SELECT tableoid, oid, toasteroid, relid, "
 						 "toastentid, attnum, version, relname, toastentname, "
 						 "description, toastoptions "
-						 "FROM pg_toastrel");
+						 "FROM pg_toast_rel");
 
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
@@ -16848,7 +16848,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 				/* retrieve name of foreign server and generic options */
 				appendPQExpBuffer(query,
 									  "SELECT trel.toasteroid AS toasterid "
-									  "FROM pg_catalog.pg_toastrel trel "
+									  "FROM pg_catalog.pg_toast_rel trel "
 									  "JOIN %s ", qualrelname);
 				appendPQExpBufferStr(query, "\n  ON trel.relid = ");
 				appendStringLiteralAH(query, qualrelname, fout);

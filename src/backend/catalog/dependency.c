@@ -58,7 +58,7 @@
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_toaster.h"
-#include "catalog/pg_toastrel.h"
+#include "catalog/pg_toast_rel.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_ts_config.h"
@@ -1468,12 +1468,13 @@ doDeletion(const ObjectAddress *object, int flags)
 			DropObjectById(object);
 			break;
 
-		case OCLASS_TOASTER:
+		case ToasterRelationId:
 			elog(ERROR, "toaster cannot be deleted by doDeletion");
 			break;
-		case OCLASS_TOASTREL:
+		case ToastrelRelationId:
 			elog(ERROR, "toast relation cannot be deleted by doDeletion");
 			break;
+
 			/*
 			 * These global object types are not supported here.
 			 */

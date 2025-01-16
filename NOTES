@@ -1,5 +1,16 @@
 
 TODO:
 -----------------------------------------------------------------------------------------
+* #if 0
+* //
+* XXX
+* teodor
+* PG_TOASTREL
+* FIXME
+* /* */
+* validateToaster() amoid
+* look for changes to default toaster 16->17,18
 * cluster.c XXX PG_TOASTREL
 * tablecmds.c look for '//' comments
+* better default toaster name than "deftoaster"
+* s/tsr.*/ any better prefix for "toaster"

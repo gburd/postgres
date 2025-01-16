@@ -30,8 +30,7 @@
 #include "access/toasterapi.h"
 #include "access/htup_details.h"
 #include "catalog/pg_toaster.h"
-#include "catalog/pg_toastrel.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel.h"
 #include "commands/defrem.h"
 #include "lib/pairingheap.h"
 #include "utils/builtins.h"
@@ -1307,11 +1306,12 @@ toast_write_slice(Relation toastrel, Relation *toastidxs,
 			TM_Result	result;
 			TM_FailureData tmfd;
 			LockTupleMode lockmode;
+			TU_UpdateIndexes update_indexes = TU_All;
 
 			result = heap_update(toastrel, &old_tid, toasttup,
 								 mycid, InvalidSnapshot,
 								 true, /* wait for commit */
-								 &tmfd, &lockmode);
+								 &tmfd, &lockmode, &update_indexes);
 
 			switch (result)
 			{

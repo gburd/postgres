@@ -40,8 +40,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
-#include "catalog/pg_toastrel.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel.h"
 #include "commands/cluster.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
@@ -2286,10 +2285,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 		toast_vacuum_params.toast_parent = relid;
 
-		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);
-
 	// FIXME - list is lost during context switching XXX PG_TOASTREL
-		if(HasToastrel(relid, 0, AccessShareLock) && t_arr_rowcount > 0)
+		if(HasToastrel(InvalidOid, relid, 0, AccessShareLock) && t_arr_rowcount > 0)
 		{
 			for(int i = 0; i < t_arr_rowcount; i++)
 			{

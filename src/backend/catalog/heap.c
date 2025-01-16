@@ -53,7 +53,7 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_tablespace.h"
-#include "catalog/pg_toastrel.h"
+#include "catalog/pg_toast_rel.h"
 #include "catalog/pg_type.h"
 #include "catalog/storage.h"
 #include "commands/tablecmds.h"

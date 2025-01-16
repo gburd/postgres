@@ -23,7 +23,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_toaster.h"
-#include "catalog/pg_toastrel.h"
+#include "catalog/pg_toast_rel.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "miscadmin.h"

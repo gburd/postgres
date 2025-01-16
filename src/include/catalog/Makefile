@@ -81,7 +81,9 @@ CATALOG_HEADERS := \
 	pg_publication_namespace.h \
 	pg_publication_rel.h \
 	pg_subscription.h \
-	pg_subscription_rel.h
+	pg_subscription_rel.h \
+	pg_toaster.h \
+	pg_toast_rel.h
 
 GENERATED_HEADERS := $(CATALOG_HEADERS:%.h=%_d.h)
 
@@ -107,6 +109,7 @@ POSTGRES_BKI_DATA = \
 	pg_proc.dat \
 	pg_range.dat \
 	pg_tablespace.dat \
+	pg_toaster.dat \
 	pg_ts_config.dat \
 	pg_ts_config_map.dat \
 	pg_ts_dict.dat \

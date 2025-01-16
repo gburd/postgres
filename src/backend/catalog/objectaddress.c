@@ -55,7 +55,7 @@
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_toaster.h"
-#include "catalog/pg_toastrel.h"
+#include "catalog/pg_toast_rel.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_ts_config.h"
@@ -4040,7 +4040,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				}
 
 				appendStringInfo(&buffer, _("toaster %s"),
-								 NameStr(((Form_pg_toaster) GETSTRUCT(tup))->toastentname));
+								 NameStr(((Form_pg_toaster) GETSTRUCT(tup))->tsrname));
 				ReleaseSysCache(tup);
 				break;
 			}

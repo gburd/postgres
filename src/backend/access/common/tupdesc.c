@@ -28,7 +28,7 @@
 #include "common/hashfn.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
-#include "utils/resowner_private.h"
+#include "utils/resowner.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 

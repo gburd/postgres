@@ -26,7 +26,7 @@
 #include "catalog/pg_publication_d.h"
 #include "catalog/pg_subscription_d.h"
 #include "catalog/pg_toaster_d.h"
-#include "catalog/pg_toastrel_d.h"
+#include "catalog/pg_toast_rel_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/hashfn.h"
 #include "fe_utils/string_utils.h"

@@ -45,7 +45,10 @@ CATALOG(pg_toaster,9861,ToasterRelationId)
  */
 typedef FormData_pg_toaster *Form_pg_toaster;
 
-DECLARE_UNIQUE_INDEX(pg_toaster_name_index, 9862, ToasterNameIndexId, on pg_toaster using btree(tsrname name_ops));
-DECLARE_UNIQUE_INDEX_PKEY(pg_toaster_oid_index, 9863, ToasterOidIndexId, on pg_toaster using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX(pg_toaster_name_index, 9862, ToasterNameIndexId, pg_toaster, btree(tsrname name_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_toaster_oid_index, 9863, ToasterOidIndexId, pg_toaster, btree(oid oid_ops));
+
+MAKE_SYSCACHE(TOASTERNAME, pg_toaster_name_index, 4);
+MAKE_SYSCACHE(TOASTEROID, pg_toaster_oid_index, 16);
 
 #endif							/* PG_TOASTER_H */

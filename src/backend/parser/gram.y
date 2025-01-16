@@ -2450,6 +2450,7 @@ alter_table_cmd:
 					n->name = $3;
 					n->def = $8;
 					$$ = (Node *) n;
+				}
 			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET TOASTER <toaster_name> */
 			| ALTER opt_column ColId SET TOASTER name
 				{
