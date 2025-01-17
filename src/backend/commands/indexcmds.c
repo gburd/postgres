@@ -3548,7 +3548,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 
 				/* Also add the toast indexes */
 
-				tlist = (List *) DatumGetPointer(GetFullToastrelList(tlist, heapRelation->rd_id, 0, AccessShareLock));
+				tlist = GetFullToastRelationsList(tlist, heapRelation->rd_id, 0, AccessShareLock);
 
 				foreach(lc, tlist)
 				{

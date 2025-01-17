@@ -4062,7 +4062,7 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
 		newparams.options &= ~(REINDEXOPT_MISSING_OK);
 		newparams.tablespaceOid = InvalidOid;
 
-		toastrelids = (List *) DatumGetPointer(GetToastrelList(toastrelids, rel->rd_id, 0, AccessShareLock));
+		toastrelids = GetToastRelationsList(toastrelids, rel->rd_id, 0, AccessShareLock);
 		foreach(lc, toastrelids)
 		{
 			result |= reindex_relation(stmt, lfirst_oid(lc), flags, &newparams);

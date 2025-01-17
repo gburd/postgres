@@ -2261,7 +2261,7 @@ ExecuteTruncateGuts(List *explicit_rels,
 				List *trelids = NIL;
 				ListCell *lc;
 
-				trelids = (List *) DatumGetPointer(GetFullToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+				trelids = GetFullToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
 			// XXX PG_TOASTREL
 				foreach(lc, trelids)
 				{
@@ -14983,7 +14983,7 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 			List *trelids = NIL;
 			ListCell *lc;
 
-			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, relationOid, 0, AccessShareLock));
+			trelids = GetToastRelationsList(trelids, relationOid, 0, AccessShareLock);
 		// XXX PG_TOASTREL
 			foreach(lc, trelids)
 			{
@@ -15495,7 +15495,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		List *trelids = NIL;
 		ListCell *lc;
 
-		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+		trelids = GetToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
 		// XXX PG_TOASTREL
 		foreach(lc, trelids)
 		{
@@ -15663,7 +15663,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	{
 		List *trelids = NIL;
 
-		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+		trelids = GetToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
 	// XXX PG_TOASTREL
 		foreach(lc, trelids)
 		{
@@ -15734,7 +15734,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	{
 		List *trelids = NIL;
 
-		trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+		trelids = GetToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
 	// XXX PG_TOASTREL
 		foreach(lc, trelids)
 		{

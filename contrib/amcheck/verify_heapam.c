@@ -384,7 +384,7 @@ verify_heapam(PG_FUNCTION_ARGS)
 	list_free(ctx.toastrelids);
 	list_free(ctx.toastrels);
 
-	ctx.toastrelids = (List *) DatumGetPointer(GetToastrelList(ctx.toastrelids, ctx.rel->rd_id, 0, AccessShareLock));
+	ctx.toastrelids = GetToastRelationsList(ctx.toastrelids, ctx.rel->rd_id, 0, AccessShareLock);
 
 	/* Optionally open the toast relation, if any. */
 /*	if (ctx.rel->rd_rel->reltoastrelid && check_toast) */

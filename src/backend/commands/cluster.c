@@ -785,7 +785,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 	 * that the TOAST table will be visible for insertion.
 	 */
 
-	toastrelids = (List *) DatumGetPointer(GetToastrelList(toastrelids, OldHeap->rd_id, 0, AccessShareLock));
+	toastrelids = GetToastRelationsList(toastrelids, OldHeap->rd_id, 0, AccessShareLock);
 // XXX PG_TOASTREL
 	foreach(lc, toastrelids)
 	{
@@ -900,7 +900,7 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	if (OldHeap->rd_rel->reltoastrelid)
 		LockRelationOid(OldHeap->rd_rel->reltoastrelid, AccessExclusiveLock);
 */
-	toastrelids = (List *) DatumGetPointer(GetToastrelList(toastrelids, OldHeap->rd_id, 0, AccessShareLock));
+	toastrelids = GetToastRelationsList(toastrelids, OldHeap->rd_id, 0, AccessShareLock);
 // XXX PG_TOASTREL
 	foreach(lc, toastrelids)
 	{
@@ -1163,8 +1163,8 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		relform2->relpersistence = swptmpchr;
 
 		/* Also swap toast links, if we're swapping by links */
-		r1trel = (List *) DatumGetPointer(GetFullToastrelList(r1trel, r1, 0, AccessShareLock));
-		r2trel = (List *) DatumGetPointer(GetFullToastrelList(r2trel, r2, 0, AccessShareLock));
+		r1trel = GetFullToastRelationsList(r1trel, r1, 0, AccessShareLock);
+		r2trel = GetFullToastRelationsList(r2trel, r2, 0, AccessShareLock);
 
 		if (!swap_toast_by_content)
 		{
@@ -1791,7 +1791,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 
 		newrel = table_open(OIDOldHeap, NoLock);
 		/* Also swap toast links, if we're swapping by links */
-		tlist = (List *) DatumGetPointer(GetFullToastrelList(tlist, newrel->rd_id , 0, AccessShareLock));
+		tlist = GetFullToastRelationsList(tlist, newrel->rd_id , 0, AccessShareLock);
 
 		foreach(lc, tlist)
 		{

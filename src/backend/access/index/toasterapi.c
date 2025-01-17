@@ -591,13 +591,13 @@ InsertToastRelation(Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
 }
 
 /* ----------
- * GetToastrelList -
+ * GetToastRelationslList -
  *
  *	Retrieves PG_TOASTREL toast entities OIDs according to given key
  * ----------
  */
-Datum
-GetToastrelList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
+List *
+GetToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
 {
 	Relation		pg_toast_rel;
 	ScanKeyData key[4];
@@ -628,18 +628,16 @@ GetToastrelList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
 	keys = 0;
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
+		Form_pg_toast_rel toastrel = (Form_pg_toast_rel) GETSTRUCT(tup);
+		if(toastrel->flag != 'x' && OidIsValid(toastrel->toastentid))
+			if (!list_member_oid(trel_list, toastrel->toastentid))
+				trel_list = lcons_oid(toastrel->toastentid, trel_list);
 		total_entries++;
-		if(((Form_pg_toast_rel) GETSTRUCT(tup))->flag != 'x' 
-			&& ((Form_pg_toast_rel) GETSTRUCT(tup))->toastentid != InvalidOid)
-		{
-			if(!list_member_oid(trel_list, ((Form_pg_toast_rel) GETSTRUCT(tup))->toastentid))
-				trel_list = lcons_oid(((Form_pg_toast_rel) GETSTRUCT(tup))->toastentid, trel_list);
-		}
 	}
 	systable_endscan(scan);
 	table_close(pg_toast_rel, lockmode);
 
-	return PointerGetDatum(trel_list);
+	return trel_list;
 }
 
 /* ----------
@@ -648,8 +646,8 @@ GetToastrelList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
  *	Retrieves list of PG_TOASTREL rows according to given key
  * ----------
  */
-Datum
-GetFullToastrelList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
+List *
+GetFullToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
 {
 	Relation		pg_toast_rel;
 	ScanKeyData key[4];
@@ -721,7 +719,7 @@ GetFullToastrelList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode)
 	systable_endscan(scan);
 	table_close(pg_toast_rel, lockmode);
 
-	return PointerGetDatum(trel_list);
+	return trel_list;
 }
 
 /* ----------

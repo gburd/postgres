@@ -1,3 +1,29 @@
+GOALS:
+-----------------------------------------------------------------------------------------
+* load custom TOASTer implementation
+* assign TOASTer to a column
+* assign TOASTer to a type
+* change from one TOASTer to another (alter table ...)
+* remove custom TOASTer and be re-toasted to the default toaster
+* update/upgrade when newer version of TOASTer is released
+* contrib/bytea,jsonb example toaster implementations
+* allow attributes set per-column for a TOASTer (e.g. compression algorithm with default toaster)
+* 100% backward compatibility
+
+
+NOTES:
+-----------------------------------------------------------------------------------------
+./configure CFLAGS="-ggdb -O0 -ggdb3 -fno-inline -fno-omit-frame-pointer -DUSE_VALGRIND -U_FORTIFY_SOURCE" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib--enable-debug --enable-cassert --enable-depend
+make && make install && make check-world
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+./build/bin/psql -h localhost postgres
+gdb ./build/bin/postgres test-db/core
+make maintainer-clean
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+sudo locale-gen C.utf8
+ulimit -c unlimited
+sudo sysctl -w kernel.core_pattern=core.%u.%p.%t
+restore with sudo systemctl restart apport
 
 TODO:
 -----------------------------------------------------------------------------------------

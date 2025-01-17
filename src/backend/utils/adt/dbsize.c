@@ -444,7 +444,7 @@ calculate_table_size(Relation rel)
 		List *trelids = NIL;
 		ListCell *lc;
 
-			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, rel->rd_id, 0, AccessShareLock));
+		trelids = GetToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
 	// XXX PG_TOASTREL
 			foreach(lc, trelids)
 			{

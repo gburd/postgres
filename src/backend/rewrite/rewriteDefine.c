@@ -519,7 +519,7 @@ DefineQueryRewrite(const char *rulename,
 			List *trelids = NIL;
 			ListCell *lc;
 
-			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, event_relation->rd_id, 0, AccessShareLock));
+			trelids = GetToastRelationsList(trelids, event_relation->rd_id, 0, AccessShareLock);
 	// XXX PG_TOASTREL
 			foreach(lc, trelids)
 			{

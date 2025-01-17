@@ -1969,14 +1969,11 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	Relation	rel;
 	LockRelId	lockrelid;
 	Oid			priv_relid;
-/*	Oid			toast_relid; */
+	List	   *toast_relids = NIL;
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
-	List *trelids = NIL;
-	ListCell *lc;
-	Oid	t_arr[64];
-	int t_arr_rowcount = 0;
+	MemoryContext snapctx, curctx = CurrentMemoryContext;
 
 	Assert(params != NULL);
 
@@ -2179,32 +2176,22 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	 * automatically rebuilt by cluster_rel so we shouldn't recurse to it,
 	 * unless PROCESS_MAIN is disabled.
 	 */
-/*
 	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
 		((params->options & VACOPT_FULL) == 0 ||
 		 (params->options & VACOPT_PROCESS_MAIN) == 0))
-		toast_relid = rel->rd_rel->reltoastrelid;
-	else
-		toast_relid = InvalidOid;
-*/
-	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
-		(params->options & VACOPT_FULL) == 0)
 	{
+		/*
+		 * We need to preserve the allocated list for use outside the
+		 * snapshot's memory context.
+		 */
+		snapctx = CurrentMemoryContext;
+		MemoryContextSwitchTo(curctx);
 		if(HasToastrel(InvalidOid, relid, 0, AccessShareLock))
-		{
-			int i = 0;
-			trelids = (List *) DatumGetPointer(GetToastrelList(trelids, relid, 0, AccessShareLock));
-	// XXX PG_TOASTREL
-
-			foreach(lc, trelids)
-			{
-				Oid trel = (lfirst_oid(lc));
-				t_arr[i] = trel;
-				t_arr_rowcount++;
-				i++;
-			}
-		}
+			toast_relids = GetToastRelationsList(toast_relids, relid, 0, AccessShareLock);
+		MemoryContextSwitchTo(snapctx);
 	}
+	else
+		toast_relids = NIL;
 
 	/*
 	 * Switch to the table owner's userid, so that any index functions are run
@@ -2270,9 +2257,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	 * the toaster always uses hardcoded index access and statistics are
 	 * totally unimportant for toast relations.
 	 */
-	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
-		(params->options & VACOPT_FULL) == 0)
+	if (list_length(toast_relids) > 0)
 	{
+		ListCell *lc;
 		VacuumParams toast_vacuum_params;
 
 		/*
@@ -2285,43 +2272,14 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 		toast_vacuum_params.toast_parent = relid;
 
-	// FIXME - list is lost during context switching XXX PG_TOASTREL
-		if(HasToastrel(InvalidOid, relid, 0, AccessShareLock) && t_arr_rowcount > 0)
+		foreach(lc, toast_relids)
 		{
-			for(int i = 0; i < t_arr_rowcount; i++)
-			{
-					vacuum_rel(t_arr[i], NULL, &toast_vacuum_params, bstrategy);
-			}
-		}
-/*
-		if(t_arr_rowcount > 0)
-		{
-			foreach(lc, trelids)
-			{
-				vacuum_rel((lfirst_oid(lc)), NULL, params);
-			}
-		}
-*/
-	}
-/*
-	if ((params->options & VACOPT_PROCESS_TOAST) != 0 &&
-		(params->options & VACOPT_FULL) == 0
-		&&  trelids)
-	{
-		int i = 0;
-		foreach(lc, trelids)
-		{
-			Oid trel = (lfirst_oid(lc));
-			if (OidIsValid(trel))
-				vacuum_rel(trel, NULL, params);
-			i++;
+			Oid toast_relid = (lfirst_oid(lc));
+			if (OidIsValid(toast_relid))
+				vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);
 		}
 	}
-*/
-/*
-	if (toast_relid != InvalidOid)
-		vacuum_rel(toast_relid, NULL, params);
-*/
+
 	/*
 	 * Now release the session-level lock on the main table.
 	 */

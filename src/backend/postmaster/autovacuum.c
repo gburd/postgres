@@ -2040,8 +2040,7 @@ do_autovacuum(void)
 			List *trelids = NIL;
 			ListCell *lc;
 
-			// trelids = (List *) DatumGetPointer(GetToastrelList(trelids, relid, 0, AccessShareLock));
-			trelids = (List *) DatumGetPointer(GetFullToastrelList(trelids, relid, 0, AccessShareLock));
+			trelids = GetFullToastRelationsList(trelids, relid, 0, AccessShareLock);
 		// XXX PG_TOASTREL
 			foreach(lc, trelids)
 			{

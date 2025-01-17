@@ -1822,7 +1822,7 @@ heap_drop_with_catalog(Oid relid, bool checkCache)
 	{
 		ListCell *lc;
 		List *toastrelids = NIL;
-		toastrelids = (List *) DatumGetPointer(GetToastrelList(toastrelids, relid, 0, AccessShareLock));
+		toastrelids = GetToastRelationsList(toastrelids, relid, 0, AccessShareLock);
 		CommandCounterIncrement();
 /*FIXME remove logging*/
 // XXX PG_TOASTREL
@@ -3113,7 +3113,7 @@ heap_truncate_one_rel(Relation rel)
 	RelationTruncateIndexes(rel);
 
 	/* If there is a toast table, truncate that too */
-	toastrelids = (List *) DatumGetPointer(GetToastrelList(toastrelids, rel->rd_id, 0, AccessShareLock));
+	toastrelids = GetToastRelationsList(toastrelids, rel->rd_id, 0, AccessShareLock);
 // XXX PG_TOASTREL
 //	toastrelid = rel->rd_rel->reltoastrelid;
 //	if (OidIsVal6id(toastrelid))
