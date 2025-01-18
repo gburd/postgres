@@ -85,19 +85,19 @@ static bool toastrel_valueid_exists(Relation toastrel, Oid valueid);
 static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
 
 static void
-toast_extract_chunk_fields(Relation toastrel, TupleDesc toasttupDesc,
-						   Oid valueid, HeapTuple ttup, int32 *seqno,
-						   char **chunkdata, int *chunksize);
+			toast_extract_chunk_fields(Relation toastrel, TupleDesc toasttupDesc,
+									   Oid valueid, HeapTuple ttup, int32 *seqno,
+									   char **chunkdata, int *chunksize);
 
 static void
-toast_write_slice(Relation toastrel, Relation *toastidxs,
-				  int num_indexes, int validIndex,
-				  Oid valueid, int32 value_size, int32 slice_offset,
-				  int32 slice_length, char *slice_data,
-				  int options,
-				  void *chunk_header, int chunk_header_size,
-				  ToastChunkVisibilityCheck visibility_check,
-				  void *visibility_cxt);
+			toast_write_slice(Relation toastrel, Relation *toastidxs,
+							  int num_indexes, int validIndex,
+							  Oid valueid, int32 value_size, int32 slice_offset,
+							  int32 slice_length, char *slice_data,
+							  int options,
+							  void *chunk_header, int chunk_header_size,
+							  ToastChunkVisibilityCheck visibility_check,
+							  void *visibility_cxt);
 
 static void
 toast_extract_chunk_fields(Relation toastrel, TupleDesc toasttupDesc,
@@ -132,7 +132,7 @@ toast_extract_chunk_fields(Relation toastrel, TupleDesc toasttupDesc,
 		/* should never happen */
 		elog(ERROR, "found toasted toast chunk for toast value %u in %s",
 			 valueid, RelationGetRelationName(toastrel));
-		*chunksize = 0;		/* keep compiler quiet */
+		*chunksize = 0;			/* keep compiler quiet */
 		*chunkdata = NULL;
 	}
 }
@@ -176,8 +176,8 @@ toast_fetch_old_chunk(Relation toastrel, SysScanDesc toastscan, Oid valueid,
 		if (!old_toasttup || old_chunk_seq != expected_chunk_seq)
 		{
 			/*
-			 * All versions of the current chunk were processed,
-			 * select a visible one and use it.
+			 * All versions of the current chunk were processed, select a
+			 * visible one and use it.
 			 */
 			char	   *chunkdata = NULL;
 
@@ -193,10 +193,10 @@ toast_fetch_old_chunk(Relation toastrel, SysScanDesc toastscan, Oid valueid,
 				old_chunk_seq != expected_chunk_seq + 1 :
 				expected_chunk_seq != last_old_chunk_seq)
 				ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg_internal("missing chunk number %d for toast value %u in %s",
-									 expected_chunk_seq + 1, valueid,
-									 RelationGetRelationName(toastrel))));
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg_internal("missing chunk number %d for toast value %u in %s",
+										 expected_chunk_seq + 1, valueid,
+										 RelationGetRelationName(toastrel))));
 
 			return chunkdata;
 		}
@@ -222,8 +222,8 @@ toast_save_datum_ext(Relation rel, Oid toasterid, Datum value,
 	Pointer		dval = DatumGetPointer(value);
 	int			num_indexes;
 	int			validIndex;
-	Datum dtrel = (Datum) 0;
-	Toastrel trel = NULL;
+	Datum		dtrel = (Datum) 0;
+	Toastrel	trel = NULL;
 
 	Assert(!(VARATT_IS_EXTERNAL(value)));
 
@@ -234,19 +234,19 @@ toast_save_datum_ext(Relation rel, Oid toasterid, Datum value,
 	 */
 	dtrel = SearchToastrelCache(rel->rd_id, 0, false);
 
-	if(dtrel == (Datum) 0)
+	if (dtrel == (Datum) 0)
 	{
 		elog(ERROR, "No TOAST table for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 	}
 	trel = ((Toastrel) DatumGetPointer(dtrel));
-	if(trel == NULL || !OidIsValid(trel->toastentid))
+	if (trel == NULL || !OidIsValid(trel->toastentid))
 	{
 		elog(ERROR, "No TOAST table for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 	}
 /*	toastrel = table_open(rel->rd_rel->reltoastrelid, RowExclusiveLock); */
 
-	toastrel = table_open(trel->toastentid , RowExclusiveLock);
-	//pfree(trel);
+	toastrel = table_open(trel->toastentid, RowExclusiveLock);
+	/* pfree(trel); */
 	/* Open all the toast indexes and look for the valid one */
 	validIndex = toast_open_indexes(toastrel,
 									RowExclusiveLock,
@@ -447,22 +447,23 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 	int			num_indexes;
 	int			validIndex;
 	Oid			trel = InvalidOid;
-	Datum 		dtrel = (Datum) 0;
+	Datum		dtrel = (Datum) 0;
 
 	Assert(!(VARATT_IS_EXTERNAL(value)));
 
 	dtrel = SearchToastrelCache(rel->rd_id, attnum, false);
 
-	if(dtrel == (Datum) 0)
+	if (dtrel == (Datum) 0)
 	{
 		elog(ERROR, "No TOAST table, create new for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 	}
 	trel = ((Toastrel) DatumGetPointer(dtrel))->toastentid;
 
-	if( trel == InvalidOid )
+	if (trel == InvalidOid)
 	{
 		elog(ERROR, "No TOAST table, create new for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 	}
+
 	/*
 	 * Get the data pointer and length, and compute va_rawsize and va_extinfo.
 	 *
@@ -506,7 +507,7 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 	 * uniqueness of the OID we assign to the toasted item, even though it has
 	 * additional columns besides OID.
 	 */
-	
+
 	/* FIXME rel->rd_rel->reltoastrelid */
 	toastrel = table_open(trel, RowExclusiveLock);
 	toasttupDesc = toastrel->rd_att;
@@ -526,11 +527,11 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 	 * if we have to substitute such an OID.
 	 */
 	/* FIXME */
+
 	/*
-	if (OidIsValid(rel->rd_toastoid))
-		toast_pointer.va_toastrelid = rel->rd_toastoid;
-	else
-	*/
+	 * if (OidIsValid(rel->rd_toastoid)) toast_pointer.va_toastrelid =
+	 * rel->rd_toastoid; else
+	 */
 	toast_pointer.va_toastrelid = RelationGetRelid(toastrel);
 
 	/*
@@ -546,7 +547,7 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 	 * conflict with either new or existing toast value OIDs.
 	 */
 
-	if(IsBootstrapProcessingMode())
+	if (IsBootstrapProcessingMode())
 	{
 		elog(DEBUG1, "isBootstrap save datum table %u", rel->rd_rel->oid);
 	}
@@ -570,13 +571,13 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 
 			elog(DEBUG1, "toast_save_datum oldexternal table %u", rel->rd_rel->oid);
 
-			if(VARATT_IS_EXTERNAL(oldexternal))
+			if (VARATT_IS_EXTERNAL(oldexternal))
 			{
 				elog(DEBUG1, "toast_save_datum vartag_external table %u", rel->rd_rel->oid);
 			}
 			Assert(VARATT_IS_EXTERNAL_ONDISK(oldexternal));
 			/* Must copy to access aligned fields */
-			if(VARATT_IS_EXTERNAL(oldexternal))
+			if (VARATT_IS_EXTERNAL(oldexternal))
 			{
 				old_toast_pointer = palloc0(sizeof(varatt_external));
 				VARATT_EXTERNAL_GET_POINTER(old_toast_pointer, oldexternal);
@@ -585,8 +586,9 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 			{
 				old_toast_pointer = NULL;
 			}
-			
-			if (old_toast_pointer->va_toastrelid == toast_pointer.va_toastrelid) /* FIXME rel->rd_toastoid) */
+
+			if (old_toast_pointer->va_toastrelid == toast_pointer.va_toastrelid)	/* FIXME
+																					 * rel->rd_toastoid) */
 			{
 				/* This value came from the old toast table; reuse its OID */
 				toast_pointer.va_valueid = old_toast_pointer->va_valueid;
@@ -629,7 +631,8 @@ toast_save_datum(Relation rel, Datum value, Oid toasterid,
 					GetNewOidWithIndex(toastrel,
 									   RelationGetRelid(toastidxs[validIndex]),
 									   (AttrNumber) 1);
-			} while (toastid_valueid_exists( toast_pointer.va_toastrelid, /* FIXME rel->rd_toastoid, */
+			} while (toastid_valueid_exists(toast_pointer.va_toastrelid,	/* FIXME
+																			 * rel->rd_toastoid, */
 											toast_pointer.va_valueid));
 		}
 	}
@@ -907,7 +910,7 @@ toast_fetch_datum(struct varlena *attr)
 
 	/* Fetch all chunks */
 	toast_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
-									 attr, attrsize, 0, attrsize, result);
+							attr, attrsize, 0, attrsize, result);
 
 	/* Close toast table */
 	table_close(toastrel, AccessShareLock);
@@ -987,8 +990,8 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
 
 	/* Fetch all chunks */
 	toast_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
-									 attr, attrsize, sliceoffset, slicelength,
-									 result);
+							attr, attrsize, sliceoffset, slicelength,
+							result);
 
 	/* Close toast table */
 	table_close(toastrel, AccessShareLock);
@@ -1008,9 +1011,9 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
  */
 void
 toast_fetch_toast_slice(Relation toastrel, Oid valueid,
-					   struct varlena *attr, int32 attrsize,
-					   int32 sliceoffset, int32 slicelength,
-					   struct varlena *result)
+						struct varlena *attr, int32 attrsize,
+						int32 sliceoffset, int32 slicelength,
+						struct varlena *result)
 {
 	Relation   *toastidxs;
 	ScanKeyData toastkey[3];
@@ -1079,8 +1082,7 @@ toast_fetch_toast_slice(Relation toastrel, Oid valueid,
 	 * registered or active. That easily hides bugs around not having a
 	 * snapshot set up - most of the time there is a valid catalog snapshot.
 	 * So additionally insist that the current snapshot is registered or
-	 * active.
-	 * Read the chunks by index
+	 * active. Read the chunks by index
 	 *
 	 * The index is on (valueid, chunkidx) so they will come in order
 	 */
@@ -1229,9 +1231,9 @@ toast_write_slice(Relation toastrel, Relation *toastidxs,
 					Int32GetDatum(chunk_seq));
 
 		/*
-		 * Find all the chunks.  (We don't actually care whether we see them in
-		 * sequence or not, but since we've already locked the index we might as
-		 * well use systable_beginscan_ordered.)
+		 * Find all the chunks.  (We don't actually care whether we see them
+		 * in sequence or not, but since we've already locked the index we
+		 * might as well use systable_beginscan_ordered.)
 		 */
 		init_toast_snapshot(&SnapshotToast);
 		toastscan = systable_beginscan_ordered(toastrel, toastidxs[validIndex],
@@ -1310,7 +1312,7 @@ toast_write_slice(Relation toastrel, Relation *toastidxs,
 
 			result = heap_update(toastrel, &old_tid, toasttup,
 								 mycid, InvalidSnapshot,
-								 true, /* wait for commit */
+								 true,	/* wait for commit */
 								 &tmfd, &lockmode, &update_indexes);
 
 			switch (result)
@@ -1341,28 +1343,30 @@ toast_write_slice(Relation toastrel, Relation *toastidxs,
 
 
 		if (!HeapTupleIsHeapOnly(toasttup))
-		/*
-		 * Create the index entry.  We cheat a little here by not using
-		 * FormIndexDatum: this relies on the knowledge that the index columns
-		 * are the same as the initial columns of the table for all the
-		 * indexes.  We also cheat by not providing an IndexInfo: this is okay
-		 * for now because btree doesn't need one, but we might have to be
-		 * more honest someday.
-		 *
-		 * Note also that there had better not be any user-created index on
-		 * the TOAST table, since we don't bother to update anything else.
-		 */
-		for (int i = 0; i < num_indexes; i++)
-		{
-			/* Only index relations marked as ready can be updated */
-			if (toastidxs[i]->rd_index->indisready)
-				index_insert(toastidxs[i], t_values, t_isnull,
-							 &(toasttup->t_self),
-							 toastrel,
-							 toastidxs[i]->rd_index->indisunique ?
-							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							 false, NULL);
-		}
+
+			/*
+			 * Create the index entry.  We cheat a little here by not using
+			 * FormIndexDatum: this relies on the knowledge that the index
+			 * columns are the same as the initial columns of the table for
+			 * all the indexes.  We also cheat by not providing an IndexInfo:
+			 * this is okay for now because btree doesn't need one, but we
+			 * might have to be more honest someday.
+			 *
+			 * Note also that there had better not be any user-created index
+			 * on the TOAST table, since we don't bother to update anything
+			 * else.
+			 */
+			for (int i = 0; i < num_indexes; i++)
+			{
+				/* Only index relations marked as ready can be updated */
+				if (toastidxs[i]->rd_index->indisready)
+					index_insert(toastidxs[i], t_values, t_isnull,
+								 &(toasttup->t_self),
+								 toastrel,
+								 toastidxs[i]->rd_index->indisunique ?
+								 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+								 false, NULL);
+			}
 
 		/*
 		 * Free memory

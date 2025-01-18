@@ -310,8 +310,8 @@ static void dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrin
 static void dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo);
 static void dumpSubscriptionTable(Archive *fout, const SubRelInfo *subrinfo);
 static void dumpDatabase(Archive *fout);
-static void dumpToaster(Archive *fout, const ToasterInfo *tsrinfo);
-static void dumpToastrel(Archive *fout, const ToastrelInfo *tsrelinfo);
+static void dumpToaster(Archive *fout, const ToasterInfo * tsrinfo);
+static void dumpToastrel(Archive *fout, const ToastrelInfo * tsrelinfo);
 static void dumpDatabaseConfig(Archive *AH, PQExpBuffer outbuf,
 							   const char *dbname, Oid dboid);
 static void dumpEncoding(Archive *AH);
@@ -2036,14 +2036,14 @@ selectDumpableAccessMethod(AccessMethodInfo *method, Archive *fout)
  * method's OID is in the range reserved for initdb.
  */
 static void
-selectDumpableToaster(ToasterInfo *method, Archive *fout)
+selectDumpableToaster(ToasterInfo * method, Archive *fout)
 {
 	if (checkExtensionMembership(&method->dobj, fout))
 		return;					/* extension membership overrides all else */
 
 	/*
-	 * This would be DUMP_COMPONENT_ACL for from-initdb toaster, but
-	 * they do not support ACLs currently.
+	 * This would be DUMP_COMPONENT_ACL for from-initdb toaster, but they do
+	 * not support ACLs currently.
 	 */
 	if (method->dobj.catId.oid <= (Oid) g_last_builtin_oid)
 		method->dobj.dump = DUMP_COMPONENT_NONE;
@@ -2062,14 +2062,14 @@ selectDumpableToaster(ToasterInfo *method, Archive *fout)
  * method's OID is in the range reserved for initdb.
  */
 static void
-selectDumpableToastrel(ToastrelInfo *method, Archive *fout)
+selectDumpableToastrel(ToastrelInfo * method, Archive *fout)
 {
 	if (checkExtensionMembership(&method->dobj, fout))
 		return;					/* extension membership overrides all else */
 
 	/*
-	 * This would be DUMP_COMPONENT_ACL for from-initdb toaster, but
-	 * they do not support ACLs currently.
+	 * This would be DUMP_COMPONENT_ACL for from-initdb toaster, but they do
+	 * not support ACLs currently.
 	 */
 	if (method->dobj.catId.oid <= (Oid) g_last_builtin_oid)
 		method->dobj.dump = DUMP_COMPONENT_NONE;
@@ -5318,7 +5318,7 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
  *	  write out a single toaster definition
  */
 static void
-dumpToaster(Archive *fout, const ToasterInfo *tsrinfo)
+dumpToaster(Archive *fout, const ToasterInfo * tsrinfo)
 {
 	DumpOptions *dopt = fout->dopt;
 	PQExpBuffer q;
@@ -5339,9 +5339,8 @@ dumpToaster(Archive *fout, const ToasterInfo *tsrinfo)
 	appendPQExpBuffer(q, "HANDLER %s;\n", tsrinfo->tsrhandler);
 
 	/*
-	 * Toaster could not be dropped
-	 * appendPQExpBuffer(delq, "DROP TOASTER %s;\n",
-	 *				  qtsrname);
+	 * Toaster could not be dropped appendPQExpBuffer(delq, "DROP TOASTER
+	 * %s;\n", qtsrname);
 	 */
 	if (dopt->binary_upgrade)
 		binary_upgrade_extension_member(q, &tsrinfo->dobj,
@@ -5372,7 +5371,7 @@ dumpToaster(Archive *fout, const ToasterInfo *tsrinfo)
  *	  write out a single toaster definition
  */
 static void
-dumpToastrel(Archive *fout, const ToastrelInfo *tsrelinfo)
+dumpToastrel(Archive *fout, const ToastrelInfo * tsrelinfo)
 {
 	DumpOptions *dopt = fout->dopt;
 	PQExpBuffer q;
@@ -5393,9 +5392,8 @@ dumpToastrel(Archive *fout, const ToastrelInfo *tsrelinfo)
 	/* appendPQExpBuffer(q, "HANDLER %s;\n", tsrelinfo->toastentname); */
 
 	/*
-	 * Toast relation could not be dropped
-	 * appendPQExpBuffer(delq, "DROP PG_TOASTREL %s;\n",
-	 *				  qtsrname);
+	 * Toast relation could not be dropped appendPQExpBuffer(delq, "DROP
+	 * PG_TOASTREL %s;\n", qtsrname);
 	 */
 	if (dopt->binary_upgrade)
 		binary_upgrade_extension_member(q, &tsrelinfo->dobj,
@@ -10284,8 +10282,9 @@ getToastrels(Archive *fout, int *numToastrels)
 	int			i_tsrentid;
 	int			i_attnum;
 	int			i_version;
-	int			i_relname; /* FIXME */
+	int			i_relname;		/* FIXME */
 	int			i_tsrentname;
+
 /* FIXME */
 
 	int			i_description;
@@ -16838,8 +16837,8 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			/* check toastability of type, not column! */
 			if (tbinfo->typstorage[j] != TYPSTORAGE_PLAIN)
 			{
-				ToasterInfo   *tsr;
-				Oid				tsrId = DEFAULT_TOASTER_OID;
+				ToasterInfo *tsr;
+				Oid			tsrId = DEFAULT_TOASTER_OID;
 				PQExpBuffer query = createPQExpBuffer();
 				PGresult   *res;
 
@@ -16847,13 +16846,13 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 
 				/* retrieve name of foreign server and generic options */
 				appendPQExpBuffer(query,
-									  "SELECT trel.toasteroid AS toasterid "
-									  "FROM pg_catalog.pg_toast_rel trel "
-									  "JOIN %s ", qualrelname);
+								  "SELECT trel.toasteroid AS toasterid "
+								  "FROM pg_catalog.pg_toast_rel trel "
+								  "JOIN %s ", qualrelname);
 				appendPQExpBufferStr(query, "\n  ON trel.relid = ");
 				appendStringLiteralAH(query, qualrelname, fout);
 				appendPQExpBufferStr(query, "::pg_catalog.regclass;\n");
-				appendPQExpBuffer(query, "\n  AND trel.attnum = %u ", (j+1));
+				appendPQExpBuffer(query, "\n  AND trel.attnum = %u ", (j + 1));
 				appendPQExpBufferStr(query, "\n  ORDER BY trel.version DESC LIMIT 1 ");
 
 				res = ExecuteSqlQueryForSingleRow(fout, query->data);
@@ -16861,14 +16860,14 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 				PQclear(res);
 				destroyPQExpBuffer(query);
 
-				if(tsrId != DEFAULT_TOASTER_OID)
+				if (tsrId != DEFAULT_TOASTER_OID)
 				{
 					tsr = findToasterByOid(tsrId);
 					if (tsr)
 						appendPQExpBuffer(q, "ALTER TABLE %s ALTER COLUMN %s SET TOASTER %s;\n",
-									  qualrelname,
-									  fmtId(tbinfo->attnames[j]),
-									  tsr->dobj.name);
+										  qualrelname,
+										  fmtId(tbinfo->attnames[j]),
+										  tsr->dobj.name);
 				}
 			}
 

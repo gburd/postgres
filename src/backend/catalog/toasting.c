@@ -83,6 +83,7 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 	int			i;
 	TupleDesc	tupDesc;
 	List	   *tsrOids = NIL;
+
 /*
 	if(!IsBootstrapProcessingMode())
 		return;
@@ -95,15 +96,15 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 	 * Create toaster data storage (heap table for generic toaster), once per
 	 * table for each toster.
 	 */
-	for(i = 0; i < tupDesc->natts; i++)
+	for (i = 0; i < tupDesc->natts; i++)
 	{
-		FormData_pg_attribute   *attr = TupleDescAttr(tupDesc, i);
-		TsrRoutine				*tsr;
-		Oid trel;
-		NameData relname;
-		NameData tname;
+		FormData_pg_attribute *attr = TupleDescAttr(tupDesc, i);
+		TsrRoutine *tsr;
+		Oid			trel;
+		NameData	relname;
+		NameData	tname;
 		char		toast_relname[NAMEDATALEN];
-		Oid toasterid = DEFAULT_TOASTER_OID;
+		Oid			toasterid = DEFAULT_TOASTER_OID;
 
 		if (attr->attisdropped)
 			continue;
@@ -113,14 +114,15 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 		if (list_member_oid(tsrOids, DEFAULT_TOASTER_OID))
 			continue;
 
-		if(!TypeIsToastable(attr->atttypid))
+		if (!TypeIsToastable(attr->atttypid))
 			continue;
 
-		if(OIDOldToast != InvalidOid)
+		if (OIDOldToast != InvalidOid)
 		{
-			Oid oldtoaster = DEFAULT_TOASTER_OID;
+			Oid			oldtoaster = DEFAULT_TOASTER_OID;
+
 			oldtoaster = DatumGetObjectId(GetLastToaster(OIDOldToast, attr->attnum, AccessShareLock));
-			if(oldtoaster != InvalidOid)
+			if (oldtoaster != InvalidOid)
 				toasterid = oldtoaster;
 		}
 
@@ -131,18 +133,18 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 		else
 		{
 			trel = DatumGetObjectId(tsr->init(rel, toasterid, InvalidOid, InvalidOid, reloptions, attr->attnum,
-								lockmode, check, OIDOldToast));
+											  lockmode, check, OIDOldToast));
 		}
 
-		if(trel != InvalidOid)
+		if (trel != InvalidOid)
 		{
-		/* XXX insert record into pg_toast_rel */
+			/* XXX insert record into pg_toast_rel */
 			namestrcpy(&relname, RelationGetRelationName(rel));
 			snprintf(toast_relname, sizeof(toast_relname),
-				 "pg_toast_%u", rel->rd_id);
+					 "pg_toast_%u", rel->rd_id);
 			namestrcpy(&tname, toast_relname);
 			InsertToastRelation(toasterid, rel->rd_id, trel, attr->attnum,
-				0, relname, tname, 0, RowExclusiveLock);
+								0, relname, tname, 0, RowExclusiveLock);
 		}
 		tsrOids = lappend_oid(tsrOids, toasterid);
 		CommandCounterIncrement();
@@ -172,19 +174,19 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 
 	/* create_toast_table does all the work */
 	tupDesc = RelationGetDescr(rel);
-	for(int i = 0; i < tupDesc->natts; i++)
+	for (int i = 0; i < tupDesc->natts; i++)
 	{
-		FormData_pg_attribute   *attr = TupleDescAttr(tupDesc, i);
-		TsrRoutine				*tsr;
-		Oid trel;
-		NameData relname;
-		NameData tname;
+		FormData_pg_attribute *attr = TupleDescAttr(tupDesc, i);
+		TsrRoutine *tsr;
+		Oid			trel;
+		NameData	relname;
+		NameData	tname;
 		char		toast_relname[NAMEDATALEN];
 
-		if (attr->attisdropped )
+		if (attr->attisdropped)
 			continue;
 
-		if(!TypeIsToastable(attr->atttypid))
+		if (!TypeIsToastable(attr->atttypid))
 			continue;
 
 		/* such toaster is already created its storage */
@@ -197,17 +199,17 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 			elog(ERROR, "\"%s\" does not require a toast table", relName);
 		else
 			trel = DatumGetObjectId(tsr->init(rel, DEFAULT_TOASTER_OID, toastOid, toastIndexOid, (Datum) 0, attr->attnum,
-								AccessExclusiveLock, false, InvalidOid));
+											  AccessExclusiveLock, false, InvalidOid));
 
 		/* XXX insert record into pg_toast_rel */
-		if(trel != InvalidOid)
+		if (trel != InvalidOid)
 		{
 			namestrcpy(&relname, relName);
 			snprintf(toast_relname, sizeof(toast_relname),
-				 "pg_toast_%u", rel->rd_id);
+					 "pg_toast_%u", rel->rd_id);
 			namestrcpy(&tname, toast_relname);
 			InsertToastRelation(DEFAULT_TOASTER_OID, rel->rd_id, trel, attr->attnum,
-				0, relname, tname, 0, RowExclusiveLock);
+								0, relname, tname, 0, RowExclusiveLock);
 		}
 		tsrOids = lappend_oid(tsrOids, DEFAULT_TOASTER_OID);
 	}
@@ -245,18 +247,18 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 	int16		coloptions[2];
 	ObjectAddress baseobject,
 				toastobject;
-	Oid trel = InvalidOid;
+	Oid			trel = InvalidOid;
 
 	/*
 	 * Is it already toasted?
 	 */
 
-	if(IsBootstrapProcessingMode())
+	if (IsBootstrapProcessingMode())
 	{
-		if(HasToastrel(toasteroid, rel->rd_id, attnum, AccessShareLock))
+		if (HasToastrel(toasteroid, rel->rd_id, attnum, AccessShareLock))
 		{
 			trel = DatumGetObjectId(GetActualToastrel(toasteroid, relOid, attnum, AccessShareLock));
-			if( trel != InvalidOid )
+			if (trel != InvalidOid)
 			{
 				return trel;
 			}
@@ -270,19 +272,13 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 	/*
 	 * Check to see whether the table actually needs a TOAST table.
 	 */
+
 	/*
-	if (!IsBinaryUpgrade)
-	{
-		* Normal mode, normal check *
-		if (!needs_toast_table(rel))
-		{
-			elog(NOTICE, "Does not need toast table.");
-			return InvalidOid;
-		}
-	}
-	else
-	*/
-	if(IsBinaryUpgrade)
+	 * if (!IsBinaryUpgrade) { Normal mode, normal check * if
+	 * (!needs_toast_table(rel)) { elog(NOTICE, "Does not need toast table.");
+	 * return InvalidOid; } } else
+	 */
+	if (IsBinaryUpgrade)
 	{
 		/*
 		 * In binary-upgrade mode, create a TOAST table if and only if
@@ -308,6 +304,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 			return InvalidOid;
 		}
 	}
+
 	/*
 	 * If requested check lockmode is sufficient. This is a cross check in
 	 * case of errors or conflicting decisions in earlier code.
@@ -322,7 +319,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 	{
 		toast_relid = InvalidOid;
 		trel = DatumGetObjectId(GetActualToastrel(toasteroid, relOid, attnum, AccessShareLock));
-		if( trel != InvalidOid )
+		if (trel != InvalidOid)
 		{
 			return trel;
 		}
@@ -372,7 +369,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 
 	/* Toast table is shared if and only if its parent is. */
 	shared_relation = IsSharedRelation(relOid);
-	// rel->rd_rel->relisshared;
+	/* rel->rd_rel->relisshared; */
 
 	/* It's mapped if and only if its parent is, too */
 	mapped_relation = RelationIsMapped(rel);
@@ -404,6 +401,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 
 	/* ShareLock is not really needed here, but take it anyway */
 	toast_rel = table_open(toast_relid, ShareLock);
+
 	/*
 	 * Create unique index on chunk_id, chunk_seq.
 	 *
@@ -498,6 +496,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 	heap_freetuple(reltup);
 
 	table_close(class_rel, RowExclusiveLock);
+
 	/*
 	 * Register dependency from the toast table to the main, so that the toast
 	 * table will be deleted if the main is.  Skip this in bootstrap mode.
@@ -513,6 +512,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 
 		recordDependencyOn(&toastobject, &baseobject, DEPENDENCY_INTERNAL);
 	}
+
 	/*
 	 * Make changes visible
 	 */
@@ -695,9 +695,11 @@ init_toast_snapshot(Snapshot toast_snapshot)
 	InitToastSnapshot(*toast_snapshot, snapshot->lsn, snapshot->whenTaken);
 }
 
-Oid GetLastToasterId(Oid relid, int16 attnum)
+Oid
+GetLastToasterId(Oid relid, int16 attnum)
 {
-	Oid tsrid = InvalidOid;
+	Oid			tsrid = InvalidOid;
+
 	tsrid = DatumGetObjectId(GetLastToaster(relid, attnum, AccessShareLock));
 	return tsrid;
 }

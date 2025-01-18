@@ -1782,59 +1782,62 @@ heap_drop_with_catalog(Oid relid, bool checkCache)
 	 * shared-cache-inval notice that will make them update their partition
 	 * descriptors.
 	 */
-	if(checkCache)
+	if (checkCache)
 	{
-	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for relation %u", relid);
-	if (((Form_pg_class) GETSTRUCT(tuple))->relispartition)
-	{
-		/*
-		 * We have to lock the parent if the partition is being detached,
-		 * because it's possible that some query still has a partition
-		 * descriptor that includes this partition.
-		 */
-		parentOid = get_partition_parent(relid, true);
-		LockRelationOid(parentOid, AccessExclusiveLock);
+		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for relation %u", relid);
+		if (((Form_pg_class) GETSTRUCT(tuple))->relispartition)
+		{
+			/*
+			 * We have to lock the parent if the partition is being detached,
+			 * because it's possible that some query still has a partition
+			 * descriptor that includes this partition.
+			 */
+			parentOid = get_partition_parent(relid, true);
+			LockRelationOid(parentOid, AccessExclusiveLock);
 
-		/*
-		 * If this is not the default partition, dropping it will change the
-		 * default partition's partition constraint, so we must lock it.
-		 */
-		defaultPartOid = get_default_partition_oid(parentOid);
-		if (OidIsValid(defaultPartOid) && relid != defaultPartOid)
-			LockRelationOid(defaultPartOid, AccessExclusiveLock);
-	}
+			/*
+			 * If this is not the default partition, dropping it will change
+			 * the default partition's partition constraint, so we must lock
+			 * it.
+			 */
+			defaultPartOid = get_default_partition_oid(parentOid);
+			if (OidIsValid(defaultPartOid) && relid != defaultPartOid)
+				LockRelationOid(defaultPartOid, AccessExclusiveLock);
+		}
 
-	ReleaseSysCache(tuple);
-	} // if(checkCache)
+		ReleaseSysCache(tuple);
+	} //if (checkCache)
 
-	rel = relation_open(relid, AccessExclusiveLock);
+		rel = relation_open(relid, AccessExclusiveLock);
 
-	if(rel->rd_rel->relkind == RELKIND_TOASTVALUE && checkCache == true)
+	if (rel->rd_rel->relkind == RELKIND_TOASTVALUE && checkCache == true)
 	{
 		relation_close(rel, AccessExclusiveLock);
 		return;
 	}
 	relation_close(rel, AccessExclusiveLock);
 
-	if(HasToastrel(InvalidOid, relid, 0, AccessShareLock))
+	if (HasToastrel(InvalidOid, relid, 0, AccessShareLock))
 	{
-		ListCell *lc;
-		List *toastrelids = NIL;
+		ListCell   *lc;
+		List	   *toastrelids = NIL;
+
 		toastrelids = GetToastRelationsList(toastrelids, relid, 0, AccessShareLock);
 		CommandCounterIncrement();
 /*FIXME remove logging*/
-// XXX PG_TOASTREL
+/*  XXX PG_TOASTREL */
 		foreach(lc, toastrelids)
 		{
-			Oid trel = lfirst_oid(lc);
+			Oid			trel = lfirst_oid(lc);
+
 			heap_drop_with_catalog(trel, false);
 			CommandCounterIncrement();
 		}
 
 		DeleteToastRelation(InvalidOid, InvalidOid, relid, 0, 0,
-		0, RowExclusiveLock);
+							0, RowExclusiveLock);
 		CommandCounterIncrement();
 	}
 
@@ -1849,7 +1852,7 @@ heap_drop_with_catalog(Oid relid, bool checkCache)
 	 * might still have open queries or cursors, or pending trigger events, in
 	 * our own session.
 	 */
-	if(!(rel->rd_rel->relkind == RELKIND_TOASTVALUE && checkCache == false))
+	if (!(rel->rd_rel->relkind == RELKIND_TOASTVALUE && checkCache == false))
 		CheckTableNotInUse(rel, "DROP TABLE");
 
 	/*
@@ -3096,8 +3099,8 @@ void
 heap_truncate_one_rel(Relation rel)
 {
 /*	Oid			toastrelid; */
-	List			*toastrelids = NIL;
-	ListCell		*lc;
+	List	   *toastrelids = NIL;
+	ListCell   *lc;
 
 	/*
 	 * Truncate the relation.  Partitioned tables have no storage, so there is
@@ -3114,9 +3117,9 @@ heap_truncate_one_rel(Relation rel)
 
 	/* If there is a toast table, truncate that too */
 	toastrelids = GetToastRelationsList(toastrelids, rel->rd_id, 0, AccessShareLock);
-// XXX PG_TOASTREL
-//	toastrelid = rel->rd_rel->reltoastrelid;
-//	if (OidIsVal6id(toastrelid))
+/*  XXX PG_TOASTREL */
+/* 	toastrelid = rel->rd_rel->reltoastrelid; */
+/* 	if (OidIsVal6id(toastrelid)) */
 	foreach(lc, toastrelids)
 	{
 /*		Relation	toastrel = table_open(toastrelid, AccessExclusiveLock); */

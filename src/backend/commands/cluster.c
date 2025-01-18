@@ -693,14 +693,15 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 	TupleDesc	OldHeapDesc;
 	char		NewHeapName[NAMEDATALEN];
 	Oid			OIDNewHeap;
+
 /*	Oid			toastid; */
 	Relation	OldHeap;
 	HeapTuple	tuple;
 	Datum		reloptions;
 	bool		isNull;
 	Oid			namespaceid;
-	List		*toastrelids = NIL;
-	ListCell	*lc;
+	List	   *toastrelids = NIL;
+	ListCell   *lc;
 
 	OldHeap = table_open(OIDOldHeap, lockmode);
 	OldHeapDesc = RelationGetDescr(OldHeap);
@@ -786,10 +787,11 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 	 */
 
 	toastrelids = GetToastRelationsList(toastrelids, OldHeap->rd_id, 0, AccessShareLock);
-// XXX PG_TOASTREL
+/*  XXX PG_TOASTREL */
 	foreach(lc, toastrelids)
 	{
-		Oid trel = lfirst_oid(lc);
+		Oid			trel = lfirst_oid(lc);
+
 		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(trel));
 		if (!HeapTupleIsValid(tuple))
 			elog(ERROR, "cache lookup failed for relation %u", trel);
@@ -806,7 +808,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 	toastid = OldHeap->rd_rel->reltoastrelid;
 	if (OidIsValid(toastid))
 	{ */
-		/* keep the existing toast table's reloptions, if any */
+	/* keep the existing toast table's reloptions, if any */
 /*
 		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(toastid));
 		if (!HeapTupleIsValid(tuple))
@@ -857,9 +859,9 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	int			elevel = verbose ? INFO : DEBUG2;
 	PGRUsage	ru0;
 	char	   *nspname;
-	List		*toastrelids = NIL;
-	ListCell	*lc;
-	
+	List	   *toastrelids = NIL;
+	ListCell   *lc;
+
 	pg_rusage_init(&ru0);
 
 	/*
@@ -896,12 +898,13 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 * We don't need to open the toast relation here, just lock it.  The lock
 	 * will be held till end of transaction.
 	 */
-	/* XXX PG_TOASTREL
-	if (OldHeap->rd_rel->reltoastrelid)
-		LockRelationOid(OldHeap->rd_rel->reltoastrelid, AccessExclusiveLock);
-*/
+
+	/*
+	 * XXX PG_TOASTREL if (OldHeap->rd_rel->reltoastrelid)
+	 * LockRelationOid(OldHeap->rd_rel->reltoastrelid, AccessExclusiveLock);
+	 */
 	toastrelids = GetToastRelationsList(toastrelids, OldHeap->rd_id, 0, AccessShareLock);
-// XXX PG_TOASTREL
+/*  XXX PG_TOASTREL */
 	foreach(lc, toastrelids)
 	{
 		LockRelationOid(lfirst_oid(lc), AccessExclusiveLock);
@@ -914,10 +917,12 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	 * swap by links.  This is okay because swap by content is only essential
 	 * for system catalogs, and we don't support schema changes for them.
 	 */
-	/* PG_TOASTREL
-	if (OldHeap->rd_rel->reltoastrelid && NewHeap->rd_rel->reltoastrelid)
-	*/
-	if(HasToastrel(InvalidOid, OldHeap->rd_id, 0, AccessShareLock) 
+
+	/*
+	 * PG_TOASTREL if (OldHeap->rd_rel->reltoastrelid &&
+	 * NewHeap->rd_rel->reltoastrelid)
+	 */
+	if (HasToastrel(InvalidOid, OldHeap->rd_id, 0, AccessShareLock)
 		&& HasToastrel(InvalidOid, NewHeap->rd_id, 0, AccessShareLock))
 	{
 		*pSwapToastByContent = true;
@@ -1112,10 +1117,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				relfilenumber2;
 	RelFileNumber swaptemp;
 	char		swptmpchr;
-	Oid relam1, relam2;
-	List		*r1trel = NIL;
-	List		*r2trel = NIL;
-	ListCell	*lc;
+	Oid			relam1,
+				relam2;
+	List	   *r1trel = NIL;
+	List	   *r2trel = NIL;
+	ListCell   *lc;
 	Toastrel	trel;
 
 
@@ -1177,22 +1183,24 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			{
 				HeapTuple	ttup;
 				Form_pg_toast_rel tform;
-				trel = (Toastrel)lfirst(lc);
+
+				trel = (Toastrel) lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
-				trel = (Toastrel)lfirst(lc);
+				trel = (Toastrel) lfirst(lc);
 				InsertToastRelation(trel->toasteroid, r2, trel->toastentid, trel->attnum, 0, relform2->relname, tform->relname, 0, AccessExclusiveLock);
 			}
 			foreach(lc, r2trel)
 			{
 				HeapTuple	ttup;
 				Form_pg_toast_rel tform;
-				trel = (Toastrel)lfirst(lc);
+
+				trel = (Toastrel) lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
-				trel = (Toastrel)lfirst(lc);
+				trel = (Toastrel) lfirst(lc);
 				InsertToastRelation(trel->toasteroid, r1, trel->toastentid, trel->attnum, 0, relform1->relname, tform->relname, 0, AccessExclusiveLock);
 			}
 		}
@@ -1225,7 +1233,7 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			elog(ERROR, "cannot change access method of mapped relation \"%s\"",
 				 NameStr(relform1->relname));
 		if (!swap_toast_by_content &&
-				(!HasToastrel(InvalidOid, r1, 0, AccessShareLock) || !HasToastrel(InvalidOid, r2, 0, AccessShareLock)))
+			(!HasToastrel(InvalidOid, r1, 0, AccessShareLock) || !HasToastrel(InvalidOid, r2, 0, AccessShareLock)))
 /*			(relform1->reltoastrelid || relform2->reltoastrelid)) */
 			elog(ERROR, "cannot swap toast by links for mapped relation \"%s\"",
 				 NameStr(relform1->relname));
@@ -1374,22 +1382,22 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	 * deal with them too.
 	 */
 /*	if (relform1->reltoastrelid || relform2->reltoastrelid) */
-	if(HasToastrel(InvalidOid, r1, 0, AccessShareLock) || HasToastrel(InvalidOid, r2, 0, AccessShareLock))
+	if (HasToastrel(InvalidOid, r1, 0, AccessShareLock) || HasToastrel(InvalidOid, r2, 0, AccessShareLock))
 	{
 		if (swap_toast_by_content)
 		{
 /*			if (relform1->reltoastrelid && relform2->reltoastrelid) */
-			if(HasToastrel(InvalidOid, r1, 0, AccessShareLock) && HasToastrel(InvalidOid, r2, 0, AccessShareLock))
+			if (HasToastrel(InvalidOid, r1, 0, AccessShareLock) && HasToastrel(InvalidOid, r2, 0, AccessShareLock))
 			{
 /**/
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup1; */
 /*					Form_pg_toast_rel tform1; */
-					Toastrel		trel1;
-					ListCell		*lc2;
-					
-					trel1 = (Toastrel)lfirst(lc);
+					Toastrel	trel1;
+					ListCell   *lc2;
+
+					trel1 = (Toastrel) lfirst(lc);
 /*					ttup1 = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel1->toastentid)); */
 /*					tform1 = (Form_pg_toast_rel) GETSTRUCT(ttup1); */
 
@@ -1397,22 +1405,22 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 					{
 /*						HeapTuple	ttup2;
 						Form_pg_toast_rel tform2; */
-						Toastrel		trel2;
+						Toastrel	trel2;
 
-						trel2 = (Toastrel)lfirst(lc2);
+						trel2 = (Toastrel) lfirst(lc2);
 /*						ttup2 = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel2->toastentid));
 						tform2 = (Form_pg_toast_rel) GETSTRUCT(ttup2); */
 
-						if(trel1->attnum == trel2->attnum)
+						if (trel1->attnum == trel2->attnum)
 						{
 							swap_relation_files(trel1->toastentid,
-									trel2->toastentid,
-									target_is_pg_class,
-									swap_toast_by_content,
-									is_internal,
-									frozenXid,
-									cutoffMulti,
-									mapped_tables);
+												trel2->toastentid,
+												target_is_pg_class,
+												swap_toast_by_content,
+												is_internal,
+												frozenXid,
+												cutoffMulti,
+												mapped_tables);
 /*
 							InsertToastRelation(trel1->toasteroid, r2, trel1->toastentid, trel1->attnum, 0, relform2->relname, tform1->relname, 0, AccessExclusiveLock);
 							InsertToastRelation(trel2->toasteroid, r1, trel2->toastentid, trel2->attnum, 0, relform2->relname, tform2->relname, 0, AccessExclusiveLock);
@@ -1424,7 +1432,7 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			}
 
 /**/
-				/* Recursively swap the contents of the toast tables */
+			/* Recursively swap the contents of the toast tables */
 /*
 				swap_relation_files(relform1->reltoastrelid,
 									relform2->reltoastrelid,
@@ -1470,21 +1478,21 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 
 			/* Delete old dependencies */
 /*			if (relform1->reltoastrelid) */
-			if(HasToastrel(InvalidOid, r1, 0, AccessShareLock))
+			if (HasToastrel(InvalidOid, r1, 0, AccessShareLock))
 			{
 /**/
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup;
 					Form_pg_toast_rel tform; */
-					
-					trel = (Toastrel)lfirst(lc);
+
+					trel = (Toastrel) lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
-					
+
 					count = deleteDependencyRecordsFor(RelationRelationId,
-												   trel->toastentid,
-												   false);
+													   trel->toastentid,
+													   false);
 					if (count != 1)
 						elog(ERROR, "expected one dependency record for TOAST table, found %ld",
 							 count);
@@ -1512,21 +1520,21 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 						 count);
 			}
 */
-			if(HasToastrel(InvalidOid, r2, 0, AccessShareLock))
+			if (HasToastrel(InvalidOid, r2, 0, AccessShareLock))
 			{
 /**/
 				foreach(lc, r1trel)
 				{
 /*					HeapTuple	ttup; */
 /*					Form_pg_toast_rel tform; */
-					
-					trel = (Toastrel)lfirst(lc);
+
+					trel = (Toastrel) lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
 /*					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
-					
+
 					count = deleteDependencyRecordsFor(RelationRelationId,
-												   trel->toastentid,
-												   false);
+													   trel->toastentid,
+													   false);
 					if (count != 1)
 						elog(ERROR, "expected one dependency record for TOAST table, found %ld",
 							 count);
@@ -1543,11 +1551,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			{
 				HeapTuple	ttup;
 				Form_pg_toast_rel tform;
-					
-				trel = (Toastrel)lfirst(lc);
+
+				trel = (Toastrel) lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
-					
+
 				baseobject.classId = RelationRelationId;
 				baseobject.objectSubId = 0;
 				toastobject.classId = RelationRelationId;
@@ -1563,11 +1571,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 			{
 				HeapTuple	ttup;
 				Form_pg_toast_rel tform;
-					
-				trel = (Toastrel)lfirst(lc);
+
+				trel = (Toastrel) lfirst(lc);
 				ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 				tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
-					
+
 				baseobject.classId = RelationRelationId;
 				baseobject.objectSubId = 0;
 				toastobject.classId = RelationRelationId;
@@ -1783,23 +1791,24 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	if (!swap_toast_by_content)
 	{
 		Relation	newrel;
-		List		*tlist = NIL;
-		ListCell	*lc;
+		List	   *tlist = NIL;
+		ListCell   *lc;
 
 		newrel = table_open(OIDOldHeap, NoLock);
 		/* Also swap toast links, if we're swapping by links */
-		tlist = GetFullToastRelationsList(tlist, newrel->rd_id , 0, AccessShareLock);
+		tlist = GetFullToastRelationsList(tlist, newrel->rd_id, 0, AccessShareLock);
 
 		foreach(lc, tlist)
 		{
 			HeapTuple	ttup;
 			Form_pg_toast_rel tform;
-			Toastrel trel;
-			trel = (Toastrel)lfirst(lc);
+			Toastrel	trel;
+
+			trel = (Toastrel) lfirst(lc);
 			ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid));
 			tform = (Form_pg_toast_rel) GETSTRUCT(ttup);
 
-			trel = (Toastrel)lfirst(lc);
+			trel = (Toastrel) lfirst(lc);
 			InsertToastRelation(trel->toasteroid, newrel->rd_id, trel->toastentid, trel->attnum, 0, newrel->rd_rel->relname, tform->relname, 0, AccessExclusiveLock);
 		}
 
@@ -1814,14 +1823,14 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 			toastidx = toast_get_valid_index(newrel->rd_rel->reltoastrelid,
 											 NoLock);
 */
-			/* rename the toast table ... */
+		/* rename the toast table ... */
 /*
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u",
 					 OIDOldHeap);
 			RenameRelationInternal(newrel->rd_rel->reltoastrelid,
 								   NewToastName, true, false);
 */
-			/* ... and its valid index too. */
+		/* ... and its valid index too. */
 /*
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u_index",
 					 OIDOldHeap);
@@ -1829,11 +1838,12 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 			RenameRelationInternal(toastidx,
 								   NewToastName, true, true);
 */
-			/*
-			 * Reset the relrewrite for the toast. The command-counter
-			 * increment is required here as we are about to update the tuple
-			 * that is updated as part of RenameRelationInternal.
-			 */
+
+		/*
+		 * Reset the relrewrite for the toast. The command-counter increment
+		 * is required here as we are about to update the tuple that is
+		 * updated as part of RenameRelationInternal.
+		 */
 /*
 			CommandCounterIncrement();
 			ResetRelRewrite(newrel->rd_rel->reltoastrelid);

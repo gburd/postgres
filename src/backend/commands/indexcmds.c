@@ -3472,7 +3472,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 				 * toast indexes.
 				 */
 				Relation	heapRelation;
-				List *tlist = NIL;
+				List	   *tlist = NIL;
 
 				/* Save the list of relation OIDs in private context */
 				oldcontext = MemoryContextSwitchTo(private_context);
@@ -3553,17 +3553,18 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 				foreach(lc, tlist)
 				{
 /*					HeapTuple	ttup; */
-					Toastrel trel;
+					Toastrel	trel;
 					Relation	toastRelation;
+
 /*					Form_pg_toast_rel tform; */
 
-					trel = (Toastrel)lfirst(lc);
+					trel = (Toastrel) lfirst(lc);
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
 /*					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
 
 /*					trel = (Toastrel)lfirst(lc); */
 					toastRelation = table_open(trel->toastentid,
-														   ShareUpdateExclusiveLock);
+											   ShareUpdateExclusiveLock);
 					oldcontext = MemoryContextSwitchTo(private_context);
 					heapRelationIds = lappend_oid(heapRelationIds, trel->toastentid);
 
@@ -3614,11 +3615,11 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 					Relation	toastRelation = table_open(toastOid,
 														   ShareUpdateExclusiveLock);
 */
-					/* Save the list of relation OIDs in private context */
+				/* Save the list of relation OIDs in private context */
 /*
 					oldcontext = MemoryContextSwitchTo(private_context);
 */
-					/* Track this relation for session locks */
+				/* Track this relation for session locks */
 /*
 					heapRelationIds = lappend_oid(heapRelationIds, toastOid);
 
@@ -3640,10 +3641,10 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 						{
 							ReindexIndexInfo *idx;
 */
-							/*
-							 * Save the list of relation OIDs in private
-							 * context
-							 */
+
+				/*
+				 * Save the list of relation OIDs in private context
+				 */
 /*
 							oldcontext = MemoryContextSwitchTo(private_context);
 
@@ -3651,7 +3652,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 							idx->indexId = cellOid;
 							indexIds = lappend(indexIds, idx);
 */
-							/* other fields set later */
+				/* other fields set later */
 /*
 							MemoryContextSwitchTo(oldcontext);
 						}

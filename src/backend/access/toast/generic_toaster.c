@@ -63,9 +63,10 @@
  */
 static Datum
 generic_toast_init(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid, Datum reloptions, int attnum, LOCKMODE lockmode,
-				 bool check, Oid OIDOldToast)
+				   bool check, Oid OIDOldToast)
 {
-	Oid trel = InvalidOid;
+	Oid			trel = InvalidOid;
+
 	trel = create_toast_table(rel, toastoid, toastindexoid, DEFAULT_TOASTER_OID, reloptions, attnum, lockmode,
 							  check, OIDOldToast);
 	return ObjectIdGetDatum(trel);
@@ -77,9 +78,9 @@ generic_toast_init(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid
  */
 static Datum
 generic_toast(Relation toast_rel, Oid toasterid, Datum value, Datum oldvalue,
-			 int attnum, int max_inline_size, int options)
+			  int attnum, int max_inline_size, int options)
 {
-	Datum result;
+	Datum		result;
 
 	Assert(toast_rel != NULL);
 
@@ -97,12 +98,12 @@ static Datum
 generic_detoast(Datum toast_ptr, int offset, int length)
 {
 	struct varlena *result = 0;
-	struct varlena *tvalue = (struct varlena*)DatumGetPointer(toast_ptr);
+	struct varlena *tvalue = (struct varlena *) DatumGetPointer(toast_ptr);
 	struct varatt_external toast_pointer;
 
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, tvalue);
-	if(offset == 0
-	   && (length < 0 || length >= VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer)))
+	if (offset == 0
+		&& (length < 0 || length >= VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer)))
 	{
 		result = toast_fetch_datum(tvalue);
 	}
@@ -129,7 +130,7 @@ generic_delete_toast(Datum value, bool is_speculative)
  * Generic Validate function. Always returns true
  */
 static bool
-generic_validate (Oid typeoid, char storage, char compression,
+generic_validate(Oid typeoid, char storage, char compression,
 				 Oid amoid, bool false_ok)
 {
 	return true;

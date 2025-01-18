@@ -49,7 +49,7 @@ PG_FUNCTION_INFO_V1(dummy_toaster_handler);
  */
 static Datum
 dummy_detoast(Datum toast_ptr,
-			 int offset, int length)
+			  int offset, int length)
 {
 	struct varlena *attr = (struct varlena *) DatumGetPointer(toast_ptr);
 	struct varlena *result;
@@ -71,20 +71,22 @@ dummy_detoast(Datum toast_ptr,
  */
 static Datum
 dummy_toast(Relation toast_rel, Oid toasterid,
-		   Datum value, Datum oldvalue,
-		   int attnum, int max_inline_size,  int options)
+			Datum value, Datum oldvalue,
+			int attnum, int max_inline_size, int options)
 {
-	struct varlena			*attr;
-	struct varlena			*result;
-	int	len;
-	attr = (struct varlena*)DatumGetPointer(value); //pg_detoast_datum((struct varlena*)DatumGetPointer(value));
+	struct varlena *attr;
+	struct varlena *result;
+	int			len;
 
-	if(VARSIZE_ANY_EXHDR(attr) > MAX_DUMMY_CHUNK_SIZE)
+	attr = (struct varlena *) DatumGetPointer(value);
+	//pg_detoast_datum((struct varlena *) DatumGetPointer(value));
+
+	if (VARSIZE_ANY_EXHDR(attr) > MAX_DUMMY_CHUNK_SIZE)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg_internal("Data <%d> size exceeds MAX_DUMMY_CHUNK_SIZE <%d>",
-								 (int)VARSIZE_ANY_EXHDR(attr), MAX_DUMMY_CHUNK_SIZE)));
+								 (int) VARSIZE_ANY_EXHDR(attr), MAX_DUMMY_CHUNK_SIZE)));
 
 	}
 
@@ -108,7 +110,7 @@ dummy_toast(Relation toast_rel, Oid toasterid,
 	memcpy(VARATT_CUSTOM_GET_DATA(result), VARDATA_ANY(attr),
 		   VARSIZE_ANY_EXHDR(attr));
 
-	if ((char*)attr != DatumGetPointer(value))
+	if ((char *) attr != DatumGetPointer(value))
 		pfree(attr);
 
 	return PointerGetDatum(result);
@@ -128,9 +130,10 @@ dummy_delete(Datum toast_ptr, bool is_speculative)
  */
 static bool
 dummy_toaster_validate(Oid typeoid, char storage, char compression,
-                                        Oid amoid, bool false_ok)
+					   Oid amoid, bool false_ok)
 {
-	bool result = true;
+	bool		result = true;
+
 	return result;
 }
 
@@ -138,17 +141,19 @@ dummy_toaster_validate(Oid typeoid, char storage, char compression,
  * Dummy validation function, always returns TRUE
  */
 static Datum
-dummy_toast_init(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid, Datum reloptions,int attnum, LOCKMODE lockmode,
-						   bool check, Oid OIDOldToast)
+dummy_toast_init(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid, Datum reloptions, int attnum, LOCKMODE lockmode,
+				 bool check, Oid OIDOldToast)
 {
-	Oid res = 1;
+	Oid			res = 1;
+
 	return ObjectIdGetDatum(res);
 }
 
 Datum
 dummy_toaster_handler(PG_FUNCTION_ARGS)
 {
-	TsrRoutine  *tsr = makeNode(TsrRoutine);
+	TsrRoutine *tsr = makeNode(TsrRoutine);
+
 	tsr->init = dummy_toast_init;
 	tsr->toast = dummy_toast;
 	tsr->update_toast = NULL;

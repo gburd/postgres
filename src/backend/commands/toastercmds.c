@@ -42,7 +42,7 @@ static Oid	lookup_toaster_handler_func(List *handler_name);
  *		Registers a new toaster.
  */
 ObjectAddress
-CreateToaster(CreateToasterStmt *stmt)
+CreateToaster(CreateToasterStmt * stmt)
 {
 	Relation	rel;
 	ObjectAddress myself;
@@ -65,7 +65,7 @@ CreateToaster(CreateToasterStmt *stmt)
 
 	/* Check if name is used */
 	tsroid = GetSysCacheOid1(TOASTERNAME, Anum_pg_toaster_oid,
-							CStringGetDatum(stmt->tsrname));
+							 CStringGetDatum(stmt->tsrname));
 	if (OidIsValid(tsroid))
 	{
 		if (stmt->if_not_exists)
@@ -132,7 +132,7 @@ CreateToaster(CreateToasterStmt *stmt)
  *		Drops toaster.
  */
 void
-DropToaster(DropToasterStmt *stmt)
+DropToaster(DropToasterStmt * stmt)
 {
 	Relation	rel;
 	Oid			tsroid;
@@ -152,7 +152,7 @@ DropToaster(DropToasterStmt *stmt)
 
 	/* Check if name is used */
 	tsroid = GetSysCacheOid1(TOASTERNAME, Anum_pg_toaster_oid,
-							CStringGetDatum(stmt->tsrname));
+							 CStringGetDatum(stmt->tsrname));
 
 	if (tsroid == DEFAULT_TOASTER_OID || !OidIsValid(tsroid))
 	{
@@ -173,21 +173,21 @@ DropToaster(DropToasterStmt *stmt)
 		return;
 	}
 
-	if(HasToastrel(tsroid, 0, 0, AccessShareLock))
+	if (HasToastrel(tsroid, 0, 0, AccessShareLock))
 	{
 		ereport(ERROR,
-			(errcode(ERRCODE_NO_DATA_FOUND),
-			 errmsg("toaster \"%s\" has related TOAST tables and cannot be dropped",
-					stmt->tsrname)));
+				(errcode(ERRCODE_NO_DATA_FOUND),
+				 errmsg("toaster \"%s\" has related TOAST tables and cannot be dropped",
+						stmt->tsrname)));
 	}
 
 	ScanKeyInit(&key,
-					Anum_pg_toaster_oid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(tsroid));
+				Anum_pg_toaster_oid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(tsroid));
 
 	scan = systable_beginscan(rel, ToasterOidIndexId, true,
-								  NULL, 1, &key);
+							  NULL, 1, &key);
 
 	while (HeapTupleIsValid((tup = systable_getnext(scan))))
 	{
@@ -215,7 +215,7 @@ get_toaster_oid(const char *tsrname, bool missing_ok)
 	tup = SearchSysCache1(TOASTERNAME, CStringGetDatum(tsrname));
 	if (HeapTupleIsValid(tup))
 	{
-		Form_pg_toaster	tsrform = (Form_pg_toaster) GETSTRUCT(tup);
+		Form_pg_toaster tsrform = (Form_pg_toaster) GETSTRUCT(tup);
 
 		oid = tsrform->oid;
 		ReleaseSysCache(tup);
@@ -240,7 +240,7 @@ get_toaster_name(Oid tsroid)
 	tup = SearchSysCache1(TOASTEROID, ObjectIdGetDatum(tsroid));
 	if (HeapTupleIsValid(tup))
 	{
-		Form_pg_toaster	tsrform = (Form_pg_toaster) GETSTRUCT(tup);
+		Form_pg_toaster tsrform = (Form_pg_toaster) GETSTRUCT(tup);
 
 		result = pstrdup(NameStr(tsrform->tsrname));
 		ReleaseSysCache(tup);

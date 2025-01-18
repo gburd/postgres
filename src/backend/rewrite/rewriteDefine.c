@@ -514,16 +514,17 @@ DefineQueryRewrite(const char *rulename,
 
 		relationRelation = table_open(RelationRelationId, RowExclusiveLock);
 
-		if(HasToastrel(InvalidOid, event_relation->rd_id, 0, AccessShareLock))
+		if (HasToastrel(InvalidOid, event_relation->rd_id, 0, AccessShareLock))
 		{
-			List *trelids = NIL;
-			ListCell *lc;
+			List	   *trelids = NIL;
+			ListCell   *lc;
 
 			trelids = GetToastRelationsList(trelids, event_relation->rd_id, 0, AccessShareLock);
-	// XXX PG_TOASTREL
+			/* XXX PG_TOASTREL */
 			foreach(lc, trelids)
 			{
-				Toastrel trel = (Toastrel) (lfirst(lc));
+				Toastrel	trel = (Toastrel) (lfirst(lc));
+
 				toastrelid = trel->toastentid;
 
 /*		toastrelid = event_relation->rd_rel->reltoastrelid; */
@@ -533,20 +534,21 @@ DefineQueryRewrite(const char *rulename,
 				DeleteSystemAttributeTuples(event_relid);
 
 				/*
-		 		* Drop the toast table if any.  (This won't take care of updating the
-		 		* toast fields in the relation's own pg_class entry; we handle that
-		 		* below.)
-		 		*/
+				 * Drop the toast table if any.  (This won't take care of
+				 * updating the toast fields in the relation's own pg_class
+				 * entry; we handle that below.)
+				 */
 				if (OidIsValid(toastrelid))
 				{
 					ObjectAddress toastobject;
 
 					/*
-			 		* Delete the dependency of the toast relation on the main
-			 		* relation so we can drop the former without dropping the latter.
-			 		*/
+					 * Delete the dependency of the toast relation on the main
+					 * relation so we can drop the former without dropping the
+					 * latter.
+					 */
 					deleteDependencyRecordsFor(RelationRelationId, toastrelid,
-									   false);
+											   false);
 
 					/* Make deletion of dependency record visible */
 					CommandCounterIncrement();
@@ -556,13 +558,14 @@ DefineQueryRewrite(const char *rulename,
 					toastobject.objectId = toastrelid;
 					toastobject.objectSubId = 0;
 					performDeletion(&toastobject, DROP_RESTRICT,
-							PERFORM_DELETION_INTERNAL);
+									PERFORM_DELETION_INTERNAL);
 				}
 
 				/*
-		 		* SetRelationRuleStatus may have updated the pg_class row, so we must
-		 		* advance the command counter before trying to update it again.
-			 	*/
+				 * SetRelationRuleStatus may have updated the pg_class row, so
+				 * we must advance the command counter before trying to update
+				 * it again.
+				 */
 				CommandCounterIncrement();
 			}
 		}

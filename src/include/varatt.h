@@ -40,9 +40,9 @@ typedef struct varatt_external
 
 typedef struct uint32align16
 {
-	uint16	hi;
-	uint16	lo;
-} uint32align16;
+	uint16		hi;
+	uint16		lo;
+}			uint32align16;
 
 #define set_uint32align16(p, v)	\
 	( \
@@ -56,9 +56,9 @@ typedef struct uint32align16
 /* varatt_custom uses 16bit aligment */
 typedef struct varatt_custom
 {
-	uint16			va_toasterdatalen;/* total size of toast pointer, < BLCKSZ */
-	uint32align16	va_rawsize;		/* Original data size (includes header) */
-	uint32align16	va_toasterid;	/* Toaster ID, actually Oid */
+	uint16		va_toasterdatalen;	/* total size of toast pointer, < BLCKSZ */
+	uint32align16 va_rawsize;	/* Original data size (includes header) */
+	uint32align16 va_toasterid; /* Toaster ID, actually Oid */
 	char		va_toasterdata[FLEXIBLE_ARRAY_MEMBER];	/* Custom toaster data */
 }			varatt_custom;
 

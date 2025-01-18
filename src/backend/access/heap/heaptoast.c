@@ -104,15 +104,15 @@ heap_compute_data_size_without_attr(TupleDesc tupleDesc,
  */
 static void
 heap_toast_tuple_externalize(ToastTupleContext *ttc, int attno,
-							int maxDataLen, int options)
+							 int maxDataLen, int options)
 {
-	int	max_inline_size;
-	int	size;
+	int			max_inline_size;
+	int			size;
 
-	size= heap_compute_data_size_without_attr(ttc->ttc_rel->rd_att,
-											  ttc->ttc_values,
-											  ttc->ttc_isnull,
-											  attno);
+	size = heap_compute_data_size_without_attr(ttc->ttc_rel->rd_att,
+											   ttc->ttc_values,
+											   ttc->ttc_isnull,
+											   attno);
 
 	max_inline_size = Max(0, maxDataLen - size);
 
@@ -259,7 +259,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		 */
 		/* FIXME set force_toast flag */
 		if (toast_attr[biggest_attno].tai_size > maxDataLen
-			&& HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock) )
+			&& HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
 			/* &&	rel->rd_rel->reltoastrelid != InvalidOid) */
 			heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
@@ -271,8 +271,8 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 	 */
 	/* FIXME force_toast flag */
 	while (heap_compute_data_size(tupleDesc,
-								  toast_values, toast_isnull) > maxDataLen )
-			/* && rel->rd_rel->reltoastrelid != InvalidOid) */
+								  toast_values, toast_isnull) > maxDataLen)
+		/* && rel->rd_rel->reltoastrelid != InvalidOid) */
 	{
 		int			biggest_attno;
 
@@ -307,7 +307,8 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 
 	while (heap_compute_data_size(tupleDesc,
 								  toast_values, toast_isnull) > maxDataLen) /* &&
-		   rel->rd_rel->reltoastrelid != InvalidOid) */
+																			 * rel->rd_rel->reltoastrelid
+																			 * != InvalidOid) */
 	{
 		int			biggest_attno;
 
@@ -315,7 +316,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		if (biggest_attno < 0)
 			break;
 
-		if(HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
+		if (HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
 			heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
 
@@ -677,8 +678,8 @@ heap_fetch_toast_slice(Relation toastrel, Oid valueid,
 					   int32 sliceoffset, int32 slicelength,
 					   struct varlena *result)
 {
-	fetch_toast_slice( toastrel, valueid,
-					   attr, attrsize,
-					   sliceoffset, slicelength,
-					   result);
+	fetch_toast_slice(toastrel, valueid,
+					  attr, attrsize,
+					  sliceoffset, slicelength,
+					  result);
 }

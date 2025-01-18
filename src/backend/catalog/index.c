@@ -4056,8 +4056,8 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
 		 * This rule is enforced by setting tablespaceOid to InvalidOid.
 		 */
 		ReindexParams newparams = *params;
-		List *toastrelids = NIL;
-		ListCell *lc;
+		List	   *toastrelids = NIL;
+		ListCell   *lc;
 
 		newparams.options &= ~(REINDEXOPT_MISSING_OK);
 		newparams.tablespaceOid = InvalidOid;

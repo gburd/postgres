@@ -29,16 +29,16 @@
  */
 CATALOG(pg_toast_rel,9881,ToastrelRelationId)
 {
-	Oid			oid;			   /* oid */
-   Oid			toasteroid;		/* oid */
-   Oid			relid;		   /* oid */
-   Oid			toastentid;		/* oid */
-   int16			attnum;		   /* oid */
-   int16       version;
-   NameData	   relname;		   /* original table name */
-   NameData	   toastentname;	/* toast storage entity name */
-   char		   flag;	         /* Cleanup flag */
-	char		   toastoptions;	/* Toast options */
+	Oid			oid;			/* oid */
+	Oid			toasteroid;		/* oid */
+	Oid			relid;			/* oid */
+	Oid			toastentid;		/* oid */
+	int16		attnum;			/* oid */
+	int16		version;
+	NameData	relname;		/* original table name */
+	NameData	toastentname;	/* toast storage entity name */
+	char		flag;			/* Cleanup flag */
+	char		toastoptions;	/* Toast options */
 } FormData_pg_toast_rel;
 
 /* ----------------

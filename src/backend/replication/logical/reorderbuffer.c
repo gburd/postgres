@@ -4826,10 +4826,10 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	desc = RelationGetDescr(relation);
 
-	if(HasToastrel(InvalidOid, relation->rd_id, 0, AccessShareLock))
+	if (HasToastrel(InvalidOid, relation->rd_id, 0, AccessShareLock))
 	{
 		elog(ERROR, "could not open toast relation for base relation \"%s\"",
-			RelationGetRelationName(relation));
+			 RelationGetRelationName(relation));
 	}
 /*
 	toast_rel = RelationIdGetRelation(relation->rd_rel->reltoastrelid);
@@ -4862,7 +4862,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		dlist_iter	it;
 		Size		data_done = 0;
 
-		Oid trel;
+		Oid			trel;
 
 		/* system columns aren't toasted */
 		if (attr->attnum < 0)
@@ -4883,7 +4883,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		varlena = (struct varlena *) DatumGetPointer(attrs[natt]);
 
 		/* FIXME Need to implement applying diffs for Custom TOAST Pointer */
-		if(VARATT_IS_CUSTOM(varlena))
+		if (VARATT_IS_CUSTOM(varlena))
 			continue;
 
 		/* no need to do anything if the tuple isn't external */
@@ -4917,7 +4917,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		toast_rel = RelationIdGetRelation(trel);
 		if (!RelationIsValid(toast_rel))
 			elog(ERROR, "could not open toast relation with OID %u (base relation \"%s\")",
-				trel, RelationGetRelationName(relation));
+				 trel, RelationGetRelationName(relation));
 
 		toast_desc = RelationGetDescr(toast_rel);
 

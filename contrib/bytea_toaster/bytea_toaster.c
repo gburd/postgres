@@ -38,8 +38,8 @@ typedef struct AppendableToastData
 	varatt_external ptr;
 	AppendableToastVersion version;
 	int32		inline_tail_size;
-	char	   *inline_tail_data; /* [FLEXIBLE_ARRAY_MEMBER]; */
-} AppendableToastData;
+	char	   *inline_tail_data;	/* [FLEXIBLE_ARRAY_MEMBER]; */
+}			AppendableToastData;
 
 #define VARATT_CUSTOM_APPENDABLE_HDRSZ \
 	offsetof(AppendableToastData, inline_tail_data)
@@ -61,7 +61,7 @@ bytea_toaster_init(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid
 				   bool check, Oid OIDOldToast)
 {
 	return ObjectIdGetDatum(create_toast_table(rel, toasteroid, InvalidOid, InvalidOid, reloptions, attnum,
-							  lockmode, check, OIDOldToast));
+											   lockmode, check, OIDOldToast));
 }
 
 static bool
@@ -113,7 +113,7 @@ typedef struct AppendableToastVisibilityContext
 	ItemPointerData chunktid;
 	AppendableToastVersion max_chunk_version;
 	AppendableToastVersion attrversion;
-} AppendableToastVisibilityContext;
+}			AppendableToastVisibilityContext;
 
 static bool
 bytea_toaster_check_visibility(void *pcxt, char **chunkdata,
@@ -201,28 +201,31 @@ bytea_toaster_toast(Relation rel, Oid toasterid,
 					Datum newval, Datum oldval,
 					int attnum, int max_inline_size, int options)
 {
-	return (Datum)(bytea_toaster_copy(rel, toasterid, newval, options, attnum));
+	return (Datum) (bytea_toaster_copy(rel, toasterid, newval, options, attnum));
 }
 
 static Datum
 bytea_toaster_update_toast(Relation rel, Oid toasterid,
 						   Datum newval, Datum oldval, int options, int attnum)
 {
-	bool		is_speculative = false; /* (options & HEAP_INSERT_SPECULATIVE) != 0 XXX */
+	bool		is_speculative = false; /* (options & HEAP_INSERT_SPECULATIVE)
+										 * != 0 XXX */
 
 	if (VARATT_IS_CUSTOM(newval) && VARATT_IS_CUSTOM(oldval))
 	{
 		AppendableToastData old_data;
 		AppendableToastData new_data;
-		Oid			toastrelid = InvalidOid; // rel->rd_rel->reltoastrelid;
-		Datum	dtrel = SearchToastrelCache(rel->rd_id, attnum, false);
+		Oid			toastrelid = InvalidOid;
 
-		if(dtrel == (Datum) 0)
+		//rel->rd_rel->reltoastrelid;
+		Datum		dtrel = SearchToastrelCache(rel->rd_id, attnum, false);
+
+		if (dtrel == (Datum) 0)
 		{
 			elog(ERROR, "No TOAST table, create new for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 		}
 		toastrelid = ((Toastrel) DatumGetPointer(dtrel))->toastentid;
-		if( toastrelid == InvalidOid )
+		if (toastrelid == InvalidOid)
 		{
 			elog(ERROR, "No TOAST table, create new for rel %u toasterid %u", rel->rd_rel->oid, toasterid);
 		}
@@ -267,14 +270,14 @@ bytea_toaster_update_toast(Relation rel, Oid toasterid,
 	else if (VARATT_IS_EXTERNAL_ONDISK(oldval))
 		toast_delete_datum(oldval, is_speculative);
 
-	return (Datum)(bytea_toaster_copy(rel, toasterid, newval, options, attnum));
+	return (Datum) (bytea_toaster_copy(rel, toasterid, newval, options, attnum));
 }
 
 static Datum
 bytea_toaster_copy_toast(Relation rel, Oid toasterid,
 						 Datum newval, int options, int attnum)
 {
-	return (Datum)(bytea_toaster_copy(rel, toasterid, newval, options, attnum));
+	return (Datum) (bytea_toaster_copy(rel, toasterid, newval, options, attnum));
 }
 
 static Datum
@@ -339,7 +342,7 @@ bytea_toaster_detoast(Datum toastptr,
 
 	if (slicelength > 0)
 	{
-		Relation toastrel;
+		Relation	toastrel;
 
 		toastrel = table_open(data.ptr.va_toastrelid, AccessShareLock);
 
@@ -416,7 +419,8 @@ bytea_toaster_handler(PG_FUNCTION_ARGS)
 
 	tsr->init = bytea_toaster_init;
 	tsr->toast = bytea_toaster_toast;
-	tsr->deltoast = NULL; //bytea_toaster_delete_toast;
+	tsr->deltoast = NULL;
+	//bytea_toaster_delete_toast;
 	tsr->copy_toast = bytea_toaster_copy_toast;
 	tsr->update_toast = bytea_toaster_update_toast;
 	tsr->detoast = bytea_toaster_detoast;

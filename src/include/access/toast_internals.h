@@ -63,18 +63,18 @@ extern struct varlena *toast_fetch_datum_slice(struct varlena *attr,
 											   int32 slicelength);
 
 extern void
-toast_fetch_toast_slice(Relation toastrel, Oid valueid, 
-					   struct varlena *attr, int32 attrsize,
-					   int32 sliceoffset, int32 slicelength,
-					   struct varlena *result);
+			toast_fetch_toast_slice(Relation toastrel, Oid valueid,
+									struct varlena *attr, int32 attrsize,
+									int32 sliceoffset, int32 slicelength,
+									struct varlena *result);
 
 extern Datum toast_save_datum_ext(Relation rel, Oid toasterid, Datum value,
 								  struct varlena *oldexternal, int options, int attnum,
 								  void *chunk_header, int chunk_header_size);
 
-typedef bool (*ToastChunkVisibilityCheck)(void *cxt, char **chunkdata,
-										  int32 *chunksize,
-										  ItemPointer tid);
+typedef bool (*ToastChunkVisibilityCheck) (void *cxt, char **chunkdata,
+										   int32 *chunksize,
+										   ItemPointer tid);
 
 extern struct varlena *toast_fetch_datum(struct varlena *attr);
 extern struct varlena *toast_fetch_datum_slice(struct varlena *attr,
@@ -83,11 +83,11 @@ extern struct varlena *toast_fetch_datum_slice(struct varlena *attr,
 
 
 extern void
-toast_update_datum(Datum value,
-				   void *slice_data, int slice_offset, int slice_length,
-				   void *chunk_header, int chunk_header_size,
-				   ToastChunkVisibilityCheck visibility_check,
-				   void *visibility_cxt, int options);
+			toast_update_datum(Datum value,
+							   void *slice_data, int slice_offset, int slice_length,
+							   void *chunk_header, int chunk_header_size,
+							   ToastChunkVisibilityCheck visibility_check,
+							   void *visibility_cxt, int options);
 
 /*
 extern Size toast_datum_size(Datum value);

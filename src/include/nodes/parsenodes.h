@@ -3004,17 +3004,17 @@ typedef struct CreateAmStmt
 typedef struct CreateToasterStmt
 {
 	NodeTag		type;
-	char	   *tsrname;			/* toaster name */
+	char	   *tsrname;		/* toaster name */
 	List	   *handler_name;	/* handler function name */
 	bool		if_not_exists;
-} CreateToasterStmt;
+}			CreateToasterStmt;
 
 typedef struct DropToasterStmt
 {
 	NodeTag		type;
-	char	   *tsrname;			/* toaster name */
+	char	   *tsrname;		/* toaster name */
 	bool		if_not_exists;
-} DropToasterStmt;
+}			DropToasterStmt;
 
 /* ----------------------
  *		Create TRIGGER Statement

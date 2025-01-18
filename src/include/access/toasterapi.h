@@ -50,44 +50,44 @@ do { \
 #define BYTEA_TOASTER_MAGIC    0xb17ea757
 typedef struct ByteaToastRoutine
 {
-       int32           magic;
-       Datum     (*append)(Datum val1, Datum val2);
-} ByteaToastRoutine;
+	int32		magic;
+	Datum		(*append) (Datum val1, Datum val2);
+}			ByteaToastRoutine;
 
 /*
  * Callback function signatures --- see indexam.sgml for more info.
  */
 
 /* Create toast storage */
-typedef Datum (*toast_init)(Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid, Datum reloptions, int attnum, LOCKMODE lockmode,
-						   bool check, Oid OIDOldToast);
+typedef Datum (*toast_init) (Relation rel, Oid toasteroid, Oid toastoid, Oid toastindexoid, Datum reloptions, int attnum, LOCKMODE lockmode,
+							 bool check, Oid OIDOldToast);
 
 /* Toast function */
 typedef Datum (*toast_function) (Relation toast_rel,
-										   Oid toasterid,
-										   Datum value,
-										   Datum oldvalue,
-											int attnum,
-										   int max_inline_size,
-										   int options);
+								 Oid toasterid,
+								 Datum value,
+								 Datum oldvalue,
+								 int attnum,
+								 int max_inline_size,
+								 int options);
 
 /* Update toast function, optional */
 typedef Datum (*update_toast_function) (Relation toast_rel,
-												  Oid toasterid,
-												  Datum newvalue,
-												  Datum oldvalue,
-												  int options);
+										Oid toasterid,
+										Datum newvalue,
+										Datum oldvalue,
+										int options);
 
 /* Copy toast function, optional */
 typedef Datum (*copy_toast_function) (Relation toast_rel,
-												Oid toasterid,
-												Datum newvalue,
-												int options,
-												int attnum);
+									  Oid toasterid,
+									  Datum newvalue,
+									  int options,
+									  int attnum);
 
 /* Detoast function */
 typedef Datum (*detoast_function) (Datum toast_ptr,
-											 int offset, int length);
+								   int offset, int length);
 
 /* Delete toast function */
 typedef void (*del_toast_function) (Datum value, bool is_speculative);
@@ -95,7 +95,7 @@ typedef void (*del_toast_function) (Datum value, bool is_speculative);
 
 
 /* Return virtual table of functions, optional */
-typedef void * (*get_vtable_function) (Datum toast_ptr);
+typedef void *(*get_vtable_function) (Datum toast_ptr);
 
 /* validate definition of a toaster Oid */
 typedef bool (*toastervalidate_function) (Oid typeoid,
@@ -111,7 +111,7 @@ typedef struct TsrRoutine
 	NodeTag		type;
 
 	/* interface functions */
-	toast_init init;
+	toast_init	init;
 	toast_function toast;
 	update_toast_function update_toast;
 	copy_toast_function copy_toast;
@@ -119,37 +119,39 @@ typedef struct TsrRoutine
 	del_toast_function deltoast;
 	get_vtable_function get_vtable;
 	toastervalidate_function toastervalidate;
-} TsrRoutine;
+}			TsrRoutine;
 
-typedef struct ToastrelData {
-	Oid			oid;			   /* oid */
-   Oid			toasteroid;		/* oid */
-   Oid			relid;		   /* oid */
-   Oid			toastentid;		/* oid */
-   int16			attnum;		   /* oid */
-   int16       version;
-   NameData	   relname;		   /* original table name */
-   NameData	   toastentname;	/* toast storage entity name */
-   char		   description;	/* Description */
-	char		   toastoptions;	/* Toast options */
-} ToastrelData;
+typedef struct ToastrelData
+{
+	Oid			oid;			/* oid */
+	Oid			toasteroid;		/* oid */
+	Oid			relid;			/* oid */
+	Oid			toastentid;		/* oid */
+	int16		attnum;			/* oid */
+	int16		version;
+	NameData	relname;		/* original table name */
+	NameData	toastentname;	/* toast storage entity name */
+	char		description;	/* Description */
+	char		toastoptions;	/* Toast options */
+}			ToastrelData;
 
 typedef struct ToastrelData *Toastrel;
 
-typedef struct ToastrelKey {
-   Oid			toastentid;		/* oid */
+typedef struct ToastrelKey
+{
+	Oid			toastentid;		/* oid */
 	Oid			toasterid;		/* oid */
-   int16			attnum;		   /* oid */
-	int16			version;		   /* oid */
-} ToastrelKey;
+	int16		attnum;			/* oid */
+	int16		version;		/* oid */
+}			ToastrelKey;
 
 typedef struct ToastrelKey *Toastkey;
 
 /* Functions in access/index/toasterapi.c */
-extern TsrRoutine *GetTsrRoutine(Oid tsrhandler);
-extern TsrRoutine *GetTsrRoutineByOid(Oid tsroid, bool noerror);
-extern TsrRoutine *SearchTsrCache(Oid tsroid);
-extern bool	validateToaster(Oid toasteroid, Oid typeoid, char storage,
+extern TsrRoutine * GetTsrRoutine(Oid tsrhandler);
+extern TsrRoutine * GetTsrRoutineByOid(Oid tsroid, bool noerror);
+extern TsrRoutine * SearchTsrCache(Oid tsroid);
+extern bool validateToaster(Oid toasteroid, Oid typeoid, char storage,
 							char compression, Oid amoid, bool false_ok);
 extern Datum default_toaster_handler(PG_FUNCTION_ARGS);
 
@@ -159,29 +161,29 @@ extern Datum GetAttVersionToastrel(Oid toasterid, Oid relid, int16 attnum, LOCKM
 extern Datum GetLastToaster(Oid relid, int16 attnum, LOCKMODE lockmode);
 
 extern bool InsertToastRelation(Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
-	int version, NameData relname, NameData toastentname, char toastoptions, LOCKMODE lockmode);
+								int version, NameData relname, NameData toastentname, char toastoptions, LOCKMODE lockmode);
 extern bool UpdateToastRelationFlag(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
-	int version, char flag, LOCKMODE lockmode);
+									int version, char flag, LOCKMODE lockmode);
 extern bool
-DeleteToastRelation(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
-	int version, LOCKMODE lockmode);
+			DeleteToastRelation(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
+								int version, LOCKMODE lockmode);
 
 
-extern Datum SearchToastrelCache(Oid	relid, int16 attnum, bool search_ind);
+extern Datum SearchToastrelCache(Oid relid, int16 attnum, bool search_ind);
 extern Datum InsertToastrelCache(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
-	int16 version, char toastoptions);
-extern Datum DeleteToastrelCache(Oid toasterid, Oid	relid, int16 attnum);
+								 int16 version, char toastoptions);
+extern Datum DeleteToastrelCache(Oid toasterid, Oid relid, int16 attnum);
 extern Datum InsertOrReplaceToastrelCache(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
-	char toastoptions);
+										  char toastoptions);
 extern List *GetToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode);
 extern bool HasToastrel(Oid toasterid, Oid relid, int16 attnum, LOCKMODE lockmode);
 extern List *GetFullToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode);
 
 extern Datum GetInheritedToaster(List *schema, List *supers, char relpersistence,
-				bool is_partition, List **supconstr,
-				Oid accessMethodId, NameData attname, Oid typid);
+								 bool is_partition, List **supconstr,
+								 Oid accessMethodId, NameData attname, Oid typid);
 
-Datum relopts_get_toaster_opts(Datum reloptions, Oid *relid, Oid *toasterid);
-Datum relopts_set_toaster_opts(Datum reloptions, Oid relid, Oid toasterid);
+Datum		relopts_get_toaster_opts(Datum reloptions, Oid *relid, Oid *toasterid);
+Datum		relopts_set_toaster_opts(Datum reloptions, Oid relid, Oid toasterid);
 
 #endif							/* TOASTERAPI_H */

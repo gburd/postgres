@@ -439,19 +439,20 @@ calculate_table_size(Relation rel)
 	/*
 	 * Size of toast relation
 	 */
-	if(HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+	if (HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
 	{
-		List *trelids = NIL;
-		ListCell *lc;
+		List	   *trelids = NIL;
+		ListCell   *lc;
 
 		trelids = GetToastRelationsList(trelids, rel->rd_id, 0, AccessShareLock);
-	// XXX PG_TOASTREL
-			foreach(lc, trelids)
-			{
-				Toastrel trel = (Toastrel) (lfirst(lc));
-				if (OidIsValid(trel->toastentid))
-					size += calculate_toast_table_size(trel->toastentid);
-			}
+		/* XXX PG_TOASTREL */
+		foreach(lc, trelids)
+		{
+			Toastrel	trel = (Toastrel) (lfirst(lc));
+
+			if (OidIsValid(trel->toastentid))
+				size += calculate_toast_table_size(trel->toastentid);
+		}
 	}
 
 /*

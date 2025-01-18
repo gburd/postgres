@@ -78,12 +78,12 @@ typedef struct ToastedAttribute
 
 typedef struct ToastRelationCtx
 {
-	Oid		toastrelid;
+	Oid			toastrelid;
 	Relation	toast_rel;
-	Relation	*toast_indexes;
+	Relation   *toast_indexes;
 	Relation	valid_toast_index;
-	int		num_toast_indexes;
-} ToastRelationCtx;
+	int			num_toast_indexes;
+}			ToastRelationCtx;
 
 /*
  * Struct holding the running context information during
@@ -160,8 +160,8 @@ typedef struct HeapCheckContext
 	Tuplestorestate *tupstore;
 
 	/* PG_TOASTREL toast relations list */
-	List		*toastrelids;
-	List		*toastrels;
+	List	   *toastrelids;
+	List	   *toastrels;
 } HeapCheckContext;
 
 /* Internal implementation */
@@ -386,10 +386,10 @@ verify_heapam(PG_FUNCTION_ARGS)
 	ctx.toastrelids = GetToastRelationsList(ctx.toastrelids, ctx.rel->rd_id, 0, AccessShareLock);
 
 	/* Optionally open the toast relation, if any. */
-	if(ctx.toastrelids && check_toast)
+	if (ctx.toastrelids && check_toast)
 	{
 		int			offset;
-		ListCell		*lc;
+		ListCell   *lc;
 		Oid			entry;
 
 		foreach(lc, ctx.toastrelids)
@@ -400,11 +400,11 @@ verify_heapam(PG_FUNCTION_ARGS)
 			entry = lfirst_oid(lc);
 			trel_entry->toastrelid = entry;
 			trel_entry->toast_rel = table_open(trel_entry->toastrelid,
-								   AccessShareLock);
+											   AccessShareLock);
 			offset = toast_open_indexes(trel_entry->toast_rel,
-									AccessShareLock,
-									&(trel_entry->toast_indexes),
-									&(trel_entry->num_toast_indexes));
+										AccessShareLock,
+										&(trel_entry->toast_indexes),
+										&(trel_entry->num_toast_indexes));
 			trel_entry->valid_toast_index = trel_entry->toast_indexes[offset];
 
 			ctx.toastrels = lcons(trel_entry, ctx.toastrels);
@@ -851,24 +851,26 @@ verify_heapam(PG_FUNCTION_ARGS)
 	 * Close the associated toast table and indexes, if any. Optionally open
 	 * the toast relation, if any.
 	 */
-	if(ctx.toastrels)
+	if (ctx.toastrels)
 	{
-		ListCell		*lc;
+		ListCell   *lc;
 
 		foreach(lc, ctx.toastrels)
 		{
-			ToastRelationCtx *trel_entry;// = palloc(sizeof(ToastRelationCtx));
+			ToastRelationCtx *trel_entry;
+
+			//= palloc(sizeof(ToastRelationCtx));
 
 			trel_entry = (ToastRelationCtx *) (lfirst(lc));
 
 			toast_close_indexes(trel_entry->toast_indexes, trel_entry->num_toast_indexes,
-							AccessShareLock);
+								AccessShareLock);
 			if (trel_entry->toast_rel)
 				table_close(trel_entry->toast_rel, AccessShareLock);
 		}
 	}
 
-/*	
+/*
 	if (ctx.toast_indexes)
 		toast_close_indexes(ctx.toast_indexes, ctx.num_toast_indexes,
 							AccessShareLock);

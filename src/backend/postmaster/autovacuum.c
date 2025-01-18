@@ -2035,24 +2035,25 @@ do_autovacuum(void)
 		 * this whether or not the table is going to be vacuumed, because we
 		 * don't automatically vacuum toast tables along the parent table.
 		 */
-		if(HasToastrel(InvalidOid, relid, 0, AccessShareLock))
+		if (HasToastrel(InvalidOid, relid, 0, AccessShareLock))
 		{
-			List *trelids = NIL;
-			ListCell *lc;
+			List	   *trelids = NIL;
+			ListCell   *lc;
 
 			trelids = GetFullToastRelationsList(trelids, relid, 0, AccessShareLock);
-		// XXX PG_TOASTREL
+			/* XXX PG_TOASTREL */
 			foreach(lc, trelids)
 			{
-				Toastrel trel = (Toastrel) (lfirst(lc));
+				Toastrel	trel = (Toastrel) (lfirst(lc));
+
 				if (OidIsValid(trel->toastentid))
 				{
 					av_relation *hentry;
 					bool		found;
 
 					hentry = hash_search(table_toast_map,
-								 &(trel->toastentid),
-								 HASH_ENTER, &found);
+										 &(trel->toastentid),
+										 HASH_ENTER, &found);
 
 					if (!found)
 					{
@@ -2082,7 +2083,7 @@ do_autovacuum(void)
 			if (!found)
 			{
 */
-				/* hash_search already filled in the key */
+		/* hash_search already filled in the key */
 /*
 				hentry->ar_relid = relid;
 				hentry->ar_hasrelopts = false;

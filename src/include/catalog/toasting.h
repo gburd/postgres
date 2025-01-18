@@ -29,7 +29,7 @@ extern void BootstrapToastTable(char *relName,
 								Oid toastOid, Oid toastIndexOid);
 
 /* generic toaster access */
-extern Oid create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid,
+extern Oid	create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid,
 							   Datum reloptions, int attnum, LOCKMODE lockmode, bool check,
 							   Oid OIDOldToast);
 
@@ -42,6 +42,6 @@ extern void toast_close_indexes(Relation *toastidxs, int num_indexes,
 								LOCKMODE lock);
 extern void init_toast_snapshot(Snapshot toast_snapshot);
 
-extern Oid GetLastToasterId(Oid relid, int16 attnum);
+extern Oid	GetLastToasterId(Oid relid, int16 attnum);
 
 #endif							/* TOASTING_H */
