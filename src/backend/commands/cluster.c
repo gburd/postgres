@@ -1196,9 +1196,6 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				InsertToastRelation(trel->toasteroid, r1, trel->toastentid, trel->attnum, 0, relform1->relname, tform->relname, 0, AccessExclusiveLock);
 			}
 		}
-
-		pfree(r1trel);
-		pfree(r2trel);
 	}
 	else
 	{
@@ -1805,7 +1802,6 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 			trel = (Toastrel)lfirst(lc);
 			InsertToastRelation(trel->toasteroid, newrel->rd_id, trel->toastentid, trel->attnum, 0, newrel->rd_rel->relname, tform->relname, 0, AccessExclusiveLock);
 		}
-		pfree(tlist);
 
 /*
 		if (OidIsValid(newrel->rd_rel->reltoastrelid))

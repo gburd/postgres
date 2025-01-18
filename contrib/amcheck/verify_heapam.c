@@ -380,14 +380,12 @@ verify_heapam(PG_FUNCTION_ARGS)
 							nblocks - 1)));
 		last_block = (BlockNumber) lb;
 	}
-
 	list_free(ctx.toastrelids);
 	list_free(ctx.toastrels);
 
 	ctx.toastrelids = GetToastRelationsList(ctx.toastrelids, ctx.rel->rd_id, 0, AccessShareLock);
 
 	/* Optionally open the toast relation, if any. */
-/*	if (ctx.rel->rd_rel->reltoastrelid && check_toast) */
 	if(ctx.toastrelids && check_toast)
 	{
 		int			offset;
@@ -398,6 +396,7 @@ verify_heapam(PG_FUNCTION_ARGS)
 		{
 			ToastRelationCtx *trel_entry = palloc(sizeof(ToastRelationCtx));
 
+			/* Main relation has associated toast relation */
 			entry = lfirst_oid(lc);
 			trel_entry->toastrelid = entry;
 			trel_entry->toast_rel = table_open(trel_entry->toastrelid,
@@ -848,9 +847,10 @@ verify_heapam(PG_FUNCTION_ARGS)
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 
-	/* Close the associated toast table and indexes, if any. */
-	/* Optionally open the toast relation, if any. */
-/*	if (ctx.rel->rd_rel->reltoastrelid && check_toast) */
+	/*
+	 * Close the associated toast table and indexes, if any. Optionally open
+	 * the toast relation, if any.
+	 */
 	if(ctx.toastrels)
 	{
 		ListCell		*lc;
@@ -867,8 +867,6 @@ verify_heapam(PG_FUNCTION_ARGS)
 				table_close(trel_entry->toast_rel, AccessShareLock);
 		}
 	}
-	list_free(ctx.toastrelids);
-	list_free(ctx.toastrels);
 
 /*	
 	if (ctx.toast_indexes)
@@ -1793,7 +1791,6 @@ check_tuple_attribute(HeapCheckContext *ctx)
 	}
 
 	/* The relation better have a toast table */
-/*	if (!ctx->rel->rd_rel->reltoastrelid) */
 	if (!HasToastrel(InvalidOid, ctx->rel->rd_id, 0, AccessShareLock))
 	{
 		report_corruption(ctx,

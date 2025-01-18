@@ -1881,3 +1881,83 @@ cd ws/postgresql/
 code &
 ls
 nix develop
+ulimit -c unlimited
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+ls test-db/
+cat /proc/sys/kernel/core_pattern
+ls /var/crash
+file /var/crash/_usr_lib_python-validity_dbus-service.0.crash 
+sudo file /var/crash/_usr_lib_python-validity_dbus-service.0.crash 
+cat /var/log/apport.log 
+emacs -nw NOTES 
+sudo sysctl -w kernel.core_pattern=core
+history | grep configure
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+find . -name \*core\*
+fg
+vi NOTES
+gdb ./build/bin/postgres test-db/core
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+make && rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+make && rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+make
+rg GetToastrelList
+emacs -nw (rg -l GetToastrelList)
+emacs -nw $(rg -l GetToastrelList)
+emacs -nw $(rg -l GetToast.*RelationsList)
+make
+emacs -nw $(rg -l GetFullToastrelList)
+make
+find . -name rewriteDefine.c
+emacs -nw src/backend/rewrite/rewriteDefine.c 
+make
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+make clean && make
+make
+make clean
+ls
+rm -rf build test-db
+make
+find . -name \*.o
+find . -name \*.o -delete
+find . -name \*.o
+make
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+make
+make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+git branch
+git co gregburd/toasters/rel-17-2
+rm -rf .envrc .history .idea .vscode flake.*
+git co gregburd/toasters/rel-17-2
+tig
+make check
+find . -name core
+ls build/bin/
+find . -name postgres
+gdb tmp_install/home/gburd/ws/postgresql/build/bin/postgres src/test/regress/tmp_check/data/core 
+make && make install && make check
+find . -name core
+gdb tmp_install/home/gburd/ws/postgresql/build/bin/postgres src/test/regress/tmp_check/data/core 
+emacs -nw $(rg -l 'Get.*ToastRelationsList')
+fg
+make && make install && make check
+emacs -nw src/backend/rewrite/rewriteDefine.c 
+make && make install && make check
+gdb tmp_install/home/gburd/ws/postgresql/build/bin/postgres src/test/regress/tmp_check/data/core 
+fg

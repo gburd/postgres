@@ -3607,8 +3607,6 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 					table_close(toastRelation, NoLock);
 				}
 
-				pfree(tlist);
-
 /*
 				if (OidIsValid(heapRelation->rd_rel->reltoastrelid))
 				{

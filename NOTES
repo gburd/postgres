@@ -9,6 +9,37 @@ GOALS:
 * contrib/bytea,jsonb example toaster implementations
 * allow attributes set per-column for a TOASTer (e.g. compression algorithm with default toaster)
 * 100% backward compatibility
+* allow plugin contorl over vacuum/analyze process
+
+
+IDEAS:
+-----------------------------------------------------------------------------------------
+* TOASTER: simple content addresible chunker
+  * every 2k chunk of content is hashed
+  * store chunk in nbtree with key hash and value is the chunk
+
+* TOASTER: pcompress/ctrie
+  * use pcompress to form small content addresible chunks that are
+    deduped/compressed/encrypted/etc
+  * use random hashing (consistent hashing) to partition documents by
+    "liveliness" as estimated by the (clock2, CAR, ARC, LRU?) algorithm
+    patition the "clock" into sections by "heat".  Hotter documents are
+    just stored rather than chunked/compressed/etc.  The most frequently
+    updated documents are kept as-is in a LOB-like L1 of LSM storage where
+    they can be collected fast as they tombstone or are replaced by newer
+    younger versions.  Their key is the hash of the entire document.
+  v1:
+  * store dictionaries and other meta-data in relations or just as data in the
+    heap?
+  * store chunks in heapam, use hasham as the index (assuming it's faster for
+    totally unordered hash keys, think sha1)
+  v2:
+  * store those chunks in a page-backed concurrent hash array mapped trie (ctrie)
+  * LSM/HanoiDB-like in that L1 storage is a log of updates and after that is a
+    set of ctries
+  * LSM can be provided filters that inform "sections", this can be used to
+    partition data making bulk removal easier or queries faster
+  * on vacuum use reference counting, update dictionaries
 
 
 NOTES:
@@ -18,6 +49,7 @@ make && make install && make check-world
 ./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
 ./build/bin/psql -h localhost postgres
 gdb ./build/bin/postgres test-db/core
+gdb tmp_install/home/gburd/ws/postgresql/build/bin/postgres src/test/regress/tmp_check/data/core
 make maintainer-clean
 for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
 sudo locale-gen C.utf8
@@ -27,6 +59,7 @@ restore with sudo systemctl restart apport
 
 TODO:
 -----------------------------------------------------------------------------------------
+* VALGRIND/memory leaks
 * #if 0
 * //
 * XXX
@@ -35,8 +68,13 @@ TODO:
 * FIXME
 * /* */
 * validateToaster() amoid
+* TOAST_TUPLE_THRESHOLD
 * look for changes to default toaster 16->17,18
 * cluster.c XXX PG_TOASTREL
 * tablecmds.c look for '//' comments
 * better default toaster name than "deftoaster"
 * s/tsr.*/ any better prefix for "toaster"
+
+-----------------------------------------------------------------------------------------
+trel.relid = '%s' and
+SELECT tsr.tsrname FROM pg_toaster tsr, pg_toast_rel trel WHERE tsr.oid = trel.toasteroid AND trel.attnum = a.attnum ORDER BY trel.version DESC LIMIT 1) AS atttoaster;
