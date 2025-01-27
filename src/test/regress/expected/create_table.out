@@ -285,11 +285,11 @@ Partition key: RANGE (a oid_ops, plusone(b), c, d COLLATE "C")
 Number of partitions: 0
 
 \d+ partitioned2
-                                Partitioned table "public.partitioned2"
- Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
---------+---------+-----------+----------+---------+----------+------------+--------------+-------------
- a      | integer |           |          |         | plain    |            |              | 
- b      | text    |           |          |         | extended | deftoaster |              | 
+                               Partitioned table "public.partitioned2"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+---------+--------------+-------------
+ a      | integer |           |          |         | plain    |         |              | 
+ b      | text    |           |          |         | extended |         |              | 
 Partition key: RANGE (((a + 1)), substr(b, 1, 5))
 Number of partitions: 0
 
@@ -854,11 +854,11 @@ Partition constraint: ((a IS NOT NULL) AND (a = 'b'::text))
 
 -- Both partition bound and partition key in describe output
 \d+ part_c
-                                   Partitioned table "public.part_c"
- Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
---------+---------+-----------+----------+---------+----------+------------+--------------+-------------
- a      | text    |           |          |         | extended | deftoaster |              | 
- b      | integer |           | not null | 0       | plain    |            |              | 
+                                  Partitioned table "public.part_c"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+---------+--------------+-------------
+ a      | text    |           |          |         | extended |         |              | 
+ b      | integer |           | not null | 0       | plain    |         |              | 
 Partition of: parted FOR VALUES IN ('c')
 Partition constraint: ((a IS NOT NULL) AND (a = 'c'::text))
 Partition key: RANGE (b)
@@ -970,11 +970,11 @@ SELECT obj_description('parted_col_comment'::regclass);
 (1 row)
 
 \d+ parted_col_comment
-                              Partitioned table "public.parted_col_comment"
- Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target |  Description  
---------+---------+-----------+----------+---------+----------+------------+--------------+---------------
- a      | integer |           |          |         | plain    |            |              | Partition key
- b      | text    |           |          |         | extended | deftoaster |              | 
+                             Partitioned table "public.parted_col_comment"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Toaster | Stats target |  Description  
+--------+---------+-----------+----------+---------+----------+---------+--------------+---------------
+ a      | integer |           |          |         | plain    |         |              | Partition key
+ b      | text    |           |          |         | extended |         |              | 
 Partition key: LIST (a)
 Number of partitions: 0
 

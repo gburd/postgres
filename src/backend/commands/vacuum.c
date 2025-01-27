@@ -2187,7 +2187,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		 */
 		snapctx = CurrentMemoryContext;
 		MemoryContextSwitchTo(curctx);
-		if (HasToastrel(InvalidOid, relid, 0, AccessShareLock))
+		if (HasToastRelation(InvalidOid, relid, 0, AccessShareLock))
 			toast_relids = GetToastRelationsList(toast_relids, relid, 0, AccessShareLock);
 		MemoryContextSwitchTo(snapctx);
 	}
@@ -2275,7 +2275,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 
 		foreach(lc, toast_relids)
 		{
-			Oid			toast_relid = (lfirst_oid(lc));
+			Oid			toast_relid = lfirst_oid(lc);
 
 			if (OidIsValid(toast_relid))
 				vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);

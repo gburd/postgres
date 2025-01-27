@@ -173,7 +173,7 @@ DropToaster(DropToasterStmt * stmt)
 		return;
 	}
 
-	if (HasToastrel(tsroid, 0, 0, AccessShareLock))
+	if (HasToastRelation(tsroid, 0, 0, AccessShareLock))
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_NO_DATA_FOUND),

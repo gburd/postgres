@@ -1,114 +1,3 @@
-which gcc
-env CFLAGS=-O0 ./configure --prefix=/usr/local/pgsql --enable-debug --enable-cassert
-fg
-jetbrains-toolbox 
-git pull
-git st
-git add CMakeLists.txt PGXS.cmake.in README.cmake 
-git stash
-git st
-git branch
-git switch -c gregburd/moar-hot
-git st
-git commit -m "Nix, CMake, and notes"
-git st
-git lol
-git commit --amend .
-git st
-git fetch
-git rebase origin/master
-tig
-pwd
-ls
-ls /usr/local/pgsql/
-rm -rf /usr/local/pgsql
-sudo rm -rf /usr/local/pgsql
-make clean
-./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
-make
-ls
-vi flake.nix 
-ls ~/ws/sparsemap/.envrc 
-more ~/ws/sparsemap/.envrc 
-cp ~/ws/sparsemap/.envrc .
-cd .
-which direnv
-which envrc
-cd .
-direnv
-direnv allow
-cd .
-more .dir-locals.el 
-more .envrc 
-use flake
-flake develop
-./build/bin/psql -h localhost postgres
-pgrep postgres
-pkill -9 postgres
-./build/bin/psql -h localhost postgres
-git st
-git diff
-git st
-make
-make clean
-./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
-make
-git branch
-git fetch
-git st
-tig
-git commit --ammend .
-git commit --amend .
-git rebase origin/master
-tig
-nvim
-git st
-more .envrc 
-ls
-tig
-vi .gitignore 
-git st
-git diff
-make
-rg rd_projectionattr
-make
-git st
-tig
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-find . -name postgres
-ls build
-find . -name bin
-ls src/bin/
-make clean
-ls
-git st
-./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
-make
-make install
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-mkdir test-db
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-rm -rf test-db
-./build/bin/initdb test-db
-env | grep LANG
-env | grep LC_
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-ls test-db
-vi .envrc 
-export LC_ALL="en_US.UTF-8"
-export LC_CTYPE="en_US.UTF-8"
-export LC_ALL="en_US.UTF-8"
-export LC_ALL="C"
-export LC_CTYPE="C"
-nvim .envrc
-./build/bin/initdb test-db
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-make
-make install
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-make && make install
-./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
-make && make install
 ./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
 make && make install
 ./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
@@ -1961,3 +1850,151 @@ emacs -nw src/backend/rewrite/rewriteDefine.c
 make && make install && make check
 gdb tmp_install/home/gburd/ws/postgresql/build/bin/postgres src/test/regress/tmp_check/data/core 
 fg
+cd ws/postgresql/
+nix develop 
+code
+emacs &
+emcas -nw src/test/regress/regression.diffs
+emacs -nw src/test/regress/regression.diffs
+find . -name copy.sql
+fg
+git branch
+fg
+ls
+make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DCACHEDEBUG -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make clean
+rm -rf build test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db | grep toast
+rm -rf test-db/
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db | grep toast 2>&1
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset; make check
+fg
+reset; make check
+fg
+reset; make check
+fg
+make -n check
+make -c src/test/regress -n
+make -n -C src/test/regress
+emacs -nw src/test/regress/Makefile 
+find . -name pg_regress\*
+./tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --help
+cd src/test/regress/sql
+ls
+./tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --help
+../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --help
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --help
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress create_table.sql 
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhos=localhost --port=5432 create_table.sql 
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhos= --port=5432 create_table.sql 
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=lo432 create_table.sql 
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --port=5432 create_table.sql 
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 create_table.sql 
+git st
+../../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 create_table
+cd ..
+../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 create_table
+more src/test/regress/regression.out
+cd ../../../
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 create_table)
+more src/test/regress/regression.out
+more src/test/regress/regression.diff
+more src/test/regress/regression.diffs
+mv src/test/regress/results/create_table.out src/test/regress/expected/create_table.out 
+git diff src/test/regress/expected/create_table.out
+make check
+fg
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 insert)
+more src/test/regress/regression.diffs
+history
+fg
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 insert)
+fg
+rg part_test_int4_ops
+fg
+cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress  --help
+find . -name test_setup.sql
+./build/bin/psql -f -q $(find . -name test_setup.sql)
+../../../build/bin/psql -f -q $(find . -name test_setup.sql)
+../../../build/bin/psql -h localhost -q -f $(find . -name test_setup.sql)
+../../../build/bin/psql -h localhost postgres -q -f $(find . -name test_setup.sql)
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 insert)
+fg
+(cd ../../..; make check)
+fg
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 insert)
+fg
+../../../build/bin/psql -h localhost -q -f $(find . -name test_setup.sql)
+(cd ../../..; rg test_setup.sql)
+(cd ../../..; rg -tc test_setup.sql)
+fg
+(cd ../../..; make check)
+fg
+find . -name insert.out
+mv results/insert.out expected/insert.out 
+git diff expected/insert.out
+fg
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 create_index)
+fg
+make && make install
+cd ../../..
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+git tags -l | grep REL_17
+git tag -l | grep REL_17
+git show-ref -s REL_17_2
+cd ws
+df -kl
+ls /media/gburd/03B3-4DCF/
+tar -cvzf postgresql /media/gburd/03B3-4DCF/pg-20250123-toasters-rel-17-2.tgz
+tar -cvzf /media/gburd/03B3-4DCF/pg-20250123-toasters-rel-17-2.tgz postgresql
+cd
+cd ws/postgresql/
+nix develop
+sudo bash -c "echo 0 > /proc/sys/kernel/yama/ptrace_scope"
+cd ws/postgresql/
+vi .history 
+which gdb
+nix develop
+code
+git branch
+ls /tmp/*.csv
+find . -name copytest.csv
+vi /tmp/copytest.csv 
+rg 9864
+emacs -nw src/backend/access/README.toastapi 
+rg IsPartitioned
+rg Partitioned
+rg TypeIsToastable
+vi NOTES 
+more NOTES 
+./build/bin/psql -h localhost postgres
+rg PG_TEST
+make check PG_TEST_EXTRA=insert
+make check-tests TESTS=insert
+make check-tests TESTS="test_setup insert"
+make check-tests TESTS="test_setup create_index"
+./build/bin/psql -h localhost postgres
+make check-tests TESTS="test_setup create_index"
+cd ws/postgresql/
+ls
+nix develop

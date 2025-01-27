@@ -90,6 +90,12 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 */
 	rel = table_open(relOid, lockmode);
 
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		table_close(rel, NoLock);
+		return;
+	}
+
 	tupDesc = RelationGetDescr(rel);
 
 	/*
@@ -255,7 +261,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid, Oid toasteroid
 
 	if (IsBootstrapProcessingMode())
 	{
-		if (HasToastrel(toasteroid, rel->rd_id, attnum, AccessShareLock))
+		if (HasToastRelation(toasteroid, rel->rd_id, attnum, AccessShareLock))
 		{
 			trel = DatumGetObjectId(GetActualToastrel(toasteroid, relOid, attnum, AccessShareLock));
 			if (trel != InvalidOid)

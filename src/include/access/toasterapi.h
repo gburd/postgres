@@ -176,7 +176,7 @@ extern Datum DeleteToastrelCache(Oid toasterid, Oid relid, int16 attnum);
 extern Datum InsertOrReplaceToastrelCache(Oid treloid, Oid toasteroid, Oid relid, Oid toastentid, int16 attnum,
 										  char toastoptions);
 extern List *GetToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode);
-extern bool HasToastrel(Oid toasterid, Oid relid, int16 attnum, LOCKMODE lockmode);
+extern bool HasToastRelation(Oid toasterid, Oid relid, int16 attnum, LOCKMODE lockmode);
 extern List *GetFullToastRelationsList(List *trel_list, Oid relid, int16 attnum, LOCKMODE lockmode);
 
 extern Datum GetInheritedToaster(List *schema, List *supers, char relpersistence,

@@ -1819,7 +1819,7 @@ heap_drop_with_catalog(Oid relid, bool checkCache)
 	}
 	relation_close(rel, AccessExclusiveLock);
 
-	if (HasToastrel(InvalidOid, relid, 0, AccessShareLock))
+	if (HasToastRelation(InvalidOid, relid, 0, AccessShareLock))
 	{
 		ListCell   *lc;
 		List	   *toastrelids = NIL;

@@ -4047,7 +4047,7 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
 		result |= reindex_relation(toast_relid, flags, &newparams);
 	}
 */
-	if ((flags & REINDEX_REL_PROCESS_TOAST) && HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+	if ((flags & REINDEX_REL_PROCESS_TOAST) && HasToastRelation(InvalidOid, rel->rd_id, 0, AccessShareLock))
 	{
 		/*
 		 * Note that this should fail if the toast relation is missing, so

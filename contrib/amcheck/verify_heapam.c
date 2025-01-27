@@ -859,7 +859,7 @@ verify_heapam(PG_FUNCTION_ARGS)
 		{
 			ToastRelationCtx *trel_entry;
 
-			//= palloc(sizeof(ToastRelationCtx));
+			/* = palloc(sizeof(ToastRelationCtx)); */
 
 			trel_entry = (ToastRelationCtx *) (lfirst(lc));
 
@@ -1793,7 +1793,7 @@ check_tuple_attribute(HeapCheckContext *ctx)
 	}
 
 	/* The relation better have a toast table */
-	if (!HasToastrel(InvalidOid, ctx->rel->rd_id, 0, AccessShareLock))
+	if (!HasToastRelation(InvalidOid, ctx->rel->rd_id, 0, AccessShareLock))
 	{
 		report_corruption(ctx,
 						  psprintf("toast value %u is external but relation has no toast relation",

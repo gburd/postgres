@@ -491,30 +491,28 @@ DefineQueryRewrite(const char *rulename,
 		SetRelationRuleStatus(event_relid, true);
 	}
 
-	/* ---------------------------------------------------------------------
-	 * If the relation is becoming a view:
-	 * - delete the associated storage files
-	 * - get rid of any system attributes in pg_attribute; a view shouldn't
-	 *	 have any of those
-	 * - remove the toast table; there is no need for it anymore, and its
-	 *	 presence would make vacuum slightly more complicated
-	 * - set relkind to RELKIND_VIEW, and adjust other pg_class fields
-	 *	 to be appropriate for a view
+#if 0
+
+	/*
+	 * If the relation is becoming a view: - delete the associated storage
+	 * files - get rid of any system attributes in pg_attribute; a view
+	 * shouldn't have any of those - remove the toast table; there is no need
+	 * for it anymore, and its presence would make vacuum slightly more
+	 * complicated - set relkind to RELKIND_VIEW, and adjust other pg_class
+	 * fields to be appropriate for a view
 	 *
 	 * NB: we had better have AccessExclusiveLock to do this ...
-	 * ---------------------------------------------------------------------
 	 */
 	if (event_relation->rd_rel->relkind != RELKIND_VIEW &&
 		event_relation->rd_rel->relkind != RELKIND_MATVIEW)
 	{
 		Relation	relationRelation;
-		Oid			toastrelid;
 		HeapTuple	classTup;
 		Form_pg_class classForm;
 
 		relationRelation = table_open(RelationRelationId, RowExclusiveLock);
 
-		if (HasToastrel(InvalidOid, event_relation->rd_id, 0, AccessShareLock))
+		if (HasToastRelation(InvalidOid, event_relation->rd_id, 0, AccessShareLock))
 		{
 			List	   *trelids = NIL;
 			ListCell   *lc;
@@ -523,9 +521,9 @@ DefineQueryRewrite(const char *rulename,
 			/* XXX PG_TOASTREL */
 			foreach(lc, trelids)
 			{
-				Toastrel	trel = (Toastrel) (lfirst(lc));
+				Oid			toastentid = lfirst_oid(lc);
+				ObjectAddress toastobject;
 
-				toastrelid = trel->toastentid;
 
 /*		toastrelid = event_relation->rd_rel->reltoastrelid; */
 
@@ -538,28 +536,24 @@ DefineQueryRewrite(const char *rulename,
 				 * updating the toast fields in the relation's own pg_class
 				 * entry; we handle that below.)
 				 */
-				if (OidIsValid(toastrelid))
-				{
-					ObjectAddress toastobject;
 
-					/*
-					 * Delete the dependency of the toast relation on the main
-					 * relation so we can drop the former without dropping the
-					 * latter.
-					 */
-					deleteDependencyRecordsFor(RelationRelationId, toastrelid,
-											   false);
+				/*
+				 * Delete the dependency of the toast relation on the main
+				 * relation so we can drop the former without dropping the
+				 * latter.
+				 */
+				deleteDependencyRecordsFor(RelationRelationId, toastentid,
+										   false);
 
-					/* Make deletion of dependency record visible */
-					CommandCounterIncrement();
+				/* Make deletion of dependency record visible */
+				CommandCounterIncrement();
 
-					/* Now drop toast table, including its index */
-					toastobject.classId = RelationRelationId;
-					toastobject.objectId = toastrelid;
-					toastobject.objectSubId = 0;
-					performDeletion(&toastobject, DROP_RESTRICT,
-									PERFORM_DELETION_INTERNAL);
-				}
+				/* Now drop toast table, including its index */
+				toastobject.classId = RelationRelationId;
+				toastobject.objectId = toastentid;
+				toastobject.objectSubId = 0;
+				performDeletion(&toastobject, DROP_RESTRICT,
+								PERFORM_DELETION_INTERNAL);
 
 				/*
 				 * SetRelationRuleStatus may have updated the pg_class row, so
@@ -597,6 +591,7 @@ DefineQueryRewrite(const char *rulename,
 		heap_freetuple(classTup);
 		table_close(relationRelation, RowExclusiveLock);
 	}
+#endif
 
 	ObjectAddressSet(address, RewriteRelationId, ruleId);
 

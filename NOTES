@@ -44,6 +44,8 @@ IDEAS:
 
 NOTES:
 -----------------------------------------------------------------------------------------
+sudo bash -c "echo 0 > /proc/sys/kernel/yama/ptrace_scope"
+sudo /sbin/setcap CAP_SYS_PTRACE=+eip $(which gdb)
 ./configure CFLAGS="-ggdb -O0 -ggdb3 -fno-inline -fno-omit-frame-pointer -DUSE_VALGRIND -U_FORTIFY_SOURCE" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib--enable-debug --enable-cassert --enable-depend
 make && make install && make check-world
 ./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
@@ -56,6 +58,11 @@ sudo locale-gen C.utf8
 ulimit -c unlimited
 sudo sysctl -w kernel.core_pattern=core.%u.%p.%t
 restore with sudo systemctl restart apport
+
+mv src/test/regress/results/create_table.out src/test/regress/expected/create_table.out
+git diff src/test/regress/expected/create_table.out
+(cd src/test/regress; ../../../tmp_install/home/gburd/ws/postgresql/build/lib/pgxs/src/test/regress/pg_regress --host=localhost --port=5432 insert)
+
 
 TODO:
 -----------------------------------------------------------------------------------------
@@ -74,6 +81,7 @@ TODO:
 * tablecmds.c look for '//' comments
 * better default toaster name than "deftoaster"
 * s/tsr.*/ any better prefix for "toaster"
+* make sure added/removed headers were required
 
 -----------------------------------------------------------------------------------------
 trel.relid = '%s' and

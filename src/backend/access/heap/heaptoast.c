@@ -82,7 +82,7 @@ heap_compute_data_size_without_attr(TupleDesc tupleDesc,
 									Datum *toast_values,
 									bool *toast_isnull, int attno)
 {
-	struct varlena tmp;
+	struct varlena tmp = {0};
 	int			size;
 	Datum	   *pvalue = &toast_values[attno];
 	Datum		old_value = *pvalue;
@@ -259,7 +259,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		 */
 		/* FIXME set force_toast flag */
 		if (toast_attr[biggest_attno].tai_size > maxDataLen
-			&& HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
+			&& HasToastRelation(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
 			/* &&	rel->rd_rel->reltoastrelid != InvalidOid) */
 			heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
@@ -316,7 +316,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 		if (biggest_attno < 0)
 			break;
 
-		if (HasToastrel(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
+		if (HasToastRelation(InvalidOid, rel->rd_id, biggest_attno, AccessShareLock))
 			heap_toast_tuple_externalize(&ttc, biggest_attno, maxDataLen, options);
 	}
 

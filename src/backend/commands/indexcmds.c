@@ -3558,7 +3558,7 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 
 /*					Form_pg_toast_rel tform; */
 
-					trel = (Toastrel) lfirst(lc);
+					trel = (Toastrel) DatumGetPointer(lfirst_oid(lc));
 /*					ttup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(trel->toastentid)); */
 /*					tform = (Form_pg_toast_rel) GETSTRUCT(ttup); */
 

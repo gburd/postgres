@@ -2035,7 +2035,7 @@ do_autovacuum(void)
 		 * this whether or not the table is going to be vacuumed, because we
 		 * don't automatically vacuum toast tables along the parent table.
 		 */
-		if (HasToastrel(InvalidOid, relid, 0, AccessShareLock))
+		if (HasToastRelation(InvalidOid, relid, 0, AccessShareLock))
 		{
 			List	   *trelids = NIL;
 			ListCell   *lc;
@@ -2044,7 +2044,7 @@ do_autovacuum(void)
 			/* XXX PG_TOASTREL */
 			foreach(lc, trelids)
 			{
-				Toastrel	trel = (Toastrel) (lfirst(lc));
+				Toastrel	trel = (Toastrel) DatumGetPointer(lfirst_oid(lc));
 
 				if (OidIsValid(trel->toastentid))
 				{

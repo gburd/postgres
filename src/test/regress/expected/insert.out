@@ -256,11 +256,11 @@ create rule irule3 as on insert to inserttest2 do also
   insert into inserttestb (f4[1].if1, f4[1].if2[2])
   select new.f1, new.f2;
 \d+ inserttest2
-                                Table "public.inserttest2"
- Column |  Type  | Collation | Nullable | Default | Storage  | Stats target | Description 
---------+--------+-----------+----------+---------+----------+--------------+-------------
- f1     | bigint |           |          |         | plain    |              | 
- f2     | text   |           |          |         | extended |              | 
+                                      Table "public.inserttest2"
+ Column |  Type  | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
+--------+--------+-----------+----------+---------+----------+------------+--------------+-------------
+ f1     | bigint |           |          |         | plain    |            |              | 
+ f2     | text   |           |          |         | extended | deftoaster |              | 
 Rules:
     irule1 AS
     ON INSERT TO inserttest2 DO  INSERT INTO inserttestb (f3.if2[1], f3.if2[2])
@@ -561,11 +561,11 @@ from hash_parted order by part;
 -- test \d+ output on a table which has both partitioned and unpartitioned
 -- partitions
 \d+ list_parted
-                                 Partitioned table "public.list_parted"
- Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
---------+---------+-----------+----------+---------+----------+------------+--------------+-------------
- a      | text    |           |          |         | extended | deftoaster |              | 
- b      | integer |           |          |         | plain    |            |              | 
+                               Partitioned table "public.list_parted"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+---------+--------------+-------------
+ a      | text    |           |          |         | extended |         |              | 
+ b      | integer |           |          |         | plain    |         |              | 
 Partition key: LIST (lower(a))
 Partitions: part_aa_bb FOR VALUES IN ('aa', 'bb'),
             part_cc_dd FOR VALUES IN ('cc', 'dd'),
@@ -966,11 +966,11 @@ create table mcrparted6_common_ge_10 partition of mcrparted for values from ('co
 create table mcrparted7_gt_common_lt_d partition of mcrparted for values from ('common', maxvalue) to ('d', minvalue);
 create table mcrparted8_ge_d partition of mcrparted for values from ('d', minvalue) to (maxvalue, maxvalue);
 \d+ mcrparted
-                                  Partitioned table "public.mcrparted"
- Column |  Type   | Collation | Nullable | Default | Storage  |  Toaster   | Stats target | Description 
---------+---------+-----------+----------+---------+----------+------------+--------------+-------------
- a      | text    |           |          |         | extended | deftoaster |              | 
- b      | integer |           |          |         | plain    |            |              | 
+                                Partitioned table "public.mcrparted"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+---------+--------------+-------------
+ a      | text    |           |          |         | extended |         |              | 
+ b      | integer |           |          |         | plain    |         |              | 
 Partition key: RANGE (a, b)
 Partitions: mcrparted1_lt_b FOR VALUES FROM (MINVALUE, MINVALUE) TO ('b', MINVALUE),
             mcrparted2_b FOR VALUES FROM ('b', MINVALUE) TO ('c', MINVALUE),

@@ -2257,7 +2257,7 @@ ExecuteTruncateGuts(List *explicit_rels,
 			 * The same for the toast table, if any.
 			 */
 
-			if (HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+			if (HasToastRelation(InvalidOid, rel->rd_id, 0, AccessShareLock))
 			{
 				List	   *trelids = NIL;
 				ListCell   *lc;
@@ -2266,7 +2266,7 @@ ExecuteTruncateGuts(List *explicit_rels,
 				/* XXX PG_TOASTREL */
 				foreach(lc, trelids)
 				{
-					Toastrel	trel = (Toastrel) (lfirst(lc));
+					Toastrel	trel = (Toastrel) DatumGetPointer(lfirst_oid(lc));
 
 					if (OidIsValid(trel->toastentid))
 					{
@@ -14982,7 +14982,7 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 
 		/* If it has a toast table, recurse to change its ownership */
 
-		if (HasToastrel(InvalidOid, relationOid, 0, AccessShareLock))
+		if (HasToastRelation(InvalidOid, relationOid, 0, AccessShareLock))
 		{
 			List	   *trelids = NIL;
 			ListCell   *lc;
@@ -14991,17 +14991,13 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 			/* XXX PG_TOASTREL */
 			foreach(lc, trelids)
 			{
-				Toastrel	trel = (Toastrel) (lfirst(lc));
+				Oid			toastentid = lfirst_oid(lc);
+				Relation	toastrel = relation_open(toastentid,
+													 AccessExclusiveLock);
 
-				if (OidIsValid(trel->toastentid))
-				{
-					Relation	toastrel = relation_open(trel->toastentid,
-														 AccessExclusiveLock);
-
-					RelationSetNewRelfilenumber(toastrel,
-												toastrel->rd_rel->relpersistence);
-					table_close(toastrel, NoLock);
-				}
+				RelationSetNewRelfilenumber(toastrel,
+											toastrel->rd_rel->relpersistence);
+				table_close(toastrel, NoLock);
 			}
 		}
 
@@ -15495,7 +15491,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 
 	/* repeat the whole exercise for the toast table, if there's one */
 
-	if (HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+	if (HasToastRelation(InvalidOid, rel->rd_id, 0, AccessShareLock))
 	{
 		List	   *trelids = NIL;
 		ListCell   *lc;
@@ -15504,61 +15500,57 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		/* XXX PG_TOASTREL */
 		foreach(lc, trelids)
 		{
-			Toastrel	trel = (Toastrel) (lfirst(lc));
+			Oid			toastid = lfirst_oid(lc);
 
-			if (OidIsValid(trel->toastentid))
+			Relation	toastrel;
+
+			toastrel = table_open(toastid, lockmode);
+			tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(toastid));
+			if (!HeapTupleIsValid(tuple))
+				elog(ERROR, "cache lookup failed for relation %u", toastid);
+
+			if (operation == AT_ReplaceRelOptions)
 			{
-				Relation	toastrel;
-				Oid			toastid = trel->toastentid;
-
-				toastrel = table_open(toastid, lockmode);
-				tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(toastid));
-				if (!HeapTupleIsValid(tuple))
-					elog(ERROR, "cache lookup failed for relation %u", toastid);
-
-				if (operation == AT_ReplaceRelOptions)
-				{
-					datum = (Datum) 0;
-					isnull = true;
-				}
-				else
-				{
-					datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
-											&isnull);
-				}
-
-				newOptions = transformRelOptions(isnull ? (Datum) 0 : datum,
-												 defList, "toast", validnsps, false,
-												 operation == AT_ResetRelOptions);
-
-				(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
-
-				memset(repl_val, 0, sizeof(repl_val));
-				memset(repl_null, false, sizeof(repl_null));
-				memset(repl_repl, false, sizeof(repl_repl));
-
-				if (newOptions != (Datum) 0)
-					repl_val[Anum_pg_class_reloptions - 1] = newOptions;
-				else
-					repl_null[Anum_pg_class_reloptions - 1] = true;
-
-				repl_repl[Anum_pg_class_reloptions - 1] = true;
-
-				newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass),
-											 repl_val, repl_null, repl_repl);
-
-				CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
-
-				InvokeObjectPostAlterHookArg(RelationRelationId,
-											 RelationGetRelid(toastrel), 0,
-											 InvalidOid, true);
-
-				heap_freetuple(newtuple);
-
-				ReleaseSysCache(tuple);
-
-				table_close(toastrel, NoLock);
+				datum = (Datum) 0;
+				isnull = true;
 			}
+			else
+			{
+				datum = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions,
+										&isnull);
+			}
+
+			newOptions = transformRelOptions(isnull ? (Datum) 0 : datum,
+											 defList, "toast", validnsps, false,
+											 operation == AT_ResetRelOptions);
+
+			(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
+
+			memset(repl_val, 0, sizeof(repl_val));
+			memset(repl_null, false, sizeof(repl_null));
+			memset(repl_repl, false, sizeof(repl_repl));
+
+			if (newOptions != (Datum) 0)
+				repl_val[Anum_pg_class_reloptions - 1] = newOptions;
+			else
+				repl_null[Anum_pg_class_reloptions - 1] = true;
+
+			repl_repl[Anum_pg_class_reloptions - 1] = true;
+
+			newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass),
+										 repl_val, repl_null, repl_repl);
+
+			CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
+
+			InvokeObjectPostAlterHookArg(RelationRelationId,
+										 RelationGetRelid(toastrel), 0,
+										 InvalidOid, true);
+
+			heap_freetuple(newtuple);
+
+			ReleaseSysCache(tuple);
+
+			table_close(toastrel, NoLock);
 		}
 	}
 
@@ -15667,7 +15659,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	reltoastrelid = rel->rd_rel->reltoastrelid;
 */
 	/* Fetch the list of indexes on toast relation if necessary */
-	if (HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+	if (HasToastRelation(InvalidOid, rel->rd_id, 0, AccessShareLock))
 	{
 		List	   *trelids = NIL;
 
@@ -15675,15 +15667,12 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 		/* XXX PG_TOASTREL */
 		foreach(lc, trelids)
 		{
-			Toastrel	trel = (Toastrel) (lfirst(lc));
+			Oid			toastentid = lfirst_oid(lc);
 
-			if (OidIsValid(trel->toastentid))
-			{
-				Relation	toastRel = relation_open(trel->toastentid, lockmode);
+			Relation	toastRel = relation_open(toastentid, lockmode);
 
-				reltoastidxids = RelationGetIndexList(toastRel);
-				relation_close(toastRel, lockmode);
-			}
+			reltoastidxids = RelationGetIndexList(toastRel);
+			relation_close(toastRel, lockmode);
 		}
 	}
 
@@ -15740,7 +15729,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	CommandCounterIncrement();
 
 	/* Move associated toast relation and/or indexes, too */
-	if (HasToastrel(InvalidOid, rel->rd_id, 0, AccessShareLock))
+	if (HasToastRelation(InvalidOid, rel->rd_id, 0, AccessShareLock))
 	{
 		List	   *trelids = NIL;
 
@@ -15748,10 +15737,9 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 		/* XXX PG_TOASTREL */
 		foreach(lc, trelids)
 		{
-			Toastrel	trel = (Toastrel) (lfirst(lc));
+			Oid			toastentid = lfirst_oid(lc);
 
-			if (OidIsValid(trel->toastentid))
-				ATExecSetTableSpace(trel->toastentid, newTableSpace, lockmode);
+			ATExecSetTableSpace(toastentid, newTableSpace, lockmode);
 		}
 	}
 
