@@ -117,6 +117,8 @@
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -146,6 +148,11 @@ static bool index_expression_changed_walker(Node *node,
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
 										char typtype, Oid atttypid);
 
+/*
+ * GUC parameters
+ */
+bool		enable_expression_checks = true;
+
 /* ----------------------------------------------------------------
  *		ExecOpenIndices
  *
@@ -168,6 +175,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	IndexInfo **indexInfoArray;
 
 	resultRelInfo->ri_NumIndices = 0;
+	resultRelation->rd_indexinfolist = NIL;
 
 	/* fast path if no indexes */
 	if (!RelationGetForm(resultRelation)->relhasindex)
@@ -209,6 +217,10 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 
 		/* extract index key information from the index's pg_index info */
 		ii = BuildIndexInfo(indexDesc);
+
+		/* used when determining if indexed values changed during update */
+		resultRelation->rd_indexinfolist =
+			lappend(resultRelation->rd_indexinfolist, ii);
 
 		/*
 		 * If the indexes are to be used for speculative insertion or conflict
@@ -1165,4 +1177,232 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 				(errcode(ERRCODE_CHECK_VIOLATION),
 				 errmsg("empty WITHOUT OVERLAPS value found in column \"%s\" in relation \"%s\"",
 						NameStr(attname), RelationGetRelationName(rel))));
+}
+
+/*
+ * Determine which indexes must be invoked during ExecIndexInsertTuple().
+ *
+ * That will include: any index on a column where there is an attribute that was
+ * modified, any expression index where the expression's value updated, any
+ * index used in a constraint, and any summarizing index.
+ */
+Bitmapset *
+ExecIndexesRequiringUpdates(Relation relation,
+							Bitmapset *modified_attrs,
+							EState *estate,
+							HeapTuple old_tuple,
+							HeapTuple new_tuple,
+							bool *only_summarizing)
+{
+	ListCell   *lc;
+	List	   *indexinfolist = relation->rd_indexinfolist;
+	ExprContext *econtext = NULL;
+	int			num_summarizing = 0;
+	TupleDesc	tupledesc;
+	TupleTableSlot *old_tts,
+			   *new_tts;
+	Bitmapset  *result = NULL;
+
+	/*
+	 * Examine each index on this relation relative to the changes between old
+	 * and new tuples.
+	 */
+	foreach(lc, indexinfolist)
+	{
+		IndexInfo  *indexInfo = (IndexInfo *) lfirst(lc);
+
+		/* If the index is marked as read-only, ignore it */
+		if (!indexInfo->ii_ReadyForInserts)
+			continue;
+
+		/* If the index is used to enforce constraints, include it */
+		if (indexInfo->ii_ExclusionOps)
+		{
+			result = bms_add_member(result, foreach_current_index(lc));
+			continue;
+		}
+
+		/*
+		 * Summarizing indexes don't prevent HOT updates, but do require that
+		 * they are updated so we include it in the set.
+		 */
+		if (indexInfo->ii_Summarizing)
+		{
+			num_summarizing++;
+			result = bms_add_member(result, foreach_current_index(lc));
+			continue;
+		}
+
+		/*
+		 * If this is a partial index it has a predicate, evaluate the
+		 * expression to determine if we need to include it or not.
+		 */
+		if (enable_expression_checks && estate != NULL &&
+			bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
+		{
+			ExprState  *pstate;
+			bool		old_tuple_qualifies,
+						new_tuple_qualifies;
+
+			/* Create these once, only if necessary, then reuse them. */
+			if (!econtext)
+			{
+				econtext = GetPerTupleExprContext(estate);
+				tupledesc = RelationGetDescr(relation);
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
+
+			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+			/*
+			 * Here the term "qualifies" means "satisfies the predicate
+			 * condition of the partial index".
+			 */
+			econtext->ecxt_scantuple = old_tts;
+			old_tuple_qualifies = ExecQual(pstate, econtext);
+
+			econtext->ecxt_scantuple = new_tts;
+			new_tuple_qualifies = ExecQual(pstate, econtext);
+
+			/*
+			 * If neither the old nor the new tuples satisfy the predicate we
+			 * can be sure that this index doesn't need updating, continue to
+			 * the next index.
+			 */
+			if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
+				continue;
+
+			/*
+			 * If there is a transition between indexed and not indexed,
+			 * that's enough to require that this index is updated.
+			 */
+			if (new_tuple_qualifies != old_tuple_qualifies)
+			{
+				result = bms_add_member(result, foreach_current_index(lc));
+				continue;
+			}
+
+			/*
+			 * Otherwise the old and new values exist in the index, but did
+			 * they get updated?  We don't yet know, so proceed with the next
+			 * statement in the loop to find out.
+			 */
+		}
+
+
+		/*
+		 * Indexes with expressions may or may not have changed, it is
+		 * impossible to know without exercising their expression and
+		 * reviewing index tuple state for changes.  This is a lot of work,
+		 * but because all indexes on JSONB columns fall into this category it
+		 * can be worth it to avoid index updates and remain on the HOT update
+		 * path when possible.  Unique index constraints must also be honored,
+		 * that happens in the index access method and so we need to update
+		 * it.
+		 */
+		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modified_attrs) &&
+			!indexInfo->ii_Unique)
+		{
+			Datum		old_values[INDEX_MAX_KEYS];
+			bool		old_isnull[INDEX_MAX_KEYS];
+			Datum		new_values[INDEX_MAX_KEYS];
+			bool		new_isnull[INDEX_MAX_KEYS];
+			bool		changed = false;
+
+			/*
+			 * Assume the index is changed when we don't have an estate
+			 * context to use or the GUC is disabled.
+			 */
+			if (!enable_expression_checks || estate == NULL)
+			{
+				result = bms_add_member(result, foreach_current_index(lc));
+				continue;
+			}
+
+			/* Create these once, only if necessary, then reuse them. */
+			if (!econtext)
+			{
+				econtext = GetPerTupleExprContext(estate);
+				tupledesc = RelationGetDescr(relation);
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
+
+			indexInfo->ii_ExpressionsState = NIL;
+
+			econtext->ecxt_scantuple = old_tts;
+			FormIndexDatum(indexInfo,
+						   old_tts,
+						   estate,
+						   old_values,
+						   old_isnull);
+
+			econtext->ecxt_scantuple = new_tts;
+			FormIndexDatum(indexInfo,
+						   new_tts,
+						   estate,
+						   new_values,
+						   new_isnull);
+
+			for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+			{
+				if (old_isnull[i] != new_isnull[i])
+				{
+					changed = true;
+					break;
+				}
+				else if (!old_isnull[i])
+				{
+					int16		elmlen;
+					bool		elmbyval;
+
+					get_typlenbyval(indexInfo->ii_OpClassDataTypes[i],
+									&elmlen, &elmbyval);
+					if (!datum_image_eq(old_values[i], new_values[i],
+										elmbyval, elmlen))
+					{
+						changed = true;
+						break;
+					}
+				}
+			}
+
+			if (changed)
+				result = bms_add_member(result, foreach_current_index(lc));
+
+			/* Shortcut index_unchanged_by_update(), we know the answer. */
+			indexInfo->ii_CheckedUnchanged = true;
+			indexInfo->ii_IndexUnchanged = !changed;
+			continue;
+		}
+
+		/*
+		 * If the index references modified attributes then it needs to be
+		 * updated.
+		 */
+		if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+			result = bms_add_member(result, foreach_current_index(lc));
+	}
+
+	if (econtext)
+	{
+		ExecDropSingleTupleTableSlot(old_tts);
+		ExecDropSingleTupleTableSlot(new_tts);
+	}
+
+	*only_summarizing = (list_length(indexinfolist) > 0 &&
+						 num_summarizing == list_length(indexinfolist));
+
+	return result;
 }
