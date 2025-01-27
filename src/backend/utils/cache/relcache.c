@@ -2436,7 +2436,6 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_pkattr);
 	bms_free(relation->rd_idattr);
 	bms_free(relation->rd_hotblockingattr);
-	bms_free(relation->rd_summarizedattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5229,7 +5228,6 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
-	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5250,8 +5248,6 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_idattr);
 			case INDEX_ATTR_BITMAP_HOT_BLOCKING:
 				return bms_copy(relation->rd_hotblockingattr);
-			case INDEX_ATTR_BITMAP_SUMMARIZED:
-				return bms_copy(relation->rd_summarizedattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5295,7 +5291,6 @@ restart:
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
 	hotblockingattrs = NULL;
-	summarizedattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5308,7 +5303,6 @@ restart:
 		bool		isKey;		/* candidate key */
 		bool		isPK;		/* primary key */
 		bool		isIDKey;	/* replica identity index */
-		Bitmapset **attrs;
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -5346,16 +5340,6 @@ restart:
 		/* Is this index the configured (or default) replica identity? */
 		isIDKey = (indexOid == relreplindex);
 
-		/*
-		 * If the index is summarizing, it doesn't block HOT updates, but we
-		 * may still need to update it (if the attributes were modified). So
-		 * decide which bitmap we'll update in the following loop.
-		 */
-		if (indexDesc->rd_indam->amsummarizing)
-			attrs = &summarizedattrs;
-		else
-			attrs = &hotblockingattrs;
-
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
 		{
@@ -5377,8 +5361,8 @@ restart:
 			 */
 			if (attrnum != 0)
 			{
-				*attrs = bms_add_member(*attrs,
-										attrnum - FirstLowInvalidHeapAttributeNumber);
+				hotblockingattrs = bms_add_member(hotblockingattrs,
+												  attrnum - FirstLowInvalidHeapAttributeNumber);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
 					uindexattrs = bms_add_member(uindexattrs,
@@ -5395,12 +5379,14 @@ restart:
 		}
 
 		/* Collect all attributes used in expressions, too */
-		pull_varattnos(indexExpressions, 1, attrs);
+		pull_varattnos(indexExpressions, 1, &hotblockingattrs);
 
 		/* Collect all attributes in the index predicate, too */
-		pull_varattnos(indexPredicate, 1, attrs);
+		pull_varattnos(indexPredicate, 1, &hotblockingattrs);
 
-		index_close(indexDesc, AccessShareLock);
+		if (indexDesc->rd_index)
+
+			index_close(indexDesc, AccessShareLock);
 	}
 
 	/*
@@ -5427,7 +5413,6 @@ restart:
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
 		bms_free(hotblockingattrs);
-		bms_free(summarizedattrs);
 
 		goto restart;
 	}
@@ -5442,8 +5427,6 @@ restart:
 	relation->rd_idattr = NULL;
 	bms_free(relation->rd_hotblockingattr);
 	relation->rd_hotblockingattr = NULL;
-	bms_free(relation->rd_summarizedattr);
-	relation->rd_summarizedattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5457,7 +5440,6 @@ restart:
 	relation->rd_pkattr = bms_copy(pkindexattrs);
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
-	relation->rd_summarizedattr = bms_copy(summarizedattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5472,8 +5454,6 @@ restart:
 			return idindexattrs;
 		case INDEX_ATTR_BITMAP_HOT_BLOCKING:
 			return hotblockingattrs;
-		case INDEX_ATTR_BITMAP_SUMMARIZED:
-			return summarizedattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
