@@ -164,6 +164,7 @@ typedef struct RelationData
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
+	Bitmapset  *rd_expressionattr;	/* indexed cols referenced by expressions */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 
@@ -345,6 +346,7 @@ typedef struct StdRdOptions
 	StdRdOptIndexCleanup vacuum_index_cleanup;	/* controls index vacuuming */
 	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
 	bool		vacuum_truncate_set;	/* whether vacuum_truncate is set */
+	bool		expression_checks;	/* use expression to checks for changes */
 
 	/*
 	 * Fraction of pages in a relation that vacuum can eagerly scan and fail
@@ -405,6 +407,14 @@ typedef struct StdRdOptions
 #define RelationGetParallelWorkers(relation, defaultpw) \
 	((relation)->rd_options ? \
 	 ((StdRdOptions *) (relation)->rd_options)->parallel_workers : (defaultpw))
+
+/*
+ * RelationGetExpressionChecks
+ *		Returns the relation's expression_checks reloption setting.
+ */
+#define RelationGetExpressionChecks(relation) \
+	((relation)->rd_options ? \
+	 ((StdRdOptions *) (relation)->rd_options)->expression_checks : true)
 
 /* ViewOptions->check_option values */
 typedef enum ViewOptCheckOption
