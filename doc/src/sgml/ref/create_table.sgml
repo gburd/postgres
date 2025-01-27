@@ -1981,6 +1981,24 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     </listitem>
    </varlistentry>
 
+   <varlistentry id="reloption-expression-checks" xreflabel="expression_checks">
+    <term><literal>expression_checks</literal> (<type>boolean</type>)
+    <indexterm>
+     <primary><varname>expression_checks</varname> storage parameter</primary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Enables or disables evaulation of predicate expressions on partial
+      indexes or expressions used to define indexes during updates.
+      If <literal>true</literal>, then these expressions are evaluated during
+      updates to data within the heap relation against the old and new values
+      and then compared to determine if <acronym>HOT</acronym> updates are
+      allowable or not. The default value is <literal>true</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
    </variablelist>
 
   </refsect2>
