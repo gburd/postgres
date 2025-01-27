@@ -2680,7 +2680,7 @@ apply_handle_update_internal(ApplyExecutionData *edata,
 	MemoryContext oldctx;
 
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1, NIL);
-	ExecOpenIndices(relinfo, false);
+	ExecOpenIndicesForUpdate(relinfo, false, true);
 
 	found = FindReplTupleInLocalRel(edata, localrel,
 									&relmapentry->remoterel,
