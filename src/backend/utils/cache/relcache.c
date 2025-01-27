@@ -64,6 +64,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/schemapg.h"
 #include "catalog/storage.h"
+#include "catalog/index.h"
 #include "commands/policy.h"
 #include "commands/publicationcmds.h"
 #include "commands/trigger.h"
@@ -5188,6 +5189,128 @@ RelationGetIndexPredicate(Relation relation)
 	return result;
 }
 
+ /*
+  * RelationGetExprIndexInfoList -- get a list of IndexInfo for expression
+  * indexes on this relation
+  */
+List *
+RelationGetExprIndexInfoList(Relation relation)
+{
+	ListCell   *lc;
+	List	   *indexoidlist;
+	List	   *newindexoidlist;
+	List	   *result = NULL;
+	List	   *oldlist;
+	Oid			relpkindex;
+	Oid			relreplindex;
+	MemoryContext oldcxt;
+
+	if (relation->rd_iiexprlist)
+		return list_copy(relation->rd_iiexprlist);
+
+	/* Fast path if definitely no indexes */
+	if (!RelationGetForm(relation)->relhasindex)
+		return NIL;
+
+restart:
+	indexoidlist = RelationGetIndexList(relation);
+
+	/* Fall out if no indexes (but relhasindex was set) */
+	if (indexoidlist == NIL)
+		return NIL;
+
+	/*
+	 * Copy the rd_pkindex and rd_replidindex values computed by
+	 * RelationGetIndexList before proceeding.  This is needed because a
+	 * relcache flush could occur inside index_open below, resetting the
+	 * fields managed by RelationGetIndexList.  We need to do the work with
+	 * stable values of these fields.
+	 */
+	relpkindex = relation->rd_pkindex;
+	relreplindex = relation->rd_replidindex;
+
+	foreach(lc, indexoidlist)
+	{
+		Oid			oid = lfirst_oid(lc);
+		Datum		datum;
+		bool		isnull;
+		Node	   *indexExpressions;
+		Node	   *indexPredicate;
+		Relation	indexDesc;
+		IndexInfo  *indexInfo;
+
+		/*
+		 * Extract index expressions and index predicate.  Note: Don't use
+		 * RelationGetIndexExpressions()/RelationGetIndexPredicate(), because
+		 * those might run constant expressions evaluation, which needs a
+		 * snapshot, which we might not have here.  (Also, it's probably more
+		 * sound to collect the bitmaps before any transformations that might
+		 * eliminate columns, but the practical impact of this is limited.)
+		 */
+		indexDesc = index_open(oid, AccessShareLock);
+		datum = heap_getattr(indexDesc->rd_indextuple, Anum_pg_index_indexprs,
+							 GetPgIndexDescriptor(), &isnull);
+		if (!isnull)
+			indexExpressions = stringToNode(TextDatumGetCString(datum));
+		else
+			indexExpressions = NULL;
+
+		datum = heap_getattr(indexDesc->rd_indextuple, Anum_pg_index_indpred,
+							 GetPgIndexDescriptor(), &isnull);
+		if (!isnull)
+			indexPredicate = stringToNode(TextDatumGetCString(datum));
+		else
+			indexPredicate = NULL;
+
+		if (indexExpressions || indexPredicate)
+		{
+			oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+			indexInfo = BuildIndexInfo(indexDesc);
+			MemoryContextSwitchTo(oldcxt);
+			result = lappend(result, indexInfo);
+		}
+
+		index_close(indexDesc, AccessShareLock);
+	}
+
+	/*
+	 * During one of the index_opens in the above loop, we might have received
+	 * a relcache flush event on this relcache entry, which might have been
+	 * signaling a change in the rel's index list.  If so, we'd better start
+	 * over to ensure we deliver up-to-date IndexInfo.
+	 */
+	newindexoidlist = RelationGetIndexList(relation);
+	if (equal(indexoidlist, newindexoidlist) &&
+		relpkindex == relation->rd_pkindex &&
+		relreplindex == relation->rd_replidindex)
+	{
+		/* Still the same index set, so proceed */
+		list_free(newindexoidlist);
+		list_free(indexoidlist);
+	}
+	else
+	{
+		/* Gotta do it over ... might as well not leak memory */
+		list_free(newindexoidlist);
+		list_free(indexoidlist);
+		list_free(result);
+
+		goto restart;
+	}
+
+	/* Now save a copy of the completed list in the relcache entry. */
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+	oldlist = relation->rd_iiexprlist;
+	relation->rd_iiexprlist = list_copy(result);
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Don't leak the old list, if there is one */
+	if (oldlist)
+		list_free(oldlist);
+
+	return result;
+}
+
 /*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
@@ -5229,7 +5352,11 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
+	Bitmapset  *hotblockingexprattrs;	/* as above, but only those in
+										 * expressions */
 	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
+	Bitmapset  *summarizedexprattrs;	/* as above, but only those in
+										 * expressions */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5252,6 +5379,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_hotblockingattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_EXPRESSION:
+				return bms_copy(relation->rd_expressionattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5295,7 +5424,9 @@ restart:
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
 	hotblockingattrs = NULL;
+	hotblockingexprattrs = NULL;
 	summarizedattrs = NULL;
+	summarizedexprattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5309,6 +5440,7 @@ restart:
 		bool		isPK;		/* primary key */
 		bool		isIDKey;	/* replica identity index */
 		Bitmapset **attrs;
+		Bitmapset **exprattrs;
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -5352,14 +5484,20 @@ restart:
 		 * decide which bitmap we'll update in the following loop.
 		 */
 		if (indexDesc->rd_indam->amsummarizing)
+		{
 			attrs = &summarizedattrs;
+			exprattrs = &summarizedexprattrs;
+		}
 		else
+		{
 			attrs = &hotblockingattrs;
+			exprattrs = &hotblockingexprattrs;
+		}
 
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
 		{
-			int			attrnum = indexDesc->rd_index->indkey.values[i];
+			int			attridx = indexDesc->rd_index->indkey.values[i];
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
@@ -5375,30 +5513,28 @@ restart:
 			 * key or identity key. Hence we do not include them into
 			 * uindexattrs, pkindexattrs and idindexattrs bitmaps.
 			 */
-			if (attrnum != 0)
+			if (attridx != 0)
 			{
-				*attrs = bms_add_member(*attrs,
-										attrnum - FirstLowInvalidHeapAttributeNumber);
+				AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
+
+				*attrs = bms_add_member(*attrs, attrnum);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
-					uindexattrs = bms_add_member(uindexattrs,
-												 attrnum - FirstLowInvalidHeapAttributeNumber);
+					uindexattrs = bms_add_member(uindexattrs, attrnum);
 
 				if (isPK && i < indexDesc->rd_index->indnkeyatts)
-					pkindexattrs = bms_add_member(pkindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					pkindexattrs = bms_add_member(pkindexattrs, attrnum);
 
 				if (isIDKey && i < indexDesc->rd_index->indnkeyatts)
-					idindexattrs = bms_add_member(idindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					idindexattrs = bms_add_member(idindexattrs, attrnum);
 			}
 		}
 
 		/* Collect all attributes used in expressions, too */
-		pull_varattnos(indexExpressions, 1, attrs);
+		pull_varattnos(indexExpressions, 1, exprattrs);
 
 		/* Collect all attributes in the index predicate, too */
-		pull_varattnos(indexPredicate, 1, attrs);
+		pull_varattnos(indexPredicate, 1, exprattrs);
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -5427,10 +5563,26 @@ restart:
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
 		bms_free(hotblockingattrs);
+		bms_free(hotblockingexprattrs);
 		bms_free(summarizedattrs);
+		bms_free(summarizedexprattrs);
 
 		goto restart;
 	}
+
+	/* {expression-only columns} = {expression columns} - {direct columns} */
+	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
+										   hotblockingattrs);
+	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
+	hotblockingattrs = bms_add_members(hotblockingattrs,
+									   hotblockingexprattrs);
+
+	/* {summarized-only columns} = {summarized columns} - {direct columns} */
+	summarizedexprattrs = bms_del_members(summarizedexprattrs,
+										  summarizedattrs);
+	/* {summarized columns} = {direct columns} + {summarized-only columns} */
+	summarizedattrs = bms_add_members(summarizedattrs,
+									  summarizedexprattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5444,6 +5596,8 @@ restart:
 	relation->rd_hotblockingattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_expressionattr);
+	relation->rd_expressionattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5458,6 +5612,7 @@ restart:
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_expressionattr = bms_copy(hotblockingexprattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5474,6 +5629,8 @@ restart:
 			return hotblockingattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return hotblockingexprattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
