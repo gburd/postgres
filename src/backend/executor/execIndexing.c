@@ -117,6 +117,8 @@
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -1096,6 +1098,9 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 
 	if (hasexpression)
 	{
+		if (indexInfo->ii_IndexUnchanged)
+			return true;
+
 		indexInfo->ii_IndexUnchanged = false;
 		return false;
 	}
@@ -1172,4 +1177,198 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 				(errcode(ERRCODE_CHECK_VIOLATION),
 				 errmsg("empty WITHOUT OVERLAPS value found in column \"%s\" in relation \"%s\"",
 						NameStr(attname), RelationGetRelationName(rel))));
+}
+
+/*
+ * Determine if any index with an expression requires updating.
+ *
+ * This function will review all indexes with expressions to determine if the
+ * update from old to new tuple requires that the index be updated.  This is
+ * used to determine if a HOT update is possible or not.
+ *
+ * Returns true iff none of the expression indexes require updating due to the
+ * change from old to new tuple or when both the old and new tuples do not
+ * satisfy the predicate of the index.
+ */
+bool
+ExecIndexesExpressionsWereNotUpdated(Relation relation,
+									 Bitmapset *modified_attrs,
+									 EState *estate,
+									 HeapTuple old_tuple,
+									 HeapTuple new_tuple)
+{
+	ListCell   *lc;
+	List	   *indexinfolist = RelationGetExprIndexInfoList(relation);
+	ExprContext *econtext = NULL;
+	TupleDesc	tupledesc;
+	TupleTableSlot *old_tts = NULL;
+	TupleTableSlot *new_tts = NULL;
+	bool		expression_checks = RelationGetExpressionChecks(relation);
+	bool		changed = false;
+
+#ifndef USE_ASSERT_CHECKING
+
+	/*
+	 * Assume the index is changed when we don't have an estate context to use
+	 * or the reloption is disabled.
+	 */
+	if (!expression_checks || estate == NULL)
+		return changed;
+#endif
+
+	Assert(expression_checks == true);
+	Assert(estate != NULL);
+
+	/*
+	 * Examine expression and partial indexs on this relation relative to the
+	 * changes between old and new tuples.
+	 */
+	foreach(lc, indexinfolist)
+	{
+		IndexInfo  *indexInfo = (IndexInfo *) lfirst(lc);
+
+		/*
+		 * If this is a partial index it has a predicate, evaluate the
+		 * expression to determine if we need to include it or not.
+		 */
+		if (bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
+		{
+			ExprState  *pstate;
+			bool		old_tuple_qualifies,
+						new_tuple_qualifies;
+
+			/* Create these once, only if necessary, then reuse them. */
+			if (!econtext)
+			{
+				econtext = GetPerTupleExprContext(estate);
+				tupledesc = RelationGetDescr(relation);
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
+
+			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+			/*
+			 * Here the term "qualifies" means "satisfies the predicate
+			 * condition of the partial index".
+			 */
+			econtext->ecxt_scantuple = old_tts;
+			old_tuple_qualifies = ExecQual(pstate, econtext);
+
+			econtext->ecxt_scantuple = new_tts;
+			new_tuple_qualifies = ExecQual(pstate, econtext);
+
+			/*
+			 * If neither the old nor the new tuples satisfy the predicate we
+			 * can be sure that this index doesn't need updating, continue to
+			 * the next index.
+			 */
+			if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
+				continue;
+
+			/*
+			 * If there is a transition between indexed and not indexed,
+			 * that's enough to require that this index is updated.
+			 */
+			if (new_tuple_qualifies != old_tuple_qualifies)
+			{
+				changed = true;
+				break;
+			}
+
+			/*
+			 * Otherwise the old and new values exist in the index, but did
+			 * they get updated?  We don't yet know, so proceed with the next
+			 * statement in the loop to find out.
+			 */
+		}
+
+
+		/*
+		 * Indexes with expressions may or may not have changed, it is
+		 * impossible to know without exercising their expression and
+		 * reviewing index tuple state for changes.  This is a lot of work,
+		 * but because all indexes on JSONB columns fall into this category it
+		 * can be worth it to avoid index updates and remain on the HOT update
+		 * path when possible.
+		 */
+		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modified_attrs))
+		{
+			Datum		old_values[INDEX_MAX_KEYS];
+			bool		old_isnull[INDEX_MAX_KEYS];
+			Datum		new_values[INDEX_MAX_KEYS];
+			bool		new_isnull[INDEX_MAX_KEYS];
+
+			/* Create these once, only if necessary, then reuse them. */
+			if (!econtext)
+			{
+				econtext = GetPerTupleExprContext(estate);
+				tupledesc = RelationGetDescr(relation);
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
+
+			indexInfo->ii_ExpressionsState = NIL;
+
+			econtext->ecxt_scantuple = old_tts;
+			FormIndexDatum(indexInfo,
+						   old_tts,
+						   estate,
+						   old_values,
+						   old_isnull);
+
+			econtext->ecxt_scantuple = new_tts;
+			FormIndexDatum(indexInfo,
+						   new_tts,
+						   estate,
+						   new_values,
+						   new_isnull);
+
+			for (int i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+			{
+				if (old_isnull[i] != new_isnull[i])
+				{
+					changed = true;
+					break;
+				}
+				else if (!old_isnull[i])
+				{
+					int16		elmlen = indexInfo->ii_IndexAttrLen[i];
+					bool		elmbyval = bms_is_member(i, indexInfo->ii_IndexAttrByVal);
+
+					if (!datum_image_eq(old_values[i], new_values[i],
+										elmbyval, elmlen))
+					{
+						changed = true;
+						break;
+					}
+				}
+			}
+
+			/* Shortcut index_unchanged_by_update(), we know the answer. */
+			indexInfo->ii_CheckedUnchanged = true;
+			indexInfo->ii_IndexUnchanged = !changed;
+
+			if (changed)
+				break;
+		}
+	}
+
+	if (econtext)
+	{
+		ExecDropSingleTupleTableSlot(old_tts);
+		ExecDropSingleTupleTableSlot(new_tts);
+	}
+
+	return !changed;
 }

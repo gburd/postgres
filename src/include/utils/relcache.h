@@ -52,6 +52,7 @@ extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetDummyIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
+extern List *RelationGetExprIndexInfoList(Relation relation);
 
 /*
  * Which set of columns to return by RelationGetIndexAttrBitmap.
@@ -63,6 +64,7 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_IDENTITY_KEY,
 	INDEX_ATTR_BITMAP_HOT_BLOCKING,
 	INDEX_ATTR_BITMAP_SUMMARIZED,
+	INDEX_ATTR_BITMAP_EXPRESSION,
 } IndexAttrBitmapKind;
 
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,

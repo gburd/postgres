@@ -2456,7 +2456,26 @@ BuildIndexInfo(Relation index)
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
+	{
+		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
+
 		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+		ii->ii_IndexAttrs =
+			bms_add_member(ii->ii_IndexAttrs,
+						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+
+		ii->ii_IndexAttrLen[i] = attr->attlen;
+		if (attr->attbyval)
+			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
+	}
+
+	/* collect attributes used in the expression, if one is present */
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate, if one is present */
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 
 	/* fetch exclusion constraint info if any */
 	if (indexStruct->indisexclusion)
