@@ -777,6 +777,11 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
 									   ItemPointer tupleid,
 									   const Datum *values, const bool *isnull,
 									   EState *estate, bool newIndex);
+extern bool ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
+										 Bitmapset *modifiedAttrs,
+										 EState *estate,
+										 TupleTableSlot *old_tts,
+										 TupleTableSlot *new_tts);
 
 /*
  * prototypes from functions in execReplication.c

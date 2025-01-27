@@ -3211,13 +3211,14 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes)
+			TM_FailureData *tmfd, UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
+	LockTupleMode *lockmode = &updateCxt->lockmode;
 	Bitmapset  *hot_attrs;
 	Bitmapset  *sum_attrs;
+	Bitmapset  *exp_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3294,6 +3295,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	exp_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_EXPRESSION);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
@@ -3355,10 +3358,11 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
-		*update_indexes = TU_None;
+		updateCxt->updateIndexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		/* modified_attrs not yet initialized */
@@ -3656,10 +3660,11 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
+		updateCxt->updateIndexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
@@ -3976,12 +3981,24 @@ l2:
 
 	if (newbuf == buffer)
 	{
+		ResultRelInfo *resultRelInfo = updateCxt->rri;
+		EState	   *estate = updateCxt->estate;
+		bool		expression_checks = RelationGetExpressionChecks(relation);
+
 		/*
 		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed.
+		 * to do a HOT update.  As a reminder, hot_attrs includes attributes
+		 * used by indexes including within expressions and predicates, but
+		 * not attributes only used by summarizing indexes.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
+		if (!bms_overlap(modified_attrs, hot_attrs) ||
+			(estate && resultRelInfo && expression_checks &&
+			 bms_overlap(modified_attrs, exp_attrs) &&
+			 !ExecExpressionIndexesUpdated(resultRelInfo,
+										   modified_attrs,
+										   estate,
+										   resultRelInfo->ri_oldTupleSlot,
+										   resultRelInfo->ri_newTupleSlot)))
 		{
 			use_hot_update = true;
 
@@ -4163,18 +4180,19 @@ l2:
 	if (use_hot_update)
 	{
 		if (summarized_update)
-			*update_indexes = TU_Summarizing;
+			updateCxt->updateIndexes = TU_Summarizing;
 		else
-			*update_indexes = TU_None;
+			updateCxt->updateIndexes = TU_None;
 	}
 	else
-		*update_indexes = TU_All;
+		updateCxt->updateIndexes = TU_All;
 
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
 
 	bms_free(hot_attrs);
 	bms_free(sum_attrs);
+	bms_free(exp_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
@@ -4452,16 +4470,15 @@ HeapDetermineColumnsInfo(Relation relation,
  */
 void
 simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
-	LockTupleMode lockmode;
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes);
+						 &tmfd, updateCxt);
 	switch (result)
 	{
 		case TM_SelfModified:
