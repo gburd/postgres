@@ -5229,7 +5229,11 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
+	Bitmapset  *hotblockingexprattrs;	/* as above, but only those in
+										 * expressions */
 	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
+	Bitmapset  *summarizedexprattrs;	/* as above, but only those in
+										 * expressions */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5252,6 +5256,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_hotblockingattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_EXPRESSION:
+				return bms_copy(relation->rd_expressionattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5295,7 +5301,9 @@ restart:
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
 	hotblockingattrs = NULL;
+	hotblockingexprattrs = NULL;
 	summarizedattrs = NULL;
+	summarizedexprattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5309,6 +5317,7 @@ restart:
 		bool		isPK;		/* primary key */
 		bool		isIDKey;	/* replica identity index */
 		Bitmapset **attrs;
+		Bitmapset **exprattrs;
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -5352,14 +5361,20 @@ restart:
 		 * decide which bitmap we'll update in the following loop.
 		 */
 		if (indexDesc->rd_indam->amsummarizing)
+		{
 			attrs = &summarizedattrs;
+			exprattrs = &summarizedexprattrs;
+		}
 		else
+		{
 			attrs = &hotblockingattrs;
+			exprattrs = &hotblockingexprattrs;
+		}
 
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
 		{
-			int			attrnum = indexDesc->rd_index->indkey.values[i];
+			int			attridx = indexDesc->rd_index->indkey.values[i];
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
@@ -5375,30 +5390,28 @@ restart:
 			 * key or identity key. Hence we do not include them into
 			 * uindexattrs, pkindexattrs and idindexattrs bitmaps.
 			 */
-			if (attrnum != 0)
+			if (attridx != 0)
 			{
-				*attrs = bms_add_member(*attrs,
-										attrnum - FirstLowInvalidHeapAttributeNumber);
+				AttrNumber	attrnum = attridx - FirstLowInvalidHeapAttributeNumber;
+
+				*attrs = bms_add_member(*attrs, attrnum);
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
-					uindexattrs = bms_add_member(uindexattrs,
-												 attrnum - FirstLowInvalidHeapAttributeNumber);
+					uindexattrs = bms_add_member(uindexattrs, attrnum);
 
 				if (isPK && i < indexDesc->rd_index->indnkeyatts)
-					pkindexattrs = bms_add_member(pkindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					pkindexattrs = bms_add_member(pkindexattrs, attrnum);
 
 				if (isIDKey && i < indexDesc->rd_index->indnkeyatts)
-					idindexattrs = bms_add_member(idindexattrs,
-												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					idindexattrs = bms_add_member(idindexattrs, attrnum);
 			}
 		}
 
 		/* Collect all attributes used in expressions, too */
-		pull_varattnos(indexExpressions, 1, attrs);
+		pull_varattnos(indexExpressions, 1, exprattrs);
 
 		/* Collect all attributes in the index predicate, too */
-		pull_varattnos(indexPredicate, 1, attrs);
+		pull_varattnos(indexPredicate, 1, exprattrs);
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -5427,10 +5440,26 @@ restart:
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
 		bms_free(hotblockingattrs);
+		bms_free(hotblockingexprattrs);
 		bms_free(summarizedattrs);
+		bms_free(summarizedexprattrs);
 
 		goto restart;
 	}
+
+	/* {expression-only columns} = {expression columns} - {direct columns} */
+	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
+										   hotblockingattrs);
+	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
+	hotblockingattrs = bms_add_members(hotblockingattrs,
+									   hotblockingexprattrs);
+
+	/* {summarized-only columns} = {summarized columns} - {direct columns} */
+	summarizedexprattrs = bms_del_members(summarizedexprattrs,
+										  summarizedattrs);
+	/* {summarized columns} = {direct columns} + {summarized-only columns} */
+	summarizedattrs = bms_add_members(summarizedattrs,
+									  summarizedexprattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5444,6 +5473,8 @@ restart:
 	relation->rd_hotblockingattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_expressionattr);
+	relation->rd_expressionattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5458,6 +5489,7 @@ restart:
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_expressionattr = bms_copy(hotblockingexprattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5474,6 +5506,8 @@ restart:
 			return hotblockingattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return hotblockingexprattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
