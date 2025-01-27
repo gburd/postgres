@@ -639,8 +639,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
+		TU_UpdateIndexes update_indexes;
 		bool		conflict = false;
 
 		/* Compute stored generated columns */

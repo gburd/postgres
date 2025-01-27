@@ -38,6 +38,7 @@ struct IndexInfo;
 struct SampleScanState;
 struct VacuumParams;
 struct ValidateIndexState;
+struct EState;
 
 /*
  * Bitmask values for the flags argument to the scan_begin callback.
@@ -550,7 +551,8 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
-								 TU_UpdateIndexes *update_indexes);
+								 TU_UpdateIndexes *update_indexes,
+								 struct EState *estate);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1541,12 +1543,12 @@ static inline TM_Result
 table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes)
+				   TU_UpdateIndexes *update_indexes, struct EState *estate)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, snapshot, crosscheck,
-										 wait, tmfd,
-										 lockmode, update_indexes);
+										 wait, tmfd, lockmode,
+										 update_indexes, estate);
 }
 
 /*

@@ -2283,7 +2283,8 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes);
+								&updateCxt->updateIndexes,
+								estate);
 
 	return result;
 }
@@ -2301,6 +2302,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 {
 	ModifyTableState *mtstate = context->mtstate;
 	List	   *recheckIndexes = NIL;
+	bool		onlySummarizing = updateCxt->updateIndexes == TU_Summarizing;
 
 	/* insert index entries for tuple if necessary */
 	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
@@ -2308,7 +2310,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing));
+											   onlySummarizing);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
@@ -4362,6 +4364,7 @@ ExecModifyTable(PlanState *pstate)
 				/* Now apply the update. */
 				slot = ExecUpdate(&context, resultRelInfo, tupleid, oldtuple,
 								  oldSlot, slot, node->canSetTag);
+
 				if (tuplock)
 					UnlockTuple(resultRelInfo->ri_RelationDesc, tupleid,
 								InplaceUpdateTupleLock);
