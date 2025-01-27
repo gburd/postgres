@@ -63,6 +63,7 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_IDENTITY_KEY,
 	INDEX_ATTR_BITMAP_HOT_BLOCKING,
 	INDEX_ATTR_BITMAP_SUMMARIZED,
+	INDEX_ATTR_BITMAP_EXPRESSION,
 } IndexAttrBitmapKind;
 
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,

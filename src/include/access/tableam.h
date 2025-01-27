@@ -126,6 +126,28 @@ typedef enum TU_UpdateIndexes
 } TU_UpdateIndexes;
 
 /*
+ * Data specific to processing UPDATE operations.
+ *
+ * When table_tuple_update is called some storage managers, notably heapam,
+ * can at times avoid index updates.  In the heapam this is known as a HOT
+ * update.  This struct is used to provide the state required to test for
+ * HOT updates and to communicate that decision on to the index AMs.
+ */
+typedef struct UpdateContext
+{
+	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
+	struct ResultRelInfo *rri;	/* ResultRelInfo for the updated table. */
+	struct EState *estate;		/* EState used within the update. */
+	bool		crossPartUpdate;	/* Was it a cross-partition update? */
+
+	/*
+	 * Lock mode to acquire on the latest tuple version before performing
+	 * EvalPlanQual on it
+	 */
+	LockTupleMode lockmode;
+} UpdateContext;
+
+/*
  * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
  * because the target tuple is already outdated, they fill in this struct to
  * provide information to the caller about what happened.
@@ -549,8 +571,7 @@ typedef struct TableAmRoutine
 								 Snapshot crosscheck,
 								 bool wait,
 								 TM_FailureData *tmfd,
-								 LockTupleMode *lockmode,
-								 TU_UpdateIndexes *update_indexes);
+								 UpdateContext *updateCxt);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1540,13 +1561,11 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
 static inline TM_Result
 table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, Snapshot snapshot, Snapshot crosscheck,
-				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes)
+				   bool wait, TM_FailureData *tmfd, UpdateContext *updateCxt)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, snapshot, crosscheck,
-										 wait, tmfd,
-										 lockmode, update_indexes);
+										 wait, tmfd, updateCxt);
 }
 
 /*
@@ -2076,7 +2095,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 									  Snapshot snapshot);
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
-									  TU_UpdateIndexes *update_indexes);
+									  UpdateContext *updateCxt);
 
 
 /* ----------------------------------------------------------------------------
