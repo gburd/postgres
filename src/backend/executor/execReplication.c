@@ -567,8 +567,8 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, false,
 												   conflictindexes ? true : false,
-												   &conflict,
-												   conflictindexes, false);
+												   &conflict, false,
+												   conflictindexes);
 
 		/*
 		 * Checks the conflict indexes to fetch the conflicting local tuple
@@ -639,8 +639,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
+		TU_UpdateIndexes update_indexes;
 		bool		conflict = false;
 
 		/* Compute stored generated columns */
