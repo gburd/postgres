@@ -2934,6 +2934,7 @@ TSVectorStat
 TState
 TStatus
 TStoreState
+UpdateContext
 TU_UpdateIndexes
 TXNEntryFile
 TYPCATEGORY
@@ -3118,7 +3119,6 @@ UniqueState
 UnlistenStmt
 UnresolvedTup
 UnresolvedTupData
-UpdateContext
 UpdateStmt
 UpgradeTask
 UpgradeTaskProcessCB
