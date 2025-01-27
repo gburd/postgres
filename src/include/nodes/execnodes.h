@@ -164,8 +164,10 @@ typedef struct ExprState
  *							(zeroes indicate expressions). It also contains
  * 							info about included columns.
  *		Expressions			expr trees for expression entries, or NIL if none
+ *		ExpressionAttrs		bitmap of attributes used within the expression
  *		ExpressionsState	exec state for expressions, or NIL if none
  *		Predicate			partial-index predicate, or NIL if none
+ *		PredicateAttrs		bitmap of attributes used within the predicate
  *		PredicateState		exec state for predicate, or NIL if none
  *		ExclusionOps		Per-column exclusion operators, or NULL if none
  *		ExclusionProcs		Underlying function OIDs for ExclusionOps
@@ -184,6 +186,7 @@ typedef struct ExprState
  *		ParallelWorkers		# of workers requested (excludes leader)
  *		Am					Oid of index AM
  *		AmCache				private cache area for index AM
+ *		OpClassDataTypes	operator class data types
  *		Context				memory context holding this IndexInfo
  *
  * ii_Concurrent, ii_BrokenHotChain, and ii_ParallelWorkers are used only
@@ -196,9 +199,15 @@ typedef struct IndexInfo
 	int			ii_NumIndexAttrs;	/* total number of columns in index */
 	int			ii_NumIndexKeyAttrs;	/* number of key columns in index */
 	AttrNumber	ii_IndexAttrNumbers[INDEX_MAX_KEYS];
+	uint16		ii_IndexAttrLen[INDEX_MAX_KEYS];
+	Bitmapset  *ii_IndexAttrByVal;
+	FmgrInfo   *ii_EqualityProc[INDEX_MAX_KEYS];
+	Oid			ii_Collation[INDEX_MAX_KEYS];
 	List	   *ii_Expressions; /* list of Expr */
+	Bitmapset  *ii_ExpressionAttrs;
 	List	   *ii_ExpressionsState;	/* list of ExprState */
 	List	   *ii_Predicate;	/* list of Expr */
+	Bitmapset  *ii_PredicateAttrs;
 	ExprState  *ii_PredicateState;
 	Oid		   *ii_ExclusionOps;	/* array with one entry per column */
 	Oid		   *ii_ExclusionProcs;	/* array with one entry per column */
@@ -211,6 +220,8 @@ typedef struct IndexInfo
 	bool		ii_ReadyForInserts;
 	bool		ii_CheckedUnchanged;
 	bool		ii_IndexUnchanged;
+	bool		ii_CheckedPredicate;
+	bool		ii_PredicateSatisfied;
 	bool		ii_Concurrent;
 	bool		ii_BrokenHotChain;
 	bool		ii_Summarizing;
