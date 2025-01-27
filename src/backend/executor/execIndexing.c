@@ -117,6 +117,8 @@
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -168,6 +170,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	IndexInfo **indexInfoArray;
 
 	resultRelInfo->ri_NumIndices = 0;
+	resultRelation->rd_indexinfolist = NIL;
 
 	/* fast path if no indexes */
 	if (!RelationGetForm(resultRelation)->relhasindex)
@@ -209,6 +212,10 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 
 		/* extract index key information from the index's pg_index info */
 		ii = BuildIndexInfo(indexDesc);
+
+		/* used when determining if indexed values changed during update */
+		resultRelation->rd_indexinfolist =
+			lappend(resultRelation->rd_indexinfolist, ii);
 
 		/*
 		 * If the indexes are to be used for speculative insertion or conflict
@@ -1165,4 +1172,163 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 				(errcode(ERRCODE_CHECK_VIOLATION),
 				 errmsg("empty WITHOUT OVERLAPS value found in column \"%s\" in relation \"%s\"",
 						NameStr(attname), RelationGetRelationName(rel))));
+}
+
+/*
+ * This will first determine if the index has a predicate and if so if the
+ * update satisfies that or not.  Then, if necessary, we compare old and new
+ * values of the indexed expression and help determine if it is possible to
+ * use a HOT update or not.
+ *
+ * 'relation' is the table with the indexes we should examine.
+ * 'modified' is the set of attributes that are modified by the update.
+ * 'old_tts' is a slot with the old tuple.
+ * 'new_tts' is a slot with the new tuple.
+ *
+ * Returns true iff none of the indexes on this relation require updating.
+ *
+ * When the changes in new tuple impact a value stored in an index we must
+ * return false. When an index has a predicate that is not satisfied by either
+ * the new or old tuples then that index is unchanged. When an index has a
+ * predicate that is satisfied by both the old and new tuples then we can
+ * proceed and check to see if the indexed values were changed or not.
+ */
+bool
+ExecCheckIfIndexedValuesChanged(Relation relation, Bitmapset *modified,
+								EState *estate, TupleTableSlot *old_tts,
+								TupleTableSlot *new_tts)
+{
+	ListCell       *lc;
+	List		   *indexinfolist;
+	ExprContext    *econtext;
+	bool            changed = false;
+
+	if (!estate)
+		return false;
+
+	indexinfolist = relation->rd_indexinfolist;
+	econtext = GetPerTupleExprContext(estate);
+
+	/*
+	 * Examine each index on this relation to see if it is affected by the
+	 * changes in newtup.  If any index is changed, we must not use a HOT
+	 * update.
+	 */
+	foreach(lc, indexinfolist)
+	{
+		IndexInfo  *ii = (IndexInfo *) lfirst(lc);
+
+		/*
+		 * If this is a partial index it has a predicate, evaluate the
+		 * expression defining that to determine if newtup satisfies it
+		 * which would require an index update.
+		 */
+		if (bms_overlap(ii->ii_PredicateAttrs, modified))
+		{
+			ExprState *pstate;
+			bool old_tuple_qualifies, new_tuple_qualifies;
+
+ 			pstate = ExecPrepareQual(ii->ii_Predicate, estate);
+
+			/*
+			 * Here the term "qualifies" means "satisfies the predicate condition
+			 * of the partial index".
+			 */
+			econtext->ecxt_scantuple = old_tts;
+			old_tuple_qualifies = ExecQual(pstate, econtext);
+
+			econtext->ecxt_scantuple = new_tts;
+			new_tuple_qualifies = ExecQual(pstate, econtext);
+
+			/*
+			 * If neither the old nor the new tuples satisfy the predicate we can
+			 * be sure that this index doesn't need updating, continue to the next.
+			 */
+			if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
+				continue;
+
+			/*
+			 * If there is a transition between indexed and not indexed, that's
+			 * enough to require an index update.
+			 */
+			if (new_tuple_qualifies != old_tuple_qualifies)
+			{
+				changed = true;
+				break;
+			}
+
+			/*
+			 * Otherwise they were both in the index, but did it change?  We
+			 * don't yet know, so proceed with the next statement in the loop.
+			 */
+		}
+
+		/*
+		 * We'll need to review the before and after values for each attribute
+		 * in any expression index to determine if those values changed or not.
+		 * If any attribute in the expression for this index has changed then
+		 * we can not use a HOT update.
+		 */
+		if (bms_overlap(ii->ii_ExpressionAttrs, modified))
+		{
+			Datum	   	    old_values[INDEX_MAX_KEYS];
+			bool		    old_isnull[INDEX_MAX_KEYS];
+			Datum	   	    new_values[INDEX_MAX_KEYS];
+			bool		    new_isnull[INDEX_MAX_KEYS];
+
+			ii->ii_ExpressionsState = NIL;
+
+			econtext->ecxt_scantuple = old_tts;
+			FormIndexDatum(ii,
+						   old_tts,
+						   estate,
+						   old_values,
+						   old_isnull);
+
+			econtext->ecxt_scantuple = new_tts;
+			FormIndexDatum(ii,
+						   new_tts,
+						   estate,
+						   new_values,
+						   new_isnull);
+
+			for (int i = 0; i < ii->ii_NumIndexAttrs; i++)
+			{
+				if (old_isnull[i] != new_isnull[i])
+				{
+					changed = true;
+					break;
+				}
+				else if (!old_isnull[i])
+				{
+					int16 elmlen;
+					bool elmbyval;
+					get_typlenbyval(ii->ii_OpClassDataTypes[i], &elmlen, &elmbyval);
+					if (!datum_image_eq(old_values[i], new_values[i], elmbyval, elmlen))
+					{
+						changed = true;
+						break;
+					}
+				}
+			}
+
+			if (changed)
+				break;
+			else
+				continue;
+		}
+
+		/*
+		 * If we get here, then we must have an non-expression index that is
+		 * potentially changed.  If any of its attributes overlap with those
+		 * modified, then we must not use a HOT update.
+		 */
+		if (bms_overlap(ii->ii_IndexAttrs, modified))
+		{
+			changed = true;
+			break;
+		}
+	}
+
+	return changed;
 }

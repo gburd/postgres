@@ -154,6 +154,9 @@ typedef struct RelationData
 	bool		rd_ispkdeferrable;	/* is rd_pkindex a deferrable PK? */
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
 
+	/* list of IndexInfo for this relation */
+	List	   *rd_indexinfolist;	/* an ordered list of IndexInfo for indexes on relation */
+
 	/* data managed by RelationGetStatExtList: */
 	List	   *rd_statlist;	/* list of OIDs of extended stats */
 

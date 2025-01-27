@@ -3164,7 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes)
+			TU_UpdateIndexes *update_indexes, struct EState *estate)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3934,19 +3934,39 @@ l2:
 		 * changed.
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs))
-		{
 			use_hot_update = true;
-
+		else if (estate != NULL)
+		{
 			/*
-			 * If none of the columns that are used in hot-blocking indexes
-			 * were updated, we can apply HOT, but we do still need to check
-			 * if we need to update the summarizing indexes, and update those
-			 * indexes if the columns were updated, or we may fail to detect
-			 * e.g. value bound changes in BRIN minmax indexes.
+			 * It is possible that hot_attrs includes indexes with expressions
+			 * or indexes with predicates that are not be impacted by this
+			 * change.
 			 */
-			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = true;
+			TupleDesc      tupledesc = RelationGetDescr(relation);
+			TupleTableSlot *old_tts = MakeSingleTupleTableSlot(tupledesc,
+															   &TTSOpsHeapTuple);
+			TupleTableSlot *new_tts = MakeSingleTupleTableSlot(tupledesc,
+															   &TTSOpsHeapTuple);
+
+			ExecStoreHeapTuple(&oldtup, old_tts, InvalidBuffer);
+			ExecStoreHeapTuple(newtup, new_tts, InvalidBuffer);
+			use_hot_update = !ExecCheckIfIndexedValuesChanged(relation,
+															  modified_attrs,
+															  estate,
+															  old_tts, new_tts);
+			ExecDropSingleTupleTableSlot(old_tts);
+			ExecDropSingleTupleTableSlot(new_tts);
 		}
+
+		/*
+		 * If none of the columns that are used in hot-blocking indexes
+		 * were updated, we can apply HOT, but we do still need to check
+		 * if we need to update the summarizing indexes, and update those
+		 * indexes if the columns were updated, or we may fail to detect
+		 * e.g. value bound changes in BRIN minmax indexes.
+		 */
+		if (use_hot_update && bms_overlap(modified_attrs, sum_attrs))
+			summarized_update = true;
 	}
 	else
 	{
@@ -4413,7 +4433,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes);
+						 &tmfd, &lockmode, update_indexes, NULL);
 	switch (result)
 	{
 		case TM_SelfModified:
