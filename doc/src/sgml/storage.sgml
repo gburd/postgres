@@ -1139,6 +1139,27 @@ data. Empty in ordinary tables.</entry>
  </para>
 
  <para>
+  <acronym>HOT</acronym> updates can occur when the expression used to define
+  and index shows no changes to the indexed value. To determine this requires
+  that the expression be evaulated for the old and new values to be stored in
+  the index and then compared. This allows for <acronym>HOT</acronym> updates
+  when data indexed within JSONB columns is unchanged. To disable this
+  behavior and avoid the overhead of evaluating the expression during updates
+  set the <literal>expression_checks</literal> option to false for the table.
+ </para>
+
+ <para>
+  <acronym>HOT</acronym> updates can also occur when updated values are not
+  within the predicate of a partial index. However, <acronym>HOT</acronym>
+  updates are not possible when the updated value and the current value differ
+  with regards to the predicate. To determin this requires that the predicate
+  expression be evaluated for the old and new values to be stored in the index
+  and then compared. To disable this behavior and avoid the overhead of
+  evaluating the expression during updates set
+  the <literal>expression_checks</literal> option to false for the table.
+ </para>
+
+ <para>
   You can increase the likelihood of sufficient page space for
   <acronym>HOT</acronym> updates by decreasing a table's <link
   linkend="reloption-fillfactor"><literal>fillfactor</literal></link>.  If you
