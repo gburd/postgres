@@ -180,11 +180,20 @@ typedef struct IndexInfo
 	List	   *ii_Expressions; /* list of Expr */
 	/* exec state for expressions, or NIL if none */
 	List	   *ii_ExpressionsState;	/* list of ExprState */
+	/* attributes referenced by expressions, or NULL if none */
+	Bitmapset  *ii_ExpressionsAttrs;
+
+	/* index attribute length */
+	uint16		ii_IndexAttrLen[INDEX_MAX_KEYS];
+	/* is the index attribute by-value */
+	Bitmapset  *ii_IndexAttrByVal;
 
 	/* partial-index predicate, or NIL if none */
 	List	   *ii_Predicate;	/* list of Expr */
 	/* exec state for expressions, or NIL if none */
 	ExprState  *ii_PredicateState;
+	/* attributes referenced by the predicate, or NULL if none */
+	Bitmapset  *ii_PredicateAttrs;
 
 	/* Per-column exclusion operators, or NULL if none */
 	Oid		   *ii_ExclusionOps;	/* array with one entry per column */
@@ -208,6 +217,10 @@ typedef struct IndexInfo
 	bool		ii_CheckedUnchanged;
 	/* aminsert hint, cached for retail inserts */
 	bool		ii_IndexUnchanged;
+	/* partial index predicate determined yet? */
+	bool		ii_CheckedPredicate;
+	/* amupdate hint used to avoid rechecking predicate */
+	bool		ii_PredicateSatisfied;
 	/* are we doing a concurrent index build? */
 	bool		ii_Concurrent;
 	/* did we detect any broken HOT chains? */

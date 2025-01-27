@@ -2467,6 +2467,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionStrats);
 	}
 
+	ii->ii_IndexAttrByVal = NULL;
+
 	return ii;
 }
 
@@ -2705,6 +2707,52 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 				 index->rd_opcintype[i], index->rd_opfamily[i]);
 		ii->ii_UniqueProcs[i] = get_opcode(ii->ii_UniqueOps[i]);
 	}
+}
+
+/* ----------------
+ *		BuildExpressionIndexInfo
+ *			Add extra state to IndexInfo record
+ *
+ * For expression indexes updates may not change the indexed value allowing
+ * for a HOT update.  Add information to the IndexInfo to allow for checking
+ * if the indexed value has changed.
+ *
+ * Do this processing here rather than in BuildIndexInfo() to not incur the
+ * overhead in the common non-expression cases.
+ * ----------------
+ */
+void
+BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
+{
+	int			i;
+	int			indnkeyatts;
+
+	/*
+	 * Expressions are not allowed on non-key attributes, so we can skip them
+	 * as they should show up in the index HOT-blocking attributes.
+	 */
+	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+
+	/*
+	 * Collect attributes used by the index, their len and if they are by
+	 * value.
+	 */
+	for (i = 0; i < indnkeyatts; i++)
+	{
+		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
+
+		ii->ii_IndexAttrLen[i] = attr->attlen;
+		if (attr->attbyval)
+			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
+	}
+
+	/* collect attributes used in the expression */
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate */
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 }
 
 /* ----------------
