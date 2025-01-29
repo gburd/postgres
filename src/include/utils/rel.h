@@ -155,7 +155,8 @@ typedef struct RelationData
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
 
 	/* list of IndexInfo for this relation */
-	List	   *rd_indexinfolist;	/* an ordered list of IndexInfo for indexes on relation */
+	List	   *rd_indexinfolist;	/* an ordered list of IndexInfo for
+									 * indexes on relation */
 
 	/* data managed by RelationGetStatExtList: */
 	List	   *rd_statlist;	/* list of OIDs of extended stats */
@@ -166,6 +167,7 @@ typedef struct RelationData
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
+	Bitmapset  *rd_expressionattr;	/* cols with expression indexes */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */

@@ -67,6 +67,8 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
 #endif
+bool		check_expr_indexes(Relation relation, HeapTuple oldtup, HeapTuple newtup,
+							   EState *estate, Bitmapset *modified_attrs);
 static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
 										   Bitmapset *interesting_cols,
 										   Bitmapset *external_cols,
@@ -3169,6 +3171,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
+	Bitmapset  *exp_attrs;
 	Bitmapset  *sum_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
@@ -3244,13 +3247,14 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 */
 	hot_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	exp_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_EXPRESSION);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
-	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
@@ -3310,6 +3314,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
+		bms_free(exp_attrs);
 		bms_free(sum_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
@@ -3611,6 +3616,7 @@ l2:
 		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
+		bms_free(exp_attrs);
 		bms_free(sum_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
@@ -3928,42 +3934,25 @@ l2:
 
 	if (newbuf == buffer)
 	{
+		hot_attrs = bms_difference(hot_attrs, exp_attrs);
+
 		/*
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  Check if any of the index columns have been
 		 * changed.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
+		if (!bms_overlap(modified_attrs, hot_attrs) &&
+			(!bms_overlap(modified_attrs, exp_attrs) ||
+			 (estate ? !check_expr_indexes(relation, &oldtup, newtup,
+										   estate, modified_attrs) : false)))
 			use_hot_update = true;
-		else if (estate != NULL)
-		{
-			/*
-			 * It is possible that hot_attrs includes indexes with expressions
-			 * or indexes with predicates that are not be impacted by this
-			 * change.
-			 */
-			TupleDesc      tupledesc = RelationGetDescr(relation);
-			TupleTableSlot *old_tts = MakeSingleTupleTableSlot(tupledesc,
-															   &TTSOpsHeapTuple);
-			TupleTableSlot *new_tts = MakeSingleTupleTableSlot(tupledesc,
-															   &TTSOpsHeapTuple);
-
-			ExecStoreHeapTuple(&oldtup, old_tts, InvalidBuffer);
-			ExecStoreHeapTuple(newtup, new_tts, InvalidBuffer);
-			use_hot_update = !ExecCheckIfIndexedValuesChanged(relation,
-															  modified_attrs,
-															  estate,
-															  old_tts, new_tts);
-			ExecDropSingleTupleTableSlot(old_tts);
-			ExecDropSingleTupleTableSlot(new_tts);
-		}
 
 		/*
-		 * If none of the columns that are used in hot-blocking indexes
-		 * were updated, we can apply HOT, but we do still need to check
-		 * if we need to update the summarizing indexes, and update those
-		 * indexes if the columns were updated, or we may fail to detect
-		 * e.g. value bound changes in BRIN minmax indexes.
+		 * If none of the columns that are used in hot-blocking indexes were
+		 * updated, we can apply HOT, but we do still need to check if we need
+		 * to update the summarizing indexes, and update those indexes if the
+		 * columns were updated, or we may fail to detect e.g. value bound
+		 * changes in BRIN minmax indexes.
 		 */
 		if (use_hot_update && bms_overlap(modified_attrs, sum_attrs))
 			summarized_update = true;
@@ -4146,6 +4135,7 @@ l2:
 		heap_freetuple(old_key_tuple);
 
 	bms_free(hot_attrs);
+	bms_free(exp_attrs);
 	bms_free(sum_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
@@ -4321,6 +4311,35 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
 }
+
+bool
+check_expr_indexes(Relation relation, HeapTuple oldtup, HeapTuple newtup,
+				   EState *estate, Bitmapset *modified_attrs)
+{
+	bool		result;
+
+	/*
+	 * A modified attr refers to an expression index, it is possible that it
+	 * is not changed and we can still do a HOT update.  If we have an estate,
+	 * we can check the before and after values of the expression and
+	 * determine the truth.
+	 */
+	TupleDesc	tupledesc = RelationGetDescr(relation);
+	TupleTableSlot *old_tts = MakeSingleTupleTableSlot(tupledesc,
+													   &TTSOpsHeapTuple);
+	TupleTableSlot *new_tts = MakeSingleTupleTableSlot(tupledesc,
+													   &TTSOpsHeapTuple);
+
+	ExecStoreHeapTuple(oldtup, old_tts, InvalidBuffer);
+	ExecStoreHeapTuple(newtup, new_tts, InvalidBuffer);
+	result = ExecCheckIfIndexedExprValuesChanged(relation, modified_attrs,
+												 estate, old_tts, new_tts);
+	ExecDropSingleTupleTableSlot(old_tts);
+	ExecDropSingleTupleTableSlot(new_tts);
+
+	return result;
+}
+
 
 /*
  * Check which columns are being updated.
