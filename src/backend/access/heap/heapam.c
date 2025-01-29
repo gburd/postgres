@@ -3944,7 +3944,7 @@ l2:
 		if (!bms_overlap(modified_attrs, hot_attrs) &&
 			(!bms_overlap(modified_attrs, exp_attrs) ||
 			 (estate ? !check_expr_indexes(relation, &oldtup, newtup,
-										   estate, modified_attrs) : false)))
+										   estate, modified_attrs) : true)))
 			use_hot_update = true;
 
 		/*

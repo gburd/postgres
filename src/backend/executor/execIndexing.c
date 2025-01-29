@@ -1217,6 +1217,12 @@ ExecCheckIfIndexedExprValuesChanged(Relation relation, Bitmapset *modified,
 	{
 		IndexInfo  *ii = (IndexInfo *) lfirst(lc);
 
+		if (ii->ii_ExclusionOps || ii->ii_UniqueOps)
+		{
+			changed = true;
+			break;
+		}
+
 		/*
 		 * If this is a partial index it has a predicate, evaluate the
 		 * expression defining that to determine if newtup satisfies it which
