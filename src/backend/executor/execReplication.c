@@ -688,8 +688,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  resultRelInfo->ri_NumIndices,
-								  resultRelInfo->ri_IndexRelationInfo,
 								  &modified_indexes);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;

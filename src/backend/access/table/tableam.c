@@ -336,8 +336,7 @@ void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
-						  int num_indexes, struct IndexInfo **index_infos,
-						  Bitmapset **modified_indexes)
+						  Bitmapset **modified_attrs)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -347,7 +346,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								GetCurrentCommandId(true),
 								snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, &lockmode, 0, NULL, modified_indexes);
+								&tmfd, &lockmode, modified_attrs, NULL);
 
 	switch (result)
 	{

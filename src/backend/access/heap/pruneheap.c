@@ -542,7 +542,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 
 		if (ItemIdIsRedirected(itemid))
 		{
-			/* This is the start of a HOT chain */
+			/* This is the start of a (P)HOT chain */
 			prstate.root_items[prstate.nroot_items++] = offnum;
 			continue;
 		}
@@ -1199,7 +1199,7 @@ heap_prune_chain(Relation relation, Page page, BlockNumber blockno,
 		priorXmax = HeapTupleHeaderGetUpdateXid(htup);
 	}
 
-	if (ItemIdIsRedirected(rootlp) && nchain < 2)
+	if (nchain == 1 && ItemIdIsRedirected(rootlp))
 	{
 		/*
 		 * We found a redirect item that doesn't point to a valid follow-on
@@ -1466,6 +1466,7 @@ heap_prune_record_redirect_with_data(PruneState *prstate,
 {
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
+	prstate->processed[rdoffnum] = true;
 
 	/*
 	 * Do not mark the redirect target here.  It needs to be counted
@@ -1910,7 +1911,6 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		htup = (HeapTupleHeader) PageGetItem(page, tolp);
 		Assert(HeapTupleHeaderIsHeapOnly(htup));
 #endif
-
 		ItemIdSetRedirect(fromlp, tooff);
 	}
 
@@ -1922,7 +1922,63 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		OffsetNumber tooff = *offnum++;
 		ItemId		fromlp = PageGetItemId(page, fromoff);
 		OffsetNumber origoff = ItemIdGetOffset(fromlp);
+		ItemId		tolp PG_USED_FOR_ASSERTS_ONLY;
 
+		if (!ItemIdHasStorage(fromlp))
+		{
+			ItemId		intermediate = PageGetItemId(page, origoff);
+
+			origoff = ItemIdGetOffset(intermediate);
+			fromlp->lp_off = origoff;
+		}
+
+#ifdef USE_ASSERT_CHECKING
+
+		/*
+		 * Any existing item that we set as an LP_REDIRECT (any 'from' item)
+		 * must be the first item from a HOT chain.
+		 */
+
+		if (!ItemIdIsRedirected(fromlp))
+		{
+			/*
+			 * Setup a LP_REDIRECT from a normal tuple to the new partial
+			 * heap-only tuple.
+			 */
+			Assert(ItemIdHasStorage(fromlp) && ItemIdIsNormal(fromlp));
+			htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+			Assert(!HeapTupleHeaderIsHeapOnly(htup));
+		}
+		else
+		{
+			/* We shouldn't need to redundantly set the redirect */
+			Assert(ItemIdGetRedirect(fromlp) != tooff);
+
+			if (ItemIdHasStorage(fromlp))
+			{
+				Offset		pd_lower = ((PageHeader) page)->pd_lower;
+				Offset		pd_upper = ((PageHeader) page)->pd_upper;
+				Offset		pd_special = ((PageHeader) page)->pd_special;
+
+				htup = (HeapTupleHeader) PageGetItem(page, fromlp);
+				Assert(!HeapTupleHeaderIsPartialHeapOnly(htup));
+			}
+		}
+
+		/*
+		 * The item that we're about to set as an LP_REDIRECT (the 'from'
+		 * item) will point to an existing item (the 'to' item) that is either
+		 * a heap-only tuple, or a partial heap-only tuple.
+		 *
+		 * This check may miss problems, e.g. the target of a redirect could
+		 * be marked as unused subsequently. The page_verify_redirects() check
+		 * below will catch such problems.
+		 */
+		tolp = PageGetItemId(page, tooff);
+		Assert(ItemIdHasStorage(tolp) && ItemIdIsNormal(tolp));
+		htup = (HeapTupleHeader) PageGetItem(page, tolp);
+		Assert(HeapTupleHeaderIsPartialHeapOnly(htup));
+#endif
 		ItemIdSetRedirectWithData(fromlp, tooff);
 
 		memcpy((char *) page + origoff,
@@ -1946,7 +2002,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		 * heap-only tuple item, though. (It's not clear how much of a problem
 		 * that would be, but there is no reason to allow it.)
 		 */
-		if (ItemIdHasStorage(lp))
+		if (ItemIdHasStorage(lp) && !ItemIdIsPartialHotRedirected(page, lp))
 		{
 			Assert(ItemIdIsNormal(lp));
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
@@ -1990,7 +2046,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			{
 				Assert(ItemIdHasStorage(lp) && ItemIdIsNormal(lp));
 				htup = (HeapTupleHeader) PageGetItem(page, lp);
-				Assert(HeapTupleHeaderIsHeapOnly(htup));
+				Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+					   HeapTupleHeaderIsPartialHeapOnly(htup));
 			}
 			else
 				Assert(ItemIdIsUsed(lp));

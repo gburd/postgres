@@ -5251,10 +5251,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       <listitem>
        <para>
         Enables or disables the ability to determine if indexes with
-        expressions have changed allowing for the heap-only tuple (HOT)
-        optimzation on update when using the heap access method.  When enabled
-        each expression is evaluated three times, not once, per-update. The
-        default is <literal>on</literal>.
+        expressions partial indexes have changed allowing for the heap-only
+        tuple (HOT) optimzation on update when using the heap access method.
+        The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>

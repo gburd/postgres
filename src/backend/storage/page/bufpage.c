@@ -767,8 +767,8 @@ PageRepairFragmentation(Page page)
 							 itemidptr->itemoff >= (int) pd_special))
 					ereport(ERROR,
 							(errcode(ERRCODE_DATA_CORRUPTED),
-							 errmsg("corrupted line pointer: %u, upper: %u, special: %u",
-									itemidptr->itemoff, pd_upper, pd_special)));
+							 errmsg("corrupted line pointer: %u, off: %u, upper: %u, special: %u",
+									i, itemidptr->itemoff, pd_upper, pd_special)));
 
 				/*
 				 * If this is a redirected line pointer that has storage, we

@@ -660,6 +660,12 @@ extern void check_exclusion_constraint(Relation heap, Relation index,
 									   ItemPointer tupleid,
 									   const Datum *values, const bool *isnull,
 									   EState *estate, bool newIndex);
+extern Bitmapset *ExecIndexesRequiringUpdates(Relation relation,
+											  Bitmapset *modified_attrs,
+											  EState *estate,
+											  HeapTuple old_tuple,
+											  HeapTuple new_tuple,
+											  bool *only_summarizing);
 
 /*
  * prototypes from functions in execReplication.c

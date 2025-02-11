@@ -1,0 +1,19 @@
+
+* RelationGetIndexAttrBitmap: repeates some of what's already available in indexinfolist
+* HeapDetermineColumnsInfo: used now in the PHOT path, semi conflated with the next two
+* ExecIndexesRequiringUpdates
+* index_unchanged_by_update
+
+
+DROP TABLE IF EXISTS public.ex;
+CREATE TABLE public.ex (_v JSONB) WITH (fillfactor = 60);
+INSERT INTO ex (_v) VALUES ('{"a": 0, "b": 0}');
+INSERT INTO ex (_v) SELECT jsonb_build_object('b', n) FROM generate_series(100, 10000) as n;
+CREATE INDEX idx_ex_a ON ex ((_v->>'a'));
+CREATE INDEX idx_ex_b ON ex ((_v->>'b')) WHERE (_v->>'b')::numeric > 9;
+SET SESSION enable_seqscan = OFF;
+SET SESSION enable_bitmapscan = OFF;
+UPDATE ex SET _v = jsonb_build_object('a', 2, 'b', 12) WHERE (_v->>'a')::numeric = 0;
+UPDATE ex SET _v = jsonb_build_object('a', 2, 'b', 10) WHERE (_v->>'a')::numeric = 2;
+EXPLAIN (COSTS OFF) SELECT * FROM ex WHERE (_v->>'b')::numeric > 9 AND (_v->>'b')::numeric < 100;
+SELECT * FROM ex WHERE (_v->>'b')::numeric > 9 AND (_v->>'b')::numeric < 100;

@@ -2455,7 +2455,22 @@ BuildIndexInfo(Relation index)
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
+	{
 		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+		ii->ii_IndexAttrs =
+			bms_add_member(ii->ii_IndexAttrs,
+						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* collect attributes used in the expression, if one is present */
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
+	ii->ii_IndexAttrs = bms_add_members(ii->ii_IndexAttrs, ii->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate, if one is present */
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
+	ii->ii_IndexAttrs = bms_add_members(ii->ii_IndexAttrs, ii->ii_PredicateAttrs);
 
 	/* fetch exclusion constraint info if any */
 	if (indexStruct->indisexclusion)

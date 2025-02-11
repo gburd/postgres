@@ -1,0 +1,86 @@
+drop table if exists t;
+create table t(key int4 primary key, fruit text);
+create unique index fruit_index on t(fruit);
+insert into t values (25, 'Peach');
+insert into t values (26, 'Fig');
+insert into t values (26, 'Peach') on conflict (key) do update set fruit = excluded.fruit;
+
+update t set key = 26, fruit = 'Peach';
+
+
+
+DROP TABLE IF EXISTS bookings;
+CREATE TABLE bookings (
+    room_id INTEGER,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    EXCLUDE USING gist (
+        (tsrange(start_time, end_time)) WITH =
+    )
+);
+
+-- Insert a valid booking
+INSERT INTO bookings (room_id, start_time, end_time) VALUES (1, '2024-07-04 10:00:00', '2024-07-04 12:00:00');
+
+-- Attempt to insert an overlapping booking for the same room (will fail)
+INSERT INTO bookings (room_id, start_time, end_time) VALUES (1, '2024-07-04 11:30:00', '2024-07-04 13:00:00');
+
+-- Update the existing booking to overlap with the attempted insertion (will also fail)
+UPDATE bookings SET end_time = '2024-07-04 13:00:00' WHERE room_id = 1 AND start_time = '2024-07-04 10:00:00';
+
+
+
+
+
+
+
+CREATE TABLE brin_hot (
+  id  integer PRIMARY KEY,
+  val integer NOT NULL
+) WITH (autovacuum_enabled = off, fillfactor = 70);
+
+INSERT INTO brin_hot SELECT *, 0 FROM generate_series(1, 235);
+CREATE INDEX val_brin ON brin_hot using brin(val);
+
+UPDATE brin_hot SET val = -3 WHERE id = 42;
+
+SELECT pg_stat_get_tuples_hot_updated('brin_hot'::regclass::oid);
+
+
+
+
+
+
+
+ii_ExclusionOps
+ii_UniqueOps
+
+ii_NullsNotDistinct
+ii_WithoutOverlaps
+
+
+DROP TABLE IF EXISTS upsert;
+CREATE TABLE upsert (key text not null, payload text);
+CREATE UNIQUE INDEX ON upsert(lower(key)) INCLUDE (payload);
+BEGIN ISOLATION LEVEL READ COMMITTED;
+INSERT INTO upsert(key, payload) VALUES('FooFoo', 'insert1') ON CONFLICT (lower(key)) DO UPDATE set key = EXCLUDED.key, payload = upsert.payload || ' updated by insert1';
+INSERT INTO upsert(key, payload) VALUES('FOOFOO', 'insert2') ON CONFLICT (lower(key)) DO UPDATE set key = EXCLUDED.key, payload = upsert.payload || ' updated by insert2';
+COMMIT;
+step select2: SELECT * FROM upsert;
+
+DROP TABLE IF EXISTS upsert;
+CREATE TABLE upsert (key text primary key, payload text);
+BEGIN;
+INSERT INTO upsert(key, payload) VALUES('FooFoo', 'insert1');
+UPDATE upsert set key = 'FOOFOO', payload = 'updated by insert2';
+COMMIT;
+step select2: SELECT * FROM upsert;
+
+
+CREATE TYPE bogus AS ENUM('good', 'new');
+
+BEGIN;
+ALTER TYPE bogus RENAME TO bogon;
+ALTER TYPE bogon ADD VALUE 'bad';
+SELECT 'bad'::bogon;
+ROLLBACK;

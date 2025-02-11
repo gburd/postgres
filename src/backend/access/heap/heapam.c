@@ -102,14 +102,6 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
-static Bitmapset *HeapDetermineModifiedIndexes(bool *only_summarizing,
-											   Bitmapset *modified_attrs,
-											   Relation relation,
-											   int num_indexes,
-											   IndexInfo **index_info_array,
-											   HeapTuple old,
-											   HeapTuple new);
-
 
 /*
  * Each tuple lock mode has a corresponding heavyweight lock, and one or two
@@ -216,11 +208,6 @@ static const int MultiXactStatusLock[MaxMultiXactStatus + 1] =
 /* Get the LockTupleMode for a given MultiXactStatus */
 #define TUPLOCK_from_mxstatus(status) \
 			(MultiXactStatusLock[(status)])
-
-/*
- * GUC parameters
- */
-bool		enable_expression_checks = true;
 
 /* ----------------------------------------------------------------
  *						 heap support routines
@@ -3253,12 +3240,11 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			int num_indexes, IndexInfo **index_infos,
-			Bitmapset **modified_indexes)
+			Bitmapset **modified_indexes, EState *estate)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
-	Bitmapset  *hot_attrs;
+	Bitmapset  *idx_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3331,13 +3317,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * Note that we get copies of each bitmap, so we need not worry about
 	 * relcache flush happening midway through.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
-	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, idx_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
 
@@ -3394,7 +3379,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
 
-		bms_free(hot_attrs);
+		bms_free(idx_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		/* modified_attrs not yet initialized */
@@ -3693,7 +3678,7 @@ l2:
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
 
-		bms_free(hot_attrs);
+		bms_free(idx_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(interesting_attrs);
@@ -4008,55 +3993,84 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (modified_indexes && newbuf == buffer)
+	if (modified_indexes != NULL && newbuf == buffer)
 	{
 		/* Find the set of indexes that should be updated if any. */
 		bool		only_summarizing = false;
+		int			num_indexes = list_length(relation->rd_indexinfolist);
+		int			num_modified = 0;
 
-		*modified_indexes =
-			HeapDetermineModifiedIndexes(&only_summarizing, modified_attrs,
-										 relation, num_indexes, index_infos,
-										 &oldtup, newtup);
+		if (!bms_overlap(idx_attrs, modified_attrs))
+		{
+			use_hot_update = true;
+		}
+		else
+		{
+			*modified_indexes =
+				ExecIndexesRequiringUpdates(relation, modified_attrs,
+											estate, &oldtup, newtup,
+											&only_summarizing);
+			num_modified = bms_num_members(*modified_indexes);
+		}
 
 		/*
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update as long as none of the index columns have been
 		 * updated or the only columns updated were summarizing.
 		 */
-		if (!only_summarizing && bms_is_empty(*modified_indexes))
+		if (num_modified == 0)
 		{
 			/*
-			 * If no attributes were modified, we can be on the HOT path but
-			 * we need to signal with a non-NULL modified_indexes bitmap that
+			 * If no indexes were modified, we can be on the HOT path but we
+			 * need to signal with a non-NULL modified_indexes bitmap that
 			 * none of the indexes need to be updated, so add a non-existent
 			 * index which won't match later when creating index entries.
 			 */
 			*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
 			use_hot_update = true;
 		}
+		else if (num_modified == num_indexes)
+		{
+			/*
+			 * If all the indexes were modified we signal that all indexes
+			 * need to be updated by setting modified_indexes to NULL (after
+			 * freeing the bitmapset).  If they were all summarizing indexes
+			 * they will all be updated, so that case is covered here.
+			 */
+			bms_free(*modified_indexes);
+			*modified_indexes = NULL;
+			use_hot_update = false;
+		}
+		else
+		{
 
-		/*
-		 * We can still use the HOT path if only summarizing indexes need to
-		 * be updated.
-		 */
-		if (only_summarizing)
-			use_hot_update = true;
+				/*
+				 * We can still use the HOT path if the subset of indexes
+				 * updated were all summarizing, they don't require the PHOT
+				 * work so let's avoid it.
+				 */
+				if (only_summarizing)
+					use_hot_update = true;
 
-		/*
-		 * But, if HOT won't work because some of indexed values were modified
-		 * it may still be advantageous remain on the HOT path and only update
-		 * the subset of indexes with modification by doing a Partial HOT
-		 * (PHOT) update.
-		 */
-		if (!use_hot_update)
-			/* Skip the HOT path if we're updating all the indexes anyway. */
-			use_phot_update = num_indexes > bms_num_members(*modified_indexes);
+				/*
+				 * If we're not on the HOT path, meaning that some of the
+				 * indexes need to be updated, we can continue on the PHOT
+				 * path and update only the modified indexes.
+				 */
+				use_phot_update = !use_hot_update;
+		}
 	}
 	else
 	{
-		/* Signal that we're not on the (P)HOT path by setting this to NULL */
+		/*
+		 * Signal that we're not on the (P)HOT path by setting this to NULL.
+		 * This will trigger a full update of all indexes.
+		 */
 		if (modified_indexes)
+		{
+			bms_free(*modified_indexes);
 			*modified_indexes = NULL;
+		}
 
 		/* Set a hint that the old page could use prune/defrag */
 		PageSetFull(page);
@@ -4227,7 +4241,7 @@ l2:
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
 
-	bms_free(hot_attrs);
+	bms_free(idx_attrs);
 	bms_free(key_attrs);
 	bms_free(id_attrs);
 	bms_free(interesting_attrs);
@@ -4317,130 +4331,6 @@ check_lock_if_inplace_updateable_rel(Relation relation,
 			}
 			break;
 	}
-}
-
-/*
- * For the purposes of PHOT index updates we need to determine the set of
- * indexes that should be updated.  That will include: any index on a column
- * who's attribute was modified, any expression index where the expression's
- * value updated, and any summarizing indexing.  The resulting bitmap will
- * contain the index into the index_info_array for each index that needs to be
- * updated later in ExecIndexInsertTuple().
- */
-static Bitmapset *
-HeapDetermineModifiedIndexes(bool *only_summarizing,
-							 Bitmapset *modified_attrs,
-							 Relation relation, int num_indexes,
-							 IndexInfo **index_info_array,
-							 HeapTuple old, HeapTuple new)
-{
-	Bitmapset  *modified_indexes = NULL;
-	EState	   *estate;
-	ExprContext *econtext;
-	TupleDesc	tupledesc;
-	TupleTableSlot *slot;
-	Datum		old_values[INDEX_MAX_KEYS];
-	bool		old_isnull[INDEX_MAX_KEYS];
-	Datum		new_values[INDEX_MAX_KEYS];
-	bool		new_isnull[INDEX_MAX_KEYS];
-	int			num_summarizing = 0;
-
-	for (int n = 0; n < num_indexes; n++)
-	{
-		bool		unchanged = true;
-		IndexInfo  *indexInfo = index_info_array[n];
-
-		if (indexInfo->ii_Summarizing)
-		{
-			/*
-			 * Summarizing indexes can be on the (P)HOT path but they need to
-			 * be updated.
-			 */
-			num_summarizing++;
-			modified_indexes = bms_add_member(modified_indexes, n);
-		}
-		else if (indexInfo->ii_Expressions)
-		{
-			int			i;
-
-			/*
-			 * Assume the index is changed when we don't have an estate
-			 * context to use or the GUC is disabled.
-			 */
-			if (!enable_expression_checks || !relation->rd_estate)
-			{
-				modified_indexes = bms_add_member(modified_indexes, n);
-				continue;
-			}
-
-			estate = (EState *) relation->rd_estate;
-			econtext = GetPerTupleExprContext(estate);
-			tupledesc = RelationGetDescr(relation);
-			slot = MakeSingleTupleTableSlot(tupledesc, &TTSOpsHeapTuple);
-			econtext->ecxt_scantuple = slot;
-			indexInfo->ii_ExpressionsState = NIL;
-
-			ResetExprContext(econtext);
-			ExecStoreHeapTuple(old, slot, InvalidBuffer);
-			FormIndexDatum(indexInfo, slot, estate, old_values, old_isnull);
-
-			ExecStoreHeapTuple(new, slot, InvalidBuffer);
-			FormIndexDatum(indexInfo, slot, estate, new_values, new_isnull);
-
-			/*
-			 * Determine if any of the attributes used by this index have
-			 * changed.
-			 */
-			for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
-			{
-				if (old_isnull[i] != new_isnull[i])
-				{
-					unchanged = false;
-					break;
-				}
-				if (!old_isnull[i])
-				{
-					int16		elmlen;
-					bool		elmbyval;
-
-					get_typlenbyval(indexInfo->ii_OpClassDataTypes[i], &elmlen, &elmbyval);
-					if (!datum_image_eq(old_values[i], new_values[i], elmbyval, elmlen))
-					{
-						unchanged = false;
-						break;
-					}
-				}
-			}
-
-			if (!unchanged)
-				modified_indexes = bms_add_member(modified_indexes, n);
-
-			/* Shortcut index_unchanged_by_update(), we know the answer. */
-			indexInfo->ii_CheckedUnchanged = true;
-			indexInfo->ii_IndexUnchanged = unchanged;
-
-			ExecDropSingleTupleTableSlot(slot);
-		}
-		else
-		{
-			for (int i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
-			{
-				AttrNumber	attrnum = indexInfo->ii_IndexAttrNumbers[i]
-					- FirstLowInvalidHeapAttributeNumber;
-
-				if (bms_is_member(attrnum, modified_attrs))
-				{
-					modified_indexes = bms_add_member(modified_indexes, n);
-					unchanged = false;
-					break;
-				}
-			}
-		}
-	}
-
-	*only_summarizing = (num_indexes > 0 && num_summarizing == num_indexes);
-
-	return modified_indexes;
 }
 
 /*
@@ -4639,7 +4529,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
 						 &tmfd, &lockmode,
-						 0, NULL, NULL);
+						 NULL, NULL);
 
 	switch (result)
 	{

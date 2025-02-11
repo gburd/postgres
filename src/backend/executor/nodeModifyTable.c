@@ -2269,9 +2269,8 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								resultRelInfo->ri_NumIndices,
-								resultRelInfo->ri_IndexRelationInfo,
-								&updateCxt->modifiedIndexes);
+								&updateCxt->modifiedIndexes,
+								estate);
 
 	return result;
 }
@@ -4027,7 +4026,6 @@ ExecModifyTable(PlanState *pstate)
 
 	/* Preload local variables */
 	resultRelInfo = node->resultRelInfo + node->mt_lastResultIndex;
-	resultRelInfo->ri_RelationDesc->rd_estate = (void *) estate;
 	subplanstate = outerPlanState(node);
 
 	/* Set global context */

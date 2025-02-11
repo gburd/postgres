@@ -1009,12 +1009,11 @@ struct config_bool ConfigureNamesBool[] =
 	},
 	{
 		{"enable_expression_checks", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the ability to examine expression indexes for "
-						 "changes during updates."),
-			gettext_noop("Evaluates the expression provided on the index three times "
-						 "rather than once to determine if the expressed value has "
-						 "changed.  This allows for heap-only tuple (HOT) updates on "
-						 "only those indexes that have changes."),
+			gettext_noop("Enables the ability to examine expression and partial indexes "
+						 "for changes during updates."),
+			gettext_noop("Evaluates the expressions on the index to determine if "
+						 "the indexed values changed.  This allows for heap-only "
+						 "tuple (HOT) updates when indexes have not changed."),
 			GUC_EXPLAIN
 		},
 		&enable_expression_checks,
