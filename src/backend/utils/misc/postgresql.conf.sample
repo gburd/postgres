@@ -411,7 +411,6 @@
 #enable_tidscan = on
 #enable_group_by_reordering = on
 #enable_distinct_reordering = on
-#enable_expression_checks = on
 
 # - Planner Cost Constants -
 
