@@ -696,7 +696,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
 												   &conflict, conflictindexes,
-												   &modified_indexes);
+												   modified_indexes);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in

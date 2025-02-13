@@ -3169,6 +3169,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
+	Bitmapset  *sum_attrs;
+	Bitmapset  *exp_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
 	Bitmapset  *interesting_attrs;
@@ -3242,11 +3244,16 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 */
 	hot_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	sum_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	exp_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_EXPRESSION);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
 	interesting_attrs = NULL;
 	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
 
@@ -3304,6 +3311,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->cmax = InvalidCommandId;
 
 		bms_free(hot_attrs);
+		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		/* modified_attrs not yet initialized */
@@ -3603,6 +3612,8 @@ l2:
 			ReleaseBuffer(vmbuffer);
 
 		bms_free(hot_attrs);
+		bms_free(sum_attrs);
+		bms_free(exp_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
@@ -3920,51 +3931,83 @@ l2:
 	if (modified_indexes && newbuf == buffer)
 	{
 		bool		only_summarizing = false;
+		bool		already_checked = false;
 		int			num_indexes = list_length(relation->rd_indexinfolist);
 
 		/*
-		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.
+		 * Since the new tuple is going into the same page, we might be able to
+		 * do a HOT update.  As a reminder, hot_attrs includes attributes used
+		 * in expressions, but not attributes used by summarizing indexes.
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs))
 		{
-			/*
-			 * If no attributes were modified, we can be on the HOT path but
-			 * we need to signal with a non-NULL modified_indexes bitmap that
-			 * none of the indexes need to be updated, so add a non-existent
-			 * index which won't match later when creating index entries.
-			 */
 			*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
 			use_hot_update = true;
 		}
 		else
 		{
 			/*
-			 * Some of the columns used in HOT-blocking indexes were updated,
-			 * but there are still cases where we can do a HOT update.  Check
-			 * if the columns that are used in the HOT-blocking indexes were
-			 * updated, and if not, we can do a HOT update.
+			 * We may still be able to use the HOT update path if the reason for
+			 * the overlap is an unchanged expression.
 			 */
+			if (bms_overlap(modified_attrs, exp_attrs))
+			{
+				*modified_indexes =
+					ExecIndexesRequiringUpdates(relation, modified_attrs,
+												estate, &oldtup, newtup,
+												&only_summarizing);
+				already_checked = true;
+				if (bms_is_empty(*modified_indexes) || only_summarizing)
+				{
+					/*
+					 * When no indexes were updated, or the only indexes updated
+					 * were summarizing indexes, we can use the HOT path.  We
+					 * ensure that the bitmapset isn't NULL by adding in an
+					 * index that can't match later when we filter to determine
+					 * which indexes to update and which to skip in
+					 * execIndexing.  We do that so as to signal the need to
+					 * filter which indexes are updated.
+					 */
+					*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
+					use_hot_update = true;
+				}
+				else
+				{
+					/*
+					 * When any index requires updates, then all indexes must be
+					 * updated and this update cannot be HOT.  We signal that by
+					 * setting modified_indexes to NULL which indicates on need
+					 * to filter indexes out during execIndexing.
+					 */
+					bms_free(*modified_indexes);
+					*modified_indexes = NULL;
+				}
+			}
+		}
+
+		/*
+		 * Summarizing indexes need not prevent a HOT update when their
+		 * attributes are modified like other index types, but their indexed
+		 * values do need to be updated. Let's find out which indexes need to be
+		 * updated.
+		 */
+		if (!already_checked && bms_overlap(modified_attrs, sum_attrs))
+		{
+			bms_free(*modified_indexes);
 			*modified_indexes =
 				ExecIndexesRequiringUpdates(relation, modified_attrs,
 											estate, &oldtup, newtup,
 											&only_summarizing);
-			if (bms_is_empty(*modified_indexes) || only_summarizing)
-			{
-				/* See earlier comment... */
-				*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
+			if (only_summarizing)
 				use_hot_update = true;
-			}
-			else
-			{
-				bms_free(*modified_indexes);
-				*modified_indexes = NULL;
-			}
 		}
 	}
 	else
 	{
-		/* Signal that we're not on the HOT path by setting this to NULL */
+		/*
+		 * We're not able on the HOT update path. Setting modified_indexes to
+		 * NULL is the signal to update all indexes.
+		 */
 		if (modified_indexes)
 			*modified_indexes = NULL;
 

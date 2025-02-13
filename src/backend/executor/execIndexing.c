@@ -148,11 +148,6 @@ static bool index_expression_changed_walker(Node *node,
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
 										char typtype, Oid atttypid);
 
-/*
- * GUC parameters
- */
-bool		enable_expression_checks = true;
-
 /* ----------------------------------------------------------------
  *		ExecOpenIndices
  *
@@ -1206,6 +1201,7 @@ ExecIndexesRequiringUpdates(Relation relation,
 	TupleDesc	tupledesc;
 	TupleTableSlot *old_tts,
 			   *new_tts;
+	bool		expression_checks = RelationGetExpressionChecks(relation);
 	Bitmapset  *result = NULL;
 
 	/*
@@ -1218,12 +1214,15 @@ ExecIndexesRequiringUpdates(Relation relation,
 
 		/*
 		 * Summarizing indexes don't prevent HOT updates, but do require that
-		 * they are updated so we include it in the set.
+		 * they are updated when necessary so we include it in the set.
 		 */
 		if (indexInfo->ii_Summarizing)
 		{
-			num_summarizing++;
-			result = bms_add_member(result, foreach_current_index(lc));
+			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+			{
+				num_summarizing++;
+				result = bms_add_member(result, foreach_current_index(lc));
+			}
 			continue;
 		}
 
@@ -1231,7 +1230,7 @@ ExecIndexesRequiringUpdates(Relation relation,
 		 * If this is a partial index it has a predicate, evaluate the
 		 * expression to determine if we need to include it or not.
 		 */
-		if (enable_expression_checks && estate != NULL &&
+		if (expression_checks && estate != NULL &&
 			bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
 		{
 			ExprState  *pstate;
@@ -1308,9 +1307,9 @@ ExecIndexesRequiringUpdates(Relation relation,
 
 			/*
 			 * Assume the index is changed when we don't have an estate
-			 * context to use or the GUC is disabled.
+			 * context to use or the reloption is disabled.
 			 */
-			if (!enable_expression_checks || estate == NULL)
+			if (!expression_checks || estate == NULL)
 			{
 				result = bms_add_member(result, foreach_current_index(lc));
 				continue;
