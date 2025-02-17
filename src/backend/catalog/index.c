@@ -2460,6 +2460,8 @@ BuildIndexInfo(Relation index)
 		ii->ii_IndexAttrs =
 			bms_add_member(ii->ii_IndexAttrs,
 						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+
+		ii->ii_CompactAttr[i] = TupleDescCompactAttr(RelationGetDescr(index), i);
 	}
 
 	/* collect attributes used in the expression, if one is present */
@@ -2478,8 +2480,6 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
-
-	ii->ii_OpClassDataTypes = index->rd_opcintype;
 
 	return ii;
 }

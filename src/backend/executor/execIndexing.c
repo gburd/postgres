@@ -1213,8 +1213,8 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 	Assert(estate != NULL);
 
 	/*
-	 * Examine each index on this relation relative to the changes between old
-	 * and new tuples.
+	 * Examine expression and partial indexs on this relation relative to the
+	 * changes between old and new tuples.
 	 */
 	foreach(lc, indexinfolist)
 	{
@@ -1336,11 +1336,9 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 				}
 				else if (!old_isnull[i])
 				{
-					int16		elmlen;
-					bool		elmbyval;
-					Oid			opcintyp = indexInfo->ii_OpClassDataTypes[i];
+					int16		elmlen = indexInfo->ii_CompactAttr[i]->attlen;
+					bool		elmbyval = indexInfo->ii_CompactAttr[i]->attbyval;
 
-					get_typlenbyval(opcintyp, &elmlen, &elmbyval);
 					if (!datum_image_eq(old_values[i], new_values[i],
 										elmbyval, elmlen))
 					{

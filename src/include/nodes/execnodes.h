@@ -200,6 +200,7 @@ typedef struct IndexInfo
 	int			ii_NumIndexKeyAttrs;	/* number of key columns in index */
 	Bitmapset  *ii_IndexAttrs;
 	AttrNumber	ii_IndexAttrNumbers[INDEX_MAX_KEYS];
+	CompactAttribute *ii_CompactAttr[INDEX_MAX_KEYS];
 	List	   *ii_Expressions; /* list of Expr */
 	Bitmapset  *ii_ExpressionAttrs;
 	List	   *ii_ExpressionsState;	/* list of ExprState */
@@ -224,7 +225,6 @@ typedef struct IndexInfo
 	int			ii_ParallelWorkers;
 	Oid			ii_Am;
 	void	   *ii_AmCache;
-	Oid		   *ii_OpClassDataTypes;
 	MemoryContext ii_Context;
 } IndexInfo;
 
