@@ -154,10 +154,6 @@ typedef struct RelationData
 	bool		rd_ispkdeferrable;	/* is rd_pkindex a deferrable PK? */
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
 
-	/* list of IndexInfo for this relation */
-	List	   *rd_indexinfolist;	/* an ordered list of IndexInfo for
-									 * indexes on relation */
-
 	/* data managed by RelationGetStatExtList: */
 	List	   *rd_statlist;	/* list of OIDs of extended stats */
 
@@ -169,6 +165,10 @@ typedef struct RelationData
 	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
 	Bitmapset  *rd_expressionattr;	/* indexed cols referenced by expressions */
+
+	/* data managed by RelationGetExprIndexInfoList: */
+	List	   *rd_iiexprlist;	/* list of IndexInfo for indexes with
+								 * expressions */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 

@@ -120,12 +120,8 @@ typedef struct ModifyTableContext
  */
 typedef struct UpdateContext
 {
-	Bitmapset  *modifiedIndexes;	/* Either NULL indicating that all indexes
-									 * should be updated or a bitmap of
-									 * IndexInfo array positions for the
-									 * subset of modified indexes requiring
-									 * updates. */
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
+	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -2287,7 +2283,7 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->modifiedIndexes,
+								&updateCxt->updateIndexes,
 								estate);
 
 	return result;
@@ -2308,12 +2304,12 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0)
+	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   updateCxt->modifiedIndexes);
+											   (updateCxt->updateIndexes == TU_Summarizing));
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,

@@ -170,7 +170,6 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	IndexInfo **indexInfoArray;
 
 	resultRelInfo->ri_NumIndices = 0;
-	resultRelation->rd_indexinfolist = NIL;
 
 	/* fast path if no indexes */
 	if (!RelationGetForm(resultRelation)->relhasindex)
@@ -212,10 +211,6 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 
 		/* extract index key information from the index's pg_index info */
 		ii = BuildIndexInfo(indexDesc);
-
-		/* used when determining if indexed values changed during update */
-		resultRelation->rd_indexinfolist =
-			lappend(resultRelation->rd_indexinfolist, ii);
 
 		/*
 		 * If the indexes are to be used for speculative insertion or conflict
@@ -314,7 +309,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool noDupErr,
 					  bool *specConflict,
 					  List *arbiterIndexes,
-					  Bitmapset *modified_indexes)
+					  bool onlySummarizing)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -371,12 +366,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * If modified_indexes is NULL, we're not in a HOT update, so we
-		 * should update all indexes.  If it's not NULL, we should only update
-		 * the listed indexes.  This list will include any summarizing indexes
-		 * that require updates on the HOT path as well.
+		 * Skip processing of non-summarizing indexes if we only update
+		 * summarizing indexes
 		 */
-		if (update && modified_indexes && !bms_is_member(i, modified_indexes))
+		if (onlySummarizing && !indexInfo->ii_Summarizing)
 			continue;
 
 		/* Check for partial index */
@@ -1180,29 +1173,44 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 }
 
 /*
- * Determine which indexes must be invoked during ExecIndexInsertTuple().
+ * Determine if any index with an expression requires updating.
  *
- * That will include: any index on a column where there is an attribute that was
- * modified, any expression index where the expression's value updated, any
- * index used in a constraint, and any summarizing index.
+ * This function will review all indexes with expressions to determine if the
+ * update from old to new tuple requires that the index be updated.  This is
+ * used to determine if a HOT update is possible or not.
+ *
+ * Returns true iff none of the expression indexes require updating due to the
+ * change from old to new tuple or when both the old and new tuples do not
+ * satisfy the predicate of the index.
  */
-Bitmapset *
-ExecIndexesRequiringUpdates(Relation relation,
-							Bitmapset *modified_attrs,
-							EState *estate,
-							HeapTuple old_tuple,
-							HeapTuple new_tuple,
-							bool *only_summarizing)
+bool
+ExecIndexesExpressionsWereNotUpdated(Relation relation,
+									 Bitmapset *modified_attrs,
+									 EState *estate,
+									 HeapTuple old_tuple,
+									 HeapTuple new_tuple)
 {
 	ListCell   *lc;
-	List	   *indexinfolist = relation->rd_indexinfolist;
+	List	   *indexinfolist = RelationGetExprIndexInfoList(relation);
 	ExprContext *econtext = NULL;
-	int			num_summarizing = 0;
 	TupleDesc	tupledesc;
-	TupleTableSlot *old_tts,
-			   *new_tts;
+	TupleTableSlot *old_tts = NULL;
+	TupleTableSlot *new_tts = NULL;
 	bool		expression_checks = RelationGetExpressionChecks(relation);
-	Bitmapset  *result = NULL;
+	bool		changed = false;
+
+#ifndef USE_ASSERT_CHECKING
+
+	/*
+	 * Assume the index is changed when we don't have an estate context to use
+	 * or the reloption is disabled.
+	 */
+	if (!expression_checks || estate == NULL)
+		return changed;
+#endif
+
+	Assert(expression_checks == true);
+	Assert(estate != NULL);
 
 	/*
 	 * Examine each index on this relation relative to the changes between old
@@ -1213,25 +1221,10 @@ ExecIndexesRequiringUpdates(Relation relation,
 		IndexInfo  *indexInfo = (IndexInfo *) lfirst(lc);
 
 		/*
-		 * Summarizing indexes don't prevent HOT updates, but do require that
-		 * they are updated when necessary so we include it in the set.
-		 */
-		if (indexInfo->ii_Summarizing)
-		{
-			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
-			{
-				num_summarizing++;
-				result = bms_add_member(result, foreach_current_index(lc));
-			}
-			continue;
-		}
-
-		/*
 		 * If this is a partial index it has a predicate, evaluate the
 		 * expression to determine if we need to include it or not.
 		 */
-		if (expression_checks && estate != NULL &&
-			bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
+		if (bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
 		{
 			ExprState  *pstate;
 			bool		old_tuple_qualifies,
@@ -1277,8 +1270,8 @@ ExecIndexesRequiringUpdates(Relation relation,
 			 */
 			if (new_tuple_qualifies != old_tuple_qualifies)
 			{
-				result = bms_add_member(result, foreach_current_index(lc));
-				continue;
+				changed = true;
+				break;
 			}
 
 			/*
@@ -1303,17 +1296,6 @@ ExecIndexesRequiringUpdates(Relation relation,
 			bool		old_isnull[INDEX_MAX_KEYS];
 			Datum		new_values[INDEX_MAX_KEYS];
 			bool		new_isnull[INDEX_MAX_KEYS];
-			bool		changed = false;
-
-			/*
-			 * Assume the index is changed when we don't have an estate
-			 * context to use or the reloption is disabled.
-			 */
-			if (!expression_checks || estate == NULL)
-			{
-				result = bms_add_member(result, foreach_current_index(lc));
-				continue;
-			}
 
 			/* Create these once, only if necessary, then reuse them. */
 			if (!econtext)
@@ -1369,20 +1351,13 @@ ExecIndexesRequiringUpdates(Relation relation,
 			}
 
 			if (changed)
-				result = bms_add_member(result, foreach_current_index(lc));
-
-			/* Shortcut index_unchanged_by_update(), we know the answer. */
-			indexInfo->ii_CheckedUnchanged = true;
-			indexInfo->ii_IndexUnchanged = !changed;
-			continue;
+			{
+				/* Shortcut index_unchanged_by_update(), we know the answer. */
+				indexInfo->ii_CheckedUnchanged = true;
+				indexInfo->ii_IndexUnchanged = !changed;
+				break;
+			}
 		}
-
-		/*
-		 * If the index references modified attributes then it needs to be
-		 * updated.
-		 */
-		if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
-			result = bms_add_member(result, foreach_current_index(lc));
 	}
 
 	if (econtext)
@@ -1391,8 +1366,5 @@ ExecIndexesRequiringUpdates(Relation relation,
 		ExecDropSingleTupleTableSlot(new_tts);
 	}
 
-	*only_summarizing = (list_length(indexinfolist) > 0 &&
-						 num_summarizing == bms_num_members(result));
-
-	return result;
+	return !changed;
 }

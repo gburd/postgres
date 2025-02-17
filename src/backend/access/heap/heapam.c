@@ -3164,7 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			Bitmapset **modified_indexes, struct EState *estate)
+			TU_UpdateIndexes *update_indexes, struct EState *estate)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3193,6 +3193,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
+	bool		summarized_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3309,6 +3310,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
+		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3610,6 +3612,7 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
+		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3928,89 +3931,35 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (modified_indexes && newbuf == buffer)
+	if (newbuf == buffer)
 	{
-		bool		only_summarizing = false;
-		bool		already_checked = false;
-		int			num_indexes = list_length(relation->rd_indexinfolist);
+		bool		expression_checks = RelationGetExpressionChecks(relation);
 
 		/*
-		 * Since the new tuple is going into the same page, we might be able to
-		 * do a HOT update.  As a reminder, hot_attrs includes attributes used
-		 * in expressions, but not attributes used by summarizing indexes.
+		 * Since the new tuple is going into the same page, we might be able
+		 * to do a HOT update.  As a reminder, hot_attrs includes attributes
+		 * used in expressions, but not attributes used by summarizing
+		 * indexes.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
-		{
-			*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
+		if (!bms_overlap(modified_attrs, hot_attrs) ||
+			(expression_checks == true && estate != NULL && exp_attrs &&
+			 bms_overlap(modified_attrs, exp_attrs) &&
+			 ExecIndexesExpressionsWereNotUpdated(relation, modified_attrs,
+												  estate, &oldtup, newtup)))
 			use_hot_update = true;
-		}
-		else
-		{
-			/*
-			 * We may still be able to use the HOT update path if the reason for
-			 * the overlap is an unchanged expression.
-			 */
-			if (bms_overlap(modified_attrs, exp_attrs))
-			{
-				*modified_indexes =
-					ExecIndexesRequiringUpdates(relation, modified_attrs,
-												estate, &oldtup, newtup,
-												&only_summarizing);
-				already_checked = true;
-				if (bms_is_empty(*modified_indexes) || only_summarizing)
-				{
-					/*
-					 * When no indexes were updated, or the only indexes updated
-					 * were summarizing indexes, we can use the HOT path.  We
-					 * ensure that the bitmapset isn't NULL by adding in an
-					 * index that can't match later when we filter to determine
-					 * which indexes to update and which to skip in
-					 * execIndexing.  We do that so as to signal the need to
-					 * filter which indexes are updated.
-					 */
-					*modified_indexes = bms_add_member(*modified_indexes, num_indexes);
-					use_hot_update = true;
-				}
-				else
-				{
-					/*
-					 * When any index requires updates, then all indexes must be
-					 * updated and this update cannot be HOT.  We signal that by
-					 * setting modified_indexes to NULL which indicates on need
-					 * to filter indexes out during execIndexing.
-					 */
-					bms_free(*modified_indexes);
-					*modified_indexes = NULL;
-				}
-			}
-		}
 
 		/*
-		 * Summarizing indexes need not prevent a HOT update when their
-		 * attributes are modified like other index types, but their indexed
-		 * values do need to be updated. Let's find out which indexes need to be
-		 * updated.
+		 * If none of the columns that are used in hot-blocking indexes were
+		 * updated, we can apply HOT, but we do still need to check if we need
+		 * to update the summarizing indexes, and update those indexes if the
+		 * columns were updated, or we may fail to detect e.g. value bound
+		 * changes in BRIN minmax indexes.
 		 */
-		if (!already_checked && bms_overlap(modified_attrs, sum_attrs))
-		{
-			bms_free(*modified_indexes);
-			*modified_indexes =
-				ExecIndexesRequiringUpdates(relation, modified_attrs,
-											estate, &oldtup, newtup,
-											&only_summarizing);
-			if (only_summarizing)
-				use_hot_update = true;
-		}
+		if (use_hot_update && bms_overlap(modified_attrs, sum_attrs))
+			summarized_update = true;
 	}
 	else
 	{
-		/*
-		 * We're not able on the HOT update path. Setting modified_indexes to
-		 * NULL is the signal to update all indexes.
-		 */
-		if (modified_indexes)
-			*modified_indexes = NULL;
-
 		/* Set a hint that the old page could use prune/defrag */
 		PageSetFull(page);
 	}
@@ -4166,6 +4115,22 @@ l2:
 		newtup->t_self = heaptup->t_self;
 		heap_freetuple(heaptup);
 	}
+
+	/*
+	 * If it is a HOT update, the update may still need to update summarized
+	 * indexes, lest we fail to update those summaries and get incorrect
+	 * results (for example, minmax bounds of the block may change with this
+	 * update).
+	 */
+	if (use_hot_update)
+	{
+		if (summarized_update)
+			*update_indexes = TU_Summarizing;
+		else
+			*update_indexes = TU_None;
+	}
+	else
+		*update_indexes = TU_All;
 
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
@@ -4447,7 +4412,8 @@ HeapDetermineColumnsInfo(Relation relation,
  * via ereport().
  */
 void
-simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
+simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
+				   TU_UpdateIndexes *update_indexes)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4456,7 +4422,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, NULL, NULL);
+						 &tmfd, &lockmode, update_indexes, NULL);
 	switch (result)
 	{
 		case TM_SelfModified:

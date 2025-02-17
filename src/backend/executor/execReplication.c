@@ -639,9 +639,9 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
+		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
-		Bitmapset  *modified_indexes = NULL;
 
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
@@ -655,16 +655,17 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot);
+		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
+								  &update_indexes);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0)
+		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
 												   &conflict, conflictindexes,
-												   modified_indexes);
+												   (update_indexes == TU_Summarizing));
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
@@ -682,7 +683,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 							 recheckIndexes, NULL, false);
 
 		list_free(recheckIndexes);
-		bms_free(modified_indexes);
 	}
 }
 
