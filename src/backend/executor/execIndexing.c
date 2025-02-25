@@ -113,6 +113,7 @@
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "storage/lmgr.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
@@ -315,8 +316,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool update,
 					  bool noDupErr,
 					  bool *specConflict,
-					  List *arbiterIndexes,
-					  bool onlySummarizing)
+					  List *arbiterIndexes)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -376,7 +376,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * Skip processing of non-summarizing indexes if we only update
 		 * summarizing indexes
 		 */
-		if (onlySummarizing && !indexInfo->ii_Summarizing)
+		if (resultRelInfo->ri_OnlySummarized && !indexInfo->ii_Summarizing)
 			continue;
 
 		/* Check for partial index */
@@ -1179,16 +1179,53 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 						NameStr(attname), RelationGetRelationName(rel))));
 }
 
+
+ /*
+  * AttributeIndexInfo -- adds attribute information to IndexInfo
+  */
+static IndexInfo *
+AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
+{
+	if (indexInfo->ii_IndexAttrByVal)
+		return indexInfo;
+
+	/*
+	 * collect attributes used by the index, their len and if they are by
+	 * value
+	 */
+	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+	{
+		indexInfo->ii_IndexAttrs =
+			bms_add_member(indexInfo->ii_IndexAttrs,
+						   indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
+
+		if (i < indexInfo->ii_NumIndexKeyAttrs)
+		{
+			int16		elmlen;
+			bool		elmbyval;
+
+			get_typlenbyval(index->rd_opcintype[i], &elmlen, &elmbyval);
+			indexInfo->ii_IndexAttrLen[i] = elmlen;
+			if (elmbyval)
+				indexInfo->ii_IndexAttrByVal = bms_add_member(indexInfo->ii_IndexAttrByVal, i);
+		}
+	}
+
+	/* collect attributes used in the expression */
+	if (indexInfo->ii_Expressions)
+		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexInfo->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate */
+	if (indexInfo->ii_Predicate)
+		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
+
+	return indexInfo;
+}
+
 /*
- * Determine if any index with an expression requires updating.
- *
- * This function will review all indexes with expressions to determine if the
- * update from old to new tuple requires that the index be updated.  This is
- * used to determine if a HOT update is possible or not.
- *
- * Returns true iff none of the expression indexes require updating due to the
- * change from old to new tuple or when both the old and new tuples do not
- * satisfy the predicate of the index.
+ * Determine if indexes that have expressions or predicates require updates
+ * for the purposes of allowing HOT updates.  Returns true iff all indexed
+ * values are unchanged.
  */
 bool
 ExecIndexesExpressionsWereNotUpdated(Relation relation,
@@ -1197,35 +1234,47 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 									 HeapTuple old_tuple,
 									 HeapTuple new_tuple)
 {
-	ListCell   *lc;
-	List	   *indexinfolist = RelationGetExprIndexInfoList(relation);
-	ExprContext *econtext = NULL;
-	TupleDesc	tupledesc;
-	TupleTableSlot *old_tts = NULL;
-	TupleTableSlot *new_tts = NULL;
 	bool		expression_checks = RelationGetExpressionChecks(relation);
-	bool		changed = false;
+	bool		result = true;
+	ResultRelInfo *resultRelInfo;
+	Relation	index;
+	IndexInfo  *indexInfo;
+	ExprContext *econtext = NULL;
+	TupleTableSlot *old_tts;
+	TupleTableSlot *new_tts;
 
 #ifndef USE_ASSERT_CHECKING
 
 	/*
-	 * Assume the index is changed when we don't have an estate context to use
-	 * or the reloption is disabled.
+	 * We're not able to access the IndexInfo array without an estate.
 	 */
-	if (!expression_checks || estate == NULL)
-		return changed;
+	if (estate == NULL)
+		return false;
+
+	if (estate->es_result_relations[i]->ri_RelationDesc != relation)
+		return false;
+
+	if (expression_checks == false)
+		return false;
 #endif
 
-	Assert(expression_checks == true);
 	Assert(estate != NULL);
+	Assert(estate->es_result_relations[0]->ri_RelationDesc == relation);
+	Assert(expression_checks == true);
+
+	resultRelInfo = estate->es_result_relations[0];
+	old_tts = resultRelInfo->ri_oldTupleSlot;
+	new_tts = resultRelInfo->ri_newTupleSlot;
 
 	/*
-	 * Examine expression and partial indexs on this relation relative to the
-	 * changes between old and new tuples.
+	 * Examine each index on this relation relative to the changes between old
+	 * and new tuples.
 	 */
-	foreach(lc, indexinfolist)
+	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 	{
-		IndexInfo  *indexInfo = (IndexInfo *) lfirst(lc);
+		index = (Relation) resultRelInfo->ri_IndexRelationDescs[i];
+		indexInfo = AttributeIndexInfo(index,
+									   resultRelInfo->ri_IndexRelationInfo[i]);
 
 		/*
 		 * If this is a partial index it has a predicate, evaluate the
@@ -1239,17 +1288,7 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 
 			/* Create these once, only if necessary, then reuse them. */
 			if (!econtext)
-			{
 				econtext = GetPerTupleExprContext(estate);
-				tupledesc = RelationGetDescr(relation);
-				old_tts = MakeSingleTupleTableSlot(tupledesc,
-												   &TTSOpsHeapTuple);
-				new_tts = MakeSingleTupleTableSlot(tupledesc,
-												   &TTSOpsHeapTuple);
-
-				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
-				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
-			}
 
 			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
@@ -1273,11 +1312,13 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 
 			/*
 			 * If there is a transition between indexed and not indexed,
-			 * that's enough to require that this index is updated.
+			 * that's enough to require that this index is updated. If any
+			 * single non-summarizing index requires updates then they all
+			 * should be updated.
 			 */
 			if (new_tuple_qualifies != old_tuple_qualifies)
 			{
-				changed = true;
+				result = false;
 				break;
 			}
 
@@ -1303,20 +1344,11 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 			bool		old_isnull[INDEX_MAX_KEYS];
 			Datum		new_values[INDEX_MAX_KEYS];
 			bool		new_isnull[INDEX_MAX_KEYS];
+			bool		changed = false;
 
 			/* Create these once, only if necessary, then reuse them. */
 			if (!econtext)
-			{
 				econtext = GetPerTupleExprContext(estate);
-				tupledesc = RelationGetDescr(relation);
-				old_tts = MakeSingleTupleTableSlot(tupledesc,
-												   &TTSOpsHeapTuple);
-				new_tts = MakeSingleTupleTableSlot(tupledesc,
-												   &TTSOpsHeapTuple);
-
-				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
-				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
-			}
 
 			indexInfo->ii_ExpressionsState = NIL;
 
@@ -1334,19 +1366,19 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 						   new_values,
 						   new_isnull);
 
-			for (int i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+			for (int j = 0; j < indexInfo->ii_NumIndexKeyAttrs; j++)
 			{
-				if (old_isnull[i] != new_isnull[i])
+				if (old_isnull[j] != new_isnull[j])
 				{
 					changed = true;
 					break;
 				}
-				else if (!old_isnull[i])
+				else if (!old_isnull[j])
 				{
-					int16		elmlen = indexInfo->ii_IndexAttrLen[i];
-					bool		elmbyval = bms_is_member(i, indexInfo->ii_IndexAttrByVal);
+					int16		elmlen = indexInfo->ii_IndexAttrLen[j];
+					bool		elmbyval = bms_is_member(j, indexInfo->ii_IndexAttrByVal);
 
-					if (!datum_image_eq(old_values[i], new_values[i],
+					if (!datum_image_eq(old_values[j], new_values[j],
 										elmbyval, elmlen))
 					{
 						changed = true;
@@ -1360,15 +1392,12 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 			indexInfo->ii_IndexUnchanged = !changed;
 
 			if (changed)
+			{
+				result = false;
 				break;
+			}
 		}
 	}
 
-	if (econtext)
-	{
-		ExecDropSingleTupleTableSlot(old_tts);
-		ExecDropSingleTupleTableSlot(new_tts);
-	}
-
-	return !changed;
+	return result;
 }

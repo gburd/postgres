@@ -3164,7 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes, struct EState *estate)
+			struct EState *estate)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3193,7 +3193,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
-	bool		summarized_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3310,7 +3309,6 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
-		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3612,7 +3610,6 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3938,28 +3935,35 @@ l2:
 		/*
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  As a reminder, hot_attrs includes attributes
-		 * used in expressions, but not attributes used by summarizing
-		 * indexes.
+		 * used by indexes including within expressions and predicates, but
+		 * not attributes only used by summarizing indexes.
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
-			(expression_checks == true && estate != NULL && exp_attrs &&
-			 bms_overlap(modified_attrs, exp_attrs) &&
-			 ExecIndexesExpressionsWereNotUpdated(relation, modified_attrs,
-												  estate, &oldtup, newtup)))
+			(expression_checks && bms_overlap(modified_attrs, exp_attrs) &&
+			 ExecIndexesExpressionsWereNotUpdated(relation, modified_attrs, estate,
+												  &oldtup, newtup)))
+		{
 			use_hot_update = true;
 
-		/*
-		 * If none of the columns that are used in hot-blocking indexes were
-		 * updated, we can apply HOT, but we do still need to check if we need
-		 * to update the summarizing indexes, and update those indexes if the
-		 * columns were updated, or we may fail to detect e.g. value bound
-		 * changes in BRIN minmax indexes.
-		 */
-		if (use_hot_update && bms_overlap(modified_attrs, sum_attrs))
-			summarized_update = true;
+			/*
+			 * If none of the columns that are used in hot-blocking indexes
+			 * were updated, we can apply HOT, but we do still need to check
+			 * if we need to update the summarizing indexes, and update those
+			 * indexes if the columns were updated, or we may fail to detect
+			 * e.g. value bound changes in BRIN minmax indexes.
+			 */
+			if (bms_overlap(modified_attrs, sum_attrs))
+					ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
+		}
 	}
 	else
 	{
+		/*
+		 * We're not able to proceed on the HOT update path, all indexes must
+		 * be updated.
+		 */
+		use_hot_update = false;
+
 		/* Set a hint that the old page could use prune/defrag */
 		PageSetFull(page);
 	}
@@ -4115,22 +4119,6 @@ l2:
 		newtup->t_self = heaptup->t_self;
 		heap_freetuple(heaptup);
 	}
-
-	/*
-	 * If it is a HOT update, the update may still need to update summarized
-	 * indexes, lest we fail to update those summaries and get incorrect
-	 * results (for example, minmax bounds of the block may change with this
-	 * update).
-	 */
-	if (use_hot_update)
-	{
-		if (summarized_update)
-			*update_indexes = TU_Summarizing;
-		else
-			*update_indexes = TU_None;
-	}
-	else
-		*update_indexes = TU_All;
 
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
@@ -4412,8 +4400,7 @@ HeapDetermineColumnsInfo(Relation relation,
  * via ereport().
  */
 void
-simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4422,7 +4409,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes, NULL);
+						 &tmfd, &lockmode, NULL);
 	switch (result)
 	{
 		case TM_SelfModified:
