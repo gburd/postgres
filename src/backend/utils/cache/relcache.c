@@ -5196,7 +5196,7 @@ RelationGetIndexPredicate(Relation relation)
   * indexes on this relation
   */
 List *
-RelationGetExprIndexInfoList(Relation relation)
+RelationGetIndexInfoList(Relation relation)
 {
 	ListCell   *lc;
 	List	   *indexoidlist;
@@ -5264,7 +5264,7 @@ restart:
 		else
 			indexPredicate = NULL;
 
-		if (indexExpressions || indexPredicate)
+/* GSB		if (indexExpressions || indexPredicate) */
 		{
 			oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 			indexInfo = BuildIndexInfo(indexDesc);

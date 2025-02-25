@@ -489,7 +489,7 @@ typedef struct ResultRelInfo
 	/* array of relation descriptors for indices */
 	RelationPtr ri_IndexRelationDescs;
 
-	/* array of key/attr info for indices */
+	/* array of key/attr info for indices, when NULL don't update index */
 	IndexInfo **ri_IndexRelationInfo;
 
 	/*
@@ -626,6 +626,9 @@ typedef struct ResultRelInfo
 	 * one of its ancestors; see ExecCrossPartitionUpdateForeignKey().
 	 */
 	List	   *ri_ancestorResultRels;
+
+	/* true if only summarized columns are updated */
+	bool		ri_OnlySummarized;
 } ResultRelInfo;
 
 /* ----------------
