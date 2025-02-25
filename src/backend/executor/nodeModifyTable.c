@@ -121,7 +121,6 @@ typedef struct ModifyTableContext
 typedef struct UpdateContext
 {
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -1178,8 +1177,7 @@ ExecInsert(ModifyTableContext *context,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, false, true,
 												   &specConflict,
-												   arbiterIndexes,
-												   false);
+												   arbiterIndexes);
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -1218,8 +1216,7 @@ ExecInsert(ModifyTableContext *context,
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
-													   false, NULL, NIL,
-													   false);
+													   false, NULL, NIL);
 		}
 	}
 
@@ -2283,7 +2280,6 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes,
 								estate);
 
 	return result;
@@ -2304,12 +2300,11 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0)
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 											   slot, context->estate,
 											   true, false,
-											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing));
+											   NULL, NIL);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,

@@ -159,8 +159,8 @@ the HOT optimization is not applied, and the new tuple is inserted into
 all indexes of the table.  If none of the updated columns are included in
 the table's indexes, the HOT optimization is applied and no indexes are
 updated.  If instead the updated columns are only indexed by summarizing
-indexes, the HOT optimization is applied, and the update is propagated to
-all of the summarizing indexes.
+indexes, the HOT optimization is applied, but the update is propagated to
+the summarizing indexes that have updated values.
 
 Abort Cases
 -----------

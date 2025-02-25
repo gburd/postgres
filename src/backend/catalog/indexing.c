@@ -72,8 +72,7 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  * This is effectively a cut-down version of ExecInsertIndexTuples.
  */
 static void
-CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
-				   TU_UpdateIndexes updateIndexes)
+CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 {
 	int			i;
 	int			numIndexes;
@@ -83,7 +82,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		onlySummarized = (updateIndexes == TU_Summarizing);
+	bool		onlySummarized = indstate->ri_OnlySummarized;
 
 	/*
 	 * HOT update does not require index inserts. But with asserts enabled we
@@ -240,7 +239,7 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, TU_All);
+	CatalogIndexInsert(indstate, tup);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -260,7 +259,7 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, TU_All);
+	CatalogIndexInsert(indstate, tup);
 }
 
 /*
@@ -291,7 +290,7 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 
 		tuple = ExecFetchSlotHeapTuple(slot[i], true, &should_free);
 		tuple->t_tableOid = slot[i]->tts_tableOid;
-		CatalogIndexInsert(indstate, tuple, TU_All);
+		CatalogIndexInsert(indstate, tuple);
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -313,15 +312,14 @@ void
 CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
-	TU_UpdateIndexes updateIndexes = TU_All;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -337,13 +335,11 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	TU_UpdateIndexes updateIndexes = TU_All;
-
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup);
 }
 
 /*

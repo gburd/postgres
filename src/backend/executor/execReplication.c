@@ -568,7 +568,7 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 												   slot, estate, false,
 												   conflictindexes ? true : false,
 												   &conflict,
-												   conflictindexes, false);
+												   conflictindexes);
 
 		/*
 		 * Checks the conflict indexes to fetch the conflicting local tuple
@@ -639,7 +639,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -655,17 +654,15 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
+		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
-												   &conflict, conflictindexes,
-												   (update_indexes == TU_Summarizing));
+												   &conflict, conflictindexes);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in

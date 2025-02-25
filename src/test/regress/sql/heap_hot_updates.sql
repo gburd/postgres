@@ -125,25 +125,25 @@ SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 1 no new 
 -- first (xact) and then later into the global statistics for a relation, so first we need
 -- to ensure pending stats are flushed.
 SELECT pg_stat_force_next_flush();
-SELECT 
+SELECT
     c.relname AS table_name,
     -- Transaction statistics
     pg_stat_get_xact_tuples_updated(c.oid) AS xact_updates,
     pg_stat_get_xact_tuples_hot_updated(c.oid) AS xact_hot_updates,
     ROUND((
-        pg_stat_get_xact_tuples_hot_updated(c.oid)::float / 
+        pg_stat_get_xact_tuples_hot_updated(c.oid)::float /
         NULLIF(pg_stat_get_xact_tuples_updated(c.oid), 0) * 100
     )::numeric, 2) AS xact_hot_update_percentage,
     -- Cumulative statistics
     s.n_tup_upd AS total_updates,
     s.n_tup_hot_upd AS hot_updates,
     ROUND((
-        s.n_tup_hot_upd::float / 
+        s.n_tup_hot_upd::float /
         NULLIF(s.n_tup_upd, 0) * 100
     )::numeric, 2) AS total_hot_update_percentage
 FROM pg_class c
 LEFT JOIN pg_stat_user_tables s ON c.relname = s.relname
-WHERE c.relname = 'ex' 
+WHERE c.relname = 'ex'
 AND c.relnamespace = 'public'::regnamespace;
 -- expect: 5 xact updates with 1 xact hot update and no cumulative updates as yet
 
@@ -179,7 +179,7 @@ SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 0 no n
 UPDATE users SET name = 'foo' WHERE email = 'user1@example.com';
 SELECT pg_stat_get_xact_tuples_hot_updated('users'::regclass); -- expect: 1 a single new HOT update
 
--- Create a partial index on the email column, updates 
+-- Create a partial index on the email column, updates
 CREATE INDEX idx_users_email_no_example ON users (lower(email)) WHERE lower(email) LIKE '%@example.com%';
 
 -- An update that changes the email column but not the indexed portion of it and falls outside the constraint.
