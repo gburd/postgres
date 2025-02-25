@@ -3928,7 +3928,7 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (newbuf == buffer)
+	if (newbuf == buffer && !IsSystemRelation(relation))
 	{
 		bool		expression_checks = RelationGetExpressionChecks(relation);
 
@@ -3953,7 +3953,7 @@ l2:
 			 * e.g. value bound changes in BRIN minmax indexes.
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
-					ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
+				ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
 		}
 	}
 	else
