@@ -1222,6 +1222,34 @@ AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
 	return indexInfo;
 }
 
+#define PROMOTE_MODIFIED(i) \
+do { \
+	if (modified == (i)) { \
+		modified++; \
+		break; \
+	} \
+	resultRelInfo->ri_IndexRelationInfo[(i)] = resultRelInfo->ri_IndexRelationInfo[modified]; \
+	resultRelInfo->ri_IndexRelationInfo[modified] = indexInfo; \
+	resultRelInfo->ri_IndexRelationDescs[(i)] = resultRelInfo->ri_IndexRelationDescs[modified]; \
+	resultRelInfo->ri_IndexRelationDescs[modified] = index; \
+	modified++; \
+} while (0)
+
+#define DEMOTE_UNMODIFIED(i) \
+do { \
+	if ((remaining - 1) == (i)) { \
+		remaining--; \
+		i--; \
+		break; \
+	} \
+	resultRelInfo->ri_IndexRelationInfo[(i)] = resultRelInfo->ri_IndexRelationInfo[remaining - 1]; \
+	resultRelInfo->ri_IndexRelationInfo[remaining] = indexInfo; \
+	resultRelInfo->ri_IndexRelationDescs[(i)] = resultRelInfo->ri_IndexRelationDescs[remaining]; \
+	resultRelInfo->ri_IndexRelationDescs[remaining] = index; \
+	remaining--; \
+	i--; \
+} while (0)
+
 /*
  * Determine if indexes that have expressions or predicates require updates
  * for the purposes of allowing HOT updates.  Returns true iff all indexed
@@ -1242,6 +1270,9 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 	ExprContext *econtext = NULL;
 	TupleTableSlot *old_tts;
 	TupleTableSlot *new_tts;
+	int			summarized = 0;
+	int			modified = 0;
+	int			remaining;
 
 #ifndef USE_ASSERT_CHECKING
 
@@ -1265,16 +1296,32 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 	resultRelInfo = estate->es_result_relations[0];
 	old_tts = resultRelInfo->ri_oldTupleSlot;
 	new_tts = resultRelInfo->ri_newTupleSlot;
+	remaining = resultRelInfo->ri_NumIndices;
 
 	/*
 	 * Examine each index on this relation relative to the changes between old
 	 * and new tuples.
 	 */
-	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
+	for (int i = 0; i < remaining; i++)
 	{
 		index = (Relation) resultRelInfo->ri_IndexRelationDescs[i];
 		indexInfo = AttributeIndexInfo(index,
 									   resultRelInfo->ri_IndexRelationInfo[i]);
+
+		/*
+		 * Move modified summarizing indexes to the front of the set.
+		 */
+		if (indexInfo->ii_Summarizing)
+		{
+			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+			{
+				PROMOTE_MODIFIED(i);
+				summarized++;
+			}
+			else
+				DEMOTE_UNMODIFIED(i);
+			continue;
+		}
 
 		/*
 		 * If this is a partial index it has a predicate, evaluate the
@@ -1308,7 +1355,10 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 			 * the next index.
 			 */
 			if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
+			{
+				DEMOTE_UNMODIFIED(i);
 				continue;
+			}
 
 			/*
 			 * If there is a transition between indexed and not indexed,
@@ -1318,6 +1368,7 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 			 */
 			if (new_tuple_qualifies != old_tuple_qualifies)
 			{
+				PROMOTE_MODIFIED(i);
 				result = false;
 				break;
 			}
@@ -1393,10 +1444,44 @@ ExecIndexesExpressionsWereNotUpdated(Relation relation,
 
 			if (changed)
 			{
+				PROMOTE_MODIFIED(i);
 				result = false;
 				break;
 			}
+			else
+			{
+				DEMOTE_UNMODIFIED(i);
+				continue;
+			}
 		}
+
+		/*
+		 * If the index references modified attributes then it needs to be
+		 * updated.
+		 */
+		if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
+		{
+			PROMOTE_MODIFIED(i);
+			break;
+		}
+		else
+		{
+			DEMOTE_UNMODIFIED(i);
+			continue;
+		}
+	}
+
+	/*
+	 * To account for the case where the only modified indexes were
+	 * summarizing we essentially prune the list of indexes to only those that
+	 * need to be updated now that they are sorted with modified indexes
+	 * first.
+	 */
+	if (summarized > 0 && summarized == modified)
+	{
+		resultRelInfo->ri_OnlySummarized = true;
+		resultRelInfo->ri_NumIndices = summarized;
+		result = false;
 	}
 
 	return result;
