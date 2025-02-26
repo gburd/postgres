@@ -166,10 +166,6 @@ typedef struct RelationData
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
 	Bitmapset  *rd_expressionattr;	/* indexed cols referenced by expressions */
 
-	/* data managed by RelationGetExprIndexInfoList: */
-	List	   *rd_iiexprlist;	/* list of IndexInfo for indexes with
-								 * expressions */
-
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 
 	/*

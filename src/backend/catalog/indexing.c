@@ -150,7 +150,9 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 		 * Skip insertions into non-summarizing indexes if we only need to
 		 * update summarizing indexes.
 		 */
-		if (onlySummarized && !indexInfo->ii_Summarizing)
+		if (onlySummarized &&
+			(!indexInfo->ii_Summarizing ||
+			 (indexInfo->ii_CheckedUnchanged && indexInfo->ii_IndexUnchanged)))
 			continue;
 
 		/*

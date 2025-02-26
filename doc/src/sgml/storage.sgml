@@ -1140,7 +1140,7 @@ data. Empty in ordinary tables.</entry>
 
  <para>
   <acronym>HOT</acronym> updates can occur when the expression used to define
-  and index shows no changes to the indexed value. To determine this requires
+  an index shows no changes to the indexed value. To determine this requires
   that the expression be evaulated for the old and new values to be stored in
   the index and then compared. This allows for <acronym>HOT</acronym> updates
   when data indexed within JSONB columns is unchanged. To disable this
