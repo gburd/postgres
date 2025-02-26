@@ -3928,7 +3928,7 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (newbuf == buffer && !IsSystemRelation(relation))
+	if (newbuf == buffer)
 	{
 		bool		expression_checks = RelationGetExpressionChecks(relation);
 
@@ -3940,8 +3940,8 @@ l2:
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
 			(expression_checks && bms_overlap(modified_attrs, exp_attrs) &&
-			 ExecIndexesExpressionsWereNotUpdated(relation, modified_attrs, estate,
-												  &oldtup, newtup)))
+			 !ExecExpressionIndexesUpdated(relation, modified_attrs, estate,
+										   &oldtup, newtup)))
 		{
 			use_hot_update = true;
 

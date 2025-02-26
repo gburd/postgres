@@ -140,7 +140,7 @@ do not reference columns which are updated in that HOT chain.
 Summarizing indexes (such as BRIN) are assumed to have no references to
 individual tuples and thus are ignored when checking HOT applicability.
 
-Expressions on indexes are evaluated and the results are used when check for
+Expressions on indexes are evaluated and the results used when checking for
 changes.  This allows for the JSONB datatype to have HOT updates when the
 indexed portion of the document are not modified.
 
