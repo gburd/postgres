@@ -75,7 +75,7 @@ static void
 CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 {
 	int			i;
-	int			numIndexes;
+	int			numModifiedIndexes;
 	RelationPtr relationDescs;
 	Relation	heapRelation;
 	TupleTableSlot *slot;
@@ -100,8 +100,8 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
 	 */
-	numIndexes = indstate->ri_NumIndices;
-	if (numIndexes == 0)
+	numModifiedIndexes = indstate->ri_NumModifiedIndices;
+	if (numModifiedIndexes == 0)
 		return;
 	relationDescs = indstate->ri_IndexRelationDescs;
 	indexInfoArray = indstate->ri_IndexRelationInfo;
@@ -115,7 +115,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 	/*
 	 * for each index, form and insert the index tuple
 	 */
-	for (i = 0; i < numIndexes; i++)
+	for (i = 0; i < numModifiedIndexes; i++)
 	{
 		IndexInfo  *indexInfo;
 		Relation	index;
@@ -150,9 +150,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 		 * Skip insertions into non-summarizing indexes if we only need to
 		 * update summarizing indexes.
 		 */
-		if (onlySummarized &&
-			(!indexInfo->ii_Summarizing ||
-			 (indexInfo->ii_CheckedUnchanged && indexInfo->ii_IndexUnchanged)))
+		if (onlySummarized && !indexInfo->ii_Summarizing)
 			continue;
 
 		/*

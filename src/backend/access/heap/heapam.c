@@ -3939,7 +3939,9 @@ l2:
 		 * not attributes only used by summarizing indexes.
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
-			(expression_checks && bms_overlap(modified_attrs, exp_attrs) &&
+			(expression_checks == true &&
+			 estate != NULL &&
+			 bms_overlap(modified_attrs, exp_attrs) &&
 			 !ExecExpressionIndexesUpdated(relation, modified_attrs, estate,
 										   &oldtup, newtup)))
 		{
@@ -3958,12 +3960,6 @@ l2:
 	}
 	else
 	{
-		/*
-		 * We're not able to proceed on the HOT update path, all indexes must
-		 * be updated.
-		 */
-		use_hot_update = false;
-
 		/* Set a hint that the old page could use prune/defrag */
 		PageSetFull(page);
 	}

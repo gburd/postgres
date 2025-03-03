@@ -4359,12 +4359,6 @@ ExecModifyTable(PlanState *pstate)
 				slot = ExecUpdate(&context, resultRelInfo, tupleid, oldtuple,
 								  oldSlot, slot, node->canSetTag);
 
-				for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
-				{
-					resultRelInfo->ri_IndexRelationInfo[i]->ii_CheckedUnchanged = false;
-					resultRelInfo->ri_IndexRelationInfo[i]->ii_IndexUnchanged = false;
-				}
-
 				if (tuplock)
 					UnlockTuple(resultRelInfo->ri_RelationDesc, tupleid,
 								InplaceUpdateTupleLock);
