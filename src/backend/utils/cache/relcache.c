@@ -5207,6 +5207,7 @@ RelationGetIndexPredicate(Relation relation)
  *									index (empty if FULL)
  *	INDEX_ATTR_BITMAP_HOT_BLOCKING	Columns that block updates from being HOT
  *	INDEX_ATTR_BITMAP_SUMMARIZED	Columns included in summarizing indexes
+ *	INDEX_ATTR_BITMAP_EXPRESSION	Columns included in expresion indexes
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
  * we can include system attributes (e.g., OID) in the bitmap representation.
@@ -5448,17 +5449,21 @@ restart:
 		goto restart;
 	}
 
-	/* {expression-only columns} = {expression columns} - {direct columns} */
+	/* {expression-only columns} = {all expression columns} - {direct columns} */
 	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
 										   hotblockingattrs);
-	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
+
+	/*
+	 * {hot-blocking columns} = {all direct columns} + {expression-only
+	 * columns}
+	 */
 	hotblockingattrs = bms_add_members(hotblockingattrs,
 									   hotblockingexprattrs);
 
-	/* {summarized-only columns} = {summarized columns} - {direct columns} */
+	/* {summarized-only columns} = {all summarized columns} - {direct columns} */
 	summarizedexprattrs = bms_del_members(summarizedexprattrs,
 										  summarizedattrs);
-	/* {summarized columns} = {direct columns} + {summarized-only columns} */
+	/* {summarized columns} = {all direct columns} + {summarized-only columns} */
 	summarizedattrs = bms_add_members(summarizedattrs,
 									  summarizedexprattrs);
 

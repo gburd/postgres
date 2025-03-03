@@ -191,6 +191,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	indexInfoArray = (IndexInfo **) palloc(len * sizeof(IndexInfo *));
 
 	resultRelInfo->ri_NumIndices = len;
+	resultRelInfo->ri_NumModifiedIndices = len;
 	resultRelInfo->ri_IndexRelationDescs = relationDescs;
 	resultRelInfo->ri_IndexRelationInfo = indexInfoArray;
 
@@ -314,7 +315,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
 	int			i;
-	int			numIndices;
+	int			numModifiedIndices;
 	RelationPtr relationDescs;
 	Relation	heapRelation;
 	IndexInfo **indexInfoArray;
@@ -327,7 +328,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	/*
 	 * Get information from the result relation info structure.
 	 */
-	numIndices = resultRelInfo->ri_NumIndices;
+	numModifiedIndices = resultRelInfo->ri_NumModifiedIndices;
 	relationDescs = resultRelInfo->ri_IndexRelationDescs;
 	indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
 	heapRelation = resultRelInfo->ri_RelationDesc;
@@ -345,9 +346,9 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	econtext->ecxt_scantuple = slot;
 
 	/*
-	 * for each index, form and insert the index tuple
+	 * For each index, form and insert the index tuple
 	 */
-	for (i = 0; i < numIndices; i++)
+	for (i = 0; i < numModifiedIndices; i++)
 	{
 		Relation	indexRelation = relationDescs[i];
 		IndexInfo  *indexInfo;
@@ -369,9 +370,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * Skip processing of non-summarizing indexes if we only update
 		 * changed summarizing indexes
 		 */
-		if (resultRelInfo->ri_OnlySummarized &&
-			(!indexInfo->ii_Summarizing ||
-			 (indexInfo->ii_CheckedUnchanged && indexInfo->ii_IndexUnchanged)))
+		if (resultRelInfo->ri_OnlySummarized && !indexInfo->ii_Summarizing)
 			continue;
 
 		/* Check for partial index */
@@ -1218,11 +1217,95 @@ AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
 }
 
 /*
- * ExecIndexesSummarizedUpdated -- determine if summarizing indexes require
- * updates for the purposes of allowing HOT updates.  Returns true if only
- * summarized indexes are updated.  This should be called after
- * ExecExpressionIndexesUpdated which will check expression indexes for
- * changes and set the appropriate flags in indexInfo.
+ * The intent here is to reorder the indexes such that the summarized indexes
+ * are at the front of the array when modified and end of the array if not.
+ *
+ * [0, nmod)                      modified summarizing indexes
+ * (len - (nsum - nmod), len]     unmodified summarizing indexes
+ * [nmod, len - (nsum - nmod)]    non-summarizing indexes
+ *
+ * Returns true if only summarized indexes overlaped with modified attributes.
+ */
+static inline bool
+reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, Bitmapset *modified_attrs, int *nsum, int *nmod)
+{
+	int			head = 0;
+	int			tail = len - 1;
+	int			i = 0;
+	bool		only_summarized = true;
+
+	if (len <= 0 || nsum == NULL || nmod == NULL)
+		return false;
+
+	*nsum = 0;
+	*nmod = 0;
+
+	while (i <= tail)
+	{
+		Relation	index;
+		IndexInfo  *ii;
+		Bitmapset  *idx_attrs = indexInfos[i]->ii_IndexAttrs;
+		bool		sum = indexInfos[i]->ii_Summarizing;
+		bool		mod = bms_overlap(idx_attrs, modified_attrs);
+
+		if (sum)
+		{
+			(*nsum)++;
+			if (mod)
+			{
+				/* Summarized and modified, move info/desc to front. */
+				if (i != head)
+				{
+					index = indexes[i];
+					indexes[i] = indexes[head];
+					indexes[head] = index;
+
+					ii = indexInfos[i];
+					indexInfos[i] = indexInfos[head];
+					indexInfos[head] = ii;
+				}
+				(*nmod)++;
+				head++;
+				i++;
+			}
+			else
+			{
+				/* Summarized and not modified, move info/desc to end. */
+				if (i != tail)
+				{
+					index = indexes[i];
+					indexes[i] = indexes[tail];
+					indexes[tail] = index;
+
+					ii = indexInfos[i];
+					indexInfos[i] = indexInfos[tail];
+					indexInfos[tail] = ii;
+				}
+				tail--;
+			}
+		}
+		else
+		{
+			/* Neither, leave element where it is. */
+			if (mod)
+				only_summarized = false;
+			i++;
+		}
+	}
+
+	return only_summarized && *nsum > 0;
+}
+
+/*
+ * ExecIndexesSummarizedUpdated -- determine which summarizing indexes require
+ * updates for the purposes of allowing HOT updates while still updating these
+ * indexes.
+ *
+ * Returns true if one or more summarized indexes were updated.  Adjusts the
+ * ri_NumModifiedIndices and ri_OnlySummarized flags in resultRelInfo.
+ *
+ * Note, this assumes that other indexes have been checked and that they do
+ * not require updates.
  */
 bool
 ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modified_attrs)
@@ -1230,8 +1313,8 @@ ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modif
 	bool		expression_checks = RelationGetExpressionChecks(relation);
 	bool		result = true;
 	ResultRelInfo *resultRelInfo;
-	Relation	index;
-	IndexInfo  *indexInfo;
+	int			summarized = 0;
+	int			modified = 0;
 
 #ifndef USE_ASSERT_CHECKING
 /*
@@ -1253,49 +1336,20 @@ ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modif
 
 	resultRelInfo = estate->es_result_relations[0];
 
-	/*
-	 * Examine each index on this relation relative to the changes between old
-	 * and new tuples.
-	 */
-	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
+	if (resultRelInfo->ri_NumIndices > 0)
 	{
-		index = (Relation) resultRelInfo->ri_IndexRelationDescs[i];
-		indexInfo = AttributeIndexInfo(index,
-									   resultRelInfo->ri_IndexRelationInfo[i]);
+		result = reorder_summarized_indexes(resultRelInfo->ri_IndexRelationDescs,
+											resultRelInfo->ri_IndexRelationInfo,
+											resultRelInfo->ri_NumIndices,
+											modified_attrs,
+											&summarized, &modified);
 
-		if (indexInfo->ii_CheckedUnchanged)
-			continue;
-
-		/*
-		 * Determine if a summarizing index has been modified.
-		 */
-		if (indexInfo->ii_Summarizing)
+		if (result)
 		{
-			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
-			{
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = false;
-			}
-			else
-			{
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = true;
-			}
-			continue;
+			resultRelInfo->ri_OnlySummarized = true;
+			resultRelInfo->ri_NumModifiedIndices = modified;
 		}
-
-		/*
-		 * If some non-summarizing index was updated then the index references
-		 * modified attributes then it needs to be updated.
-		 */
-		if ((indexInfo->ii_CheckedUnchanged == false &&
-			 bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs)) ||
-			(indexInfo->ii_CheckedUnchanged == true &&
-			 indexInfo->ii_IndexUnchanged == false))
-			result = false;
 	}
-
-	resultRelInfo->ri_OnlySummarized = result;
 
 	return result;
 }
@@ -1314,7 +1368,6 @@ ExecExpressionIndexesUpdated(Relation relation,
 {
 	bool		expression_checks = RelationGetExpressionChecks(relation);
 	bool		result = false;
-	bool		onlySummarized = true;
 	ResultRelInfo *resultRelInfo;
 	Relation	index;
 	IndexInfo  *indexInfo;
@@ -1355,9 +1408,6 @@ ExecExpressionIndexesUpdated(Relation relation,
 		indexInfo = AttributeIndexInfo(index,
 									   resultRelInfo->ri_IndexRelationInfo[i]);
 
-		if (indexInfo->ii_CheckedUnchanged)
-			continue;
-
 		/*
 		 * If this is a partial index it has a predicate, evaluate the
 		 * expression to determine if we need to include it or not.
@@ -1390,11 +1440,7 @@ ExecExpressionIndexesUpdated(Relation relation,
 			 * the next index.
 			 */
 			if ((new_tuple_qualifies == false) && (old_tuple_qualifies == false))
-			{
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = true;
 				continue;
-			}
 
 			/*
 			 * If there is a transition between indexed and not indexed,
@@ -1404,10 +1450,6 @@ ExecExpressionIndexesUpdated(Relation relation,
 			 */
 			if (new_tuple_qualifies != old_tuple_qualifies)
 			{
-				if (!indexInfo->ii_Summarizing)
-					onlySummarized = false;
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = false;
 				result = true;
 				break;
 			}
@@ -1417,24 +1459,6 @@ ExecExpressionIndexesUpdated(Relation relation,
 			 * they get updated?  We don't yet know, so proceed with the next
 			 * statement in the loop to find out.
 			 */
-		}
-
-		/*
-		 * Determine if a summarizing index has been modified.
-		 */
-		if (indexInfo->ii_Summarizing)
-		{
-			if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
-			{
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = false;
-			}
-			else
-			{
-				indexInfo->ii_CheckedUnchanged = true;
-				indexInfo->ii_IndexUnchanged = true;
-			}
-			continue;
 		}
 
 		/*
@@ -1456,8 +1480,6 @@ ExecExpressionIndexesUpdated(Relation relation,
 			/* Create these once, only if necessary, then reuse them. */
 			if (!econtext)
 				econtext = GetPerTupleExprContext(estate);
-
-			indexInfo->ii_ExpressionsState = NIL;
 
 			econtext->ecxt_scantuple = old_tts;
 			FormIndexDatum(indexInfo,
@@ -1499,12 +1521,9 @@ ExecExpressionIndexesUpdated(Relation relation,
 
 			if (changed)
 			{
-				onlySummarized = false;
 				result = true;
 				break;
 			}
-			else
-				continue;
 		}
 
 		/*
@@ -1513,29 +1532,9 @@ ExecExpressionIndexesUpdated(Relation relation,
 		 */
 		if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
 		{
-			onlySummarized = false;
-			indexInfo->ii_CheckedUnchanged = true;
-			indexInfo->ii_IndexUnchanged = false;
+			result = true;
 			break;
 		}
-		else
-		{
-			indexInfo->ii_CheckedUnchanged = true;
-			indexInfo->ii_IndexUnchanged = true;
-			continue;
-		}
-	}
-
-	/*
-	 * To account for the case where the only modified indexes were
-	 * summarizing we essentially prune the list of indexes to only those that
-	 * need to be updated now that they are sorted with modified indexes
-	 * first.
-	 */
-	if (onlySummarized)
-	{
-		resultRelInfo->ri_OnlySummarized = true;
-		result = false;
 	}
 
 	return result;
