@@ -5367,7 +5367,7 @@ restart:
 		if (indexDesc->rd_indam->amsummarizing)
 		{
 			attrs = &summarizedattrs;
-			exprattrs = &summarizedattrs;
+			exprattrs = &summarizedexprattrs;
 		}
 		else
 		{
@@ -5464,7 +5464,6 @@ restart:
 	/* {expression-only columns} = {expression columns} - {direct columns} */
 	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
 										   hotblockingattrs);
-
 	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
 	hotblockingattrs = bms_add_members(hotblockingattrs,
 									   hotblockingexprattrs);
