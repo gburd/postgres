@@ -567,7 +567,7 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, false,
 												   conflictindexes ? true : false,
-												   &conflict,
+												   &conflict, false,
 												   conflictindexes);
 
 		/*
@@ -640,6 +640,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	{
 		List	   *recheckIndexes = NIL;
 		List	   *conflictindexes;
+		TU_UpdateIndexes update_indexes;
 		bool		conflict = false;
 
 		/* Compute stored generated columns */
@@ -654,15 +655,17 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
-		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot);
+		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
+								  &update_indexes);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0)
+		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
-												   &conflict, conflictindexes);
+												   &conflict, conflictindexes,
+												   (update_indexes == TU_Summarizing));
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
