@@ -489,7 +489,7 @@ typedef struct ResultRelInfo
 	/* array of relation descriptors for indices */
 	RelationPtr ri_IndexRelationDescs;
 
-	/* array of key/attr info for indices, when NULL don't update index */
+	/* array of key/attr info for indices */
 	IndexInfo **ri_IndexRelationInfo;
 
 	/*

@@ -3164,8 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes,
-			struct EState *estate)
+			TU_UpdateIndexes *update_indexes, struct EState *estate)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3958,7 +3957,7 @@ l2:
 			 * e.g. value bound changes in BRIN minmax indexes.
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
+				summarized_update = true; //ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
 		}
 	}
 	else
