@@ -3164,6 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
+			TU_UpdateIndexes *update_indexes,
 			struct EState *estate)
 {
 	TM_Result	result;
@@ -3193,6 +3194,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
+	bool		summarized_update = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3309,6 +3311,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
+		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3610,6 +3613,7 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
+		*update_indexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3939,8 +3943,7 @@ l2:
 		 * not attributes only used by summarizing indexes.
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
-			(expression_checks == true &&
-			 estate != NULL &&
+			(expression_checks &&
 			 bms_overlap(modified_attrs, exp_attrs) &&
 			 !ExecExpressionIndexesUpdated(relation, modified_attrs, estate,
 										   &oldtup, newtup)))
@@ -3955,7 +3958,7 @@ l2:
 			 * e.g. value bound changes in BRIN minmax indexes.
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
-				ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
+				summarized_update = ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
 		}
 	}
 	else
@@ -4115,6 +4118,22 @@ l2:
 		newtup->t_self = heaptup->t_self;
 		heap_freetuple(heaptup);
 	}
+
+	/*
+	 * If it is a HOT update, the update may still need to update summarized
+	 * indexes, lest we fail to update those summaries and get incorrect
+	 * results (for example, minmax bounds of the block may change with this
+	 * update).
+	 */
+	if (use_hot_update)
+	{
+		if (summarized_update)
+			*update_indexes = TU_Summarizing;
+		else
+			*update_indexes = TU_None;
+	}
+	else
+		*update_indexes = TU_All;
 
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
@@ -4396,7 +4415,8 @@ HeapDetermineColumnsInfo(Relation relation,
  * via ereport().
  */
 void
-simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
+simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
+				   TU_UpdateIndexes *update_indexes)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4405,7 +4425,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, NULL);
+						 &tmfd, &lockmode, update_indexes, NULL);
 	switch (result)
 	{
 		case TM_SelfModified:

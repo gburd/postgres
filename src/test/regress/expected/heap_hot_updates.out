@@ -437,34 +437,33 @@ CREATE TABLE ex (att1 JSONB, att2 text) WITH (fillfactor = 60);
 CREATE INDEX ex_expr1_idx ON ex USING btree((att1->'data'));
 CREATE INDEX ex_sumr1_idx ON ex USING BRIN(att2);
 INSERT INTO ex VALUES ('{"data": []}', 'nothing special');
-INSERT INTO ex VALUES ('{"data": []}', 'nothing special');
--- Update the unindexed value of att1, this should be a HOT update and not
+-- Update the unindexed value of att1, this should be a HOT update and and should
 -- update the summarizing index.
-UPDATE ex SET att1 = att1 || '{"status": "checkmate"}';
-SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 2 one new HOT update
+UPDATE ex SET att1 = att1 || '{"status": "stalemate"}';
+SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 1 one new HOT update
  pg_stat_get_xact_tuples_hot_updated 
 -------------------------------------
-                                   2
+                                   1
 (1 row)
 
 -- Update the indexed value of att2, a summarized value, this is a summarized
 -- only update and should use the HOT path while still triggering an update to
 -- the summarizing BRIN index.
 UPDATE ex SET att2 = 'special indeed';
-SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 4 one new HOT update
+SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 2 one new HOT update
  pg_stat_get_xact_tuples_hot_updated 
 -------------------------------------
-                                   4
+                                   2
 (1 row)
 
 -- Update to att1 doesn't change the indexed value while the update to att2 does,
 -- this again is a summarized only update and should use the HOT path as well as
 -- trigger an update to the BRIN index.
-UPDATE ex SET att1 = att1 || '{"status": "checkmate!"}', att2 = 'special, so special';
-SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 6 one new HOT update
+UPDATE ex SET att1 = att1 || '{"status": "checkmate"}', att2 = 'special, so special';
+SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 3 one new HOT update
  pg_stat_get_xact_tuples_hot_updated 
 -------------------------------------
-                                   6
+                                   3
 (1 row)
 
 -- This updates both indexes, the expression index on att1 and the summarizing
@@ -472,10 +471,10 @@ SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 6 one new
 -- indexes and only some are summarized, not all.  This should force all
 -- indexes to be updated.
 UPDATE ex SET att1 = att1 || '{"data": [1,2,3]}', att2 = 'do you want to play a game?';
-SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 6 both indexes updated
+SELECT pg_stat_get_xact_tuples_hot_updated('ex'::regclass); -- expect: 4 both indexes updated
  pg_stat_get_xact_tuples_hot_updated 
 -------------------------------------
-                                   6
+                                   3
 (1 row)
 
 DROP TABLE ex;

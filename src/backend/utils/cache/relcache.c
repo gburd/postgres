@@ -5367,7 +5367,7 @@ restart:
 		if (indexDesc->rd_indam->amsummarizing)
 		{
 			attrs = &summarizedattrs;
-			exprattrs = &summarizedexprattrs;
+			exprattrs = &summarizedattrs;
 		}
 		else
 		{
@@ -5451,14 +5451,21 @@ restart:
 		goto restart;
 	}
 
-	/* {expression-only columns} = {all expression columns} - {direct columns} */
+	/*
+	 * HOT-blocking attributes (columns) should include all columns that are
+	 * part of the index, but not part of the index expressions from partial
+	 * and expression indexes.  So, we need to remove the expression-only
+	 * columns from the HOT-blocking columns bitmap as those will be checked
+	 * separately.  This is true for both summarizing and non-summarizing
+	 * indexes which we've separated above, so we have to do this for both
+	 * bitmaps.
+	 */
+
+	/* {expression-only columns} = {expression columns} - {direct columns} */
 	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
 										   hotblockingattrs);
 
-	/*
-	 * {hot-blocking columns} = {all direct columns} + {expression-only
-	 * columns}
-	 */
+	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
 	hotblockingattrs = bms_add_members(hotblockingattrs,
 									   hotblockingexprattrs);
 
