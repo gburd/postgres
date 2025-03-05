@@ -334,7 +334,8 @@ simple_table_tuple_delete(Relation rel, ItemPointer tid, Snapshot snapshot)
 void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
-						  Snapshot snapshot)
+						  Snapshot snapshot,
+						  TU_UpdateIndexes *update_indexes)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -344,7 +345,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								GetCurrentCommandId(true),
 								snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, &lockmode, NULL);
+								&tmfd, &lockmode, update_indexes, NULL);
 
 	switch (result)
 	{

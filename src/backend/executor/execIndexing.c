@@ -191,7 +191,6 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	indexInfoArray = (IndexInfo **) palloc(len * sizeof(IndexInfo *));
 
 	resultRelInfo->ri_NumIndices = len;
-	resultRelInfo->ri_NumModifiedIndices = len;
 	resultRelInfo->ri_IndexRelationDescs = relationDescs;
 	resultRelInfo->ri_IndexRelationInfo = indexInfoArray;
 
@@ -310,12 +309,13 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  bool update,
 					  bool noDupErr,
 					  bool *specConflict,
-					  List *arbiterIndexes)
+					  List *arbiterIndexes,
+					  bool onlySummarizing)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
 	int			i;
-	int			numModifiedIndices;
+	int			numIndices;
 	RelationPtr relationDescs;
 	Relation	heapRelation;
 	IndexInfo **indexInfoArray;
@@ -328,7 +328,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	/*
 	 * Get information from the result relation info structure.
 	 */
-	numModifiedIndices = resultRelInfo->ri_NumModifiedIndices;
+	numIndices = resultRelInfo->ri_NumIndices;
 	relationDescs = resultRelInfo->ri_IndexRelationDescs;
 	indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
 	heapRelation = resultRelInfo->ri_RelationDesc;
@@ -348,7 +348,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	/*
 	 * For each index, form and insert the index tuple
 	 */
-	for (i = 0; i < numModifiedIndices; i++)
+	for (i = 0; i < numIndices; i++)
 	{
 		Relation	indexRelation = relationDescs[i];
 		IndexInfo  *indexInfo;
@@ -370,7 +370,9 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * Skip processing of non-summarizing indexes if we only update
 		 * changed summarizing indexes
 		 */
-		if (resultRelInfo->ri_OnlySummarized && !indexInfo->ii_Summarizing)
+		if (onlySummarizing &&
+			(!indexInfo->ii_Summarizing ||
+			 (indexInfo->ii_CheckedUnchanged && indexInfo->ii_IndexUnchanged)))
 			continue;
 
 		/* Check for partial index */
@@ -1242,25 +1244,27 @@ reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, B
 
 	while (i <= tail)
 	{
-		Relation	index;
-		IndexInfo  *ii;
-		Bitmapset  *idx_attrs = indexInfos[i]->ii_IndexAttrs;
-		bool		sum = indexInfos[i]->ii_Summarizing;
-		bool		mod = bms_overlap(idx_attrs, modified_attrs);
+		Relation	index = indexes[i];
+		IndexInfo  *ii = AttributeIndexInfo(index, indexInfos[i]);
+		bool		sum = ii->ii_Summarizing;
+		bool		mod = bms_overlap(ii->ii_IndexAttrs, modified_attrs) ||
+			bms_overlap(ii->ii_PredicateAttrs, modified_attrs);
 
 		if (sum)
 		{
 			(*nsum)++;
+
+			indexInfos[i]->ii_CheckedUnchanged = true;
+			indexInfos[i]->ii_IndexUnchanged = !mod;
+
 			if (mod)
 			{
 				/* Summarized and modified, move info/desc to front. */
 				if (i != head)
 				{
-					index = indexes[i];
 					indexes[i] = indexes[head];
 					indexes[head] = index;
 
-					ii = indexInfos[i];
 					indexInfos[i] = indexInfos[head];
 					indexInfos[head] = ii;
 				}
@@ -1273,11 +1277,9 @@ reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, B
 				/* Summarized and not modified, move info/desc to end. */
 				if (i != tail)
 				{
-					index = indexes[i];
 					indexes[i] = indexes[tail];
 					indexes[tail] = index;
 
-					ii = indexInfos[i];
 					indexInfos[i] = indexInfos[tail];
 					indexInfos[tail] = ii;
 				}
@@ -1287,7 +1289,8 @@ reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, B
 		else
 		{
 			/* Neither, leave element where it is. */
-			if (mod)
+			if ((ii->ii_CheckedUnchanged && !ii->ii_IndexUnchanged) ||
+				(ii->ii_CheckedUnchanged == false && mod))
 				only_summarized = false;
 			i++;
 		}
@@ -1301,8 +1304,7 @@ reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, B
  * updates for the purposes of allowing HOT updates while still updating these
  * indexes.
  *
- * Returns true if one or more summarized indexes were updated.  Adjusts the
- * ri_NumModifiedIndices and ri_OnlySummarized flags in resultRelInfo.
+ * Returns true if one or more summarized indexes were updated.
  *
  * Note, this assumes that other indexes have been checked and that they do
  * not require updates.
@@ -1310,48 +1312,37 @@ reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, B
 bool
 ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modified_attrs)
 {
-	bool		expression_checks = RelationGetExpressionChecks(relation);
-	bool		result = true;
 	ResultRelInfo *resultRelInfo;
 	int			summarized = 0;
 	int			modified = 0;
+	bool		onlySummarized = false;
+
+	/*
+	 * We're not able to access the IndexInfo array without an estate.
+	 */
+	if (estate == NULL || modified_attrs == NULL)
+		return false;
 
 #ifndef USE_ASSERT_CHECKING
-/*
- * We're not able to access the IndexInfo array without an estate.
- */
-	if (estate == NULL)
-		return false;
-
 	if (estate->es_result_relations[0]->ri_RelationDesc != relation)
-		return false;
-
-	if (expression_checks == false)
 		return false;
 #endif
 
-	Assert(estate != NULL);
 	Assert(estate->es_result_relations[0]->ri_RelationDesc == relation);
-	Assert(expression_checks == true);
 
 	resultRelInfo = estate->es_result_relations[0];
 
 	if (resultRelInfo->ri_NumIndices > 0)
 	{
-		result = reorder_summarized_indexes(resultRelInfo->ri_IndexRelationDescs,
-											resultRelInfo->ri_IndexRelationInfo,
-											resultRelInfo->ri_NumIndices,
-											modified_attrs,
-											&summarized, &modified);
-
-		if (result)
-		{
-			resultRelInfo->ri_OnlySummarized = true;
-			resultRelInfo->ri_NumModifiedIndices = modified;
-		}
+		onlySummarized =
+			reorder_summarized_indexes(resultRelInfo->ri_IndexRelationDescs,
+									   resultRelInfo->ri_IndexRelationInfo,
+									   resultRelInfo->ri_NumIndices,
+									   modified_attrs,
+									   &summarized, &modified);
 	}
 
-	return result;
+	return onlySummarized && summarized > 0 && modified > 0;
 }
 
 /*
@@ -1372,31 +1363,31 @@ ExecExpressionIndexesUpdated(Relation relation,
 	Relation	index;
 	IndexInfo  *indexInfo;
 	ExprContext *econtext = NULL;
+	TupleDesc	tupledesc;
 	TupleTableSlot *old_tts;
 	TupleTableSlot *new_tts;
-
-#ifndef USE_ASSERT_CHECKING
 
 	/*
 	 * We're not able to access the IndexInfo array without an estate.
 	 */
-	if (estate == NULL)
+	if (estate == NULL || modified_attrs == NULL)
 		return true;
 
+#ifndef USE_ASSERT_CHECKING
 	if (estate->es_result_relations[0]->ri_RelationDesc != relation)
-		return true;
-
-	if (expression_checks == false)
 		return true;
 #endif
 
-	Assert(estate != NULL);
 	Assert(estate->es_result_relations[0]->ri_RelationDesc == relation);
-	Assert(expression_checks == true);
+
+	if (expression_checks == false)
+		return true;
 
 	resultRelInfo = estate->es_result_relations[0];
 	old_tts = resultRelInfo->ri_oldTupleSlot;
 	new_tts = resultRelInfo->ri_newTupleSlot;
+	econtext = GetPerTupleExprContext(estate);
+	tupledesc = RelationGetDescr(relation);
 
 	/*
 	 * Examine each index on this relation relative to the changes between old
@@ -1419,8 +1410,19 @@ ExecExpressionIndexesUpdated(Relation relation,
 						new_tuple_qualifies;
 
 			/* Create these once, only if necessary, then reuse them. */
-			if (!econtext)
-				econtext = GetPerTupleExprContext(estate);
+			if (old_tts == NULL)
+			{
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+			}
+
+			if (new_tts == NULL)
+			{
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
 
 			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
@@ -1478,8 +1480,19 @@ ExecExpressionIndexesUpdated(Relation relation,
 			bool		changed = false;
 
 			/* Create these once, only if necessary, then reuse them. */
-			if (!econtext)
-				econtext = GetPerTupleExprContext(estate);
+			if (old_tts == NULL)
+			{
+				old_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
+			}
+
+			if (new_tts == NULL)
+			{
+				new_tts = MakeSingleTupleTableSlot(tupledesc,
+												   &TTSOpsHeapTuple);
+				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+			}
 
 			econtext->ecxt_scantuple = old_tts;
 			FormIndexDatum(indexInfo,
@@ -1525,17 +1538,13 @@ ExecExpressionIndexesUpdated(Relation relation,
 				break;
 			}
 		}
-
-		/*
-		 * If the index references modified attributes then it needs to be
-		 * updated.
-		 */
-		if (bms_overlap(indexInfo->ii_IndexAttrs, modified_attrs))
-		{
-			result = true;
-			break;
-		}
 	}
+
+	if (resultRelInfo->ri_oldTupleSlot == NULL)
+		ExecDropSingleTupleTableSlot(old_tts);
+
+	if (resultRelInfo->ri_newTupleSlot == NULL)
+		ExecDropSingleTupleTableSlot(new_tts);
 
 	return result;
 }
