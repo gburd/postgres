@@ -374,13 +374,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * Skip processing of non-summarizing indexes and only update those
-		 * summarizing indexes that have changes, they will be marked as
-		 * CheckedUnchanged and not IndexUnchanged.
+		 * Skip processing of non-summarizing indexes if we only update
+		 * summarizing indexes.
 		 */
-		if (onlySummarizing &&
-			(!indexInfo->ii_Summarizing ||
-			 (indexInfo->ii_CheckedUnchanged && indexInfo->ii_IndexUnchanged)))
+		if (onlySummarizing && !indexInfo->ii_Summarizing)
 			continue;
 
 		/* Check for partial index */
@@ -1224,82 +1221,6 @@ AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
 		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
 
 	return indexInfo;
-}
-
-/*
- * ExecIndexesSummarizedUpdated -- determine which summarizing indexes require
- * updates for the purposes of allowing HOT updates while still updating these
- * indexes.
- *
- * Returns true if only one or more summarized indexes were updated.
- *
- * Note, this assumes that other indexes have been checked and that they do
- * not require updates.
- */
-bool
-ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modified_attrs)
-{
-	ResultRelInfo *resultRelInfo;
-	bool		onlySummarized = false;
-	int			nsum = 0;
-
-	/*
-	 * We're not able to access the IndexInfo array without an estate.
-	 */
-	if (estate == NULL || modified_attrs == NULL)
-		return false;
-
-#ifndef USE_ASSERT_CHECKING
-	if (estate->es_result_relations[0]->ri_RelationDesc != relation)
-		return false;
-#endif
-
-	Assert(estate->es_result_relations[0]->ri_RelationDesc == relation);
-
-	resultRelInfo = estate->es_result_relations[0];
-
-	/*
-	 * Examine each index on this relation and mark those that are summarizing
-	 * and have been modified where "modified" means that they have summarized
-	 * or predicate attributes that overlap with the modified attributes. It
-	 * is possible that the summarized attributes are not the same as the
-	 * predicate attributes as can happen with a partial BRIN index on
-	 * attribute 'a' where the partial predicate refers to attribute 'b'.  An
-	 * update that modified 'b' but not 'a' would still require an update to
-	 * the index but can be HOT updated if only summarized indexes were
-	 * modified.
-	 */
-	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
-	{
-		Relation	index = resultRelInfo->ri_IndexRelationDescs[i];
-		IndexInfo  *ii = AttributeIndexInfo(index,
-											resultRelInfo->ri_IndexRelationInfo[i]);
-		bool		sum = ii->ii_Summarizing;
-		bool		mod = bms_overlap(ii->ii_IndexAttrs, modified_attrs) ||
-			bms_overlap(ii->ii_PredicateAttrs, modified_attrs);
-
-		if (sum)
-		{
-			ii->ii_CheckedUnchanged = true;
-			ii->ii_IndexUnchanged = !mod;
-			nsum += mod ? 1 : 0;
-		}
-		else
-		{
-			/*
-			 * This function is called after ExecExpressionIndexesUpdated() so
-			 * we can assume that all indexes that have expressions or
-			 * predicates have been checked and marked.  Ensure that we set
-			 * onlySummarized to false if any non-summarizing index requires
-			 * updates.
-			 */
-			if ((ii->ii_CheckedUnchanged && !ii->ii_IndexUnchanged) ||
-				(!ii->ii_CheckedUnchanged && mod))
-				onlySummarized = false;
-		}
-	}
-
-	return onlySummarized && nsum > 0;
 }
 
 /*

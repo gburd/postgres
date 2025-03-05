@@ -3957,7 +3957,7 @@ l2:
 			 * e.g. value bound changes in BRIN minmax indexes.
 			 */
 			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = true; //ExecIndexesSummarizedUpdated(relation, estate, modified_attrs);
+				summarized_update = true;
 		}
 	}
 	else

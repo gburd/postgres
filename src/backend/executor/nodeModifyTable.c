@@ -1218,7 +1218,8 @@ ExecInsert(ModifyTableContext *context,
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 													   slot, estate, false,
-													   false, NULL, NIL, false);
+													   false, NULL, NIL,
+													   false);
 		}
 	}
 
@@ -2304,8 +2305,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	bool		onlySummarizing = updateCxt->updateIndexes == TU_Summarizing;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 &&
-		(updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 											   slot, context->estate,
 											   true, false,

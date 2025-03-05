@@ -1547,8 +1547,8 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, snapshot, crosscheck,
-										 wait, tmfd, lockmode, update_indexes,
-										 estate);
+										 wait, tmfd, lockmode,
+										 update_indexes, estate);
 }
 
 /*
@@ -2079,6 +2079,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
 									  TU_UpdateIndexes *update_indexes);
+
 
 /* ----------------------------------------------------------------------------
  * Helper functions to implement parallel scans for block oriented AMs.

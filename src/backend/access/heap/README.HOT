@@ -160,7 +160,7 @@ all indexes of the table.  If none of the updated columns are included in
 the table's indexes, the HOT optimization is applied and no indexes are
 updated.  If instead the updated columns are only indexed by summarizing
 indexes, the HOT optimization is applied and the update is propagated to
-only those summarizing indexes that have updated values.
+all of the summarizing indexes.
 
 Abort Cases
 -----------

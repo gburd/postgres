@@ -567,8 +567,8 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, false,
 												   conflictindexes ? true : false,
-												   &conflict, false,
-												   conflictindexes);
+												   &conflict,
+												   conflictindexes, false);
 
 		/*
 		 * Checks the conflict indexes to fetch the conflicting local tuple
