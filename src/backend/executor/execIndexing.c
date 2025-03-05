@@ -353,7 +353,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 	econtext->ecxt_scantuple = slot;
 
 	/*
-	 * For each index, form and insert the index tuple
+	 * for each index, form and insert the index tuple
 	 */
 	for (i = 0; i < numIndices; i++)
 	{
@@ -374,8 +374,9 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * Skip processing of non-summarizing indexes if we only update
-		 * changed summarizing indexes
+		 * Skip processing of non-summarizing indexes and only update those
+		 * summarizing indexes that have changes, they will be marked as
+		 * CheckedUnchanged and not IndexUnchanged.
 		 */
 		if (onlySummarizing &&
 			(!indexInfo->ii_Summarizing ||
@@ -1226,92 +1227,11 @@ AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
 }
 
 /*
- * The intent here is to reorder the indexes such that the summarized indexes
- * are at the front of the array when modified and end of the array if not.
- *
- * [0, nmod)                      modified summarizing indexes
- * (len - (nsum - nmod), len]     unmodified summarizing indexes
- * [nmod, len - (nsum - nmod)]    non-summarizing indexes
- *
- * Returns true if only summarized indexes overlaped with modified attributes.
- */
-static inline bool
-reorder_summarized_indexes(Relation *indexes, IndexInfo **indexInfos, int len, Bitmapset *modified_attrs, int *nsum, int *nmod)
-{
-	int			head = 0;
-	int			tail = len - 1;
-	int			i = 0;
-	bool		only_summarized = true;
-
-	if (len <= 0 || nsum == NULL || nmod == NULL)
-		return false;
-
-	*nsum = 0;
-	*nmod = 0;
-
-	while (i <= tail)
-	{
-		Relation	index = indexes[i];
-		IndexInfo  *ii = AttributeIndexInfo(index, indexInfos[i]);
-		bool		sum = ii->ii_Summarizing;
-		bool		mod = bms_overlap(ii->ii_IndexAttrs, modified_attrs) ||
-			bms_overlap(ii->ii_PredicateAttrs, modified_attrs);
-
-		if (sum)
-		{
-			(*nsum)++;
-
-			indexInfos[i]->ii_CheckedUnchanged = true;
-			indexInfos[i]->ii_IndexUnchanged = !mod;
-
-			if (mod)
-			{
-				/* Summarized and modified, move info/desc to front. */
-				if (i != head)
-				{
-					indexes[i] = indexes[head];
-					indexes[head] = index;
-
-					indexInfos[i] = indexInfos[head];
-					indexInfos[head] = ii;
-				}
-				(*nmod)++;
-				head++;
-				i++;
-			}
-			else
-			{
-				/* Summarized and not modified, move info/desc to end. */
-				if (i != tail)
-				{
-					indexes[i] = indexes[tail];
-					indexes[tail] = index;
-
-					indexInfos[i] = indexInfos[tail];
-					indexInfos[tail] = ii;
-				}
-				tail--;
-			}
-		}
-		else
-		{
-			/* Neither, leave element where it is. */
-			if ((ii->ii_CheckedUnchanged && !ii->ii_IndexUnchanged) ||
-				(ii->ii_CheckedUnchanged == false && mod))
-				only_summarized = false;
-			i++;
-		}
-	}
-
-	return only_summarized && *nsum > 0;
-}
-
-/*
  * ExecIndexesSummarizedUpdated -- determine which summarizing indexes require
  * updates for the purposes of allowing HOT updates while still updating these
  * indexes.
  *
- * Returns true if one or more summarized indexes were updated.
+ * Returns true if only one or more summarized indexes were updated.
  *
  * Note, this assumes that other indexes have been checked and that they do
  * not require updates.
@@ -1320,9 +1240,8 @@ bool
 ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modified_attrs)
 {
 	ResultRelInfo *resultRelInfo;
-	int			summarized = 0;
-	int			modified = 0;
 	bool		onlySummarized = false;
+	int			nsum = 0;
 
 	/*
 	 * We're not able to access the IndexInfo array without an estate.
@@ -1339,17 +1258,48 @@ ExecIndexesSummarizedUpdated(Relation relation, EState *estate, Bitmapset *modif
 
 	resultRelInfo = estate->es_result_relations[0];
 
-	if (resultRelInfo->ri_NumIndices > 0)
+	/*
+	 * Examine each index on this relation and mark those that are summarizing
+	 * and have been modified where "modified" means that they have summarized
+	 * or predicate attributes that overlap with the modified attributes. It
+	 * is possible that the summarized attributes are not the same as the
+	 * predicate attributes as can happen with a partial BRIN index on
+	 * attribute 'a' where the partial predicate refers to attribute 'b'.  An
+	 * update that modified 'b' but not 'a' would still require an update to
+	 * the index but can be HOT updated if only summarized indexes were
+	 * modified.
+	 */
+	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 	{
-		onlySummarized =
-			reorder_summarized_indexes(resultRelInfo->ri_IndexRelationDescs,
-									   resultRelInfo->ri_IndexRelationInfo,
-									   resultRelInfo->ri_NumIndices,
-									   modified_attrs,
-									   &summarized, &modified);
+		Relation	index = resultRelInfo->ri_IndexRelationDescs[i];
+		IndexInfo  *ii = AttributeIndexInfo(index,
+											resultRelInfo->ri_IndexRelationInfo[i]);
+		bool		sum = ii->ii_Summarizing;
+		bool		mod = bms_overlap(ii->ii_IndexAttrs, modified_attrs) ||
+			bms_overlap(ii->ii_PredicateAttrs, modified_attrs);
+
+		if (sum)
+		{
+			ii->ii_CheckedUnchanged = true;
+			ii->ii_IndexUnchanged = !mod;
+			nsum += mod ? 1 : 0;
+		}
+		else
+		{
+			/*
+			 * This function is called after ExecExpressionIndexesUpdated() so
+			 * we can assume that all indexes that have expressions or
+			 * predicates have been checked and marked.  Ensure that we set
+			 * onlySummarized to false if any non-summarizing index requires
+			 * updates.
+			 */
+			if ((ii->ii_CheckedUnchanged && !ii->ii_IndexUnchanged) ||
+				(!ii->ii_CheckedUnchanged && mod))
+				onlySummarized = false;
+		}
 	}
 
-	return onlySummarized && summarized > 0 && modified > 0;
+	return onlySummarized && nsum > 0;
 }
 
 /*

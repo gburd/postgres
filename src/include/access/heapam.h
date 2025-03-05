@@ -47,13 +47,6 @@ typedef struct BulkInsertStateData *BulkInsertState;
 struct TupleTableSlot;
 struct VacuumCutoffs;
 
-/*
- * The state object used by Heap update is actually the same as the executor's
- * ResultRelInfo, but we give it another type name to decouple callers from
- * that fact.
- */
-typedef struct ResultRelInfo *HeapUpdateState;
-
 #define MaxLockTupleMode	LockTupleExclusive
 
 /*
