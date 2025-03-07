@@ -38,7 +38,6 @@ struct IndexInfo;
 struct SampleScanState;
 struct VacuumParams;
 struct ValidateIndexState;
-struct EState;
 
 /*
  * Bitmask values for the flags argument to the scan_begin callback.
@@ -125,6 +124,18 @@ typedef enum TU_UpdateIndexes
 	/* Only summarized columns were updated, TID is unchanged */
 	TU_Summarizing,
 } TU_UpdateIndexes;
+
+/*
+ * When table_tuple_update is called some storage managers, notably heapam,
+ * can at times avoid index updates.  In the heapam this is known as a HOT
+ * update.  This struct is used to provide the state required to test for
+ * HOT updates and to communicate that decision on to the index AMs.
+ */
+typedef struct TU_UpdateData
+{
+	struct ResultRelInfo *rri;	/* ResultRelInfo for the updated table. */
+	struct EState *estate;		/* Current estate used within the update. */
+} TU_UpdateData;
 
 /*
  * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
@@ -551,8 +562,7 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
-								 TU_UpdateIndexes *update_indexes,
-								 struct EState *estate);
+								 TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1543,12 +1553,12 @@ static inline TM_Result
 table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes, struct EState *estate)
+				   TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, snapshot, crosscheck,
 										 wait, tmfd, lockmode,
-										 update_indexes, estate);
+										 update_indexes, update_state);
 }
 
 /*
@@ -2078,7 +2088,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 									  Snapshot snapshot);
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
-									  TU_UpdateIndexes *update_indexes);
+									  TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state);
 
 
 /* ----------------------------------------------------------------------------

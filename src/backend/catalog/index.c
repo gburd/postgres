@@ -2456,26 +2456,7 @@ BuildIndexInfo(Relation index)
 
 	/* fill in attribute numbers */
 	for (i = 0; i < numAtts; i++)
-	{
-		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
-
 		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
-		ii->ii_IndexAttrs =
-			bms_add_member(ii->ii_IndexAttrs,
-						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
-
-		ii->ii_IndexAttrLen[i] = attr->attlen;
-		if (attr->attbyval)
-			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
-	}
-
-	/* collect attributes used in the expression, if one is present */
-	if (ii->ii_Expressions)
-		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
-
-	/* collect attributes used in the predicate, if one is present */
-	if (ii->ii_Predicate)
-		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 
 	/* fetch exclusion constraint info if any */
 	if (indexStruct->indisexclusion)
@@ -2723,6 +2704,90 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
 				 ii->ii_UniqueStrats[i], index->rd_opcintype[i],
 				 index->rd_opcintype[i], index->rd_opfamily[i]);
 		ii->ii_UniqueProcs[i] = get_opcode(ii->ii_UniqueOps[i]);
+	}
+}
+
+/* ----------------
+ *		BuildExpressionIndexInfo
+ *			Add extra state to IndexInfo record
+ *
+ * For expression indexes updates may not changed the indexed value allowing
+ * for a HOT update.  Add information to the IndexInfo to allow for checking
+ * if the indexed value has changed.
+ *
+ * Do this processing here rather than in BuildIndexInfo() to not incur the
+ * overhead in the common non-expression cases.
+ * ----------------
+ */
+void
+BuildExpressionIndexInfo(Relation index, IndexInfo *indexInfo)
+{
+	int			i;
+	int			numAtts = indexInfo->ii_NumIndexKeyAttrs;
+	Form_pg_index indexStruct = index->rd_index;
+
+	/*
+	 * Collect attributes used by the index, their len and if they are by
+	 * value.
+	 */
+	for (i = 0; i < numAtts; i++)
+	{
+		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
+
+		indexInfo->ii_IndexAttrs =
+			bms_add_member(indexInfo->ii_IndexAttrs,
+						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+
+		indexInfo->ii_IndexAttrs =
+			bms_add_member(indexInfo->ii_IndexAttrs,
+						   indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
+
+		indexInfo->ii_IndexAttrLen[i] = attr->attlen;
+		if (attr->attbyval)
+			indexInfo->ii_IndexAttrByVal = bms_add_member(indexInfo->ii_IndexAttrByVal, i);
+	}
+
+	/* collect attributes used in the expression */
+	if (indexInfo->ii_Expressions)
+		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexInfo->ii_ExpressionAttrs);
+
+	/* collect attributes used in the predicate */
+	if (indexInfo->ii_Predicate)
+		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
+}
+
+/* ----------------
+ *		BuildCustomOperatorIndexInfo
+ *			Add extra state to IndexInfo record
+ *
+ * Custom operators used to test equality on indexes that support such an
+ * option may provide a different result from the default memcmp() equality
+ * test in datum_image_eq() and allow for HOT updates.  Add information to
+ * the IndexInfo to allow for checking for equality using the custom operator
+ * if there is one.
+ *
+ * Do this processing here rather than in BuildIndexInfo() to not incur the
+ * overhead in the common non-expression cases.
+ * ----------------
+ */
+void
+BuildCustomOperatorIndexInfo(Relation index, IndexInfo *indexInfo)
+{
+	int			i;
+	int			numAtts = indexInfo->ii_NumIndexKeyAttrs;
+
+	for (i = 0; i < numAtts; i++)
+	{
+		if (index->rd_amhandler == BTREE_AM_OID)
+		{
+			/*
+			 * For btree indexes, we can use the operator associated with the
+			 * equality operator to check for equality.  This is only possible
+			 * if the operator is a btree equality operator.
+			 */
+			indexInfo->ii_EqualityProc[i] = index_getprocinfo(index, i + 1, 1);
+			indexInfo->ii_Collation[i] = index->rd_indcollation[i];
+		}
 	}
 }
 
