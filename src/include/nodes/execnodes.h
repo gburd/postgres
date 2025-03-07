@@ -203,6 +203,8 @@ typedef struct IndexInfo
 	AttrNumber	ii_IndexAttrNumbers[INDEX_MAX_KEYS];
 	uint16		ii_IndexAttrLen[INDEX_MAX_KEYS];
 	Bitmapset  *ii_IndexAttrByVal;
+	FmgrInfo   *ii_EqualityProc[INDEX_MAX_KEYS];
+	Oid			ii_Collation[INDEX_MAX_KEYS];
 	List	   *ii_Expressions; /* list of Expr */
 	Bitmapset  *ii_ExpressionAttrs;
 	List	   *ii_ExpressionsState;	/* list of ExprState */

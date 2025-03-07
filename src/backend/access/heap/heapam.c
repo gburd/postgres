@@ -3164,7 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes, struct EState *estate)
+			TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3944,7 +3944,10 @@ l2:
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
 			(expression_checks &&
 			 bms_overlap(modified_attrs, exp_attrs) &&
-			 !ExecExpressionIndexesUpdated(relation, modified_attrs, estate,
+			 !ExecExpressionIndexesUpdated(update_state->rri,
+										   modified_attrs,
+										   update_state->estate,
+										   RelationGetDescr(relation),
 										   &oldtup, newtup)))
 		{
 			use_hot_update = true;
@@ -4419,12 +4422,13 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
+	TU_UpdateData update_state = {0};
 	LockTupleMode lockmode;
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes, NULL);
+						 &tmfd, &lockmode, update_indexes, &update_state);
 	switch (result)
 	{
 		case TM_SelfModified:

@@ -224,6 +224,21 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		if (speculative && ii->ii_Unique && !indexDesc->rd_index->indisexclusion)
 			BuildSpeculativeIndexInfo(indexDesc, ii);
 
+		/*
+		 * If the index uses expressions then let's populate the additional
+		 * information nessaary to evaluate them for changes during updates.
+		 */
+		if (ii->ii_Expressions || ii->ii_Predicate)
+			BuildExpressionIndexInfo(indexDesc, ii);
+
+		/*
+		 * If the index has a custom operator for equality then let's populate
+		 * the additional information nessaary to use that when testing for
+		 * equality while examining indexed values for changes during updates.
+		 */
+		if (false)
+			BuildCustomOperatorIndexInfo(indexDesc, ii);
+
 		relationDescs[i] = indexDesc;
 		indexInfoArray[i] = ii;
 		i++;
@@ -1180,92 +1195,29 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 						NameStr(attname), RelationGetRelationName(rel))));
 }
 
-
- /*
-  * AttributeIndexInfo -- adds attribute information to IndexInfo
-  */
-static IndexInfo *
-AttributeIndexInfo(Relation index, IndexInfo *indexInfo)
-{
-	if (indexInfo->ii_IndexAttrByVal)
-		return indexInfo;
-
-	/*
-	 * collect attributes used by the index, their len and if they are by
-	 * value
-	 */
-	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
-	{
-		indexInfo->ii_IndexAttrs =
-			bms_add_member(indexInfo->ii_IndexAttrs,
-						   indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
-
-		if (i < indexInfo->ii_NumIndexKeyAttrs)
-		{
-			int16		elmlen;
-			bool		elmbyval;
-
-			get_typlenbyval(index->rd_opcintype[i], &elmlen, &elmbyval);
-			indexInfo->ii_IndexAttrLen[i] = elmlen;
-			if (elmbyval)
-				indexInfo->ii_IndexAttrByVal = bms_add_member(indexInfo->ii_IndexAttrByVal, i);
-		}
-	}
-
-	/* collect attributes used in the expression */
-	if (indexInfo->ii_Expressions)
-		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexInfo->ii_ExpressionAttrs);
-
-	/* collect attributes used in the predicate */
-	if (indexInfo->ii_Predicate)
-		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
-
-	return indexInfo;
-}
-
 /*
  * Determine if indexes that have expressions or predicates require updates
  * for the purposes of allowing HOT updates.  Returns false iff all indexed
  * values are unchanged.
  */
 bool
-ExecExpressionIndexesUpdated(Relation relation,
-							 Bitmapset *modified_attrs,
+ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
+							 Bitmapset *modifiedAttrs,
 							 EState *estate,
-							 HeapTuple old_tuple,
-							 HeapTuple new_tuple)
+							 TupleDesc tupleDesc,
+							 HeapTuple old,
+							 HeapTuple new)
 {
-	bool		expression_checks = RelationGetExpressionChecks(relation);
 	bool		result = false;
-	ResultRelInfo *resultRelInfo;
-	Relation	index;
 	IndexInfo  *indexInfo;
 	ExprContext *econtext = NULL;
-	TupleDesc	tupledesc;
-	TupleTableSlot *old_tts;
-	TupleTableSlot *new_tts;
+	TupleTableSlot *old_tts = NULL;
+	TupleTableSlot *new_tts = NULL;
 
-	/*
-	 * We're not able to access the IndexInfo array without an estate.
-	 */
-	if (estate == NULL || modified_attrs == NULL)
+	if (estate == NULL || resultRelInfo == NULL || modifiedAttrs == NULL)
 		return true;
 
-#ifndef USE_ASSERT_CHECKING
-	if (estate->es_result_relations[0]->ri_RelationDesc != relation)
-		return true;
-#endif
-
-	Assert(estate->es_result_relations[0]->ri_RelationDesc == relation);
-
-	if (expression_checks == false)
-		return true;
-
-	resultRelInfo = estate->es_result_relations[0];
-	old_tts = resultRelInfo->ri_oldTupleSlot;
-	new_tts = resultRelInfo->ri_newTupleSlot;
 	econtext = GetPerTupleExprContext(estate);
-	tupledesc = RelationGetDescr(relation);
 
 	/*
 	 * Examine each index on this relation relative to the changes between old
@@ -1273,15 +1225,13 @@ ExecExpressionIndexesUpdated(Relation relation,
 	 */
 	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 	{
-		index = (Relation) resultRelInfo->ri_IndexRelationDescs[i];
-		indexInfo = AttributeIndexInfo(index,
-									   resultRelInfo->ri_IndexRelationInfo[i]);
+		indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
 
 		/*
 		 * If this is a partial index it has a predicate, evaluate the
 		 * expression to determine if we need to include it or not.
 		 */
-		if (bms_overlap(indexInfo->ii_PredicateAttrs, modified_attrs))
+		if (bms_overlap(indexInfo->ii_PredicateAttrs, modifiedAttrs))
 		{
 			ExprState  *pstate;
 			bool		old_tuple_qualifies,
@@ -1290,16 +1240,12 @@ ExecExpressionIndexesUpdated(Relation relation,
 			/* Create these once, only if necessary, then reuse them. */
 			if (old_tts == NULL)
 			{
-				old_tts = MakeSingleTupleTableSlot(tupledesc,
+				old_tts = MakeSingleTupleTableSlot(tupleDesc,
 												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
-			}
-
-			if (new_tts == NULL)
-			{
-				new_tts = MakeSingleTupleTableSlot(tupledesc,
+				ExecStoreHeapTuple(old, old_tts, InvalidBuffer);
+				new_tts = MakeSingleTupleTableSlot(tupleDesc,
 												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new, new_tts, InvalidBuffer);
 			}
 
 			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
@@ -1349,7 +1295,7 @@ ExecExpressionIndexesUpdated(Relation relation,
 		 * can be worth it to avoid index updates and remain on the HOT update
 		 * path when possible.
 		 */
-		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modified_attrs))
+		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modifiedAttrs))
 		{
 			Datum		old_values[INDEX_MAX_KEYS];
 			bool		old_isnull[INDEX_MAX_KEYS];
@@ -1360,16 +1306,12 @@ ExecExpressionIndexesUpdated(Relation relation,
 			/* Create these once, only if necessary, then reuse them. */
 			if (old_tts == NULL)
 			{
-				old_tts = MakeSingleTupleTableSlot(tupledesc,
+				old_tts = MakeSingleTupleTableSlot(tupleDesc,
 												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(old_tuple, old_tts, InvalidBuffer);
-			}
-
-			if (new_tts == NULL)
-			{
-				new_tts = MakeSingleTupleTableSlot(tupledesc,
+				ExecStoreHeapTuple(old, old_tts, InvalidBuffer);
+				new_tts = MakeSingleTupleTableSlot(tupleDesc,
 												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(new_tuple, new_tts, InvalidBuffer);
+				ExecStoreHeapTuple(new, new_tts, InvalidBuffer);
 			}
 
 			econtext->ecxt_scantuple = old_tts;
@@ -1395,14 +1337,31 @@ ExecExpressionIndexesUpdated(Relation relation,
 				}
 				else if (!old_isnull[j])
 				{
+					FmgrInfo   *procinfo = indexInfo->ii_EqualityProc[i];
 					int16		elmlen = indexInfo->ii_IndexAttrLen[j];
 					bool		elmbyval = bms_is_member(j, indexInfo->ii_IndexAttrByVal);
 
-					if (!datum_image_eq(old_values[j], new_values[j],
-										elmbyval, elmlen))
+					if (procinfo)
 					{
-						changed = true;
-						break;
+						Oid			collation = indexInfo->ii_Collation[i];
+						Datum		old = old_values[i];
+						Datum		new = new_values[i];
+						Datum		result = FunctionCall2Coll(procinfo, collation, old, new);
+
+						if (DatumGetInt32(result) != 0)
+						{
+							changed = true;
+							break;
+						}
+					}
+					else
+					{
+						if (!datum_image_eq(old_values[j], new_values[j],
+											elmbyval, elmlen))
+						{
+							changed = true;
+							break;
+						}
 					}
 				}
 			}
@@ -1418,11 +1377,11 @@ ExecExpressionIndexesUpdated(Relation relation,
 		}
 	}
 
-	if (resultRelInfo->ri_oldTupleSlot == NULL)
+	if (old_tts)
+	{
 		ExecDropSingleTupleTableSlot(old_tts);
-
-	if (resultRelInfo->ri_newTupleSlot == NULL)
 		ExecDropSingleTupleTableSlot(new_tts);
+	}
 
 	return result;
 }

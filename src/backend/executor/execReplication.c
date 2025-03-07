@@ -33,6 +33,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#include "access/hix.h"
 
 
 static bool tuples_equal(TupleTableSlot *slot1, TupleTableSlot *slot2,
@@ -641,6 +642,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		List	   *recheckIndexes = NIL;
 		List	   *conflictindexes;
 		TU_UpdateIndexes update_indexes;
+		TU_UpdateData update_state = {.estate = estate, .rri = resultRelInfo};
 		bool		conflict = false;
 
 		/* Compute stored generated columns */
@@ -656,7 +658,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+								  &update_indexes, &update_state);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 

@@ -3088,6 +3088,7 @@ UnlistenStmt
 UnresolvedTup
 UnresolvedTupData
 UpdateContext
+TU_UpdateData
 UpdateStmt
 UpgradeTask
 UpgradeTaskProcessCB

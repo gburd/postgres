@@ -132,6 +132,8 @@ extern bool CompareIndexInfo(const IndexInfo *info1, const IndexInfo *info2,
 							 const AttrMap *attmap);
 
 extern void BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii);
+extern void BuildExpressionIndexInfo(Relation index, IndexInfo *indexInfo);
+extern void BuildCustomOperatorIndexInfo(Relation index, IndexInfo *indexInfo);
 
 extern void FormIndexDatum(IndexInfo *indexInfo,
 						   TupleTableSlot *slot,

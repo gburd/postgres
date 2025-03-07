@@ -69,6 +69,7 @@
 #include "utils/datum.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "access/hix.h"
 
 
 typedef struct MTTargetRelLookup
@@ -114,21 +115,6 @@ typedef struct ModifyTableContext
 	 */
 	TupleTableSlot *cpUpdateReturningSlot;
 } ModifyTableContext;
-
-/*
- * Context struct containing output data specific to UPDATE operations.
- */
-typedef struct UpdateContext
-{
-	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
-
-	/*
-	 * Lock mode to acquire on the latest tuple version before performing
-	 * EvalPlanQual on it
-	 */
-	LockTupleMode lockmode;
-} UpdateContext;
 
 
 static void ExecBatchInsert(ModifyTableState *mtstate,
@@ -2151,6 +2137,7 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	EState	   *estate = context->estate;
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	bool		partition_constraint_failed;
+	TU_UpdateData update_state = {.estate = estate, .rri = resultRelInfo};
 	TM_Result	result;
 
 	updateCxt->crossPartUpdate = false;
@@ -2283,8 +2270,7 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes,
-								estate);
+								&updateCxt->updateIndexes, &update_state);
 
 	return result;
 }
