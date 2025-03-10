@@ -2137,7 +2137,6 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	EState	   *estate = context->estate;
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	bool		partition_constraint_failed;
-	TU_UpdateData update_state = {.estate = estate, .rri = resultRelInfo};
 	TM_Result	result;
 
 	updateCxt->crossPartUpdate = false;
@@ -2270,7 +2269,7 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes, &update_state);
+								updateCxt);
 
 	return result;
 }
@@ -2431,6 +2430,9 @@ ExecUpdate(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	UpdateContext updateCxt = {0};
 	TM_Result	result;
+
+	updateCxt.estate = estate;
+	updateCxt.rri = resultRelInfo;
 
 	/*
 	 * abort the operation if not running transactions
@@ -3119,6 +3121,9 @@ lmerge_matched:
 		CmdType		commandType = relaction->mas_action->commandType;
 		TM_Result	result;
 		UpdateContext updateCxt = {0};
+
+		updateCxt.rri = resultRelInfo;
+		updateCxt.estate = estate;
 
 		/*
 		 * Test condition, if any.

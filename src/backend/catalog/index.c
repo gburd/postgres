@@ -2710,7 +2710,7 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
  *		BuildExpressionIndexInfo
  *			Add extra state to IndexInfo record
  *
- * For expression indexes updates may not changed the indexed value allowing
+ * For expression indexes updates may not change the indexed value allowing
  * for a HOT update.  Add information to the IndexInfo to allow for checking
  * if the indexed value has changed.
  *
@@ -2719,40 +2719,38 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
  * ----------------
  */
 void
-BuildExpressionIndexInfo(Relation index, IndexInfo *indexInfo)
+BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
 {
 	int			i;
-	int			numAtts = indexInfo->ii_NumIndexKeyAttrs;
+	int			indnkeyatts;
 	Form_pg_index indexStruct = index->rd_index;
+
+	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 
 	/*
 	 * Collect attributes used by the index, their len and if they are by
 	 * value.
 	 */
-	for (i = 0; i < numAtts; i++)
+	for (i = 0; i < indnkeyatts; i++)
 	{
 		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
 
-		indexInfo->ii_IndexAttrs =
-			bms_add_member(indexInfo->ii_IndexAttrs,
-						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+		ii->ii_IndexAttrs =
+			bms_add_member(ii->ii_IndexAttrs,
+						   ii->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
 
-		indexInfo->ii_IndexAttrs =
-			bms_add_member(indexInfo->ii_IndexAttrs,
-						   indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
-
-		indexInfo->ii_IndexAttrLen[i] = attr->attlen;
+		ii->ii_IndexAttrLen[i] = attr->attlen;
 		if (attr->attbyval)
-			indexInfo->ii_IndexAttrByVal = bms_add_member(indexInfo->ii_IndexAttrByVal, i);
+			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
 	}
 
 	/* collect attributes used in the expression */
-	if (indexInfo->ii_Expressions)
-		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexInfo->ii_ExpressionAttrs);
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
 
 	/* collect attributes used in the predicate */
-	if (indexInfo->ii_Predicate)
-		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 }
 
 /* ----------------
@@ -2770,23 +2768,47 @@ BuildExpressionIndexInfo(Relation index, IndexInfo *indexInfo)
  * ----------------
  */
 void
-BuildCustomOperatorIndexInfo(Relation index, IndexInfo *indexInfo)
+BuildCustomOperatorIndexInfo(Relation index, IndexInfo *ii)
 {
 	int			i;
-	int			numAtts = indexInfo->ii_NumIndexKeyAttrs;
+	int			indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	Oid			amid = index->rd_rel->relam;
+	Oid			opfamily;
+	Oid			opcintype;
+	Oid			strat;
+	Oid			opid = InvalidOid;
+	Oid			procid = InvalidOid;
 
-	for (i = 0; i < numAtts; i++)
+	/* RegProcedure *loc = index->rd_support; */
+	/* RegProcedure regproc; */
+	/* FmgrInfo *locinfo = index->rd_indam->amoptsprocnum; */
+
+	/* Assert(locinfo != NULL); */
+
+	/*
+	 * We have to look up the operator's strategy number.  This provides a
+	 * cross-check that the operator does match the index.
+	 */
+	/* We need the func OIDs and strategy numbers too */
+	for (i = 0; i < indnkeyatts; i++)
 	{
-		if (index->rd_amhandler == BTREE_AM_OID)
-		{
-			/*
-			 * For btree indexes, we can use the operator associated with the
-			 * equality operator to check for equality.  This is only possible
-			 * if the operator is a btree equality operator.
-			 */
-			indexInfo->ii_EqualityProc[i] = index_getprocinfo(index, i + 1, 1);
-			indexInfo->ii_Collation[i] = index->rd_indcollation[i];
-		}
+		opfamily = index->rd_opfamily[i];
+		opcintype = index->rd_opcintype[i];
+		strat = IndexAmTranslateCompareType(COMPARE_EQ, amid, opfamily, true);
+		if (strat == InvalidStrategy)
+			continue;
+
+		opid = get_opfamily_member(opfamily, opcintype, opcintype, strat);
+		if (!OidIsValid(opid))
+			continue;
+
+		procid = index_getprocid(index, i + 1, opid);
+		if (!OidIsValid(procid))
+			continue;
+
+		/* regproc = get_opcode(opid); */
+		ii->ii_EqualityProc[i] = index_getprocinfo(index, i + 1, procid);
+		ii->ii_Collation[i] = index->rd_indcollation[i];
 	}
 }
 

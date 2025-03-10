@@ -3164,7 +3164,7 @@ TM_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state)
+			UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3310,7 +3310,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
-		*update_indexes = TU_None;
+		updateCxt->updateIndexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3612,7 +3612,7 @@ l2:
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
+		updateCxt->updateIndexes = TU_None;
 
 		bms_free(hot_attrs);
 		bms_free(sum_attrs);
@@ -3944,9 +3944,9 @@ l2:
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
 			(expression_checks &&
 			 bms_overlap(modified_attrs, exp_attrs) &&
-			 !ExecExpressionIndexesUpdated(update_state->rri,
+			 !ExecExpressionIndexesUpdated(updateCxt->rri,
 										   modified_attrs,
-										   update_state->estate,
+										   updateCxt->estate,
 										   RelationGetDescr(relation),
 										   &oldtup, newtup)))
 		{
@@ -4130,12 +4130,12 @@ l2:
 	if (use_hot_update)
 	{
 		if (summarized_update)
-			*update_indexes = TU_Summarizing;
+			updateCxt->updateIndexes = TU_Summarizing;
 		else
-			*update_indexes = TU_None;
+			updateCxt->updateIndexes = TU_None;
 	}
 	else
-		*update_indexes = TU_All;
+		updateCxt->updateIndexes = TU_All;
 
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
@@ -4418,17 +4418,16 @@ HeapDetermineColumnsInfo(Relation relation,
  */
 void
 simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
-	TU_UpdateData update_state = {0};
 	LockTupleMode lockmode;
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes, &update_state);
+						 &tmfd, &lockmode, updateCxt);
 	switch (result)
 	{
 		case TM_SelfModified:

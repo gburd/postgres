@@ -236,7 +236,7 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		 * the additional information nessaary to use that when testing for
 		 * equality while examining indexed values for changes during updates.
 		 */
-		if (false)
+		if (ii->ii_Expressions)
 			BuildCustomOperatorIndexInfo(indexDesc, ii);
 
 		relationDescs[i] = indexDesc;
