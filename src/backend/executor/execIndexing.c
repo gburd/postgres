@@ -231,14 +231,6 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		if (ii->ii_Expressions || ii->ii_Predicate)
 			BuildExpressionIndexInfo(indexDesc, ii);
 
-		/*
-		 * If the index has a custom operator for equality then let's populate
-		 * the additional information nessaary to use that when testing for
-		 * equality while examining indexed values for changes during updates.
-		 */
-		if (false)
-			BuildCustomOperatorIndexInfo(indexDesc, ii);
-
 		relationDescs[i] = indexDesc;
 		indexInfoArray[i] = ii;
 		i++;
@@ -1204,17 +1196,14 @@ bool
 ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 							 Bitmapset *modifiedAttrs,
 							 EState *estate,
-							 TupleDesc tupleDesc,
-							 HeapTuple old,
-							 HeapTuple new)
+							 TupleTableSlot *old_tts,
+							 TupleTableSlot *new_tts)
 {
 	bool		result = false;
 	IndexInfo  *indexInfo;
 	ExprContext *econtext = NULL;
-	TupleTableSlot *old_tts = NULL;
-	TupleTableSlot *new_tts = NULL;
 
-	if (estate == NULL || resultRelInfo == NULL || modifiedAttrs == NULL)
+	if (old_tts == NULL || new_tts == NULL)
 		return true;
 
 	econtext = GetPerTupleExprContext(estate);
@@ -1236,17 +1225,6 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 			ExprState  *pstate;
 			bool		old_tuple_qualifies,
 						new_tuple_qualifies;
-
-			/* Create these once, only if necessary, then reuse them. */
-			if (old_tts == NULL)
-			{
-				old_tts = MakeSingleTupleTableSlot(tupleDesc,
-												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(old, old_tts, InvalidBuffer);
-				new_tts = MakeSingleTupleTableSlot(tupleDesc,
-												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(new, new_tts, InvalidBuffer);
-			}
 
 			pstate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 
@@ -1297,36 +1275,27 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 		 */
 		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modifiedAttrs))
 		{
+			TupleTableSlot *save_scantuple;
 			Datum		old_values[INDEX_MAX_KEYS];
 			bool		old_isnull[INDEX_MAX_KEYS];
 			Datum		new_values[INDEX_MAX_KEYS];
 			bool		new_isnull[INDEX_MAX_KEYS];
 			bool		changed = false;
 
-			/* Create these once, only if necessary, then reuse them. */
-			if (old_tts == NULL)
-			{
-				old_tts = MakeSingleTupleTableSlot(tupleDesc,
-												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(old, old_tts, InvalidBuffer);
-				new_tts = MakeSingleTupleTableSlot(tupleDesc,
-												   &TTSOpsHeapTuple);
-				ExecStoreHeapTuple(new, new_tts, InvalidBuffer);
-			}
-
+			save_scantuple = econtext->ecxt_scantuple;
 			econtext->ecxt_scantuple = old_tts;
 			FormIndexDatum(indexInfo,
 						   old_tts,
 						   estate,
 						   old_values,
 						   old_isnull);
-
 			econtext->ecxt_scantuple = new_tts;
 			FormIndexDatum(indexInfo,
 						   new_tts,
 						   estate,
 						   new_values,
 						   new_isnull);
+			econtext->ecxt_scantuple = save_scantuple;
 
 			for (int j = 0; j < indexInfo->ii_NumIndexKeyAttrs; j++)
 			{
@@ -1337,31 +1306,14 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 				}
 				else if (!old_isnull[j])
 				{
-					FmgrInfo   *procinfo = indexInfo->ii_EqualityProc[i];
 					int16		elmlen = indexInfo->ii_IndexAttrLen[j];
 					bool		elmbyval = bms_is_member(j, indexInfo->ii_IndexAttrByVal);
 
-					if (procinfo)
+					if (!datum_image_eq(old_values[j], new_values[j],
+										elmbyval, elmlen))
 					{
-						Oid			collation = indexInfo->ii_Collation[i];
-						Datum		old = old_values[i];
-						Datum		new = new_values[i];
-						Datum		result = FunctionCall2Coll(procinfo, collation, old, new);
-
-						if (DatumGetInt32(result) != 0)
-						{
-							changed = true;
-							break;
-						}
-					}
-					else
-					{
-						if (!datum_image_eq(old_values[j], new_values[j],
-											elmbyval, elmlen))
-						{
-							changed = true;
-							break;
-						}
+						changed = true;
+						break;
 					}
 				}
 			}
@@ -1375,12 +1327,6 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 				break;
 			}
 		}
-	}
-
-	if (old_tts)
-	{
-		ExecDropSingleTupleTableSlot(old_tts);
-		ExecDropSingleTupleTableSlot(new_tts);
 	}
 
 	return result;

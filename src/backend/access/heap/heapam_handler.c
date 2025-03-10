@@ -313,7 +313,7 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state)
+					UpdateContext *updateCxt)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -324,7 +324,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode, update_indexes, update_state);
+						 tmfd, lockmode, updateCxt);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
@@ -339,14 +339,14 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 */
 	if (result != TM_Ok)
 	{
-		Assert(*update_indexes == TU_None);
-		*update_indexes = TU_None;
+		Assert(updateCxt->updateIndexes == TU_None);
+		updateCxt->updateIndexes = TU_None;
 	}
 	else if (!HeapTupleIsHeapOnly(tuple))
-		Assert(*update_indexes == TU_All);
+		Assert(updateCxt->updateIndexes == TU_All);
 	else
-		Assert((*update_indexes == TU_Summarizing) ||
-			   (*update_indexes == TU_None));
+		Assert((updateCxt->updateIndexes == TU_Summarizing) ||
+			   (updateCxt->updateIndexes == TU_None));
 
 	if (shouldFree)
 		pfree(tuple);

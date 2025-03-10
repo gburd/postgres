@@ -2711,7 +2711,7 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
  *		BuildExpressionIndexInfo
  *			Add extra state to IndexInfo record
  *
- * For expression indexes updates may not changed the indexed value allowing
+ * For expression indexes updates may not change the indexed value allowing
  * for a HOT update.  Add information to the IndexInfo to allow for checking
  * if the indexed value has changed.
  *
@@ -2720,40 +2720,38 @@ BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii)
  * ----------------
  */
 void
-BuildExpressionIndexInfo(Relation index, IndexInfo *indexInfo)
+BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
 {
 	int			i;
-	int			numAtts = indexInfo->ii_NumIndexKeyAttrs;
+	int			indnkeyatts;
 	Form_pg_index indexStruct = index->rd_index;
+
+	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 
 	/*
 	 * Collect attributes used by the index, their len and if they are by
 	 * value.
 	 */
-	for (i = 0; i < numAtts; i++)
+	for (i = 0; i < indnkeyatts; i++)
 	{
 		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
 
-		indexInfo->ii_IndexAttrs =
-			bms_add_member(indexInfo->ii_IndexAttrs,
-						   indexStruct->indkey.values[i] - FirstLowInvalidHeapAttributeNumber);
+		ii->ii_IndexAttrs =
+			bms_add_member(ii->ii_IndexAttrs,
+						   ii->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
 
-		indexInfo->ii_IndexAttrs =
-			bms_add_member(indexInfo->ii_IndexAttrs,
-						   indexInfo->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
-
-		indexInfo->ii_IndexAttrLen[i] = attr->attlen;
+		ii->ii_IndexAttrLen[i] = attr->attlen;
 		if (attr->attbyval)
-			indexInfo->ii_IndexAttrByVal = bms_add_member(indexInfo->ii_IndexAttrByVal, i);
+			ii->ii_IndexAttrByVal = bms_add_member(ii->ii_IndexAttrByVal, i);
 	}
 
 	/* collect attributes used in the expression */
-	if (indexInfo->ii_Expressions)
-		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexInfo->ii_ExpressionAttrs);
+	if (ii->ii_Expressions)
+		pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_ExpressionAttrs);
 
 	/* collect attributes used in the predicate */
-	if (indexInfo->ii_Predicate)
-		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexInfo->ii_PredicateAttrs);
+	if (ii->ii_Predicate)
+		pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_PredicateAttrs);
 }
 
 /* ----------------

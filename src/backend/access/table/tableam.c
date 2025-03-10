@@ -336,7 +336,7 @@ void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
-						  TU_UpdateIndexes *update_indexes, TU_UpdateData *update_state)
+						  UpdateContext *updateCxt)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -346,7 +346,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								GetCurrentCommandId(true),
 								snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, &lockmode, update_indexes, update_state);
+								&tmfd, &lockmode, updateCxt);
 
 	switch (result)
 	{
