@@ -393,19 +393,33 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			ExprState  *predicate;
 
 			/*
-			 * If predicate state not set up yet, create it (in the estate's
-			 * per-query context)
+			 * It is possible that we've already checked the predicate, if so
+			 * then avoid the duplicate work.
 			 */
-			predicate = indexInfo->ii_PredicateState;
-			if (predicate == NULL)
+			if (indexInfo->ii_CheckedPredicate)
 			{
-				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
-				indexInfo->ii_PredicateState = predicate;
+				/* Skip this index-update if the predicate isn't satisfied */
+				if (!indexInfo->ii_PredicateSatisfied)
+					continue;
 			}
+			else
+			{
 
-			/* Skip this index-update if the predicate isn't satisfied */
-			if (!ExecQual(predicate, econtext))
-				continue;
+				/*
+				 * If predicate state not set up yet, create it (in the
+				 * estate's per-query context)
+				 */
+				predicate = indexInfo->ii_PredicateState;
+				if (predicate == NULL)
+				{
+					predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+					indexInfo->ii_PredicateState = predicate;
+				}
+
+				/* Skip this index-update if the predicate isn't satisfied */
+				if (!ExecQual(predicate, econtext))
+					continue;
+			}
 		}
 
 		/*
@@ -1237,6 +1251,8 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 
 			econtext->ecxt_scantuple = new_tts;
 			new_tuple_qualifies = ExecQual(pstate, econtext);
+			indexInfo->ii_CheckedPredicate = true;
+			indexInfo->ii_PredicateSatisfied = new_tuple_qualifies;
 
 			/*
 			 * If neither the old nor the new tuples satisfy the predicate we

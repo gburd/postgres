@@ -222,6 +222,8 @@ typedef struct IndexInfo
 	bool		ii_ReadyForInserts;
 	bool		ii_CheckedUnchanged;
 	bool		ii_IndexUnchanged;
+	bool		ii_CheckedPredicate;
+	bool		ii_PredicateSatisfied;
 	bool		ii_Concurrent;
 	bool		ii_BrokenHotChain;
 	bool		ii_Summarizing;
