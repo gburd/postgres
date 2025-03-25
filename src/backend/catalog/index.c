@@ -2724,7 +2724,6 @@ BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
 {
 	int			i;
 	int			indnkeyatts;
-	Form_pg_index indexStruct = index->rd_index;
 
 	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 
