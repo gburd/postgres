@@ -1,0 +1,1947 @@
+which gcc
+env CFLAGS=-O0 ./configure --prefix=/usr/local/pgsql --enable-debug --enable-cassert
+fg
+jetbrains-toolbox 
+git pull
+git st
+git add CMakeLists.txt PGXS.cmake.in README.cmake 
+git stash
+git st
+git branch
+git switch -c gregburd/moar-hot
+git st
+git commit -m "Nix, CMake, and notes"
+git st
+git lol
+git commit --amend .
+git st
+git fetch
+git rebase origin/master
+tig
+pwd
+ls
+ls /usr/local/pgsql/
+rm -rf /usr/local/pgsql
+sudo rm -rf /usr/local/pgsql
+make clean
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+ls
+vi flake.nix 
+ls ~/ws/sparsemap/.envrc 
+more ~/ws/sparsemap/.envrc 
+cp ~/ws/sparsemap/.envrc .
+cd .
+which direnv
+which envrc
+cd .
+direnv
+direnv allow
+cd .
+more .dir-locals.el 
+more .envrc 
+use flake
+flake develop
+./build/bin/psql -h localhost postgres
+pgrep postgres
+pkill -9 postgres
+./build/bin/psql -h localhost postgres
+git st
+git diff
+git st
+make
+make clean
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+git branch
+git fetch
+git st
+tig
+git commit --ammend .
+git commit --amend .
+git rebase origin/master
+tig
+nvim
+git st
+more .envrc 
+ls
+tig
+vi .gitignore 
+git st
+git diff
+make
+rg rd_projectionattr
+make
+git st
+tig
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+find . -name postgres
+ls build
+find . -name bin
+ls src/bin/
+make clean
+ls
+git st
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+mkdir test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf test-db
+./build/bin/initdb test-db
+env | grep LANG
+env | grep LC_
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+ls test-db
+vi .envrc 
+export LC_ALL="en_US.UTF-8"
+export LC_CTYPE="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
+export LC_ALL="C"
+export LC_CTYPE="C"
+nvim .envrc
+./build/bin/initdb test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make
+make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+git st
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rg BITMAP_PROJECTE
+rg HOT_BLOCKING
+reset; make
+make
+rg TU_Summarizing
+rg ExecInsertIndexTuple
+git st
+git branch
+git commit -m "WIP" .
+git co master
+git co gregburd/moar-hot
+tig
+git co master
+git st
+git pull
+git branch gregburd/default-hot
+git cherry-pick bf3efc29a3657c5f41d1b54c3f5f36884be666b5
+tig
+make clean
+make && make install
+make
+make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rg TU_UpdateIndexes
+git st
+git stash
+make
+rg _BLOCKING
+rg TU_Summarizing
+make
+rg TU_Summarizing
+make
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+ls
+mv test-db/ /tmp
+./build/bin/initdb test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+./build/bin/initdb test-db
+ls
+ulimit -c unlimited
+./build/bin/initdb test-db
+ls
+vi build/bin/initdb 
+./build/bin/initdb -h
+./build/bin/initdb --help
+./build/bin/initdb --debug --no-clean test-db
+ls test-db/
+file test-db/core 
+gdb ./build/bin/postgres test-db/core 
+make clean
+make
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset; make
+rg HeapTuple
+make
+rg get_typlenbyval
+make
+rg datumIsEqual | grep \*.h
+rg datumIsEqual
+make
+make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+mv test-db/ /tmp/foo
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+rm -rf test-foo
+ls
+rm -rf test-db
+cp -r /tmp/foo test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf test-db/
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+rm -rf test-db
+make && make install
+git st
+make && make install
+git branch
+tig
+git branch -D gregburd/default-hot
+git branch
+git commit -m "WIP" .
+git switch -c gregburd/default-hot
+git co master
+git co gregburd/default-hot
+ti
+tig
+git co master
+tig
+git rebase -i HEAD~3
+git pull
+tig
+git branch
+git co gregburd/moar-hot
+git rebase origin/master
+tig
+make clean
+make && make install
+git st
+git co master
+make clean
+git switch -c phot
+git cherry-pick bf3efc29a3657c5f41d1b54c3f5f36884be666b5
+rg GSB
+git st
+tig
+git commit --amend .
+rg XLOG_HEAP2_VISIBLE
+rg XLOG_HEAP2_CLEAN
+rg prune_and_freeze
+rg heap_xlog_deserialize_prune_and_freeze
+git st
+git branch
+git st
+git stash
+git am --keep-cr --signoff ../pg-patch-sets/phot/0001-Introduce-t_infomask2-bits-for-partial-heap-only-tup.patch
+git am --show-current-patch=diff
+git am --keep-cr --signoff ../pg-patch-sets/phot/0002-Introduce-basic-WAL-infrastructure-for-partial-heap-.patch
+git am --abort
+git am --keep-cr --signoff ../pg-patch-sets/phot/0002-Introduce-basic-WAL-infrastructure-for-partial-heap-.patch
+git am --abort
+git am --keep-cr --signoff ../pg-patch-sets/phot/0003-Add-logic-for-following-basic-partial-heap-only-tupl.patch
+git st
+git am --abort
+git am --keep-cr --signoff ../pg-patch-sets/phot/0004-prune-in-progress.patch
+git st
+git am --abort
+ls ../pg-patch-sets/phot/
+zed .
+git st
+git stash list
+git branch
+tig
+history | grep stash
+history
+emacs -nw ../pg-patch-sets/phot/0001-Introduce-t_infomask2-bits-for-partial-heap-only-tup.patch 
+git s
+tgit st
+git st
+ls build/
+git fetch
+git branch
+tig
+git st
+rm -rf build cmake-build-debug/
+tig
+ls .direnv/
+more .envrc 
+more .history 
+ls
+git st
+tig
+echo 54eaa11ebdc6aacd73f7819290769823732da4e2
+git co master
+git branch -D phot
+git pull
+git co 789d81de8a50d9a23cc1a3b8ea5d839246020689
+git switch -c phot
+git cherry-pick 54eaa11ebdc6aacd73f7819290769823732da4e2
+ls
+git st
+git cherry-pick --abort
+git s
+tgit st
+git st
+mkdir _
+mv .direnv/ .envrc .history .idea/ _flake.nix NOTES _
+git cherry-pick 54eaa11ebdc6aacd73f7819290769823732da4e2
+tig
+ls _
+ls -a _
+cd _
+ls -a
+mv .history .envrc ..
+cd ..
+git st
+git add .envrc
+git commit --amend .
+git st
+tig
+git st
+git am --keep-cr --signoff ../pg-patch-sets/phot/0001-Introduce-t_infomask2-bits-for-partial-heap-only-tup.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0002-Introduce-basic-WAL-infrastructure-for-partial-heap-.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0003-Add-logic-for-following-basic-partial-heap-only-tupl.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0004-prune-in-progress.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0005-in-prog.patch
+git st
+emacs -nw ../pg-patch-sets/phot/0005-in-prog.patch 
+git branch
+git st
+tig
+echo 2dfa5f532aa37709a2063d582139478d4454bf0e
+git co master
+git branch -D phot
+git co c82d59d
+tig
+git branch
+git switch -c phot
+git am --quit
+git branch
+git co c82d59d
+git st
+git branch
+git switch -c phot
+git am --keep-cr --signoff ../pg-patch-sets/phot/0001-Introduce-t_infomask2-bits-for-partial-heap-only-tup.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0002-Introduce-basic-WAL-infrastructure-for-partial-heap-.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0003-Add-logic-for-following-basic-partial-heap-only-tupl.patch
+git am --keep-cr --signoff ../pg-patch-sets/phot/0004-prune-in-progress.patch
+emacs -nw ../pg-patch-sets/phot/0005-in-prog.patch 
+git am --keep-cr --signoff ../pg-patch-sets/phot/0005-in-prog.patch
+tig
+git cherry-pick 2dfa5f532aa37709a2063d582139478d4454bf0e
+tig
+git
+git st
+rg IndexGetAttrBitmap
+rg heap_hot_search_buffer
+rg ItemIdIsPartialHotRedirected
+emacs -nw src/include/storage/itemid.h 
+git st
+git branch
+git co gregburd/default-hot
+tig
+git branch
+git fetch
+git rebase origin/master
+tig
+git branch -m phot bossartn/phot
+git branch
+git co bossartn/phot
+tig
+git describe --tags 
+git tag | grep REL_13
+git switch -c gregburd/phot/rel-13-stable
+git rebase origin/REL_13_STABLE
+git st
+emacs -nw configure.in 
+fg
+git rebase --abort
+fg
+emacs -nw configure.in 
+git st
+ls
+emacs -nw configure
+git st
+git branch
+git branch -m gregburd/phot/rel-13-stable gregburd/phot/rel-14-stable
+git rebase origin/REL_14_STABLE
+git st
+emcas -nw src/backend/access/heap/heapam.c
+emacs -nw src/backend/access/heap/heapam.c
+fg
+git st
+emacs -nw src/backend/access/heap/pruneheap.c 
+emacs -nw src/backend/access/heap/heapam.c src/include/access/heapam.h 
+emacs -nw src/backend/access/heap/pruneheap.c 
+emacs -nw src/include/access/heapam_xlog.h 
+fg
+git st
+git rebase --continue
+git add src/backend/access/heap/heapam.c
+gi tst
+git st
+git add src/include/access/heapam.h
+git add src/include/access/heapam_xlog.h 
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c
+emacs -nw src/backend/access/heap/vacuumlazy.c 
+fg
+rg HeapTupleIsHotUpdated
+rg HeapTupleIsHeapOnly
+git st
+git rebase --continue
+ls
+mkdir build
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+tig
+emacs -nw src/backend/access/heap/heapam.c src/include/access/heapam.h 
+make
+emacs -nw src/backend/access/heap/heapam.c src/include/access/heapam.h 
+fg
+make
+emacs -nw src/backend/access/heap/heapam.c src/include/access/heapam.h 
+rg HeapDetermineColumnsInfo
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+rg HeapDetermineColumnsInfo
+fg
+make
+make install
+ls build/
+ls build/bin/
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+export LC_CTYPE="C"
+export LC_ALL="C"
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make installcheck
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make check
+nvim ./src/test/regress/log/initdb.log 
+more .envrc 
+which direnv
+direnv allow .
+cd .
+env | grep LC
+env LC_ALL=C make check
+nvim ./src/test/regress/log/initdb.log 
+more .envrc 
+env LC_ALL="C" LC_CTYPE="C" make check
+nvim ./src/test/regress/log/initdb.log 
+echo $SHELL
+fg
+cd ws/postgresql/
+ls
+ls _
+ls _/.direnv/
+rm -rf _/.direnv
+mv _/NOTES  .
+jetbrains-toolbox &
+more NO
+ls
+./build/bin/psql -h localhost postgres
+sudo nvim /etc/sysctl.d/10-ptrace.con
+sudo vi /etc/sysctl.d/10-ptrace.con
+sudo /sbin/setcap CAP_SYS_PTRACE=+eip /usr/bin/gdb
+which gdb
+sudo /sbin/setcap CAP_SYS_PTRACE=+eip $(which gdb)
+./build/bin/psql -h localhost postgres
+echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+./build/bin/psql -h localhost postgres
+cd 
+cd ws
+ls /media/gburd/03B3-4DCF/
+tar -cvzf /media/gburd/03B3-4DCF/pg-31122024.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-02012025-mid-rel17-rebase.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-02012025-post-rel17-rebase-precompile.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-02012025-post-rel17-rebase-compiles.tgz postgresql
+df -kl
+ls /media/gburd/03B3-4DCF/
+file /media/gburd/03B3-4DCF/
+file /media/gburd/03B3-4DCF/*
+ls
+./build/bin/psql -h localhost postgres
+cd postgresql
+./build/bin/psql -h localhost postgres
+tig
+./build/bin/psql -h localhost postgres
+which code
+code &
+./build/bin/psql -h localhost postgres
+which gdb
+./build/bin/psql -h localhost postgres
+pwd
+./build/bin/psql -h localhost postgres
+git st
+make installcheck
+cd ..
+tar -cvzf /media/gburd/03B3-4DCF/pg-30122024.tgz postgresql
+cd postgresql/
+nix develop
+cd ws/postgresql/
+nix develop
+cd .
+cd ..
+cd postgresql/
+which direnv
+nvim ~/.bashrc 
+eval "$(direnv hook bash)"
+env | grep LC
+make check
+nvim src/test/regress/log/initdb.log
+nvim .envrc 
+direnv allow
+make check
+sudo locale-gen en_US.UTF-8
+sudo dpkg-reconfigure locales 
+make check
+which setlocale
+locale -a
+locale-gen en_US.UTF-8
+sudo locale-gen en_US.UTF-8
+locale
+vi /etc/environment
+vi /etc/locale.gen 
+vi /etc/locale.conf 
+locale -a
+emacs -nw .envrc 
+direnv allow
+make check
+which sh
+file /bin/sh
+vi /home/gburd/ws/postgresql/src/test/regress/log/postmaster.log
+rg "starting postmaster"
+find . -name pg_regress.c
+emacs -nw src/test/regress/pg_regress.c
+make && make install
+make check
+git st
+git co src/test/regress/pg_regress.c 
+git st
+tig
+git commit -m "fix locale" .envrc
+git st
+git commit -m "REL_14 adjustments" .
+tig
+git rebase -i HEAD~4
+git st
+git branch
+git switch -c gregburd/phot/rel-15-stable
+git rebase origin/REL_15_STABLE
+git st
+emacs -nw doc/src/sgml/release-14.sgml doc/src/sgml/release-15.sgml 
+git rm doc/src/sgml/release-14.sgml
+git st
+git rebase --continue
+git st
+git rm doc/src/sgml/release-14.sgml
+git rebase --continue
+git st
+git rm doc/src/sgml/release-14.sgml
+git rebase --continue
+git st
+git rm doc/src/sgml/release-14.sgml
+git rebase --continue
+git st
+ls src/test/regress/
+emacs -nw contrib/postgres_fdw/expected/postgres_fdw.out 
+fg
+emacs -nw contrib/postgres_fdw/option.c 
+git rebase --abort
+git branch
+tig
+git log --graph --decorate --onelin
+git log --graph --decorate --oneline
+
+git st
+emacs -nw src/include/access/htup_details.h 
+fg
+git st
+git rebase --continue
+git st
+fg
+emacs -nw src/backend/replication/logical/decode.c 
+rg DecodeHeap2Op
+fg
+rg rm_decode
+fg
+find . -name rmgr.c
+fg
+rg ReorderProcessBufferXid
+fg
+rg ReorderBufferProcessXid
+fg
+rg GetRmgr
+fg
+rg RmgrTable
+find . -name rmgrlist.h
+fg
+rg heap2_decode
+fg
+git st
+fg
+rg '>>>>>'
+fg
+rg heap2_decode
+rg heap3_decode
+git st
+git rebase --continue
+git add src/include/replication/decode.h 
+git rebase --continue
+git st
+fg
+emacs -nw src/backend/access/heap/heapam.c
+fg
+emacs -nw src/backend/access/heap/pruneheap.c 
+fg
+emacs -nw src/include/access/heapam_xlog.h 
+fg
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+emacs -nw src/backend/executor/nodeModifyTable.c 
+fg
+rg UpdateContext
+fg
+git st
+fg
+git rebase --continue
+tig
+more .history
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make clean
+ls
+git st
+rm src/test/regress/expected/create_function_0.out 
+rm src/test/regress/expected/create_function_1.out 
+rm src/test/regress/expected/create_function_2.out 
+rm src/test/regress/sql/create_function_0.sql 
+rm src/test/regress/sql/create_function_1.sql 
+rm src/test/regress/sql/create_function_2
+rm src/test/regress/sql/create_function_2.sql 
+git st
+rm -rf test-db
+ls build
+mv build /tmp
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+git st
+make
+emacs -nw src/backend/access/heap/heapam.c 
+make
+fg
+emacs -nw src/backend/access/heap/pruneheap.c 
+make
+fg
+emacs -nw src/backend/executor/nodeModifyTable.c 
+make
+emacs -nw src/backend/replication/logical/decode.c 
+make
+mkdir build
+make install
+make check
+emacs -nw src/test/regress/pg_regress.c
+make && make install
+make check
+git st
+git commit -m "REL_15 adjustments" .
+git st
+tig
+git reset HEAD^
+gi tst
+git st
+git co src/test/regress/pg_regress.c
+git st
+git commit -m "REL_15 adjustments" .
+git st
+git switch -c gregburd/phot/rel-16-stable
+git rebase --onto origin/REL_16_STABLE origin/REL_15_STABLE
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+emacs -nw src/backend/replication/logical/decode.c 
+fg
+rg DecodeRecordIntoReorderBuffer
+fg
+rg DecodeRecordIntoRorderBuffer
+fg
+git st
+emacs -nw src/backend/replication/logical/decode.c 
+git add src/backend/replication/logical/decode.c 
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+emacs -nw src/backend/access/index/genam.c
+emacs -nw src/backend/access/nbtree/nbtpage.c 
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/pruneheap.c 
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+git st
+emacs -nw src/backend/access/heap/heapam_handler.c 
+fg
+emacs -nw src/backend/access/table/tableam.c 
+emacs -nw src/backend/commands/copyfrom.c 
+fg
+emacs -nw src/backend/executor/execIndexing.c 
+emacs -nw src/backend/executor/execReplication.c 
+rg ExecInsertIndexTuples
+
+emacs -nw src/backend/executor/nodeModifyTable.c 
+emacs -nw src/include/access/heapam.h
+emacs -nw src/include/access/tableam.h 
+emacs -nw src/include/executor/executor.h 
+git st
+rg -l ExecInsertIndexTuples
+emacs -nw $(rg -l ExecInsertIndexTuples)
+git st
+git add src/backend/commands/copyfrom.c 
+git st
+git add src/backend/executor/execReplication.c 
+git add src/backend/executor/nodeModifyTable.c 
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/executor/nodeModifyTable.c 
+emacs -nw src/backend/replication/logical/decode.c 
+git st
+git rebase --continue
+git st
+rm src/include/parser/gram.h
+ls build/
+rm -rf build
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+emacs -nw src/include/access/tableam.h 
+fg
+make
+emacs -nw src/include/access/heapam.h
+make
+emacs -nw src/backend/access/heap/heapam.c
+fg
+make
+find . -name bitmapset.c
+emacs -nw src/backend/nodes/bitmapset.c 
+fg
+make
+fg
+emacs -nw src/backend/access/heap/pruneheap.c 
+make
+find . -name heapdesc.c
+emacs -nw src/backend/access/rmgrdesc/heapdesc.c 
+make
+emacs -nw src/backend/replication/logical/decode.c 
+make
+make check
+git co src/test/regress/pg_regress.c
+emacs -nw src/test/regress/pg_regress.c
+make && make install
+ls build/
+make check
+vi .history 
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+vi .history 
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf test-db/
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make check
+vi /home/gburd/ws/postgresql/src/test/regress/regression.diffs
+vi /home/gburd/ws/postgresql/src/test/regress/regression.out
+git branch
+git branch -a | grep _STABLE
+vi /home/gburd/ws/postgresql/src/test/regress/regression.out
+vi /home/gburd/ws/postgresql/src/test/regress/regression.diffs 
+make clean
+git st
+git diff
+git st
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+make check
+git st
+git co src/test/regress/pg_regress.c
+git st
+git commit -m "REL_16 adjustments" .
+git switch -c gregburd/phot/rel-17-stable
+git rebase --onto origin/REL_17_STABLE origin/REL_16_STABLE
+git st
+make clean
+git st
+git st | grep src/backend
+git st | grep src/backend | awk '{print $2}'
+git st | grep '??' | grep src/backend | awk '{print $2}'
+for f in $(git st | grep '??' | grep src/backend | awk '{print $2}'); do; echo $f; done
+for f in $(git st | grep '??' | grep src/backend | awk '{print $2}'); do echo $f; done
+for f in $(git st | grep '??' | grep src/backend | awk '{print $2}'); do rm $f; done
+git st
+rm src/include/catalog/header-stamp 
+rm -rf build test-db
+git st
+emacs -nw src/include/access/heapam_xlog.h 
+fg
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c
+rg heap_xlog_deserialize_prune_and_freeze
+fg
+git checkout --merge src/backend/access/heap/heapam.c
+git st
+fg
+git checkout --merge src/backend/access/rmgrdesc/heapdesc.c
+fg
+git checkout --merge src/include/access/heapam_xlog.h
+fg
+git st
+fg
+rg heap_prune_chain
+fg
+rg likely
+fg
+git st
+fg
+git st
+fg
+rg heap_xlog_deserialize_prune_and_freeze
+fg
+rg RedirectHeaderData
+fg
+rg heap_xlog_deserialize_prune_and_freeze
+fg
+rg XLHP_HAS_REDIRECTION
+fg
+rg log_heap_prune_and_freeze
+fg
+git st
+fg
+rg heap_page_prune_execute
+fg
+rg HAS_REDIRECTION_DATA
+fg
+git st
+git add src/backend/access/heap/pruneheap.c src/backend/access/heap/vacuumlazy.c  src/backend/access/rmgrdesc/heapdesc.c src/include/access/heapam.h src/include/access/heapam_xlog.h 
+git st
+git rebase --continue
+git st
+fg
+emacs -nw src/backend/access/heap/pruneheap.c 
+git st
+fg
+git st
+emcas -nw src/backend/executor/nodeModifyTable.
+emacs -nw src/backend/executor/nodeModifyTable.c
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/pruneheap.c
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/pruneheap.c
+git st
+git rebase --continue
+git st
+rm src/backend/access/heap/pruneheap_.c 
+git st
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert
+make
+emacs -nw src/backend/access/heap/heapam.c
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+make
+fg
+rg GetModifiedColumnsBitmap
+fg
+make
+fg
+make
+fg
+git st
+fg
+git diff src/include/access/heapam_xlog.h
+make
+fg
+make
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+./build/bin/psql -h localhost postgres
+jobs
+kill -9 `jobs -ps`
+jobs
+./build/bin/psql -h localhost postgres
+pwd
+./build/bin/psql -h localhost postgres
+rg pgstat_count_heap_update
+./build/bin/psql -h localhost postgres
+rg onlySummarizing
+./build/bin/psql -h localhost postgres
+tig
+./build/bin/psql -h localhost postgres
+cd ws/postgresql/
+nix develop
+code &
+sudo /sbin/setcap CAP_SYS_PTRACE=+eip $(which gdb)
+code 
+which gdb
+locate gdb
+jetbrains-toolbox 
+which lldb
+sudo sysctl -w kernel.yama.ptrace_scope=0
+code
+pgrep jbrains
+pgrep jetbrains
+ps -ef | grep jetbrains
+pgrep java
+pgrep clion
+pkill clion
+pkill jetbrains-toolbox
+pkill jetbrains
+ps -ef | grep jetbrains
+rg -tc -A2 bms_next_match
+rg -tc bms_next_match
+rg -tc -A2 bms_next_member
+rg -tc -A2 bms_next_member | grep FirstLow
+pkill postgres
+pgrep postgres
+ps -ef | grep postgres
+kill -9 14537
+ps -ef | grep postgres
+pkill 14722
+ps -ef | grep postgres
+pkill -9 14722
+ps -ef | grep postgres
+pgrep gdb
+pkill -9 14722
+ps -ef | grep postgres
+sudo kill -9 14722
+ps -ef | grep postgres
+rg ItemIdIsNormal
+rg ItemIdGetLength
+rg ItemIdSetLength
+rg ItemIdSetRedirectWithData
+ls
+cp -r test-db/ _test-db-02
+cd ..
+tar -cvzf /media/gburd/03B3-4DCF/pg-03012025.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-04012025-18devel-merge.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-04012025-18devel-check.tgz postgresql
+cd postgresql/
+emacs -nw src/backend/access/heap/heapam.c
+rg 'int a = attr'
+fg
+rg TM_Summarizing
+rg TU_Summarizing
+rg onlySummarizing
+rg ExecBitmapIndexScan
+cd ..
+tar -cvzf /media/gburd/03B3-4DCF/pg-06012025-18devel-check.tgz postgresql
+tar -cvzf /media/gburd/03B3-4DCF/pg-07012025-18devel.tgz postgresql
+which pg_indent_bsd
+cd postgresql/
+which pg_indent_bsd
+which pg_indent
+cd ..
+ls
+git clone https://git.postgresql.org/git/pg_bsd_indent.git
+cd pg_bsd_indent/
+cp ../postgresql/flake.nix .
+cp ../postgresql/.envrc .
+direnv allow
+git st
+git add flake.nix
+cd .
+cd ..
+cd pg_bsd_indent/
+ls
+make PG_CONFIG=/home/gburd/ws/postgresql/build/bin/pg_config 
+more .envrc 
+find . -name pg_bsd_indent
+file ./pg_bsd_indent 
+ls ~/bin
+cp ./pg_bsd_indent ~/bin
+wihch pg_bsd_indent
+which pg_bsd_indent
+cd ../postgresql/
+emacs -nw flake.nix 
+fg
+which perl
+fg
+which pg_indent
+file src/tools/pgindent/typedefs.list 
+wget -O src/tools/pgindent/typedefs.list https://buildfarm.postgresql.org/cgi-bin/typedefs.pl
+git st
+git diff src/tools/pgindent/typedefs.list
+cd src/tools/pgindent/
+ls
+more README 
+which perltidy
+perltidy --version
+fg
+ls
+file pgindent
+git st
+more README 
+cd ../../..
+emacs -nw flake.nix 
+which perltidy
+which perl
+more src/tools/pgindent
+more src/tools/pgindent/README 
+sudo apt search metacpan
+sudo apt install metacpan
+sudo apt search cpanm
+PATH="/home/gburd/perl5/bin${PATH:+:${PATH}}"; export PATH;
+PERL5LIB="/home/gburd/perl5/lib/perl5${PERL5LIB:+:${PERL5LIB}}"; export PERL5LIB;
+PERL_LOCAL_LIB_ROOT="/home/gburd/perl5${PERL_LOCAL_LIB_ROOT:+:${PERL_LOCAL_LIB_ROOT}}"; export PERL_LOCAL_LIB_ROOT;
+PERL_MB_OPT="--install_base \"/home/gburd/perl5\""; export PERL_MB_OPT;
+PERL_MM_OPT="INSTALL_BASE=/home/gburd/perl5"; export PERL_MM_OPT;
+more src/tools/pgindent/README 
+git st
+git diff
+git st
+git commit -m "https://www.postgresql.org/message-id/flat/CABwTF4VBTKLORbKMOT8qi7W76vQ5hsV73Q%2BraPpXFveoiWUwBQ%40mail.gmail.com" src/test/regress/pg_regress.c 
+git commit -m "update typedefs.list" src/tools/pgindent/typedefs.list 
+git st
+git commit -m "add perl to flake" flake.nix
+git st
+git commit -m "cleanup" .
+more src/tools/pgindent/README 
+perltidy --version
+pwd
+./src/tools/pgindent/pgindent .
+which pg_bsd_indent
+ls /usr/local/bin
+mv ~/bin/pg_bsd_indent /usr/local/bin
+sudo mv ~/bin/pg_bsd_indent /usr/local/bin
+file /usr/local/bin/pg_bsd_indent 
+ls -lart /usr/local/bin/pg_bsd_indent 
+reset; ./src/tools/pgindent/pgindent .
+pg_bsd_indent --version
+sudo rm /usr/local/bin/pg_bsd_indent 
+rg '2.1.2'
+rg '2\.1\.2'
+cd src/tools/pg_bsd_indent/
+ls
+make
+cp pg_bsd_indent ~/bin/
+cd ../..
+cd ..
+reset; ./src/tools/pgindent/pgindent .
+git st
+make clean
+git st
+more pgsrcg0S3h.BAK 
+mv pgsrcg0S3h.BAK /tmp
+reset; ./src/tools/pgindent/pgindent .
+ls build/
+ls
+rm -rf test-db
+rm -rf build
+reset; ./src/tools/pgindent/pgindent .
+git st
+tig
+git restore .
+git st
+git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 6390c0dc0004439915b9cd648ef36c64ffa73c6a
+git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 6390c0dc0004439915b9cd648ef36c64ffa73c6a | grep \.[ch]
+git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 6390c0dc0004439915b9cd648ef36c64ffa73c6a | egrep '\.c$|\.h$'
+for file in $(git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 6390c0dc0004439915b9cd648ef36c64ffa73c6a | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+git restore .
+git commit --amend .
+tig
+for file in $(git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 c37a74db7ce717bae2be7c8d792a618bc848d6bc | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+git restore .
+git st
+for file in $(git diff --name-only c57d2e169a75490f08194e7e9393a44ebb4576a3 35527be98dd24e8b73f922165128e5d3d5412901 | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+
+git commit -m "pgindent" .
+tig
+mkdir /media/gburd/03B3-4DCF/pg-patch-sets
+mkdir /media/gburd/03B3-4DCF/pg-patch-sets/phot
+tig
+touch /media/gburd/03B3-4DCF/pg-patch-sets/phot/v1-2f8b4007dbbac5aa9605414974c802e415176df4
+git format-patch -v1 master
+ls v1-00*
+rm v1-00*
+git st
+git format-patch -v1 2f8b4007dbbac5aa9605414974c802e415176df4
+mv v1-00* /media/gburd/03B3-4DCF/pg-patch-sets/phot/
+git st
+file pgsrcquQjT.BAK 
+more pgsrcquQjT.BAK 
+rm pgsrcquQjT.BAK 
+git st
+git diff --name-only ^HEAD HEAD
+git diff --name-only HEAD~1 HEAD
+git diff --name-only HEAD HEAD^
+git diff --name-only HEAD^ HEAD
+git st
+git diff --name-only HEAD
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+git diff --name-only HEAD
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg IndexGetAttrBitmap
+git st
+git diff
+git commit -m "cleanup and docs" .
+rg IndexGetAttrBitmap
+git diff
+git st
+git diff
+tig
+git commit -m "cleanup" .
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+./src/tools/pgindent/pgindent src/backend/utils/cache/relcache.c
+./src/tools/pgindent/pgindent src/backend/access/heap/heapam.c
+git st
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+git branch
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg ExecInsertIndexTuples
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+git st
+git branch
+git switch -c gregburd/phot/default-hot
+git st
+git commit -m "merged default-hot" .
+git co gregburd/phot/devel
+git st
+tig
+git fetch
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg tuple_update
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg tuple_update
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg INDEX_ATTR_BITMAP_EXPRESSION
+rg rd_expressionattr
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+rg TU_Update
+emacs -nw $(rg -l TU_Update)
+rg onlySummarizing
+fg
+emacs -nw $(rg -l onlySummarizing)
+for file in $(git diff --name-only HEAD); do ./src/tools/pgindent/pgindent $file; done
+git diff --name-only HEAD
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+git diff --name-only HEAD | egrep '.c$|.h$'
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+rg -A2 ri_NumIndices
+reset; rg -A2 '->ri_NumIndices'
+reset; rg -A2 '\->ri_NumIndices'
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+rg -A5 'table_tuple_update\('
+reset; rg -A7 'table_tuple_update\('
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+rg 'bms_free\(modified_indexes\)'
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+git diff --name-only HEAD | egrep '.c$|.h$'
+git diff --name-only HEAD | egrep '\.c$|\.h$'
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+rg enable_distinct_reordering
+emacs -nw src/backend/utils/misc/postgresql.conf.sample 
+emacs -nw doc/src/sgml/config.sgml
+git st
+rm pgsrcbqGvn.BAK 
+rg 'unrecognized configuration parameter'
+rg -tc 'unrecognized configuration parameter'
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+./src/tools/pgindent/pgindent --show-diff .
+./src/tools/pgindent/pgindent --help
+./src/tools/pgindent/pgindent --diff .
+pgrep gdb
+ps -ef | grep gdb
+pwd
+cd ws/postgresql/
+nix develop
+code &
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make check
+emacs -nw src/test/regress/pg_regress.c
+make && make install
+
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+ls
+mv test-db/ _test-db-01
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf test-db/
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset;make check
+git st
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+make clean
+git st
+ls biuld
+ls build
+rm -rf build
+./configure --help
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make
+make install
+reset;make check
+git st
+git co src/test/regress/pg_regress.c
+git commit -m "REL_17 adjustments" .
+git branch -a | grep devel
+git branch -a | grep dev
+git branch -a | grep 18
+git branch -a
+git branch -a | grep REL_18
+git tag -a
+git tag -l
+git tag -l | grep devel
+git switch -c gregburd/phot/18devel
+git fetch
+git rebase origin/master
+git st
+git rebase --abort
+git rebase --onto origin/master origin/REL_17_STABLE
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+rg HEAP2_CLEAN
+rg HEAP?_CLEAN
+rg HEAP_CLEAN
+rg "We're about to remove tuples"
+rg "full-page image"
+rg "If we have a full-page image"
+fg
+git rebase --abort
+cp src/backend/access/heap/heapam.c src/backend/access/heap/heapam_.c 
+git rebase --onto origin/master origin/REL_17_STABLE
+emacs -nw src/backend/access/heap/heapam_.c src/backend/access/heap/heapam_xlog.c 
+meld src/backend/access/heap/heapam_xlog_.c src/backend/access/heap/heapam_xlog.c &
+fg
+meld src/backend/access/heap/heap_xlog_.c src/backend/access/heap/heapam_xlog.c &
+fg
+git st
+git rebase --continue
+git add src/backend/access/heap/heapam_xlog.c 
+git st
+git rebase --continue
+git st
+cp src/backend/access/heap/heapam.c src/backend/access/heap/heapam_.c 
+rm src/backend/access/heap/heapam_.c 
+rm src/backend/access/heap/heap_xlog_.c 
+emacs -nw src/backend/access/heap/heapam.c
+meld src/backend/access/heap/heapam_xlog_1.c src/backend/access/heap/heapam_xlog.c &
+git st
+git add src/backend/access/heap/heapam_xlog.c 
+git rebase --continue
+git st
+emacs -nw src/backend/executor/execReplication.c 
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/access/heap/heapam.c 
+touch src/backend/access/heap/heapam_1.c
+fg
+meld src/backend/access/heap/heapam_1.c src/backend/access/heap/heapam_xlog.c &
+git st
+fg
+git st
+git add src/backend/access/heap/heapam_xlog.c
+git st
+git rebase --continue
+git st
+tig
+
+make clean
+./configure CFLAGS="-ggdb -Og -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make clean
+ls
+git st
+rm -rf build
+rm src/backend/access/heap/heapam_1.c 
+rm src/backend/access/heap/heapam_xlog_1.c 
+rm src/include/pg_config_ext.h 
+rm src/include/stamp-ext-h 
+mv test-db _test-db-17
+git st
+make
+echo $?
+git st
+make check
+emacs -nw src/test/regress/pg_regress.c
+make check
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+make check-world
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+find . -name foreign_key
+find . -name foreign_key\*
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+make check-world
+fg
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+make check-world
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+make check-world
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+make check
+git st
+git co src/test/regress/pg_regress.c
+tig
+git commit -m "18devel adjustments" .
+tig
+git st
+make clean
+git st
+rm -rf build test-db _test-db-01 _test-db-02/ _test-db-17/
+git st
+ls _
+ls -a _
+rm -rf _
+ls
+git st
+./configure --help
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+git branch
+git switch -c gregburd/phot/devel
+git fetch
+git rebase --onto origin/master 30f017626308a06cf0c0c82a706a1ba1b07df34a
+git st
+tig
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=0" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+emacs -nw src/test/regress/pg_regress.c
+make && make install && make check
+emcas -nw /nix/store/lw21wr626v5sdcaxxkv2k4zf1121hfc9-glibc-2.40-36-dev/include/features.h
+emacs -nw /nix/store/lw21wr626v5sdcaxxkv2k4zf1121hfc9-glibc-2.40-36-dev/include/features.h
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -U_FORTIFY_SOURCE" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+rg FORTIFY_SOURCE
+emacs -nw /nix/store/lw21wr626v5sdcaxxkv2k4zf1121hfc9-glibc-2.40-36-dev/include/features.h
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+./configure CFLAGS="-ggdb -O0 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=0" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+tig
+git st
+git commit --amend .
+tig
+make && make install && make check
+git st
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install && make check
+make
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+ls
+gdb ./build/bin/postgres test-db/core 
+ls test-db
+find . -name core\*
+cat /proc/sys/kernel/core_pattern
+ulimit -c unlimited
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+file core
+find . -name core\*
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+ls -l build/bin/
+gdb ./build/bin/initdb test-db/core 
+gdb ./build/bin/postgres test-db/core 
+make clean
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+ls test-db/
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+tig
+git rebase --onto origin/master 2f8b4007dbbac5aa9605414974c802e415176df4
+make clean
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check
+git branch
+
+git st
+git merge --abort
+git co gregburd/phot/default-hot
+git rebase --onto origin/master 2f8b4007dbbac5aa9605414974c802e415176df4
+git co gregburd/phot/devel
+git co gregburd/phot/default-hot
+tig
+git co gregburd/phot/devel
+git cherry-pick 56fd57c1ad2c80b78cd18349415cf70d732022fd
+tig
+reset; make
+rg GetPerTupleExprContext
+make
+rg -th FormIndexDatum
+make
+rg -th get_typlenbyval
+make
+mak
+make
+rg simple_table_tuple_update
+make
+rg -th ExecInsertIndexTup
+make
+rg CatalogIndexInsert
+make
+rg -l simple_table_tuple_update
+emacs -nw $(rg -l simple_table_tuple_update)
+make
+mamke
+make
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rg -th bms_make_singleton
+rg -th bms_make_empty
+rg -tc bms_make_empty
+rg -tc bms_make_singleton
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core 
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+
+reset; make check
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+find . -name \*constraints\*
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset; make check
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+reset; make check
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+make check
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+reset; make check-world
+fg
+emacs -nw src/test/isolation/output_iso/regression.diffs
+make && make install
+reset; make check-world
+fg
+find . -name insert-conflict-do\*
+fg
+make -n check TESTS="insert-conflict-do-update2"
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset; make check-world
+fg
+emacs -nw src/test/regress/regression.diffs src/test/regress/regression.out
+emacs -nw src/test/isolation/output_iso/regression.diffs 
+find . -name insertconflict-\*
+fg
+find . -name \*specconflict\*
+fg
+make && make install
+reset; make check-world
+fg
+reset; make check
+fg
+make && make install
+reset; make check-world
+fg
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+make && make install
+fg
+reset; make check-world
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+strings build/bin/postgres | grep enable_expression_checks
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make clean
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+fg
+reset; make check
+emacs -nw src/test/isolation/output_iso/regression.diffs 
+emcas -nw src/test/regress/regression.diffs
+emacs -nw src/test/regress/regression.diffs
+reset; make check
+emacs -nw src/test/regress/regression.diffs
+reset; make check-world
+emacs -nw src/test/isolation/output_iso/regression.diffs 
+ffg
+fg
+make check-world TESTS="insert-conflict-specconflict"
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make && make install
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make && make install
+make check-world
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make check-world
+fg
+rg enable_expresion_checks
+rg enable_expression_checks
+emacs -nw src/backend/utils/misc/postgresql.conf.sample 
+fg
+make && make install
+make check-world
+emacs -nw src/test/regress/regression.diffs
+emacs -nw src/test/regress/expected/sysviews.out 
+make check-world
+fg
+emacs -nw src/test/regress/expected/sysviews.out 
+emacs -nw src/backend/utils/misc/postgresql.conf.sample 
+make && make install
+make check-world
+fg
+git st
+fg
+git st
+git diff src/test/isolation/specs/insert-conflict-specconflict.spec
+cp src/test/isolation/specs/insert-conflict-specconflict.spec /tmp
+
+make && make install
+make check-world
+fg
+cp /tmp/insert-conflict-specconflict.spec  src/test/isolation/specs/insert-conflict-specconflict.spec
+fg
+make && make install
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+make check-world
+fg
+file /home/gburd/ws/postgresql/src/test/isolation/expected/insert-conflict-specconflict.out
+find . -name insert-conflict-specconflict.out
+cp ./src/test/isolation/output_iso/results/insert-conflict-specconflict.out /home/gburd/ws/postgresql/src/test/isolation/expected/insert-conflict-specconflict.out
+git st
+make check-world
+fg
+emacs -nw contrib/pg_surgery/regression.diffs 
+find . -name heap_surgery\*
+fg
+make && make install
+make check-world
+echo $?
+git st
+tig
+EDITOR=emacs git commit .
+git branch
+git fetch
+tig
+git rebase --onto origin/master ebd8fc7e47fdad6adb68aad341d95c541d7325c3
+make clean
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check-world
+echo $?
+git branch
+git switch -c gregburd/phot/patch-v2
+tig
+git rebase -i HEAD~21
+tig
+git rebaes -i HEAD~2
+git rebase -i HEAD~2
+tig
+make clean
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+git branch
+git co gregburd/phot/devel
+ls
+cp flake.* .envrc /tmp
+git co gregburd/phot/patch-v2
+cp /tmp/.envrc /tmp/flake.* .
+git add flake.nix
+cd .
+cd ..
+cd postgresql/
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check-world
+more .envrc 
+locale
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+more /etc/default/locale
+sudo locale-gen en_US.UTF-8
+sudo locale-gen C.utf8
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+make check-world
+emacs -nw tmp_install/log/install.log 
+git st
+
+emacs -nw tmp_install/log/install.log 
+git rm -f flake.nix flake.lock
+rm .envrc 
+git co gregburd/phot/devel
+git branch -m gregburd/phot/patch-v2 gregburd/phot/patch-v2.1 
+git branch
+git branch -m gregburd/phot/patch-v2.1 gregburd/phot/patch-v2-try1 
+git switch -c gregburd/phot/patch-v2
+git rebase -i HEAD~21
+tig
+cp /tmp/.envrc /tmp/flake.* .
+git add flake.nix
+cd .
+cd ..
+cd postgresql/
+emacs -nw src/test/regress/pg_regress.c
+make clean
+make && make install && make check-world
+emacs -nw tmp_install/log/install.log 
+fg
+find . -name heapfuncs.c
+git diff gregburd/phot/patch-v2 gregburd/phot/devel -- contrib/pageinspect/heapfuncs.c
+fg
+make && make install && make check-world
+emacs -nw tmp_install/log/install.log 
+make && make install && make check-world
+emacs -nw tmp_install/log/install.log 
+make && make install && make check-world
+emacs -nw contrib/pageinspect/regression.diffs 
+fg
+emacs -nw contrib/pageinspect/regression.diffs 
+find . -name page.\*
+fg
+cd contrib/pageinspect/
+ls
+make check
+fg
+make check
+fg
+cd ../..
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+make && make install
+(cd contrib/pageinspect && make check)
+fg
+rg tuple_data_split
+fg
+(cd contrib/pageinspect && make install)
+fg
+(cd contrib/pageinspect && make check)
+git st
+make check-world
+echo $?
+git st
+git co src/test/regress/pg_regress.c
+git diff src/backend/access/heap/pruneheap.c
+git st
+git rm -f flake.nix flake.lock
+git st
+tig
+git st
+tig
+git commit -m "fixes" .
+tig
+git rebase -i HEAD~11
+tig
+git st
+mkdir /tmp/_
+mv /tmp/flake.* /tmp/_
+mv /tmp/.envrc /tmp/_
+mv .envrc .direnv/ .history .idea/ .vscode/ NOTES TEST? /tmp/_
+rm -rf test-db
+rm -rf build
+git st
+rm .#TEST6
+mv TEST /tmp/_
+make maintainer-clean
+git st
+tig
+touch /media/gburd/03B3-4DCF/pg-patch-sets/phot/v2-597b1ffbf12352a3863a894f16741864aaf2242f
+ls /media/gburd/03B3-4DCF/pg-patch-sets/phot/
+vi /tmp/history
+vi /tmp/_/history
+vi /tmp/_/.history
+git format-patch -v2 597b1ffbf12352a3863a894f16741864aaf2242f
+mv v2-* /media/gburd/03B3-4DCF/pg-patch-sets/phot/
+git fetch
+tig
+git branch
+git switch gregburd/phot/patch-v3
+git rebase --onto origin/master 597b1ffbf12352a3863a894f16741864aaf2242f
+tig
+git branch
+tig
+git switch -c gregburd/phot/devel-v3
+cp -r /tmp/_/.envrc /tmp/_/.history /tmp/_/.idea /tmp/_/.vscode /tmp/_/flake.nix /tmp/_/flake.lock .
+git st
+git add flake.nix flake.lock 
+cd ../
+cd postgresql/
+./configure CFLAGS="-ggdb -O1 -g3 -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make && make install && make check-world
+make check
+sudo locale-gen C.utf8
+make check
+emacs -nw src/test/regress/pg_regress.c
+make && make check
+make check-world
+echo $?
+fg
+cd ws/postgresql/
+code &
+ls
+nix develop
+cd ws/postgresql/
+rg extract_value
+rg gin_extract_value_bytea
+emacs -nw contrib/btree_gin/btree_gin--1.0.sql
+rg gin_extract_value_bytea
+fg
+rg gin_extract_value
+fg
+rg extractValue
+emacs -nw doc/src/sgml/xindex.sgml 
+rg index_form_datum
+rg form_index_datum
+rg form_index_tuple
+rg index_form_tuple
+emacs -nw src/backend/access/gin/ginentrypage.c 
+rg GinSetNPosting
+fg
+rg GinGetPosting
+fg
+rg rum_btree_extract_value
+fg
+rg gin_btree_extract_value
+fg
+strings build/bin/postgres | grep extract_value
+strings build/bin/postgres | grep gin_btree
+nm -am build/bin/postgres | grep gin_btree
+file ./build/bin/postgres 
+nm -an build/bin/postgres | grep gin_btree
+nm -an build/bin/postgres
+nm -P ./build/bin/postgres | awk '$2 == "T" {print "b " $1}'
+nm -P ./build/bin/postgres | awk '$2 == "T" {print "b " $1}' | grep extract
+./build/bin/psql -h localhost postgres
+nix develop
+./build/bin/psql -h localhost postgres
+cd ws/postgresql/
+nix develop
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+cd ws/postgresql/
+nix develop
+emacs -nw src/test/regress/pg_regress.c
+code
+git st
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make clean
+make && make install
+git st
+git stash
+git st
+git fetch
+git branch
+git rebase origin/master
+git stash pop
+rg get_opfamily_member_for_cmptype
+for file in $(git diff --name-only HEAD | egrep '.c$|.h$'); do ./src/tools/pgindent/pgindent $file; done
+make && make install
+make check-world
+echo $?
+./configure --help
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make check-world
+rg -tc prune

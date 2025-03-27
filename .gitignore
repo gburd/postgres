@@ -43,3 +43,9 @@ lib*.pc
 /Release/
 /tmp_install/
 /portlock/
+
+/build
+/test-db
+/.idea
+/.vscode
+/.direnv
