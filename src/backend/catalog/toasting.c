@@ -482,8 +482,7 @@ create_toast_table_generic(Relation rel, Oid toasterid, Oid toastOid, Oid toastI
 
 bool
 create_toast_table(Relation rel, Oid toasterid, Oid toastOid, Oid toastIndexOid,
-	Datum reloptions, LOCKMODE lockmode, bool check,
-	Oid OIDOldToast)
+	Datum reloptions, LOCKMODE lockmode, bool check, Oid OIDOldToast)
 {
 	Oid	relid = RelationGetRelid(rel);
 	Oid	toastrelid;

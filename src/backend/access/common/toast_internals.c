@@ -1104,12 +1104,13 @@ toast_write_slice(Relation toastrel, Relation *toastidxs,
 		{
 			TM_Result	result;
 			TM_FailureData tmfd;
+			TU_UpdateIndexes update_indexes;
 			LockTupleMode lockmode;
 
 			result = heap_update(toastrel, &old_tid, toasttup,
 								 mycid, InvalidSnapshot,
 								 true, /* wait for commit */
-								 &tmfd, &lockmode);
+								 &tmfd, &lockmode, &update_indexes);
 
 			switch (result)
 			{

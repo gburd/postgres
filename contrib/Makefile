@@ -14,7 +14,6 @@ SUBDIRS = \
 		bloom		\
 		btree_gin	\
 		btree_gist	\
-		bytea_toaster	\
 		citext		\
 		cube		\
 		dblink		\

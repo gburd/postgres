@@ -5547,8 +5547,8 @@ RelationGetIdentityKeyBitmap(Relation relation)
 	indexDesc = RelationIdGetRelation(replidindex);
 
 	if (!RelationIsValid(indexDesc))
-		elog(ERROR, "could not open relation with OID %u",
-			 relation->rd_replidindex);
+		Assert(0); //elog(ERROR, "could not open relation with OID %u",
+			 //relation->rd_replidindex);
 
 	/* Add referenced attributes to idindexattrs */
 	for (i = 0; i < indexDesc->rd_index->indnatts; i++)

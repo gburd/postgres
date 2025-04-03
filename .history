@@ -1945,3 +1945,7 @@ echo $?
 ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
 make check-world
 rg -tc prune
+cd ws/postgresql/
+git branch 
+more .git/config 
+history | grep indent
