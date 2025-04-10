@@ -335,7 +335,7 @@ CREATE VIEW vac_option_tab_counts AS
     THEN 'main' ELSE 'toast' END as rel,
   s.vacuum_count
   FROM pg_stat_all_tables s
-  LEFT JOIN pg_class c ON s.relid = c.reltoastrelid
+  LEFT JOIN pg_class c ON s.relid = ANY(c.reltoastrelids)
   WHERE c.relname = 'vac_option_tab' OR s.relname = 'vac_option_tab'
   ORDER BY rel;
 VACUUM (PROCESS_TOAST TRUE) vac_option_tab;
@@ -379,7 +379,7 @@ SELECT * FROM vac_option_tab_counts;
 SELECT relfilenode AS main_filenode FROM pg_class
   WHERE relname = 'vac_option_tab' \gset
 SELECT t.relfilenode AS toast_filenode FROM pg_class c, pg_class t
-  WHERE c.reltoastrelid = t.oid AND c.relname = 'vac_option_tab' \gset
+  WHERE t.oid = ANY(c.reltoastrelids) AND c.relname = 'vac_option_tab' \gset
 -- Only the toast relation is processed.
 VACUUM (PROCESS_MAIN FALSE, FULL) vac_option_tab;
 SELECT relfilenode = :main_filenode AS is_same_main_filenode
@@ -391,7 +391,7 @@ SELECT relfilenode = :main_filenode AS is_same_main_filenode
 
 SELECT t.relfilenode = :toast_filenode AS is_same_toast_filenode
   FROM pg_class c, pg_class t
-  WHERE c.reltoastrelid = t.oid AND c.relname = 'vac_option_tab';
+  WHERE t.oid = ANY(c.reltoastrelids) AND c.relname = 'vac_option_tab';
  is_same_toast_filenode 
 ------------------------
  f

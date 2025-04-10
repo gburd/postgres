@@ -2341,7 +2341,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		for (int i = 0; i < toast_nrelids; i++)
 		{
 			if (OidIsValid(toast_relids[i]))
-			vacuum_rel(toast_relids[i], NULL, &toast_vacuum_params);
+			vacuum_rel(toast_relids[i], NULL, &toast_vacuum_params, bstrategy);
 		}
 
 		pfree(toast_relids);
