@@ -242,10 +242,10 @@ ALTER TABLE ONLY test_replica_identity4
 ALTER TABLE ONLY test_replica_identity4_1
   ADD CONSTRAINT test_replica_identity4_1_pkey PRIMARY KEY (id);
 \d+ test_replica_identity4
-                    Partitioned table "public.test_replica_identity4"
- Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
---------+---------+-----------+----------+---------+---------+--------------+-------------
- id     | integer |           | not null |         | plain   |              | 
+                         Partitioned table "public.test_replica_identity4"
+ Column |  Type   | Collation | Nullable | Default | Storage | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+---------+--------------+-------------
+ id     | integer |           | not null |         | plain   |         |              | 
 Partition key: LIST (id)
 Indexes:
     "test_replica_identity4_pkey" PRIMARY KEY, btree (id) INVALID REPLICA IDENTITY
@@ -254,10 +254,10 @@ Partitions: test_replica_identity4_1 FOR VALUES IN (1)
 ALTER INDEX test_replica_identity4_pkey
   ATTACH PARTITION test_replica_identity4_1_pkey;
 \d+ test_replica_identity4
-                    Partitioned table "public.test_replica_identity4"
- Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
---------+---------+-----------+----------+---------+---------+--------------+-------------
- id     | integer |           | not null |         | plain   |              | 
+                         Partitioned table "public.test_replica_identity4"
+ Column |  Type   | Collation | Nullable | Default | Storage | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+---------+--------------+-------------
+ id     | integer |           | not null |         | plain   |         |              | 
 Partition key: LIST (id)
 Indexes:
     "test_replica_identity4_pkey" PRIMARY KEY, btree (id) REPLICA IDENTITY

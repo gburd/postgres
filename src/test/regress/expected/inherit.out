@@ -1099,20 +1099,20 @@ NOTICE:  merging definition of column "i" for child "inhtd"
 NOTICE:  merging definition of column "j" for child "inhtd"
 NOTICE:  merging definition of column "j" for child "inhtd"
 \d+ inhta
-                                   Table "public.inhta"
- Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
---------+---------+-----------+----------+---------+---------+--------------+-------------
- i      | integer |           |          |         | plain   |              | 
- j      | bigint  |           |          | 1       | plain   |              | 
+                                        Table "public.inhta"
+ Column |  Type   | Collation | Nullable | Default | Storage | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+---------+--------------+-------------
+ i      | integer |           |          |         | plain   |         |              | 
+ j      | bigint  |           |          | 1       | plain   |         |              | 
 Child tables: inhtb,
               inhtd
 
 \d+ inhtd
-                                   Table "public.inhtd"
- Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
---------+---------+-----------+----------+---------+---------+--------------+-------------
- i      | integer |           |          |         | plain   |              | 
- j      | bigint  |           |          | 1       | plain   |              | 
+                                        Table "public.inhtd"
+ Column |  Type   | Collation | Nullable | Default | Storage | Toaster | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+---------+--------------+-------------
+ i      | integer |           |          |         | plain   |         |              | 
+ j      | bigint  |           |          | 1       | plain   |         |              | 
 Inherits: inhta,
           inhtb,
           inhtc

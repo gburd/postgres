@@ -1015,6 +1015,7 @@ insert into rules_src values(22,23), (33,default);
 select * from rules_src;
 select * from rules_log;
 create rule r4 as on delete to rules_src do notify rules_src_deletion;
+\d+ rules_src
 
 --
 -- Ensure an aliased target relation for insert is correctly deparsed.

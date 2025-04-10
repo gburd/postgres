@@ -2718,8 +2718,6 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				else
 					def->toaster = NULL;
 
-				def->inhcount++;
-
 				/*
 				 * Merge of NOT NULL constraints = OR 'em together
 				 */
