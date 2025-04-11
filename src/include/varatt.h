@@ -118,12 +118,14 @@ typedef enum vartag_external
 #define VARTAG_IS_EXPANDED(tag) \
 	(((tag) & ~1) == VARTAG_EXPANDED_RO)
 
-#define VARTAG_SIZE(tag) \
-	((tag) == VARTAG_INDIRECT ? sizeof(varatt_indirect) : \
-	 VARTAG_IS_EXPANDED(tag) ? sizeof(varatt_expanded) : \
-	 (tag) == VARTAG_ONDISK ? sizeof(varatt_external) : \
-	 (tag) == VARTAG_CUSTOM ? offsetof(varatt_custom, va_toasterdata)	: \
-	 (AssertMacro(false), 0))
+#define VARTAG_SIZE(tag, PTR) (                              \
+	((tag) == VARTAG_INDIRECT)  ? sizeof(varatt_indirect) :   \
+	(VARTAG_IS_EXPANDED(tag)) ? sizeof(varatt_expanded)   :   \
+	((tag) == VARTAG_ONDISK)   ? sizeof(varatt_external)  :   \
+	((tag) == VARTAG_CUSTOM)   ? (offsetof(varatt_custom, va_toasterdata) + \
+									((varatt_custom *)(((varattrib_1b_e *) (PTR))->va_data))->va_toasterdatalen) : \
+	(AssertMacro(false), 0)                                  \
+)
 
 /*
  * These structs describe the header of a varlena object that may have been
@@ -309,7 +311,7 @@ typedef struct
 #define VARDATA_SHORT(PTR)					VARDATA_1B(PTR)
 
 #define VARTAG_EXTERNAL(PTR)				VARTAG_1B_E(PTR)
-#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(VARTAG_EXTERNAL(PTR)))
+#define VARSIZE_EXTERNAL(PTR)				(VARHDRSZ_EXTERNAL + VARTAG_SIZE(VARTAG_EXTERNAL(PTR), PTR))
 #define VARDATA_EXTERNAL(PTR)				VARDATA_1B_E(PTR)
 
 #define VARATT_IS_COMPRESSED(PTR)			VARATT_IS_4B_C(PTR)
