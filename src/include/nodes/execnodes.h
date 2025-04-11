@@ -160,7 +160,6 @@ typedef struct ExprState
  *
  *		NumIndexAttrs		total number of columns in this index
  *		NumIndexKeyAttrs	number of key columns in index
- *		IndexAttrs			bitmap of index attributes
  *		IndexAttrNumbers	underlying-rel attribute numbers used as keys
  *							(zeroes indicate expressions). It also contains
  * 							info about included columns.
@@ -199,7 +198,6 @@ typedef struct IndexInfo
 	NodeTag		type;
 	int			ii_NumIndexAttrs;	/* total number of columns in index */
 	int			ii_NumIndexKeyAttrs;	/* number of key columns in index */
-	Bitmapset  *ii_IndexAttrs;
 	AttrNumber	ii_IndexAttrNumbers[INDEX_MAX_KEYS];
 	uint16		ii_IndexAttrLen[INDEX_MAX_KEYS];
 	Bitmapset  *ii_IndexAttrByVal;

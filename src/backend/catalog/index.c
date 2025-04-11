@@ -2467,6 +2467,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionStrats);
 	}
 
+	ii->ii_IndexAttrByVal = NULL;
+
 	return ii;
 }
 
@@ -2725,6 +2727,10 @@ BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
 	int			i;
 	int			indnkeyatts;
 
+	/*
+	 * Expressions are not allowed on non-key attributes, so we can skip them
+	 * as they should show up in the index HOT-blocking attributes.
+	 */
 	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 
 	/*
@@ -2734,10 +2740,6 @@ BuildExpressionIndexInfo(Relation index, IndexInfo *ii)
 	for (i = 0; i < indnkeyatts; i++)
 	{
 		CompactAttribute *attr = TupleDescCompactAttr(RelationGetDescr(index), i);
-
-		ii->ii_IndexAttrs =
-			bms_add_member(ii->ii_IndexAttrs,
-						   ii->ii_IndexAttrNumbers[i] - FirstLowInvalidHeapAttributeNumber);
 
 		ii->ii_IndexAttrLen[i] = attr->attlen;
 		if (attr->attbyval)

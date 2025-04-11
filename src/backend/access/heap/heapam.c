@@ -3986,19 +3986,27 @@ l2:
 		bool		expression_checks = RelationGetExpressionChecks(relation);
 
 		/*
-		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  As a reminder, hot_attrs includes attributes
-		 * used by indexes including within expressions and predicates, but
-		 * not attributes only used by summarizing indexes.
+		 * hot_attrs includes indexes with expressions and indexes with
+		 * predicates that may not be impacted by this change.  If the
+		 * modified attributes in this update don't overlap with any
+		 * attributes referenced by indexes on the relation then we can use
+		 * the HOT update path.  If they do overlap, then check to see if the
+		 * overlap is exclusively due to attributes that are only referenced
+		 * within expressions.  If that is the case, the HOT update path may
+		 * be possible iff the expression indexes are unchanged by this update
+		 * or, with partial indexes, both the new and the old heap tuples
+		 * don't satisfy the partial index predicate expression (meaning they
+		 * are both outside of the scope of the index).
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
-			(estate && resultRelInfo && expression_checks &&
-			 bms_overlap(modified_attrs, exp_attrs) &&
-			 !ExecExpressionIndexesUpdated(resultRelInfo,
-										   modified_attrs,
-										   estate,
-										   resultRelInfo->ri_oldTupleSlot,
-										   resultRelInfo->ri_newTupleSlot)))
+			(expression_checks && resultRelInfo && estate &&
+			 bms_is_subset(modified_attrs, exp_attrs) &&
+			 !ExecExprIndexesRequireUpdates(relation,
+											resultRelInfo,
+											modified_attrs,
+											estate,
+											resultRelInfo->ri_oldTupleSlot,
+											resultRelInfo->ri_newTupleSlot)))
 		{
 			use_hot_update = true;
 

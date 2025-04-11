@@ -162,6 +162,24 @@ static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum at
 void
 ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 {
+	ExecOpenIndicesForUpdate(resultRelInfo, speculative, false);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecOpenIndicesForUpdate
+ *
+ *		Find the indices associated with a result relation, open them,
+ *		and save information about them in the result ResultRelInfo
+ *		including potentially information useful for informing HOT
+ *		updates in ExecExprIndexesRequireUpdates().
+ *
+ *		At entry, caller has already opened and locked
+ *		resultRelInfo->ri_RelationDesc.
+ * ----------------------------------------------------------------
+ */
+void
+ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool update)
+{
 	Relation	resultRelation = resultRelInfo->ri_RelationDesc;
 	List	   *indexoidlist;
 	ListCell   *l;
@@ -226,8 +244,13 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		/*
 		 * If the index uses expressions then let's populate the additional
 		 * information nessaary to evaluate them for changes during updates.
+		 *
+		 * NOTE: We don't test for ii->ii_Predicate because the tests in
+		 * ExecExprIndexesRequireUpdates() that check predicates for updates
+		 * doesn't use the additional info added by
+		 * BuildExpressionIndexInfo().
 		 */
-		if (ii->ii_Expressions || ii->ii_Predicate)
+		if (update && ii->ii_Expressions)
 			BuildExpressionIndexInfo(indexDesc, ii);
 
 		relationDescs[i] = indexDesc;
@@ -1201,29 +1224,50 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 }
 
 /*
- * Determine if indexes that have expressions or predicates require updates
- * for the purposes of allowing HOT updates.  Returns false iff all indexed
- * values are unchanged.
+ *
+ * This will first determine if the index has a predicate and if so if the
+ * update satisfies that or not.  Then, if necessary, we compare old and
+ * new values of the indexed expression and help determine if it is possible
+ * to use a HOT update or not.
+ *
+ * 'resultRelInfo' is the table with the indexes we should examine.
+ * 'modified' is the set of attributes that are modified by the update.
+ * 'estate' is the executor state for the update.
+ * 'old_tts' is a slot with the old tuple.
+ * 'new_tts' is a slot with the new tuple.
+ *
+ * Returns true iff none of the indexes on this relation require updating.
+ *
+ * When the changes in new tuple impact a value stored in an index we must
+ * return true. When an index has a predicate that is not satisfied by either
+ * the new or old tuples then that index is unchanged. When an index has a
+ * predicate that is satisfied by both the old and new tuples then we can
+ * proceed and check to see if the indexed values were changed or not.
  */
 bool
-ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
-							 Bitmapset *modifiedAttrs,
-							 EState *estate,
-							 TupleTableSlot *old_tts,
-							 TupleTableSlot *new_tts)
+ExecExprIndexesRequireUpdates(Relation relation,
+							  ResultRelInfo *resultRelInfo,
+							  Bitmapset *modifiedAttrs,
+							  EState *estate,
+							  TupleTableSlot *old_tts,
+							  TupleTableSlot *new_tts)
 {
+	bool		expression_checks = RelationGetExpressionChecks(relation);
 	bool		result = false;
 	IndexInfo  *indexInfo;
+	TupleTableSlot *save_scantuple;
 	ExprContext *econtext = NULL;
 
-	if (old_tts == NULL || new_tts == NULL)
+	if (resultRelInfo == NULL || estate == NULL ||
+		old_tts == NULL || new_tts == NULL || !expression_checks)
 		return true;
 
 	econtext = GetPerTupleExprContext(estate);
 
 	/*
-	 * Examine each index on this relation relative to the changes between old
-	 * and new tuples.
+	 * Examine each index on this relation to see if it is affected by the
+	 * changes in newtup.  If any index is changed, we must not use a HOT
+	 * update.
 	 */
 	for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 	{
@@ -1245,11 +1289,14 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 			 * Here the term "qualifies" means "satisfies the predicate
 			 * condition of the partial index".
 			 */
+			save_scantuple = econtext->ecxt_scantuple;
 			econtext->ecxt_scantuple = old_tts;
 			old_tuple_qualifies = ExecQual(pstate, econtext);
 
 			econtext->ecxt_scantuple = new_tts;
 			new_tuple_qualifies = ExecQual(pstate, econtext);
+			econtext->ecxt_scantuple = save_scantuple;
+
 			indexInfo->ii_CheckedPredicate = true;
 			indexInfo->ii_PredicateSatisfied = new_tuple_qualifies;
 
@@ -1263,9 +1310,7 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 
 			/*
 			 * If there is a transition between indexed and not indexed,
-			 * that's enough to require that this index is updated. If any
-			 * single non-summarizing index requires updates then they all
-			 * should be updated.
+			 * that's enough to require an index update.
 			 */
 			if (new_tuple_qualifies != old_tuple_qualifies)
 			{
@@ -1290,7 +1335,6 @@ ExecExpressionIndexesUpdated(ResultRelInfo *resultRelInfo,
 		 */
 		if (bms_overlap(indexInfo->ii_ExpressionAttrs, modifiedAttrs))
 		{
-			TupleTableSlot *save_scantuple;
 			Datum		old_values[INDEX_MAX_KEYS];
 			bool		old_isnull[INDEX_MAX_KEYS];
 			Datum		new_values[INDEX_MAX_KEYS];
