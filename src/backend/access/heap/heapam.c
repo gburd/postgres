@@ -3983,7 +3983,6 @@ l2:
 	{
 		ResultRelInfo *resultRelInfo = updateCxt->rri;
 		EState	   *estate = updateCxt->estate;
-		bool		expression_checks = RelationGetExpressionChecks(relation);
 
 		/*
 		 * hot_attrs includes indexes with expressions and indexes with
@@ -3999,8 +3998,7 @@ l2:
 		 * are both outside of the scope of the index).
 		 */
 		if (!bms_overlap(modified_attrs, hot_attrs) ||
-			(expression_checks && resultRelInfo && estate &&
-			 bms_is_subset(modified_attrs, exp_attrs) &&
+			(bms_is_subset(modified_attrs, exp_attrs) &&
 			 !ExecExprIndexesRequireUpdates(relation,
 											resultRelInfo,
 											modified_attrs,
@@ -4011,13 +4009,11 @@ l2:
 			use_hot_update = true;
 
 			/*
-			 * If none of the columns that are used in hot-blocking indexes
-			 * were updated, we can apply HOT, but we do still need to check
-			 * if we need to update the summarizing indexes, and update those
-			 * indexes if the columns were updated, or we may fail to detect
-			 * e.g. value bound changes in BRIN minmax indexes.
+			 * If all modified attributes were only referenced by summarizing
+			 * indexes then we remain HOT, but we need to update those indexes
+			 * to ensure that they are consistent with the new tuple.
 			 */
-			if (bms_overlap(modified_attrs, sum_attrs))
+			if (bms_is_subset(modified_attrs, sum_attrs))
 				summarized_update = true;
 		}
 	}

@@ -5305,12 +5305,9 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *uindexattrs;	/* columns in unique indexes */
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
-	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
-	Bitmapset  *hotblockingexprattrs;	/* as above, but only those in
-										 * expressions */
-	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
-	Bitmapset  *summarizedexprattrs;	/* as above, but only those in
-										 * expressions */
+	Bitmapset  *idx_attrs;		/* columns referenced by indexes */
+	Bitmapset  *expr_attrs;		/* columns referenced by index expressions */
+	Bitmapset  *sum_attrs;		/* columns with summarizing indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5377,10 +5374,9 @@ restart:
 	uindexattrs = NULL;
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
-	hotblockingattrs = NULL;
-	hotblockingexprattrs = NULL;
-	summarizedattrs = NULL;
-	summarizedexprattrs = NULL;
+	idx_attrs = NULL;
+	expr_attrs = NULL;
+	sum_attrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5439,13 +5435,13 @@ restart:
 		 */
 		if (indexDesc->rd_indam->amsummarizing)
 		{
-			attrs = &summarizedattrs;
-			exprattrs = &summarizedexprattrs;
+			attrs = &sum_attrs;
+			exprattrs = &sum_attrs;
 		}
 		else
 		{
-			attrs = &hotblockingattrs;
-			exprattrs = &hotblockingexprattrs;
+			attrs = &idx_attrs;
+			exprattrs = &expr_attrs;
 		}
 
 		/* Collect simple attribute references */
@@ -5456,8 +5452,8 @@ restart:
 			/*
 			 * Since we have covering indexes with non-key columns, we must
 			 * handle them accurately here. non-key columns must be added into
-			 * hotblockingattrs or summarizedattrs, since they are in index,
-			 * and update shouldn't miss them.
+			 * idx_attrs or sum_attrs, since they are in index, and update
+			 * shouldn't miss them.
 			 *
 			 * Summarizing indexes do not block HOT, but do need to be updated
 			 * when the column value changes, thus require a separate
@@ -5516,10 +5512,9 @@ restart:
 		bms_free(uindexattrs);
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
-		bms_free(hotblockingattrs);
-		bms_free(hotblockingexprattrs);
-		bms_free(summarizedattrs);
-		bms_free(summarizedexprattrs);
+		bms_free(idx_attrs);
+		bms_free(expr_attrs);
+		bms_free(sum_attrs);
 
 		goto restart;
 	}
@@ -5528,25 +5523,12 @@ restart:
 	 * HOT-blocking attributes should include all columns that are part of the
 	 * index except attributes only referenced in expressions, including
 	 * expressions used to form partial indexes.  So, we need to remove the
-	 * expression-only columns from the HOT-blocking columns bitmap as those
-	 * will be checked separately.  This is true for both summarizing and
-	 * non-summarizing indexes which we've separated above, so we have to do
-	 * this for both bitmaps.
+	 * expression-only attributes from the HOT-blocking columns bitmap as
+	 * those will be checked separately.
 	 */
-
-	/* {expression-only columns} = {expression columns} - {direct columns} */
-	hotblockingexprattrs = bms_del_members(hotblockingexprattrs,
-										   hotblockingattrs);
-	/* {hot-blocking columns} = {direct columns} + {expression-only columns} */
-	hotblockingattrs = bms_add_members(hotblockingattrs,
-									   hotblockingexprattrs);
-
-	/* {summarized-only columns} = {all summarized columns} - {direct columns} */
-	summarizedexprattrs = bms_del_members(summarizedexprattrs,
-										  summarizedattrs);
-	/* {summarized columns} = {all direct columns} + {summarized-only columns} */
-	summarizedattrs = bms_add_members(summarizedattrs,
-									  summarizedexprattrs);
+	expr_attrs = bms_del_members(expr_attrs, idx_attrs);
+	idx_attrs = bms_add_members(idx_attrs, expr_attrs);
+	expr_attrs = bms_add_members(expr_attrs, sum_attrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5574,9 +5556,9 @@ restart:
 	relation->rd_keyattr = bms_copy(uindexattrs);
 	relation->rd_pkattr = bms_copy(pkindexattrs);
 	relation->rd_idattr = bms_copy(idindexattrs);
-	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
-	relation->rd_summarizedattr = bms_copy(summarizedattrs);
-	relation->rd_expressionattr = bms_copy(hotblockingexprattrs);
+	relation->rd_hotblockingattr = bms_copy(idx_attrs);
+	relation->rd_summarizedattr = bms_copy(sum_attrs);
+	relation->rd_expressionattr = bms_copy(expr_attrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5590,11 +5572,11 @@ restart:
 		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 			return idindexattrs;
 		case INDEX_ATTR_BITMAP_HOT_BLOCKING:
-			return hotblockingattrs;
+			return idx_attrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
-			return summarizedattrs;
+			return sum_attrs;
 		case INDEX_ATTR_BITMAP_EXPRESSION:
-			return hotblockingexprattrs;
+			return expr_attrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
