@@ -1259,7 +1259,8 @@ ExecExprIndexesRequireUpdates(Relation relation,
 	ExprContext *econtext = NULL;
 
 	if (resultRelInfo == NULL || estate == NULL ||
-		old_tts == NULL || new_tts == NULL || !expression_checks)
+		old_tts == NULL || new_tts == NULL ||
+		!expression_checks || IsolationIsSerializable())
 		return true;
 
 	econtext = GetPerTupleExprContext(estate);
@@ -1339,7 +1340,6 @@ ExecExprIndexesRequireUpdates(Relation relation,
 			bool		old_isnull[INDEX_MAX_KEYS];
 			Datum		new_values[INDEX_MAX_KEYS];
 			bool		new_isnull[INDEX_MAX_KEYS];
-			bool		changed = false;
 
 			save_scantuple = econtext->ecxt_scantuple;
 			econtext->ecxt_scantuple = old_tts;
@@ -1360,7 +1360,7 @@ ExecExprIndexesRequireUpdates(Relation relation,
 			{
 				if (old_isnull[j] != new_isnull[j])
 				{
-					changed = true;
+					result = true;
 					break;
 				}
 				else if (!old_isnull[j])
@@ -1371,20 +1371,17 @@ ExecExprIndexesRequireUpdates(Relation relation,
 					if (!datum_image_eq(old_values[j], new_values[j],
 										elmbyval, elmlen))
 					{
-						changed = true;
+						result = true;
 						break;
 					}
 				}
 			}
 
 			indexInfo->ii_CheckedUnchanged = true;
-			indexInfo->ii_IndexUnchanged = !changed;
+			indexInfo->ii_IndexUnchanged = !result;
 
-			if (changed)
-			{
-				result = true;
+			if (result)
 				break;
-			}
 		}
 	}
 
