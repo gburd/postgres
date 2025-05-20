@@ -1801,7 +1801,11 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 		/*
 		 * If this tuple was a PHOT update, make sure that we should keep
-		 * following it based on the modified attributes.
+		 * following the redirect chain based on the modified attributes.
+		 *
+		 * The idea here is that when walking a PHOT chain, some index entries
+		 * may be stale meaning they should be ignored because a newer index
+		 * entry has been created.
 		 *
 		 * If indexed_attrs is NULL, we follow this just like we do HOT
 		 * chains.  The caller is responsible for handling the return value
@@ -1825,6 +1829,13 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			modified_attrs = HeapDetermineColumnsInfo(relation, attrs, NULL,
 													  &prev_tup, heapTuple,
 													  &id_has_external);
+
+			/*
+			 * The assumption here is that if any indexed attributes were
+			 * modified between the previous and the current tuple in the HOT
+			 * chain that we can assume a new index entry was created and that
+			 * this one is stale/out-of-date/pending vacuum.
+			 */
 			index_attrs_modified = !bms_is_empty(modified_attrs);
 
 			bms_free(attrs);
