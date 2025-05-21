@@ -11,7 +11,7 @@
   description = "PostgreSQL development environment with selectable compiler.";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -59,7 +59,7 @@
             rev = "1d98c65d282554ffb6997dba67b0f8e41e22e169"; # This is the specific commit hash for v3.5
             sha256 = "sha256-n6V04iF+QZ4+4x32s5Q6m1C8g7B9e0k3j2f1d8m9o0o="; # This is the content hash for v3.5
           };
-          buildInputs = with pkgs; [
+          buildInputs = with pkgs; with pkgs.python3Packages; [
             llvmPackages.llvm
             llvmPackages.clang
             zlib
@@ -207,7 +207,7 @@
           export PG_BUILD_DIR="${pgBuildDir}"
           export PG_INSTALL_DIR="${pgInstallDir}"
 
-          alias pg-configure='
+          alias pg-setup='
             if [ -z "$PERL_CORE_DIR" ]; then
               echo "Error: Could not find perl CORE directory in ${pkgs.perl}. Check your Perl installation." >&2
               return 1
@@ -243,18 +243,21 @@
           alias pg-docs='ninja -C "$PG_BUILD_DIR docs" || { echo "Ninja documentation build failed!"; return 1; }'
           alias pg-check='ninja -C build check'
           alias pg-test='meson test -C "$PG_BUILD_DIR"'
+          alias pg-list-tests='meson test -C "$PG_BUILD_DIR" --list'
+          alias pg-run-tests='meson test -C "$PG_BUILD_DIR" "$@"'
           alias pg-clean='ninja -C "$PG_BUILD_DIR" clean'
           alias pg-maintainer-clean='(cd "$PG_SOURCE_DIR" && ./configure --without-icu > /dev/null 2>&1 && make maintainer-clean > /dev/null 2>&1) || true'
 
-          echo "To configure PostgreSQL with Meson, run: pg-configure"
+          echo "To configure PostgreSQL with Meson, run: pg-setup"
+          echo "To configure PostgreSQL with Autoconf, run: pg-configure"
           echo "To compile PostgreSQL, run: pg-build"
           echo "To run tests (after building): pg-check"
           echo "To maintainer clean: pg-maintainer-clean"
         '';
 
         # Helper to get the latest version from a range
-        latestGCCVersion = pkgs.lib.last (pkgs.lib.range 11 13);
-        latestClangVersion = pkgs.lib.last (pkgs.lib.range 15 17);
+        latestGCCVersion = pkgs.lib.last (pkgs.lib.range 11 14);
+        latestClangVersion = pkgs.lib.last (pkgs.lib.range 15 20);
         stringRange = start: end: pkgs.lib.map toString (pkgs.lib.range start end);
 
         # Define common optional tools attribute set for reuse
@@ -314,7 +317,7 @@
 
         # GCC-based shells
         # Use stringRange to get a list of strings like [ "11" "12" "13" ]
-        gccShells = pkgs.lib.genAttrs (stringRange 11 13) (versionString: # versionString will now be "11", "12", etc.
+        gccShells = pkgs.lib.genAttrs (stringRange 11 14) (versionString: # versionString will now be "11", "12", etc.
           let
             # No need for toString here, as versionString is already a string
             compilerName = "gcc";
@@ -329,7 +332,7 @@
 
         # Clang-based shells
         # Use stringRange to get a list of strings like [ "15" "16" "17" ]
-        clangShells = pkgs.lib.genAttrs (stringRange 15 17) (versionString: # versionString will now be "15", "16", etc.
+        clangShells = pkgs.lib.genAttrs (stringRange 15 20) (versionString: # versionString will now be "15", "16", etc.
           let
             # No need for toString here, as versionString is already a string
             compilerName = "clang";

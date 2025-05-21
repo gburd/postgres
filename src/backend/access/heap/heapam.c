@@ -4059,7 +4059,7 @@ l2:
 	 * one pin is held.
 	 */
 
-	if (newbuf == buffer)
+	if (newbuf == buffer && list_length(relation->rd_indexlist))
 	{
 		/*
 		 * Since the new tuple is going into the same page, we might be able
@@ -4072,10 +4072,10 @@ l2:
 		/*
 		 * If HOT won't work, maybe PHOT will.
 		 */
-		if (!use_hot_update && !IsCatalogRelation(relation))
+		if (!use_hot_update)
 		{
 			Bitmapset  *updated_indexed_attrs = bms_intersect(*modified_attrs, hot_attrs);
-			bool		updated_all_indexed_attrs = bms_equal(hot_attrs, updated_indexed_attrs);
+			bool		updated_all_indexed_attrs = bms_is_subset(updated_indexed_attrs, hot_attrs);
 
 			use_phot_update = !updated_all_indexed_attrs;
 
