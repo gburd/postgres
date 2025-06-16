@@ -731,8 +731,7 @@ extern Bitmapset *ExecGetAllUpdatedCols(ResultRelInfo *relinfo, EState *estate);
 /*
  * prototypes from functions in execIndexing.c
  */
-extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
-extern void ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool update);
+extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative, bool update);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 								   TupleTableSlot *slot, EState *estate,

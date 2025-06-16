@@ -160,25 +160,7 @@ static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum at
  * ----------------------------------------------------------------
  */
 void
-ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
-{
-	ExecOpenIndicesForUpdate(resultRelInfo, speculative, false);
-}
-
-/* ----------------------------------------------------------------
- *		ExecOpenIndicesForUpdate
- *
- *		Find the indices associated with a result relation, open them,
- *		and save information about them in the result ResultRelInfo
- *		including potentially information useful for informing HOT
- *		updates in ExecExprIndexesRequireUpdates().
- *
- *		At entry, caller has already opened and locked
- *		resultRelInfo->ri_RelationDesc.
- * ----------------------------------------------------------------
- */
-void
-ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool update)
+ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative, bool update)
 {
 	Relation	resultRelation = resultRelInfo->ri_RelationDesc;
 	List	   *indexoidlist;
@@ -244,13 +226,8 @@ ExecOpenIndicesForUpdate(ResultRelInfo *resultRelInfo, bool speculative, bool up
 		/*
 		 * If the index uses expressions then let's populate the additional
 		 * information nessaary to evaluate them for changes during updates.
-		 *
-		 * NOTE: We don't test for ii->ii_Predicate because the tests in
-		 * ExecExprIndexesRequireUpdates() that check predicates for updates
-		 * doesn't use the additional info added by
-		 * BuildExpressionIndexInfo().
 		 */
-		if (update && ii->ii_Expressions)
+		if (update && (ii->ii_Expressions || ii->ii_Predicate))
 			BuildExpressionIndexInfo(indexDesc, ii);
 
 		relationDescs[i] = indexDesc;
