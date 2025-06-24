@@ -677,7 +677,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
+		UpdateContext updateCxt = {0};
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -693,17 +693,19 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
+		updateCxt.estate = estate;
+		updateCxt.rri = resultRelInfo;
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+								  &updateCxt);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
+		if (resultRelInfo->ri_NumIndices > 0 && (updateCxt.updateIndexes != TU_None))
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   slot, estate, true,
 												   conflictindexes ? true : false,
 												   &conflict, conflictindexes,
-												   (update_indexes == TU_Summarizing));
+												   (updateCxt.updateIndexes == TU_Summarizing));
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in

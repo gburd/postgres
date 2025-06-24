@@ -49,7 +49,7 @@ CatalogOpenIndexes(Relation heapRel)
 	resultRelInfo->ri_RelationDesc = heapRel;
 	resultRelInfo->ri_TrigDesc = NULL;	/* we don't fire triggers */
 
-	ExecOpenIndices(resultRelInfo, false);
+	ExecOpenIndices(resultRelInfo, false, false);
 
 	return resultRelInfo;
 }
@@ -313,15 +313,17 @@ void
 CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
-	TU_UpdateIndexes updateIndexes = TU_All;
+	UpdateContext updateCxt = {0};
+
+	updateCxt.updateIndexes = TU_All;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &updateCxt);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, updateCxt.updateIndexes);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -337,13 +339,15 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	TU_UpdateIndexes updateIndexes = TU_All;
+	UpdateContext updateCxt = {0};
+
+	updateCxt.updateIndexes = TU_All;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &updateCxt);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, updateCxt.updateIndexes);
 }
 
 /*
