@@ -1,0 +1,39 @@
+nix develop
+pg-build
+pg-indent-changed-files 
+pg-build
+pg-indent-changed-files 
+pg-build
+pg-indent-changed-files 
+vi src/backend/nodes/bitmapset.c 
+rg pg_popcount
+pg-indent-changed-files 
+fg
+cd ws/postgresql/
+nix develop
+cd ws/postgresql/
+git st
+nix develop
+git switch -c sparsemap
+vi ../pg-patch-sets/v5-0001-dev-setup.patch 
+git am --keep-cr ../pg-patch-sets/v5-0001-dev-setup.patch 
+nix develop
+git co master
+git st
+git co .history
+git co master
+git pull
+git switch rm-freelist
+git rebase origin/master
+git branch
+git co pg-heap-hot-updates-patch-v17 
+git rebase origin/master
+git branch -m pg-heap-hot-updates-patch-v17 heap-hot-updates
+git co heap-hot-updates 
+tig
+git rebase origin/master
+ls
+git switch rm-freelist
+clion
+cd ws/postgresql/
+nix develop
