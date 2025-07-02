@@ -1232,7 +1232,7 @@ spawn_process(const char *cmdline)
 		char	   *cmdline2;
 
 		cmdline2 = psprintf("exec %s", cmdline);
-		execl(shellprog, shellprog, "-c", cmdline2, (char *) NULL);
+		execlp(shellprog, shellprog, "-c", cmdline2, (char *) NULL);
 		/* Not using the normal bail() here as we want _exit */
 		bail_noatexit("could not exec \"%s\": %m", shellprog);
 	}

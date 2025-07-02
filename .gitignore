@@ -43,3 +43,11 @@ lib*.pc
 /Release/
 /tmp_install/
 /portlock/
+
+build/
+install/
+test-db/
+.direnv/
+.cache/
+.history
+
