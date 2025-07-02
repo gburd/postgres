@@ -3408,8 +3408,70 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	oldtup.t_len = ItemIdGetLength(lp);
 	oldtup.t_self = *otid;
 
-	/* the new tuple is ready, except for this: */
+	/* The new tuple is ready, except for this: */
 	newtup->t_tableOid = RelationGetRelid(relation);
+
+	if (!bms_is_empty(interesting_cols))
+	{
+		TupleDesc	tupdesc = RelationGetDescr(relation);
+		int			natts = tupdesc->natts;
+		int			attridx;
+		Datum	   *oldvals,
+				   *newvals;
+		bool	   *oldnulls,
+				   *newnulls;
+		Bitmapset  *modified_indicies =
+			bms_add_range(NULL, 0, updateCxt->rri->ri_NumIndices);
+
+
+		oldvals = (Datum *) palloc(natts * sizeof(Datum));
+		oldnulls = (bool *) palloc(natts * sizeof(bool));
+		newvals = (Datum *) palloc(natts * sizeof(Datum));
+		newnulls = (bool *) palloc(natts * sizeof(bool));
+
+		heap_deform_tuple(oldtup, tupdesc, oldvals, oldnulls);
+		heap_deform_tuple(newtup, tupdesc, newvals, newnulls);
+
+		/*
+		 * Check if any of the old tuple's attributes are stored externally.
+		 */
+		attidx = -1;
+		while ((attidx = bms_next_member(external_cols, attidx)) >= 0)
+		{
+			AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
+
+			/*
+			 * Ignore whole-tuple references, system attributes, and nulls. No
+			 * need to check attributes that can't be stored externally. Note
+			 * that system attributes can't be stored externally.
+			 */
+			if (attrnum <= 0 || oldnull[attidx] ||
+				TupleDescCompactAttr(tupdesc, attrnum - 1)->attlen != -1)
+				continue;
+
+			if (VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(oldvals[attidx])))
+			{
+				id_has_external = true;
+				break;
+			}
+		}
+
+		/*
+		 * Determine which attributes are modified by the update and the
+		 * subset of indexes that will need to be updated as a result.  Start off assuming
+		 * that all indexes will need to be updated, and then remove those
+		 * that are not updated.
+		 */
+		modified_attrs = HeapDetermineColumnsInfo(relation, idx_attrs,
+												  oldvals, newvals,
+												  oldnulls, newnulls,
+												  modified_indicies);
+
+		pfree(oldvals);
+		pfree(oldnulls);
+		pfree(newvals);
+		pfree(newnulls);
+	}
 
 	/*
 	 * Determine columns modified by the update.  Additionally, identify
@@ -3419,9 +3481,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	 * new tuple so we must include it as part of the old_key_tuple.  See
 	 * ExtractReplicaIdentity.
 	 */
-	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
-											  id_attrs, &oldtup,
-											  newtup, &id_has_external);
+	modified_indicies = HeapDetermineModifiedIncides(relation,
+													 id_attrs, key_attrs,
+													 &oldtup, newtup,
+													 modified_attrs,
+													 &key_attrs_intact,
+													 &id_has_external);
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -4427,6 +4492,7 @@ HeapDetermineColumnsInfo(Relation relation,
 	{
 		/* attidx is zero-based, attrnum is the normal attribute number */
 		AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		int			eq_op_count;
 		Datum		value1,
 					value2;
 		bool		isnull1,

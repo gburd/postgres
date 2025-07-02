@@ -5309,7 +5309,9 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *idx_attrs;		/* columns referenced by indexes */
-	Bitmapset  *expr_attrs;		/* columns referenced by index expressions */
+	Bitmapset  *expr_attrs;		/* columns with expressions XXX I really want
+								 * cols that are types that support paths and
+								 * are referenced in expressions */
 	Bitmapset  *sum_attrs;		/* columns with summarizing indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;

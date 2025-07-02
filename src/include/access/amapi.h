@@ -209,6 +209,9 @@ typedef void (*ammarkpos_function) (IndexScanDesc scan);
 /* restore marked scan position */
 typedef void (*amrestrpos_function) (IndexScanDesc scan);
 
+/* provide strategy number used for equality tests */
+typedef StrategyNumber (*amequalitystrategy_function) (void);
+
 /*
  * Callback function signatures - for parallel index scans.
  */
@@ -311,6 +314,7 @@ typedef struct IndexAmRoutine
 	amendscan_function amendscan;
 	ammarkpos_function ammarkpos;	/* can be NULL */
 	amrestrpos_function amrestrpos; /* can be NULL */
+	amequalitystrategy_function amequalitystrategy; /* can be NULL */
 
 	/* interface functions to support parallel index scans */
 	amestimateparallelscan_function amestimateparallelscan; /* can be NULL */
