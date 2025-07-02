@@ -26,7 +26,7 @@ env:
   # Build test dependencies as part of the build step, to see compiler
   # errors/warnings in one place.
   MBUILD_TARGET: all testprep
-  MTEST_ARGS: --print-errorlogs --no-rebuild -C build
+  MTEST_ARGS: --print-errorlogs --no-rebuild --maxfail=3 -C build
   PGCTLTIMEOUT: 120 # avoids spurious failures during parallel tests
   TEMP_CONFIG: ${CIRRUS_WORKING_DIR}/src/tools/ci/pg_ci_base.conf
   PG_TEST_EXTRA: kerberos ldap ssl libpq_encryption load_balance oauth
