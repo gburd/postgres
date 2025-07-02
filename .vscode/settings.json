@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "syscache.h": "c",
+        "random": "c"
+    }
+}

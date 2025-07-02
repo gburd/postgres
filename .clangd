@@ -1,0 +1,5 @@
+CompileFlags:
+  CompilationDatabase: build/       # Search build/ directory for compile_commands.json
+  Remove: [ -Werror ]
+  Add: [ -DPGDLLIMPORT= ]
+
