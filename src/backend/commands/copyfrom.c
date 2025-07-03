@@ -921,7 +921,7 @@ CopyFrom(CopyFromState cstate)
 	/* Verify the named relation is a valid target for INSERT */
 	CheckValidResultRel(resultRelInfo, CMD_INSERT, NIL);
 
-	ExecOpenIndices(resultRelInfo, false);
+	ExecOpenIndices(resultRelInfo, false, false);
 
 	/*
 	 * Set up a ModifyTableState so we can let FDW(s) init themselves for

@@ -116,21 +116,6 @@ typedef struct ModifyTableContext
 	TupleTableSlot *cpUpdateReturningSlot;
 } ModifyTableContext;
 
-/*
- * Context struct containing output data specific to UPDATE operations.
- */
-typedef struct UpdateContext
-{
-	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
-
-	/*
-	 * Lock mode to acquire on the latest tuple version before performing
-	 * EvalPlanQual on it
-	 */
-	LockTupleMode lockmode;
-} UpdateContext;
-
 
 static void ExecBatchInsert(ModifyTableState *mtstate,
 							ResultRelInfo *resultRelInfo,
@@ -890,7 +875,7 @@ ExecInsert(ModifyTableContext *context,
 	 */
 	if (resultRelationDesc->rd_rel->relhasindex &&
 		resultRelInfo->ri_IndexRelationDescs == NULL)
-		ExecOpenIndices(resultRelInfo, onconflict != ONCONFLICT_NONE);
+		ExecOpenIndices(resultRelInfo, onconflict != ONCONFLICT_NONE, false);
 
 	/*
 	 * BEFORE ROW INSERT Triggers.
@@ -2105,7 +2090,7 @@ ExecUpdatePrologue(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	 */
 	if (resultRelationDesc->rd_rel->relhasindex &&
 		resultRelInfo->ri_IndexRelationDescs == NULL)
-		ExecOpenIndices(resultRelInfo, false);
+		ExecOpenIndices(resultRelInfo, false, true);
 
 	/* BEFORE ROW UPDATE triggers */
 	if (resultRelInfo->ri_TrigDesc &&
@@ -2303,8 +2288,7 @@ lreplace:
 								estate->es_snapshot,
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
-								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes);
+								&context->tmfd, updateCxt);
 
 	return result;
 }
@@ -2322,6 +2306,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 {
 	ModifyTableState *mtstate = context->mtstate;
 	List	   *recheckIndexes = NIL;
+	bool		onlySummarizing = updateCxt->updateIndexes == TU_Summarizing;
 
 	/* insert index entries for tuple if necessary */
 	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
@@ -2329,7 +2314,7 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   slot, context->estate,
 											   true, false,
 											   NULL, NIL,
-											   (updateCxt->updateIndexes == TU_Summarizing));
+											   onlySummarizing);
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
@@ -2464,6 +2449,9 @@ ExecUpdate(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	UpdateContext updateCxt = {0};
 	TM_Result	result;
+
+	updateCxt.estate = estate;
+	updateCxt.rri = resultRelInfo;
 
 	/*
 	 * abort the operation if not running transactions
@@ -3152,6 +3140,9 @@ lmerge_matched:
 		CmdType		commandType = relaction->mas_action->commandType;
 		TM_Result	result;
 		UpdateContext updateCxt = {0};
+
+		updateCxt.rri = resultRelInfo;
+		updateCxt.estate = estate;
 
 		/*
 		 * Test condition, if any.

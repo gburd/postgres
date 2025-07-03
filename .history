@@ -1,0 +1,1262 @@
+history | grep for
+ls
+ls _
+ls ../pg-patch-sets/pluggable-toaster/
+mv v2* ../pg-patch-sets/pluggable-toaster/
+more TOASTER 
+mv TOASTER ../pg-patch-sets/pluggable-toaster/
+ls
+git st
+ls
+mv contrib/jsonb_toaster.tgz contrib/bytea_toaster.tgz ../pg-patch-sets/pluggable-toaster/
+rm pgt.tgz 
+ls -a _
+rmdir _
+ls
+git st
+ls
+echo $SHELL
+history
+cd /tmp
+ls
+mkdir foo
+cd foo
+cd
+cd ws/postgresql/
+ls
+more HISTORY 
+git branch
+git co master
+git pull
+git co gregburd/heap-hot-updates/devel-v16
+git rebase origin/master
+git rebase --abort
+git rebase origin/master
+tig
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make clean
+make && make install && make check-world
+git branch
+tig
+nix develop
+fg
+cd ws/postgresql
+nix develop
+exit
+git fetch
+make && make install
+vi .history
+vi ~/Desktop/NOTES 
+make check-tests TESTS="test_setup heap_hot_updates"
+emacs -nw /home/gburd/ws/postgresql/src/test/regress/regression.diffs
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+fg
+vi ~/Desktop/NOTES 
+meld src/test/regress/results/heap_hot_updates.out src/test/regress/expected/heap_hot_updates.out
+bg
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+make && make install
+make check-tests TESTS="test_setup heap_hot_updates"
+make && make check-tests TESTS="test_setup heap_hot_updates"
+emacs -nw src/test/regress/sql/heap_hot_updates.sql 
+make && make check-tests TESTS="test_setup heap_hot_updates"
+emacs -nw src/test/regress/sql/heap_hot_updates.sql 
+make && make check-tests TESTS="test_setup heap_hot_updates"
+emacs -nw src/test/regress/sql/heap_hot_updates.sql 
+find . -name stats.sql
+emacs- nw src/test/regress/sql/stats.sql 
+emacs -nw src/test/regress/sql/stats.sql 
+fg
+git co fg
+git co src/test/regress/sql/heap_hot_updates.sql
+git co src/test/regress/expected/heap_hot_updates.out
+cp ~/Desktop/heap_hot_updates.sql src/test/regress/sql/hhu.sql
+emacs -nw src/test/regress/sql/hhu.sql
+make && make check-tests TESTS="test_setup hhu heap_hot_updates"
+fg
+make && make check-tests TESTS="test_setup hhu heap_hot_updates"
+cat > src/test/regress/expected/hhu.out
+make && make check-tests TESTS="test_setup hhu heap_hot_updates"
+meld src/test/regress/results/hhu.out src/test/regress/expected/hhu.out &
+make && make check-tests TESTS="test_setup hhu heap_hot_updates"
+make && make install && make check-tests TESTS="test_setup hhu heap_hot_updates"
+nix develop
+more ~/Desktop/NOTES 
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+make && make install && make check-tests TESTS="test_setup hhu heap_hot_updates"
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+make && make install && make check-tests TESTS="test_setup hhu heap_hot_updates"
+which meson
+make && make install && make check-tests TESTS="test_setup hhu heap_hot_updates"
+git st
+git st | egrep '^\?\? src/\*.[ch]'
+git st | egrep '^\?\? src/\*.[ch]$'
+git st | egrep '^\?\? src'
+make && make install && make check-tests TESTS="test_setup heap_hot_updates"
+make check-tests TESTS="test_setup heap_hot_updates"
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+git st | egrep '^\?\? src'
+git st | egrep '^\?\? src' | xargs rm
+git st
+rm pgsrcKbQ3D.BAK 
+tig
+make && make check-world
+vi tmp_install/log/install.log 
+git st
+make && make install
+make clean
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+rg pg_toaster_d.h
+git branch
+rg pg_toaster_d.h
+git st
+rm -rf test-db/ build
+rg pg_toaster_d.h
+make && make install
+git st
+rg pg_toaster_d.h
+find . -name pg_toaster\*
+git commit -m "WIP" .
+git fetch
+git rebase origin/master
+make
+tig
+make install
+make check-world
+vi tmp_install/log/install.log 
+rg pg_toaster_d.h
+find . -name pg_toaster_d.h
+find . -name pg_toaster\*
+tig
+git st
+git branch
+
+git rebase origin/master
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make clean
+ls
+git st
+rm -rf build
+meson setup build --buildtype=debug -Dcassert=true --werror --optimization=0 -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+tar -cvzf foo.tar .direnv .envrc .history .idea
+make distclean
+meson setup build --buildtype=debug -Dcassert=true --werror --optimization=0 -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+cd build
+ninja
+cd ..
+meson setup build --buildtype=debug -Dcassert=true --werror --optimization=g -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+meson setup build --reconfigure --buildtype=debug -Dcassert=true --werror --optimization=g -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+cd build/
+ninja
+git branch
+cd ..
+git st
+cp foo.tar /tmp
+git clean
+git st
+make distclean
+cd build/
+ninja
+cd ..
+git clean -dfx
+tar -xvf /tmp/foo.tar 
+git st
+meson setup build --reconfigure --buildtype=debug -Dcassert=true --werror --optimization=g -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+cd build/
+ninja
+vi ~/Desktop/NOTES 
+cd ..
+git clean -dfx
+tar -xvf /tmp/foo.tar 
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+make check-world
+vi src/test/isolation/output_iso/regression.diffs
+fg
+git st
+fg
+cd ws/postgresql/
+nix develop
+cd ws/postgresql/
+ls
+vi .git/config 
+cd ws/postgresql/
+nix develop
+more ~/Desktop/NOTES 
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+more ~/Desktop/NOTES 
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+more tmp_install/log/install.log 
+tail -f tmp_install/log/install.log 
+cd ws/postgresql/
+nix develop
+history | grep psql
+cd ws/postgresql/
+more .history 
+vi .history 
+cd ws/postgresql/
+ls
+history
+sudo sysctl -w kernel.core_pattern=core
+more ~/Desktop/NOTES 
+sudo bash -c "echo 0 > /proc/sys/kernel/yama/ptrace_scope"
+nix develop
+vi src/test/isolation/output_iso/regression.diffs
+nvim src/test/isolation/output_iso/regression.diffs
+code
+git fetch
+make && make install
+make check-world
+nvim src/test/isolation/output_iso/regression.diffs
+make && make install
+make check-world
+nvim src/test/isolation/output_iso/regression.diffs
+make && make install
+nvim src/test/isolation/output_iso/regression.diffs
+emacs -nw ~/.config/nvim/init.lua 
+nvim
+emacs -nw ~/.config/nvim/init.lua 
+nvim
+nvim src/test/isolation/output_iso/regression.diffs
+fg
+nvim src/test/isolation/output_iso/regression.diffs
+find . -name partial-index.out
+emacs -nw src/test/isolation/specs/partial-index.spec 
+make && make install
+jobs
+fg
+make check-world
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+gi tst
+git st
+git diff
+git commit -m "WIP" .
+tig
+git branch -a
+git switch -c gregburd/heap-hot-updates/patch-v16
+tig
+git rebase -i HEAD~4
+tig
+nvim
+git rebase -i HEAD~2
+nvim
+git rebase -i HEAD~2
+find . -name pg_regress.c
+nvim src/test/regress/pg_regress.c 
+git st
+git rm flake.nix flake.lock 
+git st
+git commit --amend .
+tig
+git fetch
+git rebase origin/master
+tig
+git commit --amend .
+tig
+git rebase -i HEAD~1
+git commit --amend --author="Greg Burd <greg@burd.me>"
+tig
+nvim
+emacs ~/.config/nvim/init.lua 
+nvim
+git commit --amend --author="Greg Burd <greg@burd.me>"
+tig
+git format-patch -v16 origin/master
+cp v16-0001-Expand-HOT-update-path-to-include-expression-and.patch ../pg-patch-sets/heap-hot-updates/
+git co gregburd/heap-hot-updates/devel-v16
+git switch -c gregburd/heap-hot-updates/devel-v17
+nvim flake.nix 
+ls
+rm v16-0001-Expand-HOT-update-path-to-include-expression-and.patch 
+git branch
+tig
+git rebase -i HEAD~4
+gi tst
+git st
+git commit -m "WIP" .
+git rebase -i HEAD~5
+tig
+git st
+which ikos-scan
+ikos-scan ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+vi config.log
+which ikos-scan-cc
+ikos-scan-cc --version
+ikos
+ikos --help
+ikos-config --help
+ikos-scan --help
+ikos-scan -v -log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+find . -name log
+find . -name \*.log
+ls build
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+find . -name config.log
+nvcim config.log 
+nvim config.log 
+emacs -nw configure 
+cat > foo.c
+ikos foo.c 
+echo $?
+fg
+ikos-scan-cc foo.c 
+man ikos-scan-cc
+ikos-scan-cc --help
+vi $(which ikos-scan-cc)
+vi .envrc 
+direnv allow
+ikos-scan-cc foo.c 
+rm foo.c
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+fg
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+fg
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+fg
+ikos-scan -v --log info ./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make clean
+ikos-scan make
+file output.db 
+ikos-view output.db 
+find . -name output.db
+sqlite output.db 
+find . -name \*.bc
+rm a.out.bc 
+ikos-scan src/port/qsort.o.bc 
+find . -name postgres\*.bc
+ikos-scan src/backend/postgres.bc
+nvim $(which ikos-scan)
+vi ~/Desktop/NOTES 
+rm -rf ./test-db; ikos-scan ./build/bin/initdb --debug --no-clean test-db
+ikos-view output.db 
+rm -rf ./test-db; ikos-scan ./build/bin/initdb.bc --debug --no-clean test-db
+find . -name \*initdb\*.bc
+rm -rf ./test-db; ikos-scan ./src/bin/initdb/initdb.bc --debug --no-clean test-db
+chmod +x src/bin/initdb/initdb.bc
+rm -rf ./test-db; ikos-scan ./src/bin/initdb/initdb.bc --debug --no-clean test-db
+ikos-scan --help
+chmod -x src/bin/initdb/initdb.bc
+rm -rf ./test-db; ikos ./src/bin/initdb/initdb.bc --debug --no-clean test-db
+ikos ./src/bin/initdb/initdb.bc
+find . -name postgres\*.bc
+ikos ./src/backend/postgres.bc
+ikos --version
+which ar
+which llvm-ar
+vi flake.nix 
+nvim flake.nix 
+fg
+nvim flake.nix 
+which llvm-ar
+which ar
+
+ls *.out
+ls
+nvim config.log 
+make clean
+make
+ikos ./src/backend/postgres.bc
+nvim flake.nix 
+git st
+find . -name \*.ikosbin -remove
+find . -name \*.ikosbin -delete
+git st
+rm output.db 
+rm -rf build
+git co configure
+git st
+fg
+git st
+jobs
+git st
+git fetch
+git branch
+git st
+git diff
+which cc
+cc --version
+which gcc
+gcc --version
+fg
+cp flake.nix ../pg-patch-sets/flake.nix-clang
+git co flake.nix
+git st
+git branch
+git branch|grep phot
+git co gregburd/phot/devel-v4
+git st
+s
+ls
+more flake.nix 
+git switch -c gregburd/phot/devel-v5
+git fetch
+git rebase origin/master
+git st
+emacs -nw src/backend/access/heap/heapam_handler.c
+git rebase --abort
+tig
+git rebase origin/master
+fg
+emacs -nw src/backend/access/heap/heapam_handler.c
+git rebase --abort
+git rebase 2b73a8cd33b^
+tig
+git st
+tar -cvzf /tmp/bar.tgz .direnv .envrc .history .idea 
+git clean -dfx
+tar -xvzf /tmp/bar.tgz 
+git st
+meson setup build --reconfigure --buildtype=debug -Dcassert=true --werror --optimization=g -Dtap_tests=enabled -Dselinux=disabled --prefix=$(pwd)/build
+(cd build; ninja)
+git clean -dfx
+tar -xvzf /tmp/bar.tgz 
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+make check-world
+emacs -nw src/test/regress/regression.diffs 
+git rebase 2b73a8cd33b
+tig
+make && make install
+df -kl
+git rebase c3953226a^
+git rebase c3953226a
+git rebase --abort
+emacs -nw src/backend/access/heap/heapam_handler.c
+git rebase c3953226a
+emacs -nw src/backend/access/heap/heapam_handler.c
+git st
+git rebase --continue
+gi tst
+git st
+emacs -nw src/backend/access/heap/heapam_handler.c
+git st
+git rebase --continue
+tig
+git rebase origin/master
+git st
+emacs -nw contrib/pageinspect/heapfuncs.c 
+git rebase --abort
+meld --help
+git config --global alias.meld '!/home/gburd/bin/git-meld.pl'
+cat > ~/bin/git-meld.pl
+chmod +x ~/bin/git-meld.pl
+tig
+git meld c3953226a07527a1e2f7f410b83e1a7021f42888...HEAD
+bg
+find . -name core
+git st
+tig
+git rebase origin/master
+git st
+emacs -nw contrib/pageinspect/heapfuncs.c 
+ls
+vi TODO.txt
+fg
+vi TODO.txt
+git st
+git rebase --continue
+git st
+emacs -nw src/tools/pgindent/typedefs.list 
+rg EC_KEY
+fg
+rg ECDerivesKey
+fg
+git st
+git rebase --continue
+git st
+emacs -nw src/backend/utils/misc/postgresql.conf.sample 
+git st
+git rebase --continue
+git st
+tig
+git fetch
+git rebase origin/master
+make clean
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make clean
+reset; make && make install
+emacs -nw src/include/access/heapam.h src/backend/access/heap/heapam_handler.c 
+fg
+vi NOTES 
+ls
+more TODO.txt 
+vi TODO.txt 
+fg
+vi TODO.txt 
+fg
+make && make install
+find . -name pruneheap.c
+fg
+make && make install
+make check-world
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend
+make check-world
+vi TODO.txt 
+reset; make
+vi TODO.txt 
+reset; make
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+reset; make
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+reset; make
+rm -rf ./test-db; ./src/bin/initdb/initdb.bc --debug --no-clean test-db
+rm -rf ./test-db; ./src/bin/initdb/initdb --debug --no-clean test-db
+rm -rf ./test-db; ./src/bin/initdb --debug --no-clean test-db
+more ~/Desktop/NOTES 
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+more ~/Desktop/NOTES 
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+reset; make check-world
+git branch
+emacs -nw src/test/regress/regression.diffs 
+make check-tests TESTS="test_setup heap_hot_updates"
+meld src/test/regress/results/heap_hot_updates.out src/test/regress/expected/heap_hot_updates.out &
+make && make install
+more ~/Desktop/NOTES
+gdb ./build/bin/postgres test-db/core
+make && make install
+reset; meka
+reset; make
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+reset; make
+cat > FODDER
+reset; make
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+vi FODDER 
+find . -name bitmapset.h
+mv /tmp/foo.c
+mv /tmp/foo.c .
+vi foo.c
+nvim foo.c
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+cd ws/postgresql/
+nix develpo
+nix develop
+cd ws/postgresql/
+nix develop
+more ~/Desktop/NOTES 
+./build/bin/psql
+./build/bin/psql -p 5432
+./build/bin/psql --help
+./build/bin/psql -p 5432
+./build/bin/psql --host=localhost --port=5432 --user=postgres --database=postgres
+./build/bin/psql --host=localhost --port=5432 --user=postgres -d postgres
+./build/bin/psql --host=localhost --port=5432 -d postgres
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/psql --host=localhost --port=5432 --user=postgres -d postgres
+./build/bin/psql --host=localhost --port=5432 -d postgres
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+./build/bin/postgres --config-file=$(pwd)/test-db/postgresql.conf -D $(pwd)/test-db -k $(pwd)/test-db
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+code &
+make && make install
+rm -rf ./test-db; ./build/bin/initdb --debug --no-clean test-db
+gdb ./build/bin/postgres test-db/core
+more ~/Desktop/NOTES 
+sudo bash -c "echo 0 > /proc/sys/kernel/yama/ptrace_scope"
+sudo sysctl -w kernel.core_pattern=core
+cd ws/postgresql/
+nix develop
+git st
+git meld origin/REL_17_STABLE..HEAD
+git meld origin/REL_17_STABLE...HEAD
+more ~/bin/git-meld.pl 
+tig
+git meld 81eaaa2c41dd29b06edf8b234753debbd1a581d5...HEAD &
+emacs -nw
+emacs -nw
+cd ws/postgresql/
+nix develop
+source ~/.bash_aliases 
+mesonconf
+which perl
+fg
+emacs -nw ~/.bash_aliases flake.nix 
+mesonconf
+fg
+source ~/.bash_aliases 
+mesonconfig
+mesonconf
+fg
+mesonconf
+fg
+source ~/.bash_aliases 
+mesonconf
+echo LD_LIBRARY_PATH
+echo $LD_LIBRARY_PATH
+echo $NIX_LD_LIBRARY_PATH
+fg
+mesonconf
+ls
+ninja -C $(pwd)/build
+fg
+ninja -C $(pwd)/build
+fg
+ninja -C $(pwd)/build
+which zi
+which zic
+file build/src/timezone/zic
+fg
+ninja -C $(pwd)/build
+ninja -C $(pwd)/build clean
+ninja -C $(pwd)/build build
+ninja -C $(pwd)/build
+/home/gburd/ws/postgresql/build/src/timezone/zic -d src/timezone/timezone ../src/timezone/data/tzdata.zi
+ldd /home/gburd/ws/postgresql/build/src/timezone/zic
+fg
+cat nix.flake
+cat flake.nix 
+which xsel
+which xclip
+echo $SHELL
+nvim ~/.bash_aliases 
+sudo apt install xsel
+source ~/.bash_aliases 
+cat flake.nix | copy
+cp flake.nix ~/Desktop/
+fg
+cat > /tmp/flake.nix
+meld /tmp/flake.nix flake.nix 
+bg
+more .envrc
+vi .envrc
+cat > .envrc
+direnv allow
+fg
+cd ws/postgresql/
+cd ws/postgresql/
+git branch
+tig
+cd ../pg-phot-devel-v4/
+git st
+ls
+ls flake.
+nix develop
+cd ../postgresql/
+git st
+git co gregburd/phot/devel-v4
+more ~/Desktop/NOTES 
+git worktree --help
+git worktree list
+git branch
+ls ..
+ls ../pg-
+ls ../pg-*
+git worktree list
+history
+git worktree list
+git worktree remove gregburd/phot/devel-v4
+git worktree remove /home/gburd/ws/pg-phot-devel-v4
+cd /home/gburd/ws/pg-phot-devel-v4
+ls
+git st
+more .history 
+ls
+cd ../postgresql/
+git worktree remove -f /home/gburd/ws/pg-phot-devel-v4
+git co gregburd/phot/devel-v4
+git st
+nix devel
+nix develop
+which cc
+cc --version
+which cc
+pg-configure
+pg-configure 
+pg-configure
+pg-configure 
+pg-configure
+vi /home/gburd/ws/postgresql/build/meson-logs/meson-log.txt
+pg-configure
+ls
+rm -rf build/
+pg-configure
+pg-build 
+ls
+pg-install 
+which pg-install
+\pg-install
+pg-check
+pg-test
+git st
+tig
+git commit --amend .
+git st
+pg-list-tests
+alias pg-run-tests='meson test -C "$PG_BUILD_DIR" "$@"'
+pg-run-tests "src/backend/utils/tests/memory_context_test"
+pg-run-tests memory_context_test
+pg-run-tests initdb:
+pg-run-tests ssl/001_ssltests
+ls
+ls test-db/
+cd ws/postgresql/
+emacs -nw flake.nix 
+fg
+cd ws/postgresql/
+emacs -nw flake.nix
+fg
+git st
+git commit -m "WIP" .
+gi tst
+git st
+cd .
+nix develop .#clang.default
+fg
+nix develop .#clang.default
+nix --version
+curl -L https://nixos.org/nix/install | sh
+cd
+sudo -i
+cd ws/postgresql/
+nix develop .#clang.default
+emacs -nw flake.nix 
+nix develop .#clang.default
+cat > /tmp/flake.nix 
+meld /tmp/flake.nix flake.nix &
+nix develop .#clang.default
+emacs -nw flake.nix 
+nix develop .#clang.default
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+nix develop .#clang.default
+emacs -nw flake.nix 
+nix develop .#clang.default
+nix develop .#gcc.default
+nix repl
+cat > /tmp/flake.nix
+meld /tmp/flake.nix flake.nix 
+nix develop .#gcc.default
+fg
+emacs -nw flake.nix 
+nix develop .#gcc.default
+cat flake.nix 
+cat flake.nix  | copy
+nix develop .#gcc.default
+emacs -nw flake.nix 
+fg
+nix develop .#gcc.default --refresh
+nix repl .
+fg
+nix develop .#gcc.default --refresh
+nix develop .#clang.default --refresh
+nix develop .#gcc.default --refresh
+emacs -nw flake.nix 
+fg
+pg-configure
+nix develop .#gcc.default
+fg
+emacs -nw flake.nix 
+nix develop .#gcc.default
+fg
+nix develop .#gcc.default
+fg
+nix develop .#gcc.default
+fg
+emacs -nw flake.nix 
+fg
+nix develop .#gcc.default
+nix develop .#gcc.with-ikos
+nix develop .#gcc.latest.with-ikos
+nix develop .#gcc.default.with-ikos
+nix develop .#gcc.13.with-ikos
+ikos-scan -c r.c
+fg
+git branch
+pg-build
+pg-clean
+reset
+pg-build
+more ~/Desktop/NOTES 
+mkdir /media/gburd/03B3-4DCF/config
+git st
+mkdir /media/gburd/03B3-4DCF/config/pg
+cp -r flake.nix flake.lock .direnv .envrc .idea .vscode .history /media/gburd/03B3-4DCF/config/pg
+rm -rf /media/gburd/03B3-4DCF/config/pg/.direnv/
+cp -r ~/.config/nvim /media/gburd/03B3-4DCF/config/
+cp -r ~/.emacs.d ~/.bash* /media/gburd/03B3-4DCF/config/
+ls ~/.bash*
+cp -r ~/.emacs.d /media/gburd/03B3-4DCF/config/
+ls /media/gburd/03B3-4DCF/config//.emacs.d
+rm -rf /media/gburd/03B3-4DCF/config/.emacs.d
+cp ~/.emacs.d/init.el ~/.emacs.d/burd.org /media/gburd/03B3-4DCF/config/
+cp ~/.bash* /media/gburd/03B3-4DCF/config/
+more ~/Desktop/NOTES 
+cd ws/postgresql/
+nvim r.c
+vi src/backend/access/heap/heapam.c 
+pg-build
+nix flake show
+more flake.nix 
+nix develop .#gcc
+nix develop .
+nvim flake.nix 
+emacs -nw flake.nix 
+cd ws/postgresql/
+nix develop .
+pg-clean
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+emacs -nw flake.nix 
+fg
+emacs -nw flake.nix 
+fg
+make clean
+make && make install
+emacs -nw flake.nix 
+ls .cache/
+ls .cache/clangd/
+ls .cache/clangd/index/
+ls
+rm -rf .cache/
+ls build/
+rm -rf build test-db/
+git st
+rm src/test/isolation/expected/update-expr.out 
+rm src/test/isolation/specs/update-expr.spec 
+git st
+find . -name \*.o\*
+ls
+git st
+tar -cvzf /media/gburd/03B3-4DCF/config/pg-conf.tgz flake.* .direnv .history .idea .vscode NOTES TEST TODO.txt
+mv src/test/regress/expected/heap_hot_updates.out src/test/regress/sql/_heap_hot_updates.sql src/test/regress/sql/heap_hot_updates.sql /media/gburd/03B3-4DCF/
+git st
+git commit -m "WIP" .
+git st
+tar -cvzf /tmp/pg-conf.tgz flake.* .direnv .history .idea .vscode NOTES TEST TODO.txt
+pg-maintainer-clean 
+fg
+mv /tmp/pg-conf.tgz ~/Desktop/
+ls
+cd ws/postgresql/
+nix develop .
+cd .config
+tar -cvzf nvim.tgz nvim
+mv nvim.tgz /media/gburd/03B3-4DCF/config/
+cd
+cd ws/postgresql/
+ls
+git st
+it branch
+git branch
+ls
+mv compile_flags.txt /tmp
+more build/compile_commands.json 
+ls
+more meson_options.txt 
+ls
+git st
+zed &
+more .clangd 
+rm .clangd
+zed &
+vi build/compile_commands.json 
+pg-build
+code
+zed
+git st
+git diff
+zed &
+git branch
+git fetch
+git fetch origin/master
+git fetch origin
+git branch
+git rebase origin/master
+git st
+git diff
+tig
+git fetch
+git commit -m "ExecOpenIndices/ForUpdate()" .
+git rebase origin/master
+emacs -nw flake.nix 
+fg
+pg-setup
+fg
+pg-setup
+ls
+git st
+rm -rf build
+pg-setup
+fg
+which clang
+rm -rf build
+pg-setup
+fg
+rm -rf build
+pg-setup
+pg-build
+which pg-install
+ls /tmp
+ls
+ls test-db
+emacs -nw flake.nix 
+pg-install
+fg
+pg-install
+fg
+pg-install
+fg
+meson install -C build
+ls
+ls build/
+vi build/build.ninja 
+fg
+cd ws/postgresql/
+nix develop
+pg-setup
+which g++
+rm -rf build
+pg-setup
+gcc++ --version
+ls
+ls build
+pg-setup
+which copy
+vi ~/.bashrc 
+vi ~/.bash_aliases 
+cat flake.nix| copy
+cp flake.nix flake.nix3
+cat > flake.nix
+pg-setup
+which clang
+pg-setup
+which clang
+which which
+ls
+which ls
+which which
+ls
+which clang
+clang --version
+rm -rf build
+pg-setup
+/nix/store/r870pk76914yfvm38djxchvaikd8712f-clang-wrapper-20.1.6/bin/clang --version
+ls
+which which
+rm -rf build
+pg-setup
+rm -rf build
+pg-setup
+cat > flake.nix
+rm -rg build
+rm -rf build
+pg-setup
+rm -rf ./build/
+pg-setup
+pg-config
+pg-setup
+pg-build
+meson build
+meson all -C build
+meson all build
+meson compile -C build
+pg-build
+ls
+pg-install
+git st
+ls install/
+tree install
+more flake.nix
+pg-init
+ls /tmp/test-db/
+pg-start
+rm -rf ./build ./install/
+pg-setup
+which which 
+which which
+pg-setup
+cat > flake.nix
+pg-setup
+more meson.build 
+which which
+ls
+cat > flake.nix
+rm -rf ./build ./install
+pg-setup
+which which
+which more
+more meson.build 
+pg-log
+ls
+pg-clean
+ls
+rm -rf ./build ./install
+pg-setup
+pg-logs
+pg-log
+cp flake.nix flake.nix6
+cat > flake.nix
+pg-setup
+pg-log
+cp flake.nix flake.nix7
+cat > flake.nix
+pg-setup
+cp flake.nix flake.nix8
+cat > flake.nix
+rm -rf ./build ./install
+pg-setup
+pg-logs
+pg-log
+rm -rf ./build ./install
+cp flake.nix flake.nix9
+cat > flake.nix
+pg-setup
+pg-log
+rm -rf ./build ./install
+cp flake.nix flake.nix10
+cat > flake.nix
+pg-setup
+pg-log
+pg-setpu
+pg-setup
+nvim flake.nix 
+ls
+cp flake.nix _/flake.nix11
+rm -rf ./build
+pg-config
+pg-setup
+pg-build
+pg-log
+cat > flake.nix 
+pg-setup
+rm -rf ./build ./install
+pg-setup
+pg-info
+pg-setup
+more pg-aliases.sh 
+cat > shell.nix 
+pg-info
+ls build/
+rm -rf build
+pg-setup
+pg-build
+ls
+rm -rf build
+pg-setup
+pg-info
+pg-log
+emacs -nw pg-aliases.sh 
+pg-bench-run
+pg-bench
+ls
+history | grep nix
+history | grep nix | grep -v flake
+history | grep nix | grep -v flake | grep -v develop
+nix-collect-garbage -d
+fg
+ls
+pg-setup
+pg-build
+pg-info
+pg-install
+git st
+pg-info
+pg-init
+pg-info
+pg-start
+pg-test
+git st
+tig
+git fetch
+git rebase origin/master
+git st
+tig
+git st
+pg-start
+pg-clean
+ls
+rm -rf build install /tmp/test-db
+ls
+pg-setup
+pg-log
+pg-logs
+pg-log
+pg-info
+pg-biuld-log
+pg-build-log
+cd .
+ls
+rm -rf build-clang-musl
+pg-setup
+pg-build-log 
+rm -rf build
+pg-setup
+wihch which
+which which
+pg-build-log 
+rg Ogdb
+pg-setup
+rm -rf build
+pg-setup
+rg c99
+grep c99 *.nix pg-aliases.sh 
+pg-setpu
+pg-setup
+pg-setpu
+pg-setup
+echo $CC
+pg-build-log 
+grep O0 *.nix pg-aliases.sh 
+pg-setup
+pg-build-log
+pg-setup
+pg-build-log
+ls
+rm -rf build-clang/
+zed &
+code
+pg-bench
+which pg-bench-run
+man pg-bench-run
+pg-bench-run --help
+find . -name pg-bench\*
+pg-bench
+nvim /tmp/pgbench-results/results_20250618_083343.txt 
+pg-bench
+nvim /tmp/pgbench-results/results_20250618_112014.txt 
+ls /tmp
+ls /tmp/toast/
+cd /tmp/toast/
+ls
+htop
+cd
+ls
+cd .ssh
+more id_ed25519.pub 
+cd
+cd ws/postgresql/
+ls
+git st
+tig
+git commit --amend .
+ls
+mkdir ~/pg-dev-tools
+cp .envrc flake.* pg-aliases.sh shell.nix ~/pg-dev-tools/
+more r.c 
+ls
+git st
+cp -r .idea .vscode/ .clang-format ~/pg-dev-tools/
+ls
+git st
+git fetch
+git rebase origin/master
+ls
+rm -rf build install
+pg-setup
+pg-test 
+meson test -C build
+cp ~/pg-dev-tools/shell.nix .
+ls
+rm -rf build
+pg-setup
+pg-build
+cp ~/pg-dev-tools/pg-aliases.sh .
+rm -rf ./build/
+code &
+zed &
+find . -name \*jsonb\*
+find src -name \*jsonb\*
+rg jsonb_in
+rg 'jsonb_in,'
+rg 'INPUT = jsonb_in,'
+find . -name pg_type.dat
+nvim src/include/catalog/pg_type.dat 
+nvim .
+find . -name am\*.h
+git st
+nvim src/include/access/amapi.h 
+git st
+git diff
+for file in $(git diff --name-only HEAD | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+fg
+git st
+git diff
+fg
+tig
+git lol
+git log
+fg
+pg-setup
+pg-build
+cd src/tools/pg_bsd_indent/
+ls
+more README 
+ls
+more meson.build 
+ls
+ls tests/
+cd ../../
+cd ..
+ls
+make
+cd src/tools/pg_bsd_indent/
+make
+ls
+meson build
+cd ../../..
+ls
+find . -name pg_bsd_indent
+file build/src/tools/pg_bsd_indent/pg_bsd_indent
+./build/src/tools/pg_bsd_indent/pg_bsd_indent -h
+./build/src/tools/pg_bsd_indent/pg_bsd_indent -?
+./build/src/tools/pg_bsd_indent/pg_bsd_indent --help
+./build/src/tools/pg_bsd_indent/pg_bsd_indent
+cp ./build/src/tools/pg_bsd_indent/pg_bsd_indent ~/bin
+git co gregburd/heap-hot-updates/patch-v17 
+for file in $(git diff --name-only HEAD^ | egrep '\.c$|\.h$'); do ./src/tools/pgindent/pgindent $file; done
+git st
+git branch
+nvim src/test/regress/expected/heap_hot_updates.out 
+git st
+fg
+git co gregburd/heap-hot-updates/patch-v17
+git switch -c gregburd/heap-hot-updates/devel-v18
+ls
+nix develop
+git st
+ls
+git branch
+git co gregburd/heap-hot-updates/devel-v17
+git push -f
+git branch -D gregburd/heap-hot-updates/devel-v18
+git switch -c gregburd/heap-hot-updates/devel-v18
+nix develop
+fg

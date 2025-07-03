@@ -3007,7 +3007,7 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH("(");
 	/* ALTER TABLESPACE <foo> SET|RESET ( */
 	else if (Matches("ALTER", "TABLESPACE", MatchAny, "SET|RESET", "("))
-		COMPLETE_WITH("seq_page_cost", "random_page_cost",
+		COMPLETE_WITH("seq_page_cost", "random_page_cost", "expression_checks",
 					  "effective_io_concurrency", "maintenance_io_concurrency");
 
 	/* ALTER TEXT SEARCH */
