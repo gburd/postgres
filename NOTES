@@ -1,0 +1,116 @@
+
+-------------- TODO
+* RelationGetIndexAttrBitmap: repeates some of what's already available in indexinfolist
+* HeapDetermineColumnsInfo: used now in the PHOT path, semi conflated with the next two
+* ExecIndexesRequiringUpdates
+* index_unchanged_by_update
+* find // comments
+* heap_page_items
+* XXX
+* NB:
+* TU_
+
+-------------- TESTS
+
+DROP TABLE IF EXISTS public.ex;
+CREATE TABLE public.ex (_v JSONB) WITH (fillfactor = 60);
+INSERT INTO ex (_v) VALUES ('{"a": 0, "b": 0}');
+INSERT INTO ex (_v) SELECT jsonb_build_object('b', n) FROM generate_series(100, 10000) as n;
+CREATE INDEX idx_ex_a ON ex ((_v->>'a'));
+CREATE INDEX idx_ex_b ON ex ((_v->>'b')) WHERE (_v->>'b')::numeric > 9;
+SET SESSION enable_seqscan = OFF;
+SET SESSION enable_bitmapscan = OFF;
+UPDATE ex SET _v = jsonb_build_object('a', 2, 'b', 12) WHERE (_v->>'a')::numeric = 0;
+UPDATE ex SET _v = jsonb_build_object('a', 2, 'b', 10) WHERE (_v->>'a')::numeric = 2;
+EXPLAIN (COSTS OFF) SELECT * FROM ex WHERE (_v->>'b')::numeric > 9 AND (_v->>'b')::numeric < 100;
+SELECT * FROM ex WHERE (_v->>'b')::numeric > 9 AND (_v->>'b')::numeric < 100;
+
+
+------------------------------------------------------------
+
+drop table if exists t;
+create table t(key int4 primary key, fruit text);
+create unique index fruit_index on t(fruit);
+insert into t values (25, 'Peach');
+insert into t values (26, 'Fig');
+insert into t values (26, 'Peach') on conflict (key) do update set fruit = excluded.fruit;
+
+update t set key = 26, fruit = 'Peach';
+
+
+
+DROP TABLE IF EXISTS bookings;
+CREATE TABLE bookings (
+    room_id INTEGER,
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    EXCLUDE USING gist (
+        (tsrange(start_time, end_time)) WITH =
+    )
+);
+
+-- Insert a valid booking
+INSERT INTO bookings (room_id, start_time, end_time) VALUES (1, '2024-07-04 10:00:00', '2024-07-04 12:00:00');
+
+-- Attempt to insert an overlapping booking for the same room (will fail)
+INSERT INTO bookings (room_id, start_time, end_time) VALUES (1, '2024-07-04 11:30:00', '2024-07-04 13:00:00');
+
+-- Update the existing booking to overlap with the attempted insertion (will also fail)
+UPDATE bookings SET end_time = '2024-07-04 13:00:00' WHERE room_id = 1 AND start_time = '2024-07-04 10:00:00';
+
+
+
+
+
+
+
+CREATE TABLE brin_hot (
+  id  integer PRIMARY KEY,
+  val integer NOT NULL
+) WITH (autovacuum_enabled = off, fillfactor = 70);
+
+INSERT INTO brin_hot SELECT *, 0 FROM generate_series(1, 235);
+CREATE INDEX val_brin ON brin_hot using brin(val);
+
+UPDATE brin_hot SET val = -3 WHERE id = 42;
+
+SELECT pg_stat_get_tuples_hot_updated('brin_hot'::regclass::oid);
+
+
+
+
+
+
+
+ii_ExclusionOps
+ii_UniqueOps
+
+ii_NullsNotDistinct
+ii_WithoutOverlaps
+
+
+DROP TABLE IF EXISTS upsert;
+CREATE TABLE upsert (key text not null, payload text);
+CREATE UNIQUE INDEX ON upsert(lower(key)) INCLUDE (payload);
+BEGIN ISOLATION LEVEL READ COMMITTED;
+INSERT INTO upsert(key, payload) VALUES('FooFoo', 'insert1') ON CONFLICT (lower(key)) DO UPDATE set key = EXCLUDED.key, payload = upsert.payload || ' updated by insert1';
+INSERT INTO upsert(key, payload) VALUES('FOOFOO', 'insert2') ON CONFLICT (lower(key)) DO UPDATE set key = EXCLUDED.key, payload = upsert.payload || ' updated by insert2';
+COMMIT;
+step select2: SELECT * FROM upsert;
+
+DROP TABLE IF EXISTS upsert;
+CREATE TABLE upsert (key text primary key, payload text);
+BEGIN;
+INSERT INTO upsert(key, payload) VALUES('FooFoo', 'insert1');
+UPDATE upsert set key = 'FOOFOO', payload = 'updated by insert2';
+COMMIT;
+step select2: SELECT * FROM upsert;
+
+
+CREATE TYPE bogus AS ENUM('good', 'new');
+
+BEGIN;
+ALTER TYPE bogus RENAME TO bogon;
+ALTER TYPE bogon ADD VALUE 'bad';
+SELECT 'bad'::bogon;
+ROLLBACK;
