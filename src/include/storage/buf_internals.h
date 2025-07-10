@@ -217,8 +217,7 @@ BufMappingPartitionLockByIndex(uint32 index)
  * single atomic variable.  This layout allow us to do some operations in a
  * single atomic operation, without actually acquiring and releasing spinlock;
  * for instance, increase or decrease refcount.  buf_id field never changes
- * after initialization, so does not need locking.  freeNext is protected by
- * the buffer_strategy_lock not buffer header lock.  The LWLock can take care
+ * after initialization, so does not need locking.  The LWLock can take care
  * of itself.  The buffer header lock is *not* used to control access to the
  * data in the buffer!
  *
@@ -264,7 +263,6 @@ typedef struct BufferDesc
 	pg_atomic_uint32 state;
 
 	int			wait_backend_pgprocno;	/* backend of pin-count waiter */
-	int			freeNext;		/* link in freelist chain */
 
 	PgAioWaitRef io_wref;		/* set iff AIO is in progress */
 	LWLock		content_lock;	/* to lock access to buffer contents */
@@ -359,13 +357,6 @@ BufferDescriptorGetContentLock(const BufferDesc *bdesc)
 {
 	return (LWLock *) (&bdesc->content_lock);
 }
-
-/*
- * The freeNext field is either the index of the next freelist entry,
- * or one of these special values:
- */
-#define FREENEXT_END_OF_LIST	(-1)
-#define FREENEXT_NOT_IN_LIST	(-2)
 
 /*
  * Functions for acquiring/releasing a shared buffer header's spinlock.  Do
