@@ -411,7 +411,7 @@ apw_load_buffers(void)
 		Assert(apw_state->prewarm_start_idx < apw_state->prewarm_stop_idx);
 
 		/* If we've run out of free buffers, don't launch another worker. */
-		if (!have_free_buffer())
+		if (apw_state->prewarmed_blocks >= NBuffers)
 			break;
 
 		/*
@@ -462,7 +462,7 @@ apw_read_stream_next_block(ReadStream *stream,
 	{
 		BlockInfoRecord blk = p->block_info[p->pos];
 
-		if (!have_free_buffer())
+		if (apw_state->prewarmed_blocks >= NBuffers)
 		{
 			p->pos = apw_state->prewarm_stop_idx;
 			return InvalidBlockNumber;
@@ -523,10 +523,11 @@ autoprewarm_database_main(Datum main_arg)
 	blk = block_info[i];
 
 	/*
-	 * Loop until we run out of blocks to prewarm or until we run out of free
+	 * Loop until we run out of blocks to prewarm or until we run out of
 	 * buffers.
 	 */
-	while (i < apw_state->prewarm_stop_idx && have_free_buffer())
+	while (i < apw_state->prewarm_stop_idx &&
+		   apw_state->prewarmed_blocks <= NBuffers)
 	{
 		Oid			tablespace = blk.tablespace;
 		RelFileNumber filenumber = blk.filenumber;
@@ -568,14 +569,14 @@ autoprewarm_database_main(Datum main_arg)
 
 		/*
 		 * We have a relation; now let's loop until we find a valid fork of
-		 * the relation or we run out of free buffers. Once we've read from
-		 * all valid forks or run out of options, we'll close the relation and
+		 * the relation or we run out of buffers. Once we've read from all
+		 * valid forks or run out of options, we'll close the relation and
 		 * move on.
 		 */
 		while (i < apw_state->prewarm_stop_idx &&
 			   blk.tablespace == tablespace &&
 			   blk.filenumber == filenumber &&
-			   have_free_buffer())
+			   apw_state->prewarmed_blocks <= NBuffers)
 		{
 			ForkNumber	forknum = blk.forknum;
 			BlockNumber nblocks;
