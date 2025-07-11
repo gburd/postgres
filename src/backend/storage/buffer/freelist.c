@@ -27,23 +27,20 @@
 /*
  * The shared freelist control information.
  */
-typedef struct
-{
-	/* Spinlock: protects the values below */
-	slock_t		buffer_strategy_lock;
-
+typedef struct {
 	/*
-	 * Clock sweep hand: index of next buffer to consider grabbing. Note that
-	 * this isn't a concrete buffer - we only ever increase the value. So, to
-	 * get an actual buffer, it needs to be used modulo NBuffers.
+	 * The clock-sweep hand is atomically updated by 1 at every tick.  Use the
+	 * macro CLOCK_HAND_POSITION() o find the next victim's index in the
+	 * BufferDescriptor array. To calculate the number of times the clock-sweep
+	 * hand has made a complete pass through all available buffers in the pool
+	 * divide NBuffers.
 	 */
-	pg_atomic_uint32 nextVictimBuffer;
+	pg_atomic_uint64 nextVictimBuffer;
 
 	/*
 	 * Statistics.  These counters should be wide enough that they can't
 	 * overflow during a single bgwriter cycle.
 	 */
-	uint32		completePasses; /* Complete cycles of the clock sweep */
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
 	/*
@@ -83,12 +80,14 @@ typedef struct BufferAccessStrategyData
 	Buffer		buffers[FLEXIBLE_ARRAY_MEMBER];
 }			BufferAccessStrategyData;
 
-
 /* Prototypes for internal functions */
 static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 									 uint32 *buf_state);
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
+
+#define CLOCK_HAND_POSITION(counter) \
+	((counter) & 0xFFFFFFFF) % NBuffers
 
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
@@ -99,6 +98,7 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 static inline uint32
 ClockSweepTick(void)
 {
+	uint64		hand = UINT64_MAX;
 	uint32		victim;
 
 	/*
@@ -106,69 +106,12 @@ ClockSweepTick(void)
 	 * doing this, this can lead to buffers being returned slightly out of
 	 * apparent order.
 	 */
-	victim =
-		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+	hand = pg_atomic_fetch_add_u64(&StrategyControl->nextVictimBuffer, 1);
 
-	if (victim >= NBuffers)
-	{
-		uint32		originalVictim = victim;
+	victim = CLOCK_HAND_POSITION(hand);
+	Assert(victim < NBuffers);
 
-		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
-
-		/*
-		 * If we're the one that just caused a wraparound, force
-		 * completePasses to be incremented while holding the spinlock. We
-		 * need the spinlock so StrategySyncStart() can return a consistent
-		 * value consisting of nextVictimBuffer and completePasses.
-		 */
-		if (victim == 0)
-		{
-			uint32		expected;
-			uint32		wrapped;
-			bool		success = false;
-
-			expected = originalVictim + 1;
-
-			while (!success)
-			{
-				/*
-				 * Acquire the spinlock while increasing completePasses. That
-				 * allows other readers to read nextVictimBuffer and
-				 * completePasses in a consistent manner which is required for
-				 * StrategySyncStart().  In theory delaying the increment
-				 * could lead to an overflow of nextVictimBuffers, but that's
-				 * highly unlikely and wouldn't be particularly harmful.
-				 */
-				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-
-				wrapped = expected % NBuffers;
-
-				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
-														 &expected, wrapped);
-				if (success)
-					StrategyControl->completePasses++;
-				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-			}
-		}
-	}
 	return victim;
-}
-
-/*
- * have_free_buffer -- check if we've filled the buffer pool at startup
- *
- * Used exclusively by autoprewarm.
- */
-bool
-have_free_buffer(void)
-{
-	uint64		hand = pg_atomic_read_u64(&StrategyControl->nextVictimBuffer);
-
-	if (hand < NBuffers)
-		return true;
-	else
-		return false;
 }
 
 /*
@@ -193,10 +136,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 
 	*from_ring = false;
 
-	/*
-	 * If given a strategy object, see whether it can select a buffer. We
-	 * assume strategy objects don't need buffer_strategy_lock.
-	 */
+	/* If given a strategy object, see whether it can select a buffer */
 	if (strategy != NULL)
 	{
 		buf = GetBufferFromRing(strategy, buf_state);
@@ -241,7 +181,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 */
 	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 
-	/* Use the "clock sweep" algorithm to find a free buffer */
+	/* Use the "clock-sweep" algorithm to find a free buffer */
 	trycounter = NBuffers;
 	for (;;)
 	{
@@ -292,37 +232,30 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
  * The result is the buffer index of the best buffer to sync first.
  * BgBufferSync() will proceed circularly around the buffer array from there.
  *
- * In addition, we return the completed-pass count (which is effectively
- * the higher-order bits of nextVictimBuffer) and the count of recent buffer
- * allocs if non-NULL pointers are passed.  The alloc count is reset after
- * being read.
+ * In addition, we return the completed-pass count and the count of recent
+ * buffer allocs if non-NULL pointers are passed.  The alloc count is reset
+ * after being read.
  */
-int
-StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
-{
-	uint32		nextVictimBuffer;
-	int			result;
+uint32 StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc) {
+	uint64		counter = UINT64_MAX; uint32		result;
 
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	result = nextVictimBuffer % NBuffers;
+	counter = pg_atomic_read_u64(&StrategyControl->nextVictimBuffer);
+	result = CLOCK_HAND_POSITION(counter);
 
 	if (complete_passes)
 	{
-		*complete_passes = StrategyControl->completePasses;
-
 		/*
-		 * Additionally add the number of wraparounds that happened before
-		 * completePasses could be incremented. C.f. ClockSweepTick().
+		 * The number of complete passes is the counter divided by NBuffers
+		 * because the clock hand is a 64-bit counter that only increases.
 		 */
-		*complete_passes += nextVictimBuffer / NBuffers;
+		*complete_passes = (uint32) (counter / NBuffers);
 	}
 
 	if (num_buf_alloc)
 	{
 		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
 	}
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+
 	return result;
 }
 
@@ -337,21 +270,14 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 void
 StrategyNotifyBgWriter(int bgwprocno)
 {
-	/*
-	 * We acquire buffer_strategy_lock just to ensure that the store appears
-	 * atomic to StrategyGetBuffer.  The bgwriter should call this rather
-	 * infrequently, so there's no performance penalty from being safe.
-	 */
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 	StrategyControl->bgwprocno = bgwprocno;
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
 }
 
 
 /*
  * StrategyShmemSize
  *
- * estimate the size of shared memory used by the freelist-related structures.
+ * Estimate the size of shared memory used by the freelist-related structures.
  *
  * Note: for somewhat historical reasons, the buffer lookup hashtable size
  * is also determined here.
@@ -409,13 +335,10 @@ StrategyInitialize(bool init)
 		 */
 		Assert(init);
 
-		SpinLockInit(&StrategyControl->buffer_strategy_lock);
-
-		/* Initialize the clock sweep pointer */
-		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
+		/* Initialize combined clock-sweep pointer/complete passes counter */
+		pg_atomic_init_u64(&StrategyControl->nextVictimBuffer, 0);
 
 		/* Clear statistics */
-		StrategyControl->completePasses = 0;
 		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
 
 		/* No pending notification */
@@ -659,7 +582,7 @@ GetBufferFromRing(BufferAccessStrategy strategy, uint32 *buf_state)
 	 *
 	 * If usage_count is 0 or 1 then the buffer is fair game (we expect 1,
 	 * since our own previous usage of the ring element would have left it
-	 * there, but it might've been decremented by clock sweep since then). A
+	 * there, but it might've been decremented by clock-sweep since then). A
 	 * higher usage_count indicates someone else has touched the buffer, so we
 	 * shouldn't re-use it.
 	 */
