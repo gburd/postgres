@@ -23,6 +23,22 @@
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
+typedef union
+{
+	uint64		combined;
+	struct
+	{
+		uint32		completePasses;
+
+		/*
+		 * Clock-sweep hand: index of next buffer to consider grabbing. Note
+		 * that this isn't a concrete buffer - we only ever increase the
+		 * value. So, to get an actual buffer, it needs to be used modulo
+		 * NBuffers.
+		 */
+		uint32		nextVictimBuffer;
+	};
+}			VictimBufferState;
 
 /*
  * The shared freelist control information.
@@ -30,17 +46,15 @@
 typedef struct
 {
 	/*
-	 * Clock-sweep hand: index of next buffer to consider grabbing. Note that
-	 * this isn't a concrete buffer - we only ever increase the value. So, to
-	 * get an actual buffer, it needs to be used modulo NBuffers.
+	 * Note: the state.completePasses and numBufferAllocs statistics are
+	 * counters that should be wide enough that they can't overflow during a
+	 * single bgwriter cycle.
 	 */
-	pg_atomic_uint32 nextVictimBuffer;
-
-	/*
-	 * Statistics.  These counters should be wide enough that they can't
-	 * overflow during a single bgwriter cycle.
-	 */
-	pg_atomic_uint32 completePasses;	/* Complete cycles of the clock-sweep */
+	union
+	{
+		pg_atomic_uint64 combined;
+		VictimBufferState state;
+	}			u;
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
 	/*
@@ -96,43 +110,50 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 static inline uint32
 ClockSweepTick(void)
 {
+	VictimBufferState expected, updated;
 	uint32		victim;
+	bool		success;
+
+	expected.combined = pg_atomic_read_u64(&StrategyControl->u.combined);
 
 	/*
 	 * Atomically move hand ahead one buffer - if there's several processes
 	 * doing this, this can lead to buffers being returned slightly out of
-	 * apparent order.
+	 * apparent order.  We may loop if completePasses is updated by another
+	 * process, but that's OK as it should be infrequent.
 	 */
-	victim =
-		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
-
-	if (victim >= NBuffers)
+	do
 	{
-		uint32		originalVictim = victim;
+		updated = expected;
+		updated.nextVictimBuffer += 1;
 
-		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
+		success = pg_atomic_compare_exchange_u64(&StrategyControl->u.combined,
+												 &expected.combined,
+												 updated.combined);
+	} while (!success);
 
-		/* Increment completePasses if we just caused a wraparound */
-		if (victim == 0)
-		{
-			uint32		expected;
-			uint32		wrapped;
-			bool		success = false;
+	victim = updated.nextVictimBuffer % NBuffers;
 
-			expected = originalVictim + 1;
+    /*
+     * Check if we wrapped around NBuffers boundary and need to increment
+     * completePasses. We detect wraparound by checking if the old value
+     * was the last buffer in the range.
+     */
+    if (expected.nextVictimBuffer == NBuffers - 1)
+    {
+        expected.combined = pg_atomic_read_u64(&StrategyControl->u.combined);
 
-			while (!success)
-			{
-				wrapped = expected % NBuffers;
+        do
+        {
+            updated = expected;
+            updated.completePasses += 1;
 
-				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
-														 &expected, wrapped);
-				if (success)
-					pg_atomic_fetch_add_u32(&StrategyControl->completePasses, 1);
-			}
-		}
-	}
+            success = pg_atomic_compare_exchange_u64(&StrategyControl->u.combined,
+                                                     &expected.combined,
+                                                     updated.combined);
+        } while (!success);
+    }
+
 	return victim;
 }
 
@@ -262,15 +283,17 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 int
 StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 {
+	VictimBufferState state;
 	uint32		nextVictimBuffer;
 	int			result;
 
-	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
+	state.combined = pg_atomic_read_u64(&StrategyControl->u.combined);
+	nextVictimBuffer = state.nextVictimBuffer;
 	result = nextVictimBuffer % NBuffers;
 
 	if (complete_passes)
 	{
-		*complete_passes = pg_atomic_read_u32(&StrategyControl->completePasses);
+		*complete_passes = state.completePasses;
 
 		/*
 		 * Additionally add the number of wraparounds that happened before
@@ -363,12 +386,8 @@ StrategyInitialize(bool init)
 		 */
 		Assert(init);
 
-		/* Initialize the clock-sweep pointer */
-		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
-
-		/* Clear statistics */
-		pg_atomic_init_u32(&StrategyControl->completePasses, 0);
-		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+		/* Clear the clock-sweep hand and related statistics */
+		pg_atomic_init_u64(&StrategyControl->u.combined, 0);
 
 		/* No pending notification */
 		StrategyControl->bgwprocno = -1;

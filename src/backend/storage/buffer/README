@@ -157,9 +157,9 @@ unset by sleeping on the buffer's condition variable.
 Normal Buffer Replacement Strategy
 ----------------------------------
 
-To choose a victim buffer to recycle when there are no free buffers available,
-we use a simple clock-sweep algorithm, which avoids the need to take
-system-wide locks during common operations.  It works like this:
+To choose a victim buffer to recycle we use a simple clock-sweep algorithm,
+which avoids the need to take system-wide locks during common operations.  It
+works like this:
 
 Each buffer header contains a usage counter, which is incremented (up to a
 small limit value) whenever the buffer is pinned.  (This requires only the
@@ -167,8 +167,9 @@ buffer header spinlock, which would have to be taken anyway to increment the
 buffer reference count, so it's nearly free.)
 
 The "clock hand" is a buffer index, nextVictimBuffer, that moves circularly
-through all the available buffers.  nextVictimBuffer is protected by the
-buffer_strategy_lock.
+through all the available buffers.  nextVictimBuffer and completePasses are
+combined into single uint64 atomic as VictimBufferState so that they remain in
+sync and properly inform the BgBufferSync() as to where to start scanning.
 
 The algorithm for a process that needs to obtain a victim buffer is:
 
