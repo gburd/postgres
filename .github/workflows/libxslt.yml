@@ -1,0 +1,76 @@
+name: Build libxslt
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 03 * * *"
+
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-libxslt:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      LIBXML2_VERSION: ${{needs.get-versions.outputs.LIBXML2_VERSION}}
+      LIBXSLT_VERSION: ${{needs.get-versions.outputs.LIBXSLT_VERSION}}
+      ZLIB_VERSION: ${{needs.get-versions.outputs.ZLIB_VERSION}}
+
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download libxml2
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: libxml2.yml
+          workflow_conclusion: success
+          name: libxml2-${{ env.LIBXML2_VERSION }}-win64
+          path: /build/libxml2
+          if_no_artifact_found: fail
+
+      - name: Download zlib
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: zlib.yml
+          workflow_conclusion: success
+          name: zlib-${{ env.ZLIB_VERSION }}-win64
+          path: /build/zlib
+          if_no_artifact_found: fail
+
+      - name: Download
+        run: |
+          curl https://gitlab.gnome.org/GNOME/libxslt/-/archive/v${{ env.LIBXSLT_VERSION }}/libxslt-v${{ env.LIBXSLT_VERSION }}.tar.gz -o ./libxslt-v${{ env.LIBXSLT_VERSION }}.tar.gz
+          tar zxvf libxslt-v${{ env.LIBXSLT_VERSION }}.tar.gz
+
+      - name: Configure
+        run: |
+          cd libxslt-v${{ env.LIBXSLT_VERSION }}
+          cmake -B build -D CMAKE_INSTALL_PREFIX=/libxslt -D CMAKE_PREFIX_PATH="/build/zlib;/build/libxml2"
+
+      - name: Build
+        run: |
+          cd libxslt-v${{ env.LIBXSLT_VERSION }}
+          cmake --build build --config Release
+
+      - name: Install
+        run: |
+          cd libxslt-v${{ env.LIBXSLT_VERSION }}
+          cmake --install build
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: libxslt-v${{ env.LIBXSLT_VERSION }}-src
+          path: libxslt-v${{ env.LIBXSLT_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: libxslt-${{ env.LIBXSLT_VERSION }}-win64
+          path: /libxslt

@@ -1,0 +1,82 @@
+name: Build zlib
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 01 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-zlib:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      ZLIB_VERSION: ${{needs.get-versions.outputs.ZLIB_VERSION}}
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download
+        run: |
+          curl https://zlib.net/zlib-${{ env.ZLIB_VERSION }}.tar.gz -o ./zlib-${{ env.ZLIB_VERSION }}.tar.gz
+          tar zxvf zlib-${{ env.ZLIB_VERSION }}.tar.gz
+
+      - name: Build
+        run: |
+          cd zlib-${{ env.ZLIB_VERSION }}
+          nmake -f win32/Makefile.msc
+
+      - name: Install
+        run: |
+          cd zlib-${{ env.ZLIB_VERSION }}
+
+          mkdir \zlib
+
+          mkdir \zlib\bin
+          copy zlib1.dll \zlib\bin\
+          copy zlib1.pdb \zlib\bin\
+
+          mkdir \zlib\include
+          copy zlib.h \zlib\include\
+          copy zconf.h \zlib\include\
+
+          mkdir \zlib\lib
+          copy zlib.lib \zlib\lib\
+          copy zlib.pdb \zlib\lib\
+          copy zdll.lib \zlib\lib\
+          copy zdll.exp \zlib\lib\
+
+      - name: Create pkgconfig File
+        run: |
+          mkdir \zlib\lib\pkgconfig
+
+          >> \zlib\lib\pkgconfig\zlib.pc echo prefix=${pcfiledir}/../..
+          >> \zlib\lib\pkgconfig\zlib.pc echo exec_prefix=${prefix}
+          >> \zlib\lib\pkgconfig\zlib.pc echo libdir=${prefix}/lib
+          >> \zlib\lib\pkgconfig\zlib.pc echo includedir=${prefix}/include
+          >> \zlib\lib\pkgconfig\zlib.pc echo.
+          >> \zlib\lib\pkgconfig\zlib.pc echo Name: zlib
+          >> \zlib\lib\pkgconfig\zlib.pc echo Description: zlib compression library
+          >> \zlib\lib\pkgconfig\zlib.pc echo Version: ${{ env.ZLIB_VERSION }}
+          >> \zlib\lib\pkgconfig\zlib.pc echo Requires:
+          >> \zlib\lib\pkgconfig\zlib.pc echo Libs: -L${libdir} -lzdll
+          >> \zlib\lib\pkgconfig\zlib.pc echo Cflags: -I${includedir}
+        shell: cmd
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: zlib-${{ env.ZLIB_VERSION }}-src
+          path: zlib-${{ env.ZLIB_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: zlib-${{ env.ZLIB_VERSION }}-win64
+          path: /zlib
