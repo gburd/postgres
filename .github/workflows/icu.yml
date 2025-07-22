@@ -1,0 +1,90 @@
+name: Build ICU
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 01 * * *"
+
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-icu:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      ICU_VERSION: ${{needs.get-versions.outputs.ICU_VERSION}}
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download
+        run: |
+          curl -L https://github.com/unicode-org/icu/releases/download/release-$(echo ${{ env.ICU_VERSION }} | sed 's/\./-/g')/icu4c-$(echo ${{ env.ICU_VERSION }} | sed 's/\./_/g')-src.tgz -o ./icu4c-${{ env.ICU_VERSION }}.tar.gz
+          tar zxvf ./icu4c-${{ env.ICU_VERSION }}.tar.gz
+        shell: bash
+
+      - name: Build
+        run: |
+          cd icu
+          devenv.com source\allinone\allinone.sln /build "Release|x64"
+
+      - name: Install
+        run: |
+          cd icu
+
+          mkdir \icu
+
+          mkdir \icu\bin64
+          copy bin64\* \icu\bin64\
+
+          mkdir \icu\include
+          mkdir \icu\include/unicode
+          copy include\unicode\* \icu\include\unicode\/
+
+          mkdir \icu\lib64
+          copy lib64\* \icu\lib64\
+
+      - name: Create pkgconfig Files
+        run: |
+          mkdir \icu\lib
+          mkdir \icu\lib\pkgconfig
+
+          >> \icu\lib\pkgconfig\icu-uc.pc echo prefix=${pcfiledir}/../..
+          >> \icu\lib\pkgconfig\icu-uc.pc echo exec_prefix=${prefix}
+          >> \icu\lib\pkgconfig\icu-uc.pc echo libdir=${prefix}/lib64
+          >> \icu\lib\pkgconfig\icu-uc.pc echo includedir=${prefix}/include
+          >> \icu\lib\pkgconfig\icu-uc.pc echo.
+          >> \icu\lib\pkgconfig\icu-uc.pc echo Name: icu-uc
+          >> \icu\lib\pkgconfig\icu-uc.pc echo Description: International Components for Unicode: Common and Data libraries
+          >> \icu\lib\pkgconfig\icu-uc.pc echo Version: ${{ env.ICU_VERSION }}
+          >> \icu\lib\pkgconfig\icu-uc.pc echo Libs: -L${libdir} -licuuc -licudt
+          >> \icu\lib\pkgconfig\icu-uc.pc echo Cflags: -I${includedir}
+
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo prefix=${pcfiledir}/../..
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo exec_prefix=${prefix}
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo libdir=${prefix}/lib64
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo includedir=${prefix}/include
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo.
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo Name: icu-i18n
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo Description: International Components for Unicode: Internationalization library
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo Version: ${{ env.ICU_VERSION }}
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo Libs: -L${libdir} -licuin
+          >> \icu\lib\pkgconfig\icu-i18n.pc echo Cflags: -I${includedir}
+        shell: cmd
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: icu-${{ env.ICU_VERSION }}-src
+          path: icu4c-${{ env.ICU_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: icu-${{ env.ICU_VERSION }}-win64
+          path: /icu

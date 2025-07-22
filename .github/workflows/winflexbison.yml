@@ -1,0 +1,40 @@
+name: Package winflexbison
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 00 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  package-winflexbison:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      WINFLEXBISON_VERSION: ${{needs.get-versions.outputs.WINFLEXBISON_VERSION}}
+
+    steps:
+      - name: Download
+        run: |
+          curl -L -o winflexbison.zip "https://github.com/lexxmark/winflexbison/releases/download/v${{ env.WINFLEXBISON_VERSION }}/win_flex_bison-${{ env.WINFLEXBISON_VERSION }}.zip"
+          mkdir winflexbison
+          cd winflexbison
+          unzip ../winflexbison.zip
+
+      # while the meson build nows about win_{bison,flex}, src/tools/msvc doesn't
+      - name: Rename Binaries
+        run: |
+          mv winflexbison/win_bison.exe winflexbison/bison.exe
+          mv winflexbison/win_flex.exe winflexbison/flex.exe
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: winflexbison-${{ env.WINFLEXBISON_VERSION }}-win64
+          path: winflexbison

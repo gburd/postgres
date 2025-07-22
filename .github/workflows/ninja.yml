@@ -1,0 +1,37 @@
+name: Package Ninja
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 00 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  package-ninja:
+    needs: get-versions
+    runs-on: windows-latest
+    env:
+      NINJA_VERSION:  ${{needs.get-versions.outputs.NINJA_VERSION}}
+    steps:
+      - name: Download
+        run: |
+          curl -L -o ninja.zip https://github.com/ninja-build/ninja/releases/download/v${{ env.NINJA_VERSION }}/ninja-win.zip
+          mkdir /ninja/bin
+
+          unzip ninja.zip
+          cp ninja.exe /ninja/bin
+          ls /ninja/bin
+          $ENV:PATH="/ninja/bin;$ENV:PATH"
+          ninja --version || true
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: ninja-${{ env.NINJA_VERSION }}-win64
+          path: /ninja
