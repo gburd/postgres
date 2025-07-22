@@ -1,0 +1,81 @@
+name: Build KRB5
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 01 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-krb5:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      KRB5_VERSION: ${{needs.get-versions.outputs.KRB5_VERSION}}
+
+    steps:
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download
+        run: |
+          curl https://kerberos.org/dist/krb5/1.21/krb5-${{ env.KRB5_VERSION }}.tar.gz -o ./krb5-${{ env.KRB5_VERSION }}.tar.gz
+          tar zxvf krb5-${{ env.KRB5_VERSION }}.tar.gz
+
+      - name: Configure
+        run: |
+          cd krb5-${{ env.KRB5_VERSION }}\src
+          nmake -f Makefile.in prep-windows
+
+      - name: Build
+        run: |
+          cd krb5-${{ env.KRB5_VERSION }}\src
+          $env:PATH += ";" + $env:WindowsSdkVerBinPath + "\x86"
+          nmake NODEBUG=1
+
+      - name: Install
+        # We're only doing a 64 bit build, so we need to tweak things at the
+        # end of the installation to make it look as it would if we had built
+        # both 32 and 64 bit together.
+        run: |
+          mkdir \krb5
+          cd krb5-${{ env.KRB5_VERSION }}\src
+          $env:KRB_INSTALL_DIR = "\krb5"
+          nmake install NODEBUG=1
+
+          mkdir \krb5\lib\amd64
+          move \krb5\lib\*.lib \krb5\lib\amd64\
+
+      - name: Create pkgconfig File
+        run: |
+          mkdir \krb5\lib\pkgconfig
+
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo prefix=${pcfiledir}/../..
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo exec_prefix=${prefix}
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo libdir=${prefix}/lib
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo includedir=${prefix}/include
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo.
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo Name: krb5-gssapi
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo Version: ${{ env.KRB5_VERSION }}
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo Description: MIT kerberos library
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo Libs: -L${libdir}/amd64 -lkrb5_64 -lgssapi64 -lcomerr64
+          >> \krb5\lib\pkgconfig\krb5-gssapi.pc echo Cflags: -I${includedir} -I${includedir}/krb5
+        shell: cmd
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: krb5-${{ env.KRB5_VERSION }}-src
+          path: krb5-${{ env.KRB5_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: krb5-${{ env.KRB5_VERSION }}-win64
+          path: /krb5

@@ -1,0 +1,95 @@
+name: Build ossp-uuid
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 01 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-ossp-uuid:
+    needs: get-versions
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      OSSP-UUID_VERSION: ${{needs.get-versions.outputs.OSSP-UUID_VERSION}}
+
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc automake autoconf pkg-config make zip patch tar
+
+      - name: Download
+        # We get this from the Debian repo, as OSSP is basically unavailable these days
+        run: |
+          curl https://salsa.debian.org/debian/ossp-uuid/-/archive/upstream/${{ env.OSSP-UUID_VERSION }}/ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}.tar.gz -o ./ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}.tar.gz
+          tar zxvf ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}.tar.gz
+
+      - name: Configure
+        run: |
+          cd ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}
+          ./configure --prefix=$(pwd)/winpgbuild
+        shell: bash
+
+      - name: Build
+        run: |
+          cd ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}
+          make all
+        shell: bash
+
+      - name: Install
+        # Manual installation, as .exe extensions aren't handled properly
+        run: |
+          cd ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}
+          mkdir winpgbuild
+          mkdir winpgbuild/bin
+          mkdir winpgbuild/include
+          mkdir winpgbuild/lib
+
+          cp .libs/uuid.exe winpgbuild/bin
+          cp uuid.h winpgbuild/include
+          cp .libs/libuuid.a winpgbuild/lib
+          cp .libs/libuuid.a winpgbuild/lib/uuid.lib
+          cp .libs/libuuid.la winpgbuild/lib
+          cp .libs/libuuid.lai winpgbuild/lib
+
+      - name: Create pkgconfig File
+        run: |
+          cd ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}
+          mkdir winpgbuild/lib/pkgconfig
+
+          cat << EOF > winpgbuild/lib/pkgconfig/ossp-uuid.pc
+          prefix=\${pcfiledir}/../..
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: ossp-uuid
+          Description: ossp uuid library
+          Version: ${{ env.OSSP-UUID_VERSION }}
+          Libs: -L\${libdir} -luuid
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}-src
+          path: ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: ossp-uuid-${{ env.OSSP-UUID_VERSION }}-win64
+          path: ossp-uuid-upstream-${{ env.OSSP-UUID_VERSION }}/winpgbuild

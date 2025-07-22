@@ -1,0 +1,85 @@
+name: Build zstd
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 01 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  build-zstd:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      ZSTD_VERSION: ${{needs.get-versions.outputs.ZSTD_VERSION}}
+    steps:
+      - uses: microsoft/setup-msbuild@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Download
+        run: |
+          curl -L https://github.com/facebook/zstd/releases/download/v${{ env.ZSTD_VERSION }}/zstd-${{ env.ZSTD_VERSION }}.tar.gz -o ./zstd-${{ env.ZSTD_VERSION }}.tar.gz
+          tar zxvf zstd-${{ env.ZSTD_VERSION }}.tar.gz
+
+      - name: Configure
+        run: |
+          cd zstd-${{ env.ZSTD_VERSION }}
+          devenv.com /upgrade build\VS2010\zstd.sln
+
+      - name: Build
+        run: |
+          cd zstd-${{ env.ZSTD_VERSION }}
+          msbuild build\VS2010\zstd.sln -target:libzstd-dll /property:Configuration=Release /property:Platform=x64
+
+      - name: Install
+        run: |
+          cd zstd-${{ env.ZSTD_VERSION }}
+
+          mkdir \zstd
+
+          mkdir \zstd\bin
+          copy build\VS2010\bin\x64_Release\libzstd.dll \zstd\bin\
+          copy build\VS2010\bin\x64_Release\libzstd.pdb \zstd\bin\
+
+          mkdir \zstd\include
+          copy lib\*.h \zstd\include\
+
+          mkdir \zstd\lib
+          copy build\VS2010\bin\x64_Release\libzstd.lib \zstd\lib\
+
+      - name: Create pkgconfig File
+        run: |
+          mkdir \zstd\lib\pkgconfig
+
+          >> \zstd\lib\pkgconfig\libzstd.pc echo prefix=${pcfiledir}/../..
+          >> \zstd\lib\pkgconfig\libzstd.pc echo exec_prefix=${prefix}
+          >> \zstd\lib\pkgconfig\libzstd.pc echo libdir=${prefix}/lib
+          >> \zstd\lib\pkgconfig\libzstd.pc echo includedir=${prefix}/include
+          >> \zstd\lib\pkgconfig\libzstd.pc echo.
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Name: zstd
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Description: fast lossless compression algorithm library
+          >> \zstd\lib\pkgconfig\libzstd.pc echo URL: https://facebook.github.io/zstd/
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Version: ${{ env.ZSTD_VERSION }}
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Libs: -L${libdir} -lzstd
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Libs.private:
+          >> \zstd\lib\pkgconfig\libzstd.pc echo Cflags: -I${includedir}
+        shell: cmd
+
+      - name: Upload Source
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: zstd-${{ env.ZSTD_VERSION }}-src
+          path: zstd-${{ env.ZSTD_VERSION }}.tar.gz
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: zstd-${{ env.ZSTD_VERSION }}-win64
+          path: /zstd
