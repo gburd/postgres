@@ -1,0 +1,41 @@
+name: Package Meson
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "00 00 * * *"
+    
+jobs:
+  get-versions:
+    uses: ./.github/workflows/manifest.yml
+    with:
+      config-path: manifest.json
+
+  package-meson:
+    runs-on: windows-latest
+    needs: get-versions
+    env:
+      MESON_VERSION: ${{needs.get-versions.outputs.MESON_VERSION}}
+    steps:
+      - name: Download
+        run: |
+          curl.exe -L -o meson.tar.gz https://github.com/mesonbuild/meson/releases/download/${{ env.MESON_VERSION }}/meson-${{ env.MESON_VERSION }}.tar.gz
+
+          mkdir -p /meson/mesonbuild
+          mkdir -p /meson/bin
+
+          tar -C /meson/mesonbuild --strip-components=1 -xvzf meson.tar.gz
+
+          echo "@python %~dp0/../mesonbuild/meson.py %*" | out-file -encoding ascii \meson\bin\meson.cmd;
+          \meson\bin\meson.cmd --help
+
+          $ENV:PATH="/meson/bin;$ENV:PATH"
+          meson --version
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: meson-${{ env.MESON_VERSION }}-win64
+          path: /meson
