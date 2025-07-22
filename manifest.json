@@ -1,0 +1,112 @@
+{
+    "packages": [
+      {
+        "name": "gettext",
+        "version": "0.25",
+        "source": "https://www.gnu.org/software/gettext/",
+        "licence": "https://www.gnu.org/software/gettext/manual/html_node/GNU-GPL.html"
+      },
+      {
+        "name": "icu",
+        "version": "77.1",
+        "source": "https://icu.unicode.org/home",
+        "licence": "https://github.com/unicode-org/icu/blob/main/LICENSE"
+      },
+      {
+        "name": "libiconv",
+        "version": "1.18",
+        "source": "https://www.gnu.org/software/libiconv/",
+        "licence": "https://www.gnu.org/licenses/lgpl-2.1.html"
+      },
+      {
+        "name": "krb5",
+        "version": "1.21.3",
+        "source": "https://web.mit.edu/kerberos/",
+        "licence": "https://web.mit.edu/kerberos/krb5-1.21/doc/mitK5license.html"
+      },
+      {
+        "name": "libxml2",
+        "version": "2.13.8",
+        "source": "https://gitlab.gnome.org/GNOME/libxml2/",
+        "licence": "https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/Copyright?ref_type=heads"
+      },
+      {
+        "name": "libxslt",
+        "version": "1.1.43",
+        "source": "https://gitlab.gnome.org/GNOME/libxslt/",
+        "licence": "https://gitlab.gnome.org/GNOME/libxslt/-/blob/master/Copyright?ref_type=heads"
+      },
+      {
+        "name": "lz4",
+        "version": "1.10.0",
+        "source": "https://lz4.org/",
+        "licence": "https://github.com/lz4/lz4/blob/dev/LICENSE"
+      },
+      {
+        "name": "openssl",
+        "version": "3.0.17",
+        "source": "https://openssl.org/",
+        "licence": "https://www.openssl.org/source/apache-license-2.0.txt"
+      },
+      {
+        "name": "ossp-uuid",
+        "version": "1.6.2",
+        "source": "https://salsa.debian.org/debian/ossp-uuid/",
+        "licence": "https://salsa.debian.org/debian/ossp-uuid/-/blob/master/README?ref_type=heads"
+      },
+      {
+        "name": "zlib",
+        "version": "1.3.1",
+        "source": "https://zlib.net/",
+        "licence": "https://zlib.net/zlib_license.html"
+      },
+      {
+        "name": "zstd",
+        "version": "1.5.7",
+        "source": "https://facebook.github.io/zstd/",
+        "licence": "https://github.com/facebook/zstd/blob/dev/LICENSE"
+      },
+      {
+        "name": "diffutils",
+        "version": "2.8.7-1",
+        "source": "https://gnuwin32.sourceforge.net/packages/diffutils.htm",
+        "licence": "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
+      },
+      {
+        "name": "meson",
+        "version": "1.8.2",
+        "source": "https://mesonbuild.com",
+        "licence": "https://github.com/mesonbuild/meson/blob/master/COPYING"
+      },
+      {
+        "name": "ninja",
+        "version": "1.13.0",
+        "source": "https://ninja-build.org",
+        "licence": "https://github.com/ninja-build/ninja/blob/master/COPYING"
+      },
+      {
+        "name": "pkgconf",
+        "version": "2.5.1",
+        "source": "http://pkgconf.org",
+        "licence": "https://github.com/pkgconf/pkgconf/blob/master/COPYING"
+      },
+      {
+        "name": "winflexbison",
+        "version": "2.5.25",
+        "source": "https://github.com/lexxmark/winflexbison",
+        "licence": "https://github.com/lexxmark/winflexbison/blob/master/flex/src/COPYING"
+      },
+      {
+        "name": "postgresql-dev",
+        "version": "master",
+        "source": "https://github.com/postgres/postgres",
+        "licence": "https://www.postgresql.org/about/licence/"
+      },
+      {
+        "name": "postgresql",
+        "version": "['17.5', '16.9', '15.13', '14.18', '13.21']",
+        "source": "https://ftp.postgresql.org/pub/source/",
+        "licence": "https://www.postgresql.org/about/licence/"
+      }
+    ]
+  }
