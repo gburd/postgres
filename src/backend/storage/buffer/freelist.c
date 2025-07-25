@@ -27,6 +27,8 @@ typedef struct ClockSweep
 {
 	pg_atomic_uint64 counter;	/* Only incremented by one */
 	uint32_t	size;			/* Size of the clock */
+	uint32_t	m;				/* Mask if power-of-2, or magic constant */
+	bool        pow2;           /* True if power-of-2, else use fast_mod() */
 } ClockSweep;
 
 /*
@@ -94,6 +96,33 @@ ClockSweepInit(ClockSweep *sweep, uint32 size)
 {
 	pg_atomic_init_u64(&sweep->counter, 0);
 	sweep->size = size;
+
+	if ((size & (size - 1)) == 0)
+	{
+		/* Power of 2: use simple mask */
+		sweep->m = size - 1;
+		sweep->pow2 = true;
+	}
+	else
+	{
+		/* Non-power of 2: calculate magic constant */
+		sweep->m = ((1ULL << 32) + size - 1) / size;	/* ceil() div */
+	    sweep->pow2 = false;
+	}
+}
+
+/* A faster modulo using pre-computed magic constant */
+static inline uint32
+fast_mod(uint32 n, uint32 divisor, uint64 magic)
+{
+	/* Compute quotient using magic multiplication */
+	uint32		quotient = (uint32) (((uint64) n * magic) >> 32);
+
+	/* Compute remainder */
+	uint32		remainder = n - quotient * divisor;
+
+	/* Adjust if remainder is too large (can only be off by divisor) */
+	return remainder < divisor ? remainder : remainder - divisor;
 }
 
 /* Extract the number of complete cycles from the clock hand */
@@ -110,8 +139,20 @@ static inline uint32
 ClockSweepPosition(ClockSweep *sweep)
 {
 	uint64		counter = pg_atomic_read_u64(&sweep->counter);
+	uint32		current = (uint32) counter & 0xFFFFFFFF;
+	uint32		result;
 
-	return ((counter) & 0xFFFFFFFF) % sweep->size;
+	if (sweep->pow2)
+		/* Power of 2: use mask */
+		result = current & sweep->m;
+	else
+		/* Non-power of 2: use magic modulo */
+		result = fast_mod(current, sweep->size, sweep->m);
+
+	Assert(result < sweep->size);
+	Assert(result == (counter & 0xFFFFFFFF) % sweep->size);
+
+	return result;
 }
 
 /*
@@ -121,8 +162,20 @@ static inline uint32
 ClockSweepTick(ClockSweep *sweep)
 {
 	uint64		counter = pg_atomic_fetch_add_u64(&sweep->counter, 1);
+	uint32		current = (uint32) counter & 0xFFFFFFFF;
+	uint32		result;
 
-	return ((counter) & 0xFFFFFFFF) % sweep->size;
+	if (sweep->pow2)
+		/* Power of 2: use mask */
+		result = current & sweep->m;
+	else
+		/* Non-power of 2: use magic modulo */
+		result = fast_mod(current, sweep->size, sweep->m);
+
+	Assert(result < sweep->size);
+	Assert(result == (counter & 0xFFFFFFFF) % sweep->size);
+
+	return result;
 }
 
 /*
