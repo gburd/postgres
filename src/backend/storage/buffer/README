@@ -166,14 +166,13 @@ small limit value) whenever the buffer is pinned.  (This requires only the
 buffer header spinlock, which would have to be taken anyway to increment the
 buffer reference count, so it's nearly free.)
 
-The "clock hand" is a buffer index, nextVictimBuffer, that moves circularly
-through all the available buffers.  nextVictimBuffer and completePasses are
-atomic values.
+The "clock hand" is a buffer index that moves circularly through all the
+available buffers.
 
 The algorithm for a process that needs to obtain a victim buffer is:
 
-1. Select the buffer pointed to by nextVictimBuffer, and circularly advance
-nextVictimBuffer for next time.
+1. Select the buffer pointed to by the clock hand, and circularly advance it
+for next time.
 
 2. If the selected buffer is pinned or has a nonzero usage count, it cannot be
 used.  Decrement its usage count (if nonzero), return to step 3 to examine the
@@ -235,13 +234,12 @@ Background Writer's Processing
 ------------------------------
 
 The background writer is designed to write out pages that are likely to be
-recycled soon, thereby offloading the writing work from active backends.
-To do this, it scans forward circularly from the current position of
-nextVictimBuffer (which it does not change!), looking for buffers that are
-dirty and not pinned nor marked with a positive usage count.  It pins,
-writes, and releases any such buffer.
+recycled soon, thereby offloading the writing work from active backends. To do
+this, it scans forward circularly from the current position of clock (which it
+does not change!), looking for buffers that are dirty and not pinned nor marked
+with a positive usage count.  It pins, writes, and releases any such buffer.
 
-We enforce reading nextVictimBuffer within an atomic action so it needs only to
+We enforce reading the clock hand within an atomic action so it needs only to
 spinlock each buffer header for long enough to check the dirtybit.  Even
 without that assumption, the writer only needs to take the lock long enough to
 read the variable value, not while scanning the buffers. (This is a very

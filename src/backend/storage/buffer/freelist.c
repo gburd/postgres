@@ -23,19 +23,22 @@
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
+typedef struct ClockSweep
+{
+	pg_atomic_uint64 counter;	/* Only incremented by one */
+	uint32_t	size;			/* Size of the clock */
+} ClockSweep;
 
 /*
  * The shared freelist control information.
  */
-typedef struct {
+typedef struct
+{
 	/*
-	 * The clock-sweep hand is atomically updated by 1 at every tick.  Use the
-	 * macro CLOCK_HAND_POSITION() o find the next victim's index in the
-	 * BufferDescriptor array. To calculate the number of times the clock-sweep
-	 * hand has made a complete pass through all available buffers in the pool
-	 * divide NBuffers.
+	 * The next buffer available for use is determined by the clock-sweep
+	 * algorithm.
 	 */
-	pg_atomic_uint64 nextVictimBuffer;
+	ClockSweep	clock;
 
 	/*
 	 * Statistics.  These counters should be wide enough that they can't
@@ -86,32 +89,40 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 
-#define CLOCK_HAND_POSITION(counter) \
-	((counter) & 0xFFFFFFFF) % NBuffers
+static void
+ClockSweepInit(ClockSweep *sweep, uint32 size)
+{
+	pg_atomic_init_u64(&sweep->counter, 0);
+	sweep->size = size;
+}
+
+/* Extract the number of complete cycles from the clock hand */
+static inline uint32
+ClockSweepCycles(ClockSweep *sweep)
+{
+	uint64		current = pg_atomic_read_u64(&sweep->counter);
+
+	return current / sweep->size;
+}
+
+/* Return the current position of the clock's hand modulo size */
+static inline uint32
+ClockSweepPosition(ClockSweep *sweep)
+{
+	uint64		counter = pg_atomic_read_u64(&sweep->counter);
+
+	return ((counter) & 0xFFFFFFFF) % sweep->size;
+}
 
 /*
- * ClockSweepTick - Helper routine for StrategyGetBuffer()
- *
- * Move the clock hand one buffer ahead of its current position and return the
- * id of the buffer now under the hand.
+ * Move the clock hand ahead one and return its new position.
  */
 static inline uint32
-ClockSweepTick(void)
+ClockSweepTick(ClockSweep *sweep)
 {
-	uint64		hand = UINT64_MAX;
-	uint32		victim;
+	uint64		counter = pg_atomic_fetch_add_u64(&sweep->counter, 1);
 
-	/*
-	 * Atomically move hand ahead one buffer - if there's several processes
-	 * doing this, this can lead to buffers being returned slightly out of
-	 * apparent order.
-	 */
-	hand = pg_atomic_fetch_add_u64(&StrategyControl->nextVictimBuffer, 1);
-
-	victim = CLOCK_HAND_POSITION(hand);
-	Assert(victim < NBuffers);
-
-	return victim;
+	return ((counter) & 0xFFFFFFFF) % sweep->size;
 }
 
 /*
@@ -181,11 +192,11 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	 */
 	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 
-	/* Use the "clock-sweep" algorithm to find a free buffer */
+	/* Use the clock-sweep algorithm to find a free buffer */
 	trycounter = NBuffers;
 	for (;;)
 	{
-		buf = GetBufferDescriptor(ClockSweepTick());
+		buf = GetBufferDescriptor(ClockSweepTick(&StrategyControl->clock));
 
 		/*
 		 * If the buffer is pinned or has a nonzero usage_count, we cannot use
@@ -236,19 +247,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
  * buffer allocs if non-NULL pointers are passed.  The alloc count is reset
  * after being read.
  */
-uint32 StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc) {
-	uint64		counter = UINT64_MAX; uint32		result;
-
-	counter = pg_atomic_read_u64(&StrategyControl->nextVictimBuffer);
-	result = CLOCK_HAND_POSITION(counter);
+uint32
+StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
+{
+	uint32		result = ClockSweepPosition(&StrategyControl->clock);
 
 	if (complete_passes)
 	{
-		/*
-		 * The number of complete passes is the counter divided by NBuffers
-		 * because the clock hand is a 64-bit counter that only increases.
-		 */
-		*complete_passes = (uint32) (counter / NBuffers);
+		*complete_passes = ClockSweepCycles(&StrategyControl->clock);
 	}
 
 	if (num_buf_alloc)
@@ -335,8 +341,8 @@ StrategyInitialize(bool init)
 		 */
 		Assert(init);
 
-		/* Initialize combined clock-sweep pointer/complete passes counter */
-		pg_atomic_init_u64(&StrategyControl->nextVictimBuffer, 0);
+		/* Initialize the clock-sweep algorithm */
+		ClockSweepInit(&StrategyControl->clock, NBuffers);
 
 		/* Clear statistics */
 		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
