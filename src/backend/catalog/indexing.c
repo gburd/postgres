@@ -73,7 +73,7 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  */
 static void
 CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
-				   TU_UpdateIndexes updateIndexes)
+				   TU_UpdateIndexes updateIndexes, Bitmapset *modifiedAttrs)
 {
 	int			i;
 	int			numIndexes;
@@ -146,6 +146,31 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 			continue;
 		}
 #endif							/* USE_ASSERT_CHECKING */
+
+		/*
+		 * If the indexed attributes were not modified and this is a
+		 * partial-HOT update, skip it.
+		 */
+		if (true)
+		{
+			bool		should_update = false;
+			int			j;
+
+			for (j = 0; j < indexInfo->ii_NumIndexAttrs; j++)
+			{
+				AttrNumber	attrnum = indexInfo->ii_IndexAttrNumbers[j]
+					- FirstLowInvalidHeapAttributeNumber;
+
+				if (bms_is_member(attrnum, modifiedAttrs))
+				{
+					should_update = true;
+					break;
+				}
+			}
+
+			if (!should_update)
+				continue;
+		}
 
 		/*
 		 * Skip insertions into non-summarizing indexes if we only need to
@@ -314,14 +339,17 @@ CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
 	TU_UpdateIndexes updateIndexes = TU_All;
+	Bitmapset *modifiedAttrs = NULL;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &updateIndexes, modifiedAttrs);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, updateIndexes, modifiedAttrs);
+	bms_free(modifiedAttrs);
+
 	CatalogCloseIndexes(indstate);
 }
 
@@ -338,12 +366,14 @@ CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
 	TU_UpdateIndexes updateIndexes = TU_All;
+	Bitmapset *modifiedAttrs = NULL;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &updateIndexes, modifiedAttrs);
+	bms_free(modifiedAttrs);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, updateIndexes, modifiedAttrs);
 }
 
 /*

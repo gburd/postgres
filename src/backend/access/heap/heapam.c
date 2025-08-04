@@ -4594,18 +4594,16 @@ HeapDetermineColumnsInfo(Relation relation,
  */
 void
 simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   TU_UpdateIndexes *update_indexes, Bitmapset *modified_attrs)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
 	LockTupleMode lockmode;
-	Bitmapset  *modified_attrs; /* unused */
 
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes, &modified_attrs);
-	bms_free(modified_attrs);
+						 &tmfd, &lockmode, update_indexes, modified_attrs);
 
 	switch (result)
 	{

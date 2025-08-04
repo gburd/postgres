@@ -1609,3 +1609,196 @@ meson test -q --print-errorlogs -C build test_misc/002_tablespace
 emacs -nw build/meson-logs/testlog.txt 
 find . -name 002_tablespace.pl
 fg
+tig
+zig &
+code &
+zed &
+history | grep omni
+rg ClockSweep
+vi src/tools/pgindent/typedefs.list 
+rg MemSet
+more ~/Desktop/NOTES 
+git st
+pwd
+ls build/
+git st
+ls -alg
+which meson
+clion &
+pg-setup
+pg-build
+git st
+git add .idea/
+git commit -m "dev" .idea
+git st
+git diff meson.build
+git co meson.build
+git st
+git commit -m "WIP: clockpro" .
+git branch
+git worktree list
+git st
+git branch -a | grep phot
+git co gregburd/phot/devel-v7
+tig
+git fetch
+git rebase origin/master
+reset
+pg-clean
+ls
+git st
+pg-build
+reset; pg-test
+ls
+pg-init 
+tig
+git st
+git diff
+git st
+ls
+rm -rf build install /tmp/test-db
+more ~/Desktop/No
+more ~/Desktop/NOTES 
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+reset
+make check-world
+git lol
+git st
+git diff
+git branch
+ls
+rm install
+rm -rf build test-db tmp_install
+git st
+file portlock/
+ls portlock/
+rmdir portlock/
+ls
+git st
+rm src/test/regress/regression.diffs 
+rm src/test/regress/regression.out
+git co gregburd/phot/devel-v6
+git stash
+git co gregburd/phot/devel-v6
+git st
+git co gregburd/phot/devel-v5
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/build --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git lol
+rm -rf ./install ./build /tmp/test-db
+git co gregburd/phot/devel-v6
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git bisect start HEAD
+git bisect good 81eaaa2c41d
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+tig
+git am --keep-cr  ../pg-patch-sets/phot/v5-*
+git st
+git am --show-current-patch=diff
+git st
+git am --abort
+git bisect --abort
+git bisect visualize
+git bisect reset
+git lol
+git rev-list --ancestry-path 81eaaa2c41d..62a17a92833
+git rev-list --ancestry-path 81eaaa2c41d..62a17a92833 | wc -l
+git log --oneline 81eaaa2c41d..62a17a92833
+git st
+git lol
+git format-patch -v6 6fa4b40d0f3
+ls ../pg-patch-sets/phot/
+mv v6-000* ../pg-patch-sets/phot/
+git bisect good 81eaaa2c41d
+git bisect reset
+git bisect start HEAD
+git bisect good 81eaaa2c41d
+tig
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+tig
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+tig
+git am --keep-cr ../pg-patch-sets/v5-0001-dev-setup.patch
+nix develop
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+tig
+git bisect bad
+tig
+git am --keep-cr ../pg-patch-sets/v5-0001-dev-setup.patch
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git bisect bad
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git bisect good
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+tig
+history
+git bisect log
+git bisect log /tmp/bisect.log
+git bisect log > /tmp/bisect.log
+vi /tmp/bisect.log 
+git bisect reset
+git bisect replay /tmp/bisect.log
+tig
+git am ../pg-patch-sets/v5-0001-dev-setup.patch
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+tig
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git bisect bad
+tig
+git am ../pg-patch-sets/v5-0001-dev-setup.patch
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+tig
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+git bisect bad
+tig
+git bisect log
+tig
+git am ../pg-patch-sets/v5-0001-dev-setup.patch
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+tig
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+tig
+git bisect bad 8c9eec540dc4ba684b74e3ccab8413f358a2f93d
+tig
+git am ../pg-patch-sets/v5-0001-dev-setup.patch
+git am --keep-cr ../pg-patch-sets/phot/v6-000*
+tig
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+make && make install
+tig
+git bisect bad 9fd989ff9937966a8c3f28bfb6cce8f8071b3289
+tig
+emacs -nw ../pg-patch-sets/phot/v5-0008-Enable-P-HOT-for-expression-indexes.patch 
+git bisect log > /tmp/bisect2.log
+tig
+git bisect abort
+git bisect reset
+tig
+git st
+rm -rf ./install ./build /tmp/test-db
+./configure CFLAGS="-ggdb -Og -fno-omit-frame-pointer -DUSE_VALGRIND -D_FORTIFY_SOURCE=1" --prefix=$(pwd)/install --libdir=$(pwd)/build/lib --enable-debug --enable-cassert --enable-depend --enable-tap-tests
+tig
+git fetch
+tig
+git branch
+git co gregburd/phot/devel-v7
+tig

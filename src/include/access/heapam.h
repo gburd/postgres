@@ -370,7 +370,8 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, ItemPointer tid);
 extern void simple_heap_update(Relation relation, ItemPointer otid,
-							   HeapTuple tup, TU_UpdateIndexes *update_indexes);
+							   HeapTuple tup, TU_UpdateIndexes *update_indexes,
+							   Bitmapset *modified_attrs);
 
 extern TransactionId heap_index_delete_tuples(Relation irel, Relation rel,
 											  TM_IndexDeleteOp *delstate);
