@@ -1609,3 +1609,9 @@ meson test -q --print-errorlogs -C build test_misc/002_tablespace
 emacs -nw build/meson-logs/testlog.txt 
 find . -name 002_tablespace.pl
 fg
+make
+vi src/backend/nodes/bitmapset.c 
+more ~/Desktop/NOTES 
+cd 
+cd ws/postgresql/
+nix develop

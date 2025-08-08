@@ -2,22 +2,22 @@
 
 # Build system management
 pg_clean_for_compiler() {
-  local current_compiler="$(basename $CC)"
-  local build_dir="$PG_BUILD_DIR"
+        local current_compiler="$(basename $CC)"
+        local build_dir="$PG_BUILD_DIR"
 
-  if [ -f "$build_dir/compile_commands.json" ]; then
-    local last_compiler=$(grep -o '/[^/]*/bin/[gc]cc\|/[^/]*/bin/clang' "$build_dir/compile_commands.json" | head -1 | xargs basename 2>/dev/null || echo "unknown")
+        if [ -f "$build_dir/compile_commands.json" ]; then
+                local last_compiler=$(grep -o '/[^/]*/bin/[gc]cc\|/[^/]*/bin/clang' "$build_dir/compile_commands.json" | head -1 | xargs basename 2>/dev/null || echo "unknown")
 
-    if [ "$last_compiler" != "$current_compiler" ] && [ "$last_compiler" != "unknown" ]; then
-      echo "Detected compiler change from $last_compiler to $current_compiler"
-      echo "Cleaning build directory..."
-      rm -rf "$build_dir"
-      mkdir -p "$build_dir"
-    fi
-  fi
+                if [ "$last_compiler" != "$current_compiler" ] && [ "$last_compiler" != "unknown" ]; then
+                        echo "Detected compiler change from $last_compiler to $current_compiler"
+                        echo "Cleaning build directory..."
+                        rm -rf "$build_dir"
+                        mkdir -p "$build_dir"
+                fi
+        fi
 
-  mkdir -p "$build_dir"
-  echo "$current_compiler" > "$build_dir/.compiler_used"
+        mkdir -p "$build_dir"
+        echo "$current_compiler" >"$build_dir/.compiler_used"
 }
 
 # Core PostgreSQL commands
@@ -41,6 +41,7 @@ alias pg-setup='
   env CFLAGS="-I$PERL_CORE_DIR $CFLAGS" \
       LDFLAGS="-L$PERL_CORE_DIR -lperl $LDFLAGS" \
   meson setup --reconfigure \
+    --buildtype=debug \
     -Doptimization=g \
     -Ddebug=true \
     -Db_sanitize=none \
@@ -136,10 +137,10 @@ alias pg-flame-120='pg-flame-generate 120'
 
 # Custom flame graph with specific duration and output
 pg-flame-custom() {
-  local duration=${1:-30}
-  local output_dir=${2:-$PG_FLAME_DIR}
-  echo "Generating flame graph for ${duration}s, output to: $output_dir"
-  pg-flame-generate "$duration" "$output_dir"
+        local duration=${1:-30}
+        local output_dir=${2:-$PG_FLAME_DIR}
+        echo "Generating flame graph for ${duration}s, output to: $output_dir"
+        pg-flame-generate "$duration" "$output_dir"
 }
 
 # Benchmarking with pgbench
@@ -151,53 +152,53 @@ alias pg-bench-readonly='pg-bench-run 20 4 2000 50 120 select-only'
 
 # Custom benchmark function
 pg-bench-custom() {
-  local clients=${1:-10}
-  local threads=${2:-2}
-  local transactions=${3:-1000}
-  local scale=${4:-10}
-  local duration=${5:-60}
-  local test_type=${6:-tpcb-like}
+        local clients=${1:-10}
+        local threads=${2:-2}
+        local transactions=${3:-1000}
+        local scale=${4:-10}
+        local duration=${5:-60}
+        local test_type=${6:-tpcb-like}
 
-  echo "Running custom benchmark:"
-  echo "  Clients: $clients, Threads: $threads"
-  echo "  Transactions: $transactions, Scale: $scale"
-  echo "  Duration: ${duration}s, Type: $test_type"
+        echo "Running custom benchmark:"
+        echo "  Clients: $clients, Threads: $threads"
+        echo "  Transactions: $transactions, Scale: $scale"
+        echo "  Duration: ${duration}s, Type: $test_type"
 
-  pg-bench-run "$clients" "$threads" "$transactions" "$scale" "$duration" "$test_type"
+        pg-bench-run "$clients" "$threads" "$transactions" "$scale" "$duration" "$test_type"
 }
 
 # Benchmark with flame graph
 pg-bench-flame() {
-  local duration=${1:-60}
-  local clients=${2:-10}
-  local scale=${3:-10}
+        local duration=${1:-60}
+        local clients=${2:-10}
+        local scale=${3:-10}
 
-  echo "Running benchmark with flame graph generation"
-  echo "Duration: ${duration}s, Clients: $clients, Scale: $scale"
+        echo "Running benchmark with flame graph generation"
+        echo "Duration: ${duration}s, Clients: $clients, Scale: $scale"
 
-  # Start benchmark in background
-  pg-bench-run "$clients" 2 1000 "$scale" "$duration" tpcb-like &
-  local bench_pid=$!
+        # Start benchmark in background
+        pg-bench-run "$clients" 2 1000 "$scale" "$duration" tpcb-like &
+        local bench_pid=$!
 
-  # Wait a bit for benchmark to start
-  sleep 5
+        # Wait a bit for benchmark to start
+        sleep 5
 
-  # Generate flame graph for most of the benchmark duration
-  local flame_duration=$((duration - 10))
-  if [ $flame_duration -gt 10 ]; then
-    pg-flame-generate "$flame_duration" &
-    local flame_pid=$!
-  fi
+        # Generate flame graph for most of the benchmark duration
+        local flame_duration=$((duration - 10))
+        if [ $flame_duration -gt 10 ]; then
+                pg-flame-generate "$flame_duration" &
+                local flame_pid=$!
+        fi
 
-  # Wait for benchmark to complete
-  wait $bench_pid
+        # Wait for benchmark to complete
+        wait $bench_pid
 
-  # Wait for flame graph if it was started
-  if [ -n "${flame_pid:-}" ]; then
-    wait $flame_pid
-  fi
+        # Wait for flame graph if it was started
+        if [ -n "${flame_pid:-}" ]; then
+                wait $flame_pid
+        fi
 
-  echo "Benchmark and flame graph generation completed"
+        echo "Benchmark and flame graph generation completed"
 }
 
 # Performance monitoring
@@ -206,14 +207,14 @@ alias pg-htop='htop -p $(pgrep -f "postgres.*-D.*$PG_DATA_DIR" | tr "\n" "," | s
 
 # System performance stats during PostgreSQL operation
 pg-stats() {
-  local duration=${1:-30}
-  echo "Collecting system stats for ${duration}s..."
+        local duration=${1:-30}
+        echo "Collecting system stats for ${duration}s..."
 
-  iostat -x 1 "$duration" > "$PG_BENCH_DIR/iostat_$(date +%Y%m%d_%H%M%S).log" &
-  vmstat 1 "$duration" > "$PG_BENCH_DIR/vmstat_$(date +%Y%m%d_%H%M%S).log" &
+        iostat -x 1 "$duration" >"$PG_BENCH_DIR/iostat_$(date +%Y%m%d_%H%M%S).log" &
+        vmstat 1 "$duration" >"$PG_BENCH_DIR/vmstat_$(date +%Y%m%d_%H%M%S).log" &
 
-  wait
-  echo "System stats saved to $PG_BENCH_DIR"
+        wait
+        echo "System stats saved to $PG_BENCH_DIR"
 }
 
 # Log management
@@ -258,11 +259,11 @@ alias pg-flame-results='ls -la "$PG_FLAME_DIR" && echo "Open flame graphs with: 
 
 # Clean up old results
 pg-clean-results() {
-  local days=${1:-7}
-  echo "Cleaning benchmark and flame graph results older than $days days..."
-  find "$PG_BENCH_DIR" -type f -mtime +$days -delete 2>/dev/null || true
-  find "$PG_FLAME_DIR" -type f -mtime +$days -delete 2>/dev/null || true
-  echo "Cleanup completed"
+        local days=${1:-7}
+        echo "Cleaning benchmark and flame graph results older than $days days..."
+        find "$PG_BENCH_DIR" -type f -mtime +$days -delete 2>/dev/null || true
+        find "$PG_FLAME_DIR" -type f -mtime +$days -delete 2>/dev/null || true
+        echo "Cleanup completed"
 }
 
 # Information

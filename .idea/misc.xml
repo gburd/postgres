@@ -1,18 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ExternalStorageConfigurationManager" enabled="true" />
-  <component name="MakefileSettings">
+  <component name="MesonSettings">
     <option name="linkedExternalProjectsSettings">
-      <MakefileProjectSettings>
+      <MesonProjectSettings>
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
           </set>
         </option>
-        <option name="version" value="2" />
-      </MakefileProjectSettings>
+        <option name="profiles">
+          <MesonProfile>
+            <option name="buildDir" value="build" />
+            <option name="setupOptions">
+              <list>
+                <option value="-Doptimization=g" />
+                <option value="-Ddebug=true" />
+                <option value="-Db_sanitize=none" />
+                <option value="-Db_lundef=false" />
+                <option value="-Dlz4=enabled" />
+                <option value="-Dzstd=enabled" />
+                <option value="-Dllvm=disabled" />
+                <option value="-Dplperl=enabled" />
+                <option value="-Dplpython=enabled" />
+                <option value="-Dpltcl=enabled" />
+                <option value="-Dlibxml=enabled" />
+                <option value="-Duuid=e2fs" />
+                <option value="-Dlibxslt=enabled" />
+                <option value="-Dssl=openssl" />
+                <option value="-Dldap=disabled" />
+                <option value="-Dcassert=true" />
+                <option value="-Dtap_tests=enabled" />
+                <option value="-Dinjection_points=true" />
+                <option value="-Ddocs_pdf=enabled" />
+                <option value="-Ddocs_html_style=website" />
+                <option value="--prefix=/ws/postgres/install" />
+              </list>
+            </option>
+          </MesonProfile>
+        </option>
+      </MesonProjectSettings>
     </option>
   </component>
-  <component name="MakefileWorkspace" PROJECT_DIR="$PROJECT_DIR$" />
+  <component name="MesonWorkspace" PROJECT_DIR="$PROJECT_DIR$" />
 </project>
