@@ -37,6 +37,18 @@
 /* number of offsets we can store in the header of a BlocktableEntry */
 #define NUM_FULL_OFFSETS ((sizeof(uintptr_t) - sizeof(uint8) - sizeof(int8)) / sizeof(OffsetNumber))
 
+#if SIZEOF_VOID_P >= 8
+
+#define BITS_PER_BITMAPWORD 64
+typedef uint64 bitmapword;		/* must be an unsigned type */
+
+#else
+
+#define BITS_PER_BITMAPWORD 32
+typedef uint32 bitmapword;		/* must be an unsigned type */
+
+#endif
+
 /*
  * This is named similarly to PagetableEntry in tidbitmap.c
  * because the two have a similar function.

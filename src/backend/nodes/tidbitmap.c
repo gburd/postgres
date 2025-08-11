@@ -47,6 +47,14 @@
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 
+#if SIZEOF_VOID_P >= 8
+#define BITS_PER_BITMAPWORD 64
+typedef uint64 bitmapword;		/* must be an unsigned type */
+#else
+#define BITS_PER_BITMAPWORD 32
+typedef uint32 bitmapword;		/* must be an unsigned type */
+#endif
+
 /*
  * When we have to switch over to lossy storage, we use a data structure
  * with one bit per page, where all pages having the same number DIV

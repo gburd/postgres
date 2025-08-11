@@ -151,7 +151,6 @@
  *-------------------------------------------------------------------------
  */
 
-#include "nodes/bitmapset.h"
 #include "port/pg_bitutils.h"
 #include "port/simd.h"
 #include "utils/dsa.h"
@@ -159,6 +158,21 @@
 #ifdef RT_SHMEM
 #include "miscadmin.h"
 #include "storage/lwlock.h"
+#endif
+
+/* Select appropriate bit-twiddling functions for bitmap word size */
+#if SIZEOF_VOID_P >= 8
+typedef uint64 bitmapword;
+#define BITS_PER_BITMAPWORD 64
+#define bmw_leftmost_one_pos(w)		pg_leftmost_one_pos32(w)
+#define bmw_rightmost_one_pos(w)	pg_rightmost_one_pos32(w)
+#define bmw_popcount(w)				pg_popcount32(w)
+#else
+typedef uint32 bitmapword;
+#define BITS_PER_BITMAPWORD 32
+#define bmw_leftmost_one_pos(w)		pg_leftmost_one_pos64(w)
+#define bmw_rightmost_one_pos(w)	pg_rightmost_one_pos64(w)
+#define bmw_popcount(w)				pg_popcount64(w)
 #endif
 
 /* helpers */

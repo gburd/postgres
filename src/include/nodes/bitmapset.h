@@ -3,7 +3,7 @@
  * bitmapset.h
  *	  PostgreSQL generic bitmap set package
  *
- * A bitmap set can represent any set of nonnegative integers, although
+ * A bitmap set can represent any set of non-negative integers, although
  * it is mainly intended for sets where the maximum value is not large,
  * say at most a few hundred.  By convention, we always represent the
  * empty set by a NULL pointer.
@@ -28,31 +28,91 @@ struct List;
 /*
  * Data representation
  *
- * Larger bitmap word sizes generally give better performance, so long as
- * they're not wider than the processor can handle efficiently.  We use
- * 64-bit words if pointers are that large, else 32-bit words.
+ * This is an implementation for a sparse, compressed bitmap. It is resizable
+ * and mutable, with reasonable performance for random access modifications
+ * and lookups.
+ *
+ * A Bitmapset consists of multiple chunks stored sequentially in memory.
+ * Each chunk encodes a contiguous range of up to BMS_CHUNK_MAX_CAPACITY bits
+ * (typically 2048 bits on 64-bit systems) using compression to minimize
+ * storage for uniform bit patterns.
+ *
+ * Memory Layout:
+ * - Header: 4-byte chunk count
+ * - Chunk data: Variable-length compressed chunks stored sequentially
+ *
+ * Each chunk consists of:
+ * - 4-byte starting bit offset (chunk_off_t)
+ * - Flag bitvector (bms_bitvec_t): 2-bit flags describing each sub-range
+ * - Payload vectors: Only stored for "mixed" sub-ranges
+ *
+ * Flag Encoding (2 bits per sub-range):
+ * - 0b00 (BMS_PAYLOAD_ZEROS): All bits are 0 (no payload stored)
+ * - 0b01 (BMS_PAYLOAD_NONE):  Sub-range unused (reduces chunk capacity)
+ * - 0b10 (BMS_PAYLOAD_MIXED): Mixed 0s and 1s (payload vector stored)
+ * - 0b11 (BMS_PAYLOAD_ONES):  All bits are 1 (no payload stored)
+ *
+ * Compression Efficiency:
+ * - Minimum size: 12 bytes (4-byte offset + 8-byte flags) for uniform patterns
+ * - Maximum size: 268 bytes when all sub-ranges are mixed
+ * - Empty ranges: Represented as gaps between chunks (0 bytes)
+ * - Sparse bitmaps achieve significant space savings
+ *
+ * Three-Tier Architecture:
+ *
+ * Tier 0 (Bit Level): Individual bits stored in bms_bitvec_t vectors
+ *   - 64-bit vectors on 64-bit platforms, 32-bit on 32-bit platforms
+ *   - Direct bit manipulation for mixed payload ranges
+ *
+ * Tier 1 (Chunk Level): Groups of vectors with compressed representation
+ *   - Each chunk covers up to BMS_CHUNK_MAX_CAPACITY contiguous bits
+ *   - Flag bitvector describes BMS_FLAGS_PER_INDEX sub-ranges
+ *   - Only mixed sub-ranges require storage of actual bit vectors
+ *   - Uniform sub-ranges (all 0s or all 1s) compressed into flags
+ *
+ * Tier 2 (Bitmap Level): Collection of chunks with gap handling
+ *   - Chunks stored in ascending bit-offset order
+ *   - Gaps between chunks implicitly represent unset bits
+ *   - Dynamic memory management for chunk insertion/removal
+ *   - Automatic chunk merging and splitting for optimal storage
+ *
+ * Performance Characteristics:
+ * - Random access: O(log chunks + constant) for bit operations
+ * - Sequential access: Optimized chunk-level iteration
+ * - Memory usage: Proportional to set bit density and fragmentation
+ * - Sparse patterns: Excellent compression (gaps cost nothing)
+ * - Dense patterns: Competitive with traditional bitmap representations
+ *
+ * Below is a simplified representation.
+ *
+ *     00 11 22 33
+ *     ^-- descriptor for bms_bitvec_t 1
+ *        ^-- descriptor for bms_bitvec_t 2
+ *           ^-- descriptor for bms_bitvec_t 3
+ *              ^-- descriptor for bms_bitvec_t 4
+ *
+ *    The flags can have one of the following values:
+ *
+ *     00   The bms_bitvec_t is all zero -> no additional vectors required
+ *     11   The bms_bitvec_t is all one -> no additional vectors required
+ *     10   The bms_bitvec_t contains a bitmap -> no additional vectors required
+ *     01   The bms_bitvec_t is not used, used to reduce capacity
+ *
+ *    The serialized size of a chunk in memory therefore is at least one
+ *    bms_bitvec_t for the flags, and (optionally) additional bms_bitvec_t if
+ *    they are required.
  */
-#if SIZEOF_VOID_P >= 8
-
-#define BITS_PER_BITMAPWORD 64
-typedef uint64 bitmapword;		/* must be an unsigned type */
-typedef int64 signedbitmapword; /* must be the matching signed type */
-
-#else
-
-#define BITS_PER_BITMAPWORD 32
-typedef uint32 bitmapword;		/* must be an unsigned type */
-typedef int32 signedbitmapword; /* must be the matching signed type */
-
-#endif
 
 typedef struct Bitmapset
 {
 	pg_node_attr(custom_copy_equal, special_read_write, no_query_jumble)
 
 	NodeTag		type;
-	int			nwords;			/* number of words in array */
-	bitmapword	words[FLEXIBLE_ARRAY_MEMBER];	/* really [nwords] */
+
+	size_t		size;			/* size of data in bytes */
+	size_t		used;			/* amount of data used in bytes */
+	uint8	   *data;			/* pointer to the chunks that describe the
+								 * bitmap */
 } Bitmapset;
 
 
@@ -73,23 +133,31 @@ typedef enum
 	BMS_MULTIPLE,				/* >1 member */
 } BMS_Membership;
 
-/* Select appropriate bit-twiddling functions for bitmap word size */
-#if BITS_PER_BITMAPWORD == 32
-#define bmw_leftmost_one_pos(w)		pg_leftmost_one_pos32(w)
-#define bmw_rightmost_one_pos(w)	pg_rightmost_one_pos32(w)
-#define bmw_popcount(w)				pg_popcount32(w)
-#elif BITS_PER_BITMAPWORD == 64
-#define bmw_leftmost_one_pos(w)		pg_leftmost_one_pos64(w)
-#define bmw_rightmost_one_pos(w)	pg_rightmost_one_pos64(w)
-#define bmw_popcount(w)				pg_popcount64(w)
-#else
-#error "invalid BITS_PER_BITMAPWORD"
-#endif
-
-
 /*
  * function prototypes in nodes/bitmapset.c
  */
+
+extern Bitmapset *bms_create(size_t initial_size);
+extern Bitmapset *bms_create_with_buffer(uint8 *buffer, size_t buffer_size);
+extern Bitmapset *bms_attach_buffer(Bitmapset *map, uint8 *buffer, size_t buffer_size);
+extern Bitmapset *bms_resize(Bitmapset *map, uint8 *new_buffer, size_t new_size);
+
+/* Capacity and size management */
+extern size_t bms_get_capacity(const Bitmapset *map);
+extern size_t bms_get_used_size(const Bitmapset *map);
+extern size_t bms_calculate_used_size(const Bitmapset *map);
+
+/* Bit manipulation functions */
+extern Bitmapset *bms_add_member(Bitmapset *a, int x);
+extern Bitmapset *bms_del_member(Bitmapset *a, int x);
+
+/* Advanced query functions */
+extern int	bms_rank(const Bitmapset *map, int start_bit, int end_bit, bool target_value);
+extern int	bms_select(const Bitmapset *map, int nth_occurrence, bool target_value);
+extern size_t bms_find_span(Bitmapset *map, size_t start_bit, size_t span_length, bool target_value);
+
+/* Split operations */
+extern int	bms_split(Bitmapset *source_map, int split_bit, Bitmapset *dest_map);
 
 extern Bitmapset *bms_copy(const Bitmapset *a);
 extern bool bms_equal(const Bitmapset *a, const Bitmapset *b);
@@ -110,12 +178,15 @@ extern bool bms_nonempty_difference(const Bitmapset *a, const Bitmapset *b);
 extern int	bms_singleton_member(const Bitmapset *a);
 extern bool bms_get_singleton_member(const Bitmapset *a, int *member);
 extern int	bms_num_members(const Bitmapset *a);
+extern double bms_density(const Bitmapset *a);
 
-/* optimized tests when we don't need to know exact membership count: */
+/* optimized tests when we don't need to know the exact membership count: */
 extern BMS_Membership bms_membership(const Bitmapset *a);
 
-/* NULL is now the only allowed representation of an empty bitmapset */
-#define bms_is_empty(a)  ((a) == NULL)
+extern void bms_empty(Bitmapset *map);
+
+/* TODO: NULL is now the only allowed representation of an empty bitmapset */
+extern bool bms_is_empty(const Bitmapset *a);
 
 /* these routines recycle (modify or free) their non-const inputs: */
 
@@ -129,6 +200,8 @@ extern Bitmapset *bms_del_members(Bitmapset *a, const Bitmapset *b);
 extern Bitmapset *bms_join(Bitmapset *a, Bitmapset *b);
 
 /* support for iterating through the integer elements of a set: */
+extern int	bms_first_member(const Bitmapset *a);
+extern int	bms_last_member(const Bitmapset *a);
 extern int	bms_next_member(const Bitmapset *a, int prevbit);
 extern int	bms_prev_member(const Bitmapset *a, int prevbit);
 
