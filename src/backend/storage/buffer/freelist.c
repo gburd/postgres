@@ -31,11 +31,27 @@ typedef struct
 {
 	/*
 	 * The clock-sweep counter is atomically updated by 1 at every tick.  Use
-	 * the macro CLOCKSWEEP_HAND() to find the location of the hand on the
-	 * clock. Use CLOCKSWEEP_PASSES() to calculate the number of times the
+	 * the function ClockSweepHand() to find the location of the hand on the
+	 * clock. Use ClockSweepPasses() to calculate the number of times the
 	 * clock-sweep hand has made a complete pass around the clock.
 	 */
 	pg_atomic_uint64 clockSweepCounter;
+
+	/*
+	 * Division and modulo can be expensive to calculate repeatedly.  Given
+	 * that the buffer manager is a very hot code path we implement a more
+	 * efficient method based on using "Division by invariant Integers using
+	 * Multiplication" (https://gmplib.org/~tege/divcnst-pldi94.pdf) by
+	 * Granlund-Montgomery.  Our implementation below was inspired by the MIT
+	 * Licensed "fastdiv" (https://github.com/jmtilli/fastdiv).
+	 */
+	struct
+	{
+		uint32		mul;
+		uint32		mod;
+		uint8		shift1:1;
+		uint8		shift2:7;
+	}			md;
 
 	/*
 	 * Statistics.  These counters should be wide enough that they can't
@@ -86,17 +102,75 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 
+static inline uint32
+InvariantDivision(uint64 n)
+{
+	/* Compute quotient using multiplication */
+	uint64		product = n * StrategyControl->md.mul;
+	uint32		quotient = (uint32) (product >> 32);
+
+	/*
+	 * The invariant multiplication gives us an approximation that may be off
+	 * by 1.
+	 */
+	n -= quotient;
+	n >>= StrategyControl->md.shift1;
+	n += quotient;
+	n >>= StrategyControl->md.shift2;
+
+	return n;
+}
+
+static inline uint32
+InvariantModulo(uint64 n)
+{
+	/* Compute quotient using multiplication */
+	uint64		product = n * StrategyControl->md.mul;
+	uint32		quotient = (uint32) (product >> 32);
+	uint32		on = n;
+
+	/*
+	 * The invariant multiplication gives us an approximation that may be off
+	 * by 1.
+	 */
+	n -= quotient;
+	n >>= StrategyControl->md.shift1;
+	n += quotient;
+	n >>= StrategyControl->md.shift2;
+
+	quotient = StrategyControl->md.mod * n;
+	return on - quotient;
+}
+
 /*
  * The clock-sweep counter is a uint64 but the clock hand can never be larger
- * than a uint32.  Enforce that contract uniformly using this macro.
+ * than a uint32.
  */
-#define CLOCKSWEEP_HAND(counter) \ ((uint32) (counter)) % NBuffers
+static inline uint32
+ClockSweepHand(uint64 counter)
+{
+	uint32		result = InvariantModulo(counter);
+
+	Assert(result < NBuffers);
+	Assert(result == (uint32) counter % NBuffers);
+
+	return result;
+}
 
 /*
  * The number of times the clock hand has made a complete pass around the clock
  * visiting all the available buffers is the counter divided by NBuffers.
  */
-#define CLOCKSWEEP_PASSES(counter) \ (uint32) ((counter) / NBuffers)
+static inline uint32
+ClockSweepPasses(uint64 counter)
+{
+	uint32		result = InvariantDivision(counter);
+
+	/* Verify our result matches standard division */
+	Assert(result == (uint32) (counter / NBuffers));
+
+	return result;
+}
 
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
@@ -117,7 +191,7 @@ ClockSweepTick(void)
 	 */
 	counter = pg_atomic_fetch_add_u64(&StrategyControl->clockSweepCounter, 1);
 
-	hand = CLOCKSWEEP_HAND(counter);
+	hand = ClockSweepHand(counter);
 	Assert(hand < NBuffers);
 
 	return hand;
@@ -251,10 +325,10 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 	uint32		result;
 
 	counter = pg_atomic_read_u64(&StrategyControl->clockSweepCounter);
-	result = CLOCKSWEEP_HAND(counter);
+	result = ClockSweepHand(counter);
 
 	if (complete_passes)
-		*complete_passes = CLOCKSWEEP_PASSES(counter);
+		*complete_passes = ClockSweepPasses(counter);
 
 	if (num_buf_alloc)
 		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
@@ -333,10 +407,26 @@ StrategyInitialize(bool init)
 
 	if (!found)
 	{
+		uint8		shift2 = 0;
+		uint32		divisor = NBuffers;
+		uint8		is_pow2 = (divisor & (divisor - 1)) == 0 ? 0 : 1;
+
 		/*
 		 * Only done once, usually in postmaster
 		 */
 		Assert(init);
+
+		/* Calculate the constants used for speeding up division and modulo */
+		Assert(NBuffers > 0 && NBuffers < (1U << 31));
+
+		/* shift2 = ilog(NBuffers) */
+		for (uint32 n = divisor; n >>= 1;)
+			shift2++;
+
+		StrategyControl->md.shift1 = is_pow2;
+		StrategyControl->md.shift2 = shift2;
+		StrategyControl->md.mod = NBuffers;
+		StrategyControl->md.mul = (1ULL << (32 + is_pow2 + shift2)) / NBuffers + 1;
 
 		/* Initialize combined clock-sweep pointer/complete passes counter */
 		pg_atomic_init_u64(&StrategyControl->clockSweepCounter, 0);
