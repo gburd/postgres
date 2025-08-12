@@ -3666,6 +3666,14 @@ BgBufferSync(WritebackContext *wb_context)
 	{
 		int32		passes_delta = strategy_passes - prev_strategy_passes;
 
+		/*
+		 * It would take ~10 years of continuous operation at ~59 billion
+		 * clock ticks per-second to overflow the uint64 value of
+		 * clockSweepCounter. We consider this impossible and memorialize that
+		 * decision with this assert.
+		 */
+		Assert(prev_strategy_passes <= strategy_passes);
+
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
 		strategy_delta += (long) passes_delta * NBuffers;
 

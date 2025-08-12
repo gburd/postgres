@@ -127,11 +127,10 @@ bits of the tag's hash value.  The rules stated above apply to each partition
 independently.  If it is necessary to lock more than one partition at a time,
 they must be locked in partition-number order to avoid risk of deadlock.
 
-* A separate system-wide spinlock, buffer_strategy_lock, provides mutual
-exclusion for operations that select buffers for replacement.  A spinlock is
-used here rather than a lightweight lock for efficiency; no other locks of any
-sort should be acquired while buffer_strategy_lock is held.  This is essential
-to allow buffer replacement to happen in multiple backends with reasonable
+* Operations that select buffers for replacement don't require a lock, but
+rather use atomic operations to ensure coordination across backends when
+accessing members of the BufferStrategyControl datastructure. This allows
+buffer replacement to happen in multiple backends with reasonable
 concurrency.
 
 * Each buffer header contains a spinlock that must be taken when examining
@@ -158,30 +157,39 @@ unset by sleeping on the buffer's condition variable.
 Normal Buffer Replacement Strategy
 ----------------------------------
 
-To choose a victim buffer to recycle we use a simple clock-sweep algorithm.  It
-works like this:
+To choose a victim buffer to recycle we use a simple clock-sweep algorithm,
+done carefully this can be accomplished without the need to take a system-wide
+lock. The strategy works like this:
+
+The "clock hand" is a buffer index that conceptually moves circularly through
+all the available buffers in the range of 0 to NBuffers-1.  Each time the hand
+returns to 0 is a "complete pass" of the buffers managed by the clock.  The
+hand progresses one "tick" at a time around the clock identifying a potential
+"victim".  These two values, the hand's position and the number of complete
+passes, must be consistent across backends.
+
+In this implementation the hand's position on the clock is determined by the
+value of clockSweepCounter modulo the value of NBuffers. The value of
+clockSweepCounter, a uint64, is atomically incremented by 1 at each tick of the
+clock.  The number of complete passes is therefor the clockSweepCounter divided
+by NBuffers.  This reduces the coordination across backends to either an atomic
+read or an atomic fetch add.
 
 Each buffer header contains a usage counter, which is incremented (up to a
 small limit value) whenever the buffer is pinned.  (This requires only the
 buffer header spinlock, which would have to be taken anyway to increment the
 buffer reference count, so it's nearly free.)
 
-The "clock hand" is a buffer index, nextVictimBuffer, that moves circularly
-through all the available buffers.  nextVictimBuffer is protected by the
-buffer_strategy_lock.
-
 The algorithm for a process that needs to obtain a victim buffer is:
 
-1. Obtain buffer_strategy_lock.
+1. Move around the clock one tick. Atomically read and advance
+clockSweepCounter by 1 and return its previous value modulo NBuffers.
 
-2. Select the buffer pointed to by nextVictimBuffer, and circularly advance
-nextVictimBuffer for next time. Release buffer_strategy_lock.
+2. If the selected buffer is pinned or has a nonzero usage count, it cannot be
+used.  Decrement its usage count (if nonzero), return to step 1 to examine the
+next buffer.
 
-3. If the selected buffer is pinned or has a nonzero usage count, it cannot
-be used.  Decrement its usage count (if nonzero), reacquire
-buffer_strategy_lock, and return to step 3 to examine the next buffer.
-
-4. Pin the selected buffer, and return.
+3. Pin the selected buffer, and return.
 
 (Note that if the selected buffer is dirty, we will have to write it out
 before we can recycle it; if someone else pins the buffer meanwhile we will
@@ -237,19 +245,17 @@ Background Writer's Processing
 ------------------------------
 
 The background writer is designed to write out pages that are likely to be
-recycled soon, thereby offloading the writing work from active backends.
-To do this, it scans forward circularly from the current position of
-nextVictimBuffer (which it does not change!), looking for buffers that are
-dirty and not pinned nor marked with a positive usage count.  It pins,
-writes, and releases any such buffer.
+recycled soon, thereby offloading the writing work from active backends. To do
+this, it scans forward circularly from the current position of the clock-sweep
+hand (read atomically and not modified), looking for buffers that are dirty and
+not pinned nor marked with a positive usage count.  It pins, writes, and
+releases any such buffer.
 
-If we can assume that reading nextVictimBuffer is an atomic action, then
-the writer doesn't even need to take buffer_strategy_lock in order to look
-for buffers to write; it needs only to spinlock each buffer header for long
-enough to check the dirtybit.  Even without that assumption, the writer
-only needs to take the lock long enough to read the variable value, not
-while scanning the buffers.  (This is a very substantial improvement in
-the contention cost of the writer compared to PG 8.0.)
+It only needs to spinlock each buffer header for long enough to check the
+dirtybit.  Even without that assumption, the writer only needs to take the lock
+long enough to read the variable value, not while scanning the buffers. (This
+is a very substantial improvement in the contention cost of the writer compared
+to PG 8.0.)
 
 The background writer takes shared content lock on a buffer while writing it
 out (and anyone else who flushes buffer contents to disk must do so too).
