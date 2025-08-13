@@ -1,0 +1,19 @@
+CREATE EXTENSION test_bitmapset;
+--
+-- All the logic is in the test_bitmapset() function. It will throw
+-- an error if something fails.
+--
+SELECT test_bitmapset();
+NOTICE:  starting bitmapset tests
+NOTICE:  testing empty bitmapset operations
+NOTICE:  testing single element bitmapset operations
+NOTICE:  testing multiple elements and set operations
+NOTICE:  testing edge cases and boundary conditions
+NOTICE:  testing iteration functions
+NOTICE:  testing comprehensive set operations
+NOTICE:  all bitmapset tests passed
+ test_bitmapset 
+----------------
+ 
+(1 row)
+
