@@ -528,6 +528,14 @@ InitProcess(void)
 	MyProc->clogGroupMemberLsn = InvalidXLogRecPtr;
 	Assert(pg_atomic_read_u32(&MyProc->clogGroupNext) == INVALID_PROC_NUMBER);
 
+	/* Initialize buffer usage tracking */
+	pg_atomic_init_u32(&MyProc->bufferUsageSum, 0);
+	pg_atomic_init_u32(&MyProc->bufferDecayRate, 1);
+	pg_atomic_init_u64(&MyProc->clockSweepDistance, 0);
+	pg_atomic_init_u32(&MyProc->clockSweepPasses, 0);
+	pg_atomic_init_u64(&MyProc->clockSweepTimeMicros, 0);
+	pg_atomic_init_u32(&MyProc->bufferSearchCount, 0);
+
 	/*
 	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
 	 * on it.  That allows us to repoint the process latch, which so far

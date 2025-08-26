@@ -266,6 +266,8 @@ typedef struct BufferDesc
 
 	PgAioWaitRef io_wref;		/* set iff AIO is in progress */
 	LWLock		content_lock;	/* to lock access to buffer contents */
+
+    pg_atomic_uint32 dirty_backend_id; /* backend ID that last dirtied this buffer */
 } BufferDesc;
 
 /*

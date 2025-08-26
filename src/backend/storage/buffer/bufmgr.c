@@ -2136,6 +2136,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * just like permanent relations.
 	 */
 	victim_buf_state |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+	if (MyProc != NULL)
+		pg_atomic_add_fetch_u32(&MyProc->bufferUsageSum, 1);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		victim_buf_state |= BM_PERMANENT;
 
@@ -2781,6 +2783,8 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 			victim_buf_hdr->tag = tag;
 
 			buf_state |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+			if (MyProc != NULL)
+				pg_atomic_add_fetch_u32(&MyProc->bufferUsageSum, 1);
 			if (bmr.relpersistence == RELPERSISTENCE_PERMANENT || fork == INIT_FORKNUM)
 				buf_state |= BM_PERMANENT;
 
@@ -2950,6 +2954,11 @@ MarkBufferDirty(Buffer buffer)
 		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
 		buf_state |= BM_DIRTY | BM_JUST_DIRTIED;
 
+		/* Track which backend dirtied this buffer */
+		if (MyProc != NULL)
+			pg_atomic_write_u32(&bufHdr->dirty_backend_id,
+								MyProc - ProcGlobal->allProcs);
+
 		if (pg_atomic_compare_exchange_u32(&bufHdr->state, &old_buf_state,
 										   buf_state))
 			break;
@@ -3071,7 +3080,11 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 			{
 				/* Default case: increase usagecount unless already max. */
 				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
+				{
 					buf_state += BUF_USAGECOUNT_ONE;
+					if (MyProc != NULL)
+						pg_atomic_add_fetch_u32(&MyProc->bufferUsageSum, 1);
+				}
 			}
 			else
 			{

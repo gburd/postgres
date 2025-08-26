@@ -234,6 +234,7 @@ BTWriteState
 BUF_MEM
 BYTE
 BY_HANDLE_FILE_INFORMATION
+BackendBufferStats
 BackendParameters
 BackendStartupData
 BackendState
@@ -336,6 +337,7 @@ Bucket
 BufFile
 Buffer
 BufferAccessStrategy
+BufferAccessStrategyData
 BufferAccessStrategyType
 BufferCacheNumaContext
 BufferCacheNumaRec

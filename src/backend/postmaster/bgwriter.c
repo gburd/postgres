@@ -77,6 +77,296 @@ int			BgWriterDelay = 200;
 static TimestampTz last_snapshot_ts;
 static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
 
+/*
+ * Collected buffer usage information.
+ */
+typedef struct BackendBufferStats
+{
+	int			backend_id;
+	uint64		usage_sum;
+	double		usage_ratio;
+} BackendBufferStats;
+
+static int
+compare_backend_usage(const void *a, const void *b)
+{
+	const BackendBufferStats *stat_a = (const BackendBufferStats *) a;
+	const BackendBufferStats *stat_b = (const BackendBufferStats *) b;
+
+	if (stat_a->usage_ratio < stat_b->usage_ratio)
+		return -1;
+	if (stat_a->usage_ratio > stat_b->usage_ratio)
+		return 1;
+	return 0;
+}
+
+static uint64
+CalculateSystemBufferPressure(BackendBufferStats *backend_stats[], int *num_backends)
+{
+	uint64		total_usage = 0;
+	int			active_backends = 0;
+	BackendBufferStats *stats;
+
+	/* Count active backends first */
+	for (int i = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+
+		if (proc->pid != 0 && proc->databaseId != InvalidOid)
+			active_backends++;
+	}
+
+	if (active_backends == 0)
+	{
+		*backend_stats = NULL;
+		*num_backends = 0;
+		return 0;
+	}
+
+	/* Allocate stats array */
+	stats = palloc(sizeof(BackendBufferStats) * active_backends);
+	*backend_stats = stats;
+	*num_backends = active_backends;
+
+	/* Collect stats from all active backends */
+	for (int i = 0, j = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+
+		if (proc->pid != 0 && proc->databaseId != InvalidOid)
+		{
+			uint64		usage_sum = pg_atomic_read_u32(&proc->bufferUsageSum);
+
+			stats[j].backend_id = i;
+			stats[j].usage_sum = usage_sum;
+			stats[j].usage_ratio = (double) usage_sum / NBuffers;
+			total_usage += usage_sum;
+			j++;
+		}
+	}
+
+	/* Sort by usage ratio for percentile calculation */
+	qsort(stats, active_backends, sizeof(BackendBufferStats),
+		  compare_backend_usage);
+
+	return total_usage;
+}
+
+static void
+GetHighUsageBackends(BackendBufferStats *stats, int num_backends,
+					 int **high_usage_backends, int *num_high_usage)
+{
+	int			percentile_90_idx = (int) (num_backends * 0.9);
+
+	*num_high_usage = num_backends - percentile_90_idx;
+
+	if (*num_high_usage > 0)
+	{
+		*high_usage_backends = palloc(sizeof(int) * (*num_high_usage));
+		for (int i = 0; i < *num_high_usage; i++)
+		{
+			(*high_usage_backends)[i] = stats[percentile_90_idx + i].backend_id;
+		}
+	}
+	else
+	{
+		*high_usage_backends = NULL;
+		*num_high_usage = 0;
+	}
+}
+
+/*
+ * Shared buffer sync function used by both main loop and aggressive writing
+ */
+static int
+SyncTargetedBuffers(WritebackContext *wb_context, int *target_backends,
+					int num_targets, int max_buffers)
+{
+	int			buffers_written = 0;
+	int			buffer_id;
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+
+	/* If no specific targets, sync any dirty buffers */
+	if (target_backends == NULL || num_targets == 0)
+	{
+		return BgBufferSync(wb_context);
+	}
+
+	/* Scan through all buffers looking for dirty ones from target backends */
+	for (buffer_id = 0; buffer_id < NBuffers && buffers_written < max_buffers; buffer_id++)
+	{
+		uint32		dirty_backend;
+		bool		is_target;
+
+		bufHdr = GetBufferDescriptor(buffer_id);
+
+		/* Quick check if buffer is dirty */
+		buf_state = pg_atomic_read_u32(&bufHdr->state);
+		if (!(buf_state & BM_DIRTY))
+			continue;
+
+		/* Check if this buffer is from one of our target backends */
+		dirty_backend = pg_atomic_read_u32(&bufHdr->dirty_backend_id);
+		is_target = false;
+
+		for (int i = 0; i < num_targets; i++)
+			if (dirty_backend == target_backends[i])
+			{
+				is_target = true;
+				break;
+			}
+
+		if (!is_target)
+			continue;
+
+		/* Skip if buffer is pinned */
+		if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
+			continue;
+
+		/* Try to write this buffer using the writeback context */
+		ScheduleBufferTagForWriteback(wb_context,
+									  IOContextForStrategy(NULL),
+									  &bufHdr->tag);
+		buffers_written++;
+	}
+
+	/* Issue the actual writes */
+	if (buffers_written > 0)
+	{
+		IssuePendingWritebacks(wb_context, IOContextForStrategy(NULL));
+	}
+
+	return buffers_written;
+}
+
+static void
+AggressiveBufferWrite(WritebackContext *wb_context, int *high_usage_backends,
+					  int num_high_usage, bool critical)
+{
+	int			write_target = critical ? bgwriter_lru_maxpages * 3 : bgwriter_lru_maxpages * 2;
+	int			buffers_written = 0;
+
+	/* Focus on buffers from high-usage backends first */
+	buffers_written = SyncTargetedBuffers(wb_context, high_usage_backends,
+										  num_high_usage, write_target);
+
+	/* If still under target, write additional dirty buffers */
+	if (buffers_written < write_target)
+		BgBufferSync(wb_context);
+}
+
+/* In src/backend/postmaster/bgwriter.c - Enhanced UpdateBackendDecayRates */
+static void
+UpdateBackendDecayRates(BackendBufferStats *backend_stats, int num_backends,
+						double pressure_ratio, int *high_usage_backends, int num_high_usage)
+{
+	uint32		base_decay_rate;
+	uint64		total_usage = 0;
+	uint64		avg_usage;
+	int			i,
+				j;
+
+	/* Calculate base decay rate from system pressure */
+	if (pressure_ratio > 0.90)
+		base_decay_rate = 3;	/* Critical pressure - aggressive decay */
+	else if (pressure_ratio > 0.75)
+		base_decay_rate = 2;	/* High pressure */
+	else
+		base_decay_rate = 1;	/* Normal decay rate */
+
+	/* Calculate total usage for relative comparisons */
+	for (i = 0; i < num_backends; i++)
+		total_usage += backend_stats[i].usage_sum;
+	avg_usage = num_backends > 0 ? total_usage / num_backends : 0;
+
+	if (base_decay_rate > 1)
+		elog(LOG, "Buffer pressure: %.2f%%, base decay rate: %u, avg usage: %lu",
+			 pressure_ratio * 100, base_decay_rate, avg_usage);
+
+	/* Update each backend's personalized decay rate */
+	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	{
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+
+		/* Only update active user backends */
+		if (proc->pid != 0 && proc->databaseId != InvalidOid)
+		{
+			uint32		backend_usage = pg_atomic_read_u32(&proc->bufferUsageSum);
+			uint32		personalized_rate = base_decay_rate;
+
+			/* Find this backend in the stats array */
+			BackendBufferStats *backend_stat = NULL;
+
+			for (j = 0; j < num_backends; j++)
+			{
+				if (backend_stats[j].backend_id == i)
+				{
+					backend_stat = &backend_stats[j];
+					break;
+				}
+			}
+
+			/*
+			 * Calculate personalized decay rate based on usage and
+			 * clock-sweep performance
+			 */
+			if (backend_stat != NULL && avg_usage > 0)
+			{
+				double		usage_ratio = (double) backend_usage / avg_usage;
+
+				/* Get clock-sweep performance metrics */
+				uint32		search_count = pg_atomic_read_u32(&proc->bufferSearchCount);
+				uint64		total_distance = pg_atomic_read_u64(&proc->clockSweepDistance);
+				uint32		total_passes = pg_atomic_read_u32(&proc->clockSweepPasses);
+				uint64		total_time = pg_atomic_read_u64(&proc->clockSweepTimeMicros);
+
+				/* Calculate average search metrics */
+				double		avg_distance = search_count > 0 ? (double) total_distance / search_count : 0;
+				double		avg_passes = search_count > 0 ? (double) total_passes / search_count : 0;
+				double		avg_time = search_count > 0 ? (double) total_time / search_count : 0;
+
+				/* Adjust decay rate based on usage relative to average */
+				if (usage_ratio > 2.0)
+				{
+					/* High usage backends get more aggressive decay */
+					personalized_rate = Min(4, base_decay_rate + 2);
+				}
+				else if (usage_ratio > 1.5)
+				{
+					personalized_rate = Min(4, base_decay_rate + 1);
+				}
+				else if (usage_ratio < 0.5)
+				{
+					/* Low usage backends get less aggressive decay */
+					personalized_rate = Max(1, base_decay_rate > 1 ? base_decay_rate - 1 : 1);
+				}
+
+				/* Further adjust based on clock-sweep performance */
+				if (avg_distance > NBuffers * 0.5)	/* Searching more than
+													 * half the buffer pool */
+				{
+					personalized_rate = Min(4, personalized_rate + 1);
+				}
+				if (avg_passes > 1.0)	/* Making multiple complete passes */
+				{
+					personalized_rate = Min(4, personalized_rate + 1);
+				}
+				if (avg_time > 1000.0)	/* Taking more than 1ms per search */
+				{
+					personalized_rate = Min(4, personalized_rate + 1);
+				}
+
+				elog(LOG, "Backend %d: usage_ratio=%.2f, avg_distance=%.1f, avg_passes=%.2f, "
+					 "avg_time=%.1fμs, decay_rate=%u",
+					 i, usage_ratio, avg_distance, avg_passes, avg_time, personalized_rate);
+			}
+
+			/* Update the backend's decay rate */
+			pg_atomic_write_u32(&proc->bufferDecayRate, personalized_rate);
+		}
+	}
+}
 
 /*
  * Main entry point for bgwriter process
@@ -222,6 +512,15 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 	 */
 	for (;;)
 	{
+		BackendBufferStats *backend_stats = NULL;
+		int			num_backends;
+		int		   *high_usage_backends = NULL;
+		int			num_high_usage;
+		uint64		max_possible;
+		uint64		total_usage;
+		double		pressure_ratio;
+		bool		high_pressure;
+		bool		critical_pressure;
 		bool		can_hibernate;
 		int			rc;
 
@@ -229,6 +528,35 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 		ResetLatch(MyLatch);
 
 		ProcessMainLoopInterrupts();
+
+		/* Calculate current buffer pressure */
+		total_usage = CalculateSystemBufferPressure(&backend_stats, &num_backends);
+		max_possible = (uint64) NBuffers * BM_MAX_USAGE_COUNT;
+		total_usage = total_usage > max_possible ? max_possible : total_usage;
+		pressure_ratio = (double) total_usage / max_possible;
+
+		/* Get high-usage backends (90th percentile) */
+		if (backend_stats != NULL)
+			GetHighUsageBackends(backend_stats, num_backends,
+								 &high_usage_backends, &num_high_usage);
+
+		/* Update global decay rate based on current pressure */
+		UpdateBackendDecayRates(backend_stats, num_backends, pressure_ratio,
+								high_usage_backends, num_high_usage);
+
+		/* Determine if proactive action is needed */
+		high_pressure = pressure_ratio > 0.75;	/* 75% threshold */
+		critical_pressure = pressure_ratio > 0.90;	/* 90% threshold */
+
+		if (high_pressure)
+		{
+			elog(LOG, "%s buffer pressure detected: %.2f%% (%d high-usage backends)",
+				 critical_pressure ? "Critical" : "High",
+				 pressure_ratio * 100, num_high_usage);
+
+			/* Aggressive writing of dirty buffers */
+			AggressiveBufferWrite(&wb_context, high_usage_backends, num_high_usage, critical_pressure);
+		}
 
 		/*
 		 * Do one cycle of dirty-buffer writing.
@@ -293,6 +621,11 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 				last_snapshot_ts = now;
 			}
 		}
+
+		if (backend_stats != NULL)
+			pfree(backend_stats);
+		if (high_usage_backends != NULL)
+			pfree(high_usage_backends);
 
 		/*
 		 * Sleep until we are signaled or BgWriterDelay has elapsed.

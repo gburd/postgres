@@ -81,7 +81,7 @@ typedef struct BufferAccessStrategyData
 	 * struct.
 	 */
 	Buffer		buffers[FLEXIBLE_ARRAY_MEMBER];
-}			BufferAccessStrategyData;
+} BufferAccessStrategyData;
 
 
 /* Prototypes for internal functions */
@@ -174,6 +174,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	int			bgwprocno;
 	int			trycounter;
 	uint32		local_buf_state;	/* to avoid repeated (de-)referencing */
+	uint32		backend_decay_rate;
+
+	/* Clock-sweep performance tracking */
+	instr_time	start_time,
+				end_time;
+	uint64		buffers_examined = 0;
+	uint32		complete_passes = 0;
+	uint32		initial_clock_hand;
 
 	*from_ring = false;
 
@@ -190,6 +198,18 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 			return buf;
 		}
 	}
+
+	initial_clock_hand = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
+	if (initial_clock_hand >= NBuffers)
+		initial_clock_hand %= NBuffers;
+
+	/* Start timing the buffer search */
+	INSTR_TIME_SET_CURRENT(start_time);
+
+	/* Get this backend's personalized decay rate */
+	backend_decay_rate = pg_atomic_read_u32(&MyProc->bufferDecayRate);
+	if (backend_decay_rate == 0)
+		backend_decay_rate = 1;
 
 	/*
 	 * If asked, we need to waken the bgwriter. Since we don't want to rely on
@@ -228,7 +248,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 	trycounter = NBuffers;
 	for (;;)
 	{
-		buf = GetBufferDescriptor(ClockSweepTick());
+		uint32		hand = ClockSweepTick();
+
+		buf = GetBufferDescriptor(hand);
+		buffers_examined++;
 
 		/*
 		 * If the buffer is pinned or has a nonzero usage_count, we cannot use
@@ -238,18 +261,51 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 
 		if (BUF_STATE_GET_REFCOUNT(local_buf_state) == 0)
 		{
-			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			uint32		current_usage = BUF_STATE_GET_USAGECOUNT(local_buf_state);
+
+			if (current_usage != 0)
 			{
-				local_buf_state -= BUF_USAGECOUNT_ONE;
+				uint32		current_sum;
+				uint32		new_sum;
+				uint32		decay_amount = Min(current_usage, backend_decay_rate);
+
+				local_buf_state -= decay_amount * BUF_USAGECOUNT_ONE;
+
+				do
+				{
+					current_sum = pg_atomic_read_u32(&MyProc->bufferUsageSum);
+					if (current_sum < decay_amount)
+						new_sum = 0;
+					else
+						new_sum = current_sum - decay_amount;
+				} while (!pg_atomic_compare_exchange_u32(&MyProc->bufferUsageSum,
+														 &current_sum, new_sum));
 
 				trycounter = NBuffers;
 			}
 			else
 			{
+				uint64		search_time_micros;
+
+				INSTR_TIME_SET_CURRENT(end_time);
+				INSTR_TIME_SUBTRACT(end_time, start_time);
+
+				search_time_micros = INSTR_TIME_GET_MICROSEC(end_time);
+
+				/* Update this backend's clock-sweep performance metrics */
+				pg_atomic_add_fetch_u64(&MyProc->clockSweepDistance, buffers_examined);
+				pg_atomic_add_fetch_u32(&MyProc->clockSweepPasses, complete_passes);
+				pg_atomic_add_fetch_u64(&MyProc->clockSweepTimeMicros, search_time_micros);
+				pg_atomic_add_fetch_u32(&MyProc->bufferSearchCount, 1);
+
+				elog(LOG, "Buffer search completed: examined=%lu, passes=%u, time=%luμs, decay_rate=%u",
+					 buffers_examined, complete_passes, search_time_micros, backend_decay_rate);
+
 				/* Found a usable buffer */
 				if (strategy != NULL)
 					AddBufferToRing(strategy, buf);
 				*buf_state = local_buf_state;
+
 				return buf;
 			}
 		}
@@ -266,6 +322,9 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state, bool *from_r
 			elog(ERROR, "no unpinned buffers available");
 		}
 		UnlockBufHdr(buf, local_buf_state);
+
+		if (buffers_examined > 1 && hand == initial_clock_hand)
+			complete_passes++;
 	}
 }
 
@@ -305,6 +364,7 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 	{
 		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
 	}
+
 	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
 	return result;
 }

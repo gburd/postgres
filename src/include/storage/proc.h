@@ -247,6 +247,16 @@ struct PGPROC
 	uint8		lwWaitMode;		/* lwlock mode being waited for */
 	proclist_node lwWaitLink;	/* position in LW lock wait list */
 
+	/* Per-backend buffer usage tracking */
+	pg_atomic_uint32 bufferUsageSum;	/* Running total of buffer usage */
+	pg_atomic_uint32 bufferDecayRate;	/* Per-tick usage decay rate */
+
+	/* Clock-sweep performance metrics */
+	pg_atomic_uint64 clockSweepDistance;	/* Total buffers examined */
+	pg_atomic_uint32 clockSweepPasses;	/* Complete clock passes */
+	pg_atomic_uint64 clockSweepTimeMicros;	/* Total time in microseconds */
+	pg_atomic_uint32 bufferSearchCount; /* Number of buffer searches */
+
 	/* Support for condition variables. */
 	proclist_node cvWaitLink;	/* position in CV wait list */
 

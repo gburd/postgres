@@ -124,6 +124,9 @@ BufferManagerShmemInit(void)
 			pg_atomic_init_u32(&buf->state, 0);
 			buf->wait_backend_pgprocno = INVALID_PROC_NUMBER;
 
+			/* Initialize dirty backend tracking */
+			pg_atomic_init_u32(&buf->dirty_backend_id, INVALID_PROC_NUMBER);
+
 			buf->buf_id = i;
 
 			pgaio_wref_clear(&buf->io_wref);
