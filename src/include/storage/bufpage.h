@@ -424,6 +424,21 @@ PageHasPrunable(const PageData *page)
 	return PageHasFreeLinePointers(page) && PageGetMaxOffsetNumber(page) >= 4;
 }
 
+/*
+ * PageNeedsScanPruning
+ *		Determines if a page should be re-evaluated for pruning during scan
+ *		based on the number of modifications that have occurred.
+ */
+static inline bool
+PageNeedsScanPruning(const PageData *page, int modifications)
+{
+	/*
+	 * Re-evaluate pruning if we've had several modifications and page has
+	 * prunable content
+	 */
+	return modifications >= 3 && PageHasPrunable(page);
+}
+
 static inline void
 PageSetFull(Page page)
 {

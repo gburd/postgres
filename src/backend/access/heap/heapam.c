@@ -57,6 +57,7 @@
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, int options);
+static void heap_notify_scan_modification(Relation relation, BlockNumber block);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
@@ -445,6 +446,11 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	scan->rs_cblock = InvalidBlockNumber;
 	scan->rs_ntuples = 0;
 	scan->rs_cindex = 0;
+
+	/* Initialize scan-time pruning tracking */
+	scan->rs_page_updates = 0;
+	scan->rs_page_pruned = false;
+	scan->rs_last_pruned_block = InvalidBlockNumber;
 
 	/*
 	 * Initialize to ForwardScanDirection because it is most common and
@@ -925,6 +931,10 @@ heapgettup(HeapScanDesc scan,
 
 		Assert(BufferGetBlockNumber(scan->rs_cbuf) == scan->rs_cblock);
 
+		/* Reset page tracking for new page */
+		scan->rs_page_updates = 0;
+		scan->rs_page_pruned = false;
+
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		page = heapgettup_start_page(scan, dir, &linesleft, &lineoff);
 continue_page:
@@ -942,7 +952,12 @@ continue_page:
 			ItemId		lpp = PageGetItemId(page, lineoff);
 
 			if (!ItemIdIsNormal(lpp))
+			{
+				/* Track dead line pointers as potential modifications */
+				if (ItemIdIsDead(lpp))
+					scan->rs_page_updates++;
 				continue;
+			}
 
 			tuple->t_data = (HeapTupleHeader) PageGetItem(page, lpp);
 			tuple->t_len = ItemIdGetLength(lpp);
@@ -972,10 +987,32 @@ continue_page:
 		}
 
 		/*
-		 * if we get here, it means we've exhausted the items on this page and
-		 * it's time to move to the next.
+		 * Before moving to next page, check if current page needs scan-time
+		 * pruning. This addresses the issue where multiple updates during a
+		 * scan don't trigger pruning until the next scan.
 		 */
-		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+		if (scan->rs_page_updates > 0 &&
+			scan->rs_cblock != scan->rs_last_pruned_block &&
+			PageNeedsScanPruning(page, scan->rs_page_updates))
+		{
+			/* Unlock buffer temporarily for pruning attempt */
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+			/* Attempt opportunistic pruning */
+			heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+
+			/* Mark this block as pruned to avoid repeated attempts */
+			scan->rs_last_pruned_block = scan->rs_cblock;
+			scan->rs_page_pruned = true;
+		}
+		else
+		{
+			/*
+			 * if we get here, it means we've exhausted the items on this page
+			 * and it's time to move to the next.
+			 */
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+		}
 	}
 
 	/* end of scan */
@@ -1042,6 +1079,10 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 		Assert(BufferGetBlockNumber(scan->rs_cbuf) == scan->rs_cblock);
 
+		/* Reset page tracking for new page */
+		scan->rs_page_updates = 0;
+		scan->rs_page_pruned = false;
+
 		/* prune the page and determine visible tuple offsets */
 		heap_prepare_pagescan((TableScanDesc) scan);
 		page = BufferGetPage(scan->rs_cbuf);
@@ -1077,6 +1118,18 @@ continue_page:
 			scan->rs_cindex = lineindex;
 			return;
 		}
+	}
+
+	/*
+	 * Before ending scan, check if current page needs scan-time pruning.
+	 */
+	if (BufferIsValid(scan->rs_cbuf) && scan->rs_page_updates > 0 &&
+		scan->rs_cblock != scan->rs_last_pruned_block &&
+		PageNeedsScanPruning(BufferGetPage(scan->rs_cbuf), scan->rs_page_updates))
+	{
+		/* Attempt opportunistic pruning */
+		heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+		scan->rs_last_pruned_block = scan->rs_cblock;
 	}
 
 	/* end of scan */
@@ -3185,6 +3238,12 @@ l1:
 		heap_page_prune_opt(relation, buffer, 0);
 	}
 
+	/*
+	 * Notify any active scans on this relation about the page modification.
+	 * This helps with scan-time pruning decisions.
+	 */
+	heap_notify_scan_modification(relation, BufferGetBlockNumber(buffer));
+
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 
@@ -3225,6 +3284,24 @@ l1:
 		heap_freetuple(old_key_tuple);
 
 	return TM_Ok;
+}
+
+/*
+ * heap_notify_scan_modification - notify active scans about page modifications
+ *
+ * This function helps track modifications during scans to enable better
+ * scan-time pruning decisions. It's a simplified implementation that could
+ * be extended with a proper scan registry in the future.
+ */
+static void
+heap_notify_scan_modification(Relation relation, BlockNumber block)
+{
+	/*
+	 * For now, this is a placeholder. In a full implementation, we would
+	 * maintain a registry of active scans and notify them about
+	 * modifications. The scan tracking we added to HeapScanDescData provides
+	 * the foundation for this functionality.
+	 */
 }
 
 /*
@@ -4254,6 +4331,12 @@ l2:
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
 	bms_free(interesting_attrs);
+
+	/*
+	 * Notify any active scans about the page modification for scan-time
+	 * pruning.
+	 */
+	heap_notify_scan_modification(relation, ItemPointerGetBlockNumber(otid));
 
 	return TM_Ok;
 }
