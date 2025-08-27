@@ -14,6 +14,7 @@
 #ifndef BUFPAGE_H
 #define BUFPAGE_H
 
+#include "access/transam.h"
 #include "access/xlogdefs.h"
 #include "storage/block.h"
 #include "storage/item.h"
@@ -415,6 +416,8 @@ PageIsFull(const PageData *page)
 {
 	return ((const PageHeaderData *) page)->pd_flags & PD_PAGE_FULL;
 }
+
+
 static inline void
 PageSetFull(Page page)
 {
@@ -507,5 +510,13 @@ extern bool PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 									Item newtup, Size newsize);
 extern char *PageSetChecksumCopy(Page page, BlockNumber blkno);
 extern void PageSetChecksumInplace(Page page, BlockNumber blkno);
+
+static inline bool
+PageHasPrunable(const PageData *page)
+{
+	return (PageHasFreeLinePointers(page) ||
+			PageGetFreeSpace(page) < BLCKSZ / 4 ||
+			PageGetMaxOffsetNumber(page) > 21);
+}
 
 #endif							/* BUFPAGE_H */

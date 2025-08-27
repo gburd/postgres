@@ -2243,7 +2243,14 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	END_CRIT_SECTION();
 
-	UnlockReleaseBuffer(buffer);
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	/* Consider pruning the page if it's getting full */
+	if (PageIsFull(BufferGetPage(buffer)))
+		heap_page_prune_opt(relation, buffer);
+
+	ReleaseBuffer(buffer);
+
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 
@@ -2658,7 +2665,14 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
 		}
 
-		UnlockReleaseBuffer(buffer);
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+		/* Consider pruning the page if it's getting full */
+		if (PageIsFull(BufferGetPage(buffer)))
+			heap_page_prune_opt(relation, buffer);
+
+		ReleaseBuffer(buffer);
+
 		ndone += nthispage;
 
 		/*
