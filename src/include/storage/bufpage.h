@@ -405,6 +405,7 @@ PageSetHasFreeLinePointers(Page page)
 {
 	((PageHeader) page)->pd_flags |= PD_HAS_FREE_LINES;
 }
+
 static inline void
 PageClearHasFreeLinePointers(Page page)
 {

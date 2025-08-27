@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "storage/bufpage.h"
 #include "access/heapam_xlog.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
@@ -187,10 +188,14 @@ static void page_verify_redirects(Page page);
  * Note: this is called quite often.  It's important that it fall out quickly
  * if there's not any use in pruning.
  *
+ * If tuple_len is provided (> 0), the function will consider pruning even
+ * if the page doesn't meet the normal free space threshold, as long as
+ * pruning could potentially make room for a tuple of that size.
+ *
  * Caller must have pin on the buffer, and must *not* have a lock on it.
  */
 void
-heap_page_prune_opt(Relation relation, Buffer buffer)
+heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prune_xid;
@@ -228,6 +233,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 * for a new tuple version, or when free space falls below the relation's
 	 * fill-factor target (but not less than 10%).
 	 *
+	 * If a specific tuple length is provided, we also consider pruning if the
+	 * current free space plus potential space from pruning could accommodate
+	 * the tuple, even if the page doesn't meet the normal threshold.
+	 *
 	 * Checking free space here is questionable since we aren't holding any
 	 * lock on the buffer; in the worst case we could get a bogus answer. It's
 	 * unlikely to be *seriously* wrong, though, since reading either pd_lower
@@ -239,7 +248,11 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 											 HEAP_DEFAULT_FILLFACTOR);
 	minfree = Max(minfree, BLCKSZ / 10);
 
-	if (PageIsFull(page) || PageGetHeapFreeSpace(page) < minfree)
+	/*
+	 * Check if we should prune based on normal criteria or tuple-specific
+	 * needs
+	 */
+	if (PageIsFull(page) || PageGetHeapFreeSpace(page) < minfree || tuple_len > 0)
 	{
 		/* OK, try to get exclusive buffer lock */
 		if (!ConditionalLockBufferForCleanup(buffer))
@@ -250,7 +263,9 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 		 * page's free space, and recheck the heuristic about whether to
 		 * prune.
 		 */
-		if (PageIsFull(page) || PageGetHeapFreeSpace(page) < minfree)
+		if (PageIsFull(page) || PageGetHeapFreeSpace(page) < minfree ||
+			(tuple_len > 0 && PageGetHeapFreeSpace(page) < MAXALIGN(tuple_len) &&
+			 PageHasPrunable(page)))
 		{
 			OffsetNumber dummy_off_loc;
 			PruneFreezeResult presult;

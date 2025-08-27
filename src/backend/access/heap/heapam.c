@@ -569,7 +569,7 @@ heap_prepare_pagescan(TableScanDesc sscan)
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
 	 */
-	heap_page_prune_opt(scan->rs_base.rs_rd, buffer);
+	heap_page_prune_opt(scan->rs_base.rs_rd, buffer, 0);
 
 	/*
 	 * We must hold share lock on the buffer content while examining tuple
@@ -2247,7 +2247,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	/* Consider pruning the page if it's getting full */
 	if (PageIsFull(BufferGetPage(buffer)))
-		heap_page_prune_opt(relation, buffer);
+		heap_page_prune_opt(relation, buffer, heaptup->t_len);
 
 	ReleaseBuffer(buffer);
 
@@ -2669,7 +2669,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 
 		/* Consider pruning the page if it's getting full */
 		if (PageIsFull(BufferGetPage(buffer)))
-			heap_page_prune_opt(relation, buffer);
+			heap_page_prune_opt(relation, buffer, heaptuples[ndone]->t_len);
 
 		ReleaseBuffer(buffer);
 
@@ -3832,6 +3832,12 @@ l2:
 	pagefree = PageGetHeapFreeSpace(page);
 
 	newtupsize = MAXALIGN(newtup->t_len);
+
+	if (newtupsize > pagefree && PageHasPrunable(page))
+	{
+		heap_page_prune_opt(relation, buffer, newtupsize);
+		pagefree = PageGetHeapFreeSpace(page);
+	}
 
 	if (need_toast || newtupsize > pagefree)
 	{
