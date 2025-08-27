@@ -2243,7 +2243,21 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	END_CRIT_SECTION();
 
-	UnlockReleaseBuffer(buffer);
+	/*
+	 * Consider pruning the page if it's getting full, following the same
+	 * heuristics used for UPDATE operations. This helps maintain page density
+	 * and can free up space for future insertions.
+	 */
+	if (PageIsFull(BufferGetPage(buffer)))
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		heap_page_prune_opt(relation, buffer);
+	}
+	else
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	ReleaseBuffer(buffer);
+
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 
@@ -2661,7 +2675,19 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
 		}
 
-		UnlockReleaseBuffer(buffer);
+		/*
+		 * Consider pruning the page if it's getting full, following the same
+		 * heuristics used for UPDATE operations.
+		 */
+		if (PageIsFull(BufferGetPage(buffer)))
+		{
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			heap_page_prune_opt(relation, buffer);
+			ReleaseBuffer(buffer);
+		}
+		else
+			UnlockReleaseBuffer(buffer);
+
 		ndone += nthispage;
 
 		/*
@@ -3148,7 +3174,16 @@ l1:
 
 	END_CRIT_SECTION();
 
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	/*
+	 * Consider pruning the page after deletion, following the same heuristics
+	 * used for UPDATE operations. This can help clean up dead tuples and
+	 * improve page utilization.
+	 */
+	if (PageIsFull(BufferGetPage(buffer)))
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		heap_page_prune_opt(relation, buffer);
+	}
 
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
