@@ -14,6 +14,7 @@
 #ifndef BUFPAGE_H
 #define BUFPAGE_H
 
+#include "access/transam.h"
 #include "access/xlogdefs.h"
 #include "storage/block.h"
 #include "storage/item.h"
@@ -415,6 +416,16 @@ PageIsFull(const PageData *page)
 {
 	return ((const PageHeaderData *) page)->pd_flags & PD_PAGE_FULL;
 }
+
+static inline bool
+PageHasPrunable(const PageData *page)
+{
+	const PageHeaderData *pageheader = (const PageHeaderData *) page;
+
+	/* Must have prune XID and free line pointers to be worth pruning */
+	return PageHasFreeLinePointers(page) && PageGetMaxOffsetNumber(page) >= 4;
+}
+
 static inline void
 PageSetFull(Page page)
 {

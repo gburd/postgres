@@ -3179,7 +3179,7 @@ l1:
 	 * used for UPDATE operations. This can help clean up dead tuples and
 	 * improve page utilization.
 	 */
-	if (PageIsFull(BufferGetPage(buffer)))
+	if (PageHasPrunable(BufferGetPage(buffer)))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		heap_page_prune_opt(relation, buffer);
