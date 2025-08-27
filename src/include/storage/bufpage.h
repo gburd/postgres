@@ -405,6 +405,7 @@ PageSetHasFreeLinePointers(Page page)
 {
 	((PageHeader) page)->pd_flags |= PD_HAS_FREE_LINES;
 }
+
 static inline void
 PageClearHasFreeLinePointers(Page page)
 {
@@ -420,9 +421,6 @@ PageIsFull(const PageData *page)
 static inline bool
 PageHasPrunable(const PageData *page)
 {
-	const PageHeaderData *pageheader = (const PageHeaderData *) page;
-
-	/* Must have prune XID and free line pointers to be worth pruning */
 	return PageHasFreeLinePointers(page) && PageGetMaxOffsetNumber(page) >= 4;
 }
 
