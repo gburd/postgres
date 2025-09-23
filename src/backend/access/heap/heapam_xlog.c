@@ -505,6 +505,10 @@ heap_xlog_insert(XLogReaderState *record)
 
 		freespace = PageGetHeapFreeSpace(page); /* needed to update FSM below */
 
+		if (TransactionIdIsValid(xlrec->prune_xid) &&
+			TransactionIdIsNormal(xlrec->prune_xid))
+			PageSetPrunable(page, xlrec->prune_xid);
+
 		PageSetLSN(page, lsn);
 
 		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
@@ -647,6 +651,10 @@ heap_xlog_multi_insert(XLogReaderState *record)
 			elog(PANIC, "total tuple length mismatch");
 
 		freespace = PageGetHeapFreeSpace(page); /* needed to update FSM below */
+
+		if (TransactionIdIsValid(xlrec->prune_xid) &&
+			TransactionIdIsNormal(xlrec->prune_xid))
+			PageSetPrunable(page, xlrec->prune_xid);
 
 		PageSetLSN(page, lsn);
 

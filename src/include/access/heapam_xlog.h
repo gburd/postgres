@@ -159,6 +159,7 @@ typedef struct xl_heap_header
 /* This is what we need to know about insert */
 typedef struct xl_heap_insert
 {
+	TransactionId prune_xid;	/* record xid for pruning purposes */
 	OffsetNumber offnum;		/* inserted tuple's offset */
 	uint8		flags;
 
@@ -180,6 +181,7 @@ typedef struct xl_heap_insert
  */
 typedef struct xl_heap_multi_insert
 {
+	TransactionId prune_xid;	/* record xid for pruning purposes */
 	uint8		flags;
 	uint16		ntuples;
 	OffsetNumber offsets[FLEXIBLE_ARRAY_MEMBER];

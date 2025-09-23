@@ -2194,14 +2194,11 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	}
 
 	/*
-	 * XXX Should we set PageSetPrunable on this page ?
-	 *
-	 * The inserting transaction may eventually abort thus making this tuple
-	 * DEAD and hence available for pruning. Though we don't want to optimize
-	 * for aborts, if no other tuple in this page is UPDATEd/DELETEd, the
-	 * aborted tuple will never be pruned until next vacuum is triggered.
-	 *
-	 * If you do add PageSetPrunable here, add it in heap_xlog_insert too.
+	 * If the inserting transaction aborts, this tuple will become DEAD and
+	 * can be pruned during subsequent page accesses rather than waiting for
+	 * the next vacuum cycle. This is beneficial for pages that don't
+	 * experience other modifications (UPDATEs/DELETEs) which would normally
+	 * trigger the prunable marking.
 	 */
 
 	MarkBufferDirty(buffer);
@@ -2237,6 +2234,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 		xlrec.offnum = ItemPointerGetOffsetNumber(&heaptup->t_self);
 		xlrec.flags = 0;
+		xlrec.prune_xid = InvalidTransactionId;
+		if (IsTransactionState() && TransactionIdIsNormal(xid))
+			xlrec.prune_xid = xid;
 		if (all_visible_cleared)
 			xlrec.flags |= XLH_INSERT_ALL_VISIBLE_CLEARED;
 		if (options & HEAP_INSERT_SPECULATIVE)
@@ -2286,6 +2286,15 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	}
 
 	END_CRIT_SECTION();
+
+	/*
+	 * We marked the page as prunable during insert to enable cleanup of this
+	 * tuple if the inserting transaction aborts. The prune_xid has been set
+	 * to the current transaction ID and logged in the WAL record to ensure
+	 * consistent recovery behavior.
+	 */
+	if (IsTransactionState() && TransactionIdIsNormal(xid))
+		PageSetPrunable(BufferGetPage(buffer), xid);
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
@@ -2571,7 +2580,8 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			PageSetAllVisible(page);
 
 		/*
-		 * XXX Should we set PageSetPrunable on this page ? See heap_insert()
+		 * Similar to heap_insert() we set the page as prunable and record the
+		 * prune_xid for recovery.
 		 */
 
 		MarkBufferDirty(buffer);
@@ -2614,6 +2624,9 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			Assert(!(all_visible_cleared && all_frozen_set));
 
 			xlrec->flags = 0;
+			xlrec->prune_xid = InvalidTransactionId;
+			if (IsTransactionState() && TransactionIdIsNormal(xid))
+				xlrec->prune_xid = xid;
 			if (all_visible_cleared)
 				xlrec->flags = XLH_INSERT_ALL_VISIBLE_CLEARED;
 			if (all_frozen_set)
@@ -2708,6 +2721,13 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 							  InvalidTransactionId,
 							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
 		}
+
+		/*
+		 * Similar to heap_insert() we mark the page prunable and have
+		 * recorded prune_xid in the WAL.
+		 */
+		if (IsTransactionState() && TransactionIdIsNormal(xid))
+			PageSetPrunable(BufferGetPage(buffer), xid);
 
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
