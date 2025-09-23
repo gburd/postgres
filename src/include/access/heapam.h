@@ -97,6 +97,12 @@ typedef struct HeapScanDescData
 	uint32		rs_cindex;		/* current tuple's index in vistuples */
 	uint32		rs_ntuples;		/* number of visible tuples on page */
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
+
+	/* scan-time pruning tracking */
+	int			rs_page_updates;	/* count of updates/deletes on current
+									 * page */
+	bool		rs_page_pruned; /* whether current page was already pruned */
+	BlockNumber rs_last_pruned_block;	/* last block we attempted pruning on */
 } HeapScanDescData;
 typedef struct HeapScanDescData *HeapScanDesc;
 

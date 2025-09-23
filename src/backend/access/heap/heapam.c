@@ -446,6 +446,11 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	scan->rs_ntuples = 0;
 	scan->rs_cindex = 0;
 
+	/* Initialize scan-time pruning tracking */
+	scan->rs_page_updates = 0;
+	scan->rs_page_pruned = false;
+	scan->rs_last_pruned_block = InvalidBlockNumber;
+
 	/*
 	 * Initialize to ForwardScanDirection because it is most common and
 	 * because heap scans go forward before going backward (e.g. CURSORs).
@@ -925,6 +930,10 @@ heapgettup(HeapScanDesc scan,
 
 		Assert(BufferGetBlockNumber(scan->rs_cbuf) == scan->rs_cblock);
 
+		/* Reset page tracking for new page */
+		scan->rs_page_updates = 0;
+		scan->rs_page_pruned = false;
+
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		page = heapgettup_start_page(scan, dir, &linesleft, &lineoff);
 continue_page:
@@ -942,7 +951,12 @@ continue_page:
 			ItemId		lpp = PageGetItemId(page, lineoff);
 
 			if (!ItemIdIsNormal(lpp))
+			{
+				/* Track dead line pointers as potential modifications */
+				if (ItemIdIsDead(lpp))
+					scan->rs_page_updates++;
 				continue;
+			}
 
 			tuple->t_data = (HeapTupleHeader) PageGetItem(page, lpp);
 			tuple->t_len = ItemIdGetLength(lpp);
@@ -972,10 +986,27 @@ continue_page:
 		}
 
 		/*
-		 * if we get here, it means we've exhausted the items on this page and
-		 * it's time to move to the next.
+		 * Before moving to next page, check if current page needs scan-time
+		 * pruning. This addresses the issue where multiple updates during a
+		 * scan don't trigger pruning until the next scan.
 		 */
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+		if (scan->rs_page_updates > 0 &&
+			scan->rs_cblock != scan->rs_last_pruned_block &&
+			PageNeedsScanPruning(page, scan->rs_page_updates))
+		{
+			/* Attempt opportunistic pruning */
+			heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+
+			/* Mark this block as pruned to avoid repeated attempts */
+			scan->rs_last_pruned_block = scan->rs_cblock;
+			scan->rs_page_pruned = true;
+		}
+
+		/*
+		 * If we get here, it means we've exhausted the items on this page and
+		 * it's time to move to the next.
+		 */
 	}
 
 	/* end of scan */
@@ -1042,6 +1073,10 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 		Assert(BufferGetBlockNumber(scan->rs_cbuf) == scan->rs_cblock);
 
+		/* Reset page tracking for new page */
+		scan->rs_page_updates = 0;
+		scan->rs_page_pruned = false;
+
 		/* prune the page and determine visible tuple offsets */
 		heap_prepare_pagescan((TableScanDesc) scan);
 		page = BufferGetPage(scan->rs_cbuf);
@@ -1077,6 +1112,15 @@ continue_page:
 			scan->rs_cindex = lineindex;
 			return;
 		}
+	}
+
+	/* Before ending scan, check if current page needs scan-time pruning */
+	if (BufferIsValid(scan->rs_cbuf) && scan->rs_page_updates > 0 &&
+		scan->rs_cblock != scan->rs_last_pruned_block &&
+		PageNeedsScanPruning(BufferGetPage(scan->rs_cbuf), scan->rs_page_updates))
+	{
+		heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+		scan->rs_last_pruned_block = scan->rs_cblock;
 	}
 
 	/* end of scan */

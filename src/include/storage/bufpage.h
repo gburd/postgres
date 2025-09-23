@@ -418,7 +418,6 @@ PageIsFull(const PageData *page)
 	return ((const PageHeaderData *) page)->pd_flags & PD_PAGE_FULL;
 }
 
-
 static inline void
 PageSetFull(Page page)
 {
@@ -518,6 +517,12 @@ PageHasPrunable(const PageData *page)
 	return (PageHasFreeLinePointers(page) ||
 			PageGetFreeSpace(page) < BLCKSZ / 4 ||
 			PageGetMaxOffsetNumber(page) > 21);
+}
+
+static inline bool
+PageNeedsScanPruning(const PageData *page, int modifications)
+{
+	return modifications >= 3 && PageHasPrunable(page);
 }
 
 #endif							/* BUFPAGE_H */
