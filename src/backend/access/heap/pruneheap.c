@@ -177,6 +177,7 @@ static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetN
 
 static void page_verify_redirects(Page page);
 
+extern bool enable_heap_prune_tracking;
 
 /*
  * Optionally prune and repair fragmentation in the specified page.
@@ -195,12 +196,38 @@ static void page_verify_redirects(Page page);
  * Caller must have pin on the buffer, and must *not* have a lock on it.
  */
 void
-heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
+heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len, HeapPruneContext context)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prune_xid;
 	GlobalVisState *vistest;
 	Size		minfree;
+	Size		freespace_before = 0;
+	Size		freespace_after = 0;
+	instr_time	start_time,
+				end_time;
+	uint64		hot_updates = 0;
+	HeapPruneExitReason exit_reason = HEAP_PRUNE_EXIT_SUCCESS;
+
+	static const char *context_names[] = {
+		"UPDATE_FULL_PAGE",
+		"INSERT_SPACE_CHECK",
+		"SCAN_OPPORTUNISTIC",
+		"SCAN_END",
+		"MULTI_INSERT",
+		"PREPARE_PAGESCAN"
+	};
+
+	/* Track statistics if enabled */
+	if (enable_heap_prune_tracking)
+	{
+		INSTR_TIME_SET_CURRENT(start_time);
+		prune_stats_by_context[context].calls_total++;
+		freespace_before = PageGetHeapFreeSpace(page);
+		/* Get HOT updates on relation */
+		if (relation->pgstat_info)
+			hot_updates = relation->pgstat_info->counts.tuples_hot_updated;
+	}
 
 	/*
 	 * We can't write WAL in recovery mode, so there's no point trying to
@@ -208,7 +235,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 	 * soon anyway, so this is no particular loss.
 	 */
 	if (RecoveryInProgress())
+	{
+		if (enable_heap_prune_tracking)
+		{
+			exit_reason = HEAP_PRUNE_EXIT_RECOVERY_IN_PROGRESS;
+			elog(DEBUG2, "heap_page_prune_opt: context=%s RETURNed RecoveryInProgress", context_names[context]);
+			goto exit_with_reason;
+		}
 		return;
+	}
 
 	/*
 	 * First check whether there's any chance there's something to prune,
@@ -217,7 +252,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 	 */
 	prune_xid = ((PageHeader) page)->pd_prune_xid;
 	if (!TransactionIdIsValid(prune_xid))
+	{
+		if (enable_heap_prune_tracking)
+		{
+			exit_reason = HEAP_PRUNE_EXIT_INVALID_XACT_XID;
+			elog(DEBUG2, "heap_page_prune_opt: context=%s RETURNed !TransactionIdIsValid", context_names[context]);
+			goto exit_with_reason;
+		}
 		return;
+	}
 
 	/*
 	 * Check whether prune_xid indicates that there may be dead rows that can
@@ -226,7 +269,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 	vistest = GlobalVisTestFor(relation);
 
 	if (!GlobalVisTestIsRemovableXid(vistest, prune_xid))
+	{
+		if (enable_heap_prune_tracking)
+		{
+			exit_reason = HEAP_PRUNE_EXIT_NO_REMOVABLE_XIDS;
+			elog(DEBUG2, "heap_page_prune_opt: context=%s RETURNed !GlobalVisTestIsRemovableXid", context_names[context]);
+			goto exit_with_reason;
+		}
 		return;
+	}
 
 	/*
 	 * We prune when a previous UPDATE failed to find enough space on the page
@@ -256,7 +307,15 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 	{
 		/* OK, try to get exclusive buffer lock */
 		if (!ConditionalLockBufferForCleanup(buffer))
+		{
+			if (enable_heap_prune_tracking)
+			{
+				exit_reason = HEAP_PRUNE_EXIT_LOCK_FAILED;
+				elog(DEBUG2, "heap_page_prune_opt: RETURNed !ConditionalLockBufferForCleanup");
+				goto exit_with_reason;
+			}
 			return;
+		}
 
 		/*
 		 * Now that we have buffer lock, get accurate information about the
@@ -295,6 +354,38 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 			if (presult.ndeleted > presult.nnewlpdead)
 				pgstat_update_heap_dead_tuples(relation,
 											   presult.ndeleted - presult.nnewlpdead);
+
+
+			/* Update statistics */
+			if (enable_heap_prune_tracking)
+			{
+				int			tuples_pruned = presult.ndeleted;
+
+				freespace_after = PageGetHeapFreeSpace(page);
+
+				if (tuples_pruned > 0)
+				{
+					exit_reason = HEAP_PRUNE_EXIT_SUCCESS;
+					prune_stats_by_context[context].pages_pruned++;
+					prune_stats_by_context[context].tuples_pruned += tuples_pruned;
+					prune_stats_by_context[context].space_freed += (freespace_after - freespace_before);
+
+					elog(DEBUG2, "heap_page_prune_opt: context=%s, tuples_pruned=%d, space_freed=%zu, "
+						 "tuple_len=%zu, hot_updates=%lu, relation=%s",
+						 context_names[context], tuples_pruned,
+						 (freespace_after - freespace_before), tuple_len,
+						 hot_updates, RelationGetRelationName(relation));
+				}
+				else
+				{
+					exit_reason = HEAP_PRUNE_EXIT_OTHER;
+					elog(DEBUG3, "heap_page_prune_opt: context=%s, no pruning done, freespace_before=%zu, "
+						 "tuple_len=%zu, relation=%s",
+						 context_names[context], freespace_before, tuple_len,
+						 RelationGetRelationName(relation));
+				}
+
+			}
 		}
 
 		/* And release buffer lock */
@@ -305,6 +396,52 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len)
 		 * UPDATEs/INSERTs by opting to not update the FSM at this point.  The
 		 * free space should be reused by UPDATEs to *this* page.
 		 */
+	}
+
+	else if (enable_heap_prune_tracking)
+	{
+		/* Called but no pruning needed */
+		exit_reason = HEAP_PRUNE_EXIT_PAGE_NOT_PRUNABLE;
+		elog(DEBUG3, "heap_page_prune_opt: context=%s, no pruning needed, freespace=%zu, "
+			 "tuple_len=%zu, relation=%s",
+			 context_names[context], freespace_before, tuple_len,
+			 RelationGetRelationName(relation));
+	}
+
+
+exit_with_reason:
+	if (enable_heap_prune_tracking)
+	{
+		/* Record timing */
+		INSTR_TIME_SET_CURRENT(end_time);
+		INSTR_TIME_SUBTRACT(end_time, start_time);
+		prune_stats_by_context[context].time_spent_us += INSTR_TIME_GET_MICROSEC(end_time);
+
+		/* Record exit reason */
+		switch (exit_reason)
+		{
+			case HEAP_PRUNE_EXIT_SUCCESS:
+				prune_stats_by_context[context].exit_success++;
+				break;
+			case HEAP_PRUNE_EXIT_RECOVERY_IN_PROGRESS:
+				prune_stats_by_context[context].exit_recover_in_progress++;
+				break;
+			case HEAP_PRUNE_EXIT_INVALID_XACT_XID:
+				prune_stats_by_context[context].exit_invalid_xact_xid++;
+				break;
+			case HEAP_PRUNE_EXIT_NO_REMOVABLE_XIDS:
+				prune_stats_by_context[context].exit_no_removable_xids++;
+				break;
+			case HEAP_PRUNE_EXIT_LOCK_FAILED:
+				prune_stats_by_context[context].exit_lock_failed++;
+				break;
+			case HEAP_PRUNE_EXIT_PAGE_NOT_PRUNABLE:
+				prune_stats_by_context[context].exit_page_not_prunable++;
+				break;
+			default:
+				prune_stats_by_context[context].exit_other++;
+				break;
+		}
 	}
 }
 

@@ -1,0 +1,67 @@
+  phase   |      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+----------+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ BASELINE | SCAN_OPPORTUNISTIC |         153 |            0 |             0 |           0 |             0 |            0 |                   150 |                      0 |                      3 |                0 |          0 |                   0.00 |                0.000
+ BASELINE | UPDATE_FULL_PAGE   |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | INSERT_SPACE_CHECK |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | SCAN_END           |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | MULTI_INSERT       |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+(5 rows)
+
+         phase          |      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+------------------------+--------------------+-------------+------------------+---------------------+---------------+-------------
+ BASELINE_EXIT_ANALYSIS | SCAN_OPPORTUNISTIC |         160 |             0.00 | INVALID_XACT_XID    |           157 |       98.13
+(1 row)
+
+  phase   |      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+----------+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ MID_TEST | SCAN_OPPORTUNISTIC |         154 |            0 |             0 |           0 |             1 |            0 |                   151 |                      0 |                      3 |                0 |          0 |                   0.00 |                0.006
+ MID_TEST | UPDATE_FULL_PAGE   |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ MID_TEST | INSERT_SPACE_CHECK |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ MID_TEST | SCAN_END           |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ MID_TEST | MULTI_INSERT       |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+(5 rows)
+
+         phase          |      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+------------------------+--------------------+-------------+------------------+---------------------+---------------+-------------
+ MID_TEST_EXIT_ANALYSIS | SCAN_OPPORTUNISTIC |         160 |             0.00 | INVALID_XACT_XID    |           157 |       98.13
+(1 row)
+
+   phase   |      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+-----------+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ POST_TEST | SCAN_OPPORTUNISTIC |         153 |            0 |             0 |           0 |             1 |            0 |                   150 |                      0 |                      3 |                0 |          0 |                   0.00 |                0.007
+ POST_TEST | UPDATE_FULL_PAGE   |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ POST_TEST | INSERT_SPACE_CHECK |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ POST_TEST | SCAN_END           |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ POST_TEST | MULTI_INSERT       |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+(5 rows)
+
+          phase          |      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+-------------------------+--------------------+-------------+------------------+---------------------+---------------+-------------
+ POST_TEST_EXIT_ANALYSIS | SCAN_OPPORTUNISTIC |         160 |             0.00 | INVALID_XACT_XID    |           157 |       98.13
+(1 row)
+
+     report_type     |      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+---------------------+--------------------+-------------+------------------+---------------------+---------------+-------------
+ EXIT_REASON_SUMMARY | SCAN_OPPORTUNISTIC |         160 |             0.00 | INVALID_XACT_XID    |           157 |       98.13
+(1 row)
+
+   report_type   |      context       | main_failure_reason |                              recommendation                               | failure_pct 
+-----------------+--------------------+---------------------+---------------------------------------------------------------------------+-------------
+ RECOMMENDATIONS | SCAN_OPPORTUNISTIC | INVALID_XACT_XID    | Check prune_xid setting and page header - may need transaction visibility |       98.58
+(1 row)
+
+ schemaname |     relname      | n_tup_ins | n_tup_upd | n_tup_hot_upd | hot_update_pct | table_size 
+------------+------------------+-----------+-----------+---------------+----------------+------------
+ public     | pgbench_accounts |         0 |   7786123 |       6686906 |          85.88 | 1932 MB
+(1 row)
+
+ relpages | reltuples | n_dead_tup | last_vacuum | last_autovacuum | heap_size 
+----------+-----------+------------+-------------+-----------------+-----------
+    81968 |     5e+06 |    1355592 |             |                 | 1820 MB
+(1 row)
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         153 |            0 |             0 |           0 |            0 |                   150 |                      0 |                      3 |                0 |          0 |                   0.00 |                0.144
+(1 row)
+

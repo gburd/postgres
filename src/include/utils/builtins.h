@@ -136,4 +136,6 @@ extern int32 type_maximum_size(Oid type_oid, int32 typemod);
 /* quote.c */
 extern char *quote_literal_cstr(const char *rawstr);
 
+extern Datum pg_stat_get_heap_prune_stats(PG_FUNCTION_ARGS);
+
 #endif							/* BUILTINS_H */

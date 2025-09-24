@@ -32,7 +32,7 @@
 /* GUCs */
 extern PGDLLIMPORT char *default_table_access_method;
 extern PGDLLIMPORT bool synchronize_seqscans;
-
+extern PGDLLIMPORT bool enable_heap_prune_tracking;
 
 struct BulkInsertStateData;
 struct IndexInfo;

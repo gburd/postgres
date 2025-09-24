@@ -1,0 +1,583 @@
+Null display is "[null]".
+Timing is on.
+Expanded display is used automatically.
+Welcome to PostgreSQL! 
+
+Type :version to see the PostgreSQL version. 
+
+Type :extensions to see the available extensions. 
+
+Type \q to exit. 
+
+SET
+Time: 0.485 ms
+SET
+Time: 0.102 ms
+ALTER SYSTEM
+Time: 0.304 ms
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+Time: 0.551 ms
+psql:test.sql:9: NOTICE:  42710: extension "pageinspect" already exists, skipping
+LOCATION:  CreateExtension, extension.c:1988
+CREATE EXTENSION
+Time: 0.206 ms
+DROP FUNCTION
+Time: 1.324 ms
+DROP FUNCTION
+Time: 1.703 ms
+CREATE FUNCTION
+Time: 2.192 ms
+CREATE FUNCTION
+Time: 1.003 ms
+ pg_stat_reset 
+---------------
+ 
+(1 row)
+
+Time: 0.405 ms
+=== PHASE 1: Setup with Massive Tuples ===
+CREATE TABLE
+Time: 6.849 ms
+ALTER TABLE
+Time: 0.441 ms
+CREATE INDEX
+Time: 0.849 ms
+INSERT 0 20
+Time: 2.709 ms
+psql:test.sql:164: WARNING:  25P01: there is no transaction in progress
+LOCATION:  EndTransactionBlock, xact.c:4164
+COMMIT
+Time: 0.068 ms
+  phase   |      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+----------+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ BASELINE | SCAN_OPPORTUNISTIC |         506 |            4 |            79 |       15472 |          3906 |            4 |                   364 |                     53 |                     85 |                0 |          0 |                   0.79 |                7.719
+ BASELINE | UPDATE_FULL_PAGE   |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | INSERT_SPACE_CHECK |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | SCAN_END           |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | MULTI_INSERT       |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+(5 rows)
+
+Time: 3.167 ms
+=== PHASE 2: Create Dead Tuples in Separate Transactions ===
+BEGIN
+Time: 0.055 ms
+UPDATE 10
+Time: 1.329 ms
+COMMIT
+Time: 0.070 ms
+--- After First Dead Tuple Creation ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         525 |            4 |            79 |       15472 |          3943 |            4 |                   376 |                     53 |                     86 |                6 |          0 |                   0.76 |                7.510
+ UPDATE_FULL_PAGE   |          10 |            0 |             0 |           0 |            15 |            0 |                     0 |                      0 |                      0 |               10 |          0 |                   0.00 |                1.500
+(2 rows)
+
+Time: 0.142 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         531 |             0.75 | INVALID_XACT_XID    |           380 |       71.56
+ UPDATE_FULL_PAGE   |          10 |             0.00 | LOCK_FAILED         |            10 |      100.00
+(2 rows)
+
+Time: 0.633 ms
+BEGIN
+Time: 0.061 ms
+UPDATE 10
+Time: 1.255 ms
+COMMIT
+Time: 0.074 ms
+--- After Second Dead Tuple Creation ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         535 |            5 |            89 |       18456 |          4075 |            5 |                   380 |                     56 |                     88 |                6 |          0 |                   0.93 |                7.617
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+Time: 0.139 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         535 |             0.93 | INVALID_XACT_XID    |           380 |       71.03
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+Time: 0.141 ms
+psql:test.sql:201: INFO:  00000: vacuuming "postgres.public.ultimate_prune_test"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:201: INFO:  00000: finished vacuuming "postgres.public.ultimate_prune_test": index scans: 1
+pages: 0 removed, 2 remain, 2 scanned (100.00% of total), 0 eagerly scanned
+tuples: 10 removed, 20 remain, 0 are dead but not yet removable
+removable cutoff: 867, which was 0 XIDs old when operation ended
+new relfrozenxid: 865, which is 4 XIDs ahead of previous value
+frozen: 0 pages from table (0.00% of total) had 0 tuples frozen
+visibility map: 2 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan needed: 1 pages from table (50.00% of total) had 9 dead item identifiers removed
+index "ultimate_prune_test_pkey": pages: 2 in total, 0 newly deleted, 0 currently deleted, 0 reusable
+index "idx_ultimate_status": pages: 2 in total, 0 newly deleted, 0 currently deleted, 0 reusable
+avg read rate: 0.000 MB/s, avg write rate: 122.709 MB/s
+buffer usage: 40 hits, 0 reads, 3 dirtied
+WAL usage: 11 records, 3 full page images, 25912 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:201: INFO:  00000: vacuuming "postgres.pg_toast.pg_toast_16536"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:201: INFO:  00000: finished vacuuming "postgres.pg_toast.pg_toast_16536": index scans: 0
+pages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned
+tuples: 0 removed, 0 remain, 0 are dead but not yet removable
+removable cutoff: 867, which was 0 XIDs old when operation ended
+new relfrozenxid: 867, which is 6 XIDs ahead of previous value
+frozen: 0 pages from table (100.00% of total) had 0 tuples frozen
+visibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed
+avg read rate: 122.070 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 27 hits, 1 reads, 0 dirtied
+WAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:201: INFO:  00000: analyzing "public.ultimate_prune_test"
+LOCATION:  do_analyze_rel, analyze.c:320
+psql:test.sql:201: INFO:  00000: "ultimate_prune_test": scanned 2 of 2 pages, containing 20 live rows and 0 dead rows; 20 rows in sample, 20 estimated total rows
+LOCATION:  acquire_sample_rows, analyze.c:1344
+psql:test.sql:201: INFO:  00000: finished analyzing table "postgres.public.ultimate_prune_test"
+avg read rate: 0.000 MB/s, avg write rate: 15.625 MB/s
+buffer usage: 185 hits, 0 reads, 2 dirtied
+WAL usage: 14 records, 2 full page images, 6871 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  do_analyze_rel, analyze.c:841
+VACUUM
+Time: 1.017 ms
+--- After VACUUM ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         636 |            5 |            89 |       18456 |          4147 |            5 |                   440 |                     56 |                    129 |                6 |          0 |                   0.79 |                6.520
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+Time: 0.164 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         636 |             0.79 | INVALID_XACT_XID    |           440 |       69.18
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+Time: 0.149 ms
+=== PHASE 3: Extreme INSERT Test ===
+CREATE TABLE
+Time: 0.876 ms
+ALTER TABLE
+Time: 0.171 ms
+INSERT 0 1
+Time: 0.253 ms
+psql:test.sql:220: WARNING:  25P01: there is no transaction in progress
+LOCATION:  EndTransactionBlock, xact.c:4164
+COMMIT
+Time: 0.064 ms
+BEGIN
+Time: 0.047 ms
+UPDATE 1
+Time: 0.166 ms
+COMMIT
+Time: 0.056 ms
+psql:test.sql:228: INFO:  00000: vacuuming "postgres.public.insert_mega_test"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:228: INFO:  00000: finished vacuuming "postgres.public.insert_mega_test": index scans: 0
+pages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned
+tuples: 1 removed, 1 remain, 0 are dead but not yet removable
+removable cutoff: 872, which was 0 XIDs old when operation ended
+new relfrozenxid: 871, which is 3 XIDs ahead of previous value
+frozen: 0 pages from table (0.00% of total) had 0 tuples frozen
+visibility map: 1 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed
+avg read rate: 0.000 MB/s, avg write rate: 274.123 MB/s
+buffer usage: 19 hits, 0 reads, 4 dirtied
+WAL usage: 6 records, 4 full page images, 33343 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:228: INFO:  00000: vacuuming "postgres.pg_toast.pg_toast_16552"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:228: INFO:  00000: finished vacuuming "postgres.pg_toast.pg_toast_16552": index scans: 0
+pages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned
+tuples: 0 removed, 0 remain, 0 are dead but not yet removable
+removable cutoff: 872, which was 0 XIDs old when operation ended
+new relfrozenxid: 872, which is 4 XIDs ahead of previous value
+frozen: 0 pages from table (100.00% of total) had 0 tuples frozen
+visibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed
+avg read rate: 137.061 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 25 hits, 1 reads, 0 dirtied
+WAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:228: INFO:  00000: analyzing "public.insert_mega_test"
+LOCATION:  do_analyze_rel, analyze.c:320
+psql:test.sql:228: INFO:  00000: "insert_mega_test": scanned 1 of 1 pages, containing 1 live rows and 0 dead rows; 1 rows in sample, 1 estimated total rows
+LOCATION:  acquire_sample_rows, analyze.c:1344
+psql:test.sql:228: INFO:  00000: finished analyzing table "postgres.public.insert_mega_test"
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 22 hits, 0 reads, 0 dirtied
+WAL usage: 4 records, 0 full page images, 406 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  do_analyze_rel, analyze.c:841
+VACUUM
+Time: 0.495 ms
+INSERT 0 1
+Time: 0.259 ms
+--- After INSERT Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         734 |            8 |           144 |       22176 |          4217 |            8 |                   450 |                     72 |                    198 |                6 |          0 |                   1.09 |                5.745
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+Time: 0.150 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         734 |             1.09 | INVALID_XACT_XID    |           450 |       61.31
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+Time: 0.152 ms
+DROP TABLE
+Time: 0.684 ms
+=== PHASE 4: UPDATE Test with Extreme Sizes ===
+BEGIN
+Time: 0.062 ms
+UPDATE 10
+Time: 1.297 ms
+COMMIT
+Time: 0.068 ms
+psql:test.sql:254: INFO:  00000: vacuuming "postgres.public.ultimate_prune_test"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:254: INFO:  00000: finished vacuuming "postgres.public.ultimate_prune_test": index scans: 0
+pages: 0 removed, 2 remain, 2 scanned (100.00% of total), 0 eagerly scanned
+tuples: 10 removed, 20 remain, 0 are dead but not yet removable
+removable cutoff: 876, which was 0 XIDs old when operation ended
+new relfrozenxid: 866, which is 1 XIDs ahead of previous value
+frozen: 0 pages from table (0.00% of total) had 0 tuples frozen
+visibility map: 2 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 26 hits, 0 reads, 0 dirtied
+WAL usage: 6 records, 0 full page images, 676 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:254: INFO:  00000: vacuuming "postgres.pg_toast.pg_toast_16536"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:254: INFO:  00000: finished vacuuming "postgres.pg_toast.pg_toast_16536": index scans: 0
+pages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned
+tuples: 0 removed, 0 remain, 0 are dead but not yet removable
+removable cutoff: 876, which was 0 XIDs old when operation ended
+new relfrozenxid: 876, which is 9 XIDs ahead of previous value
+frozen: 0 pages from table (100.00% of total) had 0 tuples frozen
+visibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 12 hits, 0 reads, 0 dirtied
+WAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:254: INFO:  00000: analyzing "public.ultimate_prune_test"
+LOCATION:  do_analyze_rel, analyze.c:320
+psql:test.sql:254: INFO:  00000: "ultimate_prune_test": scanned 2 of 2 pages, containing 20 live rows and 0 dead rows; 20 rows in sample, 20 estimated total rows
+LOCATION:  acquire_sample_rows, analyze.c:1344
+psql:test.sql:254: INFO:  00000: finished analyzing table "postgres.public.ultimate_prune_test"
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 40 hits, 0 reads, 0 dirtied
+WAL usage: 7 records, 0 full page images, 1020 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  do_analyze_rel, analyze.c:841
+VACUUM
+Time: 0.453 ms
+BEGIN
+Time: 0.060 ms
+UPDATE 5
+Time: 0.973 ms
+COMMIT
+Time: 0.071 ms
+--- After UPDATE Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         824 |            9 |           162 |       24640 |          4251 |            9 |                   461 |                     77 |                    271 |                6 |          0 |                   1.09 |                5.159
+ UPDATE_FULL_PAGE   |          28 |            0 |             0 |           0 |            43 |            0 |                     3 |                     15 |                      0 |               10 |          0 |                   0.00 |                1.536
+(2 rows)
+
+Time: 0.150 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         824 |             1.09 | INVALID_XACT_XID    |           461 |       55.95
+ UPDATE_FULL_PAGE   |          28 |             0.00 | NO_REMOVABLE_XIDS   |            15 |       53.57
+(2 rows)
+
+Time: 0.141 ms
+=== PHASE 5: Scan Pressure Test ===
+BEGIN
+Time: 0.052 ms
+UPDATE 10
+Time: 1.703 ms
+COMMIT
+Time: 0.070 ms
+psql:test.sql:285: INFO:  00000: vacuuming "postgres.public.ultimate_prune_test"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:285: INFO:  00000: finished vacuuming "postgres.public.ultimate_prune_test": index scans: 1
+pages: 0 removed, 3 remain, 3 scanned (100.00% of total), 0 eagerly scanned
+tuples: 10 removed, 20 remain, 0 are dead but not yet removable
+removable cutoff: 879, which was 0 XIDs old when operation ended
+new relfrozenxid: 875, which is 9 XIDs ahead of previous value
+frozen: 0 pages from table (0.00% of total) had 0 tuples frozen
+visibility map: 3 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan needed: 2 pages from table (66.67% of total) had 5 dead item identifiers removed
+index "ultimate_prune_test_pkey": pages: 2 in total, 0 newly deleted, 0 currently deleted, 0 reusable
+index "idx_ultimate_status": pages: 2 in total, 0 newly deleted, 0 currently deleted, 0 reusable
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 39 hits, 0 reads, 0 dirtied
+WAL usage: 10 records, 0 full page images, 870 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:285: INFO:  00000: vacuuming "postgres.pg_toast.pg_toast_16536"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:285: INFO:  00000: finished vacuuming "postgres.pg_toast.pg_toast_16536": index scans: 0
+pages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned
+tuples: 0 removed, 0 remain, 0 are dead but not yet removable
+removable cutoff: 879, which was 0 XIDs old when operation ended
+new relfrozenxid: 879, which is 3 XIDs ahead of previous value
+frozen: 0 pages from table (100.00% of total) had 0 tuples frozen
+visibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 12 hits, 0 reads, 0 dirtied
+WAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:285: INFO:  00000: analyzing "public.ultimate_prune_test"
+LOCATION:  do_analyze_rel, analyze.c:320
+psql:test.sql:285: INFO:  00000: "ultimate_prune_test": scanned 3 of 3 pages, containing 20 live rows and 0 dead rows; 20 rows in sample, 20 estimated total rows
+LOCATION:  acquire_sample_rows, analyze.c:1344
+psql:test.sql:285: INFO:  00000: finished analyzing table "postgres.public.ultimate_prune_test"
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 41 hits, 0 reads, 0 dirtied
+WAL usage: 8 records, 0 full page images, 1014 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  do_analyze_rel, analyze.c:841
+VACUUM
+Time: 0.590 ms
+ count 
+-------
+    10
+(1 row)
+
+Time: 0.286 ms
+ count 
+-------
+    10
+(1 row)
+
+Time: 0.126 ms
+          avg           
+------------------------
+ 10390.0000000000000000
+(1 row)
+
+Time: 0.647 ms
+SET
+Time: 0.056 ms
+SET
+Time: 0.046 ms
+ count 
+-------
+    20
+(1 row)
+
+Time: 0.496 ms
+ count 
+-------
+     5
+(1 row)
+
+Time: 0.148 ms
+RESET
+Time: 0.094 ms
+RESET
+Time: 0.093 ms
+--- After SCAN Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         962 |           10 |           194 |       30552 |          4432 |           10 |                   567 |                     81 |                    298 |                6 |          0 |                   1.04 |                4.607
+ UPDATE_FULL_PAGE   |          39 |            0 |             0 |           0 |            71 |            0 |                     5 |                     23 |                      0 |               11 |          0 |                   0.00 |                1.821
+(2 rows)
+
+Time: 0.164 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         962 |             1.04 | INVALID_XACT_XID    |           567 |       58.94
+ UPDATE_FULL_PAGE   |          39 |             0.00 | NO_REMOVABLE_XIDS   |            23 |       58.97
+(2 rows)
+
+Time: 0.146 ms
+=== PHASE 6: Multi-Insert Test ===
+INSERT 0 20
+Time: 2.848 ms
+--- After MULTI_INSERT Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         962 |           10 |           194 |       30552 |          4432 |           10 |                   567 |                     81 |                    298 |                6 |          0 |                   1.04 |                4.607
+ UPDATE_FULL_PAGE   |          39 |            0 |             0 |           0 |            71 |            0 |                     5 |                     23 |                      0 |               11 |          0 |                   0.00 |                1.821
+(2 rows)
+
+Time: 0.138 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         962 |             1.04 | INVALID_XACT_XID    |           567 |       58.94
+ UPDATE_FULL_PAGE   |          39 |             0.00 | NO_REMOVABLE_XIDS   |            23 |       58.97
+(2 rows)
+
+Time: 0.133 ms
+=== PHASE 7: Ultimate Stress Test ===
+BEGIN
+Time: 0.054 ms
+UPDATE 20
+Time: 3.228 ms
+COMMIT
+Time: 0.069 ms
+BEGIN
+Time: 0.047 ms
+UPDATE 20
+Time: 2.787 ms
+COMMIT
+Time: 0.069 ms
+INSERT 0 20
+Time: 3.189 ms
+--- After STRESS Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         999 |           11 |           195 |       31056 |          4490 |           11 |                   569 |                    113 |                    299 |                6 |          1 |                   1.10 |                4.494
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |           121 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00 |                1.532
+(2 rows)
+
+Time: 0.146 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         999 |             1.10 | INVALID_XACT_XID    |           569 |       56.96
+ UPDATE_FULL_PAGE   |          79 |             0.00 | NO_REMOVABLE_XIDS   |            57 |       72.15
+(2 rows)
+
+Time: 0.139 ms
+=== PHASE 8: Force Extreme Conditions ===
+CREATE TABLE
+Time: 0.997 ms
+ALTER TABLE
+Time: 0.173 ms
+INSERT 0 1
+Time: 0.216 ms
+psql:test.sql:369: WARNING:  25P01: there is no transaction in progress
+LOCATION:  EndTransactionBlock, xact.c:4164
+COMMIT
+Time: 0.067 ms
+BEGIN
+Time: 0.057 ms
+UPDATE 1
+Time: 0.238 ms
+COMMIT
+Time: 0.060 ms
+psql:test.sql:377: INFO:  00000: vacuuming "postgres.public.force_pruning_test"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:377: INFO:  00000: finished vacuuming "postgres.public.force_pruning_test": index scans: 0
+pages: 0 removed, 1 remain, 1 scanned (100.00% of total), 0 eagerly scanned
+tuples: 1 removed, 1 remain, 0 are dead but not yet removable
+removable cutoff: 888, which was 0 XIDs old when operation ended
+new relfrozenxid: 887, which is 3 XIDs ahead of previous value
+frozen: 0 pages from table (0.00% of total) had 0 tuples frozen
+visibility map: 1 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (0.00% of total) had 0 dead item identifiers removed
+avg read rate: 0.000 MB/s, avg write rate: 260.417 MB/s
+buffer usage: 19 hits, 0 reads, 4 dirtied
+WAL usage: 6 records, 4 full page images, 33343 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:377: INFO:  00000: vacuuming "postgres.pg_toast.pg_toast_16561"
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:818
+psql:test.sql:377: INFO:  00000: finished vacuuming "postgres.pg_toast.pg_toast_16561": index scans: 0
+pages: 0 removed, 0 remain, 0 scanned (100.00% of total), 0 eagerly scanned
+tuples: 0 removed, 0 remain, 0 are dead but not yet removable
+removable cutoff: 888, which was 0 XIDs old when operation ended
+new relfrozenxid: 888, which is 4 XIDs ahead of previous value
+frozen: 0 pages from table (100.00% of total) had 0 tuples frozen
+visibility map: 0 pages set all-visible, 0 pages set all-frozen (0 were all-visible)
+index scan not needed: 0 pages from table (100.00% of total) had 0 dead item identifiers removed
+avg read rate: 124.008 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 25 hits, 1 reads, 0 dirtied
+WAL usage: 1 records, 0 full page images, 258 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  heap_vacuum_rel, vacuumlazy.c:1145
+psql:test.sql:377: INFO:  00000: analyzing "public.force_pruning_test"
+LOCATION:  do_analyze_rel, analyze.c:320
+psql:test.sql:377: INFO:  00000: "force_pruning_test": scanned 1 of 1 pages, containing 1 live rows and 0 dead rows; 1 rows in sample, 1 estimated total rows
+LOCATION:  acquire_sample_rows, analyze.c:1344
+psql:test.sql:377: INFO:  00000: finished analyzing table "postgres.public.force_pruning_test"
+avg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s
+buffer usage: 22 hits, 0 reads, 0 dirtied
+WAL usage: 4 records, 0 full page images, 406 bytes, 0 buffers full
+system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+LOCATION:  do_analyze_rel, analyze.c:841
+VACUUM
+Time: 0.471 ms
+INSERT 0 1
+Time: 0.273 ms
+--- After FORCE PRUNING Test ---
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |        1102 |           11 |           195 |       31056 |          4500 |           11 |                   574 |                    113 |                    397 |                6 |          1 |                   1.00 |                4.083
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |           121 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00 |                1.532
+(2 rows)
+
+Time: 0.146 ms
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |        1102 |             1.00 | INVALID_XACT_XID    |           574 |       52.09
+ UPDATE_FULL_PAGE   |          79 |             0.00 | NO_REMOVABLE_XIDS   |            57 |       72.15
+(2 rows)
+
+Time: 0.140 ms
+DROP TABLE
+Time: 0.573 ms
+=== PHASE 9: Final Comprehensive Analysis ===
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct 
+--------------------+-------------+--------------+---------------+-------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------
+ SCAN_OPPORTUNISTIC |        1149 |           11 |           195 |       31056 |           11 |                   574 |                    113 |                    444 |                6 |          1 |                   0.96
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00
+(2 rows)
+
+Time: 0.163 ms
+     report_type     |      context       | main_failure_reason | failure_count | failure_pct | success_rate_pct 
+---------------------+--------------------+---------------------+---------------+-------------+------------------
+ EXIT_REASON_SUMMARY | SCAN_OPPORTUNISTIC | INVALID_XACT_XID    |           574 |       49.96 |             0.96
+ EXIT_REASON_SUMMARY | UPDATE_FULL_PAGE   | NO_REMOVABLE_XIDS   |            57 |       72.15 |             0.00
+(2 rows)
+
+Time: 0.156 ms
+   report_type   |      context       | main_failure_reason |                       recommendation                       
+-----------------+--------------------+---------------------+------------------------------------------------------------
+ RECOMMENDATIONS | SCAN_OPPORTUNISTIC | INVALID_XACT_XID    | Check prune_xid setting and page header
+ RECOMMENDATIONS | UPDATE_FULL_PAGE   | NO_REMOVABLE_XIDS   | Need more transaction churn or longer waits for visibility
+(2 rows)
+
+Time: 0.209 ms
+ schemaname |       relname       | n_tup_ins | n_tup_upd | n_tup_hot_upd | n_dead_tup | hot_update_pct | table_size | heap_size 
+------------+---------------------+-----------+-----------+---------------+------------+----------------+------------+-----------
+ public     | ultimate_prune_test |         0 |         0 |             0 |          0 |              0 | 136 kB     | 64 kB
+(1 row)
+
+Time: 2.278 ms
+=== Test Complete ===
+ALTER SYSTEM
+Time: 0.132 ms
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+Time: 0.105 ms
+DROP TABLE
+Time: 0.928 ms

@@ -106,6 +106,9 @@ static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
 
+/* GUC variable */
+bool		enable_heap_prune_tracking = false;
+HeapPruneStats prune_stats_by_context[6] = {0};
 
 /*
  * Each tuple lock mode has a corresponding heavyweight lock, and one or two
@@ -574,7 +577,7 @@ heap_prepare_pagescan(TableScanDesc sscan)
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
 	 */
-	heap_page_prune_opt(scan->rs_base.rs_rd, buffer, 0);
+	heap_page_prune_opt(scan->rs_base.rs_rd, buffer, 0, PRUNE_CONTEXT_PREPARE_PAGESCAN);
 
 	/*
 	 * We must hold share lock on the buffer content while examining tuple
@@ -996,7 +999,7 @@ continue_page:
 			PageNeedsScanPruning(page, scan->rs_page_updates))
 		{
 			/* Attempt opportunistic pruning */
-			heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+			heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0, PRUNE_CONTEXT_SCAN_OPPORTUNISTIC);
 
 			/* Mark this block as pruned to avoid repeated attempts */
 			scan->rs_last_pruned_block = scan->rs_cblock;
@@ -1119,7 +1122,7 @@ continue_page:
 		scan->rs_cblock != scan->rs_last_pruned_block &&
 		PageNeedsScanPruning(BufferGetPage(scan->rs_cbuf), scan->rs_page_updates))
 	{
-		heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0);
+		heap_page_prune_opt(scan->rs_base.rs_rd, scan->rs_cbuf, 0, PRUNE_CONTEXT_SCAN_END);
 		scan->rs_last_pruned_block = scan->rs_cblock;
 	}
 
@@ -2300,7 +2303,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	/* Consider pruning the page if it's getting full */
 	if (PageIsFull(BufferGetPage(buffer)))
-		heap_page_prune_opt(relation, buffer, heaptup->t_len);
+		heap_page_prune_opt(relation, buffer, heaptup->t_len, PRUNE_CONTEXT_INSERT_SPACE_CHECK);
 
 	ReleaseBuffer(buffer);
 
@@ -2733,7 +2736,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 
 		/* Consider pruning the page if it's getting full */
 		if (PageIsFull(BufferGetPage(buffer)))
-			heap_page_prune_opt(relation, buffer, heaptuples[ndone]->t_len);
+			heap_page_prune_opt(relation, buffer, heaptuples[ndone]->t_len, PRUNE_CONTEXT_MULTI_INSERT);
 
 		ReleaseBuffer(buffer);
 
@@ -3899,7 +3902,7 @@ l2:
 
 	if (newtupsize > pagefree && PageHasPrunable(page))
 	{
-		heap_page_prune_opt(relation, buffer, newtupsize);
+		heap_page_prune_opt(relation, buffer, newtupsize, PRUNE_CONTEXT_UPDATE_FULL_PAGE);
 		pagefree = PageGetHeapFreeSpace(page);
 	}
 

@@ -32,6 +32,47 @@
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
+/* Heap pruning statistics */
+typedef enum HeapPruneContext
+{
+	PRUNE_CONTEXT_UPDATE_FULL_PAGE, /* Update on full page (new) */
+	PRUNE_CONTEXT_INSERT_SPACE_CHECK,	/* Insert with space check (new) */
+	PRUNE_CONTEXT_SCAN_OPPORTUNISTIC,	/* Scan-time opportunistic (new) */
+	PRUNE_CONTEXT_SCAN_END,		/* End of scan cleanup (new) */
+	PRUNE_CONTEXT_MULTI_INSERT, /* Multi-insert operation (new) */
+	PRUNE_CONTEXT_PREPARE_PAGESCAN	/* Prepare scan (pre-existing) */
+}			HeapPruneContext;
+
+typedef enum HeapPruneExitReason
+{
+	HEAP_PRUNE_EXIT_SUCCESS = 0,
+	HEAP_PRUNE_EXIT_RECOVERY_IN_PROGRESS,
+	HEAP_PRUNE_EXIT_INVALID_XACT_XID,
+	HEAP_PRUNE_EXIT_NO_REMOVABLE_XIDS,
+	HEAP_PRUNE_EXIT_LOCK_FAILED,
+	HEAP_PRUNE_EXIT_PAGE_NOT_PRUNABLE,
+	HEAP_PRUNE_EXIT_OTHER
+}			HeapPruneExitReason;
+
+typedef struct HeapPruneStats
+{
+	uint64		calls_total;	/* Total calls to heap_page_prune_opt */
+	uint64		pages_pruned;	/* Pages that had items pruned */
+	uint64		tuples_pruned;	/* Total tuples pruned */
+	uint64		space_freed;	/* Total space freed (bytes) */
+	uint64		time_spent_us;	/* Total time spent in microseconds */
+
+	/* Exit reason counters */
+	int64		exit_success;
+	int64		exit_recover_in_progress;
+	int64		exit_invalid_xact_xid;
+	int64		exit_no_removable_xids;
+	int64		exit_lock_failed;
+	int64		exit_page_not_prunable;
+	int64		exit_other;
+}			HeapPruneStats;
+extern HeapPruneStats prune_stats_by_context[6];
+
 
 /* "options" flag bits for heap_insert */
 #define HEAP_INSERT_SKIP_FSM	TABLE_INSERT_SKIP_FSM
@@ -372,7 +413,8 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;
-extern void heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len);
+extern void heap_page_prune_opt(Relation relation, Buffer buffer, Size tuple_len,
+								HeapPruneContext context);
 extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 									   struct GlobalVisState *vistest,
 									   int options,

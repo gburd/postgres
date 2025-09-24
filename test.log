@@ -1,0 +1,870 @@
+/******** QUERY *********/
+SET enable_heap_prune_tracking = on;
+/************************/
+
+SET
+/******** QUERY *********/
+SET log_min_messages = debug2;
+/************************/
+
+SET
+/******** QUERY *********/
+ALTER SYSTEM SET autovacuum = off;
+/************************/
+
+ALTER SYSTEM
+/******** QUERY *********/
+SELECT pg_reload_conf();
+/************************/
+
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+/******** QUERY *********/
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+/************************/
+
+CREATE EXTENSION
+/******** QUERY *********/
+DROP FUNCTION IF EXISTS capture_prune_stats();
+/************************/
+
+DROP FUNCTION
+/******** QUERY *********/
+DROP FUNCTION IF EXISTS analyze_exit_reasons();
+/************************/
+
+DROP FUNCTION
+/******** QUERY *********/
+CREATE OR REPLACE FUNCTION capture_prune_stats()
+RETURNS TABLE(
+    context text,
+    calls_total bigint,
+    pages_pruned bigint,
+    tuples_pruned bigint,
+    space_freed bigint,
+    time_spent_us bigint,
+    exit_success bigint,
+    exit_invalid_xact_xid bigint,
+    exit_no_removable_xids bigint,
+    exit_page_not_prunable bigint,
+    exit_lock_failed bigint,
+    exit_other bigint,
+    prune_success_rate_pct numeric,
+    avg_time_per_call_us numeric
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.context,
+        s.calls_total,
+        s.pages_pruned,
+        s.tuples_pruned,
+        s.space_freed,
+        s.time_spent_us,
+        s.exit_success,
+        s.exit_invalid_xact_xid,
+        s.exit_no_removable_xids,
+        s.exit_page_not_prunable,
+        s.exit_lock_failed,
+        s.exit_other,
+        CASE WHEN s.calls_total > 0
+             THEN round(100.0 * s.pages_pruned / s.calls_total, 2)
+             ELSE 0
+        END as prune_success_rate_pct,
+        CASE WHEN s.calls_total > 0
+             THEN round(s.time_spent_us::numeric / s.calls_total, 3)
+             ELSE 0
+        END as avg_time_per_call_us
+    FROM pg_stat_get_heap_prune_stats() AS s(
+        context text,
+        calls_total bigint,
+        pages_pruned bigint,
+        tuples_pruned bigint,
+        space_freed bigint,
+        time_spent_us bigint,
+        exit_success bigint,
+        exit_invalid_xact_xid bigint,
+        exit_no_removable_xids bigint,
+        exit_page_not_prunable bigint,
+        exit_lock_failed bigint,
+        exit_other bigint
+    )
+    ORDER BY s.calls_total DESC;
+END;
+$$ LANGUAGE plpgsql;
+/************************/
+
+CREATE FUNCTION
+/******** QUERY *********/
+CREATE OR REPLACE FUNCTION analyze_exit_reasons()
+RETURNS TABLE(
+    context text,
+    calls_total bigint,
+    success_rate_pct numeric,
+    main_failure_reason text,
+    failure_count bigint,
+    failure_pct numeric
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH exit_analysis AS (
+        SELECT
+            s.context as ctx,
+            s.calls_total as total_calls,
+            s.exit_success,
+            s.exit_invalid_xact_xid,
+            s.exit_no_removable_xids,
+            s.exit_page_not_prunable,
+            s.exit_lock_failed,
+            s.exit_other,
+            CASE WHEN s.calls_total > 0
+                 THEN round(100.0 * s.exit_success / s.calls_total, 2)
+                 ELSE 0
+            END as success_rate
+        FROM capture_prune_stats() s
+        WHERE s.calls_total > 0
+    ),
+    failure_reasons AS (
+        SELECT
+            ea.ctx,
+            ea.total_calls,
+            ea.success_rate,
+            CASE
+                WHEN ea.exit_invalid_xact_xid >= GREATEST(ea.exit_no_removable_xids, ea.exit_page_not_prunable, ea.exit_lock_failed, ea.exit_other)
+                THEN 'INVALID_XACT_XID'
+                WHEN ea.exit_no_removable_xids >= GREATEST(ea.exit_invalid_xact_xid, ea.exit_page_not_prunable, ea.exit_lock_failed, ea.exit_other)
+                THEN 'NO_REMOVABLE_XIDS'
+                WHEN ea.exit_page_not_prunable >= GREATEST(ea.exit_invalid_xact_xid, ea.exit_no_removable_xids, ea.exit_lock_failed, ea.exit_other)
+                THEN 'PAGE_NOT_PRUNABLE'
+                WHEN ea.exit_lock_failed >= GREATEST(ea.exit_invalid_xact_xid, ea.exit_no_removable_xids, ea.exit_page_not_prunable, ea.exit_other)
+                THEN 'LOCK_FAILED'
+                ELSE 'OTHER'
+            END as main_reason,
+            GREATEST(ea.exit_invalid_xact_xid, ea.exit_no_removable_xids, ea.exit_page_not_prunable, ea.exit_lock_failed, ea.exit_other) as max_failure_count
+        FROM exit_analysis ea
+    )
+    SELECT
+        fr.ctx,
+        fr.total_calls,
+        fr.success_rate,
+        fr.main_reason,
+        fr.max_failure_count,
+        CASE WHEN fr.total_calls > 0
+             THEN round(100.0 * fr.max_failure_count / fr.total_calls, 2)
+             ELSE 0
+        END as failure_percentage
+    FROM failure_reasons fr
+    ORDER BY fr.total_calls DESC;
+END;
+$$ LANGUAGE plpgsql;
+/************************/
+
+CREATE FUNCTION
+/******** QUERY *********/
+SELECT pg_stat_reset();
+/************************/
+
+ pg_stat_reset 
+---------------
+ 
+(1 row)
+
+/******** QUERY *********/
+CREATE TABLE ultimate_prune_test (
+    id serial PRIMARY KEY,
+    data text,
+    status varchar(20) DEFAULT 'active',
+    counter bigint DEFAULT 0,
+    -- Make tuples absolutely massive - ~6KB each
+    mega_padding1 text DEFAULT repeat('AAAAAAAA', 750),  -- 6KB
+    mega_padding2 text DEFAULT repeat('BBBBBBBB', 750),  -- 6KB
+    mega_padding3 text DEFAULT repeat('CCCCCCCC', 750)   -- 6KB
+);
+/************************/
+
+CREATE TABLE
+/******** QUERY *********/
+ALTER TABLE ultimate_prune_test SET (autovacuum_enabled = false);
+/************************/
+
+ALTER TABLE
+/******** QUERY *********/
+CREATE INDEX idx_ultimate_status ON ultimate_prune_test(status);
+/************************/
+
+CREATE INDEX
+/******** QUERY *********/
+INSERT INTO ultimate_prune_test (data, mega_padding1, mega_padding2, mega_padding3)
+SELECT
+    'initial_' || i,
+    repeat('INIT1_' || i, 750),
+    repeat('INIT2_' || i, 750),
+    repeat('INIT3_' || i, 750)
+FROM generate_series(1, 20) i;
+/************************/
+
+INSERT 0 20
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+SELECT 'BASELINE' as phase, * FROM capture_prune_stats();
+/************************/
+
+  phase   |      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+----------+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ BASELINE | SCAN_OPPORTUNISTIC |         506 |            4 |            79 |       15472 |          3906 |            4 |                   364 |                     53 |                     85 |                0 |          0 |                   0.79 |                7.719
+ BASELINE | UPDATE_FULL_PAGE   |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | INSERT_SPACE_CHECK |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | SCAN_END           |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+ BASELINE | MULTI_INSERT       |           0 |            0 |             0 |           0 |             0 |            0 |                     0 |                      0 |                      0 |                0 |          0 |                      0 |                    0
+(5 rows)
+
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'dead_v1_' || id,
+    counter = counter + 1000,
+    mega_padding1 = repeat('DEAD1_V1_' || id, 750),
+    mega_padding2 = repeat('DEAD2_V1_' || id, 750),
+    mega_padding3 = repeat('DEAD3_V1_' || id, 750)
+WHERE id BETWEEN 1 AND 10;
+/************************/
+
+UPDATE 10
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         525 |            4 |            79 |       15472 |          3943 |            4 |                   376 |                     53 |                     86 |                6 |          0 |                   0.76 |                7.510
+ UPDATE_FULL_PAGE   |          10 |            0 |             0 |           0 |            15 |            0 |                     0 |                      0 |                      0 |               10 |          0 |                   0.00 |                1.500
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         531 |             0.75 | INVALID_XACT_XID    |           380 |       71.56
+ UPDATE_FULL_PAGE   |          10 |             0.00 | LOCK_FAILED         |            10 |      100.00
+(2 rows)
+
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'dead_v2_' || id,
+    counter = counter + 2000,
+    mega_padding1 = repeat('DEAD1_V2_' || id, 750),
+    mega_padding2 = repeat('DEAD2_V2_' || id, 750),
+    mega_padding3 = repeat('DEAD3_V2_' || id, 750)
+WHERE id BETWEEN 11 AND 20;
+/************************/
+
+UPDATE 10
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         535 |            5 |            89 |       18456 |          4075 |            5 |                   380 |                     56 |                     88 |                6 |          0 |                   0.93 |                7.617
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         535 |             0.93 | INVALID_XACT_XID    |           380 |       71.03
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+/******** QUERY *********/
+VACUUM (ANALYZE, VERBOSE) ultimate_prune_test;
+/************************/
+
+VACUUM
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         636 |            5 |            89 |       18456 |          4147 |            5 |                   440 |                     56 |                    129 |                6 |          0 |                   0.79 |                6.520
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         636 |             0.79 | INVALID_XACT_XID    |           440 |       69.18
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+/******** QUERY *********/
+CREATE TABLE insert_mega_test (
+    id serial,
+    huge_data text DEFAULT repeat('XXXXXXXX', 1500)  -- 12KB per tuple
+);
+/************************/
+
+CREATE TABLE
+/******** QUERY *********/
+ALTER TABLE insert_mega_test SET (autovacuum_enabled = false);
+/************************/
+
+ALTER TABLE
+/******** QUERY *********/
+INSERT INTO insert_mega_test (huge_data)
+VALUES (repeat('HUGE_INITIAL', 1500));
+/************************/
+
+INSERT 0 1
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE insert_mega_test SET huge_data = repeat('DEAD_HUGE', 1500);
+/************************/
+
+UPDATE 1
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+VACUUM (ANALYZE, VERBOSE) insert_mega_test;
+/************************/
+
+VACUUM
+/******** QUERY *********/
+INSERT INTO insert_mega_test (huge_data)
+VALUES (repeat('TRIGGER_INSERT_PRUNING', 1500));
+/************************/
+
+INSERT 0 1
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         734 |            8 |           144 |       22176 |          4217 |            8 |                   450 |                     72 |                    198 |                6 |          0 |                   1.09 |                5.745
+ UPDATE_FULL_PAGE   |          20 |            0 |             0 |           0 |            29 |            0 |                     1 |                      9 |                      0 |               10 |          0 |                   0.00 |                1.450
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         734 |             1.09 | INVALID_XACT_XID    |           450 |       61.31
+ UPDATE_FULL_PAGE   |          20 |             0.00 | LOCK_FAILED         |            10 |       50.00
+(2 rows)
+
+/******** QUERY *********/
+DROP TABLE insert_mega_test;
+/************************/
+
+DROP TABLE
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'more_dead_' || id,
+    counter = counter + 10000,
+    mega_padding1 = repeat('MOREDEAD1_' || id, 800),
+    mega_padding2 = repeat('MOREDEAD2_' || id, 800),
+    mega_padding3 = repeat('MOREDEAD3_' || id, 800)
+WHERE id BETWEEN 1 AND 10;
+/************************/
+
+UPDATE 10
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+VACUUM (ANALYZE, VERBOSE) ultimate_prune_test;
+/************************/
+
+VACUUM
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'GIGANTIC_UPDATE_' || repeat('X', 500) || '_' || id,
+    counter = counter + 100000,
+    mega_padding1 = repeat('GIGANTIC1_' || id, 1000),
+    mega_padding2 = repeat('GIGANTIC2_' || id, 1000),
+    mega_padding3 = repeat('GIGANTIC3_' || id, 1000)
+WHERE id BETWEEN 1 AND 5;
+/************************/
+
+UPDATE 5
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         824 |            9 |           162 |       24640 |          4251 |            9 |                   461 |                     77 |                    271 |                6 |          0 |                   1.09 |                5.159
+ UPDATE_FULL_PAGE   |          28 |            0 |             0 |           0 |            43 |            0 |                     3 |                     15 |                      0 |               10 |          0 |                   0.00 |                1.536
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         824 |             1.09 | INVALID_XACT_XID    |           461 |       55.95
+ UPDATE_FULL_PAGE   |          28 |             0.00 | NO_REMOVABLE_XIDS   |            15 |       53.57
+(2 rows)
+
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'scan_dead_' || id,
+    counter = counter + 1000000,
+    mega_padding1 = repeat('SCANDEAD1_' || id, 900),
+    mega_padding2 = repeat('SCANDEAD2_' || id, 900),
+    mega_padding3 = repeat('SCANDEAD3_' || id, 900)
+WHERE id BETWEEN 11 AND 20;
+/************************/
+
+UPDATE 10
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+VACUUM (ANALYZE, VERBOSE) ultimate_prune_test;
+/************************/
+
+VACUUM
+/******** QUERY *********/
+SELECT count(*) FROM ultimate_prune_test WHERE data LIKE 'scan_dead_%';
+/************************/
+
+ count 
+-------
+    10
+(1 row)
+
+/******** QUERY *********/
+SELECT count(*) FROM ultimate_prune_test WHERE counter > 500000;
+/************************/
+
+ count 
+-------
+    10
+(1 row)
+
+/******** QUERY *********/
+SELECT avg(length(mega_padding1)) FROM ultimate_prune_test;
+/************************/
+
+          avg           
+------------------------
+ 10390.0000000000000000
+(1 row)
+
+/******** QUERY *********/
+SET enable_indexscan = off;
+/************************/
+
+SET
+/******** QUERY *********/
+SET enable_bitmapscan = off;
+/************************/
+
+SET
+/******** QUERY *********/
+SELECT count(*) FROM ultimate_prune_test WHERE status = 'active';
+/************************/
+
+ count 
+-------
+    20
+(1 row)
+
+/******** QUERY *********/
+SELECT count(*) FROM ultimate_prune_test WHERE length(data) > 50;
+/************************/
+
+ count 
+-------
+     5
+(1 row)
+
+/******** QUERY *********/
+RESET enable_indexscan;
+/************************/
+
+RESET
+/******** QUERY *********/
+RESET enable_bitmapscan;
+/************************/
+
+RESET
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         962 |           10 |           194 |       30552 |          4432 |           10 |                   567 |                     81 |                    298 |                6 |          0 |                   1.04 |                4.607
+ UPDATE_FULL_PAGE   |          39 |            0 |             0 |           0 |            71 |            0 |                     5 |                     23 |                      0 |               11 |          0 |                   0.00 |                1.821
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         962 |             1.04 | INVALID_XACT_XID    |           567 |       58.94
+ UPDATE_FULL_PAGE   |          39 |             0.00 | NO_REMOVABLE_XIDS   |            23 |       58.97
+(2 rows)
+
+/******** QUERY *********/
+INSERT INTO ultimate_prune_test (data, mega_padding1, mega_padding2, mega_padding3)
+SELECT
+    'bulk_mega_' || i,
+    repeat('BULKMEGA1_' || i, 900),
+    repeat('BULKMEGA2_' || i, 900),
+    repeat('BULKMEGA3_' || i, 900)
+FROM generate_series(21, 40) i;
+/************************/
+
+INSERT 0 20
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         962 |           10 |           194 |       30552 |          4432 |           10 |                   567 |                     81 |                    298 |                6 |          0 |                   1.04 |                4.607
+ UPDATE_FULL_PAGE   |          39 |            0 |             0 |           0 |            71 |            0 |                     5 |                     23 |                      0 |               11 |          0 |                   0.00 |                1.821
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         962 |             1.04 | INVALID_XACT_XID    |           567 |       58.94
+ UPDATE_FULL_PAGE   |          39 |             0.00 | NO_REMOVABLE_XIDS   |            23 |       58.97
+(2 rows)
+
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'stress1_' || id,
+    counter = counter + 10000000,
+    mega_padding1 = repeat('STRESS1A_' || id, 1200),
+    mega_padding2 = repeat('STRESS1B_' || id, 1200),
+    mega_padding3 = repeat('STRESS1C_' || id, 1200)
+WHERE id BETWEEN 1 AND 20;
+/************************/
+
+UPDATE 20
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE ultimate_prune_test SET
+    data = 'stress2_' || id,
+    counter = counter + 20000000,
+    mega_padding1 = repeat('STRESS2A_' || id, 1200),
+    mega_padding2 = repeat('STRESS2B_' || id, 1200),
+    mega_padding3 = repeat('STRESS2C_' || id, 1200)
+WHERE id BETWEEN 21 AND 40;
+/************************/
+
+UPDATE 20
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+INSERT INTO ultimate_prune_test (data, mega_padding1, mega_padding2, mega_padding3)
+SELECT
+    'stress_insert_' || i,
+    repeat('STRESSINS1_' || i, 1200),
+    repeat('STRESSINS2_' || i, 1200),
+    repeat('STRESSINS3_' || i, 1200)
+FROM generate_series(41, 60) i;
+/************************/
+
+INSERT 0 20
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |         999 |           11 |           195 |       31056 |          4490 |           11 |                   569 |                    113 |                    299 |                6 |          1 |                   1.10 |                4.494
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |           121 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00 |                1.532
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |         999 |             1.10 | INVALID_XACT_XID    |           569 |       56.96
+ UPDATE_FULL_PAGE   |          79 |             0.00 | NO_REMOVABLE_XIDS   |            57 |       72.15
+(2 rows)
+
+/******** QUERY *********/
+CREATE TABLE force_pruning_test (
+    id serial,
+    data text DEFAULT repeat('Z', 8000)  -- 8KB per tuple, 1 per page
+);
+/************************/
+
+CREATE TABLE
+/******** QUERY *********/
+ALTER TABLE force_pruning_test SET (autovacuum_enabled = false);
+/************************/
+
+ALTER TABLE
+/******** QUERY *********/
+INSERT INTO force_pruning_test (data) VALUES (repeat('FIRST', 2000));
+/************************/
+
+INSERT 0 1
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+BEGIN;
+/************************/
+
+BEGIN
+/******** QUERY *********/
+UPDATE force_pruning_test SET data = repeat('DEAD_FIRST', 2000) WHERE id = 1;
+/************************/
+
+UPDATE 1
+/******** QUERY *********/
+COMMIT;
+/************************/
+
+COMMIT
+/******** QUERY *********/
+VACUUM (ANALYZE, VERBOSE) force_pruning_test;
+/************************/
+
+VACUUM
+/******** QUERY *********/
+INSERT INTO force_pruning_test (data) VALUES (repeat('MUST_TRIGGER_PRUNING', 2000));
+/************************/
+
+INSERT 0 1
+/******** QUERY *********/
+SELECT * FROM capture_prune_stats() WHERE calls_total > 0;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | time_spent_us | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct | avg_time_per_call_us 
+--------------------+-------------+--------------+---------------+-------------+---------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------+----------------------
+ SCAN_OPPORTUNISTIC |        1102 |           11 |           195 |       31056 |          4500 |           11 |                   574 |                    113 |                    397 |                6 |          1 |                   1.00 |                4.083
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |           121 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00 |                1.532
+(2 rows)
+
+/******** QUERY *********/
+SELECT * FROM analyze_exit_reasons();
+/************************/
+
+      context       | calls_total | success_rate_pct | main_failure_reason | failure_count | failure_pct 
+--------------------+-------------+------------------+---------------------+---------------+-------------
+ SCAN_OPPORTUNISTIC |        1102 |             1.00 | INVALID_XACT_XID    |           574 |       52.09
+ UPDATE_FULL_PAGE   |          79 |             0.00 | NO_REMOVABLE_XIDS   |            57 |       72.15
+(2 rows)
+
+/******** QUERY *********/
+DROP TABLE force_pruning_test;
+/************************/
+
+DROP TABLE
+/******** QUERY *********/
+SELECT
+    context,
+    calls_total,
+    pages_pruned,
+    tuples_pruned,
+    space_freed,
+    exit_success,
+    exit_invalid_xact_xid,
+    exit_no_removable_xids,
+    exit_page_not_prunable,
+    exit_lock_failed,
+    exit_other,
+    prune_success_rate_pct
+FROM capture_prune_stats()
+WHERE calls_total > 0
+ORDER BY calls_total DESC;
+/************************/
+
+      context       | calls_total | pages_pruned | tuples_pruned | space_freed | exit_success | exit_invalid_xact_xid | exit_no_removable_xids | exit_page_not_prunable | exit_lock_failed | exit_other | prune_success_rate_pct 
+--------------------+-------------+--------------+---------------+-------------+--------------+-----------------------+------------------------+------------------------+------------------+------------+------------------------
+ SCAN_OPPORTUNISTIC |        1149 |           11 |           195 |       31056 |           11 |                   574 |                    113 |                    444 |                6 |          1 |                   0.96
+ UPDATE_FULL_PAGE   |          79 |            0 |             0 |           0 |            0 |                    11 |                     57 |                      0 |               11 |          0 |                   0.00
+(2 rows)
+
+/******** QUERY *********/
+SELECT
+    'EXIT_REASON_SUMMARY' as report_type,
+    context,
+    main_failure_reason,
+    failure_count,
+    failure_pct,
+    success_rate_pct
+FROM analyze_exit_reasons()
+ORDER BY calls_total DESC;
+/************************/
+
+     report_type     |      context       | main_failure_reason | failure_count | failure_pct | success_rate_pct 
+---------------------+--------------------+---------------------+---------------+-------------+------------------
+ EXIT_REASON_SUMMARY | SCAN_OPPORTUNISTIC | INVALID_XACT_XID    |           574 |       49.96 |             0.96
+ EXIT_REASON_SUMMARY | UPDATE_FULL_PAGE   | NO_REMOVABLE_XIDS   |            57 |       72.15 |             0.00
+(2 rows)
+
+/******** QUERY *********/
+WITH recommendations AS (
+    SELECT
+        context,
+        main_failure_reason,
+        CASE main_failure_reason
+            WHEN 'INVALID_XACT_XID' THEN 'Check prune_xid setting and page header'
+            WHEN 'NO_REMOVABLE_XIDS' THEN 'Need more transaction churn or longer waits for visibility'
+            WHEN 'PAGE_NOT_PRUNABLE' THEN 'Check PageHasPrunable() logic and page conditions'
+            WHEN 'LOCK_FAILED' THEN 'Increase lock acquisition attempts or use different strategy'
+            ELSE 'Investigate other failure causes'
+        END as recommendation
+    FROM analyze_exit_reasons()
+    WHERE calls_total > 0
+)
+SELECT
+    'RECOMMENDATIONS' as report_type,
+    context,
+    main_failure_reason,
+    recommendation
+FROM recommendations;
+/************************/
+
+   report_type   |      context       | main_failure_reason |                       recommendation                       
+-----------------+--------------------+---------------------+------------------------------------------------------------
+ RECOMMENDATIONS | SCAN_OPPORTUNISTIC | INVALID_XACT_XID    | Check prune_xid setting and page header
+ RECOMMENDATIONS | UPDATE_FULL_PAGE   | NO_REMOVABLE_XIDS   | Need more transaction churn or longer waits for visibility
+(2 rows)
+
+/******** QUERY *********/
+SELECT
+    schemaname, relname, n_tup_ins, n_tup_upd, n_tup_hot_upd, n_dead_tup,
+    CASE WHEN n_tup_upd > 0 THEN round(100.0 * n_tup_hot_upd / n_tup_upd, 2) ELSE 0 END as hot_update_pct,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||relname)) as table_size,
+    pg_size_pretty(pg_relation_size(schemaname||'.'||relname)) as heap_size
+FROM pg_stat_user_tables
+WHERE relname = 'ultimate_prune_test';
+/************************/
+
+ schemaname |       relname       | n_tup_ins | n_tup_upd | n_tup_hot_upd | n_dead_tup | hot_update_pct | table_size | heap_size 
+------------+---------------------+-----------+-----------+---------------+------------+----------------+------------+-----------
+ public     | ultimate_prune_test |         0 |         0 |             0 |          0 |              0 | 136 kB     | 64 kB
+(1 row)
+
+/******** QUERY *********/
+ALTER SYSTEM SET autovacuum = on;
+/************************/
+
+ALTER SYSTEM
+/******** QUERY *********/
+SELECT pg_reload_conf();
+/************************/
+
+ pg_reload_conf 
+----------------
+ t
+(1 row)
+
+/******** QUERY *********/
+DROP TABLE ultimate_prune_test;
+/************************/
+
+DROP TABLE

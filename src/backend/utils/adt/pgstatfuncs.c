@@ -31,6 +31,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
+#include "access/heapam.h"
 
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
 
@@ -2162,6 +2163,58 @@ pg_stat_get_replication_slot(PG_FUNCTION_ARGS)
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/*
+ * pg_stat_get_heap_prune_stats - return heap pruning statistics
+ */
+Datum
+pg_stat_get_heap_prune_stats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[12];
+	bool		nulls[12];
+	HeapTuple	tuple;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	static const char *context_names[] = {
+		"UPDATE_FULL_PAGE",
+		"INSERT_SPACE_CHECK",
+		"SCAN_OPPORTUNISTIC",
+		"SCAN_END",
+		"MULTI_INSERT",
+		"PREPARE_PAGESCAN",
+	};
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
+
+	for (int i = 0; i < 5; i++)
+	{
+		memset(nulls, 0, sizeof(nulls));
+
+
+		values[0] = CStringGetTextDatum(context_names[i]);
+		values[1] = Int64GetDatum(prune_stats_by_context[i].calls_total);
+		values[2] = Int64GetDatum(prune_stats_by_context[i].pages_pruned);
+		values[3] = Int64GetDatum(prune_stats_by_context[i].tuples_pruned);
+		values[4] = Int64GetDatum(prune_stats_by_context[i].space_freed);
+		values[5] = Int64GetDatum(prune_stats_by_context[i].time_spent_us);
+		values[6] = Int64GetDatum(prune_stats_by_context[i].exit_success);
+		values[7] = Int64GetDatum(prune_stats_by_context[i].exit_invalid_xact_xid);
+		values[8] = Int64GetDatum(prune_stats_by_context[i].exit_no_removable_xids);
+		values[9] = Int64GetDatum(prune_stats_by_context[i].exit_page_not_prunable);
+		values[10] = Int64GetDatum(prune_stats_by_context[i].exit_lock_failed);
+		values[11] = Int64GetDatum(prune_stats_by_context[i].exit_other);
+
+		tuple = heap_form_tuple(tupdesc, values, nulls);
+		tuplestore_puttuple(rsinfo->setResult, tuple);
+	}
+
+	return (Datum) 0;
 }
 
 /*

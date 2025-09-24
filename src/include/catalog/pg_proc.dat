@@ -12588,4 +12588,9 @@
   proargnames => '{pid,io_id,io_generation,state,operation,off,length,target,handle_data_len,raw_result,result,target_desc,f_sync,f_localmem,f_buffered}',
   prosrc => 'pg_get_aios' },
 
+{ oid => '9999', descr => 'statistics for heap pruning operations',
+  proname => 'pg_stat_get_heap_prune_stats', prorows => '5', proisstrict => 'f',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  prosrc => 'pg_stat_get_heap_prune_stats' },
 ]

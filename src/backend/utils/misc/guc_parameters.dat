@@ -3475,4 +3475,10 @@
   assign_hook => 'assign_io_method',
 },
 
+{ name => 'enable_heap_prune_tracking', type => 'bool', context => 'PGC_USERSET', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables tracking of heap pruning statistics.',
+  variable => 'enable_heap_prune_tracking',
+  boot_val => 'true',
+},
+
 ]
