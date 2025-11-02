@@ -347,7 +347,7 @@ CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tupl
 		close_indexes = true;
 	}
 
-	simple_heap_update(heapRel, otid, tuple, &updateIndexes);
+	simple_heap_update(heapRel, otid, tuple, updated, &updateIndexes);
 
 	CatalogIndexInsert(indstate, tuple, updateIndexes);
 

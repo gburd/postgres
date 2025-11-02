@@ -364,11 +364,13 @@ extern TM_Result heap_delete(Relation relation, const ItemPointerData *tid,
 							 TM_FailureData *tmfd, bool changingPart);
 extern void heap_finish_speculative(Relation relation, const ItemPointerData *tid);
 extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid);
-extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
-							 HeapTuple newtup,
-							 CommandId cid, Snapshot crosscheck, bool wait,
-							 TM_FailureData *tmfd, LockTupleMode *lockmode,
-							 TU_UpdateIndexes *update_indexes);
+extern TM_Result heap_update(Relation relation, HeapTupleData *oldtup,
+							 HeapTuple newtup, CommandId cid, Snapshot crosscheck, bool wait,
+							 TM_FailureData *tmfd, LockTupleMode *lockmode, Buffer buffer,
+							 Page page, BlockNumber block, ItemId lp, Bitmapset *hot_attrs,
+							 Bitmapset *sum_attrs, Bitmapset *pk_attrs, Bitmapset *rid_attrs,
+							 Bitmapset *mix_attrs, Buffer *vmbuffer,
+							 bool rep_id_key_required, TU_UpdateIndexes *update_indexes);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -403,7 +405,8 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
 extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, TU_UpdateIndexes *update_indexes);
+							   HeapTuple tup, const Bitmapset *updated,
+							   TU_UpdateIndexes *update_indexes);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -429,6 +432,18 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *redirected, int nredirected,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused);
+
+/* in heap/heapam.c */
+extern Bitmapset *HeapDetermineColumnsInfo(Relation relation,
+										   Bitmapset *interesting_cols,
+										   Bitmapset *external_cols,
+										   HeapTuple oldtup, HeapTuple newtup,
+										   bool *has_external);
+#ifdef USE_ASSERT_CHECKING
+extern void check_lock_if_inplace_updateable_rel(Relation relation,
+												 const ItemPointerData *otid,
+												 HeapTuple newtup);
+#endif
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,

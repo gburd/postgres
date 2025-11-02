@@ -44,6 +44,7 @@
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "utils/injection_point.h"
 #include "utils/rel.h"
 
 static void reform_and_rewrite_tuple(HeapTuple tuple,
@@ -312,23 +313,133 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 	return heap_delete(relation, tid, cid, crosscheck, wait, tmfd, changingPart);
 }
 
-
 static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd,
 					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
+	bool		rep_id_key_required = false;
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
+	HeapTupleData oldtup;
+	Buffer		buffer;
+	Buffer		vmbuffer = InvalidBuffer;
+	Page		page;
+	BlockNumber block;
+	ItemId		lp;
+	Bitmapset  *hot_attrs,
+			   *sum_attrs,
+			   *pk_attrs,
+			   *rid_attrs,
+			   *mix_attrs,
+			   *idx_attrs;
 	TM_Result	result;
+
+	Assert(ItemPointerIsValid(otid));
+
+	/* Cheap, simplistic check that the tuple matches the rel's rowtype. */
+	Assert(HeapTupleHeaderGetNatts(tuple->t_data) <=
+		   RelationGetNumberOfAttributes(relation));
+
+	/*
+	 * Forbid this during a parallel operation, lest it allocate a combo CID.
+	 * Other workers might need that combo CID for visibility checks, and we
+	 * have no provision for broadcasting it to them.
+	 */
+	if (IsInParallelMode())
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+				 errmsg("cannot update tuples during a parallel operation")));
+
+#ifdef USE_ASSERT_CHECKING
+	check_lock_if_inplace_updateable_rel(relation, otid, tuple);
+#endif
+
+	/*
+	 * Fetch the list of attributes to be checked for various operations.
+	 *
+	 * For HOT considerations, this is wasted effort if we fail to update or
+	 * have to put the new tuple on a different page.  But we must compute the
+	 * list before obtaining buffer lock --- in the worst case, if we are
+	 * doing an update on one of the relevant system catalogs, we could
+	 * deadlock if we try to fetch the list later.  In any case, the relcache
+	 * caches the data so this is usually pretty cheap.
+	 *
+	 * We also need columns used by the replica identity and columns that are
+	 * considered the "key" of rows in the table.
+	 *
+	 * Note that we get copies of each bitmap, so we need not worry about
+	 * relcache flush happening midway through.
+	 */
+	hot_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
+	sum_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_SUMMARIZED);
+	pk_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
+	rid_attrs = RelationGetIndexAttrBitmap(relation,
+										   INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+	idx_attrs = bms_copy(hot_attrs);
+	idx_attrs = bms_add_members(idx_attrs, sum_attrs);
+	idx_attrs = bms_add_members(idx_attrs, pk_attrs);
+	idx_attrs = bms_add_members(idx_attrs, rid_attrs);
+
+	block = ItemPointerGetBlockNumber(otid);
+	INJECTION_POINT("heap_update-before-pin", NULL);
+	buffer = ReadBuffer(relation, block);
+	page = BufferGetPage(buffer);
+
+	/*
+	 * Before locking the buffer, pin the visibility map page if it appears to
+	 * be necessary.  Since we haven't got the lock yet, someone else might be
+	 * in the middle of changing this, so we'll need to recheck after we have
+	 * the lock.
+	 */
+	if (PageIsAllVisible(page))
+		visibilitymap_pin(relation, block, &vmbuffer);
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(otid));
+
+	Assert(ItemIdIsNormal(lp));
+
+	/*
+	 * Partially construct the oldtup for HeapDetermineColumnsInfo to work and
+	 * then pass that on to heap_update.
+	 */
+	oldtup.t_tableOid = RelationGetRelid(relation);
+	oldtup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+	oldtup.t_len = ItemIdGetLength(lp);
+	oldtup.t_self = *otid;
+
+	mix_attrs = HeapDetermineColumnsInfo(relation, idx_attrs, rid_attrs,
+										 &oldtup, tuple, &rep_id_key_required);
+
+	/*
+	 * We'll need to WAL log the replica identity attributes if either they
+	 * overlap with the modified indexed attributes or, as we've checked for
+	 * just now in HeapDetermineColumnsInfo, they were unmodified external
+	 * indexed attributes.
+	 */
+	rep_id_key_required = rep_id_key_required || bms_overlap(mix_attrs, rid_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
 	tuple->t_tableOid = slot->tts_tableOid;
 
-	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, lockmode, update_indexes);
+	result = heap_update(relation, &oldtup, tuple, cid, crosscheck, wait, tmfd, lockmode,
+						 buffer, page, block, lp, hot_attrs, sum_attrs, pk_attrs,
+						 rid_attrs, mix_attrs, &vmbuffer, rep_id_key_required, update_indexes);
+
+	bms_free(hot_attrs);
+	bms_free(sum_attrs);
+	bms_free(pk_attrs);
+	bms_free(rid_attrs);
+	bms_free(mix_attrs);
+	bms_free(idx_attrs);
+
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
