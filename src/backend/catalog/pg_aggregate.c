@@ -79,9 +79,6 @@ AggregateCreate(const char *aggName,
 	Relation	aggdesc;
 	HeapTuple	tup;
 	HeapTuple	oldtup;
-	bool		nulls[Natts_pg_aggregate];
-	Datum		values[Natts_pg_aggregate];
-	bool		replaces[Natts_pg_aggregate];
 	Form_pg_proc proc;
 	Oid			transfn;
 	Oid			finalfn = InvalidOid;	/* can be omitted */
@@ -100,13 +97,13 @@ AggregateCreate(const char *aggName,
 	int			nargs_transfn;
 	int			nargs_finalfn;
 	Oid			procOid;
-	TupleDesc	tupDesc;
 	char	   *detailmsg;
-	int			i;
 	ObjectAddress myself,
 				referenced;
 	ObjectAddresses *addrs;
 	AclResult	aclresult;
+
+	CatalogUpdateValuesContext(pg_aggregate, ctx);
 
 	/* sanity checks (caller should have caught these) */
 	if (!aggName)
@@ -584,7 +581,7 @@ AggregateCreate(const char *aggName,
 	/*
 	 * permission checks on used types
 	 */
-	for (i = 0; i < numArgs; i++)
+	for (int i = 0; i < numArgs; i++)
 	{
 		aclresult = object_aclcheck(TypeRelationId, aggArgTypes[i], GetUserId(), ACL_USAGE);
 		if (aclresult != ACLCHECK_OK)
@@ -648,43 +645,36 @@ AggregateCreate(const char *aggName,
 	 * Okay to create the pg_aggregate entry.
 	 */
 	aggdesc = table_open(AggregateRelationId, RowExclusiveLock);
-	tupDesc = aggdesc->rd_att;
 
 	/* initialize nulls and values */
-	for (i = 0; i < Natts_pg_aggregate; i++)
-	{
-		nulls[i] = false;
-		values[i] = (Datum) 0;
-		replaces[i] = true;
-	}
-	values[Anum_pg_aggregate_aggfnoid - 1] = ObjectIdGetDatum(procOid);
-	values[Anum_pg_aggregate_aggkind - 1] = CharGetDatum(aggKind);
-	values[Anum_pg_aggregate_aggnumdirectargs - 1] = Int16GetDatum(numDirectArgs);
-	values[Anum_pg_aggregate_aggtransfn - 1] = ObjectIdGetDatum(transfn);
-	values[Anum_pg_aggregate_aggfinalfn - 1] = ObjectIdGetDatum(finalfn);
-	values[Anum_pg_aggregate_aggcombinefn - 1] = ObjectIdGetDatum(combinefn);
-	values[Anum_pg_aggregate_aggserialfn - 1] = ObjectIdGetDatum(serialfn);
-	values[Anum_pg_aggregate_aggdeserialfn - 1] = ObjectIdGetDatum(deserialfn);
-	values[Anum_pg_aggregate_aggmtransfn - 1] = ObjectIdGetDatum(mtransfn);
-	values[Anum_pg_aggregate_aggminvtransfn - 1] = ObjectIdGetDatum(minvtransfn);
-	values[Anum_pg_aggregate_aggmfinalfn - 1] = ObjectIdGetDatum(mfinalfn);
-	values[Anum_pg_aggregate_aggfinalextra - 1] = BoolGetDatum(finalfnExtraArgs);
-	values[Anum_pg_aggregate_aggmfinalextra - 1] = BoolGetDatum(mfinalfnExtraArgs);
-	values[Anum_pg_aggregate_aggfinalmodify - 1] = CharGetDatum(finalfnModify);
-	values[Anum_pg_aggregate_aggmfinalmodify - 1] = CharGetDatum(mfinalfnModify);
-	values[Anum_pg_aggregate_aggsortop - 1] = ObjectIdGetDatum(sortop);
-	values[Anum_pg_aggregate_aggtranstype - 1] = ObjectIdGetDatum(aggTransType);
-	values[Anum_pg_aggregate_aggtransspace - 1] = Int32GetDatum(aggTransSpace);
-	values[Anum_pg_aggregate_aggmtranstype - 1] = ObjectIdGetDatum(aggmTransType);
-	values[Anum_pg_aggregate_aggmtransspace - 1] = Int32GetDatum(aggmTransSpace);
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggfnoid, ObjectIdGetDatum(procOid));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggkind, CharGetDatum(aggKind));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggnumdirectargs, Int16GetDatum(numDirectArgs));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggtransfn, ObjectIdGetDatum(transfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggfinalfn, ObjectIdGetDatum(finalfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggcombinefn, ObjectIdGetDatum(combinefn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggserialfn, ObjectIdGetDatum(serialfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggdeserialfn, ObjectIdGetDatum(deserialfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmtransfn, ObjectIdGetDatum(mtransfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggminvtransfn, ObjectIdGetDatum(minvtransfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmfinalfn, ObjectIdGetDatum(mfinalfn));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggfinalextra, BoolGetDatum(finalfnExtraArgs));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmfinalextra, BoolGetDatum(mfinalfnExtraArgs));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggfinalmodify, CharGetDatum(finalfnModify));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmfinalmodify, CharGetDatum(mfinalfnModify));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggsortop, ObjectIdGetDatum(sortop));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggtranstype, ObjectIdGetDatum(aggTransType));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggtransspace, Int32GetDatum(aggTransSpace));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmtranstype, ObjectIdGetDatum(aggmTransType));
+	CatalogTupleUpdateValue(ctx, pg_aggregate, aggmtransspace, Int32GetDatum(aggmTransSpace));
 	if (agginitval)
-		values[Anum_pg_aggregate_agginitval - 1] = CStringGetTextDatum(agginitval);
+		CatalogTupleUpdateValue(ctx, pg_aggregate, agginitval, CStringGetTextDatum(agginitval));
 	else
-		nulls[Anum_pg_aggregate_agginitval - 1] = true;
+		CatalogTupleUpdateValueNull(ctx, pg_aggregate, agginitval);
 	if (aggminitval)
-		values[Anum_pg_aggregate_aggminitval - 1] = CStringGetTextDatum(aggminitval);
+		CatalogTupleUpdateValue(ctx, pg_aggregate, aggminitval, CStringGetTextDatum(aggminitval));
 	else
-		nulls[Anum_pg_aggregate_aggminitval - 1] = true;
+		CatalogTupleUpdateValueNull(ctx, pg_aggregate, aggminitval);
 
 	if (replace)
 		oldtup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(procOid));
@@ -717,18 +707,12 @@ AggregateCreate(const char *aggName,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 					 errmsg("cannot change number of direct arguments of an aggregate function")));
 
-		replaces[Anum_pg_aggregate_aggfnoid - 1] = false;
-		replaces[Anum_pg_aggregate_aggkind - 1] = false;
-		replaces[Anum_pg_aggregate_aggnumdirectargs - 1] = false;
-
-		tup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
-		CatalogTupleUpdate(aggdesc, &tup->t_self, tup);
+		ModifyCatalogTupleValues(aggdesc, oldtup, ctx);
 		ReleaseSysCache(oldtup);
 	}
 	else
 	{
-		tup = heap_form_tuple(tupDesc, values, nulls);
-		CatalogTupleInsert(aggdesc, tup);
+		InsertCatalogTupleValues(aggdesc, ctx);
 	}
 
 	table_close(aggdesc, RowExclusiveLock);

@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/htup.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_collation.h"
@@ -120,15 +121,13 @@ static bool get_elem_stat_type(Oid atttypid, char atttyptype,
 							   Oid *elemtypid, Oid *elem_eq_opr);
 static Datum text_to_stavalues(const char *staname, FmgrInfo *array_in, Datum d,
 							   Oid typid, int32 typmod, bool *ok);
-static void set_stats_slot(Datum *values, bool *nulls, bool *replaces,
+static void set_stats_slot(void *_ctx,
 						   int16 stakind, Oid staop, Oid stacoll,
 						   Datum stanumbers, bool stanumbers_isnull,
 						   Datum stavalues, bool stavalues_isnull);
-static void upsert_pg_statistic(Relation starel, HeapTuple oldtup,
-								const Datum *values, const bool *nulls, const bool *replaces);
+static void upsert_pg_statistic(Relation starel, HeapTuple oldtup, void *_ctx);
 static bool delete_pg_statistic(Oid reloid, AttrNumber attnum, bool stainherit);
-static void init_empty_stats_tuple(Oid reloid, int16 attnum, bool inherited,
-								   Datum *values, bool *nulls, bool *replaces);
+static void init_empty_stats_tuple(Oid reloid, int16 attnum, bool inherited, void *_ctx);
 
 /*
  * Insert or Update Attribute Statistics
@@ -182,12 +181,9 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 	bool		do_bounds_histogram = !PG_ARGISNULL(RANGE_BOUNDS_HISTOGRAM_ARG);
 	bool		do_range_length_histogram = !PG_ARGISNULL(RANGE_LENGTH_HISTOGRAM_ARG) &&
 		!PG_ARGISNULL(RANGE_EMPTY_FRAC_ARG);
-
-	Datum		values[Natts_pg_statistic] = {0};
-	bool		nulls[Natts_pg_statistic] = {0};
-	bool		replaces[Natts_pg_statistic] = {0};
-
 	bool		result = true;
+
+	CatalogUpdateValuesContext(pg_statistic, ctx);
 
 	stats_check_required_arg(fcinfo, attarginfo, ATTRELSCHEMA_ARG);
 	stats_check_required_arg(fcinfo, attarginfo, ATTRELNAME_ARG);
@@ -359,27 +355,19 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 	/* initialize from existing tuple if exists */
 	if (HeapTupleIsValid(statup))
-		heap_deform_tuple(statup, RelationGetDescr(starel), values, nulls);
+		DeformCatalogTuple(starel, statup, ctx);
 	else
-		init_empty_stats_tuple(reloid, attnum, inherited, values, nulls,
-							   replaces);
+		init_empty_stats_tuple(reloid, attnum, inherited, (void *) ctx);
 
 	/* if specified, set to argument values */
 	if (!PG_ARGISNULL(NULL_FRAC_ARG))
-	{
-		values[Anum_pg_statistic_stanullfrac - 1] = PG_GETARG_DATUM(NULL_FRAC_ARG);
-		replaces[Anum_pg_statistic_stanullfrac - 1] = true;
-	}
+		CatalogTupleUpdateValue(ctx, pg_statistic, stanullfrac, PG_GETARG_DATUM(NULL_FRAC_ARG));
+
 	if (!PG_ARGISNULL(AVG_WIDTH_ARG))
-	{
-		values[Anum_pg_statistic_stawidth - 1] = PG_GETARG_DATUM(AVG_WIDTH_ARG);
-		replaces[Anum_pg_statistic_stawidth - 1] = true;
-	}
+		CatalogTupleUpdateValue(ctx, pg_statistic, stawidth, PG_GETARG_DATUM(AVG_WIDTH_ARG));
+
 	if (!PG_ARGISNULL(N_DISTINCT_ARG))
-	{
-		values[Anum_pg_statistic_stadistinct - 1] = PG_GETARG_DATUM(N_DISTINCT_ARG);
-		replaces[Anum_pg_statistic_stadistinct - 1] = true;
-	}
+		CatalogTupleUpdateValue(ctx, pg_statistic, stadistinct, PG_GETARG_DATUM(N_DISTINCT_ARG));
 
 	/* STATISTIC_KIND_MCV */
 	if (do_mcv)
@@ -394,7 +382,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
+			set_stats_slot(ctx,
 						   STATISTIC_KIND_MCV,
 						   eq_opr, atttypcoll,
 						   stanumbers, false, stavalues, false);
@@ -417,7 +405,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
+			set_stats_slot(ctx,
 						   STATISTIC_KIND_HISTOGRAM,
 						   lt_opr, atttypcoll,
 						   0, true, stavalues, false);
@@ -433,7 +421,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 		ArrayType  *arry = construct_array_builtin(elems, 1, FLOAT4OID);
 		Datum		stanumbers = PointerGetDatum(arry);
 
-		set_stats_slot(values, nulls, replaces,
+		set_stats_slot(ctx,
 					   STATISTIC_KIND_CORRELATION,
 					   lt_opr, atttypcoll,
 					   stanumbers, false, 0, true);
@@ -454,7 +442,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
+			set_stats_slot(ctx,
 						   STATISTIC_KIND_MCELEM,
 						   elem_eq_opr, atttypcoll,
 						   stanumbers, false, stavalues, false);
@@ -468,7 +456,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 	{
 		Datum		stanumbers = PG_GETARG_DATUM(ELEM_COUNT_HISTOGRAM_ARG);
 
-		set_stats_slot(values, nulls, replaces,
+		set_stats_slot(ctx,
 					   STATISTIC_KIND_DECHIST,
 					   elem_eq_opr, atttypcoll,
 					   stanumbers, false, 0, true);
@@ -494,7 +482,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
+			set_stats_slot(ctx,
 						   STATISTIC_KIND_BOUNDS_HISTOGRAM,
 						   InvalidOid, InvalidOid,
 						   0, true, stavalues, false);
@@ -521,7 +509,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 
 		if (converted)
 		{
-			set_stats_slot(values, nulls, replaces,
+			set_stats_slot(ctx,
 						   STATISTIC_KIND_RANGE_LENGTH_HISTOGRAM,
 						   Float8LessOperator, InvalidOid,
 						   stanumbers, false, stavalues, false);
@@ -530,7 +518,7 @@ attribute_statistics_update(FunctionCallInfo fcinfo)
 			result = false;
 	}
 
-	upsert_pg_statistic(starel, statup, values, nulls, replaces);
+	upsert_pg_statistic(starel, statup, ctx);
 
 	if (HeapTupleIsValid(statup))
 		ReleaseSysCache(statup);
@@ -760,92 +748,75 @@ text_to_stavalues(const char *staname, FmgrInfo *array_in, Datum d, Oid typid,
  * slot.
  */
 static void
-set_stats_slot(Datum *values, bool *nulls, bool *replaces,
+set_stats_slot(void *_ctx,
 			   int16 stakind, Oid staop, Oid stacoll,
 			   Datum stanumbers, bool stanumbers_isnull,
 			   Datum stavalues, bool stavalues_isnull)
 {
-	int			slotidx;
+	CatalogUpdateValuesDecl(pg_statistic, ctx) * ctx = _ctx;
+	int			i = 0;
 	int			first_empty = -1;
-	AttrNumber	stakind_attnum;
-	AttrNumber	staop_attnum;
-	AttrNumber	stacoll_attnum;
 
-	/* find existing slot with given stakind */
-	for (slotidx = 0; slotidx < STATISTIC_NUM_SLOTS; slotidx++)
+	/*
+	 * This might seem odd, to be adding 'i' to the name of the field on these
+	 * macros, but that's what we need to do here to find the proper slot
+	 * offset and record the proper value into the updated bitmap.
+	 *
+	 * Example: CatalogTupleValue(ctx, pg_statistic, stakind1 + i);
+	 *
+	 * Becomes: ctx.values[Anum_pg_statistic_stakind1 + i - 1];
+	 *
+	 * The result is you're indexing the i'th value, exactly what we needed.
+	 */
+
+	/* Find existing slot with given stakind */
+	for (i = 0; i < STATISTIC_NUM_SLOTS; i++)
 	{
-		stakind_attnum = Anum_pg_statistic_stakind1 - 1 + slotidx;
+		Datum		d = CatalogTupleValue(ctx, pg_statistic, stakind1 + i);
+		int16		v = DatumGetInt16(d);
 
-		if (first_empty < 0 &&
-			DatumGetInt16(values[stakind_attnum]) == 0)
-			first_empty = slotidx;
-		if (DatumGetInt16(values[stakind_attnum]) == stakind)
+		if (first_empty < 0 && v == 0)
+			first_empty = i;
+
+		if (v == stakind)
 			break;
 	}
 
-	if (slotidx >= STATISTIC_NUM_SLOTS && first_empty >= 0)
-		slotidx = first_empty;
+	if (i >= STATISTIC_NUM_SLOTS && first_empty >= 0)
+		i = first_empty;
 
-	if (slotidx >= STATISTIC_NUM_SLOTS)
+	if (i >= STATISTIC_NUM_SLOTS)
 		ereport(ERROR,
-				(errmsg("maximum number of statistics slots exceeded: %d",
-						slotidx + 1)));
+				(errmsg("maximum number of statistics slots exceeded: %d", i + 1)));
 
-	stakind_attnum = Anum_pg_statistic_stakind1 - 1 + slotidx;
-	staop_attnum = Anum_pg_statistic_staop1 - 1 + slotidx;
-	stacoll_attnum = Anum_pg_statistic_stacoll1 - 1 + slotidx;
+	if (DatumGetInt16(CatalogTupleValue(ctx, pg_statistic, stakind1 + i)) != stakind)
+		CatalogTupleUpdateValue(ctx, pg_statistic, stakind1 + i, Int16GetDatum(stakind));
 
-	if (DatumGetInt16(values[stakind_attnum]) != stakind)
-	{
-		values[stakind_attnum] = Int16GetDatum(stakind);
-		replaces[stakind_attnum] = true;
-	}
-	if (DatumGetObjectId(values[staop_attnum]) != staop)
-	{
-		values[staop_attnum] = ObjectIdGetDatum(staop);
-		replaces[staop_attnum] = true;
-	}
-	if (DatumGetObjectId(values[stacoll_attnum]) != stacoll)
-	{
-		values[stacoll_attnum] = ObjectIdGetDatum(stacoll);
-		replaces[stacoll_attnum] = true;
-	}
+	if (DatumGetInt16(CatalogTupleValue(ctx, pg_statistic, staop1 + i)) != staop)
+		CatalogTupleUpdateValue(ctx, pg_statistic, staop1 + i, ObjectIdGetDatum(staop));
+
+	if (DatumGetInt16(CatalogTupleValue(ctx, pg_statistic, stacoll1 + i)) != stacoll)
+		CatalogTupleUpdateValue(ctx, pg_statistic, stacoll1 + i, ObjectIdGetDatum(stacoll));
+
 	if (!stanumbers_isnull)
-	{
-		values[Anum_pg_statistic_stanumbers1 - 1 + slotidx] = stanumbers;
-		nulls[Anum_pg_statistic_stanumbers1 - 1 + slotidx] = false;
-		replaces[Anum_pg_statistic_stanumbers1 - 1 + slotidx] = true;
-	}
+		CatalogTupleUpdateValue(ctx, pg_statistic, stanumbers1 + i, stanumbers);
+
 	if (!stavalues_isnull)
-	{
-		values[Anum_pg_statistic_stavalues1 - 1 + slotidx] = stavalues;
-		nulls[Anum_pg_statistic_stavalues1 - 1 + slotidx] = false;
-		replaces[Anum_pg_statistic_stavalues1 - 1 + slotidx] = true;
-	}
+		CatalogTupleUpdateValue(ctx, pg_statistic, stavalues1 + i, stavalues);
 }
 
 /*
  * Upsert the pg_statistic record.
  */
 static void
-upsert_pg_statistic(Relation starel, HeapTuple oldtup,
-					const Datum *values, const bool *nulls, const bool *replaces)
+upsert_pg_statistic(Relation starel, HeapTuple oldtup, void *_ctx)
 {
-	HeapTuple	newtup;
+	CatalogUpdateValuesDecl(pg_statistic, ctx) * ctx = _ctx;
 
 	if (HeapTupleIsValid(oldtup))
-	{
-		newtup = heap_modify_tuple(oldtup, RelationGetDescr(starel),
-								   values, nulls, replaces);
-		CatalogTupleUpdate(starel, &newtup->t_self, newtup);
-	}
+		ModifyCatalogTupleValues(starel, oldtup, ctx);
 	else
-	{
-		newtup = heap_form_tuple(RelationGetDescr(starel), values, nulls);
-		CatalogTupleInsert(starel, newtup);
-	}
-
-	heap_freetuple(newtup);
+		InsertCatalogTupleValues(starel, ctx);
 
 	CommandCounterIncrement();
 }
@@ -884,37 +855,28 @@ delete_pg_statistic(Oid reloid, AttrNumber attnum, bool stainherit)
  * Initialize values and nulls for a new stats tuple.
  */
 static void
-init_empty_stats_tuple(Oid reloid, int16 attnum, bool inherited,
-					   Datum *values, bool *nulls, bool *replaces)
+init_empty_stats_tuple(Oid reloid, int16 attnum, bool inherited, void *_ctx)
 {
-	memset(nulls, true, sizeof(bool) * Natts_pg_statistic);
-	memset(replaces, true, sizeof(bool) * Natts_pg_statistic);
+	CatalogUpdateValuesDecl(pg_statistic, ctx) * ctx = (struct _cat_pg_statistic_ctx_upd_vals *) _ctx;
 
-	/* must initialize non-NULL attributes */
+	CatalogTupleUpdateMarkAllColumnsUpdated(ctx, pg_statistic);
+	memset(ctx->nulls, true, sizeof(bool) * Natts_pg_statistic);
 
-	values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(reloid);
-	nulls[Anum_pg_statistic_starelid - 1] = false;
-	values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(attnum);
-	nulls[Anum_pg_statistic_staattnum - 1] = false;
-	values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(inherited);
-	nulls[Anum_pg_statistic_stainherit - 1] = false;
+	/* Now we must initialize non-NULL attributes */
+	CatalogTupleUpdateValue(ctx, pg_statistic, starelid, ObjectIdGetDatum(reloid));
+	CatalogTupleUpdateValue(ctx, pg_statistic, staattnum, Int16GetDatum(attnum));
+	CatalogTupleUpdateValue(ctx, pg_statistic, stainherit, BoolGetDatum(inherited));
 
-	values[Anum_pg_statistic_stanullfrac - 1] = DEFAULT_NULL_FRAC;
-	nulls[Anum_pg_statistic_stanullfrac - 1] = false;
-	values[Anum_pg_statistic_stawidth - 1] = DEFAULT_AVG_WIDTH;
-	nulls[Anum_pg_statistic_stawidth - 1] = false;
-	values[Anum_pg_statistic_stadistinct - 1] = DEFAULT_N_DISTINCT;
-	nulls[Anum_pg_statistic_stadistinct - 1] = false;
+	CatalogTupleUpdateValue(ctx, pg_statistic, stanullfrac, DEFAULT_NULL_FRAC);
+	CatalogTupleUpdateValue(ctx, pg_statistic, stawidth, DEFAULT_AVG_WIDTH);
+	CatalogTupleUpdateValue(ctx, pg_statistic, stadistinct, DEFAULT_N_DISTINCT);
 
 	/* initialize stakind, staop, and stacoll slots */
-	for (int slotnum = 0; slotnum < STATISTIC_NUM_SLOTS; slotnum++)
+	for (int i = 0; i < STATISTIC_NUM_SLOTS; i++)
 	{
-		values[Anum_pg_statistic_stakind1 + slotnum - 1] = (Datum) 0;
-		nulls[Anum_pg_statistic_stakind1 + slotnum - 1] = false;
-		values[Anum_pg_statistic_staop1 + slotnum - 1] = ObjectIdGetDatum(InvalidOid);
-		nulls[Anum_pg_statistic_staop1 + slotnum - 1] = false;
-		values[Anum_pg_statistic_stacoll1 + slotnum - 1] = ObjectIdGetDatum(InvalidOid);
-		nulls[Anum_pg_statistic_stacoll1 + slotnum - 1] = false;
+		CatalogTupleUpdateValue(ctx, pg_statistic, stakind1 + i, (Datum) 0);
+		CatalogTupleUpdateValue(ctx, pg_statistic, staop1 + i, ObjectIdGetDatum(InvalidOid));
+		CatalogTupleUpdateValue(ctx, pg_statistic, stacoll1 + i, ObjectIdGetDatum(InvalidOid));
 	}
 }
 

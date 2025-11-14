@@ -29,6 +29,7 @@
 #include "catalog/index.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_statistic.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/vacuum.h"
@@ -1666,50 +1667,34 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 	for (attno = 0; attno < natts; attno++)
 	{
 		VacAttrStats *stats = vacattrstats[attno];
-		HeapTuple	stup,
-					oldtup;
-		int			i,
-					k,
+		HeapTuple	oldtup;
+		int			k,
 					n;
-		Datum		values[Natts_pg_statistic];
-		bool		nulls[Natts_pg_statistic];
-		bool		replaces[Natts_pg_statistic];
+
+		CatalogUpdateValuesContext(pg_statistic, ctx);
 
 		/* Ignore attr if we weren't able to collect stats */
 		if (!stats->stats_valid)
 			continue;
 
-		/*
-		 * Construct a new pg_statistic tuple
-		 */
-		for (i = 0; i < Natts_pg_statistic; ++i)
-		{
-			nulls[i] = false;
-			replaces[i] = true;
-		}
+		/* Construct a new pg_statistic tuple */
+		CatalogTupleUpdateMarkAllColumnsUpdated(ctx, pg_statistic);
+		CatalogTupleSetValue(ctx, pg_statistic, starelid, ObjectIdGetDatum(relid));
+		CatalogTupleSetValue(ctx, pg_statistic, staattnum, Int16GetDatum(stats->tupattnum));
+		CatalogTupleSetValue(ctx, pg_statistic, stainherit, BoolGetDatum(inh));
+		CatalogTupleSetValue(ctx, pg_statistic, stanullfrac, Float4GetDatum(stats->stanullfrac));
+		CatalogTupleSetValue(ctx, pg_statistic, stawidth, Int32GetDatum(stats->stawidth));
+		CatalogTupleSetValue(ctx, pg_statistic, stadistinct, Float4GetDatum(stats->stadistinct));
 
-		values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(relid);
-		values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(stats->tupattnum);
-		values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(inh);
-		values[Anum_pg_statistic_stanullfrac - 1] = Float4GetDatum(stats->stanullfrac);
-		values[Anum_pg_statistic_stawidth - 1] = Int32GetDatum(stats->stawidth);
-		values[Anum_pg_statistic_stadistinct - 1] = Float4GetDatum(stats->stadistinct);
-		i = Anum_pg_statistic_stakind1 - 1;
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = Int16GetDatum(stats->stakind[k]); /* stakindN */
-		}
-		i = Anum_pg_statistic_staop1 - 1;
+			CatalogTupleSetValue(ctx, pg_statistic, stakind1 + k, Int16GetDatum(stats->stakind[k]));
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = ObjectIdGetDatum(stats->staop[k]);	/* staopN */
-		}
-		i = Anum_pg_statistic_stacoll1 - 1;
+			CatalogTupleSetValue(ctx, pg_statistic, staop1 + k, ObjectIdGetDatum(stats->staop[k]));
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = ObjectIdGetDatum(stats->stacoll[k]);	/* stacollN */
-		}
-		i = Anum_pg_statistic_stanumbers1 - 1;
+			CatalogTupleSetValue(ctx, pg_statistic, stacoll1 + k, ObjectIdGetDatum(stats->stacoll[k]));
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
 		{
 			if (stats->stanumbers[k] != NULL)
@@ -1721,15 +1706,12 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 				for (n = 0; n < nnum; n++)
 					numdatums[n] = Float4GetDatum(stats->stanumbers[k][n]);
 				arry = construct_array_builtin(numdatums, nnum, FLOAT4OID);
-				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
+				CatalogTupleSetValue(ctx, pg_statistic, stanumbers1 + k, PointerGetDatum(arry));
 			}
 			else
-			{
-				nulls[i] = true;
-				values[i++] = (Datum) 0;
-			}
+				CatalogTupleSetValueNull(ctx, pg_statistic, stanumbers1 + k);
 		}
-		i = Anum_pg_statistic_stavalues1 - 1;
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
 		{
 			if (stats->stavalues[k] != NULL)
@@ -1742,12 +1724,11 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 									   stats->statyplen[k],
 									   stats->statypbyval[k],
 									   stats->statypalign[k]);
-				values[i++] = PointerGetDatum(arry);	/* stavaluesN */
+				CatalogTupleSetValue(ctx, pg_statistic, stavalues1 + k, PointerGetDatum(arry));
 			}
 			else
 			{
-				nulls[i] = true;
-				values[i++] = (Datum) 0;
+				CatalogTupleSetValueNull(ctx, pg_statistic, stavalues1 + k);
 			}
 		}
 
@@ -1761,29 +1742,26 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 		if (indstate == NULL)
 			indstate = CatalogOpenIndexes(sd);
 
+		ctx->idx = indstate;
+
 		if (HeapTupleIsValid(oldtup))
 		{
-			/* Yes, replace it */
-			stup = heap_modify_tuple(oldtup,
-									 RelationGetDescr(sd),
-									 values,
-									 nulls,
-									 replaces);
+			/* Yes, replace existing tuple */
+			ModifyCatalogTupleValues(sd, oldtup, ctx);
 			ReleaseSysCache(oldtup);
-			CatalogTupleUpdateWithInfo(sd, &stup->t_self, stup, indstate);
 		}
 		else
 		{
 			/* No, insert new tuple */
-			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
-			CatalogTupleInsertWithInfo(sd, stup, indstate);
+			InsertCatalogTupleValues(sd, ctx);
 		}
 
-		heap_freetuple(stup);
+		CatalogTupleReuseUpdateContext(ctx);
 	}
 
 	if (indstate != NULL)
 		CatalogCloseIndexes(indstate);
+
 	table_close(sd, RowExclusiveLock);
 }
 

@@ -37,18 +37,13 @@ typedef struct ResultRelInfo *CatalogIndexState;
  */
 extern CatalogIndexState CatalogOpenIndexes(Relation heapRel);
 extern void CatalogCloseIndexes(CatalogIndexState indstate);
-extern void CatalogTupleInsert(Relation heapRel, HeapTuple tup);
-extern void CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
-									   CatalogIndexState indstate);
-extern void CatalogTuplesMultiInsertWithInfo(Relation heapRel,
-											 TupleTableSlot **slot,
-											 int ntuples,
-											 CatalogIndexState indstate);
+extern void CatalogTupleInsert(Relation heapRel, HeapTuple tup,
+							   CatalogIndexState indstate);
+extern void CatalogTuplesMultiInsert(Relation heapRel, TupleTableSlot **slot,
+									 int ntuples, CatalogIndexState indstate);
 extern void CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid,
-							   HeapTuple tup);
-extern void CatalogTupleUpdateWithInfo(Relation heapRel,
-									   const ItemPointerData *otid, HeapTuple tup,
-									   CatalogIndexState indstate);
+							   HeapTuple tuple, const struct Bitmapset *updated,
+							   CatalogIndexState indstate);
 extern void CatalogTupleDelete(Relation heapRel, const ItemPointerData *tid);
 
 #endif							/* INDEXING_H */
