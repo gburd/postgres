@@ -336,14 +336,17 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 
 	if (!IsBootstrapProcessingMode())
 	{
+		Bitmapset  *updated = NULL;
+
 		/* normal case, use a transactional update */
 		reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relOid));
 		if (!HeapTupleIsValid(reltup))
 			elog(ERROR, "cache lookup failed for relation %u", relOid);
 
-		((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
+		HeapTupleUpdateField(pg_class, reltoastrelid, toast_relid, (Form_pg_class) GETSTRUCT(reltup), updated);
+		CatalogTupleUpdate(class_rel, &reltup->t_self, reltup, updated, NULL);
 
-		CatalogTupleUpdate(class_rel, &reltup->t_self, reltup);
+		bms_free(updated);
 	}
 	else
 	{

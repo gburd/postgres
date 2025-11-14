@@ -769,7 +769,7 @@ AdjustNotNullInheritance(Oid relid, AttrNumber attnum,
 
 		if (!is_local)
 		{
-			CatalogTupleCondUpdateValue(ctx, pg_constraint, coninhcount,
+			CatalogTupleCondUpdateField(ctx, pg_constraint, coninhcount,
 										pg_add_s16_overflow(CatalogGetFormField(ctx, coninhcount), 1,
 															&CatalogGetFormField(ctx, coninhcount)),
 										ereport(ERROR, errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),

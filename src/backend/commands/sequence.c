@@ -125,8 +125,8 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 	TupleDesc	tupDesc;
 	Datum		value[SEQ_COL_LASTCOL];
 	bool		null[SEQ_COL_LASTCOL];
-	Datum		pgs_values[Natts_pg_sequence];
-	bool		pgs_nulls[Natts_pg_sequence];
+	Datum		pgs_values[Natts_pg_sequence] = {0};
+	bool		pgs_nulls[Natts_pg_sequence] = {false};
 	int			i;
 
 	/*
@@ -221,17 +221,17 @@ DefineSequence(ParseState *pstate, CreateSeqStmt *seq)
 
 	memset(pgs_nulls, 0, sizeof(pgs_nulls));
 
-	pgs_values[Anum_pg_sequence_seqrelid - 1] = ObjectIdGetDatum(seqoid);
-	pgs_values[Anum_pg_sequence_seqtypid - 1] = ObjectIdGetDatum(seqform.seqtypid);
-	pgs_values[Anum_pg_sequence_seqstart - 1] = Int64GetDatumFast(seqform.seqstart);
-	pgs_values[Anum_pg_sequence_seqincrement - 1] = Int64GetDatumFast(seqform.seqincrement);
-	pgs_values[Anum_pg_sequence_seqmax - 1] = Int64GetDatumFast(seqform.seqmax);
-	pgs_values[Anum_pg_sequence_seqmin - 1] = Int64GetDatumFast(seqform.seqmin);
-	pgs_values[Anum_pg_sequence_seqcache - 1] = Int64GetDatumFast(seqform.seqcache);
-	pgs_values[Anum_pg_sequence_seqcycle - 1] = BoolGetDatum(seqform.seqcycle);
+	HeapTupleSetValue(pg_sequence, seqrelid, ObjectIdGetDatum(seqoid), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqtypid, ObjectIdGetDatum(seqform.seqtypid), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqstart, Int64GetDatumFast(seqform.seqstart), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqincrement, Int64GetDatumFast(seqform.seqincrement), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqmax, Int64GetDatumFast(seqform.seqmax), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqmin, Int64GetDatumFast(seqform.seqmin), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqcache, Int64GetDatumFast(seqform.seqcache), pgs_values);
+	HeapTupleSetValue(pg_sequence, seqcycle, BoolGetDatum(seqform.seqcycle), pgs_values);
 
 	tuple = heap_form_tuple(tupDesc, pgs_values, pgs_nulls);
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 	table_close(rel, RowExclusiveLock);
@@ -444,6 +444,7 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 	bool		is_called;
 	int64		last_value;
 	HeapTuple	newdatatuple;
+	Bitmapset  *updated = NULL;
 
 	/* Open and lock sequence, and check for ownership along the way. */
 	relid = RangeVarGetRelidExtended(stmt->sequence,
@@ -525,8 +526,15 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
 	if (owned_by)
 		process_owned_by(seqrel, owned_by, stmt->for_identity);
 
+	/*
+	 * Mark all sequence columns as potentially updated since init_params can
+	 * modify any field
+	 */
+	HeapTupleUpdateSetAllColumnsUpdated(pg_sequence, updated);
+
 	/* update the pg_sequence tuple (we could skip this in some cases...) */
-	CatalogTupleUpdate(rel, &seqtuple->t_self, seqtuple);
+	CatalogTupleUpdate(rel, &seqtuple->t_self, seqtuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId, relid, 0);
 

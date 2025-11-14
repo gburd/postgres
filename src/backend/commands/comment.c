@@ -147,10 +147,9 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 	SysScanDesc sd;
 	HeapTuple	oldtuple;
 	HeapTuple	newtuple = NULL;
-	Datum		values[Natts_pg_description];
-	bool		nulls[Natts_pg_description];
-	bool		replaces[Natts_pg_description];
-	int			i;
+	Datum		values[Natts_pg_description] = {0};
+	bool		nulls[Natts_pg_description] = {false};
+	Bitmapset  *updated = NULL;
 
 	/* Reduce empty-string to NULL case */
 	if (comment != NULL && strlen(comment) == 0)
@@ -159,15 +158,10 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 	/* Prepare to form or update a tuple, if necessary */
 	if (comment != NULL)
 	{
-		for (i = 0; i < Natts_pg_description; i++)
-		{
-			nulls[i] = false;
-			replaces[i] = true;
-		}
-		values[Anum_pg_description_objoid - 1] = ObjectIdGetDatum(oid);
-		values[Anum_pg_description_classoid - 1] = ObjectIdGetDatum(classoid);
-		values[Anum_pg_description_objsubid - 1] = Int32GetDatum(subid);
-		values[Anum_pg_description_description - 1] = CStringGetTextDatum(comment);
+		HeapTupleUpdateValue(pg_description, objoid, ObjectIdGetDatum(oid), values, nulls, updated);
+		HeapTupleUpdateValue(pg_description, classoid, ObjectIdGetDatum(classoid), values, nulls, updated);
+		HeapTupleUpdateValue(pg_description, objsubid, Int32GetDatum(subid), values, nulls, updated);
+		HeapTupleUpdateValue(pg_description, description, CStringGetTextDatum(comment), values, nulls, updated);
 	}
 
 	/* Use the index to search for a matching old tuple */
@@ -198,9 +192,9 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 			CatalogTupleDelete(description, &oldtuple->t_self);
 		else
 		{
-			newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(description), values,
-										 nulls, replaces);
-			CatalogTupleUpdate(description, &oldtuple->t_self, newtuple);
+			HeapTupleUpdateValue(pg_description, description, CStringGetTextDatum(comment), values, nulls, updated);
+			newtuple = heap_update_tuple(oldtuple, RelationGetDescr(description), values, nulls, updated);
+			CatalogTupleUpdate(description, &oldtuple->t_self, newtuple, updated, NULL);
 		}
 
 		break;					/* Assume there can be only one match */
@@ -214,7 +208,7 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 	{
 		newtuple = heap_form_tuple(RelationGetDescr(description),
 								   values, nulls);
-		CatalogTupleInsert(description, newtuple);
+		CatalogTupleInsert(description, newtuple, NULL);
 	}
 
 	if (newtuple != NULL)
@@ -223,6 +217,7 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 	/* Done */
 
 	table_close(description, NoLock);
+	bms_free(updated);
 }
 
 /*
@@ -242,9 +237,9 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 	SysScanDesc sd;
 	HeapTuple	oldtuple;
 	HeapTuple	newtuple = NULL;
-	Datum		values[Natts_pg_shdescription];
-	bool		nulls[Natts_pg_shdescription];
-	bool		replaces[Natts_pg_shdescription];
+	Datum		values[Natts_pg_shdescription] = {0};
+	bool		nulls[Natts_pg_shdescription] = {false};
+	Bitmapset  *updated = NULL;
 	int			i;
 
 	/* Reduce empty-string to NULL case */
@@ -257,11 +252,10 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 		for (i = 0; i < Natts_pg_shdescription; i++)
 		{
 			nulls[i] = false;
-			replaces[i] = true;
 		}
-		values[Anum_pg_shdescription_objoid - 1] = ObjectIdGetDatum(oid);
-		values[Anum_pg_shdescription_classoid - 1] = ObjectIdGetDatum(classoid);
-		values[Anum_pg_shdescription_description - 1] = CStringGetTextDatum(comment);
+		HeapTupleUpdateValue(pg_shdescription, objoid, ObjectIdGetDatum(oid), values, nulls, updated);
+		HeapTupleUpdateValue(pg_shdescription, classoid, ObjectIdGetDatum(classoid), values, nulls, updated);
+		HeapTupleUpdateValue(pg_shdescription, description, CStringGetTextDatum(comment), values, nulls, updated);
 	}
 
 	/* Use the index to search for a matching old tuple */
@@ -288,9 +282,9 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 			CatalogTupleDelete(shdescription, &oldtuple->t_self);
 		else
 		{
-			newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(shdescription),
-										 values, nulls, replaces);
-			CatalogTupleUpdate(shdescription, &oldtuple->t_self, newtuple);
+			HeapTupleUpdateValue(pg_shdescription, description, CStringGetTextDatum(comment), values, nulls, updated);
+			newtuple = heap_update_tuple(oldtuple, RelationGetDescr(shdescription), values, nulls, updated);
+			CatalogTupleUpdate(shdescription, &oldtuple->t_self, newtuple, updated, NULL);
 		}
 
 		break;					/* Assume there can be only one match */
@@ -304,7 +298,7 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 	{
 		newtuple = heap_form_tuple(RelationGetDescr(shdescription),
 								   values, nulls);
-		CatalogTupleInsert(shdescription, newtuple);
+		CatalogTupleInsert(shdescription, newtuple, NULL);
 	}
 
 	if (newtuple != NULL)
@@ -313,6 +307,7 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 	/* Done */
 
 	table_close(shdescription, NoLock);
+	bms_free(updated);
 }
 
 /*

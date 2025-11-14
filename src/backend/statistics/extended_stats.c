@@ -762,20 +762,14 @@ statext_store(Oid statOid, bool inh,
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup;
-	Datum		values[Natts_pg_statistic_ext_data];
-	bool		nulls[Natts_pg_statistic_ext_data];
+	Datum		values[Natts_pg_statistic_ext_data] = {0};
+	bool		nulls[Natts_pg_statistic_ext_data] = {false};
 
 	pg_stextdata = table_open(StatisticExtDataRelationId, RowExclusiveLock);
 
-	memset(nulls, true, sizeof(nulls));
-	memset(values, 0, sizeof(values));
-
 	/* basic info */
-	values[Anum_pg_statistic_ext_data_stxoid - 1] = ObjectIdGetDatum(statOid);
-	nulls[Anum_pg_statistic_ext_data_stxoid - 1] = false;
-
-	values[Anum_pg_statistic_ext_data_stxdinherit - 1] = BoolGetDatum(inh);
-	nulls[Anum_pg_statistic_ext_data_stxdinherit - 1] = false;
+	HeapTupleSetValue(pg_statistic_ext_data, stxoid, ObjectIdGetDatum(statOid), values);
+	HeapTupleSetValue(pg_statistic_ext_data, stxdinherit, BoolGetDatum(inh), values);
 
 	/*
 	 * Construct a new pg_statistic_ext_data tuple, replacing the calculated
@@ -785,29 +779,42 @@ statext_store(Oid statOid, bool inh,
 	{
 		bytea	   *data = statext_ndistinct_serialize(ndistinct);
 
-		nulls[Anum_pg_statistic_ext_data_stxdndistinct - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_data_stxdndistinct - 1] = PointerGetDatum(data);
+		if (data == NULL)
+			HeapTupleSetValueNull(pg_statistic_ext_data, stxdndistinct, values, nulls);
+		else
+			HeapTupleSetValue(pg_statistic_ext_data, stxdndistinct, PointerGetDatum(data), values);
 	}
+	else
+		HeapTupleSetValueNull(pg_statistic_ext_data, stxdndistinct, values, nulls);
 
 	if (dependencies != NULL)
 	{
 		bytea	   *data = statext_dependencies_serialize(dependencies);
 
-		nulls[Anum_pg_statistic_ext_data_stxddependencies - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_data_stxddependencies - 1] = PointerGetDatum(data);
+		if (data == NULL)
+			HeapTupleSetValueNull(pg_statistic_ext_data, stxddependencies, values, nulls);
+		else
+			HeapTupleSetValue(pg_statistic_ext_data, stxddependencies, PointerGetDatum(data), values);
 	}
+	else
+		HeapTupleSetValueNull(pg_statistic_ext_data, stxddependencies, values, nulls);
+
 	if (mcv != NULL)
 	{
 		bytea	   *data = statext_mcv_serialize(mcv, stats);
 
-		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
+		if (data == NULL)
+			HeapTupleSetValueNull(pg_statistic_ext_data, stxdmcv, values, nulls);
+		else
+			HeapTupleSetValue(pg_statistic_ext_data, stxdmcv, PointerGetDatum(data), values);
 	}
+	else
+		HeapTupleSetValueNull(pg_statistic_ext_data, stxdmcv, values, nulls);
+
 	if (exprs != (Datum) 0)
-	{
-		nulls[Anum_pg_statistic_ext_data_stxdexpr - 1] = false;
-		values[Anum_pg_statistic_ext_data_stxdexpr - 1] = exprs;
-	}
+		HeapTupleSetValue(pg_statistic_ext_data, stxdexpr, exprs, values);
+	else
+		HeapTupleSetValueNull(pg_statistic_ext_data, stxdexpr, values, nulls);
 
 	/*
 	 * Delete the old tuple if it exists, and insert a new one. It's easier
@@ -817,7 +824,7 @@ statext_store(Oid statOid, bool inh,
 
 	/* form and insert a new tuple */
 	stup = heap_form_tuple(RelationGetDescr(pg_stextdata), values, nulls);
-	CatalogTupleInsert(pg_stextdata, stup);
+	CatalogTupleInsert(pg_stextdata, stup, NULL);
 
 	heap_freetuple(stup);
 
@@ -2293,8 +2300,8 @@ serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 					k;
 		VacAttrStats *stats = exprdata[exprno].vacattrstat;
 
-		Datum		values[Natts_pg_statistic];
-		bool		nulls[Natts_pg_statistic];
+		Datum		values[Natts_pg_statistic] = {0};
+		bool		nulls[Natts_pg_statistic] = {false};
 		HeapTuple	stup;
 
 		if (!stats->stats_valid)
@@ -2315,12 +2322,12 @@ serialize_expr_stats(AnlExprData *exprdata, int nexprs)
 			nulls[i] = false;
 		}
 
-		values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(InvalidOid);
-		values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(InvalidAttrNumber);
-		values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(false);
-		values[Anum_pg_statistic_stanullfrac - 1] = Float4GetDatum(stats->stanullfrac);
-		values[Anum_pg_statistic_stawidth - 1] = Int32GetDatum(stats->stawidth);
-		values[Anum_pg_statistic_stadistinct - 1] = Float4GetDatum(stats->stadistinct);
+		HeapTupleSetValue(pg_statistic, starelid, ObjectIdGetDatum(InvalidOid), values);
+		HeapTupleSetValue(pg_statistic, staattnum, Int16GetDatum(InvalidAttrNumber), values);
+		HeapTupleSetValue(pg_statistic, stainherit, BoolGetDatum(false), values);
+		HeapTupleSetValue(pg_statistic, stanullfrac, Float4GetDatum(stats->stanullfrac), values);
+		HeapTupleSetValue(pg_statistic, stawidth, Int32GetDatum(stats->stawidth), values);
+		HeapTupleSetValue(pg_statistic, stadistinct, Float4GetDatum(stats->stadistinct), values);
 		i = Anum_pg_statistic_stakind1 - 1;
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
 		{

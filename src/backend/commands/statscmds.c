@@ -71,8 +71,8 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	Oid			namespaceId;
 	Oid			stxowner = GetUserId();
 	HeapTuple	htup;
-	Datum		values[Natts_pg_statistic_ext];
-	bool		nulls[Natts_pg_statistic_ext];
+	Datum		values[Natts_pg_statistic_ext] = {0};
+	bool		nulls[Natts_pg_statistic_ext] = {false};
 	int2vector *stxkeys;
 	List	   *stxexprs = NIL;
 	Datum		exprsDatum;
@@ -531,22 +531,22 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 
 	statoid = GetNewOidWithIndex(statrel, StatisticExtOidIndexId,
 								 Anum_pg_statistic_ext_oid);
-	values[Anum_pg_statistic_ext_oid - 1] = ObjectIdGetDatum(statoid);
-	values[Anum_pg_statistic_ext_stxrelid - 1] = ObjectIdGetDatum(relid);
-	values[Anum_pg_statistic_ext_stxname - 1] = NameGetDatum(&stxname);
-	values[Anum_pg_statistic_ext_stxnamespace - 1] = ObjectIdGetDatum(namespaceId);
-	values[Anum_pg_statistic_ext_stxowner - 1] = ObjectIdGetDatum(stxowner);
-	values[Anum_pg_statistic_ext_stxkeys - 1] = PointerGetDatum(stxkeys);
-	nulls[Anum_pg_statistic_ext_stxstattarget - 1] = true;
-	values[Anum_pg_statistic_ext_stxkind - 1] = PointerGetDatum(stxkind);
+	HeapTupleSetValue(pg_statistic_ext, oid, ObjectIdGetDatum(statoid), values);
+	HeapTupleSetValue(pg_statistic_ext, stxrelid, ObjectIdGetDatum(relid), values);
+	HeapTupleSetValue(pg_statistic_ext, stxname, NameGetDatum(&stxname), values);
+	HeapTupleSetValue(pg_statistic_ext, stxnamespace, ObjectIdGetDatum(namespaceId), values);
+	HeapTupleSetValue(pg_statistic_ext, stxowner, ObjectIdGetDatum(stxowner), values);
+	HeapTupleSetValue(pg_statistic_ext, stxkeys, PointerGetDatum(stxkeys), values);
+	HeapTupleSetValueNull(pg_statistic_ext, stxstattarget, values, nulls);
+	HeapTupleSetValue(pg_statistic_ext, stxkind, PointerGetDatum(stxkind), values);
 
-	values[Anum_pg_statistic_ext_stxexprs - 1] = exprsDatum;
+	HeapTupleSetValue(pg_statistic_ext, stxexprs, exprsDatum, values);
 	if (exprsDatum == (Datum) 0)
-		nulls[Anum_pg_statistic_ext_stxexprs - 1] = true;
+		HeapTupleSetValueNull(pg_statistic_ext, stxexprs, values, nulls);
 
 	/* insert it into pg_statistic_ext */
 	htup = heap_form_tuple(statrel->rd_att, values, nulls);
-	CatalogTupleInsert(statrel, htup);
+	CatalogTupleInsert(statrel, htup, NULL);
 	heap_freetuple(htup);
 
 	relation_close(statrel, RowExclusiveLock);
@@ -642,9 +642,9 @@ AlterStatistics(AlterStatsStmt *stmt)
 	Oid			stxoid;
 	HeapTuple	oldtup;
 	HeapTuple	newtup;
-	Datum		repl_val[Natts_pg_statistic_ext];
-	bool		repl_null[Natts_pg_statistic_ext];
-	bool		repl_repl[Natts_pg_statistic_ext];
+	Datum		values[Natts_pg_statistic_ext] = {0};
+	bool		nulls[Natts_pg_statistic_ext] = {false};
+	Bitmapset  *updated = NULL;
 	ObjectAddress address;
 	int			newtarget = 0;
 	bool		newtarget_default;
@@ -719,23 +719,16 @@ AlterStatistics(AlterStatsStmt *stmt)
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_STATISTIC_EXT,
 					   NameListToString(stmt->defnames));
 
-	/* Build new tuple. */
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	/* replace the stxstattarget column */
-	repl_repl[Anum_pg_statistic_ext_stxstattarget - 1] = true;
 	if (!newtarget_default)
-		repl_val[Anum_pg_statistic_ext_stxstattarget - 1] = Int16GetDatum(newtarget);
+		HeapTupleUpdateValue(pg_statistic_ext, stxstattarget, Int16GetDatum(newtarget), values, nulls, updated);
 	else
-		repl_null[Anum_pg_statistic_ext_stxstattarget - 1] = true;
+		HeapTupleUpdateValueNull(pg_statistic_ext, stxstattarget, values, nulls, updated);
 
-	newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),
-							   repl_val, repl_null, repl_repl);
+	newtup = heap_update_tuple(oldtup, RelationGetDescr(rel), values, nulls, updated);
 
 	/* Update system catalog. */
-	CatalogTupleUpdate(rel, &newtup->t_self, newtup);
+	CatalogTupleUpdate(rel, &newtup->t_self, newtup, updated, NULL);
 
 	InvokeObjectPostAlterHook(StatisticExtRelationId, stxoid, 0);
 
@@ -746,6 +739,7 @@ AlterStatistics(AlterStatsStmt *stmt)
 	 * other fields, there is no need to update dependencies.
 	 */
 
+	bms_free(updated);
 	heap_freetuple(newtup);
 	ReleaseSysCache(oldtup);
 

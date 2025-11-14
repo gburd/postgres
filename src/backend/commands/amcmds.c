@@ -47,8 +47,8 @@ CreateAccessMethod(CreateAmStmt *stmt)
 	ObjectAddress referenced;
 	Oid			amoid;
 	Oid			amhandler;
-	bool		nulls[Natts_pg_am];
-	Datum		values[Natts_pg_am];
+	Datum		values[Natts_pg_am] = {0};
+	bool		nulls[Natts_pg_am] = {false};
 	HeapTuple	tup;
 
 	rel = table_open(AccessMethodRelationId, RowExclusiveLock);
@@ -84,15 +84,14 @@ CreateAccessMethod(CreateAmStmt *stmt)
 	memset(nulls, false, sizeof(nulls));
 
 	amoid = GetNewOidWithIndex(rel, AmOidIndexId, Anum_pg_am_oid);
-	values[Anum_pg_am_oid - 1] = ObjectIdGetDatum(amoid);
-	values[Anum_pg_am_amname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->amname));
-	values[Anum_pg_am_amhandler - 1] = ObjectIdGetDatum(amhandler);
-	values[Anum_pg_am_amtype - 1] = CharGetDatum(stmt->amtype);
+	HeapTupleSetValue(pg_am, oid, ObjectIdGetDatum(amoid), values);
+	HeapTupleSetValue(pg_am, amname, DirectFunctionCall1(namein, CStringGetDatum(stmt->amname)), values);
+	HeapTupleSetValue(pg_am, amhandler, ObjectIdGetDatum(amhandler), values);
+	HeapTupleSetValue(pg_am, amtype, CharGetDatum(stmt->amtype), values);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	heap_freetuple(tup);
 
 	myself.classId = AccessMethodRelationId;

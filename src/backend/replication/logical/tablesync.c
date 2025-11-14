@@ -1652,9 +1652,9 @@ UpdateTwoPhaseState(Oid suboid, char new_state)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription] = {0};
+	bool		nulls[Natts_pg_subscription] = {false};
+	Bitmapset  *updated = NULL;
 
 	Assert(new_state == LOGICALREP_TWOPHASE_STATE_DISABLED ||
 		   new_state == LOGICALREP_TWOPHASE_STATE_PENDING ||
@@ -1667,19 +1667,13 @@ UpdateTwoPhaseState(Oid suboid, char new_state)
 			 "cache lookup failed for subscription oid %u",
 			 suboid);
 
-	/* Form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-
 	/* And update/set two_phase state */
-	values[Anum_pg_subscription_subtwophasestate - 1] = CharGetDatum(new_state);
-	replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+	HeapTupleUpdateValue(pg_subscription, subtwophasestate, CharGetDatum(new_state), values, nulls, updated);
 
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel),
-							values, nulls, replaces);
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
-	heap_freetuple(tup);
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
+	heap_freetuple(tup);
 }

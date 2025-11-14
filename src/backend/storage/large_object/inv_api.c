@@ -562,9 +562,8 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 	}			workbuf = {0};
 	char	   *workb = VARDATA(&workbuf.hdr);
 	HeapTuple	newtup;
-	Datum		values[Natts_pg_largeobject];
-	bool		nulls[Natts_pg_largeobject];
-	bool		replace[Natts_pg_largeobject];
+	Datum		values[Natts_pg_largeobject] = {0};
+	bool		nulls[Natts_pg_largeobject] = {false};
 	CatalogIndexState indstate;
 
 	Assert(obj_desc);
@@ -610,6 +609,8 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 
 	while (nwritten < nbytes)
 	{
+		Bitmapset  *updated = NULL;
+
 		/*
 		 * If possible, get next pre-existing page of the LO.  We expect the
 		 * indexscan will deliver these in order --- but there may be holes.
@@ -665,16 +666,11 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 			/*
 			 * Form and insert updated tuple
 			 */
-			memset(values, 0, sizeof(values));
-			memset(nulls, false, sizeof(nulls));
-			memset(replace, false, sizeof(replace));
-			values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
-			replace[Anum_pg_largeobject_data - 1] = true;
-			newtup = heap_modify_tuple(oldtuple, RelationGetDescr(lo_heap_r),
-									   values, nulls, replace);
-			CatalogTupleUpdateWithInfo(lo_heap_r, &newtup->t_self, newtup,
-									   indstate);
+			HeapTupleUpdateValue(pg_largeobject, data, PointerGetDatum(&workbuf), values, nulls, updated);
+			newtup = heap_update_tuple(oldtuple, RelationGetDescr(lo_heap_r), values, nulls, updated);
+			CatalogTupleUpdate(lo_heap_r, &newtup->t_self, newtup, updated, indstate);
 			heap_freetuple(newtup);
+			bms_free(updated);
 
 			/*
 			 * We're done with this old page.
@@ -711,11 +707,11 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 			 */
 			memset(values, 0, sizeof(values));
 			memset(nulls, false, sizeof(nulls));
-			values[Anum_pg_largeobject_loid - 1] = ObjectIdGetDatum(obj_desc->id);
-			values[Anum_pg_largeobject_pageno - 1] = Int32GetDatum(pageno);
-			values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
+			HeapTupleSetValue(pg_largeobject, loid, ObjectIdGetDatum(obj_desc->id), values);
+			HeapTupleSetValue(pg_largeobject, pageno, Int32GetDatum(pageno), values);
+			HeapTupleSetValue(pg_largeobject, data, PointerGetDatum(&workbuf), values);
 			newtup = heap_form_tuple(lo_heap_r->rd_att, values, nulls);
-			CatalogTupleInsertWithInfo(lo_heap_r, newtup, indstate);
+			CatalogTupleInsert(lo_heap_r, newtup, indstate);
 			heap_freetuple(newtup);
 		}
 		pageno++;
@@ -751,9 +747,9 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 	}			workbuf = {0};
 	char	   *workb = VARDATA(&workbuf.hdr);
 	HeapTuple	newtup;
-	Datum		values[Natts_pg_largeobject];
-	bool		nulls[Natts_pg_largeobject];
-	bool		replace[Natts_pg_largeobject];
+	Datum		values[Natts_pg_largeobject] = {0};
+	bool		nulls[Natts_pg_largeobject] = {false};
+	Bitmapset  *updated = NULL;
 	CatalogIndexState indstate;
 
 	Assert(obj_desc);
@@ -840,14 +836,11 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 		 */
 		memset(values, 0, sizeof(values));
 		memset(nulls, false, sizeof(nulls));
-		memset(replace, false, sizeof(replace));
-		values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
-		replace[Anum_pg_largeobject_data - 1] = true;
-		newtup = heap_modify_tuple(oldtuple, RelationGetDescr(lo_heap_r),
-								   values, nulls, replace);
-		CatalogTupleUpdateWithInfo(lo_heap_r, &newtup->t_self, newtup,
-								   indstate);
+		HeapTupleUpdateValue(pg_largeobject, data, PointerGetDatum(&workbuf), values, nulls, updated);
+		newtup = heap_update_tuple(oldtuple, RelationGetDescr(lo_heap_r), values, nulls, updated);
+		CatalogTupleUpdate(lo_heap_r, &newtup->t_self, newtup, updated, indstate);
 		heap_freetuple(newtup);
+		bms_free(updated);
 	}
 	else
 	{
@@ -879,11 +872,11 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 		 */
 		memset(values, 0, sizeof(values));
 		memset(nulls, false, sizeof(nulls));
-		values[Anum_pg_largeobject_loid - 1] = ObjectIdGetDatum(obj_desc->id);
-		values[Anum_pg_largeobject_pageno - 1] = Int32GetDatum(pageno);
-		values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
+		HeapTupleSetValue(pg_largeobject, loid, ObjectIdGetDatum(obj_desc->id), values);
+		HeapTupleSetValue(pg_largeobject, pageno, Int32GetDatum(pageno), values);
+		HeapTupleSetValue(pg_largeobject, data, PointerGetDatum(&workbuf), values);
 		newtup = heap_form_tuple(lo_heap_r->rd_att, values, nulls);
-		CatalogTupleInsertWithInfo(lo_heap_r, newtup, indstate);
+		CatalogTupleInsert(lo_heap_r, newtup, indstate);
 		heap_freetuple(newtup);
 	}
 

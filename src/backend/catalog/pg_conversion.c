@@ -45,8 +45,8 @@ ConversionCreate(const char *conname, Oid connamespace,
 	TupleDesc	tupDesc;
 	HeapTuple	tup;
 	Oid			oid;
-	bool		nulls[Natts_pg_conversion];
-	Datum		values[Natts_pg_conversion];
+	Datum		values[Natts_pg_conversion] = {0};
+	bool		nulls[Natts_pg_conversion] = {false};
 	NameData	cname;
 	ObjectAddress myself,
 				referenced;
@@ -94,19 +94,19 @@ ConversionCreate(const char *conname, Oid connamespace,
 	namestrcpy(&cname, conname);
 	oid = GetNewOidWithIndex(rel, ConversionOidIndexId,
 							 Anum_pg_conversion_oid);
-	values[Anum_pg_conversion_oid - 1] = ObjectIdGetDatum(oid);
-	values[Anum_pg_conversion_conname - 1] = NameGetDatum(&cname);
-	values[Anum_pg_conversion_connamespace - 1] = ObjectIdGetDatum(connamespace);
-	values[Anum_pg_conversion_conowner - 1] = ObjectIdGetDatum(conowner);
-	values[Anum_pg_conversion_conforencoding - 1] = Int32GetDatum(conforencoding);
-	values[Anum_pg_conversion_contoencoding - 1] = Int32GetDatum(contoencoding);
-	values[Anum_pg_conversion_conproc - 1] = ObjectIdGetDatum(conproc);
-	values[Anum_pg_conversion_condefault - 1] = BoolGetDatum(def);
+	HeapTupleSetValue(pg_conversion, oid, ObjectIdGetDatum(oid), values);
+	HeapTupleSetValue(pg_conversion, conname, NameGetDatum(&cname), values);
+	HeapTupleSetValue(pg_conversion, connamespace, ObjectIdGetDatum(connamespace), values);
+	HeapTupleSetValue(pg_conversion, conowner, ObjectIdGetDatum(conowner), values);
+	HeapTupleSetValue(pg_conversion, conforencoding, Int32GetDatum(conforencoding), values);
+	HeapTupleSetValue(pg_conversion, contoencoding, Int32GetDatum(contoencoding), values);
+	HeapTupleSetValue(pg_conversion, conproc, ObjectIdGetDatum(conproc), values);
+	HeapTupleSetValue(pg_conversion, condefault, BoolGetDatum(def), values);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* insert a new tuple */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 
 	myself.classId = ConversionRelationId;
 	myself.objectId = oid;

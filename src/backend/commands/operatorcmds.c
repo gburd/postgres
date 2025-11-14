@@ -466,11 +466,9 @@ AlterOperator(AlterOperatorStmt *stmt)
 	Relation	catalog;
 	HeapTuple	tup;
 	Form_pg_operator oprForm;
-	int			i;
 	ListCell   *pl;
-	Datum		values[Natts_pg_operator];
-	bool		nulls[Natts_pg_operator];
-	bool		replaces[Natts_pg_operator];
+	Datum		values[Natts_pg_operator] = {0};
+	bool		nulls[Natts_pg_operator] = {false};
 	List	   *restrictionName = NIL;	/* optional restrict. sel. function */
 	bool		updateRestriction = false;
 	Oid			restrictionOid;
@@ -485,6 +483,7 @@ AlterOperator(AlterOperatorStmt *stmt)
 	bool		updateMerges = false;
 	bool		canHash = false;
 	bool		updateHashes = false;
+	Bitmapset  *updated = NULL;
 
 	/* Look up the operator */
 	oprId = LookupOperWithArgs(stmt->opername, false);
@@ -646,47 +645,27 @@ AlterOperator(AlterOperatorStmt *stmt)
 						   canHash);
 
 	/* Update the tuple */
-	for (i = 0; i < Natts_pg_operator; ++i)
-	{
-		values[i] = (Datum) 0;
-		replaces[i] = false;
-		nulls[i] = false;
-	}
 	if (updateRestriction)
-	{
-		replaces[Anum_pg_operator_oprrest - 1] = true;
-		values[Anum_pg_operator_oprrest - 1] = ObjectIdGetDatum(restrictionOid);
-	}
+		HeapTupleUpdateValue(pg_operator, oprrest, ObjectIdGetDatum(restrictionOid), values, nulls, updated);
+
 	if (updateJoin)
-	{
-		replaces[Anum_pg_operator_oprjoin - 1] = true;
-		values[Anum_pg_operator_oprjoin - 1] = ObjectIdGetDatum(joinOid);
-	}
+		HeapTupleUpdateValue(pg_operator, oprjoin, ObjectIdGetDatum(joinOid), values, nulls, updated);
+
 	if (OidIsValid(commutatorOid))
-	{
-		replaces[Anum_pg_operator_oprcom - 1] = true;
-		values[Anum_pg_operator_oprcom - 1] = ObjectIdGetDatum(commutatorOid);
-	}
+		HeapTupleUpdateValue(pg_operator, oprcom, ObjectIdGetDatum(commutatorOid), values, nulls, updated);
+
 	if (OidIsValid(negatorOid))
-	{
-		replaces[Anum_pg_operator_oprnegate - 1] = true;
-		values[Anum_pg_operator_oprnegate - 1] = ObjectIdGetDatum(negatorOid);
-	}
+		HeapTupleUpdateValue(pg_operator, oprnegate, ObjectIdGetDatum(negatorOid), values, nulls, updated);
+
 	if (updateMerges)
-	{
-		replaces[Anum_pg_operator_oprcanmerge - 1] = true;
-		values[Anum_pg_operator_oprcanmerge - 1] = BoolGetDatum(canMerge);
-	}
+		HeapTupleUpdateValue(pg_operator, oprcanmerge, BoolGetDatum(canMerge), values, nulls, updated);
+
 	if (updateHashes)
-	{
-		replaces[Anum_pg_operator_oprcanhash - 1] = true;
-		values[Anum_pg_operator_oprcanhash - 1] = BoolGetDatum(canHash);
-	}
+		HeapTupleUpdateValue(pg_operator, oprcanhash, BoolGetDatum(canHash), values, nulls, updated);
 
-	tup = heap_modify_tuple(tup, RelationGetDescr(catalog),
-							values, nulls, replaces);
+	tup = heap_update_tuple(tup, RelationGetDescr(catalog), values, nulls, updated);
 
-	CatalogTupleUpdate(catalog, &tup->t_self, tup);
+	CatalogTupleUpdate(catalog, &tup->t_self, tup, updated, NULL);
 
 	address = makeOperatorDependencies(tup, false, true);
 
@@ -696,6 +675,7 @@ AlterOperator(AlterOperatorStmt *stmt)
 	InvokeObjectPostAlterHook(OperatorRelationId, oprId, 0);
 
 	table_close(catalog, NoLock);
+	bms_free(updated);
 
 	return address;
 }

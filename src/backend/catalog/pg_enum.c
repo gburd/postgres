@@ -194,12 +194,12 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 		memset(slot[slotCount]->tts_isnull, false,
 			   slot[slotCount]->tts_tupleDescriptor->natts * sizeof(bool));
 
-		slot[slotCount]->tts_values[Anum_pg_enum_oid - 1] = ObjectIdGetDatum(oids[elemno]);
-		slot[slotCount]->tts_values[Anum_pg_enum_enumtypid - 1] = ObjectIdGetDatum(enumTypeOid);
-		slot[slotCount]->tts_values[Anum_pg_enum_enumsortorder - 1] = Float4GetDatum(elemno + 1);
+		HeapTupleSetValue(pg_enum, oid, ObjectIdGetDatum(oids[elemno]), slot[slotCount]->tts_values);
+		HeapTupleSetValue(pg_enum, enumtypid, ObjectIdGetDatum(enumTypeOid), slot[slotCount]->tts_values);
+		HeapTupleSetValue(pg_enum, enumsortorder, Float4GetDatum(elemno + 1), slot[slotCount]->tts_values);
 
 		namestrcpy(enumlabel, lab);
-		slot[slotCount]->tts_values[Anum_pg_enum_enumlabel - 1] = NameGetDatum(enumlabel);
+		HeapTupleSetValue(pg_enum, enumlabel, NameGetDatum(enumlabel), slot[slotCount]->tts_values);
 
 		ExecStoreVirtualTuple(slot[slotCount]);
 		slotCount++;
@@ -207,8 +207,7 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 		/* if slots are full, insert a batch of tuples */
 		if (slotCount == nslots)
 		{
-			CatalogTuplesMultiInsertWithInfo(pg_enum, slot, slotCount,
-											 indstate);
+			CatalogTuplesMultiInsert(pg_enum, slot, slotCount, indstate);
 			slotCount = 0;
 		}
 
@@ -217,10 +216,9 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 
 	/* Insert any tuples left in the buffer */
 	if (slotCount > 0)
-		CatalogTuplesMultiInsertWithInfo(pg_enum, slot, slotCount,
-										 indstate);
+		CatalogTuplesMultiInsert(pg_enum, slot, slotCount, indstate);
 
-	/* clean up */
+	/* Clean up */
 	pfree(oids);
 	for (int i = 0; i < nslots; i++)
 		ExecDropSingleTupleTableSlot(slot[i]);
@@ -310,8 +308,8 @@ AddEnumLabel(Oid enumTypeOid,
 {
 	Relation	pg_enum;
 	Oid			newOid;
-	Datum		values[Natts_pg_enum];
-	bool		nulls[Natts_pg_enum];
+	Datum		values[Natts_pg_enum] = {0};
+	bool		nulls[Natts_pg_enum] = {false};
 	NameData	enumlabel;
 	HeapTuple	enum_tup;
 	float4		newelemorder;
@@ -577,13 +575,13 @@ restart:
 
 	/* Create the new pg_enum entry */
 	memset(nulls, false, sizeof(nulls));
-	values[Anum_pg_enum_oid - 1] = ObjectIdGetDatum(newOid);
-	values[Anum_pg_enum_enumtypid - 1] = ObjectIdGetDatum(enumTypeOid);
-	values[Anum_pg_enum_enumsortorder - 1] = Float4GetDatum(newelemorder);
+	HeapTupleSetValue(pg_enum, oid, ObjectIdGetDatum(newOid), values);
+	HeapTupleSetValue(pg_enum, enumtypid, ObjectIdGetDatum(enumTypeOid), values);
+	HeapTupleSetValue(pg_enum, enumsortorder, Float4GetDatum(newelemorder), values);
 	namestrcpy(&enumlabel, newVal);
-	values[Anum_pg_enum_enumlabel - 1] = NameGetDatum(&enumlabel);
+	HeapTupleSetValue(pg_enum, enumlabel, NameGetDatum(&enumlabel), values);
 	enum_tup = heap_form_tuple(RelationGetDescr(pg_enum), values, nulls);
-	CatalogTupleInsert(pg_enum, enum_tup);
+	CatalogTupleInsert(pg_enum, enum_tup, NULL);
 	heap_freetuple(enum_tup);
 
 	table_close(pg_enum, RowExclusiveLock);
@@ -629,6 +627,7 @@ RenameEnumLabel(Oid enumTypeOid,
 	HeapTuple	old_tup;
 	bool		found_new;
 	int			i;
+	Bitmapset  *updated = NULL;
 
 	/* check length of new label is ok */
 	if (strlen(newVal) > (NAMEDATALEN - 1))
@@ -689,9 +688,12 @@ RenameEnumLabel(Oid enumTypeOid,
 
 	/* Update the pg_enum entry */
 	namestrcpy(&en->enumlabel, newVal);
-	CatalogTupleUpdate(pg_enum, &enum_tup->t_self, enum_tup);
-	heap_freetuple(enum_tup);
+	HeapTupleMarkColumnUpdated(pg_enum, enumlabel, updated);
 
+	CatalogTupleUpdate(pg_enum, &enum_tup->t_self, enum_tup, updated, NULL);
+
+	bms_free(updated);
+	heap_freetuple(enum_tup);
 	table_close(pg_enum, RowExclusiveLock);
 }
 
@@ -792,9 +794,12 @@ RenumberEnumType(Relation pg_enum, HeapTuple *existing, int nelems)
 		newsortorder = i + 1;
 		if (en->enumsortorder != newsortorder)
 		{
-			en->enumsortorder = newsortorder;
+			Bitmapset  *updated = NULL;
 
-			CatalogTupleUpdate(pg_enum, &newtup->t_self, newtup);
+			HeapTupleUpdateField(pg_enum, enumsortorder, newsortorder, en, updated);
+
+			CatalogTupleUpdate(pg_enum, &newtup->t_self, newtup, updated, NULL);
+			bms_free(updated);
 		}
 
 		heap_freetuple(newtup);

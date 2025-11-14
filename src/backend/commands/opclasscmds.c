@@ -246,8 +246,8 @@ CreateOpFamily(CreateOpFamilyStmt *stmt, const char *opfname,
 	Oid			opfamilyoid;
 	Relation	rel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_opfamily];
-	bool		nulls[Natts_pg_opfamily];
+	Datum		values[Natts_pg_opfamily] = {0};
+	bool		nulls[Natts_pg_opfamily] = {false};
 	NameData	opfName;
 	ObjectAddress myself,
 				referenced;
@@ -275,16 +275,16 @@ CreateOpFamily(CreateOpFamilyStmt *stmt, const char *opfname,
 
 	opfamilyoid = GetNewOidWithIndex(rel, OpfamilyOidIndexId,
 									 Anum_pg_opfamily_oid);
-	values[Anum_pg_opfamily_oid - 1] = ObjectIdGetDatum(opfamilyoid);
-	values[Anum_pg_opfamily_opfmethod - 1] = ObjectIdGetDatum(amoid);
+	HeapTupleSetValue(pg_opfamily, oid, ObjectIdGetDatum(opfamilyoid), values);
+	HeapTupleSetValue(pg_opfamily, opfmethod, ObjectIdGetDatum(amoid), values);
 	namestrcpy(&opfName, opfname);
-	values[Anum_pg_opfamily_opfname - 1] = NameGetDatum(&opfName);
-	values[Anum_pg_opfamily_opfnamespace - 1] = ObjectIdGetDatum(namespaceoid);
-	values[Anum_pg_opfamily_opfowner - 1] = ObjectIdGetDatum(GetUserId());
+	HeapTupleSetValue(pg_opfamily, opfname, NameGetDatum(&opfName), values);
+	HeapTupleSetValue(pg_opfamily, opfnamespace, ObjectIdGetDatum(namespaceoid), values);
+	HeapTupleSetValue(pg_opfamily, opfowner, ObjectIdGetDatum(GetUserId()), values);
 
 	tup = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 
 	heap_freetuple(tup);
 
@@ -350,8 +350,8 @@ DefineOpClass(CreateOpClassStmt *stmt)
 	HeapTuple	tup;
 	Form_pg_am	amform;
 	IndexAmRoutine *amroutine;
-	Datum		values[Natts_pg_opclass];
-	bool		nulls[Natts_pg_opclass];
+	Datum		values[Natts_pg_opclass] = {0};
+	bool		nulls[Natts_pg_opclass] = {false};
 	AclResult	aclresult;
 	NameData	opcName;
 	ObjectAddress myself,
@@ -653,20 +653,20 @@ DefineOpClass(CreateOpClassStmt *stmt)
 
 	opclassoid = GetNewOidWithIndex(rel, OpclassOidIndexId,
 									Anum_pg_opclass_oid);
-	values[Anum_pg_opclass_oid - 1] = ObjectIdGetDatum(opclassoid);
-	values[Anum_pg_opclass_opcmethod - 1] = ObjectIdGetDatum(amoid);
+	HeapTupleSetValue(pg_opclass, oid, ObjectIdGetDatum(opclassoid), values);
+	HeapTupleSetValue(pg_opclass, opcmethod, ObjectIdGetDatum(amoid), values);
 	namestrcpy(&opcName, opcname);
-	values[Anum_pg_opclass_opcname - 1] = NameGetDatum(&opcName);
-	values[Anum_pg_opclass_opcnamespace - 1] = ObjectIdGetDatum(namespaceoid);
-	values[Anum_pg_opclass_opcowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_opclass_opcfamily - 1] = ObjectIdGetDatum(opfamilyoid);
-	values[Anum_pg_opclass_opcintype - 1] = ObjectIdGetDatum(typeoid);
-	values[Anum_pg_opclass_opcdefault - 1] = BoolGetDatum(stmt->isDefault);
-	values[Anum_pg_opclass_opckeytype - 1] = ObjectIdGetDatum(storageoid);
+	HeapTupleSetValue(pg_opclass, opcname, NameGetDatum(&opcName), values);
+	HeapTupleSetValue(pg_opclass, opcnamespace, ObjectIdGetDatum(namespaceoid), values);
+	HeapTupleSetValue(pg_opclass, opcowner, ObjectIdGetDatum(GetUserId()), values);
+	HeapTupleSetValue(pg_opclass, opcfamily, ObjectIdGetDatum(opfamilyoid), values);
+	HeapTupleSetValue(pg_opclass, opcintype, ObjectIdGetDatum(typeoid), values);
+	HeapTupleSetValue(pg_opclass, opcdefault, BoolGetDatum(stmt->isDefault), values);
+	HeapTupleSetValue(pg_opclass, opckeytype, ObjectIdGetDatum(storageoid), values);
 
 	tup = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 
 	heap_freetuple(tup);
 
@@ -1455,8 +1455,8 @@ storeOperators(List *opfamilyname, Oid amoid, Oid opfamilyoid,
 			   List *operators, bool isAdd)
 {
 	Relation	rel;
-	Datum		values[Natts_pg_amop];
-	bool		nulls[Natts_pg_amop];
+	Datum		values[Natts_pg_amop] = {0};
+	bool		nulls[Natts_pg_amop] = {false};
 	HeapTuple	tup;
 	Oid			entryoid;
 	ObjectAddress myself,
@@ -1496,19 +1496,19 @@ storeOperators(List *opfamilyname, Oid amoid, Oid opfamilyoid,
 
 		entryoid = GetNewOidWithIndex(rel, AccessMethodOperatorOidIndexId,
 									  Anum_pg_amop_oid);
-		values[Anum_pg_amop_oid - 1] = ObjectIdGetDatum(entryoid);
-		values[Anum_pg_amop_amopfamily - 1] = ObjectIdGetDatum(opfamilyoid);
-		values[Anum_pg_amop_amoplefttype - 1] = ObjectIdGetDatum(op->lefttype);
-		values[Anum_pg_amop_amoprighttype - 1] = ObjectIdGetDatum(op->righttype);
-		values[Anum_pg_amop_amopstrategy - 1] = Int16GetDatum(op->number);
-		values[Anum_pg_amop_amoppurpose - 1] = CharGetDatum(oppurpose);
-		values[Anum_pg_amop_amopopr - 1] = ObjectIdGetDatum(op->object);
-		values[Anum_pg_amop_amopmethod - 1] = ObjectIdGetDatum(amoid);
-		values[Anum_pg_amop_amopsortfamily - 1] = ObjectIdGetDatum(op->sortfamily);
+		HeapTupleSetValue(pg_amop, oid, ObjectIdGetDatum(entryoid), values);
+		HeapTupleSetValue(pg_amop, amopfamily, ObjectIdGetDatum(opfamilyoid), values);
+		HeapTupleSetValue(pg_amop, amoplefttype, ObjectIdGetDatum(op->lefttype), values);
+		HeapTupleSetValue(pg_amop, amoprighttype, ObjectIdGetDatum(op->righttype), values);
+		HeapTupleSetValue(pg_amop, amopstrategy, Int16GetDatum(op->number), values);
+		HeapTupleSetValue(pg_amop, amoppurpose, CharGetDatum(oppurpose), values);
+		HeapTupleSetValue(pg_amop, amopopr, ObjectIdGetDatum(op->object), values);
+		HeapTupleSetValue(pg_amop, amopmethod, ObjectIdGetDatum(amoid), values);
+		HeapTupleSetValue(pg_amop, amopsortfamily, ObjectIdGetDatum(op->sortfamily), values);
 
 		tup = heap_form_tuple(rel->rd_att, values, nulls);
 
-		CatalogTupleInsert(rel, tup);
+		CatalogTupleInsert(rel, tup, NULL);
 
 		heap_freetuple(tup);
 
@@ -1585,8 +1585,8 @@ storeProcedures(List *opfamilyname, Oid amoid, Oid opfamilyoid,
 				List *procedures, bool isAdd)
 {
 	Relation	rel;
-	Datum		values[Natts_pg_amproc];
-	bool		nulls[Natts_pg_amproc];
+	Datum		values[Natts_pg_amproc] = {0};
+	bool		nulls[Natts_pg_amproc] = {false};
 	HeapTuple	tup;
 	Oid			entryoid;
 	ObjectAddress myself,
@@ -1623,16 +1623,16 @@ storeProcedures(List *opfamilyname, Oid amoid, Oid opfamilyoid,
 
 		entryoid = GetNewOidWithIndex(rel, AccessMethodProcedureOidIndexId,
 									  Anum_pg_amproc_oid);
-		values[Anum_pg_amproc_oid - 1] = ObjectIdGetDatum(entryoid);
-		values[Anum_pg_amproc_amprocfamily - 1] = ObjectIdGetDatum(opfamilyoid);
-		values[Anum_pg_amproc_amproclefttype - 1] = ObjectIdGetDatum(proc->lefttype);
-		values[Anum_pg_amproc_amprocrighttype - 1] = ObjectIdGetDatum(proc->righttype);
-		values[Anum_pg_amproc_amprocnum - 1] = Int16GetDatum(proc->number);
-		values[Anum_pg_amproc_amproc - 1] = ObjectIdGetDatum(proc->object);
+		HeapTupleSetValue(pg_amproc, oid, ObjectIdGetDatum(entryoid), values);
+		HeapTupleSetValue(pg_amproc, amprocfamily, ObjectIdGetDatum(opfamilyoid), values);
+		HeapTupleSetValue(pg_amproc, amproclefttype, ObjectIdGetDatum(proc->lefttype), values);
+		HeapTupleSetValue(pg_amproc, amprocrighttype, ObjectIdGetDatum(proc->righttype), values);
+		HeapTupleSetValue(pg_amproc, amprocnum, Int16GetDatum(proc->number), values);
+		HeapTupleSetValue(pg_amproc, amproc, ObjectIdGetDatum(proc->object), values);
 
 		tup = heap_form_tuple(rel->rd_att, values, nulls);
 
-		CatalogTupleInsert(rel, tup);
+		CatalogTupleInsert(rel, tup, NULL);
 
 		heap_freetuple(tup);
 

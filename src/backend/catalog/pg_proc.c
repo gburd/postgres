@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/htup.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -135,9 +136,9 @@ ProcedureCreate(const char *procedureName,
 	Relation	rel;
 	HeapTuple	tup;
 	HeapTuple	oldtup;
-	bool		nulls[Natts_pg_proc];
-	Datum		values[Natts_pg_proc];
-	bool		replaces[Natts_pg_proc];
+	Datum		values[Natts_pg_proc] = {0};
+	bool		nulls[Natts_pg_proc] = {false};
+	Bitmapset  *updated = NULL;
 	NameData	procname;
 	TupleDesc	tupDesc;
 	bool		is_update;
@@ -318,67 +319,61 @@ ProcedureCreate(const char *procedureName,
 	/*
 	 * All seems OK; prepare the data to be inserted into pg_proc.
 	 */
-
-	for (i = 0; i < Natts_pg_proc; ++i)
-	{
-		nulls[i] = false;
-		values[i] = (Datum) 0;
-		replaces[i] = true;
-	}
+	HeapTupleUpdateSetAllColumnsUpdated(pg_proc, updated);
 
 	namestrcpy(&procname, procedureName);
-	values[Anum_pg_proc_proname - 1] = NameGetDatum(&procname);
-	values[Anum_pg_proc_pronamespace - 1] = ObjectIdGetDatum(procNamespace);
-	values[Anum_pg_proc_proowner - 1] = ObjectIdGetDatum(proowner);
-	values[Anum_pg_proc_prolang - 1] = ObjectIdGetDatum(languageObjectId);
-	values[Anum_pg_proc_procost - 1] = Float4GetDatum(procost);
-	values[Anum_pg_proc_prorows - 1] = Float4GetDatum(prorows);
-	values[Anum_pg_proc_provariadic - 1] = ObjectIdGetDatum(variadicType);
-	values[Anum_pg_proc_prosupport - 1] = ObjectIdGetDatum(prosupport);
-	values[Anum_pg_proc_prokind - 1] = CharGetDatum(prokind);
-	values[Anum_pg_proc_prosecdef - 1] = BoolGetDatum(security_definer);
-	values[Anum_pg_proc_proleakproof - 1] = BoolGetDatum(isLeakProof);
-	values[Anum_pg_proc_proisstrict - 1] = BoolGetDatum(isStrict);
-	values[Anum_pg_proc_proretset - 1] = BoolGetDatum(returnsSet);
-	values[Anum_pg_proc_provolatile - 1] = CharGetDatum(volatility);
-	values[Anum_pg_proc_proparallel - 1] = CharGetDatum(parallel);
-	values[Anum_pg_proc_pronargs - 1] = UInt16GetDatum(parameterCount);
-	values[Anum_pg_proc_pronargdefaults - 1] = UInt16GetDatum(list_length(parameterDefaults));
-	values[Anum_pg_proc_prorettype - 1] = ObjectIdGetDatum(returnType);
-	values[Anum_pg_proc_proargtypes - 1] = PointerGetDatum(parameterTypes);
+	HeapTupleUpdateValue(pg_proc, proname, NameGetDatum(&procname), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, pronamespace, ObjectIdGetDatum(procNamespace), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proowner, ObjectIdGetDatum(proowner), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prolang, ObjectIdGetDatum(languageObjectId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, procost, Float4GetDatum(procost), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prorows, Float4GetDatum(prorows), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, provariadic, ObjectIdGetDatum(variadicType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prosupport, ObjectIdGetDatum(prosupport), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prokind, CharGetDatum(prokind), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prosecdef, BoolGetDatum(security_definer), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proleakproof, BoolGetDatum(isLeakProof), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proisstrict, BoolGetDatum(isStrict), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proretset, BoolGetDatum(returnsSet), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, provolatile, CharGetDatum(volatility), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proparallel, CharGetDatum(parallel), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, pronargs, UInt16GetDatum(parameterCount), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, pronargdefaults, UInt16GetDatum(list_length(parameterDefaults)), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prorettype, ObjectIdGetDatum(returnType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, proargtypes, PointerGetDatum(parameterTypes), values, nulls, updated);
 	if (allParameterTypes != PointerGetDatum(NULL))
-		values[Anum_pg_proc_proallargtypes - 1] = allParameterTypes;
+		HeapTupleUpdateValue(pg_proc, proallargtypes, allParameterTypes, values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_proallargtypes - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, proallargtypes, values, nulls, updated);
 	if (parameterModes != PointerGetDatum(NULL))
-		values[Anum_pg_proc_proargmodes - 1] = parameterModes;
+		HeapTupleUpdateValue(pg_proc, proargmodes, parameterModes, values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_proargmodes - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, proargmodes, values, nulls, updated);
 	if (parameterNames != PointerGetDatum(NULL))
-		values[Anum_pg_proc_proargnames - 1] = parameterNames;
+		HeapTupleUpdateValue(pg_proc, proargnames, parameterNames, values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_proargnames - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, proargnames, values, nulls, updated);
 	if (parameterDefaults != NIL)
-		values[Anum_pg_proc_proargdefaults - 1] = CStringGetTextDatum(nodeToString(parameterDefaults));
+		HeapTupleUpdateValue(pg_proc, proargdefaults, CStringGetTextDatum(nodeToString(parameterDefaults)), values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_proargdefaults - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, proargdefaults, values, nulls, updated);
 	if (trftypes != PointerGetDatum(NULL))
-		values[Anum_pg_proc_protrftypes - 1] = trftypes;
+		HeapTupleUpdateValue(pg_proc, protrftypes, trftypes, values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_protrftypes - 1] = true;
-	values[Anum_pg_proc_prosrc - 1] = CStringGetTextDatum(prosrc);
+		HeapTupleUpdateValueNull(pg_proc, protrftypes, values, nulls, updated);
+	HeapTupleUpdateValue(pg_proc, prosrc, CStringGetTextDatum(prosrc), values, nulls, updated);
 	if (probin)
-		values[Anum_pg_proc_probin - 1] = CStringGetTextDatum(probin);
+		HeapTupleUpdateValue(pg_proc, probin, CStringGetTextDatum(probin), values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_probin - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, probin, values, nulls, updated);
 	if (prosqlbody)
-		values[Anum_pg_proc_prosqlbody - 1] = CStringGetTextDatum(nodeToString(prosqlbody));
+		HeapTupleUpdateValue(pg_proc, prosqlbody, CStringGetTextDatum(nodeToString(prosqlbody)), values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_prosqlbody - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, prosqlbody, values, nulls, updated);
 	if (proconfig != PointerGetDatum(NULL))
-		values[Anum_pg_proc_proconfig - 1] = proconfig;
+		HeapTupleUpdateValue(pg_proc, proconfig, proconfig, values, nulls, updated);
 	else
-		nulls[Anum_pg_proc_proconfig - 1] = true;
+		HeapTupleUpdateValueNull(pg_proc, proconfig, values, nulls, updated);
 	/* proacl will be determined later */
 
 	rel = table_open(ProcedureRelationId, RowExclusiveLock);
@@ -579,13 +574,13 @@ ProcedureCreate(const char *procedureName,
 		 * Do not change existing oid, ownership or permissions, either.  Note
 		 * dependency-update code below has to agree with this decision.
 		 */
-		replaces[Anum_pg_proc_oid - 1] = false;
-		replaces[Anum_pg_proc_proowner - 1] = false;
-		replaces[Anum_pg_proc_proacl - 1] = false;
+		HeapTupleSetColumnNotUpdated(pg_proc, oid, updated);
+		HeapTupleSetColumnNotUpdated(pg_proc, proowner, updated);
+		HeapTupleSetColumnNotUpdated(pg_proc, proacl, updated);
 
 		/* Okay, do it... */
-		tup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		tup = heap_update_tuple(oldtup, tupDesc, values, nulls, updated);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 		ReleaseSysCache(oldtup);
 		is_update = true;
@@ -599,18 +594,23 @@ ProcedureCreate(const char *procedureName,
 		proacl = get_user_default_acl(OBJECT_FUNCTION, proowner,
 									  procNamespace);
 		if (proacl != NULL)
-			values[Anum_pg_proc_proacl - 1] = PointerGetDatum(proacl);
+			HeapTupleUpdateValue(pg_proc, proacl, PointerGetDatum(proacl), values, nulls, updated);
 		else
-			nulls[Anum_pg_proc_proacl - 1] = true;
+			HeapTupleUpdateValueNull(pg_proc, proacl, values, nulls, updated);
 
 		newOid = GetNewOidWithIndex(rel, ProcedureOidIndexId,
 									Anum_pg_proc_oid);
-		values[Anum_pg_proc_oid - 1] = ObjectIdGetDatum(newOid);
+		HeapTupleUpdateValue(pg_proc, oid, ObjectIdGetDatum(newOid), values, nulls, updated);
+
+		/* Okay, do it... */
 		tup = heap_form_tuple(tupDesc, values, nulls);
-		CatalogTupleInsert(rel, tup);
+		CatalogTupleInsert(rel, tup, NULL);
+
 		is_update = false;
 	}
 
+	bms_free(updated);
+	updated = NULL;
 
 	retval = ((Form_pg_proc) GETSTRUCT(tup))->oid;
 

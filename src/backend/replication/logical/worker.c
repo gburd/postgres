@@ -6121,21 +6121,12 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 	 */
 	if (subform->subskiplsn == myskiplsn)
 	{
-		bool		nulls[Natts_pg_subscription];
-		bool		replaces[Natts_pg_subscription];
-		Datum		values[Natts_pg_subscription];
-
-		memset(values, 0, sizeof(values));
-		memset(nulls, false, sizeof(nulls));
-		memset(replaces, false, sizeof(replaces));
+		Bitmapset  *updated = NULL;
 
 		/* reset subskiplsn */
-		values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
-		replaces[Anum_pg_subscription_subskiplsn - 1] = true;
-
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-								replaces);
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		HeapTupleUpdateField(pg_subscription, subskiplsn, LSNGetDatum(InvalidXLogRecPtr), subform, updated);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+		bms_free(updated);
 
 		if (myskiplsn != finish_lsn)
 			ereport(WARNING,

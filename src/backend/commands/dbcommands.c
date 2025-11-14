@@ -702,8 +702,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	volatile Oid dst_deftablespace;
 	Relation	pg_database_rel;
 	HeapTuple	tuple;
-	Datum		new_record[Natts_pg_database] = {0};
-	bool		new_record_nulls[Natts_pg_database] = {0};
+	Datum		values[Natts_pg_database] = {0};
+	bool		nulls[Natts_pg_database] = {false};
 	Oid			dboid = InvalidOid;
 	Oid			datdba;
 	ListCell   *option;
@@ -1457,45 +1457,44 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		   (dblocprovider == COLLPROVIDER_LIBC && !dblocale));
 
 	/* Form tuple */
-	new_record[Anum_pg_database_oid - 1] = ObjectIdGetDatum(dboid);
-	new_record[Anum_pg_database_datname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(dbname));
-	new_record[Anum_pg_database_datdba - 1] = ObjectIdGetDatum(datdba);
-	new_record[Anum_pg_database_encoding - 1] = Int32GetDatum(encoding);
-	new_record[Anum_pg_database_datlocprovider - 1] = CharGetDatum(dblocprovider);
-	new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(dbistemplate);
-	new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(dballowconnections);
-	new_record[Anum_pg_database_dathasloginevt - 1] = BoolGetDatum(src_hasloginevt);
-	new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(dbconnlimit);
-	new_record[Anum_pg_database_datfrozenxid - 1] = TransactionIdGetDatum(src_frozenxid);
-	new_record[Anum_pg_database_datminmxid - 1] = TransactionIdGetDatum(src_minmxid);
-	new_record[Anum_pg_database_dattablespace - 1] = ObjectIdGetDatum(dst_deftablespace);
-	new_record[Anum_pg_database_datcollate - 1] = CStringGetTextDatum(dbcollate);
-	new_record[Anum_pg_database_datctype - 1] = CStringGetTextDatum(dbctype);
+	HeapTupleSetValue(pg_database, oid, ObjectIdGetDatum(dboid), values);
+	HeapTupleSetValue(pg_database, datname, DirectFunctionCall1(namein, CStringGetDatum(dbname)), values);
+	HeapTupleSetValue(pg_database, datdba, ObjectIdGetDatum(datdba), values);
+	HeapTupleSetValue(pg_database, encoding, Int32GetDatum(encoding), values);
+	HeapTupleSetValue(pg_database, datlocprovider, CharGetDatum(dblocprovider), values);
+	HeapTupleSetValue(pg_database, datistemplate, BoolGetDatum(dbistemplate), values);
+	HeapTupleSetValue(pg_database, datallowconn, BoolGetDatum(dballowconnections), values);
+	HeapTupleSetValue(pg_database, dathasloginevt, BoolGetDatum(src_hasloginevt), values);
+	HeapTupleSetValue(pg_database, datconnlimit, Int32GetDatum(dbconnlimit), values);
+	HeapTupleSetValue(pg_database, datfrozenxid, TransactionIdGetDatum(src_frozenxid), values);
+	HeapTupleSetValue(pg_database, datminmxid, TransactionIdGetDatum(src_minmxid), values);
+	HeapTupleSetValue(pg_database, dattablespace, ObjectIdGetDatum(dst_deftablespace), values);
+	HeapTupleSetValue(pg_database, datcollate, CStringGetTextDatum(dbcollate), values);
+	HeapTupleSetValue(pg_database, datctype, CStringGetTextDatum(dbctype), values);
 	if (dblocale)
-		new_record[Anum_pg_database_datlocale - 1] = CStringGetTextDatum(dblocale);
+		HeapTupleSetValue(pg_database, datlocale, CStringGetTextDatum(dblocale), values);
 	else
-		new_record_nulls[Anum_pg_database_datlocale - 1] = true;
+		HeapTupleSetValueNull(pg_database, datlocale, values, nulls);
 	if (dbicurules)
-		new_record[Anum_pg_database_daticurules - 1] = CStringGetTextDatum(dbicurules);
+		HeapTupleSetValue(pg_database, daticurules, CStringGetTextDatum(dbicurules), values);
 	else
-		new_record_nulls[Anum_pg_database_daticurules - 1] = true;
+		HeapTupleSetValueNull(pg_database, daticurules, values, nulls);
 	if (dbcollversion)
-		new_record[Anum_pg_database_datcollversion - 1] = CStringGetTextDatum(dbcollversion);
+		HeapTupleSetValue(pg_database, datcollversion, CStringGetTextDatum(dbcollversion), values);
 	else
-		new_record_nulls[Anum_pg_database_datcollversion - 1] = true;
+		HeapTupleSetValueNull(pg_database, datcollversion, values, nulls);
 
 	/*
 	 * We deliberately set datacl to default (NULL), rather than copying it
 	 * from the template database.  Copying it would be a bad idea when the
 	 * owner is not the same as the template's owner.
 	 */
-	new_record_nulls[Anum_pg_database_datacl - 1] = true;
+	HeapTupleSetValueNull(pg_database, datacl, values, nulls);
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_database_rel),
-							new_record, new_record_nulls);
+							values, nulls);
 
-	CatalogTupleInsert(pg_database_rel, tuple);
+	CatalogTupleInsert(pg_database_rel, tuple, NULL);
 
 	/*
 	 * Now generate additional catalog entries associated with the new DB
@@ -1909,6 +1908,7 @@ RenameDatabase(const char *oldname, const char *newname)
 	int			notherbackends;
 	int			npreparedxacts;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
@@ -1980,8 +1980,9 @@ RenameDatabase(const char *oldname, const char *newname)
 	if (!HeapTupleIsValid(newtup))
 		elog(ERROR, "cache lookup failed for database %u", db_id);
 	otid = newtup->t_self;
-	namestrcpy(&(((Form_pg_database) GETSTRUCT(newtup))->datname), newname);
-	CatalogTupleUpdate(rel, &otid, newtup);
+	namestrcpy(&((Form_pg_database) GETSTRUCT(newtup))->datname, newname);
+	HeapTupleMarkColumnUpdated(pg_database, datname, updated);
+	CatalogTupleUpdate(rel, &otid, newtup, updated, NULL);
 	UnlockTuple(rel, &otid, InplaceUpdateTupleLock);
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
@@ -1992,6 +1993,7 @@ RenameDatabase(const char *oldname, const char *newname)
 	 * Close pg_database, but keep lock till commit.
 	 */
 	table_close(rel, NoLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -2189,9 +2191,9 @@ movedb(const char *dbname, const char *tblspcname)
 	PG_ENSURE_ERROR_CLEANUP(movedb_failure_callback,
 							PointerGetDatum(&fparms));
 	{
-		Datum		new_record[Natts_pg_database] = {0};
-		bool		new_record_nulls[Natts_pg_database] = {0};
-		bool		new_record_repl[Natts_pg_database] = {0};
+		Datum		values[Natts_pg_database] = {0};
+		bool		nulls[Natts_pg_database] = {false};
+		Bitmapset  *updated = NULL;
 
 		/*
 		 * Copy files from the old tablespace to the new one
@@ -2233,13 +2235,10 @@ movedb(const char *dbname, const char *tblspcname)
 					 errmsg("database \"%s\" does not exist", dbname)));
 		LockTuple(pgdbrel, &oldtuple->t_self, InplaceUpdateTupleLock);
 
-		new_record[Anum_pg_database_dattablespace - 1] = ObjectIdGetDatum(dst_tblspcoid);
-		new_record_repl[Anum_pg_database_dattablespace - 1] = true;
+		HeapTupleUpdateValue(pg_database, dattablespace, ObjectIdGetDatum(dst_tblspcoid), values, nulls, updated);
 
-		newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(pgdbrel),
-									 new_record,
-									 new_record_nulls, new_record_repl);
-		CatalogTupleUpdate(pgdbrel, &oldtuple->t_self, newtuple);
+		newtuple = heap_update_tuple(oldtuple, RelationGetDescr(pgdbrel), values, nulls, updated);
+		CatalogTupleUpdate(pgdbrel, &oldtuple->t_self, newtuple, updated, NULL);
 		UnlockTuple(pgdbrel, &oldtuple->t_self, InplaceUpdateTupleLock);
 
 		InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
@@ -2267,6 +2266,7 @@ movedb(const char *dbname, const char *tblspcname)
 		 * Close pg_database, but keep lock till commit.
 		 */
 		table_close(pgdbrel, NoLock);
+		bms_free(updated);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(movedb_failure_callback,
 								PointerGetDatum(&fparms));
@@ -2382,9 +2382,9 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	DefElem    *dallowconnections = NULL;
 	DefElem    *dconnlimit = NULL;
 	DefElem    *dtablespace = NULL;
-	Datum		new_record[Natts_pg_database] = {0};
-	bool		new_record_nulls[Natts_pg_database] = {0};
-	bool		new_record_repl[Natts_pg_database] = {0};
+	Datum		values[Natts_pg_database] = {0};
+	bool		nulls[Natts_pg_database] = {false};
+	Bitmapset  *updated = NULL;
 
 	/* Extract options from the statement node tree */
 	foreach(option, stmt->options)
@@ -2503,24 +2503,16 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	 * Build an updated tuple, perusing the information just obtained
 	 */
 	if (distemplate)
-	{
-		new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(dbistemplate);
-		new_record_repl[Anum_pg_database_datistemplate - 1] = true;
-	}
-	if (dallowconnections)
-	{
-		new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(dballowconnections);
-		new_record_repl[Anum_pg_database_datallowconn - 1] = true;
-	}
-	if (dconnlimit)
-	{
-		new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(dbconnlimit);
-		new_record_repl[Anum_pg_database_datconnlimit - 1] = true;
-	}
+		HeapTupleUpdateValue(pg_database, datistemplate, BoolGetDatum(dbistemplate), values, nulls, updated);
 
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel), new_record,
-								 new_record_nulls, new_record_repl);
-	CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+	if (dallowconnections)
+		HeapTupleUpdateValue(pg_database, datallowconn, BoolGetDatum(dballowconnections), values, nulls, updated);
+
+	if (dconnlimit)
+		HeapTupleUpdateValue(pg_database, datconnlimit, Int32GetDatum(dbconnlimit), values, nulls, updated);
+
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(rel), values, nulls, updated);
+	CatalogTupleUpdate(rel, &tuple->t_self, newtuple, updated, NULL);
 	UnlockTuple(rel, &tuple->t_self, InplaceUpdateTupleLock);
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, dboid, 0);
@@ -2529,6 +2521,7 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 
 	/* Close pg_database, but keep lock till commit */
 	table_close(rel, NoLock);
+	bms_free(updated);
 
 	return dboid;
 }
@@ -2597,22 +2590,21 @@ AlterDatabaseRefreshColl(AlterDatabaseRefreshCollStmt *stmt)
 		elog(ERROR, "invalid collation version change");
 	else if (oldversion && newversion && strcmp(newversion, oldversion) != 0)
 	{
-		bool		nulls[Natts_pg_database] = {0};
-		bool		replaces[Natts_pg_database] = {0};
 		Datum		values[Natts_pg_database] = {0};
+		bool		nulls[Natts_pg_database] = {false};
+		Bitmapset  *updated = NULL;
 		HeapTuple	newtuple;
 
 		ereport(NOTICE,
 				(errmsg("changing version from %s to %s",
 						oldversion, newversion)));
 
-		values[Anum_pg_database_datcollversion - 1] = CStringGetTextDatum(newversion);
-		replaces[Anum_pg_database_datcollversion - 1] = true;
+		HeapTupleUpdateValue(pg_database, datcollversion, CStringGetTextDatum(newversion), values, nulls, updated);
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
-									 values, nulls, replaces);
-		CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(rel), values, nulls, updated);
+		CatalogTupleUpdate(rel, &tuple->t_self, newtuple, updated, NULL);
 		heap_freetuple(newtuple);
+		bms_free(updated);
 	}
 	else
 		ereport(NOTICE,
@@ -2699,9 +2691,9 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 	 */
 	if (datForm->datdba != newOwnerId)
 	{
-		Datum		repl_val[Natts_pg_database];
-		bool		repl_null[Natts_pg_database] = {0};
-		bool		repl_repl[Natts_pg_database] = {0};
+		Datum		values[Natts_pg_database] = {0};
+		bool		nulls[Natts_pg_database] = {false};
+		Bitmapset  *updated = NULL;
 		Acl		   *newAcl;
 		Datum		aclDatum;
 		bool		isNull;
@@ -2731,8 +2723,7 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 
 		LockTuple(rel, &tuple->t_self, InplaceUpdateTupleLock);
 
-		repl_repl[Anum_pg_database_datdba - 1] = true;
-		repl_val[Anum_pg_database_datdba - 1] = ObjectIdGetDatum(newOwnerId);
+		HeapTupleUpdateValue(pg_database, datdba, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 		/*
 		 * Determine the modified ACL for the new owner.  This is only
@@ -2746,18 +2737,18 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		{
 			newAcl = aclnewowner(DatumGetAclP(aclDatum),
 								 datForm->datdba, newOwnerId);
-			repl_repl[Anum_pg_database_datacl - 1] = true;
-			repl_val[Anum_pg_database_datacl - 1] = PointerGetDatum(newAcl);
+			HeapTupleUpdateValue(pg_database, datacl, PointerGetDatum(newAcl), values, nulls, updated);
 		}
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel), repl_val, repl_null, repl_repl);
-		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(rel), values, nulls, updated);
+		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
 		UnlockTuple(rel, &tuple->t_self, InplaceUpdateTupleLock);
 
 		heap_freetuple(newtuple);
 
 		/* Update owner dependency reference */
 		changeDependencyOnOwner(DatabaseRelationId, db_id, newOwnerId);
+		bms_free(updated);
 	}
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);

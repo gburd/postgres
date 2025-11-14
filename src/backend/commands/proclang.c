@@ -46,9 +46,9 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	Oid			funcargtypes[1];
 	Relation	rel;
 	TupleDesc	tupDesc;
-	Datum		values[Natts_pg_language];
-	bool		nulls[Natts_pg_language];
-	bool		replaces[Natts_pg_language];
+	Datum		values[Natts_pg_language] = {0};
+	bool		nulls[Natts_pg_language] = {false};
+	Bitmapset  *updated = NULL;
 	NameData	langname;
 	HeapTuple	oldtup;
 	HeapTuple	tup;
@@ -104,19 +104,15 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	tupDesc = RelationGetDescr(rel);
 
 	/* Prepare data to be inserted */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, true, sizeof(replaces));
-
 	namestrcpy(&langname, languageName);
-	values[Anum_pg_language_lanname - 1] = NameGetDatum(&langname);
-	values[Anum_pg_language_lanowner - 1] = ObjectIdGetDatum(languageOwner);
-	values[Anum_pg_language_lanispl - 1] = BoolGetDatum(true);
-	values[Anum_pg_language_lanpltrusted - 1] = BoolGetDatum(stmt->pltrusted);
-	values[Anum_pg_language_lanplcallfoid - 1] = ObjectIdGetDatum(handlerOid);
-	values[Anum_pg_language_laninline - 1] = ObjectIdGetDatum(inlineOid);
-	values[Anum_pg_language_lanvalidator - 1] = ObjectIdGetDatum(valOid);
-	nulls[Anum_pg_language_lanacl - 1] = true;
+	HeapTupleUpdateValue(pg_language, lanname, NameGetDatum(&langname), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, lanowner, ObjectIdGetDatum(languageOwner), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, lanispl, BoolGetDatum(true), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, lanpltrusted, BoolGetDatum(stmt->pltrusted), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, lanplcallfoid, ObjectIdGetDatum(handlerOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, laninline, ObjectIdGetDatum(inlineOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_language, lanvalidator, ObjectIdGetDatum(valOid), values, nulls, updated);
+	HeapTupleUpdateValueNull(pg_language, lanacl, values, nulls, updated);
 
 	/* Check for pre-existing definition */
 	oldtup = SearchSysCache1(LANGNAME, PointerGetDatum(languageName));
@@ -142,13 +138,13 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 		 * Do not change existing oid, ownership or permissions.  Note
 		 * dependency-update code below has to agree with this decision.
 		 */
-		replaces[Anum_pg_language_oid - 1] = false;
-		replaces[Anum_pg_language_lanowner - 1] = false;
-		replaces[Anum_pg_language_lanacl - 1] = false;
+		HeapTupleSetColumnNotUpdated(pg_language, oid, updated);
+		HeapTupleSetColumnNotUpdated(pg_language, lanowner, updated);
+		HeapTupleSetColumnNotUpdated(pg_language, lanacl, updated);
 
 		/* Okay, do it... */
-		tup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		tup = heap_update_tuple(oldtup, tupDesc, values, nulls, updated);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 		langoid = oldform->oid;
 		ReleaseSysCache(oldtup);
@@ -157,11 +153,10 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	else
 	{
 		/* Creating a new language */
-		langoid = GetNewOidWithIndex(rel, LanguageOidIndexId,
-									 Anum_pg_language_oid);
-		values[Anum_pg_language_oid - 1] = ObjectIdGetDatum(langoid);
+		langoid = GetNewOidWithIndex(rel, LanguageOidIndexId, Anum_pg_language_oid);
+		HeapTupleUpdateValue(pg_language, oid, ObjectIdGetDatum(langoid), values, nulls, updated);
 		tup = heap_form_tuple(tupDesc, values, nulls);
-		CatalogTupleInsert(rel, tup);
+		CatalogTupleInsert(rel, tup, NULL);
 		is_update = false;
 	}
 
@@ -213,6 +208,7 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	InvokeObjectPostCreateHook(LanguageRelationId, myself.objectId, 0);
 
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return myself;
 }

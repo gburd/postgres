@@ -342,6 +342,7 @@ update_default_partition_oid(Oid parentId, Oid defaultPartId)
 	HeapTuple	tuple;
 	Relation	pg_partitioned_table;
 	Form_pg_partitioned_table part_table_form;
+	Bitmapset  *updated = NULL;
 
 	pg_partitioned_table = table_open(PartitionedRelationId, RowExclusiveLock);
 
@@ -353,10 +354,12 @@ update_default_partition_oid(Oid parentId, Oid defaultPartId)
 
 	part_table_form = (Form_pg_partitioned_table) GETSTRUCT(tuple);
 	part_table_form->partdefid = defaultPartId;
-	CatalogTupleUpdate(pg_partitioned_table, &tuple->t_self, tuple);
+	HeapTupleMarkColumnUpdated(pg_partitioned_table, partdefid, updated);
+	CatalogTupleUpdate(pg_partitioned_table, &tuple->t_self, tuple, updated, NULL);
 
 	heap_freetuple(tuple);
 	table_close(pg_partitioned_table, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*

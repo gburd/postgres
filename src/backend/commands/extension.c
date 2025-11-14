@@ -2067,8 +2067,8 @@ InsertExtensionTuple(const char *extName, Oid extOwner,
 {
 	Oid			extensionOid;
 	Relation	rel;
-	Datum		values[Natts_pg_extension];
-	bool		nulls[Natts_pg_extension];
+	Datum		values[Natts_pg_extension] = {0};
+	bool		nulls[Natts_pg_extension] = {false};
 	HeapTuple	tuple;
 	ObjectAddress myself;
 	ObjectAddress nsp;
@@ -2085,27 +2085,26 @@ InsertExtensionTuple(const char *extName, Oid extOwner,
 
 	extensionOid = GetNewOidWithIndex(rel, ExtensionOidIndexId,
 									  Anum_pg_extension_oid);
-	values[Anum_pg_extension_oid - 1] = ObjectIdGetDatum(extensionOid);
-	values[Anum_pg_extension_extname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(extName));
-	values[Anum_pg_extension_extowner - 1] = ObjectIdGetDatum(extOwner);
-	values[Anum_pg_extension_extnamespace - 1] = ObjectIdGetDatum(schemaOid);
-	values[Anum_pg_extension_extrelocatable - 1] = BoolGetDatum(relocatable);
-	values[Anum_pg_extension_extversion - 1] = CStringGetTextDatum(extVersion);
+	HeapTupleSetValue(pg_extension, oid, ObjectIdGetDatum(extensionOid), values);
+	HeapTupleSetValue(pg_extension, extname, DirectFunctionCall1(namein, CStringGetDatum(extName)), values);
+	HeapTupleSetValue(pg_extension, extowner, ObjectIdGetDatum(extOwner), values);
+	HeapTupleSetValue(pg_extension, extnamespace, ObjectIdGetDatum(schemaOid), values);
+	HeapTupleSetValue(pg_extension, extrelocatable, BoolGetDatum(relocatable), values);
+	HeapTupleSetValue(pg_extension, extversion, CStringGetTextDatum(extVersion), values);
 
 	if (extConfig == PointerGetDatum(NULL))
-		nulls[Anum_pg_extension_extconfig - 1] = true;
+		HeapTupleSetValueNull(pg_extension, extconfig, values, nulls);
 	else
-		values[Anum_pg_extension_extconfig - 1] = extConfig;
+		HeapTupleSetValue(pg_extension, extconfig, extConfig, values);
 
 	if (extCondition == PointerGetDatum(NULL))
-		nulls[Anum_pg_extension_extcondition - 1] = true;
+		HeapTupleSetValueNull(pg_extension, extcondition, values, nulls);
 	else
-		values[Anum_pg_extension_extcondition - 1] = extCondition;
+		HeapTupleSetValue(pg_extension, extcondition, extCondition, values);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 	table_close(rel, RowExclusiveLock);
@@ -2674,9 +2673,9 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 	int			arrayLength;
 	int			arrayIndex;
 	bool		isnull;
-	Datum		repl_val[Natts_pg_extension];
-	bool		repl_null[Natts_pg_extension];
-	bool		repl_repl[Natts_pg_extension];
+	Datum		values[Natts_pg_extension] = {0};
+	bool		nulls[Natts_pg_extension] = {false};
+	Bitmapset  *updated = NULL;
 	ArrayType  *a;
 
 	/*
@@ -2731,10 +2730,6 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 		elog(ERROR, "could not find tuple for extension %u",
 			 CurrentExtensionObject);
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	/* Build or modify the extconfig value */
 	elementDatum = ObjectIdGetDatum(tableoid);
 
@@ -2784,8 +2779,7 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 					  true /* OID's typbyval */ ,
 					  TYPALIGN_INT /* OID's typalign */ );
 	}
-	repl_val[Anum_pg_extension_extconfig - 1] = PointerGetDatum(a);
-	repl_repl[Anum_pg_extension_extconfig - 1] = true;
+	HeapTupleUpdateValue(pg_extension, extconfig, PointerGetDatum(a), values, nulls, updated);
 
 	/* Build or modify the extcondition value */
 	elementDatum = PointerGetDatum(wherecond);
@@ -2820,17 +2814,16 @@ pg_extension_config_dump(PG_FUNCTION_ARGS)
 					  false /* TEXT's typbyval */ ,
 					  TYPALIGN_INT /* TEXT's typalign */ );
 	}
-	repl_val[Anum_pg_extension_extcondition - 1] = PointerGetDatum(a);
-	repl_repl[Anum_pg_extension_extcondition - 1] = true;
+	HeapTupleUpdateValue(pg_extension, extcondition, PointerGetDatum(a), values, nulls, updated);
 
-	extTup = heap_modify_tuple(extTup, RelationGetDescr(extRel),
-							   repl_val, repl_null, repl_repl);
+	extTup = heap_update_tuple(extTup, RelationGetDescr(extRel), values, nulls, updated);
 
-	CatalogTupleUpdate(extRel, &extTup->t_self, extTup);
+	CatalogTupleUpdate(extRel, &extTup->t_self, extTup, updated, NULL);
 
 	systable_endscan(extScan);
 
 	table_close(extRel, RowExclusiveLock);
+	bms_free(updated);
 
 	PG_RETURN_VOID();
 }
@@ -2906,9 +2899,9 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	int			arrayLength;
 	int			arrayIndex;
 	bool		isnull;
-	Datum		repl_val[Natts_pg_extension];
-	bool		repl_null[Natts_pg_extension];
-	bool		repl_repl[Natts_pg_extension];
+	Datum		values[Natts_pg_extension] = {0};
+	bool		nulls[Natts_pg_extension] = {false};
+	Bitmapset  *updated = NULL;
 	ArrayType  *a;
 
 	/* Find the pg_extension tuple */
@@ -2975,14 +2968,10 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	}
 
 	/* Modify or delete the extconfig value */
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	if (arrayLength <= 1)
 	{
 		/* removing only element, just set array to null */
-		repl_null[Anum_pg_extension_extconfig - 1] = true;
+		HeapTupleUpdateValueNull(pg_extension, extconfig, values, nulls, updated);
 	}
 	else
 	{
@@ -2999,9 +2988,8 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 
 		a = construct_array_builtin(dvalues, arrayLength - 1, OIDOID);
 
-		repl_val[Anum_pg_extension_extconfig - 1] = PointerGetDatum(a);
+		HeapTupleUpdateValue(pg_extension, extconfig, PointerGetDatum(a), values, nulls, updated);
 	}
-	repl_repl[Anum_pg_extension_extconfig - 1] = true;
 
 	/* Modify or delete the extcondition value */
 	arrayDatum = heap_getattr(extTup, Anum_pg_extension_extcondition,
@@ -3026,7 +3014,7 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 	if (arrayLength <= 1)
 	{
 		/* removing only element, just set array to null */
-		repl_null[Anum_pg_extension_extcondition - 1] = true;
+		HeapTupleUpdateValueNull(pg_extension, extcondition, values, nulls, updated);
 	}
 	else
 	{
@@ -3042,19 +3030,17 @@ extension_config_remove(Oid extensionoid, Oid tableoid)
 			dvalues[i] = dvalues[i + 1];
 
 		a = construct_array_builtin(dvalues, arrayLength - 1, TEXTOID);
-
-		repl_val[Anum_pg_extension_extcondition - 1] = PointerGetDatum(a);
+		HeapTupleUpdateValue(pg_extension, extcondition, PointerGetDatum(a), values, nulls, updated);
 	}
-	repl_repl[Anum_pg_extension_extcondition - 1] = true;
 
-	extTup = heap_modify_tuple(extTup, RelationGetDescr(extRel),
-							   repl_val, repl_null, repl_repl);
+	extTup = heap_update_tuple(extTup, RelationGetDescr(extRel), values, nulls, updated);
 
-	CatalogTupleUpdate(extRel, &extTup->t_self, extTup);
+	CatalogTupleUpdate(extRel, &extTup->t_self, extTup, updated, NULL);
 
 	systable_endscan(extScan);
 
 	table_close(extRel, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*
@@ -3072,6 +3058,7 @@ AlterExtensionNamespace(const char *extensionName, const char *newschema, Oid *o
 	SysScanDesc extScan;
 	HeapTuple	extTup;
 	Form_pg_extension extForm;
+	Bitmapset  *updated = NULL;
 	Relation	depRel;
 	SysScanDesc depScan;
 	HeapTuple	depTup;
@@ -3253,11 +3240,12 @@ AlterExtensionNamespace(const char *extensionName, const char *newschema, Oid *o
 	relation_close(depRel, AccessShareLock);
 
 	/* Now adjust pg_extension.extnamespace */
-	extForm->extnamespace = nspOid;
+	HeapTupleUpdateField(pg_extension, extnamespace, nspOid, extForm, updated);
 
-	CatalogTupleUpdate(extRel, &extTup->t_self, extTup);
+	CatalogTupleUpdate(extRel, &extTup->t_self, extTup, updated, NULL);
 
 	table_close(extRel, RowExclusiveLock);
+	bms_free(updated);
 
 	/* update dependency to point to the new schema */
 	if (changeDependencyFor(ExtensionRelationId, extensionOid,
@@ -3447,9 +3435,9 @@ ApplyExtensionUpdates(Oid extensionOid,
 		SysScanDesc extScan;
 		HeapTuple	extTup;
 		Form_pg_extension extForm;
-		Datum		values[Natts_pg_extension];
-		bool		nulls[Natts_pg_extension];
-		bool		repl[Natts_pg_extension];
+		Datum		values[Natts_pg_extension] = {0};
+		bool		nulls[Natts_pg_extension] = {false};
+		Bitmapset  *updated = NULL;
 		ObjectAddress myself;
 		ListCell   *lc;
 
@@ -3486,21 +3474,14 @@ ApplyExtensionUpdates(Oid extensionOid,
 		/*
 		 * Modify extrelocatable and extversion in the pg_extension tuple
 		 */
-		memset(values, 0, sizeof(values));
-		memset(nulls, 0, sizeof(nulls));
-		memset(repl, 0, sizeof(repl));
+		HeapTupleUpdateValue(pg_extension, extrelocatable, BoolGetDatum(control->relocatable), values, nulls, updated);
+		HeapTupleUpdateValue(pg_extension, extversion, CStringGetTextDatum(versionName), values, nulls, updated);
 
-		values[Anum_pg_extension_extrelocatable - 1] =
-			BoolGetDatum(control->relocatable);
-		repl[Anum_pg_extension_extrelocatable - 1] = true;
-		values[Anum_pg_extension_extversion - 1] =
-			CStringGetTextDatum(versionName);
-		repl[Anum_pg_extension_extversion - 1] = true;
+		extTup = heap_update_tuple(extTup, RelationGetDescr(extRel),
+								   values, nulls, updated);
 
-		extTup = heap_modify_tuple(extTup, RelationGetDescr(extRel),
-								   values, nulls, repl);
-
-		CatalogTupleUpdate(extRel, &extTup->t_self, extTup);
+		CatalogTupleUpdate(extRel, &extTup->t_self, extTup, updated, NULL);
+		bms_free(updated);
 
 		systable_endscan(extScan);
 

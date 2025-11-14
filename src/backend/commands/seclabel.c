@@ -334,18 +334,16 @@ SetSharedSecurityLabel(const ObjectAddress *object,
 	SysScanDesc scan;
 	HeapTuple	oldtup;
 	HeapTuple	newtup = NULL;
-	Datum		values[Natts_pg_shseclabel];
-	bool		nulls[Natts_pg_shseclabel];
-	bool		replaces[Natts_pg_shseclabel];
+	Datum		values[Natts_pg_shseclabel] = {0};
+	bool		nulls[Natts_pg_shseclabel] = {false};
+	Bitmapset  *updated = NULL;
 
 	/* Prepare to form or update a tuple, if necessary. */
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-	values[Anum_pg_shseclabel_objoid - 1] = ObjectIdGetDatum(object->objectId);
-	values[Anum_pg_shseclabel_classoid - 1] = ObjectIdGetDatum(object->classId);
-	values[Anum_pg_shseclabel_provider - 1] = CStringGetTextDatum(provider);
+	HeapTupleUpdateValue(pg_shseclabel, objoid, ObjectIdGetDatum(object->objectId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_shseclabel, classoid, ObjectIdGetDatum(object->classId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_shseclabel, provider, CStringGetTextDatum(provider), values, nulls, updated);
 	if (label != NULL)
-		values[Anum_pg_shseclabel_label - 1] = CStringGetTextDatum(label);
+		HeapTupleUpdateValue(pg_shseclabel, label, CStringGetTextDatum(label), values, nulls, updated);
 
 	/* Use the index to search for a matching old tuple */
 	ScanKeyInit(&keys[0],
@@ -373,10 +371,9 @@ SetSharedSecurityLabel(const ObjectAddress *object,
 			CatalogTupleDelete(pg_shseclabel, &oldtup->t_self);
 		else
 		{
-			replaces[Anum_pg_shseclabel_label - 1] = true;
-			newtup = heap_modify_tuple(oldtup, RelationGetDescr(pg_shseclabel),
-									   values, nulls, replaces);
-			CatalogTupleUpdate(pg_shseclabel, &oldtup->t_self, newtup);
+			HeapTupleUpdateValue(pg_shseclabel, label, CStringGetTextDatum(label), values, nulls, updated);
+			newtup = heap_update_tuple(oldtup, RelationGetDescr(pg_shseclabel), values, nulls, updated);
+			CatalogTupleUpdate(pg_shseclabel, &oldtup->t_self, newtup, updated, NULL);
 		}
 	}
 	systable_endscan(scan);
@@ -386,13 +383,14 @@ SetSharedSecurityLabel(const ObjectAddress *object,
 	{
 		newtup = heap_form_tuple(RelationGetDescr(pg_shseclabel),
 								 values, nulls);
-		CatalogTupleInsert(pg_shseclabel, newtup);
+		CatalogTupleInsert(pg_shseclabel, newtup, NULL);
 	}
 
 	if (newtup != NULL)
 		heap_freetuple(newtup);
 
 	table_close(pg_shseclabel, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*
@@ -409,9 +407,9 @@ SetSecurityLabel(const ObjectAddress *object,
 	SysScanDesc scan;
 	HeapTuple	oldtup;
 	HeapTuple	newtup = NULL;
-	Datum		values[Natts_pg_seclabel];
-	bool		nulls[Natts_pg_seclabel];
-	bool		replaces[Natts_pg_seclabel];
+	Datum		values[Natts_pg_seclabel] = {0};
+	bool		nulls[Natts_pg_seclabel] = {false};
+	Bitmapset  *updated = NULL;
 
 	/* Shared objects have their own security label catalog. */
 	if (IsSharedRelation(object->classId))
@@ -421,14 +419,12 @@ SetSecurityLabel(const ObjectAddress *object,
 	}
 
 	/* Prepare to form or update a tuple, if necessary. */
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-	values[Anum_pg_seclabel_objoid - 1] = ObjectIdGetDatum(object->objectId);
-	values[Anum_pg_seclabel_classoid - 1] = ObjectIdGetDatum(object->classId);
-	values[Anum_pg_seclabel_objsubid - 1] = Int32GetDatum(object->objectSubId);
-	values[Anum_pg_seclabel_provider - 1] = CStringGetTextDatum(provider);
+	HeapTupleUpdateValue(pg_seclabel, objoid, ObjectIdGetDatum(object->objectId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_seclabel, classoid, ObjectIdGetDatum(object->classId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_seclabel, objsubid, Int32GetDatum(object->objectSubId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_seclabel, provider, CStringGetTextDatum(provider), values, nulls, updated);
 	if (label != NULL)
-		values[Anum_pg_seclabel_label - 1] = CStringGetTextDatum(label);
+		HeapTupleUpdateValue(pg_seclabel, label, CStringGetTextDatum(label), values, nulls, updated);
 
 	/* Use the index to search for a matching old tuple */
 	ScanKeyInit(&keys[0],
@@ -460,10 +456,9 @@ SetSecurityLabel(const ObjectAddress *object,
 			CatalogTupleDelete(pg_seclabel, &oldtup->t_self);
 		else
 		{
-			replaces[Anum_pg_seclabel_label - 1] = true;
-			newtup = heap_modify_tuple(oldtup, RelationGetDescr(pg_seclabel),
-									   values, nulls, replaces);
-			CatalogTupleUpdate(pg_seclabel, &oldtup->t_self, newtup);
+			HeapTupleUpdateValue(pg_seclabel, label, CStringGetTextDatum(label), values, nulls, updated);
+			newtup = heap_update_tuple(oldtup, RelationGetDescr(pg_seclabel), values, nulls, updated);
+			CatalogTupleUpdate(pg_seclabel, &oldtup->t_self, newtup, updated, NULL);
 		}
 	}
 	systable_endscan(scan);
@@ -471,9 +466,8 @@ SetSecurityLabel(const ObjectAddress *object,
 	/* If we didn't find an old tuple, insert a new one */
 	if (newtup == NULL && label != NULL)
 	{
-		newtup = heap_form_tuple(RelationGetDescr(pg_seclabel),
-								 values, nulls);
-		CatalogTupleInsert(pg_seclabel, newtup);
+		newtup = heap_form_tuple(RelationGetDescr(pg_seclabel), values, nulls);
+		CatalogTupleInsert(pg_seclabel, newtup, NULL);
 	}
 
 	/* Update indexes, if necessary */
@@ -481,6 +475,7 @@ SetSecurityLabel(const ObjectAddress *object,
 		heap_freetuple(newtup);
 
 	table_close(pg_seclabel, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*

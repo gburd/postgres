@@ -1377,6 +1377,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	DefElem    *rows_item = NULL;
 	DefElem    *support_item = NULL;
 	DefElem    *parallel_item = NULL;
+	Bitmapset  *updated = NULL;
 	ObjectAddress address;
 
 	rel = table_open(ProcedureRelationId, RowExclusiveLock);
@@ -1425,14 +1426,25 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	}
 
 	if (volatility_item)
+	{
 		procForm->provolatile = interpret_func_volatility(volatility_item);
+		HeapTupleMarkColumnUpdated(pg_proc, provolatile, updated);
+	}
+
 	if (strict_item)
+	{
 		procForm->proisstrict = boolVal(strict_item->arg);
+		HeapTupleMarkColumnUpdated(pg_proc, proisstrict, updated);
+	}
 	if (security_def_item)
+	{
 		procForm->prosecdef = boolVal(security_def_item->arg);
+		HeapTupleMarkColumnUpdated(pg_proc, prosecdef, updated);
+	}
 	if (leakproof_item)
 	{
 		procForm->proleakproof = boolVal(leakproof_item->arg);
+		HeapTupleMarkColumnUpdated(pg_proc, proleakproof, updated);
 		if (procForm->proleakproof && !superuser())
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -1441,6 +1453,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	if (cost_item)
 	{
 		procForm->procost = defGetNumeric(cost_item);
+		HeapTupleMarkColumnUpdated(pg_proc, procost, updated);
 		if (procForm->procost <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1449,6 +1462,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	if (rows_item)
 	{
 		procForm->prorows = defGetNumeric(rows_item);
+		HeapTupleMarkColumnUpdated(pg_proc, prorows, updated);
 		if (procForm->prorows <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1483,17 +1497,20 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 		}
 
 		procForm->prosupport = newsupport;
+		HeapTupleMarkColumnUpdated(pg_proc, prosupport, updated);
 	}
 	if (parallel_item)
+	{
 		procForm->proparallel = interpret_func_parallel(parallel_item);
+		HeapTupleMarkColumnUpdated(pg_proc, proparallel, updated);
+	}
 	if (set_items)
 	{
 		Datum		datum;
 		bool		isnull;
 		ArrayType  *a;
-		Datum		repl_val[Natts_pg_proc];
-		bool		repl_null[Natts_pg_proc];
-		bool		repl_repl[Natts_pg_proc];
+		Datum		values[Natts_pg_proc] = {0};
+		bool		nulls[Natts_pg_proc] = {false};
 
 		/* extract existing proconfig setting */
 		datum = SysCacheGetAttr(PROCOID, tup, Anum_pg_proc_proconfig, &isnull);
@@ -1503,27 +1520,19 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 		a = update_proconfig_value(a, set_items);
 
 		/* update the tuple */
-		memset(repl_repl, false, sizeof(repl_repl));
-		repl_repl[Anum_pg_proc_proconfig - 1] = true;
-
 		if (a == NULL)
-		{
-			repl_val[Anum_pg_proc_proconfig - 1] = (Datum) 0;
-			repl_null[Anum_pg_proc_proconfig - 1] = true;
-		}
+			HeapTupleUpdateValueNull(pg_proc, proconfig, values, nulls, updated);
 		else
-		{
-			repl_val[Anum_pg_proc_proconfig - 1] = PointerGetDatum(a);
-			repl_null[Anum_pg_proc_proconfig - 1] = false;
-		}
+			HeapTupleUpdateValue(pg_proc, proconfig, PointerGetDatum(a), values, nulls, updated);
 
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel),
-								repl_val, repl_null, repl_repl);
+		tup = heap_update_tuple(tup, RelationGetDescr(rel),
+								values, nulls, updated);
 	}
 	/* DO NOT put more touches of procForm below here; it's now dangling. */
 
 	/* Do the update */
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(ProcedureRelationId, funcOid, 0);
 
@@ -1840,9 +1849,9 @@ CreateTransform(CreateTransformStmt *stmt)
 	Oid			tosqlfuncid;
 	AclResult	aclresult;
 	Form_pg_proc procstruct;
-	Datum		values[Natts_pg_transform];
-	bool		nulls[Natts_pg_transform] = {0};
-	bool		replaces[Natts_pg_transform] = {0};
+	Datum		values[Natts_pg_transform] = {0};
+	bool		nulls[Natts_pg_transform] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			transformid;
 	HeapTuple	tuple;
 	HeapTuple	newtuple;
@@ -1943,10 +1952,10 @@ CreateTransform(CreateTransformStmt *stmt)
 	/*
 	 * Ready to go
 	 */
-	values[Anum_pg_transform_trftype - 1] = ObjectIdGetDatum(typeid);
-	values[Anum_pg_transform_trflang - 1] = ObjectIdGetDatum(langid);
-	values[Anum_pg_transform_trffromsql - 1] = ObjectIdGetDatum(fromsqlfuncid);
-	values[Anum_pg_transform_trftosql - 1] = ObjectIdGetDatum(tosqlfuncid);
+	HeapTupleUpdateValue(pg_transform, trftype, ObjectIdGetDatum(typeid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_transform, trflang, ObjectIdGetDatum(langid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_transform, trffromsql, ObjectIdGetDatum(fromsqlfuncid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_transform, trftosql, ObjectIdGetDatum(tosqlfuncid), values, nulls, updated);
 
 	relation = table_open(TransformRelationId, RowExclusiveLock);
 
@@ -1964,11 +1973,8 @@ CreateTransform(CreateTransformStmt *stmt)
 							format_type_be(typeid),
 							stmt->lang)));
 
-		replaces[Anum_pg_transform_trffromsql - 1] = true;
-		replaces[Anum_pg_transform_trftosql - 1] = true;
-
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation), values, nulls, replaces);
-		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(relation), values, nulls, updated);
+		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple, updated, NULL);
 
 		transformid = form->oid;
 		ReleaseSysCache(tuple);
@@ -1978,9 +1984,9 @@ CreateTransform(CreateTransformStmt *stmt)
 	{
 		transformid = GetNewOidWithIndex(relation, TransformOidIndexId,
 										 Anum_pg_transform_oid);
-		values[Anum_pg_transform_oid - 1] = ObjectIdGetDatum(transformid);
+		HeapTupleUpdateValue(pg_transform, oid, ObjectIdGetDatum(transformid), values, nulls, updated);
 		newtuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
-		CatalogTupleInsert(relation, newtuple);
+		CatalogTupleInsert(relation, newtuple, NULL);
 		is_replace = false;
 	}
 
@@ -2022,6 +2028,7 @@ CreateTransform(CreateTransformStmt *stmt)
 	InvokeObjectPostCreateHook(TransformRelationId, transformid, 0);
 
 	heap_freetuple(newtuple);
+	bms_free(updated);
 
 	table_close(relation, RowExclusiveLock);
 

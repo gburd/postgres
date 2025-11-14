@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/htup.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "catalog/catalog.h"
@@ -53,11 +54,11 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 	Relation	relation;
 	HeapTuple	tuple;
 	Oid			castid;
-	Datum		values[Natts_pg_cast];
-	bool		nulls[Natts_pg_cast] = {0};
 	ObjectAddress myself,
 				referenced;
 	ObjectAddresses *addrs;
+
+	CatalogInsertValuesContext(pg_cast, ctx);
 
 	relation = table_open(CastRelationId, RowExclusiveLock);
 
@@ -78,16 +79,14 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 
 	/* ready to go */
 	castid = GetNewOidWithIndex(relation, CastOidIndexId, Anum_pg_cast_oid);
-	values[Anum_pg_cast_oid - 1] = ObjectIdGetDatum(castid);
-	values[Anum_pg_cast_castsource - 1] = ObjectIdGetDatum(sourcetypeid);
-	values[Anum_pg_cast_casttarget - 1] = ObjectIdGetDatum(targettypeid);
-	values[Anum_pg_cast_castfunc - 1] = ObjectIdGetDatum(funcid);
-	values[Anum_pg_cast_castcontext - 1] = CharGetDatum(castcontext);
-	values[Anum_pg_cast_castmethod - 1] = CharGetDatum(castmethod);
+	CatalogTupleSetValue(ctx, pg_cast, oid, ObjectIdGetDatum(castid));
+	CatalogTupleSetValue(ctx, pg_cast, castsource, ObjectIdGetDatum(sourcetypeid));
+	CatalogTupleSetValue(ctx, pg_cast, casttarget, ObjectIdGetDatum(targettypeid));
+	CatalogTupleSetValue(ctx, pg_cast, castfunc, ObjectIdGetDatum(funcid));
+	CatalogTupleSetValue(ctx, pg_cast, castcontext, CharGetDatum(castcontext));
+	CatalogTupleSetValue(ctx, pg_cast, castmethod, CharGetDatum(castmethod));
 
-	tuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
-
-	CatalogTupleInsert(relation, tuple);
+	InsertCatalogTupleValues(relation, ctx);
 
 	addrs = new_object_addresses();
 
@@ -129,8 +128,6 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 
 	/* Post creation hook for new cast */
 	InvokeObjectPostCreateHook(CastRelationId, castid, 0);
-
-	heap_freetuple(tuple);
 
 	table_close(relation, RowExclusiveLock);
 

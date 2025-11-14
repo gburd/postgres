@@ -18,6 +18,7 @@
 #include "access/table.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
+#include "nodes/bitmapset.h"
 #include "catalog/pg_rewrite.h"
 #include "rewrite/rewriteSupport.h"
 #include "utils/inval.h"
@@ -68,9 +69,12 @@ SetRelationRuleStatus(Oid relationId, bool relHasRules)
 	if (classForm->relhasrules != relHasRules)
 	{
 		/* Do the update */
-		classForm->relhasrules = relHasRules;
+		Bitmapset  *updated = NULL;
 
-		CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple);
+		classForm->relhasrules = relHasRules;
+		updated = bms_add_member(updated, Anum_pg_class_relhasrules - FirstLowInvalidHeapAttributeNumber);
+
+		CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple, updated, NULL);
 	}
 	else
 	{

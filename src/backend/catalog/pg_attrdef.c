@@ -39,14 +39,12 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 	char	   *adbin;
 	Relation	adrel;
 	HeapTuple	tuple;
-	Datum		values[Natts_pg_attrdef];
-	static bool nulls[Natts_pg_attrdef] = {false, false, false, false};
+	Datum		values[Natts_pg_attrdef] = {0};
+	bool		nulls[Natts_pg_attrdef] = {false};
 	Relation	attrrel;
 	HeapTuple	atttup;
 	Form_pg_attribute attStruct;
-	Datum		valuesAtt[Natts_pg_attribute] = {0};
-	bool		nullsAtt[Natts_pg_attribute] = {0};
-	bool		replacesAtt[Natts_pg_attribute] = {0};
+	Bitmapset  *updated = NULL;
 	char		attgenerated;
 	Oid			attrdefOid;
 	ObjectAddress colobject,
@@ -64,13 +62,13 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 	 */
 	attrdefOid = GetNewOidWithIndex(adrel, AttrDefaultOidIndexId,
 									Anum_pg_attrdef_oid);
-	values[Anum_pg_attrdef_oid - 1] = ObjectIdGetDatum(attrdefOid);
-	values[Anum_pg_attrdef_adrelid - 1] = ObjectIdGetDatum(RelationGetRelid(rel));
-	values[Anum_pg_attrdef_adnum - 1] = Int16GetDatum(attnum);
-	values[Anum_pg_attrdef_adbin - 1] = CStringGetTextDatum(adbin);
+	HeapTupleSetValue(pg_attrdef, oid, ObjectIdGetDatum(attrdefOid), values);
+	HeapTupleSetValue(pg_attrdef, adrelid, ObjectIdGetDatum(RelationGetRelid(rel)), values);
+	HeapTupleSetValue(pg_attrdef, adnum, Int16GetDatum(attnum), values);
+	HeapTupleSetValue(pg_attrdef, adbin, CStringGetTextDatum(adbin), values);
 
 	tuple = heap_form_tuple(adrel->rd_att, values, nulls);
-	CatalogTupleInsert(adrel, tuple);
+	CatalogTupleInsert(adrel, tuple, NULL);
 
 	defobject.classId = AttrDefaultRelationId;
 	defobject.objectId = attrdefOid;
@@ -79,7 +77,7 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 	table_close(adrel, RowExclusiveLock);
 
 	/* now can free some of the stuff allocated above */
-	pfree(DatumGetPointer(values[Anum_pg_attrdef_adbin - 1]));
+	pfree(DatumGetPointer(HeapTupleValue(pg_attrdef, adbin, values)));
 	heap_freetuple(tuple);
 	pfree(adbin);
 
@@ -91,22 +89,21 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 	atttup = SearchSysCacheCopy2(ATTNUM,
 								 ObjectIdGetDatum(RelationGetRelid(rel)),
 								 Int16GetDatum(attnum));
+
 	if (!HeapTupleIsValid(atttup))
 		elog(ERROR, "cache lookup failed for attribute %d of relation %u",
 			 attnum, RelationGetRelid(rel));
+
 	attStruct = (Form_pg_attribute) GETSTRUCT(atttup);
 	attgenerated = attStruct->attgenerated;
 
-	valuesAtt[Anum_pg_attribute_atthasdef - 1] = BoolGetDatum(true);
-	replacesAtt[Anum_pg_attribute_atthasdef - 1] = true;
-
-	atttup = heap_modify_tuple(atttup, RelationGetDescr(attrrel),
-							   valuesAtt, nullsAtt, replacesAtt);
-
-	CatalogTupleUpdate(attrrel, &atttup->t_self, atttup);
+	Assert(bms_is_empty(updated));
+	HeapTupleUpdateField(pg_attribute, atthasdef, BoolGetDatum(true), attStruct, updated);
+	CatalogTupleUpdate(attrrel, &atttup->t_self, atttup, updated, NULL);
 
 	table_close(attrrel, RowExclusiveLock);
 	heap_freetuple(atttup);
+	bms_free(updated);
 
 	/*
 	 * Make a dependency so that the pg_attrdef entry goes away if the column
@@ -215,6 +212,7 @@ RemoveAttrDefaultById(Oid attrdefId)
 	HeapTuple	tuple;
 	Oid			myrelid;
 	AttrNumber	myattnum;
+	Bitmapset  *updated = NULL;
 
 	/* Grab an appropriate lock on the pg_attrdef relation */
 	attrdef_rel = table_open(AttrDefaultRelationId, RowExclusiveLock);
@@ -255,8 +253,8 @@ RemoveAttrDefaultById(Oid attrdefId)
 			 myattnum, myrelid);
 
 	((Form_pg_attribute) GETSTRUCT(tuple))->atthasdef = false;
-
-	CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+	HeapTupleMarkColumnUpdated(pg_attribute, atthasdef, updated);
+	CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple, updated, NULL);
 
 	/*
 	 * Our update of the pg_attribute row will force a relcache rebuild, so

@@ -54,8 +54,8 @@ CollationCreate(const char *collname, Oid collnamespace,
 	Relation	rel;
 	TupleDesc	tupDesc;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_collation];
-	bool		nulls[Natts_pg_collation];
+	Datum		values[Natts_pg_collation] = {0};
+	bool		nulls[Natts_pg_collation] = {false};
 	NameData	name_name;
 	Oid			oid;
 	ObjectAddress myself,
@@ -175,38 +175,38 @@ CollationCreate(const char *collname, Oid collnamespace,
 	namestrcpy(&name_name, collname);
 	oid = GetNewOidWithIndex(rel, CollationOidIndexId,
 							 Anum_pg_collation_oid);
-	values[Anum_pg_collation_oid - 1] = ObjectIdGetDatum(oid);
-	values[Anum_pg_collation_collname - 1] = NameGetDatum(&name_name);
-	values[Anum_pg_collation_collnamespace - 1] = ObjectIdGetDatum(collnamespace);
-	values[Anum_pg_collation_collowner - 1] = ObjectIdGetDatum(collowner);
-	values[Anum_pg_collation_collprovider - 1] = CharGetDatum(collprovider);
-	values[Anum_pg_collation_collisdeterministic - 1] = BoolGetDatum(collisdeterministic);
-	values[Anum_pg_collation_collencoding - 1] = Int32GetDatum(collencoding);
+	HeapTupleSetValue(pg_collation, oid, ObjectIdGetDatum(oid), values);
+	HeapTupleSetValue(pg_collation, collname, NameGetDatum(&name_name), values);
+	HeapTupleSetValue(pg_collation, collnamespace, ObjectIdGetDatum(collnamespace), values);
+	HeapTupleSetValue(pg_collation, collowner, ObjectIdGetDatum(collowner), values);
+	HeapTupleSetValue(pg_collation, collprovider, CharGetDatum(collprovider), values);
+	HeapTupleSetValue(pg_collation, collisdeterministic, BoolGetDatum(collisdeterministic), values);
+	HeapTupleSetValue(pg_collation, collencoding, Int32GetDatum(collencoding), values);
 	if (collcollate)
-		values[Anum_pg_collation_collcollate - 1] = CStringGetTextDatum(collcollate);
+		HeapTupleSetValue(pg_collation, collcollate, CStringGetTextDatum(collcollate), values);
 	else
-		nulls[Anum_pg_collation_collcollate - 1] = true;
+		HeapTupleSetValueNull(pg_collation, collcollate, values, nulls);
 	if (collctype)
-		values[Anum_pg_collation_collctype - 1] = CStringGetTextDatum(collctype);
+		HeapTupleSetValue(pg_collation, collctype, CStringGetTextDatum(collctype), values);
 	else
-		nulls[Anum_pg_collation_collctype - 1] = true;
+		HeapTupleSetValueNull(pg_collation, collctype, values, nulls);
 	if (colllocale)
-		values[Anum_pg_collation_colllocale - 1] = CStringGetTextDatum(colllocale);
+		HeapTupleSetValue(pg_collation, colllocale, CStringGetTextDatum(colllocale), values);
 	else
-		nulls[Anum_pg_collation_colllocale - 1] = true;
+		HeapTupleSetValueNull(pg_collation, colllocale, values, nulls);
 	if (collicurules)
-		values[Anum_pg_collation_collicurules - 1] = CStringGetTextDatum(collicurules);
+		HeapTupleSetValue(pg_collation, collicurules, CStringGetTextDatum(collicurules), values);
 	else
-		nulls[Anum_pg_collation_collicurules - 1] = true;
+		HeapTupleSetValueNull(pg_collation, collicurules, values, nulls);
 	if (collversion)
-		values[Anum_pg_collation_collversion - 1] = CStringGetTextDatum(collversion);
+		HeapTupleSetValue(pg_collation, collversion, CStringGetTextDatum(collversion), values);
 	else
-		nulls[Anum_pg_collation_collversion - 1] = true;
+		HeapTupleSetValueNull(pg_collation, collversion, values, nulls);
 
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* insert a new tuple */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	Assert(OidIsValid(oid));
 
 	/* set up dependencies for the new collation */

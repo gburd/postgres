@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/htup.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "nodes/makefuncs.h"
@@ -79,10 +80,9 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 	bool		update_relallfrozen = false;
 	HeapTuple	ctup;
 	Form_pg_class pgcform;
-	int			replaces[4] = {0};
-	Datum		values[4] = {0};
-	bool		nulls[4] = {0};
-	int			nreplaces = 0;
+	Datum		values[Natts_pg_class] = {0};
+	bool		nulls[Natts_pg_class] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			locked_table = InvalidOid;
 
 	stats_check_required_arg(fcinfo, relarginfo, RELSCHEMA_ARG);
@@ -146,42 +146,26 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 	pgcform = (Form_pg_class) GETSTRUCT(ctup);
 
 	if (update_relpages && relpages != pgcform->relpages)
-	{
-		replaces[nreplaces] = Anum_pg_class_relpages;
-		values[nreplaces] = UInt32GetDatum(relpages);
-		nreplaces++;
-	}
+		HeapTupleUpdateValue(pg_class, relpages, UInt32GetDatum(relpages), values, nulls, updated);
 
 	if (update_reltuples && reltuples != pgcform->reltuples)
-	{
-		replaces[nreplaces] = Anum_pg_class_reltuples;
-		values[nreplaces] = Float4GetDatum(reltuples);
-		nreplaces++;
-	}
+		HeapTupleUpdateValue(pg_class, reltuples, Float4GetDatum(reltuples), values, nulls, updated);
 
 	if (update_relallvisible && relallvisible != pgcform->relallvisible)
-	{
-		replaces[nreplaces] = Anum_pg_class_relallvisible;
-		values[nreplaces] = UInt32GetDatum(relallvisible);
-		nreplaces++;
-	}
+		HeapTupleUpdateValue(pg_class, relallvisible, UInt32GetDatum(relallvisible), values, nulls, updated);
 
 	if (update_relallfrozen && relallfrozen != pgcform->relallfrozen)
-	{
-		replaces[nreplaces] = Anum_pg_class_relallfrozen;
-		values[nreplaces] = UInt32GetDatum(relallfrozen);
-		nreplaces++;
-	}
+		HeapTupleUpdateValue(pg_class, relallfrozen, UInt32GetDatum(relallfrozen), values, nulls, updated);
 
-	if (nreplaces > 0)
+	if (!bms_is_empty(updated))
 	{
 		TupleDesc	tupdesc = RelationGetDescr(crel);
 		HeapTuple	newtup;
 
-		newtup = heap_modify_tuple_by_cols(ctup, tupdesc, nreplaces,
-										   replaces, values, nulls);
-		CatalogTupleUpdate(crel, &newtup->t_self, newtup);
+		newtup = heap_update_tuple(ctup, tupdesc, values, nulls, updated);
+		CatalogTupleUpdate(crel, &newtup->t_self, newtup, updated, NULL);
 		heap_freetuple(newtup);
+		bms_free(updated);
 	}
 
 	ReleaseSysCache(ctup);

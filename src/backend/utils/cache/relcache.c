@@ -3780,6 +3780,7 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 	MultiXactId minmulti = InvalidMultiXactId;
 	TransactionId freezeXid = InvalidTransactionId;
 	RelFileLocator newrlocator;
+	Bitmapset  *updated = NULL;
 
 	if (!IsBinaryUpgrade)
 	{
@@ -3929,21 +3930,21 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 	else
 	{
 		/* Normal case, update the pg_class entry */
-		classform->relfilenode = newrelfilenumber;
+		HeapTupleUpdateField(pg_class, relfilenode, newrelfilenumber, classform, updated);
 
 		/* relpages etc. never change for sequences */
 		if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
 		{
-			classform->relpages = 0;	/* it's empty until further notice */
-			classform->reltuples = -1;
-			classform->relallvisible = 0;
-			classform->relallfrozen = 0;
+			HeapTupleUpdateField(pg_class, relpages, 0, classform, updated);
+			HeapTupleUpdateField(pg_class, reltuples, -1, classform, updated);
+			HeapTupleUpdateField(pg_class, relallvisible, 0, classform, updated);
+			HeapTupleUpdateField(pg_class, relallfrozen, 0, classform, updated);
 		}
-		classform->relfrozenxid = freezeXid;
-		classform->relminmxid = minmulti;
-		classform->relpersistence = persistence;
+		HeapTupleUpdateField(pg_class, relfrozenxid, freezeXid, classform, updated);
+		HeapTupleUpdateField(pg_class, relminmxid, minmulti, classform, updated);
+		HeapTupleUpdateField(pg_class, relpersistence, persistence, classform, updated);
 
-		CatalogTupleUpdate(pg_class, &otid, tuple);
+		CatalogTupleUpdate(pg_class, &otid, tuple, updated, NULL);
 	}
 
 	UnlockTuple(pg_class, &otid, InplaceUpdateTupleLock);
@@ -3958,6 +3959,7 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 	CommandCounterIncrement();
 
 	RelationAssumeNewRelfilelocator(relation);
+	bms_free(updated);
 }
 
 /*

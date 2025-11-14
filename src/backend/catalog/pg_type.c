@@ -60,8 +60,8 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
 	TupleDesc	tupDesc;
 	int			i;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_type];
-	bool		nulls[Natts_pg_type];
+	Datum		values[Natts_pg_type] = {0};
+	bool		nulls[Natts_pg_type] = {false};
 	Oid			typoid;
 	NameData	name;
 	ObjectAddress address;
@@ -92,37 +92,37 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
 	 * mistaken for a usable type.
 	 */
 	namestrcpy(&name, typeName);
-	values[Anum_pg_type_typname - 1] = NameGetDatum(&name);
-	values[Anum_pg_type_typnamespace - 1] = ObjectIdGetDatum(typeNamespace);
-	values[Anum_pg_type_typowner - 1] = ObjectIdGetDatum(ownerId);
-	values[Anum_pg_type_typlen - 1] = Int16GetDatum(sizeof(int32));
-	values[Anum_pg_type_typbyval - 1] = BoolGetDatum(true);
-	values[Anum_pg_type_typtype - 1] = CharGetDatum(TYPTYPE_PSEUDO);
-	values[Anum_pg_type_typcategory - 1] = CharGetDatum(TYPCATEGORY_PSEUDOTYPE);
-	values[Anum_pg_type_typispreferred - 1] = BoolGetDatum(false);
-	values[Anum_pg_type_typisdefined - 1] = BoolGetDatum(false);
-	values[Anum_pg_type_typdelim - 1] = CharGetDatum(DEFAULT_TYPDELIM);
-	values[Anum_pg_type_typrelid - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typsubscript - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typelem - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typarray - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typinput - 1] = ObjectIdGetDatum(F_SHELL_IN);
-	values[Anum_pg_type_typoutput - 1] = ObjectIdGetDatum(F_SHELL_OUT);
-	values[Anum_pg_type_typreceive - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typsend - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typmodin - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typmodout - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typanalyze - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typalign - 1] = CharGetDatum(TYPALIGN_INT);
-	values[Anum_pg_type_typstorage - 1] = CharGetDatum(TYPSTORAGE_PLAIN);
-	values[Anum_pg_type_typnotnull - 1] = BoolGetDatum(false);
-	values[Anum_pg_type_typbasetype - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_type_typtypmod - 1] = Int32GetDatum(-1);
-	values[Anum_pg_type_typndims - 1] = Int32GetDatum(0);
-	values[Anum_pg_type_typcollation - 1] = ObjectIdGetDatum(InvalidOid);
-	nulls[Anum_pg_type_typdefaultbin - 1] = true;
-	nulls[Anum_pg_type_typdefault - 1] = true;
-	nulls[Anum_pg_type_typacl - 1] = true;
+	HeapTupleSetValue(pg_type, typname, NameGetDatum(&name), values);
+	HeapTupleSetValue(pg_type, typnamespace, ObjectIdGetDatum(typeNamespace), values);
+	HeapTupleSetValue(pg_type, typowner, ObjectIdGetDatum(ownerId), values);
+	HeapTupleSetValue(pg_type, typlen, Int16GetDatum(sizeof(int32)), values);
+	HeapTupleSetValue(pg_type, typbyval, BoolGetDatum(true), values);
+	HeapTupleSetValue(pg_type, typtype, CharGetDatum(TYPTYPE_PSEUDO), values);
+	HeapTupleSetValue(pg_type, typcategory, CharGetDatum(TYPCATEGORY_PSEUDOTYPE), values);
+	HeapTupleSetValue(pg_type, typispreferred, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_type, typisdefined, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_type, typdelim, CharGetDatum(DEFAULT_TYPDELIM), values);
+	HeapTupleSetValue(pg_type, typrelid, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typsubscript, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typelem, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typarray, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typinput, ObjectIdGetDatum(F_SHELL_IN), values);
+	HeapTupleSetValue(pg_type, typoutput, ObjectIdGetDatum(F_SHELL_OUT), values);
+	HeapTupleSetValue(pg_type, typreceive, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typsend, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typmodin, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typmodout, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typanalyze, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typalign, CharGetDatum(TYPALIGN_INT), values);
+	HeapTupleSetValue(pg_type, typstorage, CharGetDatum(TYPSTORAGE_PLAIN), values);
+	HeapTupleSetValue(pg_type, typnotnull, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_type, typbasetype, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_type, typtypmod, Int32GetDatum(-1), values);
+	HeapTupleSetValue(pg_type, typndims, Int32GetDatum(0), values);
+	HeapTupleSetValue(pg_type, typcollation, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValueNull(pg_type, typdefaultbin, values, nulls);
+	HeapTupleSetValueNull(pg_type, typdefault, values, nulls);
+	HeapTupleSetValueNull(pg_type, typacl, values, nulls);
 
 	/* Use binary-upgrade override for pg_type.oid? */
 	if (IsBinaryUpgrade)
@@ -141,7 +141,7 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
 									Anum_pg_type_oid);
 	}
 
-	values[Anum_pg_type_oid - 1] = ObjectIdGetDatum(typoid);
+	HeapTupleSetValue(pg_type, oid, ObjectIdGetDatum(typoid), values);
 
 	/*
 	 * create a new type tuple
@@ -151,7 +151,7 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
 	/*
 	 * insert the tuple in the relation and get the tuple's oid.
 	 */
-	CatalogTupleInsert(pg_type_desc, tup);
+	CatalogTupleInsert(pg_type_desc, tup, NULL);
 
 	/*
 	 * Create dependencies.  We can/must skip this in bootstrap mode.
@@ -229,13 +229,12 @@ TypeCreate(Oid newTypeOid,
 	Oid			typeObjectId;
 	bool		isDependentType;
 	bool		rebuildDeps = false;
-	Acl		   *typacl;
+	Acl		   *typacl = NULL;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_type];
-	bool		replaces[Natts_pg_type];
-	Datum		values[Natts_pg_type];
+	Datum		values[Natts_pg_type] = {0};
+	bool		nulls[Natts_pg_type] = {false};
+	Bitmapset  *updated = NULL;
 	NameData	name;
-	int			i;
 	ObjectAddress address;
 
 	/*
@@ -334,78 +333,65 @@ TypeCreate(Oid newTypeOid,
 		typeType == TYPTYPE_MULTIRANGE ||
 		(OidIsValid(relationOid) && relationKind != RELKIND_COMPOSITE_TYPE);
 
-	/*
-	 * initialize arrays needed for heap_form_tuple or heap_modify_tuple
-	 */
-	for (i = 0; i < Natts_pg_type; ++i)
-	{
-		nulls[i] = false;
-		replaces[i] = true;
-		values[i] = (Datum) 0;
-	}
+	HeapTupleUpdateSetAllColumnsUpdated(pg_type, updated);
 
-	/*
-	 * insert data values
-	 */
+	/* Insert data values */
 	namestrcpy(&name, typeName);
-	values[Anum_pg_type_typname - 1] = NameGetDatum(&name);
-	values[Anum_pg_type_typnamespace - 1] = ObjectIdGetDatum(typeNamespace);
-	values[Anum_pg_type_typowner - 1] = ObjectIdGetDatum(ownerId);
-	values[Anum_pg_type_typlen - 1] = Int16GetDatum(internalSize);
-	values[Anum_pg_type_typbyval - 1] = BoolGetDatum(passedByValue);
-	values[Anum_pg_type_typtype - 1] = CharGetDatum(typeType);
-	values[Anum_pg_type_typcategory - 1] = CharGetDatum(typeCategory);
-	values[Anum_pg_type_typispreferred - 1] = BoolGetDatum(typePreferred);
-	values[Anum_pg_type_typisdefined - 1] = BoolGetDatum(true);
-	values[Anum_pg_type_typdelim - 1] = CharGetDatum(typDelim);
-	values[Anum_pg_type_typrelid - 1] = ObjectIdGetDatum(relationOid);
-	values[Anum_pg_type_typsubscript - 1] = ObjectIdGetDatum(subscriptProcedure);
-	values[Anum_pg_type_typelem - 1] = ObjectIdGetDatum(elementType);
-	values[Anum_pg_type_typarray - 1] = ObjectIdGetDatum(arrayType);
-	values[Anum_pg_type_typinput - 1] = ObjectIdGetDatum(inputProcedure);
-	values[Anum_pg_type_typoutput - 1] = ObjectIdGetDatum(outputProcedure);
-	values[Anum_pg_type_typreceive - 1] = ObjectIdGetDatum(receiveProcedure);
-	values[Anum_pg_type_typsend - 1] = ObjectIdGetDatum(sendProcedure);
-	values[Anum_pg_type_typmodin - 1] = ObjectIdGetDatum(typmodinProcedure);
-	values[Anum_pg_type_typmodout - 1] = ObjectIdGetDatum(typmodoutProcedure);
-	values[Anum_pg_type_typanalyze - 1] = ObjectIdGetDatum(analyzeProcedure);
-	values[Anum_pg_type_typalign - 1] = CharGetDatum(alignment);
-	values[Anum_pg_type_typstorage - 1] = CharGetDatum(storage);
-	values[Anum_pg_type_typnotnull - 1] = BoolGetDatum(typeNotNull);
-	values[Anum_pg_type_typbasetype - 1] = ObjectIdGetDatum(baseType);
-	values[Anum_pg_type_typtypmod - 1] = Int32GetDatum(typeMod);
-	values[Anum_pg_type_typndims - 1] = Int32GetDatum(typNDims);
-	values[Anum_pg_type_typcollation - 1] = ObjectIdGetDatum(typeCollation);
+	HeapTupleUpdateValue(pg_type, typname, NameGetDatum(&name), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typnamespace, ObjectIdGetDatum(typeNamespace), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typowner, ObjectIdGetDatum(ownerId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typlen, Int16GetDatum(internalSize), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typbyval, BoolGetDatum(passedByValue), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typtype, CharGetDatum(typeType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typcategory, CharGetDatum(typeCategory), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typispreferred, BoolGetDatum(typePreferred), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typisdefined, BoolGetDatum(true), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typdelim, CharGetDatum(typDelim), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typrelid, ObjectIdGetDatum(relationOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typsubscript, ObjectIdGetDatum(subscriptProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typelem, ObjectIdGetDatum(elementType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typarray, ObjectIdGetDatum(arrayType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typinput, ObjectIdGetDatum(inputProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typoutput, ObjectIdGetDatum(outputProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typreceive, ObjectIdGetDatum(receiveProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typsend, ObjectIdGetDatum(sendProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typmodin, ObjectIdGetDatum(typmodinProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typmodout, ObjectIdGetDatum(typmodoutProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typanalyze, ObjectIdGetDatum(analyzeProcedure), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typalign, CharGetDatum(alignment), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typstorage, CharGetDatum(storage), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typnotnull, BoolGetDatum(typeNotNull), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typbasetype, ObjectIdGetDatum(baseType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typtypmod, Int32GetDatum(typeMod), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typndims, Int32GetDatum(typNDims), values, nulls, updated);
+	HeapTupleUpdateValue(pg_type, typcollation, ObjectIdGetDatum(typeCollation), values, nulls, updated);
 
 	/*
-	 * initialize the default binary value for this type.  Check for nulls of
-	 * course.
+	 * Initialize the default binary value for this type.
 	 */
 	if (defaultTypeBin)
-		values[Anum_pg_type_typdefaultbin - 1] = CStringGetTextDatum(defaultTypeBin);
+		HeapTupleUpdateValue(pg_type, typdefaultbin, CStringGetTextDatum(defaultTypeBin), values, nulls, updated);
 	else
-		nulls[Anum_pg_type_typdefaultbin - 1] = true;
+		HeapTupleUpdateValueNull(pg_type, typdefaultbin, values, nulls, updated);
 
 	/*
-	 * initialize the default value for this type.
+	 * Initialize the default value for this type.
 	 */
 	if (defaultTypeValue)
-		values[Anum_pg_type_typdefault - 1] = CStringGetTextDatum(defaultTypeValue);
+		HeapTupleUpdateValue(pg_type, typdefault, CStringGetTextDatum(defaultTypeValue), values, nulls, updated);
 	else
-		nulls[Anum_pg_type_typdefault - 1] = true;
+		HeapTupleUpdateValueNull(pg_type, typdefault, values, nulls, updated);
 
 	/*
-	 * Initialize the type's ACL, too.  But dependent types don't get one.
+	 * Initialize the type's ACL too, but dependent types don't get one.
 	 */
-	if (isDependentType)
-		typacl = NULL;
-	else
-		typacl = get_user_default_acl(OBJECT_TYPE, ownerId,
-									  typeNamespace);
+	if (!isDependentType)
+		typacl = get_user_default_acl(OBJECT_TYPE, ownerId, typeNamespace);
+
 	if (typacl != NULL)
-		values[Anum_pg_type_typacl - 1] = PointerGetDatum(typacl);
+		HeapTupleUpdateValue(pg_type, typacl, PointerGetDatum(typacl), values, nulls, updated);
 	else
-		nulls[Anum_pg_type_typacl - 1] = true;
+		HeapTupleUpdateValueNull(pg_type, typacl, values, nulls, updated);
 
 	/*
 	 * open pg_type and prepare to insert or update a row.
@@ -431,9 +417,7 @@ TypeCreate(Oid newTypeOid,
 					(errcode(ERRCODE_DUPLICATE_OBJECT),
 					 errmsg("type \"%s\" already exists", typeName)));
 
-		/*
-		 * shell type must have been created by same owner
-		 */
+		/* Shell type must have been created by same owner */
 		if (typform->typowner != ownerId)
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TYPE, typeName);
 
@@ -441,18 +425,16 @@ TypeCreate(Oid newTypeOid,
 		if (OidIsValid(newTypeOid))
 			elog(ERROR, "cannot assign new OID to existing shell type");
 
-		replaces[Anum_pg_type_oid - 1] = false;
+		HeapTupleSetColumnNotUpdated(pg_type, oid, updated);
 
-		/*
-		 * Okay to update existing shell type tuple
-		 */
-		tup = heap_modify_tuple(tup,
+		/* Okay to update existing shell type tuple */
+		tup = heap_update_tuple(tup,
 								RelationGetDescr(pg_type_desc),
 								values,
 								nulls,
-								replaces);
+								updated);
 
-		CatalogTupleUpdate(pg_type_desc, &tup->t_self, tup);
+		CatalogTupleUpdate(pg_type_desc, &tup->t_self, tup, updated, NULL);
 
 		typeObjectId = typform->oid;
 
@@ -480,12 +462,11 @@ TypeCreate(Oid newTypeOid,
 											  Anum_pg_type_oid);
 		}
 
-		values[Anum_pg_type_oid - 1] = ObjectIdGetDatum(typeObjectId);
+		HeapTupleUpdateValue(pg_type, oid, ObjectIdGetDatum(typeObjectId), values, nulls, updated);
 
-		tup = heap_form_tuple(RelationGetDescr(pg_type_desc),
-							  values, nulls);
+		tup = heap_form_tuple(RelationGetDescr(pg_type_desc), values, nulls);
 
-		CatalogTupleInsert(pg_type_desc, tup);
+		CatalogTupleInsert(pg_type_desc, tup, NULL);
 	}
 
 	/*
@@ -509,9 +490,8 @@ TypeCreate(Oid newTypeOid,
 
 	ObjectAddressSet(address, TypeRelationId, typeObjectId);
 
-	/*
-	 * finish up
-	 */
+	/* Clean up */
+	bms_free(updated);
 	table_close(pg_type_desc, RowExclusiveLock);
 
 	return address;
@@ -765,6 +745,7 @@ RenameTypeInternal(Oid typeOid, const char *newTypeName, Oid typeNamespace)
 	Relation	pg_type_desc;
 	HeapTuple	tuple;
 	Form_pg_type typ;
+	Bitmapset  *updated = NULL;
 	Oid			arrayOid;
 	Oid			oldTypeOid;
 
@@ -804,12 +785,14 @@ RenameTypeInternal(Oid typeOid, const char *newTypeName, Oid typeNamespace)
 	}
 
 	/* OK, do the rename --- tuple is a copy, so OK to scribble on it */
-	namestrcpy(&(typ->typname), newTypeName);
+	namestrcpy(&typ->typname, newTypeName);
+	HeapTupleMarkColumnUpdated(pg_type, typname, updated);
 
-	CatalogTupleUpdate(pg_type_desc, &tuple->t_self, tuple);
+	CatalogTupleUpdate(pg_type_desc, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(TypeRelationId, typeOid, 0);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 	table_close(pg_type_desc, RowExclusiveLock);
 

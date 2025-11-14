@@ -3641,6 +3641,7 @@ SetRelationHasSubclass(Oid relationId, bool relhassubclass)
 	Relation	relationRelation;
 	HeapTuple	tuple;
 	Form_pg_class classtuple;
+	Bitmapset  *updated = NULL;
 
 	Assert(CheckRelationOidLockedByMe(relationId,
 									  ShareUpdateExclusiveLock, false) ||
@@ -3658,8 +3659,8 @@ SetRelationHasSubclass(Oid relationId, bool relhassubclass)
 
 	if (classtuple->relhassubclass != relhassubclass)
 	{
-		classtuple->relhassubclass = relhassubclass;
-		CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple);
+		HeapTupleUpdateField(pg_class, relhassubclass, relhassubclass, classtuple, updated);
+		CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple, updated, NULL);
 	}
 	else
 	{
@@ -3668,6 +3669,7 @@ SetRelationHasSubclass(Oid relationId, bool relhassubclass)
 	}
 
 	heap_freetuple(tuple);
+	bms_free(updated);
 	table_close(relationRelation, RowExclusiveLock);
 }
 
@@ -3747,6 +3749,8 @@ SetRelationTableSpace(Relation rel,
 	HeapTuple	tuple;
 	ItemPointerData otid;
 	Form_pg_class rd_rel;
+	Bitmapset  *updated = NULL;
+	Oid			field = InvalidOid;
 	Oid			reloid = RelationGetRelid(rel);
 
 	Assert(CheckRelationTableSpaceMove(rel, newTableSpaceId));
@@ -3761,11 +3765,16 @@ SetRelationTableSpace(Relation rel,
 	rd_rel = (Form_pg_class) GETSTRUCT(tuple);
 
 	/* Update the pg_class row. */
-	rd_rel->reltablespace = (newTableSpaceId == MyDatabaseTableSpace) ?
-		InvalidOid : newTableSpaceId;
+	if (newTableSpaceId != MyDatabaseTableSpace)
+		field = newTableSpaceId;
+
+	HeapTupleUpdateField(pg_class, reltablespace, field, rd_rel, updated);
+
 	if (RelFileNumberIsValid(newRelFilenumber))
-		rd_rel->relfilenode = newRelFilenumber;
-	CatalogTupleUpdate(pg_class, &otid, tuple);
+		HeapTupleUpdateField(pg_class, relfilenode, newRelFilenumber, rd_rel, updated);
+
+	CatalogTupleUpdate(pg_class, &otid, tuple, updated, NULL);
+
 	UnlockTuple(pg_class, &otid, InplaceUpdateTupleLock);
 
 	/*
@@ -3777,6 +3786,7 @@ SetRelationTableSpace(Relation rel,
 									 rd_rel->reltablespace);
 
 	heap_freetuple(tuple);
+	bms_free(updated);
 	table_close(pg_class, RowExclusiveLock);
 }
 
@@ -3846,6 +3856,7 @@ renameatt_internal(Oid myrelid,
 	HeapTuple	atttup;
 	Form_pg_attribute attform;
 	AttrNumber	attnum;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Grab an exclusive lock on the target table, which we will NOT release
@@ -3959,9 +3970,10 @@ renameatt_internal(Oid myrelid,
 	(void) check_for_column_name_collision(targetrelation, newattname, false);
 
 	/* apply the update */
-	namestrcpy(&(attform->attname), newattname);
-
-	CatalogTupleUpdate(attrelation, &atttup->t_self, atttup);
+	namestrcpy(&attform->attname, newattname);
+	HeapTupleMarkColumnUpdated(pg_attribute, attname, updated);
+	CatalogTupleUpdate(attrelation, &atttup->t_self, atttup, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId, myrelid, attnum);
 
@@ -4267,6 +4279,7 @@ RenameRelationInternal(Oid myrelid, const char *newrelname, bool is_internal, bo
 	HeapTuple	reltup;
 	Form_pg_class relform;
 	Oid			namespaceId;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Grab a lock on the target relation, which we will NOT release until end
@@ -4312,9 +4325,12 @@ RenameRelationInternal(Oid myrelid, const char *newrelname, bool is_internal, bo
 	 * Update pg_class tuple with new relname.  (Scribbling on reltup is OK
 	 * because it's a copy...)
 	 */
-	namestrcpy(&(relform->relname), newrelname);
 
-	CatalogTupleUpdate(relrelation, &otid, reltup);
+	namestrcpy(&relform->relname, newrelname);
+	HeapTupleMarkColumnUpdated(pg_class, relname, updated);
+	CatalogTupleUpdate(relrelation, &otid, reltup, updated, NULL);
+	bms_free(updated);
+
 	UnlockTuple(relrelation, &otid, InplaceUpdateTupleLock);
 
 	InvokeObjectPostAlterHookArg(RelationRelationId, myrelid, 0,
@@ -4357,6 +4373,7 @@ ResetRelRewrite(Oid myrelid)
 	Relation	relrelation;	/* for RELATION relation */
 	HeapTuple	reltup;
 	Form_pg_class relform;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Find relation's pg_class tuple.
@@ -4368,13 +4385,11 @@ ResetRelRewrite(Oid myrelid)
 		elog(ERROR, "cache lookup failed for relation %u", myrelid);
 	relform = (Form_pg_class) GETSTRUCT(reltup);
 
-	/*
-	 * Update pg_class tuple.
-	 */
-	relform->relrewrite = InvalidOid;
+	/* Update pg_class tuple */
+	HeapTupleUpdateField(pg_class, relrewrite, InvalidOid, relform, updated);
+	CatalogTupleUpdate(relrelation, &reltup->t_self, reltup, updated, NULL);
 
-	CatalogTupleUpdate(relrelation, &reltup->t_self, reltup);
-
+	bms_free(updated);
 	heap_freetuple(reltup);
 	table_close(relrelation, RowExclusiveLock);
 }
@@ -7227,6 +7242,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	AlterTableCmd *childcmd;
 	ObjectAddress address;
 	TupleDesc	tupdesc;
+	Bitmapset  *updated = NULL;
 
 	/* since this function recurses, it could be driven to stack overflow */
 	check_stack_depth();
@@ -7286,8 +7302,13 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				ereport(ERROR,
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
-			CatalogTupleUpdate(attrdesc, &tuple->t_self, tuple);
 
+			HeapTupleMarkColumnUpdated(pg_attribute, attinhcount, updated);
+
+			CatalogTupleUpdate(attrdesc, &tuple->t_self, tuple, updated, NULL);
+
+			bms_free(updated);
+			updated = NULL;
 			heap_freetuple(tuple);
 
 			/* Inform the user about the merge */
@@ -7385,9 +7406,10 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	/*
 	 * Update pg_class tuple as appropriate
 	 */
-	relform->relnatts = newattnum;
-
-	CatalogTupleUpdate(pgclass, &reltup->t_self, reltup);
+	Assert(bms_is_empty(updated));
+	HeapTupleUpdateField(pg_class, relnatts, newattnum, relform, updated);
+	CatalogTupleUpdate(pgclass, &reltup->t_self, reltup, updated, NULL);
+	bms_free(updated);
 
 	heap_freetuple(reltup);
 
@@ -7851,6 +7873,7 @@ set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum,
 	{
 		Relation	attr_rel;
 		HeapTuple	tuple;
+		Bitmapset  *updated = NULL;
 
 		attr_rel = table_open(AttributeRelationId, RowExclusiveLock);
 
@@ -7864,8 +7887,9 @@ set_attnotnull(List **wqueue, Relation rel, AttrNumber attnum,
 
 		attr = (Form_pg_attribute) GETSTRUCT(tuple);
 
-		attr->attnotnull = true;
-		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+		HeapTupleUpdateField(pg_attribute, attnotnull, true, attr, updated);
+		CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple, updated, NULL);
+		bms_free(updated);
 
 		/*
 		 * If the nullness isn't already proven by validated constraints, have
@@ -7944,6 +7968,7 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 	{
 		Form_pg_constraint conForm = (Form_pg_constraint) GETSTRUCT(tuple);
 		bool		changed = false;
+		Bitmapset  *updated = NULL;
 
 		/*
 		 * Don't let a NO INHERIT constraint be changed into inherit.
@@ -7967,11 +7992,12 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 				ereport(ERROR,
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
+			HeapTupleMarkColumnUpdated(pg_constraint, coninhcount, updated);
 			changed = true;
 		}
 		else if (!conForm->conislocal)
 		{
-			conForm->conislocal = true;
+			HeapTupleUpdateField(pg_constraint, conislocal, true, conForm, updated);
 			changed = true;
 		}
 		else if (!conForm->convalidated)
@@ -7990,7 +8016,8 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 
 			constr_rel = table_open(ConstraintRelationId, RowExclusiveLock);
 
-			CatalogTupleUpdate(constr_rel, &tuple->t_self, tuple);
+			CatalogTupleUpdate(constr_rel, &tuple->t_self, tuple, updated, NULL);
+			bms_free(updated);
 			ObjectAddressSet(address, ConstraintRelationId, conForm->oid);
 			table_close(constr_rel, RowExclusiveLock);
 		}
@@ -8238,6 +8265,7 @@ ATExecAddIdentity(Relation rel, const char *colName,
 	AttrNumber	attnum;
 	ObjectAddress address;
 	ColumnDef  *cdef = castNode(ColumnDef, def);
+	Bitmapset  *updated = NULL;
 	bool		ispartitioned;
 
 	ispartitioned = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
@@ -8318,8 +8346,9 @@ ATExecAddIdentity(Relation rel, const char *colName,
 				 errmsg("column \"%s\" of relation \"%s\" already has a default value",
 						colName, RelationGetRelationName(rel))));
 
-	attTup->attidentity = cdef->identity;
-	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_attribute, attidentity, cdef->identity, attTup, updated);
+	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -8432,8 +8461,11 @@ ATExecSetIdentity(Relation rel, const char *colName, Node *def,
 
 	if (generatedEl)
 	{
-		attTup->attidentity = defGetInt32(generatedEl);
-		CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+		Bitmapset  *updated = NULL;
+
+		HeapTupleUpdateField(pg_attribute, attidentity, defGetInt32(generatedEl), attTup, updated);
+		CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
+		bms_free(updated);
 
 		InvokeObjectPostAlterHook(RelationRelationId,
 								  RelationGetRelid(rel),
@@ -8488,6 +8520,7 @@ ATExecDropIdentity(Relation rel, const char *colName, bool missing_ok, LOCKMODE 
 	Oid			seqid;
 	ObjectAddress seqaddress;
 	bool		ispartitioned;
+	Bitmapset  *updated = NULL;
 
 	ispartitioned = (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
 	if (ispartitioned && !recurse)
@@ -8536,8 +8569,9 @@ ATExecDropIdentity(Relation rel, const char *colName, bool missing_ok, LOCKMODE 
 		}
 	}
 
-	attTup->attidentity = '\0';
-	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_attribute, attidentity, '\0', attTup, updated);
+	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -8799,6 +8833,7 @@ ATExecDropExpression(Relation rel, const char *colName, bool missing_ok, LOCKMOD
 	Relation	attrelation;
 	Oid			attrdefoid;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	attrelation = table_open(AttributeRelationId, RowExclusiveLock);
 	tuple = SearchSysCacheCopyAttName(RelationGetRelid(rel), colName);
@@ -8852,8 +8887,9 @@ ATExecDropExpression(Relation rel, const char *colName, bool missing_ok, LOCKMOD
 	 * Mark the column as no longer generated.  (The atthasdef flag needs to
 	 * get cleared too, but RemoveAttrDefault will handle that.)
 	 */
-	attTup->attgenerated = '\0';
-	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_attribute, attgenerated, '\0', attTup, updated);
+	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -8905,9 +8941,9 @@ ATExecSetStatistics(Relation rel, const char *colName, int16 colNum, Node *newVa
 	Form_pg_attribute attrtuple;
 	AttrNumber	attnum;
 	ObjectAddress address;
-	Datum		repl_val[Natts_pg_attribute];
-	bool		repl_null[Natts_pg_attribute];
-	bool		repl_repl[Natts_pg_attribute];
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * We allow referencing columns by numbers only for indexes, since table
@@ -9010,16 +9046,14 @@ ATExecSetStatistics(Relation rel, const char *colName, int16 colNum, Node *newVa
 	}
 
 	/* Build new tuple. */
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
 	if (!newtarget_default)
-		repl_val[Anum_pg_attribute_attstattarget - 1] = Int16GetDatum(newtarget);
+		HeapTupleUpdateValue(pg_attribute, attstattarget, Int16GetDatum(newtarget), values, nulls, updated);
 	else
-		repl_null[Anum_pg_attribute_attstattarget - 1] = true;
-	repl_repl[Anum_pg_attribute_attstattarget - 1] = true;
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(attrelation),
-								 repl_val, repl_null, repl_repl);
-	CatalogTupleUpdate(attrelation, &tuple->t_self, newtuple);
+		HeapTupleUpdateValueNull(pg_attribute, attstattarget, values, nulls, updated);
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(attrelation),
+								 values, nulls, updated);
+	CatalogTupleUpdate(attrelation, &tuple->t_self, newtuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -9052,9 +9086,9 @@ ATExecSetOptions(Relation rel, const char *colName, Node *options,
 				newOptions;
 	bool		isnull;
 	ObjectAddress address;
-	Datum		repl_val[Natts_pg_attribute];
-	bool		repl_null[Natts_pg_attribute];
-	bool		repl_repl[Natts_pg_attribute];
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 
 	attrelation = table_open(AttributeRelationId, RowExclusiveLock);
 
@@ -9084,18 +9118,17 @@ ATExecSetOptions(Relation rel, const char *colName, Node *options,
 	(void) attribute_reloptions(newOptions, true);
 
 	/* Build new tuple. */
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
 	if (newOptions != (Datum) 0)
-		repl_val[Anum_pg_attribute_attoptions - 1] = newOptions;
+		HeapTupleUpdateValue(pg_attribute, attoptions, newOptions, values, nulls, updated);
 	else
-		repl_null[Anum_pg_attribute_attoptions - 1] = true;
-	repl_repl[Anum_pg_attribute_attoptions - 1] = true;
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(attrelation),
-								 repl_val, repl_null, repl_repl);
+		HeapTupleUpdateValueNull(pg_attribute, attoptions, values, nulls, updated);
+
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(attrelation),
+								 values, nulls, updated);
 
 	/* Update system catalog. */
-	CatalogTupleUpdate(attrelation, &newtuple->t_self, newtuple);
+	CatalogTupleUpdate(attrelation, &newtuple->t_self, newtuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -9156,19 +9189,21 @@ SetIndexStorageProperties(Relation rel, Relation attrelation,
 		if (HeapTupleIsValid(tuple))
 		{
 			Form_pg_attribute attrtuple = (Form_pg_attribute) GETSTRUCT(tuple);
+			Bitmapset  *updated = NULL;
 
 			if (setstorage)
-				attrtuple->attstorage = newstorage;
+				HeapTupleUpdateField(pg_attribute, attstorage, newstorage, attrtuple, updated);
 
 			if (setcompression)
-				attrtuple->attcompression = newcompression;
+				HeapTupleUpdateField(pg_attribute, attcompression, newcompression, attrtuple, updated);
 
-			CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+			CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
 
 			InvokeObjectPostAlterHook(RelationRelationId,
 									  RelationGetRelid(rel),
 									  attrtuple->attnum);
 
+			bms_free(updated);
 			heap_freetuple(tuple);
 		}
 
@@ -9189,6 +9224,7 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	Form_pg_attribute attrtuple;
 	AttrNumber	attnum;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	attrelation = table_open(AttributeRelationId, RowExclusiveLock);
 
@@ -9208,9 +9244,9 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
 
-	attrtuple->attstorage = GetAttributeStorage(attrtuple->atttypid, strVal(newValue));
+	HeapTupleUpdateField(pg_attribute, attstorage, GetAttributeStorage(attrtuple->atttypid, strVal(newValue)), attrtuple, updated);
 
-	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -9225,6 +9261,7 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 							  false, 0,
 							  lockmode);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 
 	table_close(attrelation, RowExclusiveLock);
@@ -9418,9 +9455,11 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 				else
 				{
 					/* Child column must survive my deletion */
-					childatt->attinhcount--;
+					Bitmapset  *updated = NULL;
 
-					CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+					HeapTupleUpdateField(pg_attribute, attinhcount, childatt->attinhcount - 1, childatt, updated);
+					CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple, updated, NULL);
+					bms_free(updated);
 
 					/* Make update visible */
 					CommandCounterIncrement();
@@ -9433,10 +9472,12 @@ ATExecDropColumn(List **wqueue, Relation rel, const char *colName,
 				 * we need to mark the inheritors' attributes as locally
 				 * defined rather than inherited.
 				 */
-				childatt->attinhcount--;
-				childatt->attislocal = true;
+				Bitmapset  *updated = NULL;
 
-				CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+				HeapTupleUpdateField(pg_attribute, attinhcount, childatt->attinhcount - 1, childatt, updated);
+				HeapTupleUpdateField(pg_attribute, attislocal, true, childatt, updated);
+				CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple, updated, NULL);
+				bms_free(updated);
 
 				/* Make update visible */
 				CommandCounterIncrement();
@@ -12648,16 +12689,22 @@ ATExecAlterConstrInheritability(List **wqueue, ATAlterConstraint *cmdcon,
 		{
 			HeapTuple	childtup;
 			Form_pg_constraint childcon;
+			Bitmapset  *updated = NULL;
 
 			childtup = findNotNullConstraint(childoid, colName);
 			if (!childtup)
 				elog(ERROR, "cache lookup failed for not-null constraint on column \"%s\" of relation %u",
 					 colName, childoid);
+
 			childcon = (Form_pg_constraint) GETSTRUCT(childtup);
 			Assert(childcon->coninhcount > 0);
-			childcon->coninhcount--;
-			childcon->conislocal = true;
-			CatalogTupleUpdate(conrel, &childtup->t_self, childtup);
+
+			HeapTupleUpdateField(pg_constraint, coninhcount, childcon->coninhcount - 1, childcon, updated);
+			HeapTupleUpdateField(pg_constraint, conislocal, true, childcon, updated);
+
+			CatalogTupleUpdate(conrel, &childtup->t_self, childtup, updated, NULL);
+
+			bms_free(updated);
 			heap_freetuple(childtup);
 		}
 		else
@@ -12702,6 +12749,7 @@ AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
 		Form_pg_trigger tgform = (Form_pg_trigger) GETSTRUCT(tgtuple);
 		Form_pg_trigger copy_tg;
 		HeapTuple	tgCopyTuple;
+		Bitmapset  *updated = NULL;
 
 		/*
 		 * Remember OIDs of other relation(s) involved in FK constraint.
@@ -12728,12 +12776,14 @@ AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
 		tgCopyTuple = heap_copytuple(tgtuple);
 		copy_tg = (Form_pg_trigger) GETSTRUCT(tgCopyTuple);
 
-		copy_tg->tgdeferrable = deferrable;
-		copy_tg->tginitdeferred = initdeferred;
-		CatalogTupleUpdate(tgrel, &tgCopyTuple->t_self, tgCopyTuple);
+		HeapTupleUpdateField(pg_trigger, tgdeferrable, deferrable, copy_tg, updated);
+		HeapTupleUpdateField(pg_trigger, tginitdeferred, initdeferred, copy_tg, updated);
+
+		CatalogTupleUpdate(tgrel, &tgCopyTuple->t_self, tgCopyTuple, updated, NULL);
 
 		InvokeObjectPostAlterHook(TriggerRelationId, tgform->oid, 0);
 
+		bms_free(updated);
 		heap_freetuple(tgCopyTuple);
 	}
 
@@ -12848,6 +12898,7 @@ AlterConstrUpdateConstraintEntry(ATAlterConstraint *cmdcon, Relation conrel,
 {
 	HeapTuple	copyTuple;
 	Form_pg_constraint copy_con;
+	Bitmapset  *updated = NULL;
 
 	Assert(cmdcon->alterEnforceability || cmdcon->alterDeferrability ||
 		   cmdcon->alterInheritability);
@@ -12857,7 +12908,7 @@ AlterConstrUpdateConstraintEntry(ATAlterConstraint *cmdcon, Relation conrel,
 
 	if (cmdcon->alterEnforceability)
 	{
-		copy_con->conenforced = cmdcon->is_enforced;
+		HeapTupleUpdateField(pg_constraint, conenforced, cmdcon->is_enforced, copy_con, updated);
 
 		/*
 		 * NB: The convalidated status is irrelevant when the constraint is
@@ -12866,22 +12917,26 @@ AlterConstrUpdateConstraintEntry(ATAlterConstraint *cmdcon, Relation conrel,
 		 * ENFORCED, validation will be performed during phase 3, so it makes
 		 * sense to mark it as valid in that case.
 		 */
-		copy_con->convalidated = cmdcon->is_enforced;
+		HeapTupleUpdateField(pg_constraint, convalidated, cmdcon->is_enforced, copy_con, updated);
 	}
+
 	if (cmdcon->alterDeferrability)
 	{
-		copy_con->condeferrable = cmdcon->deferrable;
-		copy_con->condeferred = cmdcon->initdeferred;
+		HeapTupleUpdateField(pg_constraint, condeferrable, cmdcon->deferrable, copy_con, updated);
+		HeapTupleUpdateField(pg_constraint, condeferred, cmdcon->initdeferred, copy_con, updated);
 	}
-	if (cmdcon->alterInheritability)
-		copy_con->connoinherit = cmdcon->noinherit;
 
-	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+	if (cmdcon->alterInheritability)
+		HeapTupleUpdateField(pg_constraint, connoinherit, cmdcon->noinherit, copy_con, updated);
+
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple, updated, NULL);
+
 	InvokeObjectPostAlterHook(ConstraintRelationId, copy_con->oid, 0);
 
 	/* Make new constraint flags visible to others */
 	CacheInvalidateRelcacheByRelid(copy_con->conrelid);
 
+	bms_free(updated);
 	heap_freetuple(copyTuple);
 }
 
@@ -12994,6 +13049,7 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation fkrel,
 	AlteredTableInfo *tab;
 	HeapTuple	copyTuple;
 	Form_pg_constraint copy_con;
+	Bitmapset  *updated = NULL;
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_FOREIGN);
@@ -13090,11 +13146,14 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation fkrel,
 	 */
 	copyTuple = heap_copytuple(contuple);
 	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-	copy_con->convalidated = true;
-	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+
+	HeapTupleUpdateField(pg_constraint, convalidated, true, copy_con, updated);
+
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
 
+	bms_free(updated);
 	heap_freetuple(copyTuple);
 }
 
@@ -13120,6 +13179,7 @@ QueueCheckConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	NewConstraint *newcon;
 	Datum		val;
 	char	   *conbin;
+	Bitmapset  *updated = NULL;
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_CHECK);
@@ -13193,11 +13253,14 @@ QueueCheckConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	 */
 	copyTuple = heap_copytuple(contuple);
 	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-	copy_con->convalidated = true;
-	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+
+	HeapTupleUpdateField(pg_constraint, convalidated, true, copy_con, updated);
+
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
 
+	bms_free(updated);
 	heap_freetuple(copyTuple);
 }
 
@@ -13220,6 +13283,7 @@ QueueNNConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	List	   *children = NIL;
 	AttrNumber	attnum;
 	char	   *colname;
+	Bitmapset  *updated = NULL;
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_NOTNULL);
@@ -13296,11 +13360,14 @@ QueueNNConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	 */
 	copyTuple = heap_copytuple(contuple);
 	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-	copy_con->convalidated = true;
-	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+
+	HeapTupleUpdateField(pg_constraint, convalidated, true, copy_con, updated);
+
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
 
+	bms_free(updated);
 	heap_freetuple(copyTuple);
 }
 
@@ -14175,8 +14242,11 @@ dropconstraint_internal(Relation rel, HeapTuple constraintTup, DropBehavior beha
 		/* All good -- reset attnotnull if needed */
 		if (attForm->attnotnull)
 		{
-			attForm->attnotnull = false;
-			CatalogTupleUpdate(attrel, &atttup->t_self, atttup);
+			Bitmapset  *updated = NULL;
+
+			HeapTupleUpdateField(pg_attribute, attnotnull, false, attForm, updated);
+			CatalogTupleUpdate(attrel, &atttup->t_self, atttup, updated, NULL);
+			bms_free(updated);
 		}
 
 		table_close(attrel, RowExclusiveLock);
@@ -14309,11 +14379,16 @@ dropconstraint_internal(Relation rel, HeapTuple constraintTup, DropBehavior beha
 			else
 			{
 				/* Child constraint must survive my deletion */
-				childcon->coninhcount--;
-				CatalogTupleUpdate(conrel, &tuple->t_self, tuple);
+				Bitmapset  *updated = NULL;
+
+				HeapTupleUpdateField(pg_constraint, coninhcount, childcon->coninhcount - 1, childcon, updated);
+
+				CatalogTupleUpdate(conrel, &tuple->t_self, tuple, updated, NULL);
 
 				/* Make update visible */
 				CommandCounterIncrement();
+
+				bms_free(updated);
 			}
 		}
 		else
@@ -14324,14 +14399,19 @@ dropconstraint_internal(Relation rel, HeapTuple constraintTup, DropBehavior beha
 			 * mark the inheritors' constraints as locally defined rather than
 			 * inherited.
 			 */
-			childcon->coninhcount--;
-			if (childcon->coninhcount == 0)
-				childcon->conislocal = true;
+			Bitmapset  *updated = NULL;
 
-			CatalogTupleUpdate(conrel, &tuple->t_self, tuple);
+			HeapTupleUpdateField(pg_constraint, coninhcount, childcon->coninhcount - 1, childcon, updated);
+
+			if (childcon->coninhcount == 0)
+				HeapTupleUpdateField(pg_constraint, conislocal, true, childcon, updated);
+
+			CatalogTupleUpdate(conrel, &tuple->t_self, tuple, updated, NULL);
 
 			/* Make update visible */
 			CommandCounterIncrement();
+
+			bms_free(updated);
 		}
 
 		heap_freetuple(tuple);
@@ -14737,6 +14817,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	SysScanDesc scan;
 	HeapTuple	depTup;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Clear all the missing values if we're rewriting the table, since this
@@ -14913,9 +14994,8 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 
 			int			one = 1;
 			bool		isNull;
-			Datum		valuesAtt[Natts_pg_attribute] = {0};
-			bool		nullsAtt[Natts_pg_attribute] = {0};
-			bool		replacesAtt[Natts_pg_attribute] = {0};
+			Datum		values[Natts_pg_attribute] = {0};
+			bool		nulls[Natts_pg_attribute] = {false};
 			HeapTuple	newTup;
 
 			missingval = array_get_element(missingval,
@@ -14933,35 +15013,36 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 														 tform->typbyval,
 														 tform->typalign));
 
-			valuesAtt[Anum_pg_attribute_attmissingval - 1] = missingval;
-			replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
-			nullsAtt[Anum_pg_attribute_attmissingval - 1] = false;
+			HeapTupleUpdateValue(pg_attribute, attmissingval, missingval, values, nulls, updated);
 
-			newTup = heap_modify_tuple(heapTup, RelationGetDescr(attrelation),
-									   valuesAtt, nullsAtt, replacesAtt);
+			newTup = heap_update_tuple(heapTup, RelationGetDescr(attrelation),
+									   values, nulls, updated);
 			heap_freetuple(heapTup);
+			bms_free(updated);
+			updated = NULL;
+
 			heapTup = newTup;
 			attTup = (Form_pg_attribute) GETSTRUCT(heapTup);
 		}
 	}
 
-	attTup->atttypid = targettype;
-	attTup->atttypmod = targettypmod;
-	attTup->attcollation = targetcollid;
+	HeapTupleUpdateField(pg_attribute, atttypid, targettype, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, atttypmod, targettypmod, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attcollation, targetcollid, attTup, updated);
 	if (list_length(typeName->arrayBounds) > PG_INT16_MAX)
 		ereport(ERROR,
 				errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				errmsg("too many array dimensions"));
-	attTup->attndims = list_length(typeName->arrayBounds);
-	attTup->attlen = tform->typlen;
-	attTup->attbyval = tform->typbyval;
-	attTup->attalign = tform->typalign;
-	attTup->attstorage = tform->typstorage;
-	attTup->attcompression = InvalidCompressionMethod;
+	HeapTupleUpdateField(pg_attribute, attndims, list_length(typeName->arrayBounds), attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attlen, tform->typlen, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attbyval, tform->typbyval, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attalign, tform->typalign, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attstorage, tform->typstorage, attTup, updated);
+	HeapTupleUpdateField(pg_attribute, attcompression, InvalidCompressionMethod, attTup, updated);
 
 	ReleaseSysCache(typeTuple);
 
-	CatalogTupleUpdate(attrelation, &heapTup->t_self, heapTup);
+	CatalogTupleUpdate(attrelation, &heapTup->t_self, heapTup, updated, NULL);
 
 	table_close(attrelation, RowExclusiveLock);
 
@@ -15021,6 +15102,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 						RelationGetRelid(rel), attnum);
 
 	/* Cleanup */
+	bms_free(updated);
 	heap_freetuple(heapTup);
 
 	return address;
@@ -15956,9 +16038,9 @@ ATExecAlterColumnGenericOptions(Relation rel,
 	HeapTuple	tuple;
 	HeapTuple	newtuple;
 	bool		isnull;
-	Datum		repl_val[Natts_pg_attribute];
-	bool		repl_null[Natts_pg_attribute];
-	bool		repl_repl[Natts_pg_attribute];
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 	Datum		datum;
 	Form_pg_foreign_table fttableform;
 	Form_pg_attribute atttableform;
@@ -16000,11 +16082,6 @@ ATExecAlterColumnGenericOptions(Relation rel,
 				 errmsg("cannot alter system column \"%s\"", colName)));
 
 
-	/* Initialize buffers for new tuple values */
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	/* Extract the current options */
 	datum = SysCacheGetAttr(ATTNAME,
 							tuple,
@@ -16020,18 +16097,15 @@ ATExecAlterColumnGenericOptions(Relation rel,
 									fdw->fdwvalidator);
 
 	if (DatumGetPointer(datum) != NULL)
-		repl_val[Anum_pg_attribute_attfdwoptions - 1] = datum;
+		HeapTupleUpdateValue(pg_attribute, attfdwoptions, datum, values, nulls, updated);
 	else
-		repl_null[Anum_pg_attribute_attfdwoptions - 1] = true;
-
-	repl_repl[Anum_pg_attribute_attfdwoptions - 1] = true;
+		HeapTupleUpdateValueNull(pg_attribute, attfdwoptions, values, nulls, updated);
 
 	/* Everything looks good - update the tuple */
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(attrel),
+								 values, nulls, updated);
 
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(attrel),
-								 repl_val, repl_null, repl_repl);
-
-	CatalogTupleUpdate(attrel, &newtuple->t_self, newtuple);
+	CatalogTupleUpdate(attrel, &newtuple->t_self, newtuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -16043,6 +16117,7 @@ ATExecAlterColumnGenericOptions(Relation rel,
 
 	table_close(attrel, RowExclusiveLock);
 
+	bms_free(updated);
 	heap_freetuple(newtuple);
 
 	return address;
@@ -16169,13 +16244,13 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 	 */
 	if (tuple_class->relowner != newOwnerId)
 	{
-		Datum		repl_val[Natts_pg_class];
-		bool		repl_null[Natts_pg_class];
-		bool		repl_repl[Natts_pg_class];
+		Datum		values[Natts_pg_class] = {0};
+		bool		nulls[Natts_pg_class] = {false};
 		Acl		   *newAcl;
 		Datum		aclDatum;
 		bool		isNull;
 		HeapTuple	newtuple;
+		Bitmapset  *updated = NULL;
 
 		/* skip permission checks when recursing to index or toast table */
 		if (!recursing)
@@ -16203,11 +16278,7 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 			}
 		}
 
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
-
-		repl_repl[Anum_pg_class_relowner - 1] = true;
-		repl_val[Anum_pg_class_relowner - 1] = ObjectIdGetDatum(newOwnerId);
+		HeapTupleUpdateValue(pg_class, relowner, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 		/*
 		 * Determine the modified ACL for the new owner.  This is only
@@ -16220,14 +16291,14 @@ ATExecChangeOwner(Oid relationOid, Oid newOwnerId, bool recursing, LOCKMODE lock
 		{
 			newAcl = aclnewowner(DatumGetAclP(aclDatum),
 								 tuple_class->relowner, newOwnerId);
-			repl_repl[Anum_pg_class_relacl - 1] = true;
-			repl_val[Anum_pg_class_relacl - 1] = PointerGetDatum(newAcl);
+			HeapTupleUpdateValue(pg_class, relacl, PointerGetDatum(newAcl), values, nulls, updated);
 		}
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(class_rel), repl_val, repl_null, repl_repl);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(class_rel), values, nulls, updated);
 
-		CatalogTupleUpdate(class_rel, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(class_rel, &newtuple->t_self, newtuple, updated, NULL);
 
+		bms_free(updated);
 		heap_freetuple(newtuple);
 
 		/*
@@ -16319,9 +16390,9 @@ change_owner_fix_column_acls(Oid relationOid, Oid oldOwnerId, Oid newOwnerId)
 	while (HeapTupleIsValid(attributeTuple = systable_getnext(scan)))
 	{
 		Form_pg_attribute att = (Form_pg_attribute) GETSTRUCT(attributeTuple);
-		Datum		repl_val[Natts_pg_attribute];
-		bool		repl_null[Natts_pg_attribute];
-		bool		repl_repl[Natts_pg_attribute];
+		Datum		values[Natts_pg_attribute] = {0};
+		bool		nulls[Natts_pg_attribute] = {false};
+		Bitmapset  *updated = NULL;
 		Acl		   *newAcl;
 		Datum		aclDatum;
 		bool		isNull;
@@ -16339,20 +16410,17 @@ change_owner_fix_column_acls(Oid relationOid, Oid oldOwnerId, Oid newOwnerId)
 		if (isNull)
 			continue;
 
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
-
 		newAcl = aclnewowner(DatumGetAclP(aclDatum),
 							 oldOwnerId, newOwnerId);
-		repl_repl[Anum_pg_attribute_attacl - 1] = true;
-		repl_val[Anum_pg_attribute_attacl - 1] = PointerGetDatum(newAcl);
+		HeapTupleUpdateValue(pg_attribute, attacl, PointerGetDatum(newAcl), values, nulls, updated);
 
-		newtuple = heap_modify_tuple(attributeTuple,
+		newtuple = heap_update_tuple(attributeTuple,
 									 RelationGetDescr(attRelation),
-									 repl_val, repl_null, repl_repl);
+									 values, nulls, updated);
 
-		CatalogTupleUpdate(attRelation, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(attRelation, &newtuple->t_self, newtuple, updated, NULL);
 
+		bms_free(updated);
 		heap_freetuple(newtuple);
 	}
 	systable_endscan(scan);
@@ -16521,6 +16589,7 @@ ATExecSetAccessMethodNoStorage(Relation rel, Oid newAccessMethodId)
 	HeapTuple	tuple;
 	Form_pg_class rd_rel;
 	Oid			reloid = RelationGetRelid(rel);
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Shouldn't be called on relations having storage; these are processed in
@@ -16538,17 +16607,18 @@ ATExecSetAccessMethodNoStorage(Relation rel, Oid newAccessMethodId)
 
 	/* Update the pg_class row. */
 	oldAccessMethodId = rd_rel->relam;
-	rd_rel->relam = newAccessMethodId;
+	HeapTupleUpdateField(pg_class, relam, newAccessMethodId, rd_rel, updated);
 
 	/* Leave if no update required */
 	if (rd_rel->relam == oldAccessMethodId)
 	{
+		bms_free(updated);
 		heap_freetuple(tuple);
 		table_close(pg_class, RowExclusiveLock);
 		return;
 	}
 
-	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple, updated, NULL);
 
 	/*
 	 * Update the dependency on the new access method.  No dependency is added
@@ -16596,6 +16666,7 @@ ATExecSetAccessMethodNoStorage(Relation rel, Oid newAccessMethodId)
 
 	InvokeObjectPostAlterHook(RelationRelationId, RelationGetRelid(rel), 0);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 	table_close(pg_class, RowExclusiveLock);
 }
@@ -16643,9 +16714,9 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	HeapTuple	newtuple;
 	Datum		datum;
 	Datum		newOptions;
-	Datum		repl_val[Natts_pg_class];
-	bool		repl_null[Natts_pg_class];
-	bool		repl_repl[Natts_pg_class];
+	Datum		values[Natts_pg_class] = {0};
+	bool		nulls[Natts_pg_class] = {false};
+	Bitmapset  *updated = NULL;
 	const char *const validnsps[] = HEAP_RELOPT_NAMESPACES;
 
 	if (defList == NIL && operation != AT_ReplaceRelOptions)
@@ -16747,25 +16818,23 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	 * All we need do here is update the pg_class row; the new options will be
 	 * propagated into relcaches during post-commit cache inval.
 	 */
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
 
 	if (newOptions != (Datum) 0)
-		repl_val[Anum_pg_class_reloptions - 1] = newOptions;
+		HeapTupleUpdateValue(pg_class, reloptions, newOptions, values, nulls, updated);
 	else
-		repl_null[Anum_pg_class_reloptions - 1] = true;
+		HeapTupleUpdateValueNull(pg_class, reloptions, values, nulls, updated);
 
-	repl_repl[Anum_pg_class_reloptions - 1] = true;
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(pgclass),
+								 values, nulls, updated);
 
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass),
-								 repl_val, repl_null, repl_repl);
+	CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple, updated, NULL);
 
-	CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
 	UnlockTuple(pgclass, &tuple->t_self, InplaceUpdateTupleLock);
 
 	InvokeObjectPostAlterHook(RelationRelationId, RelationGetRelid(rel), 0);
 
+	bms_free(updated);
+	updated = NULL;
 	heap_freetuple(newtuple);
 
 	ReleaseSysCache(tuple);
@@ -16807,26 +16876,25 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 
 		(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
 
-		memset(repl_val, 0, sizeof(repl_val));
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
+		memset(values, 0, sizeof(values));
+		memset(nulls, false, sizeof(nulls));
+		Assert(bms_is_empty(updated));
 
 		if (newOptions != (Datum) 0)
-			repl_val[Anum_pg_class_reloptions - 1] = newOptions;
+			HeapTupleUpdateValue(pg_class, reloptions, newOptions, values, nulls, updated);
 		else
-			repl_null[Anum_pg_class_reloptions - 1] = true;
+			HeapTupleUpdateValueNull(pg_class, reloptions, values, nulls, updated);
 
-		repl_repl[Anum_pg_class_reloptions - 1] = true;
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(pgclass),
+									 values, nulls, updated);
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(pgclass),
-									 repl_val, repl_null, repl_repl);
-
-		CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(pgclass, &newtuple->t_self, newtuple, updated, NULL);
 
 		InvokeObjectPostAlterHookArg(RelationRelationId,
 									 RelationGetRelid(toastrel), 0,
 									 InvalidOid, true);
 
+		bms_free(updated);
 		heap_freetuple(newtuple);
 
 		ReleaseSysCache(tuple);
@@ -17498,6 +17566,7 @@ MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel, bool ispart
 	for (AttrNumber parent_attno = 1; parent_attno <= parent_desc->natts; parent_attno++)
 	{
 		Form_pg_attribute parent_att = TupleDescAttr(parent_desc, parent_attno - 1);
+		Bitmapset  *updated = NULL;
 		char	   *parent_attname = NameStr(parent_att->attname);
 		HeapTuple	tuple;
 
@@ -17582,6 +17651,8 @@ MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel, bool ispart
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
 
+			HeapTupleMarkColumnUpdated(pg_attribute, attinhcount, updated);
+
 			/*
 			 * In case of partitions, we must enforce that value of attislocal
 			 * is same in all partitions. (Note: there are only inherited
@@ -17590,10 +17661,12 @@ MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel, bool ispart
 			if (parent_rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 			{
 				Assert(child_att->attinhcount == 1);
-				child_att->attislocal = false;
+				HeapTupleUpdateField(pg_attribute, attislocal, false, child_att, updated);
 			}
 
-			CatalogTupleUpdate(attrrel, &tuple->t_self, tuple);
+			CatalogTupleUpdate(attrrel, &tuple->t_self, tuple, updated, NULL);
+
+			bms_free(updated);
 			heap_freetuple(tuple);
 		}
 		else
@@ -17656,6 +17729,7 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
 		HeapTuple	child_tuple;
 		AttrNumber	parent_attno;
 		bool		found = false;
+		Bitmapset  *updated = NULL;
 
 		if (parent_con->contype != CONSTRAINT_CHECK &&
 			parent_con->contype != CONSTRAINT_NOTNULL)
@@ -17764,6 +17838,8 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
 
+			HeapTupleMarkColumnUpdated(pg_constraint, coninhcount, updated);
+
 			/*
 			 * In case of partitions, an inherited constraint must be
 			 * inherited only once since it cannot have multiple parents and
@@ -17772,10 +17848,12 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
 			if (parent_rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 			{
 				Assert(child_con->coninhcount == 1);
-				child_con->conislocal = false;
+				HeapTupleUpdateField(pg_constraint, conislocal, false, child_con, updated);
 			}
 
-			CatalogTupleUpdate(constraintrel, &child_copy->t_self, child_copy);
+			CatalogTupleUpdate(constraintrel, &child_copy->t_self, child_copy, updated, NULL);
+
+			bms_free(updated);
 			heap_freetuple(child_copy);
 
 			found = true;
@@ -17879,6 +17957,7 @@ MarkInheritDetached(Relation child_rel, Relation parent_rel)
 	while (HeapTupleIsValid(inheritsTuple = systable_getnext(scan)))
 	{
 		Form_pg_inherits inhForm;
+		Bitmapset  *updated = NULL;
 
 		inhForm = (Form_pg_inherits) GETSTRUCT(inheritsTuple);
 		if (inhForm->inhdetachpending)
@@ -17893,14 +17972,18 @@ MarkInheritDetached(Relation child_rel, Relation parent_rel)
 		if (inhForm->inhrelid == RelationGetRelid(child_rel))
 		{
 			HeapTuple	newtup;
+			Form_pg_inherits classForm;
 
 			newtup = heap_copytuple(inheritsTuple);
-			((Form_pg_inherits) GETSTRUCT(newtup))->inhdetachpending = true;
+			classForm = (Form_pg_inherits) GETSTRUCT(newtup);
 
-			CatalogTupleUpdate(catalogRelation,
-							   &inheritsTuple->t_self,
-							   newtup);
+			HeapTupleUpdateField(pg_inherits, inhdetachpending, true, classForm, updated);
+
+			CatalogTupleUpdate(catalogRelation, &inheritsTuple->t_self, newtup, updated, NULL);
+
 			found = true;
+
+			bms_free(updated);
 			heap_freetuple(newtup);
 			/* keep looking, to ensure we catch others pending detach */
 		}
@@ -17985,6 +18068,7 @@ RemoveInheritance(Relation child_rel, Relation parent_rel, bool expect_detached)
 	while (HeapTupleIsValid(attributeTuple = systable_getnext(scan)))
 	{
 		Form_pg_attribute att = (Form_pg_attribute) GETSTRUCT(attributeTuple);
+		Bitmapset  *updated = NULL;
 
 		/* Ignore if dropped or not inherited */
 		if (att->attisdropped)
@@ -17999,11 +18083,14 @@ RemoveInheritance(Relation child_rel, Relation parent_rel, bool expect_detached)
 			HeapTuple	copyTuple = heap_copytuple(attributeTuple);
 			Form_pg_attribute copy_att = (Form_pg_attribute) GETSTRUCT(copyTuple);
 
-			copy_att->attinhcount--;
-			if (copy_att->attinhcount == 0)
-				copy_att->attislocal = true;
+			HeapTupleUpdateField(pg_attribute, attinhcount, copy_att->attinhcount - 1, copy_att, updated);
 
-			CatalogTupleUpdate(catalogRelation, &copyTuple->t_self, copyTuple);
+			if (copy_att->attinhcount == 0)
+				HeapTupleUpdateField(pg_attribute, attislocal, true, copy_att, updated);
+
+			CatalogTupleUpdate(catalogRelation, &copyTuple->t_self, copyTuple, updated, NULL);
+
+			bms_free(updated);
 			heap_freetuple(copyTuple);
 		}
 	}
@@ -18065,6 +18152,7 @@ RemoveInheritance(Relation child_rel, Relation parent_rel, bool expect_detached)
 	{
 		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(constraintTuple);
 		bool		match = false;
+		Bitmapset  *updated = NULL;
 
 		/*
 		 * Match CHECK constraints by name, not-null constraints by column
@@ -18110,11 +18198,14 @@ RemoveInheritance(Relation child_rel, Relation parent_rel, bool expect_detached)
 				elog(ERROR, "relation %u has non-inherited constraint \"%s\"",
 					 RelationGetRelid(child_rel), NameStr(copy_con->conname));
 
-			copy_con->coninhcount--;
-			if (copy_con->coninhcount == 0)
-				copy_con->conislocal = true;
+			HeapTupleUpdateField(pg_constraint, coninhcount, copy_con->coninhcount - 1, copy_con, updated);
 
-			CatalogTupleUpdate(catalogRelation, &copyTuple->t_self, copyTuple);
+			if (copy_con->coninhcount == 0)
+				HeapTupleUpdateField(pg_constraint, conislocal, true, copy_con, updated);
+
+			CatalogTupleUpdate(catalogRelation, &copyTuple->t_self, copyTuple, updated, NULL);
+
+			bms_free(updated);
 			heap_freetuple(copyTuple);
 		}
 	}
@@ -18220,6 +18311,7 @@ ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKMODE lockmode)
 	ObjectAddress tableobj,
 				typeobj;
 	HeapTuple	classtuple;
+	Bitmapset  *updated = NULL;
 
 	/* Validate the type. */
 	typetuple = typenameType(NULL, ofTypename, NULL);
@@ -18325,11 +18417,14 @@ ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKMODE lockmode)
 	classtuple = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
 	if (!HeapTupleIsValid(classtuple))
 		elog(ERROR, "cache lookup failed for relation %u", relid);
-	((Form_pg_class) GETSTRUCT(classtuple))->reloftype = typeid;
-	CatalogTupleUpdate(relationRelation, &classtuple->t_self, classtuple);
+
+	HeapTupleUpdateField(pg_class, reloftype, typeid, (Form_pg_class) GETSTRUCT(classtuple), updated);
+
+	CatalogTupleUpdate(relationRelation, &classtuple->t_self, classtuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId, relid, 0);
 
+	bms_free(updated);
 	heap_freetuple(classtuple);
 	table_close(relationRelation, RowExclusiveLock);
 
@@ -18350,6 +18445,7 @@ ATExecDropOf(Relation rel, LOCKMODE lockmode)
 	Oid			relid = RelationGetRelid(rel);
 	Relation	relationRelation;
 	HeapTuple	tuple;
+	Bitmapset  *updated = NULL;
 
 	if (!OidIsValid(rel->rd_rel->reloftype))
 		ereport(ERROR,
@@ -18370,11 +18466,14 @@ ATExecDropOf(Relation rel, LOCKMODE lockmode)
 	tuple = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for relation %u", relid);
-	((Form_pg_class) GETSTRUCT(tuple))->reloftype = InvalidOid;
-	CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple);
+
+	HeapTupleUpdateField(pg_class, reloftype, InvalidOid, (Form_pg_class) GETSTRUCT(tuple), updated);
+
+	CatalogTupleUpdate(relationRelation, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId, relid, 0);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 	table_close(relationRelation, RowExclusiveLock);
 }
@@ -18412,8 +18511,11 @@ relation_mark_replica_identity(Relation rel, char ri_type, Oid indexOid,
 	pg_class_form = (Form_pg_class) GETSTRUCT(pg_class_tuple);
 	if (pg_class_form->relreplident != ri_type)
 	{
-		pg_class_form->relreplident = ri_type;
-		CatalogTupleUpdate(pg_class, &pg_class_tuple->t_self, pg_class_tuple);
+		Bitmapset  *updated = NULL;
+
+		HeapTupleUpdateField(pg_class, relreplident, ri_type, pg_class_form, updated);
+		CatalogTupleUpdate(pg_class, &pg_class_tuple->t_self, pg_class_tuple, updated, NULL);
+		bms_free(updated);
 	}
 	table_close(pg_class, RowExclusiveLock);
 	heap_freetuple(pg_class_tuple);
@@ -18426,6 +18528,7 @@ relation_mark_replica_identity(Relation rel, char ri_type, Oid indexOid,
 	{
 		Oid			thisIndexOid = lfirst_oid(index);
 		bool		dirty = false;
+		Bitmapset  *updated = NULL;
 
 		pg_index_tuple = SearchSysCacheCopy1(INDEXRELID,
 											 ObjectIdGetDatum(thisIndexOid));
@@ -18439,7 +18542,7 @@ relation_mark_replica_identity(Relation rel, char ri_type, Oid indexOid,
 			if (!pg_index_form->indisreplident)
 			{
 				dirty = true;
-				pg_index_form->indisreplident = true;
+				HeapTupleUpdateField(pg_index, indisreplident, true, pg_index_form, updated);
 			}
 		}
 		else
@@ -18448,13 +18551,13 @@ relation_mark_replica_identity(Relation rel, char ri_type, Oid indexOid,
 			if (pg_index_form->indisreplident)
 			{
 				dirty = true;
-				pg_index_form->indisreplident = false;
+				HeapTupleUpdateField(pg_index, indisreplident, false, pg_index_form, updated);
 			}
 		}
 
 		if (dirty)
 		{
-			CatalogTupleUpdate(pg_index, &pg_index_tuple->t_self, pg_index_tuple);
+			CatalogTupleUpdate(pg_index, &pg_index_tuple->t_self, pg_index_tuple, updated, NULL);
 			InvokeObjectPostAlterHookArg(IndexRelationId, thisIndexOid, 0,
 										 InvalidOid, is_internal);
 
@@ -18467,6 +18570,7 @@ relation_mark_replica_identity(Relation rel, char ri_type, Oid indexOid,
 			 */
 			CacheInvalidateRelcache(rel);
 		}
+		bms_free(updated);
 		heap_freetuple(pg_index_tuple);
 	}
 
@@ -18596,6 +18700,7 @@ ATExecSetRowSecurity(Relation rel, bool rls)
 	Relation	pg_class;
 	Oid			relid;
 	HeapTuple	tuple;
+	Bitmapset  *updated = NULL;
 
 	relid = RelationGetRelid(rel);
 
@@ -18607,13 +18712,14 @@ ATExecSetRowSecurity(Relation rel, bool rls)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for relation %u", relid);
 
-	((Form_pg_class) GETSTRUCT(tuple))->relrowsecurity = rls;
-	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_class, relrowsecurity, rls, (Form_pg_class) GETSTRUCT(tuple), updated);
+	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel), 0);
 
 	table_close(pg_class, RowExclusiveLock);
+	bms_free(updated);
 	heap_freetuple(tuple);
 }
 
@@ -18626,6 +18732,7 @@ ATExecForceNoForceRowSecurity(Relation rel, bool force_rls)
 	Relation	pg_class;
 	Oid			relid;
 	HeapTuple	tuple;
+	Bitmapset  *updated = NULL;
 
 	relid = RelationGetRelid(rel);
 
@@ -18636,13 +18743,14 @@ ATExecForceNoForceRowSecurity(Relation rel, bool force_rls)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for relation %u", relid);
 
-	((Form_pg_class) GETSTRUCT(tuple))->relforcerowsecurity = force_rls;
-	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_class, relforcerowsecurity, force_rls, (Form_pg_class) GETSTRUCT(tuple), updated);
+	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel), 0);
 
 	table_close(pg_class, RowExclusiveLock);
+	bms_free(updated);
 	heap_freetuple(tuple);
 }
 
@@ -18657,9 +18765,9 @@ ATExecGenericOptions(Relation rel, List *options)
 	ForeignDataWrapper *fdw;
 	HeapTuple	tuple;
 	bool		isnull;
-	Datum		repl_val[Natts_pg_foreign_table];
-	bool		repl_null[Natts_pg_foreign_table];
-	bool		repl_repl[Natts_pg_foreign_table];
+	Datum		values[Natts_pg_foreign_table] = {0};
+	bool		nulls[Natts_pg_foreign_table] = {false};
+	Bitmapset  *updated = NULL;
 	Datum		datum;
 	Form_pg_foreign_table tableform;
 
@@ -18679,10 +18787,6 @@ ATExecGenericOptions(Relation rel, List *options)
 	server = GetForeignServer(tableform->ftserver);
 	fdw = GetForeignDataWrapper(server->fdwid);
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	/* Extract the current options */
 	datum = SysCacheGetAttr(FOREIGNTABLEREL,
 							tuple,
@@ -18698,18 +18802,16 @@ ATExecGenericOptions(Relation rel, List *options)
 									fdw->fdwvalidator);
 
 	if (DatumGetPointer(datum) != NULL)
-		repl_val[Anum_pg_foreign_table_ftoptions - 1] = datum;
+		HeapTupleUpdateValue(pg_foreign_table, ftoptions, datum, values, nulls, updated);
 	else
-		repl_null[Anum_pg_foreign_table_ftoptions - 1] = true;
-
-	repl_repl[Anum_pg_foreign_table_ftoptions - 1] = true;
+		HeapTupleUpdateValueNull(pg_foreign_table, ftoptions, values, nulls, updated);
 
 	/* Everything looks good - update the tuple */
 
-	tuple = heap_modify_tuple(tuple, RelationGetDescr(ftrel),
-							  repl_val, repl_null, repl_repl);
+	tuple = heap_update_tuple(tuple, RelationGetDescr(ftrel),
+							  values, nulls, updated);
 
-	CatalogTupleUpdate(ftrel, &tuple->t_self, tuple);
+	CatalogTupleUpdate(ftrel, &tuple->t_self, tuple, updated, NULL);
 
 	/*
 	 * Invalidate relcache so that all sessions will refresh any cached plans
@@ -18722,6 +18824,7 @@ ATExecGenericOptions(Relation rel, List *options)
 
 	table_close(ftrel, RowExclusiveLock);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 }
 
@@ -18743,6 +18846,7 @@ ATExecSetCompression(Relation rel,
 	char	   *compression;
 	char		cmethod;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	compression = strVal(newValue);
 
@@ -18771,8 +18875,8 @@ ATExecSetCompression(Relation rel,
 	cmethod = GetAttributeCompression(atttableform->atttypid, compression);
 
 	/* update pg_attribute entry */
-	atttableform->attcompression = cmethod;
-	CatalogTupleUpdate(attrel, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_attribute, attcompression, cmethod, atttableform, updated);
+	CatalogTupleUpdate(attrel, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
@@ -18787,6 +18891,7 @@ ATExecSetCompression(Relation rel,
 							  true, cmethod,
 							  lockmode);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 
 	table_close(attrel, RowExclusiveLock);
@@ -19050,6 +19155,7 @@ AlterRelationNamespaceInternal(Relation classRel, Oid relOid,
 	Form_pg_class classForm;
 	ObjectAddress thisobj;
 	bool		already_done = false;
+	Bitmapset  *updated = NULL;
 
 	/* no rel lock for relkind=c so use LOCKTAG_TUPLE */
 	classTup = SearchSysCacheLockedCopy1(RELOID, ObjectIdGetDatum(relOid));
@@ -19083,9 +19189,10 @@ AlterRelationNamespaceInternal(Relation classRel, Oid relOid,
 							get_namespace_name(newNspOid))));
 
 		/* classTup is a copy, so OK to scribble on */
-		classForm->relnamespace = newNspOid;
+		HeapTupleUpdateField(pg_class, relnamespace, newNspOid, classForm, updated);
 
-		CatalogTupleUpdate(classRel, &otid, classTup);
+		CatalogTupleUpdate(classRel, &otid, classTup, updated, NULL);
+		bms_free(updated);
 		UnlockTuple(classRel, &otid, InplaceUpdateTupleLock);
 
 
@@ -21077,9 +21184,9 @@ DetachPartitionFinalize(Relation rel, Relation partRel, bool concurrent,
 	List	   *fks;
 	ListCell   *cell;
 	List	   *indexes;
-	Datum		new_val[Natts_pg_class];
-	bool		new_null[Natts_pg_class],
-				new_repl[Natts_pg_class];
+	Datum		new_val[Natts_pg_class] = {0};
+	bool		new_null[Natts_pg_class] = {false};
+	Bitmapset  *updated = NULL;
 	HeapTuple	tuple,
 				newtuple;
 	Relation	trigrel = NULL;
@@ -21329,17 +21436,13 @@ DetachPartitionFinalize(Relation rel, Relation partRel, bool concurrent,
 	Assert(((Form_pg_class) GETSTRUCT(tuple))->relispartition);
 
 	/* Clear relpartbound and reset relispartition */
-	memset(new_val, 0, sizeof(new_val));
-	memset(new_null, false, sizeof(new_null));
-	memset(new_repl, false, sizeof(new_repl));
-	new_val[Anum_pg_class_relpartbound - 1] = (Datum) 0;
-	new_null[Anum_pg_class_relpartbound - 1] = true;
-	new_repl[Anum_pg_class_relpartbound - 1] = true;
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(classRel),
-								 new_val, new_null, new_repl);
+	HeapTupleUpdateValueNull(pg_class, relpartbound, new_val, new_null, updated);
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(classRel),
+								 new_val, new_null, updated);
 
-	((Form_pg_class) GETSTRUCT(newtuple))->relispartition = false;
-	CatalogTupleUpdate(classRel, &newtuple->t_self, newtuple);
+	HeapTupleUpdateField(pg_class, relispartition, false, (Form_pg_class) GETSTRUCT(newtuple), updated);
+	CatalogTupleUpdate(classRel, &newtuple->t_self, newtuple, updated, NULL);
+	bms_free(updated);
 	heap_freetuple(newtuple);
 	table_close(classRel, RowExclusiveLock);
 
@@ -21759,6 +21862,7 @@ validatePartitionedIndex(Relation partedIdx, Relation partedTbl)
 	int			tuples = 0;
 	HeapTuple	inhTup;
 	bool		updated = false;
+	Bitmapset  *updated_cols = NULL;
 
 	Assert(partedIdx->rd_rel->relkind == RELKIND_PARTITIONED_INDEX);
 
@@ -21811,10 +21915,11 @@ validatePartitionedIndex(Relation partedIdx, Relation partedTbl)
 				 RelationGetRelid(partedIdx));
 		indexForm = (Form_pg_index) GETSTRUCT(indTup);
 
-		indexForm->indisvalid = true;
+		HeapTupleUpdateField(pg_index, indisvalid, true, indexForm, updated_cols);
 		updated = true;
 
-		CatalogTupleUpdate(idxRel, &indTup->t_self, indTup);
+		CatalogTupleUpdate(idxRel, &indTup->t_self, indTup, updated_cols, NULL);
+		bms_free(updated_cols);
 
 		table_close(idxRel, RowExclusiveLock);
 		heap_freetuple(indTup);

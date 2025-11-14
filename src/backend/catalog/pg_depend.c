@@ -61,7 +61,7 @@ recordMultipleDependencies(const ObjectAddress *depender,
 {
 	Relation	dependDesc;
 	CatalogIndexState indstate;
-	TupleTableSlot **slot;
+	TupleTableSlot **slots;
 	int			i,
 				max_slots,
 				slot_init_count,
@@ -88,7 +88,7 @@ recordMultipleDependencies(const ObjectAddress *depender,
 	 */
 	max_slots = Min(nreferenced,
 					MAX_CATALOG_MULTI_INSERT_BYTES / sizeof(FormData_pg_depend));
-	slot = palloc(sizeof(TupleTableSlot *) * max_slots);
+	slots = palloc(sizeof(TupleTableSlot *) * max_slots);
 
 	/* Don't open indexes unless we need to make an update */
 	indstate = NULL;
@@ -99,6 +99,9 @@ recordMultipleDependencies(const ObjectAddress *depender,
 	slot_init_count = 0;
 	for (i = 0; i < nreferenced; i++, referenced++)
 	{
+		TupleTableSlot *slot;
+		Datum	   *values;
+
 		/*
 		 * If the referenced object is pinned by the system, there's no real
 		 * need to record dependencies on it.  This saves lots of space in
@@ -109,29 +112,32 @@ recordMultipleDependencies(const ObjectAddress *depender,
 
 		if (slot_init_count < max_slots)
 		{
-			slot[slot_stored_count] = MakeSingleTupleTableSlot(RelationGetDescr(dependDesc),
-															   &TTSOpsHeapTuple);
+			slots[slot_stored_count] = MakeSingleTupleTableSlot(RelationGetDescr(dependDesc),
+																&TTSOpsHeapTuple);
 			slot_init_count++;
 		}
 
-		ExecClearTuple(slot[slot_stored_count]);
+		ExecClearTuple(slots[slot_stored_count]);
+
+		slot = slots[slot_stored_count];
+		values = slot->tts_values;
 
 		/*
 		 * Record the dependency.  Note we don't bother to check for duplicate
 		 * dependencies; there's no harm in them.
 		 */
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_refclassid - 1] = ObjectIdGetDatum(referenced->classId);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_refobjid - 1] = ObjectIdGetDatum(referenced->objectId);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_refobjsubid - 1] = Int32GetDatum(referenced->objectSubId);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_deptype - 1] = CharGetDatum((char) behavior);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_classid - 1] = ObjectIdGetDatum(depender->classId);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_objid - 1] = ObjectIdGetDatum(depender->objectId);
-		slot[slot_stored_count]->tts_values[Anum_pg_depend_objsubid - 1] = Int32GetDatum(depender->objectSubId);
+		HeapTupleSetValue(pg_depend, refclassid, ObjectIdGetDatum(referenced->classId), values);
+		HeapTupleSetValue(pg_depend, refobjid, ObjectIdGetDatum(referenced->objectId), values);
+		HeapTupleSetValue(pg_depend, refobjsubid, Int32GetDatum(referenced->objectSubId), values);
+		HeapTupleSetValue(pg_depend, deptype, CharGetDatum((char) behavior), values);
+		HeapTupleSetValue(pg_depend, classid, ObjectIdGetDatum(depender->classId), values);
+		HeapTupleSetValue(pg_depend, objid, ObjectIdGetDatum(depender->objectId), values);
+		HeapTupleSetValue(pg_depend, objsubid, Int32GetDatum(depender->objectSubId), values);
 
-		memset(slot[slot_stored_count]->tts_isnull, false,
-			   slot[slot_stored_count]->tts_tupleDescriptor->natts * sizeof(bool));
+		memset(slot->tts_isnull, false,
+			   slot->tts_tupleDescriptor->natts * sizeof(bool));
 
-		ExecStoreVirtualTuple(slot[slot_stored_count]);
+		ExecStoreVirtualTuple(slot);
 		slot_stored_count++;
 
 		/* If slots are full, insert a batch of tuples */
@@ -141,8 +147,7 @@ recordMultipleDependencies(const ObjectAddress *depender,
 			if (indstate == NULL)
 				indstate = CatalogOpenIndexes(dependDesc);
 
-			CatalogTuplesMultiInsertWithInfo(dependDesc, slot, slot_stored_count,
-											 indstate);
+			CatalogTuplesMultiInsert(dependDesc, slots, slot_stored_count, indstate);
 			slot_stored_count = 0;
 		}
 	}
@@ -154,8 +159,7 @@ recordMultipleDependencies(const ObjectAddress *depender,
 		if (indstate == NULL)
 			indstate = CatalogOpenIndexes(dependDesc);
 
-		CatalogTuplesMultiInsertWithInfo(dependDesc, slot, slot_stored_count,
-										 indstate);
+		CatalogTuplesMultiInsert(dependDesc, slots, slot_stored_count, indstate);
 	}
 
 	if (indstate != NULL)
@@ -165,8 +169,8 @@ recordMultipleDependencies(const ObjectAddress *depender,
 
 	/* Drop only the number of slots used */
 	for (i = 0; i < slot_init_count; i++)
-		ExecDropSingleTupleTableSlot(slot[i]);
-	pfree(slot);
+		ExecDropSingleTupleTableSlot(slots[i]);
+	pfree(slots);
 }
 
 /*
@@ -531,14 +535,16 @@ changeDependencyFor(Oid classId, Oid objectId,
 				CatalogTupleDelete(depRel, &tup->t_self);
 			else
 			{
+				Bitmapset  *updated = NULL;
+
 				/* make a modifiable copy */
 				tup = heap_copytuple(tup);
 				depform = (Form_pg_depend) GETSTRUCT(tup);
 
-				depform->refobjid = newRefObjectId;
+				HeapTupleUpdateField(pg_depend, refobjid, newRefObjectId, depform, updated);
+				CatalogTupleUpdate(depRel, &tup->t_self, tup, updated, NULL);
 
-				CatalogTupleUpdate(depRel, &tup->t_self, tup);
-
+				bms_free(updated);
 				heap_freetuple(tup);
 			}
 
@@ -588,15 +594,16 @@ changeDependenciesOf(Oid classId, Oid oldObjectId,
 	while (HeapTupleIsValid((tup = systable_getnext(scan))))
 	{
 		Form_pg_depend depform;
+		Bitmapset  *updated = NULL;
 
 		/* make a modifiable copy */
 		tup = heap_copytuple(tup);
 		depform = (Form_pg_depend) GETSTRUCT(tup);
 
-		depform->objid = newObjectId;
+		HeapTupleUpdateField(pg_depend, objid, newObjectId, depform, updated);
+		CatalogTupleUpdate(depRel, &tup->t_self, tup, updated, NULL);
 
-		CatalogTupleUpdate(depRel, &tup->t_self, tup);
-
+		bms_free(updated);
 		heap_freetuple(tup);
 
 		count++;
@@ -675,15 +682,16 @@ changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
 		else
 		{
 			Form_pg_depend depform;
+			Bitmapset  *updated = NULL;
 
 			/* make a modifiable copy */
 			tup = heap_copytuple(tup);
 			depform = (Form_pg_depend) GETSTRUCT(tup);
 
-			depform->refobjid = newRefObjectId;
+			HeapTupleUpdateField(pg_depend, refobjid, newRefObjectId, depform, updated);
+			CatalogTupleUpdate(depRel, &tup->t_self, tup, updated, NULL);
 
-			CatalogTupleUpdate(depRel, &tup->t_self, tup);
-
+			bms_free(updated);
 			heap_freetuple(tup);
 		}
 

@@ -828,8 +828,8 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 	Relation	rel;
 	ObjectAddress myself;
 	Oid			puboid;
-	bool		nulls[Natts_pg_publication];
-	Datum		values[Natts_pg_publication];
+	Datum		values[Natts_pg_publication] = {0};
+	bool		nulls[Natts_pg_publication] = {false};
 	HeapTuple	tup;
 	bool		publish_given;
 	PublicationActions pubactions;
@@ -871,9 +871,8 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
 
-	values[Anum_pg_publication_pubname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->pubname));
-	values[Anum_pg_publication_pubowner - 1] = ObjectIdGetDatum(GetUserId());
+	HeapTupleSetValue(pg_publication, pubname, DirectFunctionCall1(namein, CStringGetDatum(stmt->pubname)), values);
+	HeapTupleSetValue(pg_publication, pubowner, ObjectIdGetDatum(GetUserId()), values);
 
 	parse_publication_options(pstate,
 							  stmt->options,
@@ -892,28 +891,20 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 
 	puboid = GetNewOidWithIndex(rel, PublicationObjectIndexId,
 								Anum_pg_publication_oid);
-	values[Anum_pg_publication_oid - 1] = ObjectIdGetDatum(puboid);
-	values[Anum_pg_publication_puballtables - 1] =
-		BoolGetDatum(stmt->for_all_tables);
-	values[Anum_pg_publication_puballsequences - 1] =
-		BoolGetDatum(stmt->for_all_sequences);
-	values[Anum_pg_publication_pubinsert - 1] =
-		BoolGetDatum(pubactions.pubinsert);
-	values[Anum_pg_publication_pubupdate - 1] =
-		BoolGetDatum(pubactions.pubupdate);
-	values[Anum_pg_publication_pubdelete - 1] =
-		BoolGetDatum(pubactions.pubdelete);
-	values[Anum_pg_publication_pubtruncate - 1] =
-		BoolGetDatum(pubactions.pubtruncate);
-	values[Anum_pg_publication_pubviaroot - 1] =
-		BoolGetDatum(publish_via_partition_root);
-	values[Anum_pg_publication_pubgencols - 1] =
-		CharGetDatum(publish_generated_columns);
+	HeapTupleSetValue(pg_publication, oid, ObjectIdGetDatum(puboid), values);
+	HeapTupleSetValue(pg_publication, puballtables, BoolGetDatum(stmt->for_all_tables), values);
+	HeapTupleSetValue(pg_publication, puballsequences, BoolGetDatum(stmt->for_all_sequences), values);
+	HeapTupleSetValue(pg_publication, pubinsert, BoolGetDatum(pubactions.pubinsert), values);
+	HeapTupleSetValue(pg_publication, pubupdate, BoolGetDatum(pubactions.pubupdate), values);
+	HeapTupleSetValue(pg_publication, pubdelete, BoolGetDatum(pubactions.pubdelete), values);
+	HeapTupleSetValue(pg_publication, pubtruncate, BoolGetDatum(pubactions.pubtruncate), values);
+	HeapTupleSetValue(pg_publication, pubviaroot, BoolGetDatum(publish_via_partition_root), values);
+	HeapTupleSetValue(pg_publication, pubgencols, CharGetDatum(publish_generated_columns), values);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	heap_freetuple(tup);
 
 	recordDependencyOnOwner(PublicationRelationId, puboid, GetUserId());
@@ -991,9 +982,9 @@ static void
 AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 						Relation rel, HeapTuple tup)
 {
-	bool		nulls[Natts_pg_publication];
-	bool		replaces[Natts_pg_publication];
-	Datum		values[Natts_pg_publication];
+	Datum		values[Natts_pg_publication] = {0};
+	bool		nulls[Natts_pg_publication] = {false};
+	Bitmapset  *updated = NULL;
 	bool		publish_given;
 	PublicationActions pubactions;
 	bool		publish_via_partition_root_given;
@@ -1103,42 +1094,25 @@ AlterPublicationOptions(ParseState *pstate, AlterPublicationStmt *stmt,
 	}
 
 	/* Everything ok, form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-
 	if (publish_given)
 	{
-		values[Anum_pg_publication_pubinsert - 1] = BoolGetDatum(pubactions.pubinsert);
-		replaces[Anum_pg_publication_pubinsert - 1] = true;
-
-		values[Anum_pg_publication_pubupdate - 1] = BoolGetDatum(pubactions.pubupdate);
-		replaces[Anum_pg_publication_pubupdate - 1] = true;
-
-		values[Anum_pg_publication_pubdelete - 1] = BoolGetDatum(pubactions.pubdelete);
-		replaces[Anum_pg_publication_pubdelete - 1] = true;
-
-		values[Anum_pg_publication_pubtruncate - 1] = BoolGetDatum(pubactions.pubtruncate);
-		replaces[Anum_pg_publication_pubtruncate - 1] = true;
+		HeapTupleUpdateValue(pg_publication, pubinsert, BoolGetDatum(pubactions.pubinsert), values, nulls, updated);
+		HeapTupleUpdateValue(pg_publication, pubupdate, BoolGetDatum(pubactions.pubupdate), values, nulls, updated);
+		HeapTupleUpdateValue(pg_publication, pubdelete, BoolGetDatum(pubactions.pubdelete), values, nulls, updated);
+		HeapTupleUpdateValue(pg_publication, pubtruncate, BoolGetDatum(pubactions.pubtruncate), values, nulls, updated);
 	}
 
 	if (publish_via_partition_root_given)
-	{
-		values[Anum_pg_publication_pubviaroot - 1] = BoolGetDatum(publish_via_partition_root);
-		replaces[Anum_pg_publication_pubviaroot - 1] = true;
-	}
+		HeapTupleUpdateValue(pg_publication, pubviaroot, BoolGetDatum(publish_via_partition_root), values, nulls, updated);
 
 	if (publish_generated_columns_given)
-	{
-		values[Anum_pg_publication_pubgencols - 1] = CharGetDatum(publish_generated_columns);
-		replaces[Anum_pg_publication_pubgencols - 1] = true;
-	}
+		HeapTupleUpdateValue(pg_publication, pubgencols, CharGetDatum(publish_generated_columns), values, nulls, updated);
 
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-							replaces);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
 	/* Update the catalog. */
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+	bms_free(updated);
 
 	CommandCounterIncrement();
 
@@ -2043,6 +2017,7 @@ static void
 AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
 	Form_pg_publication form;
+	Bitmapset  *updated = NULL;
 
 	form = (Form_pg_publication) GETSTRUCT(tup);
 
@@ -2079,8 +2054,10 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		}
 	}
 
-	form->pubowner = newOwnerId;
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	HeapTupleUpdateField(pg_publication, pubowner, newOwnerId, form, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+
+	bms_free(updated);
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(PublicationRelationId,

@@ -557,6 +557,7 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
 	Form_pg_index indexForm;
 	Relation	pg_index;
 	ListCell   *index;
+	Bitmapset  *updated = NULL;
 
 	/* Disallow applying to a partitioned table */
 	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
@@ -594,16 +595,16 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
 		 */
 		if (indexForm->indisclustered)
 		{
-			indexForm->indisclustered = false;
-			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+			HeapTupleUpdateField(pg_index, indisclustered, false, indexForm, updated);
+			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 		}
 		else if (thisIndexOid == indexOid)
 		{
 			/* this was checked earlier, but let's be real sure */
 			if (!indexForm->indisvalid)
 				elog(ERROR, "cannot cluster on invalid index %u", indexOid);
-			indexForm->indisclustered = true;
-			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+			HeapTupleUpdateField(pg_index, indisclustered, true, indexForm, updated);
+			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 		}
 
 		InvokeObjectPostAlterHookArg(IndexRelationId, thisIndexOid, 0,
@@ -613,6 +614,7 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
 	}
 
 	table_close(pg_index, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*
@@ -847,6 +849,7 @@ copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex, bool verb
 	int			elevel = verbose ? INFO : DEBUG2;
 	PGRUsage	ru0;
 	char	   *nspname;
+	Bitmapset  *updated = NULL;
 
 	pg_rusage_init(&ru0);
 
@@ -1016,18 +1019,19 @@ copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex, bool verb
 			 RelationGetRelid(NewHeap));
 	relform = (Form_pg_class) GETSTRUCT(reltup);
 
-	relform->relpages = num_pages;
-	relform->reltuples = num_tuples;
+	HeapTupleUpdateField(pg_class, relpages, num_pages, relform, updated);
+	HeapTupleUpdateField(pg_class, reltuples, num_tuples, relform, updated);
 
 	/* Don't update the stats for pg_class.  See swap_relation_files. */
 	if (RelationGetRelid(OldHeap) != RelationRelationId)
-		CatalogTupleUpdate(relRelation, &reltup->t_self, reltup);
+		CatalogTupleUpdate(relRelation, &reltup->t_self, reltup, updated, NULL);
 	else
 		CacheInvalidateRelcacheByTuple(reltup);
 
 	/* Clean up. */
 	heap_freetuple(reltup);
 	table_close(relRelation, RowExclusiveLock);
+	bms_free(updated);
 
 	/* Make the update visible */
 	CommandCounterIncrement();
@@ -1078,6 +1082,8 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	char		swptmpchr;
 	Oid			relam1,
 				relam2;
+	Bitmapset  *updated1 = NULL;
+	Bitmapset  *updated2 = NULL;
 
 	/* We need writable copies of both pg_class tuples. */
 	relRelation = table_open(RelationRelationId, RowExclusiveLock);
@@ -1107,27 +1113,27 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		Assert(!target_is_pg_class);
 
 		swaptemp = relform1->relfilenode;
-		relform1->relfilenode = relform2->relfilenode;
-		relform2->relfilenode = swaptemp;
+		HeapTupleUpdateField(pg_class, relfilenode, relform2->relfilenode, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relfilenode, swaptemp, relform2, updated2);
 
 		swaptemp = relform1->reltablespace;
-		relform1->reltablespace = relform2->reltablespace;
-		relform2->reltablespace = swaptemp;
+		HeapTupleUpdateField(pg_class, reltablespace, relform2->reltablespace, relform1, updated1);
+		HeapTupleUpdateField(pg_class, reltablespace, swaptemp, relform2, updated2);
 
 		swaptemp = relform1->relam;
-		relform1->relam = relform2->relam;
-		relform2->relam = swaptemp;
+		HeapTupleUpdateField(pg_class, relam, relform2->relam, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relam, swaptemp, relform2, updated2);
 
 		swptmpchr = relform1->relpersistence;
-		relform1->relpersistence = relform2->relpersistence;
-		relform2->relpersistence = swptmpchr;
+		HeapTupleUpdateField(pg_class, relpersistence, relform2->relpersistence, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relpersistence, swptmpchr, relform2, updated2);
 
 		/* Also swap toast links, if we're swapping by links */
 		if (!swap_toast_by_content)
 		{
 			swaptemp = relform1->reltoastrelid;
-			relform1->reltoastrelid = relform2->reltoastrelid;
-			relform2->reltoastrelid = swaptemp;
+			HeapTupleUpdateField(pg_class, reltoastrelid, relform2->reltoastrelid, relform1, updated1);
+			HeapTupleUpdateField(pg_class, reltoastrelid, swaptemp, relform2, updated2);
 		}
 	}
 	else
@@ -1217,8 +1223,8 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	{
 		Assert(!TransactionIdIsValid(frozenXid) ||
 			   TransactionIdIsNormal(frozenXid));
-		relform1->relfrozenxid = frozenXid;
-		relform1->relminmxid = cutoffMulti;
+		HeapTupleUpdateField(pg_class, relfrozenxid, frozenXid, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relminmxid, cutoffMulti, relform1, updated1);
 	}
 
 	/* swap size statistics too, since new rel has freshly-updated stats */
@@ -1229,20 +1235,20 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		int32		swap_allfrozen;
 
 		swap_pages = relform1->relpages;
-		relform1->relpages = relform2->relpages;
-		relform2->relpages = swap_pages;
+		HeapTupleUpdateField(pg_class, relpages, relform2->relpages, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relpages, swap_pages, relform2, updated2);
 
 		swap_tuples = relform1->reltuples;
-		relform1->reltuples = relform2->reltuples;
-		relform2->reltuples = swap_tuples;
+		HeapTupleUpdateField(pg_class, reltuples, relform2->reltuples, relform1, updated1);
+		HeapTupleUpdateField(pg_class, reltuples, swap_tuples, relform2, updated2);
 
 		swap_allvisible = relform1->relallvisible;
-		relform1->relallvisible = relform2->relallvisible;
-		relform2->relallvisible = swap_allvisible;
+		HeapTupleUpdateField(pg_class, relallvisible, relform2->relallvisible, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relallvisible, swap_allvisible, relform2, updated2);
 
 		swap_allfrozen = relform1->relallfrozen;
-		relform1->relallfrozen = relform2->relallfrozen;
-		relform2->relallfrozen = swap_allfrozen;
+		HeapTupleUpdateField(pg_class, relallfrozen, relform2->relallfrozen, relform1, updated1);
+		HeapTupleUpdateField(pg_class, relallfrozen, swap_allfrozen, relform2, updated2);
 	}
 
 	/*
@@ -1256,13 +1262,11 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	 */
 	if (!target_is_pg_class)
 	{
-		CatalogIndexState indstate;
+		CatalogIndexState indstate = CatalogOpenIndexes(relRelation);
 
-		indstate = CatalogOpenIndexes(relRelation);
-		CatalogTupleUpdateWithInfo(relRelation, &reltup1->t_self, reltup1,
-								   indstate);
-		CatalogTupleUpdateWithInfo(relRelation, &reltup2->t_self, reltup2,
-								   indstate);
+		CatalogTupleUpdate(relRelation, &reltup1->t_self, reltup1, updated1, indstate);
+		CatalogTupleUpdate(relRelation, &reltup2->t_self, reltup2, updated2, indstate);
+
 		CatalogCloseIndexes(indstate);
 	}
 	else
@@ -1435,6 +1439,8 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	heap_freetuple(reltup2);
 
 	table_close(relRelation, RowExclusiveLock);
+	bms_free(updated1);
+	bms_free(updated2);
 }
 
 /*
@@ -1535,6 +1541,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 		Relation	relRelation;
 		HeapTuple	reltup;
 		Form_pg_class relform;
+		Bitmapset  *updated = NULL;
 
 		relRelation = table_open(RelationRelationId, RowExclusiveLock);
 
@@ -1543,12 +1550,13 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 			elog(ERROR, "cache lookup failed for relation %u", OIDOldHeap);
 		relform = (Form_pg_class) GETSTRUCT(reltup);
 
-		relform->relfrozenxid = frozenXid;
-		relform->relminmxid = cutoffMulti;
+		HeapTupleUpdateField(pg_class, relfrozenxid, frozenXid, relform, updated);
+		HeapTupleUpdateField(pg_class, relminmxid, cutoffMulti, relform, updated);
 
-		CatalogTupleUpdate(relRelation, &reltup->t_self, reltup);
+		CatalogTupleUpdate(relRelation, &reltup->t_self, reltup, updated, NULL);
 
 		table_close(relRelation, RowExclusiveLock);
+		bms_free(updated);
 	}
 
 	/* Destroy new heap with old filenumber */
