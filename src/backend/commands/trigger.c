@@ -186,8 +186,9 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	int2vector *tgattr;
 	List	   *whenRtable;
 	char	   *qual;
-	Datum		values[Natts_pg_trigger];
-	bool		nulls[Natts_pg_trigger];
+	Datum		values[Natts_pg_trigger] = {0};
+	bool		nulls[Natts_pg_trigger] = {false};
+	Bitmapset  *updated = NULL;
 	Relation	rel;
 	AclResult	aclresult;
 	Relation	tgrel;
@@ -751,8 +752,7 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	if (!trigger_exists)
 	{
 		/* Generate the OID for the new trigger. */
-		trigoid = GetNewOidWithIndex(tgrel, TriggerOidIndexId,
-									 Anum_pg_trigger_oid);
+		trigoid = GetNewOidWithIndex(tgrel, TriggerOidIndexId, Anum_pg_trigger_oid);
 	}
 	else
 	{
@@ -862,22 +862,19 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	/*
 	 * Build the new pg_trigger tuple.
 	 */
-	memset(nulls, false, sizeof(nulls));
-
-	values[Anum_pg_trigger_oid - 1] = ObjectIdGetDatum(trigoid);
-	values[Anum_pg_trigger_tgrelid - 1] = ObjectIdGetDatum(RelationGetRelid(rel));
-	values[Anum_pg_trigger_tgparentid - 1] = ObjectIdGetDatum(parentTriggerOid);
-	values[Anum_pg_trigger_tgname - 1] = DirectFunctionCall1(namein,
-															 CStringGetDatum(trigname));
-	values[Anum_pg_trigger_tgfoid - 1] = ObjectIdGetDatum(funcoid);
-	values[Anum_pg_trigger_tgtype - 1] = Int16GetDatum(tgtype);
-	values[Anum_pg_trigger_tgenabled - 1] = CharGetDatum(trigger_fires_when);
-	values[Anum_pg_trigger_tgisinternal - 1] = BoolGetDatum(isInternal);
-	values[Anum_pg_trigger_tgconstrrelid - 1] = ObjectIdGetDatum(constrrelid);
-	values[Anum_pg_trigger_tgconstrindid - 1] = ObjectIdGetDatum(indexOid);
-	values[Anum_pg_trigger_tgconstraint - 1] = ObjectIdGetDatum(constraintOid);
-	values[Anum_pg_trigger_tgdeferrable - 1] = BoolGetDatum(stmt->deferrable);
-	values[Anum_pg_trigger_tginitdeferred - 1] = BoolGetDatum(stmt->initdeferred);
+	HeapTupleUpdateValue(pg_trigger, oid, ObjectIdGetDatum(trigoid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgrelid, ObjectIdGetDatum(RelationGetRelid(rel)), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgparentid, ObjectIdGetDatum(parentTriggerOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgname, DirectFunctionCall1(namein, CStringGetDatum(trigname)), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgfoid, ObjectIdGetDatum(funcoid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgtype, Int16GetDatum(tgtype), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgenabled, CharGetDatum(trigger_fires_when), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgisinternal, BoolGetDatum(isInternal), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgconstrrelid, ObjectIdGetDatum(constrrelid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgconstrindid, ObjectIdGetDatum(indexOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgconstraint, ObjectIdGetDatum(constraintOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tgdeferrable, BoolGetDatum(stmt->deferrable), values, nulls, updated);
+	HeapTupleUpdateValue(pg_trigger, tginitdeferred, BoolGetDatum(stmt->initdeferred), values, nulls, updated);
 
 	if (stmt->args)
 	{
@@ -912,15 +909,13 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 			}
 			strcpy(d, "\\000");
 		}
-		values[Anum_pg_trigger_tgnargs - 1] = Int16GetDatum(nargs);
-		values[Anum_pg_trigger_tgargs - 1] = DirectFunctionCall1(byteain,
-																 CStringGetDatum(args));
+		HeapTupleUpdateValue(pg_trigger, tgnargs, Int16GetDatum(nargs), values, nulls, updated);
+		HeapTupleUpdateValue(pg_trigger, tgargs, DirectFunctionCall1(byteain, CStringGetDatum(args)), values, nulls, updated);
 	}
 	else
 	{
-		values[Anum_pg_trigger_tgnargs - 1] = Int16GetDatum(0);
-		values[Anum_pg_trigger_tgargs - 1] = DirectFunctionCall1(byteain,
-																 CStringGetDatum(""));
+		HeapTupleUpdateValue(pg_trigger, tgnargs, Int16GetDatum(0), values, nulls, updated);
+		HeapTupleUpdateValue(pg_trigger, tgargs, DirectFunctionCall1(byteain, CStringGetDatum("")), values, nulls, updated);
 	}
 
 	/* build column number array if it's a column-specific trigger */
@@ -961,24 +956,23 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 		}
 	}
 	tgattr = buildint2vector(columns, ncolumns);
-	values[Anum_pg_trigger_tgattr - 1] = PointerGetDatum(tgattr);
+	HeapTupleUpdateValue(pg_trigger, tgattr, PointerGetDatum(tgattr), values, nulls, updated);
 
 	/* set tgqual if trigger has WHEN clause */
 	if (qual)
-		values[Anum_pg_trigger_tgqual - 1] = CStringGetTextDatum(qual);
+		HeapTupleUpdateValue(pg_trigger, tgqual, CStringGetTextDatum(qual), values, nulls, updated);
 	else
-		nulls[Anum_pg_trigger_tgqual - 1] = true;
+		HeapTupleUpdateValueNull(pg_trigger, tgqual, values, nulls, updated);
 
 	if (oldtablename)
-		values[Anum_pg_trigger_tgoldtable - 1] = DirectFunctionCall1(namein,
-																	 CStringGetDatum(oldtablename));
+		HeapTupleUpdateValue(pg_trigger, tgoldtable, DirectFunctionCall1(namein, CStringGetDatum(oldtablename)), values, nulls, updated);
 	else
-		nulls[Anum_pg_trigger_tgoldtable - 1] = true;
+		HeapTupleUpdateValueNull(pg_trigger, tgoldtable, values, nulls, updated);
+
 	if (newtablename)
-		values[Anum_pg_trigger_tgnewtable - 1] = DirectFunctionCall1(namein,
-																	 CStringGetDatum(newtablename));
+		HeapTupleUpdateValue(pg_trigger, tgnewtable, DirectFunctionCall1(namein, CStringGetDatum(newtablename)), values, nulls, updated);
 	else
-		nulls[Anum_pg_trigger_tgnewtable - 1] = true;
+		HeapTupleUpdateValueNull(pg_trigger, tgnewtable, values, nulls, updated);
 
 	/*
 	 * Insert or replace tuple in pg_trigger.
@@ -986,27 +980,29 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	if (!trigger_exists)
 	{
 		tuple = heap_form_tuple(tgrel->rd_att, values, nulls);
-		CatalogTupleInsert(tgrel, tuple);
+		CatalogTupleInsert(tgrel, tuple, NULL);
 	}
 	else
 	{
 		HeapTuple	newtup;
 
 		newtup = heap_form_tuple(tgrel->rd_att, values, nulls);
-		CatalogTupleUpdate(tgrel, &tuple->t_self, newtup);
+		CatalogTupleUpdate(tgrel, &tuple->t_self, newtup, updated, NULL);
 		heap_freetuple(newtup);
 	}
 
 	heap_freetuple(tuple);		/* free either original or new tuple */
 	table_close(tgrel, RowExclusiveLock);
+	bms_free(updated);
+	updated = NULL;
 
-	pfree(DatumGetPointer(values[Anum_pg_trigger_tgname - 1]));
-	pfree(DatumGetPointer(values[Anum_pg_trigger_tgargs - 1]));
-	pfree(DatumGetPointer(values[Anum_pg_trigger_tgattr - 1]));
+	pfree(DatumGetPointer(HeapTupleValue(pg_trigger, tgname, values)));
+	pfree(DatumGetPointer(HeapTupleValue(pg_trigger, tgargs, values)));
+	pfree(DatumGetPointer(HeapTupleValue(pg_trigger, tgattr, values)));
 	if (oldtablename)
-		pfree(DatumGetPointer(values[Anum_pg_trigger_tgoldtable - 1]));
+		pfree(DatumGetPointer(HeapTupleValue(pg_trigger, tgoldtable, values)));
 	if (newtablename)
-		pfree(DatumGetPointer(values[Anum_pg_trigger_tgnewtable - 1]));
+		pfree(DatumGetPointer(HeapTupleValue(pg_trigger, tgnewtable, values)));
 
 	/*
 	 * Update relation's pg_class entry; if necessary; and if not, send an SI
@@ -1020,9 +1016,9 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 			 RelationGetRelid(rel));
 	if (!((Form_pg_class) GETSTRUCT(tuple))->relhastriggers)
 	{
-		((Form_pg_class) GETSTRUCT(tuple))->relhastriggers = true;
-
-		CatalogTupleUpdate(pgrel, &tuple->t_self, tuple);
+		HeapTupleUpdateField(pg_class, relhastriggers, true, (Form_pg_class) GETSTRUCT(tuple), updated);
+		CatalogTupleUpdate(pgrel, &tuple->t_self, tuple, updated, NULL);
+		bms_free(updated);
 
 		CommandCounterIncrement();
 	}
@@ -1229,6 +1225,7 @@ TriggerSetParentTrigger(Relation trigRel,
 				newtup;
 	ObjectAddress depender;
 	ObjectAddress referenced;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Find the trigger to delete.
@@ -1253,9 +1250,9 @@ TriggerSetParentTrigger(Relation trigRel,
 			elog(ERROR, "trigger %u already has a parent trigger",
 				 childTrigId);
 
-		trigForm->tgparentid = parentTrigId;
+		HeapTupleUpdateField(pg_trigger, tgparentid, parentTrigId, trigForm, updated);
 
-		CatalogTupleUpdate(trigRel, &tuple->t_self, newtup);
+		CatalogTupleUpdate(trigRel, &tuple->t_self, newtup, updated, NULL);
 
 		ObjectAddressSet(depender, TriggerRelationId, childTrigId);
 
@@ -1267,9 +1264,9 @@ TriggerSetParentTrigger(Relation trigRel,
 	}
 	else
 	{
-		trigForm->tgparentid = InvalidOid;
+		HeapTupleUpdateField(pg_trigger, tgparentid, InvalidOid, trigForm, updated);
 
-		CatalogTupleUpdate(trigRel, &tuple->t_self, newtup);
+		CatalogTupleUpdate(trigRel, &tuple->t_self, newtup, updated, NULL);
 
 		deleteDependencyRecordsForClass(TriggerRelationId, childTrigId,
 										TriggerRelationId,
@@ -1281,6 +1278,7 @@ TriggerSetParentTrigger(Relation trigRel,
 
 	heap_freetuple(newtup);
 	systable_endscan(tgscan);
+	bms_free(updated);
 }
 
 
@@ -1586,6 +1584,7 @@ renametrig_internal(Relation tgrel, Relation targetrel, HeapTuple trigtup,
 	Form_pg_trigger tgform;
 	ScanKeyData key[2];
 	SysScanDesc tgscan;
+	Bitmapset  *updated = NULL;
 
 	/* If the trigger already has the new name, nothing to do. */
 	tgform = (Form_pg_trigger) GETSTRUCT(trigtup);
@@ -1633,7 +1632,7 @@ renametrig_internal(Relation tgrel, Relation targetrel, HeapTuple trigtup,
 
 	namestrcpy(&tgform->tgname, newname);
 
-	CatalogTupleUpdate(tgrel, &tuple->t_self, tuple);
+	CatalogTupleUpdate(tgrel, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(TriggerRelationId, tgform->oid, 0);
 
@@ -1643,6 +1642,7 @@ renametrig_internal(Relation tgrel, Relation targetrel, HeapTuple trigtup,
 	 * (Ideally this should happen automatically...)
 	 */
 	CacheInvalidateRelcache(targetrel);
+	bms_free(updated);
 }
 
 /*
@@ -1784,11 +1784,12 @@ EnableDisableTrigger(Relation rel, const char *tgname, Oid tgparent,
 			/* need to change this one ... make a copy to scribble on */
 			HeapTuple	newtup = heap_copytuple(tuple);
 			Form_pg_trigger newtrig = (Form_pg_trigger) GETSTRUCT(newtup);
+			Bitmapset  *updated = NULL;
 
-			newtrig->tgenabled = fires_when;
+			HeapTupleUpdateField(pg_trigger, tgenabled, fires_when, newtrig, updated);
+			CatalogTupleUpdate(tgrel, &newtup->t_self, newtup, updated, NULL);
 
-			CatalogTupleUpdate(tgrel, &newtup->t_self, newtup);
-
+			bms_free(updated);
 			heap_freetuple(newtup);
 
 			changed = true;

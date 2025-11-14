@@ -280,8 +280,8 @@ insert_event_trigger_tuple(const char *trigname, const char *eventname, Oid evtO
 	Relation	tgrel;
 	Oid			trigoid;
 	HeapTuple	tuple;
-	Datum		values[Natts_pg_event_trigger];
-	bool		nulls[Natts_pg_event_trigger];
+	Datum		values[Natts_pg_event_trigger] = {0};
+	bool		nulls[Natts_pg_event_trigger] = {false};
 	NameData	evtnamedata,
 				evteventdata;
 	ObjectAddress myself,
@@ -293,25 +293,23 @@ insert_event_trigger_tuple(const char *trigname, const char *eventname, Oid evtO
 	/* Build the new pg_trigger tuple. */
 	trigoid = GetNewOidWithIndex(tgrel, EventTriggerOidIndexId,
 								 Anum_pg_event_trigger_oid);
-	values[Anum_pg_event_trigger_oid - 1] = ObjectIdGetDatum(trigoid);
+	HeapTupleSetValue(pg_event_trigger, oid, ObjectIdGetDatum(trigoid), values);
 	memset(nulls, false, sizeof(nulls));
 	namestrcpy(&evtnamedata, trigname);
-	values[Anum_pg_event_trigger_evtname - 1] = NameGetDatum(&evtnamedata);
+	HeapTupleSetValue(pg_event_trigger, evtname, NameGetDatum(&evtnamedata), values);
 	namestrcpy(&evteventdata, eventname);
-	values[Anum_pg_event_trigger_evtevent - 1] = NameGetDatum(&evteventdata);
-	values[Anum_pg_event_trigger_evtowner - 1] = ObjectIdGetDatum(evtOwner);
-	values[Anum_pg_event_trigger_evtfoid - 1] = ObjectIdGetDatum(funcoid);
-	values[Anum_pg_event_trigger_evtenabled - 1] =
-		CharGetDatum(TRIGGER_FIRES_ON_ORIGIN);
+	HeapTupleSetValue(pg_event_trigger, evtevent, NameGetDatum(&evteventdata), values);
+	HeapTupleSetValue(pg_event_trigger, evtowner, ObjectIdGetDatum(evtOwner), values);
+	HeapTupleSetValue(pg_event_trigger, evtfoid, ObjectIdGetDatum(funcoid), values);
+	HeapTupleSetValue(pg_event_trigger, evtenabled, CharGetDatum(TRIGGER_FIRES_ON_ORIGIN), values);
 	if (taglist == NIL)
-		nulls[Anum_pg_event_trigger_evttags - 1] = true;
+		HeapTupleSetValueNull(pg_event_trigger, evttags, values, nulls);
 	else
-		values[Anum_pg_event_trigger_evttags - 1] =
-			filter_list_to_array(taglist);
+		HeapTupleSetValue(pg_event_trigger, evttags, filter_list_to_array(taglist), values);
 
 	/* Insert heap tuple. */
 	tuple = heap_form_tuple(tgrel->rd_att, values, nulls);
-	CatalogTupleInsert(tgrel, tuple);
+	CatalogTupleInsert(tgrel, tuple, NULL);
 	heap_freetuple(tuple);
 
 	/*
@@ -394,6 +392,7 @@ SetDatabaseHasLoginEventTriggers(void)
 	Relation	pg_db = table_open(DatabaseRelationId, RowExclusiveLock);
 	ItemPointerData otid;
 	HeapTuple	tuple;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Use shared lock to prevent a conflict with EventTriggerOnLogin() trying
@@ -411,8 +410,9 @@ SetDatabaseHasLoginEventTriggers(void)
 	db = (Form_pg_database) GETSTRUCT(tuple);
 	if (!db->dathasloginevt)
 	{
-		db->dathasloginevt = true;
-		CatalogTupleUpdate(pg_db, &otid, tuple);
+		HeapTupleUpdateField(pg_database, dathasloginevt, true, db, updated);
+		CatalogTupleUpdate(pg_db, &otid, tuple, updated, NULL);
+		bms_free(updated);
 		CommandCounterIncrement();
 	}
 	UnlockTuple(pg_db, &otid, InplaceUpdateTupleLock);
@@ -431,6 +431,7 @@ AlterEventTrigger(AlterEventTrigStmt *stmt)
 	Oid			trigoid;
 	Form_pg_event_trigger evtForm;
 	char		tgenabled = stmt->tgenabled;
+	Bitmapset  *updated = NULL;
 
 	tgrel = table_open(EventTriggerRelationId, RowExclusiveLock);
 
@@ -450,9 +451,10 @@ AlterEventTrigger(AlterEventTrigStmt *stmt)
 					   stmt->trigname);
 
 	/* tuple is a copy, so we can modify it below */
-	evtForm->evtenabled = tgenabled;
+	HeapTupleUpdateField(pg_event_trigger, evtenabled, tgenabled, evtForm, updated);
 
-	CatalogTupleUpdate(tgrel, &tup->t_self, tup);
+	CatalogTupleUpdate(tgrel, &tup->t_self, tup, updated, NULL);
+	bms_free(updated);
 
 	/*
 	 * Login event triggers have an additional flag in pg_database to enable
@@ -539,6 +541,7 @@ static void
 AlterEventTriggerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
 	Form_pg_event_trigger form;
+	Bitmapset  *updated = NULL;
 
 	form = (Form_pg_event_trigger) GETSTRUCT(tup);
 
@@ -557,8 +560,9 @@ AlterEventTriggerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 						NameStr(form->evtname)),
 				 errhint("The owner of an event trigger must be a superuser.")));
 
-	form->evtowner = newOwnerId;
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	HeapTupleUpdateField(pg_event_trigger, evtowner, newOwnerId, form, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+	bms_free(updated);
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(EventTriggerRelationId,

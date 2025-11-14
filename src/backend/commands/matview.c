@@ -79,6 +79,7 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
 {
 	Relation	pgrel;
 	HeapTuple	tuple;
+	Bitmapset  *updated = NULL;
 
 	Assert(relation->rd_rel->relkind == RELKIND_MATVIEW);
 
@@ -94,12 +95,12 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
 		elog(ERROR, "cache lookup failed for relation %u",
 			 RelationGetRelid(relation));
 
-	((Form_pg_class) GETSTRUCT(tuple))->relispopulated = newstate;
-
-	CatalogTupleUpdate(pgrel, &tuple->t_self, tuple);
+	HeapTupleUpdateField(pg_class, relispopulated, newstate, (Form_pg_class) GETSTRUCT(tuple), updated);
+	CatalogTupleUpdate(pgrel, &tuple->t_self, tuple, updated, NULL);
 
 	heap_freetuple(tuple);
 	table_close(pgrel, RowExclusiveLock);
+	bms_free(updated);
 
 	/*
 	 * Advance command counter to make the updated pg_class row locally

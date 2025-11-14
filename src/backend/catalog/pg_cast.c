@@ -53,8 +53,8 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 	Relation	relation;
 	HeapTuple	tuple;
 	Oid			castid;
-	Datum		values[Natts_pg_cast];
-	bool		nulls[Natts_pg_cast] = {0};
+	Datum		values[Natts_pg_cast] = {0};
+	bool		nulls[Natts_pg_cast] = {false};
 	ObjectAddress myself,
 				referenced;
 	ObjectAddresses *addrs;
@@ -78,16 +78,16 @@ CastCreate(Oid sourcetypeid, Oid targettypeid,
 
 	/* ready to go */
 	castid = GetNewOidWithIndex(relation, CastOidIndexId, Anum_pg_cast_oid);
-	values[Anum_pg_cast_oid - 1] = ObjectIdGetDatum(castid);
-	values[Anum_pg_cast_castsource - 1] = ObjectIdGetDatum(sourcetypeid);
-	values[Anum_pg_cast_casttarget - 1] = ObjectIdGetDatum(targettypeid);
-	values[Anum_pg_cast_castfunc - 1] = ObjectIdGetDatum(funcid);
-	values[Anum_pg_cast_castcontext - 1] = CharGetDatum(castcontext);
-	values[Anum_pg_cast_castmethod - 1] = CharGetDatum(castmethod);
+	HeapTupleSetValue(pg_cast, oid, ObjectIdGetDatum(castid), values);
+	HeapTupleSetValue(pg_cast, castsource, ObjectIdGetDatum(sourcetypeid), values);
+	HeapTupleSetValue(pg_cast, casttarget, ObjectIdGetDatum(targettypeid), values);
+	HeapTupleSetValue(pg_cast, castfunc, ObjectIdGetDatum(funcid), values);
+	HeapTupleSetValue(pg_cast, castcontext, CharGetDatum(castcontext), values);
+	HeapTupleSetValue(pg_cast, castmethod, CharGetDatum(castmethod), values);
 
 	tuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
 
-	CatalogTupleInsert(relation, tuple);
+	CatalogTupleInsert(relation, tuple, NULL);
 
 	addrs = new_object_addresses();
 

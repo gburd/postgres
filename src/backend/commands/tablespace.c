@@ -208,8 +208,8 @@ Oid
 CreateTableSpace(CreateTableSpaceStmt *stmt)
 {
 	Relation	rel;
-	Datum		values[Natts_pg_tablespace];
-	bool		nulls[Natts_pg_tablespace] = {0};
+	Datum		values[Natts_pg_tablespace] = {0};
+	bool		nulls[Natts_pg_tablespace] = {false};
 	HeapTuple	tuple;
 	Oid			tablespaceoid;
 	char	   *location;
@@ -325,12 +325,10 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	else
 		tablespaceoid = GetNewOidWithIndex(rel, TablespaceOidIndexId,
 										   Anum_pg_tablespace_oid);
-	values[Anum_pg_tablespace_oid - 1] = ObjectIdGetDatum(tablespaceoid);
-	values[Anum_pg_tablespace_spcname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->tablespacename));
-	values[Anum_pg_tablespace_spcowner - 1] =
-		ObjectIdGetDatum(ownerId);
-	nulls[Anum_pg_tablespace_spcacl - 1] = true;
+	HeapTupleSetValue(pg_tablespace, oid, ObjectIdGetDatum(tablespaceoid), values);
+	HeapTupleSetValue(pg_tablespace, spcname, DirectFunctionCall1(namein, CStringGetDatum(stmt->tablespacename)), values);
+	HeapTupleSetValue(pg_tablespace, spcowner, ObjectIdGetDatum(ownerId), values);
+	HeapTupleSetValueNull(pg_tablespace, spcacl, values, nulls);
 
 	/* Generate new proposed spcoptions (text array) */
 	newOptions = transformRelOptions((Datum) 0,
@@ -338,13 +336,13 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 									 NULL, NULL, false, false);
 	(void) tablespace_reloptions(newOptions, true);
 	if (newOptions != (Datum) 0)
-		values[Anum_pg_tablespace_spcoptions - 1] = newOptions;
+		HeapTupleSetValue(pg_tablespace, spcoptions, newOptions, values);
 	else
-		nulls[Anum_pg_tablespace_spcoptions - 1] = true;
+		HeapTupleSetValueNull(pg_tablespace, spcoptions, values, nulls);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 
@@ -937,6 +935,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 	HeapTuple	newtuple;
 	Form_pg_tablespace newform;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/* Search pg_tablespace */
 	rel = table_open(TableSpaceRelationId, RowExclusiveLock);
@@ -996,14 +995,15 @@ RenameTableSpace(const char *oldname, const char *newname)
 
 	/* OK, update the entry */
 	namestrcpy(&(newform->spcname), newname);
-
-	CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+	HeapTupleMarkColumnUpdated(pg_tablespace, spcname, updated);
+	CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(TableSpaceRelationId, tspId, 0);
 
 	ObjectAddressSet(address, TableSpaceRelationId, tspId);
 
 	table_close(rel, NoLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -1021,10 +1021,10 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 	Oid			tablespaceoid;
 	Datum		datum;
 	Datum		newOptions;
-	Datum		repl_val[Natts_pg_tablespace];
+	Datum		values[Natts_pg_tablespace] = {0};
+	bool		nulls[Natts_pg_tablespace] = {false};
+	Bitmapset  *updated = NULL;
 	bool		isnull;
-	bool		repl_null[Natts_pg_tablespace];
-	bool		repl_repl[Natts_pg_tablespace];
 	HeapTuple	newtuple;
 
 	/* Search pg_tablespace */
@@ -1058,26 +1058,25 @@ AlterTableSpaceOptions(AlterTableSpaceOptionsStmt *stmt)
 	(void) tablespace_reloptions(newOptions, true);
 
 	/* Build new tuple. */
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
 	if (newOptions != (Datum) 0)
-		repl_val[Anum_pg_tablespace_spcoptions - 1] = newOptions;
+		HeapTupleUpdateValue(pg_tablespace, spcoptions, newOptions, values, nulls, updated);
 	else
-		repl_null[Anum_pg_tablespace_spcoptions - 1] = true;
-	repl_repl[Anum_pg_tablespace_spcoptions - 1] = true;
-	newtuple = heap_modify_tuple(tup, RelationGetDescr(rel), repl_val,
-								 repl_null, repl_repl);
+		HeapTupleUpdateValueNull(pg_tablespace, spcoptions, values, nulls, updated);
+	newtuple = heap_update_tuple(tup, RelationGetDescr(rel), values,
+								 nulls, updated);
 
 	/* Update system catalog. */
-	CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+	CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(TableSpaceRelationId, tablespaceoid, 0);
 
 	heap_freetuple(newtuple);
+	bms_free(updated);
 
 	/* Conclude heap scan. */
 	table_endscan(scandesc);
 	table_close(rel, NoLock);
+	bms_free(updated);
 
 	return tablespaceoid;
 }

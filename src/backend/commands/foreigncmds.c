@@ -216,9 +216,9 @@ static void
 AlterForeignDataWrapperOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
 	Form_pg_foreign_data_wrapper form;
-	Datum		repl_val[Natts_pg_foreign_data_wrapper];
-	bool		repl_null[Natts_pg_foreign_data_wrapper];
-	bool		repl_repl[Natts_pg_foreign_data_wrapper];
+	Datum		values[Natts_pg_foreign_data_wrapper] = {0};
+	bool		nulls[Natts_pg_foreign_data_wrapper] = {false};
+	Bitmapset  *updated = NULL;
 	Acl		   *newAcl;
 	Datum		aclDatum;
 	bool		isNull;
@@ -243,11 +243,7 @@ AlterForeignDataWrapperOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerI
 
 	if (form->fdwowner != newOwnerId)
 	{
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
-
-		repl_repl[Anum_pg_foreign_data_wrapper_fdwowner - 1] = true;
-		repl_val[Anum_pg_foreign_data_wrapper_fdwowner - 1] = ObjectIdGetDatum(newOwnerId);
+		HeapTupleUpdateValue(pg_foreign_data_wrapper, fdwowner, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 		aclDatum = heap_getattr(tup,
 								Anum_pg_foreign_data_wrapper_fdwacl,
@@ -258,19 +254,18 @@ AlterForeignDataWrapperOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerI
 		{
 			newAcl = aclnewowner(DatumGetAclP(aclDatum),
 								 form->fdwowner, newOwnerId);
-			repl_repl[Anum_pg_foreign_data_wrapper_fdwacl - 1] = true;
-			repl_val[Anum_pg_foreign_data_wrapper_fdwacl - 1] = PointerGetDatum(newAcl);
+			HeapTupleUpdateValue(pg_foreign_data_wrapper, fdwacl, PointerGetDatum(newAcl), values, nulls, updated);
 		}
 
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel), repl_val, repl_null,
-								repl_repl);
+		tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 		/* Update owner dependency reference */
 		changeDependencyOnOwner(ForeignDataWrapperRelationId,
 								form->oid,
 								newOwnerId);
+		bms_free(updated);
 	}
 
 	InvokeObjectPostAlterHook(ForeignDataWrapperRelationId,
@@ -349,9 +344,9 @@ static void
 AlterForeignServerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
 	Form_pg_foreign_server form;
-	Datum		repl_val[Natts_pg_foreign_server];
-	bool		repl_null[Natts_pg_foreign_server];
-	bool		repl_repl[Natts_pg_foreign_server];
+	Datum		values[Natts_pg_foreign_server] = {0};
+	bool		nulls[Natts_pg_foreign_server] = {false};
+	Bitmapset  *updated = NULL;
 	Acl		   *newAcl;
 	Datum		aclDatum;
 	bool		isNull;
@@ -386,11 +381,7 @@ AlterForeignServerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 			}
 		}
 
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
-
-		repl_repl[Anum_pg_foreign_server_srvowner - 1] = true;
-		repl_val[Anum_pg_foreign_server_srvowner - 1] = ObjectIdGetDatum(newOwnerId);
+		HeapTupleUpdateValue(pg_foreign_server, srvowner, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 		aclDatum = heap_getattr(tup,
 								Anum_pg_foreign_server_srvacl,
@@ -401,18 +392,17 @@ AlterForeignServerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		{
 			newAcl = aclnewowner(DatumGetAclP(aclDatum),
 								 form->srvowner, newOwnerId);
-			repl_repl[Anum_pg_foreign_server_srvacl - 1] = true;
-			repl_val[Anum_pg_foreign_server_srvacl - 1] = PointerGetDatum(newAcl);
+			HeapTupleUpdateValue(pg_foreign_server, srvacl, PointerGetDatum(newAcl), values, nulls, updated);
 		}
 
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel), repl_val, repl_null,
-								repl_repl);
+		tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 		/* Update owner dependency reference */
 		changeDependencyOnOwner(ForeignServerRelationId, form->oid,
 								newOwnerId);
+		bms_free(updated);
 	}
 
 	InvokeObjectPostAlterHook(ForeignServerRelationId,
@@ -569,8 +559,8 @@ ObjectAddress
 CreateForeignDataWrapper(ParseState *pstate, CreateFdwStmt *stmt)
 {
 	Relation	rel;
-	Datum		values[Natts_pg_foreign_data_wrapper];
-	bool		nulls[Natts_pg_foreign_data_wrapper];
+	Datum		values[Natts_pg_foreign_data_wrapper] = {0};
+	bool		nulls[Natts_pg_foreign_data_wrapper] = {false};
 	HeapTuple	tuple;
 	Oid			fdwId;
 	bool		handler_given;
@@ -612,20 +602,19 @@ CreateForeignDataWrapper(ParseState *pstate, CreateFdwStmt *stmt)
 
 	fdwId = GetNewOidWithIndex(rel, ForeignDataWrapperOidIndexId,
 							   Anum_pg_foreign_data_wrapper_oid);
-	values[Anum_pg_foreign_data_wrapper_oid - 1] = ObjectIdGetDatum(fdwId);
-	values[Anum_pg_foreign_data_wrapper_fdwname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->fdwname));
-	values[Anum_pg_foreign_data_wrapper_fdwowner - 1] = ObjectIdGetDatum(ownerId);
+	HeapTupleSetValue(pg_foreign_data_wrapper, oid, ObjectIdGetDatum(fdwId), values);
+	HeapTupleSetValue(pg_foreign_data_wrapper, fdwname, DirectFunctionCall1(namein, CStringGetDatum(stmt->fdwname)), values);
+	HeapTupleSetValue(pg_foreign_data_wrapper, fdwowner, ObjectIdGetDatum(ownerId), values);
 
 	/* Lookup handler and validator functions, if given */
 	parse_func_options(pstate, stmt->func_options,
 					   &handler_given, &fdwhandler,
 					   &validator_given, &fdwvalidator);
 
-	values[Anum_pg_foreign_data_wrapper_fdwhandler - 1] = ObjectIdGetDatum(fdwhandler);
-	values[Anum_pg_foreign_data_wrapper_fdwvalidator - 1] = ObjectIdGetDatum(fdwvalidator);
+	HeapTupleSetValue(pg_foreign_data_wrapper, fdwhandler, ObjectIdGetDatum(fdwhandler), values);
+	HeapTupleSetValue(pg_foreign_data_wrapper, fdwvalidator, ObjectIdGetDatum(fdwvalidator), values);
 
-	nulls[Anum_pg_foreign_data_wrapper_fdwacl - 1] = true;
+	HeapTupleSetValueNull(pg_foreign_data_wrapper, fdwacl, values, nulls);
 
 	fdwoptions = transformGenericOptions(ForeignDataWrapperRelationId,
 										 PointerGetDatum(NULL),
@@ -633,13 +622,13 @@ CreateForeignDataWrapper(ParseState *pstate, CreateFdwStmt *stmt)
 										 fdwvalidator);
 
 	if (DatumGetPointer(fdwoptions) != NULL)
-		values[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = fdwoptions;
+		HeapTupleSetValue(pg_foreign_data_wrapper, fdwoptions, fdwoptions, values);
 	else
-		nulls[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = true;
+		HeapTupleSetValueNull(pg_foreign_data_wrapper, fdwoptions, values, nulls);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 
@@ -687,9 +676,9 @@ AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt)
 	Relation	rel;
 	HeapTuple	tp;
 	Form_pg_foreign_data_wrapper fdwForm;
-	Datum		repl_val[Natts_pg_foreign_data_wrapper];
-	bool		repl_null[Natts_pg_foreign_data_wrapper];
-	bool		repl_repl[Natts_pg_foreign_data_wrapper];
+	Datum		values[Natts_pg_foreign_data_wrapper] = {0};
+	bool		nulls[Natts_pg_foreign_data_wrapper] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			fdwId;
 	bool		isnull;
 	Datum		datum;
@@ -720,18 +709,13 @@ AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt)
 	fdwForm = (Form_pg_foreign_data_wrapper) GETSTRUCT(tp);
 	fdwId = fdwForm->oid;
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	parse_func_options(pstate, stmt->func_options,
 					   &handler_given, &fdwhandler,
 					   &validator_given, &fdwvalidator);
 
 	if (handler_given)
 	{
-		repl_val[Anum_pg_foreign_data_wrapper_fdwhandler - 1] = ObjectIdGetDatum(fdwhandler);
-		repl_repl[Anum_pg_foreign_data_wrapper_fdwhandler - 1] = true;
+		HeapTupleUpdateValue(pg_foreign_data_wrapper, fdwhandler, ObjectIdGetDatum(fdwhandler), values, nulls, updated);
 
 		/*
 		 * It could be that the behavior of accessing foreign table changes
@@ -743,8 +727,7 @@ AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt)
 
 	if (validator_given)
 	{
-		repl_val[Anum_pg_foreign_data_wrapper_fdwvalidator - 1] = ObjectIdGetDatum(fdwvalidator);
-		repl_repl[Anum_pg_foreign_data_wrapper_fdwvalidator - 1] = true;
+		HeapTupleUpdateValue(pg_foreign_data_wrapper, fdwvalidator, ObjectIdGetDatum(fdwvalidator), values, nulls, updated);
 
 		/*
 		 * It could be that existing options for the FDW or dependent SERVER,
@@ -784,18 +767,15 @@ AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt)
 										fdwvalidator);
 
 		if (DatumGetPointer(datum) != NULL)
-			repl_val[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = datum;
+			HeapTupleUpdateValue(pg_foreign_data_wrapper, fdwoptions, datum, values, nulls, updated);
 		else
-			repl_null[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = true;
-
-		repl_repl[Anum_pg_foreign_data_wrapper_fdwoptions - 1] = true;
+			HeapTupleUpdateValueNull(pg_foreign_data_wrapper, fdwoptions, values, nulls, updated);
 	}
 
 	/* Everything looks good - update the tuple */
-	tp = heap_modify_tuple(tp, RelationGetDescr(rel),
-						   repl_val, repl_null, repl_repl);
+	tp = heap_update_tuple(tp, RelationGetDescr(rel), values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &tp->t_self, tp);
+	CatalogTupleUpdate(rel, &tp->t_self, tp, updated, NULL);
 
 	heap_freetuple(tp);
 
@@ -837,6 +817,7 @@ AlterForeignDataWrapper(ParseState *pstate, AlterFdwStmt *stmt)
 	InvokeObjectPostAlterHook(ForeignDataWrapperRelationId, fdwId, 0);
 
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return myself;
 }
@@ -850,8 +831,8 @@ CreateForeignServer(CreateForeignServerStmt *stmt)
 {
 	Relation	rel;
 	Datum		srvoptions;
-	Datum		values[Natts_pg_foreign_server];
-	bool		nulls[Natts_pg_foreign_server];
+	Datum		values[Natts_pg_foreign_server] = {0};
+	bool		nulls[Natts_pg_foreign_server] = {false};
 	HeapTuple	tuple;
 	Oid			srvId;
 	Oid			ownerId;
@@ -914,28 +895,25 @@ CreateForeignServer(CreateForeignServerStmt *stmt)
 
 	srvId = GetNewOidWithIndex(rel, ForeignServerOidIndexId,
 							   Anum_pg_foreign_server_oid);
-	values[Anum_pg_foreign_server_oid - 1] = ObjectIdGetDatum(srvId);
-	values[Anum_pg_foreign_server_srvname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->servername));
-	values[Anum_pg_foreign_server_srvowner - 1] = ObjectIdGetDatum(ownerId);
-	values[Anum_pg_foreign_server_srvfdw - 1] = ObjectIdGetDatum(fdw->fdwid);
+	HeapTupleSetValue(pg_foreign_server, oid, ObjectIdGetDatum(srvId), values);
+	HeapTupleSetValue(pg_foreign_server, srvname, DirectFunctionCall1(namein, CStringGetDatum(stmt->servername)), values);
+	HeapTupleSetValue(pg_foreign_server, srvowner, ObjectIdGetDatum(ownerId), values);
+	HeapTupleSetValue(pg_foreign_server, srvfdw, ObjectIdGetDatum(fdw->fdwid), values);
 
 	/* Add server type if supplied */
 	if (stmt->servertype)
-		values[Anum_pg_foreign_server_srvtype - 1] =
-			CStringGetTextDatum(stmt->servertype);
+		HeapTupleSetValue(pg_foreign_server, srvtype, CStringGetTextDatum(stmt->servertype), values);
 	else
-		nulls[Anum_pg_foreign_server_srvtype - 1] = true;
+		HeapTupleSetValueNull(pg_foreign_server, srvtype, values, nulls);
 
 	/* Add server version if supplied */
 	if (stmt->version)
-		values[Anum_pg_foreign_server_srvversion - 1] =
-			CStringGetTextDatum(stmt->version);
+		HeapTupleSetValue(pg_foreign_server, srvversion, CStringGetTextDatum(stmt->version), values);
 	else
-		nulls[Anum_pg_foreign_server_srvversion - 1] = true;
+		HeapTupleSetValueNull(pg_foreign_server, srvversion, values, nulls);
 
 	/* Start with a blank acl */
-	nulls[Anum_pg_foreign_server_srvacl - 1] = true;
+	HeapTupleSetValueNull(pg_foreign_server, srvacl, values, nulls);
 
 	/* Add server options */
 	srvoptions = transformGenericOptions(ForeignServerRelationId,
@@ -944,13 +922,13 @@ CreateForeignServer(CreateForeignServerStmt *stmt)
 										 fdw->fdwvalidator);
 
 	if (DatumGetPointer(srvoptions) != NULL)
-		values[Anum_pg_foreign_server_srvoptions - 1] = srvoptions;
+		HeapTupleSetValue(pg_foreign_server, srvoptions, srvoptions, values);
 	else
-		nulls[Anum_pg_foreign_server_srvoptions - 1] = true;
+		HeapTupleSetValueNull(pg_foreign_server, srvoptions, values, nulls);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 
@@ -986,9 +964,9 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 {
 	Relation	rel;
 	HeapTuple	tp;
-	Datum		repl_val[Natts_pg_foreign_server];
-	bool		repl_null[Natts_pg_foreign_server];
-	bool		repl_repl[Natts_pg_foreign_server];
+	Datum		values[Natts_pg_foreign_server] = {0};
+	bool		nulls[Natts_pg_foreign_server] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			srvId;
 	Form_pg_foreign_server srvForm;
 	ObjectAddress address;
@@ -1013,22 +991,15 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FOREIGN_SERVER,
 					   stmt->servername);
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	if (stmt->has_version)
 	{
 		/*
 		 * Change the server VERSION string.
 		 */
 		if (stmt->version)
-			repl_val[Anum_pg_foreign_server_srvversion - 1] =
-				CStringGetTextDatum(stmt->version);
+			HeapTupleUpdateValue(pg_foreign_server, srvversion, CStringGetTextDatum(stmt->version), values, nulls, updated);
 		else
-			repl_null[Anum_pg_foreign_server_srvversion - 1] = true;
-
-		repl_repl[Anum_pg_foreign_server_srvversion - 1] = true;
+			HeapTupleUpdateValueNull(pg_foreign_server, srvversion, values, nulls, updated);
 	}
 
 	if (stmt->options)
@@ -1052,18 +1023,15 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 										fdw->fdwvalidator);
 
 		if (DatumGetPointer(datum) != NULL)
-			repl_val[Anum_pg_foreign_server_srvoptions - 1] = datum;
+			HeapTupleUpdateValue(pg_foreign_server, srvoptions, datum, values, nulls, updated);
 		else
-			repl_null[Anum_pg_foreign_server_srvoptions - 1] = true;
-
-		repl_repl[Anum_pg_foreign_server_srvoptions - 1] = true;
+			HeapTupleUpdateValueNull(pg_foreign_server, srvoptions, values, nulls, updated);
 	}
 
 	/* Everything looks good - update the tuple */
-	tp = heap_modify_tuple(tp, RelationGetDescr(rel),
-						   repl_val, repl_null, repl_repl);
+	tp = heap_update_tuple(tp, RelationGetDescr(rel), values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &tp->t_self, tp);
+	CatalogTupleUpdate(rel, &tp->t_self, tp, updated, NULL);
 
 	InvokeObjectPostAlterHook(ForeignServerRelationId, srvId, 0);
 
@@ -1072,6 +1040,7 @@ AlterForeignServer(AlterForeignServerStmt *stmt)
 	heap_freetuple(tp);
 
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -1112,8 +1081,8 @@ CreateUserMapping(CreateUserMappingStmt *stmt)
 {
 	Relation	rel;
 	Datum		useoptions;
-	Datum		values[Natts_pg_user_mapping];
-	bool		nulls[Natts_pg_user_mapping];
+	Datum		values[Natts_pg_user_mapping] = {0};
+	bool		nulls[Natts_pg_user_mapping] = {false};
 	HeapTuple	tuple;
 	Oid			useId;
 	Oid			umId;
@@ -1177,9 +1146,9 @@ CreateUserMapping(CreateUserMappingStmt *stmt)
 
 	umId = GetNewOidWithIndex(rel, UserMappingOidIndexId,
 							  Anum_pg_user_mapping_oid);
-	values[Anum_pg_user_mapping_oid - 1] = ObjectIdGetDatum(umId);
-	values[Anum_pg_user_mapping_umuser - 1] = ObjectIdGetDatum(useId);
-	values[Anum_pg_user_mapping_umserver - 1] = ObjectIdGetDatum(srv->serverid);
+	HeapTupleSetValue(pg_user_mapping, oid, ObjectIdGetDatum(umId), values);
+	HeapTupleSetValue(pg_user_mapping, umuser, ObjectIdGetDatum(useId), values);
+	HeapTupleSetValue(pg_user_mapping, umserver, ObjectIdGetDatum(srv->serverid), values);
 
 	/* Add user options */
 	useoptions = transformGenericOptions(UserMappingRelationId,
@@ -1188,13 +1157,13 @@ CreateUserMapping(CreateUserMappingStmt *stmt)
 										 fdw->fdwvalidator);
 
 	if (DatumGetPointer(useoptions) != NULL)
-		values[Anum_pg_user_mapping_umoptions - 1] = useoptions;
+		HeapTupleSetValue(pg_user_mapping, umoptions, useoptions, values);
 	else
-		nulls[Anum_pg_user_mapping_umoptions - 1] = true;
+		HeapTupleSetValueNull(pg_user_mapping, umoptions, values, nulls);
 
 	tuple = heap_form_tuple(rel->rd_att, values, nulls);
 
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	heap_freetuple(tuple);
 
@@ -1238,9 +1207,9 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 {
 	Relation	rel;
 	HeapTuple	tp;
-	Datum		repl_val[Natts_pg_user_mapping];
-	bool		repl_null[Natts_pg_user_mapping];
-	bool		repl_repl[Natts_pg_user_mapping];
+	Datum		values[Natts_pg_user_mapping] = {0};
+	bool		nulls[Natts_pg_user_mapping] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			useId;
 	Oid			umId;
 	ForeignServer *srv;
@@ -1272,10 +1241,6 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 	if (!HeapTupleIsValid(tp))
 		elog(ERROR, "cache lookup failed for user mapping %u", umId);
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	if (stmt->options)
 	{
 		ForeignDataWrapper *fdw;
@@ -1302,18 +1267,15 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 										fdw->fdwvalidator);
 
 		if (DatumGetPointer(datum) != NULL)
-			repl_val[Anum_pg_user_mapping_umoptions - 1] = datum;
+			HeapTupleUpdateValue(pg_user_mapping, umoptions, datum, values, nulls, updated);
 		else
-			repl_null[Anum_pg_user_mapping_umoptions - 1] = true;
-
-		repl_repl[Anum_pg_user_mapping_umoptions - 1] = true;
+			HeapTupleUpdateValueNull(pg_user_mapping, umoptions, values, nulls, updated);
 	}
 
 	/* Everything looks good - update the tuple */
-	tp = heap_modify_tuple(tp, RelationGetDescr(rel),
-						   repl_val, repl_null, repl_repl);
+	tp = heap_update_tuple(tp, RelationGetDescr(rel), values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &tp->t_self, tp);
+	CatalogTupleUpdate(rel, &tp->t_self, tp, updated, NULL);
 
 	InvokeObjectPostAlterHook(UserMappingRelationId,
 							  umId, 0);
@@ -1323,6 +1285,7 @@ AlterUserMapping(AlterUserMappingStmt *stmt)
 	heap_freetuple(tp);
 
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -1416,8 +1379,8 @@ CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid)
 {
 	Relation	ftrel;
 	Datum		ftoptions;
-	Datum		values[Natts_pg_foreign_table];
-	bool		nulls[Natts_pg_foreign_table];
+	Datum		values[Natts_pg_foreign_table] = {0};
+	bool		nulls[Natts_pg_foreign_table] = {false};
 	HeapTuple	tuple;
 	AclResult	aclresult;
 	ObjectAddress myself;
@@ -1456,8 +1419,8 @@ CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid)
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
 
-	values[Anum_pg_foreign_table_ftrelid - 1] = ObjectIdGetDatum(relid);
-	values[Anum_pg_foreign_table_ftserver - 1] = ObjectIdGetDatum(server->serverid);
+	HeapTupleSetValue(pg_foreign_table, ftrelid, ObjectIdGetDatum(relid), values);
+	HeapTupleSetValue(pg_foreign_table, ftserver, ObjectIdGetDatum(server->serverid), values);
 	/* Add table generic options */
 	ftoptions = transformGenericOptions(ForeignTableRelationId,
 										PointerGetDatum(NULL),
@@ -1465,13 +1428,13 @@ CreateForeignTable(CreateForeignTableStmt *stmt, Oid relid)
 										fdw->fdwvalidator);
 
 	if (DatumGetPointer(ftoptions) != NULL)
-		values[Anum_pg_foreign_table_ftoptions - 1] = ftoptions;
+		HeapTupleSetValue(pg_foreign_table, ftoptions, ftoptions, values);
 	else
-		nulls[Anum_pg_foreign_table_ftoptions - 1] = true;
+		HeapTupleSetValueNull(pg_foreign_table, ftoptions, values, nulls);
 
 	tuple = heap_form_tuple(ftrel->rd_att, values, nulls);
 
-	CatalogTupleInsert(ftrel, tuple);
+	CatalogTupleInsert(ftrel, tuple, NULL);
 
 	heap_freetuple(tuple);
 

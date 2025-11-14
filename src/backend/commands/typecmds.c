@@ -2620,9 +2620,9 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	Relation	rel;
 	char	   *defaultValue;
 	Node	   *defaultExpr = NULL; /* NULL if no default specified */
-	Datum		new_record[Natts_pg_type] = {0};
-	bool		new_record_nulls[Natts_pg_type] = {0};
-	bool		new_record_repl[Natts_pg_type] = {0};
+	Datum		values[Natts_pg_type] = {0};
+	bool		nulls[Natts_pg_type] = {false};
+	Bitmapset  *updated = NULL;
 	HeapTuple	newtuple;
 	Form_pg_type typTup;
 	ObjectAddress address;
@@ -2670,10 +2670,8 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 		{
 			/* Default is NULL, drop it */
 			defaultExpr = NULL;
-			new_record_nulls[Anum_pg_type_typdefaultbin - 1] = true;
-			new_record_repl[Anum_pg_type_typdefaultbin - 1] = true;
-			new_record_nulls[Anum_pg_type_typdefault - 1] = true;
-			new_record_repl[Anum_pg_type_typdefault - 1] = true;
+			HeapTupleUpdateValueNull(pg_type, typdefaultbin, values, nulls, updated);
+			HeapTupleUpdateValueNull(pg_type, typdefault, values, nulls, updated);
 		}
 		else
 		{
@@ -2688,27 +2686,21 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 			/*
 			 * Form an updated tuple with the new default and write it back.
 			 */
-			new_record[Anum_pg_type_typdefaultbin - 1] = CStringGetTextDatum(nodeToString(defaultExpr));
-
-			new_record_repl[Anum_pg_type_typdefaultbin - 1] = true;
-			new_record[Anum_pg_type_typdefault - 1] = CStringGetTextDatum(defaultValue);
-			new_record_repl[Anum_pg_type_typdefault - 1] = true;
+			HeapTupleUpdateValue(pg_type, typdefaultbin, CStringGetTextDatum(nodeToString(defaultExpr)), values, nulls, updated);
+			HeapTupleUpdateValue(pg_type, typdefault, CStringGetTextDatum(defaultValue), values, nulls, updated);
 		}
 	}
 	else
 	{
 		/* ALTER ... DROP DEFAULT */
-		new_record_nulls[Anum_pg_type_typdefaultbin - 1] = true;
-		new_record_repl[Anum_pg_type_typdefaultbin - 1] = true;
-		new_record_nulls[Anum_pg_type_typdefault - 1] = true;
-		new_record_repl[Anum_pg_type_typdefault - 1] = true;
+		HeapTupleUpdateValueNull(pg_type, typdefaultbin, values, nulls, updated);
+		HeapTupleUpdateValueNull(pg_type, typdefault, values, nulls, updated);
 	}
 
-	newtuple = heap_modify_tuple(tup, RelationGetDescr(rel),
-								 new_record, new_record_nulls,
-								 new_record_repl);
+	newtuple = heap_update_tuple(tup, RelationGetDescr(rel),
+								 values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &tup->t_self, newtuple);
+	CatalogTupleUpdate(rel, &tup->t_self, newtuple, updated, NULL);
 
 	/* Rebuild dependencies */
 	GenerateTypeDependencies(newtuple,
@@ -2728,6 +2720,7 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	/* Clean up */
 	table_close(rel, RowExclusiveLock);
 	heap_freetuple(newtuple);
+	bms_free(updated);
 
 	return address;
 }
@@ -2748,6 +2741,7 @@ AlterDomainNotNull(List *names, bool notNull)
 	HeapTuple	tup;
 	Form_pg_type typTup;
 	ObjectAddress address = InvalidObjectAddress;
+	Bitmapset  *updated = NULL;
 
 	/* Make a TypeName so we can use standard type lookup machinery */
 	typename = makeTypeNameFromNameList(names);
@@ -2803,9 +2797,9 @@ AlterDomainNotNull(List *names, bool notNull)
 	 * Okay to update pg_type row.  We can scribble on typTup because it's a
 	 * copy.
 	 */
-	typTup->typnotnull = notNull;
+	HeapTupleUpdateField(pg_type, typnotnull, notNull, typTup, updated);
 
-	CatalogTupleUpdate(typrel, &tup->t_self, tup);
+	CatalogTupleUpdate(typrel, &tup->t_self, tup, updated, NULL);
 
 	InvokeObjectPostAlterHook(TypeRelationId, domainoid, 0);
 
@@ -2814,6 +2808,7 @@ AlterDomainNotNull(List *names, bool notNull)
 	/* Clean up */
 	heap_freetuple(tup);
 	table_close(typrel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -2839,6 +2834,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 	HeapTuple	contup;
 	bool		found = false;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/* Make a TypeName so we can use standard type lookup machinery */
 	typename = makeTypeNameFromNameList(names);
@@ -2882,8 +2878,8 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 
 		if (construct->contype == CONSTRAINT_NOTNULL)
 		{
-			((Form_pg_type) GETSTRUCT(tup))->typnotnull = false;
-			CatalogTupleUpdate(rel, &tup->t_self, tup);
+			HeapTupleUpdateField(pg_type, typnotnull, false, (Form_pg_type) GETSTRUCT(tup), updated);
+			CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 		}
 
 		conobj.classId = ConstraintRelationId;
@@ -2922,6 +2918,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
 
 	/* Clean up */
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -2943,6 +2940,7 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 	Constraint *constr;
 	char	   *ccbin;
 	ObjectAddress address = InvalidObjectAddress;
+	Bitmapset  *updated = NULL;
 
 	/* Make a TypeName so we can use standard type lookup machinery */
 	typename = makeTypeNameFromNameList(names);
@@ -3011,14 +3009,15 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 		if (!constr->skip_validation)
 			validateDomainNotNullConstraint(domainoid);
 
-		typTup->typnotnull = true;
-		CatalogTupleUpdate(typrel, &tup->t_self, tup);
+		HeapTupleUpdateField(pg_type, typnotnull, true, typTup, updated);
+		CatalogTupleUpdate(typrel, &tup->t_self, tup, updated, NULL);
 	}
 
 	ObjectAddressSet(address, TypeRelationId, domainoid);
 
 	/* Clean up */
 	table_close(typrel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -3045,6 +3044,7 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	HeapTuple	copyTuple;
 	ScanKeyData skey[3];
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/* Make a TypeName so we can use standard type lookup machinery */
 	typename = makeTypeNameFromNameList(names);
@@ -3110,8 +3110,8 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	 */
 	copyTuple = heap_copytuple(tuple);
 	copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
-	copy_con->convalidated = true;
-	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+	HeapTupleUpdateField(pg_constraint, convalidated, true, copy_con, updated);
+	CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(ConstraintRelationId, con->oid, 0);
 
@@ -3125,6 +3125,7 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	table_close(conrel, RowExclusiveLock);
 
 	ReleaseSysCache(tup);
+	bms_free(updated);
 
 	return address;
 }
@@ -3999,9 +4000,9 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 	Relation	rel;
 	HeapTuple	tup;
 	Form_pg_type typTup;
-	Datum		repl_val[Natts_pg_type];
-	bool		repl_null[Natts_pg_type];
-	bool		repl_repl[Natts_pg_type];
+	Datum		values[Natts_pg_type] = {0};
+	bool		nulls[Natts_pg_type] = {false};
+	Bitmapset  *updated = NULL;
 	Acl		   *newAcl;
 	Datum		aclDatum;
 	bool		isNull;
@@ -4013,11 +4014,7 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 		elog(ERROR, "cache lookup failed for type %u", typeOid);
 	typTup = (Form_pg_type) GETSTRUCT(tup);
 
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
-	repl_repl[Anum_pg_type_typowner - 1] = true;
-	repl_val[Anum_pg_type_typowner - 1] = ObjectIdGetDatum(newOwnerId);
+	HeapTupleUpdateValue(pg_type, typowner, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 	aclDatum = heap_getattr(tup,
 							Anum_pg_type_typacl,
@@ -4028,14 +4025,12 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 	{
 		newAcl = aclnewowner(DatumGetAclP(aclDatum),
 							 typTup->typowner, newOwnerId);
-		repl_repl[Anum_pg_type_typacl - 1] = true;
-		repl_val[Anum_pg_type_typacl - 1] = PointerGetDatum(newAcl);
+		HeapTupleUpdateValue(pg_type, typacl, PointerGetDatum(newAcl), values, nulls, updated);
 	}
 
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel), repl_val, repl_null,
-							repl_repl);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 	/* If it has an array type, update that too */
 	if (OidIsValid(typTup->typarray))
@@ -4056,6 +4051,7 @@ AlterTypeOwnerInternal(Oid typeOid, Oid newOwnerId)
 
 	/* Clean up */
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*
@@ -4176,6 +4172,7 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 	Oid			arrayOid;
 	bool		isCompositeType;
 	ObjectAddress thisobj;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Make sure we haven't moved this object previously.
@@ -4241,9 +4238,9 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 		/* OK, modify the pg_type row */
 
 		/* tup is a copy, so we can scribble directly on it */
-		typform->typnamespace = nspOid;
+		HeapTupleUpdateField(pg_type, typnamespace, nspOid, typform, updated);
 
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 	}
 
 	/*
@@ -4307,6 +4304,7 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 								   true,	/* errorOnTableType */
 								   objsMoved);
 
+	bms_free(updated);
 	return oldNspOid;
 }
 
@@ -4574,9 +4572,9 @@ AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
 				 HeapTuple tup, Relation catalog,
 				 AlterTypeRecurseParams *atparams)
 {
-	Datum		values[Natts_pg_type];
-	bool		nulls[Natts_pg_type];
-	bool		replaces[Natts_pg_type];
+	Datum		values[Natts_pg_type] = {0};
+	bool		nulls[Natts_pg_type] = {false};
+	Bitmapset  *updated = NULL;
 	HeapTuple	newtup;
 	SysScanDesc scan;
 	ScanKeyData key[1];
@@ -4586,50 +4584,25 @@ AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
 	check_stack_depth();
 
 	/* Update the current type's tuple */
-	memset(values, 0, sizeof(values));
-	memset(nulls, 0, sizeof(nulls));
-	memset(replaces, 0, sizeof(replaces));
-
 	if (atparams->updateStorage)
-	{
-		replaces[Anum_pg_type_typstorage - 1] = true;
-		values[Anum_pg_type_typstorage - 1] = CharGetDatum(atparams->storage);
-	}
+		HeapTupleUpdateValue(pg_type, typstorage, CharGetDatum(atparams->storage), values, nulls, updated);
 	if (atparams->updateReceive)
-	{
-		replaces[Anum_pg_type_typreceive - 1] = true;
-		values[Anum_pg_type_typreceive - 1] = ObjectIdGetDatum(atparams->receiveOid);
-	}
+		HeapTupleUpdateValue(pg_type, typreceive, ObjectIdGetDatum(atparams->receiveOid), values, nulls, updated);
 	if (atparams->updateSend)
-	{
-		replaces[Anum_pg_type_typsend - 1] = true;
-		values[Anum_pg_type_typsend - 1] = ObjectIdGetDatum(atparams->sendOid);
-	}
+		HeapTupleUpdateValue(pg_type, typsend, ObjectIdGetDatum(atparams->sendOid), values, nulls, updated);
 	if (atparams->updateTypmodin)
-	{
-		replaces[Anum_pg_type_typmodin - 1] = true;
-		values[Anum_pg_type_typmodin - 1] = ObjectIdGetDatum(atparams->typmodinOid);
-	}
+		HeapTupleUpdateValue(pg_type, typmodin, ObjectIdGetDatum(atparams->typmodinOid), values, nulls, updated);
 	if (atparams->updateTypmodout)
-	{
-		replaces[Anum_pg_type_typmodout - 1] = true;
-		values[Anum_pg_type_typmodout - 1] = ObjectIdGetDatum(atparams->typmodoutOid);
-	}
+		HeapTupleUpdateValue(pg_type, typmodout, ObjectIdGetDatum(atparams->typmodoutOid), values, nulls, updated);
 	if (atparams->updateAnalyze)
-	{
-		replaces[Anum_pg_type_typanalyze - 1] = true;
-		values[Anum_pg_type_typanalyze - 1] = ObjectIdGetDatum(atparams->analyzeOid);
-	}
+		HeapTupleUpdateValue(pg_type, typanalyze, ObjectIdGetDatum(atparams->analyzeOid), values, nulls, updated);
 	if (atparams->updateSubscript)
-	{
-		replaces[Anum_pg_type_typsubscript - 1] = true;
-		values[Anum_pg_type_typsubscript - 1] = ObjectIdGetDatum(atparams->subscriptOid);
-	}
+		HeapTupleUpdateValue(pg_type, typsubscript, ObjectIdGetDatum(atparams->subscriptOid), values, nulls, updated);
 
-	newtup = heap_modify_tuple(tup, RelationGetDescr(catalog),
-							   values, nulls, replaces);
+	newtup = heap_update_tuple(tup, RelationGetDescr(catalog),
+							   values, nulls, updated);
 
-	CatalogTupleUpdate(catalog, &newtup->t_self, newtup);
+	CatalogTupleUpdate(catalog, &newtup->t_self, newtup, updated, NULL);
 
 	/* Rebuild dependencies for this type */
 	GenerateTypeDependencies(newtup,
@@ -4714,4 +4687,5 @@ AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
 	}
 
 	systable_endscan(scan);
+	bms_free(updated);
 }

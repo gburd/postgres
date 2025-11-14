@@ -187,8 +187,8 @@ DefineTSParser(List *names, List *parameters)
 	ListCell   *pl;
 	Relation	prsRel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_ts_parser];
-	bool		nulls[Natts_pg_ts_parser];
+	Datum		values[Natts_pg_ts_parser] = {0};
+	bool		nulls[Natts_pg_ts_parser] = {false};
 	NameData	pname;
 	Oid			prsOid;
 	Oid			namespaceoid;
@@ -210,10 +210,10 @@ DefineTSParser(List *names, List *parameters)
 
 	prsOid = GetNewOidWithIndex(prsRel, TSParserOidIndexId,
 								Anum_pg_ts_parser_oid);
-	values[Anum_pg_ts_parser_oid - 1] = ObjectIdGetDatum(prsOid);
+	HeapTupleSetValue(pg_ts_parser, oid, ObjectIdGetDatum(prsOid), values);
 	namestrcpy(&pname, prsname);
-	values[Anum_pg_ts_parser_prsname - 1] = NameGetDatum(&pname);
-	values[Anum_pg_ts_parser_prsnamespace - 1] = ObjectIdGetDatum(namespaceoid);
+	HeapTupleSetValue(pg_ts_parser, prsname, NameGetDatum(&pname), values);
+	HeapTupleSetValue(pg_ts_parser, prsnamespace, ObjectIdGetDatum(namespaceoid), values);
 
 	/*
 	 * loop over the definition list and extract the information we need.
@@ -224,28 +224,23 @@ DefineTSParser(List *names, List *parameters)
 
 		if (strcmp(defel->defname, "start") == 0)
 		{
-			values[Anum_pg_ts_parser_prsstart - 1] =
-				get_ts_parser_func(defel, Anum_pg_ts_parser_prsstart);
+			HeapTupleSetValue(pg_ts_parser, prsstart, get_ts_parser_func(defel, Anum_pg_ts_parser_prsstart), values);
 		}
 		else if (strcmp(defel->defname, "gettoken") == 0)
 		{
-			values[Anum_pg_ts_parser_prstoken - 1] =
-				get_ts_parser_func(defel, Anum_pg_ts_parser_prstoken);
+			HeapTupleSetValue(pg_ts_parser, prstoken, get_ts_parser_func(defel, Anum_pg_ts_parser_prstoken), values);
 		}
 		else if (strcmp(defel->defname, "end") == 0)
 		{
-			values[Anum_pg_ts_parser_prsend - 1] =
-				get_ts_parser_func(defel, Anum_pg_ts_parser_prsend);
+			HeapTupleSetValue(pg_ts_parser, prsend, get_ts_parser_func(defel, Anum_pg_ts_parser_prsend), values);
 		}
 		else if (strcmp(defel->defname, "headline") == 0)
 		{
-			values[Anum_pg_ts_parser_prsheadline - 1] =
-				get_ts_parser_func(defel, Anum_pg_ts_parser_prsheadline);
+			HeapTupleSetValue(pg_ts_parser, prsheadline, get_ts_parser_func(defel, Anum_pg_ts_parser_prsheadline), values);
 		}
 		else if (strcmp(defel->defname, "lextypes") == 0)
 		{
-			values[Anum_pg_ts_parser_prslextype - 1] =
-				get_ts_parser_func(defel, Anum_pg_ts_parser_prslextype);
+			HeapTupleSetValue(pg_ts_parser, prslextype, get_ts_parser_func(defel, Anum_pg_ts_parser_prslextype), values);
 		}
 		else
 			ereport(ERROR,
@@ -257,22 +252,22 @@ DefineTSParser(List *names, List *parameters)
 	/*
 	 * Validation
 	 */
-	if (!OidIsValid(DatumGetObjectId(values[Anum_pg_ts_parser_prsstart - 1])))
+	if (!OidIsValid(DatumGetObjectId(HeapTupleValue(pg_ts_parser, prsstart, values))))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("text search parser start method is required")));
 
-	if (!OidIsValid(DatumGetObjectId(values[Anum_pg_ts_parser_prstoken - 1])))
+	if (!OidIsValid(DatumGetObjectId(HeapTupleValue(pg_ts_parser, prstoken, values))))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("text search parser gettoken method is required")));
 
-	if (!OidIsValid(DatumGetObjectId(values[Anum_pg_ts_parser_prsend - 1])))
+	if (!OidIsValid(DatumGetObjectId(HeapTupleValue(pg_ts_parser, prsend, values))))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("text search parser end method is required")));
 
-	if (!OidIsValid(DatumGetObjectId(values[Anum_pg_ts_parser_prslextype - 1])))
+	if (!OidIsValid(DatumGetObjectId(HeapTupleValue(pg_ts_parser, prslextype, values))))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("text search parser lextypes method is required")));
@@ -282,7 +277,7 @@ DefineTSParser(List *names, List *parameters)
 	 */
 	tup = heap_form_tuple(prsRel->rd_att, values, nulls);
 
-	CatalogTupleInsert(prsRel, tup);
+	CatalogTupleInsert(prsRel, tup, NULL);
 
 	address = makeParserDependencies(tup);
 
@@ -399,8 +394,8 @@ DefineTSDictionary(List *names, List *parameters)
 	ListCell   *pl;
 	Relation	dictRel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_ts_dict];
-	bool		nulls[Natts_pg_ts_dict];
+	Datum		values[Natts_pg_ts_dict] = {0};
+	bool		nulls[Natts_pg_ts_dict] = {false};
 	NameData	dname;
 	Oid			templId = InvalidOid;
 	List	   *dictoptions = NIL;
@@ -458,21 +453,20 @@ DefineTSDictionary(List *names, List *parameters)
 
 	dictOid = GetNewOidWithIndex(dictRel, TSDictionaryOidIndexId,
 								 Anum_pg_ts_dict_oid);
-	values[Anum_pg_ts_dict_oid - 1] = ObjectIdGetDatum(dictOid);
+	HeapTupleSetValue(pg_ts_dict, oid, ObjectIdGetDatum(dictOid), values);
 	namestrcpy(&dname, dictname);
-	values[Anum_pg_ts_dict_dictname - 1] = NameGetDatum(&dname);
-	values[Anum_pg_ts_dict_dictnamespace - 1] = ObjectIdGetDatum(namespaceoid);
-	values[Anum_pg_ts_dict_dictowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_ts_dict_dicttemplate - 1] = ObjectIdGetDatum(templId);
+	HeapTupleSetValue(pg_ts_dict, dictname, NameGetDatum(&dname), values);
+	HeapTupleSetValue(pg_ts_dict, dictnamespace, ObjectIdGetDatum(namespaceoid), values);
+	HeapTupleSetValue(pg_ts_dict, dictowner, ObjectIdGetDatum(GetUserId()), values);
+	HeapTupleSetValue(pg_ts_dict, dicttemplate, ObjectIdGetDatum(templId), values);
 	if (dictoptions)
-		values[Anum_pg_ts_dict_dictinitoption - 1] =
-			PointerGetDatum(serialize_deflist(dictoptions));
+		HeapTupleSetValue(pg_ts_dict, dictinitoption, PointerGetDatum(serialize_deflist(dictoptions)), values);
 	else
-		nulls[Anum_pg_ts_dict_dictinitoption - 1] = true;
+		HeapTupleSetValueNull(pg_ts_dict, dictinitoption, values, nulls);
 
 	tup = heap_form_tuple(dictRel->rd_att, values, nulls);
 
-	CatalogTupleInsert(dictRel, tup);
+	CatalogTupleInsert(dictRel, tup, NULL);
 
 	address = makeDictionaryDependencies(tup);
 
@@ -500,9 +494,9 @@ AlterTSDictionary(AlterTSDictionaryStmt *stmt)
 	List	   *dictoptions;
 	Datum		opt;
 	bool		isnull;
-	Datum		repl_val[Natts_pg_ts_dict];
-	bool		repl_null[Natts_pg_ts_dict];
-	bool		repl_repl[Natts_pg_ts_dict];
+	Datum		values[Natts_pg_ts_dict] = {0};
+	bool		nulls[Natts_pg_ts_dict] = {false};
+	Bitmapset  *updated = NULL;
 	ObjectAddress address;
 
 	dictId = get_ts_dict_oid(stmt->dictname, false);
@@ -564,21 +558,15 @@ AlterTSDictionary(AlterTSDictionaryStmt *stmt)
 	/*
 	 * Looks good, update
 	 */
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
 	if (dictoptions)
-		repl_val[Anum_pg_ts_dict_dictinitoption - 1] =
-			PointerGetDatum(serialize_deflist(dictoptions));
+		HeapTupleUpdateValue(pg_ts_dict, dictinitoption, PointerGetDatum(serialize_deflist(dictoptions)), values, nulls, updated);
 	else
-		repl_null[Anum_pg_ts_dict_dictinitoption - 1] = true;
-	repl_repl[Anum_pg_ts_dict_dictinitoption - 1] = true;
+		HeapTupleUpdateValueNull(pg_ts_dict, dictinitoption, values, nulls, updated);
 
-	newtup = heap_modify_tuple(tup, RelationGetDescr(rel),
-							   repl_val, repl_null, repl_repl);
+	newtup = heap_update_tuple(tup, RelationGetDescr(rel),
+							   values, nulls, updated);
 
-	CatalogTupleUpdate(rel, &newtup->t_self, newtup);
+	CatalogTupleUpdate(rel, &newtup->t_self, newtup, updated, NULL);
 
 	InvokeObjectPostAlterHook(TSDictionaryRelationId, dictId, 0);
 
@@ -594,6 +582,7 @@ AlterTSDictionary(AlterTSDictionaryStmt *stmt)
 	ReleaseSysCache(tup);
 
 	table_close(rel, RowExclusiveLock);
+	bms_free(updated);
 
 	return address;
 }
@@ -692,8 +681,8 @@ DefineTSTemplate(List *names, List *parameters)
 	ListCell   *pl;
 	Relation	tmplRel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_ts_template];
-	bool		nulls[Natts_pg_ts_template];
+	Datum		values[Natts_pg_ts_template] = {0};
+	bool		nulls[Natts_pg_ts_template] = {false};
 	NameData	dname;
 	int			i;
 	Oid			tmplOid;
@@ -719,10 +708,10 @@ DefineTSTemplate(List *names, List *parameters)
 
 	tmplOid = GetNewOidWithIndex(tmplRel, TSTemplateOidIndexId,
 								 Anum_pg_ts_dict_oid);
-	values[Anum_pg_ts_template_oid - 1] = ObjectIdGetDatum(tmplOid);
+	HeapTupleSetValue(pg_ts_template, oid, ObjectIdGetDatum(tmplOid), values);
 	namestrcpy(&dname, tmplname);
-	values[Anum_pg_ts_template_tmplname - 1] = NameGetDatum(&dname);
-	values[Anum_pg_ts_template_tmplnamespace - 1] = ObjectIdGetDatum(namespaceoid);
+	HeapTupleSetValue(pg_ts_template, tmplname, NameGetDatum(&dname), values);
+	HeapTupleSetValue(pg_ts_template, tmplnamespace, ObjectIdGetDatum(namespaceoid), values);
 
 	/*
 	 * loop over the definition list and extract the information we need.
@@ -733,15 +722,11 @@ DefineTSTemplate(List *names, List *parameters)
 
 		if (strcmp(defel->defname, "init") == 0)
 		{
-			values[Anum_pg_ts_template_tmplinit - 1] =
-				get_ts_template_func(defel, Anum_pg_ts_template_tmplinit);
-			nulls[Anum_pg_ts_template_tmplinit - 1] = false;
+			HeapTupleSetValue(pg_ts_template, tmplinit, get_ts_template_func(defel, Anum_pg_ts_template_tmplinit), values);
 		}
 		else if (strcmp(defel->defname, "lexize") == 0)
 		{
-			values[Anum_pg_ts_template_tmpllexize - 1] =
-				get_ts_template_func(defel, Anum_pg_ts_template_tmpllexize);
-			nulls[Anum_pg_ts_template_tmpllexize - 1] = false;
+			HeapTupleSetValue(pg_ts_template, tmpllexize, get_ts_template_func(defel, Anum_pg_ts_template_tmpllexize), values);
 		}
 		else
 			ereport(ERROR,
@@ -753,7 +738,7 @@ DefineTSTemplate(List *names, List *parameters)
 	/*
 	 * Validation
 	 */
-	if (!OidIsValid(DatumGetObjectId(values[Anum_pg_ts_template_tmpllexize - 1])))
+	if (!OidIsValid(DatumGetObjectId(HeapTupleValue(pg_ts_template, tmpllexize, values))))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("text search template lexize method is required")));
@@ -763,7 +748,7 @@ DefineTSTemplate(List *names, List *parameters)
 	 */
 	tup = heap_form_tuple(tmplRel->rd_att, values, nulls);
 
-	CatalogTupleInsert(tmplRel, tup);
+	CatalogTupleInsert(tmplRel, tup, NULL);
 
 	address = makeTSTemplateDependencies(tup);
 
@@ -901,8 +886,8 @@ DefineTSConfiguration(List *names, List *parameters, ObjectAddress *copied)
 	Relation	cfgRel;
 	Relation	mapRel = NULL;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_ts_config];
-	bool		nulls[Natts_pg_ts_config];
+	Datum		values[Natts_pg_ts_config] = {0};
+	bool		nulls[Natts_pg_ts_config] = {false};
 	AclResult	aclresult;
 	Oid			namespaceoid;
 	char	   *cfgname;
@@ -991,16 +976,16 @@ DefineTSConfiguration(List *names, List *parameters, ObjectAddress *copied)
 
 	cfgOid = GetNewOidWithIndex(cfgRel, TSConfigOidIndexId,
 								Anum_pg_ts_config_oid);
-	values[Anum_pg_ts_config_oid - 1] = ObjectIdGetDatum(cfgOid);
+	HeapTupleSetValue(pg_ts_config, oid, ObjectIdGetDatum(cfgOid), values);
 	namestrcpy(&cname, cfgname);
-	values[Anum_pg_ts_config_cfgname - 1] = NameGetDatum(&cname);
-	values[Anum_pg_ts_config_cfgnamespace - 1] = ObjectIdGetDatum(namespaceoid);
-	values[Anum_pg_ts_config_cfgowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_ts_config_cfgparser - 1] = ObjectIdGetDatum(prsOid);
+	HeapTupleSetValue(pg_ts_config, cfgname, NameGetDatum(&cname), values);
+	HeapTupleSetValue(pg_ts_config, cfgnamespace, ObjectIdGetDatum(namespaceoid), values);
+	HeapTupleSetValue(pg_ts_config, cfgowner, ObjectIdGetDatum(GetUserId()), values);
+	HeapTupleSetValue(pg_ts_config, cfgparser, ObjectIdGetDatum(prsOid), values);
 
 	tup = heap_form_tuple(cfgRel->rd_att, values, nulls);
 
-	CatalogTupleInsert(cfgRel, tup);
+	CatalogTupleInsert(cfgRel, tup, NULL);
 
 	if (OidIsValid(sourceOid))
 	{
@@ -1058,10 +1043,10 @@ DefineTSConfiguration(List *names, List *parameters, ObjectAddress *copied)
 			memset(slot[slot_stored_count]->tts_isnull, false,
 				   slot[slot_stored_count]->tts_tupleDescriptor->natts * sizeof(bool));
 
-			slot[slot_stored_count]->tts_values[Anum_pg_ts_config_map_mapcfg - 1] = ObjectIdGetDatum(cfgOid);
-			slot[slot_stored_count]->tts_values[Anum_pg_ts_config_map_maptokentype - 1] = Int32GetDatum(cfgmap->maptokentype);
-			slot[slot_stored_count]->tts_values[Anum_pg_ts_config_map_mapseqno - 1] = Int32GetDatum(cfgmap->mapseqno);
-			slot[slot_stored_count]->tts_values[Anum_pg_ts_config_map_mapdict - 1] = ObjectIdGetDatum(cfgmap->mapdict);
+			HeapTupleSetValue(pg_ts_config_map, mapcfg, ObjectIdGetDatum(cfgOid), slot[slot_stored_count]->tts_values);
+			HeapTupleSetValue(pg_ts_config_map, maptokentype, Int32GetDatum(cfgmap->maptokentype), slot[slot_stored_count]->tts_values);
+			HeapTupleSetValue(pg_ts_config_map, mapseqno, Int32GetDatum(cfgmap->mapseqno), slot[slot_stored_count]->tts_values);
+			HeapTupleSetValue(pg_ts_config_map, mapdict, ObjectIdGetDatum(cfgmap->mapdict), slot[slot_stored_count]->tts_values);
 
 			ExecStoreVirtualTuple(slot[slot_stored_count]);
 			slot_stored_count++;
@@ -1069,16 +1054,16 @@ DefineTSConfiguration(List *names, List *parameters, ObjectAddress *copied)
 			/* If slots are full, insert a batch of tuples */
 			if (slot_stored_count == max_slots)
 			{
-				CatalogTuplesMultiInsertWithInfo(mapRel, slot, slot_stored_count,
-												 indstate);
+				CatalogTuplesMultiInsert(mapRel, slot, slot_stored_count,
+										 indstate);
 				slot_stored_count = 0;
 			}
 		}
 
 		/* Insert any tuples left in the buffer */
 		if (slot_stored_count > 0)
-			CatalogTuplesMultiInsertWithInfo(mapRel, slot, slot_stored_count,
-											 indstate);
+			CatalogTuplesMultiInsert(mapRel, slot, slot_stored_count,
+									 indstate);
 
 		for (int i = 0; i < slot_init_count; i++)
 			ExecDropSingleTupleTableSlot(slot[i]);
@@ -1402,22 +1387,18 @@ MakeConfigurationMapping(AlterTSConfigurationStmt *stmt,
 			 */
 			if (cfgmap->mapdict == dictOld)
 			{
-				Datum		repl_val[Natts_pg_ts_config_map];
-				bool		repl_null[Natts_pg_ts_config_map];
-				bool		repl_repl[Natts_pg_ts_config_map];
+				Datum		values[Natts_pg_ts_config_map] = {0};
+				bool		nulls[Natts_pg_ts_config_map] = {false};
+				Bitmapset  *updated = NULL;
 				HeapTuple	newtup;
 
-				memset(repl_val, 0, sizeof(repl_val));
-				memset(repl_null, false, sizeof(repl_null));
-				memset(repl_repl, false, sizeof(repl_repl));
+				HeapTupleUpdateValue(pg_ts_config_map, mapdict, ObjectIdGetDatum(dictNew), values, nulls, updated);
 
-				repl_val[Anum_pg_ts_config_map_mapdict - 1] = ObjectIdGetDatum(dictNew);
-				repl_repl[Anum_pg_ts_config_map_mapdict - 1] = true;
-
-				newtup = heap_modify_tuple(maptup,
+				newtup = heap_update_tuple(maptup,
 										   RelationGetDescr(relMap),
-										   repl_val, repl_null, repl_repl);
-				CatalogTupleUpdateWithInfo(relMap, &newtup->t_self, newtup, indstate);
+										   values, nulls, updated);
+				CatalogTupleUpdate(relMap, &newtup->t_self, newtup, updated, indstate);
+				bms_free(updated);
 			}
 		}
 
@@ -1451,10 +1432,10 @@ MakeConfigurationMapping(AlterTSConfigurationStmt *stmt,
 				memset(slot[slotCount]->tts_isnull, false,
 					   slot[slotCount]->tts_tupleDescriptor->natts * sizeof(bool));
 
-				slot[slotCount]->tts_values[Anum_pg_ts_config_map_mapcfg - 1] = ObjectIdGetDatum(cfgId);
-				slot[slotCount]->tts_values[Anum_pg_ts_config_map_maptokentype - 1] = Int32GetDatum(ts->num);
-				slot[slotCount]->tts_values[Anum_pg_ts_config_map_mapseqno - 1] = Int32GetDatum(j + 1);
-				slot[slotCount]->tts_values[Anum_pg_ts_config_map_mapdict - 1] = ObjectIdGetDatum(dictIds[j]);
+				HeapTupleSetValue(pg_ts_config_map, mapcfg, ObjectIdGetDatum(cfgId), slot[slotCount]->tts_values);
+				HeapTupleSetValue(pg_ts_config_map, maptokentype, Int32GetDatum(ts->num), slot[slotCount]->tts_values);
+				HeapTupleSetValue(pg_ts_config_map, mapseqno, Int32GetDatum(j + 1), slot[slotCount]->tts_values);
+				HeapTupleSetValue(pg_ts_config_map, mapdict, ObjectIdGetDatum(dictIds[j]), slot[slotCount]->tts_values);
 
 				ExecStoreVirtualTuple(slot[slotCount]);
 				slotCount++;
@@ -1462,8 +1443,8 @@ MakeConfigurationMapping(AlterTSConfigurationStmt *stmt,
 				/* If slots are full, insert a batch of tuples */
 				if (slotCount == nslots)
 				{
-					CatalogTuplesMultiInsertWithInfo(relMap, slot, slotCount,
-													 indstate);
+					CatalogTuplesMultiInsert(relMap, slot, slotCount,
+											 indstate);
 					slotCount = 0;
 				}
 			}
@@ -1471,8 +1452,8 @@ MakeConfigurationMapping(AlterTSConfigurationStmt *stmt,
 
 		/* Insert any tuples left in the buffer */
 		if (slotCount > 0)
-			CatalogTuplesMultiInsertWithInfo(relMap, slot, slotCount,
-											 indstate);
+			CatalogTuplesMultiInsert(relMap, slot, slotCount,
+									 indstate);
 
 		for (i = 0; i < nslots; i++)
 			ExecDropSingleTupleTableSlot(slot[i]);

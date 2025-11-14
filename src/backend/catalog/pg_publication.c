@@ -433,8 +433,8 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 {
 	Relation	rel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_publication_rel];
-	bool		nulls[Natts_pg_publication_rel];
+	Datum		values[Natts_pg_publication_rel] = {0};
+	bool		nulls[Natts_pg_publication_rel] = {false};
 	Relation	targetrel = pri->relation;
 	Oid			relid = RelationGetRelid(targetrel);
 	Oid			pubreloid;
@@ -477,28 +477,26 @@ publication_add_relation(Oid pubid, PublicationRelInfo *pri,
 
 	pubreloid = GetNewOidWithIndex(rel, PublicationRelObjectIndexId,
 								   Anum_pg_publication_rel_oid);
-	values[Anum_pg_publication_rel_oid - 1] = ObjectIdGetDatum(pubreloid);
-	values[Anum_pg_publication_rel_prpubid - 1] =
-		ObjectIdGetDatum(pubid);
-	values[Anum_pg_publication_rel_prrelid - 1] =
-		ObjectIdGetDatum(relid);
+	HeapTupleSetValue(pg_publication_rel, oid, ObjectIdGetDatum(pubreloid), values);
+	HeapTupleSetValue(pg_publication_rel, prpubid, ObjectIdGetDatum(pubid), values);
+	HeapTupleSetValue(pg_publication_rel, prrelid, ObjectIdGetDatum(relid), values);
 
 	/* Add qualifications, if available */
 	if (pri->whereClause != NULL)
-		values[Anum_pg_publication_rel_prqual - 1] = CStringGetTextDatum(nodeToString(pri->whereClause));
+		HeapTupleSetValue(pg_publication_rel, prqual, CStringGetTextDatum(nodeToString(pri->whereClause)), values);
 	else
-		nulls[Anum_pg_publication_rel_prqual - 1] = true;
+		HeapTupleSetValueNull(pg_publication_rel, prqual, values, nulls);
 
 	/* Add column list, if available */
 	if (pri->columns)
-		values[Anum_pg_publication_rel_prattrs - 1] = PointerGetDatum(attnumstoint2vector(attnums));
+		HeapTupleSetValue(pg_publication_rel, prattrs, PointerGetDatum(attnumstoint2vector(attnums)), values);
 	else
-		nulls[Anum_pg_publication_rel_prattrs - 1] = true;
+		HeapTupleSetValueNull(pg_publication_rel, prattrs, values, nulls);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	heap_freetuple(tup);
 
 	/* Register dependencies as needed */
@@ -674,8 +672,8 @@ publication_add_schema(Oid pubid, Oid schemaid, bool if_not_exists)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_publication_namespace];
-	bool		nulls[Natts_pg_publication_namespace];
+	Datum		values[Natts_pg_publication_namespace] = {0};
+	bool		nulls[Natts_pg_publication_namespace] = {false};
 	Oid			psschid;
 	Publication *pub = GetPublication(pubid);
 	List	   *schemaRels = NIL;
@@ -712,16 +710,14 @@ publication_add_schema(Oid pubid, Oid schemaid, bool if_not_exists)
 
 	psschid = GetNewOidWithIndex(rel, PublicationNamespaceObjectIndexId,
 								 Anum_pg_publication_namespace_oid);
-	values[Anum_pg_publication_namespace_oid - 1] = ObjectIdGetDatum(psschid);
-	values[Anum_pg_publication_namespace_pnpubid - 1] =
-		ObjectIdGetDatum(pubid);
-	values[Anum_pg_publication_namespace_pnnspid - 1] =
-		ObjectIdGetDatum(schemaid);
+	HeapTupleSetValue(pg_publication_namespace, oid, ObjectIdGetDatum(psschid), values);
+	HeapTupleSetValue(pg_publication_namespace, pnpubid, ObjectIdGetDatum(pubid), values);
+	HeapTupleSetValue(pg_publication_namespace, pnnspid, ObjectIdGetDatum(schemaid), values);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	heap_freetuple(tup);
 
 	ObjectAddressSet(myself, PublicationNamespaceRelationId, psschid);

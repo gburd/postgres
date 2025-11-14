@@ -427,6 +427,7 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
 	Datum	   *role_oids;
 	bool		attr_isnull;
 	bool		keep_policy = true;
+	Bitmapset  *updated = NULL;
 	int			i,
 				j;
 
@@ -483,29 +484,19 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
 	if (num_roles > 0)
 	{
 		ArrayType  *role_ids;
-		Datum		values[Natts_pg_policy];
-		bool		isnull[Natts_pg_policy];
-		bool		replaces[Natts_pg_policy];
+		Datum		values[Natts_pg_policy] = {0};
+		bool		nulls[Natts_pg_policy] = {false};
 		HeapTuple	new_tuple;
 		HeapTuple	reltup;
 		ObjectAddress target;
 		ObjectAddress myself;
 
-		/* zero-clear */
-		memset(values, 0, sizeof(values));
-		memset(replaces, 0, sizeof(replaces));
-		memset(isnull, 0, sizeof(isnull));
-
 		/* This is the array for the new tuple */
 		role_ids = construct_array_builtin(role_oids, num_roles, OIDOID);
 
-		replaces[Anum_pg_policy_polroles - 1] = true;
-		values[Anum_pg_policy_polroles - 1] = PointerGetDatum(role_ids);
-
-		new_tuple = heap_modify_tuple(tuple,
-									  RelationGetDescr(pg_policy_rel),
-									  values, isnull, replaces);
-		CatalogTupleUpdate(pg_policy_rel, &new_tuple->t_self, new_tuple);
+		HeapTupleUpdateValue(pg_policy, polroles, PointerGetDatum(role_ids), values, nulls, updated);
+		new_tuple = heap_update_tuple(tuple, RelationGetDescr(pg_policy_rel), values, nulls, updated);
+		CatalogTupleUpdate(pg_policy_rel, &new_tuple->t_self, new_tuple, updated, NULL);
 
 		/* Remove all the old shared dependencies (roles) */
 		deleteSharedDependencyRecordsFor(PolicyRelationId, policy_id, 0);
@@ -552,8 +543,8 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
 	}
 
 	/* Clean up. */
+	bms_free(updated);
 	systable_endscan(sscan);
-
 	table_close(pg_policy_rel, RowExclusiveLock);
 
 	return keep_policy;
@@ -584,8 +575,8 @@ CreatePolicy(CreatePolicyStmt *stmt)
 	ScanKeyData skey[2];
 	SysScanDesc sscan;
 	HeapTuple	policy_tuple;
-	Datum		values[Natts_pg_policy];
-	bool		isnull[Natts_pg_policy];
+	Datum		values[Natts_pg_policy] = {0};
+	bool		nulls[Natts_pg_policy] = {false};
 	ObjectAddress target;
 	ObjectAddress myself;
 	int			i;
@@ -618,10 +609,6 @@ CreatePolicy(CreatePolicyStmt *stmt)
 	/* Parse the supplied clause */
 	qual_pstate = make_parsestate(NULL);
 	with_check_pstate = make_parsestate(NULL);
-
-	/* zero-clear */
-	memset(values, 0, sizeof(values));
-	memset(isnull, 0, sizeof(isnull));
 
 	/* Get id of table.  Also handles permissions checks. */
 	table_id = RangeVarGetRelidExtended(stmt->table, AccessExclusiveLock,
@@ -688,30 +675,29 @@ CreatePolicy(CreatePolicyStmt *stmt)
 
 	policy_id = GetNewOidWithIndex(pg_policy_rel, PolicyOidIndexId,
 								   Anum_pg_policy_oid);
-	values[Anum_pg_policy_oid - 1] = ObjectIdGetDatum(policy_id);
-	values[Anum_pg_policy_polrelid - 1] = ObjectIdGetDatum(table_id);
-	values[Anum_pg_policy_polname - 1] = DirectFunctionCall1(namein,
-															 CStringGetDatum(stmt->policy_name));
-	values[Anum_pg_policy_polcmd - 1] = CharGetDatum(polcmd);
-	values[Anum_pg_policy_polpermissive - 1] = BoolGetDatum(stmt->permissive);
-	values[Anum_pg_policy_polroles - 1] = PointerGetDatum(role_ids);
+	HeapTupleSetValue(pg_policy, oid, ObjectIdGetDatum(policy_id), values);
+	HeapTupleSetValue(pg_policy, polrelid, ObjectIdGetDatum(table_id), values);
+	HeapTupleSetValue(pg_policy, polname, DirectFunctionCall1(namein,
+															  CStringGetDatum(stmt->policy_name)), values);
+	HeapTupleSetValue(pg_policy, polcmd, CharGetDatum(polcmd), values);
+	HeapTupleSetValue(pg_policy, polpermissive, BoolGetDatum(stmt->permissive), values);
+	HeapTupleSetValue(pg_policy, polroles, PointerGetDatum(role_ids), values);
 
 	/* Add qual if present. */
 	if (qual)
-		values[Anum_pg_policy_polqual - 1] = CStringGetTextDatum(nodeToString(qual));
+		HeapTupleSetValue(pg_policy, polqual, CStringGetTextDatum(nodeToString(qual)), values);
 	else
-		isnull[Anum_pg_policy_polqual - 1] = true;
+		HeapTupleSetValueNull(pg_policy, polqual, values, nulls);
 
 	/* Add WITH CHECK qual if present */
 	if (with_check_qual)
-		values[Anum_pg_policy_polwithcheck - 1] = CStringGetTextDatum(nodeToString(with_check_qual));
+		HeapTupleSetValue(pg_policy, polwithcheck, CStringGetTextDatum(nodeToString(with_check_qual)), values);
 	else
-		isnull[Anum_pg_policy_polwithcheck - 1] = true;
+		HeapTupleSetValueNull(pg_policy, polwithcheck, values, nulls);
 
-	policy_tuple = heap_form_tuple(RelationGetDescr(pg_policy_rel), values,
-								   isnull);
+	policy_tuple = heap_form_tuple(RelationGetDescr(pg_policy_rel), values, nulls);
 
-	CatalogTupleInsert(pg_policy_rel, policy_tuple);
+	CatalogTupleInsert(pg_policy_rel, policy_tuple, NULL);
 
 	/* Record Dependencies */
 	target.classId = RelationRelationId;
@@ -782,9 +768,9 @@ AlterPolicy(AlterPolicyStmt *stmt)
 	SysScanDesc sscan;
 	HeapTuple	policy_tuple;
 	HeapTuple	new_tuple;
-	Datum		values[Natts_pg_policy];
-	bool		isnull[Natts_pg_policy];
-	bool		replaces[Natts_pg_policy];
+	Datum		values[Natts_pg_policy] = {0};
+	bool		nulls[Natts_pg_policy] = {false};
+	Bitmapset  *updated = NULL;
 	ObjectAddress target;
 	ObjectAddress myself;
 	Datum		polcmd_datum;
@@ -854,11 +840,6 @@ AlterPolicy(AlterPolicyStmt *stmt)
 		free_parsestate(with_check_pstate);
 	}
 
-	/* zero-clear */
-	memset(values, 0, sizeof(values));
-	memset(replaces, 0, sizeof(replaces));
-	memset(isnull, 0, sizeof(isnull));
-
 	/* Find policy to update. */
 	pg_policy_rel = table_open(PolicyRelationId, RowExclusiveLock);
 
@@ -918,8 +899,7 @@ AlterPolicy(AlterPolicyStmt *stmt)
 
 	if (role_ids != NULL)
 	{
-		replaces[Anum_pg_policy_polroles - 1] = true;
-		values[Anum_pg_policy_polroles - 1] = PointerGetDatum(role_ids);
+		HeapTupleUpdateValue(pg_policy, polroles, PointerGetDatum(role_ids), values, nulls, updated);
 	}
 	else
 	{
@@ -953,9 +933,7 @@ AlterPolicy(AlterPolicyStmt *stmt)
 
 	if (qual != NULL)
 	{
-		replaces[Anum_pg_policy_polqual - 1] = true;
-		values[Anum_pg_policy_polqual - 1]
-			= CStringGetTextDatum(nodeToString(qual));
+		HeapTupleUpdateValue(pg_policy, polqual, CStringGetTextDatum(nodeToString(qual)), values, nulls, updated);
 	}
 	else
 	{
@@ -995,9 +973,7 @@ AlterPolicy(AlterPolicyStmt *stmt)
 
 	if (with_check_qual != NULL)
 	{
-		replaces[Anum_pg_policy_polwithcheck - 1] = true;
-		values[Anum_pg_policy_polwithcheck - 1]
-			= CStringGetTextDatum(nodeToString(with_check_qual));
+		HeapTupleUpdateValue(pg_policy, polwithcheck, CStringGetTextDatum(nodeToString(with_check_qual)), values, nulls, updated);
 	}
 	else
 	{
@@ -1036,10 +1012,10 @@ AlterPolicy(AlterPolicyStmt *stmt)
 		}
 	}
 
-	new_tuple = heap_modify_tuple(policy_tuple,
+	new_tuple = heap_update_tuple(policy_tuple,
 								  RelationGetDescr(pg_policy_rel),
-								  values, isnull, replaces);
-	CatalogTupleUpdate(pg_policy_rel, &new_tuple->t_self, new_tuple);
+								  values, nulls, updated);
+	CatalogTupleUpdate(pg_policy_rel, &new_tuple->t_self, new_tuple, updated, NULL);
 
 	/* Update Dependencies. */
 	deleteDependencyRecordsFor(PolicyRelationId, policy_id, false);
@@ -1081,6 +1057,7 @@ AlterPolicy(AlterPolicyStmt *stmt)
 	CacheInvalidateRelcache(target_table);
 
 	/* Clean up. */
+	bms_free(updated);
 	systable_endscan(sscan);
 	relation_close(target_table, NoLock);
 	table_close(pg_policy_rel, RowExclusiveLock);
@@ -1102,6 +1079,8 @@ rename_policy(RenameStmt *stmt)
 	ScanKeyData skey[2];
 	SysScanDesc sscan;
 	HeapTuple	policy_tuple;
+	Form_pg_policy polform;
+	Bitmapset  *updated = NULL;
 	ObjectAddress address;
 
 	/* Get id of table.  Also handles permissions checks. */
@@ -1169,11 +1148,12 @@ rename_policy(RenameStmt *stmt)
 	opoloid = ((Form_pg_policy) GETSTRUCT(policy_tuple))->oid;
 
 	policy_tuple = heap_copytuple(policy_tuple);
+	polform = (Form_pg_policy) GETSTRUCT(policy_tuple);
+	namestrcpy(&polform->polname, stmt->newname);
+	HeapTupleMarkColumnUpdated(pg_policy, polname, updated);
 
-	namestrcpy(&((Form_pg_policy) GETSTRUCT(policy_tuple))->polname,
-			   stmt->newname);
-
-	CatalogTupleUpdate(pg_policy_rel, &policy_tuple->t_self, policy_tuple);
+	CatalogTupleUpdate(pg_policy_rel, &policy_tuple->t_self, policy_tuple, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(PolicyRelationId, opoloid, 0);
 

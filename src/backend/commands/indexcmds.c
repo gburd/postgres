@@ -1553,6 +1553,8 @@ DefineIndex(Oid tableId,
 				Relation	pg_index = table_open(IndexRelationId, RowExclusiveLock);
 				HeapTuple	tup,
 							newtup;
+				Form_pg_index indexForm;
+				Bitmapset  *updated = NULL;
 
 				tup = SearchSysCache1(INDEXRELID,
 									  ObjectIdGetDatum(indexRelationId));
@@ -1560,8 +1562,10 @@ DefineIndex(Oid tableId,
 					elog(ERROR, "cache lookup failed for index %u",
 						 indexRelationId);
 				newtup = heap_copytuple(tup);
-				((Form_pg_index) GETSTRUCT(newtup))->indisvalid = false;
-				CatalogTupleUpdate(pg_index, &tup->t_self, newtup);
+				indexForm = (Form_pg_index) GETSTRUCT(newtup);
+				HeapTupleUpdateField(pg_index, indisvalid, false, indexForm, updated);
+				CatalogTupleUpdate(pg_index, &tup->t_self, newtup, updated, NULL);
+				bms_free(updated);
 				ReleaseSysCache(tup);
 				table_close(pg_index, RowExclusiveLock);
 				heap_freetuple(newtup);
@@ -4576,6 +4580,8 @@ update_relispartition(Oid relationId, bool newval)
 	HeapTuple	tup;
 	Relation	classRel;
 	ItemPointerData otid;
+	Form_pg_class classForm;
+	Bitmapset  *updated = NULL;
 
 	classRel = table_open(RelationRelationId, RowExclusiveLock);
 	tup = SearchSysCacheLockedCopy1(RELOID, ObjectIdGetDatum(relationId));
@@ -4583,8 +4589,10 @@ update_relispartition(Oid relationId, bool newval)
 		elog(ERROR, "cache lookup failed for relation %u", relationId);
 	otid = tup->t_self;
 	Assert(((Form_pg_class) GETSTRUCT(tup))->relispartition != newval);
-	((Form_pg_class) GETSTRUCT(tup))->relispartition = newval;
-	CatalogTupleUpdate(classRel, &otid, tup);
+	classForm = (Form_pg_class) GETSTRUCT(tup);
+	HeapTupleUpdateField(pg_class, relispartition, newval, classForm, updated);
+	CatalogTupleUpdate(classRel, &otid, tup, updated, NULL);
+	bms_free(updated);
 	UnlockTuple(classRel, &otid, InplaceUpdateTupleLock);
 	heap_freetuple(tup);
 	table_close(classRel, RowExclusiveLock);

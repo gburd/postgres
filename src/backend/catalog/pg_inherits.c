@@ -507,8 +507,8 @@ typeInheritsFrom(Oid subclassTypeId, Oid superclassTypeId)
 void
 StoreSingleInheritance(Oid relationId, Oid parentOid, int32 seqNumber)
 {
-	Datum		values[Natts_pg_inherits];
-	bool		nulls[Natts_pg_inherits];
+	Datum		values[Natts_pg_inherits] = {0};
+	bool		nulls[Natts_pg_inherits] = {false};
 	HeapTuple	tuple;
 	Relation	inhRelation;
 
@@ -517,16 +517,16 @@ StoreSingleInheritance(Oid relationId, Oid parentOid, int32 seqNumber)
 	/*
 	 * Make the pg_inherits entry
 	 */
-	values[Anum_pg_inherits_inhrelid - 1] = ObjectIdGetDatum(relationId);
-	values[Anum_pg_inherits_inhparent - 1] = ObjectIdGetDatum(parentOid);
-	values[Anum_pg_inherits_inhseqno - 1] = Int32GetDatum(seqNumber);
-	values[Anum_pg_inherits_inhdetachpending - 1] = BoolGetDatum(false);
+	HeapTupleSetValue(pg_inherits, inhrelid, ObjectIdGetDatum(relationId), values);
+	HeapTupleSetValue(pg_inherits, inhparent, ObjectIdGetDatum(parentOid), values);
+	HeapTupleSetValue(pg_inherits, inhseqno, Int32GetDatum(seqNumber), values);
+	HeapTupleSetValue(pg_inherits, inhdetachpending, BoolGetDatum(false), values);
 
 	memset(nulls, 0, sizeof(nulls));
 
 	tuple = heap_form_tuple(RelationGetDescr(inhRelation), values, nulls);
 
-	CatalogTupleInsert(inhRelation, tuple);
+	CatalogTupleInsert(inhRelation, tuple, NULL);
 
 	heap_freetuple(tuple);
 

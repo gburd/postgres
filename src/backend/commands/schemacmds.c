@@ -255,6 +255,7 @@ RenameSchema(const char *oldname, const char *newname)
 	AclResult	aclresult;
 	ObjectAddress address;
 	Form_pg_namespace nspform;
+	Bitmapset  *updated = NULL;
 
 	rel = table_open(NamespaceRelationId, RowExclusiveLock);
 
@@ -292,7 +293,8 @@ RenameSchema(const char *oldname, const char *newname)
 
 	/* rename */
 	namestrcpy(&nspform->nspname, newname);
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	HeapTupleMarkColumnUpdated(pg_namespace, nspname, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 	InvokeObjectPostAlterHook(NamespaceRelationId, nspOid, 0);
 
@@ -300,6 +302,7 @@ RenameSchema(const char *oldname, const char *newname)
 
 	table_close(rel, NoLock);
 	heap_freetuple(tup);
+	bms_free(updated);
 
 	return address;
 }
@@ -374,14 +377,14 @@ AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerId)
 	 */
 	if (nspForm->nspowner != newOwnerId)
 	{
-		Datum		repl_val[Natts_pg_namespace];
-		bool		repl_null[Natts_pg_namespace];
-		bool		repl_repl[Natts_pg_namespace];
+		Datum		values[Natts_pg_namespace] = {0};
+		bool		nulls[Natts_pg_namespace] = {false};
 		Acl		   *newAcl;
 		Datum		aclDatum;
 		bool		isNull;
 		HeapTuple	newtuple;
 		AclResult	aclresult;
+		Bitmapset  *updated = NULL;
 
 		/* Otherwise, must be owner of the existing object */
 		if (!object_ownercheck(NamespaceRelationId, nspForm->oid, GetUserId()))
@@ -406,11 +409,7 @@ AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerId)
 			aclcheck_error(aclresult, OBJECT_DATABASE,
 						   get_database_name(MyDatabaseId));
 
-		memset(repl_null, false, sizeof(repl_null));
-		memset(repl_repl, false, sizeof(repl_repl));
-
-		repl_repl[Anum_pg_namespace_nspowner - 1] = true;
-		repl_val[Anum_pg_namespace_nspowner - 1] = ObjectIdGetDatum(newOwnerId);
+		HeapTupleUpdateValue(pg_namespace, nspowner, ObjectIdGetDatum(newOwnerId), values, nulls, updated);
 
 		/*
 		 * Determine the modified ACL for the new owner.  This is only
@@ -423,19 +422,19 @@ AlterSchemaOwner_internal(HeapTuple tup, Relation rel, Oid newOwnerId)
 		{
 			newAcl = aclnewowner(DatumGetAclP(aclDatum),
 								 nspForm->nspowner, newOwnerId);
-			repl_repl[Anum_pg_namespace_nspacl - 1] = true;
-			repl_val[Anum_pg_namespace_nspacl - 1] = PointerGetDatum(newAcl);
+			HeapTupleUpdateValue(pg_namespace, nspacl, PointerGetDatum(newAcl), values, nulls, updated);
 		}
 
-		newtuple = heap_modify_tuple(tup, RelationGetDescr(rel), repl_val, repl_null, repl_repl);
+		newtuple = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
-		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
 
 		heap_freetuple(newtuple);
 
 		/* Update owner dependency reference */
 		changeDependencyOnOwner(NamespaceRelationId, nspForm->oid,
 								newOwnerId);
+		bms_free(updated);
 	}
 
 	InvokeObjectPostAlterHook(NamespaceRelationId,

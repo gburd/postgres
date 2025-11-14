@@ -39,8 +39,8 @@ LargeObjectCreate(Oid loid)
 	Relation	pg_lo_meta;
 	HeapTuple	ntup;
 	Oid			loid_new;
-	Datum		values[Natts_pg_largeobject_metadata];
-	bool		nulls[Natts_pg_largeobject_metadata];
+	Datum		values[Natts_pg_largeobject_metadata] = {0};
+	bool		nulls[Natts_pg_largeobject_metadata] = {false};
 	Oid			ownerId;
 	Acl		   *lomacl;
 
@@ -50,9 +50,6 @@ LargeObjectCreate(Oid loid)
 	/*
 	 * Insert metadata of the largeobject
 	 */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-
 	if (OidIsValid(loid))
 		loid_new = loid;
 	else
@@ -62,20 +59,17 @@ LargeObjectCreate(Oid loid)
 	ownerId = GetUserId();
 	lomacl = get_user_default_acl(OBJECT_LARGEOBJECT, ownerId, InvalidOid);
 
-	values[Anum_pg_largeobject_metadata_oid - 1] = ObjectIdGetDatum(loid_new);
-	values[Anum_pg_largeobject_metadata_lomowner - 1]
-		= ObjectIdGetDatum(ownerId);
+	HeapTupleSetValue(pg_largeobject_metadata, oid, ObjectIdGetDatum(loid_new), values);
+	HeapTupleSetValue(pg_largeobject_metadata, lomowner, ObjectIdGetDatum(ownerId), values);
 
 	if (lomacl != NULL)
-		values[Anum_pg_largeobject_metadata_lomacl - 1]
-			= PointerGetDatum(lomacl);
+		HeapTupleSetValue(pg_largeobject_metadata, lomacl, PointerGetDatum(lomacl), values);
 	else
-		nulls[Anum_pg_largeobject_metadata_lomacl - 1] = true;
+		HeapTupleSetValueNull(pg_largeobject_metadata, lomacl, values, nulls);
 
-	ntup = heap_form_tuple(RelationGetDescr(pg_lo_meta),
-						   values, nulls);
+	ntup = heap_form_tuple(RelationGetDescr(pg_lo_meta), values, nulls);
 
-	CatalogTupleInsert(pg_lo_meta, ntup);
+	CatalogTupleInsert(pg_lo_meta, ntup, NULL);
 
 	heap_freetuple(ntup);
 

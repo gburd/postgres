@@ -1316,8 +1316,7 @@ SetDefaultACL(InternalDefaultACL *iacls)
 	else
 	{
 		Datum		values[Natts_pg_default_acl] = {0};
-		bool		nulls[Natts_pg_default_acl] = {0};
-		bool		replaces[Natts_pg_default_acl] = {0};
+		bool		nulls[Natts_pg_default_acl] = {false};
 		Oid			defAclOid;
 
 		if (isNew)
@@ -1325,26 +1324,28 @@ SetDefaultACL(InternalDefaultACL *iacls)
 			/* insert new entry */
 			defAclOid = GetNewOidWithIndex(rel, DefaultAclOidIndexId,
 										   Anum_pg_default_acl_oid);
-			values[Anum_pg_default_acl_oid - 1] = ObjectIdGetDatum(defAclOid);
-			values[Anum_pg_default_acl_defaclrole - 1] = ObjectIdGetDatum(iacls->roleid);
-			values[Anum_pg_default_acl_defaclnamespace - 1] = ObjectIdGetDatum(iacls->nspid);
-			values[Anum_pg_default_acl_defaclobjtype - 1] = CharGetDatum(objtype);
-			values[Anum_pg_default_acl_defaclacl - 1] = PointerGetDatum(new_acl);
+			HeapTupleSetValue(pg_default_acl, oid, ObjectIdGetDatum(defAclOid), values);
+			HeapTupleSetValue(pg_default_acl, defaclrole, ObjectIdGetDatum(iacls->roleid), values);
+			HeapTupleSetValue(pg_default_acl, defaclnamespace, ObjectIdGetDatum(iacls->nspid), values);
+			HeapTupleSetValue(pg_default_acl, defaclobjtype, CharGetDatum(objtype), values);
+			HeapTupleSetValue(pg_default_acl, defaclacl, PointerGetDatum(new_acl), values);
 
 			newtuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
-			CatalogTupleInsert(rel, newtuple);
+			CatalogTupleInsert(rel, newtuple, NULL);
 		}
 		else
 		{
+			Bitmapset  *updated = NULL;
+
 			defAclOid = ((Form_pg_default_acl) GETSTRUCT(tuple))->oid;
 
 			/* update existing entry */
-			values[Anum_pg_default_acl_defaclacl - 1] = PointerGetDatum(new_acl);
-			replaces[Anum_pg_default_acl_defaclacl - 1] = true;
+			HeapTupleUpdateValue(pg_default_acl, defaclacl, PointerGetDatum(new_acl), values, nulls, updated);
 
-			newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
-										 values, nulls, replaces);
-			CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+			newtuple = heap_update_tuple(tuple, RelationGetDescr(rel), values, nulls, updated);
+			CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
+
+			bms_free(updated);
 		}
 
 		/* these dependencies don't change in an update */
@@ -1650,12 +1651,12 @@ ExecGrant_Attribute(InternalGrant *istmt, Oid relOid, const char *relname,
 	bool		need_update;
 	HeapTuple	newtuple;
 	Datum		values[Natts_pg_attribute] = {0};
-	bool		nulls[Natts_pg_attribute] = {0};
-	bool		replaces[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
 	int			noldmembers;
 	int			nnewmembers;
 	Oid		   *oldmembers;
 	Oid		   *newmembers;
+	Bitmapset  *updated = NULL;
 
 	attr_tuple = SearchSysCache2(ATTNUM,
 								 ObjectIdGetDatum(relOid),
@@ -1742,22 +1743,21 @@ ExecGrant_Attribute(InternalGrant *istmt, Oid relOid, const char *relname,
 	 */
 	if (ACL_NUM(new_acl) > 0)
 	{
-		values[Anum_pg_attribute_attacl - 1] = PointerGetDatum(new_acl);
+		HeapTupleUpdateValue(pg_attribute, attacl, PointerGetDatum(new_acl), values, nulls, updated);
 		need_update = true;
 	}
 	else
 	{
-		nulls[Anum_pg_attribute_attacl - 1] = true;
+		HeapTupleUpdateValueNull(pg_attribute, attacl, values, nulls, updated);
 		need_update = !isNull;
 	}
-	replaces[Anum_pg_attribute_attacl - 1] = true;
 
 	if (need_update)
 	{
-		newtuple = heap_modify_tuple(attr_tuple, RelationGetDescr(attRelation),
-									 values, nulls, replaces);
+		newtuple = heap_update_tuple(attr_tuple, RelationGetDescr(attRelation),
+									 values, nulls, updated);
 
-		CatalogTupleUpdate(attRelation, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(attRelation, &newtuple->t_self, newtuple, updated, NULL);
 
 		/* Update initial privileges for extensions */
 		recordExtensionInitPriv(relOid, RelationRelationId, attnum,
@@ -1773,6 +1773,7 @@ ExecGrant_Attribute(InternalGrant *istmt, Oid relOid, const char *relname,
 	pfree(new_acl);
 
 	ReleaseSysCache(attr_tuple);
+	bms_free(updated);
 }
 
 /*
@@ -1960,8 +1961,8 @@ ExecGrant_Relation(InternalGrant *istmt)
 			Oid			grantorId;
 			HeapTuple	newtuple;
 			Datum		values[Natts_pg_class] = {0};
-			bool		nulls[Natts_pg_class] = {0};
-			bool		replaces[Natts_pg_class] = {0};
+			bool		nulls[Natts_pg_class] = {false};
+			Bitmapset  *updated = NULL;
 			int			nnewmembers;
 			Oid		   *newmembers;
 			ObjectType	objtype;
@@ -2011,13 +2012,12 @@ ExecGrant_Relation(InternalGrant *istmt)
 			nnewmembers = aclmembers(new_acl, &newmembers);
 
 			/* finished building new ACL value, now insert it */
-			replaces[Anum_pg_class_relacl - 1] = true;
-			values[Anum_pg_class_relacl - 1] = PointerGetDatum(new_acl);
+			HeapTupleUpdateValue(pg_class, relacl, PointerGetDatum(new_acl), values, nulls, updated);
 
-			newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation),
-										 values, nulls, replaces);
+			newtuple = heap_update_tuple(tuple, RelationGetDescr(relation),
+										 values, nulls, updated);
 
-			CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
+			CatalogTupleUpdate(relation, &newtuple->t_self, newtuple, updated, NULL);
 			UnlockTuple(relation, &tuple->t_self, InplaceUpdateTupleLock);
 
 			/* Update initial privileges for extensions */
@@ -2030,6 +2030,7 @@ ExecGrant_Relation(InternalGrant *istmt)
 								  nnewmembers, newmembers);
 
 			pfree(new_acl);
+			bms_free(updated);
 		}
 		else
 			UnlockTuple(relation, &tuple->t_self, InplaceUpdateTupleLock);
@@ -2140,7 +2141,7 @@ ExecGrant_common(InternalGrant *istmt, Oid classid, AclMode default_privs,
 		HeapTuple	newtuple;
 		Datum	   *values = palloc0_array(Datum, RelationGetDescr(relation)->natts);
 		bool	   *nulls = palloc0_array(bool, RelationGetDescr(relation)->natts);
-		bool	   *replaces = palloc0_array(bool, RelationGetDescr(relation)->natts);
+		Bitmapset  *updated = NULL;
 		int			noldmembers;
 		int			nnewmembers;
 		Oid		   *oldmembers;
@@ -2214,14 +2215,17 @@ ExecGrant_common(InternalGrant *istmt, Oid classid, AclMode default_privs,
 		 */
 		nnewmembers = aclmembers(new_acl, &newmembers);
 
-		/* finished building new ACL value, now insert it */
-		replaces[get_object_attnum_acl(classid) - 1] = true;
+		/*
+		 * Finished building new ACL value, now insert it. NOTE: We can't use
+		 * the HeapTupleMarkColumnUpdated() macro here because
+		 * get_object_attnum_acl(classid) provides an index.
+		 */
 		values[get_object_attnum_acl(classid) - 1] = PointerGetDatum(new_acl);
+		updated = bms_add_member(updated, get_object_attnum_acl(classid) - FirstLowInvalidHeapAttributeNumber);
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation), values,
-									 nulls, replaces);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(relation), values, nulls, updated);
 
-		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple, updated, NULL);
 		UnlockTuple(relation, &tuple->t_self, InplaceUpdateTupleLock);
 
 		/* Update initial privileges for extensions */
@@ -2237,6 +2241,7 @@ ExecGrant_common(InternalGrant *istmt, Oid classid, AclMode default_privs,
 		ReleaseSysCache(tuple);
 
 		pfree(new_acl);
+		bms_free(updated);
 
 		/* prevent error when processing duplicate objects */
 		CommandCounterIncrement();
@@ -2288,8 +2293,8 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 		Oid			ownerId;
 		HeapTuple	newtuple;
 		Datum		values[Natts_pg_largeobject_metadata] = {0};
-		bool		nulls[Natts_pg_largeobject_metadata] = {0};
-		bool		replaces[Natts_pg_largeobject_metadata] = {0};
+		bool		nulls[Natts_pg_largeobject_metadata] = {false};
+		Bitmapset  *updated = NULL;
 		int			noldmembers;
 		int			nnewmembers;
 		Oid		   *oldmembers;
@@ -2367,14 +2372,12 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 		nnewmembers = aclmembers(new_acl, &newmembers);
 
 		/* finished building new ACL value, now insert it */
-		replaces[Anum_pg_largeobject_metadata_lomacl - 1] = true;
-		values[Anum_pg_largeobject_metadata_lomacl - 1]
-			= PointerGetDatum(new_acl);
+		HeapTupleUpdateValue(pg_largeobject_metadata, lomacl, PointerGetDatum(new_acl), values, nulls, updated);
 
-		newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation),
-									 values, nulls, replaces);
+		newtuple = heap_update_tuple(tuple, RelationGetDescr(relation),
+									 values, nulls, updated);
 
-		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
+		CatalogTupleUpdate(relation, &newtuple->t_self, newtuple, updated, NULL);
 
 		/* Update initial privileges for extensions */
 		recordExtensionInitPriv(loid, LargeObjectRelationId, 0, new_acl);
@@ -2389,6 +2392,7 @@ ExecGrant_Largeobject(InternalGrant *istmt)
 		systable_endscan(scan);
 
 		pfree(new_acl);
+		bms_free(updated);
 
 		/* prevent error when processing duplicate objects */
 		CommandCounterIncrement();
@@ -2527,16 +2531,16 @@ ExecGrant_Parameter(InternalGrant *istmt)
 			/* finished building new ACL value, now insert it */
 			HeapTuple	newtuple;
 			Datum		values[Natts_pg_parameter_acl] = {0};
-			bool		nulls[Natts_pg_parameter_acl] = {0};
-			bool		replaces[Natts_pg_parameter_acl] = {0};
+			bool		nulls[Natts_pg_parameter_acl] = {false};
+			Bitmapset  *updated = NULL;
 
-			replaces[Anum_pg_parameter_acl_paracl - 1] = true;
-			values[Anum_pg_parameter_acl_paracl - 1] = PointerGetDatum(new_acl);
+			HeapTupleUpdateValue(pg_parameter_acl, paracl, PointerGetDatum(new_acl), values, nulls, updated);
 
-			newtuple = heap_modify_tuple(tuple, RelationGetDescr(relation),
-										 values, nulls, replaces);
+			newtuple = heap_update_tuple(tuple, RelationGetDescr(relation),
+										 values, nulls, updated);
 
-			CatalogTupleUpdate(relation, &newtuple->t_self, newtuple);
+			CatalogTupleUpdate(relation, &newtuple->t_self, newtuple, updated, NULL);
+			bms_free(updated);
 		}
 
 		/* Update initial privileges for extensions */
@@ -4667,8 +4671,8 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid,
 	if (HeapTupleIsValid(oldtuple))
 	{
 		Datum		values[Natts_pg_init_privs] = {0};
-		bool		nulls[Natts_pg_init_privs] = {0};
-		bool		replace[Natts_pg_init_privs] = {0};
+		bool		nulls[Natts_pg_init_privs] = {false};
+		Bitmapset  *updated = NULL;
 		Datum		oldAclDatum;
 		bool		isNull;
 		Acl		   *old_acl;
@@ -4687,13 +4691,13 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid,
 		/* If we have a new ACL to set, then update the row with it. */
 		if (new_acl && ACL_NUM(new_acl) != 0)
 		{
-			values[Anum_pg_init_privs_initprivs - 1] = PointerGetDatum(new_acl);
-			replace[Anum_pg_init_privs_initprivs - 1] = true;
+			HeapTupleUpdateValue(pg_init_privs, initprivs, PointerGetDatum(new_acl), values, nulls, updated);
 
-			oldtuple = heap_modify_tuple(oldtuple, RelationGetDescr(relation),
-										 values, nulls, replace);
+			oldtuple = heap_update_tuple(oldtuple, RelationGetDescr(relation),
+										 values, nulls, updated);
 
-			CatalogTupleUpdate(relation, &oldtuple->t_self, oldtuple);
+			CatalogTupleUpdate(relation, &oldtuple->t_self, oldtuple, updated, NULL);
+			bms_free(updated);
 		}
 		else
 		{
@@ -4704,7 +4708,7 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid,
 	else
 	{
 		Datum		values[Natts_pg_init_privs] = {0};
-		bool		nulls[Natts_pg_init_privs] = {0};
+		bool		nulls[Natts_pg_init_privs] = {false};
 
 		/*
 		 * Only add a new entry if the new ACL is non-NULL.
@@ -4715,19 +4719,18 @@ recordExtensionInitPrivWorker(Oid objoid, Oid classoid, int objsubid,
 		if (new_acl && ACL_NUM(new_acl) != 0)
 		{
 			/* No entry found, so add it. */
-			values[Anum_pg_init_privs_objoid - 1] = ObjectIdGetDatum(objoid);
-			values[Anum_pg_init_privs_classoid - 1] = ObjectIdGetDatum(classoid);
-			values[Anum_pg_init_privs_objsubid - 1] = Int32GetDatum(objsubid);
+			HeapTupleSetValue(pg_init_privs, objoid, ObjectIdGetDatum(objoid), values);
+			HeapTupleSetValue(pg_init_privs, classoid, ObjectIdGetDatum(classoid), values);
+			HeapTupleSetValue(pg_init_privs, objsubid, Int32GetDatum(objsubid), values);
 
 			/* This function only handles initial privileges of extensions */
-			values[Anum_pg_init_privs_privtype - 1] =
-				CharGetDatum(INITPRIVS_EXTENSION);
+			HeapTupleSetValue(pg_init_privs, privtype, CharGetDatum(INITPRIVS_EXTENSION), values);
 
-			values[Anum_pg_init_privs_initprivs - 1] = PointerGetDatum(new_acl);
+			HeapTupleSetValue(pg_init_privs, initprivs, PointerGetDatum(new_acl), values);
 
 			tuple = heap_form_tuple(RelationGetDescr(relation), values, nulls);
 
-			CatalogTupleInsert(relation, tuple);
+			CatalogTupleInsert(relation, tuple, NULL);
 
 			/* Update pg_shdepend, too. */
 			noldmembers = 0;
@@ -4826,16 +4829,16 @@ ReplaceRoleInInitPriv(Oid oldroleid, Oid newroleid,
 	else
 	{
 		Datum		values[Natts_pg_init_privs] = {0};
-		bool		nulls[Natts_pg_init_privs] = {0};
-		bool		replaces[Natts_pg_init_privs] = {0};
+		bool		nulls[Natts_pg_init_privs] = {false};
+		Bitmapset  *updated = NULL;
 
 		/* Update existing entry. */
-		values[Anum_pg_init_privs_initprivs - 1] = PointerGetDatum(new_acl);
-		replaces[Anum_pg_init_privs_initprivs - 1] = true;
+		HeapTupleUpdateValue(pg_init_privs, initprivs, PointerGetDatum(new_acl), values, nulls, updated);
 
-		newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(rel),
-									 values, nulls, replaces);
-		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+		newtuple = heap_update_tuple(oldtuple, RelationGetDescr(rel),
+									 values, nulls, updated);
+		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated, NULL);
+		bms_free(updated);
 	}
 
 	/*
@@ -4962,16 +4965,16 @@ RemoveRoleFromInitPriv(Oid roleid, Oid classid, Oid objid, int32 objsubid)
 	else
 	{
 		Datum		values[Natts_pg_init_privs] = {0};
-		bool		nulls[Natts_pg_init_privs] = {0};
-		bool		replaces[Natts_pg_init_privs] = {0};
+		bool		nulls[Natts_pg_init_privs] = {false};
+		Bitmapset  *updated2 = NULL;
 
 		/* Update existing entry. */
-		values[Anum_pg_init_privs_initprivs - 1] = PointerGetDatum(new_acl);
-		replaces[Anum_pg_init_privs_initprivs - 1] = true;
+		HeapTupleUpdateValue(pg_init_privs, initprivs, PointerGetDatum(new_acl), values, nulls, updated2);
 
-		newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(rel),
-									 values, nulls, replaces);
-		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+		newtuple = heap_update_tuple(oldtuple, RelationGetDescr(rel),
+									 values, nulls, updated2);
+		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple, updated2, NULL);
+		bms_free(updated2);
 	}
 
 	/*

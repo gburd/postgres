@@ -312,8 +312,8 @@ replorigin_create(const char *roname)
 
 	for (roident = InvalidOid + 1; roident < PG_UINT16_MAX; roident++)
 	{
-		bool		nulls[Natts_pg_replication_origin];
-		Datum		values[Natts_pg_replication_origin];
+		Datum		values[Natts_pg_replication_origin] = {0};
+		bool		nulls[Natts_pg_replication_origin] = {false};
 		bool		collides;
 
 		CHECK_FOR_INTERRUPTS();
@@ -340,11 +340,11 @@ replorigin_create(const char *roname)
 			 */
 			memset(&nulls, 0, sizeof(nulls));
 
-			values[Anum_pg_replication_origin_roident - 1] = ObjectIdGetDatum(roident);
-			values[Anum_pg_replication_origin_roname - 1] = roname_d;
+			HeapTupleSetValue(pg_replication_origin, roident, ObjectIdGetDatum(roident), values);
+			HeapTupleSetValue(pg_replication_origin, roname, roname_d, values);
 
 			tuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
-			CatalogTupleInsert(rel, tuple);
+			CatalogTupleInsert(rel, tuple, NULL);
 			CommandCounterIncrement();
 			break;
 		}

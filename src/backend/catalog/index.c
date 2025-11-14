@@ -579,8 +579,8 @@ UpdateIndexRelation(Oid indexoid,
 	int2vector *indoption;
 	Datum		exprsDatum;
 	Datum		predDatum;
-	Datum		values[Natts_pg_index];
-	bool		nulls[Natts_pg_index] = {0};
+	Datum		values[Natts_pg_index] = {0};
+	bool		nulls[Natts_pg_index] = {false};
 	Relation	pg_index;
 	HeapTuple	tuple;
 	int			i;
@@ -634,38 +634,38 @@ UpdateIndexRelation(Oid indexoid,
 	/*
 	 * Build a pg_index tuple
 	 */
-	values[Anum_pg_index_indexrelid - 1] = ObjectIdGetDatum(indexoid);
-	values[Anum_pg_index_indrelid - 1] = ObjectIdGetDatum(heapoid);
-	values[Anum_pg_index_indnatts - 1] = Int16GetDatum(indexInfo->ii_NumIndexAttrs);
-	values[Anum_pg_index_indnkeyatts - 1] = Int16GetDatum(indexInfo->ii_NumIndexKeyAttrs);
-	values[Anum_pg_index_indisunique - 1] = BoolGetDatum(indexInfo->ii_Unique);
-	values[Anum_pg_index_indnullsnotdistinct - 1] = BoolGetDatum(indexInfo->ii_NullsNotDistinct);
-	values[Anum_pg_index_indisprimary - 1] = BoolGetDatum(primary);
-	values[Anum_pg_index_indisexclusion - 1] = BoolGetDatum(isexclusion);
-	values[Anum_pg_index_indimmediate - 1] = BoolGetDatum(immediate);
-	values[Anum_pg_index_indisclustered - 1] = BoolGetDatum(false);
-	values[Anum_pg_index_indisvalid - 1] = BoolGetDatum(isvalid);
-	values[Anum_pg_index_indcheckxmin - 1] = BoolGetDatum(false);
-	values[Anum_pg_index_indisready - 1] = BoolGetDatum(isready);
-	values[Anum_pg_index_indislive - 1] = BoolGetDatum(true);
-	values[Anum_pg_index_indisreplident - 1] = BoolGetDatum(false);
-	values[Anum_pg_index_indkey - 1] = PointerGetDatum(indkey);
-	values[Anum_pg_index_indcollation - 1] = PointerGetDatum(indcollation);
-	values[Anum_pg_index_indclass - 1] = PointerGetDatum(indclass);
-	values[Anum_pg_index_indoption - 1] = PointerGetDatum(indoption);
-	values[Anum_pg_index_indexprs - 1] = exprsDatum;
+	HeapTupleSetValue(pg_index, indexrelid, ObjectIdGetDatum(indexoid), values);
+	HeapTupleSetValue(pg_index, indrelid, ObjectIdGetDatum(heapoid), values);
+	HeapTupleSetValue(pg_index, indnatts, Int16GetDatum(indexInfo->ii_NumIndexAttrs), values);
+	HeapTupleSetValue(pg_index, indnkeyatts, Int16GetDatum(indexInfo->ii_NumIndexKeyAttrs), values);
+	HeapTupleSetValue(pg_index, indisunique, BoolGetDatum(indexInfo->ii_Unique), values);
+	HeapTupleSetValue(pg_index, indnullsnotdistinct, BoolGetDatum(indexInfo->ii_NullsNotDistinct), values);
+	HeapTupleSetValue(pg_index, indisprimary, BoolGetDatum(primary), values);
+	HeapTupleSetValue(pg_index, indisexclusion, BoolGetDatum(isexclusion), values);
+	HeapTupleSetValue(pg_index, indimmediate, BoolGetDatum(immediate), values);
+	HeapTupleSetValue(pg_index, indisclustered, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_index, indisvalid, BoolGetDatum(isvalid), values);
+	HeapTupleSetValue(pg_index, indcheckxmin, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_index, indisready, BoolGetDatum(isready), values);
+	HeapTupleSetValue(pg_index, indislive, BoolGetDatum(true), values);
+	HeapTupleSetValue(pg_index, indisreplident, BoolGetDatum(false), values);
+	HeapTupleSetValue(pg_index, indkey, PointerGetDatum(indkey), values);
+	HeapTupleSetValue(pg_index, indcollation, PointerGetDatum(indcollation), values);
+	HeapTupleSetValue(pg_index, indclass, PointerGetDatum(indclass), values);
+	HeapTupleSetValue(pg_index, indoption, PointerGetDatum(indoption), values);
+	HeapTupleSetValue(pg_index, indexprs, exprsDatum, values);
 	if (exprsDatum == (Datum) 0)
-		nulls[Anum_pg_index_indexprs - 1] = true;
-	values[Anum_pg_index_indpred - 1] = predDatum;
+		HeapTupleSetValueNull(pg_index, indexprs, values, nulls);
+	HeapTupleSetValue(pg_index, indpred, predDatum, values);
 	if (predDatum == (Datum) 0)
-		nulls[Anum_pg_index_indpred - 1] = true;
+		HeapTupleSetValueNull(pg_index, indpred, values, nulls);
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_index), values, nulls);
 
 	/*
 	 * insert the tuple into the pg_index catalog
 	 */
-	CatalogTupleInsert(pg_index, tuple);
+	CatalogTupleInsert(pg_index, tuple, NULL);
 
 	/*
 	 * close the relation and free the tuple
@@ -1569,6 +1569,8 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	Oid			indexConstraintOid;
 	List	   *constraintOids = NIL;
 	ListCell   *lc;
+	Bitmapset  *oldUpdated = NULL;
+	Bitmapset  *newUpdated = NULL;
 
 	/*
 	 * Take a necessary lock on the old and new index before swapping them.
@@ -1594,14 +1596,21 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	/* Swap the names */
 	namestrcpy(&newClassForm->relname, NameStr(oldClassForm->relname));
 	namestrcpy(&oldClassForm->relname, oldName);
+	HeapTupleUpdateField(pg_class, relname, newClassForm->relname, newClassForm, newUpdated);
+	HeapTupleUpdateField(pg_class, relname, oldClassForm->relname, oldClassForm, oldUpdated);
 
 	/* Swap the partition flags to track inheritance properly */
 	isPartition = newClassForm->relispartition;
-	newClassForm->relispartition = oldClassForm->relispartition;
-	oldClassForm->relispartition = isPartition;
+	HeapTupleUpdateField(pg_class, relispartition, oldClassForm->relispartition, newClassForm, newUpdated);
+	HeapTupleUpdateField(pg_class, relispartition, isPartition, oldClassForm, oldUpdated);
 
-	CatalogTupleUpdate(pg_class, &oldClassTuple->t_self, oldClassTuple);
-	CatalogTupleUpdate(pg_class, &newClassTuple->t_self, newClassTuple);
+	CatalogTupleUpdate(pg_class, &oldClassTuple->t_self, oldClassTuple, oldUpdated, NULL);
+	CatalogTupleUpdate(pg_class, &newClassTuple->t_self, newClassTuple, newUpdated, NULL);
+
+	bms_free(oldUpdated);
+	oldUpdated = NULL;
+	bms_free(newUpdated);
+	newUpdated = NULL;
 
 	heap_freetuple(oldClassTuple);
 	heap_freetuple(newClassTuple);
@@ -1625,33 +1634,38 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	 * Copy constraint flags from the old index. This is safe because the old
 	 * index guaranteed uniqueness.
 	 */
-	newIndexForm->indisprimary = oldIndexForm->indisprimary;
-	oldIndexForm->indisprimary = false;
-	newIndexForm->indisexclusion = oldIndexForm->indisexclusion;
-	oldIndexForm->indisexclusion = false;
-	newIndexForm->indimmediate = oldIndexForm->indimmediate;
-	oldIndexForm->indimmediate = true;
+	HeapTupleUpdateField(pg_index, indisprimary, oldIndexForm->indisprimary, newIndexForm, newUpdated);
+	HeapTupleUpdateField(pg_index, indisprimary, false, oldIndexForm, oldUpdated);
+	HeapTupleUpdateField(pg_index, indisexclusion, oldIndexForm->indisexclusion, newIndexForm, newUpdated);
+	HeapTupleUpdateField(pg_index, indisexclusion, false, oldIndexForm, oldUpdated);
+	HeapTupleUpdateField(pg_index, indimmediate, oldIndexForm->indimmediate, newIndexForm, newUpdated);
+	HeapTupleUpdateField(pg_index, indimmediate, true, oldIndexForm, oldUpdated);
 
 	/* Preserve indisreplident in the new index */
-	newIndexForm->indisreplident = oldIndexForm->indisreplident;
+	HeapTupleUpdateField(pg_index, indisreplident, oldIndexForm->indisreplident, newIndexForm, newUpdated);
 
 	/* Preserve indisclustered in the new index */
-	newIndexForm->indisclustered = oldIndexForm->indisclustered;
+	HeapTupleUpdateField(pg_index, indisclustered, oldIndexForm->indisclustered, newIndexForm, newUpdated);
 
 	/*
 	 * Mark the new index as valid, and the old index as invalid similarly to
 	 * what index_set_state_flags() does.
 	 */
-	newIndexForm->indisvalid = true;
-	oldIndexForm->indisvalid = false;
-	oldIndexForm->indisclustered = false;
-	oldIndexForm->indisreplident = false;
+	HeapTupleUpdateField(pg_index, indisvalid, true, newIndexForm, newUpdated);
+	HeapTupleUpdateField(pg_index, indisvalid, false, oldIndexForm, oldUpdated);
+	HeapTupleUpdateField(pg_index, indisclustered, false, oldIndexForm, oldUpdated);
+	HeapTupleUpdateField(pg_index, indisreplident, false, oldIndexForm, oldUpdated);
 
-	CatalogTupleUpdate(pg_index, &oldIndexTuple->t_self, oldIndexTuple);
-	CatalogTupleUpdate(pg_index, &newIndexTuple->t_self, newIndexTuple);
+	CatalogTupleUpdate(pg_index, &oldIndexTuple->t_self, oldIndexTuple, oldUpdated, NULL);
+	CatalogTupleUpdate(pg_index, &newIndexTuple->t_self, newIndexTuple, newUpdated, NULL);
 
 	heap_freetuple(oldIndexTuple);
 	heap_freetuple(newIndexTuple);
+
+	bms_free(oldUpdated);
+	oldUpdated = NULL;
+	bms_free(newUpdated);
+	newUpdated = NULL;
 
 	/*
 	 * Move constraints and triggers over to the new index
@@ -1686,9 +1700,11 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 
 		if (conForm->conindid == oldIndexId)
 		{
-			conForm->conindid = newIndexId;
+			Bitmapset  *updated = NULL;
 
-			CatalogTupleUpdate(pg_constraint, &constraintTuple->t_self, constraintTuple);
+			HeapTupleUpdateField(pg_constraint, conindid, newIndexId, conForm, updated);
+			CatalogTupleUpdate(pg_constraint, &constraintTuple->t_self, constraintTuple, updated, NULL);
+			bms_free(updated);
 		}
 
 		heap_freetuple(constraintTuple);
@@ -1704,6 +1720,8 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 
 		while (HeapTupleIsValid((triggerTuple = systable_getnext(scan))))
 		{
+			Bitmapset  *updated = NULL;
+
 			Form_pg_trigger tgForm = (Form_pg_trigger) GETSTRUCT(triggerTuple);
 
 			if (tgForm->tgconstrindid != oldIndexId)
@@ -1713,10 +1731,9 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 			triggerTuple = heap_copytuple(triggerTuple);
 			tgForm = (Form_pg_trigger) GETSTRUCT(triggerTuple);
 
-			tgForm->tgconstrindid = newIndexId;
-
-			CatalogTupleUpdate(pg_trigger, &triggerTuple->t_self, triggerTuple);
-
+			HeapTupleUpdateField(pg_trigger, tgconstrindid, newIndexId, tgForm, updated);
+			CatalogTupleUpdate(pg_trigger, &triggerTuple->t_self, triggerTuple, updated, NULL);
+			bms_free(updated);
 			heap_freetuple(triggerTuple);
 		}
 
@@ -1732,11 +1749,10 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 		SysScanDesc sd;
 		HeapTuple	tuple;
 		Datum		values[Natts_pg_description] = {0};
-		bool		nulls[Natts_pg_description] = {0};
-		bool		replaces[Natts_pg_description] = {0};
+		bool		nulls[Natts_pg_description] = {false};
+		Bitmapset  *updated = NULL;
 
-		values[Anum_pg_description_objoid - 1] = ObjectIdGetDatum(newIndexId);
-		replaces[Anum_pg_description_objoid - 1] = true;
+		HeapTupleUpdateValue(pg_description, objoid, ObjectIdGetDatum(newIndexId), values, nulls, updated);
 
 		ScanKeyInit(&skey[0],
 					Anum_pg_description_objoid,
@@ -1758,15 +1774,16 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 
 		while ((tuple = systable_getnext(sd)) != NULL)
 		{
-			tuple = heap_modify_tuple(tuple, RelationGetDescr(description),
-									  values, nulls, replaces);
-			CatalogTupleUpdate(description, &tuple->t_self, tuple);
+			tuple = heap_update_tuple(tuple, RelationGetDescr(description),
+									  values, nulls, updated);
+			CatalogTupleUpdate(description, &tuple->t_self, tuple, updated, NULL);
 
 			break;				/* Assume there can be only one match */
 		}
 
 		systable_endscan(sd);
 		table_close(description, NoLock);
+		bms_free(updated);
 	}
 
 	/*
@@ -2061,6 +2078,7 @@ index_constraint_create(Relation heapRelation,
 		Form_pg_index indexForm;
 		bool		dirty = false;
 		bool		marked_as_primary = false;
+		Bitmapset  *updated = NULL;
 
 		pg_index = table_open(IndexRelationId, RowExclusiveLock);
 
@@ -2072,20 +2090,20 @@ index_constraint_create(Relation heapRelation,
 
 		if (mark_as_primary && !indexForm->indisprimary)
 		{
-			indexForm->indisprimary = true;
+			HeapTupleUpdateField(pg_index, indisprimary, true, indexForm, updated);
 			dirty = true;
 			marked_as_primary = true;
 		}
 
 		if (deferrable && indexForm->indimmediate)
 		{
-			indexForm->indimmediate = false;
+			HeapTupleUpdateField(pg_index, indimmediate, false, indexForm, updated);
 			dirty = true;
 		}
 
 		if (dirty)
 		{
-			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 
 			/*
 			 * When we mark an existing index as primary, force a relcache
@@ -2102,6 +2120,7 @@ index_constraint_create(Relation heapRelation,
 
 		heap_freetuple(indexTuple);
 		table_close(pg_index, RowExclusiveLock);
+		bms_free(updated);
 	}
 
 	return myself;
@@ -3130,6 +3149,7 @@ index_build(Relation heapRelation,
 		Relation	pg_index;
 		HeapTuple	indexTuple;
 		Form_pg_index indexForm;
+		Bitmapset  *updated = NULL;
 
 		pg_index = table_open(IndexRelationId, RowExclusiveLock);
 
@@ -3142,11 +3162,12 @@ index_build(Relation heapRelation,
 		/* If it's a new index, indcheckxmin shouldn't be set ... */
 		Assert(!indexForm->indcheckxmin);
 
-		indexForm->indcheckxmin = true;
-		CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+		HeapTupleUpdateField(pg_index, indcheckxmin, true, indexForm, updated);
+		CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 
 		heap_freetuple(indexTuple);
 		table_close(pg_index, RowExclusiveLock);
+		bms_free(updated);
 	}
 
 	/*
@@ -3505,6 +3526,7 @@ index_set_state_flags(Oid indexId, IndexStateFlagsAction action)
 	Relation	pg_index;
 	HeapTuple	indexTuple;
 	Form_pg_index indexForm;
+	Bitmapset  *updated = NULL;
 
 	/* Open pg_index and fetch a writable copy of the index's tuple */
 	pg_index = table_open(IndexRelationId, RowExclusiveLock);
@@ -3523,14 +3545,14 @@ index_set_state_flags(Oid indexId, IndexStateFlagsAction action)
 			Assert(indexForm->indislive);
 			Assert(!indexForm->indisready);
 			Assert(!indexForm->indisvalid);
-			indexForm->indisready = true;
+			HeapTupleUpdateField(pg_index, indisready, true, indexForm, updated);
 			break;
 		case INDEX_CREATE_SET_VALID:
 			/* Set indisvalid during a CREATE INDEX CONCURRENTLY sequence */
 			Assert(indexForm->indislive);
 			Assert(indexForm->indisready);
 			Assert(!indexForm->indisvalid);
-			indexForm->indisvalid = true;
+			HeapTupleUpdateField(pg_index, indisvalid, true, indexForm, updated);
 			break;
 		case INDEX_DROP_CLEAR_VALID:
 
@@ -3547,9 +3569,9 @@ index_set_state_flags(Oid indexId, IndexStateFlagsAction action)
 			 * set on any invalid index, so clear that flag too.  For
 			 * cleanliness, also clear indisreplident.
 			 */
-			indexForm->indisvalid = false;
-			indexForm->indisclustered = false;
-			indexForm->indisreplident = false;
+			HeapTupleUpdateField(pg_index, indisvalid, false, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indisclustered, false, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indisreplident, false, indexForm, updated);
 			break;
 		case INDEX_DROP_SET_DEAD:
 
@@ -3563,15 +3585,16 @@ index_set_state_flags(Oid indexId, IndexStateFlagsAction action)
 			Assert(!indexForm->indisvalid);
 			Assert(!indexForm->indisclustered);
 			Assert(!indexForm->indisreplident);
-			indexForm->indisready = false;
-			indexForm->indislive = false;
+			HeapTupleUpdateField(pg_index, indisready, false, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indislive, false, indexForm, updated);
 			break;
 	}
 
 	/* ... and update it */
-	CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+	CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 
 	table_close(pg_index, RowExclusiveLock);
+	bms_free(updated);
 }
 
 
@@ -3850,6 +3873,7 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 		HeapTuple	indexTuple;
 		Form_pg_index indexForm;
 		bool		index_bad;
+		Bitmapset  *updated = NULL;
 
 		pg_index = table_open(IndexRelationId, RowExclusiveLock);
 
@@ -3866,13 +3890,13 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 			(indexForm->indcheckxmin && !indexInfo->ii_BrokenHotChain))
 		{
 			if (!indexInfo->ii_BrokenHotChain)
-				indexForm->indcheckxmin = false;
+				HeapTupleUpdateField(pg_index, indcheckxmin, false, indexForm, updated);
 			else if (index_bad)
-				indexForm->indcheckxmin = true;
-			indexForm->indisvalid = true;
-			indexForm->indisready = true;
-			indexForm->indislive = true;
-			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple);
+				HeapTupleUpdateField(pg_index, indcheckxmin, true, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indisvalid, true, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indisready, true, indexForm, updated);
+			HeapTupleUpdateField(pg_index, indislive, true, indexForm, updated);
+			CatalogTupleUpdate(pg_index, &indexTuple->t_self, indexTuple, updated, NULL);
 
 			/*
 			 * Invalidate the relcache for the table, so that after we commit
@@ -3885,6 +3909,7 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 		}
 
 		table_close(pg_index, RowExclusiveLock);
+		bms_free(updated);
 	}
 
 	/* Log what we did */

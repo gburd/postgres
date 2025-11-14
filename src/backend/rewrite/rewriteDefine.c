@@ -59,8 +59,8 @@ InsertRule(const char *rulname,
 {
 	char	   *evqual = nodeToString(event_qual);
 	char	   *actiontree = nodeToString((Node *) action);
-	Datum		values[Natts_pg_rewrite];
-	bool		nulls[Natts_pg_rewrite] = {0};
+	Datum		values[Natts_pg_rewrite] = {0};
+	bool		nulls[Natts_pg_rewrite] = {false};
 	NameData	rname;
 	Relation	pg_rewrite_desc;
 	HeapTuple	tup,
@@ -69,18 +69,19 @@ InsertRule(const char *rulname,
 	ObjectAddress myself,
 				referenced;
 	bool		is_update = false;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Set up *nulls and *values arrays
 	 */
 	namestrcpy(&rname, rulname);
-	values[Anum_pg_rewrite_rulename - 1] = NameGetDatum(&rname);
-	values[Anum_pg_rewrite_ev_class - 1] = ObjectIdGetDatum(eventrel_oid);
-	values[Anum_pg_rewrite_ev_type - 1] = CharGetDatum(evtype + '0');
-	values[Anum_pg_rewrite_ev_enabled - 1] = CharGetDatum(RULE_FIRES_ON_ORIGIN);
-	values[Anum_pg_rewrite_is_instead - 1] = BoolGetDatum(evinstead);
-	values[Anum_pg_rewrite_ev_qual - 1] = CStringGetTextDatum(evqual);
-	values[Anum_pg_rewrite_ev_action - 1] = CStringGetTextDatum(actiontree);
+	HeapTupleUpdateValue(pg_rewrite, rulename, NameGetDatum(&rname), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, ev_class, ObjectIdGetDatum(eventrel_oid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, ev_type, CharGetDatum(evtype + '0'), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, ev_enabled, CharGetDatum(RULE_FIRES_ON_ORIGIN), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, is_instead, BoolGetDatum(evinstead), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, ev_qual, CStringGetTextDatum(evqual), values, nulls, updated);
+	HeapTupleUpdateValue(pg_rewrite, ev_action, CStringGetTextDatum(actiontree), values, nulls, updated);
 
 	/*
 	 * Ready to store new pg_rewrite tuple
@@ -96,8 +97,6 @@ InsertRule(const char *rulname,
 
 	if (HeapTupleIsValid(oldtup))
 	{
-		bool		replaces[Natts_pg_rewrite] = {0};
-
 		if (!replace)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_OBJECT),
@@ -107,16 +106,14 @@ InsertRule(const char *rulname,
 		/*
 		 * When replacing, we don't need to replace every attribute
 		 */
-		replaces[Anum_pg_rewrite_ev_type - 1] = true;
-		replaces[Anum_pg_rewrite_is_instead - 1] = true;
-		replaces[Anum_pg_rewrite_ev_qual - 1] = true;
-		replaces[Anum_pg_rewrite_ev_action - 1] = true;
+		HeapTupleUpdateValue(pg_rewrite, ev_type, CharGetDatum(evtype + '0'), values, nulls, updated);
+		HeapTupleUpdateValue(pg_rewrite, is_instead, BoolGetDatum(evinstead), values, nulls, updated);
+		HeapTupleUpdateValue(pg_rewrite, ev_qual, CStringGetTextDatum(evqual), values, nulls, updated);
+		HeapTupleUpdateValue(pg_rewrite, ev_action, CStringGetTextDatum(actiontree), values, nulls, updated);
 
-		tup = heap_modify_tuple(oldtup, RelationGetDescr(pg_rewrite_desc),
-								values, nulls, replaces);
-
-		CatalogTupleUpdate(pg_rewrite_desc, &tup->t_self, tup);
-
+		tup = heap_update_tuple(oldtup, RelationGetDescr(pg_rewrite_desc),
+								values, nulls, updated);
+		CatalogTupleUpdate(pg_rewrite_desc, &tup->t_self, tup, updated, NULL);
 		ReleaseSysCache(oldtup);
 
 		rewriteObjectId = ((Form_pg_rewrite) GETSTRUCT(tup))->oid;
@@ -127,14 +124,12 @@ InsertRule(const char *rulname,
 		rewriteObjectId = GetNewOidWithIndex(pg_rewrite_desc,
 											 RewriteOidIndexId,
 											 Anum_pg_rewrite_oid);
-		values[Anum_pg_rewrite_oid - 1] = ObjectIdGetDatum(rewriteObjectId);
-
+		HeapTupleUpdateValue(pg_rewrite, oid, ObjectIdGetDatum(rewriteObjectId), values, nulls, updated);
 		tup = heap_form_tuple(pg_rewrite_desc->rd_att, values, nulls);
-
-		CatalogTupleInsert(pg_rewrite_desc, tup);
+		CatalogTupleInsert(pg_rewrite_desc, tup, NULL);
 	}
 
-
+	bms_free(updated);
 	heap_freetuple(tup);
 
 	/* If replacing, get rid of old dependencies and make new ones */
@@ -727,8 +722,11 @@ EnableDisableRule(Relation rel, const char *rulename,
 	 */
 	if (ruleform->ev_enabled != fires_when)
 	{
-		ruleform->ev_enabled = fires_when;
-		CatalogTupleUpdate(pg_rewrite_desc, &ruletup->t_self, ruletup);
+		Bitmapset  *updated = NULL;
+
+		HeapTupleUpdateField(pg_rewrite, ev_enabled, fires_when, ruleform, updated);
+		CatalogTupleUpdate(pg_rewrite_desc, &ruletup->t_self, ruletup, updated, NULL);
+		bms_free(updated);
 
 		changed = true;
 	}
@@ -799,6 +797,7 @@ RenameRewriteRule(RangeVar *relation, const char *oldName,
 	Form_pg_rewrite ruleform;
 	Oid			ruleOid;
 	ObjectAddress address;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Look up name, check permissions, and acquire lock (which we will NOT
@@ -845,8 +844,8 @@ RenameRewriteRule(RangeVar *relation, const char *oldName,
 
 	/* OK, do the update */
 	namestrcpy(&(ruleform->rulename), newName);
-
-	CatalogTupleUpdate(pg_rewrite_desc, &ruletup->t_self, ruletup);
+	CatalogTupleUpdate(pg_rewrite_desc, &ruletup->t_self, ruletup, updated, NULL);
+	bms_free(updated);
 
 	InvokeObjectPostAlterHook(RewriteRelationId, ruleOid, 0);
 

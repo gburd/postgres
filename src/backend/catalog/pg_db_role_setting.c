@@ -74,21 +74,18 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 			if (new)
 			{
-				Datum		repl_val[Natts_pg_db_role_setting];
-				bool		repl_null[Natts_pg_db_role_setting];
-				bool		repl_repl[Natts_pg_db_role_setting];
+				Datum		values[Natts_pg_db_role_setting] = {0};
+				bool		nulls[Natts_pg_db_role_setting] = {false};
 				HeapTuple	newtuple;
+				Bitmapset  *updated = NULL;
 
-				memset(repl_repl, false, sizeof(repl_repl));
+				HeapTupleUpdateValue(pg_db_role_setting, setconfig, PointerGetDatum(new), values, nulls, updated);
 
-				repl_val[Anum_pg_db_role_setting_setconfig - 1] =
-					PointerGetDatum(new);
-				repl_repl[Anum_pg_db_role_setting_setconfig - 1] = true;
-				repl_null[Anum_pg_db_role_setting_setconfig - 1] = false;
+				newtuple = heap_update_tuple(tuple, RelationGetDescr(rel),
+											 values, nulls, updated);
+				CatalogTupleUpdate(rel, &tuple->t_self, newtuple, updated, NULL);
 
-				newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
-											 repl_val, repl_null, repl_repl);
-				CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+				bms_free(updated);
 			}
 			else
 				CatalogTupleDelete(rel, &tuple->t_self);
@@ -96,17 +93,13 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 	}
 	else if (HeapTupleIsValid(tuple))
 	{
-		Datum		repl_val[Natts_pg_db_role_setting];
-		bool		repl_null[Natts_pg_db_role_setting];
-		bool		repl_repl[Natts_pg_db_role_setting];
+		Datum		values[Natts_pg_db_role_setting] = {0};
+		bool		nulls[Natts_pg_db_role_setting] = {false};
+		Bitmapset  *updated = NULL;
 		HeapTuple	newtuple;
 		Datum		datum;
 		bool		isnull;
 		ArrayType  *a;
-
-		memset(repl_repl, false, sizeof(repl_repl));
-		repl_repl[Anum_pg_db_role_setting_setconfig - 1] = true;
-		repl_null[Anum_pg_db_role_setting_setconfig - 1] = false;
 
 		/* Extract old value of setconfig */
 		datum = heap_getattr(tuple, Anum_pg_db_role_setting_setconfig,
@@ -121,12 +114,12 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 		if (a)
 		{
-			repl_val[Anum_pg_db_role_setting_setconfig - 1] =
-				PointerGetDatum(a);
+			HeapTupleUpdateValue(pg_db_role_setting, setconfig, PointerGetDatum(a), values, nulls, updated);
 
-			newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
-										 repl_val, repl_null, repl_repl);
-			CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+			newtuple = heap_update_tuple(tuple, RelationGetDescr(rel),
+										 values, nulls, updated);
+			CatalogTupleUpdate(rel, &tuple->t_self, newtuple, updated, NULL);
+			bms_free(updated);
 		}
 		else
 			CatalogTupleDelete(rel, &tuple->t_self);
@@ -135,21 +128,18 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 	{
 		/* non-null valuestr means it's not RESET, so insert a new tuple */
 		HeapTuple	newtuple;
-		Datum		values[Natts_pg_db_role_setting];
-		bool		nulls[Natts_pg_db_role_setting];
+		Datum		values[Natts_pg_db_role_setting] = {0};
+		bool		nulls[Natts_pg_db_role_setting] = {false};
 		ArrayType  *a;
-
-		memset(nulls, false, sizeof(nulls));
 
 		a = GUCArrayAdd(NULL, setstmt->name, valuestr);
 
-		values[Anum_pg_db_role_setting_setdatabase - 1] =
-			ObjectIdGetDatum(databaseid);
-		values[Anum_pg_db_role_setting_setrole - 1] = ObjectIdGetDatum(roleid);
-		values[Anum_pg_db_role_setting_setconfig - 1] = PointerGetDatum(a);
+		HeapTupleSetValue(pg_db_role_setting, setdatabase, ObjectIdGetDatum(databaseid), values);
+		HeapTupleSetValue(pg_db_role_setting, setrole, ObjectIdGetDatum(roleid), values);
+		HeapTupleSetValue(pg_db_role_setting, setconfig, PointerGetDatum(a), values);
 		newtuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
-		CatalogTupleInsert(rel, newtuple);
+		CatalogTupleInsert(rel, newtuple, NULL);
 	}
 	else
 	{

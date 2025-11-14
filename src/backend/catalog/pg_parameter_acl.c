@@ -74,7 +74,7 @@ ParameterAclCreate(const char *parameter)
 	TupleDesc	tupDesc;
 	HeapTuple	tuple;
 	Datum		values[Natts_pg_parameter_acl] = {0};
-	bool		nulls[Natts_pg_parameter_acl] = {0};
+	bool		nulls[Natts_pg_parameter_acl] = {false};
 
 	/*
 	 * To prevent cluttering pg_parameter_acl with useless entries, insist
@@ -96,12 +96,11 @@ ParameterAclCreate(const char *parameter)
 	parameterId = GetNewOidWithIndex(rel,
 									 ParameterAclOidIndexId,
 									 Anum_pg_parameter_acl_oid);
-	values[Anum_pg_parameter_acl_oid - 1] = ObjectIdGetDatum(parameterId);
-	values[Anum_pg_parameter_acl_parname - 1] =
-		PointerGetDatum(cstring_to_text(parname));
-	nulls[Anum_pg_parameter_acl_paracl - 1] = true;
+	HeapTupleSetValue(pg_parameter_acl, oid, ObjectIdGetDatum(parameterId), values);
+	HeapTupleSetValue(pg_parameter_acl, parname, PointerGetDatum(cstring_to_text(parname)), values);
+	HeapTupleSetValueNull(pg_parameter_acl, paracl, values, nulls);
 	tuple = heap_form_tuple(tupDesc, values, nulls);
-	CatalogTupleInsert(rel, tuple);
+	CatalogTupleInsert(rel, tuple, NULL);
 
 	/* Close pg_parameter_acl, but keep lock till commit. */
 	heap_freetuple(tuple);

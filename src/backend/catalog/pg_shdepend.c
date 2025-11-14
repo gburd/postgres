@@ -273,31 +273,31 @@ shdepChangeDep(Relation sdepRel,
 		shForm->refclassid = refclassid;
 		shForm->refobjid = refobjid;
 
-		CatalogTupleUpdate(sdepRel, &oldtup->t_self, oldtup);
+		CatalogTupleUpdate(sdepRel, &oldtup->t_self, oldtup, NULL, NULL);
 	}
 	else
 	{
 		/* Need to insert new entry */
-		Datum		values[Natts_pg_shdepend];
-		bool		nulls[Natts_pg_shdepend];
+		Datum		values[Natts_pg_shdepend] = {0};
+		bool		nulls[Natts_pg_shdepend] = {false};
 
 		memset(nulls, false, sizeof(nulls));
 
-		values[Anum_pg_shdepend_dbid - 1] = ObjectIdGetDatum(dbid);
-		values[Anum_pg_shdepend_classid - 1] = ObjectIdGetDatum(classid);
-		values[Anum_pg_shdepend_objid - 1] = ObjectIdGetDatum(objid);
-		values[Anum_pg_shdepend_objsubid - 1] = Int32GetDatum(objsubid);
+		HeapTupleSetValue(pg_shdepend, dbid, ObjectIdGetDatum(dbid), values);
+		HeapTupleSetValue(pg_shdepend, classid, ObjectIdGetDatum(classid), values);
+		HeapTupleSetValue(pg_shdepend, objid, ObjectIdGetDatum(objid), values);
+		HeapTupleSetValue(pg_shdepend, objsubid, Int32GetDatum(objsubid), values);
 
-		values[Anum_pg_shdepend_refclassid - 1] = ObjectIdGetDatum(refclassid);
-		values[Anum_pg_shdepend_refobjid - 1] = ObjectIdGetDatum(refobjid);
-		values[Anum_pg_shdepend_deptype - 1] = CharGetDatum(deptype);
+		HeapTupleSetValue(pg_shdepend, refclassid, ObjectIdGetDatum(refclassid), values);
+		HeapTupleSetValue(pg_shdepend, refobjid, ObjectIdGetDatum(refobjid), values);
+		HeapTupleSetValue(pg_shdepend, deptype, CharGetDatum(deptype), values);
 
 		/*
 		 * we are reusing oldtup just to avoid declaring a new variable, but
 		 * it's certainly a new tuple
 		 */
 		oldtup = heap_form_tuple(RelationGetDescr(sdepRel), values, nulls);
-		CatalogTupleInsert(sdepRel, oldtup);
+		CatalogTupleInsert(sdepRel, oldtup, NULL);
 	}
 
 	if (oldtup)
@@ -955,13 +955,13 @@ copyTemplateDependencies(Oid templateDbId, Oid newDbId)
 
 		shdep = (Form_pg_shdepend) GETSTRUCT(tup);
 
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_dbid - 1] = ObjectIdGetDatum(newDbId);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_classid - 1] = ObjectIdGetDatum(shdep->classid);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_objid - 1] = ObjectIdGetDatum(shdep->objid);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_objsubid - 1] = Int32GetDatum(shdep->objsubid);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_refclassid - 1] = ObjectIdGetDatum(shdep->refclassid);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_refobjid - 1] = ObjectIdGetDatum(shdep->refobjid);
-		slot[slot_stored_count]->tts_values[Anum_pg_shdepend_deptype - 1] = CharGetDatum(shdep->deptype);
+		HeapTupleSetValue(pg_shdepend, dbid, ObjectIdGetDatum(newDbId), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, classid, ObjectIdGetDatum(shdep->classid), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, objid, ObjectIdGetDatum(shdep->objid), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, objsubid, Int32GetDatum(shdep->objsubid), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, refclassid, ObjectIdGetDatum(shdep->refclassid), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, refobjid, ObjectIdGetDatum(shdep->refobjid), slot[slot_stored_count]->tts_values);
+		HeapTupleSetValue(pg_shdepend, deptype, CharGetDatum(shdep->deptype), slot[slot_stored_count]->tts_values);
 
 		ExecStoreVirtualTuple(slot[slot_stored_count]);
 		slot_stored_count++;
@@ -969,14 +969,14 @@ copyTemplateDependencies(Oid templateDbId, Oid newDbId)
 		/* If slots are full, insert a batch of tuples */
 		if (slot_stored_count == max_slots)
 		{
-			CatalogTuplesMultiInsertWithInfo(sdepRel, slot, slot_stored_count, indstate);
+			CatalogTuplesMultiInsert(sdepRel, slot, slot_stored_count, indstate);
 			slot_stored_count = 0;
 		}
 	}
 
 	/* Insert any tuples left in the buffer */
 	if (slot_stored_count > 0)
-		CatalogTuplesMultiInsertWithInfo(sdepRel, slot, slot_stored_count, indstate);
+		CatalogTuplesMultiInsert(sdepRel, slot, slot_stored_count, indstate);
 
 	systable_endscan(scan);
 
@@ -1072,8 +1072,8 @@ shdepAddDependency(Relation sdepRel,
 				   SharedDependencyType deptype)
 {
 	HeapTuple	tup;
-	Datum		values[Natts_pg_shdepend];
-	bool		nulls[Natts_pg_shdepend];
+	Datum		values[Natts_pg_shdepend] = {0};
+	bool		nulls[Natts_pg_shdepend] = {false};
 
 	/*
 	 * Make sure the object doesn't go away while we record the dependency on
@@ -1087,18 +1087,18 @@ shdepAddDependency(Relation sdepRel,
 	/*
 	 * Form the new tuple and record the dependency.
 	 */
-	values[Anum_pg_shdepend_dbid - 1] = ObjectIdGetDatum(classIdGetDbId(classId));
-	values[Anum_pg_shdepend_classid - 1] = ObjectIdGetDatum(classId);
-	values[Anum_pg_shdepend_objid - 1] = ObjectIdGetDatum(objectId);
-	values[Anum_pg_shdepend_objsubid - 1] = Int32GetDatum(objsubId);
+	HeapTupleSetValue(pg_shdepend, dbid, ObjectIdGetDatum(classIdGetDbId(classId)), values);
+	HeapTupleSetValue(pg_shdepend, classid, ObjectIdGetDatum(classId), values);
+	HeapTupleSetValue(pg_shdepend, objid, ObjectIdGetDatum(objectId), values);
+	HeapTupleSetValue(pg_shdepend, objsubid, Int32GetDatum(objsubId), values);
 
-	values[Anum_pg_shdepend_refclassid - 1] = ObjectIdGetDatum(refclassId);
-	values[Anum_pg_shdepend_refobjid - 1] = ObjectIdGetDatum(refobjId);
-	values[Anum_pg_shdepend_deptype - 1] = CharGetDatum(deptype);
+	HeapTupleSetValue(pg_shdepend, refclassid, ObjectIdGetDatum(refclassId), values);
+	HeapTupleSetValue(pg_shdepend, refobjid, ObjectIdGetDatum(refobjId), values);
+	HeapTupleSetValue(pg_shdepend, deptype, CharGetDatum(deptype), values);
 
 	tup = heap_form_tuple(sdepRel->rd_att, values, nulls);
 
-	CatalogTupleInsert(sdepRel, tup);
+	CatalogTupleInsert(sdepRel, tup, NULL);
 
 	/* clean up */
 	heap_freetuple(tup);

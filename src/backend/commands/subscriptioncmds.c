@@ -589,8 +589,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 	Relation	rel;
 	ObjectAddress myself;
 	Oid			subid;
-	bool		nulls[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription] = {0};
+	bool		nulls[Natts_pg_subscription] = {false};
 	Oid			owner = GetUserId();
 	HeapTuple	tup;
 	char	   *conninfo;
@@ -710,47 +710,35 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 
 	subid = GetNewOidWithIndex(rel, SubscriptionObjectIndexId,
 							   Anum_pg_subscription_oid);
-	values[Anum_pg_subscription_oid - 1] = ObjectIdGetDatum(subid);
-	values[Anum_pg_subscription_subdbid - 1] = ObjectIdGetDatum(MyDatabaseId);
-	values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
-	values[Anum_pg_subscription_subname - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(stmt->subname));
-	values[Anum_pg_subscription_subowner - 1] = ObjectIdGetDatum(owner);
-	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(opts.enabled);
-	values[Anum_pg_subscription_subbinary - 1] = BoolGetDatum(opts.binary);
-	values[Anum_pg_subscription_substream - 1] = CharGetDatum(opts.streaming);
-	values[Anum_pg_subscription_subtwophasestate - 1] =
-		CharGetDatum(opts.twophase ?
-					 LOGICALREP_TWOPHASE_STATE_PENDING :
-					 LOGICALREP_TWOPHASE_STATE_DISABLED);
-	values[Anum_pg_subscription_subdisableonerr - 1] = BoolGetDatum(opts.disableonerr);
-	values[Anum_pg_subscription_subpasswordrequired - 1] = BoolGetDatum(opts.passwordrequired);
-	values[Anum_pg_subscription_subrunasowner - 1] = BoolGetDatum(opts.runasowner);
-	values[Anum_pg_subscription_subfailover - 1] = BoolGetDatum(opts.failover);
-	values[Anum_pg_subscription_subretaindeadtuples - 1] =
-		BoolGetDatum(opts.retaindeadtuples);
-	values[Anum_pg_subscription_submaxretention - 1] =
-		Int32GetDatum(opts.maxretention);
-	values[Anum_pg_subscription_subretentionactive - 1] =
-		Int32GetDatum(opts.retaindeadtuples);
-	values[Anum_pg_subscription_subconninfo - 1] =
-		CStringGetTextDatum(conninfo);
+	HeapTupleSetValue(pg_subscription, oid, ObjectIdGetDatum(subid), values);
+	HeapTupleSetValue(pg_subscription, subdbid, ObjectIdGetDatum(MyDatabaseId), values);
+	HeapTupleSetValue(pg_subscription, subskiplsn, LSNGetDatum(InvalidXLogRecPtr), values);
+	HeapTupleSetValue(pg_subscription, subname, DirectFunctionCall1(namein, CStringGetDatum(stmt->subname)), values);
+	HeapTupleSetValue(pg_subscription, subowner, ObjectIdGetDatum(owner), values);
+	HeapTupleSetValue(pg_subscription, subenabled, BoolGetDatum(opts.enabled), values);
+	HeapTupleSetValue(pg_subscription, subbinary, BoolGetDatum(opts.binary), values);
+	HeapTupleSetValue(pg_subscription, substream, CharGetDatum(opts.streaming), values);
+	HeapTupleSetValue(pg_subscription, subtwophasestate, CharGetDatum(opts.twophase ? LOGICALREP_TWOPHASE_STATE_PENDING : LOGICALREP_TWOPHASE_STATE_DISABLED), values);
+	HeapTupleSetValue(pg_subscription, subdisableonerr, BoolGetDatum(opts.disableonerr), values);
+	HeapTupleSetValue(pg_subscription, subpasswordrequired, BoolGetDatum(opts.passwordrequired), values);
+	HeapTupleSetValue(pg_subscription, subrunasowner, BoolGetDatum(opts.runasowner), values);
+	HeapTupleSetValue(pg_subscription, subfailover, BoolGetDatum(opts.failover), values);
+	HeapTupleSetValue(pg_subscription, subretaindeadtuples, BoolGetDatum(opts.retaindeadtuples), values);
+	HeapTupleSetValue(pg_subscription, submaxretention, Int32GetDatum(opts.maxretention), values);
+	HeapTupleSetValue(pg_subscription, subretentionactive, Int32GetDatum(opts.retaindeadtuples), values);
+	HeapTupleSetValue(pg_subscription, subconninfo, CStringGetTextDatum(conninfo), values);
 	if (opts.slot_name)
-		values[Anum_pg_subscription_subslotname - 1] =
-			DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name));
+		HeapTupleSetValue(pg_subscription, subslotname, DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name)), values);
 	else
-		nulls[Anum_pg_subscription_subslotname - 1] = true;
-	values[Anum_pg_subscription_subsynccommit - 1] =
-		CStringGetTextDatum(opts.synchronous_commit);
-	values[Anum_pg_subscription_subpublications - 1] =
-		publicationListToArray(publications);
-	values[Anum_pg_subscription_suborigin - 1] =
-		CStringGetTextDatum(opts.origin);
+		HeapTupleSetValueNull(pg_subscription, subslotname, values, nulls);
+	HeapTupleSetValue(pg_subscription, subsynccommit, CStringGetTextDatum(opts.synchronous_commit), values);
+	HeapTupleSetValue(pg_subscription, subpublications, publicationListToArray(publications), values);
+	HeapTupleSetValue(pg_subscription, suborigin, CStringGetTextDatum(opts.origin), values);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 	heap_freetuple(tup);
 
 	recordDependencyOnOwner(SubscriptionRelationId, subid, owner);
@@ -1335,9 +1323,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 {
 	Relation	rel;
 	ObjectAddress myself;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription] = {0};
+	bool		nulls[Natts_pg_subscription] = {false};
 	HeapTuple	tup;
 	Oid			subid;
 	bool		update_tuple = false;
@@ -1352,6 +1339,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	Form_pg_subscription form;
 	bits32		supported_opts;
 	SubOpts		opts = {0};
+	Bitmapset  *updated = NULL;
 
 	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
 
@@ -1396,7 +1384,6 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	/* Form a new tuple. */
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
 
 	switch (stmt->kind)
 	{
@@ -1431,41 +1418,27 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										"slot_name = NONE")));
 
 					if (opts.slot_name)
-						values[Anum_pg_subscription_subslotname - 1] =
-							DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name));
+						HeapTupleUpdateValue(pg_subscription, subslotname,
+											 DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name)), values, nulls, updated);
 					else
-						nulls[Anum_pg_subscription_subslotname - 1] = true;
-					replaces[Anum_pg_subscription_subslotname - 1] = true;
+						HeapTupleUpdateValueNull(pg_subscription, subslotname, values, nulls, updated);
 				}
 
 				if (opts.synchronous_commit)
-				{
-					values[Anum_pg_subscription_subsynccommit - 1] =
-						CStringGetTextDatum(opts.synchronous_commit);
-					replaces[Anum_pg_subscription_subsynccommit - 1] = true;
-				}
+					HeapTupleUpdateValue(pg_subscription, subsynccommit,
+										 CStringGetTextDatum(opts.synchronous_commit), values, nulls, updated);
 
 				if (IsSet(opts.specified_opts, SUBOPT_BINARY))
-				{
-					values[Anum_pg_subscription_subbinary - 1] =
-						BoolGetDatum(opts.binary);
-					replaces[Anum_pg_subscription_subbinary - 1] = true;
-				}
+					HeapTupleUpdateValue(pg_subscription, subbinary,
+										 BoolGetDatum(opts.binary), values, nulls, updated);
 
 				if (IsSet(opts.specified_opts, SUBOPT_STREAMING))
-				{
-					values[Anum_pg_subscription_substream - 1] =
-						CharGetDatum(opts.streaming);
-					replaces[Anum_pg_subscription_substream - 1] = true;
-				}
+					HeapTupleUpdateValue(pg_subscription, substream,
+										 CharGetDatum(opts.streaming), values, nulls, updated);
 
 				if (IsSet(opts.specified_opts, SUBOPT_DISABLE_ON_ERR))
-				{
-					values[Anum_pg_subscription_subdisableonerr - 1]
-						= BoolGetDatum(opts.disableonerr);
-					replaces[Anum_pg_subscription_subdisableonerr - 1]
-						= true;
-				}
+					HeapTupleUpdateValue(pg_subscription, subdisableonerr,
+										 BoolGetDatum(opts.disableonerr), values, nulls, updated);
 
 				if (IsSet(opts.specified_opts, SUBOPT_PASSWORD_REQUIRED))
 				{
@@ -1476,18 +1449,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								 errmsg("password_required=false is superuser-only"),
 								 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
 
-					values[Anum_pg_subscription_subpasswordrequired - 1]
-						= BoolGetDatum(opts.passwordrequired);
-					replaces[Anum_pg_subscription_subpasswordrequired - 1]
-						= true;
+					HeapTupleUpdateValue(pg_subscription, subpasswordrequired,
+										 BoolGetDatum(opts.passwordrequired), values, nulls, updated);
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_RUN_AS_OWNER))
-				{
-					values[Anum_pg_subscription_subrunasowner - 1] =
-						BoolGetDatum(opts.runasowner);
-					replaces[Anum_pg_subscription_subrunasowner - 1] = true;
-				}
+					HeapTupleUpdateValue(pg_subscription, subrunasowner,
+										 BoolGetDatum(opts.runasowner), values, nulls, updated);
 
 				if (IsSet(opts.specified_opts, SUBOPT_TWOPHASE_COMMIT))
 				{
@@ -1546,11 +1514,10 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								 errhint("Resolve these transactions and try again.")));
 
 					/* Change system catalog accordingly */
-					values[Anum_pg_subscription_subtwophasestate - 1] =
-						CharGetDatum(opts.twophase ?
-									 LOGICALREP_TWOPHASE_STATE_PENDING :
-									 LOGICALREP_TWOPHASE_STATE_DISABLED);
-					replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+					HeapTupleUpdateValue(pg_subscription, subtwophasestate,
+										 CharGetDatum(opts.twophase ?
+													  LOGICALREP_TWOPHASE_STATE_PENDING :
+													  LOGICALREP_TWOPHASE_STATE_DISABLED), values, nulls, updated);
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_FAILOVER))
@@ -1565,16 +1532,14 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					CheckAlterSubOption(sub, "failover", update_failover,
 										isTopLevel);
 
-					values[Anum_pg_subscription_subfailover - 1] =
-						BoolGetDatum(opts.failover);
-					replaces[Anum_pg_subscription_subfailover - 1] = true;
+					HeapTupleUpdateValue(pg_subscription, subfailover,
+										 BoolGetDatum(opts.failover), values, nulls, updated);
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_RETAIN_DEAD_TUPLES))
 				{
-					values[Anum_pg_subscription_subretaindeadtuples - 1] =
-						BoolGetDatum(opts.retaindeadtuples);
-					replaces[Anum_pg_subscription_subretaindeadtuples - 1] = true;
+					HeapTupleUpdateValue(pg_subscription, subretaindeadtuples,
+										 BoolGetDatum(opts.retaindeadtuples), values, nulls, updated);
 
 					/*
 					 * Update the retention status only if there's a change in
@@ -1592,9 +1557,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					 */
 					if (opts.retaindeadtuples != sub->retaindeadtuples)
 					{
-						values[Anum_pg_subscription_subretentionactive - 1] =
-							BoolGetDatum(opts.retaindeadtuples);
-						replaces[Anum_pg_subscription_subretentionactive - 1] = true;
+						HeapTupleUpdateValue(pg_subscription, subretentionactive,
+											 BoolGetDatum(opts.retaindeadtuples), values, nulls, updated);
 
 						retention_active = opts.retaindeadtuples;
 					}
@@ -1629,9 +1593,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_MAX_RETENTION_DURATION))
 				{
-					values[Anum_pg_subscription_submaxretention - 1] =
-						Int32GetDatum(opts.maxretention);
-					replaces[Anum_pg_subscription_submaxretention - 1] = true;
+					HeapTupleUpdateValue(pg_subscription, submaxretention,
+										 Int32GetDatum(opts.maxretention), values, nulls, updated);
 
 					max_retention = opts.maxretention;
 				}
@@ -1650,9 +1613,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_ORIGIN))
 				{
-					values[Anum_pg_subscription_suborigin - 1] =
-						CStringGetTextDatum(opts.origin);
-					replaces[Anum_pg_subscription_suborigin - 1] = true;
+					HeapTupleUpdateValue(pg_subscription, suborigin,
+										 CStringGetTextDatum(opts.origin), values, nulls, updated);
 
 					/*
 					 * Check if changes from different origins may be received
@@ -1689,9 +1651,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										   WARNING, sub->retaindeadtuples,
 										   sub->retentionactive, false);
 
-				values[Anum_pg_subscription_subenabled - 1] =
-					BoolGetDatum(opts.enabled);
-				replaces[Anum_pg_subscription_subenabled - 1] = true;
+				HeapTupleUpdateValue(pg_subscription, subenabled,
+									 BoolGetDatum(opts.enabled), values, nulls, updated);
 
 				if (opts.enabled)
 					ApplyLauncherWakeupAtCommit();
@@ -1715,9 +1676,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 			walrcv_check_conninfo(stmt->conninfo,
 								  sub->passwordrequired && !sub->ownersuperuser);
 
-			values[Anum_pg_subscription_subconninfo - 1] =
-				CStringGetTextDatum(stmt->conninfo);
-			replaces[Anum_pg_subscription_subconninfo - 1] = true;
+			HeapTupleUpdateValue(pg_subscription, subconninfo,
+								 CStringGetTextDatum(stmt->conninfo), values, nulls, updated);
 			update_tuple = true;
 
 			/*
@@ -1734,9 +1694,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				parse_subscription_options(pstate, stmt->options,
 										   supported_opts, &opts);
 
-				values[Anum_pg_subscription_subpublications - 1] =
-					publicationListToArray(stmt->publication);
-				replaces[Anum_pg_subscription_subpublications - 1] = true;
+				HeapTupleUpdateValue(pg_subscription, subpublications,
+									 publicationListToArray(stmt->publication), values, nulls, updated);
 
 				update_tuple = true;
 
@@ -1782,9 +1741,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										   supported_opts, &opts);
 
 				publist = merge_publications(sub->publications, stmt->publication, isadd, stmt->subname);
-				values[Anum_pg_subscription_subpublications - 1] =
-					publicationListToArray(publist);
-				replaces[Anum_pg_subscription_subpublications - 1] = true;
+				HeapTupleUpdateValue(pg_subscription, subpublications,
+									 publicationListToArray(publist), values, nulls, updated);
 
 				update_tuple = true;
 
@@ -1915,8 +1873,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										LSN_FORMAT_ARGS(remote_lsn))));
 				}
 
-				values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(opts.lsn);
-				replaces[Anum_pg_subscription_subskiplsn - 1] = true;
+				HeapTupleUpdateValue(pg_subscription, subskiplsn, LSNGetDatum(opts.lsn), values, nulls, updated);
 
 				update_tuple = true;
 				break;
@@ -1930,10 +1887,9 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	/* Update the catalog if needed. */
 	if (update_tuple)
 	{
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-								replaces);
+		tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 		heap_freetuple(tup);
 	}
@@ -2000,6 +1956,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	/* Wake up related replication workers to handle this change quickly. */
 	LogicalRepWorkersWakeupAtCommit(subid);
 
+	bms_free(updated);
 	return myself;
 }
 
@@ -2355,6 +2312,7 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
 	Form_pg_subscription form;
 	AclResult	aclresult;
+	Bitmapset  *updated = NULL;
 
 	form = (Form_pg_subscription) GETSTRUCT(tup);
 
@@ -2391,8 +2349,8 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		aclcheck_error(aclresult, OBJECT_DATABASE,
 					   get_database_name(MyDatabaseId));
 
-	form->subowner = newOwnerId;
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	HeapTupleUpdateField(pg_subscription, subowner, newOwnerId, form, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(SubscriptionRelationId,
@@ -2405,6 +2363,7 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 	/* Wake up related background processes to handle this change quickly. */
 	ApplyLauncherWakeupAtCommit();
 	LogicalRepWorkersWakeupAtCommit(form->oid);
+	bms_free(updated);
 }
 
 /*

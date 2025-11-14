@@ -203,9 +203,9 @@ void
 DisableSubscription(Oid subid)
 {
 	Relation	rel;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription] = {0};
+	bool		nulls[Natts_pg_subscription] = {false};
+	Bitmapset  *updated = NULL;
 	HeapTuple	tup;
 
 	/* Look up the subscription in the catalog */
@@ -217,19 +217,13 @@ DisableSubscription(Oid subid)
 
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessShareLock);
 
-	/* Form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-
 	/* Set the subscription to disabled. */
-	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(false);
-	replaces[Anum_pg_subscription_subenabled - 1] = true;
+	HeapTupleUpdateValue(pg_subscription, subenabled, BoolGetDatum(false), values, nulls, updated);
 
 	/* Update the catalog */
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-							replaces);
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+	bms_free(updated);
 	heap_freetuple(tup);
 
 	table_close(rel, NoLock);
@@ -272,8 +266,8 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 {
 	Relation	rel;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_subscription_rel];
-	Datum		values[Natts_pg_subscription_rel];
+	Datum		values[Natts_pg_subscription_rel] = {0};
+	bool		nulls[Natts_pg_subscription_rel] = {false};
 
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessShareLock);
 
@@ -288,20 +282,18 @@ AddSubscriptionRelState(Oid subid, Oid relid, char state,
 			 relid, subid);
 
 	/* Form the tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	values[Anum_pg_subscription_rel_srsubid - 1] = ObjectIdGetDatum(subid);
-	values[Anum_pg_subscription_rel_srrelid - 1] = ObjectIdGetDatum(relid);
-	values[Anum_pg_subscription_rel_srsubstate - 1] = CharGetDatum(state);
+	HeapTupleSetValue(pg_subscription_rel, srsubid, ObjectIdGetDatum(subid), values);
+	HeapTupleSetValue(pg_subscription_rel, srrelid, ObjectIdGetDatum(relid), values);
+	HeapTupleSetValue(pg_subscription_rel, srsubstate, CharGetDatum(state), values);
 	if (XLogRecPtrIsValid(sublsn))
-		values[Anum_pg_subscription_rel_srsublsn - 1] = LSNGetDatum(sublsn);
+		HeapTupleSetValue(pg_subscription_rel, srsublsn, LSNGetDatum(sublsn), values);
 	else
-		nulls[Anum_pg_subscription_rel_srsublsn - 1] = true;
+		HeapTupleSetValueNull(pg_subscription_rel, srsublsn, values, nulls);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(rel, tup, NULL);
 
 	heap_freetuple(tup);
 
@@ -326,9 +318,9 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 {
 	Relation	rel;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_subscription_rel];
-	Datum		values[Natts_pg_subscription_rel];
-	bool		replaces[Natts_pg_subscription_rel];
+	Datum		values[Natts_pg_subscription_rel] = {0};
+	bool		nulls[Natts_pg_subscription_rel] = {false};
+	Bitmapset  *updated = NULL;
 
 	if (already_locked)
 	{
@@ -358,27 +350,21 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 			 relid, subid);
 
 	/* Update the tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
+	HeapTupleUpdateValue(pg_subscription_rel, srsubstate, CharGetDatum(state), values, nulls, updated);
 
-	replaces[Anum_pg_subscription_rel_srsubstate - 1] = true;
-	values[Anum_pg_subscription_rel_srsubstate - 1] = CharGetDatum(state);
-
-	replaces[Anum_pg_subscription_rel_srsublsn - 1] = true;
 	if (XLogRecPtrIsValid(sublsn))
-		values[Anum_pg_subscription_rel_srsublsn - 1] = LSNGetDatum(sublsn);
+		HeapTupleUpdateValue(pg_subscription_rel, srsublsn, LSNGetDatum(sublsn), values, nulls, updated);
 	else
-		nulls[Anum_pg_subscription_rel_srsublsn - 1] = true;
+		HeapTupleUpdateValueNull(pg_subscription_rel, srsublsn, values, nulls, updated);
 
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-							replaces);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
 	/* Update the catalog. */
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 	/* Cleanup. */
 	table_close(rel, NoLock);
+	bms_free(updated);
 }
 
 /*
@@ -645,9 +631,9 @@ void
 UpdateDeadTupleRetentionStatus(Oid subid, bool active)
 {
 	Relation	rel;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	Datum		values[Natts_pg_subscription] = {0};
+	bool		nulls[Natts_pg_subscription] = {false};
+	Bitmapset  *updated = NULL;
 	HeapTuple	tup;
 
 	/* Look up the subscription in the catalog */
@@ -659,20 +645,16 @@ UpdateDeadTupleRetentionStatus(Oid subid, bool active)
 
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessShareLock);
 
-	/* Form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
-
 	/* Set the subscription to disabled. */
-	values[Anum_pg_subscription_subretentionactive - 1] = active;
-	replaces[Anum_pg_subscription_subretentionactive - 1] = true;
+	HeapTupleUpdateValue(pg_subscription, subretentionactive, active, values, nulls, updated);
 
 	/* Update the catalog */
-	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-							replaces);
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
-	heap_freetuple(tup);
+	tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
+
+	/* Cleanup */
+	bms_free(updated);
+	heap_freetuple(tup);
 	table_close(rel, NoLock);
 }

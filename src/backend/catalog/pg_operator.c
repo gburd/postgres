@@ -17,6 +17,7 @@
  */
 #include "postgres.h"
 
+#include "access/htup.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -199,10 +200,11 @@ OperatorShellMake(const char *operatorName,
 	Oid			operatorObjectId;
 	int			i;
 	HeapTuple	tup;
-	Datum		values[Natts_pg_operator];
-	bool		nulls[Natts_pg_operator];
+	Datum		values[Natts_pg_operator] = {0};
+	bool		nulls[Natts_pg_operator] = {false};
 	NameData	oname;
 	TupleDesc	tupDesc;
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * validate operator name
@@ -234,22 +236,23 @@ OperatorShellMake(const char *operatorName,
 	 */
 	operatorObjectId = GetNewOidWithIndex(pg_operator_desc, OperatorOidIndexId,
 										  Anum_pg_operator_oid);
-	values[Anum_pg_operator_oid - 1] = ObjectIdGetDatum(operatorObjectId);
+
+	HeapTupleUpdateValue(pg_operator, oid, ObjectIdGetDatum(operatorObjectId), values, nulls, updated);
 	namestrcpy(&oname, operatorName);
-	values[Anum_pg_operator_oprname - 1] = NameGetDatum(&oname);
-	values[Anum_pg_operator_oprnamespace - 1] = ObjectIdGetDatum(operatorNamespace);
-	values[Anum_pg_operator_oprowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? 'b' : 'l');
-	values[Anum_pg_operator_oprcanmerge - 1] = BoolGetDatum(false);
-	values[Anum_pg_operator_oprcanhash - 1] = BoolGetDatum(false);
-	values[Anum_pg_operator_oprleft - 1] = ObjectIdGetDatum(leftTypeId);
-	values[Anum_pg_operator_oprright - 1] = ObjectIdGetDatum(rightTypeId);
-	values[Anum_pg_operator_oprresult - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_operator_oprcom - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_operator_oprnegate - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_operator_oprcode - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_operator_oprrest - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_operator_oprjoin - 1] = ObjectIdGetDatum(InvalidOid);
+	HeapTupleUpdateValue(pg_operator, oprname, NameGetDatum(&oname), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprnamespace, ObjectIdGetDatum(operatorNamespace), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprowner, ObjectIdGetDatum(GetUserId()), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprkind, CharGetDatum(leftTypeId ? 'b' : 'l'), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcanmerge, BoolGetDatum(false), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcanhash, BoolGetDatum(false), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprleft, ObjectIdGetDatum(leftTypeId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprright, ObjectIdGetDatum(rightTypeId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprresult, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcom, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprnegate, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcode, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprrest, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprjoin, ObjectIdGetDatum(InvalidOid), values, nulls, updated);
 
 	/*
 	 * create a new operator tuple
@@ -259,7 +262,7 @@ OperatorShellMake(const char *operatorName,
 	/*
 	 * insert our "shell" operator tuple
 	 */
-	CatalogTupleInsert(pg_operator_desc, tup);
+	CatalogTupleInsert(pg_operator_desc, tup, NULL);
 
 	/* Add dependencies for the entry */
 	makeOperatorDependencies(tup, true, false);
@@ -333,9 +336,9 @@ OperatorCreate(const char *operatorName,
 	Relation	pg_operator_desc;
 	HeapTuple	tup;
 	bool		isUpdate;
-	bool		nulls[Natts_pg_operator];
-	bool		replaces[Natts_pg_operator];
-	Datum		values[Natts_pg_operator];
+	Datum		values[Natts_pg_operator] = {0};
+	bool		nulls[Natts_pg_operator] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			operatorObjectId;
 	bool		operatorAlreadyDefined;
 	Oid			operResultType;
@@ -343,7 +346,6 @@ OperatorCreate(const char *operatorName,
 				negatorId;
 	bool		selfCommutator = false;
 	NameData	oname;
-	int			i;
 	ObjectAddress address;
 
 	/*
@@ -447,32 +449,25 @@ OperatorCreate(const char *operatorName,
 	else
 		negatorId = InvalidOid;
 
-	/*
-	 * set up values in the operator tuple
-	 */
-
-	for (i = 0; i < Natts_pg_operator; ++i)
-	{
-		values[i] = (Datum) 0;
-		replaces[i] = true;
-		nulls[i] = false;
-	}
+	/* Set up values in the operator tuple */
+	HeapTupleUpdateSetAllColumnsUpdated(pg_operator, updated);
+	HeapTupleSetColumnNotUpdated(pg_operator, oid, updated);
 
 	namestrcpy(&oname, operatorName);
-	values[Anum_pg_operator_oprname - 1] = NameGetDatum(&oname);
-	values[Anum_pg_operator_oprnamespace - 1] = ObjectIdGetDatum(operatorNamespace);
-	values[Anum_pg_operator_oprowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? 'b' : 'l');
-	values[Anum_pg_operator_oprcanmerge - 1] = BoolGetDatum(canMerge);
-	values[Anum_pg_operator_oprcanhash - 1] = BoolGetDatum(canHash);
-	values[Anum_pg_operator_oprleft - 1] = ObjectIdGetDatum(leftTypeId);
-	values[Anum_pg_operator_oprright - 1] = ObjectIdGetDatum(rightTypeId);
-	values[Anum_pg_operator_oprresult - 1] = ObjectIdGetDatum(operResultType);
-	values[Anum_pg_operator_oprcom - 1] = ObjectIdGetDatum(commutatorId);
-	values[Anum_pg_operator_oprnegate - 1] = ObjectIdGetDatum(negatorId);
-	values[Anum_pg_operator_oprcode - 1] = ObjectIdGetDatum(procedureId);
-	values[Anum_pg_operator_oprrest - 1] = ObjectIdGetDatum(restrictionId);
-	values[Anum_pg_operator_oprjoin - 1] = ObjectIdGetDatum(joinId);
+	HeapTupleUpdateValue(pg_operator, oprname, NameGetDatum(&oname), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprnamespace, ObjectIdGetDatum(operatorNamespace), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprowner, ObjectIdGetDatum(GetUserId()), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprkind, CharGetDatum(leftTypeId ? 'b' : 'l'), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcanmerge, BoolGetDatum(canMerge), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcanhash, BoolGetDatum(canHash), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprleft, ObjectIdGetDatum(leftTypeId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprright, ObjectIdGetDatum(rightTypeId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprresult, ObjectIdGetDatum(operResultType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcom, ObjectIdGetDatum(commutatorId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprnegate, ObjectIdGetDatum(negatorId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprcode, ObjectIdGetDatum(procedureId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprrest, ObjectIdGetDatum(restrictionId), values, nulls, updated);
+	HeapTupleUpdateValue(pg_operator, oprjoin, ObjectIdGetDatum(joinId), values, nulls, updated);
 
 	pg_operator_desc = table_open(OperatorRelationId, RowExclusiveLock);
 
@@ -489,14 +484,9 @@ OperatorCreate(const char *operatorName,
 			elog(ERROR, "cache lookup failed for operator %u",
 				 operatorObjectId);
 
-		replaces[Anum_pg_operator_oid - 1] = false;
-		tup = heap_modify_tuple(tup,
-								RelationGetDescr(pg_operator_desc),
-								values,
-								nulls,
-								replaces);
+		tup = heap_update_tuple(tup, RelationGetDescr(pg_operator_desc), values, nulls, updated);
 
-		CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup);
+		CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup, updated, NULL);
 	}
 	else
 	{
@@ -505,12 +495,12 @@ OperatorCreate(const char *operatorName,
 		operatorObjectId = GetNewOidWithIndex(pg_operator_desc,
 											  OperatorOidIndexId,
 											  Anum_pg_operator_oid);
-		values[Anum_pg_operator_oid - 1] = ObjectIdGetDatum(operatorObjectId);
+		HeapTupleUpdateValue(pg_operator, oid, ObjectIdGetDatum(operatorObjectId), values, nulls, updated);
 
 		tup = heap_form_tuple(RelationGetDescr(pg_operator_desc),
 							  values, nulls);
 
-		CatalogTupleInsert(pg_operator_desc, tup);
+		CatalogTupleInsert(pg_operator_desc, tup, NULL);
 	}
 
 	/* Add dependencies for the entry */
@@ -536,6 +526,7 @@ OperatorCreate(const char *operatorName,
 	/* Post creation hook for new operator */
 	InvokeObjectPostCreateHook(OperatorRelationId, operatorObjectId, 0);
 
+	bms_free(updated);
 	table_close(pg_operator_desc, RowExclusiveLock);
 
 	return address;
@@ -708,6 +699,7 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 	if (HeapTupleIsValid(tup))
 	{
 		Form_pg_operator t = (Form_pg_operator) GETSTRUCT(tup);
+		Bitmapset  *updated = NULL;
 		bool		update_commutator = false;
 
 		/*
@@ -717,7 +709,7 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 		 */
 		if (isDelete && OidIsValid(t->oprcom))
 		{
-			t->oprcom = InvalidOid;
+			HeapTupleUpdateField(pg_operator, oprcom, InvalidOid, t, updated);
 			update_commutator = true;
 		}
 		else if (!isDelete && t->oprcom != baseId)
@@ -745,14 +737,14 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 									NameStr(t->oprname), t->oprcom)));
 			}
 
-			t->oprcom = baseId;
+			HeapTupleUpdateField(pg_operator, oprcom, baseId, t, updated);
 			update_commutator = true;
 		}
 
 		/* If any columns were found to need modification, update tuple. */
 		if (update_commutator)
 		{
-			CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup);
+			CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup, updated, NULL);
 
 			/*
 			 * Do CCI to make the updated tuple visible.  We must do this in
@@ -763,6 +755,8 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 			 */
 			CommandCounterIncrement();
 		}
+
+		bms_free(updated);
 	}
 
 	/*
@@ -777,6 +771,7 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 	{
 		Form_pg_operator t = (Form_pg_operator) GETSTRUCT(tup);
 		bool		update_negator = false;
+		Bitmapset  *updated = NULL;
 
 		/*
 		 * We can skip doing anything if the negator's oprnegate field is
@@ -785,7 +780,7 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 		 */
 		if (isDelete && OidIsValid(t->oprnegate))
 		{
-			t->oprnegate = InvalidOid;
+			HeapTupleUpdateField(pg_operator, oprnegate, InvalidOid, t, updated);
 			update_negator = true;
 		}
 		else if (!isDelete && t->oprnegate != baseId)
@@ -813,14 +808,14 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 									NameStr(t->oprname), t->oprnegate)));
 			}
 
-			t->oprnegate = baseId;
+			HeapTupleUpdateField(pg_operator, oprnegate, baseId, t, updated);
 			update_negator = true;
 		}
 
 		/* If any columns were found to need modification, update tuple. */
 		if (update_negator)
 		{
-			CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup);
+			CatalogTupleUpdate(pg_operator_desc, &tup->t_self, tup, updated, NULL);
 
 			/*
 			 * In the deletion case, do CCI to make the updated tuple visible.
@@ -831,6 +826,8 @@ OperatorUpd(Oid baseId, Oid commId, Oid negId, bool isDelete)
 			if (isDelete)
 				CommandCounterIncrement();
 		}
+
+		bms_free(updated);
 	}
 
 	/* Close relation and release catalog lock. */

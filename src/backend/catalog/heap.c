@@ -30,6 +30,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/htup.h"
 #include "access/multixact.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -705,7 +706,7 @@ CheckAttributeType(const char *attname,
  * number of elements as tupdesc or be NULL.  The other variable-length fields
  * of pg_attribute are always initialized to null values.
  *
- * indstate is the index state for CatalogTupleInsertWithInfo.  It can be
+ * indstate is the index state for CatalogTupleInsert.  It can be
  * passed as NULL, in which case we'll fetch the necessary info.  (Don't do
  * this when inserting multiple attributes, because it's a tad more
  * expensive.)
@@ -720,7 +721,7 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 						const FormExtraData_pg_attribute tupdesc_extra[],
 						CatalogIndexState indstate)
 {
-	TupleTableSlot **slot;
+	TupleTableSlot **slots;
 	TupleDesc	td;
 	int			nslots;
 	int			natts = 0;
@@ -732,66 +733,70 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 	/* Initialize the number of slots to use */
 	nslots = Min(tupdesc->natts,
 				 (MAX_CATALOG_MULTI_INSERT_BYTES / sizeof(FormData_pg_attribute)));
-	slot = palloc(sizeof(TupleTableSlot *) * nslots);
+	slots = palloc(sizeof(TupleTableSlot *) * nslots);
 	for (int i = 0; i < nslots; i++)
-		slot[i] = MakeSingleTupleTableSlot(td, &TTSOpsHeapTuple);
+		slots[i] = MakeSingleTupleTableSlot(td, &TTSOpsHeapTuple);
 
 	while (natts < tupdesc->natts)
 	{
+		TupleTableSlot *slot = slots[slotCount];
+		Datum	   *values = slot->tts_values;
 		Form_pg_attribute attrs = TupleDescAttr(tupdesc, natts);
 		const FormExtraData_pg_attribute *attrs_extra = tupdesc_extra ? &tupdesc_extra[natts] : NULL;
 
-		ExecClearTuple(slot[slotCount]);
+		ExecClearTuple(slot);
 
-		memset(slot[slotCount]->tts_isnull, false,
-			   slot[slotCount]->tts_tupleDescriptor->natts * sizeof(bool));
+		memset(slot->tts_isnull, false,
+			   slot->tts_tupleDescriptor->natts * sizeof(bool));
 
 		if (new_rel_oid != InvalidOid)
-			slot[slotCount]->tts_values[Anum_pg_attribute_attrelid - 1] = ObjectIdGetDatum(new_rel_oid);
+			HeapTupleSetValue(pg_attribute, attrelid, ObjectIdGetDatum(new_rel_oid), values);
 		else
-			slot[slotCount]->tts_values[Anum_pg_attribute_attrelid - 1] = ObjectIdGetDatum(attrs->attrelid);
+			HeapTupleSetValue(pg_attribute, attrelid, ObjectIdGetDatum(attrs->attrelid), values);
 
-		slot[slotCount]->tts_values[Anum_pg_attribute_attname - 1] = NameGetDatum(&attrs->attname);
-		slot[slotCount]->tts_values[Anum_pg_attribute_atttypid - 1] = ObjectIdGetDatum(attrs->atttypid);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attlen - 1] = Int16GetDatum(attrs->attlen);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attnum - 1] = Int16GetDatum(attrs->attnum);
-		slot[slotCount]->tts_values[Anum_pg_attribute_atttypmod - 1] = Int32GetDatum(attrs->atttypmod);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attndims - 1] = Int16GetDatum(attrs->attndims);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attbyval - 1] = BoolGetDatum(attrs->attbyval);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attalign - 1] = CharGetDatum(attrs->attalign);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attstorage - 1] = CharGetDatum(attrs->attstorage);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attcompression - 1] = CharGetDatum(attrs->attcompression);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attnotnull - 1] = BoolGetDatum(attrs->attnotnull);
-		slot[slotCount]->tts_values[Anum_pg_attribute_atthasdef - 1] = BoolGetDatum(attrs->atthasdef);
-		slot[slotCount]->tts_values[Anum_pg_attribute_atthasmissing - 1] = BoolGetDatum(attrs->atthasmissing);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attidentity - 1] = CharGetDatum(attrs->attidentity);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attgenerated - 1] = CharGetDatum(attrs->attgenerated);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attisdropped - 1] = BoolGetDatum(attrs->attisdropped);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attislocal - 1] = BoolGetDatum(attrs->attislocal);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attinhcount - 1] = Int16GetDatum(attrs->attinhcount);
-		slot[slotCount]->tts_values[Anum_pg_attribute_attcollation - 1] = ObjectIdGetDatum(attrs->attcollation);
+		HeapTupleSetValue(pg_attribute, attname, NameGetDatum(&attrs->attname), values);
+		HeapTupleSetValue(pg_attribute, atttypid, ObjectIdGetDatum(attrs->atttypid), values);
+		HeapTupleSetValue(pg_attribute, attlen, Int16GetDatum(attrs->attlen), values);
+		HeapTupleSetValue(pg_attribute, attnum, Int16GetDatum(attrs->attnum), values);
+		HeapTupleSetValue(pg_attribute, atttypmod, Int32GetDatum(attrs->atttypmod), values);
+		HeapTupleSetValue(pg_attribute, attndims, Int16GetDatum(attrs->attndims), values);
+		HeapTupleSetValue(pg_attribute, attbyval, BoolGetDatum(attrs->attbyval), values);
+		HeapTupleSetValue(pg_attribute, attalign, CharGetDatum(attrs->attalign), values);
+		HeapTupleSetValue(pg_attribute, attstorage, CharGetDatum(attrs->attstorage), values);
+		HeapTupleSetValue(pg_attribute, attcompression, CharGetDatum(attrs->attcompression), values);
+		HeapTupleSetValue(pg_attribute, attnotnull, BoolGetDatum(attrs->attnotnull), values);
+		HeapTupleSetValue(pg_attribute, atthasdef, BoolGetDatum(attrs->atthasdef), values);
+		HeapTupleSetValue(pg_attribute, atthasmissing, BoolGetDatum(attrs->atthasmissing), values);
+		HeapTupleSetValue(pg_attribute, attidentity, CharGetDatum(attrs->attidentity), values);
+		HeapTupleSetValue(pg_attribute, attgenerated, CharGetDatum(attrs->attgenerated), values);
+		HeapTupleSetValue(pg_attribute, attisdropped, BoolGetDatum(attrs->attisdropped), values);
+		HeapTupleSetValue(pg_attribute, attislocal, BoolGetDatum(attrs->attislocal), values);
+		HeapTupleSetValue(pg_attribute, attinhcount, Int16GetDatum(attrs->attinhcount), values);
+		HeapTupleSetValue(pg_attribute, attcollation, ObjectIdGetDatum(attrs->attcollation), values);
 		if (attrs_extra)
 		{
-			slot[slotCount]->tts_values[Anum_pg_attribute_attstattarget - 1] = attrs_extra->attstattarget.value;
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attstattarget - 1] = attrs_extra->attstattarget.isnull;
+			HeapTupleSetValue(pg_attribute, attstattarget, attrs_extra->attstattarget.value, values);
+			if (attrs_extra->attstattarget.isnull)
+				HeapTupleSetValueNull(pg_attribute, attstattarget, values, slot->tts_isnull);
 
-			slot[slotCount]->tts_values[Anum_pg_attribute_attoptions - 1] = attrs_extra->attoptions.value;
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attoptions - 1] = attrs_extra->attoptions.isnull;
+			HeapTupleSetValue(pg_attribute, attoptions, attrs_extra->attoptions.value, values);
+			if (attrs_extra->attoptions.isnull)
+				HeapTupleSetValueNull(pg_attribute, attoptions, values, slot->tts_isnull);
 		}
 		else
 		{
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attstattarget - 1] = true;
-			slot[slotCount]->tts_isnull[Anum_pg_attribute_attoptions - 1] = true;
+			HeapTupleSetValueNull(pg_attribute, attstattarget, values, slot->tts_isnull);
+			HeapTupleSetValueNull(pg_attribute, attoptions, values, slot->tts_isnull);
 		}
 
 		/*
 		 * The remaining fields are not set for new columns.
 		 */
-		slot[slotCount]->tts_isnull[Anum_pg_attribute_attacl - 1] = true;
-		slot[slotCount]->tts_isnull[Anum_pg_attribute_attfdwoptions - 1] = true;
-		slot[slotCount]->tts_isnull[Anum_pg_attribute_attmissingval - 1] = true;
+		HeapTupleSetValueNull(pg_attribute, attacl, values, slot->tts_isnull);
+		HeapTupleSetValueNull(pg_attribute, attfdwoptions, values, slot->tts_isnull);
+		HeapTupleSetValueNull(pg_attribute, attmissingval, values, slot->tts_isnull);
 
-		ExecStoreVirtualTuple(slot[slotCount]);
+		ExecStoreVirtualTuple(slot);
 		slotCount++;
 
 		/*
@@ -808,8 +813,7 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 			}
 
 			/* insert the new tuples and update the indexes */
-			CatalogTuplesMultiInsertWithInfo(pg_attribute_rel, slot, slotCount,
-											 indstate);
+			CatalogTuplesMultiInsert(pg_attribute_rel, slots, slotCount, indstate);
 			slotCount = 0;
 		}
 
@@ -819,8 +823,8 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 	if (close_index)
 		CatalogCloseIndexes(indstate);
 	for (int i = 0; i < nslots; i++)
-		ExecDropSingleTupleTableSlot(slot[i]);
-	pfree(slot);
+		ExecDropSingleTupleTableSlot(slots[i]);
+	pfree(slots);
 }
 
 /* --------------------------------
@@ -914,61 +918,58 @@ InsertPgClassTuple(Relation pg_class_desc,
 				   Datum reloptions)
 {
 	Form_pg_class rd_rel = new_rel_desc->rd_rel;
-	Datum		values[Natts_pg_class];
-	bool		nulls[Natts_pg_class];
+	Datum		values[Natts_pg_class] = {0};
+	bool		nulls[Natts_pg_class] = {false};
 	HeapTuple	tup;
 
 	/* This is a tad tedious, but way cleaner than what we used to do... */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-
-	values[Anum_pg_class_oid - 1] = ObjectIdGetDatum(new_rel_oid);
-	values[Anum_pg_class_relname - 1] = NameGetDatum(&rd_rel->relname);
-	values[Anum_pg_class_relnamespace - 1] = ObjectIdGetDatum(rd_rel->relnamespace);
-	values[Anum_pg_class_reltype - 1] = ObjectIdGetDatum(rd_rel->reltype);
-	values[Anum_pg_class_reloftype - 1] = ObjectIdGetDatum(rd_rel->reloftype);
-	values[Anum_pg_class_relowner - 1] = ObjectIdGetDatum(rd_rel->relowner);
-	values[Anum_pg_class_relam - 1] = ObjectIdGetDatum(rd_rel->relam);
-	values[Anum_pg_class_relfilenode - 1] = ObjectIdGetDatum(rd_rel->relfilenode);
-	values[Anum_pg_class_reltablespace - 1] = ObjectIdGetDatum(rd_rel->reltablespace);
-	values[Anum_pg_class_relpages - 1] = Int32GetDatum(rd_rel->relpages);
-	values[Anum_pg_class_reltuples - 1] = Float4GetDatum(rd_rel->reltuples);
-	values[Anum_pg_class_relallvisible - 1] = Int32GetDatum(rd_rel->relallvisible);
-	values[Anum_pg_class_relallfrozen - 1] = Int32GetDatum(rd_rel->relallfrozen);
-	values[Anum_pg_class_reltoastrelid - 1] = ObjectIdGetDatum(rd_rel->reltoastrelid);
-	values[Anum_pg_class_relhasindex - 1] = BoolGetDatum(rd_rel->relhasindex);
-	values[Anum_pg_class_relisshared - 1] = BoolGetDatum(rd_rel->relisshared);
-	values[Anum_pg_class_relpersistence - 1] = CharGetDatum(rd_rel->relpersistence);
-	values[Anum_pg_class_relkind - 1] = CharGetDatum(rd_rel->relkind);
-	values[Anum_pg_class_relnatts - 1] = Int16GetDatum(rd_rel->relnatts);
-	values[Anum_pg_class_relchecks - 1] = Int16GetDatum(rd_rel->relchecks);
-	values[Anum_pg_class_relhasrules - 1] = BoolGetDatum(rd_rel->relhasrules);
-	values[Anum_pg_class_relhastriggers - 1] = BoolGetDatum(rd_rel->relhastriggers);
-	values[Anum_pg_class_relrowsecurity - 1] = BoolGetDatum(rd_rel->relrowsecurity);
-	values[Anum_pg_class_relforcerowsecurity - 1] = BoolGetDatum(rd_rel->relforcerowsecurity);
-	values[Anum_pg_class_relhassubclass - 1] = BoolGetDatum(rd_rel->relhassubclass);
-	values[Anum_pg_class_relispopulated - 1] = BoolGetDatum(rd_rel->relispopulated);
-	values[Anum_pg_class_relreplident - 1] = CharGetDatum(rd_rel->relreplident);
-	values[Anum_pg_class_relispartition - 1] = BoolGetDatum(rd_rel->relispartition);
-	values[Anum_pg_class_relrewrite - 1] = ObjectIdGetDatum(rd_rel->relrewrite);
-	values[Anum_pg_class_relfrozenxid - 1] = TransactionIdGetDatum(rd_rel->relfrozenxid);
-	values[Anum_pg_class_relminmxid - 1] = MultiXactIdGetDatum(rd_rel->relminmxid);
+	HeapTupleSetValue(pg_class, oid, ObjectIdGetDatum(new_rel_oid), values);
+	HeapTupleSetValue(pg_class, relname, NameGetDatum(&rd_rel->relname), values);
+	HeapTupleSetValue(pg_class, relnamespace, ObjectIdGetDatum(rd_rel->relnamespace), values);
+	HeapTupleSetValue(pg_class, reltype, ObjectIdGetDatum(rd_rel->reltype), values);
+	HeapTupleSetValue(pg_class, reloftype, ObjectIdGetDatum(rd_rel->reloftype), values);
+	HeapTupleSetValue(pg_class, relowner, ObjectIdGetDatum(rd_rel->relowner), values);
+	HeapTupleSetValue(pg_class, relam, ObjectIdGetDatum(rd_rel->relam), values);
+	HeapTupleSetValue(pg_class, relfilenode, ObjectIdGetDatum(rd_rel->relfilenode), values);
+	HeapTupleSetValue(pg_class, reltablespace, ObjectIdGetDatum(rd_rel->reltablespace), values);
+	HeapTupleSetValue(pg_class, relpages, Int32GetDatum(rd_rel->relpages), values);
+	HeapTupleSetValue(pg_class, reltuples, Float4GetDatum(rd_rel->reltuples), values);
+	HeapTupleSetValue(pg_class, relallvisible, Int32GetDatum(rd_rel->relallvisible), values);
+	HeapTupleSetValue(pg_class, relallfrozen, Int32GetDatum(rd_rel->relallfrozen), values);
+	HeapTupleSetValue(pg_class, reltoastrelid, ObjectIdGetDatum(rd_rel->reltoastrelid), values);
+	HeapTupleSetValue(pg_class, relhasindex, BoolGetDatum(rd_rel->relhasindex), values);
+	HeapTupleSetValue(pg_class, relisshared, BoolGetDatum(rd_rel->relisshared), values);
+	HeapTupleSetValue(pg_class, relpersistence, CharGetDatum(rd_rel->relpersistence), values);
+	HeapTupleSetValue(pg_class, relkind, CharGetDatum(rd_rel->relkind), values);
+	HeapTupleSetValue(pg_class, relnatts, Int16GetDatum(rd_rel->relnatts), values);
+	HeapTupleSetValue(pg_class, relchecks, Int16GetDatum(rd_rel->relchecks), values);
+	HeapTupleSetValue(pg_class, relhasrules, BoolGetDatum(rd_rel->relhasrules), values);
+	HeapTupleSetValue(pg_class, relhastriggers, BoolGetDatum(rd_rel->relhastriggers), values);
+	HeapTupleSetValue(pg_class, relrowsecurity, BoolGetDatum(rd_rel->relrowsecurity), values);
+	HeapTupleSetValue(pg_class, relforcerowsecurity, BoolGetDatum(rd_rel->relforcerowsecurity), values);
+	HeapTupleSetValue(pg_class, relhassubclass, BoolGetDatum(rd_rel->relhassubclass), values);
+	HeapTupleSetValue(pg_class, relispopulated, BoolGetDatum(rd_rel->relispopulated), values);
+	HeapTupleSetValue(pg_class, relreplident, CharGetDatum(rd_rel->relreplident), values);
+	HeapTupleSetValue(pg_class, relispartition, BoolGetDatum(rd_rel->relispartition), values);
+	HeapTupleSetValue(pg_class, relrewrite, ObjectIdGetDatum(rd_rel->relrewrite), values);
+	HeapTupleSetValue(pg_class, relfrozenxid, TransactionIdGetDatum(rd_rel->relfrozenxid), values);
+	HeapTupleSetValue(pg_class, relminmxid, MultiXactIdGetDatum(rd_rel->relminmxid), values);
 	if (relacl != (Datum) 0)
-		values[Anum_pg_class_relacl - 1] = relacl;
+		HeapTupleSetValue(pg_class, relacl, relacl, values);
 	else
-		nulls[Anum_pg_class_relacl - 1] = true;
+		HeapTupleSetValueNull(pg_class, relacl, values, nulls);
 	if (reloptions != (Datum) 0)
-		values[Anum_pg_class_reloptions - 1] = reloptions;
+		HeapTupleSetValue(pg_class, reloptions, reloptions, values);
 	else
-		nulls[Anum_pg_class_reloptions - 1] = true;
+		HeapTupleSetValueNull(pg_class, reloptions, values, nulls);
 
 	/* relpartbound is set by updating this tuple, if necessary */
-	nulls[Anum_pg_class_relpartbound - 1] = true;
+	HeapTupleSetValueNull(pg_class, relpartbound, values, nulls);
 
 	tup = heap_form_tuple(RelationGetDescr(pg_class_desc), values, nulls);
 
 	/* finally insert the new tuple, update the indexes, and clean up */
-	CatalogTupleInsert(pg_class_desc, tup);
+	CatalogTupleInsert(pg_class_desc, tup, NULL);
 
 	heap_freetuple(tup);
 }
@@ -1687,9 +1688,8 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	HeapTuple	tuple;
 	Form_pg_attribute attStruct;
 	char		newattname[NAMEDATALEN];
-	Datum		valuesAtt[Natts_pg_attribute] = {0};
-	bool		nullsAtt[Natts_pg_attribute] = {0};
-	bool		replacesAtt[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 
 	/*
 	 * Grab an exclusive lock on the target table, which we will NOT release
@@ -1710,7 +1710,7 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	attStruct = (Form_pg_attribute) GETSTRUCT(tuple);
 
 	/* Mark the attribute as dropped */
-	attStruct->attisdropped = true;
+	HeapTupleUpdateField(pg_attribute, attisdropped, true, attStruct, updated);
 
 	/*
 	 * Set the type OID to invalid.  A dropped attribute's type link cannot be
@@ -1720,13 +1720,13 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	 * the attribute's attlen and attalign.  We set atttypid to zero here as a
 	 * means of catching code that incorrectly expects it to be valid.
 	 */
-	attStruct->atttypid = InvalidOid;
+	HeapTupleUpdateField(pg_attribute, atttypid, InvalidOid, attStruct, updated);
 
 	/* Remove any not-null constraint the column may have */
-	attStruct->attnotnull = false;
+	HeapTupleUpdateField(pg_attribute, attnotnull, false, attStruct, updated);
 
 	/* Unset this so no one tries to look up the generation expression */
-	attStruct->attgenerated = '\0';
+	HeapTupleUpdateField(pg_attribute, attgenerated, '\0', attStruct, updated);
 
 	/*
 	 * Change the column name to something that isn't likely to conflict
@@ -1734,29 +1734,33 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	snprintf(newattname, sizeof(newattname),
 			 "........pg.dropped.%d........", attnum);
 	namestrcpy(&(attStruct->attname), newattname);
+	HeapTupleMarkColumnUpdated(pg_attribute, attname, updated);
 
 	/* Clear the missing value */
-	attStruct->atthasmissing = false;
-	nullsAtt[Anum_pg_attribute_attmissingval - 1] = true;
-	replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
+	HeapTupleUpdateField(pg_attribute, atthasmissing, false, attStruct, updated);
+	HeapTupleSetFieldNull(pg_attribute, attmissingval, nulls);
+	HeapTupleMarkColumnUpdated(pg_attribute, attmissingval, updated);
 
 	/*
 	 * Clear the other nullable fields.  This saves some space in pg_attribute
 	 * and removes no longer useful information.
 	 */
-	nullsAtt[Anum_pg_attribute_attstattarget - 1] = true;
-	replacesAtt[Anum_pg_attribute_attstattarget - 1] = true;
-	nullsAtt[Anum_pg_attribute_attacl - 1] = true;
-	replacesAtt[Anum_pg_attribute_attacl - 1] = true;
-	nullsAtt[Anum_pg_attribute_attoptions - 1] = true;
-	replacesAtt[Anum_pg_attribute_attoptions - 1] = true;
-	nullsAtt[Anum_pg_attribute_attfdwoptions - 1] = true;
-	replacesAtt[Anum_pg_attribute_attfdwoptions - 1] = true;
+	HeapTupleSetFieldNull(pg_attribute, attstattarget, nulls);
+	HeapTupleMarkColumnUpdated(pg_attribute, attstattarget, updated);
 
-	tuple = heap_modify_tuple(tuple, RelationGetDescr(attr_rel),
-							  valuesAtt, nullsAtt, replacesAtt);
+	HeapTupleSetFieldNull(pg_attribute, attacl, nulls);
+	HeapTupleMarkColumnUpdated(pg_attribute, attacl, updated);
 
-	CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple);
+	HeapTupleSetFieldNull(pg_attribute, attoptions, nulls);
+	HeapTupleMarkColumnUpdated(pg_attribute, attoptions, updated);
+
+	HeapTupleSetFieldNull(pg_attribute, attfdwoptions, nulls);
+	HeapTupleMarkColumnUpdated(pg_attribute, attfdwoptions, updated);
+
+	tuple = heap_update_tuple(tuple, RelationGetDescr(attr_rel),
+							  NULL, nulls, updated);
+
+	CatalogTupleUpdate(attr_rel, &tuple->t_self, tuple, updated, NULL);
 
 	/*
 	 * Because updating the pg_attribute row will trigger a relcache flush for
@@ -1765,10 +1769,9 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 	 */
 
 	table_close(attr_rel, RowExclusiveLock);
-
 	RemoveStatistics(relid, attnum);
-
 	relation_close(rel, NoLock);
+	bms_free(updated);
 }
 
 /*
@@ -1967,23 +1970,15 @@ RelationClearMissing(Relation rel)
 	Oid			relid = RelationGetRelid(rel);
 	int			natts = RelationGetNumberOfAttributes(rel);
 	int			attnum;
-	Datum		repl_val[Natts_pg_attribute];
-	bool		repl_null[Natts_pg_attribute];
-	bool		repl_repl[Natts_pg_attribute];
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 	Form_pg_attribute attrtuple;
 	HeapTuple	tuple,
 				newtuple;
 
-	memset(repl_val, 0, sizeof(repl_val));
-	memset(repl_null, false, sizeof(repl_null));
-	memset(repl_repl, false, sizeof(repl_repl));
-
-	repl_val[Anum_pg_attribute_atthasmissing - 1] = BoolGetDatum(false);
-	repl_null[Anum_pg_attribute_attmissingval - 1] = true;
-
-	repl_repl[Anum_pg_attribute_atthasmissing - 1] = true;
-	repl_repl[Anum_pg_attribute_attmissingval - 1] = true;
-
+	HeapTupleUpdateValue(pg_attribute, atthasmissing, BoolGetDatum(false), values, nulls, updated);
+	HeapTupleUpdateValueNull(pg_attribute, attmissingval, values, nulls, updated);
 
 	/* Get a lock on pg_attribute */
 	attr_rel = table_open(AttributeRelationId, RowExclusiveLock);
@@ -2003,10 +1998,10 @@ RelationClearMissing(Relation rel)
 		/* ignore any where atthasmissing is not true */
 		if (attrtuple->atthasmissing)
 		{
-			newtuple = heap_modify_tuple(tuple, RelationGetDescr(attr_rel),
-										 repl_val, repl_null, repl_repl);
+			newtuple = heap_update_tuple(tuple, RelationGetDescr(attr_rel),
+										 values, nulls, updated);
 
-			CatalogTupleUpdate(attr_rel, &newtuple->t_self, newtuple);
+			CatalogTupleUpdate(attr_rel, &newtuple->t_self, newtuple, updated, NULL);
 
 			heap_freetuple(newtuple);
 		}
@@ -2019,6 +2014,7 @@ RelationClearMissing(Relation rel)
 	 * there's nothing else to do here.
 	 */
 	table_close(attr_rel, RowExclusiveLock);
+	bms_free(updated);
 }
 
 /*
@@ -2029,9 +2025,9 @@ RelationClearMissing(Relation rel)
 void
 StoreAttrMissingVal(Relation rel, AttrNumber attnum, Datum missingval)
 {
-	Datum		valuesAtt[Natts_pg_attribute] = {0};
-	bool		nullsAtt[Natts_pg_attribute] = {0};
-	bool		replacesAtt[Natts_pg_attribute] = {0};
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 	Relation	attrrel;
 	Form_pg_attribute attStruct;
 	HeapTuple	atttup,
@@ -2060,17 +2056,15 @@ StoreAttrMissingVal(Relation rel, AttrNumber attnum, Datum missingval)
 												 attStruct->attalign));
 
 	/* Update the pg_attribute row */
-	valuesAtt[Anum_pg_attribute_atthasmissing - 1] = BoolGetDatum(true);
-	replacesAtt[Anum_pg_attribute_atthasmissing - 1] = true;
+	HeapTupleUpdateValue(pg_attribute, atthasmissing, BoolGetDatum(true), values, nulls, updated);
+	HeapTupleUpdateValue(pg_attribute, attmissingval, missingval, values, nulls, updated);
 
-	valuesAtt[Anum_pg_attribute_attmissingval - 1] = missingval;
-	replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
-
-	newtup = heap_modify_tuple(atttup, RelationGetDescr(attrrel),
-							   valuesAtt, nullsAtt, replacesAtt);
-	CatalogTupleUpdate(attrrel, &newtup->t_self, newtup);
+	newtup = heap_update_tuple(atttup, RelationGetDescr(attrrel),
+							   values, nulls, updated);
+	CatalogTupleUpdate(attrrel, &newtup->t_self, newtup, updated, NULL);
 
 	/* clean up */
+	bms_free(updated);
 	ReleaseSysCache(atttup);
 	table_close(attrrel, RowExclusiveLock);
 }
@@ -2085,9 +2079,9 @@ StoreAttrMissingVal(Relation rel, AttrNumber attnum, Datum missingval)
 void
 SetAttrMissing(Oid relid, char *attname, char *value)
 {
-	Datum		valuesAtt[Natts_pg_attribute] = {0};
-	bool		nullsAtt[Natts_pg_attribute] = {0};
-	bool		replacesAtt[Natts_pg_attribute] = {0};
+	Datum		values[Natts_pg_attribute] = {0};
+	bool		nulls[Natts_pg_attribute] = {false};
+	Bitmapset  *updated = NULL;
 	Datum		missingval;
 	Form_pg_attribute attStruct;
 	Relation	attrrel,
@@ -2120,16 +2114,15 @@ SetAttrMissing(Oid relid, char *attname, char *value)
 								  Int32GetDatum(attStruct->atttypmod));
 
 	/* update the tuple - set atthasmissing and attmissingval */
-	valuesAtt[Anum_pg_attribute_atthasmissing - 1] = BoolGetDatum(true);
-	replacesAtt[Anum_pg_attribute_atthasmissing - 1] = true;
-	valuesAtt[Anum_pg_attribute_attmissingval - 1] = missingval;
-	replacesAtt[Anum_pg_attribute_attmissingval - 1] = true;
+	HeapTupleUpdateValue(pg_attribute, atthasmissing, BoolGetDatum(true), values, nulls, updated);
+	HeapTupleUpdateValue(pg_attribute, attmissingval, missingval, values, nulls, updated);
 
-	newtup = heap_modify_tuple(atttup, RelationGetDescr(attrrel),
-							   valuesAtt, nullsAtt, replacesAtt);
-	CatalogTupleUpdate(attrrel, &newtup->t_self, newtup);
+	newtup = heap_update_tuple(atttup, RelationGetDescr(attrrel),
+							   values, nulls, updated);
+	CatalogTupleUpdate(attrrel, &newtup->t_self, newtup, updated, NULL);
 
 	/* clean up */
+	bms_free(updated);
 	ReleaseSysCache(atttup);
 	table_close(attrrel, RowExclusiveLock);
 	table_close(tablerel, AccessExclusiveLock);
@@ -2719,6 +2712,7 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 	SysScanDesc conscan;
 	ScanKeyData skey[3];
 	HeapTuple	tup;
+	Bitmapset  *updated = NULL;
 
 	/* Search for a pg_constraint entry with same name and relation */
 	conDesc = table_open(ConstraintRelationId, RowExclusiveLock);
@@ -2834,24 +2828,25 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 		 */
 		if (rel->rd_rel->relispartition)
 		{
-			con->coninhcount = 1;
-			con->conislocal = false;
+			HeapTupleUpdateField(pg_constraint, coninhcount, 1, con, updated);
+			HeapTupleUpdateField(pg_constraint, conislocal, false, con, updated);
 		}
 		else
 		{
 			if (is_local)
-				con->conislocal = true;
+				HeapTupleUpdateField(pg_constraint, conislocal, true, con, updated);
 			else if (pg_add_s16_overflow(con->coninhcount, 1,
 										 &con->coninhcount))
 				ereport(ERROR,
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
+			HeapTupleUpdateField(pg_constraint, coninhcount, con->coninhcount, con, updated);
 		}
 
 		if (is_no_inherit)
 		{
 			Assert(is_local);
-			con->connoinherit = true;
+			HeapTupleUpdateField(pg_constraint, connoinherit, true, con, updated);
 		}
 
 		/*
@@ -2863,11 +2858,12 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 		if (is_enforced && !con->conenforced)
 		{
 			Assert(is_local);
-			con->conenforced = true;
-			con->convalidated = true;
+			HeapTupleUpdateField(pg_constraint, conenforced, true, con, updated);
+			HeapTupleUpdateField(pg_constraint, convalidated, true, con, updated);
 		}
 
-		CatalogTupleUpdate(conDesc, &tup->t_self, tup);
+		CatalogTupleUpdate(conDesc, &tup->t_self, tup, updated, NULL);
+		bms_free(updated);
 	}
 
 	systable_endscan(conscan);
@@ -3148,6 +3144,7 @@ SetRelationNumChecks(Relation rel, int numchecks)
 	Relation	relrel;
 	HeapTuple	reltup;
 	Form_pg_class relStruct;
+	Bitmapset  *updated = NULL;
 
 	relrel = table_open(RelationRelationId, RowExclusiveLock);
 	reltup = SearchSysCacheCopy1(RELOID,
@@ -3159,9 +3156,10 @@ SetRelationNumChecks(Relation rel, int numchecks)
 
 	if (relStruct->relchecks != numchecks)
 	{
-		relStruct->relchecks = numchecks;
+		HeapTupleUpdateField(pg_class, relchecks, numchecks, relStruct, updated);
 
-		CatalogTupleUpdate(relrel, &reltup->t_self, reltup);
+		CatalogTupleUpdate(relrel, &reltup->t_self, reltup, updated, NULL);
+		bms_free(updated);
 	}
 	else
 	{
@@ -3470,7 +3468,7 @@ CopyStatistics(Oid fromrelid, Oid torelid)
 		if (indstate == NULL)
 			indstate = CatalogOpenIndexes(statrel);
 
-		CatalogTupleInsertWithInfo(statrel, tup, indstate);
+		CatalogTupleInsert(statrel, tup, indstate);
 
 		heap_freetuple(tup);
 	}
@@ -3906,8 +3904,8 @@ StorePartitionKey(Relation rel,
 	Datum		partexprDatum;
 	Relation	pg_partitioned_table;
 	HeapTuple	tuple;
-	Datum		values[Natts_pg_partitioned_table];
-	bool		nulls[Natts_pg_partitioned_table] = {0};
+	Datum		values[Natts_pg_partitioned_table] = {0};
+	bool		nulls[Natts_pg_partitioned_table] = {false};
 	ObjectAddress myself;
 	ObjectAddress referenced;
 	ObjectAddresses *addrs;
@@ -3935,20 +3933,20 @@ StorePartitionKey(Relation rel,
 
 	/* Only this can ever be NULL */
 	if (!partexprDatum)
-		nulls[Anum_pg_partitioned_table_partexprs - 1] = true;
+		HeapTupleSetValueNull(pg_partitioned_table, partexprs, values, nulls);
 
-	values[Anum_pg_partitioned_table_partrelid - 1] = ObjectIdGetDatum(RelationGetRelid(rel));
-	values[Anum_pg_partitioned_table_partstrat - 1] = CharGetDatum(strategy);
-	values[Anum_pg_partitioned_table_partnatts - 1] = Int16GetDatum(partnatts);
-	values[Anum_pg_partitioned_table_partdefid - 1] = ObjectIdGetDatum(InvalidOid);
-	values[Anum_pg_partitioned_table_partattrs - 1] = PointerGetDatum(partattrs_vec);
-	values[Anum_pg_partitioned_table_partclass - 1] = PointerGetDatum(partopclass_vec);
-	values[Anum_pg_partitioned_table_partcollation - 1] = PointerGetDatum(partcollation_vec);
-	values[Anum_pg_partitioned_table_partexprs - 1] = partexprDatum;
+	HeapTupleSetValue(pg_partitioned_table, partrelid, ObjectIdGetDatum(RelationGetRelid(rel)), values);
+	HeapTupleSetValue(pg_partitioned_table, partstrat, CharGetDatum(strategy), values);
+	HeapTupleSetValue(pg_partitioned_table, partnatts, Int16GetDatum(partnatts), values);
+	HeapTupleSetValue(pg_partitioned_table, partdefid, ObjectIdGetDatum(InvalidOid), values);
+	HeapTupleSetValue(pg_partitioned_table, partattrs, PointerGetDatum(partattrs_vec), values);
+	HeapTupleSetValue(pg_partitioned_table, partclass, PointerGetDatum(partopclass_vec), values);
+	HeapTupleSetValue(pg_partitioned_table, partcollation, PointerGetDatum(partcollation_vec), values);
+	HeapTupleSetValue(pg_partitioned_table, partexprs, partexprDatum, values);
 
 	tuple = heap_form_tuple(RelationGetDescr(pg_partitioned_table), values, nulls);
 
-	CatalogTupleInsert(pg_partitioned_table, tuple);
+	CatalogTupleInsert(pg_partitioned_table, tuple, NULL);
 	table_close(pg_partitioned_table, RowExclusiveLock);
 
 	/* Mark this relation as dependent on a few things as follows */
@@ -4052,9 +4050,9 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
 	Relation	classRel;
 	HeapTuple	tuple,
 				newtuple;
-	Datum		new_val[Natts_pg_class];
-	bool		new_null[Natts_pg_class],
-				new_repl[Natts_pg_class];
+	Datum		values[Natts_pg_class] = {0};
+	bool		nulls[Natts_pg_class] = {false};
+	Bitmapset  *updated = NULL;
 	Oid			defaultPartOid;
 
 	/* Update pg_class tuple */
@@ -4065,12 +4063,14 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
 		elog(ERROR, "cache lookup failed for relation %u",
 			 RelationGetRelid(rel));
 
+
 #ifdef USE_ASSERT_CHECKING
 	{
 		Form_pg_class classForm;
 		bool		isnull;
 
 		classForm = (Form_pg_class) GETSTRUCT(tuple);
+
 		Assert(!classForm->relispartition);
 		(void) SysCacheGetAttr(RELOID, tuple, Anum_pg_class_relpartbound,
 							   &isnull);
@@ -4079,26 +4079,23 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
 #endif
 
 	/* Fill in relpartbound value */
-	memset(new_val, 0, sizeof(new_val));
-	memset(new_null, false, sizeof(new_null));
-	memset(new_repl, false, sizeof(new_repl));
-	new_val[Anum_pg_class_relpartbound - 1] = CStringGetTextDatum(nodeToString(bound));
-	new_null[Anum_pg_class_relpartbound - 1] = false;
-	new_repl[Anum_pg_class_relpartbound - 1] = true;
-	newtuple = heap_modify_tuple(tuple, RelationGetDescr(classRel),
-								 new_val, new_null, new_repl);
+	HeapTupleUpdateValue(pg_class, relpartbound, CStringGetTextDatum(nodeToString(bound)), values, nulls, updated);
+	newtuple = heap_update_tuple(tuple, RelationGetDescr(classRel),
+								 values, nulls, updated);
+
 	/* Also set the flag */
-	((Form_pg_class) GETSTRUCT(newtuple))->relispartition = true;
+	HeapTupleUpdateField(pg_class, relispartition, true, (Form_pg_class) GETSTRUCT(newtuple), updated);
 
 	/*
 	 * We already checked for no inheritance children, but reset
 	 * relhassubclass in case it was left over.
 	 */
 	if (rel->rd_rel->relkind == RELKIND_RELATION && rel->rd_rel->relhassubclass)
-		((Form_pg_class) GETSTRUCT(newtuple))->relhassubclass = false;
+		HeapTupleUpdateField(pg_class, relhassubclass, false, (Form_pg_class) GETSTRUCT(newtuple), updated);
 
-	CatalogTupleUpdate(classRel, &newtuple->t_self, newtuple);
+	CatalogTupleUpdate(classRel, &newtuple->t_self, newtuple, updated, NULL);
 	heap_freetuple(newtuple);
+	bms_free(updated);
 	table_close(classRel, RowExclusiveLock);
 
 	/*

@@ -427,6 +427,7 @@ AlterCollation(AlterCollationStmt *stmt)
 	Oid			collOid;
 	HeapTuple	tup;
 	Form_pg_collation collForm;
+	Bitmapset  *updated = NULL;
 	Datum		datum;
 	bool		isnull;
 	char	   *oldversion;
@@ -468,29 +469,22 @@ AlterCollation(AlterCollationStmt *stmt)
 		elog(ERROR, "invalid collation version change");
 	else if (oldversion && newversion && strcmp(newversion, oldversion) != 0)
 	{
-		bool		nulls[Natts_pg_collation];
-		bool		replaces[Natts_pg_collation];
-		Datum		values[Natts_pg_collation];
+		bool		nulls[Natts_pg_collation] = {false};
+		Datum		values[Natts_pg_collation] = {0};
 
 		ereport(NOTICE,
 				(errmsg("changing version from %s to %s",
 						oldversion, newversion)));
 
-		memset(values, 0, sizeof(values));
-		memset(nulls, false, sizeof(nulls));
-		memset(replaces, false, sizeof(replaces));
+		HeapTupleUpdateValue(pg_collation, collversion, CStringGetTextDatum(newversion), values, nulls, updated);
 
-		values[Anum_pg_collation_collversion - 1] = CStringGetTextDatum(newversion);
-		replaces[Anum_pg_collation_collversion - 1] = true;
-
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel),
-								values, nulls, replaces);
+		tup = heap_update_tuple(tup, RelationGetDescr(rel), values, nulls, updated);
 	}
 	else
 		ereport(NOTICE,
 				(errmsg("version has not changed")));
 
-	CatalogTupleUpdate(rel, &tup->t_self, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup, updated, NULL);
 
 	InvokeObjectPostAlterHook(CollationRelationId, collOid, 0);
 
@@ -498,6 +492,7 @@ AlterCollation(AlterCollationStmt *stmt)
 
 	heap_freetuple(tup);
 	table_close(rel, NoLock);
+	bms_free(updated);
 
 	return address;
 }
