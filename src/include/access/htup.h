@@ -14,6 +14,7 @@
 #ifndef HTUP_H
 #define HTUP_H
 
+#include "catalog/pg_aggregate_d.h"
 #include "storage/itemptr.h"
 
 /* typedefs and forward declarations for structs defined in htup_details.h */
@@ -76,6 +77,66 @@ typedef HeapTupleData *HeapTuple;
  * Accessor macros to be used with HeapTuple pointers.
  */
 #define HeapTupleIsValid(tuple) ((tuple) != NULL)
+
+#define HeapTupleValue(table_name, field, values) \
+	(values)[Anum_##table_name##_##field - 1]
+
+/*
+ * These are useful when forming tuples for CatalogTupleInsert()
+ */
+
+#define HeapTupleSetField(table_name, field, value, form_ptr) \
+	(form_ptr)->field = (value)
+
+#define HeapTupleSetFieldNull(table_name, field, nulls) \
+	(nulls)[Anum_##table_name##_##field - 1] = true
+
+#define HeapTupleSetValue(table_name, field, value, values) \
+	(values)[Anum_##table_name##_##field - 1] = (value)
+
+#define HeapTupleSetValueNull(table_name, field, values, nulls) \
+	do { \
+		(values)[Anum_##table_name##_##field - 1] = (Datum) 0; \
+		(nulls)[Anum_##table_name##_##field - 1] = true; \
+	} while(0)
+
+/*
+ * These are useful when forming tuples for CatalogTupleUpdate()
+ *
+ * Updated catalog tuples need to track which fields were changed when
+ * calling  heap_update_tuple(), so we use a bitmap to keep track of that.
+ */
+#define HeapTupleMarkColumnUpdated(table_name, field, updated) \
+	(updated) = bms_add_member((updated), \
+		Anum_##table_name##_##field - FirstLowInvalidHeapAttributeNumber)
+
+#define HeapTupleUpdateSetAllColumnsUpdated(table_name, updated) \
+	(updated) = bms_add_range((updated), 1 - FirstLowInvalidHeapAttributeNumber, \
+						  Natts_##table_name - FirstLowInvalidHeapAttributeNumber)
+
+#define HeapTupleSetColumnNotUpdated(table_name, field, updated) \
+	(updated) = bms_del_member((updated), \
+		Anum_##table_name##_##field - FirstLowInvalidHeapAttributeNumber)
+
+#define HeapTupleUpdateField(table_name, field, value, form_ptr, updated) \
+	do { \
+		(form_ptr)->field = (value); \
+		HeapTupleMarkColumnUpdated(table_name, field, updated); \
+	} while(0)
+
+#define HeapTupleUpdateValue(table_name, field, value, values, nulls, updated) \
+	do { \
+		(values)[Anum_##table_name##_##field - 1] = (Datum) (value); \
+		(nulls)[Anum_##table_name##_##field - 1] = false; \
+		HeapTupleMarkColumnUpdated(table_name, field, updated); \
+	} while(0)
+
+#define HeapTupleUpdateValueNull(table_name, field, values, nulls, updated) \
+	do { \
+		(values)[Anum_##table_name##_##field - 1] = (Datum) 0; \
+		(nulls)[Anum_##table_name##_##field - 1] = true; \
+		HeapTupleMarkColumnUpdated(table_name, field, updated); \
+	} while(0)
 
 /* HeapTupleHeader functions implemented in utils/time/combocid.c */
 extern CommandId HeapTupleHeaderGetCmin(const HeapTupleHeaderData *tup);

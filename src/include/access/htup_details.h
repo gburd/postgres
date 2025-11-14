@@ -21,6 +21,9 @@
 #include "storage/bufpage.h"
 #include "varatt.h"
 
+/* Forward declarations */
+typedef struct Bitmapset Bitmapset;
+
 /*
  * MaxTupleAttributeNumber limits the number of (user) columns in a tuple.
  * The key limit on this value is that the size of the fixed overhead for
@@ -835,6 +838,11 @@ extern HeapTuple heap_modify_tuple_by_cols(HeapTuple tuple,
 										   const int *replCols,
 										   const Datum *replValues,
 										   const bool *replIsnull);
+extern HeapTuple heap_update_tuple(HeapTuple tuple,
+								   TupleDesc tupleDesc,
+								   const Datum *replValues,
+								   const bool *replIsnull,
+								   const Bitmapset *replaces);
 extern void heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 							  Datum *values, bool *isnull);
 extern void heap_freetuple(HeapTuple htup);

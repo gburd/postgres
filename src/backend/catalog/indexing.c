@@ -225,57 +225,66 @@ CatalogTupleCheckConstraints(Relation heapRel, HeapTuple tup)
  *
  * This is a convenience routine for the common case of inserting a single
  * tuple in a system catalog; it inserts a new heap tuple, keeping indexes
- * current.  Avoid using it for multiple tuples, since opening the indexes
- * and building the index info structures is moderately expensive.
- * (Use CatalogTupleInsertWithInfo in such cases.)
- */
-void
-CatalogTupleInsert(Relation heapRel, HeapTuple tup)
-{
-	CatalogIndexState indstate;
-
-	CatalogTupleCheckConstraints(heapRel, tup);
-
-	indstate = CatalogOpenIndexes(heapRel);
-
-	simple_heap_insert(heapRel, tup);
-
-	CatalogIndexInsert(indstate, tup, TU_All);
-	CatalogCloseIndexes(indstate);
-}
-
-/*
- * CatalogTupleInsertWithInfo - as above, but with caller-supplied index info
+ * current.
  *
- * This should be used when it's important to amortize CatalogOpenIndexes/
- * CatalogCloseIndexes work across multiple insertions.  At some point we
- * might cache the CatalogIndexState data somewhere (perhaps in the relcache)
- * so that callers needn't trouble over this ... but we don't do so today.
+ * If 'indstate' is NULL, the function opens and closes the indexes internally.
+ * This is convenient for single-tuple updates but has overhead from opening the
+ * indexes and building index info structures.
+ *
+ * If 'indstate' is provided (non-NULL), it is used directly without opening or
+ * closing indexes. This allows callers to amortize index management costs across
+ * multiple tuple updates. Callers must use CatalogOpenIndexes() before the first
+ * update and CatalogCloseIndexes() after the last update.
+ *
+ * XXX: At some point we might cache the CatalogIndexState data somewhere (perhaps
+ * in the relcache) so that callers needn't trouble over this.
  */
 void
-CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
-						   CatalogIndexState indstate)
+CatalogTupleInsert(Relation heapRel, HeapTuple tup,
+				   CatalogIndexState indstate)
 {
+	bool		close_indexes = false;
+
+	/* Open indexes if not provided by caller */
+	if (indstate == NULL)
+	{
+		indstate = CatalogOpenIndexes(heapRel);
+		close_indexes = true;
+	}
+
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	simple_heap_insert(heapRel, tup);
 
 	CatalogIndexInsert(indstate, tup, TU_All);
+
+	/* Close indexes only if we opened them ourselves */
+	if (close_indexes)
+		CatalogCloseIndexes(indstate);
 }
 
 /*
- * CatalogTuplesMultiInsertWithInfo - as above, but for multiple tuples
+ * CatalogTuplesMultiInsert - as above, but for multiple tuples
  *
  * Insert multiple tuples into the given catalog relation at once, with an
  * amortized cost of CatalogOpenIndexes.
  */
 void
-CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
-								 int ntuples, CatalogIndexState indstate)
+CatalogTuplesMultiInsert(Relation heapRel, TupleTableSlot **slot,
+						 int ntuples, CatalogIndexState indstate)
 {
+	bool		close_indexes = false;
+
 	/* Nothing to do */
 	if (ntuples <= 0)
 		return;
+
+	/* Open indexes if not provided by caller */
+	if (indstate == NULL)
+	{
+		indstate = CatalogOpenIndexes(heapRel);
+		close_indexes = true;
+	}
 
 	heap_multi_insert(heapRel, slot, ntuples,
 					  GetCurrentCommandId(true), 0, NULL);
@@ -296,6 +305,10 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 		if (should_free)
 			heap_freetuple(tuple);
 	}
+
+	/* Close indexes only if we opened them ourselves */
+	if (close_indexes)
+		CatalogCloseIndexes(indstate);
 }
 
 /*
@@ -303,47 +316,45 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
  *
  * Update the tuple identified by "otid", replacing it with the data in "tup".
  *
- * This is a convenience routine for the common case of updating a single
- * tuple in a system catalog; it updates one heap tuple, keeping indexes
- * current.  Avoid using it for multiple tuples, since opening the indexes
- * and building the index info structures is moderately expensive.
- * (Use CatalogTupleUpdateWithInfo in such cases.)
- */
-void
-CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tup)
-{
-	CatalogIndexState indstate;
-	TU_UpdateIndexes updateIndexes = TU_All;
-
-	CatalogTupleCheckConstraints(heapRel, tup);
-
-	indstate = CatalogOpenIndexes(heapRel);
-
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
-
-	CatalogIndexInsert(indstate, tup, updateIndexes);
-	CatalogCloseIndexes(indstate);
-}
-
-/*
- * CatalogTupleUpdateWithInfo - as above, but with caller-supplied index info
+ * This function updates a heap tuple in a system catalog and keeps its indexes
+ * current. The 'updated' bitmapset specifies which columns were modified, using
+ * the same encoding as HeapDetermineColumnsInfo().
  *
- * This should be used when it's important to amortize CatalogOpenIndexes/
- * CatalogCloseIndexes work across multiple updates.  At some point we
- * might cache the CatalogIndexState data somewhere (perhaps in the relcache)
- * so that callers needn't trouble over this ... but we don't do so today.
+ * If 'indstate' is NULL, the function opens and closes the indexes internally.
+ * This is convenient for single-tuple updates but has overhead from opening the
+ * indexes and building index info structures.
+ *
+ * If 'indstate' is provided (non-NULL), it is used directly without opening or
+ * closing indexes. This allows callers to amortize index management costs across
+ * multiple tuple updates. Callers must use CatalogOpenIndexes() before the first
+ * update and CatalogCloseIndexes() after the last update.
+ *
+ * XXX: At some point we might cache the CatalogIndexState data somewhere (perhaps
+ * in the relcache) so that callers needn't trouble over this.
  */
 void
-CatalogTupleUpdateWithInfo(Relation heapRel, const ItemPointerData *otid, HeapTuple tup,
-						   CatalogIndexState indstate)
+CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tuple,
+				   const Bitmapset *updated, CatalogIndexState indstate)
 {
 	TU_UpdateIndexes updateIndexes = TU_All;
+	bool		close_indexes = false;
 
-	CatalogTupleCheckConstraints(heapRel, tup);
+	CatalogTupleCheckConstraints(heapRel, tuple);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	/* Open indexes if not provided by caller */
+	if (indstate == NULL)
+	{
+		indstate = CatalogOpenIndexes(heapRel);
+		close_indexes = true;
+	}
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	simple_heap_update(heapRel, otid, tuple, &updateIndexes);
+
+	CatalogIndexInsert(indstate, tuple, updateIndexes);
+
+	/* Close indexes only if we opened them ourselves */
+	if (close_indexes)
+		CatalogCloseIndexes(indstate);
 }
 
 /*
@@ -355,11 +366,6 @@ CatalogTupleUpdateWithInfo(Relation heapRel, const ItemPointerData *otid, HeapTu
  * cleanup will be done later by VACUUM.  However, callers of this function
  * shouldn't have to know that; we'd like a uniform abstraction for all
  * catalog tuple changes.  Hence, provide this currently-trivial wrapper.
- *
- * The abstraction is a bit leaky in that we don't provide an optimized
- * CatalogTupleDeleteWithInfo version, because there is currently nothing to
- * optimize.  If we ever need that, rather than touching a lot of call sites,
- * it might be better to do something about caching CatalogIndexState.
  */
 void
 CatalogTupleDelete(Relation heapRel, const ItemPointerData *tid)

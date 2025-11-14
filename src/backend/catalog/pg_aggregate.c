@@ -79,9 +79,9 @@ AggregateCreate(const char *aggName,
 	Relation	aggdesc;
 	HeapTuple	tup;
 	HeapTuple	oldtup;
-	bool		nulls[Natts_pg_aggregate];
-	Datum		values[Natts_pg_aggregate];
-	bool		replaces[Natts_pg_aggregate];
+	bool		nulls[Natts_pg_aggregate] = {false};
+	Datum		values[Natts_pg_aggregate] = {0};
+	Bitmapset  *updated = NULL;
 	Form_pg_proc proc;
 	Oid			transfn;
 	Oid			finalfn = InvalidOid;	/* can be omitted */
@@ -102,7 +102,6 @@ AggregateCreate(const char *aggName,
 	Oid			procOid;
 	TupleDesc	tupDesc;
 	char	   *detailmsg;
-	int			i;
 	ObjectAddress myself,
 				referenced;
 	ObjectAddresses *addrs;
@@ -584,7 +583,7 @@ AggregateCreate(const char *aggName,
 	/*
 	 * permission checks on used types
 	 */
-	for (i = 0; i < numArgs; i++)
+	for (int i = 0; i < numArgs; i++)
 	{
 		aclresult = object_aclcheck(TypeRelationId, aggArgTypes[i], GetUserId(), ACL_USAGE);
 		if (aclresult != ACLCHECK_OK)
@@ -651,40 +650,34 @@ AggregateCreate(const char *aggName,
 	tupDesc = aggdesc->rd_att;
 
 	/* initialize nulls and values */
-	for (i = 0; i < Natts_pg_aggregate; i++)
-	{
-		nulls[i] = false;
-		values[i] = (Datum) 0;
-		replaces[i] = true;
-	}
-	values[Anum_pg_aggregate_aggfnoid - 1] = ObjectIdGetDatum(procOid);
-	values[Anum_pg_aggregate_aggkind - 1] = CharGetDatum(aggKind);
-	values[Anum_pg_aggregate_aggnumdirectargs - 1] = Int16GetDatum(numDirectArgs);
-	values[Anum_pg_aggregate_aggtransfn - 1] = ObjectIdGetDatum(transfn);
-	values[Anum_pg_aggregate_aggfinalfn - 1] = ObjectIdGetDatum(finalfn);
-	values[Anum_pg_aggregate_aggcombinefn - 1] = ObjectIdGetDatum(combinefn);
-	values[Anum_pg_aggregate_aggserialfn - 1] = ObjectIdGetDatum(serialfn);
-	values[Anum_pg_aggregate_aggdeserialfn - 1] = ObjectIdGetDatum(deserialfn);
-	values[Anum_pg_aggregate_aggmtransfn - 1] = ObjectIdGetDatum(mtransfn);
-	values[Anum_pg_aggregate_aggminvtransfn - 1] = ObjectIdGetDatum(minvtransfn);
-	values[Anum_pg_aggregate_aggmfinalfn - 1] = ObjectIdGetDatum(mfinalfn);
-	values[Anum_pg_aggregate_aggfinalextra - 1] = BoolGetDatum(finalfnExtraArgs);
-	values[Anum_pg_aggregate_aggmfinalextra - 1] = BoolGetDatum(mfinalfnExtraArgs);
-	values[Anum_pg_aggregate_aggfinalmodify - 1] = CharGetDatum(finalfnModify);
-	values[Anum_pg_aggregate_aggmfinalmodify - 1] = CharGetDatum(mfinalfnModify);
-	values[Anum_pg_aggregate_aggsortop - 1] = ObjectIdGetDatum(sortop);
-	values[Anum_pg_aggregate_aggtranstype - 1] = ObjectIdGetDatum(aggTransType);
-	values[Anum_pg_aggregate_aggtransspace - 1] = Int32GetDatum(aggTransSpace);
-	values[Anum_pg_aggregate_aggmtranstype - 1] = ObjectIdGetDatum(aggmTransType);
-	values[Anum_pg_aggregate_aggmtransspace - 1] = Int32GetDatum(aggmTransSpace);
+	HeapTupleUpdateValue(pg_aggregate, aggfnoid, ObjectIdGetDatum(procOid), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggkind, CharGetDatum(aggKind), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggnumdirectargs, Int16GetDatum(numDirectArgs), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggtransfn, ObjectIdGetDatum(transfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggfinalfn, ObjectIdGetDatum(finalfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggcombinefn, ObjectIdGetDatum(combinefn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggserialfn, ObjectIdGetDatum(serialfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggdeserialfn, ObjectIdGetDatum(deserialfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmtransfn, ObjectIdGetDatum(mtransfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggminvtransfn, ObjectIdGetDatum(minvtransfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmfinalfn, ObjectIdGetDatum(mfinalfn), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggfinalextra, BoolGetDatum(finalfnExtraArgs), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmfinalextra, BoolGetDatum(mfinalfnExtraArgs), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggfinalmodify, CharGetDatum(finalfnModify), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmfinalmodify, CharGetDatum(mfinalfnModify), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggsortop, ObjectIdGetDatum(sortop), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggtranstype, ObjectIdGetDatum(aggTransType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggtransspace, Int32GetDatum(aggTransSpace), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmtranstype, ObjectIdGetDatum(aggmTransType), values, nulls, updated);
+	HeapTupleUpdateValue(pg_aggregate, aggmtransspace, Int32GetDatum(aggmTransSpace), values, nulls, updated);
 	if (agginitval)
-		values[Anum_pg_aggregate_agginitval - 1] = CStringGetTextDatum(agginitval);
+		HeapTupleUpdateValue(pg_aggregate, agginitval, CStringGetTextDatum(agginitval), values, nulls, updated);
 	else
-		nulls[Anum_pg_aggregate_agginitval - 1] = true;
+		HeapTupleUpdateValueNull(pg_aggregate, agginitval, values, nulls, updated);
 	if (aggminitval)
-		values[Anum_pg_aggregate_aggminitval - 1] = CStringGetTextDatum(aggminitval);
+		HeapTupleUpdateValue(pg_aggregate, aggminitval, CStringGetTextDatum(aggminitval), values, nulls, updated);
 	else
-		nulls[Anum_pg_aggregate_aggminitval - 1] = true;
+		HeapTupleUpdateValueNull(pg_aggregate, aggminitval, values, nulls, updated);
 
 	if (replace)
 		oldtup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(procOid));
@@ -717,20 +710,17 @@ AggregateCreate(const char *aggName,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 					 errmsg("cannot change number of direct arguments of an aggregate function")));
 
-		replaces[Anum_pg_aggregate_aggfnoid - 1] = false;
-		replaces[Anum_pg_aggregate_aggkind - 1] = false;
-		replaces[Anum_pg_aggregate_aggnumdirectargs - 1] = false;
-
-		tup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
-		CatalogTupleUpdate(aggdesc, &tup->t_self, tup);
+		tup = heap_update_tuple(oldtup, tupDesc, values, nulls, updated);
+		CatalogTupleUpdate(aggdesc, &tup->t_self, tup, updated, NULL);
 		ReleaseSysCache(oldtup);
 	}
 	else
 	{
 		tup = heap_form_tuple(tupDesc, values, nulls);
-		CatalogTupleInsert(aggdesc, tup);
+		CatalogTupleInsert(aggdesc, tup, NULL);
 	}
 
+	bms_free(updated);
 	table_close(aggdesc, RowExclusiveLock);
 
 	/*

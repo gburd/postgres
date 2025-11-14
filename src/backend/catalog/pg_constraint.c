@@ -85,8 +85,8 @@ CreateConstraintEntry(const char *constraintName,
 	Relation	conDesc;
 	Oid			conOid;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_constraint];
-	Datum		values[Natts_pg_constraint];
+	Datum		values[Natts_pg_constraint] = {0};
+	bool		nulls[Natts_pg_constraint] = {false};
 	ArrayType  *conkeyArray;
 	ArrayType  *confkeyArray;
 	ArrayType  *conpfeqopArray;
@@ -184,70 +184,70 @@ CreateConstraintEntry(const char *constraintName,
 
 	conOid = GetNewOidWithIndex(conDesc, ConstraintOidIndexId,
 								Anum_pg_constraint_oid);
-	values[Anum_pg_constraint_oid - 1] = ObjectIdGetDatum(conOid);
-	values[Anum_pg_constraint_conname - 1] = NameGetDatum(&cname);
-	values[Anum_pg_constraint_connamespace - 1] = ObjectIdGetDatum(constraintNamespace);
-	values[Anum_pg_constraint_contype - 1] = CharGetDatum(constraintType);
-	values[Anum_pg_constraint_condeferrable - 1] = BoolGetDatum(isDeferrable);
-	values[Anum_pg_constraint_condeferred - 1] = BoolGetDatum(isDeferred);
-	values[Anum_pg_constraint_conenforced - 1] = BoolGetDatum(isEnforced);
-	values[Anum_pg_constraint_convalidated - 1] = BoolGetDatum(isValidated);
-	values[Anum_pg_constraint_conrelid - 1] = ObjectIdGetDatum(relId);
-	values[Anum_pg_constraint_contypid - 1] = ObjectIdGetDatum(domainId);
-	values[Anum_pg_constraint_conindid - 1] = ObjectIdGetDatum(indexRelId);
-	values[Anum_pg_constraint_conparentid - 1] = ObjectIdGetDatum(parentConstrId);
-	values[Anum_pg_constraint_confrelid - 1] = ObjectIdGetDatum(foreignRelId);
-	values[Anum_pg_constraint_confupdtype - 1] = CharGetDatum(foreignUpdateType);
-	values[Anum_pg_constraint_confdeltype - 1] = CharGetDatum(foreignDeleteType);
-	values[Anum_pg_constraint_confmatchtype - 1] = CharGetDatum(foreignMatchType);
-	values[Anum_pg_constraint_conislocal - 1] = BoolGetDatum(conIsLocal);
-	values[Anum_pg_constraint_coninhcount - 1] = Int16GetDatum(conInhCount);
-	values[Anum_pg_constraint_connoinherit - 1] = BoolGetDatum(conNoInherit);
-	values[Anum_pg_constraint_conperiod - 1] = BoolGetDatum(conPeriod);
+	HeapTupleSetValue(pg_constraint, oid, ObjectIdGetDatum(conOid), values);
+	HeapTupleSetValue(pg_constraint, conname, NameGetDatum(&cname), values);
+	HeapTupleSetValue(pg_constraint, connamespace, ObjectIdGetDatum(constraintNamespace), values);
+	HeapTupleSetValue(pg_constraint, contype, CharGetDatum(constraintType), values);
+	HeapTupleSetValue(pg_constraint, condeferrable, BoolGetDatum(isDeferrable), values);
+	HeapTupleSetValue(pg_constraint, condeferred, BoolGetDatum(isDeferred), values);
+	HeapTupleSetValue(pg_constraint, conenforced, BoolGetDatum(isEnforced), values);
+	HeapTupleSetValue(pg_constraint, convalidated, BoolGetDatum(isValidated), values);
+	HeapTupleSetValue(pg_constraint, conrelid, ObjectIdGetDatum(relId), values);
+	HeapTupleSetValue(pg_constraint, contypid, ObjectIdGetDatum(domainId), values);
+	HeapTupleSetValue(pg_constraint, conindid, ObjectIdGetDatum(indexRelId), values);
+	HeapTupleSetValue(pg_constraint, conparentid, ObjectIdGetDatum(parentConstrId), values);
+	HeapTupleSetValue(pg_constraint, confrelid, ObjectIdGetDatum(foreignRelId), values);
+	HeapTupleSetValue(pg_constraint, confupdtype, CharGetDatum(foreignUpdateType), values);
+	HeapTupleSetValue(pg_constraint, confdeltype, CharGetDatum(foreignDeleteType), values);
+	HeapTupleSetValue(pg_constraint, confmatchtype, CharGetDatum(foreignMatchType), values);
+	HeapTupleSetValue(pg_constraint, conislocal, BoolGetDatum(conIsLocal), values);
+	HeapTupleSetValue(pg_constraint, coninhcount, Int16GetDatum(conInhCount), values);
+	HeapTupleSetValue(pg_constraint, connoinherit, BoolGetDatum(conNoInherit), values);
+	HeapTupleSetValue(pg_constraint, conperiod, BoolGetDatum(conPeriod), values);
 
 	if (conkeyArray)
-		values[Anum_pg_constraint_conkey - 1] = PointerGetDatum(conkeyArray);
+		HeapTupleSetValue(pg_constraint, conkey, PointerGetDatum(conkeyArray), values);
 	else
-		nulls[Anum_pg_constraint_conkey - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conkey, values, nulls);
 
 	if (confkeyArray)
-		values[Anum_pg_constraint_confkey - 1] = PointerGetDatum(confkeyArray);
+		HeapTupleSetValue(pg_constraint, confkey, PointerGetDatum(confkeyArray), values);
 	else
-		nulls[Anum_pg_constraint_confkey - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, confkey, values, nulls);
 
 	if (conpfeqopArray)
-		values[Anum_pg_constraint_conpfeqop - 1] = PointerGetDatum(conpfeqopArray);
+		HeapTupleSetValue(pg_constraint, conpfeqop, PointerGetDatum(conpfeqopArray), values);
 	else
-		nulls[Anum_pg_constraint_conpfeqop - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conpfeqop, values, nulls);
 
 	if (conppeqopArray)
-		values[Anum_pg_constraint_conppeqop - 1] = PointerGetDatum(conppeqopArray);
+		HeapTupleSetValue(pg_constraint, conppeqop, PointerGetDatum(conppeqopArray), values);
 	else
-		nulls[Anum_pg_constraint_conppeqop - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conppeqop, values, nulls);
 
 	if (conffeqopArray)
-		values[Anum_pg_constraint_conffeqop - 1] = PointerGetDatum(conffeqopArray);
+		HeapTupleSetValue(pg_constraint, conffeqop, PointerGetDatum(conffeqopArray), values);
 	else
-		nulls[Anum_pg_constraint_conffeqop - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conffeqop, values, nulls);
 
 	if (confdelsetcolsArray)
-		values[Anum_pg_constraint_confdelsetcols - 1] = PointerGetDatum(confdelsetcolsArray);
+		HeapTupleSetValue(pg_constraint, confdelsetcols, PointerGetDatum(confdelsetcolsArray), values);
 	else
-		nulls[Anum_pg_constraint_confdelsetcols - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, confdelsetcols, values, nulls);
 
 	if (conexclopArray)
-		values[Anum_pg_constraint_conexclop - 1] = PointerGetDatum(conexclopArray);
+		HeapTupleSetValue(pg_constraint, conexclop, PointerGetDatum(conexclopArray), values);
 	else
-		nulls[Anum_pg_constraint_conexclop - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conexclop, values, nulls);
 
 	if (conBin)
-		values[Anum_pg_constraint_conbin - 1] = CStringGetTextDatum(conBin);
+		HeapTupleSetValue(pg_constraint, conbin, CStringGetTextDatum(conBin), values);
 	else
-		nulls[Anum_pg_constraint_conbin - 1] = true;
+		HeapTupleSetValueNull(pg_constraint, conbin, values, nulls);
 
 	tup = heap_form_tuple(RelationGetDescr(conDesc), values, nulls);
 
-	CatalogTupleInsert(conDesc, tup);
+	CatalogTupleInsert(conDesc, tup, NULL);
 
 	ObjectAddressSet(conobject, ConstraintRelationId, conOid);
 
@@ -748,7 +748,7 @@ AdjustNotNullInheritance(Oid relid, AttrNumber attnum,
 	{
 		Relation	pg_constraint;
 		Form_pg_constraint conform;
-		bool		changed = false;
+		Bitmapset  *updated = NULL;
 
 		pg_constraint = table_open(ConstraintRelationId, RowExclusiveLock);
 		conform = (Form_pg_constraint) GETSTRUCT(tup);
@@ -784,19 +784,21 @@ AdjustNotNullInheritance(Oid relid, AttrNumber attnum,
 				ereport(ERROR,
 						errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("too many inheritance parents"));
-			changed = true;
+			HeapTupleMarkColumnUpdated(pg_constraint, coninhcount, updated);
 		}
 		else if (!conform->conislocal)
 		{
-			conform->conislocal = true;
-			changed = true;
+			HeapTupleUpdateField(pg_constraint, conislocal, true, conform, updated);
 		}
 
-		if (changed)
-			CatalogTupleUpdate(pg_constraint, &tup->t_self, tup);
+		if (!bms_is_empty(updated))
+		{
+			CatalogTupleUpdate(pg_constraint, &tup->t_self, tup, updated, NULL);
+		}
 
 		table_close(pg_constraint, RowExclusiveLock);
 
+		bms_free(updated);
 		return true;
 	}
 
@@ -928,6 +930,7 @@ RemoveConstraintById(Oid conId)
 			Relation	pgrel;
 			HeapTuple	relTup;
 			Form_pg_class classForm;
+			Bitmapset  *updated = NULL;
 
 			pgrel = table_open(RelationRelationId, RowExclusiveLock);
 			relTup = SearchSysCacheCopy1(RELOID,
@@ -938,14 +941,14 @@ RemoveConstraintById(Oid conId)
 			classForm = (Form_pg_class) GETSTRUCT(relTup);
 
 			if (classForm->relchecks > 0)
-				classForm->relchecks--;
+				HeapTupleUpdateField(pg_class, relchecks, classForm->relchecks - 1, classForm, updated);
 			else
 				/* should not happen */
 				elog(WARNING, "relation \"%s\" has relchecks = %d",
 					 RelationGetRelationName(rel), classForm->relchecks);
 
-			CatalogTupleUpdate(pgrel, &relTup->t_self, relTup);
-
+			CatalogTupleUpdate(pgrel, &relTup->t_self, relTup, updated, NULL);
+			bms_free(updated);
 			heap_freetuple(relTup);
 
 			table_close(pgrel, RowExclusiveLock);
@@ -990,6 +993,7 @@ RenameConstraintById(Oid conId, const char *newname)
 	Relation	conDesc;
 	HeapTuple	tuple;
 	Form_pg_constraint con;
+	Bitmapset  *updated = NULL;
 
 	conDesc = table_open(ConstraintRelationId, RowExclusiveLock);
 
@@ -1020,11 +1024,13 @@ RenameConstraintById(Oid conId, const char *newname)
 
 	/* OK, do the rename --- tuple is a copy, so OK to scribble on it */
 	namestrcpy(&(con->conname), newname);
+	HeapTupleMarkColumnUpdated(pg_constraint, conname, updated);
 
-	CatalogTupleUpdate(conDesc, &tuple->t_self, tuple);
+	CatalogTupleUpdate(conDesc, &tuple->t_self, tuple, updated, NULL);
 
 	InvokeObjectPostAlterHook(ConstraintRelationId, conId, 0);
 
+	bms_free(updated);
 	heap_freetuple(tuple);
 	table_close(conDesc, RowExclusiveLock);
 }
@@ -1072,15 +1078,17 @@ AlterConstraintNamespaces(Oid ownerId, Oid oldNspId,
 		/* Don't update if the object is already part of the namespace */
 		if (conform->connamespace == oldNspId && oldNspId != newNspId)
 		{
+			Bitmapset  *updated = NULL;
+
 			tup = heap_copytuple(tup);
 			conform = (Form_pg_constraint) GETSTRUCT(tup);
 
-			conform->connamespace = newNspId;
-
-			CatalogTupleUpdate(conRel, &tup->t_self, tup);
+			HeapTupleUpdateField(pg_constraint, connamespace, newNspId, conform, updated);
+			CatalogTupleUpdate(conRel, &tup->t_self, tup, updated, NULL);
+			bms_free(updated);
 
 			/*
-			 * Note: currently, the constraint will not have its own
+			 * NOTE: currently, the constraint will not have its own
 			 * dependency on the namespace, so we don't need to do
 			 * changeDependencyFor().
 			 */
@@ -1116,6 +1124,7 @@ ConstraintSetParentConstraint(Oid childConstrId,
 				newtup;
 	ObjectAddress depender;
 	ObjectAddress referenced;
+	Bitmapset  *updated = NULL;
 
 	constrRel = table_open(ConstraintRelationId, RowExclusiveLock);
 	tuple = SearchSysCache1(CONSTROID, ObjectIdGetDatum(childConstrId));
@@ -1131,16 +1140,17 @@ ConstraintSetParentConstraint(Oid childConstrId,
 			elog(ERROR, "constraint %u already has a parent constraint",
 				 childConstrId);
 
-		constrForm->conislocal = false;
+		HeapTupleUpdateField(pg_constraint, conislocal, false, constrForm, updated);
 		if (pg_add_s16_overflow(constrForm->coninhcount, 1,
 								&constrForm->coninhcount))
 			ereport(ERROR,
 					errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					errmsg("too many inheritance parents"));
 
-		constrForm->conparentid = parentConstrId;
+		HeapTupleMarkColumnUpdated(pg_constraint, coninhcount, updated);
+		HeapTupleUpdateField(pg_constraint, conparentid, parentConstrId, constrForm, updated);
 
-		CatalogTupleUpdate(constrRel, &tuple->t_self, newtup);
+		CatalogTupleUpdate(constrRel, &tuple->t_self, newtup, updated, NULL);
 
 		ObjectAddressSet(depender, ConstraintRelationId, childConstrId);
 
@@ -1152,14 +1162,14 @@ ConstraintSetParentConstraint(Oid childConstrId,
 	}
 	else
 	{
-		constrForm->coninhcount--;
-		constrForm->conislocal = true;
-		constrForm->conparentid = InvalidOid;
+		HeapTupleUpdateField(pg_constraint, coninhcount, constrForm->coninhcount - 1, constrForm, updated);
+		HeapTupleUpdateField(pg_constraint, conislocal, true, constrForm, updated);
+		HeapTupleUpdateField(pg_constraint, conparentid, InvalidOid, constrForm, updated);
 
 		/* Make sure there's no further inheritance. */
 		Assert(constrForm->coninhcount == 0);
 
-		CatalogTupleUpdate(constrRel, &tuple->t_self, newtup);
+		CatalogTupleUpdate(constrRel, &tuple->t_self, newtup, updated, NULL);
 
 		deleteDependencyRecordsForClass(ConstraintRelationId, childConstrId,
 										ConstraintRelationId,
@@ -1169,6 +1179,7 @@ ConstraintSetParentConstraint(Oid childConstrId,
 										DEPENDENCY_PARTITION_SEC);
 	}
 
+	bms_free(updated);
 	ReleaseSysCache(tuple);
 	table_close(constrRel, RowExclusiveLock);
 }

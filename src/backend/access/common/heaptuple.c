@@ -1326,6 +1326,125 @@ heap_modify_tuple_by_cols(HeapTuple tuple,
 }
 
 /*
+ * heap_update_tuple
+ *		Form a new tuple from an old tuple and a set of replacement values.
+ *
+ * Creates a new HeapTuple by selectively replacing attributes from the original
+ * tuple with new values. The 'updated' Bitmapset specifies which attributes
+ * (by attribute number, 1-based adjusted by FirstLowInvalidHeapAttributeNumber)
+ * should be replaced with corresponding entries from new_values and new_isnull
+ * arrays (0-based indices).
+ *
+ * Performance strategy:
+ * - If updating many attributes (> 2*natts/3), use heap_getattr() to extract
+ *   only the few non-updated attributes. This is O(k*n) where k is the number
+ *   of non-updated attributes, which is small when updating many.
+ * - If updating few attributes (<= 2*natts/3), use heap_deform_tuple() to
+ *   extract all attributes at once (O(n)), then replace the updated ones.
+ *   This avoids the O(n^2) cost of many heap_getattr() calls.
+ *
+ * The threshold of 2*natts/3 balances the fixed O(n) cost of heap_deform_tuple
+ * against the variable O(k*n) cost of heap_getattr, where k = natts - num_updated.
+ */
+HeapTuple
+heap_update_tuple(HeapTuple tuple,
+				  TupleDesc desc,
+				  const Datum *new_values,
+				  const bool *new_nulls,
+				  const Bitmapset *updated)
+{
+	int			natts = desc->natts;
+	int			num_updated;
+	Datum	   *values;
+	bool	   *nulls;
+	HeapTuple	new_tuple;
+
+	Assert(!bms_is_empty(updated));
+
+	num_updated = bms_num_members(updated);
+	Assert(num_updated <= natts);
+
+	values = (Datum *) palloc0(natts * sizeof(Datum));
+	nulls = (bool *) palloc0(natts * sizeof(bool));
+
+	/*
+	 * Choose strategy based on update density. When updating most attributes,
+	 * it's cheaper to extract the few unchanged ones individually.
+	 */
+	if (num_updated > (2 * natts) / 3)
+	{
+		/* Updating many: use heap_getattr for the few non-updated attributes */
+		for (int i = 0; i < natts; i++)
+		{
+			/*
+			 * Convert array index to attribute number, then to bitmapset
+			 * member. Array index i (0-based) -> attnum (1-based) -> bms
+			 * member.
+			 */
+			AttrNumber	attnum = i + 1;
+			int			member = attnum - FirstLowInvalidHeapAttributeNumber;
+
+			if (bms_is_member(member, updated))
+			{
+				/* Use replacement value */
+				if (unlikely(!new_values || !new_nulls))
+					values[i] = heap_getattr(tuple, attnum, desc, &nulls[i]);
+
+				if (likely(new_values))
+					values[i] = new_values[i];
+
+				if (likely(new_nulls))
+					nulls[i] = new_nulls[i];
+			}
+			else
+			{
+				/* Extract original value using heap_getattr (1-based) */
+				values[i] = heap_getattr(tuple, attnum, desc, &nulls[i]);
+			}
+		}
+	}
+	else
+	{
+		int			member = -1;
+
+		/* Updating few: deform entire tuple, then replace updated attributes */
+		heap_deform_tuple(tuple, desc, values, nulls);
+
+		while ((member = bms_next_member(updated, member)) >= 0)
+		{
+			/*
+			 * Convert bitmapset member to attribute number, then to array
+			 * index. bms_member -> attnum (1-based) -> array index i
+			 * (0-based).
+			 */
+			AttrNumber	attnum = member + FirstLowInvalidHeapAttributeNumber;
+			int			i = attnum - 1;
+
+			Assert(i >= 0 && i < natts);
+
+			if (likely(new_values))
+				values[i] = new_values[i];
+
+			if (likely(new_nulls))
+				nulls[i] = new_nulls[i];
+		}
+	}
+
+	/* Create the new tuple */
+	new_tuple = heap_form_tuple(desc, values, nulls);
+
+	pfree(values);
+	pfree(nulls);
+
+	/* Preserve tuple identity and location information from the original */
+	new_tuple->t_data->t_ctid = tuple->t_data->t_ctid;
+	new_tuple->t_self = tuple->t_self;
+	new_tuple->t_tableOid = tuple->t_tableOid;
+
+	return new_tuple;
+}
+
+/*
  * heap_deform_tuple
  *		Given a tuple, extract data into values/isnull arrays; this is
  *		the inverse of heap_form_tuple.

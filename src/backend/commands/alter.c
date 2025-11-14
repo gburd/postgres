@@ -180,7 +180,7 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 	AclResult	aclresult;
 	Datum	   *values;
 	bool	   *nulls;
-	bool	   *replaces;
+	Bitmapset  *updated = NULL;
 	NameData	nameattrdata;
 
 	oldtup = SearchSysCache1(oidCacheId, ObjectIdGetDatum(objectId));
@@ -326,15 +326,21 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 	/* Build modified tuple */
 	values = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(Datum));
 	nulls = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(bool));
-	replaces = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(bool));
+
+	/*
+	 * NOTE: We can't use the HeapTupleMarkColumnUpdated() macro here because
+	 * 'Anum_name' isn't a table/column name, it's a index for the relation
+	 * passed into the function as an argument.
+	 */
 	namestrcpy(&nameattrdata, new_name);
 	values[Anum_name - 1] = NameGetDatum(&nameattrdata);
-	replaces[Anum_name - 1] = true;
-	newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),
-							   values, nulls, replaces);
+	updated = bms_add_member(updated, Anum_name - FirstLowInvalidHeapAttributeNumber);
+
+	newtup = heap_update_tuple(oldtup, RelationGetDescr(rel),
+							   values, nulls, updated);
 
 	/* Perform actual update */
-	CatalogTupleUpdate(rel, &oldtup->t_self, newtup);
+	CatalogTupleUpdate(rel, &oldtup->t_self, newtup, updated, NULL);
 
 	InvokeObjectPostAlterHook(classId, objectId, 0);
 
@@ -357,7 +363,7 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 	/* Release memory */
 	pfree(values);
 	pfree(nulls);
-	pfree(replaces);
+	bms_free(updated);
 	heap_freetuple(newtup);
 
 	ReleaseSysCache(oldtup);
@@ -705,7 +711,7 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 				newtup;
 	Datum	   *values;
 	bool	   *nulls;
-	bool	   *replaces;
+	Bitmapset  *updated = NULL;
 
 	tup = SearchSysCacheCopy1(oidCacheId, ObjectIdGetDatum(objid));
 	if (!HeapTupleIsValid(tup)) /* should not happen */
@@ -804,19 +810,21 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 	/* Build modified tuple */
 	values = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(Datum));
 	nulls = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(bool));
-	replaces = palloc0(RelationGetNumberOfAttributes(rel) * sizeof(bool));
+
+	/* NOTE: Don't use the HeapTupleMarkColumnUpdated() macro here either. */
 	values[Anum_namespace - 1] = ObjectIdGetDatum(nspOid);
-	replaces[Anum_namespace - 1] = true;
-	newtup = heap_modify_tuple(tup, RelationGetDescr(rel),
-							   values, nulls, replaces);
+	updated = bms_add_member(updated, Anum_namespace - FirstLowInvalidHeapAttributeNumber);
+
+	newtup = heap_update_tuple(tup, RelationGetDescr(rel),
+							   values, nulls, updated);
 
 	/* Perform actual update */
-	CatalogTupleUpdate(rel, &tup->t_self, newtup);
+	CatalogTupleUpdate(rel, &tup->t_self, newtup, updated, NULL);
 
 	/* Release memory */
 	pfree(values);
 	pfree(nulls);
-	pfree(replaces);
+	bms_free(updated);
 
 	/* update dependency to point to the new schema */
 	if (changeDependencyFor(classId, objid,
@@ -967,7 +975,7 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 		HeapTuple	newtup;
 		Datum	   *values;
 		bool	   *nulls;
-		bool	   *replaces;
+		Bitmapset  *updated = NULL;
 
 		/* Superusers can bypass permission checks */
 		if (!superuser())
@@ -1014,9 +1022,12 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 		nattrs = RelationGetNumberOfAttributes(rel);
 		values = palloc0(nattrs * sizeof(Datum));
 		nulls = palloc0(nattrs * sizeof(bool));
-		replaces = palloc0(nattrs * sizeof(bool));
+
+		/*
+		 * NOTE: Don't use the HeapTupleMarkColumnUpdated() macro here either.
+		 */
 		values[Anum_owner - 1] = ObjectIdGetDatum(new_ownerId);
-		replaces[Anum_owner - 1] = true;
+		updated = bms_add_member(updated, Anum_owner - FirstLowInvalidHeapAttributeNumber);
 
 		/*
 		 * Determine the modified ACL for the new owner.  This is only
@@ -1032,16 +1043,21 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 
 				newAcl = aclnewowner(DatumGetAclP(datum),
 									 old_ownerId, new_ownerId);
+
+				/*
+				 * NOTE: Don't use the HeapTupleMarkColumnUpdated() macro here
+				 * either.
+				 */
 				values[Anum_acl - 1] = PointerGetDatum(newAcl);
-				replaces[Anum_acl - 1] = true;
+				updated = bms_add_member(updated, Anum_acl - FirstLowInvalidHeapAttributeNumber);
 			}
 		}
 
-		newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),
-								   values, nulls, replaces);
+		newtup = heap_update_tuple(oldtup, RelationGetDescr(rel),
+								   values, nulls, updated);
 
 		/* Perform actual update */
-		CatalogTupleUpdate(rel, &newtup->t_self, newtup);
+		CatalogTupleUpdate(rel, &newtup->t_self, newtup, updated, NULL);
 
 		UnlockTuple(rel, &oldtup->t_self, InplaceUpdateTupleLock);
 
@@ -1051,7 +1067,7 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 		/* Release memory */
 		pfree(values);
 		pfree(nulls);
-		pfree(replaces);
+		bms_free(updated);
 	}
 	else
 		UnlockTuple(rel, &oldtup->t_self, InplaceUpdateTupleLock);

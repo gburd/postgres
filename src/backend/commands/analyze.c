@@ -12,6 +12,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#include "catalog/pg_statistic_d.h"
 #include "postgres.h"
 
 #include <math.h>
@@ -1668,48 +1669,34 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 		VacAttrStats *stats = vacattrstats[attno];
 		HeapTuple	stup,
 					oldtup;
-		int			i,
-					k,
+		int			k,
 					n;
-		Datum		values[Natts_pg_statistic];
-		bool		nulls[Natts_pg_statistic];
-		bool		replaces[Natts_pg_statistic];
+		Datum		values[Natts_pg_statistic] = {0};
+		bool		nulls[Natts_pg_statistic] = {false};
+		Bitmapset  *updated = NULL;
 
 		/* Ignore attr if we weren't able to collect stats */
 		if (!stats->stats_valid)
 			continue;
 
-		/*
-		 * Construct a new pg_statistic tuple
-		 */
-		for (i = 0; i < Natts_pg_statistic; ++i)
-		{
-			nulls[i] = false;
-			replaces[i] = true;
-		}
+		/* Construct a new pg_statistic tuple */
+		HeapTupleUpdateSetAllColumnsUpdated(pg_statistic, updated);
+		HeapTupleSetValue(pg_statistic, starelid, ObjectIdGetDatum(relid), values);
+		HeapTupleSetValue(pg_statistic, staattnum, Int16GetDatum(stats->tupattnum), values);
+		HeapTupleSetValue(pg_statistic, stainherit, BoolGetDatum(inh), values);
+		HeapTupleSetValue(pg_statistic, stanullfrac, Float4GetDatum(stats->stanullfrac), values);
+		HeapTupleSetValue(pg_statistic, stawidth, Int32GetDatum(stats->stawidth), values);
+		HeapTupleSetValue(pg_statistic, stadistinct, Float4GetDatum(stats->stadistinct), values);
 
-		values[Anum_pg_statistic_starelid - 1] = ObjectIdGetDatum(relid);
-		values[Anum_pg_statistic_staattnum - 1] = Int16GetDatum(stats->tupattnum);
-		values[Anum_pg_statistic_stainherit - 1] = BoolGetDatum(inh);
-		values[Anum_pg_statistic_stanullfrac - 1] = Float4GetDatum(stats->stanullfrac);
-		values[Anum_pg_statistic_stawidth - 1] = Int32GetDatum(stats->stawidth);
-		values[Anum_pg_statistic_stadistinct - 1] = Float4GetDatum(stats->stadistinct);
-		i = Anum_pg_statistic_stakind1 - 1;
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = Int16GetDatum(stats->stakind[k]); /* stakindN */
-		}
-		i = Anum_pg_statistic_staop1 - 1;
+			HeapTupleSetValue(pg_statistic, stakind1 + k, Int16GetDatum(stats->stakind[k]), values);
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = ObjectIdGetDatum(stats->staop[k]);	/* staopN */
-		}
-		i = Anum_pg_statistic_stacoll1 - 1;
+			HeapTupleSetValue(pg_statistic, staop1 + k, ObjectIdGetDatum(stats->staop[k]), values);
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
-		{
-			values[i++] = ObjectIdGetDatum(stats->stacoll[k]);	/* stacollN */
-		}
-		i = Anum_pg_statistic_stanumbers1 - 1;
+			HeapTupleSetValue(pg_statistic, stacoll1 + k, ObjectIdGetDatum(stats->stacoll[k]), values);
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
 		{
 			if (stats->stanumbers[k] != NULL)
@@ -1721,15 +1708,12 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 				for (n = 0; n < nnum; n++)
 					numdatums[n] = Float4GetDatum(stats->stanumbers[k][n]);
 				arry = construct_array_builtin(numdatums, nnum, FLOAT4OID);
-				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
+				HeapTupleSetValue(pg_statistic, stanumbers1 + k, PointerGetDatum(arry), values);
 			}
 			else
-			{
-				nulls[i] = true;
-				values[i++] = (Datum) 0;
-			}
+				HeapTupleSetFieldNull(pg_statistic, stanumbers1, (nulls + k));
 		}
-		i = Anum_pg_statistic_stavalues1 - 1;
+
 		for (k = 0; k < STATISTIC_NUM_SLOTS; k++)
 		{
 			if (stats->stavalues[k] != NULL)
@@ -1742,12 +1726,11 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 									   stats->statyplen[k],
 									   stats->statypbyval[k],
 									   stats->statypalign[k]);
-				values[i++] = PointerGetDatum(arry);	/* stavaluesN */
+				HeapTupleSetValue(pg_statistic, stavalues1, PointerGetDatum(arry), (values + k));
 			}
 			else
 			{
-				nulls[i] = true;
-				values[i++] = (Datum) 0;
+				HeapTupleSetFieldNull(pg_statistic, stavalues1, (nulls + k));
 			}
 		}
 
@@ -1764,22 +1747,23 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 		if (HeapTupleIsValid(oldtup))
 		{
 			/* Yes, replace it */
-			stup = heap_modify_tuple(oldtup,
+			stup = heap_update_tuple(oldtup,
 									 RelationGetDescr(sd),
 									 values,
 									 nulls,
-									 replaces);
+									 updated);
 			ReleaseSysCache(oldtup);
-			CatalogTupleUpdateWithInfo(sd, &stup->t_self, stup, indstate);
+			CatalogTupleUpdate(sd, &stup->t_self, stup, updated, indstate);
 		}
 		else
 		{
 			/* No, insert new tuple */
 			stup = heap_form_tuple(RelationGetDescr(sd), values, nulls);
-			CatalogTupleInsertWithInfo(sd, stup, indstate);
+			CatalogTupleInsert(sd, stup, NULL);
 		}
 
 		heap_freetuple(stup);
+		bms_free(updated);
 	}
 
 	if (indstate != NULL)
