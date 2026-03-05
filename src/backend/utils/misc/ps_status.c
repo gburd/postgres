@@ -39,6 +39,9 @@ bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
  * PS_USE_SETPROCTITLE
  *	   use the function setproctitle(const char *, ...)
  *	   (other BSDs)
+ * PS_USE_CHANGE_ARGV
+ *	   assign argv[0] = "string"
+ *	   (Solaris)
  * PS_USE_CLOBBER_ARGV
  *	   write over the argv and environment area
  *	   (Linux and most SysV-like systems)
@@ -52,7 +55,9 @@ bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 #define PS_USE_SETPROCTITLE_FAST
 #elif defined(HAVE_SETPROCTITLE)
 #define PS_USE_SETPROCTITLE
-#elif defined(__linux__) || defined(_AIX) || defined(__sun) || defined(__darwin__) || defined(__GNU__)
+#elif defined(__sun)
+#define PS_USE_CHANGE_ARGV
+#elif defined(__linux__) || defined(_AIX) || defined(__darwin__) || defined(__GNU__)
 #define PS_USE_CLOBBER_ARGV
 #elif defined(WIN32)
 #define PS_USE_WIN32
@@ -223,6 +228,9 @@ save_ps_display_args(int argc, char **argv)
 		ps_status_new_environ = new_environ;
 #endif
 	}
+#endif							/* PS_USE_CLOBBER_ARGV */
+
+#if defined(PS_USE_CHANGE_ARGV) || defined(PS_USE_CLOBBER_ARGV)
 
 	/*
 	 * If we're going to change the original argv[] then make a copy for
@@ -268,7 +276,7 @@ save_ps_display_args(int argc, char **argv)
 
 		argv = new_argv;
 	}
-#endif							/* PS_USE_CLOBBER_ARGV */
+#endif							/* PS_USE_CHANGE_ARGV or PS_USE_CLOBBER_ARGV */
 
 	return argv;
 }
@@ -305,7 +313,18 @@ init_ps_display(const char *fixed_part)
 	/* If ps_buffer is a pointer, it might still be null */
 	if (!ps_buffer)
 		return;
+#endif
 
+	/*
+	 * Overwrite argv[] to point at appropriate space, if needed
+	 */
+
+#ifdef PS_USE_CHANGE_ARGV
+	save_argv[0] = ps_buffer;
+	save_argv[1] = NULL;
+#endif							/* PS_USE_CHANGE_ARGV */
+
+#ifdef PS_USE_CLOBBER_ARGV
 	/* make extra argv slots point at end_of_area (a NUL) */
 	for (int i = 1; i < save_argc; i++)
 		save_argv[i] = ps_buffer + ps_buffer_size;
