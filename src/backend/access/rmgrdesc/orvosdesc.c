@@ -95,7 +95,7 @@ orvos_identify(uint8 info)
 			id = "BTREE_REWRITE_PAGES";
 			break;
 		case WAL_ORVOS_TOAST_NEWPAGE:
-			id = "ZSTOAST_NEWPAGE";
+			id = "ORVOS_TOAST_NEWPAGE";
 			break;
 	}
 	return id;

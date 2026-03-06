@@ -106,7 +106,7 @@ typedef struct OrvosIndexFetchData
 
 typedef struct OrvosIndexFetchData *OrvosIndexFetch;
 
-typedef struct ParallelZSScanDescData *ParallelZSScanDesc;
+typedef struct ParallelOVScanDescData *ParallelOVScanDesc;
 
 static IndexFetchTableData *orvosam_begin_index_fetch(Relation rel);
 static void orvosam_end_index_fetch(IndexFetchTableData *scan);
@@ -120,7 +120,7 @@ static bool ov_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode
 static Size ov_parallelscan_estimate(Relation rel);
 static Size ov_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan);
 static void ov_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan);
-static bool ov_parallelscan_nextrange(Relation rel, ParallelZSScanDesc pzscan,
+static bool ov_parallelscan_nextrange(Relation rel, ParallelOVScanDesc ovscan,
 									  ovtid *start, ovtid *end);
 static void ovbt_fill_missing_attribute_value(TupleDesc tupleDesc, int attno, Datum *datum, bool *isnull);
 static bool ov_fetch_attr_with_predecessor(Relation rel, TupleDesc tupdesc,
@@ -1530,7 +1530,7 @@ orvosam_getnextslot(TableScanDesc sscan, ScanDirection direction,
 		{
 			/* Allocate next range of TIDs to scan */
 			if (!ov_parallelscan_nextrange(scan->rs_scan.rs_rd,
-										   (ParallelZSScanDesc) scan->rs_scan.rs_parallel,
+										   (ParallelOVScanDesc) scan->rs_scan.rs_parallel,
 										   &scan->cur_range_start, &scan->cur_range_end))
 			{
 				ExecClearTuple(slot);
@@ -1587,7 +1587,7 @@ orvosam_getnextslot(TableScanDesc sscan, ScanDirection direction,
 			{
 				/* Allocate next range of TIDs to scan */
 				if (!ov_parallelscan_nextrange(scan->rs_scan.rs_rd,
-											   (ParallelZSScanDesc) scan->rs_scan.rs_parallel,
+											   (ParallelOVScanDesc) scan->rs_scan.rs_parallel,
 											   &scan->cur_range_start, &scan->cur_range_end))
 				{
 					ExecClearTuple(slot);
@@ -1931,17 +1931,6 @@ orvosam_scan_getnextslot_tidrange(TableScanDesc sscan,
 	return true;
 }
 
-#if 0							/* not currently used */
-static TransactionId
-orvosam_compute_xid_horizon_for_tuples(Relation rel,
-									   ItemPointerData *items,
-									   int nitems)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("function %s not implemented yet", __func__)));
-}
-#endif
 
 static IndexFetchTableData *
 orvosam_begin_index_fetch(Relation rel)
@@ -1954,16 +1943,6 @@ orvosam_begin_index_fetch(Relation rel)
 	return (IndexFetchTableData *) zscan;
 }
 
-#if 0							/* not currently used */
-static void
-orvosam_fetch_set_column_projection(struct IndexFetchTableData *scan,
-									Bitmapset *project_columns)
-{
-	OrvosIndexFetch zscan = (OrvosIndexFetch) scan;
-
-	zscan->proj_data.project_columns = project_columns;
-}
-#endif
 
 static void
 orvosam_reset_index_fetch(IndexFetchTableData *scan)
@@ -3044,12 +3023,11 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 		indexScan = NULL;
 
-		/* Set total heap blocks */
-		/* TODO */
-#if 0
-		pgstat_progress_update_param(PROGRESS_CLUSTER_TOTAL_HEAP_BLKS,
-									 heapScan->rs_nblocks);
-#endif
+	/*
+	 * TODO: Implement progress tracking for CLUSTER. Need to calculate
+	 * total row count from Orvos metadata and update
+	 * PROGRESS_CLUSTER_TOTAL_HEAP_BLKS or similar parameter.
+	 */
 	}
 
 	for (;;)
@@ -3555,116 +3533,6 @@ orvosam_relation_estimate_size(Relation rel, int32 *attr_widths,
  * ------------------------------------------------------------------------
  */
 
-#if 0							/* not currently used */
-static bool
-orvosam_scan_bitmap_next_block(TableScanDesc sscan,
-							   TBMIterateResult *tbmres)
-{
-	OrvosDesc	scan = (OrvosDesc) sscan;
-	BlockNumber tid_blkno = tbmres->blockno;
-	int			ntuples;
-	OVTidTreeScan tid_scan;
-	ovtid		tid;
-
-	ov_initialize_proj_attributes_extended(scan, RelationGetDescr(scan->rs_scan.rs_rd));
-
-	/*
-	 * Our strategy for a bitmap scan is to scan the tree of each attribute,
-	 * starting at the given logical block number, and store all the datums in
-	 * the scan struct. orvosam_scan_analyze_next_tuple() then just needs to
-	 * store the datums of the next TID in the slot.
-	 *
-	 * An alternative would be to keep the scans of each attribute open, like
-	 * in a sequential scan. I'm not sure which is better.
-	 */
-	ntuples = 0;
-	ovbt_tid_begin_scan(scan->rs_scan.rs_rd,
-						OVTidFromBlkOff(tid_blkno, 1),
-						OVTidFromBlkOff(tid_blkno + 1, 1),
-						scan->rs_scan.rs_snapshot,
-						&tid_scan);
-	tid_scan.serializable = true;
-	while ((tid = ovbt_tid_scan_next(&tid_scan, ForwardScanDirection)) != InvalidOVTid)
-	{
-		ItemPointerData itemptr;
-
-		Assert(OVTidGetBlockNumber(tid) == tid_blkno);
-
-		ItemPointerSet(&itemptr, tid_blkno, OVTidGetOffsetNumber(tid));
-
-		/*
-		 * Modern TBMIterateResult API doesn't provide per-tuple offsets. We
-		 * scan all tuples in the block and rely on snapshot visibility
-		 * checks. The lossy flag indicates if recheck is needed.
-		 */
-		if (!tbmres->lossy)
-		{
-			/*
-			 * Acquire predicate lock on tuples that we scan, even those that
-			 * are not visible to the snapshot.
-			 */
-			PredicateLockTID(scan->rs_scan.rs_rd, &itemptr, scan->rs_scan.rs_snapshot, InvalidTransactionId);
-		}
-
-		Assert(OVTidGetBlockNumber(tid) == tid_blkno);
-
-		scan->bmscan_tids[ntuples] = tid;
-		ntuples++;
-
-		/*
-		 * FIXME: heapam acquires the predicate lock first, and then calls
-		 * CheckForSerializableConflictOut(). We do it in the opposite order,
-		 * because CheckForSerializableConflictOut() call as done in
-		 * ovbt_get_last_tid() already. Does it matter? I'm not sure.
-		 */
-		PredicateLockTID(scan->rs_scan.rs_rd, &itemptr, scan->rs_scan.rs_snapshot, InvalidTransactionId);
-	}
-	ovbt_tid_end_scan(&tid_scan);
-
-	if (ntuples)
-	{
-		TupleDesc	reldesc = RelationGetDescr(scan->rs_scan.rs_rd);
-
-		for (int i = 1; i < scan->proj_data.num_proj_atts; i++)
-		{
-			int			attno = scan->proj_data.proj_atts[i];
-			OVAttrTreeScan attr_scan;
-			Datum		datum;
-			bool		isnull;
-			Datum	   *datums = scan->bmscan_datums[i];
-			bool	   *isnulls = scan->bmscan_isnulls[i];
-
-			ovbt_attr_begin_scan(scan->rs_scan.rs_rd,
-								 reldesc,
-								 attno,
-								 &attr_scan);
-			for (int n = 0; n < ntuples; n++)
-			{
-				/* Initialize to safe defaults before fetch attempt */
-				datum = (Datum) 0;
-				isnull = true;
-
-				if (!ovbt_attr_fetch(&attr_scan, &datum, &isnull, scan->bmscan_tids[n]))
-					ov_fetch_attr_with_predecessor(scan->rs_scan.rs_rd, reldesc, attno,
-												   scan->bmscan_tids[n], &datum, &isnull);
-
-				/* have to make a copy because we close the scan immediately. */
-				if (!isnull)
-					datum = ov_datumCopy(datum,
-										 attr_scan.attdesc->attbyval,
-										 attr_scan.attdesc->attlen);
-				datums[n] = datum;
-				isnulls[n] = isnull;
-			}
-			ovbt_attr_end_scan(&attr_scan);
-		}
-	}
-	scan->bmscan_nexttuple = 0;
-	scan->bmscan_ntuples = ntuples;
-
-	return ntuples > 0;
-}
-#endif
 
 /*
  * Bitmap scan implementation for Orvos tables.
@@ -3978,40 +3846,40 @@ orvos_tableam_handler(PG_FUNCTION_ARGS)
  * Routines for dividing up the TID range for parallel seq scans
  */
 
-typedef struct ParallelZSScanDescData
+typedef struct ParallelOVScanDescData
 {
 	ParallelTableScanDescData base;
 
-	ovtid		pzs_endtid;		/* last tid + 1 in relation at start of scan */
-	pg_atomic_uint64 pzs_allocatedtid_blk;	/* TID space allocated to workers
+	ovtid		pov_endtid;		/* last tid + 1 in relation at start of scan */
+	pg_atomic_uint64 pov_allocatedtid_blk;	/* TID space allocated to workers
 											 * so far. (in  65536 increments) */
-}			ParallelZSScanDescData;
-typedef struct ParallelZSScanDescData *ParallelZSScanDesc;
+}			ParallelOVScanDescData;
+typedef struct ParallelOVScanDescData *ParallelOVScanDesc;
 
 static Size
 ov_parallelscan_estimate(Relation rel)
 {
-	return sizeof(ParallelZSScanDescData);
+	return sizeof(ParallelOVScanDescData);
 }
 
 static Size
 ov_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 {
-	ParallelZSScanDesc zpscan = (ParallelZSScanDesc) pscan;
+	ParallelOVScanDesc ovscan = (ParallelOVScanDesc) pscan;
 
 	/* phs_relid field removed from ParallelTableScanDesc */
-	zpscan->pzs_endtid = ovbt_get_last_tid(rel);
-	pg_atomic_init_u64(&zpscan->pzs_allocatedtid_blk, 0);
+	ovscan->pov_endtid = ovbt_get_last_tid(rel);
+	pg_atomic_init_u64(&ovscan->pov_allocatedtid_blk, 0);
 
-	return sizeof(ParallelZSScanDescData);
+	return sizeof(ParallelOVScanDescData);
 }
 
 static void
 ov_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 {
-	ParallelZSScanDesc bpscan = (ParallelZSScanDesc) pscan;
+	ParallelOVScanDesc ovscan = (ParallelOVScanDesc) pscan;
 
-	pg_atomic_write_u64(&bpscan->pzs_allocatedtid_blk, 0);
+	pg_atomic_write_u64(&ovscan->pov_allocatedtid_blk, 0);
 }
 
 /*
@@ -4025,33 +3893,33 @@ ov_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
  * backend gets 'false' return.
  */
 static bool
-ov_parallelscan_nextrange(Relation rel, ParallelZSScanDesc pzscan,
+ov_parallelscan_nextrange(Relation rel, ParallelOVScanDesc ovscan,
 						  ovtid *start, ovtid *end)
 {
 	uint64		allocatedtid_blk;
 
 	/*
-	 * zhs_allocatedtid tracks how much has been allocated to workers already.
-	 * When phs_allocatedtid >= rs_lasttid, all TIDs have been allocated.
+	 * pov_allocatedtid_blk tracks how much has been allocated to workers
+	 * already. When it exceeds rs_lasttid, all TIDs have been allocated.
 	 *
 	 * Because we use an atomic fetch-and-add to fetch the current value, the
-	 * phs_allocatedtid counter will exceed rs_lasttid, because workers will
-	 * still increment the value, when they try to allocate the next block but
-	 * all blocks have been allocated already. The counter must be 64 bits
-	 * wide because of that, to avoid wrapping around when rs_lasttid is close
-	 * to 2^32.  That's also one reason we do this at granularity of 2^16
-	 * TIDs, even though orvos isn't block-oriented.
+	 * pov_allocatedtid_blk counter will exceed rs_lasttid, because workers
+	 * will still increment the value, when they try to allocate the next
+	 * block but all blocks have been allocated already. The counter must be
+	 * 64 bits wide because of that, to avoid wrapping around when
+	 * rs_lasttid is close to 2^32.  That's also one reason we do this at
+	 * granularity of 2^16 TIDs, even though orvos isn't block-oriented.
 	 *
 	 * TODO: we divide the TID space into chunks of 2^16 TIDs each. That's
 	 * pretty inefficient, there's a fair amount of overhead in re-starting
-	 * the B-tree scans between each range. We probably should use much larger
-	 * ranges. But this is good for testing.
+	 * the B-tree scans between each range. We probably should use much
+	 * larger ranges. But this is good for testing.
 	 */
-	allocatedtid_blk = pg_atomic_fetch_add_u64(&pzscan->pzs_allocatedtid_blk, 1);
+	allocatedtid_blk = pg_atomic_fetch_add_u64(&ovscan->pov_allocatedtid_blk, 1);
 	*start = OVTidFromBlkOff(allocatedtid_blk, 1);
 	*end = OVTidFromBlkOff(allocatedtid_blk + 1, 1);
 
-	return *start < pzscan->pzs_endtid;
+	return *start < ovscan->pov_endtid;
 }
 
 /*

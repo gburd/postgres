@@ -11,10 +11,10 @@
  *
  * How many pages of each type a table has?
  *
- * select count(*), pg_zs_page_type('t_orvos', g)
+ * select count(*), pg_ov_page_type('t_orvos', g)
  *   from generate_series(0, pg_table_size('t_orvos') / 8192 - 1) g group by 2;
  *
- *  count | pg_zs_page_type
+ *  count | pg_ov_page_type
  * -------+-----------------
  *      1 | META
  *   3701 | BTREE
@@ -24,7 +24,7 @@
  * Compression ratio of B-tree leaf pages (other pages are not compressed):
  *
  * select sum(uncompressedsz::numeric) / sum(totalsz) as compratio
- *   from pg_zs_btree_pages('t_orvos') ;
+ *   from pg_ov_btree_pages('t_orvos') ;
  *      compratio
  * --------------------
  *  3.6623829559208134
@@ -33,7 +33,7 @@
  * Per column compression ratio and number of pages:
  *
  * select attno, count(*), sum(uncompressedsz::numeric) / sum(totalsz) as
- * compratio from pg_zs_btree_pages('t_orvos') group by attno order by
+ * compratio from pg_ov_btree_pages('t_orvos') group by attno order by
  * attno;
  *
  *  attno | count |       compratio
@@ -66,14 +66,14 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
-Datum		pg_zs_page_type(PG_FUNCTION_ARGS);
-Datum		pg_zs_undo_pages(PG_FUNCTION_ARGS);
-Datum		pg_zs_btree_pages(PG_FUNCTION_ARGS);
-Datum		pg_zs_toast_pages(PG_FUNCTION_ARGS);
-Datum		pg_zs_meta_page(PG_FUNCTION_ARGS);
+Datum		pg_ov_page_type(PG_FUNCTION_ARGS);
+Datum		pg_ov_undo_pages(PG_FUNCTION_ARGS);
+Datum		pg_ov_btree_pages(PG_FUNCTION_ARGS);
+Datum		pg_ov_toast_pages(PG_FUNCTION_ARGS);
+Datum		pg_ov_meta_page(PG_FUNCTION_ARGS);
 
 Datum
-pg_zs_page_type(PG_FUNCTION_ARGS)
+pg_ov_page_type(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	uint64		pageno = PG_GETARG_INT64(1);
@@ -142,7 +142,7 @@ pg_zs_page_type(PG_FUNCTION_ARGS)
  *  lastrecptr int8
  */
 Datum
-pg_zs_undo_pages(PG_FUNCTION_ARGS)
+pg_ov_undo_pages(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -290,7 +290,7 @@ pg_zs_undo_pages(PG_FUNCTION_ARGS)
  *  next int8
  */
 Datum
-pg_zs_toast_pages(PG_FUNCTION_ARGS)
+pg_ov_toast_pages(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -419,7 +419,7 @@ pg_zs_toast_pages(PG_FUNCTION_ARGS)
  *  freespace int4
  */
 Datum
-pg_zs_btree_pages(PG_FUNCTION_ARGS)
+pg_ov_btree_pages(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -607,7 +607,7 @@ pg_zs_btree_pages(PG_FUNCTION_ARGS)
  *  flags int4
  */
 Datum
-pg_zs_meta_page(PG_FUNCTION_ARGS)
+pg_ov_meta_page(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
