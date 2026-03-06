@@ -309,7 +309,10 @@ ovundo_fetch(Relation rel, OVUndoRecPtr undoptr, Buffer *buf_p, int lockmode,
 
 	ptr = ((char *) page) + undoptr.offset;
 
-#if 0							/* FIXME: move this to the callers? */
+	/*
+	 * Validate that the fetched record is actually at the expected location.
+	 * This catches page recycling issues and corruption.
+	 */
 	if (memcmp(&undorec->undorecptr, &undoptr, sizeof(OVUndoRecPtr)) != 0)
 	{
 		/*
@@ -319,7 +322,6 @@ ovundo_fetch(Relation rel, OVUndoRecPtr undoptr, Buffer *buf_p, int lockmode,
 		elog(ERROR, "could not find UNDO record " UINT64_FORMAT " at blk %u offset %u",
 			 undoptr.counter, undoptr.blkno, undoptr.offset);
 	}
-#endif
 
 	*buf_p = buf;
 	return ptr;
