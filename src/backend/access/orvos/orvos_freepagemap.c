@@ -50,15 +50,15 @@
 #include "storage/bufpage.h"
 #include "utils/rel.h"
 
-typedef struct ZSFreePageOpaque
+typedef struct OVFreePageOpaque
 {
 	BlockNumber ov_next;
 	uint16		padding;
 	uint16		ov_page_id;		/* OV_FREE_PAGE_ID */
-}			ZSFreePageOpaque;
+}			OVFreePageOpaque;
 
 /*
- * zspage_is_recyclable()
+ * ovpage_is_unused()
  *
  * Is the current page recyclable?
  *
@@ -74,19 +74,19 @@ typedef struct ZSFreePageOpaque
  *
  */
 static bool
-zspage_is_unused(Buffer buf)
+ovpage_is_unused(Buffer buf)
 {
 	Page		page;
-	ZSFreePageOpaque *opaque;
+	OVFreePageOpaque *opaque;
 
 	page = BufferGetPage(buf);
 
 	if (PageIsNew(page))
 		return false;
 
-	if (PageGetSpecialSize(page) != sizeof(ZSFreePageOpaque))
+	if (PageGetSpecialSize(page) != sizeof(OVFreePageOpaque))
 		return false;
-	opaque = (ZSFreePageOpaque *) PageGetSpecialPointer(page);
+	opaque = (OVFreePageOpaque *) PageGetSpecialPointer(page);
 	if (opaque->ov_page_id != OV_FREE_PAGE_ID)
 		return false;
 
@@ -134,20 +134,20 @@ ovpage_getnewbuf(Relation rel, Buffer metabuf)
 	}
 	else
 	{
-		ZSFreePageOpaque *opaque;
+		OVFreePageOpaque *opaque;
 		Page		page;
 
 		buf = ReadBuffer(rel, blk);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 		/* Check that the page really is unused. */
-		if (!zspage_is_unused(buf))
+		if (!ovpage_is_unused(buf))
 		{
 			UnlockReleaseBuffer(buf);
 			elog(ERROR, "unexpected page found in free page list");
 		}
 		page = BufferGetPage(buf);
-		opaque = (ZSFreePageOpaque *) PageGetSpecialPointer(page);
+		opaque = (OVFreePageOpaque *) PageGetSpecialPointer(page);
 		metaopaque->ov_fpm_head = opaque->ov_next;
 	}
 
@@ -279,10 +279,10 @@ ovpage_extendrel_newbuf(Relation rel, Buffer metabuf)
 void
 ovpage_mark_page_deleted(Page page, BlockNumber next_free_blk)
 {
-	ZSFreePageOpaque *opaque;
+	OVFreePageOpaque *opaque;
 
-	PageInit(page, BLCKSZ, sizeof(ZSFreePageOpaque));
-	opaque = (ZSFreePageOpaque *) PageGetSpecialPointer(page);
+	PageInit(page, BLCKSZ, sizeof(OVFreePageOpaque));
+	opaque = (OVFreePageOpaque *) PageGetSpecialPointer(page);
 	opaque->ov_page_id = OV_FREE_PAGE_ID;
 	opaque->ov_next = next_free_blk;
 

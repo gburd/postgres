@@ -223,7 +223,7 @@ ovbt_attr_item_isnull(bits8 *nullbitmap, int n)
 /*
  * TID B-tree leaf page layout
  *
- * Leaf pages are packed with ZSTidArrayItems. Each OVTidArrayItem represents
+ * Leaf pages are packed with OVTidArrayItems. Each OVTidArrayItem represents
  * a range of tuples, starting at 't_firsttid', up to 't_endtid' - 1. For each
  * tuple, we its TID and the UNDO pointer. The TIDs and UNDO pointers are specially
  * encoded, so that they take less space.
@@ -412,7 +412,7 @@ typedef struct varatt_ov_toastptr
 	uint8		va_tag;			/* VARTAG_ORVOS in orvos toast datums */
 
 	/* first block */
-	BlockNumber zst_block;
+	BlockNumber ovt_block;
 }			varatt_ov_toastptr;
 
 /*

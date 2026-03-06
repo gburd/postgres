@@ -76,7 +76,7 @@ B-tree indexes.
 
 The TID tree, and all the attribute trees, use the TID as the key. The
 TID is used as a logical row identifier. Internally, Orvos passed
-TIDs around as 64-bit integers (zstid), but for interfacing with the
+TIDs around as 64-bit integers (ovtid), but for interfacing with the
 rest of the system, they are converted to/from ItemPointers. When
 converted to an ItemPointer, the conversion ensures that the ItemPointer
 looks valid, i.e. offset 0 is never used. However, the TID is just a
@@ -101,9 +101,9 @@ look at the TID tree first:
 TID tree
 --------
 
-A TID tree page consists of multiple ZSTidArrayItems. Each ZSTidArrayItem
+A TID tree page consists of multiple OVTidArrayItems. Each OVTidArrayItem
 represents a group of tuples, with TIDs in a particular range. The TID
-ranges of ZSTidArrayItems never overlap. For each tuple, we logically
+ranges of OVTidArrayItems never overlap. For each tuple, we logically
 store the TID, and its UNDO pointer. The actual visibility information
 is stored in the UNDO log, if the tuple was recently modified.
 
@@ -119,11 +119,11 @@ can be pretty effective on the heap, too))
 
 So logically, the TID tree stores the TID and UNDO pointer for every
 tuple. However, that would take a lot of space. To reduce disk usage,
-the TID tree consists of ZSTidArrayItems, which contain the TIDs and
+the TID tree consists of OVTidArrayItems, which contain the TIDs and
 their UNDO pointers in a specially encoded format. The encoded format
 is optimized for the common cases, where the gaps between TIDs are
 small, and most tuples are visible to everyone. See comments
-ZSTidArrayItem in orvos_internal.h for details.
+OVTidArrayItem in orvos_internal.h for details.
 
 Having a TID tree that's separate from the attributes helps to support
 zero column tables (which can be result of ADD COLUMN DROP COLUMN actions
@@ -141,9 +141,9 @@ data from multiple tuples in one item. In the attribute tree, the items
 can furthermore be compressed using LZ4, if the server has been
 configured with "configure --with-lz4". (If you don't use --with-lz4,
 PostgreSQL's built-in pglz algorithm is used, but it is *much* slower).
-Each item (ZSAttributeArrayItem) contains data for tuples with a range
-of consecutive TIDs. Multiple ZSAttributeArrayItems can be compressed
-together, into a single ZSAttributeCompressedItem item.
+Each item (OVAttributeArrayItem) contains data for tuples with a range
+of consecutive TIDs. Multiple OVAttributeArrayItems can be compressed
+together, into a single OVAttributeCompressedItem item.
 
 In uncompressed form, an attribute tree page can be arbitrarily large.
 But after compression, it must fit into a physical 8k block. If on insert

@@ -32,7 +32,7 @@
 struct OVUndoRec
 {
 	int16		size;			/* size of this record, including header */
-	uint8		type;			/* ZSUNDO_TYPE_* */
+	uint8		type;			/* OVUNDO_TYPE_* */
 	OVUndoRecPtr undorecptr;
 	TransactionId xid;
 	CommandId	cid;
@@ -197,7 +197,7 @@ typedef struct
 
 /*
  * ov_pending_undo_op encapsulates the insertion or modification of an UNDO
- * record. The zsundo_create_* functions don't insert UNDO records directly,
+ * record. The ovundo_create_* functions don't insert UNDO records directly,
  * because the callers are not in a critical section yet, and may still need
  * to abort. For example, to inserting a new TID to the TID tree, we first
  * construct the UNDO record for the insertion, and then lock the correct

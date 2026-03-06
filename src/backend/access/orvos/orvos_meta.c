@@ -28,10 +28,10 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-static void zsmeta_wal_log_metapage(Buffer buf, int natts);
+static void ovmeta_wal_log_metapage(Buffer buf, int natts);
 
 static OVMetaCacheData *
-zsmeta_populate_cache_from_metapage(Relation rel, Page page)
+ovmeta_populate_cache_from_metapage(Relation rel, Page page)
 {
 	OVMetaCacheData *cache;
 	OVMetaPage *metapg;
@@ -91,7 +91,7 @@ ovmeta_populate_cache(Relation rel)
 	{
 		metabuf = ReadBuffer(rel, OV_META_BLK);
 		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
-		cache = zsmeta_populate_cache_from_metapage(rel, BufferGetPage(metabuf));
+		cache = ovmeta_populate_cache_from_metapage(rel, BufferGetPage(metabuf));
 		UnlockReleaseBuffer(metabuf);
 	}
 
@@ -99,7 +99,7 @@ ovmeta_populate_cache(Relation rel)
 }
 
 static void
-zsmeta_expand_metapage_for_new_attributes(Relation rel)
+ovmeta_expand_metapage_for_new_attributes(Relation rel)
 {
 	int			natts = RelationGetNumberOfAttributes(rel) + 1;
 	Buffer		metabuf;
@@ -139,7 +139,7 @@ zsmeta_expand_metapage_for_new_attributes(Relation rel)
 		MarkBufferDirty(metabuf);
 
 		if (RelationNeedsWAL(rel))
-			zsmeta_wal_log_metapage(metabuf, natts);
+			ovmeta_wal_log_metapage(metabuf, natts);
 
 		END_CRIT_SECTION();
 	}
@@ -153,7 +153,7 @@ zsmeta_expand_metapage_for_new_attributes(Relation rel)
 }
 
 static Page
-zsmeta_initmetapage_internal(int natts)
+ovmeta_initmetapage_internal(int natts)
 {
 	Page		page;
 	OVMetaPageOpaque *opaque;
@@ -222,7 +222,7 @@ ovmeta_initmetapage(Relation rel)
 							EB_LOCK_FIRST);
 	if (BufferGetBlockNumber(buf) != OV_META_BLK)
 		elog(ERROR, "table is not empty");
-	page = zsmeta_initmetapage_internal(natts);
+	page = ovmeta_initmetapage_internal(natts);
 
 	START_CRIT_SECTION();
 	PageRestoreTempPage(page, BufferGetPage(buf));
@@ -230,7 +230,7 @@ ovmeta_initmetapage(Relation rel)
 	MarkBufferDirty(buf);
 
 	if (RelationNeedsWAL(rel))
-		zsmeta_wal_log_metapage(buf, natts);
+		ovmeta_wal_log_metapage(buf, natts);
 
 	END_CRIT_SECTION();
 
@@ -238,7 +238,7 @@ ovmeta_initmetapage(Relation rel)
 }
 
 static void
-zsmeta_wal_log_metapage(Buffer buf, int natts)
+ovmeta_wal_log_metapage(Buffer buf, int natts)
 {
 	Page		page = BufferGetPage(buf);
 	wal_orvos_init_metapage init_rec;
@@ -256,7 +256,7 @@ zsmeta_wal_log_metapage(Buffer buf, int natts)
 }
 
 static void
-zsmeta_wal_log_new_att_root(Buffer metabuf, Buffer rootbuf, AttrNumber attno)
+ovmeta_wal_log_new_att_root(Buffer metabuf, Buffer rootbuf, AttrNumber attno)
 {
 	Page		metapage = BufferGetPage(metabuf);
 	Page		rootpage = BufferGetPage(rootbuf);
@@ -403,7 +403,7 @@ ovmeta_get_root_for_attribute(Relation rel, AttrNumber attno, bool readonly)
 		}
 		else
 		{
-			zsmeta_expand_metapage_for_new_attributes(rel);
+			ovmeta_expand_metapage_for_new_attributes(rel);
 			metacache = ovmeta_populate_cache(rel);
 		}
 	}
@@ -456,7 +456,7 @@ ovmeta_get_root_for_attribute(Relation rel, AttrNumber attno, bool readonly)
 			MarkBufferDirty(metabuf);
 
 			if (RelationNeedsWAL(rel))
-				zsmeta_wal_log_new_att_root(metabuf, rootbuf, attno);
+				ovmeta_wal_log_new_att_root(metabuf, rootbuf, attno);
 
 			END_CRIT_SECTION();
 

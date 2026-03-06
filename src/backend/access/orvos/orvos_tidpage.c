@@ -959,7 +959,7 @@ ovbt_tid_mark_old_updated(Relation rel, ovtid otid, ovtid newtid,
 									   keep_old_undo_ptr ? olditem_undoptr : InvalidUndoPtr,
 									   key_update);
 
-	/* Replace the ZSBreeItem with one with the updated undo pointer. */
+	/* Replace the OVTidArrayItem with one with the updated undo pointer. */
 	page = BufferGetPage(buf);
 	origitem = (OVTidArrayItem *) PageGetItem(page, PageGetItemId(page, off));
 	newitems = ovbt_tid_item_change_undoptr(origitem, otid, undo_op->reservation.undorecptr,

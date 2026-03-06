@@ -24,9 +24,9 @@ const TupleTableSlotOps TTSOpsOrvos;
 static void
 tts_orvos_init(TupleTableSlot *slot)
 {
-	OrvosTupleTableSlot *zslot = (OrvosTupleTableSlot *) slot;
+	OrvosTupleTableSlot *ovslot = (OrvosTupleTableSlot *) slot;
 
-	zslot->visi_info = NULL;
+	ovslot->visi_info = NULL;
 }
 
 static void
@@ -37,12 +37,12 @@ tts_orvos_release(TupleTableSlot *slot)
 static void
 tts_orvos_clear(TupleTableSlot *slot)
 {
-	OrvosTupleTableSlot *zslot = (OrvosTupleTableSlot *) slot;
+	OrvosTupleTableSlot *ovslot = (OrvosTupleTableSlot *) slot;
 
 	if (unlikely(TTS_SHOULDFREE(slot)))
 	{
-		pfree(zslot->data);
-		zslot->data = NULL;
+		pfree(ovslot->data);
+		ovslot->data = NULL;
 
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
@@ -51,7 +51,7 @@ tts_orvos_clear(TupleTableSlot *slot)
 	slot->tts_flags |= TTS_FLAG_EMPTY;
 	ItemPointerSetInvalid(&slot->tts_tid);
 
-	zslot->visi_info = NULL;
+	ovslot->visi_info = NULL;
 }
 
 /*
@@ -72,18 +72,18 @@ tts_orvos_getsomeattrs(TupleTableSlot *slot, int natts)
 static Datum
 tts_orvos_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
-	OrvosTupleTableSlot *zslot = (OrvosTupleTableSlot *) slot;
+	OrvosTupleTableSlot *ovslot = (OrvosTupleTableSlot *) slot;
 
 	if (attnum == MinTransactionIdAttributeNumber ||
 		attnum == MinCommandIdAttributeNumber)
 	{
 		*isnull = false;
 		if (attnum == MinTransactionIdAttributeNumber)
-			return zslot->visi_info ? TransactionIdGetDatum(zslot->visi_info->xmin) : InvalidTransactionId;
+			return ovslot->visi_info ? TransactionIdGetDatum(ovslot->visi_info->xmin) : InvalidTransactionId;
 		else
 		{
 			Assert(attnum == MinCommandIdAttributeNumber);
-			return zslot->visi_info ? CommandIdGetDatum(zslot->visi_info->cmin) : InvalidCommandId;
+			return ovslot->visi_info ? CommandIdGetDatum(ovslot->visi_info->cmin) : InvalidCommandId;
 		}
 	}
 	elog(ERROR, "orvos tuple table slot does not have system attributes (except xmin and cmin)");
@@ -201,7 +201,7 @@ tts_orvos_materialize(TupleTableSlot *slot)
 static void
 tts_orvos_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
-	OrvosTupleTableSlot *zdstslot = (OrvosTupleTableSlot *) dstslot;
+	OrvosTupleTableSlot *ovdstslot = (OrvosTupleTableSlot *) dstslot;
 
 	TupleDesc	srcdesc = dstslot->tts_tupleDescriptor;
 
@@ -218,9 +218,9 @@ tts_orvos_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	}
 
 	if (srcslot->tts_ops == &TTSOpsOrvos)
-		zdstslot->visi_info = ((OrvosTupleTableSlot *) srcslot)->visi_info;
+		ovdstslot->visi_info = ((OrvosTupleTableSlot *) srcslot)->visi_info;
 	else
-		zdstslot->visi_info = NULL;
+		ovdstslot->visi_info = NULL;
 
 	dstslot->tts_nvalid = srcdesc->natts;
 	dstslot->tts_flags &= ~TTS_FLAG_EMPTY;

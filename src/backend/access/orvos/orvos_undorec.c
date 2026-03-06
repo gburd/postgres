@@ -46,7 +46,7 @@
 /*
  * Working area for VACUUM.
  */
-typedef struct ZSVacRelStats
+typedef struct OVVacRelStats
 {
 	int			elevel;
 	BufferAccessStrategy vac_strategy;
@@ -64,16 +64,16 @@ typedef struct ZSVacRelStats
 	double		tuples_deleted;
 
 	IntegerSet *dead_tids;
-}			ZSVacRelStats;
+}			OVVacRelStats;
 
 static bool ov_lazy_tid_reaped(ItemPointer itemptr, void *state);
 static void lazy_vacuum_index(Relation indrel,
 							  IndexBulkDeleteResult **stats,
-							  ZSVacRelStats * vacrelstats,
+							  OVVacRelStats * vacrelstats,
 							  Relation heaprel);
 static void lazy_cleanup_index(Relation indrel,
 							   IndexBulkDeleteResult *stats,
-							   ZSVacRelStats * vacrelstats);
+							   OVVacRelStats * vacrelstats);
 
 
 /*
@@ -420,7 +420,7 @@ ovundo_create_for_tuple_lock(Relation rel, TransactionId xid, CommandId cid,
  * Returns InvalidUndoPtr if the metapage has no UNDO log yet.
  */
 static OVUndoRecPtr
-zsundo_read_cached_oldest(Relation rel)
+ovundo_read_cached_oldest(Relation rel)
 {
 	Buffer		metabuf;
 	Page		metapage;
@@ -448,7 +448,7 @@ zsundo_read_cached_oldest(Relation rel)
  *      meaning new transactions have become removable.
  *
  * The caller must supply the cached oldest pointer (obtained via
- * zsundo_read_cached_oldest) and the current tail counter from the metapage.
+ * ovundo_read_cached_oldest) and the current tail counter from the metapage.
  *
  * For VACUUM, the caller bypasses this heuristic entirely.
  */
@@ -523,7 +523,7 @@ should_trim_undo(Relation rel, OVUndoRecPtr cached_oldest,
  * Returns the oldest valid UNDO pointer after trimming.
  */
 static OVUndoRecPtr
-zsundo_trim_locked(Relation rel, TransactionId OldestXmin)
+ovundo_trim_locked(Relation rel, TransactionId OldestXmin)
 {
 	Buffer		metabuf;
 	Page		metapage;
@@ -747,7 +747,7 @@ zsundo_trim_locked(Relation rel, TransactionId OldestXmin)
  * Returns the oldest valid UNDO ptr, after discarding.
  */
 static OVUndoRecPtr
-zsundo_trim(Relation rel, TransactionId OldestXmin)
+ovundo_trim(Relation rel, TransactionId OldestXmin)
 {
 	OVUndoRecPtr result;
 
@@ -757,7 +757,7 @@ zsundo_trim(Relation rel, TransactionId OldestXmin)
 	 */
 	LockPage(rel, OV_META_BLK, ExclusiveLock);
 
-	result = zsundo_trim_locked(rel, OldestXmin);
+	result = ovundo_trim_locked(rel, OldestXmin);
 
 	UnlockPage(rel, OV_META_BLK, ExclusiveLock);
 
@@ -878,7 +878,7 @@ XLogRedoUndoOp(XLogReaderState *record, uint8 block_id)
 static bool
 ov_lazy_tid_reaped(ItemPointer itemptr, void *state)
 {
-	ZSVacRelStats *vacrelstats = (ZSVacRelStats *) state;
+	OVVacRelStats *vacrelstats = (OVVacRelStats *) state;
 	ovtid		tid = OVTidFromItemPointer(*itemptr);
 
 	return intset_is_member(vacrelstats->dead_tids, tid);
@@ -895,7 +895,7 @@ void
 ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy,
 			  TransactionId OldestXmin)
 {
-	ZSVacRelStats *vacrelstats;
+	OVVacRelStats *vacrelstats;
 	Relation   *Irel;
 	int			nindexes;
 	IndexBulkDeleteResult **indstats;
@@ -918,9 +918,9 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 	/*
 	 * Scan the UNDO log, and discard what we can.
 	 */
-	(void) zsundo_trim(rel, RecentXmin);
+	(void) ovundo_trim(rel, RecentXmin);
 
-	vacrelstats = (ZSVacRelStats *) palloc0(sizeof(ZSVacRelStats));
+	vacrelstats = (OVVacRelStats *) palloc0(sizeof(OVVacRelStats));
 
 	if (params->options & VACOPT_VERBOSE)
 		vacrelstats->elevel = INFO;
@@ -1019,7 +1019,7 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 static void
 lazy_vacuum_index(Relation indrel,
 				  IndexBulkDeleteResult **stats,
-				  ZSVacRelStats * vacrelstats,
+				  OVVacRelStats * vacrelstats,
 				  Relation heaprel)
 {
 	IndexVacuumInfo ivinfo;
@@ -1053,7 +1053,7 @@ lazy_vacuum_index(Relation indrel,
 static void
 lazy_cleanup_index(Relation indrel,
 				   IndexBulkDeleteResult *stats,
-				   ZSVacRelStats * vacrelstats)
+				   OVVacRelStats * vacrelstats)
 {
 	IndexVacuumInfo ivinfo;
 	PGRUsage	ru0;
@@ -1152,7 +1152,7 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 	/*
 	 * Fast path: read the cached value with shared lock only.
 	 */
-	cached_oldest = zsundo_read_cached_oldest(rel);
+	cached_oldest = ovundo_read_cached_oldest(rel);
 
 	/*
 	 * Check the heuristic.  If there is not enough accumulated UNDO
@@ -1169,7 +1169,7 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 	if (!ConditionalLockPage(rel, OV_META_BLK, ExclusiveLock))
 		return cached_oldest;
 
-	result = zsundo_trim_locked(rel, RecentXmin);
+	result = ovundo_trim_locked(rel, RecentXmin);
 
 	UnlockPage(rel, OV_META_BLK, ExclusiveLock);
 

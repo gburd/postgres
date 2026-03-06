@@ -53,10 +53,10 @@
 
 typedef enum
 {
-	ZSSCAN_STATE_UNSTARTED,
-	ZSSCAN_STATE_SCANNING,
-	ZSSCAN_STATE_FINISHED_RANGE,
-	ZSSCAN_STATE_FINISHED
+	OVSCAN_STATE_UNSTARTED,
+	OVSCAN_STATE_SCANNING,
+	OVSCAN_STATE_FINISHED_RANGE,
+	OVSCAN_STATE_FINISHED
 }			ov_scan_state;
 
 typedef struct OrvosProjectData
@@ -1935,12 +1935,12 @@ orvosam_scan_getnextslot_tidrange(TableScanDesc sscan,
 static IndexFetchTableData *
 orvosam_begin_index_fetch(Relation rel)
 {
-	OrvosIndexFetch zscan = palloc0(sizeof(OrvosIndexFetchData));
+	OrvosIndexFetch idxscan = palloc0(sizeof(OrvosIndexFetchData));
 
-	zscan->idx_fetch_data.rel = rel;
-	zscan->proj_data.context = CurrentMemoryContext;
+	idxscan->idx_fetch_data.rel = rel;
+	idxscan->proj_data.context = CurrentMemoryContext;
 
-	return (IndexFetchTableData *) zscan;
+	return (IndexFetchTableData *) idxscan;
 }
 
 
@@ -1953,22 +1953,22 @@ orvosam_reset_index_fetch(IndexFetchTableData *scan)
 static void
 orvosam_end_index_fetch(IndexFetchTableData *scan)
 {
-	OrvosIndexFetch zscan = (OrvosIndexFetch) scan;
-	OrvosProjectData *zscan_proj = &zscan->proj_data;
+	OrvosIndexFetch idxscan = (OrvosIndexFetch) scan;
+	OrvosProjectData *ovscan_proj = &idxscan->proj_data;
 
-	if (zscan_proj->num_proj_atts > 0)
+	if (ovscan_proj->num_proj_atts > 0)
 	{
-		ovbt_tid_end_scan(&zscan_proj->tid_scan);
-		for (int i = 1; i < zscan_proj->num_proj_atts; i++)
-			ovbt_attr_end_scan(&zscan_proj->attr_scans[i - 1]);
+		ovbt_tid_end_scan(&ovscan_proj->tid_scan);
+		for (int i = 1; i < ovscan_proj->num_proj_atts; i++)
+			ovbt_attr_end_scan(&ovscan_proj->attr_scans[i - 1]);
 	}
 
-	if (zscan_proj->proj_atts)
-		pfree(zscan_proj->proj_atts);
+	if (ovscan_proj->proj_atts)
+		pfree(ovscan_proj->proj_atts);
 
-	if (zscan_proj->attr_scans)
-		pfree(zscan_proj->attr_scans);
-	pfree(zscan);
+	if (ovscan_proj->attr_scans)
+		pfree(ovscan_proj->attr_scans);
+	pfree(idxscan);
 }
 
 static bool
@@ -2517,28 +2517,28 @@ orvosam_index_build_range_scan(Relation baseRelation,
 
 		if (start_blockno != 0 || numblocks != InvalidBlockNumber)
 		{
-			OrvosDesc	zscan = (OrvosDesc) scan;
-			OrvosProjectData *zscan_proj = &zscan->proj_data;
+			OrvosDesc	ovscan = (OrvosDesc) scan;
+			OrvosProjectData *ovscan_proj = &ovscan->proj_data;
 
-			zscan->cur_range_start = OVTidFromBlkOff(start_blockno, 1);
-			zscan->cur_range_end = OVTidFromBlkOff(numblocks, 1);
+			ovscan->cur_range_start = OVTidFromBlkOff(start_blockno, 1);
+			ovscan->cur_range_end = OVTidFromBlkOff(numblocks, 1);
 
 			/* FIXME: when can 'num_proj_atts' be 0? */
-			if (zscan_proj->num_proj_atts > 0)
+			if (ovscan_proj->num_proj_atts > 0)
 			{
-				ovbt_tid_begin_scan(zscan->rs_scan.rs_rd,
-									zscan->cur_range_start,
-									zscan->cur_range_end,
-									zscan->rs_scan.rs_snapshot,
-									&zscan_proj->tid_scan);
-				for (int i = 1; i < zscan_proj->num_proj_atts; i++)
+				ovbt_tid_begin_scan(ovscan->rs_scan.rs_rd,
+									ovscan->cur_range_start,
+									ovscan->cur_range_end,
+									ovscan->rs_scan.rs_snapshot,
+									&ovscan_proj->tid_scan);
+				for (int i = 1; i < ovscan_proj->num_proj_atts; i++)
 				{
-					int			natt = zscan_proj->proj_atts[i];
+					int			natt = ovscan_proj->proj_atts[i];
 
-					ovbt_attr_begin_scan(zscan->rs_scan.rs_rd,
-										 RelationGetDescr(zscan->rs_scan.rs_rd),
+					ovbt_attr_begin_scan(ovscan->rs_scan.rs_rd,
+										 RelationGetDescr(ovscan->rs_scan.rs_rd),
 										 natt,
-										 &zscan_proj->attr_scans[i - 1]);
+										 &ovscan_proj->attr_scans[i - 1]);
 				}
 			}
 		}

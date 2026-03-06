@@ -121,7 +121,7 @@ orvos_toast_datum(Relation rel, AttrNumber attno, Datum value, ovtid tid)
 
 	toastptr = palloc0(sizeof(varatt_ov_toastptr));
 	SET_VARTAG_1B_E(toastptr, VARTAG_ORVOS);
-	toastptr->zst_block = firstblk;
+	toastptr->ovt_block = firstblk;
 
 	return PointerGetDatum(toastptr);
 }
@@ -139,7 +139,7 @@ orvos_toast_flatten(Relation rel, AttrNumber attno, ovtid tid, Datum toasted)
 	Assert(toastptr->va_tag == VARTAG_ORVOS);
 
 	prevblk = InvalidBlockNumber;
-	nextblk = toastptr->zst_block;
+	nextblk = toastptr->ovt_block;
 
 	while (nextblk != InvalidBlockNumber)
 	{

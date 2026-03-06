@@ -344,7 +344,7 @@ ovbt_attr_create_item(Form_pg_attribute att,
 
 				if (att->attlen == -1 && VARATT_IS_EXTERNAL(vl))
 				{
-					varatt_ov_toastptr *zstoast;
+					varatt_ov_toastptr *ovtoast;
 
 					/*
 					 * Any toasted datums should've been taken care of before
@@ -354,7 +354,7 @@ ovbt_attr_create_item(Form_pg_attribute att,
 					if (VARTAG_EXTERNAL(vl) != VARTAG_ORVOS)
 						elog(ERROR, "unrecognized toast tag");
 
-					zstoast = (varatt_ov_toastptr *) DatumGetPointer(datums[j]);
+					ovtoast = (varatt_ov_toastptr *) DatumGetPointer(datums[j]);
 
 					/*
 					 * 0xFFFF identifies a toast pointer. Followed by the
@@ -362,7 +362,7 @@ ovbt_attr_create_item(Form_pg_attribute att,
 					 */
 					*(p++) = 0xFF;
 					*(p++) = 0xFF;
-					memcpy(p, &zstoast->zst_block, sizeof(BlockNumber));
+					memcpy(p, &ovtoast->ovt_block, sizeof(BlockNumber));
 					p += sizeof(BlockNumber);
 				}
 				else
@@ -907,7 +907,7 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 					datums[i] = PointerGetDatum(bufp);
 
 					SET_VARTAG_1B_E(&toastptr, VARTAG_ORVOS);
-					memcpy(&toastptr.zst_block, p + 2, sizeof(BlockNumber));
+					memcpy(&toastptr.ovt_block, p + 2, sizeof(BlockNumber));
 					memcpy(bufp, &toastptr, sizeof(varatt_ov_toastptr));
 					p += 2 + sizeof(BlockNumber);
 					bufp += sizeof(varatt_ov_toastptr);

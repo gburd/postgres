@@ -19,6 +19,7 @@
 #include "access/xlogutils.h"
 #include "access/orvos_internal.h"
 #include "access/orvos_undolog.h"
+#include "access/orvos_undorec.h"
 #include "access/orvos_wal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -296,7 +297,7 @@ ovundo_fetch(Relation rel, OVUndoRecPtr undoptr, Buffer *buf_p, int lockmode,
 	 * know the record size
 	 */
 	/* Sanity check that the pointer pointed to a valid place */
-	if (undoptr.offset < SizeOfPageHeaderData ||
+	if ((uint32) undoptr.offset < SizeOfPageHeaderData ||
 		undoptr.offset >= pagehdr->pd_lower)
 	{
 		/*
@@ -313,7 +314,7 @@ ovundo_fetch(Relation rel, OVUndoRecPtr undoptr, Buffer *buf_p, int lockmode,
 	 * Validate that the fetched record is actually at the expected location.
 	 * This catches page recycling issues and corruption.
 	 */
-	if (memcmp(&undorec->undorecptr, &undoptr, sizeof(OVUndoRecPtr)) != 0)
+	if (memcmp(&((OVUndoRec *) ptr)->undorecptr, &undoptr, sizeof(OVUndoRecPtr)) != 0)
 	{
 		/*
 		 * this should not happen in the case that the page was recycled for
