@@ -1218,6 +1218,14 @@ PGAC_ARG_BOOL(with, zstd, no, [build with ZSTD support],
 AC_MSG_RESULT([$with_zstd])
 AC_SUBST(with_zstd)
 
+#
+# Orvos table AM
+#
+AC_MSG_CHECKING([whether to build with Orvos columnar table AM])
+PGAC_ARG_BOOL(with, orvos, yes, [build with Orvos columnar table access method])
+AC_MSG_RESULT([$with_orvos])
+AC_SUBST(with_orvos)
+
 if test "$with_zstd" = yes; then
   PKG_CHECK_MODULES(ZSTD, libzstd >= 1.4.0)
   # We only care about -I, -D, and -L switches;

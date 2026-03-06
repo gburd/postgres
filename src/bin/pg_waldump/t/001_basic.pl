@@ -73,7 +73,8 @@ BRIN
 CommitTs
 ReplicationOrigin
 Generic
-LogicalMessage$/,
+LogicalMessage
+Orvos$/,
 	'rmgr list');
 
 

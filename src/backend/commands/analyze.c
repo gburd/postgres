@@ -28,6 +28,7 @@
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_inherits.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
@@ -55,7 +56,6 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
-
 /* Per-index data for ANALYZE */
 typedef struct AnlIndexData
 {
@@ -72,6 +72,9 @@ int			default_statistics_target = 100;
 /* A few variables that don't seem worth passing around as parameters */
 static MemoryContext anl_context = NULL;
 static BufferAccessStrategy vac_strategy;
+
+/* Hook for table AMs to store custom statistics after ANALYZE */
+analyze_store_custom_stats_hook_type analyze_store_custom_stats_hook = NULL;
 
 
 static void do_analyze_rel(Relation onerel,
@@ -605,6 +608,16 @@ do_analyze_rel(Relation onerel, const VacuumParams params,
 		 */
 		update_attstats(RelationGetRelid(onerel), inh,
 						attr_cnt, vacattrstats);
+
+		/*
+		 * Allow table AMs to store custom statistics via hook.
+		 * CCI so the hook can see rows just written by update_attstats.
+		 */
+		if (!inh && analyze_store_custom_stats_hook)
+		{
+			CommandCounterIncrement();
+			analyze_store_custom_stats_hook(onerel, attr_cnt, vacattrstats);
+		}
 
 		for (ind = 0; ind < nindexes; ind++)
 		{

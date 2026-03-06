@@ -1,0 +1,380 @@
+
+src/backend/access/orvos/README
+
+Orvos - compressed column (and row) store for PostgreSQL
+===========================================================
+
+The purpose of this README is to provide overview of orvos's
+design, major requirements/objectives it intends to fulfill and
+high-level implementation details.
+
+History
+-------
+
+This code was originally developed as "Zedstore" by Heikki Linnakangas,
+Ashwin Agrawal, and others at Pivotal. It was presented on the
+pgsql-hackers mailing list in April 2019. The project was abandoned
+before integration into the core PostgreSQL tree. It has been revived
+as "Orvos" with the following changes:
+
+* Updated to the current TableAM API (PostgreSQL 19)
+* Integrated into the PostgreSQL build system (Makefile and meson)
+* Fixed compilation errors and API incompatibilities
+* Added ANALYZE support with block-sampling scan
+* Added bitmap scan support
+* Added planner cost estimation hooks for columnar selectivity
+* Added compression statistics collection
+* Added column-delta UPDATE optimization for WAL efficiency
+* Added opportunistic UNDO log trimming
+* Fixed buffer lifetime, locking, and concurrency bugs
+* Regression test suite
+
+Known Limitations:
+* VACUUM uses a placeholder GlobalVisState (optimization opportunity)
+* Logical replication not yet supported
+* Hybrid row-column storage not yet implemented (all columns stored
+  in separate B-trees)
+
+Objectives
+----------
+
+* Performance improvement for queries selecting subset of columns
+(reduced IO).
+
+* Reduced on-disk footprint compared to heap table. Shorter tuple
+headers and also leveraging compression of similar type data
+
+* Be first-class citizen in the Postgres architecture (tables data can
+just independently live in columnar storage) and not be at arm's
+length though an opaque interface.
+
+* Fully MVCC compliant - basically all operations supported similar to
+heap, like update, delete, serializable transactions etc...
+
+* All Indexes supported
+
+* Hybrid row-column store, where some columns are stored together, and
+others separately. Provide flexibility of granularity on how to divide
+the columns. Columns accessed together can be stored together.
+
+* Provide better control over bloat.
+
+* Eliminate need for separate toast tables
+
+* Faster add / drop column or changing data type of column by avoiding
+full rewrite of the table.
+
+Highlevel design of Orvos - B-trees for the win!
+---------------------------------------------------
+
+Orvos consists of multiple B-trees. There is one B-tree, called the
+TID tree, which contains the visibility information of each tuple, but
+no user data. In addition to that, there is one B-tree for each
+attribute, called the attribute trees, to store the user data. Note that
+these B-tree implementations are completely unrelated to PostgreSQL's
+B-tree indexes.
+
+The TID tree, and all the attribute trees, use the TID as the key. The
+TID is used as a logical row identifier. Internally, Orvos passed
+TIDs around as 64-bit integers (zstid), but for interfacing with the
+rest of the system, they are converted to/from ItemPointers. When
+converted to an ItemPointer, the conversion ensures that the ItemPointer
+looks valid, i.e. offset 0 is never used. However, the TID is just a
+48-bit row identifier, the traditional division into block and offset
+numbers is meaningless. There is locality of access, though; TIDs that
+are close to each other, will probably also reside close to each other
+on disk. So, for example, bitmap index scans or BRIN indexes, which
+work with block numbers, still make some sense, even though the "block
+number" stored in a orvos ItemPointer doesn't correspond to a
+physical block.
+
+The internal pages of the B-trees are super simple and boring. The internal
+pages of the TID and attribute trees look identical. Functions that work
+with either the TID or attribute tree use OV_META_ATTRIBUTE_NUM as the
+"attribute number", when working with the TID tree.
+
+
+
+The leaf pages look different TID tree and the attribute trees. Let's
+look at the TID tree first:
+
+TID tree
+--------
+
+A TID tree page consists of multiple ZSTidArrayItems. Each ZSTidArrayItem
+represents a group of tuples, with TIDs in a particular range. The TID
+ranges of ZSTidArrayItems never overlap. For each tuple, we logically
+store the TID, and its UNDO pointer. The actual visibility information
+is stored in the UNDO log, if the tuple was recently modified.
+
+A tuple can also be marked as dead, which means that the tuple is not
+visible to anyone. Dead tuples are marked with a special constant
+UNDO pointer value, DeadUndoPtr. The TIDs of dead tuples cannot be
+reused, until all index pointers to the tuples have been removed, by
+VACUUM. VACUUM scans the TID tree to collect all the dead TIDs. (Note
+that VACUUM does not need to scan the attribute trees, and the TID tree
+is hopefully just a small fraction of the table. Vacuum on orvos is
+therefore hopefully much faster than on heap. (Although the freeze map
+can be pretty effective on the heap, too))
+
+So logically, the TID tree stores the TID and UNDO pointer for every
+tuple. However, that would take a lot of space. To reduce disk usage,
+the TID tree consists of ZSTidArrayItems, which contain the TIDs and
+their UNDO pointers in a specially encoded format. The encoded format
+is optimized for the common cases, where the gaps between TIDs are
+small, and most tuples are visible to everyone. See comments
+ZSTidArrayItem in orvos_internal.h for details.
+
+Having a TID tree that's separate from the attributes helps to support
+zero column tables (which can be result of ADD COLUMN DROP COLUMN actions
+as well). Plus, having meta-data stored separately from data, helps to get
+better compression ratios. And also helps to simplify the overall
+design/implementation as for deletes just need to edit the TID tree
+and avoid touching the attribute btrees.
+
+
+Attribute trees
+---------------
+
+The leaf pages on the attribute tree also consist of items, which pack
+data from multiple tuples in one item. In the attribute tree, the items
+can furthermore be compressed using LZ4, if the server has been
+configured with "configure --with-lz4". (If you don't use --with-lz4,
+PostgreSQL's built-in pglz algorithm is used, but it is *much* slower).
+Each item (ZSAttributeArrayItem) contains data for tuples with a range
+of consecutive TIDs. Multiple ZSAttributeArrayItems can be compressed
+together, into a single ZSAttributeCompressedItem item.
+
+In uncompressed form, an attribute tree page can be arbitrarily large.
+But after compression, it must fit into a physical 8k block. If on insert
+or update of a tuple, the page cannot be compressed below 8k anymore, the
+page is split. Note that because TIDs are logical rather than physical
+identifiers, we can freely move tuples from one physical page to
+another during page split. A tuple's TID never changes.
+
+The buffer cache caches compressed blocks. Likewise, WAL-logging,
+full-page images etc. work on compressed blocks. Uncompression is done
+on-the-fly, as and when needed in backend-private memory, when
+reading. For some compressions like rel encoding or delta encoding
+tuples can be constructed directly from compressed data.
+
+
+To reconstruct a row with given TID, scan descends down the B-trees for
+all the columns using that TID, and fetches all attributes. Likewise, a
+sequential scan walks all the B-trees in lockstep.
+
+
+TODO: Currently, each attribute is stored in a separate attribute
+B-tree. But a hybrid row-column store would also be possible, where some
+columns were stored together in the same tree. Or even a row store, where
+all the user data was stored in a single tree, or even combined with the
+TID tree.
+
+Metapage
+--------
+
+A metapage at block 0, has links to the roots of the B-trees.
+
+
+Low-level locking / concurrency issues
+------------------------------- ------
+Design principles:
+
+* Every page is self-identifying. Every page has a page type ID,
+  which indicates what kind of a page it is. For a B-tree page,
+  the page header contains the attribute number and lo/hi key.
+  That is enough information to find the downlink to the page, so
+  that it can be deleted if necessary. There is enough information
+  on each leaf page to easily re-build the internal pages from
+  scratch, in case of corruption, for example.
+
+* Concurrency control: When traversing the B-tree, or walking UNDO
+  or TOAST pages, it's possible that a concurrent process splits or
+  moves a page just when we're about to step on it. There is enough
+  information on each page to detect that case. For example, if a
+  B-tree page is split just when you are about to step on it, you
+  can detect that by looking at the lo/hi key. If a page is deleted,
+  that can be detected too, because the attribute number or lo/hikey
+  are not what you expected. In that case, start the scan from the
+  root.
+
+* Any page can be fairly easily be moved, starting with just the
+  page itself. When you have a B-tree page at hand, you can re-find
+  its parent using its lokey, and modify the downlink. A toast page
+  contains the attno/TID, which can be used to find the pointer to
+  it in the b-tree. An UNDO page cannot currently be moved because
+  UNDO pointers contain the physical block number, but as soon as an
+  UNDO page expires, it can be deleted.
+
+
+MVCC
+----
+
+Undo record pointers are used to implement MVCC, like in zheap. Hence,
+transaction information if not directly stored with the data. In
+zheap, there's a small, fixed, number of "transaction slots" on each
+page, but orvos has undo pointer with each item directly; in normal
+cases, the compression squeezes this down to almost nothing. In case
+of bulk load the undo record pointer is maintained for array of items
+and not per item. Undo pointer is only stored in meta-column and all
+MVCC operations are performed using the meta-column only.
+
+
+Insert:
+Inserting a new row, splits the row into datums. Then while adding
+entry for meta-column adds, decides block to insert, picks a TID for
+it, and writes undo record for the same. All the data columns are
+inserted using that TID.
+
+Toast:
+When an overly large datum is stored, it is divided into chunks, and
+each chunk is stored on a dedicated toast page within the same
+physical file. The toast pages of a datum form list, each page has a
+next/prev pointer.
+
+Select:
+Property is added to Table AM to convey if column projection is
+leveraged by AM for scans. While scanning tables with AM leveraging
+this property, executor parses the plan. Leverages the target list and
+quals to find the required columns for query. This list is passed down
+to AM on beginscan. Orvos uses this column projection list to only
+pull data from selected columns. Virtual tuple table slot is used to
+pass back the datums for subset of columns.
+
+Current table am API requires enhancement here to pass down column
+projection to AM. The patch showcases two different ways for the same.
+
+* For sequential scans added new beginscan_with_column_projection()
+API. Executor checks AM property and if it leverages column projection
+uses this new API else normal beginscan() API.
+
+* For index scans instead of modifying the begin scan API, added new
+API to specifically pass column projection list after calling begin
+scan to populate the scan descriptor but before fetching the tuples.
+
+Delete:
+When deleting a tuple, new undo record is created for delete and only
+meta-column item is updated with this new undo record. New undo record
+created points to previous undo record pointer (insert undo record)
+present for the tuple. Hence, delete only operates on meta-column and
+no data column is edited.
+
+Update:
+Update in orvos is pretty equivalent to delete and insert. Delete
+action is performed as stated above and new entry is added with
+updated values. So, no in-place update happens.
+
+Index Support:
+Building index also leverages columnar storage and only scans columns
+required to build the index. Indexes work pretty similar to heap
+tables. Data is inserted into tables and TID for the tuple gets stored
+in index. On index scans, required column Btrees are scanned for given
+TID and datums passed back using virtual tuple. Since only meta-column
+is leveraged to perform visibility check, only visible tuples data are
+fetched from rest of the Btrees.
+
+Page Format
+-----------
+A Orvos table contains different kinds of pages, all in the same
+file. Kinds of pages are meta-page, per-attribute btree internal and
+leaf pages, UNDO log page, and toast pages. Each page type has its own
+distinct data storage format.
+
+META Page:
+Block 0 is always a metapage. It contains the block numbers of the
+other data structures stored within the file, like the per-attribute
+B-trees, and the UNDO log.
+
+BTREE Page:
+
+UNDO Page:
+
+TOAST Page:
+
+
+Free Pages Map
+--------------
+
+There is a simple Free Pages Map, which is just a linked list of unused
+blocks. The block number of the first unused page in the list is stored
+in the metapage. Each unused block contains link to the next unused
+block in the chain. When a block comes unused, it is added to the
+head of the list.
+
+TODO: That doesn't scale very well, and the pages are reused in LIFO
+order. We'll probably want to do something smarter to avoid making the
+metapage a bottleneck for this, as well as try to batch the page
+allocations so that each attribute B-tree would get contiguous ranges
+of blocks, to allow I/O readahead to be effective.
+
+
+Enhancement ideas / alternative designs
+---------------------------------------
+
+Instead of compressing all the tuples on a page in one batch, store a
+small "dictionary", e.g. in page header or meta page or separate
+dedicated page, and use it to compress tuple by tuple. That could make
+random reads and updates of individual tuples faster. Need to find how
+to create the dictionary first.
+
+Only cached compressed pages in the page cache. If we want to cache
+uncompressed pages instead, or in addition to that, we need to invent
+a whole new kind of a buffer cache that can deal with the
+variable-size blocks. For a first version, I think we can live without
+it.
+
+Instead of storing all columns in the same file, we could store them
+in separate files (separate forks?). That would allow immediate reuse
+of space, after dropping a column. It's not clear how to use an FSM in
+that case, though. Might have to implement an integrated FSM,
+too. (Which might not be a bad idea, anyway).
+
+Design allows for hybrid row-column store, where some columns are
+stored together, and others have a dedicated B-tree. Need to have user
+facing syntax to allow specifying how to group the columns.
+
+Salient points for the design
+------------------------------
+
+* Layout the data/tuples in mapped fashion instead of keeping the
+logical to physical mapping separate from actual data. So, keep all
+the meta-data and data logically in single stream of file, avoiding
+the need for separate forks/files to store meta-data and data.
+
+* Handle/treat operations at tuple level and not block level.
+
+* Stick to fixed size physical blocks. Variable size blocks (for
+possibly higher compression ratios) pose need for increased logical to
+physical mapping maintenance, plus restrictions on concurrency of
+writes and reads to files. Hence adopt compression to fit fixed size
+blocks instead of other way round.
+
+
+Predicate locking
+-----------------
+
+Predicate locks, to support SERIALIZABLE transactinons, are taken like
+with the heap. From README-SSI:
+
+* For a table scan, the entire relation will be locked.
+
+* Each tuple read which is visible to the reading transaction will be
+locked, whether or not it meets selection criteria; except that there
+is no need to acquire an SIREAD lock on a tuple when the transaction
+already holds a write lock on any tuple representing the row, since a
+rw-conflict would also create a ww-dependency which has more
+aggressive enforcement and thus will prevent any anomaly.
+
+* Modifying a heap tuple creates a rw-conflict with any transaction
+that holds a SIREAD lock on that tuple, or on the page or relation
+that contains it.
+
+* Inserting a new tuple creates a rw-conflict with any transaction
+holding a SIREAD lock on the entire relation. It doesn't conflict with
+page-level locks, because page-level locks are only used to aggregate
+tuple locks. Unlike index page locks, they don't lock "gaps" on the
+page.
+
+
+Orvos isn't block-based, so page-level locks really just mean a
+range of TIDs. They're only used to aggregate tuple locks.

@@ -407,6 +407,12 @@ extern void analyze_rel(Oid relid, RangeVar *relation,
 						BufferAccessStrategy bstrategy);
 extern bool std_typanalyze(VacAttrStats *stats);
 
+/* Hook for table AMs to store custom statistics after ANALYZE */
+typedef void (*analyze_store_custom_stats_hook_type) (Relation onerel,
+													   int attr_cnt,
+													   VacAttrStats **vacattrstats);
+extern PGDLLIMPORT analyze_store_custom_stats_hook_type analyze_store_custom_stats_hook;
+
 /* in utils/misc/sampling.c --- duplicate of declarations in utils/sampling.h */
 extern double anl_random_fract(void);
 extern double anl_init_selection_state(int n);

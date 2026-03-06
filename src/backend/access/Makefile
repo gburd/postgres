@@ -24,4 +24,9 @@ SUBDIRS	    = \
 	tablesample \
 	transam
 
+# Orvos table AM (optional, enabled by default)
+ifeq ($(with_orvos),yes)
+SUBDIRS += orvos
+endif
+
 include $(top_srcdir)/src/backend/common.mk

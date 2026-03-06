@@ -127,6 +127,9 @@ option('lz4', type: 'feature', value: 'auto',
 option('nls', type: 'feature', value: 'auto',
   description: 'Native language support')
 
+option('orvos', type: 'feature', value: 'enabled',
+  description: 'Orvos columnar table access method')
+
 option('pam', type: 'feature', value: 'auto',
   description: 'PAM support')
 
