@@ -33,6 +33,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/relcache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -910,6 +911,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
+	Bitmapset  *modified_idx_attrs;
 
 	/*
 	 * We support only non-system tables, with
@@ -932,7 +934,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -948,24 +949,31 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
+		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
+														searchslot, slot);
+
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &update_indexes);
+								  &modified_idx_attrs);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
+		if (resultRelInfo->ri_NumIndices > 0 &&
+			!bms_is_empty(modified_idx_attrs))
 		{
 			uint32		flags = EIIT_IS_UPDATE;
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
-			if (update_indexes == TU_Summarizing)
+			if (!bms_is_member(TableTupleUpdateAllIndexes, modified_idx_attrs))
 				flags |= EIIT_ONLY_SUMMARIZING;
+
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, flags,
 												   slot, conflictindexes,
 												   &conflict);
 		}
+
+		bms_free(modified_idx_attrs);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
