@@ -1,0 +1,34 @@
+{
+  "name": "postgres-ai-review",
+  "version": "1.0.0",
+  "description": "AI-powered code review for PostgreSQL contributions",
+  "main": "review-pr.js",
+  "type": "module",
+  "scripts": {
+    "review": "node review-pr.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.609.0",
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "minimatch": "^10.0.1",
+    "parse-diff": "^0.11.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "postgresql",
+    "code-review",
+    "ai",
+    "claude",
+    "github-actions"
+  ],
+  "author": "PostgreSQL Mirror Automation",
+  "license": "MIT"
+}
