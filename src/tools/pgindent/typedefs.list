@@ -1256,6 +1256,7 @@ HeapTupleFreeze
 HeapTupleHeader
 HeapTupleHeaderData
 HeapTupleTableSlot
+HeapUpdateIndexMode
 HistControl
 HostCacheEntry
 HostsFileLoadResult
@@ -3122,7 +3123,6 @@ TSVectorStat
 TState
 TStatus
 TStoreState
-TU_UpdateIndexes
 TXNEntryFile
 TYPCATEGORY
 T_Action

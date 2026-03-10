@@ -242,19 +242,33 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  bool *entry_needs_recheck,
+							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
 	bool		call_again = false;
 	bool		found;
 
-	slot = table_slot_create(rel, NULL);
+	slot = keep_slot ? keep_slot : table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
+
+	/*
+	 * No in-core table AM can currently reach a tuple whose index key differs
+	 * from the arriving entry's key: an AM either stores the new version at a
+	 * new TID (fresh entries for every index) or leaves every indexed
+	 * attribute unchanged (heap's HOT).  So a found tuple never needs a key
+	 * recheck.
+	 */
+	if (entry_needs_recheck != NULL)
+		*entry_needs_recheck = false;
+
 	table_index_fetch_end(scan);
-	ExecDropSingleTupleTableSlot(slot);
+	if (keep_slot == NULL)
+		ExecDropSingleTupleTableSlot(slot);
 
 	return found;
 }
@@ -361,7 +375,8 @@ void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
-						  TU_UpdateIndexes *update_indexes)
+						  const Bitmapset *modified_attrs,
+						  bool *row_moved)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -371,7 +386,9 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								GetCurrentCommandId(true),
 								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, &lockmode, update_indexes);
+								&tmfd, &lockmode,
+								modified_attrs,
+								row_moved);
 
 	switch (result)
 	{
