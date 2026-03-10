@@ -278,21 +278,23 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		when a heap tuple is inserted into the result relation.
  *
  *		When EIIT_IS_UPDATE is set and EIIT_ONLY_SUMMARIZING isn't,
- *		executor is performing an UPDATE that could not use an
+ *		the executor is performing an UPDATE that could not use an
  *		optimization like heapam's HOT (in more general terms a
- *		call to table_tuple_update() took place and set
- *		'update_indexes' to TU_All).  Receiving this hint makes
- *		us consider if we should pass down the 'indexUnchanged'
- *		hint in turn.  That's something that we figure out for
- *		each index_insert() call iff EIIT_IS_UPDATE is set.
- *		(When that flag is not set we already know not to pass the
- *		hint to any index.)
+ *		call to table_tuple_update() took place and reported, via the
+ *		whole-row TableTupleUpdateAllIndexes attribute in its
+ *		modified_attrs in/out set, that every index needs a fresh
+ *		entry).  Receiving this hint makes us consider if we should
+ *		pass down the 'indexUnchanged' hint in turn.  That's something
+ *		that we figure out for each index_insert() call iff
+ *		EIIT_IS_UPDATE is set.  (When that flag is not set we already
+ *		know not to pass the hint to any index.)
  *
  *		If EIIT_ONLY_SUMMARIZING is set, an equivalent optimization to
  *		HOT has been applied and any updated columns are indexed
  *		only by summarizing indexes (or in more general terms a
- *		call to table_tuple_update() took place and set
- *		'update_indexes' to TU_Summarizing). We can (and must)
+ *		call to table_tuple_update() took place and left modified_attrs
+ *		non-empty but without the whole-row TableTupleUpdateAllIndexes
+ *		attribute). We can (and must)
  *		therefore only update the indexes that have
  *		'amsummarizing' = true.
  *
