@@ -389,8 +389,8 @@ extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
 							 HeapTuple newtup,
 							 CommandId cid, uint32 options,
 							 Snapshot crosscheck, bool wait,
-							 TM_FailureData *tmfd, LockTupleMode *lockmode,
-							 TU_UpdateIndexes *update_indexes);
+							 TM_FailureData *tmfd, const LockTupleMode lockmode,
+							 const Bitmapset *modified_idx_attrs, const bool hot_allowed);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -462,6 +462,12 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *redirected, int nredirected,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused);
+
+/* in heap/heapam.c */
+extern bool HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs,
+								   bool *summarized_only);
+extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
+												 const Bitmapset *modified_idx_attrs);
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,
