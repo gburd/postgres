@@ -85,6 +85,8 @@ extern void RelationGetExclusionInfo(Relation indexRelation,
 
 extern void RelationInitIndexAccessInfo(Relation relation);
 
+extern void RelationBuildIdxSubattrs(Relation rel);
+
 /* caller must include pg_publication.h */
 struct PublicationDesc;
 extern void RelationBuildPublicationDesc(Relation relation,

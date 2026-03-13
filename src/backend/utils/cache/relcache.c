@@ -83,6 +83,7 @@
 #include "utils/catcache.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
+#include "utils/idxsubattr.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -1213,6 +1214,10 @@ retry:
 	relation->rd_partcheck = NIL;
 	relation->rd_partcheckvalid = false;
 	relation->rd_partcheckcxt = NULL;
+
+	/* indexed-subattr data is not loaded till asked for */
+	relation->rd_idxsubattrs = NULL;
+	relation->rd_idxsubattrsvalid = false;
 
 	/*
 	 * initialize access method information
@@ -2495,6 +2500,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_pddcxt);
 	if (relation->rd_partcheckcxt)
 		MemoryContextDelete(relation->rd_partcheckcxt);
+	if (relation->rd_idxsubattrs != NULL)
+		FreeIdxSubattrs(relation->rd_idxsubattrs);
 	pfree(relation);
 }
 
@@ -2514,6 +2521,14 @@ RelationInvalidateRelation(Relation relation)
 	 * truncation.
 	 */
 	RelationCloseSmgr(relation);
+
+	/* Free indexed sub-attribute descriptors, if any */
+	if (relation->rd_idxsubattrs != NULL)
+	{
+		FreeIdxSubattrs(relation->rd_idxsubattrs);
+		relation->rd_idxsubattrs = NULL;
+	}
+	relation->rd_idxsubattrsvalid = false;
 
 	/* Free AM cached data, if any */
 	if (relation->rd_amcache)
@@ -5556,6 +5571,368 @@ restart:
 }
 
 /*
+ * Temporary accumulator used only during RelationBuildIdxSubattrs.
+ */
+typedef struct SubattrAccumEntry
+{
+	AttrNumber	attnum;
+	Oid			typoid;
+	Oid			comparefn_oid;
+	List	   *descs;			/* List of IdxSubattrDesc (palloc'd) */
+} SubattrAccumEntry;
+
+/*
+ * FindOrCreateAccumEntry
+ *
+ * Helper for RelationBuildIdxSubattrs.  Find or create an accumulator
+ * entry for the given attribute.
+ */
+static SubattrAccumEntry *
+FindOrCreateAccumEntry(List **accum, AttrNumber attnum, Oid typoid,
+					   Oid comparefn_oid)
+{
+	ListCell   *lc;
+
+	foreach(lc, *accum)
+	{
+		SubattrAccumEntry *entry = (SubattrAccumEntry *) lfirst(lc);
+
+		if (entry->attnum == attnum)
+		{
+			Assert(entry->typoid == typoid);
+			return entry;
+		}
+	}
+
+	/* Not found, create new entry */
+	{
+		SubattrAccumEntry *entry = (SubattrAccumEntry *) palloc(sizeof(SubattrAccumEntry));
+
+		entry->attnum = attnum;
+		entry->typoid = typoid;
+		entry->comparefn_oid = comparefn_oid;
+		entry->descs = NIL;
+		*accum = lappend(*accum, entry);
+		return entry;
+	}
+}
+
+/*
+ * FinalizeAccum
+ *
+ * Convert the temporary accumulator to a RelSubattrInfo allocated in
+ * CacheMemoryContext.  Returns NULL if the accumulator is empty.
+ */
+static RelSubattrInfo *
+FinalizeAccum(List *accum, Bitmapset *simple_indexed_attrs)
+{
+	RelSubattrInfo *info;
+	ListCell   *lc;
+	MemoryContext oldcxt;
+	int			i;
+
+	if (accum == NIL)
+	{
+		bms_free(simple_indexed_attrs);
+		return NULL;
+	}
+
+	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
+
+	info = (RelSubattrInfo *) palloc(sizeof(RelSubattrInfo));
+	info->nattrs = list_length(accum);
+	info->attrs = (SubattrInfo *) palloc(info->nattrs * sizeof(SubattrInfo));
+	info->subattr_attrs = NULL;
+	info->simple_indexed_attrs = bms_copy(simple_indexed_attrs);
+
+	i = 0;
+	foreach(lc, accum)
+	{
+		SubattrAccumEntry *entry = (SubattrAccumEntry *) lfirst(lc);
+		SubattrInfo *attr = &info->attrs[i++];
+		ListCell   *dc;
+		int			j;
+
+		attr->attnum = entry->attnum;
+		attr->typoid = entry->typoid;
+		attr->ndescriptors = list_length(entry->descs);
+		attr->descriptors = (IdxSubattrDesc *) palloc(attr->ndescriptors *
+													  sizeof(IdxSubattrDesc));
+
+		j = 0;
+		foreach(dc, entry->descs)
+		{
+			IdxSubattrDesc *src = (IdxSubattrDesc *) lfirst(dc);
+			IdxSubattrDesc *dst = &attr->descriptors[j++];
+
+			dst->descriptor = datumCopy(src->descriptor, false, -1);
+			dst->indexoid = src->indexoid;
+			dst->indexcol = src->indexcol;
+		}
+
+		/*
+		 * Cache the FmgrInfo for the compare function if present.
+		 */
+		if (OidIsValid(entry->comparefn_oid))
+		{
+			fmgr_info_cxt(entry->comparefn_oid, &attr->comparefn,
+						  CacheMemoryContext);
+			attr->has_comparefn = true;
+		}
+		else
+		{
+			attr->has_comparefn = false;
+		}
+
+		/*
+		 * Add to quick membership test bitmapset.
+		 */
+		info->subattr_attrs =
+			bms_add_member(info->subattr_attrs,
+						   attr->attnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+	bms_free(simple_indexed_attrs);
+
+	return info;
+}
+
+/*
+ * RelationBuildIdxSubattrs -- build per-attribute indexed-subattr cache
+ *
+ * Scan all indexes on 'rel', and for each expression-index column whose
+ * base-table attribute has a type with typidxextract, call that function
+ * to extract a subattr descriptor.  Accumulate descriptors per attribute
+ * and store the result in rel->rd_idxsubattrs.
+ *
+ * Results live in CacheMemoryContext and persist until relcache
+ * invalidation.
+ *
+ * Caller had better hold at least RowExclusiveLock on the target relation
+ * to ensure it is safe (deadlock-free) for us to take locks on the
+ * relation's indexes.  Note that since the introduction of CREATE INDEX
+ * CONCURRENTLY, that lock level doesn't guarantee a stable set of indexes,
+ * so we have to be prepared to retry here in case of a change in the set
+ * of indexes.
+ *
+ * Note: We avoid using RelationGetIndexExpressions() because that runs
+ * eval_const_expressions(), which requires a snapshot that we might not
+ * have here.  Instead we use heap_getattr() to read indexprs directly,
+ * following the same pattern as RelationGetIndexAttrBitmap().
+ */
+void
+RelationBuildIdxSubattrs(Relation rel)
+{
+	List	   *indexoidlist;
+	List	   *newindexoidlist;
+	ListCell   *lc;
+	List	   *accum;			/* List of SubattrAccumEntry */
+	Bitmapset  *simple_indexed_attrs;
+	MemoryContext buildcxt;
+	MemoryContext oldcxt;
+
+	Assert(!rel->rd_idxsubattrsvalid);
+
+	/* Fast path if definitely no indexes */
+	if (!RelationGetForm(rel)->relhasindex)
+	{
+		rel->rd_idxsubattrs = NULL;
+		rel->rd_idxsubattrsvalid = true;
+		return;
+	}
+
+	/*
+	 * Get cached list of index OIDs. If we have to start over, we do so here.
+	 */
+restart:
+	indexoidlist = RelationGetIndexList(rel);
+
+	/* Fall out if no indexes (but relhasindex was set) */
+	if (indexoidlist == NIL)
+	{
+		rel->rd_idxsubattrs = NULL;
+		rel->rd_idxsubattrsvalid = true;
+		return;
+	}
+
+	/*
+	 * Use a temporary context for intermediate allocations (expression trees,
+	 * Var lists, etc.).  Final results are copied to CacheMemoryContext by
+	 * FinalizeAccum().
+	 */
+	buildcxt = AllocSetContextCreate(CurrentMemoryContext,
+									 "IdxSubattr build",
+									 ALLOCSET_SMALL_SIZES);
+	oldcxt = MemoryContextSwitchTo(buildcxt);
+
+	accum = NIL;
+	simple_indexed_attrs = NULL;
+
+	/*
+	 * For each index, check expression columns for subattr descriptors.
+	 *
+	 * Note: we consider all indexes returned by RelationGetIndexList, even if
+	 * they are not indisready or indisvalid.  This is important because an
+	 * index for which CREATE INDEX CONCURRENTLY has just started must be
+	 * included in HOT-safety decisions (see README.HOT).
+	 */
+	foreach(lc, indexoidlist)
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		Relation	idxrel;
+		Form_pg_index idxform;
+		Datum		datum;
+		bool		isnull;
+		List	   *indexprs;
+		int			i;
+		int			expr_index = 0;
+
+		idxrel = index_open(indexoid, AccessShareLock);
+		idxform = idxrel->rd_index;
+
+		/*
+		 * Extract index expressions.  Don't use
+		 * RelationGetIndexExpressions(), because that might run constant
+		 * expression evaluation, which needs a snapshot we might not have
+		 * here.  (Same reasoning as RelationGetIndexAttrBitmap().)
+		 */
+		datum = heap_getattr(idxrel->rd_indextuple, Anum_pg_index_indexprs,
+							 GetPgIndexDescriptor(), &isnull);
+		if (!isnull)
+			indexprs = (List *) stringToNode(TextDatumGetCString(datum));
+		else
+			indexprs = NIL;
+
+		for (i = 0; i < idxform->indnatts; i++)
+		{
+			AttrNumber	attnum = idxform->indkey.values[i];
+			Node	   *expr;
+			List	   *vars;
+			ListCell   *vc;
+
+			if (AttributeNumberIsValid(attnum))
+			{
+				/*
+				 * Simple column reference => record in simple_indexed_attrs.
+				 */
+				simple_indexed_attrs =
+					bms_add_member(simple_indexed_attrs,
+								   attnum - FirstLowInvalidHeapAttributeNumber);
+				continue;
+			}
+
+			/*
+			 * Expression index column.  Pull all Vars.
+			 */
+			if (indexprs == NIL)
+				continue;		/* defensive */
+
+			expr = (Node *) list_nth(indexprs, expr_index);
+			expr_index++;
+			vars = pull_var_clause(expr,
+								   PVC_RECURSE_AGGREGATES |
+								   PVC_RECURSE_WINDOWFUNCS |
+								   PVC_INCLUDE_PLACEHOLDERS);
+
+			foreach(vc, vars)
+			{
+				Var		   *var = (Var *) lfirst(vc);
+				HeapTuple	typetup;
+				Form_pg_type typeform;
+				Oid			extractfn_oid;
+				Oid			comparefn_oid;
+				Datum		result;
+				SubattrAccumEntry *entry;
+				IdxSubattrDesc *desc;
+
+				if (!IsA(var, Var))
+					continue;	/* shouldn't happen */
+				if (var->varno != 1)
+					continue;	/* shouldn't happen for base-table index */
+
+				attnum = var->varattno;
+				if (!AttributeNumberIsValid(attnum))
+					continue;
+
+				/*
+				 * Look up the type's typidxextract function.  If there isn't
+				 * one, this type doesn't support subattr tracking.
+				 */
+				typetup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(var->vartype));
+				if (!HeapTupleIsValid(typetup))
+					elog(ERROR, "cache lookup failed for type %u", var->vartype);
+				typeform = (Form_pg_type) GETSTRUCT(typetup);
+				extractfn_oid = typeform->typidxextract;
+				comparefn_oid = typeform->typidxcompare;
+				ReleaseSysCache(typetup);
+
+				if (!OidIsValid(extractfn_oid))
+					continue;
+
+				/*
+				 * Call the extract function to get the subattr descriptor.
+				 * Pass both the expression and the attribute number.
+				 */
+				result = OidFunctionCall2(extractfn_oid,
+										  PointerGetDatum(expr),
+										  Int16GetDatum(attnum));
+				if (DatumGetPointer(result) == NULL)
+					continue;	/* function declined to provide descriptor */
+
+				/*
+				 * Store descriptor in the accumulator for this attribute.
+				 */
+				entry = FindOrCreateAccumEntry(&accum, attnum, var->vartype,
+											   comparefn_oid);
+				desc = (IdxSubattrDesc *) palloc(sizeof(IdxSubattrDesc));
+				desc->descriptor = result;
+				desc->indexoid = indexoid;
+				desc->indexcol = i;
+				entry->descs = lappend(entry->descs, desc);
+			}
+
+			list_free(vars);
+		}
+
+		index_close(idxrel, AccessShareLock);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+
+	/*
+	 * During one of the index_opens in the above loop, we might have received
+	 * a relcache flush event on this relcache entry, which might have been
+	 * signaling a change in the rel's index list.  If so, we'd better start
+	 * over to ensure we deliver up-to-date subattr info.
+	 */
+	newindexoidlist = RelationGetIndexList(rel);
+	if (equal(indexoidlist, newindexoidlist))
+	{
+		/* Still the same index set, so proceed */
+		list_free(newindexoidlist);
+		list_free(indexoidlist);
+	}
+	else
+	{
+		/* Gotta do it over ... might as well not leak memory */
+		list_free(newindexoidlist);
+		list_free(indexoidlist);
+		MemoryContextDelete(buildcxt);
+
+		goto restart;
+	}
+
+	/*
+	 * Convert accumulator to final form and store in relcache.
+	 */
+	rel->rd_idxsubattrs = FinalizeAccum(accum, simple_indexed_attrs);
+	rel->rd_idxsubattrsvalid = true;
+
+	MemoryContextDelete(buildcxt);
+}
+
+/*
  * RelationGetIdentityKeyBitmap -- get a bitmap of replica identity attribute
  * numbers
  *
@@ -6520,6 +6897,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_droppedSubid = InvalidSubTransactionId;
 		rel->rd_amcache = NULL;
 		rel->pgstat_info = NULL;
+		rel->rd_idxsubattrs = NULL;
+		rel->rd_idxsubattrsvalid = false;
 
 		/*
 		 * Recompute lock and physical addressing info.  This is needed in

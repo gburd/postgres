@@ -60,7 +60,9 @@
 #include "access/xact.h"
 #include "commands/trigger.h"
 #include "executor/execPartition.h"
+#include "executor/execExpr.h"
 #include "executor/executor.h"
+#include "executor/execMutation.h"
 #include "executor/instrument.h"
 #include "executor/nodeModifyTable.h"
 #include "foreign/fdwapi.h"
@@ -72,6 +74,7 @@
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/idxsubattr.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -246,6 +249,106 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	 * "modified_idx_attrs".
 	 */
 	attrs = ExecCompareSlotAttrs(attrs, tupdesc, old_tts, new_tts);
+
+	/*
+	 * Refine the modified attributes set using sub-attribute tracking. For
+	 * attributes with ONLY expression indexes on sub-attributes (no simple
+	 * whole-column indexes), a byte-level column change doesn't necessarily
+	 * mean the indexed sub-attributes changed.  Check using either: -
+	 * Instrumented path: ri_ModifiedIdxAttrs (populated by mutation functions
+	 * via SubattrTrackingContext) - Fallback path: HeapCheckSubattrChanges()
+	 * (compares old/new values at indexed sub-attributes using typidxcompare
+	 * functions)
+	 *
+	 * IMPORTANT: Only refine for "subattr-only" attributes.  If an attribute
+	 * has BOTH expression indexes (subattrs) AND simple whole-column indexes,
+	 * we must keep it in the modified set because the simple index needs
+	 * updating whenever the column bytes change.
+	 */
+	if (attrs != NULL && resultRelInfo->ri_useSubattrTracking)
+	{
+		/*
+		 * Instrumented path: mutation functions already identified which
+		 * indexed sub-attributes were modified (tracked in
+		 * ri_ModifiedIdxAttrs). For attrs with ONLY subattr tracking (no
+		 * simple indexes) and NOT in ri_ModifiedIdxAttrs, the indexed paths
+		 * are unchanged; remove from attrs to allow HOT update.
+		 *
+		 * Note: ri_ModifiedIdxAttrs may be NULL, which means tracking was
+		 * active but no indexed sub-attributes were modified. This is
+		 * distinct from ri_useSubattrTracking == false, which means no
+		 * tracking was set up.
+		 */
+		Bitmapset  *refined_attrs = NULL;
+		int			attnum;
+
+		attnum = -1;
+		while ((attnum = bms_next_member(attrs, attnum)) >= 0)
+		{
+			AttrNumber	attno = attnum + FirstLowInvalidHeapAttributeNumber;
+
+			if (attr_subattr_only(relation, attno))
+			{
+				/*
+				 * Attribute has ONLY expression indexes on sub-attributes, no
+				 * simple whole-column indexes.  Check if mutation function
+				 * reported sub-attribute modification.
+				 *
+				 * If ri_ModifiedIdxAttrs is NULL, nothing was reported as
+				 * modified, so we can safely omit this attribute.
+				 */
+				if (resultRelInfo->ri_ModifiedIdxAttrs != NULL &&
+					bms_is_member(attnum, resultRelInfo->ri_ModifiedIdxAttrs))
+				{
+					/*
+					 * Indexed sub-attribute was modified; include in result
+					 */
+					refined_attrs = bms_add_member(refined_attrs, attnum);
+				}
+				/* else: indexed sub-attrs unchanged, so omit it from result */
+			}
+			else
+			{
+				/*
+				 * Attribute has simple whole-column indexes (with or without
+				 * subattr tracking), we must keep it in modified set because
+				 * byte-level change requires index update.
+				 */
+				refined_attrs = bms_add_member(refined_attrs, attnum);
+			}
+		}
+
+		if (attrs != refined_attrs)
+		{
+			bms_free(attrs);
+			attrs = refined_attrs;
+		}
+	}
+	else if (attrs != NULL)
+	{
+		/*
+		 * Fallback path: No instrumented tracking (e.g., direct tuple
+		 * modification via heap_modify_tuple, or mutation function doesn't
+		 * support tracking).  Use HeapCheckSubattrChanges() to compare
+		 * old/new values at indexed sub-attributes.
+		 */
+		HeapTuple	oldtup;
+		HeapTuple	newtup;
+		Bitmapset  *safe_attrs;
+
+		/* Extract HeapTuples from slots for comparison */
+		oldtup = ExecFetchSlotHeapTuple(old_tts, false, NULL);
+		newtup = ExecFetchSlotHeapTuple(new_tts, false, NULL);
+
+		/*
+		 * HeapCheckSubattrChanges returns attributes where indexed
+		 * sub-attributes did NOT change (safe for HOT).  Compute the
+		 * difference to get attributes that DO need index updates.
+		 */
+		safe_attrs = HeapCheckSubattrChanges(relation, oldtup, newtup, attrs);
+		attrs = bms_difference(attrs, safe_attrs);
+		bms_free(safe_attrs);
+	}
 
 	return attrs;
 }
@@ -761,6 +864,152 @@ ExecInitInsertProjection(ModifyTableState *mtstate,
 }
 
 /*
+ * ExecInjectSubattrContext
+ *		Inject per-column SubattrTrackingContexts into the subplan's
+ *		projection steps.
+ *
+ * For regular UPDATE, the SET expressions are evaluated by the subplan's
+ * projection, which is compiled before we can set up SubattrTrackingContext.
+ * This function patches the already-compiled expression steps to add the
+ * context pointer (satctx) to each function-call step.
+ *
+ * Multi-column strategy
+ * ---------------------
+ * An UPDATE can modify multiple columns in a single statement, e.g.:
+ *
+ *   UPDATE t SET j1 = jsonb_set(j1, ...), j2 = jsonb_delete(j2, ...)
+ *
+ * Each column needs its own SubattrTrackingContext with the correct
+ * target_attnum and column-specific SubattrInfo, because the executor
+ * must record which column was modified when a function sets the
+ * modified_idx_subattr flag.
+ *
+ * Column boundaries are identified by EEOP_ASSIGN_TMP and
+ * EEOP_ASSIGN_TMP_MAKE_RO steps in the expression step array.  These
+ * steps assign the computed result into the output slot for one target
+ * column.  The expression step array has this structure:
+ *
+ *   [steps for column 1] ASSIGN_TMP [steps for column 2] ASSIGN_TMP ...
+ *
+ * We scan forward through the steps.  When we hit an ASSIGN_TMP step, all
+ * preceding function-call steps (since the last ASSIGN_TMP) belong to that
+ * column.  We create a SubattrTrackingContext for the column (looking up
+ * SubattrInfo via the relation and attnum) and retroactively assign it to
+ * each EEOP_FUNCEXPR* step in that range via the step's d.func.satctx
+ * pointer.
+ *
+ * The context carries SubattrInfo descriptors but no Relation pointer, so
+ * mutation functions can check path intersection without accessing the
+ * relation directly.
+ */
+static void
+ExecInjectSubattrContext(PlanState *subplanState,
+						 ResultRelInfo *resultRelInfo,
+						 List *updateColnos,
+						 MemoryContext mcxt)
+{
+	ProjectionInfo *projInfo = subplanState->ps_ProjInfo;
+	ExprState  *exprstate;
+	int			steps_len;
+	int			last_assign;
+	int			col_idx;
+	int			ncols;
+	int			i;
+	bool		tracking_setup = false;
+
+	/* If there's no projection, nothing to do */
+	if (projInfo == NULL)
+		return;
+
+	exprstate = &projInfo->pi_state;
+	steps_len = exprstate->steps_len;
+	ncols = list_length(updateColnos);
+
+	/*
+	 * Scan forward through steps.  Each EEOP_ASSIGN_TMP[_MAKE_RO] marks the
+	 * end of steps computing one target column.  Function call steps between
+	 * two consecutive ASSIGN_TMP boundaries all contribute to the same
+	 * column.
+	 *
+	 * We use ExecEvalStepOp() to decode opcodes because the expression may
+	 * have already been through ExecReadyInterpretedExpr(), which replaces
+	 * enum opcodes with computed-goto addresses on platforms that support it.
+	 */
+	last_assign = 0;
+	col_idx = 0;
+
+	for (i = 0; i < steps_len; i++)
+	{
+		ExprEvalStep *step = &exprstate->steps[i];
+		ExprEvalOp	opcode = ExecEvalStepOp(exprstate, step);
+
+		if (opcode == EEOP_ASSIGN_TMP ||
+			opcode == EEOP_ASSIGN_TMP_MAKE_RO)
+		{
+			/*
+			 * This ASSIGN_TMP corresponds to column col_idx in updateColnos.
+			 * Don't overrun the list if expression structure is unexpected.
+			 */
+			if (col_idx < ncols)
+			{
+				AttrNumber	attnum = list_nth_int(updateColnos, col_idx);
+				SubattrTrackingContext *ctx;
+				int			j;
+
+				ctx = makeNode(SubattrTrackingContext);
+				ctx->target_attnum = attnum;
+				ctx->modified_idx_attrs = &resultRelInfo->ri_ModifiedIdxAttrs;
+				ctx->modified_idx_mcxt = mcxt;
+				ctx->subattr_info = RelationGetSubattrInfo(
+														   resultRelInfo->ri_RelationDesc, attnum);
+
+				/*
+				 * Only set up tracking if this column actually has subattr
+				 * indexes. This avoids false positives in the instrumented
+				 * path.
+				 */
+				if (ctx->subattr_info != NULL)
+				{
+					tracking_setup = true;
+
+					/* Mark all function steps since last boundary */
+					for (j = last_assign; j < i; j++)
+					{
+						ExprEvalStep *fstep = &exprstate->steps[j];
+						ExprEvalOp	fop = ExecEvalStepOp(exprstate, fstep);
+
+						switch (fop)
+						{
+							case EEOP_FUNCEXPR:
+							case EEOP_FUNCEXPR_STRICT:
+							case EEOP_FUNCEXPR_STRICT_1:
+							case EEOP_FUNCEXPR_STRICT_2:
+							case EEOP_FUNCEXPR_FUSAGE:
+							case EEOP_FUNCEXPR_STRICT_FUSAGE:
+								fstep->d.func.satctx = ctx;
+								break;
+							default:
+								break;
+						}
+					}
+				}
+			}
+
+			col_idx++;
+			last_assign = i + 1;
+		}
+	}
+
+	/*
+	 * Record whether we successfully set up subattr tracking. This lets
+	 * ExecUpdateModifiedIdxAttrs distinguish between "tracking active but
+	 * nothing modified" (ri_ModifiedIdxAttrs == NULL) and "no tracking"
+	 * (ri_useSubattrTracking == false).
+	 */
+	resultRelInfo->ri_useSubattrTracking = tracking_setup;
+}
+
+/*
  * ExecInitUpdateProjection
  *		Do one-time initialization of projection data for UPDATE tuples.
  *
@@ -824,7 +1073,8 @@ ExecInitUpdateProjection(ModifyTableState *mtstate,
 								  relDesc,
 								  mtstate->ps.ps_ExprContext,
 								  resultRelInfo->ri_newTupleSlot,
-								  &mtstate->ps);
+								  &mtstate->ps,
+								  resultRelInfo);
 
 	resultRelInfo->ri_projectNewInfoValid = true;
 }
@@ -4098,7 +4348,8 @@ ExecInitMerge(ModifyTableState *mtstate, EState *estate)
 												  relationDesc,
 												  econtext,
 												  resultRelInfo->ri_newTupleSlot,
-												  &mtstate->ps);
+												  &mtstate->ps,
+												  resultRelInfo);
 					mtstate->mt_merge_subcommands |= MERGE_UPDATE;
 					break;
 				case CMD_DELETE:
@@ -5194,6 +5445,29 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 					elog(ERROR, "could not find junk wholerow column");
 			}
 		}
+
+		/*
+		 * For UPDATE operations, inject SubattrTrackingContext into the
+		 * subplan's projection to enable per-column sub-attribute tracking.
+		 * This must be done after the subplan is initialized (so its
+		 * projection exists) but before the subplan is ever executed.
+		 */
+		if (operation == CMD_UPDATE && list_length(mtstate->mt_updateColnosLists) > 0)
+		{
+			List	   *updateColnos = (List *) list_nth(mtstate->mt_updateColnosLists, i);
+
+			if (list_length(updateColnos) > 0)
+			{
+				/* Ensure expression context exists */
+				if (mtstate->ps.ps_ExprContext == NULL)
+					ExecAssignExprContext(estate, &mtstate->ps);
+
+				ExecInjectSubattrContext(outerPlanState(mtstate),
+										 resultRelInfo,
+										 updateColnos,
+										 mtstate->ps.ps_ExprContext->ecxt_per_query_memory);
+			}
+		}
 	}
 
 	/*
@@ -5356,7 +5630,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 										  relationDesc,
 										  econtext,
 										  onconfl->oc_ProjSlot,
-										  &mtstate->ps);
+										  &mtstate->ps,
+										  resultRelInfo);
 		}
 
 		/* initialize state to evaluate the WHERE clause, if any */

@@ -111,6 +111,31 @@ CATALOG(pg_type,1247,TypeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71,TypeRelati
 	regproc		typsubscript BKI_DEFAULT(-) BKI_ARRAY_DEFAULT(array_subscript_handler) BKI_LOOKUP_OPT(pg_proc);
 
 	/*
+	 * typidxextract: function to extract an indexed-subattr descriptor from
+	 * an expression tree.  Called at relcache build time.  Zero if the type
+	 * does not support sub-attribute index tracking.
+	 *
+	 * Signature: (internal, int2) -> internal.  The first argument is a Node *
+	 * expression tree from indexprs; the second is the AttrNumber of the
+	 * base-table column to analyze.  Returns a palloc'd varlena descriptor,
+	 * or NULL.
+	 */
+	Oid			typidxextract BKI_DEFAULT(0) BKI_LOOKUP_OPT(pg_proc);
+
+	/*
+	 * typidxcompare: function to compare old and new datums for changes at
+	 * indexed subattrs.  Called at UPDATE time as fallback when no
+	 * instrumented mutation function handled the tracking.  Zero if not
+	 * supported (implies whole-column comparison).
+	 *
+	 * Signature: (type, type, internal, int4) -> bool.  The first two
+	 * arguments are the old and new datums; the third is a Datum * array of
+	 * subattr descriptors; the fourth is the count of descriptors. Returns
+	 * true if any indexed subattr value changed.
+	 */
+	Oid			typidxcompare BKI_DEFAULT(0) BKI_LOOKUP_OPT(pg_proc);
+
+	/*
 	 * If typelem is not 0 then it identifies another row in pg_type, defining
 	 * the type yielded by subscripting.  This should be 0 if typsubscript is
 	 * 0.  However, it can be 0 when typsubscript isn't 0, if the handler

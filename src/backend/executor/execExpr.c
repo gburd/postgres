@@ -47,6 +47,7 @@
 #include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/idxsubattr.h"
 #include "utils/jsonfuncs.h"
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
@@ -571,10 +572,12 @@ ExecBuildUpdateProjection(List *targetList,
 						  TupleDesc relDesc,
 						  ExprContext *econtext,
 						  TupleTableSlot *slot,
-						  PlanState *parent)
+						  PlanState *parent,
+						  ResultRelInfo *resultRelInfo)
 {
 	ProjectionInfo *projInfo = makeNode(ProjectionInfo);
 	ExprState  *state;
+	SubattrTrackingContext *satctx = NULL;
 	int			nAssignableCols;
 	bool		sawJunk;
 	Bitmapset  *assignedCols;
@@ -620,6 +623,36 @@ ExecBuildUpdateProjection(List *targetList,
 	/* We should have one targetColnos entry per non-junk column */
 	if (nAssignableCols != list_length(targetColnos))
 		elog(ERROR, "targetColnos does not match subplan target list");
+
+	/*
+	 * Create sub-attribute tracking context if needed for UPDATE operations.
+	 * This enables mutation functions to track modifications to indexed
+	 * sub-attributes for HOT update optimization.
+	 */
+	if (resultRelInfo != NULL && evalTargetList)
+	{
+		AttrNumber *resno_to_attnum;
+		int			idx;
+
+		/* Allocate and populate the resno to attnum mapping array */
+		resno_to_attnum = (AttrNumber *) palloc(nAssignableCols * sizeof(AttrNumber));
+		idx = 0;
+		foreach(lc, targetColnos)
+		{
+			resno_to_attnum[idx] = lfirst_int(lc);
+			idx++;
+		}
+
+		/* Create the tracking context */
+		satctx = makeNode(SubattrTrackingContext);
+		satctx->target_attnum = InvalidAttrNumber;	/* Set per-column below */
+		satctx->modified_idx_attrs = &resultRelInfo->ri_ModifiedIdxAttrs;
+		satctx->modified_idx_mcxt = econtext->ecxt_per_query_memory;
+		satctx->resno_to_attnum = resno_to_attnum;
+		satctx->max_resno = nAssignableCols;
+		satctx->updateColnos = targetColnos;
+		satctx->subattr_info = NULL;	/* Set per-column below */
+	}
 
 	/*
 	 * Build a bitmapset of the columns in targetColnos.  (We could just use
@@ -713,8 +746,50 @@ ExecBuildUpdateProjection(List *targetList,
 			 * ExecBuildProjectionInfo does; this is a relatively less-used
 			 * path and it doesn't seem worth expending code for that.
 			 */
+
+			/*
+			 * If sub-attribute tracking is active, save the current step
+			 * count so we can walk newly added steps after compilation and
+			 * assign the tracking context to any function call steps.
+			 */
+			int			last_step_count = (satctx != NULL) ? state->steps_len : 0;
+
 			ExecInitExprRec(tle->expr, state,
 							&state->resvalue, &state->resnull);
+
+			/*
+			 * Walk steps added by ExecInitExprRec and attach the
+			 * sub-attribute tracking context to every function-call step.
+			 * This replaces the old approach of passing context via
+			 * state->satctx, giving each step its own per-column tracking
+			 * information.
+			 */
+			if (satctx != NULL)
+			{
+				satctx->target_attnum = targetattnum;
+				satctx->subattr_info = RelationGetSubattrInfo(resultRelInfo->ri_RelationDesc,
+															  targetattnum);
+
+				for (int i = last_step_count; i < state->steps_len; i++)
+				{
+					ExprEvalStep *step = &state->steps[i];
+
+					switch (step->opcode)
+					{
+						case EEOP_FUNCEXPR:
+						case EEOP_FUNCEXPR_STRICT:
+						case EEOP_FUNCEXPR_STRICT_1:
+						case EEOP_FUNCEXPR_STRICT_2:
+						case EEOP_FUNCEXPR_FUSAGE:
+						case EEOP_FUNCEXPR_STRICT_FUSAGE:
+							step->d.func.satctx = satctx;
+							break;
+						default:
+							break;
+					}
+				}
+			}
+
 			/* Needn't worry about read-only-ness here, either. */
 			scratch.opcode = EEOP_ASSIGN_TMP;
 			scratch.d.assign_tmp.resultnum = targetattnum - 1;
@@ -2774,6 +2849,14 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 	/* Keep extra copies of this info to save an indirection at runtime */
 	scratch->d.func.fn_addr = flinfo->fn_addr;
 	scratch->d.func.nargs = nargs;
+
+	/*
+	 * Copy sub-attribute tracking context if present (for UPDATE SET
+	 * expressions).  The satctx is stored in the ExprEvalStep; at runtime
+	 * INIT_SUBATTR_TRACKING passes it to fcinfo->context before each call so
+	 * mutation functions can inspect SubattrInfo for path intersection.
+	 */
+	scratch->d.func.satctx = state->satctx;
 
 	/* We only support non-set functions here */
 	if (flinfo->fn_retset)

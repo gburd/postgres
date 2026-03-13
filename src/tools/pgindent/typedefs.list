@@ -1267,6 +1267,7 @@ IV
 IdentLine
 IdentifierLookup
 IdentifySystemCmd
+IdxSubattrDesc
 IfStackElem
 ImportForeignSchemaStmt
 ImportForeignSchemaType
@@ -2565,6 +2566,7 @@ RelOptInfo
 RelOptKind
 RelPathStr
 RelStatsInfo
+RelSubattrInfo
 RelSyncCallbackFunction
 RelToCheck
 RelToCluster
@@ -2982,6 +2984,9 @@ SubXactCallback
 SubXactCallbackItem
 SubXactEvent
 SubXactInfo
+SubattrAccumEntry
+SubattrInfo
+SubattrTrackingContext
 SubqueryScan
 SubqueryScanPath
 SubqueryScanState

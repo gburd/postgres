@@ -28,6 +28,7 @@
 #include "storage/smgr.h"
 #include "utils/relcache.h"
 #include "utils/reltrigger.h"
+#include "utils/idxsubattr.h"
 
 
 /*
@@ -64,6 +65,21 @@ typedef struct RelationData
 	bool		rd_indexvalid;	/* is rd_indexlist valid? (also rd_pkindex and
 								 * rd_replidindex) */
 	bool		rd_statvalid;	/* is rd_statlist valid? */
+
+	/*
+	 * rd_idxsubattrs: cached per-attribute indexed-subattr descriptors,
+	 * derived from pg_index.indexprs + pg_type.typidxextract. NULL when not
+	 * yet computed or when no subattr indexes exist. Invalidated alongside
+	 * other index metadata, computed in relcache.
+	 */
+	RelSubattrInfo *rd_idxsubattrs;
+
+	/*
+	 * rd_idxsubattrsvalid: false means rd_idxsubattrs has not been computed
+	 * yet.  When true, rd_idxsubattrs == NULL means "computed and empty" (no
+	 * sub-attribute expression indexes exist).
+	 */
+	bool		rd_idxsubattrsvalid;
 
 	/*----------
 	 * rd_createSubid is the ID of the highest subtransaction the rel has
@@ -164,6 +180,8 @@ typedef struct RelationData
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_indexedattr; /* all cols referenced by indexes */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
+	Bitmapset  *rd_instrattr;	/* cols with instrumented sub-attribute
+								 * tracking */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
 

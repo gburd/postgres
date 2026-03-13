@@ -391,6 +391,13 @@ typedef struct ExprEvalStep
 			PGFunction	fn_addr;	/* actual call address */
 			int			nargs;	/* number of arguments */
 			bool		make_ro;	/* make arg0 R/O (used only for NULLIF) */
+
+			/*
+			 * Sub-attr tracking context. Not passed to functions (security),
+			 * but used by executor to accumulate when
+			 * fcinfo->modified_idx_subattr is set.
+			 */
+			struct SubattrTrackingContext *satctx;
 		}			func;
 
 		/* for EEOP_BOOL_*_STEP */

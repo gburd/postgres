@@ -10,6 +10,7 @@ backend_sources += files(
   'execIndexing.c',
   'execJunk.c',
   'execMain.c',
+  'execMutation.c',
   'execParallel.c',
   'execPartition.c',
   'execProcnode.c',

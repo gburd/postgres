@@ -90,8 +90,10 @@ typedef struct FunctionCallInfoBaseData
 	Oid			fncollation;	/* collation for function to use */
 #define FIELDNO_FUNCTIONCALLINFODATA_ISNULL 4
 	bool		isnull;			/* function must set true if result is NULL */
+	bool		modified_idx_subattr;	/* set by mutation fns if indexed
+										 * sub-attrs changed */
 	short		nargs;			/* # arguments actually passed */
-#define FIELDNO_FUNCTIONCALLINFODATA_ARGS 6
+#define FIELDNO_FUNCTIONCALLINFODATA_ARGS 7
 	NullableDatum args[FLEXIBLE_ARRAY_MEMBER];
 } FunctionCallInfoBaseData;
 

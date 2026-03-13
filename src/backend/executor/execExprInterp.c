@@ -83,6 +83,50 @@
 #include "utils/xml.h"
 
 /*
+ * Sub-attribute modification tracking macros.
+ *
+ * These macros bracket each function-call expression step to implement
+ * the instrumented path of sub-attribute tracking (see execMutation.c
+ * for the dual-path architecture overview).
+ *
+ * INIT_SUBATTR_TRACKING(op, fcinfo):
+ *   Called before invoking a mutation function.  Resets the boolean flag
+ *   modified_idx_subattr to false, then (if the step has a
+ *   SubattrTrackingContext attached via satctx) sets fcinfo->context so
+ *   the function can inspect indexed sub-attribute descriptors.  The
+ *   context does NOT contain a Relation pointer; functions only see
+ *   SubattrInfo descriptors for intersection checking.
+ *
+ * ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo):
+ *   Called after the function returns.  If the function set
+ *   fcinfo->modified_idx_subattr = true (meaning its modification
+ *   intersects an indexed path), this macro records target_attnum from
+ *   the context into ri_ModifiedIdxAttrs using the per-query memory
+ *   context.  Finally, fcinfo->context is cleared to avoid leaking the
+ *   tracking context to any subsequent function calls in the expression.
+ */
+#define INIT_SUBATTR_TRACKING(op, fcinfo) \
+	do { \
+		(fcinfo)->modified_idx_subattr = false; \
+		if ((op)->d.func.satctx != NULL) \
+			(fcinfo)->context = (Node *) (op)->d.func.satctx; \
+	} while (0)
+
+#define ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo) \
+	do { \
+		if ((fcinfo)->modified_idx_subattr && (op)->d.func.satctx != NULL) \
+		{ \
+			SubattrTrackingContext *_satctx = (op)->d.func.satctx; \
+			MemoryContext _oldcxt = MemoryContextSwitchTo(_satctx->modified_idx_mcxt); \
+			int _attidx = _satctx->target_attnum - FirstLowInvalidHeapAttributeNumber; \
+			*_satctx->modified_idx_attrs = bms_add_member(*_satctx->modified_idx_attrs, _attidx); \
+			MemoryContextSwitchTo(_oldcxt); \
+		} \
+		if ((op)->d.func.satctx != NULL) \
+			(fcinfo)->context = NULL; \
+	} while (0)
+
+/*
  * Use computed-goto-based opcode dispatch when computed gotos are available.
  * But use a separate symbol so that it's easy to adjust locally in this file
  * for development and testing.
@@ -925,7 +969,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			Datum		d;
 
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			d = op->d.func.fn_addr(fcinfo);
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 			*op->resvalue = d;
 			*op->resnull = fcinfo->isnull;
 
@@ -952,7 +998,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				}
 			}
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			d = op->d.func.fn_addr(fcinfo);
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 			*op->resvalue = d;
 			*op->resnull = fcinfo->isnull;
 
@@ -976,7 +1024,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				Datum		d;
 
 				fcinfo->isnull = false;
+				INIT_SUBATTR_TRACKING(op, fcinfo);
 				d = op->d.func.fn_addr(fcinfo);
+				ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 				*op->resvalue = d;
 				*op->resnull = fcinfo->isnull;
 			}
@@ -1000,7 +1050,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				Datum		d;
 
 				fcinfo->isnull = false;
+				INIT_SUBATTR_TRACKING(op, fcinfo);
 				d = op->d.func.fn_addr(fcinfo);
+				ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 				*op->resvalue = d;
 				*op->resnull = fcinfo->isnull;
 			}
@@ -1470,7 +1522,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				Datum		eqresult;
 
 				fcinfo->isnull = false;
+				INIT_SUBATTR_TRACKING(op, fcinfo);
 				eqresult = op->d.func.fn_addr(fcinfo);
+				ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 				/* Must invert result of "="; safe to do even if null */
 				*op->resvalue = BoolGetDatum(!DatumGetBool(eqresult));
 				*op->resnull = fcinfo->isnull;
@@ -1499,7 +1553,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 				Datum		eqresult;
 
 				fcinfo->isnull = false;
+				INIT_SUBATTR_TRACKING(op, fcinfo);
 				eqresult = op->d.func.fn_addr(fcinfo);
+				ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 				*op->resvalue = eqresult;
 				*op->resnull = fcinfo->isnull;
 			}
@@ -1532,7 +1588,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 						MakeExpandedObjectReadOnlyInternal(save_arg0);
 
 				fcinfo->isnull = false;
+				INIT_SUBATTR_TRACKING(op, fcinfo);
 				result = op->d.func.fn_addr(fcinfo);
+				ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 
 				/* if the arguments are equal return null */
 				if (!fcinfo->isnull && DatumGetBool(result))
@@ -1637,7 +1695,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 
 			/* Apply comparison function */
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			d = op->d.rowcompare_step.fn_addr(fcinfo);
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 			*op->resvalue = d;
 
 			/* force NULL result if NULL function result */
@@ -2028,7 +2088,9 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			 */
 			oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			*op->resvalue = FunctionCallInvoke(fcinfo);
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 			*op->resnull = fcinfo->isnull;
 			MemoryContextSwitchTo(oldContext);
 
@@ -2661,7 +2723,9 @@ ExecJustApplyFuncToCase(ExprState *state, ExprContext *econtext, bool *isnull)
 		}
 	}
 	fcinfo->isnull = false;
+	INIT_SUBATTR_TRACKING(op, fcinfo);
 	d = op->d.func.fn_addr(fcinfo);
+	ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 	*isnull = fcinfo->isnull;
 	return d;
 }
@@ -2999,7 +3063,9 @@ ExecEvalFuncExprFusage(ExprState *state, ExprEvalStep *op,
 	pgstat_init_function_usage(fcinfo, &fcusage);
 
 	fcinfo->isnull = false;
+	INIT_SUBATTR_TRACKING(op, fcinfo);
 	d = op->d.func.fn_addr(fcinfo);
+	ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 	*op->resvalue = d;
 	*op->resnull = fcinfo->isnull;
 
@@ -3033,7 +3099,9 @@ ExecEvalFuncExprStrictFusage(ExprState *state, ExprEvalStep *op,
 	pgstat_init_function_usage(fcinfo, &fcusage);
 
 	fcinfo->isnull = false;
+	INIT_SUBATTR_TRACKING(op, fcinfo);
 	d = op->d.func.fn_addr(fcinfo);
+	ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 	*op->resvalue = d;
 	*op->resnull = fcinfo->isnull;
 
@@ -3710,7 +3778,9 @@ ExecEvalMinMax(ExprState *state, ExprEvalStep *op)
 			fcinfo->args[1].value = values[off];
 
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			cmpresult = DatumGetInt32(FunctionCallInvoke(fcinfo));
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 			if (fcinfo->isnull) /* probably should not happen */
 				continue;
 
@@ -4129,7 +4199,9 @@ ExecEvalScalarArrayOp(ExprState *state, ExprEvalStep *op)
 		else
 		{
 			fcinfo->isnull = false;
+			INIT_SUBATTR_TRACKING(op, fcinfo);
 			thisresult = op->d.scalararrayop.fn_addr(fcinfo);
+			ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 		}
 
 		/* Combine results per OR or AND semantics */
@@ -4960,7 +5032,9 @@ ExecEvalJsonExprPath(ExprState *state, ExprEvalStep *op,
 		 */
 
 		fcinfo->isnull = false;
+		INIT_SUBATTR_TRACKING(op, fcinfo);
 		*op->resvalue = FunctionCallInvoke(fcinfo);
+		ACCUMULATE_SUBATTR_MODIFICATIONS(op, fcinfo);
 		if (SOFT_ERROR_OCCURRED(&jsestate->escontext))
 			error = true;
 	}

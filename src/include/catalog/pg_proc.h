@@ -66,6 +66,19 @@ CATALOG(pg_proc,1255,ProcedureRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(81,Proce
 	/* is it a leakproof function? */
 	bool		proleakproof BKI_DEFAULT(f);
 
+	/*
+	 * prosubattrmutator: true if this function is a sub-attribute mutator
+	 * that performs tracking via add_modified_idx_attr() when a
+	 * SubattrTrackingContext is provided through fcinfo->context.
+	 *
+	 * When true, the function's first argument is assumed to be the source
+	 * datum (the value being mutated).  The executor uses this to determine
+	 * whether a SET expression is "fully instrumented" - i.e., all
+	 * transformation steps are mutators tracing back to a Var of the same
+	 * column.
+	 */
+	bool		prosubattrmutator BKI_DEFAULT(f);
+
 	/* strict with respect to NULLs? */
 	bool		proisstrict BKI_DEFAULT(t);
 

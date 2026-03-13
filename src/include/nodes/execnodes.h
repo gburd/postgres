@@ -143,6 +143,9 @@ typedef struct ExprState
 	PlanState  *parent;			/* parent PlanState node, if any */
 	ParamListInfo ext_params;	/* for compiling PARAM_EXTERN nodes */
 
+	/* Sub-attribute tracking context for UPDATE SET expressions */
+	struct SubattrTrackingContext *satctx;
+
 	Datum	   *innermost_caseval;
 	bool	   *innermost_casenull;
 
@@ -510,6 +513,13 @@ typedef struct ResultRelInfo
 	Bitmapset  *ri_extraUpdatedCols;
 	/* true if the above has been computed */
 	bool		ri_extraUpdatedCols_valid;
+
+	/*
+	 * For UPDATE with sub-attribute tracking, attnums of columns where
+	 * indexed sub-attributes were modified (for HOT update optimization)
+	 */
+	Bitmapset  *ri_ModifiedIdxAttrs;
+	bool		ri_useSubattrTracking;	/* true if subattr tracking active */
 
 	/* Projection to generate new tuple in an INSERT/UPDATE */
 	ProjectionInfo *ri_projectNew;
