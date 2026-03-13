@@ -48,6 +48,7 @@
  */
 typedef struct OVVacRelStats
 {
+	Relation	rel;			/* heap relation being vacuumed */
 	int			elevel;
 	BufferAccessStrategy vac_strategy;
 
@@ -920,6 +921,7 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 	(void) ovundo_trim(rel, RecentXmin);
 
 	vacrelstats = (OVVacRelStats *) palloc0(sizeof(OVVacRelStats));
+	vacrelstats->rel = rel;
 
 	if (params->options & VACOPT_VERBOSE)
 		vacrelstats->elevel = INFO;
@@ -1060,6 +1062,7 @@ lazy_cleanup_index(Relation indrel,
 	pg_rusage_init(&ru0);
 
 	ivinfo.index = indrel;
+	ivinfo.heaprel = vacrelstats->rel;
 	ivinfo.analyze_only = false;
 	ivinfo.estimated_count = (vacrelstats->tupcount_pages < vacrelstats->rel_pages);
 	ivinfo.message_level = vacrelstats->elevel;
