@@ -1206,9 +1206,9 @@ ovbt_pack_item(Form_pg_attribute att, OVExplodedItem * eitem)
 	size_t		itemsz;
 	char	   *p;
 	bool		has_nulls;
+	int			nullbitmapsz;
 
 	(void) att;
-	int			nullbitmapsz;
 
 	Assert(num_elements > 0);
 	Assert((size_t) num_elements <= MAX_TIDS_PER_ATTR_ITEM);

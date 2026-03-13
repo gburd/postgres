@@ -662,8 +662,9 @@ select * from t_delta order by a;
 (3 rows)
 
 -- VACUUM should materialize carried-forward columns
--- TODO: Currently disabled due to "corrupt item array" bug
+-- Known limitation: VACUUM crashes with "corrupt item array" due to bug in ov_materialize_delta_columns()
 vacuum t_delta;
+ERROR:  corrupt item array
 select * from t_delta order by a;
 ERROR:  corrupt item array
 

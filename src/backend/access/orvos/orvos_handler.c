@@ -186,10 +186,10 @@ orvosam_insert_internal(Relation relation, TupleTableSlot *slot, CommandId cid,
 	bool		isnull;
 	Datum		datum;
 	MemoryContext oldcontext;
+	MemoryContext insert_mcontext;
 
 	(void) options;
 	(void) bistate;
-	MemoryContext insert_mcontext;
 
 	/*
 	 * insert code performs allocations for creating items and merging items.

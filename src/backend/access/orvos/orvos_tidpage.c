@@ -524,9 +524,9 @@ ovbt_tid_delete(Relation rel, ovtid tid,
 	Buffer		buf;
 	Page		page;
 	ovtid		next_tid;
+	List	   *newitems = NIL;
 
 	(void) wait;
-	List	   *newitems = NIL;
 
 	/* Find the item to delete. (It could be compressed) */
 	off = ovbt_tid_fetch(rel, tid, &buf, &item_undoptr, &item_isdead);
