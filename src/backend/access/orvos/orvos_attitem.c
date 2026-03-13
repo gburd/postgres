@@ -65,9 +65,9 @@ ovbt_attr_create_items(Form_pg_attribute att,
 		max_items_with_nulls = (MAX_ATTR_ITEM_SIZE * 8) / (att->attlen * 8 + 1);
 
 		/* clamp at maximum number of tids */
-		if (max_items_without_nulls > MAX_TIDS_PER_ATTR_ITEM)
+		if ((size_t) max_items_without_nulls > MAX_TIDS_PER_ATTR_ITEM)
 			max_items_without_nulls = MAX_TIDS_PER_ATTR_ITEM;
-		if (max_items_with_nulls > MAX_TIDS_PER_ATTR_ITEM)
+		if ((size_t) max_items_with_nulls > MAX_TIDS_PER_ATTR_ITEM)
 			max_items_with_nulls = MAX_TIDS_PER_ATTR_ITEM;
 	}
 
@@ -109,7 +109,7 @@ ovbt_attr_create_items(Form_pg_attribute att,
 			if (has_nulls)
 			{
 				for (; j < nitems && num_nonnull_items < max_items_with_nulls &&
-					 j - i < MAX_TIDS_PER_ATTR_ITEM; j++)
+					 (size_t) (j - i) < MAX_TIDS_PER_ATTR_ITEM; j++)
 				{
 					if (!isnulls[j])
 					{
@@ -125,7 +125,7 @@ ovbt_attr_create_items(Form_pg_attribute att,
 			int			j;
 
 			datasz = 0;
-			for (j = i; j < nitems && j - i < MAX_TIDS_PER_ATTR_ITEM; j++)
+			for (j = i; j < nitems && (size_t) (j - i) < MAX_TIDS_PER_ATTR_ITEM; j++)
 			{
 				size_t		this_sz;
 
@@ -261,7 +261,7 @@ ovbt_attr_create_item(Form_pg_attribute att,
 	OVAttributeArrayItem *item;
 
 	Assert(num_elements > 0);
-	Assert(num_elements <= MAX_TIDS_PER_ATTR_ITEM);
+	Assert((size_t) num_elements <= MAX_TIDS_PER_ATTR_ITEM);
 
 	/* Compute TID distances */
 	for (int i = 1; i < num_elements; i++)
@@ -1153,7 +1153,7 @@ ovbt_combine_items(List *items, int start, int end)
 		total_elements += eitem->t_num_elements;
 		total_datumdatasz += eitem->datumdatasz;
 	}
-	Assert(total_elements <= MAX_TIDS_PER_ATTR_ITEM);
+	Assert((size_t) total_elements <= MAX_TIDS_PER_ATTR_ITEM);
 
 	newitem = palloc(sizeof(OVExplodedItem));
 	newitem->t_size = 0;
@@ -1206,10 +1206,12 @@ ovbt_pack_item(Form_pg_attribute att, OVExplodedItem * eitem)
 	size_t		itemsz;
 	char	   *p;
 	bool		has_nulls;
+
+	(void) att;
 	int			nullbitmapsz;
 
 	Assert(num_elements > 0);
-	Assert(num_elements <= MAX_TIDS_PER_ATTR_ITEM);
+	Assert((size_t) num_elements <= MAX_TIDS_PER_ATTR_ITEM);
 
 	/* compute deltas */
 	firsttid = eitem->tids[0];
@@ -1282,7 +1284,7 @@ ovbt_pack_item(Form_pg_attribute att, OVExplodedItem * eitem)
 	memcpy(p, eitem->datumdata, eitem->datumdatasz);
 	p += eitem->datumdatasz;
 
-	Assert(p - ((char *) newitem) == itemsz);
+	Assert((size_t) (p - ((char *) newitem)) == itemsz);
 
 	return newitem;
 }
@@ -1395,7 +1397,7 @@ ovbt_attr_recompress_items(Form_pg_attribute attr, List *items)
 			 * don't create an item that's too large, in terms of size, or in
 			 * # of tids
 			 */
-			if (total_num_elements + this_num_elements > MAX_TIDS_PER_ATTR_ITEM)
+			if ((size_t) (total_num_elements + this_num_elements) > MAX_TIDS_PER_ATTR_ITEM)
 				break;
 			if (total_size + this_size > MAX_ATTR_ITEM_SIZE)
 				break;

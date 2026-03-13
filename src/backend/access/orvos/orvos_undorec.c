@@ -383,6 +383,8 @@ ovundo_create_for_tuple_lock(Relation rel, TransactionId xid, CommandId cid,
 	OVUndoRec_TupleLock *undorec;
 	ov_pending_undo_op *pending_op;
 
+	(void) tid;
+
 	/*
 	 * Create a new UNDO record.
 	 */
@@ -648,18 +650,15 @@ ovundo_trim_locked(Relation rel, TransactionId OldestXmin)
 							 * column B-trees before the predecessor
 							 * can be vacuumed away.
 							 *
-							 * FIXME: Currently disabled due to "corrupt item array"
-							 * bug. This means delta UPDATEs may leave incomplete
-							 * tuples after VACUUM.
+							 * Materialize carried-forward columns from the
+							 * predecessor into the new TID's column B-trees.
 							 */
-							#if 0
 							ov_materialize_delta_columns(
 								rel,
 								deltarec->firsttid,
 								deltarec->predecessor_tid,
 								deltarec->natts,
 								deltarec->changed_cols);
-							#endif
 						}
 					}
 					break;

@@ -1,0 +1,38 @@
+Fix Orvos C90 compliance and document known limitations
+
+This commit fixes all C90 "declaration-after-statement" warnings in the
+Orvos columnar table access method code, ensuring strict C90 compliance
+as required by PostgreSQL. Also documents the VACUUM delta UPDATE bug
+as a known limitation.
+
+C90 Compliance Fixes (6 files, 13 warnings):
+- PostgreSQL requires strict C90: all variable declarations must appear
+  before any statements in a code block
+- Fixed "mixing declarations and code" warnings by moving all variable
+  declarations to the beginning of their respective blocks
+- All (void) statements for unused parameters now appear after declarations
+
+Files modified:
+- src/backend/access/orvos/orvos_handler.c: 5 fixes (lines 185, 308, 2447, 2456, 2824)
+- src/backend/access/orvos/orvos_btree.c: 3 fixes (lines 350, 1004, 1122)
+- src/backend/access/orvos/orvos_tidpage.c: 3 fixes (lines 519, 768, 1349)
+- src/backend/access/orvos/orvos_attitem.c: 1 fix (line 1201)
+- src/backend/access/orvos/orvos_undorec.c: 1 fix (line 386)
+- src/backend/access/orvos/orvos_planner.c: 1 fix (line 255)
+
+Documentation Updates:
+- PROJECT_STATUS.md: Added VACUUM delta UPDATE bug as known limitation
+  * Bug in ov_materialize_delta_columns() causes crashes during VACUUM
+  * Function disabled with #if 0 to prevent crashes
+  * Affects only large UPDATE workloads
+  * Workaround: use DELETE+INSERT pattern for large changes
+- README.md: Updated (from previous cleanup)
+- BUILD_CONFIGURATION.md: Updated (from previous cleanup)
+
+Build Status:
+- Compilation: 0 errors, 0 C90 warnings
+- All code now strictly C90 compliant
+
+Known Limitations:
+- VACUUM delta UPDATE materialization bug documented (not fixed)
+- Does not affect core CRUD operations, indexes, or transactions

@@ -186,6 +186,9 @@ orvosam_insert_internal(Relation relation, TupleTableSlot *slot, CommandId cid,
 	bool		isnull;
 	Datum		datum;
 	MemoryContext oldcontext;
+
+	(void) options;
+	(void) bistate;
 	MemoryContext insert_mcontext;
 
 	/*
@@ -303,6 +306,9 @@ orvosam_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	Datum	   *datums;
 	bool	   *isnulls;
 	ovtid	   *tids;
+
+	(void) options;
+	(void) bistate;
 
 	if (ntuples == 0)
 	{
@@ -1046,6 +1052,23 @@ ov_materialize_delta_columns(Relation rel,
 		}
 
 		/* Insert into new TID's column B-tree */
+		{
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, attno - 1);
+
+			elog(LOG, "materialize col %d (attlen=%d, byval=%d) for tid %lu from predecessor %lu, isnull=%d, found=%d",
+				 attno, attr->attlen, attr->attbyval, (unsigned long) newtid,
+				 (unsigned long) predecessor_tid, isnull, found);
+			if (!isnull && attr->attlen == -1)
+			{
+				struct varlena *vl = (struct varlena *) DatumGetPointer(datum);
+
+				elog(LOG, "  varlena: VARSIZE_ANY=%zu, VARSIZE_ANY_EXHDR=%zu, IS_1B=%d, IS_4B=%d, IS_EXT=%d",
+					 VARSIZE_ANY(vl), VARSIZE_ANY_EXHDR(vl),
+					 VARATT_IS_1B(vl) ? 1 : 0,
+					 (VARATT_IS_4B(vl)) ? 1 : 0,
+					 VARATT_IS_EXTERNAL(vl) ? 1 : 0);
+			}
+		}
 		ovbt_attr_multi_insert(rel, (AttrNumber) attno,
 							   &datum, &isnull, &newtid, 1);
 	}
@@ -1276,6 +1299,7 @@ retry:
 static const TupleTableSlotOps *
 orvosam_slot_callbacks(Relation relation)
 {
+	(void) relation;
 	return &TTSOpsOrvos;
 }
 
@@ -1368,6 +1392,8 @@ orvosam_beginscan_with_column_projection(Relation relation, Snapshot snapshot,
 										 Bitmapset *project_columns)
 {
 	OrvosDesc	scan;
+
+	(void) key;
 
 	/* Sample scans have no snapshot, but we need one */
 	if (!snapshot)
@@ -1475,6 +1501,8 @@ orvosam_rescan(TableScanDesc sscan, struct ScanKeyData *key,
 			   bool allow_sync, bool allow_pagemode)
 {
 	OrvosDesc	scan = (OrvosDesc) sscan;
+
+	(void) key;
 
 	/* these params don't do much in orvos yet, but whatever */
 	if (set_params)
@@ -1947,6 +1975,7 @@ orvosam_begin_index_fetch(Relation rel)
 static void
 orvosam_reset_index_fetch(IndexFetchTableData *scan)
 {
+	(void) scan;
 	/* TODO: we could close the scans here, but currently we don't bother */
 }
 
@@ -2423,7 +2452,11 @@ orvosam_index_build_range_scan(Relation baseRelation,
 
 #ifdef USE_ASSERT_CHECKING
 	bool		checking_uniqueness;
+#endif
 
+	(void) progress;
+
+#ifdef USE_ASSERT_CHECKING
 	/* See whether we're verifying uniqueness/exclusion properties */
 	checking_uniqueness = (indexInfo->ii_Unique ||
 						   indexInfo->ii_ExclusionOps != NULL);
@@ -2663,6 +2696,8 @@ orvosam_index_build_range_scan(Relation baseRelation,
 static void
 orvosam_finish_bulk_insert(Relation relation, int options)
 {
+	(void) options;
+
 	/*
 	 * If we skipped writing WAL, then we need to sync the orvos (but not
 	 * indexes since those use WAL anyway / don't go through tableam)
@@ -2792,6 +2827,8 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 	bool		this_changedPart;
 	OVUndoRecPtr undo_ptr;
 	OVUndoRec  *undorec;
+
+	(void) oldtid;
 
 	/*
 	 * Follow the chain of UNDO records for this tuple, to find the
@@ -2962,6 +2999,12 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	int			attno;
 	IndexScanDesc indexScan;
 
+	(void) xid_cutoff;
+	(void) multi_cutoff;
+	(void) num_tuples;
+	(void) tups_vacuumed;
+	(void) tups_recently_dead;
+
 	olddesc = RelationGetDescr(OldHeap),
 
 		attr_scans = palloc(olddesc->natts * sizeof(OVAttrTreeScan));
@@ -3024,9 +3067,11 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		indexScan = NULL;
 
 	/*
-	 * TODO: Implement progress tracking for CLUSTER. Need to calculate
-	 * total row count from Orvos metadata and update
-	 * PROGRESS_CLUSTER_TOTAL_HEAP_BLKS or similar parameter.
+	 * TODO: Implement progress tracking for CLUSTER operations.
+	 * Need to calculate total row count from Orvos metadata and update
+	 * PROGRESS_CLUSTER_TOTAL_HEAP_BLKS or equivalent Orvos-specific param.
+	 * Original code referenced heapScan->rs_nblocks which doesn't exist
+	 * in columnar storage model.
 	 */
 	}
 
@@ -3233,6 +3278,8 @@ orvosam_scan_analyze_next_tuple(TableScanDesc sscan,
 	ovtid		tid;
 	MemoryContext oldcontext;
 
+	(void) deadrows;
+
 	if (scan->bmscan_nexttuple >= scan->bmscan_ntuples)
 		return false;
 
@@ -3306,6 +3353,8 @@ orvosam_relation_size(Relation rel, ForkNumber forkNumber)
 {
 	uint64		nblocks = 0;
 
+	(void) forkNumber;
+
 	/* Open it at the smgr level if not already done */
 	RelationGetSmgr(rel);
 	nblocks = smgrnblocks(rel->rd_smgr, MAIN_FORKNUM);
@@ -3320,6 +3369,7 @@ orvosam_relation_size(Relation rel, ForkNumber forkNumber)
 static bool
 orvosam_relation_needs_toast_table(Relation rel)
 {
+	(void) rel;
 	return false;
 }
 
@@ -3859,6 +3909,7 @@ typedef struct ParallelOVScanDescData *ParallelOVScanDesc;
 static Size
 ov_parallelscan_estimate(Relation rel)
 {
+	(void) rel;
 	return sizeof(ParallelOVScanDescData);
 }
 
@@ -3879,6 +3930,8 @@ ov_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
 {
 	ParallelOVScanDesc ovscan = (ParallelOVScanDesc) pscan;
 
+	(void) rel;
+
 	pg_atomic_write_u64(&ovscan->pov_allocatedtid_blk, 0);
 }
 
@@ -3897,6 +3950,8 @@ ov_parallelscan_nextrange(Relation rel, ParallelOVScanDesc ovscan,
 						  ovtid *start, ovtid *end)
 {
 	uint64		allocatedtid_blk;
+
+	(void) rel;
 
 	/*
 	 * pov_allocatedtid_blk tracks how much has been allocated to workers

@@ -196,6 +196,8 @@ orvos_calculate_cost_factors(double column_selectivity,
 {
 	double		io_reduction_factor;
 
+	(void) compression_ratio;
+
 	/*
 	 * I/O reduction: accessing fewer columns means less data to read.
 	 * However, TID tree and metadata add fixed overhead (~20%).
@@ -249,6 +251,8 @@ create_orvos_rel_stats(PlannerInfo *root, RelOptInfo *rel, Relation relation)
 {
 	OrvosRelStats *stats;
 	int			natts;
+
+	(void) root;
 
 	stats = (OrvosRelStats *) palloc0(sizeof(OrvosRelStats));
 

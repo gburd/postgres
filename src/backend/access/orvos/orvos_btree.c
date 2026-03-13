@@ -347,6 +347,8 @@ ovbt_page_is_expected(Relation rel, AttrNumber attno, ovtid key, int level, Buff
 	Page		page = BufferGetPage(buf);
 	OVBtreePageOpaque *opaque;
 
+	(void) rel;
+
 	/*
 	 * The page might have been deleted and even reused as a completely
 	 * different kind of a page, so we must be prepared for anything.
@@ -1000,6 +1002,8 @@ ovbt_wal_log_leaf_items(Relation rel, AttrNumber attno, Buffer buf,
 	XLogRecPtr	recptr;
 	wal_orvos_btree_leaf_items xlrec;
 
+	(void) rel;
+
 	xlrec.attno = attno;
 	xlrec.nitems = list_length(items);
 	xlrec.off = off;
@@ -1095,7 +1099,7 @@ ovbt_leaf_items_redo(XLogReaderState *record, bool replace)
 				}
 				off++;
 			}
-			Assert(p - data == datasz);
+			Assert((Size) (p - data) == datasz);
 
 			PageSetLSN(page, lsn);
 			MarkBufferDirty(buffer);
@@ -1116,6 +1120,8 @@ ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, ov_pen
 	XLogRecPtr	recptr;
 	wal_orvos_btree_rewrite_pages xlrec;
 	uint8		block_id;
+
+	(void) rel;
 
 	if (1 /* for undo */ + list_length(buffers) > MAX_BLOCKS_IN_REWRITE)
 		elog(ERROR, "too many blocks for orvos rewrite_pages record: %d", list_length(buffers));

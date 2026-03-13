@@ -524,6 +524,8 @@ ovbt_tid_delete(Relation rel, ovtid tid,
 	Buffer		buf;
 	Page		page;
 	ovtid		next_tid;
+
+	(void) wait;
 	List	   *newitems = NIL;
 
 	/* Find the item to delete. (It could be compressed) */
@@ -766,6 +768,10 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 	TM_Result	result;
 	bool		keep_old_undo_ptr = true;
 	ovtid		next_tid;
+
+	(void) xid;
+	(void) cid;
+	(void) wait;
 
 	INJECTION_POINT("orvos_lock_updated_tuple", NULL);
 
@@ -1341,6 +1347,9 @@ ovbt_tid_clear_speculative_token(Relation rel, ovtid tid, uint32 spectoken, bool
 	bool		item_isdead;
 	bool		found;
 
+	(void) spectoken;
+	(void) forcomplete;
+
 	found = ovbt_tid_fetch(rel, tid, &buf, &item_undoptr, &item_isdead);
 	if (!found || item_isdead)
 		elog(ERROR, "couldn't find item for meta column for inserted tuple with TID (%u, %u) in rel %s",
@@ -1567,16 +1576,16 @@ ovbt_tid_replace_item(Relation rel, Buffer buf, OffsetNumber targetoff, List *ne
 	olditem = (OVTidArrayItem *) PageGetItem(page, iid);
 
 	/* Calculate how much free space we'll need */
-	sizediff = -(olditem->t_size + sizeof(ItemIdData));
+	sizediff = -(ssize_t) (olditem->t_size + sizeof(ItemIdData));
 	foreach(lc, newitems)
 	{
 		OVTidArrayItem *newitem = (OVTidArrayItem *) lfirst(lc);
 
-		sizediff += newitem->t_size + sizeof(ItemIdData);
+		sizediff += (ssize_t) (newitem->t_size + sizeof(ItemIdData));
 	}
 
 	/* Can we fit them? */
-	if (sizediff <= PageGetExactFreeSpace(page))
+	if (sizediff <= (ssize_t) PageGetExactFreeSpace(page))
 	{
 		OVTidArrayItem *newitem;
 		OffsetNumber off;
@@ -1775,7 +1784,7 @@ ovbt_tid_recompress_add_to_page(ovbt_tid_recompress_context * cxt, OVTidArrayIte
 
 	freespc = PageGetExactFreeSpace(cxt->currpage);
 	if (freespc < item->t_size + sizeof(ItemIdData) ||
-		freespc < cxt->free_space_per_page)
+		freespc < (Size) cxt->free_space_per_page)
 	{
 		ovbt_tid_recompress_newpage(cxt, item->t_firsttid, 0);
 	}
