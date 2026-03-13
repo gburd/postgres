@@ -1,0 +1,65 @@
+# Personal shell/environment configuration files
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gdb_history
+.gitconfig
+.mcp.json
+.ripgreprc
+
+# Claude Code artifacts
+.claude/
+
+# Git worktree artifacts (handled by git automatically)
+HEAD
+hooks
+objects
+refs
+.gitmodules
+
+# Personal files
+*.mbox
+
+# Temporary process/analysis files
+COMMIT_ANALYSIS.md
+COMMIT_PREP.sh
+DOCUMENTATION_CLEANUP.md
+REBASE_REPORT.md
+
+# Build logs and artifacts
+build-phase1-retry.log
+build-phase1.log
+build-phase2.log
+build-test.log
+configure-test.log
+configure.log
+src/common/*.s
+
+# Test output (generated)
+src/test/regress/regression.diffs
+src/test/regress/regression.out
+
+# Ad-hoc test files (temporary)
+test_chain_simple.sql
+test_delta_debug.sql
+test_delta_minimal.sql
+test_fix.sql
+test_orvos_smoke.c
+
+# One-time migration scripts
+rename-zs-to-ov.sh
+
+# Build helper scripts (temporary)
+test-build.sh
+
+# Core dumps and debug artifacts
+core.*
+build/testrun/**/core.*
+
+# Build directory (meson build artifacts)
+build/
+
+# Benchmarks (if not committed)
+benchmarks/
