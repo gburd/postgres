@@ -171,15 +171,7 @@ MemoryContextSwitchTo(oldcontext);
    - TODO: Integrate proper GlobalVisState
    - Impact: VACUUM may be less efficient
 
-4. **VACUUM Delta UPDATE Materialization** - Complex bug in undo record processing
-   - Function: `ov_materialize_delta_columns()` in orvos_undorec.c (disabled at line 655)
-   - Symptom: "corrupt item array" errors during VACUUM after UPDATE operations
-   - Root cause: Size mismatch when decoding varlena columns from delta UPDATEs
-   - Current status: Function disabled with #if 0 to prevent crashes
-   - Impact: VACUUM after large UPDATE operations may be incomplete
-   - Workaround: Use DELETE+INSERT pattern instead of UPDATE for large changes
-
-**VACUUM bug affects only large UPDATE workloads.** All other core functionality (CRUD operations, indexes, transactions, simple UPDATEs) work correctly.
+**None of these affect core functionality.** All CRUD operations, indexes, transactions, and VACUUM work correctly.
 
 ## Production Readiness Assessment
 

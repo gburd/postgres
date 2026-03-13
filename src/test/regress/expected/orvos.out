@@ -662,11 +662,14 @@ select * from t_delta order by a;
 (3 rows)
 
 -- VACUUM should materialize carried-forward columns
--- Known limitation: VACUUM crashes with "corrupt item array" due to bug in ov_materialize_delta_columns()
 vacuum t_delta;
-ERROR:  corrupt item array
 select * from t_delta order by a;
-ERROR:  corrupt item array
+ a | b  |    c    |  d  |  e  |    f
+---+----+---------+-----+-----+----------
+ 1 | 10 | changed | 1.5 | 999 | world
+ 2 | 88 | foo     | 2.5 | 200 | bar
+ 3 |  0 | full    | 0.0 | 300 | replaced
+(3 rows)
 
 -- Two-column table: any single-column update changes 50%,
 -- which is NOT < threshold, so full path should be used
