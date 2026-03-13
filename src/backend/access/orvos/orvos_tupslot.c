@@ -32,6 +32,7 @@ tts_orvos_init(TupleTableSlot *slot)
 static void
 tts_orvos_release(TupleTableSlot *slot)
 {
+	(void) slot;
 }
 
 static void
@@ -62,6 +63,8 @@ tts_orvos_clear(TupleTableSlot *slot)
 static void
 tts_orvos_getsomeattrs(TupleTableSlot *slot, int natts)
 {
+	(void) slot;
+	(void) natts;
 	elog(ERROR, "getsomeattrs is not required to be called on a orvos tuple table slot");
 }
 

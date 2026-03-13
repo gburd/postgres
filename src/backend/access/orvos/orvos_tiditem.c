@@ -96,7 +96,7 @@ ovbt_tid_item_create_for_range(ovtid tid, int nelements, OVUndoRecPtr undo_ptr)
 	}
 
 	total_encoded = 0;
-	while (total_encoded < nelements)
+	while (total_encoded < (uint64) nelements)
 	{
 		OVTidArrayItem *newitem;
 		Size		itemsz;
@@ -119,7 +119,7 @@ ovbt_tid_item_create_for_range(ovtid tid, int nelements, OVUndoRecPtr undo_ptr)
 		second_delta = 1;
 		num_tids = 0;
 		for (num_codewords = 0;
-			 num_codewords < OVBT_MAX_ITEM_CODEWORDS && total_encoded < nelements && num_tids < OVBT_MAX_ITEM_TIDS;
+			 num_codewords < OVBT_MAX_ITEM_CODEWORDS && total_encoded < (uint64) nelements && num_tids < OVBT_MAX_ITEM_TIDS;
 			 num_codewords++)
 		{
 			uint64		codeword;

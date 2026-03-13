@@ -57,6 +57,8 @@ orvos_mask(char *pagedata, BlockNumber blkno)
 {
 	Page		page = (Page) pagedata;
 
+	(void) blkno;
+
 	mask_page_lsn_and_checksum(page);
 
 	return;
