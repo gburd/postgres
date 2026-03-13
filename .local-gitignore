@@ -22,6 +22,7 @@ refs
 # Personal files
 *.mbox
 AUTHORS_NOTE.md
+.#*
 
 # Temporary process/analysis files
 COMMIT_ANALYSIS.md
