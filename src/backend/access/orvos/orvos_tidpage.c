@@ -843,6 +843,7 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 	 */
 	{
 		ov_pending_undo_op *lock_undo_op;
+		OVUndoRecPtr lock_undorecptr;
 		Page		lock_page;
 		OVTidArrayItem *lock_origitem;
 		List	   *lock_newitems;
@@ -851,18 +852,24 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 													key_update ? LockTupleExclusive : LockTupleNoKeyExclusive,
 													keep_old_undo_ptr ? olditem_undoptr : InvalidUndoPtr);
 
+		/*
+		 * Save the undorecptr before ovbt_tid_replace_item frees the
+		 * undo_op structure.
+		 */
+		lock_undorecptr = lock_undo_op->reservation.undorecptr;
+
 		/* Replace the item with updated undo pointer reflecting the lock. */
 		lock_page = BufferGetPage(buf);
 		lock_origitem = (OVTidArrayItem *) PageGetItem(lock_page,
 													   PageGetItemId(lock_page, idx));
 		lock_newitems = ovbt_tid_item_change_undoptr(lock_origitem, otid,
-													 lock_undo_op->reservation.undorecptr,
+													 lock_undorecptr,
 													 recent_oldest_undo);
 		ovbt_tid_replace_item(rel, buf, idx, lock_newitems, lock_undo_op);
 		list_free_deep(lock_newitems);
 
 		/* Update the prevundoptr to point to our lock record */
-		*prevundoptr_p = lock_undo_op->reservation.undorecptr;
+		*prevundoptr_p = lock_undorecptr;
 	}
 
 	ReleaseBuffer(buf);			/* ovbt_tid_replace_item unlocked 'buf' */
