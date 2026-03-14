@@ -748,6 +748,11 @@ ovbt_attr_create_items(Form_pg_attribute att,
 								elog(ERROR, "unrecognized toast tag");
 							this_sz = 2 + sizeof(BlockNumber);
 
+							/*
+							 * Toast pointers use a special format (0xFFFF header),
+							 * not compatible with native varlena format.
+							 */
+							all_short_varlena = false;
 						}
 						else if (VARATT_IS_COMPRESSED(vl))
 						{

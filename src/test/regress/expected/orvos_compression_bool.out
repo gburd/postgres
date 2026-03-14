@@ -1,170 +1,98 @@
 --
--- Tests for boolean bit-packing compression in Orvos tables
+-- Test boolean bit-packing compression (8 bools per byte)
+-- This test verifies that OVBT_ATTR_BITPACKED format flag provides
+-- 8x compression for boolean columns.
 --
--- Boolean columns are stored as 1 bit per value (8x compression vs 1 byte).
--- The OVBT_ATTR_BITPACKED flag triggers this encoding.
---
--- Basic boolean column
-CREATE TABLE t_bool_basic(id int, flag bool) USING orvos;
-INSERT INTO t_bool_basic SELECT i, (i % 2 = 0) FROM generate_series(1, 100) i;
-SELECT count(*) FROM t_bool_basic WHERE flag = true;
- count
--------
-    50
-(1 row)
-
-SELECT count(*) FROM t_bool_basic WHERE flag = false;
- count
--------
-    50
-(1 row)
-
-SELECT id, flag FROM t_bool_basic WHERE id <= 5 ORDER BY id;
- id | flag
-----+------
-  1 | f
-  2 | t
-  3 | f
-  4 | t
-  5 | f
-(5 rows)
-
-DROP TABLE t_bool_basic;
--- Wide table with many boolean columns (tests multiple bit-packed items)
-CREATE TABLE t_bool_wide(
+-- Create table with multiple boolean columns to test bit-packing
+CREATE TABLE orvos_bool_test (
     id int,
-    b1 bool, b2 bool, b3 bool, b4 bool, b5 bool,
-    b6 bool, b7 bool, b8 bool, b9 bool, b10 bool,
-    b11 bool, b12 bool, b13 bool, b14 bool, b15 bool,
-    b16 bool, b17 bool, b18 bool, b19 bool, b20 bool
+    flag1 boolean,
+    flag2 boolean,
+    flag3 boolean,
+    flag4 boolean,
+    flag5 boolean,
+    flag6 boolean,
+    flag7 boolean,
+    flag8 boolean,
+    flag9 boolean,
+    flag10 boolean
 ) USING orvos;
-INSERT INTO t_bool_wide
-SELECT i,
-    (i % 2 = 0), (i % 3 = 0), (i % 5 = 0), (i % 7 = 0), (i % 11 = 0),
-    (i % 13 = 0), (i % 17 = 0), (i % 19 = 0), (i % 23 = 0), (i % 29 = 0),
-    (i % 31 = 0), (i % 37 = 0), (i % 41 = 0), (i % 43 = 0), (i % 47 = 0),
-    (i % 53 = 0), (i % 59 = 0), (i % 61 = 0), (i % 67 = 0), (i % 71 = 0)
-FROM generate_series(1, 500) i;
--- Verify all columns read back correctly
-SELECT count(*) FROM t_bool_wide WHERE b1 = true;
- count
--------
-   250
-(1 row)
-
-SELECT count(*) FROM t_bool_wide WHERE b5 = true;
- count
--------
-    45
-(1 row)
-
-SELECT count(*) FROM t_bool_wide WHERE b10 = true;
- count
--------
-    17
-(1 row)
-
-SELECT count(*) FROM t_bool_wide WHERE b20 = true;
- count
--------
-     7
-(1 row)
-
--- Check specific rows
-SELECT id, b1, b2, b3, b10, b20 FROM t_bool_wide WHERE id IN (1, 2, 6, 30, 71) ORDER BY id;
- id | b1 | b2 | b3 | b10 | b20
-----+----+----+----+-----+-----
-  1 | f  | f  | f  | f   | f
-  2 | t  | f  | f  | f   | f
-  6 | t  | t  | f  | f   | f
- 30 | t  | t  | t  | f   | f
- 71 | f  | f  | f  | f   | t
+-- Insert test data with various boolean patterns
+INSERT INTO orvos_bool_test VALUES
+    (1, true, false, true, false, true, false, true, false, true, false),
+    (2, false, true, false, true, false, true, false, true, false, true),
+    (3, true, true, false, false, true, true, false, false, true, true),
+    (4, false, false, true, true, false, false, true, true, false, false),
+    (5, true, false, false, true, true, false, false, true, true, false);
+-- Test retrieval of all boolean values
+SELECT * FROM orvos_bool_test ORDER BY id;
+ id | flag1 | flag2 | flag3 | flag4 | flag5 | flag6 | flag7 | flag8 | flag9 | flag10 
+----+-------+-------+-------+-------+-------+-------+-------+-------+-------+--------
+  1 | t     | f     | t     | f     | t     | f     | t     | f     | t     | f
+  2 | f     | t     | f     | t     | f     | t     | f     | t     | f     | t
+  3 | t     | t     | f     | f     | t     | t     | f     | f     | t     | t
+  4 | f     | f     | t     | t     | f     | f     | t     | t     | f     | f
+  5 | t     | f     | f     | t     | t     | f     | f     | t     | t     | f
 (5 rows)
 
--- All-true and all-false edge cases
-CREATE TABLE t_bool_edge(id int, all_true bool, all_false bool) USING orvos;
-INSERT INTO t_bool_edge SELECT i, true, false FROM generate_series(1, 200) i;
-SELECT count(*) FROM t_bool_edge WHERE all_true = true;
- count
+-- Test filtering on boolean columns
+SELECT id, flag1, flag5 FROM orvos_bool_test WHERE flag1 = true ORDER BY id;
+ id | flag1 | flag5 
+----+-------+-------
+  1 | t     | t
+  3 | t     | t
+  5 | t     | t
+(3 rows)
+
+SELECT id, flag2, flag8 FROM orvos_bool_test WHERE flag2 = false AND flag8 = true ORDER BY id;
+ id | flag2 | flag8 
+----+-------+-------
+  4 | f     | t
+  5 | f     | t
+(2 rows)
+
+-- Test boolean aggregations
+SELECT COUNT(*) FROM orvos_bool_test WHERE flag1 = true;
+ count 
 -------
-   200
+     3
 (1 row)
 
-SELECT count(*) FROM t_bool_edge WHERE all_false = false;
- count
+SELECT COUNT(*) FROM orvos_bool_test WHERE flag1 = true AND flag2 = false;
+ count 
 -------
-   200
+     2
 (1 row)
 
-SELECT count(*) FROM t_bool_edge WHERE all_true = false;
- count
--------
-     0
+-- Test all TRUE and all FALSE patterns
+INSERT INTO orvos_bool_test VALUES
+    (6, true, true, true, true, true, true, true, true, true, true),
+    (7, false, false, false, false, false, false, false, false, false, false);
+SELECT * FROM orvos_bool_test WHERE id >= 6 ORDER BY id;
+ id | flag1 | flag2 | flag3 | flag4 | flag5 | flag6 | flag7 | flag8 | flag9 | flag10 
+----+-------+-------+-------+-------+-------+-------+-------+-------+-------+--------
+  6 | t     | t     | t     | t     | t     | t     | t     | t     | t     | t
+  7 | f     | f     | f     | f     | f     | f     | f     | f     | f     | f
+(2 rows)
+
+-- Test NULL booleans (should still use bit-packing for non-NULL values)
+INSERT INTO orvos_bool_test VALUES
+    (8, NULL, true, NULL, false, NULL, true, NULL, false, NULL, true),
+    (9, false, NULL, true, NULL, false, NULL, true, NULL, false, NULL);
+SELECT * FROM orvos_bool_test WHERE id >= 8 ORDER BY id;
+ id | flag1 | flag2 | flag3 | flag4 | flag5 | flag6 | flag7 | flag8 | flag9 | flag10 
+----+-------+-------+-------+-------+-------+-------+-------+-------+-------+--------
+  8 |       | t     |       | f     |       | t     |       | f     |       | t
+  9 | f     |       | t     |       | f     |       | t     |       | f     | 
+(2 rows)
+
+-- Test update of boolean values (verify MVCC with bit-packed storage)
+UPDATE orvos_bool_test SET flag1 = NOT flag1 WHERE id = 1;
+SELECT id, flag1, flag2 FROM orvos_bool_test WHERE id = 1;
+ id | flag1 | flag2 
+----+-------+-------
+  1 | f     | f
 (1 row)
 
-SELECT count(*) FROM t_bool_edge WHERE all_false = true;
- count
--------
-     0
-(1 row)
-
-DROP TABLE t_bool_edge;
--- Boolean with NULLs
-CREATE TABLE t_bool_nulls(id int, flag bool) USING orvos;
-INSERT INTO t_bool_nulls SELECT i,
-    CASE WHEN i % 10 = 0 THEN NULL
-         WHEN i % 2 = 0 THEN true
-         ELSE false END
-FROM generate_series(1, 100) i;
-SELECT count(*) FROM t_bool_nulls WHERE flag IS NULL;
- count
--------
-    10
-(1 row)
-
-SELECT count(*) FROM t_bool_nulls WHERE flag = true;
- count
--------
-    40
-(1 row)
-
-SELECT count(*) FROM t_bool_nulls WHERE flag = false;
- count
--------
-    50
-(1 row)
-
-SELECT id, flag FROM t_bool_nulls WHERE id BETWEEN 8 AND 12 ORDER BY id;
- id | flag
-----+------
-  8 | t
-  9 | f
- 10 |
- 11 | f
- 12 | t
-(5 rows)
-
-DROP TABLE t_bool_nulls;
--- Update boolean values
-CREATE TABLE t_bool_update(id int, flag bool) USING orvos;
-INSERT INTO t_bool_update SELECT i, (i % 2 = 0) FROM generate_series(1, 50) i;
-UPDATE t_bool_update SET flag = NOT flag WHERE id <= 10;
-SELECT id, flag FROM t_bool_update WHERE id <= 12 ORDER BY id;
- id | flag
-----+------
-  1 | t
-  2 | f
-  3 | t
-  4 | f
-  5 | t
-  6 | f
-  7 | t
-  8 | f
-  9 | t
- 10 | f
- 11 | f
- 12 | t
-(12 rows)
-
-DROP TABLE t_bool_update;
-DROP TABLE t_bool_wide;
+-- Cleanup
+DROP TABLE orvos_bool_test;

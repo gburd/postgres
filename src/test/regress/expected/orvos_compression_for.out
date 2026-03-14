@@ -15,33 +15,33 @@ SELECT i,
        '2024-01-01 00:00:00'::timestamp + ((i * 2) || ' seconds')::interval
 FROM generate_series(1, 1000) i;
 SELECT COUNT(*) FROM orvos_for_timestamp_test;
- count
+ count 
 -------
   1000
 (1 row)
 
 SELECT MIN(created_at), MAX(created_at) FROM orvos_for_timestamp_test;
-         min         |         max
----------------------+---------------------
- 2024-01-01 00:00:01 | 2024-01-01 00:16:40
+           min            |           max            
+--------------------------+--------------------------
+ Mon Jan 01 00:00:01 2024 | Mon Jan 01 00:16:40 2024
 (1 row)
 
 -- Test range queries on FOR-encoded timestamps
-SELECT COUNT(*) FROM orvos_for_timestamp_test
+SELECT COUNT(*) FROM orvos_for_timestamp_test 
 WHERE created_at BETWEEN '2024-01-01 00:05:00' AND '2024-01-01 00:10:00';
- count
+ count 
 -------
-   300
+   301
 (1 row)
 
 SELECT * FROM orvos_for_timestamp_test WHERE id <= 5 ORDER BY id;
- id |     created_at      |     updated_at
-----+---------------------+---------------------
-  1 | 2024-01-01 00:00:01 | 2024-01-01 00:00:02
-  2 | 2024-01-01 00:00:02 | 2024-01-01 00:00:04
-  3 | 2024-01-01 00:00:03 | 2024-01-01 00:00:06
-  4 | 2024-01-01 00:00:04 | 2024-01-01 00:00:08
-  5 | 2024-01-01 00:00:05 | 2024-01-01 00:00:10
+ id |        created_at        |        updated_at        
+----+--------------------------+--------------------------
+  1 | Mon Jan 01 00:00:01 2024 | Mon Jan 01 00:00:02 2024
+  2 | Mon Jan 01 00:00:02 2024 | Mon Jan 01 00:00:04 2024
+  3 | Mon Jan 01 00:00:03 2024 | Mon Jan 01 00:00:06 2024
+  4 | Mon Jan 01 00:00:04 2024 | Mon Jan 01 00:00:08 2024
+  5 | Mon Jan 01 00:00:05 2024 | Mon Jan 01 00:00:10 2024
 (5 rows)
 
 DROP TABLE orvos_for_timestamp_test;
@@ -56,13 +56,13 @@ INSERT INTO orvos_for_sequential_test
 SELECT 1000000 + i, i, 'value_' || i
 FROM generate_series(1, 5000) i;
 SELECT MIN(id), MAX(id) FROM orvos_for_sequential_test;
-   min   |   max
+   min   |   max   
 ---------+---------
  1000001 | 1005000
 (1 row)
 
 SELECT COUNT(*) FROM orvos_for_sequential_test WHERE id > 1002500;
- count
+ count 
 -------
   2500
 (1 row)
@@ -82,13 +82,13 @@ SELECT i,
        END
 FROM generate_series(1, 1000) i;
 SELECT MIN(amount), MAX(amount) FROM orvos_for_clustered_test;
- min | max
+ min | max  
 -----+------
  100 | 2000
 (1 row)
 
 SELECT COUNT(*) FROM orvos_for_clustered_test WHERE amount BETWEEN 100 AND 200;
- count
+ count 
 -------
    900
 (1 row)
@@ -103,14 +103,14 @@ INSERT INTO orvos_for_date_test
 SELECT i, '2024-01-01'::date + i
 FROM generate_series(0, 365) i;
 SELECT MIN(event_date), MAX(event_date) FROM orvos_for_date_test;
-    min     |    max
+    min     |    max     
 ------------+------------
- 2024-01-01 | 2024-12-31
+ 01-01-2024 | 12-31-2024
 (1 row)
 
-SELECT COUNT(*) FROM orvos_for_date_test
+SELECT COUNT(*) FROM orvos_for_date_test 
 WHERE event_date BETWEEN '2024-06-01' AND '2024-06-30';
- count
+ count 
 -------
     30
 (1 row)
@@ -129,13 +129,13 @@ SELECT i,
        END
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_for_null_test WHERE timestamp_col IS NULL;
- count
+ count 
 -------
     10
 (1 row)
 
 SELECT COUNT(*) FROM orvos_for_null_test WHERE timestamp_col IS NOT NULL;
- count
+ count 
 -------
     90
 (1 row)

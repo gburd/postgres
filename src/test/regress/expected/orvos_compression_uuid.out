@@ -12,34 +12,34 @@ INSERT INTO orvos_uuid_test
 SELECT i, gen_random_uuid(), 'record_' || i
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_uuid_test;
- count
+ count 
 -------
    100
 (1 row)
 
 SELECT COUNT(DISTINCT uuid_col) FROM orvos_uuid_test;
- count
+ count 
 -------
    100
 (1 row)
 
 -- Test retrieval and filtering
 SELECT id, uuid_col FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
- id |               uuid_col
+ id |               uuid_col               
 ----+--------------------------------------
-  1 | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  2 | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  3 | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  4 | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-  5 | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  1 | 9e9c70b9-7cd1-4e04-ba7a-d00f972ad735
+  2 | 08020abe-3b1e-47fe-a840-f3349f397abe
+  3 | b147ea96-edf2-4618-a26f-fea11dc4589c
+  4 | 106289c9-0e11-4d6f-9cda-56b505876d47
+  5 | 63973840-da08-454f-96aa-885ff536189f
 (5 rows)
 
 -- Store specific UUID for filter test
-INSERT INTO orvos_uuid_test VALUES
+INSERT INTO orvos_uuid_test VALUES 
     (101, '550e8400-e29b-41d4-a716-446655440000'::uuid, 'known_uuid');
-SELECT id, description FROM orvos_uuid_test
+SELECT id, description FROM orvos_uuid_test 
 WHERE uuid_col = '550e8400-e29b-41d4-a716-446655440000'::uuid;
- id  | description
+ id  | description 
 -----+-------------
  101 | known_uuid
 (1 row)
@@ -57,13 +57,13 @@ SELECT i,
        CASE WHEN i % 3 = 0 THEN NULL ELSE gen_random_uuid() END
 FROM generate_series(1, 50) i;
 SELECT COUNT(*) FROM orvos_uuid_nullable_test WHERE secondary_uuid IS NULL;
- count
+ count 
 -------
     16
 (1 row)
 
 SELECT COUNT(*) FROM orvos_uuid_nullable_test WHERE secondary_uuid IS NOT NULL;
- count
+ count 
 -------
     34
 (1 row)
@@ -81,7 +81,7 @@ INSERT INTO orvos_uuid_ordering_test VALUES
     (4, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid),
     (5, '12345678-1234-5678-1234-567812345678'::uuid);
 SELECT * FROM orvos_uuid_ordering_test ORDER BY uuid_col;
- id |               uuid_col
+ id |               uuid_col               
 ----+--------------------------------------
   1 | 00000000-0000-0000-0000-000000000001
   2 | 00000000-0000-0000-0000-000000000002
@@ -91,10 +91,10 @@ SELECT * FROM orvos_uuid_ordering_test ORDER BY uuid_col;
 (5 rows)
 
 -- Test UUID range queries
-SELECT id FROM orvos_uuid_ordering_test
+SELECT id FROM orvos_uuid_ordering_test 
 WHERE uuid_col < '12345678-1234-5678-1234-567812345678'::uuid
 ORDER BY id;
- id
+ id 
 ----
   1
   2
@@ -113,13 +113,13 @@ INSERT INTO orvos_multi_uuid_test
 SELECT gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid()
 FROM generate_series(1, 20);
 SELECT COUNT(DISTINCT record_id) FROM orvos_multi_uuid_test;
- count
+ count 
 -------
     20
 (1 row)
 
 SELECT COUNT(DISTINCT user_id) FROM orvos_multi_uuid_test;
- count
+ count 
 -------
     20
 (1 row)

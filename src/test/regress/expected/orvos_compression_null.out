@@ -12,13 +12,13 @@ INSERT INTO orvos_no_nulls_test
 SELECT i, 'value_' || i, i * 10
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_no_nulls_test;
- count
+ count 
 -------
    100
 (1 row)
 
 SELECT * FROM orvos_no_nulls_test WHERE id <= 5 ORDER BY id;
- id |  value  | amount
+ id |  value  | amount 
 ----+---------+--------
   1 | value_1 |     10
   2 | value_2 |     20
@@ -45,22 +45,22 @@ INSERT INTO orvos_sparse_nulls_test VALUES
     (99, 'value_99', 990),
     (100, NULL, 1000);
 SELECT COUNT(*) FROM orvos_sparse_nulls_test WHERE value IS NULL;
- count
+ count 
 -------
      3
 (1 row)
 
 SELECT COUNT(*) FROM orvos_sparse_nulls_test WHERE amount IS NULL;
- count
+ count 
 -------
      2
 (1 row)
 
 SELECT * FROM orvos_sparse_nulls_test WHERE value IS NULL ORDER BY id;
- id  | value | amount
+ id  | value | amount 
 -----+-------+--------
   96 |       |    960
-  98 |       |
+  98 |       |       
  100 |       |   1000
 (3 rows)
 
@@ -84,26 +84,26 @@ INSERT INTO orvos_rle_nulls_test
 SELECT i, NULL
 FROM generate_series(41, 70) i;
 SELECT COUNT(*) FROM orvos_rle_nulls_test WHERE value IS NULL;
- count
+ count 
 -------
     50
 (1 row)
 
 SELECT COUNT(*) FROM orvos_rle_nulls_test WHERE value IS NOT NULL;
- count
+ count 
 -------
     20
 (1 row)
 
 SELECT * FROM orvos_rle_nulls_test WHERE id IN (9, 10, 11, 12, 29, 30, 31, 32) ORDER BY id;
- id |  value
+ id |  value   
 ----+----------
   9 | value_9
  10 | value_10
- 11 |
- 12 |
- 29 |
- 30 |
+ 11 | 
+ 12 | 
+ 29 | 
+ 30 | 
  31 | value_31
  32 | value_32
 (8 rows)
@@ -120,13 +120,13 @@ SELECT i,
        CASE WHEN i % 2 = 0 THEN 'value_' || i ELSE NULL END
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_high_nulls_test WHERE value IS NULL;
- count
+ count 
 -------
     50
 (1 row)
 
 SELECT COUNT(*) FROM orvos_high_nulls_test WHERE value IS NOT NULL;
- count
+ count 
 -------
     50
 (1 row)

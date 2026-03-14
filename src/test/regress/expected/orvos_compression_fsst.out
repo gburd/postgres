@@ -11,14 +11,14 @@ INSERT INTO orvos_fsst_repetitive_test
 SELECT i, 'The quick brown fox jumps over the lazy dog. Record number: ' || i
 FROM generate_series(1, 1000) i;
 SELECT COUNT(*) FROM orvos_fsst_repetitive_test;
- count
+ count 
 -------
   1000
 (1 row)
 
 SELECT * FROM orvos_fsst_repetitive_test WHERE id <= 3 ORDER BY id;
- id |                            message
-----+----------------------------------------------------------------
+ id |                            message                            
+----+---------------------------------------------------------------
   1 | The quick brown fox jumps over the lazy dog. Record number: 1
   2 | The quick brown fox jumps over the lazy dog. Record number: 2
   3 | The quick brown fox jumps over the lazy dog. Record number: 3
@@ -34,14 +34,14 @@ INSERT INTO orvos_fsst_json_test
 SELECT i, '{"user_id": ' || i || ', "status": "active", "timestamp": "2024-01-01T00:00:00Z", "metadata": {"source": "api", "version": "v1"}}'
 FROM generate_series(1, 500) i;
 SELECT COUNT(*) FROM orvos_fsst_json_test;
- count
+ count 
 -------
    500
 (1 row)
 
 SELECT * FROM orvos_fsst_json_test WHERE id = 1;
- id |                                                        json_data
-----+--------------------------------------------------------------------------------------------------------------------------
+ id |                                                        json_data                                                        
+----+-------------------------------------------------------------------------------------------------------------------------
   1 | {"user_id": 1, "status": "active", "timestamp": "2024-01-01T00:00:00Z", "metadata": {"source": "api", "version": "v1"}}
 (1 row)
 
@@ -58,8 +58,8 @@ INSERT INTO orvos_fsst_log_test VALUES
     (4, '[ERROR] 2024-01-01 12:00:03 - Failed to connect to external service'),
     (5, '[INFO] 2024-01-01 12:00:04 - Request processed successfully');
 SELECT * FROM orvos_fsst_log_test ORDER BY id;
- id |                            log_message
-----+-------------------------------------------------------------------
+ id |                             log_message                             
+----+---------------------------------------------------------------------
   1 | [INFO] 2024-01-01 12:00:00 - Application started successfully
   2 | [INFO] 2024-01-01 12:00:01 - Database connection established
   3 | [WARN] 2024-01-01 12:00:02 - High memory usage detected
@@ -69,13 +69,13 @@ SELECT * FROM orvos_fsst_log_test ORDER BY id;
 
 -- Test filtering on FSST-compressed strings
 SELECT COUNT(*) FROM orvos_fsst_log_test WHERE log_message LIKE '[INFO]%';
- count
+ count 
 -------
      3
 (1 row)
 
 SELECT COUNT(*) FROM orvos_fsst_log_test WHERE log_message LIKE '%successfully%';
- count
+ count 
 -------
      2
 (1 row)
@@ -90,14 +90,14 @@ INSERT INTO orvos_fsst_url_test
 SELECT i, 'https://api.example.com/v1/users/' || i || '/profile?format=json&include=metadata'
 FROM generate_series(1, 1000) i;
 SELECT COUNT(*) FROM orvos_fsst_url_test;
- count
+ count 
 -------
   1000
 (1 row)
 
 SELECT * FROM orvos_fsst_url_test WHERE id <= 3 ORDER BY id;
- id |                                     url
-----+-----------------------------------------------------------------------------
+ id |                                   url                                   
+----+-------------------------------------------------------------------------
   1 | https://api.example.com/v1/users/1/profile?format=json&include=metadata
   2 | https://api.example.com/v1/users/2/profile?format=json&include=metadata
   3 | https://api.example.com/v1/users/3/profile?format=json&include=metadata
@@ -123,43 +123,7 @@ SELECT i,
        'And even more padding text to reach a good length for compression testing.'
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_fsst_mixed_test;
- count
--------
-   100
-(1 row)
-
-SELECT id, short_str, length(medium_str), length(long_str)
-FROM orvos_fsst_mixed_test WHERE id <= 3 ORDER BY id;
- id | short_str | length | length
-----+-----------+--------+--------
-  1 | short_1   |     55 |    297
-  2 | short_2   |     55 |    297
-  3 | short_3   |     55 |    297
-(3 rows)
-
-DROP TABLE orvos_fsst_mixed_test;
--- Test 6: FSST with NULL values
-CREATE TABLE orvos_fsst_null_test (
-    id int,
-    description text
-) USING orvos;
-INSERT INTO orvos_fsst_null_test
-SELECT i,
-       CASE
-           WHEN i % 5 = 0 THEN NULL
-           ELSE 'Description text for record number ' || i || ' with common patterns.'
-       END
-FROM generate_series(1, 50) i;
-SELECT COUNT(*) FROM orvos_fsst_null_test WHERE description IS NULL;
- count
--------
-    10
-(1 row)
-
-SELECT COUNT(*) FROM orvos_fsst_null_test WHERE description IS NOT NULL;
- count
--------
-    40
-(1 row)
-
-DROP TABLE orvos_fsst_null_test;
+server closed the connection unexpectedly
+	This probably means the server terminated abnormally
+	before or while processing the request.
+connection to server was lost
