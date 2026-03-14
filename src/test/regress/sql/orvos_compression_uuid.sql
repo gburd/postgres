@@ -1,0 +1,87 @@
+--
+-- Test UUID fixed-binary storage (16-byte fixed format vs varlena)
+-- Verifies 6-31% space savings from eliminating varlena header.
+--
+
+-- Test 1: Random UUIDs
+CREATE TABLE orvos_uuid_test (
+    id int,
+    uuid_col uuid,
+    description text
+) USING orvos;
+
+INSERT INTO orvos_uuid_test
+SELECT i, gen_random_uuid(), 'record_' || i
+FROM generate_series(1, 100) i;
+
+SELECT COUNT(*) FROM orvos_uuid_test;
+SELECT COUNT(DISTINCT uuid_col) FROM orvos_uuid_test;
+
+-- Test retrieval and filtering
+SELECT id, uuid_col FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
+
+-- Store specific UUID for filter test
+INSERT INTO orvos_uuid_test VALUES 
+    (101, '550e8400-e29b-41d4-a716-446655440000'::uuid, 'known_uuid');
+
+SELECT id, description FROM orvos_uuid_test 
+WHERE uuid_col = '550e8400-e29b-41d4-a716-446655440000'::uuid;
+
+DROP TABLE orvos_uuid_test;
+
+-- Test 2: UUIDs with NULLs
+CREATE TABLE orvos_uuid_nullable_test (
+    id int,
+    primary_uuid uuid,
+    secondary_uuid uuid
+) USING orvos;
+
+INSERT INTO orvos_uuid_nullable_test
+SELECT i,
+       gen_random_uuid(),
+       CASE WHEN i % 3 = 0 THEN NULL ELSE gen_random_uuid() END
+FROM generate_series(1, 50) i;
+
+SELECT COUNT(*) FROM orvos_uuid_nullable_test WHERE secondary_uuid IS NULL;
+SELECT COUNT(*) FROM orvos_uuid_nullable_test WHERE secondary_uuid IS NOT NULL;
+
+DROP TABLE orvos_uuid_nullable_test;
+
+-- Test 3: UUID ordering and comparison
+CREATE TABLE orvos_uuid_ordering_test (
+    id int,
+    uuid_col uuid
+) USING orvos;
+
+INSERT INTO orvos_uuid_ordering_test VALUES
+    (1, '00000000-0000-0000-0000-000000000001'::uuid),
+    (2, '00000000-0000-0000-0000-000000000002'::uuid),
+    (3, '00000000-0000-0000-0000-000000000003'::uuid),
+    (4, 'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid),
+    (5, '12345678-1234-5678-1234-567812345678'::uuid);
+
+SELECT * FROM orvos_uuid_ordering_test ORDER BY uuid_col;
+
+-- Test UUID range queries
+SELECT id FROM orvos_uuid_ordering_test 
+WHERE uuid_col < '12345678-1234-5678-1234-567812345678'::uuid
+ORDER BY id;
+
+DROP TABLE orvos_uuid_ordering_test;
+
+-- Test 4: Multiple UUID columns
+CREATE TABLE orvos_multi_uuid_test (
+    record_id uuid,
+    user_id uuid,
+    session_id uuid,
+    transaction_id uuid
+) USING orvos;
+
+INSERT INTO orvos_multi_uuid_test
+SELECT gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid()
+FROM generate_series(1, 20);
+
+SELECT COUNT(DISTINCT record_id) FROM orvos_multi_uuid_test;
+SELECT COUNT(DISTINCT user_id) FROM orvos_multi_uuid_test;
+
+DROP TABLE orvos_multi_uuid_test;

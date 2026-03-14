@@ -1,10 +1,20 @@
-/*
- * orvos_planner.h
- *		Planner integration for Orvos columnar table access method
+/**
+ * @file orvos_planner.h
+ * @brief Planner integration for Orvos columnar table access method.
  *
  * This module provides planner hooks to inform PostgreSQL's query planner
  * about Orvos's columnar storage characteristics, enabling better cost
  * estimation for queries that benefit from column projection.
+ *
+ * @par Cost Model Adjustments
+ * The hooks adjust I/O costs based on:
+ * - Column selectivity (fraction of columns accessed).
+ * - Compression ratio (from pg_statistic or default estimate).
+ * - Decompression CPU overhead factor.
+ *
+ * @par Statistics Storage
+ * Per-column compression statistics are stored in pg_statistic using
+ * custom stakind STATISTIC_KIND_ORVOS_COMPRESSION (10001).
  *
  * Copyright (c) 2019-2026, PostgreSQL Global Development Group
  *
@@ -14,6 +24,7 @@
 #ifndef ORVOS_PLANNER_H
 #define ORVOS_PLANNER_H
 
+#include "c.h"					/* for int, bool, float4, etc. */
 #include "commands/vacuum.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/planmain.h"

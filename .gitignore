@@ -51,3 +51,9 @@ test-db/
 .cache/
 .history
 
+
+# Test artifacts
+/log/
+/regression.diffs
+/regression.out
+/results/

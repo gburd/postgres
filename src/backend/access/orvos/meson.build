@@ -5,6 +5,8 @@ backend_sources += files(
   'orvos_attpage.c',
   'orvos_btree.c',
   'orvos_compression.c',
+  'orvos_dict.c',
+  'orvos_fsst.c',
   'orvos_freepagemap.c',
   'orvos_inspect.c',
   'orvos_meta.c',

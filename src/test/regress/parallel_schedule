@@ -85,6 +85,8 @@ test: rules psql psql_crosstab psql_pipeline amutils stats_ext collate.linux.utf
 
 # orvos table access method test
 test: orvos
+# orvos compression tests
+test: orvos_compression_bool orvos_compression_null orvos_compression_for orvos_compression_dict orvos_compression_uuid orvos_compression_fsst orvos_compression_varlena
 
 # ----------
 # Run these alone so they don't run out of parallel workers

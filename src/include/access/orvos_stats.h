@@ -1,13 +1,28 @@
-/*
- * orvos_stats.h
- *		Opportunistic statistics collection for Orvos columnar storage
+/**
+ * @file orvos_stats.h
+ * @brief Opportunistic statistics collection for Orvos columnar storage.
  *
  * Tracks tuple counts, dead tuples, null fractions, and compression
  * ratios during normal DML and scan operations, so the planner has
  * fresh estimates even between ANALYZE runs.
  *
- * Statistics are stored per-relation in a backend-local hash table and
- * reported to pgstat via the standard pgstat_report_* infrastructure.
+ * @par Design
+ * Statistics are stored per-relation in a backend-local hash table
+ * (keyed by OID).  INSERT/DELETE callbacks bump tuple counters cheaply.
+ * Sequential scans sample every Nth tuple (controlled by the
+ * orvos.stats_sample_rate GUC) to update live/dead counts and
+ * per-column null fractions.  The planner reads these counters via
+ * ovstats_get_*() and, when fresh enough, uses them in preference to
+ * stale pg_class.reltuples.
+ *
+ * @par Thread Safety
+ * The hash table is backend-local; no locking is needed.  Each backend
+ * maintains its own view; stats converge after a few scans.
+ *
+ * @par GUC Parameters
+ * - orvos.enable_opportunistic_stats (bool, default on)
+ * - orvos.stats_sample_rate (int, default 100, range 1-10000)
+ * - orvos.stats_freshness_threshold (int, default 3600, range 1-86400)
  *
  * Copyright (c) 2019-2026, PostgreSQL Global Development Group
  *
@@ -17,7 +32,7 @@
 #ifndef ORVOS_STATS_H
 #define ORVOS_STATS_H
 
-#include "postgres.h"
+#include "c.h"					/* for int64, bool, uint32, etc. */
 #include "utils/relcache.h"
 #include "utils/timestamp.h"
 

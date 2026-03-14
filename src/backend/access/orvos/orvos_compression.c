@@ -153,3 +153,106 @@ ov_decompress(const char *src, char *dst, int compressedSize, int uncompressedSi
 }
 
 #endif							/* compression implementation */
+
+/*
+ * FSST-aware compression for string columns.
+ *
+ * These functions apply FSST encoding as a pre-filter before the
+ * general-purpose compressor (zstd/lz4/pglz).  The compressed format
+ * when FSST is active:
+ *
+ *   [4 bytes: fsst_encoded_size] [general-compressed FSST-encoded data]
+ *
+ * The caller is responsible for tracking whether FSST was used (via a
+ * flag in the item header).
+ */
+#include "access/orvos_fsst.h"
+
+int
+ov_try_compress_with_fsst(const char *src, char *dst, int srcSize,
+						  int dstCapacity, const FsstSymbolTable *table)
+{
+	char	   *fsst_buf;
+	int			fsst_size;
+	int			final_size;
+
+	if (table == NULL || table->num_symbols == 0)
+		return ov_try_compress(src, dst, srcSize, dstCapacity);
+
+	/* Allocate buffer for FSST-encoded data (worst case: 2x original) */
+	fsst_buf = palloc(srcSize * 2);
+
+	/* Apply FSST encoding */
+	fsst_size = fsst_compress(src, srcSize, fsst_buf, srcSize * 2, table);
+
+	if (fsst_size <= 0 || fsst_size >= srcSize)
+	{
+		/* FSST didn't help, fall back to direct compression */
+		pfree(fsst_buf);
+		return ov_try_compress(src, dst, srcSize, dstCapacity);
+	}
+
+	/*
+	 * Store the FSST-encoded size as a 4-byte prefix, then compress the
+	 * FSST-encoded data with the general-purpose compressor.
+	 */
+	if (dstCapacity < (int) sizeof(int32) + 1)
+	{
+		pfree(fsst_buf);
+		return 0;
+	}
+
+	memcpy(dst, &fsst_size, sizeof(int32));
+
+	final_size = ov_try_compress(fsst_buf, dst + sizeof(int32),
+								 fsst_size,
+								 dstCapacity - sizeof(int32));
+
+	pfree(fsst_buf);
+
+	if (final_size <= 0)
+		return 0;
+
+	final_size += sizeof(int32);
+
+	/* Only report success if we beat the original size */
+	if (final_size >= srcSize)
+		return 0;
+
+	return final_size;
+}
+
+void
+ov_decompress_with_fsst(const char *src, char *dst,
+						int compressedSize, int uncompressedSize,
+						const FsstSymbolTable *table)
+{
+	int32		fsst_encoded_size;
+	char	   *fsst_buf;
+	int			decompressed_size;
+
+	if (table == NULL || table->num_symbols == 0)
+	{
+		ov_decompress(src, dst, compressedSize, uncompressedSize);
+		return;
+	}
+
+	/* Read the FSST-encoded size prefix */
+	memcpy(&fsst_encoded_size, src, sizeof(int32));
+	src += sizeof(int32);
+	compressedSize -= sizeof(int32);
+
+	/* Decompress the general-compressed FSST-encoded data */
+	fsst_buf = palloc(fsst_encoded_size);
+	ov_decompress(src, fsst_buf, compressedSize, fsst_encoded_size);
+
+	/* Apply FSST decoding */
+	decompressed_size = fsst_decompress(fsst_buf, fsst_encoded_size,
+										dst, uncompressedSize, table);
+
+	pfree(fsst_buf);
+
+	if (decompressed_size != uncompressedSize)
+		elog(ERROR, "FSST decompression size mismatch: got %d, expected %d",
+			 decompressed_size, uncompressedSize);
+}

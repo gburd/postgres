@@ -1,6 +1,33 @@
-/*
- * orvos_internal.h
- *		internal declarations for Orvos tables
+/**
+ * @file orvos_internal.h
+ * @brief Internal declarations for Orvos columnar table access method.
+ *
+ * This header defines the core data structures for Orvos's on-disk page
+ * formats, B-tree page layouts, TID and attribute array items, metapage
+ * structures, scan state, and cache structures.  It is the central header
+ * for all Orvos backend code.
+ *
+ * @par Architecture Overview
+ * An Orvos relation consists of multiple B-trees stored in a single
+ * physical file.  Block 0 is always a metapage.  The TID tree (attribute
+ * number 0) stores visibility/UNDO information.  Each user column has its
+ * own attribute B-tree.  UNDO log pages, toast pages, and free pages are
+ * also stored in the same file, distinguished by page type IDs in their
+ * opaque areas.
+ *
+ * @par Lock Ordering
+ * When acquiring multiple buffer locks:
+ * - Metapage lock is acquired first when needed.
+ * - B-tree pages are locked top-down (parent before child).
+ * - Within a level, pages are locked left-to-right.
+ * - UNDO buffer locks are acquired after B-tree page locks.
+ * - Split stack entries hold exclusive locks on all modified pages;
+ *   changes are applied atomically via ov_apply_split_changes().
+ *
+ * @par Memory Context
+ * Scan structures (OVTidTreeScan, OVAttrTreeScan) carry a MemoryContext
+ * field that must be used for any allocations that outlive a single
+ * getnext() call.  The caller's CurrentMemoryContext may be short-lived.
  *
  * Copyright (c) 2019, PostgreSQL Global Development Group
  *
@@ -21,29 +48,45 @@
 
 struct ov_pending_undo_op;
 
+/** @brief Attribute number used for the TID tree (visibility metadata). */
 #define OV_META_ATTRIBUTE_NUM 0
 
-
-
+/** @brief Sentinel value indicating no speculative insertion token. */
 #define INVALID_SPECULATIVE_TOKEN 0
 
-/*
- * A Orvos table contains different kinds of pages, all in the same file.
- *
- * Block 0 is always a metapage. It contains the block numbers of the other
- * data structures stored within the file, like the per-attribute B-trees,
- * and the UNDO log. In addition, if there are overly large datums in the
- * the table, they are chopped into separate "toast" pages.
+/**
+ * @name Page Type Identifiers
+ * @brief Magic numbers stored in the opaque area of each page to identify
+ *        the page type.  Every page in an Orvos relation carries one of
+ *        these in its ov_page_id field.
+ * @{
  */
 #define	OV_META_PAGE_ID		0xF083
 #define	OV_BTREE_PAGE_ID	0xF084
 #define	OV_UNDO_PAGE_ID		0xF085
 #define	OV_TOAST_PAGE_ID	0xF086
 #define	OV_FREE_PAGE_ID		0xF087
+/** @} */
 
-/* flags for orvos b-tree pages */
+/** @brief Flag indicating this B-tree page is the root of its tree. */
 #define OVBT_ROOT				0x0001
 
+/**
+ * @brief Opaque area at the end of every Orvos B-tree page.
+ *
+ * Stored in the pd_special region of the standard PageHeaderData.
+ * Contains enough information to identify the page (attribute number,
+ * key range, level) so that the page's parent downlink can be relocated
+ * after a concurrent split, and so that corruption can be detected.
+ *
+ * @param ov_attno   Attribute number (0 = TID tree, 1..N = user columns).
+ * @param ov_next    Right sibling block number (InvalidBlockNumber if rightmost).
+ * @param ov_lokey   Inclusive lower bound TID for keys on this page.
+ * @param ov_hikey   Exclusive upper bound TID for keys on this page.
+ * @param ov_level   B-tree level: 0 = leaf, >0 = internal.
+ * @param ov_flags   Combination of OVBT_ROOT and other flags.
+ * @param ov_page_id Always OV_BTREE_PAGE_ID (0xF084).
+ */
 typedef struct OVBtreePageOpaque
 {
 	AttrNumber	ov_attno;
@@ -56,13 +99,22 @@ typedef struct OVBtreePageOpaque
 	uint16		ov_page_id;		/* always OV_BTREE_PAGE_ID */
 } OVBtreePageOpaque;
 
+/**
+ * @brief Extract the OVBtreePageOpaque from a page's special area.
+ * @param page  A Page pointer to a B-tree page.
+ * @return Pointer to the OVBtreePageOpaque structure.
+ */
 #define OVBtreePageGetOpaque(page) ((OVBtreePageOpaque *) PageGetSpecialPointer(page))
 
-/*
- * Internal B-tree page layout.
+/**
+ * @brief Internal (non-leaf) B-tree page item.
  *
- * The "contents" of the page is an array of OVBtreeInternalPageItem. The number
- * of items can be deduced from pd_lower.
+ * The page contents between pd_upper and pd_special consist of an array
+ * of these items.  The number of items is deduced from pd_lower:
+ *   num = (pd_lower - SizeOfPageHeaderData) / sizeof(OVBtreeInternalPageItem)
+ *
+ * @param tid       Separator key (first TID in the right subtree).
+ * @param childblk  Block number of the child page.
  */
 typedef struct OVBtreeInternalPageItem
 {
@@ -70,6 +122,11 @@ typedef struct OVBtreeInternalPageItem
 	BlockNumber childblk;
 } OVBtreeInternalPageItem;
 
+/**
+ * @brief Get pointer to the array of internal page items.
+ * @param page  A Page containing internal B-tree items.
+ * @return Pointer to the first OVBtreeInternalPageItem.
+ */
 static inline OVBtreeInternalPageItem *
 OVBtreeInternalPageGetItems(Page page)
 {
@@ -79,6 +136,12 @@ OVBtreeInternalPageGetItems(Page page)
 
 	return items;
 }
+
+/**
+ * @brief Get the number of items on an internal B-tree page.
+ * @param page  A Page containing internal B-tree items.
+ * @return Number of OVBtreeInternalPageItem entries on the page.
+ */
 static inline int
 OVBtreeInternalPageGetNumItems(Page page)
 {
@@ -91,6 +154,11 @@ OVBtreeInternalPageGetNumItems(Page page)
 	return end - begin;
 }
 
+/**
+ * @brief Check whether an internal B-tree page has room for another item.
+ * @param page  A Page containing internal B-tree items.
+ * @return true if pd_upper - pd_lower is too small for another item.
+ */
 static inline bool
 OVBtreeInternalPageIsFull(Page page)
 {
@@ -99,53 +167,37 @@ OVBtreeInternalPageIsFull(Page page)
 	return phdr->pd_upper - phdr->pd_lower < sizeof(OVBtreeInternalPageItem);
 }
 
-/*
- * Attribute B-tree leaf page layout
+/**
+ * @brief Uncompressed attribute B-tree leaf page item.
  *
- * Leaf pages in the attribute trees are packed with "array items", which
- * contain the actual user data for the column, in a compact format. Each
- * array item contains the datums for a range of TIDs. The ranges of two
- * items never overlap, but there can be gaps, if a row has been deleted
- * or updated.
+ * Leaf pages in the attribute trees are packed with "array items" that
+ * contain the actual user data for a column in a compact format.  Each
+ * item contains datums for a contiguous range of TIDs [t_firsttid,
+ * t_endtid).  Ranges of different items never overlap, though gaps may
+ * exist due to deletions or updates.
  *
- * Each array item consists of a fixed header, a list of TIDs of the rows
- * contained in it, a NULL bitmap (if there are any NULLs), and the actual
- * Datum data. The TIDs are encoded using Simple-8b encoding, like in the
- * TID tree.
+ * @par Layout (variable-length)
+ * - Fixed header (this struct up to t_tid_codewords)
+ * - t_num_codewords x uint64: Simple-8b encoded TID deltas
+ * - NULL bitmap (ceil(t_num_elements/8) bytes), if OVBT_HAS_NULLS
+ * - Packed datum data (see below)
  *
- * The data (including the TID codewords) can be compressed. In that case,
- * OVAttributeCompressedItem is used. The fields are mostly the same as in
- * OVAttributeArrayItem, and we cast between the two liberally.
+ * @par Datum Encoding
+ * Fixed-width types are stored without alignment padding.  Variable-length
+ * types use a custom compact encoding instead of standard PostgreSQL
+ * varlena format:
+ * - @c 0xxxxxxx : 1-byte header, up to 128 bytes of data follow.
+ * - @c 1xxxxxxx @c xxxxxxxx : 2-byte header, up to 32767 bytes.
+ * - @c 0xFF @c 0xFF @c <BlockNumber> : Orvos toast pointer (datum on
+ *   separate toast pages within the same relation file).
  *
- * The datums are packed in a custom format. Fixed-width datatypes are
- * stored as is, but without any alignment padding. Variable-length
- * datatypes are *not* stored in the usual Postgres varlen format; the
- * following encoding is used instead:
- *
- * Each varlen datum begins with a one or two byte header, to store the
- * size. If the size of the datum, excluding the varlen header, is <=
- * 128, then a one byte header is used. Otherwise, the high bit of the
- * first byte is set, and two bytes are used to represent the size.
- * Two bytes is always enough, because if a datum is larger than a page,
- * it must be toasted.
- *
- * Traditional Postgres toasted datums should not be seen on-disk in
- * orvos. However, "orvos-toasted" datums, i.e. datums that have been
- * stored on separate toast blocks within orvos, are possible. They
- * are stored with magic 0xFF 0xFF as the two header bytes, followed by
- * the block number of the first toast block.
- *
- * 0xxxxxxx [up to 128 bytes of data follows]
- * 1xxxxxxx xxxxxxxx [data]
- * 11111111 11111111 toast pointer.
- *
- * XXX Heikki: I'm not sure if this special encoding makes sense. Perhaps
- * just storing normal Postgres varlenas would be better. Having a custom
- * encoding felt like a good idea, but I'm not sure we're actually gaining
- * anything. If we also did alignment padding, like the rest of Postgres
- * does, then we could avoid some memory copies when decoding the array.
- *
- * TODO: squeeze harder: eliminate padding, use high bits of t_tid for flags or size
+ * @param t_size          Total on-disk size of this item in bytes.
+ * @param t_flags         Bitmask: OVBT_ATTR_COMPRESSED, OVBT_HAS_NULLS.
+ * @param t_num_elements  Number of datums (tuples) in this item.
+ * @param t_num_codewords Number of Simple-8b codewords for TID deltas.
+ * @param t_firsttid      First TID in the range (inclusive).
+ * @param t_endtid        One past the last TID in the range (exclusive).
+ * @param t_tid_codewords Flexible array of Simple-8b encoded TID deltas.
  */
 typedef struct OVAttributeArrayItem
 {
@@ -165,6 +217,26 @@ typedef struct OVAttributeArrayItem
 	/* The Datum data follows */
 }			OVAttributeArrayItem;
 
+/**
+ * @brief Compressed attribute B-tree leaf page item.
+ *
+ * When the OVBT_ATTR_COMPRESSED flag is set in t_flags, the item uses this
+ * layout instead of OVAttributeArrayItem.  The TID codewords, null bitmap,
+ * and datum data are compressed together into t_payload using the
+ * build-time-selected algorithm (zstd > LZ4 > pglz).
+ *
+ * The buffer cache stores pages in compressed form; decompression is done
+ * on-the-fly in backend-private memory.
+ *
+ * @param t_size              Total on-disk size (compressed).
+ * @param t_flags             Must have OVBT_ATTR_COMPRESSED set.
+ * @param t_num_elements      Number of datums.
+ * @param t_num_codewords     Number of Simple-8b codewords (before compression).
+ * @param t_firsttid          First TID (inclusive).
+ * @param t_endtid            One past last TID (exclusive).
+ * @param t_uncompressed_size Size of the data before compression.
+ * @param t_payload           Compressed data (flexible array).
+ */
 typedef struct OVAttributeCompressedItem
 {
 	uint16		t_size;
@@ -183,10 +255,20 @@ typedef struct OVAttributeCompressedItem
 
 } OVAttributeCompressedItem;
 
-/*
- * The two structs above are stored on disk. OVExplodedItem is a third
- * representation of an array item that is only used in memory, when
- * repacking items on a page. It is distinguished by t_size == 0.
+/**
+ * @brief In-memory "exploded" representation of an attribute array item.
+ *
+ * Used during page repacking operations (splits, merges) when items need
+ * to be manipulated individually.  Distinguished from on-disk items by
+ * t_size == 0.
+ *
+ * @param t_size         Always 0 (sentinel to distinguish from on-disk items).
+ * @param t_flags        Same flag bits as OVAttributeArrayItem.
+ * @param t_num_elements Number of datums.
+ * @param tids           Expanded array of TIDs.
+ * @param nullbitmap     NULL bitmap (or NULL if no NULLs).
+ * @param datumdata      Raw packed datum bytes.
+ * @param datumdatasz    Size of datumdata in bytes.
  */
 typedef struct OVExplodedItem
 {
@@ -203,10 +285,77 @@ typedef struct OVExplodedItem
 	int			datumdatasz;
 }			OVExplodedItem;
 
+/** @brief Flag: this attribute item is compressed (use OVAttributeCompressedItem). */
 #define OVBT_ATTR_COMPRESSED		0x0001
+/** @brief Flag: this attribute item contains NULLs (a null bitmap follows the TID codewords). */
 #define OVBT_HAS_NULLS				0x0002
+/*
+ * When set, short varlena values (attlen == -1, attstorage != 'p') in this
+ * item are stored in PostgreSQL's native 1-byte short varlena format rather
+ * than the custom orvos length-prefix encoding. This allows the read path
+ * to return a direct pointer into the decompressed buffer without copying
+ * or reformatting the data, eliminating per-datum conversion overhead.
+ *
+ * Long varlenas (> 126 data bytes) and orvos toast pointers are still stored
+ * in the original orvos encoding even when this flag is set.
+ */
+#define OVBT_ATTR_FORMAT_NATIVE_VARLENA	0x0004
+#define OVBT_ATTR_FORMAT_FOR			0x0008	/* Frame of Reference encoding */
+#define OVBT_ATTR_BITPACKED				0x0010	/* boolean values bit-packed, 8 per byte */
+#define OVBT_ATTR_NO_NULLS				0x0020	/* no NULLs present, bitmap omitted entirely */
+#define OVBT_ATTR_SPARSE_NULLS			0x0040	/* sparse NULL encoding: (offset, count) pairs */
+#define OVBT_ATTR_RLE_NULLS				0x0080	/* RLE encoding for sequential NULL runs */
+#define OVBT_ATTR_FORMAT_DICT			0x0100	/* dictionary-encoded for low-cardinality columns */
+#define OVBT_ATTR_FORMAT_FIXED_BIN		0x0200	/* fixed-binary storage (e.g. UUID as 16 bytes) */
+#define OVBT_ATTR_FORMAT_FSST			0x0400	/* FSST string compression applied */
 
 #define OVBT_ATTR_BITMAPLEN(nelems)		(((int) (nelems) + 7) / 8)
+
+/*
+ * Sparse NULL entry: stores the byte offset into the datum data and the
+ * number of consecutive NULLs at that logical position.
+ */
+typedef struct OVSparseNullEntry
+{
+	uint16		sn_position;	/* element index where the NULL(s) start */
+	uint16		sn_count;		/* number of consecutive NULLs */
+} OVSparseNullEntry;
+
+/*
+ * RLE NULL entry: encodes runs of NULLs and non-NULLs.
+ * The high bit of rle_count indicates NULL (1) vs non-NULL (0).
+ * The remaining 15 bits store the run length.
+ */
+#define OVBT_RLE_NULL_FLAG		0x8000
+#define OVBT_RLE_COUNT_MASK		0x7FFF
+
+typedef struct OVRleNullEntry
+{
+	uint16		rle_count;		/* high bit = is_null, low 15 bits = run length */
+} OVRleNullEntry;
+
+/*
+ * Frame of Reference (FOR) encoding header.
+ *
+ * When OVBT_ATTR_FORMAT_FOR is set in t_flags, the datum data section begins
+ * with this header followed by bit-packed deltas.  Each non-null value is
+ * stored as (value - for_frame_min) using for_bits_per_value bits.  Deltas
+ * are packed into bytes LSB-first (little-endian bit order).
+ *
+ * FOR encoding is used only for pass-by-value fixed-width integer types
+ * (attlen 1, 2, 4, or 8 with attbyval true) when the range (max - min) can
+ * be represented in significantly fewer bits than the original width.
+ */
+typedef struct OVForHeader
+{
+	uint64		for_frame_min;		/* minimum value in the frame */
+	uint8		for_bits_per_value;	/* bits per delta (0..64) */
+	uint8		for_attlen;			/* original attribute length (1,2,4,8) */
+} OVForHeader;
+
+/* Packed byte size for n values at given bits-per-value */
+#define OVBT_FOR_PACKED_SIZE(nelems, bpv) \
+	(((uint64)(nelems) * (bpv) + 7) / 8)
 
 static inline void
 ovbt_attr_item_setnull(bits8 *nullbitmap, int n)
@@ -220,77 +369,43 @@ ovbt_attr_item_isnull(bits8 *nullbitmap, int n)
 	return (nullbitmap[n / 8] & (1 << (n % 8))) != 0;
 }
 
-/*
- * TID B-tree leaf page layout
+/**
+ * @brief TID B-tree leaf page item.
  *
- * Leaf pages are packed with OVTidArrayItems. Each OVTidArrayItem represents
- * a range of tuples, starting at 't_firsttid', up to 't_endtid' - 1. For each
- * tuple, we its TID and the UNDO pointer. The TIDs and UNDO pointers are specially
- * encoded, so that they take less space.
+ * Leaf pages in the TID tree are packed with OVTidArrayItems.  Each item
+ * represents a group of tuples in the TID range [t_firsttid, t_endtid).
+ * For each tuple, the item encodes both the TID (via Simple-8b delta
+ * encoding) and an UNDO slot number (2 bits per tuple).
  *
- * Item format:
+ * @par Physical Layout (variable-length)
+ * @code
+ *   Header  |  1-16 TID codewords | 0-2 UNDO pointers | UNDO slotwords
+ * @endcode
  *
- * We make use of some assumptions / observations on the TIDs and UNDO pointers
- * to pack them tightly:
+ * @par TID Encoding
+ * TID deltas (gaps between consecutive TIDs) are packed into 64-bit
+ * Simple-8b codewords.  The first encoded delta is always 0 (the
+ * absolute first TID is in t_firsttid).  For consecutive TIDs with
+ * no gaps, 60 TIDs fit per codeword (~1 bit/tuple).
  *
- * - TIDs are kept in ascending order, and the gap between two TIDs
- *   is usually very small. On a newly loaded table, all TIDs are
- *   consecutive.
+ * @par UNDO Slot Encoding
+ * There are logically 4 UNDO slots per item:
+ * - Slot 0 (OVBT_OLD_UNDO_SLOT): tuple visible to everyone (implicit).
+ * - Slot 1 (OVBT_DEAD_UNDO_SLOT): tuple is dead (implicit).
+ * - Slots 2-3: explicit OVUndoRecPtr values stored in the item.
  *
- * - It's common for the UNDO pointer to be old so that the tuple is
- *   visible to everyone. In that case we don't need to keep the exact value.
+ * Each tuple's 2-bit slot number is packed into 64-bit "slotwords"
+ * (32 slot numbers per word).  During scans, only the few distinct
+ * UNDO pointers in the slots need visibility checking, not every tuple.
  *
- * - Nearby TIDs are likely to have only a few distinct UNDO pointer values.
- *
- *
- * Each item looks like this:
- *
- *  Header  |  1-16 TID codewords | 0-2 UNDO pointers | UNDO "slotwords"
- *
- * The fixed-size header contains the start and end of the TID range that
- * this item represents, and information on how many UNDO slots and codewords
- * follow in the variable-size part.
- *
- * After the fixed-size header comes the list of TIDs. They are encoded in
- * Simple-8b codewords. Simple-8b is an encoding scheme to pack multiple
- * integers in 64-bit codewords. A single codeword can pack e.g. three 20-bit
- * integers, or 20 3-bit integers, or a number of different combinations.
- * Therefore, small integers pack more tightly than larger integers. We encode
- * the difference between each TID, so in the common case that there are few
- * gaps between the TIDs, we only need a few bits per tuple. The first encoded
- * integer is always 0, because the first TID is stored explicitly in
- * t_firsttid. (TODO: storing the first constant 0 is obviously a waste of
- * space. Also, since there cannot be duplicates, we could store "delta - 1",
- * which would allow a more tight representation in some cases.)
- *
- * After the TID codeword, are so called "UNDO slots". They represent all the
- * distinct UNDO pointers in the group of TIDs that this item covers.
- * Logically, there are 4 slots. Slots 0 and 1 are special, representing
- * all-visible "old" TIDs, and "dead" TIDs. They are not stored in the item
- * itself, to save space, but logically, they can be thought to be part of
- * every item. They are included in 't_num_undo_slots', so the number of UNDO
- * pointers physically stored on an item is actually 't_num_undo_slots - 2'.
- *
- * With the 4 UNDO slots, we can represent an UNDO pointer using a 2-bit
- * slot number. If you update a tuple with a new UNDO pointer, and all four
- * slots are already in use, the item needs to be split. Hopefully that doesn't
- * happen too often (see assumptions above).
- *
- * After the UNDO slots come "UNDO slotwords". The slotwords contain the slot
- * number of each tuple in the item. The slot numbers are packed in 64 bit
- * integers, with 2 bits for each tuple.
- *
- * Representing UNDO pointers as distinct slots also has the advantage that
- * when we're scanning the TID array, we can check the few UNDO pointers in
- * the slots against the current snapshot, and remember the visibility of
- * each slot, instead of checking every UNDO pointer separately. That
- * considerably speeds up visibility checks when reading. That's one
- * advantage of this special encoding scheme, compared to e.g. using a
- * general-purpose compression algorithm on an array of TIDs and UNDO pointers.
- *
- * The physical size of an item depends on how many tuples it covers, the
- * number of codewords needed to encode the TIDs, and many distinct UNDO
- * pointers they have.
+ * @param t_size            Total on-disk size of this item in bytes.
+ * @param t_num_tids        Number of TIDs encoded in this item.
+ * @param t_num_codewords   Number of Simple-8b codewords.
+ * @param t_num_undo_slots  Total UNDO slots (including 2 implicit ones).
+ * @param t_firsttid        First TID in range (inclusive).
+ * @param t_endtid          One past last TID (exclusive).
+ * @param t_payload         Flexible array: codewords, then UNDO slots,
+ *                          then slotwords.
  */
 typedef struct
 {
@@ -307,27 +422,34 @@ typedef struct
 
 } OVTidArrayItem;
 
-/*
- * We use 2 bits for the UNDO slot number for every tuple. We can therefore
- * fit 32 slot numbers in each 64-bit "slotword".
+/**
+ * @name UNDO Slot Constants
+ * @brief Parameters for the 2-bit UNDO slot encoding used in OVTidArrayItem.
+ * @{
  */
-#define OVBT_ITEM_UNDO_SLOT_BITS	2
-#define OVBT_MAX_ITEM_UNDO_SLOTS	(1 << (OVBT_ITEM_UNDO_SLOT_BITS))
-#define OVBT_ITEM_UNDO_SLOT_MASK	(OVBT_MAX_ITEM_UNDO_SLOTS - 1)
-#define OVBT_SLOTNOS_PER_WORD		(64 / OVBT_ITEM_UNDO_SLOT_BITS)
+#define OVBT_ITEM_UNDO_SLOT_BITS	2           /**< Bits per UNDO slot number. */
+#define OVBT_MAX_ITEM_UNDO_SLOTS	(1 << (OVBT_ITEM_UNDO_SLOT_BITS))  /**< Max 4 slots. */
+#define OVBT_ITEM_UNDO_SLOT_MASK	(OVBT_MAX_ITEM_UNDO_SLOTS - 1)     /**< 2-bit mask. */
+#define OVBT_SLOTNOS_PER_WORD		(64 / OVBT_ITEM_UNDO_SLOT_BITS)    /**< 32 slots per uint64. */
+/** @} */
 
-/*
- * To keep the item size and time needed to work with them reasonable,
- * limit the size of an item to max 16 codewords and 128 TIDs.
+/**
+ * @name TID Array Item Limits
+ * @brief Maximum sizes for OVTidArrayItem to keep item manipulation fast.
+ * @{
  */
-#define OVBT_MAX_ITEM_CODEWORDS		16
-#define OVBT_MAX_ITEM_TIDS			128
+#define OVBT_MAX_ITEM_CODEWORDS		16  /**< Max Simple-8b codewords per item. */
+#define OVBT_MAX_ITEM_TIDS			128 /**< Max TIDs per item. */
+/** @} */
 
+/** @brief Implicit slot: tuple is "old" and visible to everyone. */
 #define OVBT_OLD_UNDO_SLOT			0
+/** @brief Implicit slot: tuple is dead (not visible to anyone). */
 #define OVBT_DEAD_UNDO_SLOT			1
+/** @brief First physically-stored UNDO slot index. */
 #define OVBT_FIRST_NORMAL_UNDO_SLOT	2
 
-/* Number of UNDO slotwords needed for a given number of tuples */
+/** @brief Number of uint64 slotwords needed for @a num_tids tuples. */
 #define OVBT_NUM_SLOTWORDS(num_tids) ((num_tids + OVBT_SLOTNOS_PER_WORD - 1) / OVBT_SLOTNOS_PER_WORD)
 
 static inline size_t
@@ -362,23 +484,30 @@ OVTidArrayItemDecode(OVTidArrayItem *item, uint64 **codewords,
 	*slotwords = (uint64 *) p;
 }
 
-/*
- * Toast page layout.
+/**
+ * @brief Maximum size of a single untoasted datum in Orvos.
  *
- * When an overly large datum is stored, it is divided into chunks, and each
- * chunk is stored on a dedicated toast page. The toast pages of a datum form
- * list, each page has a next/prev pointer.
- */
-/*
- * Maximum size of an individual untoasted Datum stored in Orvos. Datums
- * larger than this need to be toasted.
- *
- * A datum needs to fit on a B-tree page, with page and item headers.
- *
- * XXX: 500 accounts for all the headers. Need to compute this correctly...
+ * Datums exceeding this size are "orvos-toasted": split into chunks and
+ * stored on dedicated toast pages within the same relation file.
+ * The threshold accounts for page header, item header, and opaque area.
  */
 #define		MaxOrvosDatumSize		(BLCKSZ - 500)
 
+/**
+ * @brief Opaque area for Orvos toast pages.
+ *
+ * Toast pages form a doubly-linked list per datum.  The first page in the
+ * chain stores the attribute number, owning TID, and total datum size.
+ * Subsequent pages store slice offsets.
+ *
+ * @param ov_attno        Attribute number of the toasted column.
+ * @param ov_tid          TID of the owning tuple (first page only).
+ * @param ov_total_size   Total uncompressed datum size (first page only).
+ * @param ov_slice_offset Byte offset of this chunk within the full datum.
+ * @param ov_prev         Previous toast page (InvalidBlockNumber if first).
+ * @param ov_next         Next toast page (InvalidBlockNumber if last).
+ * @param ov_page_id      Always OV_TOAST_PAGE_ID (0xF086).
+ */
 typedef struct OVToastPageOpaque
 {
 	AttrNumber	ov_attno;
@@ -396,14 +525,19 @@ typedef struct OVToastPageOpaque
 	uint16		ov_page_id;
 } OVToastPageOpaque;
 
-/*
- * "Toast pointer" of a datum that's stored in orvos toast pages.
+/**
+ * @brief In-tree toast pointer for oversized datums.
  *
- * This looks somewhat like a normal TOAST pointer, but we mustn't let these
- * escape out of orvos code, because the rest of the system doesn't know
- * how to deal with them.
+ * Stored in place of the actual datum in an attribute array item when the
+ * datum has been orvos-toasted.  Must be layout-compatible with
+ * varattrib_1b_e so that VARATT_IS_EXTERNAL() recognizes it.
  *
- * This must look like varattrib_1b_e!
+ * @warning These must never escape Orvos code; the rest of PostgreSQL
+ *          cannot dereference them.
+ *
+ * @param va_header  Standard 1-byte varlena header.
+ * @param va_tag     Always VARTAG_ORVOS (10).
+ * @param ovt_block  Block number of the first toast page.
  */
 typedef struct varatt_ov_toastptr
 {
@@ -421,9 +555,16 @@ typedef struct varatt_ov_toastptr
  */
 #define		VARTAG_ORVOS		10
 
-/*
- * Versions of datumGetSize and datumCopy that know about Orvos-toasted
- * datums.
+/**
+ * @brief Orvos-aware version of datumGetSize().
+ *
+ * Handles Orvos toast pointers (VARTAG_ORVOS) in addition to standard
+ * PostgreSQL datum types.
+ *
+ * @param value    The Datum to measure.
+ * @param typByVal Whether the type is pass-by-value.
+ * @param typLen   The type's declared length (-1 for varlena, -2 for cstring).
+ * @return Size of the datum in bytes.
  */
 static inline Size
 ov_datumGetSize(Datum value, bool typByVal, int typLen)
@@ -462,21 +603,32 @@ ov_datumCopy(Datum value, bool typByVal, int typLen)
 	return datumCopy(value, typByVal, typLen);
 }
 
-/*
- * Block 0 on every Orvos table is a metapage.
- *
- * It contains a directory of b-tree roots for each attribute, and lots more.
- */
+/** @brief Block number of the metapage (always 0). */
 #define OV_META_BLK		0
 
-/*
- * The metapage stores one of these for each attribute.
+/**
+ * @brief Entry in the metapage's B-tree root directory.
+ *
+ * The metapage stores one OVRootDirItem per attribute (including the TID
+ * tree at index 0).  Each entry points to the root page of the
+ * corresponding B-tree.
+ *
+ * @param root  Block number of the B-tree root page.
  */
 typedef struct OVRootDirItem
 {
 	BlockNumber root;
 } OVRootDirItem;
 
+/**
+ * @brief Metapage contents (stored in the page body area).
+ *
+ * Contains the number of attributes and a flexible array of root directory
+ * entries, one per attribute.  Index 0 is the TID tree root.
+ *
+ * @param nattributes   Number of B-trees (TID tree + user columns).
+ * @param tree_root_dir Array of root block pointers, indexed by attno.
+ */
 typedef struct OVMetaPage
 {
 	int			nattributes;
@@ -484,10 +636,19 @@ typedef struct OVMetaPage
 														 * attribute */
 } OVMetaPage;
 
-/*
- * it's not clear what we should store in the "opaque" special area, and what
- * as page contents, on a metapage. But have at least the page_id field here,
- * so that tools like pg_filedump can recognize it as a orvos metapage.
+/**
+ * @brief Metapage opaque area (stored in pd_special).
+ *
+ * Contains UNDO log head/tail pointers, the oldest live UNDO record,
+ * and the Free Page Map head.  The ov_page_id field allows tools like
+ * pg_filedump to identify the page type.
+ *
+ * @param ov_undo_head                Oldest UNDO log page.
+ * @param ov_undo_tail                Newest UNDO log page (insertion point).
+ * @param ov_undo_tail_first_counter  Counter of the first record on tail page.
+ * @param ov_undo_oldestptr           Oldest UNDO record still needed by any snapshot.
+ * @param ov_fpm_head                 Head of the Free Page Map linked list.
+ * @param ov_page_id                  Always OV_META_PAGE_ID (0xF083).
  */
 typedef struct OVMetaPageOpaque
 {
@@ -519,16 +680,28 @@ typedef struct OVMetaPageOpaque
 	uint16		ov_page_id;
 } OVMetaPageOpaque;
 
-/*
- * Codes populated by ov_SatisfiesNonVacuumable. This has minimum values
- * defined based on what's needed. Heap equivalent has more states.
+/**
+ * @brief Non-vacuumable status codes for Orvos visibility checks.
  */
 typedef enum
 {
-	OVNV_NONE,
-	OVNV_RECENTLY_DEAD			/* tuple is dead, but not deletable yet */
+	OVNV_NONE,                  /**< Tuple is vacuumable or live. */
+	OVNV_RECENTLY_DEAD          /**< Tuple is dead but not yet deletable. */
 } OVNV_Result;
 
+/**
+ * @brief Cached visibility information for an UNDO slot.
+ *
+ * During TID tree scans, the few distinct UNDO pointers in each item's
+ * slots are checked against the snapshot once, and the results are cached
+ * here.  This avoids per-tuple UNDO record lookups.
+ *
+ * @param xmin               Inserting transaction ID.
+ * @param xmax               Deleting/updating transaction ID.
+ * @param cmin               Command ID within xmin's transaction.
+ * @param speculativeToken   Token for speculative insertions (0 if none).
+ * @param nonvacuumable_status Whether the tuple is recently dead.
+ */
 typedef struct OVUndoSlotVisibility
 {
 	TransactionId xmin;
@@ -546,6 +719,12 @@ static const OVUndoSlotVisibility InvalidUndoSlotVisibility = {
 	.nonvacuumable_status = OVNV_NONE
 };
 
+/**
+ * @brief Iterator state for unpacking a single OVTidArrayItem.
+ *
+ * Holds the decoded TIDs, their UNDO slot assignments, and cached
+ * visibility for each slot.
+ */
 typedef struct OVTidItemIterator
 {
 	int			tids_allocated_size;
@@ -558,8 +737,23 @@ typedef struct OVTidItemIterator
 	OVUndoSlotVisibility undoslot_visibility[OVBT_MAX_ITEM_UNDO_SLOTS];
 } OVTidItemIterator;
 
-/*
- * Holds the state of an in-progress scan on a orvos Tid tree.
+/**
+ * @brief State for an in-progress scan on the TID tree.
+ *
+ * Created by ovbt_tid_begin_scan() and destroyed by ovbt_tid_end_scan().
+ * The scan walks TID tree leaf pages, decoding OVTidArrayItems and
+ * checking visibility against the provided snapshot.
+ *
+ * @param rel         The relation being scanned.
+ * @param context     Long-lived memory context for scan allocations.
+ * @param active      Whether the scan is currently positioned.
+ * @param lastbuf     Last buffer accessed (held with share lock during scan).
+ * @param snapshot    Visibility snapshot for tuple filtering.
+ * @param starttid    Lower bound of the TID range to scan (inclusive).
+ * @param endtid      Upper bound of the TID range to scan (exclusive).
+ * @param currtid     Last TID returned by ovbt_tid_scan_next().
+ * @param recent_oldest_undo  Oldest UNDO record still needed.
+ * @param serializable        Whether to acquire predicate locks.
  */
 typedef struct OVTidTreeScan
 {
@@ -602,11 +796,15 @@ typedef struct OVTidTreeScan
 	int			array_curr_idx;
 }			OVTidTreeScan;
 
-/*
- * This is convenience function to get the index aka slot number for undo and
- * visibility array. Important to note this performs "next_idx - 1" means
- * works after returning from TID scan function when the next_idx has been
- * incremented.
+/**
+ * @brief Get the UNDO slot number of the current TID in a TID tree scan.
+ *
+ * Must be called after ovbt_tid_scan_next() has returned a valid TID.
+ * The result indexes into scan->array_iter.undoslots[] and
+ * scan->array_iter.undoslot_visibility[].
+ *
+ * @param scan  Active TID tree scan.
+ * @return The 2-bit UNDO slot number (0-3) for the current TID.
  */
 static inline uint8
 OVTidScanCurUndoSlotNo(OVTidTreeScan * scan)
@@ -616,8 +814,25 @@ OVTidScanCurUndoSlotNo(OVTidTreeScan * scan)
 	return (scan->array_iter.tid_undoslotnos[scan->array_curr_idx]);
 }
 
-/*
- * Holds the state of an in-progress scan on a orvos attribute tree.
+/**
+ * @brief State for an in-progress scan on an Orvos attribute B-tree.
+ *
+ * Created by ovbt_attr_begin_scan() and destroyed by ovbt_attr_end_scan().
+ * The scan walks attribute tree leaf pages, decompressing and decoding
+ * OVAttributeArrayItem entries into arrays of Datums.
+ *
+ * @param rel      The relation being scanned.
+ * @param attno    Attribute number (1-based, matching pg_attribute).
+ * @param attdesc  Cached attribute descriptor from the tuple descriptor.
+ * @param context  Long-lived memory context for decompression buffers.
+ * @param active   Whether the scan is currently positioned.
+ * @param lastbuf  Last buffer accessed.
+ * @param array_datums      Decoded datum values for the current item.
+ * @param array_isnulls     NULL flags for the current item.
+ * @param array_tids        TIDs for the current item.
+ * @param array_num_elements Number of elements in the current decoded item.
+ * @param decompress_buf    Working buffer for page decompression.
+ * @param attr_buf          Working buffer for item extraction.
  */
 typedef struct OVAttrTreeScan
 {
@@ -658,39 +873,45 @@ typedef struct OVAttrTreeScan
 
 }			OVAttrTreeScan;
 
-/*
- * We keep a this cached copy of the information in the metapage in
- * backend-private memory. In RelationData->rd_amcache.
+/**
+ * @brief Backend-private cache of metapage information.
  *
- * The cache contains the block numbers of the roots of all the tree
- * structures, for quick searches, as well as the rightmost leaf page, for
- * quick insertions to the end.
+ * Stored in RelationData->rd_amcache.  Contains B-tree root block numbers
+ * and rightmost leaf pointers for fast lookups and end-of-tree insertions.
  *
- * Use ovmeta_get_cache() to get the cached struct.
+ * Validity is tied to smgr_targblock: the cache is invalidated whenever
+ * an smgr invalidation occurs (e.g., relation extension by another backend).
+ * Use ovmeta_get_cache() to access; it auto-populates on first use.
  *
- * This is used together with smgr_targblock. smgr_targblock tracks the
- * physical size of the relation file. This struct is only considered valid
- * when smgr_targblock is valid. So in effect, we invalidate this whenever
- * a smgr invalidation happens. Logically, the lifetime of this is the same
- * as smgr_targblocks/smgr_fsm_nblocks/smgr_vm_nblocks, but there's no way
- * to attach an AM-specific struct directly to SmgrRelation.
+ * @param cache_nattributes  Number of attributes (including TID tree).
+ * @param cache_attrs        Per-attribute root, rightmost leaf, and lokey.
  */
 typedef struct OVMetaCacheData
 {
 	int			cache_nattributes;
 
-	/* For each attribute */
+	/** @brief Per-attribute cache entry. */
 	struct
 	{
-		BlockNumber root;		/* root of the b-tree */
-		BlockNumber rightmost;	/* right most leaf page */
-		ovtid		rightmost_lokey;	/* lokey of rightmost leaf */
+		BlockNumber root;		/**< Root block of this attribute's B-tree. */
+		BlockNumber rightmost;	/**< Rightmost leaf page (for fast appends). */
+		ovtid		rightmost_lokey;	/**< Lokey of the rightmost leaf. */
 	}			cache_attrs[FLEXIBLE_ARRAY_MEMBER];
 
 } OVMetaCacheData;
 
+/**
+ * @brief Populate the metapage cache by reading block 0.
+ * @param rel  The Orvos relation.
+ * @return Pointer to the newly populated OVMetaCacheData.
+ */
 extern OVMetaCacheData *ovmeta_populate_cache(Relation rel);
 
+/**
+ * @brief Get the cached metapage data, populating it if necessary.
+ * @param rel  The Orvos relation.
+ * @return Pointer to the OVMetaCacheData in rel->rd_amcache.
+ */
 static inline OVMetaCacheData *
 ovmeta_get_cache(Relation rel)
 {
@@ -699,9 +920,12 @@ ovmeta_get_cache(Relation rel)
 	return (OVMetaCacheData *) rel->rd_amcache;
 }
 
-/*
- * Blow away the cached OVMetaCacheData struct. Next call to ovmeta_get_cache()
- * will reload it from the metapage.
+/**
+ * @brief Invalidate the cached metapage data.
+ *
+ * The next call to ovmeta_get_cache() will re-read the metapage.
+ *
+ * @param rel  The Orvos relation.
  */
 static inline void
 ovmeta_invalidate_cache(Relation rel)
@@ -713,13 +937,19 @@ ovmeta_invalidate_cache(Relation rel)
 	}
 }
 
-/*
- * ov_split_stack is used during page split, or page merge, to keep track
- * of all the modified pages. The page split (or merge) routines don't
- * modify pages directly, but they construct a list of 'ov_split_stack'
- * entries. Each entry holds a buffer, and a temporary in-memory copy of
- * a page that should be written to the buffer, once everything is completed.
- * All the buffers are exclusively-locked.
+/**
+ * @brief Linked list of pages modified during a B-tree page split or merge.
+ *
+ * Split/merge routines construct a list of ov_split_stack entries rather
+ * than modifying pages directly.  Each entry holds an exclusively-locked
+ * buffer and a temporary in-memory copy of the new page contents.  Once
+ * the entire operation is prepared, ov_apply_split_changes() writes all
+ * pages atomically with WAL protection.
+ *
+ * @param next     Next entry in the stack.
+ * @param buf      Exclusively-locked buffer.
+ * @param page     Temporary in-memory copy of the page to write.
+ * @param recycle  If true, add this page to the FPM after the operation.
  */
 typedef struct ov_split_stack ov_split_stack;
 

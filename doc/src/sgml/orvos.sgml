@@ -1,0 +1,310 @@
+<!-- doc/src/sgml/orvos.sgml -->
+
+<sect1 id="orvos" xreflabel="orvos">
+ <title>Orvos Columnar Storage</title>
+
+ <indexterm zone="orvos">
+  <primary>Orvos</primary>
+ </indexterm>
+
+ <para>
+  Orvos is a columnar (and optionally hybrid row-column) table access
+  method for <productname>PostgreSQL</productname>.  It stores each
+  column in a separate B-tree, with a dedicated TID tree for visibility
+  information.  This design reduces I/O for queries that access a subset
+  of columns and enables column-level compression.
+ </para>
+
+ <para>
+  To create a table using Orvos:
+<programlisting>
+CREATE TABLE t (id int, val text) USING orvos;
+</programlisting>
+ </para>
+
+ <sect2 id="orvos-guc" xreflabel="Orvos Configuration Parameters">
+  <title>Configuration Parameters</title>
+
+  <para>
+   Orvos provides several GUC (Grand Unified Configuration) parameters
+   that control its behavior.  All parameters use the
+   <literal>orvos.</literal> prefix and can be set per-session or in
+   <filename>postgresql.conf</filename>.
+  </para>
+
+  <variablelist>
+
+   <varlistentry id="guc-orvos-enable-opportunistic-stats"
+                 xreflabel="orvos.enable_opportunistic_stats">
+    <term>
+     <varname>orvos.enable_opportunistic_stats</varname> (<type>boolean</type>)
+    </term>
+    <indexterm>
+     <primary><varname>orvos.enable_opportunistic_stats</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      Enables or disables the collection of lightweight statistics
+      during normal DML operations (INSERT, DELETE) and sequential
+      scans.  When enabled, Orvos maintains per-relation tuple counts,
+      per-column null fractions, and compression ratios in a
+      backend-local hash table.  The planner consults these statistics
+      to produce better cost estimates between <command>ANALYZE</command>
+      runs.
+     </para>
+     <para>
+      Default: <literal>on</literal>.
+      Context: user (can be changed per-session).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-orvos-stats-sample-rate"
+                 xreflabel="orvos.stats_sample_rate">
+    <term>
+     <varname>orvos.stats_sample_rate</varname> (<type>integer</type>)
+    </term>
+    <indexterm>
+     <primary><varname>orvos.stats_sample_rate</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      Controls the sampling frequency during sequential scans for
+      collecting null fraction and compression statistics.  A value of
+      <replaceable>N</replaceable> means every <replaceable>N</replaceable>th
+      tuple is sampled.  Lower values increase accuracy but add CPU
+      overhead.
+     </para>
+     <para>
+      Range: 1&ndash;10000.
+      Default: <literal>100</literal>.
+      Context: user.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-orvos-stats-freshness-threshold"
+                 xreflabel="orvos.stats_freshness_threshold">
+    <term>
+     <varname>orvos.stats_freshness_threshold</varname> (<type>integer</type>)
+    </term>
+    <indexterm>
+     <primary><varname>orvos.stats_freshness_threshold</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      The number of seconds after which opportunistic statistics are
+      considered stale.  When the planner queries Orvos statistics,
+      entries older than this threshold are ignored in favor of the
+      values in <structname>pg_class</structname>.
+     </para>
+     <para>
+      Range: 1&ndash;86400 (1 second to 24 hours).
+      Default: <literal>3600</literal> (1 hour).
+      Context: user.
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </sect2>
+
+ <sect2 id="orvos-compression-config" xreflabel="Orvos Compression">
+  <title>Compression</title>
+
+  <para>
+   Orvos compresses attribute B-tree leaf pages using a compression
+   algorithm selected at build time.  The preference order is:
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     <application>zstd</application> &mdash; requires
+     <option>--with-zstd</option> at configure time.  Provides the best
+     balance of compression ratio and speed for columnar data.
+     Uses <literal>ZSTD_CLEVEL_DEFAULT</literal> (level 3).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <application>LZ4</application> &mdash; requires
+     <option>--with-lz4</option>.  Very fast with good compression
+     ratios.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <application>pglz</application> &mdash; built-in PostgreSQL
+     compression.  Used as a fallback when neither zstd nor LZ4 is
+     available.  Significantly slower than the alternatives.
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   Compression is applied transparently: the buffer cache stores
+   compressed blocks, and decompression occurs on-the-fly in
+   backend-private memory when pages are read.  Only attribute tree
+   leaf pages are compressed; TID tree pages and B-tree internal pages
+   are stored uncompressed.
+  </para>
+
+  <para>
+   A compressed page must fit within a single <literal>BLCKSZ</literal>
+   (default 8 kB) block.  If, after an insert or update, a page can no
+   longer be compressed below this limit, it is split.  Because Orvos
+   TIDs are logical rather than physical, tuples can be moved freely
+   between pages during a split without changing their TIDs.
+  </para>
+ </sect2>
+
+ <sect2 id="orvos-planner-integration" xreflabel="Orvos Planner Integration">
+  <title>Planner Integration</title>
+
+  <para>
+   Orvos installs planner hooks at module load time to inform the query
+   planner about columnar storage characteristics.  The hooks adjust
+   cost estimates based on:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Column selectivity</emphasis> &mdash; the fraction of
+     columns a query accesses.  Queries that read fewer columns benefit
+     from reduced I/O.  The threshold
+     <literal>ORVOS_MIN_COLUMN_SELECTIVITY</literal> (0.8) determines
+     when the columnar optimization applies.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Compression ratio</emphasis> &mdash; estimated or
+     measured ratio of uncompressed to compressed data size.  The
+     default estimate is 2.5x
+     (<literal>ORVOS_DEFAULT_COMPRESSION_RATIO</literal>).  After
+     <command>ANALYZE</command>, per-column compression statistics
+     from <structname>pg_statistic</structname> are used instead.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Decompression CPU cost</emphasis> &mdash; an additional
+     CPU factor (<literal>ORVOS_DECOMPRESSION_CPU_FACTOR</literal> =
+     0.3) added to account for decompression overhead.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Per-column compression statistics are stored in
+   <structname>pg_statistic</structname> using the custom stakind
+   <literal>STATISTIC_KIND_ORVOS_COMPRESSION</literal> (10001).  The
+   <structfield>stanumbers</structfield> array stores compression ratio,
+   null fraction, and average widths (compressed and uncompressed).
+  </para>
+ </sect2>
+
+ <sect2 id="orvos-delta-updates" xreflabel="Orvos Column-Delta Updates">
+  <title>Column-Delta Updates</title>
+
+  <para>
+   When an <command>UPDATE</command> modifies only a subset of columns,
+   Orvos uses a column-delta optimization: only the changed columns
+   are written to their attribute B-trees.  Unchanged columns are
+   fetched from the predecessor tuple version at read time.
+  </para>
+
+  <para>
+   This optimization creates a <literal>OVUNDO_TYPE_DELTA_INSERT</literal>
+   UNDO record that stores a bitmap of changed columns and the
+   predecessor TID.  It can reduce WAL volume by up to 80% for partial
+   updates on wide tables.
+  </para>
+ </sect2>
+
+ <sect2 id="orvos-inspection" xreflabel="Orvos Inspection Functions">
+  <title>Inspection Functions</title>
+
+  <para>
+   Orvos provides SQL-callable functions for examining page contents
+   and compression behavior:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><function>pg_ov_page_type(regclass, bigint)</function></term>
+    <listitem>
+     <para>
+      Returns the page type name (<literal>META</literal>,
+      <literal>BTREE</literal>, <literal>UNDO</literal>,
+      <literal>TOAST</literal>, <literal>FREE</literal>) for a given
+      block number.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>pg_ov_btree_pages(regclass)</function></term>
+    <listitem>
+     <para>
+      Returns a set of rows describing each B-tree page, including
+      attribute number, level, number of items, total size, and
+      uncompressed size.  Useful for calculating per-column compression
+      ratios.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Example: computing the overall compression ratio:
+<programlisting>
+SELECT sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+  FROM pg_ov_btree_pages('my_table');
+</programlisting>
+  </para>
+
+  <para>
+   Example: per-column compression ratios:
+<programlisting>
+SELECT attno, count(*) AS pages,
+       sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+  FROM pg_ov_btree_pages('my_table')
+ GROUP BY attno
+ ORDER BY attno;
+</programlisting>
+  </para>
+ </sect2>
+
+ <sect2 id="orvos-limitations" xreflabel="Orvos Limitations">
+  <title>Known Limitations</title>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     VACUUM uses a placeholder <structname>GlobalVisState</structname>
+     (optimization opportunity for future work).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Logical replication is not yet supported.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Hybrid row-column storage is not yet implemented; all columns
+     are stored in separate B-trees.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The compression algorithm is fixed at build time and cannot be
+     changed per-table or per-column.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+</sect1>

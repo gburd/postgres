@@ -1,6 +1,25 @@
-/*
- * orvos_undorec.h
- *		Declarations for different kinds of UNDO records in Orvos.
+/**
+ * @file orvos_undorec.h
+ * @brief UNDO record types and creation functions for Orvos.
+ *
+ * Defines the on-disk format of each UNDO record type (INSERT, DELETE,
+ * UPDATE, TUPLE_LOCK, DELTA_INSERT) and the "pending undo op" mechanism
+ * used to prepare UNDO records before entering a critical section.
+ *
+ * @par UNDO Record Types
+ * | Type | Constant                   | Purpose                                |
+ * |------|----------------------------|----------------------------------------|
+ * | 1    | OVUNDO_TYPE_INSERT         | Row insertion                          |
+ * | 2    | OVUNDO_TYPE_DELETE         | Row deletion (batched, up to 50 TIDs)  |
+ * | 3    | OVUNDO_TYPE_UPDATE         | Update (marks old tuple as updated)    |
+ * | 4    | OVUNDO_TYPE_TUPLE_LOCK     | SELECT FOR UPDATE/SHARE locking        |
+ * | 5    | OVUNDO_TYPE_DELTA_INSERT   | Partial-column INSERT (column-delta)   |
+ *
+ * @par Pending UNDO Operations
+ * UNDO records are not written directly during DML.  Instead,
+ * ovundo_create_for_*() prepares a ov_pending_undo_op, which is
+ * finalized by ovundo_finish_pending_op() after the B-tree modifications
+ * succeed.  This allows clean abort if the B-tree operation fails.
  *
  * Copyright (c) 2019, PostgreSQL Global Development Group
  *
@@ -10,6 +29,8 @@
 #ifndef ORVOS_UNDOREC_H
 #define ORVOS_UNDOREC_H
 
+#include "c.h"
+#include "access/transam.h"
 #include "access/orvos_tid.h"
 #include "nodes/lockoptions.h"
 #include "storage/buf.h"

@@ -1,0 +1,170 @@
+--
+-- Tests for boolean bit-packing compression in Orvos tables
+--
+-- Boolean columns are stored as 1 bit per value (8x compression vs 1 byte).
+-- The OVBT_ATTR_BITPACKED flag triggers this encoding.
+--
+-- Basic boolean column
+CREATE TABLE t_bool_basic(id int, flag bool) USING orvos;
+INSERT INTO t_bool_basic SELECT i, (i % 2 = 0) FROM generate_series(1, 100) i;
+SELECT count(*) FROM t_bool_basic WHERE flag = true;
+ count
+-------
+    50
+(1 row)
+
+SELECT count(*) FROM t_bool_basic WHERE flag = false;
+ count
+-------
+    50
+(1 row)
+
+SELECT id, flag FROM t_bool_basic WHERE id <= 5 ORDER BY id;
+ id | flag
+----+------
+  1 | f
+  2 | t
+  3 | f
+  4 | t
+  5 | f
+(5 rows)
+
+DROP TABLE t_bool_basic;
+-- Wide table with many boolean columns (tests multiple bit-packed items)
+CREATE TABLE t_bool_wide(
+    id int,
+    b1 bool, b2 bool, b3 bool, b4 bool, b5 bool,
+    b6 bool, b7 bool, b8 bool, b9 bool, b10 bool,
+    b11 bool, b12 bool, b13 bool, b14 bool, b15 bool,
+    b16 bool, b17 bool, b18 bool, b19 bool, b20 bool
+) USING orvos;
+INSERT INTO t_bool_wide
+SELECT i,
+    (i % 2 = 0), (i % 3 = 0), (i % 5 = 0), (i % 7 = 0), (i % 11 = 0),
+    (i % 13 = 0), (i % 17 = 0), (i % 19 = 0), (i % 23 = 0), (i % 29 = 0),
+    (i % 31 = 0), (i % 37 = 0), (i % 41 = 0), (i % 43 = 0), (i % 47 = 0),
+    (i % 53 = 0), (i % 59 = 0), (i % 61 = 0), (i % 67 = 0), (i % 71 = 0)
+FROM generate_series(1, 500) i;
+-- Verify all columns read back correctly
+SELECT count(*) FROM t_bool_wide WHERE b1 = true;
+ count
+-------
+   250
+(1 row)
+
+SELECT count(*) FROM t_bool_wide WHERE b5 = true;
+ count
+-------
+    45
+(1 row)
+
+SELECT count(*) FROM t_bool_wide WHERE b10 = true;
+ count
+-------
+    17
+(1 row)
+
+SELECT count(*) FROM t_bool_wide WHERE b20 = true;
+ count
+-------
+     7
+(1 row)
+
+-- Check specific rows
+SELECT id, b1, b2, b3, b10, b20 FROM t_bool_wide WHERE id IN (1, 2, 6, 30, 71) ORDER BY id;
+ id | b1 | b2 | b3 | b10 | b20
+----+----+----+----+-----+-----
+  1 | f  | f  | f  | f   | f
+  2 | t  | f  | f  | f   | f
+  6 | t  | t  | f  | f   | f
+ 30 | t  | t  | t  | f   | f
+ 71 | f  | f  | f  | f   | t
+(5 rows)
+
+-- All-true and all-false edge cases
+CREATE TABLE t_bool_edge(id int, all_true bool, all_false bool) USING orvos;
+INSERT INTO t_bool_edge SELECT i, true, false FROM generate_series(1, 200) i;
+SELECT count(*) FROM t_bool_edge WHERE all_true = true;
+ count
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM t_bool_edge WHERE all_false = false;
+ count
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM t_bool_edge WHERE all_true = false;
+ count
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM t_bool_edge WHERE all_false = true;
+ count
+-------
+     0
+(1 row)
+
+DROP TABLE t_bool_edge;
+-- Boolean with NULLs
+CREATE TABLE t_bool_nulls(id int, flag bool) USING orvos;
+INSERT INTO t_bool_nulls SELECT i,
+    CASE WHEN i % 10 = 0 THEN NULL
+         WHEN i % 2 = 0 THEN true
+         ELSE false END
+FROM generate_series(1, 100) i;
+SELECT count(*) FROM t_bool_nulls WHERE flag IS NULL;
+ count
+-------
+    10
+(1 row)
+
+SELECT count(*) FROM t_bool_nulls WHERE flag = true;
+ count
+-------
+    40
+(1 row)
+
+SELECT count(*) FROM t_bool_nulls WHERE flag = false;
+ count
+-------
+    50
+(1 row)
+
+SELECT id, flag FROM t_bool_nulls WHERE id BETWEEN 8 AND 12 ORDER BY id;
+ id | flag
+----+------
+  8 | t
+  9 | f
+ 10 |
+ 11 | f
+ 12 | t
+(5 rows)
+
+DROP TABLE t_bool_nulls;
+-- Update boolean values
+CREATE TABLE t_bool_update(id int, flag bool) USING orvos;
+INSERT INTO t_bool_update SELECT i, (i % 2 = 0) FROM generate_series(1, 50) i;
+UPDATE t_bool_update SET flag = NOT flag WHERE id <= 10;
+SELECT id, flag FROM t_bool_update WHERE id <= 12 ORDER BY id;
+ id | flag
+----+------
+  1 | t
+  2 | f
+  3 | t
+  4 | f
+  5 | t
+  6 | f
+  7 | t
+  8 | f
+  9 | t
+ 10 | f
+ 11 | f
+ 12 | t
+(12 rows)
+
+DROP TABLE t_bool_update;
+DROP TABLE t_bool_wide;

@@ -1,6 +1,24 @@
-/*
- * orvos_wal.h
- *		internal declarations for Orvos wal logging
+/**
+ * @file orvos_wal.h
+ * @brief WAL (Write-Ahead Log) record definitions for Orvos.
+ *
+ * Defines the WAL record type codes and payload structures for all
+ * Orvos WAL operations: metapage initialization, UNDO log management,
+ * B-tree leaf modifications, page splits/rewrites, toast pages, and
+ * Free Page Map updates.
+ *
+ * @par WAL Record Types
+ * | Code | Constant                            | Description                    |
+ * |------|-------------------------------------|--------------------------------|
+ * | 0x00 | WAL_ORVOS_INIT_METAPAGE             | Initialize metapage            |
+ * | 0x10 | WAL_ORVOS_UNDO_NEWPAGE              | Extend UNDO log with new page  |
+ * | 0x20 | WAL_ORVOS_UNDO_DISCARD              | Discard old UNDO records       |
+ * | 0x30 | WAL_ORVOS_BTREE_NEW_ROOT            | Create new B-tree root         |
+ * | 0x40 | WAL_ORVOS_BTREE_ADD_LEAF_ITEMS      | Add items to B-tree leaf       |
+ * | 0x50 | WAL_ORVOS_BTREE_REPLACE_LEAF_ITEM   | Replace item on B-tree leaf    |
+ * | 0x60 | WAL_ORVOS_BTREE_REWRITE_PAGES       | Page split/rewrite             |
+ * | 0x70 | WAL_ORVOS_TOAST_NEWPAGE             | Add toast page                 |
+ * | 0x80 | WAL_ORVOS_FPM_DELETE                | Add page to Free Page Map      |
  *
  * Copyright (c) 2019, PostgreSQL Global Development Group
  *
@@ -10,6 +28,7 @@
 #ifndef ORVOS_WAL_H
 #define ORVOS_WAL_H
 
+#include "c.h"
 #include "access/attnum.h"
 #include "access/xlogreader.h"
 #include "access/orvos_tid.h"

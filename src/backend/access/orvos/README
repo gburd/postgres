@@ -378,3 +378,172 @@ page.
 
 Orvos isn't block-based, so page-level locks really just mean a
 range of TIDs. They're only used to aggregate tuple locks.
+
+
+Performance Tuning Guide
+========================
+
+When to Use Orvos
+------------------
+
+Orvos is best suited for workloads with the following characteristics:
+
+* Analytical queries that read a small subset of columns from wide
+  tables.  Orvos stores each column in a separate B-tree, so queries
+  that access only a few columns read correspondingly less data.
+
+* Tables with high compression potential.  Columnar storage groups
+  values of the same type together, enabling better compression ratios
+  (typically 2-5x with zstd, depending on data characteristics).
+
+* Read-heavy workloads with infrequent updates.  While Orvos supports
+  full MVCC including updates and deletes, its update path is more
+  expensive than heap because modified columns must be written to their
+  individual B-trees.
+
+* Tables where TOAST overhead is significant.  Orvos eliminates the
+  need for separate TOAST tables; large values are stored in toast pages
+  within the same physical file.
+
+Orvos is less suitable for:
+
+* OLTP workloads with frequent single-row updates that touch many
+  columns.
+
+* Tables where nearly all columns are always read (row-oriented access
+  patterns).
+
+* Workloads that depend on HOT updates (Heap-Only Tuples), which are
+  not applicable to Orvos's columnar structure.
+
+
+Compression Tuning
+------------------
+
+Orvos compresses attribute B-tree leaf pages using one of three
+algorithms, selected at PostgreSQL build time:
+
+  1. zstd (--with-zstd) -- best compression ratio and speed. This is
+     the recommended choice.  Uses ZSTD_CLEVEL_DEFAULT (level 3) for a
+     good balance of speed and compression.
+
+  2. LZ4 (--with-lz4) -- very fast compression with good ratios.
+     Preferred over pglz when zstd is not available.
+
+  3. pglz (built-in) -- fallback when neither zstd nor LZ4 is
+     available.  Significantly slower.
+
+To check which compression algorithm is active, build PostgreSQL with
+--with-zstd (or --with-lz4) and verify via pg_config.
+
+The compression ratio depends on data characteristics:
+
+  * Columns with many repeated values compress well (integer IDs,
+    status codes, booleans).
+  * Columns with high cardinality or already-compressed data (e.g.,
+    encrypted columns) show minimal compression benefit.
+  * NULL-heavy columns compress efficiently because NULLs are stored
+    as a compact bitmap rather than occupying datum space.
+
+Use the inspection function pg_ov_btree_pages() to measure actual
+compression ratios per column:
+
+  SELECT attno, count(*) AS pages,
+         sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+    FROM pg_ov_btree_pages('my_table')
+   GROUP BY attno ORDER BY attno;
+
+
+GUC Parameters
+--------------
+
+orvos.enable_opportunistic_stats (boolean, default: on)
+
+  Controls whether Orvos collects lightweight statistics during normal
+  DML and scan operations.  These statistics feed the planner with
+  fresh tuple counts and null fractions between ANALYZE runs.  Disable
+  this if the overhead of per-tuple sampling is unacceptable.
+
+orvos.stats_sample_rate (integer, default: 100)
+
+  During sequential scans, every Nth tuple is sampled to update null
+  fractions and compression statistics.  Lower values increase accuracy
+  but add CPU overhead.  Range: 1-10000.
+
+orvos.stats_freshness_threshold (integer, default: 3600)
+
+  Number of seconds after which opportunistic statistics are considered
+  stale.  The planner ignores entries older than this threshold.
+  Range: 1-86400.
+
+
+Monitoring
+----------
+
+Key metrics to monitor for Orvos tables:
+
+1. Compression ratios: Use pg_ov_btree_pages() as shown above.
+   Low compression ratios (near 1.0) on specific columns may indicate
+   that those columns are poor candidates for columnar storage, or that
+   the data is not compressible (e.g., UUIDs, encrypted data).
+
+2. Page type distribution: Shows the breakdown of pages by type
+   (META, BTREE, UNDO, TOAST, FREE):
+
+     SELECT count(*), pg_ov_page_type('my_table', g)
+       FROM generate_series(0,
+            pg_table_size('my_table') / 8192 - 1) g
+      GROUP BY 2;
+
+3. UNDO log size: A growing UNDO log may indicate long-running
+   transactions preventing UNDO cleanup.  The UNDO log is trimmed
+   opportunistically during DML operations when no active snapshots
+   reference old records.
+
+4. Dead tuple ratio: Run VACUUM or check pg_stat_user_tables for
+   n_dead_tup estimates.  Orvos VACUUM only needs to scan the TID
+   tree (not attribute trees), making it faster than heap VACUUM for
+   wide tables.
+
+5. Column projection effectiveness: Use EXPLAIN to verify that
+   Orvos is reading only the columns needed for a query.  The
+   planner should show reduced cost estimates when accessing a
+   subset of columns.
+
+
+VACUUM Considerations
+---------------------
+
+VACUUM on Orvos tables differs from heap tables:
+
+* Only the TID tree is scanned to identify dead tuples.  Attribute
+  trees are not scanned during VACUUM, making it faster for wide
+  tables.
+
+* Dead TIDs are collected from the TID tree using
+  ovbt_collect_dead_tids(), then removed from all B-trees using
+  ovbt_tid_remove() and ovbt_attr_remove().
+
+* UNDO log entries older than the oldest active snapshot are
+  trimmed opportunistically.
+
+* The Free Page Map recycles pages in LIFO order.  After heavy
+  DELETE activity, space is reused for subsequent inserts.
+
+
+Column-Delta UPDATE Optimization
+---------------------------------
+
+When updating a subset of columns on a wide table, Orvos uses a
+column-delta optimization: only the changed columns are written to
+their attribute B-trees.  Unchanged column values are fetched from
+the predecessor tuple version at read time.
+
+This can reduce WAL volume by up to 80% for partial updates on
+tables with many columns.  The optimization is applied automatically
+when the executor detects that not all columns were modified.
+
+The UNDO record for a delta update (OVUNDO_TYPE_DELTA_INSERT)
+stores a bitmap of changed columns and a pointer to the predecessor
+TID, so the storage engine knows which columns to fetch from which
+tuple version.
