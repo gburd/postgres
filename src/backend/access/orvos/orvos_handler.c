@@ -3032,11 +3032,33 @@ ov_cluster_write_tuple(Relation NewHeap,
  * given tuple in the old table. Returns the tid of the tuple in the
  * new table, or InvalidOVTid if this tuple can be left out completely.
  */
+/*
+ * Entry in the hash table that maps old TIDs to new TIDs during CLUSTER.
+ */
+typedef struct OVClusterTidMapEntry
+{
+	ovtid		old_tid;		/* hash key */
+	ovtid		new_tid;
+} OVClusterTidMapEntry;
+
+/*
+ * Deferred UPDATE chain fixup entry.
+ */
+typedef struct OVClusterDeferredUpdate
+{
+	ovtid		new_old_tid;		/* TID of old version in new table */
+	ovtid		old_update_newtid;	/* TID of new version in old table */
+	TransactionId xmax;
+	CommandId	cmax;
+	bool		key_update;
+} OVClusterDeferredUpdate;
+
 static ovtid
 ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 						 ovtid oldtid, OVUndoRecPtr old_undoptr,
 						 OVUndoRecPtr recent_oldest_undo,
-						 TransactionId OldestXmin)
+						 TransactionId OldestXmin,
+						 List **deferred_updates)
 {
 	TransactionId this_xmin;
 	CommandId	this_cmin;
@@ -3046,6 +3068,7 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 	bool		this_was_update;
 	ovtid		this_update_newtid;
 	bool		this_key_update;
+	ovtid		newtid;
 
 	(void) oldtid;
 
@@ -3059,8 +3082,36 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 									 &this_key_update))
 		return InvalidOVTid;
 
-	return ov_cluster_write_tuple(NewHeap, this_xmin, this_cmin,
-								 this_xmax, this_cmax, this_changedPart);
+	if (this_was_update && this_xmax != InvalidTransactionId)
+	{
+		/*
+		 * Tuple was UPDATEd. Insert without xmax; we'll create the UPDATE
+		 * UNDO record later once the new version's TID in the new table
+		 * is known.
+		 */
+		newtid = ov_cluster_write_tuple(NewHeap, this_xmin, this_cmin,
+										InvalidTransactionId, InvalidCommandId,
+										false);
+
+		{
+			OVClusterDeferredUpdate *fixup = palloc(sizeof(OVClusterDeferredUpdate));
+
+			fixup->new_old_tid = newtid;
+			fixup->old_update_newtid = this_update_newtid;
+			fixup->xmax = this_xmax;
+			fixup->cmax = this_cmax;
+			fixup->key_update = this_key_update;
+			*deferred_updates = lappend(*deferred_updates, fixup);
+		}
+	}
+	else
+	{
+		newtid = ov_cluster_write_tuple(NewHeap, this_xmin, this_cmin,
+										this_xmax, this_cmax,
+										this_changedPart);
+	}
+
+	return newtid;
 }
 
 /*
@@ -3248,6 +3299,7 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	int			attno;
 	IndexScanDesc indexScan;
 	Tuplesortstate *tuplesort;
+	List	   *deferred_updates = NIL;
 
 	(void) xid_cutoff;
 	(void) multi_cutoff;
@@ -3409,7 +3461,8 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 			new_tid = ov_cluster_process_tuple(OldHeap, NewHeap,
 											   old_tid, old_undoptr,
 											   recent_oldest_undo,
-											   OldestXmin);
+											   OldestXmin,
+											   &deferred_updates);
 			if (new_tid != InvalidOVTid)
 			{
 				/* Fetch the attributes and write them out */
@@ -3485,6 +3538,14 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 		tuplesort_end(tuplesort);
 	}
+
+	/*
+	 * TODO: Process deferred_updates list here. These are tuples that were
+	 * UPDATEd and need their UPDATE chain UNDO records created now that both
+	 * old and new TIDs in the new table are known. See Task #12 (Fix CLUSTER
+	 * breaking UPDATE chains) in FUTURE_WORK_ROADMAP.md.
+	 */
+	(void) deferred_updates;	/* silence unused variable warning */
 
 	ovbt_tid_end_scan(&tid_scan);
 	for (attno = 1; attno <= olddesc->natts; attno++)
