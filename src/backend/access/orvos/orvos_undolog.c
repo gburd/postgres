@@ -98,11 +98,16 @@ retry_lock_tail:
 		 * Release the lock on the metapage while we find a new block, because
 		 * that could take a while. (And accessing the Free Page Map might
 		 * lock the metapage, too, causing self-deadlock.)
+		 *
+		 * Pass InvalidBuffer to ovpage_getnewbuf so it acquires its own
+		 * exclusive lock on the metapage internally. We cannot pass our
+		 * unlocked metabuf -- ovpage_getnewbuf assumes a non-Invalid metabuf
+		 * is already locked.
 		 */
 		LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 
 		/* new page */
-		newbuf = ovpage_getnewbuf(rel, metabuf);
+		newbuf = ovpage_getnewbuf(rel, InvalidBuffer);
 
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		if (metaopaque->ov_undo_tail != tail_blk)
@@ -115,10 +120,15 @@ retry_lock_tail:
 				elog(ERROR, "UNDO tail block pointer was changed unexpectedly");
 
 			/*
-			 * we don't need the new page, after all. (Or maybe we do, if the
-			 * new tail block is already full, but we're not smart about it.)
+			 * We don't need the new page, after all. Release our exclusive
+			 * metabuf lock before calling ovpage_delete_page, which acquires
+			 * its own metabuf lock internally.
 			 */
+			LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 			ovpage_delete_page(rel, newbuf);
+
+			/* Re-lock metabuf shared for the retry loop */
+			LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 			goto retry_lock_tail;
 		}
 
