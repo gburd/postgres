@@ -14,6 +14,7 @@
 #include "access/xact.h"
 #include "access/orvos_internal.h"
 #include "access/orvos_undorec.h"
+#include "port/pg_lfind.h"
 #include "storage/procarray.h"
 
 static bool
@@ -37,6 +38,52 @@ ov_tuplelock_compatible(LockTupleMode mode, LockTupleMode newmode)
 
 		default:
 			elog(ERROR, "unknown tuple lock mode %d", newmode);
+	}
+}
+
+/*
+ * Walk the UNDO chain from the given pointer to find the INSERT record,
+ * and check whether the inserting transaction committed.
+ *
+ * Returns true if the INSERT is "old" (before recent_oldest_undo) or if
+ * the inserting transaction committed.  Returns false if the inserting
+ * transaction aborted or is still in progress.
+ *
+ * This is used to avoid waiting on tuple locks when the inserting
+ * transaction has already aborted (the tuple never really existed).
+ */
+static bool
+ov_insert_is_committed(Relation rel, OVUndoRecPtr undo_ptr,
+					   OVUndoRecPtr recent_oldest_undo)
+{
+	OVUndoRec  *undorec;
+
+	for (;;)
+	{
+		if (undo_ptr.counter < recent_oldest_undo.counter)
+			return true;		/* old enough to be visible */
+
+		undorec = ovundo_fetch_record(rel, undo_ptr);
+		if (!undorec)
+		{
+			recent_oldest_undo = ovundo_get_oldest_undo_ptr(rel);
+			if (undo_ptr.counter >= recent_oldest_undo.counter)
+				elog(ERROR, "could not find UNDO record " UINT64_FORMAT " at blk %u offset %u",
+					 undo_ptr.counter, undo_ptr.blkno, undo_ptr.offset);
+			return true;		/* concurrent trim, assume visible */
+		}
+
+		if (OVUNDO_TYPE_IS_INSERT(undorec->type))
+		{
+			if (TransactionIdIsCurrentTransactionId(undorec->xid))
+				return true;
+			if (TransactionIdIsInProgress(undorec->xid))
+				return false;
+			return TransactionIdDidCommit(undorec->xid);
+		}
+
+		/* Skip TUPLE_LOCK, DELETE, UPDATE records to reach the INSERT */
+		undo_ptr = undorec->prevundorec;
 	}
 }
 
@@ -183,17 +230,12 @@ retry_fetch:
 			return TM_Invisible;
 		}
 
-		/* The tuple is visible to use. But can we lock it? */
-
 		/*
-		 * No conflict with this lock. Look at the previous UNDO record, there
-		 * might be more locks.
-		 *
-		 * FIXME: Shouldn't we drill down to the INSERT record and check if
-		 * that's visible to us first, before looking at the lockers?
+		 * The inserting transaction committed (or is ours). The tuple is
+		 * visible. Return TM_Ok -- we don't need to check further records
+		 * in the chain beyond the INSERT.
 		 */
-		undo_ptr = undorec->prevundorec;
-		goto fetch_undo_record;
+		return TM_Ok;
 	}
 	else if (undorec->type == OVUNDO_TYPE_TUPLE_LOCK)
 	{
@@ -218,6 +260,14 @@ retry_fetch:
 		else if (!ov_tuplelock_compatible(lock_undorec->lockmode, mode) &&
 				 TransactionIdIsInProgress(undorec->xid))
 		{
+			/*
+			 * Before waiting on a conflicting lock, check if the tuple's
+			 * inserting transaction actually committed. If it aborted, the
+			 * tuple never really existed and we should not wait.
+			 */
+			if (!ov_insert_is_committed(rel, undorec->prevundorec, recent_oldest_undo))
+				return TM_Invisible;
+
 			tmfd->ctid = ItemPointerFromOVTid(item_tid);
 			tmfd->xmax = undorec->xid;
 			tmfd->cmax = InvalidCommandId;
@@ -230,11 +280,9 @@ retry_fetch:
 		}
 
 		/*
-		 * No conflict with this lock. Look at the previous UNDO record, there
-		 * might be more locks.
-		 *
-		 * FIXME: Shouldn't we drill down to the INSERT record and check if
-		 * that's visible to us first, before looking at the lockers?
+		 * No conflict with this lock. Look at the previous UNDO record,
+		 * there might be more locks, or we will reach the INSERT record
+		 * to verify visibility.
 		 */
 		undo_ptr = undorec->prevundorec;
 		goto fetch_undo_record;
@@ -880,6 +928,217 @@ fetch_undo_record:
 }
 
 /*
+ * Like HeapTupleSatisfiesToast.
+ *
+ * In Orvos, TOAST data is stored internally in toast pages within the same
+ * relation, not in a separate TOAST table. The semantics of SnapshotToast
+ * are: if you can see the main table row that references the TOAST data,
+ * you should be able to see the TOASTed value. The only exception is tuples
+ * from aborted transactions (including speculative insertions).
+ *
+ * This is essentially the same as SnapshotAny, but we skip tuples whose
+ * inserting transaction aborted.
+ */
+static bool
+ov_SatisfiesToast(OVTidTreeScan *scan, OVUndoRecPtr item_undoptr,
+				  OVUndoSlotVisibility *visi_info)
+{
+	Relation	rel = scan->rel;
+	OVUndoRecPtr undo_ptr;
+	OVUndoRec  *undorec;
+
+	undo_ptr = item_undoptr;
+
+fetch_undo_record:
+	/* If this record is "old", then the record is visible. */
+	if (undo_ptr.counter < scan->recent_oldest_undo.counter)
+	{
+		visi_info->xmin = FrozenTransactionId;
+		visi_info->cmin = InvalidCommandId;
+		return true;
+	}
+
+	/* have to fetch the UNDO record */
+	undorec = ovundo_fetch_record(rel, undo_ptr);
+	if (!undorec)
+	{
+		scan->recent_oldest_undo = ovundo_get_oldest_undo_ptr(rel);
+		if (undo_ptr.counter >= scan->recent_oldest_undo.counter)
+			elog(ERROR, "could not find UNDO record " UINT64_FORMAT " at blk %u offset %u",
+				 undo_ptr.counter, undo_ptr.blkno, undo_ptr.offset);
+		goto fetch_undo_record;
+	}
+
+	if (OVUNDO_TYPE_IS_INSERT(undorec->type))
+	{
+		visi_info->xmin = undorec->xid;
+		visi_info->cmin = undorec->cid;
+
+		/*
+		 * Reject tuples from aborted transactions. An invalid xid can be left
+		 * behind by a speculative insertion that was canceled.
+		 */
+		if (!TransactionIdIsValid(undorec->xid))
+			return false;
+		if (!TransactionIdIsCurrentTransactionId(undorec->xid) &&
+			!TransactionIdIsInProgress(undorec->xid) &&
+			!TransactionIdDidCommit(undorec->xid))
+			return false;
+
+		return true;
+	}
+	else if (undorec->type == OVUNDO_TYPE_DELETE ||
+			 undorec->type == OVUNDO_TYPE_UPDATE ||
+			 undorec->type == OVUNDO_TYPE_TUPLE_LOCK)
+	{
+		undo_ptr = undorec->prevundorec;
+		goto fetch_undo_record;
+	}
+	else
+		elog(ERROR, "unexpected UNDO record type: %d", undorec->type);
+
+	return true;				/* keep compiler quiet */
+}
+
+/*
+ * Like HeapTupleSatisfiesHistoricMVCC.
+ *
+ * Used for logical decoding. Only usable on catalog tables. In Orvos, this
+ * is unlikely to be called since Orvos tables are not catalog tables.
+ * However, we provide a correct implementation for completeness.
+ *
+ * The historic MVCC snapshot uses xid arrays (xip for committed xids,
+ * subxip for our own transaction's sub-xids) instead of the normal
+ * snapshot mechanism.
+ */
+static bool
+ov_SatisfiesHistoricMVCC(OVTidTreeScan *scan, OVUndoRecPtr item_undoptr,
+						 OVUndoSlotVisibility *visi_info)
+{
+	Relation	rel = scan->rel;
+	Snapshot	snapshot = scan->snapshot;
+	OVUndoRecPtr undo_ptr;
+	OVUndoRec  *undorec;
+	TransactionId xmin = InvalidTransactionId;
+	CommandId	cmin = InvalidCommandId;
+	TransactionId xmax = InvalidTransactionId;
+	CommandId	cmax = InvalidCommandId;
+
+	undo_ptr = item_undoptr;
+
+fetch_undo_record:
+	/* If this record is "old", the tuple is visible to everyone. */
+	if (undo_ptr.counter < scan->recent_oldest_undo.counter)
+	{
+		visi_info->xmin = FrozenTransactionId;
+		visi_info->cmin = InvalidCommandId;
+		return true;
+	}
+
+	/* have to fetch the UNDO record */
+	undorec = ovundo_fetch_record(rel, undo_ptr);
+	if (!undorec)
+	{
+		scan->recent_oldest_undo = ovundo_get_oldest_undo_ptr(rel);
+		if (undo_ptr.counter >= scan->recent_oldest_undo.counter)
+			elog(ERROR, "could not find UNDO record " UINT64_FORMAT " at blk %u offset %u",
+				 undo_ptr.counter, undo_ptr.blkno, undo_ptr.offset);
+		goto fetch_undo_record;
+	}
+
+	if (OVUNDO_TYPE_IS_INSERT(undorec->type))
+	{
+		xmin = undorec->xid;
+		cmin = undorec->cid;
+		visi_info->xmin = xmin;
+		visi_info->cmin = cmin;
+
+		/* Check xmin visibility using historic snapshot rules */
+		if (pg_lfind32(xmin, snapshot->subxip, snapshot->subxcnt))
+		{
+			/* One of our own sub-transaction's xids */
+			if (cmin >= snapshot->curcid)
+				return false;	/* inserted after scan started */
+			/* fall through to check xmax */
+		}
+		else if (TransactionIdPrecedes(xmin, snapshot->xmin))
+		{
+			/* Before our xmin horizon - check if committed */
+			if (!TransactionIdDidCommit(xmin))
+				return false;
+			/* fall through to check xmax */
+		}
+		else if (TransactionIdFollowsOrEquals(xmin, snapshot->xmax))
+		{
+			/* Beyond our xmax horizon - invisible */
+			return false;
+		}
+		else if (pg_lfind32(xmin, snapshot->xip, snapshot->xcnt))
+		{
+			/* Committed transaction in [xmin, xmax) */
+			/* fall through to check xmax */
+		}
+		else
+		{
+			/* Between [xmin, xmax) but not committed - invisible */
+			return false;
+		}
+
+		/*
+		 * xmin is visible. If the tuple was not deleted/updated, it's visible.
+		 */
+		if (xmax == InvalidTransactionId)
+			return true;
+
+		/* Check xmax visibility */
+		if (pg_lfind32(xmax, snapshot->subxip, snapshot->subxcnt))
+		{
+			if (cmax == InvalidCommandId || cmax >= snapshot->curcid)
+				return true;	/* deleted after scan started */
+			else
+				return false;	/* deleted before scan started */
+		}
+		else if (TransactionIdPrecedes(xmax, snapshot->xmin))
+		{
+			if (!TransactionIdDidCommit(xmax))
+				return true;	/* deleter aborted */
+			return false;		/* deleter committed and old */
+		}
+		else if (TransactionIdFollowsOrEquals(xmax, snapshot->xmax))
+		{
+			return true;		/* deleter not yet visible */
+		}
+		else if (pg_lfind32(xmax, snapshot->xip, snapshot->xcnt))
+		{
+			return false;		/* deleter committed */
+		}
+		else
+		{
+			return true;		/* deleter not committed */
+		}
+	}
+	else if (undorec->type == OVUNDO_TYPE_DELETE ||
+			 undorec->type == OVUNDO_TYPE_UPDATE)
+	{
+		/* Remember the xmax info and continue to find the INSERT */
+		xmax = undorec->xid;
+		cmax = undorec->cid;
+		undo_ptr = undorec->prevundorec;
+		goto fetch_undo_record;
+	}
+	else if (undorec->type == OVUNDO_TYPE_TUPLE_LOCK)
+	{
+		/* Ignore tuple locks, continue to find INSERT */
+		undo_ptr = undorec->prevundorec;
+		goto fetch_undo_record;
+	}
+	else
+		elog(ERROR, "unexpected UNDO record type: %d", undorec->type);
+
+	return false;				/* keep compiler quiet */
+}
+
+/*
  * Like HeapTupleSatisfiesVisibility
  *
  * If next_tid is not NULL then gets populated for the tuple if tuple was
@@ -927,15 +1186,13 @@ ov_SatisfiesVisibility(OVTidTreeScan * scan, OVUndoRecPtr item_undoptr,
 			return ov_SatisfiesAny(scan, item_undoptr, visi_info);
 
 		case SNAPSHOT_TOAST:
-			elog(ERROR, "SnapshotToast not implemented in orvos");
-			break;
+			return ov_SatisfiesToast(scan, item_undoptr, visi_info);
 
 		case SNAPSHOT_DIRTY:
 			return ov_SatisfiesDirty(scan, item_undoptr, next_tid, visi_info);
 
 		case SNAPSHOT_HISTORIC_MVCC:
-			elog(ERROR, "SnapshotHistoricMVCC not implemented in orvos yet");
-			break;
+			return ov_SatisfiesHistoricMVCC(scan, item_undoptr, visi_info);
 
 		case SNAPSHOT_NON_VACUUMABLE:
 			return ov_SatisfiesNonVacuumable(scan, item_undoptr, visi_info);
