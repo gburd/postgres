@@ -150,10 +150,42 @@ ovbt_attr_scan_fetch_array(OVAttrTreeScan * scan, ovtid nexttid)
 		/*
 		 * Scan the items on the page, to find the next one that covers
 		 * nexttid.
+		 *
+		 * As an optimization, check the last offset first. During sequential
+		 * scans, the next item is usually at the same offset or just after
+		 * the one we found last time, so we can avoid scanning from the
+		 * beginning of the page.
 		 */
-		/* TODO: check the last offset first, as an optimization */
 		maxoff = PageGetMaxOffsetNumber(page);
-		for (off = FirstOffsetNumber; off <= maxoff; off++)
+
+		off = FirstOffsetNumber;
+		if (scan->lastoff >= FirstOffsetNumber && scan->lastoff <= maxoff)
+		{
+			ItemId		iid = PageGetItemId(page, scan->lastoff);
+			OVAttributeArrayItem *item = (OVAttributeArrayItem *) PageGetItem(page, iid);
+
+			if (item->t_firsttid <= nexttid && item->t_endtid > nexttid)
+			{
+				ovbt_attr_item_extract(scan, item);
+				scan->array_curr_idx = -1;
+
+				if (scan->array_num_elements > 0)
+				{
+					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+					return true;
+				}
+			}
+
+			/*
+			 * The item at lastoff didn't match. Start scanning from
+			 * lastoff rather than the beginning, since items before it
+			 * are unlikely to match in a forward scan.
+			 */
+			if (item->t_endtid <= nexttid)
+				off = scan->lastoff + 1;
+		}
+
+		for (; off <= maxoff; off++)
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			OVAttributeArrayItem *item = (OVAttributeArrayItem *) PageGetItem(page, iid);
@@ -172,6 +204,7 @@ ovbt_attr_scan_fetch_array(OVAttrTreeScan * scan, ovtid nexttid)
 			 */
 			ovbt_attr_item_extract(scan, item);
 			scan->array_curr_idx = -1;
+			scan->lastoff = off;
 
 			if (scan->array_num_elements > 0)
 			{

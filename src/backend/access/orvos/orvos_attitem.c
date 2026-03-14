@@ -769,8 +769,8 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 		 * pass-by-ref fixed size.
 		 *
 		 * Because the on-disk format doesn't guarantee any alignment, we need
-		 * to take care of that here. XXX: we could skip the copying if
-		 * attalign='c'
+		 * to take care of that here. When attalign='c', no alignment padding
+		 * is needed so we skip the per-element att_align_nominal calls.
 		 */
 		int			buf_needed;
 		int			alignlen;
@@ -806,35 +806,53 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 
 		bufp = scan->attr_buf;
 
-		for (int i = 0; i < numelements; i++)
+		if (alignlen == 1)
 		{
-			if (nulls[i])
-				datums[i] = (Datum) 0;
-			else
+			/*
+			 * char-aligned: no alignment padding needed, so we can skip the
+			 * per-element att_align_nominal call and just memcpy sequentially.
+			 */
+			for (int i = 0; i < numelements; i++)
 			{
-				bufp = (char *) att_align_nominal(bufp, attalign);
+				if (nulls[i])
+					datums[i] = (Datum) 0;
+				else
+				{
+					memcpy(bufp, p, attlen);
+					datums[i] = PointerGetDatum(bufp);
+					p += attlen;
+					bufp += attlen;
+				}
+			}
+		}
+		else
+		{
+			for (int i = 0; i < numelements; i++)
+			{
+				if (nulls[i])
+					datums[i] = (Datum) 0;
+				else
+				{
+					bufp = (char *) att_align_nominal(bufp, attalign);
 
-				Assert(bufp + attlen - scan->attr_buf <= buf_needed);
+					Assert(bufp + attlen - scan->attr_buf <= buf_needed);
 
-				memcpy(bufp, p, attlen);
-				datums[i] = PointerGetDatum(bufp);
-				p += attlen;
-				bufp += attlen;
+					memcpy(bufp, p, attlen);
+					datums[i] = PointerGetDatum(bufp);
+					p += attlen;
+					bufp += attlen;
+				}
 			}
 		}
 	}
 	else if (attlen == -1)
 	{
 		/*
-		 * Decode varlenas. Because we store varlenas unaligned, we might need
-		 * a buffer for them, too, like for pass-by-ref fixed-widths above.
-		 */
-		/*
-		 * pass-by-ref fixed size.
-		 *
-		 * Because the on-disk format doesn't guarantee any alignment, we need
-		 * to take care of that here. XXX: we could skip the copying if
-		 * attalign='c'
+		 * Decode varlenas. Because we store varlenas unaligned, we need
+		 * a buffer for them, like for pass-by-ref fixed-widths above.
+		 * The on-disk format uses a different header encoding than
+		 * PostgreSQL's standard varlena headers, so we always need to
+		 * transform the data during decoding.
 		 */
 		int			buf_needed;
 		char	   *bufp;

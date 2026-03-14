@@ -554,7 +554,7 @@ ovbt_tid_delete(Relation rel, ovtid tid,
 		if (result != TM_Ok)
 		{
 			UnlockReleaseBuffer(buf);
-			/* FIXME: We should fill TM_FailureData *hufd correctly */
+			/* ov_SatisfiesUpdate already populates hufd (xmax, cmax, ctid) */
 			return result;
 		}
 
@@ -564,7 +564,6 @@ ovbt_tid_delete(Relation rel, ovtid tid,
 			 * Perform additional check for transaction-snapshot mode RI
 			 * updates
 			 */
-			/* FIXME: dummmy scan */
 			OVTidTreeScan scan;
 			TransactionId obsoleting_xid;
 			OVUndoSlotVisibility visi_info;
@@ -577,7 +576,13 @@ ovbt_tid_delete(Relation rel, ovtid tid,
 			if (!ov_SatisfiesVisibility(&scan, item_undoptr, &obsoleting_xid, NULL, &visi_info))
 			{
 				UnlockReleaseBuffer(buf);
-				/* FIXME: We should fill TM_FailureData *hufd correctly */
+				/*
+				 * The crosscheck snapshot couldn't see the tuple. Fill in
+				 * TM_FailureData so callers can report the conflict.
+				 */
+				hufd->ctid = ItemPointerFromOVTid(tid);
+				hufd->xmax = obsoleting_xid;
+				hufd->cmax = InvalidCommandId;
 				return TM_Updated;
 			}
 		}
@@ -625,7 +630,6 @@ ovbt_find_latest_tid(Relation rel, ovtid *tid, Snapshot snapshot)
 
 		if (snapshot)
 		{
-			/* FIXME: dummmy scan */
 			OVTidTreeScan scan;
 			TransactionId obsoleting_xid;
 			OVUndoSlotVisibility visi_info;
@@ -769,8 +773,6 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 	bool		keep_old_undo_ptr = true;
 	ovtid		next_tid;
 
-	(void) xid;
-	(void) cid;
 	(void) wait;
 
 	INJECTION_POINT("orvos_lock_updated_tuple", NULL);
@@ -803,14 +805,13 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 	if (result != TM_Ok)
 	{
 		UnlockReleaseBuffer(buf);
-		/* FIXME: We should fill TM_FailureData *hufd correctly */
+		/* ov_SatisfiesUpdate already populates hufd (xmax, cmax, ctid) */
 		return result;
 	}
 
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		/* FIXME: dummmy scan */
 		OVTidTreeScan scan;
 		TransactionId obsoleting_xid;
 		OVUndoSlotVisibility visi_info;
@@ -823,17 +824,48 @@ ovbt_tid_update_lock_old(Relation rel, ovtid otid,
 		if (!ov_SatisfiesVisibility(&scan, olditem_undoptr, &obsoleting_xid, NULL, &visi_info))
 		{
 			UnlockReleaseBuffer(buf);
-			/* FIXME: We should fill TM_FailureData *hufd correctly */
+			/*
+			 * The crosscheck snapshot couldn't see the tuple. Fill in
+			 * TM_FailureData so callers can report the conflict.
+			 */
+			hufd->ctid = ItemPointerFromOVTid(otid);
+			hufd->xmax = obsoleting_xid;
+			hufd->cmax = InvalidCommandId;
 			result = TM_Updated;
 		}
 	}
 
 	/*
-	 * TODO: tuple-locking not implemented. Pray that there is no competing
-	 * concurrent update!
+	 * Place a tuple lock on the old item to prevent concurrent modifications
+	 * between now and when we mark it as updated. This creates a TUPLE_LOCK
+	 * UNDO record that other transactions will see via ov_SatisfiesUpdate(),
+	 * causing them to wait or return TM_BeingModified.
 	 */
+	{
+		ov_pending_undo_op *lock_undo_op;
+		Page		lock_page;
+		OVTidArrayItem *lock_origitem;
+		List	   *lock_newitems;
 
-	UnlockReleaseBuffer(buf);
+		lock_undo_op = ovundo_create_for_tuple_lock(rel, xid, cid, otid,
+													key_update ? LockTupleExclusive : LockTupleNoKeyExclusive,
+													keep_old_undo_ptr ? olditem_undoptr : InvalidUndoPtr);
+
+		/* Replace the item with updated undo pointer reflecting the lock. */
+		lock_page = BufferGetPage(buf);
+		lock_origitem = (OVTidArrayItem *) PageGetItem(lock_page,
+													   PageGetItemId(lock_page, idx));
+		lock_newitems = ovbt_tid_item_change_undoptr(lock_origitem, otid,
+													 lock_undo_op->reservation.undorecptr,
+													 recent_oldest_undo);
+		ovbt_tid_replace_item(rel, buf, idx, lock_newitems, lock_undo_op);
+		list_free_deep(lock_newitems);
+
+		/* Update the prevundoptr to point to our lock record */
+		*prevundoptr_p = lock_undo_op->reservation.undorecptr;
+	}
+
+	ReleaseBuffer(buf);			/* ovbt_tid_replace_item unlocked 'buf' */
 
 	return TM_Ok;
 }
@@ -1400,14 +1432,26 @@ ovbt_tid_fetch(Relation rel, ovtid tid, Buffer *buf_p, OVUndoRecPtr *undoptr_p, 
 			ovbt_tid_item_unpack(item, &iter);
 
 			/*
-			 * TODO: could do binary search here. Better yet, integrate the
-			 * unpack function with the callers
+			 * Binary search for the target TID in the unpacked array.
+			 * The TIDs are sorted (decoded from delta-coded codewords).
 			 */
-			for (int i = 0; i < iter.num_tids; i++)
 			{
-				if (iter.tids[i] == tid)
+				int			lo = 0;
+				int			hi = iter.num_tids;
+
+				while (hi > lo)
 				{
-					int			slotno = iter.tid_undoslotnos[i];
+					int			mid = lo + (hi - lo) / 2;
+
+					if (tid > iter.tids[mid])
+						lo = mid + 1;
+					else
+						hi = mid;
+				}
+
+				if (lo < iter.num_tids && iter.tids[lo] == tid)
+				{
+					int			slotno = iter.tid_undoslotnos[lo];
 					OVUndoRecPtr undoptr = iter.undoslots[slotno];
 
 					*isdead_p = (slotno == OVBT_DEAD_UNDO_SLOT);
