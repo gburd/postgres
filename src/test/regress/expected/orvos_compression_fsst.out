@@ -123,7 +123,43 @@ SELECT i,
        'And even more padding text to reach a good length for compression testing.'
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_fsst_mixed_test;
-server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-connection to server was lost
+ count
+-------
+   100
+(1 row)
+
+SELECT id, short_str, length(medium_str), length(long_str)
+FROM orvos_fsst_mixed_test WHERE id <= 3 ORDER BY id;
+ id | short_str | length | length
+----+-----------+--------+--------
+  1 | short_1   |     85 |    330
+  2 | short_2   |     85 |    330
+  3 | short_3   |     85 |    330
+(3 rows)
+
+DROP TABLE orvos_fsst_mixed_test;
+-- Test 6: FSST with NULL values
+CREATE TABLE orvos_fsst_null_test (
+    id int,
+    description text
+) USING orvos;
+INSERT INTO orvos_fsst_null_test
+SELECT i,
+       CASE
+           WHEN i % 5 = 0 THEN NULL
+           ELSE 'Description text for record number ' || i || ' with common patterns.'
+       END
+FROM generate_series(1, 50) i;
+SELECT COUNT(*) FROM orvos_fsst_null_test WHERE description IS NULL;
+ count
+-------
+    10
+(1 row)
+
+SELECT COUNT(*) FROM orvos_fsst_null_test WHERE description IS NOT NULL;
+ count
+-------
+    40
+(1 row)
+
+DROP TABLE orvos_fsst_null_test;
