@@ -1047,6 +1047,8 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 
 	vacrelstats = (OVVacRelStats *) palloc0(sizeof(OVVacRelStats));
 	vacrelstats->rel = rel;
+	vacrelstats->old_live_tuples = rel->rd_rel->reltuples;
+	vacrelstats->rel_pages = RelationGetNumberOfBlocks(rel);
 
 	if (params->options & VACOPT_VERBOSE)
 		vacrelstats->elevel = INFO;
@@ -1103,13 +1105,6 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 		starttid = endtid;
 	} while (starttid < MaxPlusOneOVTid);
 
-	/* Do post-vacuum cleanup and statistics update for each index */
-	for (int i = 0; i < nindexes; i++)
-		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats);
-
-	/* Done with indexes */
-	vac_close_indexes(nindexes, Irel, NoLock);
-
 	/*
 	 * Note: ovbt_collect_dead_tids counts all tuples (live + dead) in
 	 * num_live_tuples. Subtract dead tuples that were just removed to get the
@@ -1119,6 +1114,18 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 		num_live_tuples -= num_dead_tuples;
 	else
 		num_live_tuples = 0;
+
+	/* Update vacrelstats for index cleanup to use */
+	vacrelstats->new_rel_tuples = num_live_tuples;
+	vacrelstats->new_live_tuples = num_live_tuples;
+	vacrelstats->new_dead_tuples = num_dead_tuples;
+
+	/* Do post-vacuum cleanup and statistics update for each index */
+	for (int i = 0; i < nindexes; i++)
+		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats);
+
+	/* Done with indexes */
+	vac_close_indexes(nindexes, Irel, NoLock);
 
 	/*
 	 * Update pg_class to reflect new info we know. Using OldestXmin as new
