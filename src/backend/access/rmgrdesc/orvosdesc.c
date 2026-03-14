@@ -64,6 +64,12 @@ orvos_desc(StringInfo buf, XLogReaderState *record)
 						 OVTidGetBlockNumber(walrec->tid), OVTidGetOffsetNumber(walrec->tid),
 						 walrec->attno, walrec->offset, walrec->total_size);
 	}
+	else if (info == WAL_ORVOS_FPM_DELETE)
+	{
+		wal_orvos_fpm_delete *walrec = (wal_orvos_fpm_delete *) rec;
+
+		appendStringInfo(buf, "old_fpm_head %u", walrec->old_fpm_head);
+	}
 }
 
 const char *
@@ -96,6 +102,9 @@ orvos_identify(uint8 info)
 			break;
 		case WAL_ORVOS_TOAST_NEWPAGE:
 			id = "ORVOS_TOAST_NEWPAGE";
+			break;
+		case WAL_ORVOS_FPM_DELETE:
+			id = "FPM_DELETE";
 			break;
 	}
 	return id;

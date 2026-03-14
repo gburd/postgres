@@ -47,6 +47,9 @@ orvos_redo(XLogReaderState *record)
 		case WAL_ORVOS_TOAST_NEWPAGE:
 			ovtoast_newpage_redo(record);
 			break;
+		case WAL_ORVOS_FPM_DELETE:
+			ovfpm_delete_redo(record);
+			break;
 		default:
 			elog(PANIC, "orvos_redo: unknown op code %u", info);
 	}

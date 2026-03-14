@@ -45,7 +45,11 @@
 
 #include <math.h>
 
+#include "access/xloginsert.h"
+#include "access/xlogreader.h"
+#include "access/xlogutils.h"
 #include "access/orvos_internal.h"
+#include "access/orvos_wal.h"
 #include "miscadmin.h"
 #include "storage/bufpage.h"
 #include "utils/rel.h"
@@ -248,6 +252,7 @@ ovpage_extendrel_newbuf(Relation rel, Buffer metabuf)
 				Buffer		extrabuf = buffers[i];
 				Page		page;
 				BlockNumber extrablk;
+				BlockNumber old_fpm_head;
 
 				/*
 				 * The extra buffers are pinned but not locked by
@@ -256,18 +261,42 @@ ovpage_extendrel_newbuf(Relation rel, Buffer metabuf)
 				extrablk = BufferGetBlockNumber(extrabuf);
 				LockBuffer(extrabuf, BUFFER_LOCK_EXCLUSIVE);
 
+				old_fpm_head = metaopaque->ov_fpm_head;
+
+				START_CRIT_SECTION();
+
 				/* Mark it as free and add to the FPM linked list */
 				page = BufferGetPage(extrabuf);
-				ovpage_mark_page_deleted(page, metaopaque->ov_fpm_head);
+				ovpage_mark_page_deleted(page, old_fpm_head);
 				MarkBufferDirty(extrabuf);
 
 				/* Update FPM head to point to this new free page */
 				metaopaque->ov_fpm_head = extrablk;
+				MarkBufferDirty(local_metabuf);
+
+				if (RelationNeedsWAL(rel))
+				{
+					wal_orvos_fpm_delete xlrec;
+					XLogRecPtr	recptr;
+
+					xlrec.old_fpm_head = old_fpm_head;
+
+					XLogBeginInsert();
+					XLogRegisterData((char *) &xlrec, SizeOfZSWalFpmDelete);
+					XLogRegisterBuffer(0, local_metabuf, REGBUF_STANDARD);
+					XLogRegisterBuffer(1, extrabuf, REGBUF_WILL_INIT | REGBUF_STANDARD);
+
+					recptr = XLogInsert(RM_ORVOS_ID, WAL_ORVOS_FPM_DELETE);
+
+					PageSetLSN(metapage, recptr);
+					PageSetLSN(page, recptr);
+				}
+
+				END_CRIT_SECTION();
 
 				UnlockReleaseBuffer(extrabuf);
 			}
 
-			MarkBufferDirty(local_metabuf);
 			if (release_metabuf)
 				UnlockReleaseBuffer(local_metabuf);
 		}
@@ -301,20 +330,89 @@ ovpage_delete_page(Relation rel, Buffer buf)
 	Page		metapage;
 	OVMetaPageOpaque *metaopaque;
 	Page		page;
+	BlockNumber old_fpm_head;
 
 	metabuf = ReadBuffer(rel, OV_META_BLK);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
 	metaopaque = (OVMetaPageOpaque *) PageGetSpecialPointer(metapage);
 
+	old_fpm_head = metaopaque->ov_fpm_head;
+
+	START_CRIT_SECTION();
+
 	page = BufferGetPage(buf);
-	ovpage_mark_page_deleted(page, metaopaque->ov_fpm_head);
+	ovpage_mark_page_deleted(page, old_fpm_head);
 	metaopaque->ov_fpm_head = blk;
 
 	MarkBufferDirty(metabuf);
 	MarkBufferDirty(buf);
 
-	/* FIXME: WAL-logging */
+	if (RelationNeedsWAL(rel))
+	{
+		wal_orvos_fpm_delete xlrec;
+		XLogRecPtr	recptr;
+
+		xlrec.old_fpm_head = old_fpm_head;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfZSWalFpmDelete);
+		XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(1, buf, REGBUF_WILL_INIT | REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_ORVOS_ID, WAL_ORVOS_FPM_DELETE);
+
+		PageSetLSN(metapage, recptr);
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(metabuf);
+}
+
+/*
+ * WAL redo for WAL_ORVOS_FPM_DELETE.
+ *
+ * blkref #0: the metapage (update ov_fpm_head)
+ * blkref #1: the freed page (re-initialize as free page)
+ */
+void
+ovfpm_delete_redo(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	wal_orvos_fpm_delete *xlrec = (wal_orvos_fpm_delete *) XLogRecGetData(record);
+	BlockNumber old_fpm_head = xlrec->old_fpm_head;
+	Buffer		metabuf;
+	Buffer		freebuf;
+	BlockNumber freeblk;
+
+	XLogRecGetBlockTag(record, 1, NULL, NULL, &freeblk);
+
+	if (XLogReadBufferForRedo(record, 0, &metabuf) == BLK_NEEDS_REDO)
+	{
+		Page		metapage = BufferGetPage(metabuf);
+		OVMetaPageOpaque *metaopaque;
+
+		metaopaque = (OVMetaPageOpaque *) PageGetSpecialPointer(metapage);
+		metaopaque->ov_fpm_head = freeblk;
+
+		PageSetLSN(metapage, lsn);
+		MarkBufferDirty(metabuf);
+	}
+
+	/* The freed page is always re-initialized */
+	freebuf = XLogInitBufferForRedo(record, 1);
+	{
+		Page		freepage = BufferGetPage(freebuf);
+
+		ovpage_mark_page_deleted(freepage, old_fpm_head);
+
+		PageSetLSN(freepage, lsn);
+		MarkBufferDirty(freebuf);
+	}
+
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+	UnlockReleaseBuffer(freebuf);
 }

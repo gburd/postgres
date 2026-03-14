@@ -25,6 +25,7 @@
 #define WAL_ORVOS_BTREE_REPLACE_LEAF_ITEM	0x50
 #define WAL_ORVOS_BTREE_REWRITE_PAGES	0x60
 #define WAL_ORVOS_TOAST_NEWPAGE			0x70
+#define WAL_ORVOS_FPM_DELETE			0x80
 
 /* in orvos_wal.c */
 extern void orvos_redo(XLogReaderState *record);
@@ -143,9 +144,31 @@ typedef struct wal_orvos_toast_newpage
 
 #define SizeOfZSWalToastNewPage (offsetof(wal_orvos_toast_newpage, offset) + sizeof(int32))
 
+/*
+ * WAL record for adding a page to the Free Page Map.
+ * (WAL_ORVOS_FPM_DELETE)
+ *
+ * This is used when a page is marked as deleted and added to the FPM
+ * linked list. The metapage's ov_fpm_head is updated to point to the
+ * newly freed page.
+ *
+ * blkref #0: the metapage
+ * blkref #1: the page being added to the FPM (WILL_INIT)
+ *
+ * old_fpm_head is the previous FPM head value that becomes the
+ * ov_next pointer on the freed page.
+ */
+typedef struct wal_orvos_fpm_delete
+{
+	BlockNumber old_fpm_head;
+}			wal_orvos_fpm_delete;
+
+#define SizeOfZSWalFpmDelete (offsetof(wal_orvos_fpm_delete, old_fpm_head) + sizeof(BlockNumber))
+
 extern void ovbt_leaf_items_redo(XLogReaderState *record, bool replace);
 extern void ovmeta_new_btree_root_redo(XLogReaderState *record);
 extern void ovbt_rewrite_pages_redo(XLogReaderState *record);
 extern void ovtoast_newpage_redo(XLogReaderState *record);
+extern void ovfpm_delete_redo(XLogReaderState *record);
 
 #endif							/* ORVOS_WAL_H */
