@@ -864,6 +864,9 @@ extern TM_Result ovbt_tid_lock(Relation rel, ovtid tid,
 extern void ovbt_tid_undo_deletion(Relation rel, ovtid tid, OVUndoRecPtr undoptr, OVUndoRecPtr recent_oldest_undo);
 extern ovtid ovbt_get_last_tid(Relation rel);
 extern void ovbt_find_latest_tid(Relation rel, ovtid *tid, Snapshot snapshot);
+extern void ovbt_tid_mark_updated_for_cluster(Relation rel, ovtid otid,
+											  ovtid newtid, TransactionId xid,
+											  CommandId cid, bool key_update);
 
 /* prototypes for functions in orvos_tiditem.c */
 extern List *ovbt_tid_item_create_for_range(ovtid tid, int nelements, OVUndoRecPtr undo_ptr);
@@ -911,7 +914,7 @@ extern Buffer ovbt_find_and_lock_leaf_containing_tid(Relation rel, AttrNumber at
 													 Buffer buf, ovtid nexttid, int lockmode);
 extern bool ovbt_page_is_expected(Relation rel, AttrNumber attno, ovtid key, int level, Buffer buf);
 extern void ovbt_wal_log_leaf_items(Relation rel, AttrNumber attno, Buffer buf, OffsetNumber off, bool replace, List *items, struct ov_pending_undo_op *undo_op);
-extern void ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, struct ov_pending_undo_op *undo_op);
+extern void ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, struct ov_pending_undo_op *undo_op, uint32 recycle_bitmap, BlockNumber old_fpm_head, Buffer metabuf);
 
 /*
  * Return the value of row identified with 'tid' in a scan.

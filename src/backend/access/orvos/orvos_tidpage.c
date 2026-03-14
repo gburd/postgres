@@ -1009,6 +1009,45 @@ ovbt_tid_mark_old_updated(Relation rel, ovtid otid, ovtid newtid,
 	return true;
 }
 
+/*
+ * Mark a tuple as updated during CLUSTER/VACUUM FULL.
+ *
+ * Like ovbt_tid_mark_old_updated, but skips the prevrecptr consistency check
+ * since we have exclusive access during CLUSTER. Creates an UPDATE undo
+ * record on the old TID pointing to newtid, preserving UPDATE chains.
+ */
+void
+ovbt_tid_mark_updated_for_cluster(Relation rel, ovtid otid, ovtid newtid,
+								  TransactionId xid, CommandId cid,
+								  bool key_update)
+{
+	OVUndoRecPtr recent_oldest_undo = ovundo_get_oldest_undo_ptr(rel);
+	Buffer		buf;
+	Page		page;
+	OVUndoRecPtr olditem_undoptr;
+	bool		olditem_isdead;
+	OffsetNumber off;
+	ov_pending_undo_op *undo_op;
+	List	   *newitems;
+	OVTidArrayItem *origitem;
+
+	off = ovbt_tid_fetch(rel, otid, &buf, &olditem_undoptr, &olditem_isdead);
+	if (!OffsetNumberIsValid(off) || olditem_isdead)
+		elog(ERROR, "could not find tuple to mark as updated during CLUSTER");
+
+	undo_op = ovundo_create_for_update(rel, xid, cid, otid, newtid,
+									   olditem_undoptr, key_update);
+
+	page = BufferGetPage(buf);
+	origitem = (OVTidArrayItem *) PageGetItem(page, PageGetItemId(page, off));
+	newitems = ovbt_tid_item_change_undoptr(origitem, otid,
+											undo_op->reservation.undorecptr,
+											recent_oldest_undo);
+	ovbt_tid_replace_item(rel, buf, off, newitems, undo_op);
+	list_free_deep(newitems);
+	ReleaseBuffer(buf);
+}
+
 TM_Result
 ovbt_tid_lock(Relation rel, ovtid tid, TransactionId xid, CommandId cid,
 			  LockTupleMode mode, bool follow_updates, Snapshot snapshot,

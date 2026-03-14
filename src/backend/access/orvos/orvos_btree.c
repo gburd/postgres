@@ -901,6 +901,10 @@ ov_new_split_stack_entry(Buffer buf, Page page)
 /*
  * Apply all the changes represented by a list of ov_split_stack
  * entries.
+ *
+ * Pages marked with recycle=true are added to the Free Page Map within
+ * the same critical section and WAL record, so that crash recovery will
+ * also recycle them (avoiding page leaks).
  */
 void
 ov_apply_split_changes(Relation rel, ov_split_stack * stack, ov_pending_undo_op * undo_op)
@@ -908,17 +912,44 @@ ov_apply_split_changes(Relation rel, ov_split_stack * stack, ov_pending_undo_op 
 	ov_split_stack *head = stack;
 	bool		wal_needed = RelationNeedsWAL(rel);
 	List	   *buffers = NIL;
+	uint32		recycle_bitmap = 0;
+	bool		has_recycle = false;
+	Buffer		metabuf = InvalidBuffer;
+	int			idx;
+
+	/* Build the buffer list and recycle bitmap */
+	idx = 0;
+	stack = head;
+	while (stack)
+	{
+		if (wal_needed)
+			buffers = lappend_int(buffers, stack->buf);
+		if (stack->recycle)
+		{
+			Assert(idx < 32);
+			recycle_bitmap |= (1U << idx);
+			has_recycle = true;
+		}
+		idx++;
+		stack = stack->next;
+	}
+
+	/*
+	 * If any pages need recycling, lock the metapage now so we can update
+	 * ov_fpm_head inside the critical section.
+	 */
+	if (has_recycle)
+	{
+		metabuf = ReadBuffer(rel, OV_META_BLK);
+		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	}
 
 	if (wal_needed)
 	{
-		stack = head;
-		while (stack)
-		{
-			buffers = lappend_int(buffers, stack->buf);
-			stack = stack->next;
-		}
+		int		nbufs = list_length(buffers);
 
-		XLogEnsureRecordSpace(list_length(buffers), 0);
+		/* +1 for undo, +1 for metapage if recycling */
+		XLogEnsureRecordSpace(nbufs + (has_recycle ? 1 : 0), 0);
 	}
 
 	START_CRIT_SECTION();
@@ -934,28 +965,59 @@ ov_apply_split_changes(Relation rel, ov_split_stack * stack, ov_pending_undo_op 
 	if (undo_op)
 		ovundo_finish_pending_op(undo_op, (char *) undo_op->payload);
 
-	if (RelationNeedsWAL(rel))
+	/*
+	 * Recycle pages inside the critical section so that the WAL record
+	 * captures the FPM state change atomically.  Save old_fpm_head before
+	 * modifying so we can include it in the WAL record for redo.
+	 */
 	{
-		/*
-		 * FIXME: it would be good to add the 'recycle' flags to the WAL
-		 * record, so that we wouldn't leak the unused pages on crash.
-		 */
-		ovbt_wal_log_rewrite_pages(rel, 0	/* FIXME: attno. but not used for
-								     * anything ATM */ ,
-								   buffers, undo_op);
-		list_free(buffers);
+		BlockNumber saved_old_fpm_head = InvalidBlockNumber;
+
+		if (has_recycle)
+		{
+			Page		metapage = BufferGetPage(metabuf);
+			OVMetaPageOpaque *metaopaque = (OVMetaPageOpaque *) PageGetSpecialPointer(metapage);
+			BlockNumber fpm_head = metaopaque->ov_fpm_head;
+
+			saved_old_fpm_head = fpm_head;
+
+			stack = head;
+			while (stack)
+			{
+				if (stack->recycle)
+				{
+					BlockNumber blk = BufferGetBlockNumber(stack->buf);
+					Page		page = BufferGetPage(stack->buf);
+
+					ovpage_mark_page_deleted(page, fpm_head);
+					fpm_head = blk;
+					MarkBufferDirty(stack->buf);
+				}
+				stack = stack->next;
+			}
+
+			metaopaque->ov_fpm_head = fpm_head;
+			MarkBufferDirty(metabuf);
+		}
+
+		if (wal_needed)
+		{
+			ovbt_wal_log_rewrite_pages(rel, 0, buffers, undo_op,
+									   recycle_bitmap, saved_old_fpm_head,
+									   has_recycle ? metabuf : InvalidBuffer);
+			list_free(buffers);
+		}
 	}
 
 	END_CRIT_SECTION();
+
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
 
 	stack = head;
 	while (stack)
 	{
 		ov_split_stack *next;
-
-		/* add this page to the Free Page Map for recycling */
-		if (stack->recycle)
-			ovpage_delete_page(rel, stack->buf);
 
 		UnlockReleaseBuffer(stack->buf);
 
@@ -1114,7 +1176,10 @@ ovbt_leaf_items_redo(XLogReaderState *record, bool replace)
 #define MAX_BLOCKS_IN_REWRITE		100
 
 void
-ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, ov_pending_undo_op * undo_op)
+ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers,
+						   ov_pending_undo_op * undo_op,
+						   uint32 recycle_bitmap, BlockNumber old_fpm_head,
+						   Buffer metabuf)
 {
 	ListCell   *lc;
 	XLogRecPtr	recptr;
@@ -1123,10 +1188,13 @@ ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, ov_pen
 
 	(void) rel;
 
-	if (1 /* for undo */ + list_length(buffers) > MAX_BLOCKS_IN_REWRITE)
+	if (1 /* for undo */ + list_length(buffers) + (BufferIsValid(metabuf) ? 1 : 0) > MAX_BLOCKS_IN_REWRITE)
 		elog(ERROR, "too many blocks for orvos rewrite_pages record: %d", list_length(buffers));
 
 	xlrec.attno = attno;
+	xlrec.numpages = list_length(buffers);
+	xlrec.recycle_bitmap = recycle_bitmap;
+	xlrec.old_fpm_head = old_fpm_head;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, SizeOfZSWalBtreeRewritePages);
@@ -1138,9 +1206,23 @@ ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, ov_pen
 	foreach(lc, buffers)
 	{
 		Buffer		buf = (Buffer) lfirst_int(lc);
+		uint8		flags = REGBUF_STANDARD | REGBUF_FORCE_IMAGE | REGBUF_KEEP_DATA;
 
-		XLogRegisterBuffer(block_id, buf,
-						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE | REGBUF_KEEP_DATA);
+		/*
+		 * Pages being recycled are re-initialized as free pages, so use
+		 * REGBUF_WILL_INIT for them during redo.
+		 */
+		if (recycle_bitmap & (1U << (block_id - 1)))
+			flags = REGBUF_WILL_INIT | REGBUF_STANDARD;
+
+		XLogRegisterBuffer(block_id, buf, flags);
+		block_id++;
+	}
+
+	/* Register the metapage if we have recycle pages */
+	if (BufferIsValid(metabuf))
+	{
+		XLogRegisterBuffer(block_id, metabuf, REGBUF_STANDARD);
 		block_id++;
 	}
 
@@ -1154,34 +1236,131 @@ ovbt_wal_log_rewrite_pages(Relation rel, AttrNumber attno, List *buffers, ov_pen
 
 		PageSetLSN(BufferGetPage(buf), recptr);
 	}
+
+	if (BufferIsValid(metabuf))
+		PageSetLSN(BufferGetPage(metabuf), recptr);
 }
 
 void
 ovbt_rewrite_pages_redo(XLogReaderState *record)
 {
-#ifdef UNUSED
 	XLogRecPtr	lsn = record->EndRecPtr;
 	wal_orvos_btree_rewrite_pages *xlrec = (wal_orvos_btree_rewrite_pages *) XLogRecGetData(record);
-#endif
 	Buffer		buffers[MAX_BLOCKS_IN_REWRITE];
 	uint8		block_id;
+	uint32		recycle_bitmap = xlrec->recycle_bitmap;
+	int			numpages = xlrec->numpages;
+	int			meta_block_id = -1;
 
 	if (XLogRecMaxBlockId(record) >= MAX_BLOCKS_IN_REWRITE)
 		elog(ERROR, "too many blocks in orvos rewrite_pages record: %d", XLogRecMaxBlockId(record) + 1);
 
+	/* Block 0: UNDO buffer */
 	if (XLogRecHasBlockRef(record, 0))
 		buffers[0] = XLogRedoUndoOp(record, 0);
 	else
 		buffers[0] = InvalidBuffer;
 
-	/* Iterate over blocks */
-	for (block_id = 1; block_id <= XLogRecMaxBlockId(record); block_id++)
+	/*
+	 * Determine metapage block_id: if there are recycle pages, the metapage
+	 * is registered as the block after all b-tree pages (block numpages + 1).
+	 */
+	if (recycle_bitmap != 0)
+		meta_block_id = numpages + 1;
+
+	/* Restore b-tree page images */
+	for (block_id = 1; block_id <= (uint8) numpages; block_id++)
 	{
-		if (XLogReadBufferForRedo(record, block_id, &buffers[block_id]) != BLK_RESTORED)
-			elog(ERROR, "orvos rewrite_pages WAL record did not contain a full-page image");
+		if (recycle_bitmap & (1U << (block_id - 1)))
+		{
+			/*
+			 * This page is being recycled. Initialize it as a free page.
+			 * The page content was already set by ovpage_mark_page_deleted
+			 * during normal operation; during redo we re-initialize it.
+			 */
+			buffers[block_id] = XLogInitBufferForRedo(record, block_id);
+			{
+				BlockNumber blk;
+				BlockNumber next_free;
+				Page		page = BufferGetPage(buffers[block_id]);
+				int			bit_idx = block_id - 1;
+
+				XLogRecGetBlockTag(record, block_id, NULL, NULL, &blk);
+
+				/*
+				 * Determine the ov_next for this free page. The first
+				 * recycled page (lowest block_id) points to old_fpm_head.
+				 * Subsequent recycled pages point to the previous recycled
+				 * page's block number.  We chain them in the same order as
+				 * the normal-path code does.
+				 */
+				next_free = xlrec->old_fpm_head;
+				{
+					int			j;
+
+					for (j = 0; j < bit_idx; j++)
+					{
+						if (recycle_bitmap & (1U << j))
+						{
+							BlockNumber prev_blk;
+
+							XLogRecGetBlockTag(record, j + 1, NULL, NULL, &prev_blk);
+							next_free = prev_blk;
+						}
+					}
+				}
+
+				ovpage_mark_page_deleted(page, next_free);
+
+				PageSetLSN(page, lsn);
+				MarkBufferDirty(buffers[block_id]);
+			}
+		}
+		else
+		{
+			if (XLogReadBufferForRedo(record, block_id, &buffers[block_id]) != BLK_RESTORED)
+				elog(ERROR, "orvos rewrite_pages WAL record did not contain a full-page image");
+		}
 	}
 
-	/* Changes are done: unlock and release all buffers */
+	/* Redo metapage FPM head update if there were recycles */
+	if (meta_block_id > 0 && XLogRecHasBlockRef(record, meta_block_id))
+	{
+		Buffer		metabuf;
+
+		buffers[meta_block_id] = InvalidBuffer;
+		if (XLogReadBufferForRedo(record, meta_block_id, &metabuf) == BLK_NEEDS_REDO)
+		{
+			Page		metapage = BufferGetPage(metabuf);
+			OVMetaPageOpaque *metaopaque = (OVMetaPageOpaque *) PageGetSpecialPointer(metapage);
+			BlockNumber new_fpm_head;
+
+			/*
+			 * The new FPM head is the last recycled page (highest block_id)
+			 * since we chain them forward.
+			 */
+			{
+				int			last_recycle_bit = -1;
+				int			j;
+
+				for (j = 0; j < numpages; j++)
+				{
+					if (recycle_bitmap & (1U << j))
+						last_recycle_bit = j;
+				}
+				Assert(last_recycle_bit >= 0);
+				XLogRecGetBlockTag(record, last_recycle_bit + 1, NULL, NULL, &new_fpm_head);
+			}
+
+			metaopaque->ov_fpm_head = new_fpm_head;
+
+			PageSetLSN(metapage, lsn);
+			MarkBufferDirty(metabuf);
+		}
+		buffers[meta_block_id] = metabuf;
+	}
+
+	/* Unlock and release all buffers */
 	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 	{
 		if (BufferIsValid(buffers[block_id]))

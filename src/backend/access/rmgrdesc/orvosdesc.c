@@ -56,6 +56,14 @@ orvos_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "attno %d, %d items, off %d", walrec->attno, walrec->nitems, walrec->off);
 	}
+	else if (info == WAL_ORVOS_BTREE_REWRITE_PAGES)
+	{
+		wal_orvos_btree_rewrite_pages *walrec = (wal_orvos_btree_rewrite_pages *) rec;
+
+		appendStringInfo(buf, "attno %d, numpages %d, recycle_bitmap 0x%08x, old_fpm_head %u",
+						 walrec->attno, walrec->numpages,
+						 walrec->recycle_bitmap, walrec->old_fpm_head);
+	}
 	else if (info == WAL_ORVOS_TOAST_NEWPAGE)
 	{
 		wal_orvos_toast_newpage *walrec = (wal_orvos_toast_newpage *) rec;

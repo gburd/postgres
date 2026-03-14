@@ -115,15 +115,21 @@ typedef struct wal_orvos_btree_leaf_items
  * we just rewrite whole pages.
  *
  * block #0 is UNDO buffer, if any.
- * The rest are the b-tree pages (numpages).
+ * Blocks 1..numpages are the b-tree pages.
+ * If recycle_bitmap is non-zero, the block after the last b-tree page is
+ * the metapage (for updating ov_fpm_head).  Each bit i in recycle_bitmap
+ * indicates that b-tree page at block_id (i + 1) should be recycled into
+ * the Free Page Map.
  */
 typedef struct wal_orvos_btree_rewrite_pages
 {
 	AttrNumber	attno;			/* 0 means TID tree */
 	int			numpages;
+	uint32		recycle_bitmap; /* bits for pages to recycle (max 32 pages) */
+	BlockNumber old_fpm_head;	/* FPM head before recycling */
 }			wal_orvos_btree_rewrite_pages;
 
-#define SizeOfZSWalBtreeRewritePages (offsetof(wal_orvos_btree_rewrite_pages, numpages) + sizeof(int))
+#define SizeOfZSWalBtreeRewritePages (offsetof(wal_orvos_btree_rewrite_pages, old_fpm_head) + sizeof(BlockNumber))
 
 /*
  * WAL record for orvos toasting. When a large datum spans multiple pages,

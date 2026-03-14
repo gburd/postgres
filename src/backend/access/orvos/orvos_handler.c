@@ -3300,6 +3300,16 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	IndexScanDesc indexScan;
 	Tuplesortstate *tuplesort;
 	List	   *deferred_updates = NIL;
+	HTAB	   *tid_map;
+	HASHCTL		hashctl;
+
+	/* Create hash table to map old TIDs to new TIDs for UPDATE chain fixup */
+	memset(&hashctl, 0, sizeof(hashctl));
+	hashctl.keysize = sizeof(ovtid);
+	hashctl.entrysize = sizeof(OVClusterTidMapEntry);
+	hashctl.hcxt = CurrentMemoryContext;
+	tid_map = hash_create("CLUSTER TID map", 1024, &hashctl,
+						  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	(void) xid_cutoff;
 	(void) multi_cutoff;
@@ -3465,6 +3475,15 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 											   &deferred_updates);
 			if (new_tid != InvalidOVTid)
 			{
+				/* Record old->new TID mapping for UPDATE chain fixup */
+				{
+					OVClusterTidMapEntry *entry;
+					bool		found;
+
+					entry = hash_search(tid_map, &old_tid, HASH_ENTER, &found);
+					entry->new_tid = new_tid;
+				}
+
 				/* Fetch the attributes and write them out */
 				for (attno = 1; attno <= olddesc->natts; attno++)
 				{
@@ -3540,12 +3559,59 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	}
 
 	/*
-	 * TODO: Process deferred_updates list here. These are tuples that were
-	 * UPDATEd and need their UPDATE chain UNDO records created now that both
-	 * old and new TIDs in the new table are known. See Task #12 (Fix CLUSTER
-	 * breaking UPDATE chains) in FUTURE_WORK_ROADMAP.md.
+	 * Apply deferred UPDATE chain fixups. For each tuple that was UPDATEd in
+	 * the old table, we now know both the old and new TIDs in the new table.
+	 * Create UPDATE undo records to preserve the chain pointers.
 	 */
-	(void) deferred_updates;	/* silence unused variable warning */
+	{
+		ListCell   *lc;
+
+		foreach(lc, deferred_updates)
+		{
+			OVClusterDeferredUpdate *fixup = lfirst(lc);
+			OVClusterTidMapEntry *entry;
+			bool		found;
+
+			/* Look up the new TID of the updated-to version */
+			entry = hash_search(tid_map, &fixup->old_update_newtid,
+								HASH_FIND, &found);
+			if (found)
+			{
+				/*
+				 * Mark the old version as updated, pointing to the new
+				 * version. This creates an UPDATE undo record instead
+				 * of a DELETE, preserving the chain for READ COMMITTED.
+				 */
+				ovbt_tid_mark_updated_for_cluster(NewHeap,
+												  fixup->new_old_tid,
+												  entry->new_tid,
+												  fixup->xmax,
+												  fixup->cmax,
+												  fixup->key_update);
+			}
+			else
+			{
+				/*
+				 * The updated-to tuple was not copied (e.g. it was dead).
+				 * Fall back to marking as deleted.
+				 */
+				TM_Result	delete_result;
+				bool		xact_has_lock;
+
+				delete_result = ovbt_tid_delete(NewHeap, fixup->new_old_tid,
+												fixup->xmax, fixup->cmax,
+												NULL, NULL, false, NULL, false,
+												&xact_has_lock);
+				if (delete_result != TM_Ok)
+					elog(ERROR, "tuple deletion failed during CLUSTER UPDATE chain fixup");
+			}
+
+			pfree(fixup);
+		}
+		list_free(deferred_updates);
+	}
+
+	hash_destroy(tid_map);
 
 	ovbt_tid_end_scan(&tid_scan);
 	for (attno = 1; attno <= olddesc->natts; attno++)
