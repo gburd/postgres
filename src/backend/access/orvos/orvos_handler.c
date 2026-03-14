@@ -999,8 +999,15 @@ ov_materialize_delta_columns(Relation rel,
 						undorec = ovundo_fetch_record(rel, undoptr);
 						if (undorec != NULL)
 						{
-							/* Skip past any lock records */
-							while (undorec->type == OVUNDO_TYPE_TUPLE_LOCK)
+							/*
+							 * Skip past lock and update records to find
+							 * the underlying DELTA_INSERT.  A chained
+							 * delta update leaves UPDATE and TUPLE_LOCK
+							 * records ahead of the DELTA_INSERT in the
+							 * UNDO chain.
+							 */
+							while (undorec->type == OVUNDO_TYPE_TUPLE_LOCK ||
+								   undorec->type == OVUNDO_TYPE_UPDATE)
 							{
 								OVUndoRecPtr prev = undorec->prevundorec;
 
@@ -4736,8 +4743,17 @@ ov_fetch_attr_with_predecessor(Relation rel, TupleDesc tupdesc,
 			if (undorec == NULL)
 				break;
 
-			/* Skip past any lock records */
-			while (undorec->type == OVUNDO_TYPE_TUPLE_LOCK)
+			/*
+			 * Skip past lock and update records to find the underlying
+			 * DELTA_INSERT.  When a delta-updated row is subsequently
+			 * updated again, the latest UNDO record on the old TID is an
+			 * UPDATE (from ovbt_tid_mark_old_updated), followed by a
+			 * TUPLE_LOCK, then the original DELTA_INSERT.  We must
+			 * traverse the prevundorec chain past these to locate the
+			 * predecessor information.
+			 */
+			while (undorec->type == OVUNDO_TYPE_TUPLE_LOCK ||
+				   undorec->type == OVUNDO_TYPE_UPDATE)
 			{
 				OVUndoRecPtr prev = undorec->prevundorec;
 
