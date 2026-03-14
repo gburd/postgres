@@ -10,6 +10,7 @@
  */
 #include "postgres.h"
 
+#include "access/detoast.h"
 #include "access/orvos_compression.h"
 #include "access/orvos_internal.h"
 #include "access/orvos_simple8b.h"
@@ -155,19 +156,21 @@ ovbt_attr_create_items(Form_pg_attribute att,
 						else if (VARATT_IS_COMPRESSED(vl))
 						{
 							/*
-							 * "inline" compressed datum. We will include it
-							 * in an attribute item, which we will try to
-							 * compress as whole, so compressing individual
-							 * items is a bit silly. We could uncompress it
-							 * here, but that also seems silly, because then
-							 * it was a waste of time to compress it earlier.
-							 * Furthermore, it's theoretically possible that
-							 * it would not compress as well using LZ4, so
-							 * that it would be too large to store on a page.
-							 *
-							 * TODO: what to do?
+							 * Inline compressed datum. Decompress it so we
+							 * can store the raw data in the attribute item.
+							 * The attribute item itself will be compressed as
+							 * a whole by orvos, so keeping individual datums
+							 * compressed is redundant.
 							 */
-							elog(ERROR, "inline compressed datums not implemented");
+							struct varlena *detoasted = detoast_attr(vl);
+
+							datums[j] = PointerGetDatum(detoasted);
+							this_sz = VARSIZE_ANY_EXHDR(detoasted);
+
+							if ((this_sz + 1) > 0x7F)
+								this_sz += 2;
+							else
+								this_sz += 1;
 						}
 						else
 						{
