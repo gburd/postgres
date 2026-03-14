@@ -1,8 +1,12 @@
 /*
  * orvos_simple8b.h
- *		XXX
+ *		Simple-8b encoding interface for orvos
  *
- * Copyright (c) 2019, PostgreSQL Global Development Group
+ * This header now delegates to the shared Simple-8b implementation in
+ * lib/simple8b.h.  It is kept for backward compatibility so that existing
+ * orvos code that includes "access/orvos_simple8b.h" continues to work.
+ *
+ * Copyright (c) 2019-2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/include/access/orvos_simple8b.h
@@ -10,12 +14,6 @@
 #ifndef ORVOS_SIMPLE8B_H
 #define ORVOS_SIMPLE8B_H
 
-extern uint64 simple8b_encode(const uint64 *ints, int num_ints, int *num_encoded);
-extern uint64 simple8b_encode_consecutive(const uint64 firstint, const uint64 secondint, int num_ints,
-										  int *num_encoded);
-extern int	simple8b_decode(uint64 codeword, uint64 *decoded);
-
-extern void simple8b_decode_words(uint64 *codewords, int num_codewords,
-								  uint64 *dst, int num_integers);
+#include "lib/simple8b.h"
 
 #endif							/* ORVOS_SIMPLE8B_H */

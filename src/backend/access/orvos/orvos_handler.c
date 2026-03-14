@@ -46,9 +46,12 @@
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/read_stream.h"
+#include "access/htup_details.h"
 #include "utils/builtins.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
+#include "utils/hsearch.h"
+#include "utils/tuplesort.h"
 
 
 typedef enum
@@ -2806,29 +2809,40 @@ orvosam_relation_copy_data(Relation rel, const RelFileLocator *newrnode)
 /*
  * Subroutine of the orvosam_relation_copy_for_cluster() callback.
  *
- * Creates the TID item with correct visibility information for the
- * given tuple in the old table. Returns the tid of the tuple in the
- * new table, or InvalidOVTid if this tuple can be left out completely.
+ * Determines visibility of a tuple in the old table by following UNDO
+ * records.  Returns true if the tuple is visible and should be copied,
+ * false if it should be skipped.  On success, the output parameters
+ * are filled with the visibility information.
  *
- * FIXME: This breaks UPDATE chains. I.e. after this is done, an UPDATE
- * looks like DELETE + INSERT, instead of an UPDATE, to any transaction that
- * might try to follow the update chain.
+ * out_was_update and out_update_newtid are set when the xmax came from
+ * an UPDATE record (as opposed to DELETE). out_update_newtid contains
+ * the TID of the new row version in the old table, which is used by
+ * the caller to reconstruct UPDATE chains in the new table.
  */
-static ovtid
-ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
-						 ovtid oldtid, OVUndoRecPtr old_undoptr,
-						 OVUndoRecPtr recent_oldest_undo,
-						 TransactionId OldestXmin)
+static bool
+ov_cluster_check_visibility(Relation OldHeap,
+							OVUndoRecPtr old_undoptr,
+							OVUndoRecPtr recent_oldest_undo,
+							TransactionId OldestXmin,
+							TransactionId *out_xmin,
+							CommandId *out_cmin,
+							TransactionId *out_xmax,
+							CommandId *out_cmax,
+							bool *out_changedPart,
+							bool *out_was_update,
+							ovtid *out_update_newtid,
+							bool *out_key_update)
 {
 	TransactionId this_xmin;
 	CommandId	this_cmin;
 	TransactionId this_xmax;
 	CommandId	this_cmax;
 	bool		this_changedPart;
+	bool		this_was_update;
+	ovtid		this_update_newtid;
+	bool		this_key_update;
 	OVUndoRecPtr undo_ptr;
 	OVUndoRec  *undorec;
-
-	(void) oldtid;
 
 	/*
 	 * Follow the chain of UNDO records for this tuple, to find the
@@ -2839,6 +2853,10 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 	this_cmin = InvalidCommandId;
 	this_xmax = InvalidTransactionId;
 	this_cmax = InvalidCommandId;
+	this_changedPart = false;
+	this_was_update = false;
+	this_update_newtid = InvalidOVTid;
+	this_key_update = false;
 
 	undo_ptr = old_undoptr;
 	for (;;)
@@ -2920,15 +2938,25 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 				else
 				{
 					/*
-					 * deleter committed or is in progress. Remember that it
-					 * was deleted by this XID.
+					 * deleter/updater committed or is in progress. Remember
+					 * that it was deleted/updated by this XID.
 					 */
 					this_xmax = undorec->xid;
 					this_cmax = undorec->cid;
 					if (undorec->type == OVUNDO_TYPE_DELETE)
+					{
 						this_changedPart = ((OVUndoRec_Delete *) undorec)->changedPart;
+						this_was_update = false;
+					}
 					else
+					{
+						OVUndoRec_Update *updaterec = (OVUndoRec_Update *) undorec;
+
 						this_changedPart = false;
+						this_was_update = true;
+						this_update_newtid = updaterec->newtid;
+						this_key_update = updaterec->key_update;
+					}
 
 					/*
 					 * follow the UNDO chain to find information about the
@@ -2941,44 +2969,265 @@ ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
 		}
 	}
 
+	if (this_xmin == InvalidTransactionId)
+		return false;
+
+	*out_xmin = this_xmin;
+	*out_cmin = this_cmin;
+	*out_xmax = this_xmax;
+	*out_cmax = this_cmax;
+	*out_changedPart = this_changedPart;
+	*out_was_update = this_was_update;
+	*out_update_newtid = this_update_newtid;
+	*out_key_update = this_key_update;
+	return true;
+}
+
+/*
+ * ov_cluster_write_tuple
+ *
+ * Write a tuple with the given visibility info into the new table.
+ * Returns the new TID, or InvalidOVTid on failure.
+ */
+static ovtid
+ov_cluster_write_tuple(Relation NewHeap,
+					   TransactionId this_xmin, CommandId this_cmin,
+					   TransactionId this_xmax, CommandId this_cmax,
+					   bool this_changedPart)
+{
+	ovtid		newtid = InvalidOVTid;
+
+	/* Insert the first version of the row. */
+	ovbt_tid_multi_insert(NewHeap,
+						  &newtid, 1,
+						  this_xmin,
+						  this_cmin,
+						  INVALID_SPECULATIVE_TOKEN,
+						  InvalidUndoPtr);
+
 	/*
-	 * We now know the visibility of this tuple. Re-create it in the new
+	 * And if the tuple was deleted/updated away, do the same in the new
 	 * table.
 	 */
-	if (this_xmin != InvalidTransactionId)
+	if (this_xmax != InvalidTransactionId)
 	{
-		/* Insert the first version of the row. */
-		ovtid		newtid = InvalidOVTid;
+		TM_Result	delete_result;
+		bool		this_xact_has_lock;
 
-		/* First, insert the tuple. */
-		ovbt_tid_multi_insert(NewHeap,
-							  &newtid, 1,
-							  this_xmin,
-							  this_cmin,
-							  INVALID_SPECULATIVE_TOKEN,
-							  InvalidUndoPtr);
-
-		/*
-		 * And if the tuple was deleted/updated away, do the same in the new
-		 * table.
-		 */
-		if (this_xmax != InvalidTransactionId)
-		{
-			TM_Result	delete_result;
-			bool		this_xact_has_lock;
-
-			/* tuple was deleted. */
-			delete_result = ovbt_tid_delete(NewHeap, newtid,
-											this_xmax, this_cmax,
-											NULL, NULL, false, NULL, this_changedPart,
-											&this_xact_has_lock);
-			if (delete_result != TM_Ok)
-				elog(ERROR, "tuple deletion failed during table rewrite");
-		}
-		return newtid;
+		/* tuple was deleted. */
+		delete_result = ovbt_tid_delete(NewHeap, newtid,
+										this_xmax, this_cmax,
+										NULL, NULL, false, NULL, this_changedPart,
+										&this_xact_has_lock);
+		if (delete_result != TM_Ok)
+			elog(ERROR, "tuple deletion failed during table rewrite");
 	}
-	else
+	return newtid;
+}
+
+/*
+ * ov_cluster_process_tuple
+ *
+ * Creates the TID item with correct visibility information for the
+ * given tuple in the old table. Returns the tid of the tuple in the
+ * new table, or InvalidOVTid if this tuple can be left out completely.
+ */
+static ovtid
+ov_cluster_process_tuple(Relation OldHeap, Relation NewHeap,
+						 ovtid oldtid, OVUndoRecPtr old_undoptr,
+						 OVUndoRecPtr recent_oldest_undo,
+						 TransactionId OldestXmin)
+{
+	TransactionId this_xmin;
+	CommandId	this_cmin;
+	TransactionId this_xmax;
+	CommandId	this_cmax;
+	bool		this_changedPart;
+	bool		this_was_update;
+	ovtid		this_update_newtid;
+	bool		this_key_update;
+
+	(void) oldtid;
+
+	if (!ov_cluster_check_visibility(OldHeap, old_undoptr,
+									 recent_oldest_undo, OldestXmin,
+									 &this_xmin, &this_cmin,
+									 &this_xmax, &this_cmax,
+									 &this_changedPart,
+									 &this_was_update,
+									 &this_update_newtid,
+									 &this_key_update))
 		return InvalidOVTid;
+
+	return ov_cluster_write_tuple(NewHeap, this_xmin, this_cmin,
+								 this_xmax, this_cmax, this_changedPart);
+}
+
+/*
+ * ov_cluster_encode_visibility
+ *
+ * Encode Orvos visibility info into a HeapTuple header so it can survive
+ * the tuplesort.  We repurpose HeapTuple header fields as follows:
+ *   t_xmin  -> xmin
+ *   t_xmax  -> xmax
+ *   t_cid   -> cmin (via HeapTupleHeaderSetCmin)
+ *   t_ctid  -> cmax encoded as (blockno=cmax, offset=changedPart?1:0)
+ */
+static void
+ov_cluster_encode_visibility(HeapTuple tuple,
+							 TransactionId xmin, CommandId cmin,
+							 TransactionId xmax, CommandId cmax,
+							 bool changedPart)
+{
+	HeapTupleHeaderSetXmin(tuple->t_data, xmin);
+	HeapTupleHeaderSetXmax(tuple->t_data, xmax);
+	HeapTupleHeaderSetCmin(tuple->t_data, cmin);
+
+	/*
+	 * Encode cmax and changedPart into t_ctid.  This field is normally the
+	 * self-pointer or chain pointer, but we repurpose it here because
+	 * the tuple only lives through the sort and is never stored on disk.
+	 */
+	ItemPointerSet(&tuple->t_data->t_ctid, (BlockNumber) cmax,
+				   changedPart ? 1 : 0);
+}
+
+/*
+ * ov_cluster_decode_visibility
+ *
+ * Decode visibility info previously encoded in a HeapTuple header by
+ * ov_cluster_encode_visibility().
+ */
+static void
+ov_cluster_decode_visibility(HeapTuple tuple,
+							 TransactionId *xmin, CommandId *cmin,
+							 TransactionId *xmax, CommandId *cmax,
+							 bool *changedPart)
+{
+	*xmin = HeapTupleHeaderGetRawXmin(tuple->t_data);
+	*xmax = HeapTupleHeaderGetRawXmax(tuple->t_data);
+	*cmin = HeapTupleHeaderGetRawCommandId(tuple->t_data);
+	*cmax = (CommandId) ItemPointerGetBlockNumberNoCheck(&tuple->t_data->t_ctid);
+	*changedPart = (ItemPointerGetOffsetNumberNoCheck(&tuple->t_data->t_ctid) != 0);
+}
+
+/*
+ * ov_cluster_materialize_tuple
+ *
+ * Materialize a single Orvos row (identified by old_tid) into a HeapTuple,
+ * fetching all attribute values from the columnar attribute B-trees.  The
+ * caller must have already opened attribute scans for all non-dropped columns.
+ * The resulting HeapTuple is allocated in the current memory context.
+ */
+static HeapTuple
+ov_cluster_materialize_tuple(Relation OldHeap, TupleDesc olddesc,
+							 OVAttrTreeScan *attr_scans, ovtid old_tid)
+{
+	Datum	   *values;
+	bool	   *isnull;
+	HeapTuple	tuple;
+	int			natts = olddesc->natts;
+
+	values = palloc(natts * sizeof(Datum));
+	isnull = palloc(natts * sizeof(bool));
+
+	for (int attno = 1; attno <= natts; attno++)
+	{
+		Form_pg_attribute att = TupleDescAttr(olddesc, attno - 1);
+
+		if (att->attisdropped)
+		{
+			values[attno - 1] = (Datum) 0;
+			isnull[attno - 1] = true;
+		}
+		else
+		{
+			Datum		datum = (Datum) 0;
+			bool		isnullval = true;
+
+			if (!ovbt_attr_fetch(&attr_scans[attno - 1], &datum, &isnullval, old_tid))
+				ov_fetch_attr_with_predecessor(OldHeap, olddesc, attno, old_tid, &datum, &isnullval);
+
+			/* Flatten any Orvos-TOASTed values for the sort */
+			if (!isnullval && att->attlen == -1)
+			{
+				if (VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(datum)) &&
+					VARTAG_EXTERNAL((struct varlena *) DatumGetPointer(datum)) == VARTAG_ORVOS)
+				{
+					datum = orvos_toast_flatten(OldHeap, (AttrNumber) attno, old_tid, datum);
+				}
+			}
+
+			values[attno - 1] = datum;
+			isnull[attno - 1] = isnullval;
+		}
+	}
+
+	tuple = heap_form_tuple(olddesc, values, isnull);
+
+	pfree(values);
+	pfree(isnull);
+
+	return tuple;
+}
+
+/*
+ * ov_cluster_write_sorted_tuple
+ *
+ * Write a sorted HeapTuple into the new Orvos table, decomposing it back
+ * into columnar form.  The HeapTuple has visibility info encoded in its
+ * header by ov_cluster_encode_visibility().
+ */
+static void
+ov_cluster_write_sorted_tuple(Relation NewHeap, HeapTuple tuple,
+							  TupleDesc olddesc)
+{
+	TransactionId xmin,
+				xmax;
+	CommandId	cmin,
+				cmax;
+	bool		changedPart;
+	ovtid		new_tid;
+	int			natts = olddesc->natts;
+	Datum	   *values;
+	bool	   *isnull;
+
+	/* Decode visibility info from the HeapTuple header */
+	ov_cluster_decode_visibility(tuple, &xmin, &cmin, &xmax, &cmax,
+								 &changedPart);
+
+	/* Write the TID with visibility info */
+	new_tid = ov_cluster_write_tuple(NewHeap, xmin, cmin, xmax, cmax,
+									 changedPart);
+	if (new_tid == InvalidOVTid)
+		return;
+
+	/* Decompose the HeapTuple into individual attributes */
+	values = palloc(natts * sizeof(Datum));
+	isnull = palloc(natts * sizeof(bool));
+	heap_deform_tuple(tuple, olddesc, values, isnull);
+
+	/* Write each attribute into the new table's column B-trees */
+	for (int attno = 1; attno <= natts; attno++)
+	{
+		Form_pg_attribute att = TupleDescAttr(olddesc, attno - 1);
+		Datum		datum = values[attno - 1];
+
+		/* Re-toast if needed for the new table */
+		if (!isnull[attno - 1] && att->attlen == -1)
+		{
+			if (VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(datum)) > MaxOrvosDatumSize)
+			{
+				datum = orvos_toast_datum(NewHeap, attno, datum, new_tid);
+			}
+		}
+
+		ovbt_attr_multi_insert(NewHeap, (AttrNumber) attno,
+							   &datum, &isnull[attno - 1], &new_tid, 1);
+	}
+
+	pfree(values);
+	pfree(isnull);
 }
 
 
@@ -2998,6 +3247,7 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	OVUndoRecPtr recent_oldest_undo = ovundo_get_oldest_undo_ptr(OldHeap);
 	int			attno;
 	IndexScanDesc indexScan;
+	Tuplesortstate *tuplesort;
 
 	(void) xid_cutoff;
 	(void) multi_cutoff;
@@ -3005,9 +3255,8 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	(void) tups_vacuumed;
 	(void) tups_recently_dead;
 
-	olddesc = RelationGetDescr(OldHeap),
-
-		attr_scans = palloc(olddesc->natts * sizeof(OVAttrTreeScan));
+	olddesc = RelationGetDescr(OldHeap);
+	attr_scans = palloc(olddesc->natts * sizeof(OVAttrTreeScan));
 
 	/*
 	 * Scan the old table. We ignore any old updated-away tuple versions, and
@@ -3030,17 +3279,18 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 							 &attr_scans[attno - 1]);
 	}
 
-	/*
-	 * TODO: sorting not implemented yet. (it would require materializing each
-	 * row into a HeapTuple or something like that, which could carry the
-	 * xmin/xmax information through the sorter).
-	 */
-	use_sort = false;
+	/* Set up sorting if requested */
+	if (use_sort)
+		tuplesort = tuplesort_begin_cluster(olddesc, OldIndex,
+											maintenance_work_mem,
+											NULL, TUPLESORT_NONE);
+	else
+		tuplesort = NULL;
 
 	/*
 	 * Prepare to scan the OldHeap.  To ensure we see recently-dead tuples
 	 * that still need to be copied, we scan with SnapshotAny and use
-	 * HeapTupleSatisfiesVacuum for the visibility test.
+	 * Orvos UNDO chain visibility for the visibility test.
 	 */
 	if (OldIndex != NULL && !use_sort)
 	{
@@ -3065,23 +3315,17 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 									 PROGRESS_CLUSTER_PHASE_SEQ_SCAN_HEAP);
 
 		indexScan = NULL;
-
-	/*
-	 * TODO: Implement progress tracking for CLUSTER operations.
-	 * Need to calculate total row count from Orvos metadata and update
-	 * PROGRESS_CLUSTER_TOTAL_HEAP_BLKS or equivalent Orvos-specific param.
-	 * Original code referenced heapScan->rs_nblocks which doesn't exist
-	 * in columnar storage model.
-	 */
 	}
 
+	/*
+	 * Main scan loop: read all tuples from the old table, checking visibility.
+	 * In index-scan mode, write directly.  In scan-and-sort mode, materialize
+	 * into HeapTuples with encoded visibility and feed to tuplesort.
+	 */
 	for (;;)
 	{
 		ovtid		old_tid;
 		OVUndoRecPtr old_undoptr;
-		ovtid		new_tid;
-		Datum		datum = (Datum) 0;
-		bool		isnull = true;
 		ovtid		fetchtid = InvalidOVTid;
 
 		CHECK_FOR_INTERRUPTS();
@@ -3116,49 +3360,131 @@ orvosam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 		old_undoptr = tid_scan.array_iter.undoslots[OVTidScanCurUndoSlotNo(&tid_scan)];
 
-		new_tid = ov_cluster_process_tuple(OldHeap, NewHeap,
-										   old_tid, old_undoptr,
-										   recent_oldest_undo,
-										   OldestXmin);
-		if (new_tid != InvalidOVTid)
+		if (tuplesort != NULL)
 		{
-			/* Fetch the attributes and write them out */
-			for (attno = 1; attno <= olddesc->natts; attno++)
+			/*
+			 * Scan-and-sort mode: check visibility, materialize the tuple,
+			 * encode visibility into the HeapTuple header, and feed to sort.
+			 */
+			TransactionId vis_xmin,
+						vis_xmax;
+			CommandId	vis_cmin,
+						vis_cmax;
+			bool		vis_changedPart;
+			bool		vis_was_update;
+			ovtid		vis_update_newtid;
+			bool		vis_key_update;
+			HeapTuple	htup;
+
+			if (!ov_cluster_check_visibility(OldHeap, old_undoptr,
+											 recent_oldest_undo, OldestXmin,
+											 &vis_xmin, &vis_cmin,
+											 &vis_xmax, &vis_cmax,
+											 &vis_changedPart,
+											 &vis_was_update,
+											 &vis_update_newtid,
+											 &vis_key_update))
+				continue;
+
+			htup = ov_cluster_materialize_tuple(OldHeap, olddesc,
+												attr_scans, old_tid);
+			ov_cluster_encode_visibility(htup, vis_xmin, vis_cmin,
+										 vis_xmax, vis_cmax,
+										 vis_changedPart);
+
+			tuplesort_putheaptuple(tuplesort, htup);
+
+			pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_TUPLES_SCANNED,
+										 *num_tuples + 1);
+		}
+		else
+		{
+			/*
+			 * Index-scan or VACUUM FULL mode: process and write directly.
+			 */
+			ovtid		new_tid;
+			Datum		datum = (Datum) 0;
+			bool		isnull = true;
+
+			new_tid = ov_cluster_process_tuple(OldHeap, NewHeap,
+											   old_tid, old_undoptr,
+											   recent_oldest_undo,
+											   OldestXmin);
+			if (new_tid != InvalidOVTid)
 			{
-				Form_pg_attribute att = TupleDescAttr(olddesc, attno - 1);
+				/* Fetch the attributes and write them out */
+				for (attno = 1; attno <= olddesc->natts; attno++)
+				{
+					Form_pg_attribute att = TupleDescAttr(olddesc, attno - 1);
 
-				if (att->attisdropped)
-				{
-					datum = (Datum) 0;
-					isnull = true;
-				}
-				else
-				{
-					if (!ovbt_attr_fetch(&attr_scans[attno - 1], &datum, &isnull, old_tid))
-						ov_fetch_attr_with_predecessor(OldHeap, olddesc, attno, old_tid, &datum, &isnull);
-				}
-
-				/* flatten and re-toast any ZS-TOASTed values */
-				if (!isnull && att->attlen == -1)
-				{
-					if (VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(datum)) && VARTAG_EXTERNAL((struct varlena *) DatumGetPointer(datum)) == VARTAG_ORVOS)
+					if (att->attisdropped)
 					{
-						datum = orvos_toast_flatten(OldHeap, (AttrNumber) attno, old_tid, datum);
+						datum = (Datum) 0;
+						isnull = true;
+					}
+					else
+					{
+						if (!ovbt_attr_fetch(&attr_scans[attno - 1], &datum, &isnull, old_tid))
+							ov_fetch_attr_with_predecessor(OldHeap, olddesc, attno, old_tid, &datum, &isnull);
 					}
 
-					if (VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(datum)) > MaxOrvosDatumSize)
+					/* flatten and re-toast any Orvos-TOASTed values */
+					if (!isnull && att->attlen == -1)
 					{
-						datum = orvos_toast_datum(NewHeap, attno, datum, new_tid);
-					}
-				}
+						if (VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(datum)) && VARTAG_EXTERNAL((struct varlena *) DatumGetPointer(datum)) == VARTAG_ORVOS)
+						{
+							datum = orvos_toast_flatten(OldHeap, (AttrNumber) attno, old_tid, datum);
+						}
 
-				ovbt_attr_multi_insert(NewHeap, (AttrNumber) attno, &datum, &isnull, &new_tid, 1);
+						if (VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(datum)) > MaxOrvosDatumSize)
+						{
+							datum = orvos_toast_datum(NewHeap, attno, datum, new_tid);
+						}
+					}
+
+					ovbt_attr_multi_insert(NewHeap, (AttrNumber) attno, &datum, &isnull, &new_tid, 1);
+				}
 			}
 		}
 	}
 
 	if (indexScan != NULL)
 		index_endscan(indexScan);
+
+	/*
+	 * In scan-and-sort mode, complete the sort, then read out all tuples
+	 * and write them to the new relation in sorted order.
+	 */
+	if (tuplesort != NULL)
+	{
+		/* Report that we are now sorting tuples */
+		pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
+									 PROGRESS_CLUSTER_PHASE_SORT_TUPLES);
+
+		tuplesort_performsort(tuplesort);
+
+		/* Report that we are now writing new heap */
+		pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
+									 PROGRESS_CLUSTER_PHASE_WRITE_NEW_HEAP);
+
+		for (;;)
+		{
+			HeapTuple	tuple;
+
+			CHECK_FOR_INTERRUPTS();
+
+			tuple = tuplesort_getheaptuple(tuplesort, true);
+			if (tuple == NULL)
+				break;
+
+			ov_cluster_write_sorted_tuple(NewHeap, tuple, olddesc);
+
+			pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_TUPLES_WRITTEN,
+										 *num_tuples + 1);
+		}
+
+		tuplesort_end(tuplesort);
+	}
 
 	ovbt_tid_end_scan(&tid_scan);
 	for (attno = 1; attno <= olddesc->natts; attno++)

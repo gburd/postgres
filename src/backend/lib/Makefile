@@ -22,5 +22,6 @@ OBJS = \
 	knapsack.o \
 	pairingheap.o \
 	rbtree.o \
+	simple8b.o \
 
 include $(top_srcdir)/src/backend/common.mk
