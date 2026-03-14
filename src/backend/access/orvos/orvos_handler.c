@@ -3585,13 +3585,157 @@ orvosam_relation_estimate_size(Relation rel, int32 *attr_widths,
 
 
 /*
+ * orvosam_bitmap_fetch_next_block
+ *
+ * Fetch the next block of tuples from the TID bitmap into the scan
+ * descriptor's bmscan arrays. Returns true if a block was fetched,
+ * false if the bitmap is exhausted.
+ *
+ * For exact (non-lossy) pages, we extract the specific tuple offsets from the
+ * bitmap and convert them to ovtid values. For lossy pages, we scan all TIDs
+ * in the logical block range using the TID tree.
+ *
+ * After fetching TIDs, we batch-fetch all projected column values.
+ */
+static bool
+orvosam_bitmap_fetch_next_block(OrvosDesc scan,
+								bool *recheck,
+								uint64 *lossy_pages,
+								uint64 *exact_pages)
+{
+	TableScanDesc sscan = &scan->rs_scan;
+	Relation	rel = sscan->rs_rd;
+	TBMIterateResult tbmres;
+	int			ntuples;
+	TupleDesc	reldesc;
+
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		/* Get next block from the bitmap iterator */
+		if (!tbm_iterate(&sscan->st.rs_tbmiterator, &tbmres))
+			return false;
+
+		/* Initialize projection and bmscan arrays on first call */
+		ov_initialize_proj_attributes_extended(scan, RelationGetDescr(rel));
+
+		ntuples = 0;
+
+		if (tbmres.lossy)
+		{
+			/*
+			 * Lossy page: we don't know which specific tuples matched, so
+			 * scan all TIDs in this logical block range using the TID tree.
+			 * The executor will recheck all returned tuples.
+			 */
+			OVTidTreeScan tid_scan;
+			ovtid		tid;
+
+			*recheck = true;
+
+			ovbt_tid_begin_scan(rel,
+								OVTidFromBlkOff(tbmres.blockno, 1),
+								OVTidFromBlkOff(tbmres.blockno + 1, 1),
+								sscan->rs_snapshot,
+								&tid_scan);
+
+			while ((tid = ovbt_tid_scan_next(&tid_scan,
+											 ForwardScanDirection)) != InvalidOVTid)
+			{
+				if (ntuples >= MAX_ITEMS_PER_LOGICAL_BLOCK)
+					break;
+				scan->bmscan_tids[ntuples] = tid;
+				ntuples++;
+			}
+			ovbt_tid_end_scan(&tid_scan);
+
+			(*lossy_pages)++;
+		}
+		else
+		{
+			/*
+			 * Exact page: extract specific tuple offsets from the bitmap and
+			 * convert to ovtid values. Only these specific TIDs need to be
+			 * fetched.
+			 */
+			OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
+			int			noffsets;
+
+			*recheck = tbmres.recheck;
+
+			noffsets = tbm_extract_page_tuple(&tbmres, offsets,
+											  TBM_MAX_TUPLES_PER_PAGE);
+
+			for (int i = 0; i < noffsets; i++)
+			{
+				ovtid		tid = OVTidFromBlkOff(tbmres.blockno, offsets[i]);
+
+				if (ntuples >= MAX_ITEMS_PER_LOGICAL_BLOCK)
+					break;
+				scan->bmscan_tids[ntuples] = tid;
+				ntuples++;
+			}
+
+			(*exact_pages)++;
+		}
+
+		/* Skip empty blocks */
+		if (ntuples == 0)
+			continue;
+
+		/* Batch-fetch all projected column values for the collected TIDs */
+		reldesc = RelationGetDescr(rel);
+
+		for (int i = 1; i < scan->proj_data.num_proj_atts; i++)
+		{
+			int			attno = scan->proj_data.proj_atts[i];
+			OVAttrTreeScan attr_scan;
+			Datum		datum;
+			bool		isnull;
+			Datum	   *datums = scan->bmscan_datums[i];
+			bool	   *isnulls = scan->bmscan_isnulls[i];
+
+			ovbt_attr_begin_scan(rel, reldesc, attno, &attr_scan);
+			for (int n = 0; n < ntuples; n++)
+			{
+				datum = (Datum) 0;
+				isnull = true;
+
+				if (!ovbt_attr_fetch(&attr_scan, &datum, &isnull,
+									 scan->bmscan_tids[n]))
+					ov_fetch_attr_with_predecessor(rel, reldesc, attno,
+												   scan->bmscan_tids[n],
+												   &datum, &isnull);
+
+				if (!isnull)
+					datum = ov_datumCopy(datum,
+										 attr_scan.attdesc->attbyval,
+										 attr_scan.attdesc->attlen);
+
+				datums[n] = datum;
+				isnulls[n] = isnull;
+			}
+			ovbt_attr_end_scan(&attr_scan);
+		}
+
+		scan->bmscan_nexttuple = 0;
+		scan->bmscan_ntuples = ntuples;
+		return true;
+	}
+}
+
+/*
  * Bitmap scan implementation for Orvos tables.
  *
- * For now, this implements a simple sequential scan approach since Orvos
- * doesn't have the traditional block-oriented structure of heap tables.
- * The TID tree structure means we scan TIDs sequentially and check visibility.
+ * Iterates through the TID bitmap, fetching blocks of matching tuples and
+ * returning them one at a time. For exact (non-lossy) bitmap pages, only the
+ * specific TIDs from the bitmap are fetched. For lossy pages, all visible
+ * TIDs in the logical block are fetched, and recheck is set so the executor
+ * re-evaluates the original predicate.
  *
- * Future optimization: Could use the bitmap to skip ranges of TIDs more efficiently.
+ * Column values are batch-fetched per block for efficiency, using the same
+ * bmscan arrays used by ANALYZE and TABLESAMPLE scans.
  */
 static bool
 orvosam_scan_bitmap_next_tuple(TableScanDesc sscan,
@@ -3600,26 +3744,74 @@ orvosam_scan_bitmap_next_tuple(TableScanDesc sscan,
 							   uint64 *lossy_pages,
 							   uint64 *exact_pages)
 {
-	/*
-	 * For Orvos tables, we always need to recheck visibility since our
-	 * columnar structure doesn't directly map to heap's block-based model.
-	 */
-	*recheck = true;
+	OrvosDesc	scan = (OrvosDesc) sscan;
+	ovtid		tid;
+	MemoryContext oldcontext;
 
 	/*
-	 * Note: lossy_pages and exact_pages are not used in this implementation
-	 * since Orvos doesn't have the traditional block-based structure. The
-	 * bitmap filtering happens at the executor level above us.
+	 * If we've exhausted the current block's tuples, fetch the next block
+	 * from the bitmap.
 	 */
-	(void) lossy_pages;			/* unused */
-	(void) exact_pages;			/* unused */
+	while (scan->bmscan_nexttuple >= scan->bmscan_ntuples)
+	{
+		if (!orvosam_bitmap_fetch_next_block(scan, recheck,
+											 lossy_pages, exact_pages))
+			return false;
+	}
 
-	/*
-	 * Use the regular sequential scan to get the next tuple. This is less
-	 * efficient than heap's bitmap scan but functionally correct. The bitmap
-	 * filtering happens at the executor level above us.
-	 */
-	return orvosam_getnextslot(sscan, ForwardScanDirection, slot);
+	Assert((scan->proj_data.num_proj_atts - 1) <=
+		   slot->tts_tupleDescriptor->natts);
+
+	/* Initialize all slot positions to NULL */
+	for (int i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+	{
+		slot->tts_values[i] = (Datum) 0;
+		slot->tts_isnull[i] = true;
+	}
+
+	oldcontext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+	tid = scan->bmscan_tids[scan->bmscan_nexttuple];
+	for (int i = 1; i < scan->proj_data.num_proj_atts; i++)
+	{
+		int			natt = scan->proj_data.proj_atts[i];
+		Form_pg_attribute att =
+			TupleDescAttr(slot->tts_tupleDescriptor, natt - 1);
+		Datum		datum;
+		bool		isnull;
+
+		datum = scan->bmscan_datums[i][scan->bmscan_nexttuple];
+		isnull = scan->bmscan_isnulls[i][scan->bmscan_nexttuple];
+
+		/* Flatten Orvos-TOASTed values */
+		if (!isnull && att->attlen == -1 &&
+			VARATT_IS_EXTERNAL(
+				(struct varlena *) DatumGetPointer(datum)) &&
+			VARTAG_EXTERNAL(
+				(struct varlena *) DatumGetPointer(datum)) == VARTAG_ORVOS)
+		{
+			datum = orvos_toast_flatten(scan->rs_scan.rs_rd,
+										(AttrNumber) natt, tid, datum);
+		}
+
+		/* Copy non-byval datums to slot's memory context */
+		if (!isnull && !att->attbyval)
+			datum = ov_datumCopy(datum, att->attbyval, att->attlen);
+
+		slot->tts_values[natt - 1] = datum;
+		slot->tts_isnull[natt - 1] = isnull;
+	}
+
+	MemoryContextSwitchTo(oldcontext);
+
+	slot->tts_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
+	slot->tts_tid = ItemPointerFromOVTid(tid);
+	slot->tts_nvalid = slot->tts_tupleDescriptor->natts;
+	slot->tts_flags &= ~TTS_FLAG_EMPTY;
+
+	scan->bmscan_nexttuple++;
+
+	return true;
 }
 
 static bool
@@ -3808,9 +4000,7 @@ orvosam_vacuum_rel(Relation onerel, const VacuumParams params,
 {
 	VacuumParams mutable_params = params;
 
-	/* TODO: Fix ovundo_vacuum to use GlobalVisState instead of TransactionId */
-	ovundo_vacuum(onerel, &mutable_params, bstrategy,
-				  InvalidTransactionId);
+	ovundo_vacuum(onerel, &mutable_params, bstrategy);
 }
 
 const TableAmRoutine orvosam_methods = {

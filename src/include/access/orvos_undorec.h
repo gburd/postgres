@@ -261,8 +261,7 @@ extern void XLogRegisterUndoOp(uint8 block_id, ov_pending_undo_op * undo_op);
 extern Buffer XLogRedoUndoOp(XLogReaderState *record, uint8 block_id);
 
 struct VacuumParams;
-extern void ovundo_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy,
-						  TransactionId OldestXmin);
+extern void ovundo_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy);
 extern OVUndoRecPtr ovundo_get_oldest_undo_ptr(Relation rel);
 
 #endif							/* ORVOS_UNDOREC_H */

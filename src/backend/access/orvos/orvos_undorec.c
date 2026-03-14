@@ -38,10 +38,13 @@
 #include "postmaster/autovacuum.h"
 #include "pgstat.h"
 #include "storage/lmgr.h"
+#include "storage/procarray.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
 #include "utils/rel.h"
 #include "utils/lsyscache.h"
+#include "utils/timestamp.h"
+#include "utils/snapmgr.h"
 
 /*
  * Working area for VACUUM.
@@ -457,7 +460,7 @@ ovundo_read_cached_oldest(Relation rel)
  */
 static bool
 should_trim_undo(Relation rel, OVUndoRecPtr cached_oldest,
-				 TransactionId OldestXmin)
+				 GlobalVisState *vistest)
 {
 	Buffer		metabuf;
 	Page		metapage;
@@ -489,8 +492,8 @@ should_trim_undo(Relation rel, OVUndoRecPtr cached_oldest,
 
 	/*
 	 * Even if fewer records accumulated, trim if the oldest record's
-	 * transaction now precedes OldestXmin -- that means at least one
-	 * record has become removable.
+	 * transaction is removable -- that means at least one record has
+	 * become removable.
 	 */
 	{
 		OVUndoRec  *oldest_rec;
@@ -502,8 +505,8 @@ should_trim_undo(Relation rel, OVUndoRecPtr cached_oldest,
 						 BUFFER_LOCK_SHARE, true);
 		if (oldest_rec != NULL)
 		{
-			removable = TransactionIdPrecedes(oldest_rec->xid,
-											  OldestXmin);
+			removable = GlobalVisTestIsRemovableXid(vistest,
+													oldest_rec->xid);
 		}
 		if (BufferIsValid(undobuf))
 			UnlockReleaseBuffer(undobuf);
@@ -526,7 +529,7 @@ should_trim_undo(Relation rel, OVUndoRecPtr cached_oldest,
  * Returns the oldest valid UNDO pointer after trimming.
  */
 static OVUndoRecPtr
-ovundo_trim_locked(Relation rel, TransactionId OldestXmin)
+ovundo_trim_locked(Relation rel, GlobalVisState *vistest)
 {
 	Buffer		metabuf;
 	Page		metapage;
@@ -600,7 +603,7 @@ ovundo_trim_locked(Relation rel, TransactionId OldestXmin)
 			}
 			oldest_undorecptr = undorec->undorecptr;
 
-			if (!TransactionIdPrecedes(undorec->xid, OldestXmin))
+			if (!GlobalVisTestIsRemovableXid(vistest, undorec->xid))
 			{
 				/* Still needed. Bail out. */
 				break;
@@ -747,7 +750,7 @@ ovundo_trim_locked(Relation rel, TransactionId OldestXmin)
  * Returns the oldest valid UNDO ptr, after discarding.
  */
 static OVUndoRecPtr
-ovundo_trim(Relation rel, TransactionId OldestXmin)
+ovundo_trim(Relation rel, GlobalVisState *vistest)
 {
 	OVUndoRecPtr result;
 
@@ -757,7 +760,7 @@ ovundo_trim(Relation rel, TransactionId OldestXmin)
 	 */
 	LockPage(rel, OV_META_BLK, ExclusiveLock);
 
-	result = ovundo_trim_locked(rel, OldestXmin);
+	result = ovundo_trim_locked(rel, vistest);
 
 	UnlockPage(rel, OV_META_BLK, ExclusiveLock);
 
@@ -892,8 +895,7 @@ ov_lazy_tid_reaped(ItemPointer itemptr, void *state)
  * garbage left behind by aborts or deletions based on the UNDO log.
  */
 void
-ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy,
-			  TransactionId OldestXmin)
+ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy)
 {
 	OVVacRelStats *vacrelstats;
 	Relation   *Irel;
@@ -902,6 +904,10 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 	ovtid		starttid;
 	ovtid		endtid;
 	uint64		num_live_tuples;
+	uint64		num_dead_tuples;
+	TimestampTz starttime;
+	GlobalVisState *vistest;
+	TransactionId OldestXmin;
 
 	/* do nothing if the table is completely empty. */
 	if (RelationGetTargetBlock(rel) == 0 ||
@@ -915,10 +921,19 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 			return;
 	}
 
+	starttime = GetCurrentTimestamp();
+
+	/*
+	 * Use GlobalVisState for accurate visibility testing during VACUUM.
+	 * This replaces the old InvalidTransactionId/RecentXmin approach with
+	 * the proper per-relation visibility horizon.
+	 */
+	vistest = GlobalVisTestFor(rel);
+
 	/*
 	 * Scan the UNDO log, and discard what we can.
 	 */
-	(void) ovundo_trim(rel, RecentXmin);
+	(void) ovundo_trim(rel, vistest);
 
 	vacrelstats = (OVVacRelStats *) palloc0(sizeof(OVVacRelStats));
 	vacrelstats->rel = rel;
@@ -942,12 +957,14 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 
 	starttid = MinOVTid;
 	num_live_tuples = 0;
+	num_dead_tuples = 0;
 	do
 	{
 		IntegerSet *dead_tids;
 
 		/* Scan the TID tree, to collect TIDs that have been marked dead. */
 		dead_tids = ovbt_collect_dead_tids(rel, starttid, &endtid, &num_live_tuples);
+		num_dead_tuples += intset_num_entries(dead_tids);
 		vacrelstats->dead_tids = dead_tids;
 
 		if (intset_num_entries(dead_tids) > 0)
@@ -984,14 +1001,22 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 	vac_close_indexes(nindexes, Irel, NoLock);
 
 	/*
-	 * Update pg_class to reflect new info we know. The main thing we know for
-	 * sure here is relhasindex or not currently. Using OldestXmin as new
-	 * frozenxid. And since we don't now the new multixid passing it as
-	 * invalid to avoid update. Plus, using false for relallisvisible as don't
-	 * know that either.
-	 *
-	 * FIXME: pass correct numbers for other arguments.
+	 * Note: ovbt_collect_dead_tids counts all tuples (live + dead) in
+	 * num_live_tuples. Subtract dead tuples that were just removed to get the
+	 * actual live tuple count.
 	 */
+	if (num_live_tuples > num_dead_tuples)
+		num_live_tuples -= num_dead_tuples;
+	else
+		num_live_tuples = 0;
+
+	/*
+	 * Update pg_class to reflect new info we know. Using OldestXmin as new
+	 * frozenxid. Since we don't know the new multixid, pass it as invalid to
+	 * avoid update. We don't track all-visible or all-frozen pages in the
+	 * columnar store, so pass 0 for those.
+	 */
+	OldestXmin = GetOldestNonRemovableTransactionId(rel);
 	vac_update_relstats(rel,
 						RelationGetNumberOfBlocks(rel),
 						num_live_tuples,
@@ -1004,11 +1029,11 @@ ovundo_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy
 						NULL,	/* minmulti_updated */
 						false); /* in_outer_xact */
 
-	/* report results to the stats collector, too */
+	/* report results to the cumulative stats system */
 	pgstat_report_vacuum(rel,
 						 num_live_tuples,
-						 0,		/* FIXME: # of dead tuples */
-						 0);	/* FIXME: vacuum start time */
+						 num_dead_tuples,
+						 starttime);
 }
 
 /*
@@ -1138,6 +1163,7 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 {
 	OVUndoRecPtr cached_oldest;
 	OVUndoRecPtr result;
+	GlobalVisState *vistest;
 
 	/* do nothing if the table is completely empty. */
 	if (RelationGetTargetBlock(rel) == 0 ||
@@ -1151,6 +1177,8 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 			return InvalidUndoPtr;
 	}
 
+	vistest = GlobalVisTestFor(rel);
+
 	/*
 	 * Fast path: read the cached value with shared lock only.
 	 */
@@ -1160,7 +1188,7 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 	 * Check the heuristic.  If there is not enough accumulated UNDO
 	 * work, skip the expensive trim entirely.
 	 */
-	if (!should_trim_undo(rel, cached_oldest, RecentXmin))
+	if (!should_trim_undo(rel, cached_oldest, vistest))
 		return cached_oldest;
 
 	/*
@@ -1171,7 +1199,7 @@ ovundo_get_oldest_undo_ptr(Relation rel)
 	if (!ConditionalLockPage(rel, OV_META_BLK, ExclusiveLock))
 		return cached_oldest;
 
-	result = ovundo_trim_locked(rel, RecentXmin);
+	result = ovundo_trim_locked(rel, vistest);
 
 	UnlockPage(rel, OV_META_BLK, ExclusiveLock);
 
