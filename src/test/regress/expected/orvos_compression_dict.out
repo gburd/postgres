@@ -119,10 +119,54 @@ SELECT i,
        (ARRAY['new', 'in_progress', 'done'])[1 + (i % 3)],
        'description_' || i
 FROM generate_series(1, 1000) i;
-WARNING:  terminating connection because of crash of another server process
-DETAIL:  The postmaster has commanded this server process to roll back the current transaction and exit, because another server process exited abnormally and possibly corrupted shared memory.
-HINT:  In a moment you should be able to reconnect to the database and repeat your command.
-server closed the connection unexpectedly
-	This probably means the server terminated abnormally
-	before or while processing the request.
-connection to server was lost
+SELECT COUNT(DISTINCT status) FROM orvos_dict_mixed_test;
+ count
+-------
+     3
+(1 row)
+
+SELECT COUNT(DISTINCT description) FROM orvos_dict_mixed_test;
+ count
+-------
+  1000
+(1 row)
+
+SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' LIMIT 5;
+ id  | status |    description
+-----+--------+-------------------
+   3 | done   | description_3
+   6 | done   | description_6
+   9 | done   | description_9
+  12 | done   | description_12
+  15 | done   | description_15
+(5 rows)
+
+DROP TABLE orvos_dict_mixed_test;
+-- Test 4: NULL values with dictionary encoding
+CREATE TABLE orvos_dict_null_test (
+    id int,
+    status text
+) USING orvos;
+INSERT INTO orvos_dict_null_test
+SELECT i,
+       CASE
+           WHEN i % 10 = 0 THEN NULL
+           ELSE (ARRAY['draft', 'published', 'archived'])[1 + (i % 3)]
+       END
+FROM generate_series(1, 100) i;
+SELECT COUNT(*) FROM orvos_dict_null_test WHERE status IS NULL;
+ count
+-------
+    10
+(1 row)
+
+SELECT status, COUNT(*) FROM orvos_dict_null_test GROUP BY status ORDER BY status;
+  status   | count
+-----------+-------
+ archived  |    30
+ draft     |    30
+ published |    30
+           |    10
+(4 rows)
+
+DROP TABLE orvos_dict_null_test;
