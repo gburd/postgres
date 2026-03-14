@@ -1062,23 +1062,6 @@ ov_materialize_delta_columns(Relation rel,
 		}
 
 		/* Insert into new TID's column B-tree */
-		{
-			Form_pg_attribute attr = TupleDescAttr(tupdesc, attno - 1);
-
-			elog(LOG, "materialize col %d (attlen=%d, byval=%d) for tid %lu from predecessor %lu, isnull=%d, found=%d",
-				 attno, attr->attlen, attr->attbyval, (unsigned long) newtid,
-				 (unsigned long) predecessor_tid, isnull, found);
-			if (!isnull && attr->attlen == -1)
-			{
-				struct varlena *vl = (struct varlena *) DatumGetPointer(datum);
-
-				elog(LOG, "  varlena: VARSIZE_ANY=%zu, VARSIZE_ANY_EXHDR=%zu, IS_1B=%d, IS_4B=%d, IS_EXT=%d",
-					 VARSIZE_ANY(vl), VARSIZE_ANY_EXHDR(vl),
-					 VARATT_IS_1B(vl) ? 1 : 0,
-					 (VARATT_IS_4B(vl)) ? 1 : 0,
-					 VARATT_IS_EXTERNAL(vl) ? 1 : 0);
-			}
-		}
 		ovbt_attr_multi_insert(rel, (AttrNumber) attno,
 							   &datum, &isnull, &newtid, 1);
 	}
@@ -4116,26 +4099,55 @@ orvosam_bitmap_fetch_next_block(OrvosDesc scan,
 		{
 			/*
 			 * Exact page: extract specific tuple offsets from the bitmap and
-			 * convert to ovtid values. Only these specific TIDs need to be
-			 * fetched.
+			 * convert to ovtid values. We must check visibility for each TID,
+			 * because the index may still contain entries for deleted rows.
+			 *
+			 * We do this by scanning the TID tree for the block range (which
+			 * performs visibility checking) and intersecting the results with
+			 * the bitmap's TID set.
 			 */
 			OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
 			int			noffsets;
+			OVTidTreeScan tid_scan;
+			ovtid		tid;
+			ovtid		bitmap_tids[TBM_MAX_TUPLES_PER_PAGE];
+			int			bm_idx;
 
 			*recheck = tbmres.recheck;
 
 			noffsets = tbm_extract_page_tuple(&tbmres, offsets,
 											  TBM_MAX_TUPLES_PER_PAGE);
 
+			/* Build sorted array of TIDs from bitmap offsets */
 			for (int i = 0; i < noffsets; i++)
-			{
-				ovtid		tid = OVTidFromBlkOff(tbmres.blockno, offsets[i]);
+				bitmap_tids[i] = OVTidFromBlkOff(tbmres.blockno, offsets[i]);
 
-				if (ntuples >= MAX_ITEMS_PER_LOGICAL_BLOCK)
-					break;
-				scan->bmscan_tids[ntuples] = tid;
-				ntuples++;
+			/* Scan TID tree for the block range with visibility checking */
+			ovbt_tid_begin_scan(rel,
+								OVTidFromBlkOff(tbmres.blockno, 1),
+								OVTidFromBlkOff(tbmres.blockno + 1, 1),
+								sscan->rs_snapshot,
+								&tid_scan);
+
+			bm_idx = 0;
+			while ((tid = ovbt_tid_scan_next(&tid_scan,
+											 ForwardScanDirection)) != InvalidOVTid)
+			{
+				/* Advance bitmap index past TIDs less than current */
+				while (bm_idx < noffsets && bitmap_tids[bm_idx] < tid)
+					bm_idx++;
+
+				/* If this visible TID is in the bitmap set, include it */
+				if (bm_idx < noffsets && bitmap_tids[bm_idx] == tid)
+				{
+					if (ntuples >= MAX_ITEMS_PER_LOGICAL_BLOCK)
+						break;
+					scan->bmscan_tids[ntuples] = tid;
+					ntuples++;
+					bm_idx++;
+				}
 			}
+			ovbt_tid_end_scan(&tid_scan);
 
 			(*exact_pages)++;
 		}

@@ -955,7 +955,9 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 		elog(ERROR, "not implemented");
 
 	if (p - (unsigned char *) src != srcSize)
-		elog(ERROR, "corrupt item array");
+		elog(ERROR, "corrupt item array: consumed %d of %d bytes, numelements=%d, attlen=%d, attbyval=%d, hasnulls=%d, attno=%d",
+			 (int)(p - (unsigned char *) src), srcSize, numelements,
+			 attlen, attbyval, hasnulls, attr->attnum);
 }
 
 
@@ -1094,7 +1096,8 @@ ovbt_split_item(Form_pg_attribute attr, OVExplodedItem * origitem, ovtid first_r
 		if (origitem->tids[i] >= first_right_tid)
 			break;
 
-		p += ovbt_attr_datasize(attr->attlen, p);
+		if (!ovbt_attr_item_isnull(origitem->nullbitmap, i))
+			p += ovbt_attr_datasize(attr->attlen, p);
 	}
 	left_num_elements = i;
 	left_datasz = p - origitem->datumdata;
@@ -1110,7 +1113,7 @@ ovbt_split_item(Form_pg_attribute attr, OVExplodedItem * origitem, ovtid first_r
 	leftitem->t_flags = 0;
 	leftitem->t_num_elements = left_num_elements;
 	leftitem->tids = palloc(left_num_elements * sizeof(ovtid));
-	leftitem->nullbitmap = palloc0(left_num_elements * sizeof(bool));
+	leftitem->nullbitmap = palloc0(OVBT_ATTR_BITMAPLEN(left_num_elements));
 	leftitem->datumdata = palloc(left_datasz);
 	leftitem->datumdatasz = left_datasz;
 
@@ -1128,7 +1131,7 @@ ovbt_split_item(Form_pg_attribute attr, OVExplodedItem * origitem, ovtid first_r
 	rightitem->t_flags = 0;
 	rightitem->t_num_elements = right_num_elements;
 	rightitem->tids = palloc(right_num_elements * sizeof(ovtid));
-	rightitem->nullbitmap = palloc(right_num_elements * sizeof(bool));
+	rightitem->nullbitmap = palloc0(OVBT_ATTR_BITMAPLEN(right_num_elements));
 	rightitem->datumdata = palloc(right_datasz);
 	rightitem->datumdatasz = right_datasz;
 
@@ -1137,7 +1140,7 @@ ovbt_split_item(Form_pg_attribute attr, OVExplodedItem * origitem, ovtid first_r
 	for (i = 0; i < right_num_elements; i++)
 	{
 		if (ovbt_attr_item_isnull(origitem->nullbitmap, left_num_elements + i))
-			ovbt_attr_item_setnull(leftitem->nullbitmap, i);
+			ovbt_attr_item_setnull(rightitem->nullbitmap, i);
 	}
 	memcpy(rightitem->datumdata, &origitem->datumdata[left_datasz], right_datasz);
 
