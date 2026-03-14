@@ -6,13 +6,12 @@
  * for different kinds of WAL records.
  *
  * If you perform multiple operations in the same transaction and command, we
- * reuse the same UNDO record for it. There's a one-element cache of each
- * operation type, so this only takes effect in simple cases.
- *
- * TODO: make the caching work in more cases. A hash table or something..
- * Currently, we do this for DELETEs and INSERTs. We could perhaps do this
- * for UPDATEs as well, although they're more a bit more tricky, as we need
- * to also store the 'ctid' pointer to the new tuple in an UPDATE.
+ * reuse the same UNDO record for it. A hash table cache keyed by
+ * (relfilelocator, xid, cid, prev_undo_ptr) allows this to work even when
+ * operations with different parameters are interleaved. Currently, we do
+ * this for DELETEs and INSERTs. We could perhaps do this for UPDATEs as
+ * well, although they're a bit more tricky, as we need to also store the
+ * 'ctid' pointer to the new tuple in an UPDATE.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -39,12 +38,93 @@
 #include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
 #include "utils/rel.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 #include "utils/snapmgr.h"
+
+/*
+ * UNDO record cache using hash tables.
+ *
+ * Instead of a single-element cache per operation type, we use hash tables
+ * keyed by (relfilelocator, xid, cid, prev_undo_ptr) to cache recently
+ * created UNDO records. This allows the caching to work when multiple
+ * operations with different parameters are interleaved (e.g., deleting
+ * from multiple tables in the same transaction).
+ *
+ * The caches are created lazily and live for the duration of the backend.
+ * Entries are small (just the key + the cached undo pointer), so the memory
+ * footprint is minimal even with many concurrent operations.
+ */
+#define UNDO_CACHE_INIT_SIZE	16
+
+/* Cache key for DELETE UNDO records */
+typedef struct OVUndoDeleteCacheKey
+{
+	RelFileLocator relfilelocator;
+	TransactionId xid;
+	CommandId	cid;
+	bool		changedPart;
+	uint64		prev_undo_counter;	/* OVUndoRecPtr.counter */
+} OVUndoDeleteCacheKey;
+
+/* Cache entry for DELETE UNDO records */
+typedef struct OVUndoDeleteCacheEntry
+{
+	OVUndoDeleteCacheKey key;
+	OVUndoRecPtr undo_ptr;
+} OVUndoDeleteCacheEntry;
+
+/* Cache key for INSERT UNDO records */
+typedef struct OVUndoInsertCacheKey
+{
+	RelFileLocator relfilelocator;
+	TransactionId xid;
+	CommandId	cid;
+	ovtid		endtid;				/* next expected TID (for consecutive check) */
+	uint64		prev_undo_counter;
+} OVUndoInsertCacheKey;
+
+/* Cache entry for INSERT UNDO records */
+typedef struct OVUndoInsertCacheEntry
+{
+	OVUndoInsertCacheKey key;
+	OVUndoRecPtr undo_ptr;
+} OVUndoInsertCacheEntry;
+
+static HTAB *undo_delete_cache = NULL;
+static HTAB *undo_insert_cache = NULL;
+
+static void
+init_undo_delete_cache(void)
+{
+	HASHCTL		ctl;
+
+	ctl.keysize = sizeof(OVUndoDeleteCacheKey);
+	ctl.entrysize = sizeof(OVUndoDeleteCacheEntry);
+	ctl.hcxt = TopMemoryContext;
+	undo_delete_cache = hash_create("Orvos UNDO delete cache",
+									UNDO_CACHE_INIT_SIZE,
+									&ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
+static void
+init_undo_insert_cache(void)
+{
+	HASHCTL		ctl;
+
+	ctl.keysize = sizeof(OVUndoInsertCacheKey);
+	ctl.entrysize = sizeof(OVUndoInsertCacheEntry);
+	ctl.hcxt = TopMemoryContext;
+	undo_insert_cache = hash_create("Orvos UNDO insert cache",
+									UNDO_CACHE_INIT_SIZE,
+									&ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
 
 /*
  * Working area for VACUUM.
@@ -119,24 +199,30 @@ ovundo_create_for_delete(Relation rel, TransactionId xid, CommandId cid, ovtid t
 {
 	OVUndoRec_Delete *undorec;
 	ov_pending_undo_op *pending_op;
+	OVUndoDeleteCacheKey key;
+	OVUndoDeleteCacheEntry *entry;
+	bool		found;
 
-	static RelFileLocator cached_relfilenode;
-	static TransactionId cached_xid;
-	static CommandId cached_cid;
-	static bool cached_changedPart;
-	static OVUndoRecPtr cached_prev_undo_ptr;
-	static OVUndoRecPtr cached_undo_ptr;
+	if (undo_delete_cache == NULL)
+		init_undo_delete_cache();
 
-	if (RelFileLocatorEquals(rel->rd_locator, cached_relfilenode) &&
-		xid == cached_xid &&
-		cid == cached_cid &&
-		changedPart == cached_changedPart &&
-		prev_undo_ptr.counter == cached_prev_undo_ptr.counter)
+	/* Build lookup key */
+	memset(&key, 0, sizeof(key));
+	key.relfilelocator = rel->rd_locator;
+	key.xid = xid;
+	key.cid = cid;
+	key.changedPart = changedPart;
+	key.prev_undo_counter = prev_undo_ptr.counter;
+
+	entry = (OVUndoDeleteCacheEntry *)
+		hash_search(undo_delete_cache, &key, HASH_FIND, &found);
+
+	if (found)
 	{
 		Buffer		buf;
 		OVUndoRec_Delete *orig_undorec;
 
-		orig_undorec = (OVUndoRec_Delete *) ovundo_fetch(rel, cached_undo_ptr,
+		orig_undorec = (OVUndoRec_Delete *) ovundo_fetch(rel, entry->undo_ptr,
 														 &buf, BUFFER_LOCK_EXCLUSIVE, false);
 
 		if (orig_undorec->rec.type != OVUNDO_TYPE_DELETE)
@@ -149,7 +235,7 @@ ovundo_create_for_delete(Relation rel, TransactionId xid, CommandId cid, ovtid t
 			undorec = (OVUndoRec_Delete *) pending_op->payload;
 
 			pending_op->reservation.undobuf = buf;
-			pending_op->reservation.undorecptr = cached_undo_ptr;
+			pending_op->reservation.undorecptr = entry->undo_ptr;
 			pending_op->reservation.length = sizeof(OVUndoRec_Delete);
 			pending_op->reservation.ptr = (char *) orig_undorec;
 			pending_op->is_update = true;
@@ -160,11 +246,14 @@ ovundo_create_for_delete(Relation rel, TransactionId xid, CommandId cid, ovtid t
 
 			return pending_op;
 		}
+
+		/* Record is full, remove it from cache and create a new one */
 		UnlockReleaseBuffer(buf);
+		hash_search(undo_delete_cache, &key, HASH_REMOVE, NULL);
 	}
 
 	/*
-	 * Cache miss. Create a new UNDO record.
+	 * Cache miss (or full record). Create a new UNDO record.
 	 */
 	pending_op = palloc(offsetof(ov_pending_undo_op, payload) + sizeof(OVUndoRec_Delete));
 	pending_op->is_update = false;
@@ -183,16 +272,12 @@ ovundo_create_for_delete(Relation rel, TransactionId xid, CommandId cid, ovtid t
 	undorec->num_tids = 1;
 
 	/*
-	 * XXX: this caching mechanism assumes that once we've reserved the undo
-	 * record, we never change our minds and don't write the undo record,
-	 * after all.
+	 * Add to cache. This assumes that once we've reserved the undo
+	 * record, we will always write it.
 	 */
-	cached_relfilenode = rel->rd_locator;
-	cached_xid = xid;
-	cached_cid = cid;
-	cached_changedPart = changedPart;
-	cached_prev_undo_ptr = prev_undo_ptr;
-	cached_undo_ptr = pending_op->reservation.undorecptr;
+	entry = (OVUndoDeleteCacheEntry *)
+		hash_search(undo_delete_cache, &key, HASH_ENTER, &found);
+	entry->undo_ptr = pending_op->reservation.undorecptr;
 
 	return pending_op;
 }
@@ -214,48 +299,66 @@ ovundo_create_for_insert(Relation rel, TransactionId xid, CommandId cid, ovtid t
 	OVUndoRec_Insert *undorec;
 	ov_pending_undo_op *pending_op;
 
-	static RelFileLocator cached_relfilenode;
-	static TransactionId cached_xid;
-	static CommandId cached_cid;
-	static ovtid cached_endtid;
-	static OVUndoRecPtr cached_prev_undo_ptr;
-	static OVUndoRecPtr cached_undo_ptr;
+	if (undo_insert_cache == NULL)
+		init_undo_insert_cache();
 
-	if (speculative_token == INVALID_SPECULATIVE_TOKEN &&
-		RelFileLocatorEquals(rel->rd_locator, cached_relfilenode) &&
-		xid == cached_xid &&
-		cid == cached_cid &&
-		tid == cached_endtid &&
-		prev_undo_ptr.counter == cached_prev_undo_ptr.counter)
+	/*
+	 * Try to extend an existing cached INSERT record if the TIDs are
+	 * consecutive and the visibility parameters match.
+	 */
+	if (speculative_token == INVALID_SPECULATIVE_TOKEN)
 	{
-		Buffer		buf;
-		OVUndoRec_Insert *orig_undorec;
+		OVUndoInsertCacheKey key;
+		OVUndoInsertCacheEntry *entry;
+		bool		found;
 
-		orig_undorec = (OVUndoRec_Insert *) ovundo_fetch(rel, cached_undo_ptr,
-														 &buf, BUFFER_LOCK_EXCLUSIVE, false);
+		memset(&key, 0, sizeof(key));
+		key.relfilelocator = rel->rd_locator;
+		key.xid = xid;
+		key.cid = cid;
+		key.endtid = tid;
+		key.prev_undo_counter = prev_undo_ptr.counter;
 
-		if (orig_undorec->rec.type != OVUNDO_TYPE_INSERT)
-			elog(ERROR, "unexpected undo record type %d, expected INSERT", orig_undorec->rec.type);
+		entry = (OVUndoInsertCacheEntry *)
+			hash_search(undo_insert_cache, &key, HASH_FIND, &found);
 
-		/* Extend the range of the old record to cover the new TID */
-		Assert(orig_undorec->endtid == tid);
-		Assert(orig_undorec->speculative_token == INVALID_SPECULATIVE_TOKEN);
+		if (found)
+		{
+			Buffer		buf;
+			OVUndoRec_Insert *orig_undorec;
+			OVUndoRecPtr cached_undo_ptr = entry->undo_ptr;
 
-		pending_op = palloc(offsetof(ov_pending_undo_op, payload) + sizeof(OVUndoRec_Insert));
-		undorec = (OVUndoRec_Insert *) pending_op->payload;
+			orig_undorec = (OVUndoRec_Insert *) ovundo_fetch(rel, cached_undo_ptr,
+															 &buf, BUFFER_LOCK_EXCLUSIVE, false);
 
-		pending_op->reservation.undobuf = buf;
-		pending_op->reservation.undorecptr = cached_undo_ptr;
-		pending_op->reservation.length = sizeof(OVUndoRec_Insert);
-		pending_op->reservation.ptr = (char *) orig_undorec;
-		pending_op->is_update = true;
+			if (orig_undorec->rec.type != OVUNDO_TYPE_INSERT)
+				elog(ERROR, "unexpected undo record type %d, expected INSERT", orig_undorec->rec.type);
 
-		memcpy(undorec, orig_undorec, sizeof(OVUndoRec_Insert));
-		undorec->endtid = tid + nitems;
+			/* Extend the range of the old record to cover the new TID */
+			Assert(orig_undorec->endtid == tid);
+			Assert(orig_undorec->speculative_token == INVALID_SPECULATIVE_TOKEN);
 
-		cached_endtid = tid + nitems;
+			pending_op = palloc(offsetof(ov_pending_undo_op, payload) + sizeof(OVUndoRec_Insert));
+			undorec = (OVUndoRec_Insert *) pending_op->payload;
 
-		return pending_op;
+			pending_op->reservation.undobuf = buf;
+			pending_op->reservation.undorecptr = cached_undo_ptr;
+			pending_op->reservation.length = sizeof(OVUndoRec_Insert);
+			pending_op->reservation.ptr = (char *) orig_undorec;
+			pending_op->is_update = true;
+
+			memcpy(undorec, orig_undorec, sizeof(OVUndoRec_Insert));
+			undorec->endtid = tid + nitems;
+
+			/* Remove old entry and insert updated one with new endtid */
+			hash_search(undo_insert_cache, &key, HASH_REMOVE, NULL);
+			key.endtid = tid + nitems;
+			entry = (OVUndoInsertCacheEntry *)
+				hash_search(undo_insert_cache, &key, HASH_ENTER, NULL);
+			entry->undo_ptr = cached_undo_ptr;
+
+			return pending_op;
+		}
 	}
 
 	/*
@@ -278,12 +381,19 @@ ovundo_create_for_insert(Relation rel, TransactionId xid, CommandId cid, ovtid t
 
 	if (speculative_token == INVALID_SPECULATIVE_TOKEN)
 	{
-		cached_relfilenode = rel->rd_locator;
-		cached_xid = xid;
-		cached_cid = cid;
-		cached_endtid = tid + nitems;
-		cached_prev_undo_ptr = prev_undo_ptr;
-		cached_undo_ptr = pending_op->reservation.undorecptr;
+		OVUndoInsertCacheKey key;
+		OVUndoInsertCacheEntry *entry;
+
+		memset(&key, 0, sizeof(key));
+		key.relfilelocator = rel->rd_locator;
+		key.xid = xid;
+		key.cid = cid;
+		key.endtid = tid + nitems;
+		key.prev_undo_counter = prev_undo_ptr.counter;
+
+		entry = (OVUndoInsertCacheEntry *)
+			hash_search(undo_insert_cache, &key, HASH_ENTER, NULL);
+		entry->undo_ptr = pending_op->reservation.undorecptr;
 	}
 
 	return pending_op;
