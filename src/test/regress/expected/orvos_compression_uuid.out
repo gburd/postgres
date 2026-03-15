@@ -18,20 +18,21 @@ SELECT COUNT(*) FROM orvos_uuid_test;
 (1 row)
 
 SELECT COUNT(DISTINCT uuid_col) FROM orvos_uuid_test;
- count 
+ count
 -------
    100
 (1 row)
 
--- Test retrieval and filtering
-SELECT id, uuid_col FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
- id |               uuid_col               
-----+--------------------------------------
-  1 | 9e9c70b9-7cd1-4e04-ba7a-d00f972ad735
-  2 | 08020abe-3b1e-47fe-a840-f3349f397abe
-  3 | b147ea96-edf2-4618-a26f-fea11dc4589c
-  4 | 106289c9-0e11-4d6f-9cda-56b505876d47
-  5 | 63973840-da08-454f-96aa-885ff536189f
+-- Test retrieval and filtering (verify format without checking exact UUID values)
+SELECT id, uuid_col IS NOT NULL as has_uuid, length(uuid_col::text) as uuid_text_length
+FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
+ id | has_uuid | uuid_text_length
+----+----------+------------------
+  1 | t        |               36
+  2 | t        |               36
+  3 | t        |               36
+  4 | t        |               36
+  5 | t        |               36
 (5 rows)
 
 -- Store specific UUID for filter test

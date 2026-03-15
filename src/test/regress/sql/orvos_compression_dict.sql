@@ -65,7 +65,7 @@ FROM generate_series(1, 1000) i;
 SELECT COUNT(DISTINCT status) FROM orvos_dict_mixed_test;
 SELECT COUNT(DISTINCT description) FROM orvos_dict_mixed_test;
 
-SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' LIMIT 5;
+SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' ORDER BY id LIMIT 5;
 
 DROP TABLE orvos_dict_mixed_test;
 

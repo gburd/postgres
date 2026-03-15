@@ -1754,7 +1754,15 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 		int			buf_needed;
 		char	   *bufp;
 
-		buf_needed = srcSize + (VARHDRSZ) * numelements;
+		/*
+		 * Calculate buffer size needed for decoded varlenas:
+		 * - srcSize: input data size with orvos 1-2 byte headers
+		 * - VARHDRSZ * numelements: extra space to expand headers from 1-2 bytes to 4 bytes
+		 * - sizeof(int32) * numelements: worst-case alignment padding (4-byte alignment)
+		 * This ensures we have enough space even when converting all 2-byte headers
+		 * to 4-byte VARHDRSZ headers with maximum alignment padding.
+		 */
+		buf_needed = srcSize + (VARHDRSZ + sizeof(int32)) * numelements;
 
 		if (scan->attr_buf_size < buf_needed)
 		{

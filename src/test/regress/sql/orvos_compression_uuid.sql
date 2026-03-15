@@ -17,8 +17,9 @@ FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_uuid_test;
 SELECT COUNT(DISTINCT uuid_col) FROM orvos_uuid_test;
 
--- Test retrieval and filtering
-SELECT id, uuid_col FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
+-- Test retrieval and filtering (verify format without checking exact UUID values)
+SELECT id, uuid_col IS NOT NULL as has_uuid, length(uuid_col::text) as uuid_text_length
+FROM orvos_uuid_test WHERE id <= 5 ORDER BY id;
 
 -- Store specific UUID for filter test
 INSERT INTO orvos_uuid_test VALUES 

@@ -131,14 +131,14 @@ SELECT COUNT(DISTINCT description) FROM orvos_dict_mixed_test;
   1000
 (1 row)
 
-SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' LIMIT 5;
- id  | status |    description
------+--------+-------------------
-   3 | done   | description_3
-   6 | done   | description_6
-   9 | done   | description_9
-  12 | done   | description_12
-  15 | done   | description_15
+SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' ORDER BY id LIMIT 5;
+ id | status |  description
+----+--------+----------------
+  2 | done   | description_2
+  5 | done   | description_5
+  8 | done   | description_8
+ 11 | done   | description_11
+ 14 | done   | description_14
 (5 rows)
 
 DROP TABLE orvos_dict_mixed_test;
