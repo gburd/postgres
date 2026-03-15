@@ -120,19 +120,19 @@ SELECT i,
        'description_' || i
 FROM generate_series(1, 1000) i;
 SELECT COUNT(DISTINCT status) FROM orvos_dict_mixed_test;
- count
+ count 
 -------
      3
 (1 row)
 
 SELECT COUNT(DISTINCT description) FROM orvos_dict_mixed_test;
- count
+ count 
 -------
   1000
 (1 row)
 
 SELECT * FROM orvos_dict_mixed_test WHERE status = 'done' ORDER BY id LIMIT 5;
- id | status |  description
+ id | status |  description   
 ----+--------+----------------
   2 | done   | description_2
   5 | done   | description_5
@@ -155,13 +155,13 @@ SELECT i,
        END
 FROM generate_series(1, 100) i;
 SELECT COUNT(*) FROM orvos_dict_null_test WHERE status IS NULL;
- count
+ count 
 -------
     10
 (1 row)
 
 SELECT status, COUNT(*) FROM orvos_dict_null_test GROUP BY status ORDER BY status;
-  status   | count
+  status   | count 
 -----------+-------
  archived  |    30
  draft     |    30
