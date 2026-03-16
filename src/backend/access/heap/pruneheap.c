@@ -18,7 +18,10 @@
 #include "access/heapam_xlog.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/parallel.h"
 #include "access/transam.h"
+#include "access/undorecord.h"
+#include "access/xact.h"
 #include "access/visibilitymapdefs.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -883,6 +886,73 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 		prstate.set_all_visible = prstate.set_all_frozen = false;
 
 	Assert(!prstate.set_all_frozen || prstate.set_all_visible);
+
+	/*
+	 * If UNDO is enabled, save tuples that are about to be pruned (made
+	 * LP_DEAD or LP_UNUSED) to UNDO log. This allows recovery of
+	 * accidentally pruned data.  We batch all pruned tuples into a single
+	 * UndoRecordSet for efficiency.
+	 */
+	if (do_prune && RelationHasUndo(prstate.relation) &&
+		!IsParallelWorker() && !IsInParallelMode())
+	{
+		UndoRecordSet *uset;
+		UndoRecPtr	undo_ptr;
+		TransactionId xid = GetCurrentTransactionId();
+		BlockNumber blkno = BufferGetBlockNumber(prstate.buffer);
+		Page		undopage = BufferGetPage(prstate.buffer);
+		int			i;
+
+		uset = UndoRecordSetCreate(xid);
+
+		/* Save tuples being set to LP_DEAD */
+		for (i = 0; i < prstate.ndead; i++)
+		{
+			OffsetNumber offnum = prstate.nowdead[i];
+			ItemId		lp = PageGetItemId(undopage, offnum);
+
+			if (ItemIdHasStorage(lp))
+			{
+				HeapTupleData htup;
+
+				htup.t_tableOid = RelationGetRelid(prstate.relation);
+				htup.t_data = (HeapTupleHeader) PageGetItem(undopage, lp);
+				htup.t_len = ItemIdGetLength(lp);
+				ItemPointerSet(&htup.t_self, blkno, offnum);
+
+				UndoRecordAddTuple(uset, UNDO_PRUNE, prstate.relation,
+								   blkno, offnum, &htup);
+			}
+		}
+
+		/* Save tuples being set to LP_UNUSED */
+		for (i = 0; i < prstate.nunused; i++)
+		{
+			OffsetNumber offnum = prstate.nowunused[i];
+			ItemId		lp = PageGetItemId(undopage, offnum);
+
+			if (ItemIdHasStorage(lp))
+			{
+				HeapTupleData htup;
+
+				htup.t_tableOid = RelationGetRelid(prstate.relation);
+				htup.t_data = (HeapTupleHeader) PageGetItem(undopage, lp);
+				htup.t_len = ItemIdGetLength(lp);
+				ItemPointerSet(&htup.t_self, blkno, offnum);
+
+				UndoRecordAddTuple(uset, UNDO_PRUNE, prstate.relation,
+								   blkno, offnum, &htup);
+			}
+		}
+
+		if (uset->nrecords > 0)
+		{
+			undo_ptr = UndoRecordSetInsert(uset);
+			SetCurrentTransactionUndoRecPtr(undo_ptr);
+		}
+
+		UndoRecordSetFree(uset);
+	}
 
 	/* Any error while applying the changes is critical */
 	START_CRIT_SECTION();

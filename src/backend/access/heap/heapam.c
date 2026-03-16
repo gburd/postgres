@@ -37,8 +37,10 @@
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"
+#include "access/undorecord.h"
 #include "access/valid.h"
 #include "access/visibilitymap.h"
+#include "access/xact.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
@@ -2312,6 +2314,30 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		ReleaseBuffer(vmbuffer);
 
 	/*
+	 * Generate UNDO record for INSERT if the relation has UNDO enabled.
+	 * For INSERT, the UNDO record just records the tuple location so that
+	 * rollback can delete the inserted tuple.  No tuple data is stored.
+	 *
+	 * This is done after the critical section and buffer release because
+	 * UNDO insertion involves I/O that cannot happen in a critical section.
+	 */
+	if (RelationHasUndo(relation))
+	{
+		UndoRecordSet *uset;
+		UndoRecPtr	undo_ptr;
+
+		uset = UndoRecordSetCreate(xid);
+		UndoRecordAddTuple(uset, UNDO_INSERT, relation,
+						   ItemPointerGetBlockNumber(&(heaptup->t_self)),
+						   ItemPointerGetOffsetNumber(&(heaptup->t_self)),
+						   NULL);
+		undo_ptr = UndoRecordSetInsert(uset);
+		UndoRecordSetFree(uset);
+
+		SetCurrentTransactionUndoRecPtr(undo_ptr);
+	}
+
+	/*
 	 * If tuple is cacheable, mark it for invalidation from the caches in case
 	 * we abort.  Note it is OK to do this after releasing the buffer, because
 	 * the heaptup data structure is all in local memory, not in the shared
@@ -3116,6 +3142,29 @@ l1:
 							  tp.t_data->t_infomask, tp.t_data->t_infomask2,
 							  xid, LockTupleExclusive, true,
 							  &new_xmax, &new_infomask, &new_infomask2);
+
+	/*
+	 * If UNDO is enabled, copy the old tuple before the critical section
+	 * modifies it. We need the full old tuple for rollback.
+	 */
+	if (RelationHasUndo(relation))
+	{
+		HeapTuple	undo_oldtuple;
+		UndoRecordSet *uset;
+		UndoRecPtr	undo_ptr;
+
+		undo_oldtuple = heap_copytuple(&tp);
+		uset = UndoRecordSetCreate(xid);
+		UndoRecordAddTuple(uset, UNDO_DELETE, relation,
+						   block,
+						   ItemPointerGetOffsetNumber(tid),
+						   undo_oldtuple);
+		undo_ptr = UndoRecordSetInsert(uset);
+		UndoRecordSetFree(uset);
+		heap_freetuple(undo_oldtuple);
+
+		SetCurrentTransactionUndoRecPtr(undo_ptr);
+	}
 
 	START_CRIT_SECTION();
 
@@ -4129,6 +4178,29 @@ l2:
 										   bms_overlap(modified_attrs, id_attrs) ||
 										   id_has_external,
 										   &old_key_copied);
+
+	/*
+	 * If UNDO is enabled, save the old tuple version before the critical
+	 * section modifies it.  For UPDATE, we store the full old tuple.
+	 */
+	if (RelationHasUndo(relation))
+	{
+		HeapTuple	undo_oldtuple;
+		UndoRecordSet *uset;
+		UndoRecPtr	undo_ptr;
+
+		undo_oldtuple = heap_copytuple(&oldtup);
+		uset = UndoRecordSetCreate(xid);
+		UndoRecordAddTuple(uset, UNDO_UPDATE, relation,
+						   ItemPointerGetBlockNumber(&(oldtup.t_self)),
+						   ItemPointerGetOffsetNumber(&(oldtup.t_self)),
+						   undo_oldtuple);
+		undo_ptr = UndoRecordSetInsert(uset);
+		UndoRecordSetFree(uset);
+		heap_freetuple(undo_oldtuple);
+
+		SetCurrentTransactionUndoRecPtr(undo_ptr);
+	}
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();

@@ -161,6 +161,15 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
+	{
+		{
+			"enable_undo",
+			"Enables UNDO logging for this relation",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		false
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2013,7 +2022,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_truncate", RELOPT_TYPE_TERNARY,
 		offsetof(StdRdOptions, vacuum_truncate)},
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
+		{"enable_undo", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, enable_undo)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,

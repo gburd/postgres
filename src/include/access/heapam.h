@@ -529,4 +529,7 @@ heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
 	tuple->t_infomask2 = frz->t_infomask2;
 }
 
+/* UNDO support */
+extern bool RelationHasUndo(Relation rel);
+
 #endif							/* HEAPAM_H */

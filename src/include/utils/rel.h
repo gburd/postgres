@@ -354,6 +354,7 @@ typedef struct StdRdOptions
 	 * to freeze. 0 if disabled, -1 if unspecified.
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
+	bool		enable_undo;	/* enable UNDO logging for this relation */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
