@@ -26,6 +26,8 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undolog.h"
+#include "access/undorecord.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -55,6 +57,7 @@
 #include "storage/aio_subsys.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/lmgr.h"
 #include "storage/md.h"
 #include "storage/predicate.h"
@@ -217,6 +220,10 @@ typedef struct TransactionStateData
 	bool		parallelChildXact;	/* is any parent transaction parallel? */
 	bool		chain;			/* start a new block after this one */
 	bool		topXidLogged;	/* for a subxact: is top-level XID logged? */
+	/* UNDO chain tracking */
+	UndoRecPtr	firstUndoPtr;	/* first UNDO record in chain */
+	UndoRecPtr	currentUndoPtr; /* most recent UNDO record */
+	bool		has_undo_actions; /* quick check for UNDO presence */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -367,6 +374,10 @@ static void AtSubAbort_ResourceOwner(void);
 static void AtSubCommit_Memory(void);
 static void AtSubStart_Memory(void);
 static void AtSubStart_ResourceOwner(void);
+
+static void AtEOXact_Undo(bool isCommit);
+static void AtSubCommit_Undo(void);
+static void AtSubAbort_Undo(void);
 
 static void ShowTransactionState(const char *str);
 static void ShowTransactionStateRec(const char *str, TransactionState s);
@@ -2116,6 +2127,11 @@ StartTransaction(void)
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
 
+	/* Initialize UNDO tracking */
+	s->firstUndoPtr = InvalidUndoRecPtr;
+	s->currentUndoPtr = InvalidUndoRecPtr;
+	s->has_undo_actions = false;
+
 	/*
 	 * Once the current user ID and the security context flags are fetched,
 	 * both will be properly reset even if transaction startup fails.
@@ -2465,6 +2481,7 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	FileOpsDoPendingOps(true);
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -2483,6 +2500,7 @@ CommitTransaction(void)
 	AtEOXact_on_commit_actions(true);
 	AtEOXact_Namespace(true, is_parallel_worker);
 	AtEOXact_SMgr();
+	AtEOXact_Undo(true);
 	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
@@ -2752,6 +2770,7 @@ PrepareTransaction(void)
 	PostPrepare_Inval();
 
 	PostPrepare_smgr();
+	PostPrepare_FileOps();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -3001,6 +3020,7 @@ AbortTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
 		smgrDoPendingDeletes(false);
+		FileOpsDoPendingOps(false);
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
@@ -3008,6 +3028,7 @@ AbortTransaction(void)
 		AtEOXact_on_commit_actions(false);
 		AtEOXact_Namespace(false, is_parallel_worker);
 		AtEOXact_SMgr();
+		AtEOXact_Undo(false);
 		AtEOXact_Files(false);
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
@@ -5174,6 +5195,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_LargeObject(true, s->subTransactionId,
 							s->parent->subTransactionId);
 	AtSubCommit_Notify();
+	AtSubCommit_Undo();
 
 	CallSubXactCallbacks(SUBXACT_EVENT_COMMIT_SUB, s->subTransactionId,
 						 s->parent->subTransactionId);
@@ -5186,6 +5208,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_TypeCache();
 	AtEOSubXact_Inval(true);
 	AtSubCommit_smgr();
+	AtSubCommit_FileOps();
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
@@ -5345,6 +5368,7 @@ AbortSubTransaction(void)
 		AtEOSubXact_LargeObject(false, s->subTransactionId,
 								s->parent->subTransactionId);
 		AtSubAbort_Notify();
+		AtSubAbort_Undo();
 
 		/* Advertise the fact that we aborted in pg_xact. */
 		(void) RecordTransactionAbort(true);
@@ -5372,6 +5396,7 @@ AbortSubTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, false);
 		AtSubAbort_smgr();
+		AtSubAbort_FileOps();
 
 		AtEOXact_GUC(false, s->gucNestLevel);
 		AtEOSubXact_SPI(false, s->subTransactionId);
@@ -6467,4 +6492,174 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+/*
+ * ----------------------------------------------------------------
+ *					   UNDO integration
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * AtEOXact_Undo - Cleanup UNDO at transaction end
+ *
+ * This function is called at the end of every transaction (commit or abort)
+ * to handle UNDO-related cleanup.
+ *
+ * For commit: Currently does nothing (UNDO kept for point-in-time recovery)
+ * For abort: Will apply UNDO in future commit (Commit 14)
+ */
+static void
+AtEOXact_Undo(bool isCommit)
+{
+	if (!CurrentTransactionState->has_undo_actions)
+		return;					/* no UNDO generated, nothing to do */
+
+	if (isCommit)
+	{
+		/*
+		 * On commit, UNDO records are retained for:
+		 * 1. Point-in-time recovery (pruned tuples)
+		 * 2. Potential future features (time-travel queries)
+		 *
+		 * The UNDO worker will eventually discard them when they're
+		 * no longer needed by any active transaction.
+		 */
+		ereport(DEBUG2,
+				(errmsg("transaction %u committed with UNDO chain starting at %llu",
+						GetCurrentTransactionId(),
+						(unsigned long long) CurrentTransactionState->firstUndoPtr)));
+	}
+	else
+	{
+		/*
+		 * On abort, we do NOT apply UNDO records because the normal
+		 * abort process already handles rollback through visibility checks.
+		 * The UNDO records are kept in the log for:
+		 * 1. Point-in-time recovery (pruned tuples) - main value proposition
+		 * 2. Future features (time-travel queries, replication)
+		 *
+		 * Attempting to apply UNDO during abort causes "attempted to delete
+		 * invisible tuple" errors because the tuples are already invisible
+		 * due to the aborting transaction's state.
+		 *
+		 * Note: We use GetCurrentTransactionIdIfAny() here because this
+		 * function is called during AbortTransaction() inside a
+		 * HOLD_INTERRUPTS section, after the transaction state has been
+		 * set to TRANS_ABORT.  Using GetCurrentTransactionId() could
+		 * attempt to assign a new XID via AssignTransactionId(), which
+		 * asserts TRANS_INPROGRESS and can trigger errors that reset
+		 * InterruptHoldoffCount to 0 (via elog.c error handling),
+		 * causing a subsequent RESUME_INTERRUPTS assertion failure.
+		 */
+		ereport(DEBUG2,
+				(errmsg("transaction %u aborted, UNDO chain starting at %llu retained for recovery",
+						GetCurrentTransactionIdIfAny(),
+						(unsigned long long) CurrentTransactionState->firstUndoPtr)));
+
+		/* ApplyUndoChain(CurrentTransactionState->firstUndoPtr); */
+	}
+
+	/* Reset UNDO tracking state */
+	CurrentTransactionState->firstUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->currentUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->has_undo_actions = false;
+}
+
+/*
+ * AtSubCommit_Undo - Merge child UNDO chain into parent
+ *
+ * When a subtransaction commits, its UNDO chain becomes part of the
+ * parent transaction's chain.
+ */
+static void
+AtSubCommit_Undo(void)
+{
+	TransactionState parent = CurrentTransactionState->parent;
+
+	if (!CurrentTransactionState->has_undo_actions)
+		return;					/* no UNDO to merge */
+
+	/*
+	 * Merge this subtransaction's UNDO chain into the parent's chain.
+	 * The parent's current pointer becomes the child's current pointer.
+	 */
+	if (parent)
+	{
+		if (!parent->has_undo_actions)
+		{
+			/* Parent had no UNDO, adopt child's chain as parent's */
+			parent->firstUndoPtr = CurrentTransactionState->firstUndoPtr;
+		}
+
+		parent->currentUndoPtr = CurrentTransactionState->currentUndoPtr;
+		parent->has_undo_actions = true;
+	}
+}
+
+/*
+ * AtSubAbort_Undo - Handle UNDO for subtransaction abort
+ *
+ * When a subtransaction aborts, we should apply its UNDO records.
+ * For now, this is a placeholder. Full implementation in Commit 14.
+ */
+static void
+AtSubAbort_Undo(void)
+{
+	if (!CurrentTransactionState->has_undo_actions)
+		return;
+
+	/*
+	 * On subtransaction abort, we do NOT apply UNDO records because the
+	 * normal abort process already handles rollback through visibility
+	 * checks.  Attempting to apply UNDO during abort causes assertion
+	 * failures (no active snapshot for TOAST access) and "attempted to
+	 * delete invisible tuple" errors.  The UNDO records are retained for
+	 * recovery purposes, same as top-level abort (see AtEOXact_Undo).
+	 *
+	 * TODO (Commit 14): Implement proper UNDO apply that handles
+	 * abort-time conditions correctly.
+	 */
+	ereport(DEBUG2,
+			(errmsg("subtransaction aborted, UNDO chain starting at %llu retained for recovery",
+					(unsigned long long) CurrentTransactionState->firstUndoPtr)));
+
+	/* ApplyUndoChain(CurrentTransactionState->firstUndoPtr); */
+
+	/* Reset state */
+	CurrentTransactionState->firstUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->currentUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->has_undo_actions = false;
+}
+
+/*
+ * SetCurrentTransactionUndoRecPtr
+ *		Record an UNDO pointer in the current transaction state.
+ *
+ * If this is the first UNDO record in the transaction, it is also stored
+ * as firstUndoPtr (chain head). currentUndoPtr always tracks the most
+ * recently inserted UNDO record.
+ */
+void
+SetCurrentTransactionUndoRecPtr(UndoRecPtr ptr)
+{
+	TransactionState s = CurrentTransactionState;
+
+	if (!UndoRecPtrIsValid(s->firstUndoPtr))
+		s->firstUndoPtr = ptr;
+
+	s->currentUndoPtr = ptr;
+	s->has_undo_actions = true;
+}
+
+/*
+ * GetCurrentTransactionUndoRecPtr
+ *		Return the most recent UNDO pointer in the current transaction.
+ *
+ * Returns InvalidUndoRecPtr if no UNDO records have been generated.
+ */
+UndoRecPtr
+GetCurrentTransactionUndoRecPtr(void)
+{
+	return CurrentTransactionState->currentUndoPtr;
 }
