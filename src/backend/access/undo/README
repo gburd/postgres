@@ -1,0 +1,98 @@
+UNDO Log Management for PostgreSQL
+===================================
+
+This directory contains the implementation of the generic UNDO log system
+for PostgreSQL.
+
+## Overview
+
+The UNDO log system provides:
+1. Transactional UNDO logging for heap tuple operations
+2. Point-in-time recovery of pruned tuple versions
+3. Transaction rollback using UNDO records
+4. Foundation for future features (UNDO-based MVCC, time-travel queries)
+
+## Architecture
+
+### UNDO Pointer Format (UndoRecPtr)
+
+UndoRecPtr is a 64-bit pointer with the following layout:
+- Bits 0-39:  Offset within log (40 bits = 1TB per log)
+- Bits 40-63: Log number (24 bits = 16M logs)
+
+This format allows for up to 16 million UNDO logs, each up to 1TB in size.
+
+### File Layout
+
+UNDO logs are stored in `$PGDATA/base/undo/` with 12-digit zero-padded names:
+```
+$PGDATA/base/undo/
+├── 000000000001
+├── 000000000002
+└── ...
+```
+
+### Shared Memory Structures
+
+UndoLogSharedData: Global control structure containing:
+- Array of UndoLogControl structures (one per active log)
+- Next log number counter
+- Allocation lock
+
+UndoLogControl: Per-log metadata:
+- insert_ptr: Next insertion point (end of log)
+- discard_ptr: Oldest UNDO still needed
+- oldest_xid: Oldest transaction using this log
+- lock: Protects allocations and updates
+
+## Files
+
+undolog.c/undolog.h - Core UNDO log file management
+- Log file creation, extension, and deletion
+- Space allocation
+- Read/write operations
+- Discard operations
+
+## Current Status
+
+**Commit 1: UNDO Log File Management Infrastructure** (COMPLETE)
+
+Implemented:
+- Basic UNDO log file operations
+- Shared memory initialization
+- UndoRecPtr format and macros
+- Log allocation and management
+- Read/write operations
+- Integration with PostgreSQL shared memory system
+
+Not yet implemented:
+- WAL logging (Commit 2)
+- UNDO record format (Commit 3)
+- Background discard worker (Commit 4)
+- Transaction integration (Commit 5)
+- Log rotation and cleanup
+- Performance optimizations (Taurus algorithm, Commit 16)
+
+## Design Principles
+
+1. **Incremental**: Each commit adds independent value
+2. **Optional**: UNDO disabled by default, opt-in per relation
+3. **Backward compatible**: Zero breaking changes
+4. **Performance neutral**: No overhead when disabled
+5. **Generic**: Usable by heap, other table AMs, and future subsystems
+
+## Future Work
+
+See the implementation plan for details on remaining commits:
+- Phase 1: Foundation (Commits 2-5)
+- Phase 2: Transactional file operations (Commits 6-9)
+- Phase 3: Heap UNDO logging (Commits 10-15)
+- Phase 4: Optimization and hardening (Commits 16-20)
+- Phase 5: Documentation and testing (Commits 21-25)
+
+## References
+
+Design inspired by:
+- ZHeap (EnterpriseDB, 2017-2019): Transaction slots, sequential logs, TPD pages
+- BerkeleyDB: LSN-based chaining, pre-log-then-operate, deferred deletion
+- Aether DB: Taurus algorithm (per-thread WAL streams), physiological logging, CLRs
