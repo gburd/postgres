@@ -12836,4 +12836,24 @@
   proname => 'hashoid8extended', prorettype => 'int8',
   proargtypes => 'oid8 int8', prosrc => 'hashoid8extended' },
 
+# UNDO subsystem statistics
+{ oid => '9950',
+  descr => 'statistics: UNDO log per-log statistics',
+  proname => 'pg_stat_get_undo_logs', prorows => '10', proisstrict => 'f',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int4,int8,int8,int8,xid}',
+  proargmodes => '{o,o,o,o,o}',
+  proargnames => '{log_number,insert_offset,discard_offset,size_bytes,oldest_xid}',
+  prosrc => 'pg_stat_get_undo_logs' },
+{ oid => '9951',
+  descr => 'statistics: UNDO buffer cache statistics',
+  proname => 'pg_stat_get_undo_buffers', proisstrict => 'f',
+  provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int4,int8,int8,int8,int8,float4}',
+  proargmodes => '{o,o,o,o,o,o}',
+  proargnames => '{num_buffers,cache_hits,cache_misses,cache_evictions,cache_writes,hit_ratio}',
+  prosrc => 'pg_stat_get_undo_buffers' },
+
 ]

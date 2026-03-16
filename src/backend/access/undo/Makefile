@@ -18,6 +18,7 @@ OBJS = \
 	undoinsert.o \
 	undolog.o \
 	undorecord.o \
+	undostats.o \
 	undoworker.o
 
 include $(top_srcdir)/src/backend/common.mk

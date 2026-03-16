@@ -5169,6 +5169,7 @@ BootStrapXLOG(uint32 data_checksum_version)
 	checkPoint.newestCommitTsXid = InvalidTransactionId;
 	checkPoint.time = (pg_time_t) time(NULL);
 	checkPoint.oldestActiveXid = InvalidTransactionId;
+	checkPoint.oldestUndoRecPtr = 0;	/* No UNDO logs at initdb time */
 
 	TransamVariables->nextXid = checkPoint.nextXid;
 	TransamVariables->nextOid = checkPoint.nextOid;
@@ -7245,6 +7246,9 @@ CreateCheckPoint(int flags)
 							 &checkPoint.nextMultiOffset,
 							 &checkPoint.oldestMulti,
 							 &checkPoint.oldestMultiDB);
+
+	/* Record the oldest UNDO discard pointer for recovery */
+	checkPoint.oldestUndoRecPtr = UndoLogGetOldestDiscardPtr();
 
 	/*
 	 * Having constructed the checkpoint record, ensure all shmem disk buffers

@@ -63,6 +63,14 @@ typedef struct CheckPoint
 	 * set to InvalidTransactionId.
 	 */
 	TransactionId oldestActiveXid;
+
+	/*
+	 * Oldest UNDO record pointer still needed. This is the minimum discard
+	 * pointer across all active UNDO logs at checkpoint time. Stored as
+	 * uint64 to avoid including undolog.h (it's an UndoRecPtr). Set to 0
+	 * (InvalidUndoRecPtr) when no UNDO logs are active.
+	 */
+	uint64		oldestUndoRecPtr;
 } CheckPoint;
 
 /* XLOG info values for XLOG rmgr */

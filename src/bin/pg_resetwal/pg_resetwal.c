@@ -707,6 +707,7 @@ GuessControlValues(void)
 	ControlFile.checkPointCopy.oldestMultiDB = InvalidOid;
 	ControlFile.checkPointCopy.time = (pg_time_t) time(NULL);
 	ControlFile.checkPointCopy.oldestActiveXid = InvalidTransactionId;
+	ControlFile.checkPointCopy.oldestUndoRecPtr = 0;
 
 	ControlFile.state = DB_SHUTDOWNED;
 	ControlFile.time = (pg_time_t) time(NULL);
@@ -783,6 +784,8 @@ PrintControlValues(bool guessed)
 		   ControlFile.checkPointCopy.oldestXidDB);
 	printf(_("Latest checkpoint's oldestActiveXID:  %u\n"),
 		   ControlFile.checkPointCopy.oldestActiveXid);
+	printf(_("Latest checkpoint's oldestUndoRecPtr: %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.oldestUndoRecPtr);
 	printf(_("Latest checkpoint's oldestMultiXid:   %u\n"),
 		   ControlFile.checkPointCopy.oldestMulti);
 	printf(_("Latest checkpoint's oldestMulti's DB: %u\n"),

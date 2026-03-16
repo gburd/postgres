@@ -6,5 +6,6 @@ backend_sources += files(
   'undoinsert.c',
   'undolog.c',
   'undorecord.c',
+  'undostats.c',
   'undoworker.c',
 )
