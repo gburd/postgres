@@ -122,12 +122,28 @@ typedef struct PendingFileOp
 	struct PendingFileOp *next;	/* linked list link */
 } PendingFileOp;
 
-/* Public API for transactional file operations */
+/* GUC variable */
+extern bool enable_transactional_fileops;
+
+/*
+ * Public API for transactional file operations
+ *
+ * These functions handle platform-specific differences automatically:
+ *   - O_DIRECT: PG_O_DIRECT (Linux/FreeBSD native, macOS F_NOCACHE,
+ *     Windows FILE_FLAG_NO_BUFFERING)
+ *   - fsync: pg_fsync() (Linux fdatasync, macOS F_FULLFSYNC,
+ *     BSD fsync, Windows FlushFileBuffers)
+ *   - Directory sync: fsync_parent_path() (Unix only, no-op on Windows)
+ *   - Durable ops: durable_rename()/durable_unlink() with proper
+ *     fsync ordering for crash safety
+ */
 extern int	FileOpsCreate(const char *path, int flags, mode_t mode,
 						  bool register_delete);
 extern void FileOpsDelete(const char *path, bool at_commit);
+extern void FileOpsCancelPendingDelete(const char *path, bool at_commit);
 extern int	FileOpsMove(const char *oldpath, const char *newpath);
 extern void FileOpsTruncate(const char *path, off_t length);
+extern void FileOpsSync(const char *path);
 
 /* Transaction lifecycle hooks */
 extern void FileOpsDoPendingOps(bool isCommit);

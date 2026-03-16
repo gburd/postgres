@@ -29,6 +29,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bulk_write.h"
+#include "storage/fileops.h"
 #include "storage/freespace.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
@@ -154,6 +155,21 @@ RelationCreateStorage(RelFileLocator rlocator, char relpersistence,
 		log_smgrcreate(&srel->smgr_rlocator.locator, MAIN_FORKNUM);
 
 	/*
+	 * When transactional file operations are enabled, also log the creation
+	 * via RM_FILEOPS_ID. This provides an additional layer of crash recovery
+	 * tracking using path-based operations alongside the existing
+	 * RelFileLocator-based RM_SMGR_ID logging. The FILEOPS record captures
+	 * the creation in a format suitable for standby replay and
+	 * point-in-time recovery tools.
+	 */
+	if (needs_wal && enable_transactional_fileops && register_delete)
+	{
+		RelPathStr	relpath = relpathperm(rlocator, MAIN_FORKNUM);
+
+		FileOpsDelete(relpath.str, false);	/* delete on abort */
+	}
+
+	/*
 	 * Add the relation to the list of stuff to delete at abort, if we are
 	 * asked to do so.
 	 */
@@ -228,6 +244,20 @@ RelationDropStorage(Relation rel)
 	 * for now I'll keep the logic simple.
 	 */
 
+	/*
+	 * When transactional file operations are enabled, also schedule the
+	 * deletion via RM_FILEOPS_ID. This records the drop as a path-based
+	 * FILEOPS WAL entry, complementing the RelFileLocator-based SMGR
+	 * pending delete. The FILEOPS delete-at-commit entry ensures standby
+	 * replay and recovery tools can track the file removal.
+	 */
+	if (enable_transactional_fileops)
+	{
+		RelPathStr	relpath = relpathperm(rel->rd_locator, MAIN_FORKNUM);
+
+		FileOpsDelete(relpath.str, true);	/* delete at commit */
+	}
+
 	RelationCloseSmgr(rel);
 }
 
@@ -254,6 +284,7 @@ RelationPreserveStorage(RelFileLocator rlocator, bool atCommit)
 	PendingRelDelete *pending;
 	PendingRelDelete *prev;
 	PendingRelDelete *next;
+	bool		found = false;
 
 	prev = NULL;
 	for (pending = pendingDeletes; pending != NULL; pending = next)
@@ -268,6 +299,7 @@ RelationPreserveStorage(RelFileLocator rlocator, bool atCommit)
 			else
 				pendingDeletes = next;
 			pfree(pending);
+			found = true;
 			/* prev does not change */
 		}
 		else
@@ -275,6 +307,19 @@ RelationPreserveStorage(RelFileLocator rlocator, bool atCommit)
 			/* unrelated entry, don't touch it */
 			prev = pending;
 		}
+	}
+
+	/*
+	 * Also cancel any matching FileOps pending delete entry.  When
+	 * RelationDropStorage adds a pending delete, it also adds a FileOps
+	 * delete entry (if enable_transactional_fileops is on).  We must cancel
+	 * both to prevent the file from being deleted at commit.
+	 */
+	if (found && enable_transactional_fileops)
+	{
+		RelPathStr	relpath = relpathperm(rlocator, MAIN_FORKNUM);
+
+		FileOpsCancelPendingDelete(relpath.str, atCommit);
 	}
 }
 
