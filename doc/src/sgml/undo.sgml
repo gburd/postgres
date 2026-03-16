@@ -1,0 +1,379 @@
+<!-- doc/src/sgml/undo.sgml -->
+
+<sect1 id="undo" xreflabel="UNDO Logging">
+ <title>UNDO Logging</title>
+
+ <indexterm zone="undo">
+  <primary>UNDO logging</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> provides an optional UNDO logging
+  system that records the inverse of data modifications to heap tables.
+  This enables two capabilities: transaction rollback using stored UNDO
+  records, and point-in-time recovery of pruned tuple data using the
+  <application>pg_undorecover</application> utility.
+ </para>
+
+ <para>
+  UNDO logging is disabled by default and enabled per-relation using
+  the <literal>enable_undo</literal> storage parameter.  When disabled,
+  there is zero overhead on normal heap operations.
+ </para>
+
+ <sect2 id="undo-enabling">
+  <title>Enabling UNDO Logging</title>
+
+  <para>
+   To enable UNDO logging on a table, use the <literal>enable_undo</literal>
+   storage parameter:
+  </para>
+
+<programlisting>
+-- Enable at table creation
+CREATE TABLE important_data (
+    id      serial PRIMARY KEY,
+    payload text
+) WITH (enable_undo = on);
+
+-- Enable on an existing table
+ALTER TABLE important_data SET (enable_undo = on);
+
+-- Disable UNDO logging
+ALTER TABLE important_data SET (enable_undo = off);
+</programlisting>
+
+  <note>
+   <para>
+    Enabling or disabling <literal>enable_undo</literal> requires an
+    <literal>ACCESS EXCLUSIVE</literal> lock on the table.  Plan for
+    a maintenance window if the table is under active use.
+   </para>
+  </note>
+
+  <para>
+   System catalogs cannot have UNDO enabled.  Attempting to set
+   <literal>enable_undo = on</literal> on a system relation will
+   be silently ignored.
+  </para>
+ </sect2>
+
+ <sect2 id="undo-use-cases">
+  <title>When to Use UNDO</title>
+
+  <para>
+   Consider enabling UNDO logging when:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     You need to recover data that may be lost to aggressive vacuuming
+     or HOT pruning.  UNDO records preserve pruned tuple versions in
+     a separate log, recoverable via <application>pg_undorecover</application>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     You want additional rollback safety for critical tables where
+     data integrity is paramount.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     You need an audit trail of old tuple versions for compliance
+     or forensic purposes.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Do not enable UNDO logging on:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     High-throughput write-heavy tables where the additional I/O
+     overhead is unacceptable.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Temporary tables or tables with short-lived data that does not
+     need recovery protection.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="undo-operations">
+  <title>Logged Operations</title>
+
+  <para>
+   When UNDO is enabled on a table, the following operations generate
+   UNDO records:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>INSERT</literal></term>
+    <listitem>
+     <para>
+      Records the block and offset of the newly inserted tuple.
+      On rollback, the inserted tuple is deleted.  No tuple payload
+      is stored (only the location is needed for deletion).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>DELETE</literal></term>
+    <listitem>
+     <para>
+      Records a full copy of the tuple being deleted.  On rollback,
+      the old tuple is re-inserted into the table.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>UPDATE</literal></term>
+    <listitem>
+     <para>
+      Records a full copy of the old tuple version before the update.
+      On rollback, the new version is deleted and the old version
+      is re-inserted.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>Pruning (HOT cleanup and VACUUM)</term>
+    <listitem>
+     <para>
+      Records full copies of tuples being marked as dead or unused
+      during page pruning.  These records are not rolled back (pruning
+      is a maintenance operation, not a transactional data change) but
+      are preserved for point-in-time recovery via
+      <application>pg_undorecover</application>.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="undo-recovery-tool">
+  <title>Point-in-Time Recovery with pg_undorecover</title>
+
+  <para>
+   The <application>pg_undorecover</application> utility reads UNDO log
+   files directly from the data directory and outputs recovered tuple data.
+   The server does not need to be running.
+  </para>
+
+<programlisting>
+# Show all UNDO records
+pg_undorecover /path/to/pgdata
+
+# Filter by relation OID
+pg_undorecover -r 16384 /path/to/pgdata
+
+# Filter by transaction ID and output as CSV
+pg_undorecover -x 12345 -f csv /path/to/pgdata
+
+# Show only pruned records as JSON
+pg_undorecover -t prune -f json /path/to/pgdata
+
+# Show statistics only
+pg_undorecover -s -v /path/to/pgdata
+</programlisting>
+
+  <para>
+   <application>pg_undorecover</application> options:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><option>-r <replaceable>RELOID</replaceable></option></term>
+    <listitem>
+     <para>Filter records by relation OID.</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><option>-x <replaceable>XID</replaceable></option></term>
+    <listitem>
+     <para>Filter records by transaction ID.</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><option>-t <replaceable>TYPE</replaceable></option></term>
+    <listitem>
+     <para>
+      Filter by record type.  Valid types:
+      <literal>insert</literal>, <literal>delete</literal>,
+      <literal>update</literal>, <literal>prune</literal>,
+      <literal>inplace</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><option>-f <replaceable>FORMAT</replaceable></option></term>
+    <listitem>
+     <para>
+      Output format: <literal>text</literal> (default),
+      <literal>csv</literal>, or <literal>json</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><option>-s</option></term>
+    <listitem>
+     <para>Show statistics summary only, without individual records.</para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><option>-v</option></term>
+    <listitem>
+     <para>Verbose mode with detailed scan progress.</para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="undo-configuration">
+  <title>Configuration Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><varname>undo_worker_naptime</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Time in milliseconds between UNDO discard worker cycles.
+      The worker wakes periodically to check for UNDO records that
+      are no longer needed by any active transaction.
+      Default: <literal>60000</literal> (1 minute).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><varname>undo_retention_time</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Minimum time in milliseconds to retain UNDO records after
+      the creating transaction completes.  Higher values allow
+      <application>pg_undorecover</application> to access older data
+      but consume more disk space.
+      Default: <literal>3600000</literal> (1 hour).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><varname>undo_buffer_size</varname> (<type>integer</type>)</term>
+    <listitem>
+     <para>
+      Size of the dedicated UNDO buffer cache in kilobytes.  This
+      cache reduces file I/O for UNDO record access.  Set to 0 to
+      disable the buffer cache.
+      Default: <literal>1024</literal> (1 MB).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="undo-space-management">
+  <title>UNDO Space Management</title>
+
+  <para>
+   UNDO logs are stored in <filename>$PGDATA/base/undo/</filename> as
+   files named with 12-digit zero-padded log numbers (e.g.,
+   <filename>000000000001</filename>).  Each log can grow up to 1 GB.
+  </para>
+
+  <para>
+   The UNDO discard worker background process automatically reclaims
+   space by advancing the discard pointer once no active transaction
+   references old UNDO records.  The retention time is controlled by
+   <varname>undo_retention_time</varname>.
+  </para>
+
+  <para>
+   To monitor UNDO space usage, check the file sizes in the undo
+   directory:
+  </para>
+
+<programlisting>
+-- From the operating system:
+ls -lh $PGDATA/base/undo/
+du -sh $PGDATA/base/undo/
+</programlisting>
+
+  <para>
+   If UNDO space is growing unexpectedly, check for:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Long-running transactions that prevent discard.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     A high <varname>undo_retention_time</varname> value.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The UNDO worker not running (check
+     <structname>pg_stat_activity</structname> for the
+     <literal>undo worker</literal> process).
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="undo-performance">
+  <title>Performance Impact</title>
+
+  <para>
+   When UNDO is disabled (the default), there is no measurable
+   performance impact.  When enabled on a table, expect:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>INSERT:</emphasis> Minimal overhead.  Only a 32-byte
+     header is written to the UNDO log (no tuple data).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>DELETE/UPDATE:</emphasis> Moderate overhead.  The full
+     old tuple is copied to the UNDO log.  Cost scales with tuple size.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>PRUNE:</emphasis> Overhead proportional to the number
+     of tuples being pruned.  Records are batched for efficiency.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   UNDO I/O is performed outside critical sections, so it does not
+   extend the time that buffer locks are held.
+  </para>
+ </sect2>
+
+</sect1>
