@@ -125,6 +125,11 @@ test: plancache limit plpgsql copy2 temp domain rangefuncs prepare conversion tr
 # ----------
 test: partition_merge partition_split partition_join partition_prune reloptions hash_part indexing partition_aggregate partition_info tuplesort explain compression compression_lz4 memoize stats predicate numa eager_aggregate graph_table_rls
 
+# ----------
+# UNDO and FILEOPS tests
+# ----------
+test: undo fileops
+
 # event_trigger depends on create_am and cannot run concurrently with
 # any test that runs DDL
 # oidjoins is read-only, though, and should run late for best coverage
