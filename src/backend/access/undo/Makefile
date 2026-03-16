@@ -13,8 +13,11 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	undoapply.o \
+	undobuffers.o \
 	undoinsert.o \
 	undolog.o \
-	undorecord.o
+	undorecord.o \
+	undoworker.o
 
 include $(top_srcdir)/src/backend/common.mk

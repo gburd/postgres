@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "access/transam.h"
+#include "access/undobuffers.h"
 #include "access/undolog.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
@@ -96,13 +97,13 @@ UndoLogShmemInit(void)
 			log->discard_ptr = InvalidUndoRecPtr;
 			log->oldest_xid = InvalidTransactionId;
 			/* Note: LWLock tranche will be registered dynamically */
-			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
+			LWLockInitialize(&log->lock, LWTRANCHE_FIRST_USER_DEFINED);
 			log->in_use = false;
 		}
 
 		UndoLogShared->next_log_number = 1;
 		LWLockInitialize(&UndoLogShared->allocation_lock,
-						 LWTRANCHE_UNDO_LOG);
+						 LWTRANCHE_FIRST_USER_DEFINED);
 	}
 }
 
@@ -183,14 +184,9 @@ CreateUndoLogFile(uint32 log_number)
 				(errcode_for_file_access(),
 				 errmsg("could not create directory \"%s\": %m", UNDO_LOG_DIR)));
 
-	/*
-	 * Create the log file.  Use O_CREAT without O_EXCL so that this is
-	 * idempotent -- the file may already exist from a previous server
-	 * incarnation (after crash recovery, the shared-memory log control
-	 * array is re-initialized, but the on-disk files survive).
-	 */
+	/* Create the log file */
 	UndoLogPath(log_number, path);
-	fd = BasicOpenFile(path, O_RDWR | O_CREAT | PG_BINARY);
+	fd = BasicOpenFile(path, O_RDWR | O_CREAT | O_EXCL | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -436,14 +432,19 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 /*
  * UndoLogRead
  *		Read data from UNDO log at specified pointer
+ *
+ * Uses the UNDO buffer cache when available (normal backend operation).
+ * Falls back to direct I/O when the buffer cache is not initialized
+ * (e.g., during early startup or in frontend tools).
+ *
+ * Reads may span multiple BLCKSZ blocks. The function handles this
+ * by reading from each block in sequence through the buffer cache.
  */
 void
 UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
 	uint64		offset = UndoRecPtrGetOffset(ptr);
-	int			fd;
-	ssize_t		nread;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -452,35 +453,68 @@ UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 	if (size == 0)
 		return;
 
-	fd = OpenUndoLogFile(log_number, O_RDONLY);
-
-	/* Seek to position */
-	if (lseek(fd, offset, SEEK_SET) < 0)
+	/*
+	 * Use the UNDO buffer cache if it has been initialized. The cache
+	 * provides LRU-managed block caching, avoiding repeated file
+	 * open/seek/read/close for each access.
+	 */
+	if (UndoBufCtl != NULL)
 	{
-		int			save_errno = errno;
+		Size		bytes_read = 0;
 
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek in UNDO log %u: %m", log_number)));
+		while (bytes_read < size)
+		{
+			uint32		block_number;
+			uint32		block_offset;
+			Size		copy_len;
+			char	   *block_data;
+			int			buf_idx;
+
+			block_number = (uint32) ((offset + bytes_read) / BLCKSZ);
+			block_offset = (uint32) ((offset + bytes_read) % BLCKSZ);
+			copy_len = Min(size - bytes_read, BLCKSZ - block_offset);
+
+			block_data = UndoBufferRead(log_number, block_number, &buf_idx);
+			memcpy(buffer + bytes_read, block_data + block_offset, copy_len);
+			UndoBufferRelease(buf_idx);
+
+			bytes_read += copy_len;
+		}
 	}
-
-	/* Read data */
-	nread = read(fd, buffer, size);
-	if (nread != size)
+	else
 	{
-		int			save_errno = errno;
+		/* Direct I/O fallback for early startup or frontend tools */
+		int			fd;
+		ssize_t		nread;
 
-		close(fd);
-		if (nread < 0)
+		fd = OpenUndoLogFile(log_number, O_RDONLY);
+
+		if (lseek(fd, offset, SEEK_SET) < 0)
+		{
+			int			save_errno = errno;
+
+			close(fd);
 			errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read from UNDO log %u: %m", log_number)));
-	}
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek in UNDO log %u: %m", log_number)));
+		}
 
-	close(fd);
+		nread = read(fd, buffer, size);
+		if (nread != size)
+		{
+			int			save_errno = errno;
+
+			close(fd);
+			if (nread < 0)
+				errno = save_errno;
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read from UNDO log %u: %m", log_number)));
+		}
+
+		close(fd);
+	}
 }
 
 /*
@@ -617,7 +651,7 @@ undo_redo(XLogReaderState *record)
 					/* Log doesn't exist, create it */
 					for (i = 0; i < MAX_UNDO_LOGS; i++)
 					{
-						if (\!UndoLogShared->logs[i].in_use)
+						if (!UndoLogShared->logs[i].in_use)
 						{
 							log = &UndoLogShared->logs[i];
 							log->log_number = xlrec->log_number;
@@ -630,7 +664,7 @@ undo_redo(XLogReaderState *record)
 					}
 				}
 
-				if (log \!= NULL)
+				if (log != NULL)
 				{
 					/*
 					 * Update insert pointer to reflect this allocation

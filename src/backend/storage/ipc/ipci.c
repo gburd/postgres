@@ -22,7 +22,9 @@
 #include "access/syncscan.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undobuffers.h"
 #include "access/undolog.h"
+#include "access/undoworker.h"
 #include "access/xlogprefetcher.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogwait.h"
@@ -144,6 +146,8 @@ CalculateShmemSize(void)
 	size = add_size(size, WaitLSNShmemSize());
 	size = add_size(size, LogicalDecodingCtlShmemSize());
 	size = add_size(size, UndoLogShmemSize());
+	size = add_size(size, UndoBuffersShmemSize());
+	size = add_size(size, UndoWorkerShmemSize());
 
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);
@@ -332,6 +336,8 @@ CreateOrAttachShmemStructs(void)
 	WaitLSNShmemInit();
 	LogicalDecodingCtlShmemInit();
 	UndoLogShmemInit();
+	UndoBuffersShmemInit();
+	UndoWorkerShmemInit();
 }
 
 /*
