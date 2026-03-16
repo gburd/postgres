@@ -30,6 +30,7 @@
 #include "access/multixact.h"
 #include "access/nbtxlog.h"
 #include "access/spgxlog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"

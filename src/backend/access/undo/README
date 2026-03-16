@@ -56,6 +56,7 @@ undolog.c/undolog.h - Core UNDO log file management
 ## Current Status
 
 **Commit 1: UNDO Log File Management Infrastructure** (COMPLETE)
+**Commit 2: Add Resource Manager RM_UNDO_ID** (COMPLETE)
 
 Implemented:
 - Basic UNDO log file operations
@@ -64,9 +65,14 @@ Implemented:
 - Log allocation and management
 - Read/write operations
 - Integration with PostgreSQL shared memory system
+- **NEW in Commit 2:**
+  - RM_UNDO_ID resource manager registration
+  - WAL record types (ALLOCATE, DISCARD, EXTEND)
+  - undo_redo() function for crash recovery
+  - undo_desc() and undo_identify() for pg_waldump
+  - WAL logging infrastructure
 
 Not yet implemented:
-- WAL logging (Commit 2)
 - UNDO record format (Commit 3)
 - Background discard worker (Commit 4)
 - Transaction integration (Commit 5)

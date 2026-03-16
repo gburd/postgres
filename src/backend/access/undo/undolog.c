@@ -28,7 +28,10 @@
 
 #include "access/transam.h"
 #include "access/undolog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
+#include "access/xlog.h"
+#include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/lwlock.h"
@@ -573,4 +576,105 @@ UndoLogGetDiscardPtr(uint32 log_number)
 	}
 
 	return ptr;
+}
+
+/*
+ * undo_redo - Replay an UNDO WAL record
+ *
+ * This function is called during crash recovery to replay UNDO log
+ * operations from the WAL.
+ */
+void
+undo_redo(XLogReaderState *record)
+{
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	char	   *rec = XLogRecGetData(record);
+
+	switch (info)
+	{
+		case XLOG_UNDO_ALLOCATE:
+			{
+				xl_undo_allocate *xlrec = (xl_undo_allocate *) rec;
+				UndoLogControl *log;
+				int			i;
+
+				/*
+				 * Find or create the log control structure for this log
+				 */
+				log = NULL;
+				for (i = 0; i < MAX_UNDO_LOGS; i++)
+				{
+					if (UndoLogShared->logs[i].in_use &&
+						UndoLogShared->logs[i].log_number == xlrec->log_number)
+					{
+						log = &UndoLogShared->logs[i];
+						break;
+					}
+				}
+
+				if (log == NULL)
+				{
+					/* Log doesn't exist, create it */
+					for (i = 0; i < MAX_UNDO_LOGS; i++)
+					{
+						if (\!UndoLogShared->logs[i].in_use)
+						{
+							log = &UndoLogShared->logs[i];
+							log->log_number = xlrec->log_number;
+							log->insert_ptr = xlrec->start_ptr;
+							log->discard_ptr = MakeUndoRecPtr(xlrec->log_number, 0);
+							log->oldest_xid = InvalidTransactionId;
+							log->in_use = true;
+							break;
+						}
+					}
+				}
+
+				if (log \!= NULL)
+				{
+					/*
+					 * Update insert pointer to reflect this allocation
+					 * No lock needed during recovery (single-threaded)
+					 */
+					log->insert_ptr = xlrec->start_ptr + xlrec->length;
+				}
+			}
+			break;
+
+		case XLOG_UNDO_DISCARD:
+			{
+				xl_undo_discard *xlrec = (xl_undo_discard *) rec;
+				int			i;
+
+				/* Find the log and update its discard pointer */
+				for (i = 0; i < MAX_UNDO_LOGS; i++)
+				{
+					if (UndoLogShared->logs[i].in_use &&
+						UndoLogShared->logs[i].log_number == xlrec->log_number)
+					{
+						UndoLogControl *log = &UndoLogShared->logs[i];
+
+						log->discard_ptr = xlrec->discard_ptr;
+						log->oldest_xid = xlrec->oldest_xid;
+						break;
+					}
+				}
+			}
+			break;
+
+		case XLOG_UNDO_EXTEND:
+			{
+				xl_undo_extend *xlrec = (xl_undo_extend *) rec;
+
+				/*
+				 * Extend the log file to the specified size
+				 * File will be created if it doesn't exist
+				 */
+				ExtendUndoLogFile(xlrec->log_number, xlrec->new_size);
+			}
+			break;
+
+		default:
+			elog(PANIC, "undo_redo: unknown op code %u", info);
+	}
 }
