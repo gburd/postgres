@@ -57,6 +57,7 @@ undolog.c/undolog.h - Core UNDO log file management
 
 **Commit 1: UNDO Log File Management Infrastructure** (COMPLETE)
 **Commit 2: Add Resource Manager RM_UNDO_ID** (COMPLETE)
+**Commit 3: UNDO Record Format and Insertion API** (COMPLETE)
 
 Implemented:
 - Basic UNDO log file operations
@@ -65,17 +66,22 @@ Implemented:
 - Log allocation and management
 - Read/write operations
 - Integration with PostgreSQL shared memory system
-- **NEW in Commit 2:**
-  - RM_UNDO_ID resource manager registration
-  - WAL record types (ALLOCATE, DISCARD, EXTEND)
-  - undo_redo() function for crash recovery
-  - undo_desc() and undo_identify() for pg_waldump
-  - WAL logging infrastructure
+- RM_UNDO_ID resource manager registration
+- WAL record types (ALLOCATE, DISCARD, EXTEND)
+- undo_redo() function for crash recovery
+- undo_desc() and undo_identify() for pg_waldump
+- WAL logging infrastructure
+- **NEW in Commit 3:**
+  - UndoRecordHeader structure (32 bytes)
+  - Record types: INSERT, DELETE, UPDATE, PRUNE, INPLACE
+  - Batch-oriented API: UndoRecordSet
+  - Record serialization/deserialization
+  - Efficient buffer management with auto-expansion
 
 Not yet implemented:
-- UNDO record format (Commit 3)
 - Background discard worker (Commit 4)
 - Transaction integration (Commit 5)
+- Heap integration (Commits 10-15)
 - Log rotation and cleanup
 - Performance optimizations (Taurus algorithm, Commit 16)
 
