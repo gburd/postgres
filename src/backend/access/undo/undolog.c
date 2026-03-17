@@ -99,14 +99,12 @@ UndoLogShmemInit(void)
 			log->insert_ptr = InvalidUndoRecPtr;
 			log->discard_ptr = InvalidUndoRecPtr;
 			log->oldest_xid = InvalidTransactionId;
-			/* Note: LWLock tranche will be registered dynamically */
-			LWLockInitialize(&log->lock, LWTRANCHE_FIRST_USER_DEFINED);
+			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
 			log->in_use = false;
 		}
 
 		UndoLogShared->next_log_number = 1;
-		LWLockInitialize(&UndoLogShared->allocation_lock,
-						 LWTRANCHE_FIRST_USER_DEFINED);
+		LWLockInitialize(&UndoLogShared->allocation_lock, LWTRANCHE_UNDO_LOG);
 	}
 }
 

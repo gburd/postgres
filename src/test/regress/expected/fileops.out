@@ -6,22 +6,22 @@
 -- ================================================================
 -- Show current value (default is off)
 SHOW enable_transactional_fileops;
- enable_transactional_fileops
+ enable_transactional_fileops 
 ------------------------------
- off
+ on
 (1 row)
 
 -- It's a USERSET GUC, so we can toggle it
 SET enable_transactional_fileops = on;
 SHOW enable_transactional_fileops;
- enable_transactional_fileops
+ enable_transactional_fileops 
 ------------------------------
  on
 (1 row)
 
 SET enable_transactional_fileops = off;
 SHOW enable_transactional_fileops;
- enable_transactional_fileops
+ enable_transactional_fileops 
 ------------------------------
  off
 (1 row)
@@ -36,14 +36,14 @@ SET enable_transactional_fileops = on;
 CREATE TABLE fileops_t1 (id int, data text);
 INSERT INTO fileops_t1 VALUES (1, 'created');
 SELECT * FROM fileops_t1;
- id |  data
+ id |  data   
 ----+---------
   1 | created
 (1 row)
 
 -- Verify the file was created
 SELECT pg_relation_filepath('fileops_t1') IS NOT NULL AS has_filepath;
- has_filepath
+ has_filepath 
 --------------
  t
 (1 row)
@@ -66,7 +66,7 @@ BEGIN;
 CREATE TABLE fileops_rollback (id int);
 INSERT INTO fileops_rollback VALUES (1);
 SELECT count(*) FROM fileops_rollback;
- count
+ count 
 -------
      1
 (1 row)
@@ -87,7 +87,7 @@ DROP TABLE fileops_keep;
 ROLLBACK;
 -- Table should still exist after rollback of DROP
 SELECT * FROM fileops_keep;
- id
+ id 
 ----
  42
 (1 row)
@@ -106,13 +106,13 @@ DROP TABLE fileops_multi2;
 COMMIT;
 -- multi1 and multi3 should exist, multi2 should not
 SELECT * FROM fileops_multi1;
- id
+ id 
 ----
   1
 (1 row)
 
 SELECT * FROM fileops_multi3;
- id
+ id 
 ----
   3
 (1 row)
@@ -133,7 +133,7 @@ INSERT INTO fileops_sp_child VALUES (2);
 ROLLBACK TO sp1;
 -- parent table should still exist within the transaction
 SELECT * FROM fileops_sp_parent;
- id
+ id 
 ----
   1
 (1 row)
@@ -141,7 +141,7 @@ SELECT * FROM fileops_sp_parent;
 COMMIT;
 -- After commit, verify parent exists and child does not
 SELECT * FROM fileops_sp_parent;
- id
+ id 
 ----
   1
 (1 row)
@@ -150,7 +150,6 @@ SELECT * FROM fileops_sp_child;
 ERROR:  relation "fileops_sp_child" does not exist
 LINE 1: SELECT * FROM fileops_sp_child;
                       ^
-
 -- ================================================================
 -- Section 8: CREATE TABLE with transactional fileops disabled
 -- ================================================================
@@ -158,7 +157,7 @@ SET enable_transactional_fileops = off;
 CREATE TABLE fileops_nontxn (id int);
 INSERT INTO fileops_nontxn VALUES (1);
 SELECT * FROM fileops_nontxn;
- id
+ id 
 ----
   1
 (1 row)
@@ -171,7 +170,7 @@ SET enable_transactional_fileops = on;
 CREATE TABLE fileops_trunc (id int);
 INSERT INTO fileops_trunc SELECT generate_series(1, 100);
 SELECT count(*) FROM fileops_trunc;
- count
+ count 
 -------
    100
 (1 row)
@@ -179,7 +178,7 @@ SELECT count(*) FROM fileops_trunc;
 BEGIN;
 TRUNCATE fileops_trunc;
 SELECT count(*) FROM fileops_trunc;
- count
+ count 
 -------
      0
 (1 row)
@@ -187,7 +186,7 @@ SELECT count(*) FROM fileops_trunc;
 ROLLBACK;
 -- Should have all rows back after rollback
 SELECT count(*) FROM fileops_trunc;
- count
+ count 
 -------
    100
 (1 row)
@@ -202,7 +201,7 @@ CREATE INDEX fileops_idx_id ON fileops_idx(id);
 -- Verify index is usable within transaction
 SET enable_seqscan = off;
 SELECT count(*) FROM fileops_idx WHERE id = 50;
- count
+ count 
 -------
      1
 (1 row)
@@ -211,7 +210,7 @@ RESET enable_seqscan;
 COMMIT;
 -- Index should persist
 SELECT count(*) FROM fileops_idx WHERE id = 50;
- count
+ count 
 -------
      1
 (1 row)

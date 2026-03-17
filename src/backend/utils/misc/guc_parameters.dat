@@ -990,7 +990,7 @@
   variable => 'enable_tidscan',
   boot_val => 'true',
 },
-{ name => 'enable_transactional_fileops', type => 'bool', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
+{ name => 'enable_transactional_fileops', type => 'bool', context => 'PGC_USERSET', group => 'WAL_SETTINGS',
   short_desc => 'Enables transactional file operations with WAL logging.',
   long_desc => 'When enabled, file operations are logged to WAL and deferred until transaction commit/abort, ensuring atomicity and durability of filesystem changes.',
   variable => 'enable_transactional_fileops',
@@ -2090,6 +2090,15 @@
   min => '0',
   max => 'MAX_BACKENDS',
 },
+{ name => 'max_undo_logs', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
+  short_desc => 'Maximum number of concurrent UNDO logs.',
+  long_desc => 'Sets the maximum number of UNDO log files that can be active simultaneously. Each transaction may use its own UNDO log.',
+  variable => 'max_undo_logs',
+  boot_val => '100',
+  min => '10',
+  max => '1000',
+},
+
 
 { name => 'max_wal_senders', type => 'int', context => 'PGC_POSTMASTER', group => 'REPLICATION_SENDING',
   short_desc => 'Sets the maximum number of simultaneously running WAL sender processes.',
@@ -2109,6 +2118,7 @@
   assign_hook => 'assign_max_wal_size',
 },
 
+
 { name => 'max_worker_processes', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_WORKER_PROCESSES',
   short_desc => 'Maximum number of concurrent worker processes.',
   variable => 'max_worker_processes',
@@ -2116,6 +2126,7 @@
   min => '0',
   max => 'MAX_BACKENDS',
 },
+
 
 { name => 'md5_password_warnings', type => 'bool', context => 'PGC_USERSET', group => 'CONN_AUTH_AUTH',
   short_desc => 'Enables deprecation warnings for MD5 passwords.',
@@ -3123,6 +3134,7 @@
   boot_val => 'false',
 },
 
+
 { name => 'transaction_buffers', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Sets the size of the dedicated buffer pool used for the transaction status cache.',
   long_desc => '0 means use a fraction of "shared_buffers".',
@@ -3151,6 +3163,7 @@
   check_hook => 'check_transaction_isolation',
 },
 
+
 { name => 'transaction_read_only', type => 'bool', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the current transaction\'s read-only status.',
   flags => 'GUC_NO_RESET | GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',
@@ -3170,12 +3183,14 @@
   assign_hook => 'assign_transaction_timeout',
 },
 
+
 { name => 'transform_null_equals', type => 'bool', context => 'PGC_USERSET', group => 'COMPAT_OPTIONS_OTHER',
   short_desc => 'Treats "expr=NULL" as "expr IS NULL".',
   long_desc => 'When turned on, expressions of the form expr = NULL (or NULL = expr) are treated as expr IS NULL, that is, they return true if expr evaluates to the null value, and false otherwise. The correct behavior of expr = NULL is to always return null (unknown).',
   variable => 'Transform_null_equals',
   boot_val => 'false',
 },
+
 
 { name => 'undo_buffer_size', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
   short_desc => 'Size of the UNDO log buffer cache in KB.',
@@ -3186,12 +3201,13 @@
   min => '0',
   max => '1048576',
 },
+
 { name => 'undo_log_segment_size', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
   short_desc => 'Size of UNDO log segments in KB.',
   long_desc => 'Sets the size of individual UNDO log segment files. Larger segments reduce file overhead but consume more disk space.',
   flags => 'GUC_UNIT_KB',
   variable => 'undo_log_segment_size',
-  boot_val => '1048576',
+  boot_val => '1073741824',
   min => '1024',
   max => '1073741824',
 },

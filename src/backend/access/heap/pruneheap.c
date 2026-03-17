@@ -894,6 +894,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	 * UndoRecordSet for efficiency.
 	 */
 	if (do_prune && RelationHasUndo(prstate.relation) &&
+		params->reason != PRUNE_ON_ACCESS &&
 		!IsParallelWorker() && !IsInParallelMode())
 	{
 		UndoRecordSet *uset;

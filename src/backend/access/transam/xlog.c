@@ -6310,7 +6310,7 @@ StartupXLOG(void)
 	 * appropriate now that we're not in standby mode anymore.
 	 */
 	if (promoted)
-		RequestCheckpoint(CHECKPOINT_FORCE);
+		RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_AFTER_PROMOTION);
 }
 
 /*
@@ -7333,8 +7333,14 @@ CreateCheckPoint(int flags)
 	 *
 	 * If we are shutting down, or Startup process is completing crash
 	 * recovery we don't need to write running xact data.
+	 *
+	 * Also skip during the first checkpoint after promotion. This avoids
+	 * generating XLOG_RUNNING_XACTS WAL that would require synchronous
+	 * replication acknowledgment when prepared transactions exist, which
+	 * could block the checkpoint and stall concurrent queries.
 	 */
-	if (!shutdown && XLogStandbyInfoActive())
+	if (!shutdown && XLogStandbyInfoActive() &&
+		!(flags & CHECKPOINT_AFTER_PROMOTION))
 		LogStandbySnapshot();
 
 	START_CRIT_SECTION();
