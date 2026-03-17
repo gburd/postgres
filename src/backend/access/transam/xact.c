@@ -26,8 +26,10 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/twophase_rmgr.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -378,6 +380,8 @@ static void AtSubStart_ResourceOwner(void);
 static void AtEOXact_Undo(bool isCommit);
 static void AtSubCommit_Undo(void);
 static void AtSubAbort_Undo(void);
+static void AtPrepare_Undo(void);
+static void PostPrepare_Undo(void);
 
 static void ShowTransactionState(const char *str);
 static void ShowTransactionStateRec(const char *str, TransactionState s);
@@ -2701,6 +2705,7 @@ PrepareTransaction(void)
 
 	AtPrepare_Notify();
 	AtPrepare_Locks();
+	AtPrepare_Undo();
 	AtPrepare_PredicateLocks();
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
@@ -2771,6 +2776,7 @@ PrepareTransaction(void)
 
 	PostPrepare_smgr();
 	PostPrepare_FileOps();
+	PostPrepare_Undo();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -6662,4 +6668,184 @@ UndoRecPtr
 GetCurrentTransactionUndoRecPtr(void)
 {
 	return CurrentTransactionState->currentUndoPtr;
+}
+
+/*
+ * AtPrepare_Undo - Save UNDO chain state for prepared transaction
+ *
+ * Called during PREPARE TRANSACTION to save the current UNDO chain state
+ * into the two-phase state file, so it can be restored during COMMIT/ROLLBACK
+ * PREPARED.
+ */
+static void
+AtPrepare_Undo(void)
+{
+	/*
+	 * If this transaction generated UNDO records, save the chain pointers
+	 * to the two-phase state file.
+	 */
+	if (CurrentTransactionState->has_undo_actions)
+	{
+		xl_undo_chain_state undo_state;
+
+		undo_state.firstUndoPtr = CurrentTransactionState->firstUndoPtr;
+		undo_state.currentUndoPtr = CurrentTransactionState->currentUndoPtr;
+
+		RegisterTwoPhaseRecord(TWOPHASE_RM_UNDO_ID, 0,
+							   &undo_state, sizeof(xl_undo_chain_state));
+	}
+}
+
+/*
+ * PostPrepare_Undo - Clean up UNDO state after PREPARE TRANSACTION
+ *
+ * The UNDO chain has been saved to the two-phase state file, so we can
+ * reset the current transaction's tracking state.
+ */
+static void
+PostPrepare_Undo(void)
+{
+	/* Reset UNDO tracking state */
+	CurrentTransactionState->firstUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->currentUndoPtr = InvalidUndoRecPtr;
+	CurrentTransactionState->has_undo_actions = false;
+}
+
+/*
+ * undo_twophase_recover - Restore UNDO chain state during recovery
+ *
+ * Called when replaying a prepared transaction during crash recovery.
+ */
+/*
+ * Hash table for storing UNDO chain state of prepared transactions
+ * Maps TransactionId -> xl_undo_chain_state
+ */
+typedef struct PreparedUndoEntry
+{
+	TransactionId xid;			/* hash key */
+	xl_undo_chain_state state;	/* UNDO chain state */
+} PreparedUndoEntry;
+
+static HTAB *PreparedUndoHash = NULL;
+
+/*
+ * InitPreparedUndoHash - Initialize the prepared transaction UNDO hash table
+ */
+static void
+InitPreparedUndoHash(void)
+{
+	HASHCTL		hash_ctl;
+
+	if (PreparedUndoHash != NULL)
+		return;
+
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(TransactionId);
+	hash_ctl.entrysize = sizeof(PreparedUndoEntry);
+	PreparedUndoHash = hash_create("Prepared transaction UNDO state",
+								   16, &hash_ctl,
+								   HASH_ELEM | HASH_BLOBS);
+}
+
+void
+undo_twophase_recover(FullTransactionId fxid, uint16 info,
+					  void *recdata, uint32 len)
+{
+	xl_undo_chain_state *undo_state = (xl_undo_chain_state *) recdata;
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	PreparedUndoEntry *entry;
+	bool		found;
+
+	Assert(len == sizeof(xl_undo_chain_state));
+
+	/* Initialize hash table on first use */
+	InitPreparedUndoHash();
+
+	/* Store UNDO chain state in hash table */
+	entry = (PreparedUndoEntry *) hash_search(PreparedUndoHash,
+											   &xid,
+											   HASH_ENTER,
+											   &found);
+	if (found)
+		elog(ERROR, "duplicate prepared transaction UNDO state for xid %u", xid);
+
+	entry->state = *undo_state;
+
+	ereport(DEBUG2,
+			(errmsg("recovered UNDO chain for prepared transaction %u: first=%llu current=%llu",
+					xid,
+					(unsigned long long) undo_state->firstUndoPtr,
+					(unsigned long long) undo_state->currentUndoPtr)));
+}
+
+/*
+ * undo_twophase_postcommit - Handle COMMIT PREPARED with UNDO
+ *
+ * For committed prepared transactions, we keep the UNDO records for
+ * point-in-time recovery, just like regular commits. We retrieve the UNDO
+ * chain state from the hash table and clean it up.
+ */
+void
+undo_twophase_postcommit(FullTransactionId fxid, uint16 info,
+						 void *recdata, uint32 len)
+{
+	xl_undo_chain_state *undo_state = (xl_undo_chain_state *) recdata;
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	PreparedUndoEntry *entry;
+	bool		found;
+
+	Assert(len == sizeof(xl_undo_chain_state));
+
+	ereport(DEBUG2,
+			(errmsg("COMMIT PREPARED with UNDO chain: xid=%u first=%llu",
+					xid,
+					(unsigned long long) undo_state->firstUndoPtr)));
+
+	/* Retrieve and remove UNDO state from hash table if it exists */
+	if (PreparedUndoHash != NULL)
+	{
+		entry = (PreparedUndoEntry *) hash_search(PreparedUndoHash,
+												   &xid,
+												   HASH_REMOVE,
+												   &found);
+		/* It's OK if not found - might not have been recovered from crash */
+	}
+
+	/* UNDO records are retained for recovery (same as regular commit) */
+}
+
+/*
+ * undo_twophase_postabort - Handle ROLLBACK PREPARED with UNDO
+ *
+ * For aborted prepared transactions, we keep the UNDO records for
+ * point-in-time recovery (same as regular abort). We retrieve the UNDO
+ * chain state from the hash table and clean it up.
+ */
+void
+undo_twophase_postabort(FullTransactionId fxid, uint16 info,
+						void *recdata, uint32 len)
+{
+	xl_undo_chain_state *undo_state = (xl_undo_chain_state *) recdata;
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	PreparedUndoEntry *entry;
+	bool		found;
+
+	Assert(len == sizeof(xl_undo_chain_state));
+
+	ereport(DEBUG2,
+			(errmsg("ROLLBACK PREPARED with UNDO chain: xid=%u first=%llu",
+					xid,
+					(unsigned long long) undo_state->firstUndoPtr)));
+
+	/* Retrieve and remove UNDO state from hash table if it exists */
+	if (PreparedUndoHash != NULL)
+	{
+		entry = (PreparedUndoEntry *) hash_search(PreparedUndoHash,
+												   &xid,
+												   HASH_REMOVE,
+												   &found);
+		/* It's OK if not found - might not have been recovered from crash */
+	}
+
+	/* UNDO records are retained for recovery (same as regular abort) */
 }

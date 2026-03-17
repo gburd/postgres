@@ -16,13 +16,13 @@
 #ifndef UNDO_XLOG_H
 #define UNDO_XLOG_H
 
+#include "access/transam.h"
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
 /* Forward declaration - full definition in undolog.h (backend only) */
 typedef uint64 UndoRecPtr;
-typedef uint32 TransactionId;
 
 /*
  * WAL record types for UNDO operations
@@ -82,9 +82,29 @@ typedef struct xl_undo_extend
 
 #define SizeOfUndoExtend	(offsetof(xl_undo_extend, new_size) + sizeof(uint64))
 
+/*
+ * xl_undo_chain_state - UNDO chain state for prepared transactions
+ *
+ * Saved in the two-phase state file during PREPARE TRANSACTION, so the
+ * UNDO chain can be restored during COMMIT/ROLLBACK PREPARED.
+ */
+typedef struct xl_undo_chain_state
+{
+	UndoRecPtr	firstUndoPtr;	/* First UNDO record in transaction chain */
+	UndoRecPtr	currentUndoPtr;	/* Most recent UNDO record in chain */
+} xl_undo_chain_state;
+
 /* Function declarations for WAL operations */
 extern void undo_redo(XLogReaderState *record);
 extern void undo_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undo_identify(uint8 info);
+
+/* Two-phase commit support */
+extern void undo_twophase_recover(FullTransactionId fxid, uint16 info,
+								  void *recdata, uint32 len);
+extern void undo_twophase_postcommit(FullTransactionId fxid, uint16 info,
+									 void *recdata, uint32 len);
+extern void undo_twophase_postabort(FullTransactionId fxid, uint16 info,
+									void *recdata, uint32 len);
 
 #endif							/* UNDO_XLOG_H */
