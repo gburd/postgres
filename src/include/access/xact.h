@@ -22,6 +22,9 @@
 #include "storage/relfilelocator.h"
 #include "storage/sinval.h"
 
+/* Forward declaration for UNDO - actual header only included in backend */
+typedef uint64 UndoRecPtr;
+
 /*
  * Maximum size of Global Transaction ID (including '\0').
  *
@@ -460,6 +463,8 @@ extern void SetCurrentStatementStartTimestamp(void);
 extern int	GetCurrentTransactionNestLevel(void);
 extern bool TransactionIdIsCurrentTransactionId(TransactionId xid);
 extern void CommandCounterIncrement(void);
+extern void SetCurrentTransactionUndoRecPtr(UndoRecPtr ptr);
+extern UndoRecPtr GetCurrentTransactionUndoRecPtr(void);
 extern void ForceSyncCommit(void);
 extern void StartTransactionCommand(void);
 extern void SaveTransactionCharacteristics(SavedTransactionCharacteristics *s);

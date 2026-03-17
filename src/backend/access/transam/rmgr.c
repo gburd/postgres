@@ -33,6 +33,7 @@
 #include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "catalog/storage_xlog.h"
+#include "storage/fileops.h"
 #include "commands/dbcommands_xlog.h"
 #include "commands/sequence_xlog.h"
 #include "commands/tablespace.h"

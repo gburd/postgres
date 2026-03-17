@@ -20,6 +20,7 @@
 #include "access/nbtxlog.h"
 #include "access/rmgr.h"
 #include "access/spgxlog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/storage_xlog.h"
@@ -29,6 +30,7 @@
 #include "replication/message.h"
 #include "replication/origin.h"
 #include "rmgrdesc.h"
+#include "storage/fileops.h"
 #include "storage/standbydefs.h"
 #include "utils/relmapper.h"
 

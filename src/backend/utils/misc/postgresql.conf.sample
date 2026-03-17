@@ -263,6 +263,21 @@
 #commit_delay = 0                       # range 0-100000, in microseconds
 #commit_siblings = 5                    # range 0-1000
 
+
+# - UNDO Log Settings -
+
+#enable_transactional_fileops = on      # enables transactional file operations
+                                        # with WAL logging
+                                        # (change requires restart)
+#max_undo_logs = 100                    # maximum number of concurrent UNDO logs
+                                        # (change requires restart)
+#undo_buffer_size = 1MB                 # size of UNDO log buffer cache
+                                        # (change requires restart)
+#undo_log_segment_size = 1GB            # size of UNDO log segments
+                                        # (change requires restart)
+#undo_retention_time = 60s              # minimum time to retain UNDO records
+#undo_worker_naptime = 10s              # time between UNDO worker cleanup cycles
+
 # - Checkpoints -
 
 #checkpoint_timeout = 5min              # range 30s-1d

@@ -43,10 +43,6 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 
-/* GUC parameters */
-int			undo_worker_naptime = 10000; /* 10 seconds default */
-int			undo_retention_time = 60000; /* 60 seconds default */
-
 /* Shared memory state */
 static UndoWorkerShmemData *UndoWorkerShmem = NULL;
 

@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "access/transam.h"
+#include "common/file_perm.h"
 #include "access/undobuffers.h"
 #include "access/undolog.h"
 #include "access/undo_xlog.h"
@@ -40,9 +41,11 @@
 #include "utils/errcodes.h"
 #include "utils/memutils.h"
 
-/* GUC parameters (will be defined in later commits) */
+/* GUC parameters */
 int			undo_log_segment_size = UNDO_LOG_SEGMENT_SIZE;
 int			max_undo_logs = MAX_UNDO_LOGS;
+int			undo_retention_time = 60000;	/* 60 seconds */
+int			undo_worker_naptime = 10000;	/* 10 seconds */
 
 /* Shared memory pointer */
 UndoLogSharedData *UndoLogShared = NULL;
@@ -179,7 +182,7 @@ CreateUndoLogFile(uint32 log_number)
 	int			fd;
 
 	/* Ensure directory exists */
-	if (mkdir(UNDO_LOG_DIR, S_IRWXU) < 0 && errno != EEXIST)
+	if (mkdir(UNDO_LOG_DIR, pg_dir_create_mode) < 0 && errno != EEXIST)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create directory \"%s\": %m", UNDO_LOG_DIR)));
@@ -711,4 +714,33 @@ undo_redo(XLogReaderState *record)
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}
+}
+
+/*
+ * UndoLogGetOldestDiscardPtr
+ *		Get the oldest UNDO discard pointer across all active logs
+ *
+ * This is used during checkpoint to record the oldest UNDO data that
+ * might be needed for recovery.
+ */
+UndoRecPtr
+UndoLogGetOldestDiscardPtr(void)
+{
+	UndoRecPtr	oldest = InvalidUndoRecPtr;
+	int			i;
+
+	/* Scan all active UNDO logs to find the oldest discard pointer */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (log->in_use)
+		{
+			if (!UndoRecPtrIsValid(oldest) ||
+				log->discard_ptr < oldest)
+				oldest = log->discard_ptr;
+		}
+	}
+
+	return oldest;
 }

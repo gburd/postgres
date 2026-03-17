@@ -377,7 +377,7 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 			 * No need to work on the file when calculating only the size of
 			 * the items in the data folder.
 			 */
-			if (!sizeonly)
+			if (!sizeonly && strstr(fn, "/base/undo/") == NULL)
 				scan_file(fn, segmentno);
 		}
 		else if (S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))

@@ -85,6 +85,12 @@ typedef struct UndoLogSharedData
 /* Global shared memory pointer (set during startup) */
 extern UndoLogSharedData *UndoLogShared;
 
+/* GUC parameters */
+extern int	undo_log_segment_size;
+extern int	max_undo_logs;
+extern int	undo_retention_time;
+extern int	undo_worker_naptime;
+
 /*
  * Public API for UNDO log management
  */
@@ -103,5 +109,6 @@ extern void UndoLogDiscard(UndoRecPtr oldest_needed);
 extern char *UndoLogPath(uint32 log_number, char *path);
 extern UndoRecPtr UndoLogGetInsertPtr(uint32 log_number);
 extern UndoRecPtr UndoLogGetDiscardPtr(uint32 log_number);
+extern UndoRecPtr UndoLogGetOldestDiscardPtr(void);
 
 #endif							/* UNDOLOG_H */

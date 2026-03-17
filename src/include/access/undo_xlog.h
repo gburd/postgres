@@ -16,8 +16,13 @@
 #ifndef UNDO_XLOG_H
 #define UNDO_XLOG_H
 
-#include "access/undolog.h"
 #include "access/xlogdefs.h"
+#include "access/xlogreader.h"
+#include "lib/stringinfo.h"
+
+/* Forward declaration - full definition in undolog.h (backend only) */
+typedef uint64 UndoRecPtr;
+typedef uint32 TransactionId;
 
 /*
  * WAL record types for UNDO operations

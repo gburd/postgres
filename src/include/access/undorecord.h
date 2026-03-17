@@ -28,6 +28,7 @@
 #include "access/undolog.h"
 #include "access/xlogdefs.h"
 #include "storage/block.h"
+#include "utils/rel.h"
 #include "storage/itemptr.h"
 
 /*
