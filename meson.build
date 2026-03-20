@@ -673,6 +673,10 @@ if have_cxx and not cxx.compiles(cxx11_test, name: 'C++11')
   endif
 endif
 
+# XXX Should test whether <stdatomic.h> works without this
+if cc.get_id() == 'msvc'
+  cflags += '/experimental:c11atomics'
+endif
 
 postgres_inc = [include_directories(postgres_inc_d)]
 test_lib_d = postgres_lib_d
