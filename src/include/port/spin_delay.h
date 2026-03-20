@@ -67,14 +67,20 @@ pg_spin_delay(void)
 
 #ifdef _MSC_VER
 
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
 	/*
-	 * If using Visual C++ on Win64, inline assembly is unavailable.  Use a
-	 * _mm_pause intrinsic instead of rep nop.
+	 * Research indicates ISB is better than __yield() on AArch64.  See
+	 * https://postgr.es/m/1c2a29b8-5b1e-44f7-a871-71ec5fefc120%40app.fastmail.com.
 	 */
-#if defined(_WIN64)
+	__isb(_ARM64_BARRIER_SY);
+#elif defined(_WIN64)
+	/*
+	 * x86_64: inline assembly is unavailable. Use _mm_pause intrinsic
+	 * instead of rep nop.
+	 */
 	_mm_pause();
 #else
-	/* See comment for gcc code. Same code, MASM syntax */
+	/* x86 32-bit: Use inline assembly. Same code as gcc, MASM syntax */
 	__asm		rep nop;
 #endif
 #endif							/* _MSC_VER */
