@@ -1293,9 +1293,28 @@ test_relpath(PG_FUNCTION_ARGS)
 	if ((int) ceil(log10(MAX_BACKENDS)) != PROCNUMBER_CHARS)
 		elog(WARNING, "mismatch between MAX_BACKENDS and PROCNUMBER_CHARS");
 
-	/* verify that the max-length relpath is generated ok */
-	rpath = GetRelationPath(OID_MAX, OID_MAX, OID_MAX, MAX_BACKENDS - 1,
-							INIT_FORKNUM);
+	/*
+	 * Verify that the max-length relpath is generated ok.  Use the fork with
+	 * the longest name, since FORKNAMECHARS reflects that length.
+	 */
+	{
+		ForkNumber	longest_fork = MAIN_FORKNUM;
+		int			longest_len = 0;
+
+		for (ForkNumber f = MAIN_FORKNUM; f <= MAX_FORKNUM; f++)
+		{
+			int			len = strlen(forkNames[f]);
+
+			if (len > longest_len)
+			{
+				longest_len = len;
+				longest_fork = f;
+			}
+		}
+
+		rpath = GetRelationPath(OID_MAX, OID_MAX, OID_MAX, MAX_BACKENDS - 1,
+								longest_fork);
+	}
 
 	if (strlen(rpath.str) != REL_PATH_STR_MAXLEN)
 		elog(WARNING, "maximum length relpath is if length %zu instead of %zu",

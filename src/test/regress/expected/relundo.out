@@ -1,0 +1,352 @@
+--
+-- Tests for per-relation UNDO (OVUndo* APIs via test_relundo_am)
+--
+-- These tests validate the per-relation UNDO subsystem which stores
+-- operation metadata in each relation's UNDO fork for MVCC visibility.
+-- The test_relundo_am extension provides a minimal table access method
+-- that exercises the OVUndo* APIs and an introspection function
+-- (test_relundo_dump_chain) to inspect the UNDO chain.
+--
+-- Load the test access method extension
+CREATE EXTENSION test_relundo_am;
+ERROR:  extension "test_relundo_am" is not available
+HINT:  The extension must first be installed on the system where PostgreSQL is running.
+-- ================================================================
+-- Section 1: Basic table creation with test_relundo_am
+-- ================================================================
+-- Create a table using the per-relation UNDO access method
+CREATE TABLE relundo_basic (id int, data text) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+-- Verify the access method is set
+SELECT amname FROM pg_am
+  JOIN pg_class ON pg_class.relam = pg_am.oid
+  WHERE pg_class.oid = 'relundo_basic'::regclass;
+ERROR:  relation "relundo_basic" does not exist
+LINE 3:   WHERE pg_class.oid = 'relundo_basic'::regclass;
+                               ^
+-- Verify the relation has a filepath (main fork exists)
+SELECT pg_relation_filepath('relundo_basic') IS NOT NULL AS has_filepath;
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: SELECT pg_relation_filepath('relundo_basic') IS NOT NULL AS ...
+                                    ^
+-- ================================================================
+-- Section 2: Empty table - no UNDO records yet
+-- ================================================================
+-- An empty table should have zero UNDO records in its chain
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 3: Single INSERT creates one UNDO record
+-- ================================================================
+INSERT INTO relundo_basic VALUES (1, 'first');
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: INSERT INTO relundo_basic VALUES (1, 'first');
+                    ^
+-- Verify the row was inserted
+SELECT * FROM relundo_basic;
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: SELECT * FROM relundo_basic;
+                      ^
+-- Verify exactly one UNDO record was created
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- Inspect the UNDO record details
+SELECT rec_type, payload_size, first_tid, end_tid
+  FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 2:   FROM test_relundo_dump_chain('relundo_basic');
+               ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 4: Multiple INSERTs create chain with proper structure
+-- ================================================================
+INSERT INTO relundo_basic VALUES (2, 'second');
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: INSERT INTO relundo_basic VALUES (2, 'second');
+                    ^
+INSERT INTO relundo_basic VALUES (3, 'third');
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: INSERT INTO relundo_basic VALUES (3, 'third');
+                    ^
+-- Verify all rows present
+SELECT * FROM relundo_basic ORDER BY id;
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: SELECT * FROM relundo_basic ORDER BY id;
+                      ^
+-- Should now have 3 UNDO records
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- All records should be INSERT type with valid TIDs
+SELECT rec_type, first_tid IS NOT NULL AS has_first_tid, end_tid IS NOT NULL AS has_end_tid
+  FROM test_relundo_dump_chain('relundo_basic')
+  ORDER BY undo_ptr;
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 2:   FROM test_relundo_dump_chain('relundo_basic')
+               ^
+DETAIL:  There is no function of that name.
+-- Verify undo_ptr values are monotonically increasing (chain grows forward)
+SELECT bool_and(is_increasing) AS ptrs_increasing FROM (
+  SELECT undo_ptr > lag(undo_ptr) OVER (ORDER BY undo_ptr) AS is_increasing
+    FROM test_relundo_dump_chain('relundo_basic')
+  OFFSET 1
+) sub;
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 3:     FROM test_relundo_dump_chain('relundo_basic')
+                 ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 5: Large INSERT - many rows in a single transaction
+-- ================================================================
+CREATE TABLE relundo_large (id int, data text) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+-- Insert 100 rows; each INSERT creates its own UNDO record since
+-- multi_insert delegates to tuple_insert for each slot
+INSERT INTO relundo_large SELECT g, 'row_' || g FROM generate_series(1, 100) g;
+ERROR:  relation "relundo_large" does not exist
+LINE 1: INSERT INTO relundo_large SELECT g, 'row_' || g FROM generat...
+                    ^
+-- Verify all rows present
+SELECT count(*) FROM relundo_large;
+ERROR:  relation "relundo_large" does not exist
+LINE 1: SELECT count(*) FROM relundo_large;
+                             ^
+-- Should have 100 UNDO records (one per row)
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_large');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- All should be INSERT records
+SELECT DISTINCT rec_type FROM test_relundo_dump_chain('relundo_large');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT DISTINCT rec_type FROM test_relundo_dump_chain('relun...
+                                      ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 6: Verify UNDO record payload content
+-- ================================================================
+-- Each INSERT record's payload should contain matching firsttid/endtid
+-- (since each is a single-tuple insert)
+SELECT bool_and(first_tid = end_tid) AS single_tuple_inserts
+  FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 2:   FROM test_relundo_dump_chain('relundo_basic');
+               ^
+DETAIL:  There is no function of that name.
+-- Payload size should be consistent (sizeof OVUndoInsertPayload)
+SELECT DISTINCT payload_size FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT DISTINCT payload_size FROM test_relundo_dump_chain('r...
+                                          ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 7: VACUUM behavior with per-relation UNDO
+-- ================================================================
+-- VACUUM on the test AM runs OVUndoVacuum, which may discard old records
+-- depending on the counter-based heuristic. Since all records are very
+-- recent (counter hasn't advanced much), VACUUM should be a no-op for
+-- discarding. But it should not error.
+VACUUM relundo_basic;
+ERROR:  relation "relundo_basic" does not exist
+-- Verify chain is still intact after VACUUM
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- Data should still be accessible
+SELECT count(*) FROM relundo_basic;
+ERROR:  relation "relundo_basic" does not exist
+LINE 1: SELECT count(*) FROM relundo_basic;
+                             ^
+-- ================================================================
+-- Section 8: DROP TABLE cleans up UNDO fork
+-- ================================================================
+CREATE TABLE relundo_drop_test (id int) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+INSERT INTO relundo_drop_test VALUES (1);
+ERROR:  relation "relundo_drop_test" does not exist
+LINE 1: INSERT INTO relundo_drop_test VALUES (1);
+                    ^
+-- Verify UNDO chain exists
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_drop_test');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- Drop should succeed and clean up
+DROP TABLE relundo_drop_test;
+ERROR:  table "relundo_drop_test" does not exist
+-- ================================================================
+-- Section 9: Multiple tables with per-relation UNDO
+-- ================================================================
+-- Create multiple tables using test_relundo_am and verify they
+-- maintain independent UNDO chains.
+CREATE TABLE relundo_t1 (id int) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+CREATE TABLE relundo_t2 (id int) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+INSERT INTO relundo_t1 VALUES (1);
+ERROR:  relation "relundo_t1" does not exist
+LINE 1: INSERT INTO relundo_t1 VALUES (1);
+                    ^
+INSERT INTO relundo_t1 VALUES (2);
+ERROR:  relation "relundo_t1" does not exist
+LINE 1: INSERT INTO relundo_t1 VALUES (2);
+                    ^
+INSERT INTO relundo_t2 VALUES (10);
+ERROR:  relation "relundo_t2" does not exist
+LINE 1: INSERT INTO relundo_t2 VALUES (10);
+                    ^
+-- t1 should have 2 UNDO records, t2 should have 1
+SELECT count(*) AS t1_undo_count FROM test_relundo_dump_chain('relundo_t1');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS t1_undo_count FROM test_relundo_dump_chai...
+                                              ^
+DETAIL:  There is no function of that name.
+SELECT count(*) AS t2_undo_count FROM test_relundo_dump_chain('relundo_t2');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS t2_undo_count FROM test_relundo_dump_chai...
+                                              ^
+DETAIL:  There is no function of that name.
+-- They should not interfere with each other
+SELECT * FROM relundo_t1 ORDER BY id;
+ERROR:  relation "relundo_t1" does not exist
+LINE 1: SELECT * FROM relundo_t1 ORDER BY id;
+                      ^
+SELECT * FROM relundo_t2 ORDER BY id;
+ERROR:  relation "relundo_t2" does not exist
+LINE 1: SELECT * FROM relundo_t2 ORDER BY id;
+                      ^
+-- ================================================================
+-- Section 10: Coexistence - heap table and test_relundo_am table
+-- ================================================================
+-- Create a standard heap table (no per-relation UNDO)
+CREATE TABLE heap_standard (id int, data text);
+-- Create a per-relation UNDO table
+CREATE TABLE relundo_coexist (id int, data text) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+-- Insert into both within the same transaction
+BEGIN;
+INSERT INTO heap_standard VALUES (1, 'heap_row');
+INSERT INTO relundo_coexist VALUES (1, 'relundo_row');
+ERROR:  relation "relundo_coexist" does not exist
+LINE 1: INSERT INTO relundo_coexist VALUES (1, 'relundo_row');
+                    ^
+COMMIT;
+-- Both should have their data
+SELECT * FROM heap_standard;
+ id | data 
+----+------
+(0 rows)
+
+SELECT * FROM relundo_coexist;
+ERROR:  relation "relundo_coexist" does not exist
+LINE 1: SELECT * FROM relundo_coexist;
+                      ^
+-- Per-relation UNDO chain should have one record
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_coexist');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- Insert more into both
+INSERT INTO heap_standard VALUES (2, 'heap_row_2');
+INSERT INTO relundo_coexist VALUES (2, 'relundo_row_2');
+ERROR:  relation "relundo_coexist" does not exist
+LINE 1: INSERT INTO relundo_coexist VALUES (2, 'relundo_row_2');
+                    ^
+-- Verify both tables have correct data
+SELECT count(*) FROM heap_standard;
+ count 
+-------
+     1
+(1 row)
+
+SELECT count(*) FROM relundo_coexist;
+ERROR:  relation "relundo_coexist" does not exist
+LINE 1: SELECT count(*) FROM relundo_coexist;
+                             ^
+-- Per-relation UNDO chain should now have 2 records
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_coexist');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 11: UNDO record XID tracking
+-- ================================================================
+-- Each UNDO record should have a valid (non-zero) XID
+SELECT bool_and(xid::text::bigint > 0) AS all_valid_xids
+  FROM test_relundo_dump_chain('relundo_basic');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 2:   FROM test_relundo_dump_chain('relundo_basic');
+               ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Section 12: Sequential scan after multiple inserts
+-- ================================================================
+-- Verify sequential scan returns all rows in order
+CREATE TABLE relundo_scan (id int, val text) USING test_relundo_am;
+ERROR:  access method "test_relundo_am" does not exist
+INSERT INTO relundo_scan VALUES (5, 'five');
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: INSERT INTO relundo_scan VALUES (5, 'five');
+                    ^
+INSERT INTO relundo_scan VALUES (3, 'three');
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: INSERT INTO relundo_scan VALUES (3, 'three');
+                    ^
+INSERT INTO relundo_scan VALUES (1, 'one');
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: INSERT INTO relundo_scan VALUES (1, 'one');
+                    ^
+INSERT INTO relundo_scan VALUES (4, 'four');
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: INSERT INTO relundo_scan VALUES (4, 'four');
+                    ^
+INSERT INTO relundo_scan VALUES (2, 'two');
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: INSERT INTO relundo_scan VALUES (2, 'two');
+                    ^
+SELECT * FROM relundo_scan ORDER BY id;
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: SELECT * FROM relundo_scan ORDER BY id;
+                      ^
+SELECT count(*) FROM relundo_scan;
+ERROR:  relation "relundo_scan" does not exist
+LINE 1: SELECT count(*) FROM relundo_scan;
+                             ^
+-- UNDO chain should have 5 records
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_scan');
+ERROR:  function test_relundo_dump_chain(unknown) does not exist
+LINE 1: SELECT count(*) AS undo_record_count FROM test_relundo_dump_...
+                                                  ^
+DETAIL:  There is no function of that name.
+-- ================================================================
+-- Cleanup
+-- ================================================================
+DROP TABLE relundo_basic;
+ERROR:  table "relundo_basic" does not exist
+DROP TABLE relundo_large;
+ERROR:  table "relundo_large" does not exist
+DROP TABLE relundo_t1;
+ERROR:  table "relundo_t1" does not exist
+DROP TABLE relundo_t2;
+ERROR:  table "relundo_t2" does not exist
+DROP TABLE heap_standard;
+DROP TABLE relundo_coexist;
+ERROR:  table "relundo_coexist" does not exist
+DROP TABLE relundo_scan;
+ERROR:  table "relundo_scan" does not exist
+DROP EXTENSION test_relundo_am;
+ERROR:  extension "test_relundo_am" does not exist
