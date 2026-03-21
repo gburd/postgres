@@ -577,6 +577,35 @@ extern void HeapBeginBulkUndo(Relation rel, int64 nrows);
 extern void HeapEndBulkUndo(Relation rel);
 extern void HeapBulkUndoAddRecord(Relation rel, uint8 rmid, uint16 info,
 								   const char *payload, Size payload_len);
+extern void HeapBulkUndoAddRecordParts(Relation rel, uint8 rmid, uint16 info,
+									   const char *part1, Size part1_len,
+									   const char *part2, Size part2_len);
 extern void HeapBulkUndoFlush(void);
 extern bool HeapBulkUndoIsActive(Relation rel);
+
+/*
+ * HeapUndoPayloadHeader - Fixed header portion of heap UNDO payloads.
+ *
+ * This is the same layout as HeapUndoPayload in heapam_undo.c, exposed
+ * here so that callers can build the header on the stack and pass it
+ * directly to scatter-gather UNDO APIs (avoiding intermediate palloc).
+ */
+typedef struct HeapUndoPayloadHeader
+{
+	BlockNumber blkno;
+	OffsetNumber offset;
+	uint16		flags;
+	uint32		tuple_len;
+}			HeapUndoPayloadHeader;
+
+#define HEAP_UNDO_HAS_INDEX		0x0001
+#define HEAP_UNDO_HAS_TUPLE		0x0002
+
+#define SizeOfHeapUndoPayloadHeader \
+	(offsetof(HeapUndoPayloadHeader, tuple_len) + sizeof(uint32))
+
+extern void HeapUndoBuildHeader(HeapUndoPayloadHeader *hdr,
+								BlockNumber blkno, OffsetNumber offset,
+								bool relhasindex, uint32 tuple_len);
+
 #endif							/* HEAPAM_H */

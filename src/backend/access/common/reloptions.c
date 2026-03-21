@@ -36,6 +36,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "access/undolog.h"
+
 /*
  * Contents of pg_class.reloptions
  *
@@ -161,6 +163,15 @@ static relopt_bool boolRelOpts[] =
 										 * inserts */
 		},
 		true
+	},
+	{
+		{
+			"enable_undo",
+			"Enables UNDO logging for this relation",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		false
 	},
 	/* list terminator */
 	{{NULL}}
@@ -2025,7 +2036,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_truncate", RELOPT_TYPE_TERNARY,
 		offsetof(StdRdOptions, vacuum_truncate)},
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
+		{"enable_undo", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, enable_undo)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,
@@ -2180,7 +2193,25 @@ heap_reloptions(char relkind, Datum reloptions, bool validate)
 			return (bytea *) rdopts;
 		case RELKIND_RELATION:
 		case RELKIND_MATVIEW:
-			return default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+			{
+				rdopts = (StdRdOptions *)
+					default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+
+				/*
+				 * If the per-relation enable_undo option is set to true,
+				 * verify that the server-level enable_undo GUC is also
+				 * enabled.  The UNDO subsystem must be active (requires
+				 * server restart) before per-relation UNDO logging can be
+				 * used.
+				 */
+				if (rdopts != NULL && rdopts->enable_undo && !enable_undo)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot enable UNDO for a relation when the server-level \"enable_undo\" is disabled"),
+							 errhint("Set \"enable_undo\" to \"on\" in postgresql.conf and restart the server.")));
+
+				return (bytea *) rdopts;
+			}
 		default:
 			/* other relkinds are not supported */
 			return NULL;

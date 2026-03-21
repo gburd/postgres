@@ -178,6 +178,16 @@ extern void UndoRecordAddPayload(UndoRecordSet *uset,
 								 const char *payload,
 								 Size payload_len);
 
+/* Add records with scatter-gather payload (avoids intermediate buffer) */
+extern void UndoRecordAddPayloadParts(UndoRecordSet *uset,
+									  uint8 rmid,
+									  uint16 info,
+									  Oid reloid,
+									  const char *part1,
+									  Size part1_len,
+									  const char *part2,
+									  Size part2_len);
+
 /* Insert the accumulated records into UNDO log */
 extern UndoRecPtr UndoRecordSetInsert(UndoRecordSet *uset);
 

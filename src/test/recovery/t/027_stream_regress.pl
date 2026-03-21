@@ -33,6 +33,9 @@ compute_query_id = 'regress'
 # some test queries.  Disable synchronized seqscans to prevent that.
 $node_primary->append_conf('postgresql.conf', 'synchronize_seqscans = off');
 
+# Enable UNDO logging for regression tests that require it
+$node_primary->append_conf('postgresql.conf', 'enable_undo = on');
+
 # WAL consistency checking is resource intensive so require opt-in with the
 # PG_TEST_EXTRA environment variable.
 if (   $ENV{PG_TEST_EXTRA}
