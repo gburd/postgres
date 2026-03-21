@@ -82,6 +82,7 @@ Generic
 LogicalMessage
 Undo
 RelUndo
+FileOps
 XLOG2$/,
 	'rmgr list');
 

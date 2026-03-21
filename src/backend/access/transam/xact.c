@@ -58,6 +58,7 @@
 #include "storage/aio_subsys.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/lmgr.h"
 #include "storage/md.h"
 #include "storage/predicate.h"
@@ -2531,6 +2532,7 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	FileOpsDoPendingOps(true);
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -2818,6 +2820,7 @@ PrepareTransaction(void)
 	PostPrepare_Inval();
 
 	PostPrepare_smgr();
+	PostPrepare_FileOps();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -3089,6 +3092,7 @@ AbortTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
 		smgrDoPendingDeletes(false);
+		FileOpsDoPendingOps(false);
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
@@ -5274,6 +5278,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_TypeCache();
 	AtEOSubXact_Inval(true);
 	AtSubCommit_smgr();
+	AtSubCommit_FileOps();
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
@@ -5460,6 +5465,7 @@ AbortSubTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, false);
 		AtSubAbort_smgr();
+		AtSubAbort_FileOps();
 
 		AtEOXact_GUC(false, s->gucNestLevel);
 		AtEOSubXact_SPI(false, s->subTransactionId);
