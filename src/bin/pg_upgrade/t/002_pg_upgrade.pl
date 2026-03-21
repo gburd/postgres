@@ -229,6 +229,8 @@ $oldnode->append_conf('postgresql.conf', 'log_statement = none');
 # Set wal_level = replica to run the regression tests in the same
 # wal_level as when 'make check' runs.
 $oldnode->append_conf('postgresql.conf', 'wal_level = replica');
+# Enable UNDO logging for regression tests that require it
+$oldnode->append_conf('postgresql.conf', 'enable_undo = on');
 $oldnode->start;
 
 my $result;

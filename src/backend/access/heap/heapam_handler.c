@@ -67,6 +67,25 @@ static bool BitmapHeapScanNextBlock(TableScanDesc scan,
 									bool *recheck,
 									uint64 *lossy_pages, uint64 *exact_pages);
 
+/*
+ * RelationHasUndo
+ *		Check whether a relation has UNDO logging enabled.
+ *
+ * Returns false for system catalog relations (never generate UNDO for those)
+ * and for any relation that hasn't opted in via the enable_undo storage
+ * parameter.
+ */
+bool
+RelationHasUndo(Relation rel)
+{
+	/* Never generate UNDO for system catalogs */
+	if (IsSystemRelation(rel))
+		return false;
+
+	return rel->rd_options &&
+		((StdRdOptions *) rel->rd_options)->enable_undo;
+}
+
 
 /* ------------------------------------------------------------------------
  * Slot related callbacks for heap AM

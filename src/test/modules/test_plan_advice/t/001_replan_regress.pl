@@ -20,6 +20,7 @@ $node->append_conf('postgresql.conf', <<EOM);
 shared_preload_libraries='test_plan_advice'
 pg_plan_advice.always_explain_supplied_advice=false
 pg_plan_advice.feedback_warnings=true
+enable_undo=on
 EOM
 $node->start;
 
