@@ -1040,6 +1040,14 @@
   boot_val => 'true',
 },
 
+
+{ name => 'enable_undo', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables UNDO logging infrastructure.',
+  long_desc => 'When enabled, the UNDO logging system is initialized at server startup for crash-safe transaction rollback.',
+  variable => 'enable_undo',
+  boot_val => 'false',
+},
+
 { name => 'event_source', type => 'string', context => 'PGC_POSTMASTER', group => 'LOGGING_WHERE',
   short_desc => 'Sets the application name used to identify PostgreSQL messages in the event log.',
   variable => 'event_source',
@@ -3253,6 +3261,36 @@
   boot_val => 'false',
 },
 
+
+{ name => 'undo_buffer_size', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Sets the size of the UNDO buffer cache.',
+  long_desc => 'Size of the dedicated buffer cache for UNDO log pages, in kilobytes.',
+  flags => 'GUC_UNIT_KB',
+  variable => 'undo_buffer_size',
+  boot_val => '1024',
+  min => '128',
+  max => 'INT_MAX / 1024',
+},
+
+{ name => 'undo_retention_time', type => 'int', context => 'PGC_SIGHUP', group => 'WAL_SETTINGS',
+  short_desc => 'Minimum time to retain UNDO records.',
+  long_desc => 'UNDO records will not be discarded until they are at least this old, in milliseconds.',
+  flags => 'GUC_UNIT_MS',
+  variable => 'undo_retention_time',
+  boot_val => '60000',
+  min => '0',
+  max => 'INT_MAX',
+},
+
+{ name => 'undo_worker_naptime', type => 'int', context => 'PGC_SIGHUP', group => 'VACUUM_AUTOVACUUM',
+  short_desc => 'Time to sleep between runs of the UNDO discard worker.',
+  long_desc => 'The UNDO discard worker wakes up periodically to discard old UNDO records.',
+  flags => 'GUC_UNIT_MS',
+  variable => 'undo_worker_naptime',
+  boot_val => '10000',
+  min => '1',
+  max => 'INT_MAX',
+},
 { name => 'unix_socket_directories', type => 'string', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',
   short_desc => 'Sets the directories where Unix-domain sockets will be created.',
   flags => 'GUC_LIST_INPUT | GUC_LIST_QUOTE | GUC_SUPERUSER_ONLY',
@@ -3283,6 +3321,7 @@
   variable => 'update_process_title',
   boot_val => 'DEFAULT_UPDATE_PROCESS_TITLE',
 },
+
 
 { name => 'vacuum_buffer_usage_limit', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
   short_desc => 'Sets the buffer pool size for VACUUM, ANALYZE, and autovacuum.',

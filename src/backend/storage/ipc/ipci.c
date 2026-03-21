@@ -14,6 +14,19 @@
  */
 #include "postgres.h"
 
+#include "access/clog.h"
+#include "access/commit_ts.h"
+#include "access/multixact.h"
+#include "access/nbtree.h"
+#include "access/subtrans.h"
+#include "access/syncscan.h"
+#include "access/transam.h"
+#include "access/twophase.h"
+#include "access/undo.h"
+#include "access/xlogprefetcher.h"
+#include "access/xlogrecovery.h"
+#include "access/xlogwait.h"
+#include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/dsm.h"
@@ -68,7 +81,50 @@ CalculateShmemSize(void)
 	 * during the actual allocation phase.
 	 */
 	size = 100000;
-	size = add_size(size, ShmemGetRequestedSize());
+	size = add_size(size, hash_estimate_size(SHMEM_INDEX_SIZE,
+											 sizeof(ShmemIndexEnt)));
+	size = add_size(size, dsm_estimate_size());
+	size = add_size(size, DSMRegistryShmemSize());
+	size = add_size(size, BufferManagerShmemSize());
+	size = add_size(size, LockManagerShmemSize());
+	size = add_size(size, PredicateLockShmemSize());
+	size = add_size(size, ProcGlobalShmemSize());
+	size = add_size(size, XLogPrefetchShmemSize());
+	size = add_size(size, VarsupShmemSize());
+	size = add_size(size, XLOGShmemSize());
+	size = add_size(size, XLogRecoveryShmemSize());
+	size = add_size(size, CLOGShmemSize());
+	size = add_size(size, UndoShmemSize());
+	size = add_size(size, CommitTsShmemSize());
+	size = add_size(size, SUBTRANSShmemSize());
+	size = add_size(size, TwoPhaseShmemSize());
+	size = add_size(size, BackgroundWorkerShmemSize());
+	size = add_size(size, MultiXactShmemSize());
+	size = add_size(size, LWLockShmemSize());
+	size = add_size(size, ProcArrayShmemSize());
+	size = add_size(size, BackendStatusShmemSize());
+	size = add_size(size, SharedInvalShmemSize());
+	size = add_size(size, PMSignalShmemSize());
+	size = add_size(size, ProcSignalShmemSize());
+	size = add_size(size, CheckpointerShmemSize());
+	size = add_size(size, AutoVacuumShmemSize());
+	size = add_size(size, ReplicationSlotsShmemSize());
+	size = add_size(size, ReplicationOriginShmemSize());
+	size = add_size(size, WalSndShmemSize());
+	size = add_size(size, WalRcvShmemSize());
+	size = add_size(size, WalSummarizerShmemSize());
+	size = add_size(size, PgArchShmemSize());
+	size = add_size(size, ApplyLauncherShmemSize());
+	size = add_size(size, BTreeShmemSize());
+	size = add_size(size, SyncScanShmemSize());
+	size = add_size(size, AsyncShmemSize());
+	size = add_size(size, StatsShmemSize());
+	size = add_size(size, WaitEventCustomShmemSize());
+	size = add_size(size, InjectionPointShmemSize());
+	size = add_size(size, SlotSyncShmemSize());
+	size = add_size(size, AioShmemSize());
+	size = add_size(size, WaitLSNShmemSize());
+	size = add_size(size, LogicalDecodingCtlShmemSize());
 
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);
@@ -175,7 +231,6 @@ RegisterBuiltinShmemCallbacks(void)
 	RegisterShmemCallbacks(&(subsystem_callbacks));
 
 #include "storage/subsystemlist.h"
-
 #undef PG_SHMEM_SUBSYSTEM
 }
 

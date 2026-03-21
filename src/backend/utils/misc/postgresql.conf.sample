@@ -905,6 +905,20 @@
 
 
 #------------------------------------------------------------------------------
+# DEVELOPER OPTIONS
+#------------------------------------------------------------------------------
+
+# These options are intended for use in development and testing.
+
+#enable_undo = off                      # enable UNDO logging infrastructure
+                                        # (change requires restart)
+#undo_buffer_size = 1MB                 # memory buffer for UNDO log records
+                                        # (change requires restart)
+#undo_retention_time = 300s             # time to retain UNDO records
+#undo_worker_naptime = 60s              # time between UNDO discard worker runs
+
+
+#------------------------------------------------------------------------------
 # CONFIG FILE INCLUDES
 #------------------------------------------------------------------------------
 

@@ -26,6 +26,9 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undolog.h"
+#include "access/undorecord.h"
+#include "access/xactundo.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -217,6 +220,7 @@ typedef struct TransactionStateData
 	bool		parallelChildXact;	/* is any parent transaction parallel? */
 	bool		chain;			/* start a new block after this one */
 	bool		topXidLogged;	/* for a subxact: is top-level XID logged? */
+	uint64		undoRecPtr;		/* most recent UNDO record in chain */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -1121,6 +1125,36 @@ IsInParallelMode(void)
 	TransactionState s = CurrentTransactionState;
 
 	return s->parallelModeLevel != 0 || s->parallelChildXact;
+}
+
+/*
+ * SetCurrentTransactionUndoRecPtr
+ *		Set the most recent UNDO record pointer for the current transaction.
+ *
+ * Called from heap_insert/delete/update when they generate UNDO records.
+ * The pointer is used during abort to walk the UNDO chain and apply
+ * compensation operations.
+ */
+void
+SetCurrentTransactionUndoRecPtr(uint64 undo_ptr)
+{
+	TransactionState s = CurrentTransactionState;
+
+	s->undoRecPtr = undo_ptr;
+}
+
+/*
+ * GetCurrentTransactionUndoRecPtr
+ *		Get the most recent UNDO record pointer for the current transaction.
+ *
+ * Returns InvalidUndoRecPtr (0) if no UNDO records have been generated.
+ */
+uint64
+GetCurrentTransactionUndoRecPtr(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	return s->undoRecPtr;
 }
 
 /*
@@ -2143,6 +2177,7 @@ StartTransaction(void)
 	s->childXids = NULL;
 	s->nChildXids = 0;
 	s->maxChildXids = 0;
+	s->undoRecPtr = 0;			/* no UNDO records yet */
 
 	/*
 	 * Once the current user ID and the security context flags are fetched,
@@ -2448,6 +2483,9 @@ CommitTransaction(void)
 
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
 					  : XACT_EVENT_COMMIT);
+
+	/* Clean up transaction undo state (free per-persistence record sets) */
+	AtCommit_XactUndo();
 
 	CurrentResourceOwner = NULL;
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2927,6 +2965,25 @@ AbortTransaction(void)
 	Assert(s->parent == NULL);
 
 	/*
+	 * Discard the UNDO record pointer for this transaction.
+	 *
+	 * Physical UNDO application is NOT needed during standard transaction
+	 * abort because PostgreSQL's MVCC-based heap already handles rollback
+	 * through CLOG: the aborting transaction's xid is marked as aborted in
+	 * CLOG, and subsequent visibility checks will ignore changes made by this
+	 * transaction.  INSERT tuples become invisible (eventually pruned),
+	 * DELETE/UPDATE changes are ignored (old tuple versions remain visible).
+	 *
+	 * Physical UNDO application is intended for cases where the page has been
+	 * modified in-place and the old state cannot be recovered through CLOG
+	 * alone (e.g., in ZHeap-style in-place updates, or after pruning has
+	 * removed old tuple versions).  The UNDO records written during this
+	 * transaction are preserved in the UNDO log for use by the undo worker,
+	 * crash recovery, or future in-place update mechanisms.
+	 */
+	s->undoRecPtr = 0;
+
+	/*
 	 * set the current transaction state information appropriately during the
 	 * abort processing
 	 */
@@ -2960,6 +3017,9 @@ AbortTransaction(void)
 	AtEOXact_Parallel(false);
 	s->parallelModeLevel = 0;
 	s->parallelChildXact = false;	/* should be false already */
+
+	/* Clean up transaction undo state (free per-persistence record sets) */
+	AtAbort_XactUndo();
 
 	/*
 	 * do abort processing

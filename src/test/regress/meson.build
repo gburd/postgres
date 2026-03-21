@@ -50,6 +50,7 @@ tests += {
   'bd': meson.current_build_dir(),
   'regress': {
     'schedule': files('parallel_schedule'),
+    'regress_args': ['--temp-config', files('undo_regress.conf')],
     'test_kwargs': {
       'priority': 50,
       'timeout': 1000,
