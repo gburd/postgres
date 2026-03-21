@@ -1,0 +1,198 @@
+--
+-- Tests for UNDO logging (enable_undo storage parameter)
+--
+
+-- ================================================================
+-- Section 1: enable_undo storage parameter basics
+-- ================================================================
+
+-- Create table with UNDO enabled
+CREATE TABLE undo_basic (id int, data text) WITH (enable_undo = on);
+
+-- Verify the storage parameter is set
+SELECT reloptions FROM pg_class WHERE oid = 'undo_basic'::regclass;
+
+-- Create table without UNDO (default)
+CREATE TABLE undo_default (id int, data text);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_default'::regclass;
+
+-- ALTER TABLE to enable UNDO
+ALTER TABLE undo_default SET (enable_undo = on);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_default'::regclass;
+
+-- ALTER TABLE to disable UNDO
+ALTER TABLE undo_default SET (enable_undo = off);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_default'::regclass;
+
+-- Boolean-style: specifying name only enables it
+ALTER TABLE undo_default SET (enable_undo);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_default'::regclass;
+
+-- Reset
+ALTER TABLE undo_default RESET (enable_undo);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_default'::regclass AND reloptions IS NULL;
+
+-- Invalid values for enable_undo
+CREATE TABLE undo_bad (id int) WITH (enable_undo = 'string');
+CREATE TABLE undo_bad (id int) WITH (enable_undo = 42);
+
+-- ================================================================
+-- Section 2: Basic DML with UNDO-enabled table
+-- ================================================================
+
+-- INSERT
+INSERT INTO undo_basic VALUES (1, 'first');
+INSERT INTO undo_basic VALUES (2, 'second');
+INSERT INTO undo_basic VALUES (3, 'third');
+SELECT * FROM undo_basic ORDER BY id;
+
+-- UPDATE
+UPDATE undo_basic SET data = 'updated_first' WHERE id = 1;
+SELECT * FROM undo_basic ORDER BY id;
+
+-- DELETE
+DELETE FROM undo_basic WHERE id = 2;
+SELECT * FROM undo_basic ORDER BY id;
+
+-- Verify correct final state
+SELECT count(*) FROM undo_basic;
+
+-- ================================================================
+-- Section 3: Transaction rollback with UNDO
+-- ================================================================
+
+-- INSERT then rollback
+BEGIN;
+INSERT INTO undo_basic VALUES (10, 'will_rollback');
+SELECT count(*) FROM undo_basic WHERE id = 10;
+ROLLBACK;
+SELECT count(*) FROM undo_basic WHERE id = 10;
+
+-- DELETE then rollback
+BEGIN;
+DELETE FROM undo_basic WHERE id = 1;
+SELECT count(*) FROM undo_basic WHERE id = 1;
+ROLLBACK;
+SELECT count(*) FROM undo_basic WHERE id = 1;
+
+-- UPDATE then rollback
+BEGIN;
+UPDATE undo_basic SET data = 'temp_update' WHERE id = 3;
+SELECT data FROM undo_basic WHERE id = 3;
+ROLLBACK;
+SELECT data FROM undo_basic WHERE id = 3;
+
+-- ================================================================
+-- Section 4: Subtransactions with UNDO
+-- ================================================================
+
+BEGIN;
+INSERT INTO undo_basic VALUES (20, 'parent_insert');
+SAVEPOINT sp1;
+INSERT INTO undo_basic VALUES (21, 'child_insert');
+ROLLBACK TO sp1;
+-- child_insert should be gone, parent_insert should remain
+SELECT id, data FROM undo_basic WHERE id IN (20, 21) ORDER BY id;
+COMMIT;
+SELECT id, data FROM undo_basic WHERE id IN (20, 21) ORDER BY id;
+
+-- Nested savepoints
+BEGIN;
+INSERT INTO undo_basic VALUES (30, 'level0');
+SAVEPOINT sp1;
+INSERT INTO undo_basic VALUES (31, 'level1');
+SAVEPOINT sp2;
+INSERT INTO undo_basic VALUES (32, 'level2');
+ROLLBACK TO sp2;
+-- level2 gone, level0 and level1 remain
+SELECT id, data FROM undo_basic WHERE id IN (30, 31, 32) ORDER BY id;
+ROLLBACK TO sp1;
+-- level1 also gone, only level0 remains
+SELECT id, data FROM undo_basic WHERE id IN (30, 31, 32) ORDER BY id;
+COMMIT;
+SELECT id, data FROM undo_basic WHERE id IN (30, 31, 32) ORDER BY id;
+
+-- ================================================================
+-- Section 5: System catalog protection
+-- ================================================================
+
+-- Attempting to set enable_undo on a system catalog should be silently
+-- ignored (RelationHasUndo returns false for system relations).
+-- We can't ALTER system catalogs directly, but we verify the protection
+-- exists by checking that system tables never report enable_undo.
+SELECT c.relname, c.reloptions
+FROM pg_class c
+WHERE c.relnamespace = 'pg_catalog'::regnamespace
+  AND c.reloptions::text LIKE '%enable_undo%'
+LIMIT 1;
+
+-- ================================================================
+-- Section 6: Mixed UNDO and non-UNDO tables
+-- ================================================================
+
+CREATE TABLE no_undo_table (id int, data text);
+INSERT INTO no_undo_table VALUES (1, 'no_undo');
+
+BEGIN;
+INSERT INTO undo_basic VALUES (40, 'undo_row');
+INSERT INTO no_undo_table VALUES (2, 'no_undo_row');
+ROLLBACK;
+
+-- Both inserts should be rolled back (standard PostgreSQL behavior)
+SELECT count(*) FROM undo_basic WHERE id = 40;
+SELECT count(*) FROM no_undo_table WHERE id = 2;
+
+-- ================================================================
+-- Section 7: UNDO with TRUNCATE
+-- ================================================================
+
+CREATE TABLE undo_trunc (id int) WITH (enable_undo = on);
+INSERT INTO undo_trunc SELECT generate_series(1, 10);
+SELECT count(*) FROM undo_trunc;
+
+TRUNCATE undo_trunc;
+SELECT count(*) FROM undo_trunc;
+
+-- Re-insert after truncate
+INSERT INTO undo_trunc VALUES (100);
+SELECT * FROM undo_trunc;
+
+-- ================================================================
+-- Section 8: GUC validation - undo_buffer_size
+-- ================================================================
+
+-- undo_buffer_size is a POSTMASTER context GUC, so we can SHOW it
+-- but cannot SET it at runtime.
+SHOW undo_buffer_size;
+
+-- ================================================================
+-- Section 9: UNDO with various data types
+-- ================================================================
+
+CREATE TABLE undo_types (
+    id serial,
+    int_val int,
+    text_val text,
+    float_val float8,
+    bool_val boolean,
+    ts_val timestamp
+) WITH (enable_undo = on);
+
+INSERT INTO undo_types (int_val, text_val, float_val, bool_val, ts_val)
+VALUES (42, 'hello world', 3.14, true, '2024-01-01 12:00:00');
+
+BEGIN;
+UPDATE undo_types SET text_val = 'changed', float_val = 2.71 WHERE id = 1;
+SELECT text_val, float_val FROM undo_types WHERE id = 1;
+ROLLBACK;
+SELECT text_val, float_val FROM undo_types WHERE id = 1;
+
+-- ================================================================
+-- Cleanup
+-- ================================================================
+
+DROP TABLE undo_basic;
+DROP TABLE undo_default;
+DROP TABLE no_undo_table;
+DROP TABLE undo_trunc;
+DROP TABLE undo_types;

@@ -46,6 +46,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "access/atm.h"
 #include "access/clog.h"
 #include "access/commit_ts.h"
 #include "access/heaptoast.h"
@@ -6561,6 +6562,14 @@ StartupXLOG(void)
 	 */
 	if (performedWalRecovery)
 		promoted = PerformRecoveryXLogAction();
+
+	/*
+	 * Finalize ATM state after recovery.  WAL replay has reconstructed the
+	 * Aborted Transaction Map via XLOG_ATM_ABORT and XLOG_ATM_FORGET redo
+	 * handlers.  Log a summary of entries that still need Logical Revert.
+	 */
+	if (performedWalRecovery)
+		ATMRecoveryFinalize();
 
 	/*
 	 * If any of the critical GUCs have changed, log them before we allow

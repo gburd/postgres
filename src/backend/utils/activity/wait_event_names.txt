@@ -417,6 +417,10 @@ XactSLRU	"Waiting to access the transaction status SLRU cache."
 ParallelVacuumDSA	"Waiting for parallel vacuum dynamic shared memory allocation."
 AioUringCompletion	"Waiting for another process to complete IO via io_uring."
 ShmemIndex	"Waiting to find or allocate space in shared memory."
+UndoLog	"Waiting to access or modify UNDO log metadata."
+UndoWorker	"Waiting to access or modify UNDO worker shared memory queue."
+AbortedTxnMap	"Waiting to access the Aborted Transaction Map."
+SecondaryLog	"Waiting to access the Secondary Log (sLog)."
 
 # No "ABI_compatibility" region here as WaitEventLWLock has its own C code.
 

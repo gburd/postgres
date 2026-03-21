@@ -61,6 +61,10 @@ tests += {
       't/050_redo_segment_missing.pl',
       't/051_effective_wal_level.pl',
       't/052_checkpoint_segment_missing.pl',
+      't/054_fileops_recovery.pl',
+      't/055_undo_clr.pl',
+      't/056_undo_crash.pl',
+      't/057_undo_standby.pl',
     ],
   },
 }

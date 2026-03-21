@@ -1,0 +1,133 @@
+/*-------------------------------------------------------------------------
+ *
+ * undodesc.c
+ *	  rmgr descriptor routines for access/undo
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/access/rmgrdesc/undodesc.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/undo_xlog.h"
+#include "access/xlogreader.h"
+
+/*
+ * undo_desc - Describe an UNDO WAL record for pg_waldump
+ *
+ * This function generates human-readable output for UNDO WAL records,
+ * used by pg_waldump and other debugging tools.
+ */
+void
+undo_desc(StringInfo buf, XLogReaderState *record)
+{
+	char	   *rec = XLogRecGetData(record);
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	switch (info)
+	{
+		case XLOG_UNDO_ALLOCATE:
+			{
+				xl_undo_allocate *xlrec = (xl_undo_allocate *) rec;
+
+				appendStringInfo(buf, "log %u, start %llu, len %u, xid %u",
+								 xlrec->log_number,
+								 (unsigned long long) xlrec->start_ptr,
+								 xlrec->length,
+								 xlrec->xid);
+			}
+			break;
+
+		case XLOG_UNDO_DISCARD:
+			{
+				xl_undo_discard *xlrec = (xl_undo_discard *) rec;
+
+				appendStringInfo(buf, "log %u, discard_ptr %llu, oldest_xid %u",
+								 xlrec->log_number,
+								 (unsigned long long) xlrec->discard_ptr,
+								 xlrec->oldest_xid);
+			}
+			break;
+
+		case XLOG_UNDO_EXTEND:
+			{
+				xl_undo_extend *xlrec = (xl_undo_extend *) rec;
+
+				appendStringInfo(buf, "log %u, new_size %llu",
+								 xlrec->log_number,
+								 (unsigned long long) xlrec->new_size);
+			}
+			break;
+
+		case XLOG_UNDO_APPLY_RECORD:
+			{
+				xl_undo_apply *xlrec = (xl_undo_apply *) rec;
+				const char *op_name;
+
+				switch (xlrec->operation_type)
+				{
+					case 0x0001:
+						op_name = "INSERT";
+						break;
+					case 0x0002:
+						op_name = "DELETE";
+						break;
+					case 0x0003:
+						op_name = "UPDATE";
+						break;
+					case 0x0004:
+						op_name = "PRUNE";
+						break;
+					case 0x0005:
+						op_name = "INPLACE";
+						break;
+					default:
+						op_name = "UNKNOWN";
+						break;
+				}
+
+				appendStringInfo(buf,
+								 "undo apply %s: urec_ptr %llu, xid %u, "
+								 "block %u, offset %u",
+								 op_name,
+								 (unsigned long long) xlrec->urec_ptr,
+								 xlrec->xid,
+								 xlrec->target_block,
+								 xlrec->target_offset);
+			}
+			break;
+	}
+}
+
+/*
+ * undo_identify - Identify an UNDO WAL record type
+ *
+ * Returns a string identifying the operation type for debugging output.
+ */
+const char *
+undo_identify(uint8 info)
+{
+	const char *id = NULL;
+
+	switch (info & ~XLR_INFO_MASK)
+	{
+		case XLOG_UNDO_ALLOCATE:
+			id = "ALLOCATE";
+			break;
+		case XLOG_UNDO_DISCARD:
+			id = "DISCARD";
+			break;
+		case XLOG_UNDO_EXTEND:
+			id = "EXTEND";
+			break;
+		case XLOG_UNDO_APPLY_RECORD:
+			id = "APPLY_RECORD";
+			break;
+	}
+
+	return id;
+}
