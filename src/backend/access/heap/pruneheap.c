@@ -18,8 +18,13 @@
 #include "access/heapam_xlog.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/parallel.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
+#include "access/undorecord.h"
+#include "access/undormgr.h"
+#include "access/visibilitymapdefs.h"
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
@@ -1225,6 +1230,82 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	/* Lock vmbuffer before entering a critical section */
 	if (do_set_vm)
 		LockBuffer(prstate.vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+
+	/*
+	 * If UNDO is enabled, save tuples that are about to be pruned (made
+	 * LP_DEAD or LP_UNUSED) to UNDO log. This allows recovery of accidentally
+	 * pruned data.  We batch all pruned tuples into a single UndoRecordSet
+	 * for efficiency.
+	 */
+	if (do_prune && RelationHasUndo(prstate.relation) &&
+		params->reason != PRUNE_ON_ACCESS &&
+		!IsParallelWorker() && !IsInParallelMode())
+	{
+		UndoRecordSet *uset;
+		UndoRecPtr	undo_ptr;
+		TransactionId prune_xid = GetCurrentTransactionId();
+		BlockNumber blkno = BufferGetBlockNumber(prstate.buffer);
+		Page		undopage = BufferGetPage(prstate.buffer);
+		int			i;
+
+		uset = UndoRecordSetCreate(prune_xid, GetCurrentTransactionUndoRecPtr());
+
+		/* Save tuples being set to LP_DEAD */
+		for (i = 0; i < prstate.ndead; i++)
+		{
+			OffsetNumber offnum = prstate.nowdead[i];
+			ItemId		lp = PageGetItemId(undopage, offnum);
+
+			if (ItemIdHasStorage(lp))
+			{
+				char	   *tup_data = (char *) PageGetItem(undopage, lp);
+				uint32		tup_len = ItemIdGetLength(lp);
+				Size		payload_size = HeapUndoPayloadSize(tup_len);
+				char	   *payload = (char *) palloc(payload_size);
+
+				HeapUndoBuildPayload(payload, payload_size,
+									 blkno, offnum,
+									 RelationGetForm(prstate.relation)->relhasindex,
+									 tup_data, tup_len);
+				UndoRecordAddPayload(uset, UNDO_RMID_HEAP, HEAP_UNDO_PRUNE,
+									 RelationGetRelid(prstate.relation),
+									 payload, payload_size);
+				pfree(payload);
+			}
+		}
+
+		/* Save tuples being set to LP_UNUSED */
+		for (i = 0; i < prstate.nunused; i++)
+		{
+			OffsetNumber offnum = prstate.nowunused[i];
+			ItemId		lp = PageGetItemId(undopage, offnum);
+
+			if (ItemIdHasStorage(lp))
+			{
+				char	   *tup_data = (char *) PageGetItem(undopage, lp);
+				uint32		tup_len = ItemIdGetLength(lp);
+				Size		payload_size = HeapUndoPayloadSize(tup_len);
+				char	   *payload = (char *) palloc(payload_size);
+
+				HeapUndoBuildPayload(payload, payload_size,
+									 blkno, offnum,
+									 RelationGetForm(prstate.relation)->relhasindex,
+									 tup_data, tup_len);
+				UndoRecordAddPayload(uset, UNDO_RMID_HEAP, HEAP_UNDO_PRUNE,
+									 RelationGetRelid(prstate.relation),
+									 payload, payload_size);
+				pfree(payload);
+			}
+		}
+
+		if (uset->nrecords > 0)
+		{
+			undo_ptr = UndoRecordSetInsert(uset);
+			SetCurrentTransactionUndoRecPtr(undo_ptr);
+		}
+
+		UndoRecordSetFree(uset);
+	}
 
 	/* Any error while applying the changes is critical */
 	START_CRIT_SECTION();
