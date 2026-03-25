@@ -20,6 +20,7 @@
 #include "access/nbtxlog.h"
 #include "access/rmgr.h"
 #include "access/spgxlog.h"
+#include "access/relundo_xlog.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"

@@ -13,6 +13,10 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	relundo.o \
+	relundo_discard.o \
+	relundo_page.o \
+	relundo_xlog.o \
 	undo.o \
 	undo_bufmgr.o \
 	undo_xlog.o \

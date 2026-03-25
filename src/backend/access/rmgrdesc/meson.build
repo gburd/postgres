@@ -15,6 +15,7 @@ rmgr_desc_sources = files(
   'mxactdesc.c',
   'nbtdesc.c',
   'relmapdesc.c',
+  'relundodesc.c',
   'replorigindesc.c',
   'rmgrdesc_utils.c',
   'seqdesc.c',

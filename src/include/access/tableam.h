@@ -875,6 +875,57 @@ typedef struct TableAmRoutine
 										   SampleScanState *scanstate,
 										   TupleTableSlot *slot);
 
+
+	/* ------------------------------------------------------------------------
+	 * Per-relation UNDO callbacks (optional, for MVCC via UNDO chains)
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Initialize per-relation UNDO for this relation.
+	 *
+	 * Called during CREATE TABLE for table AMs that use per-relation UNDO for
+	 * MVCC visibility determination. Creates the UNDO fork and initializes
+	 * the metapage.
+	 *
+	 * If NULL, the table AM does not use per-relation UNDO (e.g., heap AM).
+	 */
+	void		(*relation_init_undo) (Relation rel);
+
+	/*
+	 * Check if a tuple satisfies a snapshot using UNDO chain walking.
+	 *
+	 * This is an alternative to the standard xmin/xmax visibility checking
+	 * used by heap AM. Table AMs that store operation metadata in
+	 * per-relation UNDO logs can use this to determine tuple visibility by
+	 * walking the UNDO chain starting from undo_ptr.
+	 *
+	 * Parameters: rel       - Relation containing the tuple tid       - TID
+	 * of the tuple to check snapshot  - Snapshot to check visibility against
+	 * undo_ptr  - RelUndoRecPtr to start UNDO chain walk from
+	 *
+	 * Returns: true if tuple is visible to snapshot, false otherwise
+	 *
+	 * If NULL, the table AM does not use UNDO-based visibility (e.g., heap
+	 * AM).
+	 */
+	bool		(*tuple_satisfies_snapshot_undo) (Relation rel,
+												  ItemPointer tid,
+												  Snapshot snapshot,
+												  uint64 undo_ptr);
+
+	/*
+	 * Vacuum per-relation UNDO log.
+	 *
+	 * Called during VACUUM to discard old UNDO records and reclaim space. The
+	 * oldest_xid parameter indicates the oldest transaction ID that is still
+	 * visible to any running transaction.
+	 *
+	 * If NULL, the table AM does not use per-relation UNDO (e.g., heap AM).
+	 */
+	void		(*relation_vacuum_undo) (Relation rel,
+										 TransactionId oldest_xid);
+
 } TableAmRoutine;
 
 

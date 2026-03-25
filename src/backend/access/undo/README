@@ -690,3 +690,4 @@ Monitor and adjust based on:
 - UNDO-based MVCC for reduced bloat
 - Parallel UNDO application
 - Online UNDO log compaction
+

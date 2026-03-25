@@ -80,6 +80,8 @@ CommitTs
 ReplicationOrigin
 Generic
 LogicalMessage
+Undo
+RelUndo
 XLOG2$/,
 	'rmgr list');
 

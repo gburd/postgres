@@ -1292,7 +1292,7 @@ test_relpath(PG_FUNCTION_ARGS)
 
 	/* verify that the max-length relpath is generated ok */
 	rpath = GetRelationPath(OID_MAX, OID_MAX, OID_MAX, MAX_BACKENDS - 1,
-							INIT_FORKNUM);
+							RELUNDO_FORKNUM);
 
 	if (strlen(rpath.str) != REL_PATH_STR_MAXLEN)
 		elog(WARNING, "maximum length relpath is if length %zu instead of %zu",
