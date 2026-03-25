@@ -26,6 +26,9 @@
 #include "access/undorecord.h"
 #include "access/xlogdefs.h"
 
+/* Per-relation UNDO pointer type (defined in relundo.h as uint64) */
+typedef uint64 RelUndoRecPtr;
+
 /*
  * XactUndoContext - Context for a single undo insertion within a transaction.
  *
@@ -76,5 +79,9 @@ extern void AtProcExit_XactUndo(void);
 
 /* Undo chain traversal for rollback */
 extern UndoRecPtr GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel);
+
+/* Per-relation UNDO tracking for rollback */
+extern void RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr);
+extern RelUndoRecPtr GetPerRelUndoPtr(Oid relid);
 
 #endif							/* XACTUNDO_H */

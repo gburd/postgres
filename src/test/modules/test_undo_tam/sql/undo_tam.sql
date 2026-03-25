@@ -1,22 +1,22 @@
 --
--- Tests for per-relation UNDO (OVUndo* APIs via test_undo_tam)
+-- Tests for per-relation UNDO (RelUndo* APIs via test_relundo_am)
 --
 -- These tests validate the per-relation UNDO subsystem which stores
 -- operation metadata in each relation's UNDO fork for MVCC visibility.
--- The test_undo_tam extension provides a minimal table access method
--- that exercises the OVUndo* APIs and an introspection function
--- (test_undo_tam_dump_chain) to inspect the UNDO chain.
+-- The test_relundo_am extension provides a minimal table access method
+-- that exercises the RelUndo* APIs and an introspection function
+-- (test_relundo_dump_chain) to inspect the UNDO chain.
 --
 
 -- Load the test access method extension
-CREATE EXTENSION test_undo_tam;
+CREATE EXTENSION test_relundo_am;
 
 -- ================================================================
--- Section 1: Basic table creation with test_undo_tam
+-- Section 1: Basic table creation with test_relundo_am
 -- ================================================================
 
 -- Create a table using the per-relation UNDO access method
-CREATE TABLE relundo_basic (id int, data text) USING test_undo_tam;
+CREATE TABLE relundo_basic (id int, data text) USING test_relundo_am;
 
 -- Verify the access method is set
 SELECT amname FROM pg_am
@@ -31,7 +31,7 @@ SELECT pg_relation_filepath('relundo_basic') IS NOT NULL AS has_filepath;
 -- ================================================================
 
 -- An empty table should have zero UNDO records in its chain
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_basic');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
 
 -- ================================================================
 -- Section 3: Single INSERT creates one UNDO record
@@ -43,11 +43,11 @@ INSERT INTO relundo_basic VALUES (1, 'first');
 SELECT * FROM relundo_basic;
 
 -- Verify exactly one UNDO record was created
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_basic');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
 
 -- Inspect the UNDO record details
 SELECT rec_type, payload_size, first_tid, end_tid
-  FROM test_undo_tam_dump_chain('relundo_basic');
+  FROM test_relundo_dump_chain('relundo_basic');
 
 -- ================================================================
 -- Section 4: Multiple INSERTs create chain with proper structure
@@ -60,17 +60,17 @@ INSERT INTO relundo_basic VALUES (3, 'third');
 SELECT * FROM relundo_basic ORDER BY id;
 
 -- Should now have 3 UNDO records
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_basic');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
 
 -- All records should be INSERT type with valid TIDs
 SELECT rec_type, first_tid IS NOT NULL AS has_first_tid, end_tid IS NOT NULL AS has_end_tid
-  FROM test_undo_tam_dump_chain('relundo_basic')
+  FROM test_relundo_dump_chain('relundo_basic')
   ORDER BY undo_ptr;
 
 -- Verify undo_ptr values are monotonically increasing (chain grows forward)
 SELECT bool_and(is_increasing) AS ptrs_increasing FROM (
   SELECT undo_ptr > lag(undo_ptr) OVER (ORDER BY undo_ptr) AS is_increasing
-    FROM test_undo_tam_dump_chain('relundo_basic')
+    FROM test_relundo_dump_chain('relundo_basic')
   OFFSET 1
 ) sub;
 
@@ -78,7 +78,7 @@ SELECT bool_and(is_increasing) AS ptrs_increasing FROM (
 -- Section 5: Large INSERT - many rows in a single transaction
 -- ================================================================
 
-CREATE TABLE relundo_large (id int, data text) USING test_undo_tam;
+CREATE TABLE relundo_large (id int, data text) USING test_relundo_am;
 
 -- Insert 100 rows; each INSERT creates its own UNDO record since
 -- multi_insert delegates to tuple_insert for each slot
@@ -88,10 +88,10 @@ INSERT INTO relundo_large SELECT g, 'row_' || g FROM generate_series(1, 100) g;
 SELECT count(*) FROM relundo_large;
 
 -- Should have 100 UNDO records (one per row)
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_large');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_large');
 
 -- All should be INSERT records
-SELECT DISTINCT rec_type FROM test_undo_tam_dump_chain('relundo_large');
+SELECT DISTINCT rec_type FROM test_relundo_dump_chain('relundo_large');
 
 -- ================================================================
 -- Section 6: Verify UNDO record payload content
@@ -100,23 +100,23 @@ SELECT DISTINCT rec_type FROM test_undo_tam_dump_chain('relundo_large');
 -- Each INSERT record's payload should contain matching firsttid/endtid
 -- (since each is a single-tuple insert)
 SELECT bool_and(first_tid = end_tid) AS single_tuple_inserts
-  FROM test_undo_tam_dump_chain('relundo_basic');
+  FROM test_relundo_dump_chain('relundo_basic');
 
--- Payload size should be consistent (sizeof OVUndoInsertPayload)
-SELECT DISTINCT payload_size FROM test_undo_tam_dump_chain('relundo_basic');
+-- Payload size should be consistent (sizeof RelUndoInsertPayload)
+SELECT DISTINCT payload_size FROM test_relundo_dump_chain('relundo_basic');
 
 -- ================================================================
 -- Section 7: VACUUM behavior with per-relation UNDO
 -- ================================================================
 
--- VACUUM on the test AM runs OVUndoVacuum, which may discard old records
+-- VACUUM on the test AM runs RelUndoVacuum, which may discard old records
 -- depending on the counter-based heuristic. Since all records are very
 -- recent (counter hasn't advanced much), VACUUM should be a no-op for
 -- discarding. But it should not error.
 VACUUM relundo_basic;
 
 -- Verify chain is still intact after VACUUM
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_basic');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic');
 
 -- Data should still be accessible
 SELECT count(*) FROM relundo_basic;
@@ -125,11 +125,11 @@ SELECT count(*) FROM relundo_basic;
 -- Section 8: DROP TABLE cleans up UNDO fork
 -- ================================================================
 
-CREATE TABLE relundo_drop_test (id int) USING test_undo_tam;
+CREATE TABLE relundo_drop_test (id int) USING test_relundo_am;
 INSERT INTO relundo_drop_test VALUES (1);
 
 -- Verify UNDO chain exists
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_drop_test');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_drop_test');
 
 -- Drop should succeed and clean up
 DROP TABLE relundo_drop_test;
@@ -138,32 +138,32 @@ DROP TABLE relundo_drop_test;
 -- Section 9: Multiple tables with per-relation UNDO
 -- ================================================================
 
--- Create multiple tables using test_undo_tam and verify they
+-- Create multiple tables using test_relundo_am and verify they
 -- maintain independent UNDO chains.
-CREATE TABLE relundo_t1 (id int) USING test_undo_tam;
-CREATE TABLE relundo_t2 (id int) USING test_undo_tam;
+CREATE TABLE relundo_t1 (id int) USING test_relundo_am;
+CREATE TABLE relundo_t2 (id int) USING test_relundo_am;
 
 INSERT INTO relundo_t1 VALUES (1);
 INSERT INTO relundo_t1 VALUES (2);
 INSERT INTO relundo_t2 VALUES (10);
 
 -- t1 should have 2 UNDO records, t2 should have 1
-SELECT count(*) AS t1_undo_count FROM test_undo_tam_dump_chain('relundo_t1');
-SELECT count(*) AS t2_undo_count FROM test_undo_tam_dump_chain('relundo_t2');
+SELECT count(*) AS t1_undo_count FROM test_relundo_dump_chain('relundo_t1');
+SELECT count(*) AS t2_undo_count FROM test_relundo_dump_chain('relundo_t2');
 
 -- They should not interfere with each other
 SELECT * FROM relundo_t1 ORDER BY id;
 SELECT * FROM relundo_t2 ORDER BY id;
 
 -- ================================================================
--- Section 10: Coexistence - heap table and test_undo_tam table
+-- Section 10: Coexistence - heap table and test_relundo_am table
 -- ================================================================
 
 -- Create a standard heap table (no per-relation UNDO)
 CREATE TABLE heap_standard (id int, data text);
 
 -- Create a per-relation UNDO table
-CREATE TABLE relundo_coexist (id int, data text) USING test_undo_tam;
+CREATE TABLE relundo_coexist (id int, data text) USING test_relundo_am;
 
 -- Insert into both within the same transaction
 BEGIN;
@@ -176,7 +176,7 @@ SELECT * FROM heap_standard;
 SELECT * FROM relundo_coexist;
 
 -- Per-relation UNDO chain should have one record
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_coexist');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_coexist');
 
 -- Insert more into both
 INSERT INTO heap_standard VALUES (2, 'heap_row_2');
@@ -187,7 +187,7 @@ SELECT count(*) FROM heap_standard;
 SELECT count(*) FROM relundo_coexist;
 
 -- Per-relation UNDO chain should now have 2 records
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_coexist');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_coexist');
 
 -- ================================================================
 -- Section 11: UNDO record XID tracking
@@ -195,14 +195,14 @@ SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_coex
 
 -- Each UNDO record should have a valid (non-zero) XID
 SELECT bool_and(xid::text::bigint > 0) AS all_valid_xids
-  FROM test_undo_tam_dump_chain('relundo_basic');
+  FROM test_relundo_dump_chain('relundo_basic');
 
 -- ================================================================
 -- Section 12: Sequential scan after multiple inserts
 -- ================================================================
 
 -- Verify sequential scan returns all rows in order
-CREATE TABLE relundo_scan (id int, val text) USING test_undo_tam;
+CREATE TABLE relundo_scan (id int, val text) USING test_relundo_am;
 INSERT INTO relundo_scan VALUES (5, 'five');
 INSERT INTO relundo_scan VALUES (3, 'three');
 INSERT INTO relundo_scan VALUES (1, 'one');
@@ -213,7 +213,7 @@ SELECT * FROM relundo_scan ORDER BY id;
 SELECT count(*) FROM relundo_scan;
 
 -- UNDO chain should have 5 records
-SELECT count(*) AS undo_record_count FROM test_undo_tam_dump_chain('relundo_scan');
+SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_scan');
 
 -- ================================================================
 -- Cleanup
@@ -226,4 +226,4 @@ DROP TABLE relundo_t2;
 DROP TABLE heap_standard;
 DROP TABLE relundo_coexist;
 DROP TABLE relundo_scan;
-DROP EXTENSION test_undo_tam;
+DROP EXTENSION test_relundo_am;

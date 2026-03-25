@@ -86,21 +86,32 @@ RelUndoReserve(Relation rel, Size record_size, Buffer *undo_buffer)
 	metapage = BufferGetPage(metabuf);
 	meta = (RelUndoMetaPage) PageGetContents(metapage);
 
+	elog(DEBUG1, "RelUndoReserve: record_size=%zu, head_blkno=%u",
+		 record_size, meta->head_blkno);
+
 	/*
 	 * If there's a head page, check if it has enough space.
 	 */
 	if (BlockNumberIsValid(meta->head_blkno))
 	{
+		elog(DEBUG1, "RelUndoReserve: reading existing head page %u",
+			 meta->head_blkno);
+
 		databuf = ReadBufferExtended(rel, RELUNDO_FORKNUM, meta->head_blkno,
 									 RBM_NORMAL, NULL);
 		LockBuffer(databuf, BUFFER_LOCK_EXCLUSIVE);
 
 		datapage = BufferGetPage(databuf);
 
+		elog(DEBUG1, "RelUndoReserve: free_space=%zu",
+			 relundo_get_free_space(datapage));
+
 		if (relundo_get_free_space(datapage) >= record_size)
 		{
 			/* Enough space on current head page */
 			blkno = meta->head_blkno;
+
+			elog(DEBUG1, "RelUndoReserve: enough space, using block %u", blkno);
 
 			/* Release the metapage -- we don't need to modify it */
 			UnlockReleaseBuffer(metabuf);
@@ -108,6 +119,7 @@ RelUndoReserve(Relation rel, Size record_size, Buffer *undo_buffer)
 		}
 
 		/* Not enough space; release this page, allocate a new one */
+		elog(DEBUG1, "RelUndoReserve: not enough space, allocating new page");
 		UnlockReleaseBuffer(databuf);
 	}
 
@@ -122,9 +134,18 @@ RelUndoReserve(Relation rel, Size record_size, Buffer *undo_buffer)
 
 reserve:
 	/* Reserve space by advancing pd_lower */
+	elog(DEBUG1, "RelUndoReserve: at reserve label, block=%u", blkno);
+
 	datahdr = (RelUndoPageHeader) PageGetContents(datapage);
+
+	elog(DEBUG1, "RelUndoReserve: datahdr=%p, pd_lower=%u, pd_upper=%u, counter=%u",
+		 datahdr, datahdr->pd_lower, datahdr->pd_upper, datahdr->counter);
+
 	offset = datahdr->pd_lower;
 	datahdr->pd_lower += record_size;
+
+	elog(DEBUG1, "RelUndoReserve: reserved offset=%u, new pd_lower=%u",
+		 offset, datahdr->pd_lower);
 
 	/* Build the UNDO pointer */
 	ptr = MakeRelUndoRecPtr(datahdr->counter, blkno, offset);
@@ -158,34 +179,51 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	uint8		info;
 	Buffer		metabuf = InvalidBuffer;
 
+	elog(DEBUG1, "RelUndoFinish: starting, ptr=%lu, payload_size=%zu",
+		 (unsigned long) ptr, payload_size);
+
+	elog(DEBUG1, "RelUndoFinish: calling BufferGetPage");
 	page = BufferGetPage(undo_buffer);
+
+	elog(DEBUG1, "RelUndoFinish: calling PageGetContents");
 	contents = PageGetContents(page);
+
+	elog(DEBUG1, "RelUndoFinish: calling RelUndoGetOffset");
 	offset = RelUndoGetOffset(ptr);
+
+	elog(DEBUG1, "RelUndoFinish: casting to RelUndoPageHeader");
 	datahdr = (RelUndoPageHeader) contents;
 
+	elog(DEBUG1, "RelUndoFinish: checking is_new_page, offset=%u", offset);
 	/*
 	 * Check if this is the first record on a newly allocated page. If the
 	 * offset equals the header size, this is a new page.
 	 */
 	is_new_page = (offset == SizeOfRelUndoPageHeaderData);
 
+	elog(DEBUG1, "RelUndoFinish: is_new_page=%d", is_new_page);
+
 	/* Calculate total UNDO record size */
 	total_record_size = SizeOfRelUndoRecordHeader + payload_size;
 
+	elog(DEBUG1, "RelUndoFinish: writing header at offset %u", offset);
 	/* Write the header */
 	memcpy(contents + offset, header, SizeOfRelUndoRecordHeader);
 
+	elog(DEBUG1, "RelUndoFinish: writing payload");
 	/* Write the payload immediately after the header */
 	if (payload_size > 0 && payload != NULL)
 		memcpy(contents + offset + SizeOfRelUndoRecordHeader,
 			   payload, payload_size);
 
+	elog(DEBUG1, "RelUndoFinish: marking buffer dirty");
 	/*
 	 * Mark the buffer dirty now, before the critical section.
 	 * XLogRegisterBuffer requires the buffer to be dirty when called.
 	 */
 	MarkBufferDirty(undo_buffer);
 
+	elog(DEBUG1, "RelUndoFinish: checking if need metapage");
 	/*
 	 * If this is a new page, get the metapage lock BEFORE entering the
 	 * critical section. We need to include the metapage in the WAL record
@@ -195,16 +233,23 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	 * buffer to be exclusively locked.
 	 */
 	if (is_new_page)
+	{
+		elog(DEBUG1, "RelUndoFinish: getting metapage");
 		metabuf = relundo_get_metapage(rel, BUFFER_LOCK_EXCLUSIVE);
+	}
 
 	/*
 	 * Allocate WAL record data buffer BEFORE entering critical section.
 	 * Cannot call palloc() inside a critical section.
 	 */
+	elog(DEBUG1, "RelUndoFinish: allocating WAL record buffer, is_new_page=%d, total_record_size=%zu",
+		 is_new_page, total_record_size);
+
 	if (is_new_page)
 	{
 		Size		wal_data_size = SizeOfRelUndoPageHeaderData + total_record_size;
 
+		elog(DEBUG1, "RelUndoFinish: new page, allocating %zu bytes", wal_data_size);
 		record_data = (char *) palloc(wal_data_size);
 
 		/* Copy page header */
@@ -220,12 +265,22 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	else
 	{
 		/* Normal case: just the UNDO record */
+		elog(DEBUG1, "RelUndoFinish: existing page, allocating %zu bytes", total_record_size);
 		record_data = (char *) palloc(total_record_size);
+		elog(DEBUG1, "RelUndoFinish: palloc succeeded, record_data=%p", record_data);
+		elog(DEBUG1, "RelUndoFinish: copying header, header=%p, size=%zu", header, SizeOfRelUndoRecordHeader);
 		memcpy(record_data, header, SizeOfRelUndoRecordHeader);
+		elog(DEBUG1, "RelUndoFinish: header copied");
 		if (payload_size > 0 && payload != NULL)
+		{
+			elog(DEBUG1, "RelUndoFinish: copying payload, payload=%p, size=%zu", payload, payload_size);
 			memcpy(record_data + SizeOfRelUndoRecordHeader, payload, payload_size);
+			elog(DEBUG1, "RelUndoFinish: payload memcpy completed");
+		}
+		elog(DEBUG1, "RelUndoFinish: finished WAL buffer preparation");
 	}
 
+	elog(DEBUG1, "RelUndoFinish: about to START_CRIT_SECTION");
 	/* WAL-log the insertion */
 	START_CRIT_SECTION();
 
@@ -247,8 +302,12 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	 *
 	 * For a new page, we also include the RelUndoPageHeaderData so that redo
 	 * can reconstruct the page header fields (prev_blkno, counter).
+	 * Use REGBUF_WILL_INIT to indicate the redo routine will initialize the page.
 	 */
-	XLogRegisterBuffer(0, undo_buffer, REGBUF_STANDARD);
+	if (is_new_page)
+		XLogRegisterBuffer(0, undo_buffer, REGBUF_WILL_INIT);
+	else
+		XLogRegisterBuffer(0, undo_buffer, REGBUF_STANDARD);
 
 	if (is_new_page)
 	{
@@ -425,12 +484,7 @@ RelUndoInitRelation(Relation rel)
 	smgrcreate(srel, RELUNDO_FORKNUM, false);
 
 	/*
-	 * For relation creation, just log the fork creation without doing full
-	 * WAL logging. The metapage initialization will be WAL-logged when the
-	 * first UNDO record is inserted.
-	 *
-	 * Note: We can't use XLogInsert here because the relation may not be
-	 * fully set up for WAL logging during CREATE TABLE.
+	 * Create the physical fork file and log it.
 	 */
 	if (!InRecovery)
 		log_smgrcreate(&rel->rd_locator, RELUNDO_FORKNUM);
@@ -457,13 +511,31 @@ RelUndoInitRelation(Relation rel)
 	meta->total_records = 0;
 	meta->discarded_records = 0;
 
-	/*
-	 * Mark the buffer dirty. We don't WAL-log the metapage initialization
-	 * here because this is called during relation creation. The metapage will
-	 * be implicitly logged via a full page image on the first UNDO record
-	 * insertion.
-	 */
 	MarkBufferDirty(metabuf);
+
+	/*
+	 * WAL-log the metapage initialization. This is critical for crash safety.
+	 * If we crash after table creation but before the first INSERT, the
+	 * metapage must be recoverable.
+	 */
+	if (!InRecovery)
+	{
+		xl_relundo_init xlrec;
+		XLogRecPtr	recptr;
+
+		xlrec.magic = RELUNDO_METAPAGE_MAGIC;
+		xlrec.version = RELUNDO_METAPAGE_VERSION;
+		xlrec.counter = 1;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfRelundoInit);
+		XLogRegisterBuffer(0, metabuf, REGBUF_WILL_INIT | REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_RELUNDO_ID, XLOG_RELUNDO_INIT);
+
+		PageSetLSN(metapage, recptr);
+	}
+
 	UnlockReleaseBuffer(metabuf);
 }
 

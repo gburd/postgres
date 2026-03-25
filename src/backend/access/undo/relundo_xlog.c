@@ -228,6 +228,10 @@ relundo_redo(XLogReaderState *record)
 			relundo_redo_discard(record);
 			break;
 
+		case XLOG_RELUNDO_APPLY:
+			/* CLR - already replayed, nothing to do */
+			break;
+
 		default:
 			elog(PANIC, "relundo_redo: unknown op code %u", info);
 	}

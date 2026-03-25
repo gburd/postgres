@@ -22,6 +22,7 @@
  */
 #include "postgres.h"
 
+#include "access/relundo_worker.h"
 #include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undoworker.h"
@@ -53,6 +54,7 @@ UndoShmemSize(void)
 	size = UndoLogShmemSize();
 	size = add_size(size, XactUndoShmemSize());
 	size = add_size(size, UndoWorkerShmemSize());
+	size = add_size(size, RelUndoWorkerShmemSize());
 
 	return size;
 }
@@ -81,6 +83,7 @@ UndoShmemInit(void)
 	UndoLogShmemInit();
 	XactUndoShmemInit();
 	UndoWorkerShmemInit();
+	RelUndoWorkerShmemInit();
 }
 
 /*

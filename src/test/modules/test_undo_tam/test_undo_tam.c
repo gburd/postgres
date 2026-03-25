@@ -32,6 +32,7 @@
 #include "access/relundo.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "access/xactundo.h"
 #include "catalog/index.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
@@ -288,12 +289,16 @@ testrelundo_scan_getnextslot(TableScanDesc sscan,
 		OffsetNumber maxoff;
 
 		/* Move to next block if needed */
-		if (!scan->rs_inited || scan->rs_curoffset > PageGetMaxOffsetNumber(BufferGetPage(scan->rs_cbuf)))
+		if (!scan->rs_inited || !BufferIsValid(scan->rs_cbuf) ||
+			scan->rs_curoffset > PageGetMaxOffsetNumber(BufferGetPage(scan->rs_cbuf)))
 		{
 			if (scan->rs_inited)
 			{
-				ReleaseBuffer(scan->rs_cbuf);
-				scan->rs_cbuf = InvalidBuffer;
+				if (BufferIsValid(scan->rs_cbuf))
+				{
+					ReleaseBuffer(scan->rs_cbuf);
+					scan->rs_cbuf = InvalidBuffer;
+				}
 				scan->rs_curblock++;
 			}
 
@@ -519,7 +524,7 @@ testrelundo_tuple_insert(Relation rel, TupleTableSlot *slot,
 	hdr.urec_type = RELUNDO_INSERT;
 	hdr.urec_len = record_size;
 	hdr.urec_xid = GetCurrentTransactionId();
-	hdr.urec_prevundorec = InvalidRelUndoRecPtr; /* No chain linking for now */
+	hdr.urec_prevundorec = GetPerRelUndoPtr(RelationGetRelid(rel));
 
 	/* Build the INSERT payload */
 	ItemPointerCopy(&tid, &payload.firsttid);
@@ -528,6 +533,14 @@ testrelundo_tuple_insert(Relation rel, TupleTableSlot *slot,
 	/* Phase 2: Complete the UNDO record */
 	RelUndoFinish(rel, undo_buffer, undo_ptr, &hdr,
 				 &payload, sizeof(RelUndoInsertPayload));
+
+	/*
+	 * Step 3: Register this relation's UNDO chain with the transaction system
+	 * so that rollback can find and apply the UNDO records. This function
+	 * checks internally if the relation is already registered for this
+	 * transaction, so it's safe to call on every insert.
+	 */
+	RegisterPerRelUndo(RelationGetRelid(rel), undo_ptr);
 }
 
 static void

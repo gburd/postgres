@@ -87,6 +87,15 @@ relundo_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->npages_freed);
 			}
 			break;
+
+		case XLOG_RELUNDO_APPLY:
+			{
+				xl_relundo_apply *xlrec = (xl_relundo_apply *) data;
+
+				appendStringInfo(buf, "urec_ptr %lu",
+								 (unsigned long) xlrec->urec_ptr);
+			}
+			break;
 	}
 }
 
@@ -111,6 +120,9 @@ relundo_identify(uint8 info)
 			break;
 		case XLOG_RELUNDO_DISCARD:
 			id = "DISCARD";
+			break;
+		case XLOG_RELUNDO_APPLY:
+			id = "APPLY";
 			break;
 	}
 

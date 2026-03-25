@@ -130,11 +130,27 @@ typedef struct RelUndoRecordHeader
 	uint16		urec_len;		/* Total length including header */
 	TransactionId urec_xid;		/* Creating transaction ID */
 	RelUndoRecPtr urec_prevundorec;	/* Previous record in chain */
+
+	/* Rollback support fields */
+	uint16		info_flags;		/* Information flags (see below) */
+	uint16		tuple_len;		/* Length of tuple data (0 if none) */
+	/* Followed by type-specific payload + optional tuple data */
 } RelUndoRecordHeader;
 
 /* Size of the common UNDO record header */
 #define SizeOfRelUndoRecordHeader \
-	offsetof(RelUndoRecordHeader, urec_prevundorec) + sizeof(RelUndoRecPtr)
+	sizeof(RelUndoRecordHeader)
+
+/*
+ * RelUndoRecordHeader info_flags values
+ *
+ * These flags indicate what additional data is stored with the UNDO record
+ * to support transaction rollback.
+ */
+#define RELUNDO_INFO_HAS_TUPLE		0x0001	/* Record contains complete tuple */
+#define RELUNDO_INFO_HAS_CLR		0x0002	/* CLR pointer is valid */
+#define RELUNDO_INFO_CLR_APPLIED	0x0004	/* CLR has been applied */
+#define RELUNDO_INFO_PARTIAL_TUPLE	0x0008	/* Delta/partial tuple only */
 
 /*
  * RELUNDO_INSERT payload
@@ -446,5 +462,25 @@ extern void RelUndoDropRelation(Relation rel);
  *   oldest_xmin   - Oldest XID still visible to any transaction
  */
 extern void RelUndoVacuum(Relation rel, TransactionId oldest_xmin);
+
+/*
+ * =============================================================================
+ * ROLLBACK API - Support for transaction abort via UNDO application
+ * =============================================================================
+ */
+
+/*
+ * RelUndoApplyChain - Walk and apply per-relation UNDO chain for rollback
+ *
+ * Walks backwards through the UNDO chain applying each operation to restore
+ * the database state. Called during transaction abort.
+ */
+extern void RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr);
+
+/* Read UNDO record including tuple data for rollback */
+extern RelUndoRecordHeader *RelUndoReadRecordWithTuple(Relation rel,
+														RelUndoRecPtr ptr,
+														char **tuple_data_out,
+														uint32 *tuple_len_out);
 
 #endif							/* RELUNDO_H */

@@ -2,8 +2,10 @@
 
 backend_sources += files(
   'relundo.c',
+  'relundo_apply.c',
   'relundo_discard.c',
   'relundo_page.c',
+  'relundo_worker.c',
   'relundo_xlog.c',
   'undo.c',
   'undo_bufmgr.c',

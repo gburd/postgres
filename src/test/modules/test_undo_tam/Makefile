@@ -9,7 +9,7 @@ PGFILEDESC = "test_undo_tam - test table AM using per-relation UNDO"
 EXTENSION = test_undo_tam
 DATA = test_undo_tam--1.0.sql
 
-REGRESS = relundo
+REGRESS = relundo relundo_rollback
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

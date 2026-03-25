@@ -33,16 +33,29 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/undo.h"
+#include "access/relundo_worker.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/xact.h"
 #include "access/xactundo.h"
+#include "access/relundo.h"
+#include "access/table.h"
 #include "catalog/pg_class.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
+#include "storage/lmgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+/* Per-relation UNDO tracking for rollback */
+typedef struct PerRelUndoEntry
+{
+	Oid			relid;			/* Relation OID */
+	RelUndoRecPtr start_urec_ptr;	/* First UNDO record for this relation */
+	struct PerRelUndoEntry *next;
+}			PerRelUndoEntry;
 
 /* Per-subtransaction backend-private undo state. */
 typedef struct XactUndoSubTransaction
@@ -66,6 +79,9 @@ typedef struct XactUndoData
 
 	/* Tracking for the most recent undo insertion per persistence level. */
 	UndoRecPtr	last_location[NUndoPersistenceLevels];
+
+	/* Per-relation UNDO tracking for rollback */
+	PerRelUndoEntry *relundo_list;	/* List of relations with per-relation UNDO */
 }			XactUndoData;
 
 static XactUndoData XactUndo;
@@ -73,6 +89,7 @@ static XactUndoSubTransaction XactUndoTopState;
 
 static void ResetXactUndo(void);
 static void CollapseXactUndoSubTransactions(void);
+static void ApplyPerRelUndo(void);
 static UndoPersistenceLevel GetUndoPersistenceLevel(char relpersistence);
 
 /*
@@ -294,18 +311,24 @@ AtCommit_XactUndo(void)
  *
  * On abort, we need to apply the undo chain to roll back changes.
  * The actual undo application is triggered by xact.c before calling
- * this function.  Here we just clean up the record sets.
+ * this function.  Here we apply per-relation UNDO and clean up the record sets.
  */
 void
 AtAbort_XactUndo(void)
 {
 	int			i;
 
-	if (!XactUndo.has_undo)
+	if (!XactUndo.has_undo && XactUndo.relundo_list == NULL)
 		return;
 
 	/* Collapse all subtransaction state. */
 	CollapseXactUndoSubTransactions();
+
+	/*
+	 * Apply per-relation UNDO chains before cleaning up.
+	 * This must happen before we reset state so we have the relation list.
+	 */
+	ApplyPerRelUndo();
 
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)
@@ -416,6 +439,9 @@ ResetXactUndo(void)
 	XactUndoTopState.next = NULL;
 	for (i = 0; i < NUndoPersistenceLevels; i++)
 		XactUndoTopState.start_location[i] = InvalidUndoRecPtr;
+
+	/* Reset per-relation UNDO list */
+	XactUndo.relundo_list = NULL;
 }
 
 /*
@@ -425,6 +451,10 @@ ResetXactUndo(void)
 static void
 CollapseXactUndoSubTransactions(void)
 {
+	/* If XactUndo hasn't been initialized yet, nothing to collapse */
+	if (XactUndo.subxact == NULL)
+		return;
+
 	while (XactUndo.subxact != &XactUndoTopState)
 	{
 		XactUndoSubTransaction *subxact = XactUndo.subxact;
@@ -445,4 +475,119 @@ CollapseXactUndoSubTransactions(void)
 
 		pfree(subxact);
 	}
+}
+
+/*
+ * RegisterPerRelUndo
+ *		Register a per-relation UNDO chain for rollback on abort.
+ *
+ * Called by table AMs that use per-relation UNDO when they insert their
+ * first UNDO record for a relation in the current transaction.
+ */
+void
+RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr)
+{
+	PerRelUndoEntry *entry;
+
+	/* Initialize XactUndo if this is the first time it's being used */
+	if (XactUndo.subxact == NULL)
+	{
+		XactUndo.subxact = &XactUndoTopState;
+		XactUndoTopState.nestingLevel = 1;
+		XactUndoTopState.next = NULL;
+		for (int i = 0; i < NUndoPersistenceLevels; i++)
+			XactUndoTopState.start_location[i] = InvalidUndoRecPtr;
+	}
+
+	/* Mark that we have UNDO so commit/abort cleanup happens correctly */
+	XactUndo.has_undo = true;
+
+	/* Check if this relation is already registered and update the pointer */
+	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
+	{
+		if (entry->relid == relid)
+		{
+			/* Update to the latest UNDO pointer for rollback */
+			entry->start_urec_ptr = start_urec_ptr;
+			elog(DEBUG1, "RegisterPerRelUndo: updated relation %u to UNDO pointer %lu",
+				 relid, (unsigned long) start_urec_ptr);
+			return;
+		}
+	}
+
+	/* Add new entry to the list. Use CurTransactionContext for proper cleanup. */
+	entry = (PerRelUndoEntry *) MemoryContextAlloc(CurTransactionContext,
+												   sizeof(PerRelUndoEntry));
+	entry->relid = relid;
+	entry->start_urec_ptr = start_urec_ptr;
+	entry->next = XactUndo.relundo_list;
+	XactUndo.relundo_list = entry;
+
+	elog(DEBUG1, "RegisterPerRelUndo: registered relation %u with start UNDO pointer %lu",
+		 relid, (unsigned long) start_urec_ptr);
+}
+
+/*
+ * GetPerRelUndoPtr
+ *		Return the current (latest) UNDO record pointer for a relation,
+ *		or InvalidRelUndoRecPtr if the relation has no registered UNDO.
+ *
+ * Used by table AMs to chain UNDO records: each new UNDO record's
+ * urec_prevundorec is set to the previous record pointer.
+ */
+RelUndoRecPtr
+GetPerRelUndoPtr(Oid relid)
+{
+	PerRelUndoEntry *entry;
+
+	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
+	{
+		if (entry->relid == relid)
+			return entry->start_urec_ptr;
+	}
+
+	return InvalidRelUndoRecPtr;
+}
+
+/*
+ * ApplyPerRelUndo
+ *		Apply per-relation UNDO chains for all registered relations.
+ *
+ * Called during transaction abort to roll back changes made via
+ * per-relation UNDO. Queue work for background UNDO workers.
+ *
+ * Per-relation UNDO cannot be applied synchronously during ROLLBACK
+ * because we cannot safely access the catalog (IsTransactionState()
+ * returns false during TRANS_ABORT state, causing relation_open() to
+ * assert-fail).
+ *
+ * Instead, we queue the work for background UNDO workers that will
+ * apply the UNDO chains asynchronously in a proper transaction context.
+ * This matches the ZHeap architecture where UNDO application is
+ * deferred to background processes.
+ */
+static void
+ApplyPerRelUndo(void)
+{
+	PerRelUndoEntry *entry;
+	TransactionId xid = GetCurrentTransactionIdIfAny();
+
+	if (XactUndo.relundo_list == NULL)
+	{
+		elog(DEBUG1, "ApplyPerRelUndo: no per-relation UNDO to apply");
+		return;					/* No per-relation UNDO to apply */
+	}
+
+	elog(LOG, "ApplyPerRelUndo: queuing UNDO work for background workers");
+
+	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
+	{
+		elog(LOG, "Queuing UNDO work: database %u, relation %u, UNDO ptr %lu",
+			 MyDatabaseId, entry->relid, (unsigned long) entry->start_urec_ptr);
+
+		RelUndoQueueAdd(MyDatabaseId, entry->relid, entry->start_urec_ptr, xid);
+	}
+
+	/* Start a worker if one isn't already running */
+	StartRelUndoWorker(MyDatabaseId);
 }

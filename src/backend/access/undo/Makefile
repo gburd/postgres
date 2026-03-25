@@ -14,8 +14,10 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	relundo.o \
+	relundo_apply.o \
 	relundo_discard.o \
 	relundo_page.o \
+	relundo_worker.o \
 	relundo_xlog.o \
 	undo.o \
 	undo_bufmgr.o \

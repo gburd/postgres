@@ -26,10 +26,15 @@
 #ifndef RELUNDO_XLOG_H
 #define RELUNDO_XLOG_H
 
+#include "postgres.h"
+
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
+
+/* Forward declaration - full definition in relundo.h */
+typedef uint64 RelUndoRecPtr;
 
 /*
  * WAL record types for per-relation UNDO operations
@@ -40,6 +45,7 @@
 #define XLOG_RELUNDO_INIT			0x00	/* Metapage initialization */
 #define XLOG_RELUNDO_INSERT			0x10	/* UNDO record insertion */
 #define XLOG_RELUNDO_DISCARD		0x20	/* Discard old UNDO pages */
+#define XLOG_RELUNDO_APPLY			0x40	/* Apply UNDO for rollback (CLR) */
 
 /*
  * Flag: set when the data page being inserted into is newly initialized
@@ -108,5 +114,19 @@ typedef struct xl_relundo_discard
 extern void relundo_redo(XLogReaderState *record);
 extern void relundo_desc(StringInfo buf, XLogReaderState *record);
 extern const char *relundo_identify(uint8 info);
+
+/*
+ * XLOG_RELUNDO_APPLY - Compensation Log Record for UNDO application
+ *
+ * Records that we've applied an UNDO operation during transaction rollback.
+ * Prevents double-application if we crash during rollback.
+ */
+typedef struct xl_relundo_apply
+{
+	RelUndoRecPtr urec_ptr;		/* UNDO record that was applied */
+	RelFileLocator target_reloc; /* Target relation */
+} xl_relundo_apply;
+
+#define SizeOfRelUndoApply	(offsetof(xl_relundo_apply, target_reloc) + sizeof(RelFileLocator))
 
 #endif							/* RELUNDO_XLOG_H */
