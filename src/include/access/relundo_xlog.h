@@ -115,6 +115,11 @@ extern void relundo_redo(XLogReaderState *record);
 extern void relundo_desc(StringInfo buf, XLogReaderState *record);
 extern const char *relundo_identify(uint8 info);
 
+/* Parallel redo support */
+extern void relundo_startup(void);
+extern void relundo_cleanup(void);
+extern void relundo_mask(char *pagedata, BlockNumber blkno);
+
 /*
  * XLOG_RELUNDO_APPLY - Compensation Log Record for UNDO application
  *
