@@ -66,6 +66,7 @@ tests += {
       't/055_undo_clr.pl',
       't/056_undo_crash.pl',
       't/057_undo_standby.pl',
+      't/058_undo_tam_crash.pl',
     ],
   },
 }
