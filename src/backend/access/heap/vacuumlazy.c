@@ -131,6 +131,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/index_prune.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"
@@ -358,6 +359,8 @@ typedef struct LVRelState
 	int64		live_tuples;	/* # live tuples remaining */
 	int64		recently_dead_tuples;	/* # dead, but not yet removable */
 	int64		missed_dead_tuples; /* # removable, but not removed */
+	int64		undo_pruned_index_entries;	/* # index entries pre-marked dead
+											 * by UNDO-informed pruning */
 
 	/* State maintained by heap_vac_scan_next_block() */
 	BlockNumber current_block;	/* last block returned */
@@ -773,6 +776,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 	vacrel->live_tuples = 0;
 	vacrel->recently_dead_tuples = 0;
 	vacrel->missed_dead_tuples = 0;
+	vacrel->undo_pruned_index_entries = 0;
 
 	vacrel->new_all_visible_pages = 0;
 	vacrel->new_all_visible_all_frozen_pages = 0;
@@ -875,10 +879,31 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 #endif
 
 	/*
+	 * Capture UNDO-informed index pruning stats before heap scan so we
+	 * can report the delta in VACUUM verbose output.
+	 */
+	{
+		IndexPruneStats *prune_stats = IndexPruneGetStats();
+
+		vacrel->undo_pruned_index_entries = prune_stats->total_entries_pruned;
+	}
+
+	/*
 	 * Call lazy_scan_heap to perform all required heap pruning, index
 	 * vacuuming, and heap vacuuming (plus related processing)
 	 */
 	lazy_scan_heap(vacrel);
+
+	/*
+	 * Compute UNDO-informed index pruning delta: how many entries were
+	 * pre-marked dead during this VACUUM cycle.
+	 */
+	{
+		IndexPruneStats *prune_stats = IndexPruneGetStats();
+
+		vacrel->undo_pruned_index_entries =
+			prune_stats->total_entries_pruned - vacrel->undo_pruned_index_entries;
+	}
 
 	/*
 	 * Save dead items max_bytes and update the memory usage statistics before
@@ -1136,6 +1161,11 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 							 orig_rel_pages == 0 ? 100.0 :
 							 100.0 * vacrel->lpdead_item_pages / orig_rel_pages,
 							 vacrel->lpdead_items);
+
+			if (vacrel->undo_pruned_index_entries > 0)
+				appendStringInfo(&buf,
+								 _("UNDO-informed pruning: %" PRId64 " index entries pre-marked dead\n"),
+								 vacrel->undo_pruned_index_entries);
 
 			if (vacrel->worker_usage.vacuum.nplanned > 0)
 				appendStringInfo(&buf,

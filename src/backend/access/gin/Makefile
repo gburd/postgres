@@ -23,6 +23,7 @@ OBJS = \
 	gininsert.o \
 	ginlogic.o \
 	ginpostinglist.o \
+	ginprune.o \
 	ginscan.o \
 	ginutil.o \
 	ginvacuum.o \

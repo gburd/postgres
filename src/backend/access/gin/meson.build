@@ -11,6 +11,7 @@ backend_sources += files(
   'gininsert.c',
   'ginlogic.c',
   'ginpostinglist.c',
+  'ginprune.c',
   'ginscan.c',
   'ginutil.c',
   'ginvacuum.c',

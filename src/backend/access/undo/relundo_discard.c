@@ -23,6 +23,7 @@
  */
 #include "postgres.h"
 
+#include "access/index_prune.h"
 #include "access/relundo.h"
 #include "access/relundo_xlog.h"
 #include "access/xlog.h"
@@ -294,6 +295,13 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 	if (npages_freed > 0)
 	{
 		meta->discarded_records += npages_freed;	/* approximate */
+
+		/*
+		 * Notify all indexes on this relation that UNDO records have been
+		 * discarded. This allows indexes to proactively mark dead entries,
+		 * reducing VACUUM work.
+		 */
+		IndexPruneNotifyDiscard(rel, oldest_visible_counter);
 
 		/* WAL-log the discard operation */
 		START_CRIT_SECTION();

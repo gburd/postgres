@@ -16,7 +16,9 @@
 
 #include "access/gist_private.h"
 #include "access/gistscan.h"
+#include "access/index_prune.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_collation.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -26,6 +28,10 @@
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+/* Forward declaration for UNDO-informed pruning callback (defined in gistprune.c) */
+extern uint64 gist_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										  uint16 discard_counter);
 
 /* non-export function prototypes */
 static void gistfixsplit(GISTInsertState *state, GISTSTATE *giststate);
@@ -40,6 +46,10 @@ static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 							GISTSTATE *giststate, List *splitinfo, bool unlockbuf);
 static void gistprunepage(Relation rel, Page page, Buffer buffer,
 						  Relation heapRel);
+
+/* Forward declaration for UNDO-informed pruning callback */
+extern uint64 gist_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										  uint16 discard_counter);
 
 
 #define ROTATEDIST(d) do { \
@@ -113,6 +123,15 @@ gisthandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = gisttranslatecmptype,
 	};
+
+	/* Register UNDO-informed index pruning callback */
+	static bool handler_registered = false;
+
+	if (!handler_registered)
+	{
+		IndexPruneRegisterHandler(GIST_AM_OID, gist_prune_by_undo_counter);
+		handler_registered = true;
+	}
 
 	PG_RETURN_POINTER(&amroutine);
 }
