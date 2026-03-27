@@ -2036,4 +2036,13 @@
 { amprocfamily => 'brin/box_inclusion_ops', amproclefttype => 'box',
   amprocrighttype => 'box', amprocnum => '13', amproc => 'box_contain' },
 
+
+# BLOB btree support functions
+{ amprocfamily => 'btree/blob_ops', amproclefttype => 'blob',
+  amprocrighttype => 'blob', amprocnum => '1', amproc => 'blob_cmp' },
+
+# CLOB btree support functions
+{ amprocfamily => 'btree/clob_ops', amproclefttype => 'clob',
+  amprocrighttype => 'clob', amprocnum => '1', amproc => 'clob_cmp' },
+
 ]

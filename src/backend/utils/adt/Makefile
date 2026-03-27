@@ -22,6 +22,8 @@ OBJS = \
 	arraysubs.o \
 	arrayutils.o \
 	ascii.o \
+	blob.o \
+	blob_diff.o \
 	bool.o \
 	bytea.o \
 	cash.o \
@@ -36,6 +38,7 @@ OBJS = \
 	encode.o \
 	enum.o \
 	expandeddatum.o \
+	external_clob.o \
 	expandedrecord.o \
 	float.o \
 	format_type.o \

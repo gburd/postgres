@@ -309,4 +309,11 @@
 { oid => '6158',
   opfmethod => 'gist', opfname => 'multirange_ops' },
 
+
+# BLOB and CLOB operator families
+{ oid => '8340',
+  opfmethod => 'btree', opfname => 'blob_ops' },
+{ oid => '8341',
+  opfmethod => 'btree', opfname => 'clob_ops' },
+
 ]

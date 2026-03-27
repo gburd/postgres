@@ -704,5 +704,20 @@
   descr => 'object identifier(oid8), 8 bytes',
   typname => 'oid8', typlen => '8', typbyval => 't', typcategory => 'N',
   typinput => 'oid8in', typoutput => 'oid8out', typreceive => 'oid8recv',
-  typsend => 'oid8send', typalign => 'd' },
+  typsend => 'oid8send', typalign => 'd', typstorage => 'p' },
+
+# External BLOB/CLOB types with filesystem storage
+{ oid => '8400', array_type_oid => '8402',
+  descr => 'external binary large object with filesystem storage',
+  typname => 'blob', typlen => '40', typbyval => 'f',
+  typcategory => 'U', typinput => 'blob_in',
+  typoutput => 'blob_out', typreceive => 'blob_recv',
+  typsend => 'blob_send', typalign => 'd', typstorage => 'p' },
+{ oid => '8401', array_type_oid => '8403',
+  descr => 'external character large object with filesystem storage',
+  typname => 'clob', typlen => '40', typbyval => 'f',
+  typcategory => 'S', typinput => 'clob_in',
+  typoutput => 'clob_out', typreceive => 'clob_recv',
+  typsend => 'clob_send', typalign => 'd', typstorage => 'p',
+  typcollation => 'default' },
 ]

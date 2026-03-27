@@ -594,4 +594,14 @@
 { castsource => 'tstzrange', casttarget => 'tstzmultirange',
   castfunc => 'tstzmultirange(tstzrange)', castcontext => 'e',
   castmethod => 'f' },
+
+# BLOB/CLOB cast functions
+{ castsource => 'bytea', casttarget => 'blob',
+  castfunc => 'blob_from_bytea(bytea)', castcontext => 'e', castmethod => 'f' },
+{ castsource => 'blob', casttarget => 'bytea',
+  castfunc => 'bytea_from_blob(blob)', castcontext => 'e', castmethod => 'f' },
+{ castsource => 'text', casttarget => 'clob',
+  castfunc => 'clob_from_text(text)', castcontext => 'i', castmethod => 'f' },
+{ castsource => 'clob', casttarget => 'text',
+  castfunc => 'text_from_clob(clob)', castcontext => 'i', castmethod => 'f' },
 ]

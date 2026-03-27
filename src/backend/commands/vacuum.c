@@ -24,6 +24,7 @@
 #include "postgres.h"
 
 #include <math.h>
+#include <sys/stat.h>
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
@@ -54,6 +55,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/blob.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
@@ -2341,6 +2343,35 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 
 		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy,
 				   isTopLevel);
+	}
+
+	/*
+	 * Perform external BLOB/CLOB maintenance if the directory exists.
+	 * This handles garbage collection of unreferenced blob files and
+	 * delta chain compaction.
+	 */
+	{
+		const char *blob_dir = blob_directory ? blob_directory : EXTBLOB_DIRECTORY;
+		struct stat st;
+
+		if (stat(blob_dir, &st) == 0 && S_ISDIR(st.st_mode))
+		{
+			ExternalBlobVacuumStats blob_stats;
+			bool		verbose = (params.options & VACOPT_VERBOSE) != 0;
+
+			ExternalBlobPerformVacuum(verbose, &blob_stats);
+
+			/* Report statistics if verbose */
+			if (verbose && (blob_stats.compactions_performed > 0 ||
+							blob_stats.files_removed > 0))
+			{
+				ereport(INFO,
+						(errmsg("external blob vacuum: removed %lu files, reclaimed %lu bytes, compacted %lu delta chains",
+								blob_stats.files_removed,
+								blob_stats.bytes_reclaimed,
+								blob_stats.compactions_performed)));
+			}
+		}
 	}
 
 	/*

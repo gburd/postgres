@@ -814,8 +814,11 @@ SELECT oid, typname, typtype, typelem, typarray
                     FROM pg_attribute a
                     WHERE a.atttypid=t.oid AND
                           a.attnum > 0 AND
-                          a.attrelid='tab_core_types'::regclass);
- oid | typname | typtype | typelem | typarray 
------+---------+---------+---------+----------
-(0 rows)
+                          a.attrelid='tab_core_types'::regclass)
+  ORDER BY oid;
+ oid  | typname | typtype | typelem | typarray 
+------+---------+---------+---------+----------
+ 8400 | blob    | b       |       0 |     8402
+ 8401 | clob    | b       |       0 |     8403
+(2 rows)
 

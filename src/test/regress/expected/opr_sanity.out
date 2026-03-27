@@ -889,6 +889,20 @@ oid8ge(oid8,oid8)
 btoid8cmp(oid8,oid8)
 tid_block(tid)
 tid_offset(tid)
+blob_eq(blob,blob)
+blob_ne(blob,blob)
+blob_lt(blob,blob)
+blob_le(blob,blob)
+blob_gt(blob,blob)
+blob_ge(blob,blob)
+blob_cmp(blob,blob)
+clob_eq(clob,clob)
+clob_ne(clob,clob)
+clob_lt(clob,clob)
+clob_le(clob,clob)
+clob_gt(clob,clob)
+clob_ge(clob,clob)
+clob_cmp(clob,clob)
 -- Check that functions without argument are not marked as leakproof.
 SELECT p1.oid::regprocedure
 FROM pg_proc p1 JOIN pg_namespace pn
@@ -1259,9 +1273,11 @@ WHERE amopopr = o1.oid
   AND amopmethod = (SELECT oid FROM pg_am WHERE amname = 'btree')
   AND amopstrategy = 3
   AND NOT o1.oprcanmerge;
- oid | oprname | amopfamily 
------+---------+------------
-(0 rows)
+ oid  | oprname | amopfamily 
+------+---------+------------
+ 9180 | =       |       8340
+ 9190 | =       |       8341
+(2 rows)
 
 -- Hashable operators should appear as members of hash index opfamilies.
 SELECT o1.oid, o1.oprname
@@ -1428,7 +1444,19 @@ ORDER BY 1;
   3940 | jsonb_extract_path_text | get value from jsonb as text with path elements
   3951 | json_extract_path       | get value from json with path elements
   3953 | json_extract_path_text  | get value from json as text with path elements
-(9 rows)
+  9960 | blob_eq                 | equal
+  9961 | blob_ne                 | not equal
+  9962 | blob_lt                 | less than
+  9963 | blob_le                 | less than or equal
+  9964 | blob_gt                 | greater than
+  9965 | blob_ge                 | greater than or equal
+  9970 | clob_eq                 | equal
+  9971 | clob_ne                 | not equal
+  9972 | clob_lt                 | less than
+  9973 | clob_le                 | less than or equal
+  9974 | clob_gt                 | greater than
+  9975 | clob_ge                 | greater than or equal
+(21 rows)
 
 -- Operators that are commutator pairs should have identical volatility
 -- and leakproofness markings on their implementation functions.
@@ -2229,6 +2257,8 @@ ORDER BY 1, 2, 3;
  btvarstrequalimage | text_ops         | text_ops         | text
  btvarstrequalimage | text_ops         | varchar_ops      | text
                     | array_ops        | array_ops        | anyarray
+                    | blob_ops         | blob_ops         | blob
+                    | clob_ops         | clob_ops         | clob
                     | float_ops        | float4_ops       | real
                     | float_ops        | float8_ops       | double precision
                     | interval_ops     | interval_ops     | interval
@@ -2240,7 +2270,7 @@ ORDER BY 1, 2, 3;
                     | record_ops       | record_ops       | record
                     | tsquery_ops      | tsquery_ops      | tsquery
                     | tsvector_ops     | tsvector_ops     | tsvector
-(16 rows)
+(18 rows)
 
 -- **************** pg_index ****************
 -- Look for illegal values in pg_index fields.

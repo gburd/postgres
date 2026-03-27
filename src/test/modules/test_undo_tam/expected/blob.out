@@ -1,0 +1,326 @@
+-- Test external BLOB/CLOB types with filesystem storage
+-- Feature 2: External BLOB/CLOB Types with Filesystem Storage
+-- Enable output
+\set VERBOSITY verbose
+-- Test 1: Basic BLOB creation and retrieval
+SELECT 'Test 1: Basic BLOB creation' AS test;
+            test             
+-----------------------------
+ Test 1: Basic BLOB creation
+(1 row)
+
+-- Create table with blob column
+CREATE TABLE blob_test (
+    id serial PRIMARY KEY,
+    name text,
+    data blob
+);
+-- Insert a small blob
+INSERT INTO blob_test (name, data) VALUES
+    ('small', '\x48656C6C6F20576F726C6421'::blob);  -- "Hello World!"
+-- Retrieve and verify
+SELECT id, name, data FROM blob_test WHERE name = 'small';
+ id | name  |            data            
+----+-------+----------------------------
+  1 | small | \x48656c6c6f20576f726c6421
+(1 row)
+
+-- Test 2: CLOB (text) storage
+SELECT 'Test 2: CLOB storage' AS test;
+         test         
+----------------------
+ Test 2: CLOB storage
+(1 row)
+
+CREATE TABLE clob_test (
+    id serial PRIMARY KEY,
+    name text,
+    content clob
+);
+-- Insert text data
+INSERT INTO clob_test (name, content) VALUES
+    ('greeting', 'Hello, this is a test of external CLOB storage!');
+INSERT INTO clob_test (name, content) VALUES
+    ('long_text', repeat('Lorem ipsum dolor sit amet, consectetur adipiscing elit. ', 100));
+-- Retrieve and verify
+SELECT id, name, length(content::text) AS len FROM clob_test;
+ id |   name    | len  
+----+-----------+------
+  1 | greeting  |   47
+  2 | long_text | 5700
+(2 rows)
+
+-- Test 3: Deduplication
+SELECT 'Test 3: Deduplication' AS test;
+         test          
+-----------------------
+ Test 3: Deduplication
+(1 row)
+
+-- Insert identical content multiple times
+INSERT INTO blob_test (name, data) VALUES
+    ('dup1', '\x48656C6C6F20576F726C6421'::blob),  -- Same as 'small'
+    ('dup2', '\x48656C6C6F20576F726C6421'::blob),  -- Same as 'small'
+    ('dup3', '\x48656C6C6F20576F726C6421'::blob);  -- Same as 'small'
+-- All should reference the same underlying file (content-addressable)
+SELECT COUNT(*) AS total_rows FROM blob_test;
+ total_rows 
+------------
+          4
+(1 row)
+
+SELECT COUNT(DISTINCT data) AS distinct_blobs FROM blob_test;
+ distinct_blobs 
+----------------
+              1
+(1 row)
+
+-- Test 4: Updates and delta generation
+SELECT 'Test 4: Updates and delta generation' AS test;
+                 test                 
+--------------------------------------
+ Test 4: Updates and delta generation
+(1 row)
+
+-- Create a blob with substantial content
+INSERT INTO blob_test (name, data) VALUES
+    ('updateable', decode(repeat('41424344', 1000), 'hex')::blob);  -- 4KB of ABCD pattern
+-- Update with slightly modified content (should create delta)
+UPDATE blob_test
+SET data = decode(repeat('41424345', 1000), 'hex')::blob  -- Changed last byte
+WHERE name = 'updateable';
+-- Verify update
+SELECT name, octet_length(data::bytea) AS size FROM blob_test WHERE name = 'updateable';
+    name    | size 
+------------+------
+ updateable | 4000
+(1 row)
+
+-- Test 5: Large blob handling
+SELECT 'Test 5: Large blob handling' AS test;
+            test             
+-----------------------------
+ Test 5: Large blob handling
+(1 row)
+
+-- Insert a larger blob (1MB)
+INSERT INTO blob_test (name, data) VALUES
+    ('large', decode(repeat('00010203', 262144), 'hex')::blob);  -- 1MB
+-- Verify size
+SELECT name, octet_length(data::bytea) AS size FROM blob_test WHERE name = 'large';
+ name  |  size   
+-------+---------
+ large | 1048576
+(1 row)
+
+-- Update large blob (should create delta)
+UPDATE blob_test
+SET data = ('\x99999999' || decode(repeat('00010203', 262143), 'hex'))::blob
+WHERE name = 'large';
+SELECT name, octet_length(data::bytea) AS size FROM blob_test WHERE name = 'large';
+ name  |  size   
+-------+---------
+ large | 1048576
+(1 row)
+
+-- Test 6: Transaction rollback
+SELECT 'Test 6: Transaction rollback' AS test;
+             test             
+------------------------------
+ Test 6: Transaction rollback
+(1 row)
+
+BEGIN;
+-- Insert blob in transaction
+INSERT INTO blob_test (name, data) VALUES
+    ('rollback_test', '\x0123456789ABCDEF'::blob);
+-- Verify it exists
+SELECT COUNT(*) FROM blob_test WHERE name = 'rollback_test';
+ count 
+-------
+     1
+(1 row)
+
+-- Rollback
+ROLLBACK;
+-- Should not exist after rollback
+SELECT COUNT(*) FROM blob_test WHERE name = 'rollback_test';
+ count 
+-------
+     0
+(1 row)
+
+-- Test 7: Transaction commit
+SELECT 'Test 7: Transaction commit' AS test;
+            test            
+----------------------------
+ Test 7: Transaction commit
+(1 row)
+
+BEGIN;
+-- Insert blob in transaction
+INSERT INTO blob_test (name, data) VALUES
+    ('commit_test', '\xFEDCBA9876543210'::blob);
+-- Update it
+UPDATE blob_test
+SET data = '\xFEDCBA9876543211'::blob
+WHERE name = 'commit_test';
+-- Commit
+COMMIT;
+-- Should exist after commit
+SELECT COUNT(*) FROM blob_test WHERE name = 'commit_test';
+ count 
+-------
+     1
+(1 row)
+
+SELECT name, data FROM blob_test WHERE name = 'commit_test';
+    name     |        data        
+-------------+--------------------
+ commit_test | \xfedcba9876543211
+(1 row)
+
+-- Test 8: Concurrent transactions (if supported)
+SELECT 'Test 8: Concurrent access' AS test;
+           test            
+---------------------------
+ Test 8: Concurrent access
+(1 row)
+
+-- This would require multiple sessions to test properly
+-- For now, just verify basic isolation
+BEGIN;
+INSERT INTO blob_test (name, data) VALUES ('concurrent1', '\x11111111'::blob);
+-- In real test, another session would try to read here
+COMMIT;
+-- Test 9: NULL handling
+SELECT 'Test 9: NULL handling' AS test;
+         test          
+-----------------------
+ Test 9: NULL handling
+(1 row)
+
+INSERT INTO blob_test (name, data) VALUES ('null_blob', NULL);
+SELECT name, data IS NULL AS is_null FROM blob_test WHERE name = 'null_blob';
+   name    | is_null 
+-----------+---------
+ null_blob | t
+(1 row)
+
+-- Test 10: Deletion
+SELECT 'Test 10: Deletion' AS test;
+       test        
+-------------------
+ Test 10: Deletion
+(1 row)
+
+-- Count before deletion
+SELECT COUNT(*) AS before_delete FROM blob_test;
+ before_delete 
+---------------
+             9
+(1 row)
+
+-- Delete specific rows
+DELETE FROM blob_test WHERE name IN ('small', 'dup1', 'dup2');
+-- Count after deletion
+SELECT COUNT(*) AS after_delete FROM blob_test;
+ after_delete 
+--------------
+            6
+(1 row)
+
+-- Test 11: Array of blobs
+SELECT 'Test 11: Array of blobs' AS test;
+          test           
+-------------------------
+ Test 11: Array of blobs
+(1 row)
+
+CREATE TABLE blob_array_test (
+    id serial PRIMARY KEY,
+    name text,
+    blobs blob[]
+);
+-- Insert array of blobs
+INSERT INTO blob_array_test (name, blobs) VALUES
+    ('multi', ARRAY['\x0102'::blob, '\x0304'::blob, '\x0506'::blob]);
+SELECT name, array_length(blobs, 1) AS num_blobs FROM blob_array_test;
+ name  | num_blobs 
+-------+-----------
+ multi |         3
+(1 row)
+
+-- Test 12: CLOB with collation
+SELECT 'Test 12: CLOB collation and text operations' AS test;
+                    test                     
+---------------------------------------------
+ Test 12: CLOB collation and text operations
+(1 row)
+
+-- Test text operations on CLOB
+SELECT name,
+       substring(content::text, 1, 20) AS first_20_chars,
+       position('test' in content::text) AS test_position
+FROM clob_test
+WHERE name = 'greeting';
+   name   |    first_20_chars    | test_position 
+----------+----------------------+---------------
+ greeting | Hello, this is a tes |            18
+(1 row)
+
+-- Test 13: Index on blob column (if supported)
+SELECT 'Test 13: Index creation' AS test;
+          test           
+-------------------------
+ Test 13: Index creation
+(1 row)
+
+-- Attempt to create index (may not be supported initially)
+-- CREATE INDEX blob_test_data_idx ON blob_test USING hash (data);
+-- Test 14: Statistics and monitoring
+SELECT 'Test 14: Statistics' AS test;
+        test         
+---------------------
+ Test 14: Statistics
+(1 row)
+
+-- Check table sizes
+SELECT pg_size_pretty(pg_total_relation_size('blob_test')) AS blob_test_size;
+ blob_test_size 
+----------------
+ 32 kB
+(1 row)
+
+SELECT pg_size_pretty(pg_total_relation_size('clob_test')) AS clob_test_size;
+ clob_test_size 
+----------------
+ 32 kB
+(1 row)
+
+-- Count total rows
+SELECT
+    (SELECT COUNT(*) FROM blob_test) AS blob_rows,
+    (SELECT COUNT(*) FROM clob_test) AS clob_rows;
+ blob_rows | clob_rows 
+-----------+-----------
+         6 |         2
+(1 row)
+
+-- Test 15: Cleanup
+SELECT 'Test 15: Cleanup' AS test;
+       test       
+------------------
+ Test 15: Cleanup
+(1 row)
+
+DROP TABLE blob_test CASCADE;
+DROP TABLE clob_test CASCADE;
+DROP TABLE blob_array_test CASCADE;
+-- Summary
+SELECT 'All external BLOB/CLOB tests completed!' AS summary;
+                 summary                 
+-----------------------------------------
+ All external BLOB/CLOB tests completed!
+(1 row)
+

@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 backend_sources += files(
+  'blob_worker.c',
   'relundo.c',
   'relundo_apply.c',
   'relundo_discard.c',

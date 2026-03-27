@@ -492,4 +492,11 @@
 
 # no brin opclass for the geometric types except box
 
+
+# BLOB and CLOB operator classes
+{ opcmethod => 'btree', opcname => 'blob_ops', opcfamily => 'btree/blob_ops',
+  opcintype => 'blob' },
+{ opcmethod => 'btree', opcname => 'clob_ops', opcfamily => 'btree/clob_ops',
+  opcintype => 'clob' },
+
 ]

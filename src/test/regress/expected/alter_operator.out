@@ -99,12 +99,11 @@ FROM pg_depend
 WHERE classid = 'pg_operator'::regclass AND
       objid = '===(bool,bool)'::regoperator
 ORDER BY 1;
-                          ref                          | deptype 
--------------------------------------------------------+---------
- function alter_op_test_fn(boolean,boolean)            | n
- function customcontsel(internal,oid,internal,integer) | n
- schema public                                         | n
-(3 rows)
+                    ref                     | deptype 
+--------------------------------------------+---------
+ function alter_op_test_fn(boolean,boolean) | n
+ schema public                              | n
+(2 rows)
 
 --
 -- Test invalid options.

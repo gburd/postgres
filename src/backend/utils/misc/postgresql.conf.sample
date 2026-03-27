@@ -52,6 +52,15 @@
 #external_pid_file = ''                 # write an extra PID file
                                         # (change requires restart)
 
+# - External BLOB/CLOB Storage -
+
+#blob_directory = 'pg_blob'             # directory for external BLOB/CLOB storage
+                                        # (change requires restart)
+#blob_compaction_threshold = 10         # merge delta chains after this many
+                                        # updates to a BLOB
+#blob_delta_threshold = 256             # minimum BLOB size in KB to use
+                                        # delta encoding
+
 
 #------------------------------------------------------------------------------
 # CONNECTIONS AND AUTHENTICATION
@@ -232,6 +241,8 @@
 #max_parallel_workers = 8               # number of max_worker_processes that
                                         # can be used in parallel operations
 #parallel_leader_participation = on
+#max_relundo_workers = 4                # maximum number of per-relation undo
+                                        # workers (change requires restart)
 
 
 #------------------------------------------------------------------------------
@@ -421,6 +432,7 @@
 
 #enable_async_append = on
 #enable_bitmapscan = on
+#enable_blob_compression = on
 #enable_gathermerge = on
 #enable_hashagg = on
 #enable_hashjoin = on
@@ -722,6 +734,8 @@
 #autovacuum_max_workers = 3             # max number of autovacuum subprocesses
 #autovacuum_max_parallel_workers = 0    # limited by max_parallel_workers
 #autovacuum_naptime = 1min              # time between autovacuum runs
+#relundo_worker_naptime = 10s           # time between relundo worker runs
+#blob_worker_naptime = 5min             # time between blob worker runs
 #autovacuum_vacuum_threshold = 50       # min number of row updates before
                                         # vacuum
 #autovacuum_vacuum_insert_threshold = 1000      # min number of row inserts

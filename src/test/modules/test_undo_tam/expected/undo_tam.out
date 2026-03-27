@@ -18,9 +18,9 @@ CREATE TABLE relundo_basic (id int, data text) USING test_relundo_am;
 SELECT amname FROM pg_am
   JOIN pg_class ON pg_class.relam = pg_am.oid
   WHERE pg_class.oid = 'relundo_basic'::regclass;
-     amname      
------------------
- test_relundo_am
+    amname
+---------------
+ test_undo_tam
 (1 row)
 
 -- Verify the relation has a filepath (main fork exists)
@@ -60,7 +60,7 @@ SELECT count(*) AS undo_record_count FROM test_relundo_dump_chain('relundo_basic
 
 -- Inspect the UNDO record details
 SELECT rec_type, payload_size, first_tid, end_tid
-  FROM test_relundo_dump_chain('relundo_basic');
+  FROM test_undo_tam_dump_chain('relundo_basic');
  rec_type | payload_size | first_tid | end_tid
 ----------+--------------+-----------+---------
  INSERT   |           12 | (0,1)     | (0,1)
@@ -150,7 +150,7 @@ SELECT bool_and(first_tid = end_tid) AS single_tuple_inserts
 (1 row)
 
 -- Payload size should be consistent (sizeof RelUndoInsertPayload)
-SELECT DISTINCT payload_size FROM test_relundo_dump_chain('relundo_basic');
+SELECT DISTINCT payload_size FROM test_undo_tam_dump_chain('relundo_basic');
  payload_size
 --------------
            12

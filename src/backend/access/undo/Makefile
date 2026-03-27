@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	blob_worker.o \
 	relundo.o \
 	relundo_apply.o \
 	relundo_discard.o \

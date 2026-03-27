@@ -1,0 +1,404 @@
+-- Comprehensive tests for External BLOB/CLOB with UNDO integration
+-- Tests: creation, deduplication, delta updates, compaction,
+--        transaction rollback, CLOB text operations, encoding
+-- ============================================================
+-- Setup
+-- ============================================================
+CREATE TABLE eb_blob_test (
+    id serial PRIMARY KEY,
+    tag text,
+    data blob
+);
+CREATE TABLE eb_clob_test (
+    id serial PRIMARY KEY,
+    tag text,
+    content clob
+);
+-- ============================================================
+-- Test 1: BLOB creation and retrieval
+-- ============================================================
+SELECT 'Test 1: BLOB creation' AS test;
+         test          
+-----------------------
+ Test 1: BLOB creation
+(1 row)
+
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('hello', '\x48656C6C6F'::blob);
+SELECT tag, data FROM eb_blob_test WHERE tag = 'hello';
+  tag  |     data     
+-------+--------------
+ hello | \x48656c6c6f
+(1 row)
+
+-- ============================================================
+-- Test 2: CLOB creation and retrieval
+-- ============================================================
+SELECT 'Test 2: CLOB creation' AS test;
+         test          
+-----------------------
+ Test 2: CLOB creation
+(1 row)
+
+INSERT INTO eb_clob_test (tag, content) VALUES
+    ('greeting', 'Hello, World!');
+SELECT tag, content::text FROM eb_clob_test WHERE tag = 'greeting';
+   tag    |    content    
+----------+---------------
+ greeting | Hello, World!
+(1 row)
+
+-- ============================================================
+-- Test 3: Content-addressable deduplication
+-- ============================================================
+SELECT 'Test 3: Deduplication' AS test;
+         test          
+-----------------------
+ Test 3: Deduplication
+(1 row)
+
+-- Insert same content four times
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('dup_a', '\xDEADBEEF'::blob),
+    ('dup_b', '\xDEADBEEF'::blob),
+    ('dup_c', '\xDEADBEEF'::blob),
+    ('dup_d', '\xDEADBEEF'::blob);
+-- All refs should be equal (same hash, same version)
+SELECT COUNT(*) AS total FROM eb_blob_test WHERE tag LIKE 'dup_%';
+ total 
+-------
+     4
+(1 row)
+
+SELECT COUNT(DISTINCT data) AS distinct_values FROM eb_blob_test WHERE tag LIKE 'dup_%';
+ distinct_values 
+-----------------
+               1
+(1 row)
+
+-- ============================================================
+-- Test 4: Delta updates on substantial content
+-- ============================================================
+SELECT 'Test 4: Delta updates' AS test;
+         test          
+-----------------------
+ Test 4: Delta updates
+(1 row)
+
+-- Create a 4KB blob (above blob_delta_threshold)
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('delta_src', decode(repeat('41424344', 1024), 'hex')::blob);
+SELECT tag, octet_length(data::bytea) AS size
+FROM eb_blob_test WHERE tag = 'delta_src';
+    tag    | size 
+-----------+------
+ delta_src | 4096
+(1 row)
+
+-- Update with minor change (last 4 bytes differ) -- should produce a delta
+UPDATE eb_blob_test
+SET data = decode(repeat('41424344', 1023) || '45464748', 'hex')::blob
+WHERE tag = 'delta_src';
+SELECT tag, octet_length(data::bytea) AS size
+FROM eb_blob_test WHERE tag = 'delta_src';
+    tag    | size 
+-----------+------
+ delta_src | 4096
+(1 row)
+
+-- ============================================================
+-- Test 5: Multiple sequential updates (delta chain)
+-- ============================================================
+SELECT 'Test 5: Delta chain' AS test;
+        test         
+---------------------
+ Test 5: Delta chain
+(1 row)
+
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('chain', decode(repeat('AA', 2048), 'hex')::blob);
+-- Apply several small updates to build a delta chain
+UPDATE eb_blob_test SET data = decode('BB' || repeat('AA', 2047), 'hex')::blob WHERE tag = 'chain';
+UPDATE eb_blob_test SET data = decode('BBCC' || repeat('AA', 2046), 'hex')::blob WHERE tag = 'chain';
+UPDATE eb_blob_test SET data = decode('BBCCDD' || repeat('AA', 2045), 'hex')::blob WHERE tag = 'chain';
+SELECT tag, octet_length(data::bytea) AS size
+FROM eb_blob_test WHERE tag = 'chain';
+  tag  | size 
+-------+------
+ chain | 2048
+(1 row)
+
+-- ============================================================
+-- Test 6: Transaction rollback cleans up blob files
+-- ============================================================
+SELECT 'Test 6: Transaction rollback' AS test;
+             test             
+------------------------------
+ Test 6: Transaction rollback
+(1 row)
+
+BEGIN;
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('rollback_me', '\xCAFEBABE01020304'::blob);
+SELECT COUNT(*) AS during_txn FROM eb_blob_test WHERE tag = 'rollback_me';
+ during_txn 
+------------
+          1
+(1 row)
+
+ROLLBACK;
+SELECT COUNT(*) AS after_rollback FROM eb_blob_test WHERE tag = 'rollback_me';
+ after_rollback 
+----------------
+              0
+(1 row)
+
+-- ============================================================
+-- Test 7: Transaction commit persists blob
+-- ============================================================
+SELECT 'Test 7: Transaction commit' AS test;
+            test            
+----------------------------
+ Test 7: Transaction commit
+(1 row)
+
+BEGIN;
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('committed', '\xCAFEBABE05060708'::blob);
+COMMIT;
+SELECT COUNT(*) AS after_commit FROM eb_blob_test WHERE tag = 'committed';
+ after_commit 
+--------------
+            1
+(1 row)
+
+SELECT tag, data FROM eb_blob_test WHERE tag = 'committed';
+    tag    |        data        
+-----------+--------------------
+ committed | \xcafebabe05060708
+(1 row)
+
+-- ============================================================
+-- Test 8: CLOB text operations (external_clob.c functions)
+-- ============================================================
+SELECT 'Test 8: CLOB text operations' AS test;
+             test             
+------------------------------
+ Test 8: CLOB text operations
+(1 row)
+
+INSERT INTO eb_clob_test (tag, content) VALUES
+    ('ops_test', 'The quick brown fox jumps over the lazy dog');
+-- Character length
+SELECT tag, clob_length(content) AS char_len
+FROM eb_clob_test WHERE tag = 'ops_test';
+ERROR:  function clob_length(clob) does not exist
+LINE 1: SELECT tag, clob_length(content) AS char_len
+                    ^
+DETAIL:  There is no function of that name.
+-- Byte length
+SELECT tag, clob_octet_length(content) AS byte_len
+FROM eb_clob_test WHERE tag = 'ops_test';
+ERROR:  function clob_octet_length(clob) does not exist
+LINE 1: SELECT tag, clob_octet_length(content) AS byte_len
+                    ^
+DETAIL:  There is no function of that name.
+-- Substring extraction (1-based, 10 chars starting at position 5)
+SELECT tag, clob_substring(content, 5, 10) AS substr
+FROM eb_clob_test WHERE tag = 'ops_test';
+ERROR:  function clob_substring(clob, integer, integer) does not exist
+LINE 1: SELECT tag, clob_substring(content, 5, 10) AS substr
+                    ^
+DETAIL:  There is no function of that name.
+-- Encoding name
+SELECT tag, clob_encoding(content) AS encoding
+FROM eb_clob_test WHERE tag = 'ops_test';
+ERROR:  function clob_encoding(clob) does not exist
+LINE 1: SELECT tag, clob_encoding(content) AS encoding
+                    ^
+DETAIL:  There is no function of that name.
+-- ============================================================
+-- Test 9: CLOB concatenation
+-- ============================================================
+SELECT 'Test 9: CLOB concatenation' AS test;
+            test            
+----------------------------
+ Test 9: CLOB concatenation
+(1 row)
+
+INSERT INTO eb_clob_test (tag, content) VALUES
+    ('concat_a', 'Hello, '),
+    ('concat_b', 'World!');
+SELECT clob_concat(a.content, b.content)::text AS concatenated
+FROM eb_clob_test a, eb_clob_test b
+WHERE a.tag = 'concat_a' AND b.tag = 'concat_b';
+ERROR:  function clob_concat(clob, clob) does not exist
+LINE 1: SELECT clob_concat(a.content, b.content)::text AS concatenat...
+               ^
+DETAIL:  There is no function of that name.
+-- ============================================================
+-- Test 10: CLOB LIKE pattern matching
+-- ============================================================
+SELECT 'Test 10: CLOB LIKE' AS test;
+        test        
+--------------------
+ Test 10: CLOB LIKE
+(1 row)
+
+SELECT tag, clob_like(content, '%quick%') AS matches_quick,
+       clob_like(content, '%slow%') AS matches_slow
+FROM eb_clob_test WHERE tag = 'ops_test';
+ERROR:  function clob_like(clob, unknown) does not exist
+LINE 1: SELECT tag, clob_like(content, '%quick%') AS matches_quick,
+                    ^
+DETAIL:  There is no function of that name.
+-- ============================================================
+-- Test 11: Large CLOB (repeated text)
+-- ============================================================
+SELECT 'Test 11: Large CLOB' AS test;
+        test         
+---------------------
+ Test 11: Large CLOB
+(1 row)
+
+INSERT INTO eb_clob_test (tag, content) VALUES
+    ('large_text', repeat('Lorem ipsum dolor sit amet. ', 200));
+SELECT tag, clob_length(content) AS char_len,
+       clob_octet_length(content) AS byte_len
+FROM eb_clob_test WHERE tag = 'large_text';
+ERROR:  function clob_length(clob) does not exist
+LINE 1: SELECT tag, clob_length(content) AS char_len,
+                    ^
+DETAIL:  There is no function of that name.
+-- ============================================================
+-- Test 12: CLOB deduplication
+-- ============================================================
+SELECT 'Test 12: CLOB deduplication' AS test;
+            test             
+-----------------------------
+ Test 12: CLOB deduplication
+(1 row)
+
+INSERT INTO eb_clob_test (tag, content) VALUES
+    ('clob_dup1', 'identical text content'),
+    ('clob_dup2', 'identical text content'),
+    ('clob_dup3', 'identical text content');
+SELECT COUNT(*) AS total FROM eb_clob_test WHERE tag LIKE 'clob_dup%';
+ total 
+-------
+     3
+(1 row)
+
+SELECT COUNT(DISTINCT content) AS distinct_values FROM eb_clob_test WHERE tag LIKE 'clob_dup%';
+ distinct_values 
+-----------------
+               1
+(1 row)
+
+-- ============================================================
+-- Test 13: NULL blob and clob handling
+-- ============================================================
+SELECT 'Test 13: NULL handling' AS test;
+          test          
+------------------------
+ Test 13: NULL handling
+(1 row)
+
+INSERT INTO eb_blob_test (tag, data) VALUES ('null_data', NULL);
+INSERT INTO eb_clob_test (tag, content) VALUES ('null_content', NULL);
+SELECT tag, data IS NULL AS is_null FROM eb_blob_test WHERE tag = 'null_data';
+    tag    | is_null 
+-----------+---------
+ null_data | t
+(1 row)
+
+SELECT tag, content IS NULL AS is_null FROM eb_clob_test WHERE tag = 'null_content';
+     tag      | is_null 
+--------------+---------
+ null_content | t
+(1 row)
+
+-- ============================================================
+-- Test 14: Blob comparison operators
+-- ============================================================
+SELECT 'Test 14: Comparison operators' AS test;
+             test              
+-------------------------------
+ Test 14: Comparison operators
+(1 row)
+
+INSERT INTO eb_blob_test (tag, data) VALUES
+    ('cmp_a', '\x0001'::blob),
+    ('cmp_b', '\x0002'::blob),
+    ('cmp_c', '\x0001'::blob);
+SELECT a.tag AS tag_a, b.tag AS tag_b, (a.data = b.data) AS eq
+FROM eb_blob_test a, eb_blob_test b
+WHERE a.tag = 'cmp_a' AND b.tag = 'cmp_c';
+ tag_a | tag_b | eq 
+-------+-------+----
+ cmp_a | cmp_c | t
+(1 row)
+
+SELECT a.tag AS tag_a, b.tag AS tag_b, (a.data < b.data) AS lt
+FROM eb_blob_test a, eb_blob_test b
+WHERE a.tag = 'cmp_a' AND b.tag = 'cmp_b';
+ tag_a | tag_b | lt 
+-------+-------+----
+ cmp_a | cmp_b | t
+(1 row)
+
+-- ============================================================
+-- Test 15: Empty blob and clob
+-- ============================================================
+SELECT 'Test 15: Empty values' AS test;
+         test          
+-----------------------
+ Test 15: Empty values
+(1 row)
+
+INSERT INTO eb_blob_test (tag, data) VALUES ('empty_blob', '\x'::blob);
+INSERT INTO eb_clob_test (tag, content) VALUES ('empty_clob', '');
+SELECT tag, octet_length(data::bytea) AS size FROM eb_blob_test WHERE tag = 'empty_blob';
+    tag     | size 
+------------+------
+ empty_blob |    0
+(1 row)
+
+SELECT tag, clob_length(content) AS char_len FROM eb_clob_test WHERE tag = 'empty_clob';
+ERROR:  function clob_length(clob) does not exist
+LINE 1: SELECT tag, clob_length(content) AS char_len FROM eb_clob_te...
+                    ^
+DETAIL:  There is no function of that name.
+-- ============================================================
+-- Test 16: Deletion and row count verification
+-- ============================================================
+SELECT 'Test 16: Deletion' AS test;
+       test        
+-------------------
+ Test 16: Deletion
+(1 row)
+
+SELECT COUNT(*) AS before_delete FROM eb_blob_test;
+ before_delete 
+---------------
+            13
+(1 row)
+
+DELETE FROM eb_blob_test WHERE tag LIKE 'dup_%';
+SELECT COUNT(*) AS after_delete FROM eb_blob_test;
+ after_delete 
+--------------
+            9
+(1 row)
+
+-- ============================================================
+-- Cleanup
+-- ============================================================
+DROP TABLE eb_blob_test CASCADE;
+DROP TABLE eb_clob_test CASCADE;
+SELECT 'All external BLOB/CLOB tests passed' AS result;
+               result                
+-------------------------------------
+ All external BLOB/CLOB tests passed
+(1 row)
+

@@ -631,4 +631,5 @@ SELECT oid, typname, typtype, typelem, typarray
                     FROM pg_attribute a
                     WHERE a.atttypid=t.oid AND
                           a.attnum > 0 AND
-                          a.attrelid='tab_core_types'::regclass);
+                          a.attrelid='tab_core_types'::regclass)
+  ORDER BY oid;

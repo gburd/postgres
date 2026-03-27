@@ -3250,4 +3250,39 @@
   amoprighttype => 'point', amopstrategy => '7', amopopr => '@>(box,point)',
   amopmethod => 'brin' },
 
+
+# BLOB btree operator class
+{ amopfamily => 'btree/blob_ops', amoplefttype => 'blob',
+  amoprighttype => 'blob', amopstrategy => '1', amopopr => '<(blob,blob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/blob_ops', amoplefttype => 'blob',
+  amoprighttype => 'blob', amopstrategy => '2', amopopr => '<=(blob,blob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/blob_ops', amoplefttype => 'blob',
+  amoprighttype => 'blob', amopstrategy => '3', amopopr => '=(blob,blob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/blob_ops', amoplefttype => 'blob',
+  amoprighttype => 'blob', amopstrategy => '4', amopopr => '>=(blob,blob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/blob_ops', amoplefttype => 'blob',
+  amoprighttype => 'blob', amopstrategy => '5', amopopr => '>(blob,blob)',
+  amopmethod => 'btree' },
+
+# CLOB btree operator class
+{ amopfamily => 'btree/clob_ops', amoplefttype => 'clob',
+  amoprighttype => 'clob', amopstrategy => '1', amopopr => '<(clob,clob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/clob_ops', amoplefttype => 'clob',
+  amoprighttype => 'clob', amopstrategy => '2', amopopr => '<=(clob,clob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/clob_ops', amoplefttype => 'clob',
+  amoprighttype => 'clob', amopstrategy => '3', amopopr => '=(clob,clob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/clob_ops', amoplefttype => 'clob',
+  amoprighttype => 'clob', amopstrategy => '4', amopopr => '>=(clob,clob)',
+  amopmethod => 'btree' },
+{ amopfamily => 'btree/clob_ops', amoplefttype => 'clob',
+  amoprighttype => 'clob', amopstrategy => '5', amopopr => '>(clob,clob)',
+  amopmethod => 'btree' },
+
 ]
