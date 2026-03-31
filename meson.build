@@ -674,6 +674,83 @@ if have_cxx and not cxx.compiles(cxx11_test, name: 'C++11')
 endif
 
 
+###############################################################
+# Check for C11 stdatomic.h support
+###############################################################
+
+stdatomic_test_code = '''
+#include <stdatomic.h>
+int main(void) {
+    _Atomic int x = 0;
+    atomic_fetch_add(&x, 1);
+    atomic_thread_fence(memory_order_seq_cst);
+    _Atomic(unsigned long long) y = 0;
+    unsigned long long expected = 0;
+    atomic_compare_exchange_strong(&y, &expected, 42);
+    return 0;
+}
+'''
+
+has_stdatomic = false
+use_stdatomic = get_option('use_stdatomic')
+
+if cc.get_id() == 'msvc'
+  msvc_ver = cc.version()
+  if msvc_ver.version_compare('>=19.30')  # Visual Studio 2022+
+    message('MSVC version @0@ detected (>= 19.30), checking for stdatomic.h support'.format(msvc_ver))
+    if cc.compiles(stdatomic_test_code,
+                   name: 'MSVC stdatomic.h with /experimental:c11atomics',
+                   args: test_c_args + ['/experimental:c11atomics'])
+      has_stdatomic = true
+      message('MSVC stdatomic.h is available with /experimental:c11atomics')
+    else
+      message('MSVC stdatomic.h test compilation failed')
+    endif
+  else
+    message('MSVC version @0@ is too old for stdatomic.h (requires >= 19.30)'.format(msvc_ver))
+  endif
+else
+  # GCC/Clang and other compilers
+  if cc.has_header('stdatomic.h', args: test_c_args)
+    message('stdatomic.h header found, testing compilation...')
+    if cc.compiles(stdatomic_test_code,
+                   name: 'stdatomic.h works',
+                   args: test_c_args)
+      has_stdatomic = true
+      message('stdatomic.h is available and working')
+    else
+      message('stdatomic.h found but test compilation failed')
+    endif
+  else
+    message('stdatomic.h header not found')
+  endif
+endif
+
+# Process the use_stdatomic option
+if use_stdatomic == 'yes'
+  if not has_stdatomic
+    error('stdatomic.h was requested with -Duse_stdatomic=yes but is not available or not working')
+  endif
+  cdata.set('USE_STDATOMIC_H', 1)
+  message('Using C11 stdatomic.h for atomic operations (forced by -Duse_stdatomic=yes)')
+  if cc.get_id() == 'msvc'
+    cflags += '/experimental:c11atomics'
+  endif
+elif use_stdatomic == 'no'
+  message('Using traditional platform-specific atomics (forced by -Duse_stdatomic=no)')
+  # Do not set USE_STDATOMIC_H
+elif use_stdatomic == 'auto'
+  if has_stdatomic
+    cdata.set('USE_STDATOMIC_H', 1)
+    message('Using C11 stdatomic.h for atomic operations (auto-detected)')
+    if cc.get_id() == 'msvc'
+      cflags += '/experimental:c11atomics'
+    endif
+  else
+    message('Using traditional platform-specific atomics (stdatomic.h not available)')
+  endif
+endif
+
 postgres_inc = [include_directories(postgres_inc_d)]
 test_lib_d = postgres_lib_d
 test_c_args = cppflags + cflags
