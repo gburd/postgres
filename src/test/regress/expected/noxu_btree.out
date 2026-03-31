@@ -1,0 +1,30 @@
+CREATE TABLE t_btree_concurrency(a int, b text) USING noxu;
+CREATE INDEX ON t_btree_concurrency(a);
+INSERT INTO t_btree_concurrency SELECT i, 'data' || i FROM generate_series(1, 5000) i;
+SELECT COUNT(*) FROM t_btree_concurrency;
+ count 
+-------
+  5000
+(1 row)
+
+SELECT MIN(a), MAX(a) FROM t_btree_concurrency WHERE a > 2500;
+ min  | max  
+------+------
+ 2501 | 5000
+(1 row)
+
+DELETE FROM t_btree_concurrency WHERE a % 3 = 0;
+INSERT INTO t_btree_concurrency SELECT i, 'reinsert' || i FROM generate_series(5001, 6000) i;
+SELECT COUNT(*) FROM t_btree_concurrency;
+ count 
+-------
+  4334
+(1 row)
+
+SELECT COUNT(*) FROM t_btree_concurrency WHERE b LIKE 'reinsert%';
+ count 
+-------
+  1000
+(1 row)
+
+DROP TABLE t_btree_concurrency;

@@ -22,6 +22,7 @@ OBJS = \
 	logicalmsgdesc.o \
 	mxactdesc.o \
 	nbtdesc.o \
+	noxudesc.o \
 	relmapdesc.o \
 	relundodesc.o \
 	replorigindesc.o \

@@ -1,0 +1,491 @@
+<!-- doc/src/sgml/noxu.sgml -->
+
+<sect1 id="noxu" xreflabel="noxu">
+ <title>Noxu Columnar Storage</title>
+
+ <indexterm zone="noxu">
+  <primary>Noxu</primary>
+ </indexterm>
+
+ <para>
+  Noxu is a columnar (and optionally hybrid row-column) table access
+  method for <productname>PostgreSQL</productname>.  It stores each
+  column in a separate B-tree, with a dedicated TID tree for visibility
+  information.  This design reduces I/O for queries that access a subset
+  of columns and enables column-level compression.
+ </para>
+
+ <para>
+  To create a table using Noxu:
+<programlisting>
+CREATE TABLE t (id int, val text) USING noxu;
+</programlisting>
+ </para>
+
+ <sect2 id="noxu-guc" xreflabel="Noxu Configuration Parameters">
+  <title>Configuration Parameters</title>
+
+  <para>
+   Noxu provides several GUC (Grand Unified Configuration) parameters
+   that control its behavior.  All parameters use the
+   <literal>noxu.</literal> prefix and can be set per-session or in
+   <filename>postgresql.conf</filename>.
+  </para>
+
+  <variablelist>
+
+   <varlistentry id="guc-noxu-enable-opportunistic-stats"
+                 xreflabel="noxu.enable_opportunistic_stats">
+    <term>
+     <varname>noxu.enable_opportunistic_stats</varname> (<type>boolean</type>)
+    </term>
+    <indexterm>
+     <primary><varname>noxu.enable_opportunistic_stats</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      Enables or disables the collection of lightweight statistics
+      during normal DML operations (INSERT, DELETE) and sequential
+      scans.  When enabled, Noxu maintains per-relation tuple counts,
+      per-column null fractions, and compression ratios in a
+      backend-local hash table.  The planner consults these statistics
+      to produce better cost estimates between <command>ANALYZE</command>
+      runs.
+     </para>
+     <para>
+      Default: <literal>on</literal>.
+      Context: user (can be changed per-session).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-noxu-stats-sample-rate"
+                 xreflabel="noxu.stats_sample_rate">
+    <term>
+     <varname>noxu.stats_sample_rate</varname> (<type>integer</type>)
+    </term>
+    <indexterm>
+     <primary><varname>noxu.stats_sample_rate</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      Controls the sampling frequency during sequential scans for
+      collecting null fraction and compression statistics.  A value of
+      <replaceable>N</replaceable> means every <replaceable>N</replaceable>th
+      tuple is sampled.  Lower values increase accuracy but add CPU
+      overhead.
+     </para>
+     <para>
+      Range: 1&ndash;10000.
+      Default: <literal>100</literal>.
+      Context: user.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="guc-noxu-stats-freshness-threshold"
+                 xreflabel="noxu.stats_freshness_threshold">
+    <term>
+     <varname>noxu.stats_freshness_threshold</varname> (<type>integer</type>)
+    </term>
+    <indexterm>
+     <primary><varname>noxu.stats_freshness_threshold</varname> configuration parameter</primary>
+    </indexterm>
+    <listitem>
+     <para>
+      The number of seconds after which opportunistic statistics are
+      considered stale.  When the planner queries Noxu statistics,
+      entries older than this threshold are ignored in favor of the
+      values in <structname>pg_class</structname>.
+     </para>
+     <para>
+      Range: 1&ndash;86400 (1 second to 24 hours).
+      Default: <literal>3600</literal> (1 hour).
+      Context: user.
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+ </sect2>
+
+ <sect2 id="noxu-compression-config" xreflabel="Noxu Compression">
+  <title>Compression</title>
+
+  <para>
+   Noxu compresses attribute B-tree leaf pages using a compression
+   algorithm selected at build time.  The preference order is:
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     <application>zstd</application> &mdash; requires
+     <option>--with-zstd</option> at configure time.  Provides the best
+     balance of compression ratio and speed for columnar data.
+     Uses <literal>ZSTD_CLEVEL_DEFAULT</literal> (level 3).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <application>LZ4</application> &mdash; requires
+     <option>--with-lz4</option>.  Very fast with good compression
+     ratios.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <application>pglz</application> &mdash; built-in PostgreSQL
+     compression.  Used as a fallback when neither zstd nor LZ4 is
+     available.  Significantly slower than the alternatives.
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   Compression is applied transparently: the buffer cache stores
+   compressed blocks, and decompression occurs on-the-fly in
+   backend-private memory when pages are read.  Only attribute tree
+   leaf pages are compressed; TID tree pages and B-tree internal pages
+   are stored uncompressed.
+  </para>
+
+  <para>
+   A compressed page must fit within a single <literal>BLCKSZ</literal>
+   (default 8 kB) block.  If, after an insert or update, a page can no
+   longer be compressed below this limit, it is split.  Because Noxu
+   TIDs are logical rather than physical, tuples can be moved freely
+   between pages during a split without changing their TIDs.
+  </para>
+ </sect2>
+
+ <sect2 id="noxu-column-encodings" xreflabel="Noxu Column Encodings">
+  <title>Column-Level Encodings</title>
+
+  <para>
+   In addition to page-level compression, Noxu applies specialized
+   column-level encodings as pre-filters that operate on the datum data
+   within attribute array items.  These encodings are selected
+   automatically based on column type and data characteristics, and
+   are indicated by flag bits in each item's
+   <structfield>t_flags</structfield> field.
+  </para>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>Frame of Reference (FOR) Encoding</term>
+    <listitem>
+     <para>
+      For pass-by-value fixed-width integer columns (<type>int2</type>,
+      <type>int4</type>, <type>int8</type>), when the value range
+      (max &minus; min) within an item can be represented in fewer bits
+      than the original width, values are stored as bit-packed deltas
+      from a frame minimum.  This is effective for columns with clustered
+      values (e.g. timestamps, sequence-generated IDs).
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>Dictionary Encoding</term>
+    <listitem>
+     <para>
+      For columns with very low cardinality (fewer than 1% distinct
+      values relative to row count), each datum is replaced by a
+      <type>uint16</type> index into a dictionary of distinct values.
+      This achieves 10&ndash;100x compression for low-cardinality string
+      columns (e.g. status codes, country codes).  The dictionary
+      supports up to 65,534 entries and 64 KB of total value data.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>FSST String Compression</term>
+    <listitem>
+     <para>
+      For text and varchar columns, the FSST (Fast Static Symbol Table)
+      algorithm builds a 256-entry symbol table of frequently occurring
+      byte sequences (1&ndash;8 bytes each) from a sample of column values.
+      Multi-byte sequences in the input are replaced with single-byte
+      codes, achieving 30&ndash;60% additional compression on top of the
+      general-purpose compressor.  The symbol table is built during
+      B-tree construction and stored in the attribute metapage.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>Boolean Bit-Packing</term>
+    <listitem>
+     <para>
+      Boolean columns are bit-packed, storing 8 values per byte instead
+      of 1 byte per value.  This provides an 8x reduction before
+      general-purpose compression is applied.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>Fixed-Binary Storage (<literal>NXBT_ATTR_FORMAT_FIXED_BIN</literal>)</term>
+    <listitem>
+     <para>
+      Pass-by-reference fixed-length types with a known fixed binary
+      representation are stored as tightly packed raw bytes without
+      varlena headers or alignment padding.  Currently this applies to
+      <type>uuid</type> columns (OID 2950, 16 bytes), which are
+      detected automatically when <structfield>atttypid</structfield>
+      = <literal>UUIDOID</literal>,
+      <structfield>attlen</structfield> = <literal>UUID_LEN</literal>
+      (16), and <structfield>attbyval</structfield> is false.
+     </para>
+     <para>
+      In standard PostgreSQL heap storage, each UUID occupies 20 bytes
+      (4-byte varlena header + 16-byte value).  With fixed-binary
+      storage, UUIDs are stored as 16 raw bytes, saving 4 bytes per
+      non-null value (20% per datum).  For items with many UUIDs, this
+      produces 6&ndash;31% overall space savings depending on NULL
+      density and the ratio of UUID columns to other data.
+     </para>
+     <para>
+      On the read path, a dedicated decoder
+      (<function>fetch_att_array_fixed_bin</function>) reconstructs
+      pass-by-reference <type>Datum</type> values from the packed
+      binary data into an aligned working buffer.  The encoding is
+      compatible with all NULL representation strategies and survives
+      page-level compression transparently.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>Native Varlena Format</term>
+    <listitem>
+     <para>
+      Short variable-length values can be stored in PostgreSQL's native
+      1-byte short varlena format rather than Noxu's custom encoding.
+      This eliminates per-datum conversion overhead on the read path by
+      allowing direct pointer returns into the decompressed buffer.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>NULL Bitmap Strategies</term>
+    <listitem>
+     <para>
+      Noxu selects the most compact NULL representation per attribute
+      item based on the NULL density and distribution of the data.  Four
+      strategies are available, chosen automatically at item creation time:
+     </para>
+     <itemizedlist>
+      <listitem>
+       <para>
+        <emphasis>No NULLs</emphasis>
+        (<literal>NXBT_ATTR_NO_NULLS</literal>) &mdash; when no NULLs are
+        present, the bitmap is omitted entirely, saving
+        <literal>ceil(N/8)</literal> bytes per item.  This is common for
+        <literal>NOT NULL</literal> columns and provides 100% savings on
+        bitmap overhead.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        <emphasis>Sparse NULLs</emphasis>
+        (<literal>NXBT_ATTR_SPARSE_NULLS</literal>) &mdash; when fewer than
+        5% of elements are NULL, stores an array of (position, count) pairs
+        instead of a full bitmap.  Each pair is 4 bytes, so this is most
+        effective when NULLs are rare and may cluster.  At 512 elements with
+        1% NULLs, sparse encoding uses 22 bytes versus 64 bytes for a full
+        bitmap (66% savings).
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        <emphasis>RLE NULLs</emphasis>
+        (<literal>NXBT_ATTR_RLE_NULLS</literal>) &mdash; when there are
+        runs of 8 or more consecutive NULLs, uses run-length encoding.
+        Each 2-byte entry encodes a run of up to 32,767 NULLs or non-NULLs.
+        This is effective for append-heavy workloads where NULLs cluster
+        temporally (e.g., columns added via <command>ALTER TABLE</command>,
+        sensor readings during outage periods).  Two large runs at 512
+        elements use only 6 bytes versus 64 bytes for a bitmap (91% savings).
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        <emphasis>Standard bitmap</emphasis>
+        (<literal>NXBT_HAS_NULLS</literal>) &mdash; the default fallback:
+        1 bit per element, <literal>ceil(N/8)</literal> bytes.  Used when
+        neither sparse nor RLE encoding saves space, such as high-density
+        alternating NULL patterns.
+       </para>
+      </listitem>
+     </itemizedlist>
+     <para>
+      When dictionary encoding is active, NULL information is embedded
+      in the dictionary indices (using a sentinel value), so the separate
+      NULL bitmap is omitted regardless of NULL density.
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+  <para>
+   These encodings are applied as pre-filters before general-purpose
+   page compression (zstd/LZ4/pglz).  Multiple encodings may be
+   combined for maximum compression.
+  </para>
+ </sect2>
+
+ <sect2 id="noxu-planner-integration" xreflabel="Noxu Planner Integration">
+  <title>Planner Integration</title>
+
+  <para>
+   Noxu installs planner hooks at module load time to inform the query
+   planner about columnar storage characteristics.  The hooks adjust
+   cost estimates based on:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Column selectivity</emphasis> &mdash; the fraction of
+     columns a query accesses.  Queries that read fewer columns benefit
+     from reduced I/O.  The threshold
+     <literal>NOXU_MIN_COLUMN_SELECTIVITY</literal> (0.8) determines
+     when the columnar optimization applies.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Compression ratio</emphasis> &mdash; estimated or
+     measured ratio of uncompressed to compressed data size.  The
+     default estimate is 2.5x
+     (<literal>NOXU_DEFAULT_COMPRESSION_RATIO</literal>).  After
+     <command>ANALYZE</command>, per-column compression statistics
+     from <structname>pg_statistic</structname> are used instead.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Decompression CPU cost</emphasis> &mdash; an additional
+     CPU factor (<literal>NOXU_DECOMPRESSION_CPU_FACTOR</literal> =
+     0.3) added to account for decompression overhead.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Per-column compression statistics are stored in
+   <structname>pg_statistic</structname> using the custom stakind
+   <literal>STATISTIC_KIND_NOXU_COMPRESSION</literal> (10001).  The
+   <structfield>stanumbers</structfield> array stores compression ratio,
+   null fraction, and average widths (compressed and uncompressed).
+  </para>
+ </sect2>
+
+ <sect2 id="noxu-delta-updates" xreflabel="Noxu Column-Delta Updates">
+  <title>Column-Delta Updates</title>
+
+  <para>
+   When an <command>UPDATE</command> modifies only a subset of columns,
+   Noxu uses a column-delta optimization: only the changed columns
+   are written to their attribute B-trees.  Unchanged columns are
+   fetched from the predecessor tuple version at read time.
+  </para>
+
+  <para>
+   This optimization creates a <literal>NXUNDO_TYPE_DELTA_INSERT</literal>
+   UNDO record that stores a bitmap of changed columns and the
+   predecessor TID.  It can reduce WAL volume by up to 80% for partial
+   updates on wide tables.
+  </para>
+ </sect2>
+
+ <sect2 id="noxu-inspection" xreflabel="Noxu Inspection Functions">
+  <title>Inspection Functions</title>
+
+  <para>
+   Noxu provides SQL-callable functions for examining page contents
+   and compression behavior:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><function>pg_nx_page_type(regclass, bigint)</function></term>
+    <listitem>
+     <para>
+      Returns the page type name (<literal>META</literal>,
+      <literal>BTREE</literal>, <literal>UNDO</literal>,
+      <literal>TOAST</literal>, <literal>FREE</literal>) for a given
+      block number.
+     </para>
+    </listitem>
+   </varlistentry>
+   <varlistentry>
+    <term><function>pg_nx_btree_pages(regclass)</function></term>
+    <listitem>
+     <para>
+      Returns a set of rows describing each B-tree page, including
+      attribute number, level, number of items, total size, and
+      uncompressed size.  Useful for calculating per-column compression
+      ratios.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   Example: computing the overall compression ratio:
+<programlisting>
+SELECT sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+  FROM pg_nx_btree_pages('my_table');
+</programlisting>
+  </para>
+
+  <para>
+   Example: per-column compression ratios:
+<programlisting>
+SELECT attno, count(*) AS pages,
+       sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+  FROM pg_nx_btree_pages('my_table')
+ GROUP BY attno
+ ORDER BY attno;
+</programlisting>
+  </para>
+ </sect2>
+
+ <sect2 id="noxu-limitations" xreflabel="Noxu Limitations">
+  <title>Known Limitations</title>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     VACUUM uses a placeholder <structname>GlobalVisState</structname>
+     (optimization opportunity for future work).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Logical replication is not yet supported.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Hybrid row-column storage is not yet implemented; all columns
+     are stored in separate B-trees.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The compression algorithm is fixed at build time and cannot be
+     changed per-table or per-column.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+</sect1>

@@ -100,9 +100,12 @@ relundo_redo_init(XLogReaderState *record)
 		elog(PANIC, "relundo_redo_init: invalid version %u (expected %u)",
 			 xlrec->version, RELUNDO_METAPAGE_VERSION);
 
-	/* Initial counter should be 0 for a freshly initialized metapage */
-	if (xlrec->counter != 0)
-		elog(PANIC, "relundo_redo_init: initial counter %u is not zero",
+	/*
+	 * Initial counter should be 1 for a freshly initialized metapage. (We
+	 * start at 1 so that 0 is clearly "no counter" or "ancient".)
+	 */
+	if (xlrec->counter != 1)
+		elog(PANIC, "relundo_redo_init: initial counter %u is not 1",
 			 xlrec->counter);
 
 	buf = XLogInitBufferForRedo(record, 0);
@@ -158,8 +161,8 @@ relundo_prefetch_block(XLogReaderState *record, uint8 block_id)
 	smgr = smgropen(rlocator, INVALID_PROC_NUMBER);
 
 	/*
-	 * Only prefetch if the relation fork exists and the block is within
-	 * the current size.  During recovery, relations may not yet have been
+	 * Only prefetch if the relation fork exists and the block is within the
+	 * current size.  During recovery, relations may not yet have been
 	 * extended to the referenced block.
 	 */
 	if (smgrexists(smgr, forknum))
@@ -222,7 +225,10 @@ relundo_redo_insert(XLogReaderState *record)
 		elog(PANIC, "relundo_redo_insert: record extends past page end (offset %u + len %u > %u)",
 			 xlrec->page_offset, xlrec->urec_len, (uint32) BLCKSZ);
 
-	/* new_pd_lower must be at least as far as the end of the record we are inserting */
+	/*
+	 * new_pd_lower must be at least as far as the end of the record we are
+	 * inserting
+	 */
 	if (xlrec->new_pd_lower < xlrec->page_offset)
 		elog(PANIC, "relundo_redo_insert: new_pd_lower %u precedes page_offset %u",
 			 xlrec->new_pd_lower, xlrec->page_offset);
@@ -233,14 +239,14 @@ relundo_redo_insert(XLogReaderState *record)
 
 	/*
 	 * Async I/O optimization: when the record touches both the data page
-	 * (block 0) and the metapage (block 1), issue a prefetch for the
-	 * metapage before we read block 0.  This allows both I/Os to be in
-	 * flight simultaneously.
+	 * (block 0) and the metapage (block 1), issue a prefetch for the metapage
+	 * before we read block 0.  This allows both I/Os to be in flight
+	 * simultaneously.
 	 *
 	 * Enter batch mode so that the buffer manager can coalesce the I/O
-	 * submissions when using io_method = worker or io_uring.  Batch mode
-	 * is only useful when we have multiple blocks to process; for single-
-	 * block records the overhead is not worthwhile.
+	 * submissions when using io_method = worker or io_uring.  Batch mode is
+	 * only useful when we have multiple blocks to process; for single- block
+	 * records the overhead is not worthwhile.
 	 */
 	use_batchmode = has_metapage && (io_method != IOMETHOD_SYNC);
 
@@ -325,7 +331,10 @@ relundo_redo_insert(XLogReaderState *record)
 			/* Update the page's free space pointer */
 			undohdr->pd_lower = xlrec->new_pd_lower;
 
-			/* Post-condition check: verify pd_lower is reasonable after update */
+			/*
+			 * Post-condition check: verify pd_lower is reasonable after
+			 * update
+			 */
 			if (undohdr->pd_lower < xlrec->page_offset + record_len)
 				elog(PANIC, "relundo_redo_insert: pd_lower %u too small for offset %u + len %zu",
 					 undohdr->pd_lower, xlrec->page_offset, record_len);
@@ -373,7 +382,8 @@ relundo_redo_discard(XLogReaderState *record)
 	if (xlrec->npages_freed == 0)
 		elog(PANIC, "relundo_redo_discard: npages_freed is zero");
 
-	if (xlrec->npages_freed > 10000)  /* Sanity check: max 10000 pages per discard */
+	if (xlrec->npages_freed > 10000)	/* Sanity check: max 10000 pages per
+										 * discard */
 		elog(PANIC, "relundo_redo_discard: unreasonable npages_freed %u",
 			 xlrec->npages_freed);
 
@@ -471,9 +481,8 @@ void
 relundo_startup(void)
 {
 	/*
-	 * No per-backend initialization needed currently.
-	 * If we add backend-local caches or state in the future,
-	 * initialize them here.
+	 * No per-backend initialization needed currently. If we add backend-local
+	 * caches or state in the future, initialize them here.
 	 */
 }
 
@@ -487,9 +496,8 @@ void
 relundo_cleanup(void)
 {
 	/*
-	 * No per-backend cleanup needed currently.
-	 * If relundo_startup() initializes any resources,
-	 * release them here.
+	 * No per-backend cleanup needed currently. If relundo_startup()
+	 * initializes any resources, release them here.
 	 */
 }
 
@@ -516,8 +524,8 @@ relundo_mask(char *pagedata, BlockNumber blkno)
 	Page		page = (Page) pagedata;
 
 	/*
-	 * Mask LSN and checksum -- these may differ across parallel redo
-	 * workers due to replay ordering.
+	 * Mask LSN and checksum -- these may differ across parallel redo workers
+	 * due to replay ordering.
 	 */
 	mask_page_lsn_and_checksum(page);
 
@@ -533,13 +541,13 @@ relundo_mask(char *pagedata, BlockNumber blkno)
 	{
 		/*
 		 * Data page: mask unused space between the UNDO page header's
-		 * pd_lower (next insertion point) and pd_upper (end of usable
-		 * space).  This region may contain stale data from prior page
-		 * reuse and is not meaningful for consistency.
+		 * pd_lower (next insertion point) and pd_upper (end of usable space).
+		 * This region may contain stale data from prior page reuse and is not
+		 * meaningful for consistency.
 		 *
-		 * The RelUndoPageHeader sits at the start of the page contents
-		 * area (after the standard PageHeaderData).  Its pd_lower and
-		 * pd_upper are offsets relative to the contents area.
+		 * The RelUndoPageHeader sits at the start of the page contents area
+		 * (after the standard PageHeaderData).  Its pd_lower and pd_upper are
+		 * offsets relative to the contents area.
 		 */
 		RelUndoPageHeader undohdr = (RelUndoPageHeader) PageGetContents(page);
 		char	   *contents = (char *) PageGetContents(page);

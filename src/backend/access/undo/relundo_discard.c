@@ -32,6 +32,7 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/smgr.h"
 
 /*
  * relundo_counter_precedes
@@ -107,6 +108,27 @@ relundo_free_page(Relation rel, Buffer pagebuf, Buffer metabuf)
 }
 
 /*
+ * relundo_block_exists
+ *		Check if a block number is within the UNDO fork's physical size.
+ *
+ * Returns true if the block exists on disk, false otherwise.
+ * This guards against reading blocks that were allocated but never
+ * flushed, or blocks referenced by a stale metapage after a crash.
+ */
+static bool
+relundo_block_exists(Relation rel, BlockNumber blkno)
+{
+	SMgrRelation srel = RelationGetSmgr(rel);
+	BlockNumber nblocks;
+
+	if (!smgrexists(srel, RELUNDO_FORKNUM))
+		return false;
+
+	nblocks = smgrnblocks(srel, RELUNDO_FORKNUM);
+	return (blkno < nblocks);
+}
+
+/*
  * RelUndoDiscard
  *		Discard old UNDO records and reclaim space.
  *
@@ -134,6 +156,32 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 	meta = (RelUndoMetaPage) PageGetContents(metapage);
 
 	tail_blkno = meta->tail_blkno;
+
+	/*
+	 * Validate metapage pointers before attempting to walk the chain.
+	 * If the pointers reference blocks beyond the fork size, reset the chain.
+	 */
+	if (BlockNumberIsValid(meta->head_blkno) &&
+		!relundo_block_exists(rel, meta->head_blkno))
+	{
+		elog(WARNING, "UNDO head block %u does not exist, resetting chain", meta->head_blkno);
+		meta->head_blkno = InvalidBlockNumber;
+		meta->tail_blkno = InvalidBlockNumber;
+		MarkBufferDirty(metabuf);
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
+
+	if (BlockNumberIsValid(tail_blkno) &&
+		!relundo_block_exists(rel, tail_blkno))
+	{
+		elog(WARNING, "UNDO tail block %u does not exist, resetting chain", tail_blkno);
+		meta->head_blkno = InvalidBlockNumber;
+		meta->tail_blkno = InvalidBlockNumber;
+		MarkBufferDirty(metabuf);
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
 
 	/*
 	 * Walk from tail toward head, freeing discardable pages.
@@ -189,6 +237,19 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 			RelUndoPageHeader hdr;
 			BlockNumber prev;
 
+			/*
+			 * Check that this block physically exists before reading it.
+			 * After a crash, the metapage may reference blocks that were
+			 * allocated but never flushed to disk, or the fork may be
+			 * shorter than expected.  In that case, stop walking the chain.
+			 */
+			if (!relundo_block_exists(rel, current_blkno))
+			{
+				elog(WARNING, "UNDO discard: block %u does not exist in fork (relation \"%s\"), truncating chain walk",
+					 current_blkno, RelationGetRelationName(rel));
+				break;
+			}
+
 			buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
 									 RBM_NORMAL, NULL);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -223,6 +284,13 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 				RelUndoPageHeader hdr;
 				BlockNumber prev;
 
+				if (!relundo_block_exists(rel, current_blkno))
+				{
+					elog(WARNING, "UNDO discard: block %u does not exist in fork (relation \"%s\"), stopping free walk",
+						 current_blkno, RelationGetRelationName(rel));
+					break;
+				}
+
 				buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
 										 RBM_NORMAL, NULL);
 				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -254,6 +322,13 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 				RelUndoPageHeader hdr;
 				BlockNumber prev;
 
+				if (!relundo_block_exists(rel, current_blkno))
+				{
+					elog(WARNING, "UNDO discard: block %u does not exist in fork (relation \"%s\"), stopping free walk",
+						 current_blkno, RelationGetRelationName(rel));
+					break;
+				}
+
 				buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
 										 RBM_NORMAL, NULL);
 				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -269,6 +344,7 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 			}
 
 			/* Update the new tail: clear its prev link */
+			if (relundo_block_exists(rel, new_tail_blkno))
 			{
 				Buffer		tailbuf;
 				Page		tailpage;
@@ -285,6 +361,10 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 
 				MarkBufferDirty(tailbuf);
 				UnlockReleaseBuffer(tailbuf);
+			}
+			else
+			{
+				elog(WARNING, "UNDO tail block %u does not exist, truncating discard", new_tail_blkno);
 			}
 
 			meta->tail_blkno = new_tail_blkno;

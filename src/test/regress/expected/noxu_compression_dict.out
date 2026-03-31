@@ -1,0 +1,237 @@
+--
+-- Test dictionary encoding for low-cardinality columns
+-- Verifies 10-100x compression for columns with distinct_count/total_rows < 0.01
+--
+-- Test 1: Very low cardinality (10 distinct values, 1000 rows = 1% cardinality)
+CREATE TABLE noxu_dict_low_card_test (
+    id int,
+    status text,
+    category text
+) USING noxu;
+INSERT INTO noxu_dict_low_card_test
+SELECT i,
+       (ARRAY['pending', 'active', 'completed', 'cancelled', 'failed'])[1 + (i % 5)],
+       (ARRAY['A', 'B', 'C', 'D', 'E'])[1 + (i % 5)]
+FROM generate_series(1, 1000) i;
+SELECT COUNT(DISTINCT status) FROM noxu_dict_low_card_test;
+ count 
+-------
+     5
+(1 row)
+
+SELECT COUNT(DISTINCT category) FROM noxu_dict_low_card_test;
+ count 
+-------
+     5
+(1 row)
+
+SELECT status, COUNT(*) FROM noxu_dict_low_card_test GROUP BY status ORDER BY status;
+  status   | count 
+-----------+-------
+ active    |   200
+ cancelled |   200
+ completed |   200
+ failed    |   200
+ pending   |   200
+(5 rows)
+
+SELECT category, COUNT(*) FROM noxu_dict_low_card_test GROUP BY category ORDER BY category;
+ category | count 
+----------+-------
+ A        |   200
+ B        |   200
+ C        |   200
+ D        |   200
+ E        |   200
+(5 rows)
+
+-- Test filtering on dictionary-encoded columns
+SELECT COUNT(*) FROM noxu_dict_low_card_test WHERE status = 'active';
+ count 
+-------
+   200
+(1 row)
+
+SELECT COUNT(*) FROM noxu_dict_low_card_test WHERE category = 'A';
+ count 
+-------
+   200
+(1 row)
+
+SELECT COUNT(*) FROM noxu_dict_low_card_test WHERE status = 'completed' AND category = 'C';
+ count 
+-------
+   200
+(1 row)
+
+DROP TABLE noxu_dict_low_card_test;
+-- Test 2: Enum-like column (country codes)
+CREATE TABLE noxu_dict_country_test (
+    id int,
+    country_code char(2),
+    region text
+) USING noxu;
+INSERT INTO noxu_dict_country_test
+SELECT i,
+       (ARRAY['US', 'CA', 'UK', 'FR', 'DE', 'JP', 'AU', 'BR', 'IN', 'CN'])[1 + (i % 10)],
+       (ARRAY['North America', 'Europe', 'Asia', 'Oceania', 'South America'])[1 + (i % 5)]
+FROM generate_series(1, 10000) i;
+SELECT COUNT(DISTINCT country_code) FROM noxu_dict_country_test;
+ count 
+-------
+    10
+(1 row)
+
+SELECT country_code, COUNT(*) FROM noxu_dict_country_test GROUP BY country_code ORDER BY country_code;
+ country_code | count 
+--------------+-------
+ AU           |  1000
+ BR           |  1000
+ CA           |  1000
+ CN           |  1000
+ DE           |  1000
+ FR           |  1000
+ IN           |  1000
+ JP           |  1000
+ UK           |  1000
+ US           |  1000
+(10 rows)
+
+SELECT region, COUNT(*) FROM noxu_dict_country_test GROUP BY region ORDER BY region;
+    region     | count 
+---------------+-------
+ Asia          |  2000
+ Europe        |  2000
+ North America |  2000
+ Oceania       |  2000
+ South America |  2000
+(5 rows)
+
+DROP TABLE noxu_dict_country_test;
+-- Test 3: Mixed cardinality (should not encode high-cardinality column)
+CREATE TABLE noxu_dict_mixed_test (
+    id int,
+    status text,  -- Low cardinality (should use dictionary)
+    description text  -- High cardinality (should not use dictionary)
+) USING noxu;
+INSERT INTO noxu_dict_mixed_test
+SELECT i,
+       (ARRAY['new', 'in_progress', 'done'])[1 + (i % 3)],
+       'description_' || i
+FROM generate_series(1, 1000) i;
+SELECT COUNT(DISTINCT status) FROM noxu_dict_mixed_test;
+ count 
+-------
+     3
+(1 row)
+
+SELECT COUNT(DISTINCT description) FROM noxu_dict_mixed_test;
+ count 
+-------
+  1000
+(1 row)
+
+SELECT * FROM noxu_dict_mixed_test WHERE status = 'done' ORDER BY id LIMIT 5;
+ id | status |  description   
+----+--------+----------------
+  2 | done   | description_2
+  5 | done   | description_5
+  8 | done   | description_8
+ 11 | done   | description_11
+ 14 | done   | description_14
+(5 rows)
+
+DROP TABLE noxu_dict_mixed_test;
+-- Test 4: NULL values with dictionary encoding
+CREATE TABLE noxu_dict_null_test (
+    id int,
+    status text
+) USING noxu;
+INSERT INTO noxu_dict_null_test
+SELECT i,
+       CASE
+	   WHEN i % 10 = 0 THEN NULL
+	   ELSE (ARRAY['draft', 'published', 'archived'])[1 + (i % 3)]
+       END
+FROM generate_series(1, 100) i;
+SELECT COUNT(*) FROM noxu_dict_null_test WHERE status IS NULL;
+ count 
+-------
+    10
+(1 row)
+
+SELECT status, COUNT(*) FROM noxu_dict_null_test GROUP BY status ORDER BY status;
+  status   | count 
+-----------+-------
+ archived  |    30
+ draft     |    30
+ published |    30
+           |    10
+(4 rows)
+
+DROP TABLE noxu_dict_null_test;
+-- Test 5: UPDATE and DELETE on dictionary-encoded columns
+-- Exercises the explode path for dictionary items
+CREATE TABLE noxu_dict_update_test (
+    id int,
+    status text
+) USING noxu;
+INSERT INTO noxu_dict_update_test
+SELECT i,
+       (ARRAY['open', 'closed', 'pending'])[1 + (i % 3)]
+FROM generate_series(1, 300) i;
+-- Verify initial state
+SELECT status, COUNT(*) FROM noxu_dict_update_test GROUP BY status ORDER BY status;
+ status  | count 
+---------+-------
+ closed  |   100
+ open    |   100
+ pending |   100
+(3 rows)
+
+-- Update some rows
+UPDATE noxu_dict_update_test SET status = 'resolved' WHERE id <= 30;
+SELECT status, COUNT(*) FROM noxu_dict_update_test GROUP BY status ORDER BY status;
+  status  | count 
+----------+-------
+ closed   |    90
+ open     |    90
+ pending  |    90
+ resolved |    30
+(4 rows)
+
+-- Delete some rows
+DELETE FROM noxu_dict_update_test WHERE id <= 15;
+SELECT COUNT(*) FROM noxu_dict_update_test;
+ count 
+-------
+   285
+(1 row)
+
+SELECT status, COUNT(*) FROM noxu_dict_update_test GROUP BY status ORDER BY status;
+  status  | count 
+----------+-------
+ closed   |    90
+ open     |    90
+ pending  |    90
+ resolved |    15
+(4 rows)
+
+DROP TABLE noxu_dict_update_test;
+-- Test 6: Integer column with low cardinality (fixed-width byval)
+CREATE TABLE noxu_dict_int_test (
+    id int,
+    priority int
+) USING noxu;
+INSERT INTO noxu_dict_int_test
+SELECT i, (i % 3) + 1
+FROM generate_series(1, 1000) i;
+SELECT priority, COUNT(*) FROM noxu_dict_int_test GROUP BY priority ORDER BY priority;
+ priority | count 
+----------+-------
+        1 |   333
+        2 |   334
+        3 |   333
+(3 rows)
+
+DROP TABLE noxu_dict_int_test;

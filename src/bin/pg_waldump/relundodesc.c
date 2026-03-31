@@ -1,1 +1,1 @@
-../../backend/access/rmgrdesc/relundodesc.c
+../../../src/backend/access/rmgrdesc/relundodesc.c

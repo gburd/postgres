@@ -58,7 +58,7 @@ typedef struct RelUndoWorkQueue
 /*
  * Worker registration and lifecycle
  */
-extern Size RelUndoWorkerShmemSize(void);
+extern void RelUndoWorkerShmemRequest(void);
 extern void RelUndoWorkerShmemInit(void);
 extern void RelUndoLauncherMain(Datum main_arg);
 extern void RelUndoWorkerMain(Datum main_arg);

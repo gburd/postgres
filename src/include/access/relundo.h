@@ -119,6 +119,13 @@ typedef enum RelUndoRecordType
 } RelUndoRecordType;
 
 /*
+ * Test whether a record type represents an insertion.
+ * DELTA_INSERT is treated as INSERT for visibility purposes.
+ */
+#define RELUNDO_TYPE_IS_INSERT(type) \
+	((type) == RELUNDO_INSERT || (type) == RELUNDO_DELTA_INSERT)
+
+/*
  * Common header for all per-relation UNDO records
  *
  * Every UNDO record starts with this fixed-size header, followed by
@@ -129,6 +136,7 @@ typedef struct RelUndoRecordHeader
 	uint16		urec_type;		/* RelUndoRecordType */
 	uint16		urec_len;		/* Total length including header */
 	TransactionId urec_xid;		/* Creating transaction ID */
+	CommandId	urec_cid;		/* Command ID within the transaction */
 	RelUndoRecPtr urec_prevundorec;	/* Previous record in chain */
 
 	/* Rollback support fields */
@@ -161,6 +169,7 @@ typedef struct RelUndoInsertPayload
 {
 	ItemPointerData firsttid;	/* First inserted TID */
 	ItemPointerData endtid;		/* Last inserted TID (inclusive) */
+	uint32		speculative_token;	/* Token for speculative insertions (0 if none) */
 } RelUndoInsertPayload;
 
 /*
@@ -173,6 +182,7 @@ typedef struct RelUndoInsertPayload
 typedef struct RelUndoDeletePayload
 {
 	uint16		ntids;			/* Number of TIDs in this record */
+	bool		changedPart;	/* Tuple moved to different partition by UPDATE */
 	ItemPointerData tids[RELUNDO_DELETE_MAX_TIDS];
 } RelUndoDeletePayload;
 
@@ -185,7 +195,7 @@ typedef struct RelUndoUpdatePayload
 {
 	ItemPointerData oldtid;		/* Old tuple TID */
 	ItemPointerData newtid;		/* New tuple TID */
-	/* Optional: column bitmap for partial updates could be added here */
+	bool		key_update;		/* Were key columns updated? (FOR KEY SHARE conflict) */
 } RelUndoUpdatePayload;
 
 /*

@@ -61,40 +61,30 @@ static void relundo_worker_sigterm(SIGNAL_ARGS);
 static void process_relundo_work_item(RelUndoWorkItem *item);
 
 /*
- * RelUndoWorkerShmemSize
- *		Calculate shared memory space needed for per-relation UNDO workers
+ * RelUndoWorkerShmemRequest
+ *		Request shared memory space for per-relation UNDO workers
  */
-Size
-RelUndoWorkerShmemSize(void)
+void
+RelUndoWorkerShmemRequest(void)
 {
-	Size		size = 0;
-
-	size = add_size(size, sizeof(RelUndoWorkQueue));
-	return size;
+	ShmemRequestStruct(.name = "Per-Relation UNDO Work Queue",
+					   .size = sizeof(RelUndoWorkQueue),
+					   .ptr = (void **) &WorkQueue,
+		);
 }
 
 /*
  * RelUndoWorkerShmemInit
- *		Allocate and initialize shared memory for per-relation UNDO workers
+ *		Initialize shared memory for per-relation UNDO workers
  */
 void
 RelUndoWorkerShmemInit(void)
 {
-	bool		found;
-
-	WorkQueue = (RelUndoWorkQueue *)
-		ShmemInitStruct("Per-Relation UNDO Work Queue",
-						sizeof(RelUndoWorkQueue),
-						&found);
-
-	if (!found)
-	{
-		/* First time through, initialize the work queue */
-		LWLockInitialize(&WorkQueue->lock, LWTRANCHE_UNDO_WORKER);
-		WorkQueue->num_items = 0;
-		WorkQueue->next_worker_id = 1;
-		memset(WorkQueue->items, 0, sizeof(WorkQueue->items));
-	}
+	/* Initialize the work queue */
+	LWLockInitialize(&WorkQueue->lock, LWTRANCHE_UNDO_WORKER);
+	WorkQueue->num_items = 0;
+	WorkQueue->next_worker_id = 1;
+	memset(WorkQueue->items, 0, sizeof(WorkQueue->items));
 }
 
 /*

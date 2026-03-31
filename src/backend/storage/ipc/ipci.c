@@ -72,59 +72,9 @@ CalculateShmemSize(void)
 	Size		size;
 
 	/*
-	 * Size of the Postgres shared-memory block is estimated via moderately-
-	 * accurate estimates for the big hogs, plus 100K for the stuff that's too
-	 * small to bother with estimating.
-	 *
-	 * We take some care to ensure that the total size request doesn't
-	 * overflow size_t.  If this gets through, we don't need to be so careful
-	 * during the actual allocation phase.
+	 * Get size requested by individual subsystems via their callbacks.
 	 */
-	size = 100000;
-	size = add_size(size, hash_estimate_size(SHMEM_INDEX_SIZE,
-											 sizeof(ShmemIndexEnt)));
-	size = add_size(size, dsm_estimate_size());
-	size = add_size(size, DSMRegistryShmemSize());
-	size = add_size(size, BufferManagerShmemSize());
-	size = add_size(size, LockManagerShmemSize());
-	size = add_size(size, PredicateLockShmemSize());
-	size = add_size(size, ProcGlobalShmemSize());
-	size = add_size(size, XLogPrefetchShmemSize());
-	size = add_size(size, VarsupShmemSize());
-	size = add_size(size, XLOGShmemSize());
-	size = add_size(size, XLogRecoveryShmemSize());
-	size = add_size(size, CLOGShmemSize());
-	size = add_size(size, UndoShmemSize());
-	size = add_size(size, CommitTsShmemSize());
-	size = add_size(size, SUBTRANSShmemSize());
-	size = add_size(size, TwoPhaseShmemSize());
-	size = add_size(size, BackgroundWorkerShmemSize());
-	size = add_size(size, MultiXactShmemSize());
-	size = add_size(size, LWLockShmemSize());
-	size = add_size(size, ProcArrayShmemSize());
-	size = add_size(size, BackendStatusShmemSize());
-	size = add_size(size, SharedInvalShmemSize());
-	size = add_size(size, PMSignalShmemSize());
-	size = add_size(size, ProcSignalShmemSize());
-	size = add_size(size, CheckpointerShmemSize());
-	size = add_size(size, AutoVacuumShmemSize());
-	size = add_size(size, ReplicationSlotsShmemSize());
-	size = add_size(size, ReplicationOriginShmemSize());
-	size = add_size(size, WalSndShmemSize());
-	size = add_size(size, WalRcvShmemSize());
-	size = add_size(size, WalSummarizerShmemSize());
-	size = add_size(size, PgArchShmemSize());
-	size = add_size(size, ApplyLauncherShmemSize());
-	size = add_size(size, BTreeShmemSize());
-	size = add_size(size, SyncScanShmemSize());
-	size = add_size(size, AsyncShmemSize());
-	size = add_size(size, StatsShmemSize());
-	size = add_size(size, WaitEventCustomShmemSize());
-	size = add_size(size, InjectionPointShmemSize());
-	size = add_size(size, SlotSyncShmemSize());
-	size = add_size(size, AioShmemSize());
-	size = add_size(size, WaitLSNShmemSize());
-	size = add_size(size, LogicalDecodingCtlShmemSize());
+	size = ShmemGetRequestedSize();
 
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);

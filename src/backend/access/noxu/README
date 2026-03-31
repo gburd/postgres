@@ -1,0 +1,1454 @@
+Noxu - compressed column (and row) store for PostgreSQL
+===========================================================
+
+The purpose of this README is to provide overview of noxu's
+design, major requirements/objectives it intends to fulfill and
+high-level implementation details.
+
+History
+-------
+
+This code was originally developed as "Zedstore" by Heikki Linnakangas,
+Ashwin Agrawal, and others at Pivotal. It was presented on the
+pgsql-hackers mailing list in April 2019. The project was abandoned
+before integration into the core PostgreSQL tree. It has been revived
+as "Noxu" with the following changes:
+
+* Updated to the current TableAM API (PostgreSQL 19)
+* Integrated into the PostgreSQL build system (Makefile and meson)
+* Fixed compilation errors and API incompatibilities
+* Added ANALYZE support with block-sampling scan
+* Added bitmap scan support
+* Added planner cost estimation hooks for columnar selectivity
+* Added compression statistics collection
+* Added column-delta UPDATE optimization for WAL efficiency
+* Added opportunistic UNDO log trimming
+* Fixed buffer lifetime, locking, and concurrency bugs
+* Regression test suite
+
+Known Limitations:
+* VACUUM uses a placeholder GlobalVisState (optimization opportunity)
+* Logical replication not yet supported
+* Hybrid row-column storage not yet implemented (all columns stored
+  in separate B-trees)
+
+Objectives
+----------
+
+* Performance improvement for queries selecting subset of columns
+  (reduced IO).
+
+* Reduced on-disk footprint compared to heap table. Shorter tuple
+  headers and also leveraging compression of similar type data
+
+* Be first-class citizen in the Postgres architecture (tables data can
+  just independently live in columnar storage) and not be at arm's
+  length though an opaque interface.
+
+* Fully MVCC compliant - basically all operations supported similar to
+  heap, like update, delete, serializable transactions etc...
+
+* All Indexes supported
+
+* Hybrid row-column store, where some columns are stored together, and others
+  separately. Provide flexibility of granularity on how to divide the
+  columns. Columns accessed together can be stored together.
+
+* Provide better control over bloat.
+
+* Overflow records rather than separate TOAST tables/indexs
+
+* Faster add / drop column or changing data type of column by avoiding
+  full rewrite of the table.
+
+Highlevel design of Noxu - B-trees for the win!
+---------------------------------------------------
+
+Noxu consists of multiple B-trees. There is one B-tree, called the
+TID tree, which contains the visibility information of each tuple, but
+no user data. In addition to that, there is one B-tree for each
+attribute, called the attribute trees, to store the user data. Note that
+these B-tree implementations are completely unrelated to PostgreSQL's
+B-tree indexes.
+
+The TID tree, and all the attribute trees, use the TID as the key. The
+TID is used as a logical row identifier. Internally, Noxu passed
+TIDs around as 64-bit integers (nxtid), but for interfacing with the
+rest of the system, they are converted to/from ItemPointers. When
+converted to an ItemPointer, the conversion ensures that the ItemPointer
+looks valid, i.e. offset 0 is never used. However, the TID is just a
+48-bit row identifier, the traditional division into block and offset
+numbers is meaningless. There is locality of access, though; TIDs that
+are close to each other, will probably also reside close to each other
+on disk. So, for example, bitmap index scans or BRIN indexes, which
+work with block numbers, still make some sense, even though the "block
+number" stored in a noxu ItemPointer doesn't correspond to a
+physical block.
+
+The internal pages of the B-trees are super simple and boring. The internal
+pages of the TID and attribute trees look identical. Functions that work
+with either the TID or attribute tree use NX_META_ATTRIBUTE_NUM as the
+"attribute number", when working with the TID tree.
+
+
+
+The leaf pages look different TID tree and the attribute trees. Let's
+look at the TID tree first:
+
+TID tree
+--------
+
+A TID tree page consists of multiple NXTidArrayItems. Each NXTidArrayItem
+represents a group of tuples, with TIDs in a particular range. The TID
+ranges of NXTidArrayItems never overlap. For each tuple, we logically
+store the TID, and its UNDO pointer. The actual visibility information
+is stored in the UNDO log, if the tuple was recently modified.
+
+A tuple can also be marked as dead, which means that the tuple is not
+visible to anyone. Dead tuples are marked with a special constant
+UNDO pointer value, DeadUndoPtr. The TIDs of dead tuples cannot be
+reused, until all index pointers to the tuples have been removed, by
+VACUUM. VACUUM scans the TID tree to collect all the dead TIDs. (Note
+that VACUUM does not need to scan the attribute trees, and the TID tree
+is hopefully just a small fraction of the table. Vacuum on noxu is
+therefore hopefully much faster than on heap. (Although the freeze map
+can be pretty effective on the heap, too))
+
+So logically, the TID tree stores the TID and UNDO pointer for every
+tuple. However, that would take a lot of space. To reduce disk usage,
+the TID tree consists of NXTidArrayItems, which contain the TIDs and
+their UNDO pointers in a specially encoded format. The encoded format
+is optimized for the common cases, where the gaps between TIDs are
+small, and most tuples are visible to everyone. See comments
+NXTidArrayItem in noxu_internal.h for details.
+
+Having a TID tree that's separate from the attributes helps to support
+zero column tables (which can be result of ADD COLUMN DROP COLUMN actions
+as well). Plus, having meta-data stored separately from data, helps to get
+better compression ratios. And also helps to simplify the overall
+design/implementation as for deletes just need to edit the TID tree
+and avoid touching the attribute btrees.
+
+
+Attribute trees
+---------------
+
+The leaf pages on the attribute tree also consist of items, which pack
+data from multiple tuples in one item. In the attribute tree, the items
+can furthermore be compressed using LZ4, if the server has been
+configured with "configure --with-lz4". (If you don't use --with-lz4,
+PostgreSQL's built-in pglz algorithm is used, but it is *much* slower).
+Each item (NXAttributeArrayItem) contains data for tuples with a range
+of consecutive TIDs. Multiple NXAttributeArrayItems can be compressed
+together, into a single NXAttributeCompressedItem item.
+
+In uncompressed form, an attribute tree page can be arbitrarily large.
+But after compression, it must fit into a physical 8k block. If on insert
+or update of a tuple, the page cannot be compressed below 8k anymore, the
+page is split. Note that because TIDs are logical rather than physical
+identifiers, we can freely move tuples from one physical page to
+another during page split. A tuple's TID never changes.
+
+The buffer cache caches compressed blocks. Likewise, WAL-logging,
+full-page images etc. work on compressed blocks. Uncompression is done
+on-the-fly, as and when needed in backend-private memory, when
+reading. For some compressions like rel encoding or delta encoding
+tuples can be constructed directly from compressed data.
+
+
+To reconstruct a row with given TID, scan descends down the B-trees for
+all the columns using that TID, and fetches all attributes. Likewise, a
+sequential scan walks all the B-trees in lockstep.
+
+
+Currently, each attribute is stored in a separate attribute B-tree. A
+hybrid row-column store is also possible as a future enhancement, where
+some columns could be stored together in the same tree. At one extreme,
+a pure row store could place all user data in a single tree, or even
+combine it with the TID tree. The current per-column layout was chosen
+for its simplicity and because it enables efficient column pruning and
+per-column compression.
+
+Metapage
+--------
+
+A metapage at block 0, has links to the roots of the B-trees.
+
+
+Low-level locking / concurrency issues
+------------------------------- ------
+Design principles:
+
+* Every page is self-identifying. Every page has a page type ID,
+  which indicates what kind of a page it is. For a B-tree page,
+  the page header contains the attribute number and lo/hi key.
+  That is enough information to find the downlink to the page, so
+  that it can be deleted if necessary. There is enough information
+  on each leaf page to easily re-build the internal pages from
+  scratch, in case of corruption, for example.
+
+* Concurrency control: When traversing the B-tree, or walking UNDO
+  or overflow pages, it's possible that a concurrent process splits
+  or moves a page just when we're about to step on it. There is enough
+  information on each page to detect that case. For example, if a
+  B-tree page is split just when you are about to step on it, you
+  can detect that by looking at the lo/hi key. If a page is deleted,
+  that can be detected too, because the attribute number or lo/hikey
+  are not what you expected. In that case, start the scan from the
+  root.
+
+* Any page can be fairly easily be moved, starting with just the
+  page itself. When you have a B-tree page at hand, you can re-find
+  its parent using its lokey, and modify the downlink. An overflow page
+  contains the attno/TID, which can be used to find the pointer to
+  it in the b-tree. An UNDO page cannot currently be moved because
+  UNDO pointers contain the physical block number, but as soon as an
+  UNDO page expires, it can be deleted.
+
+
+MVCC
+----
+
+Undo record pointers are used to implement MVCC, like in zheap. Hence,
+transaction information if not directly stored with the data. In
+zheap, there's a small, fixed, number of "transaction slots" on each
+page, but noxu has undo pointer with each item directly; in normal
+cases, the compression squeezes this down to almost nothing. In case
+of bulk load the undo record pointer is maintained for array of items
+and not per item. Undo pointer is only stored in meta-column and all
+MVCC operations are performed using the meta-column only.
+
+
+Insert:
+Inserting a new row, splits the row into datums. Then while adding
+entry for meta-column adds, decides block to insert, picks a TID for
+it, and writes undo record for the same. All the data columns are
+inserted using that TID.
+
+Overflow:
+When an overly large datum is stored, it is divided into chunks, and
+each chunk is stored on a dedicated overflow page within the same
+physical file. The overflow pages of a datum form list, each page has a
+next/prev pointer.
+
+Select:
+Property is added to Table AM to convey if column projection is
+leveraged by AM for scans. While scanning tables with AM leveraging
+this property, executor parses the plan. Leverages the target list and
+quals to find the required columns for query. This list is passed down
+to AM on beginscan. Noxu uses this column projection list to only
+pull data from selected columns. Virtual tuple table slot is used to
+pass back the datums for subset of columns.
+
+Current table am API requires enhancement here to pass down column
+projection to AM. The patch showcases two different ways for the same.
+
+* For sequential scans added new beginscan_with_column_projection()
+API. Executor checks AM property and if it leverages column projection
+uses this new API else normal beginscan() API.
+
+* For index scans instead of modifying the begin scan API, added new
+API to specifically pass column projection list after calling begin
+scan to populate the scan descriptor but before fetching the tuples.
+
+Delete:
+When deleting a tuple, new undo record is created for delete and only
+meta-column item is updated with this new undo record. New undo record
+created points to previous undo record pointer (insert undo record)
+present for the tuple. Hence, delete only operates on meta-column and
+no data column is edited.
+
+Update:
+Update in noxu is pretty equivalent to delete and insert. Delete
+action is performed as stated above and new entry is added with
+updated values. So, no in-place update happens.
+
+Index Support:
+Building index also leverages columnar storage and only scans columns
+required to build the index. Indexes work pretty similar to heap
+tables. Data is inserted into tables and TID for the tuple gets stored
+in index. On index scans, required column Btrees are scanned for given
+TID and datums passed back using virtual tuple. Since only meta-column
+is leveraged to perform visibility check, only visible tuples data are
+fetched from rest of the Btrees.
+
+Page Format
+-----------
+A Noxu table contains different kinds of pages, all in the same
+file. Kinds of pages are meta-page, per-attribute btree internal and
+leaf pages, UNDO log page, and overflow pages. Each page type has its
+own distinct data storage format.
+
+All page types share the standard PostgreSQL `PageHeaderData` prefix
+(24 bytes) and store a page-type-specific "opaque" area at the end of
+the page via `pd_special`.
+
+Page types are identified by the `nx_page_id` field in the opaque area:
+
+ID                    Constant  Description
+`0xF083`              `NX_META_PAGE_ID`     Metapage (always block 0)
+`0xF084`              `NX_BTREE_PAGE_ID`    B-tree page (internal or leaf)
+`0xF085`              `NX_UNDO_PAGE_ID`     UNDO log page
+`0xF086`              `NX_OVERFLOW_PAGE_ID` Overflow page (oversized datums)
+`0xF087`              `NX_FREE_PAGE_ID`     Free Page Map (FPM) entry
+
+------------------------------------------------------------------------
+1  Metapage (block 0)
+------------------------------------------------------------------------
+
+Every Noxu relation begins with a single metapage at block 0.  It
+contains the block numbers of the other data structures stored within
+the file, like the per-attribute B-trees, and the UNDO log.
+
+ 0                   PageHeaderData  (24 B)
+24                   NXMetaPage
+		     +---------------------------------+
+int32  nattributes
+		     +---------------------------------+
+OVRootDirItem  tree_root_dir[0]
+OVRootDirItem  tree_root_dir[1]
+...
+tree_root_dir[nattributes]
+		     +---------------------------------+
+			      ...
+pd_special -->       NXMetaPageOpaque
+		     +---------------------------------+
+BlockNumber  nx_undo_head
+BlockNumber  nx_undo_tail
+uint64 nx_undo_tail_first_counter
+NXUndoRecPtr nx_undo_oldestptr
+BlockNumber  nx_fpm_head
+uint16  nx_flags
+uint16  nx_page_id (0xF083)
+		     +---------------------------------+
+
+The `tree_root_dir` array is indexed by attribute number.  Index 0
+(`NX_META_ATTRIBUTE_NUM`) holds the root of the TID tree.  Indices
+1..nattributes hold the roots of the per-column attribute B-trees.
+
+`OVRootDirItem` contains a single `BlockNumber root` field pointing to
+the root page of the corresponding B-tree.
+
+
+
+------------------------------------------------------------------------
+2  B-tree Pages
+------------------------------------------------------------------------
+
+Both the TID tree and the attribute trees use the same physical page
+format.  Internal and leaf pages are distinguished by the `nx_level`
+field in the opaque area (0 = leaf).
+
+
+2.1  Opaque Area (`NXBtreePageOpaque`)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+pd_special -->       NXBtreePageOpaque
+		     +---------------------------------+
+AttrNumber   nx_attno
+BlockNumber  nx_next
+nxtid        nx_lokey
+nxtid        nx_hikey
+uint16       nx_level
+uint16       nx_flags
+uint16       padding
+uint16       nx_page_id (0xF084)
+		     +---------------------------------+
+
+Every B-tree page is self-identifying: the `nx_attno`, `nx_lokey`, and
+`nx_hikey` fields allow the page's parent downlink to be located
+without additional state.
+
+
+2.2  Internal Page Layout
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The page contents (between `pd_upper` and `pd_special`) are an array of
+`NXBtreeInternalPageItem`:
+
+  +-----------------------------+
+nxtid       tid
+BlockNumber childblk
+  +-----------------------------+
+...
+  +-----------------------------+
+
+The number of items is deduced from `pd_lower`:
+
+  num_items = (pd_lower - SizeOfPageHeaderData) / sizeof(NXBtreeInternalPageItem)
+
+Internal pages look identical for TID trees and attribute trees.
+
+
+2.3  TID Tree Leaf Page Layout
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+TID tree leaf pages contain `NXTidArrayItem` entries.  Each item covers
+a contiguous range of TIDs and encodes both the TID deltas and UNDO
+slot information.
+
+  NXTidArrayItem
+  +-----------------------------------------+
+uint16  t_size
+uint16  t_num_tids
+uint16  t_num_codewords
+uint16  t_num_undo_slots
+nxtid   t_firsttid
+nxtid   t_endtid
+  +-----------------------------------------+
+t_payload[]
+[ t_num_codewords x uint64 codewords ]
+[ (t_num_undo_slots - 2) x UndoRecPtr ]
+[ ceil(t_num_tids / 32) x uint64 ]
+  +-----------------------------------------+
+
+**TID encoding:**  TID deltas (gaps between consecutive TIDs) are
+packed using Simple-8b encoding.  The first encoded value is always 0
+(the absolute TID is in `t_firsttid`).  Small gaps (common on newly
+loaded tables) compress to a few bits per tuple.
+
+**UNDO slot encoding:**  There are logically 4 UNDO slots per item:
+
+Slot                  Meaning
+0                     `NXBT_OLD_UNDO_SLOT` -- tuple visible to everyone
+1                     `NXBT_DEAD_UNDO_SLOT` -- tuple is dead
+2-3                   Normal UNDO pointers (physically stored in the item)
+
+Slots 0 and 1 are implicit (never stored on disk).  Each tuple's
+2-bit slot number is packed into 64-bit "slotwords", 32 slot numbers
+per word.
+
+**Size calculation:**
+SizeOfNXTidArrayItem(num_tids, num_undo_slots, num_codewords)
+  = offsetof(NXTidArrayItem, t_payload)
+  + num_codewords * 8
+  + (num_undo_slots - 2) * sizeof(NXUndoRecPtr)
+  + ceil(num_tids / 32) * 8
+
+**Limits:**  `NXBT_MAX_ITEM_CODEWORDS` = 16, `NXBT_MAX_ITEM_TIDS` = 128.
+
+
+2.4  Attribute Tree Leaf Page Layout
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Attribute tree leaf pages contain `NXAttributeArrayItem` entries (or
+their compressed variant, `NXAttributeCompressedItem`).
+
+
+Uncompressed Item (`NXAttributeArrayItem`)
+..........................................
+
+  NXAttributeArrayItem
+  +-----------------------------------------+
+uint16  t_size
+uint16  t_flags
+uint16  t_num_elements
+uint16  t_num_codewords
+nxtid   t_firsttid
+nxtid   t_endtid
+  +-----------------------------------------+
+uint64  t_tid_codewords[]
+  +-----------------------------------------+
+<NULL data>
+NXBT_HAS_NULLS: bitmap, ceil(N/8) B
+NXBT_ATTR_SPARSE_NULLS: (pos,cnt) []
+NXBT_ATTR_RLE_NULLS: run-length []
+NXBT_ATTR_NO_NULLS: (absent)
+  +-----------------------------------------+
+<datum data>
+  +-----------------------------------------+
+
+
+Compressed Item (`NXAttributeCompressedItem`)
+.............................................
+
+When the `NXBT_ATTR_COMPRESSED` flag is set in `t_flags`:
+
+  NXAttributeCompressedItem
+  +-----------------------------------------+
+uint16  t_size
+uint16  t_flags
+uint16  t_num_elements
+uint16  t_num_codewords
+nxtid   t_firsttid
+nxtid   t_endtid
+uint16  t_uncompressed_size
+  +-----------------------------------------+
+char    t_payload[]
+
+  +-----------------------------------------+
+
+Compression is applied to the variable-length portion (TID codewords,
+null bitmap, and datum data combined).  The compression algorithm is
+selected at build time: zstd (preferred), LZ4, or pglz (fallback).
+
+The buffer cache stores compressed blocks.  Decompression happens
+on-the-fly in backend-private memory.
+
+
+Datum Encoding
+..............
+
+Fixed-width types are stored without alignment padding.  Variable-length
+types use a custom encoding (not standard PostgreSQL varlena):
+
+  0xxxxxxx                        -- 1-byte header, up to 128 bytes of data
+  1xxxxxxx xxxxxxxx               -- 2-byte header, up to 32767 bytes
+  11111111 11111111 <BlockNumber> -- noxu overflow pointer
+
+This compact encoding avoids the 4-byte varlena overhead for short
+values.
+
+
+In-Memory Representation (`NXExplodedItem`)
+...........................................
+
+During page repacking, items are decoded into `NXExplodedItem`:
+
+  NXExplodedItem
+  +-----------------------------------------+
+uint16  t_size = 0  (sentinel)
+uint16  t_flags
+uint16  t_num_elements
+nxtid  *tids
+bits8  *nullbitmap
+char   *datumdata
+int     datumdatasz
+  +-----------------------------------------+
+
+
+
+------------------------------------------------------------------------
+3  UNDO Log Pages
+------------------------------------------------------------------------
+
+UNDO pages form a singly-linked list (head = oldest, tail = newest).
+
+ 0                   PageHeaderData  (24 B)
+24                   <UNDO records, packed sequentially>
+		     ...
+pd_special -->       NXUndoPageOpaque
+		     +-----------------------------------------+
+BlockNumber       next
+NXUndoRecPtr      first_undorecptr
+NXUndoRecPtr      last_undorecptr
+uint16 padding x3
+uint16 nx_page_id (0xF085)
+		     +-----------------------------------------+
+
+
+3.1  UNDO Record Pointer (`NXUndoRecPtr`)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  NXUndoRecPtr
+  +-----------------------------------+
+uint64      counter
+BlockNumber blkno
+int32       offset
+  +-----------------------------------+
+
+Special pointer values:
+
+Name                  Counter  BlockNumber  Meaning
+`InvalidUndoPtr`      0  `InvalidBlockNumber`  Visible to everyone
+`DeadUndoPtr`         1  `InvalidBlockNumber`  Not visible to anyone
+
+
+3.2  UNDO Record Types
+~~~~~~~~~~~~~~~~~~~~~~
+
+All UNDO records share a common header (`NXUndoRec`):
+
+  NXUndoRec  (common header)
+  +-----------------------------------+
+int16        size
+uint8        type
+NXUndoRecPtr undorecptr
+TransactionId xid
+CommandId    cid
+NXUndoRecPtr prevundorec
+  +-----------------------------------+
+
+Type ID               Constant  Extension Structure
+1                     `NXUNDO_TYPE_INSERT`  `NXUndoRec_Insert`
+2                     `NXUNDO_TYPE_DELETE`  `NXUndoRec_Delete`
+3                     `NXUNDO_TYPE_UPDATE`  `NXUndoRec_Update`
+4                     `NXUNDO_TYPE_TUPLE_LOCK`  `NXUndoRec_TupleLock`
+5                     `NXUNDO_TYPE_DELTA_INSERT`  `NXUndoRec_DeltaInsert`
+
+
+INSERT Record
+.............
+
+  NXUndoRec_Insert
+  +-----------------------------------+
+NXUndoRec   rec
+nxtid       firsttid
+nxtid       endtid
+uint32      speculative_token
+  +-----------------------------------+
+
+
+DELETE Record
+.............
+
+  NXUndoRec_Delete
+  +-----------------------------------+
+NXUndoRec   rec
+bool        changedPart
+uint16      num_tids
+nxtid       tids[50]
+  +-----------------------------------+
+
+
+UPDATE Record
+.............
+
+  NXUndoRec_Update
+  +-----------------------------------+
+NXUndoRec   rec
+nxtid       oldtid
+nxtid       newtid
+bool        key_update
+  +-----------------------------------+
+
+
+Column-Delta INSERT Record
+..........................
+
+Used when an UPDATE only changes a subset of columns.  Unchanged columns
+are fetched from `predecessor_tid` instead of being stored redundantly.
+
+  NXUndoRec_DeltaInsert
+  +-----------------------------------+
+NXUndoRec   rec
+nxtid       firsttid
+nxtid       endtid
+uint32      speculative_token
+nxtid       predecessor_tid
+int16       natts
+int16       nchanged
+uint32      changed_cols[]
+  +-----------------------------------+
+
+The bitmap uses `ceil(natts/32)` words.  Bit `(attno-1)` set means
+column `attno` was modified and has a B-tree entry under this TID.
+
+
+Tuple Lock Record
+.................
+
+  NXUndoRec_TupleLock
+  +-----------------------------------+
+NXUndoRec   rec
+nxtid       tid
+LockTupleMode lockmode
+  +-----------------------------------+
+
+
+
+------------------------------------------------------------------------
+4  Overflow Pages
+------------------------------------------------------------------------
+
+Large datums that exceed `MaxNoxuDatumSize` (approximately
+`BLCKSZ - 500`) are split into chunks stored on dedicated overflow pages.
+The pages form a doubly-linked list.
+
+ 0                   PageHeaderData  (24 B)
+24                   <overflow chunk data>
+		     ...
+pd_special -->       NXOverflowPageOpaque
+		     +-----------------------------------------+
+AttrNumber  nx_attno
+nxtid       nx_tid       (first page)
+uint32      nx_total_size (first page)
+uint32      nx_slice_offset
+BlockNumber nx_prev
+BlockNumber nx_next
+uint16      nx_flags
+uint16      padding x2
+uint16      nx_page_id (0xF086)
+		     +-----------------------------------------+
+
+`nx_tid` and `nx_total_size` are only set on the first page of a overflow
+chain.  `nx_slice_offset` records the byte offset of this chunk within
+the complete datum.
+
+An in-tree overflow pointer (`varatt_nx_overflowptr`) is stored in place of
+the datum:
+
+  varatt_nx_overflowptr
+  +-----------------------------------+
+uint8       va_header
+uint8       va_tag = VARTAG_NOXU (10)
+BlockNumber nxt_block
+  +-----------------------------------+
+
+
+
+------------------------------------------------------------------------
+5  Free Page Map (FPM)
+------------------------------------------------------------------------
+
+Unused pages are tracked via a singly-linked list.  The metapage's
+`nx_fpm_head` field points to the first free page.
+
+ 0                   PageHeaderData  (24 B)
+		     (page contents unused)
+pd_special -->       NXFreePageOpaque
+		     +-----------------------------------------+
+BlockNumber nx_next
+uint16      padding
+uint16      nx_page_id (0xF087)
+		     +-----------------------------------------+
+
+Pages are allocated from the head (LIFO order).  When a page is freed,
+it is added to the head of the list.
+
+
+
+------------------------------------------------------------------------
+6  TID Addressing
+------------------------------------------------------------------------
+
+Throughout Noxu, TIDs are carried as 64-bit unsigned integers (`nxtid`)
+rather than the standard `ItemPointerData`.  Conversions are defined in
+`noxu_tid.h`.
+
+  nxtid = blk * (MaxNXTidOffsetNumber - 1) + off
+
+Where `MaxNXTidOffsetNumber` = 129.
+
+Special values:
+
+Name                  Value  Meaning
+`InvalidNXTid`        0  No valid TID
+`MinNXTid`            1  Smallest valid TID
+`MaxNXTid`            ~2^48  Largest valid TID
+
+TIDs are logical, not physical.  Nearby TIDs tend to reside on nearby
+pages, so block-range based optimizations (BRIN, bitmap scans) still
+provide benefit.
+
+
+
+------------------------------------------------------------------------
+7  Simple-8b Encoding
+------------------------------------------------------------------------
+
+TID deltas throughout Noxu are compressed using Simple-8b encoding.
+Each 64-bit codeword packs multiple small integers.  The selector (top
+4 bits) determines how many integers are packed and their bit width:
+
+Selector              Count  Bits each  Max value
+0                     240  0  0
+1                     60  1  1
+2                     30  2  3
+3                     20  3  7
+4                     15  4  15
+5                     12  5  31
+6                     10  6  63
+7                     8  7  127
+8                     7  8  255
+9                     6  10  1023
+10                    5  12  4095
+11                    4  15  32767
+12                    3  20  1048575
+13                    2  30  1073741823
+14                    1  60  2^60 - 1
+
+For consecutive TIDs with no gaps (delta = 1), selector 1 packs 60
+TIDs per codeword, yielding ~1 bit per TID.
+
+
+
+------------------------------------------------------------------------
+8  Compression
+------------------------------------------------------------------------
+
+Noxu compresses attribute tree leaf pages using one of three algorithms,
+selected at PostgreSQL build time:
+
+Priority              Algorithm  Configure flag  Notes
+1                     zstd  `--with-zstd`  Best ratio and speed
+2                     LZ4  `--with-lz4`  Very fast, good ratio
+3                     pglz  (built-in)  Fallback, significantly slower
+
+Compression is applied to the variable-length portion of attribute items
+(TID codewords + null bitmap + datum data).  The buffer cache stores
+compressed pages; decompression is performed on-the-fly in
+backend-private memory.
+
+Only attribute tree leaf pages are compressed.  TID tree pages and
+internal B-tree pages are not compressed.
+
+
+
+------------------------------------------------------------------------
+8.1  Attribute Item Format Flags
+------------------------------------------------------------------------
+
+In addition to general-purpose page compression, individual attribute
+array items may use specialized column encodings.  These are indicated
+by flag bits in the `t_flags` field of `NXAttributeArrayItem`:
+
+Flag                  Bit  Description
+`NXBT_ATTR_COMPRESSED`  0x0001  Item payload is compressed (see sec. 2.4)
+`NXBT_HAS_NULLS`      0x0002  Null bitmap present after TID codewords
+`NXBT_ATTR_FORMAT_NATIVE_VARLENA`  0x0004  Short varlenas in PostgreSQL's 1-byte format
+`NXBT_ATTR_FORMAT_FOR`  0x0008  Frame of Reference encoding (sec. 8.2)
+`NXBT_ATTR_BITPACKED`  0x0010  Booleans bit-packed, 8 per byte
+`NXBT_ATTR_NO_NULLS`  0x0020  No NULLs present, bitmap omitted entirely
+`NXBT_ATTR_SPARSE_NULLS`  0x0040  Sparse NULL encoding (position, count) pairs
+`NXBT_ATTR_RLE_NULLS`  0x0080  RLE encoding for sequential NULL runs
+`NXBT_ATTR_FORMAT_DICT`  0x0100  Dictionary encoding (sec. 8.3)
+`NXBT_ATTR_FORMAT_FIXED_BIN`  0x0200  Fixed-binary storage (e.g. UUID as 16 bytes)
+`NXBT_ATTR_FORMAT_FSST`  0x0400  FSST string compression (sec. 8.4)
+
+These encodings are applied as pre-filters before general-purpose
+compression.  Multiple flags may be combined (e.g. `NXBT_ATTR_FORMAT_DICT`
+with `NXBT_ATTR_COMPRESSED`).
+
+
+8.2  Frame of Reference (FOR) Encoding
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_FORMAT_FOR` is set, the datum data section begins with an
+`NXForHeader` followed by bit-packed deltas:
+
+  NXForHeader
+  +-----------------------------------+
+uint64  for_frame_min
+uint8   for_bits_per_value
+uint8   for_attlen
+  +-----------------------------------+
+  <bit-packed deltas, LSB-first>
+
+Each non-null value is stored as `(value - for_frame_min)` using
+`for_bits_per_value` bits.  Deltas are packed into bytes LSB-first.
+This encoding is used only for pass-by-value fixed-width integer types
+when the range (max - min) can be represented in fewer bits than the
+original width.
+
+Packed byte size: `ceil(num_elements * bits_per_value / 8)`.
+
+
+8.3  Dictionary Encoding
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_FORMAT_DICT` is set, the datum data section is replaced
+with a dictionary structure:
+
+  NXDictHeader
+  +-----------------------------------+
+uint16  num_entries
+uint16  entry_size
+uint32  total_data_size
+  +-----------------------------------+
+  uint32  offsets[num_entries]         |  byte offsets into values data
+  <values data: total_data_size bytes>
+  uint16  indices[num_elements]       |  one index per element
+
+Each datum is replaced by a `uint16` index into the dictionary.  NULL
+values use the sentinel index `0xFFFF`.  Dictionary encoding is applied
+when the column has very low cardinality (distinct count / total rows
+< 0.01) and the dictionary fits within `NX_DICT_MAX_ENTRIES` (65534)
+entries and `NX_DICT_MAX_TOTAL_SIZE` (64 KB) of value data.
+
+
+8.4  FSST String Compression
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_FORMAT_FSST` is set, string datums have been pre-encoded
+using the FSST (Fast Static Symbol Table) algorithm before
+general-purpose compression.  FSST builds a 256-entry symbol table of
+frequently occurring 1-8 byte sequences, replacing multi-byte patterns
+with single-byte codes.
+
+The symbol table (`FsstSymbolTable`) is built from a sample of column
+values during B-tree construction and stored in the attribute metapage.
+It is used for all items in that attribute tree.
+
+FSST typically achieves 30-60% additional size reduction on top of
+zstd/LZ4 for text columns.
+
+
+8.5  NULL Bitmap Encodings
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Noxu supports three strategies for encoding NULL information:
+
+Strategy              Flag  Encoding
+Standard bitmap       `NXBT_HAS_NULLS`  1 bit per element, `ceil(N/8)` bytes
+Sparse NULLs          `NXBT_ATTR_SPARSE_NULLS`  Array of `(position, count)` pairs
+RLE NULLs             `NXBT_ATTR_RLE_NULLS`  Run-length encoded runs of NULL/non-NULL
+No NULLs              `NXBT_ATTR_NO_NULLS`  Bitmap omitted entirely
+
+**Sparse NULL entry** (`NXSparseNullEntry`):
+  +-----------------------------------+
+uint16  sn_position
+uint16  sn_count
+  +-----------------------------------+
+
+**RLE NULL entry** (`NXRleNullEntry`):
+  +-----------------------------------+
+uint16  rle_count
+  +-----------------------------------+
+
+The `NXBT_RLE_NULL_FLAG` (0x8000) bit in `rle_count` indicates a NULL
+run; the remaining 15 bits (`NXBT_RLE_COUNT_MASK` = 0x7FFF) store the
+run length.
+
+
+8.6  Boolean Bit-Packing
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_BITPACKED` is set (only for boolean columns), values
+are stored as individual bits, 8 per byte.  This reduces boolean column
+storage from 1 byte per value to 1 bit per value (8x reduction before
+general-purpose compression).
+
+
+8.7  Fixed-Binary Storage
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_FORMAT_FIXED_BIN` is set, variable-length types with
+a known fixed binary representation (e.g. UUID as 16 bytes) are stored
+without the varlena header, using their raw binary form.  This avoids
+1-4 bytes of overhead per datum.
+
+
+8.8  Native Varlena Format
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When `NXBT_ATTR_FORMAT_NATIVE_VARLENA` is set, short varlena values
+(attlen == -1, attstorage != 'p') are stored in PostgreSQL's native
+1-byte short varlena format rather than the custom Noxu length-prefix
+encoding.  This allows the read path to return a direct pointer into
+the decompressed buffer without copying or reformatting, eliminating
+per-datum conversion overhead.
+
+Long varlenas (> 126 data bytes) and Noxu overflow pointers are still
+stored in the original Noxu encoding when this flag is set.
+
+
+
+------------------------------------------------------------------------
+9  WAL Record Types
+------------------------------------------------------------------------
+
+ID                    Constant  Description
+`0x00`                `WAL_NOXU_INIT_METAPAGE`  Initialize metapage
+`0x10`                `WAL_NOXU_UNDO_NEWPAGE`  Extend UNDO log
+`0x20`                `WAL_NOXU_UNDO_DISCARD`  Discard old UNDO records
+`0x30`                `WAL_NOXU_BTREE_NEW_ROOT`  Create new B-tree root
+`0x40`                `WAL_NOXU_BTREE_ADD_LEAF_ITEMS`  Add items to B-tree leaf
+`0x50`                `WAL_NOXU_BTREE_REPLACE_LEAF_ITEM`  Replace item on B-tree leaf
+`0x60`                `WAL_NOXU_BTREE_REWRITE_PAGES`  Page split / rewrite
+`0x70`                `WAL_NOXU_OVERFLOW_NEWPAGE`  Add overflow page
+`0x80`                `WAL_NOXU_FPM_DELETE`  Add page to Free Page Map
+
+Free Pages Map
+--------------
+
+There is a simple Free Pages Map, which is just a linked list of unused
+blocks. The block number of the first unused page in the list is stored
+in the metapage. Each unused block contains link to the next unused
+block in the chain. When a block comes unused, it is added to the
+head of the list.
+
+Three mitigations reduce metapage contention:
+
+1. **Batch extension:** `nxpage_extendrel_newbuf()` extends the relation
+   by 8-512 pages at once (adaptive based on relation size), adding the
+   extras to the FPM.  This amortizes the extension lock cost.
+
+2. **Deferred deallocation:** `nxpage_delete_page()` enqueues freed pages
+   in a per-backend transaction-local queue rather than immediately
+   acquiring the metapage lock.  The queue is batch-flushed at commit
+   time, reducing metapage lock acquisitions from O(N) to O(R) where R
+   is the number of distinct relations that had pages freed.
+
+3. **Batch allocation cache:** `nxpage_getnewbuf()` pre-pops up to 8
+   extra block numbers from the FPM linked list into a backend-local
+   cache while already holding the metapage lock.  Subsequent allocation
+   requests for the same relation are served directly from this cache,
+   reducing allocation-side metapage lock acquisitions from O(N) to
+   O(N/8).  Unused cached blocks are returned to the FPM at transaction
+   end via the transaction callback.
+
+Pages are still reused in LIFO order, so physical locality is not
+guaranteed.  A future improvement could sort free pages by block number
+or maintain per-attribute free lists to improve I/O readahead
+effectiveness.
+
+
+Enhancement ideas / alternative designs
+---------------------------------------
+
+Instead of compressing all the tuples on a page in one batch, store a
+small "dictionary", e.g. in page header or meta page or separate
+dedicated page, and use it to compress tuple by tuple. That could make
+random reads and updates of individual tuples faster. Need to find how
+to create the dictionary first.
+
+Only cached compressed pages in the page cache. If we want to cache
+uncompressed pages instead, or in addition to that, we need to invent
+a whole new kind of a buffer cache that can deal with the
+variable-size blocks. For a first version, I think we can live without
+it.
+
+Instead of storing all columns in the same file, we could store them
+in separate files (separate forks?). That would allow immediate reuse
+of space, after dropping a column. It's not clear how to use an FSM in
+that case, though. Might have to implement an integrated FSM,
+too. (Which might not be a bad idea, anyway).
+
+Design allows for hybrid row-column store, where some columns are
+stored together, and others have a dedicated B-tree. Need to have user
+facing syntax to allow specifying how to group the columns.
+
+Salient points for the design
+------------------------------
+
+* Layout the data/tuples in mapped fashion instead of keeping the
+logical to physical mapping separate from actual data. So, keep all
+the meta-data and data logically in single stream of file, avoiding
+the need for separate forks/files to store meta-data and data.
+
+* Handle/treat operations at tuple level and not block level.
+
+* Stick to fixed size physical blocks. Variable size blocks (for
+possibly higher compression ratios) pose need for increased logical to
+physical mapping maintenance, plus restrictions on concurrency of
+writes and reads to files. Hence adopt compression to fit fixed size
+blocks instead of other way round.
+
+
+Predicate locking
+-----------------
+
+Predicate locks, to support SERIALIZABLE transactinons, are taken like
+with the heap. From README-SSI:
+
+* For a table scan, the entire relation will be locked.
+
+* Each tuple read which is visible to the reading transaction will be
+locked, whether or not it meets selection criteria; except that there
+is no need to acquire an SIREAD lock on a tuple when the transaction
+already holds a write lock on any tuple representing the row, since a
+rw-conflict would also create a ww-dependency which has more
+aggressive enforcement and thus will prevent any anomaly.
+
+* Modifying a heap tuple creates a rw-conflict with any transaction
+that holds a SIREAD lock on that tuple, or on the page or relation
+that contains it.
+
+* Inserting a new tuple creates a rw-conflict with any transaction
+holding a SIREAD lock on the entire relation. It doesn't conflict with
+page-level locks, because page-level locks are only used to aggregate
+tuple locks. Unlike index page locks, they don't lock "gaps" on the
+page.
+
+
+Noxu isn't block-based, so page-level locks really just mean a
+range of TIDs. They're only used to aggregate tuple locks.
+
+
+Performance Tuning Guide
+========================
+
+When to Use Noxu
+------------------
+
+Noxu is best suited for workloads with the following characteristics:
+
+* Analytical queries that read a small subset of columns from wide
+  tables.  Noxu stores each column in a separate B-tree, so queries
+  that access only a few columns read correspondingly less data.
+
+* Tables with high compression potential.  Columnar storage groups
+  values of the same type together, enabling better compression ratios
+  (typically 2-5x with zstd, depending on data characteristics).
+
+* Read-heavy workloads with infrequent updates.  While Noxu supports
+  full MVCC including updates and deletes, its update path is more
+  expensive than heap because modified columns must be written to their
+  individual B-trees.
+
+* Tables where overflow overhead is significant.  Noxu eliminates the
+  need for separate overflow tables; large values are stored in toast
+  pages within the same physical file.
+
+Noxu is less suitable for:
+
+* OLTP workloads with frequent single-row updates that touch many
+  columns.
+
+* Tables where nearly all columns are always read (row-oriented access
+  patterns).
+
+* Workloads that depend on HOT updates (Heap-Only Tuples), which are
+  not applicable to Noxu's columnar structure.
+
+
+Column Ordering Optimization
+-----------------------------
+
+Column order in the table definition affects both query performance
+and compression ratios:
+
+* Place columns most frequently used in WHERE clauses and
+  projections first.  The planner identifies accessed columns by
+  attribute number, so grouping hot columns together may improve
+  cache locality during sequential scans.
+
+* Group columns with similar data types together.  Columns of the
+  same type tend to compress better when they share B-tree leaf pages,
+  as the general-purpose compressor can exploit patterns across
+  adjacent values.
+
+* Place nullable columns at the end.  When most values are non-NULL,
+  the NXBT_ATTR_NO_NULLS flag allows the null bitmap to be omitted
+  entirely, saving space.  Placing always-NULL or mostly-NULL columns
+  last avoids disrupting the compact encoding of earlier columns.
+
+* Place low-cardinality columns before high-cardinality columns.
+  Low-cardinality columns benefit from dictionary encoding
+  (NXBT_ATTR_FORMAT_DICT), which replaces each datum with a uint16
+  index.  High-cardinality columns (UUIDs, timestamps) use
+  fixed-binary or FOR encoding, which have different space profiles.
+
+* For wide tables, consider which columns are typically updated
+  together.  The column-delta UPDATE optimization only writes changed
+  columns; keeping stable columns separate from volatile ones
+  maximizes the benefit.
+
+
+Compression Tuning
+------------------
+
+Noxu compresses attribute B-tree leaf pages using one of three
+algorithms, selected at PostgreSQL build time:
+
+  1. zstd (--with-zstd) -- best compression ratio and speed. This is
+     the recommended choice.  Uses ZSTD_CLEVEL_DEFAULT (level 3) for a
+     good balance of speed and compression.
+
+  2. LZ4 (--with-lz4) -- very fast compression with good ratios.
+     Preferred over pglz when zstd is not available.
+
+  3. pglz (built-in) -- fallback when neither zstd nor LZ4 is
+     available.  Significantly slower.
+
+To check which compression algorithm is active, build PostgreSQL with
+--with-zstd (or --with-lz4) and verify via pg_config.
+
+The compression ratio depends on data characteristics:
+
+  * Columns with many repeated values compress well (integer IDs,
+    status codes, booleans).
+  * Columns with high cardinality or already-compressed data (e.g.,
+    encrypted columns) show minimal compression benefit.
+  * NULL-heavy columns compress efficiently because NULLs are stored
+    as a compact bitmap rather than occupying datum space.
+
+Noxu also applies column-level pre-encodings automatically:
+
+  * Frame of Reference (FOR): Integer columns with clustered values
+    are stored as bit-packed deltas from a minimum.  Effective when
+    the value range within an item is small relative to the type width.
+
+  * Dictionary encoding: Low-cardinality columns (< 1% distinct
+    values) are encoded as uint16 indices into a dictionary, achieving
+    10-100x compression for status codes and categorical data.
+
+  * FSST: Text columns gain 30-60% additional compression from symbol
+    table encoding applied before the general-purpose compressor.
+
+  * Boolean bit-packing: Boolean columns are stored at 1 bit per value
+    (8x reduction) before general-purpose compression.
+
+  * Fixed-binary storage: Types with known fixed binary representations
+    (e.g. UUID as 16 bytes) avoid varlena header overhead.
+
+Use the inspection function pg_nx_btree_pages() to measure actual
+compression ratios per column:
+
+  SELECT attno, count(*) AS pages,
+         sum(uncompressedsz::numeric) / sum(totalsz) AS compratio
+    FROM pg_nx_btree_pages('my_table')
+   GROUP BY attno ORDER BY attno;
+
+
+GUC Parameters
+--------------
+
+noxu.enable_opportunistic_stats (boolean, default: on)
+
+  Controls whether Noxu collects lightweight statistics during normal
+  DML and scan operations.  These statistics feed the planner with
+  fresh tuple counts and null fractions between ANALYZE runs.  Disable
+  this if the overhead of per-tuple sampling is unacceptable.
+
+noxu.stats_sample_rate (integer, default: 100)
+
+  During sequential scans, every Nth tuple is sampled to update null
+  fractions and compression statistics.  Lower values increase accuracy
+  but add CPU overhead.  Range: 1-10000.
+
+noxu.stats_freshness_threshold (integer, default: 3600)
+
+  Number of seconds after which opportunistic statistics are considered
+  stale.  The planner ignores entries older than this threshold.
+  Range: 1-86400.
+
+
+Monitoring
+----------
+
+Key metrics to monitor for Noxu tables:
+
+1. Compression ratios: Use pg_nx_btree_pages() as shown above.
+   Low compression ratios (near 1.0) on specific columns may indicate
+   that those columns are poor candidates for columnar storage, or that
+   the data is not compressible (e.g., UUIDs, encrypted data).
+
+2. Page type distribution: Shows the breakdown of pages by type
+   (META, BTREE, UNDO, OVERFLOW, FREE):
+
+     SELECT count(*), pg_nx_page_type('my_table', g)
+       FROM generate_series(0,
+            pg_table_size('my_table') / 8192 - 1) g
+      GROUP BY 2;
+
+3. UNDO log size: A growing UNDO log may indicate long-running
+   transactions preventing UNDO cleanup.  The UNDO log is trimmed
+   opportunistically during DML operations when no active snapshots
+   reference old records.
+
+4. Dead tuple ratio: Run VACUUM or check pg_stat_user_tables for
+   n_dead_tup estimates.  Noxu VACUUM only needs to scan the TID
+   tree (not attribute trees), making it faster than heap VACUUM for
+   wide tables.
+
+5. Column projection effectiveness: Use EXPLAIN to verify that
+   Noxu is reading only the columns needed for a query.  The
+   planner should show reduced cost estimates when accessing a
+   subset of columns.
+
+6. Planner statistics freshness: The planner uses opportunistic
+   statistics when they are newer than noxu.stats_freshness_threshold
+   seconds.  If cost estimates seem stale after bulk operations, run
+   ANALYZE or reduce the freshness threshold.
+
+
+Maintenance Strategies
+----------------------
+
+Regular maintenance for Noxu tables:
+
+1. ANALYZE:  Run ANALYZE periodically to collect per-column compression
+   statistics into pg_statistic.  These statistics are used by the
+   planner for cost estimation.  Noxu ANALYZE uses block-sampling
+   (scanning B-tree pages in random order) which is faster than heap
+   ANALYZE for large tables.
+
+2. VACUUM:  Noxu VACUUM only scans the TID tree, not attribute trees,
+   making it faster than heap VACUUM for wide tables.  Dead TIDs are
+   collected in bulk (up to NXUNDO_NUM_TIDS_PER_DELETE = 50 per UNDO
+   record) and removed from all B-trees.  Run VACUUM regularly to
+   prevent TID space from growing unbounded.
+
+3. UNDO log cleanup:  UNDO records are discarded opportunistically
+   when no active snapshot references them.  Long-running transactions
+   prevent UNDO cleanup and can cause the UNDO log to grow.  Monitor
+   UNDO page count using pg_nx_page_type() and investigate long-running
+   transactions if the UNDO log grows beyond expected bounds.
+
+4. Free Page Map recycling:  Freed pages are recycled in LIFO order
+   via the Free Page Map.  After heavy DELETE activity, subsequent
+   inserts reuse freed pages before extending the relation.  Note that
+   the current FPM implementation uses a linked list through the
+   metapage, which may become a bottleneck under heavy concurrent
+   allocation; this is a known scalability limitation.
+
+5. Bulk loading:  For initial data loads, use COPY or multi-row INSERT.
+   Noxu batches TID allocations and UNDO records for multi-row
+   inserts, which is more efficient than single-row inserts.  Run
+   ANALYZE after bulk loading to establish accurate statistics.
+
+
+VACUUM Considerations
+---------------------
+
+VACUUM on Noxu tables differs from heap tables:
+
+* Only the TID tree is scanned to identify dead tuples.  Attribute
+  trees are not scanned during VACUUM, making it faster for wide
+  tables.
+
+* Dead TIDs are collected from the TID tree using
+  nxbt_collect_dead_tids(), then removed from all B-trees using
+  nxbt_tid_remove() and nxbt_attr_remove().
+
+* UNDO log entries older than the oldest active snapshot are
+  trimmed opportunistically.
+
+* The Free Page Map recycles pages in LIFO order.  After heavy
+  DELETE activity, space is reused for subsequent inserts.
+
+
+Column-Delta UPDATE Optimization
+---------------------------------
+
+When updating a subset of columns on a wide table, Noxu uses a
+column-delta optimization: only the changed columns are written to
+their attribute B-trees.  Unchanged column values are fetched from
+the predecessor tuple version at read time.
+
+This can reduce WAL volume by up to 80% for partial updates on
+tables with many columns.  The optimization is applied automatically
+when the executor detects that not all columns were modified.
+
+The UNDO record for a delta update (NXUNDO_TYPE_DELTA_INSERT)
+stores a bitmap of changed columns and a pointer to the predecessor
+TID, so the storage engine knows which columns to fetch from which
+tuple version.
+
+
+Per-Relation UNDO Integration
+==============================
+
+Noxu uses PostgreSQL's per-relation UNDO infrastructure for MVCC
+visibility checking and transaction rollback.  UNDO records are stored
+in a dedicated fork (RELUNDO_FORKNUM) rather than inline in data
+pages, keeping the data page format clean and allowing the UNDO log to
+be managed independently.
+
+UNDO Record Storage
+-------------------
+
+UNDO records are stored in the relation's UNDO fork, separate from the
+main data fork:
+
+* Fork type: RELUNDO_FORKNUM (see src/include/common/relpath.h)
+* Managed by: src/backend/access/undo/relundo.c
+* Initialized by: RelUndoInitRelation() during table creation
+  (called from noxuam_relation_set_new_filenode in noxu_handler.c)
+
+The UNDO fork has its own metapage at block 0 which tracks the head
+and tail of the UNDO page chain, plus a monotonically increasing
+counter used to identify individual UNDO records.
+
+UNDO Record Types
+-----------------
+
+Noxu uses 5 UNDO record types (defined in src/include/access/relundo.h):
+
+* RELUNDO_INSERT (1): Tuple insertion.  Stores a TID range
+  (firsttid, endtid) and an optional speculative insertion token.
+
+* RELUNDO_DELETE (2): Tuple deletion.  Stores a list of up to
+  RELUNDO_DELETE_MAX_TIDS (50) TIDs in a single record.
+
+* RELUNDO_UPDATE (3): Tuple update.  Stores old TID, new TID, and
+  a key_update flag indicating whether indexed columns changed.
+
+* RELUNDO_TUPLE_LOCK (4): Row-level locking for SELECT FOR
+  UPDATE/SHARE.  Stores TID and lock mode.
+
+* RELUNDO_DELTA_INSERT (5): Partial-column update (column-delta).
+  Stores a bitmap of changed columns and a pointer to the predecessor
+  TID, allowing unchanged columns to be fetched from the prior version.
+
+Each record also carries a common header with the inserting
+transaction ID (xid), command ID (cid), and a pointer to the previous
+UNDO record in the chain (urec_prevundorec), enabling backwards
+traversal for visibility checks and rollback.
+
+Visibility Checking
+-------------------
+
+Tuple visibility is determined by walking the UNDO chain backwards
+from the tuple's undo_ptr field in the TID tree item, using the
+snapshot's xmin/xmax to determine visibility.
+
+The entry point is nx_SatisfiesVisibility() (noxu_visibility.c),
+which dispatches to snapshot-specific routines:
+
+* nx_SatisfiesMVCC(): Standard MVCC visibility for regular queries.
+* nx_SatisfiesUpdate(): UPDATE/DELETE visibility with conflict
+  detection.  Also populates HeapUpdateFailureData for callers.
+* nx_SatisfiesDirty(): Reads uncommitted changes, used for
+  speculative inserts and ON CONFLICT processing.
+* nx_SatisfiesSelf(): Sees all changes made by the current
+  transaction (SnapshotSelf semantics).
+* nx_SatisfiesAny(): Sees all non-dead tuples regardless of
+  transaction status (SnapshotAny semantics).
+* nx_SatisfiesNonVacuumable(): Determines whether a tuple can be
+  vacuumed.
+* nx_SatisfiesOverflow(): Visibility for overflow datum access.
+* nx_SatisfiesHistoricMVCC(): For logical decoding.
+
+DDL Lifecycle Hooks
+-------------------
+
+Per-relation UNDO is wired into the Noxu table AM lifecycle
+callbacks in noxu_handler.c:
+
+* Relation creation (noxuam_relation_set_new_filenode):
+  Calls RelUndoInitRelation() to create the UNDO fork and write
+  the initial metapage.
+
+* Nontransactional truncate (noxuam_relation_nontransactional_truncate):
+  Calls RelUndoInitRelation() to reinitialize the UNDO fork after
+  all data has been removed.
+
+* Relation copy (noxuam_relation_copy_data):
+  Copies the UNDO fork alongside the main fork when the relation's
+  storage is relocated.
+
+* VACUUM (noxuam_vacuum_rel):
+  Calls RelUndoVacuum() after the Noxu-specific vacuum pass to
+  discard old UNDO records no longer needed for visibility checks.
+
+* Relation drop:
+  The UNDO fork is automatically removed by smgrdounlinkall() when
+  the relation is dropped; no explicit cleanup is needed.
+
+Transaction Rollback
+--------------------
+
+When a transaction aborts, its UNDO chain is walked to reverse all
+operations:
+
+1. During DML, each UNDO record's pointer is registered via
+   RegisterPerRelUndo() (see src/backend/access/undo/xactundo.c),
+   which associates the relation OID with the start of its UNDO chain
+   for the current transaction.
+
+2. On abort, background rollback workers walk the chain via the
+   urec_prevundorec links in each UNDO record header.
+
+3. For each record type, the corresponding reverse operation is
+   applied:
+   - RELUNDO_INSERT: Marks the inserted TIDs as dead.
+   - RELUNDO_DELETE: Restores the deleted TIDs (clears UNDO pointer).
+   - RELUNDO_UPDATE: Restores the old tuple version.
+   - RELUNDO_DELTA_INSERT: Marks the delta-inserted TIDs as dead.
+   - RELUNDO_TUPLE_LOCK: Releases the row lock.
+
+API Reference
+-------------
+
+* src/include/access/relundo.h: Full per-relation UNDO API, including
+  RelUndoReserve(), RelUndoReadRecord(), RelUndoInitRelation(),
+  RelUndoVacuum(), RelUndoDiscard(), and RelUndoDropRelation().
+
+* src/include/access/xactundo.h: Transaction-level UNDO registration
+  via RegisterPerRelUndo().
+
+* src/include/access/noxu_undorec.h: Noxu-specific UNDO record type
+  definitions and helper functions.

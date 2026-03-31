@@ -14,6 +14,7 @@
 
 #include "access/parallel.h"
 #include "commands/repack.h"
+#include "access/relundo_worker.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -166,6 +167,10 @@ static const struct
 	{
 		.fn_name = "DataChecksumsWorkerMain",
 		.fn_addr = DataChecksumsWorkerMain
+	},
+	{
+		.fn_name = "RelUndoWorkerMain",
+		.fn_addr = RelUndoWorkerMain
 	}
 };
 

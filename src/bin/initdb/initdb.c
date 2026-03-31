@@ -1154,9 +1154,11 @@ test_config_settings(void)
 		100, 50, 40, 30, 20
 	};
 	static const int trial_bufs[] = {
-		16384, 8192, 4096, 3584, 3072, 2560, 2048, 1536,
-		1000, 900, 800, 700, 600, 500,
-		400, 300, 200, 100, 50
+		16384, 8192, 4096, 3584, 3072, 2560, 2048
+		/* Removed values below 2048 (16MB) due to v19devel AIO subsystem
+		 * and UNDO subsystem requiring more base shared memory. Minimum
+		 * practical shared_buffers with UNDO is ~16MB to accommodate all
+		 * subsystems including AIO, UNDO logs, and worker queues. */
 	};
 
 	const int	connslen = sizeof(trial_conns) / sizeof(int);

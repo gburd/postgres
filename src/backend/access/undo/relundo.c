@@ -134,18 +134,10 @@ RelUndoReserve(Relation rel, Size record_size, Buffer *undo_buffer)
 
 reserve:
 	/* Reserve space by advancing pd_lower */
-	elog(DEBUG1, "RelUndoReserve: at reserve label, block=%u", blkno);
-
 	datahdr = (RelUndoPageHeader) PageGetContents(datapage);
-
-	elog(DEBUG1, "RelUndoReserve: datahdr=%p, pd_lower=%u, pd_upper=%u, counter=%u",
-		 datahdr, datahdr->pd_lower, datahdr->pd_upper, datahdr->counter);
 
 	offset = datahdr->pd_lower;
 	datahdr->pd_lower += record_size;
-
-	elog(DEBUG1, "RelUndoReserve: reserved offset=%u, new pd_lower=%u",
-		 offset, datahdr->pd_lower);
 
 	/* Build the UNDO pointer */
 	ptr = MakeRelUndoRecPtr(datahdr->counter, blkno, offset);
@@ -377,18 +369,25 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 	char	   *contents;
 	Size		psize;
 
-	if (!RelUndoRecPtrIsValid(ptr))
-		return false;
-
 	blkno = RelUndoGetBlockNum(ptr);
 	offset = RelUndoGetOffset(ptr);
 
-	/* Check that the block exists in the UNDO fork */
-	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
+	if (!RelUndoRecPtrIsValid(ptr))
 		return false;
 
-	if (blkno >= RelationGetNumberOfBlocksInFork(rel, RELUNDO_FORKNUM))
+	/* Check that the UNDO fork exists */
+	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
+	{
+		elog(DEBUG1, "RelUndoReadRecord: UNDO fork does not exist for relation %u", RelationGetRelid(rel));
 		return false;
+	}
+
+	/*
+	 * NOTE: We don't validate blkno < RelationGetNumberOfBlocksInFork() here
+	 * because that function can return stale cached data. ExtendBufferedRel
+	 * updates the fork size but doesn't immediately invalidate all caches.
+	 * Instead, we rely on ReadBufferExtended to fail if the block doesn't exist.
+	 */
 
 	buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, blkno, RBM_NORMAL, NULL);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -396,12 +395,30 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 	page = BufferGetPage(buf);
 	contents = PageGetContents(page);
 
-	/* Validate that offset is within the written portion of the page */
+	/* Validate page counter and offset */
 	{
 		RelUndoPageHeader hdr = (RelUndoPageHeader) contents;
+		uint16		requested_counter = RelUndoGetCounter(ptr);
 
+		/*
+		 * Verify that the page's counter matches the pointer's counter.
+		 * If they differ, the page has been discarded and reused with a new
+		 * generation counter, meaning the old UNDO record is gone. This
+		 * protects against stale pointers after page reuse.
+		 */
+		if (hdr->counter != requested_counter)
+		{
+			elog(DEBUG1, "RelUndoReadRecord: counter mismatch - page counter=%u, requested counter=%u (page reused)",
+				 hdr->counter, requested_counter);
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+
+		/* Validate that offset is within the written portion of the page */
 		if (offset < SizeOfRelUndoPageHeaderData || offset >= hdr->pd_lower)
 		{
+			elog(DEBUG1, "RelUndoReadRecord: offset validation failed - offset=%u, pd_lower=%u, pd_upper=%u, counter=%u",
+				 offset, hdr->pd_lower, hdr->pd_upper, hdr->counter);
 			UnlockReleaseBuffer(buf);
 			return false;
 		}
@@ -413,6 +430,7 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 	/* A zero urec_type means the slot was cancelled (hole) */
 	if (header->urec_type == 0)
 	{
+		elog(DEBUG1, "RelUndoReadRecord: urec_type is 0 (cancelled/hole) at blk=%u offset=%u", blkno, offset);
 		UnlockReleaseBuffer(buf);
 		return false;
 	}

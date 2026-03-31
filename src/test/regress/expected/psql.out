@@ -5170,8 +5170,9 @@ List of access methods
  hash   | Index
  heap   | Table
  heap2  | Table
+ noxu   | Table
  spgist | Index
-(8 rows)
+(9 rows)
 
 \dA *
 List of access methods
@@ -5184,8 +5185,9 @@ List of access methods
  hash   | Index
  heap   | Table
  heap2  | Table
+ noxu   | Table
  spgist | Index
-(8 rows)
+(9 rows)
 
 \dA h*
 List of access methods
@@ -5220,8 +5222,9 @@ List of access methods
  hash   | Index | hashhandler          | hash index access method
  heap   | Table | heap_tableam_handler | heap table access method
  heap2  | Table | heap_tableam_handler | 
+ noxu   | Table | noxu_tableam_handler | noxu table access method
  spgist | Index | spghandler           | SP-GiST index access method
-(8 rows)
+(9 rows)
 
 \dA+ *
                              List of access methods
@@ -5234,8 +5237,9 @@ List of access methods
  hash   | Index | hashhandler          | hash index access method
  heap   | Table | heap_tableam_handler | heap table access method
  heap2  | Table | heap_tableam_handler | 
+ noxu   | Table | noxu_tableam_handler | noxu table access method
  spgist | Index | spghandler           | SP-GiST index access method
-(8 rows)
+(9 rows)
 
 \dA+ h*
                      List of access methods

@@ -492,9 +492,6 @@ RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr)
 {
 	PerRelUndoEntry *entry;
 
-	elog(LOG, "RegisterPerRelUndo: called for relid=%u, start_urec_ptr=%lu",
-		 relid, (unsigned long) start_urec_ptr);
-
 	/* Initialize XactUndo if this is the first time it's being used */
 	if (XactUndo.subxact == NULL)
 	{

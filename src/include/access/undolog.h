@@ -98,7 +98,7 @@ extern int	undo_buffer_size;
  */
 
 /* Shared memory initialization */
-extern Size UndoLogShmemSize(void);
+extern void UndoLogShmemRequest(void);
 extern void UndoLogShmemInit(void);
 
 /* UNDO log operations */

@@ -1,0 +1,14 @@
+reset; rm -rf ./build ./install; pg-setup; pg-build; find ./build -name core.\* -delete; pg-test
+claude --resume
+reset; rm -rf ./build ./install; pg-setup; pg-build; find ./build -name core.\* -delete; pg-test
+find build -name core.\*
+reset; pg-test
+git st
+git commit -m "whitespace (mostly) in tests" src
+find build -name 001_replan_regress.out
+find build -name 001_replan_regress\*
+vi build/testrun/test_plan_advice/001_replan_regress/log/001_replan_regress_main.log
+git push 
+git push -f
+tig
+git lol

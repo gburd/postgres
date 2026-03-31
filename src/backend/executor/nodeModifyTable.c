@@ -2881,7 +2881,6 @@ redo_act:
 											  updateCxt.lockmode, LockWaitBlock,
 											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
 											  &context->tmfd);
-
 					switch (result)
 					{
 						case TM_Ok:

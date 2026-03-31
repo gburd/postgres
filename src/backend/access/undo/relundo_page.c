@@ -116,6 +116,19 @@ relundo_allocate_page(Relation rel, Buffer metabuf, Buffer *newbuf)
 		/* Re-initialize the page for use as a data page */
 		relundo_init_page(freepage, old_head, meta->counter);
 
+		/*
+		 * Increment the generation counter so the next page gets a different
+		 * counter value. This is critical: UNDO pointers embed the counter to
+		 * distinguish different generations of the same physical page. Without
+		 * incrementing, reused pages would have the same counter as their
+		 * previous incarnation, breaking UNDO chain traversal.
+		 *
+		 * Counter 0 is reserved for InvalidRelUndoRecPtr, so wrap to 1.
+		 */
+		meta->counter++;
+		if (meta->counter == 0)
+			meta->counter = 1;
+
 		MarkBufferDirty(freebuf);
 		buf = freebuf;
 	}
@@ -128,6 +141,19 @@ relundo_allocate_page(Relation rel, Buffer metabuf, Buffer *newbuf)
 
 		page = BufferGetPage(buf);
 		relundo_init_page(page, old_head, meta->counter);
+
+		/*
+		 * Increment the generation counter so the next page gets a different
+		 * counter value. This is critical: UNDO pointers embed the counter to
+		 * distinguish different generations of the same physical page. Without
+		 * incrementing, reused pages would have the same counter as their
+		 * previous incarnation, breaking UNDO chain traversal.
+		 *
+		 * Counter 0 is reserved for InvalidRelUndoRecPtr, so wrap to 1.
+		 */
+		meta->counter++;
+		if (meta->counter == 0)
+			meta->counter = 1;
 
 		MarkBufferDirty(buf);
 	}

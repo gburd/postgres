@@ -55,10 +55,16 @@ static void perform_undo_discard(void);
 /*
  * UndoWorkerShmemSize - Calculate shared memory needed
  */
-Size
-UndoWorkerShmemSize(void)
+/*
+ * UndoWorkerShmemRequest - Request shared memory
+ */
+void
+UndoWorkerShmemRequest(void)
 {
-	return sizeof(UndoWorkerShmemData);
+	ShmemRequestStruct(.name = "UNDO Worker Data",
+					   .size = sizeof(UndoWorkerShmemData),
+					   .ptr = (void **) &UndoWorkerShmem,
+		);
 }
 
 /*
@@ -67,24 +73,14 @@ UndoWorkerShmemSize(void)
 void
 UndoWorkerShmemInit(void)
 {
-	bool		found;
+	LWLockInitialize(&UndoWorkerShmem->lock,
+					 LWTRANCHE_UNDO_LOG);
 
-	UndoWorkerShmem = (UndoWorkerShmemData *)
-		ShmemInitStruct("UNDO Worker Data",
-						UndoWorkerShmemSize(),
-						&found);
-
-	if (!found)
-	{
-		LWLockInitialize(&UndoWorkerShmem->lock,
-						 LWTRANCHE_UNDO_LOG);
-
-		pg_atomic_init_u64(&UndoWorkerShmem->last_discard_time, 0);
-		UndoWorkerShmem->oldest_xid_checked = InvalidTransactionId;
-		UndoWorkerShmem->last_discard_ptr = InvalidUndoRecPtr;
-		UndoWorkerShmem->naptime_ms = undo_worker_naptime;
-		UndoWorkerShmem->shutdown_requested = false;
-	}
+	pg_atomic_init_u64(&UndoWorkerShmem->last_discard_time, 0);
+	UndoWorkerShmem->oldest_xid_checked = InvalidTransactionId;
+	UndoWorkerShmem->last_discard_ptr = InvalidUndoRecPtr;
+	UndoWorkerShmem->naptime_ms = undo_worker_naptime;
+	UndoWorkerShmem->shutdown_requested = false;
 }
 
 /*

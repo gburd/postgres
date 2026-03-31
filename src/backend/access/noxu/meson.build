@@ -1,0 +1,28 @@
+# Copyright (c) 2022-2026, PostgreSQL Global Development Group
+
+backend_sources += files(
+  'noxu_array.c',
+  'noxu_attitem.c',
+  'noxu_attpage.c',
+  'noxu_btree.c',
+  'noxu_compression.c',
+  'noxu_dict.c',
+  'noxu_fsst.c',
+  'noxu_freepagemap.c',
+  'noxu_inspect.c',
+  'noxu_meta.c',
+  'noxu_overflow.c',
+  'noxu_planner.c',
+  'noxu_rollback.c',
+  'noxu_shared_dict.c',
+  'noxu_simple8b.c',
+  'noxu_uuid.c',
+  'noxu_tiditem.c',
+  'noxu_tidpage.c',
+  'noxu_tupslot.c',
+  'noxu_undostubs.c',
+  'noxu_visibility.c',
+  'noxu_wal.c',
+  'noxu_handler.c',
+  'noxu_stats.c',
+)

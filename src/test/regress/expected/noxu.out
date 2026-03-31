@@ -1,0 +1,1087 @@
+-- simple tests to iteratively build the noxu
+-- create and drop works
+create table t_noxu(c1 int, c2 int, c3 int) USING noxu;
+drop table t_noxu;
+-- insert and select works
+create table t_noxu(c1 int, c2 int, c3 int) USING noxu;
+insert into t_noxu select i,i+1,i+2 from generate_series(1, 10)i;
+select * from t_noxu;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  4 |  5 |  6
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+(10 rows)
+
+-- selecting only few columns work
+select c1, c3 from t_noxu;
+ c1 | c3 
+----+----
+  1 |  3
+  2 |  4
+  3 |  5
+  4 |  6
+  5 |  7
+  6 |  8
+  7 |  9
+  8 | 10
+  9 | 11
+ 10 | 12
+(10 rows)
+
+-- only few columns in output and where clause work
+select c3 from t_noxu where c2 > 5;
+ c3 
+----
+  7
+  8
+  9
+ 10
+ 11
+ 12
+(6 rows)
+
+-- Test abort works
+begin;
+insert into t_noxu select i,i+1,i+2 from generate_series(21, 25)i;
+abort;
+insert into t_noxu select i,i+1,i+2 from generate_series(31, 35)i;
+select * from t_noxu;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  4 |  5 |  6
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(15 rows)
+
+--
+-- Test indexing
+--
+create index on t_noxu (c1);
+set enable_seqscan=off;
+set enable_indexscan=on;
+set enable_bitmapscan=off;
+-- index scan
+select * from t_noxu where c1 = 5;
+ c1 | c2 | c3 
+----+----+----
+  5 |  6 |  7
+(1 row)
+
+-- index-only scan
+select c1 from t_noxu where c1 = 5;
+ c1 
+----
+  5
+(1 row)
+
+-- bitmap scan
+set enable_indexscan=off;
+set enable_bitmapscan=on;
+select c1, c2 from t_noxu where c1 between 5 and 10;
+ c1 | c2 
+----+----
+  5 |  6
+  6 |  7
+  7 |  8
+  8 |  9
+  9 | 10
+ 10 | 11
+(6 rows)
+
+--
+-- Test DELETE and UPDATE
+--
+delete from t_noxu where c2 = 5;
+select * from t_noxu;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(14 rows)
+
+delete from t_noxu where c2 < 5;
+select * from t_noxu;
+ c1 | c2 | c3 
+----+----+----
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(11 rows)
+
+update t_noxu set c2 = 100 where c1 = 8;
+select * from t_noxu;
+ c1 | c2  | c3 
+----+-----+----
+  5 |   6 |  7
+  6 |   7 |  8
+  7 |   8 |  9
+  9 |  10 | 11
+ 10 |  11 | 12
+ 31 |  32 | 33
+ 32 |  33 | 34
+ 33 |  34 | 35
+ 34 |  35 | 36
+ 35 |  36 | 37
+  8 | 100 | 10
+(11 rows)
+
+--
+-- Test page deletion, by deleting a bigger range of values
+--
+insert into t_noxu select i,i+1,i+2 from generate_series(10000, 15000)i;
+delete from t_noxu where c1 >= 10000;
+--
+-- Test VACUUM
+--
+vacuum t_noxu;
+select * from t_noxu;
+ c1 | c2  | c3 
+----+-----+----
+  5 |   6 |  7
+  6 |   7 |  8
+  7 |   8 |  9
+  9 |  10 | 11
+ 10 |  11 | 12
+ 31 |  32 | 33
+ 32 |  33 | 34
+ 33 |  34 | 35
+ 34 |  35 | 36
+ 35 |  36 | 37
+  8 | 100 | 10
+(11 rows)
+
+--
+-- Test DELETE with index
+--
+CREATE TABLE t_del_test(a int, b text) USING noxu;
+CREATE INDEX ON t_del_test(a);
+INSERT INTO t_del_test SELECT i, 'data' || i FROM generate_series(1, 100) i;
+SELECT COUNT(*) FROM t_del_test;
+ count 
+-------
+   100
+(1 row)
+
+DELETE FROM t_del_test WHERE a % 3 = 0;
+SELECT COUNT(*) FROM t_del_test;
+ count 
+-------
+    67
+(1 row)
+
+DROP TABLE t_del_test;
+--
+-- Test overflow
+--
+create table t_noxu_overflow(c1 int, t text) USING noxu;
+insert into t_noxu_overflow select i, repeat('x', 10000) from generate_series(1, 10) i;
+select c1, length(t) from t_noxu_overflow;
+ c1 | length 
+----+--------
+  1 |  10000
+  2 |  10000
+  3 |  10000
+  4 |  10000
+  5 |  10000
+  6 |  10000
+  7 |  10000
+  8 |  10000
+  9 |  10000
+ 10 |  10000
+(10 rows)
+
+--
+-- Test NULL values
+--
+create table t_noxu_nullvalues(c1 int, c2 int) USING noxu;
+insert into t_noxu_nullvalues values(1, NULL), (NULL, 2);
+select * from t_noxu_nullvalues;
+ c1 | c2 
+----+----
+  1 |   
+    |  2
+(2 rows)
+
+select c2 from t_noxu_nullvalues;
+ c2 
+----
+   
+  2
+(2 rows)
+
+update t_noxu_nullvalues set c1 = 1, c2 = NULL;
+select * from t_noxu_nullvalues;
+ c1 | c2 
+----+----
+  1 |   
+  1 |   
+(2 rows)
+
+--
+-- Test COPY
+--
+create table t_noxu_copy(a serial, b int, c text not null default 'stuff', d text,e text) USING noxu;
+COPY t_noxu_copy (a, b, c, d, e) from stdin;
+COPY t_noxu_copy (b, d) from stdin;
+COPY t_noxu_copy (b, d) from stdin;
+COPY t_noxu_copy (a, b, c, d, e) from stdin;
+select * from t_noxu_copy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     1 |  1 | stuff | test_1 | 
+     2 |  2 | stuff | test_2 | 
+     3 |  3 | stuff | test_3 | 
+     4 |  4 | stuff | test_4 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(12 rows)
+
+COPY t_noxu_copy (a, d, e) to stdout;
+9999	NN	\N
+10000	41	51
+1	test_1	\N
+2	test_2	\N
+3	test_3	\N
+4	test_4	\N
+5	test_5	\N
+10001	42	52
+10002	43	53
+10003	44	54
+10004	45	55
+10005	46	56
+--
+-- Also test delete and update on the table that was populated with COPY.
+-- This exercises splitting the array item. (A table not populated with
+-- COPY only contains single items, at the moment.)
+--
+delete from t_noxu_copy where b = 4;
+select * from t_noxu_copy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     1 |  1 | stuff | test_1 | 
+     2 |  2 | stuff | test_2 | 
+     3 |  3 | stuff | test_3 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(11 rows)
+
+delete from t_noxu_copy where b < 3;
+select * from t_noxu_copy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     3 |  3 | stuff | test_3 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(9 rows)
+
+update t_noxu_copy set b = 100 where b = 5;
+select * from t_noxu_copy;
+   a   |  b  |   c   |   d    | e  
+-------+-----+-------+--------+----
+  9999 |     | \N    | NN     | 
+ 10000 |  21 | 31    | 41     | 51
+     3 |   3 | stuff | test_3 | 
+ 10001 |  22 | 32    | 42     | 52
+ 10002 |  23 | 33    | 43     | 53
+ 10003 |  24 | 34    | 44     | 54
+ 10004 |  25 | 35    | 45     | 55
+ 10005 |  26 | 36    | 46     | 56
+     5 | 100 | stuff | test_5 | 
+(9 rows)
+
+-- Test rolling back COPY
+begin;
+COPY t_noxu_copy (b, d) from stdin;
+rollback;
+select count(*) from t_noxu_copy where b >= 20000;
+ count 
+-------
+     0
+(1 row)
+
+--
+-- Test zero column table
+--
+create table t_noxu_withzerocols() using noxu;
+insert into t_noxu_withzerocols select t.* from t_noxu_withzerocols t right join generate_series(1,1) on true;
+select count(*) from t_noxu_withzerocols;
+ count 
+-------
+     1
+(1 row)
+
+-- Test for alter table add column
+create table t_noxu_addcol(a int) using noxu;
+insert into t_noxu_addcol select * from generate_series(1, 3);
+-- rewrite case
+alter table t_noxu_addcol add column b int generated always as (a + 1) stored;
+select * from t_noxu_addcol;
+ a | b 
+---+---
+ 1 | 2
+ 2 | 3
+ 3 | 4
+(3 rows)
+
+-- test alter table add column with no default
+create table t_noxu_addcol_simple(a int) using noxu;
+insert into t_noxu_addcol_simple values (1);
+alter table t_noxu_addcol_simple add b int;
+select * from t_noxu_addcol_simple;
+ a | b 
+---+---
+ 1 |  
+(1 row)
+
+insert into t_noxu_addcol_simple values(2,3);
+select * from t_noxu_addcol_simple;
+ a | b 
+---+---
+ 1 |  
+ 2 | 3
+(2 rows)
+
+-- fixed length default value stored in catalog
+alter table t_noxu_addcol add column c int default 3;
+select * from t_noxu_addcol;
+ a | b | c 
+---+---+---
+ 1 | 2 | 3
+ 2 | 3 | 3
+ 3 | 4 | 3
+(3 rows)
+
+-- variable length default value stored in catalog
+alter table t_noxu_addcol add column d text default 'abcdefgh';
+select d from t_noxu_addcol;
+    d     
+----------
+ abcdefgh
+ abcdefgh
+ abcdefgh
+(3 rows)
+
+-- insert after add column
+insert into t_noxu_addcol values (2);
+select * from t_noxu_addcol;
+ a | b | c |    d     
+---+---+---+----------
+ 1 | 2 | 3 | abcdefgh
+ 2 | 3 | 3 | abcdefgh
+ 3 | 4 | 3 | abcdefgh
+ 2 | 3 | 3 | abcdefgh
+(4 rows)
+
+insert into t_noxu_addcol (a, c, d) values (3,5, 'test_insert');
+select b,c,d from t_noxu_addcol;
+ b | c |      d      
+---+---+-------------
+ 2 | 3 | abcdefgh
+ 3 | 3 | abcdefgh
+ 4 | 3 | abcdefgh
+ 3 | 3 | abcdefgh
+ 4 | 5 | test_insert
+(5 rows)
+
+--
+-- Test TABLESAMPLE
+--
+-- regular test tablesample.sql doesn't directly work for noxu as
+-- its using fillfactor to create specific block layout for
+-- heap. Hence, output differs between heap and noxu table while
+-- sampling. We need to use many tuples here to have multiple logical
+-- blocks as don't have way to force TIDs spread / jump for noxu.
+--
+CREATE TABLE t_noxu_tablesample (id int, name text) using noxu;
+INSERT INTO t_noxu_tablesample
+       SELECT i, repeat(i::text, 2) FROM generate_series(0, 299) s(i);
+-- lets delete half (even numbered ids) rows to limit the output
+DELETE FROM t_noxu_tablesample WHERE id%2 = 0;
+-- should return ALL visible tuples from SOME blocks
+SELECT ctid,t.id FROM t_noxu_tablesample AS t TABLESAMPLE SYSTEM (50) REPEATABLE (0);
+  ctid   | id  
+---------+-----
+ (1,2)   | 129
+ (1,4)   | 131
+ (1,6)   | 133
+ (1,8)   | 135
+ (1,10)  | 137
+ (1,12)  | 139
+ (1,14)  | 141
+ (1,16)  | 143
+ (1,18)  | 145
+ (1,20)  | 147
+ (1,22)  | 149
+ (1,24)  | 151
+ (1,26)  | 153
+ (1,28)  | 155
+ (1,30)  | 157
+ (1,32)  | 159
+ (1,34)  | 161
+ (1,36)  | 163
+ (1,38)  | 165
+ (1,40)  | 167
+ (1,42)  | 169
+ (1,44)  | 171
+ (1,46)  | 173
+ (1,48)  | 175
+ (1,50)  | 177
+ (1,52)  | 179
+ (1,54)  | 181
+ (1,56)  | 183
+ (1,58)  | 185
+ (1,60)  | 187
+ (1,62)  | 189
+ (1,64)  | 191
+ (1,66)  | 193
+ (1,68)  | 195
+ (1,70)  | 197
+ (1,72)  | 199
+ (1,74)  | 201
+ (1,76)  | 203
+ (1,78)  | 205
+ (1,80)  | 207
+ (1,82)  | 209
+ (1,84)  | 211
+ (1,86)  | 213
+ (1,88)  | 215
+ (1,90)  | 217
+ (1,92)  | 219
+ (1,94)  | 221
+ (1,96)  | 223
+ (1,98)  | 225
+ (1,100) | 227
+ (1,102) | 229
+ (1,104) | 231
+ (1,106) | 233
+ (1,108) | 235
+ (1,110) | 237
+ (1,112) | 239
+ (1,114) | 241
+ (1,116) | 243
+ (1,118) | 245
+ (1,120) | 247
+ (1,122) | 249
+ (1,124) | 251
+ (1,126) | 253
+ (1,128) | 255
+ (2,2)   | 257
+ (2,4)   | 259
+ (2,6)   | 261
+ (2,8)   | 263
+ (2,10)  | 265
+ (2,12)  | 267
+ (2,14)  | 269
+ (2,16)  | 271
+ (2,18)  | 273
+ (2,20)  | 275
+ (2,22)  | 277
+ (2,24)  | 279
+ (2,26)  | 281
+ (2,28)  | 283
+ (2,30)  | 285
+ (2,32)  | 287
+ (2,34)  | 289
+ (2,36)  | 291
+ (2,38)  | 293
+ (2,40)  | 295
+ (2,42)  | 297
+ (2,44)  | 299
+(86 rows)
+
+-- should return SOME visible tuples but from ALL the blocks
+SELECT ctid,id FROM t_noxu_tablesample TABLESAMPLE BERNOULLI (50) REPEATABLE (0);
+  ctid   | id  
+---------+-----
+ (0,4)   |   3
+ (0,6)   |   5
+ (0,8)   |   7
+ (0,20)  |  19
+ (0,30)  |  29
+ (0,42)  |  41
+ (0,44)  |  43
+ (0,48)  |  47
+ (0,52)  |  51
+ (0,54)  |  53
+ (0,56)  |  55
+ (0,62)  |  61
+ (0,64)  |  63
+ (0,66)  |  65
+ (0,76)  |  75
+ (0,80)  |  79
+ (0,82)  |  81
+ (0,84)  |  83
+ (0,88)  |  87
+ (0,90)  |  89
+ (0,92)  |  91
+ (0,98)  |  97
+ (0,106) | 105
+ (0,108) | 107
+ (0,122) | 121
+ (0,126) | 125
+ (1,2)   | 129
+ (1,4)   | 131
+ (1,6)   | 133
+ (1,8)   | 135
+ (1,10)  | 137
+ (1,12)  | 139
+ (1,20)  | 147
+ (1,24)  | 151
+ (1,26)  | 153
+ (1,28)  | 155
+ (1,30)  | 157
+ (1,32)  | 159
+ (1,34)  | 161
+ (1,40)  | 167
+ (1,44)  | 171
+ (1,46)  | 173
+ (1,58)  | 185
+ (1,66)  | 193
+ (1,68)  | 195
+ (1,70)  | 197
+ (1,78)  | 205
+ (1,80)  | 207
+ (1,88)  | 215
+ (1,92)  | 219
+ (1,96)  | 223
+ (1,100) | 227
+ (1,102) | 229
+ (1,106) | 233
+ (1,112) | 239
+ (1,116) | 243
+ (1,120) | 247
+ (1,122) | 249
+ (1,126) | 253
+ (2,2)   | 257
+ (2,6)   | 261
+ (2,8)   | 263
+ (2,10)  | 265
+ (2,12)  | 267
+ (2,16)  | 271
+ (2,18)  | 273
+ (2,24)  | 279
+ (2,26)  | 281
+ (2,28)  | 283
+ (2,30)  | 285
+ (2,34)  | 289
+ (2,36)  | 291
+ (2,42)  | 297
+ (2,44)  | 299
+(74 rows)
+
+--
+-- Test column-delta UPDATE optimization
+--
+-- When fewer than half the columns change, Noxu uses a delta path that
+-- skips unchanged column B-tree inserts and fetches them from the
+-- predecessor TID instead.
+--
+-- Wide table: single column update should use delta path (1/6 < 50%)
+create table t_noxu_delta(a int, b int, c text, d numeric, e int, f text)
+  USING noxu;
+insert into t_noxu_delta values
+  (1, 10, 'hello', 1.5, 100, 'world'),
+  (2, 20, 'foo',   2.5, 200, 'bar'),
+  (3, 30, 'baz',   3.5, 300, 'qux');
+-- Update single column
+update t_noxu_delta set b = 99 where a = 2;
+select * from t_noxu_delta order by a;
+ a | b  |   c   |  d  |  e  |   f   
+---+----+-------+-----+-----+-------
+ 1 | 10 | hello | 1.5 | 100 | world
+ 2 | 99 | foo   | 2.5 | 200 | bar
+ 3 | 30 | baz   | 3.5 | 300 | qux
+(3 rows)
+
+-- Update two columns (2/6 < 50%, still delta)
+update t_noxu_delta set c = 'changed', e = 999 where a = 1;
+select * from t_noxu_delta order by a;
+ a | b  |    c    |  d  |  e  |   f   
+---+----+---------+-----+-----+-------
+ 1 | 10 | changed | 1.5 | 999 | world
+ 2 | 99 | foo     | 2.5 | 200 | bar
+ 3 | 30 | baz     | 3.5 | 300 | qux
+(3 rows)
+
+-- Update four columns (4/6 > 50%, should use full path)
+update t_noxu_delta set b = 0, c = 'full', d = 0.0, f = 'replaced' where a = 3;
+select * from t_noxu_delta order by a;
+ a | b  |    c    |  d  |  e  |    f     
+---+----+---------+-----+-----+----------
+ 1 | 10 | changed | 1.5 | 999 | world
+ 2 | 99 | foo     | 2.5 | 200 | bar
+ 3 |  0 | full    | 0.0 | 300 | replaced
+(3 rows)
+
+-- Chained delta: update same row twice (predecessor chain depth 2)
+update t_noxu_delta set b = 88 where a = 2;
+select * from t_noxu_delta order by a;
+ a | b  |    c    |  d  |  e  |    f     
+---+----+---------+-----+-----+----------
+ 1 | 10 | changed | 1.5 | 999 | world
+ 2 | 88 | foo     | 2.5 | 200 | bar
+ 3 |  0 | full    | 0.0 | 300 | replaced
+(3 rows)
+
+-- VACUUM should materialize carried-forward columns
+vacuum t_noxu_delta;
+select * from t_noxu_delta order by a;
+ a | b  |    c    |  d  |  e  |    f     
+---+----+---------+-----+-----+----------
+ 1 | 10 | changed | 1.5 | 999 | world
+ 2 | 88 | foo     | 2.5 | 200 | bar
+ 3 |  0 | full    | 0.0 | 300 | replaced
+(3 rows)
+
+-- Two-column table: any single-column update changes 50%,
+-- which is NOT < threshold, so full path should be used
+create table t_noxu_delta_two(a int, b int) USING noxu;
+insert into t_noxu_delta_two values (1, 10), (2, 20);
+update t_noxu_delta_two set b = 99 where a = 1;
+select * from t_noxu_delta_two order by a;
+ a | b  
+---+----
+ 1 | 99
+ 2 | 20
+(2 rows)
+
+vacuum t_noxu_delta_two;
+select * from t_noxu_delta_two order by a;
+ a | b  
+---+----
+ 1 | 99
+ 2 | 20
+(2 rows)
+
+-- Test delta UPDATE with NULL values
+create table t_noxu_delta_null(a int, b int, c text, d int) USING noxu;
+insert into t_noxu_delta_null values (1, 10, 'test', 100);
+-- Change one column to NULL (delta path: 1/4 < 50%)
+update t_noxu_delta_null set b = NULL where a = 1;
+select * from t_noxu_delta_null;
+ a | b |  c   |  d  
+---+---+------+-----
+ 1 |   | test | 100
+(1 row)
+
+-- Change NULL back to value
+update t_noxu_delta_null set b = 20 where a = 1;
+select * from t_noxu_delta_null;
+ a | b  |  c   |  d  
+---+----+------+-----
+ 1 | 20 | test | 100
+(1 row)
+
+vacuum t_noxu_delta_null;
+select * from t_noxu_delta_null;
+ a | b  |  c   |  d  
+---+----+------+-----
+ 1 | 20 | test | 100
+(1 row)
+
+-- Clean up
+drop table t_noxu_delta;
+drop table t_noxu_delta_two;
+drop table t_noxu_delta_null;
+--
+-- Test ANALYZE column statistics collection
+--
+-- Create a wide table to test columnar statistics
+CREATE TABLE t_noxu_analyze(
+    col1  int,
+    col2  int,
+    col3  text,
+    col4  numeric,
+    col5  timestamp,
+    col6  int,
+    col7  text,
+    col8  int,
+    col9  text,
+    col10 int
+) USING noxu;
+-- Insert data with varying compression characteristics
+INSERT INTO t_noxu_analyze
+SELECT
+    i,
+    i % 1000,
+    repeat('test_data_' || (i % 10)::text, 5),  -- repetitive, compresses well
+    i * 1.5,
+    now() - (i || ' seconds')::interval,
+    i % 100,
+    repeat('x', 50),
+    i % 50,
+    repeat('y', 75),
+    i
+FROM generate_series(1, 1000) i;
+-- Run ANALYZE to collect columnar statistics
+ANALYZE t_noxu_analyze;
+-- Verify that Noxu-specific statistics were collected and stored
+-- Check for custom stakind (10001 = STATISTIC_KIND_NOXU_COMPRESSION)
+SELECT attname,
+       stakind1, stakind2, stakind3, stakind4, stakind5,
+       (stakind1 = 10001 OR stakind2 = 10001 OR stakind3 = 10001 OR
+	stakind4 = 10001 OR stakind5 = 10001) AS has_noxu_stats
+FROM pg_statistic s
+JOIN pg_attribute a ON s.starelid = a.attrelid AND s.staattnum = a.attnum
+WHERE s.starelid = 't_noxu_analyze'::regclass
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+ORDER BY a.attnum;
+ attname | stakind1 | stakind2 | stakind3 | stakind4 | stakind5 | has_noxu_stats 
+---------+----------+----------+----------+----------+----------+----------------
+ col1    |        2 |        3 |    10001 |        0 |        0 | t
+ col2    |        2 |        3 |    10001 |        0 |        0 | t
+ col3    |        1 |        3 |    10001 |        0 |        0 | t
+ col4    |        2 |        3 |    10001 |        0 |        0 | t
+ col5    |        2 |        3 |    10001 |        0 |        0 | t
+ col6    |        1 |        3 |    10001 |        0 |        0 | t
+ col7    |        1 |        3 |    10001 |        0 |        0 | t
+ col8    |        1 |        3 |    10001 |        0 |        0 | t
+ col9    |        1 |        3 |    10001 |        0 |        0 | t
+ col10   |        2 |        3 |    10001 |        0 |        0 | t
+(10 rows)
+
+-- Verify compression statistics are reasonable
+-- Extract compression ratios from stanumbers arrays where stakind = 10001
+WITH noxu_stats AS (
+  SELECT
+    a.attname,
+    CASE
+      WHEN s.stakind1 = 10001 THEN s.stanumbers1[1]
+      WHEN s.stakind2 = 10001 THEN s.stanumbers2[1]
+      WHEN s.stakind3 = 10001 THEN s.stanumbers3[1]
+      WHEN s.stakind4 = 10001 THEN s.stanumbers4[1]
+      WHEN s.stakind5 = 10001 THEN s.stanumbers5[1]
+    END AS compression_ratio
+  FROM pg_statistic s
+  JOIN pg_attribute a ON s.starelid = a.attrelid AND s.staattnum = a.attnum
+  WHERE s.starelid = 't_noxu_analyze'::regclass
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+    AND (s.stakind1 = 10001 OR s.stakind2 = 10001 OR s.stakind3 = 10001 OR
+	 s.stakind4 = 10001 OR s.stakind5 = 10001)
+)
+SELECT
+  attname,
+  compression_ratio,
+  CASE
+    WHEN compression_ratio >= 1.0 AND compression_ratio <= 10.0 THEN 'reasonable'
+    ELSE 'unexpected'
+  END AS sanity_check
+FROM noxu_stats
+ORDER BY attname;
+ attname | compression_ratio | sanity_check 
+---------+-------------------+--------------
+ col1    |                 2 | reasonable
+ col10   |                 2 | reasonable
+ col2    |                 2 | reasonable
+ col3    |               2.5 | reasonable
+ col4    |               2.5 | reasonable
+ col5    |                 2 | reasonable
+ col6    |                 2 | reasonable
+ col7    |               2.5 | reasonable
+ col8    |                 2 | reasonable
+ col9    |               2.5 | reasonable
+(10 rows)
+
+--
+-- Test planner cost estimation with column projection
+--
+-- Create equivalent heap table for cost comparison
+CREATE TABLE t_noxu_analyze_heap(
+    col1  int,
+    col2  int,
+    col3  text,
+    col4  numeric,
+    col5  timestamp,
+    col6  int,
+    col7  text,
+    col8  int,
+    col9  text,
+    col10 int
+) USING heap;
+INSERT INTO t_noxu_analyze_heap SELECT * FROM t_noxu_analyze;
+ANALYZE t_noxu_analyze_heap;
+-- Test 1: Narrow projection (2 of 10 columns)
+-- Noxu should show lower cost than heap due to column projection
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT col1, col3 FROM t_noxu_analyze WHERE col1 < 500;
+         QUERY PLAN         
+----------------------------
+ Seq Scan on t_noxu_analyze
+   Disabled: true
+   Filter: (col1 < 500)
+(3 rows)
+
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT col1, col3 FROM t_noxu_analyze_heap WHERE col1 < 500;
+           QUERY PLAN            
+---------------------------------
+ Seq Scan on t_noxu_analyze_heap
+   Disabled: true
+   Filter: (col1 < 500)
+(3 rows)
+
+-- Test 2: Wide projection (all 10 columns)
+-- Costs should be similar between noxu and heap
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT * FROM t_noxu_analyze WHERE col1 < 500;
+         QUERY PLAN         
+----------------------------
+ Seq Scan on t_noxu_analyze
+   Disabled: true
+   Filter: (col1 < 500)
+(3 rows)
+
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT * FROM t_noxu_analyze_heap WHERE col1 < 500;
+           QUERY PLAN            
+---------------------------------
+ Seq Scan on t_noxu_analyze_heap
+   Disabled: true
+   Filter: (col1 < 500)
+(3 rows)
+
+-- Test 3: Single column aggregation (highly selective)
+-- Noxu should be significantly cheaper
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT AVG(col1) FROM t_noxu_analyze;
+            QUERY PLAN            
+----------------------------------
+ Aggregate
+   ->  Seq Scan on t_noxu_analyze
+         Disabled: true
+(3 rows)
+
+EXPLAIN (COSTS OFF, SUMMARY OFF)
+SELECT AVG(col1) FROM t_noxu_analyze_heap;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Seq Scan on t_noxu_analyze_heap
+         Disabled: true
+(3 rows)
+
+-- Cleanup
+DROP TABLE t_noxu_analyze CASCADE;
+DROP TABLE t_noxu_analyze_heap CASCADE;
+--
+-- Test opportunistic UNDO trimming (Phase 1)
+--
+-- This tests that UNDO trimming uses non-blocking locks and heuristics
+CREATE TABLE t_noxu_undo_trim(a int, b text) USING noxu;
+-- Generate UNDO log entries via aborted transaction
+BEGIN;
+INSERT INTO t_noxu_undo_trim SELECT i, 'row' || i FROM generate_series(1, 100) i;
+ROLLBACK;
+-- Insert committed data
+INSERT INTO t_noxu_undo_trim SELECT i, 'committed' || i FROM generate_series(1, 50) i;
+-- Multiple visibility checks should trigger opportunistic UNDO trim
+-- (uses fast path with shared locks and heuristic)
+SELECT COUNT(*) FROM t_noxu_undo_trim;
+ count 
+-------
+    50
+(1 row)
+
+SELECT COUNT(*) FROM t_noxu_undo_trim WHERE a > 25;
+ count 
+-------
+    25
+(1 row)
+
+SELECT COUNT(*) FROM t_noxu_undo_trim WHERE b LIKE 'committed%';
+ count 
+-------
+    50
+(1 row)
+
+-- Verify data is correct after UNDO trimming
+SELECT COUNT(*) FROM t_noxu_undo_trim;
+ count 
+-------
+    50
+(1 row)
+
+-- Explicit VACUUM should also work (uses blocking lock, always trims)
+VACUUM t_noxu_undo_trim;
+SELECT COUNT(*) FROM t_noxu_undo_trim;
+ count 
+-------
+    50
+(1 row)
+
+DROP TABLE t_noxu_undo_trim;
+--
+-- Test B-tree concurrency (cache invalidation and deadlock detection)
+--
+-- This test verifies that B-tree operations don't deadlock when the metacache
+-- is stale. The fix prevents self-deadlock by invalidating cache before descent
+-- and detecting attempts to lock buffers already held.
+CREATE TABLE t_noxu_btree_concurrency(a int, b text) USING noxu;
+CREATE INDEX ON t_noxu_btree_concurrency(a);
+-- Insert enough data to cause B-tree splits
+-- This exercises the code path where we hold a buffer and need to find parent
+INSERT INTO t_noxu_btree_concurrency SELECT i, 'data' || i FROM generate_series(1, 5000) i;
+-- Verify data integrity after splits
+SELECT COUNT(*) FROM t_noxu_btree_concurrency;
+ count 
+-------
+  5000
+(1 row)
+
+SELECT MIN(a), MAX(a) FROM t_noxu_btree_concurrency WHERE a > 2500;
+ min  | max  
+------+------
+ 2501 | 5000
+(1 row)
+
+-- Delete and reinsert to exercise tree modifications with stale cache
+DELETE FROM t_noxu_btree_concurrency WHERE a % 3 = 0;
+INSERT INTO t_noxu_btree_concurrency SELECT i, 'reinsert' || i FROM generate_series(5001, 6000) i;
+-- Verify correctness
+SELECT COUNT(*) FROM t_noxu_btree_concurrency;
+ count 
+-------
+  4334
+(1 row)
+
+SELECT COUNT(*) FROM t_noxu_btree_concurrency WHERE b LIKE 'reinsert%';
+ count 
+-------
+  1000
+(1 row)
+
+DROP TABLE t_noxu_btree_concurrency;
+--
+-- Test btree root splits with downlink page-fit validation.
+-- Insert enough rows to force multiple levels of internal page splits,
+-- exercising the nxbt_newroot() downlink overflow check.
+--
+CREATE TABLE t_noxu_btree_root_splits(id int, payload text) USING noxu;
+INSERT INTO t_noxu_btree_root_splits
+  SELECT i, repeat('x', 100) FROM generate_series(1, 50000) i;
+SELECT COUNT(*) FROM t_noxu_btree_root_splits;
+ count 
+-------
+ 50000
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM t_noxu_btree_root_splits;
+ min |  max  
+-----+-------
+   1 | 50000
+(1 row)
+
+DROP TABLE t_noxu_btree_root_splits;
+--
+-- Test opportunistic statistics collection
+--
+-- Verify that DML operations update tuple counts and that the planner
+-- can use them for better estimates between ANALYZE runs.
+-- Enable the feature and set a fast sampling rate for testing.
+SET noxu.enable_opportunistic_stats = on;
+SET noxu.stats_sample_rate = 1;
+SET noxu.stats_freshness_threshold = 3600;
+CREATE TABLE t_noxu_opstats(a int, b text, c int) USING noxu;
+-- Insert data.  This should increment the insert counter.
+INSERT INTO t_noxu_opstats SELECT i, 'row' || i, i * 2
+FROM generate_series(1, 1000) i;
+-- A sequential scan should populate scan-based tuple counts.
+SELECT COUNT(*) FROM t_noxu_opstats;
+ count 
+-------
+  1000
+(1 row)
+
+-- Delete some rows.  This should increment the delete counter.
+DELETE FROM t_noxu_opstats WHERE a <= 300;
+-- Another scan should see the reduced row count.
+SELECT COUNT(*) FROM t_noxu_opstats;
+ count 
+-------
+   700
+(1 row)
+
+-- Planner should use opportunistic stats for this EXPLAIN.
+-- We just check that it runs without error; exact costs are unstable.
+SET log_statement = 'none';  -- Disable statement logging to avoid test diff noise
+SET client_min_messages = 'debug2';
+EXPLAIN (COSTS OFF) SELECT a FROM t_noxu_opstats WHERE a > 100;
+DEBUG:  Noxu: using opportunistic stats for t_noxu_opstats: 1700 live, 0 dead (was 12096 from density)
+DEBUG:  Noxu: adjusted page estimate from 28 to 20 (32% reduction) due to column selectivity 0.60
+DEBUG:  Noxu relation t_noxu_opstats: 3/3 columns accessed (100.0% selectivity)
+         QUERY PLAN         
+----------------------------
+ Seq Scan on t_noxu_opstats
+   Disabled: true
+   Filter: (a > 100)
+(3 rows)
+
+RESET client_min_messages;
+RESET log_statement;
+-- Verify that disabling the GUC suppresses collection.
+SET noxu.enable_opportunistic_stats = off;
+INSERT INTO t_noxu_opstats SELECT i, 'extra' || i, i
+FROM generate_series(2000, 2100) i;
+SET noxu.enable_opportunistic_stats = on;
+-- Clean up
+DROP TABLE t_noxu_opstats;

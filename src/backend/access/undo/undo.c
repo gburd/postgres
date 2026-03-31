@@ -28,6 +28,7 @@
 #include "access/undoworker.h"
 #include "access/xactundo.h"
 #include "storage/ipc.h"
+#include "storage/shmem.h"
 #include "utils/memutils.h"
 
 /*
@@ -37,26 +38,29 @@
  */
 MemoryContext UndoContext = NULL;
 
+static void UndoShmemRequest(void *arg);
+static void UndoShmemInitWrapper(void *arg);
 static void AtProcExit_Undo(int code, Datum arg);
 
+const ShmemCallbacks UndoShmemCallbacks = {
+	.request_fn = UndoShmemRequest,
+	.init_fn = UndoShmemInitWrapper,
+};
+
 /*
- * UndoShmemSize
- *		Figure out how much shared memory will be needed for undo.
- *
- * Each subsystem separately computes the space it requires, and we
- * carefully add up those values here.
+ * UndoShmemRequest
+ *		Request shared memory for undo subsystem.
  */
-Size
-UndoShmemSize(void)
+static void
+UndoShmemRequest(void *arg)
 {
-	Size		size;
-
-	size = UndoLogShmemSize();
-	size = add_size(size, XactUndoShmemSize());
-	size = add_size(size, UndoWorkerShmemSize());
-	size = add_size(size, RelUndoWorkerShmemSize());
-
-	return size;
+	/*
+	 * Request shared memory for UNDO subsystem structures using the new
+	 * shmem allocation API. Each subsystem registers its structures here.
+	 */
+	UndoLogShmemRequest();
+	UndoWorkerShmemRequest();
+	RelUndoWorkerShmemRequest();
 }
 
 /*
@@ -84,6 +88,16 @@ UndoShmemInit(void)
 	XactUndoShmemInit();
 	UndoWorkerShmemInit();
 	RelUndoWorkerShmemInit();
+}
+
+/*
+ * UndoShmemInitWrapper
+ *		Wrapper for new subsystem callback API.
+ */
+static void
+UndoShmemInitWrapper(void *arg)
+{
+	UndoShmemInit();
 }
 
 /*

@@ -357,6 +357,7 @@ typedef struct StdRdOptions
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
 	bool		enable_undo;	/* enable UNDO logging for this relation */
+	int			split_pct;		/* B-tree internal page split percentage (10..90) */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
@@ -411,6 +412,22 @@ typedef struct StdRdOptions
 #define RelationGetParallelWorkers(relation, defaultpw) \
 	((relation)->rd_options ? \
 	 ((StdRdOptions *) (relation)->rd_options)->parallel_workers : (defaultpw))
+
+/*
+ * RelationGetSplitPct
+ *		Returns the relation's split_pct reloption setting (default 90).
+ *		Controls the B-tree internal page split ratio for noxu tables.
+ *		Note multiple eval of argument!
+ */
+#define NOXU_DEFAULT_SPLIT_PCT		90
+#define NOXU_MIN_SPLIT_PCT			10
+#define NOXU_MAX_SPLIT_PCT			90
+
+#define RelationGetSplitPct(relation) \
+	((relation)->rd_options && \
+	 ((StdRdOptions *) (relation)->rd_options)->split_pct > 0 ? \
+	 ((StdRdOptions *) (relation)->rd_options)->split_pct : \
+	 NOXU_DEFAULT_SPLIT_PCT)
 
 /* ViewOptions->check_option values */
 typedef enum ViewOptCheckOption

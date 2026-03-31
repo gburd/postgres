@@ -65,18 +65,21 @@ static void CreateUndoLogFile(uint32 log_number);
 /* ExtendUndoLogFile is declared in undolog.h */
 
 /*
- * UndoLogShmemSize
- *		Calculate shared memory size for UNDO log management
+ * UndoLogShmemRequest
+ *		Request shared memory for UNDO log management
  */
-Size
-UndoLogShmemSize(void)
+void
+UndoLogShmemRequest(void)
 {
-	Size		size = 0;
+	Size		size;
 
 	/* Space for UndoLogSharedData */
-	size = add_size(size, sizeof(UndoLogSharedData));
+	size = sizeof(UndoLogSharedData);
 
-	return size;
+	ShmemRequestStruct(.name = "UNDO Log Control",
+					   .size = size,
+					   .ptr = (void **) &UndoLogShared,
+		);
 }
 
 /*
@@ -86,31 +89,23 @@ UndoLogShmemSize(void)
 void
 UndoLogShmemInit(void)
 {
-	bool		found;
+	int			i;
 
-	UndoLogShared = (UndoLogSharedData *)
-		ShmemInitStruct("UNDO Log Control", UndoLogShmemSize(), &found);
-
-	if (!found)
+	/* Initialize all log control structures */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
 	{
-		int			i;
+		UndoLogControl *log = &UndoLogShared->logs[i];
 
-		/* Initialize all log control structures */
-		for (i = 0; i < MAX_UNDO_LOGS; i++)
-		{
-			UndoLogControl *log = &UndoLogShared->logs[i];
-
-			log->log_number = 0;
-			log->insert_ptr = InvalidUndoRecPtr;
-			log->discard_ptr = InvalidUndoRecPtr;
-			log->oldest_xid = InvalidTransactionId;
-			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
-			log->in_use = false;
-		}
-
-		UndoLogShared->next_log_number = 1;
-		LWLockInitialize(&UndoLogShared->allocation_lock, LWTRANCHE_UNDO_LOG);
+		log->log_number = 0;
+		log->insert_ptr = InvalidUndoRecPtr;
+		log->discard_ptr = InvalidUndoRecPtr;
+		log->oldest_xid = InvalidTransactionId;
+		LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
+		log->in_use = false;
 	}
+
+	UndoLogShared->next_log_number = 1;
+	LWLockInitialize(&UndoLogShared->allocation_lock, LWTRANCHE_UNDO_LOG);
 }
 
 /*

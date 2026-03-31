@@ -133,7 +133,8 @@ SELECT amname, amhandler, amtype FROM pg_am where amtype = 't' ORDER BY 1, 2;
 --------+----------------------+--------
  heap   | heap_tableam_handler | t
  heap2  | heap_tableam_handler | t
-(2 rows)
+ noxu   | noxu_tableam_handler | t
+(3 rows)
 
 -- First create tables employing the new AM using USING
 -- plain CREATE TABLE

@@ -575,9 +575,8 @@ testrelundo_multi_insert(Relation rel, TupleTableSlot **slots,
 
 static TM_Result
 testrelundo_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
-						 Snapshot snapshot, Snapshot crosscheck,
-						 bool wait, TM_FailureData *tmfd,
-						 bool changingPart)
+						 uint32 options, Snapshot snapshot, Snapshot crosscheck,
+						 bool wait, TM_FailureData *tmfd)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -587,7 +586,7 @@ testrelundo_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
 
 static TM_Result
 testrelundo_tuple_update(Relation rel, ItemPointer otid,
-						 TupleTableSlot *slot, CommandId cid,
+						 TupleTableSlot *slot, CommandId cid, uint32 options,
 						 Snapshot snapshot, Snapshot crosscheck,
 						 bool wait, TM_FailureData *tmfd,
 						 LockTupleMode *lockmode,
@@ -668,6 +667,7 @@ static void
 testrelundo_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 									  Relation OldIndex, bool use_sort,
 									  TransactionId OldestXmin,
+									  Snapshot snapshot,
 									  TransactionId *xid_cutoff,
 									  MultiXactId *multi_cutoff,
 									  double *num_tuples,
@@ -680,7 +680,7 @@ testrelundo_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 }
 
 static void
-testrelundo_relation_vacuum(Relation rel, const VacuumParams params,
+testrelundo_relation_vacuum(Relation rel, const VacuumParams *params,
 							BufferAccessStrategy bstrategy)
 {
 	/* No-op vacuum for test AM */

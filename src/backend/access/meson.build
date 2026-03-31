@@ -6,6 +6,12 @@ subdir('gin')
 subdir('gist')
 subdir('hash')
 subdir('heap')
+
+# Noxu table AM (optional, enabled by default)
+if not get_option('noxu').disabled()
+  subdir('noxu')
+endif
+
 subdir('index')
 subdir('nbtree')
 subdir('rmgrdesc')

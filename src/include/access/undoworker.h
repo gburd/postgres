@@ -46,7 +46,7 @@ extern int	undo_worker_naptime;
 extern int	undo_retention_time;
 
 /* Shared memory functions */
-extern Size UndoWorkerShmemSize(void);
+extern void UndoWorkerShmemRequest(void);
 extern void UndoWorkerShmemInit(void);
 
 /* Worker lifecycle functions */

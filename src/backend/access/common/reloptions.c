@@ -424,6 +424,15 @@ static relopt_int intRelOpts[] =
 		},
 		-1, 0, 1024
 	},
+	{
+		{
+			"split_pct",
+			"B-tree internal page split percentage for noxu tables (10..90)",
+			RELOPT_KIND_HEAP,
+			ShareUpdateExclusiveLock	/* applies only to future splits */
+		},
+		0, 0, 90		/* 0 means use default (90); range 10..90 enforced at use */
+	},
 
 	/* list terminator */
 	{{NULL}}
@@ -2038,7 +2047,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
 		{"enable_undo", RELOPT_TYPE_BOOL,
-		offsetof(StdRdOptions, enable_undo)}
+		offsetof(StdRdOptions, enable_undo)},
+		{"split_pct", RELOPT_TYPE_INT,
+		offsetof(StdRdOptions, split_pct)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,

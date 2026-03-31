@@ -83,6 +83,7 @@ LogicalMessage
 Undo
 RelUndo
 FileOps
+Noxu
 XLOG2$/,
 	'rmgr list');
 

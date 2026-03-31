@@ -926,6 +926,84 @@ typedef struct TableAmRoutine
 	void		(*relation_vacuum_undo) (Relation rel,
 										 TransactionId oldest_xid);
 
+
+	/* ------------------------------------------------------------------------
+	 * Logical decoding callbacks (optional, for REPACK CONCURRENTLY)
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Initialize logical decoding state for REPACK CONCURRENTLY.
+	 *
+	 * Called at the start of a REPACK CONCURRENTLY operation to set up any
+	 * per-relation state needed to decode WAL records into logical changes
+	 * (INSERT/UPDATE/DELETE).
+	 *
+	 * Parameters:
+	 *   rel        - Source relation being repacked
+	 *   target_rel - New target relation receiving changes
+	 *
+	 * Returns an opaque pointer to AM-specific decoding state, which will
+	 * be passed to subsequent relation_logical_decode_apply/end calls.
+	 *
+	 * If NULL, the table AM does not support REPACK CONCURRENTLY.
+	 */
+	void	   *(*relation_logical_decode_begin) (Relation rel,
+												  Relation target_rel);
+
+	/*
+	 * Apply a decoded logical change to the target relation.
+	 *
+	 * Called for each INSERT/UPDATE/DELETE decoded from WAL during the
+	 * catch-up phase of REPACK CONCURRENTLY.  The change_type indicates
+	 * the DML operation, and slot contains the tuple data:
+	 *
+	 *   'I' (INSERT):  slot contains the new tuple.
+	 *   'U' (UPDATE):  old_tid identifies the old row; slot contains
+	 *                   the new tuple.
+	 *   'D' (DELETE):  old_tid identifies the deleted row; slot may
+	 *                   be empty.
+	 *
+	 * The AM is responsible for applying the change to target_rel using
+	 * whatever internal operations are appropriate (e.g., columnar B-tree
+	 * insert, update chains, UNDO coordination).
+	 *
+	 * Parameters:
+	 *   decode_state - Opaque state from relation_logical_decode_begin
+	 *   rel          - Original source relation
+	 *   target_rel   - Target relation for the replayed change
+	 *   change_type  - 'I' for INSERT, 'U' for UPDATE, 'D' for DELETE
+	 *   old_tid      - TID of the old tuple (UPDATE/DELETE only)
+	 *   slot         - Tuple data (INSERT: new tuple; UPDATE: new tuple;
+	 *                  DELETE: may be NULL)
+	 *
+	 * If NULL, the table AM does not support REPACK CONCURRENTLY.
+	 */
+	void		(*relation_logical_decode_apply) (void *decode_state,
+												  Relation rel,
+												  Relation target_rel,
+												  char change_type,
+												  ItemPointer old_tid,
+												  TupleTableSlot *slot);
+
+	/*
+	 * Finalize logical decoding for REPACK CONCURRENTLY.
+	 *
+	 * Called after the catch-up phase completes and before the final
+	 * relfilenode swap.  The AM should release any resources allocated
+	 * during relation_logical_decode_begin.
+	 *
+	 * Parameters:
+	 *   decode_state - Opaque state from relation_logical_decode_begin
+	 *   rel          - Source relation
+	 *   target_rel   - Target relation
+	 *
+	 * If NULL, the table AM does not support REPACK CONCURRENTLY.
+	 */
+	void		(*relation_logical_decode_end) (void *decode_state,
+											    Relation rel,
+											    Relation target_rel);
+
 } TableAmRoutine;
 
 
@@ -2126,6 +2204,58 @@ table_scan_sample_next_tuple(TableScanDesc scan,
 {
 	return scan->rs_rd->rd_tableam->scan_sample_next_tuple(scan, scanstate,
 														   slot);
+}
+
+
+/* ----------------------------------------------------------------------------
+ * Logical decoding functions for REPACK CONCURRENTLY.
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Begin logical decoding for a REPACK CONCURRENTLY operation.
+ *
+ * Returns an opaque AM-specific state pointer, or NULL if the AM
+ * does not support REPACK CONCURRENTLY.
+ */
+static inline void *
+table_relation_logical_decode_begin(Relation rel, Relation target_rel)
+{
+	if (rel->rd_tableam->relation_logical_decode_begin == NULL)
+		return NULL;
+	return rel->rd_tableam->relation_logical_decode_begin(rel, target_rel);
+}
+
+/*
+ * Apply a single decoded change (INSERT/UPDATE/DELETE) to the target
+ * relation during REPACK CONCURRENTLY catch-up.
+ */
+static inline void
+table_relation_logical_decode_apply(void *decode_state,
+									Relation rel,
+									Relation target_rel,
+									char change_type,
+									ItemPointer old_tid,
+									TupleTableSlot *slot)
+{
+	Assert(rel->rd_tableam->relation_logical_decode_apply != NULL);
+	rel->rd_tableam->relation_logical_decode_apply(decode_state,
+												   rel, target_rel,
+												   change_type,
+												   old_tid, slot);
+}
+
+/*
+ * End logical decoding and release resources.
+ */
+static inline void
+table_relation_logical_decode_end(void *decode_state,
+								  Relation rel,
+								  Relation target_rel)
+{
+	if (rel->rd_tableam->relation_logical_decode_end != NULL)
+		rel->rd_tableam->relation_logical_decode_end(decode_state,
+													 rel, target_rel);
 }
 
 

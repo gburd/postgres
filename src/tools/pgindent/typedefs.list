@@ -615,7 +615,6 @@ CustomScanState
 CycleCtr
 DataChecksumsWorkerOperation
 DBState
-DbOidName
 DCHCacheEntry
 DEADLOCK_INFO
 DECountItem
@@ -650,6 +649,7 @@ DatumTupleFields
 DbInfo
 DbInfoArr
 DbLocaleInfo
+DbOidName
 DeClonePtrType
 DeadLockState
 DeallocateStmt
@@ -1851,6 +1851,25 @@ NumericDigit
 NumericSortSupport
 NumericSumAccum
 NumericVar
+NXAttributeCompressedItem
+NXBtreeInternalPageItem
+NXBtreePageOpaque
+NXMetaCacheData
+NXMetaPage
+NXMetaPageOpaque
+NXNV_Result
+NXRootDirItem
+NXTidArrayItem
+NXTidItemIterator
+NXOverflowPageOpaque
+NXUndoPageOpaque
+NXUndoRec
+NXUndoRecPtr
+NXUndoRec_Delete
+NXUndoRec_Insert
+NXUndoRec_TupleLock
+NXUndoRec_Update
+NXUndoSlotVisibility
 OAuthValidatorCallbacks
 OAuthValidatorModuleInit
 OM_uint32
@@ -2524,6 +2543,7 @@ RTEPermissionInfo
 RWConflict
 RWConflictData
 RWConflictPoolHeader
+RadixSortInfo
 Range
 RangeBound
 RangeBox
@@ -3982,6 +4002,7 @@ ossl_EVP_cipher_func
 other
 output_type
 overexplain_options
+ovtid
 pagetable_hash
 pagetable_iterator
 pairingheap
@@ -3997,7 +4018,6 @@ pe_test_vector
 pendingPosition
 pending_label
 pgParameterStatus
-pgoff_t
 pg_atomic_flag
 pg_atomic_uint32
 pg_atomic_uint64
@@ -4066,6 +4086,7 @@ pg_utf_to_local_combined
 pg_uuid_t
 pg_wchar
 pg_wchar_tbl
+pgoff_t
 pgp_armor_headers_state
 pgpa_advice_item
 pgpa_advice_tag_type
@@ -4191,7 +4212,6 @@ qsort_comparator
 query_pathkeys_callback
 radius_attribute
 radius_packet
-RadixSortInfo
 rangeTableEntry_used_context
 rank_context
 rbt_allocfunc

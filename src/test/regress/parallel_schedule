@@ -93,6 +93,11 @@ test: create_table_like alter_generic alter_operator misc async dbsize merge mis
 # amutils depends on geometry, create_index_spgist, hash_index, brin
 test: rules psql psql_crosstab psql_pipeline amutils stats_ext collate.linux.utf8 collate.windows.win1252
 
+# noxu table access method test
+test: noxu
+# noxu compression tests
+test: noxu_compression_bool noxu_compression_null noxu_compression_for noxu_compression_dict noxu_compression_uuid noxu_compression_fsst noxu_compression_varlena
+
 # ----------
 # Run these alone so they don't run out of parallel workers
 # select_parallel depends on create_misc

@@ -32,6 +32,7 @@
 #include "access/relundo.h"
 #include "access/relundo_xlog.h"
 #include "access/xloginsert.h"
+#include "commands/defrem.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
@@ -49,7 +50,10 @@ static void RelUndoApplyDeltaInsert(Relation rel, Page page, OffsetNumber offset
 									char *delta_data, uint32 delta_len);
 static void RelUndoWriteCLR(Relation rel, RelUndoRecPtr urec_ptr,
 							XLogRecPtr clr_lsn);
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
+
+/* Forward declaration for Noxu-specific rollback */
+extern void NoxuRelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr);
 
 /*
  * RelUndoApplyChain - Walk and apply per-relation UNDO chain for rollback
@@ -57,6 +61,9 @@ static void RelUndoWriteCLR(Relation rel, RelUndoRecPtr urec_ptr,
  * This is the main entry point for transaction abort. We walk backwards
  * through the UNDO chain starting from start_ptr, applying each operation
  * until we reach an invalid pointer or the beginning of the chain.
+ *
+ * For Noxu tables, we dispatch to a specialized implementation that
+ * understands Noxu's columnar B-tree structure.
  */
 void
 RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
@@ -69,6 +76,7 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 	Page		page;
 	BlockNumber target_blkno;
 	OffsetNumber target_offset;
+	const char *am_name;
 
 	/* Nothing to do if no UNDO records */
 	if (!RelUndoRecPtrIsValid(current_ptr))
@@ -77,14 +85,27 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 		return;
 	}
 
+	/*
+	 * Check if this is an Noxu table. If so, dispatch to the Noxu-specific
+	 * rollback implementation which understands columnar B-tree structures.
+	 */
+	am_name = rel->rd_rel->relam ? get_am_name(rel->rd_rel->relam) : NULL;
+	if (am_name && strcmp(am_name, "noxu") == 0)
+	{
+		elog(DEBUG1, "RelUndoApplyChain: dispatching to Noxu-specific rollback for relation %s",
+			 RelationGetRelationName(rel));
+		NoxuRelUndoApplyChain(rel, start_ptr);
+		return;
+	}
+
 	elog(DEBUG1, "RelUndoApplyChain: starting rollback at %lu",
 		 (unsigned long) current_ptr);
 
 	/*
-	 * Walk backwards through the chain, applying each record.
-	 * Note: Current implementation only supports INSERT rollback with
-	 * metadata-only UNDO records. DELETE/UPDATE rollback would require
-	 * storing complete tuple data in UNDO records.
+	 * Walk backwards through the chain, applying each record. Note: Current
+	 * implementation only supports INSERT rollback with metadata-only UNDO
+	 * records. DELETE/UPDATE rollback would require storing complete tuple
+	 * data in UNDO records.
 	 */
 	while (RelUndoRecPtrIsValid(current_ptr))
 	{
@@ -112,9 +133,10 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 			case RELUNDO_UPDATE:
 			case RELUNDO_TUPLE_LOCK:
 			case RELUNDO_DELTA_INSERT:
+
 				/*
-				 * These operations require complete tuple data in UNDO records,
-				 * which is not yet implemented. For now, skip them.
+				 * These operations require complete tuple data in UNDO
+				 * records, which is not yet implemented. For now, skip them.
 				 */
 				elog(WARNING, "RelUndoApplyChain: rollback for record type %d not yet implemented",
 					 header.urec_type);
@@ -252,7 +274,7 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 		OffsetNumber new_offset;
 
 		new_offset = PageAddItem(page, tuple_data, tuple_len,
-								  offset, false, false);
+								 offset, false, false);
 		if (new_offset != offset)
 			elog(ERROR, "RelUndoApplyDelete: could not restore tuple at expected offset");
 	}
@@ -260,7 +282,7 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 	elog(DEBUG2, "RelUndoApplyDelete: restored tuple at offset %u (%u bytes)",
 		 offset, tuple_len);
 }
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
 
 #ifdef NOT_USED
 /*
@@ -288,9 +310,9 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 		elog(ERROR, "RelUndoApplyUpdate: tuple at offset %u is not normal", offset);
 
 	/*
-	 * Overwrite the new tuple with the old version.
-	 * In a real implementation, we'd need to handle size differences,
-	 * potentially using a different page if the old tuple is larger.
+	 * Overwrite the new tuple with the old version. In a real implementation,
+	 * we'd need to handle size differences, potentially using a different
+	 * page if the old tuple is larger.
 	 */
 	if (ItemIdGetLength(lp) < tuple_len)
 	{
@@ -306,7 +328,7 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 	elog(DEBUG2, "RelUndoApplyUpdate: restored old tuple at offset %u (%u bytes)",
 		 offset, tuple_len);
 }
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
 
 #ifdef NOT_USED
 /*
@@ -335,7 +357,7 @@ RelUndoApplyTupleLock(Relation rel, Page page, OffsetNumber offset)
 	 */
 	elog(DEBUG2, "RelUndoApplyTupleLock: removed lock from tuple at offset %u", offset);
 }
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
 
 #ifdef NOT_USED
 /*
@@ -363,15 +385,14 @@ RelUndoApplyDeltaInsert(Relation rel, Page page, OffsetNumber offset,
 		elog(ERROR, "RelUndoApplyDeltaInsert: tuple at offset %u is not normal", offset);
 
 	/*
-	 * In a real columnar implementation, we'd need to:
-	 * 1. Parse the delta to identify which columns were modified
-	 * 2. Restore the original column values
-	 * This is highly table AM specific.
+	 * In a real columnar implementation, we'd need to: 1. Parse the delta to
+	 * identify which columns were modified 2. Restore the original column
+	 * values This is highly table AM specific.
 	 */
 	elog(DEBUG2, "RelUndoApplyDeltaInsert: restored delta at offset %u (%u bytes)",
 		 offset, delta_len);
 }
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
 
 #ifdef NOT_USED
 /*
@@ -398,7 +419,7 @@ RelUndoWriteCLR(Relation rel, RelUndoRecPtr urec_ptr, XLogRecPtr clr_lsn)
 	elog(DEBUG3, "RelUndoWriteCLR: wrote CLR for UNDO record %lu",
 		 (unsigned long) urec_ptr);
 }
-#endif /* NOT_USED */
+#endif							/* NOT_USED */
 
 /*
  * RelUndoReadRecordWithTuple - Read UNDO record including tuple data
@@ -426,8 +447,8 @@ RelUndoReadRecordWithTuple(Relation rel, RelUndoRecPtr ptr,
 		return NULL;
 
 	/*
-	 * Allocate combined buffer for header + payload.
-	 * Tuple data will be allocated separately if present.
+	 * Allocate combined buffer for header + payload. Tuple data will be
+	 * allocated separately if present.
 	 */
 	header = (RelUndoRecordHeader *) palloc(SizeOfRelUndoRecordHeader + payload_size);
 	memcpy(header, &header_local, SizeOfRelUndoRecordHeader);
@@ -440,12 +461,12 @@ RelUndoReadRecordWithTuple(Relation rel, RelUndoRecPtr ptr,
 	if (header->info_flags & RELUNDO_INFO_HAS_TUPLE && header->tuple_len > 0)
 	{
 		/*
-		 * In a real implementation, we'd need to read the tuple data
-		 * from the UNDO fork. For now, return NULL to indicate this
-		 * feature is not fully implemented yet.
+		 * In a real implementation, we'd need to read the tuple data from the
+		 * UNDO fork. For now, return NULL to indicate this feature is not
+		 * fully implemented yet.
 		 *
-		 * The tuple data follows the payload in the UNDO fork at:
-		 * position = ptr + SizeOfRelUndoRecordHeader + payload_size
+		 * The tuple data follows the payload in the UNDO fork at: position =
+		 * ptr + SizeOfRelUndoRecordHeader + payload_size
 		 */
 		elog(WARNING, "RelUndoReadRecordWithTuple: tuple data reading not yet implemented");
 	}
