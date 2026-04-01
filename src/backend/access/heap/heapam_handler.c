@@ -221,50 +221,39 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
-					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
+					CommandId cid, uint32 options,
+					Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
+					TM_IndexUpdateInfo *upd_info)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
 	bool		hot_allowed;
-	bool		summarized_only;
 	TM_Result	result;
 
 	Assert(ItemPointerIsValid(otid));
+	Assert(upd_info != NULL);
 
-	hot_allowed = HeapUpdateHotAllowable(relation, modified_idx_attrs, &summarized_only);
-	*lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
+	hot_allowed = HeapUpdateHotAllowable(relation, upd_info->modified_attrs);
+	*lockmode = HeapUpdateDetermineLockmode(relation, upd_info->modified_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
 	tuple->t_tableOid = slot->tts_tableOid;
 
-	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, *lockmode, modified_idx_attrs, hot_allowed);
+	result = heap_update(relation, otid, tuple, cid, options,
+						 crosscheck, wait,
+						 tmfd, *lockmode, upd_info->modified_attrs, hot_allowed);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
-	 * Note: heap_update returns the tid (location) of the new tuple in the
-	 * t_self field.
-	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
+	 * Decide whether new index entries are needed for the tuple.  If the
+	 * tuple stored by heap_update is heap-only, this was a HOT update and
+	 * (subject to per-index checks in the executor) only summarizing indexes
+	 * need a new entry.  Otherwise every index must get an entry pointing to
+	 * the new tuple's TID.
 	 */
-	*update_indexes = TU_None;
-	if (result == TM_Ok)
-	{
-		if (HeapTupleIsHeapOnly(tuple))
-		{
-			if (summarized_only)
-				*update_indexes = TU_Summarizing;
-		}
-		else
-			*update_indexes = TU_All;
-	}
+	upd_info->update_all_indexes = (result == TM_Ok) && !HeapTupleIsHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);

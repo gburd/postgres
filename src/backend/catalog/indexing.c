@@ -18,6 +18,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
@@ -73,7 +74,7 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  */
 static void
 CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
-				   TU_UpdateIndexes updateIndexes)
+				   const TM_IndexUpdateInfo *upd_info)
 {
 	int			i;
 	int			numIndexes;
@@ -83,7 +84,18 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		onlySummarized = (updateIndexes == TU_Summarizing);
+	bool		allIndexes;
+	bool		onlySummarized;
+
+	/*
+	 * Determine whether all indexes need updating (non-HOT) or only
+	 * summarizing indexes (HOT with summarized column changes).  When
+	 * upd_info is NULL the caller is handling a fresh insert, so every
+	 * index must get an entry.
+	 */
+	allIndexes = (upd_info == NULL) || upd_info->update_all_indexes;
+	onlySummarized = !allIndexes && upd_info != NULL &&
+		!bms_is_empty(upd_info->modified_attrs);
 
 	/*
 	 * HOT update does not require index inserts. But with asserts enabled we
@@ -240,7 +252,7 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, TU_All);
+	CatalogIndexInsert(indstate, tup, NULL);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -260,7 +272,7 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, TU_All);
+	CatalogIndexInsert(indstate, tup, NULL);
 }
 
 /*
@@ -291,7 +303,7 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 
 		tuple = ExecFetchSlotHeapTuple(slot[i], true, &should_free);
 		tuple->t_tableOid = slot[i]->tts_tableOid;
-		CatalogIndexInsert(indstate, tuple, TU_All);
+		CatalogIndexInsert(indstate, tuple, NULL);
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -313,15 +325,16 @@ void
 CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
-	TU_UpdateIndexes updateIndexes = TU_All;
+	TM_IndexUpdateInfo upd_info;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &upd_info);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, &upd_info);
+	bms_free((Bitmapset *) upd_info.modified_attrs);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -337,13 +350,14 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, const ItemPointerData *otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	TU_UpdateIndexes updateIndexes = TU_All;
+	TM_IndexUpdateInfo upd_info;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &updateIndexes);
+	simple_heap_update(heapRel, otid, tup, &upd_info);
 
-	CatalogIndexInsert(indstate, tup, updateIndexes);
+	CatalogIndexInsert(indstate, tup, &upd_info);
+	bms_free((Bitmapset *) upd_info.modified_attrs);
 }
 
 /*
