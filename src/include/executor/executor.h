@@ -18,6 +18,7 @@
 #include "datatype/timestamp.h"
 #include "executor/execdesc.h"
 #include "fmgr.h"
+#include "nodes/execnodes.h"
 #include "nodes/lockoptions.h"
 #include "nodes/parsenodes.h"
 #include "utils/memutils.h"
@@ -617,6 +618,10 @@ extern TupleDesc ExecCleanTypeFromTL(List *targetList);
 extern TupleDesc ExecTypeFromExprList(List *exprList);
 extern void ExecTypeSetColNames(TupleDesc typeInfo, List *namesList);
 extern void UpdateChangedParamSet(PlanState *node, Bitmapset *newchg);
+extern Bitmapset *ExecCompareSlotAttrs(Bitmapset *attrs,
+									   TupleDesc tupdesc,
+									   TupleTableSlot *old_tts,
+									   TupleTableSlot *new_tts);
 
 typedef struct TupOutputState
 {
@@ -816,5 +821,8 @@ extern ResultRelInfo *ExecLookupResultRelByOid(ModifyTableState *node,
 											   Oid resultoid,
 											   bool missing_ok,
 											   bool update_cache);
+extern Bitmapset *ExecUpdateModifiedIdxAttrs(ResultRelInfo *relinfo,
+											 TupleTableSlot *old_tts,
+											 TupleTableSlot *new_tts);
 
 #endif							/* EXECUTOR_H  */
