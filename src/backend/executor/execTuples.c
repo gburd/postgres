@@ -66,6 +66,7 @@
 #include "nodes/nodeFuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
@@ -2003,6 +2004,75 @@ ExecFetchSlotHeapTupleDatum(TupleTableSlot *slot)
 		pfree(tup);
 
 	return ret;
+}
+
+/*
+ * ExecCompareSlotAttrs
+ *
+ * Compare the subset of attributes in attrs bewtween TupleTableSlots to detect
+ * which attributes have changed.
+ *
+ * Returns a reused when possible Bitmapset of attribute indices (using
+ * FirstLowInvalidHeapAttributeNumber convention) that differ between the two
+ * slots.
+ */
+Bitmapset *
+ExecCompareSlotAttrs(Bitmapset *attrs, TupleDesc tupdesc,
+					 TupleTableSlot *s1, TupleTableSlot *s2)
+{
+	int			attidx = -1;
+
+	while ((attidx = bms_next_member(attrs, attidx)) >= 0)
+	{
+		/* attidx is zero-based, attrnum is the normal attribute number */
+		AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
+		Datum		value1,
+					value2;
+		bool		null1,
+					null2;
+		CompactAttribute *att;
+
+		/*
+		 * If it's a whole-tuple reference, say "not equal".  It's not really
+		 * worth supporting this case, since it could only succeed after a
+		 * no-op update, which is hardly a case worth optimizing for.
+		 */
+		if (attrnum == 0)
+			continue;
+
+		/*
+		 * Likewise, automatically say "not equal" for any system attribute
+		 * other than tableOID; we cannot expect these to be consistent in a
+		 * HOT chain, or even to be set correctly yet in the new tuple.
+		 */
+		if (attrnum < 0)
+		{
+			if (attrnum == TableOidAttributeNumber)
+				attrs = bms_del_member(attrs, attidx);
+			else
+				continue;
+		}
+
+		att = TupleDescCompactAttr(tupdesc, attrnum - 1);
+		value1 = slot_getattr(s1, attrnum, &null1);
+		value2 = slot_getattr(s2, attrnum, &null2);
+
+		/* A change to/from NULL, so not equal */
+		if (null1 != null2)
+			continue;
+
+		/* Both NULL, no change/unmodified */
+		if (null2)
+		{
+			attrs = bms_del_member(attrs, attidx);
+			continue;
+		}
+
+		if (datum_image_eq(value1, value2, att->attbyval, att->attlen))
+			attrs = bms_del_member(attrs, attidx);
+	}
+
+	return attrs;
 }
 
 /* ----------------------------------------------------------------
