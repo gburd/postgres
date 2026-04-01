@@ -130,7 +130,13 @@ typedef struct ModifyTableContext
 typedef struct UpdateContext
 {
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
+
+	/*
+	 * Information returned by the table AM's update callback about which
+	 * indexes need new entries.  Populated by ExecUpdateAct and consumed by
+	 * ExecUpdateEpilogue.
+	 */
+	TM_IndexUpdateInfo upd_info;
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -2526,8 +2532,9 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	bool		partition_constraint_failed;
 	TM_Result	result;
 
-	/* The set of modified indexed attributes that trigger new index entries */
-	Bitmapset  *modified_idx_attrs = NULL;
+	/* Reset any state left over from a previous call */
+	updateCxt->upd_info.modified_attrs = NULL;
+	updateCxt->upd_info.update_all_indexes = false;
 
 	updateCxt->crossPartUpdate = false;
 
@@ -2651,7 +2658,8 @@ lreplace:
 	 * we will overlook attributes directly modified by heap_modify_tuple()
 	 * which are not known to ExecGetUpdatedCols().
 	 */
-	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot);
+	updateCxt->upd_info.modified_attrs =
+		ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot);
 
 	/*
 	 * Call into the table AM to update the heap tuple.
@@ -2669,8 +2677,7 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								modified_idx_attrs,
-								&updateCxt->updateIndexes);
+								&updateCxt->upd_info);
 
 	return result;
 }
@@ -2691,14 +2698,22 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0 &&
+		(updateCxt->upd_info.update_all_indexes ||
+		 !bms_is_empty(updateCxt->upd_info.modified_attrs)))
 	{
-		uint32		flags = EIIT_IS_UPDATE;
+		/*
+		 * Populate per-index ii_IndexUnchanged before inserting.  For a
+		 * non-HOT update (update_all_indexes) every index needs a fresh
+		 * entry; for a HOT update only those whose key attributes overlap the
+		 * modified set do.
+		 */
+		ExecSetIndexUnchanged(resultRelInfo,
+							  updateCxt->upd_info.update_all_indexes,
+							  updateCxt->upd_info.modified_attrs);
 
-		if (updateCxt->updateIndexes == TU_Summarizing)
-			flags |= EIIT_ONLY_SUMMARIZING;
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
-											   flags, slot, NIL,
+											   EIIT_IS_UPDATE, slot, NIL,
 											   NULL);
 	}
 
