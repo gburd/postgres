@@ -129,7 +129,7 @@ typedef struct ModifyTableContext
 typedef struct UpdateContext
 {
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
+	Bitmapset  *modified_idx_attrs; /* Which indexed attributes were modified? */
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -2668,8 +2668,10 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								modified_idx_attrs,
-								&updateCxt->updateIndexes);
+								&modified_idx_attrs);
+
+	/* Store for use in ExecUpdateEpilogue (after table AM may set sentinel) */
+	updateCxt->modified_idx_attrs = modified_idx_attrs;
 
 	return result;
 }
@@ -2690,12 +2692,22 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0 &&
+		!bms_is_empty(updateCxt->modified_idx_attrs))
 	{
 		uint32		flags = EIIT_IS_UPDATE;
 
-		if (updateCxt->updateIndexes == TU_Summarizing)
-			flags |= EIIT_ONLY_SUMMARIZING;
+		if (bms_is_member(MODIFIED_IDX_ATTRS_ALL_IDX,
+						  updateCxt->modified_idx_attrs))
+			flags |= EIIT_ALL_INDEXES;
+
+		/*
+		 * Set ii_IndexUnchanged hints for each index based on which indexed
+		 * attributes were actually modified.
+		 */
+		ExecSetIndexUnchanged(resultRelInfo,
+							  updateCxt->modified_idx_attrs);
+
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
 											   flags, slot, NIL,
 											   NULL);

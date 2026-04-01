@@ -156,6 +156,35 @@ all summarizing indexes.  (Realistically, we only need to propagate the
 update to the indexes that contain the updated values, but that is yet to
 be implemented.)
 
+
+Per-Index Update Tracking
+-------------------------
+
+After the table AM performs the update, the executor determines which
+indexes need new entries using per-index tracking rather than a single
+global enum.
+
+The table AM communicates whether a HOT update occurred by setting (or not)
+the MODIFIED_IDX_ATTRS_ALL_IDX sentinel bit (bit 0) in the modified_idx_attrs
+bitmapset.  When this bit is set, the update was non-HOT and all indexes
+require new entries (because the tuple has a new TID).  When the bit is not
+set, the update was HOT and only summarizing indexes whose columns changed
+need new entries.
+
+The executor then calls ExecSetIndexUnchanged() to populate the per-index
+ii_IndexUnchanged flag on each IndexInfo.  This flag indicates whether each
+index's key values are unchanged by the update.  For non-HOT updates, even
+"unchanged" indexes must get new entries (new TID), but the indexUnchanged
+hint is passed to the index AM's aminsert callback to enable optimizations
+such as bottom-up deletion of logically-equivalent duplicate entries.
+
+The EIIT_ALL_INDEXES flag is passed to ExecInsertIndexTuples() to indicate
+whether all indexes need entries (non-HOT) or only summarizing indexes (HOT).
+This replaces the previous TU_UpdateIndexes enum (TU_None/TU_All/TU_Summarizing)
+with a cleaner separation between the table AM (which determines HOT
+eligibility) and the executor (which determines per-index behavior).
+
+
 Abort Cases
 -----------
 

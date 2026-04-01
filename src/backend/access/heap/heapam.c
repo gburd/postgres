@@ -4340,8 +4340,7 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  * that HOT is allowed.
  */
 bool
-HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs,
-					   bool *summarized_only)
+HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 {
 	bool		hot_allowed;
 
@@ -4350,7 +4349,6 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs,
 	 * need updating and HOT is allowable.
 	 */
 	hot_allowed = true;
-	*summarized_only = false;
 
 	/*
 	 * Check for case (a); when there are no modified index attributes HOT is
@@ -4373,7 +4371,6 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs,
 		if (bms_is_subset(modified_idx_attrs, sum_attrs))
 		{
 			hot_allowed = true;
-			*summarized_only = true;
 		}
 		else
 		{
@@ -4504,7 +4501,7 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
  */
 void
 simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   Bitmapset **modified_idx_attrs)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4513,10 +4510,9 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	BufferHeapTupleTableSlot *bslot;
 	HeapTuple	oldtup;
 	bool		shouldFree = true;
-	Bitmapset  *idx_attrs,
-			   *modified_idx_attrs;
-	bool		hot_allowed,
-				summarized_only;
+	Bitmapset  *idx_attrs;
+	Bitmapset  *local_modified_idx_attrs;
+	bool		hot_allowed;
 	Buffer		buffer;
 
 	Assert(ItemPointerIsValid(otid));
@@ -4570,8 +4566,6 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 		 */
 		Assert(RelationSupportsSysCache(RelationGetRelid(relation)));
 
-		*update_indexes = TU_None;
-
 		/* modified_idx_attrs not yet initialized */
 		bms_free(idx_attrs);
 		ExecDropSingleTupleTableSlot(slot);
@@ -4587,13 +4581,13 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
 	oldtup = ExecFetchSlotHeapTuple(slot, false, &shouldFree);
 
-	modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
-	lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
-	hot_allowed = HeapUpdateHotAllowable(relation, modified_idx_attrs, &summarized_only);
+	local_modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
+	lockmode = HeapUpdateDetermineLockmode(relation, local_modified_idx_attrs);
+	hot_allowed = HeapUpdateHotAllowable(relation, local_modified_idx_attrs);
 
 	result = heap_update(relation, otid, tup, GetCurrentCommandId(true),
 						 InvalidSnapshot, true /* wait for commit */ ,
-						 &tmfd, lockmode, modified_idx_attrs, hot_allowed);
+						 &tmfd, lockmode, local_modified_idx_attrs, hot_allowed);
 
 	if (shouldFree)
 		heap_freetuple(oldtup);
@@ -4601,14 +4595,6 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	ExecDropSingleTupleTableSlot(slot);
 	bms_free(idx_attrs);
 
-	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
-	 */
-	*update_indexes = TU_None;
 	switch (result)
 	{
 		case TM_SelfModified:
@@ -4617,11 +4603,16 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			break;
 
 		case TM_Ok:
-			/* done successfully */
+
+			/*
+			 * If the tuple returned from heap_update() is marked heap-only,
+			 * this was a HOT update and no non-summarizing indexes need
+			 * updating.  Otherwise, set the sentinel bit so the caller knows
+			 * all indexes need updating.
+			 */
 			if (!HeapTupleIsHeapOnly(tup))
-				*update_indexes = TU_All;
-			else if (summarized_only)
-				*update_indexes = TU_Summarizing;
+				local_modified_idx_attrs = bms_add_member(local_modified_idx_attrs,
+														  MODIFIED_IDX_ATTRS_ALL_IDX);
 			break;
 
 		case TM_Updated:
@@ -4636,6 +4627,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 			break;
 	}
+
+	*modified_idx_attrs = local_modified_idx_attrs;
 }
 
 

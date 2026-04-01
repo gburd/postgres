@@ -223,48 +223,40 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
+					Bitmapset **modified_idx_attrs)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
 	bool		hot_allowed;
-	bool		summarized_only;
 	TM_Result	result;
 
 	Assert(ItemPointerIsValid(otid));
 
-	hot_allowed = HeapUpdateHotAllowable(relation, modified_idx_attrs, &summarized_only);
-	*lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
+	hot_allowed = HeapUpdateHotAllowable(relation, *modified_idx_attrs);
+	*lockmode = HeapUpdateDetermineLockmode(relation, *modified_idx_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, *lockmode, modified_idx_attrs, hot_allowed);
+						 tmfd, *lockmode, *modified_idx_attrs, hot_allowed);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
+	 * Decide whether new index entries are needed for the tuple.
 	 *
 	 * Note: heap_update returns the tid (location) of the new tuple in the
 	 * t_self field.
 	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
+	 * If the tuple returned from heap_update() is marked heap-only, this was
+	 * a HOT update and no non-summarizing indexes need updating.  Otherwise,
+	 * set the MODIFIED_IDX_ATTRS_ALL_IDX sentinel bit so the executor knows
+	 * all indexes need updating.
 	 */
-	*update_indexes = TU_None;
-	if (result == TM_Ok)
-	{
-		if (HeapTupleIsHeapOnly(tuple))
-		{
-			if (summarized_only)
-				*update_indexes = TU_Summarizing;
-		}
-		else
-			*update_indexes = TU_All;
-	}
+	if (result == TM_Ok && !HeapTupleIsHeapOnly(tuple))
+		*modified_idx_attrs = bms_add_member(*modified_idx_attrs,
+											 MODIFIED_IDX_ATTRS_ALL_IDX);
 
 	if (shouldFree)
 		pfree(tuple);

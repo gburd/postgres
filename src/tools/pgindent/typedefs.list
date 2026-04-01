@@ -3116,7 +3116,6 @@ TSVectorStat
 TState
 TStatus
 TStoreState
-TU_UpdateIndexes
 TXNEntryFile
 TYPCATEGORY
 T_Action

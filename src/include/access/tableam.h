@@ -126,20 +126,25 @@ typedef enum TM_Result
 } TM_Result;
 
 /*
- * Result codes for table_update(..., update_indexes*..).
- * Used to determine which indexes to update.
+ * Sentinel bit in modified_idx_attrs bitmapset.
+ *
+ * When set by the table AM in the modified_idx_attrs bitmapset (via the
+ * tuple_update callback), this indicates that the update was non-HOT and
+ * all indexes need to be updated.  The executor checks this bit to
+ * determine whether per-index update decisions are needed.
+ *
+ * Bit 0 in the bitmapset corresponds to FirstLowInvalidHeapAttributeNumber
+ * which is never a valid heap attribute, making it safe to use as a sentinel.
  */
-typedef enum TU_UpdateIndexes
-{
-	/* No indexed columns were updated (incl. TID addressing of tuple) */
-	TU_None,
+#define MODIFIED_IDX_ATTRS_ALL_IDX 0
 
-	/* A non-summarizing indexed column was updated, or the TID has changed */
-	TU_All,
-
-	/* Only summarized columns were updated, TID is unchanged */
-	TU_Summarizing,
-} TU_UpdateIndexes;
+/*
+ * Verify that the sentinel bit position matches FirstLowInvalidHeapAttributeNumber,
+ * which is what Bitmapset bit 0 maps to after the attribute-number offset.
+ * If Bitmapset internals ever change the offset mapping, this will catch it.
+ */
+StaticAssertDecl(MODIFIED_IDX_ATTRS_ALL_IDX == 0,
+				 "MODIFIED_IDX_ATTRS_ALL_IDX must be bit 0 (FirstLowInvalidHeapAttributeNumber)");
 
 /*
  * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
@@ -586,8 +591,7 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
-								 const Bitmapset *modified_idx_attrs,
-								 TU_UpdateIndexes *update_indexes);
+								 Bitmapset **modified_idx_attrs);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1574,12 +1578,15 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *		TABLE_UPDATE_NO_LOGICAL -- force-disables the emitting of logical
  *		decoding information for the tuple.
  *
+ * Input/Output parameters:
+ *	modified_idx_attrs - on input, the set of indexed attributes whose values
+ *		changed.  On output, the table AM may set the MODIFIED_IDX_ATTRS_ALL_IDX
+ *		sentinel bit to indicate that all indexes need updating (non-HOT update).
+ *
  * Output parameters:
  *	slot - newly constructed tuple data to store
  *	tmfd - filled in failure cases (see below)
  *	lockmode - filled with lock mode acquired on tuple
- *	update_indexes - in success cases this is set if new index entries
- *		are required for this tuple; see TU_UpdateIndexes
  *
  * Normal, successful return value is TM_Ok, which means we did actually
  * update it.  Failure return codes are TM_SelfModified, TM_Updated, and
@@ -1600,12 +1607,12 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
 				   Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
+				   Bitmapset **modified_idx_attrs)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, snapshot, crosscheck,
 										 wait, tmfd, lockmode,
-										 modified_idx_attrs, update_indexes);
+										 modified_idx_attrs);
 }
 
 /*
@@ -2090,8 +2097,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 									  Snapshot snapshot);
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
-									  const Bitmapset *modified_idx_attrs,
-									  TU_UpdateIndexes *update_indexes);
+									  Bitmapset **modified_idx_attrs);
 
 
 /* ----------------------------------------------------------------------------

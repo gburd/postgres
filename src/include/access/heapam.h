@@ -422,7 +422,7 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
 extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, TU_UpdateIndexes *update_indexes);
+							   HeapTuple tup, Bitmapset **modified_idx_attrs);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -463,8 +463,7 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *unused, int nunused);
 
 /* in heap/heapam.c */
-extern bool HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs,
-								   bool *summarized_only);
+extern bool HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs);
 extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
 												 const Bitmapset *modified_idx_attrs);
 

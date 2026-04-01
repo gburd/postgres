@@ -140,11 +140,6 @@ static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
 static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 									 const Datum *existing_values, const bool *existing_isnull,
 									 const Datum *new_values);
-static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
-									  EState *estate, IndexInfo *indexInfo,
-									  Relation indexRelation);
-static bool index_expression_changed_walker(Node *node,
-											Bitmapset *allUpdatedCols);
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
 										char typtype, Oid atttypid);
 
@@ -277,24 +272,12 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
  *		into all the relations indexing the result relation
  *		when a heap tuple is inserted into the result relation.
  *
- *		When EIIT_IS_UPDATE is set and EIIT_ONLY_SUMMARIZING isn't,
- *		executor is performing an UPDATE that could not use an
- *		optimization like heapam's HOT (in more general terms a
- *		call to table_tuple_update() took place and set
- *		'update_indexes' to TU_All).  Receiving this hint makes
- *		us consider if we should pass down the 'indexUnchanged'
- *		hint in turn.  That's something that we figure out for
- *		each index_insert() call iff EIIT_IS_UPDATE is set.
- *		(When that flag is not set we already know not to pass the
- *		hint to any index.)
- *
- *		If EIIT_ONLY_SUMMARIZING is set, an equivalent optimization to
- *		HOT has been applied and any updated columns are indexed
- *		only by summarizing indexes (or in more general terms a
- *		call to table_tuple_update() took place and set
- *		'update_indexes' to TU_Summarizing). We can (and must)
- *		therefore only update the indexes that have
- *		'amsummarizing' = true.
+ *		When EIIT_IS_UPDATE is set, the executor is performing an
+ *		UPDATE.  The per-index ii_IndexUnchanged flag (populated by
+ *		ExecSetIndexUnchanged()) indicates whether each index's key
+ *		values are unchanged by this update.  When ii_IndexUnchanged
+ *		is true, we pass indexUnchanged=true to index_insert() as a
+ *		hint for bottom-up deletion optimization.
  *
  *		Unique and exclusion constraints are enforced at the same
  *		time.  This returns a list of index OIDs for any unique or
@@ -370,10 +353,19 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * Skip processing of non-summarizing indexes if we only update
-		 * summarizing indexes
+		 * For UPDATE operations, use the per-index ii_IndexUnchanged flag
+		 * (populated by ExecSetIndexUnchanged) to determine behavior.
+		 *
+		 * For HOT updates (EIIT_IS_UPDATE set, EIIT_ALL_INDEXES not set):
+		 * skip non-summarizing indexes entirely since the heap-only tuple
+		 * doesn't need new entries in them.  Only summarizing indexes with
+		 * modified columns get new entries.
+		 *
+		 * For non-HOT updates (EIIT_ALL_INDEXES set): all indexes get new
+		 * entries because the tuple has a new TID.
 		 */
-		if ((flags & EIIT_ONLY_SUMMARIZING) && !indexInfo->ii_Summarizing)
+		if ((flags & EIIT_IS_UPDATE) && !(flags & EIIT_ALL_INDEXES) &&
+			!indexInfo->ii_Summarizing)
 			continue;
 
 		/* Check for partial index */
@@ -436,15 +428,13 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			checkUnique = UNIQUE_CHECK_PARTIAL;
 
 		/*
-		 * There's definitely going to be an index_insert() call for this
-		 * index.  If we're being called as part of an UPDATE statement,
-		 * consider if the 'indexUnchanged' = true hint should be passed.
+		 * For UPDATE operations, use the per-index ii_IndexUnchanged flag
+		 * (populated by ExecSetIndexUnchanged) to hint whether the index
+		 * values are unchanged.  This helps the index AM optimize for
+		 * bottom-up deletion of duplicate index entries.
 		 */
-		indexUnchanged = ((flags & EIIT_IS_UPDATE) &&
-						  index_unchanged_by_update(resultRelInfo,
-													estate,
-													indexInfo,
-													indexRelation));
+		indexUnchanged = (flags & EIIT_IS_UPDATE) ?
+			indexInfo->ii_IndexUnchanged : false;
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
@@ -1009,149 +999,81 @@ index_recheck_constraint(Relation index, const Oid *constr_procs,
 }
 
 /*
- * Check if ExecInsertIndexTuples() should pass indexUnchanged hint.
+ * ExecSetIndexUnchanged
  *
- * When the executor performs an UPDATE that requires a new round of index
- * tuples, determine if we should pass 'indexUnchanged' = true hint for one
- * single index.
+ * Set ii_IndexUnchanged hints for all indexes based on which indexed
+ * attributes were actually modified during an UPDATE.
+ *
+ * This function examines modified_idx_attrs (the set of indexed attributes
+ * that changed) and sets ii_IndexUnchanged = true for indexes where none
+ * of their indexed attributes were modified. This allows index AMs to
+ * optimize index insertion for logically unchanged indexes.
+ *
+ * For indexes with amcomparedatums support, we use that callback to
+ * determine if the index needs updating based on precise datum comparison.
  */
-static bool
-index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
-						  IndexInfo *indexInfo, Relation indexRelation)
+void
+ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
+					  const Bitmapset *modified_idx_attrs)
 {
-	Bitmapset  *updatedCols;
-	Bitmapset  *extraUpdatedCols;
-	Bitmapset  *allUpdatedCols;
-	bool		hasexpression = false;
-	List	   *idxExprs;
+	int			numIndices = resultRelInfo->ri_NumIndices;
+	IndexInfo **indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
+	RelationPtr indexDescs = resultRelInfo->ri_IndexRelationDescs;
 
-	/*
-	 * Check cache first
-	 */
-	if (indexInfo->ii_CheckedUnchanged)
-		return indexInfo->ii_IndexUnchanged;
-	indexInfo->ii_CheckedUnchanged = true;
+	/* If no indexes or no modified attributes info, can't set hints */
+	if (numIndices == 0 || modified_idx_attrs == NULL)
+		return;
 
-	/*
-	 * Check for indexed attribute overlap with updated columns.
-	 *
-	 * Only do this for key columns.  A change to a non-key column within an
-	 * INCLUDE index should not be counted here.  Non-key column values are
-	 * opaque payload state to the index AM, a little like an extra table TID.
-	 *
-	 * Note that row-level BEFORE triggers won't affect our behavior, since
-	 * they don't affect the updatedCols bitmaps generally.  It doesn't seem
-	 * worth the trouble of checking which attributes were changed directly.
-	 */
-	updatedCols = ExecGetUpdatedCols(resultRelInfo, estate);
-	extraUpdatedCols = ExecGetExtraUpdatedCols(resultRelInfo, estate);
-	for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
+	for (int i = 0; i < numIndices; i++)
 	{
-		int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
+		IndexInfo  *indexInfo = indexInfoArray[i];
+		Relation	indexDesc = indexDescs[i];
+		bool		indexUnchanged = true;
 
-		if (keycol <= 0)
-		{
-			/*
-			 * Skip expressions for now, but remember to deal with them later
-			 * on
-			 */
-			hasexpression = true;
+		if (indexDesc == NULL)
 			continue;
-		}
 
-		if (bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-						  updatedCols) ||
-			bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-						  extraUpdatedCols))
+		/*
+		 * Check if any of this index's key attributes are in the modified
+		 * set. We only check key attributes - non-key INCLUDE columns don't
+		 * affect HOT update eligibility.
+		 */
+		for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
 		{
-			/* Changed key column -- don't hint for this index */
-			indexInfo->ii_IndexUnchanged = false;
-			return false;
-		}
-	}
+			int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
 
-	/*
-	 * When we get this far and index has no expressions, return true so that
-	 * index_insert() call will go on to pass 'indexUnchanged' = true hint.
-	 *
-	 * The _absence_ of an indexed key attribute that overlaps with updated
-	 * attributes (in addition to the total absence of indexed expressions)
-	 * shows that the index as a whole is logically unchanged by UPDATE.
-	 */
-	if (!hasexpression)
-	{
-		indexInfo->ii_IndexUnchanged = true;
-		return true;
-	}
+			if (keycol <= 0)
+			{
+				/*
+				 * Expression index. For now, conservatively assume it
+				 * changed. In the future, we could walk the expression tree
+				 * to check if any referenced attributes are in
+				 * modifiedIdxAttrs.
+				 */
+				indexUnchanged = false;
+				break;
+			}
 
-	/*
-	 * Need to pass only one bms to expression_tree_walker helper function.
-	 * Avoid allocating memory in common case where there are no extra cols.
-	 */
-	if (!extraUpdatedCols)
-		allUpdatedCols = updatedCols;
-	else
-		allUpdatedCols = bms_union(updatedCols, extraUpdatedCols);
-
-	/*
-	 * We have to work slightly harder in the event of indexed expressions,
-	 * but the principle is the same as before: try to find columns (Vars,
-	 * actually) that overlap with known-updated columns.
-	 *
-	 * If we find any matching Vars, don't pass hint for index.  Otherwise
-	 * pass hint.
-	 */
-	idxExprs = RelationGetIndexExpressions(indexRelation);
-	hasexpression = index_expression_changed_walker((Node *) idxExprs,
-													allUpdatedCols);
-	list_free(idxExprs);
-	if (extraUpdatedCols)
-		bms_free(allUpdatedCols);
-
-	if (hasexpression)
-	{
-		indexInfo->ii_IndexUnchanged = false;
-		return false;
-	}
-
-	/*
-	 * Deliberately don't consider index predicates.  We should even give the
-	 * hint when result rel's "updated tuple" has no corresponding index
-	 * tuple, which is possible with a partial index (provided the usual
-	 * conditions are met).
-	 */
-	indexInfo->ii_IndexUnchanged = true;
-	return true;
-}
-
-/*
- * Indexed expression helper for index_unchanged_by_update().
- *
- * Returns true when Var that appears within allUpdatedCols located.
- */
-static bool
-index_expression_changed_walker(Node *node, Bitmapset *allUpdatedCols)
-{
-	if (node == NULL)
-		return false;
-
-	if (IsA(node, Var))
-	{
-		Var		   *var = (Var *) node;
-
-		if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber,
-						  allUpdatedCols))
-		{
-			/* Var was updated -- indicates that we should not hint */
-			return true;
+			/*
+			 * Check if this attribute is in the modified set.
+			 */
+			if (bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
+							  modified_idx_attrs))
+			{
+				indexUnchanged = false;
+				break;
+			}
 		}
 
-		/* Still haven't found a reason to not pass the hint */
-		return false;
-	}
+		/*
+		 * If index has amcomparedatums, we could use it here for more precise
+		 * checking. For now, we rely on the modified attributes tracking.
+		 * Future enhancement: call amcomparedatums if available and
+		 * indexUnchanged is currently false.
+		 */
 
-	return expression_tree_walker(node, index_expression_changed_walker,
-								  allUpdatedCols);
+		indexInfo->ii_IndexUnchanged = indexUnchanged;
+	}
 }
 
 /*

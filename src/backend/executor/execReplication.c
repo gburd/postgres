@@ -934,7 +934,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
-		TU_UpdateIndexes update_indexes;
 		List	   *conflictindexes;
 		bool		conflict = false;
 
@@ -954,25 +953,30 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 														searchslot, slot);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  modified_idx_attrs, &update_indexes);
-		bms_free(modified_idx_attrs);
-
+								  &modified_idx_attrs);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
-		if (resultRelInfo->ri_NumIndices > 0 && (update_indexes != TU_None))
+		if (resultRelInfo->ri_NumIndices > 0 &&
+			!bms_is_empty(modified_idx_attrs))
 		{
 			uint32		flags = EIIT_IS_UPDATE;
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
-			if (update_indexes == TU_Summarizing)
-				flags |= EIIT_ONLY_SUMMARIZING;
+			if (bms_is_member(MODIFIED_IDX_ATTRS_ALL_IDX,
+							  modified_idx_attrs))
+				flags |= EIIT_ALL_INDEXES;
+
+			ExecSetIndexUnchanged(resultRelInfo, modified_idx_attrs);
+
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, flags,
 												   slot, conflictindexes,
 												   &conflict);
 		}
+
+		bms_free(modified_idx_attrs);
 
 		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
