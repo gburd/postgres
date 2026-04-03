@@ -78,7 +78,7 @@ dummy_toast(Relation toast_rel, Oid toasterid,
 	int			len;
 
 	attr = (struct varlena *) DatumGetPointer(value);
-	//pg_detoast_datum((struct varlena *) DatumGetPointer(value));
+	/* pg_detoast_datum((struct varlena *) DatumGetPointer(value)); */
 
 	if (VARSIZE_ANY_EXHDR(attr) > MAX_DUMMY_CHUNK_SIZE)
 	{
@@ -119,7 +119,7 @@ dummy_toast(Relation toast_rel, Oid toasterid,
  * Dummy delete function
  */
 static void
-dummy_delete(Datum value, bool is_speculative)
+dummy_delete(Relation rel, Datum value, bool is_speculative)
 {
 }
 
