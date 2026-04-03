@@ -5070,7 +5070,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	bool	   *isnull;
 	bool	   *free;
 	HeapTuple	tmphtup;
-	Relation	toast_rel;
+	Relation   *toast_rels;
 	MemoryContext oldcontext;
 	HeapTuple	newtup;
 	Size		old_size;
@@ -5101,10 +5101,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 	desc = RelationGetDescr(relation);
 
-	toast_rel = RelationIdGetRelation(relation->rd_rel->reltoastrelid);
-	if (!RelationIsValid(toast_rel))
-		elog(ERROR, "could not open toast relation with OID %u (base relation \"%s\")",
-			 relation->rd_rel->reltoastrelid, RelationGetRelationName(relation));
+	toast_rels = palloc0(sizeof(*toast_rels) * relation->rd_ntoasters);
 
 	/* should we allocate from stack instead? */
 	attrs = palloc0_array(Datum, desc->natts);
@@ -5118,6 +5115,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	for (natt = 0; natt < desc->natts; natt++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(desc, natt);
+		Oid			toasterid;
 		TsrRoutine *toaster;
 		struct varlena *varlena;
 
@@ -5150,7 +5148,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		if (toaster->reconstruct)
 		{
 			reconstructed = (struct varlena *) DatumGetPointer(
-															   toaster->reconstruct(toast_rel, varlena, txn->toast_hash, &need_free));
+															   toaster->reconstruct(NULL, varlena, txn->toast_hash, &need_free));
 		}
 		else
 		{
@@ -5194,7 +5192,14 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	 * free resources we won't further need, more persistent stuff will be
 	 * free'd in ReorderBufferToastReset().
 	 */
-	RelationClose(toast_rel);
+	for (int i = 0; i < relation->rd_ntoasters; i++)
+	{
+		if (toast_rels[i])
+			RelationClose(toast_rels[i]);
+	}
+
+	pfree(toast_rels);
+
 	pfree(tmphtup);
 	for (natt = 0; natt < desc->natts; natt++)
 	{

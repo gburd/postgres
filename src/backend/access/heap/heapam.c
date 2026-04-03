@@ -231,7 +231,7 @@ AssertHasSnapshotForToast(Relation rel)
 		return;
 
 	/* if the relation doesn't have a TOAST table, we are good */
-	if (!OidIsValid(rel->rd_rel->reltoastrelid))
+	if (rel->rd_ntoasters == 0)
 		return;
 
 	Assert(HaveRegisteredOrActiveSnapshot());

@@ -54,7 +54,7 @@ do { \
  */
 
 /* Create toast storage */
-typedef void (*toast_init) (Relation rel, Oid toastoid, Oid toastindexoid, Datum reloptions, LOCKMODE lockmode,
+typedef void (*toast_init) (Relation rel, Oid toasterid, Oid toastoid, Oid toastindexoid, Datum reloptions, LOCKMODE lockmode,
 							bool check, Oid OIDOldToast);
 
 /* Toast function */
@@ -83,7 +83,7 @@ typedef Datum (*detoast_function) (Datum toast_ptr,
 								   int offset, int length);
 
 /* Delete toast function */
-typedef void (*del_toast_function) (Datum value, bool is_speculative);
+typedef void (*del_toast_function) (Relation rel, Datum value, bool is_speculative);
 
 /* Reconstruct function necessary for replication */
 typedef Datum (*reconstruct_toast_function) (Relation toastrel,
@@ -98,6 +98,9 @@ typedef void *(*get_vtable_function) (Datum toast_ptr);
 typedef bool (*toastervalidate_function) (Oid typeoid,
 										  char storage, char compression,
 										  Oid amoid, bool false_ok);
+
+#define TOASTREL_VACUUM_FULL_DISABLED 0x01
+typedef int (*toast_rel_info_function) (Relation toast_rel);
 
 /*
  * API struct for Toaster.  Note this must be stored in a single palloc'd

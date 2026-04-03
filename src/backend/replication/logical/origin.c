@@ -313,8 +313,10 @@ replorigin_create(const char *roname)
 	 * needing out-of-line storage.  If you add a TOAST table to this catalog,
 	 * be sure to set up a snapshot everywhere it might be needed.  For more
 	 * information, see https://postgr.es/m/ZvMSUPOqUU-VNADN%40nathan.
+	 *
+	 * Note: With new TOAST API using reltoastrelids arrays, we check rd_ntoasters.
 	 */
-	Assert(!OidIsValid(rel->rd_rel->reltoastrelid));
+	Assert(rel->rd_ntoasters == 0);
 
 	for (roident = InvalidOid + 1; roident < PG_UINT16_MAX; roident++)
 	{

@@ -77,7 +77,7 @@ SELECT conname FROM pg_constraint WHERE conrelid = 'clstr_tst'::regclass
 ORDER BY 1;
 
 SELECT relname, relkind,
-    EXISTS(SELECT 1 FROM pg_class WHERE oid = c.reltoastrelid) AS hastoast
+    EXISTS(SELECT 1 FROM pg_class WHERE oid = ANY(c.reltoastrelids)) AS hastoast
 FROM pg_class c WHERE relname LIKE 'clstr_tst%' ORDER BY relname;
 
 -- Verify that indisclustered is correctly set

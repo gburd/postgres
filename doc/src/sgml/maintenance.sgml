@@ -617,7 +617,7 @@
 SELECT c.oid::regclass AS table_name,
        greatest(age(c.relfrozenxid), age(t.relfrozenxid)) AS age
 FROM pg_class c
-LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+LEFT JOIN pg_class t ON t.oid = ANY(c.reltoastrelids)
 WHERE c.relkind IN ('r', 'm');
 
 SELECT datname, age(datfrozenxid) FROM pg_database;

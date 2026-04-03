@@ -67,10 +67,10 @@
  * Default Toast mechanics uses heap storage mechanics
  */
 static void
-generic_toast_init(Relation rel, Oid toastoid, Oid toastindexoid, Datum reloptions, LOCKMODE lockmode,
+generic_toast_init(Relation rel, Oid toasterid, Oid toastoid, Oid toastindexoid, Datum reloptions, LOCKMODE lockmode,
 				   bool check, Oid OIDOldToast)
 {
-	(void) create_toast_table(rel, toastoid, toastindexoid, reloptions, lockmode,
+	(void) create_toast_table(rel, toasterid, toastoid, toastindexoid, reloptions, lockmode,
 							  check, OIDOldToast);
 }
 
@@ -86,7 +86,7 @@ generic_toast(Relation toast_rel, Oid toasterid, Datum value, Datum oldvalue,
 
 	Assert(toast_rel != NULL);
 
-	result = toast_save_datum(toast_rel, value,
+	result = toast_save_datum(toast_rel, toasterid, value,
 							  (struct varlena *) DatumGetPointer(oldvalue),
 							  options);
 	return result;
@@ -123,9 +123,9 @@ generic_detoast(Datum toast_ptr, int offset, int length)
  * (marks as dead)
  */
 static void
-generic_delete_toast(Datum value, bool is_speculative)
+generic_delete_toast(Relation rel, Datum value, bool is_speculative)
 {
-	toast_delete_datum(NULL, value, is_speculative);
+	toast_delete_datum(rel, value, is_speculative);
 }
 
 /*
