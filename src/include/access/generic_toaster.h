@@ -40,9 +40,9 @@
 extern FetchDatumIterator create_fetch_datum_iterator(struct varlena *attr);
 extern void free_fetch_datum_iterator(FetchDatumIterator iter);
 extern void fetch_datum_iterate(FetchDatumIterator iter);
-extern ToastBuffer * create_toast_buffer(int32 size, bool compressed);
-extern void free_toast_buffer(ToastBuffer * buf);
-extern void toast_decompress_iterate(ToastBuffer * source, ToastBuffer * dest,
+extern ToastBuffer *create_toast_buffer(int32 size, bool compressed);
+extern void free_toast_buffer(ToastBuffer *buf);
+extern void toast_decompress_iterate(ToastBuffer *source, ToastBuffer *dest,
 									 ToastCompressionId compression_method,
 									 void **decompression_state,
 									 const char *destend);
