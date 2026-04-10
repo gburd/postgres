@@ -38,7 +38,7 @@
 #include "utils/memutils.h"
 
 /* GUC variables */
-bool		noxu_nursery_enabled = true;
+bool		noxu_nursery_enabled = false;
 int			noxu_nursery_size = 2048;
 int			noxu_nursery_mem_limit_kb = 8192;
 bool		noxu_nursery_flush_on_scan = true;
@@ -242,11 +242,19 @@ nx_nursery_buffer_row(NXNurseryBuffer *nursery,
  * The Phase 1 flush path: decomposes buffered rows into per-column arrays
  * and calls nxbt_attr_multi_insert() for each column with the full batch.
  */
+/*
+ * Maximum rows per sub-batch when flushing to B-trees.  This matches
+ * PostgreSQL's COPY batch size (MAX_BUFFERED_TUPLES) to stay within the
+ * well-tested range for nxbt_attr_multi_insert and item creation/compression.
+ */
+#define NX_NURSERY_FLUSH_BATCH_SIZE		1000
+
 static void
 nx_nursery_flush_to_btree(Relation rel, NXNurseryBuffer *nursery)
 {
 	int			nrows = nursery->nrows;
 	int			nattrs = nursery->nattrs;
+	int			batch_size;
 	nxtid	   *tids;
 	Datum	   *col_datums;
 	bool	   *col_isnulls;
@@ -258,51 +266,59 @@ nx_nursery_flush_to_btree(Relation rel, NXNurseryBuffer *nursery)
 									   ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(flush_mcxt);
 
-	/* Build TID array */
-	tids = (nxtid *) palloc(nrows * sizeof(nxtid));
-	for (int i = 0; i < nrows; i++)
-		tids[i] = nursery->rows[i].tid;
+	batch_size = Min(nrows, NX_NURSERY_FLUSH_BATCH_SIZE);
 
-	/* Allocate per-column temporary arrays */
-	col_datums = (Datum *) palloc(nrows * sizeof(Datum));
-	col_isnulls = (bool *) palloc(nrows * sizeof(bool));
+	/* Allocate per-column temporary arrays (batch-sized) */
+	tids = (nxtid *) palloc(batch_size * sizeof(nxtid));
+	col_datums = (Datum *) palloc(batch_size * sizeof(Datum));
+	col_isnulls = (bool *) palloc(batch_size * sizeof(bool));
 
 	/*
-	 * Flush each column.  This is where the magic happens: instead of
-	 * inserting 1-element items, we insert nrows-element items that
-	 * trigger type-specific compression codecs.
+	 * Flush in sub-batches to stay within the well-tested range for
+	 * nxbt_attr_multi_insert.  Each sub-batch triggers compression
+	 * codecs (Chimp, DOD, FOR, Dict, etc.) since nitems >> 1.
 	 */
-	for (AttrNumber attno = 1; attno <= nattrs; attno++)
+	for (int batch_start = 0; batch_start < nrows; batch_start += batch_size)
 	{
-		Form_pg_attribute attr = TupleDescAttr(rel->rd_att, attno - 1);
+		int			batch_end = Min(batch_start + batch_size, nrows);
+		int			nbatch = batch_end - batch_start;
 
-		/* Gather this column's values from all buffered rows */
-		for (int i = 0; i < nrows; i++)
+		/* Build TID array for this sub-batch */
+		for (int i = 0; i < nbatch; i++)
+			tids[i] = nursery->rows[batch_start + i].tid;
+
+		for (AttrNumber attno = 1; attno <= nattrs; attno++)
 		{
-			Datum		datum = nursery->rows[i].datums[attno - 1];
-			bool		isnull = nursery->rows[i].isnulls[attno - 1];
+			Form_pg_attribute attr = TupleDescAttr(rel->rd_att, attno - 1);
 
-			if (!isnull && attr->attlen < 0 &&
-				VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(datum)))
+			/* Gather column values for this sub-batch */
+			for (int i = 0; i < nbatch; i++)
 			{
-				datum = PointerGetDatum(
-					detoast_external_attr(
-						(struct varlena *) DatumGetPointer(datum)));
+				Datum		datum = nursery->rows[batch_start + i].datums[attno - 1];
+				bool		isnull = nursery->rows[batch_start + i].isnulls[attno - 1];
+
+				if (!isnull && attr->attlen < 0 &&
+					VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(datum)))
+				{
+					datum = PointerGetDatum(
+						detoast_external_attr(
+							(struct varlena *) DatumGetPointer(datum)));
+				}
+
+				if (!isnull && attr->attlen < 0 &&
+					VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(datum)) > MaxNoxuDatumSize)
+				{
+					datum = noxu_overflow_datum(rel, attno, datum,
+												nursery->rows[batch_start + i].tid);
+				}
+
+				col_datums[i] = datum;
+				col_isnulls[i] = isnull;
 			}
 
-			if (!isnull && attr->attlen < 0 &&
-				VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(datum)) > MaxNoxuDatumSize)
-			{
-				datum = noxu_overflow_datum(rel, attno, datum,
-											nursery->rows[i].tid);
-			}
-
-			col_datums[i] = datum;
-			col_isnulls[i] = isnull;
+			nxbt_attr_multi_insert(rel, attno, col_datums, col_isnulls,
+								   tids, nbatch);
 		}
-
-		nxbt_attr_multi_insert(rel, attno, col_datums, col_isnulls,
-							   tids, nrows);
 	}
 
 	MemoryContextSwitchTo(oldcontext);
@@ -722,7 +738,7 @@ nx_nursery_init_gucs(void)
 							 "in memory and flushed in bulk to the attribute "
 							 "B-trees, enabling compression codecs.",
 							 &noxu_nursery_enabled,
-							 true,
+							 false,
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);

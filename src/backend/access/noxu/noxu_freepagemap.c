@@ -77,6 +77,7 @@
 #include "miscadmin.h"
 #include "storage/bufpage.h"
 #include "storage/relfilelocator.h"
+#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -214,10 +215,25 @@ nxfpm_return_cached_blocks(RelFileLocator locator)
 	Page		metapage;
 	NXMetaPageOpaque *metaopaque;
 	BlockNumber fpm_head;
+	BlockNumber nblocks;
+	SMgrRelation srel;
 	int			i;
 
 	if (nxfpm_alloc_cache.count == 0)
 		return;
+
+	/*
+	 * Get the current relation size to skip blocks that no longer exist.
+	 * This can happen when a concurrent UNDO worker frees pages and the
+	 * relation is implicitly truncated.
+	 */
+	srel = smgropen(locator, INVALID_PROC_NUMBER);
+	if (!smgrexists(srel, MAIN_FORKNUM))
+	{
+		nxfpm_alloc_cache.count = 0;
+		return;
+	}
+	nblocks = smgrnblocks(srel, MAIN_FORKNUM);
 
 	metabuf = ReadBufferWithoutRelcache(locator,
 										MAIN_FORKNUM,
@@ -235,10 +251,15 @@ nxfpm_return_cached_blocks(RelFileLocator locator)
 		Buffer		pagebuf;
 		Page		page;
 		BlockNumber old_fpm_head = fpm_head;
+		BlockNumber blk = nxfpm_alloc_cache.blocks[i];
+
+		/* Skip blocks beyond the current relation size */
+		if (blk >= nblocks)
+			continue;
 
 		pagebuf = ReadBufferWithoutRelcache(locator,
 											MAIN_FORKNUM,
-											nxfpm_alloc_cache.blocks[i],
+											blk,
 											RBM_NORMAL,
 											NULL,
 											true);
@@ -248,7 +269,7 @@ nxfpm_return_cached_blocks(RelFileLocator locator)
 
 		page = BufferGetPage(pagebuf);
 		nxpage_mark_page_deleted(page, old_fpm_head);
-		fpm_head = nxfpm_alloc_cache.blocks[i];
+		fpm_head = blk;
 
 		MarkBufferDirty(pagebuf);
 
@@ -729,7 +750,33 @@ nxfpm_flush_dealloc_queue(void)
 		{
 			Buffer		pagebuf;
 			BlockNumber fpm_head;
+			BlockNumber nblocks;
+			SMgrRelation srel;
 			bool		needs_wal;
+
+			/*
+			 * Get the current relation size to skip blocks that no longer
+			 * exist (e.g., freed by a concurrent UNDO worker).
+			 */
+			srel = smgropen(cur_locator, INVALID_PROC_NUMBER);
+			if (!smgrexists(srel, MAIN_FORKNUM))
+			{
+				/* Relation gone; discard all entries for it */
+				entry = nxfpm_dealloc_queue;
+				nxfpm_dealloc_queue = NULL;
+				while (entry != NULL)
+				{
+					next = entry->next;
+					if (!RelFileLocatorEquals(entry->locator, cur_locator))
+					{
+						entry->next = nxfpm_dealloc_queue;
+						nxfpm_dealloc_queue = entry;
+					}
+					entry = next;
+				}
+				continue;
+			}
+			nblocks = smgrnblocks(srel, MAIN_FORKNUM);
 
 			/* Read and lock the metapage */
 			metabuf = ReadBufferWithoutRelcache(cur_locator,
@@ -764,6 +811,13 @@ nxfpm_flush_dealloc_queue(void)
 						Page		page;
 
 						needs_wal = entry->needs_wal;
+
+						/* Skip blocks beyond the current relation size */
+						if (entry->blkno >= nblocks)
+						{
+							entry = next;
+							continue;
+						}
 
 						/* Re-read the page to update its nx_next pointer */
 						pagebuf = ReadBufferWithoutRelcache(cur_locator,
