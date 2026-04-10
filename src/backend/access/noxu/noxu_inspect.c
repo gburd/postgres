@@ -130,6 +130,12 @@ pg_nx_page_type(PG_FUNCTION_ARGS)
 		case NX_DICT_PAGE_ID:
 			result = "DICT";
 			break;
+		case NX_LSM_ROW_PAGE_ID:
+			result = "LSM_ROW";
+			break;
+		case NX_LSM_META_PAGE_ID:
+			result = "LSM_META";
+			break;
 		default:
 			result = psprintf("UNKNOWN 0x%04x", nx_page_id);
 	}

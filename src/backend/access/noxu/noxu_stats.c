@@ -158,7 +158,12 @@ noxu_stats_init(void)
 							0,
 							NULL, NULL, NULL);
 
-	MarkGUCPrefixReserved("noxu");
+	/*
+	 * Note: MarkGUCPrefixReserved("noxu") is called from the handler
+	 * initialization after all noxu GUC modules have registered their
+	 * variables (stats, nursery, lsm, planner).  This ensures that
+	 * SET noxu.xxx works for all registered parameters.
+	 */
 }
 
 /* ----------------------------------------------------------------

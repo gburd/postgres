@@ -1350,8 +1350,26 @@ nxbt_wal_log_leaf_items(Relation rel, AttrNumber attno, Buffer buf,
 	ListCell   *lc;
 	XLogRecPtr	recptr;
 	wal_noxu_btree_leaf_items xlrec;
+	Size		total_item_data = 0;
 
 	(void) rel;
+
+	/*
+	 * Calculate total item data size.  If the items are too large to
+	 * register individually (would exceed the per-buffer WAL data limit
+	 * of UINT16_MAX bytes), fall back to a full-page image.  This can
+	 * happen when a nursery flush writes many compressed items to a
+	 * single leaf page in one batch.
+	 */
+	foreach(lc, items)
+	{
+		void	   *item = (void *) lfirst(lc);
+
+		if (attno == NX_META_ATTRIBUTE_NUM)
+			total_item_data += ((NXTidArrayItem *) item)->t_size;
+		else
+			total_item_data += ((NXAttributeArrayItem *) item)->t_size;
+	}
 
 	xlrec.attno = attno;
 	xlrec.nitems = list_length(items);
@@ -1359,25 +1377,45 @@ nxbt_wal_log_leaf_items(Relation rel, AttrNumber attno, Buffer buf,
 
 	XLogBeginInsert();
 
-	/* Register ALL buffers first, before any data */
-	XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-	if (undo_op)
-		XLogRegisterUndoOp(1, undo_op);
-
-	/* Now register all data after buffers are registered */
-	XLogRegisterData((char *) &xlrec, SizeOfNXWalBtreeLeafItems);
-
-	foreach(lc, items)
+	if (total_item_data > PG_UINT16_MAX - 256 ||
+		list_length(items) + 2 > XLR_NORMAL_RDATAS)
 	{
-		void	   *item = (void *) lfirst(lc);
-		size_t		itemsz;
+		/*
+		 * Too many items or too much data for incremental WAL logging.
+		 * Use a full-page image instead.  The page already has the items
+		 * written to it, so the FPI captures everything correctly.
+		 * On redo, the standard full-page-image restore handles it.
+		 *
+		 * The XLR_NORMAL_RDATAS limit (20) is hit when a nursery flush
+		 * produces many items that all land on the same leaf page.
+		 */
+		XLogRegisterBuffer(0, buf, REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
+		if (undo_op)
+			XLogRegisterUndoOp(1, undo_op);
 
-		if (attno == NX_META_ATTRIBUTE_NUM)
-			itemsz = ((NXTidArrayItem *) item)->t_size;
-		else
-			itemsz = ((NXAttributeArrayItem *) item)->t_size;
+		XLogRegisterData((char *) &xlrec, SizeOfNXWalBtreeLeafItems);
+	}
+	else
+	{
+		/* Normal path: register items individually for compact WAL */
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		if (undo_op)
+			XLogRegisterUndoOp(1, undo_op);
 
-		XLogRegisterBufData(0, item, itemsz);
+		XLogRegisterData((char *) &xlrec, SizeOfNXWalBtreeLeafItems);
+
+		foreach(lc, items)
+		{
+			void	   *item = (void *) lfirst(lc);
+			size_t		itemsz;
+
+			if (attno == NX_META_ATTRIBUTE_NUM)
+				itemsz = ((NXTidArrayItem *) item)->t_size;
+			else
+				itemsz = ((NXAttributeArrayItem *) item)->t_size;
+
+			XLogRegisterBufData(0, item, itemsz);
+		}
 	}
 
 	recptr = XLogInsert(RM_NOXU_ID,

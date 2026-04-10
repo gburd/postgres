@@ -78,6 +78,23 @@ noxu_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "old_fpm_head %u", walrec->old_fpm_head);
 	}
+	else if (info == WAL_NOXU_LSM_INIT_META)
+	{
+		wal_noxu_lsm_init_meta *walrec = (wal_noxu_lsm_init_meta *) rec;
+
+		appendStringInfo(buf, "base_capacity %d", walrec->base_capacity);
+	}
+	else if (info == WAL_NOXU_LSM_UPDATE_META)
+	{
+		appendStringInfo(buf, "update lsm metadata (full-page image)");
+	}
+	else if (info == WAL_NOXU_LSM_ROW_PAGE)
+	{
+		wal_noxu_lsm_row_page *walrec = (wal_noxu_lsm_row_page *) rec;
+
+		appendStringInfo(buf, "level %u, segment '%c'",
+						 walrec->level_num, walrec->segment_id);
+	}
 }
 
 const char *
@@ -113,6 +130,15 @@ noxu_identify(uint8 info)
 			break;
 		case WAL_NOXU_FPM_DELETE:
 			id = "FPM_DELETE";
+			break;
+		case WAL_NOXU_LSM_INIT_META:
+			id = "LSM_INIT_META";
+			break;
+		case WAL_NOXU_LSM_UPDATE_META:
+			id = "LSM_UPDATE_META";
+			break;
+		case WAL_NOXU_LSM_ROW_PAGE:
+			id = "LSM_ROW_PAGE";
 			break;
 	}
 	return id;

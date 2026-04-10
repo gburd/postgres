@@ -60,6 +60,13 @@ nxmeta_populate_cache_from_metapage(Relation rel, Page page)
 							   offsetof(NXMetaCacheData, cache_attrs[natts]));
 	cache->cache_nattributes = natts;
 
+	/* Read LSM metadata block pointer from opaque area */
+	{
+		NXMetaPageOpaque *opaque = (NXMetaPageOpaque *) PageGetSpecialPointer(page);
+
+		cache->cache_lsm_meta = NXMetaGetLSMMetaBlock(opaque);
+	}
+
 	for (int i = 0; i < natts; i++)
 	{
 		cache->cache_attrs[i].root = metapg->tree_root_dir[i].root;
@@ -200,6 +207,9 @@ nxmeta_initmetapage_internal(int natts)
 	opaque->nx_undo_tail_first_counter = 0;
 
 	opaque->nx_fpm_head = InvalidBlockNumber;
+
+	/* nx_undo_head is repurposed for LSM metadata block pointer */
+	NXMetaSetLSMMetaBlock(opaque, InvalidBlockNumber);
 
 	metapg = (NXMetaPage *) PageGetContents(page);
 

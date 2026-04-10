@@ -45,6 +45,9 @@
 #define WAL_NOXU_BTREE_REWRITE_PAGES	        0x60
 #define WAL_NOXU_OVERFLOW_NEWPAGE	        0x70
 #define WAL_NOXU_FPM_DELETE			0x80
+#define WAL_NOXU_LSM_INIT_META			0x90
+#define WAL_NOXU_LSM_UPDATE_META		0xA0
+#define WAL_NOXU_LSM_ROW_PAGE			0xB0
 
 /* in noxu_wal.c */
 extern void noxu_redo(XLogReaderState *record);
@@ -190,10 +193,59 @@ typedef struct wal_noxu_fpm_delete
 
 #define SizeOfNXWalFpmDelete (offsetof(wal_noxu_fpm_delete, old_fpm_head) + sizeof(BlockNumber))
 
+/*
+ * WAL record for initializing the LSM metadata page.
+ * (WAL_NOXU_LSM_INIT_META)
+ *
+ * blkref #0: the metapage (updated with nx_lsm_meta pointer)
+ * blkref #1: the new LSM metadata page (WILL_INIT)
+ */
+typedef struct wal_noxu_lsm_init_meta
+{
+	int32		base_capacity;	/* initial base capacity */
+}			wal_noxu_lsm_init_meta;
+
+#define SizeOfNXWalLSMInitMeta (offsetof(wal_noxu_lsm_init_meta, base_capacity) + sizeof(int32))
+
+/*
+ * WAL record for updating LSM metadata (segment assignment, merge state).
+ * (WAL_NOXU_LSM_UPDATE_META)
+ *
+ * Uses a full-page image of the LSM metadata page.
+ *
+ * blkref #0: the LSM metadata page (REGBUF_FORCE_IMAGE)
+ */
+typedef struct wal_noxu_lsm_update_meta
+{
+	int32		dummy;			/* placeholder for debugging */
+}			wal_noxu_lsm_update_meta;
+
+#define SizeOfNXWalLSMUpdateMeta (offsetof(wal_noxu_lsm_update_meta, dummy) + sizeof(int32))
+
+/*
+ * WAL record for writing an LSM row-oriented segment page.
+ * (WAL_NOXU_LSM_ROW_PAGE)
+ *
+ * blkref #0: the row page (WILL_INIT, full-page image)
+ */
+typedef struct wal_noxu_lsm_row_page
+{
+	uint16		level_num;
+	char		segment_id;
+	char		padding;
+}			wal_noxu_lsm_row_page;
+
+#define SizeOfNXWalLSMRowPage (offsetof(wal_noxu_lsm_row_page, padding) + sizeof(char))
+
 extern void nxbt_leaf_items_redo(XLogReaderState *record, bool replace);
 extern void nxmeta_new_btree_root_redo(XLogReaderState *record);
 extern void nxbt_rewrite_pages_redo(XLogReaderState *record);
 extern void nxoverflow_newpage_redo(XLogReaderState *record);
 extern void nxfpm_delete_redo(XLogReaderState *record);
+
+/* LSM WAL redo functions (in noxu_lsm.c) */
+extern void nx_lsm_init_meta_redo(XLogReaderState *record);
+extern void nx_lsm_update_meta_redo(XLogReaderState *record);
+extern void nx_lsm_row_page_redo(XLogReaderState *record);
 
 #endif							/* NOXU_WAL_H */

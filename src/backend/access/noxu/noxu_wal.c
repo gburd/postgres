@@ -61,6 +61,15 @@ noxu_redo(XLogReaderState *record)
 		case WAL_NOXU_FPM_DELETE:
 			nxfpm_delete_redo(record);
 			break;
+		case WAL_NOXU_LSM_INIT_META:
+			nx_lsm_init_meta_redo(record);
+			break;
+		case WAL_NOXU_LSM_UPDATE_META:
+			nx_lsm_update_meta_redo(record);
+			break;
+		case WAL_NOXU_LSM_ROW_PAGE:
+			nx_lsm_row_page_redo(record);
+			break;
 
 		default:
 			elog(PANIC, "noxu_redo: unknown op code %u", info);

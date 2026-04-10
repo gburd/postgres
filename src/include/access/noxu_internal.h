@@ -141,6 +141,8 @@ nx_relundo_delta_col_is_changed(const NXRelUndoDeltaInsertPayload * delta, int a
 #define	NX_OVERFLOW_PAGE_ID	0xF086
 #define	NX_FREE_PAGE_ID		0xF087
 #define	NX_DICT_PAGE_ID		0xF088	/**< Shared dictionary page. */
+#define	NX_LSM_ROW_PAGE_ID	0xF089	/**< LSM row-oriented segment page. */
+#define	NX_LSM_META_PAGE_ID	0xF08A	/**< LSM level metadata page. */
 /** @} */
 
 /** @brief Flag indicating this B-tree page is the root of its tree. */
@@ -827,6 +829,16 @@ typedef struct NXMetaPageOpaque
 	uint16		nx_page_id;
 } NXMetaPageOpaque;
 
+/*
+ * Access macros for the LSM metadata block pointer.
+ *
+ * The LSM metadata block number is stored in the deprecated nx_undo_head
+ * field of NXMetaPageOpaque, repurposing it without changing the struct
+ * size.  This preserves binary compatibility with existing on-disk pages.
+ */
+#define NXMetaGetLSMMetaBlock(opaque)		((opaque)->nx_undo_head)
+#define NXMetaSetLSMMetaBlock(opaque, blk)	((opaque)->nx_undo_head = (blk))
+
 /**
  * @brief Non-vacuumable status codes for Noxu visibility checks.
  */
@@ -1044,6 +1056,7 @@ typedef struct NXAttrTreeScan
 typedef struct NXMetaCacheData
 {
 	int			cache_nattributes;
+	BlockNumber cache_lsm_meta;	/**< Block of LSM metadata page, or Invalid. */
 
 	/** @brief Per-attribute cache entry. */
 	struct

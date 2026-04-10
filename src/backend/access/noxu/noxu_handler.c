@@ -28,6 +28,8 @@
 #include "access/heaptoast.h"
 #include "access/xact.h"
 #include "access/noxu_internal.h"
+#include "access/noxu_lsm.h"
+#include "access/noxu_nursery.h"
 #include "access/noxu_planner.h"
 #include "access/noxu_stats.h"
 #include "access/relundo.h"
@@ -50,6 +52,7 @@
 #include "storage/read_stream.h"
 #include "access/htup_details.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 #include "utils/hsearch.h"
@@ -98,6 +101,10 @@ typedef struct NoxuDescData
 	/* These fields are use for TABLESAMPLE scans */
 	nxtid		max_tid_to_scan;
 	nxtid		next_tid_to_scan;
+
+	/* Nursery read-your-writes state */
+	int			nursery_scan_idx;	/* Next nursery entry to check (-1 = done) */
+	bool		nursery_flushed;	/* Has nursery been flushed for this scan? */
 
 }			NoxuDescData;
 
@@ -186,25 +193,95 @@ noxuam_insert_internal(Relation relation, TupleTableSlot *slot, CommandId cid,
 	(void) options;
 	(void) bistate;
 
+	if (slot->tts_tupleDescriptor->natts != relation->rd_att->natts)
+		elog(ERROR, "slot's attribute count doesn't match relcache entry");
+
+	slot_getallattrs(slot);
+
 	/*
+	 * Nursery path: buffer attribute data for batch insertion.
+	 *
+	 * The nursery is used when:
+	 * - noxu.nursery_enabled is on
+	 * - This is not a speculative insertion (INSERT...ON CONFLICT)
+	 * - No datum exceeds MaxNoxuDatumSize (overflow needs the TID immediately)
+	 *
+	 * The TID tree entry is created immediately (so indexes get a valid TID),
+	 * but attribute data is deferred until the nursery flushes, at which point
+	 * nxbt_attr_multi_insert() is called with a large batch, enabling
+	 * type-specific compression codecs (Chimp, DOD, FOR, Dict, UUID v7, etc.)
+	 * that require nitems >= 2.
+	 */
+	if (noxu_nursery_enabled && speculative_token == INVALID_SPECULATIVE_TOKEN)
+	{
+		NXNurseryBuffer *nursery;
+		bool		has_oversized = false;
+
+		/* Check for oversized datums that need immediate overflow handling */
+		d = slot->tts_values;
+		isnulls = slot->tts_isnull;
+		for (attno = 1; attno <= relation->rd_att->natts; attno++)
+		{
+			Form_pg_attribute attr = TupleDescAttr(slot->tts_tupleDescriptor, attno - 1);
+
+			if (!isnulls[attno - 1] && attr->attlen < 0 &&
+				!VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(d[attno - 1])) &&
+				VARSIZE_ANY_EXHDR((struct varlena *) DatumGetPointer(d[attno - 1])) > MaxNoxuDatumSize)
+			{
+				has_oversized = true;
+				break;
+			}
+		}
+
+		if (!has_oversized)
+		{
+			nursery = nx_nursery_get_or_create(relation);
+
+			/* Flush if at capacity or memory limit */
+			if (nursery->nrows >= nursery->capacity ||
+				nursery->mem_bytes >= (Size) noxu_nursery_mem_limit_kb * 1024)
+			{
+				nx_nursery_flush(relation, nursery);
+			}
+
+			/* Insert TID immediately (for index correctness) */
+			tid = InvalidNXTid;
+			nxbt_tid_multi_insert(relation, &tid, 1,
+								  xid, cid, speculative_token,
+								  InvalidRelUndoRecPtr);
+
+			CheckForSerializableConflictIn(relation, NULL, InvalidBlockNumber);
+
+			/* Buffer attribute data for batch flush later */
+			nx_nursery_buffer_row(nursery, slot, tid, cid);
+
+			slot->tts_tableOid = RelationGetRelid(relation);
+			slot->tts_tid = ItemPointerFromNXTid(tid);
+
+			pgstat_count_heap_insert(relation, 1);
+			nxstats_count_insert(RelationGetRelid(relation), 1);
+			return;
+		}
+
+		/* Fall through to direct insert for oversized datums */
+	}
+
+	/*
+	 * Direct insert path: create TID and attribute items immediately.
+	 *
+	 * Used when the nursery is disabled, for speculative inserts, or when
+	 * datums exceed MaxNoxuDatumSize and need overflow pages.
+	 *
 	 * Insert code performs many small allocations for creating and merging
 	 * items, proportional to the number of columns and rows. Using a
 	 * dedicated memory context allows efficient bulk cleanup via
 	 * MemoryContextDelete rather than tracking individual pfree calls.
-	 *
-	 * A potential future optimization would be to avoid the context creation
-	 * overhead for simple cases and only create it when page splits occur,
-	 * but profiling has not shown this to be a significant bottleneck.
 	 */
 	insert_mcontext = AllocSetContextCreate(CurrentMemoryContext,
 											"NoxuAMContext",
 											ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(insert_mcontext);
 
-	if (slot->tts_tupleDescriptor->natts != relation->rd_att->natts)
-		elog(ERROR, "slot's attribute count doesn't match relcache entry");
-
-	slot_getallattrs(slot);
 	d = slot->tts_values;
 	isnulls = slot->tts_isnull;
 
@@ -1528,6 +1605,25 @@ noxuam_beginscan_with_column_projection(Relation relation, Snapshot snapshot,
 	scan->proj_data.project_columns = project_columns;
 
 	/*
+	 * Flush the nursery before scanning.  Since TID tree entries exist for
+	 * nursery-buffered rows but their attribute data is only in memory,
+	 * the attribute B-tree scan would find TIDs but miss column values.
+	 * Flushing ensures attribute data is in the B-trees before the scan.
+	 */
+	scan->nursery_scan_idx = -1;
+	scan->nursery_flushed = false;
+	if (noxu_nursery_enabled)
+	{
+		NXNurseryBuffer *nursery = nx_nursery_get(relation);
+
+		if (nursery != NULL && nursery->nrows > 0)
+		{
+			nx_nursery_flush(relation, nursery);
+			scan->nursery_flushed = true;
+		}
+	}
+
+	/*
 	 * For a seqscan in a serializable transaction, acquire a predicate lock
 	 * on the entire relation. This is required not only to lock all the
 	 * matching tuples, but also to conflict with new insertions into the
@@ -2155,6 +2251,20 @@ noxuam_fetch_row(NoxuIndexFetchData * fetch,
 	nxtid		tid = NXTidFromItemPointer(*tid_p);
 	bool		found = true;
 	NoxuProjectData *fetch_proj = &fetch->proj_data;
+
+	/*
+	 * Check if the TID's attribute data is still buffered in the nursery.
+	 * If so, flush the nursery first so the B-tree fetch below can find it.
+	 * This is necessary because TID tree entries are created immediately
+	 * during nursery inserts, but attribute data is deferred.
+	 */
+	if (noxu_nursery_enabled)
+	{
+		NXNurseryBuffer *nursery = nx_nursery_get(rel);
+
+		if (nursery != NULL && nursery->nrows > 0)
+			nx_nursery_flush(rel, nursery);
+	}
 
 	/* first time here, initialize */
 	if (fetch_proj->num_proj_atts == 0)
@@ -2832,6 +2942,15 @@ static void
 noxuam_finish_bulk_insert(Relation relation, uint32 options)
 {
 	(void) options;
+
+	/* Flush any remaining nursery data at end of bulk insert */
+	if (noxu_nursery_enabled)
+	{
+		NXNurseryBuffer *nursery = nx_nursery_get(relation);
+
+		if (nursery != NULL && nursery->nrows > 0)
+			nx_nursery_flush(relation, nursery);
+	}
 
 	/*
 	 * If we skipped writing WAL, then we need to sync the noxu (but not
@@ -5140,6 +5259,15 @@ noxuam_vacuum_rel(Relation onerel, const VacuumParams *params,
 {
 	VacuumParams mutable_params = *params;
 
+	/* Flush nursery before vacuum to ensure all data is in the B-trees */
+	if (noxu_nursery_enabled)
+	{
+		NXNurseryBuffer *nursery = nx_nursery_get(onerel);
+
+		if (nursery != NULL && nursery->nrows > 0)
+			nx_nursery_flush(onerel, nursery);
+	}
+
 	/*
 	 * Vacuum the per-relation UNDO fork.  nxundo_vacuum determines the oldest
 	 * visible XID, calls RelUndoVacuum to discard expired records, and updates
@@ -5226,6 +5354,12 @@ noxu_tableam_handler(PG_FUNCTION_ARGS)
 	{
 		noxu_stats_init();
 		noxu_planner_init();
+		nx_nursery_init_gucs();
+		nx_lsm_init_gucs();
+
+		/* Reserve after all modules have registered their GUCs */
+		MarkGUCPrefixReserved("noxu");
+
 		initialized = true;
 	}
 
