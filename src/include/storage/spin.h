@@ -44,6 +44,82 @@
 #ifndef SPIN_H
 #define SPIN_H
 
+#ifdef USE_STDATOMIC_H
+
+/*
+ * Atomics-based spinlocks.  Future releases aim to make this the sole path.
+ *
+ * When stdatomic.h is available, spinlocks are implemented directly on top
+ * of the pg_atomic_flag API rather than platform-specific TAS assembly.
+ */
+#include "port/atomics.h"
+
+typedef pg_atomic_flag slock_t;
+
+/*
+ * SpinDelayStatus and friends are needed here since s_lock.h isn't included
+ * in the stdatomic path.  These must match the definitions in s_lock.h.
+ */
+#define DEFAULT_SPINS_PER_DELAY  100
+
+typedef struct
+{
+	int			spins;
+	int			delays;
+	int			cur_delay;
+	const char *file;
+	int			line;
+	const char *func;
+} SpinDelayStatus;
+
+static inline void
+init_spin_delay(SpinDelayStatus *status,
+				const char *file, int line, const char *func)
+{
+	status->spins = 0;
+	status->delays = 0;
+	status->cur_delay = 0;
+	status->file = file;
+	status->line = line;
+	status->func = func;
+}
+
+#define init_local_spin_delay(status) init_spin_delay(status, __FILE__, __LINE__, __func__)
+
+extern void perform_spin_delay(SpinDelayStatus *status);
+extern void finish_spin_delay(SpinDelayStatus *status);
+extern void set_spins_per_delay(int shared_spins_per_delay);
+extern int	update_spins_per_delay(int shared_spins_per_delay);
+
+extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
+
+static inline void
+SpinLockInit(volatile slock_t *lock)
+{
+	pg_atomic_init_flag(lock);
+}
+
+/*
+ * SpinLockAcquire - acquire a spinlock, waiting if necessary.
+ *
+ * This is a macro (not an inline function) so that __FILE__, __LINE__, and
+ * __func__ resolve at the call site for "stuck spinlock" diagnostics.
+ */
+#define SpinLockAcquire(lock) \
+	(pg_atomic_test_set_flag(lock) ? (void) 0 : \
+	 (void) s_lock((lock), __FILE__, __LINE__, __func__))
+
+static inline void
+SpinLockRelease(volatile slock_t *lock)
+{
+	pg_atomic_clear_flag(lock);
+}
+
+#else							/* !USE_STDATOMIC_H */
+
+/*
+ * Traditional spinlock implementation using platform-specific TAS assembly.
+ */
 #include "storage/s_lock.h"
 
 static inline void
@@ -63,5 +139,7 @@ SpinLockRelease(volatile slock_t *lock)
 {
 	S_UNLOCK(lock);
 }
+
+#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */

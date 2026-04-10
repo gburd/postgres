@@ -130,4 +130,15 @@ __asm__ __volatile__("":::"memory");
 }
 #endif							/* PG_HAVE_SPIN_DELAY */
 
+/*
+ * Architectures where a relaxed load before the atomic exchange
+ * reduces cache-coherency traffic under spinlock contention.
+ */
+#if defined(__i386__) || defined(__x86_64__) || \
+	defined(_M_IX86) || defined(_M_AMD64) || \
+	defined(__ppc__) || defined(__powerpc__) || \
+	defined(__ppc64__) || defined(__powerpc64__)
+#define PG_SPIN_TRY_RELAXED
+#endif
+
 #endif							/* SPIN_DELAY_H */
