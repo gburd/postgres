@@ -2,41 +2,41 @@
 CREATE EXTENSION test_atomics;
 -- Test atomic flag operations (moderate iteration count for CI)
 SELECT test_atomic_flag_operations(1000);
-              test_atomic_flag_operations
--------------------------------------------------------
+                 test_atomic_flag_operations
+--------------------------------------------------------------
  SUCCESS: All 1000 atomic flag operations completed correctly+
- Implementation: stdatomic.h (C11)                    +
+ Implementation: stdatomic.h (C11)                           +
 
 (1 row)
 
 -- Test uint32 atomic operations
 SELECT test_atomic_uint32_operations(1000);
-            test_atomic_uint32_operations
-------------------------------------------------------
+                 test_atomic_uint32_operations
+----------------------------------------------------------------
  SUCCESS: All 1000 uint32 atomic operations completed correctly+
- Implementation: stdatomic.h (C11)                   +
+ Implementation: stdatomic.h (C11)                             +
 
 (1 row)
 
 -- Test uint64 atomic operations
 SELECT test_atomic_uint64_operations(1000);
-            test_atomic_uint64_operations
-------------------------------------------------------
+                 test_atomic_uint64_operations
+----------------------------------------------------------------
  SUCCESS: All 1000 uint64 atomic operations completed correctly+
- Implementation: stdatomic.h (C11)                   +
+ Implementation: stdatomic.h (C11)                             +
 
 (1 row)
 
 -- Benchmark atomic operations (lower iteration count for CI)
 SELECT benchmark_atomic_operations(10000);
-                   benchmark_atomic_operations
-------------------------------------------------------------------
- Atomic flag: 10000 iterations in *.* ms (*.* M ops/sec)        +
- uint32 fetch_add: 10000 iterations in *.* ms (*.* M ops/sec)   +
- uint64 fetch_add: 10000 iterations in *.* ms (*.* M ops/sec)   +
- uint32 compare_exchange: 10000 iterations in *.* ms (*.* M ops/sec)+
-                                                                  +
- Implementation: stdatomic.h (C11)                               +
+                       benchmark_atomic_operations
+--------------------------------------------------------------------------
+ Atomic flag: 10000 iterations in *.* ms (*.* M ops/sec)                 +
+ uint32 fetch_add: 10000 iterations in *.* ms (*.* M ops/sec)            +
+ uint64 fetch_add: 10000 iterations in *.* ms (*.* M ops/sec)            +
+ uint32 compare_exchange: 10000 iterations in *.* ms (*.* M ops/sec)     +
+                                                                         +
+ Implementation: stdatomic.h (C11)                                       +
 
 (1 row)
 

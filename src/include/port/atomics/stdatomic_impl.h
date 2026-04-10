@@ -123,7 +123,7 @@ typedef pg_atomic(uint64) pg_atomic_uint64;
  * This polarity difference is INTENTIONAL and internal to the implementation.
  * The public API behavior is identical in both implementations:
  * - pg_atomic_init_flag() initializes to unlocked state
- * - pg_atomic_test_set_flag() returns true if lock acquisition failed
+ * - pg_atomic_test_set_flag() returns true if lock was successfully acquired
  * - pg_atomic_clear_flag() releases the lock
  *
  * The stdatomic.h convention (1=unlocked) is more natural for C11 atomics
@@ -145,7 +145,8 @@ pg_atomic_init_flag_impl(volatile pg_atomic_flag *ptr)
  * pg_atomic_test_set_flag_impl - Try to acquire lock
  *
  * Atomically sets flag to 0 (locked) and returns previous value.
- * Returns true if the flag was already 0 (already locked), false if we acquired it.
+ * Returns true if we successfully acquired the lock (old value was 1,
+ * meaning unlocked), false if already locked (old value was 0).
  *
  * Memory ordering: acquire (synchronizes-with prior release)
  */
@@ -153,13 +154,13 @@ static inline bool
 pg_atomic_test_set_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	/*
-	 * Exchange flag with 0 (locked). If previous value was 0, we failed
-	 * to acquire (someone else holds it). If previous value was 1, we
-	 * succeeded (we changed it from unlocked to locked).
+	 * Exchange flag with 0 (locked). If previous value was 1 (unlocked),
+	 * we succeeded in acquiring. If previous value was 0 (already locked),
+	 * we failed.
 	 *
-	 * Return true if we FAILED (for failed acquisition loop).
+	 * Return true if we SUCCEEDED in acquiring the lock.
 	 */
-	return atomic_exchange_explicit(ptr, 0, memory_order_acquire) == 0;
+	return atomic_exchange_explicit(ptr, 0, memory_order_acquire) != 0;
 }
 
 /*
@@ -210,23 +211,25 @@ pg_atomic_init_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 /*
  * pg_atomic_read_u32_impl - Atomically read uint32 value
  *
- * Memory ordering: seq_cst (fully ordered)
+ * Memory ordering: relaxed (matching traditional volatile semantics).
+ * Callers that need ordering should use pg_atomic_read_membarrier_u32_impl().
  */
 static inline uint32
 pg_atomic_read_u32_impl(volatile pg_atomic_uint32 *ptr)
 {
-	return atomic_load_explicit(ptr, memory_order_seq_cst);
+	return atomic_load_explicit(ptr, memory_order_relaxed);
 }
 
 /*
  * pg_atomic_write_u32_impl - Atomically write uint32 value
  *
- * Memory ordering: seq_cst (fully ordered)
+ * Memory ordering: relaxed (matching traditional volatile semantics).
+ * Callers that need ordering should use pg_atomic_write_membarrier_u32_impl().
  */
 static inline void
 pg_atomic_write_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 {
-	atomic_store_explicit(ptr, val, memory_order_seq_cst);
+	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
 
 /*
@@ -381,16 +384,28 @@ pg_atomic_init_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 	atomic_init(ptr, val);
 }
 
+/*
+ * pg_atomic_read_u64_impl - Atomically read uint64 value
+ *
+ * Memory ordering: relaxed (matching traditional volatile semantics).
+ * Callers that need ordering should use pg_atomic_read_membarrier_u64_impl().
+ */
 static inline uint64
 pg_atomic_read_u64_impl(volatile pg_atomic_uint64 *ptr)
 {
-	return atomic_load_explicit(ptr, memory_order_seq_cst);
+	return atomic_load_explicit(ptr, memory_order_relaxed);
 }
 
+/*
+ * pg_atomic_write_u64_impl - Atomically write uint64 value
+ *
+ * Memory ordering: relaxed (matching traditional volatile semantics).
+ * Callers that need ordering should use pg_atomic_write_membarrier_u64_impl().
+ */
 static inline void
 pg_atomic_write_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 {
-	atomic_store_explicit(ptr, val, memory_order_seq_cst);
+	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
 
 static inline uint64

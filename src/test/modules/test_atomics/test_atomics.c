@@ -60,8 +60,8 @@ test_atomic_flag_operations(PG_FUNCTION_ARGS)
 			break;
 		}
 
-		/* Acquire the flag (test_set should succeed, returning false) */
-		if (pg_atomic_test_set_flag(&test_flag))
+		/* Acquire the flag (test_set should succeed, returning true) */
+		if (!pg_atomic_test_set_flag(&test_flag))
 		{
 			success = false;
 			appendStringInfo(&buf, "ERROR: Failed to acquire flag at iteration %d\n", i);
