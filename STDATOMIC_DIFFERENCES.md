@@ -13,20 +13,26 @@ dual-implementation approach.
 
 | Operation | Postgres 18 | V3 Patches | V4 Patches |
 |-----------|-------------|------------|------------|
-| `pg_atomic_read_u32/64()` | Plain load (no ordering) | `memory_order_relaxed` | `memory_order_seq_cst` |
-| `pg_atomic_write_u32/64()` | Plain store (no ordering) | `memory_order_relaxed` | `memory_order_seq_cst` |
+| `pg_atomic_read_u32/64()` | Plain load (no ordering) | `memory_order_relaxed` | `memory_order_relaxed` |
+| `pg_atomic_write_u32/64()` | Plain store (no ordering) | `memory_order_relaxed` | `memory_order_relaxed` |
 | `pg_atomic_unlocked_read_u32/64()` | Plain load | `memory_order_relaxed` | `memory_order_relaxed` |
 | `pg_atomic_unlocked_write_u32/64()` | Plain store | `memory_order_relaxed` | `memory_order_relaxed` |
 
-**Impact:** V4 is MORE CONSERVATIVE than both Postgres 18 and v3.
+**Impact:** V4 now matches both Postgres 18 and v3 for basic read/write.
 - Postgres 18: No ordering guarantees (compiler can reorder/optimize)
-- V3: Atomic but can be reordered by CPU
-- v4: Full sequential consistency (strictest)
+- V3: Atomic but can be reordered by CPU (`relaxed`)
+- V4: `relaxed` ordering, matching traditional volatile semantics
+- The `_membarrier` variants use `seq_cst` for callers that need ordering.
 
-**Correctness:** Using seq_cst is always safe. If performance issues arise, can
-relax to `memory_order_relaxed` after thorough testing.
+**Correctness:** `relaxed` is correct because traditional `pg_atomic_read_u32_impl`
+(generic-gcc.h) is a plain volatile read with no fence. The `_membarrier` variants
+already use `seq_cst` for callers that need ordering guarantees.
 
-**Decision:** Not configurable. Memory ordering is an API contract.
+**Performance:** On x86 (TSO), behavior is identical since relaxed ≈ seq_cst for
+loads/stores. On ARM/POWER this avoids unnecessary DMB/sync instructions,
+matching the performance profile of the traditional implementation.
+
+**Decision:** Not configurable. Memory ordering matches traditional semantics.
 
 ---
 
@@ -308,9 +314,45 @@ if (try_to_set && pg_atomic_test_set_flag(lock))
 
 ---
 
-## 7. DELETED FUNCTIONALITY
+## 7. SPINLOCK DUAL-PATH IMPLEMENTATION
 
-### 7.1 Architecture-Specific Assembly (v3 patches only)
+### 7.1 Spinlock Implementation Strategy
+
+When `USE_STDATOMIC_H` is defined, spinlocks are implemented on top of
+the `pg_atomic_flag` API rather than platform-specific TAS assembly:
+
+| Component | Traditional Path | stdatomic Path |
+|-----------|-----------------|----------------|
+| `slock_t` type | `unsigned char` (platform-specific) | `pg_atomic_flag` (`_Atomic(uint8)`) |
+| `SpinLockInit` | `S_INIT_LOCK()` | `pg_atomic_init_flag()` |
+| `SpinLockAcquire` | `S_LOCK()` (TAS + s_lock) | `pg_atomic_test_set_flag()` + `s_lock()` |
+| `SpinLockRelease` | `S_UNLOCK()` | `pg_atomic_clear_flag()` |
+| Spin delay | `SPIN_DELAY()` | `pg_spin_delay()` |
+
+**Key design decisions:**
+
+1. **`SpinLockAcquire` is a macro** (not an inline function) so that
+   `__FILE__`/`__LINE__`/`__func__` resolve at the call site for
+   "stuck spinlock" diagnostics.
+
+2. **`s_lock()` uses the relaxed-load optimization** on x86/PowerPC
+   via `PG_SPIN_TRY_RELAXED`: a relaxed load tests the flag before
+   attempting the atomic exchange, reducing cache-coherency traffic
+   under contention.
+
+3. **`SpinDelayStatus` is duplicated** in `spin.h` (for the stdatomic path)
+   and `s_lock.h` (for the traditional path) to avoid circular header
+   dependencies.
+
+4. **`S_LOCK_TEST` standalone test** is only built for the traditional path,
+   since the stdatomic path uses the same `s_lock()` slow path but through
+   the atomics API.
+
+---
+
+## 8. DELETED FUNCTIONALITY
+
+### 8.1 Architecture-Specific Assembly (v3 patches only)
 
 **Files deleted by v3 patches:**
 - `src/include/port/atomics/arch-arm.h` (32 lines)
@@ -329,7 +371,7 @@ stdatomic performs poorly on any platform.
 
 ---
 
-### 7.2 Test-and-Set Assembly Functions
+### 8.2 Test-and-Set Assembly Functions
 
 **Postgres 18:** Some platforms build platform-specific `tas.s` files with hand-written
 atomic test-and-set.
@@ -342,9 +384,9 @@ atomic test-and-set.
 
 ---
 
-## 8. C++ COMPATIBILITY
+## 9. C++ COMPATIBILITY
 
-### 8.1 Header Inclusion
+### 9.1 Header Inclusion
 
 | Implementation | C Compatibility | C++ Compatibility |
 |----------------|-----------------|-------------------|
@@ -359,9 +401,9 @@ atomic test-and-set.
 
 ---
 
-## 9. FRONTEND CODE SUPPORT
+## 10. FRONTEND CODE SUPPORT
 
-### 9.1 Atomics in Frontend Programs
+### 10.1 Atomics in Frontend Programs
 
 | Implementation | Frontend Support |
 |----------------|------------------|
@@ -377,9 +419,9 @@ is a standard header with no backend dependencies.
 
 ---
 
-## 10. BUILD FLAG RECOMMENDATIONS
+## 11. BUILD FLAG RECOMMENDATIONS
 
-### 10.1 Primary Flag: USE_STDATOMIC_H
+### 11.1 Primary Flag: USE_STDATOMIC_H
 
 **Purpose:** Select stdatomic.h vs Postgres 18 implementation.
 
@@ -395,7 +437,7 @@ is a standard header with no backend dependencies.
 
 ---
 
-### 10.2 Flags NOT Recommended
+### 11.2 Flags NOT Recommended
 
 Based on comprehensive audit, these flags are **NOT NEEDED:**
 
@@ -418,9 +460,9 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 
 ---
 
-## 11. TESTING REQUIREMENTS
+## 12. TESTING REQUIREMENTS
 
-### 11.1 Functional Testing
+### 12.1 Functional Testing
 
 **Required before production:**
 
@@ -449,7 +491,7 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 
 ---
 
-### 11.2 Performance Testing
+### 12.2 Performance Testing
 
 **Required on ALL supported platforms:**
 
@@ -466,7 +508,7 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 
 ---
 
-### 11.3 Platform Coverage
+### 12.3 Platform Coverage
 
 **Must test on:**
 - ✓ x86_64 Linux
@@ -479,9 +521,9 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 
 ---
 
-## 12. DOCUMENTATION REQUIREMENTS
+## 13. DOCUMENTATION REQUIREMENTS
 
-### 12.1 Code Comments
+### 13.1 Code Comments
 
 **Completed:**
 - ✓ Flag polarity difference documented in stdatomic_impl.h
@@ -489,7 +531,7 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 - ✓ Memory ordering documented in atomics.h
 - ✓ C++ compatibility documented in stdatomic_impl.h
 
-### 12.2 User Documentation
+### 13.2 User Documentation
 
 **Required:**
 - Document `-Duse_stdatomic` build option
@@ -499,7 +541,7 @@ Based on comprehensive audit, these flags are **NOT NEEDED:**
 
 ---
 
-## 13. SUMMARY: NO ADDITIONAL BUILD FLAGS NEEDED
+## 14. SUMMARY: NO ADDITIONAL BUILD FLAGS NEEDED
 
 **Conclusion:** The semantic differences between Postgres 18 and stdatomic.h
 implementations do NOT require additional build flags beyond the primary

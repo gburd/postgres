@@ -25,6 +25,10 @@
  * Both implementations provide identical public API and semantics.
  * Selection is made at build time via -Duse_stdatomic=auto/yes/no.
  *
+ * NOTE: The traditional platform-specific implementation is maintained for
+ * backward compatibility. Future versions aim to make stdatomic.h the sole
+ * implementation and remove the traditional path.
+ *
  * PORTING NOTES:
  *
  * To bring up postgres on a platform/compiler at the very least
