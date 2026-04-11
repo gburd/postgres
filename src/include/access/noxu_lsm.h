@@ -182,6 +182,67 @@ extern void nx_lsm_request_merge(Relation rel, int level_num);
 /* Scan support */
 extern bool nx_lsm_tid_in_segment(NXLSMSegmentDesc *seg, nxtid tid);
 
+/*
+ * NXCompressionPolicy - Per-level compression codec eligibility.
+ *
+ * Controls which compression codecs are tried at each LSM level.
+ * When NULL is passed to nxbt_attr_create_item(), all codecs are
+ * evaluated (current default behavior).  When non-NULL, only
+ * allowed codecs are tried.
+ *
+ * Level 1 (row pages): No column compression (row-oriented format).
+ * Level 2: Cheap codecs (FOR, Dict, bitpacking) for warm data.
+ * Level 3+: All codecs for maximum compression on cold data.
+ */
+typedef struct NXCompressionPolicy
+{
+	bool		allow_chimp;		/* Float XOR compression */
+	bool		allow_dod;			/* Delta-of-delta */
+	bool		allow_for;			/* Frame of reference */
+	bool		allow_dict;			/* Dictionary encoding */
+	bool		allow_fsst;			/* FSST string compression */
+	bool		allow_uuid_delta;	/* UUID v7 delta */
+	bool		allow_shared_dict;	/* zstd shared dictionary */
+	bool		allow_page_compress; /* zstd/LZ4/pglz page-level */
+} NXCompressionPolicy;
+
+/* Pre-defined policies for each level tier */
+extern const NXCompressionPolicy nx_lsm_policy_level2;		/* cheap codecs */
+extern const NXCompressionPolicy nx_lsm_policy_full;		/* all codecs */
+
+/* Get the compression policy for a given level */
+extern const NXCompressionPolicy *nx_lsm_get_level_policy(int level_num);
+
+/*
+ * NXSegmentZoneMap - Per-segment min/max statistics for predicate pushdown.
+ *
+ * Built during merge, stored alongside segment descriptors in the LSM
+ * metadata.  Allows entire segments to be skipped during scan when the
+ * query predicate doesn't overlap the segment's value range.
+ */
+#define NX_ZONEMAP_MAX_COLS		32	/* Max columns tracked per segment */
+
+typedef struct NXSegmentZoneMap
+{
+	int			ncols;			/* Number of columns tracked */
+	bool		valid;			/* Zone map has been populated */
+	Datum		col_min[NX_ZONEMAP_MAX_COLS];
+	Datum		col_max[NX_ZONEMAP_MAX_COLS];
+	int32		col_null_count[NX_ZONEMAP_MAX_COLS];
+} NXSegmentZoneMap;
+
+/* Merge operations (noxu_merge_worker.c) */
+extern void nx_lsm_merge_level(Relation rel, int level_num);
+extern void nx_lsm_merge_all_pending(Relation rel);
+
+/* Background merge worker (noxu_merge_worker.c) */
+extern void NoxuMergeWorkerMain(Datum main_arg);
+extern void NoxuMergeWorkerRegister(void);
+extern void nx_lsm_merge_init_gucs(void);
+
+/* GUC variables */
+extern PGDLLIMPORT int noxu_lsm_merge_interval_ms;
+
 /* Initialization */
 extern void nx_lsm_init_gucs(void);
 

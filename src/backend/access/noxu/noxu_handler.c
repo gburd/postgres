@@ -5274,6 +5274,9 @@ noxuam_vacuum_rel(Relation onerel, const VacuumParams *params,
 	 * the NX metapage statistics.
 	 */
 	nxundo_vacuum(onerel, &mutable_params, bstrategy);
+
+	/* Force all pending LSM merges synchronously during VACUUM */
+	nx_lsm_merge_all_pending(onerel);
 }
 
 const TableAmRoutine noxuam_methods = {
@@ -5356,6 +5359,7 @@ noxu_tableam_handler(PG_FUNCTION_ARGS)
 		noxu_planner_init();
 		nx_nursery_init_gucs();
 		nx_lsm_init_gucs();
+		nx_lsm_merge_init_gucs();
 
 		/* Reserve after all modules have registered their GUCs */
 		MarkGUCPrefixReserved("noxu");

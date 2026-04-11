@@ -33,6 +33,51 @@ int			noxu_lsm_base_capacity = 4096;
 int			noxu_lsm_max_levels = 20;
 
 /*
+ * Pre-defined compression policies for LSM levels (Phase 4).
+ *
+ * Level 2: Cheap codecs only (FOR, Dict, bitpacking).
+ * Level 3+: Full codec cascade for maximum compression.
+ */
+const NXCompressionPolicy nx_lsm_policy_level2 = {
+	.allow_chimp = false,
+	.allow_dod = false,
+	.allow_for = true,
+	.allow_dict = true,
+	.allow_fsst = false,
+	.allow_uuid_delta = false,
+	.allow_shared_dict = false,
+	.allow_page_compress = true,
+};
+
+const NXCompressionPolicy nx_lsm_policy_full = {
+	.allow_chimp = true,
+	.allow_dod = true,
+	.allow_for = true,
+	.allow_dict = true,
+	.allow_fsst = true,
+	.allow_uuid_delta = true,
+	.allow_shared_dict = true,
+	.allow_page_compress = true,
+};
+
+/*
+ * nx_lsm_get_level_policy - Get the compression policy for a given level.
+ *
+ * Returns NULL for Level 1 (row-oriented, no column compression).
+ * Returns policy_level2 for Level 2 (cheap codecs).
+ * Returns policy_full for Level 3+ (all codecs).
+ */
+const NXCompressionPolicy *
+nx_lsm_get_level_policy(int level_num)
+{
+	if (level_num <= 1)
+		return NULL;			/* Row-oriented, no column compression */
+	if (level_num == 2)
+		return &nx_lsm_policy_level2;
+	return &nx_lsm_policy_full;
+}
+
+/*
  * Backend-private LSM metadata cache.
  * Keyed by RelFileLocator, but for simplicity we cache only the
  * most recently used relation.
@@ -612,17 +657,19 @@ nx_lsm_assign_to_level(Relation rel, int level_num,
 }
 
 /*
- * nx_lsm_request_merge - Request a background merge at a level.
+ * nx_lsm_request_merge - Request a merge at a level.
  *
- * For Phase 2, this is a no-op placeholder.  Phase 3 will implement
- * the background merge worker.  For now, merges can be triggered
- * explicitly via VACUUM or a future SQL function.
+ * When both A and B segments exist at a level, attempt an immediate
+ * synchronous merge.  This avoids the complexity of background worker
+ * coordination and ensures data is promptly merged into the B-tree.
+ *
+ * The background merge worker (NoxuMergeWorkerMain) provides an
+ * additional periodic scan for any missed merges.
  */
 void
-nx_lsm_request_merge(Relation rel pg_attribute_unused(),
-					  int level_num pg_attribute_unused())
+nx_lsm_request_merge(Relation rel, int level_num)
 {
-	/* Phase 3 will implement background merge scheduling */
+	nx_lsm_merge_level(rel, level_num);
 }
 
 /*

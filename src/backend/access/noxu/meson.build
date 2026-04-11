@@ -11,6 +11,7 @@ backend_sources += files(
   'noxu_freepagemap.c',
   'noxu_inspect.c',
   'noxu_lsm.c',
+  'noxu_merge_worker.c',
   'noxu_meta.c',
   'noxu_nursery.c',
   'noxu_overflow.c',
