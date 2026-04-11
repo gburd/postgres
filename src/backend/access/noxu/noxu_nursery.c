@@ -38,7 +38,7 @@
 #include "utils/memutils.h"
 
 /* GUC variables */
-bool		noxu_nursery_enabled = false;
+bool		noxu_nursery_enabled = true;
 int			noxu_nursery_size = 2048;
 int			noxu_nursery_mem_limit_kb = 8192;
 bool		noxu_nursery_flush_on_scan = true;
@@ -67,6 +67,7 @@ static void nx_nursery_subxact_callback(SubXactEvent event,
 										void *arg);
 static void nx_nursery_destroy_all(void);
 static void nx_nursery_reset(NXNurseryBuffer *nursery);
+void nx_nursery_reset_internal(NXNurseryBuffer *nursery);
 
 /*
  * nx_nursery_ensure_htab - Create the hash table if it doesn't exist.
@@ -249,7 +250,7 @@ nx_nursery_buffer_row(NXNurseryBuffer *nursery,
  */
 #define NX_NURSERY_FLUSH_BATCH_SIZE		1000
 
-static void
+void
 nx_nursery_flush_to_btree(Relation rel, NXNurseryBuffer *nursery)
 {
 	int			nrows = nursery->nrows;
@@ -333,7 +334,7 @@ nx_nursery_flush_to_btree(Relation rel, NXNurseryBuffer *nursery)
  * If both slots are occupied (merge in progress), falls back to the
  * direct B-tree path.
  */
-static void pg_attribute_unused()
+static void
 nx_nursery_flush_to_lsm(Relation rel, NXNurseryBuffer *nursery)
 {
 	int			nrows = nursery->nrows;
@@ -409,11 +410,14 @@ nx_nursery_flush_to_lsm(Relation rel, NXNurseryBuffer *nursery)
 /*
  * nx_nursery_flush - Flush all buffered attribute data.
  *
- * Always flushes to the B-tree to ensure data is visible to scans.
- * The LSM Level 1 path (nx_nursery_flush_to_lsm) is available as
- * infrastructure for Phase 3's background merge worker, which will
- * use it for capacity-triggered flushes while the merge worker moves
- * data from Level 1 into the B-tree asynchronously.
+ * When noxu.lsm_enabled is on, flushes to Level 1 row-oriented pages
+ * via nx_nursery_flush_to_lsm().  When off (or when Level 1 is full
+ * and merge is in progress), flushes directly to the B-tree via
+ * nx_nursery_flush_to_btree().
+ *
+ * The LSM path writes row-oriented pages that are later merged into
+ * the columnar B-tree format by the background merge worker, enabling
+ * tiered compression at merge time.
  */
 void
 nx_nursery_flush(Relation rel, NXNurseryBuffer *nursery)
@@ -421,7 +425,10 @@ nx_nursery_flush(Relation rel, NXNurseryBuffer *nursery)
 	if (nursery->nrows == 0)
 		return;
 
-	nx_nursery_flush_to_btree(rel, nursery);
+	if (noxu_lsm_enabled)
+		nx_nursery_flush_to_lsm(rel, nursery);
+	else
+		nx_nursery_flush_to_btree(rel, nursery);
 
 	/* Reset the nursery for reuse */
 	nx_nursery_reset(nursery);
@@ -445,6 +452,18 @@ nx_nursery_reset(NXNurseryBuffer *nursery)
 
 	nursery->nrows = 0;
 	nursery->mem_bytes = 0;
+}
+
+/*
+ * nx_nursery_reset_internal - Externally callable version of nx_nursery_reset.
+ *
+ * Used by the handler when it needs to flush to B-tree directly
+ * (bypassing the LSM path) and then reset the nursery.
+ */
+void
+nx_nursery_reset_internal(NXNurseryBuffer *nursery)
+{
+	nx_nursery_reset(nursery);
 }
 
 /*
@@ -738,7 +757,7 @@ nx_nursery_init_gucs(void)
 							 "in memory and flushed in bulk to the attribute "
 							 "B-trees, enabling compression codecs.",
 							 &noxu_nursery_enabled,
-							 false,
+							 true,
 							 PGC_USERSET,
 							 0,
 							 NULL, NULL, NULL);

@@ -100,6 +100,7 @@
 #include "pgstat.h"
 #include "port/pg_bswap.h"
 #include "port/pg_getopt_ctx.h"
+#include "access/noxu_lsm.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/pgarch.h"
@@ -921,6 +922,13 @@ PostmasterMain(int argc, char *argv[])
 	 * before any modules had a chance to take the background worker slots.
 	 */
 	ApplyLauncherRegister();
+
+	/*
+	 * Register the Noxu LSM merge background worker.  This periodically
+	 * scans for Noxu relations with pending A+B segments and merges them
+	 * from row-oriented format into columnar B-tree format.
+	 */
+	NoxuMergeWorkerRegister();
 
 	/*
 	 * Register the shared memory needs of all core subsystems.

@@ -20,13 +20,16 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/noxu_internal.h"
 #include "access/noxu_lsm.h"
 #include "access/noxu_wal.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/pg_class.h"
+#include "commands/defrem.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
@@ -231,9 +234,21 @@ nx_lsm_merge_segments(Relation rel, int level_num,
 	 * full codec cascade (FOR → DOD → Chimp → Dict → Array → UUID)
 	 * because nitems = n (the full merged batch).
 	 *
+	 * Set the compression policy based on the target level.  Level 2
+	 * uses cheap codecs (FOR, Dict) for warm data; Level 3+ uses all
+	 * codecs for maximum compression on cold data.
+	 *
 	 * We insert in sub-batches to stay within the well-tested range.
 	 */
 #define NX_MERGE_BATCH_SIZE		1000
+
+	{
+		const NXCompressionPolicy *policy;
+		int			target_level = level_num + 1;
+
+		policy = nx_lsm_get_level_policy(target_level);
+		nxbt_attr_set_compression_policy(policy);
+	}
 
 	for (int batch_start = 0; batch_start < n; batch_start += NX_MERGE_BATCH_SIZE)
 	{
@@ -250,7 +265,17 @@ nx_lsm_merge_segments(Relation rel, int level_num,
 		}
 	}
 
-	/* Free old A and B segments → add pages to free page map */
+	/* Clear the compression policy (restore default: all codecs) */
+	nxbt_attr_set_compression_policy(NULL);
+
+	/*
+	 * Free old A and B segment pages via the Free Page Map.
+	 *
+	 * Note: We only free pages here if the merge is running in the
+	 * background worker or during VACUUM.  When called synchronously
+	 * from nx_lsm_request_merge (during an INSERT's nursery flush),
+	 * the FPM dealloc queue will be processed at transaction commit.
+	 */
 	nx_lsm_free_segment_pages(rel, seg_a);
 	nx_lsm_free_segment_pages(rel, seg_b);
 
@@ -364,6 +389,134 @@ nx_lsm_merge_all_pending(Relation rel)
 	}
 }
 
+/*
+ * nx_lsm_flush_segment_to_btree - Read a single row-oriented segment and
+ * insert its data directly into the B-tree attribute pages.
+ *
+ * This is used before scans to ensure any remaining unpaired segments
+ * (e.g., a lone segment A without a matching B) are visible via the
+ * normal B-tree scan path.
+ */
+static void
+nx_lsm_flush_segment_to_btree(Relation rel, NXLSMSegmentDesc *seg)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	int			nattrs = tupdesc->natts;
+	int			n;
+	nxtid	   *tids;
+	Datum	  **col_datums;
+	bool	  **col_isnulls;
+	MemoryContext flush_mcxt;
+	MemoryContext oldcontext;
+
+	if (NXLSMSegmentIsEmpty(seg) || seg->nrows == 0)
+		return;
+
+	flush_mcxt = AllocSetContextCreate(CurrentMemoryContext,
+									   "NoxuLSMFlushSeg",
+									   ALLOCSET_DEFAULT_SIZES);
+	oldcontext = MemoryContextSwitchTo(flush_mcxt);
+
+	tids = (nxtid *) palloc(seg->nrows * sizeof(nxtid));
+	col_datums = (Datum **) palloc(nattrs * sizeof(Datum *));
+	col_isnulls = (bool **) palloc(nattrs * sizeof(bool *));
+	for (int i = 0; i < nattrs; i++)
+	{
+		col_datums[i] = (Datum *) palloc(seg->nrows * sizeof(Datum));
+		col_isnulls[i] = (bool *) palloc(seg->nrows * sizeof(bool));
+	}
+
+	/* Read all rows from the segment */
+	n = nx_lsm_read_row_segment(rel, seg, tids, col_datums,
+								col_isnulls, 0, tupdesc);
+
+	if (n > 0)
+	{
+		/* Insert into B-tree attribute pages in sub-batches */
+		for (int batch_start = 0; batch_start < n;
+			 batch_start += NX_MERGE_BATCH_SIZE)
+		{
+			int		batch_end = Min(batch_start + NX_MERGE_BATCH_SIZE, n);
+			int		nbatch = batch_end - batch_start;
+
+			for (AttrNumber attno = 1; attno <= nattrs; attno++)
+			{
+				nxbt_attr_multi_insert(rel, attno,
+									   col_datums[attno - 1] + batch_start,
+									   col_isnulls[attno - 1] + batch_start,
+									   tids + batch_start,
+									   nbatch);
+			}
+		}
+	}
+
+	/*
+	 * Don't free the segment pages here.  The pages will be reclaimed
+	 * by VACUUM.  Freeing them during a read-only scan context can
+	 * trigger FPM dealloc queue issues during commit.  The segment
+	 * descriptor is cleared by the caller so the pages won't be
+	 * re-read.
+	 */
+
+	MemoryContextSwitchTo(oldcontext);
+	MemoryContextDelete(flush_mcxt);
+}
+
+/*
+ * nx_lsm_flush_all_to_btree - Flush all remaining LSM segments to B-tree.
+ *
+ * Called before sequential scans.  First merges any complete A+B pairs,
+ * then flushes any remaining lone segments directly into the B-tree.
+ * After this call, all attribute data is accessible via the normal
+ * B-tree scan path.
+ */
+void
+nx_lsm_flush_all_to_btree(Relation rel)
+{
+	NXLSMMetaPageData *meta;
+
+	if (!noxu_lsm_enabled)
+		return;
+
+	if (RelationGetNumberOfBlocks(rel) == 0)
+		return;
+
+	/* First, merge any complete A+B pairs */
+	nx_lsm_merge_all_pending(rel);
+
+	/* Then flush any remaining lone segments */
+	meta = nx_lsm_get_meta(rel);
+
+	for (int i = 0; i < meta->nlevels; i++)
+	{
+		NXLSMLevelDesc *level = &meta->levels[i];
+		bool		changed = false;
+
+		if (!NXLSMSegmentIsEmpty(&level->seg_a) && !level->seg_a.is_columnar)
+		{
+			nx_lsm_flush_segment_to_btree(rel, &level->seg_a);
+			memset(&level->seg_a, 0, sizeof(NXLSMSegmentDesc));
+			level->seg_a.segment_id = NX_LSM_SEG_NONE;
+			changed = true;
+		}
+
+		if (!NXLSMSegmentIsEmpty(&level->seg_b) && !level->seg_b.is_columnar)
+		{
+			nx_lsm_flush_segment_to_btree(rel, &level->seg_b);
+			memset(&level->seg_b, 0, sizeof(NXLSMSegmentDesc));
+			level->seg_b.segment_id = NX_LSM_SEG_NONE;
+			changed = true;
+		}
+
+		if (changed)
+		{
+			nx_lsm_meta_update(rel, meta);
+			/* Re-read after update */
+			meta = nx_lsm_get_meta(rel);
+		}
+	}
+}
+
 /* ----------------------------------------------------------------
  * Background Merge Worker
  * ----------------------------------------------------------------
@@ -397,22 +550,85 @@ nx_merge_worker_sigterm(SIGNAL_ARGS)
  * nx_lsm_find_pending_merges - Scan pg_class for Noxu relations with
  * pending merges.
  *
- * Returns a list of relation OIDs that need merging.  This is a simple
- * scan of pg_class filtering for noxu AM relations.  The actual merge
- * decision (whether A+B both exist) is made when opening each relation.
+ * Returns a list of relation OIDs that need merging.  Scans pg_class
+ * for relations using the noxu table AM, then checks each one's LSM
+ * metadata for levels where both A and B segments exist.
  */
 static List *
 nx_lsm_find_pending_merges(void)
 {
-	/* TODO: Scan pg_class for noxu relations with LSM metadata.
-	 * For now, this is a placeholder that returns NIL.
-	 * A real implementation would:
-	 * 1. Open pg_class
-	 * 2. Scan for relam = noxuam OID
-	 * 3. For each, check LSM metadata for pending merges
-	 * 4. Return OID list
+	List	   *result = NIL;
+	Relation	pg_class_rel;
+	TableScanDesc scan;
+	HeapTuple	tup;
+	Oid			noxuam_oid;
+
+	/*
+	 * Look up the noxu table AM OID.  If it doesn't exist (e.g., template
+	 * database without noxu), return immediately.
 	 */
-	return NIL;
+	noxuam_oid = get_table_am_oid("noxu", true);
+	if (!OidIsValid(noxuam_oid))
+		return NIL;
+
+	pg_class_rel = table_open(RelationRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(pg_class_rel, 0, NULL);
+
+	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tup);
+
+		if (classForm->relam == noxuam_oid &&
+			classForm->relkind == RELKIND_RELATION)
+		{
+			/*
+			 * Quick check: open the relation and see if its LSM metadata
+			 * has any levels with both A and B segments (merge candidates).
+			 * We do the full check here to avoid unnecessary RowExclusiveLock
+			 * acquisitions in the main loop.
+			 */
+			Oid			relid = classForm->oid;
+			Relation	rel = NULL;
+
+			PG_TRY();
+			{
+				rel = table_open(relid, AccessShareLock);
+
+				if (RelationGetNumberOfBlocks(rel) > 0)
+				{
+					NXLSMMetaPageData *meta = nx_lsm_get_meta(rel);
+
+					for (int i = 0; i < meta->nlevels; i++)
+					{
+						NXLSMLevelDesc *level = &meta->levels[i];
+
+						if (!NXLSMSegmentIsEmpty(&level->seg_a) &&
+							!NXLSMSegmentIsEmpty(&level->seg_b) &&
+							!level->merge_active)
+						{
+							result = lappend_oid(result, relid);
+							break;
+						}
+					}
+				}
+
+				table_close(rel, AccessShareLock);
+			}
+			PG_CATCH();
+			{
+				/* Skip relations we can't access */
+				if (rel)
+					table_close(rel, AccessShareLock);
+				FlushErrorState();
+			}
+			PG_END_TRY();
+		}
+	}
+
+	table_endscan(scan);
+	table_close(pg_class_rel, AccessShareLock);
+
+	return result;
 }
 
 /*
@@ -431,8 +647,12 @@ NoxuMergeWorkerMain(Datum main_arg)
 	pqsignal(SIGTERM, nx_merge_worker_sigterm);
 	BackgroundWorkerUnblockSignals();
 
-	/* Connect to default database */
-	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
+	/*
+	 * Connect to the "postgres" database.  The merge worker currently
+	 * processes noxu relations in a single database.  A future enhancement
+	 * could iterate all databases like autovacuum does.
+	 */
+	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
 	ereport(LOG, (errmsg("Noxu LSM merge worker started")));
 

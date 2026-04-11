@@ -22,10 +22,13 @@
 #include "access/noxu_wal.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "executor/tuptable.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 
 /* GUC variables */
 bool		noxu_lsm_enabled = false;	/* off by default, Phase 2 opt-in */
@@ -356,36 +359,97 @@ nx_lsm_write_row_pages(Relation rel,
 		/* Allocate a new page */
 		buf = nxpage_getnewbuf(rel, metabuf);
 
-		START_CRIT_SECTION();
-
-		page = BufferGetPage(buf);
-		PageInit(page, BLCKSZ, sizeof(NXLSMRowPageOpaque));
-
-		opaque = NXLSMRowPageGetOpaque(page);
-		opaque->level_num = level_num;
-		opaque->segment_id = segment_id;
-		opaque->next_page = InvalidBlockNumber;
-		opaque->nx_page_id = NX_LSM_ROW_PAGE_ID;
-
-		/* Fill page with MinimalTuples using line pointers */
-		while (row_idx < nrows)
+		/*
+		 * Pre-build TID-tagged items BEFORE entering the critical section.
+		 * palloc is not allowed inside critical sections in assert-enabled
+		 * builds.  We build items into a temporary array and then copy them
+		 * to the page inside the critical section.
+		 */
 		{
-			MinimalTuple mtup = tuples[row_idx];
-			Size		tupsize = mtup->t_len;
-			OffsetNumber off;
+			/* Temporary item storage */
+			typedef struct PendingItem
+			{
+				char	   *data;
+				Size		size;
+				nxtid		tid;
+			} PendingItem;
 
-			/* Check if tuple fits on this page */
-			if (PageGetFreeSpace(page) < MAXALIGN(tupsize) + sizeof(ItemIdData))
-				break;
+			PendingItem pending_items[MaxHeapTuplesPerPage];
+			int			npending = 0;
 
-			off = PageAddItemExtended(page, (char *) mtup, tupsize,
-									  InvalidOffsetNumber,
-									  PAI_OVERWRITE);
-			if (off == InvalidOffsetNumber)
-				break;
+			page = BufferGetPage(buf);
 
-			page_last_tid = tids[row_idx];
-			row_idx++;
+			/*
+			 * Estimate how many items will fit.  We can't call
+			 * PageGetFreeSpace before PageInit, so use BLCKSZ minus
+			 * headers as a conservative estimate.
+			 */
+			Size		space_avail = BLCKSZ - SizeOfPageHeaderData -
+				sizeof(NXLSMRowPageOpaque);
+
+			while (row_idx < nrows &&
+				   npending < MaxHeapTuplesPerPage)
+			{
+				MinimalTuple mtup = tuples[row_idx];
+				Size		tupsize = mtup->t_len;
+				Size		itemsize = sizeof(NXLSMRowItemHeader) + tupsize;
+				char	   *itembuf;
+				NXLSMRowItemHeader *hdr;
+
+				if (space_avail < MAXALIGN(itemsize) + sizeof(ItemIdData))
+					break;
+
+				itembuf = (char *) palloc(itemsize);
+				hdr = (NXLSMRowItemHeader *) itembuf;
+				hdr->tid = tids[row_idx];
+				memcpy(itembuf + sizeof(NXLSMRowItemHeader),
+					   (char *) mtup, tupsize);
+
+				pending_items[npending].data = itembuf;
+				pending_items[npending].size = itemsize;
+				pending_items[npending].tid = tids[row_idx];
+				npending++;
+
+				space_avail -= MAXALIGN(itemsize) + sizeof(ItemIdData);
+				row_idx++;
+			}
+
+			/* Now enter the critical section and write to the page */
+			START_CRIT_SECTION();
+
+			PageInit(page, BLCKSZ, sizeof(NXLSMRowPageOpaque));
+
+			opaque = NXLSMRowPageGetOpaque(page);
+			opaque->level_num = level_num;
+			opaque->segment_id = segment_id;
+			opaque->next_page = InvalidBlockNumber;
+			opaque->nx_page_id = NX_LSM_ROW_PAGE_ID;
+
+			for (int pi = 0; pi < npending; pi++)
+			{
+				OffsetNumber off;
+
+				off = PageAddItemExtended(page, pending_items[pi].data,
+										  pending_items[pi].size,
+										  InvalidOffsetNumber,
+										  PAI_OVERWRITE);
+				if (off == InvalidOffsetNumber)
+				{
+					/*
+					 * Item didn't fit despite our estimate.  Push the
+					 * remaining items back for the next page.
+					 */
+					row_idx -= (npending - pi);
+					break;
+				}
+				page_last_tid = pending_items[pi].tid;
+			}
+
+			/* Free pre-built items (after copying to page) */
+			END_CRIT_SECTION();
+			for (int pi = 0; pi < npending; pi++)
+				pfree(pending_items[pi].data);
+			START_CRIT_SECTION();
 		}
 
 		opaque->first_tid = page_first_tid;
@@ -497,6 +561,7 @@ nx_lsm_read_row_segment(Relation rel,
 		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff; off++)
 		{
 			ItemId		iid = PageGetItemId(page, off);
+			NXLSMRowItemHeader *hdr;
 			MinimalTuple mtup;
 			HeapTupleData htup;
 			Datum	   *values;
@@ -505,7 +570,12 @@ nx_lsm_read_row_segment(Relation rel,
 			if (!ItemIdIsNormal(iid))
 				continue;
 
-			mtup = (MinimalTuple) PageGetItem(page, iid);
+			/*
+			 * Each item is an NXLSMRowItemHeader followed by the
+			 * MinimalTuple data.  Extract the TID from the header.
+			 */
+			hdr = (NXLSMRowItemHeader *) PageGetItem(page, iid);
+			mtup = (MinimalTuple) ((char *) hdr + sizeof(NXLSMRowItemHeader));
 
 			/* Convert MinimalTuple to HeapTuple for deforming */
 			htup.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET;
@@ -529,26 +599,9 @@ nx_lsm_read_row_segment(Relation rel,
 				pfree(isnulls);
 			}
 
-			/* Extract TID from the line pointer position and page opaque */
+			/* Extract TID from the item header */
 			if (tids_out)
-			{
-				/*
-				 * TIDs are stored in the tuples themselves during write.
-				 * For now, derive from the page opaque TID range and offset.
-				 * Actually, we stored MinimalTuples which don't carry TIDs.
-				 * We need an auxiliary TID storage mechanism.
-				 *
-				 * Solution: Store TIDs in a separate array at the beginning
-				 * of the page data, or encode them in the MinimalTuple header.
-				 * For Phase 2 initial implementation, we store (tid, tuplen,
-				 * tupdata) per entry on the page.
-				 *
-				 * TODO: For now, reconstruct TIDs from page opaque range.
-				 * This is a placeholder that works for sequential TIDs.
-				 */
-				tids_out[n] = opaque->first_tid +
-					(nxtid)(off - FirstOffsetNumber);
-			}
+				tids_out[n] = hdr->tid;
 
 			n++;
 		}
@@ -688,6 +741,156 @@ nx_lsm_tid_in_segment(NXLSMSegmentDesc *seg, nxtid tid)
 	return (tid >= seg->first_tid && tid <= seg->last_tid);
 }
 
+/*
+ * nx_lsm_lookup_tid_in_segment - Look up a TID in a row-oriented segment.
+ *
+ * Walks the segment's page chain looking for the given TID.  If found,
+ * populates the slot with the row's column values and returns true.
+ * Returns false if the TID is not in the segment.
+ */
+bool
+nx_lsm_lookup_tid_in_segment(Relation rel, NXLSMSegmentDesc *seg,
+							  nxtid target_tid, TupleTableSlot *slot)
+{
+	BlockNumber blk;
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	int			natts = tupdesc->natts;
+
+	if (NXLSMSegmentIsEmpty(seg))
+		return false;
+
+	/* Quick range check */
+	if (target_tid < seg->first_tid || target_tid > seg->last_tid)
+		return false;
+
+	blk = seg->first_block;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buf;
+		Page		page;
+		NXLSMRowPageOpaque *opaque;
+		OffsetNumber maxoff;
+
+		buf = ReadBuffer(rel, blk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = NXLSMRowPageGetOpaque(page);
+
+		/* Skip this page if TID is outside its range */
+		if (target_tid < opaque->first_tid || target_tid > opaque->last_tid)
+		{
+			blk = opaque->next_page;
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff; off++)
+		{
+			ItemId		iid = PageGetItemId(page, off);
+			NXLSMRowItemHeader *hdr;
+			MinimalTuple mtup;
+			HeapTupleData htup;
+			Datum	   *values;
+			bool	   *isnulls;
+
+			if (!ItemIdIsNormal(iid))
+				continue;
+
+			hdr = (NXLSMRowItemHeader *) PageGetItem(page, iid);
+			if (hdr->tid != target_tid)
+				continue;
+
+			/* Found it.  Deform the tuple and populate the slot. */
+			mtup = (MinimalTuple) ((char *) hdr + sizeof(NXLSMRowItemHeader));
+			htup.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET;
+			htup.t_data = (HeapTupleHeader) ((char *) mtup - MINIMAL_TUPLE_OFFSET);
+
+			values = (Datum *) palloc(natts * sizeof(Datum));
+			isnulls = (bool *) palloc(natts * sizeof(bool));
+			heap_deform_tuple(&htup, tupdesc, values, isnulls);
+
+			ExecClearTuple(slot);
+			for (int i = 0; i < natts && i < slot->tts_tupleDescriptor->natts; i++)
+			{
+				Form_pg_attribute attr = TupleDescAttr(slot->tts_tupleDescriptor, i);
+
+				if (isnulls[i])
+				{
+					slot->tts_values[i] = (Datum) 0;
+					slot->tts_isnull[i] = true;
+				}
+				else
+				{
+					if (!attr->attbyval)
+						slot->tts_values[i] = datumCopy(values[i],
+														attr->attbyval,
+														attr->attlen);
+					else
+						slot->tts_values[i] = values[i];
+					slot->tts_isnull[i] = false;
+				}
+			}
+
+			pfree(values);
+			pfree(isnulls);
+
+			slot->tts_tableOid = RelationGetRelid(rel);
+			slot->tts_tid = ItemPointerFromNXTid(target_tid);
+			ExecStoreVirtualTuple(slot);
+
+			UnlockReleaseBuffer(buf);
+			return true;
+		}
+
+		blk = opaque->next_page;
+		UnlockReleaseBuffer(buf);
+	}
+
+	return false;
+}
+
+/*
+ * nx_lsm_lookup_tid - Look up a TID across all Level 1 segments.
+ *
+ * Checks each non-empty segment at Level 1 for the target TID.
+ * Returns true and populates the slot if found.
+ */
+bool
+nx_lsm_lookup_tid(Relation rel, nxtid target_tid, TupleTableSlot *slot)
+{
+	NXLSMMetaPageData *meta;
+	NXLSMLevelDesc *l1;
+
+	if (!noxu_lsm_enabled)
+		return false;
+
+	if (RelationGetNumberOfBlocks(rel) == 0)
+		return false;
+
+	meta = nx_lsm_get_meta(rel);
+	if (meta->nlevels < 1)
+		return false;
+
+	l1 = &meta->levels[0];
+
+	/* Check segment A */
+	if (nx_lsm_lookup_tid_in_segment(rel, &l1->seg_a, target_tid, slot))
+		return true;
+
+	/* Check segment B */
+	if (nx_lsm_lookup_tid_in_segment(rel, &l1->seg_b, target_tid, slot))
+		return true;
+
+	/* Check merge-in-progress segment X */
+	if (nx_lsm_lookup_tid_in_segment(rel, &l1->seg_x, target_tid, slot))
+		return true;
+
+	return false;
+}
+
 /* ----------------------------------------------------------------
  * WAL Redo Functions
  * ----------------------------------------------------------------
@@ -707,8 +910,13 @@ nx_lsm_init_meta_redo(XLogReaderState *record)
 	Buffer		metabuf;
 	Buffer		lsmbuf;
 
-	/* Redo the LSM metadata page initialization */
-	if (XLogReadBufferForRedo(record, 1, &lsmbuf) == BLK_NEEDS_REDO)
+	/*
+	 * Redo the LSM metadata page initialization.
+	 *
+	 * Block 1 was registered with REGBUF_WILL_INIT, so use
+	 * XLogInitBufferForRedo which zeroes the page before we write to it.
+	 */
+	lsmbuf = XLogInitBufferForRedo(record, 1);
 	{
 		Page		page = BufferGetPage(lsmbuf);
 
@@ -716,8 +924,7 @@ nx_lsm_init_meta_redo(XLogReaderState *record)
 		PageSetLSN(page, record->EndRecPtr);
 		MarkBufferDirty(lsmbuf);
 	}
-	if (BufferIsValid(lsmbuf))
-		UnlockReleaseBuffer(lsmbuf);
+	UnlockReleaseBuffer(lsmbuf);
 
 	/* Redo the metapage update */
 	if (XLogReadBufferForRedo(record, 0, &metabuf) == BLK_NEEDS_REDO)

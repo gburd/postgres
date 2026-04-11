@@ -12,6 +12,7 @@
 
 #include "postgres.h"
 
+#include "access/noxu_lsm.h"
 #include "access/parallel.h"
 #include "commands/repack.h"
 #include "access/relundo_worker.h"
@@ -171,6 +172,10 @@ static const struct
 	{
 		.fn_name = "RelUndoWorkerMain",
 		.fn_addr = RelUndoWorkerMain
+	},
+	{
+		.fn_name = "NoxuMergeWorkerMain",
+		.fn_addr = NoxuMergeWorkerMain
 	}
 };
 

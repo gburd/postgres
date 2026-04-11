@@ -69,6 +69,20 @@ typedef struct NXLSMRowPageOpaque
 	((NXLSMRowPageOpaque *) PageGetSpecialPointer(page))
 
 /*
+ * NXLSMRowItemHeader - Header prepended to each MinimalTuple on row pages.
+ *
+ * Each item on a row-oriented segment page consists of this header
+ * followed immediately by the MinimalTuple data.  This allows us to
+ * recover the TID for each row without relying on sequential TID
+ * assignment (which breaks when subtransactions abort rows).
+ */
+typedef struct NXLSMRowItemHeader
+{
+	nxtid		tid;			/* The TID for this row */
+	/* MinimalTuple data follows immediately */
+} NXLSMRowItemHeader;
+
+/*
  * NXLSMSegmentDesc - Descriptor for a single segment within a level.
  *
  * A segment is a contiguous set of pages within the relation file,
@@ -181,6 +195,10 @@ extern void nx_lsm_request_merge(Relation rel, int level_num);
 
 /* Scan support */
 extern bool nx_lsm_tid_in_segment(NXLSMSegmentDesc *seg, nxtid tid);
+extern bool nx_lsm_lookup_tid_in_segment(Relation rel, NXLSMSegmentDesc *seg,
+										  nxtid target_tid, TupleTableSlot *slot);
+extern bool nx_lsm_lookup_tid(Relation rel, nxtid target_tid,
+							   TupleTableSlot *slot);
 
 /*
  * NXCompressionPolicy - Per-level compression codec eligibility.
@@ -214,6 +232,13 @@ extern const NXCompressionPolicy nx_lsm_policy_full;		/* all codecs */
 extern const NXCompressionPolicy *nx_lsm_get_level_policy(int level_num);
 
 /*
+ * Set the active compression policy for the current backend.
+ * When non-NULL, nxbt_attr_create_item() only tries allowed codecs.
+ * Pass NULL to restore default (all codecs eligible).
+ */
+extern void nxbt_attr_set_compression_policy(const NXCompressionPolicy *policy);
+
+/*
  * NXSegmentZoneMap - Per-segment min/max statistics for predicate pushdown.
  *
  * Built during merge, stored alongside segment descriptors in the LSM
@@ -234,6 +259,7 @@ typedef struct NXSegmentZoneMap
 /* Merge operations (noxu_merge_worker.c) */
 extern void nx_lsm_merge_level(Relation rel, int level_num);
 extern void nx_lsm_merge_all_pending(Relation rel);
+extern void nx_lsm_flush_all_to_btree(Relation rel);
 
 /* Background merge worker (noxu_merge_worker.c) */
 extern void NoxuMergeWorkerMain(Datum main_arg);

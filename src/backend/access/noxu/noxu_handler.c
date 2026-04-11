@@ -1609,6 +1609,9 @@ noxuam_beginscan_with_column_projection(Relation relation, Snapshot snapshot,
 	 * nursery-buffered rows but their attribute data is only in memory,
 	 * the attribute B-tree scan would find TIDs but miss column values.
 	 * Flushing ensures attribute data is in the B-trees before the scan.
+	 *
+	 * When LSM is enabled, also force-merge any pending Level 1 segments
+	 * into the B-tree so the sequential scan can find all data.
 	 */
 	scan->nursery_scan_idx = -1;
 	scan->nursery_flushed = false;
@@ -1618,10 +1621,25 @@ noxuam_beginscan_with_column_projection(Relation relation, Snapshot snapshot,
 
 		if (nursery != NULL && nursery->nrows > 0)
 		{
-			nx_nursery_flush(relation, nursery);
+			/*
+			 * For scan-triggered flushes, always flush to B-tree regardless
+			 * of noxu.lsm_enabled.  This ensures the scan sees all data
+			 * through the normal attribute B-tree path.  LSM Level 1 is
+			 * only used for capacity-triggered flushes during inserts.
+			 */
+			nx_nursery_flush_to_btree(relation, nursery);
+			nx_nursery_reset_internal(nursery);
 			scan->nursery_flushed = true;
 		}
 	}
+
+	/*
+	 * Force all LSM Level 1 data into the B-tree.  This first merges
+	 * any complete A+B pairs, then flushes any remaining lone segments.
+	 * After this, all attribute data is in the B-tree for the scan.
+	 */
+	if (noxu_lsm_enabled)
+		nx_lsm_flush_all_to_btree(relation);
 
 	/*
 	 * For a seqscan in a serializable transaction, acquire a predicate lock
@@ -2253,18 +2271,39 @@ noxuam_fetch_row(NoxuIndexFetchData * fetch,
 	NoxuProjectData *fetch_proj = &fetch->proj_data;
 
 	/*
-	 * Check if the TID's attribute data is still buffered in the nursery.
-	 * If so, flush the nursery first so the B-tree fetch below can find it.
-	 * This is necessary because TID tree entries are created immediately
-	 * during nursery inserts, but attribute data is deferred.
+	 * Check if the TID is in the nursery or Level 1 LSM segments.
+	 *
+	 * When the nursery is enabled, attribute data for recently inserted
+	 * rows may be buffered in memory (nursery) or in Level 1 row-oriented
+	 * pages (when LSM is enabled).  We check both before falling through
+	 * to the B-tree.
+	 *
+	 * When LSM is disabled, flush the nursery to the B-tree so the
+	 * subsequent B-tree fetch can find the data.
 	 */
 	if (noxu_nursery_enabled)
 	{
 		NXNurseryBuffer *nursery = nx_nursery_get(rel);
 
+		/* First try a direct nursery lookup (no flush needed) */
 		if (nursery != NULL && nursery->nrows > 0)
-			nx_nursery_flush(rel, nursery);
+		{
+			if (nx_nursery_lookup_tid(nursery, tid, slot, rel))
+				return true;
+
+			/*
+			 * Not in nursery.  When LSM is disabled, flush to B-tree so
+			 * the B-tree fetch below can find recently-flushed data.
+			 * When LSM is enabled, data goes to Level 1 (checked below).
+			 */
+			if (!noxu_lsm_enabled)
+				nx_nursery_flush(rel, nursery);
+		}
 	}
+
+	/* Check Level 1 LSM segments for the TID */
+	if (noxu_lsm_enabled && nx_lsm_lookup_tid(rel, tid, slot))
+		return true;
 
 	/* first time here, initialize */
 	if (fetch_proj->num_proj_atts == 0)
@@ -5275,8 +5314,8 @@ noxuam_vacuum_rel(Relation onerel, const VacuumParams *params,
 	 */
 	nxundo_vacuum(onerel, &mutable_params, bstrategy);
 
-	/* Force all pending LSM merges synchronously during VACUUM */
-	nx_lsm_merge_all_pending(onerel);
+	/* Force all LSM Level 1 data into the B-tree during VACUUM */
+	nx_lsm_flush_all_to_btree(onerel);
 }
 
 const TableAmRoutine noxuam_methods = {

@@ -79,6 +79,8 @@ extern PGDLLIMPORT bool noxu_nursery_flush_on_scan;
 extern NXNurseryBuffer *nx_nursery_get_or_create(Relation rel);
 extern NXNurseryBuffer *nx_nursery_get(Relation rel);
 extern void nx_nursery_flush(Relation rel, NXNurseryBuffer *nursery);
+extern void nx_nursery_flush_to_btree(Relation rel, NXNurseryBuffer *nursery);
+extern void nx_nursery_reset_internal(NXNurseryBuffer *nursery);
 
 /* Buffer a row's attribute data (TID already assigned) */
 extern void nx_nursery_buffer_row(NXNurseryBuffer *nursery,

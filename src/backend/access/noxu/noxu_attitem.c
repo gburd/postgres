@@ -15,6 +15,7 @@
 #include "access/noxu_compression.h"
 #include "access/noxu_dict.h"
 #include "access/noxu_internal.h"
+#include "access/noxu_lsm.h"
 #include "access/noxu_shared_dict.h"
 #include "access/noxu_simple8b.h"
 #include "access/noxu_uuid.h"
@@ -24,6 +25,22 @@
 #include "miscadmin.h"
 #include "utils/datum.h"
 #include "utils/uuid.h"
+
+/*
+ * Active compression policy for LSM tiered compression.
+ *
+ * When non-NULL, the codec cascade in nxbt_attr_create_item() skips
+ * codecs that are not allowed by the policy.  Set by the LSM merge
+ * worker before calling nxbt_attr_multi_insert() and cleared after.
+ * NULL means all codecs are eligible (default behavior).
+ */
+static const NXCompressionPolicy *nx_active_compression_policy = NULL;
+
+void
+nxbt_attr_set_compression_policy(const NXCompressionPolicy *policy)
+{
+	nx_active_compression_policy = policy;
+}
 
 /*
  * We avoid creating items that are "too large". An item can legitimately use
@@ -1485,8 +1502,13 @@ nxbt_attr_create_item(Form_pg_attribute att,
 			use_bitpacked = true;
 	}
 
-	/* Check if FOR encoding is beneficial (skip if bitpacked) */
-	if (!use_bitpacked)
+	/*
+	 * Check if FOR encoding is beneficial (skip if bitpacked).
+	 * Gated by compression policy: Level 2+ allows FOR.
+	 */
+	if (!use_bitpacked &&
+		(nx_active_compression_policy == NULL ||
+		 nx_active_compression_policy->allow_for))
 		use_for = for_should_encode(att, datums, isnulls, num_elements, datasz,
 									&for_frame_min, &for_bpv, &for_datasz);
 
@@ -1495,8 +1517,11 @@ nxbt_attr_create_item(Form_pg_attribute att,
 	 * Delta-of-delta exploits the regularity of timestamp intervals: for
 	 * evenly spaced timestamps, the second-order deltas are all zero.
 	 * Compare against the better of raw and FOR-encoded sizes.
+	 * Gated by compression policy: Level 3+ allows DOD.
 	 */
-	if (!use_bitpacked)
+	if (!use_bitpacked &&
+		(nx_active_compression_policy == NULL ||
+		 nx_active_compression_policy->allow_dod))
 	{
 		int		compare_sz = use_for ? for_datasz : datasz;
 
@@ -1515,8 +1540,11 @@ nxbt_attr_create_item(Form_pg_attribute att,
 	 * It is most effective for time-series float data with gradual changes.
 	 * Skip if bitpacked or DOD was already selected.  Chimp can supersede
 	 * FOR for float types since it typically achieves better compression.
+	 * Gated by compression policy: Level 3+ allows Chimp.
 	 */
-	if (!use_bitpacked && !use_dod)
+	if (!use_bitpacked && !use_dod &&
+		(nx_active_compression_policy == NULL ||
+		 nx_active_compression_policy->allow_chimp))
 	{
 		int		compare_sz = use_for ? for_datasz : datasz;
 
@@ -1532,8 +1560,11 @@ nxbt_attr_create_item(Form_pg_attribute att,
 	 * Check if dictionary encoding is beneficial. Dictionary encoding is
 	 * most effective for low-cardinality columns (few distinct values).
 	 * Skip if another encoding was already selected.
+	 * Gated by compression policy: Level 2+ allows Dict.
 	 */
 	if (!use_bitpacked && !use_for && !use_dod && !use_chimp &&
+		(nx_active_compression_policy == NULL ||
+		 nx_active_compression_policy->allow_dict) &&
 		nx_dict_should_encode(att, datums, isnulls, num_elements))
 	{
 		dict_encoded = nx_dict_encode(att, datums, isnulls, num_elements,
@@ -1567,8 +1598,11 @@ nxbt_attr_create_item(Form_pg_attribute att,
 	 * UUID (typid=2950, typlen=16, pass-by-ref, char-aligned) benefits
 	 * from an optimized read path.  When UUIDs are time-ordered (v1/v6/v7),
 	 * delta encoding of the 48-bit timestamp prefix gives 3-5x compression.
+	 * Gated by compression policy: Level 3+ allows UUID delta.
 	 */
 	if (!use_bitpacked && !use_for && !use_dict &&
+		(nx_active_compression_policy == NULL ||
+		 nx_active_compression_policy->allow_uuid_delta) &&
 		att->attlen == UUID_LEN && !att->attbyval &&
 		att->atttypid == 2950)
 	{

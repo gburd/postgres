@@ -196,8 +196,20 @@ nxfpm_xact_callback(XactEvent event, void *arg)
 			nxfpm_dealloc_queue = NULL;
 			break;
 
+		case XACT_EVENT_COMMIT:
+		case XACT_EVENT_PARALLEL_COMMIT:
+		case XACT_EVENT_PREPARE:
+			/*
+			 * Post-commit cleanup.  The queue should have been flushed
+			 * during PRE_COMMIT.  Explicitly NULL the pointer to prevent
+			 * dangling references into the now-reset TopTransactionContext.
+			 */
+			nxfpm_dealloc_queue = NULL;
+			nxfpm_alloc_cache.valid = false;
+			nxfpm_alloc_cache.count = 0;
+			break;
+
 		default:
-			/* COMMIT / PREPARE after pre-commit: queue already flushed */
 			break;
 	}
 }
