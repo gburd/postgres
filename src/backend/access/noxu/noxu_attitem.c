@@ -2293,8 +2293,38 @@ nxbt_attr_item_extract(NXAttrTreeScan * scan, NXAttributeArrayItem * item)
 		int			data_size = pend - p;
 		int			buf_needed;
 
-		/* Conservative estimate for reconstructing varlena datums */
-		buf_needed = data_size + nelements * VARHDRSZ;
+		/*
+		 * Compute buffer size for reconstructing decoded datums.
+		 *
+		 * Dictionary decoding expands data: each of nelements gets its own
+		 * copy of its dictionary value.  For varlena types, each element
+		 * needs up to (max_entry_size + VARHDRSZ + alignment) bytes in the
+		 * output buffer.  We peek at the dictionary header and offsets to
+		 * find the maximum entry size, which bounds the per-element cost.
+		 *
+		 * For fixed-length types the per-element cost is just attlen, but
+		 * we use the same conservative formula for simplicity.
+		 */
+		{
+			const NXDictHeader *hdr = (const NXDictHeader *) p;
+			const uint32 *offsets = (const uint32 *) (p + sizeof(NXDictHeader));
+			int			max_entry_size = 0;
+
+			for (int k = 0; k < hdr->num_entries; k++)
+			{
+				int			entry_size;
+
+				if (k + 1 < hdr->num_entries)
+					entry_size = (int) (offsets[k + 1] - offsets[k]);
+				else
+					entry_size = (int) (hdr->total_data_size - offsets[k]);
+				if (entry_size > max_entry_size)
+					max_entry_size = entry_size;
+			}
+
+			buf_needed = nelements * (max_entry_size + VARHDRSZ +
+									  sizeof(int32));
+		}
 		if (scan->attr_buf_size < buf_needed)
 		{
 			if (scan->attr_buf)
@@ -2686,16 +2716,15 @@ fetch_att_array(char *src, int srcSize, bool hasnulls,
 		char	   *bufp;
 
 		/*
-		 * Calculate buffer size needed for decoded varlenas:
-		 * - srcSize: input data size with noxu 1-2 byte headers
-		 * - (VARHDRSZ * 2) * numelements: extra space for header expansion and safety margin
-		 * - (sizeof(int32) * 2) * numelements: worst-case alignment padding before each element
+		 * Calculate buffer size needed for decoded varlenas.
 		 *
-		 * Conservative calculation to handle all cases:
-		 * - 1-byte native varlena headers expanding to 4-byte VARHDRSZ
-		 * - 2-byte noxu headers expanding to 4-byte VARHDRSZ
-		 * - Up to 3 bytes alignment padding before each element
-		 * - Additional safety margin for complex compression scenarios (FSST, etc.)
+		 * Each source element has a 1-byte (noxu compact) or 2-byte header
+		 * plus data, or a PG native 1-byte / 3-byte header plus data.
+		 * When reformatting to PG standard varlena we may need up to
+		 * VARHDRSZ (4 bytes) header + 3 bytes alignment per element,
+		 * replacing a 1-2 byte source header.  The worst-case expansion
+		 * per element is about (VARHDRSZ + 3 - 1) = 6 bytes.  We use
+		 * a generous multiplier to handle any format combination safely.
 		 */
 		buf_needed = srcSize + (VARHDRSZ * 2 + sizeof(int32) * 2) * numelements;
 
@@ -3506,8 +3535,37 @@ nxbt_attr_explode_item(Form_pg_attribute att, NXAttributeArrayItem * item,
 		char	   *rawbuf;
 		char	   *wp;
 
-		/* Allocate temporary arrays for decoding */
-		buf_size = data_size + item->t_num_elements * (VARHDRSZ + 4);
+		/*
+		 * Allocate temporary arrays for decoding.
+		 *
+		 * The decode buffer must be large enough to hold every element's
+		 * reconstructed varlena datum.  Dictionary encoding compresses by
+		 * storing each distinct value once; on decode, every element
+		 * expands to (header + val_size) bytes.  We peek at the dict
+		 * header to find the largest entry size and use that as the
+		 * per-element upper bound, with room for a 4-byte varlena header
+		 * plus worst-case 'int' alignment padding (3 bytes).
+		 */
+		{
+			const NXDictHeader *dhdr = (const NXDictHeader *) p;
+			const uint32 *doffsets = (const uint32 *) (p + sizeof(NXDictHeader));
+			int			max_entry_sz = 0;
+
+			for (int di = 0; di < dhdr->num_entries; di++)
+			{
+				int		esz;
+
+				if (di + 1 < dhdr->num_entries)
+					esz = (int)(doffsets[di + 1] - doffsets[di]);
+				else
+					esz = (int)(dhdr->total_data_size - doffsets[di]);
+				if (esz > max_entry_sz)
+					max_entry_sz = esz;
+			}
+			buf_size = item->t_num_elements * (max_entry_sz + VARHDRSZ + 4);
+			if (buf_size < data_size)
+				buf_size = data_size;
+		}
 		datums = palloc(item->t_num_elements * sizeof(Datum));
 		isnulls = palloc(item->t_num_elements * sizeof(bool));
 		rawbuf = palloc(buf_size);
