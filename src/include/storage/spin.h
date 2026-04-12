@@ -51,7 +51,7 @@
 #ifdef USE_STDATOMIC_H
 
 /*
- * Atomics-based spinlocks.  Future releases aim to make this the sole path.
+ * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
  *
  * When stdatomic.h is available, spinlocks are implemented directly on top
  * of the pg_atomic_flag API rather than platform-specific TAS assembly.
@@ -63,10 +63,10 @@ typedef pg_atomic_flag slock_t;
 /* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
 #include "port/spin_delay_status.h"
 
-extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
+extern int s_lock(slock_t *lock, const char *file, int line, const char *func);
 
 static inline void
-SpinLockInit(volatile slock_t *lock)
+SpinLockInit(slock_t *lock)
 {
 	pg_atomic_init_flag(lock);
 }
@@ -82,7 +82,7 @@ SpinLockInit(volatile slock_t *lock)
 	 (void) s_lock((lock), __FILE__, __LINE__, __func__))
 
 static inline void
-SpinLockRelease(volatile slock_t *lock)
+SpinLockRelease(slock_t *lock)
 {
 	pg_atomic_clear_flag(lock);
 }
