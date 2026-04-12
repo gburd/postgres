@@ -25,9 +25,9 @@
  * Both implementations provide identical public API and semantics.
  * Selection is made at build time via -Duse_stdatomic=auto/yes/no.
  *
- * NOTE: The traditional platform-specific implementation is maintained for
- * backward compatibility. Future versions aim to make stdatomic.h the sole
- * implementation and remove the traditional path.
+ * NOTE: The traditional platform-specific implementation is deprecated as of
+ * PostgreSQL 19. It will be removed in a future major release. New platforms
+ * should use stdatomic.h exclusively.
  *
  * PORTING NOTES:
  *
@@ -109,25 +109,6 @@
  * section below. Those functions call _impl functions, which are provided by
  * stdatomic_impl.h for this path.
  */
-
-/*
- * Generic atomic read/write operations
- *
- * These type-generic macros work with any atomic type (uint8, uint16, uint32,
- * uint64) and provide relaxed memory ordering. They are only available when
- * using the stdatomic.h implementation.
- *
- * For stronger ordering guarantees, use the type-specific functions like
- * pg_atomic_read_u32() which provide sequential consistency.
- *
- * Note: These use memory_order_relaxed for performance. The traditional
- * implementation does not provide these generic operations.
- */
-#define pg_atomic_read(ptr) \
-	atomic_load_explicit((ptr), memory_order_relaxed)
-
-#define pg_atomic_write(ptr, val) \
-	atomic_store_explicit((ptr), (val), memory_order_relaxed)
 
 #else							/* !USE_STDATOMIC_H */
 

@@ -647,6 +647,10 @@ test_spinlock(void)
 	 *
 	 * We embed the spinlock in a struct with other members to test that the
 	 * spinlock operations don't perform too wide writes.
+	 *
+	 * Note: slock_t is _Atomic(uint8) (1 byte) in the stdatomic path vs
+	 * potentially larger (e.g., unsigned char or int) in the traditional
+	 * path. This test verifies no over-wide writes regardless of slock_t size.
 	 */
 	{
 		struct test_lock_struct

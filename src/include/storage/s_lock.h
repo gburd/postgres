@@ -714,40 +714,7 @@ extern int	tas(volatile slock_t *lock);		/* in port/.../tas.s, or
  */
 extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
 
-/* Support for dynamic adjustment of spins_per_delay */
-#define DEFAULT_SPINS_PER_DELAY  100
-
-extern void set_spins_per_delay(int shared_spins_per_delay);
-extern int	update_spins_per_delay(int shared_spins_per_delay);
-
-/*
- * Support for spin delay which is useful in various places where
- * spinlock-like procedures take place.
- */
-typedef struct
-{
-	int			spins;
-	int			delays;
-	int			cur_delay;
-	const char *file;
-	int			line;
-	const char *func;
-} SpinDelayStatus;
-
-static inline void
-init_spin_delay(SpinDelayStatus *status,
-				const char *file, int line, const char *func)
-{
-	status->spins = 0;
-	status->delays = 0;
-	status->cur_delay = 0;
-	status->file = file;
-	status->line = line;
-	status->func = func;
-}
-
-#define init_local_spin_delay(status) init_spin_delay(status, __FILE__, __LINE__, __func__)
-extern void perform_spin_delay(SpinDelayStatus *status);
-extern void finish_spin_delay(SpinDelayStatus *status);
+/* SpinDelayStatus and helpers shared with the stdatomic spin.h path. */
+#include "port/spin_delay_status.h"
 
 #endif	 /* S_LOCK_H */

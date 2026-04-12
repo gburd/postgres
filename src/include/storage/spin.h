@@ -18,6 +18,10 @@
  *	void SpinLockRelease(volatile slock_t *lock)
  *		Unlock a previously acquired lock.
  *
+ *	bool SpinLockFree(slock_t *lock)
+ *		Tests if the lock is free. Returns true if free, false if locked.
+ *		This is not a synchronization primitive; use with caution.
+ *
  *	Load and store operations in calling code are guaranteed not to be
  *	reordered with respect to these operations, because they include a
  *	compiler barrier.  (Before PostgreSQL 9.5, callers needed to use a
@@ -56,40 +60,8 @@
 
 typedef pg_atomic_flag slock_t;
 
-/*
- * SpinDelayStatus and friends are needed here since s_lock.h isn't included
- * in the stdatomic path.  These must match the definitions in s_lock.h.
- */
-#define DEFAULT_SPINS_PER_DELAY  100
-
-typedef struct
-{
-	int			spins;
-	int			delays;
-	int			cur_delay;
-	const char *file;
-	int			line;
-	const char *func;
-} SpinDelayStatus;
-
-static inline void
-init_spin_delay(SpinDelayStatus *status,
-				const char *file, int line, const char *func)
-{
-	status->spins = 0;
-	status->delays = 0;
-	status->cur_delay = 0;
-	status->file = file;
-	status->line = line;
-	status->func = func;
-}
-
-#define init_local_spin_delay(status) init_spin_delay(status, __FILE__, __LINE__, __func__)
-
-extern void perform_spin_delay(SpinDelayStatus *status);
-extern void finish_spin_delay(SpinDelayStatus *status);
-extern void set_spins_per_delay(int shared_spins_per_delay);
-extern int	update_spins_per_delay(int shared_spins_per_delay);
+/* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
+#include "port/spin_delay_status.h"
 
 extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
 
@@ -115,6 +87,12 @@ SpinLockRelease(volatile slock_t *lock)
 	pg_atomic_clear_flag(lock);
 }
 
+static inline bool
+SpinLockFree(slock_t *lock)
+{
+	return pg_atomic_unlocked_test_flag(lock);
+}
+
 #else							/* !USE_STDATOMIC_H */
 
 /*
@@ -128,17 +106,21 @@ SpinLockInit(volatile slock_t *lock)
 	S_INIT_LOCK(lock);
 }
 
-static inline void
-SpinLockAcquire(volatile slock_t *lock)
-{
-	S_LOCK(lock);
-}
+#define SpinLockAcquire(lock) S_LOCK(lock)
 
 static inline void
 SpinLockRelease(volatile slock_t *lock)
 {
 	S_UNLOCK(lock);
 }
+
+#ifdef S_LOCK_FREE
+static inline bool
+SpinLockFree(volatile slock_t *lock)
+{
+	return S_LOCK_FREE(lock);
+}
+#endif
 
 #endif							/* USE_STDATOMIC_H */
 
