@@ -144,7 +144,7 @@ pg_atomic_init_flag_impl(volatile pg_atomic_flag *ptr)
 /*
  * pg_atomic_test_set_flag_impl - Try to acquire lock
  *
- * Atomically sets flag to 0 (locked) and returns previous value.
+ * Atomically clears the flag (AND with 0) and returns previous value.
  * Returns true if we successfully acquired the lock (old value was 1,
  * meaning unlocked), false if already locked (old value was 0).
  *
@@ -154,13 +154,13 @@ static inline bool
 pg_atomic_test_set_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	/*
-	 * Exchange flag with 0 (locked). If previous value was 1 (unlocked),
-	 * we succeeded in acquiring. If previous value was 0 (already locked),
-	 * we failed.
+	 * AND flag with 0 to clear it (locked). If previous value was 1
+	 * (unlocked), we succeeded in acquiring. If previous value was 0
+	 * (already locked), we failed.
 	 *
 	 * Return true if we SUCCEEDED in acquiring the lock.
 	 */
-	return atomic_exchange_explicit(ptr, 0, memory_order_acquire) != 0;
+	return atomic_fetch_and_explicit(ptr, 0, memory_order_acquire) != 0;
 }
 
 /*
