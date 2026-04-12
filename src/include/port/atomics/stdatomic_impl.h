@@ -157,7 +157,7 @@ typedef pg_atomic(uint64) pg_atomic_uint64;
  * In the stdatomic.h implementation, we initialize to 1 (unlocked).
  */
 static inline void
-pg_atomic_init_flag_impl(pg_atomic_flag *ptr)
+pg_atomic_init_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	atomic_init(ptr, 1);  /* 1 = unlocked */
 }
@@ -172,7 +172,7 @@ pg_atomic_init_flag_impl(pg_atomic_flag *ptr)
  * Memory ordering: acquire (synchronizes-with prior release)
  */
 static inline bool
-pg_atomic_test_set_flag_impl(pg_atomic_flag *ptr)
+pg_atomic_test_set_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	/*
 	 * AND flag with 0 to clear it (locked). If previous value was 1
@@ -191,7 +191,7 @@ pg_atomic_test_set_flag_impl(pg_atomic_flag *ptr)
  * Uses relaxed ordering since this is typically used for optimization hints.
  */
 static inline bool
-pg_atomic_unlocked_test_flag_impl(pg_atomic_flag *ptr)
+pg_atomic_unlocked_test_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	return atomic_load_explicit(ptr, memory_order_relaxed) != 0;
 }
@@ -203,7 +203,7 @@ pg_atomic_unlocked_test_flag_impl(pg_atomic_flag *ptr)
  * Memory ordering: release (makes prior writes visible)
  */
 static inline void
-pg_atomic_clear_flag_impl(pg_atomic_flag *ptr)
+pg_atomic_clear_flag_impl(volatile pg_atomic_flag *ptr)
 {
 	atomic_store_explicit(ptr, 1, memory_order_release);
 }
@@ -224,7 +224,7 @@ pg_atomic_clear_flag_impl(pg_atomic_flag *ptr)
  * when no concurrent access is possible.
  */
 static inline void
-pg_atomic_init_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
+pg_atomic_init_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 {
 	atomic_init(ptr, val);
 }
@@ -236,7 +236,7 @@ pg_atomic_init_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
  * Callers that need ordering should use pg_atomic_read_membarrier_u32_impl().
  */
 static inline uint32
-pg_atomic_read_u32_impl(pg_atomic_uint32 *ptr)
+pg_atomic_read_u32_impl(volatile pg_atomic_uint32 *ptr)
 {
 	return atomic_load_explicit(ptr, memory_order_relaxed);
 }
@@ -248,7 +248,7 @@ pg_atomic_read_u32_impl(pg_atomic_uint32 *ptr)
  * Callers that need ordering should use pg_atomic_write_membarrier_u32_impl().
  */
 static inline void
-pg_atomic_write_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
+pg_atomic_write_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
@@ -260,7 +260,7 @@ pg_atomic_write_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
  * Memory ordering: seq_cst
  */
 static inline uint32
-pg_atomic_exchange_u32_impl(pg_atomic_uint32 *ptr, uint32 newval)
+pg_atomic_exchange_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 newval)
 {
 	return atomic_exchange_explicit(ptr, newval, memory_order_seq_cst);
 }
@@ -276,7 +276,7 @@ pg_atomic_exchange_u32_impl(pg_atomic_uint32 *ptr, uint32 newval)
  * Memory ordering: seq_cst for both success and failure
  */
 static inline bool
-pg_atomic_compare_exchange_u32_impl(pg_atomic_uint32 *ptr,
+pg_atomic_compare_exchange_u32_impl(volatile pg_atomic_uint32 *ptr,
 									uint32 *expected, uint32 newval)
 {
 	return atomic_compare_exchange_strong_explicit(ptr, expected, newval,
@@ -291,7 +291,7 @@ pg_atomic_compare_exchange_u32_impl(pg_atomic_uint32 *ptr,
  * Memory ordering: seq_cst
  */
 static inline uint32
-pg_atomic_fetch_add_u32_impl(pg_atomic_uint32 *ptr, int32 add_)
+pg_atomic_fetch_add_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
 {
 	return atomic_fetch_add_explicit(ptr, add_, memory_order_seq_cst);
 }
@@ -303,7 +303,7 @@ pg_atomic_fetch_add_u32_impl(pg_atomic_uint32 *ptr, int32 add_)
  * Memory ordering: seq_cst
  */
 static inline uint32
-pg_atomic_fetch_sub_u32_impl(pg_atomic_uint32 *ptr, int32 sub_)
+pg_atomic_fetch_sub_u32_impl(volatile pg_atomic_uint32 *ptr, int32 sub_)
 {
 	return atomic_fetch_sub_explicit(ptr, sub_, memory_order_seq_cst);
 }
@@ -315,7 +315,7 @@ pg_atomic_fetch_sub_u32_impl(pg_atomic_uint32 *ptr, int32 sub_)
  * Memory ordering: seq_cst
  */
 static inline uint32
-pg_atomic_fetch_and_u32_impl(pg_atomic_uint32 *ptr, uint32 and_)
+pg_atomic_fetch_and_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 and_)
 {
 	return atomic_fetch_and_explicit(ptr, and_, memory_order_seq_cst);
 }
@@ -327,7 +327,7 @@ pg_atomic_fetch_and_u32_impl(pg_atomic_uint32 *ptr, uint32 and_)
  * Memory ordering: seq_cst
  */
 static inline uint32
-pg_atomic_fetch_or_u32_impl(pg_atomic_uint32 *ptr, uint32 or_)
+pg_atomic_fetch_or_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 or_)
 {
 	return atomic_fetch_or_explicit(ptr, or_, memory_order_seq_cst);
 }
@@ -339,7 +339,7 @@ pg_atomic_fetch_or_u32_impl(pg_atomic_uint32 *ptr, uint32 or_)
  * Implemented using fetch_add + add_ since C11 doesn't have add_fetch.
  */
 static inline uint32
-pg_atomic_add_fetch_u32_impl(pg_atomic_uint32 *ptr, int32 add_)
+pg_atomic_add_fetch_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
 {
 	return atomic_fetch_add_explicit(ptr, add_, memory_order_seq_cst) + add_;
 }
@@ -350,7 +350,7 @@ pg_atomic_add_fetch_u32_impl(pg_atomic_uint32 *ptr, int32 add_)
  * Atomically subtracts sub_ from *ptr and returns the NEW value.
  */
 static inline uint32
-pg_atomic_sub_fetch_u32_impl(pg_atomic_uint32 *ptr, int32 sub_)
+pg_atomic_sub_fetch_u32_impl(volatile pg_atomic_uint32 *ptr, int32 sub_)
 {
 	return atomic_fetch_sub_explicit(ptr, sub_, memory_order_seq_cst) - sub_;
 }
@@ -362,7 +362,7 @@ pg_atomic_sub_fetch_u32_impl(pg_atomic_uint32 *ptr, int32 sub_)
  * correctness is more important than performance.
  */
 static inline uint32
-pg_atomic_read_membarrier_u32_impl(pg_atomic_uint32 *ptr)
+pg_atomic_read_membarrier_u32_impl(volatile pg_atomic_uint32 *ptr)
 {
 	return atomic_load_explicit(ptr, memory_order_seq_cst);
 }
@@ -374,7 +374,7 @@ pg_atomic_read_membarrier_u32_impl(pg_atomic_uint32 *ptr)
  * is guaranteed externally. Uses relaxed ordering.
  */
 static inline void
-pg_atomic_unlocked_write_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
+pg_atomic_unlocked_write_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
@@ -385,7 +385,7 @@ pg_atomic_unlocked_write_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
  * Atomic write with sequential consistency.
  */
 static inline void
-pg_atomic_write_membarrier_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
+pg_atomic_write_membarrier_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_seq_cst);
 }
@@ -400,31 +400,31 @@ pg_atomic_write_membarrier_u32_impl(pg_atomic_uint32 *ptr, uint32 val)
  */
 
 static inline void
-pg_atomic_init_u64_impl(pg_atomic_uint64 *ptr, uint64 val)
+pg_atomic_init_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 {
 	atomic_init(ptr, val);
 }
 
 static inline uint64
-pg_atomic_read_u64_impl(pg_atomic_uint64 *ptr)
+pg_atomic_read_u64_impl(volatile pg_atomic_uint64 *ptr)
 {
 	return atomic_load_explicit(ptr, memory_order_relaxed);
 }
 
 static inline void
-pg_atomic_write_u64_impl(pg_atomic_uint64 *ptr, uint64 val)
+pg_atomic_write_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
 
 static inline uint64
-pg_atomic_exchange_u64_impl(pg_atomic_uint64 *ptr, uint64 newval)
+pg_atomic_exchange_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 newval)
 {
 	return atomic_exchange_explicit(ptr, newval, memory_order_seq_cst);
 }
 
 static inline bool
-pg_atomic_compare_exchange_u64_impl(pg_atomic_uint64 *ptr,
+pg_atomic_compare_exchange_u64_impl(volatile pg_atomic_uint64 *ptr,
 									uint64 *expected, uint64 newval)
 {
 	return atomic_compare_exchange_strong_explicit(ptr, expected, newval,
@@ -433,55 +433,55 @@ pg_atomic_compare_exchange_u64_impl(pg_atomic_uint64 *ptr,
 }
 
 static inline uint64
-pg_atomic_fetch_add_u64_impl(pg_atomic_uint64 *ptr, int64 add_)
+pg_atomic_fetch_add_u64_impl(volatile pg_atomic_uint64 *ptr, int64 add_)
 {
 	return atomic_fetch_add_explicit(ptr, add_, memory_order_seq_cst);
 }
 
 static inline uint64
-pg_atomic_fetch_sub_u64_impl(pg_atomic_uint64 *ptr, int64 sub_)
+pg_atomic_fetch_sub_u64_impl(volatile pg_atomic_uint64 *ptr, int64 sub_)
 {
 	return atomic_fetch_sub_explicit(ptr, sub_, memory_order_seq_cst);
 }
 
 static inline uint64
-pg_atomic_fetch_and_u64_impl(pg_atomic_uint64 *ptr, uint64 and_)
+pg_atomic_fetch_and_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 and_)
 {
 	return atomic_fetch_and_explicit(ptr, and_, memory_order_seq_cst);
 }
 
 static inline uint64
-pg_atomic_fetch_or_u64_impl(pg_atomic_uint64 *ptr, uint64 or_)
+pg_atomic_fetch_or_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 or_)
 {
 	return atomic_fetch_or_explicit(ptr, or_, memory_order_seq_cst);
 }
 
 static inline uint64
-pg_atomic_add_fetch_u64_impl(pg_atomic_uint64 *ptr, int64 add_)
+pg_atomic_add_fetch_u64_impl(volatile pg_atomic_uint64 *ptr, int64 add_)
 {
 	return atomic_fetch_add_explicit(ptr, add_, memory_order_seq_cst) + add_;
 }
 
 static inline uint64
-pg_atomic_sub_fetch_u64_impl(pg_atomic_uint64 *ptr, int64 sub_)
+pg_atomic_sub_fetch_u64_impl(volatile pg_atomic_uint64 *ptr, int64 sub_)
 {
 	return atomic_fetch_sub_explicit(ptr, sub_, memory_order_seq_cst) - sub_;
 }
 
 static inline uint64
-pg_atomic_read_membarrier_u64_impl(pg_atomic_uint64 *ptr)
+pg_atomic_read_membarrier_u64_impl(volatile pg_atomic_uint64 *ptr)
 {
 	return atomic_load_explicit(ptr, memory_order_seq_cst);
 }
 
 static inline void
-pg_atomic_unlocked_write_u64_impl(pg_atomic_uint64 *ptr, uint64 val)
+pg_atomic_unlocked_write_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_relaxed);
 }
 
 static inline void
-pg_atomic_write_membarrier_u64_impl(pg_atomic_uint64 *ptr, uint64 val)
+pg_atomic_write_membarrier_u64_impl(volatile pg_atomic_uint64 *ptr, uint64 val)
 {
 	atomic_store_explicit(ptr, val, memory_order_seq_cst);
 }

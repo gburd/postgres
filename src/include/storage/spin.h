@@ -63,10 +63,10 @@ typedef pg_atomic_flag slock_t;
 /* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
 #include "port/spin_delay_status.h"
 
-extern int s_lock(slock_t *lock, const char *file, int line, const char *func);
+extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
 
 static inline void
-SpinLockInit(slock_t *lock)
+SpinLockInit(volatile slock_t *lock)
 {
 	pg_atomic_init_flag(lock);
 }
@@ -82,13 +82,13 @@ SpinLockInit(slock_t *lock)
 	 (void) s_lock((lock), __FILE__, __LINE__, __func__))
 
 static inline void
-SpinLockRelease(slock_t *lock)
+SpinLockRelease(volatile slock_t *lock)
 {
 	pg_atomic_clear_flag(lock);
 }
 
 static inline bool
-SpinLockFree(slock_t *lock)
+SpinLockFree(volatile slock_t *lock)
 {
 	return pg_atomic_unlocked_test_flag(lock);
 }
@@ -119,6 +119,13 @@ static inline bool
 SpinLockFree(volatile slock_t *lock)
 {
 	return S_LOCK_FREE(lock);
+}
+#else
+/* Fallback when platform doesn't provide S_LOCK_FREE: always report busy */
+static inline bool
+SpinLockFree(volatile slock_t *lock)
+{
+	return false;
 }
 #endif
 

@@ -75,6 +75,16 @@
 
 #define INSIDE_ATOMICS_H
 
+/*
+ * When using C11 stdatomic.h, the _Atomic qualifier already prevents the
+ * compiler from optimizing away loads/stores, making volatile technically
+ * redundant.  However, we retain volatile on both the public API and _impl
+ * function signatures for compatibility with existing callers that access
+ * atomic fields through volatile-qualified struct pointers.  GCC and Clang
+ * both handle volatile _Atomic correctly (the volatile is simply ignored
+ * for atomic operations, which already have stronger ordering guarantees).
+ */
+
 #include <limits.h>
 
 /*

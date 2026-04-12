@@ -103,11 +103,7 @@ s_lock_stuck(const char *file, int line, const char *func)
  * s_lock(lock) - platform-independent portion of waiting for a spinlock.
  */
 int
-#ifdef USE_STDATOMIC_H
-s_lock(slock_t *lock, const char *file, int line, const char *func)
-#else
 s_lock(volatile slock_t *lock, const char *file, int line, const char *func)
-#endif
 {
 	SpinDelayStatus delayStatus;
 
