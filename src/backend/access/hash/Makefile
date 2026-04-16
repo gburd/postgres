@@ -19,6 +19,7 @@ OBJS = \
 	hashinsert.o \
 	hashovfl.o \
 	hashpage.o \
+	hashprune.o \
 	hashsearch.o \
 	hashsort.o \
 	hashutil.o \

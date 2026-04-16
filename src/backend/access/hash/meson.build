@@ -7,6 +7,7 @@ backend_sources += files(
   'hashinsert.c',
   'hashovfl.c',
   'hashpage.c',
+  'hashprune.c',
   'hashsearch.c',
   'hashsort.c',
   'hashutil.c',

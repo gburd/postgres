@@ -20,10 +20,12 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/index_prune.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -34,6 +36,10 @@
 #include "utils/fmgrprotos.h"
 #include "utils/index_selfuncs.h"
 #include "utils/rel.h"
+
+/* Forward declaration for UNDO-informed pruning callback (defined in hashprune.c) */
+extern uint64 hash_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										  uint16 discard_counter);
 
 /* Working state for hashbuild and its callback */
 typedef struct
@@ -124,6 +130,15 @@ hashhandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = hashtranslatestrategy,
 		.amtranslatecmptype = hashtranslatecmptype,
 	};
+
+	/* Register UNDO-informed index pruning callback */
+	static bool handler_registered = false;
+
+	if (!handler_registered)
+	{
+		IndexPruneRegisterHandler(HASH_AM_OID, hash_prune_by_undo_counter);
+		handler_registered = true;
+	}
 
 	PG_RETURN_POINTER(&amroutine);
 }
