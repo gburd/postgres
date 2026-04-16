@@ -6,6 +6,7 @@ backend_sources += files(
   'gistbuildbuffers.c',
   'gistget.c',
   'gistproc.c',
+  'gistprune.c',
   'gistscan.c',
   'gistsplit.c',
   'gistutil.c',

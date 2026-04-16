@@ -18,6 +18,7 @@ OBJS = \
 	gistbuildbuffers.o \
 	gistget.o \
 	gistproc.o \
+	gistprune.o \
 	gistscan.o \
 	gistsplit.o \
 	gistutil.o \
