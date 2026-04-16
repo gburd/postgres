@@ -17,6 +17,7 @@ OBJS = \
 	spginsert.o \
 	spgkdtreeproc.o \
 	spgproc.o \
+	spgprune.o \
 	spgquadtreeproc.o \
 	spgscan.o \
 	spgtextproc.o \
