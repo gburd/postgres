@@ -18,6 +18,7 @@
  */
 #include "postgres.h"
 
+#include "access/index_prune.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
@@ -38,6 +39,9 @@
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
+/* Forward declaration for UNDO-informed pruning callback (defined in nbtprune.c) */
+extern uint64 _bt_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										 uint16 discard_counter);
 
 /*
  * BTPARALLEL_NOT_INITIALIZED indicates that the scan has not started.
@@ -172,6 +176,15 @@ bthandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = bttranslatestrategy,
 		.amtranslatecmptype = bttranslatecmptype,
 	};
+
+	/* Register UNDO-informed index pruning callback */
+	static bool handler_registered = false;
+
+	if (!handler_registered)
+	{
+		IndexPruneRegisterHandler(BTREE_AM_OID, _bt_prune_by_undo_counter);
+		handler_registered = true;
+	}
 
 	PG_RETURN_POINTER(&amroutine);
 }
