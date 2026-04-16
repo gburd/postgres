@@ -17,11 +17,13 @@
 
 #include "access/amvalidate.h"
 #include "access/htup_details.h"
+#include "access/index_prune.h"
 #include "access/reloptions.h"
 #include "access/spgist_private.h"
 #include "access/toast_compression.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_amop.h"
 #include "commands/vacuum.h"
 #include "nodes/nodeFuncs.h"
@@ -35,6 +37,9 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+/* Forward declaration for UNDO-informed pruning callback (defined in spgprune.c) */
+extern uint64 spg_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										 uint16 discard_counter);
 
 /*
  * SP-GiST handler function: return IndexAmRoutine with access method parameters
@@ -98,6 +103,15 @@ spghandler(PG_FUNCTION_ARGS)
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = NULL,
 	};
+
+	/* Register UNDO-informed index pruning callback */
+	static bool handler_registered = false;
+
+	if (!handler_registered)
+	{
+		IndexPruneRegisterHandler(SPGIST_AM_OID, spg_prune_by_undo_counter);
+		handler_registered = true;
+	}
 
 	PG_RETURN_POINTER(&amroutine);
 }

@@ -5,6 +5,7 @@ backend_sources += files(
   'spginsert.c',
   'spgkdtreeproc.c',
   'spgproc.c',
+  'spgprune.c',
   'spgquadtreeproc.c',
   'spgscan.c',
   'spgtextproc.c',
