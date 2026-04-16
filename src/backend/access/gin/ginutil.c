@@ -16,8 +16,10 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
+#include "access/index_prune.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "commands/progress.h"
@@ -30,6 +32,9 @@
 #include "utils/typcache.h"
 #include "lib/qunique.h"
 
+/* Forward declaration for UNDO-informed pruning callback */
+extern uint64 gin_prune_by_undo_counter(Relation heaprel, Relation indexrel,
+										 uint16 discard_counter);
 
 /*
  * GIN handler function: return IndexAmRoutine with access method parameters
@@ -91,6 +96,15 @@ ginhandler(PG_FUNCTION_ARGS)
 		.aminitparallelscan = NULL,
 		.amparallelrescan = NULL,
 	};
+
+	/* Register UNDO-informed index pruning callback */
+	static bool handler_registered = false;
+
+	if (!handler_registered)
+	{
+		IndexPruneRegisterHandler(GIN_AM_OID, gin_prune_by_undo_counter);
+		handler_registered = true;
+	}
 
 	PG_RETURN_POINTER(&amroutine);
 }
