@@ -116,6 +116,27 @@ extern void AtSubCommit_FileOps(void);
 extern void AtSubAbort_FileOps(void);
 extern void PostPrepare_FileOps(void);
 
+/*
+ * xl_fileops_create - WAL record for file creation
+ *
+ * Records that a file was created within a transaction. If the transaction
+ * aborts, the file will be deleted. The path is stored as variable-length
+ * data following the fixed header.
+ */
+typedef struct xl_fileops_create
+{
+	int			flags;			/* open flags used for creation */
+	mode_t		mode;			/* file permission mode */
+	bool		register_delete;	/* register for delete-on-abort */
+	/* variable-length path follows */
+}			xl_fileops_create;
+
+#define SizeOfFileOpsCreate (offsetof(xl_fileops_create, register_delete) + sizeof(bool))
+
+/* File creation API */
+extern int	FileOpsCreate(const char *path, int flags, mode_t mode,
+						  bool register_delete);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);

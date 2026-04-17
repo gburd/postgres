@@ -199,6 +199,62 @@ FileOpsCancelPendingDelete(const char *path, bool at_commit)
  *
  * An ERROR is raised if the sync fails.
  */
+/*
+ * FileOpsCreate - Create a file within a transaction
+ *
+ * Creates the file immediately (so it can be used within the transaction)
+ * and logs the creation to WAL. If register_delete is true, the file will
+ * be deleted if the transaction aborts.
+ *
+ * Platform handling:
+ *   - Linux/FreeBSD: O_DIRECT passed directly to open()
+ *   - macOS: F_NOCACHE fcntl applied after open()
+ *   - Windows: FILE_FLAG_NO_BUFFERING (handled by port layer)
+ *
+ * Returns the file descriptor on success, or -1 on failure.
+ */
+int
+FileOpsCreate(const char *path, int flags, mode_t mode, bool register_delete)
+{
+	int			fd;
+
+	Assert(!IsInParallelMode());
+
+	fd = OpenTransientFilePerm(path, flags | O_CREAT, mode);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create file \"%s\": %m", path)));
+
+	if (enableFsync)
+	{
+		pg_fsync(fd);
+		fileops_fsync_parent(path, WARNING);
+	}
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_create xlrec;
+		int			pathlen;
+
+		xlrec.flags = flags;
+		xlrec.mode = mode;
+		xlrec.register_delete = register_delete;
+
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsCreate);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_CREATE);
+	}
+
+	if (register_delete)
+		AddPendingFileOp(PENDING_FILEOP_DELETE, path, NULL, 0, false);
+
+	return fd;
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -245,8 +301,11 @@ FileOpsDoPendingOps(bool isCommit)
 		{
 			switch (pending->type)
 			{
+				case PENDING_FILEOP_CREATE:
+					/* Creates are executed immediately, nothing to do */
+					break;
+
 				default:
-					/* No operations registered yet */
 					break;
 			}
 		}
@@ -315,9 +374,62 @@ void
 fileops_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	char	   *data = XLogRecGetData(record);
 
 	switch (info)
 	{
+		case XLOG_FILEOPS_CREATE:
+			{
+				xl_fileops_create *xlrec = (xl_fileops_create *) data;
+				const char *path = data + SizeOfFileOpsCreate;
+				int			fd;
+
+				fd = BasicOpenFilePerm(path,
+									  (xlrec->flags & ~PG_O_DIRECT) | O_CREAT,
+									  xlrec->mode);
+				if (fd < 0)
+				{
+					if (errno == ENOENT)
+					{
+						char		parentpath[MAXPGPATH];
+						char	   *sep;
+
+						strlcpy(parentpath, path, MAXPGPATH);
+						sep = strrchr(parentpath, '/');
+						if (sep != NULL)
+						{
+							*sep = '\0';
+							if (MakePGDirectory(parentpath) < 0 &&
+								errno != EEXIST)
+								ereport(WARNING,
+										(errcode_for_file_access(),
+										 errmsg("could not create directory \"%s\" during WAL replay: %m",
+												parentpath)));
+						}
+
+						fd = BasicOpenFilePerm(path,
+											   (xlrec->flags & ~PG_O_DIRECT) | O_CREAT,
+											   xlrec->mode);
+					}
+
+					if (fd < 0 && errno != EEXIST)
+						ereport(WARNING,
+								(errcode_for_file_access(),
+								 errmsg("could not create file \"%s\" during WAL replay: %m",
+										path)));
+				}
+
+				if (fd >= 0)
+				{
+					if (enableFsync)
+						pg_fsync(fd);
+					close(fd);
+					if (enableFsync)
+						fileops_fsync_parent(path, WARNING);
+				}
+			}
+			break;
+
 		default:
 			elog(PANIC, "fileops_redo: unknown op code %u", info);
 			break;

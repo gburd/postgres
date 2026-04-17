@@ -18,10 +18,21 @@
 void
 fileops_desc(StringInfo buf, XLogReaderState *record)
 {
+	char	   *data = XLogRecGetData(record);
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
+		case XLOG_FILEOPS_CREATE:
+			{
+				xl_fileops_create *xlrec = (xl_fileops_create *) data;
+				const char *path = data + SizeOfFileOpsCreate;
+
+				appendStringInfo(buf, "create \"%s\" flags 0x%x mode 0%o",
+								 path, xlrec->flags, xlrec->mode);
+			}
+			break;
+
 		default:
 			appendStringInfo(buf, "unknown fileops op code %u", info);
 			break;
@@ -35,7 +46,9 @@ fileops_identify(uint8 info)
 
 	switch (info & ~XLR_INFO_MASK)
 	{
-		/* Operation-specific cases added in subsequent commits */
+		case XLOG_FILEOPS_CREATE:
+			id = "CREATE";
+			break;
 	}
 
 	return id;
