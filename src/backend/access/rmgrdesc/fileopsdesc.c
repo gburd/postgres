@@ -33,6 +33,17 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_RENAME:
+			{
+				xl_fileops_rename *xlrec = (xl_fileops_rename *) data;
+				const char *oldpath = data + SizeOfFileOpsRename;
+				const char *newpath = oldpath + xlrec->oldpath_len;
+
+				appendStringInfo(buf, "rename \"%s\" to \"%s\"",
+								 oldpath, newpath);
+			}
+			break;
+
 		case XLOG_FILEOPS_DELETE:
 			{
 				xl_fileops_delete *xlrec = (xl_fileops_delete *) data;
@@ -62,6 +73,9 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_DELETE:
 			id = "DELETE";
+			break;
+		case XLOG_FILEOPS_RENAME:
+			id = "RENAME";
 			break;
 	}
 
