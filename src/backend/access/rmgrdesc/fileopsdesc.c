@@ -65,6 +65,26 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_CHMOD:
+			{
+				xl_fileops_chmod *xlrec = (xl_fileops_chmod *) data;
+				const char *path = data + SizeOfFileOpsChmod;
+
+				appendStringInfo(buf, "chmod \"%s\" mode 0%o",
+								 path, (unsigned int) xlrec->mode);
+			}
+			break;
+
+		case XLOG_FILEOPS_CHOWN:
+			{
+				xl_fileops_chown *xlrec = (xl_fileops_chown *) data;
+				const char *path = data + SizeOfFileOpsChown;
+
+				appendStringInfo(buf, "chown \"%s\" uid %d gid %d",
+								 path, (int) xlrec->uid, (int) xlrec->gid);
+			}
+			break;
+
 		case XLOG_FILEOPS_TRUNCATE:
 			{
 				xl_fileops_truncate *xlrec = (xl_fileops_truncate *) data;
@@ -102,6 +122,12 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_TRUNCATE:
 			id = "TRUNCATE";
+			break;
+		case XLOG_FILEOPS_CHMOD:
+			id = "CHMOD";
+			break;
+		case XLOG_FILEOPS_CHOWN:
+			id = "CHOWN";
 			break;
 	}
 

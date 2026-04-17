@@ -208,6 +208,33 @@ typedef struct xl_fileops_truncate
 /* File truncation API */
 extern void FileOpsTruncate(const char *path, off_t length);
 
+/*
+ * xl_fileops_chmod - WAL record for file permission change
+ */
+typedef struct xl_fileops_chmod
+{
+	mode_t		mode;			/* new permission mode */
+	/* variable-length path follows */
+}			xl_fileops_chmod;
+
+#define SizeOfFileOpsChmod (offsetof(xl_fileops_chmod, mode) + sizeof(mode_t))
+
+/*
+ * xl_fileops_chown - WAL record for file ownership change
+ */
+typedef struct xl_fileops_chown
+{
+	uid_t		uid;			/* new owner user id */
+	gid_t		gid;			/* new owner group id */
+	/* variable-length path follows */
+}			xl_fileops_chown;
+
+#define SizeOfFileOpsChown (offsetof(xl_fileops_chown, gid) + sizeof(gid_t))
+
+/* File metadata API */
+extern int	FileOpsChmod(const char *path, mode_t mode);
+extern int	FileOpsChown(const char *path, uid_t uid, gid_t gid);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
