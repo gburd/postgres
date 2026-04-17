@@ -173,6 +173,27 @@ typedef struct xl_fileops_rename
 /* File rename API */
 extern int	FileOpsRename(const char *oldpath, const char *newpath);
 
+/*
+ * xl_fileops_write - WAL record for file write at offset
+ *
+ * Records that data was written to a file at a specific offset.
+ * The path and data are stored as variable-length data following
+ * the fixed header.
+ */
+typedef struct xl_fileops_write
+{
+	off_t		offset;			/* write offset in file */
+	uint32		len;			/* data length */
+	uint16		path_len;		/* length of path (including NUL) */
+	/* variable-length path follows, then data */
+}			xl_fileops_write;
+
+#define SizeOfFileOpsWrite (offsetof(xl_fileops_write, path_len) + sizeof(uint16))
+
+/* File write API */
+extern int	FileOpsWrite(const char *path, off_t offset,
+						 const void *data, uint32 len);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);

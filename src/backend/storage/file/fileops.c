@@ -321,6 +321,78 @@ FileOpsRename(const char *oldpath, const char *newpath)
 	return 0;
 }
 
+/*
+ * FileOpsWrite - Write data to a file at a specific offset
+ *
+ * Immediate execution, WAL-logged for crash recovery replay.
+ * Uses pwrite() on POSIX. On Windows: SetFilePointerEx + WriteFile.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int
+FileOpsWrite(const char *path, off_t offset, const void *data, uint32 len)
+{
+	int			fd;
+	ssize_t		nbytes;
+
+	Assert(!IsInParallelMode());
+
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\" for writing: %m", path)));
+
+	nbytes = pg_pwrite(fd, data, len, offset);
+	if (nbytes != (ssize_t) len)
+	{
+		int			save_errno = errno;
+
+		CloseTransientFile(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write %u bytes to file \"%s\" at offset %lld: %m",
+						len, path, (long long) offset)));
+	}
+
+	if (enableFsync && pg_fsync(fd) != 0)
+	{
+		int			save_errno = errno;
+
+		CloseTransientFile(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\" after write: %m", path)));
+	}
+
+	if (CloseTransientFile(fd) != 0)
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", path)));
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_write xlrec;
+		int			pathlen;
+
+		pathlen = strlen(path) + 1;
+
+		xlrec.offset = offset;
+		xlrec.len = len;
+		xlrec.path_len = pathlen;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsWrite);
+		XLogRegisterData(path, pathlen);
+		XLogRegisterData(data, len);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_WRITE);
+	}
+
+	return 0;
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -513,6 +585,37 @@ fileops_redo(XLogReaderState *record)
 					close(fd);
 					if (enableFsync)
 						fileops_fsync_parent(path, WARNING);
+				}
+			}
+			break;
+
+		case XLOG_FILEOPS_WRITE:
+			{
+				xl_fileops_write *xlrec = (xl_fileops_write *) data;
+				const char *path = data + SizeOfFileOpsWrite;
+				const char *wdata = path + xlrec->path_len;
+				int			fd;
+
+				fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+				if (fd < 0)
+				{
+					if (errno != ENOENT)
+						ereport(WARNING,
+								(errcode_for_file_access(),
+								 errmsg("could not open file \"%s\" for write during WAL replay: %m",
+										path)));
+				}
+				else
+				{
+					if (pg_pwrite(fd, wdata, xlrec->len, xlrec->offset) !=
+						(ssize_t) xlrec->len)
+						ereport(WARNING,
+								(errcode_for_file_access(),
+								 errmsg("could not write to file \"%s\" during WAL replay: %m",
+										path)));
+					else if (enableFsync)
+						pg_fsync(fd);
+					close(fd);
 				}
 			}
 			break;
