@@ -456,6 +456,88 @@ FileOpsTruncate(const char *path, off_t length)
 				 errmsg("could not close file \"%s\": %m", path)));
 }
 
+/*
+ * FileOpsChmod - Change file permissions within a transaction
+ *
+ * Immediate execution, WAL-logged.
+ * On POSIX: chmod(). On Windows: _chmod() with limited mode bits
+ * (only _S_IREAD/_S_IWRITE; no group/other). Logs WARNING for
+ * unsupported mode bits on Windows.
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsChmod(const char *path, mode_t mode)
+{
+	Assert(!IsInParallelMode());
+
+	if (chmod(path, mode) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not chmod file \"%s\" to mode 0%o: %m",
+						path, (unsigned int) mode)));
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_chmod xlrec;
+		int			pathlen;
+
+		xlrec.mode = mode;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsChmod);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_CHMOD);
+	}
+
+	return 0;
+}
+
+/*
+ * FileOpsChown - Change file ownership within a transaction
+ *
+ * Immediate execution, WAL-logged.
+ * On POSIX: chown(). On Windows: no-op with WARNING (Windows uses
+ * ACLs for ownership, not uid/gid).
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsChown(const char *path, uid_t uid, gid_t gid)
+{
+	Assert(!IsInParallelMode());
+
+#ifndef WIN32
+	if (chown(path, uid, gid) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not chown file \"%s\" to %d:%d: %m",
+						path, (int) uid, (int) gid)));
+#else
+	ereport(WARNING,
+			(errmsg("chown is not supported on Windows, skipping for \"%s\"",
+					path)));
+#endif
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_chown xlrec;
+		int			pathlen;
+
+		xlrec.uid = uid;
+		xlrec.gid = gid;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsChown);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_CHOWN);
+	}
+
+	return 0;
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -697,6 +779,35 @@ fileops_redo(XLogReaderState *record)
 			 * FileOpsDoPendingOps() at transaction commit/abort.
 			 * Intentional no-op during redo.
 			 */
+			break;
+
+		case XLOG_FILEOPS_CHMOD:
+			{
+				xl_fileops_chmod *xlrec = (xl_fileops_chmod *) data;
+				const char *path = data + SizeOfFileOpsChmod;
+
+				if (chmod(path, xlrec->mode) < 0 && errno != ENOENT)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not chmod file \"%s\" during WAL replay: %m",
+									path)));
+			}
+			break;
+
+		case XLOG_FILEOPS_CHOWN:
+			{
+				xl_fileops_chown *xlrec = (xl_fileops_chown *) data;
+				const char *path = data + SizeOfFileOpsChown;
+
+#ifndef WIN32
+				if (chown(path, xlrec->uid, xlrec->gid) < 0 &&
+					errno != ENOENT)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not chown file \"%s\" during WAL replay: %m",
+									path)));
+#endif
+			}
 			break;
 
 		case XLOG_FILEOPS_TRUNCATE:
