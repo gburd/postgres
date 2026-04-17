@@ -545,6 +545,76 @@ FileOpsSync(const char *path)
 }
 
 /*
+ * FileOpsMkdir - Create a directory within a transaction
+ *
+ * Immediate execution. Optionally registers rmdir-on-abort.
+ * Uses MakePGDirectory() pattern (mkdir with pg_dir_create_mode).
+ * On Windows: _mkdir() (no mode parameter, permissions from parent).
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsMkdir(const char *path, mode_t mode)
+{
+	Assert(!IsInParallelMode());
+
+	if (MakePGDirectory(path) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create directory \"%s\": %m", path)));
+
+	if (enableFsync)
+		fileops_fsync_parent(path, WARNING);
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_mkdir xlrec;
+		int			pathlen;
+
+		xlrec.mode = mode;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsMkdir);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_MKDIR);
+	}
+
+	/* Register rmdir-on-abort so directory is cleaned up on rollback */
+	AddPendingFileOp(PENDING_FILEOP_RMDIR, path, NULL, 0, false);
+
+	return 0;
+}
+
+/*
+ * FileOpsRmdir - Remove a directory within a transaction
+ *
+ * Deferred to commit time (like DELETE). Uses rmdir() on all platforms.
+ * On Windows: _rmdir().
+ */
+void
+FileOpsRmdir(const char *path, bool at_commit)
+{
+	Assert(!IsInParallelMode());
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_rmdir xlrec;
+		int			pathlen;
+
+		xlrec.at_commit = at_commit;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsRmdir);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_RMDIR);
+	}
+
+	AddPendingFileOp(PENDING_FILEOP_RMDIR, path, NULL, 0, at_commit);
+}
+
+/*
  * FileOpsDoPendingOps - Execute pending file operations at transaction end
  *
  * At commit, operations with at_commit=true are executed.
@@ -600,6 +670,22 @@ FileOpsDoPendingOps(bool isCommit)
 							ereport(WARNING,
 									(errcode_for_file_access(),
 									 errmsg("could not remove file \"%s\": %m",
+											pending->path)));
+					}
+					else
+					{
+						if (enableFsync)
+							fileops_fsync_parent(pending->path, WARNING);
+					}
+					break;
+
+				case PENDING_FILEOP_RMDIR:
+					if (rmdir(pending->path) < 0)
+					{
+						if (errno != ENOENT)
+							ereport(WARNING,
+									(errcode_for_file_access(),
+									 errmsg("could not remove directory \"%s\": %m",
 											pending->path)));
 					}
 					else
@@ -777,6 +863,29 @@ fileops_redo(XLogReaderState *record)
 			/*
 			 * DELETE records log deferred operations executed by
 			 * FileOpsDoPendingOps() at transaction commit/abort.
+			 * Intentional no-op during redo.
+			 */
+			break;
+
+		case XLOG_FILEOPS_MKDIR:
+			{
+				xl_fileops_mkdir *xlrec pg_attribute_unused() =
+					(xl_fileops_mkdir *) data;
+				const char *path = data + SizeOfFileOpsMkdir;
+
+				if (MakePGDirectory(path) < 0 && errno != EEXIST)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not create directory \"%s\" during WAL replay: %m",
+									path)));
+				else if (enableFsync)
+					fileops_fsync_parent(path, WARNING);
+			}
+			break;
+
+		case XLOG_FILEOPS_RMDIR:
+			/*
+			 * RMDIR records log deferred operations, like DELETE.
 			 * Intentional no-op during redo.
 			 */
 			break;
