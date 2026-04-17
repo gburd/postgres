@@ -65,6 +65,16 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_TRUNCATE:
+			{
+				xl_fileops_truncate *xlrec = (xl_fileops_truncate *) data;
+				const char *path = data + SizeOfFileOpsTruncate;
+
+				appendStringInfo(buf, "truncate \"%s\" to %lld bytes",
+								 path, (long long) xlrec->length);
+			}
+			break;
+
 		default:
 			appendStringInfo(buf, "unknown fileops op code %u", info);
 			break;
@@ -89,6 +99,9 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_WRITE:
 			id = "WRITE";
+			break;
+		case XLOG_FILEOPS_TRUNCATE:
+			id = "TRUNCATE";
 			break;
 	}
 

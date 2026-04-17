@@ -194,6 +194,20 @@ typedef struct xl_fileops_write
 extern int	FileOpsWrite(const char *path, off_t offset,
 						 const void *data, uint32 len);
 
+/*
+ * xl_fileops_truncate - WAL record for file truncation
+ */
+typedef struct xl_fileops_truncate
+{
+	off_t		length;			/* new file length */
+	/* variable-length path follows */
+}			xl_fileops_truncate;
+
+#define SizeOfFileOpsTruncate (offsetof(xl_fileops_truncate, length) + sizeof(off_t))
+
+/* File truncation API */
+extern void FileOpsTruncate(const char *path, off_t length);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);

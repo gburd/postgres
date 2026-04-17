@@ -393,6 +393,69 @@ FileOpsWrite(const char *path, off_t offset, const void *data, uint32 len)
 	return 0;
 }
 
+/*
+ * FileOpsTruncate - Truncate a file within a transaction
+ *
+ * Executed immediately and WAL-logged. Uses ftruncate() on POSIX,
+ * SetEndOfFile() on Windows. File is fsynced after truncation.
+ */
+void
+FileOpsTruncate(const char *path, off_t length)
+{
+	int			fd;
+
+	Assert(!IsInParallelMode());
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_truncate xlrec;
+		int			pathlen;
+
+		xlrec.length = length;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsTruncate);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_TRUNCATE);
+	}
+
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\" for truncation: %m", path)));
+
+	if (ftruncate(fd, length) < 0)
+	{
+		int			save_errno = errno;
+
+		CloseTransientFile(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not truncate file \"%s\" to %lld bytes: %m",
+						path, (long long) length)));
+	}
+
+	if (enableFsync && pg_fsync(fd) != 0)
+	{
+		int			save_errno = errno;
+
+		CloseTransientFile(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not fsync file \"%s\" after truncation: %m",
+						path)));
+	}
+
+	if (CloseTransientFile(fd) != 0)
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", path)));
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -634,6 +697,37 @@ fileops_redo(XLogReaderState *record)
 			 * FileOpsDoPendingOps() at transaction commit/abort.
 			 * Intentional no-op during redo.
 			 */
+			break;
+
+		case XLOG_FILEOPS_TRUNCATE:
+			{
+				xl_fileops_truncate *xlrec = (xl_fileops_truncate *) data;
+				const char *path = data + SizeOfFileOpsTruncate;
+				int			fd;
+
+				XLogFlush(record->EndRecPtr);
+
+				fd = BasicOpenFile(path, O_RDWR | PG_BINARY);
+				if (fd < 0)
+				{
+					if (errno != ENOENT)
+						ereport(WARNING,
+								(errcode_for_file_access(),
+								 errmsg("could not open file \"%s\" for truncation during WAL replay: %m",
+										path)));
+				}
+				else
+				{
+					if (ftruncate(fd, xlrec->length) < 0)
+						ereport(WARNING,
+								(errcode_for_file_access(),
+								 errmsg("could not truncate file \"%s\" to %lld bytes during WAL replay: %m",
+										path, (long long) xlrec->length)));
+					else if (enableFsync)
+						pg_fsync(fd);
+					close(fd);
+				}
+			}
 			break;
 
 		default:
