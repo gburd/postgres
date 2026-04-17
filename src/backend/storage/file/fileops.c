@@ -68,6 +68,7 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "port/pg_xattr.h"
 #include "storage/fd.h"
 #include "storage/fileops.h"
 #include "utils/memutils.h"
@@ -76,7 +77,7 @@
 bool		enable_transactional_fileops = true;
 
 /* Head of the pending file operations linked list */
-static PendingFileOp *pendingFileOps = NULL;
+static PendingFileOp * pendingFileOps = NULL;
 
 /*
  * fileops_fsync_parent -- fsync the parent directory of a file path
@@ -139,7 +140,7 @@ AddPendingFileOp(PendingFileOpType type, const char *path,
  * FreePendingFileOp - Free a pending file operation entry
  */
 static void
-FreePendingFileOp(PendingFileOp *pending)
+FreePendingFileOp(PendingFileOp * pending)
 {
 	if (pending->path)
 		pfree(pending->path);
@@ -707,6 +708,110 @@ FileOpsLink(const char *oldpath, const char *newpath)
 }
 
 /*
+ * FileOpsSetXattr - Set an extended attribute on a file
+ *
+ * Immediate execution, WAL-logged.
+ * Uses pg_setxattr() portability layer which handles:
+ *   - Linux: setxattr()
+ *   - macOS: setxattr() with extra options parameter
+ *   - FreeBSD: extattr_set_file()
+ *   - Windows: NTFS Alternate Data Streams
+ *   - Other: returns ENOTSUP
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsSetXattr(const char *path, const char *name,
+				const void *value, size_t len)
+{
+	Assert(!IsInParallelMode());
+
+	if (pg_setxattr(path, name, value, len) < 0)
+	{
+		if (errno == ENOTSUP)
+			ereport(WARNING,
+					(errmsg("extended attributes not supported on this platform, skipping setxattr for \"%s\"",
+							path)));
+		else
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not set extended attribute \"%s\" on \"%s\": %m",
+							name, path)));
+	}
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_setxattr xlrec;
+		int			pathlen;
+		int			namelen;
+
+		pathlen = strlen(path) + 1;
+		namelen = strlen(name) + 1;
+
+		xlrec.path_len = (uint16) pathlen;
+		xlrec.name_len = (uint16) namelen;
+		xlrec.value_len = (uint32) len;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsSetxattr);
+		XLogRegisterData(path, pathlen);
+		XLogRegisterData(name, namelen);
+		XLogRegisterData(value, (uint32) len);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_SETXATTR);
+	}
+
+	return 0;
+}
+
+/*
+ * FileOpsRemoveXattr - Remove an extended attribute from a file
+ *
+ * Immediate execution, WAL-logged.
+ * Uses pg_removexattr() portability layer.
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsRemoveXattr(const char *path, const char *name)
+{
+	Assert(!IsInParallelMode());
+
+	if (pg_removexattr(path, name) < 0)
+	{
+		if (errno == ENOTSUP)
+			ereport(WARNING,
+					(errmsg("extended attributes not supported on this platform, skipping removexattr for \"%s\"",
+							path)));
+		else if (errno != PG_ENOATTR)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not remove extended attribute \"%s\" from \"%s\": %m",
+							name, path)));
+	}
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_removexattr xlrec;
+		int			pathlen;
+		int			namelen;
+
+		pathlen = strlen(path) + 1;
+		namelen = strlen(name) + 1;
+
+		xlrec.path_len = (uint16) pathlen;
+		xlrec.name_len = (uint16) namelen;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsRemovexattr);
+		XLogRegisterData(path, pathlen);
+		XLogRegisterData(name, namelen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_REMOVEXATTR);
+	}
+
+	return 0;
+}
+
+/*
  * FileOpsDoPendingOps - Execute pending file operations at transaction end
  *
  * At commit, operations with at_commit=true are executed.
@@ -867,8 +972,8 @@ fileops_redo(XLogReaderState *record)
 				int			fd;
 
 				fd = BasicOpenFilePerm(path,
-									  (xlrec->flags & ~PG_O_DIRECT) | O_CREAT,
-									  xlrec->mode);
+									   (xlrec->flags & ~PG_O_DIRECT) | O_CREAT,
+									   xlrec->mode);
 				if (fd < 0)
 				{
 					if (errno == ENOENT)
@@ -944,18 +1049,20 @@ fileops_redo(XLogReaderState *record)
 			break;
 
 		case XLOG_FILEOPS_RENAME:
+
 			/*
 			 * RENAME records log deferred renames executed by
-			 * FileOpsDoPendingOps() at transaction commit.
-			 * Intentional no-op during redo.
+			 * FileOpsDoPendingOps() at transaction commit. Intentional no-op
+			 * during redo.
 			 */
 			break;
 
 		case XLOG_FILEOPS_DELETE:
+
 			/*
 			 * DELETE records log deferred operations executed by
-			 * FileOpsDoPendingOps() at transaction commit/abort.
-			 * Intentional no-op during redo.
+			 * FileOpsDoPendingOps() at transaction commit/abort. Intentional
+			 * no-op during redo.
 			 */
 			break;
 
@@ -1012,9 +1119,10 @@ fileops_redo(XLogReaderState *record)
 			break;
 
 		case XLOG_FILEOPS_RMDIR:
+
 			/*
-			 * RMDIR records log deferred operations, like DELETE.
-			 * Intentional no-op during redo.
+			 * RMDIR records log deferred operations, like DELETE. Intentional
+			 * no-op during redo.
 			 */
 			break;
 
@@ -1075,6 +1183,39 @@ fileops_redo(XLogReaderState *record)
 						pg_fsync(fd);
 					close(fd);
 				}
+			}
+			break;
+
+		case XLOG_FILEOPS_SETXATTR:
+			{
+				xl_fileops_setxattr *xlrec = (xl_fileops_setxattr *) data;
+				const char *path = data + SizeOfFileOpsSetxattr;
+				const char *name = path + xlrec->path_len;
+				const void *value = name + xlrec->name_len;
+
+				if (pg_setxattr(path, name, value, xlrec->value_len) < 0 &&
+					errno != ENOTSUP && errno != ENOENT)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not set extended attribute \"%s\" on \"%s\" during WAL replay: %m",
+									name, path)));
+			}
+			break;
+
+		case XLOG_FILEOPS_REMOVEXATTR:
+			{
+				xl_fileops_removexattr *xlrec =
+					(xl_fileops_removexattr *) data;
+				const char *path = data + SizeOfFileOpsRemovexattr;
+				const char *name = path + xlrec->path_len;
+
+				if (pg_removexattr(path, name) < 0 &&
+					errno != ENOTSUP && errno != ENOENT &&
+					errno != PG_ENOATTR)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not remove extended attribute \"%s\" from \"%s\" during WAL replay: %m",
+									name, path)));
 			}
 			break;
 

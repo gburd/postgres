@@ -138,6 +138,29 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_SETXATTR:
+			{
+				xl_fileops_setxattr *xlrec = (xl_fileops_setxattr *) data;
+				const char *path = data + SizeOfFileOpsSetxattr;
+				const char *name = path + xlrec->path_len;
+
+				appendStringInfo(buf, "setxattr \"%s\" name \"%s\" len %u",
+								 path, name, xlrec->value_len);
+			}
+			break;
+
+		case XLOG_FILEOPS_REMOVEXATTR:
+			{
+				xl_fileops_removexattr *xlrec =
+					(xl_fileops_removexattr *) data;
+				const char *path = data + SizeOfFileOpsRemovexattr;
+				const char *name = path + xlrec->path_len;
+
+				appendStringInfo(buf, "removexattr \"%s\" name \"%s\"",
+								 path, name);
+			}
+			break;
+
 		default:
 			appendStringInfo(buf, "unknown fileops op code %u", info);
 			break;
@@ -183,6 +206,12 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_LINK:
 			id = "LINK";
+			break;
+		case XLOG_FILEOPS_SETXATTR:
+			id = "SETXATTR";
+			break;
+		case XLOG_FILEOPS_REMOVEXATTR:
+			id = "REMOVEXATTR";
 			break;
 	}
 

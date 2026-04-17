@@ -287,6 +287,36 @@ typedef struct xl_fileops_link
 extern int	FileOpsSymlink(const char *target, const char *linkpath);
 extern int	FileOpsLink(const char *oldpath, const char *newpath);
 
+/*
+ * xl_fileops_setxattr - WAL record for setting an extended attribute
+ */
+typedef struct xl_fileops_setxattr
+{
+	uint16		name_len;		/* attribute name length (including NUL) */
+	uint32		value_len;		/* attribute value length */
+	uint16		path_len;		/* file path length (including NUL) */
+	/* variable-length: path, name, value */
+}			xl_fileops_setxattr;
+
+#define SizeOfFileOpsSetxattr (offsetof(xl_fileops_setxattr, path_len) + sizeof(uint16))
+
+/*
+ * xl_fileops_removexattr - WAL record for removing an extended attribute
+ */
+typedef struct xl_fileops_removexattr
+{
+	uint16		name_len;		/* attribute name length (including NUL) */
+	uint16		path_len;		/* file path length (including NUL) */
+	/* variable-length: path, name */
+}			xl_fileops_removexattr;
+
+#define SizeOfFileOpsRemovexattr (offsetof(xl_fileops_removexattr, path_len) + sizeof(uint16))
+
+/* Extended attribute API */
+extern int	FileOpsSetXattr(const char *path, const char *name,
+							const void *value, size_t len);
+extern int	FileOpsRemoveXattr(const char *path, const char *name);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
