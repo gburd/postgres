@@ -33,6 +33,17 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_DELETE:
+			{
+				xl_fileops_delete *xlrec = (xl_fileops_delete *) data;
+				const char *path = data + SizeOfFileOpsDelete;
+
+				appendStringInfo(buf, "delete \"%s\" at_%s",
+								 path,
+								 xlrec->at_commit ? "commit" : "abort");
+			}
+			break;
+
 		default:
 			appendStringInfo(buf, "unknown fileops op code %u", info);
 			break;
@@ -48,6 +59,9 @@ fileops_identify(uint8 info)
 	{
 		case XLOG_FILEOPS_CREATE:
 			id = "CREATE";
+			break;
+		case XLOG_FILEOPS_DELETE:
+			id = "DELETE";
 			break;
 	}
 

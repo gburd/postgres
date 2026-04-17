@@ -137,6 +137,24 @@ typedef struct xl_fileops_create
 extern int	FileOpsCreate(const char *path, int flags, mode_t mode,
 						  bool register_delete);
 
+/*
+ * xl_fileops_delete - WAL record for file deletion
+ *
+ * Records that a file deletion was requested. The at_commit flag indicates
+ * whether the deletion should happen at commit (true) or was registered
+ * as a delete-on-abort from a prior create (false).
+ */
+typedef struct xl_fileops_delete
+{
+	bool		at_commit;		/* true = delete at commit, false = at abort */
+	/* variable-length path follows */
+}			xl_fileops_delete;
+
+#define SizeOfFileOpsDelete (offsetof(xl_fileops_delete, at_commit) + sizeof(bool))
+
+/* File deletion API */
+extern void FileOpsDelete(const char *path, bool at_commit);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
