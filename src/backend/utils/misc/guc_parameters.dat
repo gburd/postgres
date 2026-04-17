@@ -1040,6 +1040,12 @@
   boot_val => 'true',
 },
 
+{ name => 'enable_transactional_fileops', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables transactional file operations with WAL logging.',
+  long_desc => 'When enabled, filesystem operations (create, delete, rename, etc.) are WAL-logged and integrated with transaction commit/abort.',
+  variable => 'enable_transactional_fileops',
+  boot_val => 'true',
+},
 
 { name => 'enable_undo', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Enables UNDO logging infrastructure.',

@@ -1,0 +1,186 @@
+<!-- doc/src/sgml/fileops.sgml -->
+
+<sect1 id="fileops" xreflabel="Transactional File Operations">
+ <title>Transactional File Operations</title>
+
+ <indexterm zone="fileops">
+  <primary>transactional file operations</primary>
+ </indexterm>
+
+ <indexterm zone="fileops">
+  <primary>FILEOPS</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> includes a transactional file
+  operations layer (FILEOPS) that makes filesystem operations such as
+  file creation, deletion, renaming, and truncation atomic with the
+  enclosing database transaction.  These operations are WAL-logged
+  via the <literal>RM_FILEOPS_ID</literal> resource manager and
+  replayed correctly during crash recovery and on standbys.
+ </para>
+
+ <sect2 id="fileops-overview">
+  <title>Overview</title>
+
+  <para>
+   Without FILEOPS, filesystem operations during <command>CREATE
+   TABLE</command> or <command>DROP TABLE</command> are not truly
+   transactional &mdash; a crash between the catalog update and the
+   file operation can leave orphaned files or missing files.  The
+   FILEOPS layer addresses this by:
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     Writing a WAL record before performing the filesystem operation.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Deferring destructive operations (deletion) until transaction
+     commit.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Registering undo actions (delete-on-abort for newly created files)
+     that execute automatically if the transaction rolls back.
+    </para>
+   </listitem>
+  </orderedlist>
+ </sect2>
+
+ <sect2 id="fileops-configuration">
+  <title>Configuration</title>
+
+  <para>
+   Transactional file operations are controlled by a single GUC:
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term><varname>enable_transactional_fileops</varname> (<type>boolean</type>)</term>
+    <listitem>
+     <para>
+      Enables WAL-logged transactional file operations.  When
+      <literal>on</literal> (the default), file creation and deletion
+      during DDL commands are WAL-logged and integrated with the
+      transaction lifecycle.  Set to <literal>off</literal> to revert
+      to the traditional non-transactional behavior.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="fileops-operations">
+  <title>Supported Operations</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>File Creation</term>
+    <listitem>
+     <para>
+      When a new relation file is created (e.g., during
+      <command>CREATE TABLE</command>), a
+      <literal>XLOG_FILEOPS_CREATE</literal> WAL record is written.
+      If the transaction aborts, the file is automatically deleted.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Deletion</term>
+    <listitem>
+     <para>
+      File deletion (e.g., during <command>DROP TABLE</command>) is
+      deferred until transaction commit.  A
+      <literal>XLOG_FILEOPS_DELETE</literal> WAL record is written.
+      If the transaction aborts, the file remains intact.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Move/Rename</term>
+    <listitem>
+     <para>
+      File renames are WAL-logged via
+      <literal>XLOG_FILEOPS_MOVE</literal>.  This ensures renames
+      are replayed during crash recovery.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Truncation</term>
+    <listitem>
+     <para>
+      File truncations are WAL-logged via
+      <literal>XLOG_FILEOPS_TRUNCATE</literal>.  The old size is
+      recorded for potential undo operations.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="fileops-platform">
+  <title>Platform-Specific Behavior</title>
+
+  <para>
+   The FILEOPS implementation includes platform-specific handling for
+   filesystem differences.  On all platforms, parent directory
+   <function>fsync</function> is performed after file creation or
+   deletion to ensure directory entry durability.
+  </para>
+
+  <para>
+   On systems with copy-on-write filesystems (e.g., ZFS, Btrfs),
+   the FILEOPS layer respects the existing
+   <varname>data_sync_retry</varname> setting for handling
+   <function>fsync</function> failures.
+  </para>
+ </sect2>
+
+ <sect2 id="fileops-recovery">
+  <title>Crash Recovery</title>
+
+  <para>
+   During crash recovery, the FILEOPS resource manager replays
+   operations from the WAL:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <literal>CREATE</literal> records: re-create the file if it
+     does not exist.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>DELETE</literal> records: perform the deferred deletion.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>MOVE</literal> records: re-apply the rename operation.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>TRUNCATE</literal> records: re-apply the truncation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   On standbys, FILEOPS WAL records are replayed identically, ensuring
+   that the standby's filesystem state matches the primary's.
+  </para>
+ </sect2>
+
+</sect1>

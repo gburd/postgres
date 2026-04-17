@@ -914,6 +914,8 @@
 
 # These options are intended for use in development and testing.
 
+#enable_transactional_fileops = on      # WAL-log filesystem operations for
+                                        # crash-safe file create/delete/rename
 #enable_undo = off                      # enable UNDO logging infrastructure
                                         # (change requires restart)
 #undo_buffer_size = 1MB                 # memory buffer for UNDO log records

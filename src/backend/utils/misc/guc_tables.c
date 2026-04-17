@@ -83,6 +83,7 @@
 #include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/io_worker.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"

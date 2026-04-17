@@ -953,10 +953,11 @@ CREATE TABLE tab_settings_flags AS SELECT name, category,
 SELECT name FROM tab_settings_flags
   WHERE category = 'Developer Options' AND NOT not_in_sample
   ORDER BY 1;
-    name     
--------------
+             name             
+------------------------------
+ enable_transactional_fileops
  enable_undo
-(1 row)
+(2 rows)
 
 -- Most query-tuning GUCs are flagged as valid for EXPLAIN.
 -- default_statistics_target is an exception.
