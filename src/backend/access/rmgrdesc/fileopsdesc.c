@@ -33,6 +33,16 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_WRITE:
+			{
+				xl_fileops_write *xlrec = (xl_fileops_write *) data;
+				const char *path = data + SizeOfFileOpsWrite;
+
+				appendStringInfo(buf, "write \"%s\" offset %lld len %u",
+								 path, (long long) xlrec->offset, xlrec->len);
+			}
+			break;
+
 		case XLOG_FILEOPS_RENAME:
 			{
 				xl_fileops_rename *xlrec = (xl_fileops_rename *) data;
@@ -76,6 +86,9 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_RENAME:
 			id = "RENAME";
+			break;
+		case XLOG_FILEOPS_WRITE:
+			id = "WRITE";
 			break;
 	}
 
