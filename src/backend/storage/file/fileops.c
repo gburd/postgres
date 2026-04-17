@@ -255,6 +255,36 @@ FileOpsCreate(const char *path, int flags, mode_t mode, bool register_delete)
 	return fd;
 }
 
+/*
+ * FileOpsDelete - Schedule a file deletion within a transaction
+ *
+ * The file is not deleted immediately. Instead, the deletion is deferred
+ * to transaction commit (if at_commit is true) or abort (if false).
+ * On Unix: unlink() with parent dir fsync.
+ * On Windows: pgunlink() with retry on EACCES.
+ */
+void
+FileOpsDelete(const char *path, bool at_commit)
+{
+	Assert(!IsInParallelMode());
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_delete xlrec;
+		int			pathlen;
+
+		xlrec.at_commit = at_commit;
+		pathlen = strlen(path) + 1;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsDelete);
+		XLogRegisterData(path, pathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_DELETE);
+	}
+
+	AddPendingFileOp(PENDING_FILEOP_DELETE, path, NULL, 0, at_commit);
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -303,6 +333,22 @@ FileOpsDoPendingOps(bool isCommit)
 			{
 				case PENDING_FILEOP_CREATE:
 					/* Creates are executed immediately, nothing to do */
+					break;
+
+				case PENDING_FILEOP_DELETE:
+					if (unlink(pending->path) < 0)
+					{
+						if (errno != ENOENT)
+							ereport(WARNING,
+									(errcode_for_file_access(),
+									 errmsg("could not remove file \"%s\": %m",
+											pending->path)));
+					}
+					else
+					{
+						if (enableFsync)
+							fileops_fsync_parent(pending->path, WARNING);
+					}
 					break;
 
 				default:
@@ -428,6 +474,14 @@ fileops_redo(XLogReaderState *record)
 						fileops_fsync_parent(path, WARNING);
 				}
 			}
+			break;
+
+		case XLOG_FILEOPS_DELETE:
+			/*
+			 * DELETE records log deferred operations executed by
+			 * FileOpsDoPendingOps() at transaction commit/abort.
+			 * Intentional no-op during redo.
+			 */
 			break;
 
 		default:
