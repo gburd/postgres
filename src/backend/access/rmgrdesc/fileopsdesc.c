@@ -65,6 +65,27 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_MKDIR:
+			{
+				xl_fileops_mkdir *xlrec = (xl_fileops_mkdir *) data;
+				const char *path = data + SizeOfFileOpsMkdir;
+
+				appendStringInfo(buf, "mkdir \"%s\" mode 0%o",
+								 path, (unsigned int) xlrec->mode);
+			}
+			break;
+
+		case XLOG_FILEOPS_RMDIR:
+			{
+				xl_fileops_rmdir *xlrec = (xl_fileops_rmdir *) data;
+				const char *path = data + SizeOfFileOpsRmdir;
+
+				appendStringInfo(buf, "rmdir \"%s\" at_%s",
+								 path,
+								 xlrec->at_commit ? "commit" : "abort");
+			}
+			break;
+
 		case XLOG_FILEOPS_CHMOD:
 			{
 				xl_fileops_chmod *xlrec = (xl_fileops_chmod *) data;
@@ -128,6 +149,12 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_CHOWN:
 			id = "CHOWN";
+			break;
+		case XLOG_FILEOPS_MKDIR:
+			id = "MKDIR";
+			break;
+		case XLOG_FILEOPS_RMDIR:
+			id = "RMDIR";
 			break;
 	}
 

@@ -235,6 +235,32 @@ typedef struct xl_fileops_chown
 extern int	FileOpsChmod(const char *path, mode_t mode);
 extern int	FileOpsChown(const char *path, uid_t uid, gid_t gid);
 
+/*
+ * xl_fileops_mkdir - WAL record for directory creation
+ */
+typedef struct xl_fileops_mkdir
+{
+	mode_t		mode;			/* directory permission mode */
+	/* variable-length path follows */
+}			xl_fileops_mkdir;
+
+#define SizeOfFileOpsMkdir (offsetof(xl_fileops_mkdir, mode) + sizeof(mode_t))
+
+/*
+ * xl_fileops_rmdir - WAL record for directory removal
+ */
+typedef struct xl_fileops_rmdir
+{
+	bool		at_commit;		/* true = rmdir at commit, false = at abort */
+	/* variable-length path follows */
+}			xl_fileops_rmdir;
+
+#define SizeOfFileOpsRmdir (offsetof(xl_fileops_rmdir, at_commit) + sizeof(bool))
+
+/* Directory lifecycle API */
+extern int	FileOpsMkdir(const char *path, mode_t mode);
+extern void FileOpsRmdir(const char *path, bool at_commit);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
