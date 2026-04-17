@@ -1,41 +1,48 @@
---
--- Example: Transactional file operations (FILEOPS)
---
--- This example demonstrates WAL-logged file system operations that
--- integrate with PostgreSQL's transaction system.
---
+-- ============================================================================
+-- Example 4: Transactional File Operations (FILEOPS)
+-- ============================================================================
+-- Demonstrates WAL-logged, transactional table creation and deletion
 
--- FILEOPS provides atomic guarantees for:
--- - Creating/dropping relation forks
--- - Extending relation forks
--- - File operations with crash recovery
+-- FILEOPS is enabled by default (enable_transactional_fileops = on)
 
--- Note: This is a low-level infrastructure feature.
--- Most users will not interact with FILEOPS directly.
--- It is used internally by per-relation UNDO and can be used
--- by custom table access methods or extensions.
+-- Example 1: Table creation survives crashes
+BEGIN;
 
--- Example: Table AM using FILEOPS to create custom fork
--- (This is illustrative - actual usage is via C API)
+CREATE TABLE crash_safe_data (
+    id   serial PRIMARY KEY,
+    data text
+);
 
--- When a table AM creates a per-relation UNDO fork:
---   1. FileOpsCreate(rel, RELUNDO_FORKNUM)  -- Create fork
---   2. FileOpsExtend(rel, RELUNDO_FORKNUM, 10)  -- Extend by 10 blocks
---   3. On COMMIT: Changes are permanent
---   4. On ROLLBACK: Fork creation is reversed
+-- At this point, a XLOG_FILEOPS_CREATE WAL record has been written
+-- If the server crashes before COMMIT, the file will be automatically deleted
 
--- The key benefit: File operations participate in transactions
--- Without FILEOPS: File created, transaction aborts, orphan file remains
--- With FILEOPS: File created, transaction aborts, file automatically removed
+INSERT INTO crash_safe_data (data) VALUES ('test data');
 
--- FILEOPS operations are WAL-logged:
--- - Crash during CREATE: Redo creates the file
--- - Crash after ROLLBACK: Undo removes the file
--- - Standby replay: File operations are replayed correctly
+COMMIT;
 
--- GUC configuration:
--- enable_transactional_fileops = on  (default)
+-- The file is now durable; CREATE and data are atomic
 
--- For extension developers:
--- See src/include/storage/fileops.h for C API documentation
--- See src/backend/access/undo/relundo.c for usage examples
+-- Example 2: Table deletion is deferred until commit
+BEGIN;
+
+DROP TABLE crash_safe_data;
+
+-- The relation file still exists on disk (deletion deferred)
+-- A XLOG_FILEOPS_DELETE WAL record has been written
+
+COMMIT;
+
+-- Now the file is deleted atomically with the transaction commit
+
+-- Example 3: Rollback properly cleans up created files
+BEGIN;
+
+CREATE TABLE temp_table (id int);
+INSERT INTO temp_table VALUES (1), (2), (3);
+
+-- File exists on disk with data
+
+ROLLBACK;
+
+-- File is automatically deleted (FILEOPS cleanup on abort)
+-- No orphaned files left behind
