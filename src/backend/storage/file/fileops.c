@@ -615,6 +615,98 @@ FileOpsRmdir(const char *path, bool at_commit)
 }
 
 /*
+ * FileOpsSymlink - Create a symbolic link within a transaction
+ *
+ * Immediate execution. Registers delete-on-abort for cleanup.
+ * On POSIX: symlink(). On Windows: pgsymlink() which creates NTFS
+ * junction points via DeviceIoControl(). Note: junction points only
+ * work for directories on Windows.
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsSymlink(const char *target, const char *linkpath)
+{
+	Assert(!IsInParallelMode());
+
+	if (symlink(target, linkpath) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create symbolic link \"%s\" -> \"%s\": %m",
+						linkpath, target)));
+
+	if (enableFsync)
+		fileops_fsync_parent(linkpath, WARNING);
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_symlink xlrec;
+		int			targetlen;
+		int			linkpathlen;
+
+		targetlen = strlen(target) + 1;
+		linkpathlen = strlen(linkpath) + 1;
+		xlrec.target_len = targetlen;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsSymlink);
+		XLogRegisterData(target, targetlen);
+		XLogRegisterData(linkpath, linkpathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_SYMLINK);
+	}
+
+	/* Register delete-on-abort to clean up the symlink on rollback */
+	AddPendingFileOp(PENDING_FILEOP_DELETE, linkpath, NULL, 0, false);
+
+	return 0;
+}
+
+/*
+ * FileOpsLink - Create a hard link within a transaction
+ *
+ * Immediate execution. Registers delete-on-abort for cleanup.
+ * On POSIX: link(). On Windows: CreateHardLinkA() (NTFS only).
+ *
+ * Returns 0 on success.
+ */
+int
+FileOpsLink(const char *oldpath, const char *newpath)
+{
+	Assert(!IsInParallelMode());
+
+	if (link(oldpath, newpath) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create hard link \"%s\" -> \"%s\": %m",
+						newpath, oldpath)));
+
+	if (enableFsync)
+		fileops_fsync_parent(newpath, WARNING);
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_link xlrec;
+		int			oldpathlen;
+		int			newpathlen;
+
+		oldpathlen = strlen(oldpath) + 1;
+		newpathlen = strlen(newpath) + 1;
+		xlrec.oldpath_len = oldpathlen;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsLink);
+		XLogRegisterData(oldpath, oldpathlen);
+		XLogRegisterData(newpath, newpathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_LINK);
+	}
+
+	/* Register delete-on-abort to clean up the link on rollback */
+	AddPendingFileOp(PENDING_FILEOP_DELETE, newpath, NULL, 0, false);
+
+	return 0;
+}
+
+/*
  * FileOpsDoPendingOps - Execute pending file operations at transaction end
  *
  * At commit, operations with at_commit=true are executed.
@@ -865,6 +957,42 @@ fileops_redo(XLogReaderState *record)
 			 * FileOpsDoPendingOps() at transaction commit/abort.
 			 * Intentional no-op during redo.
 			 */
+			break;
+
+		case XLOG_FILEOPS_SYMLINK:
+			{
+				xl_fileops_symlink *xlrec = (xl_fileops_symlink *) data;
+				const char *target = data + SizeOfFileOpsSymlink;
+				const char *linkpath = target + xlrec->target_len;
+
+				/* Remove existing link first for idempotent redo */
+				unlink(linkpath);
+				if (symlink(target, linkpath) < 0 && errno != EEXIST)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not create symbolic link \"%s\" during WAL replay: %m",
+									linkpath)));
+				else if (enableFsync)
+					fileops_fsync_parent(linkpath, WARNING);
+			}
+			break;
+
+		case XLOG_FILEOPS_LINK:
+			{
+				xl_fileops_link *xlrec = (xl_fileops_link *) data;
+				const char *oldpath = data + SizeOfFileOpsLink;
+				const char *newpath = oldpath + xlrec->oldpath_len;
+
+				/* Remove existing link first for idempotent redo */
+				unlink(newpath);
+				if (link(oldpath, newpath) < 0 && errno != EEXIST)
+					ereport(WARNING,
+							(errcode_for_file_access(),
+							 errmsg("could not create hard link \"%s\" during WAL replay: %m",
+									newpath)));
+				else if (enableFsync)
+					fileops_fsync_parent(newpath, WARNING);
+			}
 			break;
 
 		case XLOG_FILEOPS_MKDIR:

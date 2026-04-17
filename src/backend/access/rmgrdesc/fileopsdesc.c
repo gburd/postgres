@@ -65,6 +65,28 @@ fileops_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_FILEOPS_SYMLINK:
+			{
+				xl_fileops_symlink *xlrec = (xl_fileops_symlink *) data;
+				const char *target = data + SizeOfFileOpsSymlink;
+				const char *linkpath = target + xlrec->target_len;
+
+				appendStringInfo(buf, "symlink \"%s\" -> \"%s\"",
+								 linkpath, target);
+			}
+			break;
+
+		case XLOG_FILEOPS_LINK:
+			{
+				xl_fileops_link *xlrec = (xl_fileops_link *) data;
+				const char *oldpath = data + SizeOfFileOpsLink;
+				const char *newpath = oldpath + xlrec->oldpath_len;
+
+				appendStringInfo(buf, "link \"%s\" -> \"%s\"",
+								 newpath, oldpath);
+			}
+			break;
+
 		case XLOG_FILEOPS_MKDIR:
 			{
 				xl_fileops_mkdir *xlrec = (xl_fileops_mkdir *) data;
@@ -155,6 +177,12 @@ fileops_identify(uint8 info)
 			break;
 		case XLOG_FILEOPS_RMDIR:
 			id = "RMDIR";
+			break;
+		case XLOG_FILEOPS_SYMLINK:
+			id = "SYMLINK";
+			break;
+		case XLOG_FILEOPS_LINK:
+			id = "LINK";
 			break;
 	}
 

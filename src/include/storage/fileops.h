@@ -261,6 +261,32 @@ typedef struct xl_fileops_rmdir
 extern int	FileOpsMkdir(const char *path, mode_t mode);
 extern void FileOpsRmdir(const char *path, bool at_commit);
 
+/*
+ * xl_fileops_symlink - WAL record for symbolic link creation
+ */
+typedef struct xl_fileops_symlink
+{
+	uint16		target_len;		/* length of target (including NUL) */
+	/* variable-length target follows, then linkpath */
+}			xl_fileops_symlink;
+
+#define SizeOfFileOpsSymlink (offsetof(xl_fileops_symlink, target_len) + sizeof(uint16))
+
+/*
+ * xl_fileops_link - WAL record for hard link creation
+ */
+typedef struct xl_fileops_link
+{
+	uint16		oldpath_len;	/* length of old path (including NUL) */
+	/* variable-length old path follows, then new path */
+}			xl_fileops_link;
+
+#define SizeOfFileOpsLink (offsetof(xl_fileops_link, oldpath_len) + sizeof(uint16))
+
+/* Link operations API */
+extern int	FileOpsSymlink(const char *target, const char *linkpath);
+extern int	FileOpsLink(const char *oldpath, const char *newpath);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
