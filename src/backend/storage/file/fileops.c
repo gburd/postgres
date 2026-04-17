@@ -285,6 +285,42 @@ FileOpsDelete(const char *path, bool at_commit)
 	AddPendingFileOp(PENDING_FILEOP_DELETE, path, NULL, 0, at_commit);
 }
 
+/*
+ * FileOpsRename - Rename a file within a transaction
+ *
+ * The rename is deferred to commit time. Uses durable_rename() internally
+ * which handles all platform differences:
+ *   - Unix: rename() with fsync of both old and new parent dirs
+ *   - Windows: MoveFileEx(MOVEFILE_REPLACE_EXISTING) with retry
+ */
+int
+FileOpsRename(const char *oldpath, const char *newpath)
+{
+	Assert(!IsInParallelMode());
+
+	if (XLogIsNeeded())
+	{
+		xl_fileops_rename xlrec;
+		int			oldpathlen;
+		int			newpathlen;
+
+		oldpathlen = strlen(oldpath) + 1;
+		newpathlen = strlen(newpath) + 1;
+
+		xlrec.oldpath_len = oldpathlen;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfFileOpsRename);
+		XLogRegisterData(oldpath, oldpathlen);
+		XLogRegisterData(newpath, newpathlen);
+		XLogInsert(RM_FILEOPS_ID, XLOG_FILEOPS_RENAME);
+	}
+
+	AddPendingFileOp(PENDING_FILEOP_RENAME, oldpath, newpath, 0, true);
+
+	return 0;
+}
+
 void
 FileOpsSync(const char *path)
 {
@@ -333,6 +369,11 @@ FileOpsDoPendingOps(bool isCommit)
 			{
 				case PENDING_FILEOP_CREATE:
 					/* Creates are executed immediately, nothing to do */
+					break;
+
+				case PENDING_FILEOP_RENAME:
+					(void) durable_rename(pending->path, pending->newpath,
+										  WARNING);
 					break;
 
 				case PENDING_FILEOP_DELETE:
@@ -474,6 +515,14 @@ fileops_redo(XLogReaderState *record)
 						fileops_fsync_parent(path, WARNING);
 				}
 			}
+			break;
+
+		case XLOG_FILEOPS_RENAME:
+			/*
+			 * RENAME records log deferred renames executed by
+			 * FileOpsDoPendingOps() at transaction commit.
+			 * Intentional no-op during redo.
+			 */
 			break;
 
 		case XLOG_FILEOPS_DELETE:

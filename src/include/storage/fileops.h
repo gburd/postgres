@@ -155,6 +155,24 @@ typedef struct xl_fileops_delete
 /* File deletion API */
 extern void FileOpsDelete(const char *path, bool at_commit);
 
+/*
+ * xl_fileops_rename - WAL record for file rename
+ *
+ * Records that a file was renamed. Both old and new paths are stored
+ * as variable-length data: oldpath_len bytes of old path, then the
+ * new path follows.
+ */
+typedef struct xl_fileops_rename
+{
+	uint16		oldpath_len;	/* length of old path (including NUL) */
+	/* variable-length old path follows, then new path */
+}			xl_fileops_rename;
+
+#define SizeOfFileOpsRename (offsetof(xl_fileops_rename, oldpath_len) + sizeof(uint16))
+
+/* File rename API */
+extern int	FileOpsRename(const char *oldpath, const char *newpath);
+
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);
