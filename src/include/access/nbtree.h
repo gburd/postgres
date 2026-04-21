@@ -1331,4 +1331,25 @@ extern IndexBuildResult *btbuild(Relation heap, Relation index,
 								 struct IndexInfo *indexInfo);
 extern void _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc);
 
+/*
+ * nbtree UNDO support (nbtree_undo.c)
+ */
+
+/* nbtree UNDO subtypes (stored in urec_info) */
+#define NBTREE_UNDO_INSERT_LEAF		0x0001
+#define NBTREE_UNDO_INSERT_UPPER	0x0002
+#define NBTREE_UNDO_INSERT_POST		0x0004
+#define NBTREE_UNDO_DELETE			0x0005
+#define NBTREE_UNDO_SPLIT_L		0x0006
+#define NBTREE_UNDO_SPLIT_R		0x0007
+#define NBTREE_UNDO_NEWROOT		0x0008
+#define NBTREE_UNDO_DEDUP			0x0009
+#define NBTREE_UNDO_VACUUM			0x000A
+
+extern void NbtreeUndoRmgrInit(void);
+extern void NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
+								IndexTuple itup, Size itemsz,
+								OffsetNumber offset, bool isleaf);
+extern void NbtreeUndoLogDedup(Relation rel, Relation heaprel, Buffer buf);
+
 #endif							/* NBTREE_H */

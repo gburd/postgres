@@ -173,9 +173,13 @@ to drain worker queue synchronously.
 
 ### Use Neither
 - Append-only workloads (minimal aborts)
-- Bulk load scenarios (COPY)
 - Read-only replicas
 - Space-critical deployments
+
+Note: Bulk load scenarios (COPY, large DML) previously fell in the "Use
+Neither" category due to 2x write amplification without abort benefit.
+The bulk UNDO hints mechanism now reduces per-row overhead by batching
+UNDO records, making UNDO viable for large operations.
 
 ---
 
@@ -184,7 +188,7 @@ to drain worker queue synchronously.
 ### Cluster-wide UNDO
 1. **Undo-based MVCC**: Reduce bloat by storing old versions in UNDO
 2. **Time-travel queries**: `SELECT * FROM t AS OF SYSTEM TIME '...'`
-3. **Faster VACUUM**: Discard entire UNDO segments instead of scanning heap
+3. ~~**Faster VACUUM**: Discard entire UNDO segments instead of scanning heap~~ **Implemented**: Segment rotation and lifecycle management enables segment-level discard via `UndoLogSealAndRotate()` and `pg_undo_force_discard()`
 4. **Parallel rollback**: Multi-worker UNDO application
 
 ### Per-Relation UNDO
