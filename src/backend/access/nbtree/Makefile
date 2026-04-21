@@ -21,6 +21,7 @@ OBJS = \
 	nbtprune.o \
 	nbtreadpage.o \
 	nbtree.o \
+	nbtree_undo.o \
 	nbtsearch.o \
 	nbtsort.o \
 	nbtsplitloc.o \
