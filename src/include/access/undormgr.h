@@ -38,6 +38,7 @@
 #define UNDO_RMID_HEAP		1
 #define UNDO_RMID_NBTREE	2
 #define UNDO_RMID_FILEOPS	3
+#define UNDO_RMID_RECNO		4
 
 #define MAX_UNDO_RMGRS		256
 

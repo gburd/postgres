@@ -366,6 +366,26 @@
 #track_commit_timestamp = off   # collect timestamp of transaction commit
                                 # (change requires restart)
 
+# RECNO table access method - hybrid logical clock settings
+#recno_use_hlc = on             # use hybrid logical clocks for RECNO timestamps
+                                # (change requires restart)
+#recno_node_id = 0              # node/replica ID for RECNO hybrid logical clocks
+                                # (range: 0-4095)
+#recno_max_clock_offset_ms = 250        # max expected clock offset in ms for
+                                # RECNO uncertainty intervals (range: 0-60000)
+#recno_uncertainty_wait = on    # whether replicas wait on RECNO uncertainty windows
+#recno_slog_entries_per_backend = 2048  # per-backend RECNO sLog entries in shared
+                                # memory (range: 128-262144, requires restart)
+#undo_instant_abort_threshold = 65536  # UNDO bytes threshold above which RECNO
+                                # uses instant abort via ATM
+
+# RECNO table access method - compression settings
+# Attribute-level compression is configured per-relation via the
+# `compression` and `compression_level` reloptions (there is no GUC), e.g.:
+#   CREATE TABLE t (...) USING recno WITH (compression = 'zstd');
+#   ALTER TABLE t SET (compression = 'lz4', compression_level = 6);
+# Valid compression values: off, auto, lz4, zstd.
+
 # - Primary Server -
 
 # These settings are ignored on a standby server.
@@ -802,6 +822,8 @@
 #default_toast_compression = pglz       # pglz or lz4
 #temp_tablespaces = ''                  # a list of tablespace names, '' uses
                                         # only default tablespace
+
+
 #check_function_bodies = on
 #default_transaction_isolation = 'read committed'
 #default_transaction_read_only = off
@@ -918,6 +940,7 @@
                                         # crash-safe file create/delete/rename
 #enable_undo = off                      # enable UNDO logging infrastructure
                                         # (change requires restart)
+#enable_transactional_fileops = on      # enable WAL-logged transactional file ops
 #undo_buffer_size = 1MB                 # memory buffer for UNDO log records
                                         # (change requires restart)
 #undo_instant_abort_threshold = 65536   # bytes; 0 = always use ATM instant abort

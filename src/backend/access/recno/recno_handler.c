@@ -1,0 +1,4233 @@
+/*-------------------------------------------------------------------------
+ *
+ * recno_handler.c
+ *	  RECNO table access method handler
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/access/recno/recno_handler.c
+ *
+ * NOTES
+ *	  This file implements the RECNO table access method, which provides
+ *	  time-based MVCC with in-place updates, overflow pages for large
+ *	  attributes, compression, and advanced space management.
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/recno.h"
+#include "access/recno_slog.h"
+#include "access/recno_xlog.h"
+#include "access/tableam.h"
+#include "access/tsmapi.h"
+#include "access/multixact.h"
+#include "access/xact.h"
+#include "access/xloginsert.h"
+#include "catalog/index.h"
+#include "catalog/storage.h"
+#include "catalog/storage_xlog.h"
+#include "commands/progress.h"
+#include "executor/executor.h"
+#include "nodes/execnodes.h"
+#include "nodes/tidbitmap.h"
+#include "utils/backend_progress.h"
+#include "utils/snapmgr.h"
+#include "utils/timestamp.h"
+#include "utils/tuplesort.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "storage/lmgr.h"
+#include "storage/procarray.h"
+#include "storage/read_stream.h"
+#include "storage/smgr.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
+
+/*
+ * Global MVCC state
+ */
+static RecnoMvccData *recno_mvcc_state = NULL;
+
+
+/* Forward declarations */
+static void recno_init_mvcc_state(void);
+static void recno_prepare_pagescan(RecnoScanDesc scan, Buffer buffer);
+static BlockNumber recno_scan_stream_read_next(ReadStream *stream,
+											   void *callback_private_data,
+											   void *per_buffer_data);
+static bool recno_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
+static bool recno_scan_analyze_next_tuple(TableScanDesc scan,
+										  double *liverows, double *deadrows,
+										  TupleTableSlot *slot);
+static void recno_scan_set_tidrange(TableScanDesc sscan, ItemPointer mintid,
+									ItemPointer maxtid);
+static bool recno_scan_getnextslot_tidrange(TableScanDesc sscan, ScanDirection direction,
+											TupleTableSlot *slot);
+static bool recno_scan_bitmap_next_tuple(TableScanDesc scan,
+										 TupleTableSlot *slot,
+										 bool *recheck,
+										 uint64 *lossy_pages,
+										 uint64 *exact_pages);
+static MinimalTuple minimal_tuple_from_recno_tuple(RecnoTuple rtuple, TupleDesc tupdesc);
+static RecnoTuple recno_tuple_from_slot(TupleTableSlot *slot);
+
+/* Include operations from other modules */
+extern void recno_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
+							   uint32 options, BulkInsertState bistate);
+extern TM_Result recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
+									uint32 options, Snapshot snapshot, Snapshot crosscheck,
+									bool wait, TM_FailureData *tmfd);
+extern TM_Result recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
+									CommandId cid, uint32 options,
+									Snapshot snapshot, Snapshot crosscheck,
+									bool wait, TM_FailureData *tmfd,
+									LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes);
+extern void recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
+							   CommandId cid, uint32 options, BulkInsertState bistate);
+extern void recno_relation_vacuum(Relation onerel, const VacuumParams *params,
+								  BufferAccessStrategy bstrategy);
+extern RecnoTuple RecnoFormTupleFromSlot(TupleTableSlot *slot);
+
+/*
+ * Read stream callback for sequential scan prefetching.
+ *
+ * Returns the next block number to read ahead for the sequential scan.
+ * The read_stream infrastructure will prefetch these blocks asynchronously,
+ * reducing I/O wait time for cold data.
+ *
+ * Uses rs_prefetch_block (separate from rs_cblock) to track the prefetch
+ * position independently of the scan's current position.
+ */
+static BlockNumber
+recno_scan_stream_read_next(ReadStream *stream,
+							void *callback_private_data,
+							void *per_buffer_data)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) callback_private_data;
+	BlockNumber block;
+
+	block = scan->rs_prefetch_block;
+	if (block >= scan->rs_nblocks)
+		return InvalidBlockNumber;
+
+	scan->rs_prefetch_block = block + 1;
+	return block;
+}
+
+/*
+ * ------------------------------------------------------------------------
+ * Slot related callbacks for RECNO AM
+ * ------------------------------------------------------------------------
+ */
+
+/*
+ * Return slot implementation suitable for storing RECNO tuples
+ */
+static const TupleTableSlotOps *
+recno_slot_callbacks(Relation relation)
+{
+	(void) relation;
+	return &TTSOpsRecnoTuple;
+}
+
+/*
+ * recno_begin_bulk_insert - Signal the start of a DML operation.
+ *
+ * NOTE: this callback is deliberately a no-op.  RECNO's UNDO records
+ * currently take the per-row PrepareXactUndoData path (each INSERT /
+ * UPDATE / DELETE emits a standalone XLOG_UNDO_BATCH WAL record).  That
+ * path is the only one the revert-worker's UndoReadBatchFromWAL()
+ * knows how to walk for non-heap AMs.
+ *
+ * To switch RECNO to the Tier-2 buffered / embedded-UNDO path (like
+ * heapam does), three pieces need to land together:
+ *   (a) RECNO WAL records must grow a HAS_UNDO flag and embed the
+ *       Tier-2 payload via UndoBufferTakePayload()/XLogRegisterData().
+ *   (b) UndoReadBatchFromWAL() in undo_xlog.c must learn the RECNO
+ *       opcode+payload-offset table.
+ *   (c) RECNO redo handlers must skip past the embedded UNDO when
+ *       replaying.
+ * Until those land, activating the buffer here would cause the revert
+ * worker to see a RECNO WAL record (rmid=24) where it expects an
+ * XLOG_UNDO_BATCH and fail the chain walk.
+ */
+static void
+recno_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
+{
+	(void) rel;
+	(void) options;
+	(void) nrows;
+}
+
+/*
+ * recno_finish_bulk_insert - Complete a DML operation.
+ *
+ * No-op to match recno_begin_bulk_insert.  See the comment there for
+ * why Tier-2 buffering is disabled for RECNO.
+ */
+static void
+recno_finish_bulk_insert(Relation rel, uint32 options)
+{
+	(void) rel;
+	(void) options;
+}
+
+/*
+ * ------------------------------------------------------------------------
+ * Table scan callbacks for RECNO AM
+ * ------------------------------------------------------------------------
+ */
+
+/*
+ * Start a scan of the RECNO relation
+ */
+static TableScanDesc
+recno_scan_begin(Relation relation, Snapshot snapshot,
+				 int nkeys, ScanKey key,
+				 ParallelTableScanDesc pscan,
+				 uint32 flags)
+{
+	RecnoScanDesc scan;
+
+
+	/* Initialize MVCC state if not done already */
+	if (recno_mvcc_state == NULL)
+		recno_init_mvcc_state();
+
+	scan = (RecnoScanDesc) palloc0(sizeof(RecnoScanDescData));
+
+	scan->rs_base.rs_rd = relation;
+	scan->rs_base.rs_snapshot = snapshot;
+	scan->rs_base.rs_nkeys = nkeys;
+	scan->rs_base.rs_key = key;
+	scan->rs_base.rs_flags = flags;
+	scan->rs_base.rs_parallel = pscan;
+
+	scan->rs_cbuf = InvalidBuffer;
+	scan->rs_cblock = InvalidBlockNumber;
+	scan->rs_nblocks = RelationGetNumberOfBlocks(relation);
+	scan->rs_startblock = 0;
+	scan->rs_coffset = FirstOffsetNumber;
+	scan->rs_cindex = InvalidOffsetNumber;
+	scan->rs_inited = false;
+	scan->rs_ntuples = 0;
+	scan->rs_vistuples = NULL;
+
+	/* Allocate parallel scan worker data if doing a parallel scan */
+	if (pscan != NULL)
+		scan->rs_parallelworkerdata = palloc_object(ParallelBlockTableScanWorkerData);
+	else
+		scan->rs_parallelworkerdata = NULL;
+
+	/* Set up MVCC timestamps (dual-mode: HLC or legacy) */
+	if (recno_use_hlc)
+	{
+		HLCTimestamp hlc = RecnoGetTransactionHLC();
+
+		scan->rs_snapshot_ts = (uint64) hlc;
+		scan->rs_xact_ts = (uint64) hlc;
+		scan->rs_snapshot_hlc = hlc;
+	}
+	else
+	{
+		scan->rs_snapshot_ts = GetCurrentTimestamp();
+		scan->rs_xact_ts = GetCurrentTimestamp();
+		scan->rs_snapshot_hlc = InvalidHLCTimestamp;
+	}
+
+	/* Initialize MVCC state if needed */
+	if (recno_mvcc_state == NULL)
+		recno_init_mvcc_state();
+	scan->rs_mvcc = recno_mvcc_state;
+
+	/*
+	 * Initialize read stream for sequential prefetching (non-parallel only).
+	 * The read stream uses the kernel readahead and our callback to prefetch
+	 * upcoming pages, reducing I/O wait time for cold sequential scans.
+	 * Parallel scans use their own block coordination, so skip the stream.
+	 */
+	scan->rs_prefetch_block = 0;
+	if (pscan == NULL && scan->rs_nblocks > 0)
+	{
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL,
+														   NULL, /* bstrategy */
+														   relation,
+														   MAIN_FORKNUM,
+														   recno_scan_stream_read_next,
+														   scan,
+														   0);
+	}
+	else
+	{
+		scan->rs_read_stream = NULL;
+	}
+
+	return (TableScanDesc) scan;
+}
+
+/*
+ * End the scan and release resources
+ */
+static void
+recno_scan_end(TableScanDesc sscan)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) sscan;
+
+	/* End read stream before releasing buffers */
+	if (scan->rs_read_stream != NULL)
+	{
+		read_stream_end(scan->rs_read_stream);
+		scan->rs_read_stream = NULL;
+	}
+
+	/* Release buffer if held */
+	if (BufferIsValid(scan->rs_cbuf))
+	{
+		ReleaseBuffer(scan->rs_cbuf);
+		scan->rs_cbuf = InvalidBuffer;
+	}
+
+	if (scan->rs_vistuples)
+		pfree(scan->rs_vistuples);
+
+	if (scan->rs_parallelworkerdata != NULL)
+		pfree(scan->rs_parallelworkerdata);
+
+	/*
+	 * Unregister the snapshot if this scan owns it (SO_TEMP_SNAPSHOT).
+	 * Without this, catalog scans and parallel worker scans leak snapshot
+	 * references, causing "resource was not closed" warnings.
+	 */
+	if (scan->rs_base.rs_flags & SO_TEMP_SNAPSHOT)
+		UnregisterSnapshot(scan->rs_base.rs_snapshot);
+
+	pfree(scan);
+}
+
+/*
+ * Restart a relation scan
+ */
+static void
+recno_scan_rescan(TableScanDesc sscan, ScanKey key,
+				  bool set_params, bool allow_strat,
+				  bool allow_sync, bool allow_pagemode)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) sscan;
+
+	/* Release current buffer */
+	if (BufferIsValid(scan->rs_cbuf))
+	{
+		ReleaseBuffer(scan->rs_cbuf);
+		scan->rs_cbuf = InvalidBuffer;
+	}
+
+	/* Reset read stream for rescan */
+	if (scan->rs_read_stream != NULL)
+	{
+		read_stream_reset(scan->rs_read_stream);
+		scan->rs_prefetch_block = 0;
+	}
+
+	/* Reset scan position to start of relation */
+	scan->rs_cblock = InvalidBlockNumber;
+	scan->rs_nblocks = RelationGetNumberOfBlocks(sscan->rs_rd);
+	scan->rs_cindex = 0;
+	scan->rs_coffset = FirstOffsetNumber;
+	scan->rs_inited = false;
+	scan->rs_ntuples = 0;
+
+	/* Update scan key if provided */
+	scan->rs_base.rs_nkeys = key ? scan->rs_base.rs_nkeys : 0;
+	scan->rs_base.rs_key = key;
+}
+
+/*
+ * Get the next block to scan.
+ *
+ * For serial scans, simply advances sequentially.  For parallel scans,
+ * coordinates with other workers via table_block_parallelscan_nextpage()
+ * so that each block is scanned by exactly one worker.
+ *
+ * Returns the next block number, or InvalidBlockNumber when finished.
+ */
+static BlockNumber
+recno_scan_nextblock(RecnoScanDesc scan)
+{
+	BlockNumber nblocks = scan->rs_nblocks;
+
+	if (nblocks == 0)
+		return InvalidBlockNumber;
+
+	if (scan->rs_base.rs_parallel != NULL)
+	{
+		ParallelBlockTableScanDesc pbscan =
+			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+
+		/* Initialize parallel worker state on first call */
+		if (!scan->rs_inited)
+		{
+			table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
+													 scan->rs_parallelworkerdata,
+													 pbscan,
+													 scan->rs_startblock,
+													 InvalidBlockNumber);
+			scan->rs_inited = true;
+		}
+
+		return table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+												 scan->rs_parallelworkerdata,
+												 pbscan);
+	}
+	else
+	{
+		/* Serial scan: advance to next block sequentially */
+		if (scan->rs_cblock == InvalidBlockNumber)
+			return 0;
+
+		if (scan->rs_cblock + 1 >= nblocks)
+			return InvalidBlockNumber;
+
+		return scan->rs_cblock + 1;
+	}
+}
+
+/*
+ * recno_prepare_pagescan -- collect visible tuple offsets for page-mode scan
+ *
+ * Called once per page.  Locks SHARE, checks visibility for all tuples,
+ * collects visible offsets into scan->rs_vistuples[], then unlocks.
+ * The buffer remains pinned via scan->rs_cbuf.
+ *
+ * This is the RECNO equivalent of heapgetpage().  By doing all visibility
+ * checks under a single SHARE lock acquisition per page, we avoid the
+ * overhead of ReadBuffer+LockBuffer+ReleaseBuffer per tuple that the
+ * original scan path had.
+ *
+ * The visibility map optimization (1D) is integrated here: if the page is
+ * marked all-visible, per-tuple visibility checks are skipped entirely.
+ */
+static void
+recno_prepare_pagescan(RecnoScanDesc scan, Buffer buffer)
+{
+	Page		page;
+	OffsetNumber maxoff;
+	OffsetNumber offnum;
+	int			ntup = 0;
+	bool		all_visible;
+
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buffer);
+
+	/* Skip new/empty pages */
+	if (PageIsNew(page))
+	{
+		scan->rs_ntuples = 0;
+		scan->rs_cindex = 0;
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		return;
+	}
+
+	maxoff = PageGetMaxOffsetNumber(page);
+
+	/* Allocate vistuples array if needed (shared with bitmap scan path) */
+	if (scan->rs_vistuples == NULL)
+	{
+		scan->rs_vistuples = (OffsetNumber *)
+			MemoryContextAlloc(TopMemoryContext,
+							   MaxOffsetNumber * sizeof(OffsetNumber));
+	}
+
+	/*
+	 * Check visibility map: if all tuples on this page are marked
+	 * all-visible, we can skip the expensive per-tuple MVCC visibility
+	 * check (RecnoTupleVisibleToSnapshotDual).
+	 */
+	all_visible = RecnoVMCheck(scan->rs_base.rs_rd, scan->rs_cblock,
+							   RECNO_VM_ALL_VISIBLE);
+
+	for (offnum = FirstOffsetNumber; offnum <= maxoff;
+		 offnum = OffsetNumberNext(offnum))
+	{
+		ItemId		itemid;
+		RecnoTupleHeader *tuple_header;
+
+		itemid = PageGetItemId(page, offnum);
+		if (!ItemIdIsNormal(itemid))
+			continue;
+
+		tuple_header = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+		/* Skip overflow records - they are not tuples */
+		if (RecnoIsOverflowRecord(tuple_header, ItemIdGetLength(itemid)))
+			continue;
+
+		/* Skip deleted tuples */
+		if (tuple_header->t_flags & RECNO_TUPLE_DELETED)
+			continue;
+
+		/* Skip speculative tuples not yet confirmed */
+		if (tuple_header->t_flags & RECNO_TUPLE_SPECULATIVE)
+			continue;
+
+		/*
+		 * Check MVCC visibility.  If the page is marked all-visible in the
+		 * visibility map, skip the expensive per-tuple check.  Otherwise,
+		 * consult the commit timestamp and the sLog for in-progress
+		 * transaction state.
+		 */
+		if (!all_visible &&
+			scan->rs_base.rs_snapshot &&
+			!RecnoTupleVisibleToSnapshotDual(tuple_header,
+											  scan->rs_base.rs_snapshot,
+											  RelationGetRelid(scan->rs_base.rs_rd),
+											  buffer))
+			continue;
+
+		scan->rs_vistuples[ntup++] = offnum;
+	}
+
+	scan->rs_ntuples = ntup;
+	scan->rs_cindex = 0;
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+}
+
+/*
+ * Get next tuple from scan (page-mode)
+ *
+ * Uses page-mode scanning: for each page, recno_prepare_pagescan() collects
+ * all visible tuple offsets under a single SHARE lock.  This function then
+ * iterates through those offsets from the pinned-but-unlocked buffer.
+ *
+ * This eliminates the per-tuple ReadBuffer+LockBuffer+ReleaseBuffer overhead
+ * of the original implementation (50K rows = 50K buffer ops → 1 per page).
+ *
+ * For parallel scans, block assignment is coordinated via
+ * recno_scan_nextblock() which uses the parallel scan infrastructure.
+ */
+static bool
+recno_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) sscan;
+
+	/* Clear the slot first */
+	ExecClearTuple(slot);
+
+	/* Update cached block count */
+	scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_base.rs_rd);
+
+	/* If relation is empty, return false immediately */
+	if (scan->rs_nblocks == 0)
+		return false;
+
+	for (;;)
+	{
+		Page		page;
+
+		/*
+		 * Try to return the next visible tuple from the current page.
+		 * The buffer is pinned but NOT locked -- this matches heap's
+		 * page-mode pattern.  RecnoSlotStoreTuple acquires its own pin
+		 * so the slot data remains valid after we move to the next page.
+		 */
+		while (scan->rs_cindex < scan->rs_ntuples)
+		{
+			OffsetNumber offnum;
+			ItemId		itemid;
+			RecnoTupleHeader *tuple_header;
+
+			offnum = scan->rs_vistuples[scan->rs_cindex];
+			scan->rs_cindex++;
+
+			page = BufferGetPage(scan->rs_cbuf);
+			itemid = PageGetItemId(page, offnum);
+
+			if (!ItemIdIsNormal(itemid))
+				continue;
+
+			tuple_header = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			RecnoSlotStoreTuple(slot, tuple_header,
+								ItemIdGetLength(itemid), scan->rs_cbuf);
+			ItemPointerSet(&slot->tts_tid, scan->rs_cblock, offnum);
+
+			return true;
+		}
+
+		/*
+		 * Exhausted all visible tuples on the current page.
+		 * Release the buffer pin and advance to the next block.
+		 */
+		if (BufferIsValid(scan->rs_cbuf))
+		{
+			ReleaseBuffer(scan->rs_cbuf);
+			scan->rs_cbuf = InvalidBuffer;
+		}
+
+		/*
+		 * Get the next page.  Use the read stream if available (prefetches
+		 * upcoming pages for I/O efficiency), otherwise fall back to
+		 * ReadBuffer for parallel scans.
+		 */
+		if (scan->rs_read_stream != NULL)
+		{
+			scan->rs_cbuf = read_stream_next_buffer(scan->rs_read_stream, NULL);
+			if (!BufferIsValid(scan->rs_cbuf))
+				return false;
+			scan->rs_cblock = BufferGetBlockNumber(scan->rs_cbuf);
+		}
+		else
+		{
+			BlockNumber block = recno_scan_nextblock(scan);
+
+			if (!BlockNumberIsValid(block))
+				return false;
+
+			scan->rs_cblock = block;
+			scan->rs_cbuf = ReadBuffer(scan->rs_base.rs_rd, scan->rs_cblock);
+		}
+
+		/*
+		 * Opportunistic cleanup: try to prune dead tuples before scanning.
+		 * RecnoPagePruneOpt() expects only a pin (no lock) and will
+		 * non-blockingly try to get an exclusive lock.
+		 */
+		RecnoPagePruneOpt(scan->rs_base.rs_rd, scan->rs_cbuf);
+
+		/*
+		 * Prepare the page scan: lock SHARE, collect all visible tuple
+		 * offsets into rs_vistuples[], then unlock.  The buffer stays
+		 * pinned for efficient tuple access without re-locking.
+		 */
+		recno_prepare_pagescan(scan, scan->rs_cbuf);
+	}
+}
+
+/*
+ * Set TID range for TID range scans
+ *
+ * This restricts the scan to only return tuples within the given TID range.
+ * Used by TID range scans (WHERE ctid >= ... AND ctid < ...).
+ *
+ * Following the heap AM pattern, we store the effective min/max TIDs in the
+ * base scan descriptor's st.tidrange fields and configure the scan start
+ * position accordingly.
+ */
+static void
+recno_scan_set_tidrange(TableScanDesc sscan, ItemPointer mintid,
+						ItemPointer maxtid)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) sscan;
+	BlockNumber nblocks;
+	ItemPointerData highestItem;
+	ItemPointerData lowestItem;
+
+	nblocks = RelationGetNumberOfBlocks(sscan->rs_rd);
+
+	/*
+	 * For relations without any pages, we can simply leave the TID range
+	 * unset.  There will be no tuples to scan, therefore no tuples outside
+	 * the given TID range.
+	 */
+	if (nblocks == 0)
+		return;
+
+	/*
+	 * Set up ItemPointers which point to the first and last possible tuples
+	 * in the relation.
+	 */
+	ItemPointerSet(&highestItem, nblocks - 1, MaxOffsetNumber);
+	ItemPointerSet(&lowestItem, 0, FirstOffsetNumber);
+
+	/*
+	 * If the given maximum TID is below the highest possible TID in the
+	 * relation, then restrict the range to that, otherwise we scan to the end
+	 * of the relation.
+	 */
+	if (ItemPointerCompare(maxtid, &highestItem) < 0)
+		ItemPointerCopy(maxtid, &highestItem);
+
+	/*
+	 * If the given minimum TID is above the lowest possible TID in the
+	 * relation, then restrict the range to only scan for TIDs above that.
+	 */
+	if (ItemPointerCompare(mintid, &lowestItem) > 0)
+		ItemPointerCopy(mintid, &lowestItem);
+
+	/*
+	 * Check for an empty range.
+	 */
+	if (ItemPointerCompare(&highestItem, &lowestItem) < 0)
+	{
+		/* Force an empty scan */
+		scan->rs_cblock = nblocks;
+		scan->rs_coffset = FirstOffsetNumber;
+		ItemPointerSetInvalid(&sscan->st.tidrange.rs_mintid);
+		ItemPointerSetInvalid(&sscan->st.tidrange.rs_maxtid);
+		return;
+	}
+
+	/* Set scan start position to the first block in range */
+	scan->rs_cblock = ItemPointerGetBlockNumberNoCheck(&lowestItem);
+	scan->rs_coffset = FirstOffsetNumber;
+
+	/* Store the effective TID range in the base scan descriptor */
+	ItemPointerCopy(&lowestItem, &sscan->st.tidrange.rs_mintid);
+	ItemPointerCopy(&highestItem, &sscan->st.tidrange.rs_maxtid);
+}
+
+/*
+ * Get next tuple within the TID range set by recno_scan_set_tidrange.
+ *
+ * This delegates to the regular recno_scan_getnextslot for tuple fetching
+ * and visibility, then filters to only return tuples within the TID range.
+ * This keeps visibility semantics consistent between regular and TID range
+ * scans.
+ */
+static bool
+recno_scan_getnextslot_tidrange(TableScanDesc sscan, ScanDirection direction,
+								TupleTableSlot *slot)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) sscan;
+	ItemPointer mintid = &sscan->st.tidrange.rs_mintid;
+	ItemPointer maxtid = &sscan->st.tidrange.rs_maxtid;
+	BlockNumber nblocks;
+	BlockNumber block;
+	BlockNumber maxblock;
+	Buffer		buffer;
+	Page		page;
+	OffsetNumber offnum;
+	OffsetNumber maxoff;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_header;
+
+	/* If the range is invalid/empty, we're done */
+	if (!ItemPointerIsValid(mintid) || !ItemPointerIsValid(maxtid))
+	{
+		ExecClearTuple(slot);
+		return false;
+	}
+
+	maxblock = ItemPointerGetBlockNumber(maxtid);
+
+	/* Clear the slot */
+	ExecClearTuple(slot);
+
+	nblocks = RelationGetNumberOfBlocks(sscan->rs_rd);
+	if (nblocks == 0)
+		return false;
+
+	/* Scan pages within the TID range */
+	for (block = scan->rs_cblock; block <= maxblock && block < nblocks; block++)
+	{
+		buffer = ReadBuffer(sscan->rs_rd, block);
+
+		/*
+		 * Opportunistic cleanup on first visit to page, consistent with the
+		 * regular scan path.
+		 */
+		if (scan->rs_coffset == FirstOffsetNumber)
+			RecnoPagePruneOpt(sscan->rs_rd, buffer);
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+
+		/* Skip new/empty pages */
+		if (PageIsNew(page))
+		{
+			UnlockReleaseBuffer(buffer);
+			scan->rs_coffset = FirstOffsetNumber;
+			continue;
+		}
+
+		maxoff = PageGetMaxOffsetNumber(page);
+
+		for (offnum = scan->rs_coffset; offnum <= maxoff; offnum++)
+		{
+			ItemPointerData curtid;
+
+			ItemPointerSet(&curtid, block, offnum);
+
+			/*
+			 * Filter by TID range.  Skip tuples below mintid.
+			 */
+			if (ItemPointerCompare(&curtid, mintid) < 0)
+				continue;
+
+			/*
+			 * If we've passed maxtid, we're done scanning.
+			 */
+			if (ItemPointerCompare(&curtid, maxtid) > 0)
+			{
+				UnlockReleaseBuffer(buffer);
+				return false;
+			}
+
+			itemid = PageGetItemId(page, offnum);
+
+			if (!ItemIdIsNormal(itemid))
+				continue;
+
+			tuple_header = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/* Skip overflow records - they are not tuples */
+			if (RecnoIsOverflowRecord(tuple_header,
+									  ItemIdGetLength(itemid)))
+				continue;
+
+			/* Skip deleted tuples */
+			if (tuple_header->t_flags & RECNO_TUPLE_DELETED)
+				continue;
+
+			/* Skip speculative tuples not yet confirmed */
+			if (tuple_header->t_flags & RECNO_TUPLE_SPECULATIVE)
+				continue;
+
+			/* Check MVCC visibility */
+			if (sscan->rs_snapshot &&
+				!RecnoTupleVisibleToSnapshotDual(tuple_header,
+												 sscan->rs_snapshot,
+												 RelationGetRelid(sscan->rs_rd),
+												 buffer))
+				continue;
+
+			/*
+			 * Store the tuple into the slot with a buffer pin. Decompression
+			 * happens lazily during deformation.
+			 */
+			RecnoSlotStoreTuple(slot, tuple_header,
+								ItemIdGetLength(itemid), buffer);
+			ItemPointerSet(&slot->tts_tid, block, offnum);
+
+			/* Update scan position for next call */
+			scan->rs_cblock = block;
+			scan->rs_coffset = offnum + 1;
+
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			ReleaseBuffer(buffer);
+			return true;
+		}
+
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buffer);
+		scan->rs_coffset = FirstOffsetNumber;
+	}
+
+	/* Reached end of assigned range */
+	return false;
+}
+
+/*
+ * Bitmap heap scan: fetch next tuple from bitmap
+ *
+ * This is the scan_bitmap_next_tuple callback.  It iterates over TIDs from
+ * the TBM (TID bitmap) built by a BitmapIndexScan, fetches and checks
+ * visibility for each tuple, and returns visible ones in the slot.
+ *
+ * For each block indicated by the bitmap:
+ * - If the block is "lossy" (the bitmap lost per-tuple precision for this
+ *   block), we check every tuple on the page.
+ * - If the block is "exact", we only check the specific offsets indicated.
+ *
+ * The scan descriptor was set up via table_beginscan_bm() and the TBM
+ * iterator is stored in scan->st.rs_tbmiterator.
+ */
+static bool
+recno_scan_bitmap_next_tuple(TableScanDesc scan,
+							 TupleTableSlot *slot,
+							 bool *recheck,
+							 uint64 *lossy_pages,
+							 uint64 *exact_pages)
+{
+	RecnoScanDesc rscan = (RecnoScanDesc) scan;
+	TBMIterateResult tbmres;
+
+	for (;;)
+	{
+		/*
+		 * If we have tuples remaining from a previously fetched page, try to
+		 * return one.
+		 */
+		if (rscan->rs_ntuples > 0 &&
+			rscan->rs_cindex < rscan->rs_ntuples)
+		{
+			OffsetNumber offnum;
+			Page		page;
+			ItemId		itemid;
+			RecnoTupleHeader *tuple_hdr;
+
+			offnum = rscan->rs_vistuples[rscan->rs_cindex];
+			rscan->rs_cindex++;
+
+			/* Re-read the page (we released the lock after visibility check) */
+			if (!BufferIsValid(rscan->rs_cbuf))
+				rscan->rs_cbuf = ReadBuffer(scan->rs_rd, rscan->rs_cblock);
+
+			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(rscan->rs_cbuf);
+
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+				continue;
+			}
+
+			tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/* Skip deleted tuples */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+			{
+				LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+				continue;
+			}
+
+			/*
+			 * Store the tuple with a buffer pin.  The slot gets its own pin
+			 * via RecnoSlotStoreTuple so the data stays valid.
+			 */
+			RecnoSlotStoreTuple(slot, tuple_hdr,
+								ItemIdGetLength(itemid), rscan->rs_cbuf);
+			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
+			ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, offnum);
+
+			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+			return true;
+		}
+
+		/* Release buffer from previous block */
+		if (BufferIsValid(rscan->rs_cbuf))
+		{
+			ReleaseBuffer(rscan->rs_cbuf);
+			rscan->rs_cbuf = InvalidBuffer;
+		}
+
+		/*
+		 * Advance to the next block in the bitmap.
+		 */
+		if (!tbm_iterate(&scan->st.rs_tbmiterator, &tbmres))
+			return false;		/* bitmap exhausted */
+
+		Assert(BlockNumberIsValid(tbmres.blockno));
+
+		/*
+		 * Ignore block numbers beyond the end of the relation.  This can
+		 * happen if the relation has been truncated since the bitmap was
+		 * created.
+		 */
+		if (tbmres.blockno >= RelationGetNumberOfBlocks(scan->rs_rd))
+			continue;
+
+		*recheck = tbmres.recheck;
+
+		rscan->rs_cblock = tbmres.blockno;
+		rscan->rs_cbuf = ReadBuffer(scan->rs_rd, tbmres.blockno);
+
+		LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_SHARE);
+		{
+			Page		page = BufferGetPage(rscan->rs_cbuf);
+			int			ntup = 0;
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			/* Allocate vistuples array if needed */
+			if (rscan->rs_vistuples == NULL)
+			{
+				rscan->rs_vistuples = (OffsetNumber *)
+					MemoryContextAlloc(TopMemoryContext,
+									   MaxOffsetNumber * sizeof(OffsetNumber));
+			}
+
+			if (!tbmres.lossy)
+			{
+				/*
+				 * Exact page: only examine offsets listed in the bitmap.
+				 */
+				OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
+				int			noffsets;
+
+				noffsets = tbm_extract_page_tuple(&tbmres, offsets,
+												  TBM_MAX_TUPLES_PER_PAGE);
+
+				for (int j = 0; j < noffsets; j++)
+				{
+					OffsetNumber offnum = offsets[j];
+					ItemId		itemid;
+					RecnoTupleHeader *tuple_hdr;
+
+					if (offnum < FirstOffsetNumber || offnum > maxoff)
+						continue;
+
+					itemid = PageGetItemId(page, offnum);
+					if (!ItemIdIsNormal(itemid))
+						continue;
+
+					tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+					/* Skip overflow records */
+					if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
+						continue;
+
+					/* Skip deleted/speculative tuples */
+					if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+						continue;
+					if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+						continue;
+
+					/* Check visibility */
+					if (scan->rs_snapshot &&
+						!RecnoTupleVisibleToSnapshotDual(tuple_hdr, scan->rs_snapshot,
+															RelationGetRelid(scan->rs_rd),
+															rscan->rs_cbuf))
+						continue;
+
+					rscan->rs_vistuples[ntup++] = offnum;
+				}
+
+				(*exact_pages)++;
+			}
+			else
+			{
+				/*
+				 * Lossy page: examine every tuple on the page.
+				 */
+				OffsetNumber offnum;
+
+				for (offnum = FirstOffsetNumber; offnum <= maxoff;
+					 offnum = OffsetNumberNext(offnum))
+				{
+					ItemId		itemid;
+					RecnoTupleHeader *tuple_hdr;
+
+					itemid = PageGetItemId(page, offnum);
+					if (!ItemIdIsNormal(itemid))
+						continue;
+
+					tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+					/* Skip overflow records */
+					if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
+						continue;
+
+					/* Skip deleted/speculative tuples */
+					if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+						continue;
+					if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+						continue;
+
+					/* Check visibility */
+					if (scan->rs_snapshot &&
+						!RecnoTupleVisibleToSnapshotDual(tuple_hdr, scan->rs_snapshot,
+															RelationGetRelid(scan->rs_rd),
+															rscan->rs_cbuf))
+						continue;
+
+					rscan->rs_vistuples[ntup++] = offnum;
+				}
+
+				(*lossy_pages)++;
+			}
+
+			rscan->rs_ntuples = ntup;
+			rscan->rs_cindex = 0;
+		}
+		LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+		/* Loop back to return the first visible tuple from this block */
+	}
+}
+
+/*
+ * ------------------------------------------------------------------------
+ * Index scan callbacks for RECNO AM
+ * ------------------------------------------------------------------------
+ */
+
+static IndexFetchTableData *
+recno_index_fetch_begin(Relation rel, uint32 flags)
+{
+	IndexFetchRecnoData *scan = palloc0_object(IndexFetchRecnoData);
+
+	scan->base.rel = rel;
+	scan->buffer = InvalidBuffer;
+	scan->all_dead = false;
+
+	return &scan->base;
+}
+
+static void
+recno_index_fetch_reset(IndexFetchTableData *scan)
+{
+	IndexFetchRecnoData *rscan = (IndexFetchRecnoData *) scan;
+
+	if (BufferIsValid(rscan->buffer))
+	{
+		ReleaseBuffer(rscan->buffer);
+		rscan->buffer = InvalidBuffer;
+	}
+}
+
+static void
+recno_index_fetch_end(IndexFetchTableData *scan)
+{
+	IndexFetchRecnoData *rscan = (IndexFetchRecnoData *) scan;
+
+	recno_index_fetch_reset(scan);
+
+	pfree(rscan);
+}
+
+/*
+ * Fetches, as part of an index scan, tuple at `tid` into `slot`, after doing
+ * a visibility test according to `snapshot`. If a tuple was found and passed
+ * the visibility test, returns true, false otherwise. Note that *tid may be
+ * modified when we return true (see later remarks on multiple row versions
+ * reachable via a single index entry).
+ *
+ * *call_again needs to be false on the first call to table_index_fetch_tuple() for
+ * a tid. If there potentially is another tuple matching the tid, *call_again
+ * will be set to true, signaling that table_index_fetch_tuple() should be called
+ * again for the same tid.
+ *
+ * *all_dead, if all_dead is not NULL, will be set to true by
+ * table_index_fetch_tuple() iff it is guaranteed that no backend needs to see
+ * that tuple. Index AMs can use that to avoid returning that tid in future
+ * searches.
+ *
+ * The difference between this function and table_tuple_fetch_row_version()
+ * is that this function returns the currently visible version of a row if
+ * the AM supports storing multiple row versions reachable via a single index
+ * entry. RECNO does in-place updates so there are no version chains to
+ * follow; this behaves identically to table_tuple_fetch_row_version().
+ */
+static bool
+recno_index_fetch_tuple(IndexFetchTableData *iftd,
+						ItemPointer tid,
+						Snapshot snapshot,
+						TupleTableSlot *tts,
+						bool *call_again, bool *all_dead)
+{
+	IndexFetchRecnoData *scan = (IndexFetchRecnoData *) iftd;
+	Relation	rel = scan->base.rel;
+	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
+	Buffer		buffer;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+	bool		visible = false;
+
+	/* Initialize output parameters */
+	*call_again = false;
+	if (all_dead)
+		*all_dead = scan->all_dead;
+
+	/* Clear the slot */
+	ExecClearTuple(tts);
+
+	/*
+	 * Release any buffer from a previous index_fetch_tuple call. This
+	 * prevents buffer leaks when scanning multiple tuples.
+	 */
+	if (BufferIsValid(scan->buffer))
+	{
+		ReleaseBuffer(scan->buffer);
+		scan->buffer = InvalidBuffer;
+	}
+
+	/* Validate block number */
+	if (blkno >= RelationGetNumberOfBlocks(rel))
+		return false;
+
+	/* Read the page */
+	buffer = ReadBuffer(rel, blkno);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buffer);
+
+	/* Validate offset */
+	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/* Get the item */
+	itemid = PageGetItemId(page, offnum);
+
+	if (!ItemIdIsNormal(itemid))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/* Get tuple header */
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	/* Check visibility (dual-mode: HLC or legacy) */
+	if (snapshot)
+	{
+		if (snapshot->snapshot_type == SNAPSHOT_DIRTY)
+		{
+			/*
+			 * For SNAPSHOT_DIRTY (used by _bt_check_unique during ON
+			 * CONFLICT), we must report the inserting/deleting xid
+			 * through the snapshot struct so that
+			 * SpeculativeInsertionWait can function correctly.  This
+			 * mirrors HeapTupleSatisfiesDirty() behaviour.
+			 *
+			 * Uses t_xid_hint for INSERT visibility (fast path) and a
+			 * single batched sLog lookup for DELETE/UPDATE/LOCK state.
+			 */
+			RecnoSLogEntry slog_entries[RECNO_SLOG_MAX_OPS];
+			int			slog_nfound = -1;	/* lazy: -1 = not yet fetched */
+
+			snapshot->xmin = InvalidTransactionId;
+			snapshot->xmax = InvalidTransactionId;
+			snapshot->speculativeToken = 0;
+
+			/*
+			 * Check if this tuple is uncommitted (inserted by a
+			 * still-running transaction).  Use t_xid_hint for the
+			 * fast path, falling back to sLog for speculative inserts.
+			 */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+			{
+				TransactionId hint_xid = InvalidTransactionId;
+
+				if (TransactionIdIsValid(hint_xid) &&
+					!TransactionIdIsCurrentTransactionId(hint_xid))
+				{
+					if (TransactionIdIsInProgress(hint_xid))
+					{
+						/*
+						 * Another transaction is inserting this tuple.
+						 * Report xmin for SpeculativeInsertionWait.
+						 */
+						snapshot->xmin = hint_xid;
+
+						if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+						{
+							/* Fetch sLog for speculative token */
+							slog_nfound = RecnoSLogLookupAll(
+								RelationGetRelid(rel), tid,
+								slog_entries, RECNO_SLOG_MAX_OPS);
+							{
+								int		si;
+								for (si = 0; si < slog_nfound; si++)
+								{
+									if (slog_entries[si].xid == hint_xid &&
+										slog_entries[si].spec_token != 0)
+									{
+										snapshot->speculativeToken =
+											slog_entries[si].spec_token;
+										break;
+									}
+								}
+							}
+						}
+
+						visible = true;
+						goto visibility_done;
+					}
+					else if (TransactionIdDidAbort(hint_xid))
+					{
+						/* Inserter aborted -- invisible */
+						visible = false;
+						goto visibility_done;
+					}
+					else
+					{
+						/*
+						 * Inserter committed.  Clear stale flag via
+						 * BufferSetHintBits16 (handles lock upgrade).
+						 */
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+											buffer);
+					}
+				}
+				else if (TransactionIdIsValid(hint_xid) &&
+						 TransactionIdIsCurrentTransactionId(hint_xid))
+				{
+					/*
+					 * Our own insert.  Check sLog for our own delete
+					 * or for an ABORTED entry from savepoint rollback.
+					 */
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+					{
+						int		si;
+						bool	found_invisible = false;
+
+						for (si = 0; si < slog_nfound; si++)
+						{
+							if (!TransactionIdEquals(slog_entries[si].xid, hint_xid))
+								continue;
+							if (slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+								slog_entries[si].op_type == RECNO_SLOG_ABORTED)
+							{
+								found_invisible = true;
+								break;
+							}
+						}
+
+						if (found_invisible)
+						{
+							visible = false;
+							goto visibility_done;
+						}
+					}
+					/* Our insert, not deleted/aborted by us -- fall through */
+				}
+				else
+				{
+					/*
+					 * Invalid hint_xid -- fall back to sLog lookup.
+					 * This handles pre-upgrade tuples.
+					 */
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+					{
+						int		si;
+						bool	found_inserter = false;
+
+						for (si = 0; si < slog_nfound; si++)
+						{
+							if (slog_entries[si].op_type == RECNO_SLOG_INSERT &&
+								TransactionIdIsInProgress(slog_entries[si].xid))
+							{
+								snapshot->xmin = slog_entries[si].xid;
+								found_inserter = true;
+								break;
+							}
+							if (slog_entries[si].op_type == RECNO_SLOG_ABORTED)
+							{
+								visible = false;
+								goto visibility_done;
+							}
+						}
+
+						if (!found_inserter)
+						{
+							/* Stale flag, clear it */
+							BufferSetHintBits16(&tuple_hdr->t_flags,
+												tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+												buffer);
+						}
+						else
+						{
+							visible = true;
+							goto visibility_done;
+						}
+					}
+				}
+			}
+
+			/* Inserting xact is committed (or ours).  Check deletion. */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+			{
+				/* Single batched sLog lookup for delete state */
+				if (slog_nfound < 0)
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+				{
+					int		si;
+
+					for (si = 0; si < slog_nfound; si++)
+					{
+						if (TransactionIdIsCurrentTransactionId(slog_entries[si].xid) &&
+							(slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+							 slog_entries[si].op_type == RECNO_SLOG_UPDATE))
+						{
+							/* We deleted it ourselves */
+							visible = false;
+							goto visibility_done;
+						}
+						if (TransactionIdIsInProgress(slog_entries[si].xid) &&
+							(slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+							 slog_entries[si].op_type == RECNO_SLOG_UPDATE))
+						{
+							/* Deleter still running */
+							snapshot->xmax = slog_entries[si].xid;
+							visible = true;
+							goto visibility_done;
+						}
+					}
+				}
+
+				/*
+				 * CLOG fallback: if UNDO worker removed sLog entries,
+				 * use t_xid_hint (deleter's XID) to detect aborted deletes.
+				 */
+				if (slog_nfound == 0)
+				{
+					TransactionId hint_xid = InvalidTransactionId;
+
+					if (TransactionIdIsValid(hint_xid) &&
+						!TransactionIdIsInProgress(hint_xid) &&
+						TransactionIdDidAbort(hint_xid))
+					{
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_DELETED,
+											buffer);
+						/* Fall through — tuple is still live */
+					}
+					else
+					{
+						/* No in-progress deleter -- deletion is committed */
+						visible = false;
+						goto visibility_done;
+					}
+				}
+				else
+				{
+					/* No in-progress deleter -- deletion is committed */
+					visible = false;
+					goto visibility_done;
+				}
+			}
+
+			/*
+			 * Check if this is the old version of an out-of-place update.
+			 * The RECNO_TUPLE_UPDATED flag means this tuple has been
+			 * superseded by a newer version at t_ctid.  However, the
+			 * updater may have aborted — check sLog for ABORTED entries
+			 * before declaring it invisible.
+			 */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
+			{
+				if (slog_nfound < 0)
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+				{
+					int		si;
+					bool	update_aborted = false;
+
+					for (si = 0; si < slog_nfound; si++)
+					{
+						if (slog_entries[si].op_type == RECNO_SLOG_ABORTED)
+						{
+							update_aborted = true;
+							break;
+						}
+						if ((slog_entries[si].op_type == RECNO_SLOG_UPDATE) &&
+							!TransactionIdIsCurrentTransactionId(slog_entries[si].xid) &&
+							TransactionIdDidAbort(slog_entries[si].xid))
+						{
+							update_aborted = true;
+							break;
+						}
+					}
+
+					if (update_aborted)
+					{
+						/*
+						 * Updater aborted.  Clear stale UPDATED flag
+						 * via hint-bits and treat as still-live tuple.
+						 */
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_UPDATED,
+											buffer);
+						/* Fall through to visible */
+					}
+					else if (slog_nfound == 0)
+					{
+						/*
+						 * CLOG fallback: UNDO worker removed the sLog
+						 * entries.  Use t_xid_hint (updater's XID) to
+						 * determine the outcome.
+						 */
+						TransactionId hint_xid = InvalidTransactionId;
+
+						if (TransactionIdIsValid(hint_xid) &&
+							TransactionIdIsCurrentTransactionId(hint_xid))
+						{
+							visible = false;
+							goto visibility_done;
+						}
+						else if (TransactionIdIsValid(hint_xid) &&
+								 !TransactionIdIsInProgress(hint_xid) &&
+								 TransactionIdDidAbort(hint_xid))
+						{
+							BufferSetHintBits16(&tuple_hdr->t_flags,
+												tuple_hdr->t_flags & ~RECNO_TUPLE_UPDATED,
+												buffer);
+							/* Fall through to visible */
+						}
+						else if (TransactionIdIsValid(hint_xid) &&
+								 TransactionIdIsInProgress(hint_xid))
+						{
+							snapshot->xmax = hint_xid;
+							/* Updater still running — tuple visible for now */
+						}
+						else
+						{
+							/* Updater committed — old version is dead */
+							visible = false;
+							goto visibility_done;
+						}
+					}
+					else
+					{
+						/* Check if updater is current, in-progress, or committed */
+						bool	updater_running = false;
+
+						for (si = 0; si < slog_nfound; si++)
+						{
+							if (slog_entries[si].op_type != RECNO_SLOG_UPDATE)
+								continue;
+
+							if (TransactionIdIsCurrentTransactionId(slog_entries[si].xid))
+							{
+								/*
+								 * We are the updater — old version is dead.
+								 * This mirrors the DELETED handling above.
+								 */
+								visible = false;
+								goto visibility_done;
+							}
+
+							if (TransactionIdIsInProgress(slog_entries[si].xid))
+							{
+								snapshot->xmax = slog_entries[si].xid;
+								updater_running = true;
+								break;
+							}
+						}
+
+						if (!updater_running)
+						{
+							/* Updater committed — old version is dead */
+							visible = false;
+							goto visibility_done;
+						}
+						/* Updater still running — tuple visible for now */
+					}
+				}
+			}
+
+			/* LOCKED tuples are still visible (lock != delete) */
+			if ((tuple_hdr->t_flags & RECNO_TUPLE_LOCKED) &&
+				!(tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED)))
+			{
+				visible = true;
+				goto visibility_done;
+			}
+
+			visible = true;
+		}
+		else
+		{
+			visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
+													RelationGetRelid(rel),
+													buffer);
+		}
+	}
+	else
+	{
+		/*
+		 * No snapshot means fetch unconditionally (e.g., system catalog
+		 * scans).  Deleted and updated-away tuples are not visible.
+		 */
+		visible = !(tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED));
+	}
+visibility_done:
+
+	if (!visible)
+	{
+		/*
+		 * Set the all_dead hint only if the tuple is deleted AND no running
+		 * transaction can still see it.  RecnoCanVacuumTimestamp returns true
+		 * when the tuple's commit timestamp is older than the oldest active
+		 * transaction's start timestamp, meaning no snapshot needs this
+		 * tuple.
+		 *
+		 * Setting all_dead prematurely would let the index AM remove the
+		 * entry while concurrent transactions still need it.
+		 */
+		if ((tuple_hdr->t_flags & RECNO_TUPLE_DELETED) &&
+			RecnoCanVacuumTimestamp(tuple_hdr->t_commit_ts))
+		{
+			if (all_dead)
+				*all_dead = true;
+			scan->all_dead = true;
+		}
+
+		/*
+		 * Do NOT set call_again for UPDATED tuples.  For out-of-place
+		 * updates the executor inserts new index entries (TU_All), so
+		 * the index scan will naturally find the new version through
+		 * its own index entry.  Setting call_again=true here with the
+		 * same tid causes an infinite loop because the caller retries
+		 * with the unchanged tid parameter.
+		 */
+
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/*
+	 * Unlock the buffer before materializing the slot. We keep the pin to
+	 * ensure the page doesn't get evicted. We must unlock here because
+	 * RecnoTupleToSlotWithOverflow may need to fetch overflow data, and if
+	 * that overflow is on the same page, it would try to lock an
+	 * already-locked buffer causing an assertion failure.
+	 */
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	/* Tuple is visible - convert to slot (with overflow fetch) */
+	if (RecnoTupleToSlotWithOverflow(tuple_hdr, tts, rel))
+	{
+		tts->tts_tableOid = RelationGetRelid(rel);
+		tts->tts_tid = *tid;
+		/* Slot is already marked valid by RecnoTupleToSlotWithOverflow */
+	}
+	else
+	{
+		ReleaseBuffer(buffer);
+		return false;
+	}
+
+	/*
+	 * Keep buffer pinned: RecnoTupleToSlotWithOverflow stores pointers into
+	 * the buffer page data for non-overflow columns, so the buffer must
+	 * remain valid until the slot is cleared.
+	 */
+	scan->buffer = buffer;
+
+	return true;
+}
+
+/*
+ * ------------------------------------------------------------------------
+ * Tuple manipulation callbacks for RECNO AM
+ * ------------------------------------------------------------------------
+ */
+
+/*
+ * Fetch tuple at given TID
+ */
+static bool
+recno_tuple_fetch_row_version(Relation relation,
+							  ItemPointer tid,
+							  Snapshot snapshot,
+							  TupleTableSlot *slot)
+{
+	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
+	Buffer		buffer;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+	bool		visible = false;
+
+	/* Clear the slot */
+	ExecClearTuple(slot);
+
+	/* Validate block number */
+	if (blkno >= RelationGetNumberOfBlocks(relation))
+		return false;
+
+	/* Read the page */
+	buffer = ReadBuffer(relation, blkno);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buffer);
+
+	/* Validate offset */
+	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/* Get the item */
+	itemid = PageGetItemId(page, offnum);
+
+	if (!ItemIdIsNormal(itemid))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/* Get tuple header */
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	/*
+	 * Check visibility (dual-mode: HLC or legacy). Special case: SnapshotAny
+	 * is used by DELETE RETURNING to fetch the just-deleted tuple, so we must
+	 * allow deleted tuples in that case.
+	 */
+	if (snapshot && snapshot != SnapshotAny)
+	{
+		/* For normal snapshots, check visibility */
+		visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
+												RelationGetRelid(relation),
+												buffer);
+
+		/* Deleted tuples are not visible to normal snapshots */
+		if (!visible || (tuple_hdr->t_flags & RECNO_TUPLE_DELETED))
+		{
+			UnlockReleaseBuffer(buffer);
+			return false;
+		}
+	}
+	else if (snapshot == SnapshotAny)
+	{
+		/* SnapshotAny: fetch any tuple, even if deleted (for RETURNING) */
+		visible = true;
+	}
+	else
+	{
+		/* No snapshot means fetch unconditionally if not deleted */
+		if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+		{
+			UnlockReleaseBuffer(buffer);
+			return false;
+		}
+		visible = true;
+	}
+
+	if (!visible)
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	/* Store tuple into slot with buffer pin for safe access */
+	RecnoSlotStoreTuple(slot, tuple_hdr,
+						ItemIdGetLength(itemid), buffer);
+	slot->tts_tableOid = RelationGetRelid(relation);
+	slot->tts_tid = *tid;
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	ReleaseBuffer(buffer);
+
+	return true;
+}
+
+/*
+ * Check if TID is valid for relation scan
+ */
+static bool
+recno_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(scan->rs_rd);
+
+	return ItemPointerIsValid(tid) &&
+		ItemPointerGetBlockNumber(tid) < nblocks;
+}
+
+/*
+ * Get latest version of tuple (for updates)
+ */
+static void
+recno_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
+{
+	/* RECNO uses in-place updates, so TID doesn't change */
+	/* But we need to follow update chains if they exist */
+
+	BlockNumber block = ItemPointerGetBlockNumber(tid);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
+	Buffer		buffer;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+
+	buffer = ReadBuffer(scan->rs_rd, block);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buffer);
+	itemid = PageGetItemId(page, offnum);
+
+	if (ItemIdIsNormal(itemid))
+	{
+		tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+		/* Follow update chain if needed */
+		if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
+		{
+			ItemPointerCopy(&tuple_hdr->t_ctid, tid);
+		}
+	}
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	ReleaseBuffer(buffer);
+}
+
+/*
+ * Check if tuple satisfies snapshot
+ */
+static bool
+recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
+							   Snapshot snapshot)
+{
+	Buffer		buffer;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+	BlockNumber blkno;
+	OffsetNumber offnum;
+	bool		visible;
+
+	/*
+	 * Re-fetch the on-disk tuple header by TID so we can check the real
+	 * commit timestamps and transaction status.  The previous implementation
+	 * used recno_tuple_from_slot() which fabricated a new tuple with current
+	 * timestamps, making the visibility check meaningless.
+	 */
+	if (!ItemPointerIsValid(&slot->tts_tid))
+		return false;
+
+	blkno = ItemPointerGetBlockNumber(&slot->tts_tid);
+	offnum = ItemPointerGetOffsetNumber(&slot->tts_tid);
+
+	if (blkno >= RelationGetNumberOfBlocks(rel))
+		return false;
+
+	buffer = ReadBuffer(rel, blkno);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buffer);
+
+	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	itemid = PageGetItemId(page, offnum);
+	if (!ItemIdIsNormal(itemid))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
+
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	/*
+	 * For SNAPSHOT_DIRTY, we need to emulate HeapTupleSatisfiesDirty():
+	 * return the inserting xid and speculative token through the snapshot
+	 * so that callers like _bt_check_unique / SpeculativeInsertionWait can
+	 * properly wait for or detect speculative insertions.
+	 *
+	 * With the sLog migration, t_xmin/t_xmax no longer exist in the tuple
+	 * header.  We query the sLog for in-progress transaction state.
+	 */
+	if (snapshot->snapshot_type == SNAPSHOT_DIRTY)
+	{
+		ItemPointerData item_tid;
+
+		snapshot->xmin = InvalidTransactionId;
+		snapshot->xmax = InvalidTransactionId;
+		snapshot->speculativeToken = 0;
+
+		ItemPointerSet(&item_tid, blkno, offnum);
+
+		/*
+		 * Check if this tuple is uncommitted (inserted by a
+		 * still-running transaction).
+		 */
+		if (tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+		{
+			bool		is_insert = false;
+			TransactionId dirty_xid;
+
+			dirty_xid = RecnoSLogGetDirtyXid(RelationGetRelid(rel),
+											 &item_tid, &is_insert);
+
+			if (TransactionIdIsValid(dirty_xid) && is_insert)
+			{
+				/*
+				 * Another transaction is inserting this tuple.
+				 * Report xmin for SpeculativeInsertionWait.
+				 */
+				snapshot->xmin = dirty_xid;
+
+				if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+				{
+					snapshot->speculativeToken =
+						ItemPointerGetBlockNumber(&tuple_hdr->t_ctid);
+				}
+
+				UnlockReleaseBuffer(buffer);
+				return true;	/* visible for dirty snapshot purposes */
+			}
+			else if (!TransactionIdIsValid(dirty_xid))
+			{
+				/*
+				 * No in-progress sLog entry found.  Check for aborted
+				 * insert with pending UNDO.
+				 */
+				if (RecnoSLogHasAbortedEntry(RelationGetRelid(rel),
+											  &item_tid))
+				{
+					UnlockReleaseBuffer(buffer);
+					return false;
+				}
+
+				/*
+				 * With the t_xid_hint optimization, regular INSERTs
+				 * no longer create sLog entries.  Use t_xid_hint (the
+				 * inserter's XID) for CLOG/ProcArray checks, mirroring
+				 * the pattern in recno_index_fetch_tuple.
+				 */
+				{
+					TransactionId hint_xid = InvalidTransactionId;
+
+					if (TransactionIdIsValid(hint_xid))
+					{
+						if (TransactionIdIsCurrentTransactionId(hint_xid))
+						{
+							/*
+							 * Our own uncommitted insert.  Check sLog
+							 * for our own delete of this tuple.
+							 */
+							RecnoSLogEntry my_entry;
+							int nfound;
+
+							nfound = RecnoSLogLookup(RelationGetRelid(rel),
+													 &item_tid, hint_xid,
+													 &my_entry, 1);
+							if (nfound > 0 &&
+								my_entry.op_type == RECNO_SLOG_DELETE)
+							{
+								/* Our own delete */
+								UnlockReleaseBuffer(buffer);
+								return false;
+							}
+							/* Our own insert, not deleted -- fall through */
+						}
+						else if (TransactionIdIsInProgress(hint_xid))
+						{
+							/*
+							 * Another transaction is inserting this tuple.
+							 * Report xmin so caller can wait if needed.
+							 */
+							snapshot->xmin = hint_xid;
+
+							if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+							{
+								snapshot->speculativeToken =
+									ItemPointerGetBlockNumber(&tuple_hdr->t_ctid);
+							}
+
+							UnlockReleaseBuffer(buffer);
+							return true;
+						}
+						else if (TransactionIdDidCommit(hint_xid))
+						{
+							/*
+							 * Inserter committed.  Clear the stale
+							 * UNCOMMITTED flag and persist the hint.
+							 */
+							if (BufferIsValid(buffer))
+								BufferSetHintBits16(&tuple_hdr->t_flags,
+													tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+													buffer);
+							else
+								tuple_hdr->t_flags &=
+									~RECNO_TUPLE_UNCOMMITTED;
+							/* Fall through to normal visibility */
+						}
+						else
+						{
+							/*
+							 * Inserter aborted.  Tuple is not visible.
+							 */
+							UnlockReleaseBuffer(buffer);
+							return false;
+						}
+					}
+					else
+					{
+						/*
+						 * No valid t_xid_hint.  Fall back to sLog
+						 * lookup for pre-hint tuples.
+						 */
+						RecnoSLogEntry my_entry;
+						int nfound;
+						TransactionId myxid = GetCurrentTransactionIdIfAny();
+
+						if (TransactionIdIsValid(myxid))
+						{
+							nfound = RecnoSLogLookup(RelationGetRelid(rel),
+													 &item_tid, myxid,
+													 &my_entry, 1);
+							if (nfound > 0 &&
+								my_entry.op_type != RECNO_SLOG_DELETE)
+							{
+								/* Our own insert or in-place update */
+							}
+							else if (nfound > 0)
+							{
+								/* Our own delete */
+								UnlockReleaseBuffer(buffer);
+								return false;
+							}
+							else
+							{
+								/*
+								 * Stale UNCOMMITTED flag.
+								 * Clear and fall through.
+								 */
+								if (BufferIsValid(buffer))
+									BufferSetHintBits16(&tuple_hdr->t_flags,
+														tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+														buffer);
+								else
+									tuple_hdr->t_flags &=
+										~RECNO_TUPLE_UNCOMMITTED;
+							}
+						}
+						else
+						{
+							/*
+							 * No current transaction, stale flag.
+							 */
+							if (BufferIsValid(buffer))
+								BufferSetHintBits16(&tuple_hdr->t_flags,
+													tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+													buffer);
+							else
+								tuple_hdr->t_flags &=
+									~RECNO_TUPLE_UNCOMMITTED;
+						}
+					}
+				}
+			}
+		}
+
+		/* Tuple is committed (or ours).  Check if deleted. */
+		if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+		{
+			bool		is_insert = false;
+			TransactionId del_xid;
+
+			del_xid = RecnoSLogGetDirtyXid(RelationGetRelid(rel),
+										   &item_tid, &is_insert);
+
+			if (TransactionIdIsValid(del_xid) && !is_insert)
+			{
+				/* Deleter still running */
+				snapshot->xmax = del_xid;
+				UnlockReleaseBuffer(buffer);
+				return true;
+			}
+			else if (RecnoSLogIsDeletedByMe(RelationGetRelid(rel),
+											&item_tid))
+			{
+				/* We deleted it ourselves */
+				UnlockReleaseBuffer(buffer);
+				return false;
+			}
+			else
+			{
+				/*
+				 * Tuple is marked DELETED with no in-progress deleter --
+				 * deletion is committed.
+				 */
+				UnlockReleaseBuffer(buffer);
+				return false;
+			}
+		}
+
+		/*
+		 * Check if tuple has been superseded by an out-of-place update.
+		 * The RECNO_TUPLE_UPDATED flag means this is the old version and
+		 * a newer version exists at the t_ctid location.  The old version
+		 * is effectively dead for index unique-check purposes.
+		 */
+		if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
+		{
+			UnlockReleaseBuffer(buffer);
+			return false;
+		}
+
+		/* Speculative but our own txn and not yet confirmed -- visible */
+		UnlockReleaseBuffer(buffer);
+		return true;
+	}
+
+	visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
+										RelationGetRelid(rel), buffer);
+
+	UnlockReleaseBuffer(buffer);
+
+	return visible;
+}
+
+/*
+ * Speculative tuple insertion for RECNO
+ * This is used for INSERT ... ON CONFLICT operations
+ */
+static void
+recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
+							   CommandId cid, uint32 options,
+							   BulkInsertState bistate, uint32 specToken)
+{
+	RecnoTuple	tuple;
+	Buffer		buf;
+	Page		page;
+	Size		tuple_size;
+	BlockNumber target_block;
+	OffsetNumber offnum;
+	RecnoTupleHeader *tuple_hdr;
+	uint64		commit_ts;
+	RecnoOverflowBuffers overflow_buffers;
+	int			i;
+
+	slot_getallattrs(slot);
+
+	/* Create RECNO tuple from slot with overflow support */
+	overflow_buffers.count = 0;
+	tuple = RecnoFormTuple(RelationGetDescr(relation),
+						   slot->tts_values, slot->tts_isnull,
+						   relation, &overflow_buffers);
+	tuple_size = tuple->t_len;
+
+	/*
+	 * Get timestamp BEFORE entering critical section, as this may allocate
+	 * memory.
+	 */
+	commit_ts = RecnoGetCommitTimestamp();
+
+	/*
+	 * Mark the tuple as uncommitted so that SNAPSHOT_DIRTY callers can
+	 * detect in-progress insertions via the sLog.  The sLog entry is
+	 * registered after the tuple is placed on the page (below) so that
+	 * the TID is valid.
+	 */
+	tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+	/* t_xid_hint removed */
+
+	/*
+	 * Use the FSM to find a page with enough free space, or extend the
+	 * relation with a properly initialized new page.
+	 */
+	target_block = RecnoGetPageWithFreeSpace(relation, tuple_size);
+	if (target_block == InvalidBlockNumber)
+	{
+		/* Clean up overflow buffers before throwing error */
+		for (i = 0; i < overflow_buffers.count; i++)
+		{
+			UnlockReleaseBuffer(overflow_buffers.buffers[i].buffer);
+			pfree(overflow_buffers.buffers[i].record_data);
+		}
+		pfree(tuple);
+		elog(ERROR, "RECNO failed to allocate page for speculative insertion");
+	}
+
+	buf = ReadBuffer(relation, target_block);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buf);
+
+	/* Verify page has sufficient space */
+	if (PageGetFreeSpace(page) < tuple_size)
+	{
+		/* FSM was stale, update and retry */
+		RecnoRecordFreeSpace(relation, target_block, PageGetFreeSpace(page));
+		UnlockReleaseBuffer(buf);
+
+		target_block = RecnoGetPageWithFreeSpace(relation, tuple_size);
+		if (target_block == InvalidBlockNumber)
+		{
+			/* Clean up overflow buffers before throwing error */
+			for (i = 0; i < overflow_buffers.count; i++)
+			{
+				UnlockReleaseBuffer(overflow_buffers.buffers[i].buffer);
+				pfree(overflow_buffers.buffers[i].record_data);
+			}
+			pfree(tuple);
+			elog(ERROR, "RECNO failed to allocate page for speculative insertion after retry");
+		}
+
+		buf = ReadBuffer(relation, target_block);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+
+		if (PageGetFreeSpace(page) < tuple_size)
+		{
+			/* Clean up overflow buffers AND locked buffer before throwing error */
+			for (i = 0; i < overflow_buffers.count; i++)
+			{
+				UnlockReleaseBuffer(overflow_buffers.buffers[i].buffer);
+				pfree(overflow_buffers.buffers[i].record_data);
+			}
+			pfree(tuple);
+			UnlockReleaseBuffer(buf);
+			elog(ERROR, "RECNO page still has insufficient space for speculative insertion");
+		}
+	}
+
+	/* NO EREPORT(ERROR) from here till changes are logged */
+	START_CRIT_SECTION();
+
+	/* Add tuple to page */
+	offnum = PageAddItem(page, tuple->t_data, tuple_size,
+						 InvalidOffsetNumber, false, false);
+	if (offnum == InvalidOffsetNumber)
+		elog(PANIC, "failed to add RECNO tuple to page during speculative insert");
+
+	/* Mark as speculative insertion */
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, PageGetItemId(page, offnum));
+	tuple_hdr->t_flags |= RECNO_TUPLE_SPECULATIVE;
+	tuple_hdr->t_commit_ts = commit_ts;
+
+	/*
+	 * Store the speculative insertion token in t_ctid, using the same
+	 * encoding as heap: block number holds the token, offset is set to
+	 * SpecTokenOffsetNumber so callers can distinguish a token from a
+	 * real TID.
+	 */
+	ItemPointerSet(&tuple_hdr->t_ctid, specToken, SpecTokenOffsetNumber);
+
+	/* Set TID in slot */
+	ItemPointerSet(&slot->tts_tid, BufferGetBlockNumber(buf), offnum);
+
+	MarkBufferDirty(buf);
+
+	/* WAL logging */
+	if (RelationNeedsWAL(relation))
+	{
+		XLogRecPtr	recptr;
+		xl_recno_insert xlrec;
+
+		xlrec.offnum = offnum;
+		xlrec.flags = RECNO_TUPLE_SPECULATIVE;
+		xlrec.commit_ts = commit_ts;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xl_recno_insert));
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, (char *) tuple->t_data, tuple_size);
+
+		/* Register overflow buffers if any */
+		if (overflow_buffers.count > 0)
+		{
+			for (i = 0; i < overflow_buffers.count; i++)
+			{
+				RecnoOverflowBuffer *ovb = &overflow_buffers.buffers[i];
+
+				/* Register the overflow buffer */
+				XLogRegisterBuffer(i + 1, ovb->buffer, REGBUF_STANDARD);
+
+				/* Register the overflow record data */
+				XLogRegisterBufData(i + 1, ovb->record_data, ovb->record_len);
+			}
+		}
+
+		recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_INSERT);
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	/*
+	 * Register the speculative insertion in the sLog so that SNAPSHOT_DIRTY
+	 * callers can find the inserting xid via RecnoSLogGetDirtyXid().
+	 */
+	RecnoSLogInsert(RelationGetRelid(relation), &slot->tts_tid,
+					GetTopTransactionId(), commit_ts, cid,
+					RECNO_SLOG_INSERT, GetCurrentSubTransactionId(),
+					specToken);
+
+	/* Update FSM with remaining free space */
+	RecnoRecordFreeSpace(relation, BufferGetBlockNumber(buf),
+						 PageGetFreeSpace(page));
+
+	UnlockReleaseBuffer(buf);
+
+	/* Release overflow buffers, deduplicating shared buffers */
+	for (i = 0; i < overflow_buffers.count; i++)
+	{
+		Buffer		ovf_buf = overflow_buffers.buffers[i].buffer;
+		bool		already_released = (ovf_buf == buf);
+		int			j;
+
+		for (j = 0; j < i && !already_released; j++)
+		{
+			if (overflow_buffers.buffers[j].buffer == ovf_buf)
+				already_released = true;
+		}
+
+		if (!already_released)
+			UnlockReleaseBuffer(ovf_buf);
+		pfree(overflow_buffers.buffers[i].record_data);
+	}
+
+	pfree(tuple);
+}
+
+/*
+ * Complete speculative insertion for RECNO
+ */
+static void
+recno_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
+								 uint32 specToken, bool succeeded)
+{
+	ItemPointer tid = &slot->tts_tid;
+	Buffer		buf;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+
+	buf = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buf);
+
+	itemid = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	if (!ItemIdIsNormal(itemid))
+	{
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	if (succeeded)
+	{
+		/*
+		 * Speculative insertion succeeded.  Clear the speculative flag and
+		 * restore t_ctid to point to the tuple itself (removing the
+		 * speculative token), mirroring heap_finish_speculative().
+		 */
+		START_CRIT_SECTION();
+
+		tuple_hdr->t_flags &= ~(RECNO_TUPLE_SPECULATIVE |
+								RECNO_TUPLE_UNCOMMITTED);
+		ItemPointerSet(&tuple_hdr->t_ctid,
+					   ItemPointerGetBlockNumber(tid),
+					   ItemPointerGetOffsetNumber(tid));
+
+		MarkBufferDirty(buf);
+
+		/* WAL-log the confirmation */
+		if (RelationNeedsWAL(relation))
+		{
+			XLogRecPtr	recptr;
+			xl_recno_insert xlrec;
+
+			xlrec.offnum = ItemPointerGetOffsetNumber(tid);
+			xlrec.flags = 0;	/* cleared SPECULATIVE */
+			xlrec.commit_ts = tuple_hdr->t_commit_ts;
+
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xl_recno_insert));
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+
+			recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_INSERT);
+			PageSetLSN(page, recptr);
+		}
+
+		END_CRIT_SECTION();
+	}
+	else
+	{
+		uint64		delete_ts;
+
+		/*
+		 * Get timestamp BEFORE entering critical section, as this may
+		 * allocate memory.  (We already hold the buffer lock, but
+		 * RecnoGetCommitTimestamp is safe to call here.)
+		 */
+		delete_ts = RecnoGetCommitTimestamp();
+
+		START_CRIT_SECTION();
+
+		tuple_hdr->t_flags |= RECNO_TUPLE_DELETED;
+		tuple_hdr->t_commit_ts = delete_ts;
+
+		MarkBufferDirty(buf);
+
+		/* WAL log the speculative abort as a delete */
+		if (RelationNeedsWAL(relation))
+		{
+			XLogRecPtr	recptr;
+			xl_recno_delete xlrec;
+
+			xlrec.offnum = ItemPointerGetOffsetNumber(tid);
+			xlrec.flags = 0;
+			xlrec.commit_ts = delete_ts;
+
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xl_recno_delete));
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+			XLogRegisterBufData(0, (char *) tuple_hdr, tuple_hdr->t_len);
+
+			recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_DELETE);
+			PageSetLSN(page, recptr);
+		}
+
+		END_CRIT_SECTION();
+	}
+
+	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * Lock a tuple in RECNO table
+ */
+static TM_Result
+recno_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
+				 TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
+				 LockWaitPolicy wait_policy, uint8 flags,
+				 TM_FailureData *tmfd)
+{
+	Buffer		buf;
+	Page		page;
+	ItemId		itemid;
+	RecnoTupleHeader *tuple_hdr;
+	TM_Result	result = TM_Ok;
+	TransactionId current_xid;
+	bool		have_tuple_lock = false;
+
+	/*
+	 * Get transaction XID BEFORE entering critical section, as this may
+	 * allocate memory.
+	 */
+	current_xid = GetTopTransactionId();
+
+reacquire:
+	buf = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buf);
+
+	itemid = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	if (!ItemIdIsNormal(itemid))
+	{
+		UnlockReleaseBuffer(buf);
+		return TM_Invisible;
+	}
+
+	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	/* Check if tuple is deleted */
+	if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+	{
+		if (tmfd)
+		{
+			tmfd->ctid = *tid;
+			tmfd->xmax = InvalidTransactionId;
+			tmfd->cmax = InvalidCommandId;
+		}
+		result = TM_Deleted;
+		goto out_unlock;
+	}
+
+	/*
+	 * Check visibility using timestamp-based MVCC and handle concurrent
+	 * modifications.  Same pattern as UPDATE/DELETE: distinguish truly
+	 * invisible tuples from concurrent modifications.
+	 */
+	if (!RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
+										RelationGetRelid(relation),
+										buf))
+	{
+		TransactionId dirty_xid;
+		bool		is_insert_entry;
+
+		dirty_xid = RecnoSLogGetDirtyXid(RelationGetRelid(relation),
+										  tid, &is_insert_entry);
+
+		if (TransactionIdIsValid(dirty_xid) && is_insert_entry)
+		{
+			/* Another txn's in-progress INSERT - truly invisible */
+			if (tmfd)
+			{
+				tmfd->ctid = *tid;
+				tmfd->xmax = dirty_xid;
+				tmfd->cmax = InvalidCommandId;
+			}
+			result = TM_Invisible;
+			goto out_unlock;
+		}
+
+		if (TransactionIdIsValid(dirty_xid) && !is_insert_entry)
+		{
+			/* Another txn's in-progress UPDATE/DELETE - wait and retry */
+			if (wait_policy == LockWaitBlock)
+			{
+				TransactionId wait_xid = dirty_xid;
+
+				UnlockReleaseBuffer(buf);
+				if (!have_tuple_lock)
+				{
+					RecnoLockTuple(relation, tid, mode, true,
+								   &have_tuple_lock);
+				}
+				XactLockTableWait(wait_xid, relation, tid, XLTW_Lock);
+				goto reacquire;
+			}
+			else if (wait_policy == LockWaitError)
+			{
+				if (tmfd)
+				{
+					tmfd->ctid = *tid;
+					tmfd->xmax = dirty_xid;
+					tmfd->cmax = InvalidCommandId;
+				}
+				result = TM_WouldBlock;
+				goto out_unlock;
+			}
+			else	/* LockWaitSkip */
+			{
+				result = TM_WouldBlock;
+				goto out_unlock;
+			}
+		}
+
+		/*
+		 * No sLog entry - committed modification after our snapshot.
+		 *
+		 * If TUPLE_LOCK_FLAG_FIND_LAST_VERSION is set, the caller wants
+		 * us to follow the update chain and lock the latest version.
+		 * In RECNO with in-place updates, the current tuple IS the
+		 * latest version (same TID), so fall through to lock it and
+		 * set tmfd->traversed to trigger EPQ re-evaluation.
+		 *
+		 * Otherwise, report TM_Updated so the executor can handle it.
+		 */
+		if (flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION)
+		{
+			if (tmfd)
+			{
+				tmfd->ctid = *tid;
+				tmfd->xmax = InvalidTransactionId;
+				tmfd->cmax = InvalidCommandId;
+				tmfd->traversed = true;
+			}
+			/* Fall through to lock the current (latest) version */
+		}
+		else
+		{
+			if (tmfd)
+			{
+				tmfd->ctid = *tid;
+				tmfd->xmax = InvalidTransactionId;
+				tmfd->cmax = InvalidCommandId;
+				tmfd->traversed = false;
+			}
+			result = TM_Updated;
+			goto out_unlock;
+		}
+	}
+
+	/*
+	 * Check for lock conflicts using the sLog.  The sLog tracks all
+	 * in-progress lock/delete/update operations, replacing the old
+	 * t_xmax/MultiXact-based scheme.
+	 */
+	{
+		RecnoSLogOpType requested_lock;
+
+		requested_lock = (mode == LockTupleKeyShare ||
+						  mode == LockTupleShare)
+			? RECNO_SLOG_LOCK_SHARE : RECNO_SLOG_LOCK_EXCL;
+
+		if (RecnoSLogHasLockConflict(RelationGetRelid(relation), tid,
+									 current_xid, requested_lock))
+		{
+			/* There's a conflict - check wait policy */
+			if (wait_policy == LockWaitError)
+			{
+				if (tmfd)
+				{
+					tmfd->ctid = *tid;
+					tmfd->xmax = InvalidTransactionId;
+					tmfd->cmax = InvalidCommandId;
+				}
+				result = TM_WouldBlock;
+				goto out_unlock;
+			}
+			else if (wait_policy == LockWaitSkip)
+			{
+				result = TM_WouldBlock;
+				goto out_unlock;
+			}
+			else					/* LockWaitBlock */
+			{
+				bool		dummy_is_insert;
+				TransactionId xwait;
+
+				/*
+				 * Find the conflicting transaction from the sLog so we
+				 * can wait on it.  RecnoSLogGetDirtyXid returns the first
+				 * in-progress xid operating on this tuple.
+				 */
+				xwait = RecnoSLogGetDirtyXid(RelationGetRelid(relation),
+											 tid, &dummy_is_insert);
+
+				/* Release buffer and wait */
+				UnlockReleaseBuffer(buf);
+
+				if (TransactionIdIsValid(xwait))
+				{
+					/* Acquire tuple-level lock to wait */
+					if (!have_tuple_lock)
+					{
+						RecnoLockTuple(relation, tid, mode, true,
+									   &have_tuple_lock);
+					}
+
+					/* Wait for the conflicting transaction */
+					XactLockTableWait(xwait, relation, tid, XLTW_Lock);
+				}
+
+				/* Re-acquire buffer and retry */
+				goto reacquire;
+			}
+		}
+	}
+
+	/*
+	 * Lock succeeded.  Set traversed for FIND_LAST_VERSION callers.
+	 * RECNO uses in-place updates, so the current tuple IS the latest
+	 * version — the update chain was trivially "followed."
+	 */
+	if (tmfd)
+	{
+		tmfd->traversed = (flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION) != 0;
+		tmfd->ctid = *tid;
+		tmfd->xmax = InvalidTransactionId;
+		tmfd->cmax = InvalidCommandId;
+	}
+
+	tuple_hdr->t_flags |= RECNO_TUPLE_LOCKED;
+
+	START_CRIT_SECTION();
+
+	MarkBufferDirty(buf);
+
+	/* Log the lock operation */
+	if (RelationNeedsWAL(relation))
+	{
+		XLogRecPtr	recptr;
+		xl_recno_lock xlrec;
+
+		xlrec.offnum = ItemPointerGetOffsetNumber(tid);
+		xlrec.flags = 0;
+		xlrec.infomask = tuple_hdr->t_infomask;
+		xlrec.lock_mode = (uint8) mode;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xl_recno_lock));
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_LOCK);
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	/*
+	 * Populate the slot with the locked tuple's data.  This must happen after
+	 * END_CRIT_SECTION (since overflow fetch may do I/O and ereport). We must
+	 * unlock the buffer (but keep the pin) before calling
+	 * RecnoTupleToSlotWithOverflow because it may fetch overflow data, and if
+	 * that overflow is on the same page, it would try to lock an
+	 * already-locked buffer causing an assertion failure.
+	 *
+	 * FK constraint triggers and other callers of table_tuple_lock() expect
+	 * the slot to contain valid tuple data.
+	 */
+	if (slot && result == TM_Ok)
+	{
+		/* Unlock buffer but keep pin for slot materialization */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * Register the lock in the sLog AFTER releasing the buffer lock
+		 * to avoid deadlocks with RecnoSLogGetDirtyXid's slow path.
+		 */
+		{
+			RecnoSLogOpType lock_op;
+
+			lock_op = (mode == LockTupleKeyShare || mode == LockTupleShare)
+				? RECNO_SLOG_LOCK_SHARE : RECNO_SLOG_LOCK_EXCL;
+
+			RecnoSLogInsert(RelationGetRelid(relation), tid,
+							current_xid, 0, cid, lock_op,
+							GetCurrentSubTransactionId(), 0);
+		}
+
+		if (!RecnoTupleToSlotWithOverflow(tuple_hdr, slot, relation))
+		{
+			/*
+			 * Conversion failed (e.g., tuple was concurrently deleted).
+			 * Return TM_Deleted rather than leaving the slot empty.
+			 */
+			ReleaseBuffer(buf);
+			if (have_tuple_lock)
+				RecnoUnlockTuple(relation, tid, mode);
+			return TM_Deleted;
+		}
+		slot->tts_tid = *tid;
+		slot->tts_tableOid = RelationGetRelid(relation);
+
+		/* Release the buffer pin now that slot is materialized */
+		ReleaseBuffer(buf);
+
+		/* Release tuple-level lock if we acquired it */
+		if (have_tuple_lock)
+			RecnoUnlockTuple(relation, tid, mode);
+
+		return result;
+	}
+
+out_unlock:
+	UnlockReleaseBuffer(buf);
+
+	/* Release tuple-level lock if we acquired it */
+	if (have_tuple_lock)
+		RecnoUnlockTuple(relation, tid, mode);
+
+	return result;
+}
+
+/*
+ * Nontransactional truncate for RECNO relation
+ *
+ * This is called for TRUNCATE operations. We use RelationTruncate which
+ * properly handles all forks (main, FSM, VM), WAL logging, shared buffer
+ * invalidation, and cache coherency.
+ */
+static void
+recno_relation_nontransactional_truncate(Relation rel)
+{
+	RelationTruncate(rel, 0);
+}
+
+/*
+ * Set new filelocator for RECNO relation
+ */
+static void
+recno_relation_set_new_filelocator(Relation rel,
+								   const RelFileLocator *newrlocator,
+								   char persistence,
+								   TransactionId *freezeXid,
+								   MultiXactId *minmulti)
+{
+	SMgrRelation srel;
+
+	/* Set freeze XID to current transaction minimum */
+	*freezeXid = RecentXmin;
+
+	/* Set minimum multixact ID */
+	*minmulti = GetOldestMultiXactId();
+
+	/* Create the storage file (empty, no blocks yet) */
+	srel = RelationCreateStorage(*newrlocator, persistence, true);
+
+	/* WAL-log the file creation */
+	if (persistence == RELPERSISTENCE_PERMANENT)
+		log_smgrcreate(newrlocator, MAIN_FORKNUM);
+
+	/*
+	 * Note: We do not initialize block 0 here. Block 0 will be created
+	 * on-demand during the first scan or insert operation via
+	 * RecnoGetPageWithFreeSpace() or the scan's RBM_ZERO_AND_LOCK logic.
+	 */
+
+	/* Set up init fork for unlogged tables if needed */
+	if (persistence == RELPERSISTENCE_UNLOGGED)
+	{
+		Assert(rel->rd_rel->relkind == RELKIND_RELATION ||
+			   rel->rd_rel->relkind == RELKIND_TOASTVALUE);
+		smgrcreate(srel, INIT_FORKNUM, false);
+		log_smgrcreate(newrlocator, INIT_FORKNUM);
+	}
+
+	smgrclose(srel);
+
+	/*
+	 * Under UNDO-in-WAL, RECNO does not own a per-relation UNDO fork.
+	 * UNDO records are written into the shared UNDO log via
+	 * UndoBuffer* / PrepareXactUndoData/ PrepareXactUndoData, tagged with UNDO_RMID_RECNO.
+	 * The relation's enable_undo reloption (see RelationHasUndo) is the
+	 * only per-table gate required; no on-disk fork initialisation is
+	 * needed at CREATE TABLE / TRUNCATE time.
+	 */
+}
+
+/*
+ * Check whether table tuples referenced by index entries are dead.
+ *
+ * This is called by index AMs during index tuple deletion (both simple
+ * deletion during VACUUM and bottom-up deletion during retail inserts).
+ * The index AM passes a list of TIDs and we check each one's liveness.
+ * We set knowndeletable=true for entries whose table tuples are dead,
+ * allowing the index AM to remove its entries.
+ *
+ * IMPORTANT: This function must NEVER modify table data.  It only reads
+ * tuple headers to check visibility status.
+ *
+ * Modeled on heap_index_delete_tuples() but simplified for RECNO's
+ * timestamp-based MVCC.
+ */
+static TransactionId
+recno_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
+{
+	TransactionId snapshotConflictHorizon = InvalidTransactionId;
+	BlockNumber blkno = InvalidBlockNumber;
+	Buffer		buf = InvalidBuffer;
+	Page		page = NULL;
+	OffsetNumber maxoff = InvalidOffsetNumber;
+	int			finalndeltids = 0;
+
+	Assert(delstate->ndeltids > 0);
+
+	/* Iterate over deltids, determine which are deletable */
+	for (int i = 0; i < delstate->ndeltids; i++)
+	{
+		TM_IndexDelete *ideltid = &delstate->deltids[i];
+		TM_IndexStatus *istatus = delstate->status + ideltid->id;
+		ItemPointer htid = &ideltid->tid;
+		OffsetNumber offnum;
+
+		/*
+		 * Read buffer for this block if we haven't already.  Avoid refetching
+		 * if it's the same block as the previous entry.
+		 */
+		if (blkno == InvalidBlockNumber ||
+			ItemPointerGetBlockNumber(htid) != blkno)
+		{
+			if (BufferIsValid(buf))
+				UnlockReleaseBuffer(buf);
+
+			blkno = ItemPointerGetBlockNumber(htid);
+			buf = ReadBuffer(rel, blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			maxoff = PageGetMaxOffsetNumber(page);
+		}
+
+		offnum = ItemPointerGetOffsetNumber(htid);
+
+		/* Sanity check: offset must be valid */
+		if (offnum < FirstOffsetNumber || offnum > maxoff)
+		{
+			/*
+			 * Index entry points to invalid offset.  Mark as deletable to
+			 * clean up the corruption.
+			 */
+			istatus->knowndeletable = true;
+			finalndeltids = i + 1;
+			continue;
+		}
+
+		/* Already known to be deletable by the index AM? */
+		if (istatus->knowndeletable)
+		{
+			Assert(!delstate->bottomup && !istatus->promising);
+			finalndeltids = i + 1;
+			continue;
+		}
+
+		{
+			ItemId		lp = PageGetItemId(page, offnum);
+
+			if (!ItemIdIsNormal(lp))
+			{
+				/*
+				 * LP_DEAD, LP_UNUSED, or LP_REDIRECT: the tuple is gone. The
+				 * index entry can be removed.
+				 */
+				istatus->knowndeletable = true;
+			}
+			else
+			{
+				RecnoTupleHeader *tuple_hdr;
+
+				tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, lp);
+
+				/*
+				 * For RECNO, a tuple is vacuumable (and its index entry
+				 * deletable) if it is deleted AND old enough that no snapshot
+				 * can see it.
+				 */
+				if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+				{
+					if (RecnoCanVacuumTimestamp(tuple_hdr->t_commit_ts))
+					{
+						istatus->knowndeletable = true;
+					}
+					else
+					{
+						/* Recently dead -- cannot delete index entry yet */
+						continue;
+					}
+				}
+				else
+				{
+					/* Live tuple -- cannot delete index entry */
+					continue;
+				}
+			}
+		}
+
+		/* Track progress for bottom-up deletion */
+		if (delstate->bottomup && istatus->knowndeletable)
+		{
+			int			actualfreespace = 0;
+
+			actualfreespace += istatus->freespace;
+			if (actualfreespace >= delstate->bottomupfreespace)
+			{
+				/* Met the space target -- stop early */
+				finalndeltids = i + 1;
+				break;
+			}
+		}
+
+		finalndeltids = i + 1;
+	}
+
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+
+	/*
+	 * Shrink deltids array to exclude non-deletable entries at the end.
+	 */
+	Assert(finalndeltids > 0 || delstate->bottomup);
+	delstate->ndeltids = finalndeltids;
+
+	return snapshotConflictHorizon;
+}
+
+/*
+ * Copy data for RECNO relation (used by ALTER TABLE SET ACCESS METHOD, etc.)
+ *
+ * This performs a block-level copy of all storage forks from the old
+ * relation files to new ones. Since we copy directly without examining
+ * shared buffers, we must flush any dirty pages first. The old physical
+ * files are scheduled for deletion.
+ */
+static void
+recno_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
+{
+	SMgrRelation dstrel;
+
+	/*
+	 * Since we copy the file directly without looking at the shared buffers,
+	 * we'd better first flush out any pages of the source relation that are
+	 * in shared buffers. We assume no new changes will be made while we are
+	 * holding exclusive lock on the rel.
+	 */
+	FlushRelationBuffers(rel);
+
+	/*
+	 * Create and copy all forks of the relation, and schedule unlinking of
+	 * old physical files.
+	 *
+	 * NOTE: any conflict in relfilenumber value will be caught in
+	 * RelationCreateStorage().
+	 */
+	dstrel = RelationCreateStorage(*newrlocator, rel->rd_rel->relpersistence,
+								   true);
+
+	/* Copy main fork */
+	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
+						rel->rd_rel->relpersistence);
+
+	/* Copy any extra forks that exist (FSM, etc.) */
+	for (ForkNumber forkNum = MAIN_FORKNUM + 1;
+		 forkNum <= MAX_FORKNUM; forkNum++)
+	{
+		if (smgrexists(RelationGetSmgr(rel), forkNum))
+		{
+			smgrcreate(dstrel, forkNum, false);
+
+			/*
+			 * WAL log creation if the relation is persistent, or this is the
+			 * init fork of an unlogged relation.
+			 */
+			if (RelationIsPermanent(rel) ||
+				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
+				 forkNum == INIT_FORKNUM))
+				log_smgrcreate(newrlocator, forkNum);
+			RelationCopyStorage(RelationGetSmgr(rel), dstrel, forkNum,
+								rel->rd_rel->relpersistence);
+		}
+	}
+
+	/* Drop old relation storage, and close new one */
+	RelationDropStorage(rel);
+	smgrclose(dstrel);
+}
+
+/*
+ * Copy data for cluster operation
+ *
+ * This is called by CLUSTER and VACUUM FULL to copy tuples from the old
+ * table to the new one, optionally reordering by an index. We scan the
+ * old table using SnapshotAny and perform our own MVCC visibility checks
+ * to decide which tuples to keep, which to discard as dead, and which
+ * are recently dead.
+ *
+ * For RECNO, visibility is determined by the tuple's timestamp-based MVCC
+ * flags (deleted flag, commit timestamp, etc.) rather than heap-style xmin/xmax.
+ */
+static void
+recno_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
+								Relation OldIndex, bool use_sort,
+								TransactionId OldestXmin,
+								Snapshot snapshot,
+								TransactionId *xid_cutoff,
+								MultiXactId *multi_cutoff,
+								double *num_tuples,
+								double *tups_vacuumed,
+								double *tups_recently_dead)
+{
+	TableScanDesc tableScan;
+	IndexScanDesc indexScan;
+	TupleTableSlot *slot;
+	CommandId	mycid = GetCurrentCommandId(true);
+	double		live_tuples = 0;
+	double		dead_tuples = 0;
+	double		recent_dead = 0;
+
+	/* Initialize return values */
+	*xid_cutoff = InvalidTransactionId;
+	*multi_cutoff = InvalidMultiXactId;
+	*num_tuples = 0;
+	*tups_vacuumed = 0;
+	*tups_recently_dead = 0;
+
+	/*
+	 * Valid smgr_targblock implies something already wrote to the relation.
+	 * This may be harmless, but this function hasn't planned for it.
+	 */
+	Assert(RelationGetTargetBlock(NewTable) == InvalidBlockNumber);
+
+	/*
+	 * Set up the scan. If we have an index and are not doing a sort, use an
+	 * index scan to get tuples in index order. Otherwise do a sequential scan
+	 * (and optionally sort afterward).
+	 */
+	if (OldIndex != NULL && !use_sort)
+	{
+		pgstat_progress_update_param(PROGRESS_REPACK_PHASE,
+									 PROGRESS_REPACK_PHASE_INDEX_SCAN_HEAP);
+
+		tableScan = NULL;
+		indexScan = index_beginscan(OldTable, OldIndex, SnapshotAny, NULL,
+									0, 0, 0);
+		index_rescan(indexScan, NULL, 0, NULL, 0);
+	}
+	else
+	{
+		pgstat_progress_update_param(PROGRESS_REPACK_PHASE,
+									 PROGRESS_REPACK_PHASE_SEQ_SCAN_HEAP);
+
+		tableScan = table_beginscan(OldTable, SnapshotAny, 0, NULL, 0);
+		indexScan = NULL;
+	}
+
+	slot = table_slot_create(OldTable, NULL);
+
+	/*
+	 * Scan through the old table. For each tuple, check visibility using
+	 * RECNO's timestamp-based MVCC and either copy it to the new table or
+	 * skip it.
+	 */
+	for (;;)
+	{
+		bool		isdead = false;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (indexScan != NULL)
+		{
+			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot))
+				break;
+		}
+		else
+		{
+			if (!table_scan_getnextslot(tableScan, ForwardScanDirection, slot))
+				break;
+		}
+
+		/*
+		 * For RECNO, check tuple visibility using our page-level access. Read
+		 * the tuple header from the page to check MVCC flags.
+		 */
+		{
+			Buffer		buf;
+			Page		page;
+			ItemId		itemid;
+			RecnoTupleHeader *tuple_hdr;
+			BlockNumber blkno = ItemPointerGetBlockNumber(&slot->tts_tid);
+			OffsetNumber offnum = ItemPointerGetOffsetNumber(&slot->tts_tid);
+
+			buf = ReadBuffer(OldTable, blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				/* Item pointer is dead or unused -- skip */
+				UnlockReleaseBuffer(buf);
+				dead_tuples++;
+				continue;
+			}
+
+			tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
+			{
+				/*
+				 * Old version from a cross-page (out-of-place) update.
+				 * The live version resides elsewhere; this copy is dead.
+				 */
+				isdead = true;
+			}
+			else if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+			{
+				/*
+				 * Tuple has been deleted. Check whether it's old enough to be
+				 * truly dead vs recently dead (still needed for MVCC
+				 * snapshots).
+				 */
+				if (RecnoCanVacuumTimestamp(tuple_hdr->t_commit_ts))
+				{
+					/* Definitely dead -- can discard */
+					isdead = true;
+				}
+				else
+				{
+					/* Recently dead -- still needed by some snapshots */
+					recent_dead++;
+					isdead = false;
+				}
+			}
+
+			UnlockReleaseBuffer(buf);
+		}
+
+		if (isdead)
+		{
+			dead_tuples++;
+			continue;
+		}
+
+		/* Live or recently-dead tuple -- copy to new table */
+		table_tuple_insert(NewTable, slot, mycid, 0, NULL);
+		live_tuples++;
+
+		pgstat_progress_update_param(PROGRESS_REPACK_HEAP_TUPLES_SCANNED,
+									 live_tuples + dead_tuples + recent_dead);
+	}
+
+	/* Clean up scan resources */
+	if (indexScan != NULL)
+		index_endscan(indexScan);
+	if (tableScan != NULL)
+		table_endscan(tableScan);
+
+	ExecDropSingleTupleTableSlot(slot);
+
+	/* Return statistics to caller */
+	*num_tuples = live_tuples;
+	*tups_vacuumed = dead_tuples;
+	*tups_recently_dead = recent_dead;
+}
+
+/*
+ * Build range scan for index creation
+ *
+ * Scans the RECNO table and feeds tuples to the index AM's callback for
+ * index building.  Handles partial indexes, expression indexes, uniqueness
+ * checking, concurrent index builds, and proper visibility classification.
+ *
+ * Modeled on heapam_index_build_range_scan().
+ */
+static double
+recno_index_build_range_scan(Relation tablerel, Relation indexrel,
+							 IndexInfo *indexInfo, bool allow_sync,
+							 bool anyvisible, bool progress,
+							 BlockNumber start_blockno, BlockNumber numblocks,
+							 IndexBuildCallback callback, void *callback_state,
+							 TableScanDesc scan)
+{
+	double		reltuples = 0;
+	bool		checking_uniqueness;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	ExprState  *predicate;
+	TupleTableSlot *slot;
+	EState	   *estate;
+	ExprContext *econtext;
+	Snapshot	snapshot;
+	bool		need_unregister_snapshot = false;
+
+	/* See whether we're verifying uniqueness/exclusion properties */
+	checking_uniqueness = (indexInfo->ii_Unique ||
+						   indexInfo->ii_ExclusionOps != NULL);
+
+	/* "Any visible" mode is not compatible with uniqueness checks */
+	Assert(!(anyvisible && checking_uniqueness));
+
+	/*
+	 * Need an EState for evaluation of index expressions and partial-index
+	 * predicates.  Also a slot to hold the current tuple.
+	 */
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+	slot = table_slot_create(tablerel, NULL);
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/* Set up execution state for predicate, if any */
+	predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+	/*
+	 * Prepare for scan.  Normal index build uses SnapshotAny (we do our own
+	 * visibility checks).  Concurrent/bootstrap uses an MVCC snapshot.
+	 */
+	if (!scan)
+	{
+		if (IsBootstrapProcessingMode() || indexInfo->ii_Concurrent)
+		{
+			snapshot = RegisterSnapshot(GetTransactionSnapshot());
+			need_unregister_snapshot = true;
+		}
+		else
+			snapshot = SnapshotAny;
+
+		scan = table_beginscan_strat(tablerel, snapshot, 0, NULL,
+									 true, allow_sync);
+	}
+	else
+	{
+		snapshot = scan->rs_snapshot;
+	}
+
+	/* Scan all tuples in the base relation */
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		bool		tupleIsAlive;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (snapshot == SnapshotAny)
+		{
+			/*
+			 * Classify the tuple using RECNO's timestamp-based MVCC by
+			 * re-reading the tuple header from the page.
+			 */
+			Buffer		buf;
+			Page		page;
+			ItemId		itemid;
+			RecnoTupleHeader *tuple_hdr;
+			BlockNumber blkno = ItemPointerGetBlockNumber(&slot->tts_tid);
+			OffsetNumber offnum = ItemPointerGetOffsetNumber(&slot->tts_tid);
+			bool		indexIt;
+
+			buf = ReadBuffer(tablerel, blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				UnlockReleaseBuffer(buf);
+				continue;
+			}
+
+			tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			if (tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
+			{
+				if (RecnoCanVacuumTimestamp(tuple_hdr->t_commit_ts))
+				{
+					/* Definitely dead -- skip */
+					UnlockReleaseBuffer(buf);
+					continue;
+				}
+				else
+				{
+					/* Recently dead -- index for MVCC, don't count */
+					indexIt = true;
+					tupleIsAlive = false;
+				}
+			}
+			else if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+			{
+				/* Speculative insertion not yet confirmed -- skip */
+				UnlockReleaseBuffer(buf);
+				continue;
+			}
+			else
+			{
+				/* Live tuple -- index and count it */
+				indexIt = true;
+				tupleIsAlive = true;
+				reltuples += 1;
+			}
+
+			UnlockReleaseBuffer(buf);
+
+			if (!indexIt)
+				continue;
+		}
+		else
+		{
+			/* MVCC snapshot already filtered for visibility */
+			tupleIsAlive = true;
+			reltuples += 1;
+		}
+
+		MemoryContextReset(econtext->ecxt_per_tuple_memory);
+
+		/* In a partial index, discard tuples that don't satisfy predicate */
+		if (predicate != NULL)
+		{
+			if (!ExecQual(predicate, econtext))
+				continue;
+		}
+
+		/*
+		 * Extract all indexed attributes.  This also evaluates any index
+		 * expressions.
+		 */
+		FormIndexDatum(indexInfo, slot, estate, values, isnull);
+
+		/*
+		 * Call the AM's callback with the tuple's own TID.
+		 */
+		callback(indexrel, &slot->tts_tid, values, isnull,
+				 tupleIsAlive, callback_state);
+	}
+
+	table_endscan(scan);
+
+	if (need_unregister_snapshot)
+		UnregisterSnapshot(snapshot);
+
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+
+	/* These may have been pointing to the now-gone estate */
+	indexInfo->ii_ExpressionsState = NIL;
+	indexInfo->ii_PredicateState = NULL;
+
+	return reltuples;
+}
+
+/*
+ * Validate scan for index
+ */
+static void
+recno_index_validate_scan(Relation tablerel, Relation indexrel,
+						  IndexInfo *indexInfo, Snapshot snapshot,
+						  ValidateIndexState *state)
+{
+	TableScanDesc scan;
+	TupleTableSlot *slot;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	ExprState  *predicate;
+	EState	   *estate;
+	ExprContext *econtext;
+	ItemPointer indexcursor = NULL;
+	ItemPointerData decoded;
+	bool		tuplesort_empty = false;
+
+	/*
+	 * Need an EState for evaluation of index expressions and partial-index
+	 * predicates.
+	 */
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+	slot = table_slot_create(tablerel, NULL);
+	econtext->ecxt_scantuple = slot;
+
+	predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+	/*
+	 * Scan the table and the sorted output from tuplesort in parallel. For
+	 * each table tuple, check if there's a matching index entry. Tuples that
+	 * satisfy the predicate but have no index entry need to be inserted into
+	 * the index.
+	 */
+	scan = table_beginscan_strat(tablerel, snapshot, 0, NULL, true, false);
+
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		state->htups += 1;
+
+		/*
+		 * Skip tuples that don't satisfy the partial index predicate.
+		 */
+		if (predicate != NULL)
+		{
+			MemoryContextReset(econtext->ecxt_per_tuple_memory);
+			if (!ExecQual(predicate, econtext))
+				continue;
+		}
+
+		/*
+		 * Advance the tuplesort cursor past any entries that are for TIDs
+		 * earlier than the current table tuple.
+		 */
+		while (!tuplesort_empty &&
+			   (!indexcursor ||
+				ItemPointerCompare(indexcursor, &slot->tts_tid) < 0))
+		{
+			Datum		ts_val;
+			bool		ts_isnull;
+
+			tuplesort_empty = !tuplesort_getdatum(state->tuplesort,
+												  true, false,
+												  &ts_val, &ts_isnull,
+												  NULL);
+			Assert(tuplesort_empty || !ts_isnull);
+			if (!tuplesort_empty)
+			{
+				itemptr_decode(&decoded, DatumGetInt64(ts_val));
+				indexcursor = &decoded;
+			}
+			else
+			{
+				indexcursor = NULL;
+			}
+		}
+
+		/*
+		 * If the sorted cursor TID matches the current table tuple, the index
+		 * already has this entry.  Otherwise, we need to add it.
+		 */
+		if (indexcursor != NULL &&
+			ItemPointerCompare(indexcursor, &slot->tts_tid) == 0)
+		{
+			/* Already in the index -- skip */
+			continue;
+		}
+
+		MemoryContextReset(econtext->ecxt_per_tuple_memory);
+
+		FormIndexDatum(indexInfo, slot, estate, values, isnull);
+
+		/*
+		 * Insert the missing index entry using the tuple's own TID.
+		 */
+		index_insert(indexrel, values, isnull, &slot->tts_tid,
+					 tablerel, indexInfo->ii_Unique ?
+					 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+					 false, indexInfo);
+
+		state->tups_inserted += 1;
+	}
+
+	table_endscan(scan);
+
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+
+	indexInfo->ii_ExpressionsState = NIL;
+	indexInfo->ii_PredicateState = NULL;
+}
+
+/*
+ * Get relation size information
+ *
+ * Returns the on-disk size in bytes for the specified fork of the relation.
+ * This is used by pg_relation_size(), VACUUM, CLUSTER, and many other
+ * operations that need to know the physical storage footprint.
+ */
+static uint64
+recno_relation_size(Relation rel, ForkNumber forkNumber)
+{
+	uint64		nblocks = 0;
+
+	/* Open the smgr handle if needed */
+	if (smgrexists(RelationGetSmgr(rel), forkNumber))
+		nblocks = (uint64) smgrnblocks(RelationGetSmgr(rel), forkNumber);
+
+	return nblocks * BLCKSZ;
+}
+
+/*
+ * Check if relation needs a TOAST table
+ */
+static bool
+recno_relation_needs_toast_table(Relation rel)
+{
+	/* RECNO uses its own overflow page mechanism instead of TOAST */
+	/* Return false to prevent PostgreSQL from trying to create TOAST tables */
+	return false;
+}
+
+/*
+ * Estimate relation size
+ *
+ * Provides the planner with estimates of the number of pages, tuples,
+ * and all-visible fraction for this relation. Uses the actual block count
+ * from storage and estimates tuple density from the first non-empty page.
+ */
+static void
+recno_relation_estimate_size(Relation rel, int32 *attr_widths,
+							 BlockNumber *pages, double *tuples,
+							 double *allvisfrac)
+{
+	BlockNumber nblocks;
+	double		tuple_count;
+
+	/* Get actual block count from storage */
+	if (smgrexists(RelationGetSmgr(rel), MAIN_FORKNUM))
+		nblocks = smgrnblocks(RelationGetSmgr(rel), MAIN_FORKNUM);
+	else
+		nblocks = 0;
+
+	*pages = Max(nblocks, 1);
+
+	if (nblocks == 0)
+	{
+		*tuples = 0;
+		*allvisfrac = 0.0;
+		return;
+	}
+
+	/*
+	 * Estimate tuple count. If we have reltuples from pg_class, use that.
+	 * Otherwise, sample the first block to estimate tuple density.
+	 */
+	if (rel->rd_rel->reltuples >= 0)
+	{
+		/*
+		 * Scale reltuples by the ratio of current pages to relpages to
+		 * account for growth or shrinkage since last ANALYZE.
+		 */
+		if (rel->rd_rel->relpages > 0)
+			tuple_count = rel->rd_rel->reltuples *
+				((double) nblocks / (double) rel->rd_rel->relpages);
+		else
+			tuple_count = rel->rd_rel->reltuples;
+	}
+	else
+	{
+		/*
+		 * No statistics available.  Sample the first non-empty page to
+		 * estimate tuple density.  If we can't find one, fall back to a
+		 * conservative estimate.
+		 */
+		double		tuples_per_page = 0;
+		BlockNumber probe;
+
+		for (probe = 0; probe < Min(nblocks, 10); probe++)
+		{
+			Buffer		buf;
+			Page		pg;
+			OffsetNumber maxoff;
+			OffsetNumber off;
+			int			live = 0;
+
+			buf = ReadBufferExtended(rel, MAIN_FORKNUM, probe,
+									 RBM_NORMAL, NULL);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			pg = BufferGetPage(buf);
+
+			if (PageIsNew(pg))
+			{
+				UnlockReleaseBuffer(buf);
+				continue;
+			}
+
+			maxoff = PageGetMaxOffsetNumber(pg);
+			for (off = FirstOffsetNumber; off <= maxoff; off++)
+			{
+				ItemId		iid = PageGetItemId(pg, off);
+
+				if (!ItemIdIsNormal(iid))
+					continue;
+
+				/*
+				 * Skip overflow records -- they are not user tuples and
+				 * should not inflate the density estimate.
+				 */
+				if (RecnoIsOverflowRecord(
+										  (RecnoTupleHeader *) PageGetItem(pg, iid),
+										  ItemIdGetLength(iid)))
+					continue;
+
+				live++;
+			}
+
+			UnlockReleaseBuffer(buf);
+
+			if (live > 0)
+			{
+				tuples_per_page = (double) live;
+				break;
+			}
+		}
+
+		/* Fallback if every sampled page was empty or new */
+		if (tuples_per_page <= 0)
+			tuples_per_page = (BLCKSZ - RECNO_PAGE_OVERHEAD) / 100.0;
+
+		tuple_count = tuples_per_page * nblocks;
+	}
+
+	*tuples = Max(tuple_count, 0);
+
+	/*
+	 * Compute allvisfrac from the Visibility Map.
+	 *
+	 * PERFORMANCE FIX: The previous implementation called RecnoVMCheck() for
+	 * each data block (N calls for N pages), which opened/closed the VM buffer
+	 * N times even though all data blocks typically fit in 1-2 VM pages.
+	 * For scale=10 pgbench_accounts (10,417 pages), this caused 10,417 buffer
+	 * pin/unpin operations during query planning, costing ~40ms per query.
+	 *
+	 * Replacement: read each VM page ONCE, count ALL_VISIBLE bits in bulk
+	 * using pg_popcount, then scale to nblocks.  O(vmPages) instead of O(nblocks).
+	 */
+	{
+		BlockNumber vmBlocks;
+		BlockNumber visiblePages = 0;
+
+		if (smgrexists(RelationGetSmgr(rel), VISIBILITYMAP_FORKNUM))
+			vmBlocks = smgrnblocks(RelationGetSmgr(rel), VISIBILITYMAP_FORKNUM);
+		else
+			vmBlocks = 0;
+
+		if (vmBlocks > 0)
+		{
+			BlockNumber mapBlock;
+			/* HEAPBLOCKS_PER_PAGE = MAPSIZE * 4 — we count 2 bits per data block */
+			/* The ALL_VISIBLE bit is the low bit (bit 0) of each 2-bit pair    */
+#define RECNO_VM_MAPSIZE  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
+#define RECNO_HEAPBLKS_PER_VM_PAGE (RECNO_VM_MAPSIZE * 4)
+
+			for (mapBlock = 0; mapBlock < vmBlocks; mapBlock++)
+			{
+				Buffer		vmBuf;
+				Page		vmPage;
+				uint8	   *map;
+				BlockNumber	firstHeapBlk;
+				BlockNumber	lastHeapBlk;
+				BlockNumber	blksInPage;
+				BlockNumber	bytesNeeded;
+				BlockNumber	b;
+
+				vmBuf = ReadBufferExtended(rel, VISIBILITYMAP_FORKNUM, mapBlock,
+										   RBM_NORMAL, NULL);
+				LockBuffer(vmBuf, BUFFER_LOCK_SHARE);
+				vmPage = BufferGetPage(vmBuf);
+				map = (uint8 *) PageGetContents(vmPage);
+
+				/* Which data blocks does this VM page cover? */
+				firstHeapBlk = mapBlock * RECNO_HEAPBLKS_PER_VM_PAGE;
+				lastHeapBlk  = Min(firstHeapBlk + RECNO_HEAPBLKS_PER_VM_PAGE,
+								   nblocks);
+				blksInPage   = lastHeapBlk - firstHeapBlk;
+				bytesNeeded  = (blksInPage + 3) / 4;  /* 2 bits per block, 4 blocks per byte */
+
+				/*
+				 * Count set ALL_VISIBLE bits (bit 0 of each 2-bit pair).
+				 * Each byte holds 4 data blocks: bits [1:0], [3:2], [5:4], [7:6].
+				 * Count bytes where each 2-bit group has bit 0 set.
+				 * Shortcut: use pg_popcount on masked bytes.
+				 */
+				for (b = 0; b < bytesNeeded; b++)
+				{
+					uint8 byte = map[b];
+					/* Extract bit 0 of each 2-bit pair: bits 0, 2, 4, 6 */
+					uint8 avBits = byte & 0x55;  /* 01010101 mask */
+					/* Count set bits (each bit represents one data block) */
+					visiblePages += pg_number_of_ones[avBits];
+				}
+
+				UnlockReleaseBuffer(vmBuf);
+			}
+
+			/* Clamp to actual nblocks in case of rounding */
+			if (visiblePages > nblocks)
+				visiblePages = nblocks;
+
+			*allvisfrac = (double) visiblePages / (double) nblocks;
+		}
+		else
+		{
+			*allvisfrac = 0.0;
+		}
+	}
+}
+
+/*
+ * Sample scan: get next block for sampling (TABLESAMPLE support)
+ *
+ * Called by the TABLESAMPLE executor to prepare the next block for tuple
+ * extraction.  The TSM (Table Sample Method) decides which block to visit
+ * via its NextSampleBlock callback, or, if that callback is NULL, we scan
+ * sequentially starting from rs_startblock and wrapping around.
+ *
+ * We read the selected block into a buffer (pinned, not locked -- locking
+ * is deferred to recno_scan_sample_next_tuple) and return true.  Returns
+ * false when there are no more blocks to sample.
+ */
+static bool
+recno_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
+{
+	RecnoScanDesc rscan = (RecnoScanDesc) scan;
+	TsmRoutine *tsm = scanstate->tsmroutine;
+	BlockNumber blockno;
+
+	/* Return false immediately if relation is empty */
+	if (rscan->rs_nblocks == 0)
+		return false;
+
+	/* Release previous buffer, if any */
+	if (BufferIsValid(rscan->rs_cbuf))
+	{
+		ReleaseBuffer(rscan->rs_cbuf);
+		rscan->rs_cbuf = InvalidBuffer;
+	}
+
+	if (tsm->NextSampleBlock)
+	{
+		/* TSM tells us which block to visit next */
+		blockno = tsm->NextSampleBlock(scanstate, rscan->rs_nblocks);
+	}
+	else
+	{
+		/* No NextSampleBlock callback -- scan sequentially */
+		if (rscan->rs_cblock == InvalidBlockNumber)
+		{
+			Assert(!rscan->rs_inited);
+			blockno = rscan->rs_startblock;
+		}
+		else
+		{
+			Assert(rscan->rs_inited);
+
+			blockno = rscan->rs_cblock + 1;
+
+			if (blockno >= rscan->rs_nblocks)
+			{
+				/* Wrap to beginning of relation */
+				blockno = 0;
+			}
+
+			if (blockno == rscan->rs_startblock)
+			{
+				/* Completed full cycle -- done */
+				blockno = InvalidBlockNumber;
+			}
+		}
+	}
+
+	rscan->rs_cblock = blockno;
+
+	if (!BlockNumberIsValid(blockno))
+	{
+		rscan->rs_inited = false;
+		return false;
+	}
+
+	Assert(rscan->rs_cblock < rscan->rs_nblocks);
+
+	CHECK_FOR_INTERRUPTS();
+
+	/* Read the selected block -- comes back pinned but not locked */
+	rscan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM,
+										blockno, RBM_NORMAL, NULL);
+
+	rscan->rs_inited = true;
+	return true;
+}
+
+/*
+ * Sample scan: get next tuple from current block (TABLESAMPLE support)
+ *
+ * Called repeatedly for the block prepared by recno_scan_sample_next_block().
+ * The TSM's NextSampleTuple callback decides which tuple offsets to examine.
+ * We lock the buffer, check the tuple at the selected offset for visibility,
+ * and either return it in the slot (true) or indicate end-of-page (false).
+ *
+ * Unlike the ANALYZE path which iterates all items sequentially, here the
+ * TSM picks specific offsets, and we loop until it returns InvalidOffsetNumber
+ * to signal that it is done with this block.
+ */
+static bool
+recno_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
+							 TupleTableSlot *slot)
+{
+	RecnoScanDesc rscan = (RecnoScanDesc) scan;
+	TsmRoutine *tsm = scanstate->tsmroutine;
+	BlockNumber blockno = rscan->rs_cblock;
+	Page		page;
+	OffsetNumber maxoffset;
+
+	/*
+	 * Lock the buffer for visibility checks.  We hold the lock for the
+	 * duration of this call and release before returning, matching the heap
+	 * AM's non-pagemode pattern.
+	 */
+	LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(rscan->rs_cbuf);
+	maxoffset = PageGetMaxOffsetNumber(page);
+
+	for (;;)
+	{
+		OffsetNumber tupoffset;
+		ItemId		itemid;
+		RecnoTupleHeader *tuple_hdr;
+		bool		visible;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Ask the TSM which tuple to examine next on this page */
+		tupoffset = tsm->NextSampleTuple(scanstate, blockno, maxoffset);
+
+		if (OffsetNumberIsValid(tupoffset))
+		{
+			/* Skip invalid item pointers */
+			itemid = PageGetItemId(page, tupoffset);
+			if (!ItemIdIsNormal(itemid))
+				continue;
+
+			tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/* Skip overflow records -- not user-visible tuples */
+			if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
+				continue;
+
+			/*
+			 * Determine visibility.  RECNO uses timestamp-based MVCC, so we
+			 * check the tuple flags and use the dual-mode visibility
+			 * function. Deleted and speculative tuples are not visible.
+			 */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+				visible = false;
+			else if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+				visible = false;
+			else if (scan->rs_snapshot)
+				visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr,
+														  scan->rs_snapshot,
+														  RelationGetRelid(scan->rs_rd),
+														  rscan->rs_cbuf);
+			else
+				visible = true; /* no snapshot means return all live */
+
+			if (!visible)
+				continue;
+
+			/*
+			 * Found a visible tuple.  Store it into the slot with a buffer
+			 * pin so the data stays valid after we unlock.
+			 */
+			RecnoSlotStoreTuple(slot, tuple_hdr,
+								ItemIdGetLength(itemid), rscan->rs_cbuf);
+			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
+			ItemPointerSet(&slot->tts_tid, blockno, tupoffset);
+
+			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+			return true;
+		}
+		else
+		{
+			/*
+			 * NextSampleTuple returned InvalidOffsetNumber -- done with this
+			 * block.  Unlock, clear the slot, and tell the caller to move on.
+			 */
+			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			ExecClearTuple(slot);
+			return false;
+		}
+	}
+
+	/* unreachable */
+	Assert(false);
+}
+
+
+
+/*
+ * ------------------------------------------------------------------------
+ * Helper function to initialize MVCC state
+ * ------------------------------------------------------------------------
+ */
+static void
+recno_init_mvcc_state(void)
+{
+	if (recno_mvcc_state == NULL)
+	{
+		recno_mvcc_state = (RecnoMvccData *)
+			MemoryContextAllocZero(TopMemoryContext, sizeof(RecnoMvccData));
+
+		recno_mvcc_state->current_commit_ts = 1;
+		recno_mvcc_state->oldest_active_ts = 1;
+		recno_mvcc_state->serializable_horizon = 1;
+		recno_mvcc_state->anti_deps_tracking = false;
+	}
+}
+
+/*
+ * Helper functions for tuple conversion
+ */
+static MinimalTuple
+__attribute__((unused))
+minimal_tuple_from_recno_tuple(RecnoTuple rtuple, TupleDesc tupdesc)
+{
+	HeapTuple	heap_tuple;
+	MinimalTuple result;
+	Datum	   *values;
+	bool	   *isnull;
+	int			natts;
+	int			i;
+
+	if (!rtuple || !rtuple->t_data)
+		return NULL;
+
+	natts = tupdesc->natts;
+	values = (Datum *) palloc(natts * sizeof(Datum));
+	isnull = (bool *) palloc(natts * sizeof(bool));
+
+	/* For now, create a basic tuple with NULLs - this prevents crashes */
+	for (i = 0; i < natts; i++)
+	{
+		values[i] = (Datum) 0;
+		isnull[i] = true;
+	}
+
+	/* Form heap tuple then convert to minimal tuple */
+	heap_tuple = heap_form_tuple(tupdesc, values, isnull);
+	result = minimal_tuple_from_heap_tuple(heap_tuple, 0);
+
+	heap_freetuple(heap_tuple);
+	pfree(values);
+	pfree(isnull);
+
+	return result;
+}
+
+static RecnoTuple
+__attribute__((unused))
+recno_tuple_from_slot(TupleTableSlot *slot)
+{
+	RecnoTuple	tuple;
+	Size		tuple_size;
+
+	if (slot == NULL || slot->tts_tupleDescriptor == NULL)
+		return NULL;
+
+	/* Create basic RECNO tuple structure */
+	tuple_size = sizeof(RecnoTupleData) + sizeof(RecnoTupleHeader);
+	tuple = (RecnoTuple) palloc0(tuple_size);
+
+	tuple->t_len = sizeof(RecnoTupleHeader);
+	tuple->t_data = (RecnoTupleHeader *) ((char *) tuple + sizeof(RecnoTupleData));
+	tuple->t_tableOid = slot->tts_tableOid;
+	ItemPointerCopy(&slot->tts_tid, &tuple->t_self);
+
+	/* Initialize basic header */
+	tuple->t_data->t_len = tuple->t_len;
+	tuple->t_data->t_flags = 0;
+	tuple->t_data->t_commit_ts = RecnoGetCommitTimestamp();
+	ItemPointerCopy(&slot->tts_tid, &tuple->t_data->t_ctid);
+
+	return tuple;
+}
+
+/*
+ * ------------------------------------------------------------------------
+ * Main table AM routine structure for RECNO
+ * ------------------------------------------------------------------------
+ */
+static const TableAmRoutine recno_methods = {
+	.type = T_TableAmRoutine,
+
+	/*
+	 * RECNO participates in UNDO-in-WAL via its own UNDO resource manager
+	 * (UNDO_RMID_RECNO).  Setting am_supports_undo = true permits
+	 * CREATE TABLE … USING recno WITH (enable_undo = on); records written
+	 * from recno_operations.c are dispatched at rollback time to the
+	 * recno_undo_apply callback registered by RecnoUndoRmgrInit().
+	 *
+	 * Upstream's am_supports_undo contract (see src/include/access/tableam.h)
+	 * is now AM-agnostic: each AM registers its own rm_undo callback and
+	 * handles its own page format there.  RECNO writes records tagged
+	 * UNDO_RMID_RECNO; undoapply.c dispatches to recno_undo.c, which
+	 * interprets the RECNO page format directly.  No heap-page-layout
+	 * constraint applies.
+	 */
+	.am_supports_undo = true,
+
+	/* Use minimal tuple slot */
+	.slot_callbacks = recno_slot_callbacks,
+
+	/* Use minimal scan functions - just return empty results */
+	.scan_begin = recno_scan_begin,
+	.scan_end = recno_scan_end,
+	.scan_rescan = recno_scan_rescan,
+	.scan_getnextslot = recno_scan_getnextslot,
+
+	.scan_set_tidrange = recno_scan_set_tidrange,
+	.scan_getnextslot_tidrange = recno_scan_getnextslot_tidrange,
+
+	.parallelscan_estimate = table_block_parallelscan_estimate,
+	.parallelscan_initialize = table_block_parallelscan_initialize,
+	.parallelscan_reinitialize = table_block_parallelscan_reinitialize,
+
+	/* Use minimal index functions */
+	.index_fetch_begin = recno_index_fetch_begin,
+	.index_fetch_reset = recno_index_fetch_reset,
+	.index_fetch_end = recno_index_fetch_end,
+	.index_fetch_tuple = recno_index_fetch_tuple,
+
+	/* Use minimal tuple functions */
+	.tuple_insert = recno_tuple_insert,
+	.tuple_insert_speculative = recno_tuple_insert_speculative,
+	.tuple_complete_speculative = recno_tuple_complete_speculative,
+	.multi_insert = recno_multi_insert,
+	.tuple_delete = recno_tuple_delete,
+	.tuple_update = recno_tuple_update,
+	.tuple_lock = recno_tuple_lock,
+
+	/* UNDO write-buffer activation / deactivation */
+	.begin_bulk_insert = recno_begin_bulk_insert,
+	.finish_bulk_insert = recno_finish_bulk_insert,
+
+	.tuple_fetch_row_version = recno_tuple_fetch_row_version,
+	.tuple_get_latest_tid = recno_tuple_get_latest_tid,
+	.tuple_tid_valid = recno_tuple_tid_valid,
+	.tuple_satisfies_snapshot = recno_tuple_satisfies_snapshot,
+	.index_delete_tuples = recno_index_delete_tuples,
+
+	/* Keep only essential relation functions */
+	.relation_set_new_filelocator = recno_relation_set_new_filelocator,
+	.relation_nontransactional_truncate = recno_relation_nontransactional_truncate,
+	.relation_copy_data = recno_relation_copy_data,
+	.relation_copy_for_cluster = recno_relation_copy_for_cluster,
+	.relation_vacuum = recno_relation_vacuum,
+	.scan_analyze_next_block = recno_scan_analyze_next_block,
+	.scan_analyze_next_tuple = recno_scan_analyze_next_tuple,
+	.index_build_range_scan = recno_index_build_range_scan,
+	.index_validate_scan = recno_index_validate_scan,
+
+	.relation_size = recno_relation_size,
+	.relation_needs_toast_table = recno_relation_needs_toast_table,
+	.relation_toast_am = NULL,
+	.relation_fetch_toast_slice = NULL,
+
+	.relation_estimate_size = recno_relation_estimate_size,
+
+	.scan_bitmap_next_tuple = recno_scan_bitmap_next_tuple,
+	.scan_sample_next_block = recno_scan_sample_next_block,
+	.scan_sample_next_tuple = recno_scan_sample_next_tuple,
+};
+
+/*
+ * Return the RECNO table AM routine
+ */
+const TableAmRoutine *
+GetRecnoTableAmRoutine(void)
+{
+	return &recno_methods;
+}
+
+/*
+ * Handler function for RECNO table access method
+ */
+PG_FUNCTION_INFO_V1(recno_tableam_handler);
+
+Datum
+recno_tableam_handler(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(&recno_methods);
+}
+
+/*
+ * ANALYZE support: select next block to sample
+ *
+ * Called by ANALYZE to prepare the next sampled block for tuple extraction.
+ * The ReadStream provides buffers for blocks selected by the BlockSampler
+ * in analyze.c -- we do not choose blocks ourselves.
+ *
+ * We acquire a buffer pin and shared lock here and hold them until
+ * recno_scan_analyze_next_tuple() has returned false for this block,
+ * preventing concurrent activity (e.g. pruning) from removing tuples
+ * out from under us.
+ */
+static bool
+recno_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
+{
+	RecnoScanDesc rscan = (RecnoScanDesc) scan;
+
+	/*
+	 * Get the next buffer from the read stream.  The stream was set up by
+	 * analyze.c with a BlockSampler callback, so it yields only the randomly
+	 * selected sample blocks.  The buffer comes back already pinned.
+	 */
+	rscan->rs_cbuf = read_stream_next_buffer(stream, NULL);
+
+	if (!BufferIsValid(rscan->rs_cbuf))
+		return false;
+
+	/*
+	 * Don't lock the buffer here; recno_scan_analyze_next_tuple() manages its
+	 * own lock/unlock cycle so it can release the lock before returning a
+	 * sampled tuple, allowing RecnoFetchOverflowColumn() to safely lock the
+	 * same buffer for overflow data on this page.
+	 */
+
+	rscan->rs_cblock = BufferGetBlockNumber(rscan->rs_cbuf);
+	rscan->rs_cindex = FirstOffsetNumber;
+
+	return true;
+}
+
+/*
+ * ANALYZE support: get next tuple from current block
+ *
+ * Extracts tuples one at a time from the block prepared by
+ * recno_scan_analyze_next_block().  For each item pointer on the page we
+ * classify the tuple as live, dead, or not-a-tuple (overflow record,
+ * unused pointer) and update the caller's counters.
+ *
+ * When a live tuple suitable for sampling is found, it is materialized
+ * into the slot and we return true.  When all items on the page have been
+ * examined, we release the buffer and return false.
+ *
+ * The buffer remains pinned and locked for the entire duration of tuple
+ * iteration on this block, matching the heap AM contract.
+ */
+static bool
+recno_scan_analyze_next_tuple(TableScanDesc scan,
+							  double *liverows, double *deadrows,
+							  TupleTableSlot *slot)
+{
+	RecnoScanDesc rscan = (RecnoScanDesc) scan;
+	Page		targpage;
+	OffsetNumber maxoffset;
+
+	Assert(BufferIsValid(rscan->rs_cbuf));
+
+	/*
+	 * Re-acquire the buffer content lock.  We release it before returning a
+	 * sampled tuple (see below) so that the caller can safely deform the
+	 * tuple -- RecnoFetchOverflowColumn() may need to lock the same buffer to
+	 * read overflow data stored on the same page.
+	 */
+	LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+	targpage = BufferGetPage(rscan->rs_cbuf);
+	maxoffset = PageGetMaxOffsetNumber(targpage);
+
+	/* Inner loop over items on the selected page */
+	for (; rscan->rs_cindex <= maxoffset; rscan->rs_cindex++)
+	{
+		ItemId		itemid;
+		RecnoTupleHeader *tuple_hdr;
+		bool		sample_it = false;
+
+		itemid = PageGetItemId(targpage, rscan->rs_cindex);
+
+		/*
+		 * Skip unused and dead line pointers.  Dead line pointers are counted
+		 * as dead rows because vacuum needs to reclaim them.
+		 */
+		if (!ItemIdIsNormal(itemid))
+		{
+			if (ItemIdIsDead(itemid))
+				*deadrows += 1;
+			continue;
+		}
+
+		tuple_hdr = (RecnoTupleHeader *) PageGetItem(targpage, itemid);
+
+		/* Skip overflow records -- these are not user-visible tuples */
+		if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
+			continue;
+
+		/*
+		 * Classify the tuple for ANALYZE purposes.  RECNO uses
+		 * timestamp-based MVCC rather than xmin/xmax, so we check the tuple
+		 * flags and timestamps directly.
+		 */
+		if (tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
+		{
+			/* Dead tuple (deleted or updated) -- counted as dead for ANALYZE */
+			*deadrows += 1;
+		}
+		else if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+		{
+			/*
+			 * Speculative insertion not yet confirmed.  Don't count it; if
+			 * the inserter commits it will be picked up by a future ANALYZE.
+			 */
+		}
+		else
+		{
+			/*
+			 * Tuple is live (or at least not deleted/speculative). Sample it
+			 * for statistics.
+			 */
+			sample_it = true;
+			*liverows += 1;
+		}
+
+		if (sample_it)
+		{
+			/*
+			 * Materialize the tuple into palloc'd memory rather than storing
+			 * a buffer-pinned pointer.  This is necessary because slot
+			 * deformation may call RecnoFetchOverflowColumn(), which acquires
+			 * buffer locks on overflow pages.  If the overflow data resides
+			 * on the same page we are scanning, a buffer-pinned slot would
+			 * cause a lock re-entry assertion failure in LockBuffer
+			 * (bufmgr.c).
+			 */
+			Size		tuple_size = ItemIdGetLength(itemid);
+			RecnoTupleHeader *tuple_copy;
+
+			tuple_copy = (RecnoTupleHeader *) palloc(tuple_size);
+			memcpy(tuple_copy, tuple_hdr, tuple_size);
+
+			RecnoSlotStoreMaterializedTuple(slot, tuple_copy, tuple_size);
+			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
+			ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, rscan->rs_cindex);
+
+			rscan->rs_cindex++;
+
+			/*
+			 * Release the content lock so the caller can safely deform the
+			 * materialized tuple.  The buffer pin is kept so the page stays
+			 * in the buffer pool.  We re-acquire the lock at the top of this
+			 * function when called again.
+			 */
+			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			return true;
+		}
+	}
+
+	/*
+	 * No more tuples on this page.  Release the buffer pin and lock that were
+	 * acquired in recno_scan_analyze_next_block().
+	 */
+	UnlockReleaseBuffer(rscan->rs_cbuf);
+	rscan->rs_cbuf = InvalidBuffer;
+
+	/* Prevent stale slot contents from holding a pin */
+	ExecClearTuple(slot);
+
+	return false;
+}

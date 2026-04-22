@@ -26,6 +26,7 @@
 #include "access/atm.h"
 #include "access/heapam.h"
 #include "access/nbtree.h"
+#include "access/recno_undo.h"
 #include "access/slog.h"
 #include "access/logical_revert_worker.h"
 #include "access/undo.h"
@@ -177,6 +178,7 @@ UndoShmemInit(void)
 	HeapUndoRmgrInit();
 	NbtreeUndoRmgrInit();
 	FileopsUndoRmgrInit();
+	RecnoUndoRmgrInit();
 }
 
 /*

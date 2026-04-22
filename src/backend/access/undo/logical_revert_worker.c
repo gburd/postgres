@@ -13,7 +13,7 @@
  *   2. Marks the ATM entry as reverted via ATMMarkReverted()
  *   3. Emits XLOG_ATM_FORGET and removes the entry via ATMForget()
  *
- * Unlike relundo_worker.c (event-driven, processes a shared memory work
+ * Unlike event-driven UNDO worker variants (which process a shared memory work
  * queue), this worker is timer-driven: it sleeps for logical_revert_naptime
  * milliseconds between scan cycles.
  *
@@ -33,10 +33,13 @@
 #include <signal.h>
 
 #include "access/atm.h"
+#include "access/heapam.h"
 #include "access/logical_revert_worker.h"
+#include "access/table.h"
 #include "access/undorecord.h"
 #include "access/xact.h"
 #include "access/xlogdefs.h"
+#include "catalog/pg_database.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
@@ -260,6 +263,10 @@ sleep:
 /*
  * StartLogicalRevertWorker
  *		Launch a logical revert worker for the specified database.
+ *
+ *	The worker uses a modest `bgw_restart_time` so that if it exits due
+ *	to a transient error the postmaster auto-restarts it.  That removes
+ *	the need for the launcher to re-spawn workers on every scan.
  */
 void
 StartLogicalRevertWorker(Oid dboid)
@@ -271,7 +278,7 @@ StartLogicalRevertWorker(Oid dboid)
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	worker.bgw_restart_time = BGW_NEVER_RESTART;
+	worker.bgw_restart_time = 60;
 	sprintf(worker.bgw_library_name, "postgres");
 	sprintf(worker.bgw_function_name, "LogicalRevertWorkerMain");
 	snprintf(worker.bgw_name, BGW_MAXLEN,
@@ -290,4 +297,137 @@ StartLogicalRevertWorker(Oid dboid)
 	{
 		elog(DEBUG1, "started logical revert worker for database %u", dboid);
 	}
+}
+
+/*
+ * LogicalRevertLauncherMain
+ *		Launcher background worker.
+ *
+ *	On startup: scan pg_database once and spawn a LogicalRevertWorker
+ *	for every connectable database.  Then loop forever doing nothing
+ *	meaningful — the per-db workers use `bgw_restart_time = 60` so the
+ *	postmaster auto-restarts them if they exit, and the launcher does
+ *	NOT re-spawn on every wake-up (the slot pool is small and eager
+ *	re-spawning exhausts it).
+ *
+ *	A future iteration should watch for CREATE DATABASE / DROP DATABASE
+ *	events and adjust the worker set accordingly; for now new databases
+ *	get a worker only on the next server restart.
+ */
+void
+LogicalRevertLauncherMain(Datum main_arg)
+{
+	bool		did_initial_scan = false;
+
+	pqsignal(SIGHUP, logical_revert_sighup);
+	pqsignal(SIGTERM, logical_revert_sigterm);
+	BackgroundWorkerUnblockSignals();
+
+	/*
+	 * The launcher does not connect to any database itself.  It spawns
+	 * per-db workers which do their own connection (via
+	 * BackgroundWorkerInitializeConnectionByOid).  For the one-shot
+	 * pg_database scan we connect to postgres (not template1, because
+	 * holding a connection to template1 would block CREATE DATABASE).
+	 */
+	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
+
+	elog(LOG, "logical revert launcher started");
+
+	while (!got_SIGTERM)
+	{
+		int			rc;
+
+		if (got_SIGHUP)
+		{
+			got_SIGHUP = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		if (!did_initial_scan)
+		{
+			StartTransactionCommand();
+			{
+				Relation	pg_database;
+				TableScanDesc scan;
+				HeapTuple	tup;
+
+				pg_database = table_open(DatabaseRelationId, AccessShareLock);
+				scan = table_beginscan_catalog(pg_database, 0, NULL);
+				while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+				{
+					Form_pg_database db = (Form_pg_database) GETSTRUCT(tup);
+
+					if (!db->datallowconn)
+						continue;
+					/*
+					 * Skip template databases.  template1 / template0 are
+					 * not expected to accumulate ATM entries, and having a
+					 * revert-worker connection to template1 would block
+					 * subsequent CREATE DATABASE commands that use it as
+					 * the source template.
+					 */
+					if (strncmp(NameStr(db->datname), "template", 8) == 0)
+						continue;
+					StartLogicalRevertWorker(db->oid);
+				}
+				table_endscan(scan);
+				table_close(pg_database, AccessShareLock);
+			}
+			CommitTransactionCommand();
+			did_initial_scan = true;
+			elog(LOG, "logical revert launcher: initial pg_database scan complete");
+		}
+
+		/*
+		 * Sleep for a long interval.  The launcher's only remaining job is
+		 * to stay alive so SIGTERM handling and SIGHUP config reloads can
+		 * reach it; the per-db workers do the real work and auto-restart
+		 * on their own.
+		 */
+		rc = WaitLatch(MyLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+					   60000L,		/* 1 minute */
+					   PG_WAIT_EXTENSION);
+
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
+
+		ResetLatch(MyLatch);
+	}
+
+	elog(LOG, "logical revert launcher shutting down");
+	proc_exit(0);
+}
+
+/*
+ * LogicalRevertLauncherRegister
+ *		Register the logical revert launcher as a static background worker.
+ *
+ *	Called from postmaster.c at startup, alongside ApplyLauncherRegister().
+ *	Enabled only when enable_undo is on at server level; otherwise the
+ *	launcher adds no useful work.
+ */
+void
+LogicalRevertLauncherRegister(void)
+{
+	BackgroundWorker bgw;
+
+	/* Disabled during binary upgrade and when UNDO is off cluster-wide. */
+	if (IsBinaryUpgrade)
+		return;
+
+	memset(&bgw, 0, sizeof(bgw));
+	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
+		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	bgw.bgw_restart_time = 5;
+	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
+	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "LogicalRevertLauncherMain");
+	snprintf(bgw.bgw_name, BGW_MAXLEN, "logical revert launcher");
+	snprintf(bgw.bgw_type, BGW_MAXLEN, "logical revert launcher");
+	bgw.bgw_notify_pid = 0;
+	bgw.bgw_main_arg = (Datum) 0;
+
+	RegisterBackgroundWorker(&bgw);
 }

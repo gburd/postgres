@@ -107,6 +107,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/recno.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/xact.h"
@@ -445,6 +446,22 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 													estate,
 													indexInfo,
 													indexRelation));
+
+		/*
+		 * In-place table AMs (RECNO) keep a tuple's TID stable across an
+		 * UPDATE.  For an index whose key columns are unchanged by this
+		 * UPDATE, the existing index entry (key, TID) is therefore still
+		 * correct and must NOT be re-inserted: doing so would raise a
+		 * spurious duplicate-key error on a unique index (e.g. the table's
+		 * PRIMARY KEY) because the identical (key, TID) entry already
+		 * exists.  Heap never hits this because a non-HOT UPDATE allocates a
+		 * fresh TID.  Skip the re-insert for unchanged indexes on RECNO
+		 * relations; changed indexes still go through index_insert (RECNO's
+		 * update path removed the stale entry first).
+		 */
+		if (indexUnchanged &&
+			heapRelation->rd_tableam == GetRecnoTableAmRoutine())
+			continue;
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */

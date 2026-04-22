@@ -104,7 +104,7 @@ IndexPruneFindHandler(Oid indexam_oid)
  * IndexPruneNotifyDiscard
  *
  * Notifies all indexes on a relation that UNDO records have been discarded.
- * Called by RelUndoDiscard() after determining the discard counter.
+ * Called after the UNDO discard worker has determined the discard counter.
  *
  * This function:
  *   1. Opens all indexes on the heap relation

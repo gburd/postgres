@@ -13,7 +13,9 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "access/logical_revert_worker.h"
 #include "access/undo_flush.h"
+#include "access/undoworker.h"
 #include "commands/repack.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -167,6 +169,18 @@ static const struct
 	{
 		.fn_name = "DataChecksumsWorkerMain",
 		.fn_addr = DataChecksumsWorkerMain
+	},
+	{
+		.fn_name = "LogicalRevertWorkerMain",
+		.fn_addr = LogicalRevertWorkerMain
+	},
+	{
+		.fn_name = "LogicalRevertLauncherMain",
+		.fn_addr = LogicalRevertLauncherMain
+	},
+	{
+		.fn_name = "UndoWorkerMain",
+		.fn_addr = UndoWorkerMain
 	},
 	{
 		.fn_name = "UndoFlushWriterMain",

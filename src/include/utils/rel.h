@@ -347,6 +347,22 @@ typedef enum StdRdOptUndoMode
 	STDRD_OPTION_UNDO_ON,		/* Full UNDO records (rollback capable) */
 }			StdRdOptUndoMode;
 
+/*
+ * StdRdOptions->recno_compression values.
+ *
+ * RECNO attribute-level compression is configured purely per-relation via
+ * the `compression` reloption -- there is intentionally no GUC.  "off"
+ * disables compression; "auto" lets RECNO pick (currently zstd); the named
+ * algorithms force a specific codec.
+ */
+typedef enum StdRdOptRecnoCompression
+{
+	STDRD_OPTION_RECNO_COMPRESS_AUTO = 0,	/* default: AM chooses */
+	STDRD_OPTION_RECNO_COMPRESS_OFF,		/* no compression */
+	STDRD_OPTION_RECNO_COMPRESS_LZ4,		/* force lz4 */
+	STDRD_OPTION_RECNO_COMPRESS_ZSTD,		/* force zstd */
+}			StdRdOptRecnoCompression;
+
 typedef struct StdRdOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
@@ -364,6 +380,8 @@ typedef struct StdRdOptions
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
 	StdRdOptUndoMode enable_undo;	/* UNDO logging mode for this relation */
+	StdRdOptRecnoCompression recno_compression; /* RECNO attr compression */
+	int			recno_compression_level;	/* RECNO compression level */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10

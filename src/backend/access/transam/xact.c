@@ -6499,7 +6499,7 @@ xact_redo(XLogReaderState *record)
 		xact_redo_commit(&parsed, XLogRecGetXid(record),
 						 record->EndRecPtr, XLogRecGetOrigin(record));
 
-		/* Remove from UNDO recovery tracking -- committed, no rollback needed */
+		/* Remove from UNDO recovery tracking — committed, no rollback needed */
 		UndoRecoveryRemoveXid(XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_COMMIT_PREPARED)
@@ -6529,7 +6529,7 @@ xact_redo(XLogReaderState *record)
 						record->EndRecPtr, XLogRecGetOrigin(record));
 
 		/*
-		 * Remove from UNDO recovery tracking -- abort record present means
+		 * Remove from UNDO recovery tracking — abort record present means
 		 * the UNDO rollback was already completed (or will be handled by
 		 * the abort record's own redo logic).
 		 */

@@ -16,7 +16,6 @@
 
 #include "access/bufmask.h"
 #include "access/heapam.h"
-#include "access/undo_xlog.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -300,17 +299,6 @@ heap_xlog_delete(XLogReaderState *record)
 	RelFileLocator target_locator;
 	ItemPointerData target_tid;
 
-	/* Track embedded UNDO batch for crash recovery, if present */
-	if (xlrec->flags & XLH_DELETE_HAS_UNDO)
-	{
-		const char *undo_start = (const char *) xlrec + SizeOfHeapDelete;
-		const xl_undo_batch *undo_hdr = (const xl_undo_batch *) undo_start;
-
-		UndoRecoveryTrackBatch(undo_hdr->xid, record->ReadRecPtr,
-							   undo_hdr->chain_prev,
-							   undo_hdr->persistence);
-	}
-
 	XLogRecGetBlockTag(record, 0, &target_locator, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
@@ -394,17 +382,6 @@ heap_xlog_insert(XLogReaderState *record)
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
-
-	/* Track embedded UNDO batch for crash recovery, if present */
-	if (xlrec->flags & XLH_INSERT_HAS_UNDO)
-	{
-		const char *undo_start = (const char *) xlrec + SizeOfHeapInsert;
-		const xl_undo_batch *undo_hdr = (const xl_undo_batch *) undo_start;
-
-		UndoRecoveryTrackBatch(undo_hdr->xid, record->ReadRecPtr,
-							   undo_hdr->chain_prev,
-							   undo_hdr->persistence);
-	}
 
 	XLogRecGetBlockTag(record, 0, &target_locator, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
@@ -750,17 +727,6 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	/* initialize to keep the compiler quiet */
 	oldtup.t_data = NULL;
 	oldtup.t_len = 0;
-
-	/* Track embedded UNDO batch for crash recovery, if present */
-	if (xlrec->flags & XLH_UPDATE_HAS_UNDO)
-	{
-		const char *undo_start = (const char *) xlrec + SizeOfHeapUpdate;
-		const xl_undo_batch *undo_hdr = (const xl_undo_batch *) undo_start;
-
-		UndoRecoveryTrackBatch(undo_hdr->xid, record->ReadRecPtr,
-							   undo_hdr->chain_prev,
-							   undo_hdr->persistence);
-	}
 
 	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &newblk);
 	if (XLogRecGetBlockTagExtended(record, 1, NULL, NULL, &oldblk, NULL))

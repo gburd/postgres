@@ -43,6 +43,9 @@
 #include "access/undo_xlog.h"
 #include "access/atm.h"
 #include "storage/fileops.h"
+#ifdef USE_RECNO
+#include "access/recno_xlog.h"
+#endif
 /* IWYU pragma: end_keep */
 
 

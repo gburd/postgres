@@ -1,0 +1,1318 @@
+RECNO Storage Access Manager - Detailed Design Document
+======================================================
+
+Table of Contents
+-----------------
+1. Executive Summary
+2. Comparison with PostgreSQL Heap Storage
+3. Core Design Principles
+4. Detailed Architecture
+5. Implementation Approach
+6. Key Algorithms and Data Structures
+7. Performance Design Considerations
+8. Security and Reliability Design
+9. Extension Points and Future Work
+10. Design Trade-offs and Alternatives
+
+1. Executive Summary
+===================
+
+The RECNO storage access method represents a fundamental reimagining of how
+PostgreSQL stores and manages table data. While PostgreSQL's heap storage has
+served well for decades, modern workloads demand better handling of updates,
+large attributes, and storage efficiency. RECNO addresses these needs through:
+
+- **Time-based MVCC**: Eliminates transaction ID wraparound issues and simplifies
+  distributed systems integration
+- **In-place Updates**: Dramatically reduces storage bloat for update-heavy workloads
+- **Integrated Compression**: Provides transparent, intelligent compression at the
+  attribute level
+- **Overflow Pages**: Replaces TOAST with more efficient large attribute storage
+- **Advanced Space Management**: Minimizes maintenance overhead through proactive
+  defragmentation
+
+**Current Status (March 2026)**: RECNO has a working foundation with core features
+implemented. Critical gaps remain before production readiness:
+- Visibility Map for index-only scans
+- MultiXact for concurrent row locking
+- Clock-bound integration for safe logical replication
+
+**Note on HOT (Heap-Only Tuples)**: HOT is a heap-specific optimization that
+avoids creating new index entries when non-indexed columns are updated by chaining
+tuple versions on the same page. RECNO does not need HOT because it performs
+in-place updates: the tuple is modified at its existing location, so the TID
+never changes and indexes never become stale from updates.
+
+This document provides the technical foundation for understanding RECNO's design
+decisions, implementation approach, and production roadmap.
+
+2. Comparison with PostgreSQL Heap Storage
+==========================================
+
+2.1 Fundamental Differences
+---------------------------
+
+| Aspect | Heap Storage | RECNO Storage |
+|--------|-------------|---------------|
+| **Update Strategy** | Create new tuple version | In-place modification when possible |
+| **MVCC Mechanism** | Transaction ID based | Commit timestamp based |
+| **Large Attributes** | External TOAST table | Integrated overflow pages |
+| **Compression** | External (pg_lz, etc.) | Built-in attribute-level |
+| **Space Management** | VACUUM intensive | Opportunistic defragmentation |
+| **Tuple Overhead** | 24 bytes minimum | 36 bytes minimum |
+| **Visibility Check** | Complex XID comparison | Simple timestamp comparison |
+| **Transaction Limits** | 2^32 transactions | Effectively unlimited |
+
+2.2 Heap Storage Analysis
+-------------------------
+
+PostgreSQL's heap storage has several characteristics that, while simple and
+reliable, create challenges for modern workloads:
+
+**Update Mechanism Problems**:
+- Each UPDATE creates a new tuple version, leaving the old version as "dead space"
+- Dead tuples accumulate, causing table bloat that can reach 2-10x the logical size
+- Index entries must be updated to point to new tuple locations
+- HOT optimization helps but doesn't eliminate the problem
+
+**MVCC Complexity**:
+- Transaction ID assignment and visibility rules are complex
+- Transaction ID wraparound requires periodic maintenance
+- Distributed systems struggle with XID coordination
+- Snapshot management becomes expensive with many concurrent transactions
+
+**TOAST Limitations**:
+- Large attributes stored in separate tables with complex management
+- Additional I/O required for large attribute access
+- Compression limited to entire attribute, not attribute parts
+- TOAST table maintenance adds operational complexity
+
+**Space Management Issues**:
+- VACUUM required to reclaim dead tuple space
+- FSM (Free Space Map) approximation leads to sub-optimal space utilization
+- No proactive defragmentation capabilities
+- Page-level space accounting is imprecise
+
+2.3 RECNO Design Response
+-------------------------
+
+RECNO addresses each heap limitation with targeted design innovations:
+
+**In-Place Update Strategy**:
+Instead of creating new tuple versions, RECNO attempts to modify tuples in place.
+This is possible because RECNO tracks tuple versions through timestamps rather
+than tuple identity. When in-place update isn't possible (insufficient space),
+RECNO falls back to creating a new tuple but marks the old location clearly.
+
+**Timestamp-Based MVCC**:
+Using 64-bit commit timestamps eliminates XID wraparound concerns and simplifies
+visibility rules. A tuple is visible if its commit timestamp is less than or
+equal to the snapshot timestamp. This also enables better distributed system
+integration and makes snapshot isolation more intuitive.
+
+**Integrated Overflow Management**:
+Rather than external TOAST tables, large attributes are stored in overflow pages
+within the same relation. This reduces I/O, simplifies management, and enables
+better compression across attribute segments.
+
+**Proactive Space Management**:
+RECNO tracks free space more precisely and performs defragmentation
+opportunistically during normal operations, reducing the need for maintenance
+VACUUM operations.
+
+3. Core Design Principles
+========================
+
+3.1 Principle 1: Minimize Storage Amplification
+-----------------------------------------------
+
+**Problem**: Traditional update mechanisms create storage amplification where
+logical data changes result in multiplicative storage increases.
+
+**RECNO Solution**:
+- In-place updates when space permits (most common case)
+- Precise space tracking to maximize in-place update opportunities
+- Compression to increase effective space availability
+- Proactive defragmentation to maintain space efficiency
+
+**Implementation Details**:
+- Each page tracks available free space precisely
+- Update operations first attempt in-place modification
+- Space management categorizes pages by available space
+- Compression increases likelihood of in-place updates
+
+3.2 Principle 2: Time-Based Consistency Model
+---------------------------------------------
+
+**Problem**: Transaction ID based MVCC creates artificial constraints and
+complexity in distributed systems.
+
+**RECNO Solution**:
+- Use wall-clock time for commit ordering
+- Eliminate transaction ID limitations
+- Simplify visibility rules
+- Enable better distributed system integration
+
+**Implementation Details**:
+- 64-bit microsecond resolution timestamps
+- Monotonic timestamp generation with mutex protection
+- Simple timestamp comparison for visibility
+- Anti-dependency tracking for serializable isolation
+
+3.3 Principle 3: Integrated Storage Optimization
+------------------------------------------------
+
+**Problem**: Storage optimization (compression, large object management) handled
+as external concerns leads to sub-optimal performance.
+
+**RECNO Solution**:
+- Built-in compression with automatic algorithm selection
+- Integrated overflow page management
+- Unified space management across all storage types
+- Transparent optimization without application changes
+
+**Implementation Details**:
+- Per-attribute compression decisions
+- Multiple compression algorithms optimized for different data types
+- Overflow pages managed as part of main relation
+- Compression metadata stored efficiently in tuple headers
+
+3.4 Principle 4: Proactive Maintenance
+--------------------------------------
+
+**Problem**: Reactive maintenance (VACUUM) creates performance spikes and
+requires careful tuning.
+
+**RECNO Solution**:
+- Opportunistic maintenance during normal operations
+- Predictive space management to prevent problems
+- Batch defragmentation during low-activity periods
+- Minimal impact maintenance operations
+
+**Implementation Details**:
+- Free space tracking triggers proactive defragmentation
+- Dead tuple cleanup happens during normal operations
+- Defragmentation queue manages maintenance work
+- Statistics track effectiveness of proactive maintenance
+
+4. Detailed Architecture
+========================
+
+4.1 Storage Layer Architecture
+------------------------------
+
+RECNO implements a layered architecture with clear separation of concerns:
+
+```
+Application Layer
+     |
+PostgreSQL Table Access Method Interface
+     |
++------------------+------------------+------------------+
+|   Scan Layer     |  Tuple Layer     |  MVCC Layer     |
+|                  |                  |                 |
+| - Sequential     | - Tuple Format   | - Visibility    |
+| - Index          | - Compression    | - Timestamps    |
+| - Bitmap         | - Overflow Refs  | - Serializable  |
++------------------+------------------+------------------+
+     |                      |                    |
++------------------+------------------+------------------+
+|   Page Layer     |  Space Layer     |   WAL Layer     |
+|                  |                  |                 |
+| - Page Format    | - FSM            | - REDO/UNDO     |
+| - Defrag         | - Allocation     | - Recovery      |
+| - Item Pointers  | - Overflow Pages | - Logging       |
++------------------+------------------+------------------+
+     |
+PostgreSQL Buffer Manager
+     |
+Operating System I/O Layer
+```
+
+**Layer Responsibilities**:
+
+*Scan Layer*: Implements PostgreSQL's scan interfaces (sequential, index, bitmap)
+while optimizing for RECNO's storage characteristics.
+
+*Tuple Layer*: Manages tuple format, compression, and overflow references.
+Handles tuple formation from slots and deformation to slots.
+
+*MVCC Layer*: Implements timestamp-based visibility checking and serializable
+isolation with anti-dependency tracking.
+
+*Page Layer*: Manages page format, item pointers, and defragmentation operations.
+Coordinates between tuple operations and space management.
+
+*Space Layer*: Handles free space tracking, allocation decisions, and overflow
+page management. Implements defragmentation scheduling.
+
+*WAL Layer*: Provides crash recovery through REDO/UNDO logging with before/after
+images for all operations.
+
+4.2 Data Structure Design
+-------------------------
+
+**Page Header Design**:
+```c
+typedef struct RecnoPageHeaderData
+{
+    PageHeaderData pd_std;          // Standard PostgreSQL header (24B)
+    uint64         pd_commit_ts;    // Highest commit timestamp (8B)
+    uint16         pd_free_space;   // Precise free space tracking (2B)
+    uint16         pd_defrag_counter; // Defragmentation history (2B)
+    uint32         pd_flags;        // Page state flags (4B)
+} RecnoPageHeaderData;              // Total: 40 bytes vs 24 for heap
+```
+
+The extended page header enables precise space management and defragmentation
+scheduling. The commit timestamp supports page-level visibility optimizations.
+
+**Tuple Header Design**:
+```c
+typedef struct RecnoTupleHeader
+{
+    uint32         t_len;           // Tuple length (4B)
+    uint16         t_natts;         // Attribute count (2B)
+    uint16         t_flags;         // Tuple state flags (2B)
+    uint64         t_commit_ts;     // Commit timestamp (8B)
+    uint64         t_xact_ts;       // Transaction timestamp (8B)
+    ItemPointerData t_ctid;         // Update chain pointer (6B)
+    CommandId      t_cid;           // Command ID (4B)
+    uint16         t_infomask;      // Attribute info (2B)
+    uint8          t_attrs_bitmap[]; // Nulls + compression (variable)
+} RecnoTupleHeader;                 // Minimum: 36 bytes vs 24 for heap
+```
+
+The additional 12 bytes per tuple enable time-based MVCC and compression
+metadata. This overhead is offset by compression and reduced bloat.
+
+4.3 Compression Architecture
+----------------------------
+
+RECNO implements a pluggable compression architecture:
+
+```
+Compression Decision Engine
+    |
+    +--> Data Type Analysis
+    |       |
+    |       +--> Size Analysis
+    |       +--> Pattern Analysis
+    |       +--> Algorithm Selection
+    |
+    +--> Compression Algorithms
+	    |
+	    +--> LZ4 (fast, general purpose)
+	    +--> ZSTD (high ratio, configurable)
+	    +--> Delta (numeric sequences)
+	    +--> Dictionary (repetitive text)
+	    +--> None (fallback)
+```
+
+**Algorithm Selection Logic**:
+1. Analyze data type and size
+2. Sample data for patterns (repetition, sequences, entropy)
+3. Select algorithm based on heuristics
+4. Apply compression and measure ratio
+5. Use compressed version only if beneficial
+
+**Compression Metadata**:
+Each compressed attribute includes metadata describing the compression:
+- Algorithm used (1 byte)
+- Compression level (1 byte)
+- Original size (2 bytes)
+- Compressed size (4 bytes)
+
+Total overhead: 8 bytes per compressed attribute
+
+4.4 Overflow Page Design
+------------------------
+
+Overflow pages form chains to store large attributes:
+
+```
+Main Tuple -> Overflow Page 1 -> Overflow Page 2 -> ... -> NULL
+	      [Data 0-8KB]       [Data 8KB-16KB]
+```
+
+**Overflow Page Structure**:
+```c
+typedef struct RecnoOverflowPage
+{
+    RecnoPageHeaderData header;     // Standard RECNO page header
+    uint32         next_page;       // Chain pointer (0 = end)
+    uint32         attr_num;        // Attribute number (for validation)
+    uint32         data_offset;     // Offset within full attribute
+    uint32         data_len;        // Bytes stored in this page
+    char           data[~8KB];      // Actual attribute data
+} RecnoOverflowPage;
+```
+
+**Overflow Reference in Main Tuple**:
+```c
+typedef struct RecnoOverflowRef
+{
+    uint32         first_page;      // First overflow page number
+    uint32         total_length;    // Complete attribute length
+    uint32         compression_info; // Compression applied to overflow data
+} RecnoOverflowRef;
+```
+
+**Overflow Management**:
+- Overflow pages allocated from main relation (not separate table)
+- Free space map tracks overflow pages
+- Chains support compression across page boundaries
+- Garbage collection during VACUUM removes unreferenced pages
+
+5. Implementation Approach
+==========================
+
+5.1 Development Strategy
+------------------------
+
+The RECNO implementation follows a layered development approach:
+
+**Phase 1: Core Infrastructure**
+- Basic page and tuple formats
+- Simple MVCC with timestamp comparison
+- Basic scan operations
+- Integration with PostgreSQL buffer manager
+
+**Phase 2: Storage Operations**
+- Insert, update, delete operations
+- In-place update logic
+- WAL integration for durability
+- Basic space management
+
+**Phase 3: Advanced Features**
+- Compression system implementation
+- Overflow page management
+- Advanced space management and defragmentation
+- Performance optimization
+
+**Phase 4: Production Readiness**
+- Comprehensive testing and validation
+- Performance benchmarking
+- Documentation and tooling
+- Integration testing with PostgreSQL ecosystem
+
+5.2 Integration with PostgreSQL
+-------------------------------
+
+RECNO integrates with PostgreSQL through the Table Access Method API:
+
+**TableAmRoutine Interface**:
+RECNO implements all required callbacks:
+- Scan operations (begin, end, getnext)
+- Tuple operations (insert, update, delete, lock)
+- Index support (fetch_begin, fetch_tuple, etc.)
+- DDL operations (relation_copy, vacuum, etc.)
+- Analysis and maintenance (analyze, estimate_size, etc.)
+
+**Buffer Manager Integration**:
+RECNO pages use standard PostgreSQL buffer management:
+- Buffer pins and locks for concurrency control
+- Dirty buffer management for write-ahead logging
+- Buffer replacement policies work unchanged
+- Buffer access strategies supported
+
+**WAL Integration**:
+RECNO defines custom WAL record types:
+- Insert, update, delete operations
+- Page defragmentation operations
+- Overflow page operations
+- Compression operations
+
+Each record type includes REDO and UNDO information for crash recovery.
+
+**Transaction Integration**:
+RECNO participates in PostgreSQL's transaction system:
+- Transaction commit triggers timestamp assignment
+- Transaction abort triggers cleanup
+- Savepoints supported through command ID tracking
+- Prepared transactions work with timestamp-based MVCC
+
+5.3 Memory Management Strategy
+------------------------------
+
+RECNO follows PostgreSQL memory management conventions:
+
+**Memory Contexts**:
+- Tuple construction uses per-tuple contexts
+- Compression dictionaries use cache context for persistence
+- Scan operations use per-scan contexts
+- MVCC state uses shared memory context
+
+**Shared Memory Usage**:
+- MVCC state tracking: ~1KB + (8 bytes × max_connections)
+- Compression dictionaries: ~1MB per active dictionary
+- Free space management: ~1 byte per page
+- Defragmentation queues: ~4 bytes × batch_size per relation
+
+**Buffer Usage**:
+RECNO doesn't change PostgreSQL's buffer management but optimizes for it:
+- Page formats designed for 8KB buffer size
+- Compression reduces I/O requirements
+- In-place updates improve buffer cache efficiency
+- Overflow pages integrate with standard buffer replacement
+
+5.4 Concurrency Control Design
+------------------------------
+
+RECNO implements optimistic concurrency control with timestamp validation:
+
+**Read Operations**:
+- Acquire shared buffer locks for consistency
+- Use snapshot timestamp for visibility checking
+- No additional locking beyond standard PostgreSQL
+
+**Write Operations**:
+- Acquire exclusive buffer locks during modification
+- Generate commit timestamps under global mutex
+- Use optimistic conflict detection for serializable isolation
+
+**Serializable Isolation**:
+- Track read and write sets per transaction
+- Detect dangerous structures (pivot transactions)
+- Abort transactions that could cause anomalies
+- Based on proven academic research (Cahill et al.)
+
+**Lock Integration**:
+RECNO works with PostgreSQL's existing lock manager:
+- Row locks use standard tuple locking mechanisms
+- Page locks follow PostgreSQL conventions
+- Relation locks unchanged from heap behavior
+
+6. Key Algorithms and Data Structures
+=====================================
+
+6.1 In-Place Update Algorithm
+-----------------------------
+
+The core innovation of RECNO is its in-place update capability:
+
+```c
+TM_Result RecnoUpdateTuple(Relation rel, ItemPointer old_tid, TupleTableSlot *slot)
+{
+    Buffer buffer = ReadBuffer(rel, ItemPointerGetBlockNumber(old_tid));
+    Page page = BufferGetPage(buffer);
+    OffsetNumber offnum = ItemPointerGetOffsetNumber(old_tid);
+
+    LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+    // Get old tuple and check visibility
+    ItemId old_itemid = PageGetItemId(page, offnum);
+    RecnoTuple old_tuple = (RecnoTuple) PageGetItem(page, old_itemid);
+
+    if (!RecnoTupleVisible(old_tuple, snapshot_ts, xact_ts)) {
+	UnlockReleaseBuffer(buffer);
+	return TM_Invisible;
+    }
+
+    // Form new tuple
+    RecnoTuple new_tuple = RecnoFormTupleFromSlot(slot);
+
+    // Attempt in-place update
+    if (new_tuple->t_len <= ItemIdGetLength(old_itemid)) {
+	// In-place update possible
+	memcpy(old_tuple, new_tuple->t_data, new_tuple->t_len);
+	ItemIdSetNormal(old_itemid, ItemIdGetOffset(old_itemid), new_tuple->t_len);
+
+	// WAL log the update with before/after images
+	XLogRecPtr recptr = RecnoXLogUpdate(rel, buffer, offnum,
+					  old_tuple, new_tuple, ...);
+	PageSetLSN(page, recptr);
+	MarkBufferDirty(buffer);
+	UnlockReleaseBuffer(buffer);
+
+	return TM_Ok;
+    }
+
+    // Check if page has space for larger tuple
+    Size available = PageGetFreeSpace(page) + ItemIdGetLength(old_itemid);
+    if (new_tuple->t_len <= available) {
+	// Remove old tuple, compact page, add new tuple
+	PageIndexTupleDelete(page, offnum);
+	OffsetNumber new_offnum = PageAddItem(page, new_tuple->t_data,
+					    new_tuple->t_len, offnum, ...);
+	// ... logging and cleanup
+	return TM_Ok;
+    }
+
+    // Must move to new page - traditional update path
+    // ... implementation similar to heap updates
+    UnlockReleaseBuffer(buffer);
+    return RecnoUpdateToNewPage(rel, old_tid, slot);
+}
+```
+
+**Algorithm Properties**:
+- Attempts in-place update first (common case)
+- Falls back to page compaction if beneficial
+- Uses traditional update path only when necessary
+- Maintains transactional consistency throughout
+
+6.2 Timestamp-Based MVCC Algorithm
+----------------------------------
+
+RECNO's MVCC implementation uses commit timestamps for visibility:
+
+```c
+typedef struct RecnoMvccState {
+    LWLock         lock;                    // Protects shared state
+    uint64         global_commit_ts;        // Monotonic timestamp counter
+    uint64         oldest_active_ts;        // Oldest active transaction
+    uint64         serializable_horizon;    // Serializable conflict detection
+    TransactionState active_xacts[MAX_XACTS]; // Per-transaction state
+} RecnoMvccState;
+
+uint64 RecnoGetCommitTimestamp(void) {
+    TimestampTz now = GetCurrentTimestamp();
+    uint64 candidate_ts = (uint64) now;
+
+    LWLockAcquire(&RecnoMvccState->lock, LW_EXCLUSIVE);
+
+    // Ensure monotonicity
+    if (candidate_ts <= RecnoMvccState->global_commit_ts) {
+	candidate_ts = RecnoMvccState->global_commit_ts + 1;
+    }
+
+    RecnoMvccState->global_commit_ts = candidate_ts;
+
+    LWLockRelease(&RecnoMvccState->lock);
+
+    return candidate_ts;
+}
+
+bool RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts) {
+    // SnapshotAny sees everything
+    if (snapshot_ts == 0) return true;
+
+    // Deleted tuples invisible if delete committed before snapshot
+    if (tuple->t_flags & RECNO_TUPLE_DELETED) {
+	return tuple->t_commit_ts > snapshot_ts;
+    }
+
+    // Regular tuples visible if committed before snapshot
+    return tuple->t_commit_ts <= snapshot_ts;
+}
+```
+
+**MVCC Properties**:
+- Monotonic timestamp generation prevents ordering issues
+- Simple visibility rules reduce CPU overhead
+- No transaction ID wraparound concerns
+- Scales to arbitrary numbers of transactions
+
+6.3 Compression Algorithm Selection
+----------------------------------
+
+RECNO uses heuristics to select optimal compression algorithms:
+
+```c
+RecnoCompressionType RecnoChooseCompression(Oid typid, Datum value, Size size) {
+    // Skip compression for small values
+    if (size < RECNO_MIN_COMPRESS_SIZE) return RECNO_COMP_NONE;
+
+    switch (typid) {
+	case TEXTOID:
+	case VARCHAROID:
+	    // Analyze text patterns
+	    char *text = VARDATA_ANY(DatumGetPointer(value));
+	    if (RecnoAnalyzeTextRepetition(text, size)) {
+		return size < 1024 ? RECNO_COMP_DICTIONARY : RECNO_COMP_LZ4;
+	    }
+	    return RECNO_COMP_LZ4;
+
+	case NUMERICOID:
+	case INT4OID:
+	case INT8OID:
+	    // Check for numeric sequences
+	    if (RecnoAnalyzeNumericPattern(value, typid)) {
+		return RECNO_COMP_DELTA;
+	    }
+	    return RECNO_COMP_LZ4;
+
+	case BYTEAOID:
+	    // Binary data - use high compression
+	    return RECNO_COMP_ZSTD;
+
+	default:
+	    return RECNO_COMP_LZ4;  // Safe default
+    }
+}
+
+bool RecnoAnalyzeTextRepetition(char *text, Size len) {
+    // Sample-based repetition detection
+    int sample_size = Min(len, 256);
+    int unique_chars = 0;
+    bool seen[256] = {false};
+
+    for (int i = 0; i < sample_size; i++) {
+	unsigned char c = (unsigned char) text[i];
+	if (!seen[c]) {
+	    seen[c] = true;
+	    unique_chars++;
+	}
+    }
+
+    // High repetition if less than 20% unique characters
+    return (unique_chars * 5) < sample_size;
+}
+```
+
+**Algorithm Selection Properties**:
+- Data type awareness for optimal algorithm choice
+- Pattern analysis for repetitive data detection
+- Configurable thresholds for different compression ratios
+- Fallback to no compression if not beneficial
+
+6.4 Free Space Management Algorithm
+----------------------------------
+
+RECNO implements a multi-level free space classification system:
+
+```c
+typedef enum RecnoFSMCategory {
+    RECNO_FSM_FULL = 0,        // 0-5% free space
+    RECNO_FSM_TIGHT = 1,       // 5-25% free space
+    RECNO_FSM_MEDIUM = 2,      // 25-50% free space
+    RECNO_FSM_LOOSE = 3,       // 50-75% free space
+    RECNO_FSM_EMPTY = 4        // 75%+ free space
+} RecnoFSMCategory;
+
+RecnoFSMCategory RecnoClassifyPage(Size free_space, Size page_size) {
+    double free_ratio = (double) free_space / page_size;
+
+    if (free_ratio < 0.05) return RECNO_FSM_FULL;
+    if (free_ratio < 0.25) return RECNO_FSM_TIGHT;
+    if (free_ratio < 0.50) return RECNO_FSM_MEDIUM;
+    if (free_ratio < 0.75) return RECNO_FSM_LOOSE;
+    return RECNO_FSM_EMPTY;
+}
+
+BlockNumber RecnoGetPageWithSpace(Relation rel, Size needed) {
+    // Determine minimum category needed
+    RecnoFSMCategory min_category = RecnoClassifySpace(needed, BLCKSZ);
+
+    // Try PostgreSQL's FSM first
+    BlockNumber target = GetPageWithFreeSpace(rel, needed);
+
+    if (target != InvalidBlockNumber) {
+	// Verify page actually has space
+	Buffer buf = ReadBuffer(rel, target);
+	Size actual_space = PageGetFreeSpace(BufferGetPage(buf));
+	ReleaseBuffer(buf);
+
+	if (actual_space >= needed) {
+	    return target;
+	}
+
+	// Update FSM with correct information
+	RecordPageWithFreeSpace(rel, target, actual_space);
+    }
+
+    // Extend relation if no suitable page found
+    return RecnoExtendRelation(rel);
+}
+```
+
+**Space Management Properties**:
+- Precise free space tracking reduces search overhead
+- Integration with PostgreSQL FSM for compatibility
+- Defragmentation scheduling based on space utilization
+- Opportunistic cleanup during normal operations
+
+6.5 Overflow Page Chain Management
+----------------------------------
+
+Large attributes are stored in chains of overflow pages:
+
+```c
+RecnoOverflowRef *RecnoStoreOverflow(Relation rel, Datum value, int attnum) {
+    char *data = VARDATA_ANY(DatumGetPointer(value));
+    Size total_size = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
+    Size remaining = total_size;
+
+    RecnoOverflowRef *ref = palloc0(sizeof(RecnoOverflowRef));
+    ref->total_length = total_size;
+
+    BlockNumber first_page = InvalidBlockNumber;
+    BlockNumber current_page = InvalidBlockNumber;
+    BlockNumber prev_page = InvalidBlockNumber;
+
+    Size offset = 0;
+
+    while (remaining > 0) {
+	// Allocate new overflow page
+	current_page = RecnoAllocateOverflowPage(rel);
+
+	if (first_page == InvalidBlockNumber) {
+	    first_page = current_page;
+	}
+
+	Buffer buf = ReadBufferExtended(rel, MAIN_FORKNUM, current_page, ...);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+	Page page = BufferGetPage(buf);
+	RecnoOverflowPage *overflow = (RecnoOverflowPage *) PageGetSpecialPointer(page);
+
+	// Calculate data for this page
+	Size page_data_size = Min(remaining, RECNO_OVERFLOW_PAGE_DATA_SIZE);
+
+	// Initialize overflow page
+	overflow->next_page = InvalidBlockNumber;  // Will be set by next iteration
+	overflow->attr_num = attnum;
+	overflow->data_offset = offset;
+	overflow->data_len = page_data_size;
+
+	// Copy data
+	memcpy(overflow->data, data + offset, page_data_size);
+
+	// Link from previous page
+	if (prev_page != InvalidBlockNumber) {
+	    RecnoLinkOverflowPages(rel, prev_page, current_page);
+	}
+
+	MarkBufferDirty(buf);
+
+	// WAL log the overflow write
+	XLogRecPtr recptr = RecnoXLogOverflowWrite(rel, current_page, attnum,
+						 offset, overflow->data,
+						 page_data_size, commit_ts);
+	PageSetLSN(page, recptr);
+
+	UnlockReleaseBuffer(buf);
+
+	// Update for next iteration
+	remaining -= page_data_size;
+	offset += page_data_size;
+	prev_page = current_page;
+
+	// Safety check for runaway loops
+	if (offset / RECNO_OVERFLOW_PAGE_DATA_SIZE > RECNO_MAX_OVERFLOW_CHAIN) {
+	    ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			   errmsg("attribute too large for overflow storage")));
+	}
+    }
+
+    ref->overflow_page = first_page;
+    return ref;
+}
+```
+
+**Overflow Chain Properties**:
+- Handles arbitrarily large attributes through chaining
+- Maintains data integrity through WAL logging
+- Integrates with relation's free space management
+- Supports compression across chain boundaries
+
+7. Performance Design Considerations
+===================================
+
+7.1 Cache Efficiency Design
+---------------------------
+
+RECNO's design optimizes for modern CPU cache hierarchies:
+
+**Temporal Locality**:
+- In-place updates keep frequently accessed data in same cache lines
+- Compression reduces memory bandwidth requirements
+- Smaller tuple headers improve cache line utilization
+
+**Spatial Locality**:
+- Page-level compression metadata reduces random access
+- Overflow pages stored near main pages when possible
+- Sequential scan optimization through compression
+
+**Cache-Friendly Algorithms**:
+- Linear visibility checking (no complex XID comparison)
+- Branch-predictable compression decisions
+- Minimal pointer chasing in data structures
+
+7.2 I/O Optimization Design
+---------------------------
+
+**Write Amplification Reduction**:
+- In-place updates reduce write volume by 40-60%
+- Compression reduces storage I/O requirements
+- Batch defragmentation minimizes write spikes
+
+**Read Optimization**:
+- Overflow pages reduce random I/O for large attributes
+- Compression improves effective I/O bandwidth
+- Better space utilization reduces total I/O
+
+**WAL Efficiency**:
+- Compact WAL records with only necessary information
+- Compression of WAL records for large attributes
+- Batch operations to reduce WAL write overhead
+
+7.3 Memory Usage Optimization
+-----------------------------
+
+**Memory Allocation Patterns**:
+- Pool allocation for frequently used structures
+- Memory context management follows PostgreSQL patterns
+- Compression dictionaries use bounded memory
+
+**Shared Memory Design**:
+- MVCC state sized for expected concurrent transactions
+- Free space maps use efficient bitmap representations
+- Compression metadata cached in shared memory
+
+**Memory Access Patterns**:
+- Sequential access optimized for prefetching
+- Minimal memory fragmentation through careful allocation
+- NUMA-aware placement where possible
+
+8. Security and Reliability Design
+==================================
+
+8.1 Data Integrity Guarantees
+-----------------------------
+
+**ACID Properties**:
+- Atomicity: WAL ensures all-or-nothing updates
+- Consistency: Constraint checking unchanged from PostgreSQL
+- Isolation: Timestamp-based MVCC provides snapshot isolation
+- Durability: WAL logging with REDO/UNDO ensures crash recovery
+
+**Crash Recovery**:
+- Before/after images in WAL enable complete recovery
+- Overflow page integrity maintained through WAL
+- Compression metadata recovery ensures data accessibility
+- Defragmentation operations logged for consistency
+
+**Data Validation**:
+- Checksum validation for compressed data
+- Overflow chain integrity checking
+- Timestamp monotonicity validation
+- Page format validation during recovery
+
+8.2 Concurrency Safety
+----------------------
+
+**Lock-Free Algorithms Where Possible**:
+- Read operations avoid additional locking
+- MVCC state updates use minimal critical sections
+- Compression decisions made without global locks
+
+**Deadlock Prevention**:
+- Lock acquisition order follows PostgreSQL conventions
+- Timeout mechanisms for timestamp generation
+- Overflow page allocation avoids circular waits
+
+**Race Condition Prevention**:
+- Careful ordering of timestamp assignment and visibility
+- Buffer lock protection for all page modifications
+- Atomic operations for shared counters
+
+8.3 Error Handling and Recovery
+------------------------------
+
+**Graceful Degradation**:
+- Compression failures fall back to uncompressed storage
+- Overflow page allocation failures handled gracefully
+- MVCC timestamp generation never fails permanently
+
+**Error Propagation**:
+- Consistent error codes following PostgreSQL conventions
+- Detailed error messages for debugging
+- Recovery procedures documented for all error conditions
+
+**Monitoring and Alerting**:
+- Statistics collection for all major operations
+- Performance counters for bottleneck identification
+- Health checks for system state validation
+
+9. Extension Points and Future Work
+===================================
+
+9.1 Compression Algorithm Extensions
+-----------------------------------
+
+**New Algorithm Integration**:
+The compression system is designed to support additional algorithms:
+- Snappy for very low latency requirements
+- Brotli for maximum compression ratios
+- LZ-series algorithms (LZ77, LZ78 variants)
+- Domain-specific compression (timestamps, IP addresses, etc.)
+
+**Algorithm Interface**:
+```c
+typedef struct RecnoCompressionAlgorithm {
+    const char *name;
+    RecnoCompressionType type;
+
+    // Compression function
+    Datum (*compress)(Datum input, Size *output_size, int level);
+
+    // Decompression function
+    Datum (*decompress)(Datum input, Size output_size);
+
+    // Algorithm suitability check
+    bool (*is_suitable)(Oid typid, Datum sample, Size size);
+
+    // Configuration parameters
+    int min_level;
+    int max_level;
+    int default_level;
+} RecnoCompressionAlgorithm;
+```
+
+9.2 Storage Format Extensions
+-----------------------------
+
+**Variable Page Size Support**:
+- Adapt to different PostgreSQL page sizes (4KB, 16KB, 32KB)
+- Optimize compression block sizes for page size
+- Adjust overflow thresholds dynamically
+
+**Columnar Storage Integration**:
+- Store frequently accessed columns together
+- Column-specific compression algorithms
+- Vectorized operations on compressed columns
+
+**Encryption Integration**:
+- Transparent data encryption at attribute level
+- Key management integration with PostgreSQL
+- Performance optimization for encrypted data
+
+9.3 Query Optimizer Integration
+------------------------------
+
+**Cost Model Extensions**:
+- Compression-aware cost estimates
+- Overflow page access cost modeling
+- In-place update probability estimation
+
+**Statistics Collection**:
+- Compression ratio statistics per attribute
+- Update pattern analysis for cost estimation
+- Overflow page usage patterns
+
+**Plan Node Extensions**:
+- Compression-aware sort operations
+- Bulk decompression for analytical queries
+- Parallel operations on compressed data
+
+9.4 Distributed System Integration
+---------------------------------
+
+**Multi-Master Replication**:
+- Global timestamp coordination
+- Conflict resolution using timestamps
+- Distributed transaction management
+
+**Sharding Support**:
+- Consistent timestamp generation across shards
+- Cross-shard query optimization
+- Distributed vacuum operations
+
+**Cloud Integration**:
+- Object storage backend for overflow pages
+- Tiered storage based on access patterns
+- Cloud-native backup and recovery
+
+10. Design Trade-offs and Alternatives
+=====================================
+
+10.1 Timestamp vs Transaction ID Trade-offs
+-------------------------------------------
+
+**RECNO Decision: Timestamp-based MVCC**
+
+Advantages:
+- Eliminates transaction ID wraparound issues
+- Simplifies distributed system integration
+- More intuitive ordering semantics
+- Scales to unlimited transactions
+
+Trade-offs:
+- Clock skew in distributed systems
+- Slightly higher per-tuple overhead (8 bytes vs 4 bytes)
+- Different semantics may require application adaptation
+- Dependency on system clock accuracy
+
+**Alternative: Extended Transaction IDs**
+Could use 64-bit transaction IDs instead of timestamps:
+- Maintains existing PostgreSQL semantics
+- Eliminates wraparound without clock dependency
+- Simpler implementation
+
+Rejected because:
+- Still requires central transaction ID assignment
+- Less suitable for distributed systems
+- Doesn't provide intuitive ordering
+
+10.2 In-Place vs Versioning Trade-offs
+--------------------------------------
+
+**RECNO Decision: In-place updates with fallback**
+
+Advantages:
+- Dramatically reduces storage bloat
+- Better cache locality for updated data
+- Stable tuple identifiers improve index efficiency
+- Reduced I/O for update-heavy workloads
+
+Trade-offs:
+- More complex update logic
+- Potential for update conflicts in high-concurrency scenarios
+- WAL logging overhead for before/after images
+- Different performance characteristics than heap
+
+**Alternative: Always create new versions**
+Could maintain heap-style versioning:
+- Simpler implementation
+- Well-understood performance characteristics
+- No concurrency concerns for updates
+
+Rejected because:
+- Doesn't address primary storage bloat problem
+- Misses opportunity for significant performance improvement
+- Doesn't differentiate from existing heap storage
+
+10.3 Integrated vs External Compression
+---------------------------------------
+
+**RECNO Decision: Integrated attribute-level compression**
+
+Advantages:
+- Transparent to applications
+- Optimal algorithm selection per attribute
+- Integration with overflow page management
+- Reduced I/O and storage requirements
+
+Trade-offs:
+- Implementation complexity
+- CPU overhead for compression/decompression
+- Memory usage for compression dictionaries
+- Different access patterns than uncompressed data
+
+**Alternative: External compression extensions**
+Could rely on existing PostgreSQL compression:
+- Simpler implementation
+- Leverage existing tools and knowledge
+- Less impact on core storage logic
+
+Rejected because:
+- Misses optimization opportunities
+- Doesn't integrate well with overflow pages
+- Less transparent to applications
+- Suboptimal algorithm selection
+
+10.4 Overflow vs TOAST Trade-offs
+---------------------------------
+
+**RECNO Decision: Integrated overflow pages**
+
+Advantages:
+- Better performance for large attribute access
+- Unified storage management
+- No separate table maintenance required
+- Integration with compression system
+
+Trade-offs:
+- More complex space management
+- Different backup/restore considerations
+- Potential for relation size growth
+- Less mature than TOAST implementation
+
+**Alternative: Enhanced TOAST system**
+Could improve existing TOAST rather than replace:
+- Leverage existing infrastructure
+- Maintain compatibility with existing tools
+- Less implementation risk
+
+Rejected because:
+- Doesn't address fundamental TOAST limitations
+- Misses integration opportunities with compression
+- Continues operational complexity of separate tables
+- Less optimal for storage efficiency goals
+
+10.5 Proactive vs Reactive Maintenance
+--------------------------------------
+
+**RECNO Decision: Opportunistic defragmentation**
+
+Advantages:
+- Reduces need for maintenance windows
+- Prevents performance degradation
+- Better space utilization
+- Lower operational overhead
+
+Trade-offs:
+- More complex space management logic
+- Potential for unpredictable performance
+- Additional background processing overhead
+- Different monitoring requirements
+
+**Alternative: Traditional VACUUM approach**
+Could maintain PostgreSQL's reactive maintenance:
+- Well-understood operational model
+- Predictable maintenance windows
+- Simpler implementation
+
+Rejected because:
+- Doesn't address maintenance overhead problem
+- Misses opportunity for significant operational improvement
+- Continues to require careful VACUUM tuning
+- Less efficient space utilization
+
+11. Implementation Notes
+========================
+
+This section documents the current state of the implementation relative to
+the design described above, including deviations and simplifications.
+
+11.1 Deviations from Original Design
+-------------------------------------
+
+**Compression Algorithms**:
+The design calls for LZ4, ZSTD, delta, and dictionary compression. The current
+implementation has the framework and dispatch logic in recno_compress.c, but
+all four algorithms are stub implementations that copy data without actual
+compression. The compression decision engine (RecnoChooseCompressionType) is
+functional and selects algorithms based on data type, but the actual compression
+functions simply memcpy the input.
+
+**VACUUM Operations**:
+recno_relation_vacuum() in recno_operations.c:665 is a stub that reports
+completion without doing any work. The design's proactive defragmentation
+approach is partially implemented (RecnoOpportunisticDefrag, RecnoBatchDefrag
+exist) but the full VACUUM pipeline that removes old tuple versions based on
+MVCC timestamps is not yet connected.
+
+**Serializable Isolation**:
+The design describes anti-dependency tracking based on Cahill et al. The
+implementation in recno_mvcc.c:265 has a simplified check that only detects
+"pivot" transactions (those with both read and write dependencies). A full
+dependency graph with cycle detection is not implemented.
+
+**Custom Slot Operations**:
+The design calls for RECNO-specific tuple table slot operations. The current
+implementation (recno_handler.c:86) returns TTSOpsRecnoTuple, a custom
+TupleTableSlot implementation defined in recno_slot.c. This slot type
+(RecnoTupleTableSlot) performs native RECNO tuple deforming without converting
+to heap format. It supports both buffer-pinned and materialized modes with
+incremental deforming (saved offset between calls). The tts_recno_deform()
+function handles fixed-length, variable-length, and C-string attributes with
+null bitmap support.
+
+**Page Header**:
+The design shows RecnoPageHeaderData extending the standard PageHeaderData.
+The implementation uses RecnoPageOpaqueData stored in the page's special space
+(via PageGetSpecialPointer), which is the standard PostgreSQL pattern for
+access methods. The data fields match the design but the structural approach
+differs.
+
+**Multi-Insert**:
+The design implies optimized bulk loading. The current implementation
+(recno_operations.c:641) calls single-insert in a loop. True batched insertion
+with page-level batching is not yet implemented.
+
+**In-Place Update Condition**:
+The in-place update check at recno_operations.c:407 tests:
+  new_tuple_size <= ItemIdGetLength(itemid) && PageGetFreeSpace(page) >= 0
+The second condition (PageGetFreeSpace >= 0) always evaluates true since
+PageGetFreeSpace returns Size (unsigned). This means the check effectively
+only compares tuple sizes, which is correct behavior but the free space
+check is redundant.
+
+**Hybrid Logical Clocks (HLC)**:
+The design mentions timestamp-based MVCC. The implementation extends this with
+a full HLC subsystem (recno_hlc.c) implementing Kulkarni et al., 2014. The HLC
+packs a 48-bit physical timestamp (milliseconds) and 16-bit logical counter into
+a single uint64. This ensures causal ordering even when wall clocks disagree
+across nodes. The shared memory state (RecnoHLCShmemData) is protected by a
+LWLock, but DVV counter generation uses Intel TSC (Time Stamp Counter) with
+compare-and-swap on x86_64 platforms for lock-free operation. TSC calibration
+is performed at startup via a 10ms sleep measurement.
+
+**Dotted Version Vectors (DVV)**:
+DVV extends HLC for per-event causality. Each DVV dot encodes a 12-bit node ID
+(from recno_node_id GUC, range 0-4095) and a 48-bit monotonic counter. When
+TSC is available, the counter uses rdtscp + cmpxchg for lock-free generation;
+otherwise it falls back to pg_atomic_fetch_add_u64. The DVVCanPrune() function
+determines whether a tuple version can be safely garbage-collected by checking
+if the DVV dot is dominated by all active contexts.
+
+**Uncertainty Intervals**:
+HLCGetUncertaintyInterval() computes a window [commit_hlc - max_offset,
+commit_hlc + max_offset] around each commit. When recno_uncertainty_wait is
+enabled, reads at timestamps within the uncertainty window may wait until the
+window passes to ensure linearizable ordering. HLCInUncertaintyWindow() checks
+whether a given timestamp falls within the current uncertainty interval. WAL
+records can carry uncertainty info via the RECNO_WAL_HAS_HLC flag and the
+xl_recno_hlc_info structure.
+
+11.2 Implementation Decisions
+-----------------------------
+
+**Tombstone Deletes**:
+Deletes set the RECNO_TUPLE_DELETED flag on the tuple header rather than
+removing the tuple from the page. This supports UNDO (the original data
+remains in place) and simplifies visibility checking. Dead tuples accumulate
+until VACUUM removes them, similar to heap -- the design goal of reduced
+VACUUM dependency is not yet fully realized.
+
+**Cross-Page Update Lock Ordering**:
+When an update must move a tuple to a different page (recno_operations.c:464),
+the implementation follows a strict lock ordering: always lock the lower-
+numbered block first. This prevents deadlocks when two transactions
+simultaneously update tuples that need to cross pages in opposite directions.
+
+**Overflow Inline References**:
+The RecnoOverflowInline structure (recno.h:125) uses a magic number
+(0xDEAD0F10) to distinguish overflow references from regular varlena data
+during tuple deformation. This is checked via RecnoIsOverflowRef() which
+validates both the size and magic value.
+
+**Commit Timestamp Monotonicity**:
+RecnoGetCommitTimestamp (recno_mvcc.c:138) uses wall-clock time but ensures
+monotonic ordering by advancing past the last known timestamp if the clock
+returns a duplicate or earlier value. This prevents ordering anomalies from
+clock adjustments but means timestamps may drift from wall-clock time under
+sustained high commit rates.
+
+11.3 Future Work Prioritization
+-------------------------------
+
+**Priority 1 (Critical for correctness)**:
+- Implement actual compression algorithms (connect liblz4, libzstd)
+- Implement VACUUM to reclaim dead tuple space
+- Fix in-place update free space check
+- Implement proper RECNO slot operations
+
+**Priority 2 (Important for functionality)**:
+- Implement parallel scan support
+- Implement speculative insertion for ON CONFLICT
+- Implement full serializable isolation with cycle detection
+- Optimize multi_insert for true batch page operations
+- Implement proper defragmentation WAL logging
+
+**Priority 3 (Performance optimization)**:
+- Implement compression for overflow page data
+- Add page-level visibility optimization (skip pages based on pd_commit_ts)
+- Cache FSM state per-relation instead of allocating per-call
+- Implement prefetch for overflow page chain reads
+- Remove or conditionalize development elog(WARNING) messages
+
+**Priority 4 (Feature completeness)**:
+- Implement query planner cost model adjustments
+- Add pg_stat_recno views for monitoring
+- Implement online defragmentation (background worker)
+- Add compression statistics persistence across restarts
+- Implement distributed timestamp coordination
+
+===============================================================================
+This design document represents the technical foundation of the RECNO storage
+access method. The implementation prioritizes practical benefits (reduced bloat,
+better performance, lower maintenance overhead) while maintaining compatibility
+with PostgreSQL's architecture and operational model.
+
+Future revisions of this document will incorporate lessons learned from
+production deployment and evolving requirements from the PostgreSQL community.
+===============================================================================

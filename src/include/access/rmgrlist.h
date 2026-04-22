@@ -51,3 +51,4 @@ PG_RMGR(RM_XLOG2_ID, "XLOG2", xlog2_redo, xlog2_desc, xlog2_identify, NULL, NULL
 PG_RMGR(RM_UNDO_ID, "Undo", undo_redo, undo_desc, undo_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_ATM_ID, "ATM", atm_redo, atm_desc, atm_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_FILEOPS_ID, "FileOps", fileops_redo, fileops_desc, fileops_identify, NULL, NULL, NULL, NULL)
+PG_RMGR(RM_RECNO_ID, "RECNO", recno_redo, recno_desc, recno_identify, NULL, NULL, recno_mask, recno_decode)

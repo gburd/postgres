@@ -5,12 +5,12 @@
  *
  * The Logical Revert worker periodically scans the ATM (Aborted Transaction
  * Map) for entries whose UNDO chains have not yet been applied, opens the
- * target relation, applies the UNDO chain via RelUndoApplyChain(), marks
- * the ATM entry as reverted, emits an XLOG_ATM_FORGET WAL record, and
+ * target relation, applies the UNDO chain via the per-AM apply callback,
+ * marks the ATM entry as reverted, emits an XLOG_ATM_FORGET WAL record, and
  * removes the entry from the ATM.
  *
  * This worker is timer-driven (periodic scan) rather than event-driven
- * (queue-based), which differentiates it from relundo_worker.c.
+ * (queue-based).
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -33,6 +33,8 @@ extern void LogicalRevertWorkerMain(Datum main_arg);
 
 /* Launch a logical revert worker for a specific database */
 extern void StartLogicalRevertWorker(Oid dboid);
+extern void LogicalRevertLauncherMain(Datum main_arg);
+extern void LogicalRevertLauncherRegister(void);
 
 /* GUC parameters */
 extern int	logical_revert_naptime;

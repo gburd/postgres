@@ -10,8 +10,9 @@
  *
  * ARCHITECTURE:
  * -------------
- * When RelUndoDiscard() determines that UNDO records with a certain counter
- * are no longer visible to any snapshot, it calls IndexPruneNotifyDiscard().
+ * When the UNDO discard worker determines that UNDO records with a certain
+ * counter are no longer visible to any snapshot, it calls
+ * IndexPruneNotifyDiscard().
  * This function invokes registered callback functions for each index on the
  * relation, allowing each index AM to mark its entries as dead.
  *
@@ -128,7 +129,7 @@ typedef uint64 (*IndexPruneTargetedCallback) (Relation heaprel,
 /*
  * IndexPruneNotifyDiscard
  *
- * Called by RelUndoDiscard() to notify all indexes on a relation that
+ * Called by the UNDO discard worker to notify all indexes on a relation that
  * UNDO records with counter < discard_counter have been discarded.
  *
  * This function iterates through all indexes on heaprel and invokes

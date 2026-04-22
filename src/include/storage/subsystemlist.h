@@ -91,3 +91,9 @@ PG_SHMEM_SUBSYSTEM(AioShmemCallbacks)
 
 /* UNDO subsystem */
 PG_SHMEM_SUBSYSTEM(UndoShmemCallbacks)
+
+/* RECNO table access method subsystems */
+PG_SHMEM_SUBSYSTEM(RecnoMvccShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoHLCShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoClockShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoSLogShmemCallbacks)

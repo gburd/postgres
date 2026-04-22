@@ -200,6 +200,15 @@ static relopt_int intRelOpts[] =
 	},
 	{
 		{
+			"compression_level",
+			"RECNO attribute compression level",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		3, 1, 22
+	},
+	{
+		{
 			"fillfactor",
 			"Packs btree index pages only to this percentage",
 			RELOPT_KIND_BTREE,
@@ -531,6 +540,18 @@ static relopt_enum_elt_def StdRdOptUndoModeValues[] =
 	{(const char *) NULL}		/* list terminator */
 };
 
+/* values from StdRdOptRecnoCompression */
+static relopt_enum_elt_def StdRdOptRecnoCompressionValues[] =
+{
+	{"auto", STDRD_OPTION_RECNO_COMPRESS_AUTO},
+	{"off", STDRD_OPTION_RECNO_COMPRESS_OFF},
+	{"none", STDRD_OPTION_RECNO_COMPRESS_OFF},
+	{"false", STDRD_OPTION_RECNO_COMPRESS_OFF},
+	{"lz4", STDRD_OPTION_RECNO_COMPRESS_LZ4},
+	{"zstd", STDRD_OPTION_RECNO_COMPRESS_ZSTD},
+	{(const char *) NULL}		/* list terminator */
+};
+
 /* values from StdRdOptIndexCleanup */
 static relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
 {
@@ -609,6 +630,17 @@ static relopt_enum enumRelOpts[] =
 		StdRdOptUndoModeValues,
 		STDRD_OPTION_UNDO_OFF,
 		gettext_noop("Valid values are \"off\" and \"on\".")
+	},
+	{
+		{
+			"compression",
+			"RECNO attribute-level compression codec (off, auto, lz4, zstd)",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		StdRdOptRecnoCompressionValues,
+		STDRD_OPTION_RECNO_COMPRESS_AUTO,
+		gettext_noop("Valid values are \"off\", \"auto\", \"lz4\" and \"zstd\".")
 	},
 	/* list terminator */
 	{{NULL}}
@@ -2054,7 +2086,11 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
 		{"enable_undo", RELOPT_TYPE_ENUM,
-		offsetof(StdRdOptions, enable_undo)}
+		offsetof(StdRdOptions, enable_undo)},
+		{"compression", RELOPT_TYPE_ENUM,
+		offsetof(StdRdOptions, recno_compression)},
+		{"compression_level", RELOPT_TYPE_INT,
+		offsetof(StdRdOptions, recno_compression_level)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,
