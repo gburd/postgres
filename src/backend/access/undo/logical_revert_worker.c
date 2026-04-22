@@ -34,6 +34,7 @@
 
 #include "access/atm.h"
 #include "access/logical_revert_worker.h"
+#include "access/recno_slog.h"
 #include "access/relundo.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -150,6 +151,12 @@ process_revert_entry(Relation rel, RelUndoRecPtr chain, TransactionId xid)
 		 xid, RelationGetRelid(rel));
 
 	RelUndoApplyChain(rel, chain);
+
+	/*
+	 * Clean up ABORTED sLog entries for this transaction now that the tuples
+	 * have been physically restored.
+	 */
+	RecnoSLogRemoveByXidGlobal(xid);
 
 	elog(LOG, "logical revert: completed UNDO chain for xid %u", xid);
 }

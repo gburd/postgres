@@ -1,0 +1,197 @@
+unused step name: s1r
+unused step name: s1r1
+unused step name: s1rb
+unused step name: s1ua
+unused step name: s2r
+unused step name: s2r1
+unused step name: s2ub
+unused step name: s3r2
+Parsed test spec with 3 sessions
+
+starting permutation: s1ra s2rb s1ub s2ua s1c s2c
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2rb: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'B';
+sum
+---
+700
+(1 row)
+
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s3r1 s2ua s3u2 s2c s3c
+s3: WARNING:  there is already a transaction in progress
+step s3r1: SELECT balance FROM recno_ser_test WHERE id = 1;
+balance
+-------
+    100
+(1 row)
+
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s3u2: UPDATE recno_ser_test SET balance = balance + 100 WHERE id = 2;
+step s2c: COMMIT;
+step s3c: COMMIT;
+
+starting permutation: s1ra s1ub s1c s2ra s2ua s2c
+s1: WARNING:  there is already a transaction in progress
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s1c: COMMIT;
+step s2ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s2c: COMMIT;
+
+starting permutation: s1ub s2ua s1c s2c
+s3: WARNING:  there is already a transaction in progress
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1ra s2ua s2c s1ra s1c
+s3: WARNING:  there is already a transaction in progress
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s2c: COMMIT;
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+400
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1ra s2ib s1c s2c
+s3: WARNING:  there is already a transaction in progress
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2ib: INSERT INTO recno_ser_test VALUES (6, 'B', 600);
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1ra s2ra s1ia s2ib s1c s2c
+s3: WARNING:  there is already a transaction in progress
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s1ia: INSERT INTO recno_ser_test VALUES (5, 'A', 500);
+step s2ib: INSERT INTO recno_ser_test VALUES (6, 'B', 600);
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s3ra s1ub s2ua s1c s2c s3c
+s3: WARNING:  there is already a transaction in progress
+step s3ra: SELECT * FROM recno_ser_test ORDER BY id;
+id|category|balance
+--+--------+-------
+ 1|A       |    100
+ 2|A       |    200
+ 3|B       |    300
+ 4|B       |    400
+(4 rows)
+
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3c: COMMIT;
+
+starting permutation: s1ra s2rb s1ub s2ua s1c s2c
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2rb: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'B';
+sum
+---
+700
+(1 row)
+
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1ra s2rb s3r1 s3u2 s1ub s2ua s3c s1c s2c
+s3: WARNING:  there is already a transaction in progress
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s2rb: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'B';
+sum
+---
+700
+(1 row)
+
+step s3r1: SELECT balance FROM recno_ser_test WHERE id = 1;
+balance
+-------
+    100
+(1 row)
+
+step s3u2: UPDATE recno_ser_test SET balance = balance + 100 WHERE id = 2;
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s2ua: UPDATE recno_ser_test SET balance = balance + 50 WHERE category = 'A';
+step s3c: COMMIT;
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1ra s1ub s1c s3ra s3c
+step s1ra: SELECT SUM(balance) FROM recno_ser_test WHERE category = 'A';
+sum
+---
+300
+(1 row)
+
+step s1ub: UPDATE recno_ser_test SET balance = balance - 50 WHERE category = 'B';
+step s1c: COMMIT;
+step s3ra: SELECT * FROM recno_ser_test ORDER BY id;
+id|category|balance
+--+--------+-------
+ 1|A       |    100
+ 2|A       |    200
+ 3|B       |    250
+ 4|B       |    350
+(4 rows)
+
+step s3c: COMMIT;

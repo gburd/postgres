@@ -31,6 +31,7 @@
 
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/recno_slog.h"
 #include "access/relundo_worker.h"
 #include "access/xact.h"
 #include "access/relundo.h"
@@ -302,6 +303,14 @@ process_relundo_work_item(RelUndoWorkItem *item)
 
 		/* Apply the UNDO chain */
 		RelUndoApplyChain(rel, item->start_urec_ptr);
+
+		/*
+		 * Clean up any ABORTED sLog entries for this transaction.  At abort
+		 * time, sLog entries were marked ABORTED (not removed) so visibility
+		 * checks could detect aborted-but-not-yet-undone inserts.  Now that
+		 * the tuples are physically restored, remove those entries.
+		 */
+		RecnoSLogRemoveByXidGlobal(item->xid);
 
 		table_close(rel, RowExclusiveLock);
 	}

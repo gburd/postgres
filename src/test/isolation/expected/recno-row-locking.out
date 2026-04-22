@@ -1,0 +1,415 @@
+unused step name: s1_select
+unused step name: s2_rollback
+Parsed test spec with 3 sessions
+
+starting permutation: s1_lock_upd s2_lock_upd s1_commit s2_commit s3_select s3_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_lock_test ORDER BY id;
+id|val |amount
+--+----+------
+ 1|row1|   100
+ 2|row2|   200
+ 3|row3|   300
+ 4|row4|   400
+ 5|row5|   500
+(5 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s1_update s2_update s1_commit s2_commit s3_select s3_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_update: UPDATE recno_lock_test SET amount = amount + 50 WHERE id = 1;
+step s2_update: UPDATE recno_lock_test SET amount = amount + 100 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_lock_test ORDER BY id;
+id|val |amount
+--+----+------
+ 1|row1|   150
+ 2|row2|   200
+ 3|row3|   300
+ 4|row4|   400
+ 5|row5|   500
+(5 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s2_lock_r2 s1_commit s2_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_r2: SELECT * FROM recno_lock_test WHERE id = 2 FOR UPDATE;
+id|val |amount
+--+----+------
+ 2|row2|   200
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_share s2_lock_share s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_share: SELECT * FROM recno_lock_test WHERE id = 1 FOR SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_share: SELECT * FROM recno_lock_test WHERE id = 1 FOR SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_share s2_lock_upd s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_share: SELECT * FROM recno_lock_test WHERE id = 1 FOR SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_upd s2_lock_share s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_share: SELECT * FROM recno_lock_test WHERE id = 1 FOR SHARE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_share: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_nokeyup s2_lock_upd s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_nokeyup: SELECT * FROM recno_lock_test WHERE id = 1 FOR NO KEY UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_nokeyup s2_lock_nokeyup s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_nokeyup: SELECT * FROM recno_lock_test WHERE id = 1 FOR NO KEY UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_nokeyup: SELECT * FROM recno_lock_test WHERE id = 1 FOR NO KEY UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_nokeyup: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_nokeyup s2_lock_keysh s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_nokeyup: SELECT * FROM recno_lock_test WHERE id = 1 FOR NO KEY UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_keysh: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_keysh s2_lock_share s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_share: SELECT * FROM recno_lock_test WHERE id = 1 FOR SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_keysh s2_lock_keysh s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_keysh s2_lock_upd s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_upd s3_lock_nowait s1_commit s3_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s3_lock_nowait: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE NOWAIT;
+id|val|amount
+--+---+------
+(0 rows)
+
+step s1_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s3_lock_skip s1_commit s3_commit
+s2: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s3_lock_skip: SELECT * FROM recno_lock_test ORDER BY id FOR UPDATE SKIP LOCKED;
+id|val |amount
+--+----+------
+ 2|row2|   200
+ 3|row3|   300
+ 4|row4|   400
+ 5|row5|   500
+(4 rows)
+
+step s1_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s3_lock_nowait s3_commit
+s2: WARNING:  there is already a transaction in progress
+step s3_lock_nowait: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE NOWAIT;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s2_lock_upd s1_rollback s2_commit s3_select s3_commit
+s1: WARNING:  there is already a transaction in progress
+s2: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_rollback: ROLLBACK;
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_lock_test ORDER BY id;
+id|val |amount
+--+----+------
+ 1|row1|   100
+ 2|row2|   200
+ 3|row3|   300
+ 4|row4|   400
+ 5|row5|   500
+(5 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s2_lock_upd s1_commit s2_update s2_commit s3_select s3_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_update: UPDATE recno_lock_test SET amount = amount + 100 WHERE id = 1;
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_lock_test ORDER BY id;
+id|val |amount
+--+----+------
+ 1|row1|   200
+ 2|row2|   200
+ 3|row3|   300
+ 4|row4|   400
+ 5|row5|   500
+(5 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_lock_upd s3_update_other s1_commit s3_commit s2_select s2_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s3_update_other: UPDATE recno_lock_test SET amount = amount + 25 WHERE id = 3;
+step s1_commit: COMMIT;
+step s3_commit: COMMIT;
+step s2_select: SELECT * FROM recno_lock_test ORDER BY id;
+id|val |amount
+--+----+------
+ 1|row1|   100
+ 2|row2|   200
+ 3|row3|   325
+ 4|row4|   400
+ 5|row5|   500
+(5 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_upd s1_delete s2_lock_upd s1_commit s2_commit
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_delete: DELETE FROM recno_lock_test WHERE id = 1;
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val|amount
+--+---+------
+(0 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_upd s1_update_key s2_lock_keysh s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_update_key: UPDATE recno_lock_test SET id = 11 WHERE id = 1;
+step s2_lock_keysh: SELECT * FROM recno_lock_test WHERE id = 1 FOR KEY SHARE;
+id|val|amount
+--+---+------
+(0 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_lock_upd s2_lock_r2 s1_lock_r2 s2_lock_upd s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE;
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s2_lock_r2: SELECT * FROM recno_lock_test WHERE id = 2 FOR UPDATE;
+id|val |amount
+--+----+------
+ 2|row2|   200
+(1 row)
+
+step s1_lock_r2: SELECT * FROM recno_lock_test WHERE id = 2 FOR UPDATE; <waiting ...>
+step s2_lock_upd: SELECT * FROM recno_lock_test WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_lock_r2: <... completed>
+ERROR:  deadlock detected
+step s2_lock_upd: <... completed>
+id|val |amount
+--+----+------
+ 1|row1|   100
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;

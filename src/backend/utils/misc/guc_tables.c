@@ -31,7 +31,9 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/recno.h"
 #include "access/slru.h"
+#include "access/xactundo.h"
 #include "access/toast_compression.h"
 #include "access/twophase.h"
 #include "access/undolog.h"

@@ -1,0 +1,281 @@
+unused step name: s1_select_count
+unused step name: s1_select_ids
+unused step name: s2_select_dead
+unused step name: s2_vacuum_verbose
+unused step name: s3_select
+unused step name: s3_select_count
+Parsed test spec with 4 sessions
+
+starting permutation: s1_delete s1_commit s2_vacuum s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_update s1_commit s2_vacuum s2_select_count
+step s1_update: UPDATE recno_vacuum_test SET data = repeat('y', 100) WHERE id > 50 AND id <= 75;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  100
+(1 row)
+
+
+starting permutation: s1_delete_all s1_commit s2_vacuum s2_select_count
+step s1_delete_all: DELETE FROM recno_vacuum_test;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+    0
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s3_begin s2_vacuum s3_insert s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s3_begin: BEGIN;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   51
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s3_begin s3_insert_bulk s2_vacuum s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s3_begin: BEGIN;
+step s3_insert_bulk: INSERT INTO recno_vacuum_test SELECT i, 'new_' || i, repeat('n', 50) FROM generate_series(102, 111) i;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   60
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s3_begin s2_vacuum s3_update s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s3_begin: BEGIN;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_update: UPDATE recno_vacuum_test SET val = 'updated' WHERE id = 60;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_begin s1_update_wide s1_commit s2_vacuum s2_select_count
+step s1_begin: BEGIN;
+step s1_update_wide: UPDATE recno_vacuum_test SET data = repeat('w', 500) WHERE id > 90;
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  100
+(1 row)
+
+
+starting permutation: s3_begin s3_delete s2_vacuum s3_commit s2_select_count
+step s3_begin: BEGIN;
+step s3_delete: DELETE FROM recno_vacuum_test WHERE id = 80;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   99
+(1 row)
+
+
+starting permutation: s1_update s1_commit s3_begin s3_insert s2_vacuum_analyze s3_commit s2_select_count
+step s1_update: UPDATE recno_vacuum_test SET data = repeat('y', 100) WHERE id > 50 AND id <= 75;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s3_begin: BEGIN;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+step s2_vacuum_analyze: VACUUM ANALYZE recno_vacuum_test;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  101
+(1 row)
+
+
+starting permutation: s3_begin s3_insert s2_analyze s3_commit s2_select_count
+step s3_begin: BEGIN;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+step s2_analyze: ANALYZE recno_vacuum_test;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  101
+(1 row)
+
+
+starting permutation: s4_begin s4_hold_snapshot s1_delete s1_commit s2_vacuum s4_select s4_commit s2_select_count
+step s4_begin: BEGIN;
+step s4_hold_snapshot: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  100
+(1 row)
+
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s4_select: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+step s4_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s4_begin s4_hold_snapshot s1_delete s1_commit s4_commit s2_vacuum s2_select_count
+step s4_begin: BEGIN;
+step s4_hold_snapshot: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  100
+(1 row)
+
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s4_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_begin s1_delete s2_vacuum s1_commit s2_select_count
+step s1_begin: BEGIN;
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s1_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_begin s1_delete s1_rollback s2_vacuum s2_select_count
+step s1_begin: BEGIN;
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+step s1_rollback: ROLLBACK;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+  100
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s2_vacuum_full s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum_full: VACUUM FULL recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s2_vacuum_full s3_begin s3_insert s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum_full: VACUUM FULL recno_vacuum_test;
+step s3_begin: BEGIN;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   51
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s3_begin s3_insert s3_update s2_vacuum s3_delete s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s3_begin: BEGIN;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+step s3_update: UPDATE recno_vacuum_test SET val = 'updated' WHERE id = 60;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_delete: DELETE FROM recno_vacuum_test WHERE id = 80;
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s2_vacuum s3_insert s3_commit s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s3_insert: INSERT INTO recno_vacuum_test VALUES (101, 'new_row', repeat('z', 100));
+s3: WARNING:  there is no transaction in progress
+step s3_commit: COMMIT;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   51
+(1 row)
+
+
+starting permutation: s1_delete s1_commit s2_vacuum s2_vacuum s2_select_count
+step s1_delete: DELETE FROM recno_vacuum_test WHERE id <= 50;
+s1: WARNING:  there is no transaction in progress
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_vacuum: VACUUM recno_vacuum_test;
+step s2_select_count: SELECT COUNT(*) FROM recno_vacuum_test;
+count
+-----
+   50
+(1 row)
+

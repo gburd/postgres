@@ -29,6 +29,8 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/recno.h"
+#include "access/recno_diff.h"
 #include "access/relation.h"
 #include "access/relundo.h"
 #include "access/relundo_xlog.h"
@@ -198,7 +200,15 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 					if (tuple_data_buf)
 						pfree(tuple_data_buf);
 
-					/* Mark the new tuple version as unused */
+					/*
+					 * Mark the new tuple version as unused, but only for
+					 * out-of-place updates where oldtid != newtid.  For
+					 * in-place updates the old and new tuple share the same
+					 * slot, so marking it unused would destroy the
+					 * just-restored old tuple.
+					 */
+					if (!ItemPointerEquals(&upd_payload->oldtid,
+										   &upd_payload->newtid))
 					{
 						BlockNumber new_blkno;
 						OffsetNumber new_offset;
@@ -209,7 +219,7 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 						if (BufferIsValid(buffer) &&
 							BufferGetBlockNumber(buffer) == new_blkno)
 						{
-							/* Same page — reuse the locked buffer */
+							/* Same page - reuse the locked buffer */
 							RelUndoApplyInsert(rel, page, new_offset);
 							MarkBufferDirty(buffer);
 						}
@@ -275,6 +285,110 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 
 					UnlockReleaseBuffer(buffer);
 					buffer = InvalidBuffer;
+					break;
+				}
+
+			case RELUNDO_DELTA_UPDATE:
+				{
+					/*
+					 * Byte-diff update: reconstruct the old tuple from the
+					 * current (new) tuple + the stored diff, then restore it.
+					 */
+					RelUndoDeltaUpdatePayload *du_payload =
+						(RelUndoDeltaUpdatePayload *) payload;
+					char	   *diff_data;
+					RecnoDiffRecord *diff;
+					char	   *old_tuple_data;
+					Size		old_tuple_len;
+
+					diff_data = (char *) payload +
+						offsetof(RelUndoDeltaUpdatePayload, diff_len) + sizeof(uint16);
+					diff = (RecnoDiffRecord *) diff_data;
+
+					/* Read the current (new) tuple from the page */
+					target_blkno = ItemPointerGetBlockNumber(&du_payload->oldtid);
+					target_offset = ItemPointerGetOffsetNumber(&du_payload->oldtid);
+
+					buffer = ReadBuffer(rel, target_blkno);
+					LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+					page = BufferGetPage(buffer);
+
+					if (target_offset <= PageGetMaxOffsetNumber(page))
+					{
+						ItemId		lp = PageGetItemId(page, target_offset);
+
+						if (ItemIdIsNormal(lp))
+						{
+							char	   *cur_data = (char *) PageGetItem(page, lp);
+							Size		cur_len = ItemIdGetLength(lp);
+
+							old_tuple_data = (char *) palloc(cur_len);
+
+							if (RecnoApplyDiffReverse(cur_data, cur_len,
+													  diff, old_tuple_data,
+													  &old_tuple_len))
+							{
+								RecnoTupleHeader *restored_hdr;
+
+								/* Restore old tuple in place */
+								memcpy(cur_data, old_tuple_data, old_tuple_len);
+
+								/* Clear transient flags on restored tuple */
+								restored_hdr = (RecnoTupleHeader *) cur_data;
+								restored_hdr->t_flags &= ~(RECNO_TUPLE_UNCOMMITTED |
+														   RECNO_TUPLE_DELETED |
+														   RECNO_TUPLE_UPDATED);
+
+								MarkBufferDirty(buffer);
+							}
+							else
+							{
+								elog(WARNING,
+									 "RelUndoApplyChain: failed to apply diff reverse at offset %u",
+									 target_offset);
+							}
+
+							pfree(old_tuple_data);
+						}
+					}
+
+					/* Also mark the new tuple version as unused */
+					{
+						BlockNumber new_blkno;
+						OffsetNumber new_offset;
+
+						new_blkno = ItemPointerGetBlockNumber(&du_payload->newtid);
+						new_offset = ItemPointerGetOffsetNumber(&du_payload->newtid);
+
+						if (!ItemPointerEquals(&du_payload->oldtid,
+											   &du_payload->newtid))
+						{
+							if (BufferIsValid(buffer) &&
+								BufferGetBlockNumber(buffer) == new_blkno)
+							{
+								RelUndoApplyInsert(rel, page, new_offset);
+								MarkBufferDirty(buffer);
+							}
+							else
+							{
+								Buffer		new_buf;
+								Page		new_page;
+
+								new_buf = ReadBuffer(rel, new_blkno);
+								LockBuffer(new_buf, BUFFER_LOCK_EXCLUSIVE);
+								new_page = BufferGetPage(new_buf);
+								RelUndoApplyInsert(rel, new_page, new_offset);
+								MarkBufferDirty(new_buf);
+								UnlockReleaseBuffer(new_buf);
+							}
+						}
+					}
+
+					if (BufferIsValid(buffer))
+					{
+						UnlockReleaseBuffer(buffer);
+						buffer = InvalidBuffer;
+					}
 					break;
 				}
 
@@ -383,6 +497,21 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 			elog(ERROR, "RelUndoApplyDelete: could not restore tuple at expected offset");
 	}
 
+	/*
+	 * Clear transient flags.  The restored tuple is the committed
+	 * before-image of the DELETE, so it should not be marked deleted or
+	 * uncommitted.
+	 */
+	{
+		RecnoTupleHeader *restored_hdr;
+
+		lp = PageGetItemId(page, offset);
+		restored_hdr = (RecnoTupleHeader *) PageGetItem(page, lp);
+		restored_hdr->t_flags &= ~(RECNO_TUPLE_UNCOMMITTED |
+								   RECNO_TUPLE_DELETED |
+								   RECNO_TUPLE_UPDATED);
+	}
+
 	elog(DEBUG2, "RelUndoApplyDelete: restored tuple at offset %u (%u bytes)",
 		 offset, tuple_len);
 }
@@ -453,6 +582,23 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 		if (restored_offset == InvalidOffsetNumber)
 			elog(ERROR, "RelUndoApplyUpdate: could not restore old tuple at offset %u (%u bytes)",
 				 offset, tuple_len);
+	}
+
+	/*
+	 * Clear transient flags on the restored tuple.  The UNDO record stores
+	 * the before-image which was committed, so UNCOMMITTED should not be set.
+	 * Clear it defensively in case lazy clearing hadn't run before the
+	 * snapshot was taken, and also clear DELETED/UPDATED since the operation
+	 * that set them is being rolled back.
+	 */
+	{
+		RecnoTupleHeader *restored_hdr;
+
+		lp = PageGetItemId(page, offset);
+		restored_hdr = (RecnoTupleHeader *) PageGetItem(page, lp);
+		restored_hdr->t_flags &= ~(RECNO_TUPLE_UNCOMMITTED |
+								   RECNO_TUPLE_DELETED |
+								   RECNO_TUPLE_UPDATED);
 	}
 
 	elog(DEBUG2, "RelUndoApplyUpdate: restored old tuple at offset %u (%u bytes)",

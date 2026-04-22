@@ -1,0 +1,82 @@
+<!-- Add this section to create_table.sgml after the USING method parameter description -->
+
+   <para>
+    <productname>PostgreSQL</productname> includes multiple table access methods:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <literal>heap</literal> - The default row-oriented storage with
+      multi-version concurrency control. Best for general-purpose OLTP and
+      mixed workloads.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <literal>recno</literal> - Time-based MVCC storage with in-place updates,
+      integrated overflow pages, and built-in compression. Optimized for
+      update-heavy OLTP workloads. See <xref linkend="recno"/> for details.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Example using RECNO storage for an update-heavy table:
+   </para>
+
+<programlisting>
+CREATE TABLE user_sessions (
+    session_id uuid PRIMARY KEY,
+    user_id bigint NOT NULL,
+    last_activity timestamptz NOT NULL,
+    session_data jsonb,
+    ip_address inet
+) USING recno;
+</programlisting>
+
+   <para>
+    RECNO is particularly effective for tables that:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Experience frequent <command>UPDATE</command> operations
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Have large text or JSON columns that would benefit from integrated
+      overflow storage instead of TOAST
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Would benefit from automatic attribute-level compression
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Need to avoid transaction ID wraparound issues
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Storage parameters specific to RECNO can be set with the <literal>WITH</literal>
+    clause:
+   </para>
+
+<programlisting>
+CREATE TABLE events (
+    id bigserial PRIMARY KEY,
+    event_time timestamptz NOT NULL,
+    event_type text NOT NULL,
+    payload jsonb
+) USING recno
+WITH (
+    recno_compression_level = 6,
+    recno_overflow_threshold = 2048
+);
+</programlisting>

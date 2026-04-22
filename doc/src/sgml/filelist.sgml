@@ -99,6 +99,7 @@
 <!ENTITY hash       SYSTEM "hash.sgml">
 <!ENTITY planstats    SYSTEM "planstats.sgml">
 <!ENTITY tableam    SYSTEM "tableam.sgml">
+<!ENTITY recno      SYSTEM "recno.sgml">
 <!ENTITY indexam    SYSTEM "indexam.sgml">
 <!ENTITY nls        SYSTEM "nls.sgml">
 <!ENTITY plhandler  SYSTEM "plhandler.sgml">

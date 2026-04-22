@@ -30,4 +30,8 @@ rmgr_desc_sources = files(
   'xlogdesc.c',
 )
 
+if not get_option('recno').disabled()
+  rmgr_desc_sources += files('recnodesc.c')
+endif
+
 backend_sources += rmgr_desc_sources

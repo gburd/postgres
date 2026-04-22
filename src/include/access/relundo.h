@@ -115,7 +115,8 @@ typedef enum RelUndoRecordType
 	RELUNDO_DELETE = 2,			/* Deletion (batched up to 50 TIDs) */
 	RELUNDO_UPDATE = 3,			/* Update with old/new TID link */
 	RELUNDO_TUPLE_LOCK = 4,		/* SELECT FOR UPDATE/SHARE */
-	RELUNDO_DELTA_INSERT = 5	/* Partial-column update (delta) */
+	RELUNDO_DELTA_INSERT = 5,	/* Partial-column update (delta) */
+	RELUNDO_DELTA_UPDATE = 6	/* Byte-diff update (compact versioning) */
 } RelUndoRecordType;
 
 /*
@@ -211,6 +212,21 @@ typedef struct RelUndoDeltaInsertPayload
 	uint16		delta_len;		/* Length of delta data */
 	/* Delta data follows (variable length) */
 } RelUndoDeltaInsertPayload;
+
+/*
+ * RELUNDO_DELTA_UPDATE payload
+ *
+ * Records an in-place update using byte-level diff. Instead of storing
+ * the full old tuple, stores only the bytes that changed. The diff data
+ * is a RecnoDiffRecord (see access/recno_diff.h).
+ */
+typedef struct RelUndoDeltaUpdatePayload
+{
+	ItemPointerData oldtid;		/* Old tuple TID (same as new for in-place) */
+	ItemPointerData newtid;		/* New tuple TID */
+	uint16		diff_len;		/* Length of diff data following this struct */
+	/* RecnoDiffRecord data follows (variable length) */
+} RelUndoDeltaUpdatePayload;
 
 /*
  * Per-relation UNDO metapage structure

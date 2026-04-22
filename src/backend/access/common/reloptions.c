@@ -167,7 +167,7 @@ static relopt_bool boolRelOpts[] =
 	{
 		{
 			"enable_undo",
-			"Enables UNDO logging for this relation",
+			"Enables per-relation UNDO logging for this table",
 			RELOPT_KIND_HEAP,
 			AccessExclusiveLock
 		},
@@ -2029,6 +2029,8 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_scale_factor)},
 		{"user_catalog_table", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, user_catalog_table)},
+		{"enable_undo", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, enable_undo)},
 		{"parallel_workers", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, parallel_workers)},
 		{"vacuum_index_cleanup", RELOPT_TYPE_ENUM,

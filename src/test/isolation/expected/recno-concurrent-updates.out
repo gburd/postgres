@@ -1,0 +1,247 @@
+unused step name: s1r2
+unused step name: s1ra
+unused step name: s1us
+unused step name: s2r
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s1u1 s1c s2b s2u1 s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1c: COMMIT;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s2c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1c s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u2 s1c s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u2: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s3b s3u1 s1c s2c s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s3b: BEGIN;
+step s3u1: UPDATE recno_concurrent SET counter = counter + 100 WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1r1 s1c s2r1 s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+      1
+(1 row)
+
+step s1c: COMMIT;
+step s2r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+      1
+(1 row)
+
+step s2c: COMMIT;
+
+starting permutation: s1b s1u1 s1u1 s1u1 s1r1 s1c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+      3
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1c s2c s3b s3r1 s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+      1
+(1 row)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2d1 s1c s2c s3b s3ra s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2d1: DELETE FROM recno_concurrent WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3ra: SELECT id, counter, status FROM recno_concurrent ORDER BY id;
+id|counter|status
+--+-------+------
+ 1|      1|active
+ 2|      0|active
+ 3|      0|active
+ 4|      0|active
+ 5|      0|active
+(5 rows)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1r s2c s3b s3r1 s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1r: ROLLBACK;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+(0 rows)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2us s1c s2c s3b s3ra s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2us: UPDATE recno_concurrent SET status = 'updated_s2' WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3ra: SELECT id, counter, status FROM recno_concurrent ORDER BY id;
+id|counter|status
+--+-------+------
+ 1|      1|active
+ 2|      0|active
+ 3|      0|active
+ 4|      0|active
+ 5|      0|active
+(5 rows)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1d1 s1u1 s1u2 s1u3 s1c s3b s3ra s3c
+step s1b: BEGIN;
+step s1d1: DELETE FROM recno_concurrent WHERE id = 5;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1u2: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 2;
+step s1u3: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 3;
+step s1c: COMMIT;
+step s3b: BEGIN;
+step s3ra: SELECT id, counter, status FROM recno_concurrent ORDER BY id;
+id|counter|status
+--+-------+------
+ 1|      1|active
+ 2|      1|active
+ 3|      1|active
+ 4|      0|active
+(4 rows)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s1u2 s2b s2u2 s2u3 s1c s2c s3b s3ra s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s1u2: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 2;
+step s2b: BEGIN;
+step s2u2: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 2;
+step s2u3: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 3;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3ra: SELECT id, counter, status FROM recno_concurrent ORDER BY id;
+id|counter|status
+--+-------+------
+ 1|      1|active
+ 2|      1|active
+ 3|     10|active
+ 4|      0|active
+ 5|      0|active
+(5 rows)
+
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s3b s3ua s1c s3c s2b s2ra s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s3b: BEGIN;
+step s3ua: UPDATE recno_concurrent SET counter = counter + 1;
+step s1c: COMMIT;
+step s3c: COMMIT;
+step s2b: BEGIN;
+step s2ra: SELECT id, counter, status FROM recno_concurrent ORDER BY id;
+id|counter|status
+--+-------+------
+ 1|      1|active
+ 2|      1|active
+ 3|      1|active
+ 4|      1|active
+ 5|      1|active
+(5 rows)
+
+step s2c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1r s2r1 s2c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1r: ROLLBACK;
+step s2r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+(0 rows)
+
+step s2c: COMMIT;
+
+starting permutation: s1b s2b s3b s1u1 s2u2 s3u1 s1u2 s2u3 s1c s2c s3c
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s3b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2u2: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 2;
+step s3u1: UPDATE recno_concurrent SET counter = counter + 100 WHERE id = 1;
+step s1u2: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 2;
+step s2u3: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 3;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3c: COMMIT;
+
+starting permutation: s1b s1u1 s2b s2u1 s1c s2c s3b s3r1 s3c
+step s1b: BEGIN;
+step s1u1: UPDATE recno_concurrent SET counter = counter + 1 WHERE id = 1;
+step s2b: BEGIN;
+step s2u1: UPDATE recno_concurrent SET counter = counter + 10 WHERE id = 1;
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3b: BEGIN;
+step s3r1: SELECT counter FROM recno_concurrent WHERE id = 1;
+counter
+-------
+      1
+(1 row)
+
+step s3c: COMMIT;

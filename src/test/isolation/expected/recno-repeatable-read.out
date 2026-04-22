@@ -1,0 +1,188 @@
+unused step name: s1r3
+unused step name: s2ra
+Parsed test spec with 3 sessions
+
+starting permutation: s1r1 s2u1 s2c s1r2 s1c
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2c: COMMIT;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+500
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2i s2c s1r2 s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2i: INSERT INTO recno_rr_test VALUES (4, 400);
+step s2c: COMMIT;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+ sum
+----
+1000
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2d s2c s1r2 s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2d: DELETE FROM recno_rr_test WHERE id = 3;
+step s2c: COMMIT;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+300
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s1u s1r2 s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s1u: UPDATE recno_rr_test SET value = value + 1 WHERE id = 1;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+601
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2u1 s2u2 s2c s1r2 s1c
+s2: WARNING:  there is already a transaction in progress
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2u2: UPDATE recno_rr_test SET value = value + 10 WHERE id = 2;
+step s2c: COMMIT;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+620
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2u1 s2c s1u s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2c: COMMIT;
+step s1u: UPDATE recno_rr_test SET value = value + 1 WHERE id = 1;
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2u1 s2c s1u2 s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2c: COMMIT;
+step s1u2: UPDATE recno_rr_test SET value = value + 1 WHERE id = 2;
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2u1 s2i s2d s2c s1r2 s1ra s1c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2i: INSERT INTO recno_rr_test VALUES (4, 400);
+step s2d: DELETE FROM recno_rr_test WHERE id = 3;
+step s2c: COMMIT;
+step s1r2: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+710
+(1 row)
+
+step s1ra: SELECT * FROM recno_rr_test ORDER BY id;
+id|value
+--+-----
+ 1|  110
+ 2|  200
+ 4|  400
+(3 rows)
+
+step s1c: COMMIT;
+
+starting permutation: s1r1 s2r s1u s2u2 s1c s2c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2r: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s1u: UPDATE recno_rr_test SET value = value + 1 WHERE id = 1;
+step s2u2: UPDATE recno_rr_test SET value = value + 10 WHERE id = 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+
+starting permutation: s1r1 s2u1 s2c s1u2 s1c s3ra s3c
+s3: WARNING:  there is already a transaction in progress
+step s1r1: SELECT SUM(value) FROM recno_rr_test;
+sum
+---
+600
+(1 row)
+
+step s2u1: UPDATE recno_rr_test SET value = value + 10 WHERE id = 1;
+step s2c: COMMIT;
+step s1u2: UPDATE recno_rr_test SET value = value + 1 WHERE id = 2;
+step s1c: COMMIT;
+step s3ra: SELECT * FROM recno_rr_test ORDER BY id;
+id|value
+--+-----
+ 1|  110
+ 2|  201
+ 3|  300
+(3 rows)
+
+step s3c: COMMIT;

@@ -79,9 +79,9 @@ test: fileops
 test: brin gin gist spgist privileges init_privs security_label collate matview lock replica_identity rowsecurity object_address tablesample groupingsets drop_operator password identity generated_stored join_hash
 
 # ----------
-# Additional BRIN tests
+# Additional BRIN and RECNO tests
 # ----------
-test: brin_bloom brin_multi
+test: brin_bloom brin_multi recno
 
 # ----------
 # Another group of parallel tests
@@ -154,6 +154,39 @@ test: event_trigger_login
 # this test also uses event triggers, so likewise run it by itself
 test: fast_default
 
+# RECNO tests - basic functionality
+test: recno_undo_redo recno_tables recno_mvcc
+
+# RECNO tests - features and maintenance
+test: recno_indexes recno_vacuum recno_compression recno_overflow
+
+# RECNO tests - parallel scanning and TID range scans
+test: recno_parallel
+
+# RECNO tests - performance (run separately due to timing sensitivity)
+test: recno_performance
+
+# RECNO logical replication validation
+test: recno_logical_replication
+
+# RECNO comprehensive performance benchmark (runs multiple iterations)
+test: recno_benchmark_comprehensive
+
+# RECNO multi-page, multiXact, and clock-bound tests
+test: recno_multipage recno_multixact recno_clock
+
+# RECNO compression full validation
+test: recno_compression_full
+
+# RECNO integration tests (HOT + VM + MultiXact + VACUUM + FSM)
+test: recno_integration recno_integration_vacuum
+
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
 test: tablespace
+
+# RECNO tests with known crash bugs - run after tablespace to prevent cascade
+# recno_heap_compat: multiXact assertion failure in multixact.c
+# recno_overflow_full: buffer pinning assertion + overflow chain corruption
+test: recno_heap_compat
+test: recno_overflow_full

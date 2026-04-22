@@ -61,7 +61,7 @@ forkname_to_number(const char *forkName)
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 			 errmsg("invalid fork name"),
 			 errhint("Valid fork names are \"main\", \"fsm\", "
-					 "\"vm\", and \"init\".")));
+					 "\"vm\", \"init\", and \"relundo\".")));
 #endif
 
 	return InvalidForkNumber;

@@ -1,0 +1,234 @@
+unused step name: s1_read_all
+unused step name: s1_read_class2
+unused step name: s2_read_all
+unused step name: s2_rollback
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read_class1 s2_insert_class1 s1_commit s2_commit
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_update s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class1 s1_update s2_insert_class1 s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_update s2_update s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_update s2_update s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class2 s1_insert_class2 s2_insert_class1 s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class2: SELECT SUM(value) FROM recno_ssi_test WHERE class = 2;
+sum
+---
+ 70
+(1 row)
+
+step s1_insert_class2: INSERT INTO recno_ssi_test VALUES (5, 2, 50);
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class2 s1_insert_class2 s2_update s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class2: SELECT SUM(value) FROM recno_ssi_test WHERE class = 2;
+sum
+---
+ 70
+(1 row)
+
+step s1_insert_class2: INSERT INTO recno_ssi_test VALUES (5, 2, 50);
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s3_read_all s1_update s2_update s1_commit s2_commit s3_commit
+s3: WARNING:  there is already a transaction in progress
+step s3_read_all: SELECT * FROM recno_ssi_test ORDER BY id;
+id|class|value
+--+-----+-----
+ 1|    1|   10
+ 2|    1|   20
+ 3|    2|   30
+ 4|    2|   40
+(4 rows)
+
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s1_read_class1 s3_read_all s2_update s1_update s2_commit s1_commit s3_commit
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s3_read_all: SELECT * FROM recno_ssi_test ORDER BY id;
+id|class|value
+--+-----+-----
+ 1|    1|   10
+ 2|    1|   20
+ 3|    2|   30
+ 4|    2|   40
+(4 rows)
+
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_delete s1_commit s2_commit
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_delete: DELETE FROM recno_ssi_test WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_delete s2_delete s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_delete: DELETE FROM recno_ssi_test WHERE id = 4;
+step s2_delete: DELETE FROM recno_ssi_test WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class2 s3_update_both s1_insert_class2 s2_insert_class1 s3_commit s1_commit s2_commit
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class2: SELECT SUM(value) FROM recno_ssi_test WHERE class = 2;
+sum
+---
+ 70
+(1 row)
+
+step s3_update_both: UPDATE recno_ssi_test SET value = value + 100;
+step s1_insert_class2: INSERT INTO recno_ssi_test VALUES (5, 2, 50);
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s3_commit: COMMIT;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class2 s3_read_class1 s1_insert_class2 s2_insert_class1 s3_insert s1_commit s2_commit s3_commit
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class2: SELECT SUM(value) FROM recno_ssi_test WHERE class = 2;
+sum
+---
+ 70
+(1 row)
+
+step s3_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s1_insert_class2: INSERT INTO recno_ssi_test VALUES (5, 2, 50);
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s3_insert: INSERT INTO recno_ssi_test VALUES (7, 1, 70);
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_read_class2 s1_insert_class2 s2_insert_class1 s1_rollback s2_commit
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_read_class2: SELECT SUM(value) FROM recno_ssi_test WHERE class = 2;
+sum
+---
+ 70
+(1 row)
+
+step s1_insert_class2: INSERT INTO recno_ssi_test VALUES (5, 2, 50);
+step s2_insert_class1: INSERT INTO recno_ssi_test VALUES (6, 1, 60);
+step s1_rollback: ROLLBACK;
+step s2_commit: COMMIT;
+
+starting permutation: s1_read_class1 s2_update s1_update s2_commit s1_rollback
+s3: WARNING:  there is already a transaction in progress
+step s1_read_class1: SELECT SUM(value) FROM recno_ssi_test WHERE class = 1;
+sum
+---
+ 30
+(1 row)
+
+step s2_update: UPDATE recno_ssi_test SET value = value + 10 WHERE class = 2;
+step s1_update: UPDATE recno_ssi_test SET value = value + 5 WHERE class = 1;
+step s2_commit: COMMIT;
+step s1_rollback: ROLLBACK;

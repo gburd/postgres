@@ -585,6 +585,12 @@ typedef void (*pg_funcptr_t) (void);
 #define HAVE_PRAGMA_GCC_SYSTEM_HEADER	1
 #endif
 
+/*
+ * Signal to the compiler that a function argment is intentionally
+ * not used in the function.
+ */
+#define pg_unused_arg(expr) do { (void)(expr); } while (0)
+
 
 /* ----------------------------------------------------------------
  *				Section 2:	bool, true, false

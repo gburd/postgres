@@ -39,7 +39,7 @@ SELECT octet_length(get_raw_page('xxx', 'main', 0));
 ERROR:  relation "xxx" does not exist
 SELECT octet_length(get_raw_page('test1', 'xxx', 0));
 ERROR:  invalid fork name
-HINT:  Valid fork names are "main", "fsm", "vm", and "init".
+HINT:  Valid fork names are "main", "fsm", "vm", "init", and "relundo".
 SELECT get_raw_page('test1', 0) = get_raw_page('test1', 'main', 0);
  ?column? 
 ----------

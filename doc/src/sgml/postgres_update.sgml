@@ -1,0 +1,5 @@
+<!-- Add this line to doc/src/sgml/postgres.sgml -->
+<!-- In Part II: The SQL Language, after other access method chapters -->
+<!-- Or in Part VII: Internals, Chapter "Database Physical Storage" -->
+
+&recno;

@@ -126,3 +126,11 @@ test: serializable-parallel-3
 test: matview-write-skew
 test: lock-nowait
 test: for-portion-of
+test: recno-concurrent-inserts
+test: recno-concurrent-updates
+test: recno-row-locking
+test: recno-vacuum-concurrent
+test: recno-read-committed
+test: recno-repeatable-read
+test: recno-serializable
+test: recno-serializable-conflicts

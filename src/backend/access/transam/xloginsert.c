@@ -272,7 +272,7 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 	if (block_id >= max_registered_block_id)
 	{
 		if (block_id >= max_registered_buffers)
-			elog(ERROR, "too many registered buffers");
+			elog(PANIC, "too many registered buffers");
 		max_registered_block_id = block_id + 1;
 	}
 
@@ -325,7 +325,8 @@ XLogRegisterBlock(uint8 block_id, RelFileLocator *rlocator, ForkNumber forknum,
 		max_registered_block_id = block_id + 1;
 
 	if (block_id >= max_registered_buffers)
-		elog(ERROR, "too many registered buffers");
+		elog(PANIC, "too many registered buffers (XLogRegisterBufData): block_id=%d, max_registered_buffers=%d, max_registered_block_id=%d",
+			 block_id, max_registered_buffers, max_registered_block_id);
 
 	regbuf = &registered_buffers[block_id];
 

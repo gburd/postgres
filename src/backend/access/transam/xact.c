@@ -28,6 +28,7 @@
 #include "access/twophase.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
+#include "access/relundo_worker.h"
 #include "access/xactundo.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -3091,6 +3092,14 @@ AbortTransaction(void)
 		ResourceOwnerRelease(TopTransactionResourceOwner,
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
+
+		/*
+		 * Wait for any pending synchronous UNDO workers to finish.
+		 * This must happen AFTER lock release so the worker can
+		 * acquire AccessExclusiveLock on the target relation.
+		 */
+		WaitForPendingRelUndo();
+
 		smgrDoPendingDeletes(false);
 		FileOpsDoPendingOps(false);
 

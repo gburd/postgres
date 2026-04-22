@@ -1,0 +1,4 @@
+<!-- Add this line to doc/src/sgml/filelist.sgml in the appropriate section -->
+<!-- Usually after other access method documentation like btree.sgml, brin.sgml, etc. -->
+
+<!ENTITY recno      SYSTEM "recno.sgml">

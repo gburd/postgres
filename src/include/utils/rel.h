@@ -347,6 +347,7 @@ typedef struct StdRdOptions
 	int			toast_tuple_target; /* target for tuple toasting */
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
+	bool		enable_undo;	/* enable per-relation UNDO logging */
 	int			parallel_workers;	/* max number of parallel workers */
 	StdRdOptIndexCleanup vacuum_index_cleanup;	/* controls index vacuuming */
 	pg_ternary	vacuum_truncate;	/* enables vacuum to truncate a relation */
@@ -356,7 +357,6 @@ typedef struct StdRdOptions
 	 * to freeze. 0 if disabled, -1 if unspecified.
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
-	bool		enable_undo;	/* enable UNDO logging for this relation */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10

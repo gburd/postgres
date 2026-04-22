@@ -234,7 +234,7 @@ relundo_redo_insert(XLogReaderState *record)
 			 xlrec->new_pd_lower, xlrec->page_offset);
 
 	/* Validate record type is in valid range */
-	if (xlrec->urec_type < RELUNDO_INSERT || xlrec->urec_type > RELUNDO_DELTA_INSERT)
+	if (xlrec->urec_type < RELUNDO_INSERT || xlrec->urec_type > RELUNDO_DELTA_UPDATE)
 		elog(PANIC, "relundo_redo_insert: invalid record type %u", xlrec->urec_type);
 
 	/*

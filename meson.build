@@ -1187,6 +1187,12 @@ if not lz4opt.disabled()
   if lz4.found()
     cdata.set('USE_LZ4', 1)
     cdata.set('HAVE_LIBLZ4', 1)
+
+    # Check for LZ4 >= 1.8.1 which provides the dictionary API
+    # (LZ4_compress_using_dict / LZ4_decompress_using_dict)
+    if lz4.version().version_compare('>=1.8.1')
+      cdata.set('HAVE_LZ4_DICT', 1)
+    endif
   endif
 
 else
@@ -1584,6 +1590,18 @@ else
   readline = not_found_dep
 endif
 
+
+###############################################################
+# Library: RECNO
+###############################################################
+
+recno = dependency('', required: false)
+recnoopt = get_option('recno')
+if not recnoopt.disabled()
+  # RECNO doesn't require external dependencies, it's built-in
+  recno = declare_dependency()
+  cdata.set('USE_RECNO', 1)
+endif
 
 
 ###############################################################

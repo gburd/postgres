@@ -1,0 +1,169 @@
+<!-- Add this section to tableam.sgml after the introduction -->
+
+ <sect1 id="tableam-implementations">
+  <title>Built-in Table Access Methods</title>
+
+  <para>
+   <productname>PostgreSQL</productname> comes with the following table access
+   methods:
+  </para>
+
+  <sect2 id="tableam-heap">
+   <title>heap</title>
+
+   <para>
+    The <literal>heap</literal> access method is the default storage engine.
+    It implements traditional row-oriented storage with multi-version
+    concurrency control (MVCC) based on transaction IDs. Key characteristics:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Creates new tuple versions for updates (copy-on-write)
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Uses TOAST for large attributes
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Requires periodic VACUUM to reclaim dead tuples
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Subject to transaction ID wraparound
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="tableam-recno">
+   <title>recno</title>
+
+   <para>
+    The <literal>recno</literal> access method provides an alternative storage
+    engine optimized for update-heavy OLTP workloads. It uses time-based MVCC
+    with in-place updates to reduce storage bloat. See <xref linkend="recno"/>
+    for comprehensive documentation.
+   </para>
+
+   <para>
+    Key innovations in RECNO:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>In-place updates</emphasis> - Modifies tuples directly when
+      possible, avoiding version proliferation
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Time-based MVCC</emphasis> - Uses 64-bit timestamps instead
+      of transaction IDs, eliminating wraparound issues
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Integrated overflow pages</emphasis> - Replaces TOAST with
+      more efficient large attribute storage
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Built-in compression</emphasis> - Automatic attribute-level
+      compression with multiple algorithms
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Proactive space management</emphasis> - Opportunistic
+      defragmentation reduces VACUUM frequency
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    RECNO implements the complete <structname>TableAmRoutine</structname>
+    interface and supports all PostgreSQL features including indexes,
+    constraints, triggers, and replication.
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="tableam-example">
+  <title>Example: Implementing a Custom Table Access Method</title>
+
+  <para>
+   The RECNO implementation in <filename>src/backend/access/recno/</filename>
+   provides a complete example of a custom table access method. Key files to
+   study:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <filename>recno_handler.c</filename> - Main handler function and
+     TableAmRoutine callbacks
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>recno_tuple.c</filename> - Tuple formation and access
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>recno_operations.c</filename> - Insert, update, delete
+     implementations
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>recno_mvcc.c</filename> - Time-based MVCC visibility
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <filename>recno_xlog.c</filename> - WAL integration
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   When implementing your own table access method, RECNO demonstrates:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     How to handle all required callbacks in TableAmRoutine
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Integration with PostgreSQL's WAL system
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Custom page and tuple formats
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Alternative MVCC implementations
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Space management and free space tracking
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect1>

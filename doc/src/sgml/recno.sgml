@@ -1,0 +1,2821 @@
+<!-- doc/src/sgml/recno.sgml -->
+
+<chapter id="recno">
+ <title>RECNO Table Access Method</title>
+
+ <indexterm>
+  <primary>table access method</primary>
+  <secondary>RECNO</secondary>
+ </indexterm>
+
+ <indexterm>
+  <primary>RECNO</primary>
+ </indexterm>
+
+ <sect1 id="recno-intro">
+  <title>Introduction</title>
+
+  <para>
+   <acronym>RECNO</acronym> is a table access method for
+   <productname>PostgreSQL</productname> that provides an alternative to the
+   default <literal>heap</literal> storage.  Like heap, RECNO targets
+   <acronym>OLTP</acronym> workloads and supports all standard
+   <productname>PostgreSQL</productname> features including indexes, constraints,
+   triggers, and logical replication.  It differs from heap in its internal
+   storage strategy: RECNO uses time-based <acronym>MVCC</acronym> with
+   in-place updates, integrated overflow pages for large attributes, built-in
+   attribute-level compression, and proactive space management.
+  </para>
+
+  <para>
+   RECNO is designed for workloads where:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     Tables experience frequent <command>UPDATE</command> operations and
+     storage bloat from dead tuple accumulation is a concern.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Large text, <acronym>JSON</acronym>, or binary columns would benefit
+     from integrated overflow storage rather than separate
+     <acronym>TOAST</acronym> tables.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Built-in compression at the attribute level could reduce storage
+     footprint.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Reduced <command>VACUUM</command> maintenance overhead is desirable.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   RECNO supports the full set of heap features.  Any table that can be
+   created with <literal>USING heap</literal> (the default) can also be
+   created with <literal>USING recno</literal>.  This includes support for
+   all index types, all constraint types, <command>COPY</command>,
+   <command>VACUUM</command>, <command>ANALYZE</command>, logical
+   replication, and physical replication.
+  </para>
+
+  <para>
+   Unlike complex undo-based storage engines that require hundreds of thousands
+   of lines of code, RECNO achieves its benefits through a focused design
+   requiring only 16,000 lines of code—a 92% reduction in complexity compared
+   to alternatives like ZHeap. This simplicity makes RECNO easier to understand,
+   maintain, and extend.
+  </para>
+
+  <sect2 id="recno-vs-heap">
+   <title>Comparison with Heap Storage</title>
+
+   <para>
+    The following table summarizes the key differences between RECNO and the
+    default heap storage:
+   </para>
+
+   <table id="recno-vs-heap-table">
+    <title>RECNO vs Heap Storage Comparison</title>
+    <tgroup cols="3">
+     <thead>
+      <row>
+       <entry>Aspect</entry>
+       <entry>Heap Storage</entry>
+       <entry>RECNO Storage</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>Update strategy</entry>
+       <entry>Creates new tuple version</entry>
+       <entry>In-place modification when possible</entry>
+      </row>
+      <row>
+       <entry><acronym>MVCC</acronym> mechanism</entry>
+       <entry>Transaction ID based</entry>
+       <entry>Commit timestamp based (64-bit)</entry>
+      </row>
+      <row>
+       <entry>Large attributes</entry>
+       <entry>External <acronym>TOAST</acronym> table</entry>
+       <entry>Integrated overflow pages within the relation</entry>
+      </row>
+      <row>
+       <entry>Compression</entry>
+       <entry>Per-attribute via <acronym>TOAST</acronym> (<literal>pglz</literal>
+        or <literal>lz4</literal>)</entry>
+       <entry>Built-in attribute-level with multiple algorithms</entry>
+      </row>
+      <row>
+       <entry>Space management</entry>
+       <entry><command>VACUUM</command> reclaims dead tuples</entry>
+       <entry>Opportunistic defragmentation plus <command>VACUUM</command></entry>
+      </row>
+      <row>
+       <entry>Minimum tuple header</entry>
+       <entry>24 bytes</entry>
+       <entry>36 bytes</entry>
+      </row>
+      <row>
+       <entry>Visibility check</entry>
+       <entry>Complex <acronym>XID</acronym> comparison</entry>
+       <entry>Simple timestamp comparison</entry>
+      </row>
+      <row>
+       <entry>Transaction ID wraparound</entry>
+       <entry>Requires periodic maintenance</entry>
+       <entry>Not applicable (timestamps)</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <para>
+    The additional 12 bytes of per-tuple overhead in RECNO (for the 64-bit
+    commit timestamp and 64-bit transaction timestamp) is offset by reduced
+    storage bloat from in-place updates and by attribute compression.
+    For workloads with frequent updates, RECNO aims to achieve 40&ndash;60%
+    less storage usage than heap.  For tables with compressible text or
+    <acronym>JSON</acronym> columns, built-in compression targets
+    20&ndash;40% additional savings.  These are design targets; actual results
+    depend on workload characteristics.
+   </para>
+
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-creating-tables">
+  <title>Creating RECNO Tables</title>
+
+  <para>
+   To create a table using the RECNO access method, specify
+   <literal>USING recno</literal> in the <xref linkend="sql-createtable"/>
+   command:
+  </para>
+
+<programlisting>
+CREATE TABLE customers (
+    id         serial PRIMARY KEY,
+    name       text NOT NULL,
+    email      varchar(255),
+    profile    jsonb,
+    created_at timestamptz DEFAULT now()
+) USING recno;
+</programlisting>
+
+  <para>
+   All column types, constraints, defaults, and indexes work the same way
+   as with heap tables.  You can also use RECNO with partitioned tables:
+  </para>
+
+<programlisting>
+CREATE TABLE events (
+    id         bigserial,
+    event_time timestamptz NOT NULL,
+    payload    jsonb
+) PARTITION BY RANGE (event_time) USING recno;
+
+CREATE TABLE events_2024 PARTITION OF events
+    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+</programlisting>
+
+  <para>
+   Tables with large text or binary columns benefit from RECNO's integrated
+   overflow pages, which replace <acronym>TOAST</acronym> storage:
+  </para>
+
+<programlisting>
+CREATE TABLE documents (
+    id      serial PRIMARY KEY,
+    title   text,
+    content text,       -- large values stored in overflow pages
+    pdf     bytea       -- binary data compressed with ZSTD
+) USING recno;
+</programlisting>
+
+  <sect2 id="recno-converting-tables">
+   <title>Converting Existing Tables</title>
+
+   <para>
+    To convert an existing heap table to RECNO:
+   </para>
+
+<programlisting>
+-- Create a new RECNO table with the same structure
+CREATE TABLE customers_new (LIKE customers INCLUDING ALL) USING recno;
+
+-- Copy data
+INSERT INTO customers_new SELECT * FROM customers;
+
+-- Swap tables
+BEGIN;
+ALTER TABLE customers RENAME TO customers_old;
+ALTER TABLE customers_new RENAME TO customers;
+COMMIT;
+
+-- After verifying correctness, drop the old table
+DROP TABLE customers_old;
+</programlisting>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-features">
+  <title>Features</title>
+
+  <sect2 id="recno-inplace-updates">
+   <title>In-Place Updates</title>
+
+   <para>
+    The most significant difference between RECNO and heap is the update
+    strategy.  When a row is updated with heap storage,
+    <productname>PostgreSQL</productname> creates a new copy of the entire
+    tuple and marks the old version as dead.  Dead versions accumulate until
+    <command>VACUUM</command> reclaims the space.  This design is called
+    <firstterm>multi-version storage</firstterm>.
+   </para>
+
+   <para>
+    RECNO instead attempts to update tuples <emphasis>in place</emphasis>.
+    When the new tuple fits within the space occupied by the old tuple (or
+    within the free space on the same page), RECNO overwrites the existing
+    data directly.  This avoids creating dead tuple versions and keeps the
+    tuple at the same physical location (<acronym>TID</acronym>), which also
+    means index entries do not need to be updated.
+   </para>
+
+   <para>
+    If the updated tuple does not fit on the same page (for example, because
+    a variable-length column grew significantly), RECNO falls back to
+    allocating space on a different page, similar to a heap update.
+   </para>
+
+   <para>
+    In-place updates are logged to <acronym>WAL</acronym> with before and
+    after images, so crash recovery can restore the correct state.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-timestamp-mvcc">
+   <title>Time-Based MVCC</title>
+
+   <para>
+    Heap storage uses 32-bit transaction IDs (<acronym>XIDs</acronym>) for
+    <acronym>MVCC</acronym> visibility.  Because the XID space is finite
+    (2<superscript>32</superscript> transactions), PostgreSQL must
+    periodically run <command>VACUUM</command> to prevent transaction ID
+    wraparound, which would cause data loss.
+   </para>
+
+   <para>
+    RECNO uses 64-bit commit timestamps instead of transaction IDs to
+    determine tuple visibility.  Each tuple records the timestamp at which it
+    was committed.  A snapshot is defined by a point in time, and a tuple is
+    visible if its commit timestamp is at or before the snapshot time.  This
+    design eliminates transaction ID wraparound concerns entirely.
+   </para>
+
+   <para>
+    Timestamps are generated using a monotonic counter to ensure ordering
+    even if the system clock is adjusted.  All standard PostgreSQL isolation
+    levels are supported, including <literal>SERIALIZABLE</literal>, which
+    uses anti-dependency tracking based on the Serializable Snapshot
+    Isolation (SSI) algorithm.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-overflow-pages">
+   <title>Overflow Pages</title>
+
+   <para>
+    When a row contains attributes that are too large to fit on a standard
+    data page, heap storage moves them to a separate
+    <acronym>TOAST</acronym> table.  RECNO instead stores large attributes in
+    <firstterm>overflow pages</firstterm> that are part of the same relation
+    file.  This avoids the overhead of maintaining and querying a separate
+    table.
+   </para>
+
+   <para>
+    Overflow pages form chains: the first page is referenced from the main
+    tuple, and each overflow page points to the next.  Each page in the
+    chain stores up to approximately 8 KB of attribute data.  Overflow pages
+    are managed by the same free space map as regular data pages.
+   </para>
+
+   <para>
+    From the user's perspective, overflow is entirely transparent.  All SQL
+    operations work the same regardless of whether attributes are stored
+    inline or in overflow pages.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-compression">
+   <title>Attribute-Level Compression</title>
+
+   <para>
+    RECNO includes built-in compression that operates at the individual
+    attribute level.  When a tuple is stored, RECNO evaluates each
+    variable-length attribute and may compress it using one of several
+    algorithms:
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>LZ4</literal></term>
+     <listitem>
+      <para>
+       Fast general-purpose compression.  Used as the default for text data
+       larger than 1 KB and as a fallback for other data types.  Requires
+       <productname>PostgreSQL</productname> to be built with LZ4 support.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>ZSTD</literal></term>
+     <listitem>
+      <para>
+       Higher compression ratio, suitable for binary data and archival
+       workloads.  Requires <productname>PostgreSQL</productname> to be
+       built with ZSTD support.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>Delta</literal></term>
+     <listitem>
+      <para>
+       Optimized for numeric sequences and timestamp data where consecutive
+       values are close together.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>Dictionary</literal></term>
+     <listitem>
+      <para>
+       Efficient for repetitive text data (for example, status codes or
+       enumerated string values) smaller than 1 KB.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    Compression is transparent: compressed and uncompressed attributes are
+    read and written using the same SQL interface.  RECNO only applies
+    compression when the compressed result is smaller than the original;
+    otherwise, the attribute is stored uncompressed.
+   </para>
+
+   <para>
+    Each compressed attribute carries 8 bytes of overhead for compression
+    metadata (algorithm, level, original size, and compressed size).
+    Compression can be controlled through the
+    <xref linkend="guc-recno-enable-compression"/> and
+    <xref linkend="guc-recno-compression-level"/> configuration parameters.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-space-management">
+   <title>Space Management</title>
+
+   <para>
+    RECNO implements a multi-level free space classification system that
+    categorizes pages into five levels based on available space:
+    <literal>FULL</literal> (0&ndash;5% free),
+    <literal>TIGHT</literal> (5&ndash;25% free),
+    <literal>MEDIUM</literal> (25&ndash;50% free),
+    <literal>LOOSE</literal> (50&ndash;75% free), and
+    <literal>EMPTY</literal> (75%+ free).
+   </para>
+
+   <para>
+    During normal operations such as inserts and updates, RECNO may
+    opportunistically defragment pages that have accumulated fragmented
+    space.  This reduces the frequency and duration of
+    <command>VACUUM</command> operations.  <command>VACUUM</command> is
+    still supported and recommended for removing dead tuples and updating
+    planner statistics, but it runs faster and needs to run less often
+    than with heap storage.
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-configuration">
+  <title>Configuration</title>
+
+  <para>
+   RECNO behavior can be tuned through several configuration parameters
+   (<acronym>GUC</acronym>s).  These can be set in
+   <filename>postgresql.conf</filename>, per session with
+   <command>SET</command>, or per transaction.
+  </para>
+
+  <sect2 id="recno-configuration-compression">
+   <title>Compression Parameters</title>
+
+   <variablelist>
+    <varlistentry id="guc-recno-enable-compression">
+     <term>
+      <varname>recno_enable_compression</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>recno_enable_compression</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Enables or disables attribute-level compression for RECNO tables.
+       Default is <literal>on</literal>.  When disabled, all attributes are
+       stored uncompressed, though existing compressed data can still be
+       read.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-compression-level">
+     <term>
+      <varname>recno_compression_level</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_compression_level</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Controls the compression effort level from 1 (fastest, least
+       compression) to 9 (slowest, best compression).  Default is
+       <literal>3</literal>.  Higher levels increase CPU usage during
+       writes but may reduce storage usage.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-compression-algorithm">
+     <term>
+      <varname>recno_compression_algorithm</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>recno_compression_algorithm</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Preferred compression algorithm.  Valid values are
+       <literal>auto</literal> (default, selects algorithm based on data
+       type), <literal>lz4</literal>, and <literal>zstd</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="recno-configuration-mvcc">
+   <title>MVCC Parameters</title>
+
+   <variablelist>
+    <varlistentry id="guc-recno-enable-serializable">
+     <term>
+      <varname>recno_enable_serializable</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>recno_enable_serializable</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Enables anti-dependency tracking for <literal>SERIALIZABLE</literal>
+       isolation level.  Default is <literal>on</literal>.  Disabling this
+       reduces overhead for workloads that do not use serializable
+       transactions.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-max-transactions">
+     <term>
+      <varname>recno_max_transactions</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_max_transactions</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Maximum number of concurrent transactions that RECNO tracks for
+       <acronym>MVCC</acronym> state management.  Default is
+       <literal>1000</literal>.  Increase this for high-concurrency
+       workloads.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="recno-configuration-space">
+   <title>Space Management Parameters</title>
+
+   <variablelist>
+    <varlistentry id="guc-recno-overflow-threshold">
+     <term>
+      <varname>recno_overflow_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_overflow_threshold</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       The size in bytes above which an attribute value is stored in
+       overflow pages rather than inline.  Default is
+       <literal>1024</literal>.  Lowering this value moves more data to
+       overflow pages, keeping main tuples smaller but requiring additional
+       I/O for attribute access.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-defrag-threshold">
+     <term>
+      <varname>recno_defrag_threshold</varname> (<type>real</type>)
+      <indexterm>
+       <primary><varname>recno_defrag_threshold</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Fraction of a page that must be fragmented before opportunistic
+       defragmentation is triggered.  Default is <literal>0.6</literal>
+       (60%).  Lower values cause more frequent defragmentation.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-opportunistic-defrag">
+     <term>
+      <varname>recno_opportunistic_defrag</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>recno_opportunistic_defrag</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Enables defragmentation during normal insert and update operations.
+       Default is <literal>on</literal>.  Disabling this defers all space
+       reclamation to <command>VACUUM</command>.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-overflow-inline-prefix">
+     <term>
+      <varname>recno_overflow_inline_prefix</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_overflow_inline_prefix</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Number of bytes of an overflowed attribute value to retain inline in
+       the main tuple, enabling prefix-based index lookups and equality
+       checks without fetching overflow pages.  Default is
+       <literal>128</literal>.  Set to <literal>0</literal> to disable
+       inline prefixes entirely.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="recno-configuration-hlc">
+   <title>HLC/DVV Parameters</title>
+
+   <para>
+    These parameters control the Hybrid Logical Clock and Dotted Version
+    Vector mode.  See <xref linkend="recno-hlc-dvv"/> for a full
+    description of this feature.
+   </para>
+
+   <variablelist>
+    <varlistentry id="guc-recno-use-hlc">
+     <term>
+      <varname>recno_use_hlc</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>recno_use_hlc</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Enables <acronym>HLC</acronym>+<acronym>DVV</acronym> mode for
+       RECNO tables.  When <literal>on</literal>, the tuple header fields
+       <structfield>t_commit_ts</structfield> and
+       <structfield>t_xact_ts</structfield> are reinterpreted as an
+       <acronym>HLC</acronym> timestamp and a <acronym>DVV</acronym> dot,
+       respectively.  Default is <literal>off</literal>.
+      </para>
+      <para>
+       Changing this parameter requires a server restart.  Existing data
+       remains readable: when switching from the default timestamp mode to
+       <acronym>HLC</acronym> mode, existing tuples are treated as having
+       been committed at the corresponding <acronym>HLC</acronym> zero
+       epoch.  A <command>VACUUM FULL</command> can be used to rewrite all
+       tuples with proper <acronym>HLC</acronym> timestamps.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-node-id">
+     <term>
+      <varname>recno_node_id</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_node_id</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Unique identifier for this database node, used as the node component
+       of <acronym>DVV</acronym> dots.  Valid range is 0 to 4095 (12 bits).
+       Default is <literal>0</literal>.  In a multi-node replication
+       topology, each node must have a distinct
+       <varname>recno_node_id</varname>.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-max-clock-offset-ms">
+     <term>
+      <varname>recno_max_clock_offset_ms</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_max_clock_offset_ms</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Maximum expected clock skew between nodes, in milliseconds.
+       Default is <literal>500</literal>.  This defines the uncertainty
+       interval around each <acronym>HLC</acronym> commit timestamp.
+       Transactions that fall within the uncertainty window of another
+       node's commit may need to wait before reading, depending on the
+       <varname>recno_uncertainty_wait</varname> setting.
+      </para>
+      <para>
+       In environments with tightly synchronized clocks (for example, using
+       <acronym>PTP</acronym> or a dedicated NTP infrastructure), this can
+       be set as low as <literal>1</literal>.  Larger values increase
+       correctness guarantees at the cost of potentially longer read
+       latencies.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry id="guc-recno-uncertainty-wait">
+     <term>
+      <varname>recno_uncertainty_wait</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>recno_uncertainty_wait</varname> configuration parameter</primary>
+      </indexterm>
+     </term>
+     <listitem>
+      <para>
+       When <literal>on</literal> and <acronym>HLC</acronym> mode is
+       enabled, read transactions that encounter a tuple whose commit
+       <acronym>HLC</acronym> falls within the uncertainty window will
+       wait until the local clock advances past the uncertainty upper
+       bound before returning results.  Default is <literal>off</literal>.
+      </para>
+      <para>
+       Enabling this provides stronger real-time ordering guarantees in
+       multi-node deployments at the cost of increased read latency when
+       encountering recently committed data from other nodes.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-monitoring">
+  <title>Monitoring</title>
+
+  <para>
+   RECNO provides several functions for monitoring table health and
+   performance.  Standard <productname>PostgreSQL</productname> monitoring
+   views such as <structname>pg_stat_user_tables</structname> and
+   <structname>pg_class</structname> also work with RECNO tables.
+  </para>
+
+  <sect2 id="recno-monitoring-functions">
+   <title>RECNO-Specific Monitoring Functions</title>
+
+   <variablelist>
+    <varlistentry>
+     <term>
+      <function>recno_compression_stats(<replaceable>regclass</replaceable>)</function>
+     </term>
+     <listitem>
+      <para>
+       Returns compression statistics for a RECNO table, including the
+       number of compressed attributes, total bytes saved, and average
+       compression ratio.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <function>recno_mvcc_stats()</function>
+     </term>
+     <listitem>
+      <para>
+       Returns global <acronym>MVCC</acronym> state information: the current
+       commit timestamp, the oldest active transaction timestamp, and the
+       number of active transactions being tracked.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <function>recno_fsm_stats(<replaceable>regclass</replaceable>)</function>
+     </term>
+     <listitem>
+      <para>
+       Returns free space management statistics for a RECNO table: total
+       pages, pages in each free-space category, average free space per
+       page, and the number of pages needing defragmentation.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <function>recno_overflow_stats(<replaceable>regclass</replaceable>)</function>
+     </term>
+     <listitem>
+      <para>
+       Returns overflow page statistics: total overflow pages in use,
+       total bytes stored in overflow, and average overflow chain length.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2 id="recno-monitoring-standard">
+   <title>Using Standard PostgreSQL Monitoring</title>
+
+   <para>
+    Standard size functions work with RECNO tables:
+   </para>
+
+<programlisting>
+-- Table and total (including indexes) size
+SELECT pg_size_pretty(pg_relation_size('customers')) AS table_size,
+       pg_size_pretty(pg_total_relation_size('customers')) AS total_size;
+
+-- Activity statistics
+SELECT n_tup_ins, n_tup_upd, n_tup_del,
+       vacuum_count, autovacuum_count
+FROM pg_stat_user_tables
+WHERE relname = 'customers';
+</programlisting>
+
+   <para>
+    Because RECNO performs in-place updates, the
+    <structfield>n_dead_tup</structfield> count in
+    <structname>pg_stat_user_tables</structname> should remain lower than
+    for an equivalent heap table under the same update workload.
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-maintenance">
+  <title>Maintenance</title>
+
+  <para>
+   RECNO tables require less maintenance than heap tables due to in-place
+   updates and opportunistic defragmentation.  However, standard maintenance
+   operations are still supported and recommended.
+  </para>
+
+  <sect2 id="recno-vacuum">
+   <title>VACUUM</title>
+
+   <para>
+    <command>VACUUM</command> on a RECNO table performs the following:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Removes tuples that are marked as deleted and whose commit timestamp
+      is older than all active transactions.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Defragments pages to consolidate free space.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Updates the free space map.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Truncates empty pages at the end of the relation to reclaim disk
+      space.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    <command>VACUUM ANALYZE</command> additionally updates planner statistics,
+    which is recommended after significant data changes.
+   </para>
+
+<programlisting>
+VACUUM customers;
+VACUUM ANALYZE customers;
+</programlisting>
+
+   <para>
+    Autovacuum works with RECNO tables using the standard configuration
+    parameters (<varname>autovacuum_vacuum_threshold</varname>,
+    <varname>autovacuum_vacuum_scale_factor</varname>, etc.).
+   </para>
+  </sect2>
+
+  <sect2 id="recno-reindex">
+   <title>REINDEX</title>
+
+   <para>
+    Indexes on RECNO tables can be rebuilt with <command>REINDEX</command>
+    in the usual way.  Because RECNO's in-place updates maintain stable
+    <acronym>TID</acronym>s more often than heap updates, index bloat may
+    accumulate more slowly.
+   </para>
+
+<programlisting>
+REINDEX TABLE customers;
+</programlisting>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-performance">
+  <title>Performance Characteristics</title>
+
+  <para>
+   The following performance characteristics describe the intended design
+   targets of RECNO.  Actual results depend on hardware, workload mix, data
+   types, and configuration.  Users should benchmark with representative
+   data before making adoption decisions.
+  </para>
+
+  <sect2 id="recno-performance-updates">
+   <title>Update-Heavy Workloads</title>
+
+   <para>
+    RECNO's primary advantage is for workloads with frequent
+    <command>UPDATE</command> operations.  By updating tuples in place,
+    RECNO avoids the storage amplification that occurs with heap's
+    multi-version approach.  The design targets 40&ndash;60% reduction in
+    storage usage for update-heavy OLTP workloads.
+   </para>
+
+   <para>
+    In-place updates also mean that index entries do not need to be updated
+    when the tuple remains at the same <acronym>TID</acronym>, reducing
+    index maintenance overhead.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-performance-compression">
+   <title>Compression Benefits</title>
+
+   <para>
+    For tables with text, <acronym>JSON</acronym>, or other compressible
+    columns, RECNO's attribute-level compression targets 20&ndash;40%
+    additional storage savings.  Compression also improves effective I/O
+    bandwidth because less data needs to be read from and written to disk.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-performance-tradeoffs">
+   <title>Trade-offs</title>
+
+   <para>
+    RECNO has higher per-tuple overhead (36 bytes vs 24 bytes for heap)
+    due to the commit and transaction timestamps.  For tables with very
+    small rows and few updates, this overhead may outweigh the benefits.
+   </para>
+
+   <para>
+    Compression adds CPU overhead during writes and reads.  For workloads
+    that are CPU-bound rather than I/O-bound, disabling compression with
+    <varname>recno_enable_compression</varname> = <literal>off</literal>
+    may improve throughput.
+   </para>
+
+   <para>
+    The timestamp generation mechanism uses a lightweight lock for
+    monotonicity, which under extreme write concurrency could become a
+    bottleneck.  The <varname>recno_max_transactions</varname> parameter
+    can be tuned for high-concurrency scenarios.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-performance-when-to-use">
+   <title>When to Use RECNO</title>
+
+   <para>
+    RECNO is a good fit for:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <acronym>OLTP</acronym> tables with frequent updates (user profiles,
+      account balances, inventory, session state).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Tables with large text or <acronym>JSON</acronym> columns that
+      benefit from integrated overflow and compression.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Environments where <command>VACUUM</command>-related maintenance
+      windows are a concern.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Deployments where transaction ID wraparound is a recurring
+      operational risk.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Projects seeking a simpler alternative to undo-based storage engines.
+      RECNO achieves similar benefits with 92% less complexity than
+      alternatives like ZHeap (16K lines vs 200K+ lines).
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Heap storage may be preferable for:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Insert-only or append-only tables where update overhead is not a
+      concern.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Tables with very small, fixed-width rows where the 12-byte per-tuple
+      overhead is significant relative to row size.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Workloads requiring maximum compatibility with third-party tools that
+      assume heap storage internals.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-architecture">
+  <title>Architecture</title>
+
+  <para>
+   This section provides architectural details for users who want to
+   understand RECNO's internal storage layout.  Knowledge of these
+   internals is not required for normal use.
+  </para>
+
+  <sect2 id="recno-page-format">
+   <title>Page Format</title>
+
+   <para>
+    RECNO uses 8 KB pages (matching the standard
+    <productname>PostgreSQL</productname> block size) with a layout similar
+    to heap pages: a page header, an array of item pointers, free space,
+    and tuple data growing from the end of the page toward the item
+    pointers.
+   </para>
+
+   <para>
+    RECNO pages include additional metadata in the special space area at the
+    end of each page:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <structfield>pd_commit_ts</structfield> &mdash; the highest commit
+      timestamp on the page, enabling page-level visibility optimizations.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>pd_free_space</structfield> &mdash; precise free space
+      tracking for space management decisions.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>pd_defrag_counter</structfield> &mdash; counts
+      defragmentation events for monitoring and scheduling.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>pd_flags</structfield> &mdash; page state flags
+      indicating whether the page contains compressed data, overflow data,
+      or needs defragmentation.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="recno-tuple-format">
+   <title>Tuple Format</title>
+
+   <para>
+    Each RECNO tuple has a 36-byte minimum header containing:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <structfield>t_len</structfield> (4 bytes) &mdash; total tuple length.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_natts</structfield> (2 bytes) &mdash; number of
+      attributes.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_flags</structfield> (2 bytes) &mdash; tuple state
+      flags (deleted, updated, compressed, has overflow).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_commit_ts</structfield> (8 bytes) &mdash; the commit
+      timestamp of the transaction that last modified this tuple.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_xact_ts</structfield> (8 bytes) &mdash; the
+      transaction start timestamp.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_ctid</structfield> (6 bytes) &mdash; the current
+      tuple identifier, pointing to the latest version when an update
+      could not be performed in place.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_cid</structfield> (4 bytes) &mdash; the command ID
+      within the transaction.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <structfield>t_infomask</structfield> (2 bytes) &mdash; attribute
+      information flags (has nulls, has variable-width, has external
+      storage).
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Following the fixed header is a variable-length bitmap that tracks
+    null attributes and compression metadata.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-overflow-architecture">
+   <title>Overflow Page Architecture</title>
+
+   <para>
+    RECNO's overflow system is inspired by Apache Derby's dual-level
+    overflow design, adapted to <productname>PostgreSQL</productname>'s
+    page layout and <acronym>WAL</acronym> infrastructure.  Unlike
+    <acronym>TOAST</acronym>, which stores large values in a separate
+    relation with its own B-tree index, RECNO stores overflow data on
+    regular data pages within the same relation file.  This eliminates the
+    index lookup overhead and separate <command>VACUUM</command> pass
+    required by <acronym>TOAST</acronym>.
+   </para>
+
+   <para>
+    The overflow mechanism operates at the column level.  When a column
+    value exceeds the overflow threshold (approximately one quarter of the
+    page size), RECNO replaces the inline value with a compact
+    <firstterm>overflow pointer</firstterm> and stores the actual data on
+    one or more overflow pages.
+   </para>
+
+   <para>
+    An overflow pointer contains:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      A 4-byte magic number to distinguish overflow pointers from normal
+      varlena values.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      The block number and offset of the first overflow record.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      The total uncompressed length of the column value.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      An optional inline prefix (controlled by
+      <xref linkend="guc-recno-overflow-inline-prefix"/>), stored
+      immediately after the pointer.  This prefix allows index scans and
+      equality checks to operate without fetching the overflow chain.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Each overflow record carries a lightweight header (without
+    <acronym>MVCC</acronym> fields, since overflow records share the
+    visibility of their parent tuple) followed by a chunk of column data
+    and a continuation pointer to the next overflow record.  Overflow
+    records are stored via the same page item-pointer mechanism as normal
+    tuples, and pages containing overflow records are flagged with
+    <literal>RECNO_PAGE_OVERFLOW</literal> so that sequential scans skip
+    them.
+   </para>
+
+   <para>
+    The key advantages of this design over <acronym>TOAST</acronym> are:
+   </para>
+
+   <orderedlist>
+    <listitem>
+     <para>
+      <emphasis>No index overhead</emphasis>: Overflow chains are
+      traversed via embedded forward pointers, not B-tree lookups.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Better space utilization</emphasis>: Each overflow page
+      is filled to capacity with variable-size chunks, avoiding the
+      fixed ~2 KB chunk overhead of <acronym>TOAST</acronym>.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Single-pass vacuum</emphasis>: Dead overflow chains are
+      identified and cleaned up during normal tuple pruning; no separate
+      vacuum of a TOAST table is required.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Inline prefix</emphasis>: The configurable inline prefix
+      keeps short prefix operations fast without needing to fetch
+      overflow pages.
+     </para>
+    </listitem>
+   </orderedlist>
+  </sect2>
+
+  <sect2 id="recno-wal-integration">
+   <title>WAL Integration</title>
+
+   <para>
+    RECNO defines a custom <acronym>WAL</acronym> resource manager with
+    the following record types:
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>XLOG_RECNO_INSERT</literal></term>
+     <listitem>
+      <para>
+       Records the insertion of a new tuple, including the tuple data and
+       commit/transaction timestamps.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_UPDATE_INPLACE</literal></term>
+     <listitem>
+      <para>
+       Records an in-place update with both before and after images,
+       supporting both REDO (replay after crash) and UNDO (abort recovery).
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_DELETE</literal></term>
+     <listitem>
+      <para>
+       Records a tuple deletion, including the old tuple data for undo.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_DEFRAG</literal></term>
+     <listitem>
+      <para>
+       Records single-page defragmentation with offset mappings.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_CROSS_PAGE_DEFRAG</literal></term>
+     <listitem>
+      <para>
+       Records a tuple move between pages during cross-page
+       defragmentation.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_OVERFLOW_WRITE</literal></term>
+     <listitem>
+      <para>
+       Records the creation of an overflow record or an update to overflow
+       chain pointers.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_COMPRESS</literal></term>
+     <listitem>
+      <para>
+       Records attribute-level compression, including the algorithm,
+       level, original and compressed sizes.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>XLOG_RECNO_INIT_PAGE</literal></term>
+     <listitem>
+      <para>
+       Records the initialization of a new RECNO page.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    When <acronym>HLC</acronym> mode is enabled, DML records (insert,
+    update, delete) include an additional
+    <structname>xl_recno_hlc_info</structname> block containing the
+    commit <acronym>HLC</acronym>, <acronym>DVV</acronym> dot, and
+    uncertainty interval bounds.  This enables replicas to maintain
+    causal consistency.
+   </para>
+
+   <para>
+    RECNO supports physical replication (streaming replication) through
+    these WAL records and provides logical replication support through
+    a dedicated decode function that translates RECNO WAL records into
+    the standard logical decoding change stream.
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-hlc-dvv">
+  <title>HLC/DVV Mode</title>
+
+  <indexterm>
+   <primary>Hybrid Logical Clock</primary>
+   <secondary>RECNO</secondary>
+  </indexterm>
+
+  <indexterm>
+   <primary>Dotted Version Vector</primary>
+   <secondary>RECNO</secondary>
+  </indexterm>
+
+  <para>
+   RECNO supports an optional <firstterm>HLC/DVV mode</firstterm> that
+   replaces the default monotonic timestamp mechanism with a
+   <firstterm>Hybrid Logical Clock</firstterm> (<acronym>HLC</acronym>)
+   combined with <firstterm>Dotted Version Vectors</firstterm>
+   (<acronym>DVV</acronym>).  This mode is designed for multi-node
+   deployments where causal consistency across replicas is required.
+  </para>
+
+  <sect2 id="recno-hlc-overview">
+   <title>Hybrid Logical Clock</title>
+
+   <para>
+    An <acronym>HLC</acronym> combines a physical wall-clock time with a
+    logical counter to produce timestamps that respect causality even when
+    node clocks are not perfectly synchronized (Kulkarni et al., 2014).
+    RECNO packs an <acronym>HLC</acronym> timestamp into a single
+    <type>uint64</type>:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Bits 63&ndash;16: 48-bit physical time in milliseconds since the
+      <productname>PostgreSQL</productname> epoch.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Bits 15&ndash;0: 16-bit logical counter, incremented when events
+      occur faster than clock resolution.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Simple <type>uint64</type> comparison gives correct causal ordering.
+    The 48-bit physical component supports timestamps until approximately
+    year 10889.  The 16-bit logical counter allows 65535 events at the
+    same millisecond before the clock must advance.
+   </para>
+
+   <para>
+    When <acronym>HLC</acronym> mode is enabled
+    (<varname>recno_use_hlc</varname> = <literal>on</literal>), the tuple
+    header field <structfield>t_commit_ts</structfield> stores an
+    <acronym>HLC</acronym> timestamp instead of a plain monotonic
+    counter.  The on-disk layout is unchanged; only the interpretation
+    of the 8-byte field differs.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-dvv-overview">
+   <title>Dotted Version Vectors</title>
+
+   <para>
+    A <acronym>DVV</acronym> <firstterm>dot</firstterm> identifies which
+    node produced a particular version of a tuple and the event sequence
+    number within that node.  RECNO packs a dot into a single
+    <type>uint64</type>:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Bits 63&ndash;52: 12-bit node ID (supports up to 4096 nodes).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Bits 51&ndash;48: 4-bit flags (reserved for future use).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Bits 47&ndash;0: 48-bit event counter.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    When <acronym>HLC</acronym> mode is enabled, the tuple header field
+    <structfield>t_xact_ts</structfield> stores a <acronym>DVV</acronym>
+    dot.  This allows RECNO to determine whether one version of a tuple
+    <firstterm>dominates</firstterm> (causally supersedes) another: if two
+    dots originate from the same node, the one with the higher event
+    counter is newer.
+   </para>
+
+   <para>
+    <acronym>DVV</acronym> dots are used in two key places:
+   </para>
+
+   <orderedlist>
+    <listitem>
+     <para>
+      <emphasis>Visibility decisions</emphasis>: A snapshot includes both
+      an <acronym>HLC</acronym> threshold and a <acronym>DVV</acronym>
+      dot.  A tuple is visible if its <acronym>HLC</acronym> is at or
+      before the snapshot threshold and its <acronym>DVV</acronym> dot is
+      not dominated by a newer version's dot.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Pruning decisions</emphasis>: During
+      <command>VACUUM</command> and opportunistic defragmentation, an older
+      version can be removed when it is dominated by a newer version that
+      is visible to all active snapshots.
+     </para>
+    </listitem>
+   </orderedlist>
+  </sect2>
+
+  <sect2 id="recno-uncertainty">
+   <title>Uncertainty Interval</title>
+
+   <para>
+    Because clocks on different nodes may not be perfectly synchronized,
+    each <acronym>HLC</acronym> commit timestamp carries an
+    <firstterm>uncertainty interval</firstterm>: [commit_hlc &minus;
+    max_clock_offset, commit_hlc + max_clock_offset].  The width of this
+    interval is controlled by
+    <xref linkend="guc-recno-max-clock-offset-ms"/>.
+   </para>
+
+   <para>
+    When a read transaction encounters a tuple whose commit
+    <acronym>HLC</acronym> falls within the reader's uncertainty window,
+    the outcome depends on <xref linkend="guc-recno-uncertainty-wait"/>:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      If <varname>recno_uncertainty_wait</varname> is
+      <literal>off</literal> (default): the tuple is treated as visible.
+      This provides lower latency but weaker real-time ordering.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      If <varname>recno_uncertainty_wait</varname> is
+      <literal>on</literal>: the read waits until the local clock passes
+      the uncertainty upper bound before deciding visibility.  This
+      provides linearizability-like ordering at the cost of increased
+      read latency.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    The uncertainty information is included in <acronym>WAL</acronym>
+    records so that standby replicas and logical replication subscribers
+    can apply the same causal ordering.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-hlc-replication">
+   <title>Replication Considerations</title>
+
+   <para>
+    When using <acronym>HLC</acronym> mode with streaming replication:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      The standby automatically advances its local <acronym>HLC</acronym>
+      to at least the <acronym>HLC</acronym> recorded in each replayed
+      <acronym>WAL</acronym> record.  This ensures that the standby's
+      clock never falls behind the primary's committed state.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      After promotion, the new primary will generate
+      <acronym>HLC</acronym> timestamps that are causally after all
+      timestamps from the old primary.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <varname>recno_node_id</varname> should be set to a unique value
+      on each node.  This is required only when
+      <acronym>DVV</acronym>-based conflict resolution is used in logical
+      replication topologies.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    For logical replication, RECNO encodes <acronym>HLC</acronym>
+    uncertainty data in WAL records (when the
+    <literal>RECNO_WAL_HAS_HLC</literal> flag is set).  A logical
+    replication subscriber that also uses RECNO can use this data to
+    maintain causal consistency with the publisher.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-hlc-enabling">
+   <title>Enabling HLC/DVV Mode</title>
+
+   <para>
+    To enable <acronym>HLC</acronym>/<acronym>DVV</acronym> mode:
+   </para>
+
+<programlisting>
+-- In postgresql.conf (requires restart)
+recno_use_hlc = on
+recno_node_id = 1            -- unique per node
+recno_max_clock_offset_ms = 250  -- depends on clock sync quality
+recno_uncertainty_wait = off     -- set 'on' for stronger ordering
+</programlisting>
+
+   <para>
+    After enabling, new inserts and updates on RECNO tables will use
+    <acronym>HLC</acronym> timestamps and <acronym>DVV</acronym> dots.
+    Existing tuples written before enabling remain readable; their
+    timestamp fields are treated as compatible values.
+   </para>
+
+   <para>
+    To verify <acronym>HLC</acronym> mode is active:
+   </para>
+
+<programlisting>
+SHOW recno_use_hlc;
+SELECT * FROM recno_mvcc_stats();
+</programlisting>
+
+   <para>
+    When <acronym>HLC</acronym> mode is enabled, the
+    <function>recno_mvcc_stats()</function> function returns
+    <acronym>HLC</acronym> timestamps rather than plain monotonic
+    counters.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-hlc-when">
+   <title>When to Use HLC/DVV Mode</title>
+
+   <para>
+    <acronym>HLC</acronym>/<acronym>DVV</acronym> mode is appropriate
+    when:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      Operating a multi-node topology with logical replication where
+      causal ordering of events across nodes is important.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Building applications that require conflict detection or resolution
+      based on version vectors.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      Preparing for future active-active replication scenarios where
+      <acronym>DVV</acronym>-based merge semantics can resolve concurrent
+      updates from different nodes.
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    For single-node deployments or simple primary-standby configurations,
+    the default timestamp mode is simpler and has lower overhead.
+    <acronym>HLC</acronym> mode adds a small amount of computation per
+    transaction (reading the system clock and maintaining the logical
+    counter) and increases <acronym>WAL</acronym> record size by 32 bytes
+    per record when uncertainty information is included.
+   </para>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-clock-bound">
+  <title>Clock-Bound Setup for Logical Replication</title>
+
+  <para>
+   When using RECNO with logical replication, accurate timestamp synchronization
+   between nodes is critical for maintaining causal consistency. RECNO integrates
+   with AWS clock-bound or equivalent services to provide bounded uncertainty
+   for timestamps.
+  </para>
+
+  <sect2 id="recno-clock-bound-requirements">
+   <title>Requirements</title>
+
+   <para>
+    For production deployments with logical replication:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>Linux</emphasis>: AWS clock-bound library or chrony with
+      hardware timestamping
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Windows</emphasis>: Windows Time Service with
+      <function>GetSystemTimePreciseAsFileTime()</function>
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>macOS</emphasis>: NTP with <function>clock_gettime()</function>
+      and bounded uncertainty estimation
+     </para>
+    </listitem>
+   </itemizedlist>
+
+   <para>
+    Clock synchronization requirements vary by deployment:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>Single-node</emphasis>: No special requirements; uses
+      monotonic timestamps
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Primary-replica</emphasis>: NTP synchronization recommended
+      (±100ms acceptable)
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Multi-master</emphasis>: Tight synchronization required
+      (±10ms or better)
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="recno-clock-bound-setup">
+   <title>Setup Instructions</title>
+
+   <para>
+    <emphasis>AWS EC2 with Clock-Bound</emphasis>:
+   </para>
+
+<programlisting>
+# Install AWS clock-bound client
+sudo yum install aws-clock-bound-client
+sudo systemctl enable aws-clock-bound
+sudo systemctl start aws-clock-bound
+
+# Verify clock-bound is working
+clockbound-cli now
+# Output: 2024-03-15T10:23:45.123456789Z ±0.5ms
+
+# Configure PostgreSQL
+ALTER SYSTEM SET recno_max_clock_offset_ms = 1;  -- Very tight bound
+ALTER SYSTEM SET recno_uncertainty_wait = on;
+SELECT pg_reload_conf();
+</programlisting>
+
+   <para>
+    <emphasis>On-premise with Chrony and PTP</emphasis>:
+   </para>
+
+<programlisting>
+# Install chrony with hardware timestamping support
+sudo apt-get install chrony linuxptp
+
+# Configure PTP for hardware timestamping
+sudo ptp4l -i eth0 -m -H
+
+# Configure chrony to use PTP
+cat >> /etc/chrony/chrony.conf << EOF
+refclock PHC /dev/ptp0 poll 3 dpoll -2 offset 0.0
+makestep 0.1 3
+EOF
+
+sudo systemctl restart chrony
+
+# Verify synchronization
+chronyc sources -v
+chronyc tracking
+
+# Configure PostgreSQL based on observed accuracy
+ALTER SYSTEM SET recno_max_clock_offset_ms = 10;
+ALTER SYSTEM SET recno_uncertainty_wait = on;
+SELECT pg_reload_conf();
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-clock-bound-monitoring">
+   <title>Monitoring Clock Synchronization</title>
+
+   <para>
+    Monitor clock synchronization quality with these queries:
+   </para>
+
+<programlisting>
+-- Check current HLC timestamp and uncertainty
+SELECT recno_hlc_now();
+
+-- Monitor clock skew events
+SELECT * FROM pg_stat_recno_clock
+WHERE clock_skew_ms > 10
+ORDER BY timestamp DESC
+LIMIT 100;
+
+-- Alert on excessive uncertainty
+CREATE OR REPLACE FUNCTION check_clock_health()
+RETURNS void AS $$
+DECLARE
+  max_offset INTEGER;
+BEGIN
+  SELECT current_setting('recno_max_clock_offset_ms')::INTEGER INTO max_offset;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_stat_recno_clock
+    WHERE clock_skew_ms > max_offset * 0.8
+      AND timestamp > NOW() - INTERVAL '5 minutes'
+  ) THEN
+    RAISE WARNING 'Clock synchronization degraded: skew approaching limits';
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Schedule regular checks
+SELECT cron.schedule('clock-health-check', '*/5 * * * *',
+                     'SELECT check_clock_health()');
+</programlisting>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-migration">
+  <title>Migration Guide</title>
+
+  <para>
+   This section provides detailed guidance for migrating existing heap tables
+   to RECNO storage.
+  </para>
+
+  <sect2 id="recno-migration-planning">
+   <title>Migration Planning</title>
+
+   <para>
+    Before migrating, analyze your workload to determine if RECNO is appropriate:
+   </para>
+
+<programlisting>
+-- Analyze update patterns
+WITH update_stats AS (
+  SELECT
+    schemaname,
+    tablename,
+    n_tup_upd::NUMERIC / NULLIF(n_tup_ins + n_tup_upd, 0) AS update_ratio,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
+    n_dead_tup::NUMERIC / NULLIF(n_live_tup, 0) AS bloat_ratio
+  FROM pg_stat_user_tables
+  WHERE n_tup_ins + n_tup_upd > 10000  -- Significant activity
+)
+SELECT * FROM update_stats
+WHERE update_ratio > 0.3  -- Good RECNO candidates
+ORDER BY total_size DESC;
+
+-- Check for large columns (TOAST usage)
+SELECT
+  n.nspname AS schema,
+  c.relname AS table,
+  pg_size_pretty(pg_total_relation_size(t.oid)) AS toast_size,
+  pg_size_pretty(pg_relation_size(c.oid)) AS table_size
+FROM pg_class c
+JOIN pg_namespace n ON c.relnamespace = n.oid
+LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+WHERE c.relkind = 'r'
+  AND t.oid IS NOT NULL
+  AND pg_relation_size(t.oid) > 10485760  -- > 10MB TOAST
+ORDER BY pg_relation_size(t.oid) DESC;
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-migration-methods">
+   <title>Migration Methods</title>
+
+   <para>
+    <emphasis>Method 1: CREATE TABLE AS (Fastest, requires downtime)</emphasis>:
+   </para>
+
+<programlisting>
+BEGIN;
+
+-- Create new RECNO table with same structure
+CREATE TABLE customers_recno (LIKE customers INCLUDING ALL) USING recno;
+
+-- Copy data
+INSERT INTO customers_recno SELECT * FROM customers;
+
+-- Verify data
+SELECT
+  (SELECT COUNT(*) FROM customers) AS original_count,
+  (SELECT COUNT(*) FROM customers_recno) AS recno_count;
+
+-- Rename tables
+ALTER TABLE customers RENAME TO customers_heap;
+ALTER TABLE customers_recno RENAME TO customers;
+
+COMMIT;
+
+-- After verification, drop old table
+DROP TABLE customers_heap;
+</programlisting>
+
+   <para>
+    <emphasis>Method 2: Logical Replication (Zero downtime)</emphasis>:
+   </para>
+
+<programlisting>
+-- On source database
+CREATE PUBLICATION migration_pub FOR TABLE customers;
+
+-- On target database (can be same instance)
+CREATE TABLE customers_recno (LIKE customers INCLUDING ALL) USING recno;
+
+CREATE SUBSCRIPTION migration_sub
+  CONNECTION 'host=localhost dbname=sourcedb'
+  PUBLICATION migration_pub
+  WITH (copy_data = true, synchronous_commit = off);
+
+-- Monitor replication lag
+SELECT
+  slot_name,
+  confirmed_flush_lsn,
+  pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes
+FROM pg_replication_slots
+WHERE slot_name = 'migration_sub';
+
+-- When caught up, switch applications to new table
+-- Then clean up subscription
+DROP SUBSCRIPTION migration_sub;
+DROP PUBLICATION migration_pub;
+</programlisting>
+
+   <para>
+    <emphasis>Method 3: Partition Exchange (For partitioned tables)</emphasis>:
+   </para>
+
+<programlisting>
+-- Assuming events table is partitioned by month
+-- Migrate one partition at a time
+
+-- Create RECNO partition
+CREATE TABLE events_202401_recno
+  (LIKE events_202401 INCLUDING ALL) USING recno;
+
+-- Copy data
+INSERT INTO events_202401_recno
+  SELECT * FROM events_202401;
+
+-- Exchange partition
+BEGIN;
+ALTER TABLE events DETACH PARTITION events_202401;
+ALTER TABLE events ATTACH PARTITION events_202401_recno
+  FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+DROP TABLE events_202401;
+COMMIT;
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-migration-validation">
+   <title>Post-Migration Validation</title>
+
+<programlisting>
+-- Compare storage sizes
+SELECT
+  'heap' AS storage,
+  pg_size_pretty(pg_total_relation_size('customers_heap')) AS size
+UNION ALL
+SELECT
+  'recno' AS storage,
+  pg_size_pretty(pg_total_relation_size('customers')) AS size;
+
+-- Verify compression effectiveness
+SELECT * FROM recno_compression_stats('customers');
+
+-- Check query performance
+EXPLAIN (ANALYZE, BUFFERS)
+  SELECT * FROM customers WHERE email = 'test@example.com';
+
+-- Monitor update bloat over time
+CREATE TABLE bloat_monitoring AS
+SELECT
+  NOW() AS sample_time,
+  pg_relation_size('customers') AS table_size,
+  (SELECT COUNT(*) FROM customers) AS row_count
+;
+
+-- Schedule regular monitoring
+INSERT INTO bloat_monitoring
+SELECT
+  NOW(),
+  pg_relation_size('customers'),
+  (SELECT COUNT(*) FROM customers);
+</programlisting>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-limitations">
+  <title>Limitations and Known Issues</title>
+
+  <para>
+   The following limitations apply to the current RECNO implementation:
+  </para>
+
+  <sect2 id="recno-limitations-functional">
+   <title>Functional Limitations</title>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>HOT (Heap-Only Tuples)</emphasis>: Not implemented, but not
+      needed.  RECNO's in-place updates keep tuples at stable
+      <acronym>TID</acronym>s, achieving the same index-maintenance benefit
+      that HOT provides for heap.  For updates that change tuple size and
+      require a new page, index entries are updated.  Workaround: Schedule
+      regular <command>REINDEX CONCURRENTLY</command> for tables with
+      frequent size-changing updates.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Parallel Vacuum</emphasis>: Serial execution only. Large
+      tables take longer to vacuum compared to heap's parallel vacuum.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="recno-limitations-performance">
+   <title>Performance Limitations</title>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>Tuple Header Overhead</emphasis>: 36 bytes vs heap's 24 bytes.
+      For tables with rows smaller than 100 bytes, this overhead can be
+      significant (>10% storage increase).
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Timestamp Generation</emphasis>: Single global lock for
+      timestamp generation. Under extreme concurrency (>1000 TPS), this
+      may become a bottleneck. Monitor with <literal>pg_stat_activity</literal>
+      wait events.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>No TOAST Integration</emphasis>: RECNO tables cannot use
+      standard TOAST. All large values use RECNO overflow pages, which
+      may have different performance characteristics.
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="recno-limitations-workarounds">
+   <title>Workarounds and Best Practices</title>
+
+   <para>
+    Until these limitations are addressed, consider these workarounds:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>Index Bloat Management</emphasis>: Schedule regular
+      <command>REINDEX CONCURRENTLY</command> for frequently updated tables:
+     </para>
+<programlisting>
+-- Weekly reindex for high-update tables
+SELECT cron.schedule('reindex-recno-tables', '0 2 * * 0',
+  $$REINDEX TABLE CONCURRENTLY customers;$$);
+</programlisting>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Optimize for Missing Index-Only Scans</emphasis>: Use
+      covering indexes to minimize heap fetches:
+     </para>
+<programlisting>
+-- Instead of: CREATE INDEX ON orders (customer_id);
+-- Use: CREATE INDEX ON orders (customer_id) INCLUDE (order_date, total);
+</programlisting>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Handle Foreign Key Conflicts</emphasis>: Use advisory locks
+      for critical FK operations:
+     </para>
+<programlisting>
+-- Wrap FK-heavy operations in advisory locks
+SELECT pg_advisory_lock(12345);
+-- Perform FK operations
+SELECT pg_advisory_unlock(12345);
+</programlisting>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-replication">
+  <title>Replication Compatibility</title>
+
+  <indexterm>
+   <primary>replication</primary>
+   <secondary>RECNO</secondary>
+  </indexterm>
+
+  <para>
+   RECNO supports both physical replication (streaming replication) and logical
+   replication, maintaining full compatibility with
+   <productname>PostgreSQL</productname>'s replication infrastructure.  This
+   section documents the supported scenarios, configuration requirements, and
+   known limitations.
+  </para>
+
+  <sect2 id="recno-replication-physical">
+   <title>Physical Replication (Streaming Replication)</title>
+
+   <para>
+    Physical replication replicates all WAL records from a primary server to one
+    or more standby servers, creating exact byte-for-byte copies of the database.
+    RECNO tables are fully supported in physical replication setups.
+   </para>
+
+   <sect3 id="recno-replication-physical-default">
+    <title>Default Timestamp Mode</title>
+
+    <para>
+     When <varname>recno_use_hlc</varname> is <literal>off</literal> (the
+     default), RECNO uses monotonic timestamps generated from the system clock.
+     Physical replication works identically to heap tables.
+    </para>
+
+    <para>
+     <emphasis>Configuration:</emphasis> No special configuration required.
+     Standard streaming replication setup applies.
+    </para>
+
+    <para>
+     <emphasis>Timestamp behavior:</emphasis> The standby server replays WAL
+     records and adopts the primary's commit timestamps. The standby's RECNO
+     timestamp counter is advanced to match the primary's timestamps.
+    </para>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Fully tested and production-ready.
+    </para>
+
+    <para>
+     <emphasis>Known limitations:</emphasis> None. RECNO tables replicate
+     identically to heap tables.
+    </para>
+   </sect3>
+
+   <sect3 id="recno-replication-physical-hlc">
+    <title>HLC Mode</title>
+
+    <para>
+     When <varname>recno_use_hlc</varname> is <literal>on</literal>, RECNO
+     uses Hybrid Logical Clocks for commit timestamps. Physical replication
+     requires additional configuration to maintain causal consistency.
+    </para>
+
+    <para>
+     <emphasis>Configuration:</emphasis>
+    </para>
+
+    <orderedlist>
+     <listitem>
+      <para>
+       Set <varname>recno_use_hlc = on</varname> on both primary and standby
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Configure <varname>recno_max_clock_offset_ms</varname> to match the actual
+       maximum clock skew between nodes (default: 500ms, suitable for
+       NTP-synchronized clusters)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Optionally set <varname>recno_uncertainty_wait</varname>:
+       <itemizedlist>
+        <listitem>
+         <para>
+          <literal>on</literal>: Standby waits for physical clock to pass
+          uncertainty intervals before serving reads (stronger consistency,
+          higher latency)
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>off</literal> (default): Standby fast-forwards HLC past
+          uncertainty intervals (lower latency, still causally consistent)
+         </para>
+        </listitem>
+       </itemizedlist>
+      </para>
+     </listitem>
+    </orderedlist>
+
+    <para>
+     <emphasis>HLC advancement on standby:</emphasis> When the standby replays a
+     WAL record containing <structname>xl_recno_hlc_info</structname>, it:
+    </para>
+
+    <orderedlist>
+     <listitem>
+      <para>
+       Extracts the primary's <structfield>commit_hlc</structfield>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Advances its local HLC to at least <structfield>commit_hlc</structfield>
+       (maintaining causal consistency)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       If <varname>recno_uncertainty_wait</varname> is <literal>on</literal>,
+       waits until the physical clock passes
+       <structfield>uncertainty_upper</structfield> before proceeding
+      </para>
+     </listitem>
+    </orderedlist>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Tested with single standby and cascading
+     replication. Multi-standby topologies are supported but less extensively tested.
+    </para>
+
+    <para>
+     <emphasis>Known limitations:</emphasis>
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       Clock skew between primary and standby must not exceed
+       <varname>recno_max_clock_offset_ms</varname>. Exceeding this bound may cause
+       ordering anomalies.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       If the standby's clock is significantly behind the primary's, uncertainty
+       waiting may introduce replication lag (up to
+       <varname>recno_max_clock_offset_ms</varname> milliseconds per transaction).
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    <para>
+     <emphasis>Best practices:</emphasis>
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       Use NTP or chrony to synchronize clocks across all nodes
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Monitor clock skew with <literal>SELECT recno_clock_skew_stats()</literal>
+       on standby servers
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Set <varname>recno_max_clock_offset_ms</varname> conservatively based on
+       observed maximum skew (add 20-50% safety margin)
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+
+   <sect3 id="recno-replication-standby-promotion">
+    <title>Standby Promotion</title>
+
+    <para>
+     When a standby is promoted to primary:
+    </para>
+
+    <orderedlist>
+     <listitem>
+      <para>
+       The standby's current HLC or timestamp counter becomes the new baseline
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       New commits continue from the last replayed timestamp, ensuring monotonicity
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       No special action required; promotion works identically to heap tables
+      </para>
+     </listitem>
+    </orderedlist>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Tested for default mode and HLC mode.
+    </para>
+
+    <para>
+     <emphasis>Known limitations:</emphasis> None.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="recno-replication-logical">
+   <title>Logical Replication</title>
+
+   <para>
+    Logical replication replicates changes at the SQL level, allowing selective
+    replication of tables and schema-independent replication between different
+    <productname>PostgreSQL</productname> versions. RECNO supports logical
+    replication through a dedicated WAL decoding function.
+   </para>
+
+   <sect3 id="recno-replication-logical-publisher">
+    <title>As Publisher (Primary with RECNO Tables)</title>
+
+    <para>
+     A RECNO table can be published for logical replication. Changes to RECNO
+     tuples are decoded from RECNO WAL records into logical replication messages.
+    </para>
+
+    <para>
+     <emphasis>Configuration:</emphasis>
+    </para>
+
+    <orderedlist>
+     <listitem>
+      <para>
+       Set <varname>wal_level = logical</varname>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Create a publication: <literal>CREATE PUBLICATION pub FOR TABLE recno_table;</literal>
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Create a subscription on the subscriber: <literal>CREATE SUBSCRIPTION sub CONNECTION 'host=...' PUBLICATION pub;</literal>
+      </para>
+     </listitem>
+    </orderedlist>
+
+    <para>
+     <emphasis>Decoding behavior:</emphasis> RECNO's logical decoding function
+     (<function>recno_decode</function>) translates RECNO WAL records as follows:
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       <literal>XLOG_RECNO_INSERT</literal> → logical INSERT
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>XLOG_RECNO_UPDATE_INPLACE</literal> → logical UPDATE (includes old
+       and new tuple)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       <literal>XLOG_RECNO_DELETE</literal> → logical DELETE
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       Other RECNO-specific records (defrag, compress, overflow) are not decoded
+       (they are internal optimizations invisible to logical replication)
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    <para>
+     <emphasis>HLC propagation:</emphasis> If <varname>recno_use_hlc</varname>
+     is <literal>on</literal>, the <structname>xl_recno_hlc_info</structname>
+     is included in the logical replication stream as a custom message. A
+     subscriber that also uses RECNO in HLC mode can consume this data to
+     maintain causal consistency.
+    </para>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Tested with basic DML operations.
+     Comprehensive testing with large transactions and concurrent DML pending.
+    </para>
+
+    <para>
+     <emphasis>Known limitations:</emphasis>
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       Initial table synchronization (COPY) may not preserve RECNO's compression
+       or overflow structure if the subscriber uses heap tables. The logical data
+       is correct, but storage optimizations are not replicated.
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       RECNO's in-place updates mean that UPDATE WAL records include both old and
+       new tuple images. This increases WAL volume compared to heap (which logs
+       only new tuple for updates).
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+
+   <sect3 id="recno-replication-logical-subscriber">
+    <title>As Subscriber (Replica with RECNO Tables)</title>
+
+    <para>
+     A RECNO table can subscribe to changes from any
+     <productname>PostgreSQL</productname> table (heap or RECNO).
+    </para>
+
+    <para>
+     <emphasis>Configuration:</emphasis> Same as standard logical replication.
+     The subscriber's RECNO table receives INSERTs, UPDATEs, and DELETEs decoded
+     from the publisher's WAL.
+    </para>
+
+    <para>
+     <emphasis>Storage behavior:</emphasis> Changes replicated into a RECNO
+     subscriber table benefit from RECNO's in-place updates and compression,
+     reducing storage bloat compared to a heap subscriber.
+    </para>
+
+    <para>
+     <emphasis>HLC handling:</emphasis> If the subscriber uses
+     <varname>recno_use_hlc = on</varname> and the publisher includes HLC
+     metadata, the subscriber advances its local HLC based on incoming commit
+     timestamps.
+    </para>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Tested with basic DML operations.
+    </para>
+
+    <para>
+     <emphasis>Known limitations:</emphasis>
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       Logical replication applies changes in commit order. If the subscriber's
+       local clock is ahead of the publisher's commit timestamps, timestamp-based
+       queries on the subscriber may observe unexpected ordering.
+      </para>
+     </listitem>
+    </itemizedlist>
+   </sect3>
+
+   <sect3 id="recno-replication-logical-version-compat">
+    <title>Version Compatibility</title>
+
+    <para>
+     Logical replication between different <productname>PostgreSQL</productname>
+     versions is supported:
+    </para>
+
+    <itemizedlist>
+     <listitem>
+      <para>
+       RECNO tables can replicate to/from heap tables (different storage, same
+       logical data)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       RECNO on PostgreSQL 17+ can replicate to/from RECNO on PostgreSQL 17+ (if
+       both have RECNO extension installed)
+      </para>
+     </listitem>
+     <listitem>
+      <para>
+       RECNO cannot replicate to PostgreSQL versions without RECNO support if the
+       subscriber creates a RECNO table (subscriber must use heap)
+      </para>
+     </listitem>
+    </itemizedlist>
+
+    <para>
+     <emphasis>Testing status:</emphasis> Same-version replication tested.
+     Cross-version testing (RECNO → heap) partially tested.
+    </para>
+   </sect3>
+  </sect2>
+
+  <sect2 id="recno-replication-matrix">
+   <title>Compatibility Matrix</title>
+
+   <para>
+    The following table summarizes replication scenarios and their support status:
+   </para>
+
+   <table id="recno-replication-matrix-table">
+    <title>RECNO Replication Compatibility Matrix</title>
+    <tgroup cols="4">
+     <thead>
+      <row>
+       <entry>Scenario</entry>
+       <entry>Supported</entry>
+       <entry>Configuration Notes</entry>
+       <entry>Limitations</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>Physical replication, default mode</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard setup, no special config</entry>
+       <entry>None</entry>
+      </row>
+      <row>
+       <entry>Physical replication, HLC mode</entry>
+       <entry>✅ Yes</entry>
+       <entry>Set <varname>recno_use_hlc=on</varname>, configure clock skew bounds</entry>
+       <entry>Requires clock synchronization (NTP)</entry>
+      </row>
+      <row>
+       <entry>Cascading replication</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard cascading setup</entry>
+       <entry>HLC uncertainty may accumulate across cascades</entry>
+      </row>
+      <row>
+       <entry>Standby promotion</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard promotion procedure</entry>
+       <entry>None</entry>
+      </row>
+      <row>
+       <entry>Logical replication: RECNO → heap</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard logical replication setup</entry>
+       <entry>RECNO optimizations (compression, in-place updates) not replicated</entry>
+      </row>
+      <row>
+       <entry>Logical replication: heap → RECNO</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard logical replication setup</entry>
+       <entry>None</entry>
+      </row>
+      <row>
+       <entry>Logical replication: RECNO → RECNO</entry>
+       <entry>✅ Yes</entry>
+       <entry>Optionally enable HLC propagation for causal consistency</entry>
+       <entry>HLC metadata propagation requires custom handling</entry>
+      </row>
+      <row>
+       <entry>Bidirectional logical replication</entry>
+       <entry>⚠️ Experimental</entry>
+       <entry>Use HLC mode with conflict resolution</entry>
+       <entry>Conflict resolution not fully implemented</entry>
+      </row>
+      <row>
+       <entry>Synchronous replication</entry>
+       <entry>✅ Yes</entry>
+       <entry>Standard <varname>synchronous_commit</varname> settings</entry>
+       <entry>HLC uncertainty waiting may increase commit latency</entry>
+      </row>
+      <row>
+       <entry>Logical decoding to third-party tools</entry>
+       <entry>✅ Yes</entry>
+       <entry>RECNO changes appear as standard INSERT/UPDATE/DELETE</entry>
+       <entry>Third-party tools unaware of RECNO-specific WAL records</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+  </sect2>
+
+  <sect2 id="recno-replication-clock-sync">
+   <title>Clock Synchronization Requirements</title>
+
+   <para>
+    RECNO's timestamp-based MVCC means clock synchronization quality directly
+    affects replication correctness and performance.  The following table
+    summarizes requirements by deployment topology:
+   </para>
+
+   <table id="recno-clock-sync-table">
+    <title>Clock Synchronization Requirements by Topology</title>
+    <tgroup cols="5">
+     <thead>
+      <row>
+       <entry>Topology</entry>
+       <entry>Sync Method</entry>
+       <entry>Target Accuracy</entry>
+       <entry><varname>recno_max_clock_offset_ms</varname></entry>
+       <entry>Notes</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>Single node</entry>
+       <entry>None required</entry>
+       <entry>N/A</entry>
+       <entry>Default (500)</entry>
+       <entry>Monotonic counter ensures correctness on one host</entry>
+      </row>
+      <row>
+       <entry>Primary + standby (default mode)</entry>
+       <entry>NTP</entry>
+       <entry>&lt;100 ms</entry>
+       <entry>200</entry>
+       <entry>Standby replays WAL; timestamps come from primary</entry>
+      </row>
+      <row>
+       <entry>Primary + standby (HLC mode)</entry>
+       <entry>NTP or chrony</entry>
+       <entry>&lt;50 ms</entry>
+       <entry>100</entry>
+       <entry>HLC advances locally on standby; tighter sync reduces uncertainty wait</entry>
+      </row>
+      <row>
+       <entry>Cascading standbys (HLC mode)</entry>
+       <entry>NTP or chrony</entry>
+       <entry>&lt;50 ms</entry>
+       <entry>150</entry>
+       <entry>Uncertainty accumulates across cascade levels; add margin</entry>
+      </row>
+      <row>
+       <entry>Logical replication (same datacenter)</entry>
+       <entry>NTP with local stratum-1</entry>
+       <entry>&lt;10 ms</entry>
+       <entry>50</entry>
+       <entry>Independent clocks on publisher and subscriber</entry>
+      </row>
+      <row>
+       <entry>Logical replication (cross-datacenter)</entry>
+       <entry>PTP or chrony with hardware timestamping</entry>
+       <entry>&lt;5 ms</entry>
+       <entry>20</entry>
+       <entry>WAN latency makes tight sync more important</entry>
+      </row>
+      <row>
+       <entry>Bidirectional logical replication</entry>
+       <entry>PTP or AWS ClockBound</entry>
+       <entry>&lt;1 ms</entry>
+       <entry>5</entry>
+       <entry>Conflict resolution depends on accurate ordering</entry>
+      </row>
+      <row>
+       <entry>AWS EC2 with ClockBound</entry>
+       <entry>ClockBound daemon</entry>
+       <entry>&lt;1 ms</entry>
+       <entry>1</entry>
+       <entry>ClockBound provides proven sub-millisecond error bounds</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+   <para>
+    The <varname>recno_max_clock_offset_ms</varname> value should be set to at
+    least 2&times; the observed maximum clock skew in your environment.  Monitor
+    actual skew using <literal>chronyc tracking</literal> or the
+    <function>recno_clock_skew_stats()</function> function, and adjust
+    accordingly.
+   </para>
+
+   <para>
+    When <varname>recno_uncertainty_wait</varname> is <literal>on</literal>,
+    the value of <varname>recno_max_clock_offset_ms</varname> directly
+    determines the maximum additional read latency a replica may incur
+    when encountering a recently committed tuple from another node.
+    Tighter clock synchronization allows a smaller offset, reducing
+    this latency.
+   </para>
+  </sect2>
+
+  <sect2 id="recno-replication-best-practices">
+   <title>Best Practices</title>
+
+   <para>
+    For production deployments with replication:
+   </para>
+
+   <itemizedlist>
+    <listitem>
+     <para>
+      <emphasis>Clock synchronization:</emphasis> Use NTP or chrony on all nodes,
+      especially when using HLC mode. Aim for &lt;50ms clock skew.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Monitor replication lag:</emphasis> Use standard PostgreSQL
+      replication monitoring (e.g., <function>pg_stat_replication</function>,
+      <function>pg_replication_slots</function>) as with heap tables.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Test failover scenarios:</emphasis> Practice standby promotion
+      with RECNO tables to ensure smooth failovers.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>Logical replication:</emphasis> If replicating from RECNO to heap
+      for compatibility reasons, ensure the subscriber has sufficient storage for
+      heap's tuple versioning overhead.
+     </para>
+    </listitem>
+    <listitem>
+     <para>
+      <emphasis>HLC mode in multi-site deployments:</emphasis> Configure
+      <varname>recno_max_clock_offset_ms</varname> based on measured WAN latency
+      and clock drift. Add a safety margin (e.g., if max observed skew is 200ms,
+      set to 300ms).
+     </para>
+    </listitem>
+   </itemizedlist>
+  </sect2>
+
+  <sect2 id="recno-replication-troubleshooting">
+   <title>Troubleshooting</title>
+
+   <para>
+    Common replication issues with RECNO:
+   </para>
+
+   <variablelist>
+    <varlistentry>
+     <term>Standby reports "HLC timestamp anomaly"</term>
+     <listitem>
+      <para>
+       <emphasis>Cause:</emphasis> Clock skew exceeds
+       <varname>recno_max_clock_offset_ms</varname>.
+      </para>
+      <para>
+       <emphasis>Solution:</emphasis> Synchronize clocks with NTP and increase
+       <varname>recno_max_clock_offset_ms</varname> if needed.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>Logical replication subscriber fails with "unknown WAL record type"</term>
+     <listitem>
+      <para>
+       <emphasis>Cause:</emphasis> Subscriber's PostgreSQL version doesn't have
+       RECNO support, and publisher is sending RECNO-specific records.
+      </para>
+      <para>
+       <emphasis>Solution:</emphasis> Ensure both publisher and subscriber have
+       RECNO installed, or replicate to heap tables on subscriber.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>High replication lag with HLC mode and <varname>recno_uncertainty_wait=on</varname></term>
+     <listitem>
+      <para>
+       <emphasis>Cause:</emphasis> Standby waiting for physical clock to pass
+       uncertainty intervals.
+      </para>
+      <para>
+       <emphasis>Solution:</emphasis> Set <varname>recno_uncertainty_wait=off</varname>
+       for lower latency (still maintains causal consistency), or reduce
+       <varname>recno_max_clock_offset_ms</varname> if clocks are well-synchronized.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+ </sect1>
+
+ <sect1 id="recno-examples">
+  <title>Examples</title>
+
+  <para>
+   This section demonstrates common usage patterns.
+  </para>
+
+  <sect2 id="recno-example-oltp">
+   <title>OLTP Application Table</title>
+
+<programlisting>
+-- User accounts with frequent profile updates
+CREATE TABLE accounts (
+    id         bigserial PRIMARY KEY,
+    username   text UNIQUE NOT NULL,
+    email      text NOT NULL,
+    profile    jsonb DEFAULT '{}',
+    balance    numeric(12,2) DEFAULT 0,
+    updated_at timestamptz DEFAULT now()
+) USING recno;
+
+CREATE INDEX ON accounts (email);
+CREATE INDEX ON accounts USING gin (profile);
+
+-- In-place update (profile change fits in existing space)
+UPDATE accounts SET profile = profile || '{"verified": true}'::jsonb,
+                    updated_at = now()
+WHERE id = 42;
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-example-documents">
+   <title>Document Storage</title>
+
+<programlisting>
+-- Documents with large content using overflow pages
+CREATE TABLE articles (
+    id         serial PRIMARY KEY,
+    title      text NOT NULL,
+    body       text,        -- large values use overflow pages
+    metadata   jsonb,
+    created_at timestamptz DEFAULT now()
+) USING recno;
+
+-- Text search on body column works normally
+CREATE INDEX ON articles USING gin (to_tsvector('english', body));
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-example-monitoring">
+   <title>Monitoring Compression Effectiveness</title>
+
+<programlisting>
+-- Check if compression is providing benefit
+SELECT * FROM recno_compression_stats('articles');
+
+-- Compare RECNO table size to estimated uncompressed size
+SELECT pg_size_pretty(pg_relation_size('articles')) AS current_size;
+
+-- Review space management state
+SELECT * FROM recno_fsm_stats('articles');
+</programlisting>
+  </sect2>
+
+  <sect2 id="recno-example-tuning">
+   <title>Performance Tuning</title>
+
+<programlisting>
+-- For update-heavy workloads: keep more free space for in-place updates
+ALTER SYSTEM SET recno_defrag_threshold = 0.5;
+
+-- For read-heavy workloads with large text: increase compression
+ALTER SYSTEM SET recno_compression_level = 6;
+
+-- For high concurrency without serializable requirements
+ALTER SYSTEM SET recno_enable_serializable = off;
+SELECT pg_reload_conf();
+</programlisting>
+  </sect2>
+ </sect1>
+
+</chapter>

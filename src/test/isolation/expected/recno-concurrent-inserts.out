@@ -1,0 +1,208 @@
+unused step name: s1_count
+unused step name: s2_count
+unused step name: s4_select
+Parsed test spec with 4 sessions
+
+starting permutation: s1_insert1 s2_insert1 s1_insert2 s2_insert2 s1_commit s2_commit s3_select s3_commit
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s2_insert2: INSERT INTO recno_insert_test VALUES (4, 'session2_row2');
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 1|session1_row1
+ 2|session1_row2
+ 3|session2_row1
+ 4|session2_row2
+(4 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s2_select s2_insert1 s1_select s1_commit s2_commit s3_select s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val
+--+---
+(0 rows)
+
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 1|session1_row1
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 1|session1_row1
+ 3|session2_row1
+(2 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s2_insert1 s3_insert s1_commit s2_commit s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s3_insert: INSERT INTO recno_insert_test VALUES (5, 'session3_row1');
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s1_insert2 s2_select s1_rollback s2_select s2_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s2_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val
+--+---
+(0 rows)
+
+step s1_rollback: ROLLBACK;
+step s2_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val
+--+---
+(0 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_insert1 s1_rollback s2_insert1 s2_commit s3_select s3_commit
+s3: WARNING:  there is already a transaction in progress
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s1_rollback: ROLLBACK;
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 3|session2_row1
+(1 row)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s4_bulk_insert s2_insert1 s1_commit s4_commit s2_commit s3_select s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s4_bulk_insert: INSERT INTO recno_insert_test SELECT i, 'bulk_' || i FROM generate_series(100, 109) i;
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_commit: COMMIT;
+step s4_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+ id|val          
+---+-------------
+  1|session1_row1
+  3|session2_row1
+100|bulk_100     
+101|bulk_101     
+102|bulk_102     
+103|bulk_103     
+104|bulk_104     
+105|bulk_105     
+106|bulk_106     
+107|bulk_107     
+108|bulk_108     
+109|bulk_109     
+(12 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s4_bulk_insert s4_rollback s3_select s3_commit
+step s4_bulk_insert: INSERT INTO recno_insert_test SELECT i, 'bulk_' || i FROM generate_series(100, 109) i;
+step s4_rollback: ROLLBACK;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val
+--+---
+(0 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s1_insert2 s2_insert1 s2_insert2 s1_commit s2_commit s3_count s3_commit
+s1: WARNING:  there is already a transaction in progress
+s2: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s2_insert2: INSERT INTO recno_insert_test VALUES (4, 'session2_row2');
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_count: SELECT COUNT(*) FROM recno_insert_test;
+count
+-----
+    4
+(1 row)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s2_insert1 s1_insert2 s2_insert2 s1_commit s2_rollback s3_select s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s2_insert2: INSERT INTO recno_insert_test VALUES (4, 'session2_row2');
+step s1_commit: COMMIT;
+step s2_rollback: ROLLBACK;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 1|session1_row1
+ 2|session1_row2
+(2 rows)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s2_insert1 s1_insert2 s2_insert2 s1_insert3 s2_insert3 s1_commit s2_commit s3_count s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s2_insert2: INSERT INTO recno_insert_test VALUES (4, 'session2_row2');
+step s1_insert3: INSERT INTO recno_insert_test VALUES (10, 'session1_row3');
+step s2_insert3: INSERT INTO recno_insert_test VALUES (11, 'session2_row3');
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_count: SELECT COUNT(*) FROM recno_insert_test;
+count
+-----
+    6
+(1 row)
+
+step s3_commit: COMMIT;
+
+starting permutation: s1_insert1 s2_insert1 s1_commit s3_select s2_commit s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s2_insert1: INSERT INTO recno_insert_test VALUES (3, 'session2_row1');
+step s1_commit: COMMIT;
+step s3_select: SELECT * FROM recno_insert_test ORDER BY id;
+id|val          
+--+-------------
+ 1|session1_row1
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_commit: COMMIT;
+
+starting permutation: s4_bulk_insert s1_insert1 s1_insert2 s1_insert3 s4_commit s1_commit s3_count s3_commit
+s4: WARNING:  there is already a transaction in progress
+step s4_bulk_insert: INSERT INTO recno_insert_test SELECT i, 'bulk_' || i FROM generate_series(100, 109) i;
+step s1_insert1: INSERT INTO recno_insert_test VALUES (1, 'session1_row1');
+step s1_insert2: INSERT INTO recno_insert_test VALUES (2, 'session1_row2');
+step s1_insert3: INSERT INTO recno_insert_test VALUES (10, 'session1_row3');
+step s4_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_count: SELECT COUNT(*) FROM recno_insert_test;
+count
+-----
+   13
+(1 row)
+
+step s3_commit: COMMIT;

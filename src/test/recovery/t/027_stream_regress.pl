@@ -79,7 +79,7 @@ command_ok(
 		'--bindir=',
 		'--host=' . $node_primary->host,
 		'--port=' . $node_primary->port,
-		'--schedule=../regress/parallel_schedule',
+		'--schedule=../regress/integration_schedule',
 		'--max-concurrent-tests=20',
 		'--inputdir=../regress',
 		"--outputdir=$outputdir"
