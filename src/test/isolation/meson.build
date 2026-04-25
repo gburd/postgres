@@ -69,6 +69,9 @@ tests += {
       'priority': 40,
       'timeout': 1000,
     },
+    'env': {
+      'PGCTLTIMEOUT': '180',
+    },
     'dbname': 'isolation_regression',
   },
 }

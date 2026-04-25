@@ -116,4 +116,7 @@ extern UndoRecPtr UndoLogGetOldestDiscardPtr(void);
 /* File management (also called from undo_xlog.c during redo) */
 extern void ExtendUndoLogFile(uint32 log_number, uint64 new_size);
 
+/* Checkpoint support */
+extern void CheckPointUndoLog(void);
+
 #endif							/* UNDOLOG_H */
