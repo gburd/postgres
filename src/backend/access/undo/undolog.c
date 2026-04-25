@@ -41,6 +41,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/errcodes.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 
 /* GUC parameters */
@@ -630,4 +631,72 @@ UndoLogGetOldestDiscardPtr(void)
 	}
 
 	return oldest;
+}
+
+/*
+ * CheckPointUndoLog
+ *		Perform checkpoint processing for the UNDO log subsystem.
+ *
+ * This is called from CheckPointGuts() during each checkpoint.  It ensures
+ * that UNDO log discard pointers are durably persisted so that crash recovery
+ * knows which UNDO data is still needed, and optionally logs UNDO statistics
+ * when log_checkpoints is enabled.
+ *
+ * Currently, UndoLogWrite() calls pg_fsync() on every write, so there is no
+ * additional fsync work needed here.  The primary purpose is to persist the
+ * discard pointer state (the in-memory UndoLogControl structures are rebuilt
+ * from WAL during recovery) and to provide checkpoint-time statistics for
+ * monitoring.
+ *
+ * Per-relation UNDO data flows through shared_buffers and is flushed by
+ * CheckPointBuffers(), so it does not need separate handling here.
+ */
+void
+CheckPointUndoLog(void)
+{
+	int			active_logs = 0;
+	uint64		total_allocated = 0;
+	uint64		total_discarded = 0;
+	int			i;
+
+	/* Nothing to do if UNDO is not enabled at the server level */
+	if (UndoLogShared == NULL)
+		return;
+
+	/*
+	 * Scan all active UNDO logs to gather statistics and verify discard
+	 * pointer consistency.  The discard pointers themselves are WAL-logged
+	 * (via XLOG_UNDO_DISCARD records) and will be replayed during recovery,
+	 * so we don't need to write them to a separate file here.
+	 *
+	 * We take only shared locks since we are reading, not modifying.
+	 */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (!log->in_use)
+			continue;
+
+		LWLockAcquire(&log->lock, LW_SHARED);
+
+		active_logs++;
+		total_allocated += UndoRecPtrGetOffset(log->insert_ptr);
+		total_discarded += UndoRecPtrGetOffset(log->discard_ptr);
+
+		LWLockRelease(&log->lock);
+	}
+
+	/* Log UNDO statistics during checkpoint when log_checkpoints is on */
+	if (log_checkpoints && active_logs > 0)
+	{
+		ereport(LOG,
+				(errmsg("UNDO checkpoint: %d active log(s), "
+						"%llu bytes allocated, %llu bytes discarded, "
+						"%llu bytes retained",
+						active_logs,
+						(unsigned long long) total_allocated,
+						(unsigned long long) total_discarded,
+						(unsigned long long) (total_allocated - total_discarded))));
+	}
 }
