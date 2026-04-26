@@ -25,9 +25,10 @@
 
 #include "access/transam.h"
 #include "access/undodefs.h"
+#include "port/atomics.h"
+#include "port/pg_crc32c.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
-#include "port/pg_crc32c.h"
 
 /*
  * UndoRecPtr: 64-bit pointer to UNDO record
@@ -65,10 +66,10 @@
 typedef struct UndoLogControl
 {
 	uint32		log_number;		/* Log number (matches file name) */
-	UndoRecPtr	insert_ptr;		/* Next insertion point (end of log) */
+	pg_atomic_uint64 insert_ptr;	/* Next insertion point (atomic) */
 	UndoRecPtr	discard_ptr;	/* Can discard older than this */
 	TransactionId oldest_xid;	/* Oldest transaction needing this log */
-	LWLock		lock;			/* Protects allocation and metadata */
+	LWLock		lock;			/* Protects metadata (NOT insert_ptr) */
 	bool		in_use;			/* Is this log slot active? */
 }			UndoLogControl;
 
@@ -115,6 +116,10 @@ extern UndoRecPtr UndoLogGetOldestDiscardPtr(void);
 
 /* File management (also called from undo_xlog.c during redo) */
 extern void ExtendUndoLogFile(uint32 log_number, uint64 new_size);
+
+/* Cached fd management: sync dirty logs and close cached fds */
+extern void UndoLogSync(void);
+extern void UndoLogCloseFiles(void);
 
 /* Checkpoint support */
 extern void CheckPointUndoLog(void);

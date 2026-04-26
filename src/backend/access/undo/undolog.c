@@ -58,6 +58,55 @@ UndoLogSharedData *UndoLogShared = NULL;
 /* Directory for UNDO logs */
 #define UNDO_LOG_DIR "base/undo"
 
+/*
+ * Per-backend cached file descriptor for UNDO log files.
+ *
+ * File descriptors are process-local, so this cache is backend-private
+ * (not in shared memory).  We cache one fd per log slot to avoid the
+ * overhead of open()/close() on every UndoLogWrite/UndoLogRead call.
+ * The needs_fsync flag tracks whether any write has occurred since the
+ * last sync, so UndoLogSync() at commit time only fsyncs dirty files.
+ */
+typedef struct UndoLogFdCacheEntry
+{
+	int			fd;				/* cached kernel fd, -1 if not open */
+	uint32		log_number;		/* log number this fd belongs to */
+	bool		needs_fsync;	/* dirty: written since last fsync */
+}			UndoLogFdCacheEntry;
+
+static UndoLogFdCacheEntry undo_fd_cache[MAX_UNDO_LOGS];
+static bool undo_fd_cache_initialized = false;
+
+/*
+ * InitUndoFdCache
+ *		Lazily initialize the per-backend fd cache.
+ */
+static void
+InitUndoFdCache(void)
+{
+	int			i;
+
+	if (undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		undo_fd_cache[i].fd = -1;
+		undo_fd_cache[i].log_number = 0;
+		undo_fd_cache[i].needs_fsync = false;
+	}
+	undo_fd_cache_initialized = true;
+}
+
+/*
+ * GetCachedUndoLogFdEntry
+ *		Return the cache entry for the given log_number, opening if needed.
+ *
+ * The returned entry is owned by the cache -- callers must NOT close() the fd.
+ */
+static UndoLogFdCacheEntry *
+GetCachedUndoLogFdEntry(uint32 log_number, int flags);
+
 /* Forward declarations */
 static uint32 AllocateUndoLog(void);
 static int	OpenUndoLogFile(uint32 log_number, int flags);
@@ -102,7 +151,7 @@ UndoLogShmemInit(void)
 			UndoLogControl *log = &UndoLogShared->logs[i];
 
 			log->log_number = 0;
-			log->insert_ptr = InvalidUndoRecPtr;
+			pg_atomic_init_u64(&log->insert_ptr, InvalidUndoRecPtr);
 			log->discard_ptr = InvalidUndoRecPtr;
 			log->oldest_xid = InvalidTransactionId;
 			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
@@ -150,7 +199,7 @@ AllocateUndoLog(void)
 	/* Initialize the log control structure */
 	LWLockAcquire(&log->lock, LW_EXCLUSIVE);
 	log->log_number = log_number;
-	log->insert_ptr = MakeUndoRecPtr(log_number, 0);
+	pg_atomic_write_u64(&log->insert_ptr, MakeUndoRecPtr(log_number, 0));
 	log->discard_ptr = MakeUndoRecPtr(log_number, 0);
 	log->oldest_xid = InvalidTransactionId;
 	log->in_use = true;
@@ -241,8 +290,69 @@ OpenUndoLogFile(uint32 log_number, int flags)
 }
 
 /*
+ * GetCachedUndoLogFdEntry
+ *		Return the cache entry for the given log_number, opening if needed.
+ *
+ * Searches the backend-local fd cache for an entry matching log_number.
+ * If not found, opens the file via OpenUndoLogFile() and caches the fd.
+ * The caller must NOT close the returned fd -- it is owned by the cache.
+ *
+ * Returns a pointer to the UndoLogFdCacheEntry so callers can directly
+ * access the fd and set needs_fsync without a second cache lookup.
+ *
+ * The flags parameter is passed to OpenUndoLogFile when opening a new fd.
+ */
+static UndoLogFdCacheEntry *
+GetCachedUndoLogFdEntry(uint32 log_number, int flags)
+{
+	int			i;
+	int			free_slot = -1;
+
+	InitUndoFdCache();
+
+	/* Search for existing cache entry */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		if (undo_fd_cache[i].fd >= 0 &&
+			undo_fd_cache[i].log_number == log_number)
+		{
+			return &undo_fd_cache[i];
+		}
+		if (undo_fd_cache[i].fd < 0 && free_slot < 0)
+			free_slot = i;
+	}
+
+	/* No cached entry found; need to open the file */
+	if (free_slot < 0)
+	{
+		/*
+		 * Cache is full.  Evict the first entry.  In practice the number of
+		 * concurrently active UNDO logs per backend is small, so this should
+		 * be rare.
+		 */
+		free_slot = 0;
+		if (undo_fd_cache[free_slot].needs_fsync)
+		{
+			(void) pg_fsync(undo_fd_cache[free_slot].fd);
+			undo_fd_cache[free_slot].needs_fsync = false;
+		}
+		close(undo_fd_cache[free_slot].fd);
+		undo_fd_cache[free_slot].fd = -1;
+	}
+
+	undo_fd_cache[free_slot].fd = OpenUndoLogFile(log_number, flags);
+	undo_fd_cache[free_slot].log_number = log_number;
+	undo_fd_cache[free_slot].needs_fsync = false;
+
+	return &undo_fd_cache[free_slot];
+}
+
+/*
  * ExtendUndoLogFile
  *		Extend an UNDO log file to at least new_size bytes
+ *
+ * Uses the per-backend fd cache so the file is not opened and closed
+ * on every call.
  */
 void
 ExtendUndoLogFile(uint32 log_number, uint64 new_size)
@@ -253,19 +363,13 @@ ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 	uint64		current_size;
 
 	UndoLogPath(log_number, path);
-	fd = OpenUndoLogFile(log_number, O_RDWR | O_CREAT);
+	fd = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT)->fd;
 
 	/* Get current size */
 	if (fstat(fd, &statbuf) < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not stat UNDO log file \"%s\": %m", path)));
-	}
 
 	current_size = statbuf.st_size;
 
@@ -273,16 +377,10 @@ ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 	if (new_size > current_size)
 	{
 		if (ftruncate(fd, new_size) < 0)
-		{
-			int			save_errno = errno;
-
-			close(fd);
-			errno = save_errno;
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not extend UNDO log file \"%s\" to %llu bytes: %m",
 							path, (unsigned long long) new_size)));
-		}
 
 		ereport(DEBUG1,
 				(errmsg("extended UNDO log %u from %llu to %llu bytes",
@@ -290,8 +388,6 @@ ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 						(unsigned long long) current_size,
 						(unsigned long long) new_size)));
 	}
-
-	close(fd);
 }
 
 /*
@@ -347,26 +443,39 @@ UndoLogAllocate(Size size)
 		Assert(log != NULL);
 	}
 
-	/* Allocate space at end of log */
-	LWLockAcquire(&log->lock, LW_EXCLUSIVE);
-
-	ptr = log->insert_ptr;
-	log_number = UndoRecPtrGetLogNo(ptr);
-	offset = UndoRecPtrGetOffset(ptr);
-
-	/* Check if we need to extend the file */
-	if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+	/* Atomically claim space in the UNDO log */
 	{
-		LWLockRelease(&log->lock);
-		ereport(ERROR,
-				(errmsg("UNDO log %u would exceed segment size", log_number),
-				 errhint("UNDO log rotation not yet implemented")));
+		uint64		old_ptr;
+		uint64		new_ptr;
+
+		old_ptr = pg_atomic_read_u64(&log->insert_ptr);
+		log_number = UndoRecPtrGetLogNo(old_ptr);
+		offset = UndoRecPtrGetOffset(old_ptr);
+
+		if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+			ereport(ERROR,
+					(errmsg("UNDO log %u would exceed segment size", log_number),
+					 errhint("UNDO log rotation not yet implemented")));
+
+		new_ptr = MakeUndoRecPtr(log_number, offset + size);
+
+		/* CAS loop - retry if another backend allocated concurrently */
+		while (!pg_atomic_compare_exchange_u64(&log->insert_ptr,
+											   &old_ptr, new_ptr))
+		{
+			log_number = UndoRecPtrGetLogNo(old_ptr);
+			offset = UndoRecPtrGetOffset(old_ptr);
+
+			if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+				ereport(ERROR,
+						(errmsg("UNDO log %u would exceed segment size", log_number),
+						 errhint("UNDO log rotation not yet implemented")));
+
+			new_ptr = MakeUndoRecPtr(log_number, offset + size);
+		}
+
+		ptr = old_ptr;			/* We got space starting at old_ptr */
 	}
-
-	/* Update insert pointer */
-	log->insert_ptr = MakeUndoRecPtr(log_number, offset + size);
-
-	LWLockRelease(&log->lock);
 
 	/* Extend file if necessary */
 	ExtendUndoLogFile(log_number, offset + size);
@@ -377,13 +486,19 @@ UndoLogAllocate(Size size)
 /*
  * UndoLogWrite
  *		Write data to UNDO log at specified pointer
+ *
+ * Uses the per-backend fd cache to avoid open()/close() overhead per call.
+ * Uses pwrite() for atomic positioned writes (one syscall instead of two).
+ * Does NOT fsync -- durability is provided by WAL.  The UNDO data will be
+ * synced to disk by UndoLogSync() at transaction commit time, or during
+ * the next checkpoint.
  */
 void
 UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
 	uint64		offset = UndoRecPtrGetOffset(ptr);
-	int			fd;
+	UndoLogFdCacheEntry *entry;
 	ssize_t		written;
 
 	if (!UndoRecPtrIsValid(ptr))
@@ -393,64 +508,40 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 	if (size == 0)
 		return;
 
-	fd = OpenUndoLogFile(log_number, O_RDWR | O_CREAT);
+	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
 
-	/* Seek to position */
-	if (lseek(fd, offset, SEEK_SET) < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek in UNDO log %u: %m", log_number)));
-	}
-
-	/* Write data */
-	written = write(fd, data, size);
+	/* Write data at the target offset without a separate lseek() call */
+	written = pwrite(entry->fd, data, size, (off_t) offset);
 	if (written != size)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write to UNDO log %u: %m", log_number)));
-	}
 
-	/* Sync to disk (durability) */
-	if (pg_fsync(fd) < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not fsync UNDO log %u: %m", log_number)));
-	}
-
-	close(fd);
+	/* Mark the cache entry dirty so UndoLogSync() knows to fsync it */
+	entry->needs_fsync = true;
 }
 
 /*
  * UndoLogRead
  *		Read data from UNDO log at specified pointer
  *
- * Uses the UNDO buffer cache when available (normal backend operation).
- * Falls back to direct I/O when the buffer cache is not initialized
- * (e.g., during early startup or in frontend tools).
+ * Uses the per-backend fd cache for efficiency.  Uses pread() for atomic
+ * positioned reads (one syscall instead of two).
  *
- * Reads may span multiple BLCKSZ blocks. The function handles this
- * by reading from each block in sequence through the buffer cache.
+ * Reads may span multiple BLCKSZ blocks.  The function handles this
+ * by reading from each block in sequence through direct I/O.
+ *
+ * TODO: Unify the file path convention between UndoLogWrite (which uses
+ * base/undo/) and ReadUndoBuffer (which uses base/9/) so that undo reads
+ * can go through the shared buffer pool for performance.
  */
 void
 UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
 	uint64		offset = UndoRecPtrGetOffset(ptr);
+	UndoLogFdCacheEntry *entry;
+	ssize_t		nread;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -459,49 +550,14 @@ UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 	if (size == 0)
 		return;
 
-	/*
-	 * Use direct I/O to read UNDO data from the undo log files in base/undo/.
-	 * The shared buffer pool integration (via undo_bufmgr) uses a different
-	 * file path convention (base/<UNDO_DB_OID>/<logno>) than the undo log
-	 * files (base/undo/<logno>), so we always use direct I/O here for
-	 * correctness.
-	 *
-	 * TODO: Unify the file path convention between UndoLogWrite (which uses
-	 * base/undo/) and ReadUndoBuffer (which uses base/9/) so that undo reads
-	 * can go through the shared buffer pool for performance.
-	 */
-	{
-		int			fd;
-		ssize_t		nread;
+	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
 
-		fd = OpenUndoLogFile(log_number, O_RDONLY);
-
-		if (lseek(fd, offset, SEEK_SET) < 0)
-		{
-			int			save_errno = errno;
-
-			close(fd);
-			errno = save_errno;
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not seek in UNDO log %u: %m", log_number)));
-		}
-
-		nread = read(fd, buffer, size);
-		if (nread != size)
-		{
-			int			save_errno = errno;
-
-			close(fd);
-			if (nread < 0)
-				errno = save_errno;
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not read from UNDO log %u: %m", log_number)));
-		}
-
-		close(fd);
-	}
+	/* Read data at the target offset without a separate lseek() call */
+	nread = pread(entry->fd, buffer, size, (off_t) offset);
+	if (nread != size)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read from UNDO log %u: %m", log_number)));
 }
 
 /*
@@ -563,9 +619,7 @@ UndoLogGetInsertPtr(uint32 log_number)
 
 		if (log->in_use && log->log_number == log_number)
 		{
-			LWLockAcquire(&log->lock, LW_SHARED);
-			ptr = log->insert_ptr;
-			LWLockRelease(&log->lock);
+			ptr = pg_atomic_read_u64(&log->insert_ptr);
 			break;
 		}
 	}
@@ -634,6 +688,72 @@ UndoLogGetOldestDiscardPtr(void)
 }
 
 /*
+ * UndoLogSync
+ *		Fsync all dirty UNDO log files in this backend's fd cache.
+ *
+ * Called at transaction commit to ensure all UNDO data written during
+ * the transaction is durable on disk.  Only files that have been written
+ * (needs_fsync == true) are synced; read-only fds are skipped.
+ *
+ * UNDO data is also WAL-logged, so after a crash the WAL replay will
+ * reconstruct the UNDO log metadata.  The fsync here ensures that the
+ * UNDO log *files* are consistent so that rollback of in-progress
+ * transactions can read back valid UNDO data without needing WAL replay
+ * of the UNDO file contents.
+ */
+void
+UndoLogSync(void)
+{
+	int			i;
+
+	if (!undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		if (undo_fd_cache[i].fd >= 0 && undo_fd_cache[i].needs_fsync)
+		{
+			if (pg_fsync(undo_fd_cache[i].fd) < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not fsync UNDO log %u: %m",
+								undo_fd_cache[i].log_number)));
+
+			undo_fd_cache[i].needs_fsync = false;
+		}
+	}
+}
+
+/*
+ * UndoLogCloseFiles
+ *		Close all cached UNDO log file descriptors for this backend.
+ *
+ * Called during transaction abort (when we don't need to fsync) and
+ * at process exit to release file descriptors.  Any pending dirty
+ * data is NOT fsynced -- the caller is responsible for ensuring
+ * durability if needed (e.g., by calling UndoLogSync first).
+ */
+void
+UndoLogCloseFiles(void)
+{
+	int			i;
+
+	if (!undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		if (undo_fd_cache[i].fd >= 0)
+		{
+			close(undo_fd_cache[i].fd);
+			undo_fd_cache[i].fd = -1;
+			undo_fd_cache[i].log_number = 0;
+			undo_fd_cache[i].needs_fsync = false;
+		}
+	}
+}
+
+/*
  * CheckPointUndoLog
  *		Perform checkpoint processing for the UNDO log subsystem.
  *
@@ -642,11 +762,10 @@ UndoLogGetOldestDiscardPtr(void)
  * knows which UNDO data is still needed, and optionally logs UNDO statistics
  * when log_checkpoints is enabled.
  *
- * Currently, UndoLogWrite() calls pg_fsync() on every write, so there is no
- * additional fsync work needed here.  The primary purpose is to persist the
- * discard pointer state (the in-memory UndoLogControl structures are rebuilt
- * from WAL during recovery) and to provide checkpoint-time statistics for
- * monitoring.
+ * UndoLogWrite() defers fsync to transaction commit (via UndoLogSync()).
+ * The primary purpose of this function is to persist the discard pointer
+ * state (the in-memory UndoLogControl structures are rebuilt from WAL
+ * during recovery) and to provide checkpoint-time statistics for monitoring.
  *
  * Per-relation UNDO data flows through shared_buffers and is flushed by
  * CheckPointBuffers(), so it does not need separate handling here.
@@ -678,12 +797,11 @@ CheckPointUndoLog(void)
 		if (!log->in_use)
 			continue;
 
-		LWLockAcquire(&log->lock, LW_SHARED);
-
 		active_logs++;
-		total_allocated += UndoRecPtrGetOffset(log->insert_ptr);
-		total_discarded += UndoRecPtrGetOffset(log->discard_ptr);
+		total_allocated += UndoRecPtrGetOffset(pg_atomic_read_u64(&log->insert_ptr));
 
+		LWLockAcquire(&log->lock, LW_SHARED);
+		total_discarded += UndoRecPtrGetOffset(log->discard_ptr);
 		LWLockRelease(&log->lock);
 	}
 

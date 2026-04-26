@@ -198,7 +198,7 @@ perform_undo_discard(void)
 			TransactionIdPrecedes(log->oldest_xid, oldest_xid))
 		{
 			/* This log has UNDO that can be discarded */
-			oldest_undo_ptr = log->insert_ptr;
+			oldest_undo_ptr = pg_atomic_read_u64(&log->insert_ptr);
 
 			LWLockRelease(&log->lock);
 

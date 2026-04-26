@@ -22,6 +22,18 @@
 #include "utils/memutils.h"
 
 /*
+ * Per-backend recycled memory context for UndoRecordSet.
+ *
+ * Instead of creating and destroying a MemoryContext for every
+ * UndoRecordSet, we recycle one context across operations within a
+ * transaction.  This avoids the overhead of repeated
+ * AllocSetContextCreate/MemoryContextDelete for high-frequency
+ * operations (e.g., 1000-row INSERTs).  The cached context is cleaned
+ * up at transaction end by UndoRecordSetResetCache().
+ */
+static MemoryContext UndoRecordReusableContext = NULL;
+
+/*
  * UndoRecordGetPayloadSize - Calculate size needed for an UNDO record
  *
  * This includes the fixed header plus the RM-specific payload.
@@ -106,10 +118,25 @@ UndoRecordSetCreate(TransactionId xid, UndoRecPtr prev_undo_ptr)
 	 */
 	parent = CurrentMemoryContext;
 
-	/* Create memory context for this record set */
-	mctx = AllocSetContextCreate(parent,
-								 "UNDO record set",
-								 ALLOCSET_DEFAULT_SIZES);
+	/*
+	 * Reuse a previously recycled memory context if available. This avoids
+	 * the overhead of AllocSetContextCreate/MemoryContextDelete for every
+	 * UndoRecordSet within a transaction.  MemoryContextReset clears all
+	 * allocations but keeps the context's memory blocks for reuse.
+	 */
+	if (UndoRecordReusableContext != NULL)
+	{
+		mctx = UndoRecordReusableContext;
+		UndoRecordReusableContext = NULL;	/* take ownership */
+		MemoryContextReset(mctx);
+		MemoryContextSetParent(mctx, parent);
+	}
+	else
+	{
+		mctx = AllocSetContextCreate(parent,
+									 "UNDO record set",
+									 ALLOCSET_DEFAULT_SIZES);
+	}
 
 	oldcontext = MemoryContextSwitchTo(mctx);
 
@@ -135,13 +162,58 @@ UndoRecordSetCreate(TransactionId xid, UndoRecPtr prev_undo_ptr)
 /*
  * UndoRecordSetFree - Free an UNDO record set
  *
- * Destroys the memory context and all associated data.
+ * Recycles the memory context for later reuse if possible, otherwise
+ * destroys it.  We keep at most one recycled context to bound memory.
  */
 void
 UndoRecordSetFree(UndoRecordSet *uset)
 {
-	if (uset != NULL && uset->mctx != NULL)
-		MemoryContextDelete(uset->mctx);
+	MemoryContext mctx;
+
+	if (uset == NULL || uset->mctx == NULL)
+		return;
+
+	mctx = uset->mctx;
+
+	if (UndoRecordReusableContext == NULL)
+	{
+		/*
+		 * Recycle this context for the next UndoRecordSetCreate call.
+		 *
+		 * Re-parent to TopMemoryContext so the cached context is not
+		 * destroyed if its original parent is cleaned up before
+		 * UndoRecordSetResetCache() runs.  This can happen when the
+		 * UNDO record set was created inside an SPI execution context
+		 * (e.g., DO $$ ... $$ blocks): SPI_finish() deletes its
+		 * procCxt/execCxt, which would recursively destroy this child
+		 * context, leaving UndoRecordReusableContext as a dangling
+		 * pointer.  UndoRecordSetCreate() will re-parent it to the
+		 * caller's CurrentMemoryContext on reuse.
+		 */
+		MemoryContextSetParent(mctx, TopMemoryContext);
+		UndoRecordReusableContext = mctx;
+	}
+	else
+	{
+		/* Already have one recycled context; destroy this one */
+		MemoryContextDelete(mctx);
+	}
+}
+
+/*
+ * UndoRecordSetResetCache - Release the recycled memory context.
+ *
+ * Called at transaction end (commit or abort) to ensure the cached
+ * context does not outlive the transaction.
+ */
+void
+UndoRecordSetResetCache(void)
+{
+	if (UndoRecordReusableContext != NULL)
+	{
+		MemoryContextDelete(UndoRecordReusableContext);
+		UndoRecordReusableContext = NULL;
+	}
 }
 
 /*

@@ -288,6 +288,11 @@ GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel)
  * On commit, undo records are no longer needed for rollback.
  * Free all record sets and reset state.
  *
+ * We call UndoLogSync() to fsync any UNDO log files that were written
+ * during this transaction.  This ensures the UNDO data is durable before
+ * we consider the transaction committed.  The fsync is deferred to here
+ * (rather than per-write) for performance.
+ *
  * NB: This code MUST NOT FAIL, since it is run as a post-commit step.
  */
 void
@@ -295,8 +300,22 @@ AtCommit_XactUndo(void)
 {
 	int			i;
 
+	/*
+	 * Always release the recycled UNDO record memory context, even if
+	 * XactUndo.has_undo is false.  The heap AM calls UndoRecordSetCreate/
+	 * UndoRecordSetFree directly (bypassing PrepareXactUndoData), which
+	 * caches a memory context in UndoRecordReusableContext without setting
+	 * has_undo.  If we skip this cleanup, the cached context's parent
+	 * pointer becomes dangling after the transaction's memory contexts are
+	 * destroyed, causing a segfault on the next reuse.
+	 */
+	UndoRecordSetResetCache();
+
 	if (!XactUndo.has_undo)
 		return;
+
+	/* Sync all dirty UNDO log files to disk before finishing commit. */
+	UndoLogSync();
 
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)
@@ -318,11 +337,18 @@ AtCommit_XactUndo(void)
  * On abort, we need to apply the undo chain to roll back changes.
  * The actual undo application is triggered by xact.c before calling
  * this function.  Here we apply per-relation UNDO and clean up the record sets.
+ *
+ * We close cached UNDO log fds without fsyncing -- on abort, we don't
+ * need the UNDO data to be durable (it will be replayed from WAL if
+ * needed after a crash).
  */
 void
 AtAbort_XactUndo(void)
 {
 	int			i;
+
+	/* Always clean up the recycled context; see AtCommit_XactUndo. */
+	UndoRecordSetResetCache();
 
 	if (!XactUndo.has_undo && XactUndo.relundo_list == NULL)
 		return;
@@ -345,6 +371,9 @@ AtAbort_XactUndo(void)
 			XactUndo.record_set[i] = NULL;
 		}
 	}
+
+	/* Close cached UNDO log fds (no fsync needed on abort). */
+	UndoLogCloseFiles();
 
 	ResetXactUndo();
 }
@@ -482,6 +511,9 @@ AtProcExit_XactUndo(void)
 			XactUndo.record_set[i] = NULL;
 		}
 	}
+
+	/* Close any cached UNDO log fds before process exit. */
+	UndoLogCloseFiles();
 
 	ResetXactUndo();
 }

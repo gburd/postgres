@@ -167,6 +167,7 @@ typedef struct UndoRecordSet
 extern UndoRecordSet *UndoRecordSetCreate(TransactionId xid,
 										  UndoRecPtr prev_undo_ptr);
 extern void UndoRecordSetFree(UndoRecordSet *uset);
+extern void UndoRecordSetResetCache(void);
 
 /* Add records to a set - generic payload API */
 extern void UndoRecordAddPayload(UndoRecordSet *uset,

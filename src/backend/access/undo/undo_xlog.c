@@ -90,7 +90,7 @@ undo_redo(XLogReaderState *record)
 							{
 								log = &UndoLogShared->logs[i];
 								log->log_number = xlrec->log_number;
-								log->insert_ptr = xlrec->start_ptr;
+								pg_atomic_write_u64(&log->insert_ptr, xlrec->start_ptr);
 								log->discard_ptr = MakeUndoRecPtr(xlrec->log_number, 0);
 								log->oldest_xid = InvalidTransactionId;
 								log->in_use = true;
@@ -102,7 +102,8 @@ undo_redo(XLogReaderState *record)
 					if (log != NULL)
 					{
 						/* Advance insert pointer past this allocation */
-						log->insert_ptr = xlrec->start_ptr + xlrec->length;
+						pg_atomic_write_u64(&log->insert_ptr,
+											xlrec->start_ptr + xlrec->length);
 					}
 				}
 			}
