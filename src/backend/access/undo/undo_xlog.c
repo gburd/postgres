@@ -37,6 +37,7 @@
 #include "access/undolog.h"
 #include "access/xlogutils.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 
 /*
  * undo_redo - Replay an UNDO WAL record during crash recovery
@@ -90,7 +91,7 @@ undo_redo(XLogReaderState *record)
 							{
 								log = &UndoLogShared->logs[i];
 								log->log_number = xlrec->log_number;
-								log->insert_ptr = xlrec->start_ptr;
+								pg_atomic_write_u64(&log->insert_ptr, xlrec->start_ptr);
 								log->discard_ptr = MakeUndoRecPtr(xlrec->log_number, 0);
 								log->oldest_xid = InvalidTransactionId;
 								log->in_use = true;
@@ -101,8 +102,18 @@ undo_redo(XLogReaderState *record)
 
 					if (log != NULL)
 					{
-						/* Advance insert pointer past this allocation */
-						log->insert_ptr = xlrec->start_ptr + xlrec->length;
+						/*
+						 * Advance insert pointer past this allocation.
+						 * Only move forward, never regress -- with
+						 * coalesced WAL records from concurrent backends,
+						 * a later record may cover a range already
+						 * subsumed by an earlier one.
+						 */
+						UndoRecPtr	new_end = xlrec->start_ptr + xlrec->length;
+						UndoRecPtr	cur_ptr = pg_atomic_read_u64(&log->insert_ptr);
+
+						if (new_end > cur_ptr)
+							pg_atomic_write_u64(&log->insert_ptr, new_end);
 					}
 				}
 			}
@@ -139,6 +150,9 @@ undo_redo(XLogReaderState *record)
 				 * will be created if it doesn't exist.
 				 */
 				ExtendUndoLogFile(xlrec->log_number, xlrec->new_size);
+
+				/* Also extend the smgr-managed file for checkpoint write-back */
+				ExtendUndoLogSmgrFile(xlrec->log_number, xlrec->new_size);
 			}
 			break;
 

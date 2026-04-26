@@ -29,6 +29,8 @@
 #include "access/transam.h"
 #include "access/undo_bufmgr.h"
 #include "access/undolog.h"
+#include "access/undorecord.h"
+#include "access/undoworker.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -40,6 +42,7 @@
 #include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/smgr.h"
 #include "utils/errcodes.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -57,6 +60,57 @@ UndoLogSharedData *UndoLogShared = NULL;
 
 /* Directory for UNDO logs */
 #define UNDO_LOG_DIR "base/undo"
+
+/*
+ * Per-backend cached file descriptor for UNDO log files.
+ *
+ * File descriptors are process-local, so this cache is backend-private
+ * (not in shared memory).  We cache one fd per log slot to avoid the
+ * overhead of open()/close() on every UndoLogWrite/UndoLogRead call.
+ * The needs_fsync flag tracks whether any write has occurred since the
+ * last sync, so UndoLogSync() at commit time only fsyncs dirty files.
+ */
+typedef struct UndoLogFdCacheEntry
+{
+	int			fd;				/* cached kernel fd, -1 if not open */
+	uint32		log_number;		/* log number this fd belongs to */
+	bool		needs_fsync;	/* dirty: written since last fsync */
+	uint64		cached_size;	/* last known file size (monotonically grows) */
+}			UndoLogFdCacheEntry;
+
+static UndoLogFdCacheEntry undo_fd_cache[MAX_UNDO_LOGS];
+static bool undo_fd_cache_initialized = false;
+
+/*
+ * InitUndoFdCache
+ *		Lazily initialize the per-backend fd cache.
+ */
+static void
+InitUndoFdCache(void)
+{
+	int			i;
+
+	if (undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		undo_fd_cache[i].fd = -1;
+		undo_fd_cache[i].log_number = 0;
+		undo_fd_cache[i].needs_fsync = false;
+		undo_fd_cache[i].cached_size = 0;
+	}
+	undo_fd_cache_initialized = true;
+}
+
+/*
+ * GetCachedUndoLogFdEntry
+ *		Return the cache entry for the given log_number, opening if needed.
+ *
+ * The returned entry is owned by the cache -- callers must NOT close() the fd.
+ */
+static UndoLogFdCacheEntry *
+GetCachedUndoLogFdEntry(uint32 log_number, int flags);
 
 /* Forward declarations */
 static uint32 AllocateUndoLog(void);
@@ -92,6 +146,28 @@ UndoLogShmemInit(void)
 	UndoLogShared = (UndoLogSharedData *)
 		ShmemInitStruct("UNDO Log Control", UndoLogShmemSize(), &found);
 
+	/*
+	 * Ensure the base/<UNDO_DB_OID>/ directory exists.  UNDO log buffers
+	 * use a virtual RelFileLocator with dbOid = UNDO_DB_OID (9), and the
+	 * standard storage manager (md.c) resolves this to base/9/.  This
+	 * directory must exist before recovery replays UNDO WAL records or
+	 * the checkpointer flushes dirty UNDO buffers.
+	 *
+	 * We do this unconditionally (even if not !found) so that it's
+	 * idempotent across restarts and crash recovery.
+	 */
+	if (enable_undo)
+	{
+		char		undo_db_path[MAXPGPATH];
+
+		snprintf(undo_db_path, MAXPGPATH, "base/%u", UNDO_DB_OID);
+		if (MakePGDirectory(undo_db_path) < 0 && errno != EEXIST)
+			ereport(WARNING,
+					(errcode_for_file_access(),
+					 errmsg("could not create directory \"%s\": %m",
+							undo_db_path)));
+	}
+
 	if (!found)
 	{
 		int			i;
@@ -102,7 +178,7 @@ UndoLogShmemInit(void)
 			UndoLogControl *log = &UndoLogShared->logs[i];
 
 			log->log_number = 0;
-			log->insert_ptr = InvalidUndoRecPtr;
+			pg_atomic_init_u64(&log->insert_ptr, InvalidUndoRecPtr);
 			log->discard_ptr = InvalidUndoRecPtr;
 			log->oldest_xid = InvalidTransactionId;
 			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
@@ -150,7 +226,7 @@ AllocateUndoLog(void)
 	/* Initialize the log control structure */
 	LWLockAcquire(&log->lock, LW_EXCLUSIVE);
 	log->log_number = log_number;
-	log->insert_ptr = MakeUndoRecPtr(log_number, 0);
+	pg_atomic_write_u64(&log->insert_ptr, MakeUndoRecPtr(log_number, 0));
 	log->discard_ptr = MakeUndoRecPtr(log_number, 0);
 	log->oldest_xid = InvalidTransactionId;
 	log->in_use = true;
@@ -241,57 +317,253 @@ OpenUndoLogFile(uint32 log_number, int flags)
 }
 
 /*
- * ExtendUndoLogFile
- *		Extend an UNDO log file to at least new_size bytes
+ * GetCachedUndoLogFdEntry
+ *		Return the cache entry for the given log_number, opening if needed.
+ *
+ * Searches the backend-local fd cache for an entry matching log_number.
+ * If not found, opens the file via OpenUndoLogFile() and caches the fd.
+ * The caller must NOT close the returned fd -- it is owned by the cache.
+ *
+ * Returns a pointer to the UndoLogFdCacheEntry so callers can directly
+ * access the fd and set needs_fsync without a second cache lookup.
+ *
+ * The flags parameter is passed to OpenUndoLogFile when opening a new fd.
  */
-void
-ExtendUndoLogFile(uint32 log_number, uint64 new_size)
+static UndoLogFdCacheEntry *
+GetCachedUndoLogFdEntry(uint32 log_number, int flags)
 {
-	char		path[MAXPGPATH];
-	int			fd;
-	struct stat statbuf;
-	uint64		current_size;
+	int			i;
+	int			free_slot = -1;
 
-	UndoLogPath(log_number, path);
-	fd = OpenUndoLogFile(log_number, O_RDWR | O_CREAT);
+	InitUndoFdCache();
 
-	/* Get current size */
-	if (fstat(fd, &statbuf) < 0)
+	/* Search for existing cache entry */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
 	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not stat UNDO log file \"%s\": %m", path)));
+		if (undo_fd_cache[i].fd >= 0 &&
+			undo_fd_cache[i].log_number == log_number)
+		{
+			return &undo_fd_cache[i];
+		}
+		if (undo_fd_cache[i].fd < 0 && free_slot < 0)
+			free_slot = i;
 	}
 
-	current_size = statbuf.st_size;
-
-	/* Extend if needed */
-	if (new_size > current_size)
+	/* No cached entry found; need to open the file */
+	if (free_slot < 0)
 	{
-		if (ftruncate(fd, new_size) < 0)
+		/*
+		 * Cache is full.  Evict the first entry.  In practice the number of
+		 * concurrently active UNDO logs per backend is small, so this should
+		 * be rare.
+		 */
+		free_slot = 0;
+		if (undo_fd_cache[free_slot].needs_fsync)
 		{
-			int			save_errno = errno;
+			(void) pg_fsync(undo_fd_cache[free_slot].fd);
+			undo_fd_cache[free_slot].needs_fsync = false;
+		}
+		close(undo_fd_cache[free_slot].fd);
+		undo_fd_cache[free_slot].fd = -1;
+		undo_fd_cache[free_slot].cached_size = 0;
+	}
 
-			close(fd);
-			errno = save_errno;
+	undo_fd_cache[free_slot].fd = OpenUndoLogFile(log_number, flags);
+	undo_fd_cache[free_slot].log_number = log_number;
+	undo_fd_cache[free_slot].needs_fsync = false;
+	undo_fd_cache[free_slot].cached_size = 0;	/* will be populated by
+												 * ExtendUndoLogFile */
+
+	return &undo_fd_cache[free_slot];
+}
+
+/*
+ * ExtendUndoLogFile
+ *		Extend an UNDO log file to cover at least logical_end bytes of data
+ *
+ * The logical_end parameter is in terms of UNDO data bytes (the same
+ * units as UndoRecPtr offsets).  The physical file is extended to cover
+ * the necessary number of BLCKSZ pages, accounting for PageHeaderData
+ * overhead in each page.
+ *
+ * Uses the per-backend fd cache so the file is not opened and closed
+ * on every call.  Also caches the file size in the fd cache entry to
+ * avoid fstat() syscalls on every allocation.
+ */
+void
+ExtendUndoLogFile(uint32 log_number, uint64 logical_end)
+{
+	UndoLogFdCacheEntry *entry;
+	uint64		physical_size;
+
+	if (logical_end == 0)
+		return;
+
+	/* Convert logical bytes to physical file size (accounting for headers) */
+	physical_size = UndoLogicalToFileSize(logical_end);
+
+	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
+
+	/* Fast path: cached size already sufficient */
+	if (physical_size <= entry->cached_size)
+		return;
+
+	/*
+	 * Cache miss or first call for this entry.  Check actual file size via
+	 * fstat only when the cached size is insufficient.
+	 */
+	if (entry->cached_size == 0)
+	{
+		struct stat statbuf;
+		char		path[MAXPGPATH];
+
+		if (fstat(entry->fd, &statbuf) < 0)
+		{
+			UndoLogPath(log_number, path);
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not stat UNDO log file \"%s\": %m", path)));
+		}
+		entry->cached_size = statbuf.st_size;
+
+		/* Re-check after populating cache */
+		if (physical_size <= entry->cached_size)
+			return;
+	}
+
+	/* Extend the file */
+	{
+		char		path[MAXPGPATH];
+
+		if (ftruncate(entry->fd, physical_size) < 0)
+		{
+			UndoLogPath(log_number, path);
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not extend UNDO log file \"%s\" to %llu bytes: %m",
-							path, (unsigned long long) new_size)));
+							path, (unsigned long long) physical_size)));
 		}
 
 		ereport(DEBUG1,
-				(errmsg("extended UNDO log %u from %llu to %llu bytes",
+				(errmsg("extended UNDO log %u from %llu to %llu bytes (logical end %llu)",
 						log_number,
-						(unsigned long long) current_size,
-						(unsigned long long) new_size)));
+						(unsigned long long) entry->cached_size,
+						(unsigned long long) physical_size,
+						(unsigned long long) logical_end)));
+
+		entry->cached_size = physical_size;
+	}
+}
+
+/*
+ * Per-backend flag: has this backend ensured that the base/<UNDO_DB_OID>/
+ * directory exists?  Checked once per backend lifetime to avoid repeated
+ * mkdir() syscalls.
+ */
+static bool undo_db_dir_ensured = false;
+
+/*
+ * Per-backend cache of the highest block number known to exist in each
+ * UNDO log's smgr file.  This avoids repeated smgrnblocks() calls.
+ */
+static BlockNumber undo_smgr_nblocks_cache[MAX_UNDO_LOGS];
+static bool undo_smgr_cache_initialized = false;
+
+/*
+ * EnsureUndoDbDirectory
+ *		Create the base/<UNDO_DB_OID>/ directory if it doesn't exist.
+ *
+ * UNDO log buffers are mapped to virtual RelFileLocators with
+ * dbOid = UNDO_DB_OID (9).  The standard storage manager (md.c) resolves
+ * these to file paths under base/9/.  This directory must exist before
+ * md.c can create or write UNDO log segment files during checkpoint
+ * flush-back.
+ */
+static void
+EnsureUndoDbDirectory(void)
+{
+	char		path[MAXPGPATH];
+
+	if (undo_db_dir_ensured)
+		return;
+
+	snprintf(path, MAXPGPATH, "base/%u", UNDO_DB_OID);
+
+	if (MakePGDirectory(path) < 0 && errno != EEXIST)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create directory \"%s\": %m", path)));
+
+	undo_db_dir_ensured = true;
+}
+
+/*
+ * ExtendUndoLogSmgrFile
+ *		Ensure the smgr-managed file for an UNDO log covers the required blocks.
+ *
+ * When UNDO I/O is routed through shared_buffers, dirty UNDO pages are
+ * flushed to disk by the checkpointer via md.c.  md.c resolves the virtual
+ * RelFileLocator {spcOid=1663, dbOid=9, relNumber=log_number} to file
+ * path base/9/<log_number>.  This function ensures that file exists and
+ * is extended to cover at least target_block.
+ *
+ * Uses a per-backend cache to avoid repeated smgrnblocks() calls.
+ */
+void
+ExtendUndoLogSmgrFile(uint32 log_number, uint64 logical_end)
+{
+	RelFileLocator rlocator;
+	SMgrRelation srel;
+	BlockNumber target_block;
+	BlockNumber current_nblocks;
+
+	if (logical_end == 0)
+		return;
+
+	/*
+	 * Compute the highest block number we need.  UndoRecPtrGetBlockNum
+	 * maps logical byte offsets to block numbers.
+	 */
+	target_block = UndoRecPtrGetBlockNum(logical_end - 1);
+
+	/* Initialize per-backend cache on first use */
+	if (!undo_smgr_cache_initialized)
+	{
+		int			i;
+
+		for (i = 0; i < MAX_UNDO_LOGS; i++)
+			undo_smgr_nblocks_cache[i] = 0;
+		undo_smgr_cache_initialized = true;
 	}
 
-	close(fd);
+	/* Fast path: cached nblocks already covers the target */
+	if (undo_smgr_nblocks_cache[log_number % MAX_UNDO_LOGS] > target_block)
+		return;
+
+	/* Ensure the base/9/ directory exists */
+	EnsureUndoDbDirectory();
+
+	UndoLogGetRelFileLocator(log_number, &rlocator);
+	srel = smgropen(rlocator, INVALID_PROC_NUMBER);
+
+	/* Create the fork file if it doesn't exist yet */
+	if (!smgrexists(srel, UndoLogForkNum))
+		smgrcreate(srel, UndoLogForkNum, false);
+
+	/* Extend the file to cover the target block */
+	current_nblocks = smgrnblocks(srel, UndoLogForkNum);
+
+	while (current_nblocks <= target_block)
+	{
+		PGIOAlignedBlock zbuffer;
+
+		memset(zbuffer.data, 0, BLCKSZ);
+		smgrextend(srel, UndoLogForkNum, current_nblocks, zbuffer.data, false);
+		current_nblocks++;
+	}
+
+	/* Update the per-backend cache */
+	undo_smgr_nblocks_cache[log_number % MAX_UNDO_LOGS] = current_nblocks;
 }
 
 /*
@@ -347,44 +619,76 @@ UndoLogAllocate(Size size)
 		Assert(log != NULL);
 	}
 
-	/* Allocate space at end of log */
-	LWLockAcquire(&log->lock, LW_EXCLUSIVE);
-
-	ptr = log->insert_ptr;
-	log_number = UndoRecPtrGetLogNo(ptr);
-	offset = UndoRecPtrGetOffset(ptr);
-
-	/* Check if we need to extend the file */
-	if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+	/* Atomically claim space in the UNDO log */
 	{
-		LWLockRelease(&log->lock);
-		ereport(ERROR,
-				(errmsg("UNDO log %u would exceed segment size", log_number),
-				 errhint("UNDO log rotation not yet implemented")));
+		uint64		old_ptr;
+		uint64		new_ptr;
+
+		old_ptr = pg_atomic_read_u64(&log->insert_ptr);
+		log_number = UndoRecPtrGetLogNo(old_ptr);
+		offset = UndoRecPtrGetOffset(old_ptr);
+
+		if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+			ereport(ERROR,
+					(errmsg("UNDO log %u would exceed segment size", log_number),
+					 errhint("UNDO log rotation not yet implemented")));
+
+		new_ptr = MakeUndoRecPtr(log_number, offset + size);
+
+		/* CAS loop - retry if another backend allocated concurrently */
+		while (!pg_atomic_compare_exchange_u64(&log->insert_ptr,
+											   &old_ptr, new_ptr))
+		{
+			log_number = UndoRecPtrGetLogNo(old_ptr);
+			offset = UndoRecPtrGetOffset(old_ptr);
+
+			if (offset + size > UNDO_LOG_SEGMENT_SIZE)
+				ereport(ERROR,
+						(errmsg("UNDO log %u would exceed segment size", log_number),
+						 errhint("UNDO log rotation not yet implemented")));
+
+			new_ptr = MakeUndoRecPtr(log_number, offset + size);
+		}
+
+		ptr = old_ptr;			/* We got space starting at old_ptr */
 	}
 
-	/* Update insert pointer */
-	log->insert_ptr = MakeUndoRecPtr(log_number, offset + size);
+	/* Update cumulative allocation counter */
+	pg_atomic_fetch_add_u64(&UndoLogShared->total_allocated, size);
 
-	LWLockRelease(&log->lock);
-
-	/* Extend file if necessary */
+	/* Extend file if necessary (legacy direct-I/O path) */
 	ExtendUndoLogFile(log_number, offset + size);
+
+	/* Extend the smgr-managed file for checkpoint write-back */
+	ExtendUndoLogSmgrFile(log_number, offset + size);
 
 	return ptr;
 }
 
 /*
  * UndoLogWrite
- *		Write data to UNDO log at specified pointer
+ *		Write data to UNDO log at specified pointer via shared_buffers
+ *
+ * Routes UNDO writes through PostgreSQL's shared buffer pool instead of
+ * direct pwrite() syscalls.  This eliminates per-row pwrite() overhead
+ * and per-commit fdatasync() — UNDO pages are flushed to disk by the
+ * checkpointer, same as heap pages.
+ *
+ * The logical byte offset in the UndoRecPtr is mapped to physical pages
+ * that include standard PageHeaderData, so the buffer manager's checksum
+ * and LSN tracking work correctly.
+ *
+ * Records that span page boundaries are split across multiple buffer
+ * pins.  Each modified page is WAL-logged with XLogRegisterBuffer for
+ * full-page-image support during crash recovery.
  */
 void
 UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
-	uint64		offset = UndoRecPtrGetOffset(ptr);
-	int			fd;
-	ssize_t		written;
+	uint64		logical_offset = UndoRecPtrGetOffset(ptr);
+	Size		remaining = size;
+	const char *src = data;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -393,64 +697,38 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 	if (size == 0)
 		return;
 
-	fd = OpenUndoLogFile(log_number, O_RDWR | O_CREAT);
+	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
 
-	/* Seek to position */
-	if (lseek(fd, offset, SEEK_SET) < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not seek in UNDO log %u: %m", log_number)));
-	}
-
-	/* Write data */
-	written = write(fd, data, size);
+	/* Write data at the target offset without a separate lseek() call */
+	written = pwrite(entry->fd, data, size, (off_t) offset);
 	if (written != size)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write to UNDO log %u: %m", log_number)));
-	}
 
-	/* Sync to disk (durability) */
-	if (pg_fsync(fd) < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not fsync UNDO log %u: %m", log_number)));
-	}
-
-	close(fd);
+	/* Mark the cache entry dirty so UndoLogSync() knows to fsync it */
+	entry->needs_fsync = true;
 }
 
 /*
  * UndoLogRead
- *		Read data from UNDO log at specified pointer
+ *		Read data from UNDO log at specified pointer via shared_buffers
  *
- * Uses the UNDO buffer cache when available (normal backend operation).
- * Falls back to direct I/O when the buffer cache is not initialized
- * (e.g., during early startup or in frontend tools).
+ * Routes UNDO reads through PostgreSQL's shared buffer pool.  Hot UNDO
+ * data (recently written, not yet evicted) is served directly from
+ * shared_buffers without any I/O.  This is especially beneficial for
+ * rollback reads, which access recently-written UNDO data.
  *
- * Reads may span multiple BLCKSZ blocks. The function handles this
- * by reading from each block in sequence through the buffer cache.
+ * Reads that span page boundaries are handled by reading from multiple
+ * buffer pins in sequence.
  */
 void
 UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
-	uint64		offset = UndoRecPtrGetOffset(ptr);
+	uint64		logical_offset = UndoRecPtrGetOffset(ptr);
+	Size		remaining = size;
+	char	   *dest = buffer;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -459,48 +737,25 @@ UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 	if (size == 0)
 		return;
 
-	/*
-	 * Use direct I/O to read UNDO data from the undo log files in base/undo/.
-	 * The shared buffer pool integration (via undo_bufmgr) uses a different
-	 * file path convention (base/<UNDO_DB_OID>/<logno>) than the undo log
-	 * files (base/undo/<logno>), so we always use direct I/O here for
-	 * correctness.
-	 *
-	 * TODO: Unify the file path convention between UndoLogWrite (which uses
-	 * base/undo/) and ReadUndoBuffer (which uses base/9/) so that undo reads
-	 * can go through the shared buffer pool for performance.
-	 */
+	while (remaining > 0)
 	{
-		int			fd;
-		ssize_t		nread;
+		BlockNumber blkno = UndoRecPtrGetBlockNum(logical_offset);
+		uint32		page_off = UndoRecPtrGetPageOffset(logical_offset);
+		Size		read_len = Min(remaining, (Size) (BLCKSZ - page_off));
+		Buffer		buf;
+		Page		page;
 
-		fd = OpenUndoLogFile(log_number, O_RDONLY);
+		buf = ReadUndoBuffer(log_number, blkno, RBM_NORMAL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
 
-		if (lseek(fd, offset, SEEK_SET) < 0)
-		{
-			int			save_errno = errno;
+		memcpy(dest, (char *) page + page_off, read_len);
 
-			close(fd);
-			errno = save_errno;
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not seek in UNDO log %u: %m", log_number)));
-		}
+		UnlockReleaseUndoBuffer(buf);
 
-		nread = read(fd, buffer, size);
-		if (nread != size)
-		{
-			int			save_errno = errno;
-
-			close(fd);
-			if (nread < 0)
-				errno = save_errno;
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not read from UNDO log %u: %m", log_number)));
-		}
-
-		close(fd);
+		dest += read_len;
+		logical_offset += read_len;
+		remaining -= read_len;
 	}
 }
 
@@ -563,9 +818,7 @@ UndoLogGetInsertPtr(uint32 log_number)
 
 		if (log->in_use && log->log_number == log_number)
 		{
-			LWLockAcquire(&log->lock, LW_SHARED);
-			ptr = log->insert_ptr;
-			LWLockRelease(&log->lock);
+			ptr = pg_atomic_read_u64(&log->insert_ptr);
 			break;
 		}
 	}
@@ -634,6 +887,73 @@ UndoLogGetOldestDiscardPtr(void)
 }
 
 /*
+ * UndoLogSync
+ *		Fsync all dirty UNDO log files in this backend's fd cache.
+ *
+ * Called at transaction commit to ensure all UNDO data written during
+ * the transaction is durable on disk.  Only files that have been written
+ * With shared_buffers routing (commit "Route UNDO I/O through
+ * shared_buffers"), UNDO pages are managed by the buffer pool and
+ * flushed to disk by the checkpointer, exactly like heap pages.
+ * There is no longer a need for per-commit fdatasync of UNDO files.
+ *
+ * This function is now a no-op.  It is retained for backward compatibility
+ * with callers that existed before the shared_buffers transition.
+ */
+void
+UndoLogSync(void)
+{
+	int			i;
+
+	if (!undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		if (undo_fd_cache[i].fd >= 0 && undo_fd_cache[i].needs_fsync)
+		{
+			if (pg_fsync(undo_fd_cache[i].fd) < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not fsync UNDO log %u: %m",
+								undo_fd_cache[i].log_number)));
+
+			undo_fd_cache[i].needs_fsync = false;
+		}
+	}
+}
+
+/*
+ * UndoLogCloseFiles
+ *		Close all cached UNDO log file descriptors for this backend.
+ *
+ * Called during transaction abort (when we don't need to fsync) and
+ * at process exit to release file descriptors.  Any pending dirty
+ * data is NOT fsynced -- the caller is responsible for ensuring
+ * durability if needed (e.g., by calling UndoLogSync first).
+ */
+void
+UndoLogCloseFiles(void)
+{
+	int			i;
+
+	if (!undo_fd_cache_initialized)
+		return;
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		if (undo_fd_cache[i].fd >= 0)
+		{
+			close(undo_fd_cache[i].fd);
+			undo_fd_cache[i].fd = -1;
+			undo_fd_cache[i].log_number = 0;
+			undo_fd_cache[i].needs_fsync = false;
+			undo_fd_cache[i].cached_size = 0;
+		}
+	}
+}
+
+/*
  * CheckPointUndoLog
  *		Perform checkpoint processing for the UNDO log subsystem.
  *
@@ -642,11 +962,10 @@ UndoLogGetOldestDiscardPtr(void)
  * knows which UNDO data is still needed, and optionally logs UNDO statistics
  * when log_checkpoints is enabled.
  *
- * Currently, UndoLogWrite() calls pg_fsync() on every write, so there is no
- * additional fsync work needed here.  The primary purpose is to persist the
- * discard pointer state (the in-memory UndoLogControl structures are rebuilt
- * from WAL during recovery) and to provide checkpoint-time statistics for
- * monitoring.
+ * UndoLogWrite() defers fsync to transaction commit (via UndoLogSync()).
+ * The primary purpose of this function is to persist the discard pointer
+ * state (the in-memory UndoLogControl structures are rebuilt from WAL
+ * during recovery) and to provide checkpoint-time statistics for monitoring.
  *
  * Per-relation UNDO data flows through shared_buffers and is flushed by
  * CheckPointBuffers(), so it does not need separate handling here.
@@ -678,12 +997,11 @@ CheckPointUndoLog(void)
 		if (!log->in_use)
 			continue;
 
-		LWLockAcquire(&log->lock, LW_SHARED);
-
 		active_logs++;
-		total_allocated += UndoRecPtrGetOffset(log->insert_ptr);
-		total_discarded += UndoRecPtrGetOffset(log->discard_ptr);
+		total_allocated += UndoRecPtrGetOffset(pg_atomic_read_u64(&log->insert_ptr));
 
+		LWLockAcquire(&log->lock, LW_SHARED);
+		total_discarded += UndoRecPtrGetOffset(log->discard_ptr);
 		LWLockRelease(&log->lock);
 	}
 

@@ -64,13 +64,13 @@ GetUndoLogStats(UndoLogStat * stats, int max_stats)
 		LWLockAcquire(&log->lock, LW_SHARED);
 
 		stats[count].log_number = log->log_number;
-		stats[count].insert_ptr = log->insert_ptr;
+		stats[count].insert_ptr = pg_atomic_read_u64(&log->insert_ptr);
 		stats[count].discard_ptr = log->discard_ptr;
 		stats[count].oldest_xid = log->oldest_xid;
 
 		/* Calculate size as difference between insert and discard offsets */
 		stats[count].size_bytes =
-			UndoRecPtrGetOffset(log->insert_ptr) -
+			UndoRecPtrGetOffset(stats[count].insert_ptr) -
 			UndoRecPtrGetOffset(log->discard_ptr);
 
 		LWLockRelease(&log->lock);
