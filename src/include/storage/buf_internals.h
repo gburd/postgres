@@ -414,16 +414,25 @@ extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;
 extern PGDLLIMPORT ConditionVariableMinimallyPadded *BufferIOCVArray;
 extern PGDLLIMPORT WritebackContext BackendWritebackContext;
 
+/* in bufpool.c -- number of active buffer pools (1 = default only) */
+/* NBufferPools is defined as a macro in bufpool_internals.h */
+
 /* in localbuf.c */
 extern PGDLLIMPORT BufferDesc *LocalBufferDescriptors;
 
+/* in bufpool.c -- dynamic pool buffer lookup (slow path) */
+extern BufferDesc *GetDynamicPoolBufferDescriptor(uint32 id);
+extern ConditionVariable *GetDynamicPoolIOCV(int buf_id);
+extern Block GetDynamicPoolBlock(Buffer buffer);
 
 static inline BufferDesc *
 GetBufferDescriptor(int id)
 {
-	Assert(id >= 0 && id < NBuffers);
+	if (likely(id < (uint32) NBuffers))
+		return &(BufferDescriptors[id]).bufferdesc;
 
-	return &(BufferDescriptors[id]).bufferdesc;
+	/* Slow path for dynamic pool buffer IDs */
+	return GetDynamicPoolBufferDescriptor(id);
 }
 
 static inline BufferDesc *
@@ -441,7 +450,11 @@ BufferDescriptorGetBuffer(const BufferDesc *bdesc)
 static inline ConditionVariable *
 BufferDescriptorGetIOCV(const BufferDesc *bdesc)
 {
-	return &(BufferIOCVArray[bdesc->buf_id]).cv;
+	if (likely(bdesc->buf_id < NBuffers))
+		return &(BufferIOCVArray[bdesc->buf_id]).cv;
+
+	/* Slow path for dynamic pool buffer IDs */
+	return GetDynamicPoolIOCV(bdesc->buf_id);
 }
 
 /*
@@ -584,7 +597,7 @@ extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint64 set_flag
 							  bool forget_owner, bool release_aio);
 
 
-/* freelist.c */
+/* freelist.c -- dispatch functions (call through ActivePoolRoutine vtable) */
 extern IOContext IOContextForStrategy(BufferAccessStrategy strategy);
 extern BufferDesc *StrategyGetBuffer(BufferAccessStrategy strategy,
 									 uint64 *buf_state, bool *from_ring);
@@ -593,12 +606,25 @@ extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
+extern void StrategyHintVacuum(bool vacuum_active);
+
+/* bufpool.h -- pluggable buffer pool vtable interface */
+#include "storage/bufpool.h"
 
 /* buf_table.c */
 extern uint32 BufTableHashCode(BufferTag *tagPtr);
 extern int	BufTableLookup(BufferTag *tagPtr, uint32 hashcode);
 extern int	BufTableInsert(BufferTag *tagPtr, uint32 hashcode, int buf_id);
 extern void BufTableDelete(BufferTag *tagPtr, uint32 hashcode);
+
+/* bufmgr.c -- exported for per-pool trickle writers */
+extern int	SyncOneBuffer(int buf_id, bool skip_recently_used,
+						  WritebackContext *wb_context);
+
+/*
+ * Per-pool hash table functions are declared in bufpool_internals.h
+ * (PoolBufHashLookup, PoolBufHashInsert, PoolBufHashDelete, etc.)
+ */
 
 /* localbuf.c */
 extern bool PinLocalBuffer(BufferDesc *buf_hdr, bool adjust_usagecount);

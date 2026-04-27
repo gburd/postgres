@@ -3,6 +3,14 @@
  * freelist.c
  *	  routines for managing the buffer pool's replacement strategy.
  *
+ * The buffer replacement algorithm is abstracted behind the
+ * BufferPoolRoutine vtable (see storage/bufpool.h).  The default
+ * implementation is clock-sweep, defined in this file.  Alternative
+ * algorithms (ARC, CAR, etc.) can be loaded as extensions.
+ *
+ * The public entry points (StrategyGetBuffer, StrategySyncStart, etc.)
+ * dispatch through ActivePoolRoutine, which is set to clock_pool_routine
+ * at startup.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -15,13 +23,16 @@
  */
 #include "postgres.h"
 
+#include "fmgr.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/guc.h"
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
@@ -55,8 +66,77 @@ typedef struct
 	int			bgwprocno;
 } BufferStrategyControl;
 
+/*
+ * ClockPoolState -- per-pool clock-sweep state for dynamic buffer pools.
+ *
+ * This is the equivalent of BufferStrategyControl for dynamic pools.
+ * It is stored in the DSM segment as the pool's strategy_data and includes
+ * the pool's buffer range so that ClockGetVictim knows which buffers to sweep.
+ *
+ * Unlike the default pool which uses the global BufferDescriptors array
+ * and NBuffers, dynamic pools have their own buffer descriptor arrays with
+ * buffer IDs starting at first_buf_id.  The clock hand sweeps from
+ * first_buf_id through first_buf_id + nbuffers - 1.
+ */
+typedef struct ClockPoolState
+{
+	slock_t		lock;
+	pg_atomic_uint32 nextVictimBuffer;	/* monotonically increasing, mod
+										 * nbuffers */
+	uint32		completePasses;
+	pg_atomic_uint32 numBufferAllocs;
+	int			bgwprocno;		/* trickle writer procno (-1 = none) */
+	int			nbuffers;		/* buffer count in this pool */
+	int			first_buf_id;	/* starting buffer ID */
+}			ClockPoolState;
+
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
+
+/*
+ * Active buffer pool routine and its strategy data.
+ *
+ * For the default pool, ActivePoolRoutine points to clock_pool_routine
+ * and ActivePoolData points to StrategyControl.  These are set during
+ * shared memory initialization.
+ */
+const BufferPoolRoutine *ActivePoolRoutine = NULL;
+void	   *ActivePoolData = NULL;
+
+/*
+ * GUC variable: name of the replacement algorithm for the DEFAULT pool.
+ *
+ * Looked up in the algorithm registry during shared-memory initialization.
+ * Only "clock" is built in; extensions register additional names from
+ * their shared_preload_libraries _PG_init().
+ */
+char	   *buffer_pool_algorithm = NULL;
+
+/*
+ * DEFAULT pool algorithm registry.
+ *
+ * A small linear-probed array of (name, routine) pairs.  Registrations
+ * are append-only and happen from extension _PG_init() hooks before
+ * shared memory initialization.  We cap at MAX_DEFAULT_POOL_ALGORITHMS
+ * because the number of plausible replacement algorithms is tiny; if
+ * that becomes inaccurate in the future, switching to a hash table is
+ * straightforward.
+ */
+#define MAX_DEFAULT_POOL_ALGORITHMS 16
+
+typedef struct DefaultPoolAlgorithmEntry
+{
+	const char *name;
+	const BufferPoolRoutine *routine;
+}			DefaultPoolAlgorithmEntry;
+
+static DefaultPoolAlgorithmEntry algo_registry[MAX_DEFAULT_POOL_ALGORITHMS] =
+{
+	{
+		BP_ALGO_CLOCK_NAME, &clock_pool_routine
+	},
+};
+static int	algo_registry_len = 1;
 
 static void StrategyCtlShmemRequest(void *arg);
 static void StrategyCtlShmemInit(void *arg);
@@ -100,150 +180,203 @@ static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 
-/*
- * ClockSweepTick - Helper routine for StrategyGetBuffer()
- *
- * Move the clock hand one buffer ahead of its current position and return the
- * id of the buffer now under the hand.
+/* Prototypes for clock-sweep vtable implementation */
+static BufferDesc *ClockGetVictim(void *strategy_data,
+								  BufferAccessStrategy strategy,
+								  uint64 *buf_state,
+								  bool *from_ring);
+static int	ClockSyncStart(void *strategy_data,
+						   uint32 *complete_passes,
+						   uint32 *num_buf_alloc);
+static void ClockNotifyTrickle(void *strategy_data, int bgwprocno);
+static bool ClockRejectBuffer(void *strategy_data,
+							  BufferAccessStrategy strategy,
+							  BufferDesc *buf, bool from_ring);
+static Size ClockPoolShmemSize(int nbuffers);
+static void ClockPoolShmemInit(void *strategy_data, int nbuffers,
+							   int first_buf_id, bool init);
+
+
+/* ----------------------------------------------------------------
+ *			Clock-sweep buffer pool routine (vtable)
+ * ----------------------------------------------------------------
  */
-static inline uint32
-ClockSweepTick(void)
-{
-	uint32		victim;
 
-	/*
-	 * Atomically move hand ahead one buffer - if there's several processes
-	 * doing this, this can lead to buffers being returned slightly out of
-	 * apparent order.
-	 */
-	victim =
-		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+const BufferPoolRoutine clock_pool_routine = {
+	.type = T_Invalid,			/* NodeTag not needed for built-in routine */
+	.on_hit = NULL,				/* clock-sweep uses usage_count, not explicit
+								 * tracking */
+	.on_miss = NULL,			/* clock-sweep doesn't track misses */
+	.on_evict = NULL,			/* clock-sweep doesn't track evictions */
+	.on_new_tag = NULL,			/* clock-sweep doesn't track insertions */
+	.get_victim = ClockGetVictim,
+	.sync_start = ClockSyncStart,
+	.notify_trickle = ClockNotifyTrickle,
+	.trickle_iter_begin = NULL, /* clock-sweep uses linear scan */
+	.trickle_iter_next = NULL,
+	.trickle_iter_end = NULL,
+	.hint_vacuum = NULL,		/* clock-sweep doesn't adjust for VACUUM */
+	.reject_buffer = ClockRejectBuffer,
+	.prefetch_hint = NULL,		/* clock-sweep doesn't use prefetch hints */
+	.shmem_size = ClockPoolShmemSize,
+	.shmem_init = ClockPoolShmemInit,
+	.shutdown = NULL,
+};
 
-	if (victim >= NBuffers)
-	{
-		uint32		originalVictim = victim;
 
-		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
-
-		/*
-		 * If we're the one that just caused a wraparound, force
-		 * completePasses to be incremented while holding the spinlock. We
-		 * need the spinlock so StrategySyncStart() can return a consistent
-		 * value consisting of nextVictimBuffer and completePasses.
-		 */
-		if (victim == 0)
-		{
-			uint32		expected;
-			uint32		wrapped;
-			bool		success = false;
-
-			expected = originalVictim + 1;
-
-			while (!success)
-			{
-				/*
-				 * Acquire the spinlock while increasing completePasses. That
-				 * allows other readers to read nextVictimBuffer and
-				 * completePasses in a consistent manner which is required for
-				 * StrategySyncStart().  In theory delaying the increment
-				 * could lead to an overflow of nextVictimBuffers, but that's
-				 * highly unlikely and wouldn't be particularly harmful.
-				 */
-				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-
-				wrapped = expected % NBuffers;
-
-				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
-														 &expected, wrapped);
-				if (success)
-					StrategyControl->completePasses++;
-				SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-			}
-		}
-	}
-	return victim;
-}
+/* ----------------------------------------------------------------
+ *			Clock-sweep implementation
+ * ----------------------------------------------------------------
+ */
 
 /*
- * StrategyGetBuffer
+ * ClockGetVictim -- clock-sweep implementation of get_victim
  *
- *	Called by the bufmgr to get the next candidate buffer to use in
- *	GetVictimBuffer(). The only hard requirement GetVictimBuffer() has is that
- *	the selected buffer must not currently be pinned by anyone.
+ * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
+ * buffer to use in GetVictimBuffer().  The only hard requirement is that the
+ * selected buffer must not currently be pinned by anyone.
  *
- *	strategy is a BufferAccessStrategy object, or NULL for default strategy.
+ * strategy is a BufferAccessStrategy object, or NULL for default strategy.
  *
- *	It is the callers responsibility to ensure the buffer ownership can be
- *	tracked via TrackNewBufferPin().
+ * For the default pool, strategy_data points to StrategyControl (a
+ * BufferStrategyControl*) and we sweep through BufferDescriptors[0..NBuffers-1].
+ * For dynamic pools, strategy_data points to a ClockPoolState stored in the
+ * pool's DSM segment, and we sweep through that pool's buffer range.
  *
- *	The buffer is pinned and marked as owned, using TrackNewBufferPin(),
- *	before returning.
+ * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
+ * before returning.
  */
-BufferDesc *
-StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_ring)
+static BufferDesc *
+ClockGetVictim(void *strategy_data,
+			   BufferAccessStrategy strategy,
+			   uint64 *buf_state,
+			   bool *from_ring)
 {
 	BufferDesc *buf;
-	int			bgwprocno;
 	int			trycounter;
+	bool		is_dynamic_pool;
+	int			pool_nbuffers;
+	int			pool_first_buf;
+	pg_atomic_uint32 *nextVictimPtr;
 
 	*from_ring = false;
 
 	/*
-	 * If given a strategy object, see whether it can select a buffer. We
-	 * assume strategy objects don't need buffer_strategy_lock.
+	 * Determine whether we're sweeping the default pool or a dynamic pool.
+	 * For the default pool, strategy_data == StrategyControl.
 	 */
-	if (strategy != NULL)
-	{
-		buf = GetBufferFromRing(strategy, buf_state);
-		if (buf != NULL)
-		{
-			*from_ring = true;
-			return buf;
-		}
-	}
+	is_dynamic_pool = (strategy_data != (void *) StrategyControl);
 
-	/*
-	 * If asked, we need to waken the bgwriter. Since we don't want to rely on
-	 * a spinlock for this we force a read from shared memory once, and then
-	 * set the latch based on that value. We need to go through that length
-	 * because otherwise bgwprocno might be reset while/after we check because
-	 * the compiler might just reread from memory.
-	 *
-	 * This can possibly set the latch of the wrong process if the bgwriter
-	 * dies in the wrong moment. But since PGPROC->procLatch is never
-	 * deallocated the worst consequence of that is that we set the latch of
-	 * some arbitrary process.
-	 */
-	bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
-	if (bgwprocno != -1)
+	if (is_dynamic_pool)
 	{
-		/* reset bgwprocno first, before setting the latch */
-		StrategyControl->bgwprocno = -1;
+		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+
+		pool_nbuffers = pool_state->nbuffers;
+		pool_first_buf = pool_state->first_buf_id;
+		nextVictimPtr = &pool_state->nextVictimBuffer;
 
 		/*
-		 * Not acquiring ProcArrayLock here which is slightly icky. It's
-		 * actually fine because procLatch isn't ever freed, so we just can
-		 * potentially set the wrong process' (or no process') latch.
+		 * Wake trickle writer if registered.  For dynamic pools the trickle
+		 * writer is a per-pool background worker, not the global bgwriter.
 		 */
-		SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+		{
+			int			bgwprocno = INT_ACCESS_ONCE(pool_state->bgwprocno);
+
+			if (bgwprocno != -1)
+			{
+				pool_state->bgwprocno = -1;
+				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+			}
+		}
+
+		pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
+	}
+	else
+	{
+		pool_nbuffers = NBuffers;
+		pool_first_buf = 0;
+		nextVictimPtr = &StrategyControl->nextVictimBuffer;
+
+		/*
+		 * If given a strategy object, see whether it can select a buffer. We
+		 * assume strategy objects don't need buffer_strategy_lock. Ring
+		 * buffers are only supported for the default pool.
+		 */
+		if (strategy != NULL)
+		{
+			buf = GetBufferFromRing(strategy, buf_state);
+			if (buf != NULL)
+			{
+				*from_ring = true;
+				return buf;
+			}
+		}
+
+		/*
+		 * Wake the bgwriter if asked.  See StrategyNotifyBgWriter().
+		 */
+		{
+			int			bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
+
+			if (bgwprocno != -1)
+			{
+				StrategyControl->bgwprocno = -1;
+				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+			}
+		}
+
+		pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 	}
 
-	/*
-	 * We count buffer allocation requests so that the bgwriter can estimate
-	 * the rate of buffer consumption.  Note that buffers recycled by a
-	 * strategy object are intentionally not counted here.
-	 */
-	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
-
 	/* Use the "clock sweep" algorithm to find a free buffer */
-	trycounter = NBuffers;
+	trycounter = pool_nbuffers;
 	for (;;)
 	{
 		uint64		old_buf_state;
 		uint64		local_buf_state;
+		uint32		victim_raw;
+		uint32		victim_id;
 
-		buf = GetBufferDescriptor(ClockSweepTick());
+		/*
+		 * Atomically advance the clock hand.  For the default pool this
+		 * mirrors the old ClockSweepTick() logic including completePasses
+		 * maintenance.  For dynamic pools we use a simpler modulo.
+		 */
+		victim_raw = pg_atomic_fetch_add_u32(nextVictimPtr, 1);
+
+		if (!is_dynamic_pool)
+		{
+			/* Default pool: maintain completePasses on wraparound */
+			victim_id = victim_raw % pool_nbuffers;
+
+			if (victim_raw >= (uint32) pool_nbuffers && victim_id == 0)
+			{
+				uint32		expected;
+				uint32		wrapped;
+				bool		success = false;
+
+				expected = victim_raw + 1;
+
+				while (!success)
+				{
+					SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+					wrapped = expected % pool_nbuffers;
+					success = pg_atomic_compare_exchange_u32(
+															 &StrategyControl->nextVictimBuffer,
+															 &expected, wrapped);
+					if (success)
+						StrategyControl->completePasses++;
+					SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+				}
+			}
+		}
+		else
+		{
+			/* Dynamic pool: simple modulo, no completePasses tracking */
+			victim_id = pool_first_buf + (victim_raw % pool_nbuffers);
+		}
+
+		buf = GetBufferDescriptor(victim_id);
 
 		/*
 		 * Check whether the buffer can be used and pin it if so. Do this
@@ -254,25 +387,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 		{
 			local_buf_state = old_buf_state;
 
-			/*
-			 * If the buffer is pinned or has a nonzero usage_count, we cannot
-			 * use it; decrement the usage_count (unless pinned) and keep
-			 * scanning.
-			 */
-
 			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
 			{
 				if (--trycounter == 0)
-				{
-					/*
-					 * We've scanned all the buffers without making any state
-					 * changes, so all the buffers are pinned (or were when we
-					 * looked at them). We could hope that someone will free
-					 * one eventually, but it's probably better to fail than
-					 * to risk getting stuck in an infinite loop.
-					 */
 					elog(ERROR, "no unpinned buffers available");
-				}
 				break;
 			}
 
@@ -290,7 +408,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 												   local_buf_state))
 				{
-					trycounter = NBuffers;
+					trycounter = pool_nbuffers;
 					break;
 				}
 			}
@@ -317,66 +435,235 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 }
 
 /*
- * StrategySyncStart -- tell BgBufferSync where to start syncing
+ * ClockSyncStart -- clock-sweep implementation of sync_start
  *
- * The result is the buffer index of the best buffer to sync first.
- * BgBufferSync() will proceed circularly around the buffer array from there.
+ * Tell BgBufferSync where to start syncing.  Returns the buffer index of the
+ * best buffer to sync first.  BgBufferSync() will proceed circularly around
+ * the buffer array from there.
  *
- * In addition, we return the completed-pass count (which is effectively
- * the higher-order bits of nextVictimBuffer) and the count of recent buffer
+ * In addition, we return the completed-pass count (which is effectively the
+ * higher-order bits of nextVictimBuffer) and the count of recent buffer
  * allocs if non-NULL pointers are passed.  The alloc count is reset after
  * being read.
+ */
+static int
+ClockSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
+{
+	uint32		nextVictimBuffer;
+	int			result;
+	bool		is_dynamic_pool = (strategy_data != (void *) StrategyControl);
+
+	if (is_dynamic_pool)
+	{
+		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+
+		SpinLockAcquire(&pool_state->lock);
+		nextVictimBuffer = pg_atomic_read_u32(&pool_state->nextVictimBuffer);
+		result = pool_state->first_buf_id +
+			(nextVictimBuffer % pool_state->nbuffers);
+
+		if (complete_passes)
+			*complete_passes = pool_state->completePasses;
+
+		if (num_buf_alloc)
+			*num_buf_alloc = pg_atomic_exchange_u32(&pool_state->numBufferAllocs, 0);
+
+		SpinLockRelease(&pool_state->lock);
+	}
+	else
+	{
+		SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+		nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
+		result = nextVictimBuffer % NBuffers;
+
+		if (complete_passes)
+		{
+			*complete_passes = StrategyControl->completePasses;
+			*complete_passes += nextVictimBuffer / NBuffers;
+		}
+
+		if (num_buf_alloc)
+			*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
+
+		SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+	}
+
+	return result;
+}
+
+/*
+ * ClockNotifyTrickle -- clock-sweep implementation of notify_trickle
+ *
+ * Set or clear allocation notification latch for the background writer.
+ * If bgwprocno isn't -1, the next invocation of ClockGetVictim will set
+ * that latch.  Pass -1 to clear the pending notification before it happens.
+ */
+static void
+ClockNotifyTrickle(void *strategy_data, int bgwprocno)
+{
+	bool		is_dynamic_pool = (strategy_data != (void *) StrategyControl);
+
+	if (is_dynamic_pool)
+	{
+		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+
+		SpinLockAcquire(&pool_state->lock);
+		pool_state->bgwprocno = bgwprocno;
+		SpinLockRelease(&pool_state->lock);
+	}
+	else
+	{
+		SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+		StrategyControl->bgwprocno = bgwprocno;
+		SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+	}
+}
+
+/*
+ * ClockRejectBuffer -- clock-sweep implementation of reject_buffer
+ *
+ * Consider rejecting a dirty buffer.  When a nondefault strategy is used,
+ * the buffer manager calls this function when the buffer selected by
+ * ClockGetVictim needs to be written out and doing so would require flushing
+ * WAL too.  This gives us a chance to choose a different victim.
+ *
+ * Returns true if buffer manager should ask for a new victim, and false
+ * if this buffer should be written and re-used.
+ */
+static bool
+ClockRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
+				  BufferDesc *buf, bool from_ring)
+{
+	/* We only do this in bulkread mode */
+	if (strategy->btype != BAS_BULKREAD)
+		return false;
+
+	/* Don't muck with behavior of normal buffer-replacement strategy */
+	if (!from_ring ||
+		strategy->buffers[strategy->current] != BufferDescriptorGetBuffer(buf))
+		return false;
+
+	/*
+	 * Remove the dirty buffer from the ring; necessary to prevent infinite
+	 * loop if all ring members are dirty.
+	 */
+	strategy->buffers[strategy->current] = InvalidBuffer;
+
+	return true;
+}
+
+
+/*
+ * ClockPoolShmemSize -- return the shared memory needed for a dynamic
+ *		clock-sweep pool with the given number of buffers.
+ */
+static Size
+ClockPoolShmemSize(int nbuffers)
+{
+	return sizeof(ClockPoolState);
+}
+
+/*
+ * ClockPoolShmemInit -- initialize per-pool clock-sweep state in DSM.
+ *
+ * This is called from CreateDynamicBufferPool() after the DSM segment
+ * is created and carved up.  first_buf_id is the starting buffer ID
+ * for this pool's buffers (i.e. pool->bp_first_buf).
+ */
+static void
+ClockPoolShmemInit(void *strategy_data, int nbuffers,
+				   int first_buf_id, bool init)
+{
+	ClockPoolState *state = (ClockPoolState *) strategy_data;
+
+	if (!init)
+		return;					/* re-attach: nothing to do */
+
+	SpinLockInit(&state->lock);
+	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
+	state->completePasses = 0;
+	pg_atomic_init_u32(&state->numBufferAllocs, 0);
+	state->bgwprocno = -1;
+	state->nbuffers = nbuffers;
+	state->first_buf_id = first_buf_id;
+}
+
+
+/* ----------------------------------------------------------------
+ *			Public dispatch functions
+ *
+ * These maintain the same signatures as before the vtable refactor.
+ * They dispatch through ActivePoolRoutine for the default pool.
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * StrategyGetBuffer
+ *
+ *	Called by the bufmgr to get the next candidate buffer to use in
+ *	GetVictimBuffer(). Dispatches to the active pool's get_victim callback.
+ */
+BufferDesc *
+StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_ring)
+{
+	return ActivePoolRoutine->get_victim(ActivePoolData, strategy,
+										 buf_state, from_ring);
+}
+
+/*
+ * StrategySyncStart -- tell BgBufferSync where to start syncing
+ *
+ * Dispatches to the active pool's sync_start callback.
  */
 int
 StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 {
-	uint32		nextVictimBuffer;
-	int			result;
-
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	result = nextVictimBuffer % NBuffers;
-
-	if (complete_passes)
-	{
-		*complete_passes = StrategyControl->completePasses;
-
-		/*
-		 * Additionally add the number of wraparounds that happened before
-		 * completePasses could be incremented. C.f. ClockSweepTick().
-		 */
-		*complete_passes += nextVictimBuffer / NBuffers;
-	}
-
-	if (num_buf_alloc)
-	{
-		*num_buf_alloc = pg_atomic_exchange_u32(&StrategyControl->numBufferAllocs, 0);
-	}
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-	return result;
+	return ActivePoolRoutine->sync_start(ActivePoolData,
+										 complete_passes, num_buf_alloc);
 }
 
 /*
  * StrategyNotifyBgWriter -- set or clear allocation notification latch
  *
- * If bgwprocno isn't -1, the next invocation of StrategyGetBuffer will
- * set that latch.  Pass -1 to clear the pending notification before it
- * happens.  This feature is used by the bgwriter process to wake itself up
- * from hibernation, and is not meant for anybody else to use.
+ * Dispatches to the active pool's notify_trickle callback.
  */
 void
 StrategyNotifyBgWriter(int bgwprocno)
 {
-	/*
-	 * We acquire buffer_strategy_lock just to ensure that the store appears
-	 * atomic to StrategyGetBuffer.  The bgwriter should call this rather
-	 * infrequently, so there's no performance penalty from being safe.
-	 */
-	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-	StrategyControl->bgwprocno = bgwprocno;
-	SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+	ActivePoolRoutine->notify_trickle(ActivePoolData, bgwprocno);
 }
 
+/*
+ * StrategyRejectBuffer -- consider rejecting a dirty buffer
+ *
+ * Dispatches to the active pool's reject_buffer callback.
+ */
+bool
+StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_ring)
+{
+	return ActivePoolRoutine->reject_buffer(ActivePoolData, strategy,
+											buf, from_ring);
+}
+
+/*
+ * StrategyHintVacuum -- hint that VACUUM is starting or ending
+ *
+ * Dispatches to the active pool's hint_vacuum callback, if provided.
+ * This allows algorithms like ARC to insert vacuum-loaded pages at the
+ * LRU end, preventing cache pollution.
+ */
+void
+StrategyHintVacuum(bool vacuum_active)
+{
+	if (ActivePoolRoutine->hint_vacuum)
+		ActivePoolRoutine->hint_vacuum(ActivePoolData, vacuum_active);
+}
+
+
+/* ----------------------------------------------------------------
+ *			Shared memory initialization
+ * ----------------------------------------------------------------
+ */
 
 /*
  * StrategyCtlShmemRequest -- request shared memory for the buffer
@@ -408,6 +695,54 @@ StrategyCtlShmemInit(void *arg)
 
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
+
+	/*
+	 * Set the active pool routine based on the buffer_pool_algorithm GUC.
+	 * Only clock-sweep is built in; extension-provided algorithms register
+	 * themselves by name via RegisterDefaultPoolAlgorithm() from a
+	 * shared_preload_libraries _PG_init() hook.
+	 *
+	 * If the configured name is unknown (typo or missing extension), fall
+	 * back to clock-sweep and WARNING.  We intentionally do not ERROR out of
+	 * shmem init because refusing to start is a worse UX than continuing with
+	 * a documented fallback.
+	 */
+	{
+		const char *name = buffer_pool_algorithm ? buffer_pool_algorithm
+			: BP_ALGO_CLOCK_NAME;
+		const BufferPoolRoutine *routine = LookupDefaultPoolAlgorithm(name);
+
+		if (routine == NULL)
+		{
+			ereport(WARNING,
+					(errmsg("buffer pool algorithm \"%s\" is not registered, using \"%s\"",
+							name, BP_ALGO_CLOCK_NAME),
+					 errhint("Load the providing extension via shared_preload_libraries.")));
+			routine = &clock_pool_routine;
+		}
+		ActivePoolRoutine = routine;
+		ActivePoolData = StrategyControl;
+	}
+}
+
+
+/* ----------------------------------------------------------------
+ *			SQL-callable handler function
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * clock_pool_handler -- returns the clock-sweep BufferPoolRoutine
+ *
+ * This follows the access-method handler pattern so that the default
+ * pool has a handler like any other pool.
+ */
+PG_FUNCTION_INFO_V1(clock_pool_handler);
+
+Datum
+clock_pool_handler(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(&clock_pool_routine);
 }
 
 
@@ -737,34 +1072,60 @@ IOContextForStrategy(BufferAccessStrategy strategy)
 	pg_unreachable();
 }
 
+
 /*
- * StrategyRejectBuffer -- consider rejecting a dirty buffer
+ * RegisterDefaultPoolAlgorithm -- register an algorithm for DEFAULT pool use.
  *
- * When a nondefault strategy is used, the buffer manager calls this function
- * when it turns out that the buffer selected by StrategyGetBuffer needs to
- * be written out and doing so would require flushing WAL too.  This gives us
- * a chance to choose a different victim.
- *
- * Returns true if buffer manager should ask for a new victim, and false
- * if this buffer should be written and re-used.
+ * Called from _PG_init() of buffer pool extensions.  Must happen before
+ * shared memory initialization so the algorithm is visible to the DEFAULT
+ * pool's routine lookup.  'name' must be pointer-stable for the lifetime
+ * of the server; the registry keeps the pointer by reference.
  */
-bool
-StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_ring)
+void
+RegisterDefaultPoolAlgorithm(const char *name,
+							 const BufferPoolRoutine *routine)
 {
-	/* We only do this in bulkread mode */
-	if (strategy->btype != BAS_BULKREAD)
-		return false;
+	if (name == NULL || name[0] == '\0')
+		elog(ERROR, "buffer pool algorithm name must be non-empty");
+	if (routine == NULL)
+		elog(ERROR, "buffer pool algorithm routine for \"%s\" is NULL", name);
 
-	/* Don't muck with behavior of normal buffer-replacement strategy */
-	if (!from_ring ||
-		strategy->buffers[strategy->current] != BufferDescriptorGetBuffer(buf))
-		return false;
+	for (int i = 0; i < algo_registry_len; i++)
+	{
+		if (strcmp(algo_registry[i].name, name) == 0)
+		{
+			elog(WARNING,
+				 "buffer pool algorithm \"%s\" already registered, replacing",
+				 name);
+			algo_registry[i].routine = routine;
+			return;
+		}
+	}
 
-	/*
-	 * Remove the dirty buffer from the ring; necessary to prevent infinite
-	 * loop if all ring members are dirty.
-	 */
-	strategy->buffers[strategy->current] = InvalidBuffer;
+	if (algo_registry_len >= MAX_DEFAULT_POOL_ALGORITHMS)
+		elog(ERROR,
+			 "too many buffer pool algorithms registered (max %d)",
+			 MAX_DEFAULT_POOL_ALGORITHMS);
 
-	return true;
+	algo_registry[algo_registry_len].name = name;
+	algo_registry[algo_registry_len].routine = routine;
+	algo_registry_len++;
+}
+
+/*
+ * LookupDefaultPoolAlgorithm -- return the routine registered under name,
+ * or NULL if no such name is registered.
+ */
+const BufferPoolRoutine *
+LookupDefaultPoolAlgorithm(const char *name)
+{
+	if (name == NULL)
+		return NULL;
+
+	for (int i = 0; i < algo_registry_len; i++)
+	{
+		if (strcmp(algo_registry[i].name, name) == 0)
+			return algo_registry[i].routine;
+	}
+	return NULL;
 }

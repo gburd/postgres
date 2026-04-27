@@ -589,6 +589,15 @@ static relopt_enum enumRelOpts[] =
 
 static relopt_string stringRelOpts[] =
 {
+	{
+		{
+			"buffer_pool",
+			"Buffer pool to use for this relation",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			AccessExclusiveLock
+		},
+		0, true, NULL, NULL, NULL
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2025,7 +2034,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_truncate", RELOPT_TYPE_TERNARY,
 		offsetof(StdRdOptions, vacuum_truncate)},
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
+		{"buffer_pool", RELOPT_TYPE_STRING,
+		offsetof(StdRdOptions, buffer_pool_offset)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,
