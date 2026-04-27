@@ -136,6 +136,12 @@ AppendState
 ApplyErrorCallbackArg
 ApplyExecutionData
 ApplySubXactData
+ArcBackendState
+ArcCDB
+ArcControl
+ArcGhost
+ArcGhostEntry
+ArcTrickleIter
 Archive
 ArchiveCheckConfiguredCB
 ArchiveEntryPtrType
