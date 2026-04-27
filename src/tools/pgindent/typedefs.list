@@ -1937,6 +1937,11 @@ OprInfo
 OprProofCacheEntry
 OprProofCacheKey
 OrArgIndexMatch
+OsicBackendState
+OsicBufState
+OsicControl
+OsicPartition
+OsicTrickleIter
 OuterJoinClauseInfo
 OutputPluginCallbacks
 OutputPluginOptions
