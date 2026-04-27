@@ -1595,6 +1595,9 @@ LPTSTR
 LPVOID
 LPWSTR
 LSEG
+LruControl
+LruNode
+LruTrickleIter
 LUID
 LVRelState
 LVSavedErrInfo
