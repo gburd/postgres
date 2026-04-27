@@ -918,6 +918,14 @@
   proname => 'clock_pool_handler', provolatile => 'v',
   prorettype => 'internal', proargtypes => 'internal',
   prosrc => 'clock_pool_handler' },
+{ oid => '9965', descr => 'KEEP buffer pool replacement handler (never evicts)',
+  proname => 'keep_pool_handler', provolatile => 'v',
+  prorettype => 'internal', proargtypes => 'internal',
+  prosrc => 'keep_pool_handler' },
+{ oid => '9966', descr => 'JAM buffer pool replacement handler (TOAST-optimized)',
+  proname => 'jam_pool_handler', provolatile => 'v',
+  prorettype => 'internal', proargtypes => 'internal',
+  prosrc => 'jam_pool_handler' },
 
 # Buffer pool statistics
 { oid => '9961', descr => 'statistics: per-buffer-pool activity',

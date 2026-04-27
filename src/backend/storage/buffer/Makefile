@@ -18,6 +18,7 @@ OBJS = \
 	bufmgr.o \
 	bufpool.o \
 	freelist.o \
+	jam_pool.o \
 	localbuf.o
 
 include $(top_srcdir)/src/backend/common.mk
