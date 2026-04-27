@@ -325,6 +325,26 @@ heap_xlog_delete(XLogReaderState *record)
 		if (xlrec->offnum < 1 || xlrec->offnum > PageGetMaxOffsetNumber(page))
 			elog(PANIC, "offnum out of range");
 		lp = PageGetItemId(page, xlrec->offnum);
+
+		/*
+		 * If the line pointer has been redirected, follow the redirect to
+		 * find the actual tuple.  This happens when a selective index update
+		 * (SIU) chain has been pruned: the original line pointer becomes a
+		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
+		 * UPDATE record still references the original offset, so we must
+		 * follow the redirect to locate the physical tuple.
+		 */
+		if (ItemIdIsRedirected(lp))
+		{
+			OffsetNumber redirected = ItemIdGetRedirect(lp);
+
+			elog(DEBUG2, "heap_xlog_delete: following redirect from offset %u to %u",
+				 xlrec->offnum, redirected);
+			lp = PageGetItemId(page, redirected);
+			/* Update target_tid so t_ctid points to the actual tuple */
+			ItemPointerSetOffsetNumber(&target_tid, redirected);
+		}
+
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
 
@@ -645,7 +665,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * PD_ALL_VISIBLE must be set on the heap page if the VM bit is set.
 	 *
 	 * Note that we released the heap page lock above. During normal
-	 * operation, this would be unsafe — a concurrent modification could
+	 * operation, this would be unsafe - a concurrent modification could
 	 * clear PD_ALL_VISIBLE while the VM bit remained set, violating the
 	 * invariant.
 	 *
@@ -691,10 +711,11 @@ heap_xlog_multi_insert(XLogReaderState *record)
 }
 
 /*
- * Replay XLOG_HEAP_UPDATE and XLOG_HEAP_HOT_UPDATE records.
+ * Replay XLOG_HEAP_UPDATE, XLOG_HEAP_HOT_UPDATE, and
+ * XLOG_HEAP2_INDEXED_UPDATE records.
  */
 static void
-heap_xlog_update(XLogReaderState *record, bool hot_update)
+heap_xlog_update(XLogReaderState *record, bool hot_update, bool indexed_update)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_heap_update *xlrec = (xl_heap_update *) XLogRecGetData(record);
@@ -774,6 +795,23 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(opage))
 			elog(PANIC, "offnum out of range");
 		lp = PageGetItemId(opage, offnum);
+
+		/*
+		 * If the line pointer has been redirected, follow the redirect to
+		 * find the actual tuple.  This happens when a selective index update
+		 * (SIU) chain has been pruned: the original line pointer becomes a
+		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
+		 * UPDATE record still references the original offset, so we must
+		 * follow the redirect to locate the physical tuple.
+		 */
+		if (ItemIdIsRedirected(lp))
+		{
+			elog(DEBUG2, "heap_xlog_update: following redirect from offset %u to %u",
+				 offnum, ItemIdGetRedirect(lp));
+			offnum = ItemIdGetRedirect(lp);
+			lp = PageGetItemId(opage, offnum);
+		}
+
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
 
@@ -784,6 +822,19 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;
+
+		/*
+		 * Handle HEAP_INDEXED_UPDATED: for INDEXED_UPDATE replays, set the
+		 * bit on the old tuple.  For regular UPDATE/HOT_UPDATE replays,
+		 * clear it -- a previous selective index update may have set it, but
+		 * this update might move t_ctid to a different page, violating
+		 * same-page requirement.
+		 */
+		if (indexed_update)
+			htup->t_infomask2 |= HEAP_INDEXED_UPDATED;
+		else
+			htup->t_infomask2 &= ~HEAP_INDEXED_UPDATED;
+
 		if (hot_update)
 			HeapTupleHeaderSetHotUpdated(htup);
 		else
@@ -1051,6 +1102,23 @@ heap_xlog_lock(XLogReaderState *record)
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
 			elog(PANIC, "offnum out of range");
 		lp = PageGetItemId(page, offnum);
+
+		/*
+		 * If the line pointer has been redirected, follow the redirect to
+		 * find the actual tuple.  This happens when a selective index update
+		 * (SIU) chain has been pruned: the original line pointer becomes a
+		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
+		 * UPDATE record still references the original offset, so we must
+		 * follow the redirect to locate the physical tuple.
+		 */
+		if (ItemIdIsRedirected(lp))
+		{
+			elog(DEBUG2, "heap_xlog_lock: following redirect from offset %u to %u",
+				 offnum, ItemIdGetRedirect(lp));
+			offnum = ItemIdGetRedirect(lp);
+			lp = PageGetItemId(page, offnum);
+		}
+
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
 
@@ -1127,6 +1195,23 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
 			elog(PANIC, "offnum out of range");
 		lp = PageGetItemId(page, offnum);
+
+		/*
+		 * If the line pointer has been redirected, follow the redirect to
+		 * find the actual tuple.  This happens when a selective index update
+		 * (SIU) chain has been pruned: the original line pointer becomes a
+		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
+		 * UPDATE record still references the original offset, so we must
+		 * follow the redirect to locate the physical tuple.
+		 */
+		if (ItemIdIsRedirected(lp))
+		{
+			elog(DEBUG2, "heap_xlog_lock_updated: following redirect from offset %u to %u",
+				 offnum, ItemIdGetRedirect(lp));
+			offnum = ItemIdGetRedirect(lp);
+			lp = PageGetItemId(page, offnum);
+		}
+
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
 
@@ -1214,7 +1299,7 @@ heap_redo(XLogReaderState *record)
 			heap_xlog_delete(record);
 			break;
 		case XLOG_HEAP_UPDATE:
-			heap_xlog_update(record, false);
+			heap_xlog_update(record, false, false);
 			break;
 		case XLOG_HEAP_TRUNCATE:
 
@@ -1225,7 +1310,7 @@ heap_redo(XLogReaderState *record)
 			 */
 			break;
 		case XLOG_HEAP_HOT_UPDATE:
-			heap_xlog_update(record, true);
+			heap_xlog_update(record, true, false);
 			break;
 		case XLOG_HEAP_CONFIRM:
 			heap_xlog_confirm(record);
@@ -1240,6 +1325,9 @@ heap_redo(XLogReaderState *record)
 			elog(PANIC, "heap_redo: unknown op code %u", info);
 	}
 }
+
+/* forward declaration - defined below heap2_redo */
+static void heap_xlog_indexed_update(XLogReaderState *record);
 
 void
 heap2_redo(XLogReaderState *record)
@@ -1268,6 +1356,9 @@ heap2_redo(XLogReaderState *record)
 			break;
 		case XLOG_HEAP2_REWRITE:
 			heap_xlog_logical_rewrite(record);
+			break;
+		case XLOG_HEAP2_INDEXED_UPDATE:
+			heap_xlog_indexed_update(record);
 			break;
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);
@@ -1356,4 +1447,29 @@ heap_mask(char *pagedata, BlockNumber blkno)
 				memset(page_item + len, MASK_MARKER, padlen);
 		}
 	}
+}
+
+/*
+ * Replay XLOG_HEAP2_INDEXED_UPDATE operation (selective index update).
+ *
+ * INDEXED_UPDATE uses the same WAL record format as HEAP_HOT_UPDATE
+ * (xl_heap_update with same-page old/new tuples).  We replay it using
+ * the standard heap_xlog_update(hot_update=true) logic, which correctly
+ * handles all cases (FPI, same-page, tuple reconstruction, etc.).
+ *
+ * The only difference is that HEAP_INDEXED_UPDATED must be set on the old
+ * tuple after replay.  We handle this by passing indexed_update=true
+ * to heap_xlog_update, which sets the bit after the standard HOT
+ * replay logic runs.
+ */
+static void
+heap_xlog_indexed_update(XLogReaderState *record)
+{
+	/*
+	 * INDEXED_UPDATE uses the exact same WAL record format as HOT_UPDATE.
+	 * Delegate to heap_xlog_update with hot_update=true, indexed_update=true.
+	 * The indexed_update flag causes HEAP_INDEXED_UPDATED to be set on the
+	 * old tuple (instead of cleared as for regular HOT updates).
+	 */
+	heap_xlog_update(record, true, true);
 }

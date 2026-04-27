@@ -1,0 +1,45 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2_snap s1_upd_a s1_upd_b s1_upd_a2 s1_commit s3_snap s2_read_a s2_read_b s3_read_a s3_read_b s2_commit s3_commit
+step s2_snap: SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step s1_upd_a: UPDATE iso_siu_chain SET a = 11, val = 'v1' WHERE id = 1;
+step s1_upd_b: UPDATE iso_siu_chain SET b = 21, val = 'v2' WHERE id = 1;
+step s1_upd_a2: UPDATE iso_siu_chain SET a = 12, val = 'v3' WHERE id = 1;
+step s1_commit: COMMIT;
+step s3_snap: SELECT 1;
+?column?
+--------
+       1
+(1 row)
+
+step s2_read_a: SET enable_seqscan = off; SELECT * FROM iso_siu_chain WHERE a = 10;
+id| a| b|val
+--+--+--+---
+ 1|10|20|v0 
+(1 row)
+
+step s2_read_b: SET enable_seqscan = off; SELECT * FROM iso_siu_chain WHERE b = 20;
+id| a| b|val
+--+--+--+---
+ 1|10|20|v0 
+(1 row)
+
+step s3_read_a: SET enable_seqscan = off; SELECT * FROM iso_siu_chain WHERE a = 12;
+id| a| b|val
+--+--+--+---
+ 1|12|21|v3 
+(1 row)
+
+step s3_read_b: SET enable_seqscan = off; SELECT * FROM iso_siu_chain WHERE b = 21;
+id| a| b|val
+--+--+--+---
+ 1|12|21|v3 
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_commit: COMMIT;

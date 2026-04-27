@@ -386,10 +386,8 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
  * count a tuple update
  */
 void
-pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
+pgstat_count_heap_update(Relation rel, HeapUpdateKind kind)
 {
-	Assert(!(hot && newpage));
-
 	if (pgstat_should_count_relation(rel))
 	{
 		PgStat_TableStatus *pgstat_info = rel->pgstat_info;
@@ -398,13 +396,24 @@ pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
 		pgstat_info->trans->tuples_updated++;
 
 		/*
-		 * tuples_hot_updated and tuples_newpage_updated counters are
-		 * nontransactional, so just advance them
+		 * tuples_hot_updated, tuples_siu_updated, and tuples_newpage_updated
+		 * counters are nontransactional, so just advance them
 		 */
-		if (hot)
-			pgstat_info->counts.tuples_hot_updated++;
-		else if (newpage)
-			pgstat_info->counts.tuples_newpage_updated++;
+		switch (kind)
+		{
+			case HEAP_UPDATE_HOT:
+				pgstat_info->counts.tuples_hot_updated++;
+				break;
+			case HEAP_UPDATE_HOT_SIU:
+				pgstat_info->counts.tuples_hot_updated++;
+				pgstat_info->counts.tuples_siu_updated++;
+				break;
+			case HEAP_UPDATE_NEWPAGE:
+				pgstat_info->counts.tuples_newpage_updated++;
+				break;
+			case HEAP_UPDATE_NORMAL:
+				break;
+		}
 	}
 }
 
@@ -854,6 +863,7 @@ pgstat_relation_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 	tabentry->tuples_updated += lstats->counts.tuples_updated;
 	tabentry->tuples_deleted += lstats->counts.tuples_deleted;
 	tabentry->tuples_hot_updated += lstats->counts.tuples_hot_updated;
+	tabentry->tuples_siu_updated += lstats->counts.tuples_siu_updated;
 	tabentry->tuples_newpage_updated += lstats->counts.tuples_newpage_updated;
 
 	/*

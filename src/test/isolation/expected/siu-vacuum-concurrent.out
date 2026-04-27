@@ -1,0 +1,18 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_update1 s1_update2 s1_commit s2_vacuum s1_check_a s1_check_b
+step s1_update1: UPDATE iso_siu_vacuum SET a = 11 WHERE id = 1;
+step s1_update2: UPDATE iso_siu_vacuum SET b = 21 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM iso_siu_vacuum;
+step s1_check_a: SET enable_seqscan = off; SELECT * FROM iso_siu_vacuum WHERE a = 11;
+id|a|b|filler
+--+-+-+------
+(0 rows)
+
+step s1_check_b: SET enable_seqscan = off; SELECT * FROM iso_siu_vacuum WHERE b = 21;
+id| a| b|filler
+--+--+--+------
+ 1|11|21|start 
+(1 row)
+

@@ -1051,11 +1051,17 @@ slot_deform_heap_tuple(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
 
 	firstNonCacheOffsetAttr = tupleDesc->firstNonCachedOffsetAttr;
 
+	/*
+	 * Compute the data start pointer from t_hoff.  This works transparently
+	 * with SIU-augmented tuples that have an embedded bitmap between the null
+	 * bitmap and user data, since t_hoff accounts for the extra bytes.
+	 */
+	Assert(tup->t_hoff >= SizeofHeapTupleHeader);
+	tp = (char *) tup + tup->t_hoff;
+
 	if (HeapTupleHasNulls(tuple))
 	{
 		natts = HeapTupleHeaderGetNatts(tup);
-		tp = (char *) tup + MAXALIGN(offsetof(HeapTupleHeaderData, t_bits) +
-									 BITMAPLEN(natts));
 
 		natts = Min(natts, reqnatts);
 		if (natts > firstNonGuaranteedAttr)
@@ -1079,8 +1085,6 @@ slot_deform_heap_tuple(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
 	}
 	else
 	{
-		tp = (char *) tup + MAXALIGN(offsetof(HeapTupleHeaderData, t_bits));
-
 		/*
 		 * We only need to look at the tuple's natts if we need more than the
 		 * guaranteed number of columns
@@ -1107,9 +1111,6 @@ slot_deform_heap_tuple(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
 	 * element efficiently when accessing it via TupleDescCompactAttr().
 	 */
 	cattrs = tupleDesc->compact_attrs;
-
-	/* Ensure we calculated tp correctly */
-	Assert(tp == (char *) tup + tup->t_hoff);
 
 	if (attnum < firstNonGuaranteedAttr)
 	{

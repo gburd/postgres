@@ -589,6 +589,8 @@ heap_tuple_infomask_flags(PG_FUNCTION_ARGS)
 		flags[cnt++] = CStringGetTextDatum("HEAP_HOT_UPDATED");
 	if ((t_infomask2 & HEAP_ONLY_TUPLE) != 0)
 		flags[cnt++] = CStringGetTextDatum("HEAP_ONLY_TUPLE");
+	if ((t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		flags[cnt++] = CStringGetTextDatum("HEAP_INDEXED_UPDATED");
 
 	/* build value */
 	Assert(cnt <= bitcnt);

@@ -861,7 +861,8 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, flags,
 												   slot, conflictindexes,
-												   &conflict);
+												   &conflict,
+												   NULL);
 		}
 
 		/*
@@ -968,12 +969,11 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 							  modified_idx_attrs))
 				flags |= EIIT_ALL_INDEXES;
 
-			ExecSetIndexUnchanged(resultRelInfo, modified_idx_attrs);
-
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, flags,
 												   slot, conflictindexes,
-												   &conflict);
+												   &conflict,
+												   modified_idx_attrs);
 		}
 
 		bms_free(modified_idx_attrs);

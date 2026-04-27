@@ -481,6 +481,18 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
 		case XLOG_HEAP2_LOCK_UPDATED:
 			break;
+		case XLOG_HEAP2_INDEXED_UPDATE:
+
+			/*
+			 * Updates with indexed attributes modified are treated like HOT
+			 * updates for logical decoding purposes - they represent updates
+			 * that avoid modifying certain indexes.  For logical replication,
+			 * treat them as regular updates.
+			 */
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeUpdate(ctx, buf);
+			break;
 		default:
 			elog(ERROR, "unexpected RM_HEAP2_ID record type: %u", info);
 	}

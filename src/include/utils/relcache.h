@@ -73,6 +73,11 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_SUMMARIZED,
 } IndexAttrBitmapKind;
 
+/*
+ * RelationGetIndexAttrBitmap -- return a freshly-allocated Bitmapset of
+ * attribute numbers for the requested kind of index attributes.  The caller
+ * is responsible for freeing the returned Bitmapset via bms_free().
+ */
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,
 											 IndexAttrBitmapKind attrKind);
 
@@ -91,6 +96,22 @@ extern void RelationBuildPublicationDesc(Relation relation,
 										 struct PublicationDesc *pubdesc);
 
 extern void RelationInitTableAccessMethod(Relation relation);
+
+/*
+ * IndexGetAttrBitmap -- return a freshly-allocated Bitmapset containing the
+ * attribute numbers indexed by the given index relation.  The caller is
+ * responsible for freeing the returned Bitmapset via bms_free().
+ */
+extern Bitmapset *IndexGetAttrBitmap(Relation irel);
+
+/*
+ * IndexGetAttrBitmapBorrowed -- return a borrowed pointer to the cached
+ * bitmap of all indexed attribute columns.
+ *
+ * Unlike IndexGetAttrBitmap(), this does not copy the result.
+ * The caller must not modify or free the returned bitmap.
+ */
+extern const Bitmapset *IndexGetAttrBitmapBorrowed(Relation irel);
 
 /*
  * Routines to support ereport() reports of relation-related errors

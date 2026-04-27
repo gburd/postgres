@@ -218,6 +218,13 @@ typedef struct RelationData
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
 
 	/*
+	 * Cached bitmap of heap attributes indexed by this index, computed by
+	 * IndexGetAttrBitmap().  Allocated in rd_indexcxt so it's freed on
+	 * relcache invalidation.  NULL means not yet computed.
+	 */
+	Bitmapset  *rd_indexattrs_bms;
+
+	/*
 	 * rd_amcache is available for index and table AMs to cache private data
 	 * about the relation.  This must be just a cache since it may get reset
 	 * at any time (in particular, it will get reset by a relcache inval

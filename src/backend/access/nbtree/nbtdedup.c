@@ -356,6 +356,7 @@ _bt_bottomupdel_pass(Relation rel, Buffer buf, Relation heapRel,
 	delstate.iblknum = BufferGetBlockNumber(buf);
 	delstate.bottomup = true;
 	delstate.bottomupfreespace = Max(BLCKSZ / 16, newitemsz);
+	delstate.indexed_attrs = IndexGetAttrBitmapBorrowed(rel);
 	delstate.ndeltids = 0;
 	delstate.deltids = palloc_array(TM_IndexDelete, MaxTIDsPerBTreePage);
 	delstate.status = palloc_array(TM_IndexStatus, MaxTIDsPerBTreePage);

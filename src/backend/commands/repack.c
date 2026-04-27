@@ -2593,7 +2593,7 @@ apply_concurrent_insert(Relation rel, TupleTableSlot *slot,
 						  chgcxt->cc_estate,
 						  0,
 						  slot,
-						  NIL, NULL);
+						  NIL, NULL, NULL);
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_INSERTED, 1);
 }
 
@@ -2608,8 +2608,19 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 {
 	LockTupleMode lockmode;
 	TM_FailureData tmfd;
-	TU_UpdateIndexes update_indexes;
+	Bitmapset  *modified_idx_attrs;
 	TM_Result	res;
+
+	/*
+	 * Compute the set of modified indexed attributes by comparing the
+	 * old (ondisk) and new (spilled) tuples.  This is needed so that
+	 * heap_update can make a correct HOT decision — without it,
+	 * modified_idx_attrs would be NULL and heap_update would always
+	 * allow HOT, even when primary-key columns change.
+	 */
+	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(chgcxt->cc_rri,
+													ondisk_tuple,
+													spilled_tuple);
 
 	/*
 	 * Carry out the update, skipping logical decoding for it.
@@ -2620,23 +2631,28 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							 InvalidSnapshot,
 							 InvalidSnapshot,
 							 false,
-							 &tmfd, &lockmode, &update_indexes);
+							 &tmfd, &lockmode, &modified_idx_attrs);
 	if (res != TM_Ok)
 		ereport(ERROR,
 				errmsg("failed to apply concurrent UPDATE"));
 
-	if (update_indexes != TU_None)
+	/* Update indexes for modified indexed attributes */
+	if (!bms_is_empty(modified_idx_attrs))
 	{
 		uint32		flags = EIIT_IS_UPDATE;
 
-		if (update_indexes == TU_Summarizing)
-			flags |= EIIT_ONLY_SUMMARIZING;
+		if (bms_is_member(MODIFIED_IDX_ATTRS_ALL_IDX,
+						  modified_idx_attrs))
+			flags |= EIIT_ALL_INDEXES;
+
 		ExecInsertIndexTuples(chgcxt->cc_rri,
 							  chgcxt->cc_estate,
 							  flags,
 							  spilled_tuple,
-							  NIL, NULL);
+							  NIL, NULL, modified_idx_attrs);
 	}
+
+	bms_free(modified_idx_attrs);
 
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_UPDATED, 1);
 }

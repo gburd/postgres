@@ -767,7 +767,8 @@ extern void ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
 								   uint32 flags, TupleTableSlot *slot,
 								   List *arbiterIndexes,
-								   bool *specConflict);
+								   bool *specConflict,
+								   Bitmapset *modified_attrs);
 extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
 									  TupleTableSlot *slot,
 									  EState *estate, ItemPointer conflictTid,

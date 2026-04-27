@@ -1,0 +1,206 @@
+--
+-- Test HOT selective index updates
+--
+-- This test verifies that selective index updates (where only some indexes
+-- are updated during a HOT update) work correctly. We verify:
+-- 1. Data correctness after updates
+-- 2. Statistics via pg_stat_get_tuples_siu_updated() after flushing stats
+--
+
+-- Reset stats for our test tables by using pg_stat_force_next_flush()
+-- and checking stats via the stat access functions.
+
+-- Basic selective index update (non-indexed column update)
+CREATE TABLE hot_sel_test (
+    id serial PRIMARY KEY,
+    indexed_col int,
+    non_indexed_col text
+) WITH (fillfactor = 60);
+CREATE INDEX ON hot_sel_test(indexed_col);
+
+INSERT INTO hot_sel_test (indexed_col, non_indexed_col)
+  VALUES (1, 'original');
+
+-- Update non-indexed column -> should be classic HOT (no indexed cols changed)
+UPDATE hot_sel_test SET non_indexed_col = 'modified' WHERE id = 1;
+
+-- Flush stats and verify: classic HOT update, no selective index update
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_get_tuples_siu_updated(c.oid) AS n_tup_siu_upd
+FROM pg_class c WHERE c.relname = 'hot_sel_test';
+
+-- Verify tuple was updated
+SELECT id, indexed_col, non_indexed_col FROM hot_sel_test;
+
+-- BRIN index with selective index update
+CREATE TABLE brin_sel (
+    id integer PRIMARY KEY,
+    val integer NOT NULL,
+    data text
+) WITH (autovacuum_enabled = off, fillfactor = 70);
+
+INSERT INTO brin_sel SELECT i, i, 'data' FROM generate_series(1, 235) i;
+CREATE INDEX ON brin_sel USING brin(val) WITH (pages_per_range = 1);
+
+-- Also create a btree index so we can test selective updates with BRIN
+CREATE INDEX ON brin_sel(data);
+
+-- Update btree-indexed column -> selective (BRIN always inserted, PK skipped)
+UPDATE brin_sel SET data = 'modified' WHERE id = 42;
+
+-- Flush stats and verify
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_get_tuples_siu_updated(c.oid) AS n_tup_siu_upd
+FROM pg_class c WHERE c.relname = 'brin_sel';
+
+-- Verify tuple was updated
+SELECT id, val, data FROM brin_sel WHERE id = 42;
+
+-- Mixed index types - some affected, some not
+CREATE TABLE mixed_idx_sel (
+    id serial PRIMARY KEY,
+    col_a int,
+    col_b int,
+    col_c text,
+    col_d text
+) WITH (fillfactor = 60);
+
+CREATE INDEX idx_a ON mixed_idx_sel(col_a);
+CREATE INDEX idx_b ON mixed_idx_sel(col_b);
+CREATE INDEX idx_c ON mixed_idx_sel(col_c);
+
+INSERT INTO mixed_idx_sel (col_a, col_b, col_c, col_d)
+  VALUES (1, 2, 'text_c', 'text_d');
+
+-- Update col_a and col_d -> only idx_a needs updating
+-- (col_d is not indexed, idx_b and idx_c shouldn't be updated)
+-- Then update col_b -> idx_b needs updating
+UPDATE mixed_idx_sel SET col_a = 10, col_d = 'new_d' WHERE id = 1;
+UPDATE mixed_idx_sel SET col_b = 20 WHERE id = 1;
+
+-- Flush stats and verify cumulative statistics for both updates:
+-- Update 1: col_a changed -> SIU, idx_a updated
+-- Update 2: col_b changed -> SIU, idx_b updated
+-- Total: n_tup_siu_upd=2
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_get_tuples_siu_updated(c.oid) AS n_tup_siu_upd
+FROM pg_class c WHERE c.relname = 'mixed_idx_sel';
+
+SELECT id, col_a, col_b, col_c, col_d FROM mixed_idx_sel;
+
+-- Update all non-indexed columns -> should be HOT, not selective
+CREATE TABLE hot_vs_sel (
+    id serial PRIMARY KEY,
+    indexed_col int,
+    non_idx_a text,
+    non_idx_b text
+) WITH (fillfactor = 60);
+
+CREATE INDEX ON hot_vs_sel(indexed_col);
+
+INSERT INTO hot_vs_sel (indexed_col, non_idx_a, non_idx_b)
+  VALUES (1, 'a', 'b');
+
+-- Update only non-indexed columns -> HOT
+UPDATE hot_vs_sel SET non_idx_a = 'new_a', non_idx_b = 'new_b' WHERE id = 1;
+
+-- Flush stats and verify: pure HOT update (no indexed cols changed)
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_get_tuples_siu_updated(c.oid) AS n_tup_siu_upd
+FROM pg_class c WHERE c.relname = 'hot_vs_sel';
+
+SELECT id, indexed_col, non_idx_a, non_idx_b FROM hot_vs_sel;
+
+-- Verify selective update chains are followed correctly in index scans
+CREATE TABLE sel_chain_test (
+    id integer PRIMARY KEY,
+    indexed_a int,
+    indexed_b int,
+    non_indexed text
+) WITH (fillfactor = 60);
+
+CREATE INDEX idx_chain_a ON sel_chain_test(indexed_a);
+CREATE INDEX idx_chain_b ON sel_chain_test(indexed_b);
+
+INSERT INTO sel_chain_test VALUES (1, 10, 20, 'original');
+
+-- Update indexed_a only -> selective (idx_b can follow chain)
+UPDATE sel_chain_test SET indexed_a = 100 WHERE id = 1;
+
+-- Verify idx_b can still find the tuple
+SELECT id, indexed_a, indexed_b, non_indexed
+  FROM sel_chain_test WHERE indexed_b = 20;
+
+-- Multiple updates creating selective update chain
+CREATE TABLE multi_sel (
+    id integer PRIMARY KEY,
+    idx_col int,
+    data1 text,
+    data2 text
+) WITH (fillfactor = 50);
+
+CREATE INDEX ON multi_sel(idx_col);
+
+INSERT INTO multi_sel VALUES (1, 100, 'v1', 'v1');
+
+-- Chain of updates, alternating between indexed and non-indexed columns
+UPDATE multi_sel SET data1 = 'v2' WHERE id = 1;  -- HOT
+UPDATE multi_sel SET data2 = 'v2' WHERE id = 1;  -- HOT
+UPDATE multi_sel SET data1 = 'v3' WHERE id = 1;  -- HOT
+
+SELECT id, idx_col, data1, data2 FROM multi_sel;
+
+-- Update indexed column to break the chain
+UPDATE multi_sel SET idx_col = 200 WHERE id = 1;
+
+SELECT id, idx_col, data1, data2 FROM multi_sel;
+
+-- Verify selective index update statistics with multiple index patterns
+CREATE TABLE sel_stats_test (
+    id serial PRIMARY KEY,
+    indexed_a int,
+    indexed_b int,
+    indexed_c int,
+    non_indexed_d text,
+    non_indexed_e text
+) WITH (fillfactor = 60);
+
+-- Create three indexes (plus the PK index = 4 total)
+CREATE INDEX idx_stats_a ON sel_stats_test(indexed_a);
+CREATE INDEX idx_stats_b ON sel_stats_test(indexed_b);
+CREATE INDEX idx_stats_c ON sel_stats_test(indexed_c);
+
+INSERT INTO sel_stats_test (indexed_a, indexed_b, indexed_c, non_indexed_d, non_indexed_e)
+  VALUES (1, 2, 3, 'd', 'e');
+
+-- Update only non-indexed columns -> HOT update, no selective index update
+UPDATE sel_stats_test SET non_indexed_d = 'd2', non_indexed_e = 'e2' WHERE id = 1;
+
+-- Update one indexed column -> should update 1 of 4 indexes, skip 3
+UPDATE sel_stats_test SET indexed_a = 10 WHERE id = 1;
+
+-- Update two indexed columns -> should update 2 of 4 indexes, skip 2
+UPDATE sel_stats_test SET indexed_a = 11, indexed_b = 22 WHERE id = 1;
+
+-- Update all three user-created indexed columns -> should update 3 of 4 indexes, skip 1 (PK)
+UPDATE sel_stats_test SET indexed_a = 12, indexed_b = 23, indexed_c = 34 WHERE id = 1;
+
+-- Flush stats and verify cumulative statistics
+-- 4 updates total: 1 pure HOT + 3 SIU (selective index update)
+-- n_tup_siu_upd = 3 (HOT with some indexed cols changed)
+SELECT pg_stat_force_next_flush();
+SELECT pg_stat_get_tuples_siu_updated(c.oid) AS n_tup_siu_upd
+FROM pg_class c WHERE c.relname = 'sel_stats_test';
+
+-- Verify data correctness
+SELECT id, indexed_a, indexed_b, indexed_c, non_indexed_d, non_indexed_e
+FROM sel_stats_test WHERE id = 1;
+
+-- Cleanup
+DROP TABLE hot_sel_test CASCADE;
+DROP TABLE brin_sel CASCADE;
+DROP TABLE mixed_idx_sel CASCADE;
+DROP TABLE hot_vs_sel CASCADE;
+DROP TABLE sel_chain_test CASCADE;
+DROP TABLE multi_sel CASCADE;
+DROP TABLE sel_stats_test CASCADE;

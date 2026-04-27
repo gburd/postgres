@@ -122,11 +122,11 @@ typedef struct IndexFetchHeapData
 	IndexFetchTableData xs_base;	/* AM independent part of the descriptor */
 
 	/*
-	 * Current heap buffer in scan (and its block number), if any.  NB: if
-	 * xs_blk is not InvalidBlockNumber, we hold a pin in xs_cbuf.
+	 * Current heap buffer in scan, if any. NB: if xs_cbuf is not
+	 * InvalidBuffer, we hold a pin on that buffer.
 	 */
 	Buffer		xs_cbuf;
-	BlockNumber xs_blk;
+	BlockNumber	xs_blk;			/* block number of xs_cbuf */
 
 	/* Current heap block's corresponding page in the visibility map */
 	Buffer		xs_vmbuffer;
@@ -367,6 +367,36 @@ extern bool heap_getnextslot_tidrange(TableScanDesc sscan,
 									  TupleTableSlot *slot);
 extern bool heap_fetch(Relation relation, Snapshot snapshot,
 					   HeapTuple tuple, Buffer *userbuf, bool keep_buf);
+extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
+								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
+								   bool *all_dead, bool first_call,
+								   const Bitmapset *indexed_attrs);
+
+/* SIU (Selective Index Update) bitmap helpers */
+extern int heap_siu_bitmap_raw_size(int natts);
+extern int heap_siu_bitmap_aligned_size(int natts);
+extern void heap_siu_serialize_bitmap(uint8 *dest, int nbytes,
+							   const Bitmapset *modified_idx_attrs);
+extern Bitmapset *heap_siu_deserialize_bitmap(const uint8 *data, int nbytes);
+extern Bitmapset *heap_siu_read_bitmap(HeapTupleHeader tup);
+extern bool heap_siu_bitmap_overlaps_raw(HeapTupleHeader tup,
+									const Bitmapset *indexed_attrs);
+extern bool heap_tuple_has_siu_bitmap_space(HeapTupleHeader tup);
+extern void heap_siu_merge_bitmaps_raw(Page page,
+									   OffsetNumber target_offnum,
+									   OffsetNumber *dead_offnums,
+									   int ndead);
+extern void heap_siu_bitmap_or_raw(HeapTupleHeader tup, uint8 *accum, int siu_raw);
+extern bool heap_siu_accum_overlaps(const uint8 *accum, int siu_raw,
+							   const Bitmapset *indexed_attrs);
+
+/*
+ * Maximum raw byte count of an SIU bitmap, for stack allocation.
+ * heap_siu_bitmap_raw_size(MaxHeapAttributeNumber) evaluates to 201 given the
+ * current FirstLowInvalidHeapAttributeNumber.  We use 256 as a safe
+ * upper bound; a StaticAssertDecl in heapam.c verifies this at compile time.
+ */
+#define MaxSIUBitmapRawSize		256
 
 extern void heap_get_latest_tid(TableScanDesc sscan, ItemPointer tid);
 
@@ -387,7 +417,7 @@ extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid
 extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
 							 HeapTuple newtup, CommandId cid, Snapshot crosscheck, bool wait,
 							 TM_FailureData *tmfd, const LockTupleMode lockmode,
-							 const Bitmapset *modified_idx_attrs, const bool hot_allowed);
+							 const Bitmapset *modified_idx_attrs);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -421,8 +451,8 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
-extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, Bitmapset **modified_idx_attrs);
+extern Bitmapset *simple_heap_update(Relation relation, const ItemPointerData *otid,
+							   HeapTuple tup);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -431,13 +461,11 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 extern IndexFetchTableData *heapam_index_fetch_begin(Relation rel, uint32 flags);
 extern void heapam_index_fetch_reset(IndexFetchTableData *scan);
 extern void heapam_index_fetch_end(IndexFetchTableData *scan);
-extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
-								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
-								   bool *all_dead, bool first_call);
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
-									 ItemPointer tid, Snapshot snapshot,
-									 TupleTableSlot *slot, bool *heap_continue,
-									 bool *all_dead);
+									 ItemPointer tid,
+									 Snapshot snapshot,
+									 TupleTableSlot *slot,
+									 bool *call_again, bool *all_dead);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,
@@ -463,7 +491,6 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *unused, int nunused);
 
 /* in heap/heapam.c */
-extern bool HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs);
 extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
 												 const Bitmapset *modified_idx_attrs);
 

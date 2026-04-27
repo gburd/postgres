@@ -289,7 +289,10 @@ HEAP_XMAX_IS_KEYSHR_LOCKED(uint16 infomask)
  * information stored in t_infomask2:
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-/* bits 0x1800 are available */
+#define HEAP_INDEXED_UPDATED	0x0800	/* HOT-updated tuple that also
+										 * modified indexed attributes, requiring
+										 * selective index updates */
+/* bit 0x1000 is available */
 #define HEAP_KEYS_UPDATED		0x2000	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */
@@ -558,6 +561,44 @@ static inline void
 HeapTupleHeaderClearHeapOnly(HeapTupleHeaderData *tup)
 {
 	tup->t_infomask2 &= ~HEAP_ONLY_TUPLE;
+}
+
+/*
+ * Accessors for HEAP_INDEXED_UPDATED bit.
+ * A tuple with this bit set was part of a HOT update that also modified
+ * indexed attributes, requiring selective index updates.
+ *
+ * Like HeapTupleHeaderIsHotUpdated, this must return false when xmin is
+ * invalid (aborted transaction) or xmax is invalid, because the chain
+ * linkage is unreliable in those cases.  The raw bit check variant is
+ * provided for callers that need to test the bit regardless of transaction
+ * status (e.g., WAL replay, flag clearing).
+ */
+static inline bool
+HeapTupleHeaderIsIndexedUpdated(const HeapTupleHeaderData *tup)
+{
+	return
+		(tup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
+		(tup->t_infomask & HEAP_XMAX_INVALID) == 0 &&
+		!HeapTupleHeaderXminInvalid(tup);
+}
+
+static inline bool
+HeapTupleHeaderIsIndexedUpdatedRaw(const HeapTupleHeaderData *tup)
+{
+	return (tup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0;
+}
+
+static inline void
+HeapTupleHeaderSetIndexedUpdated(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 |= HEAP_INDEXED_UPDATED;
+}
+
+static inline void
+HeapTupleHeaderClearIndexedUpdated(HeapTupleHeaderData *tup)
+{
+	tup->t_infomask2 &= ~HEAP_INDEXED_UPDATED;
 }
 
 /*

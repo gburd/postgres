@@ -272,7 +272,7 @@ UPDATE hot_test SET status = 'deleted' WHERE id = 2;
 SELECT * FROM get_hot_count('hot_test');
 
 -- Verify index still works for 'active' rows
-SELECT id, status FROM hot_test WHERE status = 'active';
+SELECT id, status FROM hot_test WHERE status = 'active' ORDER BY id;
 
 -- Only BRIN (summarizing) indexes on non-PK columns
 DROP TABLE hot_test;
@@ -384,8 +384,6 @@ UPDATE hot_test SET data = 'updated';
 SELECT * FROM get_hot_count('hot_test');
 
 -- Partitioned tables: HOT works within partitions
-DROP TABLE IF EXISTS hot_test_partitioned CASCADE;
-
 CREATE TABLE hot_test_partitioned (
     id int,
     partition_key int,
@@ -554,17 +552,17 @@ UPDATE hot_gin_test SET tags = ARRAY['tag2', 'tag1', 'tag5'] WHERE id = 1;
 SELECT * FROM get_hot_count('hot_gin_test');
 
 -- Verify GIN indexes work
-SELECT id FROM hot_gin_test WHERE tags @> ARRAY['tag5'];
-SELECT id FROM hot_gin_test WHERE properties @> '{"key1":"val1_new"}';
+SELECT id FROM hot_gin_test WHERE tags @> ARRAY['tag5'] ORDER BY id;
+SELECT id FROM hot_gin_test WHERE properties @> '{"key1":"val1_new"}' ORDER BY id;
 
 DROP TABLE hot_gin_test;
 
 -- ============================================================================
 -- Cleanup
 -- ============================================================================
-DROP TABLE IF EXISTS hot_test;
-DROP TABLE IF EXISTS hot_test_partitioned CASCADE;
-DROP FUNCTION IF EXISTS has_hot_chain(text, tid);
-DROP FUNCTION IF EXISTS print_hot_chain(text, tid);
-DROP FUNCTION IF EXISTS get_hot_count(text);
+DROP TABLE hot_test;
+DROP TABLE hot_test_partitioned CASCADE;
+DROP FUNCTION has_hot_chain(text, tid);
+DROP FUNCTION print_hot_chain(text, tid);
+DROP FUNCTION get_hot_count(text);
 DROP EXTENSION pageinspect;

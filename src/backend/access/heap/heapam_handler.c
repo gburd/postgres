@@ -42,6 +42,7 @@
 #include "storage/lock.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "utils/relcache.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
@@ -221,18 +222,16 @@ heapam_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
-					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
-					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					Bitmapset **modified_idx_attrs)
+					CommandId cid, uint32 options, Snapshot snapshot,
+					Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+					LockTupleMode *lockmode, Bitmapset **modified_idx_attrs)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
-	bool		hot_allowed;
 	TM_Result	result;
 
 	Assert(ItemPointerIsValid(otid));
 
-	hot_allowed = HeapUpdateHotAllowable(relation, *modified_idx_attrs);
 	*lockmode = HeapUpdateDetermineLockmode(relation, *modified_idx_attrs);
 
 	/* Update the tuple with table oid */
@@ -240,7 +239,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	tuple->t_tableOid = slot->tts_tableOid;
 
 	result = heap_update(relation, otid, tuple, cid, crosscheck, wait,
-						 tmfd, *lockmode, *modified_idx_attrs, hot_allowed);
+						 tmfd, *lockmode, *modified_idx_attrs);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
@@ -2563,20 +2562,53 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 		 * offset.
 		 */
 		int			curslot;
+		bool		seen[MaxHeapTuplesPerPage + 1];
 
 		/* We must have extracted the tuple offsets by now */
 		Assert(noffsets > -1);
 
+		/*
+		 * Track which resolved offsets we've already stored.  This prevents
+		 * duplicates when a selective index update creates both a stale
+		 * entry (pointing to the chain root/redirect) and a fresh entry
+		 * (pointing directly to the new tuple): both resolve to the same
+		 * live tuple offset via heap_hot_search_buffer.
+		 */
+		memset(seen, false, sizeof(seen));
+
 		for (curslot = 0; curslot < noffsets; curslot++)
 		{
 			OffsetNumber offnum = offsets[curslot];
+			OffsetNumber resolved;
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true))
-				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+									   &heapTuple, NULL, true, NULL))
+			{
+				resolved = ItemPointerGetOffsetNumber(&tid);
+
+				/* Skip if we already stored this resolved offset */
+				if (seen[resolved - 1])
+					continue;
+				seen[resolved - 1] = true;
+
+				hscan->rs_vistuples[ntup++] = resolved;
+
+				/*
+				 * If the visible tuple has HEAP_INDEXED_UPDATED set, this
+				 * HOT chain contains a selective index update.  The bitmap
+				 * index scan may have found a stale index entry pointing
+				 * to the old tuple version whose indexed column values
+				 * differ from the current visible tuple.  Force recheck
+				 * so that the BitmapHeapScan node applies the qual filter
+				 * and correctly excludes tuples that don't match.
+				 */
+				if (HeapTupleHeaderIsIndexedUpdatedRaw(heapTuple.t_data))
+					*recheck = true;
+
+			}
 		}
 	}
 	else

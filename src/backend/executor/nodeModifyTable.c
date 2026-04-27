@@ -1298,7 +1298,8 @@ ExecInsert(ModifyTableContext *context,
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, EIIT_NO_DUPE_ERROR,
 												   slot, arbiterIndexes,
-												   &specConflict);
+												   &specConflict,
+												   NULL);	/* not an UPDATE */
 
 			/* adjust the tuple's state accordingly */
 			table_tuple_complete_speculative(resultRelationDesc, slot,
@@ -1337,7 +1338,8 @@ ExecInsert(ModifyTableContext *context,
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(resultRelInfo, estate,
 													   0, slot, NIL,
-													   NULL);
+													   NULL,
+													   NULL);	/* not an UPDATE */
 		}
 	}
 
@@ -2701,16 +2703,11 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 						  updateCxt->modified_idx_attrs))
 			flags |= EIIT_ALL_INDEXES;
 
-		/*
-		 * Set ii_IndexUnchanged hints for each index based on which indexed
-		 * attributes were actually modified.
-		 */
-		ExecSetIndexUnchanged(resultRelInfo,
-							  updateCxt->modified_idx_attrs);
-
+		ExecSetIndexUnchanged(resultRelInfo, updateCxt->modified_idx_attrs);
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
 											   flags, slot, NIL,
-											   NULL);
+											   NULL,
+											   updateCxt->modified_idx_attrs);
 	}
 
 	/* Compute temporal leftovers in FOR PORTION OF */
@@ -2741,6 +2738,12 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	if (resultRelInfo->ri_WithCheckOptions != NIL)
 		ExecWithCheckOptions(WCO_VIEW_CHECK, resultRelInfo,
 							 slot, context->estate);
+
+	/*
+	 * Free the modified_idx_attrs bitmap that was allocated by
+	 * ExecUpdateModifiedIdxAttrs() and potentially modified by the table AM.
+	 */
+	bms_free(updateCxt->modified_idx_attrs);
 }
 
 /*
@@ -2917,7 +2920,10 @@ redo_act:
 		 * nothing else for us to do.
 		 */
 		if (updateCxt.crossPartUpdate)
+		{
+			bms_free(updateCxt.modified_idx_attrs);
 			return context->cpUpdateReturningSlot;
+		}
 
 		switch (result)
 		{
@@ -2953,6 +2959,7 @@ redo_act:
 							 errhint("Consider using an AFTER trigger instead of a BEFORE trigger to propagate changes to other rows.")));
 
 				/* Else, already updated by self; nothing to do */
+				bms_free(updateCxt.modified_idx_attrs);
 				return NULL;
 
 			case TM_Ok:
@@ -2992,8 +2999,11 @@ redo_act:
 												   resultRelInfo->ri_RangeTableIndex,
 												   inputslot);
 							if (TupIsNull(epqslot))
+							{
 								/* Tuple not passing quals anymore, exiting... */
+								bms_free(updateCxt.modified_idx_attrs);
 								return NULL;
+							}
 
 							/* Make sure ri_oldTupleSlot is initialized. */
 							if (unlikely(!resultRelInfo->ri_projectNewInfoValid))

@@ -113,7 +113,9 @@
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "pgstat.h"
 #include "storage/lmgr.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
@@ -211,6 +213,12 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		ii = BuildIndexInfo(indexDesc);
 
 		/*
+		 * Build bitmap of heap attributes referenced by this index. This is
+		 * used to determine which indexes need updating during HOT updates.
+		 */
+		ii->ii_IndexedAttrs = IndexGetAttrBitmap(indexDesc);
+
+		/*
 		 * If the indexes are to be used for speculative insertion, add extra
 		 * information required by unique index entries.
 		 */
@@ -296,7 +304,8 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 					  uint32 flags,
 					  TupleTableSlot *slot,
 					  List *arbiterIndexes,
-					  bool *specConflict)
+					  bool *specConflict,
+					  Bitmapset *modified_idx_attrs)
 {
 	ItemPointer tupleid = &slot->tts_tid;
 	List	   *result = NIL;
@@ -353,19 +362,14 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			continue;
 
 		/*
-		 * For UPDATE operations, use the per-index ii_IndexUnchanged flag
-		 * (populated by ExecSetIndexUnchanged) to determine behavior.
-		 *
-		 * For HOT updates (EIIT_IS_UPDATE set, EIIT_ALL_INDEXES not set):
-		 * skip non-summarizing indexes entirely since the heap-only tuple
-		 * doesn't need new entries in them.  Only summarizing indexes with
-		 * modified columns get new entries.
-		 *
-		 * For non-HOT updates (EIIT_ALL_INDEXES set): all indexes get new
-		 * entries because the tuple has a new TID.
+		 * On UPDATE we need to update indexes with attributes that overlap
+		 * with those modified or all indexes if the signal bit is set in the
+		 * modified_idx_attrs bitmap.
 		 */
-		if ((flags & EIIT_IS_UPDATE) && !(flags & EIIT_ALL_INDEXES) &&
-			!indexInfo->ii_Summarizing)
+		if ((flags & EIIT_IS_UPDATE) &&
+			!bms_is_member(MODIFIED_IDX_ATTRS_ALL_IDX, modified_idx_attrs) &&
+			(indexInfo->ii_IndexUnchanged == true ||
+			 !bms_overlap(indexInfo->ii_IndexedAttrs, modified_idx_attrs)))
 			continue;
 
 		/* Check for partial index */
@@ -847,8 +851,16 @@ retry:
 		FormIndexDatum(indexInfo, existing_slot, estate,
 					   existing_values, existing_isnull);
 
-		/* If lossy indexscan, must recheck the condition */
-		if (index_scan->xs_recheck)
+		/*
+		 * Recheck the constraint condition against the heap tuple's actual
+		 * values.  This is needed when the index scan is lossy (GiST) or when
+		 * a selective index update created stale index entries whose key
+		 * values no longer match the heap tuple's current values. Always
+		 * recheck for exclusion constraints since they use inherently lossy
+		 * index types and selective index updates can create additional false
+		 * positives.
+		 */
+		if (index_scan->xs_recheck || indexInfo->ii_ExclusionOps)
 		{
 			if (!index_recheck_constraint(index,
 										  constr_procs,
@@ -1018,7 +1030,6 @@ ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 {
 	int			numIndices = resultRelInfo->ri_NumIndices;
 	IndexInfo **indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
-	RelationPtr indexDescs = resultRelInfo->ri_IndexRelationDescs;
 
 	/* If no indexes or no modified attributes info, can't set hints */
 	if (numIndices == 0 || modified_idx_attrs == NULL)
@@ -1027,52 +1038,31 @@ ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 	for (int i = 0; i < numIndices; i++)
 	{
 		IndexInfo  *indexInfo = indexInfoArray[i];
-		Relation	indexDesc = indexDescs[i];
-		bool		indexUnchanged = true;
 
-		if (indexDesc == NULL)
+		if (indexInfo == NULL)
 			continue;
 
 		/*
-		 * Check if any of this index's key attributes are in the modified
-		 * set. We only check key attributes - non-key INCLUDE columns don't
-		 * affect HOT update eligibility.
+		 * If the index has expressions but no simple column references
+		 * (ii_IndexedAttrs is empty), we cannot determine from the
+		 * modified-columns bitmap whether the expression inputs changed.
+		 * Conservatively assume the index needs updating.
 		 */
-		for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
+		if (bms_is_empty(indexInfo->ii_IndexedAttrs) &&
+			indexInfo->ii_Expressions != NIL)
 		{
-			int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
-
-			if (keycol <= 0)
-			{
-				/*
-				 * Expression index. For now, conservatively assume it
-				 * changed. In the future, we could walk the expression tree
-				 * to check if any referenced attributes are in
-				 * modifiedIdxAttrs.
-				 */
-				indexUnchanged = false;
-				break;
-			}
-
-			/*
-			 * Check if this attribute is in the modified set.
-			 */
-			if (bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-							  modified_idx_attrs))
-			{
-				indexUnchanged = false;
-				break;
-			}
+			indexInfo->ii_IndexUnchanged = false;
+			continue;
 		}
 
 		/*
-		 * If index has amcomparedatums, we could use it here for more precise
-		 * checking. For now, we rely on the modified attributes tracking.
-		 * Future enhancement: call amcomparedatums if available and
-		 * indexUnchanged is currently false.
+		 * An index is "unchanged" only if NONE of its referenced attributes
+		 * (keys, includes, predicates, expressions) overlap with the modified
+		 * set.  ii_IndexedAttrs covers all of these, populated by
+		 * IndexGetAttrBitmap via BuildIndexInfo.
 		 */
-
-		indexInfo->ii_IndexUnchanged = indexUnchanged;
+		indexInfo->ii_IndexUnchanged =
+			!bms_overlap(indexInfo->ii_IndexedAttrs, modified_idx_attrs);
 	}
 }
 

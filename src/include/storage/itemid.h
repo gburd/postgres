@@ -37,7 +37,7 @@ typedef ItemIdData *ItemId;
  */
 #define LP_UNUSED		0		/* unused (should always have lp_len=0) */
 #define LP_NORMAL		1		/* used (should always have lp_len>0) */
-#define LP_REDIRECT		2		/* HOT redirect (should have lp_len=0) */
+#define LP_REDIRECT		2		/* HOT redirect (should always have lp_len=0) */
 #define LP_DEAD			3		/* dead, may or may not have storage */
 
 /*

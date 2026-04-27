@@ -309,6 +309,7 @@ index_compute_xid_horizon_for_tuples(Relation irel,
 	delstate.iblknum = BufferGetBlockNumber(ibuf);
 	delstate.bottomup = false;
 	delstate.bottomupfreespace = 0;
+	delstate.indexed_attrs = IndexGetAttrBitmapBorrowed(irel);
 	delstate.ndeltids = 0;
 	delstate.deltids = palloc_array(TM_IndexDelete, nitems);
 	delstate.status = palloc_array(TM_IndexStatus, nitems);

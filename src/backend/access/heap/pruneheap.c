@@ -687,7 +687,7 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 			{
 				/*
 				 * This tuple should've been processed and removed as part of
-				 * a HOT chain, so something's wrong.  To preserve evidence,
+				 * a HOT chain, so something's wrong. To preserve evidence,
 				 * we don't dare to remove it.  We cannot leave behind a DEAD
 				 * tuple either, because that will cause VACUUM to error out.
 				 * Throwing an error with a distinct error message seems like
@@ -1604,8 +1604,11 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 		}
 
 		/*
-		 * If the tuple is not HOT-updated, then we are at the end of this
-		 * HOT-update chain.
+		 * If the tuple is not HOT-updated, we are at the end of this update
+		 * chain.  Note: INDEXED_UPDATED (selective index update) tuples also have
+		 * HOT_UPDATED set on their predecessor, so HOT_UPDATED alone is
+		 * sufficient for chain following.  INDEXED_UPDATED is only used in
+		 * heap_hot_search_buffer for stale-entry detection.
 		 */
 		if (!HeapTupleHeaderIsHotUpdated(htup))
 			goto process_chain;
@@ -1674,6 +1677,37 @@ process_chain:
 								   ItemIdIsNormal(rootlp));
 		for (int i = 1; i < ndeadchain; i++)
 			heap_prune_record_unused(prstate, chainitems[i], true);
+
+		/*
+		 * Merge SIU bitmaps from dead intermediate tuples into the redirect
+		 * target.  When a chain A → B → C is pruned to REDIRECT(A) → C, the
+		 * dead tuple B's SIU bitmap is lost.  Without merging, subsequent
+		 * index scans that follow the redirect would miss the accumulated
+		 * column modifications, potentially returning wrong results from
+		 * stale index entries.
+		 *
+		 * heap_siu_merge_bitmaps_raw handles two cases:
+		 * - Target has INDEXED_UPDATED + bitmap space: dead bitmaps are
+		 *   ORed directly into the target's bitmap bytes.
+		 * - Target lacks bitmap space (plain HOT tuple): INDEXED_UPDATED
+		 *   flag is set on the target without bitmap data.  The scan code
+		 *   detects this and conservatively forces recheck of all index
+		 *   quals, which is correct though slightly less efficient.
+		 */
+		/*
+		 * WAL safety: this bitmap merge is safe because we only reach
+		 * here when ndeadchain > 1, which means do_prune was set to
+		 * true earlier in heap_prune_chain().  That guarantees a
+		 * full-page image (FPI) will be logged for this page, so the
+		 * in-place bitmap merge is captured in the WAL record.
+		 */
+		if (ndeadchain > 1)
+		{
+			heap_siu_merge_bitmaps_raw(prstate->page,
+									   chainitems[ndeadchain],
+									   &chainitems[1],
+									   ndeadchain - 1);
+		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
 		for (int i = ndeadchain; i < nchain; i++)
@@ -2319,16 +2353,17 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 				continue;
 
 			/*
-			 * This is either a plain tuple or the root of a HOT-chain.
+			 * This is either a plain tuple or the root of a HOT chain (possibly
+			 * with selective index updates).
 			 * Remember it in the mapping.
 			 */
 			root_offsets[offnum - 1] = offnum;
 
-			/* If it's not the start of a HOT-chain, we're done with it */
+			/* If it's not the start of a HOT chain, we're done with it */
 			if (!HeapTupleHeaderIsHotUpdated(htup))
 				continue;
 
-			/* Set up to scan the HOT-chain */
+			/* Set up to scan the HOT chain */
 			nextoffnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
 			priorXmax = HeapTupleHeaderGetUpdateXid(htup);
 		}

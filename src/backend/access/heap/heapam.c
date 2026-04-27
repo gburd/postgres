@@ -34,6 +34,7 @@
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/hio.h"
+#include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"
@@ -42,16 +43,19 @@
 #include "access/valid.h"
 #include "access/visibilitymap.h"
 #include "access/xloginsert.h"
+#include "catalog/catalog.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
 #include "commands/vacuum.h"
 #include "executor/instrument_node.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "nodes/lockoptions.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/buf.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "utils/datum.h"
@@ -60,6 +64,13 @@
 #include "utils/relcache.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
+
+/*
+ * Minimum free space to reserve on a page before attempting a selective
+ * index update (SIU).  If less than this much space is free after the
+ * update, we fall back to a non-HOT update to avoid over-packing the page.
+ */
+#define SIU_PAGE_RESERVE    (BLCKSZ / 8)
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
@@ -75,8 +86,10 @@ static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
 #endif
-static Bitmapset *HeapUpdateModifiedIdxAttrs(Relation relation,
-											 HeapTuple oldtup, HeapTuple newtup);
+static Bitmapset *HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup,
+											 HeapTuple newtup, const Bitmapset *idx_attrs);
+static HeapTuple heap_siu_create_tuple(HeapTuple source,
+									   const Bitmapset *modified_idx_attrs);
 static bool heap_acquire_tuplock(Relation relation, const ItemPointerData *tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
@@ -2635,7 +2648,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	 * because the heaptuples data structure is all in local memory, not in
 	 * the shared buffer.
 	 */
-	if (IsCatalogRelation(relation))
+	if (IsSystemRelation(relation))
 	{
 		for (i = 0; i < ntuples; i++)
 			CacheInvalidateHeapTuple(relation, heaptuples[i], NULL);
@@ -2717,8 +2730,8 @@ xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask)
  */
 TM_Result
 heap_delete(Relation relation, const ItemPointerData *tid,
-			CommandId cid, uint32 options, Snapshot crosscheck,
-			bool wait, TM_FailureData *tmfd)
+			CommandId cid, uint32 options, Snapshot crosscheck, bool wait,
+			TM_FailureData *tmfd)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3203,7 +3216,7 @@ TM_Result
 heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, const LockTupleMode lockmode,
-			const Bitmapset *modified_idx_attrs, const bool hot_allowed)
+			const Bitmapset *modified_idx_attrs)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3214,7 +3227,6 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	HeapTuple	heaptup;
 	HeapTuple	old_key_tuple = NULL;
 	bool		old_key_copied = false;
-	bool		walLogical = (options & TABLE_UPDATE_NO_LOGICAL) == 0;
 	Page		page,
 				newpage;
 	BlockNumber block;
@@ -3229,6 +3241,8 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
+	bool		is_indexed_update = false;
+	bool		old_had_indexed_updated = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3277,6 +3291,9 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	 */
 	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
 	id_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_IDENTITY_KEY);
+
+	/* key_intact will be set properly once we determine the lock mode */
+	key_intact = (lockmode == LockTupleNoKeyExclusive);
 
 	block = ItemPointerGetBlockNumber(otid);
 	INJECTION_POINT("heap_update-before-pin", NULL);
@@ -3351,8 +3368,8 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	newtup->t_tableOid = RelationGetRelid(relation);
 
 	/*
-	 * ExtractReplicaIdentity() needs to know if a modified indexed attrbute
-	 * is used as a replica indentity or if any of the replica identity
+	 * ExtractReplicaIdentity() needs to know if a modified indexed attribute
+	 * is used as a replica identity or if any of the replica identity
 	 * attributes are referenced in an index, unmodified, and are stored
 	 * externally in the old tuple being replaced.  In those cases it may be
 	 * necessary to WAL log them to so they are available to replicas.
@@ -3401,8 +3418,6 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 				break;
 			}
 		}
-
-		bms_free(attrs);
 	}
 
 	/*
@@ -3896,6 +3911,23 @@ l2:
 			heaptup = newtup;
 
 		/*
+		 * Opportunistic page pruning: try to reclaim dead HOT/SIU chain
+		 * members while the buffer lock is released.  This keeps HOT chains
+		 * short (faster index scans) and frees page space (more room for
+		 * subsequent same-page updates, including SIU).
+		 *
+		 * heap_page_prune_opt conditionally acquires the cleanup lock,
+		 * prunes if the page has removable dead tuples and meets the free
+		 * space threshold, then releases the lock before returning.
+		 *
+		 * After pruning we refresh pagefree without a lock.  This is only
+		 * a heuristic; the accurate check happens under the exclusive lock
+		 * inside the loop below.
+		 */
+		heap_page_prune_opt(relation, buffer, &vmbuffer, false);
+		pagefree = PageGetHeapFreeSpace(page);
+
+		/*
 		 * Now, do we need a new page for the tuple, or not?  This is a bit
 		 * tricky since someone else could have added tuples to the page while
 		 * we weren't looking.  We have to recheck the available space after
@@ -3923,7 +3955,8 @@ l2:
 			if (newtupsize > pagefree)
 			{
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
-				newbuf = RelationGetBufferForTuple(relation, heaptup->t_len,
+				newbuf = RelationGetBufferForTuple(relation,
+												   heaptup->t_len,
 												   buffer, 0, NULL,
 												   &vmbuffer_new, &vmbuffer,
 												   0);
@@ -3989,13 +4022,62 @@ l2:
 
 	if (newbuf == buffer)
 	{
-		/*
-		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed.
-		 */
-		if (hot_allowed)
+		if (bms_is_empty(modified_idx_attrs))
+		{
+			/* Pure HOT -- no indexed columns changed */
 			use_hot_update = true;
+		}
+		else if (!IsCatalogRelation(relation))
+		{
+			/*
+			 * Try selective index update (SIU): build an augmented tuple with
+			 * the SIU bitmap embedded in the header between the null bitmap
+			 * and user data.  This extends t_hoff but preserves the contract
+			 * that all page items start with a valid HeapTupleHeader.
+			 *
+			 * Skip SIU for system catalog relations: catalog index lookups
+			 * (syscache, catcache) don't follow HOT chains with SIU
+			 * awareness, and CatalogIndexInsert uses the tuple's own TID for
+			 * index entries rather than the HOT chain root TID.  When indexed
+			 * columns change in a catalog tuple, use a standard non-HOT
+			 * update so all indexes are properly maintained.
+			 */
+			HeapTuple	siu_tup = heap_siu_create_tuple(heaptup,
+														modified_idx_attrs);
+
+			if (siu_tup != NULL)
+			{
+				Size	siu_size = MAXALIGN(siu_tup->t_len);
+				Size	page_free = PageGetHeapFreeSpace(BufferGetPage(newbuf));
+
+				/*
+				 * Verify augmented tuple fits AND enough free space remains
+				 * for future same-page updates.  Without a reserve, SIU
+				 * chains fill the page with dead members that accumulate
+				 * (the SIU update path doesn't trigger page pruning),
+				 * increasing page-level lock contention at high concurrency
+				 * and lengthening HOT chains which slows index scans.
+				 *
+				 * Use a fixed 1/8 page (~1KB on 8KB pages) reserve so SIU
+				 * bails out to non-HOT before the page is completely packed,
+				 * spreading writes across pages via the FSM.
+				 */
+				if (siu_size + SIU_PAGE_RESERVE <= page_free)
+				{
+					/* Swap in augmented tuple */
+					if (heaptup != newtup)
+						pfree(heaptup);
+					heaptup = siu_tup;
+					newtupsize = MAXALIGN(heaptup->t_len);
+					use_hot_update = true;
+					is_indexed_update = true;
+				}
+				else
+					pfree(siu_tup);
+			}
+			/* else: t_hoff overflow or page too full -> standard non-HOT */
+		}
+		/* else: catalog relation with indexed columns changed -> non-HOT */
 	}
 	else
 	{
@@ -4039,6 +4121,17 @@ l2:
 		HeapTupleSetHeapOnly(heaptup);
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
+
+		/*
+		 * For selective index updates, set HEAP_INDEXED_UPDATED on the new
+		 * tuple BEFORE placing it on the page.  This flag tells index scan
+		 * chain followers that an SIU bitmap is embedded in the tuple header.
+		 * It must be set here (not after RelationPutHeapTuple) because
+		 * RelationPutHeapTuple copies the tuple data to the page -- flags
+		 * set on the palloc'd copy afterward won't appear on the page.
+		 */
+		if (is_indexed_update)
+			HeapTupleHeaderSetIndexedUpdated(heaptup->t_data);
 	}
 	else
 	{
@@ -4048,12 +4141,21 @@ l2:
 		HeapTupleClearHeapOnly(newtup);
 	}
 
-	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
+	RelationPutHeapTuple(relation, newbuf, heaptup, false);
 
+	/*
+	 * Save whether the old tuple had INDEXED_UPDATED before we clear
+	 * infomask2 bits below.  We need this to correctly restore the flag:
+	 * only tuples that were themselves created by SIU (and thus have bitmap
+	 * space in their header) should retain INDEXED_UPDATED.
+	 */
+	old_had_indexed_updated =
+		HeapTupleHeaderIsIndexedUpdatedRaw(oldtup.t_data);
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
 	oldtup.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
-	oldtup.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
+	oldtup.t_data->t_infomask2 &= ~(HEAP_KEYS_UPDATED | HEAP_INDEXED_UPDATED);
+
 	/* ... and store info about transaction updating this tuple */
 	Assert(TransactionIdIsValid(xmax_old_tuple));
 	HeapTupleHeaderSetXmax(oldtup.t_data, xmax_old_tuple);
@@ -4061,8 +4163,36 @@ l2:
 	oldtup.t_data->t_infomask2 |= infomask2_old_tuple;
 	HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
 
+	/*
+	 * Restore HEAP_INDEXED_UPDATED on oldtup only if the old tuple
+	 * previously had it — meaning it was itself created by an SIU update
+	 * and has SIU bitmap space in its header.
+	 *
+	 * IMPORTANT: Do NOT set this flag based on whether the CURRENT update
+	 * is SIU.  The SIU bitmap for the current update is embedded in the
+	 * NEW tuple's header (set above before RelationPutHeapTuple).  Setting
+	 * INDEXED_UPDATED on old tuples that lack bitmap space would trigger
+	 * the conservative 0xFF fallback in heap_siu_bitmap_or_raw() during chain
+	 * traversal, incorrectly marking all columns as modified and causing
+	 * valid index entries to be skipped as stale.
+	 */
+	if (old_had_indexed_updated)
+		oldtup.t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
+
 	/* record address of new tuple in t_ctid of old one */
 	oldtup.t_data->t_ctid = heaptup->t_self;
+
+	/*
+	 * Verify invariant: if INDEXED_UPDATED is set, t_ctid must point to same
+	 * page. This catches bugs where INDEXED_UPDATED is set incorrectly.  Use
+	 * the raw bit check since we're verifying our own flag-setting, not chain
+	 * integrity.
+	 */
+	if (HeapTupleHeaderIsIndexedUpdatedRaw(oldtup.t_data))
+	{
+		Assert(ItemPointerGetBlockNumber(&oldtup.t_self) ==
+			   ItemPointerGetBlockNumber(&oldtup.t_data->t_ctid));
+	}
 
 	/* clear PD_ALL_VISIBLE flags, reset all visibilitymap bits */
 	if (PageIsAllVisible(page))
@@ -4104,7 +4234,7 @@ l2:
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new,
-								 walLogical);
+								 true);
 		if (newbuf != buffer)
 		{
 			PageSetLSN(newpage, recptr);
@@ -4143,7 +4273,19 @@ l2:
 	if (have_tuple_lock)
 		UnlockTupleTuplock(relation, &(oldtup.t_self), lockmode);
 
-	pgstat_count_heap_update(relation, use_hot_update, newbuf != buffer);
+	{
+		HeapUpdateKind kind;
+
+		if (is_indexed_update)
+			kind = HEAP_UPDATE_HOT_SIU;
+		else if (use_hot_update)
+			kind = HEAP_UPDATE_HOT;
+		else if (newbuf != buffer)
+			kind = HEAP_UPDATE_NEWPAGE;
+		else
+			kind = HEAP_UPDATE_NORMAL;
+		pgstat_count_heap_update(relation, kind);
+	}
 
 	/*
 	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
@@ -4333,60 +4475,373 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 }
 
 /*
- * HOT updates are possible when either: a) there are no modified indexed
- * attributes, or b) the modified attributes are all on summarizing indexes.
- * Later, in heap_update(), we can choose to perform a HOT update if there is
- * space on the page for the new tuple and the following code has determined
- * that HOT is allowed.
+ * heap_siu_bitmap_raw_size - raw byte count for modified-column bitmap.
+ *
+ * Uses the same FirstLowInvalidHeapAttributeNumber offset convention as
+ * RelationGetIndexAttrBitmap.  The highest possible bit is
+ * natts - FirstLowInvalidHeapAttributeNumber, so we need
+ * (natts + |FirstLowInvalidHeapAttributeNumber| + 1) bits, rounded up
+ * to whole bytes.
+ */
+int
+heap_siu_bitmap_raw_size(int natts)
+{
+	return (natts - FirstLowInvalidHeapAttributeNumber + 1 + 7) / 8;
+}
+
+/*
+ * heap_siu_bitmap_aligned_size - MAXALIGN'd byte size of an SIU bitmap.
+ */
+int
+heap_siu_bitmap_aligned_size(int natts)
+{
+	return MAXALIGN(heap_siu_bitmap_raw_size(natts));
+}
+
+/*
+ * heap_siu_serialize_bitmap - serialize a Bitmapset into a raw byte array
+ *
+ * The caller must provide a buffer of at least nbytes bytes (as returned
+ * by SIUBitmapSize).  Each set member in the Bitmapset corresponds to a
+ * bit position in the byte array.
+ */
+void
+heap_siu_serialize_bitmap(uint8 *dest, int nbytes, const Bitmapset *modified_idx_attrs)
+{
+	int		member = -1;
+
+	memset(dest, 0, nbytes);
+	while ((member = bms_next_member(modified_idx_attrs, member)) >= 0)
+	{
+		if (member < nbytes * 8)
+			dest[member / 8] |= (1 << (member % 8));
+	}
+}
+
+/*
+ * heap_siu_deserialize_bitmap - reconstruct a Bitmapset from a raw byte array
+ */
+Bitmapset *
+heap_siu_deserialize_bitmap(const uint8 *data, int nbytes)
+{
+	Bitmapset  *bms = NULL;
+
+	for (int i = 0; i < nbytes * 8; i++)
+	{
+		if (data[i / 8] & (1 << (i % 8)))
+			bms = bms_add_member(bms, i);
+	}
+	return bms;
+}
+
+/*
+ * heap_siu_create_tuple - create augmented tuple with SIU bitmap in header.
+ *
+ * The SIU bitmap is embedded between the null bitmap and user data,
+ * extending t_hoff to account for the extra bytes.  This preserves the
+ * contract that all page items start with a valid HeapTupleHeader.
+ *
+ * Returns palloc'd HeapTuple, or NULL if t_hoff would overflow uint8.
+ */
+static HeapTuple
+heap_siu_create_tuple(HeapTuple source, const Bitmapset *modified_idx_attrs)
+{
+	HeapTupleHeader src = source->t_data;
+	int		natts = HeapTupleHeaderGetNatts(src);
+	int		siu_raw = heap_siu_bitmap_raw_size(natts);
+	int		normal_hoff = src->t_hoff;
+	int		siu_offset;
+	int		new_hoff;
+	int		src_data_len;
+	int		new_len;
+	HeapTuple result;
+
+	/* Where to insert: after null bitmap (or fixed header if no nulls) */
+	siu_offset = (src->t_infomask & HEAP_HASNULL)
+		? SizeofHeapTupleHeader + BITMAPLEN(natts)
+		: SizeofHeapTupleHeader;
+
+	new_hoff = MAXALIGN(siu_offset + siu_raw);
+	if (new_hoff > UINT8_MAX)
+		return NULL;			/* too wide for t_hoff */
+
+	src_data_len = source->t_len - normal_hoff;
+	new_len = new_hoff + src_data_len;
+
+	result = (HeapTuple) palloc(HEAPTUPLESIZE + new_len);
+	result->t_len = new_len;
+	ItemPointerSetInvalid(&result->t_self);
+	result->t_tableOid = source->t_tableOid;
+	result->t_data = (HeapTupleHeader) ((char *) result + HEAPTUPLESIZE);
+
+	/* Copy fixed header + null bitmap */
+	memcpy(result->t_data, src, siu_offset);
+	/* Write SIU bitmap */
+	heap_siu_serialize_bitmap((uint8 *) result->t_data + siu_offset,
+					   siu_raw, modified_idx_attrs);
+	/* Zero padding between SIU bitmap end and new_hoff */
+	if (siu_offset + siu_raw < new_hoff)
+		memset((char *) result->t_data + siu_offset + siu_raw, 0,
+			   new_hoff - siu_offset - siu_raw);
+	/* Copy user data */
+	memcpy((char *) result->t_data + new_hoff,
+		   (char *) src + normal_hoff, src_data_len);
+
+	result->t_data->t_hoff = (uint8) new_hoff;
+	return result;
+}
+
+/*
+ * heap_tuple_has_siu_bitmap_space - check if the tuple header has room
+ * for an SIU bitmap.
+ *
+ * Returns true if the tuple's t_hoff is large enough to contain the
+ * SIU bitmap between the null bitmap (or fixed header) and user data.
+ * A tuple may have HEAP_INDEXED_UPDATED set without bitmap space when
+ * pruning merges SIU information from dead intermediates into a target
+ * that was originally a plain HOT tuple.  In that case, the flag alone
+ * signals "recheck all columns."
  */
 bool
-HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
+heap_tuple_has_siu_bitmap_space(HeapTupleHeader tup)
 {
-	bool		hot_allowed;
+	int		natts = HeapTupleHeaderGetNatts(tup);
+	int		siu_raw = heap_siu_bitmap_raw_size(natts);
+	int		siu_offset;
+	int		needed_hoff;
 
-	/*
-	 * Let's be optimistic and start off by assuming the best case, no indexes
-	 * need updating and HOT is allowable.
-	 */
-	hot_allowed = true;
+	siu_offset = (tup->t_infomask & HEAP_HASNULL)
+		? SizeofHeapTupleHeader + BITMAPLEN(natts)
+		: SizeofHeapTupleHeader;
 
-	/*
-	 * Check for case (a); when there are no modified index attributes HOT is
-	 * allowed.
-	 */
-	if (bms_is_empty(modified_idx_attrs))
-		hot_allowed = true;
-	else
+	needed_hoff = MAXALIGN(siu_offset + siu_raw);
+	return (tup->t_hoff >= needed_hoff);
+}
+
+/*
+ * heap_siu_read_bitmap - read SIU bitmap from an INDEXED_UPDATED tuple.
+ *
+ * The bitmap is embedded in the tuple header between the null bitmap
+ * and user data.  The caller must verify HEAP_INDEXED_UPDATED is set.
+ *
+ * If the tuple has INDEXED_UPDATED set but its t_hoff is too small to
+ * contain the bitmap (happens when pruning sets the flag on a target
+ * that lacked bitmap space), returns NULL to indicate "all columns
+ * potentially modified" -- the caller should treat this conservatively.
+ */
+Bitmapset *
+heap_siu_read_bitmap(HeapTupleHeader tup)
+{
+	int		natts = HeapTupleHeaderGetNatts(tup);
+	int		siu_raw = heap_siu_bitmap_raw_size(natts);
+	int		siu_offset;
+
+	siu_offset = (tup->t_infomask & HEAP_HASNULL)
+		? SizeofHeapTupleHeader + BITMAPLEN(natts)
+		: SizeofHeapTupleHeader;
+
+	/* No bitmap space -- flag was set by pruning without bitmap data */
+	if (tup->t_hoff < MAXALIGN(siu_offset + siu_raw))
+		return NULL;
+
+	return heap_siu_deserialize_bitmap((uint8 *) tup + siu_offset, siu_raw);
+}
+
+/*
+ * heap_siu_bitmap_overlaps_raw - check if a tuple's SIU bitmap overlaps with
+ * the given indexed_attrs without allocating memory.
+ *
+ * This is the hot-path alternative to heap_siu_read_bitmap + bms_overlap.
+ * It reads the raw SIU bytes directly from the tuple header and checks
+ * overlap by iterating over indexed_attrs members.
+ *
+ * Returns true if there is any overlap, or if the tuple has
+ * INDEXED_UPDATED set but no bitmap space (conservative: assume all
+ * columns modified).
+ *
+ * The caller must verify HEAP_INDEXED_UPDATED is set before calling.
+ */
+bool
+heap_siu_bitmap_overlaps_raw(HeapTupleHeader tup, const Bitmapset *indexed_attrs)
+{
+	int		natts = HeapTupleHeaderGetNatts(tup);
+	int		siu_raw = heap_siu_bitmap_raw_size(natts);
+	int		siu_offset;
+	const uint8 *siu_bytes;
+	int		member;
+
+	siu_offset = (tup->t_infomask & HEAP_HASNULL)
+		? SizeofHeapTupleHeader + BITMAPLEN(natts)
+		: SizeofHeapTupleHeader;
+
+	/* No bitmap space -- conservatively assume all columns modified */
+	if (tup->t_hoff < MAXALIGN(siu_offset + siu_raw))
+		return true;
+
+	siu_bytes = (const uint8 *) tup + siu_offset;
+
+	/* Check each member of indexed_attrs against the raw bitmap */
+	member = -1;
+	while ((member = bms_next_member(indexed_attrs, member)) >= 0)
 	{
-		Bitmapset  *sum_attrs = RelationGetIndexAttrBitmap(relation,
-														   INDEX_ATTR_BITMAP_SUMMARIZED);
-
-		/*
-		 * At least one index attribute was modified, but is this case (b)
-		 * where all the modified index attributes are only used by
-		 * summarizing indexes?  If it is, then we need to update those
-		 * indexes, but this update can still be considered heap-only (HOT)
-		 * and avoid updating any non-summarizing indexes on the relation.
-		 */
-		if (bms_is_subset(modified_idx_attrs, sum_attrs))
+		if (member < siu_raw * BITS_PER_BYTE)
 		{
-			hot_allowed = true;
+			if (siu_bytes[member / BITS_PER_BYTE] & (1 << (member % BITS_PER_BYTE)))
+				return true;
 		}
-		else
-		{
-			/*
-			 * Now we know a) one or more indexed attributes were modified
-			 * (changed value, not just referenced within the UPDATE) and that
-			 * b) at least one of those attributes is used by a
-			 * non-summarizing index. HOT is not allowed.
-			 */
-			hot_allowed = false;
-		}
+	}
+	return false;
+}
 
-		bms_free(sum_attrs);
+/* Verify MaxSIUBitmapRawSize is large enough at compile time. */
+StaticAssertDecl(MaxSIUBitmapRawSize >= (MaxHeapAttributeNumber - FirstLowInvalidHeapAttributeNumber + 1 + 7) / 8,
+				 "MaxSIUBitmapRawSize too small for MaxHeapAttributeNumber");
+
+/*
+ * heap_siu_bitmap_or_raw - OR a tuple's raw SIU bitmap bytes into a caller-
+ * provided accumulation buffer.
+ *
+ * If the tuple has INDEXED_UPDATED but no bitmap space, sets all bytes
+ * in the accumulation buffer to 0xFF (conservative: all columns modified).
+ *
+ * 'accum' must be at least siu_raw bytes; 'siu_raw' is heap_siu_bitmap_raw_size
+ * for the tuple's natts.
+ */
+void
+heap_siu_bitmap_or_raw(HeapTupleHeader tup, uint8 *accum, int siu_raw)
+{
+	int		siu_offset;
+
+	siu_offset = (tup->t_infomask & HEAP_HASNULL)
+		? SizeofHeapTupleHeader + BITMAPLEN(HeapTupleHeaderGetNatts(tup))
+		: SizeofHeapTupleHeader;
+
+	/* No bitmap space -- conservatively mark all columns */
+	if (tup->t_hoff < MAXALIGN(siu_offset + siu_raw))
+	{
+		memset(accum, 0xFF, siu_raw);
+		return;
 	}
 
-	return hot_allowed;
+	{
+		const uint8 *siu_bytes = (const uint8 *) tup + siu_offset;
+
+		for (int i = 0; i < siu_raw; i++)
+			accum[i] |= siu_bytes[i];
+	}
+}
+
+/*
+ * heap_siu_accum_overlaps - check if an accumulated raw SIU bitmap overlaps
+ * with the given indexed_attrs Bitmapset.
+ *
+ * 'accum' is a raw byte array of size siu_raw.
+ */
+bool
+heap_siu_accum_overlaps(const uint8 *accum, int siu_raw,
+				   const Bitmapset *indexed_attrs)
+{
+	int		member = -1;
+
+	while ((member = bms_next_member(indexed_attrs, member)) >= 0)
+	{
+		if (member < siu_raw * BITS_PER_BYTE)
+		{
+			if (accum[member / BITS_PER_BYTE] & (1 << (member % BITS_PER_BYTE)))
+				return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * heap_siu_merge_bitmaps_raw - merge SIU bitmaps from dead tuples into
+ * the redirect target's tuple header during pruning.
+ *
+ * Called with the buffer's cleanup lock held.  Reads the SIU bitmaps from
+ * each dead tuple in dead_offnums[0..ndead-1] and ORs them into the
+ * target tuple's SIU bitmap.
+ *
+ * If the target has INDEXED_UPDATED and bitmap space, the merge writes
+ * directly into its header bytes.  If the target does NOT have
+ * INDEXED_UPDATED (e.g. it was a plain HOT tuple), we set the flag on it
+ * without allocating bitmap space.  heap_siu_read_bitmap and
+ * heap_siu_bitmap_overlaps_raw detect this "flag without space" case and
+ * treat it as "all columns modified," triggering conservative recheck.
+ */
+void
+heap_siu_merge_bitmaps_raw(Page page, OffsetNumber target_offnum,
+						   OffsetNumber *dead_offnums, int ndead)
+{
+	ItemId		target_lp;
+	HeapTupleHeader target_tup;
+	bool		any_dead_has_siu = false;
+
+	/* Quick check: do any dead tuples have INDEXED_UPDATED? */
+	for (int i = 0; i < ndead; i++)
+	{
+		ItemId		lp = PageGetItemId(page, dead_offnums[i]);
+		HeapTupleHeader htup;
+
+		if (!ItemIdIsNormal(lp))
+			continue;
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+		if (HeapTupleHeaderIsIndexedUpdatedRaw(htup))
+		{
+			any_dead_has_siu = true;
+			break;
+		}
+	}
+
+	if (!any_dead_has_siu)
+		return;
+
+	target_lp = PageGetItemId(page, target_offnum);
+	Assert(ItemIdIsNormal(target_lp));
+	target_tup = (HeapTupleHeader) PageGetItem(page, target_lp);
+
+	if (HeapTupleHeaderIsIndexedUpdatedRaw(target_tup) &&
+		heap_tuple_has_siu_bitmap_space(target_tup))
+	{
+		/*
+		 * Target has bitmap space.  OR each dead tuple's bitmap bytes
+		 * into the target's bitmap directly.
+		 */
+		int		natts = HeapTupleHeaderGetNatts(target_tup);
+		int		siu_raw = heap_siu_bitmap_raw_size(natts);
+		int		siu_offset;
+		uint8  *target_bytes;
+
+		siu_offset = (target_tup->t_infomask & HEAP_HASNULL)
+			? SizeofHeapTupleHeader + BITMAPLEN(natts)
+			: SizeofHeapTupleHeader;
+
+		target_bytes = (uint8 *) target_tup + siu_offset;
+
+		for (int i = 0; i < ndead; i++)
+		{
+			ItemId		lp = PageGetItemId(page, dead_offnums[i]);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (!HeapTupleHeaderIsIndexedUpdatedRaw(htup))
+				continue;
+
+			heap_siu_bitmap_or_raw(htup, target_bytes, siu_raw);
+		}
+	}
+	else
+	{
+		/*
+		 * Target doesn't have bitmap space (it was a plain HOT tuple).
+		 * Set INDEXED_UPDATED on it without bitmap data.  The scan code
+		 * detects this "flag without space" case and conservatively
+		 * treats it as "all columns modified," forcing recheck.
+		 */
+		HeapTupleHeaderSetIndexedUpdated(target_tup);
+	}
 }
 
 /*
@@ -4415,18 +4870,15 @@ HeapUpdateDetermineLockmode(Relation relation, const Bitmapset *modified_idx_att
  * attributes between oldtup and newtup.
  */
 static Bitmapset *
-HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup)
+HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup,
+						   const Bitmapset *idx_attrs)
 {
 	int			attidx;
-	Bitmapset  *attrs,
-			   *modified_idx_attrs = NULL;
+	Bitmapset  *modified_idx_attrs = NULL;
 	TupleDesc	tupdesc = RelationGetDescr(relation);
 
-	/* Get the set of all attributes across all indexes for this relation */
-	attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
-
 	/* No indexed attributes, we're done */
-	if (bms_is_empty(attrs))
+	if (bms_is_empty(idx_attrs))
 		return NULL;
 
 	/*
@@ -4438,7 +4890,7 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
 	 * attributes" or "modified_idx_attrs".
 	 */
 	attidx = -1;
-	while ((attidx = bms_next_member(attrs, attidx)) >= 0)
+	while ((attidx = bms_next_member(idx_attrs, attidx)) >= 0)
 	{
 		/* attidx is zero-based, attrnum is the normal attribute number */
 		AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
@@ -4486,8 +4938,6 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
 			modified_idx_attrs = bms_add_member(modified_idx_attrs, attidx);
 	}
 
-	bms_free(attrs);
-
 	return modified_idx_attrs;
 }
 
@@ -4499,9 +4949,8 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
  * on the relation associated with the tuple).  Any failure is reported
  * via ereport().
  */
-void
-simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup,
-				   Bitmapset **modified_idx_attrs)
+Bitmapset *
+simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4511,8 +4960,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	HeapTuple	oldtup;
 	bool		shouldFree = true;
 	Bitmapset  *idx_attrs;
-	Bitmapset  *local_modified_idx_attrs;
-	bool		hot_allowed;
+	Bitmapset  *modified_idx_attrs;
 	Buffer		buffer;
 
 	Assert(ItemPointerIsValid(otid));
@@ -4572,7 +5020,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 
 		elog(ERROR, "tuple concurrently deleted");
 
-		return;
+		return NULL;
 	}
 
 	Assert(buffer != InvalidBuffer);
@@ -4581,13 +5029,12 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
 	oldtup = ExecFetchSlotHeapTuple(slot, false, &shouldFree);
 
-	local_modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
-	lockmode = HeapUpdateDetermineLockmode(relation, local_modified_idx_attrs);
-	hot_allowed = HeapUpdateHotAllowable(relation, local_modified_idx_attrs);
+	modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup, idx_attrs);
+	lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
 
 	result = heap_update(relation, otid, tup, GetCurrentCommandId(true),
 						 InvalidSnapshot, true /* wait for commit */ ,
-						 &tmfd, lockmode, local_modified_idx_attrs, hot_allowed);
+						 &tmfd, lockmode, modified_idx_attrs);
 
 	if (shouldFree)
 		heap_freetuple(oldtup);
@@ -4611,8 +5058,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			 * all indexes need updating.
 			 */
 			if (!HeapTupleIsHeapOnly(tup))
-				local_modified_idx_attrs = bms_add_member(local_modified_idx_attrs,
-														  MODIFIED_IDX_ATTRS_ALL_IDX);
+				modified_idx_attrs = bms_add_member(modified_idx_attrs,
+													MODIFIED_IDX_ATTRS_ALL_IDX);
 			break;
 
 		case TM_Updated:
@@ -4628,7 +5075,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			break;
 	}
 
-	*modified_idx_attrs = local_modified_idx_attrs;
+	return modified_idx_attrs;
 }
 
 
@@ -7415,6 +7862,19 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple,
 		frz->t_infomask &= ~HEAP_XMAX_BITS;
 		frz->t_infomask |= HEAP_XMAX_INVALID;
 		frz->t_infomask2 &= ~HEAP_HOT_UPDATED;
+		/*
+		 * Don't clear HEAP_INDEXED_UPDATED here.  Unlike HOT_UPDATED and
+		 * KEYS_UPDATED (which are xmax-related flags describing a subsequent
+		 * update of this tuple), INDEXED_UPDATED is a structural flag set on
+		 * tuples created by selective index updates.  It indicates that an SIU
+		 * bitmap is embedded in the tuple header (via extended t_hoff) and
+		 * that stale index entries may reference this tuple through HOT chain
+		 * following.  The flag must survive xmax freezing so that bitmap heap
+		 * scans and index scans can detect the need for recheck/stale-entry
+		 * filtering.  The embedded SIU bitmap data (between the null bitmap
+		 * and user data) is preserved by freeze since freeze doesn't modify
+		 * t_hoff, so the flag must remain consistent with the data.
+		 */
 		frz->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 	}
 
@@ -8218,7 +8678,8 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 		Assert(ItemIdIsNormal(iid));
 		htup = (HeapTupleHeader) PageGetItem(page, iid);
 
-		if (unlikely(HeapTupleHeaderIsHeapOnly(htup)))
+		if (unlikely(HeapTupleHeaderIsHeapOnly(htup) &&
+					 !HeapTupleHeaderIsIndexedUpdatedRaw(htup)))
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg_internal("heap tid from index tuple (%u,%u) points to heap-only tuple at offset %u of block %u in index \"%s\"",
@@ -8266,8 +8727,16 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 				lastfreespace = 0,
 				actualfreespace = 0;
 	bool		bottomup_final_block = false;
+	const Bitmapset *indexed_attrs;
 
 	InitNonVacuumableSnapshot(SnapshotNonVacuumable, GlobalVisTestFor(rel));
+
+	/*
+	 * Use the indexed_attrs bitmap from delstate, which the caller already
+	 * computed via IndexGetAttrBitmapBorrowed().  This avoids a redundant
+	 * relcache lookup.  The pointer is borrowed -- do not free it.
+	 */
+	indexed_attrs = delstate->indexed_attrs;
 
 	/* Sort caller's deltids array by TID for further processing */
 	index_delete_sort(delstate);
@@ -8440,7 +8909,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 
 			/* Are any tuples from this HOT chain non-vacuumable? */
 			if (heap_hot_search_buffer(&tmp, rel, buf, &SnapshotNonVacuumable,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, indexed_attrs))
 				continue;		/* can't delete entry */
 
 			/* Caller will delete, since whole HOT chain is vacuumable */
@@ -8545,6 +9014,8 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	Assert(finalndeltids > 0 || delstate->bottomup);
 	delstate->ndeltids = finalndeltids;
 
+	/* indexed_attrs is owned by the caller (delstate), don't free it here */
+
 	return snapshotConflictHorizon;
 }
 
@@ -8572,8 +9043,13 @@ index_delete_sort_cmp(TM_IndexDelete *deltid1, TM_IndexDelete *deltid2)
 			return (pos1 < pos2) ? -1 : 1;
 	}
 
-	Assert(false);
-
+	/*
+	 * With HOT selective index updates, two index entries can legitimately
+	 * point to the same heap TID: the old entry (with the pre-update key) and
+	 * the new entry (with the post-update key) both resolve to the same tuple
+	 * after pruning creates an LP_REDIRECT. Treat them as equal for sorting
+	 * purposes.
+	 */
 	return 0;
 }
 
@@ -8943,7 +9419,21 @@ log_heap_update(Relation reln, Buffer oldbuf,
 
 	XLogBeginInsert();
 
-	if (HeapTupleIsHeapOnly(newtup))
+	if (HeapTupleIsHeapOnly(newtup) && HeapTupleHeaderIsIndexedUpdatedRaw(newtup->t_data))
+	{
+		/*
+		 * HOT selective index update requires same-page updates. Verify the
+		 * invariant that INDEXED_UPDATED implies same-page.
+		 *
+		 * Use the raw bit check because the new tuple has HEAP_XMAX_INVALID
+		 * set (it hasn't been updated yet), which would cause the
+		 * validity-checked version to return false.
+		 */
+		Assert(ItemPointerGetBlockNumber(&oldtup->t_self) ==
+			   ItemPointerGetBlockNumber(&newtup->t_self));
+		info = XLOG_HEAP2_INDEXED_UPDATE;
+	}
+	else if (HeapTupleIsHeapOnly(newtup))
 		info = XLOG_HEAP_HOT_UPDATE;
 	else
 		info = XLOG_HEAP_UPDATE;
@@ -9130,7 +9620,14 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-	recptr = XLogInsert(RM_HEAP_ID, info);
+	/*
+	 * The selective index update opcode lives under RM_HEAP2_ID.  The other
+	 * update opcodes live under RM_HEAP_ID.
+	 */
+	if (info == XLOG_HEAP2_INDEXED_UPDATE)
+		recptr = XLogInsert(RM_HEAP2_ID, info);
+	else
+		recptr = XLogInsert(RM_HEAP_ID, info);
 
 	return recptr;
 }

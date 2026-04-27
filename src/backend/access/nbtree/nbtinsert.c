@@ -426,6 +426,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	bool		inposting = false;
 	bool		prevalldead = true;
 	int			curposti = 0;
+	const Bitmapset *indexed_attrs = IndexGetAttrBitmapBorrowed(rel);
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -562,7 +563,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 */
 				else if (table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
-													   &all_dead))
+													   &all_dead,
+													   indexed_attrs))
 				{
 					TransactionId xwait;
 
@@ -619,7 +621,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					htid = itup->t_tid;
 					if (table_index_fetch_tuple_check(heapRel, &htid,
-													  SnapshotSelf, NULL))
+													  SnapshotSelf, NULL,
+													  NULL))
 					{
 						/* Normal case --- it's still live */
 					}
@@ -2875,6 +2878,7 @@ _bt_simpledel_pass(Relation rel, Buffer buffer, Relation heapRel,
 	delstate.iblknum = BufferGetBlockNumber(buffer);
 	delstate.bottomup = false;
 	delstate.bottomupfreespace = 0;
+	delstate.indexed_attrs = IndexGetAttrBitmapBorrowed(rel);
 	delstate.ndeltids = 0;
 	delstate.deltids = palloc(MaxTIDsPerBTreePage * sizeof(TM_IndexDelete));
 	delstate.status = palloc(MaxTIDsPerBTreePage * sizeof(TM_IndexStatus));

@@ -48,6 +48,7 @@
 #include "access/reloptions.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/pg_type.h"
 #include "nodes/execnodes.h"
@@ -287,6 +288,18 @@ index_beginscan(Relation heapRelation,
 
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, flags);
+
+	/*
+	 * Compute indexed_attrs for selective index update chain following.
+	 * When indexed_attrs is non-NULL, heap_hot_search_buffer uses it to
+	 * detect stale index entries in HOT chains with INDEXED_UPDATED tuples.
+	 * Skip for system relations since selective index updates are disabled
+	 * for them.
+	 */
+	if (!IsSystemRelation(heapRelation))
+		scan->xs_heapfetch->indexed_attrs = IndexGetAttrBitmap(indexRelation);
+	else
+		scan->xs_heapfetch->indexed_attrs = NULL;
 
 	return scan;
 }
@@ -584,6 +597,18 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heaprel, flags);
+
+	/*
+	 * Compute indexed_attrs for selective index update chain following.
+	 * When indexed_attrs is non-NULL, heap_hot_search_buffer uses it to
+	 * detect stale index entries in HOT chains with INDEXED_UPDATED tuples.
+	 * Skip for system relations since selective index updates are disabled
+	 * for them.
+	 */
+	if (!IsSystemRelation(heaprel))
+		scan->xs_heapfetch->indexed_attrs = IndexGetAttrBitmap(indexrel);
+	else
+		scan->xs_heapfetch->indexed_attrs = NULL;
 
 	return scan;
 }

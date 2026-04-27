@@ -71,10 +71,13 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  * This should be called for each inserted or updated catalog tuple.
  *
  * This is effectively a cut-down version of ExecInsertIndexTuples.
+ *
+ * Note: Selective Index Updates (SIU) are disabled for catalog relations
+ * (see !IsCatalogRelation check in heap_update), so we always insert into
+ * all indexes here.
  */
 static void
-CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
-				   const Bitmapset *modified_idx_attrs)
+CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 {
 	int			i;
 	int			numIndexes;
@@ -84,16 +87,6 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		allIndexes;
-	bool		onlySummarized;
-
-	/*
-	 * Determine whether all indexes need updating (non-HOT) or only
-	 * summarizing indexes (HOT with summarized column changes).
-	 */
-	allIndexes = (modified_idx_attrs == NULL) ||
-		bms_is_member(MODIFIED_IDX_ATTRS_ALL_IDX, modified_idx_attrs);
-	onlySummarized = !allIndexes && !bms_is_empty(modified_idx_attrs);
 
 	/*
 	 * HOT update does not require index inserts. But with asserts enabled we
@@ -101,12 +94,9 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	 * table/index.
 	 */
 #ifndef USE_ASSERT_CHECKING
-	if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
+	if (HeapTupleIsHeapOnly(heapTuple))
 		return;
 #endif
-
-	/* When only updating summarized indexes, the tuple has to be HOT. */
-	Assert((!onlySummarized) || HeapTupleIsHeapOnly(heapTuple));
 
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
@@ -150,19 +140,12 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 
 		/* see earlier check above */
 #ifdef USE_ASSERT_CHECKING
-		if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
+		if (HeapTupleIsHeapOnly(heapTuple))
 		{
 			Assert(!ReindexIsProcessingIndex(RelationGetRelid(index)));
 			continue;
 		}
 #endif							/* USE_ASSERT_CHECKING */
-
-		/*
-		 * Skip insertions into non-summarizing indexes if we only need to
-		 * update summarizing indexes.
-		 */
-		if (onlySummarized && !indexInfo->ii_Summarizing)
-			continue;
 
 		/*
 		 * FormIndexDatum fills in its values and isnull parameters with the
@@ -250,7 +233,7 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, NULL);
+	CatalogIndexInsert(indstate, tup);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -270,7 +253,7 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, NULL);
+	CatalogIndexInsert(indstate, tup);
 }
 
 /*
@@ -301,7 +284,7 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 
 		tuple = ExecFetchSlotHeapTuple(slot[i], true, &should_free);
 		tuple->t_tableOid = slot[i]->tts_tableOid;
-		CatalogIndexInsert(indstate, tuple, NULL);
+		CatalogIndexInsert(indstate, tuple);
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -323,16 +306,14 @@ void
 CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
-	Bitmapset  *modified_idx_attrs = NULL;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &modified_idx_attrs);
+	simple_heap_update(heapRel, otid, tup);
 
-	CatalogIndexInsert(indstate, tup, modified_idx_attrs);
-	bms_free(modified_idx_attrs);
+	CatalogIndexInsert(indstate, tup);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -348,14 +329,11 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, const ItemPointerData *otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	Bitmapset  *modified_idx_attrs = NULL;
-
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &modified_idx_attrs);
+	simple_heap_update(heapRel, otid, tup);
 
-	CatalogIndexInsert(indstate, tup, modified_idx_attrs);
-	bms_free(modified_idx_attrs);
+	CatalogIndexInsert(indstate, tup);
 }
 
 /*

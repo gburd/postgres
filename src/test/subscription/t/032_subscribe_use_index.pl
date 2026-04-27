@@ -384,6 +384,13 @@ $node_subscriber->poll_query_until('postgres',
   or die
   "Timed out while waiting for check subscriber tap_sub_rep_full updates test_replica_id_full table";
 
+# VACUUM to clean up stale HOT chain index entries left by selective
+# index updates.  Without this, the old index entry (for the pre-update
+# key value) and the new entry (for the post-update key value) both
+# resolve to the same heap tuple via HOT chain following, which can
+# cause double-counting in index scans with partial predicates.
+$node_subscriber->safe_psql('postgres', "VACUUM test_replica_id_full");
+
 # make sure that the subscriber has the correct data
 $result = $node_subscriber->safe_psql('postgres',
 	"select sum(x) from test_replica_id_full WHERE y IS NULL");

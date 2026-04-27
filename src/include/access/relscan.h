@@ -134,6 +134,16 @@ typedef struct IndexFetchTableData
 	 * permitted.
 	 */
 	uint32		flags;
+
+	/*
+	 * Bitmap of indexed attribute numbers for HOT selective index update
+	 * chain following.  Set by indexam.c after table_index_fetch_begin().
+	 * When non-NULL, heap_hot_search_buffer uses it to detect stale index
+	 * entries in HOT chains with INDEXED_UPDATED tuples.  NULL means standard
+	 * HOT chain following without selective filtering.
+	 */
+	Bitmapset  *indexed_attrs;
+
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;

@@ -242,7 +242,8 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  const Bitmapset *indexed_attrs)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
@@ -251,8 +252,11 @@ table_index_fetch_tuple_check(Relation rel,
 
 	slot = table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
+	/* Cast away const: scan borrows the pointer temporarily, caller retains ownership */
+	scan->indexed_attrs = unconstify(Bitmapset *, indexed_attrs);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
+	scan->indexed_attrs = NULL;		/* caller retains ownership */
 	table_index_fetch_end(scan);
 	ExecDropSingleTupleTableSlot(slot);
 

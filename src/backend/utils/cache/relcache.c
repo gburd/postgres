@@ -6056,6 +6056,156 @@ RelationGetIndexAttOptions(Relation relation, bool copy)
 }
 
 /*
+ * IndexGetAttrBitmap
+ *
+ * Get a bitmap of the heap attributes an index covers.  The bitmap uses
+ * attribute numbers offset by FirstLowInvalidHeapAttributeNumber to handle
+ * system columns.  The result is cached in rd_indexattrs_bms within the
+ * index relation's rd_indexcxt, so subsequent calls return a copy without
+ * recomputation.
+ *
+ * Caller is responsible for freeing the returned Bitmapset.
+ */
+Bitmapset *
+IndexGetAttrBitmap(Relation irel)
+{
+	Bitmapset  *attrs;
+	Form_pg_index indexStruct;
+	Datum		datum;
+	bool		isnull;
+	MemoryContext oldcxt;
+
+	Assert(RelationIsValid(irel));
+
+	/* Return a copy of the cached result if available */
+	if (irel->rd_indexattrs_bms != NULL)
+		return bms_copy(irel->rd_indexattrs_bms);
+
+	attrs = NULL;
+
+	/*
+	 * During bootstrap, we may not have rd_indextuple available yet.
+	 * In that case, just build the bitmap from rd_index key attributes.
+	 */
+	if (!irel->rd_indextuple)
+	{
+		indexStruct = irel->rd_index;
+		for (int i = 0; i < indexStruct->indnatts; i++)
+		{
+			int			attr = indexStruct->indkey.values[i];
+
+			if (attr != 0)		/* Skip expression columns */
+			{
+				attr -= FirstLowInvalidHeapAttributeNumber;
+				attrs = bms_add_member(attrs, attr);
+			}
+		}
+		/* Don't cache during bootstrap since rd_indexcxt may not exist */
+		return attrs;
+	}
+
+	indexStruct = irel->rd_index;
+	for (int i = 0; i < indexStruct->indnatts; i++)
+	{
+		int			attr;
+
+		attr = indexStruct->indkey.values[i];
+
+		/*
+		 * Skip expression columns (attnum 0) in the simple-attribute loop.
+		 * Their base columns are extracted below via pull_varattnos.
+		 */
+		if (attr == 0)
+			continue;
+
+		attr -= FirstLowInvalidHeapAttributeNumber;
+		attrs = bms_add_member(attrs, attr);
+	}
+
+	/*
+	 * Extract base columns referenced by index expressions and predicates.
+	 * This ensures the bitmap uses the same encoding as
+	 * RelationGetIndexAttrBitmap().
+	 */
+	datum = heap_getattr(irel->rd_indextuple, Anum_pg_index_indexprs,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+	{
+		char	   *exprString;
+		Node	   *indexExpressions;
+		MemoryContext tmpcxt;
+
+		tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+									   "IndexGetAttrBitmap temp context",
+									   ALLOCSET_DEFAULT_SIZES);
+		oldcxt = MemoryContextSwitchTo(tmpcxt);
+		exprString = TextDatumGetCString(datum);
+		indexExpressions = stringToNode(exprString);
+		MemoryContextSwitchTo(oldcxt);
+
+		pull_varattnos(indexExpressions, 1, &attrs);
+		MemoryContextDelete(tmpcxt);
+	}
+
+	datum = heap_getattr(irel->rd_indextuple, Anum_pg_index_indpred,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+	{
+		char	   *predString;
+		Node	   *indexPredicate;
+		MemoryContext tmpcxt;
+
+		tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+									   "IndexGetAttrBitmap temp context",
+									   ALLOCSET_DEFAULT_SIZES);
+		oldcxt = MemoryContextSwitchTo(tmpcxt);
+		predString = TextDatumGetCString(datum);
+		indexPredicate = stringToNode(predString);
+		MemoryContextSwitchTo(oldcxt);
+
+		pull_varattnos(indexPredicate, 1, &attrs);
+		MemoryContextDelete(tmpcxt);
+	}
+
+	/* Cache in rd_indexcxt if available */
+	if (irel->rd_indexcxt != NULL)
+	{
+		oldcxt = MemoryContextSwitchTo(irel->rd_indexcxt);
+		irel->rd_indexattrs_bms = bms_copy(attrs);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	return attrs;
+}
+
+/*
+ * IndexGetAttrBitmapBorrowed -- return a borrowed pointer to the cached
+ * bitmap of all indexed attribute columns.
+ *
+ * Unlike IndexGetAttrBitmap(), this does not copy the result.  The caller
+ * must not modify or free the returned bitmap, and must not use it after
+ * any operation that could invalidate the relcache entry (e.g., opening
+ * or closing indexes on the relation).
+ *
+ * This is intended for hot-path callers (e.g., btree bottom-up deletion)
+ * that only need to read the bitmap briefly and want to avoid palloc
+ * overhead.
+ */
+const Bitmapset *
+IndexGetAttrBitmapBorrowed(Relation irel)
+{
+	Assert(RelationIsValid(irel));
+
+	if (irel->rd_indexattrs_bms == NULL)
+	{
+		Bitmapset *tmp = IndexGetAttrBitmap(irel);
+		bms_free(tmp);
+	}
+
+	return irel->rd_indexattrs_bms;
+}
+
+/*
  * Routines to support ereport() reports of relation-related errors
  *
  * These could have been put into elog.c, but it seems like a module layering

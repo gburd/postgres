@@ -226,6 +226,8 @@ typedef struct IndexInfo
 	bool		ii_Summarizing;
 	/* is it a WITHOUT OVERLAPS index? */
 	bool		ii_WithoutOverlaps;
+	/* bitmap of all indexed attributes (including expressions, predicates) */
+	Bitmapset  *ii_IndexedAttrs;
 	/* # of workers requested (excludes leader) */
 	int			ii_ParallelWorkers;
 

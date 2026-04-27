@@ -391,6 +391,17 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, ", cmin: %u, cmax: %u, combo: %u",
 						 xlrec->cmin, xlrec->cmax, xlrec->combocid);
 	}
+	else if (info == XLOG_HEAP2_INDEXED_UPDATE)
+	{
+		xl_heap_update *xlrec = (xl_heap_update *) rec;
+
+		appendStringInfo(buf, "off: %u, flags: 0x%02X, ",
+						 xlrec->old_offnum,
+						 xlrec->flags);
+		appendStringInfo(buf, "new off: %u, new xmax: %u",
+						 xlrec->new_offnum,
+						 xlrec->new_xmax);
+	}
 }
 
 const char *
@@ -468,6 +479,12 @@ heap2_identify(uint8 info)
 			break;
 		case XLOG_HEAP2_REWRITE:
 			id = "REWRITE";
+			break;
+		case XLOG_HEAP2_INDEXED_UPDATE:
+			id = "INDEXED_UPDATE";
+			break;
+		case XLOG_HEAP2_INDEXED_UPDATE | XLOG_HEAP_INIT_PAGE:
+			id = "INDEXED_UPDATE+INIT";
 			break;
 	}
 

@@ -121,6 +121,111 @@ index entry to the desired tuple, so it seems better to create a new
 index entry for the new tuple.)  If further updates occur, the next
 version could become the root of a new HOT chain.
 
+
+HOT Selective Index Updates
+----------------------------
+
+HOT selective index updates extend the HOT optimization to cases where only
+some indexes need updating.
+
+Traditional HOT requires ALL indexed columns (in non-summarizing indexes)
+to be unchanged. If even one indexed column is modified, HOT cannot be used
+and ALL indexes must be updated, even those not referencing the modified
+column.
+
+HOT selective index updates allow partial index maintenance. When an UPDATE
+modifies columns indexed by some indexes but not others:
+- The old tuple is marked with HEAP_HOT_UPDATED and HEAP_INDEXED_UPDATED
+- The new tuple is marked with HEAP_ONLY_TUPLE and HEAP_INDEXED_UPDATED
+- During index scans, the chain is followed only for indexes that don't
+  reference any modified columns
+- Indexes referencing modified columns get new tuple entries as normal
+
+Example:
+  Table: (id PRIMARY KEY, name, email, phone)
+  Indexes: idx_email ON (email), idx_phone ON (phone)
+
+  UPDATE SET phone = ... WHERE id = 1;  -- Only phone column changes
+
+  Result:
+  - idx_email follows the update chain (phone not in index)
+  - idx_phone gets new entry (phone is in index)
+  - Net: 1 index update instead of 2
+
+BRIN Special Case:
+BRIN indexes maintain per-block summaries, not per-tuple entries. Since they
+don't need new tuple-level entries, updates to columns indexed only by BRIN
+can use HOT even when those columns change (only the block summary updates).
+
+How It Works:
+
+Example: Table has columns (id, name, email, phone) with indexes:
+- idx_email ON (email)
+- idx_phone ON (phone)
+
+UPDATE SET phone = 'new' WHERE id = 1 creates a selective index update tuple.
+
+Index scan on idx_email:
+1. Hits LP_REDIRECT with modified column bitmap: {phone}
+2. indexed_attrs = {email} (0-based: {2})
+3. Bitmap intersection: {phone} AND {email} = empty
+4. Follows redirect -> returns new tuple (OK)
+
+Index scan on idx_phone:
+1. Hits same LP_REDIRECT with bitmap: {phone}
+2. indexed_attrs = {phone} (0-based: {3})
+3. Bitmap intersection: {phone} AND {phone} = {phone}
+4. Stops at redirect -> returns old tuple (OK)
+
+Implementation:
+
+At update execution time, ExecInsertIndexTuples() uses the
+index_unchanged_by_update() function to determine which indexes reference
+modified columns. Indexes that don't reference any modified columns are
+skipped entirely, avoiding the cost of index maintenance for those indexes.
+
+The modified column information is determined by comparing old and new tuple
+values using HeapDetermineModifiedColumns(). This comparison is done at the
+binary level (bitwise equality) to ensure consistency across all index types.
+
+HOT selective index update chains work exactly like HOT chains in terms of:
+- Page-level restriction (no cross-page chains)
+- Pruning and space reclamation
+- Visibility checking during chain traversal
+- Line pointer redirection after pruning
+
+The key difference is that selective index updates allow partial index
+maintenance. When an index scan encounters a selectively-updated tuple, it
+checks if the index references any modified columns. If not, it follows the
+chain to find the latest version. If yes, it treats the chain as ended and
+expects a new index entry.
+
+Limitations:
+- Like HOT, selective index updates only work within a single page
+- Requires space for the new tuple on the same page
+- Selective update chains can become regular update chains if the page
+  fills up
+- Mixed HOT/selective/regular update chains are possible
+
+Index AM Compatibility:
+HOT selective index updates work with ALL index access methods (B-tree, Hash,
+GiST, GIN, SP-GiST, BRIN, Bloom, etc.) without requiring any index AM-specific
+code. This is because HOT chain following happens in the heap AM layer, not in
+individual index AMs:
+
+1. Index AMs only return TIDs (tuple identifiers) pointing to heap tuples
+2. The heap AM's index fetch handler (heapam_handler.c) is responsible for
+   fetching tuples and following HOT chains for all index types
+3. During index fetch initialization, indexed_attrs is set via
+   IndexGetAttrBitmap(irel)
+4. heap_hot_search_buffer() uses indexed_attrs to determine whether to follow
+   HOT chains with INDEXED_UPDATED tuples
+5. This logic is uniform across all index types
+
+Even "lossy" index AMs like GiST and GIN work correctly because they still
+return exact TIDs, and the heap AM handles the rest. No amcanhotselective
+property or similar index AM capability flag is needed.
+
 Line pointer 1 has to remain as long as there is any non-dead member of
 the chain on the page.  When there is not, it is marked "dead".
 This lets us reclaim the last child line pointer and associated tuple
@@ -473,6 +578,44 @@ to vacuuming, specifically the recompute-the-index-keys approach alluded
 to in Technical Challenges above.  It'll be tough to recompute the index
 keys for a root line pointer you don't have data for anymore ...
 
+Wide-Table t_hoff Overflow:
+
+SIU embeds a bitmap of modified indexed columns in the tuple header by
+extending t_hoff beyond the standard header + null bitmap size.  The t_hoff
+field is a uint8, limiting it to 255 bytes.  On a table with a very large
+number of nullable columns (roughly 1400+), the null bitmap alone can
+approach the uint8 maximum, leaving no room for the SIU bitmap.  In such
+cases, SIU gracefully degrades: heap_update falls back to a normal (non-HOT)
+update rather than producing an error.  This is expected to be extremely
+rare in practice, as tables with over 1400 columns are uncommon.
+
+
+Expression Index Limitation for HOT Selective Index Updates
+-----------------------------------------------------------
+
+Expression indexes (indexes defined on expressions rather than simple column
+references) are conservatively treated as "all columns changed" during HOT
+selective index updates.  When ExecSetIndexUnchanged() in execIndexing.c
+encounters an index key attribute with keycol <= 0 (indicating an expression
+rather than a plain column reference), it assumes the index is not unchanged
+and marks it for updating.
+
+This means that tables with expression indexes do not benefit from HOT
+selective index updates for those specific indexes.  However, other
+non-expression indexes on the same table still benefit normally.  For
+example, if a table has a B-tree index on column A, an expression index on
+lower(B), and a B-tree index on column C, an update that only modifies
+column C will still skip updating the index on column A --- only the
+expression index and the index on C will be updated.
+
+This is a deliberate conservative choice for correctness.  An expression
+index can reference any combination of columns (or even no columns at all,
+in degenerate cases), so without walking the expression tree there is no
+reliable way to determine which columns it depends on.  A future enhancement
+could analyze expression trees to extract the set of referenced columns,
+allowing HOT selective index updates to benefit expression indexes whose
+referenced columns were not modified.
+
 
 Glossary
 --------
@@ -520,6 +663,26 @@ HOT-updated tuple
 	An updated tuple, for which the next tuple in the chain is a
 	heap-only tuple.  Marked with HEAP_HOT_UPDATED flag.
 
+Selective index update tuple
+
+	A tuple similar to a heap-only tuple, but part of a HOT selective
+	index update chain where some (but not all) indexes need updating.
+	The tuple has no index entries for indexes that don't reference
+	modified columns, but does have entries for indexes that do. Marked
+	with HEAP_ONLY_TUPLE and HEAP_INDEXED_UPDATED flags.
+
+HOT selective index update
+
+	An UPDATE where some indexes need updating but others don't. Unlike
+	HOT updates where NO indexes are updated, selective index updates
+	only update those indexes that reference modified columns.
+
+Selectively-updated tuple
+
+	An updated tuple that is part of a HOT selective index update chain.
+	The next tuple in the chain is a selective index update tuple.
+	Marked with HEAP_HOT_UPDATED and HEAP_INDEXED_UPDATED flags.
+
 Indexed column
 
 	A column used in an index definition.  The column might not
@@ -547,3 +710,60 @@ Update chain
 	(or portion of an update chain) that consists of a root tuple and
 	one or more heap-only tuples.  A complete update chain can contain
 	both HOT and non-HOT (cold) updated tuples.
+
+
+Testing Requirements for HOT Selective Index Updates
+=====================================================
+
+WAL Replay Correctness:
+
+To ensure WAL replay works correctly for INDEXED_UPDATED operations, the
+following scenarios should be tested:
+
+1. Crash recovery after selective index update:
+   - Create table with multiple indexes
+   - Perform selective index updates (modify columns indexed by some but not all)
+   - Simulate crash (pg_ctl stop -m immediate)
+   - Restart and verify data integrity
+   - Verify indexes remain consistent
+
+2. Hot standby correctness:
+   - Set up primary-standby replication
+   - Perform selective index updates on primary
+   - Query standby during replay
+   - Verify standby sees consistent data
+   - Verify no conflicts occur for queries using unmodified indexes
+
+3. Multiple selective updates in same chain:
+   - Update same row multiple times with selective index updates
+   - Each update modifies different subset of indexed columns
+   - Crash and recover
+   - Verify entire update chain replays correctly
+
+4. Redirect following during replay:
+   - Perform selective index update (creates redirect)
+   - Perform another update on same row
+   - Crash and recover
+   - Verify redirect is followed correctly during replay
+
+5. Cross-page vs same-page replay:
+   - Test both same-page selective updates (common case)
+   - Test cross-page updates (rare, but must work)
+   - Verify both replay correctly after crash
+
+Test Implementation Notes:
+
+The recovery TAP tests (src/test/recovery/) are the appropriate location for
+these tests. They should use pg_ctl stop -m immediate to simulate crashes and
+verify data/index consistency after restart.
+
+Example test outline:
+  1. CREATE TABLE with 3 indexes (idx_a, idx_b, idx_c)
+  2. INSERT test data
+  3. Checkpoint to establish baseline
+  4. UPDATE modifying only column B (idx_b updated, idx_a and idx_c not)
+  5. pg_ctl stop -m immediate (before checkpoint)
+  6. Restart postgres
+  7. Verify UPDATE was replayed or rolled back correctly
+  8. Verify all three indexes are consistent with table data
+  9. Verify index scans return correct results

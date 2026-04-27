@@ -144,7 +144,7 @@ typedef enum TM_Result
  * If Bitmapset internals ever change the offset mapping, this will catch it.
  */
 StaticAssertDecl(MODIFIED_IDX_ATTRS_ALL_IDX == 0,
-				 "MODIFIED_IDX_ATTRS_ALL_IDX must be bit 0 (FirstLowInvalidHeapAttributeNumber)");
+                 "MODIFIED_IDX_ATTRS_ALL_IDX must be bit 0 (FirstLowInvalidHeapAttributeNumber)");
 
 /*
  * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
@@ -274,6 +274,15 @@ typedef struct TM_IndexDeleteOp
 	BlockNumber iblknum;		/* Index block number (for error reports) */
 	bool		bottomup;		/* Bottom-up (not simple) deletion? */
 	int			bottomupfreespace;	/* Bottom-up space target */
+
+	/*
+	 * Bitmap of indexed attribute numbers for HOT selective index update
+	 * chain following.  Set by the index AM caller (typically via
+	 * IndexGetAttrBitmapBorrowed) so that the tableam can use it for
+	 * stale-entry detection during index tuple deletion.  This is a
+	 * borrowed pointer -- the caller must not free or modify it.
+	 */
+	const Bitmapset *indexed_attrs;
 
 	/* Mutable per-TID information follows (index AM initializes entries) */
 	int			ndeltids;		/* Current # of deltids/status elements */
@@ -1327,7 +1336,8 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  const Bitmapset *indexed_attrs);
 
 
 /* ------------------------------------------------------------------------
@@ -1610,7 +1620,7 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   Bitmapset **modified_idx_attrs)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
-										 cid, snapshot, crosscheck,
+										 cid, options, snapshot, crosscheck,
 										 wait, tmfd, lockmode,
 										 modified_idx_attrs);
 }
