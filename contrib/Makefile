@@ -30,6 +30,12 @@ SUBDIRS = \
 		oid2name	\
 		pageinspect	\
 		passwordcheck	\
+		pg_bp_arc	\
+		pg_bp_car	\
+		pg_bp_lirs	\
+		pg_bp_lru	\
+		pg_bp_osic	\
+		pg_bp_rcrd	\
 		pg_buffercache	\
 		pg_freespacemap \
 		pg_logicalinspect \

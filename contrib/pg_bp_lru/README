@@ -1,0 +1,98 @@
+contrib/pg_bp_lru/README
+
+pg_bp_lru -- Least Recently Used (LRU) Buffer Replacement
+==========================================================
+
+pg_bp_lru provides the classic LRU buffer replacement algorithm as a
+PostgreSQL extension.  LRU is the simplest cache replacement strategy:
+the page that has gone longest without being accessed is evicted first.
+
+This extension is primarily useful as a baseline for benchmarking more
+sophisticated algorithms such as ARC, CAR, LIRS, and others.  By
+measuring LRU performance alongside an adaptive algorithm, you can
+quantify the value that adaptation provides for a given workload.
+
+Usage
+=====
+
+    CREATE EXTENSION pg_bp_lru;
+    CREATE BUFFER POOL my_lru_pool HANDLER lru_pool_handler SIZE '33554432';
+    CREATE TABLE test_data (...) WITH (buffer_pool = 'my_lru_pool');
+
+Algorithm
+=========
+
+LRU maintains a single doubly-linked list of cached pages ordered by
+access recency.  The least recently used page is at the head (LRU end)
+and the most recently used page is at the tail (MRU end).
+
+    On hit:      Move the page to the MRU end (tail).
+    On miss:     No structural change (just a stat increment).
+    On evict:    Remove the page from the list.
+    On new page: Insert at the MRU end (tail).
+    Eviction:    Scan from the LRU end (head) for the first
+                 unpinned buffer.
+
+There are no ghost lists, no frequency tracking, and no adaptive
+parameters.
+
+When to Use
+===========
+
+LRU is a good fit when you need:
+
+  - A performance baseline to compare against adaptive algorithms
+  - The simplest possible replacement strategy for debugging
+  - A reference implementation for testing the buffer pool framework
+  - Minimal memory overhead per buffer (~12 bytes)
+
+Statistics
+==========
+
+Install the extension to get the pg_stat_lru view:
+
+    SELECT * FROM pg_stat_lru;
+
+Columns:
+
+    name        -- buffer pool name
+    oid         -- buffer pool OID
+    list_size   -- number of buffers currently on the LRU list
+    hits        -- total cache hits
+    misses      -- total cache misses
+    evictions   -- total evictions
+
+The general-purpose pg_stat_bufferpool view also reports per-pool hit
+and miss statistics.
+
+Limitations
+===========
+
+No scan resistance:  A single sequential scan of a table larger than
+the buffer pool will flush every cached page.  LRU has no mechanism to
+protect frequently accessed pages from being evicted by a one-time
+scan.  Adaptive algorithms like ARC and LIRS solve this problem.
+
+No adaptation:  LRU cannot learn from workload patterns.  It treats
+every access identically regardless of whether a page has been accessed
+once or a thousand times.
+
+No VACUUM integration:  Pages loaded by VACUUM are inserted at the MRU
+end just like any other page.  This means VACUUM can pollute the cache.
+Algorithms with VACUUM awareness (such as ARC) insert VACUUM pages at
+the LRU end to minimize cache disruption.
+
+Spinlock on every hit:  Every cache hit acquires the global lru_lock
+spinlock to move the page to the MRU end.  This limits scalability on
+high-core-count systems.
+
+No prefetch integration:  LRU does not implement the prefetch_hint
+callback.
+
+Reference
+=========
+
+LRU is a classical algorithm from 1960s operating systems research.
+
+L.A. Belady, "A study of replacement algorithms for a virtual-storage
+computer", IBM Systems Journal, Vol. 5, No. 2, 1966.
