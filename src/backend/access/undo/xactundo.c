@@ -35,6 +35,7 @@
 
 #include "access/atm.h"
 #include "access/undo.h"
+#include "access/undo_flush.h"
 #include "access/relundo_worker.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
@@ -413,8 +414,22 @@ AtCommit_XactUndo(void)
 	 */
 	UndoWalBatchFlush();
 
-	/* Sync all dirty UNDO log files to disk before finishing commit. */
-	UndoLogSync();
+	/*
+	 * Sync UNDO data to disk before finishing commit.  If the UNDO flush
+	 * daemon is running, hand off the sync to it for group commit
+	 * batching.  Otherwise fall back to direct per-backend fdatasync.
+	 */
+	if (UndoFlushWriterIsRunning())
+	{
+		UndoRecPtr	max_ptr = UndoFlushGetMaxWritePtr();
+
+		if (UndoRecPtrIsValid(max_ptr))
+			UndoFlushWaitForSync(max_ptr);
+	}
+	else
+		UndoLogSync();
+
+	UndoFlushResetMaxWritePtr();
 
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)
@@ -484,6 +499,9 @@ AtAbort_XactUndo(void)
 
 	/* Close cached UNDO log fds (no fsync needed on abort). */
 	UndoLogCloseFiles();
+
+	/* Reset per-backend write pointer tracking. */
+	UndoFlushResetMaxWritePtr();
 
 	ResetXactUndo();
 }
@@ -624,6 +642,9 @@ AtProcExit_XactUndo(void)
 
 	/* Close any cached UNDO log fds before process exit. */
 	UndoLogCloseFiles();
+
+	/* Reset per-backend write pointer tracking. */
+	UndoFlushResetMaxWritePtr();
 
 	ResetXactUndo();
 }
