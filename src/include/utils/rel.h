@@ -174,6 +174,9 @@ typedef struct RelationData
 	 */
 	bytea	   *rd_options;		/* parsed pg_class.reloptions */
 
+	/* Buffer pool assignment (resolved from buffer_pool reloption) */
+	Oid			rd_bufpool;		/* OID of assigned buffer pool, or InvalidOid */
+
 	/*
 	 * Oid of the handler for this relation. For an index this is a function
 	 * returning IndexAmRoutine, for table like relations a function returning
@@ -356,6 +359,8 @@ typedef struct StdRdOptions
 	 * to freeze. 0 if disabled, -1 if unspecified.
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
+
+	int			buffer_pool_offset;	/* string offset for buffer_pool name */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10

@@ -147,7 +147,9 @@
 #include "pgstat.h"
 #include "portability/instr_time.h"
 #include "postmaster/autovacuum.h"
+#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool.h"
 #include "storage/freespace.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
@@ -876,9 +878,15 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 
 	/*
 	 * Call lazy_scan_heap to perform all required heap pruning, index
-	 * vacuuming, and heap vacuuming (plus related processing)
+	 * vacuuming, and heap vacuuming (plus related processing).
+	 *
+	 * Hint the buffer pool replacement algorithm that VACUUM is active,
+	 * so algorithms like ARC can insert vacuum-loaded pages at the LRU
+	 * end of their recency list to prevent cache pollution.
 	 */
+	PoolHintVacuum(rel->rd_bufpool, true);
 	lazy_scan_heap(vacrel);
+	PoolHintVacuum(rel->rd_bufpool, false);
 
 	/*
 	 * Save dead items max_bytes and update the memory usage statistics before

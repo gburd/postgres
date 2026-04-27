@@ -395,6 +395,14 @@
   boot_val => '""',
 },
 
+{ name => 'buffer_pool_strategy', type => 'enum', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Selects the buffer pool replacement strategy for the default pool.',
+  long_desc => 'Selects the replacement algorithm. Currently only clock (clock-sweep) is built in; extensions can register additional algorithms.',
+  variable => 'buffer_pool_strategy',
+  boot_val => 'BUFPOOL_STRATEGY_CLOCK',
+  options => 'buffer_pool_strategy_options',
+},
+
 { name => 'bytea_output', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the output format for bytea.',
   variable => 'bytea_output',

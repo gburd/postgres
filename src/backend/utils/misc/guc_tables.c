@@ -78,6 +78,7 @@
 #include "replication/syncrep.h"
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool.h"
 #include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
@@ -527,6 +528,7 @@ extern const struct config_enum_entry archive_mode_options[];
 extern const struct config_enum_entry recovery_target_action_options[];
 extern const struct config_enum_entry wal_sync_method_options[];
 extern const struct config_enum_entry dynamic_shared_memory_options[];
+extern const struct config_enum_entry buffer_pool_strategy_options[];
 
 /*
  * GUC option variables that are exported from this module

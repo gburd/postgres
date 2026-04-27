@@ -26,6 +26,7 @@
 #include "catalog/toasting.h"
 #include "commands/alter.h"
 #include "commands/async.h"
+#include "commands/bufferpoolcmds.h"
 #include "commands/collationcmds.h"
 #include "commands/comment.h"
 #include "commands/conversioncmds.h"
@@ -167,6 +168,8 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_CommentStmt:
 		case T_CompositeTypeStmt:
 		case T_CreateAmStmt:
+		case T_CreateBufferPoolStmt:
+		case T_AlterBufferPoolStmt:
 		case T_CreateCastStmt:
 		case T_CreateConversionStmt:
 		case T_CreateDomainStmt:
@@ -1854,6 +1857,14 @@ ProcessUtilitySlow(ParseState *pstate,
 				address = CreateAccessMethod((CreateAmStmt *) parsetree);
 				break;
 
+			case T_CreateBufferPoolStmt:
+				address = CreateBufferPool((CreateBufferPoolStmt *) parsetree);
+				break;
+
+			case T_AlterBufferPoolStmt:
+				address = AlterBufferPool((AlterBufferPoolStmt *) parsetree);
+				break;
+
 			case T_CreatePublicationStmt:
 				address = CreatePublication(pstate, (CreatePublicationStmt *) parsetree);
 				break;
@@ -2355,6 +2366,9 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_MATVIEW:
 			tag = CMDTAG_ALTER_MATERIALIZED_VIEW;
 			break;
+		case OBJECT_BUFFER_POOL:
+			tag = CMDTAG_ALTER_BUFFER_POOL;
+			break;
 		case OBJECT_PUBLICATION:
 			tag = CMDTAG_ALTER_PUBLICATION;
 			break;
@@ -2668,6 +2682,9 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_ACCESS_METHOD:
 					tag = CMDTAG_DROP_ACCESS_METHOD;
+					break;
+				case OBJECT_BUFFER_POOL:
+					tag = CMDTAG_DROP_BUFFER_POOL;
 					break;
 				case OBJECT_PUBLICATION:
 					tag = CMDTAG_DROP_PUBLICATION;
@@ -3083,6 +3100,14 @@ CreateCommandTag(Node *parsetree)
 
 		case T_CreateAmStmt:
 			tag = CMDTAG_CREATE_ACCESS_METHOD;
+			break;
+
+		case T_CreateBufferPoolStmt:
+			tag = CMDTAG_CREATE_BUFFER_POOL;
+			break;
+
+		case T_AlterBufferPoolStmt:
+			tag = CMDTAG_ALTER_BUFFER_POOL;
 			break;
 
 		case T_CreatePublicationStmt:
@@ -3711,6 +3736,11 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_CreateAmStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreateBufferPoolStmt:
+		case T_AlterBufferPoolStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

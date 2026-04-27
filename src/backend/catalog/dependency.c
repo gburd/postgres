@@ -29,6 +29,7 @@
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_attrdef.h"
 #include "catalog/pg_authid.h"
+#include "catalog/pg_bufferpool.h"
 #include "catalog/pg_auth_members.h"
 #include "catalog/pg_cast.h"
 #include "catalog/pg_collation.h"
@@ -71,6 +72,7 @@
 #include "catalog/pg_ts_template.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
+#include "commands/bufferpoolcmds.h"
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
@@ -1508,6 +1510,10 @@ doDeletion(const ObjectAddress *object, int flags)
 
 		case PublicationRelationId:
 			RemovePublicationById(object->objectId);
+			break;
+
+		case BufferPoolRelationId:
+			DropBufferPoolById(object->objectId);
 			break;
 
 		case CastRelationId:

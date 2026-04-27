@@ -367,6 +367,9 @@ BufferHeapTupleTableSlot
 BufferLockMode
 BufferLookupEnt
 BufferManagerRelation
+BufferPoolDesc
+BufferPoolKind
+BufferPoolRoutine
 BufferStrategyControl
 BufferTag
 BufferUsage
@@ -2379,6 +2382,8 @@ Point
 Pointer
 PolicyInfo
 Pool
+PoolBufHashEntry
+PoolLocalState
 PopulateArrayContext
 PopulateArrayState
 PopulateRecordCache

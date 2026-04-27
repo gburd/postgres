@@ -913,6 +913,23 @@
   prorettype => 'table_am_handler', proargtypes => 'internal',
   prosrc => 'heap_tableam_handler' },
 
+# Buffer pool replacement strategy handlers
+{ oid => '9960', descr => 'clock-sweep buffer pool replacement handler',
+  proname => 'clock_pool_handler', provolatile => 'v',
+  prorettype => 'internal', proargtypes => 'internal',
+  prosrc => 'clock_pool_handler' },
+
+# Buffer pool statistics
+{ oid => '9961', descr => 'statistics: per-buffer-pool activity',
+  proname => 'pg_stat_get_bufferpool', prorows => '10', proisstrict => 'f',
+  proretset => 't', provolatile => 's', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{name,oid,int4,int8,int8,int8}',
+  proargmodes => '{o,o,o,o,o,o}',
+  proargnames => '{name,oid,nbuffers,reads,hits,evictions}',
+  prosrc => 'pg_stat_get_bufferpool' },
+
+
 # Index access method handlers
 { oid => '330', descr => 'btree index access method handler',
   proname => 'bthandler', provolatile => 'v', prorettype => 'index_am_handler',

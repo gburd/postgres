@@ -342,6 +342,7 @@ extern PGDLLIMPORT bool optimize_bounded_sort;
  * config_enum_entry into those header files.)
  */
 extern PGDLLIMPORT const struct config_enum_entry archive_mode_options[];
+extern PGDLLIMPORT const struct config_enum_entry buffer_pool_strategy_options[];
 extern PGDLLIMPORT const struct config_enum_entry dynamic_shared_memory_options[];
 extern PGDLLIMPORT const struct config_enum_entry io_method_options[];
 extern PGDLLIMPORT const struct config_enum_entry recovery_target_action_options[];

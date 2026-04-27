@@ -46,6 +46,7 @@
 #include "replication/walsender.h"
 #include "storage/aio_subsys.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool_internals.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
@@ -1202,6 +1203,10 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * least the minimum set of "nailed-in" cache entries.
 	 */
 	RelationCacheInitializePhase3();
+
+	/* Recreate dynamic buffer pools from pg_bufferpool after restart */
+	if (!bootstrap)
+		BufferPoolStartupInit();
 
 	/* set up ACL framework (so CheckMyDatabase can check permissions) */
 	initialize_acl();

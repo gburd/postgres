@@ -23,6 +23,7 @@
 #include "catalog/objectaddress.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
+#include "catalog/pg_bufferpool.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_attrdef.h"
 #include "catalog/pg_authid.h"
@@ -67,6 +68,7 @@
 #include "catalog/pg_ts_template.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
+#include "commands/bufferpoolcmds.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/extension.h"
@@ -135,6 +137,20 @@ static const ObjectPropertyType ObjectProperty[] =
 		InvalidAttrNumber,
 		InvalidAttrNumber,
 		OBJECT_ACCESS_METHOD,
+		true
+	},
+	{
+		"buffer pool",
+		BufferPoolRelationId,
+		BufferPoolOidIndexId,
+		BUFFERPOOLOID,
+		BUFFERPOOLNAME,
+		Anum_pg_bufferpool_oid,
+		Anum_pg_bufferpool_bpname,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		InvalidAttrNumber,
+		OBJECT_BUFFER_POOL,
 		true
 	},
 	{
@@ -830,6 +846,9 @@ static const struct object_type_map
 		"access method", OBJECT_ACCESS_METHOD
 	},
 	{
+		"buffer pool", OBJECT_BUFFER_POOL
+	},
+	{
 		"operator of access method", OBJECT_AMOP
 	},
 	{
@@ -1091,6 +1110,7 @@ get_object_address(ObjectType objtype, Node *object,
 			case OBJECT_EVENT_TRIGGER:
 			case OBJECT_PARAMETER_ACL:
 			case OBJECT_ACCESS_METHOD:
+			case OBJECT_BUFFER_POOL:
 			case OBJECT_PUBLICATION:
 			case OBJECT_SUBSCRIPTION:
 				address = get_object_address_unqualified(objtype,
@@ -1346,6 +1366,11 @@ get_object_address_unqualified(ObjectType objtype,
 		case OBJECT_ACCESS_METHOD:
 			address.classId = AccessMethodRelationId;
 			address.objectId = get_am_oid(name, missing_ok);
+			address.objectSubId = 0;
+			break;
+		case OBJECT_BUFFER_POOL:
+			address.classId = BufferPoolRelationId;
+			address.objectId = get_bufferpool_oid(name, missing_ok);
 			address.objectSubId = 0;
 			break;
 		case OBJECT_DATABASE:
@@ -2395,6 +2420,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 			objnode = (Node *) name;
 			break;
 		case OBJECT_ACCESS_METHOD:
+		case OBJECT_BUFFER_POOL:
 		case OBJECT_DATABASE:
 		case OBJECT_EVENT_TRIGGER:
 		case OBJECT_EXTENSION:
@@ -2640,6 +2666,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_TSPARSER:
 		case OBJECT_TSTEMPLATE:
 		case OBJECT_ACCESS_METHOD:
+		case OBJECT_BUFFER_POOL:
 		case OBJECT_PARAMETER_ACL:
 			/* We treat these object types as being owned by superusers */
 			if (!superuser_arg(roleid))
@@ -3319,6 +3346,26 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				appendStringInfo(&buffer, _("access method %s"),
 								 NameStr(((Form_pg_am) GETSTRUCT(tup))->amname));
+				ReleaseSysCache(tup);
+				break;
+			}
+
+		case BufferPoolRelationId:
+			{
+				HeapTuple	tup;
+
+				tup = SearchSysCache1(BUFFERPOOLOID,
+									  ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(tup))
+				{
+					if (!missing_ok)
+						elog(ERROR, "cache lookup failed for buffer pool %u",
+							 object->objectId);
+					break;
+				}
+
+				appendStringInfo(&buffer, _("buffer pool %s"),
+								 NameStr(((Form_pg_bufferpool) GETSTRUCT(tup))->bpname));
 				ReleaseSysCache(tup);
 				break;
 			}
@@ -4813,6 +4860,10 @@ getObjectTypeDescription(const ObjectAddress *object, bool missing_ok)
 			appendStringInfoString(&buffer, "access method");
 			break;
 
+		case BufferPoolRelationId:
+			appendStringInfoString(&buffer, "buffer pool");
+			break;
+
 		case AccessMethodOperatorRelationId:
 			appendStringInfoString(&buffer, "operator of access method");
 			break;
@@ -5457,6 +5508,28 @@ getObjectIdentityParts(const ObjectAddress *object,
 				appendStringInfoString(&buffer, quote_identifier(amname));
 				if (objname)
 					*objname = list_make1(amname);
+			}
+			break;
+
+		case BufferPoolRelationId:
+			{
+				HeapTuple	tup;
+				char	   *bpname;
+
+				tup = SearchSysCache1(BUFFERPOOLOID,
+									  ObjectIdGetDatum(object->objectId));
+				if (!HeapTupleIsValid(tup))
+				{
+					if (!missing_ok)
+						elog(ERROR, "cache lookup failed for buffer pool %u",
+							 object->objectId);
+					break;
+				}
+				bpname = pstrdup(NameStr(((Form_pg_bufferpool) GETSTRUCT(tup))->bpname));
+				appendStringInfoString(&buffer, quote_identifier(bpname));
+				if (objname)
+					*objname = list_make1(bpname);
+				ReleaseSysCache(tup);
 			}
 			break;
 
