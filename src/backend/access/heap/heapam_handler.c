@@ -2063,14 +2063,26 @@ heapam_relation_toast_am(Relation rel)
 }
 
 /*
- * Return the default overflow buffer pool for heap TOAST data.
+ * Return the default overflow buffer pool handler for heap TOAST data.
  *
- * Returns NULL to use the DEFAULT pool.  When the JAM algorithm is
- * implemented, this will return the JAM pool handler name.
+ * Returns "jam_pool_handler" so that TOAST tables use the JAM algorithm
+ * by default.  This is used when the parent table does not specify an
+ * explicit overflow_buffer_pool reloption.
+ *
+ * Note: This returns a handler function name, not a pool name.  The
+ * caller (create_toast_table) must create a pool with this handler
+ * if one doesn't already exist.  For now, we return NULL until a
+ * pool auto-creation mechanism is in place -- the user must explicitly
+ * create a JAM pool and assign it via overflow_buffer_pool.
  */
 static const char *
 heapam_relation_overflow_pool(Relation rel)
 {
+	/*
+	 * TODO: Return "jam_pool_handler" once automatic pool creation for
+	 * AM-default overflow pools is implemented.  For now, TOAST tables use
+	 * the DEFAULT pool unless the user explicitly sets overflow_buffer_pool.
+	 */
 	return NULL;
 }
 
