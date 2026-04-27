@@ -176,7 +176,8 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 					 errmsg("buffer pool size must be at least %d bytes",
 							16 * BLCKSZ)));
 
-		CreateDynamicBufferPool(bpoid, stmt->poolname, pool_nbuffers, routine);
+		CreateDynamicBufferPool(bpoid, stmt->poolname, pool_nbuffers, routine,
+							   bphandler);
 	}
 
 	return myself;

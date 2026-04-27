@@ -207,6 +207,11 @@
 #bgwriter_lru_multiplier = 2.0          # 0-10.0 multiplier on buffers scanned/round
 #bgwriter_flush_after = 0               # measured in pages, 0 disables
 
+# - Trickle Writer (dynamic buffer pool write-back) -
+
+#trickle_flush_after = 0                # measured in pages, 0 disables
+#trickle_write_batch_size = 128         # max buffers written per cycle, 1-10000
+
 # - I/O -
 
 #backend_flush_after = 0                # measured in pages, 0 disables

@@ -45,6 +45,7 @@
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "catalog/pg_bufferpool.h"
+#include "catalog/pg_proc.h"
 #include "funcapi.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -79,6 +80,10 @@ static PoolLocalState PoolLocalStates[MAX_BUFFER_POOLS];
  * 0 = not started, 1 = in progress, 2 = done.
  */
 static pg_atomic_uint32 *BufferPoolStartupFlag = NULL;
+
+/* GUC variables for trickle writer tuning */
+int			trickle_flush_after = DEFAULT_TRICKLE_FLUSH_AFTER;
+int			trickle_write_batch_size = 128;
 
 static void BufferPoolShmemRequest(void *arg);
 static void BufferPoolShmemInit(void *arg);
@@ -412,7 +417,8 @@ BufferPoolStartupInit(void)
 			pool_nbuffers = (int) (bpform->bpsize / BLCKSZ);
 			if (pool_nbuffers >= 16)
 				CreateDynamicBufferPool(bpform->oid, poolname,
-										pool_nbuffers, routine);
+										pool_nbuffers, routine,
+										bpform->bphandler);
 			else
 				elog(WARNING, "buffer pool \"%s\" has too few buffers (%d), skipping",
 					 poolname, pool_nbuffers);
@@ -594,7 +600,7 @@ ComputeNextBufferIdBase(void)
  */
 BufferPoolDesc *
 CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
-						const BufferPoolRoutine *routine)
+						const BufferPoolRoutine *routine, Oid handler_oid)
 {
 	BufferPoolDesc *pool;
 	dsm_segment *seg;
@@ -619,11 +625,29 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	CkptSortItem *ckpt_ids;
 	void	   *strategy_data;
 
+	/*
+	 * Check that we haven't run out of pool slots.  NBufferPools is a
+	 * high-water mark; the real check is finding a free (inactive) slot below.
+	 */
 	if (NBufferPools >= MAX_BUFFER_POOLS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("maximum number of buffer pools (%d) exceeded",
-						MAX_BUFFER_POOLS)));
+	{
+		/* All slots at or below the high-water mark are taken; can we reuse? */
+		bool	has_free = false;
+
+		for (int i = 1; i < MAX_BUFFER_POOLS; i++)
+		{
+			if (!BufferPoolDescs[i].bp_active)
+			{
+				has_free = true;
+				break;
+			}
+		}
+		if (!has_free)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("maximum number of buffer pools (%d) exceeded",
+							MAX_BUFFER_POOLS)));
+	}
 
 	/* Find a free slot */
 	for (int i = 1; i < MAX_BUFFER_POOLS; i++)
@@ -764,6 +788,46 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 
 	/* Fill remaining pool descriptor fields */
 	pool->bp_oid = bp_oid;
+	pool->bp_handler_oid = handler_oid;
+	pool->bp_handler_library[0] = '\0';
+	pool->bp_handler_function[0] = '\0';
+
+	/*
+	 * For extension-provided handlers, look up the library path (probin)
+	 * and symbol name (prosrc) from pg_proc and store them in the pool
+	 * descriptor.  This allows processes without catalog access (like the
+	 * trickle writer) to load the extension library and resolve bp_routine
+	 * in their own address space.
+	 */
+	if (OidIsValid(handler_oid))
+	{
+		HeapTuple	procTup;
+
+		procTup = SearchSysCache1(PROCOID, ObjectIdGetDatum(handler_oid));
+		if (HeapTupleIsValid(procTup))
+		{
+			Datum		prosrc,
+						probin;
+			bool		isnull;
+
+			prosrc = SysCacheGetAttr(PROCOID, procTup,
+									 Anum_pg_proc_prosrc, &isnull);
+			if (!isnull)
+				strlcpy(pool->bp_handler_function,
+						TextDatumGetCString(prosrc),
+						sizeof(pool->bp_handler_function));
+
+			probin = SysCacheGetAttr(PROCOID, procTup,
+									 Anum_pg_proc_probin, &isnull);
+			if (!isnull)
+				strlcpy(pool->bp_handler_library,
+						TextDatumGetCString(probin),
+						sizeof(pool->bp_handler_library));
+
+			ReleaseSysCache(procTup);
+		}
+	}
+
 	namestrcpy(&pool->bp_name, name);
 	pool->bp_dsm_handle = dsm_segment_handle(seg);
 	pool->bp_trickle_slot = -1;
@@ -791,7 +855,10 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	/* Mark active last (acts as a memory barrier for readers) */
 	pg_write_barrier();
 	pool->bp_active = true;
-	NBufferPools++;
+
+	/* Update high-water mark so lookup loops cover this slot */
+	if (slot + 1 > NBufferPools)
+		NBufferPools = slot + 1;
 
 	/* Update MaxBufferNumber so BufferIsValid() allows these buffer IDs */
 	{
@@ -833,14 +900,7 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 
 	elog(LOG, "destroying dynamic buffer pool \"%s\"", NameStr(pool->bp_name));
 
-	/* Terminate trickle writer first, before touching any pool data */
-	TerminatePoolTrickleWriter(pool);
-
-	/* Call algorithm shutdown if provided */
-	if (pool->bp_routine->shutdown && local->attached && local->strategy_data)
-		pool->bp_routine->shutdown(local->strategy_data);
-
-	/* Check that no buffers are still pinned before flushing */
+	/* Check that no buffers are still pinned before proceeding */
 	{
 		PoolLocalState *plocal = EnsurePoolAttached(pool);
 
@@ -862,9 +922,22 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	/* Flush all dirty buffers before tearing down the pool */
 	FlushBufferPoolDirtyBuffers(pool);
 
-	/* Mark inactive to prevent new access */
+	/*
+	 * Mark inactive with a memory barrier so the trickle writer (and any
+	 * other code checking bp_active) sees the pool is going away before we
+	 * clear bp_routine and other fields.  This prevents a race where the
+	 * trickle writer passes the bp_active check but then dereferences a
+	 * NULL bp_routine.
+	 */
 	pool->bp_active = false;
 	pg_write_barrier();
+
+	/* Terminate the trickle writer and wait for it to exit */
+	TerminatePoolTrickleWriter(pool);
+
+	/* Call algorithm shutdown if provided */
+	if (pool->bp_routine->shutdown && local->attached && local->strategy_data)
+		pool->bp_routine->shutdown(local->strategy_data);
 
 	/* Unpin and detach DSM segment */
 	dsm_unpin_segment(pool->bp_dsm_handle);
@@ -890,7 +963,13 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	pool->bp_routine = NULL;
 	pool->bp_oid = InvalidOid;
 
-	NBufferPools--;
+	/*
+	 * NBufferPools is a high-water mark, not a live count.  We do NOT
+	 * decrement it here because other backends (e.g. trickle writers) use
+	 * it as the upper bound when scanning BufferPoolDescs.  Decrementing
+	 * could cause them to miss active pools at higher slot indices.
+	 * Inactive slots are simply skipped via bp_active checks.
+	 */
 
 	/* Recompute MaxBufferNumber across remaining active pools */
 	{
@@ -922,6 +1001,7 @@ TrickleWriterMain(Datum main_arg)
 {
 	int			pool_slot = DatumGetInt32(main_arg);
 	BufferPoolDesc *pool;
+	const BufferPoolRoutine *routine;
 	PoolLocalState *local;
 	WritebackContext wb_context;
 
@@ -950,12 +1030,57 @@ TrickleWriterMain(Datum main_arg)
 	 */
 	CreateAuxProcessResourceOwner();
 
+	/*
+	 * Resolve the pool's algorithm routine in this process.
+	 *
+	 * For extension-provided handlers (bp_handler_library is set), we must
+	 * load the extension library in this process and call the handler to get
+	 * a valid local pointer.  The shared-memory bp_routine pointer was set by
+	 * the backend that created the pool and points into that backend's .so
+	 * mapping, which is not loaded in the trickle writer (forked from the
+	 * postmaster).
+	 *
+	 * For built-in algorithms (bp_handler_library is empty), bp_routine
+	 * points into the postgres binary text segment and is valid in all
+	 * processes, so we can use it directly.
+	 */
+	if (pool->bp_handler_library[0] != '\0' &&
+		pool->bp_handler_function[0] != '\0')
+	{
+		PGFunction	handler_fn;
+		Datum		result;
+		FunctionCallInfoBaseData fcinfo;
+
+		handler_fn = (PGFunction) load_external_function(
+			pool->bp_handler_library,
+			pool->bp_handler_function,
+			true, NULL);
+
+		if (handler_fn == NULL)
+		{
+			elog(LOG, "trickle writer: could not load handler for pool \"%s\"",
+				 NameStr(pool->bp_name));
+			proc_exit(1);
+		}
+
+		InitFunctionCallInfoData(fcinfo, NULL, 0, InvalidOid, NULL, NULL);
+		result = handler_fn(&fcinfo);
+		routine = (const BufferPoolRoutine *) DatumGetPointer(result);
+	}
+	else
+	{
+		routine = pool->bp_routine;
+	}
+
+	/* routine will be used by trickle_iter callbacks when available */
+	(void) routine;
+
 	/* Attach to the pool's DSM segment */
 	local = EnsurePoolAttached(pool);
 
 	elog(LOG, "trickle writer started for buffer pool \"%s\"", NameStr(pool->bp_name));
 
-	WritebackContextInit(&wb_context, &checkpoint_flush_after);
+	WritebackContextInit(&wb_context, &trickle_flush_after);
 
 	/*
 	 * Main loop: scan pool's buffers for dirty pages and write them out.
@@ -976,32 +1101,32 @@ TrickleWriterMain(Datum main_arg)
 		if (!pool->bp_active)
 			break;
 
-		/* Scan pool's buffer descriptors for dirty pages */
-		for (int i = 0; i < pool->bp_nbuffers; i++)
+		/* Linear scan of pool's buffer descriptors for dirty pages */
 		{
-			BufferDesc *bufHdr = &local->descriptors[i].bufferdesc;
-			uint64		buf_state;
+			int		batch_limit = trickle_write_batch_size;
 
-			buf_state = pg_atomic_read_u64(&bufHdr->state);
+			for (int i = 0; i < pool->bp_nbuffers; i++)
+			{
+				BufferDesc *bufHdr = &local->descriptors[i].bufferdesc;
+				uint64		buf_state;
 
-			/* Skip buffers that are not valid or not dirty */
-			if (!(buf_state & BM_VALID) || !(buf_state & BM_DIRTY))
-				continue;
+				buf_state = pg_atomic_read_u64(&bufHdr->state);
 
-			/* Skip buffers that are in use (pinned) */
-			if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
-				continue;
+				/* Skip buffers that are not valid or not dirty */
+				if (!(buf_state & BM_VALID) || !(buf_state & BM_DIRTY))
+					continue;
 
-			/*
-			 * Try to pin and write the buffer.  We use SyncOneBuffer which
-			 * works with any buffer ID thanks to GetBufferDescriptor.
-			 */
-			SyncOneBuffer(bufHdr->buf_id, true, &wb_context);
-			num_written++;
-			hibernate = false;
+				/* Skip buffers that are in use (pinned) */
+				if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
+					continue;
 
-			if (num_written >= 100)
-				break;		/* don't write too many at once */
+				SyncOneBuffer(bufHdr->buf_id, true, &wb_context);
+				num_written++;
+				hibernate = false;
+
+				if (num_written >= batch_limit)
+					break;
+			}
 		}
 
 		IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);

@@ -215,4 +215,8 @@ extern PGDLLIMPORT int buffer_pool_strategy;
 /* VACUUM hint dispatch for pools */
 extern void PoolHintVacuum(Oid pool_oid, bool vacuum_active);
 
+/* GUC variables for trickle writer tuning */
+extern PGDLLIMPORT int trickle_flush_after;
+extern PGDLLIMPORT int trickle_write_batch_size;
+
 #endif							/* BUFPOOL_H */

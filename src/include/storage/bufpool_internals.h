@@ -26,6 +26,7 @@
 #ifndef BUFPOOL_INTERNALS_H
 #define BUFPOOL_INTERNALS_H
 
+#include "pg_config_manual.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
 #include "storage/condition_variable.h"
@@ -89,7 +90,22 @@ typedef struct BufferPoolDesc
 	int			bp_nbuffers;	/* number of buffers in this pool */
 	int			bp_first_buf;	/* starting buffer ID (0 for default pool) */
 
-	/* Eviction algorithm (pointer to text segment, valid in all backends) */
+	/*
+	 * Eviction algorithm vtable.  bp_routine is a process-local pointer
+	 * that must be resolved by each backend separately.  For built-in
+	 * algorithms the pointer is into the postgres text segment and is valid
+	 * in all backends.  For extension-provided algorithms (contrib), each
+	 * backend must load the extension library and call the handler function
+	 * to obtain its own valid pointer.
+	 *
+	 * bp_handler_oid stores the handler function OID (InvalidOid for builtins).
+	 * bp_handler_library and bp_handler_function store the resolved library
+	 * and function names so that processes without catalog access (e.g. the
+	 * trickle writer) can load the extension and resolve bp_routine.
+	 */
+	Oid			bp_handler_oid;		/* handler function OID (InvalidOid for builtins) */
+	char		bp_handler_library[MAXPGPATH];	/* extension .so path */
+	char		bp_handler_function[NAMEDATALEN]; /* handler function name */
 	const struct BufferPoolRoutine *bp_routine;
 
 	/*
@@ -222,7 +238,8 @@ extern int	ComputePoolPartitions(int nbuffers, bool scan_only);
  */
 extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,
 											   int nbuffers,
-											   const struct BufferPoolRoutine *routine);
+											   const struct BufferPoolRoutine *routine,
+											   Oid handler_oid);
 extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
 extern void BufferPoolStartupInit(void);
 
