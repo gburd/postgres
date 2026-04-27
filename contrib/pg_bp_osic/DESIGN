@@ -1,0 +1,379 @@
+contrib/pg_bp_osic/DESIGN
+
+OSIC Design Notes
+=================
+
+This document describes the internal design of the OSIC (One-Stage Insert
+Clock) buffer replacement algorithm implemented in pg_bp_osic.c.  It is
+intended for engineers working on the code.
+
+
+A. Algorithm Theory
+-------------------
+
+Each buffer has a boolean "cool" flag stored as bit 0 of a pg_atomic_uint32.
+
+On a cache hit, the flag is cleared atomically:
+
+    pg_atomic_fetch_and_u32(&states[local_id].flags, ~OSIC_FLAG_COOL);
+
+This is the entire hot-path operation.  No spinlock.  No list manipulation.
+Just an atomic AND that is often a no-op (the flag is already clear).
+
+Eviction uses a two-stage clock sweep:
+
+    Stage 1: The buffer is hot (cool == 0).
+             Mark it cool with pg_atomic_fetch_or_u32.
+             Advance the clock hand.
+
+    Stage 2: The buffer is cool (cool == 1) AND has refcount == 0.
+             Evict it.
+
+A buffer must survive at least one full clock cycle before it can be
+evicted, which provides basic scan resistance: a single sequential scan
+cannot immediately flush the working set.
+
+An atomic "inflight" counter (pg_atomic_uint32 in OsicControl) tracks
+pages currently being loaded.  It is incremented in on_miss and
+decremented in on_new_tag.  This prevents the eviction loop from
+releasing more buffers than necessary.
+
+The algorithm is inspired by the LeanStore buffer manager (Leis et al.,
+ICDE 2018).
+
+
+B. Partitioned Clock
+--------------------
+
+The buffer range is divided into OSIC_MAX_PARTITIONS (16) partitions.
+Each partition has:
+
+    - Its own spinlock (slock_t lock)
+    - Its own clock_hand (int, wraps within partition range)
+    - Its own buffer range (first_buf, nbuffers)
+
+The number of partitions scales with pool size:
+
+    < 256 buffers:    1 partition
+    256 - 1023:       2 partitions
+    1024 - 4095:      4 partitions
+    4096 - 16383:     8 partitions
+    >= 16384:        16 partitions
+
+Backends choose a starting partition via:
+
+    start_part = ((unsigned int) MyProcNumber) % npartitions;
+
+This distributes backends across partitions so that different backends
+can sweep different partitions concurrently.  The cast to unsigned
+handles INVALID_PROC_NUMBER (-1).
+
+The partition spinlock is held only during clock sweep (OsicGetVictim).
+It is never held during on_hit, on_miss, or on_new_tag.
+
+
+C. Cache Line Padding (False Sharing Fix)
+------------------------------------------
+
+OsicBufState is defined as:
+
+    typedef struct OsicBufState
+    {
+        pg_atomic_uint32 flags;     /* bit 0 = cool */
+        char pad[PG_CACHE_LINE_SIZE - sizeof(pg_atomic_uint32)];
+    } OsicBufState;
+
+PG_CACHE_LINE_SIZE is 128 bytes on most platforms (defined in
+pg_config_manual.h).
+
+Without padding, sizeof(pg_atomic_uint32) is 4 bytes, so 32 OsicBufState
+entries would fit in a single 128-byte cache line.  On every on_hit call,
+pg_atomic_fetch_and_u32 would invalidate the cache line for all 31
+neighboring buffers.  On a system with 64 cores hitting different buffers,
+this causes severe false sharing.
+
+With padding, each buffer's flags occupy a full cache line.  An on_hit
+call only invalidates its own cache line, eliminating false sharing
+entirely.
+
+Memory cost:
+
+    4096 buffers (32 MB pool):     4096 * 128 = 512 KB
+    131072 buffers (1 GB pool):    131072 * 128 = 16 MB
+
+This is an acceptable tradeoff for many-core systems where the false
+sharing penalty would otherwise dominate CPU time on the hit path.
+
+
+D. Per-Partition Statistics
+---------------------------
+
+Each OsicPartition has four atomic stat counters:
+
+    pg_atomic_uint64 stat_hits;
+    pg_atomic_uint64 stat_misses;
+    pg_atomic_uint64 stat_evictions;
+    pg_atomic_uint64 stat_cooling_sweeps;
+
+Having per-partition counters eliminates cross-partition atomic cache-line
+bouncing on stat updates.  If all partitions shared a single set of stat
+counters, every on_hit across all cores would bounce the same cache line.
+
+Per-backend local stats are maintained in:
+
+    static uint64 osic_local_stats[OSIC_MAX_PARTITIONS][OSIC_NUM_STATS];
+
+The PoolStatIncrement function increments the local counter and flushes
+to the shared atomic counter when the local count reaches 256 (the
+POOL_STAT_FLUSH_THRESHOLD).  This reduces atomic operations on the shared
+counters by a factor of 256.
+
+The pg_stat_osic view aggregates across all partitions by summing each
+partition's counters.
+
+Limitation: on_miss stats are always attributed to partition 0 because
+there is no buffer ID available at miss time to determine which partition
+the page will eventually land in.
+
+
+E. Victim Selection (OsicGetVictim)
+------------------------------------
+
+The victim selection proceeds in two passes:
+
+Pass 1: Free buffer scan
+.........................
+
+Scan all partitions (round-robin from start_part) looking for buffers
+where BM_TAG_VALID is false (i.e., the buffer has never been used or was
+previously freed).  No clock sweep is performed, no buffers are cooled.
+This prevents unnecessary cooling of working set pages when free buffers
+exist scattered among tagged pages.
+
+For each candidate: check refcount == 0, then CAS to pin the buffer.
+
+Pass 2: Clock sweep (cool-and-evict)
+.....................................
+
+Only reached when Pass 1 finds no free buffers.
+
+Outer loop: up to 3 * npartitions attempts across all partitions,
+round-robin from start_part.
+
+For each partition: acquire the partition spinlock, then sweep up to
+2 * nbuffers entries (one cycle to cool everything, one cycle to evict).
+
+Within each sweep step:
+
+    1. Check BM_TAG_VALID == false: if free, try to pin and return.
+    2. Check refcount != 0: if pinned, skip.
+    3. Read the cool flag:
+       - If hot (cool == 0): set the cool flag with pg_atomic_fetch_or_u32.
+         Increment stat_cooling_sweeps.  Continue.
+       - If cool (cool == 1): try to CAS-pin the buffer.  If successful,
+         increment stat_evictions and return.
+
+Release the partition spinlock after the inner sweep completes (whether
+or not a victim was found in this partition).
+
+If no victim is found after all attempts, raise an ERROR.
+
+
+F. Implementation Details
+-------------------------
+
+Memory layout in DSM:
+
+    +-------------------------------+
+    | OsicControl (header)          |  MAXALIGN'd
+    +-------------------------------+
+    | OsicPartition[0..npartitions] |  MAXALIGN'd
+    +-------------------------------+
+    | OsicBufState[0..nbuffers]     |  MAXALIGN'd
+    +-------------------------------+
+
+Access macros:
+
+    OSIC_PARTITIONS(ctl)  -- pointer to first OsicPartition
+    OSIC_BUFSTATES(ctl)   -- pointer to first OsicBufState
+
+OsicControl fields:
+
+    nbuffers        -- total buffers in this pool
+    first_buf_id    -- global buffer ID of the first buffer in this pool
+    npartitions     -- number of clock partitions (1..16)
+    inflight        -- pg_atomic_uint32, pages currently being loaded
+
+OsicPartition fields:
+
+    lock            -- slock_t, protects clock_hand during sweep
+    clock_hand      -- int, current sweep position within partition range
+    first_buf       -- int, first local buffer index in this partition
+    nbuffers        -- int, number of buffers in this partition
+    stat_hits       -- pg_atomic_uint64
+    stat_misses     -- pg_atomic_uint64
+    stat_evictions  -- pg_atomic_uint64
+    stat_cooling_sweeps -- pg_atomic_uint64
+
+OsicBufState fields:
+
+    flags           -- pg_atomic_uint32, bit 0 = cool flag
+    pad             -- char[PG_CACHE_LINE_SIZE - sizeof(pg_atomic_uint32)]
+
+osic_partition_for_buf(ctl, local_id):
+
+    Linear scan of partitions to find the one whose range contains the
+    given local buffer ID.  With at most 16 partitions this scan is
+    trivially fast.  It could be replaced with arithmetic if partitions
+    are guaranteed to be equal-sized, but the current scheme distributes
+    remainder buffers to early partitions (n = bufs_per_part + (i <
+    remaining ? 1 : 0)), so partition sizes may differ by one.
+
+
+G. Concurrency Model
+---------------------
+
+    on_hit:      LOCK-FREE
+                 pg_atomic_fetch_and_u32 on the cool flag.
+                 PoolStatIncrement on per-partition local stats.
+                 This is the key advantage of OSIC.
+
+    on_miss:     Lock-free.
+                 pg_atomic_fetch_add_u32 on inflight counter.
+                 PoolStatIncrement on partition 0 stats.
+
+    on_new_tag:  Lock-free.
+                 pg_atomic_write_u32 to reset cool flag.
+                 pg_atomic_fetch_sub_u32 to decrement inflight.
+
+    on_evict:    No-op.  Nothing to clean up.
+
+    get_victim:  Partition spinlock during clock sweep only.
+                 Different backends can sweep different partitions
+                 concurrently.  Pass 1 (free buffer scan) is lock-free.
+
+This is the most scalable algorithm among the buffer pool options for
+many-core systems with high hit rates, because the dominant operation
+(on_hit) never contends on a shared lock or counter.
+
+
+H. Comparison with Other Algorithms
+-------------------------------------
+
+vs Clock (PostgreSQL default):
+
+    OSIC adds partitioning and the dedicated cool flag, but loses the
+    usage_count gradient (0-5) that the default clock sweep provides.
+    A page that has been accessed 5 times has usage_count=5 in the default
+    and must survive 5 sweep cycles; in OSIC it has cool=0 and must
+    survive only 1 cycle.  The default clock thus gives more protection to
+    frequently accessed pages.
+
+vs ARC/CAR:
+
+    OSIC has no ghost lists, no adaptation, and no frequency tracking
+    beyond the binary cool/hot state.  It cannot detect workload phase
+    changes or dynamically rebalance recency vs. frequency.  However,
+    the lock-free hit path is significantly faster on many-core systems.
+
+vs LRU:
+
+    OSIC has clock-based scan resistance: a cool page survives one sweep
+    cycle before eviction.  Pure LRU has no such resistance; a single
+    sequential scan can flush the entire cache.
+
+Sweet spot:
+
+    Workloads where the hit rate is high (> 95%) and contention on the
+    eviction spinlock is the bottleneck.  In these workloads, the cost
+    of on_hit dominates total CPU time, and OSIC's lock-free hit path
+    provides the largest benefit.
+
+
+I. Memory Overhead
+------------------
+
+Per buffer:
+
+    OsicBufState: PG_CACHE_LINE_SIZE bytes (128 bytes typically).
+    Most of this is padding.
+
+Per partition:
+
+    OsicPartition: approximately 96 bytes (spinlock + clock_hand + range
+    fields + 4 atomic stat counters).
+
+Per pool:
+
+    OsicControl: approximately 16 bytes (nbuffers + first_buf_id +
+    npartitions + inflight counter).
+
+No CDB entries, no ghost hash table, no buf_to_cdb mapping.
+
+Total per buffer: approximately 128 bytes.  This is comparable to ARC
+if you count its CDB overhead, but the padding dominates in OSIC.  The
+tradeoff is memory for throughput: the padding eliminates false sharing
+that would otherwise limit scalability.
+
+
+J. References
+-------------
+
+V. Leis et al., "LeanStore: In-Memory Data Management Beyond Main
+Memory", Proceedings of IEEE ICDE 2018.
+https://db.in.tum.de/~leis/papers/leanstore.pdf
+
+F. J. Corbato, "A Paging Experiment with the Multics System",
+MIT Project MAC, 1968.  (General clock algorithm reference.)
+
+
+K. Known Limitations
+--------------------
+
+1. No adaptation.  No ghost lists, no frequency tracking beyond the
+   binary cool/hot flag.  Cannot detect or respond to workload phase
+   changes.
+
+2. No VACUUM integration.  hint_vacuum is NULL.  VACUUM-loaded pages
+   enter the cache as "hot" and must survive a full clock cycle before
+   eviction.
+
+3. No prefetch integration.  prefetch_hint is NULL.  No pre-cooling or
+   pre-warming of pages that are about to be accessed.
+
+4. Binary cool/hot is coarser than PostgreSQL's usage_count (0-5) or
+   ARC's explicit list ordering.  Frequently accessed pages get the same
+   protection as pages accessed only once.
+
+5. on_miss stat attribution to partition 0 is imprecise.  At miss time
+   the buffer ID is not yet known, so the miss cannot be attributed to
+   the correct partition.  This is a minor reporting issue.
+
+6. osic_partition_for_buf() uses a linear scan of partitions.  This
+   could be replaced with arithmetic (local_id / bufs_per_part) if
+   partitions were guaranteed to be equal-sized.  With at most 16
+   partitions the linear scan is negligible, but the arithmetic
+   approach would be cleaner.
+
+
+L. Future Work
+--------------
+
+1. Multi-bit cool counter.  Replace the single cool flag with a 2-bit
+   or 3-bit usage counter (similar to PostgreSQL's usage_count) for
+   finer eviction granularity.  This would give frequently accessed
+   pages more protection while keeping the lock-free atomic hit path.
+
+2. VACUUM hint.  Implement hint_vacuum to set the cool flag immediately
+   on VACUUM-loaded pages, making them the first eviction candidates
+   after a single clock sweep.  This would prevent VACUUM from polluting
+   the cache.
+
+3. Prefetch hint.  Implement prefetch_hint to pre-cool pages that are
+   about to be replaced.  When the buffer manager signals an upcoming
+   load, the target buffer's cool flag could be set proactively, reducing
+   eviction latency.
+
+4. Arithmetic partition lookup.  If partition sizes are made exactly
+   equal (with a possible small unused remainder), osic_partition_for_buf
+   could use division instead of a linear scan.
