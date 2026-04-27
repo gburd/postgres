@@ -12,6 +12,7 @@ backend_sources += files(
   'slog.c',
   'undo.c',
   'undo_bufmgr.c',
+  'undo_flush.c',
   'undo_xlog.c',
   'undoapply.c',
   'undoinsert.c',

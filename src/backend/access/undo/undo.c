@@ -28,6 +28,7 @@
 #include "access/logical_revert_worker.h"
 #include "access/relundo_worker.h"
 #include "access/undo.h"
+#include "access/undo_flush.h"
 #include "access/undolog.h"
 #include "access/undormgr.h"
 #include "access/undoworker.h"
@@ -87,6 +88,7 @@ UndoShmemSize(void)
 	size = add_size(size, LogicalRevertShmemSize());
 	size = add_size(size, ATMShmemSize());
 	size = add_size(size, SLogShmemSize());
+	size = add_size(size, UndoFlushShmemSize());
 
 	return size;
 }
@@ -104,6 +106,27 @@ static void
 UndoShmemRequest_internal(void *arg)
 {
 	SLogShmemRequest();
+
+	/*
+	 * Register the UNDO flush writer background worker.  This must happen
+	 * during the request_fn phase (before BackgroundWorkerShmemInit runs
+	 * in the init_fn phase), because RegisterBackgroundWorker() cannot be
+	 * called after BackgroundWorkerShmemInit().
+	 *
+	 * Use a static flag to ensure we only register once.  The request_fn
+	 * callback is called again during postmaster reinitialize (after a
+	 * child crash), and RegisterBackgroundWorker() would fail if called
+	 * after the first shmem init.
+	 */
+	{
+		static bool flush_writer_registered = false;
+
+		if (enable_undo && !flush_writer_registered)
+		{
+			UndoFlushWriterRegister();
+			flush_writer_registered = true;
+		}
+	}
 }
 
 /*
@@ -141,6 +164,7 @@ UndoShmemInit(void)
 	LogicalRevertShmemInit();
 	ATMShmemInit();
 	SLogShmemInit();
+	UndoFlushShmemInit();
 
 	/*
 	 * Initialize the UNDO resource manager dispatch table.

@@ -24,6 +24,7 @@ OBJS = \
 	slog.o \
 	undo.o \
 	undo_bufmgr.o \
+	undo_flush.o \
 	undo_xlog.o \
 	undoapply.o \
 	undoinsert.o \

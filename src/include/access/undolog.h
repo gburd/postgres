@@ -121,6 +121,10 @@ extern void ExtendUndoLogFile(uint32 log_number, uint64 new_size);
 extern void UndoLogSync(void);
 extern void UndoLogCloseFiles(void);
 
+/* Per-backend max write pointer for UNDO flush daemon */
+extern UndoRecPtr UndoFlushGetMaxWritePtr(void);
+extern void UndoFlushResetMaxWritePtr(void);
+
 /* Checkpoint support */
 extern void CheckPointUndoLog(void);
 

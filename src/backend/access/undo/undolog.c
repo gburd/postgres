@@ -78,6 +78,13 @@ static UndoLogFdCacheEntry undo_fd_cache[MAX_UNDO_LOGS];
 static bool undo_fd_cache_initialized = false;
 
 /*
+ * Per-backend tracking of the highest UndoRecPtr written during the
+ * current transaction.  Used by the UNDO flush daemon to know what
+ * needs to be synced at commit time.
+ */
+static UndoRecPtr undo_max_write_ptr = InvalidUndoRecPtr;
+
+/*
  * InitUndoFdCache
  *		Lazily initialize the per-backend fd cache.
  */
@@ -333,7 +340,7 @@ GetCachedUndoLogFdEntry(uint32 log_number, int flags)
 		free_slot = 0;
 		if (undo_fd_cache[free_slot].needs_fsync)
 		{
-			(void) pg_fsync(undo_fd_cache[free_slot].fd);
+			(void) pg_fdatasync(undo_fd_cache[free_slot].fd);
 			undo_fd_cache[free_slot].needs_fsync = false;
 		}
 		close(undo_fd_cache[free_slot].fd);
@@ -519,6 +526,14 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 
 	/* Mark the cache entry dirty so UndoLogSync() knows to fsync it */
 	entry->needs_fsync = true;
+
+	/* Track highest written pointer for the UNDO flush daemon */
+	{
+		UndoRecPtr	end_ptr = MakeUndoRecPtr(log_number, offset + size);
+
+		if (end_ptr > undo_max_write_ptr)
+			undo_max_write_ptr = end_ptr;
+	}
 }
 
 /*
@@ -713,10 +728,10 @@ UndoLogSync(void)
 	{
 		if (undo_fd_cache[i].fd >= 0 && undo_fd_cache[i].needs_fsync)
 		{
-			if (pg_fsync(undo_fd_cache[i].fd) < 0)
+			if (pg_fdatasync(undo_fd_cache[i].fd) < 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not fsync UNDO log %u: %m",
+						 errmsg("could not fdatasync UNDO log %u: %m",
 								undo_fd_cache[i].log_number)));
 
 			undo_fd_cache[i].needs_fsync = false;
@@ -751,6 +766,28 @@ UndoLogCloseFiles(void)
 			undo_fd_cache[i].needs_fsync = false;
 		}
 	}
+}
+
+/*
+ * UndoFlushGetMaxWritePtr
+ *		Return this backend's highest written UndoRecPtr.
+ *
+ * Used by the commit path to tell the UNDO flush daemon what needs syncing.
+ */
+UndoRecPtr
+UndoFlushGetMaxWritePtr(void)
+{
+	return undo_max_write_ptr;
+}
+
+/*
+ * UndoFlushResetMaxWritePtr
+ *		Reset this backend's max write pointer at transaction end.
+ */
+void
+UndoFlushResetMaxWritePtr(void)
+{
+	undo_max_write_ptr = InvalidUndoRecPtr;
 }
 
 /*
