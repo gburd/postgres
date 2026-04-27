@@ -88,6 +88,9 @@ static pg_atomic_uint32 *BufferPoolStartupFlag = NULL;
 int			trickle_flush_after = DEFAULT_TRICKLE_FLUSH_AFTER;
 int			trickle_write_batch_size = 128;
 
+/* GUC variable for RECYCLE pool sizing (0 = disabled) */
+int			recycle_pool_buffers = 0;
+
 static void BufferPoolShmemRequest(void *arg);
 static void BufferPoolShmemInit(void *arg);
 
@@ -420,7 +423,23 @@ BufferPoolStartupInit(void)
 		return;
 	}
 
-	/* We won the CAS; scan pg_bufferpool and recreate dynamic pools */
+	/*
+	 * Create the RECYCLE pool if configured.  This is a well-known system
+	 * pool (not catalog-backed) that replaces per-backend ring buffers with
+	 * a shared pool for bulk reads, bulk writes, and VACUUM operations.
+	 */
+	if (recycle_pool_buffers > 0 && GetBufferPoolByName("recycle") == NULL)
+	{
+		BufferPoolDesc *recycle_pool;
+
+		recycle_pool = CreateDynamicBufferPool(InvalidOid, "recycle",
+											  recycle_pool_buffers,
+											  &recycle_pool_routine);
+		recycle_pool->bp_kind = BUFPOOL_RECYCLE;
+		elog(LOG, "created RECYCLE pool with %d buffers", recycle_pool_buffers);
+	}
+
+	/* Scan pg_bufferpool and recreate dynamic pools */
 	rel = table_open(BufferPoolRelationId, AccessShareLock);
 	scan = table_beginscan_catalog(rel, 0, NULL);
 
@@ -1169,9 +1188,6 @@ TrickleWriterMain(Datum main_arg)
 		routine = pool->bp_routine;
 	}
 
-	/* routine will be used by trickle_iter callbacks when available */
-	(void) routine;
-
 	/* Attach to the pool's DSM segment */
 	local = EnsurePoolAttached(pool);
 
@@ -1198,8 +1214,43 @@ TrickleWriterMain(Datum main_arg)
 		if (!pool->bp_active)
 			break;
 
-		/* Linear scan of pool's buffer descriptors for dirty pages */
+		/*
+		 * Use the algorithm's trickle iterator if available.  This lets the
+		 * replacement algorithm direct us to the best flush candidates
+		 * (e.g., LRU tail for ARC, cold pages for CAR, HIR entries for LIRS)
+		 * rather than doing a blind linear scan.
+		 *
+		 * Note: we use the local 'routine' pointer resolved at startup,
+		 * not pool->bp_routine from shared memory, since the latter may
+		 * point to an extension .so address valid only in the creating
+		 * backend's address space.
+		 */
+		if (routine->trickle_iter_begin != NULL)
 		{
+			void   *iter;
+			int		buf_id;
+			int		batch_limit = trickle_write_batch_size;
+
+			iter = routine->trickle_iter_begin(
+				local->strategy_data, batch_limit);
+
+			while ((buf_id = routine->trickle_iter_next(
+						local->strategy_data, iter)) >= 0)
+			{
+				SyncOneBuffer(buf_id, true, &wb_context);
+				num_written++;
+				hibernate = false;
+
+				if (num_written >= batch_limit)
+					break;
+			}
+
+			routine->trickle_iter_end(
+				local->strategy_data, iter);
+		}
+		else
+		{
+			/* Fallback: linear scan of pool's buffer descriptors */
 			int		batch_limit = trickle_write_batch_size;
 
 			for (int i = 0; i < pool->bp_nbuffers; i++)
@@ -1319,7 +1370,7 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &handle))
 	{
-		elog(WARNING, "could not register trickle writer for buffer pool \"%s\"",
+		elog(LOG, "could not register trickle writer for buffer pool \"%s\"",
 			 NameStr(pool->bp_name));
 		return;
 	}

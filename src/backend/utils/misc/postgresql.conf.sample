@@ -134,6 +134,8 @@
 # - Memory -
 
 #shared_buffers = 128MB                 # min 128kB
+#recycle_pool_buffers = 0               # 0 disables; replaces ring buffers
+                                        # (change requires restart)
                                         # (change requires restart)
 #huge_pages = try                       # on, off, or try
                                         # (change requires restart)
