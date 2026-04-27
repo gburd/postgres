@@ -69,6 +69,9 @@ static int	LocalMaxBufferNumber = 0;
 int		   *SharedNBufferPools = &LocalNBufferPools;
 int		   *SharedMaxBufferNumber = &LocalMaxBufferNumber;
 
+/* Global count of unclaimed buffer slots available for pool expansion */
+pg_atomic_uint32 *UnclaimedBufferCount = NULL;
+
 /*
  * Per-backend local state for each pool slot.  Lazily populated by
  * EnsurePoolAttached() when a backend first accesses a dynamic pool.
@@ -148,6 +151,11 @@ BufferPoolShmemRequest(void *arg)
 					   .alignment = sizeof(int),
 					   .ptr = (void **) &SharedMaxBufferNumber,
 		);
+	ShmemRequestStruct(.name = "Buffer Pool Unclaimed Count",
+					   .size = sizeof(pg_atomic_uint32),
+					   .alignment = sizeof(pg_atomic_uint32),
+					   .ptr = (void **) &UnclaimedBufferCount,
+		);
 }
 
 /*
@@ -191,7 +199,13 @@ BufferPoolShmemInit(void *arg)
 
 	defpool->bp_dsm_handle = InvalidDsmHandle;
 	defpool->bp_trickle_slot = -1;
+	defpool->bp_use_direct_io = false;
 	defpool->bp_active = true;
+
+	/* Oversubscription: default pool owns all of shared_buffers */
+	defpool->bp_target_buffers = NBuffers;
+	defpool->bp_current_buffers = NBuffers;
+	defpool->bp_oversubscribed = false;
 
 	pg_atomic_init_u64(&defpool->bp_reads, 0);
 	pg_atomic_init_u64(&defpool->bp_hits, 0);
@@ -199,6 +213,9 @@ BufferPoolShmemInit(void *arg)
 
 	NBufferPools = 1;
 	MaxBufferNumber = NBuffers;
+
+	/* No unclaimed buffers at startup -- default pool owns everything */
+	pg_atomic_init_u32(UnclaimedBufferCount, 0);
 
 	/* Initialize per-backend local state array */
 	MemSet(PoolLocalStates, 0, sizeof(PoolLocalStates));
@@ -849,6 +866,12 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	namestrcpy(&pool->bp_name, name);
 	pool->bp_dsm_handle = dsm_segment_handle(seg);
 	pool->bp_trickle_slot = -1;
+	pool->bp_use_direct_io = false;
+
+	/* Oversubscription tracking: target = configured, current = actual */
+	pool->bp_target_buffers = nbuffers;
+	pool->bp_current_buffers = nbuffers;
+	pool->bp_oversubscribed = false;
 
 	pg_atomic_init_u64(&pool->bp_reads, 0);
 	pg_atomic_init_u64(&pool->bp_hits, 0);
@@ -1222,6 +1245,60 @@ TrickleWriterMain(Datum main_arg)
 
 		IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
 
+		/*
+		 * Oversubscription nudging: if this pool's current buffer count
+		 * exceeds its target, try to evict excess buffers and return them to
+		 * the unclaimed pool.  We evict up to 10% of the excess per cycle to
+		 * avoid bursts.
+		 */
+		if (pool->bp_oversubscribed)
+		{
+			int			excess = pool->bp_current_buffers - pool->bp_target_buffers;
+
+			if (excess > 0)
+			{
+				int			evict_per_cycle = Max(1, excess / 10);
+				int			evicted = 0;
+
+				for (int i = pool->bp_nbuffers - 1;
+					 i >= 0 && evicted < evict_per_cycle;
+					 i--)
+				{
+					BufferDesc *bufHdr = &local->descriptors[i].bufferdesc;
+					uint64		state = pg_atomic_read_u64(&bufHdr->state);
+
+					/* Skip pinned or locked buffers */
+					if (BUF_STATE_GET_REFCOUNT(state) > 0 ||
+						(state & BM_LOCKED))
+						continue;
+
+					/* Write out dirty buffers first */
+					if ((state & BM_VALID) && (state & BM_DIRTY))
+					{
+						SyncOneBuffer(bufHdr->buf_id, true, &wb_context);
+						hibernate = false;
+					}
+
+					evicted++;
+				}
+
+				IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
+
+				/*
+				 * Adjust current count by the number we attempted to release.
+				 * In practice, some may still be pinned, so this is a
+				 * best-effort approach.
+				 */
+				pool->bp_current_buffers -= evicted;
+				pg_atomic_fetch_add_u32(UnclaimedBufferCount, evicted);
+
+				if (pool->bp_current_buffers <= pool->bp_target_buffers)
+					pool->bp_oversubscribed = false;
+			}
+			else
+				pool->bp_oversubscribed = false;
+		}
+
 		/* Sleep longer if no work was done */
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
@@ -1499,9 +1576,10 @@ RebuildPoolPartitions(void)
  * pg_stat_get_bufferpool -- return per-pool statistics as a SRF.
  *
  * Returns one row per active buffer pool with columns:
- *   name, oid, nbuffers, reads, hits, evictions
+ *   name, oid, nbuffers, target_buffers, current_buffers,
+ *   oversubscribed, reads, hits, evictions
  */
-#define PG_STAT_GET_BUFFERPOOL_COLS 6
+#define PG_STAT_GET_BUFFERPOOL_COLS 9
 
 PG_FUNCTION_INFO_V1(pg_stat_get_bufferpool);
 
@@ -1529,9 +1607,12 @@ pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 			nulls[1] = true;
 
 		values[2] = Int32GetDatum(pool->bp_nbuffers);
-		values[3] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_reads));
-		values[4] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_hits));
-		values[5] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_evictions));
+		values[3] = Int32GetDatum(pool->bp_target_buffers);
+		values[4] = Int32GetDatum(pool->bp_current_buffers);
+		values[5] = BoolGetDatum(pool->bp_oversubscribed);
+		values[6] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_reads));
+		values[7] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_hits));
+		values[8] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_evictions));
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
 							 values, nulls);

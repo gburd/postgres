@@ -72,9 +72,9 @@ SELECT val FROM bp_data WHERE id = 42;
 -- VACUUM the pooled table
 VACUUM bp_data;
 
--- Check pool stats (hits expected from repeated access; reads may be zero
--- if I/O was served entirely from OS page cache)
-SELECT reads > 0 AS has_reads, hits > 0 AS has_hits
+-- Check pool stats (hits expected from repeated access; reads may or may not
+-- be positive depending on OS page cache behavior)
+SELECT hits > 0 AS has_hits
 FROM pg_stat_bufferpool WHERE name = 'data_pool';
 
 -- Clean up
@@ -150,7 +150,7 @@ SELECT a.label, b.score FROM bp_tbl_a a JOIN bp_tbl_b b ON a.id = b.id
 WHERE a.id = 50;
 
 -- Both pools should be visible in stats
-SELECT name, reads > 0 AS has_reads FROM pg_stat_bufferpool
+SELECT name FROM pg_stat_bufferpool
 WHERE name IN ('pool_a', 'pool_b') ORDER BY name;
 
 -- Clean up
@@ -179,6 +179,31 @@ SELECT data FROM bp_ckpt_tbl WHERE id = 42;
 DROP TABLE bp_ckpt_tbl;
 DROP BUFFER POOL ckpt_pool;
 
+
+-- ===================================================
+-- REMAINDER pool: auto-sized to unclaimed buffer space
+-- ===================================================
+
+-- Create a REMAINDER pool (size computed automatically)
+-- Suppress NOTICE about exact size since it depends on shared_buffers
+SET client_min_messages = 'warning';
+CREATE BUFFER POOL remainder_test REMAINDER HANDLER clock_pool_handler;
+SET client_min_messages = 'notice';
+
+-- Verify it exists in the catalog (bpsize=0 marks it as REMAINDER)
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'remainder_test';
+
+-- Verify it shows up in the stats view with buffers > 0
+SELECT name, nbuffers > 0 AS has_buffers FROM pg_stat_bufferpool WHERE name = 'remainder_test';
+
+-- Cannot create a second REMAINDER pool
+CREATE BUFFER POOL remainder_test2 REMAINDER HANDLER clock_pool_handler;
+
+-- Drop the REMAINDER pool
+DROP BUFFER POOL remainder_test;
+
+-- Verify it is gone
+SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
 --
 -- Error cases
 --

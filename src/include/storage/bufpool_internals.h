@@ -45,6 +45,26 @@ struct BufferPoolRoutine;
 #define MAX_BUFFER_POOLS 64
 
 /*
+ * BufferPoolKind -- classification of buffer pool instances.
+ *
+ * BUFPOOL_DEFAULT: the main shared_buffers pool (slot 0).  Its replacement
+ *   algorithm is configurable via the buffer_pool_algorithm GUC.
+ *
+ * BUFPOOL_RECYCLE: a shared pool for scan/VACUUM/bulk-write recycling that
+ *   replaces the legacy per-backend ring buffers (slot 1).
+ *
+ * BUFPOOL_USER: user-created pools via CREATE BUFFER POOL DDL.
+ *
+ * The REMAINDER pool is process-local only and does not need a kind here.
+ */
+typedef enum BufferPoolKind
+{
+	BUFPOOL_DEFAULT,			/* main shared_buffers pool */
+	BUFPOOL_RECYCLE,			/* scan/VACUUM recycling pool */
+	BUFPOOL_USER,				/* user-created dynamic pools */
+} BufferPoolKind;
+
+/*
  * PoolBufHashEntry -- open-addressed hash table entry for dynamic pools.
  *
  * Dynamic pool hash tables live entirely in DSM memory as a flat array
@@ -87,6 +107,7 @@ typedef struct BufferPoolDesc
 {
 	Oid			bp_oid;			/* OID from pg_bufferpool (0 for default) */
 	NameData	bp_name;		/* pool name */
+	BufferPoolKind bp_kind;		/* DEFAULT, RECYCLE, or USER */
 	int			bp_nbuffers;	/* number of buffers in this pool */
 	int			bp_first_buf;	/* starting buffer ID (0 for default pool) */
 
@@ -149,6 +170,17 @@ typedef struct BufferPoolDesc
 	 * future per-pool control.
 	 */
 	bool		bp_use_direct_io;
+
+	/*
+	 * Oversubscription support.  bp_target_buffers is the configured target
+	 * size; bp_current_buffers is the actual count (may exceed target when
+	 * unclaimed buffers were available).  The trickle writer nudges an
+	 * oversubscribed pool back to its target over time by evicting excess
+	 * buffers and returning them to the unclaimed pool.
+	 */
+	int			bp_target_buffers;	/* configured target buffer count */
+	int			bp_current_buffers; /* actual allocated buffers */
+	bool		bp_oversubscribed;	/* current > target */
 
 	/* Statistics (atomics for concurrent reads without lock) */
 	pg_atomic_uint64 bp_reads;
@@ -232,6 +264,7 @@ PoolStatFlush(uint64 *local_counter, pg_atomic_uint64 *shared_counter)
  * dynamic pools are created or destroyed.
  */
 extern PGDLLIMPORT BufferPoolDesc *BufferPoolDescs;
+extern PGDLLIMPORT pg_atomic_uint32 *UnclaimedBufferCount;
 extern int *SharedNBufferPools;
 #ifndef NBufferPools
 #define NBufferPools (*SharedNBufferPools)
@@ -346,7 +379,7 @@ typedef struct PoolHashPartition
  * PoolHashPartitions -- collection of weighted hash partitions.
  *
  * Backend-local structure rebuilt when pools are created or destroyed.
- * Currently advisory — actual routing uses relation-level rd_bufpool
+ * Currently advisory -- actual routing uses relation-level rd_bufpool
  * assignment.  Future: lock partition dispatch within large pools.
  */
 typedef struct PoolHashPartitions

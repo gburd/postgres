@@ -1882,10 +1882,13 @@ pg_stat_bgwriter| SELECT pg_stat_get_bgwriter_buf_written_clean() AS buffers_cle
 pg_stat_bufferpool| SELECT name,
     oid,
     nbuffers,
+    target_buffers,
+    current_buffers,
+    oversubscribed,
     reads,
     hits,
     evictions
-   FROM pg_stat_get_bufferpool() s(name, oid, nbuffers, reads, hits, evictions);
+   FROM pg_stat_get_bufferpool() s(name, oid, nbuffers, target_buffers, current_buffers, oversubscribed, reads, hits, evictions);
 pg_stat_checkpointer| SELECT pg_stat_get_checkpointer_num_timed() AS num_timed,
     pg_stat_get_checkpointer_num_requested() AS num_requested,
     pg_stat_get_checkpointer_num_performed() AS num_done,

@@ -810,7 +810,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	QUOTE QUOTES
 
 	RANGE READ REAL REASSIGN RECURSIVE REF_P REFERENCES REFERENCING
-	REFRESH REINDEX RELATIONSHIP RELATIVE_P RELEASE RENAME REPACK REPEATABLE REPLACE REPLICA
+	REFRESH REINDEX RELATIONSHIP REMAINDER RELATIVE_P RELEASE RENAME REPACK REPEATABLE REPLACE REPLICA
 	RESET RESPECT_P RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
@@ -6189,6 +6189,7 @@ am_type:
  *		QUERY:
  *			CREATE BUFFER POOL name HANDLER handler_name SIZE 'size'
  *				[ WITH ( options ) ]
+ *			CREATE BUFFER POOL name REMAINDER HANDLER handler_name
  *
  *			ALTER BUFFER POOL name SET SIZE 'size'
  *			ALTER BUFFER POOL name SET ( options )
@@ -6206,6 +6207,7 @@ CreateBufferPoolStmt:
 					n->handler_name = $6;
 					n->size = $8;
 					n->options = NIL;
+					n->is_remainder = false;
 					$$ = (Node *) n;
 				}
 			| CREATE BUFFER POOL name HANDLER handler_name SIZE Sconst WITH '(' generic_option_list ')'
@@ -6216,6 +6218,18 @@ CreateBufferPoolStmt:
 					n->handler_name = $6;
 					n->size = $8;
 					n->options = $11;
+					n->is_remainder = false;
+					$$ = (Node *) n;
+				}
+			| CREATE BUFFER POOL name REMAINDER HANDLER handler_name
+				{
+					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
+
+					n->poolname = $4;
+					n->handler_name = $7;
+					n->size = NULL;
+					n->options = NIL;
+					n->is_remainder = true;
 					$$ = (Node *) n;
 				}
 		;
@@ -19136,6 +19150,7 @@ unreserved_keyword:
 			| RELATIONSHIP
 			| RELATIVE_P
 			| RELEASE
+			| REMAINDER
 			| RENAME
 			| REPACK
 			| REPEATABLE
@@ -19788,6 +19803,7 @@ bare_label_keyword:
 			| RELATIONSHIP
 			| RELATIVE_P
 			| RELEASE
+			| REMAINDER
 			| RENAME
 			| REPACK
 			| REPEATABLE
