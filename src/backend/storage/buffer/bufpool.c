@@ -180,6 +180,7 @@ BufferPoolShmemInit(void *arg)
 	defpool = &BufferPoolDescs[0];
 	defpool->bp_oid = InvalidOid;	/* default pool has no catalog OID */
 	namestrcpy(&defpool->bp_name, "default");
+	defpool->bp_kind = BUFPOOL_DEFAULT;
 	defpool->bp_nbuffers = NBuffers;
 	defpool->bp_first_buf = 0;
 	defpool->bp_routine = ActivePoolRoutine;
@@ -343,6 +344,10 @@ DetachFromPool(int pool_slot)
 	local->mapping_locks = NULL;
 	local->ckpt_ids = NULL;
 	local->strategy_data = NULL;
+	/* Clear batched clock sweep and stat counter state */
+	local->batch_pos = 0;
+	local->batch_end = 0;
+	memset(local->local_stats, 0, sizeof(local->local_stats));
 	local->attached = false;
 }
 
@@ -434,7 +439,8 @@ BufferPoolStartupInit(void)
 
 		recycle_pool = CreateDynamicBufferPool(InvalidOid, "recycle",
 											  recycle_pool_buffers,
-											  &recycle_pool_routine);
+											  &recycle_pool_routine,
+											  InvalidOid);
 		recycle_pool->bp_kind = BUFPOOL_RECYCLE;
 		elog(LOG, "created RECYCLE pool with %d buffers", recycle_pool_buffers);
 	}
@@ -794,9 +800,10 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	hash_entries = (PoolBufHashEntry *) (dsm_base + offset);
 	offset += hash_size;
 
-	/* Set buffer ID range */
+	/* Set buffer ID range and kind */
 	pool->bp_first_buf = ComputeNextBufferIdBase();
 	pool->bp_nbuffers = nbuffers;
+	pool->bp_kind = BUFPOOL_USER;
 	pool->bp_num_partitions = 1;	/* single lock for open-addressed hash */
 	pool->bp_hash_nentries = hash_nentries;
 
@@ -1217,7 +1224,7 @@ TrickleWriterMain(Datum main_arg)
 		/*
 		 * Use the algorithm's trickle iterator if available.  This lets the
 		 * replacement algorithm direct us to the best flush candidates
-		 * (e.g., LRU tail for ARC, cold pages for CAR, HIR entries for LIRS)
+		 * (e.g. LRU tail for ARC, cold pages for CAR, HIR entries for LIRS)
 		 * rather than doing a blind linear scan.
 		 *
 		 * Note: we use the local 'routine' pointer resolved at startup,

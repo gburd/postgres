@@ -40,9 +40,29 @@ struct BufferPoolRoutine;
 
 /*
  * Maximum number of buffer pools that can exist concurrently.
- * The default pool always occupies slot 0.
+ * The default pool always occupies slot 0; the RECYCLE pool slot 1.
  */
 #define MAX_BUFFER_POOLS 64
+
+/*
+ * BufferPoolKind -- classification of buffer pool instances.
+ *
+ * BUFPOOL_DEFAULT: the main shared_buffers pool (slot 0).  Its replacement
+ *   algorithm is configurable via the buffer_pool_algorithm GUC.
+ *
+ * BUFPOOL_RECYCLE: a shared pool for scan/VACUUM/bulk-write recycling that
+ *   replaces the legacy per-backend ring buffers (slot 1).
+ *
+ * BUFPOOL_USER: user-created pools via CREATE BUFFER POOL DDL.
+ *
+ * The REMAINDER pool is process-local only and does not need a kind here.
+ */
+typedef enum BufferPoolKind
+{
+	BUFPOOL_DEFAULT,			/* main shared_buffers pool */
+	BUFPOOL_RECYCLE,			/* scan/VACUUM recycling pool */
+	BUFPOOL_USER,				/* user-created dynamic pools */
+} BufferPoolKind;
 
 /*
  * PoolBufHashEntry -- open-addressed hash table entry for dynamic pools.
@@ -87,6 +107,7 @@ typedef struct BufferPoolDesc
 {
 	Oid			bp_oid;			/* OID from pg_bufferpool (0 for default) */
 	NameData	bp_name;		/* pool name */
+	BufferPoolKind bp_kind;		/* DEFAULT, RECYCLE, or USER */
 	int			bp_nbuffers;	/* number of buffers in this pool */
 	int			bp_first_buf;	/* starting buffer ID (0 for default pool) */
 
@@ -173,6 +194,12 @@ typedef struct BufferPoolDesc
  * storing absolute pointers in the shared-memory BufferPoolDesc, which
  * would be invalid in other backends' address spaces.
  */
+/* Maximum number of stat counters any algorithm needs */
+#define POOL_MAX_STAT_COUNTERS	16
+
+/* Flush local stat accumulator to shared counter after this many increments */
+#define POOL_STAT_FLUSH_THRESHOLD	256
+
 typedef struct PoolLocalState
 {
 	dsm_segment *seg;			/* DSM segment (NULL until attached) */
@@ -184,7 +211,35 @@ typedef struct PoolLocalState
 	CkptSortItem *ckpt_ids;
 	void	   *strategy_data;
 	bool		attached;
+
+	/* Per-backend batched clock sweep state */
+	uint32		batch_pos;
+	uint32		batch_end;
+
+	/* Per-backend stat counter buffer (periodically flushed to shared) */
+	uint64		local_stats[POOL_MAX_STAT_COUNTERS];
 } PoolLocalState;
+
+/*
+ * PoolStatIncrement -- batch stat counter updates to reduce atomic contention.
+ *
+ * Increments a per-backend local counter.  When the local count reaches
+ * POOL_STAT_FLUSH_THRESHOLD, the accumulated value is flushed to the shared
+ * atomic counter and the local counter is reset.  This reduces cross-core
+ * cache-line bouncing on stat counters from every-increment to every-256th.
+ *
+ * The slight reporting lag (bounded at POOL_STAT_FLUSH_THRESHOLD per backend
+ * per counter) is acceptable for monitoring counters that reach millions.
+ */
+static inline void
+PoolStatIncrement(uint64 *local_counter, pg_atomic_uint64 *shared_counter)
+{
+	if (++(*local_counter) >= POOL_STAT_FLUSH_THRESHOLD)
+	{
+		pg_atomic_fetch_add_u64(shared_counter, *local_counter);
+		*local_counter = 0;
+	}
+}
 
 /*
  * Shared-memory array of pool descriptors and current count.

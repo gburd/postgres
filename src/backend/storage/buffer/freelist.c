@@ -31,9 +31,11 @@
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
 #include "storage/proc.h"
+#include "utils/guc.h"
+#include "utils/guc_hooks.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
-#include "utils/guc.h"
+#include "port/pg_numa.h"
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
 
@@ -65,6 +67,7 @@ typedef struct
 	 * StrategyNotifyBgWriter.
 	 */
 	int			bgwprocno;
+	int			batch_size;		/* batched clock sweep: buffers per atomic tick */
 } BufferStrategyControl;
 
 /*
@@ -88,10 +91,15 @@ typedef struct ClockPoolState
 	int			bgwprocno;				/* trickle writer procno (-1 = none) */
 	int			nbuffers;				/* buffer count in this pool */
 	int			first_buf_id;			/* starting buffer ID */
+	int			batch_size;				/* batched clock sweep */
 } ClockPoolState;
 
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
+
+/* Per-backend batch state for the default pool's clock sweep */
+static uint32 MyBatchPos = 0;
+static uint32 MyBatchEnd = 0;
 
 /*
  * Active buffer pool routine and its strategy data.
@@ -104,15 +112,38 @@ const BufferPoolRoutine *ActivePoolRoutine = NULL;
 void	   *ActivePoolData = NULL;
 
 /*
- * GUC variable for selecting the default buffer pool replacement strategy.
- * Set via "buffer_pool_strategy" (PGC_POSTMASTER).
+ * DEFAULT pool algorithm registry.
+ *
+ * Clock-sweep is always available (built-in).  Other algorithms register
+ * themselves via RegisterDefaultPoolAlgorithm() from their _PG_init()
+ * when loaded via shared_preload_libraries.  This allows runtime swap
+ * via the buffer_pool_algorithm GUC.
  */
-int			buffer_pool_strategy = BUFPOOL_STRATEGY_CLOCK;
-
-const struct config_enum_entry buffer_pool_strategy_options[] = {
-	{"clock", BUFPOOL_STRATEGY_CLOCK, false},
-	{NULL, 0, false}
+static const BufferPoolRoutine *algo_registry[BP_NUM_ALGORITHMS] = {
+	[BP_ALGO_CLOCK] = &clock_pool_routine,			/* always built-in */
+	[BP_ALGO_CLOCK_BATCH] = &clock_batch_pool_routine,	/* always built-in */
 };
+
+/* GUC variable: current algorithm for the DEFAULT pool */
+int			buffer_pool_algorithm = BP_ALGO_CLOCK;
+
+/*
+ * Shared-memory header prepended to the strategy data region.
+ * Stores the currently active algorithm so backends can detect changes.
+ */
+typedef struct DefaultPoolHeader
+{
+	slock_t		swap_lock;		/* protects algorithm swap */
+	int			current_algo;	/* BP_ALGO_* value */
+	Size		region_size;	/* total strategy_data bytes available */
+	/* strategy_data follows at MAXALIGN offset */
+} DefaultPoolHeader;
+
+static DefaultPoolHeader *DefaultPoolHdr = NULL;
+
+/* Pointer to the strategy_data region (after the header) */
+#define DEFAULT_STRATEGY_DATA(hdr) \
+	((void *) ((char *)(hdr) + MAXALIGN(sizeof(DefaultPoolHeader))))
 
 static void StrategyCtlShmemRequest(void *arg);
 static void StrategyCtlShmemInit(void *arg);
@@ -169,6 +200,10 @@ static BufferDesc *ClockGetVictim(void *strategy_data,
 								  BufferAccessStrategy strategy,
 								  uint64 *buf_state,
 								  bool *from_ring);
+static BufferDesc *ClockBatchGetVictim(void *strategy_data,
+									   BufferAccessStrategy strategy,
+									   uint64 *buf_state,
+									   bool *from_ring);
 static int	ClockSyncStart(void *strategy_data,
 						   uint32 *complete_passes,
 						   uint32 *num_buf_alloc);
@@ -179,10 +214,25 @@ static bool ClockRejectBuffer(void *strategy_data,
 static Size ClockPoolShmemSize(int nbuffers);
 static void ClockPoolShmemInit(void *strategy_data, int nbuffers,
 							   int first_buf_id, bool init);
+static void *ClockTrickleIterBegin(void *strategy_data, int max_candidates);
+static int	ClockTrickleIterNext(void *strategy_data, void *iter);
+static void ClockTrickleIterEnd(void *strategy_data, void *iter);
 
 
 /* ----------------------------------------------------------------
- *			Clock-sweep buffer pool routine (vtable)
+ *			Clock-sweep buffer pool routines (vtables)
+ *
+ * Two variants of clock-sweep are available as built-in algorithms:
+ *
+ *   clock_pool_routine (BP_ALGO_CLOCK, ID 0):
+ *     Vanilla single-step sweep.  Each victim selection does one
+ *     pg_atomic_fetch_add_u32.  Simple, correct, and the default.
+ *
+ *   clock_batch_pool_routine (BP_ALGO_CLOCK_BATCH, ID 1):
+ *     Batched sweep.  Each backend claims a batch of buffer IDs with
+ *     one atomic fetch-add, then iterates them locally.  Reduces
+ *     cross-core contention by the batch factor and scales better on
+ *     NUMA systems.  Available as a non-default built-in alternative.
  * ----------------------------------------------------------------
  */
 
@@ -195,12 +245,32 @@ const BufferPoolRoutine clock_pool_routine = {
 	.get_victim = ClockGetVictim,
 	.sync_start = ClockSyncStart,
 	.notify_trickle = ClockNotifyTrickle,
-	.trickle_iter_begin = NULL,	/* clock-sweep uses linear scan */
-	.trickle_iter_next = NULL,
-	.trickle_iter_end = NULL,
+	.trickle_iter_begin = ClockTrickleIterBegin,
+	.trickle_iter_next = ClockTrickleIterNext,
+	.trickle_iter_end = ClockTrickleIterEnd,
 	.hint_vacuum = NULL,		/* clock-sweep doesn't adjust for VACUUM */
 	.reject_buffer = ClockRejectBuffer,
 	.prefetch_hint = NULL,		/* clock-sweep doesn't use prefetch hints */
+	.shmem_size = ClockPoolShmemSize,
+	.shmem_init = ClockPoolShmemInit,
+	.shutdown = NULL,
+};
+
+const BufferPoolRoutine clock_batch_pool_routine = {
+	.type = T_Invalid,
+	.on_hit = NULL,
+	.on_miss = NULL,
+	.on_evict = NULL,
+	.on_new_tag = NULL,
+	.get_victim = ClockBatchGetVictim,
+	.sync_start = ClockSyncStart,
+	.notify_trickle = ClockNotifyTrickle,
+	.trickle_iter_begin = ClockTrickleIterBegin,
+	.trickle_iter_next = ClockTrickleIterNext,
+	.trickle_iter_end = ClockTrickleIterEnd,
+	.hint_vacuum = NULL,
+	.reject_buffer = ClockRejectBuffer,
+	.prefetch_hint = NULL,
 	.shmem_size = ClockPoolShmemSize,
 	.shmem_init = ClockPoolShmemInit,
 	.shutdown = NULL,
@@ -213,11 +283,88 @@ const BufferPoolRoutine clock_pool_routine = {
  */
 
 /*
- * ClockGetVictim -- clock-sweep implementation of get_victim
+ * ComputeClockBatchSize -- determine optimal batch size for clock sweep.
  *
- * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
- * buffer to use in GetVictimBuffer().  The only hard requirement is that the
- * selected buffer must not currently be pinned by anyone.
+ * Instead of each backend doing pg_atomic_fetch_add_u32(&nextVictimBuffer, 1)
+ * on every victim selection, backends claim a batch of buffer IDs with a
+ * single fetch-add and iterate them privately.  This reduces cross-core
+ * atomic contention by the batch factor.
+ *
+ * Batch size scales with CPU count and NUMA topology.
+ */
+#define CLOCK_SWEEP_MAX_BATCH	64
+
+static int
+ComputeClockBatchSize(int pool_nbuffers)
+{
+	int		ncpus = pg_get_online_cpus();
+	int		numa_nodes = (pg_numa_init() != -1) ? pg_numa_get_max_node() + 1 : 1;
+	int		base_batch, max_batch;
+
+	if (numa_nodes > 1)
+		base_batch = 64;
+	else if (ncpus > 16)
+		base_batch = 32;
+	else if (ncpus > 8)
+		base_batch = 16;
+	else if (ncpus > 4)
+		base_batch = 8;
+	else
+		base_batch = 1;
+
+	/* Cap: batch * MaxBackends should not exceed half the pool */
+	max_batch = (MaxBackends > 0)
+		? pool_nbuffers / (2 * MaxBackends)
+		: pool_nbuffers / 200;
+	if (max_batch < 1)
+		max_batch = 1;
+
+	return Min(base_batch, Min(max_batch, pool_nbuffers));
+}
+
+/*
+ * ClockSweepTick -- advance clock hand by a single step.
+ *
+ * The vanilla single-step implementation: each victim selection performs
+ * one pg_atomic_fetch_add_u32.  This is the classic approach used by
+ * PostgreSQL since version 8.1.  Simple and correct, but the single
+ * shared cache line bounces between all cores on every call.
+ */
+static inline uint32
+ClockSweepTick(pg_atomic_uint32 *nextVictimPtr)
+{
+	return pg_atomic_fetch_add_u32(nextVictimPtr, 1);
+}
+
+/*
+ * ClockBatchTick -- advance clock hand using batched atomic operations.
+ *
+ * Each backend claims a batch of buffer IDs with a single atomic fetch-add,
+ * then iterates them locally.  This reduces cross-core contention on the
+ * nextVictimBuffer atomic by the batch factor.
+ */
+static inline uint32
+ClockBatchTick(pg_atomic_uint32 *nextVictimPtr, int batch_size,
+			   uint32 *batch_pos, uint32 *batch_end)
+{
+	if (*batch_pos >= *batch_end)
+	{
+		uint32	base = pg_atomic_fetch_add_u32(nextVictimPtr, batch_size);
+
+		*batch_pos = base;
+		*batch_end = base + batch_size;
+	}
+	return (*batch_pos)++;
+}
+
+/*
+ * ClockGetVictim -- vanilla single-step clock-sweep implementation of get_victim
+ *
+ * Called by StrategyGetBuffer() via the vtable when the default pool uses
+ * the "clock" algorithm (BP_ALGO_CLOCK).  Advances the clock hand one
+ * buffer at a time with a single atomic fetch-add per victim selection.
+ * This is the classic PostgreSQL clock-sweep, identical to the pre-batching
+ * implementation.
  *
  * strategy is a BufferAccessStrategy object, or NULL for default strategy.
  *
@@ -333,7 +480,7 @@ ClockGetVictim(void *strategy_data,
 		pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 	}
 
-	/* Use the "clock sweep" algorithm to find a free buffer */
+	/* Vanilla clock sweep: advance one buffer at a time */
 	trycounter = pool_nbuffers;
 	for (;;)
 	{
@@ -343,11 +490,248 @@ ClockGetVictim(void *strategy_data,
 		uint32		victim_id;
 
 		/*
-		 * Atomically advance the clock hand.  For the default pool this
-		 * mirrors the old ClockSweepTick() logic including completePasses
-		 * maintenance.  For dynamic pools we use a simpler modulo.
+		 * Advance the clock hand by one step.  This is the classic
+		 * single-step approach: one atomic fetch-add per victim search.
 		 */
-		victim_raw = pg_atomic_fetch_add_u32(nextVictimPtr, 1);
+		victim_raw = ClockSweepTick(nextVictimPtr);
+
+		if (!is_dynamic_pool)
+		{
+			/* Default pool: maintain completePasses on wraparound */
+			victim_id = victim_raw % pool_nbuffers;
+
+			if (victim_raw >= (uint32) pool_nbuffers && victim_id == 0)
+			{
+				uint32		expected;
+				uint32		wrapped;
+				bool		success = false;
+
+				expected = victim_raw + 1;
+
+				while (!success)
+				{
+					SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+					wrapped = expected % pool_nbuffers;
+					success = pg_atomic_compare_exchange_u32(
+						&StrategyControl->nextVictimBuffer,
+						&expected, wrapped);
+					if (success)
+						StrategyControl->completePasses++;
+					SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+				}
+			}
+		}
+		else
+		{
+			/* Dynamic pool: simple modulo, no completePasses tracking */
+			victim_id = pool_first_buf + (victim_raw % pool_nbuffers);
+		}
+
+		buf = GetBufferDescriptor(victim_id);
+
+		/*
+		 * Check whether the buffer can be used and pin it if so. Do this
+		 * using a CAS loop, to avoid having to lock the buffer header.
+		 */
+		old_buf_state = pg_atomic_read_u64(&buf->state);
+		for (;;)
+		{
+			local_buf_state = old_buf_state;
+
+			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+			{
+				if (--trycounter == 0)
+					elog(ERROR, "no unpinned buffers available");
+				break;
+			}
+
+			/* See equivalent code in PinBuffer() */
+			if (unlikely(local_buf_state & BM_LOCKED))
+			{
+				old_buf_state = WaitBufHdrUnlocked(buf);
+				continue;
+			}
+
+			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			{
+				local_buf_state -= BUF_USAGECOUNT_ONE;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+												   local_buf_state))
+				{
+					trycounter = pool_nbuffers;
+					break;
+				}
+			}
+			else
+			{
+				/* pin the buffer if the CAS succeeds */
+				local_buf_state += BUF_REFCOUNT_ONE;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+												   local_buf_state))
+				{
+					/* Found a usable buffer */
+					if (strategy != NULL && strategy->recycle_pool == NULL)
+						AddBufferToRing(strategy, buf);
+					*buf_state = local_buf_state;
+
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					return buf;
+				}
+			}
+		}
+	}
+}
+
+/*
+ * ClockBatchGetVictim -- batched clock-sweep implementation of get_victim
+ *
+ * Called by StrategyGetBuffer() via the vtable when the default pool uses
+ * the "clock_batch" algorithm (BP_ALGO_CLOCK_BATCH).  Claims a batch of
+ * buffer IDs with a single atomic fetch-add, then iterates them locally.
+ * This reduces cross-core contention on the nextVictimBuffer atomic by
+ * the batch factor, scaling well on NUMA systems.
+ *
+ * See ClockGetVictim for parameter descriptions.
+ */
+static BufferDesc *
+ClockBatchGetVictim(void *strategy_data,
+					BufferAccessStrategy strategy,
+					uint64 *buf_state,
+					bool *from_ring)
+{
+	BufferDesc *buf;
+	int			trycounter;
+	bool		is_dynamic_pool;
+	int			pool_nbuffers;
+	int			pool_first_buf;
+	pg_atomic_uint32 *nextVictimPtr;
+	int			batch_size;
+	uint32	   *batchPosPtr;
+	uint32	   *batchEndPtr;
+	static uint32 dummy_pos = 0;
+	static uint32 dummy_end = 0;
+
+	*from_ring = false;
+
+	/*
+	 * Determine whether we're sweeping the default pool or a dynamic pool.
+	 * For the default pool, strategy_data == StrategyControl.
+	 */
+	is_dynamic_pool = (strategy_data != (void *) StrategyControl);
+
+	if (is_dynamic_pool)
+	{
+		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+
+		pool_nbuffers = pool_state->nbuffers;
+		pool_first_buf = pool_state->first_buf_id;
+		nextVictimPtr = &pool_state->nextVictimBuffer;
+		batch_size = pool_state->batch_size;
+		/* Dynamic pools: use process-local dummy batch state.
+		 * Each dynamic pool ideally has its own batch state, but
+		 * since they're typically smaller, single-step is fine. */
+		dummy_pos = dummy_end = 0;	/* force fresh batch each time */
+		batchPosPtr = &dummy_pos;
+		batchEndPtr = &dummy_end;
+
+		/*
+		 * Wake trickle writer if registered.  For dynamic pools the trickle
+		 * writer is a per-pool background worker, not the global bgwriter.
+		 */
+		{
+			int			bgwprocno = INT_ACCESS_ONCE(pool_state->bgwprocno);
+
+			if (bgwprocno != -1)
+			{
+				pool_state->bgwprocno = -1;
+				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+			}
+		}
+
+		pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
+	}
+	else
+	{
+		pool_nbuffers = NBuffers;
+		pool_first_buf = 0;
+		nextVictimPtr = &StrategyControl->nextVictimBuffer;
+		batch_size = StrategyControl->batch_size;
+		batchPosPtr = &MyBatchPos;
+		batchEndPtr = &MyBatchEnd;
+
+		/*
+		 * If given a strategy object, see whether it can select a buffer.
+		 * We assume strategy objects don't need buffer_strategy_lock.
+		 *
+		 * When the RECYCLE pool is enabled, dispatch through it instead of
+		 * using the per-backend ring buffer.  The RECYCLE pool's get_victim
+		 * returns a buffer from the shared RECYCLE pool, preventing scan
+		 * and VACUUM operations from polluting the main buffer pool.
+		 */
+		if (strategy != NULL)
+		{
+			if (strategy->recycle_pool != NULL &&
+				strategy->recycle_pool->bp_active)
+			{
+				PoolLocalState *local;
+
+				local = EnsurePoolAttached(strategy->recycle_pool);
+				buf = strategy->recycle_pool->bp_routine->get_victim(
+					local->strategy_data, NULL, buf_state, from_ring);
+				if (buf != NULL)
+				{
+					*from_ring = true;
+					return buf;
+				}
+				/* Fall through to main pool if RECYCLE pool failed */
+			}
+			else
+			{
+				buf = GetBufferFromRing(strategy, buf_state);
+				if (buf != NULL)
+				{
+					*from_ring = true;
+					return buf;
+				}
+			}
+		}
+
+		/*
+		 * Wake the bgwriter if asked.  See StrategyNotifyBgWriter().
+		 */
+		{
+			int			bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
+
+			if (bgwprocno != -1)
+			{
+				StrategyControl->bgwprocno = -1;
+				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+			}
+		}
+
+		pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+	}
+
+	/* Batched clock sweep: claim batches of buffer IDs at a time */
+	trycounter = pool_nbuffers;
+	for (;;)
+	{
+		uint64		old_buf_state;
+		uint64		local_buf_state;
+		uint32		victim_raw;
+		uint32		victim_id;
+
+		/*
+		 * Advance the clock hand using batched atomic operations.  Each
+		 * backend claims batch_size buffer IDs with one atomic fetch-add,
+		 * then iterates them locally.  This reduces cross-core contention
+		 * on the nextVictimBuffer atomic by the batch factor.
+		 */
+		victim_raw = ClockBatchTick(nextVictimPtr, batch_size,
+									batchPosPtr, batchEndPtr);
 
 		if (!is_dynamic_pool)
 		{
@@ -591,6 +975,95 @@ ClockPoolShmemInit(void *strategy_data, int nbuffers,
 	state->bgwprocno = -1;
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
+	state->batch_size = ComputeClockBatchSize(nbuffers);
+}
+
+
+/* ----------------------------------------------------------------
+ *			Clock-sweep trickle writer iterator
+ *
+ * Walk from the current clock hand position, yield dirty+unpinned
+ * buffers with zero usage count (best candidates for proactive flush).
+ * Works for both the default pool and dynamic clock-sweep pools.
+ * ----------------------------------------------------------------
+ */
+
+typedef struct ClockTrickleIter
+{
+	int			pool_first_buf;		/* starting buffer ID */
+	int			pool_nbuffers;		/* total buffers in pool */
+	int			offset;				/* current position relative to clock hand */
+	int			yielded;
+	int			max_candidates;
+} ClockTrickleIter;
+
+static void *
+ClockTrickleIterBegin(void *strategy_data, int max_candidates)
+{
+	ClockTrickleIter *iter;
+	bool		is_dynamic_pool = (strategy_data != (void *) StrategyControl);
+
+	iter = (ClockTrickleIter *) palloc(sizeof(ClockTrickleIter));
+	iter->yielded = 0;
+	iter->max_candidates = max_candidates;
+	iter->offset = 0;
+
+	if (is_dynamic_pool)
+	{
+		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+
+		iter->pool_first_buf = pool_state->first_buf_id;
+		iter->pool_nbuffers = pool_state->nbuffers;
+	}
+	else
+	{
+		iter->pool_first_buf = 0;
+		iter->pool_nbuffers = NBuffers;
+	}
+
+	return iter;
+}
+
+static int
+ClockTrickleIterNext(void *strategy_data, void *iter_state)
+{
+	ClockTrickleIter *iter = (ClockTrickleIter *) iter_state;
+
+	if (iter->yielded >= iter->max_candidates)
+		return -1;
+
+	while (iter->offset < iter->pool_nbuffers)
+	{
+		int			buf_id = iter->pool_first_buf + iter->offset;
+		BufferDesc *buf;
+		uint64		state;
+
+		iter->offset++;
+
+		buf = GetBufferDescriptor(buf_id);
+		state = pg_atomic_read_u64(&buf->state);
+
+		/* Skip if not valid, not dirty, or pinned */
+		if (!(state & BM_VALID) || !(state & BM_DIRTY))
+			continue;
+		if (BUF_STATE_GET_REFCOUNT(state) != 0)
+			continue;
+
+		/* Prefer buffers with zero usage count (coldest) */
+		if (BUF_STATE_GET_USAGECOUNT(state) == 0)
+		{
+			iter->yielded++;
+			return buf_id;
+		}
+	}
+
+	return -1;		/* exhausted */
+}
+
+static void
+ClockTrickleIterEnd(void *strategy_data, void *iter_state)
+{
+	pfree(iter_state);
 }
 
 
@@ -673,41 +1146,271 @@ StrategyHintVacuum(bool vacuum_active)
 /*
  * StrategyCtlShmemRequest -- request shared memory for the buffer
  *		cache replacement strategy.
+ *
+ * We allocate enough space for the largest registered algorithm so that
+ * runtime algorithm swap via the buffer_pool_algorithm GUC can reuse the
+ * same shmem region without restarting.
  */
 static void
 StrategyCtlShmemRequest(void *arg)
 {
+	Size		strategy_size;
+	Size		total_size;
+
+	/*
+	 * Compute max shmem needed across all registered algorithms.
+	 * Clock-sweep (always registered) uses BufferStrategyControl.
+	 */
+	strategy_size = sizeof(BufferStrategyControl);
+
+	for (int i = 0; i < BP_NUM_ALGORITHMS; i++)
+	{
+		if (algo_registry[i] != NULL && algo_registry[i]->shmem_size != NULL)
+		{
+			Size		s = algo_registry[i]->shmem_size(NBuffers);
+
+			if (s > strategy_size)
+				strategy_size = s;
+		}
+	}
+
+	total_size = MAXALIGN(sizeof(DefaultPoolHeader)) + MAXALIGN(strategy_size);
+
 	ShmemRequestStruct(.name = "Buffer Strategy Status",
-					   .size = sizeof(BufferStrategyControl),
-					   .ptr = (void **) &StrategyControl
+					   .size = total_size,
+					   .ptr = (void **) &DefaultPoolHdr
 		);
 }
 
 /*
  * StrategyCtlShmemInit -- initialize the buffer cache replacement strategy.
+ *
+ * Initializes the selected algorithm (from buffer_pool_algorithm GUC) in
+ * the shared memory region.  Also updates ActivePoolRoutine/ActivePoolData.
  */
 static void
 StrategyCtlShmemInit(void *arg)
 {
-	SpinLockInit(&StrategyControl->buffer_strategy_lock);
+	void	   *strategy_data;
+	int			algo = buffer_pool_algorithm;
+	const BufferPoolRoutine *routine;
 
-	/* Initialize the clock-sweep pointer */
-	pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
-
-	/* Clear statistics */
-	StrategyControl->completePasses = 0;
-	pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
-
-	/* No pending notification */
-	StrategyControl->bgwprocno = -1;
+	/* Initialize the shared header */
+	SpinLockInit(&DefaultPoolHdr->swap_lock);
+	DefaultPoolHdr->current_algo = algo;
 
 	/*
-	 * Set the active pool routine based on the buffer_pool_strategy GUC.
-	 * Currently only clock sweep is built in; extension-provided algorithms
-	 * register themselves via RegisterDefaultPoolAlgorithm().
+	 * Compute region_size: same max-across-all-algorithms logic as
+	 * StrategyCtlShmemRequest, so the assign hook knows how much to clear.
 	 */
-	ActivePoolRoutine = &clock_pool_routine;
-	ActivePoolData = StrategyControl;
+	{
+		Size		region_size = sizeof(BufferStrategyControl);
+
+		for (int i = 0; i < BP_NUM_ALGORITHMS; i++)
+		{
+			if (algo_registry[i] != NULL && algo_registry[i]->shmem_size != NULL)
+			{
+				Size		s = algo_registry[i]->shmem_size(NBuffers);
+
+				if (s > region_size)
+					region_size = s;
+			}
+		}
+		DefaultPoolHdr->region_size = MAXALIGN(region_size);
+	}
+
+	strategy_data = DEFAULT_STRATEGY_DATA(DefaultPoolHdr);
+
+	/*
+	 * Look up the selected algorithm.  Fall back to clock-sweep if the
+	 * requested algorithm isn't registered (extension not loaded).
+	 */
+	routine = algo_registry[algo];
+	if (routine == NULL)
+	{
+		elog(WARNING, "buffer_pool_algorithm %d not available, using clock-sweep", algo);
+		algo = BP_ALGO_CLOCK;
+		routine = algo_registry[algo];
+		DefaultPoolHdr->current_algo = algo;
+	}
+
+	/*
+	 * Initialize the algorithm's strategy data.
+	 * Both clock variants use BufferStrategyControl and set StrategyControl
+	 * for backward compatibility with code that checks strategy_data against
+	 * StrategyControl to distinguish default vs dynamic pools.
+	 */
+	if (algo == BP_ALGO_CLOCK || algo == BP_ALGO_CLOCK_BATCH)
+	{
+		StrategyControl = (BufferStrategyControl *) strategy_data;
+		SpinLockInit(&StrategyControl->buffer_strategy_lock);
+		pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
+		StrategyControl->completePasses = 0;
+		pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+		StrategyControl->bgwprocno = -1;
+
+		if (algo == BP_ALGO_CLOCK_BATCH)
+			StrategyControl->batch_size = ComputeClockBatchSize(NBuffers);
+		else
+			StrategyControl->batch_size = 1;	/* unused by vanilla clock */
+	}
+	else
+	{
+		/*
+		 * For non-clock algorithms, StrategyControl is set to the strategy
+		 * data so that ClockGetVictim's is_dynamic_pool check works
+		 * correctly (strategy_data != StrategyControl when not clock).
+		 * We allocate a minimal StrategyControl at a separate address.
+		 */
+		StrategyControl = (BufferStrategyControl *) strategy_data;
+
+		/* Call the algorithm's shmem_init */
+		routine->shmem_init(strategy_data, NBuffers, 0, true);
+	}
+
+	ActivePoolRoutine = routine;
+	ActivePoolData = strategy_data;
+}
+
+
+/* ----------------------------------------------------------------
+ *			DEFAULT pool algorithm registration and swap
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * RegisterDefaultPoolAlgorithm -- register an algorithm for DEFAULT pool use.
+ *
+ * Called from _PG_init() of buffer pool extensions.  Must happen before
+ * shared memory allocation (i.e., the extension must be in
+ * shared_preload_libraries).
+ */
+void
+RegisterDefaultPoolAlgorithm(int algo_id, const BufferPoolRoutine *routine)
+{
+	if (algo_id < 0 || algo_id >= BP_NUM_ALGORITHMS)
+		elog(ERROR, "invalid buffer pool algorithm id %d", algo_id);
+
+	if (algo_registry[algo_id] != NULL)
+		elog(WARNING, "buffer pool algorithm %d already registered, replacing", algo_id);
+
+	algo_registry[algo_id] = routine;
+}
+
+/*
+ * IsDefaultPoolAlgorithmRegistered -- check if an algorithm is available.
+ */
+int
+IsDefaultPoolAlgorithmRegistered(int algo_id)
+{
+	if (algo_id < 0 || algo_id >= BP_NUM_ALGORITHMS)
+		return false;
+	return algo_registry[algo_id] != NULL;
+}
+
+/*
+ * buffer_pool_algorithm GUC check hook.
+ *
+ * Verify that the requested algorithm is registered (its extension was
+ * loaded via shared_preload_libraries).
+ */
+bool
+check_buffer_pool_algorithm(int *newval, void **extra, GucSource source)
+{
+	int			algo = *newval;
+
+	if (algo < 0 || algo >= BP_NUM_ALGORITHMS)
+		return false;
+
+	/*
+	 * During initial startup (before shmem init), we allow any value.
+	 * The shmem init code will validate and fall back if needed.
+	 */
+	if (DefaultPoolHdr == NULL)
+		return true;
+
+	if (algo_registry[algo] == NULL)
+	{
+		GUC_check_errdetail("Algorithm extension not loaded via shared_preload_libraries.");
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * buffer_pool_algorithm GUC assign hook.
+ *
+ * Performs the actual algorithm swap in shared memory when the GUC changes.
+ * Called in every backend on SIGHUP.  The first backend to see the change
+ * performs the swap; others just update their local pointers.
+ */
+void
+assign_buffer_pool_algorithm(int newval, void *extra)
+{
+	const BufferPoolRoutine *routine;
+	void	   *strategy_data;
+
+	/* Nothing to do before shmem is initialized */
+	if (DefaultPoolHdr == NULL)
+		return;
+
+	routine = algo_registry[newval];
+	if (routine == NULL)
+		return;		/* shouldn't happen after check hook */
+
+	strategy_data = DEFAULT_STRATEGY_DATA(DefaultPoolHdr);
+
+	/*
+	 * Check if the shared state already matches.  If so, just update our
+	 * local pointers.
+	 */
+	SpinLockAcquire(&DefaultPoolHdr->swap_lock);
+
+	if (DefaultPoolHdr->current_algo != newval)
+	{
+		const BufferPoolRoutine *old_routine;
+
+		old_routine = algo_registry[DefaultPoolHdr->current_algo];
+
+		/* Shutdown the old algorithm */
+		if (old_routine != NULL && old_routine->shutdown != NULL)
+			old_routine->shutdown(strategy_data);
+
+		/* Clear the region */
+		memset(strategy_data, 0, DefaultPoolHdr->region_size);
+
+		/* Initialize the new algorithm */
+		if (newval == BP_ALGO_CLOCK || newval == BP_ALGO_CLOCK_BATCH)
+		{
+			StrategyControl = (BufferStrategyControl *) strategy_data;
+			SpinLockInit(&StrategyControl->buffer_strategy_lock);
+			pg_atomic_init_u32(&StrategyControl->nextVictimBuffer, 0);
+			StrategyControl->completePasses = 0;
+			pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+			StrategyControl->bgwprocno = -1;
+
+			if (newval == BP_ALGO_CLOCK_BATCH)
+				StrategyControl->batch_size = ComputeClockBatchSize(NBuffers);
+			else
+				StrategyControl->batch_size = 1;	/* unused by vanilla clock */
+		}
+		else
+		{
+			routine->shmem_init(strategy_data, NBuffers, 0, true);
+		}
+
+		DefaultPoolHdr->current_algo = newval;
+	}
+
+	SpinLockRelease(&DefaultPoolHdr->swap_lock);
+
+	/* Reset batch state on algorithm change */
+	MyBatchPos = MyBatchEnd = 0;
+
+	/* Update backend-local pointers */
+	ActivePoolRoutine = routine;
+	ActivePoolData = strategy_data;
 }
 
 
@@ -717,7 +1420,7 @@ StrategyCtlShmemInit(void *arg)
  */
 
 /*
- * clock_pool_handler -- returns the clock-sweep BufferPoolRoutine
+ * clock_pool_handler -- returns the vanilla clock-sweep BufferPoolRoutine
  *
  * This follows the access-method handler pattern so that the default
  * pool has a handler like any other pool.
@@ -729,6 +1432,21 @@ clock_pool_handler(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_POINTER(&clock_pool_routine);
 }
+
+/*
+ * clock_batch_pool_handler -- returns the batched clock-sweep BufferPoolRoutine
+ *
+ * The batched variant claims multiple buffer IDs per atomic operation,
+ * reducing cross-core contention on NUMA systems.
+ */
+PG_FUNCTION_INFO_V1(clock_batch_pool_handler);
+
+Datum
+clock_batch_pool_handler(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(&clock_batch_pool_routine);
+}
+
 
 /* ----------------------------------------------------------------
  *			KEEP buffer pool routine (vtable)
@@ -943,6 +1661,7 @@ typedef struct RecyclePoolState
 	int			bgwprocno;		/* trickle writer procno (-1 = none) */
 	int			nbuffers;
 	int			first_buf_id;
+	int			batch_size;				/* batched clock sweep */
 
 	/* Per-mode allocation counts for monitoring */
 	pg_atomic_uint64 bulkread_allocs;
@@ -1014,7 +1733,16 @@ RecycleGetVictim(void *strategy_data,
 		uint32		victim_raw;
 		uint32		victim_id;
 
-		victim_raw = pg_atomic_fetch_add_u32(&state->nextVictimBuffer, 1);
+		/* Batched clock sweep for RECYCLE pool */
+		{
+			static uint32 recycle_batch_pos = 0;
+			static uint32 recycle_batch_end = 0;
+
+			victim_raw = ClockBatchTick(&state->nextVictimBuffer,
+										state->batch_size,
+										&recycle_batch_pos,
+										&recycle_batch_end);
+		}
 		victim_id = state->first_buf_id + (victim_raw % state->nbuffers);
 
 		buf = GetBufferDescriptor(victim_id);
@@ -1101,6 +1829,7 @@ RecycleShmemInit(void *strategy_data, int nbuffers,
 	state->bgwprocno = -1;
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
+	state->batch_size = ComputeClockBatchSize(nbuffers);
 
 	pg_atomic_init_u64(&state->bulkread_allocs, 0);
 	pg_atomic_init_u64(&state->bulkwrite_allocs, 0);

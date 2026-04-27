@@ -1,0 +1,167 @@
+src/backend/storage/buffer/README.clock_sweep
+
+Clock-Sweep Buffer Replacement Algorithm
+=========================================
+
+Overview
+--------
+
+Clock-sweep is PostgreSQL's default buffer replacement algorithm for the
+shared buffer pool.  It is a practical approximation of LRU (Least Recently
+Used) that avoids the overhead of maintaining a true LRU list.  The algorithm
+was first described in the context of the Multics operating system (Corbato,
+1968) and has been used in PostgreSQL since version 8.1.
+
+Clock-sweep manages the shared_buffers pool -- the region of shared memory
+where PostgreSQL caches disk pages.  When a backend needs a buffer and no
+free buffers are available, the clock-sweep algorithm selects a victim buffer
+to evict by sweeping through the buffer array in a circular fashion.
+
+Two built-in variants are available:
+
+  "clock" (default) -- vanilla single-step sweep, one atomic per victim
+  "clock_batch"     -- batched sweep, one atomic per batch of victims
+
+The default "clock" algorithm is the classic PostgreSQL approach.  The
+"clock_batch" variant is available for NUMA systems where profiling shows
+contention on the shared clock hand counter.  Use CREATE BUFFER POOL with
+HANDLER clock_batch_pool_handler, or SET buffer_pool_algorithm = 'clock_batch'
+for the default pool.
+
+
+How It Works
+------------
+
+Each buffer in the pool carries a usage_count, an integer between 0 and 5
+(inclusive).  The usage_count is stored directly in the buffer header state
+word, so it requires no additional per-buffer memory.
+
+  Access:  When a backend accesses a buffer (cache hit), the usage_count
+           is incremented by 1, up to a maximum of 5 (BM_MAX_USAGE_COUNT).
+
+  Sweep:   A global clock hand (nextVictimBuffer) advances through the
+           buffer array in circular order.  For each buffer it visits:
+
+           - If usage_count > 0 and the buffer is unpinned, decrement
+             usage_count by 1 and advance to the next buffer.
+
+           - If usage_count == 0 and the buffer is unpinned, select this
+             buffer as the eviction victim.
+
+           - If the buffer is pinned (in use by some backend), skip it.
+
+The effect is that frequently-accessed buffers accumulate a high usage_count
+and survive multiple sweeps before being evicted, while infrequently-accessed
+buffers are evicted sooner.  A buffer with usage_count N requires N+1
+complete sweeps to be evicted (assuming no further accesses).
+
+
+Batched Clock Sweep
+-------------------
+
+On multi-core systems, the clock hand is a single atomic counter
+(pg_atomic_uint32) that every backend must advance.  With hundreds of
+concurrent backends, the atomic fetch-and-add on this counter becomes a
+cross-core contention bottleneck -- especially on NUMA (multi-socket)
+systems where the cost of a cross-interconnect atomic operation can be
+100-300 nanoseconds.
+
+To mitigate this, PostgreSQL uses batched clock sweep.  Instead of
+advancing the clock hand by 1 for every victim search, each backend claims
+a batch of consecutive buffer IDs with a single atomic fetch-and-add, then
+iterates through them locally without touching the shared counter.
+
+The batch size is chosen based on hardware topology:
+
+  NUMA (multi-socket):   batch = 64
+  >16 cores, 1 socket:  batch = 32
+  9-16 cores:           batch = 16
+  5-8 cores:            batch = 8
+  <=4 cores:            batch = 1 (no batching)
+
+A safety cap ensures that the total batch allocation across all backends
+does not exceed half the pool:  batch * MaxBackends <= pool_nbuffers / 2.
+
+This reduces atomic contention by the batch factor.  On a 2-socket NUMA
+system, batch=64 reduces cross-interconnect atomic traffic by 64x.
+
+
+Where Clock-Sweep Is Used
+--------------------------
+
+Clock-sweep is used in three contexts within PostgreSQL:
+
+1. Default shared_buffers pool (slot 0)
+
+   This is the main buffer pool configured by the shared_buffers GUC.
+   It uses the global BufferDescriptors array, BufferBlocks, and
+   SharedBufHash with NUM_BUFFER_PARTITIONS (128) mapping locks.
+   The replacement algorithm can be changed at runtime via the
+   buffer_pool_algorithm GUC.
+
+2. Dynamic clock-sweep pools
+
+   Users can create additional buffer pools that use clock-sweep via:
+
+       CREATE BUFFER POOL mypool SIZE '256MB' HANDLER clock_pool_handler;
+
+   These pools are backed by dynamic shared memory (DSM) segments and
+   use a single mapping lock.  Each pool has its own ClockPoolState
+   containing its own clock hand, completePasses counter, and batch size.
+   The same ClockGetVictim code path handles both the default pool and
+   dynamic clock pools.
+
+3. RECYCLE pool (slot 1)
+
+   The RECYCLE pool is a variant of clock-sweep designed for bulk
+   operations (sequential scans, COPY, VACUUM).  It replaces the
+   traditional per-backend ring buffers with a shared pool.  The key
+   difference is that RECYCLE uses a one-chance clock sweep: instead of
+   decrementing usage_count one step at a time, it clears usage_count
+   to 0 in a single step.  This ensures that pages loaded by bulk
+   operations get at most one sweep cycle of protection before eviction,
+   preventing cache pollution of the main pool.
+
+
+Background Writer Integration
+------------------------------
+
+The background writer (bgwriter) and checkpointer use the clock hand
+position to pace their work.  The completePasses counter tracks how many
+full cycles the clock hand has made through the buffer array.  The
+bgwriter uses this to determine how aggressively it should write dirty
+buffers: if the clock hand is cycling rapidly, the system is under memory
+pressure and the bgwriter should work harder.
+
+The trickle write iterator (ClockTrickleIterBegin/Next/End) walks forward
+from the current clock hand position and yields dirty, unpinned buffers
+with usage_count == 0.  These are the buffers most likely to be evicted
+next, making them ideal candidates for proactive write-back.
+
+
+Limitations
+-----------
+
+- The usage_count range of 0-5 provides only coarse ordering compared
+  to a true LRU list.  All buffers with the same usage_count are
+  effectively treated as equivalent.
+
+- Clock-sweep has no ghost lists or eviction history tracking (unlike
+  algorithms such as ARC or CAR), so it cannot adapt its behavior based
+  on past eviction patterns.
+
+- Sequential scans set usage_count to 1, giving scan-loaded pages one
+  full sweep cycle of protection.  This provides partial scan resistance
+  but is less effective than dedicated scan-resistant algorithms.
+
+- Batched sweep introduces slight unfairness: one backend's batch may
+  land entirely on hot buffers while another's lands on cold ones.
+
+
+References
+----------
+
+F.J. Corbato, "A Paging Experiment with the Multics System", MIT
+Project MAC, 1968.
+
+Source code: src/backend/storage/buffer/freelist.c

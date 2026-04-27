@@ -179,32 +179,6 @@ SELECT data FROM bp_ckpt_tbl WHERE id = 42;
 DROP TABLE bp_ckpt_tbl;
 DROP BUFFER POOL ckpt_pool;
 
-
--- ===================================================
--- REMAINDER pool: auto-sized to unclaimed buffer space
--- ===================================================
-
--- Create a REMAINDER pool (size computed automatically)
--- Suppress NOTICE about exact size since it depends on shared_buffers
-SET client_min_messages = 'warning';
-CREATE BUFFER POOL remainder_test REMAINDER HANDLER clock_pool_handler;
-SET client_min_messages = 'notice';
-
--- Verify it exists in the catalog (bpsize=0 marks it as REMAINDER)
-SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'remainder_test';
-
--- Verify it shows up in the stats view with buffers > 0
-SELECT name, nbuffers > 0 AS has_buffers FROM pg_stat_bufferpool WHERE name = 'remainder_test';
-
--- Cannot create a second REMAINDER pool
-CREATE BUFFER POOL remainder_test2 REMAINDER HANDLER clock_pool_handler;
-
--- Drop the REMAINDER pool
-DROP BUFFER POOL remainder_test;
-
--- Verify it is gone
-SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
-
 -- ===================================================
 -- overflow_buffer_pool reloption
 -- ===================================================
@@ -329,6 +303,31 @@ DROP TABLE bp_toast_test;
 DROP BUFFER POOL toast_ovfl_pool;
 DROP BUFFER POOL toast_ovfl_pool2;
 
+-- ===================================================
+-- REMAINDER pool: auto-sized to unclaimed buffer space
+-- ===================================================
+
+-- Create a REMAINDER pool (size computed automatically)
+-- Suppress NOTICE about exact size since it depends on shared_buffers
+SET client_min_messages = 'warning';
+CREATE BUFFER POOL remainder_test REMAINDER HANDLER clock_pool_handler;
+SET client_min_messages = 'notice';
+
+-- Verify it exists in the catalog (bpsize=0 marks it as REMAINDER)
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'remainder_test';
+
+-- Verify it shows up in the stats view with buffers > 0
+SELECT name, nbuffers > 0 AS has_buffers FROM pg_stat_bufferpool WHERE name = 'remainder_test';
+
+-- Cannot create a second REMAINDER pool
+CREATE BUFFER POOL remainder_test2 REMAINDER HANDLER clock_pool_handler;
+
+-- Drop the REMAINDER pool
+DROP BUFFER POOL remainder_test;
+
+-- Verify it is gone
+SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
+
 --
 -- Error cases
 --
@@ -366,6 +365,30 @@ CREATE BUFFER POOL bad_handler HANDLER nonexistent_handler SIZE '262144';
 DROP BUFFER POOL no_such_pool;
 
 --
+-- Batched clock sweep handler (clock_batch_pool_handler)
+--
+
+-- Create a pool using the batched clock sweep handler
+CREATE BUFFER POOL batch_test HANDLER clock_batch_pool_handler SIZE '262144';
+
+-- Verify catalog entry
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'batch_test';
+
+-- Verify it shows up in the stats view
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'batch_test';
+
+-- Create a table in the batched clock sweep pool and insert data
+CREATE TABLE batch_tbl (id int, val text) WITH (buffer_pool = 'batch_test');
+INSERT INTO batch_tbl SELECT g, 'data ' || g FROM generate_series(1, 100) g;
+
+-- Verify data is accessible through the batched pool
+SELECT count(*) FROM batch_tbl;
+
+-- Clean up
+DROP TABLE batch_tbl;
+DROP BUFFER POOL batch_test;
+
+--
 -- DROP BUFFER POOL (successful cases)
 --
 
@@ -380,3 +403,4 @@ SELECT bpname FROM pg_bufferpool WHERE bpname IN ('test_pool_renamed', 'test_poo
 
 -- Only the default pool should remain in the stats view
 SELECT count(*) FROM pg_stat_bufferpool;
+

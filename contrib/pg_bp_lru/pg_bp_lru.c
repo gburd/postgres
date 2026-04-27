@@ -45,6 +45,14 @@ PG_MODULE_MAGIC_EXT(.name = "pg_bp_lru", .version = PG_VERSION);
 
 void		_PG_init(void);
 
+/* Stat slot indices for PoolStatIncrement */
+#define LRU_STAT_HITS		0
+#define LRU_STAT_MISSES		1
+#define LRU_STAT_EVICTIONS	2
+#define LRU_NUM_STATS		3
+
+static uint64 lru_local_stats[LRU_NUM_STATS];
+
 
 /*
  * LRU list node -- one per buffer in the pool.
@@ -154,7 +162,7 @@ LruOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	LruNode    *nodes = LRU_NODES(ctl);
 	int			local_id = buf_id - ctl->first_buf_id;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_hits, 1);
+	PoolStatIncrement(&lru_local_stats[LRU_STAT_HITS], &ctl->stat_hits);
 
 	if (local_id < 0 || local_id >= ctl->nbuffers)
 		return;
@@ -178,7 +186,7 @@ LruOnMiss(void *strategy_data, BufferTag *tag)
 {
 	LruControl *ctl = (LruControl *) strategy_data;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_misses, 1);
+	PoolStatIncrement(&lru_local_stats[LRU_STAT_MISSES], &ctl->stat_misses);
 }
 
 /*
@@ -201,7 +209,7 @@ LruOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 
 	SpinLockRelease(&ctl->lru_lock);
 
-	pg_atomic_fetch_add_u64(&ctl->stat_evictions, 1);
+	PoolStatIncrement(&lru_local_stats[LRU_STAT_EVICTIONS], &ctl->stat_evictions);
 }
 
 /*

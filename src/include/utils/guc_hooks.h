@@ -37,6 +37,9 @@ extern bool check_backtrace_functions(char **newval, void **extra,
 									  GucSource source);
 extern void assign_backtrace_functions(const char *newval, void *extra);
 extern bool check_bonjour(bool *newval, void **extra, GucSource source);
+extern bool check_buffer_pool_algorithm(int *newval, void **extra,
+										GucSource source);
+extern void assign_buffer_pool_algorithm(int newval, void *extra);
 extern bool check_canonical_path(char **newval, void **extra, GucSource source);
 extern void assign_checkpoint_completion_target(double newval, void *extra);
 extern bool check_client_connection_check_interval(int *newval, void **extra,

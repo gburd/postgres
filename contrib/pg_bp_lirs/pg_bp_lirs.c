@@ -67,6 +67,20 @@ void		_PG_init(void);
 #define LIRS_STATUS_GHOST	2		/* Non-resident HIR (ghost entry) */
 #define LIRS_STATUS_UNUSED	(-1)
 
+/* Stat slot indices for PoolStatIncrement */
+#define LIRS_STAT_LOOKUPS			0
+#define LIRS_STAT_LIR_HITS			1
+#define LIRS_STAT_HIR_HITS			2
+#define LIRS_STAT_GHOST_HITS		3
+#define LIRS_STAT_MISSES			4
+#define LIRS_STAT_LIR_DEMOTIONS		5
+#define LIRS_STAT_HIR_PROMOTIONS	6
+#define LIRS_STAT_EVICTIONS			7
+#define LIRS_STAT_STACK_PRUNES		8
+#define LIRS_NUM_STATS				9
+
+static uint64 lirs_local_stats[LIRS_NUM_STATS];
+
 /*
  * LIRS Cache Directory Block (CDB).
  *
@@ -377,7 +391,7 @@ lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr)
 		}
 		/* Resident HIR: stays in Q, just no longer in stack */
 
-		pg_atomic_fetch_add_u64(&ctl->stat_stack_prunes, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_STACK_PRUNES], &ctl->stat_stack_prunes);
 	}
 
 	/* Step 2: LIRS-2 hard bound enforcement */
@@ -397,7 +411,7 @@ lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr)
 			lirs_free_cdb(ctl, cdb_arr, idx);
 		}
 
-		pg_atomic_fetch_add_u64(&ctl->stat_stack_prunes, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_STACK_PRUNES], &ctl->stat_stack_prunes);
 	}
 }
 
@@ -573,7 +587,7 @@ lirs_demote_bottom_lir(LirsControl *ctl, LirsCDB *cdb_arr)
 	/* Add to Q tail (resident HIR) */
 	lirs_q_append(ctl, cdb_arr, idx);
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lir_demotions, 1);
+	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LIR_DEMOTIONS], &ctl->stat_lir_demotions);
 }
 
 
@@ -598,7 +612,7 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	int			pool_local_id = buf_id - ctl->first_buf_id;
 	int			cdb_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
 		return;
@@ -611,7 +625,7 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 
 	if (cdb_arr[cdb_idx].status == LIRS_STATUS_LIR)
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_lir_hits, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LIR_HITS], &ctl->stat_lir_hits);
 
 		/* Move to stack top, prune bottom */
 		lirs_stack_move_to_top(ctl, cdb_arr, cdb_idx);
@@ -619,7 +633,7 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	}
 	else if (cdb_arr[cdb_idx].status == LIRS_STATUS_HIR)
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_hir_hits, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_HIR_HITS], &ctl->stat_hir_hits);
 
 		if (cdb_arr[cdb_idx].in_stack)
 		{
@@ -635,7 +649,7 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 			ctl->hir_count--;
 			ctl->lir_count++;
 
-			pg_atomic_fetch_add_u64(&ctl->stat_hir_promotions, 1);
+			PoolStatIncrement(&lirs_local_stats[LIRS_STAT_HIR_PROMOTIONS], &ctl->stat_hir_promotions);
 
 			/* Prune first to establish LIR at bottom */
 			lirs_stack_prune(ctl, cdb_arr);
@@ -676,7 +690,7 @@ LirsOnMiss(void *strategy_data, BufferTag *tag)
 	LirsCDB    *cdb_arr pg_attribute_unused() = LIRS_CDB(ctl);
 	int			ghost_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	SpinLockAcquire(&ctl->lirs_lock);
 
@@ -684,12 +698,12 @@ LirsOnMiss(void *strategy_data, BufferTag *tag)
 
 	if (ghost_idx >= 0 && cdb_arr[ghost_idx].status == LIRS_STATUS_GHOST)
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_ghost_hits, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_GHOST_HITS], &ctl->stat_ghost_hits);
 		state->ghost_cdb = ghost_idx;
 	}
 	else
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_misses, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_MISSES], &ctl->stat_misses);
 		state->ghost_cdb = -1;
 	}
 
@@ -772,7 +786,7 @@ LirsOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag pg_attribute_unu
 	}
 
 	buf_to_cdb[pool_local_id] = -1;
-	pg_atomic_fetch_add_u64(&ctl->stat_evictions, 1);
+	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_EVICTIONS], &ctl->stat_evictions);
 
 	SpinLockRelease(&ctl->lirs_lock);
 }
@@ -823,7 +837,7 @@ LirsOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 		lirs_stack_move_to_top(ctl, cdb_arr, cdb_idx);
 
 		ctl->lir_count++;
-		pg_atomic_fetch_add_u64(&ctl->stat_hir_promotions, 1);
+		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_HIR_PROMOTIONS], &ctl->stat_hir_promotions);
 
 		/* Prune to establish LIR at bottom, then demote if needed */
 		lirs_stack_prune(ctl, cdb_arr);
@@ -905,95 +919,46 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 	LirsCDB    *cdb_arr = LIRS_CDB(ctl);
 	int		   *buf_to_cdb = LIRS_BUF_TO_CDB(ctl);
 	BufferDesc *buf;
+	int			retry;
 
 	*from_ring = false;
 	state->ghost_cdb = -1;
 
 	/*
-	 * Phase 1: Try free (untracked) buffers first.
-	 * During cache warm-up, many buffers have no CDB entry yet.
+	 * Retry loop: if all phases fail to find a victim (all buffers
+	 * pinned), wait briefly and retry.  This can happen under heavy
+	 * concurrent load on small pools where VACUUM, queries, and the
+	 * trickle writer all compete for a limited number of buffers.
 	 */
-	if (ctl->lir_count + ctl->hir_count < ctl->nbuffers)
+	for (retry = 0; retry < 50; retry++)
 	{
-		for (int i = 0; i < ctl->nbuffers; i++)
+		/*
+		 * Phase 1: Try free (untracked) buffers first.
+		 * During cache warm-up, many buffers have no CDB entry yet.
+		 */
+		if (ctl->lir_count + ctl->hir_count < ctl->nbuffers)
 		{
-			uint64		old_buf_state;
-			uint64		local_buf_state;
-
-			if (buf_to_cdb[i] >= 0)
-				continue;
-
-			buf = GetBufferDescriptor(ctl->first_buf_id + i);
-			old_buf_state = pg_atomic_read_u64(&buf->state);
-
-			for (;;)
+			for (int i = 0; i < ctl->nbuffers; i++)
 			{
-				local_buf_state = old_buf_state;
+				uint64		old_buf_state;
+				uint64		local_buf_state;
 
-				if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
-					break;
-
-				if (unlikely(local_buf_state & BM_LOCKED))
-				{
-					old_buf_state = WaitBufHdrUnlocked(buf);
+				if (buf_to_cdb[i] >= 0)
 					continue;
-				}
 
-				local_buf_state += BUF_REFCOUNT_ONE;
-				if (pg_atomic_compare_exchange_u64(&buf->state,
-												   &old_buf_state,
-												   local_buf_state))
-				{
-					*buf_state = local_buf_state;
-					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
-					return buf;
-				}
-			}
-		}
-	}
-
-	/*
-	 * Phase 2: Evict from Q head (resident HIR pages).
-	 * Walk Q from head looking for an unpinned buffer.
-	 */
-	SpinLockAcquire(&ctl->lirs_lock);
-
-	{
-		int			attempts = 0;
-		int			max_attempts = ctl->nbuffers * 3;
-		int			idx = ctl->q_head;
-
-		while (idx >= 0 && attempts < max_attempts)
-		{
-			LirsCDB    *cdb = &cdb_arr[idx];
-			int			next = cdb->q_next;
-
-			attempts++;
-
-			if (cdb->buf_id < 0 || cdb->status != LIRS_STATUS_HIR)
-			{
-				idx = next;
-				continue;
-			}
-
-			Assert(cdb->buf_id >= 0 && cdb->buf_id < ctl->nbuffers);
-			buf = GetBufferDescriptor(cdb->buf_id + ctl->first_buf_id);
-
-			{
-				uint64		old_buf_state = pg_atomic_read_u64(&buf->state);
+				buf = GetBufferDescriptor(ctl->first_buf_id + i);
+				old_buf_state = pg_atomic_read_u64(&buf->state);
 
 				for (;;)
 				{
-					uint64		local_buf_state = old_buf_state;
+					local_buf_state = old_buf_state;
 
 					if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
 						break;
 
 					if (unlikely(local_buf_state & BM_LOCKED))
 					{
-						SpinLockRelease(&ctl->lirs_lock);
 						old_buf_state = WaitBufHdrUnlocked(buf);
-						SpinLockAcquire(&ctl->lirs_lock);
 						continue;
 					}
 
@@ -1003,30 +968,106 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 													   local_buf_state))
 					{
 						*buf_state = local_buf_state;
-						SpinLockRelease(&ctl->lirs_lock);
 						TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 						return buf;
 					}
 				}
 			}
-
-			idx = next;
 		}
-	}
 
-	SpinLockRelease(&ctl->lirs_lock);
+		/*
+		 * Phase 2: Evict from Q head (resident HIR pages).
+		 * Walk Q from head looking for an unpinned buffer.
+		 *
+		 * Note: we must re-read q_next from the CDB at the end of each
+		 * iteration rather than caching it up front, because the spinlock
+		 * may be released and reacquired while waiting for a locked buffer
+		 * header, and Q list pointers can change in that window.
+		 */
+		SpinLockAcquire(&ctl->lirs_lock);
 
-	/*
-	 * Phase 3: Fallback -- scan buffer descriptors for free buffers.
-	 */
-	{
+		{
+			int			attempts = 0;
+			int			max_attempts = ctl->nbuffers * 3;
+			int			idx = ctl->q_head;
+
+			while (idx >= 0 && idx < ctl->ncdb && attempts < max_attempts)
+			{
+				LirsCDB    *cdb = &cdb_arr[idx];
+
+				attempts++;
+
+				if (cdb->buf_id < 0 || cdb->status != LIRS_STATUS_HIR)
+				{
+					idx = cdb->q_next;
+					continue;
+				}
+
+				Assert(cdb->buf_id >= 0 && cdb->buf_id < ctl->nbuffers);
+				buf = GetBufferDescriptor(cdb->buf_id + ctl->first_buf_id);
+
+				{
+					uint64		old_buf_state = pg_atomic_read_u64(&buf->state);
+
+					for (;;)
+					{
+						uint64		local_buf_state = old_buf_state;
+
+						if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+							break;
+
+						if (unlikely(local_buf_state & BM_LOCKED))
+						{
+							SpinLockRelease(&ctl->lirs_lock);
+							old_buf_state = WaitBufHdrUnlocked(buf);
+							SpinLockAcquire(&ctl->lirs_lock);
+
+							/*
+							 * Q list may have changed while the lock was
+							 * released.  Re-validate this CDB entry: if
+							 * it was evicted, freed, or changed status,
+							 * abandon this candidate and advance to the
+							 * next Q entry.
+							 */
+							if (cdb->status != LIRS_STATUS_HIR ||
+								cdb->buf_id < 0)
+								break;
+							continue;
+						}
+
+						local_buf_state += BUF_REFCOUNT_ONE;
+						if (pg_atomic_compare_exchange_u64(&buf->state,
+														   &old_buf_state,
+														   local_buf_state))
+						{
+							*buf_state = local_buf_state;
+							SpinLockRelease(&ctl->lirs_lock);
+							TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+							return buf;
+						}
+					}
+				}
+
+				/*
+				 * Re-read q_next under the lock.  A stale cached value
+				 * could point to a freed or reallocated CDB if the lock
+				 * was released during the BM_LOCKED wait above.
+				 */
+				idx = cdb->q_next;
+			}
+		}
+
+		SpinLockRelease(&ctl->lirs_lock);
+
+		/*
+		 * Phase 3: Fallback -- scan ALL buffer descriptors for any
+		 * unpinned buffer, including those with CDB entries (LIR pages
+		 * that could be demoted).
+		 */
 		for (int i = 0; i < ctl->nbuffers; i++)
 		{
 			uint64		old_buf_state;
 			uint64		local_buf_state;
-
-			if (buf_to_cdb[i] >= 0)
-				continue;
 
 			buf = GetBufferDescriptor(ctl->first_buf_id + i);
 			old_buf_state = pg_atomic_read_u64(&buf->state);
@@ -1055,6 +1096,12 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 				}
 			}
 		}
+
+		/*
+		 * All buffers are pinned.  Wait briefly for a concurrent backend
+		 * to release a pin, then retry from the top.
+		 */
+		pg_usleep(1000);	/* 1ms */
 	}
 
 	ereport(ERROR,
@@ -1215,7 +1262,30 @@ LirsShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	ctl->nbuffers = nbuffers;
 	ctl->first_buf_id = first_buf_id;
 	ctl->ncdb = ncdb;
-	ctl->lir_capacity = Max(nbuffers * 99 / 100, 1);
+	/*
+	 * LIR capacity determines how many buffers can be "hot" (Low IRR).
+	 * The remaining slots are HIR (eviction candidates in Q).
+	 *
+	 * For small pools we need proportionally more HIR slots to avoid
+	 * running out of eviction candidates under concurrent load (e.g.,
+	 * autovacuum + benchmark queries).  Scale the ratio with pool size:
+	 *
+	 *   < 128 buffers:   75% LIR  (32 HIR slots per 128 buffers)
+	 *   128-511:         85% LIR
+	 *   512-2047:        90% LIR
+	 *   2048-8191:       95% LIR
+	 *   >= 8192:         99% LIR
+	 */
+	if (nbuffers < 128)
+		ctl->lir_capacity = Max(nbuffers * 75 / 100, 1);
+	else if (nbuffers < 512)
+		ctl->lir_capacity = Max(nbuffers * 85 / 100, 1);
+	else if (nbuffers < 2048)
+		ctl->lir_capacity = Max(nbuffers * 90 / 100, 1);
+	else if (nbuffers < 8192)
+		ctl->lir_capacity = Max(nbuffers * 95 / 100, 1);
+	else
+		ctl->lir_capacity = Max(nbuffers * 99 / 100, 1);
 	ctl->max_stack_size = nbuffers * 2;
 	ctl->ghost_hash_size = ghost_hash_size;
 
@@ -1326,7 +1396,7 @@ LirsTrickleIterNext(void *strategy_data, void *iter_state)
 	if (iter->yielded >= iter->max_candidates)
 		return -1;
 
-	while (iter->cdb_idx >= 0)
+	while (iter->cdb_idx >= 0 && iter->cdb_idx < ctl->ncdb)
 	{
 		LirsCDB	   *cdb = &cdb_arr[iter->cdb_idx];
 		int			next_idx = cdb->q_next;

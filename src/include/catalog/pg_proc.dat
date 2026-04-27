@@ -914,6 +914,10 @@
   prosrc => 'heap_tableam_handler' },
 
 # Buffer pool replacement strategy handlers
+{ oid => '9967', descr => 'batched clock-sweep buffer pool replacement handler',
+  proname => 'clock_batch_pool_handler', provolatile => 'v',
+  prorettype => 'internal', proargtypes => 'internal',
+  prosrc => 'clock_batch_pool_handler' },
 { oid => '9960', descr => 'clock-sweep buffer pool replacement handler',
   proname => 'clock_pool_handler', provolatile => 'v',
   prorettype => 'internal', proargtypes => 'internal',

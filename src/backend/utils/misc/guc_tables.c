@@ -520,6 +520,17 @@ static const struct config_enum_entry data_checksums_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry buffer_pool_algorithm_options[] = {
+	{"clock", BP_ALGO_CLOCK, false},
+	{"clock_batch", BP_ALGO_CLOCK_BATCH, false},
+	{"arc", BP_ALGO_ARC, false},
+	{"car", BP_ALGO_CAR, false},
+	{"lirs", BP_ALGO_LIRS, false},
+	{"lru", BP_ALGO_LRU, false},
+	{"osic", BP_ALGO_OSIC, false},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */

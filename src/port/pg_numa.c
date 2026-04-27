@@ -17,6 +17,10 @@
 #include <unistd.h>
 
 #include "miscadmin.h"
+#ifdef WIN32
+#include <windows.h>
+#endif
+
 #include "port/pg_numa.h"
 
 /*
@@ -118,6 +122,23 @@ pg_numa_get_max_node(void)
 	return numa_max_node();
 }
 
+/*
+ * pg_get_online_cpus -- portable online-CPU-count function.
+ *
+ * Returns the number of CPUs currently online.  Used by
+ * ComputeClockBatchSize() to scale batched clock sweep.
+ */
+int
+pg_get_online_cpus(void)
+{
+	long	ncpus;
+
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		return 1;
+	return (int) ncpus;
+}
+
 #else
 
 /* Empty wrappers */
@@ -138,6 +159,29 @@ int
 pg_numa_get_max_node(void)
 {
 	return 0;
+}
+
+/*
+ * pg_get_online_cpus -- portable online-CPU-count function (non-NUMA path).
+ */
+int
+pg_get_online_cpus(void)
+{
+#ifdef WIN32
+	SYSTEM_INFO sysinfo;
+
+	GetSystemInfo(&sysinfo);
+	return (int) sysinfo.dwNumberOfProcessors;
+#elif defined(_SC_NPROCESSORS_ONLN)
+	long	ncpus;
+
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		return 1;
+	return (int) ncpus;
+#else
+	return 1;
+#endif
 }
 
 #endif

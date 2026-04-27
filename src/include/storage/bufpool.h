@@ -131,19 +131,23 @@ typedef struct BufferPoolRoutine
 								  int bgwprocno);
 
 	/*
-	 * Optional trickle writer iterator.  When non-NULL, the trickle writer
-	 * uses these callbacks instead of a linear scan to find dirty pages
-	 * worth flushing.  This lets algorithms direct flush order to their
-	 * coldest pages (e.g., LRU tail, HIR entries).
+	 * Trickle writer iterator API.  Allows each strategy to provide
+	 * algorithm-aware candidates for proactive flush, rather than
+	 * relying on a blind linear scan.
 	 *
-	 * trickle_iter_begin: start iteration over at most max_candidates
-	 *     flush targets.  Returns an opaque iterator state.
-	 * trickle_iter_next: return the next candidate buffer ID, or -1
-	 *     when exhausted.
-	 * trickle_iter_end: free the iterator state.
+	 * trickle_iter_begin: allocate and return an opaque iterator state.
+	 *   max_candidates is a hint for how many buffers the caller wants.
+	 *   May be NULL if the algorithm doesn't provide an iterator.
+	 *
+	 * trickle_iter_next: return the next buffer ID to consider flushing,
+	 *   or -1 if no more candidates.  Must be called after _begin.
+	 *   May be NULL (no iterator support).
+	 *
+	 * trickle_iter_end: release iterator resources.
+	 *   May be NULL if _begin is NULL.
 	 */
 	void	   *(*trickle_iter_begin)(void *strategy_data,
-									  int max_candidates);
+									 int max_candidates);
 	int			(*trickle_iter_next)(void *strategy_data,
 									 void *iter);
 	void		(*trickle_iter_end)(void *strategy_data,
@@ -215,27 +219,54 @@ typedef struct BufferPoolRoutine
 extern PGDLLIMPORT const BufferPoolRoutine *ActivePoolRoutine;
 extern PGDLLIMPORT void *ActivePoolData;
 
-/* The built-in clock-sweep buffer pool routine */
+/* The built-in clock-sweep buffer pool routine (vanilla single-step) */
 extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
 
-/*
- * Buffer pool strategy selection (GUC enum).
- *
- * Selects the replacement algorithm for the default buffer pool.
- * Set via the buffer_pool_strategy GUC parameter (PGC_POSTMASTER).
- */
-typedef enum BufferPoolStrategyKind
-{
-	BUFPOOL_STRATEGY_CLOCK = 0
-} BufferPoolStrategyKind;
+/* The built-in batched clock-sweep buffer pool routine */
+extern PGDLLIMPORT const BufferPoolRoutine clock_batch_pool_routine;
 
-extern PGDLLIMPORT int buffer_pool_strategy;
+/* The built-in KEEP buffer pool routine (never evicts) */
+extern PGDLLIMPORT const BufferPoolRoutine keep_pool_routine;
 
 /* The built-in RECYCLE pool routine (one-chance clock for bulk/VACUUM scans) */
 extern PGDLLIMPORT const BufferPoolRoutine recycle_pool_routine;
 
 /* VACUUM hint dispatch for pools */
 extern void PoolHintVacuum(Oid pool_oid, bool vacuum_active);
+
+
+/* ----------------------------------------------------------------
+ * DEFAULT pool runtime algorithm swap
+ *
+ * Extensions can register their BufferPoolRoutine for use with the
+ * DEFAULT pool via the buffer_pool_algorithm GUC.  Extensions MUST be
+ * loaded via shared_preload_libraries so they're available at startup
+ * for shared memory sizing.
+ * ----------------------------------------------------------------
+ */
+
+/* Known algorithm identifiers for the DEFAULT pool */
+#define BP_ALGO_CLOCK		0
+#define BP_ALGO_CLOCK_BATCH	1
+#define BP_ALGO_ARC			2
+#define BP_ALGO_CAR			3
+#define BP_ALGO_LIRS		4
+#define BP_ALGO_LRU			5
+#define BP_ALGO_OSIC		6
+#define BP_NUM_ALGORITHMS	7
+
+/*
+ * Register an algorithm for use with the DEFAULT pool.
+ * Must be called from shared_preload_libraries _PG_init().
+ */
+extern void RegisterDefaultPoolAlgorithm(int algo_id,
+										 const BufferPoolRoutine *routine);
+
+/* Check if an algorithm is registered (available for use) */
+extern int	IsDefaultPoolAlgorithmRegistered(int algo_id);
+
+/* GUC variable for the current DEFAULT pool algorithm */
+extern PGDLLIMPORT int buffer_pool_algorithm;
 
 /* GUC variables for trickle writer tuning */
 extern PGDLLIMPORT int trickle_flush_after;

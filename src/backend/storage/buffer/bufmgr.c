@@ -4367,7 +4367,20 @@ BgBufferSync(WritebackContext *wb_context)
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
 		strategy_delta += (long) passes_delta * NBuffers;
 
-		Assert(strategy_delta >= 0);
+		/*
+		 * After a runtime buffer_pool_algorithm swap the counters reset to
+		 * zero, which can make strategy_delta negative.  Treat that the same
+		 * as a first-time initialization.
+		 */
+		if (strategy_delta < 0)
+		{
+			saved_info_valid = false;
+			strategy_delta = 0;
+			next_to_clean = strategy_buf_id;
+			next_passes = strategy_passes;
+			bufs_to_lap = NBuffers;
+			goto bg_sync_initialized;
+		}
 
 		if ((int32) (next_passes - strategy_passes) > 0)
 		{
@@ -4425,6 +4438,7 @@ BgBufferSync(WritebackContext *wb_context)
 		bufs_to_lap = NBuffers;
 	}
 
+bg_sync_initialized:
 	/* Update saved info for next time */
 	prev_strategy_buf_id = strategy_buf_id;
 	prev_strategy_passes = strategy_passes;

@@ -65,6 +65,19 @@ void		_PG_init(void);
 #define CAR_NUM_LISTS		4
 #define CAR_LIST_UNUSED		(-1)
 
+/* Stat slot indices for PoolStatIncrement */
+#define CAR_STAT_LOOKUPS		0
+#define CAR_STAT_T1_HITS		1
+#define CAR_STAT_T2_HITS		2
+#define CAR_STAT_B1_HITS		3
+#define CAR_STAT_B2_HITS		4
+#define CAR_STAT_MISSES			5
+#define CAR_STAT_T1_EVICTIONS	6
+#define CAR_STAT_T2_EVICTIONS	7
+#define CAR_NUM_STATS			8
+
+static uint64 car_local_stats[CAR_NUM_STATS];
+
 /*
  * CAR Cache Directory Block (CDB).
  *
@@ -132,6 +145,8 @@ typedef struct CarControl
 	pg_atomic_uint64 stat_t2_evictions;
 
 	int			bgwprocno;		/* trickle writer procno (-1 = none) */
+
+	pg_atomic_uint32 free_scan_start;	/* round-robin for free buffer scan */
 
 	/*
 	 * Variable-length arrays follow:
@@ -439,7 +454,7 @@ CarOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	int			pool_local_id = buf_id - ctl->first_buf_id;
 	int			cdb_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&car_local_stats[CAR_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
 		return;
@@ -449,9 +464,9 @@ CarOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 		return;
 
 	if (cdb_arr[cdb_idx].list == CAR_LIST_T1)
-		pg_atomic_fetch_add_u64(&ctl->stat_t1_hits, 1);
+		PoolStatIncrement(&car_local_stats[CAR_STAT_T1_HITS], &ctl->stat_t1_hits);
 	else if (cdb_arr[cdb_idx].list == CAR_LIST_T2)
-		pg_atomic_fetch_add_u64(&ctl->stat_t2_hits, 1);
+		PoolStatIncrement(&car_local_stats[CAR_STAT_T2_HITS], &ctl->stat_t2_hits);
 
 	/*
 	 * Set reference bit atomically.  No spinlock needed -- this is the
@@ -473,7 +488,7 @@ CarOnMiss(void *strategy_data, BufferTag *tag)
 	CarBackendState *state = car_get_backend_state(ctl);
 	int			ghost_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&car_local_stats[CAR_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	SpinLockAcquire(&ctl->car_lock);
 
@@ -488,7 +503,7 @@ CarOnMiss(void *strategy_data, BufferTag *tag)
 		{
 			int			delta;
 
-			pg_atomic_fetch_add_u64(&ctl->stat_b1_hits, 1);
+			PoolStatIncrement(&car_local_stats[CAR_STAT_B1_HITS], &ctl->stat_b1_hits);
 			delta = Max(ctl->b2_size / Max(ctl->b1_size, 1), 1);
 			ctl->target_T1_size = Min(ctl->target_T1_size + delta,
 									  ctl->nbuffers);
@@ -498,7 +513,7 @@ CarOnMiss(void *strategy_data, BufferTag *tag)
 		{
 			int			delta;
 
-			pg_atomic_fetch_add_u64(&ctl->stat_b2_hits, 1);
+			PoolStatIncrement(&car_local_stats[CAR_STAT_B2_HITS], &ctl->stat_b2_hits);
 			delta = Max(ctl->b1_size / Max(ctl->b2_size, 1), 1);
 			ctl->target_T1_size = Max(ctl->target_T1_size - delta, 0);
 			state->ghost_cdb = ghost_idx;
@@ -510,7 +525,7 @@ CarOnMiss(void *strategy_data, BufferTag *tag)
 	}
 	else
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_misses, 1);
+		PoolStatIncrement(&car_local_stats[CAR_STAT_MISSES], &ctl->stat_misses);
 		state->ghost_cdb = -1;
 	}
 
@@ -553,13 +568,13 @@ CarOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	{
 		car_clock_remove(ctl, cdb_arr, cdb_idx);
 		car_ghost_list_append(ctl, cdb_arr, cdb_idx, false);	/* B1 */
-		pg_atomic_fetch_add_u64(&ctl->stat_t1_evictions, 1);
+		PoolStatIncrement(&car_local_stats[CAR_STAT_T1_EVICTIONS], &ctl->stat_t1_evictions);
 	}
 	else if (old_list == CAR_LIST_T2)
 	{
 		car_clock_remove(ctl, cdb_arr, cdb_idx);
 		car_ghost_list_append(ctl, cdb_arr, cdb_idx, true);	/* B2 */
-		pg_atomic_fetch_add_u64(&ctl->stat_t2_evictions, 1);
+		PoolStatIncrement(&car_local_stats[CAR_STAT_T2_EVICTIONS], &ctl->stat_t2_evictions);
 	}
 	else
 	{
@@ -663,6 +678,56 @@ CarGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 	state->ghost_cdb = -1;
 
 	max_attempts = ctl->nbuffers * 3;	/* generous sweep limit */
+
+	/*
+	 * Phase 0: Check for free/untracked buffers first.
+	 * When the pool is larger than the working set, there will be many
+	 * free buffers.  Scanning for them first avoids unnecessary T1/T2
+	 * clock sweeps that would evict working set pages.
+	 */
+	{
+		int		   *buf_to_cdb = CAR_BUF_TO_CDB(ctl);
+		int			scan_start = pg_atomic_read_u32(&ctl->free_scan_start) % ctl->nbuffers;
+
+		for (int j = 0; j < ctl->nbuffers; j++)
+		{
+			int			i = (scan_start + j) % ctl->nbuffers;
+			uint64		old_buf_state;
+			uint64		local_buf_state;
+
+			if (buf_to_cdb[i] >= 0)
+				continue;		/* tracked, skip */
+
+			buf = GetBufferDescriptor(ctl->first_buf_id + i);
+			old_buf_state = pg_atomic_read_u64(&buf->state);
+
+			for (;;)
+			{
+				local_buf_state = old_buf_state;
+
+				if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+					break;
+
+				if (unlikely(local_buf_state & BM_LOCKED))
+				{
+					old_buf_state = WaitBufHdrUnlocked(buf);
+					continue;
+				}
+
+				local_buf_state += BUF_REFCOUNT_ONE;
+				if (pg_atomic_compare_exchange_u64(&buf->state,
+												   &old_buf_state,
+												   local_buf_state))
+				{
+					pg_atomic_write_u32(&ctl->free_scan_start,
+										(i + 1) % ctl->nbuffers);
+					*buf_state = local_buf_state;
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+					return buf;
+				}
+			}
+		}
+	}
 
 	SpinLockAcquire(&ctl->car_lock);
 
@@ -832,7 +897,8 @@ CarGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 	SpinLockRelease(&ctl->car_lock);
 
 	/*
-	 * Fallback: scan buffer descriptors for free (untracked) buffers.
+	 * Phase 3 (last resort): scan buffer descriptors for any usable buffer.
+	 * This should rarely be reached now that Phase 0 handles free buffers.
 	 */
 	{
 		int		   *buf_to_cdb = CAR_BUF_TO_CDB(ctl);
@@ -1065,6 +1131,7 @@ CarShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	pg_atomic_init_u64(&ctl->stat_misses, 0);
 	pg_atomic_init_u64(&ctl->stat_t1_evictions, 0);
 	pg_atomic_init_u64(&ctl->stat_t2_evictions, 0);
+	pg_atomic_init_u32(&ctl->free_scan_start, 0);
 
 	/* Initialize CDB array: all on free list */
 	cdb_arr = CAR_CDB(ctl);

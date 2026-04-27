@@ -1,0 +1,358 @@
+src/backend/storage/buffer/DESIGN.clock_sweep
+
+Clock-Sweep Implementation Design Notes
+========================================
+
+This document describes the internal design of the clock-sweep buffer
+replacement algorithm as implemented in freelist.c.  It is intended for
+engineers maintaining or extending this code.
+
+
+A. Core Algorithm
+-----------------
+
+The clock-sweep algorithm uses a single clock hand (nextVictimBuffer) that
+sweeps circularly through the buffer array.  Each buffer carries a
+usage_count in the range 0-5, stored in the buffer header state word
+(buf->state).
+
+  On access (BufferAlloc / PinBuffer):
+    usage_count = min(usage_count + 1, BM_MAX_USAGE_COUNT)
+    where BM_MAX_USAGE_COUNT = 5.
+
+  On sweep (ClockGetVictim):
+    for each buffer at the clock hand position:
+      if refcount != 0:       skip (buffer is pinned)
+      if BM_LOCKED set:       wait for unlock, retry
+      if usage_count > 0:     CAS: decrement usage_count by 1, advance
+      if usage_count == 0:    CAS: increment refcount (pin), return as victim
+
+The completePasses counter tracks how many full cycles the clock hand has
+made.  This is used by the bgwriter and checkpointer to pace their dirty
+buffer write-back.
+
+
+B. Two Built-in Variants
+-------------------------
+
+PostgreSQL provides two built-in clock-sweep algorithms:
+
+  1. "clock" (BP_ALGO_CLOCK, ID 0) -- the default
+     Vanilla single-step sweep: each victim selection calls
+     pg_atomic_fetch_add_u32(&nextVictimBuffer, 1).  Implemented in
+     ClockGetVictim() via ClockSweepTick().  This is the classic approach,
+     identical to the pre-multi-pool implementation.
+
+  2. "clock_batch" (BP_ALGO_CLOCK_BATCH, ID 1) -- non-default alternative
+     Batched sweep: each backend claims a batch of buffer IDs with a single
+     atomic fetch-add, then iterates them locally.  Implemented in
+     ClockBatchGetVictim() via ClockBatchTick().  Reduces cross-core
+     contention on the nextVictimBuffer atomic by the batch factor.
+
+Both algorithms share the same BufferStrategyControl shared state and the
+same completePasses/wraparound handling.  The only difference is how the
+clock hand is advanced (single-step vs. batched).
+
+When to choose clock_batch:
+  - Large NUMA systems (2+ sockets) with high backend counts
+  - Workloads with heavy concurrent victim selection
+  - Systems where profiling shows contention on nextVictimBuffer
+
+When to stay with clock (the default):
+  - Single-socket systems with moderate concurrency
+  - Workloads that are not victim-selection-bound
+  - When simplicity and predictability are preferred
+
+
+C. Batched Clock Sweep Details (ComputeClockBatchSize)
+-------------------------------------------------------
+
+Problem:
+
+  The single-step approach uses pg_atomic_fetch_add_u32(&nextVictimBuffer, 1)
+  on every victim selection.  This is a single cache line bouncing between all
+  cores.  On NUMA systems, each cross-interconnect atomic costs 100-300ns,
+  creating a severe scalability bottleneck under high concurrency.
+
+Solution:
+
+  Each backend claims a batch of buffer IDs with one atomic fetch-add, then
+  iterates them locally.  The function ClockBatchTick() implements this:
+
+    if batch_pos >= batch_end:
+        base = pg_atomic_fetch_add_u32(nextVictimPtr, batch_size)
+        batch_pos = base
+        batch_end = base + batch_size
+    return batch_pos++
+
+Batch size computation (ComputeClockBatchSize):
+
+    NUMA (multi-socket):    base_batch = 64
+    >16 cores, 1 socket:   base_batch = 32
+    9-16 cores:             base_batch = 16
+    5-8 cores:              base_batch = 8
+    <=4 cores:              base_batch = 1   (no batching)
+
+    Safety cap:  max_batch = pool_nbuffers / (2 * MaxBackends)
+    Final:       min(base_batch, max_batch, pool_nbuffers)
+
+  The safety cap prevents over-claiming: if every backend simultaneously
+  claims a batch, the total must not exceed half the pool.
+
+Per-backend batch state:
+
+    Default pool:   static uint32 MyBatchPos, MyBatchEnd (in freelist.c)
+    Dynamic pools:  uint32 batch_pos, batch_end in PoolLocalState
+                    (defined in bufpool_internals.h)
+
+Wraparound handling (default pool only):
+
+    When victim_raw >= pool_nbuffers and victim_raw % pool_nbuffers == 0:
+      1. Acquire buffer_strategy_lock (SpinLock)
+      2. CAS nextVictimBuffer from (victim_raw + 1) to wrapped value
+      3. If CAS succeeds, increment completePasses
+      4. Release spinlock
+      5. Repeat if CAS fails (another backend may have wrapped first)
+
+    Dynamic pools use simple modulo without completePasses tracking.
+
+
+D. Three Pool Types Using Clock Sweep
+--------------------------------------
+
+1. Default pool (slot 0):
+
+   Shared memory:   BufferStrategyControl struct (~64 bytes)
+   Buffers:         BufferDescriptors[0..NBuffers-1], BufferBlocks
+   Hash table:      SharedBufHash with NUM_BUFFER_PARTITIONS (128) LWLocks
+   Victim function: ClockGetVictim(StrategyControl, ...)
+   Configuration:   shared_buffers GUC, buffer_pool_algorithm GUC
+
+2. Dynamic clock pools:
+
+   Shared memory:   ClockPoolState in DSM segment
+   Creation:        CREATE BUFFER POOL ... HANDLER clock_pool_handler
+   Hash table:      Per-pool open-addressed hash, bp_num_partitions = 1
+   Victim function: ClockGetVictim(pool_state, ...) -- same code path
+   Initialization:  ClockPoolShmemInit() called from CreateDynamicBufferPool()
+
+3. RECYCLE pool (slot 1):
+
+   Shared memory:   RecyclePoolState in DSM segment
+   Purpose:         Replaces per-backend ring buffers for scan/VACUUM/bulk-write
+   Variant:         One-chance clock sweep (usage_count cleared to 0 in one
+                    step instead of decrementing)
+   Victim function: RecycleGetVictim() -- separate implementation
+   Routing:         BufferAccessStrategy (BAS_BULKREAD, BAS_BULKWRITE,
+                    BAS_VACUUM) dispatches through RECYCLE pool when available
+
+
+E. Concurrency Details
+-----------------------
+
+nextVictimBuffer (pg_atomic_uint32):
+  Advanced by atomic fetch-add.  With batching, each fetch-add advances
+  by batch_size instead of 1.
+
+buffer_strategy_lock (SpinLock):
+  Protects wraparound handling and completePasses update only.  NOT held
+  on the hot path.  The hot path (usage_count decrement and buffer
+  pinning) is entirely lock-free, using CAS on buf->state.
+
+Buffer header pinning:
+  Uses CAS on buf->state (a pg_atomic_uint64) to atomically increment the
+  refcount field.  If the CAS fails, the loop retries with the new state.
+
+BM_LOCKED wait:
+  If the BM_LOCKED flag is set in buf->state, the backend calls
+  WaitBufHdrUnlocked(buf) which spins briefly then sleeps.  The strategy
+  spinlock is NOT held during this wait.
+
+usage_count update on the hit path:
+  Done in BufferAlloc/PinBuffer, NOT in the clock sweep.  The clock sweep
+  only decrements usage_count.  This means the hit path has zero
+  interaction with the clock sweep mechanism.
+
+
+F. Trickle Writer Integration
+------------------------------
+
+The trickle writer (bgwriter) uses the clock hand position to find dirty
+buffers that are about to be evicted.
+
+ClockTrickleIterBegin(strategy_data, max_candidates):
+  Allocates a ClockTrickleIter, snapshots the current pool dimensions.
+
+ClockTrickleIterNext(strategy_data, iter):
+  Walks forward from offset 0 through the pool.  For each buffer:
+    - Skip if not BM_VALID or not BM_DIRTY
+    - Skip if refcount != 0 (pinned)
+    - Yield if usage_count == 0 (coldest -- about to be evicted)
+  Returns buf_id of next candidate, or -1 when exhausted.
+
+ClockTrickleIterEnd(strategy_data, iter):
+  Frees the iterator.
+
+RecycleSyncStart(strategy_data, ...):
+  Returns the RECYCLE pool's current clock position.  Used by the
+  checkpointer to coordinate write-back of RECYCLE pool dirty buffers.
+
+
+G. Ring Buffer Integration (RECYCLE Pool)
+------------------------------------------
+
+When the RECYCLE pool is enabled (recycle_pool_buffers > 0),
+BufferAccessStrategy objects route through it instead of using traditional
+per-backend ring buffers.
+
+Routing in ClockGetVictim (default pool path):
+  if strategy != NULL and strategy->recycle_pool != NULL:
+      call recycle_pool->bp_routine->get_victim(...)
+      if successful, set from_ring = true, return
+      else fall through to main pool
+
+RecycleGetVictim:
+  Same clock-sweep loop structure as ClockGetVictim but with one-chance
+  eviction: when usage_count != 0, clear it entirely (bitwise AND with
+  ~BUF_USAGECOUNT_MASK) instead of decrementing by 1.  This ensures
+  scan-loaded pages persist for at most one sweep cycle.
+
+RecycleRejectBuffer:
+  The RECYCLE pool's reject_buffer callback is NULL; dirty ring buffers
+  are handled by the caller falling through to the main pool.
+
+Per-mode statistics:
+  RecyclePoolState tracks separate atomic counters for bulkread_allocs,
+  bulkwrite_allocs, and vacuum_allocs for monitoring workload distribution
+  across the shared pool.
+
+
+H. Algorithm Swap
+-----------------
+
+The buffer_pool_algorithm GUC allows runtime swap between clock-sweep and
+extension-provided algorithms (ARC, CAR, etc.) for the default pool.
+
+Registration:
+  Extensions call RegisterDefaultPoolAlgorithm(algo_id, routine) from
+  their _PG_init().  The routine is stored in algo_registry[algo_id].
+  Clock-sweep is always at algo_registry[BP_ALGO_CLOCK].
+
+Check hook (check_buffer_pool_algorithm):
+  Verifies the requested algorithm is registered.  Before shmem init,
+  any value is accepted (deferred validation).
+
+Assign hook (assign_buffer_pool_algorithm):
+  1. Acquire DefaultPoolHdr->swap_lock (SpinLock)
+  2. If current_algo != newval:
+     a. Call old algorithm's shutdown callback (if any)
+     b. memset(strategy_data, 0, region_size)
+     c. Call new algorithm's shmem_init
+     d. Update current_algo
+  3. Release swap_lock
+  4. Reset MyBatchPos = MyBatchEnd = 0  (per-backend batch state)
+  5. Update ActivePoolRoutine and ActivePoolData
+
+DefaultPoolHeader layout:
+  swap_lock:     SpinLock protecting algorithm swap
+  current_algo:  BP_ALGO_* value identifying active algorithm
+  region_size:   total bytes available for strategy_data
+  [strategy_data follows at MAXALIGN offset]
+
+The region_size is computed as the maximum shmem_size across all registered
+algorithms, so a swap can reuse the same shared memory region without a
+server restart.
+
+
+I. Memory Overhead
+------------------
+
+Per-buffer:
+  No additional metadata.  The usage_count is packed into the existing
+  buf->state word (a pg_atomic_uint64), using BUF_USAGECOUNT_BITS bits.
+
+BufferStrategyControl (default pool):  ~64 bytes total
+  nextVictimBuffer:  pg_atomic_uint32
+  completePasses:    uint32
+  numBufferAllocs:   pg_atomic_uint32
+  batch_size:        int
+  bgwprocno:         int
+  buffer_strategy_lock: slock_t
+
+ClockPoolState (dynamic pools):  similar layout, adds first_buf_id and
+  nbuffers fields.
+
+RecyclePoolState:  extends ClockPoolState with three pg_atomic_uint64
+  per-mode stat counters (bulkread_allocs, bulkwrite_allocs, vacuum_allocs).
+
+Per-backend:
+  Default pool:  MyBatchPos, MyBatchEnd (two static uint32 in freelist.c)
+  Dynamic pools: batch_pos, batch_end in PoolLocalState (two uint32)
+
+
+J. Performance Characteristics
+-------------------------------
+
+Hit path:
+  No clock-sweep involvement.  usage_count is updated in BufferAlloc /
+  PinBuffer via CAS on buf->state.  The clock hand is not touched.
+
+Victim selection:
+  Worst case O(n) where n = pool_nbuffers (all buffers have high
+  usage_count and the hand must sweep the entire array).
+  Amortized O(1) under steady-state workloads where cold buffers are
+  readily available near the clock hand.
+
+Batched sweep effect:
+  Reduces atomic contention on nextVictimBuffer by the batch factor.
+  On NUMA systems with batch=64, this reduces cross-interconnect atomic
+  traffic by 64x compared to unbatched sweep.
+
+Wraparound cost:
+  The buffer_strategy_lock is only acquired on wraparound (once per full
+  sweep of the buffer array).  With NBuffers=16384 (128MB at 8KB pages),
+  this happens once every 16384 victim selections.
+
+
+K. References
+-------------
+
+F.J. Corbato, "A Paging Experiment with the Multics System", MIT
+Project MAC, 1968.  (Original clock algorithm.)
+
+PostgreSQL source:
+  src/backend/storage/buffer/freelist.c     -- implementation
+  src/include/storage/buf_internals.h       -- BM_MAX_USAGE_COUNT, state layout
+  src/include/storage/bufpool.h             -- BufferPoolRoutine vtable
+  src/include/storage/bufpool_internals.h   -- PoolLocalState, BufferPoolDesc
+
+Batched clock sweep inspired by pgsql-hackers discussion during
+PostgreSQL v18 development.
+
+
+L. Known Limitations
+--------------------
+
+1. Coarse ordering.  The usage_count range (0-5) groups buffers into only
+   6 priority levels.  Within a level, eviction order depends on clock hand
+   position rather than actual access recency.  True LRU would provide
+   finer ordering but at higher maintenance cost.
+
+2. No ghost lists.  Unlike ARC or CAR, clock-sweep does not track recently
+   evicted pages.  It cannot detect that an evicted page was quickly
+   re-requested and adjust its policy accordingly.  This means the
+   algorithm cannot dynamically tune the balance between recency and
+   frequency.
+
+3. Partial scan resistance.  Sequential scans set usage_count to 1 for
+   newly loaded pages.  This gives scan-loaded pages one full sweep cycle
+   of protection before eviction, which helps but does not fully prevent
+   cache pollution from large scans.  The RECYCLE pool provides stronger
+   isolation for bulk operations.
+
+4. Batch unfairness.  Batched sweep means one backend's batch may land on
+   a run of hot buffers (all with high usage_count), forcing it to
+   decrement them all without finding a victim, while another backend's
+   batch may land on cold buffers and find a victim immediately.  Under
+   uniform workloads this averages out, but skewed access patterns can
+   cause temporary unfairness in victim-finding latency.

@@ -57,6 +57,19 @@ void		_PG_init(void);
 #define ARC_NUM_LISTS		4
 #define ARC_LIST_UNUSED		(-1)
 
+/* Stat slot indices for PoolStatIncrement */
+#define ARC_STAT_LOOKUPS		0
+#define ARC_STAT_T1_HITS		1
+#define ARC_STAT_T2_HITS		2
+#define ARC_STAT_B1_HITS		3
+#define ARC_STAT_B2_HITS		4
+#define ARC_STAT_MISSES			5
+#define ARC_STAT_T1_EVICTIONS	6
+#define ARC_STAT_T2_EVICTIONS	7
+#define ARC_NUM_STATS			8
+
+static uint64 arc_local_stats[ARC_NUM_STATS];
+
 /*
  * ARC Cache Directory Block (CDB).
  *
@@ -462,7 +475,7 @@ ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	int			pool_local_id;
 	int			cdb_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	/*
 	 * Convert global buf_id to pool-local index.  For the default pool,
@@ -492,13 +505,13 @@ ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	/* Move to T2 MRU position */
 	if (cdb_arr[cdb_idx].list == ARC_LIST_T1)
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_t1_hits, 1);
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T1_HITS], &ctl->stat_t1_hits);
 		arc_list_remove(ctl, cdb_arr, cdb_idx);
 		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
 	}
 	else if (cdb_arr[cdb_idx].list == ARC_LIST_T2)
 	{
-		pg_atomic_fetch_add_u64(&ctl->stat_t2_hits, 1);
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T2_HITS], &ctl->stat_t2_hits);
 		/* Already on T2, just move to MRU position */
 		arc_list_remove(ctl, cdb_arr, cdb_idx);
 		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
@@ -520,7 +533,7 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 	ArcBackendState *state = arc_get_backend_state(ctl);
 	int			ghost_idx;
 
-	pg_atomic_fetch_add_u64(&ctl->stat_lookups, 1);
+	PoolStatIncrement(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
 
 	SpinLockAcquire(&ctl->arc_lock);
 
@@ -539,7 +552,7 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 			 */
 			int			delta;
 
-			pg_atomic_fetch_add_u64(&ctl->stat_b1_hits, 1);
+			PoolStatIncrement(&arc_local_stats[ARC_STAT_B1_HITS], &ctl->stat_b1_hits);
 
 			delta = Max(ctl->list_size[ARC_LIST_B2] /
 						Max(ctl->list_size[ARC_LIST_B1], 1), 1);
@@ -556,7 +569,7 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 			 */
 			int			delta;
 
-			pg_atomic_fetch_add_u64(&ctl->stat_b2_hits, 1);
+			PoolStatIncrement(&arc_local_stats[ARC_STAT_B2_HITS], &ctl->stat_b2_hits);
 
 			delta = Max(ctl->list_size[ARC_LIST_B1] /
 						Max(ctl->list_size[ARC_LIST_B2], 1), 1);
@@ -573,7 +586,7 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 	else
 	{
 		/* Complete cache miss */
-		pg_atomic_fetch_add_u64(&ctl->stat_misses, 1);
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_MISSES], &ctl->stat_misses);
 		state->ghost_cdb = -1;
 	}
 
@@ -632,13 +645,13 @@ ArcOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	{
 		arc_list_remove(ctl, cdb_arr, cdb_idx);
 		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_B1);
-		pg_atomic_fetch_add_u64(&ctl->stat_t1_evictions, 1);
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T1_EVICTIONS], &ctl->stat_t1_evictions);
 	}
 	else if (old_list == ARC_LIST_T2)
 	{
 		arc_list_remove(ctl, cdb_arr, cdb_idx);
 		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_B2);
-		pg_atomic_fetch_add_u64(&ctl->stat_t2_evictions, 1);
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T2_EVICTIONS], &ctl->stat_t2_evictions);
 	}
 	else
 	{

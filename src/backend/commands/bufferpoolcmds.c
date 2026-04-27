@@ -200,6 +200,14 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 						stmt->poolname),
 				 errhint("Must be superuser to create a buffer pool.")));
 
+	/* Reject reserved well-known pool names */
+	if (pg_strcasecmp(stmt->poolname, "default") == 0 ||
+		pg_strcasecmp(stmt->poolname, "recycle") == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_RESERVED_NAME),
+				 errmsg("buffer pool name \"%s\" is reserved",
+						stmt->poolname)));
+
 	/* Check if name is already used */
 	if (SearchSysCacheExists1(BUFFERPOOLNAME,
 							  CStringGetDatum(stmt->poolname)))
@@ -497,6 +505,13 @@ RenameBufferPool(const char *oldname, const char *newname)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot rename the default buffer pool")));
+
+	/* Reject reserved well-known pool names */
+	if (pg_strcasecmp(newname, "default") == 0 ||
+		pg_strcasecmp(newname, "recycle") == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_RESERVED_NAME),
+				 errmsg("buffer pool name \"%s\" is reserved", newname)));
 
 	/* Check that the new name doesn't already exist */
 	if (OidIsValid(get_bufferpool_oid(newname, true)))
