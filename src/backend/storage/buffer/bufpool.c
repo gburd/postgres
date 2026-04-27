@@ -203,6 +203,21 @@ BufferPoolShmemInit(void *arg)
 	/* Initialize per-backend local state array */
 	MemSet(PoolLocalStates, 0, sizeof(PoolLocalStates));
 
+	/*
+	 * Populate PoolLocalStates[0] from global shmem pointers so the DEFAULT
+	 * pool can be accessed through the same PoolLocalState interface as
+	 * dynamic pools.  No DSM segment -- these point into main shared memory.
+	 */
+	PoolLocalStates[0].seg = NULL;			/* not DSM-backed */
+	PoolLocalStates[0].descriptors = BufferDescriptors;
+	PoolLocalStates[0].blocks = BufferBlocks;
+	PoolLocalStates[0].io_cvs = BufferIOCVArray;
+	PoolLocalStates[0].hash_entries = NULL;	/* uses SharedBufHash */
+	PoolLocalStates[0].mapping_locks = NULL;	/* uses MainLWLockArray */
+	PoolLocalStates[0].ckpt_ids = CkptBufferIds;
+	PoolLocalStates[0].strategy_data = ActivePoolData;
+	PoolLocalStates[0].attached = true;
+
 	/* Initialize startup flag for dynamic pool recreation */
 	pg_atomic_init_u32(BufferPoolStartupFlag, 0);
 }
@@ -875,6 +890,9 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	/* Register a per-pool trickle writer background worker */
 	RegisterPoolTrickleWriter(pool, slot);
 
+	/* Rebuild cross-pool hash partition map */
+	RebuildPoolPartitions();
+
 	return pool;
 }
 
@@ -988,6 +1006,62 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 		}
 		MaxBufferNumber = new_max;
 	}
+
+	/* Rebuild cross-pool hash partition map */
+	RebuildPoolPartitions();
+}
+
+/*
+ * ResizeDynamicBufferPool
+ *		Resize a dynamic buffer pool by destroying and recreating it.
+ *
+ * DSM has no resize API, so this is implemented as an atomic
+ * destroy-and-recreate.  The pool's cached pages are evicted (they're
+ * a cache -- data is safe on disk).  The pool keeps its OID, name,
+ * and handler.
+ *
+ * The caller must ensure no buffers in the pool are pinned.
+ * Returns the new pool descriptor (may be at the same slot).
+ */
+BufferPoolDesc *
+ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
+{
+	Oid			bp_oid;
+	Oid			handler_oid;
+	NameData	pool_name;
+	const BufferPoolRoutine *routine;
+	Datum		datum;
+
+	Assert(pool != NULL);
+	Assert(pool->bp_active);
+	Assert(PoolIsDynamic(pool));
+	Assert(new_nbuffers >= 16);
+
+	/* Save pool identity before destruction */
+	bp_oid = pool->bp_oid;
+	handler_oid = pool->bp_handler_oid;
+	namestrcpy(&pool_name, NameStr(pool->bp_name));
+
+	/* Resolve the handler to get the routine vtable */
+	if (OidIsValid(handler_oid))
+	{
+		datum = OidFunctionCall0(handler_oid);
+		routine = (const BufferPoolRoutine *) DatumGetPointer(datum);
+	}
+	else
+		routine = pool->bp_routine;
+
+	elog(LOG, "resizing buffer pool \"%s\" from %d to %d buffers",
+		 NameStr(pool_name), pool->bp_nbuffers, new_nbuffers);
+
+	/* Destroy: flushes dirty buffers, terminates trickle writer, frees DSM */
+	DestroyDynamicBufferPool(pool);
+
+	/* Recreate with new size */
+	pool = CreateDynamicBufferPool(bp_oid, NameStr(pool_name), new_nbuffers,
+								   routine, handler_oid);
+
+	return pool;
 }
 
 /*
@@ -1247,6 +1321,155 @@ PoolHintVacuum(Oid pool_oid, bool vacuum_active)
 		/* Default pool uses ActivePoolData */
 		StrategyHintVacuum(vacuum_active);
 	}
+}
+
+
+/* ----------------------------------------------------------------
+ *		Weighted-range hash partition infrastructure
+ *
+ * Maps the full uint64 hash space proportionally across active pools
+ * based on their buffer counts.  Used for proportional dispatch of
+ * operations; currently advisory -- actual routing uses relation-level
+ * rd_bufpool assignment.
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * Backend-local partition map, rebuilt on pool create/destroy.
+ */
+static PoolHashPartitions LocalPartitions = {NULL, 0, 0};
+
+/*
+ * ComputeCrossPoolPartitions -- build a weighted hash partition map
+ * from all active pools, proportional to their buffer counts.
+ */
+void
+ComputeCrossPoolPartitions(PoolHashPartitions *parts)
+{
+	int			total_buffers = 0;
+	int			active_count = 0;
+	uint64		next_lower_bound = 0;
+	int			i;
+
+	/* Count total buffers across active pools */
+	for (i = 0; i < NBufferPools; i++)
+	{
+		if (BufferPoolDescs[i].bp_active)
+		{
+			total_buffers += BufferPoolDescs[i].bp_nbuffers;
+			active_count++;
+		}
+	}
+
+	if (active_count == 0 || total_buffers == 0)
+	{
+		parts->count = 0;
+		return;
+	}
+
+	/* Ensure capacity */
+	if (parts->capacity < active_count)
+	{
+		if (parts->entries)
+			pfree(parts->entries);
+		parts->entries = (PoolHashPartition *)
+			MemoryContextAlloc(TopMemoryContext,
+							   active_count * sizeof(PoolHashPartition));
+		parts->capacity = active_count;
+	}
+
+	parts->count = 0;
+
+	for (i = 0; i < NBufferPools; i++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[i];
+		PoolHashPartition *entry;
+		uint64		interval;
+
+		if (!pool->bp_active)
+			continue;
+
+		entry = &parts->entries[parts->count];
+		entry->pool_slot = i;
+		entry->lower_bound = next_lower_bound;
+
+		/* Proportional interval: (buffers / total) * UINT64_MAX */
+		interval = (uint64) ((double) UINT64_MAX *
+							  ((double) pool->bp_nbuffers / (double) total_buffers));
+
+		entry->interval_size = interval;
+		next_lower_bound += interval;
+		parts->count++;
+	}
+
+	/* Adjust last entry to cover any remainder from rounding */
+	if (parts->count > 0)
+	{
+		uint64		sum = 0;
+
+		for (i = 0; i < parts->count; i++)
+			sum += parts->entries[i].interval_size;
+
+		parts->entries[parts->count - 1].interval_size += (UINT64_MAX - sum);
+	}
+}
+
+/*
+ * GetPoolSlotForHash -- binary search to find which pool slot owns a hash.
+ *
+ * Returns the pool_slot index into BufferPoolDescs, or -1 if the
+ * partition map is empty.
+ */
+int
+GetPoolSlotForHash(PoolHashPartitions *parts, uint64 hash)
+{
+	int			left,
+				right,
+				mid;
+
+	if (parts == NULL || parts->count == 0)
+		return -1;
+
+	/* Fast path: hash falls in last partition */
+	if (hash >= parts->entries[parts->count - 1].lower_bound)
+		return parts->entries[parts->count - 1].pool_slot;
+
+	/* Binary search for the partition containing this hash */
+	left = 0;
+	right = parts->count - 1;
+
+	while (left <= right)
+	{
+		mid = left + (right - left) / 2;
+
+		if (hash >= parts->entries[mid].lower_bound)
+		{
+			if (mid == parts->count - 1 ||
+				hash < parts->entries[mid + 1].lower_bound)
+				return parts->entries[mid].pool_slot;
+			left = mid + 1;
+		}
+		else
+		{
+			if (mid == 0)
+				break;
+			right = mid - 1;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ * RebuildPoolPartitions -- rebuild the backend-local partition map.
+ *
+ * Called from CreateDynamicBufferPool/DestroyDynamicBufferPool to keep
+ * the partition map current.
+ */
+void
+RebuildPoolPartitions(void)
+{
+	ComputeCrossPoolPartitions(&LocalPartitions);
 }
 
 

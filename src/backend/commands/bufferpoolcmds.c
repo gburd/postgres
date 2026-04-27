@@ -27,6 +27,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_proc.h"
 #include "commands/bufferpoolcmds.h"
+#include "commands/defrem.h"
 #include "fmgr.h"
 #include "access/xlog.h"
 #include "miscadmin.h"
@@ -229,22 +230,104 @@ AlterBufferPool(AlterBufferPoolStmt *stmt)
 							16 * BLCKSZ)));
 
 		/*
-		 * Online resize of buffer pools is not yet supported.  Validate the
-		 * parameters above so users get immediate feedback on bad values, but
-		 * the actual DSM segment resize is not implemented.
+		 * Online resize is implemented as atomic destroy-and-recreate.  DSM
+		 * has no resize API, so we tear down the old segment, create a new
+		 * one at the desired size, and update the catalog.  Cached pages are
+		 * evicted (they're a cache -- data is safe on disk).
 		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("online resize of buffer pools is not yet supported"),
-				 errhint("Drop and recreate the buffer pool with the desired size.")));
+		{
+			BufferPoolDesc *pool;
+			int			new_nbuffers;
+
+			pool = GetBufferPoolByOid(bpoid);
+			if (pool == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("buffer pool \"%s\" is not active in shared memory",
+								stmt->poolname)));
+
+			if (!PoolIsDynamic(pool))
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("cannot resize buffer pool \"%s\": not a dynamic pool",
+								stmt->poolname)));
+
+			new_nbuffers = (int) (newsize / BLCKSZ);
+
+			/* No-op if size unchanged */
+			if (new_nbuffers == pool->bp_nbuffers)
+			{
+				ereport(NOTICE,
+						(errmsg("buffer pool \"%s\" already has %d buffers, no resize needed",
+								stmt->poolname, new_nbuffers)));
+			}
+			else
+			{
+				ResizeDynamicBufferPool(pool, new_nbuffers);
+
+				/* Update catalog with new size */
+				{
+					Relation	bprel;
+					HeapTuple	oldtup;
+					HeapTuple	newtup;
+					Datum		values[Natts_pg_bufferpool];
+					bool		nulls[Natts_pg_bufferpool];
+					bool		replaces[Natts_pg_bufferpool];
+
+					bprel = table_open(BufferPoolRelationId, RowExclusiveLock);
+
+					oldtup = SearchSysCache1(BUFFERPOOLOID, ObjectIdGetDatum(bpoid));
+					if (!HeapTupleIsValid(oldtup))
+						elog(ERROR, "cache lookup failed for buffer pool %u", bpoid);
+
+					memset(values, 0, sizeof(values));
+					memset(nulls, false, sizeof(nulls));
+					memset(replaces, false, sizeof(replaces));
+
+					values[Anum_pg_bufferpool_bpsize - 1] = Int64GetDatum(newsize);
+					replaces[Anum_pg_bufferpool_bpsize - 1] = true;
+
+					newtup = heap_modify_tuple(oldtup, RelationGetDescr(bprel),
+											   values, nulls, replaces);
+					CatalogTupleUpdate(bprel, &oldtup->t_self, newtup);
+
+					ReleaseSysCache(oldtup);
+					heap_freetuple(newtup);
+					table_close(bprel, RowExclusiveLock);
+				}
+			}
+		}
 	}
 
 	/* Handle SET ( options ) */
 	if (stmt->options != NIL)
 	{
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("ALTER BUFFER POOL SET ( ... ) is not yet supported")));
+		BufferPoolDesc *pool;
+		ListCell   *lc;
+
+		pool = GetBufferPoolByOid(bpoid);
+		if (pool == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("buffer pool \"%s\" is not active in shared memory",
+							stmt->poolname)));
+
+		foreach(lc, stmt->options)
+		{
+			DefElem	   *def = (DefElem *) lfirst(lc);
+
+			if (strcmp(def->defname, "direct_io") == 0)
+			{
+				pool->bp_use_direct_io = defGetBoolean(def);
+			}
+			else
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("unrecognized buffer pool option \"%s\"",
+								def->defname)));
+			}
+		}
 	}
 
 	InvokeObjectPostAlterHook(BufferPoolRelationId, bpoid, 0);

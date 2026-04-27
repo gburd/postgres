@@ -82,6 +82,57 @@ DROP TABLE bp_data;
 DROP BUFFER POOL data_pool;
 
 -- ===================================================
+-- ALTER BUFFER POOL SET SIZE (online resize)
+-- ===================================================
+
+-- Create a pool we can resize (256KB = 32 pages)
+CREATE BUFFER POOL resize_pool HANDLER clock_pool_handler SIZE '262144';
+
+-- Verify initial size
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'resize_pool';
+
+-- Resize to 512KB = 64 pages (destroy-and-recreate)
+ALTER BUFFER POOL resize_pool SET SIZE '524288';
+
+-- Verify new size
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'resize_pool';
+SELECT bpsize FROM pg_bufferpool WHERE bpname = 'resize_pool';
+
+-- No-op resize (same size)
+ALTER BUFFER POOL resize_pool SET SIZE '524288';
+
+-- Cannot resize the default pool
+ALTER BUFFER POOL "default" SET SIZE '1048576';
+
+-- Cannot resize with too-small size
+ALTER BUFFER POOL resize_pool SET SIZE '8192';
+
+-- Clean up
+DROP BUFFER POOL resize_pool;
+
+-- ===================================================
+-- ALTER BUFFER POOL SET (options)
+-- ===================================================
+
+-- Create a pool to test options
+CREATE BUFFER POOL option_pool HANDLER clock_pool_handler SIZE '262144';
+
+-- Set direct_io option
+ALTER BUFFER POOL option_pool SET (direct_io 'true');
+
+-- Set direct_io back to false
+ALTER BUFFER POOL option_pool SET (direct_io 'false');
+
+-- Cannot alter the default pool
+ALTER BUFFER POOL "default" SET (direct_io 'true');
+
+-- Unrecognized option
+ALTER BUFFER POOL option_pool SET (bogus_option 'true');
+
+-- Clean up
+DROP BUFFER POOL option_pool;
+
+-- ===================================================
 -- Multi-pool: two pools with tables, cross-pool JOIN
 -- ===================================================
 

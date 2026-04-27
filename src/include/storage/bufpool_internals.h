@@ -241,6 +241,8 @@ extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,
 											   const struct BufferPoolRoutine *routine,
 											   Oid handler_oid);
 extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
+extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
+											   int new_nbuffers);
 extern void BufferPoolStartupInit(void);
 
 /*
@@ -268,5 +270,37 @@ extern void PoolBufHashDelete(PoolBufHashEntry *entries, int nentries,
 extern void TrickleWriterMain(Datum main_arg);
 extern void RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot);
 extern void TerminatePoolTrickleWriter(BufferPoolDesc *pool);
+
+/*
+ * PoolHashPartition -- weighted-range hash partition entry.
+ *
+ * Maps a contiguous range of hash values to a pool slot.  Used for
+ * proportional dispatch of operations across pools based on their
+ * relative buffer counts.
+ */
+typedef struct PoolHashPartition
+{
+	uint64		lower_bound;	/* start of hash range (inclusive) */
+	uint64		interval_size;	/* width of hash range */
+	int			pool_slot;		/* index into BufferPoolDescs */
+} PoolHashPartition;
+
+/*
+ * PoolHashPartitions -- collection of weighted hash partitions.
+ *
+ * Backend-local structure rebuilt when pools are created or destroyed.
+ * Currently advisory — actual routing uses relation-level rd_bufpool
+ * assignment.  Future: lock partition dispatch within large pools.
+ */
+typedef struct PoolHashPartitions
+{
+	PoolHashPartition *entries;
+	int			count;
+	int			capacity;
+} PoolHashPartitions;
+
+extern void ComputeCrossPoolPartitions(PoolHashPartitions *parts);
+extern int	GetPoolSlotForHash(PoolHashPartitions *parts, uint64 hash);
+extern void RebuildPoolPartitions(void);
 
 #endif							/* BUFPOOL_INTERNALS_H */
