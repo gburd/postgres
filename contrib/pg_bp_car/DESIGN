@@ -1,0 +1,373 @@
+contrib/pg_bp_car/DESIGN
+
+pg_bp_car -- Internal Design Notes
+===================================
+
+This document is aimed at engineers modifying or reviewing the CAR
+buffer pool implementation.  For user-facing documentation, see README.
+
+
+A. Algorithm Theory
+===================
+
+CAR (Clock with Adaptive Replacement) is a variant of ARC that
+replaces ARC's two LRU linked lists (T1 and T2) with two clock rings
+plus per-entry reference bits.  The ghost lists (B1 and B2) remain as
+standard linked lists, and the adaptive rule for target_T1_size is
+identical to ARC.
+
+The four data structures are:
+
+    T1 -- circular clock ring, reference bits, tracks recency
+    T2 -- circular clock ring, reference bits, tracks frequency
+    B1 -- ghost list (linked list) for pages evicted from T1
+    B2 -- ghost list (linked list) for pages evicted from T2
+
+Key insight: on a cache hit, CAR only sets a reference bit on the
+entry.  This is an ordinary store followed by a write barrier -- no
+spinlock, no list removal, no list insertion.  The T1-to-T2 promotion
+that ARC performs eagerly on every hit instead happens lazily, during
+clock sweep at eviction time.
+
+Clock sweep logic:
+
+    For each entry under the clock hand:
+      - If reference_bit is set: clear it and promote from T1 to T2.
+      - If reference_bit is clear and the buffer is unpinned: evict it.
+
+Adaptation of target_T1_size is identical to ARC:
+
+    - B1 hit: increase target_T1_size by max(|B2|/|B1|, 1)
+    - B2 hit: decrease target_T1_size by max(|B1|/|B2|, 1)
+
+This shifts the balance between recency-favoring (T1) and
+frequency-favoring (T2) caching based on which ghost list is seeing
+more hits.
+
+
+B. Implementation Data Structures
+==================================
+
+CarCDB (Cache Directory Block)
+------------------------------
+
+Each CDB entry contains:
+
+    buf_tag          -- BufferTag identifying the page
+    buf_id           -- pool-local buffer index (-1 for ghost entries)
+    list             -- which list: T1, T2, B1, B2, or UNUSED
+    reference_bit    -- set on hit, cleared by clock hand
+    ghost_next       -- next entry in ghost hash chain (-1 = end)
+    clock_prev       -- previous in clock ring (T1/T2 only)
+    clock_next       -- next in clock ring (T1/T2 only)
+    ghost_prev       -- previous in ghost list (B1/B2 only)
+    ghost_list_next  -- next in ghost list (B1/B2 only)
+
+Clock rings (T1, T2) are implemented as circular doubly-linked lists
+using the clock_prev and clock_next fields.  New entries are inserted
+just before the clock hand (the MRU position), so the hand will not
+reach a newly inserted entry until it has swept the entire ring.
+
+Ghost lists (B1, B2) are standard doubly-linked lists using
+ghost_prev and ghost_list_next.  Each ghost list tracks a head and
+tail pointer for O(1) append (MRU end) and O(1) removal from any
+position.
+
+CarControl (Shared-Memory Control Block)
+----------------------------------------
+
+    car_lock           -- spinlock protecting ghost lists, clock rings,
+                          target_T1_size, and all size counters
+    nbuffers           -- number of physical buffers in this pool
+    first_buf_id       -- global buffer ID of first buffer in pool
+    ncdb               -- total CDB entries (always 2 * nbuffers)
+    target_T1_size     -- adaptive target (initially nbuffers / 2)
+    t1_size, t1_hand   -- T1 resident count and clock hand position
+    t2_size, t2_hand   -- T2 resident count and clock hand position
+    b1_head/tail/size  -- B1 ghost list endpoints and count
+    b2_head/tail/size  -- B2 ghost list endpoints and count
+    ghost_hash_size    -- size of the ghost hash table (power of 2)
+    free_cdb_list      -- head of free CDB singly-linked list
+    free_scan_start    -- atomic uint32 for round-robin free scan
+    stat_*             -- atomic uint64 counters for each stat slot
+    bgwprocno          -- process number of registered trickle writer
+
+Memory Layout in DSM
+---------------------
+
+The shared memory segment is laid out as a single contiguous block:
+
+    CarControl             (sizeof(CarControl), MAXALIGN'd)
+    CarCDB[ncdb]           (sizeof(CarCDB) * ncdb, MAXALIGN'd)
+    int ghost_hash[size]   (sizeof(int) * ghost_hash_size, MAXALIGN'd)
+    int buf_to_cdb[nbuf]   (sizeof(int) * nbuffers, MAXALIGN'd)
+
+The accessor macros CAR_CDB(), CAR_GHOST_HASH(), and CAR_BUF_TO_CDB()
+compute offsets from the CarControl pointer.
+
+The ghost hash table is a power-of-2 array of int indices into the CDB
+array.  Hash chains are singly-linked via the ghost_next field.  This
+is the same design as ARC's ghost hash.
+
+
+C. Key Difference from ARC -- the Hit Path
+===========================================
+
+This is the core scalability advantage of CAR over ARC.
+
+ARC hit path (every buffer hit):
+
+    SpinLockAcquire(&arc_lock);
+    list_remove(entry);
+    mru_insert(T2, entry);
+    SpinLockRelease(&arc_lock);
+
+CAR hit path (every buffer hit):
+
+    cdb_arr[cdb_idx].reference_bit = true;
+    pg_write_barrier();
+
+No lock.  No list manipulation.  The reference_bit write is an
+ordinary store; the pg_write_barrier() ensures it is visible to other
+cores before subsequent operations.
+
+On a 64-core system with a 99% hit rate, ARC's spinlock fires on
+virtually every buffer access, creating severe contention.  CAR's
+hit path is entirely lock-free: each backend writes to its own
+cache line (the CDB entry for that buffer) without coordinating
+with any other backend.
+
+The tradeoff is that T1-to-T2 promotion is deferred until the clock
+hand reaches the entry.  This means a page might remain classified
+as T1 (recency) for longer than in ARC.  In practice this is not
+harmful because the reference bit still protects the page from
+eviction during the sweep.
+
+
+D. Eviction -- Four-Phase Victim Search
+========================================
+
+CarGetVictim implements a four-phase search for a victim buffer:
+
+Phase 0: Free Buffer Scan (no lock)
+------------------------------------
+
+Before acquiring car_lock, scan the buf_to_cdb[] array for buffers
+that have no CDB entry (never used or already evicted).  This handles
+the common case when the pool is larger than the working set.
+
+A round-robin starting point (free_scan_start) is maintained as an
+atomic uint32.  Each backend starts scanning from a different position,
+spreading the work across backends and reducing contention on the same
+buffer descriptors.
+
+For each candidate, the code attempts an atomic compare-and-swap on the
+buffer header to acquire a pin.  If successful, the buffer is returned
+immediately without touching the clock rings.
+
+Phase 1: T1 Clock Sweep (under car_lock)
+-----------------------------------------
+
+Acquire car_lock and sweep the T1 clock ring starting from t1_hand:
+
+    - reference_bit set:  Clear the bit and promote the entry from T1
+      to T2 (lazy promotion).  Advance the hand.
+
+    - reference_bit clear and T1 larger than target:  Attempt to pin
+      the buffer via atomic CAS on the buffer header state.  If the
+      buffer is unpinned and the CAS succeeds, advance the hand,
+      release car_lock, and return the victim.  If pinned, advance
+      the hand and continue.
+
+    - reference_bit clear but T1 not above target:  Skip (let T2
+      absorb the eviction pressure).
+
+Phase 2: T2 Clock Sweep (under car_lock)
+-----------------------------------------
+
+If Phase 1 does not yield a victim, sweep the T2 clock ring:
+
+    - reference_bit set:  Clear and advance (no promotion; T2 entries
+      stay in T2).
+
+    - reference_bit clear and unpinned:  Pin via atomic CAS, advance
+      the hand, release car_lock, and return the victim.
+
+Phase 3: Last Resort Linear Scan (no lock)
+-------------------------------------------
+
+If both clock sweeps fail (all resident pages are pinned), fall back
+to a linear scan of all buffer descriptors looking for any unpinned
+buffer.  This should rarely be reached.
+
+The maximum number of attempts for Phases 1 and 2 is 3 * nbuffers,
+preventing infinite loops when all reference bits are set or all
+buffers are pinned.
+
+
+E. Prefetch Hint Integration
+=============================
+
+CarPrefetchHint is called by the buffer manager when upcoming page
+accesses are signaled (for example, during sequential scan readahead).
+
+Under car_lock, the function iterates over the provided BufferTag
+array and checks each tag against the ghost hash (B1/B2):
+
+    - If found in B1: remove from current position in B1, re-append
+      at the MRU (tail) end of B1.
+
+    - If found in B2: remove from current position in B2, re-append
+      at the MRU (tail) end of B2.
+
+Moving the ghost entry to the MRU end prevents it from being recycled
+(ghost lists are recycled from the LRU/head end) before the actual
+buffer access arrives.  When the real miss occurs shortly after, the
+ghost hit will be found, and target_T1_size will adapt as expected.
+
+This pre-adaptation mechanism allows CAR to begin shifting its T1/T2
+balance before the real accesses arrive, improving response to
+workload transitions.
+
+
+F. T1-Priority Trickle Writer
+==============================
+
+The trickle writer (background writer) uses a custom iterator that
+prioritizes T1 pages.
+
+CarSyncStart returns the current T1 clock hand position.  T1 pages
+are more likely to be evicted soon (they have not yet been promoted
+to T2), so proactively flushing dirty T1 pages to disk reduces the
+probability that an eviction will need to perform synchronous I/O.
+
+The iterator (CarTrickleIter) operates in two phases:
+
+    Phase 0 -- Walk the T1 clock ring starting from t1_hand.
+    Phase 1 -- Walk the T2 clock ring starting from t2_hand.
+
+In each phase, the iterator yields buffers that are:
+
+    - Resident (buf_id >= 0)
+    - Cold (reference_bit == false)
+    - Dirty (BM_DIRTY flag set)
+    - Unpinned (refcount == 0)
+
+The iterator snapshots the hand position under car_lock at the start
+of each phase, then reads CDB fields without holding the lock during
+the walk (the clock ring structure can shift, but the worst case is
+yielding a slightly stale candidate, which is harmless).
+
+The max_candidates parameter limits how many buffers the iterator
+yields per invocation to avoid excessive I/O in a single pass.
+
+
+G. Concurrency Model
+=====================
+
+Operation          Lock Held          Why
+---------          ---------          ---
+on_hit             none               Only writes reference_bit + barrier
+on_miss            car_lock           Ghost lookup + target adaptation
+on_evict           car_lock           Clock remove + ghost list append
+on_new_tag         car_lock           Ghost promotion or CDB allocation
+get_victim Ph.0    none               Atomic CAS on buffer header state
+get_victim Ph.1-2  car_lock           Clock sweep + atomic CAS for pin
+get_victim Ph.3    none               Linear scan with atomic CAS
+prefetch_hint      car_lock           Ghost list reorder
+sync_start         car_lock           Read t1_hand snapshot
+trickle_iter       car_lock (brief)   Snapshot hand; walk is lock-free
+
+The critical observation is that the hit path -- by far the most
+frequent operation -- requires no lock at all.  All lock-holding paths
+are for miss, eviction, or structural changes, which happen at a much
+lower rate.
+
+Statistics counters use PoolStatIncrement, which batches increments
+in a per-backend local array and flushes to the shared atomic counter
+every 256 increments.  This avoids atomic contention on hot stat
+counters.
+
+
+H. Memory Overhead
+==================
+
+CDB entries:
+    2 * nbuffers CDB entries (same ratio as ARC).
+
+CDB entry size:
+    CarCDB is larger than ArcCDB because it carries both clock ring
+    pointers (clock_prev, clock_next) and ghost list pointers
+    (ghost_prev, ghost_list_next) in every entry.  Only one set of
+    pointers is active at a time (clock pointers for T1/T2; ghost
+    pointers for B1/B2), but both are allocated unconditionally for
+    simplicity.
+
+Ghost hash:
+    A power-of-2 array of int, sized to at least ncdb (2 * nbuffers).
+    Same design as ARC.
+
+buf_to_cdb mapping:
+    An array of nbuffers ints mapping pool-local buffer IDs to CDB
+    indices.
+
+
+I. Patent Status
+================
+
+CAR is NOT covered by IBM's ARC patent (US 6,996,676).  The CAR
+algorithm was specifically designed by Bansal and Modha as a
+patent-free alternative with comparable adaptive performance
+characteristics.  The original paper explicitly discusses this
+motivation.
+
+
+J. References
+=============
+
+S. Bansal and D. Modha, "CAR: Clock with Adaptive Replacement",
+Proceedings of USENIX FAST 2004.
+https://www.usenix.org/conference/fast-04/car-clock-adaptive-replacement
+
+ARC patent: US 6,996,676 (IBM), "Adaptive cache replacement method
+and apparatus for use with a computer system."
+
+
+K. Known Limitations
+====================
+
+1. Clock sweep O(n) worst case.  If all reference bits in a ring are
+   set, the clock hand must traverse the entire ring, clearing bits
+   and promoting entries, before finding a victim.  The max_attempts
+   bound (3 * nbuffers) prevents true infinite loops, but a full
+   traversal can cause a latency spike for the backend that triggers
+   eviction.
+
+2. Reference bit is coarser than explicit LRU ordering.  ARC maintains
+   a fully ordered LRU list, so it can distinguish between "accessed 1
+   second ago" and "accessed 10 seconds ago."  CAR's binary reference
+   bit only distinguishes "accessed since last sweep" from "not
+   accessed since last sweep."  This is a deliberate tradeoff: the
+   coarser information is sufficient for good eviction decisions in
+   practice, and the benefit is eliminating the per-hit spinlock.
+
+3. Spinlock still needed for ghost list operations.  The miss path
+   (on_miss) and structural changes (on_evict, on_new_tag) require
+   car_lock because they modify the ghost list linked lists and the
+   clock ring pointers.  This means CAR is not entirely lock-free --
+   only the hit path is.  In workloads with very high miss rates, the
+   spinlock may become a bottleneck similar to ARC.  However, for
+   typical workloads where the hit rate is high, the miss-path lock
+   fires infrequently enough to be a non-issue.
+
+4. Lazy promotion delay.  A page hit in T1 is not promoted to T2 until
+   the clock hand sweeps past it.  If the ring is large and the hand
+   moves slowly, a frequently accessed T1 page might remain in T1 for
+   a long time before being promoted.  The reference bit protects it
+   from eviction during this period, but it does not receive T2's
+   stronger protection until promotion actually occurs.
+
+5. Phase 3 linear scan.  If all tracked buffers are pinned and no
+   free buffers exist, the fallback linear scan in Phase 3 is O(n)
+   and runs without holding car_lock.  This is a last-resort path
+   that should essentially never fire under normal operation.

@@ -425,6 +425,12 @@ CachedPlanSource
 CallContext
 CallStmt
 CancelRequestPacket
+CarBufState
+CarClock
+CarControl
+CarGhost
+CarGhostEntry
+CarTrickleIter
 Cardinality
 CaseExpr
 CaseKind
@@ -1636,6 +1642,11 @@ LimitOption
 LimitPath
 LimitState
 LimitStateCond
+LirsControl
+LirsGhost
+LirsGhostEntry
+LirsNode
+LirsTrickleIter
 List
 ListCell
 ListDictionary

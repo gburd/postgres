@@ -1,0 +1,170 @@
+contrib/pg_bp_car/README
+
+pg_bp_car -- Clock with Adaptive Replacement (CAR)
+===================================================
+
+pg_bp_car provides the CAR buffer replacement algorithm as a PostgreSQL
+extension.  CAR delivers the same adaptive caching behavior as ARC but
+replaces ARC's per-hit spinlock with an atomic reference-bit write,
+making it significantly more scalable on many-core systems.
+
+
+Installation
+============
+
+    CREATE EXTENSION pg_bp_car;
+
+
+Quick Start
+===========
+
+    CREATE BUFFER POOL my_car_pool HANDLER car_pool_handler SIZE '128MB';
+    CREATE TABLE hot_data (...) WITH (buffer_pool = 'my_car_pool');
+
+Tables, indexes, and materialized views can be assigned to a CAR pool.
+The pool can also be set as the default algorithm at the server level.
+
+
+When to Choose CAR Over ARC
+============================
+
+Choose CAR when:
+
+  - You have high-concurrency OLTP on many cores (32+).  ARC acquires a
+    spinlock on every buffer hit to move entries between lists.  CAR
+    only sets a reference bit, eliminating that contention entirely.
+
+  - Your workload has a high cache hit ratio.  The higher the hit rate,
+    the more often ARC's spinlock fires relative to useful I/O.  CAR's
+    lock-free hit path keeps overhead proportional to actual misses.
+
+  - You want prefetch-aware caching.  CAR implements a prefetch_hint
+    callback that checks ghost lists when upcoming pages are signaled,
+    allowing the adaptive target to shift before real accesses arrive.
+
+  - You want T1-priority background writing.  CAR's trickle writer
+    preferentially flushes T1 (recency) pages that are most likely to
+    be evicted soon, reducing eviction I/O latency.
+
+Choose ARC when:
+
+  - Precise LRU ordering matters more than hit-path concurrency.  ARC
+    keeps an explicit ordered list; CAR approximates recency with a
+    binary reference bit.
+
+  - Your system has few cores and low concurrency, where spinlock
+    contention is not a bottleneck and ARC's simpler code path may be
+    marginally faster.
+
+
+Algorithm Overview
+==================
+
+CAR uses four data structures:
+
+    T1 -- clock ring with reference bits (tracks recency)
+    T2 -- clock ring with reference bits (tracks frequency)
+    B1 -- ghost list for pages evicted from T1
+    B2 -- ghost list for pages evicted from T2
+
+On a cache hit, CAR sets the reference bit on the entry.  No lock is
+acquired, no list manipulation occurs.  T1-to-T2 promotion happens
+lazily: when the clock hand encounters a T1 entry with its reference
+bit set, it clears the bit and promotes the entry to T2.
+
+On a cache miss, CAR checks the ghost lists (B1/B2).  A hit on B1
+increases target_T1_size (favor recency); a hit on B2 decreases it
+(favor frequency).  This is the same adaptation rule as ARC.
+
+On eviction, the clock hand sweeps T1 first: entries with a set
+reference bit are promoted to T2; entries with a clear reference bit
+and no pin are evicted.  If T1 does not yield a victim, T2 is swept
+similarly.
+
+
+VACUUM Integration
+==================
+
+When VACUUM loads pages into the pool, they are inserted with their
+reference bit cleared.  This makes VACUUM-loaded pages the first
+candidates for eviction during clock sweep, preventing bulk maintenance
+operations from polluting the cache.
+
+
+Statistics
+==========
+
+    SELECT * FROM pg_stat_car;
+
+Columns:
+
+    name             -- pool name
+    oid              -- pool OID (NULL for built-in pools)
+    t1_size          -- current number of resident T1 entries
+    t2_size          -- current number of resident T2 entries
+    b1_size          -- current number of B1 ghost entries
+    b2_size          -- current number of B2 ghost entries
+    target_t1_size   -- adaptive T1 target size
+    t1_hand          -- CDB index of T1 clock hand (-1 if empty)
+    t2_hand          -- CDB index of T2 clock hand (-1 if empty)
+    lookups          -- total buffer lookups
+    t1_hits          -- hits in T1 (recency ring)
+    t2_hits          -- hits in T2 (frequency ring)
+    b1_hits          -- ghost hits in B1 (drives target_t1_size up)
+    b2_hits          -- ghost hits in B2 (drives target_t1_size down)
+    misses           -- complete cache misses (not in T1/T2/B1/B2)
+    t1_evictions     -- pages evicted from T1
+    t2_evictions     -- pages evicted from T2
+
+
+Size Advisory
+=============
+
+    SELECT * FROM pg_bp_car_size_recommendation('my_car_pool')
+        AS (current_size int, recommended_size int,
+            ghost_pressure float8, hit_ratio float8);
+
+    current_size      -- current pool size in buffers
+    recommended_size  -- suggested pool size (up to 2x current)
+    ghost_pressure    -- ratio of ghost hits to misses; values above
+                         0.1 indicate the pool would benefit from more
+                         memory
+    hit_ratio         -- fraction of lookups served from T1 or T2
+
+
+Limitations
+===========
+
+Clock sweep O(n) worst case.  If all reference bits in a ring are set,
+the clock hand must traverse the entire ring before finding a victim.
+In practice this is rare because the sweep clears bits as it goes.
+
+Reference bit is coarser than explicit LRU ordering.  ARC's explicit
+list ordering provides continuous recency information.  CAR's binary
+reference bit is a coarser approximation (hot vs. cold, rather than a
+full ordering).
+
+Spinlock still needed on the miss path.  Ghost list lookup and
+target_T1_size adaptation require a spinlock, so misses are not
+lock-free.  This is acceptable because misses are far less frequent
+than hits.
+
+Memory overhead: 2x CDB entries per buffer.  Same as ARC.  Each
+CarCDB is slightly larger than ArcCDB due to the additional
+clock_prev, clock_next, ghost_prev, and ghost_list_next fields.
+
+
+Patent Status
+=============
+
+CAR is NOT covered by IBM's ARC patent (US 6,996,676).  The CAR
+algorithm was specifically designed by Bansal and Modha as a
+patent-free alternative to ARC with comparable adaptive performance.
+
+
+References
+==========
+
+S. Bansal and D. Modha, "CAR: Clock with Adaptive Replacement",
+Proceedings of USENIX FAST 2004.
+https://www.usenix.org/conference/fast-04/car-clock-adaptive-replacement
