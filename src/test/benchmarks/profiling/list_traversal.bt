@@ -1,0 +1,104 @@
+#!/usr/bin/env bpftrace
+/*
+ * list_traversal.bt -- Linux bpftrace: count list traversal lengths in victim selection.
+ *
+ * Usage:
+ *   sudo bpftrace list_traversal.bt -p <postgres_pid>
+ */
+
+BEGIN
+{
+    printf("Tracing list traversal in victim selection... Ctrl-C to stop.\n\n");
+}
+
+/*
+ * StrategyGetBuffer (clock-sweep) -- total time as proxy for traversal length
+ */
+uprobe:*postgres*:StrategyGetBuffer
+{
+    @clock_entry[tid] = nsecs;
+}
+
+uretprobe:*postgres*:StrategyGetBuffer
+/@clock_entry[tid]/
+{
+    $elapsed = nsecs - @clock_entry[tid];
+    @clock_sweep_ns = hist($elapsed);
+    @clock_sweep_count = count();
+    delete(@clock_entry[tid]);
+}
+
+/*
+ * GetVictimBuffer -- main dispatch for all algorithms
+ */
+uprobe:*postgres*:GetVictimBuffer
+{
+    @gvb_entry[tid] = nsecs;
+}
+
+uretprobe:*postgres*:GetVictimBuffer
+/@gvb_entry[tid]/
+{
+    $elapsed = nsecs - @gvb_entry[tid];
+    @get_victim_ns = hist($elapsed);
+    @get_victim_count = count();
+    delete(@gvb_entry[tid]);
+}
+
+/*
+ * BufferAlloc -- higher-level: total time from buffer request to allocation
+ */
+uprobe:*postgres*:BufferAlloc
+{
+    @bufalloc_entry[tid] = nsecs;
+}
+
+uretprobe:*postgres*:BufferAlloc
+/@bufalloc_entry[tid]/
+{
+    $elapsed = nsecs - @bufalloc_entry[tid];
+    @buffer_alloc_ns = hist($elapsed);
+    @buffer_alloc_count = count();
+    delete(@bufalloc_entry[tid]);
+}
+
+/*
+ * ReadBuffer_common -- full I/O path including victim selection + disk read
+ */
+uprobe:*postgres*:ReadBuffer_common
+{
+    @readbuf_entry[tid] = nsecs;
+}
+
+uretprobe:*postgres*:ReadBuffer_common
+/@readbuf_entry[tid]/
+{
+    $elapsed = nsecs - @readbuf_entry[tid];
+    @read_buffer_ns = hist($elapsed);
+    @read_buffer_count = count();
+    delete(@readbuf_entry[tid]);
+}
+
+END
+{
+    printf("\n=== List Traversal & Buffer Allocation Analysis ===\n\n");
+
+    printf("--- Clock-Sweep StrategyGetBuffer Latency (ns) ---\n");
+    print(@clock_sweep_ns);
+    printf("  Calls: "); print(@clock_sweep_count);
+
+    printf("\n--- GetVictimBuffer Latency (ns) ---\n");
+    print(@get_victim_ns);
+    printf("  Calls: "); print(@get_victim_count);
+
+    printf("\n--- BufferAlloc Latency (ns) ---\n");
+    print(@buffer_alloc_ns);
+    printf("  Calls: "); print(@buffer_alloc_count);
+
+    printf("\n--- ReadBuffer_common Latency (ns) ---\n");
+    print(@read_buffer_ns);
+    printf("  Calls: "); print(@read_buffer_count);
+
+    clear(@clock_entry); clear(@gvb_entry);
+    clear(@bufalloc_entry); clear(@readbuf_entry);
+}

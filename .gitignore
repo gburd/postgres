@@ -43,3 +43,8 @@ lib*.pc
 /Release/
 /tmp_install/
 /portlock/
+
+# Development artifacts
+benchmark_results/
+__pycache__/
+.direnv/

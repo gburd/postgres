@@ -1,0 +1,155 @@
+#!/usr/bin/env bpftrace
+/*
+ * spinlock_hold_times.bt -- Linux bpftrace equivalent of spinlock_hold_times.d
+ *
+ * Measures spinlock and LWLock hold times in PostgreSQL buffer pool code.
+ *
+ * Usage:
+ *   sudo bpftrace spinlock_hold_times.bt -p <postgres_pid>
+ *   sudo bpftrace spinlock_hold_times.bt  # traces all postgres processes
+ *
+ * Requires: bpftrace >= 0.11, kernel with BTF or postgres debug symbols
+ */
+
+BEGIN
+{
+    printf("Tracing buffer pool lock hold times... Hit Ctrl-C to stop.\n\n");
+}
+
+/*
+ * SpinLockAcquire -- record entry time per-thread
+ */
+uprobe:/proc/self/exe:SpinLockAcquire/,
+uprobe:*postgres*:SpinLockAcquire
+{
+    @spin_start[tid] = nsecs;
+}
+
+uprobe:/proc/self/exe:SpinLockRelease/,
+uprobe:*postgres*:SpinLockRelease
+/@spin_start[tid]/
+{
+    $hold_ns = nsecs - @spin_start[tid];
+    @spin_hold_ns = hist($hold_ns);
+    @spin_count = count();
+    @spin_total_ns = sum($hold_ns);
+    delete(@spin_start[tid]);
+}
+
+/*
+ * LWLockAcquire / LWLockRelease
+ */
+uprobe:/proc/self/exe:LWLockAcquire/,
+uprobe:*postgres*:LWLockAcquire
+{
+    @lwlock_start[tid] = nsecs;
+}
+
+uprobe:/proc/self/exe:LWLockRelease/,
+uprobe:*postgres*:LWLockRelease
+/@lwlock_start[tid]/
+{
+    $hold_ns = nsecs - @lwlock_start[tid];
+    @lwlock_hold_ns = hist($hold_ns);
+    @lwlock_count = count();
+    @lwlock_total_ns = sum($hold_ns);
+    delete(@lwlock_start[tid]);
+}
+
+/*
+ * Victim selection functions -- measure latency per algorithm
+ */
+uprobe:/proc/self/exe:StrategyGetBuffer/,
+uprobe:*postgres*:StrategyGetBuffer
+{
+    @victim_start[tid] = nsecs;
+}
+
+uretprobe:/proc/self/exe:StrategyGetBuffer/,
+uretprobe:*postgres*:StrategyGetBuffer
+/@victim_start[tid]/
+{
+    $elapsed = nsecs - @victim_start[tid];
+    @strategy_get_buffer_ns = hist($elapsed);
+    @strategy_get_buffer_count = count();
+    delete(@victim_start[tid]);
+}
+
+/*
+ * Track GetVictimBuffer (the main dispatch function)
+ */
+uprobe:/proc/self/exe:GetVictimBuffer/,
+uprobe:*postgres*:GetVictimBuffer
+{
+    @getvictim_start[tid] = nsecs;
+}
+
+uretprobe:/proc/self/exe:GetVictimBuffer/,
+uretprobe:*postgres*:GetVictimBuffer
+/@getvictim_start[tid]/
+{
+    $elapsed = nsecs - @getvictim_start[tid];
+    @get_victim_buffer_ns = hist($elapsed);
+    @get_victim_buffer_count = count();
+    delete(@getvictim_start[tid]);
+}
+
+/*
+ * Trickle writer write-back
+ */
+uprobe:/proc/self/exe:SyncOneBuffer/,
+uprobe:*postgres*:SyncOneBuffer
+{
+    @sync_start[tid] = nsecs;
+}
+
+uretprobe:/proc/self/exe:SyncOneBuffer/,
+uretprobe:*postgres*:SyncOneBuffer
+/@sync_start[tid]/
+{
+    $elapsed = nsecs - @sync_start[tid];
+    @sync_one_buffer_ns = hist($elapsed);
+    @sync_one_buffer_count = count();
+    delete(@sync_start[tid]);
+}
+
+END
+{
+    printf("\n=== Buffer Pool Lock Profiling Results ===\n\n");
+
+    printf("--- SpinLock Hold Times (ns) ---\n");
+    print(@spin_hold_ns);
+    printf("  Total acquisitions: ");
+    print(@spin_count);
+    printf("  Total hold time (ns): ");
+    print(@spin_total_ns);
+
+    printf("\n--- LWLock Hold Times (ns) ---\n");
+    print(@lwlock_hold_ns);
+    printf("  Total acquisitions: ");
+    print(@lwlock_count);
+    printf("  Total hold time (ns): ");
+    print(@lwlock_total_ns);
+
+    printf("\n--- StrategyGetBuffer Latency (ns) ---\n");
+    print(@strategy_get_buffer_ns);
+    printf("  Calls: ");
+    print(@strategy_get_buffer_count);
+
+    printf("\n--- GetVictimBuffer Latency (ns) ---\n");
+    print(@get_victim_buffer_ns);
+    printf("  Calls: ");
+    print(@get_victim_buffer_count);
+
+    printf("\n--- SyncOneBuffer Latency (ns) ---\n");
+    print(@sync_one_buffer_ns);
+    printf("  Calls: ");
+    print(@sync_one_buffer_count);
+
+    /* Cleanup thread-local maps */
+    clear(@spin_start);
+    clear(@lwlock_start);
+    clear(@victim_start);
+    clear(@getvictim_start);
+    clear(@sync_start);
+}
