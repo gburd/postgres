@@ -139,6 +139,26 @@ typedef struct BufferPoolDesc
 	/* Pool state */
 	bool		bp_active;		/* true if pool is usable */
 
+	/*
+	 * Per-pool Direct I/O preference.  When true, the pool's trickle writer
+	 * and I/O paths should bypass the OS page cache where possible (via
+	 * PG_O_DIRECT / io_direct_flags).  Currently advisory -- actual Direct
+	 * I/O depends on global io_direct_flags being enabled.  Reserved for
+	 * future per-pool control.
+	 */
+	bool		bp_use_direct_io;
+
+	/*
+	 * Oversubscription support.  bp_target_buffers is the configured target
+	 * size; bp_current_buffers is the actual count (may exceed target when
+	 * unclaimed buffers were available).  The trickle writer nudges an
+	 * oversubscribed pool back to its target over time by evicting excess
+	 * buffers and returning them to the unclaimed pool.
+	 */
+	int			bp_target_buffers;	/* configured target buffer count */
+	int			bp_current_buffers; /* actual allocated buffers */
+	bool		bp_oversubscribed;	/* current > target */
+
 	/* Statistics (atomics for concurrent reads without lock) */
 	pg_atomic_uint64 bp_reads;
 	pg_atomic_uint64 bp_hits;
@@ -175,6 +195,7 @@ typedef struct PoolLocalState
  * dynamic pools are created or destroyed.
  */
 extern PGDLLIMPORT BufferPoolDesc *BufferPoolDescs;
+extern PGDLLIMPORT pg_atomic_uint32 *UnclaimedBufferCount;
 extern int *SharedNBufferPools;
 #ifndef NBufferPools
 #define NBufferPools (*SharedNBufferPools)
@@ -289,7 +310,7 @@ typedef struct PoolHashPartition
  * PoolHashPartitions -- collection of weighted hash partitions.
  *
  * Backend-local structure rebuilt when pools are created or destroyed.
- * Currently advisory — actual routing uses relation-level rd_bufpool
+ * Currently advisory -- actual routing uses relation-level rd_bufpool
  * assignment.  Future: lock partition dispatch within large pools.
  */
 typedef struct PoolHashPartitions

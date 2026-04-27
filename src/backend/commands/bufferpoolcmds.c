@@ -71,6 +71,104 @@ lookup_bufferpool_handler_func(List *handler_name)
 }
 
 /*
+ * ComputeRemainderPoolSize
+ *		Calculate the size for a REMAINDER pool.
+ *
+ * In the current architecture, dynamic pools (USER, RECYCLE) each allocate
+ * their own DSM segments, while the DEFAULT pool owns shared_buffers.
+ * The REMAINDER pool is sized to the portion of shared_buffers that is not
+ * claimed by any user-created dynamic pool target.  The DEFAULT pool's own
+ * target is excluded from the "claimed" tally since it represents the base
+ * shared_buffers allocation.
+ *
+ * Returns the number of buffers available for the remainder pool.
+ * Errors out if oversubscribed pools prevent creation.
+ */
+static int
+ComputeRemainderPoolSize(void)
+{
+	int			total_budget = NBuffers;
+	int			user_claimed = 0;
+	int			i;
+
+	for (i = 0; i < NBufferPools; i++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[i];
+
+		if (!pool->bp_active)
+			continue;
+
+		/*
+		 * Skip the DEFAULT pool -- its target is the base shared_buffers
+		 * allocation, not a claim against the budget.  Also skip RECYCLE
+		 * since it has its own dedicated GUC-sized allocation.
+		 */
+		if (pool->bp_kind == BUFPOOL_DEFAULT || pool->bp_kind == BUFPOOL_RECYCLE)
+			continue;
+
+		user_claimed += pool->bp_target_buffers;
+
+		/* Reject if any user pool is oversubscribed */
+		if (pool->bp_oversubscribed)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot create REMAINDER pool while pool \"%s\" is oversubscribed",
+							NameStr(pool->bp_name)),
+					 errhint("Wait for the trickle writer to reduce oversubscribed pools to their target size.")));
+	}
+
+	if (user_claimed >= total_budget)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("no unclaimed buffer space available for REMAINDER pool"),
+				 errdetail("Total budget is %d buffers, but user pools claim %d.",
+						   total_budget, user_claimed)));
+
+	return total_budget - user_claimed;
+}
+
+/*
+ * CheckNoRemainderPoolExists
+ *		Ensure no REMAINDER pool already exists.  Only one is allowed.
+ *
+ * A REMAINDER pool is identified by having bpsize == 0 in the catalog
+ * (since its size is computed dynamically).
+ */
+static void
+CheckNoRemainderPoolExists(void)
+{
+	Relation	bprel;
+	TableScanDesc scan;
+	HeapTuple	tup;
+
+	bprel = table_open(BufferPoolRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(bprel, 0, NULL);
+
+	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_bufferpool bpform = (Form_pg_bufferpool) GETSTRUCT(tup);
+
+		/* Skip the default pool -- its bpsize=0 means "all of shared_buffers" */
+		if (bpform->oid == DEFAULT_BUFFERPOOL_OID)
+			continue;
+
+		if (bpform->bpsize == 0)
+		{
+			table_endscan(scan);
+			table_close(bprel, AccessShareLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_DUPLICATE_OBJECT),
+					 errmsg("a REMAINDER pool already exists: \"%s\"",
+							NameStr(bpform->bpname)),
+					 errhint("Drop the existing REMAINDER pool first, or re-create it with the same name to recalculate its size.")));
+		}
+	}
+
+	table_endscan(scan);
+	table_close(bprel, AccessShareLock);
+}
+
+/*
  * CreateBufferPool
  *		Implements CREATE BUFFER POOL.
  */
@@ -115,13 +213,33 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 	/* Resolve handler function */
 	bphandler = lookup_bufferpool_handler_func(stmt->handler_name);
 
-	/* Parse size */
-	bpsize = DatumGetInt64(DirectFunctionCall1(int8in,
-											   CStringGetDatum(stmt->size)));
-	if (bpsize <= 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("buffer pool size must be positive")));
+	/* Compute or parse size */
+	if (stmt->is_remainder)
+	{
+		int		remainder_bufs;
+
+		/*
+		 * REMAINDER pool: size is automatically computed from the unclaimed
+		 * buffer budget.  Only one REMAINDER pool is allowed at a time.
+		 */
+		CheckNoRemainderPoolExists();
+		remainder_bufs = ComputeRemainderPoolSize();
+		bpsize = (int64) remainder_bufs * BLCKSZ;
+
+		ereport(NOTICE,
+				(errmsg("REMAINDER pool \"%s\" sized to %d buffers (%lld bytes)",
+						stmt->poolname, remainder_bufs,
+						(long long) bpsize)));
+	}
+	else
+	{
+		bpsize = DatumGetInt64(DirectFunctionCall1(int8in,
+												   CStringGetDatum(stmt->size)));
+		if (bpsize <= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("buffer pool size must be positive")));
+	}
 
 	/* Insert tuple into pg_bufferpool */
 	memset(values, 0, sizeof(values));
@@ -133,7 +251,13 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 	values[Anum_pg_bufferpool_bpname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(stmt->poolname));
 	values[Anum_pg_bufferpool_bphandler - 1] = ObjectIdGetDatum(bphandler);
-	values[Anum_pg_bufferpool_bpsize - 1] = Int64GetDatum(bpsize);
+	/*
+	 * Store bpsize=0 in catalog for REMAINDER pools as a marker so they can
+	 * be identified.  The actual computed size is used only for the DSM
+	 * allocation below.
+	 */
+	values[Anum_pg_bufferpool_bpsize - 1] =
+		Int64GetDatum(stmt->is_remainder ? 0 : bpsize);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 

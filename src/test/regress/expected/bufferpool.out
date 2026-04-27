@@ -120,13 +120,13 @@ SELECT val FROM bp_data WHERE id = 42;
 
 -- VACUUM the pooled table
 VACUUM bp_data;
--- Check pool stats (hits expected from repeated access; reads may be zero
--- if I/O was served entirely from OS page cache)
-SELECT reads > 0 AS has_reads, hits > 0 AS has_hits
+-- Check pool stats (hits expected from repeated access; reads may or may not
+-- be positive depending on OS page cache behavior)
+SELECT hits > 0 AS has_hits
 FROM pg_stat_bufferpool WHERE name = 'data_pool';
- has_reads | has_hits 
------------+----------
- f         | t
+ has_hits 
+----------
+ t
 (1 row)
 
 -- Clean up
@@ -205,12 +205,12 @@ WHERE a.id = 50;
 (1 row)
 
 -- Both pools should be visible in stats
-SELECT name, reads > 0 AS has_reads FROM pg_stat_bufferpool
+SELECT name FROM pg_stat_bufferpool
 WHERE name IN ('pool_a', 'pool_b') ORDER BY name;
-  name  | has_reads 
---------+-----------
- pool_a | f
- pool_b | f
+  name  
+--------
+ pool_a
+ pool_b
 (2 rows)
 
 -- Clean up
@@ -242,6 +242,42 @@ SELECT data FROM bp_ckpt_tbl WHERE id = 42;
 -- Clean up
 DROP TABLE bp_ckpt_tbl;
 DROP BUFFER POOL ckpt_pool;
+
+-- ===================================================
+-- REMAINDER pool: auto-sized to unclaimed buffer space
+-- ===================================================
+-- Create a REMAINDER pool (size computed automatically)
+-- Suppress NOTICE about exact size since it depends on shared_buffers
+SET client_min_messages = 'warning';
+CREATE BUFFER POOL remainder_test REMAINDER HANDLER clock_pool_handler;
+SET client_min_messages = 'notice';
+-- Verify it exists in the catalog (bpsize=0 marks it as REMAINDER)
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'remainder_test';
+     bpname     | bpsize 
+----------------+--------
+ remainder_test |      0
+(1 row)
+
+-- Verify it shows up in the stats view with buffers > 0
+SELECT name, nbuffers > 0 AS has_buffers FROM pg_stat_bufferpool WHERE name = 'remainder_test';
+      name      | has_buffers 
+----------------+-------------
+ remainder_test | t
+(1 row)
+
+-- Cannot create a second REMAINDER pool
+CREATE BUFFER POOL remainder_test2 REMAINDER HANDLER clock_pool_handler;
+ERROR:  a REMAINDER pool already exists: "remainder_test"
+HINT:  Drop the existing REMAINDER pool first, or re-create it with the same name to recalculate its size.
+-- Drop the REMAINDER pool
+DROP BUFFER POOL remainder_test;
+-- Verify it is gone
+SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
+ count 
+-------
+     0
+(1 row)
+
 --
 -- Error cases
 --

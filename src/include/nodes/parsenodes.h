@@ -3218,8 +3218,9 @@ typedef struct CreateBufferPoolStmt
 	NodeTag		type;
 	char	   *poolname;		/* buffer pool name */
 	List	   *handler_name;	/* handler function name */
-	char	   *size;			/* pool size as string (e.g., '2GB') */
+	char	   *size;			/* pool size as string (e.g., '2GB'), NULL for REMAINDER */
 	List	   *options;		/* WITH options (list of DefElem) */
+	bool		is_remainder;	/* true for REMAINDER pool (size auto-computed) */
 } CreateBufferPoolStmt;
 
 /*----------------------
