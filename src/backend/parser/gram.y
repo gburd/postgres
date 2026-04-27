@@ -313,6 +313,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		DropOwnedStmt ReassignOwnedStmt
 		AlterTSConfigurationStmt AlterTSDictionaryStmt
 		CreateMatViewStmt RefreshMatViewStmt CreateAmStmt
+		CreateBufferPoolStmt AlterBufferPoolStmt
 		CreatePublicationStmt AlterPublicationStmt
 		CreateSubscriptionStmt AlterSubscriptionStmt DropSubscriptionStmt
 
@@ -722,7 +723,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	ASENSITIVE ASSERTION ASSIGNMENT ASYMMETRIC ATOMIC AT ATTACH ATTRIBUTE AUTHORIZATION
 
 	BACKWARD BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
-	BOOLEAN_P BOTH BREADTH BY
+	BOOLEAN_P BOTH BREADTH BUFFER BY
 
 	CACHE CALL CALLED CASCADE CASCADED CASE CAST CATALOG_P CHAIN CHAR_P
 	CHARACTER CHARACTERISTICS CHECK CHECKPOINT CLASS CLOSE
@@ -777,20 +778,20 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	PARALLEL PARAMETER PARSER PARTIAL PARTITION PASSING PASSWORD PATH
 	PERIOD PLACING PLAN PLANS POLICY
-	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
+	POOL POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
 	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION
 
 	QUOTE QUOTES
 
 	RANGE READ REAL REASSIGN RECURSIVE REF_P REFERENCES REFERENCING
-	REFRESH REINDEX RELATIVE_P RELEASE RENAME REPACK REPEATABLE REPLACE REPLICA
+	REFRESH REINDEX REMAINDER RELATIVE_P RELEASE RENAME REPACK REPEATABLE REPLACE REPLICA
 	RESET RESPECT_P RESTART RESTRICT RETURN RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
 
 	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
 	SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
-	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SOURCE SQL_P STABLE STANDALONE_P
+	SIMILAR SIMPLE SIZE SKIP SMALLINT SNAPSHOT SOME SOURCE SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STORED STRICT_P STRING_P STRIP_P
 	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P SYSTEM_USER
 
@@ -1049,6 +1050,8 @@ stmt:
 			| ConstraintsSetStmt
 			| CopyStmt
 			| CreateAmStmt
+			| CreateBufferPoolStmt
+			| AlterBufferPoolStmt
 			| CreateAsStmt
 			| CreateAssertionStmt
 			| CreateCastStmt
@@ -6097,6 +6100,79 @@ am_type:
 		|	TABLE			{ $$ = AMTYPE_TABLE; }
 		;
 
+
+/*****************************************************************************
+ *
+ *		QUERY:
+ *			CREATE BUFFER POOL name HANDLER handler_name SIZE 'size'
+ *				[ WITH ( options ) ]
+ *			CREATE BUFFER POOL name REMAINDER HANDLER handler_name
+ *
+ *			ALTER BUFFER POOL name SET SIZE 'size'
+ *			ALTER BUFFER POOL name SET ( options )
+ *
+ *			DROP BUFFER POOL name  (handled via generic DROP)
+ *
+ *****************************************************************************/
+
+CreateBufferPoolStmt:
+			CREATE BUFFER POOL name HANDLER handler_name SIZE Sconst
+				{
+					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
+
+					n->poolname = $4;
+					n->handler_name = $6;
+					n->size = $8;
+					n->options = NIL;
+					n->is_remainder = false;
+					$$ = (Node *) n;
+				}
+			| CREATE BUFFER POOL name HANDLER handler_name SIZE Sconst WITH '(' generic_option_list ')'
+				{
+					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
+
+					n->poolname = $4;
+					n->handler_name = $6;
+					n->size = $8;
+					n->options = $11;
+					n->is_remainder = false;
+					$$ = (Node *) n;
+				}
+			| CREATE BUFFER POOL name REMAINDER HANDLER handler_name
+				{
+					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
+
+					n->poolname = $4;
+					n->handler_name = $7;
+					n->size = NULL;
+					n->options = NIL;
+					n->is_remainder = true;
+					$$ = (Node *) n;
+				}
+		;
+
+AlterBufferPoolStmt:
+			ALTER BUFFER POOL name SET SIZE Sconst
+				{
+					AlterBufferPoolStmt *n = makeNode(AlterBufferPoolStmt);
+
+					n->poolname = $4;
+					n->size = $7;
+					n->options = NIL;
+					$$ = (Node *) n;
+				}
+			| ALTER BUFFER POOL name SET '(' generic_option_list ')'
+				{
+					AlterBufferPoolStmt *n = makeNode(AlterBufferPoolStmt);
+
+					n->poolname = $4;
+					n->size = NULL;
+					n->options = $7;
+					$$ = (Node *) n;
+				}
+		;
+
+
 /*****************************************************************************
  *
  *		QUERIES :
@@ -7193,6 +7269,7 @@ object_type_name:
 
 drop_type_name:
 			ACCESS METHOD							{ $$ = OBJECT_ACCESS_METHOD; }
+			| BUFFER POOL							{ $$ = OBJECT_BUFFER_POOL; }
 			| EVENT TRIGGER							{ $$ = OBJECT_EVENT_TRIGGER; }
 			| EXTENSION								{ $$ = OBJECT_EXTENSION; }
 			| FOREIGN DATA_P WRAPPER				{ $$ = OBJECT_FDW; }
@@ -10039,6 +10116,16 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 					n->renameType = OBJECT_TABLESPACE;
 					n->subname = $3;
 					n->newname = $6;
+					n->missing_ok = false;
+					$$ = (Node *) n;
+				}
+			| ALTER BUFFER POOL name RENAME TO name
+				{
+					RenameStmt *n = makeNode(RenameStmt);
+
+					n->renameType = OBJECT_BUFFER_POOL;
+					n->subname = $4;
+					n->newname = $7;
 					n->missing_ok = false;
 					$$ = (Node *) n;
 				}
@@ -18093,6 +18180,7 @@ unreserved_keyword:
 			| BEFORE
 			| BEGIN_P
 			| BREADTH
+			| BUFFER
 			| BY
 			| CACHE
 			| CALL
@@ -18278,6 +18366,7 @@ unreserved_keyword:
 			| PLAN
 			| PLANS
 			| POLICY
+			| POOL
 			| PRECEDING
 			| PREPARE
 			| PREPARED
@@ -18301,6 +18390,7 @@ unreserved_keyword:
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
+			| REMAINDER
 			| RENAME
 			| REPACK
 			| REPEATABLE
@@ -18338,6 +18428,7 @@ unreserved_keyword:
 			| SHARE
 			| SHOW
 			| SIMPLE
+			| SIZE
 			| SKIP
 			| SNAPSHOT
 			| SOURCE
@@ -18653,6 +18744,7 @@ bare_label_keyword:
 			| BOOLEAN_P
 			| BOTH
 			| BREADTH
+			| BUFFER
 			| BY
 			| CACHE
 			| CALL
@@ -18910,6 +19002,7 @@ bare_label_keyword:
 			| PLAN
 			| PLANS
 			| POLICY
+			| POOL
 			| POSITION
 			| PRECEDING
 			| PREPARE
@@ -18937,6 +19030,7 @@ bare_label_keyword:
 			| REINDEX
 			| RELATIVE_P
 			| RELEASE
+			| REMAINDER
 			| RENAME
 			| REPACK
 			| REPEATABLE
@@ -18978,6 +19072,7 @@ bare_label_keyword:
 			| SHOW
 			| SIMILAR
 			| SIMPLE
+			| SIZE
 			| SKIP
 			| SMALLINT
 			| SNAPSHOT

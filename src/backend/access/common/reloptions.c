@@ -609,6 +609,15 @@ static relopt_enum enumRelOpts[] =
 
 static relopt_string stringRelOpts[] =
 {
+	{
+		{
+			"buffer_pool",
+			"Buffer pool to use for this relation",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			AccessExclusiveLock
+		},
+		0, true, NULL, NULL, NULL
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -695,8 +704,16 @@ assert_toast_defaults_unsettable(void)
 					break;
 				}
 
+			case RELOPT_TYPE_STRING:
+
+				/*
+				 * Strings are never inherited from the main table (see
+				 * merge_toast_reloptions()), so they need no "unset" value.
+				 */
+				break;
+
 			default:
-				/* Neither bools nor strings can express "unset". */
+				/* Bools cannot express "unset". */
 				Assert(false);
 		}
 	}
@@ -2117,7 +2134,9 @@ static const relopt_parse_elt stdRdOptionsTab[] = {
 	{"vacuum_truncate", RELOPT_TYPE_TERNARY,
 	offsetof(StdRdOptions, vacuum_truncate)},
 	{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-	offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+	offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
+	{"buffer_pool", RELOPT_TYPE_STRING,
+	offsetof(StdRdOptions, buffer_pool_offset)}
 };
 
 /*
@@ -2225,6 +2244,18 @@ merge_toast_reloptions(const StdRdOptions *toast_opts,
 			case RELOPT_TYPE_ENUM:
 				if (*(int *) toast_val == ((relopt_enum *) gen)->default_val)
 					*(int *) toast_val = *(const int *) main_val;
+				break;
+
+			case RELOPT_TYPE_STRING:
+
+				/*
+				 * Not inherited.  The only TOAST string option is buffer_pool,
+				 * which toasting.c derives from the main table's
+				 * overflow_buffer_pool when the TOAST table is created; the
+				 * main table's own buffer_pool deliberately does not apply.
+				 * (A string value is also an offset into its own options
+				 * struct, so it could not be copied across anyway.)
+				 */
 				break;
 
 			default:

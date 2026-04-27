@@ -5,6 +5,7 @@ backend_sources += files(
   'alter.c',
   'amcmds.c',
   'analyze.c',
+  'bufferpoolcmds.c',
   'async.c',
   'collationcmds.c',
   'comment.c',

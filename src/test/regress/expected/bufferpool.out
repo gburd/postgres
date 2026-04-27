@@ -1,0 +1,515 @@
+--
+-- BUFFERPOOL
+-- Tests for dynamic buffer pool infrastructure: CREATE, ALTER, DROP
+-- BUFFER POOL, pg_bufferpool catalog, and pg_stat_bufferpool view.
+--
+-- View the default pool in the stats view
+SELECT name FROM pg_stat_bufferpool;
+  name   
+---------
+ default
+(1 row)
+
+-- Verify the default pool exists in the catalog
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'default';
+ bpname  | bpsize 
+---------+--------
+ default |      0
+(1 row)
+
+-- Create a clock-sweep buffer pool (256KB = 32 pages)
+CREATE BUFFER POOL test_pool HANDLER clock_pool_handler SIZE '262144';
+-- Verify catalog entry
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'test_pool';
+  bpname   | bpsize 
+-----------+--------
+ test_pool | 262144
+(1 row)
+
+-- Verify it shows up in the stats view
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'test_pool';
+   name    | nbuffers 
+-----------+----------
+ test_pool |       32
+(1 row)
+
+-- Rename the pool
+ALTER BUFFER POOL test_pool RENAME TO test_pool_renamed;
+-- Verify the rename in the catalog
+SELECT bpname FROM pg_bufferpool WHERE bpname = 'test_pool_renamed';
+      bpname       
+-------------------
+ test_pool_renamed
+(1 row)
+
+-- Old name should be gone
+SELECT count(*) FROM pg_bufferpool WHERE bpname = 'test_pool';
+ count 
+-------
+     0
+(1 row)
+
+-- Verify the renamed pool is in the stats view
+SELECT name FROM pg_stat_bufferpool WHERE name = 'test_pool_renamed';
+       name        
+-------------------
+ test_pool_renamed
+(1 row)
+
+-- Create a second pool to verify multiple pools work
+CREATE BUFFER POOL test_pool2 HANDLER clock_pool_handler SIZE '262144';
+-- Should have the default plus two custom pools
+SELECT count(*) FROM pg_stat_bufferpool;
+ count 
+-------
+     3
+(1 row)
+
+-- ===================================================
+-- Data flow: actual reads/writes through dynamic pool
+-- ===================================================
+-- Create a data pool (1MB = 128 pages) with clock-sweep
+CREATE BUFFER POOL data_pool HANDLER clock_pool_handler SIZE '1048576';
+-- Create a table assigned to the pool
+CREATE TABLE bp_data (id int, val text) WITH (buffer_pool = 'data_pool');
+-- Insert 1000 rows
+INSERT INTO bp_data SELECT g, 'row-' || g FROM generate_series(1, 1000) g;
+-- Verify data reads back correctly
+SELECT count(*) FROM bp_data;
+ count 
+-------
+  1000
+(1 row)
+
+SELECT min(id), max(id) FROM bp_data;
+ min | max  
+-----+------
+   1 | 1000
+(1 row)
+
+SELECT val FROM bp_data WHERE id = 500;
+   val   
+---------
+ row-500
+(1 row)
+
+-- Update some rows
+UPDATE bp_data SET val = 'updated-' || id WHERE id <= 10;
+SELECT val FROM bp_data WHERE id = 5;
+    val    
+-----------
+ updated-5
+(1 row)
+
+-- Delete some rows
+DELETE FROM bp_data WHERE id > 990;
+SELECT count(*) FROM bp_data;
+ count 
+-------
+   990
+(1 row)
+
+-- Create an index on the pooled table
+CREATE INDEX bp_data_idx ON bp_data (id);
+-- Use the index
+SELECT val FROM bp_data WHERE id = 42;
+  val   
+--------
+ row-42
+(1 row)
+
+-- VACUUM the pooled table
+VACUUM bp_data;
+-- Check pool stats (hits expected from repeated access; reads may or may not
+-- be positive depending on OS page cache behavior)
+SELECT hits > 0 AS has_hits
+FROM pg_stat_bufferpool WHERE name = 'data_pool';
+ has_hits 
+----------
+ t
+(1 row)
+
+-- Clean up
+DROP TABLE bp_data;
+DROP BUFFER POOL data_pool;
+-- ===================================================
+-- ALTER BUFFER POOL SET SIZE (online resize)
+-- ===================================================
+-- Create a pool we can resize (256KB = 32 pages)
+CREATE BUFFER POOL resize_pool HANDLER clock_pool_handler SIZE '262144';
+-- Verify initial size
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'resize_pool';
+    name     | nbuffers 
+-------------+----------
+ resize_pool |       32
+(1 row)
+
+-- Resize to 512KB = 64 pages (destroy-and-recreate)
+ALTER BUFFER POOL resize_pool SET SIZE '524288';
+-- Verify new size
+SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'resize_pool';
+    name     | nbuffers 
+-------------+----------
+ resize_pool |       64
+(1 row)
+
+SELECT bpsize FROM pg_bufferpool WHERE bpname = 'resize_pool';
+ bpsize 
+--------
+ 524288
+(1 row)
+
+-- No-op resize (same size)
+ALTER BUFFER POOL resize_pool SET SIZE '524288';
+NOTICE:  buffer pool "resize_pool" already has 64 buffers, no resize needed
+-- Cannot resize the default pool
+ALTER BUFFER POOL "default" SET SIZE '1048576';
+ERROR:  cannot alter the default buffer pool
+-- Cannot resize with too-small size
+ALTER BUFFER POOL resize_pool SET SIZE '8192';
+ERROR:  buffer pool size must be at least 131072 bytes
+-- Clean up
+DROP BUFFER POOL resize_pool;
+-- ===================================================
+-- ALTER BUFFER POOL SET (options)
+-- ===================================================
+-- Create a pool to test options
+CREATE BUFFER POOL option_pool HANDLER clock_pool_handler SIZE '262144';
+-- Set direct_io option
+ALTER BUFFER POOL option_pool SET (direct_io 'true');
+-- Set direct_io back to false
+ALTER BUFFER POOL option_pool SET (direct_io 'false');
+-- Cannot alter the default pool
+ALTER BUFFER POOL "default" SET (direct_io 'true');
+ERROR:  cannot alter the default buffer pool
+-- Unrecognized option
+ALTER BUFFER POOL option_pool SET (bogus_option 'true');
+ERROR:  unrecognized buffer pool option "bogus_option"
+-- Clean up
+DROP BUFFER POOL option_pool;
+-- ===================================================
+-- Multi-pool: two pools with tables, cross-pool JOIN
+-- ===================================================
+CREATE BUFFER POOL pool_a HANDLER clock_pool_handler SIZE '524288';
+CREATE BUFFER POOL pool_b HANDLER clock_pool_handler SIZE '524288';
+CREATE TABLE bp_tbl_a (id int, label text) WITH (buffer_pool = 'pool_a');
+CREATE TABLE bp_tbl_b (id int, score int) WITH (buffer_pool = 'pool_b');
+INSERT INTO bp_tbl_a SELECT g, 'item-' || g FROM generate_series(1, 100) g;
+INSERT INTO bp_tbl_b SELECT g, g * 10 FROM generate_series(1, 100) g;
+-- Cross-pool join
+SELECT a.label, b.score FROM bp_tbl_a a JOIN bp_tbl_b b ON a.id = b.id
+WHERE a.id = 50;
+  label  | score 
+---------+-------
+ item-50 |   500
+(1 row)
+
+-- Both pools should be visible in stats
+SELECT name FROM pg_stat_bufferpool
+WHERE name IN ('pool_a', 'pool_b') ORDER BY name;
+  name  
+--------
+ pool_a
+ pool_b
+(2 rows)
+
+-- Clean up
+DROP TABLE bp_tbl_a;
+DROP TABLE bp_tbl_b;
+DROP BUFFER POOL pool_a;
+DROP BUFFER POOL pool_b;
+-- ===================================================
+-- Checkpoint persistence through a dynamic pool
+-- ===================================================
+CREATE BUFFER POOL ckpt_pool HANDLER clock_pool_handler SIZE '524288';
+CREATE TABLE bp_ckpt_tbl (id int, data text) WITH (buffer_pool = 'ckpt_pool');
+INSERT INTO bp_ckpt_tbl SELECT g, 'persist-' || g FROM generate_series(1, 100) g;
+-- Force a checkpoint
+CHECKPOINT;
+-- Verify data survived the checkpoint
+SELECT count(*) FROM bp_ckpt_tbl;
+ count 
+-------
+   100
+(1 row)
+
+SELECT data FROM bp_ckpt_tbl WHERE id = 42;
+    data    
+------------
+ persist-42
+(1 row)
+
+-- Clean up
+DROP TABLE bp_ckpt_tbl;
+DROP BUFFER POOL ckpt_pool;
+-- ===================================================
+-- REMAINDER pool: auto-sized to unclaimed buffer space
+-- ===================================================
+-- Create a REMAINDER pool (size computed automatically)
+-- Suppress NOTICE about exact size since it depends on shared_buffers
+SET client_min_messages = 'warning';
+CREATE BUFFER POOL remainder_test REMAINDER HANDLER clock_pool_handler;
+SET client_min_messages = 'notice';
+-- Verify it exists in the catalog (bpsize=0 marks it as REMAINDER)
+SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'remainder_test';
+     bpname     | bpsize 
+----------------+--------
+ remainder_test |      0
+(1 row)
+
+-- Verify it shows up in the stats view with buffers > 0
+SELECT name, nbuffers > 0 AS has_buffers FROM pg_stat_bufferpool WHERE name = 'remainder_test';
+      name      | has_buffers 
+----------------+-------------
+ remainder_test | t
+(1 row)
+
+-- Cannot create a second REMAINDER pool
+CREATE BUFFER POOL remainder_test2 REMAINDER HANDLER clock_pool_handler;
+ERROR:  a REMAINDER pool already exists: "remainder_test"
+HINT:  Drop the existing REMAINDER pool first, or re-create it with the same name to recalculate its size.
+-- Drop the REMAINDER pool
+DROP BUFFER POOL remainder_test;
+-- Verify it is gone
+SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
+ count 
+-------
+     0
+(1 row)
+
+-- ===================================================
+-- overflow_buffer_pool reloption
+-- ===================================================
+-- Create a pool for overflow/TOAST data
+CREATE BUFFER POOL toast_pool HANDLER clock_pool_handler SIZE '524288';
+-- Create a table with both buffer_pool and overflow_buffer_pool
+CREATE TABLE bp_overflow (id int, data text) WITH (buffer_pool = 'toast_pool', overflow_buffer_pool = 'toast_pool');
+-- Verify the reloptions are stored
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_overflow' ORDER BY 1;
+             unnest              
+---------------------------------
+ buffer_pool=toast_pool
+ overflow_buffer_pool=toast_pool
+(2 rows)
+
+-- Insert data and verify it works
+INSERT INTO bp_overflow SELECT g, 'overflow-' || g FROM generate_series(1, 50) g;
+SELECT count(*) FROM bp_overflow;
+ count 
+-------
+    50
+(1 row)
+
+SELECT data FROM bp_overflow WHERE id = 25;
+    data     
+-------------
+ overflow-25
+(1 row)
+
+-- Create a table with only overflow_buffer_pool
+CREATE TABLE bp_overflow2 (id int, data text) WITH (overflow_buffer_pool = 'toast_pool');
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_overflow2' ORDER BY 1;
+             unnest              
+---------------------------------
+ overflow_buffer_pool=toast_pool
+(1 row)
+
+INSERT INTO bp_overflow2 VALUES (1, 'test');
+SELECT data FROM bp_overflow2 WHERE id = 1;
+ data 
+------
+ test
+(1 row)
+
+-- Nonexistent overflow pool warns but doesn't fail
+CREATE TABLE bp_overflow_bad (id int) WITH (overflow_buffer_pool = 'no_such_pool');
+WARNING:  overflow buffer pool "no_such_pool" does not exist, using default pool
+DROP TABLE bp_overflow_bad;
+WARNING:  overflow buffer pool "no_such_pool" does not exist, using default pool
+-- Clean up
+DROP TABLE bp_overflow;
+DROP TABLE bp_overflow2;
+DROP BUFFER POOL toast_pool;
+-- ===================================================
+-- TOAST table inherits overflow_buffer_pool as buffer_pool
+-- ===================================================
+-- Create a pool for TOAST data
+CREATE BUFFER POOL toast_ovfl_pool HANDLER clock_pool_handler SIZE '524288';
+-- Create a table with overflow_buffer_pool and large text to trigger TOAST
+CREATE TABLE bp_toast_test (id int, big_data text) WITH (overflow_buffer_pool = 'toast_ovfl_pool');
+-- Insert large data to force TOAST table creation
+INSERT INTO bp_toast_test VALUES (1, repeat('x', 10000));
+-- Verify the parent's TOAST table exists
+SELECT reltoastrelid IS NOT NULL AND reltoastrelid != 0 AS has_toast
+FROM pg_class WHERE relname = 'bp_toast_test';
+ has_toast 
+-----------
+ t
+(1 row)
+
+-- Check that the TOAST table has buffer_pool = 'toast_ovfl_pool' in reloptions
+SELECT unnest(reloptions) FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+           unnest            
+-----------------------------
+ buffer_pool=toast_ovfl_pool
+(1 row)
+
+-- Verify the data round-trips correctly
+SELECT id, length(big_data) FROM bp_toast_test WHERE id = 1;
+ id | length 
+----+--------
+  1 |  10000
+(1 row)
+
+-- ===================================================
+-- ALTER TABLE SET overflow_buffer_pool cascades to TOAST
+-- ===================================================
+-- Create a second pool for the cascade test
+CREATE BUFFER POOL toast_ovfl_pool2 HANDLER clock_pool_handler SIZE '524288';
+-- Change the overflow pool via ALTER TABLE
+ALTER TABLE bp_toast_test SET (overflow_buffer_pool = 'toast_ovfl_pool2');
+-- Verify parent reloptions updated
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_toast_test' ORDER BY 1;
+                unnest                 
+---------------------------------------
+ overflow_buffer_pool=toast_ovfl_pool2
+(1 row)
+
+-- Verify TOAST table's buffer_pool cascaded to the new pool
+SELECT unnest(reloptions) FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+            unnest            
+------------------------------
+ buffer_pool=toast_ovfl_pool2
+(1 row)
+
+-- Verify data still works after the change
+SELECT id, length(big_data) FROM bp_toast_test WHERE id = 1;
+ id | length 
+----+--------
+  1 |  10000
+(1 row)
+
+-- Reset overflow_buffer_pool should also reset TOAST buffer_pool
+ALTER TABLE bp_toast_test RESET (overflow_buffer_pool);
+-- Parent should no longer have overflow_buffer_pool
+SELECT reloptions FROM pg_class WHERE relname = 'bp_toast_test';
+ reloptions 
+------------
+ 
+(1 row)
+
+-- TOAST table should no longer have buffer_pool
+SELECT reloptions FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+ reloptions 
+------------
+ 
+(1 row)
+
+-- ===================================================
+-- JAM pool handler for TOAST-optimized buffer management
+-- ===================================================
+-- Create a JAM pool
+CREATE BUFFER POOL jam_test_pool HANDLER jam_pool_handler SIZE '524288';
+-- Create a table using JAM pool for its TOAST data
+CREATE TABLE bp_jam_test (id int, big_data text) WITH (overflow_buffer_pool = 'jam_test_pool');
+-- Insert large data to force TOAST usage
+INSERT INTO bp_jam_test VALUES (1, repeat('y', 10000));
+-- Read back to verify
+SELECT id, length(big_data) FROM bp_jam_test WHERE id = 1;
+ id | length 
+----+--------
+  1 |  10000
+(1 row)
+
+-- Verify TOAST table uses the JAM pool
+SELECT unnest(reloptions) FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_jam_test');
+          unnest           
+---------------------------
+ buffer_pool=jam_test_pool
+(1 row)
+
+-- Insert more rows and re-read (exercises hit/miss tracking)
+INSERT INTO bp_jam_test SELECT g, repeat('z', 5000) FROM generate_series(2, 20) g;
+SELECT count(*) FROM bp_jam_test;
+ count 
+-------
+    20
+(1 row)
+
+SELECT id, length(big_data) FROM bp_jam_test WHERE id = 10;
+ id | length 
+----+--------
+ 10 |   5000
+(1 row)
+
+-- VACUUM to exercise trickle/eviction paths
+VACUUM bp_jam_test;
+-- Clean up
+DROP TABLE bp_jam_test;
+DROP BUFFER POOL jam_test_pool;
+-- Clean up overflow test tables
+DROP TABLE bp_toast_test;
+DROP BUFFER POOL toast_ovfl_pool;
+DROP BUFFER POOL toast_ovfl_pool2;
+--
+-- Error cases
+--
+-- Cannot create a pool named "default" (already exists)
+CREATE BUFFER POOL "default" HANDLER clock_pool_handler SIZE '262144';
+ERROR:  buffer pool "default" already exists
+-- Duplicate pool name
+CREATE BUFFER POOL dup_test HANDLER clock_pool_handler SIZE '262144';
+CREATE BUFFER POOL dup_test HANDLER clock_pool_handler SIZE '262144';
+ERROR:  buffer pool "dup_test" already exists
+-- DROP IF EXISTS on a nonexistent pool should succeed with NOTICE
+DROP BUFFER POOL IF EXISTS no_such_pool;
+NOTICE:  buffer pool "no_such_pool" does not exist, skipping
+-- Creating a table with a nonexistent buffer_pool reloption just stores the string
+CREATE TABLE bp_nopool (id int) WITH (buffer_pool = 'nonexistent');
+WARNING:  buffer pool "nonexistent" does not exist, using default pool
+DROP TABLE bp_nopool;
+WARNING:  buffer pool "nonexistent" does not exist, using default pool
+-- Cannot drop the default pool
+DROP BUFFER POOL "default";
+ERROR:  cannot drop buffer pool default because it is required by the database system
+-- Cannot drop a pool with dependent relations
+CREATE BUFFER POOL dep_test HANDLER clock_pool_handler SIZE '262144';
+CREATE TABLE bp_dep_tbl (id int) WITH (buffer_pool = 'dep_test');
+DROP BUFFER POOL dep_test;
+ERROR:  cannot drop buffer pool "dep_test" because relation "bp_dep_tbl" depends on it
+HINT:  Remove the buffer_pool reloption from dependent relations first.
+DROP TABLE bp_dep_tbl;
+-- Pool with SIZE too small (< 16 * 8192 = 131072)
+CREATE BUFFER POOL tiny_pool HANDLER clock_pool_handler SIZE '8192';
+ERROR:  buffer pool size must be at least 131072 bytes
+-- Invalid handler function name
+CREATE BUFFER POOL bad_handler HANDLER nonexistent_handler SIZE '262144';
+ERROR:  function nonexistent_handler(internal) does not exist
+-- DROP without IF EXISTS on nonexistent pool
+DROP BUFFER POOL no_such_pool;
+ERROR:  buffer pool "no_such_pool" does not exist
+--
+-- DROP BUFFER POOL (successful cases)
+--
+-- Drop the pools created above (also terminates their trickle writers)
+DROP BUFFER POOL test_pool_renamed;
+DROP BUFFER POOL test_pool2;
+DROP BUFFER POOL dup_test;
+DROP BUFFER POOL dep_test;
+-- Verify they are gone from the catalog
+SELECT bpname FROM pg_bufferpool WHERE bpname IN ('test_pool_renamed', 'test_pool2', 'dup_test', 'dep_test');
+ bpname 
+--------
+(0 rows)
+
+-- Only the default pool should remain in the stats view
+SELECT count(*) FROM pg_stat_bufferpool;
+ count 
+-------
+     1
+(1 row)
+

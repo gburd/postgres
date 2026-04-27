@@ -161,13 +161,15 @@
 #define DEFAULT_BACKEND_FLUSH_AFTER 0	/* never enabled by default */
 #define DEFAULT_BGWRITER_FLUSH_AFTER 64
 #define DEFAULT_CHECKPOINT_FLUSH_AFTER 32
+#define DEFAULT_TRICKLE_FLUSH_AFTER 128
 #else
 #define DEFAULT_BACKEND_FLUSH_AFTER 0
 #define DEFAULT_BGWRITER_FLUSH_AFTER 0
 #define DEFAULT_CHECKPOINT_FLUSH_AFTER 0
+#define DEFAULT_TRICKLE_FLUSH_AFTER 0
 #endif
-/* upper limit for all three variables */
-#define WRITEBACK_MAX_PENDING_FLUSHES 256
+/* upper limit for all flush_after variables */
+#define WRITEBACK_MAX_PENDING_FLUSHES 1024
 
 /*
  * USE_SSL code should be compiled only when compiling with an SSL

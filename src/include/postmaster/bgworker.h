@@ -133,6 +133,11 @@ extern BgwHandleStatus
 			WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *);
 extern const char *GetBackgroundWorkerTypeByPid(pid_t pid);
 
+/* Handle construction/introspection for cross-backend use */
+extern int	GetBackgroundWorkerHandleSlot(BackgroundWorkerHandle *handle);
+extern uint64 GetBackgroundWorkerHandleGeneration(BackgroundWorkerHandle *handle);
+extern BackgroundWorkerHandle *CreateBackgroundWorkerHandle(int slot, uint64 generation);
+
 /* Terminate a bgworker */
 extern void TerminateBackgroundWorker(BackgroundWorkerHandle *handle);
 

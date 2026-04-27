@@ -129,6 +129,7 @@ NOTICE:  checking pg_amop {amoprighttype} => pg_type {oid}
 NOTICE:  checking pg_amop {amopopr} => pg_operator {oid}
 NOTICE:  checking pg_amop {amopmethod} => pg_am {oid}
 NOTICE:  checking pg_amop {amopsortfamily} => pg_opfamily {oid}
+NOTICE:  checking pg_bufferpool {bphandler} => pg_proc {oid}
 NOTICE:  checking pg_amproc {amprocfamily} => pg_opfamily {oid}
 NOTICE:  checking pg_amproc {amproclefttype} => pg_type {oid}
 NOTICE:  checking pg_amproc {amprocrighttype} => pg_type {oid}

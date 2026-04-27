@@ -71,6 +71,7 @@ AllocSetContext
 AllocSetFreeList
 AllocateDesc
 AllocateDescKind
+AlterBufferPoolStmt
 AlterCollationStmt
 AlterDatabaseRefreshCollStmt
 AlterDatabaseSetStmt
@@ -361,6 +362,8 @@ BufferHeapTupleTableSlot
 BufferLockMode
 BufferLookupEnt
 BufferManagerRelation
+BufferPoolDesc
+BufferPoolRoutine
 BufferStrategyControl
 BufferTag
 BufferUsage
@@ -445,6 +448,7 @@ ClientCertName
 ClientConnectionInfo
 ClientData
 ClientSocket
+ClockPoolState
 ClonePtrType
 ClosePortalStmt
 ClosePtrType
@@ -563,6 +567,7 @@ Counters
 CoverExt
 CoverPos
 CreateAmStmt
+CreateBufferPoolStmt
 CreateCastStmt
 CreateConversionStmt
 CreateDBRelInfo
@@ -661,6 +666,7 @@ DecodingWorkerShared
 DefElem
 DefElemAction
 DefaultACLInfo
+DefaultPoolAlgorithmEntry
 DefineStmt
 DefnDumperPtr
 DeleteStmt
@@ -901,6 +907,7 @@ FormData_pg_attrdef
 FormData_pg_attribute
 FormData_pg_auth_members
 FormData_pg_authid
+FormData_pg_bufferpool
 FormData_pg_cast
 FormData_pg_class
 FormData_pg_collation
@@ -2373,6 +2380,10 @@ Point
 Pointer
 PolicyInfo
 Pool
+PoolBufHashEntry
+PoolHashPartition
+PoolHashPartitions
+PoolLocalState
 PopulateArrayContext
 PopulateArrayState
 PopulateRecordCache
