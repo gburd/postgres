@@ -25,20 +25,29 @@
 
 typedef void *Block;
 
+/* Forward declaration for FlushBufferPoolDirtyBuffers */
+struct BufferPoolDesc;
+
 /*
- * Possible arguments for GetAccessStrategy().
+ * BufferAccessIntent -- describes the kind of work a relation read is
+ * doing, so the buffer manager can pick the right policy:
  *
- * If adding a new BufferAccessStrategyType, also add a new IOContext so
- * IO statistics using this strategy are tracked.
+ *   - BUF_INTENT_NORMAL: ordinary OLTP-style random access; use the pool's
+ *     replacement algorithm directly.
+ *   - BUF_INTENT_BULKREAD: large sequential scan; if the active pool's
+ *     algorithm is scan-resistant the algorithm protects itself, otherwise
+ *     route through the RECYCLE pool (or a per-backend ring buffer fallback)
+ *     to avoid polluting the cache with one-shot pages.
+ *   - BUF_INTENT_BULKWRITE: COPY FROM, CTAS, CREATE INDEX; route through
+ *     RECYCLE or a per-backend ring regardless of algorithm.
+ *   - BUF_INTENT_VACUUM: VACUUM and equivalents; route through RECYCLE or a
+ *     per-backend ring regardless of algorithm.
+ *
+ * The enum itself is defined in storage/buf.h so leaf headers like
+ * access/genam.h can see it without pulling in the rest of bufmgr.h.
+ * If adding a new intent, also add a new IOContext so IO statistics
+ * using this intent are tracked.
  */
-typedef enum BufferAccessStrategyType
-{
-	BAS_NORMAL,					/* Normal random access */
-	BAS_BULKREAD,				/* Large read-only scan (hint bit updates are
-								 * ok) */
-	BAS_BULKWRITE,				/* Large multi-block write (e.g. COPY IN) */
-	BAS_VACUUM,					/* VACUUM */
-} BufferAccessStrategyType;
 
 /* Possible modes for ReadBufferExtended() */
 typedef enum
@@ -135,7 +144,7 @@ struct ReadBuffersOperation
 	SMgrRelation smgr;
 	char		persistence;
 	ForkNumber	forknum;
-	BufferAccessStrategy strategy;
+	BufferAccessIntent intent;
 
 	/*
 	 * The following private members are private state for communication
@@ -160,6 +169,21 @@ typedef struct WritebackContext WritebackContext;
 
 /* in globals.c ... this duplicates miscadmin.h */
 extern PGDLLIMPORT int NBuffers;
+
+/*
+ * MaxBufferNumber -- upper bound on valid Buffer numbers across all pools.
+ *
+ * For the default pool, this equals NBuffers.  When dynamic pools are
+ * created, it grows to cover bp_first_buf + bp_nbuffers for the highest
+ * pool.  Used by BufferIsValid() assertions.
+ *
+ * Stored in shared memory so that all backends see updates when dynamic
+ * pools are created or destroyed.  Defined in bufpool.c.
+ */
+#ifndef MaxBufferNumber
+extern int *SharedMaxBufferNumber;
+#define MaxBufferNumber (*SharedMaxBufferNumber)
+#endif
 
 /* in bufmgr.c */
 extern PGDLLIMPORT bool zero_damaged_pages;
@@ -236,10 +260,10 @@ extern bool ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum,
 extern Buffer ReadBuffer(Relation reln, BlockNumber blockNum);
 extern Buffer ReadBufferExtended(Relation reln, ForkNumber forkNum,
 								 BlockNumber blockNum, ReadBufferMode mode,
-								 BufferAccessStrategy strategy);
+								 BufferAccessIntent intent);
 extern Buffer ReadBufferWithoutRelcache(RelFileLocator rlocator,
 										ForkNumber forkNum, BlockNumber blockNum,
-										ReadBufferMode mode, BufferAccessStrategy strategy,
+										ReadBufferMode mode, BufferAccessIntent intent,
 										bool permanent);
 
 extern bool StartReadBuffer(ReadBuffersOperation *operation,
@@ -266,18 +290,18 @@ extern Buffer ReleaseAndReadBuffer(Buffer buffer, Relation relation,
 
 extern Buffer ExtendBufferedRel(BufferManagerRelation bmr,
 								ForkNumber forkNum,
-								BufferAccessStrategy strategy,
+								BufferAccessIntent intent,
 								uint32 flags);
 extern BlockNumber ExtendBufferedRelBy(BufferManagerRelation bmr,
 									   ForkNumber fork,
-									   BufferAccessStrategy strategy,
+									   BufferAccessIntent intent,
 									   uint32 flags,
 									   uint32 extend_by,
 									   Buffer *buffers,
 									   uint32 *extended_by);
 extern Buffer ExtendBufferedRelTo(BufferManagerRelation bmr,
 								  ForkNumber fork,
-								  BufferAccessStrategy strategy,
+								  BufferAccessIntent intent,
 								  uint32 flags,
 								  BlockNumber extend_to,
 								  ReadBufferMode mode);
@@ -299,6 +323,7 @@ extern void CreateAndCopyRelationData(RelFileLocator src_rlocator,
 									  RelFileLocator dst_rlocator,
 									  bool permanent);
 extern void FlushDatabaseBuffers(Oid dbid);
+extern void FlushBufferPoolDirtyBuffers(struct BufferPoolDesc *pool);
 extern void DropRelationBuffers(SMgrRelation smgr_reln,
 								ForkNumber *forkNum,
 								int nforks, BlockNumber *firstDelBlock);
@@ -376,13 +401,21 @@ extern void AtProcExit_LocalBuffers(void);
 
 /* in freelist.c */
 
-extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);
-extern BufferAccessStrategy GetAccessStrategyWithSize(BufferAccessStrategyType btype,
-													  int ring_size_kb);
-extern int	GetAccessStrategyBufferCount(BufferAccessStrategy strategy);
-extern int	GetAccessStrategyPinLimit(BufferAccessStrategy strategy);
+/* Configured ring-buffer size in pages for the given intent (0 = no ring). */
+extern int	IntentRingBufferCount(BufferAccessIntent intent);
 
-extern void FreeAccessStrategy(BufferAccessStrategy strategy);
+/* How many buffers a backend may have pinned at once for this intent. */
+extern int	IntentPinLimit(BufferAccessIntent intent);
+
+/*
+ * VACUUM's BUFFER_USAGE_LIMIT command option overrides the
+ * vacuum_buffer_usage_limit GUC for one command.  Pass kb < 0 to
+ * clear the override.  Used by ExecVacuum and parallel-vacuum workers.
+ */
+extern void SetVacuumIntentRingOverride(int kb);
+
+/* Called from buf_init at proc exit to free per-backend ring state. */
+extern void AtProcExit_IntentRings(void);
 
 
 /* inline functions */
@@ -418,7 +451,7 @@ extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 static inline bool
 BufferIsValid(Buffer bufnum)
 {
-	Assert(bufnum <= NBuffers);
+	Assert(bufnum <= MaxBufferNumber);
 	Assert(bufnum >= -NLocBuffer);
 
 	return bufnum != InvalidBuffer;
@@ -431,6 +464,9 @@ BufferIsValid(Buffer bufnum)
  * Note:
  *		Assumes buffer is valid.
  */
+/* in bufpool.c -- slow path for dynamic pool blocks */
+extern Block GetDynamicPoolBlock(Buffer buffer);
+
 static inline Block
 BufferGetBlock(Buffer buffer)
 {
@@ -438,8 +474,10 @@ BufferGetBlock(Buffer buffer)
 
 	if (BufferIsLocal(buffer))
 		return LocalBufferBlockPointers[-buffer - 1];
-	else
+	else if (likely(buffer - 1 < NBuffers))
 		return (Block) (BufferBlocks + ((Size) (buffer - 1)) * BLCKSZ);
+	else
+		return GetDynamicPoolBlock(buffer);
 }
 
 /*

@@ -217,7 +217,7 @@ pgstatindex_impl(Relation rel, FunctionCallInfo fcinfo)
 	BlockNumber nblocks;
 	BlockNumber blkno;
 	BTIndexStat indexStat;
-	BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	BufferAccessIntent intent = BUF_INTENT_BULKREAD;
 	BlockRangeReadStreamPrivate p;
 	ReadStream *stream;
 	BlockNumber startblk;
@@ -254,7 +254,7 @@ pgstatindex_impl(Relation rel, FunctionCallInfo fcinfo)
 	 * Read metapage
 	 */
 	{
-		Buffer		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, 0, RBM_NORMAL, bstrategy);
+		Buffer		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, 0, RBM_NORMAL, intent);
 		Page		page = BufferGetPage(buffer);
 		BTMetaPageData *metad = BTPageGetMeta(page);
 
@@ -291,7 +291,7 @@ pgstatindex_impl(Relation rel, FunctionCallInfo fcinfo)
 	 */
 	stream = read_stream_begin_relation(READ_STREAM_FULL |
 										READ_STREAM_USE_BATCHING,
-										bstrategy,
+										intent,
 										rel,
 										MAIN_FORKNUM,
 										block_range_read_stream_cb,
@@ -612,7 +612,7 @@ pgstathashindex(PG_FUNCTION_ARGS)
 	BlockNumber blkno;
 	Relation	rel;
 	HashIndexStat stats;
-	BufferAccessStrategy bstrategy;
+	BufferAccessIntent intent;
 	HeapTuple	tuple;
 	TupleDesc	tupleDesc;
 	Datum		values[8];
@@ -666,7 +666,7 @@ pgstathashindex(PG_FUNCTION_ARGS)
 	nblocks = RelationGetNumberOfBlocks(rel);
 
 	/* prepare access strategy for this index */
-	bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	intent = BUF_INTENT_BULKREAD;
 
 	/* Scan all blocks except the metapage (0th page) using streaming reads */
 	startblk = HASH_METAPAGE + 1;
@@ -680,7 +680,7 @@ pgstathashindex(PG_FUNCTION_ARGS)
 	 */
 	stream = read_stream_begin_relation(READ_STREAM_FULL |
 										READ_STREAM_USE_BATCHING,
-										bstrategy,
+										intent,
 										rel,
 										MAIN_FORKNUM,
 										block_range_read_stream_cb,

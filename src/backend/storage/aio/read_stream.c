@@ -757,7 +757,7 @@ read_stream_look_ahead(ReadStream *stream)
  */
 static ReadStream *
 read_stream_begin_impl(int flags,
-					   BufferAccessStrategy strategy,
+					   BufferAccessIntent intent,
 					   Relation rel,
 					   SMgrRelation smgr,
 					   char persistence,
@@ -835,8 +835,8 @@ read_stream_begin_impl(int flags,
 	max_pinned_buffers = Min(max_pinned_buffers,
 							 PG_INT16_MAX - queue_overflow - 1);
 
-	/* Give the strategy a chance to limit the number of buffers we pin. */
-	strategy_pin_limit = GetAccessStrategyPinLimit(strategy);
+	/* Give the intent a chance to limit the number of buffers we pin. */
+	strategy_pin_limit = IntentPinLimit(intent);
 	max_pinned_buffers = Min(strategy_pin_limit, max_pinned_buffers);
 
 	/*
@@ -962,7 +962,7 @@ read_stream_begin_impl(int flags,
 		stream->ios[i].op.smgr = smgr;
 		stream->ios[i].op.persistence = persistence;
 		stream->ios[i].op.forknum = forknum;
-		stream->ios[i].op.strategy = strategy;
+		stream->ios[i].op.intent = intent;
 	}
 
 	return stream;
@@ -974,7 +974,7 @@ read_stream_begin_impl(int flags,
  */
 ReadStream *
 read_stream_begin_relation(int flags,
-						   BufferAccessStrategy strategy,
+						   BufferAccessIntent intent,
 						   Relation rel,
 						   ForkNumber forknum,
 						   ReadStreamBlockNumberCB callback,
@@ -982,7 +982,7 @@ read_stream_begin_relation(int flags,
 						   size_t per_buffer_data_size)
 {
 	return read_stream_begin_impl(flags,
-								  strategy,
+								  intent,
 								  rel,
 								  RelationGetSmgr(rel),
 								  rel->rd_rel->relpersistence,
@@ -998,7 +998,7 @@ read_stream_begin_relation(int flags,
  */
 ReadStream *
 read_stream_begin_smgr_relation(int flags,
-								BufferAccessStrategy strategy,
+								BufferAccessIntent intent,
 								SMgrRelation smgr,
 								char smgr_persistence,
 								ForkNumber forknum,
@@ -1007,7 +1007,7 @@ read_stream_begin_smgr_relation(int flags,
 								size_t per_buffer_data_size)
 {
 	return read_stream_begin_impl(flags,
-								  strategy,
+								  intent,
 								  NULL,
 								  smgr,
 								  smgr_persistence,
@@ -1371,12 +1371,12 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
  * itself, without using the stream.  Returns, and consumes, the next block
  * number that would be read by the stream's look-ahead algorithm, or
  * InvalidBlockNumber if the end of the stream is reached.  Also reports the
- * strategy that would be used to read it.
+ * intent that would be used to read it.
  */
 BlockNumber
-read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
+read_stream_next_block(ReadStream *stream, BufferAccessIntent * intent)
 {
-	*strategy = stream->ios[0].op.strategy;
+	*intent = stream->ios[0].op.intent;
 	return read_stream_get_block(stream, NULL);
 }
 

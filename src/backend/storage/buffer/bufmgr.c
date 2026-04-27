@@ -55,6 +55,7 @@
 #include "storage/aio.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool_internals.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
@@ -73,7 +74,10 @@
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */
-#define BufHdrGetBlock(bufHdr)	((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ))
+#define BufHdrGetBlock(bufHdr) \
+	((bufHdr)->buf_id < NBuffers ? \
+	 ((Block) (BufferBlocks + ((Size) (bufHdr)->buf_id) * BLCKSZ)) : \
+	 GetDynamicPoolBlock((Buffer)((bufHdr)->buf_id + 1)))
 #define BufferGetLSN(bufHdr)	(PageGetLSN(BufHdrGetBlock(bufHdr)))
 
 /* Note: this macro only works on local buffers, not shared ones! */
@@ -226,6 +230,16 @@ int			backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
 
 /* local state for LockBufferForCleanup */
 static BufferDesc *PinCountWaitBuf = NULL;
+
+/*
+ * Backend-local pointer to the current target buffer pool.  Set before
+ * calling BufferAlloc() when the relation has a non-default buffer pool
+ * assignment; cleared via PG_FINALLY so longjmp out of BufferAlloc()
+ * cannot leave a stale pointer visible to the next call.  NULL means
+ * use the default pool (zero overhead -- single predicted-not-taken
+ * branch).
+ */
+static BufferPoolDesc *CurrentBufferPool = NULL;
 
 /*
  * Backend-Private refcount management:
@@ -611,10 +625,10 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 static Buffer ReadBuffer_common(Relation rel,
 								SMgrRelation smgr, char smgr_persistence,
 								ForkNumber forkNum, BlockNumber blockNum,
-								ReadBufferMode mode, BufferAccessStrategy strategy);
+								ReadBufferMode mode, BufferAccessIntent intent);
 static BlockNumber ExtendBufferedRelCommon(BufferManagerRelation bmr,
 										   ForkNumber fork,
-										   BufferAccessStrategy strategy,
+										   BufferAccessIntent intent,
 										   uint32 flags,
 										   uint32 extend_by,
 										   BlockNumber extend_upto,
@@ -622,20 +636,22 @@ static BlockNumber ExtendBufferedRelCommon(BufferManagerRelation bmr,
 										   uint32 *extended_by);
 static BlockNumber ExtendBufferedRelShared(BufferManagerRelation bmr,
 										   ForkNumber fork,
-										   BufferAccessStrategy strategy,
+										   BufferAccessIntent intent,
 										   uint32 flags,
 										   uint32 extend_by,
 										   BlockNumber extend_upto,
 										   Buffer *buffers,
 										   uint32 *extended_by);
-static bool PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
+static bool PinBuffer(BufferDesc *buf, BufferAccessIntent intent,
 					  bool skip_if_not_valid);
 static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
 static void UnpinBufferNoOwner(BufferDesc *buf);
 static void BufferSync(int flags);
-static int	SyncOneBuffer(int buf_id, bool skip_recently_used,
+int			SyncOneBuffer(int buf_id, bool skip_recently_used,
 						  WritebackContext *wb_context);
+static int	SyncOnePoolBuffer(BufferDesc *bufHdr,
+							  WritebackContext *wb_context);
 static void WaitIO(BufferDesc *buf);
 static void AbortBufferIO(Buffer buffer);
 static void shared_buffer_write_error_callback(void *arg);
@@ -644,7 +660,7 @@ static inline BufferDesc *BufferAlloc(SMgrRelation smgr,
 									  char relpersistence,
 									  ForkNumber forkNum,
 									  BlockNumber blockNum,
-									  BufferAccessStrategy strategy,
+									  BufferAccessIntent intent,
 									  bool *foundPtr, IOContext io_context);
 static bool AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress);
 static void CheckReadBuffersOperation(ReadBuffersOperation *operation, bool is_complete);
@@ -653,7 +669,7 @@ static pg_attribute_always_inline void TrackBufferHit(IOObject io_object,
 													  IOContext io_context,
 													  Relation rel, char persistence, SMgrRelation smgr,
 													  ForkNumber forknum, BlockNumber blocknum);
-static Buffer GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context);
+static Buffer GetVictimBuffer(BufferAccessIntent intent, IOContext io_context);
 static void FlushUnlockedBuffer(BufferDesc *buf, SMgrRelation reln,
 								IOObject io_object, IOContext io_context);
 static void FlushBuffer(BufferDesc *buf, SMgrRelation reln,
@@ -857,7 +873,7 @@ ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockN
 		 * pin.
 		 */
 		if (BufferTagsEqual(&tag, &bufHdr->tag) &&
-			PinBuffer(bufHdr, NULL, true))
+			PinBuffer(bufHdr, BUF_INTENT_NORMAL, true))
 		{
 			if (BufferTagsEqual(&tag, &bufHdr->tag))
 			{
@@ -873,12 +889,12 @@ ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockN
 
 /*
  * ReadBuffer -- a shorthand for ReadBufferExtended, for reading from main
- *		fork with RBM_NORMAL mode and default strategy.
+ *		fork with RBM_NORMAL mode and default intent.
  */
 Buffer
 ReadBuffer(Relation reln, BlockNumber blockNum)
 {
-	return ReadBufferExtended(reln, MAIN_FORKNUM, blockNum, RBM_NORMAL, NULL);
+	return ReadBufferExtended(reln, MAIN_FORKNUM, blockNum, RBM_NORMAL, BUF_INTENT_NORMAL);
 }
 
 /*
@@ -919,12 +935,12 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  *
  * RBM_NORMAL_NO_LOG mode is treated the same as RBM_NORMAL here.
  *
- * If strategy is not NULL, a nondefault buffer access strategy is used.
+ * If intent is not NULL, a nondefault buffer access intent is used.
  * See buffer/README for details.
  */
 inline Buffer
 ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
-				   ReadBufferMode mode, BufferAccessStrategy strategy)
+				   ReadBufferMode mode, BufferAccessIntent intent)
 {
 	Buffer		buf;
 
@@ -934,7 +950,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 * ReadBuffer_common().
 	 */
 	buf = ReadBuffer_common(reln, RelationGetSmgr(reln), 0,
-							forkNum, blockNum, mode, strategy);
+							forkNum, blockNum, mode, intent);
 
 	return buf;
 }
@@ -953,14 +969,14 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 Buffer
 ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 						  BlockNumber blockNum, ReadBufferMode mode,
-						  BufferAccessStrategy strategy, bool permanent)
+						  BufferAccessIntent intent, bool permanent)
 {
 	SMgrRelation smgr = smgropen(rlocator, INVALID_PROC_NUMBER);
 
 	return ReadBuffer_common(NULL, smgr,
 							 permanent ? RELPERSISTENCE_PERMANENT : RELPERSISTENCE_UNLOGGED,
 							 forkNum, blockNum,
-							 mode, strategy);
+							 mode, intent);
 }
 
 /*
@@ -969,13 +985,13 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 Buffer
 ExtendBufferedRel(BufferManagerRelation bmr,
 				  ForkNumber forkNum,
-				  BufferAccessStrategy strategy,
+				  BufferAccessIntent intent,
 				  uint32 flags)
 {
 	Buffer		buf;
 	uint32		extend_by = 1;
 
-	ExtendBufferedRelBy(bmr, forkNum, strategy, flags, extend_by,
+	ExtendBufferedRelBy(bmr, forkNum, intent, flags, extend_by,
 						&buf, &extend_by);
 
 	return buf;
@@ -1001,7 +1017,7 @@ ExtendBufferedRel(BufferManagerRelation bmr,
 BlockNumber
 ExtendBufferedRelBy(BufferManagerRelation bmr,
 					ForkNumber fork,
-					BufferAccessStrategy strategy,
+					BufferAccessIntent intent,
 					uint32 flags,
 					uint32 extend_by,
 					Buffer *buffers,
@@ -1014,7 +1030,7 @@ ExtendBufferedRelBy(BufferManagerRelation bmr,
 	if (bmr.relpersistence == '\0')
 		bmr.relpersistence = bmr.rel->rd_rel->relpersistence;
 
-	return ExtendBufferedRelCommon(bmr, fork, strategy, flags,
+	return ExtendBufferedRelCommon(bmr, fork, intent, flags,
 								   extend_by, InvalidBlockNumber,
 								   buffers, extended_by);
 }
@@ -1030,7 +1046,7 @@ ExtendBufferedRelBy(BufferManagerRelation bmr,
 Buffer
 ExtendBufferedRelTo(BufferManagerRelation bmr,
 					ForkNumber fork,
-					BufferAccessStrategy strategy,
+					BufferAccessIntent intent,
 					uint32 flags,
 					BlockNumber extend_to,
 					ReadBufferMode mode)
@@ -1096,7 +1112,7 @@ ExtendBufferedRelTo(BufferManagerRelation bmr,
 		if ((uint64) current_size + num_pages > extend_to)
 			num_pages = extend_to - current_size;
 
-		first_block = ExtendBufferedRelCommon(bmr, fork, strategy, flags,
+		first_block = ExtendBufferedRelCommon(bmr, fork, intent, flags,
 											  num_pages, extend_to,
 											  buffers, &extended_by);
 
@@ -1122,7 +1138,7 @@ ExtendBufferedRelTo(BufferManagerRelation bmr,
 	{
 		Assert(extended_by == 0);
 		buffer = ReadBuffer_common(bmr.rel, BMR_GET_SMGR(bmr), bmr.relpersistence,
-								   fork, extend_to - 1, mode, strategy);
+								   fork, extend_to - 1, mode, intent);
 	}
 
 	return buffer;
@@ -1225,7 +1241,7 @@ PinBufferForBlock(Relation rel,
 				  char persistence,
 				  ForkNumber forkNum,
 				  BlockNumber blockNum,
-				  BufferAccessStrategy strategy,
+				  BufferAccessIntent intent,
 				  IOObject io_object,
 				  IOContext io_context,
 				  bool *foundPtr)
@@ -1245,11 +1261,27 @@ PinBufferForBlock(Relation rel,
 									   smgr->smgr_rlocator.locator.relNumber,
 									   smgr->smgr_rlocator.backend);
 
-	if (persistence == RELPERSISTENCE_TEMP)
-		bufHdr = LocalBufferAlloc(smgr, forkNum, blockNum, foundPtr);
-	else
-		bufHdr = BufferAlloc(smgr, persistence, forkNum, blockNum,
-							 strategy, foundPtr, io_context);
+	/*
+	 * Set target buffer pool if relation specifies one.  Use PG_TRY/
+	 * PG_FINALLY so a longjmp out of BufferAlloc() cannot leak a stale
+	 * non-NULL CurrentBufferPool into a subsequent call.
+	 */
+	if (rel && OidIsValid(rel->rd_bufpool))
+		CurrentBufferPool = GetBufferPoolByOid(rel->rd_bufpool);
+
+	PG_TRY();
+	{
+		if (persistence == RELPERSISTENCE_TEMP)
+			bufHdr = LocalBufferAlloc(smgr, forkNum, blockNum, foundPtr);
+		else
+			bufHdr = BufferAlloc(smgr, persistence, forkNum, blockNum,
+								 intent, foundPtr, io_context);
+	}
+	PG_FINALLY();
+	{
+		CurrentBufferPool = NULL;
+	}
+	PG_END_TRY();
 
 	if (*foundPtr)
 		TrackBufferHit(io_object, io_context, rel, persistence, smgr, forkNum, blockNum);
@@ -1276,7 +1308,7 @@ static pg_attribute_always_inline Buffer
 ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 				  ForkNumber forkNum,
 				  BlockNumber blockNum, ReadBufferMode mode,
-				  BufferAccessStrategy strategy)
+				  BufferAccessIntent intent)
 {
 	ReadBuffersOperation operation;
 	Buffer		buffer;
@@ -1312,7 +1344,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
 			flags |= EB_LOCK_FIRST;
 
-		return ExtendBufferedRel(BMR_REL(rel), forkNum, strategy, flags);
+		return ExtendBufferedRel(BMR_REL(rel), forkNum, intent, flags);
 	}
 
 	if (rel)
@@ -1334,12 +1366,12 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 		}
 		else
 		{
-			io_context = IOContextForStrategy(strategy);
+			io_context = IOContextForStrategy(intent);
 			io_object = IOOBJECT_RELATION;
 		}
 
 		buffer = PinBufferForBlock(rel, smgr, persistence,
-								   forkNum, blockNum, strategy,
+								   forkNum, blockNum, intent,
 								   io_object, io_context, &found);
 		ZeroAndLockBuffer(buffer, mode, found);
 		return buffer;
@@ -1357,7 +1389,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 	operation.rel = rel;
 	operation.persistence = persistence;
 	operation.forknum = forkNum;
-	operation.strategy = strategy;
+	operation.intent = intent;
 	if (StartReadBuffer(&operation,
 						&buffer,
 						blockNum,
@@ -1398,7 +1430,7 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 	}
 	else
 	{
-		io_context = IOContextForStrategy(operation->strategy);
+		io_context = IOContextForStrategy(operation->intent);
 		io_object = IOOBJECT_RELATION;
 	}
 
@@ -1449,7 +1481,7 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 										   operation->persistence,
 										   operation->forknum,
 										   blockNum + i,
-										   operation->strategy,
+										   operation->intent,
 										   io_object, io_context,
 										   &found);
 		}
@@ -1770,7 +1802,7 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 	}
 	else
 	{
-		io_context = IOContextForStrategy(operation->strategy);
+		io_context = IOContextForStrategy(operation->intent);
 		io_object = IOOBJECT_RELATION;
 	}
 
@@ -1960,7 +1992,7 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 	}
 	else
 	{
-		io_context = IOContextForStrategy(operation->strategy);
+		io_context = IOContextForStrategy(operation->intent);
 		io_object = IOOBJECT_RELATION;
 	}
 
@@ -1974,6 +2006,20 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 
 	if (persistence == RELPERSISTENCE_TEMP)
 		ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
+
+	/*
+	 * Dynamic buffer pools store buffer data in DSM segments, which are
+	 * mapped at process-specific addresses.  IO workers cannot access these
+	 * buffers, so force synchronous (in-process) I/O.
+	 */
+	if (persistence != RELPERSISTENCE_TEMP)
+	{
+		BufferDesc *buf_hdr = GetBufferDescriptor(buffers[nblocks_done] - 1);
+		BufferPoolDesc *pool = GetPoolForBufferId(buf_hdr->buf_id);
+
+		if (PoolIsDynamic(pool))
+			ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
+	}
 
 	/*
 	 * If zero_damaged_pages is enabled, add the READ_BUFFERS_ZERO_ON_ERROR
@@ -2175,13 +2221,143 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 }
 
 /*
+ * BufferAllocInPool -- pool-aware buffer allocation for dynamic pools.
+ *
+ * This is the slow-path version of BufferAlloc that uses the per-pool
+ * hash table, mapping locks, and buffer descriptors instead of the
+ * global ones.  Not inlined since it's only used for dynamic pools.
+ */
+static BufferDesc *
+BufferAllocInPool(BufferPoolDesc *pool, SMgrRelation smgr,
+				  char relpersistence, ForkNumber forkNum,
+				  BlockNumber blockNum,
+				  BufferAccessIntent intent,
+				  bool *foundPtr, IOContext io_context)
+{
+	BufferTag	newTag;
+	uint32		newHash;
+	LWLock	   *newPartitionLock;
+	int			existing_buf_id;
+	Buffer		victim_buffer;
+	BufferDesc *victim_buf_hdr;
+	uint64		victim_buf_state;
+	uint64		set_bits = 0;
+	PoolLocalState *local;
+
+	ResourceOwnerEnlarge(CurrentResourceOwner);
+	ReservePrivateRefCountEntry();
+
+	/* Resolve pool's DSM-backed data for this backend */
+	local = EnsurePoolAttached(pool);
+
+	InitBufferTag(&newTag, &smgr->smgr_rlocator.locator, forkNum, blockNum);
+
+	/* Use pool's hash table and mapping lock */
+	newHash = BufTableHashCode(&newTag);
+	newPartitionLock = &local->mapping_locks[0].lock;
+
+	LWLockAcquire(newPartitionLock, LW_SHARED);
+	existing_buf_id = PoolBufHashLookup(local->hash_entries,
+										pool->bp_hash_nentries,
+										&newTag, newHash);
+	if (existing_buf_id >= 0)
+	{
+		BufferDesc *buf;
+		bool		valid;
+
+		buf = GetBufferDescriptor(existing_buf_id);
+		valid = PinBuffer(buf, intent, false);
+		LWLockRelease(newPartitionLock);
+
+		/* Notify algorithm of cache hit */
+		if (pool->bp_routine->on_hit)
+			pool->bp_routine->on_hit(local->strategy_data,
+									 existing_buf_id, &newTag);
+
+		*foundPtr = true;
+		if (!valid)
+			*foundPtr = false;
+
+		pg_atomic_fetch_add_u64(&pool->bp_hits, 1);
+		return buf;
+	}
+
+	LWLockRelease(newPartitionLock);
+
+	/* Notify algorithm of cache miss (ghost list tracking, etc.) */
+	if (pool->bp_routine->on_miss)
+		pool->bp_routine->on_miss(local->strategy_data, &newTag);
+
+	/* Get a victim buffer from the pool's eviction algorithm */
+	victim_buffer = GetVictimBuffer(intent, io_context);
+	victim_buf_hdr = GetBufferDescriptor(victim_buffer - 1);
+
+	/* Try to insert into pool's hash table */
+	LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
+	existing_buf_id = PoolBufHashInsert(local->hash_entries,
+										pool->bp_hash_nentries,
+										&newTag, newHash,
+										victim_buf_hdr->buf_id);
+	if (existing_buf_id >= 0)
+	{
+		BufferDesc *existing_buf_hdr;
+		bool		valid;
+
+		UnpinBuffer(victim_buf_hdr);
+
+		existing_buf_hdr = GetBufferDescriptor(existing_buf_id);
+		valid = PinBuffer(existing_buf_hdr, intent, false);
+		LWLockRelease(newPartitionLock);
+
+		/* Notify algorithm of cache hit (collision case) */
+		if (pool->bp_routine->on_hit)
+			pool->bp_routine->on_hit(local->strategy_data,
+									 existing_buf_id, &newTag);
+
+		*foundPtr = true;
+		if (!valid)
+			*foundPtr = false;
+
+		pg_atomic_fetch_add_u64(&pool->bp_hits, 1);
+		return existing_buf_hdr;
+	}
+
+	/* Tag the victim buffer */
+	victim_buf_state = LockBufHdr(victim_buf_hdr);
+
+	Assert(BUF_STATE_GET_REFCOUNT(victim_buf_state) == 1);
+	Assert(!(victim_buf_state & (BM_TAG_VALID | BM_VALID | BM_DIRTY | BM_IO_IN_PROGRESS)));
+
+	victim_buf_hdr->tag = newTag;
+
+	set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
+		set_bits |= BM_PERMANENT;
+
+	UnlockBufHdrExt(victim_buf_hdr, victim_buf_state, set_bits, 0, 0);
+
+	LWLockRelease(newPartitionLock);
+
+	/* Notify algorithm of new page assignment */
+	if (pool->bp_routine->on_new_tag)
+		pool->bp_routine->on_new_tag(local->strategy_data,
+									 victim_buf_hdr->buf_id, &newTag,
+									 false);
+
+	pg_atomic_fetch_add_u64(&pool->bp_reads, 1);
+
+	*foundPtr = false;
+	return victim_buf_hdr;
+}
+
+/*
  * BufferAlloc -- subroutine for PinBufferForBlock.  Handles lookup of a shared
  *		buffer.  If no buffer exists already, selects a replacement victim and
  *		evicts the old page, but does NOT read in new page.
  *
- * "strategy" can be a buffer replacement strategy object, or NULL for
- * the default strategy.  The selected buffer's usage_count is advanced when
- * using the default strategy, but otherwise possibly not (see PinBuffer).
+ * "intent" can be a buffer replacement intent object, or NULL for
+ * the default intent.  The selected buffer's usage_count is advanced when
+ * using the default intent, but otherwise possibly not (see PinBuffer).
  *
  * The returned buffer is pinned and is already marked as holding the
  * desired page.  If it already did have the desired page, *foundPtr is
@@ -2196,7 +2372,7 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 static pg_attribute_always_inline BufferDesc *
 BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			BlockNumber blockNum,
-			BufferAccessStrategy strategy,
+			BufferAccessIntent intent,
 			bool *foundPtr, IOContext io_context)
 {
 	BufferTag	newTag;			/* identity of requested block */
@@ -2207,6 +2383,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	BufferDesc *victim_buf_hdr;
 	uint64		victim_buf_state;
 	uint64		set_bits = 0;
+
+	/* Dispatch to pool-specific allocation if a dynamic pool is targeted */
+	if (unlikely(CurrentBufferPool != NULL))
+		return BufferAllocInPool(CurrentBufferPool, smgr, relpersistence,
+								 forkNum, blockNum, intent, foundPtr,
+								 io_context);
 
 	/* Make sure we will have room to remember the buffer pin */
 	ResourceOwnerEnlarge(CurrentResourceOwner);
@@ -2234,10 +2416,14 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 */
 		buf = GetBufferDescriptor(existing_buf_id);
 
-		valid = PinBuffer(buf, strategy, false);
+		valid = PinBuffer(buf, intent, false);
 
 		/* Can release the mapping lock as soon as we've pinned it */
 		LWLockRelease(newPartitionLock);
+
+		/* Notify algorithm of cache hit */
+		if (ActivePoolRoutine->on_hit)
+			ActivePoolRoutine->on_hit(ActivePoolData, existing_buf_id, &newTag);
 
 		*foundPtr = true;
 
@@ -2260,12 +2446,16 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 */
 	LWLockRelease(newPartitionLock);
 
+	/* Notify algorithm of cache miss (ghost list tracking, etc.) */
+	if (ActivePoolRoutine->on_miss)
+		ActivePoolRoutine->on_miss(ActivePoolData, &newTag);
+
 	/*
 	 * Acquire a victim buffer. Somebody else might try to do the same, we
 	 * don't hold any conflicting locks. If so we'll have to undo our work
 	 * later.
 	 */
-	victim_buffer = GetVictimBuffer(strategy, io_context);
+	victim_buffer = GetVictimBuffer(intent, io_context);
 	victim_buf_hdr = GetBufferDescriptor(victim_buffer - 1);
 
 	/*
@@ -2296,10 +2486,14 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 		existing_buf_hdr = GetBufferDescriptor(existing_buf_id);
 
-		valid = PinBuffer(existing_buf_hdr, strategy, false);
+		valid = PinBuffer(existing_buf_hdr, intent, false);
 
 		/* Can release the mapping lock as soon as we've pinned it */
 		LWLockRelease(newPartitionLock);
+
+		/* Notify algorithm of cache hit (collision case) */
+		if (ActivePoolRoutine->on_hit)
+			ActivePoolRoutine->on_hit(ActivePoolData, existing_buf_id, &newTag);
 
 		*foundPtr = true;
 
@@ -2342,6 +2536,12 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	LWLockRelease(newPartitionLock);
 
+	/* Notify algorithm of new page assignment */
+	if (ActivePoolRoutine->on_new_tag)
+		ActivePoolRoutine->on_new_tag(ActivePoolData,
+									  victim_buf_hdr->buf_id, &newTag,
+									  false);
+
 	/*
 	 * Buffer contents are currently invalid.
 	 */
@@ -2374,6 +2574,7 @@ InvalidateBuffer(BufferDesc *buf)
 	LWLock	   *oldPartitionLock;	/* buffer partition lock for it */
 	uint32		oldFlags;
 	uint64		buf_state;
+	BufferPoolDesc *pool;
 
 	/* Save the original buffer tag before dropping the spinlock */
 	oldTag = buf->tag;
@@ -2381,12 +2582,29 @@ InvalidateBuffer(BufferDesc *buf)
 	UnlockBufHdr(buf);
 
 	/*
+	 * Detect which pool this buffer belongs to, so we use the correct hash
+	 * table and mapping locks.
+	 */
+	pool = GetPoolForBufferId(buf->buf_id);
+	Assert(pool != NULL);
+
+	/*
 	 * Need to compute the old tag's hashcode and partition lock ID. XXX is it
 	 * worth storing the hashcode in BufferDesc so we need not recompute it
 	 * here?  Probably not.
 	 */
 	oldHash = BufTableHashCode(&oldTag);
-	oldPartitionLock = BufMappingPartitionLock(oldHash);
+
+	if (PoolIsDynamic(pool))
+	{
+		PoolLocalState *local = EnsurePoolAttached(pool);
+
+		oldPartitionLock = &local->mapping_locks[0].lock;
+	}
+	else
+	{
+		oldPartitionLock = BufMappingPartitionLock(oldHash);
+	}
 
 retry:
 
@@ -2450,7 +2668,37 @@ retry:
 	 * Remove the buffer from the lookup hashtable, if it was in there.
 	 */
 	if (oldFlags & BM_TAG_VALID)
-		BufTableDelete(&oldTag, oldHash);
+	{
+		if (PoolIsDynamic(pool))
+		{
+			PoolLocalState *local = EnsurePoolAttached(pool);
+
+			PoolBufHashDelete(local->hash_entries, pool->bp_hash_nentries,
+							  &oldTag, oldHash);
+		}
+		else
+			BufTableDelete(&oldTag, oldHash);
+	}
+
+	/*
+	 * Notify the pool's replacement algorithm that this buffer's content has
+	 * been evicted.  This allows algorithms like ARC to move tracking entries
+	 * to ghost lists and clear the buffer-to-CDB mapping.
+	 */
+	if (oldFlags & BM_TAG_VALID)
+	{
+		if (pool->bp_routine && pool->bp_routine->on_evict)
+		{
+			void	   *strategy_data;
+
+			if (PoolIsDynamic(pool))
+				strategy_data = EnsurePoolAttached(pool)->strategy_data;
+			else
+				strategy_data = ActivePoolData;
+			pool->bp_routine->on_evict(strategy_data,
+									   buf->buf_id, &oldTag);
+		}
+	}
 
 	/*
 	 * Done with mapping lock.
@@ -2474,14 +2722,29 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	uint32		hash;
 	LWLock	   *partition_lock;
 	BufferTag	tag;
+	BufferPoolDesc *pool;
 
 	Assert(GetPrivateRefCount(BufferDescriptorGetBuffer(buf_hdr)) == 1);
 
 	/* have buffer pinned, so it's safe to read tag without lock */
 	tag = buf_hdr->tag;
 
+	/* Detect which pool this buffer belongs to */
+	pool = GetPoolForBufferId(buf_hdr->buf_id);
+	Assert(pool != NULL);
+
 	hash = BufTableHashCode(&tag);
-	partition_lock = BufMappingPartitionLock(hash);
+
+	if (PoolIsDynamic(pool))
+	{
+		PoolLocalState *local = EnsurePoolAttached(pool);
+
+		partition_lock = &local->mapping_locks[0].lock;
+	}
+	else
+	{
+		partition_lock = BufMappingPartitionLock(hash);
+	}
 
 	LWLockAcquire(partition_lock, LW_EXCLUSIVE);
 
@@ -2532,7 +2795,28 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
 
 	/* finally delete buffer from the buffer mapping table */
-	BufTableDelete(&tag, hash);
+	if (PoolIsDynamic(pool))
+	{
+		PoolLocalState *local = EnsurePoolAttached(pool);
+
+		PoolBufHashDelete(local->hash_entries, pool->bp_hash_nentries,
+						  &tag, hash);
+	}
+	else
+		BufTableDelete(&tag, hash);
+
+	/* Notify algorithm of eviction (for ghost list tracking, etc.) */
+	if (pool->bp_routine && pool->bp_routine->on_evict)
+	{
+		void	   *strategy_data;
+
+		if (PoolIsDynamic(pool))
+			strategy_data = EnsurePoolAttached(pool)->strategy_data;
+		else
+			strategy_data = ActivePoolData;
+		pool->bp_routine->on_evict(strategy_data,
+								   buf_hdr->buf_id, &tag);
+	}
 
 	LWLockRelease(partition_lock);
 
@@ -2541,11 +2825,14 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
 	Assert(BUF_STATE_GET_REFCOUNT(pg_atomic_read_u64(&buf_hdr->state)) > 0);
 
+	/* Count eviction for pool stats */
+	pg_atomic_fetch_add_u64(&pool->bp_evictions, 1);
+
 	return true;
 }
 
 static Buffer
-GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context)
+GetVictimBuffer(BufferAccessIntent intent, IOContext io_context)
 {
 	BufferDesc *buf_hdr;
 	Buffer		buf;
@@ -2564,9 +2851,19 @@ again:
 
 	/*
 	 * Select a victim buffer.  The buffer is returned pinned and owned by
-	 * this backend.
+	 * this backend.  If targeting a dynamic pool, use the pool's eviction
+	 * algorithm instead of the global one.
 	 */
-	buf_hdr = StrategyGetBuffer(strategy, &buf_state, &from_ring);
+	if (unlikely(CurrentBufferPool != NULL) &&
+		CurrentBufferPool->bp_routine->get_victim != NULL)
+	{
+		PoolLocalState *local = EnsurePoolAttached(CurrentBufferPool);
+
+		buf_hdr = GetPoolVictim(CurrentBufferPool, local->strategy_data,
+								intent, &buf_state, &from_ring);
+	}
+	else
+		buf_hdr = StrategyGetBuffer(intent, &buf_state, &from_ring);
 	buf = BufferDescriptorGetBuffer(buf_hdr);
 
 	/*
@@ -2611,20 +2908,20 @@ again:
 		}
 
 		/*
-		 * If using a nondefault strategy, and this victim came from the
-		 * strategy ring, let the strategy decide whether to reject it when
-		 * reusing it would require a WAL flush.  This only applies to
-		 * permanent buffers; unlogged buffers can have fake LSNs, so
-		 * XLogNeedsFlush() is not meaningful for them.
+		 * If using a nondefault intent, and this victim came from the intent
+		 * ring, let the intent decide whether to reject it when reusing it
+		 * would require a WAL flush.  This only applies to permanent buffers;
+		 * unlogged buffers can have fake LSNs, so XLogNeedsFlush() is not
+		 * meaningful for them.
 		 *
 		 * We need to hold the content lock in at least share-exclusive mode
 		 * to safely inspect the page LSN, so this couldn't have been done
 		 * inside StrategyGetBuffer().
 		 */
-		if (strategy && from_ring &&
+		if (intent && from_ring &&
 			buf_state & BM_PERMANENT &&
 			XLogNeedsFlush(BufferGetLSN(buf_hdr)) &&
-			StrategyRejectBuffer(strategy, buf_hdr, from_ring))
+			StrategyRejectBuffer(intent, buf_hdr, from_ring))
 		{
 			UnlockReleaseBuffer(buf);
 			goto again;
@@ -2642,15 +2939,15 @@ again:
 	if (buf_state & BM_VALID)
 	{
 		/*
-		 * When a BufferAccessStrategy is in use, blocks evicted from shared
+		 * When a BufferAccessIntent is in use, blocks evicted from shared
 		 * buffers are counted as IOOP_EVICT in the corresponding context
-		 * (e.g. IOCONTEXT_BULKWRITE). Shared buffers are evicted by a
-		 * strategy in two cases: 1) while initially claiming buffers for the
-		 * strategy ring 2) to replace an existing strategy ring buffer
-		 * because it is pinned or in use and cannot be reused.
+		 * (e.g. IOCONTEXT_BULKWRITE). Shared buffers are evicted by a intent
+		 * in two cases: 1) while initially claiming buffers for the intent
+		 * ring 2) to replace an existing intent ring buffer because it is
+		 * pinned or in use and cannot be reused.
 		 *
-		 * Blocks evicted from buffers already in the strategy ring are
-		 * counted as IOOP_REUSE in the corresponding strategy context.
+		 * Blocks evicted from buffers already in the intent ring are counted
+		 * as IOOP_REUSE in the corresponding intent context.
 		 *
 		 * At this point, we can accurately count evictions and reuses,
 		 * because we have successfully claimed the valid buffer. Previously,
@@ -2750,7 +3047,7 @@ LimitAdditionalPins(uint32 *additional_pins)
 static BlockNumber
 ExtendBufferedRelCommon(BufferManagerRelation bmr,
 						ForkNumber fork,
-						BufferAccessStrategy strategy,
+						BufferAccessIntent intent,
 						uint32 flags,
 						uint32 extend_by,
 						BlockNumber extend_upto,
@@ -2771,7 +3068,7 @@ ExtendBufferedRelCommon(BufferManagerRelation bmr,
 											 extend_by, extend_upto,
 											 buffers, &extend_by);
 	else
-		first_block = ExtendBufferedRelShared(bmr, fork, strategy, flags,
+		first_block = ExtendBufferedRelShared(bmr, fork, intent, flags,
 											  extend_by, extend_upto,
 											  buffers, &extend_by);
 	*extended_by = extend_by;
@@ -2794,7 +3091,7 @@ ExtendBufferedRelCommon(BufferManagerRelation bmr,
 static BlockNumber
 ExtendBufferedRelShared(BufferManagerRelation bmr,
 						ForkNumber fork,
-						BufferAccessStrategy strategy,
+						BufferAccessIntent intent,
 						uint32 flags,
 						uint32 extend_by,
 						BlockNumber extend_upto,
@@ -2802,31 +3099,47 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 						uint32 *extended_by)
 {
 	BlockNumber first_block;
-	IOContext	io_context = IOContextForStrategy(strategy);
+	IOContext	io_context = IOContextForStrategy(intent);
 	instr_time	io_start;
 
 	LimitAdditionalPins(&extend_by);
 
 	/*
-	 * Acquire victim buffers for extension without holding extension lock.
-	 * Writing out victim buffers is the most expensive part of extending the
-	 * relation, particularly when doing so requires WAL flushes. Zeroing out
-	 * the buffers is also quite expensive, so do that before holding the
-	 * extension lock as well.
-	 *
-	 * These pages are pinned by us and not valid. While we hold the pin they
-	 * can't be acquired as victim buffers by another backend.
+	 * Set target buffer pool if relation specifies one.  Use PG_TRY/
+	 * PG_FINALLY so a longjmp out of GetVictimBuffer() cannot leak a stale
+	 * non-NULL CurrentBufferPool into a subsequent call.
 	 */
-	for (uint32 i = 0; i < extend_by; i++)
+	if (bmr.rel && OidIsValid(bmr.rel->rd_bufpool))
+		CurrentBufferPool = GetBufferPoolByOid(bmr.rel->rd_bufpool);
+
+	PG_TRY();
 	{
-		Block		buf_block;
+		/*
+		 * Acquire victim buffers for extension without holding extension
+		 * lock. Writing out victim buffers is the most expensive part of
+		 * extending the relation, particularly when doing so requires WAL
+		 * flushes. Zeroing out the buffers is also quite expensive, so do
+		 * that before holding the extension lock as well.
+		 *
+		 * These pages are pinned by us and not valid. While we hold the pin
+		 * they can't be acquired as victim buffers by another backend.
+		 */
+		for (uint32 i = 0; i < extend_by; i++)
+		{
+			Block		buf_block;
 
-		buffers[i] = GetVictimBuffer(strategy, io_context);
-		buf_block = BufHdrGetBlock(GetBufferDescriptor(buffers[i] - 1));
+			buffers[i] = GetVictimBuffer(intent, io_context);
+			buf_block = BufHdrGetBlock(GetBufferDescriptor(buffers[i] - 1));
 
-		/* new buffers are zero-filled */
-		MemSet(buf_block, 0, BLCKSZ);
+			/* new buffers are zero-filled */
+			MemSet(buf_block, 0, BLCKSZ);
+		}
 	}
+	PG_FINALLY();
+	{
+		CurrentBufferPool = NULL;
+	}
+	PG_END_TRY();
 
 	/*
 	 * Lock relation against concurrent extensions, unless requested not to.
@@ -2903,6 +3216,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 		uint32		hash;
 		LWLock	   *partition_lock;
 		int			existing_id;
+		BufferPoolDesc *pool;
 
 		/* in case we need to pin an existing buffer below */
 		ResourceOwnerEnlarge(CurrentResourceOwner);
@@ -2910,12 +3224,34 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 
 		InitBufferTag(&tag, &BMR_GET_SMGR(bmr)->smgr_rlocator.locator, fork,
 					  first_block + i);
+
+		/* Use the correct pool's hash table and mapping locks */
+		pool = GetPoolForBufferId(victim_buf_hdr->buf_id);
+		Assert(pool != NULL);
+
 		hash = BufTableHashCode(&tag);
-		partition_lock = BufMappingPartitionLock(hash);
 
-		LWLockAcquire(partition_lock, LW_EXCLUSIVE);
+		if (PoolIsDynamic(pool))
+		{
+			PoolLocalState *local = EnsurePoolAttached(pool);
 
-		existing_id = BufTableInsert(&tag, hash, victim_buf_hdr->buf_id);
+			partition_lock = &local->mapping_locks[0].lock;
+
+			LWLockAcquire(partition_lock, LW_EXCLUSIVE);
+
+			existing_id = PoolBufHashInsert(local->hash_entries,
+											pool->bp_hash_nentries,
+											&tag, hash,
+											victim_buf_hdr->buf_id);
+		}
+		else
+		{
+			partition_lock = BufMappingPartitionLock(hash);
+
+			LWLockAcquire(partition_lock, LW_EXCLUSIVE);
+
+			existing_id = BufTableInsert(&tag, hash, victim_buf_hdr->buf_id);
+		}
 
 		/*
 		 * We get here only in the corner case where we are trying to extend
@@ -2939,7 +3275,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 			 * Pin the existing buffer before releasing the partition lock,
 			 * preventing it from being evicted.
 			 */
-			valid = PinBuffer(existing_hdr, strategy, false);
+			valid = PinBuffer(existing_hdr, intent, false);
 
 			LWLockRelease(partition_lock);
 			UnpinBuffer(victim_buf_hdr);
@@ -2997,6 +3333,31 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 							0);
 
 			LWLockRelease(partition_lock);
+
+			/*
+			 * Notify the replacement algorithm of the new page assignment.
+			 * This is needed for ARC (and similar algorithms) in dynamic
+			 * pools so they can track the buffer in their lists.  Without
+			 * this, buffers created by relation extension are invisible to
+			 * ARC, causing list corruption when VACUUM triggers FSM/VM
+			 * extension.
+			 */
+			{
+				BufferPoolDesc *tag_pool = GetPoolForBufferId(victim_buf_hdr->buf_id);
+
+				if (tag_pool->bp_routine && tag_pool->bp_routine->on_new_tag)
+				{
+					void	   *sd;
+
+					if (PoolIsDynamic(tag_pool))
+						sd = EnsurePoolAttached(tag_pool)->strategy_data;
+					else
+						sd = ActivePoolData;
+					tag_pool->bp_routine->on_new_tag(sd,
+													 victim_buf_hdr->buf_id,
+													 &tag, false);
+				}
+			}
 
 			/* XXX: could combine the locked operations in it with the above */
 			StartSharedBufferIO(victim_buf_hdr, true, true, NULL);
@@ -3255,7 +3616,7 @@ ReleaseAndReadBuffer(Buffer buffer,
 /*
  * PinBuffer -- make buffer unavailable for replacement.
  *
- * For the default access strategy, the buffer's usage_count is incremented
+ * For the default access intent, the buffer's usage_count is incremented
  * when we first pin it; for other strategies we just make sure the usage_count
  * isn't zero.  (The idea of the latter is that we don't want synchronized
  * heap scans to inflate the count, but we need it to not be zero to discourage
@@ -3278,7 +3639,7 @@ ReleaseAndReadBuffer(Buffer buffer,
  * (recently) invalid and has not been pinned.
  */
 static bool
-PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
+PinBuffer(BufferDesc *buf, BufferAccessIntent intent,
 		  bool skip_if_not_valid)
 {
 	Buffer		b = BufferDescriptorGetBuffer(buf);
@@ -3318,7 +3679,7 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			/* increase refcount */
 			buf_state += BUF_REFCOUNT_ONE;
 
-			if (strategy == NULL)
+			if (intent == BUF_INTENT_NORMAL)
 			{
 				/* Default case: increase usagecount unless already max. */
 				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
@@ -3380,7 +3741,7 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
  * ResourceOwnerEnlarge(CurrentResourceOwner);
  *
  * Currently, no callers of this function want to modify the buffer's
- * usage_count at all, so there's no need for a strategy parameter.
+ * usage_count at all, so there's no need for a intent parameter.
  * Also we don't bother with a BM_VALID test (the caller could check that for
  * itself).
  *
@@ -3572,6 +3933,8 @@ BufferSync(int flags)
 	int			i;
 	uint64		mask = BM_DIRTY;
 	WritebackContext wb_context;
+	int			pool_ckpt_counts[MAX_BUFFER_POOLS];
+	int			have_dynamic_dirty = 0;
 
 	/*
 	 * Unless this is a shutdown checkpoint or we have been explicitly told,
@@ -3633,188 +3996,306 @@ BufferSync(int flags)
 			ProcessProcSignalBarrier();
 	}
 
-	if (num_to_scan == 0)
+	/*
+	 * Also scan dynamic pool buffers for checkpoint.  Each dynamic pool has
+	 * its own ckpt_ids array and descriptors (via PoolLocalState).  We
+	 * collect dirty buffers per-pool here; they will be written in a separate
+	 * loop after the default pool's write phase.
+	 *
+	 * pool_ckpt_counts[i] holds the number of dirty buffers found in
+	 * BufferPoolDescs[i] (only slots 1..NBufferPools-1 are used).
+	 */
+	memset(pool_ckpt_counts, 0, sizeof(pool_ckpt_counts));
+	for (int pool_idx = 1; pool_idx < NBufferPools; pool_idx++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[pool_idx];
+		int			pool_num_dirty = 0;
+
+		if (!pool->bp_active)
+			continue;
+
+		{
+			PoolLocalState *local = EnsurePoolAttached(pool);
+
+			for (int j = 0; j < pool->bp_nbuffers; j++)
+			{
+				BufferDesc *bufHdr = &local->descriptors[j].bufferdesc;
+				uint64		set_bits = 0;
+
+				buf_state = LockBufHdr(bufHdr);
+
+				if ((buf_state & mask) == mask)
+				{
+					CkptSortItem *item;
+
+					set_bits = BM_CHECKPOINT_NEEDED;
+
+					item = &local->ckpt_ids[pool_num_dirty++];
+					item->buf_id = pool->bp_first_buf + j;
+					item->tsId = bufHdr->tag.spcOid;
+					item->relNumber = BufTagGetRelNumber(&bufHdr->tag);
+					item->forkNum = BufTagGetForkNum(&bufHdr->tag);
+					item->blockNum = bufHdr->tag.blockNum;
+				}
+
+				UnlockBufHdrExt(bufHdr, buf_state,
+								set_bits, 0,
+								0);
+
+				if (ProcSignalBarrierPending)
+					ProcessProcSignalBarrier();
+			}
+		}
+
+		pool_ckpt_counts[pool_idx] = pool_num_dirty;
+		have_dynamic_dirty += pool_num_dirty;
+	}
+
+	if (num_to_scan == 0 && have_dynamic_dirty == 0)
 		return;					/* nothing to do */
 
 	WritebackContextInit(&wb_context, &checkpoint_flush_after);
 
-	TRACE_POSTGRESQL_BUFFER_SYNC_START(NBuffers, num_to_scan);
+	TRACE_POSTGRESQL_BUFFER_SYNC_START(NBuffers,
+									   num_to_scan + have_dynamic_dirty);
 
-	/*
-	 * Sort buffers that need to be written to reduce the likelihood of random
-	 * IO. The sorting is also important for the implementation of balancing
-	 * writes between tablespaces. Without balancing writes we'd potentially
-	 * end up writing to the tablespaces one-by-one; possibly overloading the
-	 * underlying system.
-	 */
-	sort_checkpoint_bufferids(CkptBufferIds, num_to_scan);
-
-	num_spaces = 0;
-
-	/*
-	 * Allocate progress status for each tablespace with buffers that need to
-	 * be flushed. This requires the to-be-flushed array to be sorted.
-	 */
-	last_tsid = InvalidOid;
-	for (i = 0; i < num_to_scan; i++)
-	{
-		CkptTsStatus *s;
-		Oid			cur_tsid;
-
-		cur_tsid = CkptBufferIds[i].tsId;
-
-		/*
-		 * Grow array of per-tablespace status structs, every time a new
-		 * tablespace is found.
-		 */
-		if (last_tsid == InvalidOid || last_tsid != cur_tsid)
-		{
-			Size		sz;
-
-			num_spaces++;
-
-			/*
-			 * Not worth adding grow-by-power-of-2 logic here - even with a
-			 * few hundred tablespaces this should be fine.
-			 */
-			sz = sizeof(CkptTsStatus) * num_spaces;
-
-			if (per_ts_stat == NULL)
-				per_ts_stat = (CkptTsStatus *) palloc(sz);
-			else
-				per_ts_stat = (CkptTsStatus *) repalloc(per_ts_stat, sz);
-
-			s = &per_ts_stat[num_spaces - 1];
-			memset(s, 0, sizeof(*s));
-			s->tsId = cur_tsid;
-
-			/*
-			 * The first buffer in this tablespace. As CkptBufferIds is sorted
-			 * by tablespace all (s->num_to_scan) buffers in this tablespace
-			 * will follow afterwards.
-			 */
-			s->index = i;
-
-			/*
-			 * progress_slice will be determined once we know how many buffers
-			 * are in each tablespace, i.e. after this loop.
-			 */
-
-			last_tsid = cur_tsid;
-		}
-		else
-		{
-			s = &per_ts_stat[num_spaces - 1];
-		}
-
-		s->num_to_scan++;
-
-		/* Check for barrier events. */
-		if (ProcSignalBarrierPending)
-			ProcessProcSignalBarrier();
-	}
-
-	Assert(num_spaces > 0);
-
-	/*
-	 * Build a min-heap over the write-progress in the individual tablespaces,
-	 * and compute how large a portion of the total progress a single
-	 * processed buffer is.
-	 */
-	ts_heap = binaryheap_allocate(num_spaces,
-								  ts_ckpt_progress_comparator,
-								  NULL);
-
-	for (i = 0; i < num_spaces; i++)
-	{
-		CkptTsStatus *ts_stat = &per_ts_stat[i];
-
-		ts_stat->progress_slice = (float8) num_to_scan / ts_stat->num_to_scan;
-
-		binaryheap_add_unordered(ts_heap, PointerGetDatum(ts_stat));
-	}
-
-	binaryheap_build(ts_heap);
-
-	/*
-	 * Iterate through to-be-checkpointed buffers and write the ones (still)
-	 * marked with BM_CHECKPOINT_NEEDED. The writes are balanced between
-	 * tablespaces; otherwise the sorting would lead to only one tablespace
-	 * receiving writes at a time, making inefficient use of the hardware.
-	 */
-	num_processed = 0;
 	num_written = 0;
-	while (!binaryheap_empty(ts_heap))
+
+	/*
+	 * Write dirty buffers from the default pool using tablespace-balanced
+	 * scheduling.
+	 */
+	if (num_to_scan > 0)
 	{
-		BufferDesc *bufHdr = NULL;
-		CkptTsStatus *ts_stat = (CkptTsStatus *)
-			DatumGetPointer(binaryheap_first(ts_heap));
+		/*
+		 * Sort buffers that need to be written to reduce the likelihood of
+		 * random IO. The sorting is also important for the implementation of
+		 * balancing writes between tablespaces. Without balancing writes we'd
+		 * potentially end up writing to the tablespaces one-by-one; possibly
+		 * overloading the underlying system.
+		 */
+		sort_checkpoint_bufferids(CkptBufferIds, num_to_scan);
 
-		buf_id = CkptBufferIds[ts_stat->index].buf_id;
-		Assert(buf_id != -1);
-
-		bufHdr = GetBufferDescriptor(buf_id);
-
-		num_processed++;
+		num_spaces = 0;
 
 		/*
-		 * We don't need to acquire the lock here, because we're only looking
-		 * at a single bit. It's possible that someone else writes the buffer
-		 * and clears the flag right after we check, but that doesn't matter
-		 * since SyncOneBuffer will then do nothing.  However, there is a
-		 * further race condition: it's conceivable that between the time we
-		 * examine the bit here and the time SyncOneBuffer acquires the lock,
-		 * someone else not only wrote the buffer but replaced it with another
-		 * page and dirtied it.  In that improbable case, SyncOneBuffer will
-		 * write the buffer though we didn't need to.  It doesn't seem worth
-		 * guarding against this, though.
+		 * Allocate progress status for each tablespace with buffers that need
+		 * to be flushed. This requires the to-be-flushed array to be sorted.
 		 */
-		if (pg_atomic_read_u64(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
+		last_tsid = InvalidOid;
+		for (i = 0; i < num_to_scan; i++)
 		{
-			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
+			CkptTsStatus *s;
+			Oid			cur_tsid;
+
+			cur_tsid = CkptBufferIds[i].tsId;
+
+			/*
+			 * Grow array of per-tablespace status structs, every time a new
+			 * tablespace is found.
+			 */
+			if (last_tsid == InvalidOid || last_tsid != cur_tsid)
 			{
-				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
-				PendingCheckpointerStats.buffers_written++;
-				num_written++;
+				Size		sz;
+
+				num_spaces++;
+
+				/*
+				 * Not worth adding grow-by-power-of-2 logic here - even with
+				 * a few hundred tablespaces this should be fine.
+				 */
+				sz = sizeof(CkptTsStatus) * num_spaces;
+
+				if (per_ts_stat == NULL)
+					per_ts_stat = (CkptTsStatus *) palloc(sz);
+				else
+					per_ts_stat = (CkptTsStatus *) repalloc(per_ts_stat, sz);
+
+				s = &per_ts_stat[num_spaces - 1];
+				memset(s, 0, sizeof(*s));
+				s->tsId = cur_tsid;
+
+				/*
+				 * The first buffer in this tablespace. As CkptBufferIds is
+				 * sorted by tablespace all (s->num_to_scan) buffers in this
+				 * tablespace will follow afterwards.
+				 */
+				s->index = i;
+
+				/*
+				 * progress_slice will be determined once we know how many
+				 * buffers are in each tablespace, i.e. after this loop.
+				 */
+
+				last_tsid = cur_tsid;
 			}
+			else
+			{
+				s = &per_ts_stat[num_spaces - 1];
+			}
+
+			s->num_to_scan++;
+
+			/* Check for barrier events. */
+			if (ProcSignalBarrierPending)
+				ProcessProcSignalBarrier();
 		}
+
+		Assert(num_spaces > 0);
 
 		/*
-		 * Measure progress independent of actually having to flush the buffer
-		 * - otherwise writing become unbalanced.
+		 * Build a min-heap over the write-progress in the individual
+		 * tablespaces, and compute how large a portion of the total progress
+		 * a single processed buffer is.
 		 */
-		ts_stat->progress += ts_stat->progress_slice;
-		ts_stat->num_scanned++;
-		ts_stat->index++;
+		ts_heap = binaryheap_allocate(num_spaces,
+									  ts_ckpt_progress_comparator,
+									  NULL);
 
-		/* Have all the buffers from the tablespace been processed? */
-		if (ts_stat->num_scanned == ts_stat->num_to_scan)
+		for (i = 0; i < num_spaces; i++)
 		{
-			binaryheap_remove_first(ts_heap);
+			CkptTsStatus *ts_stat = &per_ts_stat[i];
+
+			ts_stat->progress_slice = (float8) num_to_scan /
+				ts_stat->num_to_scan;
+
+			binaryheap_add_unordered(ts_heap, PointerGetDatum(ts_stat));
 		}
-		else
-		{
-			/* update heap with the new progress */
-			binaryheap_replace_first(ts_heap, PointerGetDatum(ts_stat));
-		}
+
+		binaryheap_build(ts_heap);
 
 		/*
-		 * Sleep to throttle our I/O rate.
-		 *
-		 * (This will check for barrier events even if it doesn't sleep.)
+		 * Iterate through to-be-checkpointed buffers and write the ones
+		 * (still) marked with BM_CHECKPOINT_NEEDED. The writes are balanced
+		 * between tablespaces; otherwise the sorting would lead to only one
+		 * tablespace receiving writes at a time, making inefficient use of
+		 * the hardware.
 		 */
-		CheckpointWriteDelay(flags, (double) num_processed / num_to_scan);
+		num_processed = 0;
+		while (!binaryheap_empty(ts_heap))
+		{
+			BufferDesc *bufHdr = NULL;
+			CkptTsStatus *ts_stat = (CkptTsStatus *)
+				DatumGetPointer(binaryheap_first(ts_heap));
+
+			buf_id = CkptBufferIds[ts_stat->index].buf_id;
+			Assert(buf_id != -1);
+
+			bufHdr = GetBufferDescriptor(buf_id);
+
+			num_processed++;
+
+			/*
+			 * We don't need to acquire the lock here, because we're only
+			 * looking at a single bit. It's possible that someone else writes
+			 * the buffer and clears the flag right after we check, but that
+			 * doesn't matter since SyncOneBuffer will then do nothing.
+			 * However, there is a further race condition: it's conceivable
+			 * that between the time we examine the bit here and the time
+			 * SyncOneBuffer acquires the lock, someone else not only wrote
+			 * the buffer but replaced it with another page and dirtied it. In
+			 * that improbable case, SyncOneBuffer will write the buffer
+			 * though we didn't need to.  It doesn't seem worth guarding
+			 * against this, though.
+			 */
+			if (pg_atomic_read_u64(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
+			{
+				if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
+				{
+					TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
+					PendingCheckpointerStats.buffers_written++;
+					num_written++;
+				}
+			}
+
+			/*
+			 * Measure progress independent of actually having to flush the
+			 * buffer - otherwise writing become unbalanced.
+			 */
+			ts_stat->progress += ts_stat->progress_slice;
+			ts_stat->num_scanned++;
+			ts_stat->index++;
+
+			/* Have all the buffers from the tablespace been processed? */
+			if (ts_stat->num_scanned == ts_stat->num_to_scan)
+			{
+				binaryheap_remove_first(ts_heap);
+			}
+			else
+			{
+				/* update heap with the new progress */
+				binaryheap_replace_first(ts_heap, PointerGetDatum(ts_stat));
+			}
+
+			/*
+			 * Sleep to throttle our I/O rate.
+			 *
+			 * (This will check for barrier events even if it doesn't sleep.)
+			 */
+			CheckpointWriteDelay(flags,
+								 (double) num_processed / num_to_scan);
+		}
+
+		/* Issue pending flushes for the default pool. */
+		IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
+
+		pfree(per_ts_stat);
+		per_ts_stat = NULL;
+		binaryheap_free(ts_heap);
 	}
 
 	/*
-	 * Issue all pending flushes. Only checkpointer calls BufferSync(), so
-	 * IOContext will always be IOCONTEXT_NORMAL.
+	 * Write dirty buffers from dynamic pools.  Dynamic pools use a simpler
+	 * write intent: sort by block order and write sequentially without
+	 * per-tablespace balancing.  SyncOnePoolBuffer() is used instead of
+	 * SyncOneBuffer() because dynamic pool buffer IDs fall outside the
+	 * default pool's BufferDescriptors array.
 	 */
-	IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
+	for (int pool_idx = 1; pool_idx < NBufferPools; pool_idx++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[pool_idx];
+		int			pool_dirty = pool_ckpt_counts[pool_idx];
 
-	pfree(per_ts_stat);
-	per_ts_stat = NULL;
-	binaryheap_free(ts_heap);
+		if (pool_dirty == 0)
+			continue;
+		if (!pool->bp_active)
+			continue;
+
+		{
+			PoolLocalState *local = EnsurePoolAttached(pool);
+
+			/* Sort this pool's dirty buffers for sequential I/O. */
+			sort_checkpoint_bufferids(local->ckpt_ids, pool_dirty);
+
+			for (int j = 0; j < pool_dirty; j++)
+			{
+				int			local_id;
+				BufferDesc *bufHdr;
+
+				buf_id = local->ckpt_ids[j].buf_id;
+				local_id = buf_id - pool->bp_first_buf;
+				bufHdr = &local->descriptors[local_id].bufferdesc;
+
+				if (pg_atomic_read_u64(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
+				{
+					if (SyncOnePoolBuffer(bufHdr, &wb_context) & BUF_WRITTEN)
+					{
+						TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
+						PendingCheckpointerStats.buffers_written++;
+						num_written++;
+					}
+				}
+
+				/*
+				 * Throttle I/O for dynamic pool writes as well.
+				 */
+				CheckpointWriteDelay(flags, (double) (j + 1) / pool_dirty);
+			}
+
+			/* Issue pending flushes for this pool. */
+			IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
+		}
+	}
 
 	/*
 	 * Update checkpoint statistics. As noted above, this doesn't include
@@ -3822,7 +4303,8 @@ BufferSync(int flags)
 	 */
 	CheckpointStats.ckpt_bufs_written += num_written;
 
-	TRACE_POSTGRESQL_BUFFER_SYNC_DONE(NBuffers, num_written, num_to_scan);
+	TRACE_POSTGRESQL_BUFFER_SYNC_DONE(NBuffers, num_written,
+									  num_to_scan + have_dynamic_dirty);
 }
 
 /*
@@ -3831,7 +4313,7 @@ BufferSync(int flags)
  * This is called periodically by the background writer process.
  *
  * Returns true if it's appropriate for the bgwriter process to go into
- * low-power hibernation mode.  (This happens if the strategy clock-sweep
+ * low-power hibernation mode.  (This happens if the intent clock-sweep
  * has been "lapped" and no buffer allocations have occurred recently,
  * or if the bgwriter has been effectively disabled by setting
  * bgwriter_lru_maxpages to 0.)
@@ -3845,8 +4327,8 @@ BgBufferSync(WritebackContext *wb_context)
 	uint32		recent_alloc;
 
 	/*
-	 * Information saved between calls so we can determine the strategy
-	 * point's advance rate and avoid scanning already-cleaned buffers.
+	 * Information saved between calls so we can determine the intent point's
+	 * advance rate and avoid scanning already-cleaned buffers.
 	 */
 	static bool saved_info_valid = false;
 	static int	prev_strategy_buf_id;
@@ -3919,10 +4401,10 @@ BgBufferSync(WritebackContext *wb_context)
 
 		if ((int32) (next_passes - strategy_passes) > 0)
 		{
-			/* we're one pass ahead of the strategy point */
+			/* we're one pass ahead of the intent point */
 			bufs_to_lap = strategy_buf_id - next_to_clean;
 #ifdef BGW_DEBUG
-			elog(DEBUG2, "bgwriter ahead: bgw %u-%u strategy %u-%u delta=%ld lap=%d",
+			elog(DEBUG2, "bgwriter ahead: bgw %u-%u intent %u-%u delta=%ld lap=%d",
 				 next_passes, next_to_clean,
 				 strategy_passes, strategy_buf_id,
 				 strategy_delta, bufs_to_lap);
@@ -3934,7 +4416,7 @@ BgBufferSync(WritebackContext *wb_context)
 			/* on same pass, but ahead or at least not behind */
 			bufs_to_lap = NBuffers - (next_to_clean - strategy_buf_id);
 #ifdef BGW_DEBUG
-			elog(DEBUG2, "bgwriter ahead: bgw %u-%u strategy %u-%u delta=%ld lap=%d",
+			elog(DEBUG2, "bgwriter ahead: bgw %u-%u intent %u-%u delta=%ld lap=%d",
 				 next_passes, next_to_clean,
 				 strategy_passes, strategy_buf_id,
 				 strategy_delta, bufs_to_lap);
@@ -3943,11 +4425,11 @@ BgBufferSync(WritebackContext *wb_context)
 		else
 		{
 			/*
-			 * We're behind, so skip forward to the strategy point and start
+			 * We're behind, so skip forward to the intent point and start
 			 * cleaning from there.
 			 */
 #ifdef BGW_DEBUG
-			elog(DEBUG2, "bgwriter behind: bgw %u-%u strategy %u-%u delta=%ld",
+			elog(DEBUG2, "bgwriter behind: bgw %u-%u intent %u-%u delta=%ld",
 				 next_passes, next_to_clean,
 				 strategy_passes, strategy_buf_id,
 				 strategy_delta);
@@ -3961,10 +4443,10 @@ BgBufferSync(WritebackContext *wb_context)
 	{
 		/*
 		 * Initializing at startup or after LRU scanning had been off. Always
-		 * start at the strategy point.
+		 * start at the intent point.
 		 */
 #ifdef BGW_DEBUG
-		elog(DEBUG2, "bgwriter initializing: strategy %u-%u",
+		elog(DEBUG2, "bgwriter initializing: intent %u-%u",
 			 strategy_passes, strategy_buf_id);
 #endif
 		strategy_delta = 0;
@@ -3982,7 +4464,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * Compute how many buffers had to be scanned for each new allocation, ie,
 	 * 1/density of reusable buffers, and track a moving average of that.
 	 *
-	 * If the strategy point didn't move, we don't update the density estimate
+	 * If the intent point didn't move, we don't update the density estimate
 	 */
 	if (strategy_delta > 0 && recent_alloc > 0)
 	{
@@ -3992,9 +4474,9 @@ BgBufferSync(WritebackContext *wb_context)
 	}
 
 	/*
-	 * Estimate how many reusable buffers there are between the current
-	 * strategy point and where we've scanned ahead to, based on the smoothed
-	 * density estimate.
+	 * Estimate how many reusable buffers there are between the current intent
+	 * point and where we've scanned ahead to, based on the smoothed density
+	 * estimate.
 	 */
 	bufs_ahead = NBuffers - bufs_to_lap;
 	reusable_buffers_est = (float) bufs_ahead / smoothed_density;
@@ -4047,7 +4529,7 @@ BgBufferSync(WritebackContext *wb_context)
 
 	/*
 	 * Now write out dirty reusable buffers, working forward from the
-	 * next_to_clean point, until we have lapped the strategy scan, or cleaned
+	 * next_to_clean point, until we have lapped the intent scan, or cleaned
 	 * enough buffers to match our estimate of the next cycle's allocation
 	 * requirements, or hit the bgwriter_lru_maxpages limit.
 	 */
@@ -4097,9 +4579,9 @@ BgBufferSync(WritebackContext *wb_context)
 	 * Consider the above scan as being like a new allocation scan.
 	 * Characterize its density and update the smoothed one based on it. This
 	 * effectively halves the moving average period in cases where both the
-	 * strategy and the background writer are doing some useful scanning,
-	 * which is helpful because a long memory isn't as desirable on the
-	 * density estimates.
+	 * intent and the background writer are doing some useful scanning, which
+	 * is helpful because a long memory isn't as desirable on the density
+	 * estimates.
 	 */
 	new_strategy_delta = bufs_to_lap - num_to_scan;
 	new_recent_alloc = reusable_buffers - reusable_buffers_est;
@@ -4134,7 +4616,7 @@ BgBufferSync(WritebackContext *wb_context)
  * (BUF_WRITTEN could be set in error if FlushBuffer finds the buffer clean
  * after locking it, but we don't care all that much.)
  */
-static int
+int
 SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 {
 	BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
@@ -4192,6 +4674,55 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 	 * SyncOneBuffer() is only called by checkpointer and bgwriter, so
 	 * IOContext will always be IOCONTEXT_NORMAL.
 	 */
+	ScheduleBufferTagForWriteback(wb_context, IOCONTEXT_NORMAL, &tag);
+
+	return result | BUF_WRITTEN;
+}
+
+/*
+ * SyncOnePoolBuffer -- write a single dirty buffer from a dynamic pool.
+ *
+ * This is similar to SyncOneBuffer() but takes a BufferDesc pointer directly,
+ * because dynamic pool buffer IDs cannot be looked up via GetBufferDescriptor()
+ * (which only indexes the default pool's BufferDescriptors array).
+ *
+ * Unlike SyncOneBuffer(), this never skips recently-used buffers -- it is
+ * only called from the checkpoint path where we always want to write.
+ *
+ * Returns a bitmask: BUF_WRITTEN if the buffer was written.
+ */
+static int
+SyncOnePoolBuffer(BufferDesc *bufHdr, WritebackContext *wb_context)
+{
+	int			result = 0;
+	uint64		buf_state;
+	BufferTag	tag;
+
+	/* Make sure we can handle the pin */
+	ReservePrivateRefCountEntry();
+	ResourceOwnerEnlarge(CurrentResourceOwner);
+
+	buf_state = LockBufHdr(bufHdr);
+
+	if (!(buf_state & BM_VALID) || !(buf_state & BM_DIRTY))
+	{
+		/* It's clean, so nothing to do */
+		UnlockBufHdr(bufHdr);
+		return result;
+	}
+
+	/*
+	 * Pin it, share-exclusive-lock it, write it.  (FlushBuffer will do
+	 * nothing if the buffer is clean by the time we've locked it.)
+	 */
+	PinBuffer_Locked(bufHdr);
+
+	FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+
+	tag = bufHdr->tag;
+
+	UnpinBuffer(bufHdr);
+
 	ScheduleBufferTagForWriteback(wb_context, IOCONTEXT_NORMAL, &tag);
 
 	return result | BUF_WRITTEN;
@@ -4259,6 +4790,9 @@ AtProcExit_Buffers(int code, Datum arg)
 
 	/* localbuf.c needs a chance too */
 	AtProcExit_LocalBuffers();
+
+	/* Free per-backend ring buffers (intent_rings[]). */
+	AtProcExit_IntentRings();
 }
 
 /*
@@ -4590,8 +5124,8 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 			  false);
 
 	/*
-	 * When a strategy is in use, only flushes of dirty buffers already in the
-	 * strategy ring are counted as strategy writes (IOCONTEXT
+	 * When a intent is in use, only flushes of dirty buffers already in the
+	 * intent ring are counted as intent writes (IOCONTEXT
 	 * [BULKREAD|BULKWRITE|VACUUM] IOOP_WRITE) for the purpose of IO
 	 * statistics tracking.
 	 *
@@ -4599,13 +5133,13 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 * being used, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE.
 	 *
 	 * If a shared buffer which was added to the ring later because the
-	 * current strategy buffer is pinned or in use or because all strategy
-	 * buffers were dirty and rejected (for BAS_BULKREAD operations only)
+	 * current intent buffer is pinned or in use or because all intent buffers
+	 * were dirty and rejected (for BUF_INTENT_BULKREAD operations only)
 	 * requires flushing, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE
 	 * (from_ring will be false).
 	 *
-	 * When a strategy is not in use, the write can only be a "regular" write
-	 * of a dirty shared buffer (IOCONTEXT_NORMAL IOOP_WRITE).
+	 * When a intent is not in use, the write can only be a "regular" write of
+	 * a dirty shared buffer (IOCONTEXT_NORMAL IOOP_WRITE).
 	 */
 	pgstat_count_io_op_time(io_object, io_context,
 							IOOP_WRITE, io_start, 1, BLCKSZ);
@@ -4880,6 +5414,55 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 		if (j >= nforks)
 			UnlockBufHdr(bufHdr);
 	}
+
+	/*
+	 * Also scan dynamic pool buffers.  Both DropRelationBuffers and
+	 * DropRelationsAllBuffers can be called from inside a critical section
+	 * (RelationTruncate WAL-logs the truncation and then calls smgrtruncate
+	 * inside START_CRIT_SECTION).  EnsurePoolAttached() performs a palloc via
+	 * dsm_attach() that asserts CritSectionCount == 0 (or a context with
+	 * allowInCritSection), so we must use TryGetPoolAttached() here.
+	 *
+	 * Correctness rests on the invariant that any backend which has placed a
+	 * buffer into a dynamic pool is already attached to that pool, since
+	 * BufferAllocInPool() calls EnsurePoolAttached() eagerly.  A backend that
+	 * has never accessed pool P has no buffers there to invalidate.
+	 */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = TryGetPoolAttached(pool);
+		if (local == NULL)
+			continue;
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *bufHdr = &local->descriptors[k].bufferdesc;
+
+			if (!BufTagMatchesRelFileLocator(&bufHdr->tag, &rlocator.locator))
+				continue;
+
+			LockBufHdr(bufHdr);
+
+			for (j = 0; j < nforks; j++)
+			{
+				if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rlocator.locator) &&
+					BufTagGetForkNum(&bufHdr->tag) == forkNum[j] &&
+					bufHdr->tag.blockNum >= firstDelBlock[j])
+				{
+					InvalidateBuffer(bufHdr);
+					break;
+				}
+			}
+			if (j >= nforks)
+				UnlockBufHdr(bufHdr);
+		}
+	}
 }
 
 /* ---------------------------------------------------------------------
@@ -5047,6 +5630,62 @@ DropRelationsAllBuffers(SMgrRelation *smgr_reln, int nlocators)
 			UnlockBufHdr(bufHdr);
 	}
 
+	/*
+	 * Also scan dynamic pool buffers.  Use TryGetPoolAttached only -- this
+	 * routine can be called from inside a critical section (see the longer
+	 * comment in DropRelationBuffers about the same constraint).
+	 */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = TryGetPoolAttached(pool);
+		if (local == NULL)
+			continue;
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			RelFileLocator *rlocator = NULL;
+			BufferDesc *bufHdr = &local->descriptors[k].bufferdesc;
+
+			if (!use_bsearch)
+			{
+				int			j;
+
+				for (j = 0; j < n; j++)
+				{
+					if (BufTagMatchesRelFileLocator(&bufHdr->tag, &locators[j]))
+					{
+						rlocator = &locators[j];
+						break;
+					}
+				}
+			}
+			else
+			{
+				RelFileLocator locator;
+
+				locator = BufTagGetRelFileLocator(&bufHdr->tag);
+				rlocator = bsearch(&locator,
+								   locators, n, sizeof(RelFileLocator),
+								   rlocator_comparator);
+			}
+
+			if (rlocator == NULL)
+				continue;
+
+			LockBufHdr(bufHdr);
+			if (BufTagMatchesRelFileLocator(&bufHdr->tag, rlocator))
+				InvalidateBuffer(bufHdr);
+			else
+				UnlockBufHdr(bufHdr);
+		}
+	}
+
 	pfree(locators);
 	pfree(rels);
 }
@@ -5087,8 +5726,38 @@ FindAndDropRelationBuffers(RelFileLocator rlocator, ForkNumber forkNum,
 		buf_id = BufTableLookup(&bufTag, bufHash);
 		LWLockRelease(bufPartitionLock);
 
+		/* If not in default pool, check dynamic pools */
 		if (buf_id < 0)
-			continue;
+		{
+			for (int p = 1; p < NBufferPools; p++)
+			{
+				BufferPoolDesc *pool = &BufferPoolDescs[p];
+				uint32		poolHash;
+				LWLock	   *poolPartitionLock;
+				PoolLocalState *plocal;
+
+				if (!pool->bp_active || !PoolIsDynamic(pool))
+					continue;
+
+				plocal = TryGetPoolAttached(pool);
+				if (plocal == NULL)
+					continue;
+				poolHash = BufTableHashCode(&bufTag);
+				poolPartitionLock = &plocal->mapping_locks[0].lock;
+
+				LWLockAcquire(poolPartitionLock, LW_SHARED);
+				buf_id = PoolBufHashLookup(plocal->hash_entries,
+										   pool->bp_hash_nentries,
+										   &bufTag, poolHash);
+				LWLockRelease(poolPartitionLock);
+
+				if (buf_id >= 0)
+					break;
+			}
+
+			if (buf_id < 0)
+				continue;
+		}
 
 		bufHdr = GetBufferDescriptor(buf_id);
 
@@ -5146,6 +5815,34 @@ DropDatabaseBuffers(Oid dbid)
 			InvalidateBuffer(bufHdr);	/* releases spinlock */
 		else
 			UnlockBufHdr(bufHdr);
+	}
+
+	/* Also scan dynamic pool buffers; skip unattached pools */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = TryGetPoolAttached(pool);
+		if (local == NULL)
+			continue;
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *bufHdr = &local->descriptors[k].bufferdesc;
+
+			if (bufHdr->tag.dbOid != dbid)
+				continue;
+
+			LockBufHdr(bufHdr);
+			if (bufHdr->tag.dbOid == dbid)
+				InvalidateBuffer(bufHdr);
+			else
+				UnlockBufHdr(bufHdr);
+		}
 	}
 }
 
@@ -5243,6 +5940,44 @@ FlushRelationBuffers(Relation rel)
 		}
 		else
 			UnlockBufHdr(bufHdr);
+	}
+
+	/* Also scan dynamic pool buffers; skip unattached pools */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = TryGetPoolAttached(pool);
+		if (local == NULL)
+			continue;
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			uint64		buf_state;
+
+			bufHdr = &local->descriptors[k].bufferdesc;
+
+			if (!BufTagMatchesRelFileLocator(&bufHdr->tag, &rel->rd_locator))
+				continue;
+
+			ReservePrivateRefCountEntry();
+			ResourceOwnerEnlarge(CurrentResourceOwner);
+
+			buf_state = LockBufHdr(bufHdr);
+			if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rel->rd_locator) &&
+				(buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
+			{
+				PinBuffer_Locked(bufHdr);
+				FlushUnlockedBuffer(bufHdr, srel, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+				UnpinBuffer(bufHdr);
+			}
+			else
+				UnlockBufHdr(bufHdr);
+		}
 	}
 }
 
@@ -5366,8 +6101,8 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 	BlockNumber nblocks;
 	BlockNumber blkno;
 	PGIOAlignedBlock buf;
-	BufferAccessStrategy bstrategy_src;
-	BufferAccessStrategy bstrategy_dst;
+	BufferAccessIntent intent_src;
+	BufferAccessIntent intent_dst;
 	BlockRangeReadStreamPrivate p;
 	ReadStream *src_stream;
 	SMgrRelation src_smgr;
@@ -5396,8 +6131,8 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 			   buf.data, true);
 
 	/* This is a bulk operation, so use buffer access strategies. */
-	bstrategy_src = GetAccessStrategy(BAS_BULKREAD);
-	bstrategy_dst = GetAccessStrategy(BAS_BULKWRITE);
+	intent_src = BUF_INTENT_BULKREAD;
+	intent_dst = BUF_INTENT_BULKWRITE;
 
 	/* Initialize streaming read */
 	p.current_blocknum = 0;
@@ -5410,7 +6145,7 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 	 */
 	src_stream = read_stream_begin_smgr_relation(READ_STREAM_FULL |
 												 READ_STREAM_USE_BATCHING,
-												 bstrategy_src,
+												 intent_src,
 												 src_smgr,
 												 permanent ? RELPERSISTENCE_PERMANENT : RELPERSISTENCE_UNLOGGED,
 												 forkNum,
@@ -5430,7 +6165,7 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 
 		dstBuf = ReadBufferWithoutRelcache(dstlocator, forkNum,
 										   BufferGetBlockNumber(srcBuf),
-										   RBM_ZERO_AND_LOCK, bstrategy_dst,
+										   RBM_ZERO_AND_LOCK, intent_dst,
 										   permanent);
 		dstPage = BufferGetPage(dstBuf);
 
@@ -5452,8 +6187,6 @@ RelationCopyStorageUsingBuffer(RelFileLocator srclocator,
 	Assert(read_stream_next_buffer(src_stream, NULL) == InvalidBuffer);
 	read_stream_end(src_stream);
 
-	FreeAccessStrategy(bstrategy_src);
-	FreeAccessStrategy(bstrategy_dst);
 }
 
 /* ---------------------------------------------------------------------
@@ -5557,6 +6290,91 @@ FlushDatabaseBuffers(Oid dbid)
 		buf_state = LockBufHdr(bufHdr);
 		if (bufHdr->tag.dbOid == dbid &&
 			(buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
+		{
+			PinBuffer_Locked(bufHdr);
+			FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+			UnpinBuffer(bufHdr);
+		}
+		else
+			UnlockBufHdr(bufHdr);
+	}
+
+	/* Also scan dynamic pool buffers; skip unattached pools */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = TryGetPoolAttached(pool);
+		if (local == NULL)
+			continue;
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			uint64		buf_state;
+
+			bufHdr = &local->descriptors[k].bufferdesc;
+
+			if (bufHdr->tag.dbOid != dbid)
+				continue;
+
+			ReservePrivateRefCountEntry();
+			ResourceOwnerEnlarge(CurrentResourceOwner);
+
+			buf_state = LockBufHdr(bufHdr);
+			if (bufHdr->tag.dbOid == dbid &&
+				(buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
+			{
+				PinBuffer_Locked(bufHdr);
+				FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+				UnpinBuffer(bufHdr);
+			}
+			else
+				UnlockBufHdr(bufHdr);
+		}
+	}
+}
+
+/*
+ * FlushBufferPoolDirtyBuffers
+ *
+ *		Write out all dirty buffers belonging to the given buffer pool.
+ *		This is called before destroying a dynamic pool so that no dirty
+ *		data is lost when the DSM segment is detached.
+ */
+void
+FlushBufferPoolDirtyBuffers(BufferPoolDesc *pool)
+{
+	int			i;
+	BufferDesc *bufHdr;
+	PoolLocalState *local;
+
+	Assert(pool != NULL);
+
+	local = EnsurePoolAttached(pool);
+
+	for (i = 0; i < pool->bp_nbuffers; i++)
+	{
+		uint64		buf_state;
+
+		bufHdr = &local->descriptors[i].bufferdesc;
+
+		/*
+		 * Unlocked precheck: skip buffers that aren't both valid and dirty.
+		 */
+		buf_state = pg_atomic_read_u64(&bufHdr->state);
+		if ((buf_state & (BM_VALID | BM_DIRTY)) != (BM_VALID | BM_DIRTY))
+			continue;
+
+		/* Make sure we can handle the pin */
+		ReservePrivateRefCountEntry();
+		ResourceOwnerEnlarge(CurrentResourceOwner);
+
+		buf_state = LockBufHdr(bufHdr);
+		if ((buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 		{
 			PinBuffer_Locked(bufHdr);
 			FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
@@ -5831,8 +6649,6 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 {
 	BufferDesc *bufHdr;
 
-	bufHdr = GetBufferDescriptor(buffer - 1);
-
 	if (!BufferIsValid(buffer))
 		elog(ERROR, "bad buffer ID: %d", buffer);
 
@@ -5841,6 +6657,8 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 		MarkLocalBufferDirty(buffer);
 		return;
 	}
+
+	bufHdr = GetBufferDescriptor(buffer - 1);
 
 	MarkSharedBufferDirtyHint(buffer, bufHdr,
 							  pg_atomic_read_u64(&bufHdr->state),
@@ -8020,6 +8838,44 @@ EvictAllUnpinnedBuffers(int32 *buffers_evicted, int32 *buffers_flushed,
 		if (buffer_flushed)
 			(*buffers_flushed)++;
 	}
+
+	/* Also evict buffers from dynamic pools */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = EnsurePoolAttached(pool);
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *desc = &local->descriptors[k].bufferdesc;
+			uint64		buf_state;
+			bool		buffer_flushed;
+
+			CHECK_FOR_INTERRUPTS();
+
+			buf_state = pg_atomic_read_u64(&desc->state);
+			if (!(buf_state & BM_VALID))
+				continue;
+
+			ResourceOwnerEnlarge(CurrentResourceOwner);
+			ReservePrivateRefCountEntry();
+
+			LockBufHdr(desc);
+
+			if (EvictUnpinnedBufferInternal(desc, &buffer_flushed))
+				(*buffers_evicted)++;
+			else
+				(*buffers_skipped)++;
+
+			if (buffer_flushed)
+				(*buffers_flushed)++;
+		}
+	}
 }
 
 /*
@@ -8081,6 +8937,51 @@ EvictRelUnpinnedBuffers(Relation rel, int32 *buffers_evicted,
 
 		if (buffer_flushed)
 			(*buffers_flushed)++;
+	}
+
+	/* Also scan dynamic pool buffers */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = EnsurePoolAttached(pool);
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *desc = &local->descriptors[k].bufferdesc;
+			uint64		buf_state = pg_atomic_read_u64(&desc->state);
+			bool		buffer_flushed;
+
+			CHECK_FOR_INTERRUPTS();
+
+			if ((buf_state & BM_VALID) == 0 ||
+				!BufTagMatchesRelFileLocator(&desc->tag, &rel->rd_locator))
+				continue;
+
+			ResourceOwnerEnlarge(CurrentResourceOwner);
+			ReservePrivateRefCountEntry();
+
+			buf_state = LockBufHdr(desc);
+
+			if ((buf_state & BM_VALID) == 0 ||
+				!BufTagMatchesRelFileLocator(&desc->tag, &rel->rd_locator))
+			{
+				UnlockBufHdr(desc);
+				continue;
+			}
+
+			if (EvictUnpinnedBufferInternal(desc, &buffer_flushed))
+				(*buffers_evicted)++;
+			else
+				(*buffers_skipped)++;
+
+			if (buffer_flushed)
+				(*buffers_flushed)++;
+		}
 	}
 }
 
@@ -8269,6 +9170,45 @@ MarkDirtyAllUnpinnedBuffers(int32 *buffers_dirtied,
 			(*buffers_already_dirty)++;
 		else
 			(*buffers_skipped)++;
+	}
+
+	/* Also mark dirty in dynamic pool buffers */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = EnsurePoolAttached(pool);
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *desc = &local->descriptors[k].bufferdesc;
+			uint64		buf_state;
+			bool		buffer_already_dirty;
+			int			buf_num;
+
+			CHECK_FOR_INTERRUPTS();
+
+			buf_state = pg_atomic_read_u64(&desc->state);
+			if (!(buf_state & BM_VALID))
+				continue;
+
+			ResourceOwnerEnlarge(CurrentResourceOwner);
+			ReservePrivateRefCountEntry();
+
+			LockBufHdr(desc);
+
+			buf_num = desc->buf_id + 1;
+			if (MarkDirtyUnpinnedBufferInternal(buf_num, desc, &buffer_already_dirty))
+				(*buffers_dirtied)++;
+			else if (buffer_already_dirty)
+				(*buffers_already_dirty)++;
+			else
+				(*buffers_skipped)++;
+		}
 	}
 }
 

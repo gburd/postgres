@@ -32,7 +32,7 @@ struct GinVacuumState
 	IndexBulkDeleteCallback callback;
 	void	   *callback_state;
 	GinState	ginstate;
-	BufferAccessStrategy strategy;
+	BufferAccessIntent strategy;
 	MemoryContext tmpCxt;
 };
 

@@ -83,7 +83,7 @@ extern BlockNumber block_range_read_stream_cb(ReadStream *stream,
 											  void *callback_private_data,
 											  void *per_buffer_data);
 extern ReadStream *read_stream_begin_relation(int flags,
-											  BufferAccessStrategy strategy,
+											  BufferAccessIntent intent,
 											  Relation rel,
 											  ForkNumber forknum,
 											  ReadStreamBlockNumberCB callback,
@@ -91,9 +91,9 @@ extern ReadStream *read_stream_begin_relation(int flags,
 											  size_t per_buffer_data_size);
 extern Buffer read_stream_next_buffer(ReadStream *stream, void **per_buffer_data);
 extern BlockNumber read_stream_next_block(ReadStream *stream,
-										  BufferAccessStrategy *strategy);
+										  BufferAccessIntent * intent);
 extern ReadStream *read_stream_begin_smgr_relation(int flags,
-												   BufferAccessStrategy strategy,
+												   BufferAccessIntent intent,
 												   SMgrRelation smgr,
 												   char smgr_persistence,
 												   ForkNumber forknum,

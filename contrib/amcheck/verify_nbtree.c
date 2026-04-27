@@ -88,8 +88,8 @@ typedef struct BtreeCheckState
 	bool		checkunique;
 	/* Per-page context */
 	MemoryContext targetcontext;
-	/* Buffer access strategy */
-	BufferAccessStrategy checkstrategy;
+	/* Buffer access intent */
+	BufferAccessIntent checkstrategy;
 
 	/*
 	 * Info for uniqueness checking. Fill this field and the one below once
@@ -488,7 +488,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 	state->targetcontext = AllocSetContextCreate(CurrentMemoryContext,
 												 "amcheck context",
 												 ALLOCSET_DEFAULT_SIZES);
-	state->checkstrategy = GetAccessStrategy(BAS_BULKREAD);
+	state->checkstrategy = BUF_INTENT_BULKREAD;
 
 	/* Get true root block from meta-page */
 	metapage = palloc_btree_page(state, BTREE_METAPAGE);
@@ -556,7 +556,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 									 state->snapshot,	/* snapshot */
 									 0, /* number of keys */
 									 NULL,	/* scan key */
-									 true,	/* buffer access strategy OK */
+									 true,	/* buffer access intent OK */
 									 true); /* syncscan OK? */
 
 		/*

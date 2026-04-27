@@ -262,7 +262,7 @@ ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath)
 	LockRelId	relid;
 	Snapshot	snapshot;
 	SMgrRelation smgr;
-	BufferAccessStrategy bstrategy;
+	BufferAccessIntent bstrategy;
 
 	/* Get pg_class relfilenumber. */
 	relfilenumber = RelationMapOidToFilenumberForDatabase(srcpath,
@@ -283,7 +283,7 @@ ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath)
 	smgrclose(smgr);
 
 	/* Use a buffer access strategy since this is a bulk read operation. */
-	bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	bstrategy = BUF_INTENT_BULKREAD;
 
 	/*
 	 * As explained in the function header comments, we need a snapshot that

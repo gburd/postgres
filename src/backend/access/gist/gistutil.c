@@ -877,7 +877,7 @@ gistNewBuffer(Relation r, Relation heaprel)
 	}
 
 	/* Must extend the file */
-	buffer = ExtendBufferedRel(BMR_REL(r), MAIN_FORKNUM, NULL,
+	buffer = ExtendBufferedRel(BMR_REL(r), MAIN_FORKNUM, BUF_INTENT_NORMAL,
 							   EB_LOCK_FIRST);
 
 	return buffer;

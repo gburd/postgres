@@ -529,7 +529,7 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 		io_context == IOCONTEXT_BULKWRITE || io_context == IOCONTEXT_VACUUM;
 
 	/*
-	 * IOOP_REUSE is only relevant when a BufferAccessStrategy is in use.
+	 * IOOP_REUSE is only relevant when a BufferAccessIntent is in use.
 	 */
 	if (!strategy_io_context && io_op == IOOP_REUSE)
 		return false;
@@ -546,7 +546,7 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 		return false;
 
 	/*
-	 * IOOP_FSYNC IOOps done by a backend using a BufferAccessStrategy are
+	 * IOOP_FSYNC IOOps done by a backend using a BufferAccessIntent are
 	 * counted in the IOCONTEXT_NORMAL IOContext. See comment in
 	 * register_dirty_segment() for more details.
 	 */

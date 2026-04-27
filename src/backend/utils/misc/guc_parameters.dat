@@ -395,6 +395,13 @@
   boot_val => '""',
 },
 
+{ name => 'buffer_pool_algorithm', type => 'string', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Names the replacement algorithm for the default buffer pool.',
+  long_desc => 'Only "clock" (clock-sweep) is built in; extensions loaded via shared_preload_libraries can register additional names.',
+  variable => 'buffer_pool_algorithm',
+  boot_val => '"clock"',
+},
+
 { name => 'bytea_output', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the output format for bytea.',
   variable => 'bytea_output',
@@ -3278,6 +3285,27 @@
   long_desc => 'When turned on, expressions of the form expr = NULL (or NULL = expr) are treated as expr IS NULL, that is, they return true if expr evaluates to the null value, and false otherwise. The correct behavior of expr = NULL is to always return null (unknown).',
   variable => 'Transform_null_equals',
   boot_val => 'false',
+},
+
+
+# Trickle writer parameters (per-pool background writers for dynamic buffer pools)
+
+{ name => 'trickle_flush_after', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_BGWRITER',
+  short_desc => 'Number of pages after which trickle writer writes are flushed to disk.',
+  long_desc => '0 disables forced writeback. Trickle writers handle dirty page write-back for dynamic buffer pools.',
+  flags => 'GUC_UNIT_BLOCKS',
+  variable => 'trickle_flush_after',
+  boot_val => 'DEFAULT_TRICKLE_FLUSH_AFTER',
+  min => '0',
+  max => 'WRITEBACK_MAX_PENDING_FLUSHES',
+},
+
+{ name => 'trickle_write_batch_size', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_BGWRITER',
+  short_desc => 'Maximum number of buffers written by trickle writer per cycle.',
+  variable => 'trickle_write_batch_size',
+  boot_val => '128',
+  min => '1',
+  max => '10000',
 },
 
 { name => 'unix_socket_directories', type => 'string', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',

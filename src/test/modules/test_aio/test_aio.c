@@ -194,7 +194,7 @@ grow_rel(PG_FUNCTION_ARGS)
 
 		ExtendBufferedRelBy(BMR_REL(rel),
 							MAIN_FORKNUM,
-							NULL,
+							BUF_INTENT_NORMAL,
 							0,
 							extend_by_pages,
 							victim_buffers,
@@ -231,7 +231,7 @@ modify_rel_block(PG_FUNCTION_ARGS)
 	rel = relation_open(relid, AccessExclusiveLock);
 
 	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno,
-							 RBM_ZERO_ON_ERROR, NULL);
+							 RBM_ZERO_ON_ERROR, BUF_INTENT_NORMAL);
 
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
@@ -331,7 +331,7 @@ create_toy_buffer(Relation rel, BlockNumber blkno)
 	uint64		unset_bits = 0;
 
 	/* place buffer in shared buffers without erroring out */
-	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_ZERO_AND_LOCK, NULL);
+	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_ZERO_AND_LOCK, BUF_INTENT_NORMAL);
 	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 	if (RelationUsesLocalBuffers(rel))
@@ -737,7 +737,7 @@ read_buffers(PG_FUNCTION_ARGS)
 		operation->rel = rel;
 		operation->smgr = smgr;
 		operation->persistence = rel->rd_rel->relpersistence;
-		operation->strategy = NULL;
+		operation->intent = BUF_INTENT_NORMAL;
 		operation->forknum = MAIN_FORKNUM;
 
 		io_reqds[nios] = StartReadBuffers(operation,
@@ -879,7 +879,7 @@ read_stream_for_blocks(PG_FUNCTION_ARGS)
 	rel = relation_open(relid, AccessShareLock);
 
 	stream = read_stream_begin_relation(READ_STREAM_FULL,
-										NULL,
+										BUF_INTENT_NORMAL,
 										rel,
 										MAIN_FORKNUM,
 										read_stream_for_blocks_cb,

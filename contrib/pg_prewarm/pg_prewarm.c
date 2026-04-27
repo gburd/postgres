@@ -251,7 +251,7 @@ pg_prewarm(PG_FUNCTION_ARGS)
 		stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
 											READ_STREAM_FULL |
 											READ_STREAM_USE_BATCHING,
-											NULL,
+											BUF_INTENT_NORMAL,
 											rel,
 											forkNumber,
 											block_range_read_stream_cb,

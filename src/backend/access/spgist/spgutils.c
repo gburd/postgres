@@ -432,7 +432,7 @@ SpGistNewBuffer(Relation index)
 		ReleaseBuffer(buffer);
 	}
 
-	buffer = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL,
+	buffer = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, BUF_INTENT_NORMAL,
 							   EB_LOCK_FIRST);
 
 	return buffer;

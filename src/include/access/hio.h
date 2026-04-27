@@ -28,7 +28,7 @@
  */
 typedef struct BulkInsertStateData
 {
-	BufferAccessStrategy strategy;	/* our BULKWRITE strategy object */
+	BufferAccessIntent strategy;	/* our BULKWRITE access intent */
 	Buffer		current_buf;	/* current insertion target page */
 
 	/*

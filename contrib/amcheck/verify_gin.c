@@ -64,7 +64,7 @@ static void check_index_page(Relation rel, Buffer buffer, BlockNumber blockNo);
 static IndexTuple gin_refind_parent(Relation rel,
 									BlockNumber parentblkno,
 									BlockNumber childblkno,
-									BufferAccessStrategy strategy);
+									BufferAccessIntent intent);
 static ItemId PageGetItemIdCareful(Relation rel, BlockNumber block, Page page,
 								   OffsetNumber offset);
 
@@ -133,7 +133,7 @@ ginReadTupleWithoutState(IndexTuple itup, int *nitems)
 static void
 gin_check_posting_tree_parent_keys_consistency(Relation rel, BlockNumber posting_tree_root)
 {
-	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKREAD);
+	BufferAccessIntent intent = BUF_INTENT_BULKREAD;
 	GinPostingTreeScanItem *stack;
 	MemoryContext mctx;
 	MemoryContext oldcontext;
@@ -172,7 +172,7 @@ gin_check_posting_tree_parent_keys_consistency(Relation rel, BlockNumber posting
 		CHECK_FOR_INTERRUPTS();
 
 		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, stack->blkno,
-									RBM_NORMAL, strategy);
+									RBM_NORMAL, intent);
 		LockBuffer(buffer, GIN_SHARE);
 		page = BufferGetPage(buffer);
 
@@ -391,7 +391,7 @@ gin_check_parent_keys_consistency(Relation rel,
 								  void *callback_state,
 								  bool readonly)
 {
-	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKREAD);
+	BufferAccessIntent intent = BUF_INTENT_BULKREAD;
 	GinScanItem *stack;
 	MemoryContext mctx;
 	MemoryContext oldcontext;
@@ -431,7 +431,7 @@ gin_check_parent_keys_consistency(Relation rel,
 		CHECK_FOR_INTERRUPTS();
 
 		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, stack->blkno,
-									RBM_NORMAL, strategy);
+									RBM_NORMAL, intent);
 		LockBuffer(buffer, GIN_SHARE);
 		page = BufferGetPage(buffer);
 		maxoff = PageGetMaxOffsetNumber(page);
@@ -567,7 +567,7 @@ gin_check_parent_keys_consistency(Relation rel,
 					 */
 					pfree(stack->parenttup);
 					stack->parenttup = gin_refind_parent(rel, stack->parentblk,
-														 stack->blkno, strategy);
+														 stack->blkno, intent);
 
 					/* We found it - make a final check before failing */
 					if (!stack->parenttup)
@@ -716,7 +716,7 @@ check_index_page(Relation rel, Buffer buffer, BlockNumber blockNo)
  */
 static IndexTuple
 gin_refind_parent(Relation rel, BlockNumber parentblkno,
-				  BlockNumber childblkno, BufferAccessStrategy strategy)
+				  BlockNumber childblkno, BufferAccessIntent intent)
 {
 	Buffer		parentbuf;
 	Page		parentpage;
@@ -725,7 +725,7 @@ gin_refind_parent(Relation rel, BlockNumber parentblkno,
 	IndexTuple	result = NULL;
 
 	parentbuf = ReadBufferExtended(rel, MAIN_FORKNUM, parentblkno, RBM_NORMAL,
-								   strategy);
+								   intent);
 
 	LockBuffer(parentbuf, GIN_SHARE);
 	parentpage = BufferGetPage(parentbuf);

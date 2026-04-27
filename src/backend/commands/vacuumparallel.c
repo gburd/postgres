@@ -257,8 +257,8 @@ struct ParallelVacuumState
 	int			nindexes_parallel_cleanup;
 	int			nindexes_parallel_condcleanup;
 
-	/* Buffer access strategy used by leader process */
-	BufferAccessStrategy bstrategy;
+	/* Buffer access intent used by leader process */
+	BufferAccessIntent bstrategy;
 
 	/*
 	 * Error reporting state.  The error callback is set only for workers
@@ -304,7 +304,7 @@ static void parallel_vacuum_dsm_detach(dsm_segment *seg, Datum arg);
 ParallelVacuumState *
 parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 					 int nrequested_workers, int vac_work_mem,
-					 int elevel, BufferAccessStrategy bstrategy)
+					 int elevel, BufferAccessIntent intent)
 {
 	ParallelVacuumState *pvs;
 	ParallelContext *pcxt;
@@ -345,7 +345,7 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 	pvs->indrels = indrels;
 	pvs->nindexes = nindexes;
 	pvs->will_parallel_vacuum = will_parallel_vacuum;
-	pvs->bstrategy = bstrategy;
+	pvs->bstrategy = intent;
 	pvs->heaprel = rel;
 
 	EnterParallelMode();
@@ -448,7 +448,7 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 	shared->dead_items_dsa_handle = dsa_get_handle(TidStoreGetDSA(dead_items));
 
 	/* Use the same buffer size for all workers */
-	shared->ring_nbuffers = GetAccessStrategyBufferCount(bstrategy);
+	shared->ring_nbuffers = IntentRingBufferCount(intent);
 
 	pg_atomic_init_u32(&(shared->cost_balance), 0);
 	pg_atomic_init_u32(&(shared->active_nworkers), 0);
@@ -1294,9 +1294,8 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 	pvs.indname = NULL;
 	pvs.status = PARALLEL_INDVAC_STATUS_INITIAL;
 
-	/* Each parallel VACUUM worker gets its own access strategy. */
-	pvs.bstrategy = GetAccessStrategyWithSize(BAS_VACUUM,
-											  shared->ring_nbuffers * (BLCKSZ / 1024));
+	/* Each parallel VACUUM worker gets the VACUUM intent. */
+	pvs.bstrategy = BUF_INTENT_VACUUM;
 
 	/* Setup error traceback support for ereport() */
 	errcallback.callback = parallel_vacuum_error_callback;
@@ -1328,7 +1327,6 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 
 	vac_close_indexes(nindexes, indrels, RowExclusiveLock);
 	table_close(rel, ShareUpdateExclusiveLock);
-	FreeAccessStrategy(pvs.bstrategy);
 
 	if (shared->is_autovacuum)
 		pv_shared_cost_params = NULL;

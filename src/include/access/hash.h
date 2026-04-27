@@ -405,12 +405,12 @@ extern void _hash_pgaddmultitup(Relation rel, Buffer buf, IndexTuple *itups,
 extern Buffer _hash_addovflpage(Relation rel, Buffer metabuf, Buffer buf, bool retain_pin);
 extern BlockNumber _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 									  Buffer wbuf, IndexTuple *itups, OffsetNumber *itup_offsets,
-									  Size *tups_size, uint16 nitups, BufferAccessStrategy bstrategy);
+									  Size *tups_size, uint16 nitups, BufferAccessIntent intent);
 extern void _hash_initbitmapbuffer(Buffer buf, uint16 bmsize, bool initpage);
 extern void _hash_squeezebucket(Relation rel,
 								Bucket bucket, BlockNumber bucket_blkno,
 								Buffer bucket_buf,
-								BufferAccessStrategy bstrategy);
+								BufferAccessIntent intent);
 extern uint32 _hash_ovflblkno_to_bitno(HashMetaPage metap, BlockNumber ovflblkno);
 
 /* hashpage.c */
@@ -430,7 +430,7 @@ extern Buffer _hash_getnewbuf(Relation rel, BlockNumber blkno,
 							  ForkNumber forkNum);
 extern Buffer _hash_getbuf_with_strategy(Relation rel, BlockNumber blkno,
 										 int access, int flags,
-										 BufferAccessStrategy bstrategy);
+										 BufferAccessIntent intent);
 extern void _hash_relbuf(Relation rel, Buffer buf);
 extern void _hash_dropbuf(Relation rel, Buffer buf);
 extern void _hash_dropscanbuf(Relation rel, HashScanOpaque so);
@@ -481,7 +481,7 @@ extern void _hash_kill_items(IndexScanDesc scan);
 /* hash.c */
 extern void hashbucketcleanup(Relation rel, Bucket cur_bucket,
 							  Buffer bucket_buf, BlockNumber bucket_blkno,
-							  BufferAccessStrategy bstrategy,
+							  BufferAccessIntent intent,
 							  uint32 maxbucket, uint32 highmask, uint32 lowmask,
 							  double *tuples_removed, double *num_index_tuples,
 							  bool split_cleanup,

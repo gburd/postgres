@@ -147,7 +147,9 @@
 #include "pgstat.h"
 #include "portability/instr_time.h"
 #include "postmaster/autovacuum.h"
+#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool.h"
 #include "storage/freespace.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
@@ -256,8 +258,8 @@ typedef struct LVRelState
 	Relation   *indrels;
 	int			nindexes;
 
-	/* Buffer access strategy and parallel vacuum state */
-	BufferAccessStrategy bstrategy;
+	/* Buffer access intent and parallel vacuum state */
+	BufferAccessIntent bstrategy;
 	ParallelVacuumState *pvs;
 
 	/* Aggressive VACUUM? (must set relfrozenxid >= FreezeLimit) */
@@ -622,7 +624,7 @@ heap_vacuum_eager_scan_setup(LVRelState *vacrel, const VacuumParams *params)
  */
 void
 heap_vacuum_rel(Relation rel, const VacuumParams *params,
-				BufferAccessStrategy bstrategy)
+				BufferAccessIntent intent)
 {
 	LVRelState *vacrel;
 	bool		verbose,
@@ -699,7 +701,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 	vacrel->rel = rel;
 	vac_open_indexes(vacrel->rel, RowExclusiveLock, &vacrel->nindexes,
 					 &vacrel->indrels);
-	vacrel->bstrategy = bstrategy;
+	vacrel->bstrategy = intent;
 	if (instrument && vacrel->nindexes > 0)
 	{
 		/* Copy index names used by instrumentation (not error reporting) */
@@ -876,9 +878,15 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 
 	/*
 	 * Call lazy_scan_heap to perform all required heap pruning, index
-	 * vacuuming, and heap vacuuming (plus related processing)
+	 * vacuuming, and heap vacuuming (plus related processing).
+	 *
+	 * Hint the buffer pool replacement algorithm that VACUUM is active, so
+	 * algorithms like ARC can insert vacuum-loaded pages at the LRU end of
+	 * their recency list to prevent cache pollution.
 	 */
+	PoolHintVacuum(rel->rd_bufpool, true);
 	lazy_scan_heap(vacrel);
+	PoolHintVacuum(rel->rd_bufpool, false);
 
 	/*
 	 * Save dead items max_bytes and update the memory usage statistics before
@@ -2907,9 +2915,9 @@ lazy_check_wraparound_failsafe(LVRelState *vacrel)
 		/*
 		 * Abandon use of a buffer access strategy to allow use of all of
 		 * shared buffers.  We assume the caller who allocated the memory for
-		 * the BufferAccessStrategy will free it.
+		 * the BufferAccessIntent will free it.
 		 */
-		vacrel->bstrategy = NULL;
+		vacrel->bstrategy = BUF_INTENT_NORMAL;
 
 		/* Disable index vacuuming, index cleanup, and heap rel truncation */
 		vacrel->do_index_vacuuming = false;

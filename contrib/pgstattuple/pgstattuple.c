@@ -65,7 +65,7 @@ typedef struct pgstattuple_type
 } pgstattuple_type;
 
 typedef void (*pgstat_page) (pgstattuple_type *, Relation, BlockNumber,
-							 BufferAccessStrategy);
+							 BufferAccessIntent);
 
 static Datum build_pgstattuple_type(pgstattuple_type *stat,
 									FunctionCallInfo fcinfo);
@@ -73,13 +73,13 @@ static Datum pgstat_relation(Relation rel, FunctionCallInfo fcinfo);
 static Datum pgstat_heap(Relation rel, FunctionCallInfo fcinfo);
 static void pgstat_btree_page(pgstattuple_type *stat,
 							  Relation rel, BlockNumber blkno,
-							  BufferAccessStrategy bstrategy);
+							  BufferAccessIntent intent);
 static void pgstat_hash_page(pgstattuple_type *stat,
 							 Relation rel, BlockNumber blkno,
-							 BufferAccessStrategy bstrategy);
+							 BufferAccessIntent intent);
 static void pgstat_gist_page(pgstattuple_type *stat,
 							 Relation rel, BlockNumber blkno,
-							 BufferAccessStrategy bstrategy);
+							 BufferAccessIntent intent);
 static Datum pgstat_index(Relation rel, BlockNumber start,
 						  pgstat_page pagefn, FunctionCallInfo fcinfo);
 static void pgstat_index_page(pgstattuple_type *stat, Page page,
@@ -409,12 +409,12 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
  */
 static void
 pgstat_btree_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
-				  BufferAccessStrategy bstrategy)
+				  BufferAccessIntent intent)
 {
 	Buffer		buf;
 	Page		page;
 
-	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, bstrategy);
+	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, intent);
 	LockBuffer(buf, BT_READ);
 	page = BufferGetPage(buf);
 
@@ -453,12 +453,12 @@ pgstat_btree_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
  */
 static void
 pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
-				 BufferAccessStrategy bstrategy)
+				 BufferAccessIntent intent)
 {
 	Buffer		buf;
 	Page		page;
 
-	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, bstrategy);
+	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, intent);
 	LockBuffer(buf, HASH_READ);
 	page = BufferGetPage(buf);
 
@@ -501,12 +501,12 @@ pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
  */
 static void
 pgstat_gist_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
-				 BufferAccessStrategy bstrategy)
+				 BufferAccessIntent intent)
 {
 	Buffer		buf;
 	Page		page;
 
-	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, bstrategy);
+	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, intent);
 	LockBuffer(buf, GIST_SHARE);
 	page = BufferGetPage(buf);
 	if (PageIsNew(page))
@@ -539,11 +539,11 @@ pgstat_index(Relation rel, BlockNumber start, pgstat_page pagefn,
 {
 	BlockNumber nblocks;
 	BlockNumber blkno;
-	BufferAccessStrategy bstrategy;
+	BufferAccessIntent intent;
 	pgstattuple_type stat = {0};
 
 	/* prepare access strategy for this index */
-	bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	intent = BUF_INTENT_BULKREAD;
 
 	blkno = start;
 	for (;;)
@@ -565,7 +565,7 @@ pgstat_index(Relation rel, BlockNumber start, pgstat_page pagefn,
 		{
 			CHECK_FOR_INTERRUPTS();
 
-			pagefn(&stat, rel, blkno, bstrategy);
+			pagefn(&stat, rel, blkno, intent);
 		}
 	}
 

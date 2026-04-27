@@ -78,6 +78,7 @@
 #include "replication/syncrep.h"
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool.h"
 #include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"

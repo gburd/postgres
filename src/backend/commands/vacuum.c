@@ -127,7 +127,7 @@ static void vac_truncate_clog(TransactionId frozenXID,
 							  TransactionId lastSaneFrozenXid,
 							  MultiXactId lastSaneMinMulti);
 static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-					   BufferAccessStrategy bstrategy, bool isTopLevel);
+					   BufferAccessIntent intent, bool isTopLevel);
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 static bool vac_tid_reaped(ItemPointer itemptr, void *state);
@@ -163,7 +163,7 @@ void
 ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 {
 	VacuumParams params;
-	BufferAccessStrategy bstrategy = NULL;
+	BufferAccessIntent intent = BUF_INTENT_NORMAL;
 	bool		verbose = false;
 	bool		skip_locked = false;
 	bool		analyze = false;
@@ -449,20 +449,32 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 
 		/*
 		 * If BUFFER_USAGE_LIMIT was specified by the VACUUM or ANALYZE
-		 * command, it overrides the value of VacuumBufferUsageLimit.  Either
-		 * value may be 0, in which case GetAccessStrategyWithSize() will
-		 * return NULL, effectively allowing full use of shared buffers.
+		 * command, it overrides the value of VacuumBufferUsageLimit for the
+		 * duration of this command.  Either value may be 0, in which case the
+		 * framework allocates no per-backend ring and the VACUUM uses the
+		 * algorithm's normal eviction (effectively allowing full use of
+		 * shared buffers).
 		 */
 		if (ring_size == -1)
 			ring_size = VacuumBufferUsageLimit;
 
-		bstrategy = GetAccessStrategyWithSize(BAS_VACUUM, ring_size);
+		SetVacuumIntentRingOverride(ring_size);
+
+		intent = BUF_INTENT_VACUUM;
 
 		MemoryContextSwitchTo(old_context);
 	}
 
-	/* Now go through the common routine */
-	vacuum(vacstmt->rels, &params, bstrategy, vac_context, isTopLevel);
+	PG_TRY();
+	{
+		/* Now go through the common routine */
+		vacuum(vacstmt->rels, &params, intent, vac_context, isTopLevel);
+	}
+	PG_FINALLY();
+	{
+		SetVacuumIntentRingOverride(-1);
+	}
+	PG_END_TRY();
 
 	/* Finally, clean up the vacuum memory context */
 	MemoryContextDelete(vac_context);
@@ -479,9 +491,9 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
  * params contains a set of parameters that can be used to customize the
  * behavior.
  *
- * bstrategy may be passed in as NULL when the caller does not want to
+ * intent may be passed in as NULL when the caller does not want to
  * restrict the number of shared_buffers that VACUUM / ANALYZE can use,
- * otherwise, the caller must build a BufferAccessStrategy with the number of
+ * otherwise, the caller must build a BufferAccessIntent with the number of
  * shared_buffers that VACUUM / ANALYZE should try to limit themselves to
  * using.
  *
@@ -491,7 +503,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
  * memory context that will not disappear at transaction commit.
  */
 void
-vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrategy,
+vacuum(List *relations, const VacuumParams *params, BufferAccessIntent intent,
 	   MemoryContext vac_context, bool isTopLevel)
 {
 	static bool in_vacuum = false;
@@ -630,7 +642,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 
 			if (params->options & VACOPT_VACUUM)
 			{
-				if (!vacuum_rel(vrel->oid, vrel->relation, *params, bstrategy,
+				if (!vacuum_rel(vrel->oid, vrel->relation, *params, intent,
 								isTopLevel))
 					continue;
 			}
@@ -649,7 +661,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 				}
 
 				analyze_rel(vrel->oid, vrel->relation, params,
-							vrel->va_cols, in_outer_xact, bstrategy);
+							vrel->va_cols, in_outer_xact, intent);
 
 				if (use_own_xacts)
 				{
@@ -2010,7 +2022,7 @@ vac_truncate_clog(TransactionId frozenXID,
  */
 static bool
 vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-		   BufferAccessStrategy bstrategy, bool isTopLevel)
+		   BufferAccessIntent intent, bool isTopLevel)
 {
 	LOCKMODE	lmode;
 	Relation	rel;
@@ -2307,7 +2319,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 			rel = NULL;
 		}
 		else
-			table_relation_vacuum(rel, &params, bstrategy);
+			table_relation_vacuum(rel, &params, intent);
 	}
 
 	/* Roll back any GUC changes executed by index functions */
@@ -2344,7 +2356,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 		toast_vacuum_params.toast_parent = relid;
 
-		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy,
+		vacuum_rel(toast_relid, NULL, toast_vacuum_params, intent,
 				   isTopLevel);
 	}
 

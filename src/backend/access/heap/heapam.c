@@ -404,16 +404,12 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 
 	if (allow_strat)
 	{
-		/* During a rescan, keep the previous strategy object. */
-		if (scan->rs_strategy == NULL)
-			scan->rs_strategy = GetAccessStrategy(BAS_BULKREAD);
+		/* During a rescan, keep the previous intent. */
+		if (scan->rs_strategy == BUF_INTENT_NORMAL)
+			scan->rs_strategy = BUF_INTENT_BULKREAD;
 	}
 	else
-	{
-		if (scan->rs_strategy != NULL)
-			FreeAccessStrategy(scan->rs_strategy);
-		scan->rs_strategy = NULL;
-	}
+		scan->rs_strategy = BUF_INTENT_NORMAL;
 
 	if (scan->rs_base.rs_parallel != NULL)
 	{
@@ -1202,7 +1198,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
 	scan->rs_base.rs_instrument = NULL;
-	scan->rs_strategy = NULL;	/* set in initscan */
+	scan->rs_strategy = BUF_INTENT_NORMAL;	/* set in initscan */
 	scan->rs_cbuf = InvalidBuffer;
 
 	/*
@@ -1274,7 +1270,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	/*
 	 * Set up a read stream for sequential scans and TID range scans. This
 	 * should be done after initscan() because initscan() allocates the
-	 * BufferAccessStrategy object passed to the read stream API.
+	 * BufferAccessIntent object passed to the read stream API.
 	 */
 	if (scan->rs_base.rs_flags & SO_TYPE_SEQSCAN ||
 		scan->rs_base.rs_flags & SO_TYPE_TIDRANGESCAN)
@@ -1415,9 +1411,6 @@ heap_endscan(TableScanDesc sscan)
 
 	if (scan->rs_base.rs_key)
 		pfree(scan->rs_base.rs_key);
-
-	if (scan->rs_strategy != NULL)
-		FreeAccessStrategy(scan->rs_strategy);
 
 	if (scan->rs_parallelworkerdata != NULL)
 		pfree(scan->rs_parallelworkerdata);
@@ -1939,7 +1932,7 @@ GetBulkInsertState(void)
 	BulkInsertState bistate;
 
 	bistate = (BulkInsertState) palloc_object(BulkInsertStateData);
-	bistate->strategy = GetAccessStrategy(BAS_BULKWRITE);
+	bistate->strategy = BUF_INTENT_BULKWRITE;
 	bistate->current_buf = InvalidBuffer;
 	bistate->next_free = InvalidBlockNumber;
 	bistate->last_free = InvalidBlockNumber;
@@ -1955,7 +1948,6 @@ FreeBulkInsertState(BulkInsertState bistate)
 {
 	if (bistate->current_buf != InvalidBuffer)
 		ReleaseBuffer(bistate->current_buf);
-	FreeAccessStrategy(bistate->strategy);
 	pfree(bistate);
 }
 

@@ -224,7 +224,7 @@ static void form_and_insert_tuple(BrinBuildState *state);
 static void form_and_spill_tuple(BrinBuildState *state);
 static void union_tuples(BrinDesc *bdesc, BrinMemTuple *a,
 						 BrinTuple *b);
-static void brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy);
+static void brin_vacuum_scan(Relation idxrel, BufferAccessIntent intent);
 static bool add_values_to_range(Relation idxRel, BrinDesc *bdesc,
 								BrinMemTuple *dtup, const Datum *values, const bool *nulls);
 static bool check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys);
@@ -1129,7 +1129,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * whole relation will be rolled back.
 	 */
 
-	meta = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL,
+	meta = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, BUF_INTENT_NORMAL,
 							 EB_LOCK_FIRST | EB_SKIP_EXTENSION_LOCK);
 	Assert(BufferGetBlockNumber(meta) == BRIN_METAPAGE_BLKNO);
 
@@ -1281,7 +1281,7 @@ brinbuildempty(Relation index)
 	Buffer		metabuf;
 
 	/* An empty BRIN index has a metapage only. */
-	metabuf = ExtendBufferedRel(BMR_REL(index), INIT_FORKNUM, NULL,
+	metabuf = ExtendBufferedRel(BMR_REL(index), INIT_FORKNUM, BUF_INTENT_NORMAL,
 								EB_LOCK_FIRST | EB_SKIP_EXTENSION_LOCK);
 
 	/* Initialize and xlog metabuffer. */
@@ -2171,7 +2171,7 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
  * and such.
  */
 static void
-brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy)
+brin_vacuum_scan(Relation idxrel, BufferAccessIntent intent)
 {
 	BlockRangeReadStreamPrivate p;
 	ReadStream *stream;
@@ -2187,7 +2187,7 @@ brin_vacuum_scan(Relation idxrel, BufferAccessStrategy strategy)
 	stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
 										READ_STREAM_FULL |
 										READ_STREAM_USE_BATCHING,
-										strategy,
+										intent,
 										idxrel,
 										MAIN_FORKNUM,
 										block_range_read_stream_cb,

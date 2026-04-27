@@ -367,7 +367,7 @@ static List *BuildRelationList(bool temp_relations, bool include_shared);
 static void FreeDatabaseList(List *dblist);
 static DataChecksumsWorkerResult ProcessDatabase(DataChecksumsWorkerDatabase *db);
 static bool ProcessAllDatabases(void);
-static bool ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrategy strategy);
+static bool ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessIntent intent);
 static void launcher_cancel_handler(SIGNAL_ARGS);
 static void WaitForAllTransactionsToFinish(void);
 
@@ -652,7 +652,7 @@ StartDataChecksumsWorkerLauncher(DataChecksumsWorkerOperation op,
  * error is raised in the lower levels.
  */
 static bool
-ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrategy strategy)
+ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessIntent intent)
 {
 	BlockNumber numblocks = RelationGetNumberOfBlocksInFork(reln, forkNum);
 	char		activity[NAMEDATALEN * 2 + 128];
@@ -675,7 +675,7 @@ ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrateg
 	 */
 	for (BlockNumber blknum = 0; blknum < numblocks; blknum++)
 	{
-		Buffer		buf = ReadBufferExtended(reln, forkNum, blknum, RBM_NORMAL, strategy);
+		Buffer		buf = ReadBufferExtended(reln, forkNum, blknum, RBM_NORMAL, intent);
 
 		/* Need to get an exclusive lock to mark the buffer as dirty */
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -745,7 +745,7 @@ ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrateg
  * error is raised in the lower levels.
  */
 static bool
-ProcessSingleRelationByOid(Oid relationId, BufferAccessStrategy strategy)
+ProcessSingleRelationByOid(Oid relationId, BufferAccessIntent intent)
 {
 	Relation	rel;
 	bool		aborted = false;
@@ -772,7 +772,7 @@ ProcessSingleRelationByOid(Oid relationId, BufferAccessStrategy strategy)
 	{
 		if (smgrexists(rel->rd_smgr, fnum))
 		{
-			if (!ProcessSingleRelationFork(rel, fnum, strategy))
+			if (!ProcessSingleRelationFork(rel, fnum, intent))
 			{
 				aborted = true;
 				break;
@@ -1512,7 +1512,7 @@ DataChecksumsWorkerMain(Datum arg)
 	Oid			dboid = DatumGetObjectId(arg);
 	List	   *RelationList = NIL;
 	List	   *InitialTempTableList = NIL;
-	BufferAccessStrategy strategy;
+	BufferAccessIntent intent;
 	bool		aborted = false;
 	int64		rels_done;
 #ifdef USE_INJECTION_POINTS
@@ -1559,9 +1559,9 @@ DataChecksumsWorkerMain(Datum arg)
 	VacuumCostBalance = 0;
 
 	/*
-	 * Create and set the vacuum strategy as our buffer strategy.
+	 * Create and set the vacuum intent as our buffer intent.
 	 */
-	strategy = GetAccessStrategy(BAS_VACUUM);
+	intent = BUF_INTENT_VACUUM;
 
 	RelationList = BuildRelationList(false,
 									 DataChecksumState->process_shared_catalogs);
@@ -1587,7 +1587,7 @@ DataChecksumsWorkerMain(Datum arg)
 	{
 		bool		costs_updated = false;
 
-		if (!ProcessSingleRelationByOid(reloid, strategy))
+		if (!ProcessSingleRelationByOid(reloid, intent))
 		{
 			aborted = true;
 			break;
@@ -1603,7 +1603,7 @@ DataChecksumsWorkerMain(Datum arg)
 
 		/*
 		 * Check if the cost settings changed during runtime and if so, update
-		 * to reflect the new values and signal that the access strategy needs
+		 * to reflect the new values and signal that the access intent needs
 		 * to be refreshed.
 		 */
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
@@ -1624,13 +1624,11 @@ DataChecksumsWorkerMain(Datum arg)
 
 		if (costs_updated)
 		{
-			FreeAccessStrategy(strategy);
-			strategy = GetAccessStrategy(BAS_VACUUM);
+			intent = BUF_INTENT_VACUUM;
 		}
 	}
 
 	list_free(RelationList);
-	FreeAccessStrategy(strategy);
 
 	if (aborted || abort_requested)
 	{

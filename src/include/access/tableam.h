@@ -690,7 +690,7 @@ typedef struct TableAmRoutine
 	 */
 	void		(*relation_vacuum) (Relation rel,
 									const VacuumParams *params,
-									BufferAccessStrategy bstrategy);
+									BufferAccessIntent intent);
 
 	/*
 	 * Prepare to analyze block `blockno` of `scan`. The scan has been started
@@ -1775,9 +1775,9 @@ table_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
  */
 static inline void
 table_relation_vacuum(Relation rel, const VacuumParams *params,
-					  BufferAccessStrategy bstrategy)
+					  BufferAccessIntent intent)
 {
-	rel->rd_tableam->relation_vacuum(rel, params, bstrategy);
+	rel->rd_tableam->relation_vacuum(rel, params, intent);
 }
 
 /*

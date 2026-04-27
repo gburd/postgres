@@ -765,7 +765,7 @@ hashvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  */
 void
 hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
-				  BlockNumber bucket_blkno, BufferAccessStrategy bstrategy,
+				  BlockNumber bucket_blkno, BufferAccessIntent intent,
 				  uint32 maxbucket, uint32 highmask, uint32 lowmask,
 				  double *tuples_removed, double *num_index_tuples,
 				  bool split_cleanup,
@@ -937,7 +937,7 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 
 		next_buf = _hash_getbuf_with_strategy(rel, blkno, HASH_WRITE,
 											  LH_OVERFLOW_PAGE,
-											  bstrategy);
+											  intent);
 
 		/*
 		 * release the lock on previous page after acquiring the lock on next
@@ -1005,7 +1005,7 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 	 */
 	if (bucket_dirty && IsBufferCleanupOK(bucket_buf))
 		_hash_squeezebucket(rel, cur_bucket, bucket_blkno, bucket_buf,
-							bstrategy);
+							intent);
 	else
 		LockBuffer(bucket_buf, BUFFER_LOCK_UNLOCK);
 }

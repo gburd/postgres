@@ -72,7 +72,7 @@ int			default_statistics_target = 100;
 
 /* A few variables that don't seem worth passing around as parameters */
 static MemoryContext anl_context = NULL;
-static BufferAccessStrategy vac_strategy;
+static BufferAccessIntent vac_strategy;
 
 
 static void do_analyze_rel(Relation onerel,
@@ -109,7 +109,7 @@ static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 void
 analyze_rel(Oid relid, RangeVar *relation,
 			const VacuumParams *params, List *va_cols, bool in_outer_xact,
-			BufferAccessStrategy bstrategy)
+			BufferAccessIntent intent)
 {
 	Relation	onerel;
 	int			elevel;
@@ -124,7 +124,7 @@ analyze_rel(Oid relid, RangeVar *relation,
 		elevel = DEBUG2;
 
 	/* Set up static variables */
-	vac_strategy = bstrategy;
+	vac_strategy = intent;
 
 	/*
 	 * Check for user-requested abort.

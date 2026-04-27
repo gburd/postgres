@@ -488,7 +488,7 @@ collect_visibility_data(Oid relid, bool include_pd)
 	vbits	   *info;
 	BlockNumber blkno;
 	Buffer		vmbuffer = InvalidBuffer;
-	BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	BufferAccessIntent intent = BUF_INTENT_BULKREAD;
 	BlockRangeReadStreamPrivate p;
 	ReadStream *stream = NULL;
 
@@ -514,7 +514,7 @@ collect_visibility_data(Oid relid, bool include_pd)
 		 */
 		stream = read_stream_begin_relation(READ_STREAM_FULL |
 											READ_STREAM_USE_BATCHING,
-											bstrategy,
+											intent,
 											rel,
 											MAIN_FORKNUM,
 											block_range_read_stream_cb,
@@ -700,7 +700,7 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 	Relation	rel;
 	corrupt_items *items;
 	Buffer		vmbuffer = InvalidBuffer;
-	BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	BufferAccessIntent intent = BUF_INTENT_BULKREAD;
 	TransactionId OldestXmin = InvalidTransactionId;
 	struct collect_corrupt_items_read_stream_private p;
 	ReadStream *stream;
@@ -734,7 +734,7 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 	p.all_frozen = all_frozen;
 	p.all_visible = all_visible;
 	stream = read_stream_begin_relation(READ_STREAM_FULL,
-										bstrategy,
+										intent,
 										rel,
 										MAIN_FORKNUM,
 										collect_corrupt_items_read_stream_next_block,

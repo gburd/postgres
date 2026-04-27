@@ -2793,6 +2793,7 @@ aclcheck_error(AclResult aclerr, ObjectType objtype,
 					case OBJECT_AMOP:
 					case OBJECT_AMPROC:
 					case OBJECT_ATTRIBUTE:
+					case OBJECT_BUFFER_POOL:
 					case OBJECT_CAST:
 					case OBJECT_DEFAULT:
 					case OBJECT_DEFACL:
@@ -2936,6 +2937,7 @@ aclcheck_error(AclResult aclerr, ObjectType objtype,
 					case OBJECT_AMOP:
 					case OBJECT_AMPROC:
 					case OBJECT_ATTRIBUTE:
+					case OBJECT_BUFFER_POOL:
 					case OBJECT_CAST:
 					case OBJECT_DEFAULT:
 					case OBJECT_DEFACL:

@@ -389,7 +389,7 @@ static void relation_needs_vacanalyze(Oid relid, AutoVacOpts *relopts,
 									  AutoVacuumScores *scores);
 
 static void autovacuum_do_vac_analyze(autovac_table *tab,
-									  BufferAccessStrategy bstrategy);
+									  BufferAccessIntent intent);
 static AutoVacOpts *extract_autovac_opts(HeapTuple tup,
 										 TupleDesc pg_class_desc);
 static void perform_work_item(AutoVacuumWorkItem *workitem);
@@ -1934,7 +1934,7 @@ do_autovacuum(void)
 	HASHCTL		ctl;
 	HTAB	   *table_toast_map;
 	ListCell   *volatile cell;
-	BufferAccessStrategy bstrategy;
+	BufferAccessIntent bstrategy;
 	ScanKeyData key;
 	TupleDesc	pg_class_desc;
 	int			effective_multixact_freeze_max_age;
@@ -2322,7 +2322,7 @@ do_autovacuum(void)
 
 	/*
 	 * Optionally, create a buffer access strategy object for VACUUM to use.
-	 * We use the same BufferAccessStrategy object for all tables VACUUMed by
+	 * We use the same BufferAccessIntent object for all tables VACUUMed by
 	 * this worker to prevent autovacuum from blowing out shared buffers.
 	 *
 	 * VacuumBufferUsageLimit being set to 0 results in
@@ -2330,12 +2330,12 @@ do_autovacuum(void)
 	 * use up to all of shared buffers.
 	 *
 	 * If we later enter failsafe mode on any of the tables being vacuumed, we
-	 * will cease use of the BufferAccessStrategy only for that table.
+	 * will cease use of the BufferAccessIntent only for that table.
 	 *
 	 * XXX should we consider adding code to adjust the size of this if
 	 * VacuumBufferUsageLimit changes?
 	 */
-	bstrategy = GetAccessStrategyWithSize(BAS_VACUUM, VacuumBufferUsageLimit);
+	bstrategy = BUF_INTENT_VACUUM;
 
 	/*
 	 * create a memory context to act as fake PortalContext, so that the
@@ -3341,7 +3341,7 @@ relation_needs_vacanalyze(Oid relid,
  * disappear at transaction commit.
  */
 static void
-autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
+autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessIntent intent)
 {
 	RangeVar   *rangevar;
 	VacuumRelation *rel;
@@ -3364,7 +3364,7 @@ autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
 	rel_list = list_make1(rel);
 	MemoryContextSwitchTo(old_context);
 
-	vacuum(rel_list, &tab->at_params, bstrategy, vac_context, true);
+	vacuum(rel_list, &tab->at_params, intent, vac_context, true);
 
 	MemoryContextDelete(vac_context);
 }

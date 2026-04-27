@@ -492,7 +492,7 @@ BlockNumber
 _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 				   Buffer wbuf, IndexTuple *itups, OffsetNumber *itup_offsets,
 				   Size *tups_size, uint16 nitups,
-				   BufferAccessStrategy bstrategy)
+				   BufferAccessIntent intent)
 {
 	HashMetaPage metap;
 	Buffer		metabuf;
@@ -543,16 +543,16 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 												 prevblkno,
 												 HASH_WRITE,
 												 LH_BUCKET_PAGE | LH_OVERFLOW_PAGE,
-												 bstrategy);
+												 intent);
 	}
 	if (BlockNumberIsValid(nextblkno))
 		nextbuf = _hash_getbuf_with_strategy(rel,
 											 nextblkno,
 											 HASH_WRITE,
 											 LH_OVERFLOW_PAGE,
-											 bstrategy);
+											 intent);
 
-	/* Note: bstrategy is intentionally not used for metapage and bitmap */
+	/* Note: intent is intentionally not used for metapage and bitmap */
 
 	/* Read the metapage so we can determine which bitmap page to use */
 	metabuf = _hash_getbuf(rel, HASH_METAPAGE, HASH_READ, LH_META_PAGE);
@@ -844,7 +844,7 @@ _hash_squeezebucket(Relation rel,
 					Bucket bucket,
 					BlockNumber bucket_blkno,
 					Buffer bucket_buf,
-					BufferAccessStrategy bstrategy)
+					BufferAccessIntent intent)
 {
 	BlockNumber wblkno;
 	BlockNumber rblkno;
@@ -890,7 +890,7 @@ _hash_squeezebucket(Relation rel,
 										  rblkno,
 										  HASH_WRITE,
 										  LH_OVERFLOW_PAGE,
-										  bstrategy);
+										  intent);
 		rpage = BufferGetPage(rbuf);
 		ropaque = HashPageGetOpaque(rpage);
 		Assert(ropaque->hasho_bucket == bucket);
@@ -956,7 +956,7 @@ readpage:
 														   wblkno,
 														   HASH_WRITE,
 														   LH_OVERFLOW_PAGE,
-														   bstrategy);
+														   intent);
 
 				if (nitups > 0)
 				{
@@ -1098,7 +1098,7 @@ readpage:
 
 		/* free this overflow page (releases rbuf) */
 		_hash_freeovflpage(rel, bucket_buf, rbuf, wbuf, itups, itup_offsets,
-						   tups_size, nitups, bstrategy);
+						   tups_size, nitups, intent);
 
 		/* be tidy */
 		for (i = 0; i < nitups; i++)
@@ -1119,7 +1119,7 @@ readpage:
 										  rblkno,
 										  HASH_WRITE,
 										  LH_OVERFLOW_PAGE,
-										  bstrategy);
+										  intent);
 		rpage = BufferGetPage(rbuf);
 		ropaque = HashPageGetOpaque(rpage);
 		Assert(ropaque->hasho_bucket == bucket);

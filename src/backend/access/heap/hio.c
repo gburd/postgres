@@ -91,7 +91,7 @@ ReadBufferBI(Relation relation, BlockNumber targetBlock,
 	/* If not bulk-insert, exactly like ReadBuffer */
 	if (!bistate)
 		return ReadBufferExtended(relation, MAIN_FORKNUM, targetBlock,
-								  mode, NULL);
+								  mode, BUF_INTENT_NORMAL);
 
 	/* If we have the desired block already pinned, re-pin and return it */
 	if (bistate->current_buf != InvalidBuffer)
@@ -337,7 +337,7 @@ RelationAddBlocks(Relation relation, BulkInsertState bistate,
 	 * way larger.
 	 */
 	first_block = ExtendBufferedRelBy(BMR_REL(relation), MAIN_FORKNUM,
-									  bistate ? bistate->strategy : NULL,
+									  bistate ? bistate->strategy : BUF_INTENT_NORMAL,
 									  EB_LOCK_FIRST,
 									  extend_by_pages,
 									  victim_buffers,

@@ -64,6 +64,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/schemapg.h"
 #include "catalog/storage.h"
+#include "commands/bufferpoolcmds.h"
 #include "commands/policy.h"
 #include "commands/publicationcmds.h"
 #include "commands/trigger.h"
@@ -514,6 +515,44 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 												  VARSIZE(options));
 		memcpy(relation->rd_options, options, VARSIZE(options));
 		pfree(options);
+	}
+
+	/*
+	 * Resolve buffer pool assignment from reloption.  Default to InvalidOid
+	 * which means use the default buffer pool.
+	 *
+	 * Only heap-like relations use StdRdOptions containing
+	 * buffer_pool_offset. Index relations use AM-specific option structs
+	 * (BTOptions, etc.) that do not contain this field -- casting them to
+	 * StdRdOptions would read garbage.  Views use ViewOptions.
+	 */
+	relation->rd_bufpool = InvalidOid;
+	if (relation->rd_options)
+	{
+		switch (relation->rd_rel->relkind)
+		{
+			case RELKIND_RELATION:
+			case RELKIND_TOASTVALUE:
+			case RELKIND_MATVIEW:
+			case RELKIND_PARTITIONED_TABLE:
+				{
+					StdRdOptions *opts = (StdRdOptions *) relation->rd_options;
+
+					if (opts->buffer_pool_offset > 0)
+					{
+						char	   *name = (char *) opts + opts->buffer_pool_offset;
+
+						relation->rd_bufpool = get_bufferpool_oid(name, true);
+						if (!OidIsValid(relation->rd_bufpool))
+							ereport(WARNING,
+									(errmsg("buffer pool \"%s\" does not exist, using default pool",
+											name)));
+					}
+				}
+				break;
+			default:
+				break;
+		}
 	}
 }
 
