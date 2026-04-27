@@ -1,0 +1,488 @@
+contrib/pg_bp_arc/DESIGN
+
+pg_bp_arc -- Design and Implementation Notes
+=============================================
+
+This document is intended for engineers maintaining or extending the
+pg_bp_arc code.  It covers the ARC algorithm theory, the PostgreSQL
+implementation details, deviations from the textbook algorithm, and
+known limitations.
+
+Source file: contrib/pg_bp_arc/pg_bp_arc.c
+
+
+A. Algorithm Theory
+===================
+
+ARC (Adaptive Replacement Cache) maintains four logical lists and one
+adaptive parameter.  The cache holds c pages total (c = nbuffers).
+
+Lists
+-----
+
+    T1   Recently accessed pages.  A page enters T1 the first time it
+         is loaded into the cache.  Pages on T1 have been accessed
+         exactly once since being brought into cache.
+
+    T2   Frequently accessed pages.  When a page on T1 is accessed a
+         second time, it is promoted to T2.  Subsequent hits on T2
+         move the page to the MRU end of T2.
+
+    B1   Ghost list for T1.  When a page is evicted from T1, its
+         identity (tag) is kept in B1 as a ghost entry.  The ghost
+         entry has no associated buffer -- it only records that the
+         page was recently in T1.
+
+    B2   Ghost list for T2.  Same as B1, but for pages evicted from
+         T2.
+
+Ghost entries allow ARC to detect that an evicted page has been
+re-requested, which drives the adaptation logic.
+
+Invariants:
+
+    |T1| + |T2| <= c           (resident pages fit in cache)
+    |T1| + |B1| <= c           (T1 directory bound)
+    |T1| + |T2| + |B1| + |B2| <= 2c  (total directory bound)
+
+Adaptive parameter: target_T1_size
+-----------------------------------
+
+target_T1_size (called "p" in the original paper) controls the desired
+split between T1 and T2.  It starts at c/2 and adapts over time:
+
+    B1 hit (page found in B1 ghost list):
+        T1 was too small.  The page was evicted from T1 recently and
+        is being accessed again.  Increase target_T1_size.
+
+        delta = max(|B2| / |B1|, 1)
+        target_T1_size = min(target_T1_size + delta, c)
+
+    B2 hit (page found in B2 ghost list):
+        T2 was too small.  The page was evicted from T2 recently and
+        is being accessed again.  Decrease target_T1_size.
+
+        delta = max(|B1| / |B2|, 1)
+        target_T1_size = max(target_T1_size - delta, 0)
+
+The delta formula is asymmetric: the ratio of the opposite ghost list
+to the hit ghost list scales the step size.  When one ghost list is
+much larger than the other, the step is small (the signal is weak);
+when the lists are similar in size, the step is larger.
+
+Eviction decision
+-----------------
+
+When a new page must be loaded and the cache is full:
+
+    If |T1| >= max(1, target_T1_size):
+        Evict the LRU page from T1 (move it to B1 as a ghost).
+    Else:
+        Evict the LRU page from T2 (move it to B2 as a ghost).
+
+This means that T1 grows up to target_T1_size before evictions shift
+to T2.
+
+Operation costs:
+
+    Hit:      O(1) -- spinlock acquire, doubly-linked list remove + insert
+    Miss:     O(1) -- ghost hash lookup, list insert
+    Eviction: O(1) amortized -- pop from LRU of T1 or T2
+
+
+B. Implementation Details
+=========================
+
+Cache Directory Blocks (CDBs)
+-----------------------------
+
+All list nodes are stored in a flat array of ArcCDB structures.  The
+total number of CDB entries is 2 * nbuffers (ncdb).  This gives
+enough entries for every buffer to be on T1 or T2, with an equal
+number available for ghost entries on B1 and B2.
+
+Each ArcCDB contains:
+
+    prev         int     Previous node in doubly-linked list (-1 = head)
+    next         int     Next node in doubly-linked list (-1 = tail)
+    list         int     Which ARC list (T1, T2, B1, B2, or UNUSED)
+    buf_tag      BufferTag   Page identity (relfilenode, fork, block)
+    buf_id       int     Pool-local buffer index (-1 for ghost entries)
+    ghost_next   int     Next in ghost hash chain (-1 = end of chain)
+
+The doubly-linked lists use integer indices into the CDB array rather
+than pointers, since the entire structure lives in DSM (dynamic shared
+memory) and must be position-independent.
+
+Each ARC list has a head and tail index stored in ArcControl:
+
+    list_head[4]    Head (LRU end) of each list
+    list_tail[4]    Tail (MRU end) of each list
+    list_size[4]    Current count of entries on each list
+
+Free CDB list
+--------------
+
+Unused CDB entries are linked into a singly-linked free list using
+the .next field.  ctl->free_cdb_list points to the first free entry.
+
+When the free list is empty, a ghost entry is recycled:
+
+    If |T1| + |B1| >= c:
+        Recycle the LRU entry from B1 (prefer B1).
+    Else if |B2| > 0:
+        Recycle the LRU entry from B2.
+    Else if |B1| > 0:
+        Recycle the LRU entry from B1 (fallback).
+
+Recycling removes the ghost from its hash chain and list, then
+returns the CDB for reuse.
+
+Ghost hash table
+----------------
+
+Ghost entries (B1 and B2) must be looked up by BufferTag during the
+on_miss callback.  A separate hash table provides O(1) expected-time
+lookup.
+
+    Size:       Power-of-2, >= ncdb (computed as pg_nextpower2_32(ncdb))
+    Bucket:     hash(buf_tag) & (ghost_hash_size - 1)
+    Chaining:   Through the ghost_next field in ArcCDB (integer index)
+    Stored in:  int array immediately after the CDB array in DSM
+
+Only ghost entries (B1/B2) are inserted into the ghost hash table.
+Resident entries (T1/T2) are looked up via buf_to_cdb[] instead.
+
+buf_to_cdb[] mapping
+--------------------
+
+An integer array of size nbuffers maps pool-local buffer IDs to CDB
+indices:
+
+    buf_to_cdb[pool_local_id] = cdb_index   (or -1 if untracked)
+
+This is used by on_hit and on_evict to find the CDB for a buffer in
+O(1) time without scanning any list.
+
+Memory layout
+-------------
+
+All ARC state for a pool is allocated as a single contiguous block
+in dynamic shared memory (DSM).  The layout is:
+
+    Offset 0:                   ArcControl header (fixed size)
+    After ArcControl:           ArcCDB[ncdb]      (2 * nbuffers entries)
+    After CDB array:            int ghost_hash[ghost_hash_size]
+    After ghost hash:           int buf_to_cdb[nbuffers]
+
+Accessor macros compute pointers into this block:
+
+    ARC_CDB(ctl)          -> ArcCDB array
+    ARC_GHOST_HASH(ctl)   -> ghost hash bucket array
+    ARC_BUF_TO_CDB(ctl)   -> buffer-to-CDB index array
+
+The total shared memory size is computed by ArcShmemSize() and
+allocated by the buffer pool infrastructure before ArcShmemInit()
+is called.
+
+Per-backend state: ArcBackendState
+-----------------------------------
+
+The on_miss and get_victim callbacks are called as separate steps
+within a single BufferAlloc invocation.  Information must be passed
+between them:
+
+    ghost_cdb     CDB index of the ghost hit found during on_miss,
+                  or -1 for a complete miss.  Used by on_new_tag to
+                  decide whether to promote a ghost entry or allocate
+                  a fresh CDB.
+
+    evict_from    Which list (T1 or T2) get_victim should try first,
+                  based on |T1| vs. target_T1_size at on_miss time.
+
+    vacuum_hint   True if VACUUM is active for this backend.  Set by
+                  hint_vacuum callback.
+
+Each backend maintains a small array of ArcBackendState (one per pool
+it has accessed), keyed by the ArcControl pointer.  This prevents
+cross-pool state leakage when multiple ARC pools exist.
+
+Concurrency: single spinlock
+-----------------------------
+
+ctl->arc_lock is a PostgreSQL slock_t (spinlock) that protects all
+mutable fields in ArcControl, the CDB array, the ghost hash table,
+and the buf_to_cdb mapping.
+
+Every on_hit, on_miss, on_evict, and on_new_tag call acquires this
+lock.  The critical sections are short (a few pointer updates), but
+the lock is acquired on every buffer access.
+
+Statistics counters (pg_atomic_uint64) can be read without the lock,
+but writes go through PoolStatIncrement batching (see below).
+
+
+C. Modifications from Textbook ARC
+===================================
+
+VACUUM integration
+------------------
+
+In the textbook algorithm, every new page enters T1 at the MRU end.
+In this implementation, when VACUUM is active (vacuum_hint is true
+or the on_new_tag vacuum_hint parameter is set), new pages are
+inserted at the LRU end of T1 instead.
+
+This means VACUUM-loaded pages sit at the eviction end of T1 and are
+the first to be evicted.  Without this, a VACUUM scanning a large
+table would push the entire working set out of cache.
+
+The relevant code is in ArcOnNewTag:
+
+    if (vacuum_hint || state->vacuum_hint)
+        arc_lru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T1);
+    else
+        arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T1);
+
+Ghost CDB validation
+--------------------
+
+The ghost_cdb value set during on_miss can become stale if an
+intervening operation (such as ExtendBufferedRelShared for FSM or
+VM pages) bypasses the normal on_miss/get_victim/on_new_tag sequence.
+
+ArcOnNewTag validates the ghost CDB before using it:
+
+    if (cdb_idx >= ctl->ncdb ||
+        (cdb_arr[cdb_idx].list != ARC_LIST_B1 &&
+         cdb_arr[cdb_idx].list != ARC_LIST_B2))
+    {
+        /* Stale ghost_cdb -- treat as a complete miss */
+        goto complete_miss;
+    }
+
+This prevents a stale ghost_cdb from corrupting the list structure.
+
+Free buffer scan (cold start optimization)
+-------------------------------------------
+
+During cold start or pool warm-up, not all buffers have been loaded
+yet.  The textbook algorithm always evicts from T1 or T2, but that
+is wasteful when free buffers exist.
+
+ArcGetVictim checks whether T1 + T2 < nbuffers.  If so, it scans
+buf_to_cdb[] for a buffer with index -1 (untracked) and tries to
+pin it.  Only when no free buffers remain does it fall back to
+evicting from T1 or T2.
+
+This avoids the need for a separate free buffer list in shared
+memory.  The scan is O(n) in the worst case but only runs during
+warm-up when most entries are free.
+
+Trickle writer integration
+--------------------------
+
+ARC implements the trickle_iter_begin/next/end callbacks for the
+per-pool trickle writer (background writer).  The iterator walks:
+
+    Phase 0: T1 from LRU to MRU
+    Phase 1: T2 from LRU to MRU
+
+For each CDB with a resident buffer (buf_id >= 0), it checks whether
+the buffer is dirty, valid, and unpinned.  If so, it yields the
+global buffer ID for the trickle writer to flush.
+
+T1 is scanned first because T1-LRU pages are the most likely
+eviction candidates.  Writing them proactively reduces the chance
+that get_victim must flush a dirty buffer synchronously.
+
+Stat counter batching
+---------------------
+
+Statistics are not updated by direct atomic increment on every
+operation.  Instead, PoolStatIncrement is used, which maintains
+per-backend local counters and flushes them to the shared
+pg_atomic_uint64 counters every 256 increments.
+
+    PoolStatIncrement(&arc_local_stats[slot], &ctl->stat_xxx);
+
+The local counters are declared as:
+
+    static uint64 arc_local_stats[ARC_NUM_STATS];
+
+This reduces atomic operation overhead on the stats counters from
+once per buffer access to once per 256 accesses.  The shared counters
+can still be read at any time (they may lag by up to 256 per backend).
+
+
+D. Concurrency and Scalability
+==============================
+
+The single spinlock (arc_lock) is the primary scalability limitation.
+
+Every cache hit requires:
+
+    1. SpinLockAcquire(&ctl->arc_lock)
+    2. Remove CDB from current list position (4 pointer updates)
+    3. Insert CDB at MRU of T2 (4 pointer updates)
+    4. SpinLockRelease(&ctl->arc_lock)
+
+On a system with N cores all doing buffer lookups, this serializes
+hit processing.  The critical section is small (no memory allocation,
+no I/O, just integer assignments), but at very high access rates the
+spinlock becomes a bottleneck.
+
+For comparison, CAR (pg_bp_car) uses a single atomic reference bit
+set on hit, with no lock.  The lock is only needed during clock sweep
+(eviction), which happens much less frequently than hits.
+
+Stat counters use pg_atomic_uint64 and can be read from pg_stat_arc
+without acquiring the spinlock.  However, writes use the batched
+PoolStatIncrement mechanism to avoid one atomic increment per access.
+
+The spinlock is NOT held during:
+
+  - I/O operations (buffer reads/writes)
+  - Buffer header pin/unpin CAS operations in get_victim
+  - Trickle writer I/O (only the iterator snapshot is taken under lock)
+
+The spinlock IS held during:
+
+  - on_hit: list move (T1->T2 or T2 MRU reposition)
+  - on_miss: ghost lookup + target_T1_size update
+  - on_evict: T1/T2 -> B1/B2 move + ghost hash insert
+  - on_new_tag: ghost promote or fresh CDB allocation + list insert
+
+Each of these critical sections is O(1) in the number of list
+operations performed.
+
+
+E. Memory Overhead
+==================
+
+Per buffer, ARC allocates:
+
+    2 ArcCDB entries           2 * sizeof(ArcCDB)
+    1 ghost hash bucket        sizeof(int)          (amortized)
+    1 buf_to_cdb entry         sizeof(int)
+
+ArcCDB structure size (assuming 64-bit system, typical padding):
+
+    prev           4 bytes (int)
+    next           4 bytes (int)
+    list           4 bytes (int)
+    buf_tag        ~20 bytes (BufferTag: RelFileLocator + ForkNumber + BlockNumber)
+    buf_id         4 bytes (int)
+    ghost_next     4 bytes (int)
+    padding        ~8 bytes (alignment)
+    -----------------------------------
+    Total:         ~48 bytes per CDB
+
+Per buffer overhead breakdown:
+
+    2 CDB entries:           ~96 bytes
+    ghost hash (amortized):  ~8 bytes (power-of-2 sized, ~2x ncdb ints)
+    buf_to_cdb:              4 bytes
+    -----------------------------------
+    Total per buffer:        ~100-120 bytes
+
+For a pool with 131072 buffers (1 GB at 8 KB pages), the ARC metadata
+consumes roughly 13-16 MB.
+
+The ArcControl header itself is fixed-size (a few hundred bytes for
+the spinlock, list head/tail arrays, and atomic stat counters).
+
+
+F. Performance Characteristics
+==============================
+
+    Operation      Cost               Notes
+    ---------      ----               -----
+    Hit (T1/T2)    O(1)               Spinlock + 2 list ops (remove + insert)
+    Miss           O(1)               Ghost hash lookup + list insert
+    Eviction       O(1) amortized     Pop LRU of T1 or T2
+    Ghost recycle  O(1)               Pop LRU of B1 or B2, remove from hash
+    Free buf scan  O(n) worst case    Only during cold start / warm-up
+    Trickle iter   O(n) per pass      Walks T1 then T2 once
+
+Worst case for get_victim: all buffers in the pool are pinned.  The
+code walks the entire primary list (T1 or T2), then the entire
+secondary list, checking each buffer's pin count.  If no unpinned
+buffer is found, it raises an ERROR.  This is the same behavior as
+the standard clock sweep when all buffers are pinned.
+
+Cache performance relative to LRU:
+
+  - Scan-resistant: A single sequential scan of a table larger than
+    the cache does not evict the entire working set.  The scan pages
+    enter T1 and are evicted from T1 without disturbing T2.
+
+  - Frequency-aware: Pages accessed multiple times are promoted to
+    T2, which is protected from eviction as long as target_T1_size
+    has not shrunk to zero.
+
+  - Self-tuning: The target_T1_size parameter adjusts automatically.
+    No DBA intervention is needed to balance recency vs. frequency.
+
+
+G. References
+=============
+
+Primary reference:
+
+    N. Megiddo and D. Modha, "ARC: A Self-Tuning, Low Overhead
+    Replacement Cache", Proceedings of USENIX Conference on File and
+    Storage Technologies (FAST), 2003.
+
+    https://www.usenix.org/conference/fast-03/arc-self-tuning-low-overhead-replacement-cache
+
+Patent:
+
+    IBM US Patent 6,996,676 -- "Data processing system and method for
+    generating a page replacement order based on a page replacement
+    policy using a balancing parameter."
+
+    Note: The CAR algorithm (pg_bp_car) was designed as a patent-free
+    alternative to ARC.  See S. Bansal and D. Modha, "CAR: Clock with
+    Adaptive Replacement", FAST 2004.
+
+
+H. Known Limitations and Future Work
+=====================================
+
+Spinlock contention on many-core systems
+    The single arc_lock serializes all hit processing.  On systems
+    with 64+ cores running a heavily concurrent OLTP workload, this
+    can become the dominant bottleneck.  Possible mitigations include
+    partitioning the ARC lists (one lock per partition) or switching
+    to a lock-free structure.  CAR's approach of using atomic reference
+    bits eliminates the per-hit lock entirely.
+
+No prefetch_hint callback
+    The arc_pool_routine sets prefetch_hint = NULL.  CAR implements
+    this callback to check ghost lists on prefetch and pre-adapt the
+    target parameter.  Adding prefetch_hint to ARC would require
+    acquiring the spinlock for ghost lookup, which may not be
+    worthwhile given the existing per-hit lock cost.
+
+No VACUUM-specific eviction acceleration
+    VACUUM pages are inserted at the LRU end of T1, making them the
+    first eviction candidates.  However, they still occupy T1 slots
+    until normal eviction removes them.  A dedicated VACUUM eviction
+    path that immediately frees the buffer without placing it on T1
+    could reduce T1 pollution during large VACUUM operations.  The
+    current approach is simple and works well in practice for typical
+    VACUUM workloads.
+
+Cold start free buffer scan
+    The O(n) scan of buf_to_cdb[] during warm-up could be replaced
+    with a dedicated free buffer list if startup performance becomes
+    important.  In practice the scan only runs when many buffers are
+    free, and each scanned buffer is either immediately usable or
+    quickly skipped.
+
+Debug validation overhead
+    ArcValidateLists (enabled in USE_ASSERT_CHECKING builds) walks
+    all four lists and the buf_to_cdb array on every on_evict and
+    on_new_tag call.  This is intentionally expensive and should
+    never be enabled in production builds.

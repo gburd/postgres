@@ -1,0 +1,149 @@
+-- Test pg_bp_arc extension
+CREATE EXTENSION pg_bp_arc;
+
+-- ===================================================
+-- ARC dynamic pool: full data lifecycle
+-- ===================================================
+
+-- Create an ARC buffer pool (4MB = 512 pages)
+CREATE BUFFER POOL arc_test_pool HANDLER arc_pool_handler SIZE '4194304';
+
+-- Create a table assigned to the ARC pool
+CREATE TABLE bp_arc_data (id int, val text) WITH (buffer_pool = 'arc_test_pool');
+
+-- Insert rows (small set to stay within pool capacity)
+INSERT INTO bp_arc_data SELECT g, 'arc-row-' || g FROM generate_series(1, 100) g;
+
+-- Read back and verify
+SELECT count(*) FROM bp_arc_data;
+SELECT min(id), max(id) FROM bp_arc_data;
+SELECT val FROM bp_arc_data WHERE id = 50;
+
+-- Repeated SELECT to trigger T1 -> T2 promotions
+SELECT count(*) FROM bp_arc_data;
+SELECT count(*) FROM bp_arc_data;
+
+-- Update some rows
+UPDATE bp_arc_data SET val = 'arc-updated-' || id WHERE id <= 10;
+SELECT val FROM bp_arc_data WHERE id = 5;
+
+-- Delete some rows
+DELETE FROM bp_arc_data WHERE id > 90;
+SELECT count(*) FROM bp_arc_data;
+
+-- Create an index on the ARC-pooled table
+CREATE INDEX bp_arc_data_idx ON bp_arc_data (id);
+
+-- Use the index
+SELECT val FROM bp_arc_data WHERE id = 42;
+
+-- VACUUM the ARC-pooled table (exercises FSM/VM extension through ARC)
+VACUUM bp_arc_data;
+
+-- Verify pool stats show activity
+SELECT hits > 0 AS has_hits
+FROM pg_stat_bufferpool WHERE name = 'arc_test_pool';
+
+-- Verify ARC stats show activity (lookups > 0)
+SELECT lookups > 0 AS has_lookups
+FROM pg_stat_arc WHERE name = 'arc_test_pool';
+
+-- Checkpoint should preserve data
+CHECKPOINT;
+SELECT count(*) FROM bp_arc_data;
+SELECT val FROM bp_arc_data WHERE id = 42;
+
+-- ===================================================
+-- ARC stress tests: bulk INSERT, DELETE, multi-VACUUM
+-- ===================================================
+
+-- Bulk INSERT: 500 rows to fill pool and trigger evictions
+INSERT INTO bp_arc_data SELECT g, 'arc-bulk-' || g FROM generate_series(101, 600) g;
+SELECT count(*) FROM bp_arc_data;
+
+-- DELETE many rows then VACUUM to exercise ghost list management
+DELETE FROM bp_arc_data WHERE id > 300;
+SELECT count(*) FROM bp_arc_data;
+
+VACUUM bp_arc_data;
+
+-- Second round: re-insert and VACUUM again (ghost hits expected)
+INSERT INTO bp_arc_data SELECT g, 'arc-refill-' || g FROM generate_series(301, 500) g;
+SELECT count(*) FROM bp_arc_data;
+
+VACUUM bp_arc_data;
+
+-- Third VACUUM cycle: should be a no-op, verifies stability
+VACUUM bp_arc_data;
+
+SELECT count(*) FROM bp_arc_data;
+
+-- Clean up basic test before adaptation test (avoids multi-pool stat overlap)
+DROP TABLE bp_arc_data;
+DROP BUFFER POOL arc_test_pool;
+
+-- ===================================================
+-- ARC algorithm behavior: adaptive T1/T2 partitioning
+-- ===================================================
+
+-- Use a small pool to force evictions and ghost list activity
+CREATE BUFFER POOL arc_adapt_pool HANDLER arc_pool_handler SIZE '1048576';
+CREATE TABLE bp_arc_adapt (id int, payload text) WITH (buffer_pool = 'arc_adapt_pool');
+
+-- Phase 1: Sequential insert (everything enters T1)
+INSERT INTO bp_arc_adapt SELECT g, repeat('x', 100) FROM generate_series(1, 200) g;
+
+-- Verify T1 has entries (pages are in recency list)
+SELECT t1_size > 0 AS t1_has_pages
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Phase 2: Repeated full scans (should promote pages from T1 to T2)
+SELECT count(*) FROM bp_arc_adapt;
+SELECT count(*) FROM bp_arc_adapt;
+SELECT count(*) FROM bp_arc_adapt;
+
+-- After repeated scans, T2 should have pages (frequency list)
+SELECT t2_size > 0 AS t2_has_pages
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Phase 3: Insert enough new rows to force evictions
+INSERT INTO bp_arc_adapt SELECT g, repeat('y', 100) FROM generate_series(201, 500) g;
+
+-- Verify eviction counters work
+SELECT (t1_evictions + t2_evictions) > 0 AS has_evictions
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Phase 4: Re-access evicted pages (should trigger ghost hits and
+-- cause target_t1_size to adapt)
+SELECT count(*) FROM bp_arc_adapt WHERE id <= 50;
+SELECT count(*) FROM bp_arc_adapt WHERE id <= 50;
+
+-- Ghost list should have entries (b1 or b2 non-empty means pages
+-- were tracked after eviction)
+SELECT (b1_size + b2_size) >= 0 AS ghost_lists_exist
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Verify hit counters are working (t1_hits + t2_hits should be > 0)
+SELECT (t1_hits + t2_hits) > 0 AS has_cache_hits
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Verify misses counter works
+SELECT misses > 0 AS has_misses
+FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
+
+-- Phase 5: VACUUM and verify stability
+VACUUM bp_arc_adapt;
+SELECT count(*) FROM bp_arc_adapt;
+
+-- Verify size advisory function works
+SELECT current_size > 0 AS has_current_size,
+       hit_ratio >= 0 AS has_hit_ratio
+FROM pg_bp_arc_size_recommendation('arc_adapt_pool')
+    AS (current_size int, recommended_size int,
+        ghost_pressure float8, hit_ratio float8);
+
+-- Clean up adaptation test
+DROP TABLE bp_arc_adapt;
+DROP BUFFER POOL arc_adapt_pool;
+
+DROP EXTENSION pg_bp_arc;

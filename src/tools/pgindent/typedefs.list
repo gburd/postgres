@@ -132,6 +132,10 @@ AppendState
 ApplyExecutionData
 ApplyRemoteCtx
 ApplySubXactData
+ArcBackendState
+ArcCDB
+ArcControl
+ArcTrickleIter
 Archive
 ArchiveCheckConfiguredCB
 ArchiveEntryPtrType

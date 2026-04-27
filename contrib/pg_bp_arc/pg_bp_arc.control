@@ -1,0 +1,5 @@
+# pg_bp_arc extension
+comment = 'ARC (Adaptive Replacement Cache) buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_arc'
+relocatable = true
