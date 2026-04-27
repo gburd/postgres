@@ -12,7 +12,9 @@
 
 #include "access/detoast.h"
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/heaptoast.h"
+#include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -1054,7 +1056,45 @@ check_tuple_header(HeapCheckContext *ctx)
 		expected_hoff = MAXALIGN(SizeofHeapTupleHeader + BITMAPLEN(ctx->natts));
 	else
 		expected_hoff = MAXALIGN(SizeofHeapTupleHeader);
-	if (ctx->tuphdr->t_hoff != expected_hoff)
+
+	/*
+	 * Tuples with HEAP_INDEXED_UPDATED have an SIU bitmap embedded between
+	 * the null bitmap (or fixed header) and user data, extending t_hoff.
+	 * Allow the larger t_hoff if the SIU flag is set.
+	 *
+	 * Note: a tuple may have INDEXED_UPDATED without bitmap space if pruning
+	 * set the flag on a plain HOT target that lacked room.  In that case,
+	 * t_hoff equals expected_hoff (no extension).  Both cases are valid.
+	 */
+	if (HeapTupleHeaderIsIndexedUpdatedRaw(tuphdr))
+	{
+		unsigned	siu_hoff;
+
+		siu_hoff = MAXALIGN(((infomask & HEAP_HASNULL)
+							 ? SizeofHeapTupleHeader + BITMAPLEN(ctx->natts)
+							 : SizeofHeapTupleHeader)
+							+ heap_siu_bitmap_raw_size(ctx->natts));
+
+		if (ctx->tuphdr->t_hoff != expected_hoff &&
+			ctx->tuphdr->t_hoff != siu_hoff)
+		{
+			report_corruption(ctx,
+							  psprintf("INDEXED_UPDATED tuple data should begin at byte %u (without SIU) or %u (with SIU bitmap), but actually begins at byte %u",
+									   expected_hoff, siu_hoff, ctx->tuphdr->t_hoff));
+			result = false;
+		}
+
+		/*
+		 * INDEXED_UPDATED should only be set on HEAP_ONLY tuples (tuples
+		 * that are part of a HOT chain, not chain roots).
+		 */
+		if (!HeapTupleHeaderIsHeapOnly(tuphdr))
+		{
+			report_corruption(ctx,
+							  psprintf("INDEXED_UPDATED is set but tuple is not heap-only"));
+		}
+	}
+	else if (ctx->tuphdr->t_hoff != expected_hoff)
 	{
 		if ((infomask & HEAP_HASNULL) && ctx->natts == 1)
 			report_corruption(ctx,
