@@ -1735,6 +1735,10 @@ LogicalSlotInfoArr
 LogicalTape
 LogicalTapeSet
 LookupSet
+LruBackendState
+LruControl
+LruNode
+LruTrickleIter
 LsnReadQueue
 LsnReadQueueNextFun
 LsnReadQueueNextStatus
@@ -2598,6 +2602,9 @@ RecursionContext
 RecursiveUnion
 RecursiveUnionPath
 RecursiveUnionState
+RecycleMode
+RecyclePoolState
+RecycleTrickleIter
 RefetchForeignRow_function
 RefreshMatViewStmt
 RegProcedure
