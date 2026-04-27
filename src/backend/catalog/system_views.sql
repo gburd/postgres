@@ -1263,6 +1263,9 @@ CREATE VIEW pg_stat_bufferpool AS
         s.name,
         s.oid,
         s.nbuffers,
+        s.target_buffers,
+        s.current_buffers,
+        s.oversubscribed,
         s.reads,
         s.hits,
         s.evictions
