@@ -15,6 +15,7 @@
 #include "port/pg_numa.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpool_internals.h"
 #include "utils/rel.h"
 #include "utils/tuplestore.h"
 
@@ -83,6 +84,97 @@ PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty_all);
 static bool firstNumaTouch = true;
 
 
+/*
+ * Helper: emit one tuple for a single buffer descriptor into the tuplestore.
+ * Used by pg_buffercache_pages() for both default and dynamic pool buffers.
+ */
+static void
+buffercache_pages_emit(ReturnSetInfo *rsinfo, BufferDesc *bufHdr)
+{
+	uint64		buf_state;
+	uint32		bufferid;
+	RelFileNumber relfilenumber;
+	Oid			reltablespace;
+	Oid			reldatabase;
+	ForkNumber	forknum;
+	BlockNumber blocknum;
+	bool		isvalid;
+	bool		isdirty;
+	uint16		usagecount;
+	int32		pinning_backends;
+	Datum		values[NUM_BUFFERCACHE_PAGES_ELEM];
+	bool		nulls[NUM_BUFFERCACHE_PAGES_ELEM];
+
+	/* Lock each buffer header before inspecting. */
+	buf_state = LockBufHdr(bufHdr);
+
+	bufferid = BufferDescriptorGetBuffer(bufHdr);
+	relfilenumber = BufTagGetRelNumber(&bufHdr->tag);
+	reltablespace = bufHdr->tag.spcOid;
+	reldatabase = bufHdr->tag.dbOid;
+	forknum = BufTagGetForkNum(&bufHdr->tag);
+	blocknum = bufHdr->tag.blockNum;
+	usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);
+	pinning_backends = BUF_STATE_GET_REFCOUNT(buf_state);
+
+	if (buf_state & BM_DIRTY)
+		isdirty = true;
+	else
+		isdirty = false;
+
+	/* Note if the buffer is valid, and has storage created */
+	if ((buf_state & BM_VALID) && (buf_state & BM_TAG_VALID))
+		isvalid = true;
+	else
+		isvalid = false;
+
+	UnlockBufHdr(bufHdr);
+
+	/* Build the tuple and add it to tuplestore */
+	values[0] = Int32GetDatum(bufferid);
+	nulls[0] = false;
+
+	/*
+	 * Set all fields except the bufferid to null if the buffer is unused or
+	 * not valid.
+	 */
+	if (blocknum == InvalidBlockNumber || isvalid == false)
+	{
+		nulls[1] = true;
+		nulls[2] = true;
+		nulls[3] = true;
+		nulls[4] = true;
+		nulls[5] = true;
+		nulls[6] = true;
+		nulls[7] = true;
+		/* unused for v1.0 callers, but the array is always long enough */
+		nulls[8] = true;
+	}
+	else
+	{
+		values[1] = ObjectIdGetDatum(relfilenumber);
+		nulls[1] = false;
+		values[2] = ObjectIdGetDatum(reltablespace);
+		nulls[2] = false;
+		values[3] = ObjectIdGetDatum(reldatabase);
+		nulls[3] = false;
+		values[4] = Int16GetDatum(forknum);
+		nulls[4] = false;
+		values[5] = Int64GetDatum((int64) blocknum);
+		nulls[5] = false;
+		values[6] = BoolGetDatum(isdirty);
+		nulls[6] = false;
+		values[7] = Int16GetDatum(usagecount);
+		nulls[7] = false;
+		/* unused for v1.0 callers, but the array is always long enough */
+		values[8] = Int32GetDatum(pinning_backends);
+		nulls[8] = false;
+	}
+
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
+
 Datum
 pg_buffercache_pages(PG_FUNCTION_ARGS)
 {
@@ -134,91 +226,28 @@ pg_buffercache_pages(PG_FUNCTION_ARGS)
 	 */
 	for (i = 0; i < NBuffers; i++)
 	{
-		BufferDesc *bufHdr;
-		uint64		buf_state;
-		uint32		bufferid;
-		RelFileNumber relfilenumber;
-		Oid			reltablespace;
-		Oid			reldatabase;
-		ForkNumber	forknum;
-		BlockNumber blocknum;
-		bool		isvalid;
-		bool		isdirty;
-		uint16		usagecount;
-		int32		pinning_backends;
-		Datum		values[NUM_BUFFERCACHE_PAGES_ELEM];
-		bool		nulls[NUM_BUFFERCACHE_PAGES_ELEM];
-
 		CHECK_FOR_INTERRUPTS();
+		buffercache_pages_emit(rsinfo, GetBufferDescriptor(i));
+	}
 
-		bufHdr = GetBufferDescriptor(i);
-		/* Lock each buffer header before inspecting. */
-		buf_state = LockBufHdr(bufHdr);
+	/*
+	 * Also scan dynamic pool buffers so they appear in pg_buffercache.
+	 */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
 
-		bufferid = BufferDescriptorGetBuffer(bufHdr);
-		relfilenumber = BufTagGetRelNumber(&bufHdr->tag);
-		reltablespace = bufHdr->tag.spcOid;
-		reldatabase = bufHdr->tag.dbOid;
-		forknum = BufTagGetForkNum(&bufHdr->tag);
-		blocknum = bufHdr->tag.blockNum;
-		usagecount = BUF_STATE_GET_USAGECOUNT(buf_state);
-		pinning_backends = BUF_STATE_GET_REFCOUNT(buf_state);
+		if (!pool->bp_active)
+			continue;
 
-		if (buf_state & BM_DIRTY)
-			isdirty = true;
-		else
-			isdirty = false;
+		local = EnsurePoolAttached(pool);
 
-		/* Note if the buffer is valid, and has storage created */
-		if ((buf_state & BM_VALID) && (buf_state & BM_TAG_VALID))
-			isvalid = true;
-		else
-			isvalid = false;
-
-		UnlockBufHdr(bufHdr);
-
-		/* Build the tuple and add it to tuplestore */
-		values[0] = Int32GetDatum(bufferid);
-		nulls[0] = false;
-
-		/*
-		 * Set all fields except the bufferid to null if the buffer is unused
-		 * or not valid.
-		 */
-		if (blocknum == InvalidBlockNumber || isvalid == false)
+		for (int k = 0; k < pool->bp_nbuffers; k++)
 		{
-			nulls[1] = true;
-			nulls[2] = true;
-			nulls[3] = true;
-			nulls[4] = true;
-			nulls[5] = true;
-			nulls[6] = true;
-			nulls[7] = true;
-			/* unused for v1.0 callers, but the array is always long enough */
-			nulls[8] = true;
+			CHECK_FOR_INTERRUPTS();
+			buffercache_pages_emit(rsinfo, &local->descriptors[k].bufferdesc);
 		}
-		else
-		{
-			values[1] = ObjectIdGetDatum(relfilenumber);
-			nulls[1] = false;
-			values[2] = ObjectIdGetDatum(reltablespace);
-			nulls[2] = false;
-			values[3] = ObjectIdGetDatum(reldatabase);
-			nulls[3] = false;
-			values[4] = Int16GetDatum(forknum);
-			nulls[4] = false;
-			values[5] = Int64GetDatum((int64) blocknum);
-			nulls[5] = false;
-			values[6] = BoolGetDatum(isdirty);
-			nulls[6] = false;
-			values[7] = Int16GetDatum(usagecount);
-			nulls[7] = false;
-			/* unused for v1.0 callers, but the array is always long enough */
-			values[8] = Int32GetDatum(pinning_backends);
-			nulls[8] = false;
-		}
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
 
 	return (Datum) 0;
@@ -617,6 +646,42 @@ pg_buffercache_summary(PG_FUNCTION_ARGS)
 			buffers_pinned++;
 	}
 
+	/* Also count dynamic pool buffers */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = EnsurePoolAttached(pool);
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *bufHdr = &local->descriptors[k].bufferdesc;
+			uint64		buf_state;
+
+			CHECK_FOR_INTERRUPTS();
+
+			buf_state = pg_atomic_read_u64(&bufHdr->state);
+
+			if (buf_state & BM_VALID)
+			{
+				buffers_used++;
+				usagecount_total += BUF_STATE_GET_USAGECOUNT(buf_state);
+
+				if (buf_state & BM_DIRTY)
+					buffers_dirty++;
+			}
+			else
+				buffers_unused++;
+
+			if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
+				buffers_pinned++;
+		}
+	}
+
 	memset(nulls, 0, sizeof(nulls));
 	values[0] = Int32GetDatum(buffers_used);
 	values[1] = Int32GetDatum(buffers_unused);
@@ -665,6 +730,36 @@ pg_buffercache_usage_counts(PG_FUNCTION_ARGS)
 			pinned[usage_count]++;
 	}
 
+	/* Also count dynamic pool buffers */
+	for (int p = 1; p < NBufferPools; p++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[p];
+		PoolLocalState *local;
+
+		if (!pool->bp_active)
+			continue;
+
+		local = EnsurePoolAttached(pool);
+
+		for (int k = 0; k < pool->bp_nbuffers; k++)
+		{
+			BufferDesc *bufHdr = &local->descriptors[k].bufferdesc;
+			uint64		buf_state = pg_atomic_read_u64(&bufHdr->state);
+			int			usage_count;
+
+			CHECK_FOR_INTERRUPTS();
+
+			usage_count = BUF_STATE_GET_USAGECOUNT(buf_state);
+			usage_counts[usage_count]++;
+
+			if (buf_state & BM_DIRTY)
+				dirty[usage_count]++;
+
+			if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
+				pinned[usage_count]++;
+		}
+	}
+
 	for (int i = 0; i < BM_MAX_USAGE_COUNT + 1; i++)
 	{
 		values[0] = Int32GetDatum(i);
@@ -711,7 +806,7 @@ pg_buffercache_evict(PG_FUNCTION_ARGS)
 
 	pg_buffercache_superuser_check("pg_buffercache_evict");
 
-	if (buf < 1 || buf > NBuffers)
+	if (buf < 1 || buf > MaxBufferNumber)
 		elog(ERROR, "bad buffer ID: %d", buf);
 
 	values[0] = BoolGetDatum(EvictUnpinnedBuffer(buf, &buffer_flushed));
@@ -828,7 +923,7 @@ pg_buffercache_mark_dirty(PG_FUNCTION_ARGS)
 
 	pg_buffercache_superuser_check("pg_buffercache_mark_dirty");
 
-	if (buf < 1 || buf > NBuffers)
+	if (buf < 1 || buf > MaxBufferNumber)
 		elog(ERROR, "bad buffer ID: %d", buf);
 
 	values[0] = BoolGetDatum(MarkDirtyUnpinnedBuffer(buf, &buffer_already_dirty));

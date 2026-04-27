@@ -2428,6 +2428,7 @@ typedef enum ObjectType
 	OBJECT_ACCESS_METHOD,
 	OBJECT_AGGREGATE,
 	OBJECT_AMOP,
+	OBJECT_BUFFER_POOL,
 	OBJECT_AMPROC,
 	OBJECT_ATTRIBUTE,			/* type's attribute, when distinct from column */
 	OBJECT_CAST,
@@ -3204,6 +3205,31 @@ typedef struct CreateAmStmt
 	List	   *handler_name;	/* handler function name */
 	char		amtype;			/* type of access method */
 } CreateAmStmt;
+
+/*----------------------
+ *		Create BUFFER POOL Statement
+ *----------------------
+ */
+typedef struct CreateBufferPoolStmt
+{
+	NodeTag		type;
+	char	   *poolname;		/* buffer pool name */
+	List	   *handler_name;	/* handler function name */
+	char	   *size;			/* pool size as string (e.g., '2GB') */
+	List	   *options;		/* WITH options (list of DefElem) */
+} CreateBufferPoolStmt;
+
+/*----------------------
+ *		Alter BUFFER POOL Statement
+ *----------------------
+ */
+typedef struct AlterBufferPoolStmt
+{
+	NodeTag		type;
+	char	   *poolname;		/* buffer pool name */
+	char	   *size;			/* new size (NULL if not changing size) */
+	List	   *options;		/* SET options (list of DefElem) */
+} AlterBufferPoolStmt;
 
 /* ----------------------
  *		Create TRIGGER Statement

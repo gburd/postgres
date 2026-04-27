@@ -22,6 +22,7 @@
 #include "postgres.h"
 
 #include "storage/buf_internals.h"
+#include "storage/bufpool_internals.h"
 #include "storage/subsystems.h"
 
 /* entry for buffer lookup hashtable */
@@ -79,6 +80,10 @@ BufTableShmemRequest(void *arg)
  * tag.  We do it like this because the callers need to know the hash code
  * in order to determine which buffer partition to lock, and we don't want
  * to do the hash computation twice (hash_any is a bit slow).
+ *
+ * The hash function used (tag_hash) is the same for both the default pool's
+ * SharedBufHash and the dynamic pool open-addressed tables, so the hash
+ * code returned here can be used for any pool.
  */
 uint32
 BufTableHashCode(BufferTag *tagPtr)
@@ -164,4 +169,174 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 
 	if (!result)				/* shouldn't happen */
 		elog(ERROR, "shared buffer hash table corrupted");
+}
+
+/* ----------------------------------------------------------------
+ *		Open-addressed hash table for dynamic buffer pools
+ *
+ * Dynamic pools use a simple open-addressed hash table with linear probing
+ * stored entirely in DSM memory.  The table uses no internal pointers,
+ * so it works correctly when the DSM is mapped at different virtual
+ * addresses in different backends.
+ *
+ * All access is protected by the pool's single mapping LWLock
+ * (bp_num_partitions = 1 for dynamic pools).
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * PoolBufHashNEntries
+ *		Compute the number of hash table entries for a pool of given size.
+ *
+ * We use 2x the number of buffers to keep the load factor at ~0.5,
+ * which gives good performance for open addressing with linear probing.
+ */
+int
+PoolBufHashNEntries(int nbuffers)
+{
+	return nbuffers * 2;
+}
+
+/*
+ * PoolBufHashSize
+ *		Compute the total size of the hash table entries array.
+ */
+Size
+PoolBufHashSize(int nbuffers)
+{
+	return (Size) PoolBufHashNEntries(nbuffers) * sizeof(PoolBufHashEntry);
+}
+
+/*
+ * PoolBufHashInit
+ *		Initialize all hash table entries to unused.
+ */
+void
+PoolBufHashInit(PoolBufHashEntry *entries, int nentries)
+{
+	for (int i = 0; i < nentries; i++)
+	{
+		ClearBufferTag(&entries[i].key);
+		entries[i].id = POOL_HASH_UNUSED;
+	}
+}
+
+/*
+ * PoolBufHashLookup
+ *		Look up a buffer tag in the open-addressed hash table.
+ *		Returns buffer ID, or -1 if not found.
+ *
+ * Caller must hold at least share lock on the pool's mapping lock.
+ */
+int
+PoolBufHashLookup(PoolBufHashEntry *entries, int nentries,
+				  BufferTag *tag, uint32 hashcode)
+{
+	uint32		idx = hashcode % nentries;
+
+	for (int i = 0; i < nentries; i++)
+	{
+		uint32		probe = (idx + i) % nentries;
+
+		if (entries[probe].id == POOL_HASH_UNUSED)
+			return -1;			/* end of probe chain, not found */
+
+		if (entries[probe].id == POOL_HASH_DELETED)
+			continue;			/* tombstone, skip */
+
+		if (BufferTagsEqual(&entries[probe].key, tag))
+			return entries[probe].id;	/* found */
+	}
+
+	return -1;					/* table full, not found */
+}
+
+/*
+ * PoolBufHashInsert
+ *		Insert a tag/buf_id pair into the open-addressed hash table.
+ *		Returns -1 on successful insertion, or the existing buffer ID
+ *		if a conflicting entry with the same tag already exists.
+ *
+ * Caller must hold exclusive lock on the pool's mapping lock.
+ */
+int
+PoolBufHashInsert(PoolBufHashEntry *entries, int nentries,
+				  BufferTag *tag, uint32 hashcode, int buf_id)
+{
+	uint32		idx = hashcode % nentries;
+	int			first_deleted = -1;
+
+	Assert(buf_id >= 0);
+	Assert(tag->blockNum != P_NEW);
+
+	for (int i = 0; i < nentries; i++)
+	{
+		uint32		probe = (idx + i) % nentries;
+
+		if (entries[probe].id == POOL_HASH_UNUSED)
+		{
+			/* End of chain. Key not found. Insert here or at tombstone. */
+			if (first_deleted >= 0)
+				probe = first_deleted;
+			entries[probe].key = *tag;
+			entries[probe].id = buf_id;
+			return -1;			/* successful insert */
+		}
+
+		if (entries[probe].id == POOL_HASH_DELETED)
+		{
+			if (first_deleted < 0)
+				first_deleted = probe;
+			continue;			/* keep scanning for existing key */
+		}
+
+		if (BufferTagsEqual(&entries[probe].key, tag))
+			return entries[probe].id;	/* key already exists */
+	}
+
+	/* Table full. Try inserting at first tombstone if any. */
+	if (first_deleted >= 0)
+	{
+		entries[first_deleted].key = *tag;
+		entries[first_deleted].id = buf_id;
+		return -1;
+	}
+
+	elog(ERROR, "pool buffer hash table is full");
+	pg_unreachable();
+}
+
+/*
+ * PoolBufHashDelete
+ *		Delete the entry for the given tag from the hash table.
+ *		The entry must exist.
+ *
+ * Uses tombstone deletion (marks entry as POOL_HASH_DELETED).
+ *
+ * Caller must hold exclusive lock on the pool's mapping lock.
+ */
+void
+PoolBufHashDelete(PoolBufHashEntry *entries, int nentries,
+				  BufferTag *tag, uint32 hashcode)
+{
+	uint32		idx = hashcode % nentries;
+
+	for (int i = 0; i < nentries; i++)
+	{
+		uint32		probe = (idx + i) % nentries;
+
+		if (entries[probe].id == POOL_HASH_UNUSED)
+			elog(ERROR, "pool buffer hash table corrupted: entry not found");
+
+		if (entries[probe].id == POOL_HASH_DELETED)
+			continue;
+
+		if (BufferTagsEqual(&entries[probe].key, tag))
+		{
+			entries[probe].id = POOL_HASH_DELETED;
+			return;
+		}
+	}
+
+	elog(ERROR, "pool buffer hash table corrupted: entry not found");
 }

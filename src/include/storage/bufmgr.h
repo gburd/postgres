@@ -25,6 +25,9 @@
 
 typedef void *Block;
 
+/* Forward declaration for FlushBufferPoolDirtyBuffers */
+struct BufferPoolDesc;
+
 /*
  * Possible arguments for GetAccessStrategy().
  *
@@ -160,6 +163,21 @@ typedef struct WritebackContext WritebackContext;
 
 /* in globals.c ... this duplicates miscadmin.h */
 extern PGDLLIMPORT int NBuffers;
+
+/*
+ * MaxBufferNumber -- upper bound on valid Buffer numbers across all pools.
+ *
+ * For the default pool, this equals NBuffers.  When dynamic pools are
+ * created, it grows to cover bp_first_buf + bp_nbuffers for the highest
+ * pool.  Used by BufferIsValid() assertions.
+ *
+ * Stored in shared memory so that all backends see updates when dynamic
+ * pools are created or destroyed.  Defined in bufpool.c.
+ */
+#ifndef MaxBufferNumber
+extern int *SharedMaxBufferNumber;
+#define MaxBufferNumber (*SharedMaxBufferNumber)
+#endif
 
 /* in bufmgr.c */
 extern PGDLLIMPORT bool zero_damaged_pages;
@@ -299,6 +317,7 @@ extern void CreateAndCopyRelationData(RelFileLocator src_rlocator,
 									  RelFileLocator dst_rlocator,
 									  bool permanent);
 extern void FlushDatabaseBuffers(Oid dbid);
+extern void FlushBufferPoolDirtyBuffers(struct BufferPoolDesc *pool);
 extern void DropRelationBuffers(SMgrRelation smgr_reln,
 								ForkNumber *forkNum,
 								int nforks, BlockNumber *firstDelBlock);
@@ -418,7 +437,7 @@ extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 static inline bool
 BufferIsValid(Buffer bufnum)
 {
-	Assert(bufnum <= NBuffers);
+	Assert(bufnum <= MaxBufferNumber);
 	Assert(bufnum >= -NLocBuffer);
 
 	return bufnum != InvalidBuffer;
@@ -431,6 +450,9 @@ BufferIsValid(Buffer bufnum)
  * Note:
  *		Assumes buffer is valid.
  */
+/* in bufpool.c -- slow path for dynamic pool blocks */
+extern Block GetDynamicPoolBlock(Buffer buffer);
+
 static inline Block
 BufferGetBlock(Buffer buffer)
 {
@@ -438,8 +460,10 @@ BufferGetBlock(Buffer buffer)
 
 	if (BufferIsLocal(buffer))
 		return LocalBufferBlockPointers[-buffer - 1];
-	else
+	else if (likely(buffer - 1 < NBuffers))
 		return (Block) (BufferBlocks + ((Size) (buffer - 1)) * BLCKSZ);
+	else
+		return GetDynamicPoolBlock(buffer);
 }
 
 /*

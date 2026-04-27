@@ -42,6 +42,7 @@
 #include "catalog/pg_ts_parser.h"
 #include "catalog/pg_ts_template.h"
 #include "commands/alter.h"
+#include "commands/bufferpoolcmds.h"
 #include "commands/collationcmds.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
@@ -410,6 +411,9 @@ ExecRenameStmt(RenameStmt *stmt)
 		case OBJECT_DOMAIN:
 		case OBJECT_TYPE:
 			return RenameType(stmt);
+
+		case OBJECT_BUFFER_POOL:
+			return RenameBufferPool(stmt->subname, stmt->newname);
 
 		case OBJECT_AGGREGATE:
 		case OBJECT_COLLATION:

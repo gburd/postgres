@@ -1258,6 +1258,17 @@ CREATE VIEW pg_stat_checkpointer AS
         pg_stat_get_checkpointer_slru_written() AS slru_written,
         pg_stat_get_checkpointer_stat_reset_time() AS stats_reset;
 
+CREATE VIEW pg_stat_bufferpool AS
+    SELECT
+        s.name,
+        s.oid,
+        s.nbuffers,
+        s.reads,
+        s.hits,
+        s.evictions
+    FROM pg_stat_get_bufferpool() s;
+
+
 CREATE VIEW pg_stat_io AS
 SELECT
        b.backend_type,

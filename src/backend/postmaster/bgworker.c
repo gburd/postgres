@@ -31,6 +31,7 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
+#include "storage/bufpool_internals.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
@@ -166,6 +167,10 @@ static const struct
 	{
 		.fn_name = "DataChecksumsWorkerMain",
 		.fn_addr = DataChecksumsWorkerMain
+	},
+	{
+		.fn_name = "TrickleWriterMain",
+		.fn_addr = TrickleWriterMain
 	}
 };
 
@@ -1462,4 +1467,40 @@ TerminateBackgroundWorkersForDatabase(Oid databaseId)
 	/* Make sure the postmaster notices the change to shared memory. */
 	if (signal_postmaster)
 		SendPostmasterSignal(PMSIGNAL_BACKGROUND_WORKER_CHANGE);
+}
+
+/*
+ * GetBackgroundWorkerHandleSlot -- extract the slot from a BGW handle.
+ */
+int
+GetBackgroundWorkerHandleSlot(BackgroundWorkerHandle *handle)
+{
+	return handle->slot;
+}
+
+/*
+ * GetBackgroundWorkerHandleGeneration -- extract the generation from a handle.
+ */
+uint64
+GetBackgroundWorkerHandleGeneration(BackgroundWorkerHandle *handle)
+{
+	return handle->generation;
+}
+
+/*
+ * CreateBackgroundWorkerHandle -- construct a BGW handle from slot+generation.
+ *
+ * This is useful for reconstructing a handle from values stored in shared
+ * memory, allowing cross-backend termination of dynamic background workers.
+ * The caller is responsible for pfree'ing the result.
+ */
+BackgroundWorkerHandle *
+CreateBackgroundWorkerHandle(int slot, uint64 generation)
+{
+	BackgroundWorkerHandle *handle;
+
+	handle = (BackgroundWorkerHandle *) palloc(sizeof(BackgroundWorkerHandle));
+	handle->slot = slot;
+	handle->generation = generation;
+	return handle;
 }

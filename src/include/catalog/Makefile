@@ -86,7 +86,8 @@ CATALOG_HEADERS := \
 	pg_propgraph_element_label.h \
 	pg_propgraph_label.h \
 	pg_propgraph_label_property.h \
-	pg_propgraph_property.h
+	pg_propgraph_property.h \
+	pg_bufferpool.h
 
 GENERATED_HEADERS := $(CATALOG_HEADERS:%.h=%_d.h)
 
@@ -118,7 +119,8 @@ POSTGRES_BKI_DATA = \
 	pg_ts_dict.dat \
 	pg_ts_parser.dat \
 	pg_ts_template.dat \
-	pg_type.dat
+	pg_type.dat \
+	pg_bufferpool.dat
 
 GENBKI_OUTPUT_FILES = \
 	$(GENERATED_HEADERS) \
