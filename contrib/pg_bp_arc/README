@@ -1,0 +1,230 @@
+contrib/pg_bp_arc/README
+
+pg_bp_arc -- Adaptive Replacement Cache (ARC)
+==============================================
+
+pg_bp_arc provides the ARC buffer replacement algorithm as a PostgreSQL
+extension.  ARC automatically balances between recency-friendly and
+frequency-friendly caching by observing which evicted pages get
+re-requested, and adjusting its internal allocation accordingly.
+
+No tuning knobs are required.  The algorithm adapts to workload changes
+on its own.
+
+
+Installation
+============
+
+pg_bp_arc is a contrib extension.  After building PostgreSQL with this
+contrib module, load the extension and create a buffer pool:
+
+    CREATE EXTENSION pg_bp_arc;
+
+    CREATE BUFFER POOL my_arc_pool
+        HANDLER arc_pool_handler
+        SIZE '256MB';
+
+Assign tables or indexes to the pool:
+
+    CREATE TABLE hot_data (id int, val text)
+        WITH (buffer_pool = 'my_arc_pool');
+
+    ALTER TABLE existing_table SET (buffer_pool = 'my_arc_pool');
+
+To use ARC as the default buffer pool algorithm for all pools, add
+pg_bp_arc to shared_preload_libraries in postgresql.conf:
+
+    shared_preload_libraries = 'pg_bp_arc'
+
+This registers ARC as the BP_ALGO_ARC algorithm, available for the
+DEFAULT pool and any pool created with HANDLER arc_pool_handler.
+
+
+When to Use ARC
+===============
+
+ARC is a good fit for:
+
+  - Workloads with shifting hot/cold data (the algorithm adapts
+    automatically as the working set changes)
+  - Mixed recency/frequency access patterns (OLTP with periodic
+    analytical or reporting scans)
+  - Tables that benefit from scan-resistant caching (large sequential
+    scans do not flush the entire cache)
+  - VACUUM-heavy workloads (VACUUM pages are given low priority to
+    avoid polluting the cache)
+
+ARC may not be the best choice for:
+
+  - Very high concurrency on many-core systems, where the single
+    spinlock becomes a bottleneck (consider pg_bp_car instead)
+  - Workloads that benefit from prefetch-aware caching (ARC does not
+    implement the prefetch_hint callback; CAR does)
+
+
+How It Works (Brief)
+====================
+
+ARC maintains four logical lists:
+
+    T1   Recently accessed pages (accessed once since entering cache)
+    T2   Frequently accessed pages (accessed two or more times)
+    B1   Ghost entries for pages recently evicted from T1
+    B2   Ghost entries for pages recently evicted from T2
+
+On a cache hit in T1, the page is promoted to T2.  On a hit in T2,
+the page moves to the most-recently-used end of T2.
+
+On a cache miss, ARC checks the ghost lists:
+
+  - B1 hit:  T1 was too small.  Increase the T1 target size.
+  - B2 hit:  T2 was too small.  Decrease the T1 target size.
+  - Neither: Complete miss.  Allocate a new entry on T1.
+
+The eviction decision follows the adaptive target: if T1 has reached
+or exceeded the target size, evict from T1; otherwise evict from T2.
+
+
+VACUUM Integration
+==================
+
+When VACUUM is active, newly loaded pages are inserted at the
+least-recently-used (LRU) end of T1 rather than the MRU end.  This
+ensures VACUUM-loaded pages are the first candidates for eviction,
+preventing cache pollution from maintenance operations.
+
+
+Statistics
+==========
+
+Install the extension to get the pg_stat_arc view:
+
+    SELECT * FROM pg_stat_arc;
+
+The view returns one row per ARC-managed pool with these columns:
+
+    Column           Type    Description
+    ------           ----    -----------
+    name             name    Pool name
+    oid              oid     Pool OID (NULL if not cataloged)
+    t1_size          int4    Current number of pages on T1
+    t2_size          int4    Current number of pages on T2
+    b1_size          int4    Current number of ghost entries on B1
+    b2_size          int4    Current number of ghost entries on B2
+    target_t1_size   int4    Current adaptive T1 target
+    lookups          int8    Total buffer lookups (hits + misses)
+    t1_hits          int8    Hits on T1 (promoted to T2)
+    t2_hits          int8    Hits on T2 (moved to T2 MRU)
+    b1_hits          int8    Ghost hits on B1 (T1 target increased)
+    b2_hits          int8    Ghost hits on B2 (T1 target decreased)
+    misses           int8    Complete cache misses
+    t1_evictions     int8    Pages evicted from T1
+    t2_evictions     int8    Pages evicted from T2
+
+Example: check the hit ratio and adaptation balance:
+
+    SELECT name,
+           t1_size, t2_size, target_t1_size,
+           CASE WHEN lookups > 0
+                THEN round(100.0 * (t1_hits + t2_hits) / lookups, 2)
+                ELSE 0
+           END AS hit_pct,
+           b1_hits, b2_hits
+    FROM pg_stat_arc;
+
+
+Size Advisory Function
+======================
+
+pg_bp_arc_size_recommendation returns sizing guidance for a pool:
+
+    SELECT *
+    FROM pg_bp_arc_size_recommendation('my_arc_pool')
+        AS (current_size int,
+            recommended_size int,
+            ghost_pressure float8,
+            hit_ratio float8);
+
+    Column             Type     Description
+    ------             ----     -----------
+    current_size       int      Current pool size in buffers
+    recommended_size   int      Suggested pool size in buffers
+    ghost_pressure     float8   (b1_hits + b2_hits) / misses
+    hit_ratio          float8   (t1_hits + t2_hits) / lookups
+
+Interpretation:
+
+  - ghost_pressure > 0.1 indicates the pool is too small.  Pages are
+    being evicted and then accessed again shortly after.  The
+    recommended_size will be larger than current_size.
+
+  - ghost_pressure near 0 means evicted pages are not being
+    re-requested, so the pool size is adequate.
+
+  - hit_ratio close to 1.0 means most accesses are served from cache.
+
+The recommended_size is a heuristic: current_size scaled up by
+ghost_pressure, capped at 2x current_size.
+
+
+Limitations
+===========
+
+Single spinlock
+    Every hit and miss acquires arc_lock.  This limits scalability on
+    high-core-count systems with very high buffer access rates.  For
+    workloads where this is a bottleneck, consider pg_bp_car, which
+    uses atomic reference bits instead of a spinlock for hit tracking.
+
+No prefetch integration
+    ARC does not implement the prefetch_hint callback.  Use CAR if
+    prefetch-aware caching is needed.
+
+2x CDB memory overhead
+    ARC allocates two Cache Directory Block entries per physical buffer
+    (one for the buffer itself, one for a potential ghost entry).  This
+    adds roughly 100-120 bytes per buffer of overhead.
+
+Patent notice
+    The ARC algorithm is covered by IBM patent US 6,996,676.  The CAR
+    algorithm (pg_bp_car) was specifically designed as a patent-free
+    alternative.
+
+
+Reference
+=========
+
+N. Megiddo and D. Modha, "ARC: A Self-Tuning, Low Overhead Replacement
+Cache", Proceedings of USENIX FAST 2003.
+
+https://www.usenix.org/conference/fast-03/arc-self-tuning-low-overhead-replacement-cache
+
+
+Patent disposition
+==================
+
+ARC was historically encumbered by patents assigned to IBM
+(US 6,996,676; US 7,096,321; US 7,058,766; US 8,612,689) and Sun
+Microsystems (US 7,469,320).  As of 2024 the IBM family has reached
+its 20-year statutory term and expired; the Sun patent reaches term
+shortly thereafter.  Sun's ZFS shipped an ARC implementation under
+the CDDL for years, which is the existing public-domain reference
+point most people cite.
+
+The implementation in pg_bp_arc.c follows the pseudocode published
+in the original FAST 2003 paper and was cross-checked against the
+Caffeine project's reference implementation (ArcPolicy.java) under
+its Apache 2.0 grant; the Apache license header is reproduced in the
+source file.
+
+This extension is included here on the understanding that the ARC
+patents have expired; downstreams should still confirm with their
+own counsel before relying on that conclusion in their jurisdiction.
+
+References
+==========
+
+  - https://github.com/ben-manes/caffeine/wiki/Efficiency
+  - https://github.com/ben-manes/caffeine/blob/master/simulator/
+      src/main/java/com/github/benmanes/caffeine/cache/simulator/
+      policy/adaptive/ArcPolicy.java
