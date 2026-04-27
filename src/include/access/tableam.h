@@ -789,6 +789,20 @@ typedef struct TableAmRoutine
 											   int32 slicelength,
 											   varlena *result);
 
+	/*
+	 * Return the default buffer pool name for TOAST/overflow data for
+	 * relations using this AM, or NULL to use the DEFAULT pool.
+	 *
+	 * This is called during TOAST table creation when the parent table
+	 * does not specify an explicit overflow_buffer_pool reloption.  The AM
+	 * can provide an algorithm-specific default (e.g. a write-optimized
+	 * strategy for heap TOAST data).
+	 *
+	 * This is an optional callback.  If not provided, the DEFAULT pool is
+	 * used for TOAST tables.
+	 */
+	const char *(*relation_overflow_pool) (Relation rel);
+
 
 	/* ------------------------------------------------------------------------
 	 * Planner related functions.
@@ -1957,6 +1971,21 @@ static inline Oid
 table_relation_toast_am(Relation rel)
 {
 	return rel->rd_tableam->relation_toast_am(rel);
+}
+
+/*
+ * table_relation_overflow_pool - return the default overflow buffer pool name
+ *
+ * Returns the AM's default buffer pool name for TOAST/overflow data, or
+ * NULL if the DEFAULT pool should be used.  This is an optional callback;
+ * if not provided, NULL is returned.
+ */
+static inline const char *
+table_relation_overflow_pool(Relation rel)
+{
+	if (rel->rd_tableam->relation_overflow_pool)
+		return rel->rd_tableam->relation_overflow_pool(rel);
+	return NULL;
 }
 
 /*
