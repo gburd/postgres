@@ -1,0 +1,5 @@
+# pg_bp_osic extension
+comment = 'OSIC buffer pool replacement strategy (LeanStore-inspired)'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_osic'
+relocatable = true
