@@ -213,8 +213,8 @@ run_benchmark 50 60 4 "scale50_60s"
 # Run 5: Scale 100, 60-second runs
 run_benchmark 100 60 4 "scale100_60s"
 
-# Run 6: Try higher client counts (may crash for recno)
-run_benchmark 10 60 16 "scale10_highclients"
+# Run 6: Higher client counts (lock convoy fix enables 32 clients)
+run_benchmark 10 60 32 "scale10_highclients"
 
 # Run 7: Long run at scale 10 with 2 clients (stress test)
 run_benchmark 10 300 2 "scale10_stress_2c"
