@@ -24,3 +24,28 @@ step s2_update_b: UPDATE iso_siu_test SET b = 21 WHERE id = 1; <waiting ...>
 step s1_commit: COMMIT;
 step s2_update_b: <... completed>
 step s2_commit: COMMIT;
+
+starting permutation: s1_update_a s1_commit s2_update_b s2_select_a s2_select_b_new s2_commit
+step s1_update_a: UPDATE iso_siu_test SET a = 11 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_update_b: UPDATE iso_siu_test SET b = 21 WHERE id = 1;
+step s2_select_a: SET enable_seqscan = off; SELECT * FROM iso_siu_test WHERE a = 11;
+id| a| b|c      
+--+--+--+-------
+ 1|11|21|initial
+(1 row)
+
+step s2_select_b_new: SET enable_seqscan = off; SELECT * FROM iso_siu_test WHERE b = 21;
+id| a| b|c      
+--+--+--+-------
+ 1|11|21|initial
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s2_update_b s1_update_a s2_commit s1_commit
+step s2_update_b: UPDATE iso_siu_test SET b = 21 WHERE id = 1;
+step s1_update_a: UPDATE iso_siu_test SET a = 11 WHERE id = 1; <waiting ...>
+step s2_commit: COMMIT;
+step s1_update_a: <... completed>
+step s1_commit: COMMIT;

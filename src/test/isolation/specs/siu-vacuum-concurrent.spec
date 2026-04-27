@@ -24,9 +24,8 @@ session s2
 step s2_vacuum   { VACUUM iso_siu_vacuum; }
 
 # Create SIU chain, commit, vacuum, then verify index scans.
-# Note: after VACUUM prunes the chain, the stale-entry detection's
-# accumulated bitmap marks the first index's entries as potentially stale.
-# The b-index check works because its entry was freshly inserted for the
-# last chain member.  The a-index check currently returns 0 rows because
-# the accumulated bitmap includes column a, triggering stale-entry skip.
+# VACUUM preserves dead SIU intermediate tuples (those with
+# HEAP_INDEXED_UPDATED) because fresh index entries point directly
+# at them.  Pruning them would cause those entries to dangle.
+# Both index checks return the correct row.
 permutation s1_update1 s1_update2 s1_commit s2_vacuum s1_check_a s1_check_b

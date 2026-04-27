@@ -284,6 +284,37 @@ fix_infomask_from_infobits(uint8 infobits, uint16 *infomask, uint16 *infomask2)
 }
 
 /*
+ * heap_xlog_follow_redirect - Follow redirect if line pointer was redirected.
+ *
+ * During WAL replay, the original offset from the WAL record may now be a
+ * redirect (created by pruning of an SIU chain between the original operation
+ * and replay).  Follow it to find the actual tuple.
+ *
+ * *p_offnum is updated in place to the redirected offset when a redirect is
+ * followed.  The caller must pass a mutable OffsetNumber.
+ *
+ * Returns the ItemId for the (possibly redirected) offset.
+ */
+static ItemId
+heap_xlog_follow_redirect(Page page, OffsetNumber *p_offnum)
+{
+	OffsetNumber offnum = *p_offnum;
+	ItemId		lp = PageGetItemId(page, offnum);
+
+	if (ItemIdIsRedirected(lp))
+	{
+		OffsetNumber redirected = ItemIdGetRedirect(lp);
+
+		elog(DEBUG2, "heap_xlog: following redirect from offset %u to %u",
+			 offnum, redirected);
+		*p_offnum = redirected;
+		lp = PageGetItemId(page, redirected);
+	}
+
+	return lp;
+}
+
+/*
  * Replay XLOG_HEAP_DELETE records.
  */
 static void
@@ -322,27 +353,13 @@ heap_xlog_delete(XLogReaderState *record)
 	{
 		page = BufferGetPage(buffer);
 
-		if (xlrec->offnum < 1 || xlrec->offnum > PageGetMaxOffsetNumber(page))
-			elog(PANIC, "offnum out of range");
-		lp = PageGetItemId(page, xlrec->offnum);
-
-		/*
-		 * If the line pointer has been redirected, follow the redirect to
-		 * find the actual tuple.  This happens when a selective index update
-		 * (SIU) chain has been pruned: the original line pointer becomes a
-		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
-		 * UPDATE record still references the original offset, so we must
-		 * follow the redirect to locate the physical tuple.
-		 */
-		if (ItemIdIsRedirected(lp))
 		{
-			OffsetNumber redirected = ItemIdGetRedirect(lp);
+			OffsetNumber offnum = xlrec->offnum;
 
-			elog(DEBUG2, "heap_xlog_delete: following redirect from offset %u to %u",
-				 xlrec->offnum, redirected);
-			lp = PageGetItemId(page, redirected);
-			/* Update target_tid so t_ctid points to the actual tuple */
-			ItemPointerSetOffsetNumber(&target_tid, redirected);
+			if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
+				elog(PANIC, "offnum out of range");
+			lp = heap_xlog_follow_redirect(page, &offnum);
+			ItemPointerSetOffsetNumber(&target_tid, offnum);
 		}
 
 		if (!ItemIdIsNormal(lp))
@@ -794,23 +811,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update, bool indexed_update)
 		offnum = xlrec->old_offnum;
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(opage))
 			elog(PANIC, "offnum out of range");
-		lp = PageGetItemId(opage, offnum);
-
-		/*
-		 * If the line pointer has been redirected, follow the redirect to
-		 * find the actual tuple.  This happens when a selective index update
-		 * (SIU) chain has been pruned: the original line pointer becomes a
-		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
-		 * UPDATE record still references the original offset, so we must
-		 * follow the redirect to locate the physical tuple.
-		 */
-		if (ItemIdIsRedirected(lp))
-		{
-			elog(DEBUG2, "heap_xlog_update: following redirect from offset %u to %u",
-				 offnum, ItemIdGetRedirect(lp));
-			offnum = ItemIdGetRedirect(lp);
-			lp = PageGetItemId(opage, offnum);
-		}
+		lp = heap_xlog_follow_redirect(opage, &offnum);
 
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
@@ -1101,23 +1102,7 @@ heap_xlog_lock(XLogReaderState *record)
 		offnum = xlrec->offnum;
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
 			elog(PANIC, "offnum out of range");
-		lp = PageGetItemId(page, offnum);
-
-		/*
-		 * If the line pointer has been redirected, follow the redirect to
-		 * find the actual tuple.  This happens when a selective index update
-		 * (SIU) chain has been pruned: the original line pointer becomes a
-		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
-		 * UPDATE record still references the original offset, so we must
-		 * follow the redirect to locate the physical tuple.
-		 */
-		if (ItemIdIsRedirected(lp))
-		{
-			elog(DEBUG2, "heap_xlog_lock: following redirect from offset %u to %u",
-				 offnum, ItemIdGetRedirect(lp));
-			offnum = ItemIdGetRedirect(lp);
-			lp = PageGetItemId(page, offnum);
-		}
+		lp = heap_xlog_follow_redirect(page, &offnum);
 
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");
@@ -1194,23 +1179,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 		offnum = xlrec->offnum;
 		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
 			elog(PANIC, "offnum out of range");
-		lp = PageGetItemId(page, offnum);
-
-		/*
-		 * If the line pointer has been redirected, follow the redirect to
-		 * find the actual tuple.  This happens when a selective index update
-		 * (SIU) chain has been pruned: the original line pointer becomes a
-		 * redirect to the surviving tuple.  During WAL replay, the DELETE or
-		 * UPDATE record still references the original offset, so we must
-		 * follow the redirect to locate the physical tuple.
-		 */
-		if (ItemIdIsRedirected(lp))
-		{
-			elog(DEBUG2, "heap_xlog_lock_updated: following redirect from offset %u to %u",
-				 offnum, ItemIdGetRedirect(lp));
-			offnum = ItemIdGetRedirect(lp);
-			lp = PageGetItemId(page, offnum);
-		}
+		lp = heap_xlog_follow_redirect(page, &offnum);
 
 		if (!ItemIdIsNormal(lp))
 			elog(PANIC, "invalid lp");

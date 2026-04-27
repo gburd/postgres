@@ -138,6 +138,25 @@ SELECT * FROM verify_heapam('test_foreign_table',
 							startblock := NULL,
 							endblock := NULL);
 
+-- Check that SIU chains are not reported as corruption.
+-- An SIU chain has HEAP_INDEXED_UPDATED tuples with modified t_hoff;
+-- verify_heapam must recognize these as valid.
+CREATE TABLE test_siu (id int PRIMARY KEY, a int, b int) WITH (fillfactor = 50);
+CREATE INDEX test_siu_a ON test_siu (a);
+CREATE INDEX test_siu_b ON test_siu (b);
+INSERT INTO test_siu VALUES (1, 10, 20);
+UPDATE test_siu SET a = 11 WHERE id = 1;
+UPDATE test_siu SET b = 21 WHERE id = 1;
+
+-- SIU chain before vacuum should be clean
+SELECT * FROM verify_heapam(relation := 'test_siu');
+
+-- SIU chain after vacuum (with preserved intermediates) should be clean
+VACUUM test_siu;
+SELECT * FROM verify_heapam(relation := 'test_siu');
+
+DROP TABLE test_siu;
+
 -- cleanup
 DROP TABLE heaptest;
 DROP TABLESPACE regress_test_stats_tblspc;

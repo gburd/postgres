@@ -296,7 +296,7 @@ index_beginscan(Relation heapRelation,
 	 * Skip for system relations since selective index updates are disabled
 	 * for them.
 	 */
-	if (!IsSystemRelation(heapRelation))
+	if (!IsCatalogRelation(heapRelation))
 		scan->xs_heapfetch->indexed_attrs = IndexGetAttrBitmap(indexRelation);
 	else
 		scan->xs_heapfetch->indexed_attrs = NULL;
@@ -605,7 +605,7 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	 * Skip for system relations since selective index updates are disabled
 	 * for them.
 	 */
-	if (!IsSystemRelation(heaprel))
+	if (!IsCatalogRelation(heaprel))
 		scan->xs_heapfetch->indexed_attrs = IndexGetAttrBitmap(indexrel);
 	else
 		scan->xs_heapfetch->indexed_attrs = NULL;

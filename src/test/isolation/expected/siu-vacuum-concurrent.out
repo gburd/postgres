@@ -6,9 +6,10 @@ step s1_update2: UPDATE iso_siu_vacuum SET b = 21 WHERE id = 1;
 step s1_commit: COMMIT;
 step s2_vacuum: VACUUM iso_siu_vacuum;
 step s1_check_a: SET enable_seqscan = off; SELECT * FROM iso_siu_vacuum WHERE a = 11;
-id|a|b|filler
---+-+-+------
-(0 rows)
+id| a| b|filler
+--+--+--+------
+ 1|11|21|start 
+(1 row)
 
 step s1_check_b: SET enable_seqscan = off; SELECT * FROM iso_siu_vacuum WHERE b = 21;
 id| a| b|filler

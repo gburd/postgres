@@ -1673,6 +1673,33 @@ process_chain:
 		 * to the first non-DEAD tuple, and mark as unused each intermediate
 		 * item that we are able to remove from the chain.
 		 */
+
+		/*
+		 * Preserve SIU intermediate tuples.  Dead tuples with
+		 * HEAP_INDEXED_UPDATED have fresh index entries pointing directly
+		 * at their LP.  Marking them LP_UNUSED would make those entries
+		 * dangle.  Reduce the dead prefix to stop before the first such
+		 * tuple, so it stays LP_NORMAL and the chain remains intact for
+		 * index scans.
+		 *
+		 * This only matters in the partial-dead-prefix branch (there are
+		 * live tuples after the dead ones).  When the entire chain is
+		 * dead (ndeadchain == nchain, handled above), the row is gone and
+		 * standard index cleanup removes the SIU entries.
+		 */
+		for (int i = 1; i < ndeadchain; i++)
+		{
+			ItemId		dead_lp = PageGetItemId(page, chainitems[i]);
+			HeapTupleHeader dead_htup;
+
+			dead_htup = (HeapTupleHeader) PageGetItem(page, dead_lp);
+			if (HeapTupleHeaderIsIndexedUpdatedRaw(dead_htup))
+			{
+				ndeadchain = i;
+				break;
+			}
+		}
+
 		heap_prune_record_redirect(prstate, rootoffnum, chainitems[ndeadchain],
 								   ItemIdIsNormal(rootlp));
 		for (int i = 1; i < ndeadchain; i++)
@@ -1995,11 +2022,29 @@ heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNumber offnum)
 									   offnum);
 			break;
 
+		case HEAPTUPLE_DEAD:
+
+			/*
+			 * Normally HEAPTUPLE_DEAD tuples are handled by pruning
+			 * (heap_prune_record_dead_or_unused / heap_prune_record_unused).
+			 * But dead SIU intermediate tuples with HEAP_INDEXED_UPDATED are
+			 * intentionally preserved as LP_NORMAL because fresh index
+			 * entries point directly at them.  Marking them LP_UNUSED would
+			 * cause those entries to dangle.
+			 *
+			 * Don't count them as live.  Prevent all-visible and all-frozen
+			 * so the visibility map stays correct for this page.
+			 */
+			Assert(HeapTupleHeaderIsIndexedUpdatedRaw(htup));
+			prstate->recently_dead_tuples++;
+			prstate->set_all_visible = false;
+			prstate->set_all_frozen = false;
+			break;
+
 		default:
 
 			/*
-			 * DEAD tuples should've been passed to heap_prune_record_dead()
-			 * or heap_prune_record_unused() instead.
+			 * Any other unexpected result is a bug.
 			 */
 			elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result %d",
 				 prstate->htsv[offnum]);

@@ -5,6 +5,10 @@
 -- where consecutive updates modify *different* indexed columns are correctly
 -- skipped during index scans, preventing wrong results.
 --
+-- All SELECT queries that verify SIU correctness are run with seqscan
+-- disabled to force index scans, since small test tables would otherwise
+-- use sequential scans and bypass the SIU chain-following logic entirely.
+--
 -- Test 1: Basic multi-column SIU chain
 -- Two consecutive updates modify different indexed columns.
 -- Stale entries for old values must NOT return the tuple.
@@ -20,6 +24,18 @@ INSERT INTO siu_test VALUES (1, 10, 20);
 UPDATE siu_test SET a = 11 WHERE id = 1;
 -- Second update: change column b (SIU: bitmap {b})
 UPDATE siu_test SET b = 21 WHERE id = 1;
+-- Force index scans for SIU verification
+SET enable_seqscan = off;
+-- Verify plan uses index scan
+EXPLAIN (COSTS OFF) SELECT * FROM siu_test WHERE a = 10;
+              QUERY PLAN              
+--------------------------------------
+ Bitmap Heap Scan on siu_test
+   Recheck Cond: (a = 10)
+   ->  Bitmap Index Scan on siu_idx_a
+         Index Cond: (a = 10)
+(4 rows)
+
 -- Stale entries for old values should return 0 rows
 SELECT * FROM siu_test WHERE a = 10;
  id | a | b 
@@ -61,6 +77,7 @@ SELECT * FROM siu_test WHERE a = 10 AND b = 20;
 (0 rows)
 
 RESET enable_bitmapscan;
+RESET enable_seqscan;
 -- Test 2: Three-step SIU chain with different columns
 CREATE TABLE siu_three (
     id int PRIMARY KEY,
@@ -75,6 +92,17 @@ INSERT INTO siu_three VALUES (1, 100, 200, 300);
 UPDATE siu_three SET x = 101 WHERE id = 1;
 UPDATE siu_three SET y = 201 WHERE id = 1;
 UPDATE siu_three SET z = 301 WHERE id = 1;
+SET enable_seqscan = off;
+-- Verify plan uses index scan
+EXPLAIN (COSTS OFF) SELECT * FROM siu_three WHERE x = 100;
+               QUERY PLAN               
+----------------------------------------
+ Bitmap Heap Scan on siu_three
+   Recheck Cond: (x = 100)
+   ->  Bitmap Index Scan on siu_three_x
+         Index Cond: (x = 100)
+(4 rows)
+
 -- All old values should return 0 rows
 SELECT * FROM siu_three WHERE x = 100;
  id | x | y | z 
@@ -110,6 +138,7 @@ SELECT * FROM siu_three WHERE z = 301;
   1 | 101 | 201 | 301
 (1 row)
 
+RESET enable_seqscan;
 -- Test 3: SIU chain where value is changed and changed back
 -- This exercises the changeback path: the accumulated bitmap says the
 -- column was modified, so the stale entry at the original TID is skipped.
@@ -124,6 +153,17 @@ INSERT INTO siu_changeback VALUES (1, 42);
 -- Change val to something else, then back to original
 UPDATE siu_changeback SET val = 99 WHERE id = 1;
 UPDATE siu_changeback SET val = 42 WHERE id = 1;
+SET enable_seqscan = off;
+-- Verify plan uses index scan
+EXPLAIN (COSTS OFF) SELECT * FROM siu_changeback WHERE val = 42;
+              QUERY PLAN               
+---------------------------------------
+ Bitmap Heap Scan on siu_changeback
+   Recheck Cond: (val = 42)
+   ->  Bitmap Index Scan on siu_cb_val
+         Index Cond: (val = 42)
+(4 rows)
+
 -- The stale entry for val=42 (at old TID) should still find the row,
 -- because after recheck, the visible tuple actually has val=42.
 SELECT * FROM siu_changeback WHERE val = 42;
@@ -138,6 +178,7 @@ SELECT * FROM siu_changeback WHERE val = 99;
 ----+-----
 (0 rows)
 
+RESET enable_seqscan;
 -- Test 4: Multiple rows with SIU chains
 CREATE TABLE siu_multi (
     id int PRIMARY KEY,
@@ -152,6 +193,19 @@ UPDATE siu_multi SET b = 21 WHERE id = 1;
 UPDATE siu_multi SET a = 31 WHERE id = 2;
 UPDATE siu_multi SET b = 41 WHERE id = 2;
 -- Row 3 is not updated
+SET enable_seqscan = off;
+-- Verify plan uses index scan
+EXPLAIN (COSTS OFF) SELECT * FROM siu_multi WHERE a = 10 ORDER BY id;
+                  QUERY PLAN                  
+----------------------------------------------
+ Sort
+   Sort Key: id
+   ->  Bitmap Heap Scan on siu_multi
+         Recheck Cond: (a = 10)
+         ->  Bitmap Index Scan on siu_multi_a
+               Index Cond: (a = 10)
+(6 rows)
+
 -- Old values should not match
 SELECT * FROM siu_multi WHERE a = 10 ORDER BY id;
  id | a | b 
@@ -211,6 +265,7 @@ SELECT * FROM siu_multi WHERE b = 60 ORDER BY id;
   3 | 50 | 60
 (1 row)
 
+RESET enable_seqscan;
 -- Test 5: SIU chain correctness persists after VACUUM
 -- VACUUM prunes dead tuples; the bitmap consolidation during pruning
 -- must preserve SIU information.
@@ -225,6 +280,16 @@ INSERT INTO siu_vacuum VALUES (1, 10, 20);
 UPDATE siu_vacuum SET a = 11 WHERE id = 1;
 UPDATE siu_vacuum SET b = 21 WHERE id = 1;
 -- Verify before vacuum
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM siu_vacuum WHERE a = 10;
+              QUERY PLAN              
+--------------------------------------
+ Bitmap Heap Scan on siu_vacuum
+   Recheck Cond: (a = 10)
+   ->  Bitmap Index Scan on siu_vac_a
+         Index Cond: (a = 10)
+(4 rows)
+
 SELECT * FROM siu_vacuum WHERE a = 10;
  id | a | b 
 ----+---+---
@@ -244,9 +309,11 @@ SELECT * FROM siu_vacuum WHERE a = 11 AND b = 21;
 (1 row)
 
 RESET enable_bitmapscan;
+RESET enable_seqscan;
 -- Prune dead tuples
 VACUUM siu_vacuum;
 -- Verify after vacuum
+SET enable_seqscan = off;
 SELECT * FROM siu_vacuum WHERE a = 10;
  id | a | b 
 ----+---+---
@@ -263,6 +330,7 @@ SELECT * FROM siu_vacuum WHERE a = 11 AND b = 21;
   1 | 11 | 21
 (1 row)
 
+RESET enable_seqscan;
 -- Test 6: Unique index with SIU chains
 -- Verify uniqueness constraints work correctly with multi-column SIU.
 CREATE TABLE siu_unique (

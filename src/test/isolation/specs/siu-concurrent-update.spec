@@ -22,6 +22,7 @@ setup           { BEGIN; }
 step s2_update_b { UPDATE iso_siu_test SET b = 21 WHERE id = 1; }
 step s2_select_a { SET enable_seqscan = off; SELECT * FROM iso_siu_test WHERE a = 11; }
 step s2_select_b { SET enable_seqscan = off; SELECT * FROM iso_siu_test WHERE b = 20; }
+step s2_select_b_new { SET enable_seqscan = off; SELECT * FROM iso_siu_test WHERE b = 21; }
 step s2_commit   { COMMIT; }
 
 # s1 updates column a, then s2 tries to update column b of same row
@@ -30,3 +31,11 @@ permutation s1_update_a s2_update_b s1_commit s2_select_a s2_select_b s2_commit
 
 # Both try to update, s2 blocks, verify index scans return correct results after
 permutation s1_update_a s2_update_b s1_commit s2_commit
+
+# s1 commits before s2 starts updating - no blocking
+# s2 sees s1's committed changes and its own update
+permutation s1_update_a s1_commit s2_update_b s2_select_a s2_select_b_new s2_commit
+
+# s2 updates column b first, then s1 tries to update column a
+# s1 blocks until s2 commits, then both updates visible
+permutation s2_update_b s1_update_a s2_commit s1_commit
