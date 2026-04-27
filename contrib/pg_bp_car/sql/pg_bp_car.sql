@@ -78,6 +78,10 @@ VACUUM bp_car_data;
 
 SELECT count(*) FROM bp_car_data;
 
+-- Clean up basic test before adaptation test (avoids multi-pool stat overlap)
+DROP TABLE bp_car_data;
+DROP BUFFER POOL car_test_pool;
+
 -- ===================================================
 -- CAR algorithm behavior: clock sweep and adaptation
 -- ===================================================
@@ -146,9 +150,5 @@ FROM pg_bp_car_size_recommendation('car_adapt_pool')
 -- Clean up adaptation test
 DROP TABLE bp_car_adapt;
 DROP BUFFER POOL car_adapt_pool;
-
--- Clean up
-DROP TABLE bp_car_data;
-DROP BUFFER POOL car_test_pool;
 
 DROP EXTENSION pg_bp_car;

@@ -598,6 +598,11 @@ pg_stat_get_lru_stats(PG_FUNCTION_ARGS)
 		values[2] = Int32GetDatum(ctl->list_size);
 		SpinLockRelease(&ctl->lru_lock);
 
+		/* Flush this backend's pending local stats before reading */
+		PoolStatFlush(&lru_local_stats[LRU_STAT_HITS], &ctl->stat_hits);
+		PoolStatFlush(&lru_local_stats[LRU_STAT_MISSES], &ctl->stat_misses);
+		PoolStatFlush(&lru_local_stats[LRU_STAT_EVICTIONS], &ctl->stat_evictions);
+
 		values[3] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_hits));
 		values[4] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_misses));
 		values[5] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_evictions));

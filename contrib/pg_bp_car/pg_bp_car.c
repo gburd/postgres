@@ -1367,6 +1367,16 @@ pg_stat_get_car_stats(PG_FUNCTION_ARGS)
 		values[8] = Int32GetDatum(ctl->t2_hand);
 		SpinLockRelease(&ctl->car_lock);
 
+		/* Flush this backend's pending local stats before reading */
+		PoolStatFlush(&car_local_stats[CAR_STAT_LOOKUPS], &ctl->stat_lookups);
+		PoolStatFlush(&car_local_stats[CAR_STAT_T1_HITS], &ctl->stat_t1_hits);
+		PoolStatFlush(&car_local_stats[CAR_STAT_T2_HITS], &ctl->stat_t2_hits);
+		PoolStatFlush(&car_local_stats[CAR_STAT_B1_HITS], &ctl->stat_b1_hits);
+		PoolStatFlush(&car_local_stats[CAR_STAT_B2_HITS], &ctl->stat_b2_hits);
+		PoolStatFlush(&car_local_stats[CAR_STAT_MISSES], &ctl->stat_misses);
+		PoolStatFlush(&car_local_stats[CAR_STAT_T1_EVICTIONS], &ctl->stat_t1_evictions);
+		PoolStatFlush(&car_local_stats[CAR_STAT_T2_EVICTIONS], &ctl->stat_t2_evictions);
+
 		values[9] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_lookups));
 		values[10] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_t1_hits));
 		values[11] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_t2_hits));

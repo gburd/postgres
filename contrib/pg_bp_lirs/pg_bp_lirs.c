@@ -1518,6 +1518,17 @@ pg_stat_get_lirs_stats(PG_FUNCTION_ARGS)
 		values[7] = Int32GetDatum(ctl->q_size);
 		SpinLockRelease(&ctl->lirs_lock);
 
+		/* Flush this backend's pending local stats before reading */
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_LOOKUPS], &ctl->stat_lookups);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_LIR_HITS], &ctl->stat_lir_hits);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_HIR_HITS], &ctl->stat_hir_hits);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_GHOST_HITS], &ctl->stat_ghost_hits);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_MISSES], &ctl->stat_misses);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_LIR_DEMOTIONS], &ctl->stat_lir_demotions);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_HIR_PROMOTIONS], &ctl->stat_hir_promotions);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_EVICTIONS], &ctl->stat_evictions);
+		PoolStatFlush(&lirs_local_stats[LIRS_STAT_STACK_PRUNES], &ctl->stat_stack_prunes);
+
 		values[8] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_lookups));
 		values[9] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_lir_hits));
 		values[10] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_hir_hits));

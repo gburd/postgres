@@ -1316,6 +1316,16 @@ pg_stat_get_arc_stats(PG_FUNCTION_ARGS)
 		values[6] = Int32GetDatum(ctl->target_T1_size);
 		SpinLockRelease(&ctl->arc_lock);
 
+		/* Flush this backend's pending local stats before reading */
+		PoolStatFlush(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_T1_HITS], &ctl->stat_t1_hits);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_T2_HITS], &ctl->stat_t2_hits);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_B1_HITS], &ctl->stat_b1_hits);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_B2_HITS], &ctl->stat_b2_hits);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_MISSES], &ctl->stat_misses);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_T1_EVICTIONS], &ctl->stat_t1_evictions);
+		PoolStatFlush(&arc_local_stats[ARC_STAT_T2_EVICTIONS], &ctl->stat_t2_evictions);
+
 		/* Statistics (atomics, no lock needed) */
 		values[7] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_lookups));
 		values[8] = Int64GetDatum(pg_atomic_read_u64(&ctl->stat_t1_hits));

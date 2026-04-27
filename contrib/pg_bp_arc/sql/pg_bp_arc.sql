@@ -78,6 +78,10 @@ VACUUM bp_arc_data;
 
 SELECT count(*) FROM bp_arc_data;
 
+-- Clean up basic test before adaptation test (avoids multi-pool stat overlap)
+DROP TABLE bp_arc_data;
+DROP BUFFER POOL arc_test_pool;
+
 -- ===================================================
 -- ARC algorithm behavior: adaptive T1/T2 partitioning
 -- ===================================================
@@ -141,9 +145,5 @@ FROM pg_bp_arc_size_recommendation('arc_adapt_pool')
 -- Clean up adaptation test
 DROP TABLE bp_arc_adapt;
 DROP BUFFER POOL arc_adapt_pool;
-
--- Clean up
-DROP TABLE bp_arc_data;
-DROP BUFFER POOL arc_test_pool;
 
 DROP EXTENSION pg_bp_arc;

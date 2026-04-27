@@ -135,6 +135,9 @@ SELECT count(*) FROM bp_arc_data;
    490
 (1 row)
 
+-- Clean up basic test before adaptation test (avoids multi-pool stat overlap)
+DROP TABLE bp_arc_data;
+DROP BUFFER POOL arc_test_pool;
 -- ===================================================
 -- ARC algorithm behavior: adaptive T1/T2 partitioning
 -- ===================================================
@@ -148,7 +151,7 @@ SELECT t1_size > 0 AS t1_has_pages
 FROM pg_stat_arc WHERE name = 'arc_adapt_pool';
  t1_has_pages 
 --------------
- f
+ t
 (1 row)
 
 -- Phase 2: Repeated full scans (should promote pages from T1 to T2)
@@ -249,7 +252,4 @@ FROM pg_bp_arc_size_recommendation('arc_adapt_pool')
 -- Clean up adaptation test
 DROP TABLE bp_arc_adapt;
 DROP BUFFER POOL arc_adapt_pool;
--- Clean up
-DROP TABLE bp_arc_data;
-DROP BUFFER POOL arc_test_pool;
 DROP EXTENSION pg_bp_arc;

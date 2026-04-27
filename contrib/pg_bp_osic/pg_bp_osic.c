@@ -756,6 +756,19 @@ pg_stat_get_osic_stats(PG_FUNCTION_ARGS)
 			uint64	total_hits = 0, total_misses = 0;
 			uint64	total_evictions = 0, total_cooling = 0;
 
+			/* Flush this backend's pending local stats before reading */
+			for (int p = 0; p < ctl->npartitions; p++)
+			{
+				PoolStatFlush(&osic_local_stats[p][OSIC_STAT_HITS],
+							  &parts_view[p].stat_hits);
+				PoolStatFlush(&osic_local_stats[p][OSIC_STAT_MISSES],
+							  &parts_view[p].stat_misses);
+				PoolStatFlush(&osic_local_stats[p][OSIC_STAT_EVICTIONS],
+							  &parts_view[p].stat_evictions);
+				PoolStatFlush(&osic_local_stats[p][OSIC_STAT_COOLING_SWEEPS],
+							  &parts_view[p].stat_cooling_sweeps);
+			}
+
 			for (int p = 0; p < ctl->npartitions; p++)
 			{
 				total_hits += pg_atomic_read_u64(&parts_view[p].stat_hits);

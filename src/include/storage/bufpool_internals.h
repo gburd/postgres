@@ -242,6 +242,22 @@ PoolStatIncrement(uint64 *local_counter, pg_atomic_uint64 *shared_counter)
 }
 
 /*
+ * PoolStatFlush -- flush a pending per-backend counter to the shared atomic.
+ *
+ * Call this in stat-view functions so that the querying backend's own
+ * pending increments become visible before the shared counter is read.
+ */
+static inline void
+PoolStatFlush(uint64 *local_counter, pg_atomic_uint64 *shared_counter)
+{
+	if (*local_counter > 0)
+	{
+		pg_atomic_fetch_add_u64(shared_counter, *local_counter);
+		*local_counter = 0;
+	}
+}
+
+/*
  * Shared-memory array of pool descriptors and current count.
  * BufferPoolDescs[0] is always the default pool.
  *

@@ -499,14 +499,14 @@ ERROR:  buffer pool "no_such_pool" does not exist
 CREATE BUFFER POOL batch_test HANDLER clock_batch_pool_handler SIZE '262144';
 -- Verify catalog entry
 SELECT bpname, bpsize FROM pg_bufferpool WHERE bpname = 'batch_test';
-   bpname   | bpsize
+   bpname   | bpsize 
 ------------+--------
  batch_test | 262144
 (1 row)
 
 -- Verify it shows up in the stats view
 SELECT name, nbuffers FROM pg_stat_bufferpool WHERE name = 'batch_test';
-    name    | nbuffers
+    name    | nbuffers 
 ------------+----------
  batch_test |       32
 (1 row)
@@ -516,7 +516,7 @@ CREATE TABLE batch_tbl (id int, val text) WITH (buffer_pool = 'batch_test');
 INSERT INTO batch_tbl SELECT g, 'data ' || g FROM generate_series(1, 100) g;
 -- Verify data is accessible through the batched pool
 SELECT count(*) FROM batch_tbl;
- count
+ count 
 -------
    100
 (1 row)
