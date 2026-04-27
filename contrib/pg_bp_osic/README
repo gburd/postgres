@@ -1,0 +1,124 @@
+contrib/pg_bp_osic/README
+
+pg_bp_osic -- One-Stage Insert Clock (OSIC)
+============================================
+
+pg_bp_osic provides the OSIC buffer replacement algorithm as a PostgreSQL
+extension.  OSIC is inspired by the LeanStore buffer manager and is
+designed for high-concurrency, many-core systems where the buffer hit
+path must be as cheap as possible.  OSIC can be used with dynamic buffer
+pools:
+
+    CREATE EXTENSION pg_bp_osic;
+    CREATE BUFFER POOL my_osic_pool HANDLER osic_pool_handler SIZE '33554432';
+    CREATE TABLE hot_data (...) WITH (buffer_pool = 'my_osic_pool');
+
+Algorithm
+=========
+
+OSIC uses a boolean "cool" flag per buffer rather than a usage counter
+or linked list.  The cache hit path is completely lock-free: it performs
+a single atomic AND to clear the cool flag.  No spinlock is acquired,
+no list is walked, and no counter is incremented on the critical path.
+
+Eviction is a two-stage clock sweep:
+
+    Stage 1: If the buffer is "hot" (cool flag clear), mark it "cool"
+             (set the flag) and advance the clock hand.
+    Stage 2: If the buffer is "cool" (flag set) and unpinned, evict it.
+
+A buffer must therefore survive at least one full sweep of the clock
+hand before it can be evicted, providing basic scan resistance.
+
+Partitioned Clock
+-----------------
+
+The buffer range is divided into up to 16 partitions, each with its own
+clock hand protected by its own spinlock.  The partition count scales
+with the pool size:
+
+    Pool size          Partitions
+    ---------          ----------
+    < 256 buffers      1
+    256 - 1023         2
+    1024 - 4095        4
+    4096 - 16383       8
+    >= 16384           16
+
+Backends choose a starting partition based on their process number, so
+different backends can sweep different partitions concurrently.  The
+partition spinlock is held only during the clock sweep; the hot-path
+on_hit callback never acquires a spinlock.
+
+When to Use OSIC
+=================
+
+OSIC is a good fit for:
+
+  - Many-core systems (32+ cores) where spinlock contention on the hit
+    path is the bottleneck
+  - Workloads with very high hit rates, where eviction is rare and the
+    cost of on_hit dominates
+  - Simple, predictable workloads (e.g., a working set that fits in
+    cache most of the time)
+
+Consider ARC or CAR instead if:
+
+  - The workload has frequent hot/cold transitions that benefit from
+    adaptive ghost-list tuning
+  - You need VACUUM-aware or prefetch-aware buffer management
+  - The working set regularly exceeds the cache size, making eviction
+    quality more important than hit-path speed
+
+Statistics
+==========
+
+Install the extension to get the pg_stat_osic view:
+
+    SELECT * FROM pg_stat_osic;
+
+Columns:
+
+    pool_name       -- name of the buffer pool
+    pool_oid        -- OID of the pool (NULL for built-in pools)
+    nbuffers        -- total buffers in this pool
+    hot_count       -- buffers currently in "hot" state (cool flag clear)
+    cool_count      -- buffers currently in "cool" state (cool flag set)
+    hits            -- total cache hits (aggregated across all partitions)
+    misses          -- total cache misses
+    evictions       -- total evictions
+    cooling_sweeps  -- total stage-1 cooling sweeps (hot -> cool transitions)
+
+Per-partition statistics are maintained with per-backend local counters
+that flush to shared atomic counters every 256 increments, reducing
+cross-core cache-line bouncing.
+
+Limitations
+===========
+
+No adaptation: OSIC has no ghost lists and no frequency tracking.  It
+cannot learn from workload changes the way ARC or CAR do.
+
+Binary granularity: The cool/hot flag is coarser than the usage_count
+(0-5) used by the built-in PostgreSQL clock sweep, or the explicit list
+ordering provided by ARC.  This may cause premature eviction of pages
+that would survive longer under finer-grained algorithms.
+
+No VACUUM integration: OSIC does not implement the hint_vacuum callback.
+VACUUM-loaded pages enter the cache as "hot" and must survive a full
+clock cycle before eviction, which may pollute the cache during large
+VACUUM operations.
+
+No prefetch integration: OSIC does not implement the prefetch_hint
+callback.
+
+Partition 0 miss attribution: Cache miss statistics are always attributed
+to partition 0 because there is no buffer context at the time of a miss.
+This is a minor reporting imprecision.
+
+Reference
+=========
+
+V. Leis et al., "LeanStore: In-Memory Data Management Beyond Main
+Memory", Proceedings of IEEE ICDE 2018.
+https://db.in.tum.de/~leis/papers/leanstore.pdf
