@@ -1,0 +1,284 @@
+contrib/pg_bp_lru/DESIGN
+
+pg_bp_lru -- Design Notes
+==========================
+
+This document describes the internal design of pg_bp_lru for engineers
+who need to understand, modify, or debug the implementation.
+
+
+A. Algorithm
+------------
+
+LRU maintains a single doubly-linked list of all cached pages, ordered
+from least recently used (head) to most recently used (tail).
+
+Operations:
+
+    On hit:       Remove from current position, insert at MRU (tail).
+    On miss:      No-op.  Only a stat counter is incremented.
+    On evict:     Remove from the list.
+    On new tag:   Insert at MRU (tail).
+    Get victim:   Scan from LRU (head) for the first unpinned buffer.
+
+There are no ghost lists.  There is no adaptation parameter.  There is
+no frequency tracking.  This is the simplest possible implementation of
+a cache replacement algorithm.
+
+The miss path does not touch the list at all -- it only increments
+an atomic counter.  This means misses are effectively lock-free.
+
+
+B. Implementation
+-----------------
+
+Data structures
+...............
+
+LruNode (one per buffer):
+
+    int   prev;      -- index of previous node (-1 = none)
+    int   next;      -- index of next node (-1 = none)
+    bool  on_list;   -- true if this node is on the LRU list
+
+LruControl (one per pool):
+
+    slock_t            lru_lock;        -- spinlock protecting the list
+    int                nbuffers;        -- number of physical buffers
+    int                first_buf_id;    -- global buffer ID of first buffer
+    int                list_head;       -- LRU end (-1 = empty)
+    int                list_tail;       -- MRU end (-1 = empty)
+    int                list_size;       -- number of buffers on the list
+    pg_atomic_uint64   stat_hits;       -- total cache hits
+    pg_atomic_uint64   stat_misses;     -- total cache misses
+    pg_atomic_uint64   stat_evictions;  -- total evictions
+
+Memory layout
+.............
+
+All state lives in a single DSM allocation:
+
+    [ LruControl (MAXALIGN'd) ][ LruNode[0] ... LruNode[nbuffers-1] ]
+
+The LRU_NODES(ctl) macro returns a pointer to the start of the node
+array by advancing past the MAXALIGN'd LruControl header.
+
+Memory overhead per buffer is approximately 12 bytes (two 4-byte ints
+for prev/next plus a 1-byte bool, padded to 4-byte alignment).  This
+is the lowest per-buffer overhead of any replacement algorithm in the
+buffer pool framework.
+
+Total shared memory: MAXALIGN(sizeof(LruControl)) + nbuffers * 12.
+
+List operations
+...............
+
+lru_list_remove(ctl, nodes, idx):
+    Unlinks node[idx] from the doubly-linked list.  Updates head/tail
+    pointers as needed.  Decrements list_size.  Caller must hold
+    lru_lock.
+
+lru_mru_insert(ctl, nodes, idx):
+    Inserts node[idx] at the MRU (tail) end.  Updates head pointer if
+    the list was empty.  Increments list_size.  Caller must hold
+    lru_lock.
+
+Both operations are O(1).
+
+Victim selection
+................
+
+LruGetVictim first checks whether any buffers are still unused (not
+yet on the list).  During warmup, this avoids unnecessary eviction.
+
+If all buffers are on the list, it acquires lru_lock and walks from
+the head (LRU end) looking for the first buffer with refcount == 0.
+Worst case is O(n) if many buffers are pinned, but typical case is
+O(1) since the LRU end is least likely to be in active use.
+
+If the buffer header is locked (BM_LOCKED), the spinlock is
+temporarily released while waiting for the header to become unlocked,
+then reacquired before continuing the scan.
+
+
+C. Concurrency
+--------------
+
+A single spinlock (lru_lock) protects all list mutations:
+
+    On hit:    acquire lru_lock, remove + insert, release.
+    On evict:  acquire lru_lock, remove, release.
+    On new tag: acquire lru_lock, insert, release.
+    Get victim: acquire lru_lock, walk list, release.
+
+The miss path does NOT acquire lru_lock.  It only increments the
+stat_misses atomic counter via PoolStatIncrement.
+
+This is the same scalability bottleneck as ARC and LIRS (single
+spinlock on every hit), but LRU operations under the lock are simpler:
+just a list remove and a list insert, with no ghost list manipulation,
+no target size adjustment, and no frequency counter updates.
+
+The stat counters (stat_hits, stat_misses, stat_evictions) use
+pg_atomic_uint64 and are updated via PoolStatIncrement, which batches
+increments in a thread-local counter and periodically flushes to the
+shared atomic.  This avoids contention on the atomic counters under
+high access rates.
+
+
+D. No VACUUM Integration
+-------------------------
+
+The hint_vacuum callback in the vtable is set to NULL.
+
+When VACUUM loads a page, it goes through the normal on_new_tag path
+and is inserted at the MRU end, just like any other page.  There is no
+special handling to minimize cache pollution from VACUUM scans.
+
+This is a deliberate design choice: LRU is intended as a simple
+baseline.  The consequence is that a VACUUM of a large table will push
+recently-used pages toward the LRU end and potentially evict them.
+This is one form of the sequential scan pollution problem.
+
+
+E. Performance Characteristics
+------------------------------
+
+Strengths:
+
+  - Simplest implementation of any replacement algorithm.
+  - Lowest memory overhead per buffer (~12 bytes).
+  - Predictable, well-understood behavior.
+  - O(1) hit and eviction operations (list manipulation).
+  - Lock-free miss path.
+
+Weaknesses:
+
+  - No scan resistance.  A single sequential scan of a table larger
+    than the buffer pool will flush every cached page, destroying the
+    working set.
+
+  - No adaptation.  LRU cannot distinguish between pages accessed once
+    and pages accessed thousands of times.  It treats all accesses
+    identically based solely on recency.
+
+  - Spinlock on every hit limits scalability on high-core-count
+    systems.
+
+  - No prefetch integration.
+
+  - Belady's anomaly applies: for certain access patterns, increasing
+    the cache size can paradoxically increase the miss rate.  This is a
+    classical property of LRU (and FIFO) that does not apply to stack
+    algorithms like OPT.
+
+Primary use case:
+
+  LRU serves as a benchmarking baseline.  By running a workload on
+  both LRU and an adaptive algorithm (ARC, LIRS, CAR), you can
+  measure exactly how much value the adaptive algorithm provides.
+  If LRU and ARC perform similarly, the workload has a simple recency
+  pattern and does not benefit from adaptation.  If ARC significantly
+  outperforms LRU, the workload has scan or frequency patterns that
+  adaptation can exploit.
+
+
+F. Trickle Writer
+-----------------
+
+The trickle writer uses an iterator to walk the LRU list from the
+head (LRU end) and yield dirty, unpinned buffers for background
+writing.
+
+LruTrickleIter:
+
+    int  current;     -- current position in the LRU list
+    int  remaining;   -- candidates left to return
+
+LruTrickleIterBegin allocates the iterator using:
+
+    MemoryContextAlloc(TopMemoryContext, sizeof(LruTrickleIter))
+
+This uses TopMemoryContext (not palloc) because trickle writers run
+in a long-lived backend context.  The standard palloc would allocate
+in CurrentMemoryContext, which may be a short-lived transaction or
+statement context that gets reset before the iterator is freed.
+
+LruTrickleIterNext walks from the current position, acquiring and
+releasing lru_lock to read each node's next pointer.  It returns the
+global buffer ID of each dirty+unpinned buffer it finds.
+
+LruTrickleIterEnd frees the iterator with pfree.
+
+
+G. Stat Counter Batching
+-------------------------
+
+Three stat counters are maintained:
+
+    stat_hits       (slot 0) -- incremented on every cache hit
+    stat_misses     (slot 1) -- incremented on every cache miss
+    stat_evictions  (slot 2) -- incremented on every eviction
+
+All three use PoolStatIncrement, which accumulates increments in a
+per-backend local counter (lru_local_stats[]) and periodically flushes
+to the shared pg_atomic_uint64.  This reduces contention on the shared
+atomic counters.
+
+The pg_stat_lru view reads the shared atomic counters directly via
+pg_atomic_read_u64.  The values may lag slightly behind real-time due
+to batching, but are eventually consistent.
+
+
+H. References
+-------------
+
+LRU is a classical algorithm with no single originating paper.  It has
+been standard in operating systems research since the 1960s.
+
+The key reference for understanding LRU limitations:
+
+    L.A. Belady, "A study of replacement algorithms for a virtual-
+    storage computer", IBM Systems Journal, Vol. 5, No. 2, 1966.
+
+This paper introduced Belady's anomaly and the optimal replacement
+algorithm (OPT/MIN), and established the framework for analyzing
+page replacement algorithms that is still used today.
+
+Standard textbooks covering LRU include:
+
+    A.S. Tanenbaum, "Modern Operating Systems" (any edition),
+    Chapter on Memory Management.
+
+    A. Silberschatz, P.B. Galvin, G. Gagne, "Operating System
+    Concepts" (any edition), Chapter on Virtual Memory.
+
+
+I. Known Limitations
+---------------------
+
+1. No scan resistance.  A single sequential scan of a table larger
+   than the cache will evict every cached page.  This is the most
+   significant practical limitation.
+
+2. No adaptation.  LRU cannot learn from workload patterns.  It
+   cannot distinguish between a page accessed once in a scan and a
+   page that is part of the hot working set.
+
+3. Spinlock on every hit.  The lru_lock spinlock is acquired on every
+   cache hit to move the page to the MRU end.  This limits
+   scalability under high concurrency.
+
+4. No prefetch integration.  The prefetch_hint callback is NULL.
+   LRU cannot use prefetch information to improve eviction decisions.
+
+5. No VACUUM awareness.  VACUUM pages pollute the cache by being
+   inserted at the MRU end like any other page.
+
+6. Belady's anomaly.  For certain access patterns, increasing the
+   cache size can increase the miss rate.  This is inherent to LRU
+   and cannot be fixed without changing the algorithm.
+
+7. This algorithm is provided purely as a baseline for comparison
+   with adaptive algorithms.  It is not recommended for production
+   workloads where scan resistance or adaptation is needed.

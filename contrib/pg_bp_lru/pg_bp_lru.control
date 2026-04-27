@@ -1,0 +1,5 @@
+# pg_bp_lru extension
+comment = 'LRU (Least Recently Used) buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_lru'
+relocatable = true
