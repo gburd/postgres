@@ -8,6 +8,7 @@ backend_sources += files(
   'heapam_xlog.c',
   'heaptoast.c',
   'hio.c',
+  'jam_pool.c',
   'pruneheap.c',
   'rewriteheap.c',
   'vacuumlazy.c',
