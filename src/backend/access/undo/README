@@ -452,8 +452,10 @@ setting controls memory available for all buffer types including UNDO.
         to an UNDO-enabled table needs an active log.
 
     "UNDO log %u would exceed segment size"
-        The 1GB segment limit was reached. Log rotation is planned
-        for a future commit.
+        The segment capacity threshold was reached.  The UNDO log will
+        seal the current segment and rotate to a fresh one via
+        UndoLogSealAndRotate().  If rotation fails due to backpressure,
+        the transaction may block until space is reclaimed.
 
     Growing UNDO directory
         Check that the UNDO worker is running (pg_stat_activity).
@@ -465,15 +467,15 @@ setting controls memory available for all buffer types including UNDO.
 ### Backend Implementation (src/backend/access/undo/)
 
     undo.c         Central coordination, shared memory aggregation
-    undolog.c      Core log file management, allocation, I/O
+    undolog.c      Core log file management, allocation, I/O, segment rotation
     undorecord.c   Record format, serialization, UndoRecordSet
     undoinsert.c   Batch insertion of accumulated records
     undoapply.c    Physical rollback: ApplyUndoChain(), memcpy-based restore, CLRs
     xactundo.c     Per-transaction undo management, per-persistence-level sets
-    undo_xlog.c    WAL redo routines, CLR replay via XLogReadBufferForRedo
+    undo_xlog.c    WAL redo routines, CLR replay, segment rotation WAL
     undo_bufmgr.c  shared_buffers integration, virtual RelFileLocator mapping
-    undoworker.c   Background discard worker process
-    undostats.c    Statistics collection and reporting
+    undoworker.c   Background discard worker, rotation checks
+    undostats.c    Statistics collection, segment state tracking
 
 ### Header Files (src/include/access/)
 
@@ -512,15 +514,20 @@ setting controls memory available for all buffer types including UNDO.
 
 ### Current Limitations
 
-    - UNDO log rotation not yet implemented (single 1GB segment per log)
     - No TOAST-aware UNDO (large tuples stored inline)
     - No delta compression for UPDATE records (full old tuple stored)
     - ProcArray integration for oldest XID is simplified
     - No UNDO-based MVCC (reads still use heap MVCC)
 
+### Implemented
+
+    - Log rotation and segment lifecycle management
+      (see UndoLogSealAndRotate() in undolog.c)
+    - Bulk UNDO hints for reduced per-row overhead in DML
+      (see HeapBeginBulkUndo() in heapam.c)
+
 ### Planned Future Work
 
-    - Log rotation and segment recycling
     - Delta compression for UPDATE records
     - TOAST-aware UNDO storage
     - Time-travel query support using UNDO data
@@ -563,10 +570,13 @@ Test suites passing:
 
 The current implementation has the following known limitations:
 
-### UNDO Log Rotation
-- Each UNDO log is limited to 1GB (UNDO_LOG_SEGMENT_SIZE)
-- Log rotation and segment recycling not yet implemented
-- Workaround: Adjust undo_retention_time to trigger discard earlier
+### UNDO Log Rotation (Implemented)
+- Segments follow a lifecycle: FREE -> ACTIVE -> SEALED -> DISCARDABLE
+- Rotation triggers: 85% capacity, 50% at checkpoint, 95% under pressure
+- UndoLogSealAndRotate() seals the current segment and activates a fresh one
+- Backpressure mechanism throttles writers when free segments are exhausted
+- pg_undo_force_discard() SQL function for manual segment reclamation
+- Background UNDO worker handles automated discard of SEALED segments
 
 ### TOAST Support
 - Large tuples (>TOAST_TUPLE_THRESHOLD) store UNDO inline
@@ -683,10 +693,45 @@ Monitor and adjust based on:
 - Disk space availability
 
 ### Future Enhancements Planned
-- UNDO log rotation and segment recycling
 - TOAST-aware UNDO storage
 - Delta compression for UPDATE records
 - Time-travel query support (SELECT AS OF TIMESTAMP)
 - UNDO-based MVCC for reduced bloat
 - Parallel UNDO application
 - Online UNDO log compaction
+
+### Segment Rotation and Lifecycle (Implemented)
+
+UNDO log segments follow a managed lifecycle:
+
+    FREE        Segment is empty and available for allocation.
+    ACTIVE      Segment is currently receiving UNDO records.
+    SEALED      Segment is full; no new writes. Awaiting discard.
+    DISCARDABLE All records in segment are beyond visibility horizon.
+
+Rotation thresholds:
+- 85% capacity: Normal rotation to the next free segment.
+- 50% at checkpoint: Rotation triggered during checkpoint to bound
+  recovery replay length.
+- 95% pressure: Emergency rotation with backpressure on writers.
+
+The background UNDO worker scans SEALED segments and transitions them to
+DISCARDABLE once all contained records are beyond the visibility horizon.
+Discarded segments are recycled to FREE state.
+
+Functions:
+- UndoLogSealAndRotate(): Seal current segment, activate next free one.
+- pg_undo_force_discard(): SQL-callable function for manual discard.
+- UndoWorkerCheckRotation(): Worker-side rotation check.
+
+### Bulk UNDO Hints (Implemented)
+
+The `begin_bulk_insert` table AM callback enables batched UNDO recording
+for large DML operations (INSERT, UPDATE, DELETE with >1000 estimated rows).
+Instead of per-row UndoLogAllocate + WAL insert + UndoLogWrite, records are
+accumulated in a persistent UndoRecordSet and flushed in batches:
+
+- Flush threshold: 256KB or 1000 records (whichever comes first)
+- Activated via: table_begin_bulk_insert() from ExecInitModifyTable
+- Deactivated via: table_finish_bulk_insert() from ExecEndModifyTable
+- Heap AM callbacks: heapam_begin_bulk_insert / heapam_finish_bulk_insert
