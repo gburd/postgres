@@ -1,0 +1,5 @@
+# pg_bp_car extension
+comment = 'CAR (Clock with Adaptive Replacement) buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_car'
+relocatable = true
