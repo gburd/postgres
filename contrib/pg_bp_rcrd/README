@@ -1,0 +1,83 @@
+pg_bp_rcrd -- RCRD (Recent Consecutive Reuse Distance) Buffer Pool Strategy
+============================================================================
+
+This extension provides the RCRD algorithm (based on LIRS2) as a
+buffer pool replacement strategy for PostgreSQL's multi-buffer-pool
+infrastructure.
+
+RCRD tracks the Consecutive Reuse Distance (CRD) of each cached page --
+the number of distinct pages accessed between consecutive accesses to
+the same page.  Pages with small CRD are classified as "hot" and kept
+in the cache; pages with large CRD are "cold" and eligible for eviction.
+
+When to Use RCRD
+----------------
+
+RCRD is well-suited for:
+  - Mixed OLTP/analytical workloads with varying access patterns
+  - Workloads with scan-heavy access that should not pollute the hot set
+  - Situations where ARC or CAR over-react to frequency changes
+  - Workloads where LIRS performs well but you want lower overhead
+
+RCRD vs LIRS
+-------------
+
+RCRD uses CRD (distance-based) classification instead of LIRS's
+stack-position-based IRR tracking.  This results in:
+  - Simpler internal bookkeeping (no stack pruning invariant)
+  - Adaptive hot threshold that grows on ghost hits
+  - Similar or better hit rates on scan-heavy workloads
+
+Usage
+-----
+
+  -- Load the extension (requires shared_preload_libraries for DEFAULT pool)
+  CREATE EXTENSION pg_bp_rcrd;
+
+  -- Create a dedicated RCRD buffer pool
+  CREATE BUFFER POOL my_rcrd_pool HANDLER rcrd_pool_handler SIZE '64MB';
+
+  -- Assign tables to the pool
+  CREATE TABLE hot_data (...) WITH (buffer_pool = 'my_rcrd_pool');
+
+  -- Monitor statistics
+  SELECT * FROM pg_stat_rcrd;
+
+  -- Get sizing advice
+  SELECT * FROM pg_bp_rcrd_size_recommendation('my_rcrd_pool')
+      AS (current_size int, recommended_size int,
+          ghost_pressure float8, hit_ratio float8);
+
+Statistics
+----------
+
+The pg_stat_rcrd view provides per-pool statistics:
+  - hot_size, cold_size, ghost_size: current page counts
+  - hot_capacity: adaptive threshold for hot classification
+  - r_size: recency list size
+  - q_size: cold list size
+  - lookups, hot_hits, cold_hits, ghost_hits, misses
+  - demotions, promotions, evictions, threshold_raises
+
+VACUUM Integration
+------------------
+
+When VACUUM is active, newly accessed pages are inserted at the Q head
+(eviction end) for fast eviction, preventing VACUUM scans from polluting
+the cache.
+
+Limitations
+-----------
+
+  - CRD computation traverses the recency list, which is O(n) in the
+    worst case.  In practice, hot pages have small CRD and the traversal
+    is short.
+  - The hot_capacity threshold only grows (on ghost hits); it does not
+    shrink.  This is intentional for stability but means the algorithm
+    may over-allocate hot slots after a workload change.
+
+References
+----------
+
+  C. Zhong, X. Zhao, and S. Jiang, "LIRS2: An Improved LIRS Replacement
+  Algorithm", Technical Report, 2013.
