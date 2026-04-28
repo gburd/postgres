@@ -408,49 +408,6 @@ WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test')
  
 (1 row)
 
--- ===================================================
--- JAM pool handler for TOAST-optimized buffer management
--- ===================================================
--- Create a JAM pool
-CREATE BUFFER POOL jam_test_pool HANDLER jam_pool_handler SIZE '524288';
--- Create a table using JAM pool for its TOAST data
-CREATE TABLE bp_jam_test (id int, big_data text) WITH (overflow_buffer_pool = 'jam_test_pool');
--- Insert large data to force TOAST usage
-INSERT INTO bp_jam_test VALUES (1, repeat('y', 10000));
--- Read back to verify
-SELECT id, length(big_data) FROM bp_jam_test WHERE id = 1;
- id | length 
-----+--------
-  1 |  10000
-(1 row)
-
--- Verify TOAST table uses the JAM pool
-SELECT unnest(reloptions) FROM pg_class
-WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_jam_test');
-          unnest           
----------------------------
- buffer_pool=jam_test_pool
-(1 row)
-
--- Insert more rows and re-read (exercises hit/miss tracking)
-INSERT INTO bp_jam_test SELECT g, repeat('z', 5000) FROM generate_series(2, 20) g;
-SELECT count(*) FROM bp_jam_test;
- count 
--------
-    20
-(1 row)
-
-SELECT id, length(big_data) FROM bp_jam_test WHERE id = 10;
- id | length 
-----+--------
- 10 |   5000
-(1 row)
-
--- VACUUM to exercise trickle/eviction paths
-VACUUM bp_jam_test;
--- Clean up
-DROP TABLE bp_jam_test;
-DROP BUFFER POOL jam_test_pool;
 -- Clean up overflow test tables
 DROP TABLE bp_toast_test;
 DROP BUFFER POOL toast_ovfl_pool;

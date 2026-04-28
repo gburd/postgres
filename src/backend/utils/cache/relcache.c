@@ -529,6 +529,7 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 	 * StdRdOptions would read garbage.  Views use ViewOptions.
 	 */
 	relation->rd_bufpool = InvalidOid;
+	relation->rd_overflow_bufpool = InvalidOid;
 	if (relation->rd_options)
 	{
 		switch (relation->rd_rel->relkind)
@@ -548,6 +549,17 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 						if (!OidIsValid(relation->rd_bufpool))
 							ereport(WARNING,
 									(errmsg("buffer pool \"%s\" does not exist, using default pool",
+											name)));
+					}
+
+					if (opts->overflow_buffer_pool_offset > 0)
+					{
+						char	   *name = (char *) opts + opts->overflow_buffer_pool_offset;
+
+						relation->rd_overflow_bufpool = get_bufferpool_oid(name, true);
+						if (!OidIsValid(relation->rd_overflow_bufpool))
+							ereport(WARNING,
+									(errmsg("overflow buffer pool \"%s\" does not exist, using default pool",
 											name)));
 					}
 				}

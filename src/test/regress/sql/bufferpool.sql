@@ -204,6 +204,99 @@ DROP BUFFER POOL remainder_test;
 
 -- Verify it is gone
 SELECT count(*) FROM pg_bufferpool WHERE bpname = 'remainder_test';
+
+-- ===================================================
+-- overflow_buffer_pool reloption
+-- ===================================================
+
+-- Create a pool for overflow/TOAST data
+CREATE BUFFER POOL toast_pool HANDLER clock_pool_handler SIZE '524288';
+
+-- Create a table with both buffer_pool and overflow_buffer_pool
+CREATE TABLE bp_overflow (id int, data text) WITH (buffer_pool = 'toast_pool', overflow_buffer_pool = 'toast_pool');
+
+-- Verify the reloptions are stored
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_overflow' ORDER BY 1;
+
+-- Insert data and verify it works
+INSERT INTO bp_overflow SELECT g, 'overflow-' || g FROM generate_series(1, 50) g;
+SELECT count(*) FROM bp_overflow;
+SELECT data FROM bp_overflow WHERE id = 25;
+
+-- Create a table with only overflow_buffer_pool
+CREATE TABLE bp_overflow2 (id int, data text) WITH (overflow_buffer_pool = 'toast_pool');
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_overflow2' ORDER BY 1;
+INSERT INTO bp_overflow2 VALUES (1, 'test');
+SELECT data FROM bp_overflow2 WHERE id = 1;
+
+-- Nonexistent overflow pool warns but doesn't fail
+CREATE TABLE bp_overflow_bad (id int) WITH (overflow_buffer_pool = 'no_such_pool');
+DROP TABLE bp_overflow_bad;
+
+-- Clean up
+DROP TABLE bp_overflow;
+DROP TABLE bp_overflow2;
+DROP BUFFER POOL toast_pool;
+
+-- ===================================================
+-- TOAST table inherits overflow_buffer_pool as buffer_pool
+-- ===================================================
+
+-- Create a pool for TOAST data
+CREATE BUFFER POOL toast_ovfl_pool HANDLER clock_pool_handler SIZE '524288';
+
+-- Create a table with overflow_buffer_pool and large text to trigger TOAST
+CREATE TABLE bp_toast_test (id int, big_data text) WITH (overflow_buffer_pool = 'toast_ovfl_pool');
+
+-- Insert large data to force TOAST table creation
+INSERT INTO bp_toast_test VALUES (1, repeat('x', 10000));
+
+-- Verify the parent's TOAST table exists
+SELECT reltoastrelid IS NOT NULL AND reltoastrelid != 0 AS has_toast
+FROM pg_class WHERE relname = 'bp_toast_test';
+
+-- Check that the TOAST table has buffer_pool = 'toast_ovfl_pool' in reloptions
+SELECT unnest(reloptions) FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+
+-- Verify the data round-trips correctly
+SELECT id, length(big_data) FROM bp_toast_test WHERE id = 1;
+
+-- ===================================================
+-- ALTER TABLE SET overflow_buffer_pool cascades to TOAST
+-- ===================================================
+
+-- Create a second pool for the cascade test
+CREATE BUFFER POOL toast_ovfl_pool2 HANDLER clock_pool_handler SIZE '524288';
+
+-- Change the overflow pool via ALTER TABLE
+ALTER TABLE bp_toast_test SET (overflow_buffer_pool = 'toast_ovfl_pool2');
+
+-- Verify parent reloptions updated
+SELECT unnest(reloptions) FROM pg_class WHERE relname = 'bp_toast_test' ORDER BY 1;
+
+-- Verify TOAST table's buffer_pool cascaded to the new pool
+SELECT unnest(reloptions) FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+
+-- Verify data still works after the change
+SELECT id, length(big_data) FROM bp_toast_test WHERE id = 1;
+
+-- Reset overflow_buffer_pool should also reset TOAST buffer_pool
+ALTER TABLE bp_toast_test RESET (overflow_buffer_pool);
+
+-- Parent should no longer have overflow_buffer_pool
+SELECT reloptions FROM pg_class WHERE relname = 'bp_toast_test';
+
+-- TOAST table should no longer have buffer_pool
+SELECT reloptions FROM pg_class
+WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'bp_toast_test');
+
+-- Clean up
+DROP TABLE bp_toast_test;
+DROP BUFFER POOL toast_ovfl_pool;
+DROP BUFFER POOL toast_ovfl_pool2;
+
 --
 -- Error cases
 --

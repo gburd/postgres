@@ -176,6 +176,7 @@ typedef struct RelationData
 
 	/* Buffer pool assignment (resolved from buffer_pool reloption) */
 	Oid			rd_bufpool;		/* OID of assigned buffer pool, or InvalidOid */
+	Oid			rd_overflow_bufpool;	/* OID of overflow/TOAST buffer pool */
 
 	/*
 	 * Oid of the handler for this relation. For an index this is a function
@@ -361,6 +362,8 @@ typedef struct StdRdOptions
 	double		vacuum_max_eager_freeze_failure_rate;
 
 	int			buffer_pool_offset; /* string offset for buffer_pool name */
+	int			overflow_buffer_pool_offset;	/* string offset for overflow
+												 * pool */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
