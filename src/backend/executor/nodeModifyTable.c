@@ -5830,12 +5830,15 @@ ExecEndModifyTable(ModifyTableState *node)
 	int			i;
 
 	/*
-	 * Allow any FDWs to shut down
+	 * Allow any FDWs to shut down, and finalize bulk insert mode.
 	 */
 	for (i = 0; i < node->mt_nrels; i++)
 	{
 		int			j;
 		ResultRelInfo *resultRelInfo = node->resultRelInfo + i;
+
+		/* End bulk insert mode (flushes pending UNDO records) */
+		table_finish_bulk_insert(resultRelInfo->ri_RelationDesc, 0);
 
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
 			resultRelInfo->ri_FdwRoutine != NULL &&

@@ -600,6 +600,19 @@ typedef struct TableAmRoutine
 							   TM_FailureData *tmfd);
 
 	/*
+	 * Notify the AM that a bulk DML operation is about to begin.
+	 *
+	 * The AM can use this hint to pre-allocate resources, enable batched
+	 * UNDO recording, or otherwise optimize for the expected workload.
+	 * 'nrows' is the planner's estimate of the number of rows to be
+	 * modified (0 means unknown).
+	 *
+	 * Optional callback.
+	 */
+	void		(*begin_bulk_insert) (Relation rel, uint32 options,
+									  int64 nrows);
+
+	/*
 	 * Perform operations necessary to complete insertions made via
 	 * tuple_insert and multi_insert with a BulkInsertState specified. In-tree
 	 * access methods ceased to use this.
@@ -1651,6 +1664,21 @@ table_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot,
 	return rel->rd_tableam->tuple_lock(rel, tid, snapshot, slot,
 									   cid, mode, wait_policy,
 									   flags, tmfd);
+}
+
+/*
+ * Notify the AM that a bulk DML operation is about to begin.
+ *
+ * 'nrows' is the planner's row count estimate (0 = unknown).
+ * The AM may use this to pre-allocate UNDO buffers, enable batched
+ * recording, or other bulk-mode optimizations.
+ */
+static inline void
+table_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
+{
+	/* optional callback */
+	if (rel->rd_tableam && rel->rd_tableam->begin_bulk_insert)
+		rel->rd_tableam->begin_bulk_insert(rel, options, nrows);
 }
 
 /*
