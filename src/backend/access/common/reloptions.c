@@ -598,6 +598,15 @@ static relopt_string stringRelOpts[] =
 		},
 		0, true, NULL, NULL, NULL
 	},
+	{
+		{
+			"overflow_buffer_pool",
+			"Buffer pool to use for TOAST/overflow data of this relation",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		0, true, NULL, NULL, NULL
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -2036,7 +2045,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
 		{"buffer_pool", RELOPT_TYPE_STRING,
-		offsetof(StdRdOptions, buffer_pool_offset)}
+		offsetof(StdRdOptions, buffer_pool_offset)},
+		{"overflow_buffer_pool", RELOPT_TYPE_STRING,
+		offsetof(StdRdOptions, overflow_buffer_pool_offset)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,
