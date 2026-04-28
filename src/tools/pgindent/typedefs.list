@@ -421,6 +421,10 @@ CachedPlanSource
 CallContext
 CallStmt
 CancelRequestPacket
+CarBackendState
+CarCDB
+CarControl
+CarTrickleIter
 Cardinality
 CaseExpr
 CaseKind
