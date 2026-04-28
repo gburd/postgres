@@ -2062,6 +2062,18 @@ heapam_relation_toast_am(Relation rel)
 	return rel->rd_rel->relam;
 }
 
+/*
+ * Return the default overflow buffer pool for heap TOAST data.
+ *
+ * Returns NULL to use the DEFAULT pool.  When the JAM algorithm is
+ * implemented, this will return the JAM pool handler name.
+ */
+static const char *
+heapam_relation_overflow_pool(Relation rel)
+{
+	return NULL;
+}
+
 
 /* ------------------------------------------------------------------------
  * Planner related callbacks for the heap AM
@@ -2712,6 +2724,7 @@ static const TableAmRoutine heapam_methods = {
 	.relation_needs_toast_table = heapam_relation_needs_toast_table,
 	.relation_toast_am = heapam_relation_toast_am,
 	.relation_fetch_toast_slice = heap_fetch_toast_slice,
+	.relation_overflow_pool = heapam_relation_overflow_pool,
 
 	.relation_estimate_size = heapam_estimate_rel_size,
 
