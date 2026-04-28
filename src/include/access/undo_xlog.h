@@ -53,6 +53,7 @@
 #define XLOG_UNDO_DISCARD			0x10	/* Discard old UNDO records */
 #define XLOG_UNDO_EXTEND			0x20	/* Extend UNDO log file */
 #define XLOG_UNDO_APPLY_RECORD		0x30	/* CLR: UNDO applied to page */
+#define XLOG_UNDO_ROTATE			0x40	/* Seal old log, activate new */
 
 /*
  * xl_undo_allocate - WAL record for UNDO space allocation
@@ -129,6 +130,31 @@ typedef struct xl_undo_apply
 }			xl_undo_apply;
 
 #define SizeOfUndoApply	(offsetof(xl_undo_apply, operation_type) + sizeof(uint16))
+
+/*
+ * Rotation trigger reasons for XLOG_UNDO_ROTATE records
+ */
+#define UNDO_ROTATE_CAPACITY	0x01	/* Rotated due to capacity threshold */
+#define UNDO_ROTATE_CHECKPOINT	0x02	/* Rotated at checkpoint boundary */
+#define UNDO_ROTATE_PRESSURE	0x03	/* Rotated under allocation pressure */
+#define UNDO_ROTATE_MANUAL		0x04	/* Rotated by pg_undo_force_discard() */
+
+/*
+ * xl_undo_rotate - WAL record for UNDO log segment rotation
+ *
+ * Logged when the active UNDO log is sealed and a new one is activated.
+ * During recovery, the old log is marked SEALED and the new log is
+ * marked ACTIVE, restoring the correct lifecycle state.
+ */
+typedef struct xl_undo_rotate
+{
+	uint32		old_log_number; /* Log being sealed (0 if first log) */
+	UndoRecPtr	old_seal_ptr;	/* Insert pointer at seal time */
+	uint32		new_log_number; /* Newly activated log */
+	uint8		trigger;		/* UNDO_ROTATE_* reason */
+}			xl_undo_rotate;
+
+#define SizeOfUndoRotate	(offsetof(xl_undo_rotate, trigger) + sizeof(uint8))
 
 /*
  * xl_undo_chain_state - UNDO chain state for prepared transactions

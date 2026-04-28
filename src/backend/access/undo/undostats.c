@@ -5,9 +5,10 @@
  *
  * This module provides monitoring and observability for the UNDO
  * subsystem, including:
- *   - Per-log statistics (insert/discard pointers, size, oldest xid)
+ *   - Per-log statistics (insert/discard pointers, size, oldest xid, state)
  *   - Buffer cache statistics (hits, misses, evictions)
  *   - Aggregate counters (total records, bytes generated)
+ *   - Force discard and rotation SQL function
  *
  * Statistics can be queried via SQL functions pg_stat_get_undo_logs()
  * and pg_stat_get_undo_buffers(), registered in pg_proc.dat.
@@ -25,19 +26,39 @@
 #include "access/htup_details.h"
 #include "access/undolog.h"
 #include "access/undostats.h"
+#include "access/undoworker.h"
+#include "access/undo_xlog.h"
+#include "catalog/pg_authid.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "storage/lwlock.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_buffers);
+PG_FUNCTION_INFO_V1(pg_undo_force_discard);
 
 /*
- * UndoLogStats - Per-log statistics snapshot
- *
- * Used to return a point-in-time snapshot of UNDO log state.
+ * UndoLogStateToString - Convert lifecycle state to display string
  */
+static const char *
+UndoLogStateToString(UndoLogState state)
+{
+	switch (state)
+	{
+		case UNDO_LOG_FREE:
+			return "free";
+		case UNDO_LOG_ACTIVE:
+			return "active";
+		case UNDO_LOG_SEALED:
+			return "sealed";
+		case UNDO_LOG_DISCARDABLE:
+			return "discardable";
+	}
+	return "unknown";
+}
 
 /*
  * GetUndoLogStats - Get statistics for all active UNDO logs
@@ -67,6 +88,7 @@ GetUndoLogStats(UndoLogStat * stats, int max_stats)
 		stats[count].insert_ptr = pg_atomic_read_u64(&log->insert_ptr);
 		stats[count].discard_ptr = log->discard_ptr;
 		stats[count].oldest_xid = log->oldest_xid;
+		stats[count].state = log->state;
 
 		/* Calculate size as difference between insert and discard offsets */
 		stats[count].size_bytes =
@@ -103,7 +125,7 @@ GetUndoBufferStats(UndoBufferStat * stats)
  * pg_stat_get_undo_logs - SQL-callable function returning UNDO log stats
  *
  * Returns a set of rows, one per active UNDO log, with columns:
- *   log_number, insert_offset, discard_offset, size_bytes, oldest_xid
+ *   log_number, insert_offset, discard_offset, size_bytes, oldest_xid, state
  */
 Datum
 pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
@@ -120,8 +142,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcxt = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-		/* Build tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
+		/* Build tuple descriptor with 6 columns (added state) */
+		tupdesc = CreateTemplateTupleDesc(6);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "log_number",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "insert_offset",
@@ -132,6 +154,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "oldest_xid",
 						   XIDOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "state",
+						   TEXTOID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -151,8 +175,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		UndoLogStat *stat = &stats[funcctx->call_cntr];
-		Datum		values[5];
-		bool		nulls[5];
+		Datum		values[6];
+		bool		nulls[6];
 		HeapTuple	tuple;
 
 		MemSet(nulls, 0, sizeof(nulls));
@@ -162,6 +186,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		values[2] = Int64GetDatum(UndoRecPtrGetOffset(stat->discard_ptr));
 		values[3] = Int64GetDatum(stat->size_bytes);
 		values[4] = TransactionIdGetDatum(stat->oldest_xid);
+		values[5] = CStringGetTextDatum(UndoLogStateToString(stat->state));
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -228,4 +253,124 @@ pg_stat_get_undo_buffers(PG_FUNCTION_ARGS)
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * pg_undo_force_discard - Force UNDO log discard and optional rotation
+ *
+ * SQL-callable function that performs immediate discard of reclaimable
+ * UNDO records and optionally rotates the active log segment.
+ *
+ * Arguments:
+ *   force_rotate (bool) - If true, seal and rotate the active log first
+ *
+ * Returns the number of log segments freed (int4).
+ *
+ * Requires the pg_maintain role for access.
+ */
+Datum
+pg_undo_force_discard(PG_FUNCTION_ARGS)
+{
+	bool		force_rotate = PG_GETARG_BOOL(0);
+	int			freed_count = 0;
+	TransactionId oldest_xid;
+	int			i;
+
+	/* Permission check: require pg_maintain role */
+	if (!has_privs_of_role(GetUserId(), ROLE_PG_MAINTAIN))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be a member of pg_maintain to force UNDO discard")));
+
+	if (UndoLogShared == NULL)
+		ereport(ERROR,
+				(errmsg("UNDO subsystem is not initialized"),
+				 errhint("Set enable_undo = on and restart the server.")));
+
+	/* Optional rotation */
+	if (force_rotate)
+		UndoLogSealAndRotate(UNDO_ROTATE_MANUAL);
+
+	/* Perform inline discard (same as discard worker Phase 1 + Phase 2) */
+	oldest_xid = UndoWorkerGetOldestXid();
+	if (!TransactionIdIsValid(oldest_xid))
+		oldest_xid = ReadNextTransactionId();
+
+	/* Phase 1: advance discard pointers */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (!log->in_use)
+			continue;
+
+		LWLockAcquire(&log->lock, LW_EXCLUSIVE);
+
+		if (TransactionIdIsValid(log->oldest_xid) &&
+			TransactionIdPrecedes(log->oldest_xid, oldest_xid))
+		{
+			UndoRecPtr	insert_ptr = pg_atomic_read_u64(&log->insert_ptr);
+
+			if (UndoRecPtrGetOffset(insert_ptr) >
+				UndoRecPtrGetOffset(log->discard_ptr))
+			{
+				log->discard_ptr = insert_ptr;
+				log->oldest_xid = oldest_xid;
+			}
+		}
+
+		LWLockRelease(&log->lock);
+	}
+
+	/* Phase 2: lifecycle transitions */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (!log->in_use)
+			continue;
+
+		LWLockAcquire(&log->lock, LW_EXCLUSIVE);
+
+		/* SEALED -> DISCARDABLE if fully discarded */
+		if (log->state == UNDO_LOG_SEALED)
+		{
+			UndoRecPtr	seal = pg_atomic_read_u64(&log->seal_ptr);
+			UndoRecPtr	discard = log->discard_ptr;
+
+			if (UndoRecPtrIsValid(seal) &&
+				UndoRecPtrGetOffset(discard) >= UndoRecPtrGetOffset(seal))
+			{
+				log->state = UNDO_LOG_DISCARDABLE;
+			}
+		}
+
+		/* DISCARDABLE -> FREE: clean up */
+		if (log->state == UNDO_LOG_DISCARDABLE)
+		{
+			uint32		log_number = log->log_number;
+
+			log->in_use = false;
+			log->state = UNDO_LOG_FREE;
+			log->log_number = 0;
+			pg_atomic_write_u64(&log->insert_ptr, InvalidUndoRecPtr);
+			log->discard_ptr = InvalidUndoRecPtr;
+			log->oldest_xid = InvalidTransactionId;
+			pg_atomic_write_u64(&log->seal_ptr, InvalidUndoRecPtr);
+			log->sealed_time = 0;
+
+			LWLockRelease(&log->lock);
+
+			UndoLogDeleteSegmentFile(log_number);
+			freed_count++;
+			continue;
+		}
+
+		LWLockRelease(&log->lock);
+	}
+
+	/* Wake the background worker for any remaining work */
+	WakeUndoDiscardWorker();
+
+	PG_RETURN_INT32(freed_count);
 }
