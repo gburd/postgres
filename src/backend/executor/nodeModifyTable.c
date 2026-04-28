@@ -5774,6 +5774,33 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	}
 
 	/*
+	 * Signal the table AM about bulk DML operations.
+	 *
+	 * When the planner estimates a large number of rows will be affected,
+	 * tell the AM so it can enable optimizations like batched UNDO recording.
+	 * This applies to INSERT, UPDATE, and DELETE operations.
+	 *
+	 * We use the subplan's row estimate (input rows to be modified), not the
+	 * ModifyTable node's plan_rows (output rows, which may be 0 for UPDATE
+	 * and DELETE without RETURNING).
+	 */
+	{
+		Cardinality estimated_rows = subplan->plan_rows;
+
+		if ((operation == CMD_INSERT || operation == CMD_UPDATE ||
+			 operation == CMD_DELETE) &&
+			estimated_rows > 1000)
+		{
+			for (i = 0; i < mtstate->mt_nrels; i++)
+			{
+				resultRelInfo = mtstate->resultRelInfo + i;
+				rel = resultRelInfo->ri_RelationDesc;
+				table_begin_bulk_insert(rel, 0, (int64) estimated_rows);
+			}
+		}
+	}
+
+	/*
 	 * Lastly, if this is not the primary (canSetTag) ModifyTable node, add it
 	 * to estate->es_auxmodifytables so that it will be run to completion by
 	 * ExecPostprocessPlan.  (It'd actually work fine to add the primary
@@ -5803,12 +5830,15 @@ ExecEndModifyTable(ModifyTableState *node)
 	int			i;
 
 	/*
-	 * Allow any FDWs to shut down
+	 * Allow any FDWs to shut down, and finalize bulk insert mode.
 	 */
 	for (i = 0; i < node->mt_nrels; i++)
 	{
 		int			j;
 		ResultRelInfo *resultRelInfo = node->resultRelInfo + i;
+
+		/* End bulk insert mode (flushes pending UNDO records) */
+		table_finish_bulk_insert(resultRelInfo->ri_RelationDesc, 0);
 
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
 			resultRelInfo->ri_FdwRoutine != NULL &&

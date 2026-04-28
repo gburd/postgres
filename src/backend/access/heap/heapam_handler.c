@@ -67,6 +67,25 @@ static bool BitmapHeapScanNextBlock(TableScanDesc scan,
 									bool *recheck,
 									uint64 *lossy_pages, uint64 *exact_pages);
 
+/*
+ * RelationHasUndo
+ *		Check whether a relation has UNDO logging enabled.
+ *
+ * Returns false for system catalog relations (never generate UNDO for those)
+ * and for any relation that hasn't opted in via the enable_undo storage
+ * parameter.
+ */
+bool
+RelationHasUndo(Relation rel)
+{
+	/* Never generate UNDO for system catalogs */
+	if (IsSystemRelation(rel))
+		return false;
+
+	return rel->rd_options &&
+		((StdRdOptions *) rel->rd_options)->enable_undo;
+}
+
 
 /* ------------------------------------------------------------------------
  * Slot related callbacks for heap AM
@@ -138,6 +157,37 @@ heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 	LockBuffer(bslot->buffer, BUFFER_LOCK_UNLOCK);
 
 	return res;
+}
+
+
+/* ----------------------------------------------------------------------------
+ *  Bulk DML hint callbacks for heap AM.
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * heapam_begin_bulk_insert - Signal the start of a bulk DML operation.
+ *
+ * If the relation has UNDO enabled, this activates batched UNDO recording
+ * to reduce per-row overhead during large INSERT/UPDATE/DELETE operations.
+ */
+static void
+heapam_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
+{
+	if (RelationHasUndo(rel))
+		HeapBeginBulkUndo(rel, nrows);
+}
+
+/*
+ * heapam_finish_bulk_insert - Complete a bulk DML operation.
+ *
+ * Flushes any pending UNDO records and releases bulk mode resources.
+ */
+static void
+heapam_finish_bulk_insert(Relation rel, uint32 options)
+{
+	if (RelationHasUndo(rel))
+		HeapEndBulkUndo(rel);
 }
 
 
@@ -2671,6 +2721,9 @@ static const TableAmRoutine heapam_methods = {
 	.tuple_delete = heapam_tuple_delete,
 	.tuple_update = heapam_tuple_update,
 	.tuple_lock = heapam_tuple_lock,
+
+	.begin_bulk_insert = heapam_begin_bulk_insert,
+	.finish_bulk_insert = heapam_finish_bulk_insert,
 
 	.tuple_fetch_row_version = heapam_fetch_row_version,
 	.tuple_get_latest_tid = heap_get_latest_tid,

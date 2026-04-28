@@ -544,4 +544,39 @@ heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
 	tuple->t_infomask2 = frz->t_infomask2;
 }
 
+/* UNDO support */
+extern bool RelationHasUndo(Relation rel);
+
+/* Heap UNDO RM (heapam_undo.c) */
+extern void HeapUndoRmgrInit(void);
+extern Size HeapUndoBuildPayload(char *dest, Size dest_size,
+								 BlockNumber blkno, OffsetNumber offset,
+								 bool relhasindex, const char *tuple_data,
+								 uint32 tuple_len);
+extern Size HeapUndoPayloadSize(uint32 tuple_len);
+
+/* Heap UNDO subtypes (stored in urec_info) */
+#define HEAP_UNDO_INSERT	0x0001
+#define HEAP_UNDO_DELETE	0x0002
+#define HEAP_UNDO_UPDATE	0x0003
+#define HEAP_UNDO_PRUNE		0x0004
+#define HEAP_UNDO_INPLACE	0x0005
+
+/*
+ * Bulk UNDO batching state.
+ *
+ * When bulk mode is active, UNDO records are accumulated in a persistent
+ * UndoRecordSet instead of being allocated/written/freed per row.
+ * Records are flushed in batches, reducing the per-row overhead of
+ * UndoLogAllocate(), WAL logging, and file I/O.
+ */
+#define HEAP_BULK_UNDO_FLUSH_THRESHOLD	(256 * 1024)	/* 256KB */
+#define HEAP_BULK_UNDO_FLUSH_RECORDS	1000
+
+extern void HeapBeginBulkUndo(Relation rel, int64 nrows);
+extern void HeapEndBulkUndo(Relation rel);
+extern void HeapBulkUndoAddRecord(Relation rel, uint8 rmid, uint16 info,
+								   const char *payload, Size payload_len);
+extern void HeapBulkUndoFlush(void);
+extern bool HeapBulkUndoIsActive(Relation rel);
 #endif							/* HEAPAM_H */
