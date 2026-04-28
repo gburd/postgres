@@ -1,0 +1,106 @@
+RCRD (Recent Consecutive Reuse Distance) Buffer Pool Strategy
+=============================================================
+
+Algorithm Overview
+------------------
+
+RCRD is based on the LIRS2 algorithm described in:
+
+  Chen Zhong, Xingsheng Zhao, and Song Jiang, "LIRS2: An Improved LIRS
+  Replacement Algorithm", Technical Report, 2013.
+
+The key insight is that buffer replacement decisions should be based on
+Consecutive Reuse Distance (CRD) rather than simple recency or frequency.
+CRD is defined as the number of distinct pages accessed between two
+consecutive accesses to the same page.
+
+Pages with small CRD are "hot" (frequently reused within a short window)
+and should be kept in the cache.  Pages with large CRD are "cold" and are
+candidates for eviction.
+
+Key Differences from LIRS
+-------------------------
+
+1. CRD vs IRR: RCRD measures the actual reuse distance at each access
+   rather than relying on the inter-reference recency maintained by LIRS's
+   stack position.  This provides more direct distance information.
+
+2. Simpler stack management: LIRS requires bottom-up stack pruning to
+   maintain the invariant that the stack bottom is always a LIR entry.
+   RCRD's recency list only needs size-based pruning (remove entries when
+   list exceeds 2*cache_size), which is simpler.
+
+3. Adaptive threshold: On ghost hits, RCRD raises the hot_capacity
+   threshold by 1, up to 99% of pool size.  This allows the algorithm
+   to adapt to workloads that need more hot slots.
+
+4. Lower memory overhead: Ghost entries in RCRD are simpler since they
+   don't need to maintain complex stack invariants.
+
+Data Structures
+---------------
+
+RcrdEntry: Per-page metadata entry.
+  - buf_tag: Page identity (tablespace, relfilenode, fork, block)
+  - buf_id: Pool-local buffer index (-1 for ghosts)
+  - status: HOT, COLD, GHOST, or UNUSED
+  - crd: Last computed consecutive reuse distance
+  - Links for recency list R and cold list Q
+  - ghost_next: Ghost hash chain pointer
+
+RcrdControl: Shared-memory control block.
+  - Recency list R: Doubly-linked, ordered by access time (MRU at top)
+  - Cold list Q: Doubly-linked list of resident COLD pages
+  - Ghost hash table: For O(1) lookup of non-resident entries
+  - hot_capacity: Adaptive threshold for HOT/COLD classification
+  - Atomic statistics counters
+
+Memory Layout
+-------------
+
+  RcrdControl struct
+  RcrdEntry[3 * nbuffers]     -- page metadata
+  int[ghost_hash_size]         -- ghost hash table
+  int[nbuffers]                -- buffer-to-entry mapping
+
+Total: approximately 200 bytes per buffer.
+
+Concurrency
+-----------
+
+All mutable shared state is protected by a single spinlock (rcrd_lock).
+The critical sections are kept short: typically O(1) for hits and O(k)
+for recency list pruning where k is the number of pruned entries.
+
+Statistics counters use atomic increments via PoolStatIncrement for
+lock-free batched updates.
+
+Algorithm Flow
+--------------
+
+On Hit:
+  1. Compute CRD (count entries above in recency list)
+  2. Update entry's CRD
+  3. HOT hit: move to recency list top
+  4. COLD hit with small CRD: promote to HOT, demote bottom HOT if needed
+  5. COLD hit with large CRD: stay COLD, move to Q tail
+
+On Miss:
+  1. Check ghost hash for non-resident entry
+  2. Ghost hit: store entry index for OnNewTag
+  3. Complete miss: record -1
+
+On Evict:
+  1. Remove from Q (for COLD) or just mark as ghost (for HOT)
+  2. Keep in recency list as ghost entry
+  3. Insert into ghost hash
+
+On New Tag:
+  1. Ghost hit: promote to HOT, raise hot_capacity
+  2. Complete miss (warm-up): insert as HOT
+  3. Complete miss (full): insert as COLD in Q
+
+Get Victim:
+  1. Try free (untracked) buffers
+  2. Evict from Q head (oldest COLD pages)
+  3. Fallback scan of all buffers

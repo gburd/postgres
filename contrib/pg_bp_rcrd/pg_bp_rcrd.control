@@ -1,0 +1,5 @@
+# pg_bp_rcrd extension
+comment = 'RCRD (Recent Consecutive Reuse Distance) buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_rcrd'
+relocatable = true
