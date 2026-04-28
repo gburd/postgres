@@ -16,6 +16,8 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/reloptions.h"
+#include "access/tableam.h"
 #include "access/toast_compression.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
@@ -250,6 +252,35 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 
 	/* It's mapped if and only if its parent is, too */
 	mapped_relation = RelationIsMapped(rel);
+
+	/*
+	 * If the parent table specifies an overflow_buffer_pool, use it as the
+	 * TOAST table's buffer_pool.  Otherwise, ask the AM for its default
+	 * overflow pool.  If neither provides one, the TOAST table uses the
+	 * DEFAULT pool (reloptions unchanged).
+	 */
+	if (rel->rd_options && rel->rd_rel->relkind == RELKIND_RELATION)
+	{
+		StdRdOptions *opts = (StdRdOptions *) rel->rd_options;
+		const char *overflow_pool = NULL;
+
+		if (opts->overflow_buffer_pool_offset > 0)
+			overflow_pool = (const char *) opts + opts->overflow_buffer_pool_offset;
+
+		if (overflow_pool == NULL)
+			overflow_pool = table_relation_overflow_pool(rel);
+
+		if (overflow_pool != NULL)
+		{
+			List	   *pool_deflist;
+
+			pool_deflist = list_make1(makeDefElem("buffer_pool",
+												  (Node *) makeString(pstrdup(overflow_pool)),
+												  -1));
+			reloptions = transformRelOptions(reloptions, pool_deflist,
+											 NULL, NULL, false, false);
+		}
+	}
 
 	toast_relid = heap_create_with_catalog(toast_relname,
 										   namespaceid,

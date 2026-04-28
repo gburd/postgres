@@ -17065,6 +17065,8 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	{
 		Relation	toastrel;
 		Oid			toastid = rel->rd_rel->reltoastrelid;
+		List	   *toast_deflist;
+		ListCell   *cell;
 
 		toastrel = table_open(toastid, lockmode);
 
@@ -17092,8 +17094,48 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 				datum = (Datum) 0;
 		}
 
+		/*
+		 * Start with toast-namespaced options from the defList.
+		 */
 		newOptions = transformRelOptions(datum, defList, "toast", validnsps,
 										 false, operation == AT_ResetRelOptions);
+
+		/*
+		 * CASCADE overflow_buffer_pool to TOAST table's buffer_pool.
+		 *
+		 * When the parent table's overflow_buffer_pool is changed, propagate
+		 * the new value as the TOAST table's buffer_pool reloption.
+		 */
+		toast_deflist = NIL;
+		foreach(cell, defList)
+		{
+			DefElem    *defel = (DefElem *) lfirst(cell);
+
+			if (defel->defnamespace == NULL &&
+				strcmp(defel->defname, "overflow_buffer_pool") == 0)
+			{
+				if (operation == AT_ResetRelOptions)
+				{
+					/*
+					 * Resetting overflow_buffer_pool removes TOAST
+					 * buffer_pool
+					 */
+					toast_deflist = lappend(toast_deflist,
+											makeDefElem("buffer_pool", NULL, defel->location));
+				}
+				else
+				{
+					/* Set TOAST buffer_pool to the new overflow pool value */
+					toast_deflist = lappend(toast_deflist,
+											makeDefElem("buffer_pool", defel->arg, defel->location));
+				}
+				break;
+			}
+		}
+		if (toast_deflist != NIL)
+			newOptions = transformRelOptions(newOptions, toast_deflist,
+											 NULL, NULL, false,
+											 operation == AT_ResetRelOptions);
 
 		(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
 
