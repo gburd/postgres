@@ -17,6 +17,7 @@
 #define UNDOSTATS_H
 
 #include "access/undolog.h"
+#include "fmgr.h"
 
 /*
  * UndoLogStat - Per-log statistics snapshot
@@ -30,6 +31,7 @@ typedef struct UndoLogStat
 	UndoRecPtr	discard_ptr;	/* Current discard pointer */
 	TransactionId oldest_xid;	/* Oldest transaction in this log */
 	uint64		size_bytes;		/* Active size (insert - discard) */
+	UndoLogState state;			/* Current lifecycle state */
 }			UndoLogStat;
 
 /*
@@ -49,5 +51,8 @@ typedef struct UndoBufferStat
 /* Functions for collecting statistics */
 extern int	GetUndoLogStats(UndoLogStat * stats, int max_stats);
 extern void GetUndoBufferStats(UndoBufferStat * stats);
+
+/* Force discard and rotation SQL function */
+extern Datum pg_undo_force_discard(PG_FUNCTION_ARGS);
 
 #endif							/* UNDOSTATS_H */

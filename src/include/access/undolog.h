@@ -25,6 +25,7 @@
 
 #include "access/transam.h"
 #include "access/undodefs.h"
+#include "datatype/timestamp.h"
 #include "port/atomics.h"
 #include "port/pg_crc32c.h"
 #include "storage/lwlock.h"
@@ -58,6 +59,29 @@
 /* Maximum number of concurrent UNDO logs */
 #define MAX_UNDO_LOGS 100
 
+/* Rotation and pressure thresholds (percentage of segment size) */
+#define UNDO_ROTATE_THRESHOLD_PCT		85	/* Seal & rotate at 85% capacity */
+#define UNDO_PRESSURE_THRESHOLD_PCT		95	/* Emergency sync discard at 95% */
+#define UNDO_CHECKPOINT_ROTATE_PCT		50	/* Checkpoint rotates if >50% full */
+#define UNDO_BACKPRESSURE_MIN_US	   100	/* Min sleep under pressure */
+#define UNDO_BACKPRESSURE_MAX_US	100000	/* Max sleep (100ms) under pressure */
+
+/*
+ * UndoLogState: Lifecycle state of an UNDO log segment
+ *
+ * Each UNDO log slot progresses through these states:
+ *   FREE -> ACTIVE -> SEALED -> DISCARDABLE -> FREE
+ *
+ * At most one log is ACTIVE at any time (accepting new writes).
+ */
+typedef enum UndoLogState
+{
+	UNDO_LOG_FREE = 0,			/* Slot available, no file */
+	UNDO_LOG_ACTIVE,			/* Accepting writes */
+	UNDO_LOG_SEALED,			/* Full or rotated; no more writes */
+	UNDO_LOG_DISCARDABLE		/* All records discarded; file can be deleted */
+}			UndoLogState;
+
 /*
  * UndoLogControl: Shared memory control structure for one UNDO log
  *
@@ -71,6 +95,10 @@ typedef struct UndoLogControl
 	TransactionId oldest_xid;	/* Oldest transaction needing this log */
 	LWLock		lock;			/* Protects metadata (NOT insert_ptr) */
 	bool		in_use;			/* Is this log slot active? */
+	/* Lifecycle management fields */
+	UndoLogState state;			/* Current lifecycle state */
+	pg_atomic_uint64 seal_ptr;	/* insert_ptr frozen at seal time */
+	TimestampTz sealed_time;	/* When this log was sealed (monitoring) */
 }			UndoLogControl;
 
 /*
@@ -81,6 +109,11 @@ typedef struct UndoLogSharedData
 	UndoLogControl logs[MAX_UNDO_LOGS];
 	uint32		next_log_number;	/* Next log number to allocate */
 	LWLock		allocation_lock;	/* Protects log allocation */
+	/* Active log tracking and cumulative counters */
+	pg_atomic_uint32 active_log_idx;	/* Index of ACTIVE log (MAX_UNDO_LOGS =
+										 * none) */
+	pg_atomic_uint64 total_allocated;	/* Cumulative bytes allocated */
+	pg_atomic_uint64 total_discarded;	/* Cumulative bytes discarded */
 }			UndoLogSharedData;
 
 /* Global shared memory pointer (set during startup) */
@@ -128,5 +161,10 @@ extern void UndoFlushResetMaxWritePtr(void);
 
 /* Checkpoint support */
 extern void CheckPointUndoLog(void);
+
+/* Segment rotation and pressure management */
+extern void UndoLogSealAndRotate(uint8 trigger);
+extern void UndoLogDeleteSegmentFile(uint32 log_number);
+extern bool UndoLogTryPressureDiscard(void);
 
 #endif							/* UNDOLOG_H */

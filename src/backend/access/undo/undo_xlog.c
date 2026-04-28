@@ -225,6 +225,87 @@ undo_redo(XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_UNDO_ROTATE:
+			{
+				xl_undo_rotate *xlrec = (xl_undo_rotate *) XLogRecGetData(record);
+
+				/*
+				 * Replay segment rotation: mark the old log SEALED and the
+				 * new log ACTIVE.  This reconstructs the lifecycle state so
+				 * that after recovery the discard worker can clean up sealed
+				 * logs properly.
+				 */
+				if (UndoLogShared != NULL)
+				{
+					int			j;
+
+					/* Seal the old log */
+					if (xlrec->old_log_number != 0)
+					{
+						for (j = 0; j < MAX_UNDO_LOGS; j++)
+						{
+							UndoLogControl *old_log = &UndoLogShared->logs[j];
+
+							if (old_log->in_use &&
+								old_log->log_number == xlrec->old_log_number)
+							{
+								old_log->state = UNDO_LOG_SEALED;
+								pg_atomic_write_u64(&old_log->seal_ptr,
+													xlrec->old_seal_ptr);
+								break;
+							}
+						}
+					}
+
+					/* Activate the new log (find or create slot) */
+					{
+						UndoLogControl *new_log = NULL;
+						int			new_slot = -1;
+
+						/* Check if it already exists (idempotent replay) */
+						for (j = 0; j < MAX_UNDO_LOGS; j++)
+						{
+							if (UndoLogShared->logs[j].in_use &&
+								UndoLogShared->logs[j].log_number == xlrec->new_log_number)
+							{
+								new_log = &UndoLogShared->logs[j];
+								new_slot = j;
+								break;
+							}
+						}
+
+						/* If not found, allocate a free slot */
+						if (new_log == NULL)
+						{
+							for (j = 0; j < MAX_UNDO_LOGS; j++)
+							{
+								if (!UndoLogShared->logs[j].in_use)
+								{
+									new_log = &UndoLogShared->logs[j];
+									new_slot = j;
+									new_log->log_number = xlrec->new_log_number;
+									pg_atomic_write_u64(&new_log->insert_ptr,
+														MakeUndoRecPtr(xlrec->new_log_number, 0));
+									new_log->discard_ptr = MakeUndoRecPtr(xlrec->new_log_number, 0);
+									new_log->oldest_xid = InvalidTransactionId;
+									new_log->in_use = true;
+									break;
+								}
+							}
+						}
+
+						if (new_log != NULL)
+						{
+							new_log->state = UNDO_LOG_ACTIVE;
+							pg_atomic_write_u64(&new_log->seal_ptr, InvalidUndoRecPtr);
+							pg_atomic_write_u32(&UndoLogShared->active_log_idx,
+												(uint32) new_slot);
+						}
+					}
+				}
+			}
+			break;
+
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}

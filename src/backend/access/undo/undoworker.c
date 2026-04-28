@@ -7,6 +7,10 @@
  * longer needed by any active transaction. This is essential for
  * preventing unbounded growth of UNDO logs.
  *
+ * The worker also manages the UNDO log lifecycle: transitioning SEALED
+ * logs to DISCARDABLE once all records are discarded, and freeing
+ * DISCARDABLE log slots by deleting their segment files.
+ *
  * Design based on ZHeap's UNDO worker and PostgreSQL's autovacuum
  * launcher patterns.
  *
@@ -43,9 +47,13 @@
 #include "utils/memutils.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 /* Shared memory state */
 static UndoWorkerShmemData * UndoWorkerShmem = NULL;
+
+/* Adaptive sleep: use shorter interval when sealed logs are pending */
+#define UNDO_WORKER_FAST_NAPTIME_MS		200
 
 /* Forward declarations */
 static void undo_worker_sighup(SIGNAL_ARGS);
@@ -84,6 +92,10 @@ UndoWorkerShmemInit(void)
 		UndoWorkerShmem->last_discard_ptr = InvalidUndoRecPtr;
 		UndoWorkerShmem->naptime_ms = undo_worker_naptime;
 		UndoWorkerShmem->shutdown_requested = false;
+
+		/* Rotation coordination fields */
+		UndoWorkerShmem->worker_proc = INVALID_PROC_NUMBER;
+		pg_atomic_init_u32(&UndoWorkerShmem->sealed_log_count, 0);
 	}
 }
 
@@ -107,6 +119,27 @@ undo_worker_sigterm(SIGNAL_ARGS)
 	(void) postgres_signal_arg; /* unused */
 	UndoWorkerShmem->shutdown_requested = true;
 	SetLatch(MyLatch);
+}
+
+/*
+ * WakeUndoDiscardWorker
+ *		Wake the UNDO discard worker via its latch.
+ *
+ * Follows the WAL writer wakeup pattern: read the worker's ProcNumber
+ * and set its latch to interrupt the WaitLatch sleep.  Safe to call
+ * from any backend, including during allocation pressure.
+ */
+void
+WakeUndoDiscardWorker(void)
+{
+	ProcNumber	proc;
+
+	if (UndoWorkerShmem == NULL)
+		return;
+
+	proc = UndoWorkerShmem->worker_proc;
+	if (proc != INVALID_PROC_NUMBER)
+		SetLatch(&GetPGProcByNumber(proc)->procLatch);
 }
 
 /*
@@ -152,10 +185,11 @@ UndoWorkerGetOldestXid(void)
 /*
  * perform_undo_discard - Main discard logic
  *
- * This function:
- * 1. Finds the oldest active transaction
- * 2. For each UNDO log, calculates what can be discarded
- * 3. Calls UndoLogDiscard to update discard pointers
+ * Two-phase approach:
+ *   Phase 1: Update discard pointers for all in-use logs based on
+ *            the oldest active transaction ID.
+ *   Phase 2: Scan SEALED/DISCARDABLE logs and manage lifecycle
+ *            transitions: SEALED -> DISCARDABLE -> FREE.
  */
 static void
 perform_undo_discard(void)
@@ -164,6 +198,7 @@ perform_undo_discard(void)
 	UndoRecPtr	oldest_undo_ptr;
 	TimestampTz current_time;
 	int			i;
+	int			freed_count = 0;
 
 	/* Get oldest active transaction */
 	oldest_xid = UndoWorkerGetOldestXid();
@@ -177,8 +212,8 @@ perform_undo_discard(void)
 	current_time = GetCurrentTimestamp();
 
 	/*
-	 * For each UNDO log, determine what can be discarded. We need to respect
-	 * the retention_time setting to allow point-in-time recovery.
+	 * Phase 1: For each UNDO log, determine what can be discarded.  We need
+	 * to respect the retention_time setting to allow point-in-time recovery.
 	 */
 	for (i = 0; i < MAX_UNDO_LOGS; i++)
 	{
@@ -205,6 +240,10 @@ perform_undo_discard(void)
 			/* Update discard pointer */
 			UndoLogDiscard(oldest_undo_ptr);
 
+			/* Update cumulative discard counter */
+			pg_atomic_fetch_add_u64(&UndoLogShared->total_discarded,
+									UndoRecPtrGetOffset(oldest_undo_ptr));
+
 			ereport(DEBUG2,
 					(errmsg("UNDO worker: discarded log %u up to %llu",
 							log->log_number,
@@ -215,6 +254,72 @@ perform_undo_discard(void)
 			LWLockRelease(&log->lock);
 		}
 	}
+
+	/*
+	 * Phase 2: Manage lifecycle transitions for SEALED and DISCARDABLE logs.
+	 *
+	 * SEALED logs whose discard_ptr >= seal_ptr have had all their records
+	 * discarded and can transition to DISCARDABLE.  DISCARDABLE logs can
+	 * have their slot freed and segment file deleted.
+	 */
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (!log->in_use)
+			continue;
+
+		LWLockAcquire(&log->lock, LW_EXCLUSIVE);
+
+		if (log->state == UNDO_LOG_SEALED)
+		{
+			UndoRecPtr	seal = pg_atomic_read_u64(&log->seal_ptr);
+			UndoRecPtr	discard = log->discard_ptr;
+
+			if (UndoRecPtrIsValid(seal) &&
+				UndoRecPtrGetOffset(discard) >= UndoRecPtrGetOffset(seal))
+			{
+				/* All records discarded -- transition to DISCARDABLE */
+				log->state = UNDO_LOG_DISCARDABLE;
+				ereport(DEBUG1,
+						(errmsg("UNDO worker: log %u transitioned to DISCARDABLE",
+								log->log_number)));
+			}
+		}
+
+		if (log->state == UNDO_LOG_DISCARDABLE)
+		{
+			uint32		log_number = log->log_number;
+
+			/* Free the slot */
+			log->in_use = false;
+			log->state = UNDO_LOG_FREE;
+			log->log_number = 0;
+			pg_atomic_write_u64(&log->insert_ptr, InvalidUndoRecPtr);
+			log->discard_ptr = InvalidUndoRecPtr;
+			log->oldest_xid = InvalidTransactionId;
+			pg_atomic_write_u64(&log->seal_ptr, InvalidUndoRecPtr);
+			log->sealed_time = 0;
+
+			LWLockRelease(&log->lock);
+
+			/* Delete the segment file outside the lock */
+			UndoLogDeleteSegmentFile(log_number);
+
+			/* Decrement sealed log count */
+			pg_atomic_fetch_sub_u32(&UndoWorkerShmem->sealed_log_count, 1);
+
+			freed_count++;
+			continue;
+		}
+
+		LWLockRelease(&log->lock);
+	}
+
+	if (freed_count > 0)
+		ereport(LOG,
+				(errmsg("UNDO worker: freed %d discardable log segment(s)",
+						freed_count)));
 
 	/* Record this discard operation */
 	LWLockAcquire(&UndoWorkerShmem->lock, LW_EXCLUSIVE);
@@ -229,6 +334,10 @@ perform_undo_discard(void)
  *
  * This is the entry point for the UNDO worker background process.
  * It runs continuously, waking periodically to discard old UNDO.
+ *
+ * Uses adaptive sleep: when sealed logs are pending cleanup, the worker
+ * wakes more frequently (200ms) to process them promptly.  Otherwise
+ * it uses the configured undo_worker_naptime.
  */
 void
 UndoWorkerMain(Datum main_arg)
@@ -241,6 +350,9 @@ UndoWorkerMain(Datum main_arg)
 
 	/* We're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
+
+	/* Register our ProcNumber for latch-based wakeup by other backends */
+	UndoWorkerShmem->worker_proc = MyProcNumber;
 
 	/* Initialize worker state */
 	ereport(LOG,
@@ -262,6 +374,8 @@ UndoWorkerMain(Datum main_arg)
 	while (!UndoWorkerShmem->shutdown_requested)
 	{
 		int			rc;
+		long		naptime;
+		uint32		sealed_count;
 
 		/* Process any pending configuration changes */
 		if (ConfigReloadPending)
@@ -278,11 +392,21 @@ UndoWorkerMain(Datum main_arg)
 		/* Perform UNDO discard */
 		perform_undo_discard();
 
-		/* Sleep until next iteration or signal */
+		/*
+		 * Adaptive sleep: use a shorter interval when sealed logs are pending
+		 * cleanup, similar to the WAL writer's adaptive sleep.
+		 */
+		sealed_count = pg_atomic_read_u32(&UndoWorkerShmem->sealed_log_count);
+		if (sealed_count > 0)
+			naptime = UNDO_WORKER_FAST_NAPTIME_MS;
+		else
+			naptime = UndoWorkerShmem->naptime_ms;
+
+		/* Sleep until next iteration, latch set, or signal */
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   UndoWorkerShmem->naptime_ms,
-					   PG_WAIT_EXTENSION);	/* TODO: Add proper wait event */
+					   naptime,
+					   WAIT_EVENT_UNDO_WORKER_MAIN);
 
 		ResetLatch(MyLatch);
 
@@ -290,6 +414,9 @@ UndoWorkerMain(Datum main_arg)
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
 	}
+
+	/* Clear our ProcNumber before exiting */
+	UndoWorkerShmem->worker_proc = INVALID_PROC_NUMBER;
 
 	/* Normal shutdown */
 	ereport(LOG,

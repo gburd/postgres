@@ -29,7 +29,10 @@
 #include "access/transam.h"
 #include "access/undo_bufmgr.h"
 #include "access/undolog.h"
+<<<<<<< HEAD
 #include "access/undorecord.h"
+=======
+>>>>>>> fb27c189aca (Add UNDO log segment rotation and lifecycle management)
 #include "access/undoworker.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
@@ -46,6 +49,7 @@
 #include "utils/errcodes.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
 /* GUC parameters */
 bool		enable_undo = false;
@@ -120,7 +124,6 @@ static UndoLogFdCacheEntry *
 GetCachedUndoLogFdEntry(uint32 log_number, int flags);
 
 /* Forward declarations */
-static uint32 AllocateUndoLog(void);
 static int	OpenUndoLogFile(uint32 log_number, int flags);
 static void CreateUndoLogFile(uint32 log_number);
 
@@ -190,58 +193,232 @@ UndoLogShmemInit(void)
 			log->oldest_xid = InvalidTransactionId;
 			LWLockInitialize(&log->lock, LWTRANCHE_UNDO_LOG);
 			log->in_use = false;
+			/* Lifecycle management fields */
+			log->state = UNDO_LOG_FREE;
+			pg_atomic_init_u64(&log->seal_ptr, InvalidUndoRecPtr);
+			log->sealed_time = 0;
 		}
 
 		UndoLogShared->next_log_number = 1;
 		LWLockInitialize(&UndoLogShared->allocation_lock, LWTRANCHE_UNDO_LOG);
+		/* No active log initially */
+		pg_atomic_init_u32(&UndoLogShared->active_log_idx, MAX_UNDO_LOGS);
+		pg_atomic_init_u64(&UndoLogShared->total_allocated, 0);
+		pg_atomic_init_u64(&UndoLogShared->total_discarded, 0);
 	}
 }
 
 /*
- * AllocateUndoLog
- *		Allocate a new UNDO log number
+ * UndoLogSealAndRotate
+ *		Seal the current active UNDO log and activate a new one.
  *
- * Returns the log number. Caller must create the file.
+ * This performs segment rotation: the current active log is frozen
+ * (no more writes allowed) and a fresh log is created and activated.
+ *
+ * The trigger parameter records why the rotation occurred (capacity,
+ * checkpoint, pressure, or manual) and is stored in the WAL record.
+ *
+ * Must be called WITHOUT holding allocation_lock -- this function
+ * acquires it internally.
  */
-static uint32
-AllocateUndoLog(void)
+void
+UndoLogSealAndRotate(uint8 trigger)
 {
-	uint32		log_number;
+	uint32		active_idx;
+	uint32		old_log_number = 0;
+	UndoRecPtr	old_seal_ptr = InvalidUndoRecPtr;
+	uint32		new_log_number;
+	int			new_slot = -1;
 	int			i;
-	UndoLogControl *log = NULL;
 
 	LWLockAcquire(&UndoLogShared->allocation_lock, LW_EXCLUSIVE);
 
-	/* Find a free slot */
+	/* Read active log index */
+	active_idx = pg_atomic_read_u32(&UndoLogShared->active_log_idx);
+
+	/* Seal the old log if one is active */
+	if (active_idx < MAX_UNDO_LOGS)
+	{
+		UndoLogControl *old_log = &UndoLogShared->logs[active_idx];
+
+		LWLockAcquire(&old_log->lock, LW_EXCLUSIVE);
+
+		/* Double-check it's still ACTIVE (another backend may have rotated) */
+		if (old_log->state == UNDO_LOG_ACTIVE)
+		{
+			old_log->state = UNDO_LOG_SEALED;
+			old_seal_ptr = pg_atomic_read_u64(&old_log->insert_ptr);
+			pg_atomic_write_u64(&old_log->seal_ptr, old_seal_ptr);
+			old_log->sealed_time = GetCurrentTimestamp();
+			old_log_number = old_log->log_number;
+		}
+
+		LWLockRelease(&old_log->lock);
+	}
+
+	/* Mark no active log while we allocate a new one */
+	pg_atomic_write_u32(&UndoLogShared->active_log_idx, MAX_UNDO_LOGS);
+
+	/* Find a free slot for the new log */
 	for (i = 0; i < MAX_UNDO_LOGS; i++)
 	{
 		if (!UndoLogShared->logs[i].in_use)
 		{
-			log = &UndoLogShared->logs[i];
+			new_slot = i;
 			break;
 		}
 	}
 
-	if (log == NULL)
+	if (new_slot < 0)
+	{
+		LWLockRelease(&UndoLogShared->allocation_lock);
 		ereport(ERROR,
-				(errmsg("too many UNDO logs active"),
-				 errhint("Increase max_undo_logs configuration parameter.")));
+				(errmsg("too many UNDO logs active, cannot rotate"),
+				 errhint("Increase max_undo_logs or wait for discard.")));
+	}
 
-	/* Allocate next log number */
-	log_number = UndoLogShared->next_log_number++;
+	/* Allocate a new log number and initialize the slot */
+	new_log_number = UndoLogShared->next_log_number++;
 
-	/* Initialize the log control structure */
-	LWLockAcquire(&log->lock, LW_EXCLUSIVE);
-	log->log_number = log_number;
-	pg_atomic_write_u64(&log->insert_ptr, MakeUndoRecPtr(log_number, 0));
-	log->discard_ptr = MakeUndoRecPtr(log_number, 0);
-	log->oldest_xid = InvalidTransactionId;
-	log->in_use = true;
-	LWLockRelease(&log->lock);
+	{
+		UndoLogControl *new_log = &UndoLogShared->logs[new_slot];
+
+		LWLockAcquire(&new_log->lock, LW_EXCLUSIVE);
+		new_log->log_number = new_log_number;
+		pg_atomic_write_u64(&new_log->insert_ptr,
+							MakeUndoRecPtr(new_log_number, 0));
+		new_log->discard_ptr = MakeUndoRecPtr(new_log_number, 0);
+		new_log->oldest_xid = InvalidTransactionId;
+		new_log->in_use = true;
+		new_log->state = UNDO_LOG_ACTIVE;
+		pg_atomic_write_u64(&new_log->seal_ptr, InvalidUndoRecPtr);
+		new_log->sealed_time = 0;
+		LWLockRelease(&new_log->lock);
+	}
+
+	/* Create the segment file for the new log */
+	CreateUndoLogFile(new_log_number);
+
+	/* Update active log index to point to the new slot */
+	pg_atomic_write_u32(&UndoLogShared->active_log_idx, new_slot);
+
+	/* WAL-log the rotation so recovery can reconstruct state */
+	{
+		xl_undo_rotate xlrec;
+
+		xlrec.old_log_number = old_log_number;
+		xlrec.old_seal_ptr = old_seal_ptr;
+		xlrec.new_log_number = new_log_number;
+		xlrec.trigger = trigger;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfUndoRotate);
+		XLogInsert(RM_UNDO_ID, XLOG_UNDO_ROTATE);
+	}
 
 	LWLockRelease(&UndoLogShared->allocation_lock);
 
-	return log_number;
+	/* Notify the discard worker about the sealed log */
+	WakeUndoDiscardWorker();
+
+	ereport(LOG,
+			(errmsg("UNDO log rotation: sealed log %u at offset %llu, "
+					"activated log %u (trigger: %s)",
+					old_log_number,
+					(unsigned long long) UndoRecPtrGetOffset(old_seal_ptr),
+					new_log_number,
+					trigger == UNDO_ROTATE_CAPACITY ? "capacity" :
+					trigger == UNDO_ROTATE_CHECKPOINT ? "checkpoint" :
+					trigger == UNDO_ROTATE_PRESSURE ? "pressure" :
+					trigger == UNDO_ROTATE_MANUAL ? "manual" : "unknown")));
+}
+
+/*
+ * UndoLogDeleteSegmentFile
+ *		Delete the on-disk segment file for a fully discarded UNDO log.
+ *
+ * Called by the discard worker after all records in a DISCARDABLE log
+ * have been cleaned up. Silently succeeds if the file is already gone.
+ */
+void
+UndoLogDeleteSegmentFile(uint32 log_number)
+{
+	char		path[MAXPGPATH];
+
+	UndoLogPath(log_number, path);
+
+	if (unlink(path) < 0 && errno != ENOENT)
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not remove UNDO log file \"%s\": %m", path)));
+	else
+		ereport(DEBUG1,
+				(errmsg("deleted UNDO log segment file: %s", path)));
+}
+
+/*
+ * UndoLogTryPressureDiscard
+ *		Attempt synchronous inline discard from the allocating backend.
+ *
+ * Called from UndoLogAllocate() when allocation pressure exceeds 95%.
+ * Performs a mini discard pass without waiting for the background worker.
+ *
+ * Returns true if space was freed, false if long-running transactions
+ * prevent discard.
+ */
+bool
+UndoLogTryPressureDiscard(void)
+{
+	TransactionId oldest_xid;
+	bool		freed = false;
+	int			i;
+
+	oldest_xid = UndoWorkerGetOldestXid();
+	if (!TransactionIdIsValid(oldest_xid))
+		oldest_xid = ReadNextTransactionId();
+
+	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	{
+		UndoLogControl *log = &UndoLogShared->logs[i];
+
+		if (!log->in_use)
+			continue;
+
+		LWLockAcquire(&log->lock, LW_EXCLUSIVE);
+
+		if (TransactionIdIsValid(log->oldest_xid) &&
+			TransactionIdPrecedes(log->oldest_xid, oldest_xid))
+		{
+			UndoRecPtr	insert_ptr = pg_atomic_read_u64(&log->insert_ptr);
+
+			if (UndoRecPtrGetOffset(insert_ptr) >
+				UndoRecPtrGetOffset(log->discard_ptr))
+			{
+				uint64		delta = UndoRecPtrGetOffset(insert_ptr) -
+									UndoRecPtrGetOffset(log->discard_ptr);
+
+				log->discard_ptr = insert_ptr;
+				log->oldest_xid = oldest_xid;
+				freed = true;
+
+				/* Update cumulative discard counter */
+				pg_atomic_fetch_add_u64(&UndoLogShared->total_discarded,
+										delta);
+
+				ereport(DEBUG2,
+						(errmsg("UNDO pressure discard: log %u advanced to %llu",
+								log->log_number,
+								(unsigned long long) UndoRecPtrGetOffset(insert_ptr))));
+			}
+		}
+
+		LWLockRelease(&log->lock);
+	}
+
+	/* Wake the background worker for follow-up cleanup */
+	WakeUndoDiscardWorker();
+
+	return freed;
 }
 
 /*
@@ -579,6 +756,11 @@ ExtendUndoLogSmgrFile(uint32 log_number, uint64 logical_end)
  *
  * Returns UndoRecPtr pointing to the allocated space.
  * Caller must write data using UndoLogWrite().
+ *
+ * This function implements segment rotation: when the active log approaches
+ * capacity, it seals the current log and activates a new one.  Under extreme
+ * pressure (>95%), it performs synchronous inline discard and applies
+ * backpressure to smooth out allocation spikes.
  */
 UndoRecPtr
 UndoLogAllocate(Size size)
@@ -587,44 +769,37 @@ UndoLogAllocate(Size size)
 	UndoRecPtr	ptr;
 	uint32		log_number;
 	uint64		offset;
-	int			i;
+	uint32		active_idx;
+	uint64		segment_size = (uint64) undo_log_segment_size;
+	int			retries = 0;
 
 	if (size == 0)
 		ereport(ERROR,
 				(errmsg("cannot allocate zero-size UNDO record")));
 
+retry:
+	if (retries++ > MAX_UNDO_LOGS * 2)
+		ereport(ERROR,
+				(errmsg("UNDO log allocation failed after %d retries", retries),
+				 errhint("Check for long-running transactions blocking UNDO discard.")));
+
 	/*
-	 * Find or create an active log. For now, use a simple strategy: use the
-	 * first in-use log, or allocate a new one if none exist.
+	 * Fast path: read active_log_idx atomically (no lock for read).
 	 */
-	log = NULL;
-	for (i = 0; i < MAX_UNDO_LOGS; i++)
+	active_idx = pg_atomic_read_u32(&UndoLogShared->active_log_idx);
+
+	if (active_idx >= MAX_UNDO_LOGS)
 	{
-		if (UndoLogShared->logs[i].in_use)
-		{
-			log = &UndoLogShared->logs[i];
-			break;
-		}
+		/* No active log exists, create one via seal-and-rotate */
+		UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
+		goto retry;
 	}
 
-	if (log == NULL)
-	{
-		/* No active log, create one */
-		log_number = AllocateUndoLog();
-		CreateUndoLogFile(log_number);
+	log = &UndoLogShared->logs[active_idx];
 
-		/* Find the log control structure we just allocated */
-		for (i = 0; i < MAX_UNDO_LOGS; i++)
-		{
-			if (UndoLogShared->logs[i].log_number == log_number)
-			{
-				log = &UndoLogShared->logs[i];
-				break;
-			}
-		}
-
-		Assert(log != NULL);
-	}
+	/* Verify the log is still ACTIVE (another backend may have rotated) */
+	if (log->state != UNDO_LOG_ACTIVE)
+		goto retry;
 
 	/* Atomically claim space in the UNDO log */
 	{
@@ -635,10 +810,47 @@ UndoLogAllocate(Size size)
 		log_number = UndoRecPtrGetLogNo(old_ptr);
 		offset = UndoRecPtrGetOffset(old_ptr);
 
-		if (offset + size > UNDO_LOG_SEGMENT_SIZE)
-			ereport(ERROR,
-					(errmsg("UNDO log %u would exceed segment size", log_number),
-					 errhint("UNDO log rotation not yet implemented")));
+		/*
+		 * Check capacity thresholds before attempting CAS.
+		 */
+		if (offset + size > segment_size)
+		{
+			/* Would exceed segment -- must rotate */
+			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
+			goto retry;
+		}
+
+		if (offset + size > (segment_size * UNDO_PRESSURE_THRESHOLD_PCT) / 100)
+		{
+			/*
+			 * Above 95%: attempt synchronous discard, apply backpressure,
+			 * then rotate.
+			 */
+			(void) UndoLogTryPressureDiscard();
+
+			/* Calculate proportional backpressure sleep */
+			{
+				uint64		pressure_pct = ((offset + size) * 100) / segment_size;
+				long		sleep_us;
+
+				sleep_us = UNDO_BACKPRESSURE_MIN_US +
+					(long) (UNDO_BACKPRESSURE_MAX_US - UNDO_BACKPRESSURE_MIN_US) *
+					(long) (pressure_pct - UNDO_PRESSURE_THRESHOLD_PCT) /
+					(long) (100 - UNDO_PRESSURE_THRESHOLD_PCT);
+				sleep_us = Min(sleep_us, UNDO_BACKPRESSURE_MAX_US);
+				pg_usleep(sleep_us);
+			}
+
+			UndoLogSealAndRotate(UNDO_ROTATE_PRESSURE);
+			goto retry;
+		}
+
+		if (offset + size > (segment_size * UNDO_ROTATE_THRESHOLD_PCT) / 100)
+		{
+			/* Above 85%: proactive rotation */
+			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
+			goto retry;
+		}
 
 		new_ptr = MakeUndoRecPtr(log_number, offset + size);
 
@@ -649,10 +861,13 @@ UndoLogAllocate(Size size)
 			log_number = UndoRecPtrGetLogNo(old_ptr);
 			offset = UndoRecPtrGetOffset(old_ptr);
 
-			if (offset + size > UNDO_LOG_SEGMENT_SIZE)
-				ereport(ERROR,
-						(errmsg("UNDO log %u would exceed segment size", log_number),
-						 errhint("UNDO log rotation not yet implemented")));
+			/* Re-check thresholds after CAS failure */
+			if (offset + size > segment_size ||
+				offset + size > (segment_size * UNDO_ROTATE_THRESHOLD_PCT) / 100)
+			{
+				/* Thresholds crossed during contention -- restart */
+				goto retry;
+			}
 
 			new_ptr = MakeUndoRecPtr(log_number, offset + size);
 		}
@@ -663,7 +878,7 @@ UndoLogAllocate(Size size)
 	/* Update cumulative allocation counter */
 	pg_atomic_fetch_add_u64(&UndoLogShared->total_allocated, size);
 
-	/* Extend file if necessary (legacy direct-I/O path) */
+	/* Extend file if necessary */
 	ExtendUndoLogFile(log_number, offset + size);
 
 	/* Extend the smgr-managed file for checkpoint write-back */
@@ -1011,6 +1226,7 @@ void
 CheckPointUndoLog(void)
 {
 	int			active_logs = 0;
+	int			sealed_logs = 0;
 	uint64		total_allocated = 0;
 	uint64		total_discarded = 0;
 	int			i;
@@ -1018,6 +1234,39 @@ CheckPointUndoLog(void)
 	/* Nothing to do if UNDO is not enabled at the server level */
 	if (UndoLogShared == NULL)
 		return;
+
+	/*
+	 * Proactive rotation: if the active log is more than 50% full, seal it
+	 * and start a fresh segment.  This ensures that at every checkpoint
+	 * boundary, a moderately-full segment is closed, preventing unbounded
+	 * accumulation within a single segment.
+	 */
+	{
+		uint32		active_idx;
+		uint64		segment_size = (uint64) undo_log_segment_size;
+
+		active_idx = pg_atomic_read_u32(&UndoLogShared->active_log_idx);
+		if (active_idx < MAX_UNDO_LOGS)
+		{
+			UndoLogControl *active_log = &UndoLogShared->logs[active_idx];
+			uint64		insert_offset;
+
+			insert_offset = UndoRecPtrGetOffset(
+												pg_atomic_read_u64(&active_log->insert_ptr));
+
+			if (insert_offset > (segment_size * UNDO_CHECKPOINT_ROTATE_PCT) / 100)
+			{
+				ereport(LOG,
+						(errmsg("UNDO checkpoint: rotating active log %u "
+								"at %llu bytes (%llu%% of segment)",
+								active_log->log_number,
+								(unsigned long long) insert_offset,
+								(unsigned long long) ((insert_offset * 100) / segment_size))));
+
+				UndoLogSealAndRotate(UNDO_ROTATE_CHECKPOINT);
+			}
+		}
+	}
 
 	/*
 	 * Scan all active UNDO logs to gather statistics and verify discard
@@ -1035,6 +1284,9 @@ CheckPointUndoLog(void)
 			continue;
 
 		active_logs++;
+		if (log->state == UNDO_LOG_SEALED || log->state == UNDO_LOG_DISCARDABLE)
+			sealed_logs++;
+
 		total_allocated += UndoRecPtrGetOffset(pg_atomic_read_u64(&log->insert_ptr));
 
 		LWLockAcquire(&log->lock, LW_SHARED);
@@ -1046,10 +1298,10 @@ CheckPointUndoLog(void)
 	if (log_checkpoints && active_logs > 0)
 	{
 		ereport(LOG,
-				(errmsg("UNDO checkpoint: %d active log(s), "
+				(errmsg("UNDO checkpoint: %d active log(s) (%d sealed/discardable), "
 						"%llu bytes allocated, %llu bytes discarded, "
 						"%llu bytes retained",
-						active_logs,
+						active_logs, sealed_logs,
 						(unsigned long long) total_allocated,
 						(unsigned long long) total_discarded,
 						(unsigned long long) (total_allocated - total_discarded))));

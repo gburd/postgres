@@ -21,6 +21,7 @@
 #include "access/undolog.h"
 #include "fmgr.h"
 #include "storage/lwlock.h"
+#include "storage/procnumber.h"
 #include "storage/shmem.h"
 
 /*
@@ -39,6 +40,10 @@ typedef struct UndoWorkerShmemData
 
 	int			naptime_ms;		/* Current sleep time in ms */
 	bool		shutdown_requested; /* Worker should exit */
+
+	/* Rotation coordination fields */
+	ProcNumber	worker_proc;	/* For latch-based wakeup */
+	pg_atomic_uint32 sealed_log_count;	/* Number of SEALED logs pending */
 }			UndoWorkerShmemData;
 
 /* GUC parameters */
@@ -56,5 +61,6 @@ extern void UndoWorkerRegister(void);
 /* Utility functions */
 extern TransactionId UndoWorkerGetOldestXid(void);
 extern void UndoWorkerRequestShutdown(void);
+extern void WakeUndoDiscardWorker(void);
 
 #endif							/* UNDOWORKER_H */

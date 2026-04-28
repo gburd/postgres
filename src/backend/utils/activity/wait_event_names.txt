@@ -70,6 +70,7 @@ WAL_SENDER_MAIN	"Waiting in main loop of WAL sender process."
 WAL_SUMMARIZER_WAL	"Waiting in WAL summarizer for more WAL to be generated."
 WAL_WRITER_MAIN	"Waiting in main loop of WAL writer process."
 UNDO_FLUSH_MAIN	"Waiting in main loop of UNDO flush writer process."
+UNDO_WORKER_MAIN	"Waiting in main loop of UNDO discard worker process."
 
 ABI_compatibility:
 

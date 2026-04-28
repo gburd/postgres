@@ -100,6 +100,40 @@ undo_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->target_offset);
 			}
 			break;
+
+		case XLOG_UNDO_ROTATE:
+			{
+				xl_undo_rotate *xlrec = (xl_undo_rotate *) rec;
+				const char *trigger_name;
+
+				switch (xlrec->trigger)
+				{
+					case UNDO_ROTATE_CAPACITY:
+						trigger_name = "capacity";
+						break;
+					case UNDO_ROTATE_CHECKPOINT:
+						trigger_name = "checkpoint";
+						break;
+					case UNDO_ROTATE_PRESSURE:
+						trigger_name = "pressure";
+						break;
+					case UNDO_ROTATE_MANUAL:
+						trigger_name = "manual";
+						break;
+					default:
+						trigger_name = "unknown";
+						break;
+				}
+
+				appendStringInfo(buf,
+								 "old_log %u, seal_ptr %llu, new_log %u, "
+								 "trigger %s",
+								 xlrec->old_log_number,
+								 (unsigned long long) xlrec->old_seal_ptr,
+								 xlrec->new_log_number,
+								 trigger_name);
+			}
+			break;
 	}
 }
 
@@ -126,6 +160,9 @@ undo_identify(uint8 info)
 			break;
 		case XLOG_UNDO_APPLY_RECORD:
 			id = "APPLY_RECORD";
+			break;
+		case XLOG_UNDO_ROTATE:
+			id = "ROTATE";
 			break;
 	}
 
