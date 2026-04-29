@@ -29,6 +29,7 @@
 #include "access/transam.h"
 #include "access/undo_bufmgr.h"
 #include "access/undolog.h"
+#include "access/undorecord.h"
 #include "access/undoworker.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
@@ -74,6 +75,7 @@ typedef struct UndoLogFdCacheEntry
 	int			fd;				/* cached kernel fd, -1 if not open */
 	uint32		log_number;		/* log number this fd belongs to */
 	bool		needs_fsync;	/* dirty: written since last fsync */
+	uint64		cached_size;	/* last known file size (monotonically grows) */
 }			UndoLogFdCacheEntry;
 
 static UndoLogFdCacheEntry undo_fd_cache[MAX_UNDO_LOGS];
@@ -103,6 +105,7 @@ InitUndoFdCache(void)
 		undo_fd_cache[i].fd = -1;
 		undo_fd_cache[i].log_number = 0;
 		undo_fd_cache[i].needs_fsync = false;
+		undo_fd_cache[i].cached_size = 0;
 	}
 	undo_fd_cache_initialized = true;
 }
@@ -520,11 +523,14 @@ GetCachedUndoLogFdEntry(uint32 log_number, int flags)
 		}
 		close(undo_fd_cache[free_slot].fd);
 		undo_fd_cache[free_slot].fd = -1;
+		undo_fd_cache[free_slot].cached_size = 0;
 	}
 
 	undo_fd_cache[free_slot].fd = OpenUndoLogFile(log_number, flags);
 	undo_fd_cache[free_slot].log_number = log_number;
 	undo_fd_cache[free_slot].needs_fsync = false;
+	undo_fd_cache[free_slot].cached_size = 0;	/* will be populated by
+												 * ExtendUndoLogFile */
 
 	return &undo_fd_cache[free_slot];
 }
@@ -534,41 +540,64 @@ GetCachedUndoLogFdEntry(uint32 log_number, int flags)
  *		Extend an UNDO log file to at least new_size bytes
  *
  * Uses the per-backend fd cache so the file is not opened and closed
- * on every call.
+ * on every call.  Also caches the file size in the fd cache entry to
+ * avoid fstat() syscalls on every allocation -- the file only grows,
+ * so the cached size is a reliable lower bound.
  */
 void
 ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 {
-	char		path[MAXPGPATH];
-	int			fd;
-	struct stat statbuf;
-	uint64		current_size;
+	UndoLogFdCacheEntry *entry;
 
-	UndoLogPath(log_number, path);
-	fd = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT)->fd;
+	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
 
-	/* Get current size */
-	if (fstat(fd, &statbuf) < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not stat UNDO log file \"%s\": %m", path)));
+	/* Fast path: cached size already sufficient */
+	if (new_size <= entry->cached_size)
+		return;
 
-	current_size = statbuf.st_size;
-
-	/* Extend if needed */
-	if (new_size > current_size)
+	/*
+	 * Cache miss or first call for this entry.  Check actual file size via
+	 * fstat only when the cached size is insufficient.
+	 */
+	if (entry->cached_size == 0)
 	{
-		if (ftruncate(fd, new_size) < 0)
+		struct stat statbuf;
+		char		path[MAXPGPATH];
+
+		if (fstat(entry->fd, &statbuf) < 0)
+		{
+			UndoLogPath(log_number, path);
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not stat UNDO log file \"%s\": %m", path)));
+		}
+		entry->cached_size = statbuf.st_size;
+
+		/* Re-check after populating cache */
+		if (new_size <= entry->cached_size)
+			return;
+	}
+
+	/* Extend the file */
+	{
+		char		path[MAXPGPATH];
+
+		if (ftruncate(entry->fd, new_size) < 0)
+		{
+			UndoLogPath(log_number, path);
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not extend UNDO log file \"%s\" to %llu bytes: %m",
 							path, (unsigned long long) new_size)));
+		}
 
 		ereport(DEBUG1,
 				(errmsg("extended UNDO log %u from %llu to %llu bytes",
 						log_number,
-						(unsigned long long) current_size,
+						(unsigned long long) entry->cached_size,
 						(unsigned long long) new_size)));
+
+		entry->cached_size = new_size;
 	}
 }
 
@@ -612,6 +641,8 @@ retry:
 
 	if (active_idx >= MAX_UNDO_LOGS)
 	{
+		/* Flush deferred WAL before rotation changes active log */
+		UndoWalBatchFlush();
 		/* No active log exists, create one via seal-and-rotate */
 		UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 		goto retry;
@@ -637,6 +668,8 @@ retry:
 		 */
 		if (offset + size > segment_size)
 		{
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			/* Would exceed segment -- must rotate */
 			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 			goto retry;
@@ -663,12 +696,16 @@ retry:
 				pg_usleep(sleep_us);
 			}
 
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			UndoLogSealAndRotate(UNDO_ROTATE_PRESSURE);
 			goto retry;
 		}
 
 		if (offset + size > (segment_size * UNDO_ROTATE_THRESHOLD_PCT) / 100)
 		{
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			/* Above 85%: proactive rotation */
 			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 			goto retry;
@@ -980,6 +1017,7 @@ UndoLogCloseFiles(void)
 			undo_fd_cache[i].fd = -1;
 			undo_fd_cache[i].log_number = 0;
 			undo_fd_cache[i].needs_fsync = false;
+			undo_fd_cache[i].cached_size = 0;
 		}
 	}
 }

@@ -101,9 +101,18 @@ undo_redo(XLogReaderState *record)
 
 					if (log != NULL)
 					{
-						/* Advance insert pointer past this allocation */
-						pg_atomic_write_u64(&log->insert_ptr,
-											xlrec->start_ptr + xlrec->length);
+						/*
+						 * Advance insert pointer past this allocation.
+						 * Only move forward, never regress -- with
+						 * coalesced WAL records from concurrent backends,
+						 * a later record may cover a range already
+						 * subsumed by an earlier one.
+						 */
+						UndoRecPtr	new_end = xlrec->start_ptr + xlrec->length;
+						UndoRecPtr	cur_ptr = pg_atomic_read_u64(&log->insert_ptr);
+
+						if (new_end > cur_ptr)
+							pg_atomic_write_u64(&log->insert_ptr, new_end);
 					}
 				}
 			}

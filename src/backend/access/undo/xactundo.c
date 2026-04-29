@@ -313,7 +313,18 @@ AtCommit_XactUndo(void)
 	UndoRecordSetResetCache();
 
 	if (!XactUndo.has_undo)
+	{
+		/* Flush any deferred WAL even if has_undo is false */
+		UndoWalBatchFlush();
 		return;
+	}
+
+	/*
+	 * Flush deferred UNDO allocation WAL records before syncing data to
+	 * disk.  This ensures WAL contains the allocation metadata before we
+	 * consider the UNDO data durable.
+	 */
+	UndoWalBatchFlush();
 
 	/*
 	 * Sync UNDO data to disk before finishing commit.  If the UNDO flush
@@ -366,7 +377,18 @@ AtAbort_XactUndo(void)
 	UndoRecordSetResetCache();
 
 	if (!XactUndo.has_undo && XactUndo.relundo_list == NULL)
+	{
+		/* Discard any deferred WAL — nothing committed needs it */
+		UndoWalBatchReset();
 		return;
+	}
+
+	/*
+	 * Flush deferred UNDO allocation WAL records before UNDO replay.
+	 * If we crash during abort, recovery needs WAL to reconstruct the
+	 * UNDO log insert pointer so it can replay the UNDO chain.
+	 */
+	UndoWalBatchFlush();
 
 	/* Collapse all subtransaction state. */
 	CollapseXactUndoSubTransactions();

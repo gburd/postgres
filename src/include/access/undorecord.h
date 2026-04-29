@@ -190,6 +190,10 @@ extern void UndoRecordAddPayloadParts(UndoRecordSet *uset,
 /* Insert the accumulated records into UNDO log */
 extern UndoRecPtr UndoRecordSetInsert(UndoRecordSet *uset);
 
+/* WAL batch management for deferred UNDO allocation logging */
+extern void UndoWalBatchFlush(void);
+extern void UndoWalBatchReset(void);
+
 /* Utility functions for record manipulation */
 extern Size UndoRecordGetPayloadSize(Size payload_len);
 extern void UndoRecordSerialize(char *dest, UndoRecordHeader *header,
