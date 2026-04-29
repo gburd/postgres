@@ -3076,29 +3076,30 @@ l1:
 							  &new_xmax, &new_infomask, &new_infomask2);
 
 	/*
-	 * If UNDO is enabled, copy the old tuple before the critical section
-	 * modifies it. We need the full old tuple for rollback.
+	 * If UNDO is enabled, save the old tuple for rollback.  The buffer is
+	 * still exclusively locked, so we can read tuple data directly from
+	 * the page without copying.  We serialize the HeapUndoPayload header
+	 * and the raw tuple data as two parts directly into the UNDO buffer,
+	 * avoiding intermediate allocations.
 	 */
 	if (RelationHasUndo(relation))
 	{
-		HeapTuple	undo_oldtuple;
-		Size		payload_size;
-		char	   *payload;
+		HeapUndoPayloadHeader undo_hdr;
 
-		undo_oldtuple = heap_copytuple(&tp);
-		payload_size = HeapUndoPayloadSize(undo_oldtuple->t_len);
-		payload = (char *) palloc(payload_size);
-		HeapUndoBuildPayload(payload, payload_size,
-							 block,
-							 ItemPointerGetOffsetNumber(tid),
-							 RelationGetForm(relation)->relhasindex,
-							 (char *) undo_oldtuple->t_data,
-							 undo_oldtuple->t_len);
+		HeapUndoBuildHeader(&undo_hdr,
+							block,
+							ItemPointerGetOffsetNumber(tid),
+							RelationGetForm(relation)->relhasindex,
+							tp.t_len);
 
 		if (HeapBulkUndoIsActive(relation))
 		{
-			HeapBulkUndoAddRecord(relation, UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
-								   payload, payload_size);
+			HeapBulkUndoAddRecordParts(relation,
+									   UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+									   (const char *) &undo_hdr,
+									   SizeOfHeapUndoPayloadHeader,
+									   (const char *) tp.t_data,
+									   tp.t_len);
 		}
 		else
 		{
@@ -3106,16 +3107,18 @@ l1:
 			UndoRecPtr	undo_ptr;
 
 			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-			UndoRecordAddPayload(uset, UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
-								 RelationGetRelid(relation), payload, payload_size);
+			UndoRecordAddPayloadParts(uset,
+									  UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+									  RelationGetRelid(relation),
+									  (const char *) &undo_hdr,
+									  SizeOfHeapUndoPayloadHeader,
+									  (const char *) tp.t_data,
+									  tp.t_len);
 			undo_ptr = UndoRecordSetInsert(uset);
 			UndoRecordSetFree(uset);
 
 			SetCurrentTransactionUndoRecPtr(undo_ptr);
 		}
-
-		heap_freetuple(undo_oldtuple);
-		pfree(payload);
 	}
 
 	START_CRIT_SECTION();
@@ -4145,29 +4148,28 @@ l2:
 										   &old_key_copied);
 
 	/*
-	 * If UNDO is enabled, save the old tuple version before the critical
-	 * section modifies it.  For UPDATE, we store the full old tuple.
+	 * If UNDO is enabled, save the old tuple for rollback.  The buffer is
+	 * still exclusively locked, so we can read tuple data directly from
+	 * the page without copying.
 	 */
 	if (RelationHasUndo(relation))
 	{
-		HeapTuple	undo_oldtuple;
-		Size		payload_size;
-		char	   *payload;
+		HeapUndoPayloadHeader undo_hdr;
 
-		undo_oldtuple = heap_copytuple(&oldtup);
-		payload_size = HeapUndoPayloadSize(undo_oldtuple->t_len);
-		payload = (char *) palloc(payload_size);
-		HeapUndoBuildPayload(payload, payload_size,
-							 ItemPointerGetBlockNumber(&(oldtup.t_self)),
-							 ItemPointerGetOffsetNumber(&(oldtup.t_self)),
-							 RelationGetForm(relation)->relhasindex,
-							 (char *) undo_oldtuple->t_data,
-							 undo_oldtuple->t_len);
+		HeapUndoBuildHeader(&undo_hdr,
+							ItemPointerGetBlockNumber(&(oldtup.t_self)),
+							ItemPointerGetOffsetNumber(&(oldtup.t_self)),
+							RelationGetForm(relation)->relhasindex,
+							oldtup.t_len);
 
 		if (HeapBulkUndoIsActive(relation))
 		{
-			HeapBulkUndoAddRecord(relation, UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
-								   payload, payload_size);
+			HeapBulkUndoAddRecordParts(relation,
+									   UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+									   (const char *) &undo_hdr,
+									   SizeOfHeapUndoPayloadHeader,
+									   (const char *) oldtup.t_data,
+									   oldtup.t_len);
 		}
 		else
 		{
@@ -4175,16 +4177,18 @@ l2:
 			UndoRecPtr	undo_ptr;
 
 			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-			UndoRecordAddPayload(uset, UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
-								 RelationGetRelid(relation), payload, payload_size);
+			UndoRecordAddPayloadParts(uset,
+									  UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+									  RelationGetRelid(relation),
+									  (const char *) &undo_hdr,
+									  SizeOfHeapUndoPayloadHeader,
+									  (const char *) oldtup.t_data,
+									  oldtup.t_len);
 			undo_ptr = UndoRecordSetInsert(uset);
 			UndoRecordSetFree(uset);
 
 			SetCurrentTransactionUndoRecPtr(undo_ptr);
 		}
-
-		heap_freetuple(undo_oldtuple);
-		pfree(payload);
 	}
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
@@ -9569,6 +9573,36 @@ HeapBulkUndoAddRecord(Relation rel, uint8 rmid, uint16 info,
 
 	UndoRecordAddPayload(bulk_undo_state.uset, rmid, info,
 						  RelationGetRelid(rel), payload, payload_len);
+	bulk_undo_state.nrecords++;
+
+	/* Auto-flush when thresholds are exceeded */
+	if (bulk_undo_state.uset->buffer_size >= HEAP_BULK_UNDO_FLUSH_THRESHOLD ||
+		bulk_undo_state.nrecords >= HEAP_BULK_UNDO_FLUSH_RECORDS)
+	{
+		HeapBulkUndoFlush();
+	}
+}
+
+/*
+ * HeapBulkUndoAddRecordParts - Add an UNDO record with scatter-gather payload.
+ *
+ * Like HeapBulkUndoAddRecord, but takes the payload as two parts that are
+ * serialized directly into the uset buffer.  This avoids allocating an
+ * intermediate payload buffer for DELETE/UPDATE where the payload is a
+ * fixed header struct + variable-length tuple data.
+ */
+void
+HeapBulkUndoAddRecordParts(Relation rel, uint8 rmid, uint16 info,
+						   const char *part1, Size part1_len,
+						   const char *part2, Size part2_len)
+{
+	Assert(bulk_undo_state.active);
+	Assert(bulk_undo_state.uset != NULL);
+
+	UndoRecordAddPayloadParts(bulk_undo_state.uset, rmid, info,
+							  RelationGetRelid(rel),
+							  part1, part1_len,
+							  part2, part2_len);
 	bulk_undo_state.nrecords++;
 
 	/* Auto-flush when thresholds are exceeded */

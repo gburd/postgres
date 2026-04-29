@@ -141,6 +141,28 @@ HeapUndoPayloadSize(uint32 tuple_len)
 }
 
 /*
+ * HeapUndoBuildHeader - Fill in a HeapUndoPayloadHeader struct
+ *
+ * This builds just the fixed header portion of the UNDO payload.
+ * Callers can pass this header and the raw tuple data separately to
+ * scatter-gather UNDO APIs, avoiding an intermediate palloc + memcpy.
+ */
+void
+HeapUndoBuildHeader(HeapUndoPayloadHeader *hdr,
+					BlockNumber blkno, OffsetNumber offset,
+					bool relhasindex, uint32 tuple_len)
+{
+	hdr->blkno = blkno;
+	hdr->offset = offset;
+	hdr->flags = 0;
+	if (relhasindex)
+		hdr->flags |= HEAP_UNDO_HAS_INDEX;
+	if (tuple_len > 0)
+		hdr->flags |= HEAP_UNDO_HAS_TUPLE;
+	hdr->tuple_len = tuple_len;
+}
+
+/*
  * heap_undo_apply - Apply a single heap UNDO record
  *
  * This is the rm_undo callback for the heap RM.  It dispatches by
