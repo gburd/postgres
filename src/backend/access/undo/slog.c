@@ -1,17 +1,20 @@
 /*-------------------------------------------------------------------------
  *
  * slog.c
- *	  Secondary Log (sLog) — Hash-based shared-memory tracking
+ *	  Secondary Log (sLog) — Skip-list + sparsemap shared-memory tracking
  *
- * The sLog replaces the old fixed-array ATM with three shared-memory hash
- * tables that provide O(1) lookups for aborted transaction tracking and
- * per-tuple operation tracking.
+ * The sLog tracks aborted transactions and per-tuple operations in shared
+ * memory for the UNDO subsystem.
  *
- * Transaction sLog (SLogTxnHash + SLogXidHash):
- *   - SLogTxnHash keyed by (xid, reloid) stores full abort metadata.
- *   - SLogXidHash keyed by xid stores a refcount of TxnHash entries,
- *     enabling O(1) ATMIsAborted() via SLogXidIsPresent().
- *   - Partitioned by txn_locks[xid % NUM_SLOG_TXN_PARTITIONS].
+ * Transaction sLog (skip-list + sparsemap):
+ *   - A shared-memory skip-list keyed by (xid, reloid) stores full abort
+ *     metadata.  Entries are ordered by xid then reloid, enabling efficient
+ *     range operations for per-xid lookups.
+ *   - A shared-memory sparsemap (compressed bitmap) provides O(1)
+ *     SLogXidIsPresent() checks.
+ *   - The skip-list is protected by a single LWLock (sLog modifications
+ *     only occur on transaction abort, an uncommon path).
+ *   - The sparsemap is protected by a SpinLock (operations are O(1)).
  *
  * Tuple sLog (SLogTupleHash):
  *   - Keyed by (relid, tid), stores up to SLOG_MAX_TUPLE_OPS concurrent
@@ -19,8 +22,7 @@
  *   - Partitioned by tuple_locks[hash(relid,tid) % NUM_SLOG_TUPLE_PARTITIONS].
  *   - WAL-free: entries are transient, removed at commit/abort.
  *
- * Locking: All locks are from LWTRANCHE_SLOG.  Transaction locks cover
- * both TxnHash and XidHash (same partition index = xid % 16).
+ * Locking: All locks are from LWTRANCHE_SLOG.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -35,18 +37,147 @@
 #include "access/slog.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/spin.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+
+#include "lib/sparsemap.h"
+
+/* ----------------------------------------------------------------
+ * Skip-list instantiation for transaction sLog
+ *
+ * The skip-list is designed for lock-free concurrent access, but we
+ * use SKIPLIST_SINGLE_THREADED mode here because:
+ *  (a) The pool allocator (shared-memory slab) is not itself lock-free.
+ *  (b) The sparsemap is not concurrent-safe.
+ *  (c) sLog modifications only happen on transaction abort — an
+ *      uncommon path — so a single LWLock is sufficient.
+ *
+ * SKIPLIST_SINGLE_THREADED eliminates C11 <stdatomic.h> dependency,
+ * replacing atomics with plain loads/stores.  All concurrent access
+ * is serialized externally by txn_lock (LWLock).
+ *
+ * Max height 16 supports 2^16 = 65,536 entries; the pool holds at
+ * most 256 user entries, so this provides ample headroom while
+ * minimizing per-node overhead (16 level pointers per pool slot).
+ * ----------------------------------------------------------------
+ */
+#define SKIPLIST_MAX_HEIGHT 16
+#define SKIPLIST_SINGLE_THREADED
+#include "lib/skiplist.h"
+
+/*
+ * struct slog_txn_node - Skip-list node for transaction sLog entries.
+ *
+ * Ordered by (xid ASC, reloid ASC) so all entries for a given xid
+ * are contiguous in the skip-list.
+ */
+struct slog_txn_node
+{
+	/* Key fields */
+	TransactionId xid;
+	Oid			reloid;
+
+	/* Data fields */
+	RelUndoRecPtr undo_chain;
+	Oid			dboid;
+	TimestampTz abort_time;
+	bool		revert_complete;
+
+	/* Skip-list metadata */
+	SKIPLIST_ENTRY(slog_txn) entries;
+};
+
+/*
+ * Suppress warnings from macro-generated skip-list functions:
+ * - Missing prototypes: SKIPLIST_DECL generates non-static functions
+ * - Mixed declarations: the macro bodies use C99 style
+ * - Unused functions: not all generated functions are called
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+#pragma GCC diagnostic ignored "-Wunused-function"
+
+/* *INDENT-OFF* */
+SKIPLIST_DECL(slog_txn, sl_, entries,
+	/* compare_entries: order by (xid, reloid) */
+	{
+		if (a->xid < b->xid)
+			return -1;
+		if (a->xid > b->xid)
+			return 1;
+		if (a->reloid < b->reloid)
+			return -1;
+		if (a->reloid > b->reloid)
+			return 1;
+		return 0;
+	},
+	/* free_entry: no-op (no heap resources to free) */
+	{
+		(void) node;
+	},
+	/* update_entry: copy data fields from value */
+	{
+		slog_txn_node_t *src = (slog_txn_node_t *) value;
+		node->undo_chain = src->undo_chain;
+		node->dboid = src->dboid;
+		node->abort_time = src->abort_time;
+		node->revert_complete = src->revert_complete;
+	},
+	/* archive_entry: deep copy */
+	{
+		dest->xid = src->xid;
+		dest->reloid = src->reloid;
+		dest->undo_chain = src->undo_chain;
+		dest->dboid = src->dboid;
+		dest->abort_time = src->abort_time;
+		dest->revert_complete = src->revert_complete;
+	},
+	/* sizeof_entry */
+	{
+		bytes = sizeof(slog_txn_node_t);
+	})
+
+SKIPLIST_DECL_POOL(slog_txn, sl_, entries, SLOG_TXN_POOL_CAPACITY)
+/* *INDENT-ON* */
+
+#pragma GCC diagnostic pop
+
+/* ----------------------------------------------------------------
+ * Shared state definition
+ * ----------------------------------------------------------------
+ */
+typedef struct SLogSharedState
+{
+	/* Transaction skip-list */
+	slog_txn_t	txn_list;		/* skip-list head struct */
+	_skip_pool_slog_txn_t txn_pool; /* pool allocator struct */
+	LWLockPadded txn_lock;		/* single LWLock for skip-list */
+
+	/* XID presence bitmap */
+	sparsemap_t xid_map;		/* sparsemap struct */
+	slock_t		xid_spinlock;	/* SpinLock for sparsemap */
+
+	/* Tuple hash (unchanged from hash-based implementation) */
+	LWLockPadded tuple_locks[NUM_SLOG_TUPLE_PARTITIONS];
+} SLogSharedState;
 
 /* ----------------------------------------------------------------
  * Static variables
  * ----------------------------------------------------------------
  */
-static HTAB *SLogTxnHash = NULL;
-static HTAB *SLogXidHash = NULL;
 static HTAB *SLogTupleHash = NULL;
 static SLogSharedState *SLogState = NULL;
+
+/* Pointers to ShmemAlloc'd regions, set by ShmemRequestStruct framework */
+static char *SLogPoolSlots = NULL;
+static char *SLogPoolFreeList = NULL;
+static char *SLogXidMapBuffer = NULL;
+
+/* Sentinel value for slh_ebr to redirect node deallocation */
+static int	slog_ebr_sentinel = 1;
 
 /* ----------------------------------------------------------------
  * Backend-private tracking for tuple sLog cleanup
@@ -66,12 +197,17 @@ static SLogTrackedKey *slog_tracked_keys = NULL;
  */
 
 /*
- * Compute LWLock partition index for transaction operations.
+ * EBR retire callback for the skip-list.
+ *
+ * Instead of pfree()'ing the node (which would crash on shared memory),
+ * we return it to the pool's free list.
  */
-static inline int
-SLogTxnPartition(TransactionId xid)
+static void
+slog_ebr_retire_callback(void *ebr_state, slog_txn_t *slist, slog_txn_node_t *node)
 {
-	return xid % NUM_SLOG_TXN_PARTITIONS;
+	(void) ebr_state;
+	(void) slist;
+	sl_skip_pool_free_slog_txn(&SLogState->txn_pool, node);
 }
 
 /*
@@ -97,20 +233,29 @@ SLogTuplePartition(Oid relid, ItemPointer tid)
 /*
  * SLogShmemSize
  *		Calculate shared memory needed for the sLog.
- *
- * This is kept for informational purposes (e.g., UndoShmemSize()).
- * The actual shared memory registration is done by SLogShmemRequest().
  */
 Size
 SLogShmemSize(void)
 {
 	Size		size;
+	size_t		raw_slot_size;
+	size_t		slot_size;
 
 	size = MAXALIGN(sizeof(SLogSharedState));
-	size = add_size(size, hash_estimate_size(SLOG_TXN_HASH_SIZE,
-											 sizeof(SLogTxnEntry)));
-	size = add_size(size, hash_estimate_size(SLOG_XID_HASH_SIZE,
-											 sizeof(SLogXidPresence)));
+
+	/* Pool slots: node + levels array, rounded to 64-byte alignment */
+	raw_slot_size = sizeof(slog_txn_node_t) +
+		sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
+	slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
+	size = add_size(size, MAXALIGN(slot_size * SLOG_TXN_POOL_CAPACITY));
+
+	/* Pool free-list array */
+	size = add_size(size, MAXALIGN(SLOG_TXN_POOL_CAPACITY * sizeof(int32_t)));
+
+	/* Sparsemap buffer */
+	size = add_size(size, MAXALIGN(SLOG_XID_MAP_BUFSIZE));
+
+	/* Tuple hash table */
 	size = add_size(size, hash_estimate_size(SLOG_TUPLE_HASH_SIZE,
 											 sizeof(SLogTupleEntry)));
 
@@ -121,10 +266,9 @@ SLogShmemSize(void)
  * SLogShmemRequest
  *		Register shared memory needs for the sLog.
  *
- * Called from UndoShmemRequest() during the request_fn phase of
- * postmaster startup, before shared memory is allocated.  Uses the
- * modern ShmemRequestStruct/ShmemRequestHash pattern so that
- * CalculateShmemSize() accounts for the sLog's hash tables.
+ * We register the main state struct, pool regions, sparsemap buffer,
+ * and tuple hash table via the ShmemRequestStruct/ShmemRequestHash
+ * framework.
  */
 void
 SLogShmemRequest(void)
@@ -135,29 +279,7 @@ SLogShmemRequest(void)
 					   .ptr = (void **) &SLogState,
 		);
 
-	/* SLogTxnHash: keyed by SLogTxnKey */
-	ShmemRequestHash(.name = "sLog Transaction Hash",
-					 .nelems = SLOG_TXN_HASH_SIZE,
-					 .ptr = &SLogTxnHash,
-					 .hash_info.keysize = sizeof(SLogTxnKey),
-					 .hash_info.entrysize = sizeof(SLogTxnEntry),
-					 .hash_info.num_partitions = NUM_SLOG_TXN_PARTITIONS,
-					 .hash_flags = HASH_ELEM | HASH_BLOBS |
-					 HASH_PARTITION | HASH_FIXED_SIZE,
-		);
-
-	/* SLogXidHash: keyed by TransactionId */
-	ShmemRequestHash(.name = "sLog XID Presence Hash",
-					 .nelems = SLOG_XID_HASH_SIZE,
-					 .ptr = &SLogXidHash,
-					 .hash_info.keysize = sizeof(TransactionId),
-					 .hash_info.entrysize = sizeof(SLogXidPresence),
-					 .hash_info.num_partitions = NUM_SLOG_TXN_PARTITIONS,
-					 .hash_flags = HASH_ELEM | HASH_BLOBS |
-					 HASH_PARTITION | HASH_FIXED_SIZE,
-		);
-
-	/* SLogTupleHash: keyed by SLogTupleKey */
+	/* SLogTupleHash: keyed by SLogTupleKey (unchanged) */
 	ShmemRequestHash(.name = "sLog Tuple Hash",
 					 .nelems = SLOG_TUPLE_HASH_SIZE,
 					 .ptr = &SLogTupleHash,
@@ -167,25 +289,140 @@ SLogShmemRequest(void)
 					 .hash_flags = HASH_ELEM | HASH_BLOBS |
 					 HASH_PARTITION | HASH_FIXED_SIZE,
 		);
+
+	/*
+	 * Additional shared memory for pool slots, free-list, and sparsemap
+	 * buffer registered as separate ShmemRequestStruct entries.
+	 */
+	{
+		size_t		raw_slot_size;
+		size_t		slot_size;
+
+		raw_slot_size = sizeof(slog_txn_node_t) +
+			sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
+		slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
+
+		ShmemRequestStruct(.name = "sLog Pool Slots",
+						   .size = slot_size * SLOG_TXN_POOL_CAPACITY,
+						   .ptr = (void **) &SLogPoolSlots,
+			);
+
+		ShmemRequestStruct(.name = "sLog Pool FreeList",
+						   .size = SLOG_TXN_POOL_CAPACITY * sizeof(int32_t),
+						   .ptr = (void **) &SLogPoolFreeList,
+			);
+
+		ShmemRequestStruct(.name = "sLog XID Map Buffer",
+						   .size = SLOG_XID_MAP_BUFSIZE,
+						   .ptr = (void **) &SLogXidMapBuffer,
+			);
+	}
 }
 
 /*
  * SLogShmemInit
  *		Initialize sLog shared memory contents.
  *
- * Called from UndoShmemInit() during the init_fn phase.  By this point,
- * the framework has already allocated the shared state struct and hash
- * tables (via SLogShmemRequest), and set SLogState, SLogTxnHash,
- * SLogXidHash, SLogTupleHash.  We only need to initialize the LWLocks.
+ * Called from UndoShmemInit() during the init_fn phase.  The framework
+ * has already allocated SLogState and SLogTupleHash.  We manually
+ * initialize the skip-list pool, skip-list, and sparsemap.
  */
 void
 SLogShmemInit(void)
 {
+	slog_txn_t *slist = &SLogState->txn_list;
+	_skip_pool_slog_txn_t *pool = &SLogState->txn_pool;
+	size_t		raw_slot_size;
+	size_t		slot_size;
+	slog_txn_node_t *head_node;
+	slog_txn_node_t *tail_node;
 	int			i;
 
-	for (i = 0; i < NUM_SLOG_TXN_PARTITIONS; i++)
-		LWLockInitialize(&SLogState->txn_locks[i].lock,
-						 LWTRANCHE_SLOG);
+	/* ---- Initialize the pool manually in shared memory ---- */
+
+	raw_slot_size = sizeof(slog_txn_node_t) +
+		sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
+	slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
+
+	pool->capacity = SLOG_TXN_POOL_CAPACITY;
+	pool->slot_size = slot_size;
+
+	/* Use the framework-allocated shared memory regions */
+	pool->slots = SLogPoolSlots;
+	memset(pool->slots, 0, slot_size * SLOG_TXN_POOL_CAPACITY);
+
+	pool->next_free = (int32_t *) SLogPoolFreeList;
+	memset(pool->next_free, 0, SLOG_TXN_POOL_CAPACITY * sizeof(int32_t));
+
+	/* Build the free-list chain */
+	for (i = 0; i < SLOG_TXN_POOL_CAPACITY - 1; i++)
+		pool->next_free[i] = i + 1;
+	pool->next_free[SLOG_TXN_POOL_CAPACITY - 1] = -1;
+	pool->free_head = 0;
+
+	/* ---- Initialize the skip-list manually ---- */
+
+	/* Allocate head and tail sentinel nodes from the pool */
+	head_node = sl_skip_pool_alloc_slog_txn(pool);
+	tail_node = sl_skip_pool_alloc_slog_txn(pool);
+
+	if (head_node == NULL || tail_node == NULL)
+		elog(PANIC, "sLog: failed to allocate skip-list sentinels from pool");
+
+	/* Set up sentinel heights and forward pointers */
+	head_node->entries.sle_height = 1;
+	for (i = 0; i < SKIPLIST_MAX_HEIGHT; i++)
+		head_node->entries.sle_levels[i].next = tail_node;
+	head_node->entries.sle_prev = NULL;
+
+	tail_node->entries.sle_height = 1;
+	for (i = 0; i < SKIPLIST_MAX_HEIGHT; i++)
+		tail_node->entries.sle_levels[i].next = NULL;
+	tail_node->entries.sle_prev = head_node;
+
+	/* Initialize the skip-list struct */
+	slist->slh_length = 0;
+	slist->slh_aux = NULL;
+	slist->slh_head = head_node;
+	slist->slh_tail = tail_node;
+
+	/* Set function pointers */
+	slist->slh_fns.free_entry = _skip_free_entry_fn_slog_txn;
+	slist->slh_fns.update_entry = _skip_update_entry_fn_slog_txn;
+	slist->slh_fns.archive_entry = _skip_archive_entry_fn_slog_txn;
+	slist->slh_fns.sizeof_entry = _skip_sizeof_entry_fn_slog_txn;
+	slist->slh_fns.compare_entries = _skip_compare_entries_fn_slog_txn;
+	slist->slh_fns.snapshot_preserve_node = NULL;
+	slist->slh_fns.snapshot_release = NULL;
+
+	/* Snapshot fields unused */
+	slist->slh_snap.cur_era = 0;
+	slist->slh_snap.pres_era = 0;
+	slist->slh_snap.pres = NULL;
+
+	/* Seed PRNG */
+	slist->slh_prng_state = ((uint32_t) time(NULL) ^
+							 ((uint32_t) MyProcPid << 16) ^
+							 (uint32_t) (uintptr_t) slist);
+	slist->slh_splay_counter = 0;
+
+	/*
+	 * Set EBR hooks to redirect node deallocation to pool free-list instead
+	 * of pfree().  We use a non-NULL sentinel for slh_ebr so the skip-list's
+	 * remove_node code takes the EBR path.
+	 */
+	slist->slh_ebr = &slog_ebr_sentinel;
+	slist->slh_ebr_retire = slog_ebr_retire_callback;
+
+	/* ---- Initialize the sparsemap ---- */
+
+	sparsemap_init(&SLogState->xid_map, (uint8 *) SLogXidMapBuffer,
+				 SLOG_XID_MAP_BUFSIZE);
+
+	/* ---- Initialize locks ---- */
+
+	LWLockInitialize(&SLogState->txn_lock.lock, LWTRANCHE_SLOG);
+	SpinLockInit(&SLogState->xid_spinlock);
 
 	for (i = 0; i < NUM_SLOG_TUPLE_PARTITIONS; i++)
 		LWLockInitialize(&SLogState->tuple_locks[i].lock,
@@ -201,71 +438,66 @@ SLogShmemInit(void)
  * SLogTxnInsert
  *		Insert an aborted transaction entry into the sLog.
  *
- * Creates entries in both SLogTxnHash and SLogXidHash (refcount).
- * Returns false if the hash table is full.
+ * Creates an entry in the skip-list and sets the corresponding bit
+ * in the XID sparsemap.  Returns false if the pool is full.
  */
 bool
 SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
 			  RelUndoRecPtr chain)
 {
-	int			partition = SLogTxnPartition(xid);
-	SLogTxnKey	key;
-	SLogTxnEntry *txn_entry;
-	SLogXidPresence *xid_entry;
-	bool		found;
+	slog_txn_node_t *node;
+	slog_txn_node_t query;
+	slog_txn_node_t *existing;
+	int			rc;
 
-	/* Zero the key struct for deterministic hashing */
-	memset(&key, 0, sizeof(key));
-	key.xid = xid;
-	key.reloid = reloid;
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_EXCLUSIVE);
+	/* Check for duplicate first */
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = reloid;
 
-	/* Insert into TxnHash */
-	txn_entry = (SLogTxnEntry *)
-		hash_search(SLogTxnHash, &key, HASH_ENTER_NULL, &found);
-
-	if (txn_entry == NULL)
-	{
-		/* Table full */
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
-		return false;
-	}
-
-	if (found)
+	existing = sl_skip_position_eq_slog_txn(&SLogState->txn_list, &query);
+	if (existing != NULL)
 	{
 		/* Already present — no-op */
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
+		LWLockRelease(&SLogState->txn_lock.lock);
 		return true;
 	}
 
-	/* Fill in the new entry */
-	txn_entry->undo_chain = chain;
-	txn_entry->dboid = dboid;
-	txn_entry->abort_time = GetCurrentTimestamp();
-	txn_entry->revert_complete = false;
-
-	/* Increment XidHash refcount */
-	xid_entry = (SLogXidPresence *)
-		hash_search(SLogXidHash, &xid, HASH_ENTER_NULL, &found);
-
-	if (xid_entry == NULL)
+	/* Allocate from pool */
+	node = sl_skip_pool_alloc_slog_txn(&SLogState->txn_pool);
+	if (node == NULL)
 	{
-		/*
-		 * XidHash full — remove the TxnHash entry we just added to keep
-		 * the two tables consistent.
-		 */
-		hash_search(SLogTxnHash, &key, HASH_REMOVE, NULL);
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
+		/* Pool full */
+		LWLockRelease(&SLogState->txn_lock.lock);
 		return false;
 	}
 
-	if (!found)
-		xid_entry->refcount = 0;
+	/* Fill key and data fields */
+	node->xid = xid;
+	node->reloid = reloid;
+	node->undo_chain = chain;
+	node->dboid = dboid;
+	node->abort_time = GetCurrentTimestamp();
+	node->revert_complete = false;
 
-	xid_entry->refcount++;
+	/* Insert into skip-list */
+	rc = sl_skip_insert_slog_txn(&SLogState->txn_list, node);
+	if (rc != 0)
+	{
+		/* Duplicate (shouldn't happen after our check, but be safe) */
+		sl_skip_pool_free_slog_txn(&SLogState->txn_pool, node);
+		LWLockRelease(&SLogState->txn_lock.lock);
+		return true;
+	}
 
-	LWLockRelease(&SLogState->txn_locks[partition].lock);
+	/* Update sparsemap */
+	SpinLockAcquire(&SLogState->xid_spinlock);
+	sparsemap_add(&SLogState->xid_map, (uint64) xid);
+	SpinLockRelease(&SLogState->xid_spinlock);
+
+	LWLockRelease(&SLogState->txn_lock.lock);
 	return true;
 }
 
@@ -274,20 +506,18 @@ SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
  *		O(1) check whether a transaction has any sLog entries.
  *
  * This is the hot-path replacement for the old O(N) ATMIsAborted scan.
+ * Uses only the SpinLock-protected sparsemap, avoiding the heavier LWLock.
  */
 bool
 SLogXidIsPresent(TransactionId xid)
 {
-	int			partition = SLogTxnPartition(xid);
-	bool		found;
+	bool		result;
 
-	LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_SHARED);
+	SpinLockAcquire(&SLogState->xid_spinlock);
+	result = sparsemap_contains(&SLogState->xid_map, (uint64) xid);
+	SpinLockRelease(&SLogState->xid_spinlock);
 
-	hash_search(SLogXidHash, &xid, HASH_FIND, &found);
-
-	LWLockRelease(&SLogState->txn_locks[partition].lock);
-
-	return found;
+	return result;
 }
 
 /*
@@ -299,268 +529,231 @@ SLogXidIsPresent(TransactionId xid)
 bool
 SLogTxnLookup(TransactionId xid, Oid reloid, SLogTxnEntry *entry_out)
 {
-	int			partition = SLogTxnPartition(xid);
-	SLogTxnKey	key;
-	SLogTxnEntry *entry;
-	bool		found;
+	slog_txn_node_t query;
+	slog_txn_node_t *found;
 
-	memset(&key, 0, sizeof(key));
-	key.xid = xid;
-	key.reloid = reloid;
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = reloid;
 
-	LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_SHARED);
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	entry = (SLogTxnEntry *)
-		hash_search(SLogTxnHash, &key, HASH_FIND, &found);
+	found = sl_skip_position_eq_slog_txn(&SLogState->txn_list, &query);
 
-	if (found && entry_out)
-		memcpy(entry_out, entry, sizeof(SLogTxnEntry));
+	if (found != NULL && entry_out != NULL)
+	{
+		entry_out->xid = found->xid;
+		entry_out->reloid = found->reloid;
+		entry_out->undo_chain = found->undo_chain;
+		entry_out->dboid = found->dboid;
+		entry_out->abort_time = found->abort_time;
+		entry_out->revert_complete = found->revert_complete;
+	}
 
-	LWLockRelease(&SLogState->txn_locks[partition].lock);
+	LWLockRelease(&SLogState->txn_lock.lock);
 
-	return found;
+	return (found != NULL);
 }
 
 /*
  * SLogTxnLookupByXid
  *		Find the UNDO chain for a given xid (any reloid).
  *
- * Uses hash_seq_search over TxnHash.  O(N) but called rarely
- * (only by ATMGetUndoChain).  Returns the first matching entry's chain.
+ * Uses skip-list GTE positioning to find the first entry with the given
+ * xid.  O(log n) instead of O(n) hash scan.
  */
 bool
 SLogTxnLookupByXid(TransactionId xid, RelUndoRecPtr *chain_out)
 {
-	HASH_SEQ_STATUS status;
-	SLogTxnEntry *entry;
-	bool		found = false;
+	slog_txn_node_t query;
+	slog_txn_node_t *found;
 
-	hash_seq_init(&status, SLogTxnHash);
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = 0;			/* minimum reloid */
 
-	while ((entry = (SLogTxnEntry *) hash_seq_search(&status)) != NULL)
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
+
+	found = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
+
+	if (found != NULL && found->xid == xid)
 	{
-		if (entry->key.xid == xid)
-		{
-			if (chain_out)
-				*chain_out = entry->undo_chain;
-			found = true;
-			hash_seq_term(&status);
-			break;
-		}
+		if (chain_out)
+			*chain_out = found->undo_chain;
+		LWLockRelease(&SLogState->txn_lock.lock);
+		return true;
 	}
 
-	return found;
+	LWLockRelease(&SLogState->txn_lock.lock);
+	return false;
 }
 
 /*
  * SLogTxnRemove
  *		Remove a specific (xid, reloid) entry.
  *
- * Decrements the XidHash refcount, removing the xid entry when it
- * reaches zero.
+ * After removal, checks whether any entries remain for this xid and
+ * clears the sparsemap bit if not.
  */
 void
 SLogTxnRemove(TransactionId xid, Oid reloid)
 {
-	int			partition = SLogTxnPartition(xid);
-	SLogTxnKey	key;
-	bool		found;
-	SLogXidPresence *xid_entry;
+	slog_txn_node_t query;
+	slog_txn_node_t check;
+	slog_txn_node_t *remaining;
+	int			rc;
 
-	memset(&key, 0, sizeof(key));
-	key.xid = xid;
-	key.reloid = reloid;
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = reloid;
 
-	LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_EXCLUSIVE);
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	hash_search(SLogTxnHash, &key, HASH_REMOVE, &found);
+	rc = sl_skip_remove_node_slog_txn(&SLogState->txn_list, &query);
 
-	if (found)
+	if (rc == 0)
 	{
-		xid_entry = (SLogXidPresence *)
-			hash_search(SLogXidHash, &xid, HASH_FIND, NULL);
+		/* Successfully removed.  Check if any entries remain for this xid. */
+		memset(&check, 0, sizeof(check));
+		check.xid = xid;
+		check.reloid = 0;
 
-		if (xid_entry)
+		remaining = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &check);
+
+		if (remaining == NULL || remaining->xid != xid)
 		{
-			xid_entry->refcount--;
-			if (xid_entry->refcount <= 0)
-				hash_search(SLogXidHash, &xid, HASH_REMOVE, NULL);
+			/* No entries remain — clear sparsemap bit */
+			SpinLockAcquire(&SLogState->xid_spinlock);
+			sparsemap_remove(&SLogState->xid_map, (uint64) xid);
+			SpinLockRelease(&SLogState->xid_spinlock);
 		}
 	}
 
-	LWLockRelease(&SLogState->txn_locks[partition].lock);
+	LWLockRelease(&SLogState->txn_lock.lock);
 }
 
 /*
  * SLogTxnRemoveByXid
  *		Remove all sLog entries for a given transaction ID.
  *
- * Two-phase: collect matching keys under SHARED, then remove under
- * EXCLUSIVE.  This avoids modifying the hash table during seq scan.
+ * Collects all nodes for this xid into a local array, then removes
+ * them.  The entries are contiguous in the skip-list thanks to the
+ * (xid, reloid) ordering.
  */
 void
 SLogTxnRemoveByXid(TransactionId xid)
 {
-	HASH_SEQ_STATUS status;
-	SLogTxnEntry *entry;
-	SLogTxnKey *keys;
-	int			nkeys = 0;
-	int			max_keys = 64;
-	int			partition;
+	slog_txn_node_t query;
+	slog_txn_node_t *node;
+	slog_txn_node_t *next;
+	slog_txn_node_t **to_remove;
+	int			nremove = 0;
+	int			max_remove = 64;
 	int			i;
 
-	keys = (SLogTxnKey *) palloc(max_keys * sizeof(SLogTxnKey));
+	to_remove = (slog_txn_node_t **) palloc(max_remove * sizeof(slog_txn_node_t *));
 
-	/* Phase 1: Collect keys */
-	hash_seq_init(&status, SLogTxnHash);
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = 0;
 
-	while ((entry = (SLogTxnEntry *) hash_seq_search(&status)) != NULL)
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
+
+	/* Collect all nodes with matching xid */
+	node = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
+
+	while (node != NULL && node->xid == xid)
 	{
-		if (entry->key.xid == xid)
+		if (nremove >= max_remove)
 		{
-			if (nkeys >= max_keys)
-			{
-				max_keys *= 2;
-				keys = (SLogTxnKey *)
-					repalloc(keys, max_keys * sizeof(SLogTxnKey));
-			}
-			memcpy(&keys[nkeys], &entry->key, sizeof(SLogTxnKey));
-			nkeys++;
+			max_remove *= 2;
+			to_remove = (slog_txn_node_t **)
+				repalloc(to_remove, max_remove * sizeof(slog_txn_node_t *));
 		}
+		to_remove[nremove++] = node;
+		next = sl_skip_next_node_slog_txn(&SLogState->txn_list, node);
+		node = next;
 	}
 
-	/* Phase 2: Remove collected keys */
-	for (i = 0; i < nkeys; i++)
+	/* Remove collected nodes */
+	for (i = 0; i < nremove; i++)
 	{
-		partition = SLogTxnPartition(keys[i].xid);
-
-		LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_EXCLUSIVE);
-		hash_search(SLogTxnHash, &keys[i], HASH_REMOVE, NULL);
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
+		sl_skip_remove_node_slog_txn(&SLogState->txn_list, to_remove[i]);
 	}
 
-	/* Remove XidHash entry */
-	if (nkeys > 0)
+	/* Clear sparsemap bit */
+	if (nremove > 0)
 	{
-		partition = SLogTxnPartition(xid);
-
-		LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_EXCLUSIVE);
-		hash_search(SLogXidHash, &xid, HASH_REMOVE, NULL);
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
+		SpinLockAcquire(&SLogState->xid_spinlock);
+		sparsemap_remove(&SLogState->xid_map, (uint64) xid);
+		SpinLockRelease(&SLogState->xid_spinlock);
 	}
 
-	pfree(keys);
+	LWLockRelease(&SLogState->txn_lock.lock);
+
+	pfree(to_remove);
 }
 
 /*
  * SLogTxnMarkReverted
  *		Mark all entries for a given xid as revert_complete.
  *
- * Two-phase: collect keys under seq scan, then update under lock.
+ * Walks the contiguous range of entries for this xid in the skip-list.
  */
 void
 SLogTxnMarkReverted(TransactionId xid)
 {
-	HASH_SEQ_STATUS status;
-	SLogTxnEntry *entry;
-	SLogTxnKey *keys;
-	int			nkeys = 0;
-	int			max_keys = 64;
-	int			partition;
-	int			i;
+	slog_txn_node_t query;
+	slog_txn_node_t *node;
 
-	keys = (SLogTxnKey *) palloc(max_keys * sizeof(SLogTxnKey));
+	memset(&query, 0, sizeof(query));
+	query.xid = xid;
+	query.reloid = 0;
 
-	/* Phase 1: Collect keys */
-	hash_seq_init(&status, SLogTxnHash);
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	while ((entry = (SLogTxnEntry *) hash_seq_search(&status)) != NULL)
+	node = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
+
+	while (node != NULL && node->xid == xid)
 	{
-		if (entry->key.xid == xid)
-		{
-			if (nkeys >= max_keys)
-			{
-				max_keys *= 2;
-				keys = (SLogTxnKey *)
-					repalloc(keys, max_keys * sizeof(SLogTxnKey));
-			}
-			memcpy(&keys[nkeys], &entry->key, sizeof(SLogTxnKey));
-			nkeys++;
-		}
+		node->revert_complete = true;
+		node = sl_skip_next_node_slog_txn(&SLogState->txn_list, node);
 	}
 
-	/* Phase 2: Update under lock */
-	for (i = 0; i < nkeys; i++)
-	{
-		bool		found;
-
-		partition = SLogTxnPartition(keys[i].xid);
-
-		LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_EXCLUSIVE);
-
-		entry = (SLogTxnEntry *)
-			hash_search(SLogTxnHash, &keys[i], HASH_FIND, &found);
-
-		if (found)
-			entry->revert_complete = true;
-
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
-	}
-
-	pfree(keys);
+	LWLockRelease(&SLogState->txn_lock.lock);
 }
 
 /*
  * SLogTxnGetNextUnreverted
  *		Find an entry that hasn't been reverted yet.
  *
- * Uses hash_seq_search to scan, then verifies under partition lock.
- * Returns true if an unreverted entry was found.
+ * Iterates the skip-list from head to tail (ordered by xid), returning
+ * the first entry with revert_complete == false.
  */
 bool
 SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
 						 Oid *reloid_out, RelUndoRecPtr *chain_out)
 {
-	HASH_SEQ_STATUS status;
-	SLogTxnEntry *entry;
+	slog_txn_node_t *node;
+	size_t		iter;
 
-	hash_seq_init(&status, SLogTxnHash);
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	while ((entry = (SLogTxnEntry *) hash_seq_search(&status)) != NULL)
+	SKIPLIST_FOREACH_H2T(slog_txn, sl_, entries, &SLogState->txn_list, node, iter)
 	{
-		int			partition;
-		SLogTxnEntry *verified;
-		bool		found;
-
-		if (entry->revert_complete)
-			continue;
-
-		/*
-		 * Found a candidate.  Verify under partition lock to ensure it's
-		 * still valid.
-		 */
-		partition = SLogTxnPartition(entry->key.xid);
-
-		LWLockAcquire(&SLogState->txn_locks[partition].lock, LW_SHARED);
-
-		verified = (SLogTxnEntry *)
-			hash_search(SLogTxnHash, &entry->key, HASH_FIND, &found);
-
-		if (found && !verified->revert_complete)
+		if (!node->revert_complete)
 		{
-			*xid_out = verified->key.xid;
-			*dboid_out = verified->dboid;
-			*reloid_out = verified->key.reloid;
-			*chain_out = verified->undo_chain;
+			*xid_out = node->xid;
+			*dboid_out = node->dboid;
+			*reloid_out = node->reloid;
+			*chain_out = node->undo_chain;
 
-			LWLockRelease(&SLogState->txn_locks[partition].lock);
-			hash_seq_term(&status);
+			LWLockRelease(&SLogState->txn_lock.lock);
 			return true;
 		}
-
-		LWLockRelease(&SLogState->txn_locks[partition].lock);
 	}
 
+	LWLockRelease(&SLogState->txn_lock.lock);
 	return false;
 }
 
@@ -571,19 +764,21 @@ SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
 void
 SLogRecoveryFinalize(int *total_out, int *unreverted_out)
 {
-	HASH_SEQ_STATUS status;
-	SLogTxnEntry *entry;
+	slog_txn_node_t *node;
+	size_t		iter;
 	int			total = 0;
 	int			unreverted = 0;
 
-	hash_seq_init(&status, SLogTxnHash);
+	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	while ((entry = (SLogTxnEntry *) hash_seq_search(&status)) != NULL)
+	SKIPLIST_FOREACH_H2T(slog_txn, sl_, entries, &SLogState->txn_list, node, iter)
 	{
 		total++;
-		if (!entry->revert_complete)
+		if (!node->revert_complete)
 			unreverted++;
 	}
+
+	LWLockRelease(&SLogState->txn_lock.lock);
 
 	if (total_out)
 		*total_out = total;
