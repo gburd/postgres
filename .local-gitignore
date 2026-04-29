@@ -1,0 +1,15 @@
+# Local development ignores (not tracked in .gitignore)
+# To enable: git config core.excludesFile .local-gitignore
+.local-gitignore
+build/
+install/
+.direnv/
+.cache/
+.history
+test-db/
+log/
+results/
+regression.diffs
+regression.out
+*.core
+core.*
