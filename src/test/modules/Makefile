@@ -51,7 +51,9 @@ SUBDIRS = \
 		  test_saslprep \
 		  test_shmem \
 		  test_shm_mq \
+		  test_skiplist \
 		  test_slru \
+		  test_sparsemap \
 		  test_tidstore \
 		  unsafe_tests \
 		  worker_spi \
