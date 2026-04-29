@@ -537,22 +537,33 @@ GetCachedUndoLogFdEntry(uint32 log_number, int flags)
 
 /*
  * ExtendUndoLogFile
- *		Extend an UNDO log file to at least new_size bytes
+ *		Extend an UNDO log file to cover at least logical_end bytes of data
+ *
+ * The logical_end parameter is in terms of UNDO data bytes (the same
+ * units as UndoRecPtr offsets).  The physical file is extended to cover
+ * the necessary number of BLCKSZ pages, accounting for PageHeaderData
+ * overhead in each page.
  *
  * Uses the per-backend fd cache so the file is not opened and closed
  * on every call.  Also caches the file size in the fd cache entry to
- * avoid fstat() syscalls on every allocation -- the file only grows,
- * so the cached size is a reliable lower bound.
+ * avoid fstat() syscalls on every allocation.
  */
 void
-ExtendUndoLogFile(uint32 log_number, uint64 new_size)
+ExtendUndoLogFile(uint32 log_number, uint64 logical_end)
 {
 	UndoLogFdCacheEntry *entry;
+	uint64		physical_size;
+
+	if (logical_end == 0)
+		return;
+
+	/* Convert logical bytes to physical file size (accounting for headers) */
+	physical_size = UndoLogicalToFileSize(logical_end);
 
 	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
 
 	/* Fast path: cached size already sufficient */
-	if (new_size <= entry->cached_size)
+	if (physical_size <= entry->cached_size)
 		return;
 
 	/*
@@ -574,7 +585,7 @@ ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 		entry->cached_size = statbuf.st_size;
 
 		/* Re-check after populating cache */
-		if (new_size <= entry->cached_size)
+		if (physical_size <= entry->cached_size)
 			return;
 	}
 
@@ -582,22 +593,23 @@ ExtendUndoLogFile(uint32 log_number, uint64 new_size)
 	{
 		char		path[MAXPGPATH];
 
-		if (ftruncate(entry->fd, new_size) < 0)
+		if (ftruncate(entry->fd, physical_size) < 0)
 		{
 			UndoLogPath(log_number, path);
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not extend UNDO log file \"%s\" to %llu bytes: %m",
-							path, (unsigned long long) new_size)));
+							path, (unsigned long long) physical_size)));
 		}
 
 		ereport(DEBUG1,
-				(errmsg("extended UNDO log %u from %llu to %llu bytes",
+				(errmsg("extended UNDO log %u from %llu to %llu bytes (logical end %llu)",
 						log_number,
 						(unsigned long long) entry->cached_size,
-						(unsigned long long) new_size)));
+						(unsigned long long) physical_size,
+						(unsigned long long) logical_end)));
 
-		entry->cached_size = new_size;
+		entry->cached_size = physical_size;
 	}
 }
 
@@ -745,21 +757,28 @@ retry:
 
 /*
  * UndoLogWrite
- *		Write data to UNDO log at specified pointer
+ *		Write data to UNDO log at specified pointer via shared_buffers
  *
- * Uses the per-backend fd cache to avoid open()/close() overhead per call.
- * Uses pwrite() for atomic positioned writes (one syscall instead of two).
- * Does NOT fsync -- durability is provided by WAL.  The UNDO data will be
- * synced to disk by UndoLogSync() at transaction commit time, or during
- * the next checkpoint.
+ * Routes UNDO writes through PostgreSQL's shared buffer pool instead of
+ * direct pwrite() syscalls.  This eliminates per-row pwrite() overhead
+ * and per-commit fdatasync() — UNDO pages are flushed to disk by the
+ * checkpointer, same as heap pages.
+ *
+ * The logical byte offset in the UndoRecPtr is mapped to physical pages
+ * that include standard PageHeaderData, so the buffer manager's checksum
+ * and LSN tracking work correctly.
+ *
+ * Records that span page boundaries are split across multiple buffer
+ * pins.  Each modified page is WAL-logged with XLogRegisterBuffer for
+ * full-page-image support during crash recovery.
  */
 void
 UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
-	uint64		offset = UndoRecPtrGetOffset(ptr);
-	UndoLogFdCacheEntry *entry;
-	ssize_t		written;
+	uint64		logical_offset = UndoRecPtrGetOffset(ptr);
+	Size		remaining = size;
+	const char *src = data;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -768,48 +787,100 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 	if (size == 0)
 		return;
 
-	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
-
-	/* Write data at the target offset without a separate lseek() call */
-	written = pwrite(entry->fd, data, size, (off_t) offset);
-	if (written != size)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write to UNDO log %u: %m", log_number)));
-
-	/* Mark the cache entry dirty so UndoLogSync() knows to fsync it */
-	entry->needs_fsync = true;
-
-	/* Track highest written pointer for the UNDO flush daemon */
+	while (remaining > 0)
 	{
-		UndoRecPtr	end_ptr = MakeUndoRecPtr(log_number, offset + size);
+		BlockNumber blkno = UndoRecPtrGetBlockNum(logical_offset);
+		uint32		page_off = UndoRecPtrGetPageOffset(logical_offset);
+		Size		write_len = Min(remaining, (Size) (BLCKSZ - page_off));
+		Buffer		buf;
+		Page		page;
+		bool		is_new_page;
 
-		if (end_ptr > undo_max_write_ptr)
-			undo_max_write_ptr = end_ptr;
+		/*
+		 * Determine if this is a new page.  A page is "new" if its first
+		 * logical byte is at or beyond the start of the current write.
+		 * In that case we zero-initialize it; otherwise we read existing
+		 * content.
+		 */
+		is_new_page = (page_off == (uint32) SizeOfPageHeaderData);
+
+		if (is_new_page)
+		{
+			buf = ReadUndoBuffer(log_number, blkno, RBM_ZERO_AND_LOCK);
+			page = BufferGetPage(buf);
+			PageInit(page, BLCKSZ, 0);
+		}
+		else
+		{
+			buf = ReadUndoBuffer(log_number, blkno, RBM_NORMAL);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			page = BufferGetPage(buf);
+
+			/*
+			 * If the page is new (all zeros — first write to this block
+			 * from a different offset within the page), initialize it.
+			 */
+			if (PageIsNew(page))
+				PageInit(page, BLCKSZ, 0);
+		}
+
+		/* Copy UNDO data into the page */
+		memcpy((char *) page + page_off, src, write_len);
+
+		/*
+		 * Update pd_lower to track how much of the page is used.
+		 * pd_lower advances monotonically within a page.  For UNDO pages,
+		 * pd_lower marks the end of written data (not the normal item
+		 * pointer boundary).
+		 */
+		{
+			LocationIndex new_lower = (LocationIndex) (page_off + write_len);
+
+			if (new_lower > ((PageHeader) page)->pd_lower)
+				((PageHeader) page)->pd_lower = new_lower;
+		}
+
+		/* WAL-log the page modification for crash safety */
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, src, (uint32) write_len);
+		{
+			xl_undo_page_write xlrec;
+
+			xlrec.page_offset = page_off;
+			xlrec.data_len = (uint32) write_len;
+			XLogRegisterData((char *) &xlrec, SizeOfUndoPageWrite);
+		}
+		XLogInsert(RM_UNDO_ID, XLOG_UNDO_PAGE_WRITE);
+
+		MarkUndoBufferDirty(buf);
+		UnlockReleaseUndoBuffer(buf);
+
+		src += write_len;
+		logical_offset += write_len;
+		remaining -= write_len;
 	}
 }
 
 /*
  * UndoLogRead
- *		Read data from UNDO log at specified pointer
+ *		Read data from UNDO log at specified pointer via shared_buffers
  *
- * Uses the per-backend fd cache for efficiency.  Uses pread() for atomic
- * positioned reads (one syscall instead of two).
+ * Routes UNDO reads through PostgreSQL's shared buffer pool.  Hot UNDO
+ * data (recently written, not yet evicted) is served directly from
+ * shared_buffers without any I/O.  This is especially beneficial for
+ * rollback reads, which access recently-written UNDO data.
  *
- * Reads may span multiple BLCKSZ blocks.  The function handles this
- * by reading from each block in sequence through direct I/O.
- *
- * TODO: Unify the file path convention between UndoLogWrite (which uses
- * base/undo/) and ReadUndoBuffer (which uses base/9/) so that undo reads
- * can go through the shared buffer pool for performance.
+ * Reads that span page boundaries are handled by reading from multiple
+ * buffer pins in sequence.
  */
 void
 UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 {
 	uint32		log_number = UndoRecPtrGetLogNo(ptr);
-	uint64		offset = UndoRecPtrGetOffset(ptr);
-	UndoLogFdCacheEntry *entry;
-	ssize_t		nread;
+	uint64		logical_offset = UndoRecPtrGetOffset(ptr);
+	Size		remaining = size;
+	char	   *dest = buffer;
 
 	if (!UndoRecPtrIsValid(ptr))
 		ereport(ERROR,
@@ -818,14 +889,26 @@ UndoLogRead(UndoRecPtr ptr, char *buffer, Size size)
 	if (size == 0)
 		return;
 
-	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
+	while (remaining > 0)
+	{
+		BlockNumber blkno = UndoRecPtrGetBlockNum(logical_offset);
+		uint32		page_off = UndoRecPtrGetPageOffset(logical_offset);
+		Size		read_len = Min(remaining, (Size) (BLCKSZ - page_off));
+		Buffer		buf;
+		Page		page;
 
-	/* Read data at the target offset without a separate lseek() call */
-	nread = pread(entry->fd, buffer, size, (off_t) offset);
-	if (nread != size)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read from UNDO log %u: %m", log_number)));
+		buf = ReadUndoBuffer(log_number, blkno, RBM_NORMAL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		memcpy(dest, (char *) page + page_off, read_len);
+
+		UnlockReleaseUndoBuffer(buf);
+
+		dest += read_len;
+		logical_offset += read_len;
+		remaining -= read_len;
+	}
 }
 
 /*
@@ -961,35 +1044,18 @@ UndoLogGetOldestDiscardPtr(void)
  *
  * Called at transaction commit to ensure all UNDO data written during
  * the transaction is durable on disk.  Only files that have been written
- * (needs_fsync == true) are synced; read-only fds are skipped.
+ * With shared_buffers routing (commit "Route UNDO I/O through
+ * shared_buffers"), UNDO pages are managed by the buffer pool and
+ * flushed to disk by the checkpointer, exactly like heap pages.
+ * There is no longer a need for per-commit fdatasync of UNDO files.
  *
- * UNDO data is also WAL-logged, so after a crash the WAL replay will
- * reconstruct the UNDO log metadata.  The fsync here ensures that the
- * UNDO log *files* are consistent so that rollback of in-progress
- * transactions can read back valid UNDO data without needing WAL replay
- * of the UNDO file contents.
+ * This function is now a no-op.  It is retained for backward compatibility
+ * with callers that existed before the shared_buffers transition.
  */
 void
 UndoLogSync(void)
 {
-	int			i;
-
-	if (!undo_fd_cache_initialized)
-		return;
-
-	for (i = 0; i < MAX_UNDO_LOGS; i++)
-	{
-		if (undo_fd_cache[i].fd >= 0 && undo_fd_cache[i].needs_fsync)
-		{
-			if (pg_fdatasync(undo_fd_cache[i].fd) < 0)
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not fdatasync UNDO log %u: %m",
-								undo_fd_cache[i].log_number)));
-
-			undo_fd_cache[i].needs_fsync = false;
-		}
-	}
+	/* No-op: dirty UNDO buffers are flushed by the checkpointer. */
 }
 
 /*

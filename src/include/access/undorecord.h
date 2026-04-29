@@ -163,10 +163,11 @@ typedef struct UndoRecordSet
  * Public API for UNDO record management
  */
 
-/* Create/destroy UNDO record sets */
+/* Create/destroy/reset UNDO record sets */
 extern UndoRecordSet *UndoRecordSetCreate(TransactionId xid,
 										  UndoRecPtr prev_undo_ptr);
 extern void UndoRecordSetFree(UndoRecordSet *uset);
+extern void UndoRecordSetReset(UndoRecordSet *uset);
 extern void UndoRecordSetResetCache(void);
 
 /* Add records to a set - generic payload API */

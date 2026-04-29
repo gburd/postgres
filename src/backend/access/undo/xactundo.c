@@ -234,10 +234,85 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 }
 
 /*
+ * PrepareXactUndoDataParts
+ *		Like PrepareXactUndoData, but with scatter-gather payload.
+ *
+ * Used when the payload is in two non-contiguous pieces (e.g., a fixed
+ * header struct followed by variable-length tuple data).  Avoids the
+ * need to assemble an intermediate contiguous buffer.
+ */
+UndoRecPtr
+PrepareXactUndoDataParts(XactUndoContext *ctx, char persistence,
+						 uint8 rmid, uint16 info, Oid reloid,
+						 const char *part1, Size part1_len,
+						 const char *part2, Size part2_len)
+{
+	int			nestingLevel = GetCurrentTransactionNestLevel();
+	UndoPersistenceLevel plevel = GetUndoPersistenceLevel(persistence);
+	TransactionId xid = GetCurrentTransactionId();
+	UndoRecordSet *uset;
+	UndoRecPtr *sub_start_location;
+
+	/* Remember that we've done something undo-related. */
+	XactUndo.has_undo = true;
+
+	/*
+	 * If we've entered a subtransaction, spin up a new XactUndoSubTransaction
+	 * so that we can track the start locations for the subtransaction
+	 * separately from any parent (sub)transactions.
+	 */
+	if (nestingLevel > XactUndo.subxact->nestingLevel)
+	{
+		XactUndoSubTransaction *subxact;
+		int			i;
+
+		subxact = MemoryContextAlloc(UndoContext ? UndoContext : TopMemoryContext,
+									 sizeof(XactUndoSubTransaction));
+		subxact->nestingLevel = nestingLevel;
+		subxact->next = XactUndo.subxact;
+		XactUndo.subxact = subxact;
+
+		for (i = 0; i < NUndoPersistenceLevels; ++i)
+			subxact->start_location[i] = InvalidUndoRecPtr;
+	}
+
+	/*
+	 * Make sure we have an UndoRecordSet of the appropriate type open for
+	 * this persistence level.
+	 */
+	uset = XactUndo.record_set[plevel];
+	if (uset == NULL)
+	{
+		uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
+		XactUndo.record_set[plevel] = uset;
+	}
+
+	/* Remember persistence level for InsertXactUndoData. */
+	ctx->plevel = plevel;
+	ctx->uset = uset;
+
+	/* Add the record using scatter-gather payload API. */
+	UndoRecordAddPayloadParts(uset, rmid, info, reloid,
+							  part1, part1_len, part2, part2_len);
+
+	/*
+	 * If this is the first undo for this persistence level in this
+	 * subtransaction, record the start location.
+	 */
+	sub_start_location = &XactUndo.subxact->start_location[plevel];
+	if (!UndoRecPtrIsValid(*sub_start_location))
+		*sub_start_location = (UndoRecPtr) 1;	/* will be set properly */
+
+	return InvalidUndoRecPtr;	/* actual ptr assigned during insert */
+}
+
+/*
  * InsertXactUndoData
  *		Insert the prepared undo data into the undo log.
  *
  * This performs the actual write of the accumulated records.
+ * Also updates the transaction-level undo record pointer (undoRecPtr
+ * in TransactionState) so that subsequent UNDO records chain correctly.
  */
 void
 InsertXactUndoData(XactUndoContext *ctx)
@@ -255,6 +330,13 @@ InsertXactUndoData(XactUndoContext *ctx)
 		/* Fix up subtransaction start location if needed */
 		if (XactUndo.subxact->start_location[ctx->plevel] == (UndoRecPtr) 1)
 			XactUndo.subxact->start_location[ctx->plevel] = ptr;
+
+		/*
+		 * Update the per-transaction undo pointer in TransactionState so
+		 * that the next UndoRecordSetCreate (if called directly by heap AM
+		 * or other subsystems) picks up the correct chain pointer.
+		 */
+		SetCurrentTransactionUndoRecPtr(ptr);
 	}
 }
 
@@ -262,14 +344,19 @@ InsertXactUndoData(XactUndoContext *ctx)
  * CleanupXactUndoInsertion
  *		Clean up after an undo insertion cycle.
  *
- * Note: does NOT free the record set -- that happens at xact end.
- * This just resets the per-insertion buffer so the set can accumulate
- * more records.
+ * Resets the record set's buffer position and record count so it can
+ * accumulate more records.  Does NOT free the record set -- that
+ * happens at transaction end (AtCommit_XactUndo / AtAbort_XactUndo).
+ *
+ * The record set's prev_undo_ptr is preserved across resets (it was
+ * updated by UndoRecordSetInsert), so subsequent records chain
+ * correctly through the undo log.
  */
 void
 CleanupXactUndoInsertion(XactUndoContext *ctx)
 {
-	/* Nothing to do currently; the record set buffer is reusable. */
+	if (ctx->uset != NULL)
+		UndoRecordSetReset(ctx->uset);
 }
 
 /*
@@ -289,10 +376,10 @@ GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel)
  * On commit, undo records are no longer needed for rollback.
  * Free all record sets and reset state.
  *
- * We call UndoLogSync() to fsync any UNDO log files that were written
- * during this transaction.  This ensures the UNDO data is durable before
- * we consider the transaction committed.  The fsync is deferred to here
- * (rather than per-write) for performance.
+ * UNDO pages are managed by shared_buffers and flushed by the
+ * checkpointer — no per-commit fdatasync is needed.  We only
+ * flush the deferred WAL allocation records so recovery can
+ * reconstruct the UNDO log insert pointer.
  *
  * NB: This code MUST NOT FAIL, since it is run as a post-commit step.
  */
@@ -303,12 +390,11 @@ AtCommit_XactUndo(void)
 
 	/*
 	 * Always release the recycled UNDO record memory context, even if
-	 * XactUndo.has_undo is false.  The heap AM calls UndoRecordSetCreate/
-	 * UndoRecordSetFree directly (bypassing PrepareXactUndoData), which
-	 * caches a memory context in UndoRecordReusableContext without setting
-	 * has_undo.  If we skip this cleanup, the cached context's parent
-	 * pointer becomes dangling after the transaction's memory contexts are
-	 * destroyed, causing a segfault on the next reuse.
+	 * XactUndo.has_undo is false.  Some callers (pruneheap.c, nbtree_undo.c)
+	 * still call UndoRecordSetCreate/Free directly, which caches a memory
+	 * context in UndoRecordReusableContext without setting has_undo.  If we
+	 * skip this cleanup, the cached context's parent pointer becomes dangling
+	 * after the transaction's memory contexts are destroyed.
 	 */
 	UndoRecordSetResetCache();
 
@@ -320,28 +406,13 @@ AtCommit_XactUndo(void)
 	}
 
 	/*
-	 * Flush deferred UNDO allocation WAL records before syncing data to
-	 * disk.  This ensures WAL contains the allocation metadata before we
-	 * consider the UNDO data durable.
+	 * Flush deferred UNDO allocation WAL records.  With shared_buffers
+	 * routing, there's no need for per-commit fdatasync — dirty UNDO
+	 * buffers are flushed by the checkpointer like regular heap pages.
+	 * We still need to flush the allocation metadata WAL so recovery can
+	 * reconstruct the insert pointer.
 	 */
 	UndoWalBatchFlush();
-
-	/*
-	 * Sync UNDO data to disk before finishing commit.  If the UNDO flush
-	 * daemon is running, hand off the sync to it for group commit
-	 * batching.  Otherwise fall back to direct per-backend fdatasync.
-	 */
-	if (UndoFlushWriterIsRunning())
-	{
-		UndoRecPtr	max_ptr = UndoFlushGetMaxWritePtr();
-
-		if (UndoRecPtrIsValid(max_ptr))
-			UndoFlushWaitForSync(max_ptr);
-	}
-	else
-		UndoLogSync();
-
-	UndoFlushResetMaxWritePtr();
 
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)

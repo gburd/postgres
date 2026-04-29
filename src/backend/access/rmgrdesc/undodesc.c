@@ -101,6 +101,16 @@ undo_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 
+		case XLOG_UNDO_PAGE_WRITE:
+			{
+				xl_undo_page_write *xlrec = (xl_undo_page_write *) rec;
+
+				appendStringInfo(buf, "page_offset %u, data_len %u",
+								 xlrec->page_offset,
+								 xlrec->data_len);
+			}
+			break;
+
 		case XLOG_UNDO_ROTATE:
 			{
 				xl_undo_rotate *xlrec = (xl_undo_rotate *) rec;
@@ -163,6 +173,9 @@ undo_identify(uint8 info)
 			break;
 		case XLOG_UNDO_ROTATE:
 			id = "ROTATE";
+			break;
+		case XLOG_UNDO_PAGE_WRITE:
+			id = "PAGE_WRITE";
 			break;
 	}
 

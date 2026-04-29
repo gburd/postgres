@@ -119,19 +119,49 @@ IsUndoRelFileLocator(const RelFileLocator *rlocator)
 }
 
 /*
- * UndoRecPtrGetBlockNum
- *		Compute the block number for an undo log byte offset.
+ * UNDO page layout
  *
- * The block number is the byte offset within the undo log divided by
- * BLCKSZ.  This is the same calculation used by ZHeap.
+ * UNDO pages stored in shared_buffers use standard PostgreSQL page headers
+ * (PageHeaderData) to support checksums, LSN tracking, and the buffer
+ * manager's page verification.  UNDO record data starts immediately
+ * after the page header.
+ *
+ * The usable bytes per page is BLCKSZ minus the page header size.
+ * All UNDO byte offsets (in UndoRecPtr) are "logical" offsets — they
+ * represent a contiguous byte stream of UNDO data.  The mapping from
+ * logical offset to physical (block, page_offset) is handled by the
+ * macros below.
  */
-#define UndoRecPtrGetBlockNum(offset)	((BlockNumber) ((offset) / BLCKSZ))
+#define UNDO_USABLE_BYTES_PER_PAGE	(BLCKSZ - (int) SizeOfPageHeaderData)
+
+/*
+ * UndoRecPtrGetBlockNum
+ *		Compute the block number for an undo log logical byte offset.
+ *
+ * Each page can hold UNDO_USABLE_BYTES_PER_PAGE bytes of UNDO data.
+ * Logical offset L maps to block L / UNDO_USABLE_BYTES_PER_PAGE.
+ */
+#define UndoRecPtrGetBlockNum(offset) \
+	((BlockNumber) ((offset) / UNDO_USABLE_BYTES_PER_PAGE))
 
 /*
  * UndoRecPtrGetPageOffset
- *		Compute the offset within the page for an undo log byte offset.
+ *		Compute the offset within the page for an undo log logical byte offset.
+ *
+ * The page offset accounts for the PageHeaderData that precedes the
+ * UNDO data in each page.
  */
-#define UndoRecPtrGetPageOffset(offset)	((uint32) ((offset) % BLCKSZ))
+#define UndoRecPtrGetPageOffset(offset) \
+	((uint32) (SizeOfPageHeaderData + ((offset) % UNDO_USABLE_BYTES_PER_PAGE)))
+
+/*
+ * UndoLogicalToFileSize
+ *		Compute the physical file size needed for a given logical byte count.
+ *
+ * This is the number of full pages needed (rounded up) times BLCKSZ.
+ */
+#define UndoLogicalToFileSize(logical_size) \
+	((uint64) (UndoRecPtrGetBlockNum((logical_size) - 1) + 1) * BLCKSZ)
 
 
 /* ----------------------------------------------------------------

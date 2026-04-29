@@ -70,6 +70,15 @@ extern UndoRecPtr PrepareXactUndoData(XactUndoContext *ctx,
 									  Oid reloid,
 									  const char *payload,
 									  Size payload_len);
+extern UndoRecPtr PrepareXactUndoDataParts(XactUndoContext *ctx,
+										   char persistence,
+										   uint8 rmid,
+										   uint16 info,
+										   Oid reloid,
+										   const char *part1,
+										   Size part1_len,
+										   const char *part2,
+										   Size part2_len);
 extern void InsertXactUndoData(XactUndoContext *ctx);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 

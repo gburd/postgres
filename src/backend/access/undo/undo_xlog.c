@@ -37,6 +37,7 @@
 #include "access/undolog.h"
 #include "access/xlogutils.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 
 /*
  * undo_redo - Replay an UNDO WAL record during crash recovery
@@ -213,6 +214,65 @@ undo_redo(XLogReaderState *record)
 						 * acceptable -- the data is gone and the UNDO
 						 * application is moot.
 						 */
+						break;
+				}
+
+				if (BufferIsValid(buffer))
+					UnlockReleaseBuffer(buffer);
+			}
+			break;
+
+		case XLOG_UNDO_PAGE_WRITE:
+			{
+				xl_undo_page_write *xlrec = (xl_undo_page_write *) XLogRecGetData(record);
+				Buffer		buffer;
+				XLogRedoAction action;
+
+				action = XLogReadBufferForRedo(record, 0, &buffer);
+
+				switch (action)
+				{
+					case BLK_RESTORED:
+						/* Full page image was applied; nothing more to do */
+						break;
+
+					case BLK_NEEDS_REDO:
+						{
+							Page		page = BufferGetPage(buffer);
+							char	   *buf_data;
+							Size		buf_len;
+
+							buf_data = XLogRecGetBlockData(record, 0, &buf_len);
+
+							/*
+							 * If the page is new (all zeros from extend),
+							 * initialize it first.
+							 */
+							if (PageIsNew(page))
+								PageInit(page, BLCKSZ, 0);
+
+							memcpy((char *) page + xlrec->page_offset,
+								   buf_data, buf_len);
+
+							/* Update pd_lower */
+							{
+								LocationIndex new_lower = (LocationIndex) (xlrec->page_offset + (uint32) buf_len);
+
+								if (new_lower > ((PageHeader) page)->pd_lower)
+									((PageHeader) page)->pd_lower = new_lower;
+							}
+
+							PageSetLSN(page, record->EndRecPtr);
+							MarkBufferDirty(buffer);
+						}
+						break;
+
+					case BLK_DONE:
+						/* Page is already up-to-date */
+						break;
+
+					case BLK_NOTFOUND:
+						/* Block doesn't exist (truncated?) */
 						break;
 				}
 
