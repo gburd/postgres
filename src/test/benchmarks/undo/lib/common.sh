@@ -19,7 +19,9 @@ PGBENCH_SCALES="${PGBENCH_SCALES:-10 50 100}"
 PGBENCH_CLIENTS="${PGBENCH_CLIENTS:-1 4 8}"
 PGBENCH_DURATION="${PGBENCH_DURATION:-60}"
 ITERATIONS="${ITERATIONS:-3}"
-BENCHMARKS="${BENCHMARKS:-b1 b2 b3 b4 b5 b6 b7 pgbench mixed}"
+BENCHMARKS="${BENCHMARKS:-b1 b2 b3 b4 b5 b6 b7 pgbench mixed zipfian concurrent}"
+# Large-scale factor for cache-pressure workloads (working set >> shared_buffers)
+PGBENCH_SCALE_LARGE="${PGBENCH_SCALE_LARGE:-500}"
 
 # Ports for three scenarios
 PORT_BASELINE=54320
@@ -610,6 +612,169 @@ record_vacuum_delta() {
     csv_write "$csv_file" "$scenario" "$bench" "autovacuum_count" "$scale" "$iter" "count" "$autovac_delta" "count"
     csv_write "$csv_file" "$scenario" "$bench" "dead_tuples_end" "$scale" "$iter" "count" "$dead_after" "count"
 }
+
+###############################################################################
+# pg_prewarm - deterministic cache state
+###############################################################################
+
+# warm_buffers SCENARIO DB_NAME TABLE_NAMES...
+# Preloads heap relations and their indexes into shared_buffers.
+# Ensures 100% buffer hit ratio for in-cache workloads.
+warm_buffers() {
+    local scenario="$1"
+    local dbname="${2:-postgres}"
+    shift 2
+    local bindir port
+    bindir="$(get_bindir "$scenario")"
+    port="$(get_port "$scenario")"
+
+    log "  Warming buffers with pg_prewarm"
+
+    # Ensure pg_prewarm extension exists
+    "$bindir/psql" -h 127.0.0.1 -p "$port" -d "$dbname" -X --no-psqlrc -q \
+        -c "CREATE EXTENSION IF NOT EXISTS pg_prewarm;" 2>/dev/null || true
+
+    # Prewarm each table and its indexes
+    for tbl in "$@"; do
+        "$bindir/psql" -h 127.0.0.1 -p "$port" -d "$dbname" -X --no-psqlrc -q -c "
+            SELECT pg_prewarm('${tbl}', 'buffer');
+        " 2>/dev/null || true
+        # Prewarm all indexes on this table
+        "$bindir/psql" -h 127.0.0.1 -p "$port" -d "$dbname" -X --no-psqlrc -t -A -q -c "
+            SELECT indexrelid::regclass::text
+            FROM pg_index WHERE indrelid = '${tbl}'::regclass;
+        " 2>/dev/null | while read -r idx; do
+            [ -n "$idx" ] && "$bindir/psql" -h 127.0.0.1 -p "$port" -d "$dbname" \
+                -X --no-psqlrc -q -c "SELECT pg_prewarm('${idx}', 'buffer');" 2>/dev/null || true
+        done
+    done
+}
+
+###############################################################################
+# Wait event sampling
+###############################################################################
+
+# _WAIT_SAMPLER_PID tracks the background sampler process
+_WAIT_SAMPLER_PID=""
+
+# start_wait_sampler SCENARIO DB_NAME OUTPUT_FILE [INTERVAL_SECS]
+# Samples pg_stat_activity wait events at the given interval.
+# Runs in background; call stop_wait_sampler to terminate.
+start_wait_sampler() {
+    local scenario="$1"
+    local dbname="$2"
+    local outfile="$3"
+    local interval="${4:-2}"
+    local bindir port
+    bindir="$(get_bindir "$scenario")"
+    port="$(get_port "$scenario")"
+
+    (
+        echo "# Wait event samples: $scenario interval=${interval}s" > "$outfile"
+        while true; do
+            "$bindir/psql" -h 127.0.0.1 -p "$port" -d "$dbname" -t -A -q -c "
+                SELECT now()::time, wait_event_type, wait_event, count(*)
+                FROM pg_stat_activity
+                WHERE state = 'active' AND pid != pg_backend_pid()
+                GROUP BY 1,2,3
+                ORDER BY 4 DESC;
+            " >> "$outfile" 2>/dev/null
+            sleep "$interval"
+        done
+    ) &
+    _WAIT_SAMPLER_PID=$!
+}
+
+# stop_wait_sampler
+# Terminates the background wait event sampler.
+stop_wait_sampler() {
+    if [ -n "$_WAIT_SAMPLER_PID" ]; then
+        kill "$_WAIT_SAMPLER_PID" 2>/dev/null
+        wait "$_WAIT_SAMPLER_PID" 2>/dev/null || true
+        _WAIT_SAMPLER_PID=""
+    fi
+}
+
+# summarize_wait_events OUTPUT_FILE
+# Aggregates wait event samples and outputs the top events.
+summarize_wait_events() {
+    local outfile="$1"
+    [ -f "$outfile" ] || return
+    awk -F'|' '
+    /^[0-9]/ && NF>=4 {
+        key = $2 "|" $3
+        count[key] += $4
+        total += $4
+    }
+    END {
+        for (k in count)
+            printf "%s|%d|%.1f%%\n", k, count[k], count[k]*100/total
+    }' "$outfile" | sort -t'|' -k2 -rn | head -10
+}
+
+###############################################################################
+# Statistics helpers
+###############################################################################
+
+# cv VALUES...
+# Computes coefficient of variation (CV%) from a list of numeric values.
+# Returns 0.0 if fewer than 2 values.
+cv() {
+    if [ $# -lt 2 ]; then
+        echo "0.0"
+        return
+    fi
+    printf '%s\n' "$@" | awk '
+    {a[NR]=$1; s+=$1}
+    END {
+        if (NR < 2) {print "0.0"; exit}
+        avg = s / NR
+        if (avg == 0) {print "0.0"; exit}
+        for (i=1; i<=NR; i++) ss += (a[i] - avg)^2
+        sd = sqrt(ss / (NR - 1))
+        printf "%.1f", (sd / avg) * 100
+    }'
+}
+
+# stdev VALUES...
+# Computes sample standard deviation.
+stdev() {
+    if [ $# -lt 2 ]; then
+        echo "0"
+        return
+    fi
+    printf '%s\n' "$@" | awk '
+    {a[NR]=$1; s+=$1}
+    END {
+        if (NR < 2) {print "0"; exit}
+        avg = s / NR
+        for (i=1; i<=NR; i++) ss += (a[i] - avg)^2
+        printf "%.2f", sqrt(ss / (NR - 1))
+    }'
+}
+
+# percentile P VALUES...
+# Computes the P-th percentile (P in 0-100) using linear interpolation.
+percentile() {
+    local pct="$1"
+    shift
+    printf '%s\n' "$@" | sort -g | awk -v p="$pct" '
+    {a[NR]=$1}
+    END {
+        if (NR == 0) {print "0"; exit}
+        rank = (p / 100.0) * (NR - 1) + 1
+        lo = int(rank)
+        hi = lo + 1
+        if (lo < 1) lo = 1
+        if (hi > NR) hi = NR
+        frac = rank - int(rank)
+        printf "%.2f", a[lo] + frac * (a[hi] - a[lo])
+    }'
+}
+
+###############################################################################
+# Memory / RSS
+###############################################################################
 
 # get_pg_rss SCENARIO
 # Returns RSS of the postgres backend processes in kB.

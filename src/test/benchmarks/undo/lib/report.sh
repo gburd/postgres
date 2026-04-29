@@ -60,6 +60,8 @@ generate_report() {
                 b7) bench_label="B7: Storage Footprint" ;;
                 pgbench) bench_label="B8: pgbench TPS" ;;
                 mixed) bench_label="B9: Mixed OLTP" ;;
+                zipfian) bench_label="B10: Zipfian Hot/Cold" ;;
+                concurrent) bench_label="B11: Multi-Role Concurrent" ;;
                 *) bench_label="$bench" ;;
             esac
 
@@ -70,9 +72,9 @@ generate_report() {
             for scale in $scales; do
                 echo " ${bench_label} (scale=${scale}, median of ${ITERATIONS:-3} iterations)"
                 echo " ---------------------------------------------------------------"
-                printf " %-24s | %10s | %10s | %10s | %8s | %8s\n" \
-                    "Sub-test" "Baseline" "UNDO Off" "UNDO On" "Off/Base" "On/Base"
-                echo " ------------------------+------------+------------+------------+----------+----------"
+                printf " %-24s | %10s | %10s | %10s | %8s | %8s | %5s\n" \
+                    "Sub-test" "Baseline" "UNDO Off" "UNDO On" "Off/Base" "On/Base" "CV%"
+                echo " ------------------------+------------+------------+------------+----------+----------+-------"
 
                 # Get sub-tests for this benchmark+scale, preserving order
                 local sub_tests
@@ -111,6 +113,21 @@ generate_report() {
                         else printf "%.2fx", $1/$2
                     }')
 
+                    # Compute CV% for the undo_on scenario (stability indicator)
+                    local on_cv="N/A"
+                    if [ -n "$on_vals" ] && [ "$(echo "$on_vals" | wc -w)" -ge 2 ]; then
+                        on_cv=$(echo "$on_vals" | awk '
+                        {a[NR]=$1; s+=$1}
+                        END {
+                            if (NR < 2) {print "N/A"; exit}
+                            avg = s / NR
+                            if (avg == 0) {print "0.0"; exit}
+                            for (i=1; i<=NR; i++) ss += (a[i] - avg)^2
+                            sd = sqrt(ss / (NR - 1))
+                            printf "%.1f", (sd / avg) * 100
+                        }')
+                    fi
+
                     # Format values with unit
                     local base_fmt off_fmt on_fmt
                     if [ "$base_med" = "N/A" ]; then base_fmt="N/A"
@@ -120,8 +137,8 @@ generate_report() {
                     if [ "$on_med" = "N/A" ]; then on_fmt="N/A"
                     else on_fmt=$(printf "%.1f %s" "$on_med" "$unit"); fi
 
-                    printf " %-24s | %10s | %10s | %10s | %8s | %8s\n" \
-                        "$sub_test" "$base_fmt" "$off_fmt" "$on_fmt" "$off_ratio" "$on_ratio"
+                    printf " %-24s | %10s | %10s | %10s | %8s | %8s | %5s\n" \
+                        "$sub_test" "$base_fmt" "$off_fmt" "$on_fmt" "$off_ratio" "$on_ratio" "$on_cv"
                 done
                 echo ""
             done
