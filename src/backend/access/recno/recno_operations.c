@@ -366,9 +366,12 @@ recno_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 	/*
 	 * Mark the tuple as uncommitted.  The RECNO_TUPLE_UNCOMMITTED flag is
 	 * set at INSERT time and cleared when the inserting transaction commits.
-	 * Visibility checks consult the sLog for in-progress transactions.
+	 * Visibility checks use t_xid_hint (the inserter's XID) for fast
+	 * CLOG/ProcArray checks, avoiding an sLog lookup entirely for the
+	 * common INSERT case.
 	 */
 	recno_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+	recno_tuple->t_data->t_xid_hint = GetTopTransactionId();
 
 	tuple_size = recno_tuple->t_len;
 
@@ -724,19 +727,17 @@ have_page:
 	}
 
 	/*
-	 * Register the insert in the sLog so that self-visibility checks and
-	 * abort cleanup can find it.  This must happen after the tuple has a
-	 * valid TID (set above) and outside the critical section.
+	 * sLog INSERT entry is no longer needed for regular inserts.
 	 *
-	 * IMPORTANT: This must be called AFTER releasing the buffer lock to
-	 * avoid deadlocks with RecnoSLogGetDirtyXid's slow path, which
-	 * acquires all sLog partition locks while potentially waiting for
-	 * buffer locks.
+	 * Visibility checks now use t_xid_hint (the inserter's XID stored in
+	 * the tuple header) for fast CLOG/ProcArray lookups instead of sLog.
+	 * This eliminates the per-tuple sLog entry that caused "out of shared
+	 * memory" during bulk inserts (100K+ rows in a single transaction).
+	 *
+	 * Speculative inserts (ON CONFLICT) are handled by the separate
+	 * recno_tuple_insert_speculative() function, which still registers
+	 * sLog entries for the speculative token.
 	 */
-	RecnoSLogInsert(RelationGetRelid(relation), tid,
-					GetTopTransactionId(), current_ts,
-					cid, RECNO_SLOG_INSERT,
-					GetCurrentSubTransactionId(), 0);
 
 	pfree(recno_tuple);
 }
@@ -861,12 +862,14 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 			visible = RecnoTupleVisibleHLC(tuple_hdr, RecnoGetSnapshotHLC(snapshot),
 										   RelationGetRelid(relation),
 										   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 		else
 			visible = RecnoTupleVisible(tuple_hdr, RecnoGetSnapshotTimestamp(snapshot), 0,
 										RelationGetRelid(relation),
 										(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 		if (!visible)
 		{
@@ -931,13 +934,15 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 											   RecnoGetSnapshotHLC(snapshot),
 											   RelationGetRelid(relation),
 											   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 			else
 				visible = RecnoTupleVisible(tuple_hdr,
 											RecnoGetSnapshotTimestamp(snapshot), 0,
 											RelationGetRelid(relation),
 											(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 			if (!visible)
 			{
@@ -1002,13 +1007,15 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 														   RecnoGetSnapshotHLC(snapshot),
 														   RelationGetRelid(relation),
 														   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 						else
 							visible = RecnoTupleVisible(tuple_hdr,
 														RecnoGetSnapshotTimestamp(snapshot), 0,
 														RelationGetRelid(relation),
 														(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 						if (!visible)
 						{
@@ -1478,12 +1485,14 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			visible = RecnoTupleVisibleHLC(old_tuple_hdr, RecnoGetSnapshotHLC(snapshot),
 										   RelationGetRelid(relation),
 										   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 		else
 			visible = RecnoTupleVisible(old_tuple_hdr, RecnoGetSnapshotTimestamp(snapshot), 0,
 										RelationGetRelid(relation),
 										(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 		if (!visible)
 		{
@@ -1548,13 +1557,15 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 											   RecnoGetSnapshotHLC(snapshot),
 											   RelationGetRelid(relation),
 											   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 			else
 				visible = RecnoTupleVisible(old_tuple_hdr,
 											RecnoGetSnapshotTimestamp(snapshot), 0,
 											RelationGetRelid(relation),
 											(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 			if (!visible)
 			{
@@ -1635,13 +1646,15 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 														   RecnoGetSnapshotHLC(snapshot),
 														   RelationGetRelid(relation),
 														   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 						else
 							visible = RecnoTupleVisible(old_tuple_hdr,
 														RecnoGetSnapshotTimestamp(snapshot), 0,
 														RelationGetRelid(relation),
 														(snapshot->snapshot_type == SNAPSHOT_MVCC)
-										   ? snapshot->curcid : InvalidCommandId);
+										   ? snapshot->curcid : InvalidCommandId,
+										   buffer);
 
 						if (!visible)
 						{
@@ -1878,10 +1891,11 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		new_tuple->t_data->t_cid = cid;
 
 		/*
-		 * Mark the new tuple version as uncommitted.  The sLog tracks which
-		 * transaction performed the update; the flag is cleared at commit.
+		 * Mark the new tuple version as uncommitted.  Set t_xid_hint for
+		 * fast visibility checks via CLOG/ProcArray.
 		 */
 		new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+		new_tuple->t_data->t_xid_hint = GetTopTransactionId();
 
 		new_tuple_size = new_tuple->t_len;
 
@@ -2269,6 +2283,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	if (in_place_update)
 	{
 		new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+		new_tuple->t_data->t_xid_hint = GetTopTransactionId();
 	}
 
 	/* Start critical section for WAL logging */
@@ -3056,6 +3071,7 @@ recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		formed_tuples[i]->t_data->t_commit_ts = current_ts;
 		formed_tuples[i]->t_data->t_cid = cid;
 		formed_tuples[i]->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+		formed_tuples[i]->t_data->t_xid_hint = GetTopTransactionId();
 
 		/* Mark tuples too large for batch insert */
 		if (formed_tuples[i]->t_len > RECNO_MAX_TUPLE_SIZE)

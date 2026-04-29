@@ -39,6 +39,7 @@
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "utils/memutils.h"
+#include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
@@ -1084,7 +1085,7 @@ RecnoGetSnapshotTimestamp(Snapshot snapshot)
  */
 bool
 RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
-				  Oid relid, CommandId curcid)
+				  Oid relid, CommandId curcid, Buffer buffer)
 {
 	uint64		tuple_commit_ts;
 	bool		is_deleted;
@@ -1195,10 +1196,12 @@ RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
 
 		/*
 		 * Fall through: operation committed, UNCOMMITTED flag is stale.
-		 * Lazily clear the flag so subsequent visibility checks skip
-		 * the sLog lookup entirely.
+		 * Lazily clear the flag and persist via MarkBufferDirtyHint
+		 * (safe under SHARE lock) so subsequent scans skip the sLog.
 		 */
 		tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+		if (BufferIsValid(buffer))
+			MarkBufferDirtyHint(buffer, true);
 	}
 
 	/*
@@ -1336,7 +1339,7 @@ not_visible:
  */
 bool
 RecnoTupleVisibleToSnapshot(RecnoTupleHeader *tuple, Snapshot snapshot,
-							Oid relid)
+							Oid relid, Buffer buffer)
 {
 	uint64		snapshot_ts;
 	uint64		xact_ts;
@@ -1355,7 +1358,8 @@ RecnoTupleVisibleToSnapshot(RecnoTupleHeader *tuple, Snapshot snapshot,
 	 */
 	return RecnoTupleVisible(tuple, snapshot_ts, xact_ts, relid,
 							(snapshot->snapshot_type == SNAPSHOT_MVCC)
-							? snapshot->curcid : InvalidCommandId);
+							? snapshot->curcid : InvalidCommandId,
+							buffer);
 }
 
 /*
@@ -1597,21 +1601,33 @@ RecnoGetSnapshotHLC(Snapshot snapshot)
 
 /*
  * RecnoTupleVisibleHLC -- check tuple visibility using HLC comparison
- * with sLog-based uncommitted-transaction tracking.
+ * with t_xid_hint / sLog-based uncommitted-transaction tracking.
  *
- * Uses the RECNO_TUPLE_UNCOMMITTED flag and sLog instead of t_xmin/t_xmax
- * CLOG lookups.  Visibility is purely a function of HLC ordering for
- * committed tuples, and sLog lookup for uncommitted tuples.
+ * For UNCOMMITTED tuples, visibility is resolved in two stages:
+ *   1. Fast path via t_xid_hint (no shared-memory lookup): the inserting
+ *      XID is stored in the tuple header at insert time.  A quick CLOG /
+ *      ProcArray check determines if the inserter committed, aborted, or
+ *      is still in progress.
+ *   2. Slow path via sLog: if the tuple has a DELETE/UPDATE/LOCK operation
+ *      or a speculative insert, the sLog is consulted (single batched
+ *      lookup per TID).
+ *
+ * When the UNCOMMITTED flag is cleared, MarkBufferDirtyHint() is called
+ * to persist the change (safe under SHARE lock), matching HEAP's hint-bit
+ * pattern.  This ensures subsequent scans skip the sLog entirely.
+ *
+ * For committed, non-deleted tuples the check is a single HLC comparison
+ * with no shared-memory access.
  */
 bool
 RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
-					 Oid relid, CommandId curcid)
+					 Oid relid, CommandId curcid, Buffer buffer)
 {
 	HLCTimestamp tuple_hlc;
 	bool		is_deleted;
 	TransactionId myxid;
 
-	/* Single-probe sLog cache (same pattern as RecnoTupleVisible) */
+	/* Lazy sLog cache -- only fetched when DELETE/UPDATE/LOCK is involved */
 	RecnoSLogEntry slog_entries[RECNO_SLOG_MAX_OPS];
 	int			slog_nfound = -1;
 
@@ -1628,13 +1644,89 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 	myxid = GetTopTransactionIdIfAny();
 
 	/*
-	 * Check RECNO_TUPLE_UNCOMMITTED flag.
+	 * ----- UNCOMMITTED check (insert visibility) -----
+	 *
+	 * When RECNO_TUPLE_UNCOMMITTED is set, the inserting transaction may
+	 * not have committed yet.  Use t_xid_hint (the inserter's XID, stored
+	 * in the tuple header at insert time) for a fast check via CLOG /
+	 * ProcArray -- no sLog partition lock needed.
 	 */
 	if (tuple->t_flags & RECNO_TUPLE_UNCOMMITTED)
 	{
+		TransactionId hint_xid = tuple->t_xid_hint;
+
+		/*
+		 * Fast path: t_xid_hint identifies the inserting transaction.
+		 * This avoids the sLog lookup for the common INSERT case.
+		 */
+		if (TransactionIdIsValid(hint_xid))
+		{
+			if (TransactionIdIsCurrentTransactionId(hint_xid))
+			{
+				/*
+				 * Our own insert.  Check for our own delete/update via sLog
+				 * (DELETE/UPDATE operations still use sLog entries).
+				 */
+				SLOG_ENSURE_FETCHED_HLC();
+				{
+					int		i;
+
+					for (i = 0; i < slog_nfound; i++)
+					{
+						if (!TransactionIdEquals(slog_entries[i].xid, myxid))
+							continue;
+						if (slog_entries[i].op_type == RECNO_SLOG_DELETE)
+							return false;
+						if (slog_entries[i].op_type == RECNO_SLOG_ABORTED)
+							goto check_slog_fallback;
+					}
+				}
+
+				/* Our insert, not deleted by us */
+				if (tuple->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
+					return false;
+				if (curcid != InvalidCommandId && tuple->t_cid >= curcid)
+					return false;	/* created after scan started */
+				return true;
+			}
+			else if (TransactionIdIsInProgress(hint_xid))
+			{
+				/* Another transaction's uncommitted insert -- not visible */
+				return false;
+			}
+			else if (TransactionIdDidAbort(hint_xid))
+			{
+				/* Inserter aborted -- tuple is invisible (UNDO pending) */
+				return false;
+			}
+			else
+			{
+				/*
+				 * Inserter committed.  Clear the stale UNCOMMITTED flag
+				 * and persist it via MarkBufferDirtyHint (safe under
+				 * SHARE lock, same pattern as HEAP hint bits).
+				 */
+				tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+				if (BufferIsValid(buffer))
+					MarkBufferDirtyHint(buffer, true);
+			}
+		}
+		else
+		{
+			/*
+			 * No valid t_xid_hint -- fall back to full sLog lookup.
+			 * This handles pre-upgrade tuples and speculative inserts.
+			 */
+			goto check_slog_fallback;
+		}
+
+		/* Skip the sLog fallback; UNCOMMITTED resolved via hint */
+		goto uncommitted_resolved;
+
+check_slog_fallback:
 		SLOG_ENSURE_FETCHED_HLC();
 
-		/* Check for our own insert */
+		/* Check for our own insert via sLog */
 		if (TransactionIdIsValid(myxid))
 		{
 			int		i;
@@ -1649,14 +1741,13 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 					break;
 				if (tuple->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
 					return false;
-				/* Our INSERT or in-place UPDATE */
 				if (curcid != InvalidCommandId && tuple->t_cid >= curcid)
-					return false;	/* created after scan started */
+					return false;
 				return true;
 			}
 		}
 
-		/* Check for another txn's in-progress operation */
+		/* Check for another txn's in-progress operation via sLog */
 		{
 			int		i;
 
@@ -1670,7 +1761,7 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 			}
 		}
 
-		/* Check for aborted entries */
+		/* Check for aborted entries via sLog */
 		{
 			int		i;
 
@@ -1686,8 +1777,13 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 			}
 		}
 
+		/* Stale flag: inserter committed, clear and persist */
 		tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+		if (BufferIsValid(buffer))
+			MarkBufferDirtyHint(buffer, true);
 	}
+
+uncommitted_resolved:
 
 	/* SnapshotAny: see everything */
 	if (snapshot_hlc == InvalidHLCTimestamp)
@@ -1695,7 +1791,7 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 
 	/*
 	 * LOCKED flag means FOR SHARE/FOR KEY SHARE/FOR UPDATE holds a lock.
-	 * The tuple itself is still live and visible — the lock only affects
+	 * The tuple itself is still live and visible -- the lock only affects
 	 * concurrency semantics, not visibility.  If the tuple is only
 	 * LOCKED (no DELETED or UPDATED flag), skip the deletion checks
 	 * and fall through to the normal timestamp comparison.
@@ -1923,7 +2019,7 @@ RecnoTupleVisibleWithUncertainty(RecnoTupleHeader *tuple,
  */
 bool
 RecnoTupleVisibleToSnapshotDual(RecnoTupleHeader *tuple, Snapshot snapshot,
-								Oid relid)
+								Oid relid, Buffer buffer)
 {
 	if (recno_use_hlc)
 	{
@@ -1935,11 +2031,12 @@ RecnoTupleVisibleToSnapshotDual(RecnoTupleHeader *tuple, Snapshot snapshot,
 		 */
 		return RecnoTupleVisibleHLC(tuple, snapshot_hlc, relid,
 								   (snapshot->snapshot_type == SNAPSHOT_MVCC)
-								   ? snapshot->curcid : InvalidCommandId);
+								   ? snapshot->curcid : InvalidCommandId,
+								   buffer);
 	}
 	else
 	{
-		return RecnoTupleVisibleToSnapshot(tuple, snapshot, relid);
+		return RecnoTupleVisibleToSnapshot(tuple, snapshot, relid, buffer);
 	}
 }
 

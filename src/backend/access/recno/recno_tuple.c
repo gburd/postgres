@@ -771,7 +771,7 @@ RecnoPageGetLiveTuples(Page page, uint64 snapshot_ts)
 				continue;
 
 			if (RecnoTupleVisible(tuple, snapshot_ts, 0, InvalidOid,
-								 InvalidCommandId))
+								 InvalidCommandId, InvalidBuffer))
 				live_tuples++;
 		}
 	}

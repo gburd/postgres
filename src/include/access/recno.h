@@ -72,13 +72,20 @@ typedef struct RecnoTupleHeader
 	uint16		t_natts;		/* 2B  Number of attributes */
 	uint16		t_flags;		/* 2B  Tuple flags */
 	uint64		t_commit_ts;	/* 8B  HLC commit timestamp (sole MVCC field) */
-	ItemPointerData t_ctid;		/* 6B  Current TID / update chain */
 	CommandId	t_cid;			/* 4B  Command ID */
+	/*
+	 * t_xid_hint: Inserting transaction's XID, valid while
+	 * RECNO_TUPLE_UNCOMMITTED is set.  Allows visibility checks to use
+	 * CLOG/ProcArray directly instead of an sLog lookup, eliminating
+	 * the per-tuple sLog entry for INSERT operations.
+	 */
+	TransactionId t_xid_hint;	/* 4B  Inserter XID (hint, uncommitted only) */
+	ItemPointerData t_ctid;		/* 6B  Current TID / update chain */
 	uint8		t_infomask;		/* 1B  HASNULL, HASVARWIDTH, etc. */
 	uint8		t_attrs_bitmap[FLEXIBLE_ARRAY_MEMBER];
 	/* Optional: RecnoInlineDiff after bitmap if HAS_INLINE_DIFF set */
 } RecnoTupleHeader;
-/* Fixed size: 27 bytes -> MAXALIGN to 32 bytes */
+/* Fixed size: 31 bytes -> MAXALIGN to 32 bytes (same as without t_xid_hint) */
 
 /* Tuple flags (uint16) */
 #define RECNO_TUPLE_COMPRESSED		0x0001
@@ -450,8 +457,8 @@ typedef struct IndexFetchRecnoData
 #define RecnoTupleGetHeader(tuple) ((tuple)->t_data)
 #define RecnoTupleGetData(tuple) \
 	((char *) (tuple)->t_data + RECNO_TUPLE_OVERHEAD)
-#define RecnoTupleIsVisible(tuple, snapshot_ts, xact_ts, relid, curcid) \
-	(RecnoTupleVisible(RecnoTupleGetHeader(tuple), snapshot_ts, xact_ts, relid, curcid))
+#define RecnoTupleIsVisible(tuple, snapshot_ts, xact_ts, relid, curcid, buf) \
+	(RecnoTupleVisible(RecnoTupleGetHeader(tuple), snapshot_ts, xact_ts, relid, curcid, buf))
 
 /* Slot operations for RECNO tuples */
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsRecnoTuple;
@@ -465,7 +472,7 @@ extern void RecnoSlotStoreMaterializedTuple(TupleTableSlot *slot,
 
 /* Function prototypes */
 extern bool RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
-							  Oid relid, CommandId curcid);
+							  Oid relid, CommandId curcid, Buffer buffer);
 extern Size RecnoComputeDataSize(TupleDesc tupdesc, Datum *values, bool *isnull);
 extern RecnoTuple RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 								 Relation rel, RecnoOverflowBuffers *overflow_buffers);
@@ -555,7 +562,7 @@ extern void RecnoCommitTransaction(void);
 extern void RecnoAbortTransaction(void);
 extern uint64 RecnoGetSnapshotTimestamp(Snapshot snapshot);
 extern bool RecnoTupleVisibleToSnapshot(RecnoTupleHeader *tuple, Snapshot snapshot,
-										Oid relid);
+										Oid relid, Buffer buffer);
 extern void RecnoUpdateOldestActiveTimestamp(void);
 extern void RecnoGetMvccStats(uint64 *current_ts, uint64 *oldest_ts, int *active_xacts);
 extern void assign_recno_enable_serializable(bool newval, void *extra);
@@ -579,10 +586,11 @@ extern HLCTimestamp RecnoGetOldestActiveHLC(void);
 extern HLCTimestamp RecnoGetSnapshotHLC(Snapshot snapshot);
 extern bool RecnoTupleVisibleHLC(RecnoTupleHeader *tuple,
 								 HLCTimestamp snapshot_hlc,
-								 Oid relid, CommandId curcid);
+								 Oid relid, CommandId curcid,
+								 Buffer buffer);
 extern bool RecnoTupleVisibleToSnapshotDual(RecnoTupleHeader *tuple,
 											Snapshot snapshot,
-											Oid relid);
+											Oid relid, Buffer buffer);
 extern bool RecnoCanPruneHLC(RecnoTupleHeader *tuple,
 							 HLCTimestamp prune_horizon);
 extern RecnoPruneResult RecnoPruneDecision(RecnoTupleHeader *tuple,

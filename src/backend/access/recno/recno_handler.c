@@ -442,7 +442,8 @@ recno_prepare_pagescan(RecnoScanDesc scan, Buffer buffer)
 			scan->rs_base.rs_snapshot &&
 			!RecnoTupleVisibleToSnapshotDual(tuple_header,
 											  scan->rs_base.rs_snapshot,
-											  RelationGetRelid(scan->rs_base.rs_rd)))
+											  RelationGetRelid(scan->rs_base.rs_rd),
+											  buffer))
 			continue;
 
 		scan->rs_vistuples[ntup++] = offnum;
@@ -749,7 +750,8 @@ recno_scan_getnextslot_tidrange(TableScanDesc sscan, ScanDirection direction,
 			if (sscan->rs_snapshot &&
 				!RecnoTupleVisibleToSnapshotDual(tuple_header,
 												 sscan->rs_snapshot,
-												 RelationGetRelid(sscan->rs_rd)))
+												 RelationGetRelid(sscan->rs_rd),
+												 buffer))
 				continue;
 
 			/*
@@ -938,7 +940,8 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 					/* Check visibility */
 					if (scan->rs_snapshot &&
 						!RecnoTupleVisibleToSnapshotDual(tuple_hdr, scan->rs_snapshot,
-															RelationGetRelid(scan->rs_rd)))
+															RelationGetRelid(scan->rs_rd),
+															rscan->rs_cbuf))
 						continue;
 
 					rscan->rs_vistuples[ntup++] = offnum;
@@ -978,7 +981,8 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 					/* Check visibility */
 					if (scan->rs_snapshot &&
 						!RecnoTupleVisibleToSnapshotDual(tuple_hdr, scan->rs_snapshot,
-															RelationGetRelid(scan->rs_rd)))
+															RelationGetRelid(scan->rs_rd),
+															rscan->rs_cbuf))
 						continue;
 
 					rscan->rs_vistuples[ntup++] = offnum;
@@ -1135,99 +1139,146 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 			 * SpeculativeInsertionWait can function correctly.  This
 			 * mirrors HeapTupleSatisfiesDirty() behaviour.
 			 *
-			 * With the sLog migration, t_xmin/t_xmax no longer exist in
-			 * the tuple header.  We query the sLog for in-progress
-			 * transaction state instead.
+			 * Uses t_xid_hint for INSERT visibility (fast path) and a
+			 * single batched sLog lookup for DELETE/UPDATE/LOCK state.
 			 */
+			RecnoSLogEntry slog_entries[RECNO_SLOG_MAX_OPS];
+			int			slog_nfound = -1;	/* lazy: -1 = not yet fetched */
+
 			snapshot->xmin = InvalidTransactionId;
 			snapshot->xmax = InvalidTransactionId;
 			snapshot->speculativeToken = 0;
 
 			/*
 			 * Check if this tuple is uncommitted (inserted by a
-			 * still-running transaction).
+			 * still-running transaction).  Use t_xid_hint for the
+			 * fast path, falling back to sLog for speculative inserts.
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
 			{
-				bool		is_insert = false;
-				TransactionId dirty_xid;
+				TransactionId hint_xid = tuple_hdr->t_xid_hint;
 
-				dirty_xid = RecnoSLogGetDirtyXid(RelationGetRelid(rel),
-												 tid, &is_insert);
-
-				if (TransactionIdIsValid(dirty_xid) && is_insert)
+				if (TransactionIdIsValid(hint_xid) &&
+					!TransactionIdIsCurrentTransactionId(hint_xid))
 				{
-					/*
-					 * Another transaction is inserting this tuple.
-					 * Report xmin for SpeculativeInsertionWait.
-					 */
-					snapshot->xmin = dirty_xid;
-
-					if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+					if (TransactionIdIsInProgress(hint_xid))
 					{
-						snapshot->speculativeToken =
-							ItemPointerGetBlockNumber(&tuple_hdr->t_ctid);
+						/*
+						 * Another transaction is inserting this tuple.
+						 * Report xmin for SpeculativeInsertionWait.
+						 */
+						snapshot->xmin = hint_xid;
+
+						if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+						{
+							/* Fetch sLog for speculative token */
+							slog_nfound = RecnoSLogLookupAll(
+								RelationGetRelid(rel), tid,
+								slog_entries, RECNO_SLOG_MAX_OPS);
+							{
+								int		si;
+								for (si = 0; si < slog_nfound; si++)
+								{
+									if (slog_entries[si].xid == hint_xid &&
+										slog_entries[si].spec_token != 0)
+									{
+										snapshot->speculativeToken =
+											slog_entries[si].spec_token;
+										break;
+									}
+								}
+							}
+						}
+
+						visible = true;
+						goto visibility_done;
 					}
-
-					visible = true;
-					goto visibility_done;
-				}
-				else if (!TransactionIdIsValid(dirty_xid))
-				{
-					/*
-					 * No in-progress inserter found.  Check for aborted
-					 * insert with pending UNDO.
-					 */
-					if (RecnoSLogHasAbortedEntry(RelationGetRelid(rel), tid))
+					else if (TransactionIdDidAbort(hint_xid))
 					{
+						/* Inserter aborted -- invisible */
 						visible = false;
 						goto visibility_done;
 					}
-
-					/*
-					 * Check if this is our own uncommitted insert.  Use
-					 * direct sLog lookup to handle in-place UPDATE case
-					 * (where op_type changed from INSERT to UPDATE).
-					 */
+					else
 					{
-						RecnoSLogEntry my_entry;
-						int nfound;
-						TransactionId myxid = GetCurrentTransactionIdIfAny();
+						/*
+						 * Inserter committed.  Clear stale flag and
+						 * persist via MarkBufferDirtyHint.
+						 */
+						tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+						MarkBufferDirtyHint(buffer, true);
+					}
+				}
+				else if (TransactionIdIsValid(hint_xid) &&
+						 TransactionIdIsCurrentTransactionId(hint_xid))
+				{
+					/*
+					 * Our own insert.  Check sLog for our own delete.
+					 */
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+					{
+						int		si;
+						bool	found_our_delete = false;
 
-						if (TransactionIdIsValid(myxid))
+						for (si = 0; si < slog_nfound; si++)
 						{
-							nfound = RecnoSLogLookup(RelationGetRelid(rel),
-													 tid, myxid,
-													 &my_entry, 1);
-							if (nfound > 0 &&
-								my_entry.op_type != RECNO_SLOG_DELETE)
+							if (TransactionIdEquals(slog_entries[si].xid, hint_xid) &&
+								slog_entries[si].op_type == RECNO_SLOG_DELETE)
 							{
-								/* Our own insert or in-place update */
+								found_our_delete = true;
+								break;
 							}
-							else if (nfound > 0)
+						}
+
+						if (found_our_delete)
+						{
+							visible = false;
+							goto visibility_done;
+						}
+					}
+					/* Our insert, not deleted by us -- fall through */
+				}
+				else
+				{
+					/*
+					 * Invalid hint_xid -- fall back to sLog lookup.
+					 * This handles pre-upgrade tuples.
+					 */
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+					{
+						int		si;
+						bool	found_inserter = false;
+
+						for (si = 0; si < slog_nfound; si++)
+						{
+							if (slog_entries[si].op_type == RECNO_SLOG_INSERT &&
+								TransactionIdIsInProgress(slog_entries[si].xid))
 							{
-								/* Our own delete */
+								snapshot->xmin = slog_entries[si].xid;
+								found_inserter = true;
+								break;
+							}
+							if (slog_entries[si].op_type == RECNO_SLOG_ABORTED)
+							{
 								visible = false;
 								goto visibility_done;
 							}
-							else
-							{
-								/*
-								 * Stale UNCOMMITTED flag: inserter
-								 * committed.  Clear flag and fall through.
-								 */
-								tuple_hdr->t_flags &=
-									~RECNO_TUPLE_UNCOMMITTED;
-							}
+						}
+
+						if (!found_inserter)
+						{
+							/* Stale flag, clear it */
+							tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+							MarkBufferDirtyHint(buffer, true);
 						}
 						else
 						{
-							/*
-							 * No current transaction, stale flag.
-							 * Clear and fall through.
-							 */
-							tuple_hdr->t_flags &=
-								~RECNO_TUPLE_UNCOMMITTED;
+							visible = true;
+							goto visibility_done;
 						}
 					}
 				}
@@ -1236,43 +1287,46 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 			/* Inserting xact is committed (or ours).  Check deletion. */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 			{
-				bool		is_insert = false;
-				TransactionId del_xid;
+				/* Single batched sLog lookup for delete state */
+				if (slog_nfound < 0)
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+				{
+					int		si;
 
-				del_xid = RecnoSLogGetDirtyXid(RelationGetRelid(rel),
-											   tid, &is_insert);
+					for (si = 0; si < slog_nfound; si++)
+					{
+						if (TransactionIdIsCurrentTransactionId(slog_entries[si].xid) &&
+							(slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+							 slog_entries[si].op_type == RECNO_SLOG_UPDATE))
+						{
+							/* We deleted it ourselves */
+							visible = false;
+							goto visibility_done;
+						}
+						if (TransactionIdIsInProgress(slog_entries[si].xid) &&
+							(slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+							 slog_entries[si].op_type == RECNO_SLOG_UPDATE))
+						{
+							/* Deleter still running */
+							snapshot->xmax = slog_entries[si].xid;
+							visible = true;
+							goto visibility_done;
+						}
+					}
+				}
 
-				if (TransactionIdIsValid(del_xid) && !is_insert)
-				{
-					/* Deleter still running */
-					snapshot->xmax = del_xid;
-					visible = true;
-					goto visibility_done;
-				}
-				else if (RecnoSLogIsDeletedByMe(RelationGetRelid(rel), tid))
-				{
-					/* We deleted it ourselves */
-					visible = false;
-					goto visibility_done;
-				}
-				else
-				{
-					/*
-					 * Tuple is marked DELETED with no in-progress
-					 * deleter -- deletion is committed.
-					 */
-					visible = false;
-					goto visibility_done;
-				}
+				/* No in-progress deleter -- deletion is committed */
+				visible = false;
+				goto visibility_done;
 			}
 
 			/*
 			 * Check if this is the old version of an out-of-place update.
 			 * The RECNO_TUPLE_UPDATED flag means this tuple has been
 			 * superseded by a newer version at t_ctid.  For unique-check
-			 * purposes this old version is dead -- reporting it as visible
-			 * would cause a spurious duplicate-key error when the executor
-			 * inserts the replacement index entry.
+			 * purposes this old version is dead.
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
 			{
@@ -1293,7 +1347,8 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 		else
 		{
 			visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
-													RelationGetRelid(rel));
+													RelationGetRelid(rel),
+													buffer);
 		}
 	}
 	else
@@ -1435,7 +1490,8 @@ recno_tuple_fetch_row_version(Relation relation,
 	{
 		/* For normal snapshots, check visibility */
 		visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
-												RelationGetRelid(relation));
+												RelationGetRelid(relation),
+												buffer);
 
 		/* Deleted tuples are not visible to normal snapshots */
 		if (!visible || (tuple_hdr->t_flags & RECNO_TUPLE_DELETED))
@@ -1627,7 +1683,7 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 			else if (!TransactionIdIsValid(dirty_xid))
 			{
 				/*
-				 * No in-progress inserter found.  Check for aborted
+				 * No in-progress sLog entry found.  Check for aborted
 				 * insert with pending UNDO.
 				 */
 				if (RecnoSLogHasAbortedEntry(RelationGetRelid(rel),
@@ -1638,47 +1694,123 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 				}
 
 				/*
-				 * Check if this is our own uncommitted insert.  Use
-				 * direct sLog lookup to handle in-place UPDATE.
+				 * With the t_xid_hint optimization, regular INSERTs
+				 * no longer create sLog entries.  Use t_xid_hint (the
+				 * inserter's XID) for CLOG/ProcArray checks, mirroring
+				 * the pattern in recno_index_fetch_tuple.
 				 */
 				{
-					RecnoSLogEntry my_entry;
-					int nfound;
-					TransactionId myxid = GetCurrentTransactionIdIfAny();
+					TransactionId hint_xid = tuple_hdr->t_xid_hint;
 
-					if (TransactionIdIsValid(myxid))
+					if (TransactionIdIsValid(hint_xid))
 					{
-						nfound = RecnoSLogLookup(RelationGetRelid(rel),
-												 &item_tid, myxid,
-												 &my_entry, 1);
-						if (nfound > 0 &&
-							my_entry.op_type != RECNO_SLOG_DELETE)
+						if (TransactionIdIsCurrentTransactionId(hint_xid))
 						{
-							/* Our own insert or in-place update */
+							/*
+							 * Our own uncommitted insert.  Check sLog
+							 * for our own delete of this tuple.
+							 */
+							RecnoSLogEntry my_entry;
+							int nfound;
+
+							nfound = RecnoSLogLookup(RelationGetRelid(rel),
+													 &item_tid, hint_xid,
+													 &my_entry, 1);
+							if (nfound > 0 &&
+								my_entry.op_type == RECNO_SLOG_DELETE)
+							{
+								/* Our own delete */
+								UnlockReleaseBuffer(buffer);
+								return false;
+							}
+							/* Our own insert, not deleted -- fall through */
 						}
-						else if (nfound > 0)
+						else if (TransactionIdIsInProgress(hint_xid))
 						{
-							/* Our own delete */
+							/*
+							 * Another transaction is inserting this tuple.
+							 * Report xmin so caller can wait if needed.
+							 */
+							snapshot->xmin = hint_xid;
+
+							if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
+							{
+								snapshot->speculativeToken =
+									ItemPointerGetBlockNumber(&tuple_hdr->t_ctid);
+							}
+
 							UnlockReleaseBuffer(buffer);
-							return false;
+							return true;
+						}
+						else if (TransactionIdDidCommit(hint_xid))
+						{
+							/*
+							 * Inserter committed.  Clear the stale
+							 * UNCOMMITTED flag and persist the hint.
+							 */
+							tuple_hdr->t_flags &=
+								~RECNO_TUPLE_UNCOMMITTED;
+							if (BufferIsValid(buffer))
+								MarkBufferDirtyHint(buffer, true);
+							/* Fall through to normal visibility */
 						}
 						else
 						{
 							/*
-							 * Stale UNCOMMITTED flag: inserter committed.
-							 * Clear flag and fall through.
+							 * Inserter aborted.  Tuple is not visible.
 							 */
-							tuple_hdr->t_flags &=
-								~RECNO_TUPLE_UNCOMMITTED;
+							UnlockReleaseBuffer(buffer);
+							return false;
 						}
 					}
 					else
 					{
 						/*
-						 * No current transaction, stale flag.
-						 * Clear and fall through.
+						 * No valid t_xid_hint.  Fall back to sLog
+						 * lookup for pre-hint tuples.
 						 */
-						tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+						RecnoSLogEntry my_entry;
+						int nfound;
+						TransactionId myxid = GetCurrentTransactionIdIfAny();
+
+						if (TransactionIdIsValid(myxid))
+						{
+							nfound = RecnoSLogLookup(RelationGetRelid(rel),
+													 &item_tid, myxid,
+													 &my_entry, 1);
+							if (nfound > 0 &&
+								my_entry.op_type != RECNO_SLOG_DELETE)
+							{
+								/* Our own insert or in-place update */
+							}
+							else if (nfound > 0)
+							{
+								/* Our own delete */
+								UnlockReleaseBuffer(buffer);
+								return false;
+							}
+							else
+							{
+								/*
+								 * Stale UNCOMMITTED flag.
+								 * Clear and fall through.
+								 */
+								tuple_hdr->t_flags &=
+									~RECNO_TUPLE_UNCOMMITTED;
+								if (BufferIsValid(buffer))
+									MarkBufferDirtyHint(buffer, true);
+							}
+						}
+						else
+						{
+							/*
+							 * No current transaction, stale flag.
+							 */
+							tuple_hdr->t_flags &=
+								~RECNO_TUPLE_UNCOMMITTED;
+							if (BufferIsValid(buffer))
+								MarkBufferDirtyHint(buffer, true);
+						}
 					}
 				}
 			}
@@ -1736,7 +1868,7 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 	}
 
 	visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
-										RelationGetRelid(rel));
+										RelationGetRelid(rel), buffer);
 
 	UnlockReleaseBuffer(buffer);
 
@@ -1785,6 +1917,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 	 * the TID is valid.
 	 */
 	tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+	tuple->t_data->t_xid_hint = GetTopTransactionId();
 
 	/*
 	 * Use the FSM to find a page with enough free space, or extend the
@@ -2107,7 +2240,8 @@ reacquire:
 	 * invisible tuples from concurrent modifications.
 	 */
 	if (!RecnoTupleVisibleToSnapshotDual(tuple_hdr, snapshot,
-										RelationGetRelid(relation)))
+										RelationGetRelid(relation),
+										buf))
 	{
 		TransactionId dirty_xid;
 		bool		is_insert_entry;
@@ -3475,7 +3609,8 @@ recno_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 			else if (scan->rs_snapshot)
 				visible = RecnoTupleVisibleToSnapshotDual(tuple_hdr,
 														  scan->rs_snapshot,
-														  RelationGetRelid(scan->rs_rd));
+														  RelationGetRelid(scan->rs_rd),
+														  rscan->rs_cbuf);
 			else
 				visible = true; /* no snapshot means return all live */
 
