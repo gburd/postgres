@@ -5789,7 +5789,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 		if ((operation == CMD_INSERT || operation == CMD_UPDATE ||
 			 operation == CMD_DELETE) &&
-			estimated_rows > 1000)
+			estimated_rows > 100)
 		{
 			for (i = 0; i < mtstate->mt_nrels; i++)
 			{

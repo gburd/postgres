@@ -106,7 +106,6 @@ UndoRecordSet *
 UndoRecordSetCreate(TransactionId xid, UndoRecPtr prev_undo_ptr)
 {
 	UndoRecordSet *uset;
-	MemoryContext oldcontext;
 	MemoryContext mctx;
 	MemoryContext parent;
 
@@ -138,23 +137,26 @@ UndoRecordSetCreate(TransactionId xid, UndoRecPtr prev_undo_ptr)
 									 ALLOCSET_DEFAULT_SIZES);
 	}
 
-	oldcontext = MemoryContextSwitchTo(mctx);
-
-	uset = (UndoRecordSet *) palloc0(sizeof(UndoRecordSet));
+	/*
+	 * Allocate everything in the uset's memory context using direct
+	 * MemoryContextAlloc to avoid MemoryContextSwitchTo overhead.
+	 */
+	uset = (UndoRecordSet *) MemoryContextAllocZero(mctx, sizeof(UndoRecordSet));
 	uset->xid = xid;
 	uset->prev_undo_ptr = prev_undo_ptr;
 	uset->persistence = UNDOPERSISTENCE_PERMANENT;
 	uset->type = URST_TRANSACTION;
-	uset->nrecords = 0;
 
-	/* Allocate initial buffer (will grow dynamically as needed) */
-	uset->buffer_capacity = 8192;	/* 8KB initial */
-	uset->buffer = (char *) palloc(uset->buffer_capacity);
+	/*
+	 * Allocate initial buffer.  512 bytes is enough for a single UNDO
+	 * record (48-byte header + typical heap payload).  For bulk mode the
+	 * buffer grows dynamically via UndoRecordEnsureCapacity.
+	 */
+	uset->buffer_capacity = 512;
+	uset->buffer = (char *) MemoryContextAlloc(mctx, uset->buffer_capacity);
 	uset->buffer_size = 0;
 
 	uset->mctx = mctx;
-
-	MemoryContextSwitchTo(oldcontext);
 
 	return uset;
 }
@@ -201,6 +203,32 @@ UndoRecordSetFree(UndoRecordSet *uset)
 }
 
 /*
+ * UndoRecordEnsureCapacity - Ensure the uset buffer can hold additional bytes
+ *
+ * Grows the buffer (using the uset's memory context) if needed.
+ * Avoids MemoryContextSwitchTo overhead by using MemoryContextAlloc directly.
+ */
+static void
+UndoRecordEnsureCapacity(UndoRecordSet *uset, Size additional)
+{
+	if (uset->buffer_size + additional > uset->buffer_capacity)
+	{
+		Size		new_capacity = uset->buffer_capacity * 2;
+		char	   *newbuf;
+
+		while (new_capacity < uset->buffer_size + additional)
+			new_capacity *= 2;
+
+		newbuf = (char *) MemoryContextAlloc(uset->mctx, new_capacity);
+		if (uset->buffer_size > 0)
+			memcpy(newbuf, uset->buffer, uset->buffer_size);
+		pfree(uset->buffer);
+		uset->buffer = newbuf;
+		uset->buffer_capacity = new_capacity;
+	}
+}
+
+/*
  * UndoRecordSetResetCache - Release the recycled memory context.
  *
  * Called at transaction end (commit or abort) to ensure the cached
@@ -231,56 +259,44 @@ UndoRecordAddPayload(UndoRecordSet *uset,
 					 const char *payload,
 					 Size payload_len)
 {
-	UndoRecordHeader header;
+	UndoRecordHeader *header;
 	Size		record_size;
-	MemoryContext oldcontext;
+	char	   *dest;
 
 	if (uset == NULL)
 		elog(ERROR, "cannot add UNDO record to NULL set");
 
-	/* Zero the header to avoid uninitialized padding bytes */
-	memset(&header, 0, sizeof(UndoRecordHeader));
-
-	oldcontext = MemoryContextSwitchTo(uset->mctx);
-
-	/* Calculate record size */
 	record_size = UndoRecordGetPayloadSize(payload_len);
 
-	/* Expand buffer if needed */
-	if (uset->buffer_size + record_size > uset->buffer_capacity)
-	{
-		Size		new_capacity = uset->buffer_capacity * 2;
+	/* Expand buffer if needed (allocate in the uset's memory context) */
+	UndoRecordEnsureCapacity(uset, record_size);
 
-		while (new_capacity < uset->buffer_size + record_size)
-			new_capacity *= 2;
-
-		uset->buffer = (char *) repalloc(uset->buffer, new_capacity);
-		uset->buffer_capacity = new_capacity;
-	}
-
-	/* Build record header */
-	header.urec_rmid = rmid;
-	header.urec_flags = UNDO_INFO_XID_VALID;
+	/*
+	 * Build the header directly in the buffer, avoiding a separate stack
+	 * variable, memset, and memcpy.  We zero the header in-place to
+	 * avoid uninitialized padding bytes in the on-disk format.
+	 */
+	dest = uset->buffer + uset->buffer_size;
+	header = (UndoRecordHeader *) dest;
+	memset(header, 0, SizeOfUndoRecordHeader);
+	header->urec_rmid = rmid;
+	header->urec_flags = UNDO_INFO_XID_VALID;
 	if (payload_len > 0)
-		header.urec_flags |= UNDO_INFO_HAS_PAYLOAD;
-	header.urec_info = info;
-	header.urec_len = (uint32) record_size;
-	header.urec_xid = uset->xid;
-	header.urec_prev = uset->prev_undo_ptr;
-	header.urec_reloid = reloid;
-	header.urec_payload_len = (uint32) payload_len;
-	header.urec_clr_ptr = InvalidXLogRecPtr;
+		header->urec_flags |= UNDO_INFO_HAS_PAYLOAD;
+	header->urec_info = info;
+	header->urec_len = (uint32) record_size;
+	header->urec_xid = uset->xid;
+	header->urec_prev = uset->prev_undo_ptr;
+	header->urec_reloid = reloid;
+	header->urec_payload_len = (uint32) payload_len;
+	header->urec_clr_ptr = InvalidXLogRecPtr;
 
-	/* Serialize record into buffer */
-	UndoRecordSerialize(uset->buffer + uset->buffer_size,
-						&header,
-						payload,
-						payload_len);
+	/* Copy payload directly after header */
+	if (payload_len > 0 && payload != NULL)
+		memcpy(dest + SizeOfUndoRecordHeader, payload, payload_len);
 
 	uset->buffer_size += record_size;
 	uset->nrecords++;
-
-	MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -301,49 +317,35 @@ UndoRecordAddPayloadParts(UndoRecordSet *uset,
 						  const char *part2,
 						  Size part2_len)
 {
-	UndoRecordHeader header;
+	UndoRecordHeader *header;
 	Size		payload_len = part1_len + part2_len;
 	Size		record_size;
-	MemoryContext oldcontext;
 	char	   *dest;
 
 	if (uset == NULL)
 		elog(ERROR, "cannot add UNDO record to NULL set");
 
-	memset(&header, 0, sizeof(UndoRecordHeader));
-
-	oldcontext = MemoryContextSwitchTo(uset->mctx);
-
 	record_size = UndoRecordGetPayloadSize(payload_len);
 
-	/* Expand buffer if needed */
-	if (uset->buffer_size + record_size > uset->buffer_capacity)
-	{
-		Size		new_capacity = uset->buffer_capacity * 2;
+	UndoRecordEnsureCapacity(uset, record_size);
 
-		while (new_capacity < uset->buffer_size + record_size)
-			new_capacity *= 2;
-
-		uset->buffer = (char *) repalloc(uset->buffer, new_capacity);
-		uset->buffer_capacity = new_capacity;
-	}
-
-	/* Build record header */
-	header.urec_rmid = rmid;
-	header.urec_flags = UNDO_INFO_XID_VALID;
-	if (payload_len > 0)
-		header.urec_flags |= UNDO_INFO_HAS_PAYLOAD;
-	header.urec_info = info;
-	header.urec_len = (uint32) record_size;
-	header.urec_xid = uset->xid;
-	header.urec_prev = uset->prev_undo_ptr;
-	header.urec_reloid = reloid;
-	header.urec_payload_len = (uint32) payload_len;
-	header.urec_clr_ptr = InvalidXLogRecPtr;
-
-	/* Serialize directly: header + part1 + part2 */
+	/* Build header directly in the buffer */
 	dest = uset->buffer + uset->buffer_size;
-	memcpy(dest, &header, SizeOfUndoRecordHeader);
+	header = (UndoRecordHeader *) dest;
+	memset(header, 0, SizeOfUndoRecordHeader);
+	header->urec_rmid = rmid;
+	header->urec_flags = UNDO_INFO_XID_VALID;
+	if (payload_len > 0)
+		header->urec_flags |= UNDO_INFO_HAS_PAYLOAD;
+	header->urec_info = info;
+	header->urec_len = (uint32) record_size;
+	header->urec_xid = uset->xid;
+	header->urec_prev = uset->prev_undo_ptr;
+	header->urec_reloid = reloid;
+	header->urec_payload_len = (uint32) payload_len;
+	header->urec_clr_ptr = InvalidXLogRecPtr;
+
+	/* Copy payload parts directly after header */
 	dest += SizeOfUndoRecordHeader;
 	if (part1_len > 0 && part1 != NULL)
 	{
@@ -355,8 +357,6 @@ UndoRecordAddPayloadParts(UndoRecordSet *uset,
 
 	uset->buffer_size += record_size;
 	uset->nrecords++;
-
-	MemoryContextSwitchTo(oldcontext);
 }
 
 /*

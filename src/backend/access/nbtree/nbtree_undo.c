@@ -153,51 +153,83 @@ NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 					IndexTuple itup, Size itemsz, OffsetNumber offset,
 					bool isleaf)
 {
-	NbtreeUndoInsertLeaf hdr;
-	Size		payload_size;
-	char	   *payload;
-	UndoRecordSet *uset;
 	TransactionId xid = GetCurrentTransactionId();
 
 	if (isleaf)
 	{
-		payload_size = SizeOfNbtreeUndoInsertLeaf + itemsz;
-		payload = (char *) palloc(payload_size);
+		NbtreeUndoInsertLeaf hdr;
 
 		hdr.blkno = BufferGetBlockNumber(buf);
 		hdr.offset = offset;
 		hdr.itup_sz = itemsz;
-		memcpy(payload, &hdr, SizeOfNbtreeUndoInsertLeaf);
-		memcpy(payload + SizeOfNbtreeUndoInsertLeaf, itup, itemsz);
 
-		uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-		UndoRecordAddPayload(uset, UNDO_RMID_NBTREE, NBTREE_UNDO_INSERT_LEAF,
-							 RelationGetRelid(heaprel), payload, payload_size);
-		UndoRecordSetInsert(uset);
-		UndoRecordSetFree(uset);
-		pfree(payload);
+		/*
+		 * When the heap is in bulk UNDO mode, piggyback on its batch to
+		 * avoid a separate UndoLogAllocate + WAL insert + pwrite per
+		 * index entry.  The UndoRecordSet accepts mixed RM IDs.
+		 */
+		if (HeapBulkUndoIsActive(heaprel))
+		{
+			HeapBulkUndoAddRecordParts(heaprel,
+									   UNDO_RMID_NBTREE,
+									   NBTREE_UNDO_INSERT_LEAF,
+									   (const char *) &hdr,
+									   SizeOfNbtreeUndoInsertLeaf,
+									   (const char *) itup,
+									   itemsz);
+		}
+		else
+		{
+			UndoRecordSet *uset;
+
+			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
+			UndoRecordAddPayloadParts(uset,
+									  UNDO_RMID_NBTREE,
+									  NBTREE_UNDO_INSERT_LEAF,
+									  RelationGetRelid(heaprel),
+									  (const char *) &hdr,
+									  SizeOfNbtreeUndoInsertLeaf,
+									  (const char *) itup,
+									  itemsz);
+			UndoRecordSetInsert(uset);
+			UndoRecordSetFree(uset);
+		}
 	}
 	else
 	{
-		/* Internal page insertion */
 		NbtreeUndoInsertUpper upper_hdr;
-
-		payload_size = SizeOfNbtreeUndoInsertUpper + itemsz;
-		payload = (char *) palloc(payload_size);
 
 		upper_hdr.blkno = BufferGetBlockNumber(buf);
 		upper_hdr.offset = offset;
 		upper_hdr.child_blkno = BTreeTupleGetDownLink(itup);
 		upper_hdr.itup_sz = itemsz;
-		memcpy(payload, &upper_hdr, SizeOfNbtreeUndoInsertUpper);
-		memcpy(payload + SizeOfNbtreeUndoInsertUpper, itup, itemsz);
 
-		uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-		UndoRecordAddPayload(uset, UNDO_RMID_NBTREE, NBTREE_UNDO_INSERT_UPPER,
-							 RelationGetRelid(heaprel), payload, payload_size);
-		UndoRecordSetInsert(uset);
-		UndoRecordSetFree(uset);
-		pfree(payload);
+		if (HeapBulkUndoIsActive(heaprel))
+		{
+			HeapBulkUndoAddRecordParts(heaprel,
+									   UNDO_RMID_NBTREE,
+									   NBTREE_UNDO_INSERT_UPPER,
+									   (const char *) &upper_hdr,
+									   SizeOfNbtreeUndoInsertUpper,
+									   (const char *) itup,
+									   itemsz);
+		}
+		else
+		{
+			UndoRecordSet *uset;
+
+			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
+			UndoRecordAddPayloadParts(uset,
+									  UNDO_RMID_NBTREE,
+									  NBTREE_UNDO_INSERT_UPPER,
+									  RelationGetRelid(heaprel),
+									  (const char *) &upper_hdr,
+									  SizeOfNbtreeUndoInsertUpper,
+									  (const char *) itup,
+									  itemsz);
+			UndoRecordSetInsert(uset);
+			UndoRecordSetFree(uset);
+		}
 	}
 }
 
