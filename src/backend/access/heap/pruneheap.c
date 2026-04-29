@@ -1233,12 +1233,24 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 
 	/*
 	 * If UNDO is enabled, save tuples that are about to be pruned (made
-	 * LP_DEAD or LP_UNUSED) to UNDO log. This allows recovery of accidentally
-	 * pruned data.  We batch all pruned tuples into a single UndoRecordSet
-	 * for efficiency.
+	 * LP_DEAD or LP_UNUSED) to UNDO log for forensic recovery via
+	 * pg_undorecover.  UNDO_PRUNE records are informational only — they are
+	 * never applied during transaction rollback.
+	 *
+	 * We skip UNDO logging for all current prune callers:
+	 *   - PRUNE_ON_ACCESS: hot query path, too frequent
+	 *   - PRUNE_VACUUM_SCAN: first VACUUM heap pass
+	 *   - PRUNE_VACUUM_CLEANUP: second VACUUM heap pass
+	 *
+	 * Writing PRUNE records during VACUUM adds 2-3x overhead with no
+	 * transactional benefit (the tuples are already committed-dead).
+	 * To re-enable forensic logging of VACUUM-pruned tuples, remove the
+	 * VACUUM exclusions below.
 	 */
 	if (do_prune && RelationHasUndo(prstate.relation) &&
 		params->reason != PRUNE_ON_ACCESS &&
+		params->reason != PRUNE_VACUUM_SCAN &&
+		params->reason != PRUNE_VACUUM_CLEANUP &&
 		!IsParallelWorker() && !IsInParallelMode())
 	{
 		UndoRecordSet *uset;
