@@ -248,6 +248,7 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
 	header = (RecnoCompressionHeader *) VARDATA(result);
 	header->comp_type = comp_type;
 	header->comp_level = recno_compression_level;
+	header->_pad = 0;
 	header->orig_size = orig_size;
 	header->comp_size = comp_size;
 

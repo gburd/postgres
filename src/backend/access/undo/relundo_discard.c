@@ -440,6 +440,9 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 		 */
 		IndexPruneNotifyDiscard(rel, oldest_visible_counter);
 
+		/* Mark buffer dirty before WAL-logging (assertion requires it) */
+		MarkBufferDirty(metabuf);
+
 		/* WAL-log the discard operation */
 		START_CRIT_SECTION();
 
@@ -464,8 +467,6 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 		}
 
 		END_CRIT_SECTION();
-
-		MarkBufferDirty(metabuf);
 	}
 
 	UnlockReleaseBuffer(metabuf);

@@ -93,7 +93,6 @@ INSERT INTO recno_ov_sizes (data) VALUES
     (repeat('f', 16000)),     -- Multiple overflow records
     (repeat('g', 50000)),     -- Long chain
     (repeat('h', 80000));     -- Very long chain (within WAL segment limits)
-ERROR:  zstd decompression failed: Destination buffer is too small
 -- Verify all sizes round-trip correctly
 SELECT id, length(data) AS len,
     data = repeat(chr(ascii('a') + id - 1), length(data)) AS content_ok
@@ -106,7 +105,9 @@ FROM recno_ov_sizes ORDER BY id;
   4 |  4000 | t
   5 |  8000 | t
   6 | 16000 | t
-(6 rows)
+  7 | 50000 | t
+  8 | 80000 | t
+(8 rows)
 
 DROP TABLE recno_ov_sizes;
 -- =============================================
@@ -511,30 +512,31 @@ CREATE TABLE recno_ov_extreme (
 ) USING recno;
 -- Large value (~100KB, within WAL segment limits)
 INSERT INTO recno_ov_extreme (data) VALUES (repeat('M', 100000));
-ERROR:  zstd decompression failed: Destination buffer is too small
 SELECT id, length(data) AS len, data = repeat('M', 100000) AS ok
 FROM recno_ov_extreme;
- id | len | ok 
-----+-----+----
-(0 rows)
+ id |  len   | ok 
+----+--------+----
+  1 | 100000 | t
+(1 row)
 
 -- Multiple large values in succession
 INSERT INTO recno_ov_extreme (data)
 SELECT repeat(chr(65 + (i % 26)), 50000) FROM generate_series(1, 10) i;
 SELECT id, length(data) AS len FROM recno_ov_extreme ORDER BY id;
- id |  len  
-----+-------
-  2 | 50000
-  3 | 50000
-  4 | 50000
-  5 | 50000
-  6 | 50000
-  7 | 50000
-  8 | 50000
-  9 | 50000
- 10 | 50000
- 11 | 50000
-(10 rows)
+ id |  len   
+----+--------
+  1 | 100000
+  2 |  50000
+  3 |  50000
+  4 |  50000
+  5 |  50000
+  6 |  50000
+  7 |  50000
+  8 |  50000
+  9 |  50000
+ 10 |  50000
+ 11 |  50000
+(11 rows)
 
 -- Verify all data integrity
 SELECT id,

@@ -270,7 +270,8 @@ typedef struct RecnoCompressionHeader
 {
 	uint8		comp_type;
 	uint8		comp_level;
-	uint16		orig_size;
+	uint16		_pad;
+	uint32		orig_size;
 	uint32		comp_size;
 } RecnoCompressionHeader;
 

@@ -840,6 +840,9 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 				((PageHeader) page)->pd_lower = new_lower;
 		}
 
+		/* Mark buffer dirty before WAL-logging (assertion requires it) */
+		MarkUndoBufferDirty(buf);
+
 		/* WAL-log the page modification for crash safety */
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
@@ -852,8 +855,6 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 			XLogRegisterData((char *) &xlrec, SizeOfUndoPageWrite);
 		}
 		XLogInsert(RM_UNDO_ID, XLOG_UNDO_PAGE_WRITE);
-
-		MarkUndoBufferDirty(buf);
 		UnlockReleaseUndoBuffer(buf);
 
 		src += write_len;

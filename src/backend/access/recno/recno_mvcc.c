@@ -1196,12 +1196,15 @@ RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
 
 		/*
 		 * Fall through: operation committed, UNCOMMITTED flag is stale.
-		 * Lazily clear the flag and persist via MarkBufferDirtyHint
-		 * (safe under SHARE lock) so subsequent scans skip the sLog.
+		 * Lazily clear via BufferSetHintBits16 (handles lock upgrade
+		 * from SHARE to SHARE_EXCLUSIVE) so subsequent scans skip sLog.
 		 */
-		tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 		if (BufferIsValid(buffer))
-			MarkBufferDirtyHint(buffer, true);
+			BufferSetHintBits16(&tuple->t_flags,
+								tuple->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+								buffer);
+		else
+			tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 	}
 
 	/*
@@ -1612,9 +1615,10 @@ RecnoGetSnapshotHLC(Snapshot snapshot)
  *      or a speculative insert, the sLog is consulted (single batched
  *      lookup per TID).
  *
- * When the UNCOMMITTED flag is cleared, MarkBufferDirtyHint() is called
- * to persist the change (safe under SHARE lock), matching HEAP's hint-bit
- * pattern.  This ensures subsequent scans skip the sLog entirely.
+ * When the UNCOMMITTED flag is cleared, BufferSetHintBits16() is used
+ * to persist the change (handles lock upgrade from SHARE to SHARE_EXCLUSIVE),
+ * matching HEAP's hint-bit pattern.  This ensures subsequent scans skip
+ * the sLog entirely.
  *
  * For committed, non-deleted tuples the check is a single HLC comparison
  * with no shared-memory access.
@@ -1703,12 +1707,15 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 			{
 				/*
 				 * Inserter committed.  Clear the stale UNCOMMITTED flag
-				 * and persist it via MarkBufferDirtyHint (safe under
-				 * SHARE lock, same pattern as HEAP hint bits).
+				 * using BufferSetHintBits16 (handles lock upgrade from
+				 * SHARE to SHARE_EXCLUSIVE internally).
 				 */
-				tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 				if (BufferIsValid(buffer))
-					MarkBufferDirtyHint(buffer, true);
+					BufferSetHintBits16(&tuple->t_flags,
+										tuple->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+										buffer);
+				else
+					tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 			}
 		}
 		else
@@ -1778,9 +1785,12 @@ check_slog_fallback:
 		}
 
 		/* Stale flag: inserter committed, clear and persist */
-		tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 		if (BufferIsValid(buffer))
-			MarkBufferDirtyHint(buffer, true);
+			BufferSetHintBits16(&tuple->t_flags,
+								tuple->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+								buffer);
+		else
+			tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 	}
 
 uncommitted_resolved:

@@ -186,7 +186,6 @@ VALUES (
     repeat('This is a very long text string that should be stored in overflow pages. ', 1000),
     decode(repeat('ABCD', 50000), 'hex')
 );
-ERROR:  zstd decompression failed: Destination buffer is too small
 -- Test retrieval of overflow data
 SELECT
     id,
@@ -196,7 +195,8 @@ SELECT
 FROM recno_overflow_test;
  id | small_text | large_text_len | huge_bytea_len 
 ----+------------+----------------+----------------
-(0 rows)
+  1 | Small text |          73000 |         100000
+(1 row)
 
 -- Test defragmentation by creating fragmented pages
 INSERT INTO recno_test (name, value, data)

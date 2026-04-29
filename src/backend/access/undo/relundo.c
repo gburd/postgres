@@ -466,6 +466,9 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		Assert(BufferIsValid(relundo_pending_metabuf));
 		metabuf = relundo_pending_metabuf;
 		relundo_pending_metabuf = InvalidBuffer;
+
+		/* Mark metabuf dirty before WAL-logging (assertion requires it) */
+		MarkBufferDirty(metabuf);
 	}
 
 	/*
@@ -632,6 +635,9 @@ RelUndoFinishWithTuple(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		Assert(BufferIsValid(relundo_pending_metabuf));
 		metabuf = relundo_pending_metabuf;
 		relundo_pending_metabuf = InvalidBuffer;
+
+		/* Mark metabuf dirty before WAL-logging (assertion requires it) */
+		MarkBufferDirty(metabuf);
 	}
 
 	/*

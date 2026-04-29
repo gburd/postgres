@@ -1202,11 +1202,12 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 					else
 					{
 						/*
-						 * Inserter committed.  Clear stale flag and
-						 * persist via MarkBufferDirtyHint.
+						 * Inserter committed.  Clear stale flag via
+						 * BufferSetHintBits16 (handles lock upgrade).
 						 */
-						tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
-						MarkBufferDirtyHint(buffer, true);
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+											buffer);
 					}
 				}
 				else if (TransactionIdIsValid(hint_xid) &&
@@ -1272,8 +1273,9 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 						if (!found_inserter)
 						{
 							/* Stale flag, clear it */
-							tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
-							MarkBufferDirtyHint(buffer, true);
+							BufferSetHintBits16(&tuple_hdr->t_flags,
+												tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+												buffer);
 						}
 						else
 						{
@@ -1748,10 +1750,13 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 							 * Inserter committed.  Clear the stale
 							 * UNCOMMITTED flag and persist the hint.
 							 */
-							tuple_hdr->t_flags &=
-								~RECNO_TUPLE_UNCOMMITTED;
 							if (BufferIsValid(buffer))
-								MarkBufferDirtyHint(buffer, true);
+								BufferSetHintBits16(&tuple_hdr->t_flags,
+													tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+													buffer);
+							else
+								tuple_hdr->t_flags &=
+									~RECNO_TUPLE_UNCOMMITTED;
 							/* Fall through to normal visibility */
 						}
 						else
@@ -1795,10 +1800,13 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 								 * Stale UNCOMMITTED flag.
 								 * Clear and fall through.
 								 */
-								tuple_hdr->t_flags &=
-									~RECNO_TUPLE_UNCOMMITTED;
 								if (BufferIsValid(buffer))
-									MarkBufferDirtyHint(buffer, true);
+									BufferSetHintBits16(&tuple_hdr->t_flags,
+														tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+														buffer);
+								else
+									tuple_hdr->t_flags &=
+										~RECNO_TUPLE_UNCOMMITTED;
 							}
 						}
 						else
@@ -1806,10 +1814,13 @@ recno_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 							/*
 							 * No current transaction, stale flag.
 							 */
-							tuple_hdr->t_flags &=
-								~RECNO_TUPLE_UNCOMMITTED;
 							if (BufferIsValid(buffer))
-								MarkBufferDirtyHint(buffer, true);
+								BufferSetHintBits16(&tuple_hdr->t_flags,
+													tuple_hdr->t_flags & ~RECNO_TUPLE_UNCOMMITTED,
+													buffer);
+							else
+								tuple_hdr->t_flags &=
+									~RECNO_TUPLE_UNCOMMITTED;
 						}
 					}
 				}

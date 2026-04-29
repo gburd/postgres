@@ -122,7 +122,7 @@ FROM generate_series(1, 2000) i;
 SELECT pg_size_pretty(pg_relation_size('recno_comp_on')) AS compressed_size;
  compressed_size 
 -----------------
- 216 kB
+ 232 kB
 (1 row)
 
 SET recno_enable_compression = off;
