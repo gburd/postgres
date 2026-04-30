@@ -91,6 +91,7 @@ extern void AtProcExit_XactUndo(void);
 
 /* Undo chain traversal for rollback */
 extern UndoRecPtr GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel);
+extern XLogRecPtr GetCurrentXactLastBatchLSN(UndoPersistenceLevel plevel);
 
 /* Per-relation UNDO tracking for rollback */
 extern void RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr);

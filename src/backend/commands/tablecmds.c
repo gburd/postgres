@@ -824,6 +824,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	List	   *nncols;
 	List	   *connames = NIL;
 	Datum		reloptions;
+	StdRdOptions *heap_rdopts = NULL;
 	ListCell   *listptr;
 	AttrNumber	attnum;
 	bool		partitioned;
@@ -988,7 +989,10 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			(void) partitioned_table_reloptions(reloptions, true);
 			break;
 		default:
-			(void) heap_reloptions(relkind, reloptions, true);
+			/* Save result so the AM UNDO check below can reuse it. */
+			heap_rdopts = (StdRdOptions *) heap_reloptions(relkind, reloptions,
+														   true);
+			break;
 	}
 
 	if (stmt->ofTypename)
@@ -1093,6 +1097,33 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 		if (RELKIND_HAS_TABLE_AM(relkind) && !OidIsValid(accessMethodId))
 			accessMethodId = get_table_am_oid(default_table_access_method, false);
+	}
+
+	/*
+	 * If the table options request enable_undo, verify the access method
+	 * declares UNDO support via am_supports_undo.
+	 */
+	if (RELKIND_HAS_TABLE_AM(relkind) && OidIsValid(accessMethodId) &&
+		heap_rdopts != NULL && heap_rdopts->enable_undo != STDRD_OPTION_UNDO_OFF)
+	{
+		HeapTuple	amtup;
+		Form_pg_am	amform;
+		bool		supports_undo;
+
+		amtup = SearchSysCache1(AMOID,
+								ObjectIdGetDatum(accessMethodId));
+		if (!HeapTupleIsValid(amtup))
+			elog(ERROR, "cache lookup failed for access method %u",
+				 accessMethodId);
+		amform = (Form_pg_am) GETSTRUCT(amtup);
+		supports_undo = GetTableAmRoutine(amform->amhandler)->am_supports_undo;
+		ReleaseSysCache(amtup);
+
+		if (!supports_undo)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("table access method \"%s\" does not support UNDO",
+							get_am_name(accessMethodId))));
 	}
 
 	/*
@@ -5433,7 +5464,58 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode,
 			  tab->relkind == RELKIND_PARTITIONED_TABLE) &&
 			 tab->partition_constraint == NULL) ||
 			tab->relkind == RELKIND_MATVIEW)
-			AlterTableCreateToastTable(tab->relid, (Datum) 0, lockmode);
+		{
+			/*
+			 * If the parent relation has enable_undo set, propagate it to the
+			 * newly created TOAST table.  The ATExecSetRelOptions path handles
+			 * explicit SET (enable_undo=on) commands, but not this code path
+			 * where a TOAST table is implicitly created by ADD COLUMN.
+			 */
+			Datum		toast_relopts = (Datum) 0;
+
+			if (tab->relkind == RELKIND_RELATION ||
+				tab->relkind == RELKIND_MATVIEW)
+			{
+				HeapTuple	classtup;
+				bool		isnull;
+				Datum		relopts_datum;
+
+				classtup = SearchSysCache1(RELOID,
+										   ObjectIdGetDatum(tab->relid));
+				if (HeapTupleIsValid(classtup))
+				{
+					relopts_datum = SysCacheGetAttr(RELOID, classtup,
+													Anum_pg_class_reloptions,
+													&isnull);
+					if (!isnull)
+					{
+						StdRdOptions *rdopts =
+							(StdRdOptions *) heap_reloptions(tab->relkind,
+															 relopts_datum,
+															 false);
+
+						if (rdopts != NULL &&
+							rdopts->enable_undo != STDRD_OPTION_UNDO_OFF)
+						{
+							const char *const validnsps[] =
+								HEAP_RELOPT_NAMESPACES;
+							List	   *undo_deflist = list_make1(
+								makeDefElem("enable_undo",
+											(Node *) makeString(pstrdup("on")),
+											-1));
+
+							toast_relopts =
+								transformRelOptions((Datum) 0, undo_deflist,
+													NULL, validnsps,
+													false, false);
+						}
+					}
+					ReleaseSysCache(classtup);
+				}
+			}
+
+			AlterTableCreateToastTable(tab->relid, toast_relopts, lockmode);
+		}
 	}
 }
 
@@ -16968,7 +17050,22 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	{
 		case RELKIND_RELATION:
 		case RELKIND_MATVIEW:
-			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
+			{
+				StdRdOptions *rdopts =
+					(StdRdOptions *) heap_reloptions(rel->rd_rel->relkind,
+													 newOptions, true);
+
+				/*
+				 * If enable_undo is being set, verify the AM supports it.
+				 */
+				if (rdopts != NULL &&
+					rdopts->enable_undo != STDRD_OPTION_UNDO_OFF &&
+					!RelationAmSupportsUndo(rel))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("table access method \"%s\" does not support UNDO",
+									get_am_name(rel->rd_rel->relam))));
+			}
 			break;
 		case RELKIND_PARTITIONED_TABLE:
 			(void) partitioned_table_reloptions(newOptions, true);
@@ -17085,6 +17182,30 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 
 		newOptions = transformRelOptions(datum, defList, "toast", validnsps,
 										 false, operation == AT_ResetRelOptions);
+
+		/*
+		 * Explicitly propagate enable_undo to the TOAST table.  The "toast"
+		 * namespace filter above excludes options without a "toast." prefix,
+		 * so we must propagate enable_undo separately.
+		 */
+		{
+			ListCell   *_lc;
+
+			foreach(_lc, defList)
+			{
+				DefElem    *_def = (DefElem *) lfirst(_lc);
+
+				if (strcmp(_def->defname, "enable_undo") == 0)
+				{
+					List	   *_undo_list = list_make1(copyObject(_def));
+
+					newOptions = transformRelOptions(newOptions, _undo_list,
+													 NULL, validnsps, false,
+													 operation == AT_ResetRelOptions);
+					break;
+				}
+			}
+		}
 
 		(void) heap_reloptions(RELKIND_TOASTVALUE, newOptions, true);
 

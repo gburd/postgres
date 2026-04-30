@@ -26,6 +26,7 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undo_xlog.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/xactundo.h"
@@ -6497,6 +6498,9 @@ xact_redo(XLogReaderState *record)
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_commit(&parsed, XLogRecGetXid(record),
 						 record->EndRecPtr, XLogRecGetOrigin(record));
+
+		/* Remove from UNDO recovery tracking -- committed, no rollback needed */
+		UndoRecoveryRemoveXid(XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_COMMIT_PREPARED)
 	{
@@ -6511,6 +6515,9 @@ xact_redo(XLogReaderState *record)
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoRemove(parsed.twophase_xid, false);
 		LWLockRelease(TwoPhaseStateLock);
+
+		/* Remove from UNDO recovery tracking */
+		UndoRecoveryRemoveXid(parsed.twophase_xid);
 	}
 	else if (info == XLOG_XACT_ABORT)
 	{
@@ -6520,6 +6527,13 @@ xact_redo(XLogReaderState *record)
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_abort(&parsed, XLogRecGetXid(record),
 						record->EndRecPtr, XLogRecGetOrigin(record));
+
+		/*
+		 * Remove from UNDO recovery tracking -- abort record present means
+		 * the UNDO rollback was already completed (or will be handled by
+		 * the abort record's own redo logic).
+		 */
+		UndoRecoveryRemoveXid(XLogRecGetXid(record));
 	}
 	else if (info == XLOG_XACT_ABORT_PREPARED)
 	{
@@ -6534,12 +6548,22 @@ xact_redo(XLogReaderState *record)
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoRemove(parsed.twophase_xid, false);
 		LWLockRelease(TwoPhaseStateLock);
+
+		/* Remove from UNDO recovery tracking */
+		UndoRecoveryRemoveXid(parsed.twophase_xid);
 	}
 	else if (info == XLOG_XACT_PREPARE)
 	{
+		xl_xact_prepare *xlrec = (xl_xact_prepare *) XLogRecGetData(record);
+
 		/*
 		 * Store xid and start/end pointers of the WAL record in TwoPhaseState
 		 * gxact entry.
+		 *
+		 * NB: xl_xact_prepare includes last_batch_lsn[NUndoPersistenceLevels]
+		 * for UNDO chain tracking across 2PC boundaries.  This extended the
+		 * on-disk struct by 24 bytes and required a XLOG_PAGE_MAGIC bump
+		 * (0xD120 -> 0xD121) to prevent misinterpretation by older replicas.
 		 */
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoAdd(InvalidFullTransactionId,
@@ -6548,6 +6572,21 @@ xact_redo(XLogReaderState *record)
 					   record->EndRecPtr,
 					   XLogRecGetOrigin(record));
 		LWLockRelease(TwoPhaseStateLock);
+
+		/*
+		 * Restore UNDO recovery tracking for the prepared transaction.
+		 * The UNDO chain LSNs were saved in the prepare record so that
+		 * if the server crashes after PREPARE but before COMMIT/ROLLBACK
+		 * PREPARED, recovery can still find and roll back UNDO records.
+		 */
+		for (int j = 0; j < NUndoPersistenceLevels; j++)
+		{
+			if (!XLogRecPtrIsInvalid(xlrec->last_batch_lsn[j]))
+				UndoRecoveryTrackBatch(xlrec->xid,
+									   xlrec->last_batch_lsn[j],
+									   InvalidXLogRecPtr,
+									   (UndoPersistenceLevel) j);
+		}
 	}
 	else if (info == XLOG_XACT_ASSIGNMENT)
 	{

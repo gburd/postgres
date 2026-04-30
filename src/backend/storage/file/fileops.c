@@ -48,7 +48,7 @@
 /*
  * ENODATA is Linux-specific; FreeBSD and other BSDs don't define it.
  * When removing extended attributes, ENODATA means "attribute does not
- * exist" — equivalent to ENOATTR on BSDs.
+ * exist" -- equivalent to ENOATTR on BSDs.
  */
 #ifndef ENODATA
 #ifdef ENOATTR

@@ -5774,22 +5774,23 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * Signal the table AM about bulk DML operations.
+	 * Signal the table AM about DML operations.
 	 *
-	 * When the planner estimates a large number of rows will be affected,
-	 * tell the AM so it can enable optimizations like batched UNDO recording.
-	 * This applies to INSERT, UPDATE, and DELETE operations.
+	 * Tell the AM that a DML operation is starting so it can enable
+	 * optimizations like the UNDO write buffer.  This is always done for
+	 * INSERT, UPDATE, and DELETE operations regardless of estimated row
+	 * count -- the UNDO write buffer overhead is negligible (one palloc
+	 * of ~512 bytes, reused for the entire transaction) and the benefit
+	 * of batched UNDO recording applies to operations of any size.
 	 *
-	 * We use the subplan's row estimate (input rows to be modified), not the
-	 * ModifyTable node's plan_rows (output rows, which may be 0 for UPDATE
-	 * and DELETE without RETURNING).
+	 * We pass the subplan's row estimate (input rows to be modified) as
+	 * a hint; the AM may use it for buffer pre-sizing.
 	 */
 	{
 		Cardinality estimated_rows = subplan->plan_rows;
 
-		if ((operation == CMD_INSERT || operation == CMD_UPDATE ||
-			 operation == CMD_DELETE) &&
-			estimated_rows > 100)
+		if (operation == CMD_INSERT || operation == CMD_UPDATE ||
+			operation == CMD_DELETE)
 		{
 			for (i = 0; i < mtstate->mt_nrels; i++)
 			{

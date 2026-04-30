@@ -19,7 +19,7 @@
 #   PGBENCH_CLIENTS   - Client counts (default: 1 4 8)
 #   PGBENCH_DURATION  - Seconds per pgbench run (default: 60)
 #   ITERATIONS        - Measurement iterations (default: 3, warmup=1 always)
-#   BENCHMARKS        - Which to run (default: b1 b2 b3 b4 b5 b6 b7 pgbench mixed)
+#   BENCHMARKS        - Which to run (default: b1 b2 b3 b4 b5 b6 b7 b8 pgbench mixed)
 #
 
 set -euo pipefail
@@ -318,7 +318,7 @@ measure_undo_log_size() {
     fi
 }
 
-# ── Run each benchmark ────────────────────────────────────────────────────────
+# -- Run each benchmark --------------------------------------------------------
 
 for bench in $BENCHMARKS; do
     log "=== Benchmark: $bench ==="
@@ -389,6 +389,9 @@ for bench in $BENCHMARKS; do
                 done
             }
             _run_b7
+            ;;
+        b8)
+            run_sql_benchmark b8 "$SCRIPT_DIR/sql/b8_large_transaction.sql"
             ;;
         pgbench)
             run_pgbench_benchmark pgbench

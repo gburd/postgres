@@ -132,6 +132,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/index_prune.h"
+#include "access/undolog.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"
@@ -154,6 +155,7 @@
 #include "storage/lmgr.h"
 #include "storage/read_stream.h"
 #include "utils/injection_point.h"
+#include "utils/rel.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_rusage.h"
 #include "utils/timestamp.h"
@@ -2069,6 +2071,44 @@ lazy_scan_prune(LVRelState *vacrel,
 	};
 
 	Assert(BufferGetBlockNumber(buf) == blkno);
+
+	/*
+	 * Skip pruning this page: its LSN is newer than the UNDO discard horizon,
+	 * meaning the page was modified after the oldest in-flight UNDO batch was
+	 * written.  A tuple on this page might be referenced by an unprocessed
+	 * UNDO record.  Both the page LSN and the UNDO batch LSNs are positions
+	 * in the same WAL stream so the comparison is valid.  This guard is
+	 * conservative: it may defer pruning of pages that no longer have any UNDO
+	 * reference, but over-protection is not a correctness error -- the tuples
+	 * remain visible and VACUUM will reclaim them once the UNDO discard
+	 * horizon advances past this page's LSN.
+	 */
+	if (rel->rd_options != NULL)
+	{
+		StdRdOptions *rdopts = (StdRdOptions *) rel->rd_options;
+
+		if (rdopts->enable_undo != STDRD_OPTION_UNDO_OFF)
+		{
+			XLogRecPtr	undo_horizon = UndoGetDiscardHorizon();
+
+			if (XLogRecPtrIsValid(undo_horizon))
+			{
+				XLogRecPtr	page_lsn = PageGetLSN(page);
+
+				if (page_lsn > undo_horizon)
+				{
+					ereport(DEBUG2,
+							(errmsg("VACUUM: skipping prune of block %u in UNDO-enabled relation \"%s\": page LSN %X/%X > UNDO discard horizon %X/%X",
+									blkno, RelationGetRelationName(rel),
+									LSN_FORMAT_ARGS(page_lsn),
+									LSN_FORMAT_ARGS(undo_horizon))));
+					*has_lpdead_items = false;
+					*vm_page_frozen = false;
+					return 0;
+				}
+			}
+		}
+	}
 
 	/*
 	 * Prune all HOT-update chains and potentially freeze tuples on this page.

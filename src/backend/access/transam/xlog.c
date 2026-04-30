@@ -8606,6 +8606,27 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 			segno = unsummarized_segno;
 	}
 
+	/*
+	 * If UNDO-in-WAL is active, retain WAL segments that contain UNDO
+	 * records still needed for rollback of in-progress transactions.
+	 *
+	 * Scan live per-backend UNDO batch LSN slots at every checkpoint rather
+	 * than using the worker-updated cached horizon, to ensure WAL retention
+	 * is accurate even when the UNDO worker lags.
+	 */
+	if (enable_undo)
+	{
+		keep = UndoGetOldestBatchLSN();
+		if (XLogRecPtrIsValid(keep))
+		{
+			XLogSegNo	undo_segno;
+
+			XLByteToSeg(keep, undo_segno, wal_segment_size);
+			if (undo_segno < segno)
+				segno = undo_segno;
+		}
+	}
+
 	/* but, keep at least wal_keep_size if that's set */
 	if (wal_keep_size_mb > 0)
 	{

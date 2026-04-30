@@ -80,10 +80,10 @@ _bt_prune_check_heap_tid(Relation heaprel, ItemPointer heaptid)
 	heapitemid = PageGetItemId(heappage, offnum);
 
 	/*
-	 * The heap item is dead if it's LP_DEAD, LP_UNUSED, or a redirect to
-	 * a dead chain.  We only mark the index entry dead for LP_DEAD or
-	 * LP_UNUSED; LP_REDIRECT is part of HOT chain management and should
-	 * not cause index entries to be marked dead.
+	 * The heap item is dead if it's LP_DEAD, LP_UNUSED, or a redirect to a
+	 * dead chain.  We only mark the index entry dead for LP_DEAD or
+	 * LP_UNUSED; LP_REDIRECT is part of HOT chain management and should not
+	 * cause index entries to be marked dead.
 	 */
 	is_dead = (ItemIdIsDead(heapitemid) || !ItemIdIsUsed(heapitemid));
 
@@ -201,11 +201,11 @@ _bt_prune_by_undo_counter(Relation heaprel, Relation indexrel,
 		maxoff = PageGetMaxOffsetNumber(page);
 
 		/*
-		 * Scan items on this leaf page.  For each non-dead item, check if
-		 * its heap tuple has been discarded.
+		 * Scan items on this leaf page.  For each non-dead item, check if its
+		 * heap tuple has been discarded.
 		 *
-		 * We use the hint-bit protocol (same as _bt_killitems): hold only
-		 * a shared lock, and use BufferBeginSetHintBits to check if we're
+		 * We use the hint-bit protocol (same as _bt_killitems): hold only a
+		 * shared lock, and use BufferBeginSetHintBits to check if we're
 		 * allowed to modify the page.
 		 */
 		for (offnum = P_FIRSTDATAKEY(opaque);
@@ -259,6 +259,135 @@ _bt_prune_by_undo_counter(Relation heaprel, Relation indexrel,
 next_page:
 		_bt_relbuf(indexrel, buf);
 		blkno = nextblkno;
+	}
+
+	return entries_pruned;
+}
+
+/*
+ * _bt_prune_by_targets
+ *
+ * Targeted index pruning: visit only the specific index pages and offsets
+ * identified by UNDO records from the discarded segment range.
+ *
+ * Complexity: O(N_targets) instead of O(N_total_index_entries).
+ *
+ * For each target, we:
+ *   1. Verify the target page is a leaf page
+ *   2. Verify the target offset is valid and the item is not already dead
+ *   3. Verify the referenced heap TID matches the target's heap_tid
+ *   4. Check whether the heap tuple is dead
+ *   5. If dead, mark the index entry LP_DEAD via hint-bit protocol
+ *
+ * Returns the number of entries marked as LP_DEAD.
+ */
+uint64
+_bt_prune_by_targets(Relation heaprel, Relation indexrel,
+					 IndexPruneTarget * targets, int ntargets)
+{
+	uint64		entries_pruned = 0;
+	int			i;
+	BlockNumber num_pages;
+	BlockNumber cur_blkno = InvalidBlockNumber;
+	Buffer		cur_buf = InvalidBuffer;
+	Page		cur_page = NULL;
+	bool		cur_hintbits_started = false;
+
+	num_pages = RelationGetNumberOfBlocks(indexrel);
+
+	for (i = 0; i < ntargets; i++)
+	{
+		IndexPruneTarget *target = &targets[i];
+		BTPageOpaque opaque;
+		ItemId		itemid;
+		IndexTuple	itup;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Skip if block is beyond the current relation size */
+		if (target->blkno >= num_pages)
+			continue;
+
+		/*
+		 * If we're switching to a different page, release the current one and
+		 * acquire the new one.
+		 */
+		if (target->blkno != cur_blkno)
+		{
+			if (BufferIsValid(cur_buf))
+			{
+				if (cur_hintbits_started)
+				{
+					opaque = BTPageGetOpaque(cur_page);
+					opaque->btpo_flags |= BTP_HAS_GARBAGE;
+					BufferFinishSetHintBits(cur_buf, true, true);
+					cur_hintbits_started = false;
+				}
+				_bt_relbuf(indexrel, cur_buf);
+			}
+
+			cur_buf = _bt_getbuf(indexrel, target->blkno, BT_READ);
+			cur_page = BufferGetPage(cur_buf);
+			cur_blkno = target->blkno;
+			cur_hintbits_started = false;
+		}
+
+		opaque = BTPageGetOpaque(cur_page);
+
+		/* Only prune leaf pages */
+		if (!P_ISLEAF(opaque))
+			continue;
+
+		/* Validate offset */
+		if (target->offset < P_FIRSTDATAKEY(opaque) ||
+			target->offset > PageGetMaxOffsetNumber(cur_page))
+			continue;
+
+		itemid = PageGetItemId(cur_page, target->offset);
+
+		/* Skip if already dead or unused */
+		if (ItemIdIsDead(itemid) || !ItemIdIsUsed(itemid))
+			continue;
+
+		itup = (IndexTuple) PageGetItem(cur_page, itemid);
+
+		/*
+		 * Verify the heap TID matches.  The index entry may have been
+		 * modified since the UNDO record was written (e.g., by a split or
+		 * page compaction).
+		 */
+		if (!ItemPointerEquals(&itup->t_tid, &target->heap_tid))
+			continue;
+
+		/*
+		 * Check if the heap tuple is actually dead.  This reads the heap page
+		 * briefly with a shared lock.
+		 */
+		if (_bt_prune_check_heap_tid(heaprel, &itup->t_tid))
+		{
+			if (!cur_hintbits_started)
+			{
+				if (!BufferBeginSetHintBits(cur_buf))
+					continue;	/* Can't modify this page */
+				cur_hintbits_started = true;
+			}
+
+			ItemIdMarkDead(itemid);
+			entries_pruned++;
+		}
+	}
+
+	/* Release the last page */
+	if (BufferIsValid(cur_buf))
+	{
+		if (cur_hintbits_started)
+		{
+			BTPageOpaque opaque = BTPageGetOpaque(cur_page);
+
+			opaque->btpo_flags |= BTP_HAS_GARBAGE;
+			BufferFinishSetHintBits(cur_buf, true, true);
+		}
+		_bt_relbuf(indexrel, cur_buf);
 	}
 
 	return entries_pruned;

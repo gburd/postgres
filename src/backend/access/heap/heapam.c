@@ -37,6 +37,7 @@
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"
+#include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/undormgr.h"
 #include "access/xactundo.h"
@@ -59,6 +60,15 @@
 #include "utils/inval.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
+
+/*
+ * UNDO write buffer flush thresholds.  Intentionally file-local (not in
+ * heapam.h) so that undolog.h is not pulled into every translation unit
+ * that includes heapam.h.  Tunable via the undo_batch_size_kb and
+ * undo_batch_record_limit GUCs (src/backend/access/undo/undolog.c).
+ */
+#define HEAP_UNDO_FLUSH_THRESHOLD	(undo_batch_size_kb * 1024)
+#define HEAP_UNDO_FLUSH_RECORDS		undo_batch_record_limit
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
@@ -118,45 +128,50 @@ static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool ke
 
 
 /* -----------------------------------------------------------------------
- * Bulk UNDO batching state
+ * UNDO write buffer state
  *
- * When a bulk DML operation is in progress (signaled via
- * HeapBeginBulkUndo), UNDO records are accumulated in a persistent
- * UndoRecordSet and flushed in batches.  This avoids the overhead of
- * per-row UndoLogAllocate + WAL insert + UndoLogWrite cycles.
+ * When the UNDO write buffer is active (signaled via HeapBeginUndoBuffer),
+ * UNDO records are accumulated in a persistent UndoRecordSet and flushed
+ * in batches.  This avoids the overhead of per-row UndoLogAllocate + WAL
+ * insert + UndoLogWrite cycles.
  *
- * The state is per-backend, so only one relation at a time can be in
- * bulk-undo mode.  This matches the executor's pattern of processing
+ * The write buffer is always activated for UNDO-enabled tables at DML
+ * start.  The overhead is negligible: one palloc of ~512 bytes, reused
+ * for the entire transaction.
+ *
+ * The state is per-backend, so only one relation at a time can have an
+ * active write buffer.  This matches the executor's pattern of processing
  * one ModifyTable node at a time.
  * -----------------------------------------------------------------------
  */
-typedef struct HeapBulkUndoState
+typedef struct HeapUndoBufferState
 {
-	Oid			relid;			/* OID of the relation in bulk mode */
+	Oid			relid;			/* OID of the relation with active buffer */
 	UndoRecordSet *uset;		/* Accumulated UNDO records */
 	int			nrecords;		/* Records since last flush */
-	bool		active;			/* Is bulk mode active? */
+	bool		active;			/* Is write buffer active? */
 	MemoryContextCallback cb;	/* Callback to reset state on context destroy */
-}			HeapBulkUndoState;
+}			HeapUndoBufferState;
 
-static HeapBulkUndoState bulk_undo_state = {
+static HeapUndoBufferState undo_buffer_state =
+{
 	.relid = InvalidOid,
-	.uset = NULL,
-	.nrecords = 0,
-	.active = false,
+		.uset = NULL,
+		.nrecords = 0,
+		.active = false,
 };
 
 /*
- * HeapBulkUndoResetCallback - Reset bulk UNDO state when the UndoRecordSet's
- * memory context is destroyed (e.g., on transaction abort).
+ * HeapUndoBufferResetCallback - Reset UNDO write buffer state when the
+ * UndoRecordSet's memory context is destroyed (e.g., on transaction abort).
  *
- * Without this, the static bulk_undo_state would retain a dangling uset
+ * Without this, the static undo_buffer_state would retain a dangling uset
  * pointer after abort, leading to use-after-free on the next transaction.
  */
 static void
-HeapBulkUndoResetCallback(void *arg)
+HeapUndoBufferResetCallback(void *arg)
 {
-	HeapBulkUndoState *state = (HeapBulkUndoState *) arg;
+	HeapUndoBufferState *state = (HeapUndoBufferState *) arg;
 
 	state->uset = NULL;
 	state->relid = InvalidOid;
@@ -2241,11 +2256,11 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 										   RelationGetForm(relation)->relhasindex,
 										   NULL, 0);
 
-		if (HeapBulkUndoIsActive(relation))
+		if (HeapUndoBufferIsActive(relation))
 		{
-			/* Bulk mode: accumulate in the batch */
-			HeapBulkUndoAddRecord(relation, UNDO_RMID_HEAP, HEAP_UNDO_INSERT,
-								   payload, payload_len);
+			/* UNDO write buffer active: accumulate in the batch */
+			HeapUndoBufferAddRecord(relation, UNDO_RMID_HEAP, HEAP_UNDO_INSERT,
+									payload, payload_len);
 		}
 		else
 		{
@@ -3077,45 +3092,107 @@ l1:
 
 	/*
 	 * If UNDO is enabled, save the old tuple for rollback.  The buffer is
-	 * still exclusively locked, so we can read tuple data directly from
-	 * the page without copying.  We serialize the HeapUndoPayload header
-	 * and the raw tuple data as two parts directly into the UNDO buffer,
-	 * avoiding intermediate allocations.
+	 * still exclusively locked, so we can read tuple data directly from the
+	 * page without copying.  We serialize the HeapUndoPayload header and the
+	 * raw tuple data as two parts directly into the UNDO buffer, avoiding
+	 * intermediate allocations.
 	 */
 	if (RelationHasUndo(relation))
 	{
 		HeapUndoPayloadHeader undo_hdr;
+		bool		full_undo = RelationHasFullUndo(relation);
 
-		HeapUndoBuildHeader(&undo_hdr,
-							block,
-							ItemPointerGetOffsetNumber(tid),
-							RelationGetForm(relation)->relhasindex,
-							tp.t_len);
+		/*
+		 * Visibility-delta optimization: for tuples inserted by a prior
+		 * committed transaction (t_xmin != current xid), DELETE only
+		 * changes three tuple-header fields (xmax, infomask, infomask2).
+		 * Store just those 8 bytes instead of the full ~160-560 byte
+		 * before-image.  Same-transaction insert-then-delete falls through
+		 * to the full-tuple path because t_cmin may have been overwritten
+		 * by SetCmax without a combo-CID entry, so we cannot safely rely
+		 * on the restored xmax alone to fix visibility.
+		 */
+		bool		use_vis_delta = full_undo &&
+			(HeapTupleHeaderGetRawXmin(tp.t_data) !=
+			 GetCurrentTransactionIdIfAny());
 
-		if (HeapBulkUndoIsActive(relation))
+		if (use_vis_delta)
 		{
-			HeapBulkUndoAddRecordParts(relation,
-									   UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
-									   (const char *) &undo_hdr,
-									   SizeOfHeapUndoPayloadHeader,
-									   (const char *) tp.t_data,
-									   tp.t_len);
+			/* Compact path: store only the three visibility fields. */
+			HeapUndoDeleteDelta vis_delta;
+
+			vis_delta.old_xmax = HeapTupleHeaderGetRawXmax(tp.t_data);
+			vis_delta.old_infomask = tp.t_data->t_infomask;
+			vis_delta.old_infomask2 = tp.t_data->t_infomask2;
+
+			HeapUndoBuildHeader(&undo_hdr,
+								block,
+								ItemPointerGetOffsetNumber(tid),
+								RelationGetForm(relation)->relhasindex,
+								SizeOfHeapUndoDeleteDelta);
+			undo_hdr.flags |= HEAP_UNDO_DELETE_VISIBILITY_ONLY;
+
+			if (HeapUndoBufferIsActive(relation))
+			{
+				HeapUndoBufferAddRecordParts(relation,
+											 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+											 (const char *) &undo_hdr,
+											 SizeOfHeapUndoPayloadHeader,
+											 (const char *) &vis_delta,
+											 SizeOfHeapUndoDeleteDelta);
+			}
+			else
+			{
+				XactUndoContext undo_ctx;
+
+				PrepareXactUndoDataParts(&undo_ctx,
+										 relation->rd_rel->relpersistence,
+										 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+										 RelationGetRelid(relation),
+										 (const char *) &undo_hdr,
+										 SizeOfHeapUndoPayloadHeader,
+										 (const char *) &vis_delta,
+										 SizeOfHeapUndoDeleteDelta);
+				InsertXactUndoData(&undo_ctx);
+				CleanupXactUndoInsertion(&undo_ctx);
+			}
 		}
 		else
 		{
-			/* Normal per-row path: use transaction-level record set */
-			XactUndoContext undo_ctx;
+			/* Full-tuple path: store the complete before-image. */
+			uint32		undo_tuple_len = full_undo ? tp.t_len : 0;
+			const char *undo_tuple_data = full_undo ? (const char *) tp.t_data : NULL;
 
-			PrepareXactUndoDataParts(&undo_ctx,
-									 relation->rd_rel->relpersistence,
-									 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
-									 RelationGetRelid(relation),
-									 (const char *) &undo_hdr,
-									 SizeOfHeapUndoPayloadHeader,
-									 (const char *) tp.t_data,
-									 tp.t_len);
-			InsertXactUndoData(&undo_ctx);
-			CleanupXactUndoInsertion(&undo_ctx);
+			HeapUndoBuildHeader(&undo_hdr,
+								block,
+								ItemPointerGetOffsetNumber(tid),
+								RelationGetForm(relation)->relhasindex,
+								undo_tuple_len);
+
+			if (HeapUndoBufferIsActive(relation))
+			{
+				HeapUndoBufferAddRecordParts(relation,
+											 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+											 (const char *) &undo_hdr,
+											 SizeOfHeapUndoPayloadHeader,
+											 undo_tuple_data,
+											 undo_tuple_len);
+			}
+			else
+			{
+				XactUndoContext undo_ctx;
+
+				PrepareXactUndoDataParts(&undo_ctx,
+										 relation->rd_rel->relpersistence,
+										 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+										 RelationGetRelid(relation),
+										 (const char *) &undo_hdr,
+										 SizeOfHeapUndoPayloadHeader,
+										 undo_tuple_data,
+										 undo_tuple_len);
+				InsertXactUndoData(&undo_ctx);
+				CleanupXactUndoInsertion(&undo_ctx);
+			}
 		}
 	}
 
@@ -4147,43 +4224,223 @@ l2:
 
 	/*
 	 * If UNDO is enabled, save the old tuple for rollback.  The buffer is
-	 * still exclusively locked, so we can read tuple data directly from
-	 * the page without copying.
+	 * still exclusively locked, so we can read tuple data directly from the
+	 * page without copying.
+	 *
+	 * For HOT updates, we store only metadata (~16 bytes) since both old and
+	 * new tuples are on the same page and linked via t_ctid.
+	 *
+	 * For non-HOT updates, we attempt delta compression: only store the bytes
+	 * that differ between old and new tuples (prefix/suffix encoding). Falls
+	 * back to full tuple storage if delta savings are insufficient.
 	 */
 	if (RelationHasUndo(relation))
 	{
-		HeapUndoPayloadHeader undo_hdr;
+		bool		full_undo = RelationHasFullUndo(relation);
 
-		HeapUndoBuildHeader(&undo_hdr,
-							ItemPointerGetBlockNumber(&(oldtup.t_self)),
-							ItemPointerGetOffsetNumber(&(oldtup.t_self)),
-							RelationGetForm(relation)->relhasindex,
-							oldtup.t_len);
-
-		if (HeapBulkUndoIsActive(relation))
+		if (use_hot_update && full_undo)
 		{
-			HeapBulkUndoAddRecordParts(relation,
-									   UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
-									   (const char *) &undo_hdr,
-									   SizeOfHeapUndoPayloadHeader,
-									   (const char *) oldtup.t_data,
-									   oldtup.t_len);
+			/*
+			 * HOT update with full UNDO: store only metadata.  On rollback we
+			 * can find the new tuple by following the old tuple's t_ctid
+			 * chain, restore infomask, and kill the new version.
+			 */
+			HeapUndoHotPayload hot_hdr;
+
+			hot_hdr.blkno = ItemPointerGetBlockNumber(&(oldtup.t_self));
+			hot_hdr.old_offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
+			hot_hdr.flags = 0;
+			if (RelationGetForm(relation)->relhasindex)
+				hot_hdr.flags |= HEAP_UNDO_HAS_INDEX;
+			hot_hdr.old_infomask = oldtup.t_data->t_infomask;
+			hot_hdr.old_infomask2 = oldtup.t_data->t_infomask2;
+
+			if (HeapUndoBufferIsActive(relation))
+			{
+				HeapUndoBufferAddRecord(relation,
+										UNDO_RMID_HEAP, HEAP_UNDO_HOT_UPDATE,
+										(const char *) &hot_hdr,
+										SizeOfHeapUndoHotPayload);
+			}
+			else
+			{
+				XactUndoContext undo_ctx;
+
+				PrepareXactUndoData(&undo_ctx,
+									relation->rd_rel->relpersistence,
+									UNDO_RMID_HEAP, HEAP_UNDO_HOT_UPDATE,
+									RelationGetRelid(relation),
+									(const char *) &hot_hdr,
+									SizeOfHeapUndoHotPayload);
+				InsertXactUndoData(&undo_ctx);
+				CleanupXactUndoInsertion(&undo_ctx);
+			}
+		}
+		else if (full_undo)
+		{
+			/*
+			 * Non-HOT update with full UNDO: try delta compression to reduce
+			 * UNDO record size, fall back to full tuple storage.
+			 */
+			bool		use_delta = false;
+			HeapUndoDeltaHeader delta_hdr;
+			const char *old_bytes = (const char *) oldtup.t_data;
+			Size		old_len = oldtup.t_len;
+			const char *new_bytes = (const char *) heaptup->t_data;
+			Size		new_len = heaptup->t_len;
+
+			/*
+			 * Attempt delta compression: compare old and new tuple bytes to
+			 * find common prefix and suffix.
+			 */
+			if (old_len > 0 && new_len > 0)
+			{
+				Size		min_len = Min(old_len, new_len);
+				uint16		prefix_len = 0;
+				uint16		suffix_len = 0;
+				uint32		changed_len;
+				Size		delta_size;
+				Size		full_size;
+
+				/* Find common prefix */
+				while (prefix_len < min_len &&
+					   old_bytes[prefix_len] == new_bytes[prefix_len])
+					prefix_len++;
+
+				/* Find common suffix (don't overlap with prefix) */
+				while (suffix_len < (min_len - prefix_len) &&
+					   old_bytes[old_len - 1 - suffix_len] ==
+					   new_bytes[new_len - 1 - suffix_len])
+					suffix_len++;
+
+				/* Changed region of old tuple */
+				changed_len = (uint32) (old_len - prefix_len - suffix_len);
+				delta_size = SizeOfHeapUndoDeltaHeader + changed_len;
+				full_size = SizeOfHeapUndoPayloadHeader + old_len;
+
+				if (delta_size + HEAP_UNDO_DELTA_MIN_SAVINGS < full_size)
+				{
+					use_delta = true;
+					delta_hdr.blkno = ItemPointerGetBlockNumber(&(oldtup.t_self));
+					delta_hdr.offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
+					delta_hdr.flags = HEAP_UNDO_HAS_DELTA;
+					if (RelationGetForm(relation)->relhasindex)
+						delta_hdr.flags |= HEAP_UNDO_HAS_INDEX;
+					delta_hdr.old_tuple_len = (uint32) old_len;
+					delta_hdr.prefix_len = prefix_len;
+					delta_hdr.suffix_len = suffix_len;
+					delta_hdr.changed_len = changed_len;
+				}
+			}
+
+			if (use_delta)
+			{
+				/* Delta-encoded UPDATE UNDO record */
+				const char *changed_data = old_bytes + delta_hdr.prefix_len;
+
+				if (HeapUndoBufferIsActive(relation))
+				{
+					HeapUndoBufferAddRecordParts(relation,
+												 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+												 (const char *) &delta_hdr,
+												 SizeOfHeapUndoDeltaHeader,
+												 changed_data,
+												 delta_hdr.changed_len);
+				}
+				else
+				{
+					XactUndoContext undo_ctx;
+
+					PrepareXactUndoDataParts(&undo_ctx,
+											 relation->rd_rel->relpersistence,
+											 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+											 RelationGetRelid(relation),
+											 (const char *) &delta_hdr,
+											 SizeOfHeapUndoDeltaHeader,
+											 changed_data,
+											 delta_hdr.changed_len);
+					InsertXactUndoData(&undo_ctx);
+					CleanupXactUndoInsertion(&undo_ctx);
+				}
+			}
+			else
+			{
+				/* Full tuple UPDATE UNDO record (delta not worthwhile) */
+				HeapUndoPayloadHeader undo_hdr;
+
+				HeapUndoBuildHeader(&undo_hdr,
+									ItemPointerGetBlockNumber(&(oldtup.t_self)),
+									ItemPointerGetOffsetNumber(&(oldtup.t_self)),
+									RelationGetForm(relation)->relhasindex,
+									oldtup.t_len);
+
+				if (HeapUndoBufferIsActive(relation))
+				{
+					HeapUndoBufferAddRecordParts(relation,
+												 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+												 (const char *) &undo_hdr,
+												 SizeOfHeapUndoPayloadHeader,
+												 (const char *) oldtup.t_data,
+												 oldtup.t_len);
+				}
+				else
+				{
+					XactUndoContext undo_ctx;
+
+					PrepareXactUndoDataParts(&undo_ctx,
+											 relation->rd_rel->relpersistence,
+											 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+											 RelationGetRelid(relation),
+											 (const char *) &undo_hdr,
+											 SizeOfHeapUndoPayloadHeader,
+											 (const char *) oldtup.t_data,
+											 oldtup.t_len);
+					InsertXactUndoData(&undo_ctx);
+					CleanupXactUndoInsertion(&undo_ctx);
+				}
+			}
 		}
 		else
 		{
-			/* Normal per-row path: use transaction-level record set */
-			XactUndoContext undo_ctx;
+			/*
+			 * Min-mode UNDO for UPDATE (both HOT and non-HOT): store only
+			 * metadata (TID + op type), no tuple data.  This enables index
+			 * TID pruning on segment discard but does not support tuple
+			 * restoration on rollback.  Standard PG abort behavior handles
+			 * visibility in min mode.
+			 */
+			HeapUndoPayloadHeader undo_hdr;
 
-			PrepareXactUndoDataParts(&undo_ctx,
-									 relation->rd_rel->relpersistence,
-									 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
-									 RelationGetRelid(relation),
-									 (const char *) &undo_hdr,
-									 SizeOfHeapUndoPayloadHeader,
-									 (const char *) oldtup.t_data,
-									 oldtup.t_len);
-			InsertXactUndoData(&undo_ctx);
-			CleanupXactUndoInsertion(&undo_ctx);
+			HeapUndoBuildHeader(&undo_hdr,
+								ItemPointerGetBlockNumber(&(oldtup.t_self)),
+								ItemPointerGetOffsetNumber(&(oldtup.t_self)),
+								RelationGetForm(relation)->relhasindex,
+								0); /* tuple_len = 0: no tuple data */
+
+			if (HeapUndoBufferIsActive(relation))
+			{
+				HeapUndoBufferAddRecordParts(relation,
+											 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+											 (const char *) &undo_hdr,
+											 SizeOfHeapUndoPayloadHeader,
+											 NULL,
+											 0);
+			}
+			else
+			{
+				XactUndoContext undo_ctx;
+
+				PrepareXactUndoDataParts(&undo_ctx,
+										 relation->rd_rel->relpersistence,
+										 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+										 RelationGetRelid(relation),
+										 (const char *) &undo_hdr,
+										 SizeOfHeapUndoPayloadHeader,
+										 NULL,
+										 0);
+				InsertXactUndoData(&undo_ctx);
+				CleanupXactUndoInsertion(&undo_ctx);
+			}
 		}
 	}
 
@@ -9443,84 +9700,90 @@ HeapCheckForSerializableConflictOut(bool visible, Relation relation,
 
 
 /* -----------------------------------------------------------------------
- * Bulk UNDO batching API
+ * UNDO write buffer API
  *
- * These functions manage batched UNDO recording for bulk DML operations.
+ * These functions manage the UNDO write buffer for DML operations.
  * Instead of creating and flushing an UndoRecordSet per row, records are
  * accumulated and flushed in batches when a size or count threshold is
  * exceeded.  This reduces per-row overhead by amortizing UndoLogAllocate,
  * WAL insertion, and UndoLogWrite across many records.
+ *
+ * The write buffer is always activated for UNDO-enabled tables at DML
+ * start, regardless of estimated row count.
  * -----------------------------------------------------------------------
  */
 
 /*
- * HeapBeginBulkUndo - Enter bulk UNDO mode for a relation.
+ * HeapBeginUndoBuffer - Activate the UNDO write buffer for a relation.
  *
  * Creates a persistent UndoRecordSet that will accumulate UNDO records
  * across multiple tuple operations.  'nrows' is the planner's estimate
  * (0 if unknown) and is used to pre-size the buffer.
+ *
+ * Always called for UNDO-enabled tables at DML start.  The overhead is
+ * negligible: one palloc of ~512 bytes, reused for the entire transaction.
  */
 void
-HeapBeginBulkUndo(Relation rel, int64 nrows)
+HeapBeginUndoBuffer(Relation rel, int64 nrows)
 {
 	TransactionId xid;
 
-	/* Only one relation at a time can be in bulk-undo mode */
-	if (bulk_undo_state.active)
+	/* Only one relation at a time can have an active write buffer */
+	if (undo_buffer_state.active)
 	{
-		if (bulk_undo_state.relid == RelationGetRelid(rel))
+		if (undo_buffer_state.relid == RelationGetRelid(rel))
 			return;				/* already active for this relation */
 
 		/* Different relation -- flush and end the previous one */
-		HeapEndBulkUndo(rel);
+		HeapEndUndoBuffer(rel);
 	}
 
 	if (!RelationHasUndo(rel))
-		return;					/* no UNDO means no batching needed */
+		return;					/* no UNDO means no write buffer needed */
 
 	xid = GetCurrentTransactionId();
 
 	/*
-	 * Create a persistent UndoRecordSet for the duration of the bulk
-	 * operation.  The buffer starts at 8KB and grows dynamically via
-	 * repalloc.  We flush at HEAP_BULK_UNDO_FLUSH_THRESHOLD (256KB)
-	 * or HEAP_BULK_UNDO_FLUSH_RECORDS (1000 records), whichever comes
-	 * first, then reuse the same set for the next batch.
+	 * Create a persistent UndoRecordSet for the duration of the DML
+	 * operation.  The buffer starts at ~512 bytes and grows dynamically via
+	 * repalloc.  We flush at HEAP_UNDO_FLUSH_THRESHOLD (undo_batch_size_kb
+	 * KB) or HEAP_UNDO_FLUSH_RECORDS (undo_batch_record_limit records),
+	 * whichever comes first, then reuse the same set for the next batch.
 	 */
-	bulk_undo_state.uset = UndoRecordSetCreate(xid,
-											   GetCurrentTransactionUndoRecPtr());
-	bulk_undo_state.relid = RelationGetRelid(rel);
-	bulk_undo_state.nrecords = 0;
-	bulk_undo_state.active = true;
+	undo_buffer_state.uset = UndoRecordSetCreate(xid,
+												 GetCurrentTransactionUndoRecPtr());
+	undo_buffer_state.relid = RelationGetRelid(rel);
+	undo_buffer_state.nrecords = 0;
+	undo_buffer_state.active = true;
 
 	/*
-	 * Register a callback on the UndoRecordSet's memory context so that
-	 * if the context is destroyed (e.g., on transaction abort), we
-	 * automatically reset the static state and avoid dangling pointers.
+	 * Register a callback on the UndoRecordSet's memory context so that if
+	 * the context is destroyed (e.g., on transaction abort), we automatically
+	 * reset the static state and avoid dangling pointers.
 	 */
-	bulk_undo_state.cb.func = HeapBulkUndoResetCallback;
-	bulk_undo_state.cb.arg = &bulk_undo_state;
-	MemoryContextRegisterResetCallback(bulk_undo_state.uset->mctx,
-									   &bulk_undo_state.cb);
+	undo_buffer_state.cb.func = HeapUndoBufferResetCallback;
+	undo_buffer_state.cb.arg = &undo_buffer_state;
+	MemoryContextRegisterResetCallback(undo_buffer_state.uset->mctx,
+									   &undo_buffer_state.cb);
 
 	ereport(DEBUG2,
-			(errmsg("bulk UNDO mode activated for relation %u, estimated %lld rows",
+			(errmsg("UNDO write buffer activated for relation %u, estimated %lld rows",
 					RelationGetRelid(rel), (long long) nrows)));
 }
 
 /*
- * HeapEndBulkUndo - Exit bulk UNDO mode, flushing any pending records.
+ * HeapEndUndoBuffer - Deactivate the UNDO write buffer, flushing pending records.
  */
 void
-HeapEndBulkUndo(Relation rel)
+HeapEndUndoBuffer(Relation rel)
 {
-	if (!bulk_undo_state.active)
+	if (!undo_buffer_state.active)
 		return;
 
 	/* Flush any remaining records */
-	HeapBulkUndoFlush();
+	HeapUndoBufferFlush();
 
-	if (bulk_undo_state.uset != NULL)
+	if (undo_buffer_state.uset != NULL)
 	{
 		/*
 		 * Unregister the reset callback before freeing.  UndoRecordSetFree
@@ -9528,128 +9791,128 @@ HeapEndBulkUndo(Relation rel)
 		 * callback registered, it would fire spuriously when the recycled
 		 * context is eventually reset by a different UndoRecordSet.
 		 */
-		MemoryContextUnregisterResetCallback(bulk_undo_state.uset->mctx,
-											 &bulk_undo_state.cb);
-		UndoRecordSetFree(bulk_undo_state.uset);
-		bulk_undo_state.uset = NULL;
+		MemoryContextUnregisterResetCallback(undo_buffer_state.uset->mctx,
+											 &undo_buffer_state.cb);
+		UndoRecordSetFree(undo_buffer_state.uset);
+		undo_buffer_state.uset = NULL;
 	}
 
 	ereport(DEBUG2,
-			(errmsg("bulk UNDO mode deactivated for relation %u",
-					bulk_undo_state.relid)));
+			(errmsg("UNDO write buffer deactivated for relation %u",
+					undo_buffer_state.relid)));
 
-	bulk_undo_state.relid = InvalidOid;
-	bulk_undo_state.nrecords = 0;
-	bulk_undo_state.active = false;
+	undo_buffer_state.relid = InvalidOid;
+	undo_buffer_state.nrecords = 0;
+	undo_buffer_state.active = false;
 }
 
 /*
- * HeapBulkUndoIsActive - Check if bulk UNDO mode is active for a relation.
+ * HeapUndoBufferIsActive - Check if the UNDO write buffer is active for a relation.
  */
 bool
-HeapBulkUndoIsActive(Relation rel)
+HeapUndoBufferIsActive(Relation rel)
 {
-	return bulk_undo_state.active &&
-		bulk_undo_state.relid == RelationGetRelid(rel) &&
-		bulk_undo_state.uset != NULL;
+	return undo_buffer_state.active &&
+		undo_buffer_state.relid == RelationGetRelid(rel) &&
+		undo_buffer_state.uset != NULL;
 }
 
 /*
- * HeapBulkUndoAddRecord - Add an UNDO record to the bulk batch.
+ * HeapUndoBufferAddRecord - Add an UNDO record to the write buffer.
  *
  * The record is accumulated in the persistent UndoRecordSet.  If the
- * batch exceeds the size or count threshold, it is flushed automatically.
+ * buffer exceeds the size or count threshold, it is flushed automatically.
  */
 void
-HeapBulkUndoAddRecord(Relation rel, uint8 rmid, uint16 info,
-					   const char *payload, Size payload_len)
+HeapUndoBufferAddRecord(Relation rel, uint8 rmid, uint16 info,
+						const char *payload, Size payload_len)
 {
-	Assert(bulk_undo_state.active);
-	Assert(bulk_undo_state.uset != NULL);
+	Assert(undo_buffer_state.active);
+	Assert(undo_buffer_state.uset != NULL);
 
-	UndoRecordAddPayload(bulk_undo_state.uset, rmid, info,
-						  RelationGetRelid(rel), payload, payload_len);
-	bulk_undo_state.nrecords++;
+	UndoRecordAddPayload(undo_buffer_state.uset, rmid, info,
+						 RelationGetRelid(rel), payload, payload_len);
+	undo_buffer_state.nrecords++;
 
 	/* Auto-flush when thresholds are exceeded */
-	if (bulk_undo_state.uset->buffer_size >= HEAP_BULK_UNDO_FLUSH_THRESHOLD ||
-		bulk_undo_state.nrecords >= HEAP_BULK_UNDO_FLUSH_RECORDS)
+	if (undo_buffer_state.uset->buffer_size >= HEAP_UNDO_FLUSH_THRESHOLD ||
+		undo_buffer_state.nrecords >= HEAP_UNDO_FLUSH_RECORDS)
 	{
-		HeapBulkUndoFlush();
+		HeapUndoBufferFlush();
 	}
 }
 
 /*
- * HeapBulkUndoAddRecordParts - Add an UNDO record with scatter-gather payload.
+ * HeapUndoBufferAddRecordParts - Add an UNDO record with scatter-gather payload.
  *
- * Like HeapBulkUndoAddRecord, but takes the payload as two parts that are
+ * Like HeapUndoBufferAddRecord, but takes the payload as two parts that are
  * serialized directly into the uset buffer.  This avoids allocating an
  * intermediate payload buffer for DELETE/UPDATE where the payload is a
  * fixed header struct + variable-length tuple data.
  */
 void
-HeapBulkUndoAddRecordParts(Relation rel, uint8 rmid, uint16 info,
-						   const char *part1, Size part1_len,
-						   const char *part2, Size part2_len)
+HeapUndoBufferAddRecordParts(Relation rel, uint8 rmid, uint16 info,
+							 const char *part1, Size part1_len,
+							 const char *part2, Size part2_len)
 {
-	Assert(bulk_undo_state.active);
-	Assert(bulk_undo_state.uset != NULL);
+	Assert(undo_buffer_state.active);
+	Assert(undo_buffer_state.uset != NULL);
 
-	UndoRecordAddPayloadParts(bulk_undo_state.uset, rmid, info,
+	UndoRecordAddPayloadParts(undo_buffer_state.uset, rmid, info,
 							  RelationGetRelid(rel),
 							  part1, part1_len,
 							  part2, part2_len);
-	bulk_undo_state.nrecords++;
+	undo_buffer_state.nrecords++;
 
 	/* Auto-flush when thresholds are exceeded */
-	if (bulk_undo_state.uset->buffer_size >= HEAP_BULK_UNDO_FLUSH_THRESHOLD ||
-		bulk_undo_state.nrecords >= HEAP_BULK_UNDO_FLUSH_RECORDS)
+	if (undo_buffer_state.uset->buffer_size >= HEAP_UNDO_FLUSH_THRESHOLD ||
+		undo_buffer_state.nrecords >= HEAP_UNDO_FLUSH_RECORDS)
 	{
-		HeapBulkUndoFlush();
+		HeapUndoBufferFlush();
 	}
 }
 
 /*
- * HeapBulkUndoFlush - Flush accumulated UNDO records to the UNDO log.
+ * HeapUndoBufferFlush - Flush accumulated UNDO records to the UNDO log.
  *
  * Writes all pending records in a single batch: one UndoLogAllocate,
  * one WAL record, one UndoLogWrite.  Then resets the buffer for the
  * next batch.
  */
 void
-HeapBulkUndoFlush(void)
+HeapUndoBufferFlush(void)
 {
 	UndoRecPtr	undo_ptr;
 
-	if (!bulk_undo_state.active || bulk_undo_state.uset == NULL)
+	if (!undo_buffer_state.active || undo_buffer_state.uset == NULL)
 		return;
 
-	if (bulk_undo_state.uset->nrecords == 0)
+	if (undo_buffer_state.uset->nrecords == 0)
 		return;
 
-	undo_ptr = UndoRecordSetInsert(bulk_undo_state.uset);
+	undo_ptr = UndoRecordSetInsert(undo_buffer_state.uset);
 
 	if (UndoRecPtrIsValid(undo_ptr))
 		SetCurrentTransactionUndoRecPtr(undo_ptr);
 
 	ereport(DEBUG2,
-			(errmsg("bulk UNDO flush: %d records, %zu bytes",
-					bulk_undo_state.nrecords,
-					bulk_undo_state.uset->buffer_size)));
+			(errmsg("UNDO write buffer flush: %d records, %zu bytes",
+					undo_buffer_state.nrecords,
+					undo_buffer_state.uset->buffer_size)));
 
 	/*
 	 * Reset the record set for the next batch.  We keep the same
-	 * UndoRecordSet to reuse its memory context and buffer allocation.
-	 * Reset the buffer position but preserve the prev_undo_ptr chain.
+	 * UndoRecordSet to reuse its memory context and buffer allocation. Reset
+	 * the buffer position but preserve the prev_undo_ptr chain.
 	 */
-	bulk_undo_state.uset->buffer_size = 0;
-	bulk_undo_state.uset->nrecords = 0;
-	bulk_undo_state.nrecords = 0;
+	undo_buffer_state.uset->buffer_size = 0;
+	undo_buffer_state.uset->nrecords = 0;
+	undo_buffer_state.nrecords = 0;
 
 	/*
-	 * Update prev_undo_ptr to point to the start of the batch we just
-	 * wrote, so the next batch chains correctly.
+	 * Update prev_undo_ptr to point to the start of the batch we just wrote,
+	 * so the next batch chains correctly.
 	 */
 	if (UndoRecPtrIsValid(undo_ptr))
-		bulk_undo_state.uset->prev_undo_ptr = undo_ptr;
+		undo_buffer_state.uset->prev_undo_ptr = undo_ptr;
 }

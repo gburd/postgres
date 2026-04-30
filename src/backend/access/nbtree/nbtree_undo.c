@@ -39,6 +39,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/index_prune.h"
 #include "access/nbtree.h"
 #include "access/undo_xlog.h"
 #include "access/undolog.h"
@@ -69,9 +70,13 @@
 
 /*
  * NbtreeUndoInsertLeaf - Payload for leaf insert undo
+ *
+ * index_oid allows direct index open during rollback, eliminating
+ * the O(N_indexes) scan through RelationGetIndexList().
  */
 typedef struct NbtreeUndoInsertLeaf
 {
+	Oid			index_oid;		/* OID of the index relation */
 	BlockNumber blkno;			/* Page where tuple was inserted */
 	OffsetNumber offset;		/* Offset of the inserted tuple */
 	Size		itup_sz;		/* Size of the index tuple */
@@ -85,6 +90,7 @@ typedef struct NbtreeUndoInsertLeaf
  */
 typedef struct NbtreeUndoInsertUpper
 {
+	Oid			index_oid;		/* OID of the index relation */
 	BlockNumber blkno;			/* Internal page */
 	OffsetNumber offset;		/* Offset of downlink */
 	BlockNumber child_blkno;	/* Child page whose downlink was added */
@@ -99,6 +105,7 @@ typedef struct NbtreeUndoInsertUpper
  */
 typedef struct NbtreeUndoDedup
 {
+	Oid			index_oid;		/* OID of the index relation */
 	BlockNumber blkno;			/* Page that was deduplicated */
 	uint16		page_len;		/* Length of saved page image */
 	/* Followed by the full page image (pre-dedup) */
@@ -111,6 +118,7 @@ typedef struct NbtreeUndoDedup
  */
 typedef struct NbtreeUndoDelete
 {
+	Oid			index_oid;		/* OID of the index relation */
 	BlockNumber blkno;			/* Page from which tuples were deleted */
 	uint16		ndeleted;		/* Number of deleted tuples */
 	/* Followed by array of (OffsetNumber, IndexTupleData) pairs */
@@ -159,24 +167,25 @@ NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 	{
 		NbtreeUndoInsertLeaf hdr;
 
+		hdr.index_oid = RelationGetRelid(rel);
 		hdr.blkno = BufferGetBlockNumber(buf);
 		hdr.offset = offset;
 		hdr.itup_sz = itemsz;
 
 		/*
-		 * When the heap is in bulk UNDO mode, piggyback on its batch to
-		 * avoid a separate UndoLogAllocate + WAL insert + pwrite per
-		 * index entry.  The UndoRecordSet accepts mixed RM IDs.
+		 * When the heap has an active UNDO write buffer, piggyback on it to
+		 * avoid a separate UndoLogAllocate + WAL insert + pwrite per index
+		 * entry.  The UndoRecordSet accepts mixed RM IDs.
 		 */
-		if (HeapBulkUndoIsActive(heaprel))
+		if (HeapUndoBufferIsActive(heaprel))
 		{
-			HeapBulkUndoAddRecordParts(heaprel,
-									   UNDO_RMID_NBTREE,
-									   NBTREE_UNDO_INSERT_LEAF,
-									   (const char *) &hdr,
-									   SizeOfNbtreeUndoInsertLeaf,
-									   (const char *) itup,
-									   itemsz);
+			HeapUndoBufferAddRecordParts(heaprel,
+										 UNDO_RMID_NBTREE,
+										 NBTREE_UNDO_INSERT_LEAF,
+										 (const char *) &hdr,
+										 SizeOfNbtreeUndoInsertLeaf,
+										 (const char *) itup,
+										 itemsz);
 		}
 		else
 		{
@@ -199,20 +208,21 @@ NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 	{
 		NbtreeUndoInsertUpper upper_hdr;
 
+		upper_hdr.index_oid = RelationGetRelid(rel);
 		upper_hdr.blkno = BufferGetBlockNumber(buf);
 		upper_hdr.offset = offset;
 		upper_hdr.child_blkno = BTreeTupleGetDownLink(itup);
 		upper_hdr.itup_sz = itemsz;
 
-		if (HeapBulkUndoIsActive(heaprel))
+		if (HeapUndoBufferIsActive(heaprel))
 		{
-			HeapBulkUndoAddRecordParts(heaprel,
-									   UNDO_RMID_NBTREE,
-									   NBTREE_UNDO_INSERT_UPPER,
-									   (const char *) &upper_hdr,
-									   SizeOfNbtreeUndoInsertUpper,
-									   (const char *) itup,
-									   itemsz);
+			HeapUndoBufferAddRecordParts(heaprel,
+										 UNDO_RMID_NBTREE,
+										 NBTREE_UNDO_INSERT_UPPER,
+										 (const char *) &upper_hdr,
+										 SizeOfNbtreeUndoInsertUpper,
+										 (const char *) itup,
+										 itemsz);
 		}
 		else
 		{
@@ -253,6 +263,7 @@ NbtreeUndoLogDedup(Relation rel, Relation heaprel, Buffer buf)
 	payload_size = SizeOfNbtreeUndoDedup + page_size;
 	payload = (char *) palloc(payload_size);
 
+	hdr.index_oid = RelationGetRelid(rel);
 	hdr.blkno = BufferGetBlockNumber(buf);
 	hdr.page_len = (uint16) page_size;
 	memcpy(payload, &hdr, SizeOfNbtreeUndoDedup);
@@ -282,7 +293,7 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 		case NBTREE_UNDO_INSERT_LEAF:
 			{
 				NbtreeUndoInsertLeaf hdr;
-				Relation	rel;
+				Relation	indexrel;
 				Buffer		buffer;
 				Page		page;
 				BTPageOpaque opaque;
@@ -293,133 +304,93 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 				memcpy(&hdr, payload, SizeOfNbtreeUndoInsertLeaf);
 
 				/*
-				 * Open the index relation.  We need to find it from the
-				 * heap OID stored in reloid.  For simplicity, we scan
-				 * pg_index to find indexes on this table.  However, we
-				 * cannot safely do catalog lookups during abort.
-				 *
-				 * Instead, we use try_relation_open on the heap relation,
-				 * then find its indexes. But during TRANS_ABORT we can't
-				 * do this safely. Use best-effort: try to open the relation
-				 * and if it fails, mark as LP_DEAD via the heap relation.
+				 * Open the index directly using the OID stored in the UNDO
+				 * payload.  This avoids the O(N_indexes) scan through
+				 * RelationGetIndexList().
 				 */
-
-				/*
-				 * For now, we take a simpler approach: the index OID
-				 * is stored in the UNDO record payload by the caller.
-				 * However, currently we store the heap OID in urec_reloid.
-				 *
-				 * Best-effort approach: try to open any relation. If it's
-				 * been dropped, skip. Since nbtree UNDO is applied
-				 * synchronously before the transaction enters TRANS_ABORT,
-				 * we can still do relation opens.
-				 */
-				rel = try_relation_open(reloid, RowExclusiveLock);
-				if (rel == NULL)
-					return UNDO_APPLY_SKIPPED;
-
-				/*
-				 * We need the index relation, not the heap. For now,
-				 * iterate through the heap's indexes to find the one
-				 * containing our target block.
-				 */
+				indexrel = try_relation_open(hdr.index_oid, RowExclusiveLock);
+				if (indexrel == NULL)
 				{
-					List	   *indexoidlist;
-					ListCell   *lc;
-					bool		found = false;
-
-					indexoidlist = RelationGetIndexList(rel);
-					foreach(lc, indexoidlist)
-					{
-						Oid			indexoid = lfirst_oid(lc);
-						Relation	indexrel;
-
-						indexrel = try_relation_open(indexoid,
-													RowExclusiveLock);
-						if (indexrel == NULL)
-							continue;
-
-						/* Check if this index has the target block */
-						if (RelationGetNumberOfBlocks(indexrel) > hdr.blkno)
-						{
-							buffer = ReadBuffer(indexrel, hdr.blkno);
-							LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-							page = BufferGetPage(buffer);
-							opaque = BTPageGetOpaque(page);
-
-							/* Verify this is a leaf btree page */
-							if (P_ISLEAF(opaque) &&
-								hdr.offset <= PageGetMaxOffsetNumber(page))
-							{
-								ItemId		lp = PageGetItemId(page, hdr.offset);
-
-								START_CRIT_SECTION();
-
-								if (ItemIdIsNormal(lp))
-									ItemIdSetDead(lp);
-
-								MarkBufferDirty(buffer);
-
-								/* Generate CLR */
-								if (RelationNeedsWAL(indexrel))
-								{
-									XLogRecPtr	clr_lsn;
-									xl_undo_apply xlrec;
-
-									xlrec.urec_ptr = urec_ptr;
-									xlrec.xid = xid;
-									xlrec.target_locator = indexrel->rd_locator;
-									xlrec.target_block = hdr.blkno;
-									xlrec.target_offset = hdr.offset;
-									xlrec.operation_type = info;
-
-									XLogBeginInsert();
-									XLogRegisterData((char *) &xlrec,
-													 SizeOfUndoApply);
-									XLogRegisterBuffer(0, buffer,
-													   REGBUF_FORCE_IMAGE |
-													   REGBUF_STANDARD);
-									clr_lsn = XLogInsert(RM_UNDO_ID,
-														  XLOG_UNDO_APPLY_RECORD);
-									PageSetLSN(page, clr_lsn);
-
-									UndoLogWrite(urec_ptr +
-												 offsetof(UndoRecordHeader,
-														  urec_clr_ptr),
-												 (const char *) &clr_lsn,
-												 sizeof(XLogRecPtr));
-								}
-
-								END_CRIT_SECTION();
-
-								found = true;
-							}
-
-							UnlockReleaseBuffer(buffer);
-						}
-
-						relation_close(indexrel, RowExclusiveLock);
-
-						if (found)
-							break;
-					}
-
-					list_free(indexoidlist);
+					ereport(DEBUG2,
+							(errmsg("nbtree UNDO INSERT_LEAF: index %u no longer exists",
+									hdr.index_oid)));
+					return UNDO_APPLY_SKIPPED;
 				}
 
-				relation_close(rel, RowExclusiveLock);
+				if (RelationGetNumberOfBlocks(indexrel) <= hdr.blkno)
+				{
+					ereport(DEBUG2,
+							(errmsg("nbtree UNDO INSERT_LEAF: block %u beyond end of index %u",
+									hdr.blkno, hdr.index_oid)));
+					relation_close(indexrel, RowExclusiveLock);
+					return UNDO_APPLY_SKIPPED;
+				}
+
+				buffer = ReadBuffer(indexrel, hdr.blkno);
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+				page = BufferGetPage(buffer);
+				opaque = BTPageGetOpaque(page);
+
+				if (P_ISLEAF(opaque) &&
+					hdr.offset <= PageGetMaxOffsetNumber(page))
+				{
+					ItemId		lp = PageGetItemId(page, hdr.offset);
+
+					START_CRIT_SECTION();
+
+					if (ItemIdIsNormal(lp))
+						ItemIdSetDead(lp);
+
+					MarkBufferDirty(buffer);
+
+					/* Generate physiological CLR */
+					if (RelationNeedsWAL(indexrel))
+					{
+						XLogRecPtr	clr_lsn;
+						xl_undo_apply xlrec;
+
+						xlrec.urec_ptr = urec_ptr;
+						xlrec.xid = xid;
+						xlrec.target_locator = indexrel->rd_locator;
+						xlrec.target_block = hdr.blkno;
+						xlrec.target_offset = hdr.offset;
+						xlrec.operation_type = info;
+						xlrec.clr_flags = UNDO_CLR_LP_DEAD;
+						xlrec.tuple_len = 0;
+
+						XLogBeginInsert();
+						XLogRegisterData((char *) &xlrec,
+										 SizeOfUndoApply);
+						XLogRegisterBuffer(0, buffer,
+										   REGBUF_STANDARD);
+						clr_lsn = XLogInsert(RM_UNDO_ID,
+											 XLOG_UNDO_APPLY_RECORD);
+						PageSetLSN(page, clr_lsn);
+
+						UndoLogWrite(urec_ptr +
+									 offsetof(UndoRecordHeader,
+											  urec_clr_ptr),
+									 (const char *) &clr_lsn,
+									 sizeof(XLogRecPtr));
+					}
+
+					END_CRIT_SECTION();
+				}
+
+				UnlockReleaseBuffer(buffer);
+				relation_close(indexrel, RowExclusiveLock);
 				return UNDO_APPLY_SUCCESS;
 			}
 
 		case NBTREE_UNDO_INSERT_UPPER:
 			{
 				/*
-				 * Undoing internal page insertions is complex and risky.
-				 * The downlink is needed for tree navigation. Instead of
-				 * removing it, we leave it in place. The child page (from
-				 * a split that was part of the aborted transaction) will
-				 * have its entries marked LP_DEAD by the leaf undo, and
-				 * eventually the page will be recycled by VACUUM.
+				 * Undoing internal page insertions is complex and risky. The
+				 * downlink is needed for tree navigation. Instead of removing
+				 * it, we leave it in place. The child page (from a split that
+				 * was part of the aborted transaction) will have its entries
+				 * marked LP_DEAD by the leaf undo, and eventually the page
+				 * will be recycled by VACUUM.
 				 */
 				return UNDO_APPLY_SKIPPED;
 			}
@@ -427,97 +398,93 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 		case NBTREE_UNDO_DEDUP:
 			{
 				NbtreeUndoDedup hdr;
-				Relation	rel;
-				List	   *indexoidlist;
-				ListCell   *lc;
-				bool		found = false;
+				Relation	indexrel;
+				Buffer		buffer;
+				Page		page;
 
 				if (payload_len < SizeOfNbtreeUndoDedup)
 					return UNDO_APPLY_ERROR;
 
 				memcpy(&hdr, payload, SizeOfNbtreeUndoDedup);
 
-				rel = try_relation_open(reloid, RowExclusiveLock);
-				if (rel == NULL)
-					return UNDO_APPLY_SKIPPED;
-
-				indexoidlist = RelationGetIndexList(rel);
-				foreach(lc, indexoidlist)
+				/*
+				 * Open the index directly using the OID stored in the UNDO
+				 * payload.
+				 */
+				indexrel = try_relation_open(hdr.index_oid, RowExclusiveLock);
+				if (indexrel == NULL)
 				{
-					Oid			indexoid = lfirst_oid(lc);
-					Relation	indexrel;
-					Buffer		buffer;
-					Page		page;
-
-					indexrel = try_relation_open(indexoid, RowExclusiveLock);
-					if (indexrel == NULL)
-						continue;
-
-					if (RelationGetNumberOfBlocks(indexrel) > hdr.blkno)
-					{
-						buffer = ReadBuffer(indexrel, hdr.blkno);
-						LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-						page = BufferGetPage(buffer);
-
-						START_CRIT_SECTION();
-
-						/* Restore the full pre-dedup page image */
-						memcpy(page,
-							   payload + SizeOfNbtreeUndoDedup,
-							   hdr.page_len);
-
-						MarkBufferDirty(buffer);
-
-						if (RelationNeedsWAL(indexrel))
-						{
-							XLogRecPtr	clr_lsn;
-							xl_undo_apply xlrec;
-
-							xlrec.urec_ptr = urec_ptr;
-							xlrec.xid = xid;
-							xlrec.target_locator = indexrel->rd_locator;
-							xlrec.target_block = hdr.blkno;
-							xlrec.target_offset = 0;
-							xlrec.operation_type = info;
-
-							XLogBeginInsert();
-							XLogRegisterData((char *) &xlrec,
-											 SizeOfUndoApply);
-							XLogRegisterBuffer(0, buffer,
-											   REGBUF_FORCE_IMAGE |
-											   REGBUF_STANDARD);
-							clr_lsn = XLogInsert(RM_UNDO_ID,
-												  XLOG_UNDO_APPLY_RECORD);
-							PageSetLSN(page, clr_lsn);
-
-							UndoLogWrite(urec_ptr +
-										 offsetof(UndoRecordHeader,
-												  urec_clr_ptr),
-										 (const char *) &clr_lsn,
-										 sizeof(XLogRecPtr));
-						}
-
-						END_CRIT_SECTION();
-
-						found = true;
-						UnlockReleaseBuffer(buffer);
-					}
-
-					relation_close(indexrel, RowExclusiveLock);
-
-					if (found)
-						break;
+					ereport(DEBUG2,
+							(errmsg("nbtree UNDO DEDUP: index %u no longer exists",
+									hdr.index_oid)));
+					return UNDO_APPLY_SKIPPED;
 				}
 
-				list_free(indexoidlist);
-				relation_close(rel, RowExclusiveLock);
-				return found ? UNDO_APPLY_SUCCESS : UNDO_APPLY_SKIPPED;
+				if (RelationGetNumberOfBlocks(indexrel) <= hdr.blkno)
+				{
+					ereport(DEBUG2,
+							(errmsg("nbtree UNDO DEDUP: block %u beyond end of index %u",
+									hdr.blkno, hdr.index_oid)));
+					relation_close(indexrel, RowExclusiveLock);
+					return UNDO_APPLY_SKIPPED;
+				}
+
+				buffer = ReadBuffer(indexrel, hdr.blkno);
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+				page = BufferGetPage(buffer);
+
+				START_CRIT_SECTION();
+
+				/* Restore the full pre-dedup page image */
+				memcpy(page,
+					   payload + SizeOfNbtreeUndoDedup,
+					   hdr.page_len);
+
+				MarkBufferDirty(buffer);
+
+				if (RelationNeedsWAL(indexrel))
+				{
+					XLogRecPtr	clr_lsn;
+					xl_undo_apply xlrec;
+
+					xlrec.urec_ptr = urec_ptr;
+					xlrec.xid = xid;
+					xlrec.target_locator = indexrel->rd_locator;
+					xlrec.target_block = hdr.blkno;
+					xlrec.target_offset = 0;
+					xlrec.operation_type = info;
+					xlrec.clr_flags = UNDO_CLR_FULL_PAGE;
+					xlrec.tuple_len = 0;
+
+					XLogBeginInsert();
+					XLogRegisterData((char *) &xlrec,
+									 SizeOfUndoApply);
+					XLogRegisterBuffer(0, buffer,
+									   REGBUF_FORCE_IMAGE |
+									   REGBUF_STANDARD);
+					clr_lsn = XLogInsert(RM_UNDO_ID,
+										 XLOG_UNDO_APPLY_RECORD);
+					PageSetLSN(page, clr_lsn);
+
+					UndoLogWrite(urec_ptr +
+								 offsetof(UndoRecordHeader,
+										  urec_clr_ptr),
+								 (const char *) &clr_lsn,
+								 sizeof(XLogRecPtr));
+				}
+
+				END_CRIT_SECTION();
+
+				UnlockReleaseBuffer(buffer);
+				relation_close(indexrel, RowExclusiveLock);
+				return UNDO_APPLY_SUCCESS;
 			}
 
 		case NBTREE_UNDO_INSERT_POST:
 		case NBTREE_UNDO_SPLIT_L:
 		case NBTREE_UNDO_SPLIT_R:
 		case NBTREE_UNDO_NEWROOT:
+
 			/*
 			 * Structural operations: attempting to reverse a split is too
 			 * dangerous due to concurrent readers.  The individual leaf
@@ -528,11 +495,12 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 			return UNDO_APPLY_SKIPPED;
 
 		case NBTREE_UNDO_DELETE:
+
 			/*
-			 * Ad-hoc deletion undo: re-insert the deleted tuples.
-			 * This is complex since we need to find the correct
-			 * insertion point.  For now, skip and let the entries
-			 * be re-created by the reverted heap operation.
+			 * Ad-hoc deletion undo: re-insert the deleted tuples. This is
+			 * complex since we need to find the correct insertion point.  For
+			 * now, skip and let the entries be re-created by the reverted
+			 * heap operation.
 			 */
 			return UNDO_APPLY_SKIPPED;
 
@@ -591,4 +559,64 @@ nbtree_undo_desc(StringInfo buf, uint8 rmid, uint16 info,
 	}
 
 	appendStringInfo(buf, "nbtree %s", opname);
+
+	/* For types that have index_oid at the start of the payload, show it */
+	if (payload_len >= sizeof(Oid) &&
+		(info == NBTREE_UNDO_INSERT_LEAF ||
+		 info == NBTREE_UNDO_INSERT_UPPER ||
+		 info == NBTREE_UNDO_DEDUP ||
+		 info == NBTREE_UNDO_DELETE))
+	{
+		Oid			index_oid;
+
+		memcpy(&index_oid, payload, sizeof(Oid));
+		appendStringInfo(buf, " index %u", index_oid);
+	}
+}
+
+/*
+ * NbtreeUndoExtractPruneTarget - Extract an IndexPruneTarget from a
+ * nbtree UNDO record.
+ *
+ * Only INSERT_LEAF records are useful for targeted pruning (they record
+ * exactly which index page and offset received the inserted entry).
+ *
+ * Returns true if a target was successfully extracted, false otherwise.
+ */
+bool
+NbtreeUndoExtractPruneTarget(uint16 info, const char *payload,
+							 Size payload_len, IndexPruneTarget * target)
+{
+	NbtreeUndoInsertLeaf hdr;
+	IndexTuple	itup;
+
+	/* Only INSERT_LEAF records have useful targeting info */
+	if (info != NBTREE_UNDO_INSERT_LEAF)
+		return false;
+
+	if (payload_len < SizeOfNbtreeUndoInsertLeaf)
+		return false;
+
+	memcpy(&hdr, payload, SizeOfNbtreeUndoInsertLeaf);
+
+	target->index_oid = hdr.index_oid;
+	target->blkno = hdr.blkno;
+	target->offset = hdr.offset;
+
+	/*
+	 * Extract the heap TID from the IndexTuple that follows the header. This
+	 * is used for verification during targeted pruning to ensure the index
+	 * entry at this offset still references the same heap tuple.
+	 */
+	if (payload_len >= SizeOfNbtreeUndoInsertLeaf + sizeof(IndexTupleData))
+	{
+		itup = (IndexTuple) (payload + SizeOfNbtreeUndoInsertLeaf);
+		target->heap_tid = itup->t_tid;
+	}
+	else
+	{
+		ItemPointerSetInvalid(&target->heap_tid);
+	}
+
+	return true;
 }

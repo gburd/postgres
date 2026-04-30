@@ -115,7 +115,7 @@
 /* ----- Atomics abstraction ----- */
 #ifdef SKIPLIST_SINGLE_THREADED
 /*
- * No <stdatomic.h> needed — provide dummy memory-order constants.
+ * No <stdatomic.h> needed -- provide dummy memory-order constants.
  * Use #ifndef guards to avoid conflicts if system headers define them.
  */
 #ifndef memory_order_relaxed
@@ -164,7 +164,7 @@ _skip_st_exchange_int(int *p, int v)
  * PostgreSQL provides pg_atomic_uint64 with full-barrier CAS, exchange,
  * fetch-add/sub, and read/write (with optional membarrier variants).
  * Since PG lacks atomic pointer types and explicit memory ordering,
- * we use pg_atomic_uint64 for ALL atomic fields — including pointers
+ * we use pg_atomic_uint64 for ALL atomic fields -- including pointers
  * (via uintptr_t type-punning) and 32-bit integers (zero-extended).
  *
  * _SKIP_ATOMIC(T) wraps T in an anonymous union that pairs
@@ -1458,7 +1458,7 @@ _SKIP_STATIC_ASSERT(SKIPLIST_MAX_HEIGHT <= 64, "SKIPLIST_MAX_HEIGHT > 64 risks s
                                                                                                                                                              \
             /* Read pred's next pointer at this level.  If pred was                                                                                          \
                concurrently logically deleted, its stored next pointers                                                                                      \
-               are marked — restart from the top in that case. */                                                                                          \
+               are marked -- restart from the top in that case. */                                                                                          \
             curr = _skip_atomic_load(&pred->field.sle_levels[i].next, memory_order_acquire);                                                                 \
             if (_SKIP_IS_MARKED(curr)) {                                                                                                                     \
                 goto _skip_locate_retry_##decl;                                                                                                              \
@@ -2504,7 +2504,7 @@ _SKIP_STATIC_ASSERT(SKIPLIST_MAX_HEIGHT <= 64, "SKIPLIST_MAX_HEIGHT > 64 risks s
             dest->field.sle_levels[lvl].next = NULL;                                                                    \
         }                                                                                                               \
                                                                                                                         \
-        /* (f) set duplicate flag — reuses sle_levels[1].next as a boolean;                                           \
+        /* (f) set duplicate flag -- reuses sle_levels[1].next as a boolean;                                           \
            safe because all nodes are allocated with SKIPLIST_MAX_HEIGHT levels. */                                     \
         dest->field.sle_levels[1].next = is_dup;                                                                        \
                                                                                                                         \

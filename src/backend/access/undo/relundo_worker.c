@@ -488,14 +488,74 @@ RelUndoWorkerMain(Datum main_arg)
 }
 
 /*
+ * Per-database worker tracking in the launcher.
+ *
+ * The launcher maintains a local array of per-database worker slots.
+ * Each slot records the database OID and the background worker handle
+ * returned by RegisterDynamicBackgroundWorker().  When a worker exits,
+ * the slot is freed for reuse.
+ */
+#define MAX_LAUNCHER_DB_SLOTS	MAX_UNDO_WORK_ITEMS
+
+typedef struct LauncherDbSlot
+{
+	Oid			dboid;			/* Database OID, or InvalidOid if free */
+	BackgroundWorkerHandle *handle; /* Worker handle (NULL if slot is free) */
+	TimestampTz last_spawn_attempt; /* 0 = never attempted */
+}			LauncherDbSlot;
+
+/*
+ * launcher_spawn_worker
+ *		Spawn a per-relation UNDO worker for the given database.
+ *
+ * Returns true on success, false if RegisterDynamicBackgroundWorker fails
+ * (e.g., because the max_worker_processes limit was reached).
+ */
+static bool
+launcher_spawn_worker(Oid dboid, BackgroundWorkerHandle **handle_out)
+{
+	BackgroundWorker worker;
+
+	memset(&worker, 0, sizeof(BackgroundWorker));
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
+		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	worker.bgw_restart_time = BGW_NEVER_RESTART;
+	sprintf(worker.bgw_library_name, "postgres");
+	sprintf(worker.bgw_function_name, "RelUndoWorkerMain");
+	snprintf(worker.bgw_name, BGW_MAXLEN,
+			 "per-relation undo worker for database %u", dboid);
+	snprintf(worker.bgw_type, BGW_MAXLEN, "per-relation undo worker");
+	worker.bgw_main_arg = ObjectIdGetDatum(dboid);
+	worker.bgw_notify_pid = 0;	/* launcher does not need SIGUSR1 */
+
+	if (!RegisterDynamicBackgroundWorker(&worker, handle_out))
+	{
+		ereport(DEBUG1,
+				(errmsg("per-relation UNDO launcher: could not register worker for database %u",
+						dboid)));
+		return false;
+	}
+
+	elog(DEBUG1, "per-relation UNDO launcher: spawned worker for database %u",
+		 dboid);
+	return true;
+}
+
+/*
  * RelUndoLauncherMain
  *		Main entry point for per-relation UNDO launcher process
  *
- * The launcher monitors the work queue and spawns workers as needed.
+ * The launcher periodically scans the shared work queue for databases
+ * that have pending UNDO work and spawns per-database worker processes
+ * as needed, up to max_relundo_workers total.
  */
 void
 RelUndoLauncherMain(Datum main_arg)
 {
+	LauncherDbSlot db_slots[MAX_LAUNCHER_DB_SLOTS];
+	int			nslots = 0;
+
 	/* Establish signal handlers */
 	pqsignal(SIGHUP, relundo_worker_sighup);
 	pqsignal(SIGTERM, relundo_worker_sigterm);
@@ -505,10 +565,17 @@ RelUndoLauncherMain(Datum main_arg)
 
 	elog(LOG, "Per-relation UNDO launcher started");
 
+	memset(db_slots, 0, sizeof(db_slots));
+
 	/* Main monitoring loop */
 	while (!got_SIGTERM)
 	{
 		int			rc;
+		int			active_count;
+		int			i,
+					j;
+		Oid			pending_dbs[MAX_UNDO_WORK_ITEMS];
+		int			npending = 0;
 
 		/* Handle SIGHUP - reload configuration */
 		if (got_SIGHUP)
@@ -518,14 +585,164 @@ RelUndoLauncherMain(Datum main_arg)
 		}
 
 		/*
-		 * TODO: Implement launcher logic:
-		 * - Check work queue for databases that need workers
-		 * - Track active workers per database
-		 * - Spawn new workers if needed (up to max_relundo_workers)
-		 * - Monitor worker health and restart if needed
+		 * Step 1: Check existing worker handles to see which are still alive.
+		 * Workers that have exited (BGWH_STOPPED) are freed.
 		 */
+		active_count = 0;
+		for (i = 0; i < nslots; i++)
+		{
+			if (db_slots[i].dboid == InvalidOid)
+				continue;
 
-		/* For now, just sleep */
+			if (db_slots[i].handle != NULL)
+			{
+				pid_t		pid;
+				BgwHandleStatus status;
+
+				status = GetBackgroundWorkerPid(db_slots[i].handle, &pid);
+				if (status == BGWH_STOPPED || status == BGWH_POSTMASTER_DIED)
+				{
+					/*
+					 * Worker has exited.  Reset any items that were marked
+					 * in_progress for this database so they can be retried.
+					 */
+					LWLockAcquire(&WorkQueue->lock, LW_EXCLUSIVE);
+					for (j = 0; j < WorkQueue->num_items; j++)
+					{
+						if (WorkQueue->items[j].dboid == db_slots[i].dboid &&
+							WorkQueue->items[j].in_progress)
+							WorkQueue->items[j].in_progress = false;
+					}
+					LWLockRelease(&WorkQueue->lock);
+
+					{
+						Oid		exited_dboid = db_slots[i].dboid;
+
+						pfree(db_slots[i].handle);
+						db_slots[i].handle = NULL;
+						db_slots[i].dboid = InvalidOid;
+
+						elog(DEBUG1,
+							 "per-relation UNDO launcher: worker for database %u has exited",
+							 exited_dboid);
+					}
+					continue;
+				}
+
+				active_count++;
+			}
+		}
+
+		/* Compact the slots array to remove freed entries */
+		nslots = 0;
+		for (i = 0; i < MAX_LAUNCHER_DB_SLOTS; i++)
+		{
+			if (db_slots[i].dboid != InvalidOid)
+				nslots = i + 1;
+		}
+
+		/*
+		 * Step 2: Scan the work queue for databases with pending (not yet
+		 * in_progress) work items that do not already have an active worker.
+		 */
+		LWLockAcquire(&WorkQueue->lock, LW_SHARED);
+		for (i = 0; i < WorkQueue->num_items; i++)
+		{
+			RelUndoWorkItem *item = &WorkQueue->items[i];
+			bool		has_worker;
+			bool		already_listed;
+
+			if (item->in_progress)
+				continue;		/* someone is working on this */
+
+			/* Check if we already noted this database needs a worker */
+			already_listed = false;
+			for (j = 0; j < npending; j++)
+			{
+				if (pending_dbs[j] == item->dboid)
+				{
+					already_listed = true;
+					break;
+				}
+			}
+			if (already_listed)
+				continue;
+
+			/* Check if there is already an active worker for this database */
+			has_worker = false;
+			for (j = 0; j < MAX_LAUNCHER_DB_SLOTS; j++)
+			{
+				if (db_slots[j].dboid == item->dboid &&
+					db_slots[j].handle != NULL)
+				{
+					has_worker = true;
+					break;
+				}
+			}
+
+			if (!has_worker)
+			{
+				if (npending < MAX_UNDO_WORK_ITEMS)
+					pending_dbs[npending++] = item->dboid;
+			}
+		}
+		LWLockRelease(&WorkQueue->lock);
+
+		/*
+		 * Step 3: Spawn workers for databases that need them, up to the
+		 * max_relundo_workers limit.
+		 */
+		for (i = 0; i < npending; i++)
+		{
+			Oid			dboid = pending_dbs[i];
+			int			free_slot = -1;
+			BackgroundWorkerHandle *handle;
+
+			if (active_count >= max_relundo_workers)
+				break;			/* at the worker limit */
+
+			/* Find a free slot in db_slots */
+			for (j = 0; j < MAX_LAUNCHER_DB_SLOTS; j++)
+			{
+				if (db_slots[j].dboid == InvalidOid)
+				{
+					free_slot = j;
+					break;
+				}
+			}
+			if (free_slot < 0)
+				break;			/* no free slots (shouldn't happen) */
+
+			/*
+			 * Back off if we recently failed to spawn a worker for this
+			 * slot.  This prevents hammering RegisterDynamicBackgroundWorker()
+			 * when worker slots are exhausted.
+			 */
+			if (db_slots[free_slot].last_spawn_attempt != 0)
+			{
+				TimestampTz now = GetCurrentTimestamp();
+
+				if (now - db_slots[free_slot].last_spawn_attempt <
+					(TimestampTz) relundo_worker_naptime * 4 * 1000)
+					continue;	/* too soon, skip this database for now */
+			}
+
+			if (launcher_spawn_worker(dboid, &handle))
+			{
+				db_slots[free_slot].dboid = dboid;
+				db_slots[free_slot].handle = handle;
+				db_slots[free_slot].last_spawn_attempt = 0;
+				if (free_slot >= nslots)
+					nslots = free_slot + 1;
+				active_count++;
+			}
+			else
+			{
+				db_slots[free_slot].last_spawn_attempt = GetCurrentTimestamp();
+			}
+		}
+
+		/* Sleep until next check or until woken */
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   relundo_worker_naptime * 2,

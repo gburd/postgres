@@ -1,5 +1,5 @@
 --
--- Role: Cold reader — uniform random reads across the full table
+-- Role: Cold reader -- uniform random reads across the full table
 --
 -- Used by the multi-role concurrent benchmark (W9).
 -- Exercises buffer cache misses and I/O-bound read paths.

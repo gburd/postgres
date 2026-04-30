@@ -323,6 +323,29 @@ typedef struct TableAmRoutine
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
 
+	/*
+	 * am_supports_undo: true if this AM supports cluster-wide UNDO.
+	 *
+	 * When true, CREATE/ALTER TABLE ... WITH (enable_undo = on) is permitted
+	 * for tables using this AM.  When false, those DDL statements raise
+	 * ERRCODE_FEATURE_NOT_SUPPORTED.
+	 *
+	 * Currently only heapam sets this to true; all UNDO record application
+	 * goes through heapam_undo.c directly.  When a per-AM UNDO apply callback
+	 * API is defined in a future revision, this flag will be superseded by
+	 * a proper am_undo_apply function pointer with a defined signature.
+	 *
+	 * WARNING: a custom AM that sets am_supports_undo = true must use
+	 * PostgreSQL standard heap page layout (PageHeader + ItemId array +
+	 * HeapTupleHeaderData tuples).  The UNDO application code in
+	 * heapam_undo.c casts PageGetItem() results directly to HeapTupleHeader.
+	 * Using this flag with a non-heap page layout causes silent data
+	 * corruption.  test_undo_tam satisfies this constraint (it uses heap
+	 * pages).  Until am_undo_apply dispatch is implemented, any AM setting
+	 * this flag must remain heap-page-compatible.
+	 */
+	bool		am_supports_undo;
+
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.
@@ -2167,5 +2190,12 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
  */
 
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
+
+/* ----------------------------------------------------------------------------
+ * Functions in tableam.c
+ * ----------------------------------------------------------------------------
+ */
+
+extern bool RelationAmSupportsUndo(Relation rel);
 
 #endif							/* TABLEAM_H */

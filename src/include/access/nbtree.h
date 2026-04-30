@@ -1346,10 +1346,43 @@ extern void _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc);
 #define NBTREE_UNDO_DEDUP			0x0009
 #define NBTREE_UNDO_VACUUM			0x000A
 
+/*
+ * NbtreeUndoInsertLeafHeader - Minimal payload header for INSERT_LEAF records
+ *
+ * This must match the first fields of the full NbtreeUndoInsertLeaf struct
+ * defined in nbtree_undo.c.  Exposed here so the UNDO discard worker can
+ * extract (index_oid, blkno, offset) for targeted index pruning without
+ * depending on the full struct.
+ */
+typedef struct NbtreeUndoInsertLeafHeader
+{
+	Oid			index_oid;		/* OID of the index relation */
+	BlockNumber blkno;			/* Page where tuple was inserted */
+	OffsetNumber offset;		/* Offset of the inserted tuple */
+}			NbtreeUndoInsertLeafHeader;
+
+#define SizeOfNbtreeUndoInsertLeafHeader \
+	(offsetof(NbtreeUndoInsertLeafHeader, offset) + sizeof(OffsetNumber))
+
 extern void NbtreeUndoRmgrInit(void);
 extern void NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 								IndexTuple itup, Size itemsz,
 								OffsetNumber offset, bool isleaf);
 extern void NbtreeUndoLogDedup(Relation rel, Relation heaprel, Buffer buf);
+
+/*
+ * NbtreeUndoExtractPruneTargets - Extract targeted pruning entries from
+ * nbtree UNDO records.
+ *
+ * Given an UNDO record with rmid=UNDO_RMID_NBTREE and info=INSERT_LEAF,
+ * extracts the (index_oid, blkno, offset) and constructs an IndexPruneTarget.
+ *
+ * Returns true if a target was successfully extracted, false otherwise.
+ */
+struct IndexPruneTarget;		/* forward declaration */
+extern bool NbtreeUndoExtractPruneTarget(uint16 info,
+										 const char *payload,
+										 Size payload_len,
+										 struct IndexPruneTarget *target);
 
 #endif							/* NBTREE_H */

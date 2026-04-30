@@ -164,15 +164,6 @@ static relopt_bool boolRelOpts[] =
 		},
 		true
 	},
-	{
-		{
-			"enable_undo",
-			"Enables UNDO logging for this relation",
-			RELOPT_KIND_HEAP,
-			AccessExclusiveLock
-		},
-		false
-	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -526,6 +517,20 @@ static relopt_real realRelOpts[] =
 	{{NULL}}
 };
 
+/* values from StdRdOptUndoMode */
+static relopt_enum_elt_def StdRdOptUndoModeValues[] =
+{
+	{"off", STDRD_OPTION_UNDO_OFF},
+	{"on", STDRD_OPTION_UNDO_ON},
+	{"false", STDRD_OPTION_UNDO_OFF},
+	{"true", STDRD_OPTION_UNDO_ON},
+	{"no", STDRD_OPTION_UNDO_OFF},
+	{"yes", STDRD_OPTION_UNDO_ON},
+	{"0", STDRD_OPTION_UNDO_OFF},
+	{"1", STDRD_OPTION_UNDO_ON},
+	{(const char *) NULL}		/* list terminator */
+};
+
 /* values from StdRdOptIndexCleanup */
 static relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
 {
@@ -593,6 +598,17 @@ static relopt_enum enumRelOpts[] =
 		viewCheckOptValues,
 		VIEW_OPTION_CHECK_OPTION_NOT_SET,
 		gettext_noop("Valid values are \"local\" and \"cascaded\".")
+	},
+	{
+		{
+			"enable_undo",
+			"UNDO logging mode (requires access method support; see am_supports_undo)",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			AccessExclusiveLock
+		},
+		StdRdOptUndoModeValues,
+		STDRD_OPTION_UNDO_OFF,
+		gettext_noop("Valid values are \"off\" and \"on\".")
 	},
 	/* list terminator */
 	{{NULL}}
@@ -2037,7 +2053,7 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, vacuum_truncate)},
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)},
-		{"enable_undo", RELOPT_TYPE_BOOL,
+		{"enable_undo", RELOPT_TYPE_ENUM,
 		offsetof(StdRdOptions, enable_undo)}
 	};
 
@@ -2189,6 +2205,16 @@ heap_reloptions(char relkind, Datum reloptions, bool validate)
 				rdopts->fillfactor = 100;
 				rdopts->autovacuum.analyze_threshold = -1;
 				rdopts->autovacuum.analyze_scale_factor = -1;
+				/*
+				 * Verify server-level enable_undo is active if per-relation
+				 * UNDO is enabled on the TOAST table.
+				 */
+				if (rdopts->enable_undo != STDRD_OPTION_UNDO_OFF &&
+					!enable_undo)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot enable UNDO for a relation when the server-level \"enable_undo\" is disabled"),
+							 errhint("Set \"enable_undo\" to \"on\" in postgresql.conf and restart the server.")));
 			}
 			return (bytea *) rdopts;
 		case RELKIND_RELATION:
@@ -2198,13 +2224,15 @@ heap_reloptions(char relkind, Datum reloptions, bool validate)
 					default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
 
 				/*
-				 * If the per-relation enable_undo option is set to true,
+				 * If the per-relation enable_undo option is set to min or on,
 				 * verify that the server-level enable_undo GUC is also
 				 * enabled.  The UNDO subsystem must be active (requires
 				 * server restart) before per-relation UNDO logging can be
 				 * used.
 				 */
-				if (rdopts != NULL && rdopts->enable_undo && !enable_undo)
+				if (rdopts != NULL &&
+					rdopts->enable_undo != STDRD_OPTION_UNDO_OFF &&
+					!enable_undo)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("cannot enable UNDO for a relation when the server-level \"enable_undo\" is disabled"),

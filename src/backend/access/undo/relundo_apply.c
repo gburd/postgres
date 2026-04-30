@@ -209,7 +209,7 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 						if (BufferIsValid(buffer) &&
 							BufferGetBlockNumber(buffer) == new_blkno)
 						{
-							/* Same page — reuse the locked buffer */
+							/* Same page -- reuse the locked buffer */
 							RelUndoApplyInsert(rel, page, new_offset);
 							MarkBufferDirty(buffer);
 						}

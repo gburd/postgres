@@ -79,10 +79,10 @@ static bool relundo_head_cache_init = false;
  * RelUndoFinish().  Previously, RelUndoReserve() released the metapage lock
  * and RelUndoFinish() re-acquired it, creating an ABBA deadlock:
  *
- *   Backend A: holds metapage → wants UNDO data page
- *   Backend B: holds UNDO data page → wants metapage
+ *   Backend A: holds metapage -> wants UNDO data page
+ *   Backend B: holds UNDO data page -> wants metapage
  *
- * Fix: keep the metapage locked through the Reserve→Finish cycle.
+ * Fix: keep the metapage locked through the Reserve->Finish cycle.
  * RelUndoReserve() stores the locked metapage buffer here, and
  * RelUndoFinish()/RelUndoFinishWithTuple() retrieves it.
  * RelUndoCancel() releases it if the operation is aborted.

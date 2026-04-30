@@ -19,7 +19,7 @@ PGBENCH_SCALES="${PGBENCH_SCALES:-10 50 100}"
 PGBENCH_CLIENTS="${PGBENCH_CLIENTS:-1 4 8}"
 PGBENCH_DURATION="${PGBENCH_DURATION:-60}"
 ITERATIONS="${ITERATIONS:-3}"
-BENCHMARKS="${BENCHMARKS:-b1 b2 b3 b4 b5 b6 b7 pgbench mixed zipfian concurrent}"
+BENCHMARKS="${BENCHMARKS:-b1 b2 b3 b4 b5 b6 b7 b8 pgbench mixed zipfian concurrent}"
 # Large-scale factor for cache-pressure workloads (working set >> shared_buffers)
 PGBENCH_SCALE_LARGE="${PGBENCH_SCALE_LARGE:-500}"
 
@@ -57,7 +57,7 @@ die() {
 # Portable helpers
 ###############################################################################
 
-# get_nproc — portable CPU count (Linux, FreeBSD, Illumos, macOS)
+# get_nproc -- portable CPU count (Linux, FreeBSD, Illumos, macOS)
 get_nproc() {
     nproc 2>/dev/null \
         || getconf _NPROCESSORS_ONLN 2>/dev/null \
@@ -66,7 +66,7 @@ get_nproc() {
         || echo 1
 }
 
-# get_dir_bytes DIR — portable directory size in bytes
+# get_dir_bytes DIR -- portable directory size in bytes
 get_dir_bytes() {
     local dir="$1"
     if du -sb "$dir" >/dev/null 2>&1; then
@@ -90,7 +90,7 @@ record_sysinfo() {
         echo "kernel: $(uname -sr)"
         echo "arch: $(uname -m)"
 
-        # CPU identification — Linux, Illumos/Solaris, FreeBSD/macOS
+        # CPU identification -- Linux, Illumos/Solaris, FreeBSD/macOS
         if [ -f /proc/cpuinfo ]; then
             echo "cpu: $(grep 'model name' /proc/cpuinfo | head -1 | sed 's/.*: //')"
         elif command -v psrinfo >/dev/null 2>&1; then
@@ -103,7 +103,7 @@ record_sysinfo() {
 
         echo "cores: $(get_nproc)"
 
-        # Memory — Linux, Illumos/Solaris, FreeBSD/macOS
+        # Memory -- Linux, Illumos/Solaris, FreeBSD/macOS
         if command -v free >/dev/null 2>&1; then
             echo "ram: $(free -h 2>/dev/null | awk '/^Mem:/{print $2}')"
         elif command -v prtconf >/dev/null 2>&1; then
@@ -161,6 +161,10 @@ build_branch() {
         # Detect platform-specific meson options
         local extra_meson_opts=""
         case "$(uname -s)" in
+            FreeBSD)
+                # FreeBSD: disable deps not present in base
+                extra_meson_opts="-Dldap=disabled -Dgssapi=disabled -Dpltcl=disabled -Dplpython=disabled -Duuid=none -Dnls=disabled"
+                ;;
             SunOS|illumos)
                 # Illumos: disable LDAP (ldap_start_tls_s linking issue)
                 extra_meson_opts="-Dldap=disabled"
@@ -460,11 +464,11 @@ start_metrics() {
     local vmstat_log="$LOGS_DIR/metrics_${label}_vmstat.log"
     local iostat_log="$LOGS_DIR/metrics_${label}_iostat.log"
 
-    # vmstat: CPU (us/sy/id/wa), memory, swap, I/O — portable across Linux/FreeBSD
+    # vmstat: CPU (us/sy/id/wa), memory, swap, I/O -- portable across Linux/FreeBSD
     vmstat 1 > "$vmstat_log" 2>&1 &
     _METRICS_VMSTAT_PID=$!
 
-    # iostat: disk I/O — use different flags per platform
+    # iostat: disk I/O -- use different flags per platform
     if [ "$(uname -s)" = "FreeBSD" ]; then
         iostat -x -w 1 > "$iostat_log" 2>&1 &
     elif [ "$(uname -s)" = "Linux" ]; then

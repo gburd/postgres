@@ -1234,7 +1234,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	/*
 	 * If UNDO is enabled, save tuples that are about to be pruned (made
 	 * LP_DEAD or LP_UNUSED) to UNDO log for forensic recovery via
-	 * pg_undorecover.  UNDO_PRUNE records are informational only — they are
+	 * pg_undorecover.  UNDO_PRUNE records are informational only -- they are
 	 * never applied during transaction rollback.
 	 *
 	 * We skip UNDO logging for all current prune callers:

@@ -142,7 +142,7 @@ typedef enum UndoRecordSetType
 typedef struct UndoRecordSet
 {
 	TransactionId xid;			/* Transaction ID for all records */
-	UndoRecPtr	prev_undo_ptr;	/* Previous UNDO pointer in chain */
+	UndoRecPtr	prev_undo_ptr;	/* Previous UNDO pointer in chain (legacy) */
 	UndoPersistenceLevel persistence;	/* Persistence level of this set */
 	UndoRecordSetType type;		/* Record set type */
 
@@ -155,6 +155,14 @@ typedef struct UndoRecordSet
 	char	   *buffer;			/* Serialized record buffer */
 	Size		buffer_size;	/* Current buffer size */
 	Size		buffer_capacity;	/* Allocated buffer capacity */
+
+	/*
+	 * WAL-based UNDO chain tracking.  When UNDO records are written
+	 * to WAL via XLOG_UNDO_BATCH, last_batch_lsn tracks the LSN of
+	 * the most recent batch for this record set.  This is used as
+	 * the chain_prev link when the next batch is written.
+	 */
+	XLogRecPtr	last_batch_lsn; /* LSN of last XLOG_UNDO_BATCH record */
 
 	MemoryContext mctx;			/* Memory context for allocations */
 }			UndoRecordSet;
@@ -207,5 +215,6 @@ extern Size UndoRecordSetGetSize(UndoRecordSet *uset);
 
 /* UNDO application during rollback */
 extern void ApplyUndoChain(UndoRecPtr start_ptr);
+extern void ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn);
 
 #endif							/* UNDORECORD_H */

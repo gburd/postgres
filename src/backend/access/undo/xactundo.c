@@ -21,6 +21,41 @@
  * independently of the others. This is safe since the modifications
  * must necessarily touch disjoint sets of pages.
  *
+ * CROSS-RELATION ORDERING INVARIANT (important for TOAST correctness):
+ *
+ * All UNDO records for all relations touched by a single transaction are
+ * packed into the same UndoRecordSet, in strict WAL-LSN emission order.
+ * This means records from a heap table and its pg_toast_NNN relation are
+ * naturally interleaved by LSN.  The newest-first application order
+ * therefore guarantees:
+ *
+ *   1. The heap UPDATE UNDO record is the newest; it is applied last.
+ *   2. New TOAST chunk INSERT UNDO records (written after the heap UPDATE
+ *      in the same transaction) are applied before the heap UPDATE UNDO.
+ *   3. Old TOAST chunk DELETE UNDO records (written earliest) are applied
+ *      last among the TOAST records -- restoring the old chunks.
+ *
+ * Net result after full rollback: the heap tuple is restored pointing to
+ * the old TOAST chunks, which are themselves restored.  This invariant
+ * holds only when enable_undo is set consistently on both the heap table
+ * and its TOAST relation; see heap_undo_check_toast() in heapam_undo.c.
+ *
+ * Known ways the invariant can be violated (each handled defensively by
+ * heap_undo_check_toast() logging a WARNING and skipping the restore):
+ *   - Cluster upgraded from a PostgreSQL version before TOAST UNDO
+ *     propagation was implemented.
+ *   - enable_undo disabled directly on the TOAST table after UNDO records
+ *     were written for the parent table.
+ *   - A table gained a TOAST table via ADD COLUMN before the
+ *     AlterTableCreateToastTable() propagation fix was applied.
+ *
+ * PARALLEL RECOVERY: InRecovery is set to true in both the startup process
+ * and all parallel recovery worker processes.  The heap_undo_check_toast()
+ * function therefore correctly uses the WARNING+skip path in all recovery
+ * contexts.  XLOG_UNDO_BATCH records are handled by the startup process
+ * via ApplyUndoChainFromWAL(); they are not dispatched to parallel workers
+ * because UNDO application requires coordinated per-transaction state.
+ *
  * This design follows the EDB undo-record-set branch architecture
  * (xactundo.c) adapted for the physical undo approach used here.
  *
@@ -36,11 +71,13 @@
 #include "access/atm.h"
 #include "access/undo.h"
 #include "access/undo_flush.h"
+#include "access/undo_xlog.h"
 #include "access/relundo_worker.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/xact.h"
 #include "access/xactundo.h"
+#include "access/xlogdefs.h"
 #include "access/relundo.h"
 #include "access/table.h"
 #include "catalog/pg_class.h"
@@ -66,6 +103,17 @@ typedef struct XactUndoSubTransaction
 {
 	SubTransactionId nestingLevel;
 	UndoRecPtr	start_location[NUndoPersistenceLevels];
+
+	/*
+	 * Snapshot of the parent's last_batch_lsn at the time this
+	 * subtransaction started.  On subtransaction abort, after applying
+	 * this subtransaction's UNDO chain, we restore XactUndo.last_batch_lsn
+	 * to these saved values so the parent's subsequent abort (or further
+	 * subtransactions) only covers the parent's own records and does not
+	 * double-apply already-reversed batches.
+	 */
+	XLogRecPtr	last_batch_lsn[NUndoPersistenceLevels];
+
 	struct XactUndoSubTransaction *next;
 }			XactUndoSubTransaction;
 
@@ -84,6 +132,13 @@ typedef struct XactUndoData
 	/* Tracking for the most recent undo insertion per persistence level. */
 	UndoRecPtr	last_location[NUndoPersistenceLevels];
 
+	/*
+	 * WAL-based UNDO chain heads.  When UNDO records are routed through
+	 * WAL via XLOG_UNDO_BATCH, this tracks the LSN of the most recent
+	 * batch per persistence level.  Used for rollback chain walking.
+	 */
+	XLogRecPtr	last_batch_lsn[NUndoPersistenceLevels];
+
 	/* Per-relation UNDO tracking for rollback */
 	PerRelUndoEntry *relundo_list;	/* List of relations with per-relation
 									 * UNDO */
@@ -91,6 +146,14 @@ typedef struct XactUndoData
 
 static XactUndoData XactUndo;
 static XactUndoSubTransaction XactUndoTopState;
+
+/*
+ * Compile-time guard: xl_xact_prepare.last_batch_lsn[3] must match
+ * NUndoPersistenceLevels.  Both headers are available here; xact.h avoids
+ * including undodefs.h to keep its include footprint minimal.
+ */
+StaticAssertDecl(NUndoPersistenceLevels == 3,
+				 "xl_xact_prepare.last_batch_lsn array size (3) must match NUndoPersistenceLevels");
 
 static void ResetXactUndo(void);
 static void CollapseXactUndoSubTransactions(void);
@@ -168,7 +231,7 @@ GetUndoPersistenceLevel(char relpersistence)
  * InvalidUndoRecPtr if undo is disabled).
  */
 UndoRecPtr
-PrepareXactUndoData(XactUndoContext *ctx, char persistence,
+PrepareXactUndoData(XactUndoContext * ctx, char persistence,
 					uint8 rmid, uint16 info, Oid reloid,
 					const char *payload, Size payload_len)
 {
@@ -191,14 +254,23 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 		XactUndoSubTransaction *subxact;
 		int			i;
 
-		subxact = MemoryContextAlloc(UndoContext ? UndoContext : TopMemoryContext,
+		/*
+		 * UndoContext must be initialized before any UNDO operations.
+		 * If it is NULL here, the caller forgot to call InitializeXactUndo().
+		 */
+		Assert(UndoContext != NULL);
+		subxact = MemoryContextAlloc(UndoContext,
 									 sizeof(XactUndoSubTransaction));
 		subxact->nestingLevel = nestingLevel;
 		subxact->next = XactUndo.subxact;
 		XactUndo.subxact = subxact;
 
 		for (i = 0; i < NUndoPersistenceLevels; ++i)
+		{
 			subxact->start_location[i] = InvalidUndoRecPtr;
+			/* Save parent's last_batch_lsn for restore on subtxn abort */
+			subxact->last_batch_lsn[i] = XactUndo.last_batch_lsn[i];
+		}
 	}
 
 	/*
@@ -242,7 +314,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
  * need to assemble an intermediate contiguous buffer.
  */
 UndoRecPtr
-PrepareXactUndoDataParts(XactUndoContext *ctx, char persistence,
+PrepareXactUndoDataParts(XactUndoContext * ctx, char persistence,
 						 uint8 rmid, uint16 info, Oid reloid,
 						 const char *part1, Size part1_len,
 						 const char *part2, Size part2_len)
@@ -273,7 +345,11 @@ PrepareXactUndoDataParts(XactUndoContext *ctx, char persistence,
 		XactUndo.subxact = subxact;
 
 		for (i = 0; i < NUndoPersistenceLevels; ++i)
+		{
 			subxact->start_location[i] = InvalidUndoRecPtr;
+			/* Save parent's last_batch_lsn for restore on subtxn abort */
+			subxact->last_batch_lsn[i] = XactUndo.last_batch_lsn[i];
+		}
 	}
 
 	/*
@@ -315,7 +391,7 @@ PrepareXactUndoDataParts(XactUndoContext *ctx, char persistence,
  * in TransactionState) so that subsequent UNDO records chain correctly.
  */
 void
-InsertXactUndoData(XactUndoContext *ctx)
+InsertXactUndoData(XactUndoContext * ctx)
 {
 	UndoRecordSet *uset = ctx->uset;
 	UndoRecPtr	ptr;
@@ -327,14 +403,21 @@ InsertXactUndoData(XactUndoContext *ctx)
 	{
 		XactUndo.last_location[ctx->plevel] = ptr;
 
+		/*
+		 * Track the WAL LSN of the most recent UNDO batch for this
+		 * persistence level.  This is used during rollback to walk
+		 * the UNDO chain backward through WAL.
+		 */
+		XactUndo.last_batch_lsn[ctx->plevel] = uset->last_batch_lsn;
+
 		/* Fix up subtransaction start location if needed */
 		if (XactUndo.subxact->start_location[ctx->plevel] == (UndoRecPtr) 1)
 			XactUndo.subxact->start_location[ctx->plevel] = ptr;
 
 		/*
-		 * Update the per-transaction undo pointer in TransactionState so
-		 * that the next UndoRecordSetCreate (if called directly by heap AM
-		 * or other subsystems) picks up the correct chain pointer.
+		 * Update the per-transaction undo pointer in TransactionState so that
+		 * the next UndoRecordSetCreate (if called directly by heap AM or
+		 * other subsystems) picks up the correct chain pointer.
 		 */
 		SetCurrentTransactionUndoRecPtr(ptr);
 	}
@@ -353,7 +436,7 @@ InsertXactUndoData(XactUndoContext *ctx)
  * correctly through the undo log.
  */
 void
-CleanupXactUndoInsertion(XactUndoContext *ctx)
+CleanupXactUndoInsertion(XactUndoContext * ctx)
 {
 	if (ctx->uset != NULL)
 		UndoRecordSetReset(ctx->uset);
@@ -370,6 +453,18 @@ GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel)
 }
 
 /*
+ * GetCurrentXactLastBatchLSN
+ *		Get the WAL LSN of the most recent UNDO batch for a persistence level.
+ *
+ * Used during transaction abort to start the WAL-based UNDO chain walk.
+ */
+XLogRecPtr
+GetCurrentXactLastBatchLSN(UndoPersistenceLevel plevel)
+{
+	return XactUndo.last_batch_lsn[plevel];
+}
+
+/*
  * AtCommit_XactUndo
  *		Post-commit cleanup of the undo state.
  *
@@ -377,7 +472,7 @@ GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel)
  * Free all record sets and reset state.
  *
  * UNDO pages are managed by shared_buffers and flushed by the
- * checkpointer — no per-commit fdatasync is needed.  We only
+ * checkpointer -- no per-commit fdatasync is needed.  We only
  * flush the deferred WAL allocation records so recovery can
  * reconstruct the UNDO log insert pointer.
  *
@@ -406,11 +501,13 @@ AtCommit_XactUndo(void)
 	}
 
 	/*
-	 * Flush deferred UNDO allocation WAL records.  With shared_buffers
-	 * routing, there's no need for per-commit fdatasync — dirty UNDO
-	 * buffers are flushed by the checkpointer like regular heap pages.
-	 * We still need to flush the allocation metadata WAL so recovery can
-	 * reconstruct the insert pointer.
+	 * With UNDO-in-WAL, all UNDO data was already written to WAL via
+	 * XLOG_UNDO_BATCH records during the transaction.  The single
+	 * XLogFlush() at commit time (in RecordTransactionCommit) ensures
+	 * both the UNDO data and the commit record are durable.  No separate
+	 * fdatasync is needed.
+	 *
+	 * Legacy WAL batch flush is now a no-op but kept for safety.
 	 */
 	UndoWalBatchFlush();
 
@@ -424,6 +521,9 @@ AtCommit_XactUndo(void)
 		}
 	}
 
+	/* Release WAL retention hold acquired in UndoRecordSetInsert(). */
+	UndoClearBatchLSN();
+
 	ResetXactUndo();
 }
 
@@ -435,9 +535,9 @@ AtCommit_XactUndo(void)
  * The actual undo application is triggered by xact.c before calling
  * this function.  Here we apply per-relation UNDO and clean up the record sets.
  *
- * We close cached UNDO log fds without fsyncing -- on abort, we don't
- * need the UNDO data to be durable (it will be replayed from WAL if
- * needed after a crash).
+ * With append-only I/O, we sync UNDO files before UNDO replay so that
+ * if we crash during rollback, recovery can re-read the UNDO records
+ * from the segment file and continue the rollback.
  */
 void
 AtAbort_XactUndo(void)
@@ -449,20 +549,41 @@ AtAbort_XactUndo(void)
 
 	if (!XactUndo.has_undo && XactUndo.relundo_list == NULL)
 	{
-		/* Discard any deferred WAL — nothing committed needs it */
+		/* No UNDO data was written; nothing to do */
 		UndoWalBatchReset();
 		return;
 	}
 
 	/*
-	 * Flush deferred UNDO allocation WAL records before UNDO replay.
-	 * If we crash during abort, recovery needs WAL to reconstruct the
-	 * UNDO log insert pointer so it can replay the UNDO chain.
+	 * With UNDO-in-WAL, all UNDO data is already in the WAL stream.
+	 * No separate sync is needed.  The UNDO data can be read back
+	 * from WAL for rollback via UndoReadBatchFromWAL().
+	 *
+	 * For crash safety during abort: if we crash mid-rollback, the
+	 * recovery undo phase will find this transaction's UNDO batches
+	 * in WAL and complete the rollback.
 	 */
-	UndoWalBatchFlush();
+	UndoWalBatchFlush();	/* no-op, kept for safety */
 
 	/* Collapse all subtransaction state. */
 	CollapseXactUndoSubTransactions();
+
+	/*
+	 * Apply cluster-wide UNDO chains from WAL.  Walk each persistence
+	 * level's chain independently via the WAL batch LSNs.  This rolls
+	 * back in-place modifications to heap/index pages.
+	 */
+	{
+		int			j;
+
+		for (j = 0; j < NUndoPersistenceLevels; j++)
+		{
+			XLogRecPtr	lsn = XactUndo.last_batch_lsn[j];
+
+			if (XLogRecPtrIsValid(lsn))
+				ApplyUndoChainFromWAL(lsn);
+		}
+	}
 
 	/*
 	 * Apply per-relation UNDO chains before cleaning up. This must happen
@@ -480,11 +601,14 @@ AtAbort_XactUndo(void)
 		}
 	}
 
-	/* Close cached UNDO log fds (no fsync needed on abort). */
+	/* Close cached UNDO log fds. */
 	UndoLogCloseFiles();
 
 	/* Reset per-backend write pointer tracking. */
 	UndoFlushResetMaxWritePtr();
+
+	/* Release WAL retention hold acquired in UndoRecordSetInsert(). */
+	UndoClearBatchLSN();
 
 	ResetXactUndo();
 }
@@ -502,7 +626,17 @@ AtSubCommit_XactUndo(int level)
 	if (subxact == NULL || subxact->nestingLevel != level)
 		return;
 
-	/* Merge start locations into parent. */
+	/*
+	 * Merge start locations into parent.
+	 *
+	 * Invariant: all UNDO records for this transaction, regardless of nesting
+	 * level, are stored in a single chain per persistence level (one
+	 * UndoRecordSet).  start_location tracks the earliest record the
+	 * subtransaction generated.  Since records are strictly append-only,
+	 * the parent's start location is always earlier than the subtransaction's
+	 * if it exists.  We only update the parent's start when it is not yet set
+	 * (the parent wrote no UNDO before this subtransaction).
+	 */
 	XactUndo.subxact = subxact->next;
 	for (i = 0; i < NUndoPersistenceLevels; i++)
 	{
@@ -545,8 +679,8 @@ AtSubAbort_XactUndo(int level)
 	 * UndoRecPtr is at or after this subtransaction's start_location.
 	 *
 	 * For each persistence level where this subtransaction generated UNDO
-	 * records, queue the work for the per-relation UNDO worker to apply
-	 * them synchronously.  The parent transaction's records (before the
+	 * records, queue the work for the per-relation UNDO worker to apply them
+	 * synchronously.  The parent transaction's records (before the
 	 * subtransaction's start_location) are preserved.
 	 */
 	for (i = 0; i < NUndoPersistenceLevels; i++)
@@ -557,17 +691,45 @@ AtSubAbort_XactUndo(int level)
 			continue;
 
 		/*
-		 * Queue subtransaction UNDO work.  The per-relation UNDO entries
+		 * Apply cluster-wide UNDO for this subtransaction.
+		 *
+		 * If the subtransaction advanced XactUndo.last_batch_lsn[i] beyond
+		 * the value saved at subtransaction start, it wrote UNDO batches that
+		 * must now be reversed.  Walk the chain from the current head back to
+		 * (but not including) the saved parent head.
+		 *
+		 * After applying, restore last_batch_lsn[i] to the parent's saved
+		 * value so that if the parent later aborts, AtAbort_XactUndo() only
+		 * walks the parent's batches and does not double-apply ours.
+		 */
+		if (XLogRecPtrIsValid(XactUndo.last_batch_lsn[i]) &&
+			XactUndo.last_batch_lsn[i] != subxact->last_batch_lsn[i])
+		{
+			/*
+			 * Invariant: the current head must be strictly newer (larger) than
+			 * the parent's saved head.  If this fires, a sibling subtransaction
+			 * improperly modified last_batch_lsn after its own abort, which
+			 * would cause us to skip or double-apply batches.
+			 */
+			Assert(!XLogRecPtrIsValid(subxact->last_batch_lsn[i]) ||
+				   XactUndo.last_batch_lsn[i] > subxact->last_batch_lsn[i]);
+
+			ApplyUndoChainFromWAL(XactUndo.last_batch_lsn[i]);
+			XactUndo.last_batch_lsn[i] = subxact->last_batch_lsn[i];
+		}
+
+		/*
+		 * Queue per-relation UNDO work.  The per-relation UNDO entries
 		 * registered during this subtransaction will be applied by the
 		 * background worker.  Since this is a subtransaction abort (not a
-		 * full transaction abort), we can't use ATM -- the parent
-		 * transaction is still running.
+		 * full transaction abort), we can't use ATM -- the parent transaction
+		 * is still running.
 		 *
-		 * We iterate the relundo_list and queue entries that were
-		 * registered at or after this subtransaction's nesting level.
-		 * For simplicity, we queue all registered relations -- the UNDO
-		 * worker will only apply records in the [sub_start, last_location]
-		 * range for each persistence level.
+		 * We iterate the relundo_list and queue entries that were registered
+		 * at or after this subtransaction's nesting level. For simplicity, we
+		 * queue all registered relations -- the UNDO worker will only apply
+		 * records in the [sub_start, last_location] range for each
+		 * persistence level.
 		 */
 		if (XactUndo.relundo_list != NULL)
 		{
@@ -591,8 +753,8 @@ AtSubAbort_XactUndo(int level)
 		/*
 		 * Reset the last_location to what it was before this subtransaction,
 		 * so that if the parent transaction continues and then aborts, only
-		 * the parent's records are applied (the subtransaction's records
-		 * have already been applied).
+		 * the parent's records are applied (the subtransaction's records have
+		 * already been applied).
 		 */
 		if (subxact->next != NULL &&
 			UndoRecPtrIsValid(subxact->next->start_location[i]))
@@ -629,6 +791,9 @@ AtProcExit_XactUndo(void)
 	/* Reset per-backend write pointer tracking. */
 	UndoFlushResetMaxWritePtr();
 
+	/* Release any WAL retention hold (in case process exits mid-transaction). */
+	UndoClearBatchLSN();
+
 	ResetXactUndo();
 }
 
@@ -647,6 +812,7 @@ ResetXactUndo(void)
 	{
 		XactUndo.record_set[i] = NULL;
 		XactUndo.last_location[i] = InvalidUndoRecPtr;
+		XactUndo.last_batch_lsn[i] = InvalidXLogRecPtr;
 	}
 
 	/* Reset subtransaction stack to the top level. */
@@ -654,7 +820,10 @@ ResetXactUndo(void)
 	XactUndoTopState.nestingLevel = 1;
 	XactUndoTopState.next = NULL;
 	for (i = 0; i < NUndoPersistenceLevels; i++)
+	{
 		XactUndoTopState.start_location[i] = InvalidUndoRecPtr;
+		XactUndoTopState.last_batch_lsn[i] = InvalidXLogRecPtr;
+	}
 
 	/* Reset per-relation UNDO list */
 	XactUndo.relundo_list = NULL;
@@ -708,11 +877,16 @@ RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr)
 	/* Initialize XactUndo if this is the first time it's being used */
 	if (XactUndo.subxact == NULL)
 	{
+		int			j;
+
 		XactUndo.subxact = &XactUndoTopState;
 		XactUndoTopState.nestingLevel = 1;
 		XactUndoTopState.next = NULL;
-		for (int i = 0; i < NUndoPersistenceLevels; i++)
-			XactUndoTopState.start_location[i] = InvalidUndoRecPtr;
+		for (j = 0; j < NUndoPersistenceLevels; j++)
+		{
+			XactUndoTopState.start_location[j] = InvalidUndoRecPtr;
+			XactUndoTopState.last_batch_lsn[j] = InvalidXLogRecPtr;
+		}
 	}
 
 	/* Mark that we have UNDO so commit/abort cleanup happens correctly */
@@ -840,7 +1014,7 @@ ApplyPerRelUndo(void)
 	use_atm = (undo_instant_abort_threshold == 0 ||
 			   (int) estimated_bytes >= undo_instant_abort_threshold);
 
-	elog(LOG, "ApplyPerRelUndo: processing per-relation UNDO entries "
+	elog(DEBUG1, "ApplyPerRelUndo: processing per-relation UNDO entries "
 		 "(estimated %zu bytes, threshold %d, %s)",
 		 estimated_bytes, undo_instant_abort_threshold,
 		 use_atm ? "ATM instant abort" : "sync rollback");
@@ -877,9 +1051,9 @@ ApplyPerRelUndo(void)
 		}
 
 		/*
-		 * Synchronous rollback path: queue work for the background per-relation
-		 * UNDO worker.  Used for small transactions (below threshold) or as a
-		 * fallback when the ATM is full.
+		 * Synchronous rollback path: queue work for the background
+		 * per-relation UNDO worker.  Used for small transactions (below
+		 * threshold) or as a fallback when the ATM is full.
 		 */
 		RelUndoQueueAdd(MyDatabaseId, entry->relid,
 						entry->start_urec_ptr, xid);

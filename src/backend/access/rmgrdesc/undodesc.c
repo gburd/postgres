@@ -85,6 +85,9 @@ undo_desc(StringInfo buf, XLogReaderState *record)
 					case 0x0005:
 						op_name = "INPLACE";
 						break;
+					case 0x0006:
+						op_name = "HOT_UPDATE";
+						break;
 					default:
 						op_name = "UNKNOWN";
 						break;
@@ -92,12 +95,15 @@ undo_desc(StringInfo buf, XLogReaderState *record)
 
 				appendStringInfo(buf,
 								 "undo apply %s: urec_ptr %llu, xid %u, "
-								 "block %u, offset %u",
+								 "block %u, offset %u, clr_flags 0x%04x, "
+								 "tuple_len %u",
 								 op_name,
 								 (unsigned long long) xlrec->urec_ptr,
 								 xlrec->xid,
 								 xlrec->target_block,
-								 xlrec->target_offset);
+								 xlrec->target_offset,
+								 xlrec->clr_flags,
+								 xlrec->tuple_len);
 			}
 			break;
 
@@ -108,6 +114,23 @@ undo_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "page_offset %u, data_len %u",
 								 xlrec->page_offset,
 								 xlrec->data_len);
+			}
+			break;
+
+		case XLOG_UNDO_BATCH:
+			{
+				xl_undo_batch *xlrec = (xl_undo_batch *) rec;
+
+				appendStringInfo(buf,
+								 "undo batch: xid %u, nrecords %u, "
+								 "total_len %u, chain_prev %X/%X, "
+								 "primary_reloid %u, persistence %d",
+								 xlrec->xid,
+								 xlrec->nrecords,
+								 xlrec->total_len,
+								 LSN_FORMAT_ARGS(xlrec->chain_prev),
+								 xlrec->primary_reloid,
+								 xlrec->persistence);
 			}
 			break;
 
@@ -176,6 +199,9 @@ undo_identify(uint8 info)
 			break;
 		case XLOG_UNDO_PAGE_WRITE:
 			id = "PAGE_WRITE";
+			break;
+		case XLOG_UNDO_BATCH:
+			id = "BATCH";
 			break;
 	}
 

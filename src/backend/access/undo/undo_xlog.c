@@ -33,11 +33,17 @@
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "access/undo_xlog.h"
 #include "access/undolog.h"
+#include "access/undorecord.h"
+#include "access/undormgr.h"
+#include "access/xlog.h"
+#include "access/xlogreader.h"
 #include "access/xlogutils.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/itemid.h"
 
 /*
  * undo_redo - Replay an UNDO WAL record during crash recovery
@@ -71,7 +77,11 @@ undo_redo(XLogReaderState *record)
 					UndoLogControl *log = NULL;
 					int			i;
 
-					/* Find the log control structure */
+					/*
+					 * Find the log control structure.
+					 * O(MAX_UNDO_LOGS) scan: with MAX_UNDO_LOGS=64 this is
+					 * acceptable at recovery time (called once per record).
+					 */
 					for (i = 0; i < MAX_UNDO_LOGS; i++)
 					{
 						if (UndoLogShared->logs[i].in_use &&
@@ -103,11 +113,11 @@ undo_redo(XLogReaderState *record)
 					if (log != NULL)
 					{
 						/*
-						 * Advance insert pointer past this allocation.
-						 * Only move forward, never regress -- with
-						 * coalesced WAL records from concurrent backends,
-						 * a later record may cover a range already
-						 * subsumed by an earlier one.
+						 * Advance insert pointer past this allocation. Only
+						 * move forward, never regress -- with coalesced WAL
+						 * records from concurrent backends, a later record
+						 * may cover a range already subsumed by an earlier
+						 * one.
 						 */
 						UndoRecPtr	new_end = xlrec->start_ptr + xlrec->length;
 						UndoRecPtr	cur_ptr = pg_atomic_read_u64(&log->insert_ptr);
@@ -148,75 +158,288 @@ undo_redo(XLogReaderState *record)
 				/*
 				 * Extend the UNDO log file to the specified size.  The file
 				 * will be created if it doesn't exist.
+				 *
+				 * With append-only I/O, the smgr-managed file is no longer
+				 * used -- UNDO data is written directly to the segment file.
 				 */
 				ExtendUndoLogFile(xlrec->log_number, xlrec->new_size);
-
-				/* Also extend the smgr-managed file for checkpoint write-back */
-				ExtendUndoLogSmgrFile(xlrec->log_number, xlrec->new_size);
 			}
 			break;
 
 		case XLOG_UNDO_APPLY_RECORD:
 			{
 				/*
-				 * CLR redo: restore the page to its post-UNDO-application
-				 * state.
+				 * Physiological CLR redo: re-apply the exact page
+				 * modification that was performed during UNDO application.
 				 *
-				 * Since we use REGBUF_FORCE_IMAGE when logging the CLR, the
-				 * full page image is always present.  XLogReadBufferForRedo
-				 * will restore it and return BLK_RESTORED, in which case we
-				 * just need to release the buffer.
-				 *
-				 * If for some reason BLK_NEEDS_REDO is returned (which should
-				 * not happen with REGBUF_FORCE_IMAGE unless the page was
-				 * already up-to-date), we would need to re-apply the UNDO
-				 * operation.  For safety we treat this as an error since it
-				 * indicates a WAL consistency problem.
+				 * If a full page image is present (BLK_RESTORED or
+				 * UNDO_CLR_FULL_PAGE), the page is already correct. Otherwise
+				 * (BLK_NEEDS_REDO), we replay the operation using the
+				 * metadata and optional tuple data in the record.
 				 */
+				xl_undo_apply *xlrec;
 				Buffer		buffer;
 				XLogRedoAction action;
 
+				xlrec = (xl_undo_apply *) XLogRecGetData(record);
 				action = XLogReadBufferForRedo(record, 0, &buffer);
 
 				switch (action)
 				{
 					case BLK_RESTORED:
-
-						/*
-						 * Full page image was applied.  Nothing more to do.
-						 * The page is already in its correct post-undo state.
-						 */
+						/* Full page image applied -- nothing more to do */
 						break;
 
 					case BLK_DONE:
-
-						/*
-						 * Page is already up-to-date (LSN check passed). This
-						 * is fine -- the UNDO was already applied.
-						 */
+						/* Page already up-to-date (LSN check) */
 						break;
 
 					case BLK_NEEDS_REDO:
+						{
+							Page		page = BufferGetPage(buffer);
 
-						/*
-						 * This should not happen with REGBUF_FORCE_IMAGE. If
-						 * it does, it indicates the full page image was not
-						 * stored (e.g., due to a bug in the write path). We
-						 * cannot safely re-apply the UNDO operation here
-						 * because we don't have the tuple data.  Log an
-						 * error.
-						 */
-						elog(WARNING, "UNDO CLR redo: BLK_NEEDS_REDO unexpected for "
-							 "full-page-image CLR record");
+							if (xlrec->clr_flags & UNDO_CLR_LP_DEAD)
+							{
+								/*
+								 * Mark the line pointer LP_DEAD.  Used for
+								 * INSERT undo (with indexes) and nbtree
+								 * INSERT_LEAF undo.
+								 */
+								ItemId		lp = PageGetItemId(page,
+															   xlrec->target_offset);
+
+								if (ItemIdIsNormal(lp))
+									ItemIdSetDead(lp);
+							}
+							else if (xlrec->clr_flags & UNDO_CLR_LP_UNUSED)
+							{
+								/*
+								 * Mark the line pointer LP_UNUSED.  Used for
+								 * INSERT undo (no indexes).
+								 */
+								ItemId		lp = PageGetItemId(page,
+															   xlrec->target_offset);
+
+								ItemIdSetUnused(lp);
+								PageSetHasFreeLinePointers(page);
+							}
+							else if (xlrec->clr_flags & UNDO_CLR_HAS_TUPLE)
+							{
+								/*
+								 * Restore tuple data.  Used for DELETE undo,
+								 * full-tuple UPDATE undo, and INPLACE undo.
+								 * The tuple data is in the buffer-specific
+								 * data registered with block reference 0.
+								 */
+								ItemId		lp = PageGetItemId(page,
+															   xlrec->target_offset);
+
+								if (ItemIdIsUsed(lp) && ItemIdHasStorage(lp) &&
+									xlrec->tuple_len > 0)
+								{
+									HeapTupleHeader htup;
+									char	   *data;
+									Size		datalen;
+
+									data = XLogRecGetBlockData(record, 0,
+															   &datalen);
+									Assert(data != NULL);
+									Assert(datalen >= xlrec->tuple_len);
+
+									ItemIdSetNormal(lp, ItemIdGetOffset(lp),
+													xlrec->tuple_len);
+									htup = (HeapTupleHeader) PageGetItem(page, lp);
+									memcpy(htup, data, xlrec->tuple_len);
+								}
+							}
+							else if (xlrec->clr_flags & UNDO_CLR_HAS_DELTA)
+							{
+								/*
+								 * Delta-encoded UPDATE redo.  Reconstruct old
+								 * tuple from current page contents + delta.
+								 * The delta data (HeapUndoDeltaHeader +
+								 * changed bytes) is in block data.
+								 */
+								ItemId		lp = PageGetItemId(page,
+															   xlrec->target_offset);
+
+								if (ItemIdIsUsed(lp) && ItemIdHasStorage(lp))
+								{
+									char	   *data;
+									Size		datalen;
+									HeapTupleHeader cur_htup;
+									const char *cur_data;
+									Size		cur_len;
+									uint16		prefix_len;
+									uint16		suffix_len;
+									uint32		changed_len;
+									uint32		old_tuple_len;
+									const char *changed_data;
+									char	   *restored;
+									Size		hdr_size;
+
+									data = XLogRecGetBlockData(record, 0,
+															   &datalen);
+									Assert(data != NULL);
+
+									/*
+									 * The block data contains: -
+									 * old_tuple_len (uint32) - prefix_len
+									 * (uint16) - suffix_len (uint16) -
+									 * changed_len (uint32) - changed bytes
+									 * (changed_len)
+									 */
+									hdr_size = sizeof(uint32) +
+										2 * sizeof(uint16) + sizeof(uint32);
+
+									if (datalen < hdr_size)
+										ereport(ERROR,
+												(errmsg("invalid delta CLR at %X/%X: "
+														"block data too short (%zu bytes)",
+														LSN_FORMAT_ARGS(record->ReadRecPtr),
+														datalen)));
+
+									memcpy(&old_tuple_len, data, sizeof(uint32));
+									memcpy(&prefix_len, data + sizeof(uint32),
+										   sizeof(uint16));
+									memcpy(&suffix_len,
+										   data + sizeof(uint32) + sizeof(uint16),
+										   sizeof(uint16));
+									memcpy(&changed_len,
+										   data + sizeof(uint32) + 2 * sizeof(uint16),
+										   sizeof(uint32));
+									changed_data = data + hdr_size;
+
+									cur_htup = (HeapTupleHeader)
+										PageGetItem(page, lp);
+									cur_data = (const char *) cur_htup;
+									cur_len = ItemIdGetLength(lp);
+
+									/*
+									 * Validate lengths before any pointer
+									 * arithmetic: a corrupt CLR could
+									 * otherwise cause a buffer underrun or
+									 * overflow.
+									 */
+									if (prefix_len > cur_len ||
+										suffix_len > cur_len ||
+										prefix_len + suffix_len > cur_len ||
+										(Size) (prefix_len + changed_len + suffix_len) != (Size) old_tuple_len ||
+										datalen < hdr_size + changed_len)
+										ereport(ERROR,
+												(errmsg("invalid delta CLR at %X/%X: "
+														"prefix=%u suffix=%u changed=%u "
+														"old_len=%u cur_len=%zu",
+														LSN_FORMAT_ARGS(record->ReadRecPtr),
+														prefix_len, suffix_len,
+														changed_len, old_tuple_len,
+														cur_len)));
+
+									restored = palloc(old_tuple_len);
+
+									/* prefix from current tuple */
+									if (prefix_len > 0)
+										memcpy(restored, cur_data, prefix_len);
+
+									/* changed middle from CLR data */
+									if (changed_len > 0)
+										memcpy(restored + prefix_len,
+											   changed_data, changed_len);
+
+									/* suffix from current tuple */
+									if (suffix_len > 0)
+										memcpy(restored + prefix_len + changed_len,
+											   cur_data + cur_len - suffix_len,
+											   suffix_len);
+
+									ItemIdSetNormal(lp, ItemIdGetOffset(lp),
+													old_tuple_len);
+									memcpy(cur_htup, restored, old_tuple_len);
+									pfree(restored);
+								}
+							}
+							else if (xlrec->clr_flags & UNDO_CLR_HAS_VISIBILITY)
+							{
+								/*
+								 * Visibility-delta redo: restore only the three
+								 * tuple-header fields changed by heap_delete().
+								 * The column data is unchanged on the page.
+								 */
+								char	   *vis_data;
+								Size		vis_datalen;
+								xl_undo_apply_visibility vis_rec;
+								ItemId		vlp;
+								HeapTupleHeader vhtup;
+
+								vis_data = XLogRecGetBlockData(record, 0,
+															  &vis_datalen);
+								Assert(vis_data != NULL);
+								Assert(vis_datalen >= SizeOfUndoApplyVisibility);
+
+								memcpy(&vis_rec, vis_data,
+									   SizeOfUndoApplyVisibility);
+
+								vlp = PageGetItemId(page,
+												   xlrec->target_offset);
+								if (ItemIdIsUsed(vlp) && ItemIdHasStorage(vlp))
+								{
+									vhtup = (HeapTupleHeader)
+										PageGetItem(page, vlp);
+									HeapTupleHeaderSetXmax(vhtup,
+														   vis_rec.old_xmax);
+									vhtup->t_infomask =
+										vis_rec.old_infomask;
+									vhtup->t_infomask2 =
+										vis_rec.old_infomask2;
+								}
+							}
+							else if (xlrec->clr_flags & UNDO_CLR_HOT_RESTORE)
+							{
+								/*
+								 * HOT update rollback: restore old tuple's
+								 * infomask and kill new tuple version.
+								 */
+								char	   *data;
+								Size		datalen;
+								xl_undo_apply_hot hot_data;
+								ItemId		old_lp;
+								HeapTupleHeader old_htup;
+								ItemId		new_lp;
+
+								data = XLogRecGetBlockData(record, 0,
+														   &datalen);
+								Assert(data != NULL);
+								Assert(datalen >= SizeOfUndoApplyHot);
+
+								memcpy(&hot_data, data, SizeOfUndoApplyHot);
+
+								old_lp = PageGetItemId(page,
+													   xlrec->target_offset);
+								if (ItemIdIsNormal(old_lp))
+								{
+									old_htup = (HeapTupleHeader)
+										PageGetItem(page, old_lp);
+									old_htup->t_infomask = hot_data.old_infomask;
+									old_htup->t_infomask2 = hot_data.old_infomask2;
+									ItemPointerSet(&old_htup->t_ctid,
+												   xlrec->target_block,
+												   xlrec->target_offset);
+								}
+
+								/* Kill the new tuple version */
+								new_lp = PageGetItemId(page,
+													   hot_data.new_offset);
+								if (ItemIdIsNormal(new_lp))
+									ItemIdSetDead(new_lp);
+							}
+
+							PageSetLSN(page, record->EndRecPtr);
+							MarkBufferDirty(buffer);
+						}
 						break;
 
 					case BLK_NOTFOUND:
-
-						/*
-						 * Block doesn't exist (relation truncated?).  This is
-						 * acceptable -- the data is gone and the UNDO
-						 * application is moot.
-						 */
+						/* Block doesn't exist (truncated?) -- skip */
 						break;
 				}
 
@@ -226,61 +449,41 @@ undo_redo(XLogReaderState *record)
 			break;
 
 		case XLOG_UNDO_PAGE_WRITE:
+
+			/*
+			 * XLOG_UNDO_PAGE_WRITE is no longer emitted (append-only I/O
+			 * architecture writes directly via pwrite, not through
+			 * shared_buffers).  We keep this case for backward compatibility
+			 * with WAL from before the transition.  Old records are simply
+			 * ignored -- the UNDO data was already written to the segment
+			 * file by the originating backend.
+			 */
+			break;
+
+		case XLOG_UNDO_BATCH:
 			{
-				xl_undo_page_write *xlrec = (xl_undo_page_write *) XLogRecGetData(record);
-				Buffer		buffer;
-				XLogRedoAction action;
+				xl_undo_batch *xlrec = (xl_undo_batch *) XLogRecGetData(record);
 
-				action = XLogReadBufferForRedo(record, 0, &buffer);
+				/*
+				 * During recovery, track this batch for incomplete transaction
+				 * detection.  After redo completes, any transaction that wrote
+				 * UNDO batches but did not commit will need its UNDO chain
+				 * walked for rollback.
+				 *
+				 * The batch payload (serialized UNDO records) is part of the
+				 * WAL record and can be re-read later via XLogReadRecord()
+				 * during the undo phase.
+				 */
+				UndoRecoveryTrackBatch(xlrec->xid, record->ReadRecPtr,
+									   xlrec->chain_prev,
+									   xlrec->persistence);
 
-				switch (action)
-				{
-					case BLK_RESTORED:
-						/* Full page image was applied; nothing more to do */
-						break;
-
-					case BLK_NEEDS_REDO:
-						{
-							Page		page = BufferGetPage(buffer);
-							char	   *buf_data;
-							Size		buf_len;
-
-							buf_data = XLogRecGetBlockData(record, 0, &buf_len);
-
-							/*
-							 * If the page is new (all zeros from extend),
-							 * initialize it first.
-							 */
-							if (PageIsNew(page))
-								PageInit(page, BLCKSZ, 0);
-
-							memcpy((char *) page + xlrec->page_offset,
-								   buf_data, buf_len);
-
-							/* Update pd_lower */
-							{
-								LocationIndex new_lower = (LocationIndex) (xlrec->page_offset + (uint32) buf_len);
-
-								if (new_lower > ((PageHeader) page)->pd_lower)
-									((PageHeader) page)->pd_lower = new_lower;
-							}
-
-							PageSetLSN(page, record->EndRecPtr);
-							MarkBufferDirty(buffer);
-						}
-						break;
-
-					case BLK_DONE:
-						/* Page is already up-to-date */
-						break;
-
-					case BLK_NOTFOUND:
-						/* Block doesn't exist (truncated?) */
-						break;
-				}
-
-				if (BufferIsValid(buffer))
-					UnlockReleaseBuffer(buffer);
+				ereport(DEBUG2,
+						(errmsg("undo_redo: BATCH xid %u, nrecords %u, "
+								"total_len %u, chain_prev %X/%X",
+								xlrec->xid, xlrec->nrecords,
+								xlrec->total_len,
+								LSN_FORMAT_ARGS(xlrec->chain_prev))));
 			}
 			break;
 
@@ -368,4 +571,436 @@ undo_redo(XLogReaderState *record)
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}
+}
+
+/* ----------------------------------------------------------------
+ *	UNDO recovery tracking
+ *
+ *	During WAL redo, we track which transactions wrote UNDO batches.
+ *	When a commit/abort record is redone, the XID is removed.
+ *	After redo completes, remaining entries represent incomplete
+ *	transactions that need their UNDO chains walked.
+ * ----------------------------------------------------------------
+ */
+
+/* Hash table entry for tracking incomplete UNDO transactions */
+typedef struct UndoRecoveryEntry
+{
+	TransactionId xid;			/* hash key */
+	XLogRecPtr	last_batch_lsn[NUndoPersistenceLevels];	/* chain heads per
+														 * persistence level */
+	char		status;			/* in use */
+}			UndoRecoveryEntry;
+
+/* Simple dynamic array for recovery tracking (used during startup only) */
+static UndoRecoveryEntry *undo_recovery_entries = NULL;
+static int	undo_recovery_nentries = 0;
+static int	undo_recovery_capacity = 0;
+
+/*
+ * UndoRecoveryTrackBatch - Record an UNDO batch during WAL redo
+ *
+ * Called from the XLOG_UNDO_BATCH redo handler to track which
+ * transactions have UNDO data that may need rollback.
+ */
+void
+UndoRecoveryTrackBatch(TransactionId xid, XLogRecPtr batch_lsn,
+					   XLogRecPtr chain_prev,
+					   UndoPersistenceLevel persistence)
+{
+	int			i;
+	UndoRecoveryEntry *entry = NULL;
+
+	if (!TransactionIdIsValid(xid))
+		return;
+
+	/* Find existing entry for this XID */
+	for (i = 0; i < undo_recovery_nentries; i++)
+	{
+		if (undo_recovery_entries[i].xid == xid)
+		{
+			entry = &undo_recovery_entries[i];
+			break;
+		}
+	}
+
+	/* Create new entry if needed */
+	if (entry == NULL)
+	{
+		if (undo_recovery_nentries >= undo_recovery_capacity)
+		{
+			int			new_capacity = (undo_recovery_capacity == 0) ? 64 :
+				undo_recovery_capacity * 2;
+			UndoRecoveryEntry *new_entries;
+
+			if (undo_recovery_entries == NULL)
+			{
+				new_entries = (UndoRecoveryEntry *)
+					palloc0(sizeof(UndoRecoveryEntry) * new_capacity);
+			}
+			else
+			{
+				new_entries = (UndoRecoveryEntry *)
+					repalloc(undo_recovery_entries,
+							 sizeof(UndoRecoveryEntry) * new_capacity);
+				memset(&new_entries[undo_recovery_capacity], 0,
+					   sizeof(UndoRecoveryEntry) * (new_capacity - undo_recovery_capacity));
+			}
+			undo_recovery_entries = new_entries;
+			undo_recovery_capacity = new_capacity;
+		}
+
+		entry = &undo_recovery_entries[undo_recovery_nentries++];
+		entry->xid = xid;
+		for (i = 0; i < NUndoPersistenceLevels; i++)
+			entry->last_batch_lsn[i] = InvalidXLogRecPtr;
+	}
+
+	/* Update the chain head for this persistence level */
+	if (persistence < NUndoPersistenceLevels)
+		entry->last_batch_lsn[persistence] = batch_lsn;
+}
+
+/*
+ * UndoRecoveryRemoveXid - Remove an XID from recovery tracking
+ *
+ * Called when a commit or abort record is redone during recovery.
+ * Committed transactions don't need UNDO rollback.  Aborted transactions
+ * that were already fully rolled back (abort record present) also don't
+ * need further work.
+ */
+void
+UndoRecoveryRemoveXid(TransactionId xid)
+{
+	int			i;
+
+	if (!TransactionIdIsValid(xid))
+		return;
+
+	for (i = 0; i < undo_recovery_nentries; i++)
+	{
+		if (undo_recovery_entries[i].xid == xid)
+		{
+			/* Mark as removed by zeroing XID */
+			undo_recovery_entries[i].xid = InvalidTransactionId;
+			break;
+		}
+	}
+}
+
+/*
+ * UndoRecoveryNeeded - Check if there are incomplete transactions needing UNDO
+ *
+ * Returns true if any tracked transactions remain after redo is complete.
+ */
+bool
+UndoRecoveryNeeded(void)
+{
+	int			i;
+
+	for (i = 0; i < undo_recovery_nentries; i++)
+	{
+		if (TransactionIdIsValid(undo_recovery_entries[i].xid))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * PerformUndoRecovery - Walk and apply UNDO chains for incomplete transactions
+ *
+ * This is the ARIES-style undo phase, called after the redo loop completes.
+ * For each incomplete transaction that wrote UNDO batches, we walk the
+ * UNDO chain backward and apply each record via the RM dispatch table.
+ *
+ * CLRs are generated during this phase to ensure idempotency in case of
+ * a crash during the undo phase itself.
+ */
+void
+PerformUndoRecovery(void)
+{
+	int			i,
+				j;
+	int			total_xacts = 0;
+	int			total_records = 0;
+	int			pending_xacts = 0;
+
+	/* Count pending transactions for the opening log message. */
+	for (i = 0; i < undo_recovery_nentries; i++)
+	{
+		if (TransactionIdIsValid(undo_recovery_entries[i].xid))
+			pending_xacts++;
+	}
+
+	if (pending_xacts > 0)
+		ereport(LOG,
+				(errmsg("UNDO recovery: %d incomplete transaction(s) to roll back",
+						pending_xacts)));
+
+	for (i = 0; i < undo_recovery_nentries; i++)
+	{
+		UndoRecoveryEntry *entry = &undo_recovery_entries[i];
+
+		if (!TransactionIdIsValid(entry->xid))
+			continue;
+
+		total_xacts++;
+
+		ereport(LOG,
+				(errmsg("UNDO recovery: rolling back transaction %u",
+						entry->xid)));
+
+		/*
+		 * Walk each persistence level's UNDO chain independently. This
+		 * mirrors the normal abort path in AtAbort_XactUndo().
+		 *
+		 * TEMP and UNLOGGED levels are skipped during crash recovery:
+		 * - TEMP: temporary tables are destroyed on server restart, so
+		 *   there is nothing to roll back and the pages no longer exist.
+		 * - UNLOGGED: unlogged table files are reset to empty on crash
+		 *   recovery (initfork), making any prior UNDO application wrong.
+		 */
+		for (j = 0; j < NUndoPersistenceLevels; j++)
+		{
+			XLogRecPtr	batch_lsn = entry->last_batch_lsn[j];
+
+			if (j == UNDOPERSISTENCE_TEMP || j == UNDOPERSISTENCE_UNLOGGED)
+				continue;
+
+			while (XLogRecPtrIsValid(batch_lsn))
+			{
+				UndoBatchData *batch;
+				char	   *pos;
+				char	   *end;
+
+				batch = UndoReadBatchFromWAL(batch_lsn);
+				if (batch == NULL)
+				{
+					/*
+					 * A missing or unreadable UNDO batch during crash recovery
+					 * means we cannot complete rollback for this transaction.
+					 * Continuing would leave the database in a partially-rolled-
+					 * back state, which is worse than stopping.  PANIC to force a
+					 * clean restart and let the DBA investigate the WAL.
+					 */
+					ereport(PANIC,
+							(errmsg("UNDO recovery: could not read batch at %X/%X "
+									"for transaction %u; cannot complete rollback",
+									LSN_FORMAT_ARGS(batch_lsn),
+									entry->xid)));
+				}
+
+				/* Walk records within this batch */
+				pos = batch->payload;
+				end = pos + batch->payload_len;
+
+				while (pos < end)
+				{
+					UndoRecordHeader header;
+					char	   *payload = NULL;
+
+					if ((Size) (end - pos) < SizeOfUndoRecordHeader)
+						break;
+
+					memcpy(&header, pos, SizeOfUndoRecordHeader);
+
+					if (header.urec_len < SizeOfUndoRecordHeader ||
+						(Size) (end - pos) < header.urec_len)
+						break;
+
+					if (header.urec_payload_len > 0)
+						payload = pos + SizeOfUndoRecordHeader;
+
+					/*
+					 * Apply this UNDO record via the RM dispatch table.
+					 *
+					 * Idempotency note: urec_clr_ptr in the UNDO record header is
+					 * always InvalidXLogRecPtr (UNDO records are immutable in WAL;
+					 * the CLR is a separate WAL record that cannot update them).
+					 * Double-application is prevented by page LSN: each CLR bumps
+					 * the heap page LSN to the CLR's EndRecPtr.  When rm_undo
+					 * reads the buffer, XLogReadBufferForRedo returns BLK_DONE or
+					 * BLK_RESTORED for pages that were already restored by a CLR
+					 * in Phase 1 redo, preventing re-application.
+					 */
+					{
+						const UndoRmgrData *rmgr = GetUndoRmgr(header.urec_rmid);
+
+						if (rmgr != NULL)
+						{
+							rmgr->rm_undo(header.urec_rmid,
+										  header.urec_info,
+										  header.urec_xid,
+										  header.urec_reloid,
+										  payload,
+										  header.urec_payload_len,
+										  InvalidUndoRecPtr);
+							total_records++;
+						}
+					}
+
+					pos += header.urec_len;
+				}
+
+				/* Follow chain to previous batch */
+				{
+					XLogRecPtr	next_lsn = batch->header.chain_prev;
+
+					/*
+					 * Guard against circular or forward-pointing chains:
+					 * chain_prev must be strictly older (smaller LSN) than
+					 * the current batch or invalid (end of chain).  A forward-
+					 * pointing chain_prev would cause an infinite loop.
+					 */
+					if (XLogRecPtrIsValid(next_lsn) && next_lsn >= batch_lsn)
+						ereport(PANIC,
+								(errmsg("UNDO recovery: chain_prev %X/%X >= batch_lsn %X/%X "
+										"for transaction %u; corrupt UNDO chain",
+										LSN_FORMAT_ARGS(next_lsn),
+										LSN_FORMAT_ARGS(batch_lsn),
+										entry->xid)));
+					UndoFreeBatchData(batch);
+					batch_lsn = next_lsn;
+				}
+			}
+		}
+	}
+
+	if (total_xacts > 0)
+		ereport(LOG,
+				(errmsg("UNDO recovery complete: %d transactions rolled back, "
+						"%d records applied",
+						total_xacts, total_records)));
+
+	/* Free tracking data */
+	if (undo_recovery_entries != NULL)
+	{
+		pfree(undo_recovery_entries);
+		undo_recovery_entries = NULL;
+	}
+	undo_recovery_nentries = 0;
+	undo_recovery_capacity = 0;
+}
+
+/* ----------------------------------------------------------------
+ *	UNDO batch reading from WAL
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * UndoReadBatchFromWAL - Read a single XLOG_UNDO_BATCH record from WAL
+ *
+ * Uses XLogReader to read the WAL record at the given LSN.
+ * Returns a palloc'd UndoBatchData containing the header and a copy
+ * of the payload.  The caller must pfree via UndoFreeBatchData().
+ *
+ * Returns NULL if the record cannot be read or is not an UNDO batch.
+ */
+/* Module-level cached XLogReader for UndoReadBatchFromWAL.
+ * Allocated once and reused across calls to avoid per-batch
+ * open/close overhead on WAL segment files during rollback.
+ */
+static XLogReaderState *undo_batch_reader = NULL;
+static XLogReaderRoutine undo_batch_reader_routine = {
+	.page_read = read_local_xlog_page,
+	.segment_open = wal_segment_open,
+	.segment_close = wal_segment_close,
+};
+
+UndoBatchData *
+UndoReadBatchFromWAL(XLogRecPtr batch_lsn)
+{
+	XLogRecord *record_hdr;
+	char	   *errormsg = NULL;
+	UndoBatchData *result;
+	xl_undo_batch *xlrec;
+	char	   *record_data;
+	Size		record_len;
+	Size		payload_offset;
+
+	if (!XLogRecPtrIsValid(batch_lsn))
+		return NULL;
+
+	/* Allocate the reader once; reuse across calls. */
+	if (undo_batch_reader == NULL)
+	{
+		undo_batch_reader = XLogReaderAllocate(wal_segment_size, NULL,
+										   &undo_batch_reader_routine, NULL);
+		if (undo_batch_reader == NULL)
+		{
+			ereport(WARNING,
+					(errmsg("could not allocate XLogReader for UNDO batch read")));
+			return NULL;
+		}
+	}
+
+	/* Position the reader at the target LSN, then read */
+	XLogBeginRead(undo_batch_reader, batch_lsn);
+	record_hdr = XLogReadRecord(undo_batch_reader, &errormsg);
+	if (record_hdr == NULL)
+	{
+		if (errormsg)
+			ereport(WARNING,
+					(errmsg("could not read WAL record at %X/%X: %s",
+							LSN_FORMAT_ARGS(batch_lsn), errormsg)));
+		return NULL;
+	}
+
+	/* Verify it's an UNDO batch record */
+	if (XLogRecGetRmid(undo_batch_reader) != RM_UNDO_ID ||
+		(XLogRecGetInfo(undo_batch_reader) & ~XLR_INFO_MASK) != XLOG_UNDO_BATCH)
+	{
+		ereport(WARNING,
+				(errmsg("WAL record at %X/%X is not an UNDO batch (rmid=%u, info=0x%02x)",
+						LSN_FORMAT_ARGS(batch_lsn),
+						XLogRecGetRmid(undo_batch_reader),
+						XLogRecGetInfo(undo_batch_reader) & ~XLR_INFO_MASK)));
+		return NULL;
+	}
+
+	/* Extract the batch header and payload */
+	record_data = XLogRecGetData(undo_batch_reader);
+	record_len = XLogRecGetDataLen(undo_batch_reader);
+
+	if (record_len < SizeOfUndoBatch)
+	{
+		ereport(WARNING,
+				(errmsg("UNDO batch record at %X/%X too short: %zu bytes",
+						LSN_FORMAT_ARGS(batch_lsn), record_len)));
+		return NULL;
+	}
+
+	xlrec = (xl_undo_batch *) record_data;
+	payload_offset = SizeOfUndoBatch;
+
+	result = (UndoBatchData *) palloc(sizeof(UndoBatchData));
+	memcpy(&result->header, xlrec, SizeOfUndoBatch);
+	result->payload_len = record_len - payload_offset;
+	if (result->payload_len > 0)
+	{
+		result->payload = (char *) palloc(result->payload_len);
+		memcpy(result->payload, record_data + payload_offset,
+			   result->payload_len);
+	}
+	else
+	{
+		result->payload = NULL;
+	}
+
+	/* Do not free reader -- it is cached for reuse. */
+	return result;
+}
+
+/*
+ * UndoFreeBatchData - Free a UndoBatchData structure
+ */
+void
+UndoFreeBatchData(UndoBatchData *batch)
+{
+	if (batch == NULL)
+		return;
+	if (batch->payload != NULL)
+		pfree(batch->payload);
+	pfree(batch);
 }

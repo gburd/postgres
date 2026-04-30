@@ -54,7 +54,7 @@ int			logical_revert_naptime = 1000;
  * Shared memory state for the Logical Revert worker.
  *
  * Minimal: just a lock and a worker-id counter. The ATM itself is the
- * "work queue" — the worker reads it directly via ATMGetNextUnreverted().
+ * "work queue" -- the worker reads it directly via ATMGetNextUnreverted().
  */
 typedef struct LogicalRevertState
 {
@@ -107,7 +107,7 @@ LogicalRevertShmemInit(void)
 
 /*
  * logical_revert_sighup
- *		SIGHUP signal handler — reload configuration.
+ *		SIGHUP signal handler -- reload configuration.
  */
 static void
 logical_revert_sighup(SIGNAL_ARGS)
@@ -122,7 +122,7 @@ logical_revert_sighup(SIGNAL_ARGS)
 
 /*
  * logical_revert_sigterm
- *		SIGTERM signal handler — request shutdown.
+ *		SIGTERM signal handler -- request shutdown.
  */
 static void
 logical_revert_sigterm(SIGNAL_ARGS)

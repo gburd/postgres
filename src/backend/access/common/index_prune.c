@@ -20,6 +20,7 @@
 
 #include "access/genam.h"
 #include "access/index_prune.h"
+#include "access/relation.h"
 #include "access/relundo.h"
 #include "catalog/index.h"
 #include "portability/instr_time.h"
@@ -38,6 +39,18 @@
  */
 static IndexPruneHandler handlers[MAX_INDEX_HANDLERS];
 static int	num_handlers = 0;
+
+/*
+ * Targeted handler registry
+ */
+typedef struct IndexPruneTargetedHandler
+{
+	Oid			indexam_oid;
+	IndexPruneTargetedCallback callback;
+}			IndexPruneTargetedHandler;
+
+static IndexPruneTargetedHandler targeted_handlers[MAX_INDEX_HANDLERS];
+static int	num_targeted_handlers = 0;
 
 /*
  * Global pruning statistics
@@ -210,4 +223,128 @@ IndexPruneResetStats(void)
 {
 	memset(&prune_stats, 0, sizeof(IndexPruneStats));
 	elog(DEBUG1, "index pruning statistics reset");
+}
+
+/*
+ * IndexPruneRegisterTargetedHandler
+ *
+ * Registers a targeted pruning callback for a specific index AM.
+ */
+void
+IndexPruneRegisterTargetedHandler(Oid indexam_oid,
+								  IndexPruneTargetedCallback callback)
+{
+	if (num_targeted_handlers >= MAX_INDEX_HANDLERS)
+	{
+		elog(ERROR, "too many targeted index pruning handlers registered");
+		return;
+	}
+
+	targeted_handlers[num_targeted_handlers].indexam_oid = indexam_oid;
+	targeted_handlers[num_targeted_handlers].callback = callback;
+	num_targeted_handlers++;
+
+	elog(DEBUG2, "registered targeted index pruning handler for AM OID %u",
+		 indexam_oid);
+}
+
+/*
+ * IndexPruneFindTargetedHandler
+ *
+ * Looks up the targeted pruning callback for a given index AM OID.
+ */
+static IndexPruneTargetedCallback
+IndexPruneFindTargetedHandler(Oid indexam_oid)
+{
+	int			i;
+
+	for (i = 0; i < num_targeted_handlers; i++)
+	{
+		if (targeted_handlers[i].indexam_oid == indexam_oid)
+			return targeted_handlers[i].callback;
+	}
+
+	return NULL;
+}
+
+/*
+ * IndexPruneNotifyTargeted
+ *
+ * Targeted index pruning: instead of scanning all leaf pages of every
+ * index, visit only the specific (index_oid, blkno, offset) targets
+ * extracted from UNDO records in the discarded segment range.
+ *
+ * Complexity: O(N_dead_entries) instead of O(N_total_entries).
+ *
+ * Targets are grouped by index_oid, then each group is dispatched to
+ * the appropriate AM's targeted callback.
+ */
+uint64
+IndexPruneNotifyTargeted(Relation heaprel,
+						 IndexPruneTarget * targets, int ntargets)
+{
+	uint64		total_entries_pruned = 0;
+	int			i;
+	instr_time	start_time,
+				end_time;
+
+	if (ntargets <= 0)
+		return 0;
+
+	INSTR_TIME_SET_CURRENT(start_time);
+
+	/*
+	 * Simple approach: sort targets by index_oid, then process each group.
+	 * For the common case (small number of targets), linear scan is fine.
+	 *
+	 * We batch targets by index_oid and dispatch to the targeted callback.
+	 */
+	i = 0;
+	while (i < ntargets)
+	{
+		Oid			cur_oid = targets[i].index_oid;
+		int			group_start = i;
+		int			group_count;
+		Relation	indexrel;
+		IndexPruneTargetedCallback callback;
+
+		/* Find the end of this group (same index_oid) */
+		while (i < ntargets && targets[i].index_oid == cur_oid)
+			i++;
+		group_count = i - group_start;
+
+		/* Open the index */
+		indexrel = try_relation_open(cur_oid, AccessShareLock);
+		if (indexrel == NULL)
+		{
+			/* Index dropped -- skip this group */
+			continue;
+		}
+
+		callback = IndexPruneFindTargetedHandler(indexrel->rd_rel->relam);
+		if (callback != NULL)
+		{
+			uint64		pruned;
+
+			pruned = callback(heaprel, indexrel,
+							  &targets[group_start], group_count);
+			total_entries_pruned += pruned;
+
+			if (pruned > 0)
+				elog(DEBUG2, "targeted prune: index %s, %lu entries pruned",
+					 RelationGetRelationName(indexrel),
+					 (unsigned long) pruned);
+		}
+
+		relation_close(indexrel, AccessShareLock);
+	}
+
+	INSTR_TIME_SET_CURRENT(end_time);
+	INSTR_TIME_SUBTRACT(end_time, start_time);
+
+	prune_stats.total_entries_pruned += total_entries_pruned;
+	prune_stats.total_prune_calls++;
+	prune_stats.total_prune_time_ms += (uint64) INSTR_TIME_GET_MILLISEC(end_time);
+
+	return total_entries_pruned;
 }

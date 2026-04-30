@@ -1190,6 +1190,35 @@ ProcessUtilitySlow(ParseState *pstate,
 																validnsps,
 																true,
 																false);
+
+							/*
+							 * If the parent table requests enable_undo,
+							 * propagate it to the TOAST table.  The "toast"
+							 * namespace filter above suppresses options
+							 * without a "toast." prefix.
+							 */
+							{
+								ListCell   *_lc;
+
+								foreach(_lc, cstmt->options)
+								{
+									DefElem    *_def = (DefElem *) lfirst(_lc);
+
+									if (_def->defnamespace == NULL &&
+										strcmp(_def->defname, "enable_undo") == 0)
+									{
+										List	   *_undo_list = list_make1(copyObject(_def));
+
+										toast_options =
+											transformRelOptions(toast_options,
+																_undo_list,
+																NULL, validnsps,
+																false, false);
+										break;
+									}
+								}
+							}
+
 							(void) heap_reloptions(RELKIND_TOASTVALUE,
 												   toast_options,
 												   true);

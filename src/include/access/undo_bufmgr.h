@@ -1,29 +1,26 @@
 /*-------------------------------------------------------------------------
  *
  * undo_bufmgr.h
- *	  UNDO log buffer manager using PostgreSQL's shared_buffers
+ *	  UNDO log buffer management and file layout definitions
  *
- * This module provides buffer management for UNDO log blocks by mapping
- * them into PostgreSQL's standard shared buffer pool using virtual
- * RelFileLocator entries.  This approach follows ZHeap's design where
- * undo data is "accessed through the buffer pool ... similar to regular
- * relation data" (ZHeap README).
+ * The UNDO log uses an append-only I/O architecture:
+ *
+ *   - Writes: pwrite() directly to segment files, no shared_buffers
+ *   - Reads:  pread() directly from segment files (hot data served
+ *             from kernel page cache)
+ *   - Sync:   fdatasync() at commit/abort (UndoLogSync)
+ *   - WAL:    Only XLOG_UNDO_ALLOCATE metadata, no page-level WAL
+ *
+ * This module retains virtual RelFileLocator mapping for:
+ *   - Buffer invalidation during segment discard (InvalidateUndoBuffers)
+ *   - Legacy backward compatibility
  *
  * Each undo log is mapped to a virtual relation:
- *
  *   RelFileLocator = {
- *     spcOid   = UNDO_DEFAULT_TABLESPACE_OID (pg_default, 1663)
- *     dbOid    = UNDO_DB_OID (pseudo-database 9, following ZHeap)
+ *     spcOid    = UNDO_DEFAULT_TABLESPACE_OID (pg_default, 1663)
+ *     dbOid     = UNDO_DB_OID (pseudo-database 9)
  *     relNumber = log_number (undo log number as RelFileNumber)
  *   }
- *
- * Buffers are read/written via ReadBufferWithoutRelcache() using
- * MAIN_FORKNUM (following ZHeap's UndoLogForkNum convention), and
- * the standard buffer manager handles all caching, clock-sweep
- * eviction, dirty tracking, and checkpoint write-back.
- *
- * Undo buffers are distinguished from regular relation buffers by
- * the UNDO_DB_OID in the dbOid field of the RelFileLocator / BufferTag.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -119,49 +116,54 @@ IsUndoRelFileLocator(const RelFileLocator *rlocator)
 }
 
 /*
- * UNDO page layout
+ * UNDO file layout: append-only
  *
- * UNDO pages stored in shared_buffers use standard PostgreSQL page headers
- * (PageHeaderData) to support checksums, LSN tracking, and the buffer
- * manager's page verification.  UNDO record data starts immediately
- * after the page header.
+ * UNDO log files use an append-only layout with NO PageHeaderData overhead.
+ * The logical byte offset in UndoRecPtr maps directly to the physical file
+ * offset.  This eliminates the overhead of page headers, pd_lower tracking,
+ * LSN management, and full-page images for UNDO data.
  *
- * The usable bytes per page is BLCKSZ minus the page header size.
- * All UNDO byte offsets (in UndoRecPtr) are "logical" offsets — they
- * represent a contiguous byte stream of UNDO data.  The mapping from
- * logical offset to physical (block, page_offset) is handled by the
- * macros below.
+ * UNDO data is written via pwrite() and read via pread(), bypassing
+ * shared_buffers entirely for the write path.  For reads, hot data is
+ * served from the kernel page cache (no I/O), while cold data requires
+ * sequential I/O on the pre-allocated file.
+ *
+ * The buffer pool integration (ReadUndoBuffer etc.) is retained only for
+ * the buffer invalidation API used during segment discard.
  */
-#define UNDO_USABLE_BYTES_PER_PAGE	(BLCKSZ - (int) SizeOfPageHeaderData)
 
 /*
- * UndoRecPtrGetBlockNum
- *		Compute the block number for an undo log logical byte offset.
+ * UndoRecPtrGetFileOffset
+ *		Compute the physical file offset for an undo log logical byte offset.
  *
- * Each page can hold UNDO_USABLE_BYTES_PER_PAGE bytes of UNDO data.
- * Logical offset L maps to block L / UNDO_USABLE_BYTES_PER_PAGE.
+ * With the append-only layout, the logical offset IS the file offset.
  */
+#define UndoRecPtrGetFileOffset(offset) ((uint64) (offset))
+
+/*
+ * Legacy page-layout macros (retained for undo_bufmgr.c invalidation API).
+ *
+ * These are used only by buffer invalidation during discard, not by the
+ * write/read paths.  The "block number" is conceptual, mapping the
+ * contiguous byte stream to BLCKSZ-aligned regions.
+ */
+#define UNDO_USABLE_BYTES_PER_PAGE	BLCKSZ
+
 #define UndoRecPtrGetBlockNum(offset) \
-	((BlockNumber) ((offset) / UNDO_USABLE_BYTES_PER_PAGE))
+	((BlockNumber) ((offset) / BLCKSZ))
 
-/*
- * UndoRecPtrGetPageOffset
- *		Compute the offset within the page for an undo log logical byte offset.
- *
- * The page offset accounts for the PageHeaderData that precedes the
- * UNDO data in each page.
- */
 #define UndoRecPtrGetPageOffset(offset) \
-	((uint32) (SizeOfPageHeaderData + ((offset) % UNDO_USABLE_BYTES_PER_PAGE)))
+	((uint32) ((offset) % BLCKSZ))
 
 /*
  * UndoLogicalToFileSize
  *		Compute the physical file size needed for a given logical byte count.
  *
- * This is the number of full pages needed (rounded up) times BLCKSZ.
+ * With append-only layout, physical size equals logical size (no headers).
+ * We round up to BLCKSZ alignment for pre-allocation.
  */
 #define UndoLogicalToFileSize(logical_size) \
-	((uint64) (UndoRecPtrGetBlockNum((logical_size) - 1) + 1) * BLCKSZ)
+	((uint64) (((logical_size) + BLCKSZ - 1) / BLCKSZ) * BLCKSZ)
 
 
 /* ----------------------------------------------------------------

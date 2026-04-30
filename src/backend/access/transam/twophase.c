@@ -77,6 +77,7 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
+#include "access/xactundo.h"
 #include "access/htup_details.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
@@ -978,8 +979,14 @@ TwoPhaseFilePath(char *path, FullTransactionId fxid)
 
 /*
  * Header for a 2PC state file
+ *
+ * TWOPHASE_MAGIC must be bumped whenever xl_xact_prepare changes layout.
+ * The struct gained last_batch_lsn[NUndoPersistenceLevels] (24 bytes) for
+ * UNDO chain tracking across 2PC boundaries, requiring this bump from
+ * 0x57F94534 to 0x57F94535 to prevent old servers from silently misreading
+ * the variable-length arrays that follow the fixed header at the wrong offsets.
  */
-#define TWOPHASE_MAGIC	0x57F94534	/* format identifier */
+#define TWOPHASE_MAGIC	0x57F94535	/* format identifier */
 
 typedef xl_xact_prepare TwoPhaseFileHeader;
 
@@ -1100,6 +1107,10 @@ StartPrepare(GlobalTransaction gxact)
 	/* EndPrepare will fill the origin data, if necessary */
 	hdr.origin_lsn = InvalidXLogRecPtr;
 	hdr.origin_timestamp = 0;
+
+	/* Save UNDO chain head LSNs so recovery can find UNDO records */
+	for (int j = 0; j < NUndoPersistenceLevels; j++)
+		hdr.last_batch_lsn[j] = GetCurrentXactLastBatchLSN(j);
 
 	save_state_data(&hdr, sizeof(TwoPhaseFileHeader));
 	save_state_data(gxact->gid, hdr.gidlen);

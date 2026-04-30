@@ -546,6 +546,7 @@ heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
 
 /* UNDO support */
 extern bool RelationHasUndo(Relation rel);
+extern bool RelationHasFullUndo(Relation rel);
 
 /* Heap UNDO RM (heapam_undo.c) */
 extern void HeapUndoRmgrInit(void);
@@ -556,32 +557,42 @@ extern Size HeapUndoBuildPayload(char *dest, Size dest_size,
 extern Size HeapUndoPayloadSize(uint32 tuple_len);
 
 /* Heap UNDO subtypes (stored in urec_info) */
-#define HEAP_UNDO_INSERT	0x0001
-#define HEAP_UNDO_DELETE	0x0002
-#define HEAP_UNDO_UPDATE	0x0003
-#define HEAP_UNDO_PRUNE		0x0004
-#define HEAP_UNDO_INPLACE	0x0005
+#define HEAP_UNDO_INSERT		0x0001
+#define HEAP_UNDO_DELETE		0x0002
+#define HEAP_UNDO_UPDATE		0x0003
+#define HEAP_UNDO_PRUNE			0x0004
+#define HEAP_UNDO_INPLACE		0x0005
+#define HEAP_UNDO_HOT_UPDATE	0x0006
 
 /*
- * Bulk UNDO batching state.
+ * UNDO write buffer.
  *
- * When bulk mode is active, UNDO records are accumulated in a persistent
- * UndoRecordSet instead of being allocated/written/freed per row.
+ * When the UNDO write buffer is active, UNDO records are accumulated in a
+ * persistent UndoRecordSet instead of being allocated/written/freed per row.
  * Records are flushed in batches, reducing the per-row overhead of
  * UndoLogAllocate(), WAL logging, and file I/O.
+ *
+ * The write buffer is always activated for UNDO-enabled tables at DML start.
+ * The overhead is negligible: one palloc of ~512 bytes, reused for the entire
+ * transaction.
  */
-#define HEAP_BULK_UNDO_FLUSH_THRESHOLD	(256 * 1024)	/* 256KB */
-#define HEAP_BULK_UNDO_FLUSH_RECORDS	1000
+extern void HeapBeginUndoBuffer(Relation rel, int64 nrows);
+extern void HeapEndUndoBuffer(Relation rel);
+extern void HeapUndoBufferAddRecord(Relation rel, uint8 rmid, uint16 info,
+									const char *payload, Size payload_len);
+extern void HeapUndoBufferAddRecordParts(Relation rel, uint8 rmid, uint16 info,
+										 const char *part1, Size part1_len,
+										 const char *part2, Size part2_len);
+extern void HeapUndoBufferFlush(void);
+extern bool HeapUndoBufferIsActive(Relation rel);
 
-extern void HeapBeginBulkUndo(Relation rel, int64 nrows);
-extern void HeapEndBulkUndo(Relation rel);
-extern void HeapBulkUndoAddRecord(Relation rel, uint8 rmid, uint16 info,
-								   const char *payload, Size payload_len);
-extern void HeapBulkUndoAddRecordParts(Relation rel, uint8 rmid, uint16 info,
-									   const char *part1, Size part1_len,
-									   const char *part2, Size part2_len);
-extern void HeapBulkUndoFlush(void);
-extern bool HeapBulkUndoIsActive(Relation rel);
+/* Backward-compatibility aliases */
+#define HeapBeginBulkUndo		HeapBeginUndoBuffer
+#define HeapEndBulkUndo			HeapEndUndoBuffer
+#define HeapBulkUndoAddRecord	HeapUndoBufferAddRecord
+#define HeapBulkUndoAddRecordParts HeapUndoBufferAddRecordParts
+#define HeapBulkUndoFlush		HeapUndoBufferFlush
+#define HeapBulkUndoIsActive	HeapUndoBufferIsActive
 
 /*
  * HeapUndoPayloadHeader - Fixed header portion of heap UNDO payloads.
@@ -598,13 +609,112 @@ typedef struct HeapUndoPayloadHeader
 	uint32		tuple_len;
 }			HeapUndoPayloadHeader;
 
-#define HEAP_UNDO_HAS_INDEX		0x0001
-#define HEAP_UNDO_HAS_TUPLE		0x0002
+#define HEAP_UNDO_HAS_INDEX				0x0001
+#define HEAP_UNDO_HAS_TUPLE				0x0002
+#define HEAP_UNDO_HAS_DELTA				0x0004	/* Payload uses delta encoding */
+#define HEAP_UNDO_DELETE_VISIBILITY_ONLY	0x0008	/* DELETE: visibility delta only */
 
 #define SizeOfHeapUndoPayloadHeader \
 	(offsetof(HeapUndoPayloadHeader, tuple_len) + sizeof(uint32))
 
-extern void HeapUndoBuildHeader(HeapUndoPayloadHeader *hdr,
+/*
+ * HeapUndoDeltaHeader - Delta-encoded UNDO payload for UPDATEs.
+ *
+ * When HEAP_UNDO_HAS_DELTA is set in flags, the UNDO payload uses
+ * prefix/suffix compression following WAL's XLH_UPDATE_PREFIX_FROM_OLD /
+ * XLH_UPDATE_SUFFIX_FROM_OLD pattern.  Only the changed bytes between
+ * the old and new tuple are stored.
+ *
+ * The full old tuple is reconstructed during rollback by:
+ *   - Copying prefix_len bytes from the new tuple (unchanged prefix)
+ *   - Inserting changed_len bytes from the UNDO record (changed middle)
+ *   - Copying suffix_len bytes from the new tuple (unchanged suffix)
+ *
+ * For a 200-byte row with one 4-byte column changed in the middle:
+ *   Full: 200 bytes.  Delta: ~20 bytes (header + 4 changed bytes).
+ */
+typedef struct HeapUndoDeltaHeader
+{
+	BlockNumber blkno;			/* Target block */
+	OffsetNumber offset;		/* Item offset within page */
+	uint16		flags;			/* HEAP_UNDO_HAS_DELTA | ... */
+	uint32		old_tuple_len;	/* Total old tuple length (for restoration) */
+	uint16		prefix_len;		/* Unchanged prefix bytes */
+	uint16		suffix_len;		/* Unchanged suffix bytes */
+	uint32		changed_len;	/* Changed middle bytes (follows header) */
+	/* Followed by changed_len bytes of old tuple's changed region */
+}			HeapUndoDeltaHeader;
+
+#define SizeOfHeapUndoDeltaHeader \
+	(offsetof(HeapUndoDeltaHeader, changed_len) + sizeof(uint32))
+
+/*
+ * Minimum savings threshold for delta compression.  If the delta encoding
+ * doesn't save at least this many bytes vs. full tuple, store the full
+ * tuple instead (avoids overhead for trivial savings).
+ */
+#define HEAP_UNDO_DELTA_MIN_SAVINGS		32
+
+/*
+ * HeapUndoDeleteDelta - Compact visibility-only UNDO payload for DELETE.
+ *
+ * When HEAP_UNDO_DELETE_VISIBILITY_ONLY is set in the payload header flags,
+ * the UNDO record stores only the three tuple-header fields changed by
+ * heap_delete(), instead of the full tuple before-image.
+ *
+ * This reduces DELETE UNDO payload from ~160-560 bytes to 8 bytes,
+ * closing most of the observed 19% DELETE overhead vs. baseline.
+ *
+ * Constraint: only used when the deleting transaction did NOT insert the
+ * tuple (t_xmin != current xid).  Same-transaction insert-then-delete
+ * falls through to the full-tuple path because t_cmin may have been
+ * overwritten by SetCmax without a combo-CID entry.
+ *
+ * On rollback, restoring old_xmax, old_infomask, and old_infomask2 is
+ * sufficient because:
+ *   1. The tuple's column data is unchanged by DELETE.
+ *   2. old_xmax = InvalidTransactionId makes the tuple "live" again.
+ *   3. old_infomask restores the pre-delete visibility bit state.
+ *   4. The t_cid field reverts to t_cmin interpretation (since xmax is
+ *      invalid), which is the original insert CID -- correct for readers.
+ */
+typedef struct HeapUndoDeleteDelta
+{
+	TransactionId old_xmax;		/* t_xmax before delete */
+	uint16		old_infomask;	/* t_infomask before delete */
+	uint16		old_infomask2;	/* t_infomask2 before delete */
+}			HeapUndoDeleteDelta;
+
+#define SizeOfHeapUndoDeleteDelta	sizeof(HeapUndoDeleteDelta)
+
+/*
+ * HeapUndoHotPayload - Minimal UNDO payload for HOT updates.
+ *
+ * For HOT updates, the old tuple stays on the same page (linked via t_ctid).
+ * We only need to store enough metadata to reverse the HOT update on rollback:
+ *   - Restore old tuple's infomask/infomask2 (clear XMAX, restore visibility)
+ *   - Clear HOT_UPDATED on old tuple, clear HEAP_ONLY on new tuple
+ *   - Mark new tuple LP_DEAD (or LP_UNUSED if no indexes)
+ *
+ * On rollback, the new tuple is found by following the old tuple's t_ctid
+ * (which was set during the update to point to the new version).
+ *
+ * This is ~16 bytes vs 48 + full_tuple_len for a full UNDO record.
+ */
+typedef struct HeapUndoHotPayload
+{
+	BlockNumber blkno;			/* Page containing both old and new tuples */
+	OffsetNumber old_offset;	/* Old tuple's item offset */
+	uint16		flags;			/* HEAP_UNDO_HAS_INDEX etc. */
+	uint16		old_infomask;	/* Old tuple's original t_infomask */
+	uint16		old_infomask2;	/* Old tuple's original t_infomask2 */
+	/* padding to 4-byte boundary happens naturally */
+}			HeapUndoHotPayload;
+
+#define SizeOfHeapUndoHotPayload \
+	(offsetof(HeapUndoHotPayload, old_infomask2) + sizeof(uint16))
+
+extern void HeapUndoBuildHeader(HeapUndoPayloadHeader * hdr,
 								BlockNumber blkno, OffsetNumber offset,
 								bool relhasindex, uint32 tuple_len);
 

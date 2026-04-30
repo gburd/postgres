@@ -188,6 +188,163 @@ ROLLBACK;
 SELECT text_val, float_val FROM undo_types WHERE id = 1;
 
 -- ================================================================
+-- Section 10: TOAST with UNDO (>2KB values)
+-- ================================================================
+
+CREATE TABLE undo_toast (id int, big_val text) WITH (enable_undo = on);
+
+-- Insert a row with a large value that will be TOASTed.
+INSERT INTO undo_toast VALUES (1, repeat('A', 10000));
+SELECT id, length(big_val) FROM undo_toast;
+
+-- UPDATE with TOASTed value, then rollback.
+BEGIN;
+UPDATE undo_toast SET big_val = repeat('B', 20000) WHERE id = 1;
+SELECT length(big_val) FROM undo_toast WHERE id = 1;
+ROLLBACK;
+
+-- Original TOASTed value should be restored.
+SELECT id, length(big_val), substr(big_val, 1, 5) FROM undo_toast WHERE id = 1;
+
+-- DELETE with TOASTed value, then rollback.
+BEGIN;
+DELETE FROM undo_toast WHERE id = 1;
+SELECT count(*) FROM undo_toast;
+ROLLBACK;
+
+SELECT id, length(big_val) FROM undo_toast;
+
+-- ================================================================
+-- Section 11: Deep subtransaction nesting with UNDO
+-- ================================================================
+
+CREATE TABLE undo_deep_sub (id int, val text) WITH (enable_undo = on);
+
+-- Nest 20 savepoints deep with modifications at each level.
+BEGIN;
+INSERT INTO undo_deep_sub VALUES (1, 'base');
+DO $$
+DECLARE
+    i int;
+BEGIN
+    FOR i IN 1..20 LOOP
+        EXECUTE format('SAVEPOINT sp_%s', i);
+        EXECUTE format(
+            'INSERT INTO undo_deep_sub VALUES (%s, %L)',
+            100 + i, 'level' || i
+        );
+    END LOOP;
+    -- Roll back the inner 10 levels.
+    FOR i IN REVERSE 20..11 LOOP
+        EXECUTE format('ROLLBACK TO sp_%s', i);
+    END LOOP;
+END;
+$$;
+
+-- Should have: base row (1) + levels 1-10 (100+1 through 100+10).
+SELECT count(*) FROM undo_deep_sub;
+COMMIT;
+
+SELECT id, val FROM undo_deep_sub ORDER BY id;
+
+-- ================================================================
+-- Section 12: HOT update with UNDO
+-- ================================================================
+
+-- Create a table where HOT updates are possible (no index on 'val').
+CREATE TABLE undo_hot (id int PRIMARY KEY, val text, counter int)
+  WITH (enable_undo = on, fillfactor = 50);
+
+INSERT INTO undo_hot SELECT g, 'initial', 0 FROM generate_series(1, 20) g;
+
+-- Update a non-indexed column (should be a HOT update).
+BEGIN;
+UPDATE undo_hot SET counter = 1 WHERE id = 5;
+UPDATE undo_hot SET counter = 2 WHERE id = 5;
+SELECT counter FROM undo_hot WHERE id = 5;
+ROLLBACK;
+
+-- After rollback, counter should be 0 (original value).
+SELECT counter FROM undo_hot WHERE id = 5;
+
+-- Committed HOT update should persist.
+UPDATE undo_hot SET counter = 99 WHERE id = 10;
+SELECT counter FROM undo_hot WHERE id = 10;
+
+-- ================================================================
+-- Section 13: Large batch operations with UNDO write buffer
+-- ================================================================
+
+CREATE TABLE undo_batch (id int, val text) WITH (enable_undo = on);
+
+-- Large insert should use the UNDO write buffer.
+INSERT INTO undo_batch SELECT g, 'row' || g FROM generate_series(1, 5000) g;
+SELECT count(*) FROM undo_batch;
+
+-- Large delete in a transaction, then rollback.
+BEGIN;
+DELETE FROM undo_batch WHERE id <= 2500;
+SELECT count(*) FROM undo_batch;
+ROLLBACK;
+
+SELECT count(*) FROM undo_batch;
+
+-- Large update in a transaction, then rollback.
+BEGIN;
+UPDATE undo_batch SET val = 'changed' WHERE id > 2500;
+ROLLBACK;
+
+SELECT count(*) FROM undo_batch WHERE val = 'changed';
+
+-- ================================================================
+-- Section 14: UNDO with indexes (B-tree)
+-- ================================================================
+
+CREATE TABLE undo_idx (id int PRIMARY KEY, val text, num int)
+  WITH (enable_undo = on);
+CREATE INDEX undo_idx_num ON undo_idx (num);
+
+INSERT INTO undo_idx SELECT g, 'v' || g, g * 10 FROM generate_series(1, 100) g;
+
+-- Index scan should work.
+SET enable_seqscan = off;
+SELECT id, num FROM undo_idx WHERE num = 500;
+RESET enable_seqscan;
+
+-- Rollback of INSERT should leave indexes consistent.
+BEGIN;
+INSERT INTO undo_idx VALUES (200, 'new', 2000);
+-- Verify via index scan.
+SET enable_seqscan = off;
+SELECT id FROM undo_idx WHERE num = 2000;
+RESET enable_seqscan;
+ROLLBACK;
+
+-- The rolled-back row should not be findable via index.
+SET enable_seqscan = off;
+SELECT count(*) FROM undo_idx WHERE num = 2000;
+RESET enable_seqscan;
+
+-- Total count via seqscan should match.
+SELECT count(*) FROM undo_idx;
+
+-- ================================================================
+-- Section 15: enable_undo = min mode is rejected
+-- ================================================================
+
+-- min mode has been removed; verify it is rejected
+CREATE TABLE undo_min_rejected (id int, data text) WITH (enable_undo = min);
+
+-- Boolean aliases should map correctly
+CREATE TABLE undo_bool_test (id int) WITH (enable_undo = true);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_bool_test'::regclass;
+DROP TABLE undo_bool_test;
+
+CREATE TABLE undo_bool_test (id int) WITH (enable_undo = false);
+SELECT reloptions FROM pg_class WHERE oid = 'undo_bool_test'::regclass;
+DROP TABLE undo_bool_test;
+
+-- ================================================================
 -- Cleanup
 -- ================================================================
 
@@ -196,3 +353,8 @@ DROP TABLE undo_default;
 DROP TABLE no_undo_table;
 DROP TABLE undo_trunc;
 DROP TABLE undo_types;
+DROP TABLE undo_toast;
+DROP TABLE undo_deep_sub;
+DROP TABLE undo_hot;
+DROP TABLE undo_batch;
+DROP TABLE undo_idx;

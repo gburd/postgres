@@ -11,7 +11,7 @@
 
 **UNDO Logs** (`undolog.c`):
 - Multi-segment architecture (default 16MB per segment, configurable via `undo_log_segment_size`)
-- Managed segment lifecycle: FREE → ACTIVE → SEALED → DISCARDABLE
+- Managed segment lifecycle: FREE -> ACTIVE -> SEALED -> DISCARDABLE
 - Rotation at 85% capacity, 50% at checkpoint, 95% under pressure
 - Backpressure mechanism when free segments are exhausted
 - Per-persistence-level logs (permanent, unlogged, temporary)

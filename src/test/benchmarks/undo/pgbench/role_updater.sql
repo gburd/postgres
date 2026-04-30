@@ -1,8 +1,8 @@
 --
--- Role: Updater — uniform random updates with occasional rollback
+-- Role: Updater -- uniform random updates with occasional rollback
 --
 -- Used by the multi-role concurrent benchmark (W9).
--- 80% commit, 20% rollback — exercises UNDO write and rollback paths.
+-- 80% commit, 20% rollback -- exercises UNDO write and rollback paths.
 --
 \set rnd random(1, 100)
 \set aid random(1, 100000 * :scale)

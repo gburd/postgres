@@ -1950,7 +1950,7 @@ __sm_append_rle_chunk(sparsemap_t **resultp, __sm_idx_t start,
     __sm_chunk_init(&last_chunk, last_p + SM_SIZEOF_OVERHEAD);
 
     if (__sm_chunk_is_rle(&last_chunk)) {
-      /* Last chunk is RLE — check if this new RLE is contiguous */
+      /* Last chunk is RLE -- check if this new RLE is contiguous */
       const size_t last_len = __sm_chunk_rle_get_length(&last_chunk);
       if ((size_t)last_start + last_len == (size_t)start) {
         /* Contiguous: extend the last chunk in place */
@@ -1959,11 +1959,11 @@ __sm_append_rle_chunk(sparsemap_t **resultp, __sm_idx_t start,
         if (new_len <= SM_CHUNK_RLE_MAX_LENGTH && new_cap <= SM_CHUNK_RLE_MAX_CAPACITY) {
           __sm_chunk_rle_set_capacity(&last_chunk, new_cap);
           __sm_chunk_rle_set_length(&last_chunk, new_len);
-          return true; /* Merged — no new chunk needed */
+          return true; /* Merged -- no new chunk needed */
         }
       }
     } else {
-      /* Last chunk is sparse — check if it's all-ones and contiguous */
+      /* Last chunk is sparse -- check if it's all-ones and contiguous */
       const size_t last_run = __sm_chunk_get_run_length(&last_chunk);
       const size_t last_cap = __sm_chunk_get_capacity(&last_chunk);
       if (last_run == last_cap && last_run > 0 &&
@@ -3119,7 +3119,7 @@ sparsemap_union(const sparsemap_t *a, const sparsemap_t *b)
         if (!__sm_append_rle_chunk(&result, (__sm_idx_t)bs,
                                    be - bs, be - bs)) goto fail;
       }
-      /* else: no set bits in overlap — nothing to emit. */
+      /* else: no set bits in overlap -- nothing to emit. */
 
       a_cursor = ov_end;
       b_cursor = ov_end;

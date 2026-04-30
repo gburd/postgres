@@ -1,5 +1,5 @@
 --
--- Role: Scanner — range scans across moderate windows
+-- Role: Scanner -- range scans across moderate windows
 --
 -- Used by the multi-role concurrent benchmark (W9).
 -- Exercises sequential I/O, UNDO visibility across many rows,

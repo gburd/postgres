@@ -124,7 +124,7 @@ these benchmarks. The GUC check on the hot path is a single boolean test.
 | fresh_table_size | 1M | 93,093,888 | 93,093,888 | 93,093,888 |
 | fresh_total_size | 1M | 115,630,080 | 115,630,080 | 115,630,080 |
 | post_update_total_size | 1M | 125,075,456 | 125,075,456 | 125,075,456 |
-| undo_log_size | 1M | — | — | 340-647 MB |
+| undo_log_size | 1M | -- | -- | 340-647 MB |
 
 UNDO log grows ~340-647MB for 1M row workloads (varies by iteration due to
 log rotation). Heap and index sizes are identical across all scenarios.

@@ -823,12 +823,15 @@ testrelundo_relation_vacuum_undo(Relation rel, TransactionId oldest_xid)
 }
 
 
+/* test_undo_tam supports cluster-wide UNDO; see am_supports_undo */
+
 /* ----------------------------------------------------------------
  * The TableAmRoutine
  * ----------------------------------------------------------------
  */
 static const TableAmRoutine testrelundo_methods = {
 	.type = T_TableAmRoutine,
+	.am_supports_undo = true,
 
 	.slot_callbacks = testrelundo_slot_callbacks,
 
@@ -879,10 +882,13 @@ static const TableAmRoutine testrelundo_methods = {
 	.scan_sample_next_block = testrelundo_scan_sample_next_block,
 	.scan_sample_next_tuple = testrelundo_scan_sample_next_tuple,
 
-	/* Per-relation UNDO callbacks */
-	.relation_init_undo = testrelundo_relation_init_undo,
-	.tuple_satisfies_snapshot_undo = testrelundo_tuple_satisfies_snapshot_undo,
-	.relation_vacuum_undo = testrelundo_relation_vacuum_undo,
+	/*
+	 * Per-relation UNDO callbacks were previously registered here as
+	 * TableAmRoutine fields (.relation_init_undo, .tuple_satisfies_snapshot_undo,
+	 * .relation_vacuum_undo).  Those fields have been removed from the struct;
+	 * the underlying functions (RelUndoVacuum etc.) are now invoked directly
+	 * by the UNDO subsystem rather than through AM dispatch.
+	 */
 };
 
 Datum

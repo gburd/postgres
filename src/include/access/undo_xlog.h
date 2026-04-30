@@ -49,12 +49,13 @@
  * These are the info codes for UNDO WAL records. The low 4 bits are used
  * for operation type, leaving the upper 4 bits for flags.
  */
-#define XLOG_UNDO_ALLOCATE			0x00	/* Allocate UNDO log space */
+#define XLOG_UNDO_ALLOCATE			0x00	/* Allocate UNDO log space (legacy) */
 #define XLOG_UNDO_DISCARD			0x10	/* Discard old UNDO records */
-#define XLOG_UNDO_EXTEND			0x20	/* Extend UNDO log file */
+#define XLOG_UNDO_EXTEND			0x20	/* Extend UNDO log file (legacy) */
 #define XLOG_UNDO_APPLY_RECORD		0x30	/* CLR: UNDO applied to page */
-#define XLOG_UNDO_ROTATE			0x40	/* Seal old log, activate new */
-#define XLOG_UNDO_PAGE_WRITE		0x50	/* Write UNDO data to a page */
+#define XLOG_UNDO_ROTATE			0x40	/* Seal old log, activate new (legacy) */
+#define XLOG_UNDO_PAGE_WRITE		0x50	/* Write UNDO data to a page (legacy) */
+#define XLOG_UNDO_BATCH				0x60	/* Batched UNDO records in WAL */
 
 /*
  * xl_undo_allocate - WAL record for UNDO space allocation
@@ -105,21 +106,44 @@ typedef struct xl_undo_extend
 #define SizeOfUndoExtend	(offsetof(xl_undo_extend, new_size) + sizeof(uint64))
 
 /*
- * xl_undo_apply - CLR for physical UNDO application
+ * xl_undo_apply - CLR for physical UNDO application (physiological)
  *
  * This is a Compensation Log Record (CLR) generated when an UNDO record
- * is physically applied to a heap page during transaction rollback.
+ * is physically applied to a heap or index page during transaction rollback.
  *
- * The actual page modification is captured via REGBUF_FORCE_IMAGE, which
- * stores a full page image in the WAL record.  The xl_undo_apply metadata
- * provides additional context for debugging, pg_waldump output, and
- * potential future optimization of the redo path.
+ * Physiological CLR approach:
+ *   Instead of storing a full 8KB page image (REGBUF_FORCE_IMAGE), we log
+ *   just the operation and its data.  During redo, we re-apply the exact
+ *   same page modification.  This reduces WAL volume from ~8KB to
+ *   ~100-500 bytes per CLR.
  *
- * During redo, if a full page image is present (BLK_RESTORED), no
- * additional action is needed.  If BLK_NEEDS_REDO, the page must be
- * re-read and the UNDO operation re-applied (but this case should not
- * occur with REGBUF_FORCE_IMAGE).
+ *   For operations that only change LP state (INSERT undo, HOT_UPDATE kill),
+ *   no additional data is needed -- the metadata in xl_undo_apply suffices.
+ *
+ *   For operations that restore tuple data (DELETE/UPDATE/INPLACE undo),
+ *   the tuple data follows the fixed header as registered buffer data.
+ *
+ *   For full page image operations (DEDUP undo), REGBUF_FORCE_IMAGE is
+ *   still used since the entire page is being replaced.
+ *
+ * CLR flags (in clr_flags):
+ *   UNDO_CLR_HAS_TUPLE    - Tuple data follows (for DELETE/UPDATE/INPLACE)
+ *   UNDO_CLR_HAS_DELTA    - Delta-encoded tuple data (for UPDATE)
+ *   UNDO_CLR_LP_DEAD      - Mark line pointer LP_DEAD (for INSERT undo)
+ *   UNDO_CLR_LP_UNUSED    - Mark line pointer LP_UNUSED (for INSERT undo)
+ *   UNDO_CLR_FULL_PAGE    - Full page image (fallback, DEDUP undo)
+ *   UNDO_CLR_HOT_RESTORE  - HOT update rollback (restore infomask + kill new)
  */
+
+/* CLR operation flags */
+#define UNDO_CLR_HAS_TUPLE		0x0001	/* Tuple data in buffer data */
+#define UNDO_CLR_HAS_DELTA		0x0002	/* Delta-encoded tuple restoration */
+#define UNDO_CLR_LP_DEAD		0x0004	/* Mark target LP_DEAD */
+#define UNDO_CLR_LP_UNUSED		0x0008	/* Mark target LP_UNUSED */
+#define UNDO_CLR_FULL_PAGE		0x0010	/* Full page image (DEDUP) */
+#define UNDO_CLR_HOT_RESTORE	0x0020	/* HOT update rollback */
+#define UNDO_CLR_HAS_VISIBILITY	0x0040	/* Visibility-delta (xmax+infomask) for DELETE */
+
 typedef struct xl_undo_apply
 {
 	UndoRecPtr	urec_ptr;		/* UNDO record pointer that was applied */
@@ -127,10 +151,44 @@ typedef struct xl_undo_apply
 	RelFileLocator target_locator;	/* Target relation file locator */
 	BlockNumber target_block;	/* Target block number */
 	OffsetNumber target_offset; /* Target item offset within page */
-	uint16		operation_type; /* UNDO record type (UNDO_INSERT, etc.) */
+	uint16		operation_type; /* UNDO subtype (HEAP_UNDO_INSERT, etc.) */
+	uint16		clr_flags;		/* UNDO_CLR_* flags */
+	uint32		tuple_len;		/* Restored tuple length (0 if no tuple) */
 }			xl_undo_apply;
 
-#define SizeOfUndoApply	(offsetof(xl_undo_apply, operation_type) + sizeof(uint16))
+#define SizeOfUndoApply	(offsetof(xl_undo_apply, tuple_len) + sizeof(uint32))
+
+/*
+ * xl_undo_apply_hot - Additional data for HOT update CLR redo
+ *
+ * Follows xl_undo_apply when UNDO_CLR_HOT_RESTORE is set.
+ * Registered as additional XLogRegisterData after the main record.
+ */
+typedef struct xl_undo_apply_hot
+{
+	OffsetNumber new_offset;	/* New (killed) tuple's offset */
+	uint16		old_infomask;	/* Restored infomask for old tuple */
+	uint16		old_infomask2;	/* Restored infomask2 for old tuple */
+}			xl_undo_apply_hot;
+
+#define SizeOfUndoApplyHot	(offsetof(xl_undo_apply_hot, old_infomask2) + sizeof(uint16))
+
+/*
+ * xl_undo_apply_visibility - Additional data for DELETE visibility-delta CLR
+ *
+ * Follows xl_undo_apply when UNDO_CLR_HAS_VISIBILITY is set.
+ * Stores only the three header fields changed by DELETE, not the full tuple.
+ * This reduces DELETE UNDO WAL payload from ~160-560 bytes to 8 bytes.
+ */
+typedef struct xl_undo_apply_visibility
+{
+	TransactionId old_xmax;		/* t_xmax before delete */
+	uint16		old_infomask;	/* t_infomask before delete */
+	uint16		old_infomask2;	/* t_infomask2 before delete */
+}			xl_undo_apply_visibility;
+
+#define SizeOfUndoApplyVisibility \
+	(offsetof(xl_undo_apply_visibility, old_infomask2) + sizeof(uint16))
 
 /*
  * xl_undo_page_write - WAL record for UNDO page data write
@@ -178,6 +236,37 @@ typedef struct xl_undo_rotate
 #define SizeOfUndoRotate	(offsetof(xl_undo_rotate, trigger) + sizeof(uint8))
 
 /*
+ * xl_undo_batch - WAL record for batched UNDO data (XLOG_UNDO_BATCH)
+ *
+ * This record type replaces the old pwrite()-to-segment-file path.
+ * All UNDO records for a batch are serialized into a single WAL record.
+ * The batch payload contains concatenated UndoRecordHeader+payload pairs
+ * in their exact serialized format.
+ *
+ * The chain_prev field links this batch to the previous batch for the
+ * same transaction.  During rollback, the UNDO chain is walked backward
+ * by reading WAL records at successive chain_prev LSNs.
+ *
+ * Coalescing: The existing UndoRecordSet mechanism batches records
+ * (flush at 256KB or 1000 records).  This batch becomes one WAL record.
+ * A 1000-row INSERT produces ~1 WAL record containing 1000 UNDO records.
+ */
+typedef struct xl_undo_batch
+{
+	TransactionId xid;			/* Owning transaction */
+	XLogRecPtr	chain_prev;		/* LSN of previous batch for this xact
+								 * (InvalidXLogRecPtr if first batch) */
+	uint32		nrecords;		/* Number of UNDO records in batch */
+	uint32		total_len;		/* Total bytes of serialized UNDO data */
+	Oid			primary_reloid; /* Relation OID (optimization for
+								 * single-relation batches) */
+	UndoPersistenceLevel persistence;	/* Persistence level of this batch */
+	/* Followed by total_len bytes of serialized UndoRecordHeader+payload */
+}			xl_undo_batch;
+
+#define SizeOfUndoBatch (offsetof(xl_undo_batch, persistence) + sizeof(UndoPersistenceLevel))
+
+/*
  * xl_undo_chain_state - UNDO chain state for prepared transactions
  *
  * Saved in the two-phase state file during PREPARE TRANSACTION, so the
@@ -201,5 +290,36 @@ extern void undo_twophase_postcommit(FullTransactionId fxid, uint16 info,
 									 void *recdata, uint32 len);
 extern void undo_twophase_postabort(FullTransactionId fxid, uint16 info,
 									void *recdata, uint32 len);
+
+/*
+ * UNDO batch reading from WAL for rollback and recovery.
+ *
+ * UndoReadBatchFromWAL reads a single XLOG_UNDO_BATCH record at the
+ * given LSN and returns the header plus a pointer to the payload data.
+ * The caller must pfree the returned data when done.
+ */
+typedef struct UndoBatchData
+{
+	xl_undo_batch header;		/* Batch header */
+	char	   *payload;		/* Serialized UNDO records (palloc'd) */
+	Size		payload_len;	/* Length of payload */
+}			UndoBatchData;
+
+extern UndoBatchData *UndoReadBatchFromWAL(XLogRecPtr batch_lsn);
+extern void UndoFreeBatchData(UndoBatchData *batch);
+
+/*
+ * Recovery UNDO phase support.
+ *
+ * During WAL redo, XLOG_UNDO_BATCH records are tracked so that after
+ * redo completes, incomplete transactions can be identified and their
+ * UNDO chains walked for rollback.
+ */
+extern void UndoRecoveryTrackBatch(TransactionId xid, XLogRecPtr batch_lsn,
+								   XLogRecPtr chain_prev,
+								   UndoPersistenceLevel persistence);
+extern void UndoRecoveryRemoveXid(TransactionId xid);
+extern bool UndoRecoveryNeeded(void);
+extern void PerformUndoRecovery(void);
 
 #endif							/* UNDO_XLOG_H */

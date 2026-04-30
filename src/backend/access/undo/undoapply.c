@@ -29,6 +29,7 @@
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/undormgr.h"
+#include "access/undo_xlog.h"
 #include "miscadmin.h"
 
 /*
@@ -47,19 +48,20 @@ ApplyOneUndoRecord(UndoRecordHeader *header, char *payload,
 	UndoApplyResult result;
 
 	/*
-	 * If this UNDO record already has a CLR pointer, it was already applied
-	 * during a previous rollback attempt (e.g., crash during rollback
-	 * followed by recovery re-applying the UNDO chain).  Skip it to avoid
-	 * double-application.
+	 * Idempotency design note:
+	 *
+	 * UNDO records are immutable once written to WAL; urec_clr_ptr in the
+	 * header is always InvalidXLogRecPtr and cannot be updated after the fact.
+	 * Double-application is prevented by page LSN instead: each CLR
+	 * (XLOG_UNDO_APPLY_RECORD) written by rm_undo bumps the heap page LSN to
+	 * the CLR's EndRecPtr.  During crash recovery Phase 2, rm_undo reads the
+	 * buffer via XLogReadBufferForRedo; if the page LSN >= CLR LSN (meaning
+	 * the CLR was already replayed in Phase 1), the buffer read returns
+	 * BLK_DONE or BLK_RESTORED and no modification is made.
+	 *
+	 * This function is therefore unconditionally correct to call for every
+	 * UNDO record encountered during chain walking.
 	 */
-	if (XLogRecPtrIsValid(header->urec_clr_ptr))
-	{
-		ereport(DEBUG2,
-				(errmsg("UNDO rollback: record at %llu already applied (CLR at %X/%X), skipping",
-						(unsigned long long) urec_ptr,
-						LSN_FORMAT_ARGS(header->urec_clr_ptr))));
-		return false;
-	}
 
 	/*
 	 * Look up the resource manager for this record.
@@ -131,14 +133,23 @@ ApplyOneUndoRecord(UndoRecordHeader *header, char *payload,
 void
 ApplyUndoChain(UndoRecPtr start_ptr)
 {
-	UndoRecPtr	current_ptr;
-	char	   *read_buffer = NULL;
-	Size		buffer_size = 0;
-	int			records_applied = 0;
-	int			records_skipped = 0;
+	UndoRecPtr	current_ptr pg_attribute_unused();
+	char	   *read_buffer pg_attribute_unused() = NULL;
+	Size		buffer_size pg_attribute_unused() = 0;
+	int			records_applied pg_attribute_unused() = 0;
+	int			records_skipped pg_attribute_unused() = 0;
 
 	if (!UndoRecPtrIsValid(start_ptr))
 		return;
+
+	/*
+	 * With UNDO-in-WAL, UNDO records are no longer in segment files.
+	 * Use ApplyUndoChainFromWAL() instead, which reads UNDO batches
+	 * from the WAL stream.
+	 */
+	ereport(ERROR,
+			(errmsg("ApplyUndoChain is not supported with UNDO-in-WAL"),
+			 errhint("Use ApplyUndoChainFromWAL() instead.")));
 
 	ereport(DEBUG1,
 			(errmsg("applying UNDO chain starting at %llu",
@@ -232,5 +243,156 @@ ApplyUndoChain(UndoRecPtr start_ptr)
 		ereport(DEBUG1,
 				(errmsg("UNDO rollback complete: %d records applied",
 						records_applied)));
+	}
+}
+
+/*
+ * ApplyUndoChainFromWAL - Walk and apply an UNDO chain from WAL
+ *
+ * This is the WAL-based equivalent of ApplyUndoChain().  Instead of
+ * reading UNDO records from segment files via UndoLogRead(), it reads
+ * XLOG_UNDO_BATCH WAL records via UndoReadBatchFromWAL() and iterates
+ * through the serialized records within each batch.
+ *
+ * The chain is walked backward via the xl_undo_batch.chain_prev LSN
+ * from the most recent batch to the first.  Within each batch, records
+ * are applied in reverse order (newest to oldest) as required by
+ * ARIES-style rollback semantics.  This is achieved by first scanning
+ * forward through the serialized records to collect their start offsets,
+ * then iterating the collected offsets in reverse to apply each record.
+ */
+void
+ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn)
+{
+	XLogRecPtr	batch_lsn;
+	int			records_applied = 0;
+	int			records_skipped = 0;
+	int			batches_processed = 0;
+
+	if (!XLogRecPtrIsValid(last_batch_lsn))
+		return;
+
+	ereport(DEBUG1,
+			(errmsg("applying UNDO chain from WAL starting at %X/%X",
+					LSN_FORMAT_ARGS(last_batch_lsn))));
+
+	batch_lsn = last_batch_lsn;
+
+	while (XLogRecPtrIsValid(batch_lsn))
+	{
+		UndoBatchData *batch;
+		char	   *pos;
+		char	   *end;
+
+		batch = UndoReadBatchFromWAL(batch_lsn);
+		if (batch == NULL)
+		{
+			ereport(WARNING,
+					(errmsg("UNDO rollback: could not read batch at %X/%X, "
+							"stopping chain walk",
+							LSN_FORMAT_ARGS(batch_lsn))));
+			break;
+		}
+
+		batches_processed++;
+
+		/*
+		 * Walk through records within this batch in reverse order.
+		 *
+		 * ARIES requires that UNDO records within a batch be applied
+		 * newest-first (reverse of serialization order).  We first scan
+		 * forward to collect pointers to each record start, then iterate
+		 * the collected pointers in reverse to apply them.
+		 */
+		pos = batch->payload;
+		end = pos + batch->payload_len;
+
+		{
+			char	  **record_starts;
+			int			nrecords_in_batch = 0;
+			int			max_records = 64;
+			int			i;
+
+			record_starts = (char **) palloc(max_records * sizeof(char *));
+
+			/* First pass: collect record start pointers by scanning forward */
+			while (pos < end)
+			{
+				UndoRecordHeader hdr;
+
+				if ((Size) (end - pos) < SizeOfUndoRecordHeader)
+				{
+					ereport(WARNING,
+							(errmsg("UNDO rollback: truncated record in batch at %X/%X",
+									LSN_FORMAT_ARGS(batch_lsn))));
+					break;
+				}
+
+				memcpy(&hdr, pos, SizeOfUndoRecordHeader);
+
+				if (hdr.urec_len < SizeOfUndoRecordHeader ||
+					(Size) (end - pos) < hdr.urec_len)
+				{
+					ereport(WARNING,
+							(errmsg("UNDO rollback: invalid record size %u in batch at %X/%X",
+									hdr.urec_len, LSN_FORMAT_ARGS(batch_lsn))));
+					break;
+				}
+
+				/* Grow array if needed */
+				if (nrecords_in_batch >= max_records)
+				{
+					max_records *= 2;
+					record_starts = (char **) repalloc(record_starts,
+													   max_records * sizeof(char *));
+				}
+
+				record_starts[nrecords_in_batch++] = pos;
+				pos += hdr.urec_len;
+			}
+
+			/*
+			 * Second pass: apply records in reverse order (newest first).
+			 * Even if there was a scan error, apply whatever records we
+			 * successfully collected.
+			 */
+			for (i = nrecords_in_batch - 1; i >= 0; i--)
+			{
+				UndoRecordHeader header;
+				char	   *payload = NULL;
+
+				memcpy(&header, record_starts[i], SizeOfUndoRecordHeader);
+
+				if (header.urec_payload_len > 0)
+					payload = record_starts[i] + SizeOfUndoRecordHeader;
+
+				if (ApplyOneUndoRecord(&header, payload, InvalidUndoRecPtr))
+					records_applied++;
+				else
+					records_skipped++;
+			}
+
+			pfree(record_starts);
+		}
+
+		/* Follow chain to previous batch */
+		batch_lsn = batch->header.chain_prev;
+		UndoFreeBatchData(batch);
+	}
+
+	/* Report results */
+	if (records_skipped > 0)
+	{
+		ereport(WARNING,
+				(errmsg("UNDO rollback from WAL: %d batches, %d records applied, "
+						"%d skipped",
+						batches_processed, records_applied, records_skipped)));
+	}
+	else
+	{
+		ereport(DEBUG1,
+				(errmsg("UNDO rollback from WAL complete: %d batches, "
+						"%d records applied",
+						batches_processed, records_applied)));
 	}
 }

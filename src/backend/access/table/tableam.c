@@ -823,3 +823,16 @@ table_block_relation_estimate_size(Relation rel, int32 *attr_widths,
 	else
 		*allvisfrac = (double) relallvisible / curpages;
 }
+
+/*
+ * RelationAmSupportsUndo
+ *		Returns true if the relation's table AM declared UNDO support.
+ *		Used by DDL validation code to reject enable_undo on unsupported AMs.
+ */
+bool
+RelationAmSupportsUndo(Relation rel)
+{
+	if (!rel->rd_tableam)
+		return false;
+	return rel->rd_tableam->am_supports_undo;
+}

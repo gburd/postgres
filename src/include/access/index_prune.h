@@ -95,6 +95,34 @@ typedef struct IndexPruneStats
 }			IndexPruneStats;
 
 /*
+ * IndexPruneTarget
+ *
+ * A targeted index pruning entry.  Instead of scanning all leaf pages,
+ * the discard worker can provide a list of specific (index_oid, blkno,
+ * offset) targets extracted from UNDO records in the discarded range.
+ * This reduces complexity from O(N_total_index_entries) to
+ * O(N_dead_entries).
+ */
+typedef struct IndexPruneTarget
+{
+	Oid			index_oid;		/* Index relation OID */
+	BlockNumber blkno;			/* Index page containing the entry */
+	OffsetNumber offset;		/* Offset of the entry within the page */
+	ItemPointerData heap_tid;	/* Referenced heap TID for verification */
+}			IndexPruneTarget;
+
+/*
+ * IndexPruneTargetedCallback
+ *
+ * Callback for targeted index pruning.  Receives a batch of targets
+ * for a single index relation and prunes only those specific entries.
+ */
+typedef uint64 (*IndexPruneTargetedCallback) (Relation heaprel,
+											  Relation indexrel,
+											  IndexPruneTarget * targets,
+											  int ntargets);
+
+/*
  * Public API functions
  */
 
@@ -112,6 +140,19 @@ typedef struct IndexPruneStats
  *   discard_counter  - UNDO counter; records with counter < this are dead
  */
 extern void IndexPruneNotifyDiscard(Relation heaprel, uint16 discard_counter);
+
+/*
+ * IndexPruneNotifyTargeted
+ *
+ * Called by the cluster-wide UNDO discard worker with specific targets
+ * extracted from nbtree UNDO records in the discarded segment range.
+ * Only visits the specified index pages, avoiding full index scans.
+ *
+ * Complexity: O(N_dead_entries) instead of O(N_total_entries).
+ */
+extern uint64 IndexPruneNotifyTargeted(Relation heaprel,
+									   IndexPruneTarget * targets,
+									   int ntargets);
 
 /*
  * IndexPruneRegisterHandler
@@ -145,6 +186,14 @@ extern IndexPruneStats * IndexPruneGetStats(void);
 extern void IndexPruneResetStats(void);
 
 /*
+ * IndexPruneRegisterTargetedHandler
+ *
+ * Registers a targeted pruning callback handler for a specific index AM.
+ */
+extern void IndexPruneRegisterTargetedHandler(Oid indexam_oid,
+											  IndexPruneTargetedCallback callback);
+
+/*
  * Index AM-specific pruning functions
  *
  * These are the actual implementation functions for each index AM.
@@ -152,6 +201,8 @@ extern void IndexPruneResetStats(void);
  */
 extern uint64 _bt_prune_by_undo_counter(Relation heaprel, Relation indexrel,
 										uint16 discard_counter);
+extern uint64 _bt_prune_by_targets(Relation heaprel, Relation indexrel,
+								   IndexPruneTarget * targets, int ntargets);
 extern uint64 gin_prune_by_undo_counter(Relation heaprel, Relation indexrel,
 										uint16 discard_counter);
 extern uint64 gist_prune_by_undo_counter(Relation heaprel, Relation indexrel,

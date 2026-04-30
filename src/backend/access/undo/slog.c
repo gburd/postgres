@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * slog.c
- *	  Secondary Log (sLog) — Skip-list + sparsemap shared-memory tracking
+ *	  Secondary Log (sLog) -- Skip-list + sparsemap shared-memory tracking
  *
  * The sLog tracks aborted transactions and per-tuple operations in shared
  * memory for the UNDO subsystem.
@@ -51,8 +51,8 @@
  * use SKIPLIST_SINGLE_THREADED mode here because:
  *  (a) The pool allocator (shared-memory slab) is not itself lock-free.
  *  (b) The sparsemap is not concurrent-safe.
- *  (c) sLog modifications only happen on transaction abort — an
- *      uncommon path — so a single LWLock is sufficient.
+ *  (c) sLog modifications only happen on transaction abort -- an
+ *      uncommon path -- so a single LWLock is sufficient.
  *
  * SKIPLIST_SINGLE_THREADED eliminates C11 <stdatomic.h> dependency,
  * replacing atomics with plain loads/stores.  All concurrent access
@@ -460,7 +460,7 @@ SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
 	existing = sl_skip_position_eq_slog_txn(&SLogState->txn_list, &query);
 	if (existing != NULL)
 	{
-		/* Already present — no-op */
+		/* Already present -- no-op */
 		LWLockRelease(&SLogState->txn_lock.lock);
 		return true;
 	}
@@ -622,7 +622,7 @@ SLogTxnRemove(TransactionId xid, Oid reloid)
 
 		if (remaining == NULL || remaining->xid != xid)
 		{
-			/* No entries remain — clear sparsemap bit */
+			/* No entries remain -- clear sparsemap bit */
 			SpinLockAcquire(&SLogState->xid_spinlock);
 			sparsemap_remove(&SLogState->xid_map, (uint64) xid);
 			SpinLockRelease(&SLogState->xid_spinlock);
@@ -835,7 +835,7 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 
 	if (entry->nops >= SLOG_MAX_TUPLE_OPS)
 	{
-		/* ops array full — if entry was just created with nops=0, remove it */
+		/* ops array full -- if entry was just created with nops=0, remove it */
 		if (!found)
 			hash_search(SLogTupleHash, &key, HASH_REMOVE, NULL);
 		LWLockRelease(&SLogState->tuple_locks[partition].lock);

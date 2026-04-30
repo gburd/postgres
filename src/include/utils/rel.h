@@ -340,6 +340,13 @@ typedef enum StdRdOptIndexCleanup
 	STDRD_OPTION_VACUUM_INDEX_CLEANUP_ON,
 } StdRdOptIndexCleanup;
 
+/* StdRdOptions->enable_undo values */
+typedef enum StdRdOptUndoMode
+{
+	STDRD_OPTION_UNDO_OFF = 0,	/* No UNDO logging (default) */
+	STDRD_OPTION_UNDO_ON,		/* Full UNDO records (rollback capable) */
+}			StdRdOptUndoMode;
+
 typedef struct StdRdOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
@@ -356,7 +363,7 @@ typedef struct StdRdOptions
 	 * to freeze. 0 if disabled, -1 if unspecified.
 	 */
 	double		vacuum_max_eager_freeze_failure_rate;
-	bool		enable_undo;	/* enable UNDO logging for this relation */
+	StdRdOptUndoMode enable_undo;	/* UNDO logging mode for this relation */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10

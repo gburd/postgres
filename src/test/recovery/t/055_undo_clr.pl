@@ -5,14 +5,14 @@
 # enable_undo=on and that rollback works correctly.
 #
 # This test verifies:
-#   1. XLOG_UNDO_ALLOCATE WAL records are generated when DML modifies
+#   1. XLOG_UNDO_BATCH WAL records are generated when DML modifies
 #      an UNDO-enabled table.
 #   2. Transaction rollback correctly restores data (via MVCC).
 #   3. UNDO records are written to the WAL even though physical UNDO
 #      application is not needed for standard heap rollback.
 #
 # We use pg_waldump to inspect the WAL and confirm the presence of
-# Undo/ALLOCATE entries after DML operations.
+# Undo/BATCH entries after DML operations.
 
 use strict;
 use warnings FATAL => 'all';
@@ -47,7 +47,7 @@ my $after_insert_lsn = $node->safe_psql('postgres',
 	q{SELECT pg_current_wal_insert_lsn()});
 
 # Execute a transaction that modifies the UNDO-enabled table and then
-# rolls back.  The DML should generate UNDO ALLOCATE WAL records, and
+# rolls back.  The DML should generate UNDO BATCH WAL records, and
 # the rollback should correctly restore data via MVCC.
 my $before_rollback_lsn = $node->safe_psql('postgres',
 	q{SELECT pg_current_wal_insert_lsn()});
@@ -66,7 +66,7 @@ my $end_lsn = $node->safe_psql('postgres',
 $node->safe_psql('postgres', q{SELECT pg_switch_wal()});
 
 # Use pg_waldump to examine WAL between the start and end LSNs.
-# Filter for the Undo resource manager to find ALLOCATE entries that
+# Filter for the Undo resource manager to find BATCH entries that
 # were generated during the INSERT operations.
 my ($stdout, $stderr);
 IPC::Run::run [
@@ -79,11 +79,11 @@ IPC::Run::run [
   '>' => \$stdout,
   '2>' => \$stderr;
 
-# Check that UNDO ALLOCATE records were generated during DML.
-my @allocate_lines = grep { /ALLOCATE/ } split(/\n/, $stdout);
+# Check that UNDO BATCH records were generated during DML.
+my @batch_lines = grep { /BATCH/ } split(/\n/, $stdout);
 
-ok(@allocate_lines > 0,
-	'pg_waldump shows Undo/ALLOCATE records during DML on undo-enabled table');
+ok(@batch_lines > 0,
+	'pg_waldump shows Undo/BATCH records during DML on undo-enabled table');
 
 # Verify that the table data is correct after rollback: all 10 rows
 # should be present since the DELETE was rolled back.

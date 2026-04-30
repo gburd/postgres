@@ -69,7 +69,7 @@ static bool BitmapHeapScanNextBlock(TableScanDesc scan,
 
 /*
  * RelationHasUndo
- *		Check whether a relation has UNDO logging enabled.
+ *		Check whether a relation has any UNDO logging enabled (min or on).
  *
  * Returns false for system catalog relations (never generate UNDO for those)
  * and for any relation that hasn't opted in via the enable_undo storage
@@ -83,7 +83,26 @@ RelationHasUndo(Relation rel)
 		return false;
 
 	return rel->rd_options &&
-		((StdRdOptions *) rel->rd_options)->enable_undo;
+		((StdRdOptions *) rel->rd_options)->enable_undo != STDRD_OPTION_UNDO_OFF;
+}
+
+/*
+ * RelationHasFullUndo
+ *		Check whether a relation has full UNDO logging enabled (mode = on).
+ *
+ * In "min" mode, only minimal metadata is logged (no tuple data), which
+ * supports index pruning but not rollback restoration.  In "on" mode,
+ * full tuple data is logged for complete rollback support.
+ */
+bool
+RelationHasFullUndo(Relation rel)
+{
+	/* Never generate UNDO for system catalogs */
+	if (IsSystemRelation(rel))
+		return false;
+
+	return rel->rd_options &&
+		((StdRdOptions *) rel->rd_options)->enable_undo == STDRD_OPTION_UNDO_ON;
 }
 
 
@@ -166,28 +185,29 @@ heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
  */
 
 /*
- * heapam_begin_bulk_insert - Signal the start of a bulk DML operation.
+ * heapam_begin_bulk_insert - Signal the start of a DML operation.
  *
- * If the relation has UNDO enabled, this activates batched UNDO recording
- * to reduce per-row overhead during large INSERT/UPDATE/DELETE operations.
+ * If the relation has UNDO enabled, this activates the UNDO write buffer
+ * to batch UNDO records and reduce per-row overhead.  Always called for
+ * UNDO-enabled tables regardless of estimated row count.
  */
 static void
 heapam_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
 {
 	if (RelationHasUndo(rel))
-		HeapBeginBulkUndo(rel, nrows);
+		HeapBeginUndoBuffer(rel, nrows);
 }
 
 /*
- * heapam_finish_bulk_insert - Complete a bulk DML operation.
+ * heapam_finish_bulk_insert - Complete a DML operation.
  *
- * Flushes any pending UNDO records and releases bulk mode resources.
+ * Flushes any pending UNDO records and deactivates the write buffer.
  */
 static void
 heapam_finish_bulk_insert(Relation rel, uint32 options)
 {
 	if (RelationHasUndo(rel))
-		HeapEndBulkUndo(rel);
+		HeapEndUndoBuffer(rel);
 }
 
 
@@ -2707,6 +2727,8 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 	return true;
 }
 
+/* heapam supports cluster-wide UNDO; see am_supports_undo in TableAmRoutine */
+
 /* ------------------------------------------------------------------------
  * Definition of the heap table access method.
  * ------------------------------------------------------------------------
@@ -2714,6 +2736,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 
 static const TableAmRoutine heapam_methods = {
 	.type = T_TableAmRoutine,
+	.am_supports_undo = true,
 
 	.slot_callbacks = heapam_slot_callbacks,
 
