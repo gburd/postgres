@@ -414,23 +414,6 @@ AtCommit_XactUndo(void)
 	 */
 	UndoWalBatchFlush();
 
-	/*
-	 * Sync UNDO data to disk before finishing commit.  If the UNDO flush
-	 * daemon is running, hand off the sync to it for group commit
-	 * batching.  Otherwise fall back to direct per-backend fdatasync.
-	 */
-	if (UndoFlushWriterIsRunning())
-	{
-		UndoRecPtr	max_ptr = UndoFlushGetMaxWritePtr();
-
-		if (UndoRecPtrIsValid(max_ptr))
-			UndoFlushWaitForSync(max_ptr);
-	}
-	else
-		UndoLogSync();
-
-	UndoFlushResetMaxWritePtr();
-
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)
 	{

@@ -54,6 +54,7 @@
 #define XLOG_UNDO_EXTEND			0x20	/* Extend UNDO log file */
 #define XLOG_UNDO_APPLY_RECORD		0x30	/* CLR: UNDO applied to page */
 #define XLOG_UNDO_ROTATE			0x40	/* Seal old log, activate new */
+#define XLOG_UNDO_PAGE_WRITE		0x50	/* Write UNDO data to a page */
 
 /*
  * xl_undo_allocate - WAL record for UNDO space allocation
@@ -130,6 +131,26 @@ typedef struct xl_undo_apply
 }			xl_undo_apply;
 
 #define SizeOfUndoApply	(offsetof(xl_undo_apply, operation_type) + sizeof(uint16))
+
+/*
+ * xl_undo_page_write - WAL record for UNDO page data write
+ *
+ * Logged when UNDO data is written to a shared-buffer-managed page.
+ * The actual data follows the record header and is also registered
+ * via XLogRegisterBufData as buffer-specific data (block reference 0).
+ *
+ * During redo, the data is memcpy'd into the page at page_offset.
+ * If a full page image was stored (REGBUF_STANDARD enables FPI after
+ * checkpoints), XLogReadBufferForRedo restores it automatically and
+ * no additional replay is needed.
+ */
+typedef struct xl_undo_page_write
+{
+	uint32		page_offset;	/* Offset within the page to write at */
+	uint32		data_len;		/* Length of data written */
+}			xl_undo_page_write;
+
+#define SizeOfUndoPageWrite	(offsetof(xl_undo_page_write, data_len) + sizeof(uint32))
 
 /*
  * Rotation trigger reasons for XLOG_UNDO_ROTATE records

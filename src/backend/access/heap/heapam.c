@@ -39,6 +39,7 @@
 #include "access/syncscan.h"
 #include "access/undorecord.h"
 #include "access/undormgr.h"
+#include "access/xactundo.h"
 #include "access/valid.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
@@ -2248,17 +2249,16 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		}
 		else
 		{
-			/* Normal per-row path */
-			UndoRecordSet *uset;
-			UndoRecPtr	undo_ptr;
+			/* Normal per-row path: use transaction-level record set */
+			XactUndoContext undo_ctx;
 
-			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-			UndoRecordAddPayload(uset, UNDO_RMID_HEAP, HEAP_UNDO_INSERT,
-								 RelationGetRelid(relation), payload, payload_len);
-			undo_ptr = UndoRecordSetInsert(uset);
-			UndoRecordSetFree(uset);
-
-			SetCurrentTransactionUndoRecPtr(undo_ptr);
+			PrepareXactUndoData(&undo_ctx,
+								relation->rd_rel->relpersistence,
+								UNDO_RMID_HEAP, HEAP_UNDO_INSERT,
+								RelationGetRelid(relation),
+								payload, payload_len);
+			InsertXactUndoData(&undo_ctx);
+			CleanupXactUndoInsertion(&undo_ctx);
 		}
 	}
 
@@ -3103,21 +3103,19 @@ l1:
 		}
 		else
 		{
-			UndoRecordSet *uset;
-			UndoRecPtr	undo_ptr;
+			/* Normal per-row path: use transaction-level record set */
+			XactUndoContext undo_ctx;
 
-			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-			UndoRecordAddPayloadParts(uset,
-									  UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
-									  RelationGetRelid(relation),
-									  (const char *) &undo_hdr,
-									  SizeOfHeapUndoPayloadHeader,
-									  (const char *) tp.t_data,
-									  tp.t_len);
-			undo_ptr = UndoRecordSetInsert(uset);
-			UndoRecordSetFree(uset);
-
-			SetCurrentTransactionUndoRecPtr(undo_ptr);
+			PrepareXactUndoDataParts(&undo_ctx,
+									 relation->rd_rel->relpersistence,
+									 UNDO_RMID_HEAP, HEAP_UNDO_DELETE,
+									 RelationGetRelid(relation),
+									 (const char *) &undo_hdr,
+									 SizeOfHeapUndoPayloadHeader,
+									 (const char *) tp.t_data,
+									 tp.t_len);
+			InsertXactUndoData(&undo_ctx);
+			CleanupXactUndoInsertion(&undo_ctx);
 		}
 	}
 
@@ -4173,21 +4171,19 @@ l2:
 		}
 		else
 		{
-			UndoRecordSet *uset;
-			UndoRecPtr	undo_ptr;
+			/* Normal per-row path: use transaction-level record set */
+			XactUndoContext undo_ctx;
 
-			uset = UndoRecordSetCreate(xid, GetCurrentTransactionUndoRecPtr());
-			UndoRecordAddPayloadParts(uset,
-									  UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
-									  RelationGetRelid(relation),
-									  (const char *) &undo_hdr,
-									  SizeOfHeapUndoPayloadHeader,
-									  (const char *) oldtup.t_data,
-									  oldtup.t_len);
-			undo_ptr = UndoRecordSetInsert(uset);
-			UndoRecordSetFree(uset);
-
-			SetCurrentTransactionUndoRecPtr(undo_ptr);
+			PrepareXactUndoDataParts(&undo_ctx,
+									 relation->rd_rel->relpersistence,
+									 UNDO_RMID_HEAP, HEAP_UNDO_UPDATE,
+									 RelationGetRelid(relation),
+									 (const char *) &undo_hdr,
+									 SizeOfHeapUndoPayloadHeader,
+									 (const char *) oldtup.t_data,
+									 oldtup.t_len);
+			InsertXactUndoData(&undo_ctx);
+			CleanupXactUndoInsertion(&undo_ctx);
 		}
 	}
 

@@ -29,10 +29,7 @@
 #include "access/transam.h"
 #include "access/undo_bufmgr.h"
 #include "access/undolog.h"
-<<<<<<< HEAD
 #include "access/undorecord.h"
-=======
->>>>>>> fb27c189aca (Add UNDO log segment rotation and lifecycle management)
 #include "access/undoworker.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
@@ -790,6 +787,8 @@ retry:
 
 	if (active_idx >= MAX_UNDO_LOGS)
 	{
+		/* Flush deferred WAL before rotation changes active log */
+		UndoWalBatchFlush();
 		/* No active log exists, create one via seal-and-rotate */
 		UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 		goto retry;
@@ -815,6 +814,8 @@ retry:
 		 */
 		if (offset + size > segment_size)
 		{
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			/* Would exceed segment -- must rotate */
 			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 			goto retry;
@@ -841,12 +842,16 @@ retry:
 				pg_usleep(sleep_us);
 			}
 
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			UndoLogSealAndRotate(UNDO_ROTATE_PRESSURE);
 			goto retry;
 		}
 
 		if (offset + size > (segment_size * UNDO_ROTATE_THRESHOLD_PCT) / 100)
 		{
+			/* Flush deferred WAL before rotation */
+			UndoWalBatchFlush();
 			/* Above 85%: proactive rotation */
 			UndoLogSealAndRotate(UNDO_ROTATE_CAPACITY);
 			goto retry;
@@ -878,7 +883,7 @@ retry:
 	/* Update cumulative allocation counter */
 	pg_atomic_fetch_add_u64(&UndoLogShared->total_allocated, size);
 
-	/* Extend file if necessary */
+	/* Extend file if necessary (legacy direct-I/O path) */
 	ExtendUndoLogFile(log_number, offset + size);
 
 	/* Extend the smgr-managed file for checkpoint write-back */
@@ -919,24 +924,78 @@ UndoLogWrite(UndoRecPtr ptr, const char *data, Size size)
 	if (size == 0)
 		return;
 
-	entry = GetCachedUndoLogFdEntry(log_number, O_RDWR | O_CREAT);
-
-	/* Write data at the target offset without a separate lseek() call */
-	written = pwrite(entry->fd, data, size, (off_t) offset);
-	if (written != size)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write to UNDO log %u: %m", log_number)));
-
-	/* Mark the cache entry dirty so UndoLogSync() knows to fsync it */
-	entry->needs_fsync = true;
-
-	/* Track highest written pointer for the UNDO flush daemon */
+	while (remaining > 0)
 	{
-		UndoRecPtr	end_ptr = MakeUndoRecPtr(log_number, offset + size);
+		BlockNumber blkno = UndoRecPtrGetBlockNum(logical_offset);
+		uint32		page_off = UndoRecPtrGetPageOffset(logical_offset);
+		Size		write_len = Min(remaining, (Size) (BLCKSZ - page_off));
+		Buffer		buf;
+		Page		page;
+		bool		is_new_page;
 
-		if (end_ptr > undo_max_write_ptr)
-			undo_max_write_ptr = end_ptr;
+		/*
+		 * Determine if this is a new page.  A page is "new" if its first
+		 * logical byte is at or beyond the start of the current write.
+		 * In that case we zero-initialize it; otherwise we read existing
+		 * content.
+		 */
+		is_new_page = (page_off == (uint32) SizeOfPageHeaderData);
+
+		if (is_new_page)
+		{
+			buf = ReadUndoBuffer(log_number, blkno, RBM_ZERO_AND_LOCK);
+			page = BufferGetPage(buf);
+			PageInit(page, BLCKSZ, 0);
+		}
+		else
+		{
+			buf = ReadUndoBuffer(log_number, blkno, RBM_NORMAL);
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			page = BufferGetPage(buf);
+
+			/*
+			 * If the page is new (all zeros — first write to this block
+			 * from a different offset within the page), initialize it.
+			 */
+			if (PageIsNew(page))
+				PageInit(page, BLCKSZ, 0);
+		}
+
+		/* Copy UNDO data into the page */
+		memcpy((char *) page + page_off, src, write_len);
+
+		/*
+		 * Update pd_lower to track how much of the page is used.
+		 * pd_lower advances monotonically within a page.  For UNDO pages,
+		 * pd_lower marks the end of written data (not the normal item
+		 * pointer boundary).
+		 */
+		{
+			LocationIndex new_lower = (LocationIndex) (page_off + write_len);
+
+			if (new_lower > ((PageHeader) page)->pd_lower)
+				((PageHeader) page)->pd_lower = new_lower;
+		}
+
+		/* WAL-log the page modification for crash safety */
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, src, (uint32) write_len);
+		{
+			xl_undo_page_write xlrec;
+
+			xlrec.page_offset = page_off;
+			xlrec.data_len = (uint32) write_len;
+			XLogRegisterData((char *) &xlrec, SizeOfUndoPageWrite);
+		}
+		XLogInsert(RM_UNDO_ID, XLOG_UNDO_PAGE_WRITE);
+
+		MarkUndoBufferDirty(buf);
+		UnlockReleaseUndoBuffer(buf);
+
+		src += write_len;
+		logical_offset += write_len;
+		remaining -= write_len;
 	}
 }
 
@@ -1133,24 +1192,7 @@ UndoLogGetOldestDiscardPtr(void)
 void
 UndoLogSync(void)
 {
-	int			i;
-
-	if (!undo_fd_cache_initialized)
-		return;
-
-	for (i = 0; i < MAX_UNDO_LOGS; i++)
-	{
-		if (undo_fd_cache[i].fd >= 0 && undo_fd_cache[i].needs_fsync)
-		{
-			if (pg_fdatasync(undo_fd_cache[i].fd) < 0)
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not fdatasync UNDO log %u: %m",
-								undo_fd_cache[i].log_number)));
-
-			undo_fd_cache[i].needs_fsync = false;
-		}
-	}
+	/* No-op: dirty UNDO buffers are flushed by the checkpointer. */
 }
 
 /*
