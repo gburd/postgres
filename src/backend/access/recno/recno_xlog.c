@@ -405,19 +405,25 @@ RecnoXLogUpdate(Relation rel, Buffer buffer, OffsetNumber offnum,
 	XLogBeginInsert();
 
 	/*
-	 * Register buffer FIRST, before any data.  When the new tuple is larger
-	 * than the old one, force a full-page image (FPI).  Without an FPI, the
-	 * redo handler must replay the size-changing update against whatever
-	 * page state results from replaying prior WAL records.  That page state
-	 * may have slightly less free space than the primary had (e.g., due to
-	 * different defragmentation outcomes), causing the redo to fail with
-	 * "failed to re-add larger tuple".  An FPI guarantees the correct page
-	 * state is restored directly.
+	 * Register the source buffer (block 0).
+	 *
+	 * For same-page out-of-place updates, force a full-page image.  Both
+	 * the old tuple (marked RECNO_TUPLE_UPDATED) and the new tuple exist
+	 * on this page at different offsets.  The redo handler cannot
+	 * reconstruct this two-tuple state without an FPI because the new
+	 * tuple's offset is not recorded in the WAL record.
+	 *
+	 * For cross-page updates, the redo handler marks the old tuple
+	 * UPDATED directly (see RECNO_WAL_CROSS_PAGE handling in recno_redo),
+	 * so an FPI is only needed when the new tuple is larger than the old
+	 * (to avoid redo replay errors from differing free-space conditions).
 	 */
 	{
 		uint8		buf_flags = REGBUF_STANDARD;
 
-		if (new_tuple->t_len > old_tuple->t_len)
+		if (!is_cross_page)
+			buf_flags |= REGBUF_FORCE_IMAGE;
+		else if (new_tuple->t_len > old_tuple->t_len)
 			buf_flags |= REGBUF_FORCE_IMAGE;
 
 		XLogRegisterBuffer(0, buffer, buf_flags);
@@ -1405,62 +1411,81 @@ recno_redo(XLogReaderState *record)
 					}
 
 					/*
-					 * Apply the new tuple data.  BLK_NEEDS_REDO is only
-					 * returned when the page LSN < record LSN (no FPI).
-					 * Growing updates (new_len > old_len) force
-					 * REGBUF_FORCE_IMAGE at WAL-write time, so they always
-					 * get BLK_RESTORED and never reach here.  That means
-					 * the existing slot size is sufficient.
+					 * Apply the update.  BLK_NEEDS_REDO is only returned
+					 * when the page LSN < record LSN (no FPI).
+					 *
+					 * For cross-page out-of-place updates, the new tuple
+					 * lives on the destination page (restored from its
+					 * FPI).  Here we just mark the old tuple as UPDATED
+					 * so visibility checks filter it correctly.
+					 *
+					 * Same-page out-of-place updates always force an FPI
+					 * (see RecnoXLogUpdate), so they get BLK_RESTORED and
+					 * never reach this code path.
 					 */
 					itemid = PageGetItemId(page, xlrec->offnum);
 					if (ItemIdIsNormal(itemid))
 					{
 						RecnoTupleHeader *existing_tuple =
 							(RecnoTupleHeader *) PageGetItem(page, itemid);
-						Size		existing_len = ItemIdGetLength(itemid);
-
-						if (use_prefix_suffix)
+						if (xlrec->flags & RECNO_WAL_CROSS_PAGE)
 						{
 							/*
-							 * Prefix/suffix compressed update: reconstruct
-							 * new tuple by patching the diff bytes into the
-							 * existing tuple data on the page.
-							 *
-							 * The existing tuple IS the old tuple (same size,
-							 * same-size update only).  We overwrite the changed
-							 * middle portion with the diff data from WAL.
+							 * Cross-page out-of-place update: mark the old
+							 * tuple as UPDATED.  The new version is on the
+							 * destination page restored from its FPI.
 							 */
-							int		difflen = (int) existing_len -
-								ps_info.prefixlen - ps_info.suffixlen;
-
-							if (difflen < 0 ||
-								ps_info.prefixlen + ps_info.suffixlen > existing_len)
-								elog(PANIC, "RECNO UPDATE REDO: invalid prefix/suffix "
-									 "(prefix=%u, suffix=%u, tuple_len=%zu)",
-									 ps_info.prefixlen, ps_info.suffixlen,
-									 existing_len);
-
-							if (difflen > 0)
-								memcpy((char *) existing_tuple + ps_info.prefixlen,
-									   diff_data, difflen);
-						}
-						else if (new_tuple_hdr->t_len <= existing_len)
-						{
-							/* Full new tuple: overwrite in place */
-							memcpy(existing_tuple, new_tuple_hdr, new_tuple_hdr->t_len);
-							ItemIdSetNormal(itemid, ItemIdGetOffset(itemid),
-											new_tuple_hdr->t_len);
+							existing_tuple->t_flags |= RECNO_TUPLE_UPDATED;
+							existing_tuple->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+							existing_tuple->t_commit_ts = xlrec->new_commit_ts;
 						}
 						else
 						{
-							/*
-							 * Should not happen: growing updates force FPI
-							 * via REGBUF_FORCE_IMAGE, so BLK_NEEDS_REDO is
-							 * never returned for them.
-							 */
-							elog(PANIC, "RECNO UPDATE REDO: new tuple (%u) larger "
-								 "than existing slot (%zu) without FPI",
-								 new_tuple_hdr->t_len, existing_len);
+							Size		existing_len = ItemIdGetLength(itemid);
+
+							if (use_prefix_suffix)
+							{
+								/*
+								 * Prefix/suffix compressed update: reconstruct
+								 * new tuple by patching the diff bytes into the
+								 * existing tuple data on the page.
+								 *
+								 * The existing tuple IS the old tuple (same size,
+								 * same-size update only).  We overwrite the changed
+								 * middle portion with the diff data from WAL.
+								 */
+								int		difflen = (int) existing_len -
+									ps_info.prefixlen - ps_info.suffixlen;
+
+								if (difflen < 0 ||
+									ps_info.prefixlen + ps_info.suffixlen > existing_len)
+									elog(PANIC, "RECNO UPDATE REDO: invalid prefix/suffix "
+										 "(prefix=%u, suffix=%u, tuple_len=%zu)",
+										 ps_info.prefixlen, ps_info.suffixlen,
+										 existing_len);
+
+								if (difflen > 0)
+									memcpy((char *) existing_tuple + ps_info.prefixlen,
+										   diff_data, difflen);
+							}
+							else if (new_tuple_hdr->t_len <= existing_len)
+							{
+								/* Full new tuple: overwrite in place */
+								memcpy(existing_tuple, new_tuple_hdr, new_tuple_hdr->t_len);
+								ItemIdSetNormal(itemid, ItemIdGetOffset(itemid),
+												new_tuple_hdr->t_len);
+							}
+							else
+							{
+								/*
+								 * Should not happen: growing updates force FPI
+								 * via REGBUF_FORCE_IMAGE, so BLK_NEEDS_REDO is
+								 * never returned for them.
+								 */
+								elog(PANIC, "RECNO UPDATE REDO: new tuple (%u) larger "
+									 "than existing slot (%zu) without FPI",
+									 new_tuple_hdr->t_len, existing_len);
+							}
 						}
 					}
 					else

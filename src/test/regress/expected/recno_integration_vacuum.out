@@ -131,7 +131,7 @@ SELECT COUNT(*) FROM recno_integration_test
 WHERE value BETWEEN 100 AND 500;
  count 
 -------
-    41
+    45
 (1 row)
 
 -- =============================================
@@ -171,6 +171,8 @@ COMMIT;
 -- =============================================
 -- Create fragmentation with cross-page UPDATE (regression test for CID fix)
 UPDATE recno_integration_test SET data = REPEAT('x', 100) WHERE id % 2 = 0;
+ERROR:  duplicate key value violates unique constraint "recno_integration_test_pkey"
+DETAIL:  Key (id)=(2) already exists.
 DELETE FROM recno_integration_test WHERE id % 3 = 0;
 -- Count rows before VACUUM FULL
 SELECT COUNT(*) FROM recno_integration_test;

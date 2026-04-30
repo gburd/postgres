@@ -127,7 +127,18 @@ UPDATE recno_vm_hot SET non_indexed = 'hot_update' WHERE id = 50;
 -- Verify VM was cleared even for HOT update
 VACUUM VERBOSE recno_vm_hot;
 INFO:  vacuuming "recno_vm_hot": scanning 1 pages
-INFO:  RECNO vacuum "recno_vm_hot": found 101 tuples (100 live, 1 dead), vacuumed 0 pages, truncated 0 pages, cleaned 2 indexes
+INFO:  vacuuming "recno_vm_hot": removing 1 dead index entries across 2 indexes
+INFO:  scanned index "recno_vm_hot_pkey" to remove 1 row versions
+INFO:  scanned index "recno_vm_hot_idx" to remove 1 row versions
+INFO:  index "recno_vm_hot_pkey" now contains 100 row versions in 2 pages
+DETAIL:  1 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
+INFO:  index "recno_vm_hot_idx" now contains 100 row versions in 2 pages
+DETAIL:  1 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
+INFO:  RECNO vacuum "recno_vm_hot": found 101 tuples (100 live, 1 dead), vacuumed 1 pages, truncated 0 pages, cleaned 2 indexes
 -- =============================================
 -- All-Frozen Pages
 -- =============================================
@@ -330,8 +341,15 @@ UPDATE recno_vm_skip SET data = 'updated' WHERE id IN (100, 500, 900);
 -- VACUUM VERBOSE should show skipped pages
 VACUUM VERBOSE recno_vm_skip;
 INFO:  vacuuming "recno_vm_skip": scanning 12 pages
+INFO:  vacuuming "recno_vm_skip": removing 3 dead index entries across 1 indexes
+INFO:  scanned index "recno_vm_skip_pkey" to remove 3 row versions
+INFO:  index "recno_vm_skip_pkey" now contains 1000 row versions in 5 pages
+DETAIL:  3 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
 INFO:  table "recno_vm_skip": starting cross-page defragmentation from block 11
-INFO:  RECNO vacuum "recno_vm_skip": found 1003 tuples (1000 live, 3 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+INFO:  table "recno_vm_skip": cross-page defrag moved 3 tuples, emptied 0 pages
+INFO:  RECNO vacuum "recno_vm_skip": found 1003 tuples (1000 live, 3 dead), vacuumed 3 pages, truncated 0 pages, cleaned 1 indexes
 -- =============================================
 -- VM Recovery After Crash
 -- =============================================

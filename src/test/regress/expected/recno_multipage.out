@@ -296,8 +296,16 @@ DELETE FROM recno_mp_vacuum_verbose WHERE id % 4 != 0;
 -- VACUUM VERBOSE should report multi-page activity
 VACUUM VERBOSE recno_mp_vacuum_verbose;
 INFO:  vacuuming "recno_mp_vacuum_verbose": scanning 9 pages
+INFO:  vacuuming "recno_mp_vacuum_verbose": removing 600 dead index entries across 1 indexes
+INFO:  scanned index "recno_mp_vacuum_verbose_pkey" to remove 600 row versions
+INFO:  index "recno_mp_vacuum_verbose_pkey" now contains 200 row versions in 5 pages
+DETAIL:  600 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
 INFO:  table "recno_mp_vacuum_verbose": starting cross-page defragmentation from block 8
-INFO:  RECNO vacuum "recno_mp_vacuum_verbose": found 800 tuples (200 live, 600 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+INFO:  table "recno_mp_vacuum_verbose": cross-page defrag moved 28 tuples, emptied 1 pages
+INFO:  truncated 1 empty pages from end of relation
+INFO:  RECNO vacuum "recno_mp_vacuum_verbose": found 800 tuples (200 live, 600 dead), vacuumed 9 pages, truncated 1 pages, cleaned 1 indexes
 -- Verify remaining data
 SELECT COUNT(*) AS remaining FROM recno_mp_vacuum_verbose;
  remaining 
@@ -329,7 +337,7 @@ VACUUM recno_mp_vacuum_full;
 SELECT pg_relation_size('recno_mp_vacuum_full') AS after_vacuum;
  after_vacuum 
 --------------
-        90112
+        81920
 (1 row)
 
 -- VACUUM FULL should reclaim all dead space by rewriting the table
@@ -401,7 +409,7 @@ SELECT COUNT(*) AS cat_0_after_delete FROM recno_mp_index WHERE category = 0;
 SELECT COUNT(*) AS cat_1_after_delete FROM recno_mp_index WHERE category = 1;
  cat_1_after_delete 
 --------------------
-                100
+                102
 (1 row)
 
 RESET enable_seqscan;

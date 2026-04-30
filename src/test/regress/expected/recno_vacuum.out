@@ -44,8 +44,15 @@ SELECT repeat('x', 100) FROM generate_series(1, 500) i;
 DELETE FROM recno_vacuum_verbose WHERE id < 250;
 VACUUM VERBOSE recno_vacuum_verbose;
 INFO:  vacuuming "recno_vacuum_verbose": scanning 6 pages
+INFO:  vacuuming "recno_vacuum_verbose": removing 249 dead index entries across 1 indexes
+INFO:  scanned index "recno_vacuum_verbose_pkey" to remove 249 row versions
+INFO:  index "recno_vacuum_verbose_pkey" now contains 251 row versions in 4 pages
+DETAIL:  249 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
 INFO:  table "recno_vacuum_verbose": starting cross-page defragmentation from block 5
-INFO:  RECNO vacuum "recno_vacuum_verbose": found 500 tuples (251 live, 249 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+INFO:  table "recno_vacuum_verbose": cross-page defrag moved 15 tuples, emptied 0 pages
+INFO:  RECNO vacuum "recno_vacuum_verbose": found 500 tuples (251 live, 249 dead), vacuumed 3 pages, truncated 0 pages, cleaned 1 indexes
 -- Verify remaining rows
 SELECT COUNT(*) FROM recno_vacuum_verbose;
  count 
