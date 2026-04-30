@@ -49,9 +49,9 @@ WHERE id IN (10, 20, 30)
 FOR SHARE;
  id |     data     | value | category 
 ----+--------------+-------+----------
+ 30 | initial_30   |   300 | cat_0
  10 | hot_update_1 |   100 | cat_0
  20 | hot_update_1 |   200 | cat_0
- 30 | initial_30   |   300 | cat_0
 (3 rows)
 
 COMMIT;

@@ -999,6 +999,35 @@ RecnoCommitTransaction(void)
 		MyRecnoXactState->xact_commit_hlc = HLCNow(InvalidHLCTimestamp);
 		MyRecnoXactState->xact_commit_ts =
 			(uint64) MyRecnoXactState->xact_commit_hlc;
+
+		/*
+		 * Advance global_commit_ts so that
+		 * RecnoGetOldestActiveTimestamp()'s no-active-transaction
+		 * fallback returns a sensible value.  Without this,
+		 * global_commit_ts stays at its initial value (1) in HLC
+		 * mode because RecnoGetCommitTimestamp() — the only other
+		 * updater — is never called.  VACUUM (and page-level
+		 * pruning in defrag) then sees oldest_ts ≈ 1 and treats
+		 * every dead tuple as "recently dead", skipping index
+		 * cleanup and leaving stale index entries that cause
+		 * phantom rows after TID reuse.
+		 */
+		if (RecnoMvccShmem != NULL)
+		{
+			uint64		old_gts;
+
+			for (;;)
+			{
+				old_gts = pg_atomic_read_u64(&RecnoMvccShmem->global_commit_ts);
+				if (MyRecnoXactState->xact_commit_ts <= old_gts)
+					break;
+				if (pg_atomic_compare_exchange_u64(
+						&RecnoMvccShmem->global_commit_ts,
+						&old_gts,
+						MyRecnoXactState->xact_commit_ts))
+					break;
+			}
+		}
 	}
 	else
 	{
@@ -1670,6 +1699,7 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 				/*
 				 * Our own insert.  Check for our own delete/update via sLog
 				 * (DELETE/UPDATE operations still use sLog entries).
+				 * Also check for ABORTED entries from savepoint rollback.
 				 */
 				SLOG_ENSURE_FETCHED_HLC();
 				{
@@ -1861,6 +1891,30 @@ uncommitted_resolved:
 					is_deleted = false;
 					break;
 				}
+			}
+		}
+
+		/*
+		 * CLOG fallback: when the UNDO worker has already removed the sLog
+		 * entries (after physically undoing the operations) but the
+		 * UPDATED/DELETED flag hasn't been cleared yet, use t_xid_hint
+		 * (which stores the updater/deleter's XID) to detect aborted ops.
+		 */
+		if (is_deleted && slog_nfound == 0)
+		{
+			TransactionId hint_xid = tuple->t_xid_hint;
+
+			if (TransactionIdIsValid(hint_xid) &&
+				!TransactionIdIsInProgress(hint_xid) &&
+				TransactionIdDidAbort(hint_xid))
+			{
+				is_deleted = false;
+
+				/* Clear stale flags as hint bits */
+				BufferSetHintBits16(&tuple->t_flags,
+									tuple->t_flags & ~(RECNO_TUPLE_UPDATED |
+														RECNO_TUPLE_DELETED),
+									buffer);
 			}
 		}
 	}

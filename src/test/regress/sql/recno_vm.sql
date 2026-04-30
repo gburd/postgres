@@ -30,7 +30,7 @@ CHECKPOINT;
 VACUUM recno_vm_test;
 
 -- Test index-only scan (should not fetch heap)
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT val FROM recno_vm_test WHERE val BETWEEN 100 AND 200;
 
 -- Verify index-only scan was used
@@ -62,7 +62,7 @@ VACUUM recno_vm_clear;
 UPDATE recno_vm_clear SET data = 'updated' WHERE id = 50;
 
 -- This should now require heap fetches for the updated page
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT val FROM recno_vm_clear WHERE val = 50;
 
 -- VACUUM again to reset VM bits
@@ -88,7 +88,7 @@ VACUUM recno_vm_delete;
 DELETE FROM recno_vm_delete WHERE id BETWEEN 40 AND 60;
 
 -- These pages should no longer be all-visible
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT val FROM recno_vm_delete WHERE val BETWEEN 40 AND 60;
 
 -- =============================================
@@ -200,13 +200,13 @@ VACUUM recno_vm_perf;
 ANALYZE recno_vm_perf;
 
 -- Test index-only scans on different indexes
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col1 FROM recno_vm_perf WHERE col1 = 50;
 
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col2 FROM recno_vm_perf WHERE col2 = 150;
 
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col3 FROM recno_vm_perf WHERE col3 = 250;
 
 -- Count index-only scans
@@ -237,7 +237,7 @@ FROM generate_series(1, 300) i;
 VACUUM recno_vm_partial;
 
 -- Index-only scan should work with partial index
-EXPLAIN (ANALYZE, BUFFERS)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT val FROM recno_vm_partial
 WHERE status = 'active' AND val BETWEEN 100 AND 500;
 

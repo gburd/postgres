@@ -112,14 +112,15 @@ static LWLockPadded *RecnoSLogLocks = NULL;
 static bool recno_slog_callbacks_registered = false;
 
 /*
- * Per-backend list of (tid, relid, xid) tuples that have sLog entries,
- * for efficient cleanup.  This avoids scanning the entire hash table
- * on commit/abort.
+ * Per-backend list of (tid, relid, xid, subxid) tuples that have sLog
+ * entries or need subtransaction tracking, for efficient cleanup.  This
+ * avoids scanning the entire hash table on commit/abort.
  */
 typedef struct RecnoSLogLocalEntry
 {
 	RecnoSLogKey	key;			/* (tid, relid) for hash lookup */
 	TransactionId	xid;			/* Which xid's op within the entry */
+	SubTransactionId subxid;		/* Subtransaction that created this entry */
 	struct RecnoSLogLocalEntry *next;
 } RecnoSLogLocalEntry;
 
@@ -179,10 +180,11 @@ RecnoSLogEnsureCallbacks(void)
 }
 
 /*
- * Add a (key, xid) pair to the backend-local tracking list.
+ * Add a (key, xid, subxid) tuple to the backend-local tracking list.
  */
 static void
-RecnoSLogLocalTrack(const RecnoSLogKey *key, TransactionId xid)
+RecnoSLogLocalTrack(const RecnoSLogKey *key, TransactionId xid,
+					SubTransactionId subxid)
 {
 	RecnoSLogLocalEntry *entry;
 	MemoryContext oldcxt;
@@ -191,6 +193,7 @@ RecnoSLogLocalTrack(const RecnoSLogKey *key, TransactionId xid)
 	entry = (RecnoSLogLocalEntry *) palloc(sizeof(RecnoSLogLocalEntry));
 	entry->key = *key;
 	entry->xid = xid;
+	entry->subxid = subxid;
 	entry->next = slog_local_list;
 	slog_local_list = entry;
 	MemoryContextSwitchTo(oldcxt);
@@ -205,6 +208,31 @@ RecnoSLogBuildKey(RecnoSLogKey *key, Oid relid, ItemPointer tid)
 	memset(key, 0, sizeof(RecnoSLogKey));
 	key->tid = *tid;
 	key->relid = relid;
+}
+
+/*
+ * RecnoSLogTrackSubXact -- lightweight subtransaction tracking for inserts.
+ *
+ * Called from recno_tuple_insert() to record (tid, xid, subxid) in the
+ * per-backend local list WITHOUT creating a shared sLog entry.  This
+ * allows the SubXactCallback to find and mark these tuples as ABORTED
+ * when a savepoint is rolled back, without the shared memory overhead
+ * of a full sLog entry per INSERT (which caused OOM during bulk inserts).
+ *
+ * On subtransaction abort, RecnoSLogRemoveBySubXid creates a shared sLog
+ * ABORTED entry so the visibility code can find it.  The number of ABORTED
+ * entries is small (only tuples in rolled-back savepoints), so this
+ * doesn't cause shared memory pressure.
+ */
+void
+RecnoSLogTrackSubXact(Oid relid, ItemPointer tid,
+					  TransactionId xid, SubTransactionId subxid)
+{
+	RecnoSLogKey key;
+
+	RecnoSLogEnsureCallbacks();
+	RecnoSLogBuildKey(&key, relid, tid);
+	RecnoSLogLocalTrack(&key, xid, subxid);
 }
 
 /* ----------------------------------------------------------------
@@ -339,7 +367,7 @@ RecnoSLogInsert(Oid relid, ItemPointer tid,
 			RecnoSLogUnlockPartition(&key);
 
 			/* Still track locally (duplicate is fine; cleanup handles it) */
-			RecnoSLogLocalTrack(&key, xid);
+			RecnoSLogLocalTrack(&key, xid, subxid);
 			return;
 		}
 	}
@@ -360,7 +388,7 @@ RecnoSLogInsert(Oid relid, ItemPointer tid,
 
 			RecnoSLogUnlockPartition(&key);
 
-			RecnoSLogLocalTrack(&key, xid);
+			RecnoSLogLocalTrack(&key, xid, subxid);
 			return;
 		}
 	}
@@ -418,7 +446,7 @@ RecnoSLogInsert(Oid relid, ItemPointer tid,
 
 					RecnoSLogUnlockPartition(&key);
 
-					RecnoSLogLocalTrack(&key, xid);
+					RecnoSLogLocalTrack(&key, xid, subxid);
 					return;
 				}
 			}
@@ -474,7 +502,7 @@ RecnoSLogInsert(Oid relid, ItemPointer tid,
 
 					RecnoSLogUnlockPartition(&key);
 
-					RecnoSLogLocalTrack(&key, xid);
+					RecnoSLogLocalTrack(&key, xid, subxid);
 					return;
 				}
 			}
@@ -771,12 +799,14 @@ void
 RecnoSLogMarkAborted(TransactionId xid)
 {
 	RecnoSLogLocalEntry *lentry;
+	int			nlocal = 0, nmarked = 0;
 
 	if (RecnoSLogHash == NULL)
 		return;
 
 	for (lentry = slog_local_list; lentry != NULL; lentry = lentry->next)
 	{
+		nlocal++;
 		if (TransactionIdEquals(lentry->xid, xid))
 		{
 			RecnoSLogHashEntry *hentry;
@@ -795,9 +825,14 @@ RecnoSLogMarkAborted(TransactionId xid)
 						TransactionIdEquals(hentry->ops[i].xid, xid))
 					{
 						hentry->ops[i].op_type = (uint8) RECNO_SLOG_ABORTED;
+						nmarked++;
 						break;
 					}
 				}
+			}
+			else
+			{
+				/* Expected for INSERT-only local entries (RecnoSLogTrackSubXact) */
 			}
 
 			RecnoSLogUnlockPartition(&lentry->key);
@@ -949,6 +984,12 @@ RecnoSLogRemoveByXidGlobal(TransactionId xid)
 
 /*
  * RecnoSLogRemoveBySubXid -- mark ops ABORTED for a specific subtransaction.
+ *
+ * Uses both the subxid stored in the local list and the shared sLog.
+ * For entries that have a shared sLog entry (from RecnoSLogInsert), marks
+ * the matching op as ABORTED.  For entries that only have local tracking
+ * (from RecnoSLogTrackSubXact, used by recno_tuple_insert), creates a new
+ * shared sLog ABORTED entry so the visibility code can find it.
  */
 void
 RecnoSLogRemoveBySubXid(TransactionId xid, SubTransactionId subxid)
@@ -960,31 +1001,77 @@ RecnoSLogRemoveBySubXid(TransactionId xid, SubTransactionId subxid)
 
 	for (lentry = slog_local_list; lentry != NULL; lentry = lentry->next)
 	{
-		if (TransactionIdEquals(lentry->xid, xid))
-		{
-			RecnoSLogHashEntry *hentry;
-			int			i;
+		RecnoSLogHashEntry *hentry;
+		bool		found_and_marked = false;
+		int			i;
 
-			RecnoSLogLockPartition(&lentry->key, LW_EXCLUSIVE);
+		if (!TransactionIdEquals(lentry->xid, xid))
+			continue;
+		if (lentry->subxid != subxid)
+			continue;
+
+		RecnoSLogLockPartition(&lentry->key, LW_EXCLUSIVE);
+
+		hentry = (RecnoSLogHashEntry *)
+			hash_search(RecnoSLogHash, &lentry->key, HASH_FIND, NULL);
+
+		if (hentry != NULL)
+		{
+			/* Shared sLog entry exists -- mark matching ops ABORTED */
+			for (i = 0; i < RECNO_SLOG_MAX_OPS; i++)
+			{
+				if (hentry->ops[i].in_use &&
+					TransactionIdEquals(hentry->ops[i].xid, xid) &&
+					hentry->ops[i].subxid == subxid)
+				{
+					hentry->ops[i].op_type = (uint8) RECNO_SLOG_ABORTED;
+					found_and_marked = true;
+				}
+			}
+		}
+
+		if (!found_and_marked)
+		{
+			/*
+			 * No shared sLog entry exists for this TID.  This happens for
+			 * regular INSERTs (recno_tuple_insert) which use lightweight
+			 * local-only tracking to avoid shared memory pressure.  Create
+			 * a shared sLog ABORTED entry so the visibility code can find
+			 * it and treat the tuple as invisible.
+			 */
+			bool	hash_found;
 
 			hentry = (RecnoSLogHashEntry *)
-				hash_search(RecnoSLogHash, &lentry->key, HASH_FIND, NULL);
+				hash_search(RecnoSLogHash, &lentry->key, HASH_ENTER, &hash_found);
 
 			if (hentry != NULL)
 			{
+				if (!hash_found)
+				{
+					hentry->nops = 0;
+					memset(hentry->ops, 0, sizeof(hentry->ops));
+				}
+
+				/* Add an ABORTED entry in the first free slot */
 				for (i = 0; i < RECNO_SLOG_MAX_OPS; i++)
 				{
-					if (hentry->ops[i].in_use &&
-						TransactionIdEquals(hentry->ops[i].xid, xid) &&
-						hentry->ops[i].subxid == subxid)
+					if (!hentry->ops[i].in_use)
 					{
+						hentry->ops[i].xid = xid;
+						hentry->ops[i].subxid = subxid;
 						hentry->ops[i].op_type = (uint8) RECNO_SLOG_ABORTED;
+						hentry->ops[i].in_use = true;
+						hentry->ops[i].commit_ts = 0;
+						hentry->ops[i].spec_token = 0;
+						hentry->ops[i].cid = InvalidCommandId;
+						hentry->nops++;
+						break;
 					}
 				}
 			}
-
-			RecnoSLogUnlockPartition(&lentry->key);
 		}
+
+		RecnoSLogUnlockPartition(&lentry->key);
 	}
 }
 
@@ -1003,7 +1090,15 @@ RecnoSLogUpdateSubXid(TransactionId xid,
 
 	for (lentry = slog_local_list; lentry != NULL; lentry = lentry->next)
 	{
-		if (TransactionIdEquals(lentry->xid, xid))
+		if (!TransactionIdEquals(lentry->xid, xid))
+			continue;
+		if (lentry->subxid != old_subxid)
+			continue;
+
+		/* Re-parent the local entry */
+		lentry->subxid = new_subxid;
+
+		/* Also re-parent in the shared sLog if an entry exists */
 		{
 			RecnoSLogHashEntry *hentry;
 			int			i;

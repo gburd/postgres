@@ -40,6 +40,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/fd.h"
+#include "storage/smgr.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/errcodes.h"
@@ -272,6 +273,23 @@ UndoLogSealAndRotate(uint8 trigger)
 
 	/* Create the segment file for the new log */
 	CreateUndoLogFile(new_log_number);
+
+	/*
+	 * Also create the smgr relation file for the buffer pool.  UNDO buffers
+	 * use ReadBufferWithoutRelcache() with a pseudo-RelFileLocator (dbOid =
+	 * UNDO_DB_OID), and the checkpointer flushes dirty buffers via smgrwrite().
+	 * Without smgrcreate(), the base/UNDO_DB_OID/ directory and segment file
+	 * won't exist, causing "could not open file" errors during checkpoint.
+	 */
+	{
+		RelFileLocator rlocator;
+		SMgrRelation srel;
+
+		UndoLogGetRelFileLocator(new_log_number, &rlocator);
+		srel = smgropen(rlocator, INVALID_PROC_NUMBER);
+		smgrcreate(srel, UndoLogForkNum, true);
+		smgrclose(srel);
+	}
 
 	/* Update active log index to point to the new slot */
 	pg_atomic_write_u32(&UndoLogShared->active_log_idx, new_slot);

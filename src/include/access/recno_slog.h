@@ -134,6 +134,17 @@ extern void RecnoSLogInsert(Oid relid, ItemPointer tid,
 							uint32 spec_token);
 
 /*
+ * RecnoSLogTrackSubXact -- lightweight subtransaction tracking for inserts.
+ *
+ * Records (tid, xid, subxid) in the per-backend local list WITHOUT creating
+ * a shared sLog entry.  On subtransaction abort, RecnoSLogRemoveBySubXid
+ * will create a shared ABORTED entry for visibility checks.
+ */
+extern void RecnoSLogTrackSubXact(Oid relid, ItemPointer tid,
+								  TransactionId xid,
+								  SubTransactionId subxid);
+
+/*
  * RecnoSLogLookup -- find sLog entries for a given TID.
  *
  * Returns the number of matching entries found.  Up to max_entries

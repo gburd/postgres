@@ -396,9 +396,10 @@ RESET enable_seqscan;
 UPDATE recno_idx_test SET value = 9999 WHERE name = 'new_item_1';
 SET enable_seqscan = off;
 SELECT name, value FROM recno_idx_test WHERE value = 9999;
- name | value 
-------+-------
-(0 rows)
+    name    | value 
+------------+-------
+ new_item_1 |  9999
+(1 row)
 
 RESET enable_seqscan;
 -- Delete row and verify index
@@ -477,7 +478,7 @@ SET enable_seqscan = off;
 SELECT COUNT(*) FROM recno_idx_churn WHERE val BETWEEN 1001 AND 1500;
  count 
 -------
-     0
+   250
 (1 row)
 
 SELECT COUNT(*) FROM recno_idx_churn WHERE val BETWEEN 2001 AND 2500;

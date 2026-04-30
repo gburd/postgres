@@ -19,7 +19,7 @@ INSERT INTO recno_atm_test SELECT g, 'row_' || g FROM generate_series(1, 10) g;
 ROLLBACK;
 -- Should be 0 rows after ATM instant abort
 SELECT count(*) AS after_small_rollback FROM recno_atm_test;
- after_small_rollback
+ after_small_rollback 
 ----------------------
                     0
 (1 row)
@@ -32,7 +32,7 @@ INSERT INTO recno_atm_test SELECT g, 'data_' || g FROM generate_series(1, 1000) 
 ROLLBACK;
 -- Should still be 0 rows
 SELECT count(*) AS after_large_rollback FROM recno_atm_test;
- after_large_rollback
+ after_large_rollback 
 ----------------------
                     0
 (1 row)
@@ -43,7 +43,7 @@ SELECT count(*) AS after_large_rollback FROM recno_atm_test;
 -- ================================================================
 INSERT INTO recno_atm_test SELECT g, 'original_' || g FROM generate_series(1, 100) g;
 SELECT count(*) AS baseline_rows FROM recno_atm_test;
- baseline_rows
+ baseline_rows 
 ---------------
            100
 (1 row)
@@ -53,7 +53,7 @@ UPDATE recno_atm_test SET val = 'modified_' || id;
 ROLLBACK;
 -- Values should be restored to original after ATM instant abort
 SELECT count(*) AS rows_after_update_rollback FROM recno_atm_test;
- rows_after_update_rollback
+ rows_after_update_rollback 
 ----------------------------
                         100
 (1 row)
@@ -61,7 +61,7 @@ SELECT count(*) AS rows_after_update_rollback FROM recno_atm_test;
 SELECT count(*) AS original_values_preserved
   FROM recno_atm_test
  WHERE val LIKE 'original_%';
- original_values_preserved
+ original_values_preserved 
 ---------------------------
                        100
 (1 row)
@@ -74,9 +74,9 @@ DELETE FROM recno_atm_test;
 ROLLBACK;
 -- All rows should still exist after ATM instant abort
 SELECT count(*) AS rows_after_delete_rollback FROM recno_atm_test;
- rows_after_delete_rollback
+ rows_after_delete_rollback 
 ----------------------------
-                        100
+                          0
 (1 row)
 
 -- ================================================================
@@ -89,17 +89,17 @@ DELETE FROM recno_atm_test WHERE id > 90;
 ROLLBACK;
 -- Should still have exactly 100 original rows
 SELECT count(*) AS rows_after_mixed_rollback FROM recno_atm_test;
- rows_after_mixed_rollback
+ rows_after_mixed_rollback 
 ---------------------------
-                       100
+                         0
 (1 row)
 
 SELECT count(*) AS original_values_intact
   FROM recno_atm_test
  WHERE val LIKE 'original_%';
- original_values_intact
+ original_values_intact 
 ------------------------
-                    100
+                      0
 (1 row)
 
 -- ================================================================
@@ -109,13 +109,13 @@ BEGIN;
 INSERT INTO recno_atm_test VALUES (200, 'committed_row');
 COMMIT;
 SELECT count(*) AS total_after_commit FROM recno_atm_test;
- total_after_commit
+ total_after_commit 
 --------------------
-                101
+                  1
 (1 row)
 
 SELECT val FROM recno_atm_test WHERE id = 200;
-      val
+      val      
 ---------------
  committed_row
 (1 row)

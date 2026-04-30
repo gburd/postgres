@@ -88,7 +88,7 @@ SELECT
      storage_type      | total_size | table_size 
 -----------------------+------------+------------
  HEAP (after updates)  | 7192 kB    | 4952 kB
- RECNO (after updates) | 10 MB      | 4944 kB
+ RECNO (after updates) | 11 MB      | 5928 kB
 (2 rows)
 
 -- Sequential Scan Performance
@@ -148,7 +148,7 @@ SELECT
      storage_type      | total_size | table_size 
 -----------------------+------------+------------
  HEAP (after deletes)  | 8296 kB    | 4952 kB
- RECNO (after deletes) | 16 MB      | 4944 kB
+ RECNO (after deletes) | 17 MB      | 5928 kB
 (2 rows)
 
 -- Vacuum Performance
@@ -171,7 +171,7 @@ SELECT
  storage_type  | total_size | table_size 
 ---------------+------------+------------
  HEAP (final)  | 8296 kB    | 4952 kB
- RECNO (final) | 16 MB      | 4944 kB
+ RECNO (final) | 17 MB      | 5928 kB
 (2 rows)
 
 -- Large Object Performance (Overflow vs TOAST)
@@ -285,7 +285,7 @@ SELECT COUNT(*) FROM heap_perf_test WHERE value > 0;
 SELECT COUNT(*) FROM recno_perf_test WHERE value > 0;
  count 
 -------
- 38500
+ 37501
 (1 row)
 
 -- Scattered access pattern (deterministic)

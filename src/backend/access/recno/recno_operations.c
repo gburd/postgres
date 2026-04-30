@@ -727,17 +727,25 @@ have_page:
 	}
 
 	/*
-	 * sLog INSERT entry is no longer needed for regular inserts.
+	 * Lightweight subtransaction tracking for savepoint rollback.
 	 *
-	 * Visibility checks now use t_xid_hint (the inserter's XID stored in
-	 * the tuple header) for fast CLOG/ProcArray lookups instead of sLog.
-	 * This eliminates the per-tuple sLog entry that caused "out of shared
-	 * memory" during bulk inserts (100K+ rows in a single transaction).
+	 * We do NOT create a full shared sLog entry here (that caused "out of
+	 * shared memory" during bulk inserts with 100K+ rows).  Instead, we
+	 * record the (tid, xid, subxid) in the per-backend local list only.
+	 *
+	 * If a savepoint is rolled back, RecnoSLogRemoveBySubXid will find
+	 * the matching local entries and create a shared sLog ABORTED entry
+	 * at that time.  The number of ABORTED entries is small (only tuples
+	 * inserted within rolled-back savepoints), so this doesn't cause
+	 * shared memory pressure.
 	 *
 	 * Speculative inserts (ON CONFLICT) are handled by the separate
 	 * recno_tuple_insert_speculative() function, which still registers
-	 * sLog entries for the speculative token.
+	 * full sLog entries for the speculative token.
 	 */
+	RecnoSLogTrackSubXact(RelationGetRelid(relation), tid,
+						  GetTopTransactionId(),
+						  GetCurrentSubTransactionId());
 
 	pfree(recno_tuple);
 }
@@ -1210,6 +1218,7 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 	tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 	tuple_hdr->t_commit_ts = current_ts;
 	tuple_hdr->t_cid = cid;
+	tuple_hdr->t_xid_hint = GetTopTransactionId();
 	/* Keep the original t_ctid for potential update chains */
 	ItemPointerCopy(tid, &tuple_hdr->t_ctid);
 
@@ -1956,6 +1965,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * space fit: new tuple is larger but the extra bytes fit in the page's
 	 * available free space. 3. Defrag fit: page defragmentation frees enough
 	 * space for the new tuple to fit in-place.
+	 *
 	 */
 	if (new_tuple_size <= ItemIdGetLength(itemid))
 	{
@@ -2090,6 +2100,24 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			}
 		}
 	}
+
+	/*
+	 * Override: disable in-place updates.
+	 *
+	 * In-place updates are currently unsafe because:
+	 * (a) They overwrite the committed tuple data at the same TID.  After
+	 *     ROLLBACK, the UNDO worker restores data asynchronously, creating a
+	 *     window where the original committed data is invisible (the
+	 *     visibility code sees UNCOMMITTED + aborted XID and cannot
+	 *     distinguish an aborted INSERT from an aborted in-place UPDATE).
+	 * (b) They return TU_None for index updates, leaving indexes stale when
+	 *     indexed column values change.
+	 *
+	 * Re-enable once synchronous per-relation UNDO application is available,
+	 * along with a HOT-style check that prevents in-place updates when
+	 * indexed columns change.
+	 */
+	in_place_update = false;
 
 	/*
 	 * Save a copy of the old tuple data BEFORE entering the critical section
@@ -2490,6 +2518,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							PageGetItem(page, PageGetItemId(page, offnum));
 						old_tuple_hdr->t_flags |= RECNO_TUPLE_UPDATED;
 						old_tuple_hdr->t_commit_ts = current_ts;
+						old_tuple_hdr->t_xid_hint = GetTopTransactionId();
 						ItemPointerSet(&old_tuple_hdr->t_ctid, blkno,
 									   new_offnum);
 						ItemPointerSet(&slot->tts_tid, blkno, new_offnum);
@@ -2614,6 +2643,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			/* Mark old tuple as updated and point to new version */
 			old_tuple_hdr->t_flags |= RECNO_TUPLE_UPDATED;
 			old_tuple_hdr->t_commit_ts = current_ts;
+			old_tuple_hdr->t_xid_hint = GetTopTransactionId();
 			ItemPointerSet(&old_tuple_hdr->t_ctid, new_blkno, new_offnum);
 
 			/* Set new TID */
@@ -2754,6 +2784,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		/* Mark old tuple as updated and point to new version */
 		old_tuple_hdr->t_flags |= RECNO_TUPLE_UPDATED;
 		old_tuple_hdr->t_commit_ts = current_ts;
+		old_tuple_hdr->t_xid_hint = GetTopTransactionId();
 		ItemPointerSet(&old_tuple_hdr->t_ctid, blkno, new_offnum);
 
 		/* Set new TID */
@@ -3658,6 +3689,18 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 	bool		do_index_cleanup;
 
 	/*
+	 * Initialize RECNO transaction state so that VACUUM's own start
+	 * timestamp is registered in xact_start_ts_slots.  Without this,
+	 * RecnoGetOldestActiveTimestamp() would see no active transactions and
+	 * fall back to global_commit_ts, which in HLC mode may never have been
+	 * updated (it is only advanced by RecnoGetCommitTimestamp(), which is
+	 * not called in HLC mode).  The result would be oldest_ts ≈ 1,
+	 * causing VACUUM to classify all dead tuples as "recently dead" and
+	 * skip index cleanup entirely.
+	 */
+	(void) RecnoGetTransactionTimestamp();
+
+	/*
 	 * Get the oldest active transaction's start timestamp.  Deleted tuples
 	 * whose commit timestamp is older than this are no longer visible to any
 	 * running transaction and can safely be removed.
@@ -3974,7 +4017,7 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 					continue;
 
 				vac_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
-				if ((vac_hdr->t_flags & RECNO_TUPLE_DELETED) &&
+				if ((vac_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED)) &&
 					!(vac_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
 					vac_hdr->t_commit_ts < oldest_ts)
 				{
@@ -4037,8 +4080,8 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 
 				vm_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, vm_itemid);
 
-				/* Deleted tuples that survived defrag are recently dead */
-				if (vm_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+				/* Dead tuples (deleted or updated) that survived defrag are recently dead */
+				if (vm_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
 				{
 					all_visible = false;
 					all_frozen = false;

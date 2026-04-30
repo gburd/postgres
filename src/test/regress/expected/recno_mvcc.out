@@ -558,8 +558,7 @@ SELECT val FROM recno_mvcc_idx ORDER BY val;
   10
   20
   30
-  40
-(4 rows)
+(3 rows)
 
 RESET enable_seqscan;
 -- Commit should persist index updates
@@ -571,12 +570,11 @@ SET enable_seqscan = off;
 SELECT val FROM recno_mvcc_idx ORDER BY val;
  val 
 -----
-  10
   20
   30
   40
-  40
-(5 rows)
+  99
+(4 rows)
 
 RESET enable_seqscan;
 DROP TABLE recno_mvcc_idx;

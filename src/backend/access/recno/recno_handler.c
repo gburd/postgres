@@ -1214,32 +1214,35 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 						 TransactionIdIsCurrentTransactionId(hint_xid))
 				{
 					/*
-					 * Our own insert.  Check sLog for our own delete.
+					 * Our own insert.  Check sLog for our own delete
+					 * or for an ABORTED entry from savepoint rollback.
 					 */
 					slog_nfound = RecnoSLogLookupAll(
 						RelationGetRelid(rel), tid,
 						slog_entries, RECNO_SLOG_MAX_OPS);
 					{
 						int		si;
-						bool	found_our_delete = false;
+						bool	found_invisible = false;
 
 						for (si = 0; si < slog_nfound; si++)
 						{
-							if (TransactionIdEquals(slog_entries[si].xid, hint_xid) &&
-								slog_entries[si].op_type == RECNO_SLOG_DELETE)
+							if (!TransactionIdEquals(slog_entries[si].xid, hint_xid))
+								continue;
+							if (slog_entries[si].op_type == RECNO_SLOG_DELETE ||
+								slog_entries[si].op_type == RECNO_SLOG_ABORTED)
 							{
-								found_our_delete = true;
+								found_invisible = true;
 								break;
 							}
 						}
 
-						if (found_our_delete)
+						if (found_invisible)
 						{
 							visible = false;
 							goto visibility_done;
 						}
 					}
-					/* Our insert, not deleted by us -- fall through */
+					/* Our insert, not deleted/aborted by us -- fall through */
 				}
 				else
 				{
@@ -1319,21 +1322,156 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 					}
 				}
 
-				/* No in-progress deleter -- deletion is committed */
-				visible = false;
-				goto visibility_done;
+				/*
+				 * CLOG fallback: if UNDO worker removed sLog entries,
+				 * use t_xid_hint (deleter's XID) to detect aborted deletes.
+				 */
+				if (slog_nfound == 0)
+				{
+					TransactionId hint_xid = tuple_hdr->t_xid_hint;
+
+					if (TransactionIdIsValid(hint_xid) &&
+						!TransactionIdIsInProgress(hint_xid) &&
+						TransactionIdDidAbort(hint_xid))
+					{
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_DELETED,
+											buffer);
+						/* Fall through — tuple is still live */
+					}
+					else
+					{
+						/* No in-progress deleter -- deletion is committed */
+						visible = false;
+						goto visibility_done;
+					}
+				}
+				else
+				{
+					/* No in-progress deleter -- deletion is committed */
+					visible = false;
+					goto visibility_done;
+				}
 			}
 
 			/*
 			 * Check if this is the old version of an out-of-place update.
 			 * The RECNO_TUPLE_UPDATED flag means this tuple has been
-			 * superseded by a newer version at t_ctid.  For unique-check
-			 * purposes this old version is dead.
+			 * superseded by a newer version at t_ctid.  However, the
+			 * updater may have aborted — check sLog for ABORTED entries
+			 * before declaring it invisible.
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
 			{
-				visible = false;
-				goto visibility_done;
+				if (slog_nfound < 0)
+					slog_nfound = RecnoSLogLookupAll(
+						RelationGetRelid(rel), tid,
+						slog_entries, RECNO_SLOG_MAX_OPS);
+				{
+					int		si;
+					bool	update_aborted = false;
+
+					for (si = 0; si < slog_nfound; si++)
+					{
+						if (slog_entries[si].op_type == RECNO_SLOG_ABORTED)
+						{
+							update_aborted = true;
+							break;
+						}
+						if ((slog_entries[si].op_type == RECNO_SLOG_UPDATE) &&
+							!TransactionIdIsCurrentTransactionId(slog_entries[si].xid) &&
+							TransactionIdDidAbort(slog_entries[si].xid))
+						{
+							update_aborted = true;
+							break;
+						}
+					}
+
+					if (update_aborted)
+					{
+						/*
+						 * Updater aborted.  Clear stale UPDATED flag
+						 * via hint-bits and treat as still-live tuple.
+						 */
+						BufferSetHintBits16(&tuple_hdr->t_flags,
+											tuple_hdr->t_flags & ~RECNO_TUPLE_UPDATED,
+											buffer);
+						/* Fall through to visible */
+					}
+					else if (slog_nfound == 0)
+					{
+						/*
+						 * CLOG fallback: UNDO worker removed the sLog
+						 * entries.  Use t_xid_hint (updater's XID) to
+						 * determine the outcome.
+						 */
+						TransactionId hint_xid = tuple_hdr->t_xid_hint;
+
+						if (TransactionIdIsValid(hint_xid) &&
+							TransactionIdIsCurrentTransactionId(hint_xid))
+						{
+							visible = false;
+							goto visibility_done;
+						}
+						else if (TransactionIdIsValid(hint_xid) &&
+								 !TransactionIdIsInProgress(hint_xid) &&
+								 TransactionIdDidAbort(hint_xid))
+						{
+							BufferSetHintBits16(&tuple_hdr->t_flags,
+												tuple_hdr->t_flags & ~RECNO_TUPLE_UPDATED,
+												buffer);
+							/* Fall through to visible */
+						}
+						else if (TransactionIdIsValid(hint_xid) &&
+								 TransactionIdIsInProgress(hint_xid))
+						{
+							snapshot->xmax = hint_xid;
+							/* Updater still running — tuple visible for now */
+						}
+						else
+						{
+							/* Updater committed — old version is dead */
+							visible = false;
+							goto visibility_done;
+						}
+					}
+					else
+					{
+						/* Check if updater is current, in-progress, or committed */
+						bool	updater_running = false;
+
+						for (si = 0; si < slog_nfound; si++)
+						{
+							if (slog_entries[si].op_type != RECNO_SLOG_UPDATE)
+								continue;
+
+							if (TransactionIdIsCurrentTransactionId(slog_entries[si].xid))
+							{
+								/*
+								 * We are the updater — old version is dead.
+								 * This mirrors the DELETED handling above.
+								 */
+								visible = false;
+								goto visibility_done;
+							}
+
+							if (TransactionIdIsInProgress(slog_entries[si].xid))
+							{
+								snapshot->xmax = slog_entries[si].xid;
+								updater_running = true;
+								break;
+							}
+						}
+
+						if (!updater_running)
+						{
+							/* Updater committed — old version is dead */
+							visible = false;
+							goto visibility_done;
+						}
+						/* Updater still running — tuple visible for now */
+					}
+				}
 			}
 
 			/* LOCKED tuples are still visible (lock != delete) */
@@ -3943,9 +4081,9 @@ recno_scan_analyze_next_tuple(TableScanDesc scan,
 		 * timestamp-based MVCC rather than xmin/xmax, so we check the tuple
 		 * flags and timestamps directly.
 		 */
-		if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+		if (tuple_hdr->t_flags & (RECNO_TUPLE_DELETED | RECNO_TUPLE_UPDATED))
 		{
-			/* Deleted tuple -- always counted as dead for ANALYZE */
+			/* Dead tuple (deleted or updated) -- counted as dead for ANALYZE */
 			*deadrows += 1;
 		}
 		else if (tuple_hdr->t_flags & RECNO_TUPLE_SPECULATIVE)
