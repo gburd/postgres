@@ -21,7 +21,6 @@
 #include "access/genam.h"
 #include "access/index_prune.h"
 #include "access/relation.h"
-#include "access/relundo.h"
 #include "catalog/index.h"
 #include "portability/instr_time.h"
 #include "utils/rel.h"

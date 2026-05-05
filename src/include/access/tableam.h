@@ -326,23 +326,29 @@ typedef struct TableAmRoutine
 	/*
 	 * am_supports_undo: true if this AM supports cluster-wide UNDO.
 	 *
-	 * When true, CREATE/ALTER TABLE ... WITH (enable_undo = on) is permitted
-	 * for tables using this AM.  When false, those DDL statements raise
-	 * ERRCODE_FEATURE_NOT_SUPPORTED.
+	 * An AM that sets this to true must: 1. Register an UNDO resource manager
+	 * via RegisterUndoRmgr() (see src/include/access/undormgr.h) with an
+	 * rm_undo callback that handles its own page format during rollback. 2.
+	 * Write UNDO records tagged with its own urec_rmid so that undoapply.c
+	 * dispatches to the correct apply handler. 3. Generate CLR (Compensation
+	 * Log Records) in its rm_undo callback for crash-recovery idempotency.
 	 *
-	 * Currently only heapam sets this to true; all UNDO record application
-	 * goes through heapam_undo.c directly.  When a per-AM UNDO apply callback
-	 * API is defined in a future revision, this flag will be superseded by
-	 * a proper am_undo_apply function pointer with a defined signature.
+	 * The UNDO infrastructure is AM-agnostic: UndoRecordHeader carries an
+	 * opaque payload interpreted exclusively by the owning RM's callbacks.
+	 * Each AM handles its own page format in its own rm_undo implementation.
+	 * There is no requirement to use heap page layout.
 	 *
-	 * WARNING: a custom AM that sets am_supports_undo = true must use
-	 * PostgreSQL standard heap page layout (PageHeader + ItemId array +
-	 * HeapTupleHeaderData tuples).  The UNDO application code in
-	 * heapam_undo.c casts PageGetItem() results directly to HeapTupleHeader.
-	 * Using this flag with a non-heap page layout causes silent data
-	 * corruption.  test_undo_tam satisfies this constraint (it uses heap
-	 * pages).  Until am_undo_apply dispatch is implemented, any AM setting
-	 * this flag must remain heap-page-compatible.
+	 * For UNDO record generation, AMs can either: (a) Use the shared Tier 2
+	 * buffer (UndoBufferAddRecord() / UndoBufferAddRecordParts() from
+	 * undobuffer.h) to embed UNDO data into DML WAL records, or (b) Create a
+	 * standalone UndoRecordSet for batched/deferred writes.
+	 *
+	 * How an AM decides whether UNDO is active for a given relation is
+	 * AM-specific.  heapam uses the enable_undo reloption; other AMs may
+	 * always use UNDO, or have their own control mechanisms.
+	 *
+	 * See src/include/access/undormgr.h for the RM registration API and
+	 * src/backend/access/undo/undoapply.c for the dispatch mechanism.
 	 */
 	bool		am_supports_undo;
 
@@ -625,10 +631,10 @@ typedef struct TableAmRoutine
 	/*
 	 * Notify the AM that a bulk DML operation is about to begin.
 	 *
-	 * The AM can use this hint to pre-allocate resources, enable batched
-	 * UNDO recording, or otherwise optimize for the expected workload.
-	 * 'nrows' is the planner's estimate of the number of rows to be
-	 * modified (0 means unknown).
+	 * The AM can use this hint to pre-allocate resources, enable batched UNDO
+	 * recording, or otherwise optimize for the expected workload. 'nrows' is
+	 * the planner's estimate of the number of rows to be modified (0 means
+	 * unknown).
 	 *
 	 * Optional callback.
 	 */

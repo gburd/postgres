@@ -57,6 +57,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undolog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
@@ -6571,6 +6572,16 @@ StartupXLOG(void)
 	 */
 	if (performedWalRecovery)
 		ATMRecoveryFinalize();
+
+	/*
+	 * Flush any deferred UNDO transactions to the ATM.  During the UNDO
+	 * phase, if syscache wasn't available, we deferred transaction processing.
+	 * Now that recovery is complete and WAL writes are allowed (checkpoint/
+	 * end-of-recovery record was written above), we can add them to the ATM
+	 * for asynchronous processing by the logical revert worker.
+	 */
+	if (performedWalRecovery && enable_undo)
+		FlushDeferredUndoXacts();
 
 	/*
 	 * If any of the critical GUCs have changed, log them before we allow

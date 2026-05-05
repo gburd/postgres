@@ -65,7 +65,6 @@ tests += {
       't/055_undo_clr.pl',
       't/056_undo_crash.pl',
       't/057_undo_standby.pl',
-      't/059_relundo_wal_compression.pl',
       't/060_undo_wal_compression.pl',
       't/061_undo_wal_retention.pl',
       't/062_undo_2pc.pl',

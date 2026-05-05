@@ -38,6 +38,7 @@
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/memutils.h"
 #include "storage/bufpage.h"
 #include "storage/itemid.h"
 #include "utils/fmgroids.h"
@@ -236,8 +237,8 @@ heap_undo_check_toast(Relation rel, const char *tuple_data, uint32 tuple_len)
 	natts = Min(HeapTupleHeaderGetNatts(htup), tupdesc->natts);
 
 	/*
-	 * Build a temporary HeapTupleData for heap_getattr.  We point t_data
-	 * at the UNDO record's copy of the tuple, which is read-only.
+	 * Build a temporary HeapTupleData for heap_getattr.  We point t_data at
+	 * the UNDO record's copy of the tuple, which is read-only.
 	 */
 	memset(&tup, 0, sizeof(tup));
 	tup.t_data = htup;
@@ -276,13 +277,13 @@ heap_undo_check_toast(Relation rel, const char *tuple_data, uint32 tuple_len)
 			VARATT_EXTERNAL_GET_POINTER(toast_pointer, DatumGetPointer(val));
 
 			/*
-			 * Open the TOAST relation and its indexes.  During crash recovery,
-			 * table_open() or toast_open_indexes() may raise ERROR on a
-			 * corrupted TOAST relation.  Wrap in PG_TRY when InRecovery so
-			 * that we can demote the error to a WARNING and skip this
-			 * attribute rather than aborting the entire recovery process.
-			 * The heap tuple will retain its post-DML state; the operator
-			 * must investigate.
+			 * Open the TOAST relation and its indexes.  During crash
+			 * recovery, table_open() or toast_open_indexes() may raise ERROR
+			 * on a corrupted TOAST relation.  Wrap in PG_TRY when InRecovery
+			 * so that we can demote the error to a WARNING and skip this
+			 * attribute rather than aborting the entire recovery process. The
+			 * heap tuple will retain its post-DML state; the operator must
+			 * investigate.
 			 *
 			 * In normal operation, ERROR is propagated as-is.
 			 */
@@ -294,9 +295,9 @@ heap_undo_check_toast(Relation rel, const char *tuple_data, uint32 tuple_len)
 				{
 					vtoastrel = table_open(toastrelid, AccessShareLock);
 					validIndex = toast_open_indexes((Relation) vtoastrel,
-												   AccessShareLock,
-												   &toastidxs,
-												   &num_indexes);
+													AccessShareLock,
+													&toastidxs,
+													&num_indexes);
 				}
 				PG_CATCH();
 				{
@@ -319,9 +320,9 @@ heap_undo_check_toast(Relation rel, const char *tuple_data, uint32 tuple_len)
 			{
 				vtoastrel = table_open(toastrelid, AccessShareLock);
 				validIndex = toast_open_indexes((Relation) vtoastrel,
-											   AccessShareLock,
-											   &toastidxs,
-											   &num_indexes);
+												AccessShareLock,
+												&toastidxs,
+												&num_indexes);
 			}
 
 			toastrel = (Relation) vtoastrel;
@@ -348,9 +349,10 @@ heap_undo_check_toast(Relation rel, const char *tuple_data, uint32 tuple_len)
 				if (InRecovery)
 				{
 					/*
-					 * During crash recovery we cannot raise ERROR -- fall back
-					 * to WARNING and skip the restore.  The row will retain its
-					 * post-DML (incorrect) state; operators must investigate.
+					 * During crash recovery we cannot raise ERROR -- fall
+					 * back to WARNING and skip the restore.  The row will
+					 * retain its post-DML (incorrect) state; operators must
+					 * investigate.
 					 */
 					ereport(WARNING,
 							(errmsg("heap UNDO: attribute %d of restored tuple has a dangling TOAST pointer "
@@ -399,6 +401,34 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 	bool		skip_tuple_restore = false;
 
 	Assert(rmid == UNDO_RMID_HEAP);
+
+	/*
+	 * During crash recovery, syscache may not be initialized yet when
+	 * PerformUndoRecovery() runs.  try_relation_open() requires syscache to
+	 * check if the relation exists, so we must defer UNDO application until
+	 * after the system is fully initialized.
+	 *
+	 * Also defer during normal transaction abort. When a transaction is
+	 * aborting, PostgreSQL uses BumpContext for memory allocations, which
+	 * doesn't support individual pfree(). This causes crashes when we try to
+	 * clean up relation cache entries via relation_close(). Instead, we
+	 * register the transaction in the ATM and let the logical revert worker
+	 * apply the UNDO asynchronously after the abort completes.
+	 *
+	 * Check if we're in recovery mode (InRecovery flag is still set) OR if
+	 * we're in an aborted transaction state.
+	 *
+	 * This transaction will be tracked in the ATM (Aborted Transaction Map)
+	 * so the background worker can pick it up later.
+	 */
+	if (InRecovery || IsAbortedTransactionBlockState())
+	{
+		ereport(DEBUG2,
+				(errmsg("heap UNDO: deferring transaction %u to logical revert worker "
+						"(in recovery or abort, syscache/memory not safe)",
+						xid)));
+		return UNDO_APPLY_SKIPPED;
+	}
 
 	/* Deserialize the heap-specific payload header */
 	if (payload_len < SizeOfHeapUndoPayload)
@@ -455,16 +485,24 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 		}
 
 		memcpy(&delta, payload, SizeOfHeapUndoDeltaHeader);
+
+		/*
+		 * Allocate delta_restored buffer. We use palloc
+		 * (CurrentMemoryContext) because this buffer is only needed for the
+		 * duration of this function. We don't pfree it at the end because
+		 * CurrentMemoryContext may be a BumpContext, which would ERROR on
+		 * pfree. The memory is reclaimed when the current context is reset.
+		 */
 		delta_restored = palloc(delta.old_tuple_len);
 	}
 
 	/*
 	 * Validate TOAST pointers in the old tuple data before restoring it.
 	 *
-	 * If the rolled-back transaction modified a TOASTed column, the old
-	 * TOAST chunks referenced by the UNDO record may no longer exist.
-	 * Restoring such a tuple would leave dangling TOAST pointers that crash
-	 * on subsequent access.  Check now (before the critical section, where
+	 * If the rolled-back transaction modified a TOASTed column, the old TOAST
+	 * chunks referenced by the UNDO record may no longer exist. Restoring
+	 * such a tuple would leave dangling TOAST pointers that crash on
+	 * subsequent access.  Check now (before the critical section, where
 	 * errors would cause a PANIC) and skip the tuple restore if invalid.
 	 */
 	if (tuple_data != NULL && hdr.tuple_len > 0 &&
@@ -518,8 +556,8 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 				{
 					/*
 					 * Visibility-delta path: only restore the three
-					 * tuple-header fields changed by heap_delete().
-					 * Column data is unchanged and stays on the page.
+					 * tuple-header fields changed by heap_delete(). Column
+					 * data is unchanged and stays on the page.
 					 */
 					if (hdr.tuple_len != SizeOfHeapUndoDeleteDelta)
 						elog(ERROR,
@@ -849,7 +887,10 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 				{
 					if (hdr.flags & HEAP_UNDO_DELETE_VISIBILITY_ONLY)
 					{
-						/* Compact CLR: store only the 8-byte visibility delta. */
+						/*
+						 * Compact CLR: store only the 8-byte visibility
+						 * delta.
+						 */
 						xlrec.clr_flags = UNDO_CLR_HAS_VISIBILITY;
 						xlrec.tuple_len = SizeOfHeapUndoDeleteDelta;
 					}
@@ -935,8 +976,8 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 		else if (xlrec.clr_flags & UNDO_CLR_HAS_VISIBILITY)
 		{
 			/*
-			 * Visibility-delta CLR: store only the three tuple-header
-			 * fields that heap_delete() changed (8 bytes total).
+			 * Visibility-delta CLR: store only the three tuple-header fields
+			 * that heap_delete() changed (8 bytes total).
 			 */
 			HeapUndoDeleteDelta vis_delta;
 
@@ -971,8 +1012,8 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 		 * With UNDO-in-WAL, UNDO records live in the WAL stream and are
 		 * immutable.  The CLR WAL record itself (XLOG_UNDO_APPLY_RECORD)
 		 * serves as proof that this UNDO record has been applied.  During
-		 * crash recovery, the CLR's existence prevents double-application.
-		 * No need to write back into the UNDO record.
+		 * crash recovery, the CLR's existence prevents double-application. No
+		 * need to write back into the UNDO record.
 		 */
 	}
 
@@ -980,10 +1021,19 @@ heap_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 
 	UnlockReleaseBuffer(buffer);
 
-	if (delta_restored != NULL)
-		pfree(delta_restored);
+	/*
+	 * delta_restored is intentionally not freed here. It was allocated with
+	 * palloc(), and calling pfree would ERROR if CurrentMemoryContext is a
+	 * BumpContext. The memory will be reclaimed when the context is reset.
+	 */
 
-	relation_close(rel, RowExclusiveLock);
+	/*
+	 * Close the relation but don't release the lock. During transaction
+	 * abort, releasing the lock might trigger cleanup code that tries to free
+	 * memory allocated in BumpContext. Use NoLock to skip lock release - the
+	 * lock will be automatically released at transaction end.
+	 */
+	relation_close(rel, NoLock);
 
 	return UNDO_APPLY_SUCCESS;
 }

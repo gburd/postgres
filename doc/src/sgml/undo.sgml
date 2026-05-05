@@ -17,8 +17,11 @@
  </para>
 
  <para>
-  UNDO logging is disabled by default and enabled per-relation using
-  the <literal>enable_undo</literal> storage parameter.  When disabled,
+  The UNDO infrastructure must first be enabled cluster-wide by setting
+  the <varname>enable_undo</varname> GUC to <literal>on</literal> in
+  <filename>postgresql.conf</filename> (requires a server restart).
+  Individual tables then opt in via the <literal>enable_undo</literal>
+  storage parameter.  When the server-level GUC is off (the default),
   there is zero overhead on normal heap operations.
  </para>
 
@@ -34,8 +37,17 @@
   <title>Enabling UNDO Logging</title>
 
   <para>
-   To enable UNDO logging on a table, use the <literal>enable_undo</literal>
-   storage parameter:
+   First, enable the UNDO infrastructure at the server level in
+   <filename>postgresql.conf</filename> (requires restart):
+  </para>
+
+<programlisting>
+enable_undo = on
+</programlisting>
+
+  <para>
+   Then enable UNDO logging on individual tables using the
+   <literal>enable_undo</literal> storage parameter:
   </para>
 
 <programlisting>
@@ -313,6 +325,20 @@ pg_undorecover -s -v /path/to/pgdata
   <title>Configuration Parameters</title>
 
   <variablelist>
+   <varlistentry>
+    <term><varname>enable_undo</varname> (<type>boolean</type>)</term>
+    <listitem>
+     <para>
+      Master switch that enables the UNDO logging infrastructure.
+      This is a <literal>PGC_POSTMASTER</literal> parameter: changing it
+      requires a server restart.  When <literal>off</literal> (the default),
+      the UNDO subsystem is completely dormant and tables cannot opt in.
+      When <literal>on</literal>, individual tables can enable UNDO via
+      the <literal>enable_undo</literal> storage parameter.
+     </para>
+    </listitem>
+   </varlistentry>
+
    <varlistentry>
     <term><varname>undo_worker_naptime</varname> (<type>integer</type>)</term>
     <listitem>

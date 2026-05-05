@@ -26,9 +26,6 @@
 #include "access/undorecord.h"
 #include "access/xlogdefs.h"
 
-/* Per-relation UNDO pointer type (defined in relundo.h as uint64) */
-typedef uint64 RelUndoRecPtr;
-
 /*
  * XactUndoContext - Context for a single undo insertion within a transaction.
  *
@@ -92,17 +89,15 @@ extern void AtProcExit_XactUndo(void);
 /* Undo chain traversal for rollback */
 extern UndoRecPtr GetCurrentXactUndoRecPtr(UndoPersistenceLevel plevel);
 extern XLogRecPtr GetCurrentXactLastBatchLSN(UndoPersistenceLevel plevel);
-
-/* Per-relation UNDO tracking for rollback */
-extern void RegisterPerRelUndo(Oid relid, RelUndoRecPtr start_urec_ptr);
-extern RelUndoRecPtr GetPerRelUndoPtr(Oid relid);
+extern void XActUndoUpdateLastBatchLSN(XLogRecPtr lsn,
+									   UndoPersistenceLevel plevel);
 
 /*
  * GUC: UNDO bytes threshold for instant abort via ATM.
  *
  * Transactions with estimated UNDO bytes >= this threshold use ATM instant
  * abort (deferred rollback via Logical Revert worker).  Transactions below
- * the threshold use synchronous rollback via the per-relation UNDO worker.
+ * the threshold use synchronous rollback inline during transaction abort.
  *
  * A value of 0 means always use ATM instant abort regardless of size.
  */

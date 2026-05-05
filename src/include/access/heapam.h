@@ -564,35 +564,8 @@ extern Size HeapUndoPayloadSize(uint32 tuple_len);
 #define HEAP_UNDO_INPLACE		0x0005
 #define HEAP_UNDO_HOT_UPDATE	0x0006
 
-/*
- * UNDO write buffer.
- *
- * When the UNDO write buffer is active, UNDO records are accumulated in a
- * persistent UndoRecordSet instead of being allocated/written/freed per row.
- * Records are flushed in batches, reducing the per-row overhead of
- * UndoLogAllocate(), WAL logging, and file I/O.
- *
- * The write buffer is always activated for UNDO-enabled tables at DML start.
- * The overhead is negligible: one palloc of ~512 bytes, reused for the entire
- * transaction.
- */
-extern void HeapBeginUndoBuffer(Relation rel, int64 nrows);
-extern void HeapEndUndoBuffer(Relation rel);
-extern void HeapUndoBufferAddRecord(Relation rel, uint8 rmid, uint16 info,
-									const char *payload, Size payload_len);
-extern void HeapUndoBufferAddRecordParts(Relation rel, uint8 rmid, uint16 info,
-										 const char *part1, Size part1_len,
-										 const char *part2, Size part2_len);
-extern void HeapUndoBufferFlush(void);
-extern bool HeapUndoBufferIsActive(Relation rel);
-
-/* Backward-compatibility aliases */
-#define HeapBeginBulkUndo		HeapBeginUndoBuffer
-#define HeapEndBulkUndo			HeapEndUndoBuffer
-#define HeapBulkUndoAddRecord	HeapUndoBufferAddRecord
-#define HeapBulkUndoAddRecordParts HeapUndoBufferAddRecordParts
-#define HeapBulkUndoFlush		HeapUndoBufferFlush
-#define HeapBulkUndoIsActive	HeapUndoBufferIsActive
+/* UNDO write buffer (AM-agnostic; see src/include/access/undobuffer.h). */
+#include "access/undobuffer.h"
 
 /*
  * HeapUndoPayloadHeader - Fixed header portion of heap UNDO payloads.
@@ -612,7 +585,8 @@ typedef struct HeapUndoPayloadHeader
 #define HEAP_UNDO_HAS_INDEX				0x0001
 #define HEAP_UNDO_HAS_TUPLE				0x0002
 #define HEAP_UNDO_HAS_DELTA				0x0004	/* Payload uses delta encoding */
-#define HEAP_UNDO_DELETE_VISIBILITY_ONLY	0x0008	/* DELETE: visibility delta only */
+#define HEAP_UNDO_DELETE_VISIBILITY_ONLY	0x0008	/* DELETE: visibility
+													 * delta only */
 
 #define SizeOfHeapUndoPayloadHeader \
 	(offsetof(HeapUndoPayloadHeader, tuple_len) + sizeof(uint32))

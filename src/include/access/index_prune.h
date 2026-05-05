@@ -36,7 +36,6 @@
 #define INDEX_PRUNE_H
 
 #include "postgres.h"
-#include "access/relundo.h"
 #include "utils/rel.h"
 
 /*

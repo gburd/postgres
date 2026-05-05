@@ -38,7 +38,6 @@
 
 #include "access/spgist_private.h"
 #include "access/index_prune.h"
-#include "access/relundo.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/rel.h"

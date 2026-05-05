@@ -38,7 +38,10 @@
  */
 #include "postgres.h"
 
-#include "access/heapam.h"
+#include "access/relation.h"
+#include "access/undobuffer.h"
+#include "access/xact.h"
+#include "access/xactundo.h"
 #include "access/index_prune.h"
 #include "access/nbtree.h"
 #include "access/undo_xlog.h"
@@ -46,8 +49,10 @@
 #include "access/undorecord.h"
 #include "access/undormgr.h"
 #include "access/xloginsert.h"
+#include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/memutils.h"
 #include "storage/bufpage.h"
 #include "storage/itemid.h"
 #include "utils/rel.h"
@@ -177,15 +182,15 @@ NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 		 * avoid a separate UndoLogAllocate + WAL insert + pwrite per index
 		 * entry.  The UndoRecordSet accepts mixed RM IDs.
 		 */
-		if (HeapUndoBufferIsActive(heaprel))
+		if (UndoBufferIsActive(heaprel))
 		{
-			HeapUndoBufferAddRecordParts(heaprel,
-										 UNDO_RMID_NBTREE,
-										 NBTREE_UNDO_INSERT_LEAF,
-										 (const char *) &hdr,
-										 SizeOfNbtreeUndoInsertLeaf,
-										 (const char *) itup,
-										 itemsz);
+			UndoBufferAddRecordParts(heaprel,
+									 UNDO_RMID_NBTREE,
+									 NBTREE_UNDO_INSERT_LEAF,
+									 (const char *) &hdr,
+									 SizeOfNbtreeUndoInsertLeaf,
+									 (const char *) itup,
+									 itemsz);
 		}
 		else
 		{
@@ -214,15 +219,15 @@ NbtreeUndoLogInsert(Relation rel, Relation heaprel, Buffer buf,
 		upper_hdr.child_blkno = BTreeTupleGetDownLink(itup);
 		upper_hdr.itup_sz = itemsz;
 
-		if (HeapUndoBufferIsActive(heaprel))
+		if (UndoBufferIsActive(heaprel))
 		{
-			HeapUndoBufferAddRecordParts(heaprel,
-										 UNDO_RMID_NBTREE,
-										 NBTREE_UNDO_INSERT_UPPER,
-										 (const char *) &upper_hdr,
-										 SizeOfNbtreeUndoInsertUpper,
-										 (const char *) itup,
-										 itemsz);
+			UndoBufferAddRecordParts(heaprel,
+									 UNDO_RMID_NBTREE,
+									 NBTREE_UNDO_INSERT_UPPER,
+									 (const char *) &upper_hdr,
+									 SizeOfNbtreeUndoInsertUpper,
+									 (const char *) itup,
+									 itemsz);
 		}
 		else
 		{
@@ -287,6 +292,33 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 				  const char *payload, Size payload_len, UndoRecPtr urec_ptr)
 {
 	Assert(rmid == UNDO_RMID_NBTREE);
+
+	/*
+	 * During crash recovery, syscache may not be initialized yet when
+	 * PerformUndoRecovery() runs.  try_relation_open() requires syscache to
+	 * check if the relation exists, so we must defer UNDO application until
+	 * after the system is fully initialized.
+	 *
+	 * Check if we're in recovery mode (InRecovery flag is still set). During
+	 * crash recovery, UNDO phase runs before syscache is initialized, so we
+	 * skip UNDO application and rely on the logical revert worker to handle
+	 * it asynchronously after startup completes.
+	 *
+	 * This transaction will be tracked in the ATM (Aborted Transaction Map)
+	 * so the background worker can pick it up later.
+	 *
+	 * Note: InRecovery is only true during startup/recovery; it's false
+	 * during normal operation and during normal transaction abort, so this
+	 * check only affects crash recovery.
+	 */
+	if (InRecovery)
+	{
+		ereport(DEBUG2,
+				(errmsg("nbtree UNDO: deferring transaction %u to logical revert worker "
+						"(in crash recovery, syscache not available)",
+						xid)));
+		return UNDO_APPLY_SKIPPED;
+	}
 
 	switch (info)
 	{

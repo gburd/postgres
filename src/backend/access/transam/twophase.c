@@ -1508,6 +1508,47 @@ StandbyTransactionIdIsPrepared(TransactionId xid)
 }
 
 /*
+ * RecoveryTransactionIdIsPrepared
+ *		Check if a transaction ID is in the in-memory prepared transaction list.
+ *
+ * This is used during crash recovery UNDO phase, before prepared transaction
+ * files exist on disk. It checks the in-memory TwoPhaseState that was
+ * reconstructed from WAL replay.
+ */
+bool
+RecoveryTransactionIdIsPrepared(TransactionId xid)
+{
+	int			i;
+	FullTransactionId fxid;
+
+	Assert(TransactionIdIsValid(xid));
+
+	if (max_prepared_xacts <= 0)
+		return false;			/* 2PC not enabled */
+
+	if (TwoPhaseState == NULL)
+		return false;			/* 2PC not initialized yet */
+
+	fxid = AdjustToFullTransactionId(xid);
+
+	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
+
+		if (FullTransactionIdEquals(gxact->fxid, fxid))
+		{
+			LWLockRelease(TwoPhaseStateLock);
+			return true;
+		}
+	}
+
+	LWLockRelease(TwoPhaseStateLock);
+	return false;
+}
+
+/*
  * FinishPreparedTransaction: execute COMMIT PREPARED or ROLLBACK PREPARED
  */
 void

@@ -4,14 +4,14 @@
  *	  Background worker for timer-driven Logical Revert via ATM scan
  *
  * This worker periodically scans the ATM (Aborted Transaction Map) for
- * entries whose per-relation UNDO chains have not yet been applied. For
- * each unreverted entry whose database matches the worker's connected
+ * entries whose WAL-based UNDO chains have not yet been confirmed as applied.
+ * For each unreverted entry whose database matches the worker's connected
  * database, the worker:
  *
- *   1. Opens the target relation with AccessExclusiveLock
- *   2. Applies the UNDO chain via RelUndoApplyChain()
- *   3. Marks the ATM entry as reverted via ATMMarkReverted()
- *   4. Emits XLOG_ATM_FORGET and removes the entry via ATMForget()
+ *   1. Applies the WAL-based UNDO chain via ApplyUndoChainFromWAL()
+ *      (idempotent: CLR records prevent double-application)
+ *   2. Marks the ATM entry as reverted via ATMMarkReverted()
+ *   3. Emits XLOG_ATM_FORGET and removes the entry via ATMForget()
  *
  * Unlike relundo_worker.c (event-driven, processes a shared memory work
  * queue), this worker is timer-driven: it sleeps for logical_revert_naptime
@@ -34,9 +34,9 @@
 
 #include "access/atm.h"
 #include "access/logical_revert_worker.h"
-#include "access/relundo.h"
-#include "access/table.h"
+#include "access/undorecord.h"
 #include "access/xact.h"
+#include "access/xlogdefs.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
@@ -71,8 +71,7 @@ static volatile sig_atomic_t got_SIGTERM = false;
 /* Signal handlers */
 static void logical_revert_sighup(SIGNAL_ARGS);
 static void logical_revert_sigterm(SIGNAL_ARGS);
-static void process_revert_entry(Relation rel, RelUndoRecPtr chain,
-								 TransactionId xid);
+static void process_revert_entry(TransactionId xid, XLogRecPtr last_batch_lsn);
 
 /*
  * LogicalRevertShmemSize
@@ -137,21 +136,24 @@ logical_revert_sigterm(SIGNAL_ARGS)
 
 /*
  * process_revert_entry
- *		Apply the UNDO chain for a single ATM entry.
+ *		Apply the WAL-based UNDO chain for a single ATM entry.
  *
- * On success the relation's UNDO chain has been fully applied and CLR
- * records written. On failure (e.g. relation dropped) we log the error
- * and continue so the ATM entry can still be cleaned up.
+ * Walks the UNDO chain from last_batch_lsn backward, applying each record.
+ * CLR records are written during application so that crash recovery is
+ * idempotent.  Returns silently if last_batch_lsn is invalid (nothing to do).
  */
 static void
-process_revert_entry(Relation rel, RelUndoRecPtr chain, TransactionId xid)
+process_revert_entry(TransactionId xid, XLogRecPtr last_batch_lsn)
 {
-	elog(LOG, "logical revert: applying UNDO chain for xid %u, relation %u",
-		 xid, RelationGetRelid(rel));
+	if (!XLogRecPtrIsValid(last_batch_lsn))
+		return;					/* nothing to apply */
 
-	RelUndoApplyChain(rel, chain);
+	ereport(DEBUG1,
+			(errmsg("logical revert: applying UNDO chain for xid %u "
+					"from LSN %X/%X",
+					xid, LSN_FORMAT_ARGS(last_batch_lsn))));
 
-	elog(LOG, "logical revert: completed UNDO chain for xid %u", xid);
+	ApplyUndoChainFromWAL(last_batch_lsn);
 }
 
 /*
@@ -189,8 +191,7 @@ LogicalRevertWorkerMain(Datum main_arg)
 	{
 		TransactionId xid;
 		Oid			entry_dboid;
-		Oid			reloid;
-		RelUndoRecPtr chain;
+		XLogRecPtr	last_batch_lsn;
 		int			rc;
 
 		/* Reload configuration on SIGHUP */
@@ -201,7 +202,7 @@ LogicalRevertWorkerMain(Datum main_arg)
 		}
 
 		/* Scan ATM for the next unreverted entry */
-		if (ATMGetNextUnreverted(&xid, &entry_dboid, &reloid, &chain))
+		if (ATMGetNextUnreverted(&xid, &entry_dboid, &last_batch_lsn))
 		{
 			/*
 			 * ATMGetNextUnreverted returns entries for any database. Skip
@@ -214,13 +215,7 @@ LogicalRevertWorkerMain(Datum main_arg)
 
 			PG_TRY();
 			{
-				Relation	rel;
-
-				rel = table_open(reloid, AccessExclusiveLock);
-
-				process_revert_entry(rel, chain, xid);
-
-				table_close(rel, AccessExclusiveLock);
+				process_revert_entry(xid, last_batch_lsn);
 
 				/*
 				 * Mark the ATM entry as reverted, then emit XLOG_ATM_FORGET
@@ -234,8 +229,8 @@ LogicalRevertWorkerMain(Datum main_arg)
 				EmitErrorReport();
 				FlushErrorState();
 
-				elog(LOG, "logical revert worker: failed to revert xid %u "
-					 "relation %u, will retry", xid, reloid);
+				elog(LOG, "logical revert worker: failed to revert xid %u, "
+					 "will retry", xid);
 			}
 			PG_END_TRY();
 

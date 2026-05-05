@@ -24,7 +24,6 @@ OBJS = \
 	mxactdesc.o \
 	nbtdesc.o \
 	relmapdesc.o \
-	relundodesc.o \
 	replorigindesc.o \
 	rmgrdesc_utils.o \
 	seqdesc.o \

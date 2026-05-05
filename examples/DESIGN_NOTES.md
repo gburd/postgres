@@ -178,8 +178,9 @@ to drain worker queue synchronously.
 
 Note: Bulk load scenarios (COPY, large DML) previously fell in the "Use
 Neither" category due to 2x write amplification without abort benefit.
-The bulk UNDO hints mechanism now reduces per-row overhead by batching
-UNDO records, making UNDO viable for large operations.
+The Tier 2 write buffer (undobuffer.c) now reduces per-row overhead by
+batching UNDO records and embedding them into DML WAL records, making
+UNDO viable for all operation sizes.
 
 ---
 

@@ -321,5 +321,6 @@ extern void UndoRecoveryTrackBatch(TransactionId xid, XLogRecPtr batch_lsn,
 extern void UndoRecoveryRemoveXid(TransactionId xid);
 extern bool UndoRecoveryNeeded(void);
 extern void PerformUndoRecovery(void);
+extern void FlushDeferredUndoXacts(void);
 
 #endif							/* UNDO_XLOG_H */

@@ -19,9 +19,6 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
-/* Forward declaration from relundo.h */
-typedef uint64 RelUndoRecPtr;
-
 /* WAL record types for RM_ATM_ID */
 #define XLOG_ATM_ABORT		0x00
 #define XLOG_ATM_FORGET		0x10
@@ -30,9 +27,9 @@ typedef uint64 RelUndoRecPtr;
 typedef struct xl_atm_abort
 {
 	TransactionId xid;
-	RelUndoRecPtr undo_chain;
+	XLogRecPtr	last_batch_lsn;	/* LSN of last UNDO batch for this xid */
 	Oid			dboid;
-	Oid			reloid;
+	Oid			reloid;			/* InvalidOid (kept for struct layout) */
 }			xl_atm_abort;
 
 #define SizeOfXlAtmAbort	(offsetof(xl_atm_abort, reloid) + sizeof(Oid))

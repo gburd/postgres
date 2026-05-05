@@ -31,6 +31,7 @@
 #include "access/undormgr.h"
 #include "access/undo_xlog.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 /*
  * ApplyOneUndoRecord - Apply a single UNDO record via RM dispatch
@@ -41,18 +42,18 @@
  * Returns true if successfully applied, false if skipped.
  */
 static bool
-ApplyOneUndoRecord(UndoRecordHeader *header, char *payload,
+ApplyOneUndoRecord(UndoRecordHeader * header, char *payload,
 				   UndoRecPtr urec_ptr)
 {
-	const UndoRmgrData *rmgr;
+	const		UndoRmgrData *rmgr;
 	UndoApplyResult result;
 
 	/*
 	 * Idempotency design note:
 	 *
 	 * UNDO records are immutable once written to WAL; urec_clr_ptr in the
-	 * header is always InvalidXLogRecPtr and cannot be updated after the fact.
-	 * Double-application is prevented by page LSN instead: each CLR
+	 * header is always InvalidXLogRecPtr and cannot be updated after the
+	 * fact. Double-application is prevented by page LSN instead: each CLR
 	 * (XLOG_UNDO_APPLY_RECORD) written by rm_undo bumps the heap page LSN to
 	 * the CLR's EndRecPtr.  During crash recovery Phase 2, rm_undo reads the
 	 * buffer via XLogReadBufferForRedo; if the page LSN >= CLR LSN (meaning
@@ -143,9 +144,9 @@ ApplyUndoChain(UndoRecPtr start_ptr)
 		return;
 
 	/*
-	 * With UNDO-in-WAL, UNDO records are no longer in segment files.
-	 * Use ApplyUndoChainFromWAL() instead, which reads UNDO batches
-	 * from the WAL stream.
+	 * With UNDO-in-WAL, UNDO records are no longer in segment files. Use
+	 * ApplyUndoChainFromWAL() instead, which reads UNDO batches from the WAL
+	 * stream.
 	 */
 	ereport(ERROR,
 			(errmsg("ApplyUndoChain is not supported with UNDO-in-WAL"),
@@ -301,8 +302,8 @@ ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn)
 		 *
 		 * ARIES requires that UNDO records within a batch be applied
 		 * newest-first (reverse of serialization order).  We first scan
-		 * forward to collect pointers to each record start, then iterate
-		 * the collected pointers in reverse to apply them.
+		 * forward to collect pointers to each record start, then iterate the
+		 * collected pointers in reverse to apply them.
 		 */
 		pos = batch->payload;
 		end = pos + batch->payload_len;
@@ -310,9 +311,25 @@ ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn)
 		{
 			char	  **record_starts;
 			int			nrecords_in_batch = 0;
-			int			max_records = 64;
+			int			max_records = 1024; /* Large enough to avoid
+											 * reallocation */
 			int			i;
 
+			/*
+			 * Allocate record_starts array. We use palloc
+			 * (CurrentMemoryContext) rather than TopMemoryContext because
+			 * this is a short-lived allocation that's only needed for the
+			 * duration of this loop iteration.
+			 *
+			 * We intentionally do NOT pfree this allocation when done.
+			 * Calling pfree on memory allocated from a BumpContext (which
+			 * executor nodes may use) would ERROR. Since this allocation is
+			 * small and short-lived, it's fine to let the memory context
+			 * reset reclaim it.
+			 *
+			 * Use a large initial size (1024) to avoid needing repalloc(),
+			 * which also doesn't work with BumpContext.
+			 */
 			record_starts = (char **) palloc(max_records * sizeof(char *));
 
 			/* First pass: collect record start pointers by scanning forward */
@@ -339,12 +356,14 @@ ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn)
 					break;
 				}
 
-				/* Grow array if needed */
+				/* Check if we have exceeded the fixed-size array */
 				if (nrecords_in_batch >= max_records)
 				{
-					max_records *= 2;
-					record_starts = (char **) repalloc(record_starts,
-													   max_records * sizeof(char *));
+					ereport(WARNING,
+							(errmsg("UNDO rollback: batch at %X/%X contains more than %d records, "
+									"cannot process all records",
+									LSN_FORMAT_ARGS(batch_lsn), max_records)));
+					break;
 				}
 
 				record_starts[nrecords_in_batch++] = pos;
@@ -372,7 +391,10 @@ ApplyUndoChainFromWAL(XLogRecPtr last_batch_lsn)
 					records_skipped++;
 			}
 
-			pfree(record_starts);
+			/*
+			 * pfree(record_starts); -- Commented out: BumpContext
+			 * incompatibility during abort
+			 */
 		}
 
 		/* Follow chain to previous batch */

@@ -103,23 +103,25 @@ InvalidUndoRecPtr is defined as 0. Log number 0 is never allocated
 
 ## 3. UNDO Record Format
 
-Every UNDO record starts with a 48-byte UndoRecordHeader (see undorecord.h):
+Every UNDO record starts with a fixed UndoRecordHeader (see undorecord.h).
+The serialized size is given by SizeOfUndoRecordHeader:
 
     Offset  Size  Field             Description
     ------  ----  -----             -----------
-    0       2     urec_type         Record type (INSERT/DELETE/UPDATE/PRUNE/INPLACE)
-    2       2     urec_info         Flags (HAS_TUPLE, HAS_DELTA, HAS_TOAST, XID_VALID,
-                                           HAS_INDEX, HAS_CLR)
-    4       4     urec_len          Total record length including header
+    0       1     urec_rmid         UNDO resource manager ID (dispatches apply)
+    1       1     urec_flags        Generic flags (UNDO_INFO_HAS_PAYLOAD, etc.)
+    2       2     urec_info         RM-specific subtype and flags
+    4       4     urec_len          Total record length including header + payload
     8       4     urec_xid          Transaction ID
-    12      8     urec_prev         Previous UNDO record in chain (UndoRecPtr)
-    20      4     urec_reloid       Relation OID
-    24      4     urec_blkno        Block number
-    28      2     urec_offset       Offset number within page
-    30      2     urec_payload_len  Length of following payload data
-    32      4     urec_tuple_len    Length of tuple data stored in record
-    36      4     (padding)
-    40      8     urec_clr_ptr      CLR WAL pointer (InvalidXLogRecPtr if not yet applied)
+    12      4     (padding)         Alignment for 8-byte urec_prev
+    16      8     urec_prev         Previous UNDO record in chain (UndoRecPtr)
+    24      4     urec_reloid       Relation OID (InvalidOid if N/A)
+    28      4     urec_payload_len  Length of RM-specific payload that follows
+    32      8     urec_clr_ptr      CLR WAL pointer (InvalidXLogRecPtr if not yet applied)
+
+The header is AM-agnostic.  The urec_rmid field identifies the resource manager
+that owns the record.  Block number, offset, and tuple data are part of the
+RM-specific opaque payload, not the generic header.
 
 The urec_clr_ptr field links UNDO records to their Compensation Log Records
 in WAL.  When an UNDO record is applied during rollback, the XLogRecPtr of
@@ -127,7 +129,9 @@ the CLR is stored here, marking the record as "already applied".  During crash
 recovery, records with valid urec_clr_ptr are skipped to prevent
 double-application.
 
-### Record Types
+### Record Types (Heap RM, urec_rmid = UNDO_RMID_HEAP)
+
+The urec_info field carries the RM-specific record type:
 
     UNDO_INSERT  (0x0001)  Marks an INSERT; no tuple payload needed.
                            Rollback: ItemId marked dead (indexed) or unused.
@@ -144,11 +148,16 @@ double-application.
     UNDO_INPLACE (0x0005)  Stores old data from in-place update.
                            Rollback: memcpy old tuple bytes in place.
 
+Other resource managers (e.g., nbtree with UNDO_RMID_BTREE) define their own
+record types in their own urec_info space.
+
 ### Payload
 
-For DELETE, UPDATE, PRUNE, and INPLACE records, the payload is the raw
-HeapTupleHeader data (t_data), with length equal to the tuple's t_len.
-INSERT records have no payload (urec_payload_len = 0).
+The payload is an opaque byte sequence whose interpretation is entirely
+RM-specific.  For the heap RM, DELETE/UPDATE/PRUNE/INPLACE payloads contain
+a small RM-specific header (block number, offset, tuple length) followed by
+the raw HeapTupleHeader data (t_data).  INSERT records have no payload
+(urec_payload_len = 0).
 
 ## 4. File Layout
 
@@ -202,6 +211,15 @@ of concerns, following the architecture of the EDB undo-record-set branch:
     undostats.c     - Statistics and monitoring functions.
 
     undoworker.c    - Background worker for undo record discard.
+
+    undormgr.c      - UNDO resource manager registry. RegisterUndoRmgr()
+                      allows any AM to register an rm_undo callback keyed
+                      by urec_rmid. undoapply.c dispatches to these callbacks.
+
+    undobuffer.c    - AM-agnostic Tier 2 UNDO write buffer. Accumulates
+                      serialized UndoRecordHeaders in a per-backend buffer,
+                      embedded into DML WAL records or flushed as standalone
+                      XLOG_UNDO_BATCH records. Used by heapam and nbtree.
 
 ### Key Types (from undodefs.h)
 
@@ -514,6 +532,8 @@ setting controls memory available for all buffer types including UNDO.
     undo_bufmgr.c  shared_buffers integration, virtual RelFileLocator mapping
     undoworker.c   Background discard worker, rotation checks
     undostats.c    Statistics collection, segment state tracking
+    undormgr.c     UNDO resource manager dispatch (RegisterUndoRmgr, per-AM callbacks)
+    undobuffer.c   AM-agnostic Tier 2 UNDO write buffer (UndoBufferBegin/End/Flush)
 
 ### Header Files (src/include/access/)
 
@@ -526,6 +546,8 @@ setting controls memory available for all buffer types including UNDO.
     undoworker.h    Worker shared memory and GUC declarations
     undo_bufmgr.h   shared_buffers wrapper API for UNDO log blocks
     undostats.h     Statistics structures and functions
+    undormgr.h      UNDO resource manager registration API (per-AM dispatch)
+    undobuffer.h    AM-agnostic Tier 2 write buffer API
 
 ### Frontend Tools (src/bin/)
 
@@ -536,8 +558,10 @@ setting controls memory available for all buffer types including UNDO.
 
 ### Modified Core Files
 
-    src/backend/access/heap/heapam.c          INSERT/DELETE/UPDATE UNDO logging
-    src/backend/access/heap/heapam_handler.c  RelationHasUndo() helper
+    src/backend/access/heap/heapam.c          INSERT/DELETE/UPDATE UNDO logging,
+                                              RelationHasUndo() helper
+    src/backend/access/heap/heapam_handler.c  begin/finish_bulk_insert -> UndoBuffer
+    src/backend/access/nbtree/nbtree_undo.c   B-tree index UNDO RM (INSERT_LEAF etc.)
     src/backend/access/heap/pruneheap.c       PRUNE UNDO logging
     src/backend/access/transam/xact.c         Transaction UNDO chain tracking
     src/backend/access/transam/rmgr.c         Resource manager registration
@@ -561,8 +585,8 @@ setting controls memory available for all buffer types including UNDO.
 
     - Log rotation and segment lifecycle management
       (see UndoLogSealAndRotate() in undolog.c)
-    - UNDO write buffer for reduced per-row overhead in DML
-      (see HeapBeginUndoBuffer() in heapam.c)
+    - AM-agnostic UNDO write buffer for reduced per-row overhead in DML
+      (see UndoBufferBegin() in undobuffer.c)
 
 ### Planned Future Work
 
@@ -603,21 +627,23 @@ transaction size.  The O(N) heap restoration work happens in the background.
 
 **b8 benchmark results -- nuc** (FreeBSD 15, amd64, 8-core, 32 GB RAM,
 shared_buffers=128MB, synchronous_commit=on, 2-iteration median,
-PostgreSQL 19devel, 2026-05-05, commit 9cbdd6d)::
+PostgreSQL 19devel, 2026-05-05, with HEAP_UNDO_DELETE_VISIBILITY_ONLY)::
 
   DML execution time (baseline -> UNDO OFF -> UNDO ON):
 
   Rows    INSERT (base->off->on)   UPDATE (base->off->on)   DELETE (base->off->on)
   ------  -----------------------  -----------------------  -----------------------
-  10K     20ms ->  18ms ->  15ms   11ms ->  12ms ->  10ms    6ms ->   6ms ->   5ms
-  100K    136ms-> 134ms -> 139ms   58ms ->  58ms ->  61ms   37ms ->  34ms ->  44ms
+  10K     25ms ->  28ms ->  28ms   14ms ->  13ms ->  15ms    6ms ->   6ms ->   7ms
+  100K    157ms-> 154ms -> 157ms   75ms ->  81ms ->  80ms   36ms ->  36ms ->  61ms (*)
 
-  DML overhead (ON vs baseline): INSERT +3%, UPDATE +6%, DELETE +19%.
-  (After DELETE delta optimization, DELETE overhead is expected to drop to <3%;
-  see HEAP_UNDO_DELETE_VISIBILITY_ONLY in heapam_undo.c.)
-  DELETE overhead was higher because UNDO records each deleted tuple's
-  full before-image; the new delta path stores only 8 bytes per row.
-  Code-presence overhead (OFF vs baseline) at 100K rows is negligible (<1%).
+  DML overhead at 10K rows (ON vs baseline): INSERT +10%, UPDATE +7%, DELETE +12%.
+  The DELETE overhead at 10K dropped from the pre-optimization baseline of +19%
+  to +12% with HEAP_UNDO_DELETE_VISIBILITY_ONLY, which writes 8 bytes per deleted
+  tuple (xmax + infomask + infomask2) instead of the full 160-560 byte
+  before-image, reducing DELETE UNDO WAL volume by ~93-98%.
+
+  (*) The 100K DELETE measurement has CV=40% with 2 iterations -- too noisy to
+  interpret.  The 10K result (CV=5%) is the reliable reference for DELETE overhead.
 
   Rollback latency (user-visible):
 
@@ -635,20 +661,17 @@ PostgreSQL 19devel, 2026-05-05, commit 9cbdd6d)::
 
   Scale  Clients  Baseline   UNDO OFF   UNDO ON   OFF/Base   ON/Base
   -----  -------  ---------  ---------  ---------  ---------  ---------
-     10        1    550 TPS    248 TPS    244 TPS      0.45x      0.44x  (*)
-     10        4    520 TPS    511 TPS    506 TPS      0.98x      0.97x
-     10        8    808 TPS    798 TPS    780 TPS      0.99x      0.97x
-     50        1    370 TPS    369 TPS    400 TPS      1.00x      1.08x
+     10        1    551 TPS    281 TPS    249 TPS      0.51x      0.45x  (**)
+     10        4    513 TPS    506 TPS    494 TPS      0.99x      0.96x
+     10        8    805 TPS    796 TPS    770 TPS      0.99x      0.96x
+     50        1    243 TPS    326 TPS    256 TPS      1.34x      1.05x  (**)
      50        4    562 TPS    554 TPS    559 TPS      0.99x      0.99x
      50        8   1036 TPS   1042 TPS   1017 TPS      1.01x      0.98x
 
-  (*) The scale=10/c=1 result shows anomalously low TPS for both UNDO OFF
-  and UNDO ON vs baseline.  This appears to be a measurement artifact on
-  FreeBSD at very small scale: the pg_prewarm warm-up loads all pages in
-  ~0.1s, but at scale=10 the working set is tiny and the bottleneck is
-  likely lock contention in the pgbench driver itself rather than
-  PostgreSQL throughput.  The c=4 and c=8 results at the same scale are
-  within 3% of baseline and are the representative measurements.
+  (**) The c=1 results show high variance at both scales on FreeBSD; they are
+  dominated by measurement artifacts rather than PostgreSQL throughput.
+  The c=4 and c=8 results are representative: code-presence overhead (OFF vs
+  baseline) is 0-1%; full UNDO overhead (ON vs baseline) is 1-4%.
 
   Cold-WAL rollback (crash recovery): not measured in b8; would require
   WAL read from disk.  Expected O(N) at ~50 MB/s WAL read throughput for

@@ -33,15 +33,15 @@ extern void ATMShmemInit(void);
 
 /* Core API */
 extern bool ATMIsAborted(TransactionId xid);
-extern bool ATMGetUndoChain(TransactionId xid, RelUndoRecPtr *chain_out);
-extern bool ATMAddAborted(TransactionId xid, Oid dboid, Oid reloid,
-						  RelUndoRecPtr chain_ptr);
+extern bool ATMGetLastBatchLSN(TransactionId xid, XLogRecPtr *lsn_out);
+extern bool ATMAddAborted(TransactionId xid, Oid dboid,
+						  XLogRecPtr last_batch_lsn);
 extern void ATMForget(TransactionId xid);
 extern void ATMMarkReverted(TransactionId xid);
 
 /* Iteration for Logical Revert worker */
 extern bool ATMGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
-								 Oid *reloid_out, RelUndoRecPtr *chain_out);
+								 XLogRecPtr *lsn_out);
 
 /* Recovery support */
 extern void ATMRecoveryFinalize(void);

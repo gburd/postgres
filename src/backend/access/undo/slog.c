@@ -80,7 +80,7 @@ struct slog_txn_node
 	Oid			reloid;
 
 	/* Data fields */
-	RelUndoRecPtr undo_chain;
+	XLogRecPtr	last_batch_lsn; /* LSN of last UNDO batch for this xid */
 	Oid			dboid;
 	TimestampTz abort_time;
 	bool		revert_complete;
@@ -121,7 +121,7 @@ SKIPLIST_DECL(slog_txn, sl_, entries,
 	/* update_entry: copy data fields from value */
 	{
 		slog_txn_node_t *src = (slog_txn_node_t *) value;
-		node->undo_chain = src->undo_chain;
+		node->last_batch_lsn = src->last_batch_lsn;
 		node->dboid = src->dboid;
 		node->abort_time = src->abort_time;
 		node->revert_complete = src->revert_complete;
@@ -130,7 +130,7 @@ SKIPLIST_DECL(slog_txn, sl_, entries,
 	{
 		dest->xid = src->xid;
 		dest->reloid = src->reloid;
-		dest->undo_chain = src->undo_chain;
+		dest->last_batch_lsn = src->last_batch_lsn;
 		dest->dboid = src->dboid;
 		dest->abort_time = src->abort_time;
 		dest->revert_complete = src->revert_complete;
@@ -443,7 +443,7 @@ SLogShmemInit(void)
  */
 bool
 SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
-			  RelUndoRecPtr chain)
+			  XLogRecPtr last_batch_lsn)
 {
 	slog_txn_node_t *node;
 	slog_txn_node_t query;
@@ -477,7 +477,7 @@ SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
 	/* Fill key and data fields */
 	node->xid = xid;
 	node->reloid = reloid;
-	node->undo_chain = chain;
+	node->last_batch_lsn = last_batch_lsn;
 	node->dboid = dboid;
 	node->abort_time = GetCurrentTimestamp();
 	node->revert_complete = false;
@@ -544,7 +544,7 @@ SLogTxnLookup(TransactionId xid, Oid reloid, SLogTxnEntry *entry_out)
 	{
 		entry_out->xid = found->xid;
 		entry_out->reloid = found->reloid;
-		entry_out->undo_chain = found->undo_chain;
+		entry_out->last_batch_lsn = found->last_batch_lsn;
 		entry_out->dboid = found->dboid;
 		entry_out->abort_time = found->abort_time;
 		entry_out->revert_complete = found->revert_complete;
@@ -563,7 +563,7 @@ SLogTxnLookup(TransactionId xid, Oid reloid, SLogTxnEntry *entry_out)
  * xid.  O(log n) instead of O(n) hash scan.
  */
 bool
-SLogTxnLookupByXid(TransactionId xid, RelUndoRecPtr *chain_out)
+SLogTxnLookupByXid(TransactionId xid, XLogRecPtr *lsn_out)
 {
 	slog_txn_node_t query;
 	slog_txn_node_t *found;
@@ -578,8 +578,8 @@ SLogTxnLookupByXid(TransactionId xid, RelUndoRecPtr *chain_out)
 
 	if (found != NULL && found->xid == xid)
 	{
-		if (chain_out)
-			*chain_out = found->undo_chain;
+		if (lsn_out)
+			*lsn_out = found->last_batch_lsn;
 		LWLockRelease(&SLogState->txn_lock.lock);
 		return true;
 	}
@@ -732,7 +732,7 @@ SLogTxnMarkReverted(TransactionId xid)
  */
 bool
 SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
-						 Oid *reloid_out, RelUndoRecPtr *chain_out)
+						 XLogRecPtr *lsn_out)
 {
 	slog_txn_node_t *node;
 	size_t		iter;
@@ -745,8 +745,7 @@ SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
 		{
 			*xid_out = node->xid;
 			*dboid_out = node->dboid;
-			*reloid_out = node->reloid;
-			*chain_out = node->undo_chain;
+			*lsn_out = node->last_batch_lsn;
 
 			LWLockRelease(&SLogState->txn_lock.lock);
 			return true;

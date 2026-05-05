@@ -44,11 +44,12 @@
 - Append-only tables: rare aborts = pure overhead
 - Space-constrained systems: UNDO retention increases storage
 
-Note: Bulk DML operations (COPY, large INSERT/UPDATE/DELETE) benefit from
-the bulk UNDO hints mechanism, which amortizes per-row overhead by batching
-UNDO records.  The `begin_bulk_insert` table AM callback activates batched
-recording for operations with >1000 estimated rows.  This significantly
-reduces the write amplification penalty for bulk workloads.
+Note: All DML operations on UNDO-enabled tables use the Tier 2 write buffer
+(undobuffer.c), which amortizes per-row overhead by embedding UNDO records
+directly into DML WAL records.  The `begin_bulk_insert` table AM callback
+activates the buffer for any UNDO-enabled relation regardless of row count.
+This eliminates separate UNDO WAL writes for single-tuple operations and
+significantly reduces write amplification for all workloads.
 
 ## Heap AM Integration
 
@@ -95,24 +96,29 @@ Rotation is triggered by `UndoLogSealAndRotate()` at configurable thresholds:
 
 The `pg_undo_force_discard()` SQL function allows manual segment reclamation.
 
-## Bulk UNDO Batching
+## UNDO Write Buffer (Tier 2)
 
-For large DML operations, per-row UNDO overhead (UndoLogAllocate + WAL insert
-+ UndoLogWrite per row) becomes a bottleneck.  The bulk UNDO hints mechanism
-amortizes this cost across many rows:
+Without batching, per-row UNDO overhead (UndoLogAllocate + WAL insert +
+UndoLogWrite per row) becomes a bottleneck.  The AM-agnostic Tier 2 write
+buffer (src/backend/access/undo/undobuffer.c) amortizes this cost:
 
 ### Activation
-1. `ExecInitModifyTable` calls `table_begin_bulk_insert()` when the planner
-   estimates >1000 affected rows
-2. The heap AM callback `heapam_begin_bulk_insert` activates
-   `HeapBeginBulkUndo()`, creating a persistent `UndoRecordSet`
+1. `ExecInitModifyTable` calls `table_begin_bulk_insert()` for DML on
+   UNDO-enabled tables (any estimated row count, including single rows)
+2. The heap AM callback `heapam_begin_bulk_insert` calls
+   `UndoBufferBegin()`, activating the AM-agnostic Tier 2 buffer
 
 ### Operation
-- `HeapBulkUndoAddRecord()` accumulates records in the persistent set
-- Auto-flush at 256KB or 1000 records (whichever comes first)
-- Single batch: one UndoLogAllocate, one WAL record, one UndoLogWrite
+- `UndoBufferAddRecord()` / `UndoBufferAddRecordParts()` accumulate
+  serialized UNDO records in a per-backend byte buffer
+- Auto-flush at `undo_batch_size_kb` (default 256KB) or
+  `undo_batch_record_limit` (default 1000 records), whichever comes first
+- At WAL-write time, buffer contents are embedded directly inside the DML
+  WAL record via XLogRegisterData(), eliminating separate UNDO WAL records
+  for single-tuple operations
 
 ### Deactivation
-- `ExecEndModifyTable` calls `table_finish_bulk_insert()` which flushes
-  remaining records and frees the UndoRecordSet
-- Memory context reset callback protects against dangling pointers on abort
+- `ExecEndModifyTable` calls `table_finish_bulk_insert()` which calls
+  `UndoBufferEnd()` to flush remaining records and deactivate the buffer
+- Buffer memory (allocated in TopMemoryContext) is preserved across
+  activations within the same backend for reuse

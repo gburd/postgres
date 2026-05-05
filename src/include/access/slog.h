@@ -30,13 +30,11 @@
 #define SLOG_H
 
 #include "access/transam.h"
+#include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
 #include "storage/itemptr.h"
 #include "storage/lwlock.h"
 #include "storage/spin.h"
-
-/* Forward declaration from relundo.h */
-typedef uint64 RelUndoRecPtr;
 
 /*
  * Partition count for tuple LWLock array.
@@ -90,7 +88,7 @@ typedef struct SLogTxnEntry
 {
 	TransactionId xid;
 	Oid			reloid;
-	RelUndoRecPtr undo_chain;	/* head of per-relation UNDO chain */
+	XLogRecPtr	last_batch_lsn; /* LSN of last UNDO batch for this xid */
 	Oid			dboid;			/* database OID */
 	TimestampTz abort_time;		/* when transaction aborted */
 	bool		revert_complete;	/* has Logical Revert finished? */
@@ -164,17 +162,16 @@ extern void SLogShmemInit(void);
  * ----------------------------------------------------------------
  */
 extern bool SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
-						  RelUndoRecPtr chain);
+						  XLogRecPtr last_batch_lsn);
 extern bool SLogXidIsPresent(TransactionId xid);
 extern bool SLogTxnLookup(TransactionId xid, Oid reloid,
 						  SLogTxnEntry * entry_out);
-extern bool SLogTxnLookupByXid(TransactionId xid, RelUndoRecPtr * chain_out);
+extern bool SLogTxnLookupByXid(TransactionId xid, XLogRecPtr *lsn_out);
 extern void SLogTxnRemove(TransactionId xid, Oid reloid);
 extern void SLogTxnRemoveByXid(TransactionId xid);
 extern void SLogTxnMarkReverted(TransactionId xid);
 extern bool SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
-									 Oid *reloid_out,
-									 RelUndoRecPtr * chain_out);
+									 XLogRecPtr *lsn_out);
 extern void SLogRecoveryFinalize(int *total_out, int *unreverted_out);
 
 /* ----------------------------------------------------------------

@@ -24,15 +24,17 @@
 #include "postgres.h"
 
 #include "access/atm.h"
+#include "access/heapam.h"
+#include "access/nbtree.h"
 #include "access/slog.h"
 #include "access/logical_revert_worker.h"
-#include "access/relundo_worker.h"
 #include "access/undo.h"
 #include "access/undo_flush.h"
 #include "access/undolog.h"
 #include "access/undormgr.h"
 #include "access/undoworker.h"
 #include "access/xactundo.h"
+#include "storage/fileops.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
@@ -84,7 +86,6 @@ UndoShmemSize(void)
 	size = UndoLogShmemSize();
 	size = add_size(size, XactUndoShmemSize());
 	size = add_size(size, UndoWorkerShmemSize());
-	size = add_size(size, RelUndoWorkerShmemSize());
 	size = add_size(size, LogicalRevertShmemSize());
 	size = add_size(size, ATMShmemSize());
 	size = add_size(size, SLogShmemSize());
@@ -160,7 +161,6 @@ UndoShmemInit(void)
 	UndoLogShmemInit();
 	XactUndoShmemInit();
 	UndoWorkerShmemInit();
-	RelUndoWorkerShmemInit();
 	LogicalRevertShmemInit();
 	ATMShmemInit();
 	SLogShmemInit();
@@ -170,6 +170,13 @@ UndoShmemInit(void)
 	 * Initialize the UNDO resource manager dispatch table.
 	 */
 	InitUndoRmgrs();
+
+	/*
+	 * Register built-in UNDO resource managers.
+	 */
+	HeapUndoRmgrInit();
+	NbtreeUndoRmgrInit();
+	FileopsUndoRmgrInit();
 }
 
 /*

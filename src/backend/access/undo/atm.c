@@ -48,7 +48,7 @@
 
 /* Internal helpers that skip WAL emission (used during redo) */
 static bool ATMAddAbortedInternal(TransactionId xid, Oid dboid, Oid reloid,
-								  RelUndoRecPtr chain_ptr);
+								  XLogRecPtr last_batch_lsn);
 static void ATMForgetInternal(TransactionId xid);
 
 /*
@@ -88,15 +88,15 @@ ATMIsAborted(TransactionId xid)
 }
 
 /*
- * ATMGetUndoChain
- *		Retrieve the UNDO chain pointer for an aborted transaction.
+ * ATMGetLastBatchLSN
+ *		Retrieve the WAL LSN of the last UNDO batch for an aborted transaction.
  *
- * Returns true if found, storing the chain pointer in *chain_out.
+ * Returns true if found, storing the LSN in *lsn_out.
  */
 bool
-ATMGetUndoChain(TransactionId xid, RelUndoRecPtr *chain_out)
+ATMGetLastBatchLSN(TransactionId xid, XLogRecPtr *lsn_out)
 {
-	return SLogTxnLookupByXid(xid, chain_out);
+	return SLogTxnLookupByXid(xid, lsn_out);
 }
 
 /*
@@ -110,9 +110,9 @@ ATMGetUndoChain(TransactionId xid, RelUndoRecPtr *chain_out)
  */
 static bool
 ATMAddAbortedInternal(TransactionId xid, Oid dboid, Oid reloid,
-					  RelUndoRecPtr chain_ptr)
+					  XLogRecPtr last_batch_lsn)
 {
-	return SLogTxnInsert(xid, reloid, dboid, chain_ptr);
+	return SLogTxnInsert(xid, reloid, dboid, last_batch_lsn);
 }
 
 /*
@@ -123,23 +123,22 @@ ATMAddAbortedInternal(TransactionId xid, Oid dboid, Oid reloid,
  * signaling the caller to fall back to synchronous rollback.
  */
 bool
-ATMAddAborted(TransactionId xid, Oid dboid, Oid reloid,
-			  RelUndoRecPtr chain_ptr)
+ATMAddAborted(TransactionId xid, Oid dboid, XLogRecPtr last_batch_lsn)
 {
 	xl_atm_abort xlrec;
 
 	/* Write WAL first */
 	xlrec.xid = xid;
-	xlrec.undo_chain = chain_ptr;
+	xlrec.last_batch_lsn = last_batch_lsn;
 	xlrec.dboid = dboid;
-	xlrec.reloid = reloid;
+	xlrec.reloid = InvalidOid;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, SizeOfXlAtmAbort);
 	XLogInsert(RM_ATM_ID, XLOG_ATM_ABORT);
 
 	/* Now update shared memory */
-	return ATMAddAbortedInternal(xid, dboid, reloid, chain_ptr);
+	return ATMAddAbortedInternal(xid, dboid, InvalidOid, last_batch_lsn);
 }
 
 /*
@@ -198,9 +197,9 @@ ATMMarkReverted(TransactionId xid)
  */
 bool
 ATMGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
-					 Oid *reloid_out, RelUndoRecPtr *chain_out)
+					 XLogRecPtr *lsn_out)
 {
-	return SLogTxnGetNextUnreverted(xid_out, dboid_out, reloid_out, chain_out);
+	return SLogTxnGetNextUnreverted(xid_out, dboid_out, lsn_out);
 }
 
 /*
@@ -241,7 +240,7 @@ atm_redo(XLogReaderState *record)
 					(xl_atm_abort *) XLogRecGetData(record);
 
 				ATMAddAbortedInternal(xlrec->xid, xlrec->dboid,
-									  xlrec->reloid, xlrec->undo_chain);
+									  xlrec->reloid, xlrec->last_batch_lsn);
 			}
 			break;
 

@@ -47,7 +47,6 @@
 #include "access/gin_private.h"
 #include "access/ginblock.h"
 #include "access/index_prune.h"
-#include "access/relundo.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/rel.h"

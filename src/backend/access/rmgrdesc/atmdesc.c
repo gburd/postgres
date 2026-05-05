@@ -28,11 +28,10 @@ atm_desc(StringInfo buf, XLogReaderState *record)
 				xl_atm_abort *xlrec = (xl_atm_abort *) data;
 
 				appendStringInfo(buf,
-								 "xid %u, undo_chain %lu, dboid %u, reloid %u",
+								 "xid %u, last_batch_lsn %X/%X, dboid %u",
 								 xlrec->xid,
-								 (unsigned long) xlrec->undo_chain,
-								 xlrec->dboid,
-								 xlrec->reloid);
+								 LSN_FORMAT_ARGS(xlrec->last_batch_lsn),
+								 xlrec->dboid);
 			}
 			break;
 

@@ -195,7 +195,7 @@ static void
 heapam_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
 {
 	if (RelationHasUndo(rel))
-		HeapBeginUndoBuffer(rel, nrows);
+		UndoBufferBegin(rel, nrows);
 }
 
 /*
@@ -207,7 +207,7 @@ static void
 heapam_finish_bulk_insert(Relation rel, uint32 options)
 {
 	if (RelationHasUndo(rel))
-		HeapEndUndoBuffer(rel);
+		UndoBufferEnd(rel);
 }
 
 
