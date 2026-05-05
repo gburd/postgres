@@ -76,6 +76,13 @@ max_wal_size = '4GB'
 log_min_messages = warning
 PGCONF
 
+        # For recno runs, increase logging to capture sLog/UNDO diagnostics
+        if [ "$am" = "recno" ]; then
+            cat >> "${pgdata}/postgresql.conf" <<RECNO_CONF
+log_min_messages = log
+RECNO_CONF
+        fi
+
         # Start
         log "  Starting server..."
         "${PG_BIN}/pg_ctl" -D "${pgdata}" -l "${pgdata}/pg.log" start -w -t 30
@@ -135,6 +142,12 @@ PGCONF
 
             clients=$((clients * 2))
         done
+
+        # Preserve per-run pg.log before stopping server
+        if [ -f "${pgdata}/pg.log" ]; then
+            cp "${pgdata}/pg.log" "${RESULTS_DIR}/pglog_${am}_${run_label}.log"
+            log "  Preserved pg.log -> pglog_${am}_${run_label}.log"
+        fi
 
         # Stop server
         "${PG_BIN}/pg_ctl" -D "${pgdata}" stop -m fast 2>/dev/null

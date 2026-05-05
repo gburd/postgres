@@ -204,8 +204,11 @@ run_pgbench_test() {
     output=$("$PGBENCH" -h 127.0.0.1 -p "$port" -c "$clients" -j "$clients" \
                         -T "$DURATION" --no-vacuum postgres 2>&1) || true
 
-    # Extract TPS (excluding connections establishing)
-    RESULT_TPS=$(echo "$output" | grep -i "excluding connections establishing" \
+    # Extract TPS.  pgbench's wording changed in PG19 from
+    # "excluding connections establishing" to
+    # "without initial connection time".  Accept either.
+    RESULT_TPS=$(echo "$output" \
+                 | grep -iE 'excluding connections establishing|without initial connection time' \
                  | sed 's/.*= *//' | sed 's/ .*//' || echo "")
 
     # Extract latency average
@@ -244,7 +247,7 @@ echo ""
 
 mkdir -p "$PGDATA_BASE"
 
-# ── Run heap benchmarks ────────────────────────────────────────
+# -- Run heap benchmarks ----------------------------------------
 init_cluster "$HEAP_PGDATA" "$HEAP_PORT" "heap"
 start_cluster "$HEAP_PGDATA" "heap"
 wait_for_ready "$HEAP_PORT" "heap"
@@ -260,7 +263,7 @@ done
 
 stop_cluster "$HEAP_PGDATA" "heap"
 
-# ── Run recno benchmarks ───────────────────────────────────────
+# -- Run recno benchmarks ---------------------------------------
 init_cluster "$RECNO_PGDATA" "$RECNO_PORT" "recno"
 start_cluster "$RECNO_PGDATA" "recno"
 wait_for_ready "$RECNO_PORT" "recno"

@@ -1,5 +1,5 @@
 --
--- Role: Hot reader -- fast point lookups on frequently-accessed rows
+-- Role: Hot reader — fast point lookups on frequently-accessed rows
 --
 -- Used by the multi-role concurrent benchmark (W9).
 -- Exercises buffer cache hits and UNDO visibility checks.

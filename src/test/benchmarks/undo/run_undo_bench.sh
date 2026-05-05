@@ -318,7 +318,7 @@ measure_undo_log_size() {
     fi
 }
 
-# -- Run each benchmark --------------------------------------------------------
+# ── Run each benchmark ────────────────────────────────────────────────────────
 
 for bench in $BENCHMARKS; do
     log "=== Benchmark: $bench ==="
