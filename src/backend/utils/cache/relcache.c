@@ -1584,6 +1584,7 @@ RelationInitIndexAccessInfo(Relation relation)
 	 */
 	relation->rd_indexprs = NIL;
 	relation->rd_indpred = NIL;
+	relation->rd_indattr = NULL;
 	relation->rd_exclops = NULL;
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
@@ -5267,6 +5268,99 @@ RelationGetIndexPredicate(Relation relation)
 }
 
 /*
+ * RelationGetIndexedAttrs -- palloc'd Bitmapset of heap attrs this index
+ * references.
+ *
+ * Includes attributes used as simple key columns, INCLUDE columns, inside
+ * expression columns, and inside the partial-index predicate.  Attribute
+ * numbers use the FirstLowInvalidHeapAttributeNumber offset convention so
+ * that system attributes are representable alongside user attributes.
+ *
+ * The function builds up the bitmap from:
+ *   - rd_index->indkey           (keys + INCLUDE)
+ *   - RelationGetIndexExpressions (parsed expression trees, already cached)
+ *   - RelationGetIndexPredicate   (parsed predicate tree, already cached)
+ * and caches a copy in rd_indexedattr, which lives in rd_indexcxt.
+ *
+ * The returned Bitmapset is allocated in the caller's current memory
+ * context; the caller owns it and must bms_free when done.  We never hand
+ * out a borrowed pointer to the cached copy because relcache invalidation
+ * can rebuild rd_indexcxt in place even while a refcount is held.
+ *
+ * Caller must hold an open lock on the index relation.
+ */
+Bitmapset *
+RelationGetIndexedAttrs(Relation indexRel)
+{
+	Bitmapset  *attrs = NULL;
+	Form_pg_index indexStruct;
+	List	   *indexprs;
+	List	   *indpred;
+	MemoryContext oldcxt;
+
+	Assert(indexRel->rd_rel->relkind == RELKIND_INDEX ||
+		   indexRel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX);
+
+	/* Fast path: return a copy of the cached bitmap. */
+	if (indexRel->rd_indattr != NULL)
+		return bms_copy(indexRel->rd_indattr);
+
+	indexStruct = indexRel->rd_index;
+
+	/*
+	 * During very early bootstrap rd_indextuple may not be populated yet.
+	 * In that case we fall back to just the key columns without caching.
+	 */
+	if (indexRel->rd_indextuple == NULL)
+	{
+		for (int i = 0; i < indexStruct->indnatts; i++)
+		{
+			AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+			if (attrnum != 0)
+				attrs = bms_add_member(attrs,
+									   attrnum - FirstLowInvalidHeapAttributeNumber);
+		}
+		return attrs;
+	}
+
+	/* Keys and INCLUDE columns */
+	for (int i = 0; i < indexStruct->indnatts; i++)
+	{
+		AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+		/* attnum 0 means "expression"; those attrs are picked up below. */
+		if (attrnum != 0)
+			attrs = bms_add_member(attrs,
+								   attrnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* Expression columns (via already-parsed tree, reusing relcache). */
+	indexprs = RelationGetIndexExpressions(indexRel);
+	if (indexprs != NIL)
+		pull_varattnos((Node *) indexprs, 1, &attrs);
+
+	/* Partial-index predicate columns. */
+	indpred = RelationGetIndexPredicate(indexRel);
+	if (indpred != NIL)
+		pull_varattnos((Node *) indpred, 1, &attrs);
+
+	/*
+	 * Cache a copy inside rd_indexcxt so subsequent calls are cheap.  The
+	 * cached bitmap is freed along with rd_indexcxt on relcache rebuild, so
+	 * it's safe to stash here.
+	 */
+	if (indexRel->rd_indexcxt != NULL)
+	{
+		oldcxt = MemoryContextSwitchTo(indexRel->rd_indexcxt);
+		indexRel->rd_indattr = bms_copy(attrs);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	return attrs;
+}
+
+/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
@@ -6499,6 +6593,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_partcheckcxt = NULL;
 		rel->rd_indexprs = NIL;
 		rel->rd_indpred = NIL;
+		rel->rd_indattr = NULL;
 		rel->rd_exclops = NULL;
 		rel->rd_exclprocs = NULL;
 		rel->rd_exclstrats = NULL;
