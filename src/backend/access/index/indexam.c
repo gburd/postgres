@@ -657,14 +657,26 @@ bool
 index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 {
 	bool		all_dead = false;
+	bool		hot_indexed_recheck = false;
 	bool		found;
 
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
-									&scan->xs_heap_continue, &all_dead);
+									&scan->xs_heap_continue, &all_dead,
+									&hot_indexed_recheck);
 
 	if (found)
 		pgstat_count_heap_fetch(scan->indexRelation);
+
+	/*
+	 * If the HOT chain we followed contained a Selective Index Update
+	 * (HOT-indexed), the scan key that got us here may no longer match the
+	 * heap tuple's current attribute values -- force the executor to run
+	 * the original qual against this tuple on top of whatever the index AM
+	 * already asked for via xs_recheck.
+	 */
+	if (found && hot_indexed_recheck)
+		scan->xs_recheck = true;
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index

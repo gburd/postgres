@@ -2592,7 +2592,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, NULL))
 				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
 		}
 	}
