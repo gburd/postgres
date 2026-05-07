@@ -719,9 +719,33 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot))
 				break;
 
-			/* Since we used no scan keys, should never need to recheck */
+			/*
+			 * CLUSTER uses a no-key full-index scan; it cannot do any
+			 * tuple-level filtering itself.  The HOT-indexed (SIU) reader
+			 * path routinely sets xs_recheck when walking chain entries whose
+			 * index key may be stale relative to the visible heap tuple.
+			 * Those entries cause the same live tuple to be visited via the
+			 * fresh SIU-inserted entry too; including them would duplicate
+			 * rows in the rewritten heap.  Skip them here -- the tuple is
+			 * reachable through its canonical index entry.
+			 *
+			 * If xs_recheck is set with actual scan keys, that's a real lossy
+			 * index scenario CLUSTER can't handle (historical restriction).
+			 */
 			if (indexScan->xs_recheck)
-				elog(ERROR, "CLUSTER does not support lossy index conditions");
+			{
+				if (indexScan->numberOfKeys > 0)
+					elog(ERROR, "CLUSTER does not support lossy index conditions");
+				continue;
+			}
+
+			/*
+			 * Same reasoning as for xs_recheck: a HOT-indexed (SIU) stale hop
+			 * would re-emit an already-visited tuple via its canonical fresh
+			 * entry.  Skip.
+			 */
+			if (indexScan->xs_hot_indexed_recheck)
+				continue;
 		}
 		else
 		{

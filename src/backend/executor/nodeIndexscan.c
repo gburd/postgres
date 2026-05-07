@@ -151,6 +151,29 @@ IndexNext(IndexScanState *node)
 			}
 		}
 
+		/*
+		 * HOT-indexed (SIU) stale entry: the chain we walked crossed a SIU
+		 * hop and the index entry's key may no longer agree with the heap
+		 * tuple's current attributes.  If the query has an original qual,
+		 * re-evaluate it against the tuple; otherwise drop the tuple as a
+		 * duplicate -- the canonical fresh SIU-inserted entry will return
+		 * the same tuple via its direct path.
+		 */
+		if (scandesc->xs_hot_indexed_recheck)
+		{
+			if (node->indexqualorig == NULL)
+			{
+				InstrCountFiltered2(node, 1);
+				continue;
+			}
+			econtext->ecxt_scantuple = slot;
+			if (!ExecQualAndReset(node->indexqualorig, econtext))
+			{
+				InstrCountFiltered2(node, 1);
+				continue;
+			}
+		}
+
 		return slot;
 	}
 

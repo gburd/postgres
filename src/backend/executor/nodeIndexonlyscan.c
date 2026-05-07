@@ -230,6 +230,21 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 
 		/*
+		 * HOT-indexed (SIU) stale entry.  For an index-only scan, the values
+		 * returned come straight from the index tuple, so a stale entry
+		 * would surface the wrong key values to the caller.  Drop it: the
+		 * canonical fresh SIU-inserted entry will return the tuple with the
+		 * correct current values.  If a recheckqual is present we also ran
+		 * it above, so the tuple is already confirmed; otherwise we have no
+		 * way to verify and must drop.
+		 */
+		if (scandesc->xs_hot_indexed_recheck)
+		{
+			InstrCountFiltered2(node, 1);
+			continue;
+		}
+
+		/*
 		 * We don't currently support rechecking ORDER BY distances.  (In
 		 * principle, if the index can support retrieval of the originally
 		 * indexed value, it should be able to produce an exact distance
