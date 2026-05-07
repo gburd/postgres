@@ -3205,7 +3205,8 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 			CommandId cid, uint32 options,
 			Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, const LockTupleMode lockmode,
-			const Bitmapset *modified_idx_attrs, const bool hot_allowed)
+			const Bitmapset *modified_idx_attrs,
+			const HeapUpdateHotMode hot_mode)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3993,10 +3994,10 @@ l2:
 	{
 		/*
 		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed.
+		 * to do a HOT update.  Check if HeapUpdateHotAllowable() has
+		 * sanctioned it (HEAP_HOT_MODE_CLASSIC or HEAP_HOT_MODE_INDEXED).
 		 */
-		if (hot_allowed)
+		if (hot_mode != HEAP_HOT_MODE_NO)
 			use_hot_update = true;
 	}
 	else
@@ -4335,60 +4336,55 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 }
 
 /*
- * HOT updates are possible when either: a) there are no modified indexed
- * attributes, or b) the modified attributes are all on summarizing indexes.
- * Later, in heap_update(), we can choose to perform a HOT update if there is
- * space on the page for the new tuple and the following code has determined
- * that HOT is allowed.
+ * HeapUpdateHotAllowable --
+ *
+ * Classify an UPDATE for HOT eligibility based on which indexed attributes
+ * changed (the `modified_idx_attrs` bitmap, computed by the executor).  The
+ * return value tells heap_update() both whether HOT is permitted and, if so,
+ * whether a HOT-indexed (SIU) tombstone must accompany the new tuple to carry
+ * the per-update modified-attrs bitmap.
+ *
+ * Today this function only ever returns HEAP_HOT_MODE_NO or
+ * HEAP_HOT_MODE_CLASSIC -- exactly mirroring the pre-SIU bool-valued API.
+ * Phase 3.1c will teach it to return HEAP_HOT_MODE_INDEXED when modified
+ * attributes overlap a non-summarizing index and the relation is SIU-eligible.
+ *
+ * Later, in heap_update(), we can choose to perform a HOT (or HOT-indexed)
+ * update if there is space on the page for the new tuple (and, for
+ * HEAP_HOT_MODE_INDEXED, a tombstone).
  */
-bool
+HeapUpdateHotMode
 HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 {
-	bool		hot_allowed;
-
 	/*
-	 * Let's be optimistic and start off by assuming the best case, no indexes
-	 * need updating and HOT is allowable.
-	 */
-	hot_allowed = true;
-
-	/*
-	 * Check for case (a); when there are no modified index attributes HOT is
-	 * allowed.
+	 * Case (a): no indexed attribute was modified -> classic HOT.
 	 */
 	if (bms_is_empty(modified_idx_attrs))
-		hot_allowed = true;
-	else
+		return HEAP_HOT_MODE_CLASSIC;
+
+	/*
+	 * Case (b): at least one indexed attribute changed.  If all of them are
+	 * used only by summarizing indexes, we can still take the classic HOT
+	 * path -- the summarizing index AM gets a new entry via aminsert and no
+	 * non-summarizing index needs to change.
+	 */
 	{
 		Bitmapset  *sum_attrs = RelationGetIndexAttrBitmap(relation,
 														   INDEX_ATTR_BITMAP_SUMMARIZED);
-
-		/*
-		 * At least one index attribute was modified, but is this case (b)
-		 * where all the modified index attributes are only used by
-		 * summarizing indexes?  If it is, then we need to update those
-		 * indexes, but this update can still be considered heap-only (HOT)
-		 * and avoid updating any non-summarizing indexes on the relation.
-		 */
-		if (bms_is_subset(modified_idx_attrs, sum_attrs))
-		{
-			hot_allowed = true;
-		}
-		else
-		{
-			/*
-			 * Now we know a) one or more indexed attributes were modified
-			 * (changed value, not just referenced within the UPDATE) and that
-			 * b) at least one of those attributes is used by a
-			 * non-summarizing index. HOT is not allowed.
-			 */
-			hot_allowed = false;
-		}
+		bool		all_summarizing = bms_is_subset(modified_idx_attrs, sum_attrs);
 
 		bms_free(sum_attrs);
+
+		if (all_summarizing)
+			return HEAP_HOT_MODE_CLASSIC;
 	}
 
-	return hot_allowed;
+	/*
+	 * A non-summarizing indexed attribute changed.  Phase 3.1c will return
+	 * HEAP_HOT_MODE_INDEXED here when the relation is SIU-eligible; for now
+	 * we preserve the legacy behavior by refusing HOT.
+	 */
+	return HEAP_HOT_MODE_NO;
 }
 
 /*
@@ -4514,7 +4510,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	bool		shouldFree = true;
 	Bitmapset  *idx_attrs;
 	Bitmapset  *local_modified_idx_attrs;
-	bool		hot_allowed;
+	HeapUpdateHotMode hot_mode;
 	Buffer		buffer;
 
 	Assert(ItemPointerIsValid(otid));
@@ -4589,12 +4585,12 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 
 	local_modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
 	lockmode = HeapUpdateDetermineLockmode(relation, local_modified_idx_attrs);
-	hot_allowed = HeapUpdateHotAllowable(relation, local_modified_idx_attrs);
+	hot_mode = HeapUpdateHotAllowable(relation, local_modified_idx_attrs);
 
 	result = heap_update(relation, otid, tup, GetCurrentCommandId(true),
 						 0 /* options */ ,
 						 InvalidSnapshot, true /* wait for commit */ ,
-						 &tmfd, lockmode, local_modified_idx_attrs, hot_allowed);
+						 &tmfd, lockmode, local_modified_idx_attrs, hot_mode);
 
 	if (shouldFree)
 		heap_freetuple(oldtup);
