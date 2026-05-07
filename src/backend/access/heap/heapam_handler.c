@@ -2613,11 +2613,26 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			OffsetNumber offnum = offsets[curslot];
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
+			bool		hot_indexed_recheck = false;
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true, NULL))
+									   &heapTuple, NULL, true,
+									   &hot_indexed_recheck))
+			{
 				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+
+				/*
+				 * If we reached the visible tuple through a HOT-indexed
+				 * (SIU) hop, the bitmap index entry that pointed us at the
+				 * chain root may describe key values the visible tuple no
+				 * longer has.  Force BitmapHeapScan to run its recheck
+				 * qual against these tuples even if the bitmap page was
+				 * otherwise exact.
+				 */
+				if (hot_indexed_recheck)
+					*recheck = true;
+			}
 		}
 	}
 	else
