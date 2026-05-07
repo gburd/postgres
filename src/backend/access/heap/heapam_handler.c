@@ -228,13 +228,13 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
-	bool		hot_allowed;
+	HeapUpdateHotMode hot_mode;
 	TM_Result	result;
 
 	Assert(ItemPointerIsValid(otid));
 	Assert(upd_info != NULL);
 
-	hot_allowed = HeapUpdateHotAllowable(relation, upd_info->modified_attrs);
+	hot_mode = HeapUpdateHotAllowable(relation, upd_info->modified_attrs);
 	*lockmode = HeapUpdateDetermineLockmode(relation, upd_info->modified_attrs);
 
 	/* Update the tuple with table oid */
@@ -243,7 +243,7 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 	result = heap_update(relation, otid, tuple, cid, options,
 						 crosscheck, wait,
-						 tmfd, *lockmode, upd_info->modified_attrs, hot_allowed);
+						 tmfd, *lockmode, upd_info->modified_attrs, hot_mode);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
