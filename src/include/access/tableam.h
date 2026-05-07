@@ -499,12 +499,20 @@ typedef struct TableAmRoutine
 	 * index_fetch_tuple iff it is guaranteed that no backend needs to see
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
+	 *
+	 * *hot_indexed_recheck, if not NULL, should be set to true iff the
+	 * tuple or any HOT chain member traversed to reach it carried a
+	 * HEAP_INDEXED_UPDATED marker (Selective Index Update).  Callers use
+	 * this to decide whether the index scan must rerun its original
+	 * quals against the heap tuple because the index entry's key may no
+	 * longer agree with the heap tuple's attribute values.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
-									  bool *call_again, bool *all_dead);
+									  bool *call_again, bool *all_dead,
+									  bool *hot_indexed_recheck);
 
 
 	/* ------------------------------------------------------------------------
@@ -1317,11 +1325,13 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 						ItemPointer tid,
 						Snapshot snapshot,
 						TupleTableSlot *slot,
-						bool *call_again, bool *all_dead)
+						bool *call_again, bool *all_dead,
+						bool *hot_indexed_recheck)
 {
 	return scan->rel->rd_tableam->index_fetch_tuple(scan, tid, snapshot,
 													slot, call_again,
-													all_dead);
+													all_dead,
+													hot_indexed_recheck);
 }
 
 /*
