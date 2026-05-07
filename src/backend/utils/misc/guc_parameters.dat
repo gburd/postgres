@@ -1234,6 +1234,14 @@
   boot_val => 'NULL',
 },
 
+{ name => 'hot_indexed_updates', type => 'bool', context => 'PGC_USERSET', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Enables HOT-indexed (Selective Index Update) updates.',
+  long_desc => 'When enabled, UPDATE statements that modify indexed columns may still be performed as heap-only (HOT) updates provided the page has room for a tombstone line pointer carrying the per-update modified-attrs bitmap.  This is a work-in-progress feature; leave disabled on production systems.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'hot_indexed_updates',
+  boot_val => 'false',
+},
+
 { name => 'hot_standby', type => 'bool', context => 'PGC_POSTMASTER', group => 'REPLICATION_STANDBY',
   short_desc => 'Allows connections and queries during recovery.',
   variable => 'EnableHotStandby',

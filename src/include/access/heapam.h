@@ -44,6 +44,15 @@
 #define HEAP_PAGE_PRUNE_ALLOW_FAST_PATH		(1 << 2)
 #define HEAP_PAGE_PRUNE_SET_VM				(1 << 3)
 
+/*
+ * GUC: if true, heap_update may emit a HOT-indexed (Selective Index Update)
+ * tombstone carrying the per-update modified-attrs bitmap instead of
+ * falling back to a non-HOT update when a non-summarizing indexed column
+ * changes.  Default false; Phase 3.1f will flip the default once the
+ * reader path and prune reclamation land.
+ */
+extern PGDLLIMPORT bool hot_indexed_updates;
+
 typedef struct BulkInsertStateData *BulkInsertState;
 typedef struct GlobalVisState GlobalVisState;
 typedef struct TupleTableSlot TupleTableSlot;
