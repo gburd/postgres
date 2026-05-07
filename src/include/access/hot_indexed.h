@@ -48,6 +48,7 @@
 #define HOT_INDEXED_H
 
 #include "access/htup_details.h"
+#include "nodes/bitmapset.h"
 #include "storage/bufpage.h"
 #include "storage/itemptr.h"
 
@@ -142,6 +143,17 @@ HotIndexedTombstoneGetNbytes(const HeapTupleHeaderData *tup)
 {
 	return HotIndexedTombstoneGetPayloadConst(tup)->t_nbytes;
 }
+
+/*
+ * Write-side API (implemented in src/backend/access/heap/hot_indexed.c).
+ */
+extern Size heap_build_hot_indexed_tombstone(char *buf,
+											 OffsetNumber target_offnum,
+											 int natts,
+											 const Bitmapset *modified_attrs);
+
+extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
+													  AttrNumber attnum);
 
 /*
  * Compile-time layout sanity:
