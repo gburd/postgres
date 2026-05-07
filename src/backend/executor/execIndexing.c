@@ -118,6 +118,7 @@
 #include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
+#include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
@@ -356,11 +357,13 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * UPDATE skip rule.  ExecSetIndexUnchanged populated
 		 * ii_IndexUnchanged for every index: for a non-HOT update it is false
 		 * everywhere (every index needs a fresh entry at the new TID), and
-		 * for a HOT update it is false only on indexes whose key attributes
-		 * overlap the modified-attrs bitmap.  When it is true on a
-		 * non-summarizing index we skip the insert entirely; the HOT chain
-		 * keeps existing entries pointing at the chain root. Summarizing
-		 * indexes always get a chance to update their block-level summaries.
+		 * for a HOT update it is false only on indexes whose attributes
+		 * (keys, INCLUDE columns, expression references, and
+		 * partial-predicate references) overlap the modified-attrs bitmap.
+		 * When it is true on a non-summarizing index we skip the insert
+		 * entirely; the HOT chain keeps existing entries pointing at the
+		 * chain root.  Summarizing indexes always get a chance to update
+		 * their block-level summaries.
 		 */
 		if ((flags & EIIT_IS_UPDATE) &&
 			indexInfo->ii_IndexUnchanged &&
@@ -1008,13 +1011,19 @@ index_recheck_constraint(Relation index, const Oid *constr_procs,
  *
  * Otherwise the update was HOT (new tuple shares the chain's root TID);
  * only indexes whose attributes overlap modified_idx_attrs require a new
- * entry.  For each index we examine its key attributes and set
- * ii_IndexUnchanged to true iff none of them appear in the modified set.
- * Expression indexes conservatively set false (a later commit widens this
- * to keys + INCLUDE + expression + predicate via RelationGetIndexedAttrs).
+ * entry.  For each index we consult RelationGetIndexedAttrs() -- the full
+ * per-index bitmap covering keys, INCLUDE columns, expression-index
+ * references, and partial-predicate references -- and set ii_IndexUnchanged
+ * true iff that bitmap does not overlap the modified set.
  *
- * INCLUDE (non-key) columns are intentionally ignored here: they do not
- * participate in search and do not affect HOT-eligibility by themselves.
+ * The flag has two consumers:
+ *
+ *   - ExecInsertIndexTuples uses it for the per-index skip decision on
+ *     UPDATE: non-summarizing indexes marked unchanged are skipped (their
+ *     existing key entry continues to resolve the HOT chain).
+ *
+ *   - Index AMs receive it as the indexUnchanged hint to aminsert (used
+ *     by nbtree deduplication and similar heuristics).
  */
 void
 ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
@@ -1038,7 +1047,7 @@ ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 		return;
 	}
 
-	/* HOT update: decide per-index based on the modified-attrs bitmap. */
+	/* HOT update: decide per-index via the full indexed-attrs bitmap. */
 	if (modified_idx_attrs == NULL)
 		return;
 
@@ -1046,32 +1055,15 @@ ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 	{
 		IndexInfo  *indexInfo = indexInfoArray[i];
 		Relation	indexDesc = indexDescs[i];
-		bool		indexUnchanged = true;
+		Bitmapset  *indexedattrs;
+		bool		indexUnchanged;
 
 		if (indexDesc == NULL)
 			continue;
 
-		for (int attr = 0; attr < indexInfo->ii_NumIndexKeyAttrs; attr++)
-		{
-			int			keycol = indexInfo->ii_IndexAttrNumbers[attr];
-
-			if (keycol <= 0)
-			{
-				/*
-				 * Expression index.  Conservatively assume it changed. A
-				 * later commit walks the expression tree precisely.
-				 */
-				indexUnchanged = false;
-				break;
-			}
-
-			if (bms_is_member(keycol - FirstLowInvalidHeapAttributeNumber,
-							  modified_idx_attrs))
-			{
-				indexUnchanged = false;
-				break;
-			}
-		}
+		indexedattrs = RelationGetIndexedAttrs(indexDesc);
+		indexUnchanged = !bms_overlap(indexedattrs, modified_idx_attrs);
+		bms_free(indexedattrs);
 
 		indexInfo->ii_IndexUnchanged = indexUnchanged;
 	}
