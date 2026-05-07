@@ -16,6 +16,7 @@
 
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/transam.h"
@@ -230,6 +231,7 @@ static void heap_prune_record_unchanged_lp_unused(PruneState *prstate, OffsetNum
 static void heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
+static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
 
 static void page_verify_redirects(Page page);
 
@@ -607,6 +609,26 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 		 * Get the tuple's visibility status and queue it up for processing.
 		 */
 		htup = (HeapTupleHeader) PageGetItem(page, itemid);
+
+		/*
+		 * A HOT-indexed (SIU) tombstone is an LP_NORMAL item that carries no
+		 * user data (natts == 0) and is flagged with HEAP_INDEXED_UPDATED.
+		 * Visibility-wise it is permanently invisible (HEAP_XMIN_INVALID), so
+		 * heap_prune_satisfies_vacuum() would classify it HEAPTUPLE_DEAD and
+		 * pruning would try to reclaim it -- destroying the modified-attrs
+		 * bitmap an index scan needs.  Record it as an unchanged line
+		 * pointer here and skip the rest of the per-offnum work.
+		 *
+		 * A later commit will add targeted reclamation of tombstones whose
+		 * live SIU tuple has itself been pruned away; for now tombstones
+		 * accumulate until the next table rewrite.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(htup))
+		{
+			heap_prune_record_unchanged_lp_tombstone(prstate, offnum);
+			continue;
+		}
+
 		tup.t_data = htup;
 		tup.t_len = ItemIdGetLength(itemid);
 		ItemPointerSet(&tup.t_self, blockno, offnum);
@@ -2052,6 +2074,28 @@ heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum
 }
 
 /*
+ * Record a HOT-indexed (SIU) tombstone that is left unchanged.
+ *
+ * A tombstone item is an LP_NORMAL line pointer flagged HEAP_INDEXED_UPDATED
+ * with natts = 0; its payload is the modified-attrs bitmap consumed by index
+ * scans, not a user tuple.  For pruning purposes it behaves like a redirect:
+ * it has storage but does not count as a live or dead tuple, and it must not
+ * be freed (doing so would silently lose the bitmap).  We simply mark the
+ * page as non-empty and record that this offset has been processed.
+ *
+ * NB: This is the conservative "never reclaim" policy; see comments in the
+ * main per-offnum loop.  A later commit will teach pruneheap to reclaim a
+ * tombstone together with its live SIU tuple once the whole chain is dead.
+ */
+static void
+heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum)
+{
+	Assert(!prstate->processed[offnum]);
+	prstate->processed[offnum] = true;
+	prstate->hastup = true;
+}
+
+/*
  * Perform the actual page changes needed by heap_page_prune_and_freeze().
  *
  * If 'lp_truncate_only' is set, we are merely marking LP_DEAD line pointers
@@ -2309,6 +2353,15 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 		if (ItemIdIsNormal(lp))
 		{
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
+
+			/*
+			 * HOT-indexed (SIU) tombstone items are never chain roots and
+			 * have no backing tuple data that index scans should resolve to.
+			 * Leave root_offsets[offnum - 1] = InvalidOffsetNumber so callers
+			 * that consult the map for this offset see it as not-a-root.
+			 */
+			if (HeapTupleHeaderIsHotIndexedTombstone(htup))
+				continue;
 
 			/*
 			 * Check if this tuple is part of a HOT-chain rooted at some other

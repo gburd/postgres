@@ -131,6 +131,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"
@@ -2214,6 +2215,15 @@ lazy_scan_noprune(LVRelState *vacrel,
 
 		hastup = true;			/* page prevents rel truncation */
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
+
+		/*
+		 * HOT-indexed (SIU) tombstones carry only a modified-attrs bitmap;
+		 * xmin/xmax are invalid and natts == 0.  VACUUM must leave them
+		 * alone (they are reclaimed by pruneheap in a later phase).
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(tupleheader))
+			continue;
+
 		if (heap_tuple_should_freeze(tupleheader, &vacrel->cutoffs,
 									 &NoFreezePageRelfrozenXid,
 									 &NoFreezePageRelminMxid))
@@ -3675,6 +3685,14 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
+
+		/*
+		 * HOT-indexed (SIU) tombstones are permanently invisible bitmap
+		 * carriers; they must not disqualify a page from being all-visible
+		 * or all-frozen.  Skip them here without touching state.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(tuple.t_data))
+			continue;
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);
