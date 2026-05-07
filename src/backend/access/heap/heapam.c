@@ -63,13 +63,23 @@
 #include "utils/syscache.h"
 
 
+/*
+ * GUC: enable/disable HOT-indexed (Selective Index Update) tombstones.
+ * Declared in access/heapam.h.
+ */
+bool		hot_indexed_updates = false;
+
+
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, uint32 options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
 								  bool all_visible_cleared, bool new_all_visible_cleared,
-								  bool walLogical);
+								  bool walLogical,
+								  OffsetNumber tombstone_offnum,
+								  const char *tombstone_item,
+								  Size tombstone_item_size);
 #ifdef USE_ASSERT_CHECKING
 static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 const ItemPointerData *otid,
@@ -3232,6 +3242,16 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
+	bool		emit_tombstone = false;
+	OffsetNumber tombstone_offnum = InvalidOffsetNumber;
+	Size		tombstone_item_size = 0;
+	/*
+	 * Stack-resident scratch for building the HOT-indexed tombstone item
+	 * before entering the critical section.  Sized for the worst case
+	 * (MaxHeapAttributeNumber = 1600 attrs -> 200-byte bitmap plus a fixed
+	 * ~28-byte header); bumped to the next power of two for safety.
+	 */
+	char		tombstone_buf[256];
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -3796,6 +3816,21 @@ l2:
 
 	newtupsize = MAXALIGN(newtup->t_len);
 
+	/*
+	 * If a HOT-indexed (SIU) update is permitted, a tombstone line pointer
+	 * must also fit on the same page as the new tuple.  Account for its
+	 * size (including one additional ItemIdData slot) when deciding whether
+	 * to stay on the old page.  If the tombstone would not fit, we fall
+	 * through to the non-HOT path.
+	 */
+	if (hot_mode == HEAP_HOT_MODE_INDEXED)
+	{
+		Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+
+		/* HotIndexedTombstoneSize already returns a MAXALIGN'd value. */
+		newtupsize += tombsize + sizeof(ItemIdData);
+	}
+
 	if (need_toast || newtupsize > pagefree)
 	{
 		TransactionId xmax_lock_old_tuple;
@@ -4042,6 +4077,19 @@ l2:
 		HeapTupleSetHeapOnly(heaptup);
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
+
+		/*
+		 * For a HOT-indexed (SIU) update, the new live tuple also carries
+		 * HEAP_INDEXED_UPDATED so index scans walking the chain know a
+		 * tombstone with the per-update modified-attrs bitmap is present on
+		 * the same page.
+		 */
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
+		{
+			heaptup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
+			newtup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
+			emit_tombstone = true;
+		}
 	}
 	else
 	{
@@ -4052,6 +4100,28 @@ l2:
 	}
 
 	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
+
+	/*
+	 * For HOT-indexed updates, emit the tombstone adjacent to the live SIU
+	 * tuple.  heaptup->t_self was populated by RelationPutHeapTuple.
+	 */
+	if (emit_tombstone)
+	{
+		int			natts = RelationGetNumberOfAttributes(relation);
+		OffsetNumber target = ItemPointerGetOffsetNumber(&heaptup->t_self);
+
+		tombstone_item_size = HotIndexedTombstoneSize(natts);
+		Assert(tombstone_item_size <= sizeof(tombstone_buf));
+		(void) heap_build_hot_indexed_tombstone(tombstone_buf, target, natts,
+												modified_idx_attrs);
+		tombstone_offnum = PageAddItemExtended(page,
+											   tombstone_buf,
+											   tombstone_item_size,
+											   InvalidOffsetNumber,
+											   PAI_IS_HEAP);
+		if (tombstone_offnum == InvalidOffsetNumber)
+			elog(ERROR, "failed to add HOT-indexed tombstone to page; newtupsize fit check was too lax");
+	}
 
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
@@ -4107,7 +4177,10 @@ l2:
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new,
-								 walLogical);
+								 walLogical,
+								 tombstone_offnum,
+								 emit_tombstone ? tombstone_buf : NULL,
+								 tombstone_item_size);
 		if (newbuf != buffer)
 		{
 			PageSetLSN(newpage, recptr);
@@ -4380,10 +4453,14 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	}
 
 	/*
-	 * A non-summarizing indexed attribute changed.  Phase 3.1c will return
-	 * HEAP_HOT_MODE_INDEXED here when the relation is SIU-eligible; for now
-	 * we preserve the legacy behavior by refusing HOT.
+	 * A non-summarizing indexed attribute changed.  Whether we can still
+	 * take a HOT-indexed (SIU) path depends on the `hot_indexed_updates`
+	 * GUC and on the relation not being a system catalog (catcache does
+	 * not yet filter stale SIU entries; see Phase 7 plan).
 	 */
+	if (hot_indexed_updates && !IsCatalogRelation(relation))
+		return HEAP_HOT_MODE_INDEXED;
+
 	return HEAP_HOT_MODE_NO;
 }
 
@@ -8923,7 +9000,10 @@ log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup, HeapTuple newtup,
 				HeapTuple old_key_tuple,
 				bool all_visible_cleared, bool new_all_visible_cleared,
-				bool walLogical)
+				bool walLogical,
+				OffsetNumber tombstone_offnum,
+				const char *tombstone_item,
+				Size tombstone_item_size)
 {
 	xl_heap_update xlrec;
 	xl_heap_header xlhdr;
@@ -9022,6 +9102,18 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		}
 	}
 
+	/*
+	 * If a HOT-indexed (SIU) tombstone was placed adjacent to the new
+	 * tuple on `newbuf`, log it so replay can recreate it.  The data is
+	 * attached to block 0 (the new buffer) after the main rdata chain.
+	 */
+	if (tombstone_item_size > 0)
+	{
+		Assert(tombstone_item != NULL);
+		Assert(OffsetNumberIsValid(tombstone_offnum));
+		xlrec.flags |= XLH_UPDATE_CONTAINS_TOMBSTONE;
+	}
+
 	/* If new tuple is the single and first tuple on page... */
 	if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
 		PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
@@ -9086,6 +9178,23 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	 * The 'data' doesn't include the common prefix or suffix.
 	 */
 	XLogRegisterBufData(0, &xlhdr, SizeOfHeapHeader);
+
+	/*
+	 * HOT-indexed (SIU) tombstones: write a uint16 trailer length right
+	 * after xlhdr so replay can subtract it from the block's data length
+	 * to recover the true tuple body length.  The trailer itself
+	 * (OffsetNumber + uint16 + raw bytes) is appended at the end of the
+	 * rdata chain below.
+	 */
+	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+	{
+		uint16		trailer_len = (uint16) (sizeof(OffsetNumber) +
+											sizeof(uint16) +
+											tombstone_item_size);
+
+		XLogRegisterBufData(0, &trailer_len, sizeof(uint16));
+	}
+
 	if (prefixlen == 0)
 	{
 		XLogRegisterBufData(0,
@@ -9125,6 +9234,21 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 		XLogRegisterData((char *) old_key_tuple->t_data + SizeofHeapTupleHeader,
 						 old_key_tuple->t_len - SizeofHeapTupleHeader);
+	}
+
+	/*
+	 * HOT-indexed (SIU) tombstone: log the recorded offset, byte count,
+	 * and the raw item bytes as buffer data on block 0 so replay can
+	 * PageAddItemExtended it at the same offset.
+	 */
+	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+	{
+		uint16		tomb_size16 = (uint16) tombstone_item_size;
+
+		Assert(tombstone_item_size > 0 && tombstone_item_size <= UINT16_MAX);
+		XLogRegisterBufData(0, &tombstone_offnum, sizeof(OffsetNumber));
+		XLogRegisterBufData(0, &tomb_size16, sizeof(uint16));
+		XLogRegisterBufData(0, unconstify(char *, tombstone_item), tombstone_item_size);
 	}
 
 	/* filtering by origin on a row level is much more efficient */
