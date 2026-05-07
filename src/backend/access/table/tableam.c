@@ -242,7 +242,8 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  bool *hot_indexed_recheck)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
@@ -252,7 +253,7 @@ table_index_fetch_tuple_check(Relation rel,
 	slot = table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
-									all_dead, NULL);
+									all_dead, hot_indexed_recheck);
 	table_index_fetch_end(scan);
 	ExecDropSingleTupleTableSlot(slot);
 

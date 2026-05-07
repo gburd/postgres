@@ -607,6 +607,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * Reset the HOT-indexed (SIU) recheck flag: it is set by the heap AM
+	 * during index_fetch_heap and is per-fetched-tuple, not per-index-entry.
+	 * For IndexOnlyScan, which may skip index_fetch_heap when the VM says
+	 * the entry is visible-to-all, this ensures we don't carry a stale
+	 * value from a previous entry.
+	 */
+	scan->xs_hot_indexed_recheck = false;
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -670,13 +679,14 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 
 	/*
 	 * If the HOT chain we followed contained a Selective Index Update
-	 * (HOT-indexed), the scan key that got us here may no longer match the
-	 * heap tuple's current attribute values -- force the executor to run
-	 * the original qual against this tuple on top of whatever the index AM
-	 * already asked for via xs_recheck.
+	 * (HOT-indexed), surface the recheck requirement on the separate
+	 * xs_hot_indexed_recheck flag (not xs_recheck).  Keeping them distinct
+	 * lets the executor tell a lossy-index recheck (needs qual re-eval)
+	 * apart from an SIU stale entry (which should be dropped when no qual
+	 * is available, since the canonical fresh entry will return the same
+	 * tuple via its direct path).
 	 */
-	if (found && hot_indexed_recheck)
-		scan->xs_recheck = true;
+	scan->xs_hot_indexed_recheck = (found && hot_indexed_recheck);
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index

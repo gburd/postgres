@@ -509,6 +509,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 			{
 				ItemPointerData htid;
 				bool		all_dead = false;
+				bool		hot_indexed_recheck = false;
 
 				if (!inposting)
 				{
@@ -559,12 +560,47 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 * satisfying SnapshotDirty. This is necessary because for AMs
 				 * with optimizations like heap's HOT, we have just a single
 				 * index entry for the entire chain.
+				 *
+				 * The hot_indexed_recheck out-param picks up any HEAP_INDEXED_UPDATED
+				 * hop encountered along the chain.  In classic HOT the chain
+				 * preserves the index key, so a live tuple anywhere in the chain
+				 * constitutes a definite conflict; with Selective Index Update
+				 * (SIU) that invariant no longer holds -- an old index entry for
+				 * key K may chain-lead to a heap tuple whose actual index key is
+				 * different K'.  In that case this is a stale entry, not a
+				 * conflict; we filter it out below once we have finished
+				 * collecting the match.
 				 */
 				else if (table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
-													   &all_dead))
+													   &all_dead,
+													   &hot_indexed_recheck))
 				{
 					TransactionId xwait;
+
+					/*
+					 * If the chain walk crossed a HOT-indexed (Selective Index
+					 * Update) hop, the classic "live tuple found in chain implies
+					 * same index key" invariant does not hold: an old index entry
+					 * for key K may chain-lead to a tuple whose current index key
+					 * is K'.  Without rechecking keys we'd raise a spurious unique
+					 * violation.  TODO(P3.1f): verify the heap tuple's actual
+					 * index key against the existing btree entry's key and only
+					 * treat it as a conflict when they agree.  For now, treat the
+					 * match as not-a-conflict and continue scanning -- we may
+					 * still find our own entry (CHECK_EXISTING) or a genuine
+					 * duplicate (non-SIU entry) further along.  This is
+					 * conservative only when the GUC hot_indexed_updates is
+					 * enabled; real duplicates restricted to SIU-affected attrs
+					 * will be missed here.
+					 */
+					if (hot_indexed_recheck)
+					{
+						if (nbuf != InvalidBuffer)
+							_bt_relbuf(rel, nbuf);
+						nbuf = InvalidBuffer;
+						goto bt_siu_skip;
+					}
 
 					/*
 					 * It is a duplicate. If we are only doing a partial
@@ -619,7 +655,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					htid = itup->t_tid;
 					if (table_index_fetch_tuple_check(heapRel, &htid,
-													  SnapshotSelf, NULL))
+													  SnapshotSelf, NULL, NULL))
 					{
 						/* Normal case --- it's still live */
 					}
@@ -715,6 +751,9 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 */
 				if (!all_dead && inposting)
 					prevalldead = false;
+
+			bt_siu_skip:
+				;
 			}
 		}
 

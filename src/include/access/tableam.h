@@ -1343,7 +1343,8 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  bool *hot_indexed_recheck);
 
 
 /* ------------------------------------------------------------------------

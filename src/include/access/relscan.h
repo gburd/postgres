@@ -190,6 +190,19 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
 	/*
+	 * T means the HOT chain we walked to reach xs_heaptid crossed a
+	 * HOT-indexed (Selective Index Update) hop: the index entry's key
+	 * may no longer match the heap tuple's current values.  Unlike
+	 * xs_recheck -- which is set by lossy index AMs such as GiST and
+	 * GIN -- this flag is set by the heap AM during chain-walking.
+	 * Executor code uses it to decide between "recheck against heap
+	 * tuple" (same as xs_recheck when the query has a qual) and "drop
+	 * as a stale duplicate" (when the canonical SIU-inserted entry
+	 * will return the same tuple via a direct path).
+	 */
+	bool		xs_hot_indexed_recheck;
+
+	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY
 	 * expressions of the last returned tuple, according to the index.  If
 	 * xs_recheckorderby is true, these need to be rechecked just like the
