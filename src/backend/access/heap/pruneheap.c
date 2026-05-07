@@ -108,6 +108,21 @@ typedef struct
 	OffsetNumber heaponly_items[MaxHeapTuplesPerPage];
 
 	/*
+	 * HOT-indexed (SIU) tombstones on this page, captured during the main
+	 * per-offnum pass.  After chain processing has decided the fate of
+	 * each SIU live tuple, prune_handle_tombstones() walks this list and
+	 * either keeps a tombstone (its target is still a live SIU tuple
+	 * readers may hit) or reclaims it as LP_UNUSED (the target was
+	 * removed, the bitmap is no longer referenced).
+	 */
+	int			ntombstones;
+	struct
+	{
+		OffsetNumber offnum;	/* tombstone's own LP offset */
+		OffsetNumber target;	/* offnum of live SIU tuple it describes */
+	}			tombstones[MaxHeapTuplesPerPage];
+
+	/*
 	 * processed[offnum] is true if item at offnum has been processed.
 	 *
 	 * This needs to be MaxHeapTuplesPerPage + 1 long as FirstOffsetNumber is
@@ -232,6 +247,7 @@ static void heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNum
 static void heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
+static void prune_handle_tombstones(PruneState *prstate);
 
 static void page_verify_redirects(Page page);
 
@@ -444,6 +460,7 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->nfrozen = 0;
 	prstate->nroot_items = 0;
 	prstate->nheaponly_items = 0;
+	prstate->ntombstones = 0;
 
 	/* initialize page freezing working state */
 	prstate->pagefrz.freeze_required = false;
@@ -616,16 +633,20 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 		 * Visibility-wise it is permanently invisible (HEAP_XMIN_INVALID), so
 		 * heap_prune_satisfies_vacuum() would classify it HEAPTUPLE_DEAD and
 		 * pruning would try to reclaim it -- destroying the modified-attrs
-		 * bitmap an index scan needs.  Record it as an unchanged line
-		 * pointer here and skip the rest of the per-offnum work.
-		 *
-		 * A later commit will add targeted reclamation of tombstones whose
-		 * live SIU tuple has itself been pruned away; for now tombstones
-		 * accumulate until the next table rewrite.
+		 * bitmap an index scan needs.  Defer the classification decision:
+		 * stash the tombstone in prstate->tombstones[] and finalize in
+		 * prune_handle_tombstones() after chain processing, which has the
+		 * information to know whether the target live SIU tuple survived.
 		 */
 		if (HeapTupleHeaderIsHotIndexedTombstone(htup))
 		{
-			heap_prune_record_unchanged_lp_tombstone(prstate, offnum);
+			if (prstate->ntombstones >= MaxHeapTuplesPerPage)
+				elog(ERROR, "too many HOT-indexed tombstones on page %u",
+					 blockno);
+			prstate->tombstones[prstate->ntombstones].offnum = offnum;
+			prstate->tombstones[prstate->ntombstones].target =
+				HotIndexedTombstoneGetTarget(htup);
+			prstate->ntombstones++;
 			continue;
 		}
 
@@ -722,6 +743,15 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 		else
 			heap_prune_record_unchanged_lp_normal(prstate, offnum);
 	}
+
+	/*
+	 * Now that chain-processing has finalized each tuple's fate, decide
+	 * each HOT-indexed tombstone's fate: keep if its target live SIU tuple
+	 * still holds data readers can walk to, reclaim otherwise.  Must come
+	 * before the "processed every tuple" Assert -- tombstones weren't
+	 * marked processed in the main loop.
+	 */
+	prune_handle_tombstones(prstate);
 
 	/* We should now have processed every tuple exactly once  */
 #ifdef USE_ASSERT_CHECKING
@@ -2093,6 +2123,107 @@ heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnu
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
 	prstate->hastup = true;
+}
+
+/*
+ * prune_handle_tombstones
+ *
+ * Final-pass classifier for HOT-indexed (SIU) tombstones recorded in
+ * prstate->tombstones[] during the main per-offnum loop.
+ *
+ * For each tombstone (offnum, target):
+ *
+ *   - If the target offset is *still* an LP_NORMAL tuple carrying
+ *     HEAP_INDEXED_UPDATED, readers walking a chain that reaches this
+ *     SIU tuple may consult the tombstone to decide whether to recheck
+ *     their scan keys.  Keep the tombstone unchanged.
+ *
+ *   - Otherwise the target has been pruned (LP_UNUSED or LP_DEAD, or
+ *     replaced by something without HEAP_INDEXED_UPDATED set).  Its
+ *     modified-attrs bitmap is no longer referenced by any caller, so
+ *     the tombstone is reclaimed as LP_UNUSED.  This is the only path
+ *     by which tombstones leave the page outside of a table rewrite.
+ *
+ * We never redirect a tombstone -- the structure has no visibility
+ * semantics -- and never mark it LP_DEAD, since index entries never
+ * point at a tombstone in the first place.
+ */
+static void
+prune_handle_tombstones(PruneState *prstate)
+{
+	Page		page = prstate->page;
+
+	for (int i = 0; i < prstate->ntombstones; i++)
+	{
+		OffsetNumber tomb_off = prstate->tombstones[i].offnum;
+		OffsetNumber target_off = prstate->tombstones[i].target;
+		bool		target_alive;
+
+		Assert(!prstate->processed[tomb_off]);
+
+		/*
+		 * Chain processing has already decided each SIU tuple's fate but
+		 * the decisions have not yet been applied to the page.  Reading
+		 * PageGetItemId(page, target_off) would see the pre-prune state
+		 * and falsely conclude the target is alive.  Instead, check the
+		 * prstate arrays: if target_off is slated to become LP_UNUSED or
+		 * LP_DEAD, the tombstone's bitmap is no longer referenced.
+		 */
+		target_alive = true;
+		if (target_off < FirstOffsetNumber ||
+			target_off > PageGetMaxOffsetNumber(page))
+		{
+			target_alive = false;
+		}
+		else
+		{
+			for (int j = 0; j < prstate->nunused; j++)
+			{
+				if (prstate->nowunused[j] == target_off)
+				{
+					target_alive = false;
+					break;
+				}
+			}
+			if (target_alive)
+			{
+				for (int j = 0; j < prstate->ndead; j++)
+				{
+					if (prstate->nowdead[j] == target_off)
+					{
+						target_alive = false;
+						break;
+					}
+				}
+			}
+			if (target_alive)
+			{
+				/*
+				 * Target survived chain processing.  Sanity-check that it is
+				 * still an LP_NORMAL tuple carrying HEAP_INDEXED_UPDATED on
+				 * the page (before any writes); if that invariant is ever
+				 * violated, treat as orphaned rather than corrupt the page.
+				 */
+				ItemId		target_lp = PageGetItemId(page, target_off);
+
+				if (!ItemIdIsNormal(target_lp))
+					target_alive = false;
+				else
+				{
+					HeapTupleHeader thdr =
+						(HeapTupleHeader) PageGetItem(page, target_lp);
+
+					if ((thdr->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+						target_alive = false;
+				}
+			}
+		}
+
+		if (target_alive)
+			heap_prune_record_unchanged_lp_tombstone(prstate, tomb_off);
+		else
+			heap_prune_record_unused(prstate, tomb_off, true);
+	}
 }
 
 /*
