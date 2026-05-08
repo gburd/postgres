@@ -3822,13 +3822,27 @@ l2:
 	 * size (including one additional ItemIdData slot) when deciding whether
 	 * to stay on the old page.  If the tombstone would not fit, we fall
 	 * through to the non-HOT path.
+	 *
+	 * Use PageGetFreeSpaceForMultipleTuples(2) for the second check so we
+	 * reserve room for two new line pointers (one for the tuple, one for
+	 * the tombstone).  PageGetHeapFreeSpace only accounts for one LP, and
+	 * the MaxHeapTuplesPerPage check it performs also applies to our
+	 * two-item insert -- if the page is already full of LPs we can't add
+	 * two more.
 	 */
 	if (hot_mode == HEAP_HOT_MODE_INDEXED)
 	{
 		Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+		Size		multi_pagefree;
+		OffsetNumber nlp = PageGetMaxOffsetNumber(page);
 
-		/* HotIndexedTombstoneSize already returns a MAXALIGN'd value. */
-		newtupsize += tombsize + sizeof(ItemIdData);
+		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+
+		if (newtupsize + tombsize > multi_pagefree ||
+			nlp + 2 > MaxHeapTuplesPerPage)
+			pagefree = 0;
+		else
+			pagefree = multi_pagefree - tombsize;
 	}
 
 	if (need_toast || newtupsize > pagefree)
@@ -3960,8 +3974,21 @@ l2:
 		{
 			if (newtupsize > pagefree)
 			{
+				Size		tuple_need = heaptup->t_len;
+
+				/*
+				 * For HOT-indexed (SIU), ask RelationGetBufferForTuple for
+				 * room that fits both the new tuple and its tombstone.
+				 * Otherwise it may return our current buffer after an
+				 * opportunistic prune even though there isn't room for the
+				 * tombstone, which would PANIC below inside the critical
+				 * section.
+				 */
+				if (hot_mode == HEAP_HOT_MODE_INDEXED)
+					tuple_need += HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
-				newbuf = RelationGetBufferForTuple(relation, heaptup->t_len,
+				newbuf = RelationGetBufferForTuple(relation, tuple_need,
 												   buffer, 0, NULL,
 												   &vmbuffer_new, &vmbuffer,
 												   0);
@@ -3975,6 +4002,18 @@ l2:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 			/* Re-check using the up-to-date free space */
 			pagefree = PageGetHeapFreeSpace(page);
+			if (hot_mode == HEAP_HOT_MODE_INDEXED)
+			{
+				Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+				Size		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+				OffsetNumber nlp = PageGetMaxOffsetNumber(page);
+
+				if (newtupsize + tombsize > multi_pagefree ||
+					nlp + 2 > MaxHeapTuplesPerPage)
+					pagefree = 0;
+				else
+					pagefree = multi_pagefree - tombsize;
+			}
 			if (newtupsize > pagefree ||
 				(vmbuffer == InvalidBuffer && PageIsAllVisible(page)))
 			{
@@ -4120,7 +4159,7 @@ l2:
 											   InvalidOffsetNumber,
 											   PAI_IS_HEAP);
 		if (tombstone_offnum == InvalidOffsetNumber)
-			elog(ERROR, "failed to add HOT-indexed tombstone to page; newtupsize fit check was too lax");
+			elog(PANIC, "failed to add HOT-indexed tombstone to page; newtupsize fit check was too lax");
 	}
 
 
@@ -4455,12 +4494,15 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	/*
 	 * A non-summarizing indexed attribute changed.  Whether we can still
 	 * take a HOT-indexed (SIU) path depends on the `hot_indexed_updates`
-	 * GUC and on the relation being SIU-eligible: not a system catalog
-	 * (catcache does not yet filter stale SIU entries; see Phase 7 plan)
-	 * and not carrying an exclusion constraint (check_exclusion_or_unique_
-	 * constraint relies on "one live tuple per (key, TID)" which SIU's
-	 * stale chain entries break; temporal PRIMARY KEY ... WITHOUT
-	 * OVERLAPS falls into this category).
+	 * GUC and on the relation being SIU-eligible: it must not carry an
+	 * exclusion constraint (check_exclusion_or_unique_constraint relies on
+	 * "one live tuple per (key, TID)" which SIU's stale chain entries
+	 * break; temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into this
+	 * category), and it must not be a system catalog.  The systable scan
+	 * path (systable_getnext and friends) already re-evaluates heap-attnum
+	 * scan keys to filter SIU-stale arrivals, but enabling SIU on catalogs
+	 * also requires bootstrap and recovery paths to be audited; that work
+	 * is deferred to Phase 7.
 	 */
 	if (hot_indexed_updates && !IsCatalogRelation(relation) &&
 		!RelationHasExclusionConstraint(relation))

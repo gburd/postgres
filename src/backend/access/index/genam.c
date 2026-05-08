@@ -24,6 +24,7 @@
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/transam.h"
+#include "access/valid.h"
 #include "catalog/index.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
@@ -415,6 +416,22 @@ systable_beginscan(Relation heapRelation,
 	sysscan->irel = irel;
 	sysscan->slot = table_slot_create(heapRelation, NULL);
 
+	/*
+	 * Keep an untranslated copy of the caller's scan keys for HOT-indexed
+	 * (SIU) recheck.  The copy uses the caller's heap attnums, which are
+	 * needed to re-evaluate a chain-walked tuple against the original query.
+	 * Index-column attnums in iscan->keyData (set below) are unsuitable for
+	 * that purpose.  heap_keys is NULL if nkeys is zero.
+	 */
+	sysscan->nkeys_heap = nkeys;
+	if (nkeys > 0)
+	{
+		sysscan->heap_keys = palloc_array(ScanKeyData, nkeys);
+		memcpy(sysscan->heap_keys, key, nkeys * sizeof(ScanKeyData));
+	}
+	else
+		sysscan->heap_keys = NULL;
+
 	if (snapshot == NULL)
 	{
 		Oid			relid = RelationGetRelid(heapRelation);
@@ -526,12 +543,18 @@ systable_getnext(SysScanDesc sysscan)
 
 	if (sysscan->irel)
 	{
-		if (index_getnext_slot(sysscan->iscan, ForwardScanDirection, sysscan->slot))
+		for (;;)
 		{
-			bool		shouldFree;
+			if (!index_getnext_slot(sysscan->iscan, ForwardScanDirection,
+									sysscan->slot))
+				break;
 
-			htup = ExecFetchSlotHeapTuple(sysscan->slot, false, &shouldFree);
-			Assert(!shouldFree);
+			{
+				bool		shouldFree;
+
+				htup = ExecFetchSlotHeapTuple(sysscan->slot, false, &shouldFree);
+				Assert(!shouldFree);
+			}
 
 			/*
 			 * We currently don't need to support lossy index operators for
@@ -543,6 +566,30 @@ systable_getnext(SysScanDesc sysscan)
 			 */
 			if (sysscan->iscan->xs_recheck)
 				elog(ERROR, "system catalog scans with lossy index conditions are not implemented");
+
+			/*
+			 * HOT-indexed (Selective Index Update): the visible heap tuple
+			 * was reached via a chain walk through a SIU hop, so the index
+			 * entry's key may no longer agree with the current tuple
+			 * attributes.  Rerun the scan keys against the heap tuple and
+			 * drop it if they don't match; the canonical fresh SIU entry
+			 * will produce the tuple via its direct path.  iscan->keyData
+			 * is populated by systable_beginscan() for the catalog scan,
+			 * which uses only simple attnum-based equality keys, so
+			 * HeapKeyTest is sufficient.
+			 */
+			if (sysscan->iscan->xs_hot_indexed_recheck &&
+				sysscan->nkeys_heap > 0 &&
+				!HeapKeyTest(htup,
+							 RelationGetDescr(sysscan->heap_rel),
+							 sysscan->nkeys_heap,
+							 sysscan->heap_keys))
+			{
+				htup = NULL;
+				continue;
+			}
+
+			break;
 		}
 	}
 	else
@@ -628,6 +675,12 @@ systable_endscan(SysScanDesc sysscan)
 	if (sysscan->snapshot)
 		UnregisterSnapshot(sysscan->snapshot);
 
+	if (sysscan->heap_keys)
+	{
+		pfree(sysscan->heap_keys);
+		sysscan->heap_keys = NULL;
+	}
+
 	/*
 	 * Reset the bsysscan flag at the end of the systable scan.  See detailed
 	 * comments in xact.c where these variables are declared.
@@ -681,6 +734,16 @@ systable_beginscan_ordered(Relation heapRelation,
 	sysscan->heap_rel = heapRelation;
 	sysscan->irel = indexRelation;
 	sysscan->slot = table_slot_create(heapRelation, NULL);
+
+	/* Same heap-attnum key snapshot as in systable_beginscan(). */
+	sysscan->nkeys_heap = nkeys;
+	if (nkeys > 0)
+	{
+		sysscan->heap_keys = palloc_array(ScanKeyData, nkeys);
+		memcpy(sysscan->heap_keys, key, nkeys * sizeof(ScanKeyData));
+	}
+	else
+		sysscan->heap_keys = NULL;
 
 	if (snapshot == NULL)
 	{
@@ -744,12 +807,36 @@ systable_getnext_ordered(SysScanDesc sysscan, ScanDirection direction)
 	HeapTuple	htup = NULL;
 
 	Assert(sysscan->irel);
-	if (index_getnext_slot(sysscan->iscan, direction, sysscan->slot))
+	for (;;)
+	{
+		if (!index_getnext_slot(sysscan->iscan, direction, sysscan->slot))
+		{
+			htup = NULL;
+			break;
+		}
 		htup = ExecFetchSlotHeapTuple(sysscan->slot, false, NULL);
 
-	/* See notes in systable_getnext */
-	if (htup && sysscan->iscan->xs_recheck)
-		elog(ERROR, "system catalog scans with lossy index conditions are not implemented");
+		/* See notes in systable_getnext */
+		if (sysscan->iscan->xs_recheck)
+			elog(ERROR, "system catalog scans with lossy index conditions are not implemented");
+
+		/*
+		 * Drop HOT-indexed (SIU) stale arrivals: the canonical fresh entry
+		 * will return this tuple through its direct path.  See systable_getnext.
+		 */
+		if (sysscan->iscan->xs_hot_indexed_recheck &&
+			sysscan->nkeys_heap > 0 &&
+			!HeapKeyTest(htup,
+						 RelationGetDescr(sysscan->heap_rel),
+						 sysscan->nkeys_heap,
+						 sysscan->heap_keys))
+		{
+			htup = NULL;
+			continue;
+		}
+
+		break;
+	}
 
 	/*
 	 * Handle the concurrent abort while fetching the catalog tuple during
@@ -776,6 +863,12 @@ systable_endscan_ordered(SysScanDesc sysscan)
 	index_endscan(sysscan->iscan);
 	if (sysscan->snapshot)
 		UnregisterSnapshot(sysscan->snapshot);
+
+	if (sysscan->heap_keys)
+	{
+		pfree(sysscan->heap_keys);
+		sysscan->heap_keys = NULL;
+	}
 
 	/*
 	 * Reset the bsysscan flag at the end of the systable scan.  See detailed

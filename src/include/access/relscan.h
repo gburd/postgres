@@ -237,6 +237,16 @@ typedef struct SysScanDescData
 	struct IndexScanDescData *iscan;	/* only valid in index-scan case */
 	struct SnapshotData *snapshot;	/* snapshot to unregister at end of scan */
 	struct TupleTableSlot *slot;
+
+	/*
+	 * Heap-attnum scan keys, captured during systable_beginscan().  Distinct
+	 * from iscan->keyData, whose sk_attno values have been translated to
+	 * index column positions.  Used during HOT-indexed (SIU) recheck so we
+	 * can evaluate the original catalog key against the heap tuple.  NULL if
+	 * nkeys_heap == 0.
+	 */
+	int			nkeys_heap;
+	struct ScanKeyData *heap_keys;
 } SysScanDescData;
 
 #endif							/* RELSCAN_H */
