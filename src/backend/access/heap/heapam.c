@@ -3972,14 +3972,28 @@ l2:
 
 				/*
 				 * For HOT-indexed (SIU), ask RelationGetBufferForTuple for
-				 * room that fits both the new tuple and its tombstone.
-				 * Otherwise it may return our current buffer after an
-				 * opportunistic prune even though there isn't room for the
-				 * tombstone, which would PANIC below inside the critical
-				 * section.
+				 * room that fits both the new tuple and its tombstone.  Pass
+				 * MAXALIGN(tuple_len) + tombstone_size + sizeof(ItemIdData):
+				 *
+				 *  - MAXALIGN so the request matches the byte footprint
+				 *    PageAddItem will actually consume (it MAXALIGN's each
+				 *    item's size);
+				 *  - plus tombstone_size (already MAXALIGN'd by
+				 *    HotIndexedTombstoneSize());
+				 *  - plus one extra sizeof(ItemIdData) because
+				 *    PageGetHeapFreeSpace (used internally by
+				 *    RelationGetBufferForTuple) reserves one LP slot but we
+				 *    need two.
+				 *
+				 * Without this the helper can return our current buffer
+				 * after an opportunistic prune with just enough room for the
+				 * tuple, and the tombstone PageAddItem would then PANIC
+				 * inside the critical section.
 				 */
 				if (hot_mode == HEAP_HOT_MODE_INDEXED)
-					tuple_need += HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+					tuple_need = MAXALIGN(heaptup->t_len) +
+								 HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation)) +
+								 sizeof(ItemIdData);
 
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
 				newbuf = RelationGetBufferForTuple(relation, tuple_need,
