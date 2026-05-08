@@ -3246,12 +3246,13 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	OffsetNumber tombstone_offnum = InvalidOffsetNumber;
 	Size		tombstone_item_size = 0;
 	/*
-	 * Stack-resident scratch for building the HOT-indexed tombstone item
-	 * before entering the critical section.  Sized for the worst case
-	 * (MaxHeapAttributeNumber = 1600 attrs -> 200-byte bitmap plus a fixed
-	 * ~28-byte header); bumped to the next power of two for safety.
+	 * Scratch buffer used to build the HOT-indexed tombstone item
+	 * before entering the critical section.  palloc'd once per call and
+	 * sized precisely for this relation; freed on return via the caller's
+	 * memory context cleanup.  NULL if we don't end up emitting a
+	 * tombstone.
 	 */
-	char		tombstone_buf[256];
+	char	   *tombstone_buf = NULL;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -4081,6 +4082,20 @@ l2:
 	}
 
 	/*
+	 * If we are going HOT-indexed (SIU), allocate the tombstone scratch
+	 * buffer and build its contents *now*, before the critical section.
+	 * Doing the palloc inside the critical section could PANIC on OOM;
+	 * building the payload here also keeps the critical section small.
+	 */
+	if (use_hot_update && hot_mode == HEAP_HOT_MODE_INDEXED)
+	{
+		int			natts = RelationGetNumberOfAttributes(relation);
+
+		tombstone_item_size = HotIndexedTombstoneSize(natts);
+		tombstone_buf = (char *) palloc(tombstone_item_size);
+	}
+
+	/*
 	 * Compute replica identity tuple before entering the critical section so
 	 * we don't PANIC upon a memory allocation failure.
 	 * ExtractReplicaIdentity() will return NULL if nothing needs to be
@@ -4142,15 +4157,18 @@ l2:
 
 	/*
 	 * For HOT-indexed updates, emit the tombstone adjacent to the live SIU
-	 * tuple.  heaptup->t_self was populated by RelationPutHeapTuple.
+	 * tuple.  heaptup->t_self was populated by RelationPutHeapTuple.  The
+	 * scratch buffer was palloc'd and sized above, before entering the
+	 * critical section, so this block does no allocation and cannot ERROR
+	 * except by the defensive PANIC which the fit check should prevent.
 	 */
 	if (emit_tombstone)
 	{
 		int			natts = RelationGetNumberOfAttributes(relation);
 		OffsetNumber target = ItemPointerGetOffsetNumber(&heaptup->t_self);
 
-		tombstone_item_size = HotIndexedTombstoneSize(natts);
-		Assert(tombstone_item_size <= sizeof(tombstone_buf));
+		Assert(tombstone_buf != NULL);
+		Assert(tombstone_item_size == HotIndexedTombstoneSize(natts));
 		(void) heap_build_hot_indexed_tombstone(tombstone_buf, target, natts,
 												modified_idx_attrs);
 		tombstone_offnum = PageAddItemExtended(page,
