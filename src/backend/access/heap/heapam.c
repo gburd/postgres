@@ -63,13 +63,6 @@
 #include "utils/syscache.h"
 
 
-/*
- * GUC: enable/disable HOT-indexed (Selective Index Update) tombstones.
- * Declared in access/heapam.h.
- */
-bool		hot_indexed_updates = true;
-
-
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, uint32 options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
@@ -4510,22 +4503,19 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	}
 
 	/*
-	 * A non-summarizing indexed attribute changed.  Whether we can still
-	 * take a HOT-indexed (SIU) path depends on the `hot_indexed_updates`
-	 * GUC and on the relation being SIU-eligible: it must not carry an
-	 * exclusion constraint (check_exclusion_or_unique_constraint relies on
-	 * "one live tuple per (key, TID)" which SIU's stale chain entries
-	 * break; temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into this
-	 * category), and it must not be a system catalog.  The catcache's
-	 * systable scan path (systable_getnext and friends in genam.c)
-	 * already re-evaluates heap-attnum scan keys to filter SIU-stale
-	 * arrivals, but enabling SIU on catalogs also requires vacuum's
-	 * full-scan path (which uses a heap scan, not an index scan) to be
-	 * made SIU-aware, and pg_class / pg_attribute invalidation paths to
-	 * cooperate with the tombstone layout.  That work is deferred to a
-	 * future Phase 7 iteration.
+	 * A non-summarizing indexed attribute changed.  HOT-indexed (SIU) is
+	 * supported whenever the relation can tolerate extra index entries in a
+	 * chain whose per-chain-member keys may differ:
+	 *
+	 *   - System catalogs are excluded: the vacuum seqscan over pg_class and
+	 *     several catcache invalidation paths don't yet filter SIU-stale
+	 *     chain hits, so catalogs fall back to the pre-SIU non-HOT path.
+	 *   - Relations with any exclusion constraint are excluded:
+	 *     check_exclusion_or_unique_constraint relies on "one live tuple per
+	 *     (key, TID)", which SIU's stale chain entries break; temporal
+	 *     PRIMARY KEY ... WITHOUT OVERLAPS falls into this category.
 	 */
-	if (hot_indexed_updates && !IsCatalogRelation(relation) &&
+	if (!IsCatalogRelation(relation) &&
 		!RelationHasExclusionConstraint(relation))
 		return HEAP_HOT_MODE_INDEXED;
 
