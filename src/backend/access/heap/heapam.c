@@ -4516,11 +4516,14 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * exclusion constraint (check_exclusion_or_unique_constraint relies on
 	 * "one live tuple per (key, TID)" which SIU's stale chain entries
 	 * break; temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into this
-	 * category), and it must not be a system catalog.  The systable scan
-	 * path (systable_getnext and friends) already re-evaluates heap-attnum
-	 * scan keys to filter SIU-stale arrivals, but enabling SIU on catalogs
-	 * also requires bootstrap and recovery paths to be audited; that work
-	 * is deferred to Phase 7.
+	 * category), and it must not be a system catalog.  The catcache's
+	 * systable scan path (systable_getnext and friends in genam.c)
+	 * already re-evaluates heap-attnum scan keys to filter SIU-stale
+	 * arrivals, but enabling SIU on catalogs also requires vacuum's
+	 * full-scan path (which uses a heap scan, not an index scan) to be
+	 * made SIU-aware, and pg_class / pg_attribute invalidation paths to
+	 * cooperate with the tombstone layout.  That work is deferred to a
+	 * future Phase 7 iteration.
 	 */
 	if (hot_indexed_updates && !IsCatalogRelation(relation) &&
 		!RelationHasExclusionConstraint(relation))
