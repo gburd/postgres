@@ -713,6 +713,7 @@ check_exclusion_or_unique_constraint(Relation heap, Relation index,
 	int			i;
 	bool		conflict;
 	bool		found_self;
+	bool		found_self_siu_hit;
 	ExprContext *econtext;
 	TupleTableSlot *existing_slot;
 	TupleTableSlot *save_scantuple;
@@ -815,6 +816,7 @@ check_exclusion_or_unique_constraint(Relation heap, Relation index,
 retry:
 	conflict = false;
 	found_self = false;
+	found_self_siu_hit = false;
 	index_scan = index_beginscan(heap, index,
 								 &DirtySnapshot, NULL, indnkeyatts, 0,
 								 SO_NONE);
@@ -830,14 +832,27 @@ retry:
 		char	   *error_existing;
 
 		/*
-		 * Ignore the entry for the tuple we're trying to check.
+		 * Ignore the entry for the tuple we're trying to check.  With HOT-
+		 * indexed (SIU) updates, several index entries may chain-lead to the
+		 * same heap tuple (a stale entry for the old key and a fresh entry
+		 * for the new key).  They all resolve to the same TID here and must
+		 * all be treated as "self", not as a duplicate error.  We tolerate
+		 * the duplicate self arrival whenever *either* this iteration or an
+		 * earlier one saw xs_hot_indexed_recheck -- the canonical direct
+		 * entry and the stale chain-walk entries can arrive in either order.
 		 */
 		if (ItemPointerIsValid(tupleid) &&
 			ItemPointerEquals(tupleid, &existing_slot->tts_tid))
 		{
-			if (found_self)		/* should not happen */
+			if (index_scan->xs_hot_indexed_recheck)
+				found_self_siu_hit = true;
+			if (found_self)
+			{
+				if (found_self_siu_hit)
+					continue;
 				elog(ERROR, "found self tuple multiple times in index \"%s\"",
 					 RelationGetRelationName(index));
+			}
 			found_self = true;
 			continue;
 		}

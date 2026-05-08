@@ -2543,7 +2543,6 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 
 	hscan->rs_cindex = 0;
 	hscan->rs_ntuples = 0;
-
 	/* Release buffer containing previous block. */
 	if (BufferIsValid(hscan->rs_cbuf))
 	{
@@ -2604,6 +2603,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 		 * offset.
 		 */
 		int			curslot;
+		bool		page_had_siu = false;
 
 		/* We must have extracted the tuple offsets by now */
 		Assert(noffsets > -1);
@@ -2620,7 +2620,38 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 									   &heapTuple, NULL, true,
 									   &hot_indexed_recheck))
 			{
-				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+				OffsetNumber	resolved = ItemPointerGetOffsetNumber(&tid);
+				bool			already_have = false;
+
+				if (hot_indexed_recheck)
+					page_had_siu = true;
+
+				/*
+				 * With HOT-indexed (SIU) updates, more than one bitmap entry
+				 * on the same block can chain-resolve to the same live tuple
+				 * (a stale old-key entry plus the fresh new-key entry, or
+				 * multiple stale entries from successive SIU updates).  Once
+				 * we've seen any SIU hop on this block dedup inline so upper
+				 * nodes (e.g., MERGE) don't see the same row twice.  Preserve
+				 * original insertion order: MERGE's RETURNING ordering and
+				 * test harness stability both depend on it.  In the absence
+				 * of SIU on the page we skip the linear scan entirely -- the
+				 * TBM's TIDs are already distinct by construction.
+				 */
+				if (page_had_siu)
+				{
+					for (int j = 0; j < ntup; j++)
+					{
+						if (hscan->rs_vistuples[j] == resolved)
+						{
+							already_have = true;
+							break;
+						}
+					}
+				}
+
+				if (!already_have)
+					hscan->rs_vistuples[ntup++] = resolved;
 
 				/*
 				 * If we reached the visible tuple through a HOT-indexed
@@ -2634,6 +2665,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 					*recheck = true;
 			}
 		}
+
 	}
 	else
 	{

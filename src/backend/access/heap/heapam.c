@@ -4455,10 +4455,15 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	/*
 	 * A non-summarizing indexed attribute changed.  Whether we can still
 	 * take a HOT-indexed (SIU) path depends on the `hot_indexed_updates`
-	 * GUC and on the relation not being a system catalog (catcache does
-	 * not yet filter stale SIU entries; see Phase 7 plan).
+	 * GUC and on the relation being SIU-eligible: not a system catalog
+	 * (catcache does not yet filter stale SIU entries; see Phase 7 plan)
+	 * and not carrying an exclusion constraint (check_exclusion_or_unique_
+	 * constraint relies on "one live tuple per (key, TID)" which SIU's
+	 * stale chain entries break; temporal PRIMARY KEY ... WITHOUT
+	 * OVERLAPS falls into this category).
 	 */
-	if (hot_indexed_updates && !IsCatalogRelation(relation))
+	if (hot_indexed_updates && !IsCatalogRelation(relation) &&
+		!RelationHasExclusionConstraint(relation))
 		return HEAP_HOT_MODE_INDEXED;
 
 	return HEAP_HOT_MODE_NO;

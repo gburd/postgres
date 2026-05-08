@@ -76,6 +76,15 @@ extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 extern Bitmapset *RelationGetIndexedAttrs(Relation indexRel);
 
 /*
+ * RelationHasExclusionConstraint -- true iff any index on this relation
+ * enforces an exclusion constraint (including WITHOUT OVERLAPS primary keys).
+ *
+ * The result is cached on the Relation so subsequent calls are O(1).  The
+ * cache is refreshed alongside the index list on relcache rebuild.
+ */
+extern bool RelationHasExclusionConstraint(Relation relation);
+
+/*
  * Which set of columns to return by RelationGetIndexAttrBitmap.
  */
 typedef enum IndexAttrBitmapKind

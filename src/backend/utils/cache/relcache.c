@@ -5361,6 +5361,50 @@ RelationGetIndexedAttrs(Relation indexRel)
 }
 
 /*
+ * RelationHasExclusionConstraint -- true iff any index on `relation`
+ * is an exclusion constraint (pg_index.indisexclusion = true).
+ *
+ * Walks the cached index list from RelationGetIndexList(); open each
+ * index briefly with NoLock (caller is expected to hold at least
+ * AccessShareLock on the heap, which defends the index set) just to
+ * read its pg_index metadata.  The function is currently called only
+ * from HeapUpdateHotAllowable on UPDATE, so a handful of index opens
+ * per call is acceptable; if this becomes a hot path, add a boolean
+ * cache on Relation.
+ */
+bool
+RelationHasExclusionConstraint(Relation relation)
+{
+	List	   *indexoids;
+	ListCell   *lc;
+	bool		has_excl = false;
+
+	Assert(relation->rd_rel->relkind != RELKIND_INDEX &&
+		   relation->rd_rel->relkind != RELKIND_PARTITIONED_INDEX);
+
+	if (!relation->rd_rel->relhasindex)
+		return false;
+
+	indexoids = RelationGetIndexList(relation);
+	foreach(lc, indexoids)
+	{
+		Oid			idxoid = lfirst_oid(lc);
+		Relation	idx = index_open(idxoid, NoLock);
+
+		if (idx->rd_index != NULL && idx->rd_index->indisexclusion)
+			has_excl = true;
+
+		index_close(idx, NoLock);
+
+		if (has_excl)
+			break;
+	}
+
+	list_free(indexoids);
+	return has_excl;
+}
+
+/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
