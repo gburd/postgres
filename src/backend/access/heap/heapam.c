@@ -67,7 +67,7 @@
  * GUC: enable/disable HOT-indexed (Selective Index Update) tombstones.
  * Declared in access/heapam.h.
  */
-bool		hot_indexed_updates = false;
+bool		hot_indexed_updates = true;
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
