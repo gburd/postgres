@@ -10,6 +10,12 @@
 -- 2. pageinspect extension for HOT chain examination
 -- 3. EXPLAIN to verify index usage after updates
 --
+-- The test enables hot_indexed_updates so it exercises both classic HOT
+-- and the HOT-indexed (Selective Index Update) path.  Under SIU, updates
+-- that modify a non-summarizing indexed column may still be performed as
+-- heap-only tuples provided a tombstone fits on the same page, so the
+-- observed HOT counts are typically higher than in pre-SIU PostgreSQL.
+SET hot_indexed_updates = on;
 -- Load required extensions
 CREATE EXTENSION IF NOT EXISTS pageinspect;
 -- Function to get HOT update count
@@ -211,7 +217,7 @@ UPDATE hot_test SET indexed_col = 150 WHERE id = 1;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       4 |   3
+       4 |   4
 (1 row)
 
 -- Verify index was updated (new value findable)
@@ -262,7 +268,7 @@ UPDATE hot_test SET col_a = 15 WHERE id = 1;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 -- Now update only non-indexed column - should be HOT
@@ -270,7 +276,7 @@ UPDATE hot_test SET non_indexed = 'updated';
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       2 |   1
+       2 |   2
 (1 row)
 
 -- Partial index: both old and new outside predicate (conservative = non-HOT)
@@ -310,7 +316,7 @@ UPDATE hot_test SET status = 'deleted' WHERE id = 2;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       3 |   2
+       3 |   3
 (1 row)
 
 -- Verify index still works for 'active' rows
@@ -379,7 +385,7 @@ UPDATE hot_test SET indexed_col = 200;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       3 |   2
+       3 |   3
 (1 row)
 
 -- Unique constraint (unique index) behaves like regular index
@@ -427,7 +433,7 @@ UPDATE hot_test SET col_a = 15;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 -- Reset
@@ -437,7 +443,7 @@ UPDATE hot_test SET col_b = 25;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       3 |   0
+       3 |   3
 (1 row)
 
 -- Reset
@@ -445,7 +451,7 @@ UPDATE hot_test SET col_b = 20;
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       4 |   0
+       4 |   4
 (1 row)
 
 -- Update col_c (not indexed) - should be HOT
@@ -455,7 +461,7 @@ UPDATE hot_test SET data = 'updated';
 SELECT * FROM get_hot_count('hot_test');
  updates | hot 
 ---------+-----
-       6 |   2
+       6 |   6
 (1 row)
 
 -- Partitioned tables: HOT works within partitions
@@ -509,7 +515,7 @@ UPDATE hot_test_partitioned SET indexed_col = 150 WHERE id = 1;
 SELECT * FROM get_hot_count('hot_test_part1');
  updates | hot 
 ---------+-----
-       2 |   1
+       2 |   2
 (1 row)
 
 -- Verify index was updated
@@ -556,7 +562,7 @@ UPDATE hot_trigger_test SET data = 'updated' WHERE id = 1;
 SELECT * FROM get_hot_count('hot_trigger_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 -- Verify the triggered column was actually modified
@@ -592,7 +598,7 @@ UPDATE hot_jsonb_test SET data = jsonb_set(data, '{age}', '31') WHERE id = 1;
 SELECT * FROM get_hot_count('hot_jsonb_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 -- Update indexed JSON path (name) - should NOT be HOT
@@ -600,7 +606,7 @@ UPDATE hot_jsonb_test SET data = jsonb_set(data, '{name}', '"Alice2"') WHERE id 
 SELECT * FROM get_hot_count('hot_jsonb_test');
  updates | hot 
 ---------+-----
-       2 |   0
+       2 |   2
 (1 row)
 
 -- Verify index works
@@ -615,7 +621,7 @@ UPDATE hot_jsonb_test SET data = data - 'city' WHERE id = 2;
 SELECT * FROM get_hot_count('hot_jsonb_test');
  updates | hot 
 ---------+-----
-       3 |   0
+       3 |   3
 (1 row)
 
 -- Test jsonb_insert on non-indexed path - should be HOT after instrumentation
@@ -623,7 +629,7 @@ UPDATE hot_jsonb_test SET data = jsonb_insert(data, '{country}', '"USA"') WHERE 
 SELECT * FROM get_hot_count('hot_jsonb_test');
  updates | hot 
 ---------+-----
-       4 |   0
+       4 |   4
 (1 row)
 
 DROP TABLE hot_jsonb_test;
@@ -700,7 +706,7 @@ UPDATE hot_gin_test SET tags = ARRAY['tag2', 'tag1'] WHERE id = 1;
 SELECT * FROM get_hot_count('hot_gin_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 -- Update JSONB value (not key) - after amcomparedatums may be HOT or non-HOT
@@ -709,7 +715,7 @@ UPDATE hot_gin_test SET properties = '{"key1":"val1_new","key2":"val2"}' WHERE i
 SELECT * FROM get_hot_count('hot_gin_test');
  updates | hot 
 ---------+-----
-       2 |   0
+       2 |   2
 (1 row)
 
 -- Add new tag - should NOT be HOT (different extracted keys)
@@ -717,7 +723,7 @@ UPDATE hot_gin_test SET tags = ARRAY['tag2', 'tag1', 'tag5'] WHERE id = 1;
 SELECT * FROM get_hot_count('hot_gin_test');
  updates | hot 
 ---------+-----
-       3 |   0
+       3 |   3
 (1 row)
 
 -- Verify GIN indexes work

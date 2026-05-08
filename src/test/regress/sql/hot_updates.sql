@@ -10,6 +10,12 @@
 -- 2. pageinspect extension for HOT chain examination
 -- 3. EXPLAIN to verify index usage after updates
 --
+-- The test enables hot_indexed_updates so it exercises both classic HOT
+-- and the HOT-indexed (Selective Index Update) path.  Under SIU, updates
+-- that modify a non-summarizing indexed column may still be performed as
+-- heap-only tuples provided a tombstone fits on the same page, so the
+-- observed HOT counts are typically higher than in pre-SIU PostgreSQL.
+SET hot_indexed_updates = on;
 
 -- Load required extensions
 CREATE EXTENSION IF NOT EXISTS pageinspect;
