@@ -584,15 +584,13 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 * same index key" invariant does not hold: an old index entry
 					 * for key K may chain-lead to a tuple whose current index key
 					 * is K'.  Without rechecking keys we'd raise a spurious unique
-					 * violation.  TODO(P3.1f): verify the heap tuple's actual
-					 * index key against the existing btree entry's key and only
-					 * treat it as a conflict when they agree.  For now, treat the
-					 * match as not-a-conflict and continue scanning -- we may
-					 * still find our own entry (CHECK_EXISTING) or a genuine
-					 * duplicate (non-SIU entry) further along.  This is
-					 * conservative only when the GUC hot_indexed_updates is
-					 * enabled; real duplicates restricted to SIU-affected attrs
-					 * will be missed here.
+					 * violation.  TODO: verify the heap tuple's actual index key
+					 * against the existing btree entry's key and only treat it
+					 * as a conflict when they agree.  For now we treat the match
+					 * as not-a-conflict and continue scanning -- we may still
+					 * find our own entry (CHECK_EXISTING) or a genuine duplicate
+					 * (non-SIU entry) further along.  Real duplicates restricted
+					 * to SIU-affected attrs will be missed here.
 					 */
 					if (hot_indexed_recheck)
 					{
