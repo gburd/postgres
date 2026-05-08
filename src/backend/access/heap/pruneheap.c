@@ -2363,13 +2363,16 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			 * items to be made LP_UNUSED instead.  This is only possible if
 			 * the relation has no indexes.  If there are any dead items, then
 			 * mark_unused_now was not true and every item being marked
-			 * LP_UNUSED must refer to a heap-only tuple.
+			 * LP_UNUSED must refer to either a heap-only tuple or a
+			 * HOT-indexed (SIU) tombstone whose target live tuple has
+			 * already been pruned.
 			 */
 			if (ndead > 0)
 			{
 				Assert(ItemIdHasStorage(lp) && ItemIdIsNormal(lp));
 				htup = (HeapTupleHeader) PageGetItem(page, lp);
-				Assert(HeapTupleHeaderIsHeapOnly(htup));
+				Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+					   HeapTupleHeaderIsHotIndexedTombstone(htup));
 			}
 			else
 				Assert(ItemIdIsUsed(lp));
