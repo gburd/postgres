@@ -44,6 +44,13 @@
 #define HEAP_PAGE_PRUNE_ALLOW_FAST_PATH		(1 << 2)
 #define HEAP_PAGE_PRUNE_SET_VM				(1 << 3)
 
+/*
+ * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
+ * may modify and still take the HOT-indexed (SIU) path.  0 disables SIU;
+ * 100 applies SIU to every otherwise-eligible update.  Default 80.
+ */
+extern PGDLLIMPORT int hot_indexed_update_threshold;
+
 typedef struct BulkInsertStateData *BulkInsertState;
 typedef struct GlobalVisState GlobalVisState;
 typedef struct TupleTableSlot TupleTableSlot;

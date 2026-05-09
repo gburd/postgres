@@ -63,6 +63,14 @@
 #include "utils/syscache.h"
 
 
+/*
+ * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
+ * may modify and still take the HOT-indexed (SIU) path.  Defined here,
+ * declared in access/heapam.h.  Default 80.
+ */
+int			hot_indexed_update_threshold = 80;
+
+
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, uint32 options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
@@ -4528,12 +4536,42 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 *     check_exclusion_or_unique_constraint relies on "one live tuple per
 	 *     (key, TID)", which SIU's stale chain entries break; temporal
 	 *     PRIMARY KEY ... WITHOUT OVERLAPS falls into this category.
+	 *   - The user-settable hot_indexed_update_threshold GUC caps SIU
+	 *     eligibility by the share of indexed attrs touched by this update.
+	 *     Beyond that share the non-HOT path almost always writes the same
+	 *     index entries as SIU would, but without the tombstone overhead.
+	 *     threshold = 0 disables SIU entirely; threshold = 100 permits SIU
+	 *     on every otherwise-eligible update.
 	 */
-	if (!IsCatalogRelation(relation) &&
-		!RelationHasExclusionConstraint(relation))
-		return HEAP_HOT_MODE_INDEXED;
+	if (IsCatalogRelation(relation) ||
+		RelationHasExclusionConstraint(relation))
+		return HEAP_HOT_MODE_NO;
 
-	return HEAP_HOT_MODE_NO;
+	if (hot_indexed_update_threshold < 100)
+	{
+		Bitmapset  *all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+															   INDEX_ATTR_BITMAP_INDEXED);
+		int			n_all = bms_num_members(all_idx_attrs);
+		int			n_mod = bms_num_members(modified_idx_attrs);
+
+		bms_free(all_idx_attrs);
+
+		if (hot_indexed_update_threshold == 0)
+			return HEAP_HOT_MODE_NO;
+
+		/*
+		 * Integer-only comparison: n_mod * 100 > n_all * threshold means
+		 * more than `threshold`% of indexed attrs were touched.  Equal
+		 * counts at the cap are allowed (e.g., threshold=100 permits full
+		 * coverage).  n_all == 0 shouldn't happen here because
+		 * modified_idx_attrs is non-empty, but guard anyway.
+		 */
+		if (n_all == 0 ||
+			n_mod * 100 > n_all * hot_indexed_update_threshold)
+			return HEAP_HOT_MODE_NO;
+	}
+
+	return HEAP_HOT_MODE_INDEXED;
 }
 
 /*
