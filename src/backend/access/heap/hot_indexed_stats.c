@@ -1,0 +1,169 @@
+/*-------------------------------------------------------------------------
+ *
+ * hot_indexed_stats.c
+ *	  SQL-callable diagnostic that walks every page of a heap relation and
+ *	  reports SIU-related structural statistics.
+ *
+ * These numbers complement the running pgstat counters
+ * (n_tup_siu_upd in pg_stat_all_tables): they answer "what is on disk
+ * right now?" rather than "how often did SIU fire during the stats
+ * window?".
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  src/backend/access/heap/hot_indexed_stats.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/heapam.h"
+#include "access/hot_indexed.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "fmgr.h"
+#include "funcapi.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "storage/bufpage.h"
+#include "storage/itemptr.h"
+#include "utils/acl.h"
+#include "utils/builtins.h"
+#include "utils/rel.h"
+
+/*
+ * pg_relation_siu_stats(regclass) -> record
+ *
+ * Walks every block of the relation's main fork and counts:
+ *   n_tombstones    -- LP_NORMAL items with HEAP_INDEXED_UPDATED+natts=0
+ *   n_chains        -- LP_REDIRECT items, i.e. HOT chain roots.  Matches
+ *                      the number of distinct HOT chains that have survived
+ *                      the most recent prune.  Root-not-redirect chains
+ *                      (length 1) are not counted here because they are
+ *                      indistinguishable from a non-chain tuple.
+ *   avg_chain_len   -- mean length across chains rooted at an LP_REDIRECT,
+ *                      derived by walking each redirect target to the end
+ *                      of its HEAP_HOT_UPDATED chain.
+ *   max_chain_len   -- longest chain observed.
+ *
+ * Requires pg_read_server_files to keep the cost out of untrusted hands;
+ * the caller also needs at least SELECT on the relation.
+ */
+PG_FUNCTION_INFO_V1(pg_relation_siu_stats);
+
+Datum
+pg_relation_siu_stats(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	rel;
+	BlockNumber nblocks;
+	BlockNumber blk;
+	int64		n_tombstones = 0;
+	int64		n_chains = 0;
+	int64		sum_chain_len = 0;
+	int64		max_chain_len = 0;
+	TupleDesc	tupdesc;
+	Datum		values[4];
+	bool		nulls[4] = {0};
+	HeapTuple	resulttup;
+
+	rel = relation_open(relid, AccessShareLock);
+	if (rel->rd_rel->relkind != RELKIND_RELATION &&
+		rel->rd_rel->relkind != RELKIND_MATVIEW &&
+		rel->rd_rel->relkind != RELKIND_TOASTVALUE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a table, materialized view, or TOAST table",
+						RelationGetRelationName(rel))));
+
+	nblocks = RelationGetNumberOfBlocks(rel);
+
+	for (blk = 0; blk < nblocks; blk++)
+	{
+		Buffer		buf;
+		Page		page;
+		OffsetNumber off;
+		OffsetNumber maxoff;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blk, RBM_NORMAL, NULL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (PageIsNew(page) || PageIsEmpty(page))
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		maxoff = PageGetMaxOffsetNumber(page);
+		for (off = FirstOffsetNumber; off <= maxoff; off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+
+			if (!ItemIdIsUsed(lp))
+				continue;
+
+			if (ItemIdIsRedirected(lp))
+			{
+				/* Walk the chain starting at the redirect target. */
+				OffsetNumber cur = ItemIdGetRedirect(lp);
+				int64		len = 0;
+
+				while (cur >= FirstOffsetNumber && cur <= maxoff)
+				{
+					ItemId		chain_lp = PageGetItemId(page, cur);
+					HeapTupleHeader thdr;
+
+					if (!ItemIdIsNormal(chain_lp))
+						break;
+					thdr = (HeapTupleHeader) PageGetItem(page, chain_lp);
+					if (HeapTupleHeaderIsHotIndexedTombstone(thdr))
+						break;
+					len++;
+					if (!(thdr->t_infomask2 & HEAP_HOT_UPDATED))
+						break;
+					cur = ItemPointerGetOffsetNumber(&thdr->t_ctid);
+				}
+				if (len > 0)
+				{
+					n_chains++;
+					sum_chain_len += len;
+					if (len > max_chain_len)
+						max_chain_len = len;
+				}
+			}
+			else if (ItemIdIsNormal(lp))
+			{
+				HeapTupleHeader thdr = (HeapTupleHeader) PageGetItem(page, lp);
+
+				if (HeapTupleHeaderIsHotIndexedTombstone(thdr))
+					n_tombstones++;
+			}
+		}
+
+		UnlockReleaseBuffer(buf);
+	}
+
+	relation_close(rel, AccessShareLock);
+
+	tupdesc = CreateTemplateTupleDesc(4);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "n_tombstones", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "n_chains", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "avg_chain_len", FLOAT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "max_chain_len", INT8OID, -1, 0);
+	tupdesc = BlessTupleDesc(tupdesc);
+
+	values[0] = Int64GetDatum(n_tombstones);
+	values[1] = Int64GetDatum(n_chains);
+	if (n_chains > 0)
+		values[2] = Float8GetDatum(((double) sum_chain_len) / (double) n_chains);
+	else
+		values[2] = Float8GetDatum(0.0);
+	values[3] = Int64GetDatum(max_chain_len);
+
+	resulttup = heap_form_tuple(tupdesc, values, nulls);
+	PG_RETURN_DATUM(HeapTupleGetDatum(resulttup));
+}

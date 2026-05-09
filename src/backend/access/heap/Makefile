@@ -21,6 +21,7 @@ OBJS = \
 	heaptoast.o \
 	hio.o \
 	hot_indexed.o \
+	hot_indexed_stats.o \
 	pruneheap.o \
 	rewriteheap.o \
 	vacuumlazy.o \

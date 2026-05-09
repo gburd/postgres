@@ -9,6 +9,7 @@ backend_sources += files(
   'heaptoast.c',
   'hio.c',
   'hot_indexed.c',
+  'hot_indexed_stats.c',
   'pruneheap.c',
   'rewriteheap.c',
   'vacuumlazy.c',
