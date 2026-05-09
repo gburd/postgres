@@ -93,6 +93,9 @@ PG_STAT_GET_RELENTRY_INT64(tuples_fetched)
 /* pg_stat_get_tuples_hot_updated */
 PG_STAT_GET_RELENTRY_INT64(tuples_hot_updated)
 
+/* pg_stat_get_tuples_siu_updated */
+PG_STAT_GET_RELENTRY_INT64(tuples_siu_updated)
+
 /* pg_stat_get_tuples_newpage_updated */
 PG_STAT_GET_RELENTRY_INT64(tuples_newpage_updated)
 
@@ -1847,6 +1850,9 @@ PG_STAT_GET_XACT_RELENTRY_INT64(tuples_fetched)
 
 /* pg_stat_get_xact_tuples_hot_updated */
 PG_STAT_GET_XACT_RELENTRY_INT64(tuples_hot_updated)
+
+/* pg_stat_get_xact_tuples_siu_updated */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_siu_updated)
 
 /* pg_stat_get_xact_tuples_newpage_updated */
 PG_STAT_GET_XACT_RELENTRY_INT64(tuples_newpage_updated)

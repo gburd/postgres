@@ -384,11 +384,17 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
 
 /*
  * count a tuple update
+ *
+ * hot      -- the update was a heap-only tuple (classic HOT or HOT-indexed)
+ * siu      -- the update was a HOT-indexed (Selective Index Update), which
+ *             is a subcase of hot=true; siu implies hot
+ * newpage  -- the new tuple went to a different buffer than the old one
  */
 void
-pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
+pgstat_count_heap_update(Relation rel, bool hot, bool siu, bool newpage)
 {
 	Assert(!(hot && newpage));
+	Assert(!(siu && !hot));
 
 	if (pgstat_should_count_relation(rel))
 	{
@@ -398,11 +404,17 @@ pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
 		pgstat_info->trans->tuples_updated++;
 
 		/*
-		 * tuples_hot_updated and tuples_newpage_updated counters are
-		 * nontransactional, so just advance them
+		 * tuples_hot_updated, tuples_siu_updated, and tuples_newpage_updated
+		 * counters are nontransactional, so just advance them.  tuples_siu
+		 * is counted in *addition* to tuples_hot: every SIU update is also
+		 * a HOT update.
 		 */
 		if (hot)
+		{
 			pgstat_info->counts.tuples_hot_updated++;
+			if (siu)
+				pgstat_info->counts.tuples_siu_updated++;
+		}
 		else if (newpage)
 			pgstat_info->counts.tuples_newpage_updated++;
 	}
@@ -854,6 +866,7 @@ pgstat_relation_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 	tabentry->tuples_updated += lstats->counts.tuples_updated;
 	tabentry->tuples_deleted += lstats->counts.tuples_deleted;
 	tabentry->tuples_hot_updated += lstats->counts.tuples_hot_updated;
+	tabentry->tuples_siu_updated += lstats->counts.tuples_siu_updated;
 	tabentry->tuples_newpage_updated += lstats->counts.tuples_newpage_updated;
 
 	/*
