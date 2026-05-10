@@ -120,6 +120,8 @@
 #include "utils/rangetypes.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/datum.h"
+#include "access/itup.h"
 
 /* waitMode argument to check_exclusion_or_unique_constraint() */
 typedef enum
@@ -1116,4 +1118,73 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
 				(errcode(ERRCODE_CHECK_VIOLATION),
 				 errmsg("empty WITHOUT OVERLAPS value found in column \"%s\" in relation \"%s\"",
 						NameStr(attname), RelationGetRelationName(rel))));
+}
+
+/*
+ * ExecIndexEntryMatchesTuple --
+ *
+ * Recheck that a btree leaf IndexTuple still agrees with the current
+ * visible heap tuple's index-form.  Used by SIU (HOT-indexed) readers to
+ * filter stale leaf entries reached via a chain walk that crossed an SIU
+ * hop.
+ *
+ * Inputs:
+ *   indexRel   - the index relation the scan is traversing
+ *   indexInfo  - cached IndexInfo for indexRel (caller owns lifetime)
+ *   slot       - the current visible heap tuple, already populated
+ *   estate     - EState for expression evaluation (for expression indexes)
+ *   itup       - the leaf IndexTuple the scan is positioned on (xs_itup)
+ *
+ * Returns true if the slot's index-form equals the leaf key.  The check
+ * uses datum_image_eq on each KEY column (INCLUDE columns are not
+ * compared; they do not participate in positioning and SIU never changes
+ * their relationship).  NULLs are treated as equal to NULL, not to any
+ * non-NULL value.  The comparison is byte-level after any required
+ * detoasting, which matches the pre-SIU invariant that a leaf entry's
+ * key is bitwise-equal to the index-form of the tuple it points at.
+ *
+ * The helper is safe to call from any snapshot; it does not follow
+ * TOAST pointers itself, relying on the caller to have already
+ * materialized the slot.
+ */
+bool
+ExecIndexEntryMatchesTuple(Relation indexRel,
+						   IndexInfo *indexInfo,
+						   TupleTableSlot *slot,
+						   EState *estate,
+						   IndexTuple itup)
+{
+	TupleDesc	indexDesc = RelationGetDescr(indexRel);
+	int			keysz = IndexRelationGetNumberOfKeyAttributes(indexRel);
+	Datum		cur_keys[INDEX_MAX_KEYS];
+	bool		cur_isnull[INDEX_MAX_KEYS];
+	int			attnum;
+
+	Assert(itup != NULL);
+	Assert(indexInfo != NULL);
+
+	/* Form the index datums from the current visible tuple. */
+	FormIndexDatum(indexInfo, slot, estate, cur_keys, cur_isnull);
+
+	for (attnum = 1; attnum <= keysz; attnum++)
+	{
+		Datum		leaf_datum;
+		bool		leaf_isnull;
+		CompactAttribute *att;
+
+		leaf_datum = index_getattr(itup, attnum, indexDesc, &leaf_isnull);
+
+		/* NULL discipline: both-NULL equal, exactly-one-NULL differ. */
+		if (leaf_isnull != cur_isnull[attnum - 1])
+			return false;
+		if (leaf_isnull)
+			continue;
+
+		att = TupleDescCompactAttr(indexDesc, attnum - 1);
+		if (!datum_image_eq(leaf_datum, cur_keys[attnum - 1],
+							att->attbyval, att->attlen))
+			return false;
+	}
+
+	return true;
 }
