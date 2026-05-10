@@ -32,6 +32,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -120,6 +121,17 @@ IndexNext(IndexScanState *node)
 		node->iss_ScanDesc = scandesc;
 
 		/*
+		 * Request xs_itup so the SIU recheck path
+		 * (xs_hot_indexed_recheck) can compare the leaf key against the
+		 * current tuple's index-form.  Restrict to btree: it's the only AM
+		 * where SIU's stale-leaf-dup matters (lossy AMs already recheck
+		 * quals on every hit via xs_recheck).  For other AMs the SIU
+		 * recheck path falls back to conservative drop.
+		 */
+		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+			scandesc->xs_want_itup = true;
+
+		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
 		 * pass the scankeys to the index AM.
 		 */
@@ -153,21 +165,34 @@ IndexNext(IndexScanState *node)
 
 		/*
 		 * HOT-indexed (SIU) stale entry: the chain we walked crossed a SIU
-		 * hop and the index entry's key may no longer agree with the heap
-		 * tuple's current attributes.  If the query has an original qual,
-		 * re-evaluate it against the tuple; otherwise drop the tuple as a
-		 * duplicate -- the canonical fresh SIU-inserted entry will return
-		 * the same tuple via its direct path.
+		 * hop, so the leaf entry we came from may no longer agree with the
+		 * heap tuple's current attributes.  Compare the leaf key against
+		 * the tuple's current index-form; drop if they disagree.  The
+		 * canonical fresh SIU-inserted entry for this tuple lives at a
+		 * different leaf key whose walk does not cross an SIU hop -- it
+		 * will return the tuple via that path, without the recheck.
+		 *
+		 * If xs_itup is unexpectedly NULL (AM didn't populate it despite
+		 * xs_want_itup=true), fall back to the conservative drop: a false
+		 * negative (dropping a real match) is preferable to a false
+		 * positive (returning a stale-key duplicate).
 		 */
 		if (scandesc->xs_hot_indexed_recheck)
 		{
-			if (node->indexqualorig == NULL)
+			if (scandesc->xs_itup == NULL)
 			{
 				InstrCountFiltered2(node, 1);
 				continue;
 			}
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqualorig, econtext))
+
+			if (node->iss_SiuIndexInfo == NULL)
+				node->iss_SiuIndexInfo = BuildIndexInfo(node->iss_RelationDesc);
+
+			if (!ExecIndexEntryMatchesTuple(node->iss_RelationDesc,
+											node->iss_SiuIndexInfo,
+											slot,
+											estate,
+											scandesc->xs_itup))
 			{
 				InstrCountFiltered2(node, 1);
 				continue;
@@ -239,6 +264,10 @@ IndexNextWithReorder(IndexScanState *node)
 								   SO_HINT_REL_READ_ONLY : SO_NONE);
 
 		node->iss_ScanDesc = scandesc;
+
+		/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+			scandesc->xs_want_itup = true;
 
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
@@ -1736,6 +1765,10 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 
+	/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+		node->iss_ScanDesc->xs_want_itup = true;
+
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
@@ -1783,6 +1816,10 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 piscan,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
+
+	/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+		node->iss_ScanDesc->xs_want_itup = true;
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

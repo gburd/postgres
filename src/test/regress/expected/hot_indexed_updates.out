@@ -11,13 +11,14 @@
 --   (A) pg_stat counters: HOT and SIU counts increment as expected
 --   (B) index lookups return the new value and not the stale value
 --       for EQUALITY queries (exercised by xs_hot_indexed_recheck's
---       qual re-evaluation)
+--       key-form recheck)
 --   (C) pg_relation_siu_stats reports the tombstones we expect to see
 --   (D) **RANGE/INEQUALITY** queries return the correct number of
---       tuples -- this covers the class of bugs where a stale btree
+--       tuples -- this is the class of bugs where a stale btree
 --       entry's key is still reachable via a looser scan key; the
---       canonical SIU recheck (indexqualorig re-eval) is insufficient
---       here because the original qual is looser than the leaf key
+--       xs_hot_indexed_recheck path forms the index datum from the
+--       current tuple and compares against the btree leaf key to
+--       drop stale arrivals
 --
 CREATE EXTENSION IF NOT EXISTS pageinspect;
 CREATE OR REPLACE FUNCTION get_hot_count(rel_name text)
@@ -150,7 +151,8 @@ UPDATE siu_range SET b = 15 WHERE a = 1 AND b = 5;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 -- IndexScan: payload IS NOT NULL forces heap fetch, no IndexOnlyScan.
--- This is the bug-exhibiting path.
+-- This is the bug-exhibiting path; with Fix A (FormIndexDatum-based
+-- key recheck at xs_hot_indexed_recheck time) it now returns 1.
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
                      QUERY PLAN                     
@@ -161,20 +163,17 @@ SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
          Filter: (payload IS NOT NULL)
 (4 rows)
 
--- FIXME: want 1, today returns 2 (SIU false-dup bug)
 SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
  count 
 -------
-     2
+     1
 (1 row)
 
--- FIXME: want 1 row, today returns 2 (SIU false-dup bug)
 SELECT a, b FROM siu_range WHERE a = 1 AND payload IS NOT NULL ORDER BY b;
  a | b  
 ---+----
  1 | 15
- 1 | 15
-(2 rows)
+(1 row)
 
 -- IndexOnlyScan: the canonical-fresh-entry-only path.
 -- Here count = 1 because the stale entry's heap recheck fails the
@@ -242,12 +241,11 @@ CREATE INDEX siu_range_b_idx ON siu_range(b);
 UPDATE siu_range SET b = 25 WHERE a = 1 AND b = 15;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
--- IndexScan path on the secondary index.
--- FIXME: want 1, today returns 2 (SIU false-dup bug on secondary btree)
+-- IndexScan path on the secondary index; same fix applies.
 SELECT count(*) FROM siu_range WHERE b BETWEEN 0 AND 100 AND payload IS NOT NULL;
  count 
 -------
-     2
+     1
 (1 row)
 
 RESET enable_seqscan;
