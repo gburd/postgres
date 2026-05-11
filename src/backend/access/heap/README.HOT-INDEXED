@@ -255,12 +255,24 @@ different subset of hot-indexed's new cases.
    hot-indexed hint); the long-term fix is a real index-key comparison in
    this path too.
 
-6. check_exclusion_or_unique_constraint.  Not currently supported:
-   relations carrying an exclusion constraint are exempted from hot-indexed
-   altogether via RelationHasExclusionConstraint() -- the one-live-
-   tuple-per-(key,TID) invariant the exclusion machinery relies on is
-   incompatible with hot-indexed's stale chain entries.  Temporal PRIMARY KEY
-   ... WITHOUT OVERLAPS is in this category.
+6. check_exclusion_or_unique_constraint.  On the scan of candidate
+   duplicates, we apply the same index_recheck_constraint call the
+   lossy-index path uses when xs_hot_indexed_recheck is set: compare
+   the candidate heap tuple's current index-form (FormIndexDatum
+   applied to existing_slot) against our new-tuple values using the
+   constraint's per-column procs.  The call returns false when the
+   candidate is a stale chain hit and we continue scanning;
+   otherwise the scan proceeds to the normal conflict-or-wait
+   decision.  This same pattern is what _bt_check_unique uses
+   in-tree (filter 7 below); the write-side coverage for unique
+   constraints on HOT-indexed chains is now symmetric.
+
+   Relations carrying an exclusion constraint are still exempted
+   from HOT-indexed writes via RelationHasExclusionConstraint().
+   The exemption guards a separate interaction not addressed by the
+   recheck: temporal UPDATE ... FOR PORTION OF emits WAL that
+   interacts poorly with logical decoding of tombstone-carrying
+   records.  Lifting this exemption is separate follow-up work.
 
 7. nodeIndexscan indexqualorig re-eval.  If xs_hot_indexed_recheck is
    true, re-evaluate the original WHERE clause against the returned
@@ -563,13 +575,23 @@ indexed chain the publisher does not have, and subsequent INSERTs
 on the subscriber would see spurious duplicate-key violations
 against stale btree entries.
 
-Sidestep the mismatch by forcing non-HOT on the apply path:
-IsLogicalWorker() is true for any apply worker (table sync, main
-apply, parallel apply) and causes HeapUpdateHotAllowable to return
-HEAP_HOT_MODE_NO without consulting the threshold or chain cap.
-Classic HOT remains available because HeapUpdateHotAllowable
-returns HEAP_HOT_MODE_CLASSIC earlier when no indexed attribute
-changed.
+Sidestep the mismatch by forcing non-HOT on the apply path when
+the subscriber carries any indexed attribute beyond its primary
+key.  The test is simply !bms_equal(INDEX_ATTR_BITMAP_INDEXED,
+INDEX_ATTR_BITMAP_PRIMARY_KEY) -- if the subscriber has a
+secondary or summarizing index, it can index columns whose
+modification status the publisher's schema would not have sampled,
+and HOT-indexed would fire on the subscriber where it did not on
+the publisher.  Subscribers whose indexed-attr set is exactly the
+primary key (the common replication-ready shape) follow the
+normal rules and can take the HOT-indexed path when the apply
+worker's UPDATE modifies an indexed attribute.
+
+This trades a narrow performance improvement on matching schemas
+for safety on divergent ones.  A tighter test would require
+materialising the publisher's heap_update decision into the
+logical replication protocol so the subscriber can replay it
+verbatim; that is future work.
 
 
 Catalog Enablement (Future Work)
