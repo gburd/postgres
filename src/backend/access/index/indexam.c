@@ -607,11 +607,11 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
-	 * Reset the HOT-indexed (SIU) recheck flag: it is set by the heap AM
-	 * during index_fetch_heap and is per-fetched-tuple, not per-index-entry.
-	 * For IndexOnlyScan, which may skip index_fetch_heap when the VM says
-	 * the entry is visible-to-all, this ensures we don't carry a stale
-	 * value from a previous entry.
+	 * Reset the HOT-indexed recheck flag: it is set by the heap AM during
+	 * index_fetch_heap and is per-fetched-tuple, not per-index-entry. For
+	 * IndexOnlyScan, which may skip index_fetch_heap when the VM says the
+	 * entry is visible-to-all, this ensures we don't carry a stale value from
+	 * a previous entry.
 	 */
 	scan->xs_hot_indexed_recheck = false;
 
@@ -678,11 +678,11 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 		pgstat_count_heap_fetch(scan->indexRelation);
 
 	/*
-	 * If the HOT chain we followed contained a Selective Index Update
+	 * If the HOT chain we followed contained a HOT-indexed update
 	 * (HOT-indexed), surface the recheck requirement on the separate
 	 * xs_hot_indexed_recheck flag (not xs_recheck).  Keeping them distinct
-	 * lets the executor tell a lossy-index recheck (needs qual re-eval)
-	 * apart from an SIU stale entry (which should be dropped when no qual
+	 * lets the executor tell a lossy-index recheck (needs qual re-eval) apart
+	 * from an hot-indexed stale entry (which should be dropped when no qual
 	 * is available, since the canonical fresh entry will return the same
 	 * tuple via its direct path).
 	 */

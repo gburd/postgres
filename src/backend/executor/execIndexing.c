@@ -835,13 +835,14 @@ retry:
 
 		/*
 		 * Ignore the entry for the tuple we're trying to check.  With HOT-
-		 * indexed (SIU) updates, several index entries may chain-lead to the
-		 * same heap tuple (a stale entry for the old key and a fresh entry
-		 * for the new key).  They all resolve to the same TID here and must
-		 * all be treated as "self", not as a duplicate error.  We tolerate
-		 * the duplicate self arrival whenever *either* this iteration or an
-		 * earlier one saw xs_hot_indexed_recheck -- the canonical direct
-		 * entry and the stale chain-walk entries can arrive in either order.
+		 * indexed (hot-indexed) updates, several index entries may chain-lead
+		 * to the same heap tuple (a stale entry for the old key and a fresh
+		 * entry for the new key).  They all resolve to the same TID here and
+		 * must all be treated as "self", not as a duplicate error.  We
+		 * tolerate the duplicate self arrival whenever *either* this
+		 * iteration or an earlier one saw xs_hot_indexed_recheck -- the
+		 * canonical direct entry and the stale chain-walk entries can arrive
+		 * in either order.
 		 */
 		if (ItemPointerIsValid(tupleid) &&
 			ItemPointerEquals(tupleid, &existing_slot->tts_tid))
@@ -1124,8 +1125,8 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
  * ExecIndexEntryMatchesTuple --
  *
  * Recheck that a btree leaf IndexTuple still agrees with the current
- * visible heap tuple's index-form.  Used by SIU (HOT-indexed) readers to
- * filter stale leaf entries reached via a chain walk that crossed an SIU
+ * visible heap tuple's index-form.  Used by hot-indexed (HOT-indexed) readers to
+ * filter stale leaf entries reached via a chain walk that crossed an hot-indexed
  * hop.
  *
  * Inputs:
@@ -1137,10 +1138,10 @@ ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval, char t
  *
  * Returns true if the slot's index-form equals the leaf key.  The check
  * uses datum_image_eq on each KEY column (INCLUDE columns are not
- * compared; they do not participate in positioning and SIU never changes
+ * compared; they do not participate in positioning and hot-indexed never changes
  * their relationship).  NULLs are treated as equal to NULL, not to any
  * non-NULL value.  The comparison is byte-level after any required
- * detoasting, which matches the pre-SIU invariant that a leaf entry's
+ * detoasting, which matches the pre-hot-indexed invariant that a leaf entry's
  * key is bitwise-equal to the index-form of the tuple it points at.
  *
  * The helper is safe to call from any snapshot; it does not follow

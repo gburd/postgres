@@ -261,11 +261,11 @@ typedef struct RelationData
 	Oid			rd_toastoid;	/* Real TOAST table's OID, or InvalidOid */
 
 	/*
-	 * Upper bound on the length of a HOT-indexed (hot-indexed) chain for this
-	 * relation, derived lazily from the relation's fillfactor and estimated
-	 * average tuple size.  A value of 0 means "not yet computed"; the HOT
-	 * decision path calls RelationGetHotIndexedChainMax() to fill it in on
-	 * demand.  Reset to 0 on relcache invalidation.
+	 * Upper bound on the length of a HOT-indexed chain for this relation,
+	 * derived lazily from the relation's fillfactor and estimated average
+	 * tuple size.  A value of 0 means "not yet computed"; the HOT decision
+	 * path calls RelationGetHotIndexedChainMax() to fill it in on demand.
+	 * Reset to 0 on relcache invalidation.
 	 *
 	 * Heuristic: (BLCKSZ * fillfactor/100 - overhead) / (est_avg_tuple +
 	 * tombstone_size).  Narrow tables get longer caps, wide tables shorter.

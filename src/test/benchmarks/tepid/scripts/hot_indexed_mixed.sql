@@ -1,5 +1,5 @@
 -- Mixed workload: 80% selects, 20% indexed-column updates.
--- Exercises both the SIU writer and the SIU reader recheck.
+-- Exercises both the hot-indexed writer and the hot-indexed reader recheck.
 \set aid random(1, :scale * 100000)
 \set bid random(1, 1000000)
 \set which random(1, 100)

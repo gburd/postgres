@@ -1,18 +1,18 @@
 --
 -- HOT_INDEXED_UPDATES
--- Test Selective Index Update (SIU), aka HOT-indexed, behaviour
+-- Test HOT-indexed update (hot-indexed), aka HOT-indexed, behaviour
 --
 -- Every UPDATE in this file modifies at least one non-summarizing
--- indexed attribute.  On a pre-SIU server all of these would be
--- non-HOT; on the SIU branch each eligible update stays on-page and
+-- indexed attribute.  On a pre-hot-indexed server all of these would be
+-- non-HOT; on the hot-indexed branch each eligible update stays on-page and
 -- inserts into only the indexes whose attributes actually changed.
 --
 -- We verify four things:
---   (A) pg_stat counters: HOT and SIU counts increment as expected
+--   (A) pg_stat counters: HOT and hot-indexed counts increment as expected
 --   (B) index lookups return the new value and not the stale value
 --       for EQUALITY queries (exercised by xs_hot_indexed_recheck's
 --       key-form recheck)
---   (C) pg_relation_siu_stats reports the tombstones we expect to see
+--   (C) pg_relation_hot_indexed_stats reports the tombstones we expect to see
 --   (D) **RANGE/INEQUALITY** queries return the correct number of
 --       tuples -- this is the class of bugs where a stale btree
 --       entry's key is still reachable via a looser scan key; the
@@ -45,15 +45,15 @@ BEGIN
                COALESCE(pg_stat_get_xact_tuples_updated(rel_oid), 0);
     hot := COALESCE(pg_stat_get_tuples_hot_updated(rel_oid), 0) +
            COALESCE(pg_stat_get_xact_tuples_hot_updated(rel_oid), 0);
-    siu := COALESCE(pg_stat_get_tuples_siu_updated(rel_oid), 0) +
-           COALESCE(pg_stat_get_xact_tuples_siu_updated(rel_oid), 0);
+    siu := COALESCE(pg_stat_get_tuples_hot_idx_updated(rel_oid), 0) +
+           COALESCE(pg_stat_get_xact_tuples_hot_idx_updated(rel_oid), 0);
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
 
 
 -- ---------------------------------------------------------------------------
--- 1. Basic SIU: modifying an indexed column stays HOT and counts as SIU
+-- 1. Basic hot-indexed: modifying an indexed column stays HOT and counts as hot-indexed
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_basic (
     id int PRIMARY KEY,
@@ -64,8 +64,8 @@ CREATE INDEX siu_basic_idx ON siu_basic(indexed_col);
 
 INSERT INTO siu_basic VALUES (1, 100, 'initial');
 
--- Pre-SIU this would be non-HOT.  Under SIU it's HOT-indexed; both the
--- HOT counter and the SIU counter advance.
+-- Pre-hot-indexed this would be non-HOT.  Under hot-indexed it's HOT-indexed; both the
+-- HOT counter and the hot-indexed counter advance.
 UPDATE siu_basic SET indexed_col = 150 WHERE id = 1;
 SELECT * FROM get_siu_count('siu_basic');
 
@@ -75,7 +75,7 @@ EXPLAIN (COSTS OFF) SELECT id, indexed_col FROM siu_basic WHERE indexed_col = 15
 SELECT id, indexed_col FROM siu_basic WHERE indexed_col = 150;
 
 -- The old value is not reachable through this index: the stale btree
--- entry (indexed_col=100) walks to the current tuple via the SIU hop,
+-- entry (indexed_col=100) walks to the current tuple via the hot-indexed hop,
 -- nodeIndexscan re-evaluates `indexed_col = 100` against the current
 -- tuple (indexed_col=150), and the row is correctly dropped.  This is
 -- the equality-lookup case that xs_hot_indexed_recheck handles today.
@@ -83,22 +83,22 @@ EXPLAIN (COSTS OFF) SELECT id FROM siu_basic WHERE indexed_col = 100;
 SELECT id FROM siu_basic WHERE indexed_col = 100;
 RESET enable_seqscan;
 
--- pg_relation_siu_stats sees one tombstone, zero HOT redirects (the
+-- pg_relation_hot_indexed_stats sees one tombstone, zero HOT redirects (the
 -- chain has not yet been pruned so no LP_REDIRECT exists).
 SELECT n_tombstones, n_chains, avg_chain_len, max_chain_len
-FROM pg_relation_siu_stats('siu_basic');
+FROM pg_relation_hot_indexed_stats('siu_basic');
 
 DROP TABLE siu_basic;
 
 -- ---------------------------------------------------------------------------
--- 2. RANGE/INEQUALITY correctness after SIU on an indexed column
+-- 2. RANGE/INEQUALITY correctness after hot-indexed on an indexed column
 --
--- This is the test class that catches the SIU false-dup bug: a stale
+-- This is the test class that catches the hot-indexed false-dup bug: a stale
 -- btree entry whose key value still satisfies the range predicate,
--- reachable via the SIU chain hop.
+-- reachable via the hot-indexed chain hop.
 --
 -- To exercise the bug we must force an IndexScan plan (the
--- IndexOnlyScan path permissively drops every SIU-reachable index-only
+-- IndexOnlyScan path permissively drops every hot-indexed-reachable index-only
 -- hit; the BitmapHeapScan path dedups by TID).  We include a payload
 -- column not present in the PK so the planner must heap-fetch.
 --
@@ -109,7 +109,7 @@ DROP TABLE siu_basic;
 --   captures the BUGGY value (2) so the regression suite stays
 --   green; when nodeIndexscan grows a FormIndexDatum-based key
 --   comparison on xs_hot_indexed_recheck paths, the expected value
---   flips to 1 in the same commit.  See the SIU cover letter's
+--   flips to 1 in the same commit.  See the hot-indexed cover letter's
 --   open-question #3.  The ORDER BY output likewise lists the row
 --   twice today; the fix collapses it to a single row.
 -- ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ CREATE TABLE siu_range (
 
 INSERT INTO siu_range VALUES (1, 5, 'hi');
 
--- SIU update on the second PK column: stale btree entry ('1','5')
+-- hot-indexed update on the second PK column: stale btree entry ('1','5')
 -- remains, new entry ('1','15') inserted.  The stale entry points at
 -- the chain root; the fresh entry points directly at the new
 -- heap-only tuple.
@@ -141,7 +141,7 @@ SELECT a, b FROM siu_range WHERE a = 1 AND payload IS NOT NULL ORDER BY b;
 
 -- IndexOnlyScan: the canonical-fresh-entry-only path.
 -- Here count = 1 because the stale entry's heap recheck fails the
--- SIU filter, which drops it as not-canonical.
+-- hot-indexed filter, which drops it as not-canonical.
 EXPLAIN (COSTS OFF) SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
 SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
 
@@ -165,7 +165,7 @@ RESET enable_indexscan;
 RESET enable_indexonlyscan;
 RESET enable_bitmapscan;
 
--- Same shape on a secondary (non-PK) btree: another SIU update on b.
+-- Same shape on a secondary (non-PK) btree: another hot-indexed update on b.
 CREATE INDEX siu_range_b_idx ON siu_range(b);
 UPDATE siu_range SET b = 25 WHERE a = 1 AND b = 15;
 
@@ -179,7 +179,7 @@ RESET enable_bitmapscan;
 DROP TABLE siu_range;
 
 -- ---------------------------------------------------------------------------
--- 3. All-or-none on a multi-indexed table: SIU only touches indexes
+-- 3. All-or-none on a multi-indexed table: hot-indexed only touches indexes
 --    whose attributes changed
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_multi (
@@ -195,7 +195,7 @@ CREATE INDEX siu_multi_c_idx ON siu_multi(col_c);
 
 INSERT INTO siu_multi VALUES (1, 10, 20, 30, 'initial');
 
--- col_a only: under SIU this is HOT-indexed, and only siu_multi_a_idx
+-- col_a only: under hot-indexed this is HOT-indexed, and only siu_multi_a_idx
 -- gets a new entry.  siu_multi_b_idx / siu_multi_c_idx keep pointing
 -- at the chain root.
 UPDATE siu_multi SET col_a = 15 WHERE id = 1;
@@ -215,7 +215,7 @@ RESET enable_seqscan;
 DROP TABLE siu_multi;
 
 -- ---------------------------------------------------------------------------
--- 4. Multi-column btree: SIU on part of a composite key
+-- 4. Multi-column btree: hot-indexed on part of a composite key
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_composite (
     id int PRIMARY KEY,
@@ -227,7 +227,7 @@ CREATE INDEX siu_composite_ab_idx ON siu_composite(col_a, col_b);
 
 INSERT INTO siu_composite VALUES (1, 10, 20, 'data');
 
--- col_a is part of the composite key: SIU.
+-- col_a is part of the composite key: hot-indexed.
 UPDATE siu_composite SET col_a = 15;
 SELECT * FROM get_siu_count('siu_composite');
 
@@ -242,7 +242,7 @@ DROP TABLE siu_composite;
 -- 5. Partial index: status transition out-of-predicate
 --
 -- Both old and new status values are outside the partial predicate,
--- so the index does not need a new entry.  Under SIU the update is
+-- so the index does not need a new entry.  Under hot-indexed the update is
 -- HOT-indexed and no index insert occurs.
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_partial (
@@ -256,7 +256,7 @@ INSERT INTO siu_partial VALUES (1, 'active', 'data1');
 INSERT INTO siu_partial VALUES (2, 'inactive', 'data2');
 INSERT INTO siu_partial VALUES (3, 'deleted', 'data3');
 
--- out -> out transition on status.  SIU keeps this on-page; the
+-- out -> out transition on status.  hot-indexed keeps this on-page; the
 -- partial index is not touched.
 UPDATE siu_partial SET status = 'deleted' WHERE id = 2;
 SELECT * FROM get_siu_count('siu_partial');
@@ -267,7 +267,7 @@ SELECT id, status FROM siu_partial WHERE status = 'active';
 DROP TABLE siu_partial;
 
 -- ---------------------------------------------------------------------------
--- 6. Partition: SIU inside one partition
+-- 6. Partition: hot-indexed inside one partition
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_part (
     id int,
@@ -293,7 +293,7 @@ RESET enable_seqscan;
 DROP TABLE siu_part CASCADE;
 
 -- ---------------------------------------------------------------------------
--- 7. Trigger modifies indexed column: SIU, not non-HOT
+-- 7. Trigger modifies indexed column: hot-indexed, not non-HOT
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_trigger (
     id int PRIMARY KEY,
@@ -318,7 +318,7 @@ CREATE TRIGGER before_update_bump
 INSERT INTO siu_trigger VALUES (1, 100, 'initial');
 
 -- UPDATE's SET clause doesn't touch the indexed column, but the
--- trigger modifies it via heap_modify_tuple.  SIU must detect this
+-- trigger modifies it via heap_modify_tuple.  hot-indexed must detect this
 -- and emit a tombstone + a new btree entry.
 UPDATE siu_trigger SET data = 'updated' WHERE id = 1;
 SELECT * FROM get_siu_count('siu_trigger');
@@ -334,7 +334,7 @@ DROP TABLE siu_trigger CASCADE;
 DROP FUNCTION siu_trigger_bump();
 
 -- ---------------------------------------------------------------------------
--- 8. JSONB expression index: indexed path change triggers SIU
+-- 8. JSONB expression index: indexed path change triggers hot-indexed
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_jsonb (
     id int PRIMARY KEY,
@@ -344,7 +344,7 @@ CREATE INDEX siu_jsonb_name_idx ON siu_jsonb ((data->>'name'));
 
 INSERT INTO siu_jsonb VALUES (1, '{"name":"Alice","age":30}');
 
--- Changing the indexed expression's value (name) is SIU.
+-- Changing the indexed expression's value (name) is hot-indexed.
 UPDATE siu_jsonb SET data = jsonb_set(data, '{name}', '"Alice2"') WHERE id = 1;
 SELECT * FROM get_siu_count('siu_jsonb');
 
@@ -356,7 +356,7 @@ RESET enable_seqscan;
 DROP TABLE siu_jsonb;
 
 -- ---------------------------------------------------------------------------
--- 9. GIN index with changed extracted keys: SIU
+-- 9. GIN index with changed extracted keys: hot-indexed
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_gin (
     id int PRIMARY KEY,
@@ -366,7 +366,7 @@ CREATE INDEX siu_gin_tags_idx ON siu_gin USING gin (tags);
 
 INSERT INTO siu_gin VALUES (1, ARRAY['tag1', 'tag2']);
 
--- Adding a tag yields a different extracted-key set: SIU.
+-- Adding a tag yields a different extracted-key set: hot-indexed.
 UPDATE siu_gin SET tags = ARRAY['tag1', 'tag2', 'tag5'] WHERE id = 1;
 SELECT * FROM get_siu_count('siu_gin');
 

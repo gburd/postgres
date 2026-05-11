@@ -121,12 +121,12 @@ IndexNext(IndexScanState *node)
 		node->iss_ScanDesc = scandesc;
 
 		/*
-		 * Request xs_itup so the SIU recheck path
+		 * Request xs_itup so the hot-indexed recheck path
 		 * (xs_hot_indexed_recheck) can compare the leaf key against the
 		 * current tuple's index-form.  Restrict to btree: it's the only AM
-		 * where SIU's stale-leaf-dup matters (lossy AMs already recheck
-		 * quals on every hit via xs_recheck).  For other AMs the SIU
-		 * recheck path falls back to conservative drop.
+		 * where hot-indexed's stale-leaf-dup matters (lossy AMs already
+		 * recheck quals on every hit via xs_recheck).  For other AMs the
+		 * hot-indexed recheck path falls back to conservative drop.
 		 */
 		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
 			scandesc->xs_want_itup = true;
@@ -164,18 +164,18 @@ IndexNext(IndexScanState *node)
 		}
 
 		/*
-		 * HOT-indexed (SIU) stale entry: the chain we walked crossed a SIU
+		 * HOT-indexed stale entry: the chain we walked crossed a hot-indexed
 		 * hop, so the leaf entry we came from may no longer agree with the
-		 * heap tuple's current attributes.  Compare the leaf key against
-		 * the tuple's current index-form; drop if they disagree.  The
-		 * canonical fresh SIU-inserted entry for this tuple lives at a
-		 * different leaf key whose walk does not cross an SIU hop -- it
-		 * will return the tuple via that path, without the recheck.
+		 * heap tuple's current attributes.  Compare the leaf key against the
+		 * tuple's current index-form; drop if they disagree.  The canonical
+		 * fresh hot-indexed-inserted entry for this tuple lives at a
+		 * different leaf key whose walk does not cross an hot-indexed hop --
+		 * it will return the tuple via that path, without the recheck.
 		 *
 		 * If xs_itup is unexpectedly NULL (AM didn't populate it despite
 		 * xs_want_itup=true), fall back to the conservative drop: a false
-		 * negative (dropping a real match) is preferable to a false
-		 * positive (returning a stale-key duplicate).
+		 * negative (dropping a real match) is preferable to a false positive
+		 * (returning a stale-key duplicate).
 		 */
 		if (scandesc->xs_hot_indexed_recheck)
 		{
@@ -265,7 +265,7 @@ IndexNextWithReorder(IndexScanState *node)
 
 		node->iss_ScanDesc = scandesc;
 
-		/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+		/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
 		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
 			scandesc->xs_want_itup = true;
 
@@ -1765,7 +1765,7 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 
-	/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+	/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
 	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
 		node->iss_ScanDesc->xs_want_itup = true;
 
@@ -1817,7 +1817,7 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 
-	/* See comment in IndexNext about xs_want_itup / SIU recheck. */
+	/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
 	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
 		node->iss_ScanDesc->xs_want_itup = true;
 

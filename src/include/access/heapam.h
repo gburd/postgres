@@ -46,8 +46,8 @@
 
 /*
  * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
- * may modify and still take the HOT-indexed (SIU) path.  0 disables SIU;
- * 100 applies SIU to every otherwise-eligible update.  Default 80.
+ * may modify and still take the HOT-indexed path.  0 disables hot-indexed;
+ * 100 applies hot-indexed to every otherwise-eligible update.  Default 80.
  */
 extern PGDLLIMPORT int hot_indexed_update_threshold;
 
@@ -396,12 +396,12 @@ extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid
  * HeapUpdateHotMode --
  *	Three-valued classification returned by HeapUpdateHotAllowable() that
  *	tells heap_update() whether a HOT update is permitted for this tuple,
- *	and if so, whether the caller must emit a HOT-indexed (SIU) tombstone
+ *	and if so, whether the caller must emit a HOT-indexed tombstone
  *	carrying the per-update modified-attrs bitmap.
  *
  *	HEAP_HOT_MODE_NO
  *		HOT is not allowed; the new tuple must go on its own TID and every
- *		index receives a fresh entry.  This is the pre-SIU classic behavior
+ *		index receives a fresh entry.  This is the pre-hot-indexed classic behavior
  *		for updates that modify a non-summarizing indexed attribute.
  *
  *	HEAP_HOT_MODE_CLASSIC
@@ -410,7 +410,7 @@ extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid
  *		not touched.
  *
  *	HEAP_HOT_MODE_INDEXED
- *		HOT-indexed (Selective Index Update): modified attributes affect one
+ *		HOT-indexed (HOT-indexed update): modified attributes affect one
  *		or more non-summarizing indexes, but the update can still be kept on
  *		the same page provided a tombstone line pointer is allocated to carry
  *		the modified-attrs bitmap.  Callers must be prepared for heap_update()

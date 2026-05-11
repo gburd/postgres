@@ -571,9 +571,9 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 * HEAP_INDEXED_UPDATED hop encountered along the chain.  In
 				 * classic HOT the chain preserves the index key, so a live
 				 * tuple anywhere in the chain constitutes a definite
-				 * conflict; with Selective Index Update (SIU) that invariant
-				 * no longer holds -- an old index entry for key K may
-				 * chain-lead to a heap tuple whose actual index key is
+				 * conflict; with HOT-indexed update (hot-indexed) that
+				 * invariant no longer holds -- an old index entry for key K
+				 * may chain-lead to a heap tuple whose actual index key is
 				 * different K'.  In that case this is a stale entry, not a
 				 * conflict; we filter it out below once we have finished
 				 * collecting the match.
@@ -596,8 +596,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 * whose current index key is K'.  Compare the leaf
 					 * entry's key against the live tuple's current index
 					 * form.  Equal keys mean this is a genuine duplicate of
-					 * the inserter's key (the SIU chain happens to preserve
-					 * that particular index's keys along this path);
+					 * the inserter's key (the hot-indexed chain happens to
+					 * preserve that particular index's keys along this path);
 					 * different keys mean the leaf entry is stale for this
 					 * index and must be skipped.
 					 *
@@ -854,7 +854,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
  *
  *	The btree unique-check uses this to distinguish a real duplicate (the
  *	leaf entry's key matches the heap tuple's current index form) from a
- *	stale chain hit introduced by HOT-indexed (Selective Index Update):
+ *	stale chain hit introduced by HOT-indexed (HOT-indexed update):
  *	the leaf entry for the old key still points at the chain root, but the
  *	live tuple's current index form is different.
  *

@@ -191,14 +191,14 @@ typedef struct IndexScanDescData
 
 	/*
 	 * T means the HOT chain we walked to reach xs_heaptid crossed a
-	 * HOT-indexed (Selective Index Update) hop: the index entry's key
-	 * may no longer match the heap tuple's current values.  Unlike
-	 * xs_recheck -- which is set by lossy index AMs such as GiST and
-	 * GIN -- this flag is set by the heap AM during chain-walking.
-	 * Executor code uses it to decide between "recheck against heap
-	 * tuple" (same as xs_recheck when the query has a qual) and "drop
-	 * as a stale duplicate" (when the canonical SIU-inserted entry
-	 * will return the same tuple via a direct path).
+	 * HOT-indexed (HOT-indexed update) hop: the index entry's key may no
+	 * longer match the heap tuple's current values.  Unlike xs_recheck --
+	 * which is set by lossy index AMs such as GiST and GIN -- this flag is
+	 * set by the heap AM during chain-walking. Executor code uses it to
+	 * decide between "recheck against heap tuple" (same as xs_recheck when
+	 * the query has a qual) and "drop as a stale duplicate" (when the
+	 * canonical hot-indexed-inserted entry will return the same tuple via a
+	 * direct path).
 	 */
 	bool		xs_hot_indexed_recheck;
 
@@ -241,8 +241,8 @@ typedef struct SysScanDescData
 	/*
 	 * Heap-attnum scan keys, captured during systable_beginscan().  Distinct
 	 * from iscan->keyData, whose sk_attno values have been translated to
-	 * index column positions.  Used during HOT-indexed (SIU) recheck so we
-	 * can evaluate the original catalog key against the heap tuple.  NULL if
+	 * index column positions.  Used during HOT-indexed recheck so we can
+	 * evaluate the original catalog key against the heap tuple.  NULL if
 	 * nkeys_heap == 0.
 	 */
 	int			nkeys_heap;

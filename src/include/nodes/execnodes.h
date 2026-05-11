@@ -1771,9 +1771,10 @@ typedef struct IndexScanState
 	Size		iss_PscanLen;
 
 	/*
-	 * Cached IndexInfo for SIU recheck (FormIndexDatum needs IndexInfo).
-	 * Built lazily on first xs_hot_indexed_recheck hit; NULL if not yet
-	 * needed.  Owned by the scan's memory context and freed at executor end.
+	 * Cached IndexInfo for hot-indexed recheck (FormIndexDatum needs
+	 * IndexInfo). Built lazily on first xs_hot_indexed_recheck hit; NULL if
+	 * not yet needed.  Owned by the scan's memory context and freed at
+	 * executor end.
 	 */
 	struct IndexInfo *iss_SiuIndexInfo;
 } IndexScanState;

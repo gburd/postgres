@@ -230,13 +230,13 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 
 		/*
-		 * HOT-indexed (SIU) stale entry.  For an index-only scan, the values
-		 * returned come straight from the index tuple, so a stale entry
-		 * would surface the wrong key values to the caller.  Drop it: the
-		 * canonical fresh SIU-inserted entry will return the tuple with the
-		 * correct current values.  If a recheckqual is present we also ran
-		 * it above, so the tuple is already confirmed; otherwise we have no
-		 * way to verify and must drop.
+		 * HOT-indexed stale entry.  For an index-only scan, the values
+		 * returned come straight from the index tuple, so a stale entry would
+		 * surface the wrong key values to the caller.  Drop it: the canonical
+		 * fresh hot-indexed-inserted entry will return the tuple with the
+		 * correct current values.  If a recheckqual is present we also ran it
+		 * above, so the tuple is already confirmed; otherwise we have no way
+		 * to verify and must drop.
 		 */
 		if (scandesc->xs_hot_indexed_recheck)
 		{

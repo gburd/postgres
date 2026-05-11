@@ -645,7 +645,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * PD_ALL_VISIBLE must be set on the heap page if the VM bit is set.
 	 *
 	 * Note that we released the heap page lock above. During normal
-	 * operation, this would be unsafe — a concurrent modification could
+	 * operation, this would be unsafe -- a concurrent modification could
 	 * clear PD_ALL_VISIBLE while the VM bit remained set, violating the
 	 * invariant.
 	 *
@@ -873,10 +873,9 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		recdata += SizeOfHeapHeader;
 
 		/*
-		 * If a HOT-indexed (SIU) tombstone rides along with this update,
-		 * read its total trailer length (OffsetNumber + uint16 + raw
-		 * bytes) right after xlhdr so the tuple body length can be
-		 * derived correctly.
+		 * If a HOT-indexed tombstone rides along with this update, read its
+		 * total trailer length (OffsetNumber + uint16 + raw bytes) right
+		 * after xlhdr so the tuple body length can be derived correctly.
 		 */
 		tombstone_trailer_len = 0;
 		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
@@ -947,8 +946,8 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			elog(PANIC, "failed to add tuple");
 
 		/*
-		 * Reinstall the HOT-indexed (SIU) tombstone that accompanied the new
-		 * tuple, if any.  The remaining block-0 data holds {OffsetNumber
+		 * Reinstall the HOT-indexed tombstone that accompanied the new tuple,
+		 * if any.  The remaining block-0 data holds {OffsetNumber
 		 * tombstone_offnum, uint16 tombstone_size, raw_item_bytes}.
 		 */
 		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
