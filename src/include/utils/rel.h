@@ -218,12 +218,12 @@ typedef struct RelationData
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
 
 	/*
-	 * Bitmap of heap attribute numbers referenced by this index (simple
-	 * keys, INCLUDE columns, expression columns, and partial-index
-	 * predicate columns), offset by FirstLowInvalidHeapAttributeNumber.
-	 * Lazily built by RelationGetIndexedAttrs() and cached in rd_indexcxt.
-	 * Consumers must bms_copy before relying on the pointer beyond any
-	 * potential AcceptInvalidationMessages() call.
+	 * Bitmap of heap attribute numbers referenced by this index (simple keys,
+	 * INCLUDE columns, expression columns, and partial-index predicate
+	 * columns), offset by FirstLowInvalidHeapAttributeNumber. Lazily built by
+	 * RelationGetIndexedAttrs() and cached in rd_indexcxt. Consumers must
+	 * bms_copy before relying on the pointer beyond any potential
+	 * AcceptInvalidationMessages() call.
 	 */
 	Bitmapset  *rd_indattr;
 
@@ -259,6 +259,18 @@ typedef struct RelationData
 	 * causes toast_save_datum() to try to preserve toast value OIDs.
 	 */
 	Oid			rd_toastoid;	/* Real TOAST table's OID, or InvalidOid */
+
+	/*
+	 * Upper bound on the length of a HOT-indexed (hot-indexed) chain for this
+	 * relation, derived lazily from the relation's fillfactor and estimated
+	 * average tuple size.  A value of 0 means "not yet computed"; the HOT
+	 * decision path calls RelationGetHotIndexedChainMax() to fill it in on
+	 * demand.  Reset to 0 on relcache invalidation.
+	 *
+	 * Heuristic: (BLCKSZ * fillfactor/100 - overhead) / (est_avg_tuple +
+	 * tombstone_size).  Narrow tables get longer caps, wide tables shorter.
+	 */
+	int			rd_hotidx_chainmax;
 
 	bool		pgstat_enabled; /* should relation stats be counted */
 	/* use "struct" here to avoid needing to include pgstat.h: */

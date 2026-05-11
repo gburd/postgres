@@ -3217,7 +3217,7 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 			Snapshot crosscheck, bool wait,
 			TM_FailureData *tmfd, const LockTupleMode lockmode,
 			const Bitmapset *modified_idx_attrs,
-			const HeapUpdateHotMode hot_mode)
+			HeapUpdateHotMode hot_mode)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3246,12 +3246,12 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	bool		emit_tombstone = false;
 	OffsetNumber tombstone_offnum = InvalidOffsetNumber;
 	Size		tombstone_item_size = 0;
+
 	/*
-	 * Scratch buffer used to build the HOT-indexed tombstone item
-	 * before entering the critical section.  palloc'd once per call and
-	 * sized precisely for this relation; freed on return via the caller's
-	 * memory context cleanup.  NULL if we don't end up emitting a
-	 * tombstone.
+	 * Scratch buffer used to build the HOT-indexed tombstone item before
+	 * entering the critical section.  palloc'd once per call and sized
+	 * precisely for this relation; freed on return via the caller's memory
+	 * context cleanup.  NULL if we don't end up emitting a tombstone.
 	 */
 	char	   *tombstone_buf = NULL;
 	bool		key_intact;
@@ -3820,17 +3820,16 @@ l2:
 
 	/*
 	 * If a HOT-indexed (SIU) update is permitted, a tombstone line pointer
-	 * must also fit on the same page as the new tuple.  Account for its
-	 * size (including one additional ItemIdData slot) when deciding whether
-	 * to stay on the old page.  If the tombstone would not fit, we fall
-	 * through to the non-HOT path.
+	 * must also fit on the same page as the new tuple.  Account for its size
+	 * (including one additional ItemIdData slot) when deciding whether to
+	 * stay on the old page.  If the tombstone would not fit, we fall through
+	 * to the non-HOT path.
 	 *
 	 * Use PageGetFreeSpaceForMultipleTuples(2) for the second check so we
-	 * reserve room for two new line pointers (one for the tuple, one for
-	 * the tombstone).  PageGetHeapFreeSpace only accounts for one LP, and
-	 * the MaxHeapTuplesPerPage check it performs also applies to our
-	 * two-item insert -- if the page is already full of LPs we can't add
-	 * two more.
+	 * reserve room for two new line pointers (one for the tuple, one for the
+	 * tombstone).  PageGetHeapFreeSpace only accounts for one LP, and the
+	 * MaxHeapTuplesPerPage check it performs also applies to our two-item
+	 * insert -- if the page is already full of LPs we can't add two more.
 	 */
 	if (hot_mode == HEAP_HOT_MODE_INDEXED)
 	{
@@ -3983,25 +3982,23 @@ l2:
 				 * room that fits both the new tuple and its tombstone.  Pass
 				 * MAXALIGN(tuple_len) + tombstone_size + sizeof(ItemIdData):
 				 *
-				 *  - MAXALIGN so the request matches the byte footprint
-				 *    PageAddItem will actually consume (it MAXALIGN's each
-				 *    item's size);
-				 *  - plus tombstone_size (already MAXALIGN'd by
-				 *    HotIndexedTombstoneSize());
-				 *  - plus one extra sizeof(ItemIdData) because
-				 *    PageGetHeapFreeSpace (used internally by
-				 *    RelationGetBufferForTuple) reserves one LP slot but we
-				 *    need two.
+				 * - MAXALIGN so the request matches the byte footprint
+				 * PageAddItem will actually consume (it MAXALIGN's each
+				 * item's size); - plus tombstone_size (already MAXALIGN'd by
+				 * HotIndexedTombstoneSize()); - plus one extra
+				 * sizeof(ItemIdData) because PageGetHeapFreeSpace (used
+				 * internally by RelationGetBufferForTuple) reserves one LP
+				 * slot but we need two.
 				 *
-				 * Without this the helper can return our current buffer
-				 * after an opportunistic prune with just enough room for the
-				 * tuple, and the tombstone PageAddItem would then PANIC
-				 * inside the critical section.
+				 * Without this the helper can return our current buffer after
+				 * an opportunistic prune with just enough room for the tuple,
+				 * and the tombstone PageAddItem would then PANIC inside the
+				 * critical section.
 				 */
 				if (hot_mode == HEAP_HOT_MODE_INDEXED)
 					tuple_need = MAXALIGN(heaptup->t_len) +
-								 HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation)) +
-								 sizeof(ItemIdData);
+						HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation)) +
+						sizeof(ItemIdData);
 
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
 				newbuf = RelationGetBufferForTuple(relation, tuple_need,
@@ -4086,7 +4083,46 @@ l2:
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  Check if HeapUpdateHotAllowable() has
 		 * sanctioned it (HEAP_HOT_MODE_CLASSIC or HEAP_HOT_MODE_INDEXED).
+		 *
+		 * For HEAP_HOT_MODE_INDEXED we additionally cap the chain length by
+		 * the per-relation heuristic from RelationGetHotIndexedChainMax: if
+		 * extending the chain would push it past the cap, we drop to the
+		 * non-HOT path.  The cap is derived from fillfactor and estimated
+		 * tuple size, so it self-adjusts to the table's geometry.  We measure
+		 * current chain length by walking forward from oldtup.t_self as long
+		 * as each chain member carries HEAP_HOT_UPDATED and lives on this
+		 * same page; the walk is bounded by MaxHeapTuplesPerPage and only
+		 * runs when HOT-indexed would otherwise fire.
 		 */
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
+		{
+			int			chain_len = 1;
+			int			chain_max = RelationGetHotIndexedChainMax(relation);
+			OffsetNumber walk_off = ItemPointerGetOffsetNumber(&oldtup.t_self);
+			HeapTupleHeader walk_tup = oldtup.t_data;
+
+			while (chain_len <= chain_max &&
+				   (walk_tup->t_infomask2 & HEAP_HOT_UPDATED) != 0 &&
+				   ItemPointerGetBlockNumber(&walk_tup->t_ctid) ==
+				   BufferGetBlockNumber(buffer))
+			{
+				ItemId		next_lp;
+
+				walk_off = ItemPointerGetOffsetNumber(&walk_tup->t_ctid);
+				if (walk_off < FirstOffsetNumber ||
+					walk_off > PageGetMaxOffsetNumber(page))
+					break;
+				next_lp = PageGetItemId(page, walk_off);
+				if (!ItemIdIsNormal(next_lp))
+					break;
+				walk_tup = (HeapTupleHeader) PageGetItem(page, next_lp);
+				chain_len++;
+			}
+
+			if (chain_len >= chain_max)
+				hot_mode = HEAP_HOT_MODE_NO;
+		}
+
 		if (hot_mode != HEAP_HOT_MODE_NO)
 			use_hot_update = true;
 	}
@@ -4098,9 +4134,9 @@ l2:
 
 	/*
 	 * If we are going HOT-indexed (SIU), allocate the tombstone scratch
-	 * buffer and build its contents *now*, before the critical section.
-	 * Doing the palloc inside the critical section could PANIC on OOM;
-	 * building the payload here also keeps the critical section small.
+	 * buffer and build its contents *now*, before the critical section. Doing
+	 * the palloc inside the critical section could PANIC on OOM; building the
+	 * payload here also keeps the critical section small.
 	 */
 	if (use_hot_update && hot_mode == HEAP_HOT_MODE_INDEXED)
 	{
@@ -4530,19 +4566,18 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * supported whenever the relation can tolerate extra index entries in a
 	 * chain whose per-chain-member keys may differ:
 	 *
-	 *   - System catalogs are excluded: the vacuum seqscan over pg_class and
-	 *     several catcache invalidation paths don't yet filter SIU-stale
-	 *     chain hits, so catalogs fall back to the pre-SIU non-HOT path.
-	 *   - Relations with any exclusion constraint are excluded:
-	 *     check_exclusion_or_unique_constraint relies on "one live tuple per
-	 *     (key, TID)", which SIU's stale chain entries break; temporal
-	 *     PRIMARY KEY ... WITHOUT OVERLAPS falls into this category.
-	 *   - The user-settable hot_indexed_update_threshold GUC caps SIU
-	 *     eligibility by the share of indexed attrs touched by this update.
-	 *     Beyond that share the non-HOT path almost always writes the same
-	 *     index entries as SIU would, but without the tombstone overhead.
-	 *     threshold = 0 disables SIU entirely; threshold = 100 permits SIU
-	 *     on every otherwise-eligible update.
+	 * - System catalogs are excluded: the vacuum seqscan over pg_class and
+	 * several catcache invalidation paths don't yet filter SIU-stale chain
+	 * hits, so catalogs fall back to the pre-SIU non-HOT path. - Relations
+	 * with any exclusion constraint are excluded:
+	 * check_exclusion_or_unique_constraint relies on "one live tuple per
+	 * (key, TID)", which SIU's stale chain entries break; temporal PRIMARY
+	 * KEY ... WITHOUT OVERLAPS falls into this category. - The user-settable
+	 * hot_indexed_update_threshold GUC caps SIU eligibility by the share of
+	 * indexed attrs touched by this update. Beyond that share the non-HOT
+	 * path almost always writes the same index entries as SIU would, but
+	 * without the tombstone overhead. threshold = 0 disables SIU entirely;
+	 * threshold = 100 permits SIU on every otherwise-eligible update.
 	 */
 	if (IsCatalogRelation(relation) ||
 		RelationHasExclusionConstraint(relation))
@@ -4561,11 +4596,11 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 			return HEAP_HOT_MODE_NO;
 
 		/*
-		 * Integer-only comparison: n_mod * 100 > n_all * threshold means
-		 * more than `threshold`% of indexed attrs were touched.  Equal
-		 * counts at the cap are allowed (e.g., threshold=100 permits full
-		 * coverage).  n_all == 0 shouldn't happen here because
-		 * modified_idx_attrs is non-empty, but guard anyway.
+		 * Integer-only comparison: n_mod * 100 > n_all * threshold means more
+		 * than `threshold`% of indexed attrs were touched.  Equal counts at
+		 * the cap are allowed (e.g., threshold=100 permits full coverage).
+		 * n_all == 0 shouldn't happen here because modified_idx_attrs is
+		 * non-empty, but guard anyway.
 		 */
 		if (n_all == 0 ||
 			n_mod * 100 > n_all * hot_indexed_update_threshold)
@@ -4687,7 +4722,7 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
  */
 void
 simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup,
-				   TM_IndexUpdateInfo *upd_info)
+				   TM_IndexUpdateInfo * upd_info)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4794,6 +4829,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			break;
 
 		case TM_Ok:
+
 			/*
 			 * If the tuple returned from heap_update() is marked heap-only,
 			 * this was a HOT update and (subject to per-index checks) only
@@ -9214,9 +9250,9 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	}
 
 	/*
-	 * If a HOT-indexed (SIU) tombstone was placed adjacent to the new
-	 * tuple on `newbuf`, log it so replay can recreate it.  The data is
-	 * attached to block 0 (the new buffer) after the main rdata chain.
+	 * If a HOT-indexed (SIU) tombstone was placed adjacent to the new tuple
+	 * on `newbuf`, log it so replay can recreate it.  The data is attached to
+	 * block 0 (the new buffer) after the main rdata chain.
 	 */
 	if (tombstone_item_size > 0)
 	{
@@ -9291,11 +9327,10 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	XLogRegisterBufData(0, &xlhdr, SizeOfHeapHeader);
 
 	/*
-	 * HOT-indexed (SIU) tombstones: write a uint16 trailer length right
-	 * after xlhdr so replay can subtract it from the block's data length
-	 * to recover the true tuple body length.  The trailer itself
-	 * (OffsetNumber + uint16 + raw bytes) is appended at the end of the
-	 * rdata chain below.
+	 * HOT-indexed (SIU) tombstones: write a uint16 trailer length right after
+	 * xlhdr so replay can subtract it from the block's data length to recover
+	 * the true tuple body length.  The trailer itself (OffsetNumber + uint16
+	 * + raw bytes) is appended at the end of the rdata chain below.
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 	{
@@ -9348,8 +9383,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	}
 
 	/*
-	 * HOT-indexed (SIU) tombstone: log the recorded offset, byte count,
-	 * and the raw item bytes as buffer data on block 0 so replay can
+	 * HOT-indexed (SIU) tombstone: log the recorded offset, byte count, and
+	 * the raw item bytes as buffer data on block 0 so replay can
 	 * PageAddItemExtended it at the same offset.
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
