@@ -5313,7 +5313,7 @@ RelationGetIndexedAttrs(Relation indexRel)
 	 */
 	if (indexRel->rd_indextuple == NULL)
 	{
-		for (int i = 0; i < indexStruct->indnatts; i++)
+		for (int i = 0; i < indexStruct->indnkeyatts; i++)
 		{
 			AttrNumber	attrnum = indexStruct->indkey.values[i];
 
@@ -5324,8 +5324,15 @@ RelationGetIndexedAttrs(Relation indexRel)
 		return attrs;
 	}
 
-	/* Keys and INCLUDE columns */
-	for (int i = 0; i < indexStruct->indnatts; i++)
+	/*
+	 * Key columns only.  INCLUDE columns (attnums past indnkeyatts) are not
+	 * considered: their values do not affect index lookups, so a change to an
+	 * INCLUDE column does not require a new index entry even though the
+	 * column is present in the index.  Callers needing the full key+include
+	 * set should use RelationGetIndexAttrBitmap(...,
+	 * INDEX_ATTR_BITMAP_INDEXED).
+	 */
+	for (int i = 0; i < indexStruct->indnkeyatts; i++)
 	{
 		AttrNumber	attrnum = indexStruct->indkey.values[i];
 
