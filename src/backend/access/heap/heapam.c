@@ -51,6 +51,7 @@
 #include "nodes/lockoptions.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
+#include "replication/logicalworker.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
@@ -4581,6 +4582,19 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * threshold = 0 disables hot-indexed entirely; threshold = 100 permits
 	 * hot-indexed on every otherwise-eligible update.
 	 */
+
+	/*
+	 * Logical replication apply path: the subscriber's index set may differ
+	 * from the publisher's, so a HEAP_HOT_MODE_INDEXED choice on the
+	 * subscriber can produce a chain that disagrees with the publisher's
+	 * plain-row state.  Force non-HOT here so the applied state always
+	 * mirrors the publisher's at the heap-tuple level.  Classic HOT (no
+	 * indexed attr change) remains untouched because HeapUpdateHotAllowable
+	 * already returned HEAP_HOT_MODE_CLASSIC above in that case.
+	 */
+	if (IsLogicalWorker())
+		return HEAP_HOT_MODE_NO;
+
 	if (IsCatalogRelation(relation) ||
 		RelationHasExclusionConstraint(relation))
 		return HEAP_HOT_MODE_NO;
