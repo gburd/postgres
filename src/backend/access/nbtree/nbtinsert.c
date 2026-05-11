@@ -15,6 +15,8 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
+#include "access/htup_details.h"
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
 #include "access/tableam.h"
@@ -22,12 +24,13 @@
 #include "access/xloginsert.h"
 #include "common/int.h"
 #include "common/pg_prng.h"
+#include "executor/tuptable.h"
 #include "lib/qunique.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
-
 /* Minimum tree height for application of fastpath optimization */
 #define BTREE_FASTPATH_MIN_LEVEL	2
 
@@ -38,6 +41,8 @@ static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
 									  Relation heapRel,
 									  IndexUniqueCheck checkUnique, bool *is_unique,
 									  uint32 *speculativeToken);
+static bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+									 TupleTableSlot *heapSlot);
 static OffsetNumber _bt_findinsertloc(Relation rel,
 									  BTInsertState insertstate,
 									  bool checkingunique,
@@ -426,6 +431,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	bool		inposting = false;
 	bool		prevalldead = true;
 	int			curposti = 0;
+	TupleTableSlot *siu_slot = NULL;
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -561,43 +567,55 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 * with optimizations like heap's HOT, we have just a single
 				 * index entry for the entire chain.
 				 *
-				 * The hot_indexed_recheck out-param picks up any HEAP_INDEXED_UPDATED
-				 * hop encountered along the chain.  In classic HOT the chain
-				 * preserves the index key, so a live tuple anywhere in the chain
-				 * constitutes a definite conflict; with Selective Index Update
-				 * (SIU) that invariant no longer holds -- an old index entry for
-				 * key K may chain-lead to a heap tuple whose actual index key is
+				 * The hot_indexed_recheck out-param picks up any
+				 * HEAP_INDEXED_UPDATED hop encountered along the chain.  In
+				 * classic HOT the chain preserves the index key, so a live
+				 * tuple anywhere in the chain constitutes a definite
+				 * conflict; with Selective Index Update (SIU) that invariant
+				 * no longer holds -- an old index entry for key K may
+				 * chain-lead to a heap tuple whose actual index key is
 				 * different K'.  In that case this is a stale entry, not a
 				 * conflict; we filter it out below once we have finished
 				 * collecting the match.
 				 */
-				else if (table_index_fetch_tuple_check(heapRel, &htid,
+				else if ((siu_slot != NULL ||
+						  (siu_slot = table_slot_create(heapRel, NULL))) &&
+						 table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
 													   &all_dead,
-													   &hot_indexed_recheck))
+													   &hot_indexed_recheck,
+													   siu_slot))
 				{
 					TransactionId xwait;
 
 					/*
-					 * If the chain walk crossed a HOT-indexed (Selective Index
-					 * Update) hop, the classic "live tuple found in chain implies
-					 * same index key" invariant does not hold: an old index entry
-					 * for key K may chain-lead to a tuple whose current index key
-					 * is K'.  Without rechecking keys we'd raise a spurious unique
-					 * violation.  TODO: verify the heap tuple's actual index key
-					 * against the existing btree entry's key and only treat it
-					 * as a conflict when they agree.  For now we treat the match
-					 * as not-a-conflict and continue scanning -- we may still
-					 * find our own entry (CHECK_EXISTING) or a genuine duplicate
-					 * (non-SIU entry) further along.  Real duplicates restricted
-					 * to SIU-affected attrs will be missed here.
+					 * If the chain walk crossed a HOT-indexed (Selective
+					 * Index Update) hop, the classic "live tuple found in
+					 * chain implies same index key" invariant does not hold:
+					 * an old index entry for key K may chain-lead to a tuple
+					 * whose current index key is K'.  Compare the leaf
+					 * entry's key against the live tuple's current index
+					 * form.  Equal keys mean this is a genuine duplicate of
+					 * the inserter's key (the SIU chain happens to preserve
+					 * that particular index's keys along this path);
+					 * different keys mean the leaf entry is stale for this
+					 * index and must be skipped.
+					 *
+					 * Expression-only indexes conservatively fall through the
+					 * comparison and are treated as stale, preserving the
+					 * older permissive behaviour for that narrow case.
 					 */
 					if (hot_indexed_recheck)
 					{
-						if (nbuf != InvalidBuffer)
-							_bt_relbuf(rel, nbuf);
-						nbuf = InvalidBuffer;
-						goto bt_siu_skip;
+						if (!_bt_heap_keys_equal_leaf(rel, curitup, siu_slot))
+						{
+							if (nbuf != InvalidBuffer)
+								_bt_relbuf(rel, nbuf);
+							nbuf = InvalidBuffer;
+							ExecClearTuple(siu_slot);
+							goto bt_siu_skip;
+						}
+						ExecClearTuple(siu_slot);
 					}
 
 					/*
@@ -612,6 +630,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					{
 						if (nbuf != InvalidBuffer)
 							_bt_relbuf(rel, nbuf);
+						if (siu_slot)
+							ExecDropSingleTupleTableSlot(siu_slot);
 						*is_unique = false;
 						return InvalidTransactionId;
 					}
@@ -627,6 +647,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					{
 						if (nbuf != InvalidBuffer)
 							_bt_relbuf(rel, nbuf);
+						if (siu_slot)
+							ExecDropSingleTupleTableSlot(siu_slot);
 						/* Tell _bt_doinsert to wait... */
 						*speculativeToken = SnapshotDirty.speculativeToken;
 						/* Caller releases lock on buf immediately */
@@ -653,7 +675,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					htid = itup->t_tid;
 					if (table_index_fetch_tuple_check(heapRel, &htid,
-													  SnapshotSelf, NULL, NULL))
+													  SnapshotSelf, NULL, NULL,
+													  NULL))
 					{
 						/* Normal case --- it's still live */
 					}
@@ -750,7 +773,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				if (!all_dead && inposting)
 					prevalldead = false;
 
-			bt_siu_skip:
+		bt_siu_skip:
 				;
 			}
 		}
@@ -819,7 +842,77 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	if (nbuf != InvalidBuffer)
 		_bt_relbuf(rel, nbuf);
 
+	if (siu_slot)
+		ExecDropSingleTupleTableSlot(siu_slot);
+
 	return InvalidTransactionId;
+}
+
+/*
+ *	_bt_heap_keys_equal_leaf() -- Compare a heap tuple's current btree key
+ *	against the key stored in a leaf IndexTuple.
+ *
+ *	The btree unique-check uses this to distinguish a real duplicate (the
+ *	leaf entry's key matches the heap tuple's current index form) from a
+ *	stale chain hit introduced by HOT-indexed (Selective Index Update):
+ *	the leaf entry for the old key still points at the chain root, but the
+ *	live tuple's current index form is different.
+ *
+ *	For expression-only indexes we conservatively return false ("not
+ *	equal"), which makes _bt_check_unique treat the hit as stale.  That's
+ *	the same permissive behaviour we had before this commit; teaching the
+ *	comparator to evaluate index expressions from inside an INSERT path is
+ *	straightforward follow-up.
+ *
+ *	heapSlot must already be populated by the caller (via
+ *	table_index_fetch_tuple_check with a keep_slot).
+ */
+static bool
+_bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+						 TupleTableSlot *heapSlot)
+{
+	TupleDesc	indexDesc = RelationGetDescr(rel);
+	int			nkey = IndexRelationGetNumberOfKeyAttributes(rel);
+	Form_pg_index indexStruct = rel->rd_index;
+
+	Assert(leaftup != NULL);
+	Assert(heapSlot != NULL && !TTS_EMPTY(heapSlot));
+
+	for (int i = 0; i < nkey; i++)
+	{
+		AttrNumber	keycol = indexStruct->indkey.values[i];
+		Datum		heap_datum;
+		bool		heap_isnull;
+		Datum		leaf_datum;
+		bool		leaf_isnull;
+		CompactAttribute *att;
+
+		if (keycol <= 0)
+		{
+			/*
+			 * Expression index key (attnum == 0).  Comparing expression
+			 * output from inside an INSERT path needs executor state we don't
+			 * have here.  Treat as "not equal" so the caller falls back to
+			 * the stale-skip path.
+			 */
+			return false;
+		}
+
+		heap_datum = slot_getattr(heapSlot, keycol, &heap_isnull);
+		leaf_datum = index_getattr(leaftup, i + 1, indexDesc, &leaf_isnull);
+
+		if (heap_isnull != leaf_isnull)
+			return false;
+		if (heap_isnull)
+			continue;
+
+		att = TupleDescCompactAttr(indexDesc, i);
+		if (!datum_image_eq(heap_datum, leaf_datum,
+							att->attbyval, att->attlen))
+			return false;
+	}
+
+	return true;
 }
 
 
