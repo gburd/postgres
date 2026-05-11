@@ -5,6 +5,7 @@ backend_sources += files(
   'deadlock.c',
   'lmgr.c',
   'lock.c',
+  'lrlock.c',
   'lwlock.c',
   'predicate.c',
   'proc.c',

@@ -17,6 +17,7 @@ OBJS = \
 	deadlock.o \
 	lmgr.o \
 	lock.o \
+	lrlock.o \
 	lwlock.o \
 	predicate.o \
 	proc.o \

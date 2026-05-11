@@ -141,6 +141,7 @@ LOGICAL_APPLY_SEND_DATA	"Waiting for a logical replication leader apply process 
 LOGICAL_PARALLEL_APPLY_STATE_CHANGE	"Waiting for a logical replication parallel apply process to change state."
 LOGICAL_SYNC_DATA	"Waiting for a logical replication remote server to send data for initial table synchronization."
 LOGICAL_SYNC_STATE_CHANGE	"Waiting for a logical replication remote server to change state."
+LRLOCK_PUBLISH	"Waiting for readers to depart during left-right lock publish."
 MESSAGE_QUEUE_INTERNAL	"Waiting for another process to be attached to a shared message queue."
 MESSAGE_QUEUE_PUT_MESSAGE	"Waiting to write a protocol message to a shared message queue."
 MESSAGE_QUEUE_RECEIVE	"Waiting to receive bytes from a shared message queue."
@@ -417,6 +418,7 @@ XactSLRU	"Waiting to access the transaction status SLRU cache."
 ParallelVacuumDSA	"Waiting for parallel vacuum dynamic shared memory allocation."
 AioUringCompletion	"Waiting for another process to complete IO via io_uring."
 ShmemIndex	"Waiting to find or allocate space in shared memory."
+LRLockWriter	"Waiting to acquire exclusive write access to a left-right lock."
 
 # No "ABI_compatibility" region here as WaitEventLWLock has its own C code.
 
