@@ -4587,13 +4587,34 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * Logical replication apply path: the subscriber's index set may differ
 	 * from the publisher's, so a HEAP_HOT_MODE_INDEXED choice on the
 	 * subscriber can produce a chain that disagrees with the publisher's
-	 * plain-row state.  Force non-HOT here so the applied state always
-	 * mirrors the publisher's at the heap-tuple level.  Classic HOT (no
-	 * indexed attr change) remains untouched because HeapUpdateHotAllowable
-	 * already returned HEAP_HOT_MODE_CLASSIC above in that case.
+	 * plain-row state.  We sidestep the mismatch by forcing non-HOT on the
+	 * apply path when the subscriber has any indexed attribute beyond the
+	 * primary key -- those are the extra indexes whose presence lowers the
+	 * subscriber's modified-attr share and lets HOT-indexed fire where it did
+	 * not on the publisher.
+	 *
+	 * When the subscriber's full indexed-attr set equals its primary-key attr
+	 * set (i.e., the relation carries no secondary or summarizing indexes),
+	 * publisher and subscriber have structurally equivalent HOT decisions and
+	 * HOT-indexed is safe on the apply path as well.
 	 */
 	if (IsLogicalWorker())
-		return HEAP_HOT_MODE_NO;
+	{
+		Bitmapset  *all_idx_attrs;
+		Bitmapset  *pk_attrs;
+		bool		extra_indexed;
+
+		all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+												   INDEX_ATTR_BITMAP_INDEXED);
+		pk_attrs = RelationGetIndexAttrBitmap(relation,
+											  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+		extra_indexed = !bms_equal(all_idx_attrs, pk_attrs);
+		bms_free(all_idx_attrs);
+		bms_free(pk_attrs);
+
+		if (extra_indexed)
+			return HEAP_HOT_MODE_NO;
+	}
 
 	if (IsCatalogRelation(relation) ||
 		RelationHasExclusionConstraint(relation))
