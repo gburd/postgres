@@ -5308,8 +5308,8 @@ RelationGetIndexedAttrs(Relation indexRel)
 	indexStruct = indexRel->rd_index;
 
 	/*
-	 * During very early bootstrap rd_indextuple may not be populated yet.
-	 * In that case we fall back to just the key columns without caching.
+	 * During very early bootstrap rd_indextuple may not be populated yet. In
+	 * that case we fall back to just the key columns without caching.
 	 */
 	if (indexRel->rd_indextuple == NULL)
 	{
@@ -5358,6 +5358,83 @@ RelationGetIndexedAttrs(Relation indexRel)
 	}
 
 	return attrs;
+}
+
+/*
+ * RelationGetHotIndexedChainMax
+ *
+ * Return the maximum HOT-indexed chain length heap_update should allow for
+ * this relation.  The cap is derived lazily from the relation's fillfactor
+ * and estimated average tuple size, so narrow tables get long chains and
+ * wide tables get short chains; neither a fixed constant nor a system-wide
+ * GUC would fit as well.
+ *
+ * Heuristic: page_budget = BLCKSZ * fillfactor / 100
+ *            cap = (page_budget - overhead) / (avg_tuple + tombstone)
+ *
+ * The answer is cached in rel->rd_hotidx_chainmax.  Zero (the initial
+ * memset value) means "not yet computed".  A relcache invalidation
+ * destroys the Relation and a fresh one reinitialises to zero, so the
+ * value is naturally re-derived after any DDL that could change it
+ * (ALTER TABLE ... SET (fillfactor = ...), ADD/DROP COLUMN, etc.).
+ *
+ * This function is safe to call on any relkind but the cap only guides
+ * HOT-indexed decisions on ordinary and matview heaps; other relkinds
+ * see it but never consult it.
+ */
+int
+RelationGetHotIndexedChainMax(Relation relation)
+{
+	int			fillfactor;
+	Size		page_budget;
+	Size		overhead;
+	Size		avg_tuple;
+	Size		tombstone;
+	int			cap;
+
+	if (relation->rd_hotidx_chainmax > 0)
+		return relation->rd_hotidx_chainmax;
+
+	fillfactor = RelationGetFillFactor(relation, HEAP_DEFAULT_FILLFACTOR);
+	page_budget = BLCKSZ * fillfactor / 100;
+
+	/*
+	 * Overhead reserved on the page: the header plus room for a handful of
+	 * ItemIdData slots we don't intend to use up.  Eight is a round number
+	 * well below MaxHeapTuplesPerPage; it keeps the cap conservative.
+	 */
+	overhead = SizeOfPageHeaderData + 8 * sizeof(ItemIdData);
+
+	/*
+	 * Average tuple estimate.  We deliberately avoid consulting
+	 * pg_class.reltuples/relpages here: autovacuum's statistics may lag
+	 * behind reality, and the cap should be stable per-DDL rather than
+	 * swinging with row counts.  The per-column 8-byte term is a generous
+	 * approximation for typical narrow tables; wide text/bytea columns just
+	 * mean the cap becomes smaller, which is the behaviour we want.
+	 */
+	avg_tuple = MAXALIGN(sizeof(HeapTupleHeaderData)) +
+		RelationGetDescr(relation)->natts * 8;
+
+	/*
+	 * Tombstone size upper bound: header + small bitmap payload + alignment.
+	 * 64 bytes safely covers the common case (few dozen attributes) without
+	 * needing to include access/hot_indexed.h here.
+	 */
+	tombstone = 64;
+
+	if (page_budget <= overhead)
+		cap = 1;
+	else
+		cap = (int) ((page_budget - overhead) / (avg_tuple + tombstone));
+
+	if (cap < 1)
+		cap = 1;
+	if (cap > MaxHeapTuplesPerPage)
+		cap = MaxHeapTuplesPerPage;
+
+	relation->rd_hotidx_chainmax = cap;
+	return cap;
 }
 
 /*

@@ -74,6 +74,7 @@ extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
  * final bms_copy.
  */
 extern Bitmapset *RelationGetIndexedAttrs(Relation indexRel);
+extern int	RelationGetHotIndexedChainMax(Relation relation);
 
 /*
  * RelationHasExclusionConstraint -- true iff any index on this relation
