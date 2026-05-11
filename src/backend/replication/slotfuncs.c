@@ -843,6 +843,7 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 		SpinLockRelease(&MyReplicationSlot->mutex);
 
 		ReplicationSlotMarkDirty();
+		ReplicationSlotPublishXmin(MyReplicationSlot);
 		ReplicationSlotsComputeRequiredXmin(false);
 		ReplicationSlotsComputeRequiredLSN();
 		ReplicationSlotSave();

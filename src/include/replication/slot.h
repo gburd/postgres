@@ -12,6 +12,7 @@
 #include "access/xlog.h"
 #include "access/xlogreader.h"
 #include "storage/condition_variable.h"
+#include "storage/lrlock.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
@@ -317,9 +318,22 @@ ReplicationSlotSetInactiveSince(ReplicationSlot *s, TimestampTz ts,
 }
 
 /*
+ * Per-slot data cached for wait-free read by ReplicationSlotsComputeRequiredXmin.
+ * Two copies of this array are maintained by ReplicationSlotXminLock (LRLock).
+ */
+typedef struct ReplicationSlotXminEntry
+{
+	TransactionId effective_xmin;
+	TransactionId effective_catalog_xmin;
+	bool		in_use;
+	ReplicationSlotInvalidationCause invalidated;
+}			ReplicationSlotXminEntry;
+
+/*
  * Pointers to shared memory
  */
 extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
+extern PGDLLIMPORT LRLock * ReplicationSlotXminLock;
 extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
 
 /* GUCs */
@@ -345,6 +359,9 @@ extern void ReplicationSlotRelease(void);
 extern void ReplicationSlotCleanup(bool synced_only);
 extern void ReplicationSlotSave(void);
 extern void ReplicationSlotMarkDirty(void);
+
+/* LRLock-based xmin cache management */
+extern void ReplicationSlotPublishXmin(ReplicationSlot *slot);
 
 /* misc stuff */
 extern void ReplicationSlotInitialize(void);

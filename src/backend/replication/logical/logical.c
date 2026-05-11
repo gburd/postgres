@@ -425,6 +425,7 @@ CreateInitDecodingContext(const char *plugin,
 		slot->effective_xmin = xmin_horizon;
 	SpinLockRelease(&slot->mutex);
 
+	ReplicationSlotPublishXmin(slot);
 	ReplicationSlotsComputeRequiredXmin(true);
 
 	LWLockRelease(ProcArrayLock);
@@ -1909,6 +1910,7 @@ LogicalConfirmReceivedLocation(XLogRecPtr lsn)
 			MyReplicationSlot->effective_catalog_xmin = MyReplicationSlot->data.catalog_xmin;
 			SpinLockRelease(&MyReplicationSlot->mutex);
 
+			ReplicationSlotPublishXmin(MyReplicationSlot);
 			ReplicationSlotsComputeRequiredXmin(false);
 			ReplicationSlotsComputeRequiredLSN();
 		}

@@ -2644,6 +2644,7 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 	if (changed)
 	{
 		ReplicationSlotMarkDirty();
+		ReplicationSlotPublishXmin(slot);
 		ReplicationSlotsComputeRequiredXmin(false);
 	}
 }

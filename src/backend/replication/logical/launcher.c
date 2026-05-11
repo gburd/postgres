@@ -1514,6 +1514,7 @@ update_conflict_slot_xmin(TransactionId new_xmin)
 	elog(DEBUG1, "updated xmin: %u", MyReplicationSlot->data.xmin);
 
 	ReplicationSlotMarkDirty();
+	ReplicationSlotPublishXmin(MyReplicationSlot);
 	ReplicationSlotsComputeRequiredXmin(false);
 
 	/*
@@ -1550,6 +1551,7 @@ init_conflict_slot_xmin(void)
 	MyReplicationSlot->data.xmin = xmin_horizon;
 	SpinLockRelease(&MyReplicationSlot->mutex);
 
+	ReplicationSlotPublishXmin(MyReplicationSlot);
 	ReplicationSlotsComputeRequiredXmin(true);
 
 	LWLockRelease(ProcArrayLock);

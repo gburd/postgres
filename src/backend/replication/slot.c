@@ -146,6 +146,26 @@ StaticAssertDecl(lengthof(SlotInvalidationCauses) == (RS_INVAL_MAX_CAUSES + 1),
 /* Control array for replication slot management */
 ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
 
+/*
+ * LRLock protecting two copies of the xmin snapshot array.
+ * Allows ReplicationSlotsComputeRequiredXmin to read without holding any
+ * blocking lock.
+ */
+LRLock	   *ReplicationSlotXminLock = NULL;
+
+/* Raw shared memory block for ReplicationSlotXminLock */
+static void *ReplicationSlotXminShmem;
+
+/* Operation type for the xmin LRLock oplog */
+typedef struct SlotXminOp
+{
+	int			idx;
+	ReplicationSlotXminEntry entry;
+}			SlotXminOp;
+
+static void slotxmin_apply_fn(void *data, const void *operation, Size op_size);
+static void slotxmin_sync_fn(void *dst, const void *src, Size data_size);
+
 static void ReplicationSlotsShmemRequest(void *arg);
 static void ReplicationSlotsShmemInit(void *arg);
 
@@ -194,24 +214,58 @@ static void CreateSlotOnDisk(ReplicationSlot *slot);
 static void SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel);
 
 /*
+ * Apply a single xmin entry update to one copy of the xmin snapshot array.
+ */
+static void
+slotxmin_apply_fn(void *data, const void *operation, Size op_size)
+{
+	ReplicationSlotXminEntry *entries = (ReplicationSlotXminEntry *) data;
+	const		SlotXminOp *op = (const SlotXminOp *) operation;
+
+	Assert(op_size == sizeof(SlotXminOp));
+	entries[op->idx] = op->entry;
+}
+
+/*
+ * Sync (byte-for-byte copy) one xmin snapshot array from source to dest.
+ */
+static void
+slotxmin_sync_fn(void *dst, const void *src, Size data_size)
+{
+	memcpy(dst, src, data_size);
+}
+
+/*
  * Register shared memory space needed for replication slots.
  */
 static void
 ReplicationSlotsShmemRequest(void *arg)
 {
 	Size		size;
+	int			max_slots;
 
 	if (max_replication_slots + max_repack_replication_slots == 0)
 		return;
 
+	max_slots = max_replication_slots + max_repack_replication_slots;
+
 	size = offsetof(ReplicationSlotCtlData, replication_slots);
-	size = add_size(size,
-					mul_size(max_replication_slots + max_repack_replication_slots,
-							 sizeof(ReplicationSlot)));
+	size = add_size(size, mul_size(max_slots, sizeof(ReplicationSlot)));
 	ShmemRequestStruct(.name = "ReplicationSlot Ctl",
 					   .size = size,
 					   .ptr = (void **) &ReplicationSlotCtl,
 		);
+
+	/*
+	 * Request shared memory for the xmin snapshot LRLock.  The LRLock
+	 * maintains two copies of ReplicationSlotXminEntry[max_slots].
+	 */
+	ShmemRequestStruct(.name = "ReplicationSlot Xmin LRLock",
+					   .size = LRLockShmemSize(
+											   max_slots * sizeof(ReplicationSlotXminEntry),
+											   MaxBackends + NUM_AUXILIARY_PROCS,
+											   max_slots * sizeof(SlotXminOp)),
+					   .ptr = &ReplicationSlotXminShmem);
 }
 
 /*
@@ -220,7 +274,9 @@ ReplicationSlotsShmemRequest(void *arg)
 static void
 ReplicationSlotsShmemInit(void *arg)
 {
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	int			max_slots = max_replication_slots + max_repack_replication_slots;
+
+	for (int i = 0; i < max_slots; i++)
 	{
 		ReplicationSlot *slot = &ReplicationSlotCtl->replication_slots[i];
 
@@ -231,6 +287,77 @@ ReplicationSlotsShmemInit(void *arg)
 						 LWTRANCHE_REPLICATION_SLOT_IO);
 		ConditionVariableInit(&slot->active_cv);
 	}
+
+	/*
+	 * Initialize the xmin snapshot LRLock.  Both copies of the xmin array
+	 * start all-zeroed (in_use=false, xmins=Invalid), which is correct for a
+	 * freshly started server with no pre-existing slots.  Surviving slots are
+	 * populated in StartupReplicationSlots() after loading from disk.
+	 */
+	if (max_slots > 0)
+	{
+		Size		data_size = max_slots * sizeof(ReplicationSlotXminEntry);
+		Size		oplog_size = max_slots * sizeof(SlotXminOp);
+
+		ReplicationSlotXminLock =
+			LRLockInitInPlace(ReplicationSlotXminShmem,
+							  data_size,
+							  slotxmin_apply_fn,
+							  slotxmin_sync_fn,
+							  MaxBackends + NUM_AUXILIARY_PROCS,
+							  oplog_size,
+							  "ReplicationSlotXminLock");
+		LRLockMarkReady(ReplicationSlotXminLock);
+	}
+}
+
+/*
+ * Publish the current xmin state of a slot to the LRLock snapshot array.
+ *
+ * Must be called after any change to effective_xmin, effective_catalog_xmin,
+ * in_use, or data.invalidated, so that wait-free readers always see a
+ * reasonably current view.
+ *
+ * The caller must hold whatever lock protects the fields being published:
+ * ReplicationSlotControlLock exclusive (or ReplicationSlotAllocationLock) for
+ * in_use changes; the slot mutex for xmin / invalidated changes.  Releasing
+ * those locks before calling this function is safe too, since the publish is
+ * serialized by the LRLock write mutex.
+ */
+void
+ReplicationSlotPublishXmin(ReplicationSlot *slot)
+{
+	int			idx;
+	SlotXminOp	op;
+
+	/* Skip if LRLock wasn't initialized (e.g. max_replication_slots == 0) */
+	if (ReplicationSlotXminLock == NULL)
+		return;
+
+	idx = (int) (slot - ReplicationSlotCtl->replication_slots);
+	Assert(idx >= 0 && idx < max_replication_slots + max_repack_replication_slots);
+
+	op.idx = idx;
+
+	/* Read current state under the spinlock */
+	SpinLockAcquire(&slot->mutex);
+	op.entry.effective_xmin = slot->effective_xmin;
+	op.entry.effective_catalog_xmin = slot->effective_catalog_xmin;
+	op.entry.invalidated = slot->data.invalidated;
+	SpinLockRelease(&slot->mutex);
+
+	/*
+	 * in_use is protected by ReplicationSlotControlLock (exclusive) for
+	 * create/drop.  For xmin-only updates the slot is already in_use and the
+	 * flag cannot change, so reading it without the lock is safe.
+	 */
+	op.entry.in_use = slot->in_use;
+
+	/* Publish to the LRLock write copy and make visible to readers */
+	LRLockWriteBegin(ReplicationSlotXminLock);
+	LRLockApplyOp(ReplicationSlotXminLock, &op, sizeof(op));
+	LRLockPublish(ReplicationSlotXminLock);
+	LRLockWriteEnd(ReplicationSlotXminLock);
 }
 
 /*
@@ -519,6 +646,9 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	MyReplicationSlot = slot;
 
 	LWLockRelease(ReplicationSlotControlLock);
+
+	/* Publish the new in_use state to the wait-free xmin snapshot. */
+	ReplicationSlotPublishXmin(slot);
 
 	/*
 	 * Create statistics entry for the new logical slot. We don't collect any
@@ -810,6 +940,7 @@ ReplicationSlotRelease(void)
 		SpinLockAcquire(&slot->mutex);
 		slot->effective_xmin = InvalidTransactionId;
 		SpinLockRelease(&slot->mutex);
+		ReplicationSlotPublishXmin(slot);
 		ReplicationSlotsComputeRequiredXmin(false);
 	}
 
@@ -1126,6 +1257,9 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	LWLockRelease(ReplicationSlotControlLock);
 	ConditionVariableBroadcast(&slot->active_cv);
 
+	/* Publish cleared in_use to the wait-free xmin snapshot. */
+	ReplicationSlotPublishXmin(slot);
+
 	/*
 	 * Slot is dead and doesn't prevent resource removal anymore, recompute
 	 * limits.
@@ -1221,11 +1355,15 @@ ReplicationSlotPersist(void)
  * caller first acquires the ReplicationSlotControlLock, followed by the
  * ProcArrayLock, to prevent any undetectable deadlocks since this function
  * acquires them in that order.
+ *
+ * When already_locked is false (the common case), this function uses the
+ * LRLock-protected xmin snapshot for a wait-free read.  The caller should
+ * have called ReplicationSlotPublishXmin() for any slot whose xmin was just
+ * updated, so that the snapshot reflects the latest values.
  */
 void
 ReplicationSlotsComputeRequiredXmin(bool already_locked)
 {
-	int			i;
 	TransactionId agg_xmin = InvalidTransactionId;
 	TransactionId agg_catalog_xmin = InvalidTransactionId;
 
@@ -1234,67 +1372,84 @@ ReplicationSlotsComputeRequiredXmin(bool already_locked)
 		   (LWLockHeldByMeInMode(ReplicationSlotControlLock, LW_EXCLUSIVE) &&
 			LWLockHeldByMeInMode(ProcArrayLock, LW_EXCLUSIVE)));
 
-	/*
-	 * Hold the ReplicationSlotControlLock until after updating the slot xmin
-	 * values, so no backend updates the initial xmin for newly created slot
-	 * concurrently. A shared lock is used here to minimize lock contention,
-	 * especially when many slots exist and advancements occur frequently.
-	 * This is safe since an exclusive lock is taken during initial slot xmin
-	 * update in slot creation.
-	 *
-	 * One might think that we can hold the ProcArrayLock exclusively and
-	 * update the slot xmin values, but it could increase lock contention on
-	 * the ProcArrayLock, which is not great since this function can be called
-	 * at non-negligible frequency.
-	 *
-	 * Concurrent invocation of this function may cause the computed slot xmin
-	 * to regress. However, this is harmless because tuples prior to the most
-	 * recent xmin are no longer useful once advancement occurs (see
-	 * LogicalConfirmReceivedLocation where the slot's xmin value is flushed
-	 * before updating the effective_xmin). Thus, such regression merely
-	 * prevents VACUUM from prematurely removing tuples without causing the
-	 * early deletion of required data.
-	 */
-	if (!already_locked)
-		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	if (!already_locked && ReplicationSlotXminLock != NULL)
 	{
-		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
-		TransactionId effective_xmin;
-		TransactionId effective_catalog_xmin;
-		bool		invalidated;
+		/*
+		 * Wait-free path: read from the LRLock xmin snapshot.  No blocking
+		 * lock is acquired; concurrent xmin updates publish their changes via
+		 * ReplicationSlotPublishXmin before calling this function.
+		 */
+		const		ReplicationSlotXminEntry *entries;
+		int			max_slots = max_replication_slots + max_repack_replication_slots;
 
-		if (!s->in_use)
-			continue;
+		entries = (const ReplicationSlotXminEntry *) LRLockReadBegin(ReplicationSlotXminLock);
 
-		SpinLockAcquire(&s->mutex);
-		effective_xmin = s->effective_xmin;
-		effective_catalog_xmin = s->effective_catalog_xmin;
-		invalidated = s->data.invalidated != RS_INVAL_NONE;
-		SpinLockRelease(&s->mutex);
+		for (int i = 0; i < max_slots; i++)
+		{
+			if (!entries[i].in_use)
+				continue;
+			if (entries[i].invalidated != RS_INVAL_NONE)
+				continue;
 
-		/* invalidated slots need not apply */
-		if (invalidated)
-			continue;
+			if (TransactionIdIsValid(entries[i].effective_xmin) &&
+				(!TransactionIdIsValid(agg_xmin) ||
+				 TransactionIdPrecedes(entries[i].effective_xmin, agg_xmin)))
+				agg_xmin = entries[i].effective_xmin;
 
-		/* check the data xmin */
-		if (TransactionIdIsValid(effective_xmin) &&
-			(!TransactionIdIsValid(agg_xmin) ||
-			 TransactionIdPrecedes(effective_xmin, agg_xmin)))
-			agg_xmin = effective_xmin;
+			if (TransactionIdIsValid(entries[i].effective_catalog_xmin) &&
+				(!TransactionIdIsValid(agg_catalog_xmin) ||
+				 TransactionIdPrecedes(entries[i].effective_catalog_xmin,
+									   agg_catalog_xmin)))
+				agg_catalog_xmin = entries[i].effective_catalog_xmin;
+		}
 
-		/* check the catalog xmin */
-		if (TransactionIdIsValid(effective_catalog_xmin) &&
-			(!TransactionIdIsValid(agg_catalog_xmin) ||
-			 TransactionIdPrecedes(effective_catalog_xmin, agg_catalog_xmin)))
-			agg_catalog_xmin = effective_catalog_xmin;
+		LRLockReadEnd(ReplicationSlotXminLock);
+	}
+	else
+	{
+		/*
+		 * Legacy path: used when already_locked=true (caller holds both locks
+		 * exclusively) or during early startup before the LRLock is
+		 * initialized.
+		 */
+		if (!already_locked)
+			LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+
+		for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+		{
+			ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+			TransactionId effective_xmin;
+			TransactionId effective_catalog_xmin;
+			bool		invalidated;
+
+			if (!s->in_use)
+				continue;
+
+			SpinLockAcquire(&s->mutex);
+			effective_xmin = s->effective_xmin;
+			effective_catalog_xmin = s->effective_catalog_xmin;
+			invalidated = s->data.invalidated != RS_INVAL_NONE;
+			SpinLockRelease(&s->mutex);
+
+			if (invalidated)
+				continue;
+
+			if (TransactionIdIsValid(effective_xmin) &&
+				(!TransactionIdIsValid(agg_xmin) ||
+				 TransactionIdPrecedes(effective_xmin, agg_xmin)))
+				agg_xmin = effective_xmin;
+
+			if (TransactionIdIsValid(effective_catalog_xmin) &&
+				(!TransactionIdIsValid(agg_catalog_xmin) ||
+				 TransactionIdPrecedes(effective_catalog_xmin, agg_catalog_xmin)))
+				agg_catalog_xmin = effective_catalog_xmin;
+		}
+
+		if (!already_locked)
+			LWLockRelease(ReplicationSlotControlLock);
 	}
 
 	ProcArraySetReplicationSlotXmin(agg_xmin, agg_catalog_xmin, already_locked);
-
-	if (!already_locked)
-		LWLockRelease(ReplicationSlotControlLock);
 }
 
 /*
@@ -2085,6 +2240,10 @@ InvalidatePossiblyObsoleteSlot(uint32 possible_causes,
 
 		SpinLockRelease(&s->mutex);
 
+		/* If we just invalidated this slot, publish the change. */
+		if (invalidated)
+			ReplicationSlotPublishXmin(s);
+
 		/*
 		 * Calculate the idle time duration of the slot if slot is marked
 		 * invalidated with RS_INVAL_IDLE_TIMEOUT.
@@ -2446,6 +2605,23 @@ StartupReplicationSlots(void)
 	/* currently no slots exist, we're done. */
 	if (max_replication_slots + max_repack_replication_slots <= 0)
 		return;
+
+	/*
+	 * Populate the LRLock xmin snapshot from the restored slot array. This
+	 * runs single-threaded during startup, so no concurrent readers.
+	 */
+	if (ReplicationSlotXminLock != NULL)
+	{
+		int			max_slots = max_replication_slots + max_repack_replication_slots;
+
+		for (int i = 0; i < max_slots; i++)
+		{
+			ReplicationSlot *slot = &ReplicationSlotCtl->replication_slots[i];
+
+			if (slot->in_use)
+				ReplicationSlotPublishXmin(slot);
+		}
+	}
 
 	/* Now that we have recovered all the data, compute replication xmin */
 	ReplicationSlotsComputeRequiredXmin(false);
