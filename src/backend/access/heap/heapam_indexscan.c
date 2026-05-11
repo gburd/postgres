@@ -186,13 +186,15 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			/*
 			 * We were pointed directly at this hot-indexed tuple.  The index
 			 * entry we arrived through was inserted *for* this update, so it
-			 * agrees with the current tuple's attribute values; no recheck is
-			 * required on this entry even though the tuple carries
-			 * HEAP_INDEXED_UPDATED.  The skip below suppresses the usual
-			 * "mark recheck" observation; walking further through the chain
-			 * (which we don't do from a heap-only hot-indexed target) would
-			 * reinstate it if needed.
+			 * agrees with the current tuple's attribute values and the
+			 * executor does not strictly have to recheck quals.  We still
+			 * raise the recheck flag, though, so higher-level readers (e.g.
+			 * systable_getnext) can dedup against other btree entries whose
+			 * chain walks end at this same live TID -- the case of an index
+			 * key that was cycled back to itself by a HOT-indexed rename.
 			 */
+			if (hot_indexed_recheck != NULL)
+				*hot_indexed_recheck = true;
 		}
 		else if (hot_indexed_recheck != NULL &&
 				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)

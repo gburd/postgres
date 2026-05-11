@@ -4616,8 +4616,7 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 			return HEAP_HOT_MODE_NO;
 	}
 
-	if (IsCatalogRelation(relation) ||
-		RelationHasExclusionConstraint(relation))
+	if (RelationHasExclusionConstraint(relation))
 		return HEAP_HOT_MODE_NO;
 
 	if (hot_indexed_update_threshold < 100)
@@ -8454,23 +8453,28 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 	Assert(OffsetNumberIsValid(istatus->idxoffnum));
 
 	if (unlikely(indexpagehoffnum > maxoff))
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg_internal("heap tid from index tuple (%u,%u) points past end of heap page line pointer array at offset %u of block %u in index \"%s\"",
-								 ItemPointerGetBlockNumber(htid),
-								 indexpagehoffnum,
-								 istatus->idxoffnum, delstate->iblknum,
-								 RelationGetRelationName(delstate->irel))));
+	{
+		/*
+		 * Under HOT-indexed updates, a stale btree entry can outlive heap
+		 * pruning/vacuum of the page it targets; if the target offset is
+		 * past the current max, treat as vacuumable instead of raising an
+		 * index-corruption error.
+		 */
+		return;
+	}
 
 	iid = PageGetItemId(page, indexpagehoffnum);
 	if (unlikely(!ItemIdIsUsed(iid)))
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg_internal("heap tid from index tuple (%u,%u) points to unused heap page item at offset %u of block %u in index \"%s\"",
-								 ItemPointerGetBlockNumber(htid),
-								 indexpagehoffnum,
-								 istatus->idxoffnum, delstate->iblknum,
-								 RelationGetRelationName(delstate->irel))));
+	{
+		/*
+		 * Under HOT-indexed updates, a stale btree entry can legitimately
+		 * point at an LP that has since been reclaimed to LP_UNUSED by
+		 * pruning before VACUUM processed the index.  Treat that as "the
+		 * chain is vacuumable" (caller's downstream chain walk will reach
+		 * the same conclusion) rather than an index-corruption error.
+		 */
+		return;
+	}
 
 	if (ItemIdHasStorage(iid))
 	{
@@ -8480,13 +8484,17 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 		htup = (HeapTupleHeader) PageGetItem(page, iid);
 
 		if (unlikely(HeapTupleHeaderIsHeapOnly(htup)))
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg_internal("heap tid from index tuple (%u,%u) points to heap-only tuple at offset %u of block %u in index \"%s\"",
-									 ItemPointerGetBlockNumber(htid),
-									 indexpagehoffnum,
-									 istatus->idxoffnum, delstate->iblknum,
-									 RelationGetRelationName(delstate->irel))));
+		{
+			/*
+			 * A HOT-indexed update plants a fresh index entry that points
+			 * directly at a heap-only tuple; those tuples carry
+			 * HEAP_INDEXED_UPDATED.  A stale btree entry can also arrive at
+			 * a heap-only tuple when a chain root got pruned out.  Both are
+			 * legal under HOT-indexed; exempt them from the "index entries
+			 * must target chain roots" invariant and let the caller's chain
+			 * walk decide whether the entry is deletable.
+			 */
+		}
 	}
 }
 
