@@ -31,6 +31,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/tupdesc.h"
@@ -172,6 +173,39 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
 				continue;		/* no visible tuple, try next index entry */
 
+			/*
+			 * HOT-indexed: if the chain walk crossed a HOT-indexed hop, the
+			 * index leaf's stored key may disagree with the live tuple's
+			 * current index form.  For IOS we serve values out of xs_itup, so
+			 * a stale leaf would surface the wrong values.  Compare the leaf
+			 * against the live tuple we just fetched; if they disagree this
+			 * leaf is stale for this index and the canonical fresh entry
+			 * will return the tuple with the correct current values.
+			 */
+			if (scandesc->xs_hot_indexed_recheck)
+			{
+				bool		keep = false;
+
+				if (scandesc->xs_itup != NULL &&
+					scandesc->indexRelation->rd_rel->relam == BTREE_AM_OID)
+				{
+					TupleTableSlot *heap_slot = node->ioss_TableSlot;
+
+					if (heap_slot != NULL && !TTS_EMPTY(heap_slot) &&
+						_bt_heap_keys_equal_leaf(scandesc->indexRelation,
+												 scandesc->xs_itup,
+												 heap_slot))
+						keep = true;
+				}
+
+				if (!keep)
+				{
+					InstrCountFiltered2(node, 1);
+					ExecClearTuple(node->ioss_TableSlot);
+					continue;
+				}
+			}
+
 			ExecClearTuple(node->ioss_TableSlot);
 
 			/*
@@ -230,15 +264,13 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 
 		/*
-		 * HOT-indexed stale entry.  For an index-only scan, the values
-		 * returned come straight from the index tuple, so a stale entry would
-		 * surface the wrong key values to the caller.  Drop it: the canonical
-		 * fresh hot-indexed-inserted entry will return the tuple with the
-		 * correct current values.  If a recheckqual is present we also ran it
-		 * above, so the tuple is already confirmed; otherwise we have no way
-		 * to verify and must drop.
+		 * HOT-indexed recheck for the VM-all-visible path: if we skipped
+		 * the heap fetch (no TableSlot available) but the scan still flags
+		 * an SIU hop, drop conservatively -- we have no way to compare the
+		 * leaf key against the live tuple's current form without a fetch,
+		 * and the canonical fresh leaf will re-produce the tuple.
 		 */
-		if (scandesc->xs_hot_indexed_recheck)
+		if (scandesc->xs_hot_indexed_recheck && !tuple_from_heap)
 		{
 			InstrCountFiltered2(node, 1);
 			continue;

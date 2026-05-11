@@ -23,7 +23,9 @@
 #include "catalog/index.h"
 #include "catalog/indexing.h"
 #include "executor/executor.h"
+#include "nodes/bitmapset.h"
 #include "utils/rel.h"
+#include "utils/relcache.h"
 
 
 /*
@@ -70,7 +72,11 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  *
  * This should be called for each inserted or updated catalog tuple.
  *
- * This is effectively a cut-down version of ExecInsertIndexTuples.
+ * This is effectively a cut-down version of ExecInsertIndexTuples.  For
+ * UPDATE paths the caller supplies upd_info so we can tell which indexes
+ * actually need a new entry.  Classic HOT and HOT-indexed updates share
+ * the same skip rule: if none of the index's attributes changed then the
+ * existing heap chain's index entries still resolve the visible tuple.
  */
 static void
 CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
@@ -84,31 +90,20 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		allIndexes;
-	bool		onlySummarized;
+	bool		is_update;
+	bool		update_all_indexes;
+	const Bitmapset *modified_idx_attrs;
 
 	/*
-	 * Determine whether all indexes need updating (non-HOT) or only
-	 * summarizing indexes (HOT with summarized column changes).  When
-	 * upd_info is NULL the caller is handling a fresh insert, so every
-	 * index must get an entry.
+	 * Unpack caller's intent.  A NULL upd_info means this is a fresh insert
+	 * (or an update path that wants every index touched): every index must
+	 * get an entry.  Otherwise we consult the per-update modified-attrs
+	 * bitmap to decide each index individually, matching the executor's
+	 * ExecSetIndexUnchanged / ExecInsertIndexTuples contract.
 	 */
-	allIndexes = (upd_info == NULL) || upd_info->update_all_indexes;
-	onlySummarized = !allIndexes && upd_info != NULL &&
-		!bms_is_empty(upd_info->modified_attrs);
-
-	/*
-	 * HOT update does not require index inserts. But with asserts enabled we
-	 * want to check that it'd be legal to currently insert into the
-	 * table/index.
-	 */
-#ifndef USE_ASSERT_CHECKING
-	if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
-		return;
-#endif
-
-	/* When only updating summarized indexes, the tuple has to be HOT. */
-	Assert((!onlySummarized) || HeapTupleIsHeapOnly(heapTuple));
+	is_update = (upd_info != NULL);
+	update_all_indexes = !is_update || upd_info->update_all_indexes;
+	modified_idx_attrs = is_update ? upd_info->modified_attrs : NULL;
 
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
@@ -132,6 +127,7 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	{
 		IndexInfo  *indexInfo;
 		Relation	index;
+		bool		index_unchanged;
 
 		indexInfo = indexInfoArray[i];
 		index = relationDescs[i];
@@ -150,21 +146,36 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 		Assert(index->rd_index->indimmediate);
 		Assert(indexInfo->ii_NumIndexKeyAttrs != 0);
 
-		/* see earlier check above */
-#ifdef USE_ASSERT_CHECKING
-		if (HeapTupleIsHeapOnly(heapTuple) && !onlySummarized)
-		{
-			Assert(!ReindexIsProcessingIndex(RelationGetRelid(index)));
-			continue;
-		}
-#endif							/* USE_ASSERT_CHECKING */
-
 		/*
-		 * Skip insertions into non-summarizing indexes if we only need to
-		 * update summarizing indexes.
+		 * Decide whether this index needs a new entry.  On INSERT every
+		 * index gets one.  On UPDATE, the executor's rule is: a
+		 * non-summarizing index can be skipped iff none of its attributes
+		 * overlap the per-update modified-attrs bitmap; summarizing indexes
+		 * (e.g. BRIN) always get a chance to update their block-level
+		 * summaries.  Mirror that here so catalog UPDATEs land the same
+		 * index entries the executor would.
+		 *
+		 * When update_all_indexes is false and the modified-attrs bitmap
+		 * is empty or NULL, we are on a classic-HOT UPDATE where no
+		 * indexed attribute changed; skip every non-summarizing index.
 		 */
-		if (onlySummarized && !indexInfo->ii_Summarizing)
+		if (!is_update || update_all_indexes)
+			index_unchanged = false;
+		else if (modified_idx_attrs == NULL ||
+				 bms_is_empty(modified_idx_attrs))
+			index_unchanged = true;
+		else
+		{
+			Bitmapset  *indexedattrs = RelationGetIndexedAttrs(index);
+
+			index_unchanged = !bms_overlap(indexedattrs, modified_idx_attrs);
+			bms_free(indexedattrs);
+		}
+		indexInfo->ii_IndexUnchanged = index_unchanged;
+
+		if (is_update && index_unchanged && !indexInfo->ii_Summarizing)
 			continue;
+
 
 		/*
 		 * FormIndexDatum fills in its values and isnull parameters with the

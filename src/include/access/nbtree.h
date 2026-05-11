@@ -1151,6 +1151,8 @@ typedef struct BTOptions
 /*
  * external entry points for btree, in nbtree.c
  */
+extern bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+									 struct TupleTableSlot *heapSlot);
 extern void btbuildempty(Relation index);
 extern bool btinsert(Relation rel, Datum *values, bool *isnull,
 					 ItemPointer ht_ctid, Relation heapRel,

@@ -41,8 +41,6 @@ static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
 									  Relation heapRel,
 									  IndexUniqueCheck checkUnique, bool *is_unique,
 									  uint32 *speculativeToken);
-static bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
-									 TupleTableSlot *heapSlot);
 static OffsetNumber _bt_findinsertloc(Relation rel,
 									  BTInsertState insertstate,
 									  bool checkingunique,
@@ -615,6 +613,25 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 							ExecClearTuple(siu_slot);
 							goto bt_siu_skip;
 						}
+
+						/*
+						 * If the chain walk landed on the same live tuple the
+						 * inserter is about to plant an entry for, this is not
+						 * a duplicate -- it is the same logical row being
+						 * re-indexed.  Happens when a HOT-indexed chain cycles
+						 * an index key (e.g. rename aa -> foo -> aa): the stale
+						 * original leaf now coincidentally agrees with the new
+						 * tuple's key, and the inserter is extending the same
+						 * chain.  Skip, don't raise a unique violation.
+						 */
+						if (ItemPointerCompare(&htid, &itup->t_tid) == 0)
+						{
+							if (nbuf != InvalidBuffer)
+								_bt_relbuf(rel, nbuf);
+							nbuf = InvalidBuffer;
+							ExecClearTuple(siu_slot);
+							goto bt_siu_skip;
+						}
 						ExecClearTuple(siu_slot);
 					}
 
@@ -867,7 +884,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
  *	heapSlot must already be populated by the caller (via
  *	table_index_fetch_tuple_check with a keep_slot).
  */
-static bool
+bool
 _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
 						 TupleTableSlot *heapSlot)
 {

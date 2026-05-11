@@ -31,6 +31,7 @@
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -431,6 +432,7 @@ systable_beginscan(Relation heapRelation,
 	}
 	else
 		sysscan->heap_keys = NULL;
+	sysscan->hot_indexed_seen_tids = NULL;
 
 	if (snapshot == NULL)
 	{
@@ -589,6 +591,39 @@ systable_getnext(SysScanDesc sysscan)
 				continue;
 			}
 
+			/*
+			 * When a HOT-indexed chain cycles an index key back to itself
+			 * (e.g. RENAME X -> Y -> X), multiple btree entries with the
+			 * same key chain-walk to the same live heap tuple.  The filter
+			 * above lets both pass because each agrees with the scan keys.
+			 * Dedup here by tracking the returned live TIDs in a per-scan
+			 * hash; skip any repeat.
+			 */
+			if (sysscan->iscan->xs_hot_indexed_recheck)
+			{
+				bool		found;
+
+				if (sysscan->hot_indexed_seen_tids == NULL)
+				{
+					HASHCTL		ctl = {0};
+
+					ctl.keysize = sizeof(ItemPointerData);
+					ctl.entrysize = sizeof(ItemPointerData);
+					ctl.hcxt = CurrentMemoryContext;
+					sysscan->hot_indexed_seen_tids =
+						hash_create("hot-indexed seen-tid dedup",
+									32, &ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+				}
+				hash_search(sysscan->hot_indexed_seen_tids,
+							&htup->t_self, HASH_ENTER, &found);
+				if (found)
+				{
+					htup = NULL;
+					continue;
+				}
+			}
+
 			break;
 		}
 	}
@@ -681,6 +716,12 @@ systable_endscan(SysScanDesc sysscan)
 		sysscan->heap_keys = NULL;
 	}
 
+	if (sysscan->hot_indexed_seen_tids)
+	{
+		hash_destroy(sysscan->hot_indexed_seen_tids);
+		sysscan->hot_indexed_seen_tids = NULL;
+	}
+
 	/*
 	 * Reset the bsysscan flag at the end of the systable scan.  See detailed
 	 * comments in xact.c where these variables are declared.
@@ -744,6 +785,7 @@ systable_beginscan_ordered(Relation heapRelation,
 	}
 	else
 		sysscan->heap_keys = NULL;
+	sysscan->hot_indexed_seen_tids = NULL;
 
 	if (snapshot == NULL)
 	{
@@ -835,6 +877,32 @@ systable_getnext_ordered(SysScanDesc sysscan, ScanDirection direction)
 			continue;
 		}
 
+		/* Same cycle-key dedup as systable_getnext. */
+		if (sysscan->iscan->xs_hot_indexed_recheck)
+		{
+			bool		found;
+
+			if (sysscan->hot_indexed_seen_tids == NULL)
+			{
+				HASHCTL		ctl = {0};
+
+				ctl.keysize = sizeof(ItemPointerData);
+				ctl.entrysize = sizeof(ItemPointerData);
+				ctl.hcxt = CurrentMemoryContext;
+				sysscan->hot_indexed_seen_tids =
+					hash_create("hot-indexed seen-tid dedup",
+								32, &ctl,
+								HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			}
+			hash_search(sysscan->hot_indexed_seen_tids,
+						&htup->t_self, HASH_ENTER, &found);
+			if (found)
+			{
+				htup = NULL;
+				continue;
+			}
+		}
+
 		break;
 	}
 
@@ -868,6 +936,12 @@ systable_endscan_ordered(SysScanDesc sysscan)
 	{
 		pfree(sysscan->heap_keys);
 		sysscan->heap_keys = NULL;
+	}
+
+	if (sysscan->hot_indexed_seen_tids)
+	{
+		hash_destroy(sysscan->hot_indexed_seen_tids);
+		sysscan->hot_indexed_seen_tids = NULL;
 	}
 
 	/*
