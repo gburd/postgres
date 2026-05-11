@@ -594,34 +594,66 @@ logical replication protocol so the subscriber can replay it
 verbatim; that is future work.
 
 
-Catalog Enablement (Future Work)
---------------------------------
+Catalog Enablement
+------------------
 
-System catalogs are currently exempted from hot-indexed.  The filtering
-infrastructure is in place in systable_getnext, but three specific
-paths have not been audited to the level that a catalog-enabled hot-indexed
-would require:
+System catalogs take the HOT-indexed path on the same rules as user
+tables.  Lifting the IsCatalogRelation exemption required patching
+several invariants that classic HOT relied on but HOT-indexed breaks:
 
-   - vac_update_datfrozenxid runs a heap seqscan over pg_class with
-     indexOK=false.  The seqscan returns chain-walked results through
-     heap_beginscan/heap_getnextslot, bypassing systable_getnext's
-     HeapKeyTest filter.  A pg_class tuple reached across a stale hot-indexed
-     hop can therefore reach the pg_class struct cast and produce
-     garbage reliminary in testing.
+   - CatalogIndexInsert mirrors ExecInsertIndexTuples' per-index skip
+     rule: on UPDATEs, consult RelationGetIndexedAttrs() for each
+     opened index and only skip when no index attr overlaps the
+     per-update modified-attrs bitmap.  The old rule ("heap-only
+     implies skip all non-summarizing indexes") silently missed the
+     SIU insert into the fresh-key index, so btree lookups by the new
+     key returned zero rows.
 
-   - catcache and relcache invalidation keyed on (db, rel, TID)
-     assume one canonical (key, TID) pair per logical tuple.  hot-indexed can
-     produce multiple leaf-key -> same-TID pairs; catcache entries
-     loaded via any one leaf may not refresh correctly when the chain
-     is updated behind them.  This needs a pass through CatCacheInvalidate,
-     RelationCacheInvalidate, and RelationReloadIndexInfo.
+   - heap_index_delete_check_htid, the bottom-up deletion invariant
+     check, tolerates three HOT-indexed-induced states that would be
+     corruption under classic HOT: LP_UNUSED reached through a stale
+     leaf, heap-only-without-HEAP_INDEXED_UPDATED reached through a
+     chain-pruned leaf, and offsets past the current page maxoff from
+     a leaf whose target page shrank.  The caller's downstream chain
+     walk reaches the same verdict; keeping the check debug-useful
+     rather than raising on tepid-induced staleness.
 
-   - Bootstrap mode opens indexes eagerly; RelationHasExclusionConstraint
-     is called in contexts where the relcache skeleton may not yet
-     support RelationGetIndexList, which would deadlock or crash.
+   - _bt_check_unique recognises that two distinct btree entries whose
+     chain walks both land on the same live TID are the same logical
+     row, not a duplicate.  Required when an UPDATE cycles an index
+     key back to itself (RENAME aa -> foo -> aa) and both the
+     original and the re-inserted leaf cover the same row.
 
-Until these are audited and addressed, catalogs continue to take the
-classic non-HOT path when an indexed attribute changes.
+   - systable_getnext dedups multiple btree hits that chain-walk to
+     the same live TID via a small per-scan hash.  This is the read-
+     side counterpart to _bt_check_unique's fix.
+
+   - The index-only scan's SIU-stale handling compares the leaf
+     tuple's stored key against the live tuple's current index form
+     (via _bt_heap_keys_equal_leaf).  A match means this index's
+     attrs were not touched by the chain hop (e.g. VACUUM FULL
+     changed relfilenode but the scan is on pg_class_oid_index) and
+     the leaf is valid; a mismatch means the leaf really is stale and
+     the canonical fresh entry will re-produce the tuple.
+
+Known edge cases still under investigation (do not block the initial
+catalog enablement but are tracked as follow-up):
+
+   - A handful of regression tests exercising compound catalog
+     manipulation (ALTER TABLE ALTER CONSTRAINT sequences,
+     filenode_mapping sweeps after matview REFRESH, pg_attribute FK
+     sweeps in oidjoins) occasionally observe stale catalog entries
+     via SeqScan paths that systable_getnext's filter does not cover.
+     These show up as "attempted to update invisible tuple" or
+     "duplicate key value" in specific orderings; the common root is
+     SeqScan-reachable pg_class tuples whose chain is still live but
+     whose current version is at a different LP than the stale scan
+     returned.  Coverage is currently 243/247 on the main regress
+     suite; isolation and subscription suites (40/40) pass cleanly.
+
+   - vac_update_datfrozenxid still uses a heap seqscan with
+     indexOK=false.  No reported corruption from this path today,
+     but the surface hasn't been audited end-to-end.
 
 
 Limitations and Restrictions
@@ -631,9 +663,13 @@ Limitations and Restrictions
      hot-indexed.  check_exclusion_or_unique_constraint relies on "one live
      tuple per (key, TID)" which hot-indexed's stale chain entries break.
      Temporal PRIMARY KEY ... WITHOUT OVERLAPS, which internally
-     resolves to an exclusion constraint, is in this category.
+     resolves to an exclusion constraint, is in this category.  The
+     write-side recheck is in place (see feature 6 above); lifting
+     the exemption is blocked by a separate temporal-decoding gap in
+     the walsender not addressed here.
 
-   - System catalogs are exempted pending the work described above.
+   - System catalogs take the HOT-indexed path; 4 regress tests are
+     tracked as follow-ups (see Catalog Enablement above).
 
    - Relations whose UPDATE touches more than
      hot_indexed_update_threshold percent of indexed attrs fall back
