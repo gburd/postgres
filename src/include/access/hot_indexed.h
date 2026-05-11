@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * hot_indexed.h
- *	  Definitions for HOT-indexed (SIU) tombstone items.
+ *	  Definitions for HOT-indexed tombstone items.
  *
  * A HOT-indexed update is an update that modifies one or more indexed
  * columns but is stored as a heap-only tuple on the same page as the
@@ -11,7 +11,7 @@
  * stale entries during chain following.
  *
  * The bitmap is carried by a "tombstone" LP_NORMAL line pointer placed
- * adjacent to the live SIU tuple on the same page.  The tombstone is
+ * adjacent to the live hot-indexed tuple on the same page.  The tombstone is
  * marked invisible (HEAP_XMIN_INVALID) so generic visibility checks
  * skip it, and is distinguished from a real tuple by
  *
@@ -26,7 +26,7 @@
  *   HeapTupleHeaderData
  *     t_ctid.blockno  = InvalidBlockNumber  (tombstone is not part of any
  *                                             HOT chain or visibility walk)
- *     t_ctid.offnum   = back-pointer to the live SIU tuple's offset
+ *     t_ctid.offnum   = back-pointer to the live hot-indexed tuple's offset
  *     t_infomask      = HEAP_XMIN_INVALID | HEAP_XMAX_INVALID
  *     t_infomask2     = HEAP_INDEXED_UPDATED   (natts bits zero)
  *     t_hoff          = MAXALIGN(SizeofHeapTupleHeader)
@@ -60,10 +60,10 @@
  */
 typedef struct HotIndexedTombstonePayload
 {
-	uint16		t_target;		/* offnum of the live SIU tuple */
+	uint16		t_target;		/* offnum of the live hot-indexed tuple */
 	uint16		t_nbytes;		/* bitmap byte count */
 	uint8		t_bitmap[FLEXIBLE_ARRAY_MEMBER];
-} HotIndexedTombstonePayload;
+}			HotIndexedTombstonePayload;
 
 #define SizeOfHotIndexedTombstonePayload \
 	offsetof(HotIndexedTombstonePayload, t_bitmap)
@@ -116,7 +116,7 @@ HotIndexedTombstoneGetPayloadConst(const HeapTupleHeaderData *tup)
 
 /*
  * HotIndexedTombstoneGetTarget
- *		Offset number of the live SIU tuple this tombstone describes.
+ *		Offset number of the live hot-indexed tuple this tombstone describes.
  */
 static inline OffsetNumber
 HotIndexedTombstoneGetTarget(const HeapTupleHeaderData *tup)
@@ -152,8 +152,8 @@ extern Size heap_build_hot_indexed_tombstone(char *buf,
 											 int natts,
 											 const Bitmapset *modified_attrs);
 
-extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
-													  AttrNumber attnum);
+extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload * p,
+													 AttrNumber attnum);
 
 /*
  * Compile-time layout sanity:

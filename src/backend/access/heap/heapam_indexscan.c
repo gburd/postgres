@@ -86,13 +86,13 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
  * If hot_indexed_recheck is not NULL, it is set to true iff any tuple
  * visited along the chain (including the returned one) carries
  * HEAP_INDEXED_UPDATED.  Callers use this to know that at least one
- * Selective Index Update has occurred in the chain, and therefore an
+ * HOT-indexed update has occurred in the chain, and therefore an
  * index-scan that arrived via this chain must recheck its scan keys
  * against the returned tuple's attribute values -- the index entry's
  * key may no longer agree with the heap tuple for attributes covered by
  * one of the encountered tombstones.  This is a conservative signal:
  * Phase 3.1e will refine it with per-index attr matching.  When there
- * was no SIU in the chain, *hot_indexed_recheck is left set to false.
+ * was no hot-indexed in the chain, *hot_indexed_recheck is left set to false.
  *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
@@ -117,9 +117,9 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		*all_dead = first_call;
 
 	/*
-	 * On the first call, clear any stale value left by a previous call.
-	 * On subsequent calls (same chain continuing), preserve whatever the
-	 * earlier hop observed.
+	 * On the first call, clear any stale value left by a previous call. On
+	 * subsequent calls (same chain continuing), preserve whatever the earlier
+	 * hop observed.
 	 */
 	if (hot_indexed_recheck && first_call)
 		*hot_indexed_recheck = false;
@@ -172,35 +172,36 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 		/*
 		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
-		 * is the target of a freshly-inserted SIU index entry: then arriving
-		 * directly at a heap-only HOT-indexed tuple is legal and the tuple
-		 * is the canonical visible version, so we fall through and apply
-		 * normal visibility checks to it.  Otherwise, treat it as a broken
-		 * chain.
+		 * is the target of a freshly-inserted hot-indexed index entry: then
+		 * arriving directly at a heap-only HOT-indexed tuple is legal and the
+		 * tuple is the canonical visible version, so we fall through and
+		 * apply normal visibility checks to it.  Otherwise, treat it as a
+		 * broken chain.
 		 */
 		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple))
 		{
 			if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
 				break;
+
 			/*
-			 * We were pointed directly at this SIU tuple.  The index entry
-			 * we arrived through was inserted *for* this update, so it
-			 * agrees with the current tuple's attribute values; no recheck
-			 * is required on this entry even though the tuple carries
+			 * We were pointed directly at this hot-indexed tuple.  The index
+			 * entry we arrived through was inserted *for* this update, so it
+			 * agrees with the current tuple's attribute values; no recheck is
+			 * required on this entry even though the tuple carries
 			 * HEAP_INDEXED_UPDATED.  The skip below suppresses the usual
 			 * "mark recheck" observation; walking further through the chain
-			 * (which we don't do from a heap-only SIU target) would reinstate
-			 * it if needed.
+			 * (which we don't do from a heap-only hot-indexed target) would
+			 * reinstate it if needed.
 			 */
 		}
 		else if (hot_indexed_recheck != NULL &&
 				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 		{
 			/*
-			 * We walked through a HOT-indexed (SIU) hop reached via an older
-			 * index entry.  The scan key that got us here may no longer
-			 * agree with the heap tuple's current attribute values -- force
-			 * the executor to recheck quals against the returned tuple.
+			 * We walked through a HOT-indexed hop reached via an older index
+			 * entry.  The scan key that got us here may no longer agree with
+			 * the heap tuple's current attribute values -- force the executor
+			 * to recheck quals against the returned tuple.
 			 */
 			*hot_indexed_recheck = true;
 		}

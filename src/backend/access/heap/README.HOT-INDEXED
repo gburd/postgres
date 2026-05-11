@@ -1,6 +1,6 @@
-src/backend/access/heap/README.SIU
+src/backend/access/heap/README.hot-indexed
 
-Selective Index Update (SIU) -- also known as HOT-indexed updates
+HOT-indexed update (hot-indexed) -- also known as HOT-indexed updates
 =================================================================
 
 Background.  The Heap Only Tuple (HOT) mechanism described in
@@ -11,8 +11,8 @@ repeatedly touches just one or two indexed columns, the gate never
 opens and every update becomes a full non-HOT migration with a new TID
 inserted into every index.
 
-Selective Index Update (SIU) widens the gate.  When an UPDATE modifies
-one or more non-summarizing indexed attributes, SIU still keeps the
+HOT-indexed update (hot-indexed) widens the gate.  When an UPDATE modifies
+one or more non-summarizing indexed attributes, hot-indexed still keeps the
 new tuple on the same heap page, but inserts into *only* the indexes
 whose attributes actually changed.  Indexes whose attributes did not
 change keep pointing at the HOT chain root, as they would under
@@ -20,7 +20,7 @@ classic HOT.  The WAL volume, index bloat and subsequent vacuum cost
 of the update scale with the number of affected indexes, not with the
 total number of indexes on the table.
 
-SIU is also called "HOT-indexed" in the code: the heap-side mechanism
+hot-indexed is also called "HOT-indexed" in the code: the heap-side mechanism
 is still a HOT chain, it just now survives an indexed-attribute
 change.  From the reader's point of view, however, some indexes can
 have entries whose key is stale relative to the chain's current live
@@ -46,20 +46,20 @@ constraints -- none of them need to reason about whether the entry
 they came from is canonical for this tuple, because only canonical
 entries exist.
 
-SIU breaks that invariant on purpose.  If we did not break it we would
+hot-indexed breaks that invariant on purpose.  If we did not break it we would
 have to delete the old leaf entry from every affected index at UPDATE
-time, paying exactly the I/O we are trying to save.  SIU's cost model
+time, paying exactly the I/O we are trying to save.  hot-indexed's cost model
 is: keep the stale entry, let readers sort it out.
 
 The reader-side job is therefore to re-establish canonicity at scan
-time, without materially slowing scans on tables where no SIU chain
+time, without materially slowing scans on tables where no hot-indexed chain
 exists, and without making unique / exclusion / FK machinery wrong.
 
 
 The Tombstone Line Pointer
 --------------------------
 
-At write time, SIU places three items on the page instead of classic
+At write time, hot-indexed places three items on the page instead of classic
 HOT's two:
 
 1. The old row remains at its line pointer (say LP[1]) as a
@@ -74,7 +74,7 @@ HOT's two:
    (InvalidBlockNumber, LP[2]).  The tombstone's body is a bitmap of
    modified attribute numbers.
 
-Diagram: before the SIU update, a table (a, b) with PK (a, b), row
+Diagram: before the hot-indexed update, a table (a, b) with PK (a, b), row
 (1, 5):
 
         Index [PK] -> LP[1]
@@ -97,11 +97,11 @@ After UPDATE SET b = 15 WHERE a = 1 AND b = 5:
 Two live leaf entries now resolve to the same live heap tuple.  The
 ('1','5') entry is the *stale* one: its leaf key is (1, 5), but the
 tuple's current b is 15.  The ('1','15') entry is the *fresh* one: it
-was inserted by the SIU path and points directly at LP[2], bypassing
+was inserted by the hot-indexed path and points directly at LP[2], bypassing
 the chain root.
 
 The LP[3] tombstone is what lets readers answer "was this chain
-crossed by an SIU hop, and if so which attributes changed?".  It is
+crossed by an hot-indexed hop, and if so which attributes changed?".  It is
 not reachable by any TID held in any btree leaf; it is only found by
 heap_page_prune while cleaning up and by heap_hot_search_buffer while
 walking a chain.
@@ -141,7 +141,7 @@ Per-Index Update Tracking
 -------------------------
 
 README.HOT describes TM_IndexUpdateInfo and the executor's
-per-index ii_IndexUnchanged flag.  SIU extends that machinery:
+per-index ii_IndexUnchanged flag.  hot-indexed extends that machinery:
 
    - When the update is HOT-indexed, TM_IndexUpdateInfo.update_all_indexes
      is false, and modified_attrs lists the attributes that actually
@@ -156,17 +156,17 @@ per-index ii_IndexUnchanged flag.  SIU extends that machinery:
 
    - ExecInsertIndexTuples() inserts only into indexes where
      ii_IndexUnchanged is false, and for summarizing indexes never
-     inserts regardless of the SIU decision (same rule as classic HOT).
+     inserts regardless of the hot-indexed decision (same rule as classic HOT).
 
 The net effect: three indexes exist on the table, an UPDATE modifies
-a column that appears in only one of them, the SIU path writes one
+a column that appears in only one of them, the hot-indexed path writes one
 new btree entry, and the other two indexes keep pointing at LP[1].
 
 
 The Chain and the Two Kinds of Leaf Entry
 -----------------------------------------
 
-A HOT chain under SIU is still rooted at LP[x] where LP[x] has
+A HOT chain under hot-indexed is still rooted at LP[x] where LP[x] has
 HEAP_HOT_UPDATED set and t_ctid forwards to the next member.  The
 distinction from classic HOT is that some members of the chain also
 have HEAP_INDEXED_UPDATED set, telling readers "the indexed-attrs of
@@ -174,18 +174,18 @@ this tuple differ from the tuple you just came from".
 
 There are now two species of leaf entry reaching a given chain:
 
-   A. A stale entry.  It was inserted before an intervening SIU and
+   A. A stale entry.  It was inserted before an intervening hot-indexed and
       points at the chain root LP[r].  Following the chain from LP[r]
       produces the current live tuple, but the tuple's index-form for
       this index may differ from the entry's key.
 
-   B. A fresh entry.  It was inserted by an SIU step and points at the
+   B. A fresh entry.  It was inserted by an hot-indexed step and points at the
       exact LP of the heap-only tuple that was current at the time,
       *not* at the chain root.  Walking the chain from there either
-      terminates at the still-current tuple or, if later SIU steps
-      occurred, crosses further SIU hops.
+      terminates at the still-current tuple or, if later hot-indexed steps
+      occurred, crosses further hot-indexed hops.
 
-After multiple SIU updates on a single indexed column, a btree leaf
+After multiple hot-indexed updates on a single indexed column, a btree leaf
 can contain a family of stale entries plus one fresh entry per still-
 visible intermediate tuple version:
 
@@ -225,41 +225,41 @@ Filters Today, and Why They Are Not Enough on Their Own
 -------------------------------------------------------
 
 The tree has several duplicate-and-stale filters.  Each one handles a
-different subset of SIU's new cases.
+different subset of hot-indexed's new cases.
 
-1. Visibility (xmin/xmax).  Unchanged.  The live tuple SIU returns is
+1. Visibility (xmin/xmax).  Unchanged.  The live tuple hot-indexed returns is
    genuinely visible; the bug is that it is *reached* twice, not that
    it is wrong.  Visibility has nothing to filter.
 
 2. BitmapHeapScan TID dedup.  The bitmap AM OR-merges TIDs across
    index scans and emits each TID once.  Stale and fresh entries that
    both resolve to the same TID collapse naturally.  No additional
-   SIU work is needed in this path.
+   hot-indexed work is needed in this path.
 
 3. nodeIndexOnlyscan permissive drop.  If xs_hot_indexed_recheck is
    true, the scan drops the tuple unconditionally.  The canonical
-   fresh entry reaches the tuple through the non-SIU path (walk ends
+   fresh entry reaches the tuple through the non-hot-indexed path (walk ends
    at the direct LP target, no flag set), so its arrival goes
    through.  IndexOnlyScan cannot be used for queries whose SELECT
    list or qual references non-indexed columns.
 
-4. systable_getnext HeapKeyTest.  On SIU-crossed chain walks in
+4. systable_getnext HeapKeyTest.  On hot-indexed-crossed chain walks in
    catalog scans, re-evaluate the scan's heap-attnum ScanKeys against
    the visible tuple.  Catalog scans are overwhelmingly equality, so
    the re-eval filters stale arrivals correctly in that restricted
    setting.
 
 5. _bt_check_unique tolerance.  On INSERT, a candidate duplicate
-   reached via an SIU hop is treated as "likely stale" and skipped.
+   reached via an hot-indexed hop is treated as "likely stale" and skipped.
    This is a permissive check (sound only up to the precision of the
-   SIU hint); the long-term fix is a real index-key comparison in
+   hot-indexed hint); the long-term fix is a real index-key comparison in
    this path too.
 
 6. check_exclusion_or_unique_constraint.  Not currently supported:
-   relations carrying an exclusion constraint are exempted from SIU
+   relations carrying an exclusion constraint are exempted from hot-indexed
    altogether via RelationHasExclusionConstraint() -- the one-live-
    tuple-per-(key,TID) invariant the exclusion machinery relies on is
-   incompatible with SIU's stale chain entries.  Temporal PRIMARY KEY
+   incompatible with hot-indexed's stale chain entries.  Temporal PRIMARY KEY
    ... WITHOUT OVERLAPS is in this category.
 
 7. nodeIndexscan indexqualorig re-eval.  If xs_hot_indexed_recheck is
@@ -276,7 +276,7 @@ The Range/Inequality Hole (Open Work)
 Consider a table (a int, b int, payload text) with PK (a, b) and row
 (1, 5, 'x'), then:
 
-        UPDATE t SET b = 15 WHERE a = 1 AND b = 5;   -- SIU
+        UPDATE t SET b = 15 WHERE a = 1 AND b = 5;   -- hot-indexed
         SELECT count(*) FROM t
          WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
 
@@ -320,11 +320,11 @@ inequality/range, both stale and fresh leaf-key values satisfy b<100
 and both chain walks reach a tuple whose current b also satisfies
 b<100.  The stale entry cannot be dropped by quals alone.
 
-Why do the SIU signals we collect not help?  Each signal answers a
+Why do the hot-indexed signals we collect not help?  Each signal answers a
 different question:
 
         HEAP_INDEXED_UPDATED (infomask bit):
-            "this chain had at least one SIU hop somewhere"
+            "this chain had at least one hot-indexed hop somewhere"
 
         tombstone modified_attrs bitmap:
             "these *heap columns* changed in the update that wrote
@@ -332,14 +332,14 @@ different question:
 
         xs_hot_indexed_recheck out-param:
             "the chain walk that produced this tuple crossed at
-             least one SIU hop"
+             least one hot-indexed hop"
 
 None of them answers "is the entry I came from the canonical entry
 for this index at this tuple?".  That's an index-form question, and
-no SIU signal carries an index form or an index-leaf key.  The
+no hot-indexed signal carries an index form or an index-leaf key.  The
 tombstone's bitmap is heap-attribute-based; even if it were extended
 to carry the old index key, the btree leaf can accumulate many stale
-entries (one per past SIU update), each with its own key -- the
+entries (one per past hot-indexed update), each with its own key -- the
 tombstone cannot enumerate them.  And the reader would still need to
 know which leaf entry it came from.
 
@@ -359,16 +359,16 @@ xs_hot_indexed_recheck is true:
 
         if they disagree, drop the tuple.
 
-This restores the pre-SIU invariant *at read time*: a tuple is
+This restores the pre-hot-indexed invariant *at read time*: a tuple is
 emitted only when its current index-form equals the leaf key used to
-reach it.  Cost: one FormIndexDatum + N opclass compares per SIU-
+reach it.  Cost: one FormIndexDatum + N opclass compares per hot-indexed-
 reached tuple.  The check is skipped entirely for tuples that did
-not cross an SIU hop, so scans on tables without SIU activity pay
+not cross an hot-indexed hop, so scans on tables without hot-indexed activity pay
 nothing.
 
 For IndexScan and IndexOnlyScan the comparison needs xs_itup
 populated.  Btree can return it when want_itup is requested; plans
-that might touch SIU chains flip want_itup on.
+that might touch hot-indexed chains flip want_itup on.
 
 For systable_getnext, the heap-attnum ScanKey re-eval is already
 strict enough for the equality scans catalogs run, so it stays as-is.
@@ -431,7 +431,7 @@ PageAddItemExtended with OverwritePage=false at the recorded offset.
 Crash recovery ends with the same three-item layout the primary left.
 
 No WAL or heap format changes are visible to tooling that predates
-SIU: old pg_upgrade, pg_repack, amcheck and pageinspect see the same
+hot-indexed: old pg_upgrade, pg_repack, amcheck and pageinspect see the same
 tuple headers, just with one more infomask2 bit set and with
 occasional LP_NORMAL items that have natts=0.  amcheck asserts the
 InvalidBlockNumber in tombstone t_ctid.
@@ -445,18 +445,18 @@ additions:
 
    - The CREATE INDEX scan walks the chain to the live tuple, forms
      index datums from that tuple, and inserts an entry pointing at
-     the chain root TID.  Under SIU the live tuple may have already
+     the chain root TID.  Under hot-indexed the live tuple may have already
      been reached by a fresh leaf entry in a DIFFERENT index; that's
      fine, the new index has no such history and is being built
      canonical from scratch.
 
    - Transactions with old snapshots are prevented from using the new
      index via pg_index.indcheckxmin, exactly as for classic HOT.
-     Broken chains under SIU are exactly as broken as under classic
+     Broken chains under hot-indexed are exactly as broken as under classic
      HOT from the new index's point of view.
 
 CREATE INDEX CONCURRENTLY works unchanged: other backends that build
-indexes while SIU writers are active must include the under-
+indexes while hot-indexed writers are active must include the under-
 construction index in their indexed-attr bitmap for HOT-safety, which
 they already do.
 
@@ -466,14 +466,14 @@ Statistics and Monitoring
 
 pg_stat_all_tables gains one column:
 
-        n_tup_siu_upd   -- cumulative count of SIU tuple updates.
-                           Every SIU update is also counted in
+        n_tup_hot_idx_upd   -- cumulative count of hot-indexed tuple updates.
+                           Every hot-indexed update is also counted in
                            n_tup_hot_upd; the new column isolates
-                           the SIU share.
+                           the hot-indexed share.
 
 A point-in-time SQL function inspects tombstone state:
 
-        pg_relation_siu_stats(regclass)
+        pg_relation_hot_indexed_stats(regclass)
             -> (n_tombstones int8,
                 n_chains int8,
                 avg_chain_len float8,
@@ -483,7 +483,7 @@ It walks every page of the relation's main fork under
 AccessShareLock, counts LP_NORMAL items whose HeapTupleHeader has
 HEAP_INDEXED_UPDATED set with natts=0 (tombstones), and follows every
 LP_REDIRECT to measure chain length.  Useful for answering "what is
-on disk right now" rather than "how much SIU fired during the stats
+on disk right now" rather than "how much hot-indexed fired during the stats
 window".
 
 
@@ -493,19 +493,19 @@ GUC Controls
 hot_indexed_update_threshold  (integer 0..100, default 80)
 
     The maximum percentage of a relation's indexed attributes that
-    an UPDATE may modify while remaining SIU-eligible.  If
+    an UPDATE may modify while remaining hot-indexed-eligible.  If
     |modified_idx_attrs| * 100 > |all_idx_attrs| * threshold, the
-    update falls back to the pre-SIU non-HOT path (classic cold
-    update).  0 disables SIU entirely (classic HOT continues to
+    update falls back to the pre-hot-indexed non-HOT path (classic cold
+    update).  0 disables hot-indexed entirely (classic HOT continues to
     apply for updates that touch no indexed attribute).  100
-    permits SIU on every otherwise-eligible update, including the
+    permits hot-indexed on every otherwise-eligible update, including the
     wide_all_cols pessimum.
 
     Rationale: when an UPDATE hits all or nearly all indexed
-    attributes the SIU path must insert into every affected index
+    attributes the hot-indexed path must insert into every affected index
     anyway, and it *also* writes a tombstone.  Net bytes on page +
     net WAL are worse than a plain non-HOT migration in that
-    regime.  The 80% default keeps SIU in the regime where it pays
+    regime.  The 80% default keeps hot-indexed in the regime where it pays
     for itself.
 
 HeapUpdateHotAllowable() returns HEAP_HOT_MODE_NO for:
@@ -515,26 +515,26 @@ HeapUpdateHotAllowable() returns HEAP_HOT_MODE_NO for:
    - updates that exceed hot_indexed_update_threshold.
 
 Otherwise it returns HEAP_HOT_MODE_INDEXED and heap_update takes the
-SIU path.
+hot-indexed path.
 
 
 Catalog Enablement (Future Work)
 --------------------------------
 
-System catalogs are currently exempted from SIU.  The filtering
+System catalogs are currently exempted from hot-indexed.  The filtering
 infrastructure is in place in systable_getnext, but three specific
-paths have not been audited to the level that a catalog-enabled SIU
+paths have not been audited to the level that a catalog-enabled hot-indexed
 would require:
 
    - vac_update_datfrozenxid runs a heap seqscan over pg_class with
      indexOK=false.  The seqscan returns chain-walked results through
      heap_beginscan/heap_getnextslot, bypassing systable_getnext's
-     HeapKeyTest filter.  A pg_class tuple reached across a stale SIU
+     HeapKeyTest filter.  A pg_class tuple reached across a stale hot-indexed
      hop can therefore reach the pg_class struct cast and produce
      garbage reliminary in testing.
 
    - catcache and relcache invalidation keyed on (db, rel, TID)
-     assume one canonical (key, TID) pair per logical tuple.  SIU can
+     assume one canonical (key, TID) pair per logical tuple.  hot-indexed can
      produce multiple leaf-key -> same-TID pairs; catcache entries
      loaded via any one leaf may not refresh correctly when the chain
      is updated behind them.  This needs a pass through CatCacheInvalidate,
@@ -552,8 +552,8 @@ Limitations and Restrictions
 ----------------------------
 
    - Relations carrying any exclusion constraint are exempted from
-     SIU.  check_exclusion_or_unique_constraint relies on "one live
-     tuple per (key, TID)" which SIU's stale chain entries break.
+     hot-indexed.  check_exclusion_or_unique_constraint relies on "one live
+     tuple per (key, TID)" which hot-indexed's stale chain entries break.
      Temporal PRIMARY KEY ... WITHOUT OVERLAPS, which internally
      resolves to an exclusion constraint, is in this category.
 
@@ -564,12 +564,12 @@ Limitations and Restrictions
      to the non-HOT path.  The default (80) is a heuristic knee.
 
    - Reader-side correctness for IndexScan's range/inequality queries
-     over an SIU-updated column is being closed by FormIndexDatum-
+     over an hot-indexed-updated column is being closed by FormIndexDatum-
      based key comparison in nodeIndexscan (see "The Canonical Fix"
      above).  IndexOnlyScan, BitmapHeapScan and equality IndexScan
      were already correct.
 
-   - _bt_check_unique still skips SIU-reached candidates
+   - _bt_check_unique still skips hot-indexed-reached candidates
      permissively.  Replacing the skip with a real key comparison is
      straightforward follow-up.
 
@@ -579,24 +579,24 @@ Glossary
 
 Fresh leaf entry
 
-        A btree leaf entry inserted by an SIU update.  Its TID
+        A btree leaf entry inserted by an hot-indexed update.  Its TID
         points directly at the heap-only tuple that was current at
         the time of insertion, not at the chain root.  Readers
         reaching a chain through a fresh entry that ends at a still-
-        current live tuple do not cross an SIU hop; they do not set
+        current live tuple do not cross an hot-indexed hop; they do not set
         xs_hot_indexed_recheck.
 
 HOT-indexed update
 
-        Synonym for SIU.  The heap-side mechanism is a HOT chain;
+        Synonym for hot-indexed.  The heap-side mechanism is a HOT chain;
         the name emphasizes that an indexed attribute changed.
 
 HEAP_INDEXED_UPDATED
 
         An infomask2 bit (0x0800) set on every heap tuple, chain
-        member, and tombstone involved in an SIU update.  Its
+        member, and tombstone involved in an hot-indexed update.  Its
         presence on a tuple tells readers the next chain hop
-        crossed an SIU write.  Its presence on a tombstone, combined
+        crossed an hot-indexed write.  Its presence on a tombstone, combined
         with natts=0, identifies the item as a tombstone rather
         than a live tuple.
 
@@ -604,14 +604,14 @@ Modified-attrs bitmap
 
         A Bitmapset of attribute numbers carried in a tombstone's
         body.  Lists the heap columns whose values differ between
-        the SIU update's old and new tuples.  Consumers: pruning
+        the hot-indexed update's old and new tuples.  Consumers: pruning
         (chain-walk skip), tombstone reclamation, and diagnostic
         functions.  Not currently consulted by recheck paths.
 
-SIU hop
+hot-indexed hop
 
         A chain step whose source tuple has HEAP_INDEXED_UPDATED
-        set.  A chain walk that crosses at least one SIU hop causes
+        set.  A chain walk that crosses at least one hot-indexed hop causes
         heap_hot_search_buffer to set xs_hot_indexed_recheck on the
         returned tuple.
 
@@ -619,11 +619,11 @@ Stale leaf entry
 
         A btree leaf entry whose key is not equal to the index-form
         of the live tuple it reaches via chain walk.  Produced
-        whenever an SIU update modifies an attribute of that leaf's
+        whenever an hot-indexed update modifies an attribute of that leaf's
         index; the old entry is left in place to save the DELETE
         I/O, and readers filter it via the recheck path.
 
-Tombstone (SIU tombstone)
+Tombstone (hot-indexed tombstone)
 
         An LP_NORMAL item on the heap page whose HeapTupleHeader has
         HEAP_INDEXED_UPDATED set, natts=0, and t_ctid=(InvalidBlockNumber,
@@ -634,7 +634,7 @@ xs_hot_indexed_recheck
 
         A bool out-parameter on IndexScanDesc set by
         heap_hot_search_buffer when the chain walk crossed at least
-        one SIU hop.  Consumed by nodeIndexscan,
+        one hot-indexed hop.  Consumed by nodeIndexscan,
         nodeIndexOnlyscan, nodeBitmapHeapscan dedup, systable_getnext,
         and (in future) index-key recheck in nodeIndexscan and
         _bt_check_unique.  Kept distinct from xs_recheck (which is

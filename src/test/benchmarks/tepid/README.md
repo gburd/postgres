@@ -1,4 +1,4 @@
-# SIU (HOT-indexed) A/B benchmark harness
+# hot-indexed (HOT-indexed) A/B benchmark harness
 
 Two postgres variants, identical pgdata layouts, pgbench workloads
 exercising classic HOT, non-HOT, and HOT-indexed paths.
@@ -9,14 +9,14 @@ exercising classic HOT, non-HOT, and HOT-indexed paths.
   merge-base with origin/master; `tepid` = the branch under test).  Requires
   a writable benchmark root via `BENCH` (default `/scratch/siu-bench`).
 - `scripts/run.sh` -- A/B driver.  Runs `simple_update` (pgbench -N),
-  `siu_update`, `siu_mixed`, and `wide_N` for N in `$WIDE_STEPS`.
+  `hot_indexed_update`, `hot_indexed_mixed`, and `wide_N` for N in `$WIDE_STEPS`.
   Collects TPS, latency, WAL bytes, HOT update count, pre/post heap and
   index size, peak CPU% and RSS.  Writes a CSV per run to `$BENCH/results/`.
 - `scripts/soak.sh` -- long-running single-workload driver that samples
   TPS/HOT%/WAL/bloat every `$SAMPLE` seconds under `$DURATION` seconds
   of constant pressure, per variant.
-- `scripts/siu_update.sql` -- `UPDATE siu_table SET b = rand WHERE a = rand`.
-- `scripts/siu_mixed.sql`  -- 80 % SELECT by PK + 20 % indexed-col UPDATE.
+- `scripts/hot_indexed_update.sql` -- `UPDATE siu_table SET b = rand WHERE a = rand`.
+- `scripts/hot_indexed_mixed.sql`  -- 80 % SELECT by PK + 20 % indexed-col UPDATE.
 - `scripts/wide_update.sql` -- driver script for the wide-table workload;
   the `SET` clause is built at run time from `$WIDE_STEPS`.
 

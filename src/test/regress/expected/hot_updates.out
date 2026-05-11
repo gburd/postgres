@@ -2,11 +2,11 @@
 -- HOT_UPDATES
 -- Test classic Heap-Only Tuple (HOT) update decisions
 --
--- This file covers HOT decisions that apply identically on a pre-SIU
+-- This file covers HOT decisions that apply identically on a pre-hot-indexed
 -- server: every UPDATE here either leaves all indexed attributes
 -- unchanged or touches only summarizing-index (BRIN) attributes, so the
 -- HOT vs non-HOT choice does not depend on whether Selective Index
--- Update (SIU) is enabled.  SIU-specific behaviour (UPDATEs that modify
+-- Update (hot-indexed) is enabled.  hot-indexed-specific behaviour (UPDATEs that modify
 -- a non-summarizing indexed attribute) is covered in
 -- hot_indexed_updates.sql.
 --

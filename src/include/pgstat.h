@@ -151,7 +151,7 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
 	PgStat_Counter tuples_hot_updated;
-	PgStat_Counter tuples_siu_updated;
+	PgStat_Counter tuples_hot_idx_updated;
 	PgStat_Counter tuples_newpage_updated;
 	bool		truncdropped;
 
@@ -461,7 +461,7 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
 	PgStat_Counter tuples_hot_updated;
-	PgStat_Counter tuples_siu_updated;
+	PgStat_Counter tuples_hot_idx_updated;
 	PgStat_Counter tuples_newpage_updated;
 
 	PgStat_Counter live_tuples;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SIU soak: run siu_update for $DURATION seconds on each variant, sampling
+# tepid soak: run hot_indexed_update for $DURATION seconds on each variant, sampling
 # TPS / HOT-rate / WAL volume / table+index bloat every $SAMPLE seconds.
 # Emits a CSV with one sample row per tick per variant.
 set -euo pipefail
@@ -82,7 +82,7 @@ run_soak() {
   local prev_hot=$hot0 prev_tot=$tot0
 
   # Drive pgbench in the background; sampler in foreground.
-  pgbench_as "$v" -f "$BENCH/scripts/siu_update.sql" \
+  pgbench_as "$v" -f "$BENCH/scripts/hot_indexed_update.sql" \
     -c "$CLIENTS" -j "$THREADS" -T "$DURATION" \
     -P "$SAMPLE" -n postgres >"$LOGDIR/pgbench_$v.log" 2>&1 &
   local pgb=$!

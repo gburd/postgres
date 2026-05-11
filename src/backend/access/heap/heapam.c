@@ -65,7 +65,7 @@
 
 /*
  * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
- * may modify and still take the HOT-indexed (SIU) path.  Defined here,
+ * may modify and still take the HOT-indexed path.  Defined here,
  * declared in access/heapam.h.  Default 80.
  */
 int			hot_indexed_update_threshold = 80;
@@ -3819,8 +3819,8 @@ l2:
 	newtupsize = MAXALIGN(newtup->t_len);
 
 	/*
-	 * If a HOT-indexed (SIU) update is permitted, a tombstone line pointer
-	 * must also fit on the same page as the new tuple.  Account for its size
+	 * If a HOT-indexed update is permitted, a tombstone line pointer must
+	 * also fit on the same page as the new tuple.  Account for its size
 	 * (including one additional ItemIdData slot) when deciding whether to
 	 * stay on the old page.  If the tombstone would not fit, we fall through
 	 * to the non-HOT path.
@@ -3978,8 +3978,8 @@ l2:
 				Size		tuple_need = heaptup->t_len;
 
 				/*
-				 * For HOT-indexed (SIU), ask RelationGetBufferForTuple for
-				 * room that fits both the new tuple and its tombstone.  Pass
+				 * For HOT-indexed, ask RelationGetBufferForTuple for room
+				 * that fits both the new tuple and its tombstone.  Pass
 				 * MAXALIGN(tuple_len) + tombstone_size + sizeof(ItemIdData):
 				 *
 				 * - MAXALIGN so the request matches the byte footprint
@@ -4133,10 +4133,10 @@ l2:
 	}
 
 	/*
-	 * If we are going HOT-indexed (SIU), allocate the tombstone scratch
-	 * buffer and build its contents *now*, before the critical section. Doing
-	 * the palloc inside the critical section could PANIC on OOM; building the
-	 * payload here also keeps the critical section small.
+	 * If we are going HOT-indexed, allocate the tombstone scratch buffer and
+	 * build its contents *now*, before the critical section. Doing the palloc
+	 * inside the critical section could PANIC on OOM; building the payload
+	 * here also keeps the critical section small.
 	 */
 	if (use_hot_update && hot_mode == HEAP_HOT_MODE_INDEXED)
 	{
@@ -4184,7 +4184,7 @@ l2:
 		HeapTupleSetHeapOnly(newtup);
 
 		/*
-		 * For a HOT-indexed (SIU) update, the new live tuple also carries
+		 * For a HOT-indexed update, the new live tuple also carries
 		 * HEAP_INDEXED_UPDATED so index scans walking the chain know a
 		 * tombstone with the per-update modified-attrs bitmap is present on
 		 * the same page.
@@ -4207,11 +4207,12 @@ l2:
 	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
 
 	/*
-	 * For HOT-indexed updates, emit the tombstone adjacent to the live SIU
-	 * tuple.  heaptup->t_self was populated by RelationPutHeapTuple.  The
-	 * scratch buffer was palloc'd and sized above, before entering the
-	 * critical section, so this block does no allocation and cannot ERROR
-	 * except by the defensive PANIC which the fit check should prevent.
+	 * For HOT-indexed updates, emit the tombstone adjacent to the live
+	 * hot-indexed tuple.  heaptup->t_self was populated by
+	 * RelationPutHeapTuple.  The scratch buffer was palloc'd and sized above,
+	 * before entering the critical section, so this block does no allocation
+	 * and cannot ERROR except by the defensive PANIC which the fit check
+	 * should prevent.
 	 */
 	if (emit_tombstone)
 	{
@@ -4523,13 +4524,13 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  * Classify an UPDATE for HOT eligibility based on which indexed attributes
  * changed (the `modified_idx_attrs` bitmap, computed by the executor).  The
  * return value tells heap_update() both whether HOT is permitted and, if so,
- * whether a HOT-indexed (SIU) tombstone must accompany the new tuple to carry
+ * whether a HOT-indexed tombstone must accompany the new tuple to carry
  * the per-update modified-attrs bitmap.
  *
  * Today this function only ever returns HEAP_HOT_MODE_NO or
- * HEAP_HOT_MODE_CLASSIC -- exactly mirroring the pre-SIU bool-valued API.
+ * HEAP_HOT_MODE_CLASSIC -- exactly mirroring the pre-hot-indexed bool-valued API.
  * Phase 3.1c will teach it to return HEAP_HOT_MODE_INDEXED when modified
- * attributes overlap a non-summarizing index and the relation is SIU-eligible.
+ * attributes overlap a non-summarizing index and the relation is hot-indexed-eligible.
  *
  * Later, in heap_update(), we can choose to perform a HOT (or HOT-indexed)
  * update if there is space on the page for the new tuple (and, for
@@ -4562,22 +4563,23 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	}
 
 	/*
-	 * A non-summarizing indexed attribute changed.  HOT-indexed (SIU) is
-	 * supported whenever the relation can tolerate extra index entries in a
-	 * chain whose per-chain-member keys may differ:
+	 * A non-summarizing indexed attribute changed.  HOT-indexed is supported
+	 * whenever the relation can tolerate extra index entries in a chain whose
+	 * per-chain-member keys may differ:
 	 *
 	 * - System catalogs are excluded: the vacuum seqscan over pg_class and
-	 * several catcache invalidation paths don't yet filter SIU-stale chain
-	 * hits, so catalogs fall back to the pre-SIU non-HOT path. - Relations
-	 * with any exclusion constraint are excluded:
+	 * several catcache invalidation paths don't yet filter hot-indexed-stale
+	 * chain hits, so catalogs fall back to the pre-hot-indexed non-HOT path.
+	 * - Relations with any exclusion constraint are excluded:
 	 * check_exclusion_or_unique_constraint relies on "one live tuple per
-	 * (key, TID)", which SIU's stale chain entries break; temporal PRIMARY
-	 * KEY ... WITHOUT OVERLAPS falls into this category. - The user-settable
-	 * hot_indexed_update_threshold GUC caps SIU eligibility by the share of
-	 * indexed attrs touched by this update. Beyond that share the non-HOT
-	 * path almost always writes the same index entries as SIU would, but
-	 * without the tombstone overhead. threshold = 0 disables SIU entirely;
-	 * threshold = 100 permits SIU on every otherwise-eligible update.
+	 * (key, TID)", which hot-indexed's stale chain entries break; temporal
+	 * PRIMARY KEY ... WITHOUT OVERLAPS falls into this category. - The
+	 * user-settable hot_indexed_update_threshold GUC caps hot-indexed
+	 * eligibility by the share of indexed attrs touched by this update.
+	 * Beyond that share the non-HOT path almost always writes the same index
+	 * entries as hot-indexed would, but without the tombstone overhead.
+	 * threshold = 0 disables hot-indexed entirely; threshold = 100 permits
+	 * hot-indexed on every otherwise-eligible update.
 	 */
 	if (IsCatalogRelation(relation) ||
 		RelationHasExclusionConstraint(relation))
@@ -9250,8 +9252,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	}
 
 	/*
-	 * If a HOT-indexed (SIU) tombstone was placed adjacent to the new tuple
-	 * on `newbuf`, log it so replay can recreate it.  The data is attached to
+	 * If a HOT-indexed tombstone was placed adjacent to the new tuple on
+	 * `newbuf`, log it so replay can recreate it.  The data is attached to
 	 * block 0 (the new buffer) after the main rdata chain.
 	 */
 	if (tombstone_item_size > 0)
@@ -9327,10 +9329,10 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	XLogRegisterBufData(0, &xlhdr, SizeOfHeapHeader);
 
 	/*
-	 * HOT-indexed (SIU) tombstones: write a uint16 trailer length right after
-	 * xlhdr so replay can subtract it from the block's data length to recover
-	 * the true tuple body length.  The trailer itself (OffsetNumber + uint16
-	 * + raw bytes) is appended at the end of the rdata chain below.
+	 * HOT-indexed tombstones: write a uint16 trailer length right after xlhdr
+	 * so replay can subtract it from the block's data length to recover the
+	 * true tuple body length.  The trailer itself (OffsetNumber + uint16 +
+	 * raw bytes) is appended at the end of the rdata chain below.
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 	{
@@ -9383,9 +9385,9 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	}
 
 	/*
-	 * HOT-indexed (SIU) tombstone: log the recorded offset, byte count, and
-	 * the raw item bytes as buffer data on block 0 so replay can
-	 * PageAddItemExtended it at the same offset.
+	 * HOT-indexed tombstone: log the recorded offset, byte count, and the raw
+	 * item bytes as buffer data on block 0 so replay can PageAddItemExtended
+	 * it at the same offset.
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 	{

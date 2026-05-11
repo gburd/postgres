@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * hot_indexed.c
- *	  Helpers for HOT-indexed (Selective Index Update) tombstone items.
+ *	  Helpers for HOT-indexed (HOT-indexed update) tombstone items.
  *
  * See access/hot_indexed.h for the on-disk layout and design rationale.
  *
@@ -32,7 +32,7 @@
  *   buf			 - output buffer; caller must guarantee at least
  *					   HotIndexedTombstoneSize(natts) bytes of addressable,
  *					   writable memory.
- *   target_offnum	 - offset number of the live SIU tuple this tombstone
+ *   target_offnum	 - offset number of the live hot-indexed tuple this tombstone
  *					   describes (must be a valid OffsetNumber).
  *   natts			 - number of user attributes in the owning relation;
  *					   must match RelationGetNumberOfAttributes at the call
@@ -68,17 +68,17 @@ heap_build_hot_indexed_tombstone(char *buf,
 
 	/*
 	 * Zero the entire item so alignment padding and the unused tail of the
-	 * bitmap byte are deterministic.  Callers rely on this for FPI
-	 * stability and for amcheck.
+	 * bitmap byte are deterministic.  Callers rely on this for FPI stability
+	 * and for amcheck.
 	 */
 	memset(buf, 0, total);
 
 	/*
-	 * Header: invisible to every visibility routine, flagged as a
-	 * HOT-indexed item, natts = 0 so HeapTupleHeaderIsHotIndexedTombstone
-	 * returns true.  t_ctid points "nowhere" (InvalidBlockNumber) with the
-	 * target offset carried in t_ctid.offnum for auditing; the payload
-	 * carries the authoritative copy of t_target.
+	 * Header: invisible to every visibility routine, flagged as a HOT-indexed
+	 * item, natts = 0 so HeapTupleHeaderIsHotIndexedTombstone returns true.
+	 * t_ctid points "nowhere" (InvalidBlockNumber) with the target offset
+	 * carried in t_ctid.offnum for auditing; the payload carries the
+	 * authoritative copy of t_target.
 	 */
 	ItemPointerSet(&tup->t_ctid, InvalidBlockNumber, target_offnum);
 	tup->t_infomask = HEAP_XMIN_INVALID | HEAP_XMAX_INVALID;
@@ -124,7 +124,7 @@ heap_build_hot_indexed_tombstone(char *buf,
  * the relation's attribute range.  Out-of-range attnums return false.
  */
 bool
-heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
+heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload * p,
 										 AttrNumber attnum)
 {
 	int			bit;

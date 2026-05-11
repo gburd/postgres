@@ -2,11 +2,11 @@
  *
  * hot_indexed_stats.c
  *	  SQL-callable diagnostic that walks every page of a heap relation and
- *	  reports SIU-related structural statistics.
+ *	  reports hot-indexed-related structural statistics.
  *
  * These numbers complement the running pgstat counters
- * (n_tup_siu_upd in pg_stat_all_tables): they answer "what is on disk
- * right now?" rather than "how often did SIU fire during the stats
+ * (n_tup_hot_idx_upd in pg_stat_all_tables): they answer "what is on disk
+ * right now?" rather than "how often did hot-indexed fire during the stats
  * window?".
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
@@ -33,7 +33,7 @@
 #include "utils/rel.h"
 
 /*
- * pg_relation_siu_stats(regclass) -> record
+ * pg_relation_hot_indexed_stats(regclass) -> record
  *
  * Walks every block of the relation's main fork and counts:
  *   n_tombstones    -- LP_NORMAL items with HEAP_INDEXED_UPDATED+natts=0
@@ -50,10 +50,10 @@
  * Requires pg_read_server_files to keep the cost out of untrusted hands;
  * the caller also needs at least SELECT on the relation.
  */
-PG_FUNCTION_INFO_V1(pg_relation_siu_stats);
+PG_FUNCTION_INFO_V1(pg_relation_hot_indexed_stats);
 
 Datum
-pg_relation_siu_stats(PG_FUNCTION_ARGS)
+pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	Relation	rel;

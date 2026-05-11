@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A/B pgbench harness for SIU: master (upstream) vs tepid.
+# A/B pgbench harness for tepid: master (upstream) vs tepid (HOT-indexed).
 #
 # Env vars:
 #   SCALE       -- pgbench -s (also multiplier for siu_table row count = SCALE*100k)
@@ -13,7 +13,7 @@
 #
 # For each variant in {master, tepid}:
 #   initdb fresh pgdata, start postgres, create test objects,
-#   run workloads (pgbench -N simple_update, siu_update, siu_mixed,
+#   run workloads (pgbench -N simple_update, hot_indexed_update, hot_indexed_mixed,
 #   and wide_N for each value in WIDE_STEPS), collect TPS + HOT counts
 #   + WAL delta + peak CPU/RSS sampled via pidstat.
 # Emits CSV + Markdown summary under /scratch/siu-bench/results/.
@@ -261,8 +261,8 @@ for v in master tepid; do
   setup_schemas "$v"
 
   run_one "$v" simple_update ''                    pgbench_accounts
-  run_one "$v" siu_update    "$BENCH/scripts/siu_update.sql"  siu_table
-  run_one "$v" siu_mixed     "$BENCH/scripts/siu_mixed.sql"   siu_table
+  run_one "$v" hot_indexed_update    "$BENCH/scripts/hot_indexed_update.sql"  siu_table
+  run_one "$v" hot_indexed_mixed     "$BENCH/scripts/hot_indexed_mixed.sql"   siu_table
 
   for n in ${WIDE_STEPS//,/ }; do
     run_one "$v" "wide_${n}" "$BENCH/scripts/wide_update.sql" wide_table \

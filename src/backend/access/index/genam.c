@@ -418,10 +418,10 @@ systable_beginscan(Relation heapRelation,
 
 	/*
 	 * Keep an untranslated copy of the caller's scan keys for HOT-indexed
-	 * (SIU) recheck.  The copy uses the caller's heap attnums, which are
-	 * needed to re-evaluate a chain-walked tuple against the original query.
-	 * Index-column attnums in iscan->keyData (set below) are unsuitable for
-	 * that purpose.  heap_keys is NULL if nkeys is zero.
+	 * (hot-indexed) recheck.  The copy uses the caller's heap attnums, which
+	 * are needed to re-evaluate a chain-walked tuple against the original
+	 * query. Index-column attnums in iscan->keyData (set below) are
+	 * unsuitable for that purpose.  heap_keys is NULL if nkeys is zero.
 	 */
 	sysscan->nkeys_heap = nkeys;
 	if (nkeys > 0)
@@ -568,15 +568,15 @@ systable_getnext(SysScanDesc sysscan)
 				elog(ERROR, "system catalog scans with lossy index conditions are not implemented");
 
 			/*
-			 * HOT-indexed (Selective Index Update): the visible heap tuple
-			 * was reached via a chain walk through a SIU hop, so the index
-			 * entry's key may no longer agree with the current tuple
+			 * HOT-indexed (HOT-indexed update): the visible heap tuple was
+			 * reached via a chain walk through a hot-indexed hop, so the
+			 * index entry's key may no longer agree with the current tuple
 			 * attributes.  Rerun the scan keys against the heap tuple and
-			 * drop it if they don't match; the canonical fresh SIU entry
-			 * will produce the tuple via its direct path.  iscan->keyData
-			 * is populated by systable_beginscan() for the catalog scan,
-			 * which uses only simple attnum-based equality keys, so
-			 * HeapKeyTest is sufficient.
+			 * drop it if they don't match; the canonical fresh hot-indexed
+			 * entry will produce the tuple via its direct path.
+			 * iscan->keyData is populated by systable_beginscan() for the
+			 * catalog scan, which uses only simple attnum-based equality
+			 * keys, so HeapKeyTest is sufficient.
 			 */
 			if (sysscan->iscan->xs_hot_indexed_recheck &&
 				sysscan->nkeys_heap > 0 &&
@@ -821,8 +821,8 @@ systable_getnext_ordered(SysScanDesc sysscan, ScanDirection direction)
 			elog(ERROR, "system catalog scans with lossy index conditions are not implemented");
 
 		/*
-		 * Drop HOT-indexed (SIU) stale arrivals: the canonical fresh entry
-		 * will return this tuple through its direct path.  See systable_getnext.
+		 * Drop HOT-indexed stale arrivals: the canonical fresh entry will
+		 * return this tuple through its direct path.  See systable_getnext.
 		 */
 		if (sysscan->iscan->xs_hot_indexed_recheck &&
 			sysscan->nkeys_heap > 0 &&

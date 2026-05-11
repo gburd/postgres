@@ -2217,9 +2217,9 @@ lazy_scan_noprune(LVRelState *vacrel,
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
 
 		/*
-		 * HOT-indexed (SIU) tombstones carry only a modified-attrs bitmap;
-		 * xmin/xmax are invalid and natts == 0.  VACUUM must leave them
-		 * alone (they are reclaimed by pruneheap in a later phase).
+		 * HOT-indexed tombstones carry only a modified-attrs bitmap;
+		 * xmin/xmax are invalid and natts == 0.  VACUUM must leave them alone
+		 * (they are reclaimed by pruneheap in a later phase).
 		 */
 		if (HeapTupleHeaderIsHotIndexedTombstone(tupleheader))
 			continue;
@@ -3687,9 +3687,9 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_tableOid = RelationGetRelid(rel);
 
 		/*
-		 * HOT-indexed (SIU) tombstones are permanently invisible bitmap
-		 * carriers; they must not disqualify a page from being all-visible
-		 * or all-frozen.  Skip them here without touching state.
+		 * HOT-indexed tombstones are permanently invisible bitmap carriers;
+		 * they must not disqualify a page from being all-visible or
+		 * all-frozen.  Skip them here without touching state.
 		 */
 		if (HeapTupleHeaderIsHotIndexedTombstone(tuple.t_data))
 			continue;

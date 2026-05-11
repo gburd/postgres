@@ -502,10 +502,10 @@ typedef struct TableAmRoutine
 	 *
 	 * *hot_indexed_recheck, if not NULL, should be set to true iff the tuple
 	 * or any HOT chain member traversed to reach it carried a
-	 * HEAP_INDEXED_UPDATED marker (Selective Index Update).  Callers use this
-	 * to decide whether the index scan must rerun its original quals against
-	 * the heap tuple because the index entry's key may no longer agree with
-	 * the heap tuple's attribute values.
+	 * HEAP_INDEXED_UPDATED marker (HOT-indexed update).  Callers use this to
+	 * decide whether the index scan must rerun its original quals against the
+	 * heap tuple because the index entry's key may no longer agree with the
+	 * heap tuple's attribute values.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,

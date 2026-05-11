@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build two postgres variants for SIU A/B benchmarks.
+# Build two postgres variants for tepid (HOT-indexed) A/B benchmarks.
 #
 # Env vars (all optional):
 #   REPO          -- path to postgres source repo (default: $HOME/ws/postgres/tepid, or /scratch/siu-bench/repo)
