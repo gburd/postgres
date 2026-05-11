@@ -880,6 +880,31 @@ retry:
 		}
 
 		/*
+		 * HOT-indexed chains can reach this loop via a stale btree leaf entry
+		 * whose key is different from the heap tuple's current index-form.
+		 * existing_values holds the current heap tuple's index-form
+		 * (FormIndexDatum above).  Compare it against our new tuple's values
+		 * using the same constraint operators; if they don't agree, the
+		 * chain-walked tuple is not actually in conflict with our insertion
+		 * -- it just shared a TID with a stale leaf entry we happened to scan
+		 * through.  Skip it.
+		 *
+		 * This mirrors _bt_check_unique's HOT-indexed recheck path; for
+		 * exclusion constraints the user-supplied operator in constr_procs
+		 * replaces the btree equality comparator, and
+		 * index_recheck_constraint does the right thing for either.
+		 */
+		if (index_scan->xs_hot_indexed_recheck)
+		{
+			if (!index_recheck_constraint(index,
+										  constr_procs,
+										  existing_values,
+										  existing_isnull,
+										  values))
+				continue;		/* stale chain hit, not a real conflict */
+		}
+
+		/*
 		 * At this point we have either a conflict or a potential conflict.
 		 *
 		 * If an in-progress transaction is affecting the visibility of this
