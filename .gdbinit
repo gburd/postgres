@@ -1,156 +1,70 @@
-# HOT Indexed Updates — GDB breakpoints for code review
+# tepid dev additions: .gdbinit for debugging the HOT-indexed updates branch
 #
-# Usage:  gdb -x .gdbinit <postgres-binary>
-# Or from gdb:  source .gdbinit
+# Usage:
+#   gdb -x .gdbinit <postgres-binary>
+#   source .gdbinit            (from inside gdb)
 #
-# These breakpoints cover the major code paths introduced or modified by
-# the HOT indexed updates patch series.  They are organized by subsystem
-# to make it easy to enable/disable groups during debugging.
+# This file is tracked in the repo for developer convenience on the tepid
+# branch.  It is not intended for upstream consumption and is ignored when
+# generating patches for the mailing list.
 #
-# Tip: to skip to a specific subsystem, disable all then enable selectively:
-#   disable breakpoints
-#   enable 1 2 3          # just the update-decision group
+# What this file does:
+#   - Sources src/tools/gdb/tepid-helpers.py, which registers three
+#     commands: tepid-break, tepid-page, tepid-index.
+#   - Calls tepid-break immediately to install pending breakpoints in
+#     every function the branch adds or materially changes.  Breakpoints
+#     are pending so the command is safe to run before symbols load (e.g.
+#     before attach).
+#
+# Breakpoints fall into four functional groups:
+#   Write path:    heap_build_hot_indexed_tombstone,
+#                  heap_hot_indexed_tombstone_attr_modified,
+#                  HeapUpdateHotAllowable, heap_update
+#   WAL:           heap_xlog_update
+#   Read path:     heap_hot_search_buffer, ExecIndexEntryMatchesTuple,
+#                  ExecSetIndexUnchanged, RelationGetIndexedAttrs,
+#                  _bt_check_unique
+#   Prune:         prune_handle_tombstones
+#   Stats:         pg_relation_hot_indexed_stats
+#
+# To disable a specific breakpoint group temporarily use gdb's own
+# "disable" / "enable" commands with the breakpoint numbers shown by
+# "info breakpoints" after tepid-break runs.
 
-# =========================================================================
-# 1. UPDATE DECISION — heap_update() HOT/HOT-indexed/non-HOT choice
-#    src/backend/access/heap/heapam.c
-# =========================================================================
+# Keep a local repo-rooted path in sync with the worktree.
+source src/tools/gdb/tepid-helpers.py
 
-# Main entry: heap_update
-break heapam.c:3210
+# Install the breakpoints.  Pending mode keeps them queued until the
+# postgres binary has loaded symbols.
+set breakpoint pending on
+tepid-break
 
-# HOT decision block: pure HOT vs HOT indexed vs non-HOT
-# Line 4019: pure HOT (no indexed columns changed)
-# Line 4024: HOT indexed path (non-catalog, some indexed columns changed)
-# Line 4031: predict augmented tuple size
-# Line 4033: size+space check before creating augmented tuple
-break heapam.c:4019
-break heapam.c:4024
-break heapam.c:4033
+# Convenience: print (col=val, ...) tuples, one per line.
+set print pretty on
+set print array on
+set print union on
 
-# Set HEAP_INDEXED_UPDATED flag on new tuple before page insertion
-break heapam.c:4101
+# Useful aliases that don't have command-class entries in tepid-helpers.
+define tbreak
+    tepid-break
+end
+document tbreak
+    Alias for tepid-break.  Installs pending breakpoints for every
+    function the tepid branch adds or materially changes.
+end
 
-# Restore HEAP_INDEXED_UPDATED on old tuple (only if it previously had it)
-break heapam.c:4147
+define tpage
+    tepid-page $arg0 $arg1
+end
+document tpage
+    tpage RELNAME BLKNUM -- show HOT chains on a heap page.  Wraps
+    tepid-page; identical argument syntax.
+end
 
-# =========================================================================
-# 2. TUPLE CREATION — building the augmented tuple with embedded bitmap
-#    src/backend/access/heap/heapam.c
-# =========================================================================
-
-# Predict augmented tuple size (returns 0 if t_hoff would overflow)
-break heap_hot_indexed_tuple_size
-
-# Create augmented tuple with embedded modified-column bitmap
-break heap_hot_indexed_create_tuple
-
-# Serialize Bitmapset into raw bytes in tuple header
-break heap_hot_indexed_serialize_bitmap
-
-# =========================================================================
-# 3. BITMAP UTILITIES — raw bitmap operations for chain following
-#    src/backend/access/heap/heapam.c
-# =========================================================================
-
-# Compute raw bitmap byte size from natts
-break heap_hot_indexed_bitmap_raw_size
-
-# Check if tuple header has room for bitmap between null bitmap and data
-break heap_hot_indexed_has_bitmap_space
-
-# Read HOT indexed bitmap from tuple header (returns Bitmapset)
-break heap_hot_indexed_read_bitmap
-
-# Fast overlap check: does tuple's raw bitmap overlap with indexed_attrs?
-break heap_hot_indexed_bitmap_overlaps_raw
-
-# OR a tuple's raw bitmap into an accumulator buffer
-break heap_hot_indexed_bitmap_or_raw
-
-# Check if accumulated raw bitmap overlaps with indexed_attrs
-break heap_hot_indexed_accum_overlaps
-
-# Merge bitmaps from dead tuples into a target tuple on the page
-break heap_hot_indexed_merge_bitmaps_raw
-
-# Deserialize raw bytes back to Bitmapset
-break heap_hot_indexed_deserialize_bitmap
-
-# =========================================================================
-# 4. INDEX SCAN — HOT chain following with stale-entry detection
-#    src/backend/access/heap/heapam_indexscan.c
-# =========================================================================
-
-# Main HOT chain search with indexed update awareness
-break heap_hot_search_buffer
-
-# Redirect-with-data: initialize bitmap accumulator from collapsed redirect
-break heapam_indexscan.c:182
-
-# Accumulate bitmap from INDEXED_UPDATED tuple in chain
-break heapam_indexscan.c:250
-
-# Stale entry detection: accumulated bitmap overlaps this index's attrs
-break heapam_indexscan.c:297
-
-# =========================================================================
-# 5. INDEX SCAN SETUP — indexed_attrs bitmap computation
-#    src/backend/access/index/indexam.c
-# =========================================================================
-
-# Compute indexed_attrs for HOT indexed update chain following
-break indexam.c:299
-
-# =========================================================================
-# 6. INDEX INSERTION — skip unchanged indexes for HOT indexed updates
-#    src/backend/executor/execIndexing.c
-# =========================================================================
-
-# Entry: insert/update index tuples
-break ExecInsertIndexTuples
-
-# Index skip decision: skip indexes whose attrs don't overlap modified set
-break execIndexing.c:370
-
-# =========================================================================
-# 7. PRUNING — chain collapsing and redirect-with-data
-#    src/backend/access/heap/pruneheap.c
-# =========================================================================
-
-# Main prune function
-break heap_page_prune_and_freeze
-
-# Per-chain pruning entry
-break heap_prune_chain
-
-# Chain collapsing: collect bitmaps from dead INDEXED_UPDATED intermediates
-break pruneheap.c:1802
-
-# OR dead tuple bitmaps into combined bitmap
-break pruneheap.c:1836
-
-# Record redirect-with-data for execute phase
-break pruneheap.c:1863
-
-# Execute phase: apply redirect-with-data entries on the page
-break pruneheap.c:1287
-
-# =========================================================================
-# 8. WAL REPLAY — recovery of HOT indexed updates
-#    src/backend/access/heap/heapam_xlog.c
-# =========================================================================
-
-# WAL replay for XLOG_HEAP2_INDEXED_UPDATE
-break heap_xlog_indexed_update
-
-# =========================================================================
-# 9. WAL LOGGING — writing HOT indexed update records
-#    src/backend/access/heap/heapam.c
-# =========================================================================
-
-# WAL logging for heap updates (handles indexed_update flag)
-break log_heap_update
-
-# Serialize redirect-with-data into WAL record (pruneheap.c)
-break pruneheap.c:2936
+define tindex
+    tepid-index $arg0 $arg1
+end
+document tindex
+    tindex IDXNAME BLKNUM -- show btree leaf entries.  Wraps
+    tepid-index; identical argument syntax.
+end
