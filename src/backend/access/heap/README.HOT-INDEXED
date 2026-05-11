@@ -510,12 +510,66 @@ hot_indexed_update_threshold  (integer 0..100, default 80)
 
 HeapUpdateHotAllowable() returns HEAP_HOT_MODE_NO for:
 
+   - IsLogicalWorker() (see "Logical replication apply" below);
    - IsCatalogRelation(rel) (see "Catalog enablement" below);
    - RelationHasExclusionConstraint(rel) (see filter #6 above);
-   - updates that exceed hot_indexed_update_threshold.
+   - updates that exceed hot_indexed_update_threshold;
+   - updates that would push the existing chain past its
+     per-relation length cap (see "Chain-length cap" below).
 
 Otherwise it returns HEAP_HOT_MODE_INDEXED and heap_update takes the
 hot-indexed path.
+
+
+Chain-length cap (per-relation geometry)
+----------------------------------------
+
+Every HOT-indexed hop a reader crosses costs at least an index-key
+recheck (FormIndexDatum + N opclass compares), so chain length
+directly limits scan performance on frequently-updated rows.
+Without a cap a hot-loop UPDATE on an indexed column on the same
+row would grow the chain unbounded.
+
+relcache.c's RelationGetHotIndexedChainMax() computes an upper
+bound lazily from the relation's fillfactor and estimated tuple
+size:
+
+    page_budget = BLCKSZ * fillfactor / 100
+    cap         = (page_budget - overhead) / (avg_tuple + tombstone)
+
+Narrow tables get long chains; wide tables get short chains.  The
+value is cached in Relation->rd_hotidx_chainmax and reset by
+relcache invalidation, so ALTER TABLE ... SET (fillfactor = N) or
+ADD/DROP COLUMN naturally re-derives the cap.  There is no GUC.
+
+heap_update walks the existing chain forward from oldtup counting
+HEAP_HOT_UPDATED hops on the same page.  If extending the chain
+would reach the cap it demotes to HEAP_HOT_MODE_NO and the update
+takes the non-HOT path, which naturally truncates the chain by
+moving the next version off-page.
+
+
+Logical replication apply
+-------------------------
+
+A subscriber's schema may add indexes the publisher does not have.
+When the apply worker calls heap_update for an UPDATE replicated
+from the publisher, HeapUpdateHotAllowable might choose
+HEAP_HOT_MODE_INDEXED on the subscriber (the subscriber has
+strictly more indexed attrs, so the share modified falls under the
+threshold), while the publisher with fewer indexes may have taken
+the same UPDATE non-HOT.  The subscriber would then build a HOT-
+indexed chain the publisher does not have, and subsequent INSERTs
+on the subscriber would see spurious duplicate-key violations
+against stale btree entries.
+
+Sidestep the mismatch by forcing non-HOT on the apply path:
+IsLogicalWorker() is true for any apply worker (table sync, main
+apply, parallel apply) and causes HeapUpdateHotAllowable to return
+HEAP_HOT_MODE_NO without consulting the threshold or chain cap.
+Classic HOT remains available because HeapUpdateHotAllowable
+returns HEAP_HOT_MODE_CLASSIC earlier when no indexed attribute
+changed.
 
 
 Catalog Enablement (Future Work)
