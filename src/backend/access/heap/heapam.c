@@ -9204,6 +9204,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	uint16		prefix_suffix[2];
 	uint16		prefixlen = 0,
 				suffixlen = 0;
+	uint16		tombstone_trailer_len = 0;
+	uint16		tombstone_size16 = 0;
 	XLogRecPtr	recptr;
 	Page		page = BufferGetPage(newbuf);
 	bool		need_tuple_data = walLogical && RelationIsLogicallyLogged(reln);
@@ -9379,11 +9381,11 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 	{
-		uint16		trailer_len = (uint16) (sizeof(OffsetNumber) +
-											sizeof(uint16) +
-											tombstone_item_size);
+		tombstone_trailer_len = (uint16) (sizeof(OffsetNumber) +
+										  sizeof(uint16) +
+										  tombstone_item_size);
 
-		XLogRegisterBufData(0, &trailer_len, sizeof(uint16));
+		XLogRegisterBufData(0, &tombstone_trailer_len, sizeof(uint16));
 	}
 
 	if (prefixlen == 0)
@@ -9434,11 +9436,11 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	 */
 	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 	{
-		uint16		tomb_size16 = (uint16) tombstone_item_size;
+		tombstone_size16 = (uint16) tombstone_item_size;
 
 		Assert(tombstone_item_size > 0 && tombstone_item_size <= UINT16_MAX);
 		XLogRegisterBufData(0, &tombstone_offnum, sizeof(OffsetNumber));
-		XLogRegisterBufData(0, &tomb_size16, sizeof(uint16));
+		XLogRegisterBufData(0, &tombstone_size16, sizeof(uint16));
 		XLogRegisterBufData(0, unconstify(char *, tombstone_item), tombstone_item_size);
 	}
 
