@@ -32,7 +32,7 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT=$BENCH/results/$TS.csv
 LOGDIR=$BENCH/logs/$TS
 mkdir -p "$LOGDIR"
-echo "variant,workload,tps,latency_avg_ms,hot_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak" > "$OUT"
+echo "variant,workload,tps,latency_avg_ms,hot_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak,per_index_before,per_index_after" > "$OUT"
 echo "=== siu-bench A/B run $TS -> $OUT (scale=$SCALE clients=$CLIENTS threads=$THREADS duration=${DURATION}s)"
 
 bin_of() {
@@ -173,6 +173,24 @@ bloat_stats() {
   psql_as "$v" -Atc "SELECT pg_table_size('$table')/8192 || ',' || pg_indexes_size('$table')"
 }
 
+# per_index_sizes: emit "idx1=bytes;idx2=bytes;..." for the indexes on
+# $table, sorted by indexrelid.  Used by the wide_* workloads so we can
+# see per-column index growth rather than just the aggregate.  Returns
+# the literal "none" when $table has no indexes.
+per_index_sizes() {
+  local v=$1 table=$2
+  local out
+  out=$(psql_as "$v" -Atc "SELECT string_agg(
+           i.relname || '=' || pg_relation_size(i.oid)::text,
+           ';' ORDER BY i.oid)
+         FROM pg_class t
+         JOIN pg_index ix ON ix.indrelid = t.oid
+         JOIN pg_class i  ON i.oid = ix.indexrelid
+         WHERE t.relname = '$table'")
+  [ -n "$out" ] || out="none"
+  echo "$out"
+}
+
 sample_peak() {
   # Sample CPU / RSS of the postmaster tree for $DURATION+5 seconds.
   # Writes "peak_cpu_pct,peak_rss_mib" to the given outfile.  Portable across
@@ -215,7 +233,9 @@ run_one() {
 
   local wal_start wal_end hot_start hot_end total_start total_end tps lat
   local bloat_before bloat_after idx_before idx_after
+  local per_idx_before per_idx_after
   read -r bloat_before idx_before <<<"$(bloat_stats "$v" "$table" | tr , ' ')"
+  per_idx_before=$(per_index_sizes "$v" "$table")
 
   wal_start=$(psql_as "$v" -Atc "SELECT pg_current_wal_lsn()::text")
   hot_start=$(psql_as "$v" -Atc "SELECT coalesce(n_tup_hot_upd,0) FROM pg_stat_user_tables WHERE relname='$table'")
@@ -262,16 +282,17 @@ run_one() {
   wal_bytes=$(psql_as "$v" -Atc "SELECT pg_wal_lsn_diff('$wal_end'::pg_lsn, '$wal_start'::pg_lsn)::bigint")
 
   read -r bloat_after idx_after <<<"$(bloat_stats "$v" "$table" | tr , ' ')"
+  per_idx_after=$(per_index_sizes "$v" "$table")
 
   local hot=$((hot_end - hot_start))
   local tot=$((total_end - total_start))
 
-  printf '%s,%s,%s,%s,%d,%d,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$v" "$workload" "$tps" "$lat" "$hot" "$tot" \
     "$wal_bytes" \
     "$bloat_before" "$bloat_after" \
     "$idx_before" "$idx_after" \
-    "$cpu_rss" >> "$OUT"
+    "$cpu_rss" "$per_idx_before" "$per_idx_after" >> "$OUT"
   printf '  %-8s %-14s tps=%10s lat=%6s hot=%8d/%-8d wal=%12s bloat=%s->%s idx=%s->%s cpu_rss=%s\n' \
     "$v" "$workload" "$tps" "$lat" "$hot" "$tot" "$wal_bytes" \
     "$bloat_before" "$bloat_after" "$idx_before" "$idx_after" "$cpu_rss"
