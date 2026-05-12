@@ -710,23 +710,51 @@ indexed chain the publisher does not have, and subsequent INSERTs
 on the subscriber would see spurious duplicate-key violations
 against stale btree entries.
 
-Sidestep the mismatch by forcing non-HOT on the apply path when
-the subscriber carries any indexed attribute beyond its primary
-key.  The test is simply !bms_equal(INDEX_ATTR_BITMAP_INDEXED,
-INDEX_ATTR_BITMAP_PRIMARY_KEY) -- if the subscriber has a
-secondary or summarizing index, it can index columns whose
-modification status the publisher's schema would not have sampled,
-and HOT-indexed would fire on the subscriber where it did not on
-the publisher.  Subscribers whose indexed-attr set is exactly the
-primary key (the common replication-ready shape) follow the
-normal rules and can take the HOT-indexed path when the apply
-worker's UPDATE modifies an indexed attribute.
+The per-subscription CREATE/ALTER SUBSCRIPTION option
+hot_indexed_on_apply controls how aggressively HeapUpdateHotAllowable
+may take the HOT-indexed path on the apply worker.  The option is
+read from pg_subscription at apply-worker startup and refreshed by
+maybe_reread_subscription() whenever the catalog invalidates; a
+cached copy is reached by heapam.c via GetHotIndexedApplyMode().
 
-This trades a narrow performance improvement on matching schemas
-for safety on divergent ones.  A tighter test would require
-materialising the publisher's heap_update decision into the
-logical replication protocol so the subscriber can replay it
-verbatim; that is future work.
+    off          Force non-HOT on apply whenever
+                 !bms_equal(INDEX_ATTR_BITMAP_INDEXED,
+                            INDEX_ATTR_BITMAP_PRIMARY_KEY).
+                 Matches the pre-C20 conservative default.  Safe on
+                 every schema, at the cost of giving up the apply-side
+                 WAL/bloat savings whenever the subscriber carries any
+                 index beyond the primary key.
+
+    subset_only  Force non-HOT only when the subscriber's indexed-attr
+                 set is NOT a subset of the primary-key attrs, i.e.
+                 !bms_is_subset(INDEX_ATTR_BITMAP_INDEXED,
+                                INDEX_ATTR_BITMAP_PRIMARY_KEY).
+                 This is the default for freshly created subscriptions
+                 and is the narrowest correct rule:
+                   - schemas with no secondary or summarizing index
+                     keep the HOT-indexed apply path (the bms_equal
+                     test already allowed this under 'off');
+                   - schemas whose secondary index(es) only index
+                     attrs that the primary key already covers keep
+                     it too, which 'off' pessimistically gave up;
+                   - schemas that index attrs outside the primary key
+                     fall back to non-HOT exactly as under 'off'.
+                 A new index on a column the primary key does not
+                 cover causes the apply path to demote silently at
+                 the subscription's next catalog invalidation.
+
+    always       Unconditional HOT-indexed eligibility on the apply
+                 path.  The operator takes responsibility for
+                 keeping publisher and subscriber indexed-attr sets
+                 compatible; divergent schemas can produce spurious
+                 duplicate-key conflicts for subsequent inserts on
+                 the subscriber.  Ship this only when you own both
+                 ends and your change-management procedure keeps
+                 them in lock-step.
+
+A tighter test would require materialising the publisher's
+heap_update decision into the logical replication protocol so the
+subscriber can replay it verbatim; that is future work.
 
 
 Catalog Enablement
