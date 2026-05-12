@@ -281,6 +281,19 @@ run_one() {
   local wal_bytes
   wal_bytes=$(psql_as "$v" -Atc "SELECT pg_wal_lsn_diff('$wal_end'::pg_lsn, '$wal_start'::pg_lsn)::bigint")
 
+  # Capture a WAL record-type histogram for this workload.  pg_waldump's
+  # --stats=record output is rich (~60 lines) so stash it in LOGDIR
+  # rather than trying to fold into the CSV.  Tolerate failures: if the
+  # segment containing wal_start has been recycled (rare with
+  # max_wal_size=4GB but possible under long chained runs), we emit a
+  # note and move on instead of aborting the whole run.
+  local wal_stats_file=$LOGDIR/${v}_${workload}.walstats
+  LD_LIBRARY_PATH="$(LD_of "$v")" "$(bin_of "$v")/pg_waldump" \
+    --stats=record -p "$BENCH/_data_$v/pg_wal" \
+    --start="$wal_start" --end="$wal_end" \
+    > "$wal_stats_file" 2> "${wal_stats_file}.err" \
+    || echo "pg_waldump unavailable for this range; see ${wal_stats_file}.err" > "$wal_stats_file"
+
   read -r bloat_after idx_after <<<"$(bloat_stats "$v" "$table" | tr , ' ')"
   per_idx_after=$(per_index_sizes "$v" "$table")
 
