@@ -3771,12 +3771,21 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_tableOid = RelationGetRelid(rel);
 
 		/*
-		 * HOT-indexed tombstones are permanently invisible bitmap carriers;
-		 * they must not disqualify a page from being all-visible or
-		 * all-frozen.  Skip them here without touching state.
+		 * HOT-indexed tombstones (adjacent and bridge variants) are
+		 * LP_NORMAL items that must never be returned as live tuples.
+		 * Their HEAP_XMIN_INVALID in the header filters them out under
+		 * per-tuple visibility checks, but if we declare the page
+		 * all-visible then the heap_getnext fast path skips those checks
+		 * and a SeqScan would surface the tombstone bytes as a live
+		 * tuple -- reading the modified-attrs bitmap or forward pointer
+		 * as user-column data and producing phantom rows.  Treat any
+		 * tombstone on the page as a blocker, same as a dead item.
 		 */
 		if (HeapTupleHeaderIsHotIndexedTombstone(tuple.t_data))
-			continue;
+		{
+			*all_frozen = all_visible = false;
+			break;
+		}
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);
