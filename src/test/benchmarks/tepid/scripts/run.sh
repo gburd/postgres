@@ -96,8 +96,17 @@ postmaster_pid() {
 
 setup_schemas() {
   local v=$1
+  seed_siu_table "$v"
+  seed_wide_table "$v"
+  # pgbench schema for built-in simple_update.
+  LD_LIBRARY_PATH="$(LD_of "$v")" "$(bin_of "$v")/pgbench" -h /tmp -p "$PORT" -U postgres \
+    -i -s "$SCALE" -q postgres >"$LOGDIR/pgbench_init_$v.log" 2>&1
+}
+
+# seed_siu_table: (re)create the narrow table used by the siu_* workloads.
+seed_siu_table() {
+  local v=$1
   local rows=$((SCALE * 100000))
-  # siu_table: the classic 4-col shape used in earlier runs.
   psql_as "$v" <<SQL
 DROP TABLE IF EXISTS siu_table;
 CREATE TABLE siu_table(a int PRIMARY KEY, b int, c int, d int, e text);
@@ -106,9 +115,14 @@ CREATE INDEX siu_c ON siu_table(c);
 CREATE INDEX siu_d ON siu_table(d);
 INSERT INTO siu_table
   SELECT i, i, i, i, repeat('x', 20) FROM generate_series(1, $rows) AS i;
-VACUUM (ANALYZE) siu_table;
+VACUUM (FULL, ANALYZE) siu_table;
+CHECKPOINT;
 SQL
-  # wide_table: id + WIDE_COLS integer indexed columns.
+}
+
+# seed_wide_table: (re)create the wide table with WIDE_COLS indexed columns.
+seed_wide_table() {
+  local v=$1
   local coldefs="" insertcols="" insertvals="" idxlist=""
   for i in $(seq 1 "$WIDE_COLS"); do
     coldefs+=", c$i int"
@@ -122,11 +136,36 @@ DROP TABLE IF EXISTS wide_table;
 CREATE TABLE wide_table(id int PRIMARY KEY $coldefs);
 $idxlist
 INSERT INTO wide_table(id $insertcols) SELECT i $insertvals FROM generate_series(1, $wide_rows) AS i;
-VACUUM (ANALYZE) wide_table;
+VACUUM (FULL, ANALYZE) wide_table;
+CHECKPOINT;
 SQL
-  # pgbench schema for built-in simple_update.
-  LD_LIBRARY_PATH="$(LD_of "$v")" "$(bin_of "$v")/pgbench" -h /tmp -p "$PORT" -U postgres \
-    -i -s "$SCALE" -q postgres >"$LOGDIR/pgbench_init_$v.log" 2>&1
+}
+
+# reset_state: restore a workload's target table to its seeded baseline.
+# Used between workloads so per-workload bloat/idx_size deltas are not
+# polluted by carryover from earlier workloads in the same variant run.
+# For pgbench_accounts we re-initialise via `pgbench -i`; for our
+# hand-rolled tables we drop + recreate + reseed.
+reset_state() {
+  local v=$1 table=$2
+  case "$table" in
+    pgbench_accounts)
+      LD_LIBRARY_PATH="$(LD_of "$v")" "$(bin_of "$v")/pgbench" -h /tmp -p "$PORT" -U postgres \
+        -i -s "$SCALE" -q postgres >>"$LOGDIR/pgbench_init_$v.log" 2>&1
+      psql_as "$v" -c "CHECKPOINT" >/dev/null
+      ;;
+    siu_table)
+      seed_siu_table "$v"
+      ;;
+    wide_table)
+      seed_wide_table "$v"
+      ;;
+    *)
+      echo "reset_state: unknown table $table" >&2
+      return 1
+      ;;
+  esac
+  psql_as "$v" -c "SELECT pg_stat_reset_single_table_counters('$table'::regclass::oid)" >/dev/null
 }
 
 bloat_stats() {
@@ -261,10 +300,13 @@ for v in master tepid; do
   setup_schemas "$v"
 
   run_one "$v" simple_update ''                    pgbench_accounts
+  reset_state "$v" siu_table
   run_one "$v" hot_indexed_update    "$BENCH/scripts/hot_indexed_update.sql"  siu_table
+  reset_state "$v" siu_table
   run_one "$v" hot_indexed_mixed     "$BENCH/scripts/hot_indexed_mixed.sql"   siu_table
 
   for n in ${WIDE_STEPS//,/ }; do
+    reset_state "$v" wide_table
     run_one "$v" "wide_${n}" "$BENCH/scripts/wide_update.sql" wide_table \
             "$(build_wide_set_clause "$n")"
   done
