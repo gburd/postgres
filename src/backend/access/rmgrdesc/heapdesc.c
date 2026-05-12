@@ -109,7 +109,8 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   int *nredirected, OffsetNumber **redirected,
 									   int *ndead, OffsetNumber **nowdead,
 									   int *nunused, OffsetNumber **nowunused,
-									   int *nbridges, OffsetNumber **bridges)
+									   int *nbridges, OffsetNumber **bridges,
+									   int *npromotions, OffsetNumber **promotions)
 {
 	if (flags & XLHP_HAS_FREEZE_PLANS)
 	{
@@ -194,6 +195,23 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 	{
 		*nbridges = 0;
 		*bridges = NULL;
+	}
+
+	if (flags & XLHP_HAS_PROMOTIONS)
+	{
+		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
+
+		*npromotions = subrecord->ntargets;
+		Assert(*npromotions > 0);
+		*promotions = subrecord->data;
+
+		cursor += offsetof(xlhp_prune_items, data);
+		cursor += sizeof(OffsetNumber) * *npromotions;
+	}
+	else
+	{
+		*npromotions = 0;
+		*promotions = NULL;
 	}
 
 	*frz_offsets = (OffsetNumber *) cursor;
@@ -321,10 +339,12 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
 			OffsetNumber *bridges;
+			OffsetNumber *promotions;
 			int			nredirected;
 			int			nunused;
 			int			ndead;
 			int			nbridges;
+			int			npromotions;
 			int			nplans;
 			xlhp_freeze_plan *plans;
 			OffsetNumber *frz_offsets;
@@ -336,10 +356,11 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 												   &nredirected, &redirected,
 												   &ndead, &nowdead,
 												   &nunused, &nowunused,
-												   &nbridges, &bridges);
+												   &nbridges, &bridges,
+												   &npromotions, &promotions);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u",
-							 nplans, nredirected, ndead, nunused, nbridges);
+			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u, npromotions: %u",
+							 nplans, nredirected, ndead, nunused, nbridges, npromotions);
 
 			if (nplans > 0)
 			{
@@ -374,6 +395,13 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfoString(buf, ", bridges:");
 				array_desc(buf, bridges, sizeof(OffsetNumber) * 2,
 						   nbridges, &redirect_elem_desc, NULL);
+			}
+
+			if (npromotions > 0)
+			{
+				appendStringInfoString(buf, ", promotions:");
+				array_desc(buf, promotions, sizeof(OffsetNumber),
+						   npromotions, &offset_elem_desc, NULL);
 			}
 		}
 	}
