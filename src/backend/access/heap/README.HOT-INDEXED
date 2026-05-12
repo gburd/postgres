@@ -414,6 +414,83 @@ Regular VACUUM does not look at tombstones specially.  It picks them
 up via the prune machinery on every page it scans.
 
 
+Bridge Tombstones (Mid-Chain Preservation)
+------------------------------------------
+
+Classic HOT's invariant "every live btree entry resolves to the
+chain root" is load-bearing for pruneheap: it lets heap_prune_chain
+reclaim dead mid-chain LPs to LP_UNUSED without coordinating with
+any index AM.  HOT-indexed breaks that invariant on purpose, by
+pointing per-update btree entries at mid-chain heap-only TIDs.
+Reclaiming those LPs to LP_UNUSED before ambulkdelete has swept
+the stale references creates a chain-mid orphan: a later insert
+reuses the slot and any btree entry still pointing there now
+resolves to unrelated data.
+
+A bridge tombstone is the repair.  When heap_prune_chain classifies
+a mid-chain heap-only tuple as dead but its header carries
+HEAP_INDEXED_UPDATED, the LP is preserved and rewritten in place to
+a 32-byte bridge: natts=0, HEAP_INDEXED_UPDATED | HEAP_HOT_UPDATED,
+t_ctid = (current page blockno, first live chain member's offset).
+The distinguishing predicate is HeapTupleHeaderIsHotIndexedBridge:
+natts=0 + HEAP_INDEXED_UPDATED + t_ctid.blockno valid (adjacent-to-
+live tombstones use InvalidBlockNumber).  The page gains the
+PD_HAS_HOT_IDX_BRIDGES flag in pd_flags so vacuum can find bridge-
+bearing pages without scanning every LP.
+
+Reader side: heap_hot_search_buffer treats a bridge as a
+transparent hop.  It sets xs_hot_indexed_recheck, skips to the
+forward target in t_ctid.offnum, and continues the walk without
+advancing prev_xmax (bridges carry neither xmin nor xmax).  An
+adjacent-to-live tombstone reached by a chain walk has no forward
+link (t_ctid.blockno = Invalid) and terminates the walk as end-of-
+chain; stale btree entries that land on adjacent tombstones return
+nothing.
+
+Vacuum reclaim: lazy_scan_prune walks any page with
+PD_HAS_HOT_IDX_BRIDGES and adds each bridge's offset to the per-page
+deadoffsets array alongside any genuine LP_DEAD items.  The
+combined TID set goes to ambulkdelete through the existing
+dead_items_add path, and every matching btree entry is removed.
+On the second pass, lazy_vacuum_heap_page converts each collected
+LP to LP_UNUSED: the genuine LP_DEAD ones via the existing path
+and the bridge LP_NORMAL ones by asserting
+HeapTupleHeaderIsHotIndexedBridge and then calling ItemIdSetUnused.
+When the bridge count on the page drops to zero, the
+PD_HAS_HOT_IDX_BRIDGES bit is cleared.
+
+The net effect: a vacuum pass following HOT-indexed activity
+leaves the page in exactly the state classic HOT would leave it,
+with no bridges, no stale index entries, and LPs compacted.
+Bridges are strictly a transient artifact between chain pruning
+and the next index cleanup.
+
+
+All-Visible vs Tombstones
+-------------------------
+
+Tombstones (both adjacent-to-live and bridge variants) are
+LP_NORMAL items with HEAP_XMIN_INVALID set, so per-tuple MVCC
+visibility routines correctly return false for them.  However the
+heap scan fast path in page_collect_tuples skips per-tuple MVCC
+checks entirely on pages marked PD_ALL_VISIBLE and treats every
+LP_NORMAL item as live.  Declaring a tombstone-bearing page all-
+visible therefore surfaces the tombstone's on-disk bytes -- the
+(t_target, t_nbytes) payload of adjacent tombstones or the bridge's
+forward-link field -- as user-column data, producing phantom rows
+in sequential scans.
+
+Heap_page_would_be_all_visible (vacuumlazy.c) and the two
+PruneState recorders that preserve tombstones on a page
+(heap_prune_record_unchanged_lp_tombstone and
+heap_prune_record_bridge) all treat any tombstone as a blocker of
+both all-visible and all-frozen.  Pages with tombstones thus never
+get PD_ALL_VISIBLE set; the heap scan fast path never applies to
+them.  This fix closed the previously-persistent oidjoins regress
+failure that reported false FK violations reading tombstone
+payload bytes as pg_attribute.attrelid.
+
+
 VACUUM and LP_UNUSED assertions
 -------------------------------
 
@@ -447,6 +524,17 @@ hot-indexed: old pg_upgrade, pg_repack, amcheck and pageinspect see the same
 tuple headers, just with one more infomask2 bit set and with
 occasional LP_NORMAL items that have natts=0.  amcheck asserts the
 InvalidBlockNumber in tombstone t_ctid.
+
+Bridge-tombstone conversion in pruneheap has its own WAL path: the
+existing xl_heap_prune record gains one flag XLHP_HAS_HOT_IDX_BRIDGES
+(bit 10) and, when set, carries an additional xlhp_prune_items sub-
+record whose data[] has 2 * nbridges OffsetNumbers ((offnum, forward)
+pairs).  heap_xlog_prune_freeze deserializes the sub-record and
+invokes heap_page_prune_execute to replay the in-place tuple-body
+rewrite and the PD_HAS_HOT_IDX_BRIDGES page-flag set.  The WAL
+layout mirrors the existing XLHP_HAS_REDIRECTIONS sub-record so the
+shared deserializer handles both shapes uniformly.  pg_waldump
+--stats=record shows 'Heap2/PRUNE_* ... nbridges=N, bridges: ...'.
 
 
 CREATE INDEX
@@ -648,20 +736,25 @@ catalog enablement but are tracked as follow-up):
      "duplicate key value" in specific orderings; the common root is
      SeqScan-reachable pg_class tuples whose chain is still live but
      whose current version is at a different LP than the stale scan
-     returned.  Coverage is currently 245/247 on the main regress
+     returned.  Coverage is currently 246/247 on the main regress
      suite; isolation and subscription suites (40/40) pass cleanly.
-     Two failures remain: foreign_key (stale pg_trigger entries after
-     ALTER CONSTRAINT NOT ENFORCED) and alter_table's filenode_mapping
-     sweep.  Root cause in both cases is a SIU-written heap-only tuple
-     whose line pointer got pruned to LP_UNUSED while btree entries
-     still pointed at it; the slot then got reused by a different
-     row.  pruneheap's path for reclaiming dead chain-mid heap-only
-     tuples with HEAP_INDEXED_UPDATED needs to keep the LP as
-     LP_DEAD (not LP_UNUSED) until vacuum's index-cleanup pass has
-     dropped the stale btree entries.  A conservative fix is in
-     place for the chain-END case in heap_prune_satisfies_vacuum;
-     the chain-MID case requires further pruneheap.c work because
-     the classic HOT chain-walking invariant needs the LP walkable.
+
+     The chain-mid orphan class of bugs was fixed in the bridge-
+     tombstone series (commits d3fb93e632c..f6807dd49c8): pruneheap
+     writes a 32-byte bridge tombstone in place of a dead mid-chain
+     HOT-indexed heap-only LP, preserving the walkable chain hop
+     until vacuum's next index-cleanup pass sweeps the stale btree
+     references, at which point lazy_vacuum_heap_page reclaims the
+     bridge to LP_UNUSED.  A related fix (f6807dd49c8) prevents
+     tombstone-bearing pages from being marked PD_ALL_VISIBLE, which
+     otherwise let the heap scan fast path surface tombstone payload
+     bytes as phantom live rows.
+
+     foreign_key remains stochastic: after ALTER CONSTRAINT NOT
+     ENFORCED, a SeqScan over pg_trigger sometimes returns trigger
+     rows the recursive drop should have eliminated.  Root cause is
+     narrower than the all-visible case already fixed; under
+     investigation.  alter_table is no longer a reliable failure.
 
    - vac_update_datfrozenxid still uses a heap seqscan with
      indexOK=false.  No reported corruption from this path today,
