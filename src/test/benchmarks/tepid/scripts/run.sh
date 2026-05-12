@@ -32,7 +32,7 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT=$BENCH/results/$TS.csv
 LOGDIR=$BENCH/logs/$TS
 mkdir -p "$LOGDIR"
-echo "variant,workload,tps,latency_avg_ms,hot_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak,per_index_before,per_index_after" > "$OUT"
+echo "variant,workload,tps,latency_avg_ms,hot_updates,hot_indexed_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak,per_index_before,per_index_after" > "$OUT"
 echo "=== siu-bench A/B run $TS -> $OUT (scale=$SCALE clients=$CLIENTS threads=$THREADS duration=${DURATION}s)"
 
 bin_of() {
@@ -173,6 +173,18 @@ bloat_stats() {
   psql_as "$v" -Atc "SELECT pg_table_size('$table')/8192 || ',' || pg_indexes_size('$table')"
 }
 
+# siu_count: number of HOT-indexed updates observed on $table since its
+# pgstat counters were last reset.  Returns "0" on master (where the
+# counter column does not exist) so the CSV column stays numeric.
+siu_count() {
+  local v=$1 table=$2
+  local val
+  val=$(psql_as "$v" -Atc \
+    "SELECT coalesce(n_tup_hot_idx_upd, 0) FROM pg_stat_user_tables WHERE relname='$table'" 2>/dev/null)
+  [[ "$val" =~ ^[0-9]+$ ]] || val=0
+  echo "$val"
+}
+
 # per_index_sizes: emit "idx1=bytes;idx2=bytes;..." for the indexes on
 # $table, sorted by indexrelid.  Used by the wide_* workloads so we can
 # see per-column index growth rather than just the aggregate.  Returns
@@ -232,6 +244,7 @@ run_one() {
   local v=$1 workload=$2 script=$3 table=${4:-siu_table} extra_set=${5:-}
 
   local wal_start wal_end hot_start hot_end total_start total_end tps lat
+  local siu_start siu_end
   local bloat_before bloat_after idx_before idx_after
   local per_idx_before per_idx_after
   read -r bloat_before idx_before <<<"$(bloat_stats "$v" "$table" | tr , ' ')"
@@ -239,6 +252,7 @@ run_one() {
 
   wal_start=$(psql_as "$v" -Atc "SELECT pg_current_wal_lsn()::text")
   hot_start=$(psql_as "$v" -Atc "SELECT coalesce(n_tup_hot_upd,0) FROM pg_stat_user_tables WHERE relname='$table'")
+  siu_start=$(siu_count "$v" "$table")
   total_start=$(psql_as "$v" -Atc "SELECT coalesce(n_tup_upd,0) FROM pg_stat_user_tables WHERE relname='$table'")
 
   local out="$LOGDIR/${v}_${workload}.log"
@@ -276,6 +290,7 @@ run_one() {
 
   wal_end=$(psql_as "$v" -Atc "SELECT pg_current_wal_lsn()::text")
   hot_end=$(psql_as "$v" -Atc "SELECT coalesce(n_tup_hot_upd,0) FROM pg_stat_user_tables WHERE relname='$table'")
+  siu_end=$(siu_count "$v" "$table")
   total_end=$(psql_as "$v" -Atc "SELECT coalesce(n_tup_upd,0) FROM pg_stat_user_tables WHERE relname='$table'")
 
   local wal_bytes
@@ -298,16 +313,17 @@ run_one() {
   per_idx_after=$(per_index_sizes "$v" "$table")
 
   local hot=$((hot_end - hot_start))
+  local siu=$((siu_end - siu_start))
   local tot=$((total_end - total_start))
 
-  printf '%s,%s,%s,%s,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-    "$v" "$workload" "$tps" "$lat" "$hot" "$tot" \
+  printf '%s,%s,%s,%s,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$v" "$workload" "$tps" "$lat" "$hot" "$siu" "$tot" \
     "$wal_bytes" \
     "$bloat_before" "$bloat_after" \
     "$idx_before" "$idx_after" \
     "$cpu_rss" "$per_idx_before" "$per_idx_after" >> "$OUT"
-  printf '  %-8s %-14s tps=%10s lat=%6s hot=%8d/%-8d wal=%12s bloat=%s->%s idx=%s->%s cpu_rss=%s\n' \
-    "$v" "$workload" "$tps" "$lat" "$hot" "$tot" "$wal_bytes" \
+  printf '  %-8s %-14s tps=%10s lat=%6s hot=%7d siu=%7d tot=%-7d wal=%12s bloat=%s->%s idx=%s->%s cpu_rss=%s\n' \
+    "$v" "$workload" "$tps" "$lat" "$hot" "$siu" "$tot" "$wal_bytes" \
     "$bloat_before" "$bloat_after" "$idx_before" "$idx_after" "$cpu_rss"
 }
 
