@@ -344,6 +344,14 @@ typedef struct xl_heap_prune
 #define		XLHP_VM_ALL_FROZEN			(1 << 9)
 
 /*
+ * XLHP_HAS_HOT_IDX_BRIDGES indicates that an xlhp_prune_items sub-record
+ * with (offnum, forward) pairs follows, describing LPs that pruneheap
+ * rewrote in place as HOT-indexed bridge tombstones.  Replay applies the
+ * same in-place rewrite.  See access/hot_indexed.h for the bridge layout.
+ */
+#define		XLHP_HAS_HOT_IDX_BRIDGES   (1 << 10)
+
+/*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
  * (appears in xl_heap_prune's xlhp_freeze_plans sub-record)
  */
