@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/relscan.h"
 #include "storage/predicate.h"
 
@@ -169,6 +170,38 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		heapTuple->t_len = ItemIdGetLength(lp);
 		heapTuple->t_tableOid = RelationGetRelid(relation);
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
+
+		/*
+		 * HOT-indexed tombstones (two variants) are never visible tuples.
+		 *
+		 * - Adjacent-to-live tombstones have t_ctid.blockno =
+		 *   InvalidBlockNumber; they sit next to a newly-written HOT-indexed
+		 *   tuple and carry its modified-attrs bitmap.  A stale btree entry
+		 *   that lands on one has no forward link to follow -- treat as end
+		 *   of chain.
+		 *
+		 * - Bridge tombstones have a valid same-page forward t_ctid, placed
+		 *   by pruneheap in the slot a dead mid-chain HOT-indexed heap-only
+		 *   tuple used to occupy.  Stale btree entries pointing at the
+		 *   bridge's LP still resolve to the live tuple by following the
+		 *   forward link.  Skip the bridge transparently: don't apply the
+		 *   xmin/xmax chain match (bridges carry neither), raise the recheck
+		 *   signal so readers compare the stored leaf key against the live
+		 *   tuple's current index form, and continue the walk.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(heapTuple->t_data))
+		{
+			if (HeapTupleHeaderIsHotIndexedBridge(heapTuple->t_data))
+			{
+				if (hot_indexed_recheck != NULL)
+					*hot_indexed_recheck = true;
+				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
+				at_chain_start = false;
+				/* prev_xmax intentionally not updated: bridges don't advance it */
+				continue;
+			}
+			break;
+		}
 
 		/*
 		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
