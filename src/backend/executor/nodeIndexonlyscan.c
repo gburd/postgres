@@ -186,15 +186,27 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			{
 				bool		keep = false;
 
-				if (scandesc->xs_itup != NULL &&
-					scandesc->indexRelation->rd_rel->relam == BTREE_AM_OID)
+				/*
+				 * Dispatch to the index AM's leaf-key recheck if it
+				 * implements the optional amrecheck_leaf_key callback and
+				 * we have both the leaf IndexTuple (xs_itup, requires
+				 * want_itup on the scan) and a populated heap slot.  The
+				 * callback returns true iff the leaf is still valid for
+				 * this index: its key matches the live tuple's current
+				 * index form.  AMs without the callback fall through to
+				 * the permissive drop path, matching pre-tepid behaviour.
+				 */
+				if (scandesc->xs_itup != NULL)
 				{
 					TupleTableSlot *heap_slot = node->ioss_TableSlot;
+					const IndexAmRoutine *amroutine =
+						scandesc->indexRelation->rd_indam;
 
 					if (heap_slot != NULL && !TTS_EMPTY(heap_slot) &&
-						_bt_heap_keys_equal_leaf(scandesc->indexRelation,
-												 scandesc->xs_itup,
-												 heap_slot))
+						amroutine->amrecheck_leaf_key != NULL &&
+						amroutine->amrecheck_leaf_key(scandesc->indexRelation,
+													  scandesc->xs_itup,
+													  heap_slot))
 						keep = true;
 				}
 

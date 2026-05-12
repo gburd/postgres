@@ -29,6 +29,15 @@ typedef struct IndexPath IndexPath;
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
 
+/*
+ * Forward references so we can declare amrecheck_leaf_key without
+ * pulling in itup.h or tuptable.h.
+ */
+struct IndexTupleData;
+typedef struct IndexTupleData *IndexTuple;
+struct TupleTableSlot;
+typedef struct TupleTableSlot TupleTableSlot;
+
 
 /*
  * Properties for amproperty API.  This list covers properties known to the
@@ -143,6 +152,21 @@ typedef IndexBulkDeleteResult *(*amvacuumcleanup_function) (IndexVacuumInfo *inf
 
 /* can indexscan return IndexTuples? */
 typedef bool (*amcanreturn_function) (Relation indexRelation, int attno);
+
+/*
+ * Compare a stored leaf tuple's key against the current index-form of a
+ * heap tuple.  Returns true iff they are equal (leaf is still valid for
+ * this index).  Used by the reader recheck path when xs_hot_indexed_recheck
+ * is set -- the chain walk crossed a HOT-indexed hop and the leaf entry
+ * the scan came in through may disagree with the live tuple's current
+ * index form.
+ *
+ * AMs that do not implement this callback leave the pointer NULL; callers
+ * must fall back to a permissive drop (match classic behaviour).
+ */
+typedef bool (*amrecheck_leaf_key_function) (Relation indexRelation,
+											 IndexTuple leaftup,
+											 TupleTableSlot *heap_slot);
 
 /* estimate cost of an indexscan */
 typedef void (*amcostestimate_function) (PlannerInfo *root,
@@ -313,6 +337,7 @@ typedef struct IndexAmRoutine
 	amendscan_function amendscan;
 	ammarkpos_function ammarkpos;	/* can be NULL */
 	amrestrpos_function amrestrpos; /* can be NULL */
+	amrecheck_leaf_key_function amrecheck_leaf_key; /* can be NULL */
 
 	/* interface functions to support parallel index scans */
 	amestimateparallelscan_function amestimateparallelscan; /* can be NULL */

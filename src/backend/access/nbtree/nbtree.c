@@ -166,6 +166,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amendscan = btendscan,
 		.ammarkpos = btmarkpos,
 		.amrestrpos = btrestrpos,
+		.amrecheck_leaf_key = _bt_heap_keys_equal_leaf,
 		.amestimateparallelscan = btestimateparallelscan,
 		.aminitparallelscan = btinitparallelscan,
 		.amparallelrescan = btparallelrescan,
