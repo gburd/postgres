@@ -1984,6 +1984,14 @@ heap_prune_record_bridge(PruneState *prstate,
 	 * ndeleted reporting.
 	 */
 	prstate->ndeleted++;
+
+	/*
+	 * A bridge is an invisible LP_NORMAL carrier.  Same reasoning as in
+	 * heap_prune_record_unchanged_lp_tombstone applies: the page must
+	 * not be declared all-visible while it holds one.
+	 */
+	prstate->set_all_visible = false;
+	prstate->set_all_frozen = false;
 }
 
 /*
@@ -2241,6 +2249,18 @@ heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnu
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
 	prstate->hastup = true;
+
+	/*
+	 * A page holding a HOT-indexed tombstone (adjacent or bridge variant)
+	 * can never be all-visible: the tombstone's HEAP_XMIN_INVALID makes it
+	 * invisible to every snapshot, which is exactly what all-visible
+	 * claims is never the case.  Declaring the page all-visible would let
+	 * the heap scan fast path in page_collect_tuples return the tombstone
+	 * bytes as a live tuple, surfacing the payload (modified-attrs bitmap
+	 * or forward pointer) as user-column data and producing phantom rows.
+	 */
+	prstate->set_all_visible = false;
+	prstate->set_all_frozen = false;
 }
 
 /*
