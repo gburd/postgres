@@ -2091,7 +2091,39 @@ lazy_scan_prune(LVRelState *vacrel,
 
 	/*
 	 * Now save details of the LP_DEAD items from the page in vacrel
+	 *
+	 * For pages that carry HOT-indexed bridge tombstones (either just
+	 * created by the prune above or left over from earlier opportunistic
+	 * prunes), add each bridge's offset to the dead-item list alongside
+	 * genuine LP_DEAD items.  ambulkdelete sees them as ordinary
+	 * dead-TID entries and removes the corresponding stale btree
+	 * entries.  lazy_vacuum_heap_page (the second pass) then converts
+	 * the bridge's LP_NORMAL to LP_UNUSED and reclaims the tuple body.
+	 * This is what lets a HOT-indexed chain rejoin classic-HOT semantics
+	 * once its stale index entries have been swept.
 	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (!HeapTupleHeaderIsHotIndexedBridge(htup))
+				continue;
+
+			Assert(presult.lpdead_items < MaxHeapTuplesPerPage);
+			presult.deadoffsets[presult.lpdead_items++] = off;
+		}
+	}
+
 	if (presult.lpdead_items > 0)
 	{
 		vacrel->lpdead_item_pages++;
@@ -2826,12 +2858,62 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		itemid = PageGetItemId(page, toff);
 
-		Assert(ItemIdIsDead(itemid) && !ItemIdHasStorage(itemid));
+		/*
+		 * Two cases: a classic LP_DEAD line pointer (no tuple body) or a
+		 * HOT-indexed bridge tombstone (LP_NORMAL with a 32-byte
+		 * natts=0 body forwarding to a live chain member).  Both are
+		 * reclaimed to LP_UNUSED here now that ambulkdelete has swept
+		 * any btree entries pointing at them.
+		 */
+		if (ItemIdIsDead(itemid))
+		{
+			Assert(!ItemIdHasStorage(itemid));
+		}
+		else
+		{
+			HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
+
+			Assert(ItemIdIsNormal(itemid));
+			htup = (HeapTupleHeader) PageGetItem(page, itemid);
+			Assert(HeapTupleHeaderIsHotIndexedBridge(htup));
+		}
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
 	}
 
 	Assert(nunused > 0);
+
+	/*
+	 * If we just reclaimed the last bridge on this page, clear the page-
+	 * level advisory bit so opportunistic prunes don't waste time scanning
+	 * it.  We only need to walk the page when the flag is currently set;
+	 * otherwise there is nothing to undo.
+	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+		bool		any_bridge_left = false;
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (HeapTupleHeaderIsHotIndexedBridge(htup))
+			{
+				any_bridge_left = true;
+				break;
+			}
+		}
+
+		if (!any_bridge_left)
+			PageClearHasHotIndexedBridges(page);
+	}
 
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
