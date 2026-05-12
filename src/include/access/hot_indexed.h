@@ -84,7 +84,8 @@ HotIndexedTombstoneSize(int natts)
 
 /*
  * HeapTupleHeaderIsHotIndexedTombstone
- *		True iff a HeapTupleHeader describes a tombstone item.
+ *		True iff a HeapTupleHeader describes a tombstone item (of either
+ *		variant: adjacent or bridge).
  *
  * Callers must first establish that the item is LP_NORMAL (so the bytes
  * at PageGetItem() can be interpreted as a HeapTupleHeader).
@@ -94,6 +95,44 @@ HeapTupleHeaderIsHotIndexedTombstone(const HeapTupleHeaderData *tup)
 {
 	return (tup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
 		HeapTupleHeaderGetNatts(tup) == 0;
+}
+
+/*
+ * HeapTupleHeaderIsHotIndexedBridge
+ *		True iff a HeapTupleHeader describes a bridge tombstone.
+ *
+ * Bridges are written by pruneheap in place of a dead mid-chain
+ * HOT-indexed heap-only tuple: the LP stays LP_NORMAL with
+ * HeapTupleHeaderIsHotIndexedTombstone, but t_ctid carries a valid
+ * forward link (same-page blockno, real offset) so chain walkers can
+ * continue through the hop.  Adjacent-to-live tombstones, by contrast,
+ * set t_ctid.blockno = InvalidBlockNumber; that is the discriminator.
+ *
+ * Callers that need to tell the two variants apart (the chain walker,
+ * vacuum's bridge reclaim, pageinspect) use this predicate.  The plain
+ * "is tombstone" predicate above still matches both variants, which is
+ * what prune_handle_tombstones() and the adjacent-tombstone post-
+ * processing want.
+ */
+static inline bool
+HeapTupleHeaderIsHotIndexedBridge(const HeapTupleHeaderData *tup)
+{
+	return HeapTupleHeaderIsHotIndexedTombstone(tup) &&
+		BlockNumberIsValid(ItemPointerGetBlockNumberNoCheck(&tup->t_ctid));
+}
+
+/*
+ * HotIndexedBridgeGetForward
+ *		Return the on-page offset that a bridge tombstone forwards to.
+ *
+ * Caller must have verified HeapTupleHeaderIsHotIndexedBridge(tup).
+ * The block number is implicit (same page as the bridge itself); callers
+ * only need the offset to continue the chain walk.
+ */
+static inline OffsetNumber
+HotIndexedBridgeGetForward(const HeapTupleHeaderData *tup)
+{
+	return ItemPointerGetOffsetNumberNoCheck(&tup->t_ctid);
 }
 
 /*
@@ -154,6 +193,46 @@ extern Size heap_build_hot_indexed_tombstone(char *buf,
 
 extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload * p,
 													 AttrNumber attnum);
+
+/*
+ * heap_build_hot_indexed_bridge
+ *		Populate *buf with a bridge tombstone that forwards chain walkers
+ *		from a dead mid-chain HOT-indexed LP to the next on-page chain
+ *		member.
+ *
+ * Arguments:
+ *	 buf			- output buffer; caller must guarantee at least
+ *					  HotIndexedBridgeSize() bytes of addressable,
+ *					  writable memory.
+ *	 blkno			- block number of the page the bridge will occupy.
+ *					  Used to build a same-page forward ItemPointer that
+ *					  chain walkers can consume without an extra lookup.
+ *	 forward_offnum - offset of the next chain member on the same page.
+ *
+ * Returns the total number of bytes written (HotIndexedBridgeSize()).
+ *
+ * Bridges carry no modified-attrs bitmap; readers arriving via a stale
+ * btree entry at the bridge's LP follow the forward link to the live
+ * tuple and recheck the key against the live tuple's current index
+ * form.  The per-hop bitmap that adjacent tombstones carry is not needed
+ * here because the bridge did not emit that update; it is merely a
+ * forwarding vestige of one.
+ */
+extern Size heap_build_hot_indexed_bridge(char *buf,
+										  BlockNumber blkno,
+										  OffsetNumber forward_offnum);
+
+/*
+ * HotIndexedBridgeSize
+ *		On-page size of a bridge tombstone.  No payload beyond the
+ *		header, so a bridge is exactly MAXALIGN(SizeofHeapTupleHeader)
+ *		bytes regardless of the owning relation's attribute count.
+ */
+static inline Size
+HotIndexedBridgeSize(void)
+{
+	return MAXALIGN(SizeofHeapTupleHeader);
+}
 
 /*
  * Compile-time layout sanity:

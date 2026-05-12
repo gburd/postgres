@@ -138,3 +138,58 @@ heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload * p,
 
 	return (p->t_bitmap[bit >> 3] & (1u << (bit & 7))) != 0;
 }
+
+/*
+ * heap_build_hot_indexed_bridge
+ *		Populate *buf with a bridge tombstone that carries no payload and
+ *		just forwards a chain walker to forward_offnum on the same page.
+ *
+ * See access/hot_indexed.h for the design rationale.  In brief, a bridge
+ * replaces a dead mid-chain HOT-indexed heap-only tuple whose LP is not
+ * yet safe to reclaim (stale btree entries may still point at it).  The
+ * resulting item is LP_NORMAL, natts==0, HEAP_INDEXED_UPDATED, with t_ctid
+ * = (blkno, forward_offnum).  HeapTupleHeaderIsHotIndexedBridge matches
+ * it.  Size is fixed at MAXALIGN(SizeofHeapTupleHeader).
+ *
+ * This routine does not palloc and is safe to call inside a critical
+ * section provided the caller has preallocated the buffer.
+ */
+Size
+heap_build_hot_indexed_bridge(char *buf,
+							  BlockNumber blkno,
+							  OffsetNumber forward_offnum)
+{
+	HeapTupleHeader tup = (HeapTupleHeader) buf;
+	Size		hoff = MAXALIGN(SizeofHeapTupleHeader);
+	Size		total = HotIndexedBridgeSize();
+
+	Assert(buf != NULL);
+	Assert(BlockNumberIsValid(blkno));
+	Assert(OffsetNumberIsValid(forward_offnum));
+
+	/*
+	 * Zero the whole item so alignment padding is deterministic.  Important
+	 * for FPI stability and for amcheck.
+	 */
+	memset(buf, 0, total);
+
+	/*
+	 * Bridge header: invisible to every visibility routine, flagged as a
+	 * HOT-indexed item, natts = 0 so HeapTupleHeaderIsHotIndexedTombstone
+	 * returns true, forward link in t_ctid with a valid blockno so
+	 * HeapTupleHeaderIsHotIndexedBridge returns true.  HEAP_HOT_UPDATED is
+	 * set so chain walkers that iterate via HeapTupleHeaderIsHotUpdated
+	 * recognise the bridge as a continue-the-chain hop and follow t_ctid.
+	 */
+	ItemPointerSet(&tup->t_ctid, blkno, forward_offnum);
+	tup->t_infomask = HEAP_XMIN_INVALID | HEAP_XMAX_INVALID;
+	tup->t_infomask2 = HEAP_INDEXED_UPDATED | HEAP_HOT_UPDATED;
+	HeapTupleHeaderSetNatts(tup, 0);
+	tup->t_hoff = (uint8) hoff;
+
+	HeapTupleHeaderSetXmin(tup, InvalidTransactionId);
+	HeapTupleHeaderSetXmax(tup, InvalidTransactionId);
+	HeapTupleHeaderSetCmin(tup, InvalidCommandId);
+
+	return total;
+}
