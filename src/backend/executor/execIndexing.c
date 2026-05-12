@@ -113,6 +113,7 @@
 #include "catalog/index.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "pgstat.h"
 #include "storage/lmgr.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -370,7 +371,30 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		if ((flags & EIIT_IS_UPDATE) &&
 			indexInfo->ii_IndexUnchanged &&
 			!indexInfo->ii_Summarizing)
+		{
+			/*
+			 * This index was skipped because its key attributes did not
+			 * change.  When the overall update is a HOT-indexed update
+			 * (some other non-summarizing index did change), record the
+			 * skip on this index's pgstat entry.  A classic-HOT update
+			 * (no indexed attribute changed) does not reach this path --
+			 * ExecInsertIndexTuples is only invoked when at least one
+			 * index needs a fresh entry.
+			 */
+			if (flags & EIIT_IS_HOT_INDEXED)
+				pgstat_count_hot_idx_upd_skipped(indexRelation);
 			continue;
+		}
+
+		/*
+		 * Non-skipped index under a HOT-indexed update: this index is
+		 * receiving a fresh entry because one of its key attributes
+		 * changed.  Summarizing indexes always insert regardless of the
+		 * HOT-indexed decision (same as classic HOT), so they are not
+		 * counted here.
+		 */
+		if ((flags & EIIT_IS_HOT_INDEXED) && !indexInfo->ii_Summarizing)
+			pgstat_count_hot_idx_upd_matched(indexRelation);
 
 		/* Check for partial index */
 		if (indexInfo->ii_Predicate != NIL)

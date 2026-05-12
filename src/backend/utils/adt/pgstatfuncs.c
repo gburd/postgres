@@ -96,6 +96,12 @@ PG_STAT_GET_RELENTRY_INT64(tuples_hot_updated)
 /* pg_stat_get_tuples_hot_idx_updated */
 PG_STAT_GET_RELENTRY_INT64(tuples_hot_idx_updated)
 
+/* pg_stat_get_tuples_hot_idx_updated_skipped */
+PG_STAT_GET_RELENTRY_INT64(tuples_hot_idx_upd_skipped)
+
+/* pg_stat_get_tuples_hot_idx_updated_matched */
+PG_STAT_GET_RELENTRY_INT64(tuples_hot_idx_upd_matched)
+
 /* pg_stat_get_tuples_newpage_updated */
 PG_STAT_GET_RELENTRY_INT64(tuples_newpage_updated)
 

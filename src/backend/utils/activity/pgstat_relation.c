@@ -868,6 +868,8 @@ pgstat_relation_flush_cb(PgStat_EntryRef *entry_ref, bool nowait)
 	tabentry->tuples_hot_updated += lstats->counts.tuples_hot_updated;
 	tabentry->tuples_hot_idx_updated += lstats->counts.tuples_hot_idx_updated;
 	tabentry->tuples_newpage_updated += lstats->counts.tuples_newpage_updated;
+	tabentry->tuples_hot_idx_upd_skipped += lstats->counts.tuples_hot_idx_upd_skipped;
+	tabentry->tuples_hot_idx_upd_matched += lstats->counts.tuples_hot_idx_upd_matched;
 
 	/*
 	 * If table was truncated/dropped, first reset the live/dead counters.

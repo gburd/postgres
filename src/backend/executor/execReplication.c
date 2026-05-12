@@ -967,6 +967,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
+			if (!upd_info.update_all_indexes)
+				flags |= EIIT_IS_HOT_INDEXED;
 
 			ExecSetIndexUnchanged(resultRelInfo,
 								  upd_info.update_all_indexes,
