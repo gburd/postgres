@@ -118,6 +118,7 @@ GetSubscription(Oid subid, bool missing_ok, bool aclcheck)
 	sub->retaindeadtuples = subform->subretaindeadtuples;
 	sub->maxretention = subform->submaxretention;
 	sub->retentionactive = subform->subretentionactive;
+	sub->hotindexedmode = subform->subhotindexedmode;
 
 	/* Get conninfo */
 	if (OidIsValid(subform->subserver))
