@@ -4081,6 +4081,25 @@ l2:
 	if (newbuf == buffer)
 	{
 		/*
+		 * RelationGetBufferForTuple may have returned this same buffer
+		 * after an opportunistic prune made room for a single tuple, but
+		 * the HOT-indexed path needs room for the tuple AND a tombstone
+		 * (two LPs).  If the two-LP fit no longer holds, demote to the
+		 * non-HOT path: otherwise we'd PANIC inside the critical section
+		 * when the tombstone PageAddItem trips MaxHeapTuplesPerPage.
+		 */
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
+		{
+			Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+			Size		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+			OffsetNumber nlp = PageGetMaxOffsetNumber(page);
+
+			if (newtupsize + tombsize > multi_pagefree ||
+				nlp + 2 > MaxHeapTuplesPerPage)
+				hot_mode = HEAP_HOT_MODE_NO;
+		}
+
+		/*
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  Check if HeapUpdateHotAllowable() has
 		 * sanctioned it (HEAP_HOT_MODE_CLASSIC or HEAP_HOT_MODE_INDEXED).
