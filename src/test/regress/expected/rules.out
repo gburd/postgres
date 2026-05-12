@@ -1810,6 +1810,8 @@ pg_stat_all_indexes| SELECT c.oid AS relid,
     pg_stat_get_lastscan(i.oid) AS last_idx_scan,
     pg_stat_get_tuples_returned(i.oid) AS idx_tup_read,
     pg_stat_get_tuples_fetched(i.oid) AS idx_tup_fetch,
+    pg_stat_get_tuples_hot_idx_updated_skipped(i.oid) AS n_tup_hot_idx_upd_skipped,
+    pg_stat_get_tuples_hot_idx_updated_matched(i.oid) AS n_tup_hot_idx_upd_matched,
     pg_stat_get_stat_reset_time(i.oid) AS stats_reset
    FROM (((pg_class c
      JOIN pg_index x ON ((c.oid = x.indrelid)))
@@ -2325,6 +2327,8 @@ pg_stat_sys_indexes| SELECT relid,
     last_idx_scan,
     idx_tup_read,
     idx_tup_fetch,
+    n_tup_hot_idx_upd_skipped,
+    n_tup_hot_idx_upd_matched,
     stats_reset
    FROM pg_stat_all_indexes
   WHERE ((schemaname = ANY (ARRAY['pg_catalog'::name, 'information_schema'::name])) OR (schemaname ~ '^pg_toast'::text));
@@ -2381,6 +2385,8 @@ pg_stat_user_indexes| SELECT relid,
     last_idx_scan,
     idx_tup_read,
     idx_tup_fetch,
+    n_tup_hot_idx_upd_skipped,
+    n_tup_hot_idx_upd_matched,
     stats_reset
    FROM pg_stat_all_indexes
   WHERE ((schemaname <> ALL (ARRAY['pg_catalog'::name, 'information_schema'::name])) AND (schemaname !~ '^pg_toast'::text));

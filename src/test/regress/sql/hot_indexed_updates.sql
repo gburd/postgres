@@ -377,6 +377,61 @@ RESET enable_seqscan;
 DROP TABLE siu_gin;
 
 -- ---------------------------------------------------------------------------
+-- 10. Per-index HOT-indexed counters: skipped vs matched
+--
+-- A table with two independent secondary indexes.  An UPDATE touches a
+-- column covered by only one of them; the HOT-indexed path must insert
+-- into that one index and skip the other.  pg_stat_all_indexes reports
+-- matched>0 on the updated index and skipped>0 on the untouched index.
+-- ---------------------------------------------------------------------------
+CREATE TABLE hotidx_perindex (
+    id int PRIMARY KEY,
+    a int,
+    b int
+) WITH (fillfactor = 50);
+CREATE INDEX hotidx_perindex_a ON hotidx_perindex(a);
+CREATE INDEX hotidx_perindex_b ON hotidx_perindex(b);
+
+INSERT INTO hotidx_perindex VALUES (1, 100, 200);
+
+-- Modify only column a.  HOT-indexed inserts into hotidx_perindex_a and
+-- skips hotidx_perindex_b (primary key indrelid is the table itself and
+-- also unchanged, so it counts as skipped too).
+UPDATE hotidx_perindex SET a = 101 WHERE id = 1;
+
+-- Force flush of pending stats to the shared entry.
+SELECT pg_stat_force_next_flush();
+
+SELECT indexrelname,
+       n_tup_hot_idx_upd_matched AS matched,
+       n_tup_hot_idx_upd_skipped AS skipped
+  FROM pg_stat_all_indexes
+ WHERE relname = 'hotidx_perindex'
+ ORDER BY indexrelname;
+
+-- A second UPDATE touching only b inverts the assignment.
+UPDATE hotidx_perindex SET b = 201 WHERE id = 1;
+SELECT pg_stat_force_next_flush();
+
+SELECT indexrelname,
+       n_tup_hot_idx_upd_matched AS matched,
+       n_tup_hot_idx_upd_skipped AS skipped
+  FROM pg_stat_all_indexes
+ WHERE relname = 'hotidx_perindex'
+ ORDER BY indexrelname;
+
+-- Invariant: matched + skipped == owning table's n_tup_hot_idx_upd.
+SELECT indexrelname,
+       n_tup_hot_idx_upd_matched + n_tup_hot_idx_upd_skipped AS total,
+       (SELECT n_tup_hot_idx_upd FROM pg_stat_all_tables
+         WHERE relname = 'hotidx_perindex') AS table_hot_idx_upd
+  FROM pg_stat_all_indexes
+ WHERE relname = 'hotidx_perindex'
+ ORDER BY indexrelname;
+
+DROP TABLE hotidx_perindex;
+
+-- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------
 DROP FUNCTION get_siu_count(text);

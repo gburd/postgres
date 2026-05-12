@@ -2713,7 +2713,10 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 							  updateCxt->upd_info.modified_attrs);
 
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
-											   EIIT_IS_UPDATE, slot, NIL,
+											   EIIT_IS_UPDATE |
+											   (updateCxt->upd_info.update_all_indexes ?
+												0 : EIIT_IS_HOT_INDEXED),
+											   slot, NIL,
 											   NULL);
 	}
 

@@ -2680,7 +2680,9 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							  upd_info.modified_attrs);
 		ExecInsertIndexTuples(chgcxt->cc_rri,
 							  chgcxt->cc_estate,
-							  EIIT_IS_UPDATE,
+							  EIIT_IS_UPDATE |
+							  (upd_info.update_all_indexes ?
+							   0 : EIIT_IS_HOT_INDEXED),
 							  spilled_tuple,
 							  NIL, NULL);
 	}
