@@ -648,8 +648,20 @@ catalog enablement but are tracked as follow-up):
      "duplicate key value" in specific orderings; the common root is
      SeqScan-reachable pg_class tuples whose chain is still live but
      whose current version is at a different LP than the stale scan
-     returned.  Coverage is currently 243/247 on the main regress
+     returned.  Coverage is currently 245/247 on the main regress
      suite; isolation and subscription suites (40/40) pass cleanly.
+     Two failures remain: foreign_key (stale pg_trigger entries after
+     ALTER CONSTRAINT NOT ENFORCED) and alter_table's filenode_mapping
+     sweep.  Root cause in both cases is a SIU-written heap-only tuple
+     whose line pointer got pruned to LP_UNUSED while btree entries
+     still pointed at it; the slot then got reused by a different
+     row.  pruneheap's path for reclaiming dead chain-mid heap-only
+     tuples with HEAP_INDEXED_UPDATED needs to keep the LP as
+     LP_DEAD (not LP_UNUSED) until vacuum's index-cleanup pass has
+     dropped the stale btree entries.  A conservative fix is in
+     place for the chain-END case in heap_prune_satisfies_vacuum;
+     the chain-MID case requires further pruneheap.c work because
+     the classic HOT chain-walking invariant needs the LP walkable.
 
    - vac_update_datfrozenxid still uses a heap seqscan with
      indexOK=false.  No reported corruption from this path today,
