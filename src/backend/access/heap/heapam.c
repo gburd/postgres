@@ -45,6 +45,7 @@
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
+#include "catalog/pg_subscription.h"
 #include "commands/vacuum.h"
 #include "executor/instrument_node.h"
 #include "executor/tuptable.h"
@@ -4606,33 +4607,60 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * Logical replication apply path: the subscriber's index set may differ
 	 * from the publisher's, so a HEAP_HOT_MODE_INDEXED choice on the
 	 * subscriber can produce a chain that disagrees with the publisher's
-	 * plain-row state.  We sidestep the mismatch by forcing non-HOT on the
-	 * apply path when the subscriber has any indexed attribute beyond the
-	 * primary key -- those are the extra indexes whose presence lowers the
-	 * subscriber's modified-attr share and lets HOT-indexed fire where it did
-	 * not on the publisher.
+	 * plain-row state.  Behaviour on this path is controlled by the
+	 * per-subscription hot_indexed_on_apply option (cached in the apply
+	 * worker and reached via GetHotIndexedApplyMode()):
 	 *
-	 * When the subscriber's full indexed-attr set equals its primary-key attr
-	 * set (i.e., the relation carries no secondary or summarizing indexes),
-	 * publisher and subscriber have structurally equivalent HOT decisions and
-	 * HOT-indexed is safe on the apply path as well.
+	 *   OFF          force non-HOT whenever the subscriber has any indexed
+	 *                attribute beyond the primary key (conservative default
+	 *                of older tepid builds);
+	 *   SUBSET_ONLY  allow HOT-indexed when the subscriber's indexed-attr
+	 *                set is a subset of its primary-key attrs, which covers
+	 *                the common replication-ready shape as well as the
+	 *                no-secondary-index case;
+	 *   ALWAYS       no apply-path gating -- the operator takes
+	 *                responsibility for keeping indexed-attr sets
+	 *                compatible between publisher and subscriber.
 	 */
 	if (IsLogicalWorker())
 	{
-		Bitmapset  *all_idx_attrs;
-		Bitmapset  *pk_attrs;
-		bool		extra_indexed;
+		char		mode = GetHotIndexedApplyMode();
 
-		all_idx_attrs = RelationGetIndexAttrBitmap(relation,
-												   INDEX_ATTR_BITMAP_INDEXED);
-		pk_attrs = RelationGetIndexAttrBitmap(relation,
-											  INDEX_ATTR_BITMAP_PRIMARY_KEY);
-		extra_indexed = !bms_equal(all_idx_attrs, pk_attrs);
-		bms_free(all_idx_attrs);
-		bms_free(pk_attrs);
+		if (mode == LOGICALREP_HOT_INDEXED_OFF)
+		{
+			Bitmapset  *all_idx_attrs;
+			Bitmapset  *pk_attrs;
+			bool		extra_indexed;
 
-		if (extra_indexed)
-			return HEAP_HOT_MODE_NO;
+			all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+													   INDEX_ATTR_BITMAP_INDEXED);
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+			extra_indexed = !bms_equal(all_idx_attrs, pk_attrs);
+			bms_free(all_idx_attrs);
+			bms_free(pk_attrs);
+
+			if (extra_indexed)
+				return HEAP_HOT_MODE_NO;
+		}
+		else if (mode == LOGICALREP_HOT_INDEXED_SUBSET_ONLY)
+		{
+			Bitmapset  *all_idx_attrs;
+			Bitmapset  *pk_attrs;
+			bool		is_subset;
+
+			all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+													   INDEX_ATTR_BITMAP_INDEXED);
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+			is_subset = bms_is_subset(all_idx_attrs, pk_attrs);
+			bms_free(all_idx_attrs);
+			bms_free(pk_attrs);
+
+			if (!is_subset)
+				return HEAP_HOT_MODE_NO;
+		}
+		/* LOGICALREP_HOT_INDEXED_ALWAYS: no apply-path gating. */
 	}
 
 	if (RelationHasExclusionConstraint(relation))
