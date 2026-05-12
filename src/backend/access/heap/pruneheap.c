@@ -1332,7 +1332,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									prstate.redirected, prstate.nredirected,
 									prstate.nowdead, prstate.ndead,
 									prstate.nowunused, prstate.nunused,
-									prstate.bridges, prstate.nbridges);
+									prstate.bridges, prstate.nbridges,
+									NULL, 0);
 		}
 
 		if (do_freeze)
@@ -1376,7 +1377,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									  prstate.redirected, prstate.nredirected,
 									  prstate.nowdead, prstate.ndead,
 									  prstate.nowunused, prstate.nunused,
-									  prstate.bridges, prstate.nbridges);
+									  prstate.bridges, prstate.nbridges,
+									  NULL, 0);
 		}
 	}
 
@@ -2379,7 +2381,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 						OffsetNumber *redirected, int nredirected,
 						OffsetNumber *nowdead, int ndead,
 						OffsetNumber *nowunused, int nunused,
-						OffsetNumber *bridges, int nbridges)
+						OffsetNumber *bridges, int nbridges,
+						OffsetNumber *promotions, int npromotions)
 {
 	Page		page = BufferGetPage(buffer);
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
@@ -2387,10 +2390,12 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
 
 	/* Shouldn't be called unless there's something to do */
-	Assert(nredirected > 0 || ndead > 0 || nunused > 0 || nbridges > 0);
+	Assert(nredirected > 0 || ndead > 0 || nunused > 0 || nbridges > 0 ||
+		   npromotions > 0);
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
-	Assert(!lp_truncate_only || (nredirected == 0 && ndead == 0 && nbridges == 0));
+	Assert(!lp_truncate_only ||
+		   (nredirected == 0 && ndead == 0 && nbridges == 0 && npromotions == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -2550,6 +2555,32 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 
 	if (nbridges > 0)
 		PageSetHasHotIndexedBridges(page);
+
+	/*
+	 * Promote surviving HOT-indexed chain members back to classic-HOT.
+	 * The operation is a header-only bit clear: vacuumlazy has determined
+	 * that the last bridge tombstone on this page is gone and that
+	 * ambulkdelete has swept the corresponding stale btree entries, so
+	 * HEAP_INDEXED_UPDATED no longer carries information any reader needs.
+	 * Clearing the bit under exclusive buffer lock restores classic-HOT
+	 * read efficiency (no more xs_hot_indexed_recheck for chain walks
+	 * landing here).  Replay is idempotent: it simply overwrites the bit
+	 * with zero, so landing on an already-promoted tuple during redo is a
+	 * no-op.
+	 */
+	offnum = promotions;
+	for (int i = 0; i < npromotions; i++)
+	{
+		OffsetNumber off = *offnum++;
+		ItemId		lp = PageGetItemId(page, off);
+		HeapTupleHeader tuple;
+
+		Assert(ItemIdIsNormal(lp));
+		tuple = (HeapTupleHeader) PageGetItem(page, lp);
+		Assert(HeapTupleHeaderGetNatts(tuple) > 0);
+		Assert(HeapTupleHeaderIsHeapOnly(tuple));
+		tuple->t_infomask2 &= ~HEAP_INDEXED_UPDATED;
+	}
 
 	if (lp_truncate_only)
 		PageTruncateLinePointerArray(page);
@@ -2922,7 +2953,8 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 						  OffsetNumber *redirected, int nredirected,
 						  OffsetNumber *dead, int ndead,
 						  OffsetNumber *unused, int nunused,
-						  OffsetNumber *bridges, int nbridges)
+						  OffsetNumber *bridges, int nbridges,
+						  OffsetNumber *promotions, int npromotions)
 {
 	xl_heap_prune xlrec;
 	XLogRecPtr	recptr;
@@ -2938,9 +2970,10 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xlhp_prune_items dead_items;
 	xlhp_prune_items unused_items;
 	xlhp_prune_items bridge_items;
+	xlhp_prune_items promotion_items;
 	OffsetNumber frz_offsets[MaxHeapTuplesPerPage];
 	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
-		nbridges > 0;
+		nbridges > 0 || npromotions > 0;
 	bool		do_set_vm = vmflags & VISIBILITYMAP_VALID_BITS;
 	bool		heap_fpi_allowed = true;
 
@@ -3037,6 +3070,16 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 							offsetof(xlhp_prune_items, data));
 		XLogRegisterBufData(0, bridges,
 							sizeof(OffsetNumber[2]) * nbridges);
+	}
+	if (npromotions > 0)
+	{
+		xlrec.flags |= XLHP_HAS_PROMOTIONS;
+
+		promotion_items.ntargets = npromotions;
+		XLogRegisterBufData(0, &promotion_items,
+							offsetof(xlhp_prune_items, data));
+		XLogRegisterBufData(0, promotions,
+							sizeof(OffsetNumber) * npromotions);
 	}
 	if (nfrozen > 0)
 		XLogRegisterBufData(0, frz_offsets,

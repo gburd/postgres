@@ -517,6 +517,7 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused,
-												   int *nbridges, OffsetNumber **bridges);
+												   int *nbridges, OffsetNumber **bridges,
+												   int *npromotions, OffsetNumber **promotions);
 
 #endif							/* HEAPAM_XLOG_H */
