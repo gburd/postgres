@@ -108,7 +108,8 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   OffsetNumber **frz_offsets,
 									   int *nredirected, OffsetNumber **redirected,
 									   int *ndead, OffsetNumber **nowdead,
-									   int *nunused, OffsetNumber **nowunused)
+									   int *nunused, OffsetNumber **nowunused,
+									   int *nbridges, OffsetNumber **bridges)
 {
 	if (flags & XLHP_HAS_FREEZE_PLANS)
 	{
@@ -176,6 +177,23 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 	{
 		*nunused = 0;
 		*nowunused = NULL;
+	}
+
+	if (flags & XLHP_HAS_HOT_IDX_BRIDGES)
+	{
+		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
+
+		*nbridges = subrecord->ntargets;
+		Assert(*nbridges > 0);
+		*bridges = &subrecord->data[0];
+
+		cursor += offsetof(xlhp_prune_items, data);
+		cursor += sizeof(OffsetNumber[2]) * *nbridges;
+	}
+	else
+	{
+		*nbridges = 0;
+		*bridges = NULL;
 	}
 
 	*frz_offsets = (OffsetNumber *) cursor;
@@ -302,9 +320,11 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			OffsetNumber *redirected;
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
+			OffsetNumber *bridges;
 			int			nredirected;
 			int			nunused;
 			int			ndead;
+			int			nbridges;
 			int			nplans;
 			xlhp_freeze_plan *plans;
 			OffsetNumber *frz_offsets;
@@ -315,10 +335,11 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 												   &nplans, &plans, &frz_offsets,
 												   &nredirected, &redirected,
 												   &ndead, &nowdead,
-												   &nunused, &nowunused);
+												   &nunused, &nowunused,
+												   &nbridges, &bridges);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u",
-							 nplans, nredirected, ndead, nunused);
+			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u",
+							 nplans, nredirected, ndead, nunused, nbridges);
 
 			if (nplans > 0)
 			{
@@ -346,6 +367,13 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfoString(buf, ", unused:");
 				array_desc(buf, nowunused, sizeof(OffsetNumber), nunused,
 						   &offset_elem_desc, NULL);
+			}
+
+			if (nbridges > 0)
+			{
+				appendStringInfoString(buf, ", bridges:");
+				array_desc(buf, bridges, sizeof(OffsetNumber) * 2,
+						   nbridges, &redirect_elem_desc, NULL);
 			}
 		}
 	}

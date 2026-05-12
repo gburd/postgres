@@ -68,11 +68,18 @@ typedef struct
 	int			nredirected;	/* numbers of entries in arrays below */
 	int			ndead;
 	int			nunused;
+	int			nbridges;		/* count of HOT-indexed bridge conversions */
 	int			nfrozen;
 	/* arrays that accumulate indexes of items to be changed */
 	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
 	OffsetNumber nowdead[MaxHeapTuplesPerPage];
 	OffsetNumber nowunused[MaxHeapTuplesPerPage];
+	/*
+	 * Bridge conversions: stored as (offnum, forward) pairs for the same
+	 * reason redirected[] does -- a single uint16 array keeps the WAL
+	 * layout minimal.
+	 */
+	OffsetNumber bridges[MaxHeapTuplesPerPage * 2];
 	HeapTupleFreeze frozen[MaxHeapTuplesPerPage];
 
 	/*
@@ -249,6 +256,10 @@ static void heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumbe
 static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
 static void prune_handle_tombstones(PruneState *prstate);
+static bool heap_prune_item_preserves_siu(Page page, OffsetNumber offnum);
+static void heap_prune_record_bridge(PruneState *prstate,
+									 OffsetNumber offnum,
+									 OffsetNumber forward);
 
 static void page_verify_redirects(Page page);
 
@@ -458,6 +469,7 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->new_prune_xid = InvalidTransactionId;
 	prstate->latest_xid_removed = InvalidTransactionId;
 	prstate->nredirected = prstate->ndead = prstate->nunused = 0;
+	prstate->nbridges = 0;
 	prstate->nfrozen = 0;
 	prstate->nroot_items = 0;
 	prstate->nheaponly_items = 0;
@@ -1217,7 +1229,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 
 	do_prune = prstate.nredirected > 0 ||
 		prstate.ndead > 0 ||
-		prstate.nunused > 0;
+		prstate.nunused > 0 ||
+		prstate.nbridges > 0;
 
 	/*
 	 * Even if we don't prune anything, if we found a new value for the
@@ -1318,7 +1331,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 			heap_page_prune_execute(prstate.buffer, false,
 									prstate.redirected, prstate.nredirected,
 									prstate.nowdead, prstate.ndead,
-									prstate.nowunused, prstate.nunused);
+									prstate.nowunused, prstate.nunused,
+									prstate.bridges, prstate.nbridges);
 		}
 
 		if (do_freeze)
@@ -1361,7 +1375,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									  prstate.frozen, prstate.nfrozen,
 									  prstate.redirected, prstate.nredirected,
 									  prstate.nowdead, prstate.ndead,
-									  prstate.nowunused, prstate.nunused);
+									  prstate.nowunused, prstate.nunused,
+									  prstate.bridges, prstate.nbridges);
 		}
 	}
 
@@ -1710,24 +1725,49 @@ process_chain:
 	else if (ndeadchain == nchain)
 	{
 		/*
-		 * The entire chain is dead.  Mark the root line pointer LP_DEAD, and
-		 * fully remove the other tuples in the chain.
+		 * The entire chain is dead.  Mark the root line pointer LP_DEAD,
+		 * and for each intermediate heap-only tuple either reclaim to
+		 * LP_UNUSED (classic HOT) or record a bridge conversion
+		 * (HOT-indexed tuple with outstanding stale btree entries).  The
+		 * last chain member has no successor to forward to; convert it
+		 * anyway when SIU-preserved so stale entries pointing at it don't
+		 * land on a reused LP.  Its forward link is the chain root (via
+		 * the existing LP_DEAD at the root's position) because there is
+		 * nothing live beyond it.  Practically, readers following the
+		 * bridge's forward land on an LP_DEAD root and terminate the walk,
+		 * which is the correct outcome for a fully-dead chain.
 		 */
 		heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
 		for (int i = 1; i < nchain; i++)
-			heap_prune_record_unused(prstate, chainitems[i], true);
+		{
+			if (heap_prune_item_preserves_siu(page, chainitems[i]))
+				heap_prune_record_bridge(prstate, chainitems[i], rootoffnum);
+			else
+				heap_prune_record_unused(prstate, chainitems[i], true);
+		}
 	}
 	else
 	{
 		/*
-		 * We found a DEAD tuple in the chain.  Redirect the root line pointer
-		 * to the first non-DEAD tuple, and mark as unused each intermediate
-		 * item that we are able to remove from the chain.
+		 * We found a DEAD tuple in the chain.  Redirect the root line
+		 * pointer to the first non-DEAD tuple, and for each intermediate
+		 * dead tuple either mark LP_UNUSED (classic HOT: no external
+		 * references) or rewrite as a bridge tombstone forwarding to the
+		 * first live chain member (HOT-indexed: stale btree entries may
+		 * still point at this LP).  The classifier
+		 * heap_prune_item_preserves_siu decides per LP.
 		 */
-		heap_prune_record_redirect(prstate, rootoffnum, chainitems[ndeadchain],
+		OffsetNumber	first_live = chainitems[ndeadchain];
+
+		heap_prune_record_redirect(prstate, rootoffnum, first_live,
 								   ItemIdIsNormal(rootlp));
 		for (int i = 1; i < ndeadchain; i++)
-			heap_prune_record_unused(prstate, chainitems[i], true);
+		{
+			if (heap_prune_item_preserves_siu(page, chainitems[i]))
+				heap_prune_record_bridge(prstate, chainitems[i], first_live);
+			else
+				heap_prune_record_unused(prstate, chainitems[i], true);
+		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
 		for (int i = ndeadchain; i < nchain; i++)
@@ -1868,6 +1908,82 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
 	 */
 	if (was_normal)
 		prstate->ndeleted++;
+}
+
+/*
+ * heap_prune_item_preserves_siu
+ *		True iff the LP at `offnum` on `page` is a live-but-soon-dead
+ *		HOT-indexed heap-only tuple whose LP must be preserved as a bridge
+ *		rather than reclaimed to LP_UNUSED.
+ *
+ * A HOT-indexed update plants a new btree entry pointing at the heap-only
+ * tuple's TID.  Classic HOT's invariant that mid-chain LPs have no external
+ * references does not hold for those entries: until ambulkdelete sweeps the
+ * stale btree entry, a reader arriving via it must find a walkable hop at
+ * the LP.  The bridge is that walkable hop.
+ *
+ * Excluded from preservation:
+ *   - items that are not LP_NORMAL (REDIRECT, DEAD, UNUSED);
+ *   - tuples without HEAP_INDEXED_UPDATED (classic HOT chain members
+ *     never had a per-tuple btree entry planted);
+ *   - tombstones (natts == 0): those are handled by
+ *     prune_handle_tombstones or by bridge-reclaim vacuum, not by chain
+ *     pruning;
+ *   - aborted heap-only tuples (HEAP_XMIN_INVALID): their writer rolled
+ *     back, so no btree entry was inserted; reclaiming is safe.
+ */
+static bool
+heap_prune_item_preserves_siu(Page page, OffsetNumber offnum)
+{
+	ItemId		lp = PageGetItemId(page, offnum);
+	HeapTupleHeader htup;
+
+	if (!ItemIdIsNormal(lp))
+		return false;
+
+	htup = (HeapTupleHeader) PageGetItem(page, lp);
+
+	if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+		return false;
+	if (HeapTupleHeaderGetNatts(htup) == 0)
+		return false;
+	if ((htup->t_infomask & HEAP_XMIN_INVALID) != 0)
+		return false;
+
+	return true;
+}
+
+/*
+ * heap_prune_record_bridge
+ *		Record that an LP should be converted to a HOT-indexed bridge
+ *		tombstone forwarding to `forward`.
+ *
+ * The actual in-place rewrite happens in heap_page_prune_execute when the
+ * critical section opens; we only stash the pair here.  Each bridge
+ * conversion is two OffsetNumbers in prstate->bridges[] to keep the WAL
+ * layout parallel with `redirected` (which is also pair-per-entry).
+ */
+static void
+heap_prune_record_bridge(PruneState *prstate,
+						 OffsetNumber offnum,
+						 OffsetNumber forward)
+{
+	Assert(!prstate->processed[offnum]);
+	Assert(OffsetNumberIsValid(offnum));
+	Assert(OffsetNumberIsValid(forward));
+	Assert(prstate->nbridges < MaxHeapTuplesPerPage);
+
+	prstate->processed[offnum] = true;
+	prstate->bridges[prstate->nbridges * 2] = offnum;
+	prstate->bridges[prstate->nbridges * 2 + 1] = forward;
+	prstate->nbridges++;
+
+	/*
+	 * The tuple body is being rewritten to a smaller bridge format, so the
+	 * bytes behind the old LP are being freed.  Count it like a reclaim for
+	 * ndeleted reporting.
+	 */
+	prstate->ndeleted++;
 }
 
 /*
@@ -2242,17 +2358,19 @@ void
 heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 						OffsetNumber *redirected, int nredirected,
 						OffsetNumber *nowdead, int ndead,
-						OffsetNumber *nowunused, int nunused)
+						OffsetNumber *nowunused, int nunused,
+						OffsetNumber *bridges, int nbridges)
 {
 	Page		page = BufferGetPage(buffer);
+	BlockNumber blkno = BufferGetBlockNumber(buffer);
 	OffsetNumber *offnum;
 	HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
 
 	/* Shouldn't be called unless there's something to do */
-	Assert(nredirected > 0 || ndead > 0 || nunused > 0);
+	Assert(nredirected > 0 || ndead > 0 || nunused > 0 || nbridges > 0);
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
-	Assert(!lp_truncate_only || (nredirected == 0 && ndead == 0));
+	Assert(!lp_truncate_only || (nredirected == 0 && ndead == 0 && nbridges == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -2384,6 +2502,34 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 
 		ItemIdSetUnused(lp);
 	}
+
+	/*
+	 * Convert each bridge's LP in place: shrink its tuple body to the
+	 * fixed-size bridge layout and update the LP length.  The LP's offset
+	 * stays where it was (the existing tuple body's start); only the
+	 * length changes, plus the bytes it addresses.  PageRepairFragmentation
+	 * later reclaims the freed tail.
+	 */
+	offnum = bridges;
+	for (int i = 0; i < nbridges; i++)
+	{
+		OffsetNumber fromoff = *offnum++;
+		OffsetNumber forward = *offnum++;
+		ItemId		lp = PageGetItemId(page, fromoff);
+		Size		bridge_size = HotIndexedBridgeSize();
+		OffsetNumber lp_off;
+
+		Assert(ItemIdIsNormal(lp));
+		Assert(ItemIdGetLength(lp) >= bridge_size);
+
+		lp_off = ItemIdGetOffset(lp);
+		(void) heap_build_hot_indexed_bridge(((char *) page) + lp_off,
+											 blkno, forward);
+		ItemIdSetNormal(lp, lp_off, bridge_size);
+	}
+
+	if (nbridges > 0)
+		PageSetHasHotIndexedBridges(page);
 
 	if (lp_truncate_only)
 		PageTruncateLinePointerArray(page);
@@ -2755,7 +2901,8 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 						  HeapTupleFreeze *frozen, int nfrozen,
 						  OffsetNumber *redirected, int nredirected,
 						  OffsetNumber *dead, int ndead,
-						  OffsetNumber *unused, int nunused)
+						  OffsetNumber *unused, int nunused,
+						  OffsetNumber *bridges, int nbridges)
 {
 	xl_heap_prune xlrec;
 	XLogRecPtr	recptr;
@@ -2770,8 +2917,10 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xlhp_prune_items redirect_items;
 	xlhp_prune_items dead_items;
 	xlhp_prune_items unused_items;
+	xlhp_prune_items bridge_items;
 	OffsetNumber frz_offsets[MaxHeapTuplesPerPage];
-	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0;
+	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
+		nbridges > 0;
 	bool		do_set_vm = vmflags & VISIBILITYMAP_VALID_BITS;
 	bool		heap_fpi_allowed = true;
 
@@ -2858,6 +3007,16 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 							offsetof(xlhp_prune_items, data));
 		XLogRegisterBufData(0, unused,
 							sizeof(OffsetNumber) * nunused);
+	}
+	if (nbridges > 0)
+	{
+		xlrec.flags |= XLHP_HAS_HOT_IDX_BRIDGES;
+
+		bridge_items.ntargets = nbridges;
+		XLogRegisterBufData(0, &bridge_items,
+							offsetof(xlhp_prune_items, data));
+		XLogRegisterBufData(0, bridges,
+							sizeof(OffsetNumber[2]) * nbridges);
 	}
 	if (nfrozen > 0)
 		XLogRegisterBufData(0, frz_offsets,
