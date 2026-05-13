@@ -202,14 +202,14 @@ extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePa
  *
  * Arguments:
  *	 buf			- output buffer; caller must guarantee at least
- *					  HotIndexedBridgeSize() bytes of addressable,
+ *					  HOT_INDEXED_BRIDGE_SIZE bytes of addressable,
  *					  writable memory.
  *	 blkno			- block number of the page the bridge will occupy.
  *					  Used to build a same-page forward ItemPointer that
  *					  chain walkers can consume without an extra lookup.
  *	 forward_offnum - offset of the next chain member on the same page.
  *
- * Returns the total number of bytes written (HotIndexedBridgeSize()).
+ * Returns the total number of bytes written (HOT_INDEXED_BRIDGE_SIZE).
  *
  * Bridges carry no modified-attrs bitmap; readers arriving via a stale
  * btree entry at the bridge's LP follow the forward link to the live
@@ -223,16 +223,12 @@ extern Size heap_build_hot_indexed_bridge(char *buf,
 										  OffsetNumber forward_offnum);
 
 /*
- * HotIndexedBridgeSize
+ * HOT_INDEXED_BRIDGE_SIZE
  *		On-page size of a bridge tombstone.  No payload beyond the
  *		header, so a bridge is exactly MAXALIGN(SizeofHeapTupleHeader)
  *		bytes regardless of the owning relation's attribute count.
  */
-static inline Size
-HotIndexedBridgeSize(void)
-{
-	return MAXALIGN(SizeofHeapTupleHeader);
-}
+#define HOT_INDEXED_BRIDGE_SIZE		(MAXALIGN(SizeofHeapTupleHeader))
 
 /*
  * Compile-time layout sanity:

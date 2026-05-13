@@ -161,7 +161,7 @@ heap_build_hot_indexed_bridge(char *buf,
 {
 	HeapTupleHeader tup = (HeapTupleHeader) buf;
 	Size		hoff = MAXALIGN(SizeofHeapTupleHeader);
-	Size		total = HotIndexedBridgeSize();
+	Size		total = HOT_INDEXED_BRIDGE_SIZE;
 
 	Assert(buf != NULL);
 	Assert(BlockNumberIsValid(blkno));
