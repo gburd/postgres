@@ -253,7 +253,7 @@ typedef struct SysScanDescData
 	 * chain-walk to the same live heap tuple (e.g. RENAME X -> Y -> X cycles
 	 * an index key; both the original "X" leaf and the fresh "X" leaf then
 	 * cover the same row).  Track already-returned live TIDs in this scan so
-	 * systable_getnext can filter the duplicate hit.  NULL until first SIU
+	 * systable_getnext can filter the duplicate hit.  NULL until first HOT-indexed hit
 	 * hit.
 	 */
 	struct HTAB *hot_indexed_seen_tids;

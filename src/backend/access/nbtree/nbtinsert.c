@@ -429,7 +429,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	bool		inposting = false;
 	bool		prevalldead = true;
 	int			curposti = 0;
-	TupleTableSlot *siu_slot = NULL;
+	TupleTableSlot *chain_walk_slot = NULL;
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -576,13 +576,13 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 * conflict; we filter it out below once we have finished
 				 * collecting the match.
 				 */
-				else if ((siu_slot != NULL ||
-						  (siu_slot = table_slot_create(heapRel, NULL))) &&
+				else if ((chain_walk_slot != NULL ||
+						  (chain_walk_slot = table_slot_create(heapRel, NULL))) &&
 						 table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
 													   &all_dead,
 													   &hot_indexed_recheck,
-													   siu_slot))
+													   chain_walk_slot))
 				{
 					TransactionId xwait;
 
@@ -605,13 +605,13 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					if (hot_indexed_recheck)
 					{
-						if (!_bt_heap_keys_equal_leaf(rel, curitup, siu_slot))
+						if (!_bt_heap_keys_equal_leaf(rel, curitup, chain_walk_slot))
 						{
 							if (nbuf != InvalidBuffer)
 								_bt_relbuf(rel, nbuf);
 							nbuf = InvalidBuffer;
-							ExecClearTuple(siu_slot);
-							goto bt_siu_skip;
+							ExecClearTuple(chain_walk_slot);
+							goto bt_chain_walk_skip;
 						}
 
 						/*
@@ -629,10 +629,10 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 							if (nbuf != InvalidBuffer)
 								_bt_relbuf(rel, nbuf);
 							nbuf = InvalidBuffer;
-							ExecClearTuple(siu_slot);
-							goto bt_siu_skip;
+							ExecClearTuple(chain_walk_slot);
+							goto bt_chain_walk_skip;
 						}
-						ExecClearTuple(siu_slot);
+						ExecClearTuple(chain_walk_slot);
 					}
 
 					/*
@@ -647,8 +647,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					{
 						if (nbuf != InvalidBuffer)
 							_bt_relbuf(rel, nbuf);
-						if (siu_slot)
-							ExecDropSingleTupleTableSlot(siu_slot);
+						if (chain_walk_slot)
+							ExecDropSingleTupleTableSlot(chain_walk_slot);
 						*is_unique = false;
 						return InvalidTransactionId;
 					}
@@ -664,8 +664,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					{
 						if (nbuf != InvalidBuffer)
 							_bt_relbuf(rel, nbuf);
-						if (siu_slot)
-							ExecDropSingleTupleTableSlot(siu_slot);
+						if (chain_walk_slot)
+							ExecDropSingleTupleTableSlot(chain_walk_slot);
 						/* Tell _bt_doinsert to wait... */
 						*speculativeToken = SnapshotDirty.speculativeToken;
 						/* Caller releases lock on buf immediately */
@@ -790,7 +790,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				if (!all_dead && inposting)
 					prevalldead = false;
 
-		bt_siu_skip:
+		bt_chain_walk_skip:
 				;
 			}
 		}
@@ -859,8 +859,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	if (nbuf != InvalidBuffer)
 		_bt_relbuf(rel, nbuf);
 
-	if (siu_slot)
-		ExecDropSingleTupleTableSlot(siu_slot);
+	if (chain_walk_slot)
+		ExecDropSingleTupleTableSlot(chain_walk_slot);
 
 	return InvalidTransactionId;
 }

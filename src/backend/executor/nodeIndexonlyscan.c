@@ -278,7 +278,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		/*
 		 * HOT-indexed recheck for the VM-all-visible path: if we skipped
 		 * the heap fetch (no TableSlot available) but the scan still flags
-		 * an SIU hop, drop conservatively -- we have no way to compare the
+		 * a HOT-indexed hop, drop conservatively -- we have no way to compare the
 		 * leaf key against the live tuple's current form without a fetch,
 		 * and the canonical fresh leaf will re-produce the tuple.
 		 */

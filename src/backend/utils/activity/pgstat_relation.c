@@ -386,15 +386,15 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
  * count a tuple update
  *
  * hot      -- the update was a heap-only tuple (classic HOT or HOT-indexed)
- * siu      -- the update was a HOT-indexed (HOT-indexed update), which
- *             is a subcase of hot=true; siu implies hot
+ * hot_indexed -- the update was a HOT-indexed update, a subcase of
+ *                hot=true; hot_indexed implies hot
  * newpage  -- the new tuple went to a different buffer than the old one
  */
 void
-pgstat_count_heap_update(Relation rel, bool hot, bool siu, bool newpage)
+pgstat_count_heap_update(Relation rel, bool hot, bool hot_indexed, bool newpage)
 {
 	Assert(!(hot && newpage));
-	Assert(!(siu && !hot));
+	Assert(!(hot_indexed && !hot));
 
 	if (pgstat_should_count_relation(rel))
 	{
@@ -412,7 +412,7 @@ pgstat_count_heap_update(Relation rel, bool hot, bool siu, bool newpage)
 		if (hot)
 		{
 			pgstat_info->counts.tuples_hot_updated++;
-			if (siu)
+			if (hot_indexed)
 				pgstat_info->counts.tuples_hot_idx_updated++;
 		}
 		else if (newpage)
