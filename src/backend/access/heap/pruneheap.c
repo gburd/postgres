@@ -748,19 +748,19 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 				 * leaving the leaf entry pointing at an unrelated live tuple
 				 * and producing spurious unique-violation errors.
 				 *
-				 * Preserve the LP as a bridge tombstone forwarding to the
-				 * live chain root, the same as for committed dead
-				 * HOT-indexed chain members.  Readers walking the leaf entry
-				 * see the bridge, raise hot_indexed_recheck, and land on the
-				 * live root; the leaf-key recheck in _bt_check_unique then
+				 * If we can find a live chain root on the same page, write a
+				 * bridge tombstone forwarding to it; readers walking the leaf
+				 * entry see the bridge, raise hot_indexed_recheck, and land on
+				 * the live root, then the leaf-key recheck in _bt_check_unique
 				 * filters the stale entry.  Vacuum reclaims the bridge once
 				 * ambulkdelete has cleaned the stale leaves.
 				 *
-				 * If we cannot find a live chain root on this page (the
-				 * chain has been fully pruned), fall back to LP_UNUSED.  In
-				 * that case the surviving leaf entry will be marked LP_DEAD
-				 * via the normal hint-bit path on the next visit (the chain
-				 * walk returns false at the LP_UNUSED slot, signalling all_dead).
+				 * If no chain root is reachable on this page (R has been
+				 * HOT-updated again to a different successor, displacing this
+				 * orphan), mark the LP LP_DEAD instead of LP_UNUSED.  LP_DEAD
+				 * pins the slot against reuse and adds the offnum to the
+				 * dead-items array so ambulkdelete sweeps the stale leaf; a
+				 * subsequent vacuum reclaims the LP after the leaf is gone.
 				 */
 				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
 					HeapTupleHeaderGetNatts(htup) > 0)
@@ -777,6 +777,11 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 						heap_prune_record_bridge(prstate, offnum, forward);
 						continue;
 					}
+
+					HeapTupleHeaderAdvanceConflictHorizon(htup,
+														  &prstate->latest_xid_removed);
+					heap_prune_record_dead(prstate, offnum, true);
+					continue;
 				}
 
 				HeapTupleHeaderAdvanceConflictHorizon(htup,
