@@ -1186,9 +1186,6 @@ TrickleWriterMain(Datum main_arg)
 		proc_exit(0);
 	}
 
-	/* routine will be used by trickle_iter callbacks when available */
-	(void) routine;
-
 	/* Attach to the pool's DSM segment */
 	local = EnsurePoolAttached(pool);
 
@@ -1215,8 +1212,40 @@ TrickleWriterMain(Datum main_arg)
 		if (!pool->bp_active)
 			break;
 
-		/* Linear scan of pool's buffer descriptors for dirty pages */
+		/*
+		 * Use the algorithm's trickle iterator if available.  This lets the
+		 * replacement algorithm direct us to the best flush candidates (e.g.,
+		 * LRU tail, HIR entries) rather than a blind linear scan.
+		 *
+		 * Note: we use the local 'routine' pointer resolved at startup, not
+		 * pool->bp_routine from shared memory, since the latter may point to
+		 * an extension .so address valid only in the creating backend's
+		 * address space.
+		 */
+		if (routine->trickle_iter_begin != NULL)
 		{
+			void	   *iter;
+			int			buf_id;
+			int			batch_limit = trickle_write_batch_size;
+
+			iter = routine->trickle_iter_begin(local->strategy_data, batch_limit);
+
+			while ((buf_id = routine->trickle_iter_next(local->strategy_data,
+														iter)) >= 0)
+			{
+				SyncOneBuffer(buf_id, true, &wb_context);
+				num_written++;
+				hibernate = false;
+
+				if (num_written >= batch_limit)
+					break;
+			}
+
+			routine->trickle_iter_end(local->strategy_data, iter);
+		}
+		else
+		{
+			/* Fallback: linear scan of pool's buffer descriptors */
 			int			batch_limit = trickle_write_batch_size;
 
 			for (int i = 0; i < pool->bp_nbuffers; i++)

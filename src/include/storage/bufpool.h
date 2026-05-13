@@ -130,6 +130,24 @@ typedef struct BufferPoolRoutine
 	void		(*notify_trickle) (void *strategy_data,
 								   int bgwprocno);
 
+	/*
+	 * Optional trickle writer iterator.  When non-NULL, the trickle writer
+	 * uses these callbacks instead of a linear scan to find dirty pages worth
+	 * flushing.  This lets algorithms direct flush order to their coldest
+	 * pages (e.g., LRU tail, HIR entries).
+	 *
+	 * trickle_iter_begin: start iteration over at most max_candidates flush
+	 * targets.  Returns an opaque iterator state. trickle_iter_next: return
+	 * the next candidate buffer ID, or -1 when exhausted. trickle_iter_end:
+	 * free the iterator state.
+	 */
+	void	   *(*trickle_iter_begin) (void *strategy_data,
+									   int max_candidates);
+	int			(*trickle_iter_next) (void *strategy_data,
+									  void *iter);
+	void		(*trickle_iter_end) (void *strategy_data,
+									 void *iter);
+
 	/* ---- Hints from higher layers ---- */
 
 	/*
