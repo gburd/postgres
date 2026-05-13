@@ -1,0 +1,5 @@
+# pg_bp_lirs extension
+comment = 'LIRS-2 (Low Inter-reference Recency Set) buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_lirs'
+relocatable = true
