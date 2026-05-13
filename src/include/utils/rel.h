@@ -272,6 +272,19 @@ typedef struct RelationData
 	 */
 	int			rd_hotidx_chainmax;
 
+	/*
+	 * Cached result of RelationHasExclusionConstraint, computed lazily on
+	 * first call.  Tristate to distinguish "not yet computed" from a real
+	 * answer.  Reset (zeroed) on relcache rebuild.  Read by
+	 * HeapUpdateHotAllowable on every UPDATE; the function used to walk the
+	 * relation's index list and open every index per call, which is
+	 * measurable on relations with many indexes.
+	 */
+#define	RD_HAS_EXCLUSION_UNKNOWN	0
+#define	RD_HAS_EXCLUSION_NO			1
+#define	RD_HAS_EXCLUSION_YES		2
+	char		rd_has_exclusion;
+
 	bool		pgstat_enabled; /* should relation stats be counted */
 	/* use "struct" here to avoid needing to include pgstat.h: */
 	struct PgStat_TableStatus *pgstat_info; /* statistics collection area */
