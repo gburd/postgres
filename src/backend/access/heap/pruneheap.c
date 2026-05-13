@@ -2541,7 +2541,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		OffsetNumber fromoff = *offnum++;
 		OffsetNumber forward = *offnum++;
 		ItemId		lp = PageGetItemId(page, fromoff);
-		Size		bridge_size = HotIndexedBridgeSize();
+		Size		bridge_size = HOT_INDEXED_BRIDGE_SIZE;
 		OffsetNumber lp_off;
 
 		Assert(ItemIdIsNormal(lp));
