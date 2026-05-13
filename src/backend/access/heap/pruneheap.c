@@ -257,6 +257,8 @@ static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetN
 static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
 static void prune_handle_tombstones(PruneState *prstate);
 static bool heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum);
+static OffsetNumber heap_prune_find_live_chain_root(Page page, BlockNumber blkno,
+													OffsetNumber dead_off);
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
@@ -736,6 +738,47 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 
 			if (likely(!HeapTupleHeaderIsHotUpdated(htup)))
 			{
+				/*
+				 * Aborted HOT-indexed update.  An aborted HOT-indexed update
+				 * inserts a btree leaf entry pointing at the new heap-only
+				 * tuple before the txn commits or aborts.  After abort the
+				 * heap-only tuple is dead but the leaf entry remains until
+				 * ambulkdelete (vacuum) sweeps it; reclaiming the LP to
+				 * LP_UNUSED would let an unrelated INSERT reuse the slot,
+				 * leaving the leaf entry pointing at an unrelated live tuple
+				 * and producing spurious unique-violation errors.
+				 *
+				 * Preserve the LP as a bridge tombstone forwarding to the
+				 * live chain root, the same as for committed dead
+				 * HOT-indexed chain members.  Readers walking the leaf entry
+				 * see the bridge, raise hot_indexed_recheck, and land on the
+				 * live root; the leaf-key recheck in _bt_check_unique then
+				 * filters the stale entry.  Vacuum reclaims the bridge once
+				 * ambulkdelete has cleaned the stale leaves.
+				 *
+				 * If we cannot find a live chain root on this page (the
+				 * chain has been fully pruned), fall back to LP_UNUSED.  In
+				 * that case the surviving leaf entry will be marked LP_DEAD
+				 * via the normal hint-bit path on the next visit (the chain
+				 * walk returns false at the LP_UNUSED slot, signalling all_dead).
+				 */
+				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
+					HeapTupleHeaderGetNatts(htup) > 0)
+				{
+					OffsetNumber forward;
+
+					forward = heap_prune_find_live_chain_root(page,
+															  prstate->block,
+															  offnum);
+					if (OffsetNumberIsValid(forward))
+					{
+						HeapTupleHeaderAdvanceConflictHorizon(htup,
+															  &prstate->latest_xid_removed);
+						heap_prune_record_bridge(prstate, offnum, forward);
+						continue;
+					}
+				}
+
 				HeapTupleHeaderAdvanceConflictHorizon(htup,
 													  &prstate->latest_xid_removed);
 				heap_prune_record_unused(prstate, offnum, true);
@@ -1929,8 +1972,12 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
  *   - tombstones (natts == 0): those are handled by
  *     prune_handle_tombstones or by bridge-reclaim vacuum, not by chain
  *     pruning;
- *   - aborted heap-only tuples (HEAP_XMIN_INVALID): their writer rolled
- *     back, so no btree entry was inserted; reclaiming is safe.
+ *   - aborted heap-only tuples (HEAP_XMIN_INVALID): handled separately in
+ *     heap_page_prune_and_freeze's heap-only-tuple loop, where they are
+ *     converted to bridges forwarding to the live chain root.  Returning
+ *     false here keeps the chain-walk path simple: chain processing only
+ *     sees those tuples when their chain root is also dead, in which case
+ *     the chain-tail bridge-to-rootoffnum conversion already covers them.
  */
 static bool
 heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum)
@@ -1951,6 +1998,79 @@ heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum)
 		return false;
 
 	return true;
+}
+
+/*
+ * heap_prune_find_live_chain_root
+ *		Walk page LPs to find the chain root of `dead_off`.
+ *
+ * Used when the heap-only-tuple loop in heap_page_prune_and_freeze is
+ * about to record a bridge for an aborted HOT-indexed heap-only tuple
+ * whose chain root was not visited by chain processing (root is LIVE,
+ * so heap_prune_chain stopped at the root and never walked into the
+ * aborted tail).
+ *
+ * The chain root is the LP_NORMAL non-heap-only tuple at the start of
+ * the chain.  We find it by walking back: the predecessor of an LP at
+ * offset X is the LP_NORMAL tuple on the same page whose t_ctid offset
+ * equals X.  If that predecessor is itself heap-only, we walk back
+ * again until we hit the non-heap-only root or run out of pages or
+ * loop guard.
+ *
+ * Returns InvalidOffsetNumber if no live chain root is reachable on
+ * this page.
+ */
+static OffsetNumber
+heap_prune_find_live_chain_root(Page page, BlockNumber blkno,
+								OffsetNumber dead_off)
+{
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	OffsetNumber prev_off = dead_off;
+	int			loop_guard = MaxHeapTuplesPerPage;
+
+	while (loop_guard-- > 0)
+	{
+		OffsetNumber found = InvalidOffsetNumber;
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+
+			/* Skip tombstones and bridges -- they are not chain links */
+			if (HeapTupleHeaderIsHotIndexedTombstone(htup))
+				continue;
+
+			/* A predecessor must claim HOT_UPDATED with same-page ctid */
+			if (!HeapTupleHeaderIsHotUpdated(htup))
+				continue;
+			if (ItemPointerGetBlockNumber(&htup->t_ctid) != blkno)
+				continue;
+			if (ItemPointerGetOffsetNumber(&htup->t_ctid) != prev_off)
+				continue;
+
+			found = off;
+
+			/* If this is the chain root (not heap-only), we're done */
+			if (!HeapTupleHeaderIsHeapOnly(htup))
+				return off;
+			break;
+		}
+
+		if (!OffsetNumberIsValid(found))
+			return InvalidOffsetNumber;
+
+		/* Predecessor is a heap-only mid-chain tuple; walk back further. */
+		prev_off = found;
+	}
+
+	return InvalidOffsetNumber;
 }
 
 /*
