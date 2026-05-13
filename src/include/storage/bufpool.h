@@ -228,6 +228,12 @@ extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
  */
 extern PGDLLIMPORT char *buffer_pool_algorithm;
 
+/* The built-in KEEP buffer pool routine (never evicts) */
+extern PGDLLIMPORT const BufferPoolRoutine keep_pool_routine;
+
+/* The built-in RECYCLE pool routine (one-chance clock for bulk/VACUUM scans) */
+extern PGDLLIMPORT const BufferPoolRoutine recycle_pool_routine;
+
 /* ----------------------------------------------------------------
  * DEFAULT pool algorithm registration
  *
@@ -261,5 +267,8 @@ extern void PoolHintVacuum(Oid pool_oid, bool vacuum_active);
 /* GUC variables for trickle writer tuning */
 extern PGDLLIMPORT int trickle_flush_after;
 extern PGDLLIMPORT int trickle_write_batch_size;
+
+/* GUC variable for RECYCLE pool sizing (0 = disabled) */
+extern PGDLLIMPORT int recycle_pool_buffers;
 
 #endif							/* BUFPOOL_H */

@@ -29,6 +29,7 @@
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpool.h"
+#include "storage/bufpool_internals.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
@@ -165,10 +166,18 @@ typedef struct BufferAccessStrategyData
 	int			current;
 
 	/*
+	 * When the RECYCLE pool is enabled (recycle_pool_buffers > 0), this
+	 * points to the RECYCLE pool descriptor.  Victim selection bypasses the
+	 * private ring and routes through the shared RECYCLE pool instead. NULL
+	 * when using the traditional per-backend ring buffer approach.
+	 */
+	struct BufferPoolDesc *recycle_pool;
+
+	/*
 	 * Array of buffer numbers.  InvalidBuffer (that is, zero) indicates we
 	 * have not yet selected a buffer for this ring slot.  For allocation
 	 * simplicity this is palloc'd together with the fixed fields of the
-	 * struct.
+	 * struct.  Unused when recycle_pool is non-NULL.
 	 */
 	Buffer		buffers[FLEXIBLE_ARRAY_MEMBER];
 }			BufferAccessStrategyData;
@@ -299,16 +308,38 @@ ClockGetVictim(void *strategy_data,
 
 		/*
 		 * If given a strategy object, see whether it can select a buffer. We
-		 * assume strategy objects don't need buffer_strategy_lock. Ring
-		 * buffers are only supported for the default pool.
+		 * assume strategy objects don't need buffer_strategy_lock.
+		 *
+		 * When the RECYCLE pool is enabled, dispatch through it instead of
+		 * using the per-backend ring buffer.  The RECYCLE pool's get_victim
+		 * returns a buffer from the shared RECYCLE pool, preventing scan and
+		 * VACUUM operations from polluting the main buffer pool.
 		 */
 		if (strategy != NULL)
 		{
-			buf = GetBufferFromRing(strategy, buf_state);
-			if (buf != NULL)
+			if (strategy->recycle_pool != NULL &&
+				strategy->recycle_pool->bp_active)
 			{
-				*from_ring = true;
-				return buf;
+				PoolLocalState *local;
+
+				local = EnsurePoolAttached(strategy->recycle_pool);
+				buf = strategy->recycle_pool->bp_routine->get_victim(
+																	 local->strategy_data, NULL, buf_state, from_ring);
+				if (buf != NULL)
+				{
+					*from_ring = true;
+					return buf;
+				}
+				/* Fall through to main pool if RECYCLE pool failed */
+			}
+			else
+			{
+				buf = GetBufferFromRing(strategy, buf_state);
+				if (buf != NULL)
+				{
+					*from_ring = true;
+					return buf;
+				}
 			}
 		}
 
@@ -421,7 +452,7 @@ ClockGetVictim(void *strategy_data,
 												   local_buf_state))
 				{
 					/* Found a usable buffer */
-					if (strategy != NULL)
+					if (strategy != NULL && strategy->recycle_pool == NULL)
 						AddBufferToRing(strategy, buf);
 					*buf_state = local_buf_state;
 
@@ -745,6 +776,483 @@ clock_pool_handler(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(&clock_pool_routine);
 }
 
+/* ----------------------------------------------------------------
+ *			KEEP buffer pool routine (vtable)
+ *
+ * The KEEP algorithm never evicts buffers.  Pages stay resident
+ * until the pool is dropped or explicitly cleared.  This is useful
+ * for pinning important data sets in memory.
+ *
+ * KEEP is a built-in algorithm, not a well-known pool.  Users
+ * create pools with the KEEP handler like any other pool:
+ *   CREATE BUFFER POOL mykeep SIZE '64MB' HANDLER keep_pool_handler;
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * KeepGetVictim -- KEEP pools cannot evict; scan for free buffers only.
+ *
+ * Returns a free (uninitialized) buffer if one exists.  If all
+ * buffers are in use, raises an error.
+ */
+static BufferDesc *
+KeepGetVictim(void *strategy_data, BufferAccessStrategy strategy,
+			  uint64 *buf_state, bool *from_ring)
+{
+	ClockPoolState *state = (ClockPoolState *) strategy_data;
+	int			nbuffers = state->nbuffers;
+	int			first_buf_id = state->first_buf_id;
+
+	*from_ring = false;
+
+	/* Scan for an unused buffer (tag not valid, not pinned) */
+	for (int i = 0; i < nbuffers; i++)
+	{
+		BufferDesc *buf = GetBufferDescriptor(first_buf_id + i);
+		uint64		old_buf_state;
+		uint64		local_buf_state;
+
+		old_buf_state = pg_atomic_read_u64(&buf->state);
+		for (;;)
+		{
+			local_buf_state = old_buf_state;
+
+			/* Only consider buffers that are not pinned and have no valid tag */
+			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+				break;
+
+			if (local_buf_state & BM_TAG_VALID)
+				break;			/* occupied -- KEEP never evicts */
+
+			if (unlikely(local_buf_state & BM_LOCKED))
+			{
+				old_buf_state = WaitBufHdrUnlocked(buf);
+				continue;
+			}
+
+			/* Pin the buffer */
+			local_buf_state += BUF_REFCOUNT_ONE;
+			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+											   local_buf_state))
+			{
+				*buf_state = local_buf_state;
+				TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+				return buf;
+			}
+		}
+	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+			 errmsg("KEEP buffer pool is full; cannot allocate new buffer"),
+			 errhint("Increase the KEEP pool size or drop the pool and recreate it larger.")));
+	pg_unreachable();
+}
+
+/*
+ * KeepShmemSize -- KEEP reuses ClockPoolState for minimal bookkeeping.
+ */
+static Size
+KeepPoolShmemSize(int nbuffers)
+{
+	return sizeof(ClockPoolState);
+}
+
+/*
+ * KeepPoolShmemInit -- initialize per-pool KEEP state (reuses ClockPoolState).
+ */
+static void
+KeepPoolShmemInit(void *strategy_data, int nbuffers,
+				  int first_buf_id, bool init)
+{
+	ClockPoolState *state = (ClockPoolState *) strategy_data;
+
+	if (!init)
+		return;
+
+	SpinLockInit(&state->lock);
+	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
+	state->completePasses = 0;
+	pg_atomic_init_u32(&state->numBufferAllocs, 0);
+	state->bgwprocno = -1;
+	state->nbuffers = nbuffers;
+	state->first_buf_id = first_buf_id;
+}
+
+/*
+ * KeepSyncStart -- return 0 (KEEP pools don't have meaningful scan state).
+ */
+static int
+KeepSyncStart(void *strategy_data, uint32 *complete_passes,
+			  uint32 *num_buf_alloc)
+{
+	if (complete_passes)
+		*complete_passes = 0;
+	if (num_buf_alloc)
+		*num_buf_alloc = 0;
+	return 0;
+}
+
+/*
+ * KeepNotifyTrickle -- no-op for KEEP (never evicts, trickle writer
+ * still flushes dirty pages but doesn't invalidate them).
+ */
+static void
+KeepNotifyTrickle(void *strategy_data, int bgwprocno)
+{
+	/* KEEP pools don't need trickle writer wakeup */
+}
+
+/*
+ * KeepRejectBuffer -- KEEP doesn't use ring strategies.
+ */
+static bool
+KeepRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
+				 BufferDesc *buf, bool from_ring)
+{
+	return false;
+}
+
+const BufferPoolRoutine keep_pool_routine = {
+	.type = T_Invalid,
+	.on_hit = NULL,				/* no tracking overhead */
+	.on_miss = NULL,
+	.on_evict = NULL,			/* should never happen */
+	.on_new_tag = NULL,
+	.get_victim = KeepGetVictim,
+	.sync_start = KeepSyncStart,
+	.notify_trickle = KeepNotifyTrickle,
+	.trickle_iter_begin = NULL, /* KEEP never evicts */
+	.trickle_iter_next = NULL,
+	.trickle_iter_end = NULL,
+	.hint_vacuum = NULL,
+	.reject_buffer = KeepRejectBuffer,
+	.prefetch_hint = NULL,
+	.shmem_size = KeepPoolShmemSize,
+	.shmem_init = KeepPoolShmemInit,
+	.shutdown = NULL,
+};
+
+/*
+ * keep_pool_handler -- SQL-callable handler returning the KEEP BufferPoolRoutine.
+ */
+PG_FUNCTION_INFO_V1(keep_pool_handler);
+
+Datum
+keep_pool_handler(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(&keep_pool_routine);
+}
+
+
+/* ----------------------------------------------------------------
+ *				RECYCLE pool replacement strategy
+ *
+ * The RECYCLE pool replaces per-backend ring buffers with a shared pool
+ * for bulk reads, bulk writes, and VACUUM operations.  It uses a one-chance
+ * clock sweep where usage_count is capped at 1: pages get one chance to
+ * survive a sweep cycle, then they're evicted.  This provides aggressive
+ * replacement suitable for scan-heavy and VACUUM workloads.
+ *
+ * Three modes share the same physical buffer pool:
+ *   RECYCLE_BULKREAD  -- large sequential scans
+ *   RECYCLE_BULKWRITE -- COPY IN, bulk inserts
+ *   RECYCLE_VACUUM    -- VACUUM operations
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * RecycleMode -- distinguishes the three usage patterns sharing the
+ * RECYCLE pool's physical buffers.
+ */
+typedef enum RecycleMode
+{
+	RECYCLE_BULKREAD,			/* large sequential scans */
+	RECYCLE_BULKWRITE,			/* COPY IN, bulk inserts */
+	RECYCLE_VACUUM,				/* VACUUM operations */
+}			RecycleMode;
+
+/*
+ * RecyclePoolState -- shared state for the RECYCLE pool.
+ *
+ * Extends ClockPoolState with per-mode statistics.  The eviction algorithm
+ * is the same for all modes (one-chance clock), but tracking per-mode
+ * activity helps monitor workload distribution.
+ */
+typedef struct RecyclePoolState
+{
+	/* Core clock-sweep state (same layout as ClockPoolState) */
+	slock_t		lock;
+	pg_atomic_uint32 nextVictimBuffer;
+	uint32		completePasses;
+	pg_atomic_uint32 numBufferAllocs;
+	int			bgwprocno;		/* trickle writer procno (-1 = none) */
+	int			nbuffers;
+	int			first_buf_id;
+
+	/* Per-mode allocation counts for monitoring */
+	pg_atomic_uint64 bulkread_allocs;
+	pg_atomic_uint64 bulkwrite_allocs;
+	pg_atomic_uint64 vacuum_allocs;
+}			RecyclePoolState;
+
+/* Forward declarations */
+static BufferDesc *RecycleGetVictim(void *strategy_data,
+									BufferAccessStrategy strategy,
+									uint64 *buf_state,
+									bool *from_ring);
+static Size RecycleShmemSize(int nbuffers);
+static void RecycleShmemInit(void *strategy_data, int nbuffers,
+							 int first_buf_id, bool init);
+static int	RecycleSyncStart(void *strategy_data, uint32 *complete_passes,
+							 uint32 *num_buf_alloc);
+static void RecycleNotifyTrickle(void *strategy_data, int bgwprocno);
+
+/* Trickle iterator for RECYCLE pool */
+typedef struct RecycleTrickleIter
+{
+	int			pos;			/* current offset in pool */
+	int			remaining;		/* max candidates left */
+}			RecycleTrickleIter;
+
+static void *RecycleTrickleIterBegin(void *strategy_data, int max_candidates);
+static int	RecycleTrickleIterNext(void *strategy_data, void *iter);
+static void RecycleTrickleIterEnd(void *strategy_data, void *iter);
+
+/*
+ * RecycleGetVictim -- one-chance clock sweep for the RECYCLE pool.
+ *
+ * Like ClockGetVictim but with usage_count capped at 1: if a buffer has
+ * usage_count >= 1, we set it to 0 in one step (rather than decrementing).
+ * This ensures pages loaded by scans don't persist longer than one sweep
+ * cycle, preventing cache pollution from bulk operations.
+ */
+static BufferDesc *
+RecycleGetVictim(void *strategy_data,
+				 BufferAccessStrategy strategy,
+				 uint64 *buf_state,
+				 bool *from_ring)
+{
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+	BufferDesc *buf;
+	int			trycounter;
+
+	*from_ring = false;
+
+	/* Wake trickle writer if registered */
+	{
+		int			bgwprocno = INT_ACCESS_ONCE(state->bgwprocno);
+
+		if (bgwprocno != -1)
+		{
+			state->bgwprocno = -1;
+			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+		}
+	}
+
+	pg_atomic_fetch_add_u32(&state->numBufferAllocs, 1);
+
+	trycounter = state->nbuffers;
+	for (;;)
+	{
+		uint64		old_buf_state;
+		uint64		local_buf_state;
+		uint32		victim_raw;
+		uint32		victim_id;
+
+		victim_raw = pg_atomic_fetch_add_u32(&state->nextVictimBuffer, 1);
+		victim_id = state->first_buf_id + (victim_raw % state->nbuffers);
+
+		buf = GetBufferDescriptor(victim_id);
+
+		old_buf_state = pg_atomic_read_u64(&buf->state);
+		for (;;)
+		{
+			local_buf_state = old_buf_state;
+
+			/* Skip pinned buffers */
+			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+			{
+				if (--trycounter == 0)
+					elog(ERROR, "no unpinned buffers available in RECYCLE pool");
+				break;
+			}
+
+			if (unlikely(local_buf_state & BM_LOCKED))
+			{
+				old_buf_state = WaitBufHdrUnlocked(buf);
+				continue;
+			}
+
+			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			{
+				/*
+				 * One-chance: clear usage_count entirely instead of
+				 * decrementing.  This gives each page exactly one sweep cycle
+				 * to be re-accessed before eviction.
+				 */
+				local_buf_state &= ~BUF_USAGECOUNT_MASK;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state,
+												   &old_buf_state,
+												   local_buf_state))
+				{
+					trycounter = state->nbuffers;
+					break;
+				}
+			}
+			else
+			{
+				/* Pin the buffer */
+				local_buf_state += BUF_REFCOUNT_ONE;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state,
+												   &old_buf_state,
+												   local_buf_state))
+				{
+					*buf_state = local_buf_state;
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+					return buf;
+				}
+			}
+		}
+	}
+}
+
+/*
+ * RecycleShmemSize -- shared memory size for RECYCLE pool state.
+ */
+static Size
+RecycleShmemSize(int nbuffers)
+{
+	return sizeof(RecyclePoolState);
+}
+
+/*
+ * RecycleShmemInit -- initialize RECYCLE pool shared state.
+ */
+static void
+RecycleShmemInit(void *strategy_data, int nbuffers,
+				 int first_buf_id, bool init)
+{
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+
+	if (!init)
+		return;
+
+	SpinLockInit(&state->lock);
+	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
+	state->completePasses = 0;
+	pg_atomic_init_u32(&state->numBufferAllocs, 0);
+	state->bgwprocno = -1;
+	state->nbuffers = nbuffers;
+	state->first_buf_id = first_buf_id;
+
+	pg_atomic_init_u64(&state->bulkread_allocs, 0);
+	pg_atomic_init_u64(&state->bulkwrite_allocs, 0);
+	pg_atomic_init_u64(&state->vacuum_allocs, 0);
+}
+
+/*
+ * RecycleSyncStart -- return current clock position for checkpoint sync.
+ */
+static int
+RecycleSyncStart(void *strategy_data, uint32 *complete_passes,
+				 uint32 *num_buf_alloc)
+{
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+	uint32		result;
+
+	SpinLockAcquire(&state->lock);
+	result = pg_atomic_read_u32(&state->nextVictimBuffer) % state->nbuffers;
+	if (complete_passes)
+		*complete_passes = state->completePasses;
+	SpinLockRelease(&state->lock);
+
+	if (num_buf_alloc)
+		*num_buf_alloc = pg_atomic_exchange_u32(&state->numBufferAllocs, 0);
+
+	return result;
+}
+
+/*
+ * RecycleNotifyTrickle -- register trickle writer for wakeup.
+ */
+static void
+RecycleNotifyTrickle(void *strategy_data, int bgwprocno)
+{
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+
+	state->bgwprocno = bgwprocno;
+}
+
+/*
+ * Trickle iterator: walk from clock hand, yield dirty pages with
+ * usage_count == 0 (already swept, ready for write-back).
+ */
+static void *
+RecycleTrickleIterBegin(void *strategy_data, int max_candidates)
+{
+	RecycleTrickleIter *iter = palloc(sizeof(RecycleTrickleIter));
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+
+	iter->pos = pg_atomic_read_u32(&state->nextVictimBuffer) % state->nbuffers;
+	iter->remaining = Min(max_candidates, state->nbuffers);
+	return iter;
+}
+
+static int
+RecycleTrickleIterNext(void *strategy_data, void *opaque)
+{
+	RecycleTrickleIter *iter = (RecycleTrickleIter *) opaque;
+	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
+
+	while (iter->remaining > 0)
+	{
+		int			buf_id = state->first_buf_id + iter->pos;
+		BufferDesc *buf = GetBufferDescriptor(buf_id);
+		uint64		buf_state = pg_atomic_read_u64(&buf->state);
+
+		iter->pos = (iter->pos + 1) % state->nbuffers;
+		iter->remaining--;
+
+		if ((buf_state & BM_VALID) && (buf_state & BM_DIRTY) &&
+			BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
+			BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
+			return buf_id;
+	}
+	return -1;
+}
+
+static void
+RecycleTrickleIterEnd(void *strategy_data, void *opaque)
+{
+	pfree(opaque);
+}
+
+/*
+ * recycle_pool_routine -- vtable for the RECYCLE buffer pool strategy.
+ */
+const BufferPoolRoutine recycle_pool_routine = {
+	.type = T_Invalid,
+	.on_hit = NULL,				/* one-chance: no usage tracking on hit */
+	.on_miss = NULL,
+	.on_evict = NULL,
+	.on_new_tag = NULL,
+	.get_victim = RecycleGetVictim,
+	.sync_start = RecycleSyncStart,
+	.notify_trickle = RecycleNotifyTrickle,
+	.trickle_iter_begin = RecycleTrickleIterBegin,
+	.trickle_iter_next = RecycleTrickleIterNext,
+	.trickle_iter_end = RecycleTrickleIterEnd,
+	.hint_vacuum = NULL,
+	.reject_buffer = NULL,
+	.prefetch_hint = NULL,
+	.shmem_size = RecycleShmemSize,
+	.shmem_init = RecycleShmemInit,
+	.shutdown = NULL,
+};
+
 
 /* ----------------------------------------------------------------
  *				Backend-private buffer ring management
@@ -847,6 +1355,7 @@ GetAccessStrategyWithSize(BufferAccessStrategyType btype, int ring_size_kb)
 {
 	int			ring_buffers;
 	BufferAccessStrategy strategy;
+	BufferPoolDesc *recycle;
 
 	Assert(ring_size_kb >= 0);
 
@@ -856,6 +1365,26 @@ GetAccessStrategyWithSize(BufferAccessStrategyType btype, int ring_size_kb)
 	/* 0 means unlimited, so no BufferAccessStrategy required */
 	if (ring_buffers == 0)
 		return NULL;
+
+	/*
+	 * If the RECYCLE pool is available, route through it instead of
+	 * allocating a private ring buffer.  We still allocate a minimal strategy
+	 * struct to carry the btype and recycle_pool pointer.
+	 */
+	recycle = GetBufferPoolByKind(BUFPOOL_RECYCLE);
+	if (recycle != NULL && recycle->bp_active)
+	{
+		strategy = (BufferAccessStrategy)
+			palloc0(offsetof(BufferAccessStrategyData, buffers));
+
+		strategy->btype = btype;
+		strategy->nbuffers = 0;
+		strategy->recycle_pool = recycle;
+
+		return strategy;
+	}
+
+	/* Traditional per-backend ring buffer path */
 
 	/* Cap to 1/8th of shared_buffers */
 	ring_buffers = Min(NBuffers / 8, ring_buffers);
@@ -871,6 +1400,7 @@ GetAccessStrategyWithSize(BufferAccessStrategyType btype, int ring_size_kb)
 	/* Set fields that don't start out zero */
 	strategy->btype = btype;
 	strategy->nbuffers = ring_buffers;
+	strategy->recycle_pool = NULL;
 
 	return strategy;
 }
@@ -887,6 +1417,10 @@ GetAccessStrategyBufferCount(BufferAccessStrategy strategy)
 {
 	if (strategy == NULL)
 		return 0;
+
+	/* When using the RECYCLE pool, report its buffer count */
+	if (strategy->recycle_pool != NULL)
+		return strategy->recycle_pool->bp_nbuffers;
 
 	return strategy->nbuffers;
 }
@@ -910,6 +1444,23 @@ GetAccessStrategyPinLimit(BufferAccessStrategy strategy)
 {
 	if (strategy == NULL)
 		return NBuffers;
+
+	/*
+	 * When using the RECYCLE pool, the pin limit is based on the RECYCLE
+	 * pool's buffer count rather than the ring size.
+	 */
+	if (strategy->recycle_pool != NULL)
+	{
+		int			pool_nbuffers = strategy->recycle_pool->bp_nbuffers;
+
+		switch (strategy->btype)
+		{
+			case BAS_BULKREAD:
+				return pool_nbuffers;
+			default:
+				return pool_nbuffers / 2;
+		}
+	}
 
 	switch (strategy->btype)
 	{
