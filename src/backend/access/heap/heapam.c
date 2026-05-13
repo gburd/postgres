@@ -4548,14 +4548,20 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
  * whether a HOT-indexed tombstone must accompany the new tuple to carry
  * the per-update modified-attrs bitmap.
  *
- * Today this function only ever returns HEAP_HOT_MODE_NO or
- * HEAP_HOT_MODE_CLASSIC -- exactly mirroring the pre-hot-indexed bool-valued API.
- * Phase 3.1c will teach it to return HEAP_HOT_MODE_INDEXED when modified
- * attributes overlap a non-summarizing index and the relation is hot-indexed-eligible.
+ * Returns:
+ *   HEAP_HOT_MODE_NO       -- HOT is not permitted; heap_update writes the
+ *                             new tuple on a fresh page and inserts into
+ *                             every index.
+ *   HEAP_HOT_MODE_CLASSIC  -- classic HOT.  No index changes whatsoever; the
+ *                             new tuple lives at the existing chain root via
+ *                             t_ctid forward link.
+ *   HEAP_HOT_MODE_INDEXED  -- HOT-indexed.  At least one non-summarizing
+ *                             index's attribute changed, but heap_update can
+ *                             keep the new tuple on the same page provided
+ *                             room exists for both the new tuple and a
+ *                             32-byte modified-attrs tombstone.
  *
- * Later, in heap_update(), we can choose to perform a HOT (or HOT-indexed)
- * update if there is space on the page for the new tuple (and, for
- * HEAP_HOT_MODE_INDEXED, a tombstone).
+ * heap_update() then chooses the actual write path based on page geometry.
  */
 HeapUpdateHotMode
 HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
@@ -4586,21 +4592,24 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	/*
 	 * A non-summarizing indexed attribute changed.  HOT-indexed is supported
 	 * whenever the relation can tolerate extra index entries in a chain whose
-	 * per-chain-member keys may differ:
+	 * per-chain-member keys may differ.  System catalogs participate in
+	 * HOT-indexed updates as of commit 5b798829a0a (see README.HOT-INDEXED
+	 * "Catalog Enablement").  HOT_HOT_MODE_NO triggers below are:
 	 *
-	 * - System catalogs are excluded: the vacuum seqscan over pg_class and
-	 * several catcache invalidation paths don't yet filter hot-indexed-stale
-	 * chain hits, so catalogs fall back to the pre-hot-indexed non-HOT path.
-	 * - Relations with any exclusion constraint are excluded:
-	 * check_exclusion_or_unique_constraint relies on "one live tuple per
-	 * (key, TID)", which hot-indexed's stale chain entries break; temporal
-	 * PRIMARY KEY ... WITHOUT OVERLAPS falls into this category. - The
-	 * user-settable hot_indexed_update_threshold GUC caps hot-indexed
-	 * eligibility by the share of indexed attrs touched by this update.
-	 * Beyond that share the non-HOT path almost always writes the same index
-	 * entries as hot-indexed would, but without the tombstone overhead.
-	 * threshold = 0 disables hot-indexed entirely; threshold = 100 permits
-	 * hot-indexed on every otherwise-eligible update.
+	 * - Relations with any exclusion constraint, because
+	 *   check_exclusion_or_unique_constraint relies on "one live tuple per
+	 *   (key, TID)".  Temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into
+	 *   this category via its internal exclusion constraint.
+	 * - The hot_indexed_update_threshold GUC caps eligibility by the share
+	 *   of indexed attrs touched.  Beyond that share the non-HOT path
+	 *   typically writes nearly the same set of index entries as the
+	 *   HOT-indexed path would, without the tombstone overhead.
+	 *   threshold = 0 disables HOT-indexed entirely; threshold = 100 permits
+	 *   HOT-indexed on every otherwise-eligible update.
+	 * - Per-relation chain-length cap (see RelationGetHotIndexedChainMax):
+	 *   if extending the existing on-page chain would exceed the cap,
+	 *   heap_update demotes to HEAP_HOT_MODE_NO so the chain truncates.
+	 * - Logical replication apply path with hot_indexed_on_apply == OFF.
 	 */
 
 	/*
@@ -4612,8 +4621,7 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * worker and reached via GetHotIndexedApplyMode()):
 	 *
 	 *   OFF          force non-HOT whenever the subscriber has any indexed
-	 *                attribute beyond the primary key (conservative default
-	 *                of older tepid builds);
+	 *                attribute beyond the primary key;
 	 *   SUBSET_ONLY  allow HOT-indexed when the subscriber's indexed-attr
 	 *                set is a subset of its primary-key attrs, which covers
 	 *                the common replication-ready shape as well as the
