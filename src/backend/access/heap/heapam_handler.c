@@ -2603,7 +2603,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 		 * offset.
 		 */
 		int			curslot;
-		bool		page_had_siu = false;
+		bool		page_had_hot_indexed = false;
 
 		/* We must have extracted the tuple offsets by now */
 		Assert(noffsets > -1);
@@ -2624,7 +2624,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 				bool		already_have = false;
 
 				if (hot_indexed_recheck)
-					page_had_siu = true;
+					page_had_hot_indexed = true;
 
 				/*
 				 * With HOT-indexed updates, more than one bitmap entry on the
@@ -2639,7 +2639,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 				 * skip the linear scan entirely -- the TBM's TIDs are already
 				 * distinct by construction.
 				 */
-				if (page_had_siu)
+				if (page_had_hot_indexed)
 				{
 					for (int j = 0; j < ntup; j++)
 					{

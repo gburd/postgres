@@ -1776,7 +1776,7 @@ typedef struct IndexScanState
 	 * not yet needed.  Owned by the scan's memory context and freed at
 	 * executor end.
 	 */
-	struct IndexInfo *iss_SiuIndexInfo;
+	struct IndexInfo *iss_HotIndexedRecheckInfo;
 } IndexScanState;
 
 /* ----------------

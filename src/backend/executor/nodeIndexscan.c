@@ -185,11 +185,11 @@ IndexNext(IndexScanState *node)
 				continue;
 			}
 
-			if (node->iss_SiuIndexInfo == NULL)
-				node->iss_SiuIndexInfo = BuildIndexInfo(node->iss_RelationDesc);
+			if (node->iss_HotIndexedRecheckInfo == NULL)
+				node->iss_HotIndexedRecheckInfo = BuildIndexInfo(node->iss_RelationDesc);
 
 			if (!ExecIndexEntryMatchesTuple(node->iss_RelationDesc,
-											node->iss_SiuIndexInfo,
+											node->iss_HotIndexedRecheckInfo,
 											slot,
 											estate,
 											scandesc->xs_itup))

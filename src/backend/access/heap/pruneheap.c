@@ -256,7 +256,7 @@ static void heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumbe
 static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
 static void prune_handle_tombstones(PruneState *prstate);
-static bool heap_prune_item_preserves_siu(Page page, OffsetNumber offnum);
+static bool heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum);
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
@@ -1732,7 +1732,7 @@ process_chain:
 		 * LP_UNUSED (classic HOT) or record a bridge conversion
 		 * (HOT-indexed tuple with outstanding stale btree entries).  The
 		 * last chain member has no successor to forward to; convert it
-		 * anyway when SIU-preserved so stale entries pointing at it don't
+		 * anyway when HOT-indexed-preserved so stale entries pointing at it don't
 		 * land on a reused LP.  Its forward link is the chain root (via
 		 * the existing LP_DEAD at the root's position) because there is
 		 * nothing live beyond it.  Practically, readers following the
@@ -1742,7 +1742,7 @@ process_chain:
 		heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
 		for (int i = 1; i < nchain; i++)
 		{
-			if (heap_prune_item_preserves_siu(page, chainitems[i]))
+			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
 				heap_prune_record_bridge(prstate, chainitems[i], rootoffnum);
 			else
 				heap_prune_record_unused(prstate, chainitems[i], true);
@@ -1757,7 +1757,7 @@ process_chain:
 		 * references) or rewrite as a bridge tombstone forwarding to the
 		 * first live chain member (HOT-indexed: stale btree entries may
 		 * still point at this LP).  The classifier
-		 * heap_prune_item_preserves_siu decides per LP.
+		 * heap_prune_item_preserves_hot_indexed decides per LP.
 		 */
 		OffsetNumber	first_live = chainitems[ndeadchain];
 
@@ -1765,7 +1765,7 @@ process_chain:
 								   ItemIdIsNormal(rootlp));
 		for (int i = 1; i < ndeadchain; i++)
 		{
-			if (heap_prune_item_preserves_siu(page, chainitems[i]))
+			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
 				heap_prune_record_bridge(prstate, chainitems[i], first_live);
 			else
 				heap_prune_record_unused(prstate, chainitems[i], true);
@@ -1913,7 +1913,7 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
 }
 
 /*
- * heap_prune_item_preserves_siu
+ * heap_prune_item_preserves_hot_indexed
  *		True iff the LP at `offnum` on `page` is a live-but-soon-dead
  *		HOT-indexed heap-only tuple whose LP must be preserved as a bridge
  *		rather than reclaimed to LP_UNUSED.
@@ -1935,7 +1935,7 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
  *     back, so no btree entry was inserted; reclaiming is safe.
  */
 static bool
-heap_prune_item_preserves_siu(Page page, OffsetNumber offnum)
+heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum)
 {
 	ItemId		lp = PageGetItemId(page, offnum);
 	HeapTupleHeader htup;
