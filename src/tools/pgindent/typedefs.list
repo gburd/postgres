@@ -1628,6 +1628,10 @@ LimitOption
 LimitPath
 LimitState
 LimitStateCond
+LirsBackendState
+LirsCDB
+LirsControl
+LirsTrickleIter
 List
 ListCell
 ListDictionary

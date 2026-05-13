@@ -1,0 +1,601 @@
+pg_bp_lirs -- LIRS-2 Internal Design
+=====================================
+
+This document describes the internal design of the pg_bp_lirs extension
+for PostgreSQL developers and maintainers.  It covers the algorithm
+theory, data structures, access pattern handling, concurrency model,
+memory layout, and known limitations.
+
+Source file: contrib/pg_bp_lirs/pg_bp_lirs.c
+
+
+A. Algorithm Theory -- LIRS
+============================
+
+LIRS (Low Inter-reference Recency Set) is a cache replacement algorithm
+based on the concept of Inter-Reference Recency (IRR).
+
+Inter-Reference Recency (IRR)
+-----------------------------
+
+The IRR of a page is the number of distinct pages accessed between two
+consecutive accesses to the same page.  For example, if the access
+sequence is A B C D A, then the IRR of page A is 3 (pages B, C, D were
+accessed between the two accesses to A).
+
+IRR is a more precise measure of a page's "hotness" than simple recency
+(time since last access) because it captures how many other pages compete
+for cache space between re-accesses.  A page with low IRR will be needed
+again before many other pages are accessed; a page with high IRR may not
+be needed again for a long time.
+
+Page Classification
+-------------------
+
+Based on IRR, each page is classified as either:
+
+  LIR (Low IRR) -- "Hot" pages.  These have short inter-reference gaps
+      and are kept in the cache.  LIR pages are never direct eviction
+      candidates; they must first be demoted to HIR.
+
+  HIR (High IRR) -- "Cold" pages.  These have long inter-reference gaps
+      and are eviction candidates.  Resident HIR pages live in the Q
+      list.  Non-resident HIR pages become ghost entries.
+
+Data Structures
+---------------
+
+The algorithm maintains three data structures:
+
+  Stack S -- A recency-ordered doubly-linked list.  Contains all LIR
+      entries, some resident HIR entries, and some ghost (non-resident
+      HIR) entries.  The bottom of the stack (LRU end) represents the
+      least recently accessed entry; the top (MRU end) represents the
+      most recently accessed.
+
+      The stack serves a dual purpose: (1) it tracks recency for LIR
+      pages, and (2) it records whether an HIR page was accessed since
+      the bottom-of-stack LIR page was last accessed.  An HIR page
+      present in the stack has demonstrated a shorter IRR than the
+      bottom LIR page and is eligible for promotion.
+
+  Q List -- A doubly-linked list of resident HIR pages, ordered for
+      eviction.  The head is the eviction end (oldest HIR); the tail
+      is the insertion end (newest HIR).  Eviction always takes from
+      the head.
+
+  Ghost Set -- Non-resident HIR entries that remain in the stack after
+      their data has been evicted.  These are also tracked in a ghost
+      hash table for O(1) lookup on cache miss.  A ghost hit indicates
+      that a page was recently evicted and should be promoted to LIR
+      upon re-admission to the cache.
+
+
+B. LIRS-2 Improvement
+======================
+
+The original LIRS algorithm (Jiang and Zhang, SIGMETRICS 2002) suffers
+from unbounded stack growth.  Because ghost entries can accumulate in
+the stack for every distinct page ever accessed, the stack can grow to
+O(n) where n is the total number of distinct pages in the workload.
+For database workloads that touch millions of pages over time, this is
+impractical.
+
+LIRS-2 (Jiang et al., HPL-2017-28, 2017) solves this by bounding the
+stack to at most 2 * cache_size entries.
+
+The pruning algorithm has two steps:
+
+  Step 1 (Standard bottom prune): Remove non-LIR entries from the
+      stack bottom until the bottom entry is an LIR page.  This
+      maintains the standard LIRS invariant that the stack bottom
+      should be an LIR page.
+
+  Step 2 (LIRS-2 hard cap): If the stack still exceeds 2 * nbuffers
+      entries, continue removing non-LIR entries from the bottom until
+      the bound is satisfied or only LIR entries remain.
+
+Ghost entries pruned from the stack during either step are freed
+entirely: they are removed from the ghost hash table and returned to
+the CDB free list.  Resident HIR entries removed from the stack remain
+in Q (they just lose their stack membership and thus their eligibility
+for promotion to LIR).
+
+In the implementation, the max_stack_size field in LirsControl holds
+the value 2 * nbuffers.  The lirs_stack_prune() function performs both
+steps and is called after every stack modification.
+
+
+C. Access Patterns
+===================
+
+The following describes how each type of page access is handled:
+
+LIR Hit (hot page re-accessed)
+------------------------------
+Callback: LirsOnHit, status == LIRS_STATUS_LIR
+
+  1. Move the LIR entry to the stack top (MRU position).
+  2. Call lirs_stack_prune() to clean up the stack bottom.
+
+This is analogous to an LRU move-to-front.  The prune ensures the
+stack bottom invariant (bottom must be LIR) is maintained.
+
+HIR Hit -- In Stack (cold page eligible for promotion)
+------------------------------------------------------
+Callback: LirsOnHit, status == LIRS_STATUS_HIR, in_stack == true
+
+  1. Remove the entry from Q.
+  2. Move the entry to the stack top.
+  3. Change status from HIR to LIR.  Increment lir_count, decrement
+     hir_count.
+  4. Call lirs_stack_prune().
+  5. If lir_count > lir_capacity, call lirs_demote_bottom_lir() to
+     push the bottom-of-stack LIR page down to HIR (appended to Q).
+  6. Call lirs_stack_prune() again after the demotion.
+
+The key insight: this HIR page is in the stack, which means it was
+accessed more recently than the bottom LIR page.  Its IRR is therefore
+shorter than that of the bottom LIR page, so it deserves promotion.
+
+HIR Hit -- Not In Stack (cold page, no promotion)
+--------------------------------------------------
+Callback: LirsOnHit, status == LIRS_STATUS_HIR, in_stack == false
+
+  1. Remove the entry from its current Q position.
+  2. Re-append it to the Q tail (most recently accessed HIR).
+  3. Push the entry onto the stack top.
+  4. Call lirs_stack_prune().
+
+The entry stays as HIR.  Without prior stack membership, the algorithm
+has no evidence that its IRR is shorter than the bottom LIR page's.
+However, pushing it onto the stack means it will be eligible for
+promotion on its next hit (if that hit occurs before it is pruned from
+the stack bottom).
+
+Ghost Hit (non-resident HIR re-accessed on miss)
+-------------------------------------------------
+Callback: LirsOnMiss sets ghost_cdb; LirsOnNewTag consumes it.
+
+  On miss (LirsOnMiss):
+    1. Look up the tag in the ghost hash table.
+    2. If found and status == GHOST, save the CDB index in the
+       per-backend ghost_cdb field for use by LirsOnNewTag.
+
+  On new tag assignment (LirsOnNewTag, ghost_cdb >= 0):
+    1. Remove the ghost entry from the ghost hash table.
+    2. Set status to LIR.  Assign the new buffer ID.
+    3. Move to stack top (the ghost may already be in the stack).
+    4. Increment lir_count.
+    5. Call lirs_stack_prune().
+    6. If lir_count > lir_capacity, demote the bottom LIR to HIR.
+    7. Prune again.
+
+The ghost hit is strong evidence of a short IRR: the page was evicted
+but accessed again before its ghost was pruned.  Direct promotion to
+LIR is the correct response.
+
+Complete Miss (page never seen or ghost already pruned)
+-------------------------------------------------------
+Callback: LirsOnNewTag, ghost_cdb == -1
+
+  1. Allocate a new CDB entry from the free list (or recycle the
+     oldest ghost from the stack bottom).
+  2. If the cache is still warming up (lir_count < lir_capacity and
+     total resident < nbuffers): insert as LIR, push onto stack.
+  3. Otherwise: insert as HIR.
+     a. If VACUUM hint is set: prepend to Q head (eviction end),
+        do NOT push onto stack.
+     b. Otherwise: append to Q tail, push onto stack.
+  4. Call lirs_stack_prune().
+
+
+D. Implementation Details
+==========================
+
+LirsCDB Structure
+-----------------
+
+Each Cache Directory Block (CDB) entry contains:
+
+    buf_tag       BufferTag   -- page identity (reltablespace, relfilenode,
+                                 forknum, blocknum)
+    buf_id        int         -- pool-local buffer index (-1 for ghosts)
+    status        int         -- LIRS_STATUS_LIR, _HIR, _GHOST, or _UNUSED
+    in_stack      bool        -- true if entry is currently in stack S
+    ghost_next    int         -- next entry in ghost hash chain (-1 = end)
+    stack_prev    int         -- previous entry in stack (toward LRU/bottom)
+    stack_next    int         -- next entry in stack (toward MRU/top)
+    q_prev        int         -- previous entry in Q (toward head/eviction)
+    q_next        int         -- next entry in Q (toward tail/insertion)
+
+Each LirsCDB is roughly 64 bytes (BufferTag is the largest field at
+roughly 20 bytes, plus 7 integer/bool fields plus padding).
+
+CDB Count: 3x Per Buffer
+-------------------------
+
+The extension allocates 3 CDB entries per physical buffer:
+
+    ncdb = nbuffers * 3
+
+This is 50% more than ARC/CAR's 2x multiplier.  The extra entries are
+needed because LIRS can have up to nbuffers resident entries (LIR + HIR)
+plus ghost entries in the bounded stack (up to 2 * nbuffers stack
+entries, minus the resident LIR entries).  The 3x factor provides
+sufficient CDB slots for the worst-case mix of resident and ghost
+entries.
+
+Unused CDB entries are maintained on a singly-linked free list (chained
+via stack_next).  When the free list is empty, the allocator scans the
+stack bottom for the oldest ghost entry to recycle.
+
+Stack Implementation
+--------------------
+
+Stack S is a doubly-linked list using integer indices into the CDB array
+(not pointers).  LirsControl maintains:
+
+    stack_top     -- index of MRU entry (-1 if empty)
+    stack_bottom  -- index of LRU entry (-1 if empty)
+    stack_size    -- current number of entries
+
+Operations:
+    lirs_stack_push()        -- insert at top (MRU end)
+    lirs_stack_remove()      -- unlink from current position
+    lirs_stack_move_to_top() -- remove + push (combined operation)
+    lirs_stack_prune()       -- LIRS-2 bottom pruning (see section B)
+
+All stack operations are O(1) except prune, which is O(k) where k is
+the number of non-LIR entries removed from the bottom.
+
+Q List Implementation
+---------------------
+
+Q is a doubly-linked list of resident HIR pages.  LirsControl maintains:
+
+    q_head   -- eviction end, oldest HIR (-1 if empty)
+    q_tail   -- insertion end, newest HIR (-1 if empty)
+    q_size   -- current number of entries
+
+Operations:
+    lirs_q_append()   -- insert at tail (normal insertion)
+    lirs_q_prepend()  -- insert at head (VACUUM pages, for fast eviction)
+    lirs_q_remove()   -- unlink from current position
+
+All Q operations are O(1).
+
+Ghost Hash Table
+----------------
+
+The ghost hash table provides O(1) lookup of non-resident HIR entries
+by BufferTag.  It follows the same open-chaining pattern used in the
+ARC and CAR extensions:
+
+  - Hash table size is the next power of 2 >= ncdb (minimum 64).
+  - Each bucket is an integer index into the CDB array (-1 = empty).
+  - Chaining uses the ghost_next field of LirsCDB.
+  - Hash function: tag_hash() with power-of-2 masking.
+
+Operations:
+    lirs_ghost_hash_bucket() -- compute bucket index
+    lirs_ghost_lookup()      -- find CDB by tag
+    lirs_ghost_insert()      -- prepend to bucket chain
+    lirs_ghost_remove()      -- unlink from bucket chain
+
+LIR Capacity Scaling
+---------------------
+
+The lir_capacity field determines the maximum number of LIR (hot) pages.
+It is set at initialization time based on pool size:
+
+    Pool size (buffers)    LIR capacity
+    -------------------    ------------
+    < 128                  75% of nbuffers
+    128 - 511              85% of nbuffers
+    512 - 2047             90% of nbuffers
+    2048 - 8191            95% of nbuffers
+    >= 8192                99% of nbuffers
+
+Smaller pools need proportionally more HIR slots to avoid running out
+of eviction candidates under concurrent load (for example, autovacuum
+plus benchmark queries competing for a small number of buffers).
+
+The LIR capacity is fixed at init time.  Unlike ARC's target_T1_size,
+it does not adapt dynamically at runtime.
+
+LIRS-2 Stack Bound
+-------------------
+
+    max_stack_size = 2 * nbuffers
+
+This is the hard upper bound on stack S entries, per the LIRS-2 paper.
+
+Memory Layout in DSM
+---------------------
+
+The shared memory segment for each LIRS pool is laid out as:
+
+    Offset 0:                              LirsControl structure
+    sizeof(LirsControl):                   LirsCDB[ncdb]  (3 * nbuffers entries)
+    sizeof(LirsControl) + ncdb*sizeof(CDB): int[ghost_hash_size]  (power-of-2)
+    ... + ghost_hash_size*sizeof(int):      int[nbuffers]  (buf_to_cdb mapping)
+
+All sections are MAXALIGN'd.  The total size is computed by
+LirsShmemSize() and allocated during LirsShmemInit().
+
+Buffer-to-CDB Mapping
+----------------------
+
+The buf_to_cdb array maps pool-local buffer indices to CDB indices.
+This provides O(1) lookup of a buffer's CDB entry during on_hit and
+on_evict callbacks.  Entries are -1 when the buffer has no CDB (free
+or untracked).
+
+
+E. VACUUM Integration
+======================
+
+VACUUM pages receive special treatment to prevent cache pollution:
+
+  1. LirsHintVacuum() sets the vacuum_hint flag in the per-backend
+     LirsBackendState when VACUUM begins and clears it when VACUUM
+     ends.
+
+  2. In LirsOnNewTag(), if vacuum_hint is true, the new HIR page is
+     inserted at Q head (eviction end) via lirs_q_prepend() instead
+     of Q tail.
+
+  3. The page is NOT pushed onto the stack.
+
+This means VACUUM pages are:
+  - First in line for eviction (Q head position).
+  - Ineligible for promotion to LIR (no stack membership).
+  - Effectively "use once and discard."
+
+Without this, a large VACUUM operation could fill the cache with
+transient pages, displacing hot LIR pages from the Q and causing
+unnecessary demotion/promotion churn.
+
+
+F. Ghost-Aware Prefetch
+=========================
+
+The LirsPrefetchHint() callback integrates LIRS with the buffer
+manager's prefetch infrastructure:
+
+  1. The buffer manager calls prefetch_hint with an array of BufferTags
+     representing pages that will be accessed soon.
+
+  2. For each tag, LIRS looks up the ghost hash table.
+
+  3. If a ghost entry is found and it is in the stack, it is moved to
+     the stack top via lirs_stack_move_to_top().
+
+This serves two purposes:
+
+  - Prevents premature pruning.  Without the prefetch hint, a ghost
+    entry near the stack bottom could be pruned before the actual
+    access arrives, converting what should be a ghost hit (with LIR
+    promotion) into a complete miss.
+
+  - Pre-positions the ghost for correct promotion.  When the real
+    access arrives and triggers LirsOnMiss/LirsOnNewTag, the ghost
+    entry is at the stack top, correctly reflecting its upcoming short
+    IRR.
+
+Only ghost entries already in the stack are moved.  Ghost entries not
+in the stack (those that were pruned earlier) are not re-inserted,
+as the prefetch hint alone is not strong enough evidence of a short
+IRR to justify re-admission.
+
+
+G. Victim Selection (LirsGetVictim)
+=====================================
+
+LirsGetVictim selects a buffer to evict.  It proceeds in three phases
+with a retry loop:
+
+Phase 1: Free Buffer Scan
+--------------------------
+If lir_count + hir_count < nbuffers, some buffers have no CDB entry
+(they are free/untracked from cache warm-up).  Scan all buffers
+looking for one with refcount == 0.  No lock is needed for this scan.
+
+If an unpinned free buffer is found, pin it and return immediately.
+
+Phase 2: Q Head Walk
+---------------------
+Acquire the LIRS spinlock and walk Q from head (oldest resident HIR)
+toward tail:
+
+  1. For each Q entry, verify it is still a resident HIR page with a
+     valid buf_id.
+
+  2. Read the buffer header state.  If refcount == 0 and not BM_LOCKED,
+     attempt a compare-and-swap to pin the buffer.  On success, release
+     the spinlock and return.
+
+  3. If the buffer header is BM_LOCKED, release the spinlock, call
+     WaitBufHdrUnlocked() (which may block), then reacquire the
+     spinlock.  After reacquiring, re-validate the CDB entry because
+     the Q list may have been modified while the lock was released.
+     If the CDB entry changed (evicted, freed, or status changed),
+     abandon this candidate and advance to the next Q entry.
+
+  4. If refcount != 0 (buffer is pinned by another backend), skip to
+     the next Q entry.
+
+The maximum number of Q walk attempts is nbuffers * 3 to prevent
+infinite loops under pathological conditions.
+
+Phase 3: Fallback Full Scan
+-----------------------------
+If no HIR victim was found (all Q entries are pinned), fall back to
+scanning ALL buffer descriptors in the pool, including LIR pages.
+This is an emergency measure and should be rare in normal operation.
+
+Retry Loop
+-----------
+If all three phases fail (every buffer in the pool is pinned), sleep
+for 1ms and retry.  This handles the transient all-pinned scenario
+that can occur under heavy concurrent load on small pools.  The retry
+limit is 50 attempts (50ms total sleep).  After 50 failures, raise
+an ERROR.
+
+
+H. Concurrency
+================
+
+Lock Design
+-----------
+
+A single spinlock (lirs_lock in LirsControl) protects all mutable
+fields: the stack, Q list, ghost hash table, all counters, and CDB
+state transitions.
+
+This is the same design as ARC.  Every LIR hit acquires the spinlock
+to perform a stack move-to-top, making it the primary scalability
+bottleneck under high concurrency.  CAR avoids this by using an atomic
+reference bit for hits, only acquiring a lock during clock sweep.
+
+Q Walk During get_victim
+-------------------------
+
+The Q head walk in LirsGetVictim must handle the case where a buffer
+header is BM_LOCKED by another backend:
+
+  1. Release the LIRS spinlock (to avoid holding it while blocking).
+  2. Call WaitBufHdrUnlocked() to wait for the header lock.
+  3. Reacquire the LIRS spinlock.
+  4. Re-validate the CDB entry (status, buf_id) because another
+     backend may have evicted or promoted the page during the window.
+
+This release-wait-reacquire pattern avoids deadlock between the LIRS
+spinlock and buffer header locks, at the cost of potential wasted work
+if the CDB entry changed.
+
+Statistics
+----------
+
+Per-pool statistics (lookups, hits, misses, etc.) use PostgreSQL's
+pg_atomic_uint64 counters in the LirsControl structure.  Backends
+accumulate counts in thread-local lirs_local_stats[] and flush them to
+the shared atomics via PoolStatIncrement(), which batches updates to
+reduce atomic operation overhead.
+
+
+I. Memory Overhead
+===================
+
+Per-buffer metadata cost:
+
+    Component                Size per buffer     Notes
+    ---------                ---------------     -----
+    LirsCDB entries          ~192 bytes          3 entries * ~64 bytes each
+    Ghost hash               ~4 bytes            1 int per CDB, amortized
+    buf_to_cdb               ~4 bytes            1 int per buffer
+    LirsControl overhead     negligible          Fixed size, shared once
+
+    Total per buffer:        ~200 bytes
+
+This is the most expensive of the three algorithms:
+
+    Algorithm    CDB multiplier    Approx. per-buffer overhead
+    ---------    --------------    ---------------------------
+    ARC          2x                ~130 bytes
+    CAR          2x                ~130 bytes
+    LIRS-2       3x                ~200 bytes
+
+For a pool of 131072 buffers (1 GB at 8 KB pages), LIRS metadata
+consumes roughly 25 MB versus roughly 17 MB for ARC/CAR.
+
+
+J. Performance Characteristics
+================================
+
+Best-Case Workloads
+-------------------
+
+  - Cyclic/looping access patterns: LIRS correctly identifies the loop
+    body as LIR even when the loop size slightly exceeds the cache.
+    ARC/CAR tend to thrash because their recency-based eviction cannot
+    distinguish loop pages from random one-shots.
+
+  - Variable reuse distances: workloads where different pages have
+    different but stable re-access intervals.  LIRS's IRR tracking
+    naturally keeps the short-interval pages hot.
+
+Worst-Case Workloads
+---------------------
+
+  - Purely random access: all algorithms degrade equally to roughly
+    cache_size / total_pages hit ratio.  LIRS adds more overhead than
+    CAR for the same result.
+
+  - Bursty stack pruning: certain access patterns can cause many ghost
+    entries to accumulate near the stack bottom, leading to a burst of
+    pruning work on a single access.  The cost is O(k) where k is the
+    number of entries pruned, bounded by the stack size.
+
+Complexity of Key Operations
+-----------------------------
+
+    Operation                     Time Complexity
+    ---------                     ---------------
+    LIR hit (stack move + prune)  O(1) amortized, O(k) worst case
+    HIR hit in stack (promote)    O(1) amortized, O(k) worst case
+    HIR hit not in stack          O(1)
+    Ghost hit (on_miss + new_tag) O(1) amortized, O(k) worst case
+    Complete miss                 O(1) amortized
+    Q-head eviction               O(1) when Q head is unpinned
+    Ghost hash lookup             O(1) expected (hash table)
+    Stack prune                   O(k) where k = non-LIR entries pruned
+
+    k is bounded by max_stack_size (2 * nbuffers) in the worst case,
+    but in practice is typically small (single digits).
+
+
+K. References
+==============
+
+[1] S. Jiang and X. Zhang, "LIRS: An Efficient Low Inter-reference
+    Recency Set Replacement Policy to Improve Buffer Cache Performance",
+    Proceedings of ACM SIGMETRICS 2002.
+    https://dl.acm.org/doi/10.1145/511399.511340
+
+[2] X. Jiang et al., "LIRS2: An Improved LIRS Replacement Algorithm",
+    HPL-2017-28, 2017.
+
+
+L. Known Limitations
+=====================
+
+1. Spinlock on every hit.  Same scalability limitation as ARC.  Every
+   LIR hit (the common case for a well-tuned pool) must acquire the
+   LIRS spinlock to perform a stack move-to-top operation.  Under high
+   concurrency, this serializes all cache hits through a single lock.
+   CAR's atomic reference bit approach avoids this bottleneck.
+
+2. 3x CDB memory.  LIRS uses 50% more metadata memory than ARC or CAR.
+   For very large pools (tens of thousands of buffers), this difference
+   is measured in megabytes and may matter on memory-constrained systems.
+
+3. Bursty stack pruning.  Under workloads that rapidly cycle through
+   many distinct pages, ghost entries accumulate near the stack bottom.
+   A subsequent access that triggers pruning may need to remove many
+   entries in a single operation, causing a latency spike while the
+   spinlock is held.
+
+4. Fixed LIR capacity ratio.  The lir_capacity is computed once at pool
+   initialization based on pool size and never changes.  ARC dynamically
+   adjusts target_T1_size in response to ghost hit patterns, allowing
+   it to adapt its recency/frequency balance at runtime.  LIRS has no
+   equivalent runtime adaptation of the LIR/HIR partition.  If the
+   optimal ratio changes over the lifetime of the workload, LIRS cannot
+   adjust.
+
+5. No per-table or per-relation awareness.  Like ARC and CAR, LIRS
+   operates at the buffer (page) level without knowledge of which
+   relation a page belongs to.  All pages in a pool compete equally
+   for LIR status regardless of their relation.
