@@ -37,6 +37,10 @@
 
 static BTStack _bt_search_insert(Relation rel, Relation heaprel,
 								 BTInsertState insertstate);
+/* defined later in this file; nbtree.c registers it as amrecheck_leaf_key. */
+bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+							  struct TupleTableSlot *heapSlot);
+
 static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
 									  Relation heapRel,
 									  IndexUniqueCheck checkUnique, bool *is_unique,
