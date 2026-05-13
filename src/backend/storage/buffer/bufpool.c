@@ -88,6 +88,9 @@ static pg_atomic_uint32 *BufferPoolStartupFlag = NULL;
 int			trickle_flush_after = DEFAULT_TRICKLE_FLUSH_AFTER;
 int			trickle_write_batch_size = 128;
 
+/* GUC variable for RECYCLE pool sizing (0 = disabled) */
+int			recycle_pool_buffers = 0;
+
 static void BufferPoolShmemRequest(void *arg);
 static void BufferPoolShmemInit(void *arg);
 
@@ -380,6 +383,24 @@ GetBufferPoolByName(const char *name)
 }
 
 /*
+ * GetBufferPoolByKind -- return the first active pool of the given kind.
+ *
+ * Intended for looking up the well-known system pools (RECYCLE) without
+ * relying on a fixed name that could collide with a user-created pool.
+ * Returns NULL if no active pool of this kind exists.
+ */
+BufferPoolDesc *
+GetBufferPoolByKind(BufferPoolKind kind)
+{
+	for (int i = 0; i < NBufferPools; i++)
+	{
+		if (BufferPoolDescs[i].bp_active && BufferPoolDescs[i].bp_kind == kind)
+			return &BufferPoolDescs[i];
+	}
+	return NULL;
+}
+
+/*
  * GetDefaultBufferPool -- return the default pool descriptor (slot 0).
  */
 BufferPoolDesc *
@@ -422,7 +443,24 @@ BufferPoolStartupInit(void)
 		return;
 	}
 
-	/* We won the CAS; scan pg_bufferpool and recreate dynamic pools */
+	/*
+	 * Create the RECYCLE pool if configured.  This is a well-known system
+	 * pool (not catalog-backed) that replaces per-backend ring buffers with a
+	 * shared pool for bulk reads, bulk writes, and VACUUM operations.
+	 */
+	if (recycle_pool_buffers > 0 && GetBufferPoolByKind(BUFPOOL_RECYCLE) == NULL)
+	{
+		BufferPoolDesc *recycle_pool;
+
+		recycle_pool = CreateDynamicBufferPool(InvalidOid, "recycle",
+											   recycle_pool_buffers,
+											   &recycle_pool_routine,
+											   InvalidOid);
+		recycle_pool->bp_kind = BUFPOOL_RECYCLE;
+		elog(LOG, "created RECYCLE pool with %d buffers", recycle_pool_buffers);
+	}
+
+	/* Scan pg_bufferpool and recreate dynamic pools */
 	rel = table_open(BufferPoolRelationId, AccessShareLock);
 	scan = table_beginscan_catalog(rel, 0, NULL);
 
@@ -1186,6 +1224,7 @@ TrickleWriterMain(Datum main_arg)
 		proc_exit(0);
 	}
 
+
 	/* Attach to the pool's DSM segment */
 	local = EnsurePoolAttached(pool);
 
@@ -1215,7 +1254,8 @@ TrickleWriterMain(Datum main_arg)
 		/*
 		 * Use the algorithm's trickle iterator if available.  This lets the
 		 * replacement algorithm direct us to the best flush candidates (e.g.,
-		 * LRU tail, HIR entries) rather than a blind linear scan.
+		 * LRU tail for ARC, cold pages for CAR, HIR entries for LIRS) rather
+		 * than doing a blind linear scan.
 		 *
 		 * Note: we use the local 'routine' pointer resolved at startup, not
 		 * pool->bp_routine from shared memory, since the latter may point to
@@ -1228,10 +1268,11 @@ TrickleWriterMain(Datum main_arg)
 			int			buf_id;
 			int			batch_limit = trickle_write_batch_size;
 
-			iter = routine->trickle_iter_begin(local->strategy_data, batch_limit);
+			iter = routine->trickle_iter_begin(
+											   local->strategy_data, batch_limit);
 
-			while ((buf_id = routine->trickle_iter_next(local->strategy_data,
-														iter)) >= 0)
+			while ((buf_id = routine->trickle_iter_next(
+														local->strategy_data, iter)) >= 0)
 			{
 				SyncOneBuffer(buf_id, true, &wb_context);
 				num_written++;
@@ -1241,7 +1282,8 @@ TrickleWriterMain(Datum main_arg)
 					break;
 			}
 
-			routine->trickle_iter_end(local->strategy_data, iter);
+			routine->trickle_iter_end(
+									  local->strategy_data, iter);
 		}
 		else
 		{
@@ -1365,8 +1407,10 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &handle))
 	{
-		elog(WARNING, "could not register trickle writer for buffer pool \"%s\"",
-			 NameStr(pool->bp_name));
+		ereport(WARNING,
+				(errmsg("could not register trickle writer for buffer pool \"%s\"",
+						NameStr(pool->bp_name)),
+				 errhint("Consider increasing max_worker_processes.")));
 		return;
 	}
 
