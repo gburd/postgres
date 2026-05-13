@@ -2527,6 +2527,16 @@
   max => '1000000.0',
 },
 
+{ name => 'recycle_pool_buffers', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Number of buffers for the RECYCLE pool (0 = disabled).',
+  long_desc => 'The RECYCLE pool replaces per-backend ring buffers for bulk reads, bulk writes, and VACUUM operations with a shared buffer pool using one-chance clock sweep.',
+  flags => 'GUC_UNIT_BLOCKS',
+  variable => 'recycle_pool_buffers',
+  boot_val => '0',
+  min => '0',
+  max => 'INT_MAX / 2',
+},
+
 { name => 'remove_temp_files_after_crash', type => 'bool', context => 'PGC_SIGHUP', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Remove temporary files after backend crash.',
   flags => 'GUC_NOT_IN_SAMPLE',

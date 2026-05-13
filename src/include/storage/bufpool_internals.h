@@ -40,7 +40,7 @@ struct BufferPoolRoutine;
 
 /*
  * Maximum number of buffer pools that can exist concurrently.
- * The default pool always occupies slot 0.
+ * The default pool always occupies slot 0; the RECYCLE pool slot 1.
  */
 #define MAX_BUFFER_POOLS 64
 
@@ -298,6 +298,7 @@ PoolIsDynamic(BufferPoolDesc *pool)
  */
 extern BufferPoolDesc *GetBufferPoolByOid(Oid pooloid);
 extern BufferPoolDesc *GetBufferPoolByName(const char *name);
+extern BufferPoolDesc *GetBufferPoolByKind(BufferPoolKind kind);
 extern BufferPoolDesc *GetDefaultBufferPool(void);
 
 /*
