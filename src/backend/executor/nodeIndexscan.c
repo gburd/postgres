@@ -179,20 +179,28 @@ IndexNext(IndexScanState *node)
 		 */
 		if (scandesc->xs_hot_indexed_recheck)
 		{
-			if (scandesc->xs_itup == NULL)
-			{
-				InstrCountFiltered2(node, 1);
-				continue;
-			}
+			const IndexAmRoutine *amroutine =
+				scandesc->indexRelation->rd_indam;
+			bool		keep = false;
 
-			if (node->iss_HotIndexedRecheckInfo == NULL)
-				node->iss_HotIndexedRecheckInfo = BuildIndexInfo(node->iss_RelationDesc);
+			/*
+			 * Dispatch to the index AM's leaf-key recheck if it implements
+			 * the optional amrecheck_leaf_key callback and the AM populated
+			 * xs_itup (which it must when xs_want_itup is set on a scan that
+			 * may surface stale leaves).  The callback returns true iff the
+			 * leaf is still valid for this index: its key matches the live
+			 * tuple's current index form.  Same dispatch path nodeIndexonlyscan
+			 * uses; AMs without the callback fall through to the permissive
+			 * drop, matching the pre-feature behaviour.
+			 */
+			if (scandesc->xs_itup != NULL &&
+				amroutine->amrecheck_leaf_key != NULL &&
+				amroutine->amrecheck_leaf_key(scandesc->indexRelation,
+											  scandesc->xs_itup,
+											  slot))
+				keep = true;
 
-			if (!ExecIndexEntryMatchesTuple(node->iss_RelationDesc,
-											node->iss_HotIndexedRecheckInfo,
-											slot,
-											estate,
-											scandesc->xs_itup))
+			if (!keep)
 			{
 				InstrCountFiltered2(node, 1);
 				continue;
