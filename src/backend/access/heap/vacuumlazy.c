@@ -1974,7 +1974,6 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 										  NULL, 0,
 										  NULL, 0,
 										  NULL, 0,
-										  NULL, 0,
 										  NULL, 0);
 
 			END_CRIT_SECTION();
@@ -2951,8 +2950,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  NULL, 0,	/* redirected */
 								  NULL, 0,	/* dead */
 								  unused, nunused,
-								  NULL, 0,	/* bridges */
-								  NULL, 0);	/* promotions */
+								  NULL, 0);	/* bridges */
 	}
 
 	END_CRIT_SECTION();

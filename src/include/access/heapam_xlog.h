@@ -351,17 +351,7 @@ typedef struct xl_heap_prune
  */
 #define		XLHP_HAS_HOT_IDX_BRIDGES   (1 << 10)
 
-/*
- * XLHP_HAS_PROMOTIONS indicates that an xlhp_prune_items sub-record with
- * offsets follows, describing LP_NORMAL chain members whose
- * HEAP_INDEXED_UPDATED bit is to be cleared.  vacuumlazy emits this after
- * reclaiming the last bridge on a page and confirming that ambulkdelete
- * has swept the corresponding stale btree references: once the chain is
- * structurally indistinguishable from a classic HOT chain, dropping the
- * bit restores classic-HOT read efficiency.  Replay applies the same bit
- * clear; the operation is idempotent.
- */
-#define		XLHP_HAS_PROMOTIONS		   (1 << 11)
+/* (1 << 11) is reserved; see README.HOT-INDEXED "Chain Promotion" notes. */
 
 /*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
@@ -517,7 +507,6 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused,
-												   int *nbridges, OffsetNumber **bridges,
-												   int *npromotions, OffsetNumber **promotions);
+												   int *nbridges, OffsetNumber **bridges);
 
 #endif							/* HEAPAM_XLOG_H */
