@@ -3031,7 +3031,7 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	}
 	if (nbridges > 0)
 	{
-		xlrec.flags |= XLHP_HAS_HOT_IDX_BRIDGES;
+		xlrec.flags |= XLHP_HAS_HOT_INDEXED_BRIDGES;
 
 		bridge_items.ntargets = nbridges;
 		XLogRegisterBufData(0, &bridge_items,

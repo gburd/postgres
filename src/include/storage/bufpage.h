@@ -210,7 +210,7 @@ typedef PageHeaderData *PageHeader;
  * page for its new tuple version; this suggests that a prune is needed.
  * Again, this is just a hint.
  *
- * PD_HAS_HOT_IDX_BRIDGES is set when pruneheap has converted a dead mid-chain
+ * PD_HAS_HOT_INDEXED_BRIDGES is set when pruneheap has converted a dead mid-chain
  * HOT-indexed heap-only tuple into a bridge tombstone instead of reclaiming
  * its LP to LP_UNUSED.  Bridges preserve the walkable chain hop but leave
  * stale btree entries pointing at the LP until vacuum's next index-cleanup
@@ -223,7 +223,7 @@ typedef PageHeaderData *PageHeader;
 #define PD_PAGE_FULL		0x0002	/* not enough free space for new tuple? */
 #define PD_ALL_VISIBLE		0x0004	/* all tuples on page are visible to
 									 * everyone */
-#define PD_HAS_HOT_IDX_BRIDGES	0x0008	/* page has HOT-indexed bridge
+#define PD_HAS_HOT_INDEXED_BRIDGES	0x0008	/* page has HOT-indexed bridge
 									 * tombstones awaiting reclaim */
 
 #define PD_VALID_FLAG_BITS	0x000F	/* OR of all valid pd_flags bits */
@@ -481,7 +481,7 @@ PageClearAllVisible(Page page)
 /*
  * PageHasHotIndexedBridges / PageSetHasHotIndexedBridges / PageClearHasHotIndexedBridges
  *
- * Accessors for PD_HAS_HOT_IDX_BRIDGES.  The bit is set by pruneheap when
+ * Accessors for PD_HAS_HOT_INDEXED_BRIDGES.  The bit is set by pruneheap when
  * a dead mid-chain HOT-indexed heap-only tuple is converted to a
  * bridge tombstone (preserving the walkable LP while deferring reclaim
  * to vacuum) and cleared by vacuum's second pass once every bridge
@@ -491,17 +491,17 @@ PageClearAllVisible(Page page)
 static inline bool
 PageHasHotIndexedBridges(const PageData *page)
 {
-	return (((const PageHeaderData *) page)->pd_flags & PD_HAS_HOT_IDX_BRIDGES) != 0;
+	return (((const PageHeaderData *) page)->pd_flags & PD_HAS_HOT_INDEXED_BRIDGES) != 0;
 }
 static inline void
 PageSetHasHotIndexedBridges(Page page)
 {
-	((PageHeader) page)->pd_flags |= PD_HAS_HOT_IDX_BRIDGES;
+	((PageHeader) page)->pd_flags |= PD_HAS_HOT_INDEXED_BRIDGES;
 }
 static inline void
 PageClearHasHotIndexedBridges(Page page)
 {
-	((PageHeader) page)->pd_flags &= ~PD_HAS_HOT_IDX_BRIDGES;
+	((PageHeader) page)->pd_flags &= ~PD_HAS_HOT_INDEXED_BRIDGES;
 }
 
 static inline TransactionId
