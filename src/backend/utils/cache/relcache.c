@@ -5456,13 +5456,10 @@ RelationGetHotIndexedChainMax(Relation relation)
  * RelationHasExclusionConstraint -- true iff any index on `relation`
  * is an exclusion constraint (pg_index.indisexclusion = true).
  *
- * Walks the cached index list from RelationGetIndexList(); open each
- * index briefly with NoLock (caller is expected to hold at least
- * AccessShareLock on the heap, which defends the index set) just to
- * read its pg_index metadata.  The function is currently called only
- * from HeapUpdateHotAllowable on UPDATE, so a handful of index opens
- * per call is acceptable; if this becomes a hot path, add a boolean
- * cache on Relation.
+ * Caches the result on Relation->rd_has_exclusion (tristate, reset on
+ * relcache rebuild).  HeapUpdateHotAllowable calls this on every UPDATE,
+ * so on relations with many indexes the previous walk-and-open-each-index
+ * implementation showed up in profiles.
  */
 bool
 RelationHasExclusionConstraint(Relation relation)
@@ -5474,8 +5471,16 @@ RelationHasExclusionConstraint(Relation relation)
 	Assert(relation->rd_rel->relkind != RELKIND_INDEX &&
 		   relation->rd_rel->relkind != RELKIND_PARTITIONED_INDEX);
 
-	if (!relation->rd_rel->relhasindex)
+	if (relation->rd_has_exclusion == RD_HAS_EXCLUSION_YES)
+		return true;
+	if (relation->rd_has_exclusion == RD_HAS_EXCLUSION_NO)
 		return false;
+
+	if (!relation->rd_rel->relhasindex)
+	{
+		relation->rd_has_exclusion = RD_HAS_EXCLUSION_NO;
+		return false;
+	}
 
 	indexoids = RelationGetIndexList(relation);
 	foreach(lc, indexoids)
@@ -5493,6 +5498,8 @@ RelationHasExclusionConstraint(Relation relation)
 	}
 
 	list_free(indexoids);
+	relation->rd_has_exclusion = has_excl ? RD_HAS_EXCLUSION_YES
+										 : RD_HAS_EXCLUSION_NO;
 	return has_excl;
 }
 
