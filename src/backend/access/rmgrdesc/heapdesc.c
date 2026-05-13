@@ -179,7 +179,7 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 		*nowunused = NULL;
 	}
 
-	if (flags & XLHP_HAS_HOT_IDX_BRIDGES)
+	if (flags & XLHP_HAS_HOT_INDEXED_BRIDGES)
 	{
 		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
 

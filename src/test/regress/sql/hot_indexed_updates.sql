@@ -533,7 +533,7 @@ DROP TABLE siu_reclaim;
 --
 -- We force the freeze path with VACUUM (FREEZE, DISABLE_PAGE_SKIPPING)
 -- and then read pd_flags via pageinspect.page_header.  The page must
--- have PD_HAS_HOT_IDX_BRIDGES (0x0008) -or- still carry tombstones
+-- have PD_HAS_HOT_INDEXED_BRIDGES (0x0008) -or- still carry tombstones
 -- (n_tombstones > 0) AND must not have PD_ALL_VISIBLE (0x0004).
 -- ---------------------------------------------------------------------------
 CREATE TABLE siu_vm (

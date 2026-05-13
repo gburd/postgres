@@ -435,7 +435,7 @@ t_ctid = (current page blockno, first live chain member's offset).
 The distinguishing predicate is HeapTupleHeaderIsHotIndexedBridge:
 natts=0 + HEAP_INDEXED_UPDATED + t_ctid.blockno valid (adjacent-to-
 live tombstones use InvalidBlockNumber).  The page gains the
-PD_HAS_HOT_IDX_BRIDGES flag in pd_flags so vacuum can find bridge-
+PD_HAS_HOT_INDEXED_BRIDGES flag in pd_flags so vacuum can find bridge-
 bearing pages without scanning every LP.
 
 Reader side: heap_hot_search_buffer treats a bridge as a
@@ -448,7 +448,7 @@ chain; stale btree entries that land on adjacent tombstones return
 nothing.
 
 Vacuum reclaim: lazy_scan_prune walks any page with
-PD_HAS_HOT_IDX_BRIDGES and adds each bridge's offset to the per-page
+PD_HAS_HOT_INDEXED_BRIDGES and adds each bridge's offset to the per-page
 deadoffsets array alongside any genuine LP_DEAD items.  The
 combined TID set goes to ambulkdelete through the existing
 dead_items_add path, and every matching btree entry is removed.
@@ -457,7 +457,7 @@ LP to LP_UNUSED: the genuine LP_DEAD ones via the existing path
 and the bridge LP_NORMAL ones by asserting
 HeapTupleHeaderIsHotIndexedBridge and then calling ItemIdSetUnused.
 When the bridge count on the page drops to zero, the
-PD_HAS_HOT_IDX_BRIDGES bit is cleared.
+PD_HAS_HOT_INDEXED_BRIDGES bit is cleared.
 
 The net effect: a vacuum pass following HOT-indexed activity
 leaves the page in exactly the state classic HOT would leave it,
@@ -558,12 +558,12 @@ occasional LP_NORMAL items that have natts=0.  amcheck asserts the
 InvalidBlockNumber in tombstone t_ctid.
 
 Bridge-tombstone conversion in pruneheap has its own WAL path: the
-existing xl_heap_prune record gains one flag XLHP_HAS_HOT_IDX_BRIDGES
+existing xl_heap_prune record gains one flag XLHP_HAS_HOT_INDEXED_BRIDGES
 (bit 10) and, when set, carries an additional xlhp_prune_items sub-
 record whose data[] has 2 * nbridges OffsetNumbers ((offnum, forward)
 pairs).  heap_xlog_prune_freeze deserializes the sub-record and
 invokes heap_page_prune_execute to replay the in-place tuple-body
-rewrite and the PD_HAS_HOT_IDX_BRIDGES page-flag set.  The WAL
+rewrite and the PD_HAS_HOT_INDEXED_BRIDGES page-flag set.  The WAL
 layout mirrors the existing XLHP_HAS_REDIRECTIONS sub-record so the
 shared deserializer handles both shapes uniformly.  pg_waldump
 --stats=record shows 'Heap2/PRUNE_* ... nbridges=N, bridges: ...'.
