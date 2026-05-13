@@ -980,7 +980,9 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			recdata += tomb_size;
 		}
 
-		Assert(recdata == recdata_end);
+		if (recdata != recdata_end)
+			elog(PANIC, "unexpected trailing data in xl_heap_update tombstone trailer: %ld bytes",
+				 (long) (recdata_end - recdata));
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(npage);
