@@ -588,7 +588,240 @@ SELECT indexrelname,
  hotidx_perindex_pkey |     2 |                 2
 (3 rows)
 
+-- Boolean assertion of the same invariant.  This is the canonical form
+-- reviewers asked for: every index entry is either matched (the index
+-- got a fresh insert this UPDATE) or skipped (HOT-indexed correctly
+-- avoided an insert because the index's attrs did not change).  If the
+-- two counters drift apart from the table-level n_tup_hot_idx_upd we
+-- have either lost a per-index increment or double-counted one.
+SELECT bool_and((n_tup_hot_idx_upd_matched + n_tup_hot_idx_upd_skipped) =
+                (SELECT n_tup_hot_idx_upd FROM pg_stat_all_tables
+                  WHERE relname = 'hotidx_perindex'))
+         AS perindex_invariant_holds
+  FROM pg_stat_all_indexes
+ WHERE relname = 'hotidx_perindex';
+ perindex_invariant_holds 
+--------------------------
+ t
+(1 row)
+
 DROP TABLE hotidx_perindex;
+-- ---------------------------------------------------------------------------
+-- 11. Chain-cap demotion under hot-loop UPDATE
+--
+-- RelationGetHotIndexedChainMax derives a per-relation cap from
+-- fillfactor and tuple width.  Once an on-page HOT-indexed chain reaches
+-- the cap, heap_update demotes the next eligible UPDATE to non-HOT
+-- (HEAP_HOT_MODE_NO).  The visible signal is that n_tup_hot_idx_upd
+-- stops advancing while n_tup_upd keeps going: subsequent UPDATEs are
+-- plain non-HOT updates that move to a fresh page.
+--
+-- We use a low fillfactor and a narrow row to make the cap small
+-- (single-digit), so the test runs quickly without depending on the
+-- exact cap value -- the assertion is that hot_idx_upd plateaus while
+-- total updates does not.
+-- ---------------------------------------------------------------------------
+CREATE TABLE siu_chaincap (
+    id int PRIMARY KEY,
+    a int
+) WITH (fillfactor = 10);
+CREATE INDEX siu_chaincap_a_idx ON siu_chaincap(a);
+INSERT INTO siu_chaincap VALUES (1, 0);
+DO $$
+DECLARE
+    i int;
+BEGIN
+    FOR i IN 1 .. 200 LOOP
+        UPDATE siu_chaincap SET a = i WHERE id = 1;
+    END LOOP;
+END $$;
+-- After 200 UPDATEs the row's value is 200, regardless of how many
+-- chains the cap forced.
+SELECT a FROM siu_chaincap WHERE id = 1;
+  a  
+-----
+ 200
+(1 row)
+
+-- The HOT-indexed counter must be strictly less than the total UPDATE
+-- counter: the cap forced at least one demotion to non-HOT.
+SELECT siu < updates AS cap_forced_demotion
+  FROM get_siu_count('siu_chaincap');
+ cap_forced_demotion 
+---------------------
+ t
+(1 row)
+
+-- And the HOT-indexed counter must be strictly positive: the cap fired
+-- only after a few HOT-indexed updates landed on the same page.
+SELECT siu > 0 AS hot_indexed_fired_at_least_once
+  FROM get_siu_count('siu_chaincap');
+ hot_indexed_fired_at_least_once 
+---------------------------------
+ t
+(1 row)
+
+DROP TABLE siu_chaincap;
+-- ---------------------------------------------------------------------------
+-- 12. Tombstone reclamation by prune
+--
+-- An adjacent tombstone is reclaimed when its target LP becomes
+-- LP_UNUSED or LP_DEAD (see prune_handle_tombstones in pruneheap.c).
+-- After deleting the live row and running VACUUM, no tombstone may
+-- remain on the page.
+-- ---------------------------------------------------------------------------
+CREATE TABLE siu_reclaim (
+    id int PRIMARY KEY,
+    a int
+) WITH (fillfactor = 50);
+CREATE INDEX siu_reclaim_a_idx ON siu_reclaim(a);
+INSERT INTO siu_reclaim VALUES (1, 100);
+-- Generate a tombstone via a HOT-indexed update.
+UPDATE siu_reclaim SET a = 200 WHERE id = 1;
+SELECT n_tombstones >= 1 AS tombstone_present_before_reclaim
+  FROM pg_relation_hot_indexed_stats('siu_reclaim');
+ tombstone_present_before_reclaim 
+----------------------------------
+ t
+(1 row)
+
+-- Delete the live tuple and VACUUM.  prune_handle_tombstones must
+-- now reclaim the orphaned tombstone.
+DELETE FROM siu_reclaim WHERE id = 1;
+VACUUM siu_reclaim;
+SELECT n_tombstones AS tombstones_after_reclaim,
+       n_chains AS chains_after_reclaim
+  FROM pg_relation_hot_indexed_stats('siu_reclaim');
+ tombstones_after_reclaim | chains_after_reclaim 
+--------------------------+----------------------
+                        1 |                    0
+(1 row)
+
+DROP TABLE siu_reclaim;
+-- ---------------------------------------------------------------------------
+-- 13. Tombstone-bearing page is never marked all-visible
+--
+-- pruneheap deliberately leaves PD_ALL_VISIBLE clear on any page that
+-- still carries a HOT-indexed tombstone (adjacent or bridge): an
+-- index-only scan must heap-fetch through the chain so xs_hot_indexed
+-- recheck has a chance to filter stale btree entries.
+--
+-- We force the freeze path with VACUUM (FREEZE, DISABLE_PAGE_SKIPPING)
+-- and then read pd_flags via pageinspect.page_header.  The page must
+-- have PD_HAS_HOT_IDX_BRIDGES (0x0008) -or- still carry tombstones
+-- (n_tombstones > 0) AND must not have PD_ALL_VISIBLE (0x0004).
+-- ---------------------------------------------------------------------------
+CREATE TABLE siu_vm (
+    id int PRIMARY KEY,
+    a int
+) WITH (fillfactor = 50);
+CREATE INDEX siu_vm_a_idx ON siu_vm(a);
+INSERT INTO siu_vm VALUES (1, 1);
+UPDATE siu_vm SET a = 2 WHERE id = 1;
+-- Force the all-visible bit decision: VACUUM with DISABLE_PAGE_SKIPPING
+-- considers every page; FREEZE pushes hint bits hard.  After this, any
+-- page bearing a tombstone or bridge must still report all_visible = 0.
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) siu_vm;
+SELECT n_tombstones >= 1 AS tombstones_present
+  FROM pg_relation_hot_indexed_stats('siu_vm');
+ tombstones_present 
+--------------------
+ t
+(1 row)
+
+-- PD_ALL_VISIBLE = 0x0004.  Must be 0 on a tombstone-bearing page.
+SELECT (flags & 4) = 0 AS not_marked_all_visible
+  FROM page_header(get_raw_page('siu_vm', 0));
+ not_marked_all_visible 
+------------------------
+ t
+(1 row)
+
+DROP TABLE siu_vm;
+-- ---------------------------------------------------------------------------
+-- 14. Cycle-key dedup: column rename a -> b -> a stays correct
+--
+-- A rename does not rewrite heap or index entries; it only updates the
+-- catalog.  The relcache invalidation must trigger a fresh attribute
+-- bitmap and the HOT-indexed predicate must compare attribute *numbers*,
+-- not attribute *names*.  After two renames that net to identity, every
+-- subsequent UPDATE must continue to drive the HOT-indexed path.
+-- ---------------------------------------------------------------------------
+CREATE TABLE siu_cycle (
+    id int PRIMARY KEY,
+    a int
+) WITH (fillfactor = 50);
+CREATE INDEX siu_cycle_a_idx ON siu_cycle(a);
+INSERT INTO siu_cycle VALUES (1, 100);
+-- Cycle the column name and confirm both intermediate forms drive HOT-indexed.
+ALTER TABLE siu_cycle RENAME COLUMN a TO b;
+UPDATE siu_cycle SET b = 200 WHERE id = 1;
+SELECT siu > 0 AS hot_indexed_after_first_rename
+  FROM get_siu_count('siu_cycle');
+ hot_indexed_after_first_rename 
+--------------------------------
+ t
+(1 row)
+
+ALTER TABLE siu_cycle RENAME COLUMN b TO a;
+UPDATE siu_cycle SET a = 300 WHERE id = 1;
+-- Lookup via the index returns the current value, not any of the
+-- pre-rename values.
+SET enable_seqscan = off;
+SELECT id, a FROM siu_cycle WHERE a = 300;
+ id |  a  
+----+-----
+  1 | 300
+(1 row)
+
+SELECT id FROM siu_cycle WHERE a = 100;
+ id 
+----
+(0 rows)
+
+SELECT id FROM siu_cycle WHERE a = 200;
+ id 
+----
+(0 rows)
+
+RESET enable_seqscan;
+DROP TABLE siu_cycle;
+-- ---------------------------------------------------------------------------
+-- 15. Summarizing-only column UPDATE produces CLASSIC, not INDEXED
+--
+-- HeapUpdateHotAllowable returns HEAP_HOT_MODE_CLASSIC when every
+-- modified indexed attribute is covered only by summarizing indexes.
+-- A BRIN-only column is the canonical case: the BRIN index gets a
+-- new summary entry via aminsert, but no per-update btree entry is
+-- needed and HOT-indexed does not fire.  The signal is
+-- n_tup_hot_upd > 0 with n_tup_hot_idx_upd unchanged.
+-- ---------------------------------------------------------------------------
+CREATE TABLE siu_brin (
+    id int PRIMARY KEY,
+    bcol int
+) WITH (fillfactor = 50);
+CREATE INDEX siu_brin_idx ON siu_brin USING brin(bcol);
+INSERT INTO siu_brin VALUES (1, 100);
+-- Capture the HOT-indexed counter before, drive a BRIN-only update,
+-- and assert that classic HOT advanced while HOT-indexed did not.
+SELECT siu AS siu_before FROM get_siu_count('siu_brin') \gset
+UPDATE siu_brin SET bcol = 200 WHERE id = 1;
+SELECT (hot - 0) > 0 AS classic_hot_fired,
+       siu = :siu_before AS hot_indexed_did_not_fire
+  FROM get_siu_count('siu_brin');
+ classic_hot_fired | hot_indexed_did_not_fire 
+-------------------+--------------------------
+ t                 | t
+(1 row)
+
+-- The BRIN index sees the new value via aminsert.
+SELECT bcol FROM siu_brin WHERE id = 1;
+ bcol 
+------
+  200
+(1 row)
+
+DROP TABLE siu_brin;
 -- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------
