@@ -1,0 +1,191 @@
+pg_bp_lirs -- LIRS-2 (Low Inter-reference Recency Set)
+======================================================
+
+pg_bp_lirs provides the LIRS-2 buffer replacement algorithm as a
+PostgreSQL extension.  LIRS-2 can be used with dynamic buffer pools:
+
+    CREATE EXTENSION pg_bp_lirs;
+    CREATE BUFFER POOL my_lirs_pool HANDLER lirs_pool_handler SIZE '33554432';
+    CREATE TABLE hot_data (...) WITH (buffer_pool = 'my_lirs_pool');
+
+
+What Is LIRS-2?
+===============
+
+LIRS (Low Inter-reference Recency Set) is a cache replacement algorithm
+that tracks the Inter-Reference Recency (IRR) of each page -- the number
+of distinct pages accessed between two consecutive accesses to the same
+page.  Pages with low IRR are classified as "hot" (LIR status) and kept
+in cache.  Pages with high IRR are classified as "cold" (HIR status) and
+become eviction candidates.
+
+Unlike ARC and CAR, which partition the cache into recency and frequency
+lists, LIRS directly measures the reuse distance of each page.  This
+makes LIRS particularly effective at handling cyclic and looping access
+patterns where the loop size varies.
+
+LIRS-2 is an improvement over the original LIRS algorithm (SIGMETRICS
+2002) that bounds the internal stack data structure to 2x the cache size.
+The original LIRS had unbounded stack growth proportional to the total
+number of distinct pages ever accessed, which made it impractical for
+long-running workloads.  LIRS-2 solves this by pruning non-LIR entries
+from the stack bottom when the bound is exceeded.
+
+
+When LIRS-2 Excels
+===================
+
+LIRS-2 is the best choice for workloads with variable reuse distances:
+
+  - Cyclic/looping access patterns where the loop size exceeds the
+    cache but individual pages are revisited at predictable intervals.
+    Example: a query repeatedly scanning the same set of tables in a
+    fixed order, where the total working set slightly exceeds the pool.
+
+  - Mixed reuse distances where some pages are accessed every few
+    hundred operations and others every few thousand.  LIRS keeps the
+    short-distance pages hot regardless of how recently they were last
+    touched, while ARC/CAR may evict them after a burst of unrelated
+    accesses.
+
+  - Workloads where ARC/CAR thrash because they cannot distinguish
+    "will be reused at a known distance" from "random one-shot access."
+
+
+When to Prefer ARC or CAR Instead
+==================================
+
+  - High-concurrency OLTP with mostly random point lookups: all three
+    algorithms degrade similarly under purely random access, but CAR's
+    atomic reference bit has lower per-hit overhead than LIRS's spinlock.
+
+  - Memory-constrained systems: LIRS requires 3 CDB entries per buffer
+    (roughly 200+ bytes per buffer) versus 2 CDB entries for ARC/CAR.
+    For very large pools this difference adds up.
+
+  - Workloads dominated by sequential scans with rare re-access: ARC's
+    adaptive T1/T2 balance and CAR's clock sweep handle this well with
+    less overhead than LIRS's stack maintenance.
+
+
+Comparison with ARC and CAR
+============================
+
+    Aspect              ARC                 CAR                 LIRS-2
+    ------              ---                 ---                 ------
+    Hit tracking        Spinlock + list     Atomic ref bit      Spinlock + list
+    Adaptation          Ghost T1/T2 size   Ghost T1/T2 size    IRR-based LIR/HIR
+    Scan resistance     Ghost-based         Ghost-based         IRR tracking
+    Cyclic workloads    May thrash          May thrash          Handles well
+    Eviction target     T1/T2 LRU          Clock hand sweep    Q head (HIR)
+    Prefetch hint       Not supported       Ghost-aware         Ghost-aware
+    Bgwriter hint       None                T1 clock hand       Q head position
+    CDB per buffer      2x                  2x                  3x
+    Per-hit lock        Spinlock            None (atomic)       Spinlock
+
+
+VACUUM Integration
+==================
+
+VACUUM-loaded pages are inserted at Q head (the eviction end) without
+being pushed onto the LIRS stack.  This makes them the first candidates
+for eviction, preventing VACUUM operations from polluting the cache with
+transient pages.  Because these pages have no stack membership, they
+cannot be promoted to LIR status.
+
+
+Ghost-Aware Prefetch
+====================
+
+LIRS implements the prefetch_hint callback.  When the buffer manager
+signals upcoming page accesses, LIRS checks the ghost hash table.
+Ghost entries found are moved to the stack top, preventing premature
+recycling during stack pruning.  This pre-warms the IRR tracking so
+the ghost entry is correctly positioned for LIR promotion when the
+actual page access arrives.
+
+
+Q-Head-Priority Trickle Writer
+===============================
+
+LirsSyncStart returns the Q head position as the trickle writer's
+starting point.  HIR pages at Q head are the most likely eviction
+candidates, so writing them to disk proactively reduces eviction
+latency when a backend later needs a free buffer.
+
+
+Statistics
+==========
+
+    SELECT * FROM pg_stat_lirs;
+
+Columns:
+
+    name             -- buffer pool name
+    oid              -- buffer pool OID
+    lir_size         -- current number of resident LIR (hot) pages
+    hir_size         -- current number of resident HIR (cold) pages
+    ghost_size       -- current number of non-resident ghost entries
+    lir_capacity     -- maximum LIR pages allowed (set at init)
+    stack_size       -- current stack S size (bounded to 2x cache)
+    q_size           -- current Q list size (resident HIR count)
+    lookups          -- total page lookups
+    lir_hits         -- hits on LIR (hot) pages
+    hir_hits         -- hits on HIR (cold) pages
+    ghost_hits       -- hits on ghost (non-resident) entries
+    misses           -- complete cache misses
+    lir_demotions    -- LIR pages demoted to HIR
+    hir_promotions   -- HIR/ghost pages promoted to LIR
+    evictions        -- pages evicted from cache
+    stack_prunes     -- LIRS-2 stack pruning events
+
+
+Size Advisory
+-------------
+
+    SELECT * FROM pg_bp_lirs_size_recommendation('my_lirs_pool')
+        AS (current_size int, recommended_size int,
+            ghost_pressure float8, hit_ratio float8);
+
+This function examines the ratio of ghost hits to total misses (ghost
+pressure).  High ghost pressure (above 0.1) indicates that recently
+evicted pages are being re-accessed, suggesting the pool would benefit
+from more buffers.  The recommended_size scales linearly with ghost
+pressure up to 2x the current size.
+
+
+Limitations
+===========
+
+Spinlock on every hit.  Like ARC, LIRS requires a spinlock acquisition
+for every cache hit to maintain stack ordering.  CAR's atomic reference
+bit approach has lower per-hit overhead.  Under high concurrency this
+can become a bottleneck.
+
+3x CDB memory.  LIRS needs 3 Cache Directory Block entries per physical
+buffer (versus 2x for ARC/CAR) to accommodate ghost entries within the
+bounded stack.  Each LirsCDB is roughly 64 bytes, bringing the total
+metadata overhead to roughly 200+ bytes per buffer.
+
+Stack pruning overhead.  The LIRS-2 stack pruning can be bursty: a
+single access may trigger removal of many non-LIR entries from the
+stack bottom.  This is bounded by the 2x cache_size limit but can
+cause latency spikes under certain access patterns.
+
+Fixed LIR capacity ratio.  The LIR/HIR partition is set at pool
+initialization time based on pool size (75% LIR for pools under 128
+buffers, scaling up to 99% LIR for pools of 8192+ buffers) and does
+not adapt dynamically at runtime.  This differs from ARC, where
+target_T1_size adjusts continuously based on ghost hit patterns.
+
+
+References
+==========
+
+S. Jiang and X. Zhang, "LIRS: An Efficient Low Inter-reference
+Recency Set Replacement Policy to Improve Buffer Cache Performance",
+Proceedings of ACM SIGMETRICS 2002.
+https://dl.acm.org/doi/10.1145/511399.511340
+
+X. Jiang et al., "LIRS2: An Improved LIRS Replacement Algorithm",
+HPL-2017-28, 2017.
