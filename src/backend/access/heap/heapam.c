@@ -4568,6 +4568,10 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 HeapUpdateHotMode
 HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 {
+	Bitmapset  *all_idx_attrs = NULL;
+	Bitmapset  *pk_attrs = NULL;
+	HeapUpdateHotMode result;
+
 	/*
 	 * Case (a): no indexed attribute was modified -> classic HOT.
 	 */
@@ -4594,99 +4598,71 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	/*
 	 * A non-summarizing indexed attribute changed.  HOT-indexed is supported
 	 * whenever the relation can tolerate extra index entries in a chain whose
-	 * per-chain-member keys may differ.  System catalogs participate in
-	 * HOT-indexed updates as of commit 5b798829a0a (see README.HOT-INDEXED
-	 * "Catalog Enablement").  HOT_HOT_MODE_NO triggers below are:
+	 * per-chain-member keys may differ.  System catalogs participate as of
+	 * commit 5b798829a0a (see README.HOT-INDEXED "Catalog Enablement").
+	 * HEAP_HOT_MODE_NO triggers below are:
 	 *
+	 * - Logical replication apply path under hot_indexed_on_apply gating.
 	 * - Relations with any exclusion constraint, because
 	 *   check_exclusion_or_unique_constraint relies on "one live tuple per
 	 *   (key, TID)".  Temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into
 	 *   this category via its internal exclusion constraint.
-	 * - The hot_indexed_update_threshold GUC caps eligibility by the share
-	 *   of indexed attrs touched.  Beyond that share the non-HOT path
-	 *   typically writes nearly the same set of index entries as the
-	 *   HOT-indexed path would, without the tombstone overhead.
-	 *   threshold = 0 disables HOT-indexed entirely; threshold = 100 permits
-	 *   HOT-indexed on every otherwise-eligible update.
-	 * - Per-relation chain-length cap (see RelationGetHotIndexedChainMax):
-	 *   if extending the existing on-page chain would exceed the cap,
-	 *   heap_update demotes to HEAP_HOT_MODE_NO so the chain truncates.
-	 * - Logical replication apply path with hot_indexed_on_apply == OFF.
-	 */
-
-	/*
-	 * Logical replication apply path: the subscriber's index set may differ
-	 * from the publisher's, so a HEAP_HOT_MODE_INDEXED choice on the
-	 * subscriber can produce a chain that disagrees with the publisher's
-	 * plain-row state.  Behaviour on this path is controlled by the
-	 * per-subscription hot_indexed_on_apply option (cached in the apply
-	 * worker and reached via GetHotIndexedApplyMode()):
+	 * - hot_indexed_update_threshold caps eligibility by share of indexed
+	 *   attrs touched.
+	 * - Per-relation chain-length cap (see RelationGetHotIndexedChainMax),
+	 *   enforced in heap_update.
 	 *
-	 *   OFF          force non-HOT whenever the subscriber has any indexed
-	 *                attribute beyond the primary key;
-	 *   SUBSET_ONLY  allow HOT-indexed when the subscriber's indexed-attr
-	 *                set is a subset of its primary-key attrs, which covers
-	 *                the common replication-ready shape as well as the
-	 *                no-secondary-index case;
-	 *   ALWAYS       no apply-path gating -- the operator takes
-	 *                responsibility for keeping indexed-attr sets
-	 *                compatible between publisher and subscriber.
+	 * Fetch the indexed-attribute bitmap once up front; the apply-path branch
+	 * may also need PRIMARY_KEY.  Both bitmaps are freed once on the way out.
 	 */
+	all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+											   INDEX_ATTR_BITMAP_INDEXED);
+
 	if (IsLogicalWorker())
 	{
 		char		mode = GetHotIndexedApplyMode();
 
 		if (mode == LOGICALREP_HOT_INDEXED_OFF)
 		{
-			Bitmapset  *all_idx_attrs;
-			Bitmapset  *pk_attrs;
-			bool		extra_indexed;
-
-			all_idx_attrs = RelationGetIndexAttrBitmap(relation,
-													   INDEX_ATTR_BITMAP_INDEXED);
 			pk_attrs = RelationGetIndexAttrBitmap(relation,
 												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
-			extra_indexed = !bms_equal(all_idx_attrs, pk_attrs);
-			bms_free(all_idx_attrs);
-			bms_free(pk_attrs);
 
-			if (extra_indexed)
-				return HEAP_HOT_MODE_NO;
+			if (!bms_equal(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
 		}
 		else if (mode == LOGICALREP_HOT_INDEXED_SUBSET_ONLY)
 		{
-			Bitmapset  *all_idx_attrs;
-			Bitmapset  *pk_attrs;
-			bool		is_subset;
-
-			all_idx_attrs = RelationGetIndexAttrBitmap(relation,
-													   INDEX_ATTR_BITMAP_INDEXED);
 			pk_attrs = RelationGetIndexAttrBitmap(relation,
 												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
-			is_subset = bms_is_subset(all_idx_attrs, pk_attrs);
-			bms_free(all_idx_attrs);
-			bms_free(pk_attrs);
 
-			if (!is_subset)
-				return HEAP_HOT_MODE_NO;
+			if (!bms_is_subset(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
 		}
 		/* LOGICALREP_HOT_INDEXED_ALWAYS: no apply-path gating. */
 	}
 
 	if (RelationHasExclusionConstraint(relation))
-		return HEAP_HOT_MODE_NO;
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
 
 	if (hot_indexed_update_threshold < 100)
 	{
-		Bitmapset  *all_idx_attrs = RelationGetIndexAttrBitmap(relation,
-															   INDEX_ATTR_BITMAP_INDEXED);
 		int			n_all = bms_num_members(all_idx_attrs);
 		int			n_mod = bms_num_members(modified_idx_attrs);
 
-		bms_free(all_idx_attrs);
-
 		if (hot_indexed_update_threshold == 0)
-			return HEAP_HOT_MODE_NO;
+		{
+			result = HEAP_HOT_MODE_NO;
+			goto out;
+		}
 
 		/*
 		 * Integer-only comparison: n_mod * 100 > n_all * threshold means more
@@ -4697,10 +4673,18 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 		 */
 		if (n_all == 0 ||
 			n_mod * 100 > n_all * hot_indexed_update_threshold)
-			return HEAP_HOT_MODE_NO;
+		{
+			result = HEAP_HOT_MODE_NO;
+			goto out;
+		}
 	}
 
-	return HEAP_HOT_MODE_INDEXED;
+	result = HEAP_HOT_MODE_INDEXED;
+
+out:
+	bms_free(all_idx_attrs);
+	bms_free(pk_attrs);
+	return result;
 }
 
 /*
