@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
@@ -5406,9 +5407,13 @@ RelationGetHotIndexedChainMax(Relation relation)
 	page_budget = BLCKSZ * fillfactor / 100;
 
 	/*
-	 * Overhead reserved on the page: the header plus room for a handful of
-	 * ItemIdData slots we don't intend to use up.  Eight is a round number
-	 * well below MaxHeapTuplesPerPage; it keeps the cap conservative.
+	 * Overhead reserved on the page: the page header plus a small slop
+	 * reserve for ItemIdData slots that may be added by chain extensions and
+	 * concurrent inserts on the same page.  Eight slots is a round number
+	 * well below MaxHeapTuplesPerPage and corresponds to roughly two cache
+	 * lines of LP space; multiplying by sizeof(ItemIdData) makes the unit
+	 * (bytes) explicit at the call site rather than buried in a magic
+	 * constant.
 	 */
 	overhead = SizeOfPageHeaderData + 8 * sizeof(ItemIdData);
 
@@ -5424,11 +5429,14 @@ RelationGetHotIndexedChainMax(Relation relation)
 		RelationGetDescr(relation)->natts * 8;
 
 	/*
-	 * Tombstone size upper bound: header + small bitmap payload + alignment.
-	 * 64 bytes safely covers the common case (few dozen attributes) without
-	 * needing to include access/hot_indexed.h here.
+	 * Tombstone size upper bound.  HotIndexedTombstoneSize() is the
+	 * authoritative on-page size for the worst-case attribute count, so by
+	 * passing MaxHeapAttributeNumber here we get an upper bound that scales
+	 * automatically if the tombstone format ever grows.  A StaticAssertDecl
+	 * in hot_indexed.c bounds this at 64 bytes, which is small enough that
+	 * an off-by-a-few estimate cannot push the cap into a degenerate range.
 	 */
-	tombstone = 64;
+	tombstone = HotIndexedTombstoneSize(MaxHeapAttributeNumber);
 
 	if (page_budget <= overhead)
 		cap = 1;

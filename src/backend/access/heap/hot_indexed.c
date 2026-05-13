@@ -23,6 +23,23 @@
 #include "storage/itemptr.h"
 
 /*
+ * Compile-time bound on the tombstone item size for the worst-case
+ * attribute count (MaxHeapAttributeNumber user columns => 200-byte bitmap
+ * + 4-byte payload header + MAXALIGN(SizeofHeapTupleHeader) header,
+ * MAXALIGN'ed).  RelationGetHotIndexedChainMax() in relcache.c sizes its
+ * page-budget heuristic against this same upper bound, so the assertion
+ * also pins the relcache.c estimate to the actual on-disk format.
+ *
+ * HotIndexedTombstoneSize() is a static inline, so we expand its body
+ * here rather than calling it (StaticAssertDecl requires a constant
+ * expression).
+ */
+StaticAssertDecl(MAXALIGN(MAXALIGN(SizeofHeapTupleHeader) +
+						  SizeOfHotIndexedTombstonePayload +
+						  ((MaxHeapAttributeNumber + 7) / 8)) <= 256,
+				 "HotIndexedTombstoneSize upper bound has grown");
+
+/*
  * heap_build_hot_indexed_tombstone
  *		Populate *buf with a tombstone item (header + payload) describing
  *		the per-update modified-indexed-attrs bitmap for a HOT-indexed
