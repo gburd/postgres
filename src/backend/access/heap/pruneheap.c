@@ -786,6 +786,41 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 			else
 			{
 				/*
+				 * Multi-update aborted HOT-indexed chain: the tuple is heap-only,
+				 * dead, AND HEAP_HOT_UPDATED.  This means an aborted transaction
+				 * performed two or more HOT-indexed updates on the same chain in
+				 * sequence; we are looking at a non-leaf member of the aborted
+				 * sub-chain (the leaf has IsHotUpdated false and is handled
+				 * above).  heap_prune_chain visited the live chain root and
+				 * stopped there because the root is LIVE; it never walked into
+				 * this aborted-tail mid-chain entry.
+				 *
+				 * The same stale-leaf hazard as the HEAP_INDEXED_UPDATED-only
+				 * branch above applies: the inner UPDATE inserted a btree leaf
+				 * pointing at this LP, the leaf survives ROLLBACK, and unrelated
+				 * INSERTs would happily reuse the LP.  Convert to a bridge
+				 * forwarding to the live chain root if reachable; otherwise
+				 * fall back to the existing "not linked" error since we have
+				 * no safe place to forward to.
+				 */
+				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
+					HeapTupleHeaderGetNatts(htup) > 0)
+				{
+					OffsetNumber forward;
+
+					forward = heap_prune_find_live_chain_root(page,
+															  prstate->block,
+															  offnum);
+					if (OffsetNumberIsValid(forward))
+					{
+						HeapTupleHeaderAdvanceConflictHorizon(htup,
+															  &prstate->latest_xid_removed);
+						heap_prune_record_bridge(prstate, offnum, forward);
+						continue;
+					}
+				}
+
+				/*
 				 * This tuple should've been processed and removed as part of
 				 * a HOT chain, so something's wrong.  To preserve evidence,
 				 * we don't dare to remove it.  We cannot leave behind a DEAD
