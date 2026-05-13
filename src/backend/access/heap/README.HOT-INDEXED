@@ -477,40 +477,25 @@ that point would restore classic-HOT read efficiency: subsequent
 chain walkers would not raise xs_hot_indexed_recheck and readers
 would skip per-key recheck entirely.
 
-The WAL infrastructure for the bit-clear is in place:
-XLHP_HAS_PROMOTIONS in xl_heap_prune carries a list of OffsetNumbers,
-log_heap_prune_and_freeze emits the sub-record, and
-heap_page_prune_execute applies it (clear HEAP_INDEXED_UPDATED on
-each listed tuple).  heap_xlog_prune_freeze replays it.
-
-What is missing is a safe trigger condition.  "No bridges remain on
-the page" is necessary but not sufficient: per-update btree entries
-pointing at non-bridge surviving heap-only tuples may still be
-outstanding (their TIDs were never in the bridge set, so
-ambulkdelete did not sweep them).  An eager promotion at the
-"no bridges remain" point breaks readers that arrive via those
-stale entries -- they no longer raise the recheck flag and would
-surface the stale leaf as if it matched the current tuple.
-
+Promotion is intentionally left out of the current WAL format and
+WAL replay path.  Earlier drafts carried an XLHP_HAS_PROMOTIONS
+flag in xl_heap_prune that listed offsets whose HEAP_INDEXED_UPDATED
+bit should be cleared, but no caller ever populated the array: the
+"no bridges remain on the page" condition is necessary but not
+sufficient (per-update btree entries pointing at non-bridge
+surviving heap-only tuples may still be outstanding -- their TIDs
+were never in the bridge set, so ambulkdelete did not sweep them).
 A correct trigger requires knowing, per surviving heap-only chain
 member, that no btree entry pointing at its TID still exists with a
 key that disagrees with the tuple's current index form.  Two
-directions to explore:
-
-  - Per-page bookkeeping: track the count of "outstanding HOT-indexed
-    btree refs" per chain on the heap page and decrement on
-    ambulkdelete sweeps.  Promotion fires when the count drops to
-    zero.  Adds a new on-page invariant.
-
-  - Verification at vacuum: after ambulkdelete, walk every index on
-    the relation and confirm no btree entry's TID is on the page.
-    Expensive but correct.  Could be amortised via amcheck-style
-    sampling.
-
-Until such a trigger is added, the WAL infrastructure stays present
-but unused.  No call site emits XLHP_HAS_PROMOTIONS.  The
-infrastructure exists so a future commit can activate promotion
-without WAL-format churn.
+directions previously sketched were per-page bookkeeping (track
+outstanding HOT-indexed btree refs per chain on the heap page and
+decrement on ambulkdelete sweeps) and a post-vacuum walk that
+verifies, after ambulkdelete, that no btree entry's TID still lands
+on the page.  Until one of those is designed and proven safe,
+shipping the unfired flag is dead WAL surface, so it is removed.
+A future commit that activates promotion will reintroduce its own
+WAL flag at that time.
 
 
 All-Visible vs Tombstones
