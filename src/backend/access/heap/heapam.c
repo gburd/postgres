@@ -4250,7 +4250,9 @@ l2:
 											   InvalidOffsetNumber,
 											   PAI_IS_HEAP);
 		if (tombstone_offnum == InvalidOffsetNumber)
-			elog(PANIC, "failed to add HOT-indexed tombstone to page; newtupsize fit check was too lax");
+			ereport(PANIC,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg_internal("could not add HOT-indexed tombstone item to page")));
 	}
 
 
