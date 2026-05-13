@@ -246,4 +246,75 @@ is($post_alter_hotidx, 0,
 
 $subscriber->safe_psql('postgres', 'DROP SUBSCRIPTION sub_always');
 
+# --- Subscriber INSERT-after-replicated-UPDATE per mode -------------------
+#
+# Verify that a subscriber INSERT using the OLD value of a replicated
+# UPDATE's indexed column succeeds without a spurious unique-violation
+# under each apply mode.  Use a dedicated table (tab_uk) so the unique
+# constraint can be defined up-front and the test does not collide with
+# pre-populated rows from the apply-path scenarios above.
+#
+# Publisher updates row $upd_id changing payload from 0 to 999.  The
+# subscriber then inserts a fresh row with payload=0 (the pre-update
+# value).  Under all three modes the leaf-key recheck must filter the
+# stale leaf entry pointing at the chain root, so the INSERT succeeds.
+
+$publisher->safe_psql('postgres',
+	q{CREATE TABLE tab_uk (
+	    id      int PRIMARY KEY,
+	    payload int,
+	    tag     text,
+	    UNIQUE (payload, tag))});
+$subscriber->safe_psql('postgres',
+	q{CREATE TABLE tab_uk (
+	    id      int PRIMARY KEY,
+	    payload int,
+	    tag     text,
+	    UNIQUE (payload, tag))});
+$publisher->safe_psql('postgres',
+	q{ALTER PUBLICATION pub ADD TABLE tab_uk});
+
+for my $mode ('off', 'subset_only', 'always')
+{
+	my $base_id = ($mode eq 'off') ? 1
+	              : ($mode eq 'subset_only') ? 100 : 200;
+	my $upd_id  = $base_id + 1;
+	my $ins_id  = $base_id + 2;
+
+	# Seed a row that we will UPDATE on the publisher (payload starts at 0),
+	# and drain the apply for it before changing payload.
+	$publisher->safe_psql('postgres',
+		"INSERT INTO tab_uk VALUES ($upd_id, 0, 'mode_$mode')");
+
+	$subscriber->safe_psql('postgres', qq{
+		CREATE SUBSCRIPTION sub_uk_$mode
+		  CONNECTION '$pub_conninfo'
+		  PUBLICATION pub
+		  WITH (slot_name = 'sub_uk_${mode}_slot', create_slot = true,
+		        hot_indexed_on_apply = '$mode', copy_data = true);
+	});
+	$publisher->wait_for_catchup("sub_uk_$mode");
+
+	# Publisher UPDATE: payload 0 -> 999.
+	$publisher->safe_psql('postgres',
+		"UPDATE tab_uk SET payload = 999 WHERE id = $upd_id");
+	$publisher->wait_for_catchup("sub_uk_$mode");
+
+	# Subscriber INSERT with the OLD payload value but a unique tag.  The
+	# existing chain leaf with key (0, 'mode_$mode') is now stale: the
+	# live tuple at the chain root has payload=999.  Leaf-key recheck must
+	# filter the stale leaf, allowing this INSERT to succeed.
+	my ($r, $out, $err) = $subscriber->psql('postgres',
+		"INSERT INTO tab_uk VALUES ($ins_id, 0, 'fresh_$mode')");
+	is($r, 0,
+	   "hot_indexed_on_apply = $mode: "
+	   . "subscriber INSERT with old payload value succeeds");
+	like($err, qr/^$/,
+		 "hot_indexed_on_apply = $mode: "
+		 . "INSERT did not raise an error");
+
+	$subscriber->safe_psql('postgres',
+		"DROP SUBSCRIPTION sub_uk_$mode");
+}
+
 done_testing();
