@@ -218,6 +218,11 @@ typedef PageHeaderData *PageHeader;
  * deferred-reclaim LPs so vacuum's second pass can skip pages that do not.
  * Cleared by vacuum once every bridge on the page has been reclaimed.
  * Classic HOT paths never look at this bit.
+ *
+ * The bit is set and cleared by heap-side code only.  Index pages never
+ * carry it (the page-flag namespace is shared between heap and index
+ * pages, but readers of index pages should not consult this bit; the heap
+ * AM is the only producer and consumer).
  */
 #define PD_HAS_FREE_LINES	0x0001	/* are there any unused line pointers? */
 #define PD_PAGE_FULL		0x0002	/* not enough free space for new tuple? */

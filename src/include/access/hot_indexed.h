@@ -18,8 +18,17 @@
  *   (t_infomask2 & HEAP_INDEXED_UPDATED) != 0 AND
  *   HeapTupleHeaderGetNatts(tup) == 0
  *
- * The natts==0 predicate is safe because every relation must have at
- * least one user attribute.
+ * The natts==0 predicate is safe because every heap tuple body has at
+ * least one user attribute serialised into it: system attributes have
+ * negative attnums and are never stored in the heap tuple body, so a
+ * legitimate user-data tuple always has HeapTupleHeaderGetNatts >= 1.
+ * Tombstones therefore carry the unique signature natts == 0 +
+ * HEAP_INDEXED_UPDATED that no real tuple can produce.
+ *
+ * (Pedantic note: pg_attribute itself contains entries with attnum < 1
+ * for system attrs.  Those are pg_attribute *rows*, each row's body
+ * still has natts >= 1 -- the row is describing a system attribute, not
+ * stored as one.)
  *
  * On-disk layout of a tombstone item (starting at PageGetItem):
  *
@@ -33,7 +42,12 @@
  *     t_bits[]        = absent (HEAP_HASNULL not set)
  *
  *   Starting at t_hoff:
- *     uint16 t_target    -- duplicate of t_ctid.offnum for cheap access
+ *     t_target        = back-pointer to the live hot-indexed tuple's offset
+ *                       (duplicate of t_ctid.offnum; t_ctid is read by
+ *                       amcheck/verify_heapam during structural validation
+ *                       while t_target is the cheap-access path used by
+ *                       reader code that already has the tombstone in
+ *                       hand)
  *     uint16 t_nbytes    -- bitmap byte count
  *     uint8  t_bitmap[t_nbytes]
  *

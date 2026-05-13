@@ -390,9 +390,17 @@ key comparison: form the index datum from the candidate heap tuple,
 compare with the would-be-duplicate leaf entry.  If equal, raise the
 unique violation; if not, it was a stale arrival and skip.
 
-For check_exclusion_or_unique_constraint, the exemption on tables
-carrying an exclusion constraint is kept for now; lifting it requires
-auditing the GiST path and overlap semantics, which is separate work.
+For check_exclusion_or_unique_constraint, write-side recheck against
+an ongoing same-relation conflict was added in commit 38b3ed530a7
+(see check_exclusion_or_unique_constraint in commands/constraint.c
+and executor/execIndexing.c) and applies on the inserter side.  The
+relation-wide exemption nonetheless stays for now: temporal PRIMARY
+KEY ... WITHOUT OVERLAPS uses logical-decoding internals where the
+decoded UPDATE arrives without the local index context to perform an
+equivalent recheck.  Lifting the relation-wide exemption requires
+auditing that decoding path and the GiST overlap semantics, which is
+separate work.  In short: write-side recheck is in place; the
+RelationHasExclusionConstraint exemption stays.
 
 
 Tombstone Reclamation
@@ -464,6 +472,38 @@ leaves the page in exactly the state classic HOT would leave it,
 with no bridges, no stale index entries, and LPs compacted.
 Bridges are strictly a transient artifact between chain pruning
 and the next index cleanup.
+
+Crash recovery and bridges
+--------------------------
+
+Bridges survive crash recovery: heap_xlog_prune replays the prune
+record that created them, which writes the same 32-byte bridge bytes
+at the same LPs.  PD_HAS_HOT_INDEXED_BRIDGES is set on the page by
+the replay path so vacuum still finds the bridge-bearing pages.  Full
+page images (FPI) replay leaves the bit set because the FPI captures
+the page after the prune.  After recovery, the next vacuum cycle
+reclaims bridges via the same lazy_vacuum_heap_page mechanism as in
+the pre-crash steady state.  Idempotent replay is safe: re-applying a
+prune record that has already been applied (because an FPI carried
+the page through and the prune record runs again) produces the same
+bridge bytes at the same LPs and the same PD_HAS_HOT_INDEXED_BRIDGES
+bit.
+
+The chain-match invariant relaxation
+------------------------------------
+
+Classic HOT relies on a strict invariant when walking chains:
+prev_xmax of step N must equal xmin of step N+1.  Bridge tombstones
+carry HEAP_XMIN_INVALID and HEAP_XMAX_INVALID, so heap_hot_search_buffer
+does NOT advance prev_xmax across a bridge step.  The next hop's
+xmin/xmax-match check after the bridge therefore compares the bridge's
+forward target's xmin against the chain member preceding the bridge
+(skipping the bridge).  In effect: bridges intentionally relax the
+strict chain-match invariant on the hop they replace.  This is the
+key concession that lets bridges paper over an LP that has otherwise
+lost its predecessor relationship; the rest of the system absorbs the
+relaxation by way of xs_hot_indexed_recheck and the leaf-key recheck
+on the reader side.
 
 
 Chain Promotion (Future Work)
@@ -602,6 +642,29 @@ pg_stat_all_tables gains one column:
                            Every hot-indexed update is also counted in
                            n_tup_hot_upd; the new column isolates
                            the hot-indexed share.
+
+pg_stat_all_indexes gains two columns:
+
+        n_tup_hot_idx_upd_skipped   -- cumulative count of hot-indexed updates
+                                    on the owning relation that did NOT
+                                    insert into this particular index because
+                                    the index's keys were unchanged.
+
+        n_tup_hot_idx_upd_matched   -- cumulative count of hot-indexed updates
+                                    on the owning relation that DID insert
+                                    into this particular index because the
+                                    index's keys changed.
+
+The per-index counters add up to the owning table's total: across all
+indexes I on table T,
+
+    SUM(I.n_tup_hot_idx_upd_skipped + I.n_tup_hot_idx_upd_matched)
+      / N_indexes(T)
+     == T.n_tup_hot_idx_upd
+
+(skipped + matched per index equals the total hot-indexed update count;
+multiplying across indexes and dividing by N_indexes yields the per-table
+figure).
 
 A point-in-time SQL function inspects tombstone state:
 
