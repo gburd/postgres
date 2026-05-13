@@ -200,9 +200,22 @@ RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)
 		skey[0].sk_argument = ObjectIdGetDatum(reltablespace);
 		skey[1].sk_argument = ObjectIdGetDatum(relfilenumber);
 
+		/*
+		 * Use a SeqScan over pg_class rather than the relfilenumber index.
+		 * Under HOT-indexed updates a row's relfilenumber can change (CLUSTER,
+		 * REINDEX, VACUUM FULL, TRUNCATE) without a corresponding btree
+		 * insert: an old leaf entry can chain-lead to a tuple whose current
+		 * relfilenode is different.  systable_getnext's SnapshotDirty path
+		 * does not loop on xs_hot_indexed_recheck the way _bt_check_unique
+		 * does, so an index scan can return the wrong row or none at all.
+		 * Forcing a heap scan side-steps the issue at the cost of one
+		 * pg_class scan per pg_filenode_relation() call.  Mirrors
+		 * AlterFKConstrEnforceabilityRecurse's identical workaround on
+		 * pg_constraint.
+		 */
 		scandesc = systable_beginscan(relation,
 									  ClassTblspcRelfilenodeIndexId,
-									  true,
+									  false,
 									  NULL,
 									  2,
 									  skey);
