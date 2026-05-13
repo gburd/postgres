@@ -761,11 +761,6 @@ extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
 extern void ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
 								  bool update_all_indexes,
 								  const Bitmapset *modified_idx_attrs);
-extern bool ExecIndexEntryMatchesTuple(Relation indexRel,
-									   IndexInfo *indexInfo,
-									   TupleTableSlot *slot,
-									   EState *estate,
-									   IndexTuple itup);
 
 /* flags for ExecInsertIndexTuples */
 #define		EIIT_IS_UPDATE			(1<<0)
