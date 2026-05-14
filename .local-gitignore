@@ -17,3 +17,4 @@ regression.diffs
 regression.out
 *.core
 core.*
+tmp_check/

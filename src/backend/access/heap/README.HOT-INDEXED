@@ -394,13 +394,34 @@ For check_exclusion_or_unique_constraint, write-side recheck against
 an ongoing same-relation conflict was added in commit 38b3ed530a7
 (see check_exclusion_or_unique_constraint in commands/constraint.c
 and executor/execIndexing.c) and applies on the inserter side.  The
-relation-wide exemption nonetheless stays for now: temporal PRIMARY
-KEY ... WITHOUT OVERLAPS uses logical-decoding internals where the
-decoded UPDATE arrives without the local index context to perform an
-equivalent recheck.  Lifting the relation-wide exemption requires
-auditing that decoding path and the GiST overlap semantics, which is
-separate work.  In short: write-side recheck is in place; the
-RelationHasExclusionConstraint exemption stays.
+relation-wide exemption nonetheless stays for one specific reason:
+temporal PRIMARY KEY ... WITHOUT OVERLAPS is internally an exclusion
+constraint over a range type backed by GiST.  Under logical
+replication the decoded UPDATE arrives at the subscriber without
+the publisher's local index context, so the apply worker cannot
+today re-do the equivalent recheck; two replicated UPDATEs whose
+temporal ranges overlap can be merged into a single HOT-indexed
+chain on the subscriber, with no apply-side signal that catches it.
+Lifting the exemption therefore requires:
+
+   (a) the publisher to ship the modified-attrs bitmap with the
+       decoded change and the apply worker to re-run
+       index_recheck_constraint locally, and
+
+   (b) a GiST overlap-semantics audit to confirm the existing
+       recheck is sufficient for range overlap (the operator family
+       is && rather than =).
+
+The breakage is keyed on "this relation has any exclusion
+constraint" rather than on a per-attribute set, which is why the
+exemption is relation-wide.  034_temporal is the regression gate:
+it currently passes with the exemption in place and would expose
+the apply-path gap if the exemption were removed without the two
+prerequisites above.
+
+In short: write-side recheck on the inserter path IS in place; the
+RelationHasExclusionConstraint exemption stays for the apply-path
+decoding gap.
 
 
 Tombstone Reclamation
@@ -638,19 +659,19 @@ Statistics and Monitoring
 
 pg_stat_all_tables gains one column:
 
-        n_tup_hot_idx_upd   -- cumulative count of hot-indexed tuple updates.
+        n_tup_hot_indexed_upd   -- cumulative count of hot-indexed tuple updates.
                            Every hot-indexed update is also counted in
                            n_tup_hot_upd; the new column isolates
                            the hot-indexed share.
 
 pg_stat_all_indexes gains two columns:
 
-        n_tup_hot_idx_upd_skipped   -- cumulative count of hot-indexed updates
+        n_tup_hot_indexed_upd_skipped   -- cumulative count of hot-indexed updates
                                     on the owning relation that did NOT
                                     insert into this particular index because
                                     the index's keys were unchanged.
 
-        n_tup_hot_idx_upd_matched   -- cumulative count of hot-indexed updates
+        n_tup_hot_indexed_upd_matched   -- cumulative count of hot-indexed updates
                                     on the owning relation that DID insert
                                     into this particular index because the
                                     index's keys changed.
@@ -658,9 +679,9 @@ pg_stat_all_indexes gains two columns:
 The per-index counters add up to the owning table's total: across all
 indexes I on table T,
 
-    SUM(I.n_tup_hot_idx_upd_skipped + I.n_tup_hot_idx_upd_matched)
+    SUM(I.n_tup_hot_indexed_upd_skipped + I.n_tup_hot_indexed_upd_matched)
       / N_indexes(T)
-     == T.n_tup_hot_idx_upd
+     == T.n_tup_hot_indexed_upd
 
 (skipped + matched per index equals the total hot-indexed update count;
 multiplying across indexes and dividing by N_indexes yields the per-table

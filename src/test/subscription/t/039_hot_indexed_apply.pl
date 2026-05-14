@@ -55,7 +55,7 @@ $subscriber->safe_psql('postgres', qq{
 	        create_slot = false);
 });
 is( $subscriber->safe_psql('postgres',
-		q{SELECT subhotindexedmode FROM pg_subscription
+		q{SELECT subhotindexedonapply FROM pg_subscription
 		  WHERE subname = 'sub_default'}),
 	's',
 	'fresh subscription defaults to subset_only');
@@ -69,7 +69,7 @@ $subscriber->safe_psql('postgres', qq{
 	        create_slot = false, hot_indexed_on_apply = 'always');
 });
 is( $subscriber->safe_psql('postgres',
-		q{SELECT subhotindexedmode FROM pg_subscription
+		q{SELECT subhotindexedonapply FROM pg_subscription
 		  WHERE subname = 'sub_always_p'}),
 	'a',
 	'CREATE with hot_indexed_on_apply = always stores a');
@@ -78,7 +78,7 @@ is( $subscriber->safe_psql('postgres',
 $subscriber->safe_psql('postgres',
 	q{ALTER SUBSCRIPTION sub_default SET (hot_indexed_on_apply = 'off')});
 is( $subscriber->safe_psql('postgres',
-		q{SELECT subhotindexedmode FROM pg_subscription
+		q{SELECT subhotindexedonapply FROM pg_subscription
 		  WHERE subname = 'sub_default'}),
 	'o',
 	'ALTER SUBSCRIPTION SET hot_indexed_on_apply = off stores o');
@@ -131,7 +131,7 @@ sub poll_counters
 		$row = $node->safe_psql('postgres',
 			qq{SELECT coalesce(n_tup_upd, 0),
 			          coalesce(n_tup_hot_upd, 0),
-			          coalesce(n_tup_hot_idx_upd, 0)
+			          coalesce(n_tup_hot_indexed_upd, 0)
 			   FROM pg_stat_user_tables WHERE relname = '$table'});
 		my ($upd) = split /\|/, $row;
 		last if ($upd + 0) >= $upd_target || time() >= $deadline;
@@ -143,7 +143,7 @@ sub poll_counters
 
 # Helper: fire UPDATEs that touch the indexed payload column on a given
 # id range and return the deltas in (n_tup_upd, n_tup_hot_upd,
-# n_tup_hot_idx_upd) on the subscriber.
+# n_tup_hot_indexed_upd) on the subscriber.
 sub apply_updates_and_read
 {
 	my ($table, $sub_name, $id_lo, $id_hi) = @_;
@@ -213,7 +213,7 @@ $subscriber->safe_psql('postgres', 'DROP SUBSCRIPTION sub_subset');
 
 # Case 3: always.  Unconditional HOT-indexed eligibility.  On tab_extra
 # updates touching the indexed payload column should now run on the
-# HOT-indexed path: n_tup_hot_idx_upd must increase.
+# HOT-indexed path: n_tup_hot_indexed_upd must increase.
 $subscriber->safe_psql('postgres', qq{
 	CREATE SUBSCRIPTION sub_always
 	  CONNECTION '$pub_conninfo'
@@ -232,17 +232,17 @@ cmp_ok($al_extra_hotidx, '>', 0,
 $subscriber->safe_psql('postgres',
 	q{ALTER SUBSCRIPTION sub_always SET (hot_indexed_on_apply = 'off')});
 is( $subscriber->safe_psql('postgres',
-		q{SELECT subhotindexedmode FROM pg_subscription
+		q{SELECT subhotindexedonapply FROM pg_subscription
 		  WHERE subname = 'sub_always'}),
 	'o',
 	'ALTER sub_always SET hot_indexed_on_apply = off persists');
 
-# Drive another batch of updates and confirm n_tup_hot_idx_upd does NOT
+# Drive another batch of updates and confirm n_tup_hot_indexed_upd does NOT
 # advance after the worker rereads the catalog.
 my (undef, undef, $post_alter_hotidx) =
   apply_updates_and_read('tab_extra', 'sub_always', 81, 100);
 is($post_alter_hotidx, 0,
-   'ALTER to off freezes n_tup_hot_idx_upd after worker reread');
+   'ALTER to off freezes n_tup_hot_indexed_upd after worker reread');
 
 $subscriber->safe_psql('postgres', 'DROP SUBSCRIPTION sub_always');
 

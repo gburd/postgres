@@ -92,7 +92,7 @@ CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROW
 									 * exceeded max_retention_duration, when
 									 * defined */
 
-	char		subhotindexedmode;	/* Per-subscription gating of the HOT-
+	char		subhotindexedonapply;	/* Per-subscription gating of the HOT-
 									 * indexed apply path.  See
 									 * LOGICALREP_HOT_INDEXED_* constants. */
 
@@ -219,7 +219,7 @@ typedef struct Subscription
 
 /*
  * Per-subscription gating of the HOT-indexed apply path.  Recorded as a
- * single-character code in pg_subscription.subhotindexedmode.
+ * single-character code in pg_subscription.subhotindexedonapply.
  *
  *   'o' -- OFF: force non-HOT on apply whenever the subscriber carries any
  *		  indexed attribute beyond the primary key.  Matches the conservative

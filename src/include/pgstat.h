@@ -151,7 +151,7 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
 	PgStat_Counter tuples_hot_updated;
-	PgStat_Counter tuples_hot_idx_updated;
+	PgStat_Counter tuples_hot_indexed_updated;
 	PgStat_Counter tuples_newpage_updated;
 
 	/*
@@ -161,8 +161,8 @@ typedef struct PgStat_TableCounts
 	 * inserted a fresh entry (key changed).  Summarizing indexes do not
 	 * contribute to either counter.
 	 */
-	PgStat_Counter tuples_hot_idx_upd_skipped;
-	PgStat_Counter tuples_hot_idx_upd_matched;
+	PgStat_Counter tuples_hot_indexed_upd_skipped;
+	PgStat_Counter tuples_hot_indexed_upd_matched;
 
 	bool		truncdropped;
 
@@ -472,12 +472,12 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
 	PgStat_Counter tuples_hot_updated;
-	PgStat_Counter tuples_hot_idx_updated;
+	PgStat_Counter tuples_hot_indexed_updated;
 	PgStat_Counter tuples_newpage_updated;
 
 	/* Per-index HOT-indexed update counters (see PgStat_TableCounts). */
-	PgStat_Counter tuples_hot_idx_upd_skipped;
-	PgStat_Counter tuples_hot_idx_upd_matched;
+	PgStat_Counter tuples_hot_indexed_upd_skipped;
+	PgStat_Counter tuples_hot_indexed_upd_matched;
 
 	PgStat_Counter live_tuples;
 	PgStat_Counter dead_tuples;
@@ -756,15 +756,15 @@ extern void pgstat_report_analyze(Relation rel,
 		if (pgstat_should_count_relation(rel))						\
 			(rel)->pgstat_info->counts.tuples_returned += (n);		\
 	} while (0)
-#define pgstat_count_hot_idx_upd_skipped(rel)						\
+#define pgstat_count_hot_indexed_upd_skipped(rel)						\
 	do {															\
 		if (pgstat_should_count_relation(rel))						\
-			(rel)->pgstat_info->counts.tuples_hot_idx_upd_skipped++;\
+			(rel)->pgstat_info->counts.tuples_hot_indexed_upd_skipped++;\
 	} while (0)
-#define pgstat_count_hot_idx_upd_matched(rel)						\
+#define pgstat_count_hot_indexed_upd_matched(rel)						\
 	do {															\
 		if (pgstat_should_count_relation(rel))						\
-			(rel)->pgstat_info->counts.tuples_hot_idx_upd_matched++;\
+			(rel)->pgstat_info->counts.tuples_hot_indexed_upd_matched++;\
 	} while (0)
 #define pgstat_count_buffer_read(rel)								\
 	do {															\

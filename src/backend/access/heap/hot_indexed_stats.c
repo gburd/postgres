@@ -5,7 +5,7 @@
  *	  reports hot-indexed-related structural statistics.
  *
  * These numbers complement the running pgstat counters
- * (n_tup_hot_idx_upd in pg_stat_all_tables): they answer "what is on disk
+ * (n_tup_hot_indexed_upd in pg_stat_all_tables): they answer "what is on disk
  * right now?" rather than "how often did hot-indexed fire during the stats
  * window?".
  *

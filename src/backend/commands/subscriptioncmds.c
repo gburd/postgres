@@ -826,7 +826,7 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		Int32GetDatum(opts.maxretention);
 	values[Anum_pg_subscription_subretentionactive - 1] =
 		BoolGetDatum(opts.retaindeadtuples);
-	values[Anum_pg_subscription_subhotindexedmode - 1] =
+	values[Anum_pg_subscription_subhotindexedonapply - 1] =
 		CharGetDatum(opts.hotindexedmode);
 	values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(serverid);
 	if (!OidIsValid(serverid))
@@ -1796,9 +1796,9 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_HOT_INDEXED_ON_APPLY))
 				{
-					values[Anum_pg_subscription_subhotindexedmode - 1] =
+					values[Anum_pg_subscription_subhotindexedonapply - 1] =
 						CharGetDatum(opts.hotindexedmode);
-					replaces[Anum_pg_subscription_subhotindexedmode - 1] = true;
+					replaces[Anum_pg_subscription_subhotindexedonapply - 1] = true;
 				}
 
 				update_tuple = true;

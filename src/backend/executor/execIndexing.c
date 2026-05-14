@@ -380,7 +380,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			 * index needs a fresh entry.
 			 */
 			if (flags & EIIT_IS_HOT_INDEXED)
-				pgstat_count_hot_idx_upd_skipped(indexRelation);
+				pgstat_count_hot_indexed_upd_skipped(indexRelation);
 			continue;
 		}
 
@@ -392,7 +392,7 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 		 * counted here.
 		 */
 		if ((flags & EIIT_IS_HOT_INDEXED) && !indexInfo->ii_Summarizing)
-			pgstat_count_hot_idx_upd_matched(indexRelation);
+			pgstat_count_hot_indexed_upd_matched(indexRelation);
 
 		/* Check for partial index */
 		if (indexInfo->ii_Predicate != NIL)

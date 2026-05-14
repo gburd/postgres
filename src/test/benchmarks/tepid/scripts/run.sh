@@ -180,7 +180,7 @@ siu_count() {
   local v=$1 table=$2
   local val
   val=$(psql_as "$v" -Atc \
-    "SELECT coalesce(n_tup_hot_idx_upd, 0) FROM pg_stat_user_tables WHERE relname='$table'" 2>/dev/null)
+    "SELECT coalesce(n_tup_hot_indexed_upd, 0) FROM pg_stat_user_tables WHERE relname='$table'" 2>/dev/null)
   [[ "$val" =~ ^[0-9]+$ ]] || val=0
   echo "$val"
 }

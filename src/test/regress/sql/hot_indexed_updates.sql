@@ -45,8 +45,8 @@ BEGIN
                COALESCE(pg_stat_get_xact_tuples_updated(rel_oid), 0);
     hot := COALESCE(pg_stat_get_tuples_hot_updated(rel_oid), 0) +
            COALESCE(pg_stat_get_xact_tuples_hot_updated(rel_oid), 0);
-    hot_idx := COALESCE(pg_stat_get_tuples_hot_idx_updated(rel_oid), 0) +
-           COALESCE(pg_stat_get_xact_tuples_hot_idx_updated(rel_oid), 0);
+    hot_idx := COALESCE(pg_stat_get_tuples_hot_indexed_updated(rel_oid), 0) +
+           COALESCE(pg_stat_get_xact_tuples_hot_indexed_updated(rel_oid), 0);
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
@@ -403,8 +403,8 @@ UPDATE hotidx_perindex SET a = 101 WHERE id = 1;
 SELECT pg_stat_force_next_flush();
 
 SELECT indexrelname,
-       n_tup_hot_idx_upd_matched AS matched,
-       n_tup_hot_idx_upd_skipped AS skipped
+       n_tup_hot_indexed_upd_matched AS matched,
+       n_tup_hot_indexed_upd_skipped AS skipped
   FROM pg_stat_all_indexes
  WHERE relname = 'hotidx_perindex'
  ORDER BY indexrelname;
@@ -414,16 +414,16 @@ UPDATE hotidx_perindex SET b = 201 WHERE id = 1;
 SELECT pg_stat_force_next_flush();
 
 SELECT indexrelname,
-       n_tup_hot_idx_upd_matched AS matched,
-       n_tup_hot_idx_upd_skipped AS skipped
+       n_tup_hot_indexed_upd_matched AS matched,
+       n_tup_hot_indexed_upd_skipped AS skipped
   FROM pg_stat_all_indexes
  WHERE relname = 'hotidx_perindex'
  ORDER BY indexrelname;
 
--- Invariant: matched + skipped == owning table's n_tup_hot_idx_upd.
+-- Invariant: matched + skipped == owning table's n_tup_hot_indexed_upd.
 SELECT indexrelname,
-       n_tup_hot_idx_upd_matched + n_tup_hot_idx_upd_skipped AS total,
-       (SELECT n_tup_hot_idx_upd FROM pg_stat_all_tables
+       n_tup_hot_indexed_upd_matched + n_tup_hot_indexed_upd_skipped AS total,
+       (SELECT n_tup_hot_indexed_upd FROM pg_stat_all_tables
          WHERE relname = 'hotidx_perindex') AS table_hot_idx_upd
   FROM pg_stat_all_indexes
  WHERE relname = 'hotidx_perindex'
@@ -433,10 +433,10 @@ SELECT indexrelname,
 -- reviewers asked for: every index entry is either matched (the index
 -- got a fresh insert this UPDATE) or skipped (HOT-indexed correctly
 -- avoided an insert because the index's attrs did not change).  If the
--- two counters drift apart from the table-level n_tup_hot_idx_upd we
+-- two counters drift apart from the table-level n_tup_hot_indexed_upd we
 -- have either lost a per-index increment or double-counted one.
-SELECT bool_and((n_tup_hot_idx_upd_matched + n_tup_hot_idx_upd_skipped) =
-                (SELECT n_tup_hot_idx_upd FROM pg_stat_all_tables
+SELECT bool_and((n_tup_hot_indexed_upd_matched + n_tup_hot_indexed_upd_skipped) =
+                (SELECT n_tup_hot_indexed_upd FROM pg_stat_all_tables
                   WHERE relname = 'hotidx_perindex'))
          AS perindex_invariant_holds
   FROM pg_stat_all_indexes
@@ -450,13 +450,13 @@ DROP TABLE hotidx_perindex;
 -- RelationGetHotIndexedChainMax derives a per-relation cap from
 -- fillfactor and tuple width.  Once an on-page HOT-indexed chain reaches
 -- the cap, heap_update demotes the next eligible UPDATE to non-HOT
--- (HEAP_HOT_MODE_NO).  The visible signal is that n_tup_hot_idx_upd
+-- (HEAP_HOT_MODE_NO).  The visible signal is that n_tup_hot_indexed_upd
 -- stops advancing while n_tup_upd keeps going: subsequent UPDATEs are
 -- plain non-HOT updates that move to a fresh page.
 --
 -- We use a low fillfactor and a narrow row to make the cap small
 -- (single-digit), so the test runs quickly without depending on the
--- exact cap value -- the assertion is that hot_idx_upd plateaus while
+-- exact cap value -- the assertion is that hot_indexed_upd plateaus while
 -- total updates does not.
 -- ---------------------------------------------------------------------------
 CREATE TABLE hi_chaincap (
@@ -602,7 +602,7 @@ DROP TABLE hi_cycle;
 -- A BRIN-only column is the canonical case: the BRIN index gets a
 -- new summary entry via aminsert, but no per-update btree entry is
 -- needed and HOT-indexed does not fire.  The signal is
--- n_tup_hot_upd > 0 with n_tup_hot_idx_upd unchanged.
+-- n_tup_hot_upd > 0 with n_tup_hot_indexed_upd unchanged.
 -- ---------------------------------------------------------------------------
 CREATE TABLE hi_brin (
     id int PRIMARY KEY,
