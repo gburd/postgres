@@ -13056,7 +13056,7 @@ AlterFKConstrEnforceabilityRecurse(List **wqueue, ATAlterConstraint *cmdcon,
 				ObjectIdGetDatum(conoid));
 
 	pscan = systable_beginscan(conrel, ConstraintParentIndexId,
-							   true, NULL, 1, &pkey);
+							   false, NULL, 1, &pkey);
 
 	while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
 		ATExecAlterFKConstrEnforceability(wqueue, cmdcon, conrel, tgrel, fkrelid,

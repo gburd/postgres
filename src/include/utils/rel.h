@@ -162,7 +162,7 @@ typedef struct RelationData
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
-	Bitmapset  *rd_hotblockingattr; /* cols blocking HOT update */
+	Bitmapset  *rd_indexedattr; /* all cols referenced by indexes */
 	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
 
 	PublicationDesc *rd_pubdesc;	/* publication descriptor, or NULL */
@@ -218,6 +218,16 @@ typedef struct RelationData
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
 
 	/*
+	 * Bitmap of heap attribute numbers referenced by this index (simple keys,
+	 * INCLUDE columns, expression columns, and partial-index predicate
+	 * columns), offset by FirstLowInvalidHeapAttributeNumber. Lazily built by
+	 * RelationGetIndexedAttrs() and cached in rd_indexcxt. Consumers must
+	 * bms_copy before relying on the pointer beyond any potential
+	 * AcceptInvalidationMessages() call.
+	 */
+	Bitmapset  *rd_indattr;
+
+	/*
 	 * rd_amcache is available for index and table AMs to cache private data
 	 * about the relation.  This must be just a cache since it may get reset
 	 * at any time (in particular, it will get reset by a relcache inval
@@ -249,6 +259,31 @@ typedef struct RelationData
 	 * causes toast_save_datum() to try to preserve toast value OIDs.
 	 */
 	Oid			rd_toastoid;	/* Real TOAST table's OID, or InvalidOid */
+
+	/*
+	 * Upper bound on the length of a HOT-indexed chain for this relation,
+	 * derived lazily from the relation's fillfactor and estimated average
+	 * tuple size.  A value of 0 means "not yet computed"; the HOT decision
+	 * path calls RelationGetHotIndexedChainMax() to fill it in on demand.
+	 * Reset to 0 on relcache invalidation.
+	 *
+	 * Heuristic: (BLCKSZ * fillfactor/100 - overhead) / (est_avg_tuple +
+	 * tombstone_size).  Narrow tables get longer caps, wide tables shorter.
+	 */
+	int			rd_hotidx_chainmax;
+
+	/*
+	 * Cached result of RelationHasExclusionConstraint, computed lazily on
+	 * first call.  Tristate to distinguish "not yet computed" from a real
+	 * answer.  Reset (zeroed) on relcache rebuild.  Read by
+	 * HeapUpdateHotAllowable on every UPDATE; the function used to walk the
+	 * relation's index list and open every index per call, which is
+	 * measurable on relations with many indexes.
+	 */
+#define	RD_HAS_EXCLUSION_UNKNOWN	0
+#define	RD_HAS_EXCLUSION_NO			1
+#define	RD_HAS_EXCLUSION_YES		2
+	char		rd_has_exclusion;
 
 	bool		pgstat_enabled; /* should relation stats be counted */
 	/* use "struct" here to avoid needing to include pgstat.h: */
