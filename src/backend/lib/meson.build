@@ -10,4 +10,5 @@ backend_sources += files(
   'knapsack.c',
   'pairingheap.c',
   'rbtree.c',
+  'sparsemap.c',
 )

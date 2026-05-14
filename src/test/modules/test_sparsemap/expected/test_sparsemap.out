@@ -1,0 +1,28 @@
+CREATE EXTENSION test_sparsemap;
+--
+-- All the logic is in the test_sparsemap() function. It will throw
+-- an error if something fails.
+--
+SELECT test_sparsemap();
+NOTICE:  testing lifecycle operations
+NOTICE:  testing capacity and resize
+NOTICE:  testing single-bit operations
+NOTICE:  testing aggregate queries
+NOTICE:  testing minimum with rolling window
+NOTICE:  testing rank and select
+NOTICE:  testing span
+NOTICE:  testing scan
+NOTICE:  testing RLE encoding
+NOTICE:  testing RLE edge cases
+NOTICE:  testing union
+NOTICE:  testing intersection
+NOTICE:  testing difference
+NOTICE:  testing split
+NOTICE:  testing offset
+NOTICE:  testing get_data
+NOTICE:  testing sparse multi-chunk pattern
+ test_sparsemap 
+----------------
+ 
+(1 row)
+
