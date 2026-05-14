@@ -33,6 +33,7 @@ compute_query_id = 'regress'
 # some test queries.  Disable synchronized seqscans to prevent that.
 $node_primary->append_conf('postgresql.conf', 'synchronize_seqscans = off');
 
+
 # WAL consistency checking is resource intensive so require opt-in with the
 # PG_TEST_EXTRA environment variable.
 if (   $ENV{PG_TEST_EXTRA}
@@ -76,7 +77,7 @@ command_ok(
 		'--bindir=',
 		'--host=' . $node_primary->host,
 		'--port=' . $node_primary->port,
-		'--schedule=../regress/parallel_schedule',
+		'--schedule=../regress/integration_schedule',
 		'--max-concurrent-tests=20',
 		'--inputdir=../regress',
 		"--outputdir=$outputdir"

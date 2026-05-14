@@ -1464,6 +1464,13 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       linkend="guc-default-table-access-method"/> for more information.
      </para>
      <para>
+      The built-in table access methods are <literal>heap</literal> (the
+      default) and <literal>recno</literal>.  The <literal>recno</literal>
+      method provides time-based <acronym>MVCC</acronym> with in-place
+      updates, integrated overflow pages, and attribute-level compression.
+      See <xref linkend="recno"/> for details.
+     </para>
+     <para>
       When creating a partition, the table access method is the access method
       of its partitioned table, if set.
      </para>

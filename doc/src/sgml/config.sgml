@@ -10357,6 +10357,89 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-recno-compression-algorithm" xreflabel="recno_compression_algorithm">
+      <term><varname>recno_compression_algorithm</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>recno_compression_algorithm</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the default compression algorithm for RECNO tables. Valid values are
+        <literal>auto</literal> (automatic selection based on data patterns),
+        <literal>lz4</literal>, <literal>zstd</literal>, <literal>delta</literal>,
+        <literal>dictionary</literal>, and <literal>none</literal>. The default is
+        <literal>auto</literal>, which analyzes data patterns to select the most
+        effective compression algorithm for each tuple.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recno-compression-level" xreflabel="recno_compression_level">
+      <term><varname>recno_compression_level</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_compression_level</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the compression level for RECNO tables when using <literal>zstd</literal>
+        compression. Valid range is 1-22, with higher values providing better
+        compression at the cost of CPU time. Default is 3, which provides a good
+        balance between compression ratio and performance.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recno-overflow-threshold" xreflabel="recno_overflow_threshold">
+      <term><varname>recno_overflow_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_overflow_threshold</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the size threshold (in bytes) above which attributes are stored
+        in overflow pages rather than inline in the main tuple. Default is 2048.
+        Smaller values reduce main page fragmentation but increase overflow page usage.
+        Larger values keep more data inline but may cause page fragmentation.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recno-defrag-threshold" xreflabel="recno_defrag_threshold">
+      <term><varname>recno_defrag_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recno_defrag_threshold</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the free space threshold (as a percentage) below which pages are
+        marked for opportunistic defragmentation. Default is 25, meaning pages
+        with less than 25% free space may be defragmented during updates.
+        Lower values trigger more frequent defragmentation but maintain better
+        space utilization.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recno-timestamp-precision" xreflabel="recno_timestamp_precision">
+      <term><varname>recno_timestamp_precision</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>recno_timestamp_precision</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the precision of commit timestamps used by RECNO's time-based MVCC.
+        Valid values are <literal>microsecond</literal> and <literal>nanosecond</literal>.
+        Default is <literal>microsecond</literal>. Higher precision provides better
+        transaction ordering but uses slightly more CPU for timestamp generation.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-default-toast-compression" xreflabel="default_toast_compression">
       <term><varname>default_toast_compression</varname> (<type>enum</type>)
       <indexterm>
