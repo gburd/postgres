@@ -259,6 +259,15 @@ extern bool BufferIsLockedByMe(Buffer buffer);
 extern bool BufferIsLockedByMeInMode(Buffer buffer, BufferLockMode mode);
 extern bool BufferIsDirty(Buffer buffer);
 extern void MarkBufferDirty(Buffer buffer);
+/*
+ * MarkBufferDirtyShared -- mark buffer dirty while holding only BUFFER_LOCK_SHARE.
+ *
+ * Safe ONLY when the page modification is performed via an atomic CAS and the
+ * buffer's dirty bit is set atomically (no exclusive content lock needed).
+ * Currently used by the RECNO table AM's CAS-update path where the tuple
+ * t_writer field is modified atomically under shared buffer lock.
+ */
+extern void MarkBufferDirtyShared(Buffer buffer);
 extern void IncrBufferRefCount(Buffer buffer);
 extern void CheckBufferIsPinnedOnce(Buffer buffer);
 extern Buffer ReleaseAndReadBuffer(Buffer buffer, Relation relation,

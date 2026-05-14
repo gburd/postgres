@@ -1,0 +1,124 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_range s2_insert_mid s2_commit s1_range s1_commit s3_read
+step s1_range: SELECT count(*) FROM recno_phantom WHERE id BETWEEN 1 AND 10;
+count
+-----
+    4
+(1 row)
+
+step s2_insert_mid: INSERT INTO recno_phantom VALUES (5, 'A', 50);
+step s2_commit: COMMIT;
+step s1_range: SELECT count(*) FROM recno_phantom WHERE id BETWEEN 1 AND 10;
+count
+-----
+    4
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+ 5|A       | 50
+10|A       |100
+(5 rows)
+
+
+starting permutation: s1_range_cat s2_insert_mid s2_commit s1_range_cat s1_commit s3_read
+step s1_range_cat: SELECT count(*), sum(val) FROM recno_phantom WHERE category = 'A';
+count|sum
+-----+---
+    3|130
+(1 row)
+
+step s2_insert_mid: INSERT INTO recno_phantom VALUES (5, 'A', 50);
+step s2_commit: COMMIT;
+step s1_range_cat: SELECT count(*), sum(val) FROM recno_phantom WHERE category = 'A';
+count|sum
+-----+---
+    3|130
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+ 5|A       | 50
+10|A       |100
+(5 rows)
+
+
+starting permutation: s1_read_all s2_insert_mid s2_delete s2_commit s1_read_all s1_commit s3_read
+step s1_read_all: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+10|A       |100
+(4 rows)
+
+step s2_insert_mid: INSERT INTO recno_phantom VALUES (5, 'A', 50);
+step s2_delete: DELETE FROM recno_phantom WHERE id = 3;
+step s2_commit: COMMIT;
+step s1_read_all: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+10|A       |100
+(4 rows)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 5|A       | 50
+10|A       |100
+(4 rows)
+
+
+starting permutation: s1_range s2_insert_end s2_commit s1_range s1_read_all s1_commit s3_read
+step s1_range: SELECT count(*) FROM recno_phantom WHERE id BETWEEN 1 AND 10;
+count
+-----
+    4
+(1 row)
+
+step s2_insert_end: INSERT INTO recno_phantom VALUES (11, 'A', 110);
+step s2_commit: COMMIT;
+step s1_range: SELECT count(*) FROM recno_phantom WHERE id BETWEEN 1 AND 10;
+count
+-----
+    4
+(1 row)
+
+step s1_read_all: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+10|A       |100
+(4 rows)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, category, val FROM recno_phantom ORDER BY id;
+id|category|val
+--+--------+---
+ 1|A       | 10
+ 2|A       | 20
+ 3|B       | 30
+10|A       |100
+11|A       |110
+(5 rows)
+
