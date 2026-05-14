@@ -70,6 +70,7 @@
 #include "miscadmin.h"
 #include "postmaster/bgwriter.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/lwlock.h"
 #include "storage/procsignal.h"
 #include "storage/standby.h"
@@ -149,31 +150,36 @@ TablespaceCreateDbspace(Oid spcOid, Oid dbOid, bool isRedo)
 			}
 			else
 			{
-				/* Directory creation failed? */
-				if (MakePGDirectory(dir) < 0)
+				if (!isRedo)
 				{
-					/* Failure other than not exists or not in WAL replay? */
-					if (errno != ENOENT || !isRedo)
-						ereport(ERROR,
-								(errcode_for_file_access(),
-								 errmsg("could not create directory \"%s\": %m",
-										dir)));
+					/* Normal operation: use FileOpsMkdir for crash safety */
+					FileOpsMkdir(dir, pg_dir_create_mode);
+				}
+				else
+				{
+					/* WAL replay: use raw mkdir with fallback */
+					if (MakePGDirectory(dir) < 0)
+					{
+						if (errno != ENOENT)
+							ereport(ERROR,
+									(errcode_for_file_access(),
+									 errmsg("could not create directory \"%s\": %m",
+											dir)));
 
-					/*
-					 * During WAL replay, it's conceivable that several levels
-					 * of directories are missing if tablespaces are dropped
-					 * further ahead of the WAL stream than we're currently
-					 * replaying.  An easy way forward is to create them as
-					 * plain directories and hope they are removed by further
-					 * WAL replay if necessary.  If this also fails, there is
-					 * trouble we cannot get out of, so just report that and
-					 * bail out.
-					 */
-					if (pg_mkdir_p(dir, pg_dir_create_mode) < 0)
-						ereport(ERROR,
-								(errcode_for_file_access(),
-								 errmsg("could not create directory \"%s\": %m",
-										dir)));
+						/*
+						 * During WAL replay, it's conceivable that several
+						 * levels of directories are missing if tablespaces
+						 * are dropped further ahead of the WAL stream than
+						 * we're currently replaying.  Create them as plain
+						 * directories and hope they are removed by further
+						 * WAL replay if necessary.
+						 */
+						if (pg_mkdir_p(dir, pg_dir_create_mode) < 0)
+							ereport(ERROR,
+									(errcode_for_file_access(),
+									 errmsg("could not create directory \"%s\": %m",
+											dir)));
+					}
 				}
 			}
 
@@ -595,11 +601,18 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 
 	if (in_place)
 	{
-		if (MakePGDirectory(linkloc) < 0 && errno != EEXIST)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not create directory \"%s\": %m",
-							linkloc)));
+		if (!InRecovery)
+		{
+			FileOpsMkdir(linkloc, pg_dir_create_mode);
+		}
+		else
+		{
+			if (MakePGDirectory(linkloc) < 0 && errno != EEXIST)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								linkloc)));
+		}
 	}
 
 	location_with_version_dir = psprintf("%s/%s", in_place ? linkloc : location,
@@ -640,6 +653,8 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 					(errcode_for_file_access(),
 					 errmsg("could not stat directory \"%s\": %m",
 							location_with_version_dir)));
+		else if (!InRecovery)
+			FileOpsMkdir(location_with_version_dir, pg_dir_create_mode);
 		else if (MakePGDirectory(location_with_version_dir) < 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
@@ -666,11 +681,16 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	/*
 	 * Create the symlink under PGDATA
 	 */
-	if (!in_place && symlink(location, linkloc) < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not create symbolic link \"%s\": %m",
-						linkloc)));
+	if (!in_place)
+	{
+		if (!InRecovery)
+			FileOpsSymlink(location, linkloc);
+		else if (symlink(location, linkloc) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not create symbolic link \"%s\": %m",
+							linkloc)));
+	}
 
 	pfree(linkloc);
 	pfree(location_with_version_dir);
@@ -770,7 +790,7 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 
 		/* remove empty directory */
 		if (rmdir(subfile) < 0)
-			ereport(redo ? LOG : ERROR,
+			ereport(redo ? LOG : WARNING,
 					(errcode_for_file_access(),
 					 errmsg("could not remove directory \"%s\": %m",
 							subfile)));
@@ -783,12 +803,15 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 	/* remove version directory */
 	if (rmdir(linkloc_with_version_dir) < 0)
 	{
-		ereport(redo ? LOG : ERROR,
+		ereport(redo ? LOG : WARNING,
 				(errcode_for_file_access(),
 				 errmsg("could not remove directory \"%s\": %m",
 						linkloc_with_version_dir)));
-		pfree(linkloc_with_version_dir);
-		return false;
+		if (redo)
+		{
+			pfree(linkloc_with_version_dir);
+			return false;
+		}
 	}
 
 	/*
@@ -818,7 +841,7 @@ remove_symlink:
 		{
 			int			saved_errno = errno;
 
-			ereport(redo ? LOG : (saved_errno == ENOENT ? WARNING : ERROR),
+			ereport(saved_errno == ENOENT ? LOG : LOG,
 					(errcode_for_file_access(),
 					 errmsg("could not remove directory \"%s\": %m",
 							linkloc)));
@@ -830,7 +853,7 @@ remove_symlink:
 		{
 			int			saved_errno = errno;
 
-			ereport(redo ? LOG : (saved_errno == ENOENT ? WARNING : ERROR),
+			ereport(saved_errno == ENOENT ? LOG : LOG,
 					(errcode_for_file_access(),
 					 errmsg("could not remove symbolic link \"%s\": %m",
 							linkloc)));

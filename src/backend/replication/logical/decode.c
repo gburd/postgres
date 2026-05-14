@@ -27,6 +27,8 @@
 #include "postgres.h"
 
 #include "access/heapam_xlog.h"
+#include "access/recno.h"
+#include "access/recno_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -48,6 +50,12 @@ static void DecodeDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeTruncate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeMultiInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
 static void DecodeSpecConfirm(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+
+/* RECNO record handlers */
+static void DecodeRecnoInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+static void DecodeRecnoUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+static void DecodeRecnoDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
+static inline bool FilterByOrigin(LogicalDecodingContext *ctx, ReplOriginId origin_id);
 
 static void DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 						 xl_xact_parsed_commit *parsed, TransactionId xid,
@@ -560,6 +568,431 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 		default:
 			elog(ERROR, "unexpected RM_HEAP_ID record type: %u", info);
+			break;
+	}
+}
+
+/*
+ * DecodeRecnoExtractHLCInfo -- extract HLC uncertainty from a RECNO WAL record.
+ *
+ * When RECNO_WAL_HAS_HLC is set in the record flags, the last
+ * SizeOfXlRecnoHlcInfo bytes of the main data area contain the HLC
+ * uncertainty interval.  This function extracts it into the caller's
+ * buffer and returns true.  Returns false if no HLC data is present.
+ *
+ * If the subscriber is running with recno_use_hlc, it should call
+ * RecnoReplicaHandleUncertainty() with the extracted data to enforce
+ * causal consistency on the receiving side.
+ */
+static bool
+DecodeRecnoExtractHLCInfo(XLogReaderState *r, uint16 flags,
+						  xl_recno_hlc_info *out_info)
+{
+	Size		total_len;
+	char	   *data;
+
+	if (!(flags & RECNO_WAL_HAS_HLC))
+		return false;
+
+	data = XLogRecGetData(r);
+	total_len = XLogRecGetDataLen(r);
+
+	if (total_len < SizeOfXlRecnoHlcInfo)
+		return false;
+
+	memcpy(out_info, data + total_len - SizeOfXlRecnoHlcInfo,
+		   SizeOfXlRecnoHlcInfo);
+
+	return true;
+}
+
+/*
+ * DecodeRecnoApplyHLCUncertainty -- apply HLC uncertainty on the receiver.
+ *
+ * Called after extracting HLC info from a decoded WAL record.  On a
+ * logical replication subscriber that has recno_use_hlc enabled, this
+ * advances the local HLC past the sender's commit HLC and optionally
+ * waits for the physical clock to pass the uncertainty window.
+ *
+ * This is the logical replication analog of recno_redo_handle_hlc()
+ * used during physical streaming replication redo.
+ */
+static void
+DecodeRecnoApplyHLCUncertainty(const xl_recno_hlc_info *hlc_info)
+{
+	int32		uncertainty_ms;
+
+	if (!recno_use_hlc)
+		return;
+
+	if (hlc_info->commit_hlc == InvalidHLCTimestamp)
+		return;
+
+	uncertainty_ms = 0;
+	if (hlc_info->uncertainty_upper != 0)
+	{
+		uint64		commit_phys = HLCGetPhysical(hlc_info->commit_hlc);
+		uint64		upper_phys = HLCGetPhysical(hlc_info->uncertainty_upper);
+
+		uncertainty_ms = (int32) (upper_phys - commit_phys);
+	}
+
+	RecnoReplicaHandleUncertainty(hlc_info->commit_hlc, uncertainty_ms);
+}
+
+/*
+ * Parse XLOG_RECNO_INSERT from wal into proper tuplebufs.
+ *
+ * Inserts contain the new tuple in RECNO format.  When the WAL record
+ * includes HLC uncertainty data (RECNO_WAL_HAS_HLC flag), this function
+ * extracts it and applies uncertainty handling on the subscriber.
+ */
+static void
+DecodeRecnoInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	Size		datalen;
+	char	   *tupledata;
+	XLogReaderState *r = buf->record;
+	xl_recno_insert *xlrec;
+	ReorderBufferChange *change;
+	RelFileLocator target_locator;
+	xl_recno_hlc_info hlc_info;
+
+	xlrec = (xl_recno_insert *) XLogRecGetData(r);
+
+	/* Extract and apply HLC uncertainty if present */
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+		DecodeRecnoApplyHLCUncertainty(&hlc_info);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_INSERT;
+	change->origin_id = XLogRecGetOrigin(r);
+
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get RECNO tuple data from WAL record. The tuple follows the
+	 * xl_recno_insert structure.
+	 */
+	tupledata = (char *) xlrec + sizeof(xl_recno_insert);
+	datalen = xlrec->tuple_len;
+
+	/*
+	 * When RECNO_WAL_LOGICAL_TUPLE is set, the write path appended a
+	 * heap-format image at the END of the main WAL data: ... [heap bytes]
+	 * [uint32 heap_len] Read heap_len from the last 4 bytes, then back up
+	 * heap_len more bytes to find the heap tuple payload.  This is immune to
+	 * whatever HLC / compression data precedes it.
+	 */
+	if (xlrec->flags & RECNO_WAL_LOGICAL_TUPLE)
+	{
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		heap_len;
+		char	   *heap_data;
+
+		memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+		elog(DEBUG1, "RECNO DecodeInsert: full_len=%zu heap_len=%u action=INSERT lsn=%X/%X",
+			 full_len, heap_len,
+			 (uint32) (buf->origptr >> 32), (uint32) buf->origptr);
+		heap_data = end - sizeof(uint32) - heap_len;
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   heap_len - SizeofHeapTupleHeader);
+		change->data.tp.newtuple->t_len = heap_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.newtuple->t_data, heap_data, heap_len);
+	}
+	else
+	{
+		/*
+		 * Legacy path: no heap image in WAL (publisher compiled without or
+		 * table not logically logged when the record was written). pgoutput
+		 * will most likely reject this; initial-sync via COPY still works, so
+		 * this is only a streaming-decoding concern.
+		 */
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, datalen);
+		memcpy(change->data.tp.newtuple->t_data, tupledata, datalen);
+		change->data.tp.newtuple->t_len = datalen;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Parse XLOG_RECNO_UPDATE_INPLACE from wal into proper tuplebufs.
+ *
+ * Updates contain both the old and new tuple in RECNO format.  When the
+ * WAL record includes HLC uncertainty data, this function extracts it
+ * and applies uncertainty handling on the subscriber.
+ */
+static void
+DecodeRecnoUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_recno_update *xlrec;
+	ReorderBufferChange *change;
+	char	   *old_tuple_data;
+	char	   *new_tuple_data;
+	RelFileLocator target_locator;
+	xl_recno_hlc_info hlc_info;
+
+	xlrec = (xl_recno_update *) XLogRecGetData(r);
+
+	/* Extract and apply HLC uncertainty if present */
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+		DecodeRecnoApplyHLCUncertainty(&hlc_info);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_UPDATE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get old and new tuple data from WAL record. The structure is:
+	 * xl_recno_update | old_tuple | new_tuple [| xl_recno_hlc_info] [|
+	 * logical images]
+	 */
+	old_tuple_data = (char *) xlrec + sizeof(xl_recno_update);
+	new_tuple_data = old_tuple_data + xlrec->old_tuple_len;
+
+	if (xlrec->flags & RECNO_WAL_LOGICAL_TUPLE)
+	{
+		/*
+		 * Two heap-format images appended at the END of the record, each with
+		 * trailing length:
+		 *
+		 * ... [old_heap bytes] [uint32 old_heap_len] [new_heap bytes] [uint32
+		 * new_heap_len]
+		 *
+		 * Walk backwards from end: read new_heap_len last, then old_heap_len
+		 * before the new bytes + its length.
+		 */
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		old_heap_len;
+		uint32		new_heap_len;
+		char	   *old_heap_data;
+		char	   *new_heap_data;
+
+		memcpy(&new_heap_len, end - sizeof(uint32), sizeof(uint32));
+		new_heap_data = end - sizeof(uint32) - new_heap_len;
+		memcpy(&old_heap_len,
+			   new_heap_data - sizeof(uint32), sizeof(uint32));
+		old_heap_data = new_heap_data - sizeof(uint32) - old_heap_len;
+
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   old_heap_len - SizeofHeapTupleHeader);
+		change->data.tp.oldtuple->t_len = old_heap_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.oldtuple->t_data, old_heap_data, old_heap_len);
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   new_heap_len - SizeofHeapTupleHeader);
+		change->data.tp.newtuple->t_len = new_heap_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.newtuple->t_data, new_heap_data, new_heap_len);
+	}
+	else
+	{
+		/* Legacy: RECNO-format bytes (will confuse pgoutput) */
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->old_tuple_len);
+		memcpy(change->data.tp.oldtuple->t_data, old_tuple_data,
+			   xlrec->old_tuple_len);
+		change->data.tp.oldtuple->t_len = xlrec->old_tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->new_tuple_len);
+		memcpy(change->data.tp.newtuple->t_data, new_tuple_data,
+			   xlrec->new_tuple_len);
+		change->data.tp.newtuple->t_len = xlrec->new_tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Parse XLOG_RECNO_DELETE from wal into proper tuplebufs.
+ *
+ * Deletes contain the old tuple for UNDO purposes.  When the WAL record
+ * includes HLC uncertainty data, this function extracts it and applies
+ * uncertainty handling on the subscriber.
+ */
+static void
+DecodeRecnoDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_recno_delete *xlrec;
+	ReorderBufferChange *change;
+	char	   *tupledata;
+	RelFileLocator target_locator;
+	xl_recno_hlc_info hlc_info;
+
+	xlrec = (xl_recno_delete *) XLogRecGetData(r);
+
+	/* Extract and apply HLC uncertainty if present */
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+		DecodeRecnoApplyHLCUncertainty(&hlc_info);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_DELETE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get old tuple data from WAL record. The tuple follows the
+	 * xl_recno_delete structure (HLC info, if present, is at the end).
+	 */
+	tupledata = (char *) xlrec + sizeof(xl_recno_delete);
+
+	if (xlrec->flags & RECNO_WAL_LOGICAL_TUPLE)
+	{
+		/*
+		 * Heap image is the last region of the WAL record: ... [heap bytes]
+		 * [uint32 heap_len]
+		 */
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		heap_len;
+		char	   *heap_data;
+
+		memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+		heap_data = end - sizeof(uint32) - heap_len;
+
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   heap_len - SizeofHeapTupleHeader);
+		change->data.tp.oldtuple->t_len = heap_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.oldtuple->t_data, heap_data, heap_len);
+	}
+	else
+	{
+		/* Legacy path */
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->tuple_len);
+		memcpy(change->data.tp.oldtuple->t_data, tupledata,
+			   xlrec->tuple_len);
+		change->data.tp.oldtuple->t_len = xlrec->tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Handle rmgr RECNO records for LogicalDecodingProcessRecord().
+ *
+ * RECNO tables use timestamp-based MVCC instead of XID-based, but for
+ * logical replication we convert RECNO tuples to heap format for the
+ * reorderbuffer. This allows RECNO tables to participate in publications
+ * and subscriptions.
+ */
+void
+recno_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_RECNO_OPMASK;
+	TransactionId xid = XLogRecGetXid(buf->record);
+	SnapBuild  *builder = ctx->snapshot_builder;
+
+	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
+
+	/*
+	 * If we don't have snapshot or we are just fast-forwarding, there is no
+	 * point in decoding data changes.
+	 */
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT)
+		return;
+
+	switch (info)
+	{
+		case XLOG_RECNO_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoInsert(ctx, buf);
+			break;
+
+		case XLOG_RECNO_UPDATE_INPLACE:
+			/* UPDATE and UPDATE_INPLACE have same value (0x10) */
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoUpdate(ctx, buf);
+			break;
+
+		case XLOG_RECNO_DELETE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoDelete(ctx, buf);
+			break;
+
+		case XLOG_RECNO_DEFRAG:
+			/* VACUUM and DEFRAG have same value (0x30) */
+		case XLOG_RECNO_COMPRESS:
+		case XLOG_RECNO_OVERFLOW_WRITE:
+		case XLOG_RECNO_INIT_PAGE:
+
+			/*
+			 * These operations don't produce logical changes visible to
+			 * replication. VACUUM, DEFRAG, and COMPRESS are maintenance.
+			 * OVERFLOW_WRITE is internal storage management. INIT_PAGE
+			 * creates empty pages.
+			 */
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_RECNO_ID record type: %u", info);
 			break;
 	}
 }

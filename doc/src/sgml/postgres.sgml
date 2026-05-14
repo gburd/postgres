@@ -164,6 +164,8 @@ break is not needed in a wider output rendering.
   &high-availability;
   &monitoring;
   &wal;
+  &undo;
+  &fileops;
   &logical-replication;
   &jit;
   &regress;
@@ -257,6 +259,7 @@ break is not needed in a wider output rendering.
   &custom-scan;
   &geqo;
   &tableam;
+  &recno;
   &indexam;
   &wal-for-extensions;
   &indextypes;
