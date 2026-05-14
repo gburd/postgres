@@ -62,6 +62,10 @@ tests += {
       't/051_effective_wal_level.pl',
       't/052_checkpoint_segment_missing.pl',
       't/053_standby_login_event_trigger.pl',
+      't/054_fileops_recovery.pl',
+      't/061_recno_enable_undo.pl',
+      't/063_fileops_undo.pl',
+      't/065_undo_adversarial_crash.pl',
     ],
   },
 }

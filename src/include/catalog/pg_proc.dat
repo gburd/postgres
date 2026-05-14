@@ -912,6 +912,10 @@
   proname => 'heap_tableam_handler', provolatile => 'v',
   prorettype => 'table_am_handler', proargtypes => 'internal',
   prosrc => 'heap_tableam_handler' },
+{ oid => '9400', descr => 'recno table access method handler',
+  proname => 'recno_tableam_handler', provolatile => 'v',
+  prorettype => 'table_am_handler', proargtypes => 'internal',
+  prosrc => 'recno_tableam_handler' },
 
 # Index access method handlers
 { oid => '330', descr => 'btree index access method handler',

@@ -1,0 +1,376 @@
+/*-------------------------------------------------------------------------
+ *
+ * slog.h
+ *	  Secondary Log (sLog) for shared-memory tracking
+ *
+ * The sLog provides shared-memory data structures for O(1) lookups:
+ *
+ *   1. Transaction skip-list - Aborted transaction entries keyed by
+ *      (xid, reloid), ordered for efficient xid-based range operations.
+ *      Protected by a single LWLock (modifications are infrequent).
+ *
+ *   2. XID sparsemap - Compressed bitmap for O(1) SLogXidIsPresent().
+ *      Protected by a SpinLock (operations are very fast).
+ *
+ *   3. SLogTupleHash - Per-tuple operation tracking keyed by (relid, tid).
+ *      Designed for RECNO table AM timestamp-based MVCC.
+ *      Partitioned by tuple_locks[NUM_SLOG_TUPLE_PARTITIONS].
+ *
+ * WAL: Transaction sLog reuses existing RM_ATM_ID records.  Tuple sLog
+ * is WAL-free (transient entries removed at commit/abort).
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * src/include/access/slog.h
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef SLOG_H
+#define SLOG_H
+
+#include "access/transam.h"
+#include "access/xlogdefs.h"
+#include "datatype/timestamp.h"
+#include "storage/itemptr.h"
+#include "storage/lwlock.h"
+#include "storage/spin.h"
+#include "utils/dsa.h"
+
+/*
+ * Partition count for tuple LWLock array.
+ * Must be a power of 2.  32 partitions reduces partition lock contention
+ * for workloads that touch many distinct TIDs concurrently.
+ */
+#define NUM_SLOG_TUPLE_PARTITIONS	32
+#define SLOG_TUPLE_PARTITION_MASK	(NUM_SLOG_TUPLE_PARTITIONS - 1)
+
+/*
+ * Maximum concurrent operations on a single TID.
+ *
+ * Under EPQ retry patterns with high concurrency, each backend that sees
+ * TM_Updated calls table_tuple_lock which adds a LOCK_EXCL sLog entry.
+ * These entries persist until the owning transaction commits, so with N
+ * concurrent backends hitting the same hot row, up to N-1 LOCK entries
+ * can coexist.  32 slots handles realistic OLTP concurrency levels.
+ * Stale-slot reclamation kicks in before the overflow ERROR.
+ */
+#define SLOG_MAX_TUPLE_OPS		32
+
+/*
+ * Tuple hash auto-sizing constants.
+ *
+ * All DML operations (INSERT/DELETE/UPDATE/LOCK) attempt to create shared
+ * hash entries.  On overflow (hash full), the operation proceeds gracefully
+ * with local-only tracking rather than crashing.  Auto-sizing formula:
+ * MaxBackends * SLOG_TUPLE_PER_BACKEND_SLOTS, clamped.
+ */
+#define SLOG_TUPLE_PER_BACKEND_SLOTS	256
+#define SLOG_TUPLE_MIN_ENTRIES			1024
+#define SLOG_TUPLE_MAX_ENTRIES			1048576
+
+/*
+ * Skip-list pool capacity for the ATM (Aborted Transaction Map).
+ * Each slot holds one aborted transaction pending UNDO application.
+ * With inline UNDO for small transactions, only large transactions
+ * accumulate here.  4096 entries handles sustained abort rates of
+ * ~100/s for 40+ seconds before the logical revert worker drains them.
+ */
+#define SLOG_TXN_POOL_CAPACITY		4100	/* 4096 user + 2 sentinels + 2 margin */
+
+/*
+ * Sparsemap buffer size for XID presence bitmap (64KB).
+ */
+#define SLOG_XID_MAP_BUFSIZE		65536
+
+/*
+ * sLog entry types for tuple operations.
+ */
+typedef enum SLogOpType
+{
+	SLOG_ENTRY_ABORTED_TXN = 0, /* Transaction-level abort entry */
+	SLOG_OP_INSERT = 1,
+	SLOG_OP_DELETE = 2,
+	SLOG_OP_UPDATE = 3,
+	SLOG_OP_LOCK_SHARE = 4,
+	SLOG_OP_LOCK_EXCL = 5,
+	SLOG_OP_ABORTED = 6,		/* Tuple-level: op was aborted, UNDO pending */
+} SLogOpType;
+
+/* ----------------------------------------------------------------
+ * Transaction sLog structures
+ *
+ * SLogTxnEntry is used as the public output type for lookups.
+ * Internally, the skip-list node (SLogTxnNode) contains these same
+ * fields plus skip-list metadata.
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * SLogTxnEntry - Public output structure for transaction lookups.
+ * Callers receive copies of this via SLogTxnLookup().
+ */
+typedef struct SLogTxnEntry
+{
+	TransactionId xid;
+	Oid			reloid;
+	XLogRecPtr	last_batch_lsn; /* LSN of last UNDO batch for this xid */
+	Oid			dboid;			/* database OID */
+	TimestampTz abort_time;		/* when transaction aborted */
+	bool		revert_complete;	/* has Logical Revert finished? */
+} SLogTxnEntry;
+
+/* ----------------------------------------------------------------
+ * Tuple sLog structures
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * SLogTupleKey - Hash key for SLogTupleHash.
+ *
+ * Note: ItemPointerData is 6 bytes.  Always memset(&key, 0, sizeof(key))
+ * before populating to ensure deterministic hashing with HASH_BLOBS.
+ */
+typedef struct SLogTupleKey
+{
+	Oid			relid;
+	ItemPointerData tid;
+} SLogTupleKey;
+
+/*
+ * SLogTupleOp - Single operation on a tuple.
+ *
+ * Uses an in_use slot-based model for O(1) removal without array compaction
+ * under the exclusive lock.
+ */
+typedef struct SLogTupleOp
+{
+	TransactionId xid;
+	TransactionId subxid;		/* subtransaction ID, or InvalidTransactionId */
+	SLogOpType	op_type;
+	CommandId	cid;
+	TimestampTz commit_ts;		/* 0 if not yet committed */
+	uint32		spec_token;		/* speculative insertion token, or 0 */
+	bool		in_use;			/* slot occupied? */
+
+	/* Shared before-image support (commit retention for MVCC reads) */
+	uint64		commit_hlc;		/* 0 = uncommitted; else HLC when committed */
+	dsa_pointer before_image_dp;	/* DSA pointer to SLogBeforeImage, or
+									 * InvalidDsaPointer if none */
+} SLogTupleOp;
+
+/*
+ * SLogBeforeImage - DSA-resident before-image for committed in-place UPDATEs.
+ *
+ * Stored in the sLog DSA area, referenced by SLogTupleOp.before_image_dp.
+ * Contains the full tuple data as it existed before the UPDATE, enabling
+ * readers with older snapshots to see the pre-modification version.
+ */
+typedef struct SLogBeforeImage
+{
+	uint32		len;			/* length of data[] (tuple body size) */
+	uint16		flags;			/* original t_flags */
+	uint64		commit_ts;		/* original t_commit_ts (insert HLC) */
+	char		data[FLEXIBLE_ARRAY_MEMBER];
+}			SLogBeforeImage;
+
+/*
+ * SLogTupleEntry - Value in SLogTupleHash.
+ */
+typedef struct SLogTupleEntry
+{
+	SLogTupleKey key;			/* hash key */
+	int			nops;			/* number of active operations */
+	SLogTupleOp ops[SLOG_MAX_TUPLE_OPS];
+} SLogTupleEntry;
+
+/* ----------------------------------------------------------------
+ * Shared state
+ *
+ * The transaction skip-list and XID sparsemap are allocated in
+ * shared memory; their internal structures are opaque to callers.
+ * The SLogSharedState is defined in slog.c.
+ * ----------------------------------------------------------------
+ */
+
+/* ----------------------------------------------------------------
+ * Callback type for tuple iteration
+ * ----------------------------------------------------------------
+ */
+typedef bool (*SLogTupleIterCallback) (const SLogTupleOp *op, void *arg);
+
+/* ----------------------------------------------------------------
+ * API: Shared memory
+ * ----------------------------------------------------------------
+ */
+extern Size SLogShmemSize(void);
+extern void SLogShmemRequest(void);
+extern void SLogShmemInit(void);
+
+/* ----------------------------------------------------------------
+ * API: Transaction sLog
+ * ----------------------------------------------------------------
+ */
+extern bool SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
+						  XLogRecPtr last_batch_lsn);
+extern bool SLogXidIsPresent(TransactionId xid);
+extern bool SLogTxnLookup(TransactionId xid, Oid reloid,
+						  SLogTxnEntry *entry_out);
+extern bool SLogTxnLookupByXid(TransactionId xid, XLogRecPtr *lsn_out);
+extern void SLogTxnRemove(TransactionId xid, Oid reloid);
+extern void SLogTxnRemoveByXid(TransactionId xid);
+extern void SLogTxnMarkReverted(TransactionId xid);
+extern bool SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
+									 XLogRecPtr *lsn_out);
+extern XLogRecPtr SLogTxnGetOldestUnrevertedLSN(void);
+extern void SLogRecoveryFinalize(int *total_out, int *unreverted_out);
+
+/* ----------------------------------------------------------------
+ * API: Tuple sLog
+ * ----------------------------------------------------------------
+ */
+
+/* Dynamic sizing */
+extern int	SLogTupleNumEntries(void);
+
+/* Core operations */
+extern bool SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
+							SLogOpType op_type, TransactionId subxid,
+							CommandId cid, TimestampTz commit_ts,
+							uint32 spec_token);
+extern bool SLogTupleInsertRecovery(Oid relid, ItemPointer tid,
+									TransactionId xid, SLogOpType op_type);
+extern bool SLogTupleLookup(Oid relid, ItemPointer tid,
+							SLogTupleEntry *entry_out);
+extern void SLogTupleRemove(Oid relid, ItemPointer tid, TransactionId xid);
+extern void SLogTupleRemoveByXid(TransactionId xid);
+extern void SLogTupleRemoveBySubXid(TransactionId xid, TransactionId subxid);
+extern void SLogTupleIterateByTid(Oid relid, ItemPointer tid,
+								  SLogTupleIterCallback callback, void *arg);
+
+/* Filtered lookup (xid_filter=InvalidTransactionId means all) */
+extern int	SLogTupleLookupFiltered(Oid relid, ItemPointer tid,
+									TransactionId xid_filter,
+									SLogTupleOp *ops_out, int max_ops);
+
+/* Subtransaction re-parenting on subxact commit */
+extern void SLogTupleUpdateSubXid(TransactionId xid,
+								  TransactionId old_subxid,
+								  TransactionId new_subxid);
+
+/* Mark all ops for xid as SLOG_OP_ABORTED */
+extern void SLogTupleMarkAborted(TransactionId xid);
+
+/* Global removal for UNDO worker (no backend-local list) */
+extern void SLogTupleRemoveByXidGlobal(TransactionId xid);
+
+/* Lightweight local-only tracking (INSERTs only) */
+extern void SLogTupleTrackLocalOnly(Oid relid, ItemPointer tid,
+									TransactionId xid, TransactionId subxid);
+
+/* Convenience wrappers */
+extern bool SLogTupleHasEntry(Oid relid, ItemPointer tid);
+extern bool SLogTupleIsInsertedByMe(Oid relid, ItemPointer tid);
+extern bool SLogTupleIsDeletedByMe(Oid relid, ItemPointer tid);
+extern TransactionId SLogTupleGetDirtyXid(Oid relid, ItemPointer tid,
+										  bool *is_insert);
+extern bool SLogTupleHasLockConflict(Oid relid, ItemPointer tid,
+									 TransactionId my_xid,
+									 SLogOpType requested_lock);
+extern bool SLogTupleHasAbortedEntry(Oid relid, ItemPointer tid);
+
+
+/* Backend-private tracking for cleanup at commit/abort */
+extern void SLogTupleTrackKey(SLogTupleKey key, TransactionId xid,
+							  TransactionId subxid);
+extern void SLogTupleResetTracking(void);
+
+/*
+ * SLogTrackedKeyInfo -- public snapshot of a tracked key for batch processing.
+ *
+ * Returned by SLogTupleCollectTrackedKeys() so that callers (e.g. RECNO
+ * commit-time stamping) can sort and batch-process tuples without knowledge
+ * of the internal SLogTrackedKey linked-list structure.
+ */
+typedef struct SLogTrackedKeyInfo
+{
+	SLogTupleKey key;
+	TransactionId xid;
+	TransactionId subxid;
+	bool		local_only;
+	SLogOpType	op_type;
+	uint64		before_commit_ts;
+	bool		has_before_image;
+} SLogTrackedKeyInfo;
+
+/* Collect tracked keys into a sortable array (for batch commit processing) */
+extern int	SLogTupleCollectTrackedKeys(TransactionId xid,
+										SLogTrackedKeyInfo **out_keys);
+
+/* Iterate tracked keys (for AM-specific pre-commit callbacks) */
+typedef bool (*SLogTrackedKeyCallback) (const SLogTupleKey *key,
+										TransactionId xid,
+										TransactionId subxid,
+										bool local_only,
+										void *arg);
+extern void SLogTupleIterateTrackedKeys(TransactionId xid,
+										SLogTrackedKeyCallback callback,
+										void *arg);
+
+/* Extended callback with before-image metadata (for commit-time processing) */
+typedef bool (*SLogTrackedKeyExtCallback) (const SLogTupleKey *key,
+										   TransactionId xid,
+										   TransactionId subxid,
+										   bool local_only,
+										   uint64 before_commit_ts,
+										   bool has_before_image,
+										   void *arg);
+extern void SLogTupleIterateTrackedKeysExt(TransactionId xid,
+										   SLogTrackedKeyExtCallback callback,
+										   void *arg);
+
+/* Iterate tracked keys for a specific subtransaction (savepoint rollback) */
+extern void SLogTupleIterateTrackedKeysForSubXid(TransactionId xid,
+												 TransactionId subxid,
+												 SLogTrackedKeyCallback callback,
+												 void *arg);
+
+/* Before-image storage for savepoint rollback */
+extern void SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid,
+									  TransactionId xid,
+									  const char *data, int len,
+									  uint16 flags, uint64 commit_ts);
+extern bool SLogTupleGetBeforeImage(Oid relid, ItemPointer tid,
+									TransactionId xid, TransactionId subxid,
+									char **data_out, int *len_out,
+									uint16 *flags_out, uint64 *commit_ts_out);
+
+/* Commit retention: retain committed UPDATE entries with before-images */
+extern void SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc);
+
+/* Per-tuple operations for two-phase commit resolution */
+extern void SLogTupleRemoveByXidSingle(Oid relid, ItemPointer tid,
+									   TransactionId xid);
+extern void SLogTupleMarkAbortedSingle(Oid relid, ItemPointer tid,
+									   TransactionId xid);
+
+/* Shared before-image read API for MVCC serving */
+extern bool SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
+										  uint64 reader_snapshot_hlc,
+										  char **data_out, int *len_out,
+										  uint16 *flags_out,
+										  uint64 *orig_commit_ts_out);
+
+/* Cleanup retained entries when no longer needed by any snapshot */
+extern void SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc);
+
+/* DSA lifecycle for before-image shared memory */
+extern void SLogEnsureDsaAttached(void);
+extern dsa_pointer SLogDsaAllocateBeforeImage(const char *data, int len,
+											  uint16 flags, uint64 commit_ts);
+extern void SLogDsaFreeBeforeImage(dsa_pointer dp);
+
+/* GUC: maximum DSA size for before-images (in MB) */
+extern int	slog_dsa_max_size_mb;
+
+#endif							/* SLOG_H */

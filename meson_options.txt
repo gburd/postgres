@@ -145,6 +145,9 @@ option('tcl_version', type: 'string', value: 'tcl',
 option('readline', type: 'feature', value: 'auto',
   description: 'Use GNU Readline or BSD Libedit for editing')
 
+option('recno', type: 'feature', value: 'auto',
+  description: 'RECNO table access method support')
+
 option('selinux', type: 'feature', value: 'auto',
   description: 'SELinux support')
 
