@@ -2497,6 +2497,28 @@ prune_handle_tombstones(PruneState *prstate)
 			if (target_alive)
 			{
 				/*
+				 * Chain processing may also have rewritten the target in
+				 * place as a HOT-indexed bridge (forward-only stub LP that
+				 * walks chain readers past the dead hop).  A bridge has no
+				 * use for the adjacent tombstone's modified-attrs bitmap:
+				 * stale-leaf readers landing on the bridge follow t_ctid
+				 * and recheck the leaf key against the live tuple.  Treat
+				 * the source as no longer a live hot-indexed tuple so the
+				 * adjacent tombstone is reclaimed alongside the chain
+				 * collapse, freeing the LP.
+				 */
+				for (int j = 0; j < prstate->nbridges; j++)
+				{
+					if (prstate->bridges[j * 2] == target_off)
+					{
+						target_alive = false;
+						break;
+					}
+				}
+			}
+			if (target_alive)
+			{
+				/*
 				 * Target survived chain processing.  Sanity-check that it is
 				 * still an LP_NORMAL tuple carrying HEAP_INDEXED_UPDATED on
 				 * the page (before any writes); if that invariant is ever
