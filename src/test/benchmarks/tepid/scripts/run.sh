@@ -32,7 +32,7 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 OUT=$BENCH/results/$TS.csv
 LOGDIR=$BENCH/logs/$TS
 mkdir -p "$LOGDIR"
-echo "variant,workload,tps,latency_avg_ms,hot_updates,hot_indexed_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak,per_index_before,per_index_after" > "$OUT"
+echo "variant,workload,tps,latency_avg_ms,classic_hot_updates,hot_indexed_updates,non_hot_updates,total_updates,wal_bytes,bloat_pages_before,bloat_pages_after,index_size_before,index_size_after,cpu_pct_peak,rss_mib_peak,per_index_before,per_index_after" > "$OUT"
 echo "=== siu-bench A/B run $TS -> $OUT (scale=$SCALE clients=$CLIENTS threads=$THREADS duration=${DURATION}s)"
 
 bin_of() {
@@ -315,15 +315,17 @@ run_one() {
   local hot=$((hot_end - hot_start))
   local siu=$((siu_end - siu_start))
   local tot=$((total_end - total_start))
+  local classic_hot=$((hot - siu))
+  local non_hot=$((tot - hot))
 
-  printf '%s,%s,%s,%s,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-    "$v" "$workload" "$tps" "$lat" "$hot" "$siu" "$tot" \
+  printf '%s,%s,%s,%s,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$v" "$workload" "$tps" "$lat" "$classic_hot" "$siu" "$non_hot" "$tot" \
     "$wal_bytes" \
     "$bloat_before" "$bloat_after" \
     "$idx_before" "$idx_after" \
     "$cpu_rss" "$per_idx_before" "$per_idx_after" >> "$OUT"
-  printf '  %-8s %-14s tps=%10s lat=%6s hot=%7d siu=%7d tot=%-7d wal=%12s bloat=%s->%s idx=%s->%s cpu_rss=%s\n' \
-    "$v" "$workload" "$tps" "$lat" "$hot" "$siu" "$tot" "$wal_bytes" \
+  printf '  %-8s %-14s tps=%10s lat=%6s classic_hot=%7d hi=%7d non_hot=%7d tot=%-7d wal=%12s bloat=%s->%s idx=%s->%s cpu_rss=%s\n' \
+    "$v" "$workload" "$tps" "$lat" "$classic_hot" "$siu" "$non_hot" "$tot" "$wal_bytes" \
     "$bloat_before" "$bloat_after" "$idx_before" "$idx_after" "$cpu_rss"
 }
 
