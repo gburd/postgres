@@ -68,3 +68,8 @@ src/tools/pg_bsd_indent/.*
 # block arguments that confuse pg_bsd_indent's parser.  It is an
 # externally-maintained library integrated into PostgreSQL.
 src/backend/lib/sparsemap\.c$
+#
+# skiplist.h and its test use SKIPLIST_DECL() macro invocations with inline
+# block arguments that confuse pg_bsd_indent's parser.
+src/include/lib/skiplist\.h$
+src/test/modules/test_skiplist/test_skiplist\.c$
