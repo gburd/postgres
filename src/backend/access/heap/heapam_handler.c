@@ -27,7 +27,6 @@
 #include "access/syncscan.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
-#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
@@ -224,12 +223,19 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, uint32 options,
 					Snapshot snapshot, Snapshot crosscheck,
-					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
+					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
+					TM_IndexUpdateInfo *upd_info)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
+	HeapUpdateHotMode hot_mode;
 	TM_Result	result;
+
+	Assert(ItemPointerIsValid(otid));
+	Assert(upd_info != NULL);
+
+	hot_mode = HeapUpdateHotAllowable(relation, upd_info->modified_attrs);
+	*lockmode = HeapUpdateDetermineLockmode(relation, upd_info->modified_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
@@ -237,29 +243,17 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 	result = heap_update(relation, otid, tuple, cid, options,
 						 crosscheck, wait,
-						 tmfd, lockmode, update_indexes);
+						 tmfd, *lockmode, upd_info->modified_attrs, hot_mode);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
-	 * Note: heap_update returns the tid (location) of the new tuple in the
-	 * t_self field.
-	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
+	 * Decide whether new index entries are needed for the tuple.  If the
+	 * tuple stored by heap_update is heap-only, this was a HOT update and
+	 * (subject to per-index checks in the executor) only summarizing indexes
+	 * need a new entry.  Otherwise every index must get an entry pointing to
+	 * the new tuple's TID.
 	 */
-	if (result != TM_Ok)
-	{
-		Assert(*update_indexes == TU_None);
-		*update_indexes = TU_None;
-	}
-	else if (!HeapTupleIsHeapOnly(tuple))
-		Assert(*update_indexes == TU_All);
-	else
-		Assert((*update_indexes == TU_Summarizing) ||
-			   (*update_indexes == TU_None));
+	upd_info->update_all_indexes = (result == TM_Ok) && !HeapTupleIsHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);
@@ -725,9 +719,33 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 			if (!index_getnext_slot(indexScan, ForwardScanDirection, slot))
 				break;
 
-			/* Since we used no scan keys, should never need to recheck */
+			/*
+			 * CLUSTER uses a no-key full-index scan; it cannot do any
+			 * tuple-level filtering itself.  The HOT-indexed reader path
+			 * routinely sets xs_recheck when walking chain entries whose
+			 * index key may be stale relative to the visible heap tuple.
+			 * Those entries cause the same live tuple to be visited via the
+			 * fresh hot-indexed-inserted entry too; including them would
+			 * duplicate rows in the rewritten heap.  Skip them here -- the
+			 * tuple is reachable through its canonical index entry.
+			 *
+			 * If xs_recheck is set with actual scan keys, that's a real lossy
+			 * index scenario CLUSTER can't handle (historical restriction).
+			 */
 			if (indexScan->xs_recheck)
-				elog(ERROR, "CLUSTER does not support lossy index conditions");
+			{
+				if (indexScan->numberOfKeys > 0)
+					elog(ERROR, "CLUSTER does not support lossy index conditions");
+				continue;
+			}
+
+			/*
+			 * Same reasoning as for xs_recheck: a HOT-indexed stale hop would
+			 * re-emit an already-visited tuple via its canonical fresh entry.
+			 * Skip.
+			 */
+			if (indexScan->xs_hot_indexed_recheck)
+				continue;
 		}
 		else
 		{
@@ -2525,7 +2543,6 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 
 	hscan->rs_cindex = 0;
 	hscan->rs_ntuples = 0;
-
 	/* Release buffer containing previous block. */
 	if (BufferIsValid(hscan->rs_cbuf))
 	{
@@ -2586,6 +2603,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 		 * offset.
 		 */
 		int			curslot;
+		bool		page_had_hot_indexed = false;
 
 		/* We must have extracted the tuple offsets by now */
 		Assert(noffsets > -1);
@@ -2595,12 +2613,60 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			OffsetNumber offnum = offsets[curslot];
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
+			bool		hot_indexed_recheck = false;
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true))
-				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+									   &heapTuple, NULL, true,
+									   &hot_indexed_recheck))
+			{
+				OffsetNumber resolved = ItemPointerGetOffsetNumber(&tid);
+				bool		already_have = false;
+
+				if (hot_indexed_recheck)
+					page_had_hot_indexed = true;
+
+				/*
+				 * With HOT-indexed updates, more than one bitmap entry on the
+				 * same block can chain-resolve to the same live tuple (a
+				 * stale old-key entry plus the fresh new-key entry, or
+				 * multiple stale entries from successive hot-indexed
+				 * updates).  Once we've seen any hot-indexed hop on this
+				 * block dedup inline so upper nodes (e.g., MERGE) don't see
+				 * the same row twice.  Preserve original insertion order:
+				 * MERGE's RETURNING ordering and test harness stability both
+				 * depend on it.  In the absence of hot-indexed on the page we
+				 * skip the linear scan entirely -- the TBM's TIDs are already
+				 * distinct by construction.
+				 */
+				if (page_had_hot_indexed)
+				{
+					for (int j = 0; j < ntup; j++)
+					{
+						if (hscan->rs_vistuples[j] == resolved)
+						{
+							already_have = true;
+							break;
+						}
+					}
+				}
+
+				if (!already_have)
+					hscan->rs_vistuples[ntup++] = resolved;
+
+				/*
+				 * If we reached the visible tuple through a HOT-indexed
+				 * (hot-indexed) hop, the bitmap index entry that pointed us
+				 * at the chain root may describe key values the visible tuple
+				 * no longer has.  Force BitmapHeapScan to run its recheck
+				 * qual against these tuples even if the bitmap page was
+				 * otherwise exact.
+				 */
+				if (hot_indexed_recheck)
+					*recheck = true;
+			}
 		}
+
 	}
 	else
 	{

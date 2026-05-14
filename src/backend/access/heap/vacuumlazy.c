@@ -131,6 +131,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"
@@ -1972,6 +1973,8 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 										  NULL, 0,
 										  NULL, 0,
 										  NULL, 0,
+										  NULL, 0,
+										  NULL, 0,
 										  NULL, 0);
 
 			END_CRIT_SECTION();
@@ -2089,7 +2092,38 @@ lazy_scan_prune(LVRelState *vacrel,
 
 	/*
 	 * Now save details of the LP_DEAD items from the page in vacrel
+	 *
+	 * For pages that carry HOT-indexed bridge tombstones (either just created
+	 * by the prune above or left over from earlier opportunistic prunes), add
+	 * each bridge's offset to the dead-item list alongside genuine LP_DEAD
+	 * items.  ambulkdelete sees them as ordinary dead-TID entries and removes
+	 * the corresponding stale btree entries.  lazy_vacuum_heap_page (the
+	 * second pass) then converts the bridge's LP_NORMAL to LP_UNUSED and
+	 * reclaims the tuple body. This is what lets a HOT-indexed chain rejoin
+	 * classic-HOT semantics once its stale index entries have been swept.
 	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (!HeapTupleHeaderIsHotIndexedBridge(htup))
+				continue;
+
+			Assert(presult.lpdead_items < MaxHeapTuplesPerPage);
+			presult.deadoffsets[presult.lpdead_items++] = off;
+		}
+	}
+
 	if (presult.lpdead_items > 0)
 	{
 		vacrel->lpdead_item_pages++;
@@ -2214,6 +2248,15 @@ lazy_scan_noprune(LVRelState *vacrel,
 
 		hastup = true;			/* page prevents rel truncation */
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
+
+		/*
+		 * HOT-indexed tombstones carry only a modified-attrs bitmap;
+		 * xmin/xmax are invalid and natts == 0.  VACUUM must leave them alone
+		 * (they are reclaimed by pruneheap in a later phase).
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(tupleheader))
+			continue;
+
 		if (heap_tuple_should_freeze(tupleheader, &vacrel->cutoffs,
 									 &NoFreezePageRelfrozenXid,
 									 &NoFreezePageRelminMxid))
@@ -2762,6 +2805,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxHeapTuplesPerPage];
 	int			nunused = 0;
+	int			bridges_remaining = 0;
 	TransactionId newest_live_xid;
 	TransactionId conflict_xid = InvalidTransactionId;
 	bool		all_frozen;
@@ -2806,6 +2850,38 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
 	}
 
+	/*
+	 * If the page advertises HOT-indexed bridges, count them now (before any
+	 * line-pointer changes).  We will decrement this counter as we reclaim
+	 * each bridge in the conversion loop below; if it reaches zero by the
+	 * end, we know no bridge remains and can clear the page-level advisory
+	 * bit without a second walk over the line-pointer array.
+	 *
+	 * Counting before the loop (rather than after) means we observe the page
+	 * exactly once per call.  Bridges that were added to the page after
+	 * lazy_scan_prune ran (e.g.\ by an intervening opportunistic prune) would
+	 * not appear in deadoffsets[], so they will not be decremented here and
+	 * the flag will correctly remain set.
+	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (HeapTupleHeaderIsHotIndexedBridge(htup))
+				bridges_remaining++;
+		}
+	}
+
 	START_CRIT_SECTION();
 
 	for (int i = 0; i < num_offsets; i++)
@@ -2815,12 +2891,60 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		itemid = PageGetItemId(page, toff);
 
-		Assert(ItemIdIsDead(itemid) && !ItemIdHasStorage(itemid));
+		/*
+		 * Two cases: a classic LP_DEAD line pointer (no tuple body) or a
+		 * HOT-indexed bridge tombstone (LP_NORMAL with a 32-byte natts=0 body
+		 * forwarding to a live chain member).  Both are reclaimed to
+		 * LP_UNUSED here now that ambulkdelete has swept any btree entries
+		 * pointing at them.
+		 */
+		if (ItemIdIsDead(itemid))
+		{
+			Assert(!ItemIdHasStorage(itemid));
+		}
+		else
+		{
+			HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
+
+			Assert(ItemIdIsNormal(itemid));
+			htup = (HeapTupleHeader) PageGetItem(page, itemid);
+			Assert(HeapTupleHeaderIsHotIndexedBridge(htup));
+
+			/*
+			 * Decrement the running count of bridges on this page.  The
+			 * pre-loop walk above counted every LP_NORMAL bridge present at
+			 * function entry, so reclaiming one here reduces the live count
+			 * by exactly one.
+			 */
+			Assert(bridges_remaining > 0);
+			bridges_remaining--;
+		}
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
 	}
 
 	Assert(nunused > 0);
+
+	/*
+	 * If the running counter shows no bridge survives on this page, clear the
+	 * page-level advisory bit so opportunistic prunes don't waste time
+	 * scanning it.  No second walk over the line-pointer array is required:
+	 * the pre-loop count plus per-reclaim decrements is exact, and the
+	 * advisory bit is harmless (only a hint) if a concurrent opportunistic
+	 * prune adds a new bridge after we observed the counter -- such a prune
+	 * sets the flag itself before releasing the buffer lock.
+	 */
+	if (bridges_remaining == 0 && PageHasHotIndexedBridges(page))
+	{
+		/*
+		 * HARDENING B: Bridge Lifecycle - all bridges reclaimed.
+		 * Before clearing the flag, allow any pending lock waiters to proceed
+		 * (CHECK_FOR_INTERRUPTS acts as a progress checkpoint).
+		 * This prevents VACUUM hangs on pages with many bridges.
+		 */
+		CHECK_FOR_INTERRUPTS();
+		PageClearHasHotIndexedBridges(page);
+	}
 
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
@@ -2856,7 +2980,9 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  NULL, 0,	/* frozen */
 								  NULL, 0,	/* redirected */
 								  NULL, 0,	/* dead */
-								  unused, nunused);
+								  unused, nunused,
+								  NULL, 0,	/* bridges */
+								  NULL, 0); /* tombstone unions */
 	}
 
 	END_CRIT_SECTION();
@@ -3675,6 +3801,23 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
+
+		/*
+		 * HOT-indexed tombstones (adjacent and bridge variants) are LP_NORMAL
+		 * items that must never be returned as live tuples. Their
+		 * HEAP_XMIN_INVALID in the header filters them out under per-tuple
+		 * visibility checks, but if we declare the page all-visible then the
+		 * heap_getnext fast path skips those checks and a SeqScan would
+		 * surface the tombstone bytes as a live tuple -- reading the
+		 * modified-attrs bitmap or forward pointer as user-column data and
+		 * producing phantom rows.  Treat any tombstone on the page as a
+		 * blocker, same as a dead item.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(tuple.t_data))
+		{
+			*all_frozen = all_visible = false;
+			break;
+		}
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);

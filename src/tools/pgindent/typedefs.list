@@ -1266,6 +1266,7 @@ HeapCheckReadStreamData
 HeapPageFreeze
 HeapScanDesc
 HeapScanDescData
+HeapUpdateHotMode
 HeapTuple
 HeapTupleData
 HeapTupleFields
@@ -1278,6 +1279,7 @@ HistControl
 HostCacheEntry
 HostsFileLoadResult
 HostsLine
+HotIndexedTombstonePayload
 HotStandbyState
 I32
 ICU_Convert_Func
@@ -3096,6 +3098,7 @@ TM_FailureData
 TM_IndexDelete
 TM_IndexDeleteOp
 TM_IndexStatus
+TM_IndexUpdateInfo
 TM_Result
 TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
@@ -3136,7 +3139,6 @@ TSVectorStat
 TState
 TStatus
 TStoreState
-TU_UpdateIndexes
 TXNEntryFile
 TYPCATEGORY
 T_Action

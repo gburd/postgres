@@ -242,19 +242,22 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  bool *hot_indexed_recheck,
+							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
 	bool		call_again = false;
 	bool		found;
 
-	slot = table_slot_create(rel, NULL);
+	slot = keep_slot ? keep_slot : table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
-									all_dead);
+									all_dead, hot_indexed_recheck);
 	table_index_fetch_end(scan);
-	ExecDropSingleTupleTableSlot(slot);
+	if (keep_slot == NULL)
+		ExecDropSingleTupleTableSlot(slot);
 
 	return found;
 }
@@ -361,7 +364,7 @@ void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
-						  TU_UpdateIndexes *update_indexes)
+						  TM_IndexUpdateInfo *upd_info)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -371,7 +374,8 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								GetCurrentCommandId(true),
 								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, &lockmode, update_indexes);
+								&tmfd, &lockmode,
+								upd_info);
 
 	switch (result)
 	{
