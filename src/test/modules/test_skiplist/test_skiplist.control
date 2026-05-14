@@ -1,0 +1,4 @@
+comment = 'Test code for lock-free skip-list'
+default_version = '1.0'
+module_pathname = '$libdir/test_skiplist'
+relocatable = true
