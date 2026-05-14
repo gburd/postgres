@@ -817,8 +817,8 @@ several invariants that classic HOT relied on but HOT-indexed breaks:
      opened index and only skip when no index attr overlaps the
      per-update modified-attrs bitmap.  The old rule ("heap-only
      implies skip all non-summarizing indexes") silently missed the
-     SIU insert into the fresh-key index, so btree lookups by the new
-     key returned zero rows.
+     HOT-indexed insert into the fresh-key index, so btree lookups by
+     the new key returned zero rows.
 
    - heap_index_delete_check_htid, the bottom-up deletion invariant
      check, tolerates three HOT-indexed-induced states that would be
@@ -827,7 +827,7 @@ several invariants that classic HOT relied on but HOT-indexed breaks:
      chain-pruned leaf, and offsets past the current page maxoff from
      a leaf whose target page shrank.  The caller's downstream chain
      walk reaches the same verdict; keeping the check debug-useful
-     rather than raising on tepid-induced staleness.
+     rather than raising on HOT-indexed-induced staleness.
 
    - _bt_check_unique recognises that two distinct btree entries whose
      chain walks both land on the same live TID are the same logical
@@ -839,13 +839,14 @@ several invariants that classic HOT relied on but HOT-indexed breaks:
      the same live TID via a small per-scan hash.  This is the read-
      side counterpart to _bt_check_unique's fix.
 
-   - The index-only scan's SIU-stale handling compares the leaf
-     tuple's stored key against the live tuple's current index form
-     (via _bt_heap_keys_equal_leaf).  A match means this index's
-     attrs were not touched by the chain hop (e.g. VACUUM FULL
-     changed relfilenode but the scan is on pg_class_oid_index) and
-     the leaf is valid; a mismatch means the leaf really is stale and
-     the canonical fresh entry will re-produce the tuple.
+   - The index-only scan's HOT-indexed-stale handling compares the
+     leaf tuple's stored key against the live tuple's current index
+     form (via the indexam amrecheck_leaf_key callback, implemented
+     for nbtree as _bt_heap_keys_equal_leaf).  A match means this
+     index's attrs were not touched by the chain hop (e.g. VACUUM
+     FULL changed relfilenode but the scan is on pg_class_oid_index)
+     and the leaf is valid; a mismatch means the leaf really is stale
+     and the canonical fresh entry will re-produce the tuple.
 
 Known edge cases still under investigation (do not block the initial
 catalog enablement but are tracked as follow-up):

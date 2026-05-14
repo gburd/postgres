@@ -36,7 +36,7 @@ TEPID_BREAK_FUNCTIONS = [
     "heap_xlog_update",
     # Read path
     "heap_hot_search_buffer",
-    "ExecIndexEntryMatchesTuple",
+    "_bt_heap_keys_equal_leaf",  # leaf-key recheck (registered as amrecheck_leaf_key)
     # Index-side
     "ExecSetIndexUnchanged",
     "RelationGetIndexedAttrs",

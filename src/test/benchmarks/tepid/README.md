@@ -7,7 +7,7 @@ exercising classic HOT, non-HOT, and HOT-indexed paths.
 
 - `scripts/build.sh` -- builds two postgres variants (`master` = tepid's
   merge-base with origin/master; `tepid` = the branch under test).  Requires
-  a writable benchmark root via `BENCH` (default `/scratch/siu-bench`).
+  a writable benchmark root via `BENCH` (default `/scratch/tepid-bench`).
 - `scripts/run.sh` -- A/B driver.  Runs `simple_update` (pgbench -N),
   `hot_indexed_update`, `hot_indexed_mixed`, and `wide_N` for N in `$WIDE_STEPS`.
   Collects TPS, latency, WAL bytes, HOT update count, pre/post heap and
@@ -24,7 +24,7 @@ exercising classic HOT, non-HOT, and HOT-indexed paths.
 
 ```
 # Build both variants (run once per benchmark host)
-REPO=$HOME/ws/postgres/tepid BENCH=/scratch/siu-bench \
+REPO=$HOME/ws/postgres/tepid BENCH=/scratch/tepid-bench \
   ./scripts/build.sh
 
 # Standard A/B

@@ -36,8 +36,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION get_siu_count(rel_name text)
-RETURNS TABLE (updates BIGINT, hot BIGINT, siu BIGINT) AS $$
+CREATE OR REPLACE FUNCTION get_hi_count(rel_name text)
+RETURNS TABLE (updates BIGINT, hot BIGINT, hot_idx BIGINT) AS $$
 DECLARE rel_oid oid;
 BEGIN
     rel_oid := rel_name::regclass::oid;
@@ -45,7 +45,7 @@ BEGIN
                COALESCE(pg_stat_get_xact_tuples_updated(rel_oid), 0);
     hot := COALESCE(pg_stat_get_tuples_hot_updated(rel_oid), 0) +
            COALESCE(pg_stat_get_xact_tuples_hot_updated(rel_oid), 0);
-    siu := COALESCE(pg_stat_get_tuples_hot_idx_updated(rel_oid), 0) +
+    hot_idx := COALESCE(pg_stat_get_tuples_hot_idx_updated(rel_oid), 0) +
            COALESCE(pg_stat_get_xact_tuples_hot_idx_updated(rel_oid), 0);
     RETURN NEXT;
 END;
@@ -55,40 +55,40 @@ $$ LANGUAGE plpgsql;
 -- ---------------------------------------------------------------------------
 -- 1. Basic hot-indexed: modifying an indexed column stays HOT and counts as hot-indexed
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_basic (
+CREATE TABLE hi_basic (
     id int PRIMARY KEY,
     indexed_col int,
     non_indexed_col text
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_basic_idx ON siu_basic(indexed_col);
+CREATE INDEX hi_basic_idx ON hi_basic(indexed_col);
 
-INSERT INTO siu_basic VALUES (1, 100, 'initial');
+INSERT INTO hi_basic VALUES (1, 100, 'initial');
 
 -- Pre-hot-indexed this would be non-HOT.  Under hot-indexed it's HOT-indexed; both the
 -- HOT counter and the hot-indexed counter advance.
-UPDATE siu_basic SET indexed_col = 150 WHERE id = 1;
-SELECT * FROM get_siu_count('siu_basic');
+UPDATE hi_basic SET indexed_col = 150 WHERE id = 1;
+SELECT * FROM get_hi_count('hi_basic');
 
 -- The new value is reachable via the index.
 SET enable_seqscan = off;
-EXPLAIN (COSTS OFF) SELECT id, indexed_col FROM siu_basic WHERE indexed_col = 150;
-SELECT id, indexed_col FROM siu_basic WHERE indexed_col = 150;
+EXPLAIN (COSTS OFF) SELECT id, indexed_col FROM hi_basic WHERE indexed_col = 150;
+SELECT id, indexed_col FROM hi_basic WHERE indexed_col = 150;
 
 -- The old value is not reachable through this index: the stale btree
 -- entry (indexed_col=100) walks to the current tuple via the hot-indexed hop,
 -- nodeIndexscan re-evaluates `indexed_col = 100` against the current
 -- tuple (indexed_col=150), and the row is correctly dropped.  This is
 -- the equality-lookup case that xs_hot_indexed_recheck handles today.
-EXPLAIN (COSTS OFF) SELECT id FROM siu_basic WHERE indexed_col = 100;
-SELECT id FROM siu_basic WHERE indexed_col = 100;
+EXPLAIN (COSTS OFF) SELECT id FROM hi_basic WHERE indexed_col = 100;
+SELECT id FROM hi_basic WHERE indexed_col = 100;
 RESET enable_seqscan;
 
 -- pg_relation_hot_indexed_stats sees one tombstone, zero HOT redirects (the
 -- chain has not yet been pruned so no LP_REDIRECT exists).
 SELECT n_tombstones, n_chains, avg_chain_len, max_chain_len
-FROM pg_relation_hot_indexed_stats('siu_basic');
+FROM pg_relation_hot_indexed_stats('hi_basic');
 
-DROP TABLE siu_basic;
+DROP TABLE hi_basic;
 
 -- ---------------------------------------------------------------------------
 -- 2. RANGE/INEQUALITY correctness after hot-indexed on an indexed column
@@ -113,20 +113,20 @@ DROP TABLE siu_basic;
 --   open-question #3.  The ORDER BY output likewise lists the row
 --   twice today; the fix collapses it to a single row.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_range (
+CREATE TABLE hi_range (
     a int,
     b int,
     payload text,
     PRIMARY KEY (a, b)
 ) WITH (fillfactor = 50);
 
-INSERT INTO siu_range VALUES (1, 5, 'hi');
+INSERT INTO hi_range VALUES (1, 5, 'hi');
 
 -- hot-indexed update on the second PK column: stale btree entry ('1','5')
 -- remains, new entry ('1','15') inserted.  The stale entry points at
 -- the chain root; the fresh entry points directly at the new
 -- heap-only tuple.
-UPDATE siu_range SET b = 15 WHERE a = 1 AND b = 5;
+UPDATE hi_range SET b = 15 WHERE a = 1 AND b = 5;
 
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
@@ -135,22 +135,22 @@ SET enable_bitmapscan = off;
 -- This is the bug-exhibiting path; with Fix A (FormIndexDatum-based
 -- key recheck at xs_hot_indexed_recheck time) it now returns 1.
 EXPLAIN (COSTS OFF)
-SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
-SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
-SELECT a, b FROM siu_range WHERE a = 1 AND payload IS NOT NULL ORDER BY b;
+SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
+SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100 AND payload IS NOT NULL;
+SELECT a, b FROM hi_range WHERE a = 1 AND payload IS NOT NULL ORDER BY b;
 
 -- IndexOnlyScan: the canonical-fresh-entry-only path.
 -- Here count = 1 because the stale entry's heap recheck fails the
 -- hot-indexed filter, which drops it as not-canonical.
-EXPLAIN (COSTS OFF) SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
-SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
+SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
 
 -- BitmapHeapScan: TID dedup collapses the stale and fresh hits.
 SET enable_indexscan = off;
 SET enable_indexonlyscan = off;
 RESET enable_bitmapscan;
-EXPLAIN (COSTS OFF) SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
-SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
+SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
 RESET enable_indexscan;
 RESET enable_indexonlyscan;
 
@@ -159,84 +159,84 @@ RESET enable_seqscan;
 SET enable_indexscan = off;
 SET enable_indexonlyscan = off;
 SET enable_bitmapscan = off;
-EXPLAIN (COSTS OFF) SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
-SELECT count(*) FROM siu_range WHERE a = 1 AND b < 100;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
+SELECT count(*) FROM hi_range WHERE a = 1 AND b < 100;
 RESET enable_indexscan;
 RESET enable_indexonlyscan;
 RESET enable_bitmapscan;
 
 -- Same shape on a secondary (non-PK) btree: another hot-indexed update on b.
-CREATE INDEX siu_range_b_idx ON siu_range(b);
-UPDATE siu_range SET b = 25 WHERE a = 1 AND b = 15;
+CREATE INDEX hi_range_b_idx ON hi_range(b);
+UPDATE hi_range SET b = 25 WHERE a = 1 AND b = 15;
 
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 -- IndexScan path on the secondary index; same fix applies.
-SELECT count(*) FROM siu_range WHERE b BETWEEN 0 AND 100 AND payload IS NOT NULL;
+SELECT count(*) FROM hi_range WHERE b BETWEEN 0 AND 100 AND payload IS NOT NULL;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 
-DROP TABLE siu_range;
+DROP TABLE hi_range;
 
 -- ---------------------------------------------------------------------------
 -- 3. All-or-none on a multi-indexed table: hot-indexed only touches indexes
 --    whose attributes changed
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_multi (
+CREATE TABLE hi_multi (
     id int PRIMARY KEY,
     col_a int,
     col_b int,
     col_c int,
     non_indexed text
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_multi_a_idx ON siu_multi(col_a);
-CREATE INDEX siu_multi_b_idx ON siu_multi(col_b);
-CREATE INDEX siu_multi_c_idx ON siu_multi(col_c);
+CREATE INDEX hi_multi_a_idx ON hi_multi(col_a);
+CREATE INDEX hi_multi_b_idx ON hi_multi(col_b);
+CREATE INDEX hi_multi_c_idx ON hi_multi(col_c);
 
-INSERT INTO siu_multi VALUES (1, 10, 20, 30, 'initial');
+INSERT INTO hi_multi VALUES (1, 10, 20, 30, 'initial');
 
--- col_a only: under hot-indexed this is HOT-indexed, and only siu_multi_a_idx
--- gets a new entry.  siu_multi_b_idx / siu_multi_c_idx keep pointing
+-- col_a only: under hot-indexed this is HOT-indexed, and only hi_multi_a_idx
+-- gets a new entry.  hi_multi_b_idx / hi_multi_c_idx keep pointing
 -- at the chain root.
-UPDATE siu_multi SET col_a = 15 WHERE id = 1;
-SELECT * FROM get_siu_count('siu_multi');
+UPDATE hi_multi SET col_a = 15 WHERE id = 1;
+SELECT * FROM get_hi_count('hi_multi');
 
 -- Lookups on all three indexes return the row.
 SET enable_seqscan = off;
-SELECT id FROM siu_multi WHERE col_a = 15;
-SELECT id FROM siu_multi WHERE col_b = 20;
-SELECT id FROM siu_multi WHERE col_c = 30;
+SELECT id FROM hi_multi WHERE col_a = 15;
+SELECT id FROM hi_multi WHERE col_b = 20;
+SELECT id FROM hi_multi WHERE col_c = 30;
 
 -- Old col_a value is unreachable by equality (stale entry filtered by
 -- qual re-eval).
-SELECT id FROM siu_multi WHERE col_a = 10;
+SELECT id FROM hi_multi WHERE col_a = 10;
 RESET enable_seqscan;
 
-DROP TABLE siu_multi;
+DROP TABLE hi_multi;
 
 -- ---------------------------------------------------------------------------
 -- 4. Multi-column btree: hot-indexed on part of a composite key
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_composite (
+CREATE TABLE hi_composite (
     id int PRIMARY KEY,
     col_a int,
     col_b int,
     data text
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_composite_ab_idx ON siu_composite(col_a, col_b);
+CREATE INDEX hi_composite_ab_idx ON hi_composite(col_a, col_b);
 
-INSERT INTO siu_composite VALUES (1, 10, 20, 'data');
+INSERT INTO hi_composite VALUES (1, 10, 20, 'data');
 
 -- col_a is part of the composite key: hot-indexed.
-UPDATE siu_composite SET col_a = 15;
-SELECT * FROM get_siu_count('siu_composite');
+UPDATE hi_composite SET col_a = 15;
+SELECT * FROM get_hi_count('hi_composite');
 
 -- Reset and then update col_b (also part of the key).
-UPDATE siu_composite SET col_a = 10;
-UPDATE siu_composite SET col_b = 25;
-SELECT * FROM get_siu_count('siu_composite');
+UPDATE hi_composite SET col_a = 10;
+UPDATE hi_composite SET col_b = 25;
+SELECT * FROM get_hi_count('hi_composite');
 
-DROP TABLE siu_composite;
+DROP TABLE hi_composite;
 
 -- ---------------------------------------------------------------------------
 -- 5. Partial index: status transition out-of-predicate
@@ -245,64 +245,64 @@ DROP TABLE siu_composite;
 -- so the index does not need a new entry.  Under hot-indexed the update is
 -- HOT-indexed and no index insert occurs.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_partial (
+CREATE TABLE hi_partial (
     id int PRIMARY KEY,
     status text,
     data text
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_partial_active_idx ON siu_partial(status) WHERE status = 'active';
+CREATE INDEX hi_partial_active_idx ON hi_partial(status) WHERE status = 'active';
 
-INSERT INTO siu_partial VALUES (1, 'active', 'data1');
-INSERT INTO siu_partial VALUES (2, 'inactive', 'data2');
-INSERT INTO siu_partial VALUES (3, 'deleted', 'data3');
+INSERT INTO hi_partial VALUES (1, 'active', 'data1');
+INSERT INTO hi_partial VALUES (2, 'inactive', 'data2');
+INSERT INTO hi_partial VALUES (3, 'deleted', 'data3');
 
 -- out -> out transition on status.  hot-indexed keeps this on-page; the
 -- partial index is not touched.
-UPDATE siu_partial SET status = 'deleted' WHERE id = 2;
-SELECT * FROM get_siu_count('siu_partial');
+UPDATE hi_partial SET status = 'deleted' WHERE id = 2;
+SELECT * FROM get_hi_count('hi_partial');
 
 -- The partial index still correctly answers "active" queries.
-SELECT id, status FROM siu_partial WHERE status = 'active';
+SELECT id, status FROM hi_partial WHERE status = 'active';
 
-DROP TABLE siu_partial;
+DROP TABLE hi_partial;
 
 -- ---------------------------------------------------------------------------
 -- 6. Partition: hot-indexed inside one partition
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_part (
+CREATE TABLE hi_part (
     id int,
     partition_key int,
     indexed_col int,
     data text,
     PRIMARY KEY (id, partition_key)
 ) PARTITION BY RANGE (partition_key);
-CREATE TABLE siu_part_1 PARTITION OF siu_part
+CREATE TABLE hi_part_1 PARTITION OF hi_part
     FOR VALUES FROM (1) TO (100) WITH (fillfactor = 50);
-CREATE INDEX siu_part_idx ON siu_part(indexed_col);
+CREATE INDEX hi_part_idx ON hi_part(indexed_col);
 
-INSERT INTO siu_part VALUES (1, 50, 100, 'data');
+INSERT INTO hi_part VALUES (1, 50, 100, 'data');
 
-UPDATE siu_part SET indexed_col = 150 WHERE id = 1;
-SELECT * FROM get_siu_count('siu_part_1');
+UPDATE hi_part SET indexed_col = 150 WHERE id = 1;
+SELECT * FROM get_hi_count('hi_part_1');
 
 SET enable_seqscan = off;
-SELECT id FROM siu_part WHERE indexed_col = 150;
-SELECT id FROM siu_part WHERE indexed_col = 100;
+SELECT id FROM hi_part WHERE indexed_col = 150;
+SELECT id FROM hi_part WHERE indexed_col = 100;
 RESET enable_seqscan;
 
-DROP TABLE siu_part CASCADE;
+DROP TABLE hi_part CASCADE;
 
 -- ---------------------------------------------------------------------------
 -- 7. Trigger modifies indexed column: hot-indexed, not non-HOT
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_trigger (
+CREATE TABLE hi_trigger (
     id int PRIMARY KEY,
     triggered_col int,
     data text
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_trigger_idx ON siu_trigger(triggered_col);
+CREATE INDEX hi_trigger_idx ON hi_trigger(triggered_col);
 
-CREATE OR REPLACE FUNCTION siu_trigger_bump()
+CREATE OR REPLACE FUNCTION hi_trigger_bump()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.triggered_col = NEW.triggered_col + 1;
@@ -311,70 +311,70 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER before_update_bump
-    BEFORE UPDATE ON siu_trigger
+    BEFORE UPDATE ON hi_trigger
     FOR EACH ROW
-    EXECUTE FUNCTION siu_trigger_bump();
+    EXECUTE FUNCTION hi_trigger_bump();
 
-INSERT INTO siu_trigger VALUES (1, 100, 'initial');
+INSERT INTO hi_trigger VALUES (1, 100, 'initial');
 
 -- UPDATE's SET clause doesn't touch the indexed column, but the
 -- trigger modifies it via heap_modify_tuple.  hot-indexed must detect this
 -- and emit a tombstone + a new btree entry.
-UPDATE siu_trigger SET data = 'updated' WHERE id = 1;
-SELECT * FROM get_siu_count('siu_trigger');
-SELECT triggered_col FROM siu_trigger WHERE id = 1;
+UPDATE hi_trigger SET data = 'updated' WHERE id = 1;
+SELECT * FROM get_hi_count('hi_trigger');
+SELECT triggered_col FROM hi_trigger WHERE id = 1;
 
 -- New value reachable.
 SET enable_seqscan = off;
-SELECT id FROM siu_trigger WHERE triggered_col = 101;
-SELECT id FROM siu_trigger WHERE triggered_col = 100;
+SELECT id FROM hi_trigger WHERE triggered_col = 101;
+SELECT id FROM hi_trigger WHERE triggered_col = 100;
 RESET enable_seqscan;
 
-DROP TABLE siu_trigger CASCADE;
-DROP FUNCTION siu_trigger_bump();
+DROP TABLE hi_trigger CASCADE;
+DROP FUNCTION hi_trigger_bump();
 
 -- ---------------------------------------------------------------------------
 -- 8. JSONB expression index: indexed path change triggers hot-indexed
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_jsonb (
+CREATE TABLE hi_jsonb (
     id int PRIMARY KEY,
     data jsonb
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_jsonb_name_idx ON siu_jsonb ((data->>'name'));
+CREATE INDEX hi_jsonb_name_idx ON hi_jsonb ((data->>'name'));
 
-INSERT INTO siu_jsonb VALUES (1, '{"name":"Alice","age":30}');
+INSERT INTO hi_jsonb VALUES (1, '{"name":"Alice","age":30}');
 
 -- Changing the indexed expression's value (name) is hot-indexed.
-UPDATE siu_jsonb SET data = jsonb_set(data, '{name}', '"Alice2"') WHERE id = 1;
-SELECT * FROM get_siu_count('siu_jsonb');
+UPDATE hi_jsonb SET data = jsonb_set(data, '{name}', '"Alice2"') WHERE id = 1;
+SELECT * FROM get_hi_count('hi_jsonb');
 
 SET enable_seqscan = off;
-SELECT id FROM siu_jsonb WHERE data->>'name' = 'Alice2';
-SELECT id FROM siu_jsonb WHERE data->>'name' = 'Alice';
+SELECT id FROM hi_jsonb WHERE data->>'name' = 'Alice2';
+SELECT id FROM hi_jsonb WHERE data->>'name' = 'Alice';
 RESET enable_seqscan;
 
-DROP TABLE siu_jsonb;
+DROP TABLE hi_jsonb;
 
 -- ---------------------------------------------------------------------------
 -- 9. GIN index with changed extracted keys: hot-indexed
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_gin (
+CREATE TABLE hi_gin (
     id int PRIMARY KEY,
     tags text[]
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_gin_tags_idx ON siu_gin USING gin (tags);
+CREATE INDEX hi_gin_tags_idx ON hi_gin USING gin (tags);
 
-INSERT INTO siu_gin VALUES (1, ARRAY['tag1', 'tag2']);
+INSERT INTO hi_gin VALUES (1, ARRAY['tag1', 'tag2']);
 
 -- Adding a tag yields a different extracted-key set: hot-indexed.
-UPDATE siu_gin SET tags = ARRAY['tag1', 'tag2', 'tag5'] WHERE id = 1;
-SELECT * FROM get_siu_count('siu_gin');
+UPDATE hi_gin SET tags = ARRAY['tag1', 'tag2', 'tag5'] WHERE id = 1;
+SELECT * FROM get_hi_count('hi_gin');
 
 SET enable_seqscan = off;
-SELECT id FROM siu_gin WHERE tags @> ARRAY['tag5'];
+SELECT id FROM hi_gin WHERE tags @> ARRAY['tag5'];
 RESET enable_seqscan;
 
-DROP TABLE siu_gin;
+DROP TABLE hi_gin;
 
 -- ---------------------------------------------------------------------------
 -- 10. Per-index HOT-indexed counters: skipped vs matched
@@ -459,38 +459,38 @@ DROP TABLE hotidx_perindex;
 -- exact cap value -- the assertion is that hot_idx_upd plateaus while
 -- total updates does not.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_chaincap (
+CREATE TABLE hi_chaincap (
     id int PRIMARY KEY,
     a int
 ) WITH (fillfactor = 10);
-CREATE INDEX siu_chaincap_a_idx ON siu_chaincap(a);
+CREATE INDEX hi_chaincap_a_idx ON hi_chaincap(a);
 
-INSERT INTO siu_chaincap VALUES (1, 0);
+INSERT INTO hi_chaincap VALUES (1, 0);
 
 DO $$
 DECLARE
     i int;
 BEGIN
     FOR i IN 1 .. 200 LOOP
-        UPDATE siu_chaincap SET a = i WHERE id = 1;
+        UPDATE hi_chaincap SET a = i WHERE id = 1;
     END LOOP;
 END $$;
 
 -- After 200 UPDATEs the row's value is 200, regardless of how many
 -- chains the cap forced.
-SELECT a FROM siu_chaincap WHERE id = 1;
+SELECT a FROM hi_chaincap WHERE id = 1;
 
 -- The HOT-indexed counter must be strictly less than the total UPDATE
 -- counter: the cap forced at least one demotion to non-HOT.
-SELECT siu < updates AS cap_forced_demotion
-  FROM get_siu_count('siu_chaincap');
+SELECT hot_idx < updates AS cap_forced_demotion
+  FROM get_hi_count('hi_chaincap');
 
 -- And the HOT-indexed counter must be strictly positive: the cap fired
 -- only after a few HOT-indexed updates landed on the same page.
-SELECT siu > 0 AS hot_indexed_fired_at_least_once
-  FROM get_siu_count('siu_chaincap');
+SELECT hot_idx > 0 AS hot_indexed_fired_at_least_once
+  FROM get_hi_count('hi_chaincap');
 
-DROP TABLE siu_chaincap;
+DROP TABLE hi_chaincap;
 
 -- ---------------------------------------------------------------------------
 -- 12. Tombstone reclamation by prune
@@ -500,28 +500,28 @@ DROP TABLE siu_chaincap;
 -- After deleting the live row and running VACUUM, no tombstone may
 -- remain on the page.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_reclaim (
+CREATE TABLE hi_reclaim (
     id int PRIMARY KEY,
     a int
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_reclaim_a_idx ON siu_reclaim(a);
+CREATE INDEX hi_reclaim_a_idx ON hi_reclaim(a);
 
-INSERT INTO siu_reclaim VALUES (1, 100);
+INSERT INTO hi_reclaim VALUES (1, 100);
 -- Generate a tombstone via a HOT-indexed update.
-UPDATE siu_reclaim SET a = 200 WHERE id = 1;
+UPDATE hi_reclaim SET a = 200 WHERE id = 1;
 SELECT n_tombstones >= 1 AS tombstone_present_before_reclaim
-  FROM pg_relation_hot_indexed_stats('siu_reclaim');
+  FROM pg_relation_hot_indexed_stats('hi_reclaim');
 
 -- Delete the live tuple and VACUUM.  prune_handle_tombstones must
 -- now reclaim the orphaned tombstone.
-DELETE FROM siu_reclaim WHERE id = 1;
-VACUUM siu_reclaim;
+DELETE FROM hi_reclaim WHERE id = 1;
+VACUUM hi_reclaim;
 
 SELECT n_tombstones AS tombstones_after_reclaim,
        n_chains AS chains_after_reclaim
-  FROM pg_relation_hot_indexed_stats('siu_reclaim');
+  FROM pg_relation_hot_indexed_stats('hi_reclaim');
 
-DROP TABLE siu_reclaim;
+DROP TABLE hi_reclaim;
 
 -- ---------------------------------------------------------------------------
 -- 13. Tombstone-bearing page is never marked all-visible
@@ -536,28 +536,28 @@ DROP TABLE siu_reclaim;
 -- have PD_HAS_HOT_INDEXED_BRIDGES (0x0008) -or- still carry tombstones
 -- (n_tombstones > 0) AND must not have PD_ALL_VISIBLE (0x0004).
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_vm (
+CREATE TABLE hi_vm (
     id int PRIMARY KEY,
     a int
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_vm_a_idx ON siu_vm(a);
+CREATE INDEX hi_vm_a_idx ON hi_vm(a);
 
-INSERT INTO siu_vm VALUES (1, 1);
-UPDATE siu_vm SET a = 2 WHERE id = 1;
+INSERT INTO hi_vm VALUES (1, 1);
+UPDATE hi_vm SET a = 2 WHERE id = 1;
 
 -- Force the all-visible bit decision: VACUUM with DISABLE_PAGE_SKIPPING
 -- considers every page; FREEZE pushes hint bits hard.  After this, any
 -- page bearing a tombstone or bridge must still report all_visible = 0.
-VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) siu_vm;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) hi_vm;
 
 SELECT n_tombstones >= 1 AS tombstones_present
-  FROM pg_relation_hot_indexed_stats('siu_vm');
+  FROM pg_relation_hot_indexed_stats('hi_vm');
 
 -- PD_ALL_VISIBLE = 0x0004.  Must be 0 on a tombstone-bearing page.
 SELECT (flags & 4) = 0 AS not_marked_all_visible
-  FROM page_header(get_raw_page('siu_vm', 0));
+  FROM page_header(get_raw_page('hi_vm', 0));
 
-DROP TABLE siu_vm;
+DROP TABLE hi_vm;
 
 -- ---------------------------------------------------------------------------
 -- 14. Cycle-key dedup: column rename a -> b -> a stays correct
@@ -568,31 +568,31 @@ DROP TABLE siu_vm;
 -- not attribute *names*.  After two renames that net to identity, every
 -- subsequent UPDATE must continue to drive the HOT-indexed path.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_cycle (
+CREATE TABLE hi_cycle (
     id int PRIMARY KEY,
     a int
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_cycle_a_idx ON siu_cycle(a);
+CREATE INDEX hi_cycle_a_idx ON hi_cycle(a);
 
-INSERT INTO siu_cycle VALUES (1, 100);
+INSERT INTO hi_cycle VALUES (1, 100);
 
 -- Cycle the column name and confirm both intermediate forms drive HOT-indexed.
-ALTER TABLE siu_cycle RENAME COLUMN a TO b;
-UPDATE siu_cycle SET b = 200 WHERE id = 1;
-SELECT siu > 0 AS hot_indexed_after_first_rename
-  FROM get_siu_count('siu_cycle');
+ALTER TABLE hi_cycle RENAME COLUMN a TO b;
+UPDATE hi_cycle SET b = 200 WHERE id = 1;
+SELECT hot_idx > 0 AS hot_indexed_after_first_rename
+  FROM get_hi_count('hi_cycle');
 
-ALTER TABLE siu_cycle RENAME COLUMN b TO a;
-UPDATE siu_cycle SET a = 300 WHERE id = 1;
+ALTER TABLE hi_cycle RENAME COLUMN b TO a;
+UPDATE hi_cycle SET a = 300 WHERE id = 1;
 -- Lookup via the index returns the current value, not any of the
 -- pre-rename values.
 SET enable_seqscan = off;
-SELECT id, a FROM siu_cycle WHERE a = 300;
-SELECT id FROM siu_cycle WHERE a = 100;
-SELECT id FROM siu_cycle WHERE a = 200;
+SELECT id, a FROM hi_cycle WHERE a = 300;
+SELECT id FROM hi_cycle WHERE a = 100;
+SELECT id FROM hi_cycle WHERE a = 200;
 RESET enable_seqscan;
 
-DROP TABLE siu_cycle;
+DROP TABLE hi_cycle;
 
 -- ---------------------------------------------------------------------------
 -- 15. Summarizing-only column UPDATE produces CLASSIC, not INDEXED
@@ -604,30 +604,30 @@ DROP TABLE siu_cycle;
 -- needed and HOT-indexed does not fire.  The signal is
 -- n_tup_hot_upd > 0 with n_tup_hot_idx_upd unchanged.
 -- ---------------------------------------------------------------------------
-CREATE TABLE siu_brin (
+CREATE TABLE hi_brin (
     id int PRIMARY KEY,
     bcol int
 ) WITH (fillfactor = 50);
-CREATE INDEX siu_brin_idx ON siu_brin USING brin(bcol);
+CREATE INDEX hi_brin_idx ON hi_brin USING brin(bcol);
 
-INSERT INTO siu_brin VALUES (1, 100);
+INSERT INTO hi_brin VALUES (1, 100);
 
 -- Capture the HOT-indexed counter before, drive a BRIN-only update,
 -- and assert that classic HOT advanced while HOT-indexed did not.
-SELECT siu AS siu_before FROM get_siu_count('siu_brin') \gset
-UPDATE siu_brin SET bcol = 200 WHERE id = 1;
+SELECT hot_idx AS hot_idx_before FROM get_hi_count('hi_brin') \gset
+UPDATE hi_brin SET bcol = 200 WHERE id = 1;
 SELECT (hot - 0) > 0 AS classic_hot_fired,
-       siu = :siu_before AS hot_indexed_did_not_fire
-  FROM get_siu_count('siu_brin');
+       hot_idx = :hot_idx_before AS hot_indexed_did_not_fire
+  FROM get_hi_count('hi_brin');
 
 -- The BRIN index sees the new value via aminsert.
-SELECT bcol FROM siu_brin WHERE id = 1;
+SELECT bcol FROM hi_brin WHERE id = 1;
 
-DROP TABLE siu_brin;
+DROP TABLE hi_brin;
 
 -- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------
-DROP FUNCTION get_siu_count(text);
+DROP FUNCTION get_hi_count(text);
 DROP FUNCTION get_hot_count(text);
 DROP EXTENSION pageinspect;
