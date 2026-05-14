@@ -40,6 +40,13 @@
 #include "replication/origin.h"
 #include "storage/standby.h"
 #include "utils/relmapper.h"
+#include "access/undo_xlog.h"
+#include "access/atm.h"
+#include "access/relundo_xlog.h"
+#include "storage/fileops.h"
+#ifdef USE_RECNO
+#include "access/recno_xlog.h"
+#endif
 /* IWYU pragma: end_keep */
 
 

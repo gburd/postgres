@@ -2180,7 +2180,12 @@ heap_reloptions(char relkind, Datum reloptions, bool validate)
 			return (bytea *) rdopts;
 		case RELKIND_RELATION:
 		case RELKIND_MATVIEW:
-			return default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+			{
+				rdopts = (StdRdOptions *)
+					default_reloptions(reloptions, validate, RELOPT_KIND_HEAP);
+
+				return (bytea *) rdopts;
+			}
 		default:
 			/* other relkinds are not supported */
 			return NULL;

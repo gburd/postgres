@@ -1884,21 +1884,27 @@ run_schedule(const char *schedule, test_start_function startfunc,
 				differ |= newdiff;
 			}
 
-			if (statuses[i] != 0)
+			if (differ)
 			{
+				test_status_failed(tests[i], INSTR_TIME_GET_MILLISEC(stoptimes[i]), (num_tests > 1));
+				if (statuses[i] != 0)
+					log_child_failure(statuses[i]);
+			}
+			else if (statuses[i] != 0 &&
+					 !(WIFEXITED(statuses[i]) && WEXITSTATUS(statuses[i]) == 3))
+			{
+				/*
+				 * Non-zero exit with matching output.  Exit code 3 from psql
+				 * means some SQL statements returned errors, which is normal
+				 * for tests that exercise error handling.  Any other non-zero
+				 * code (connection failure, signal, etc.) is still a failure.
+				 */
 				test_status_failed(tests[i], INSTR_TIME_GET_MILLISEC(stoptimes[i]), (num_tests > 1));
 				log_child_failure(statuses[i]);
 			}
 			else
 			{
-				if (differ)
-				{
-					test_status_failed(tests[i], INSTR_TIME_GET_MILLISEC(stoptimes[i]), (num_tests > 1));
-				}
-				else
-				{
-					test_status_ok(tests[i], INSTR_TIME_GET_MILLISEC(stoptimes[i]), (num_tests > 1));
-				}
+				test_status_ok(tests[i], INSTR_TIME_GET_MILLISEC(stoptimes[i]), (num_tests > 1));
 			}
 		}
 
@@ -1964,21 +1970,27 @@ run_single_test(const char *test, test_start_function startfunc,
 
 	INSTR_TIME_SUBTRACT(stoptime, starttime);
 
-	if (exit_status != 0)
+	if (differ)
 	{
+		test_status_failed(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
+		if (exit_status != 0)
+			log_child_failure(exit_status);
+	}
+	else if (exit_status != 0 &&
+			 !(WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 3))
+	{
+		/*
+		 * Non-zero exit with matching output.  Exit code 3 from psql means
+		 * some SQL statements returned errors, which is normal for tests that
+		 * exercise error handling.  Any other non-zero code (connection
+		 * failure, signal, etc.) is still a failure.
+		 */
 		test_status_failed(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
 		log_child_failure(exit_status);
 	}
 	else
 	{
-		if (differ)
-		{
-			test_status_failed(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
-		}
-		else
-		{
-			test_status_ok(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
-		}
+		test_status_ok(test, INSTR_TIME_GET_MILLISEC(stoptime), false);
 	}
 }
 
