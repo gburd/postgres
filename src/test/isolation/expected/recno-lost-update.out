@@ -1,0 +1,84 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read s2_read s1_update s2_update s1_commit s2_read_after s2_commit s3_read
+step s1_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s2_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s1_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1;
+step s2_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step s1_commit: COMMIT;
+step s2_update: <... completed>
+step s2_read_after: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      2
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, counter FROM recno_lu ORDER BY id;
+id|counter
+--+-------
+ 1|      2
+ 2|    100
+(2 rows)
+
+
+starting permutation: s1_read s2_read s2_update s1_update s2_commit s1_commit s3_read
+step s1_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s2_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s2_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1;
+step s1_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step s2_commit: COMMIT;
+step s1_update: <... completed>
+step s1_commit: COMMIT;
+step s3_read: SELECT id, counter FROM recno_lu ORDER BY id;
+id|counter
+--+-------
+ 1|      2
+ 2|    100
+(2 rows)
+
+
+starting permutation: s1_read s1_update s1_commit s2_read s2_update s2_commit s3_read
+step s1_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s1_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_read: SELECT id, counter FROM recno_lu WHERE id = 1;
+id|counter
+--+-------
+ 1|      1
+(1 row)
+
+step s2_update: UPDATE recno_lu SET counter = counter + 1 WHERE id = 1;
+step s2_commit: COMMIT;
+step s3_read: SELECT id, counter FROM recno_lu ORDER BY id;
+id|counter
+--+-------
+ 1|      2
+ 2|    100
+(2 rows)
+

@@ -1,0 +1,475 @@
+--
+-- Test RECNO VACUUM, VACUUM FULL, VACUUM ANALYZE, and related maintenance
+--
+-- =============================================
+-- Basic VACUUM
+-- =============================================
+CREATE TABLE recno_vacuum_basic (
+    id serial PRIMARY KEY,
+    name text,
+    value integer
+) USING recno;
+-- Insert data
+INSERT INTO recno_vacuum_basic (name, value)
+SELECT 'row_' || i, i FROM generate_series(1, 1000) i;
+-- Delete half the rows to create dead tuples
+DELETE FROM recno_vacuum_basic WHERE id % 2 = 0;
+-- Basic VACUUM
+VACUUM recno_vacuum_basic;
+-- Verify live rows are intact
+SELECT COUNT(*) FROM recno_vacuum_basic;
+ count 
+-------
+   500
+(1 row)
+
+-- Check that table info is reasonable
+SELECT c.relname, c.relpages > 0 AS has_pages, c.reltuples > 0 AS has_tuples
+FROM pg_class c WHERE c.relname = 'recno_vacuum_basic';
+      relname       | has_pages | has_tuples 
+--------------------+-----------+------------
+ recno_vacuum_basic | f         | f
+(1 row)
+
+DROP TABLE recno_vacuum_basic;
+-- =============================================
+-- VACUUM VERBOSE
+-- =============================================
+CREATE TABLE recno_vacuum_verbose (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_vacuum_verbose (data)
+SELECT repeat('x', 100) FROM generate_series(1, 500) i;
+DELETE FROM recno_vacuum_verbose WHERE id < 250;
+VACUUM VERBOSE recno_vacuum_verbose;
+INFO:  vacuuming "recno_vacuum_verbose": scanning 5 pages
+INFO:  vacuuming "recno_vacuum_verbose": removing 249 dead index entries across 1 indexes
+INFO:  scanned index "recno_vacuum_verbose_pkey" to remove 249 row versions
+INFO:  index "recno_vacuum_verbose_pkey" now contains 251 row versions in 4 pages
+DETAIL:  249 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
+INFO:  table "recno_vacuum_verbose": starting cross-page defragmentation from block 4
+INFO:  table "recno_vacuum_verbose": cross-page defrag moved 57 tuples, emptied 0 pages
+INFO:  RECNO vacuum "recno_vacuum_verbose": found 500 tuples (251 live, 249 dead), vacuumed 3 pages, truncated 0 pages, cleaned 1 indexes
+-- Verify remaining rows
+SELECT COUNT(*) FROM recno_vacuum_verbose;
+ count 
+-------
+   251
+(1 row)
+
+DROP TABLE recno_vacuum_verbose;
+-- =============================================
+-- VACUUM FULL (table rewrite)
+-- =============================================
+CREATE TABLE recno_vacuum_full (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+-- Insert substantial data
+INSERT INTO recno_vacuum_full (data)
+SELECT repeat('data_' || i::text || '_', 50) FROM generate_series(1, 2000) i;
+-- Record initial size
+SELECT pg_relation_size('recno_vacuum_full') > 0 AS has_initial_size;
+ has_initial_size 
+------------------
+ t
+(1 row)
+
+-- Delete 90% of rows
+DELETE FROM recno_vacuum_full WHERE id % 10 != 0;
+-- Regular VACUUM first
+VACUUM recno_vacuum_full;
+SELECT pg_relation_size('recno_vacuum_full') > 0 AS has_size_after_vacuum;
+ has_size_after_vacuum 
+-----------------------
+ t
+(1 row)
+
+-- VACUUM FULL should reclaim all space
+VACUUM FULL recno_vacuum_full;
+SELECT pg_relation_size('recno_vacuum_full') > 0 AS has_size_after_vacuum_full;
+ has_size_after_vacuum_full 
+----------------------------
+ t
+(1 row)
+
+-- Verify remaining data is intact
+SELECT COUNT(*) FROM recno_vacuum_full;
+ count 
+-------
+   200
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM recno_vacuum_full;
+ min | max  
+-----+------
+  10 | 2000
+(1 row)
+
+-- Verify access method is preserved after VACUUM FULL
+SELECT c.relname, am.amname
+FROM pg_class c JOIN pg_am am ON c.relam = am.oid
+WHERE c.relname = 'recno_vacuum_full';
+      relname      | amname 
+-------------------+--------
+ recno_vacuum_full | recno
+(1 row)
+
+DROP TABLE recno_vacuum_full;
+-- =============================================
+-- VACUUM ANALYZE
+-- =============================================
+CREATE TABLE recno_vacuum_analyze (
+    id serial PRIMARY KEY,
+    category text,
+    value integer
+) USING recno;
+INSERT INTO recno_vacuum_analyze (category, value)
+SELECT
+    CASE i % 4
+        WHEN 0 THEN 'A'
+        WHEN 1 THEN 'B'
+        WHEN 2 THEN 'C'
+        WHEN 3 THEN 'D'
+    END,
+    i
+FROM generate_series(1, 2000) i;
+-- VACUUM ANALYZE should update statistics
+VACUUM ANALYZE recno_vacuum_analyze;
+-- Verify statistics were updated
+SELECT
+    attname,
+    n_distinct,
+    most_common_vals IS NOT NULL AS has_mcv,
+    histogram_bounds IS NOT NULL AS has_histogram
+FROM pg_stats
+WHERE tablename = 'recno_vacuum_analyze'
+AND attname IN ('category', 'value')
+ORDER BY attname;
+ attname  | n_distinct | has_mcv | has_histogram 
+----------+------------+---------+---------------
+ category |          4 | t       | f
+ value    |         -1 | f       | t
+(2 rows)
+
+-- Verify reltuples is updated
+SELECT c.reltuples > 0 AS has_reltuples
+FROM pg_class c WHERE c.relname = 'recno_vacuum_analyze';
+ has_reltuples 
+---------------
+ t
+(1 row)
+
+DROP TABLE recno_vacuum_analyze;
+-- =============================================
+-- ANALYZE alone
+-- =============================================
+CREATE TABLE recno_analyze_only (
+    id serial,
+    skewed integer,
+    uniform integer
+) USING recno;
+-- Insert data with skewed distribution
+INSERT INTO recno_analyze_only (skewed, uniform)
+SELECT
+    CASE WHEN i <= 900 THEN 1 ELSE i END,  -- Heavily skewed: 90% are value 1
+    i % 100
+FROM generate_series(1, 1000) i;
+ANALYZE recno_analyze_only;
+-- Check that skew is detected (most common value should be 1)
+SELECT attname, n_distinct > 0 AS has_distinct,
+    most_common_vals IS NOT NULL AS has_mcv
+FROM pg_stats
+WHERE tablename = 'recno_analyze_only' AND attname = 'skewed';
+ attname | has_distinct | has_mcv 
+---------+--------------+---------
+ skewed  | f            | t
+(1 row)
+
+DROP TABLE recno_analyze_only;
+-- =============================================
+-- VACUUM after updates (dead tuple versions)
+-- =============================================
+CREATE TABLE recno_vacuum_update (
+    id serial PRIMARY KEY,
+    counter integer DEFAULT 0
+) USING recno;
+INSERT INTO recno_vacuum_update (counter)
+SELECT 0 FROM generate_series(1, 500);
+-- Multiple rounds of updates create dead tuples
+UPDATE recno_vacuum_update SET counter = counter + 1;
+UPDATE recno_vacuum_update SET counter = counter + 1;
+UPDATE recno_vacuum_update SET counter = counter + 1;
+VACUUM recno_vacuum_update;
+-- Verify data integrity
+SELECT COUNT(*), MIN(counter), MAX(counter) FROM recno_vacuum_update;
+ count | min | max 
+-------+-----+-----
+   500 |   3 |   3
+(1 row)
+
+DROP TABLE recno_vacuum_update;
+-- =============================================
+-- VACUUM with indexes
+-- =============================================
+CREATE TABLE recno_vacuum_idx (
+    id serial PRIMARY KEY,
+    name text,
+    value integer
+) USING recno;
+CREATE INDEX idx_rv_name ON recno_vacuum_idx (name);
+CREATE INDEX idx_rv_value ON recno_vacuum_idx (value);
+INSERT INTO recno_vacuum_idx (name, value)
+SELECT 'item_' || i, i FROM generate_series(1, 2000) i;
+-- Delete rows and vacuum
+DELETE FROM recno_vacuum_idx WHERE value % 3 = 0;
+VACUUM recno_vacuum_idx;
+-- Verify index consistency after vacuum
+SET enable_seqscan = off;
+SELECT COUNT(*) FROM recno_vacuum_idx WHERE name = 'item_100';
+ count 
+-------
+     1
+(1 row)
+
+SELECT COUNT(*) FROM recno_vacuum_idx WHERE value = 100;
+ count 
+-------
+     1
+(1 row)
+
+RESET enable_seqscan;
+-- REINDEX after vacuum
+REINDEX TABLE recno_vacuum_idx;
+SET enable_seqscan = off;
+SELECT COUNT(*) FROM recno_vacuum_idx WHERE value BETWEEN 500 AND 600;
+ count 
+-------
+    67
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE recno_vacuum_idx;
+-- =============================================
+-- VACUUM on empty table
+-- =============================================
+CREATE TABLE recno_vacuum_empty (id serial, data text) USING recno;
+-- Vacuum empty table (should be a no-op)
+VACUUM recno_vacuum_empty;
+VACUUM FULL recno_vacuum_empty;
+VACUUM ANALYZE recno_vacuum_empty;
+-- Insert then delete all, then vacuum
+INSERT INTO recno_vacuum_empty (data) SELECT 'x' FROM generate_series(1, 100);
+DELETE FROM recno_vacuum_empty;
+VACUUM recno_vacuum_empty;
+SELECT COUNT(*) FROM recno_vacuum_empty;
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE recno_vacuum_empty;
+-- =============================================
+-- VACUUM FREEZE
+-- =============================================
+CREATE TABLE recno_vacuum_freeze (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_vacuum_freeze (data)
+SELECT 'freeze_test_' || i FROM generate_series(1, 500) i;
+-- Freeze all tuples
+VACUUM (FREEZE) recno_vacuum_freeze;
+-- Verify data is still accessible
+SELECT COUNT(*) FROM recno_vacuum_freeze;
+ count 
+-------
+   500
+(1 row)
+
+SELECT data FROM recno_vacuum_freeze WHERE id = 1;
+     data      
+---------------
+ freeze_test_1
+(1 row)
+
+DROP TABLE recno_vacuum_freeze;
+-- =============================================
+-- Page reuse after VACUUM
+-- =============================================
+CREATE TABLE recno_vacuum_reuse (
+    id serial PRIMARY KEY,
+    status text DEFAULT 'active'
+) USING recno;
+INSERT INTO recno_vacuum_reuse (status)
+SELECT 'active' FROM generate_series(1, 1000);
+-- Record page count before
+SELECT c.relpages AS pages_before
+FROM pg_class c WHERE c.relname = 'recno_vacuum_reuse';
+ pages_before 
+--------------
+            0
+(1 row)
+
+-- Delete some rows
+DELETE FROM recno_vacuum_reuse WHERE id % 5 = 0;
+-- Insert new rows (some pages may be reused after vacuum)
+VACUUM recno_vacuum_reuse;
+INSERT INTO recno_vacuum_reuse (status)
+SELECT 'new' FROM generate_series(1, 200);
+-- Verify mixed pages handled correctly
+SELECT status, COUNT(*) FROM recno_vacuum_reuse GROUP BY status ORDER BY status;
+ status | count 
+--------+-------
+ active |   800
+ new    |   200
+(2 rows)
+
+DROP TABLE recno_vacuum_reuse;
+-- =============================================
+-- VACUUM on partitioned table
+-- =============================================
+CREATE TABLE recno_vacuum_part (
+    id serial,
+    created_at date NOT NULL,
+    data text
+) PARTITION BY RANGE (created_at) USING recno;
+CREATE TABLE recno_vacuum_part_1 PARTITION OF recno_vacuum_part
+    FOR VALUES FROM ('2025-01-01') TO ('2025-07-01') USING recno;
+CREATE TABLE recno_vacuum_part_2 PARTITION OF recno_vacuum_part
+    FOR VALUES FROM ('2025-07-01') TO ('2026-01-01') USING recno;
+INSERT INTO recno_vacuum_part (created_at, data) VALUES
+    ('2025-03-01', 'partition 1 data'),
+    ('2025-08-01', 'partition 2 data');
+DELETE FROM recno_vacuum_part WHERE created_at < '2025-06-01';
+-- VACUUM the partitioned table
+VACUUM recno_vacuum_part;
+VACUUM ANALYZE recno_vacuum_part;
+SELECT COUNT(*) FROM recno_vacuum_part;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE recno_vacuum_part;
+-- =============================================
+-- Cross-page defragmentation test
+-- =============================================
+CREATE TABLE recno_vacuum_defrag (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+-- Insert enough data to span multiple pages
+INSERT INTO recno_vacuum_defrag (data)
+SELECT repeat('D', 200) || '_' || i::text FROM generate_series(1, 500) i;
+-- Create fragmentation by deleting scattered rows
+DELETE FROM recno_vacuum_defrag WHERE id % 3 = 0;
+-- Record size before vacuum
+SELECT pg_relation_size('recno_vacuum_defrag') AS size_before_vacuum;
+ size_before_vacuum 
+--------------------
+              49152
+(1 row)
+
+-- VACUUM should defragment pages
+VACUUM recno_vacuum_defrag;
+-- Record size after vacuum
+SELECT pg_relation_size('recno_vacuum_defrag') AS size_after_vacuum;
+ size_after_vacuum 
+-------------------
+             49152
+(1 row)
+
+-- Verify all remaining data is intact
+SELECT COUNT(*) FROM recno_vacuum_defrag;
+ count 
+-------
+   334
+(1 row)
+
+SELECT COUNT(*) FROM recno_vacuum_defrag WHERE data LIKE 'D%';
+ count 
+-------
+   334
+(1 row)
+
+-- VACUUM FULL should compact further
+VACUUM FULL recno_vacuum_defrag;
+SELECT pg_relation_size('recno_vacuum_defrag') AS size_after_full;
+ size_after_full 
+-----------------
+           32768
+(1 row)
+
+SELECT COUNT(*) FROM recno_vacuum_defrag;
+ count 
+-------
+   334
+(1 row)
+
+DROP TABLE recno_vacuum_defrag;
+-- =============================================
+-- VACUUM with TOAST/overflow data
+-- =============================================
+CREATE TABLE recno_vacuum_large (
+    id serial PRIMARY KEY,
+    small_data text,
+    large_data text
+) USING recno;
+-- Insert rows with large data (should use TOAST or overflow)
+INSERT INTO recno_vacuum_large (small_data, large_data)
+SELECT 'small_' || i, repeat('L', 5000) || '_' || i::text
+FROM generate_series(1, 100) i;
+-- Delete half the large rows
+DELETE FROM recno_vacuum_large WHERE id % 2 = 0;
+-- VACUUM should clean up dead tuples and associated large data
+VACUUM recno_vacuum_large;
+-- Verify remaining data
+SELECT COUNT(*) FROM recno_vacuum_large;
+ count 
+-------
+    50
+(1 row)
+
+SELECT id, small_data, length(large_data) AS large_len
+FROM recno_vacuum_large ORDER BY id LIMIT 5;
+ id | small_data | large_len 
+----+------------+-----------
+  1 | small_1    |      5002
+  3 | small_3    |      5002
+  5 | small_5    |      5002
+  7 | small_7    |      5002
+  9 | small_9    |      5002
+(5 rows)
+
+-- VACUUM FULL
+VACUUM FULL recno_vacuum_large;
+SELECT COUNT(*) FROM recno_vacuum_large;
+ count 
+-------
+    50
+(1 row)
+
+DROP TABLE recno_vacuum_large;
+-- =============================================
+-- VACUUM DISABLE_PAGE_SKIPPING
+-- =============================================
+CREATE TABLE recno_vacuum_noskip (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_vacuum_noskip (data)
+SELECT 'data_' || i FROM generate_series(1, 500) i;
+DELETE FROM recno_vacuum_noskip WHERE id < 250;
+-- Force vacuum to visit all pages
+VACUUM (DISABLE_PAGE_SKIPPING) recno_vacuum_noskip;
+SELECT COUNT(*) FROM recno_vacuum_noskip;
+ count 
+-------
+   251
+(1 row)
+
+DROP TABLE recno_vacuum_noskip;
