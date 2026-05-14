@@ -21,7 +21,7 @@
 #                  heap_hot_indexed_tombstone_attr_modified,
 #                  HeapUpdateHotAllowable, heap_update
 #   WAL:           heap_xlog_update
-#   Read path:     heap_hot_search_buffer, ExecIndexEntryMatchesTuple,
+#   Read path:     heap_hot_search_buffer, _bt_heap_keys_equal_leaf,
 #                  ExecSetIndexUnchanged, RelationGetIndexedAttrs,
 #                  _bt_check_unique
 #   Prune:         prune_handle_tombstones

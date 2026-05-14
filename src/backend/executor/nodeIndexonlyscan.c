@@ -194,7 +194,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 				 * callback returns true iff the leaf is still valid for
 				 * this index: its key matches the live tuple's current
 				 * index form.  AMs without the callback fall through to
-				 * the permissive drop path, matching pre-tepid behaviour.
+				 * the permissive drop path, matching the pre-feature
+				 * behaviour.
 				 */
 				if (scandesc->xs_itup != NULL)
 				{

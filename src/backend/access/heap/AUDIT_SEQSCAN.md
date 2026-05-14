@@ -339,6 +339,29 @@ block, which predates HOT-indexed and is already mitigated there.
 The `README.HOT-INDEXED` note can be updated to record that the
 audit was performed and found no HOT-indexed-specific exposure.
 
+## Addendum: indexOK=true callers found unsafe in stochastic regress
+
+The original audit scope was deliberately narrowed to `indexOK=false`
+SeqScan callers.  Subsequent stochastic regress investigation surfaced
+two `indexOK=true` callers that were unsafe under HOT-indexed chain
+semantics for catalog UPDATE-while-iterating patterns:
+
+| Site | Symptom | Fix commit |
+|------|---------|------------|
+| `commands/tablecmds.c::AlterFKConstrEnforceabilityRecurse` -- iterating pg_constraint by `conparentid` while mutating pg_trigger | stochastic foreign_key duplicate-key on the recursive enforcement walk | `984797f8303` ("tablecmds: SeqScan pg_constraint conparentid in FK NOT ENFORCED recursion") |
+| `utils/cache/relfilenumbermap.c::RelidByRelfilenumber` -- `pg_class_tblspc_relfilenode_index` lookup | `pg_filenode_relation()` returning NULL for a relation whose relfilenode just changed (CLUSTER, REINDEX, VACUUM FULL, TRUNCATE) | `5219185d3d1` ("relfilenumbermap: SeqScan pg_class in RelidByRelfilenumber") |
+
+Both fixes flip `indexOK` to `false` for the affected scan and
+document why.  The pattern ("index walk over a catalog while
+mutating that same catalog or a paired one inside the loop") is the
+standard reviewer-visible signature; AUDIT_SEQSCAN was extended
+implicitly to recognise it.
+
+A broader audit of every `indexOK=true` SeqScan over a catalog that
+is HOT-indexed-mutated by tepid is **future work**.  The two
+findings above were the user-visible ones from regress; reviewers
+should expect more follow-ups in the same shape.
+
 ## Follow-up: README update (suggested, not landed here)
 
 Proposed diff to `README.HOT-INDEXED`, replacing the
