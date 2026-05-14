@@ -253,16 +253,34 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	 * otherwise iterate every indexed attribute and call slot_getattr twice
 	 * per attribute only to discard an empty result.
 	 *
-	 * The fast path is unsafe when a BEFORE UPDATE or INSTEAD OF UPDATE row
-	 * trigger is attached to the relation: those triggers can replace any
-	 * column of the new tuple via heap_modify_tuple() (see the
-	 * tsvector_update_trigger() in tsearch.sql), and ExecGetAllUpdatedCols()
-	 * does not record such mutations.  Fall through to the full comparison
-	 * in that case.
+	 * The fast path is unsafe when:
+	 *
+	 *   - A BEFORE UPDATE or INSTEAD OF UPDATE row trigger is attached:
+	 *     those triggers can replace any column of the new tuple via
+	 *     heap_modify_tuple() (see tsvector_update_trigger() in
+	 *     tsearch.sql), and ExecGetAllUpdatedCols() does not record such
+	 *     mutations.
+	 *
+	 *   - The UPDATE is FOR PORTION OF: the temporal-range column is
+	 *     bounded implicitly by the FOR PORTION OF machinery rather than
+	 *     listed in the SET clause, so it is not in ExecGetAllUpdatedCols().
+	 *     A short-circuit here would tell heap_update no indexed column
+	 *     changed and miss the row-split that FOR PORTION OF requires.
+	 *
+	 *   - The relation has an exclusion constraint: temporal PRIMARY KEY ...
+	 *     WITHOUT OVERLAPS is internally an exclusion constraint, and similar
+	 *     custom range/overlap constraints can drive value mutations through
+	 *     paths the SQL target list doesn't capture.  HeapUpdateHotAllowable
+	 *     already demotes such relations to non-HOT, but the fast path runs
+	 *     before that decision and must not pre-empty modified_idx_attrs.
+	 *
+	 * Fall through to the full comparison in any of these cases.
 	 */
-	if (resultRelInfo->ri_TrigDesc == NULL ||
-		(!resultRelInfo->ri_TrigDesc->trig_update_before_row &&
-		 !resultRelInfo->ri_TrigDesc->trig_update_instead_row))
+	if ((resultRelInfo->ri_TrigDesc == NULL ||
+		 (!resultRelInfo->ri_TrigDesc->trig_update_before_row &&
+		  !resultRelInfo->ri_TrigDesc->trig_update_instead_row)) &&
+		resultRelInfo->ri_forPortionOf == NULL &&
+		!RelationHasExclusionConstraint(relation))
 	{
 		targeted = ExecGetAllUpdatedCols(resultRelInfo, estate);
 		idx_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
