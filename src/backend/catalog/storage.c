@@ -29,6 +29,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bulk_write.h"
+#include "storage/fileops.h"
 #include "storage/freespace.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
@@ -700,6 +701,17 @@ smgrDoPendingDeletes(bool isCommit)
 			if (pending->atCommit == isCommit)
 			{
 				SMgrRelation srel;
+
+				/*
+				 * Clean up any FILEOPS-tracked extended attributes attached
+				 * to this relation's files.  Today this is a no-op (no
+				 * caller stores xattrs on relation files), but the hook is
+				 * here so future commits introducing relation-keyed xattrs
+				 * do not need to touch catalog/storage.c again.  See the
+				 * FILEOPS commit message for the broader pendingDeletes /
+				 * FILEOPS boundary discussion.
+				 */
+				FileOpsRemoveXattrsForRelation(&pending->rlocator);
 
 				srel = smgropen(pending->rlocator, pending->procNumber);
 
