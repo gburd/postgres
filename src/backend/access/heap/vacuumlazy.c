@@ -2805,6 +2805,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxHeapTuplesPerPage];
 	int			nunused = 0;
+	int			bridges_remaining = 0;
 	TransactionId newest_live_xid;
 	TransactionId conflict_xid = InvalidTransactionId;
 	bool		all_frozen;
@@ -2849,6 +2850,38 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
 	}
 
+	/*
+	 * If the page advertises HOT-indexed bridges, count them now (before any
+	 * line-pointer changes).  We will decrement this counter as we reclaim
+	 * each bridge in the conversion loop below; if it reaches zero by the
+	 * end, we know no bridge remains and can clear the page-level advisory
+	 * bit without a second walk over the line-pointer array.
+	 *
+	 * Counting before the loop (rather than after) means we observe the
+	 * page exactly once per call.  Bridges that were added to the page
+	 * after lazy_scan_prune ran (e.g.\ by an intervening opportunistic
+	 * prune) would not appear in deadoffsets[], so they will not be
+	 * decremented here and the flag will correctly remain set.
+	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (HeapTupleHeaderIsHotIndexedBridge(htup))
+				bridges_remaining++;
+		}
+	}
+
 	START_CRIT_SECTION();
 
 	for (int i = 0; i < num_offsets; i++)
@@ -2876,6 +2909,15 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 			Assert(ItemIdIsNormal(itemid));
 			htup = (HeapTupleHeader) PageGetItem(page, itemid);
 			Assert(HeapTupleHeaderIsHotIndexedBridge(htup));
+
+			/*
+			 * Decrement the running count of bridges on this page.  The
+			 * pre-loop walk above counted every LP_NORMAL bridge present at
+			 * function entry, so reclaiming one here reduces the live count
+			 * by exactly one.
+			 */
+			Assert(bridges_remaining > 0);
+			bridges_remaining--;
 		}
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
@@ -2884,36 +2926,16 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	Assert(nunused > 0);
 
 	/*
-	 * If we just reclaimed the last bridge on this page, clear the page-
-	 * level advisory bit so opportunistic prunes don't waste time scanning
-	 * it.  We only need to walk the page when the flag is currently set;
-	 * otherwise there is nothing to undo.
+	 * If the running counter shows no bridge survives on this page, clear
+	 * the page-level advisory bit so opportunistic prunes don't waste time
+	 * scanning it.  No second walk over the line-pointer array is required:
+	 * the pre-loop count plus per-reclaim decrements is exact, and the
+	 * advisory bit is harmless (only a hint) if a concurrent opportunistic
+	 * prune adds a new bridge after we observed the counter -- such a
+	 * prune sets the flag itself before releasing the buffer lock.
 	 */
-	if (PageHasHotIndexedBridges(page))
-	{
-		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-		bool		any_bridge_left = false;
-
-		for (OffsetNumber off = FirstOffsetNumber;
-			 off <= maxoff;
-			 off = OffsetNumberNext(off))
-		{
-			ItemId		lp = PageGetItemId(page, off);
-			HeapTupleHeader htup;
-
-			if (!ItemIdIsNormal(lp))
-				continue;
-			htup = (HeapTupleHeader) PageGetItem(page, lp);
-			if (HeapTupleHeaderIsHotIndexedBridge(htup))
-			{
-				any_bridge_left = true;
-				break;
-			}
-		}
-
-		if (!any_bridge_left)
-			PageClearHasHotIndexedBridges(page);
-	}
+	if (bridges_remaining == 0 && PageHasHotIndexedBridges(page))
+		PageClearHasHotIndexedBridges(page);
 
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
