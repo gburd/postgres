@@ -4696,14 +4696,33 @@ LockTupleMode
 HeapUpdateDetermineLockmode(Relation relation, const Bitmapset *modified_idx_attrs)
 {
 	LockTupleMode lockmode = LockTupleExclusive;
+	const Bitmapset *key_attrs;
 
-	Bitmapset  *key_attrs = RelationGetIndexAttrBitmap(relation,
-													   INDEX_ATTR_BITMAP_KEY);
+	/*
+	 * Common fast path: when no indexed attribute changed (e.g.
+	 * pgbench-style "UPDATE t SET non_idx_col = ..." or the wide_0
+	 * "UPDATE t SET id = id" workload after the executor's fast path in
+	 * ExecUpdateModifiedIdxAttrs), modified_idx_attrs is empty and a key
+	 * column cannot have changed.  Skip the relcache lookup and return the
+	 * weaker lock immediately.  At high TPS this avoids a per-UPDATE
+	 * RelationGetIndexAttrBitmap call (and its bms_copy) on the KEY
+	 * bitmap.
+	 */
+	if (bms_is_empty(modified_idx_attrs))
+		return LockTupleNoKeyExclusive;
+
+	/*
+	 * Borrow the cached bitmap rather than copying it; we only test
+	 * overlap and never mutate or free key_attrs.  HeapUpdateDetermineLockmode
+	 * runs without buffer locks but the relcache entry is pinned by the
+	 * caller's lock on the relation, and we touch nothing between fetch
+	 * and the bms_overlap that could trigger a relcache invalidation.
+	 */
+	key_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
+												 INDEX_ATTR_BITMAP_KEY);
 
 	if (!bms_overlap(modified_idx_attrs, key_attrs))
 		lockmode = LockTupleNoKeyExclusive;
-
-	bms_free(key_attrs);
 
 	return lockmode;
 }
