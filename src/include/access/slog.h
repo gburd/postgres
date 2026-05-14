@@ -12,9 +12,9 @@
  *   2. XID sparsemap - Compressed bitmap for O(1) SLogXidIsPresent().
  *      Protected by a SpinLock (operations are very fast).
  *
- *   3. SLogTupleHash - Per-tuple operation tracking keyed by (relid, tid).
+ *   3. Tuple flat hash - Per-tuple operation tracking keyed by (relid, tid).
  *      Designed for RECNO table AM timestamp-based MVCC.
- *      Partitioned by tuple_locks[NUM_SLOG_TUPLE_PARTITIONS].
+ *      Protected by LRLock flat hash (wait-free reads, serialized writes).
  *
  * WAL: Transaction sLog reuses existing RM_ATM_ID records.  Tuple sLog
  * is WAL-free (transient entries removed at commit/abort).
@@ -38,9 +38,10 @@
 #include "utils/dsa.h"
 
 /*
- * Partition count for tuple LWLock array.
- * Must be a power of 2.  32 partitions reduces partition lock contention
- * for workloads that touch many distinct TIDs concurrently.
+ * Legacy partition count retained for shared memory compatibility.
+ * The tuple sLog now uses a single LRLock flat hash (wait-free reads)
+ * with writer serialization via SLogTupleWriterLock.  These constants
+ * are no longer used operationally.
  */
 #define NUM_SLOG_TUPLE_PARTITIONS	32
 #define SLOG_TUPLE_PARTITION_MASK	(NUM_SLOG_TUPLE_PARTITIONS - 1)
@@ -64,10 +65,17 @@
  * hash entries.  On overflow (hash full), the operation proceeds gracefully
  * with local-only tracking rather than crashing.  Auto-sizing formula:
  * MaxBackends * SLOG_TUPLE_PER_BACKEND_SLOTS, clamped.
+ *
+ * The per-backend slot count must be large enough to accommodate OLTP
+ * workloads where UPDATE before-images are retained until eviction.
+ * With TPROC-C style transactions touching ~25 rows, and retained entries
+ * from committed transactions accumulating between eviction passes, 1024
+ * slots per backend provides adequate headroom for ~4K entries per partition
+ * (with 32 partitions).
  */
-#define SLOG_TUPLE_PER_BACKEND_SLOTS	256
-#define SLOG_TUPLE_MIN_ENTRIES			1024
-#define SLOG_TUPLE_MAX_ENTRIES			1048576
+#define SLOG_TUPLE_PER_BACKEND_SLOTS	1024
+#define SLOG_TUPLE_MIN_ENTRIES			4096
+#define SLOG_TUPLE_MAX_ENTRIES			4194304
 
 /*
  * Skip-list pool capacity for the ATM (Aborted Transaction Map).
@@ -282,7 +290,7 @@ extern bool SLogTupleHasAbortedEntry(Oid relid, ItemPointer tid);
 
 /* Backend-private tracking for cleanup at commit/abort */
 extern void SLogTupleTrackKey(SLogTupleKey key, TransactionId xid,
-							  TransactionId subxid);
+							  TransactionId subxid, SLogOpType op_type);
 extern void SLogTupleResetTracking(void);
 
 /*
@@ -372,5 +380,8 @@ extern void SLogDsaFreeBeforeImage(dsa_pointer dp);
 
 /* GUC: maximum DSA size for before-images (in MB) */
 extern int	slog_dsa_max_size_mb;
+
+/* GUC: number of sLog flat hash partitions (0 = auto based on CPU count) */
+extern int	slog_num_partitions;
 
 #endif							/* SLOG_H */

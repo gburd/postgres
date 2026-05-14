@@ -1,0 +1,66 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read_count s2_vacuum s1_read_count s1_commit
+step s1_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+
+step s2_vacuum: VACUUM recno_vac;
+step s1_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_read_count s2_delete s2_vacuum s1_read_count s1_read_some s1_commit s3_read_count
+step s1_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+
+step s2_delete: DELETE FROM recno_vac WHERE id BETWEEN 51 AND 60;
+step s2_vacuum: VACUUM recno_vac;
+step s1_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+
+step s1_read_some: SELECT id, val FROM recno_vac WHERE id BETWEEN 51 AND 55 ORDER BY id;
+id|val   
+--+------
+51|val_51
+52|val_52
+53|val_53
+54|val_54
+55|val_55
+(5 rows)
+
+step s1_commit: COMMIT;
+step s3_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   40
+(1 row)
+
+
+starting permutation: s2_vacuum s1_read_count s1_commit s3_read_count
+step s2_vacuum: VACUUM recno_vac;
+step s1_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_read_count: SELECT count(*) FROM recno_vac;
+count
+-----
+   50
+(1 row)
+

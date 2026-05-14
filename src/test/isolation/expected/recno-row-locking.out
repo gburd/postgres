@@ -1,0 +1,106 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_for_update s2_for_update s1_commit s2_commit
+step s1_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_for_update: <... completed>
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_for_update s2_update s1_commit s2_read s2_commit
+step s1_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_update: UPDATE recno_lock SET val = 's2_updated' WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_read: SELECT id, val FROM recno_lock ORDER BY id;
+id|val       
+--+----------
+ 1|s2_updated
+ 2|another   
+(2 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_for_update s2_delete s1_commit s2_read s2_commit
+step s1_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_delete: DELETE FROM recno_lock WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_read: SELECT id, val FROM recno_lock ORDER BY id;
+id|val    
+--+-------
+ 2|another
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_for_share s2_for_share s1_commit s2_commit
+step s1_for_share: SELECT * FROM recno_lock WHERE id = 1 FOR SHARE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_for_share: SELECT * FROM recno_lock WHERE id = 1 FOR SHARE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_for_share s2_for_update s1_commit s2_commit
+step s1_for_share: SELECT * FROM recno_lock WHERE id = 1 FOR SHARE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE; <waiting ...>
+step s1_commit: COMMIT;
+step s2_for_update: <... completed>
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_for_update s1_update s2_update s1_commit s2_read s2_commit
+step s1_for_update: SELECT * FROM recno_lock WHERE id = 1 FOR UPDATE;
+id|val     
+--+--------
+ 1|original
+(1 row)
+
+step s1_update: UPDATE recno_lock SET val = 's1_updated' WHERE id = 1;
+step s2_update: UPDATE recno_lock SET val = 's2_updated' WHERE id = 1; <waiting ...>
+step s1_commit: COMMIT;
+step s2_update: <... completed>
+step s2_read: SELECT id, val FROM recno_lock ORDER BY id;
+id|val       
+--+----------
+ 1|s2_updated
+ 2|another   
+(2 rows)
+
+step s2_commit: COMMIT;

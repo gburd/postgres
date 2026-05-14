@@ -1,0 +1,80 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_svp s1_delete s1_rollback_svp s1_read s2_read s1_commit s2_commit
+step s1_svp: SAVEPOINT sp1;
+step s1_delete: DELETE FROM recno_svp WHERE id = 1;
+step s1_rollback_svp: ROLLBACK TO sp1;
+step s1_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s2_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_svp s1_update s1_rollback_svp s1_read s2_read s1_commit s2_commit
+step s1_svp: SAVEPOINT sp1;
+step s1_update: UPDATE recno_svp SET val = 'changed_2' WHERE id = 2;
+step s1_rollback_svp: ROLLBACK TO sp1;
+step s1_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s2_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_svp s1_delete s2_read s1_rollback_svp s2_read s1_commit s2_commit
+step s1_svp: SAVEPOINT sp1;
+step s1_delete: DELETE FROM recno_svp WHERE id = 1;
+step s2_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s1_rollback_svp: ROLLBACK TO sp1;
+step s2_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+(2 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+
+starting permutation: s1_svp s1_delete s1_rollback_svp s1_svp s1_update s1_commit s2_read s2_commit
+step s1_svp: SAVEPOINT sp1;
+step s1_delete: DELETE FROM recno_svp WHERE id = 1;
+step s1_rollback_svp: ROLLBACK TO sp1;
+step s1_svp: SAVEPOINT sp1;
+step s1_update: UPDATE recno_svp SET val = 'changed_2' WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_read: SELECT id, val FROM recno_svp ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|changed_2 
+(2 rows)
+
+step s2_commit: COMMIT;
