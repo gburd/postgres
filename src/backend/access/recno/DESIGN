@@ -1,0 +1,302 @@
+RECNO Design Rationale
+=======================
+
+This document consolidates architectural design decisions for the RECNO
+table access method.  It covers MVCC correctness, WAL record format,
+lock ordering, and HLC clock-bound integration.  The intended audience is
+PostgreSQL committers evaluating the code for review.
+
+
+1. MVCC Correctness
+====================
+
+1.1 Timestamp Assignment Invariants
+------------------------------------
+
+RecnoGetCommitTimestamp() acquires LW_EXCLUSIVE on mvcc_lock, reads
+wall-clock time via GetCurrentTimestamp(), enforces ts = max(ts, G + 1)
+where G is the global monotonic counter, updates G, and returns ts.
+
+Invariant I1 (Strict Monotonicity): For any two commit timestamps c1, c2
+assigned by RecnoGetCommitTimestamp(), if c1 is assigned before c2 then
+c1 < c2.  Follows from serialized access via mvcc_lock.
+
+Invariant I2 (Transaction Ordering): T.start < T.commit for any
+transaction T, and T.start < T'.start for any T' starting after T.
+
+1.2 Visibility Rules
+---------------------
+
+RecnoTupleVisible(tuple, snapshot_ts, xact_ts):
+
+  Rule R0 (SnapshotAny):  if snapshot_ts == 0: return !deleted
+  Rule R1 (Self-visibility): if xact_ts != 0 AND cts == xact_ts:
+                             return !deleted
+  Rule R2 (Deleted tuple):  if deleted: return snapshot_ts < cts
+  Rule R3 (Live tuple):     return snapshot_ts >= cts
+
+This is provably equivalent to heap's XID-based visibility for all
+PostgreSQL isolation levels:
+
+  - Read Committed: fresh snapshot per statement
+  - Repeatable Read: single snapshot for entire transaction
+  - Serializable: simplified pivot detection via anti-dependency flags
+
+The proof proceeds by case analysis over four exhaustive cases
+(committed/not, deleted/not, self/other, locked/not).  See recno_mvcc.c
+for the implementation.
+
+1.3 Isolation Level Implementation
+------------------------------------
+
+Read Committed:
+  Each statement gets a fresh snapshot via RecnoGetSnapshotTimestamp().
+  Equivalent to heap's per-statement snapshot.
+
+Repeatable Read:
+  RecnoInitTransactionState() records xact_start_ts once per transaction.
+  All subsequent snapshots use this value.  No phantom reads because
+  tuples inserted after T.start have cts > S, so S >= cts is false.
+
+Serializable:
+  RecnoCheckSerializableConflict() tracks has_read_deps and has_write_deps.
+  When both flags set, the transaction is aborted as a potential pivot.
+  This is conservative (may abort non-anomalous transactions) but never
+  allows serialization anomalies.
+
+1.4 Pruning Safety
+-------------------
+
+RecnoPruneDecision() never removes a version visible to any active
+transaction.  The prune horizon is the minimum of all active transactions'
+start timestamps (analogous to heap's OldestXmin).
+
+A version is only removed when:
+  - Deleted tuple with cts < prune_horizon (all snapshots see it as gone)
+  - Superseded version where both old and new have cts < prune_horizon
+  - Live tuples and recently-deleted tuples are always kept
+
+1.5 Oldest Active Timestamp
+-----------------------------
+
+RecnoGetOldestActiveTimestamp() uses a per-backend slot array indexed by
+pgprocno.  A two-phase locking protocol provides fast-path reads (shared
+lock, cached value) with slow-path rescans (exclusive lock) when the cache
+is invalidated.  This is analogous to GetOldestNonRemovableTransactionId()
+but uses timestamps instead of XIDs.
+
+
+2. WAL Record Format
+=====================
+
+RECNO registers as resource manager RM_RECNO_ID.  The REDO entry point
+is recno_redo().  All records use REGBUF_STANDARD for automatic FPI
+support.
+
+2.1 Record Types
+-----------------
+
+  XLOG_RECNO_INSERT           (0x00)  New tuple insertion
+  XLOG_RECNO_UPDATE_INPLACE   (0x10)  In-place update (old + new images)
+  XLOG_RECNO_DELETE            (0x20)  Tuple deletion (old image for UNDO)
+  XLOG_RECNO_DEFRAG            (0x30)  Single-page defragmentation
+  XLOG_RECNO_OVERFLOW_WRITE    (0x40)  Overflow record write
+  XLOG_RECNO_COMPRESS          (0x50)  Attribute compression
+  XLOG_RECNO_INIT_PAGE         (0x60)  Page initialization
+  XLOG_RECNO_CROSS_PAGE_DEFRAG (0x70)  Cross-page tuple move
+  XLOG_RECNO_VM_SET            (0x80)  Set visibility map bits
+  XLOG_RECNO_VM_CLEAR          (0x90)  Clear visibility map bits
+  XLOG_RECNO_LOCK              (0xA0)  Tuple lock (reserved, not yet used)
+
+2.2 Key Differences from Heap WAL
+-----------------------------------
+
+  - UPDATE logs both old AND new tuple images (enables UNDO without
+    separate storage).  WAL volume is ~2x tuple size per update.
+  - All DML records carry uint64 commit_ts and xact_ts fields.
+  - When recno_use_hlc = on, a trailing xl_recno_hlc_info structure
+    (32 bytes) is appended with commit HLC, uncertainty bounds.
+  - TIDs are stable across updates (no HOT chain WAL records needed).
+  - DELETE sets RECNO_TUPLE_DELETED flag rather than LP_DEAD, and
+    marks the page with RECNO_PAGE_DEFRAG_NEEDED for later reclamation.
+
+2.3 HLC WAL Extension
+-----------------------
+
+When RECNO_WAL_HAS_HLC is set in the record flags, a 32-byte
+xl_recno_hlc_info is appended:
+
+    typedef struct xl_recno_hlc_info {
+        uint64  commit_hlc;          /* Commit HLC timestamp */
+        uint64  commit_dvv;          /* Reserved (unused) */
+        uint64  uncertainty_lower;   /* Lower bound of uncertainty */
+        uint64  uncertainty_upper;   /* Upper bound of uncertainty */
+    } xl_recno_hlc_info;
+
+During REDO on a standby, recno_redo_handle_hlc() extracts this and
+advances the replica's HLC to maintain causal ordering.
+
+2.4 UNDO Path in WAL REDO
+---------------------------
+
+UPDATE and DELETE REDO handlers include an UNDO path (triggered when
+page LSN > record EndRecPtr).  This restores the old tuple via memcpy
+from the before-image stored in the WAL record.  The UNDO path is used
+during specialized rollback scenarios (e.g., two-phase commit abort),
+not during normal crash recovery.
+
+2.5 Defragmentation WAL
+-------------------------
+
+XLOG_RECNO_DEFRAG logs offset mappings for diagnostic purposes (useful
+for pg_waldump), but the actual REDO implementation calls
+PageRepairFragmentation() which achieves the same result more simply.
+The page-level RECNO_PAGE_DEFRAG_NEEDED flag is cleared after compaction.
+
+2.6 Timestamp Monotonicity on Pages
+-------------------------------------
+
+Every DML REDO handler uses:
+  pd_commit_ts = Max(pd_commit_ts, xlrec->commit_ts)
+
+This ensures page-level timestamps never go backward, which is critical
+for MVCC visibility fast paths that use the page timestamp as a
+conservative upper bound.
+
+
+3. Lock Ordering
+=================
+
+3.1 Buffer and Tuple Lock Protocol
+------------------------------------
+
+  INSERT:   Buffer lock only (new tuples need no tuple lock)
+  UPDATE:   Tuple lock BEFORE buffer lock (prevents concurrent modify)
+  DELETE:   Tuple lock BEFORE buffer lock (ensures atomicity)
+
+Multiple tuple locks are acquired in TID-sorted order to prevent
+deadlocks (RecnoLockMultipleTuples).
+
+3.2 Overflow Chain Locking
+---------------------------
+
+Spatial locality (multiple overflow records on one page) requires the
+pin-reuse pattern:
+
+  1. Pin buffer on first access to a page
+  2. Lock/unlock between records on the same page (keep pin)
+  3. Release pin only when moving to a different page or at chain end
+
+This prevents the assertion failure in bufmgr.c that occurs when
+attempting to lock an already-locked buffer.  The pattern is required
+for correctness, not merely an optimization.
+
+Used in:
+  - RecnoFetchOverflowColumn() (SELECT path, BUFFER_LOCK_SHARE)
+  - RecnoDeleteOverflowChain() (DELETE path, BUFFER_LOCK_EXCLUSIVE)
+
+3.3 Interaction with UNDO-in-WAL
+----------------------------------
+
+RECNO's UNDO records are written to the cluster-wide UNDO log via the
+am_supports_undo callback.  The UNDO subsystem (undoapply.c) applies
+physical rollback with this critical section pattern:
+
+  1. Open relation with RowExclusiveLock
+  2. ReadBuffer -> LockBuffer(EXCLUSIVE)
+  3. START_CRIT_SECTION
+  4. Physical modification (memcpy restore)
+  5. MarkBufferDirty
+  6. Generate CLR via XLogInsert (REGBUF_FORCE_IMAGE)
+  7. PageSetLSN
+  8. Write CLR pointer to urec_clr_ptr
+  9. END_CRIT_SECTION
+  10. UnlockReleaseBuffer
+
+UNDO record I/O occurs BEFORE the critical section.  Only page
+modification and WAL writes occur inside.
+
+3.4 Crash During Rollback
+---------------------------
+
+If a crash occurs during UNDO application:
+  1. Recovery replays WAL forward, restoring pages via CLR full-page images
+  2. UNDO records with valid urec_clr_ptr are skipped (already applied)
+  3. Remaining UNDO records are applied normally, generating new CLRs
+  4. Rollback always completes, even after repeated crashes
+
+
+4. HLC Clock-Bound Design
+===========================
+
+4.1 Clock-Bound Daemon Integration
+------------------------------------
+
+When AWS clock-bound is available (recno_enable_clock_bound = true),
+RecnoGetTimestampBounds() reads hardware-backed bounds from
+/dev/shm/clockbound instead of using the configured epsilon.  This
+provides tighter uncertainty bounds (1-10ms vs configured 250ms
+fallback).
+
+Data structure returned:
+
+    RecnoTimestampBound {
+        HLCTimestamp hlc;          /* Current HLC */
+        int64        earliest_us;  /* Earliest possible time */
+        int64        latest_us;    /* Latest possible time */
+        uint64       error_bound_ms;
+        bool         bounds_valid; /* True if from daemon */
+    }
+
+4.2 Uncertainty Interval Handling
+----------------------------------
+
+When a reader at snapshot HLC S encounters a tuple with commit HLC C:
+  - S < C: invisible (not yet committed from snapshot perspective)
+  - S >= C + epsilon: visible (committed before snapshot, no ambiguity)
+  - S in [C, C + epsilon]: ambiguous; transaction restarts at later HLC
+
+This follows the CockroachDB approach.  Guaranteed progress: each
+restart advances the snapshot HLC past the uncertainty window.
+
+For single-node RECNO, uncertainty intervals are unnecessary because
+all events share the same HLC state (same LWLock serializes all
+assignments).
+
+4.3 Clock Health Monitoring
+-----------------------------
+
+RecnoCheckClockHealth() runs every recno_clock_check_interval_ms and:
+  - Warns at 50% of recno_max_clock_offset_ms
+  - Triggers FATAL shutdown at 80% (when recno_fatal_on_clock_drift = on)
+  - Detects NTP sync loss (no update for 5/10 minutes)
+
+This proactive monitoring prevents the bounded-skew assumption from
+being violated silently.
+
+4.4 Replica Apply Logic
+-------------------------
+
+During WAL replay on standbys, recno_redo_handle_hlc() extracts HLC
+info from DML records and:
+  1. Advances local HLC to at least the commit HLC (causal ordering)
+  2. If recno_uncertainty_wait = on: waits for physical clock to pass
+     the uncertainty window before allowing reads
+  3. If recno_uncertainty_wait = off: immediately advances HLC past
+     the window (no wait, but reads may see stale ordering briefly)
+
+On promotion, the standby's HLC continues from the last value advanced
+during replay.  No special handling needed.
+
+4.5 Comparison with Other Systems
+-----------------------------------
+
+vs CockroachDB:
+  - Similar: HLC + uncertainty intervals + transaction restarts
+  - Different: We support clock-bound for tighter bounds
+  - Different: Graceful fallback to HLC-only when daemon unavailable
+
+vs Spanner:
+  - Different: No atomic clocks required
+  - Different: Restarts instead of commit waits
+  - Similar: Bounded uncertainty, causally consistent

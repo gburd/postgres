@@ -1,0 +1,75 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_read s2_read s1_update s2_update s1_commit s2_commit
+step s1_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s2_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s1_update: UPDATE recno_ser SET val = val + 1 WHERE id = 1;
+step s2_update: UPDATE recno_ser SET val = val + 100 WHERE id = 1; <waiting ...>
+step s1_commit: COMMIT;
+step s2_update: <... completed>
+ERROR:  could not serialize access due to concurrent update
+step s2_commit: COMMIT;
+
+starting permutation: s1_read s2_read s1_insert s1_commit s2_read_after s2_commit
+step s1_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s2_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s1_insert: INSERT INTO recno_ser VALUES (3, 30);
+step s1_commit: COMMIT;
+step s2_read_after: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_read s2_read s1_update s1_commit s2_read_after s2_commit
+step s1_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s2_read: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s1_update: UPDATE recno_ser SET val = val + 1 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_read_after: SELECT id, val FROM recno_ser ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step s2_commit: COMMIT;

@@ -1,0 +1,67 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read_x s2_transfer s2_commit s1_read_y s1_commit s3_read
+step s1_read_x: SELECT val FROM recno_rs WHERE id = 1;
+val
+---
+ 50
+(1 row)
+
+step s2_transfer: UPDATE recno_rs SET val = 25 WHERE id = 1; UPDATE recno_rs SET val = 75 WHERE id = 2;
+step s2_commit: COMMIT;
+step s1_read_y: SELECT val FROM recno_rs WHERE id = 2;
+val
+---
+ 50
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_rs ORDER BY id;
+id|val
+--+---
+ 1| 25
+ 2| 75
+(2 rows)
+
+
+starting permutation: s1_read_x s2_transfer s2_commit s1_read_both s1_commit s3_read
+step s1_read_x: SELECT val FROM recno_rs WHERE id = 1;
+val
+---
+ 50
+(1 row)
+
+step s2_transfer: UPDATE recno_rs SET val = 25 WHERE id = 1; UPDATE recno_rs SET val = 75 WHERE id = 2;
+step s2_commit: COMMIT;
+step s1_read_both: SELECT id, val FROM recno_rs ORDER BY id;
+id|val
+--+---
+ 1| 50
+ 2| 50
+(2 rows)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_rs ORDER BY id;
+id|val
+--+---
+ 1| 25
+ 2| 75
+(2 rows)
+
+
+starting permutation: s2_transfer s2_commit s1_read_x s1_read_y s1_commit
+step s2_transfer: UPDATE recno_rs SET val = 25 WHERE id = 1; UPDATE recno_rs SET val = 75 WHERE id = 2;
+step s2_commit: COMMIT;
+step s1_read_x: SELECT val FROM recno_rs WHERE id = 1;
+val
+---
+ 25
+(1 row)
+
+step s1_read_y: SELECT val FROM recno_rs WHERE id = 2;
+val
+---
+ 75
+(1 row)
+
+step s1_commit: COMMIT;
