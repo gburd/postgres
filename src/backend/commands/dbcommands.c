@@ -652,9 +652,11 @@ CreateDatabaseUsingFileCopy(Oid src_dboid, Oid dst_dboid, Oid src_tsid,
 		/*
 		 * Copy this subdirectory to the new location
 		 *
-		 * We don't need to copy subdirectories
+		 * We don't need to copy subdirectories.  Register the destination
+		 * for delete-on-abort so a transaction abort recursively removes
+		 * the partial copy.
 		 */
-		copydir(srcpath, dstpath, false);
+		copydir(srcpath, dstpath, false, true);
 
 		/* Record the filesystem change in XLOG */
 		{
@@ -2228,8 +2230,18 @@ movedb(const char *dbname, const char *tblspcname)
 		FreeDir(dstdir);
 
 		/*
-		 * The directory exists but is empty. We must remove it before using
+		 * The directory exists but is empty.  We must remove it before using
 		 * the copydir function.
+		 *
+		 * NB: this rmdir is deliberately NOT routed through FILEOPS.  The
+		 * destination tablespace path is not yet referenced by any catalog
+		 * row (the pg_database.dattablespace update happens later, and is
+		 * what binds dst_dbpath to the database on commit), so an abort that
+		 * leaves dst_dbpath missing does not orphan any catalog state -- the
+		 * database remains in src_tblspcoid.  copydir() below will recreate
+		 * dst_dbpath via MakePGDirectory in its first action and registers
+		 * the destination tree for delete-on-abort, so the partial-copy
+		 * window is covered.
 		 */
 		if (rmdir(dst_dbpath) != 0)
 			elog(ERROR, "could not remove directory \"%s\": %m",
@@ -2252,9 +2264,13 @@ movedb(const char *dbname, const char *tblspcname)
 		bool		new_record_repl[Natts_pg_database] = {0};
 
 		/*
-		 * Copy files from the old tablespace to the new one
+		 * Copy files from the old tablespace to the new one.  Register the
+		 * destination for delete-on-abort so a transaction abort recursively
+		 * removes the partial copy (closing the long-standing crash-asymmetry
+		 * with the source tree, which is preserved until commit by movedb's
+		 * post-commit cleanup).
 		 */
-		copydir(src_dbpath, dst_dbpath, false);
+		copydir(src_dbpath, dst_dbpath, false, true);
 
 		/*
 		 * Record the filesystem change in XLOG
@@ -3414,9 +3430,12 @@ dbase_redo(XLogReaderState *record)
 		/*
 		 * Copy this subdirectory to the new location
 		 *
-		 * We don't need to copy subdirectories
+		 * We don't need to copy subdirectories.  Pass false for
+		 * register_for_abort_cleanup: this is a WAL replay path with no
+		 * surrounding transaction; the redo handler is itself the recovery
+		 * action.
 		 */
-		copydir(src_path, dst_path, false);
+		copydir(src_path, dst_path, false, false);
 
 		pfree(src_path);
 		pfree(dst_path);
