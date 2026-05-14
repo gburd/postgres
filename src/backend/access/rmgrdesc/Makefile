@@ -9,10 +9,12 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	atmdesc.o \
 	brindesc.o \
 	clogdesc.o \
 	committsdesc.o \
 	dbasedesc.o \
+	fileopsdesc.o \
 	genericdesc.o \
 	gindesc.o \
 	gistdesc.o \
@@ -29,7 +31,12 @@ OBJS = \
 	spgdesc.o \
 	standbydesc.o \
 	tblspcdesc.o \
+	undodesc.o \
 	xactdesc.o \
 	xlogdesc.o
+
+ifdef USE_RECNO
+OBJS += recnodesc.o
+endif
 
 include $(top_srcdir)/src/backend/common.mk
