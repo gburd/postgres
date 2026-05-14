@@ -1,0 +1,4 @@
+comment = 'Test code for compressed sparse bitmap'
+default_version = '1.0'
+module_pathname = '$libdir/test_sparsemap'
+relocatable = true

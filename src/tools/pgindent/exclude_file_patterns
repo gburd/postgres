@@ -63,3 +63,8 @@ src/tools/pg_bsd_indent/.*
 /tmp_install/
 # ... and for paranoia's sake, don't touch git stuff.
 /\.git/
+#
+# sparsemap uses type-generic macro patterns (__sm_when_diag) with inline
+# block arguments that confuse pg_bsd_indent's parser.  It is an
+# externally-maintained library integrated into PostgreSQL.
+src/backend/lib/sparsemap\.c$
