@@ -32,6 +32,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -120,6 +121,17 @@ IndexNext(IndexScanState *node)
 		node->iss_ScanDesc = scandesc;
 
 		/*
+		 * Request xs_itup so the hot-indexed recheck path
+		 * (xs_hot_indexed_recheck) can compare the leaf key against the
+		 * current tuple's index-form.  Restrict to btree: it's the only AM
+		 * where hot-indexed's stale-leaf-dup matters (lossy AMs already
+		 * recheck quals on every hit via xs_recheck).  For other AMs the
+		 * hot-indexed recheck path falls back to conservative drop.
+		 */
+		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+			scandesc->xs_want_itup = true;
+
+		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
 		 * pass the scankeys to the index AM.
 		 */
@@ -146,6 +158,50 @@ IndexNext(IndexScanState *node)
 			if (!ExecQualAndReset(node->indexqualorig, econtext))
 			{
 				/* Fails recheck, so drop it and loop back for another */
+				InstrCountFiltered2(node, 1);
+				continue;
+			}
+		}
+
+		/*
+		 * HOT-indexed stale entry: the chain we walked crossed a hot-indexed
+		 * hop, so the leaf entry we came from may no longer agree with the
+		 * heap tuple's current attributes.  Compare the leaf key against the
+		 * tuple's current index-form; drop if they disagree.  The canonical
+		 * fresh hot-indexed-inserted entry for this tuple lives at a
+		 * different leaf key whose walk does not cross an hot-indexed hop --
+		 * it will return the tuple via that path, without the recheck.
+		 *
+		 * If xs_itup is unexpectedly NULL (AM didn't populate it despite
+		 * xs_want_itup=true), fall back to the conservative drop: a false
+		 * negative (dropping a real match) is preferable to a false positive
+		 * (returning a stale-key duplicate).
+		 */
+		if (scandesc->xs_hot_indexed_recheck)
+		{
+			const IndexAmRoutine *amroutine =
+				scandesc->indexRelation->rd_indam;
+			bool		keep = false;
+
+			/*
+			 * Dispatch to the index AM's leaf-key recheck if it implements
+			 * the optional amrecheck_leaf_key callback and the AM populated
+			 * xs_itup (which it must when xs_want_itup is set on a scan that
+			 * may surface stale leaves).  The callback returns true iff the
+			 * leaf is still valid for this index: its key matches the live
+			 * tuple's current index form.  Same dispatch path
+			 * nodeIndexonlyscan uses; AMs without the callback fall through
+			 * to the permissive drop, matching the pre-feature behaviour.
+			 */
+			if (scandesc->xs_itup != NULL &&
+				amroutine->amrecheck_leaf_key != NULL &&
+				amroutine->amrecheck_leaf_key(scandesc->indexRelation,
+											  scandesc->xs_itup,
+											  slot))
+				keep = true;
+
+			if (!keep)
+			{
 				InstrCountFiltered2(node, 1);
 				continue;
 			}
@@ -216,6 +272,10 @@ IndexNextWithReorder(IndexScanState *node)
 								   SO_HINT_REL_READ_ONLY : SO_NONE);
 
 		node->iss_ScanDesc = scandesc;
+
+		/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
+		if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+			scandesc->xs_want_itup = true;
 
 		/*
 		 * If no run-time keys to calculate or they are ready, go ahead and
@@ -1713,6 +1773,10 @@ ExecIndexScanInitializeDSM(IndexScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 
+	/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
+	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+		node->iss_ScanDesc->xs_want_itup = true;
+
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
 	 * the scankeys to the index AM.
@@ -1760,6 +1824,10 @@ ExecIndexScanInitializeWorker(IndexScanState *node,
 								 piscan,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
+
+	/* See comment in IndexNext about xs_want_itup / hot-indexed recheck. */
+	if (node->iss_RelationDesc->rd_rel->relam == BTREE_AM_OID)
+		node->iss_ScanDesc->xs_want_itup = true;
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

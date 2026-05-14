@@ -34,18 +34,25 @@
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/hio.h"
+#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"
+#include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/valid.h"
 #include "access/visibilitymap.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
+#include "catalog/pg_subscription.h"
 #include "commands/vacuum.h"
 #include "executor/instrument_node.h"
+#include "executor/tuptable.h"
+#include "nodes/lockoptions.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
+#include "replication/logicalworker.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
@@ -53,8 +60,17 @@
 #include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/inval.h"
+#include "utils/relcache.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
+
+
+/*
+ * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
+ * may modify and still take the HOT-indexed path.  Defined here,
+ * declared in access/heapam.h.  Default 80.
+ */
+int			hot_indexed_update_threshold = 80;
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
@@ -63,18 +79,18 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
 								  bool all_visible_cleared, bool new_all_visible_cleared,
-								  bool walLogical);
+								  bool walLogical,
+								  OffsetNumber tombstone_offnum,
+								  const char *tombstone_item,
+								  Size tombstone_item_size);
 #ifdef USE_ASSERT_CHECKING
 static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 const ItemPointerData *otid,
 												 HeapTuple newtup);
 static void check_inplace_rel_lock(HeapTuple oldtup);
 #endif
-static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
-										   Bitmapset *interesting_cols,
-										   Bitmapset *external_cols,
-										   HeapTuple oldtup, HeapTuple newtup,
-										   bool *has_external);
+static Bitmapset *HeapUpdateModifiedIdxAttrs(Relation relation,
+											 HeapTuple oldtup, HeapTuple newtup);
 static bool heap_acquire_tuplock(Relation relation, const ItemPointerData *tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
@@ -3190,7 +3206,7 @@ simple_heap_delete(Relation relation, const ItemPointerData *tid)
  *	heap_update - replace a tuple
  *
  * See table_tuple_update() for an explanation of the parameters, except that
- * this routine directly takes a tuple rather than a slot.
+ * this routine directly takes a heap tuple rather than a slot.
  *
  * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
  * t_xmax (resolving a possible MultiXact, if necessary), and t_cmax (the last
@@ -3199,18 +3215,16 @@ simple_heap_delete(Relation relation, const ItemPointerData *tid)
  */
 TM_Result
 heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
-			CommandId cid, uint32 options pg_attribute_unused(), Snapshot crosscheck, bool wait,
-			TM_FailureData *tmfd, LockTupleMode *lockmode,
-			TU_UpdateIndexes *update_indexes)
+			CommandId cid, uint32 options,
+			Snapshot crosscheck, bool wait,
+			TM_FailureData *tmfd, const LockTupleMode lockmode,
+			const Bitmapset *modified_idx_attrs,
+			HeapUpdateHotMode hot_mode)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
-	Bitmapset  *hot_attrs;
-	Bitmapset  *sum_attrs;
-	Bitmapset  *key_attrs;
-	Bitmapset  *id_attrs;
-	Bitmapset  *interesting_attrs;
-	Bitmapset  *modified_attrs;
+	Bitmapset  *idx_attrs,
+			   *id_attrs;
 	ItemId		lp;
 	HeapTupleData oldtup;
 	HeapTuple	heaptup;
@@ -3231,13 +3245,23 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
-	bool		summarized_update = false;
+	bool		emit_tombstone = false;
+	OffsetNumber tombstone_offnum = InvalidOffsetNumber;
+	Size		tombstone_item_size = 0;
+
+	/*
+	 * Scratch buffer used to build the HOT-indexed tombstone item before
+	 * entering the critical section.  palloc'd once per call and sized
+	 * precisely for this relation; freed on return via the caller's memory
+	 * context cleanup.  NULL if we don't end up emitting a tombstone.
+	 */
+	char	   *tombstone_buf = NULL;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
 	bool		checked_lockers;
 	bool		locker_remains;
-	bool		id_has_external = false;
+	bool		rep_id_key_required = false;
 	TransactionId xmax_new_tuple,
 				xmax_old_tuple;
 	uint16		infomask_old_tuple,
@@ -3268,33 +3292,18 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 #endif
 
 	/*
-	 * Fetch the list of attributes to be checked for various operations.
+	 * Fetch the attributes used across all indexes on this relation as well
+	 * as the replica identity and columns.
 	 *
-	 * For HOT considerations, this is wasted effort if we fail to update or
-	 * have to put the new tuple on a different page.  But we must compute the
-	 * list before obtaining buffer lock --- in the worst case, if we are
-	 * doing an update on one of the relevant system catalogs, we could
-	 * deadlock if we try to fetch the list later.  In any case, the relcache
-	 * caches the data so this is usually pretty cheap.
-	 *
-	 * We also need columns used by the replica identity and columns that are
-	 * considered the "key" of rows in the table.
-	 *
-	 * Note that we get copies of each bitmap, so we need not worry about
-	 * relcache flush happening midway through.
+	 * Note: We must compute the list before obtaining buffer lock. In the
+	 * worst case, if we are doing an update on one of the relevant system
+	 * catalogs, we could deadlock if we try to fetch the list later. Keep in
+	 * mind that relcache returns copies of each bitmap, so we need not worry
+	 * about relcache flush happening midway through, but we do need to free
+	 * them.
 	 */
-	hot_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
-	sum_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_SUMMARIZED);
-	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
-	id_attrs = RelationGetIndexAttrBitmap(relation,
-										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
-	interesting_attrs = NULL;
-	interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
-	interesting_attrs = bms_add_members(interesting_attrs, sum_attrs);
-	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
-	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
+	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
+	id_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_IDENTITY_KEY);
 
 	block = ItemPointerGetBlockNumber(otid);
 	INJECTION_POINT("heap_update-before-pin", NULL);
@@ -3348,20 +3357,17 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 		tmfd->ctid = *otid;
 		tmfd->xmax = InvalidTransactionId;
 		tmfd->cmax = InvalidCommandId;
-		*update_indexes = TU_None;
 
-		bms_free(hot_attrs);
-		bms_free(sum_attrs);
-		bms_free(key_attrs);
 		bms_free(id_attrs);
-		/* modified_attrs not yet initialized */
-		bms_free(interesting_attrs);
+		bms_free(idx_attrs);
+		/* modified_idx_attrs is owned by the caller, don't free it */
+
 		return TM_Deleted;
 	}
 
 	/*
-	 * Fill in enough data in oldtup for HeapDetermineColumnsInfo to work
-	 * properly.
+	 * Fill in enough data in oldtup to determine replica identity attribute
+	 * requirements.
 	 */
 	oldtup.t_tableOid = RelationGetRelid(relation);
 	oldtup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
@@ -3372,16 +3378,59 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	newtup->t_tableOid = RelationGetRelid(relation);
 
 	/*
-	 * Determine columns modified by the update.  Additionally, identify
-	 * whether any of the unmodified replica identity key attributes in the
-	 * old tuple is externally stored or not.  This is required because for
-	 * such attributes the flattened value won't be WAL logged as part of the
-	 * new tuple so we must include it as part of the old_key_tuple.  See
-	 * ExtractReplicaIdentity.
+	 * ExtractReplicaIdentity() needs to know if a modified indexed attrbute
+	 * is used as a replica indentity or if any of the replica identity
+	 * attributes are referenced in an index, unmodified, and are stored
+	 * externally in the old tuple being replaced.  In those cases it may be
+	 * necessary to WAL log them to so they are available to replicas.
 	 */
-	modified_attrs = HeapDetermineColumnsInfo(relation, interesting_attrs,
-											  id_attrs, &oldtup,
-											  newtup, &id_has_external);
+	rep_id_key_required = bms_overlap(modified_idx_attrs, id_attrs);
+	if (!rep_id_key_required)
+	{
+		Bitmapset  *attrs;
+		TupleDesc	tupdesc = RelationGetDescr(relation);
+		int			attidx = -1;
+
+		/*
+		 * Reduce the set under review to only the unmodified indexed replica
+		 * identity key attributes.  idx_attrs is copied (by bms_difference())
+		 * not modified here.
+		 */
+		attrs = bms_difference(idx_attrs, modified_idx_attrs);
+		attrs = bms_int_members(attrs, id_attrs);
+
+		while ((attidx = bms_next_member(attrs, attidx)) >= 0)
+		{
+			/*
+			 * attidx is zero-based, attrnum is the normal attribute number
+			 */
+			AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
+			Datum		value;
+			bool		isnull;
+
+			/*
+			 * System attributes are not added into INDEX_ATTR_BITMAP_INDEXED
+			 * bitmap by relcache.
+			 */
+			Assert(attrnum > 0);
+
+			value = heap_getattr(&oldtup, attrnum, tupdesc, &isnull);
+
+			/* No need to check attributes that can't be stored externally */
+			if (isnull ||
+				TupleDescCompactAttr(tupdesc, attrnum - 1)->attlen != -1)
+				continue;
+
+			/* Check if the old tuple's attribute is stored externally */
+			if (VARATT_IS_EXTERNAL((struct varlena *) DatumGetPointer(value)))
+			{
+				rep_id_key_required = true;
+				break;
+			}
+		}
+
+		bms_free(attrs);
+	}
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -3394,9 +3443,8 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	 * is updates that don't manipulate key columns, not those that
 	 * serendipitously arrive at the same key values.
 	 */
-	if (!bms_overlap(modified_attrs, key_attrs))
+	if (lockmode == LockTupleNoKeyExclusive)
 	{
-		*lockmode = LockTupleNoKeyExclusive;
 		mxact_status = MultiXactStatusNoKeyUpdate;
 		key_intact = true;
 
@@ -3413,7 +3461,7 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	}
 	else
 	{
-		*lockmode = LockTupleExclusive;
+		Assert(lockmode == LockTupleExclusive);
 		mxact_status = MultiXactStatusUpdate;
 		key_intact = false;
 	}
@@ -3492,7 +3540,7 @@ l2:
 			bool		current_is_member = false;
 
 			if (DoesMultiXactIdConflict((MultiXactId) xwait, infomask,
-										*lockmode, &current_is_member))
+										lockmode, &current_is_member))
 			{
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
@@ -3501,7 +3549,7 @@ l2:
 				 * requesting a lock and already have one; avoids deadlock).
 				 */
 				if (!current_is_member)
-					heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
+					heap_acquire_tuplock(relation, &(oldtup.t_self), lockmode,
 										 LockWaitBlock, &have_tuple_lock);
 
 				/* wait for multixact */
@@ -3586,7 +3634,7 @@ l2:
 			 * lock.
 			 */
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-			heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
+			heap_acquire_tuplock(relation, &(oldtup.t_self), lockmode,
 								 LockWaitBlock, &have_tuple_lock);
 			XactLockTableWait(xwait, relation, &oldtup.t_self,
 							  XLTW_Update);
@@ -3646,17 +3694,14 @@ l2:
 			tmfd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
 		if (have_tuple_lock)
-			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
+			UnlockTupleTuplock(relation, &(oldtup.t_self), lockmode);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		*update_indexes = TU_None;
 
-		bms_free(hot_attrs);
-		bms_free(sum_attrs);
-		bms_free(key_attrs);
 		bms_free(id_attrs);
-		bms_free(modified_attrs);
-		bms_free(interesting_attrs);
+		bms_free(idx_attrs);
+		/* modified_idx_attrs is owned by the caller, don't free it */
+
 		return result;
 	}
 
@@ -3686,7 +3731,7 @@ l2:
 	compute_new_xmax_infomask(HeapTupleHeaderGetRawXmax(oldtup.t_data),
 							  oldtup.t_data->t_infomask,
 							  oldtup.t_data->t_infomask2,
-							  xid, *lockmode, true,
+							  xid, lockmode, true,
 							  &xmax_old_tuple, &infomask_old_tuple,
 							  &infomask2_old_tuple);
 
@@ -3775,6 +3820,34 @@ l2:
 
 	newtupsize = MAXALIGN(newtup->t_len);
 
+	/*
+	 * If a HOT-indexed update is permitted, a tombstone line pointer must
+	 * also fit on the same page as the new tuple.  Account for its size
+	 * (including one additional ItemIdData slot) when deciding whether to
+	 * stay on the old page.  If the tombstone would not fit, we fall through
+	 * to the non-HOT path.
+	 *
+	 * Use PageGetFreeSpaceForMultipleTuples(2) for the second check so we
+	 * reserve room for two new line pointers (one for the tuple, one for the
+	 * tombstone).  PageGetHeapFreeSpace only accounts for one LP, and the
+	 * MaxHeapTuplesPerPage check it performs also applies to our two-item
+	 * insert -- if the page is already full of LPs we can't add two more.
+	 */
+	if (hot_mode == HEAP_HOT_MODE_INDEXED)
+	{
+		Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+		Size		multi_pagefree;
+		OffsetNumber nlp = PageGetMaxOffsetNumber(page);
+
+		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+
+		if (newtupsize + tombsize > multi_pagefree ||
+			nlp + 2 > MaxHeapTuplesPerPage)
+			pagefree = 0;
+		else
+			pagefree = multi_pagefree - tombsize;
+	}
+
 	if (need_toast || newtupsize > pagefree)
 	{
 		TransactionId xmax_lock_old_tuple;
@@ -3803,7 +3876,7 @@ l2:
 		compute_new_xmax_infomask(HeapTupleHeaderGetRawXmax(oldtup.t_data),
 								  oldtup.t_data->t_infomask,
 								  oldtup.t_data->t_infomask2,
-								  xid, *lockmode, false,
+								  xid, lockmode, false,
 								  &xmax_lock_old_tuple, &infomask_lock_old_tuple,
 								  &infomask2_lock_old_tuple);
 
@@ -3904,8 +3977,33 @@ l2:
 		{
 			if (newtupsize > pagefree)
 			{
+				Size		tuple_need = heaptup->t_len;
+
+				/*
+				 * For HOT-indexed, ask RelationGetBufferForTuple for room
+				 * that fits both the new tuple and its tombstone.  Pass
+				 * MAXALIGN(tuple_len) + tombstone_size + sizeof(ItemIdData):
+				 *
+				 * - MAXALIGN so the request matches the byte footprint
+				 * PageAddItem will actually consume (it MAXALIGN's each
+				 * item's size); - plus tombstone_size (already MAXALIGN'd by
+				 * HotIndexedTombstoneSize()); - plus one extra
+				 * sizeof(ItemIdData) because PageGetHeapFreeSpace (used
+				 * internally by RelationGetBufferForTuple) reserves one LP
+				 * slot but we need two.
+				 *
+				 * Without this the helper can return our current buffer after
+				 * an opportunistic prune with just enough room for the tuple,
+				 * and the tombstone PageAddItem would then PANIC inside the
+				 * critical section.
+				 */
+				if (hot_mode == HEAP_HOT_MODE_INDEXED)
+					tuple_need = MAXALIGN(heaptup->t_len) +
+						HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation)) +
+						sizeof(ItemIdData);
+
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
-				newbuf = RelationGetBufferForTuple(relation, heaptup->t_len,
+				newbuf = RelationGetBufferForTuple(relation, tuple_need,
 												   buffer, 0, NULL,
 												   &vmbuffer_new, &vmbuffer,
 												   0);
@@ -3919,6 +4017,18 @@ l2:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 			/* Re-check using the up-to-date free space */
 			pagefree = PageGetHeapFreeSpace(page);
+			if (hot_mode == HEAP_HOT_MODE_INDEXED)
+			{
+				Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+				Size		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+				OffsetNumber nlp = PageGetMaxOffsetNumber(page);
+
+				if (newtupsize + tombsize > multi_pagefree ||
+					nlp + 2 > MaxHeapTuplesPerPage)
+					pagefree = 0;
+				else
+					pagefree = multi_pagefree - tombsize;
+			}
 			if (newtupsize > pagefree ||
 				(vmbuffer == InvalidBuffer && PageIsAllVisible(page)))
 			{
@@ -3972,29 +4082,89 @@ l2:
 	if (newbuf == buffer)
 	{
 		/*
-		 * Since the new tuple is going into the same page, we might be able
-		 * to do a HOT update.  Check if any of the index columns have been
-		 * changed.
+		 * RelationGetBufferForTuple may have returned this same buffer after
+		 * an opportunistic prune made room for a single tuple, but the
+		 * HOT-indexed path needs room for the tuple AND a tombstone (two
+		 * LPs).  If the two-LP fit no longer holds, demote to the non-HOT
+		 * path: otherwise we'd PANIC inside the critical section when the
+		 * tombstone PageAddItem trips MaxHeapTuplesPerPage.
 		 */
-		if (!bms_overlap(modified_attrs, hot_attrs))
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
 		{
-			use_hot_update = true;
+			Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
+			Size		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
+			OffsetNumber nlp = PageGetMaxOffsetNumber(page);
 
-			/*
-			 * If none of the columns that are used in hot-blocking indexes
-			 * were updated, we can apply HOT, but we do still need to check
-			 * if we need to update the summarizing indexes, and update those
-			 * indexes if the columns were updated, or we may fail to detect
-			 * e.g. value bound changes in BRIN minmax indexes.
-			 */
-			if (bms_overlap(modified_attrs, sum_attrs))
-				summarized_update = true;
+			if (newtupsize + tombsize > multi_pagefree ||
+				nlp + 2 > MaxHeapTuplesPerPage)
+				hot_mode = HEAP_HOT_MODE_NO;
 		}
+
+		/*
+		 * Since the new tuple is going into the same page, we might be able
+		 * to do a HOT update.  Check if HeapUpdateHotAllowable() has
+		 * sanctioned it (HEAP_HOT_MODE_CLASSIC or HEAP_HOT_MODE_INDEXED).
+		 *
+		 * For HEAP_HOT_MODE_INDEXED we additionally cap the chain length by
+		 * the per-relation heuristic from RelationGetHotIndexedChainMax: if
+		 * extending the chain would push it past the cap, we drop to the
+		 * non-HOT path.  The cap is derived from fillfactor and estimated
+		 * tuple size, so it self-adjusts to the table's geometry.  We measure
+		 * current chain length by walking forward from oldtup.t_self as long
+		 * as each chain member carries HEAP_HOT_UPDATED and lives on this
+		 * same page; the walk is bounded by MaxHeapTuplesPerPage and only
+		 * runs when HOT-indexed would otherwise fire.
+		 */
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
+		{
+			int			chain_len = 1;
+			int			chain_max = RelationGetHotIndexedChainMax(relation);
+			OffsetNumber walk_off = ItemPointerGetOffsetNumber(&oldtup.t_self);
+			HeapTupleHeader walk_tup = oldtup.t_data;
+
+			while (chain_len <= chain_max &&
+				   (walk_tup->t_infomask2 & HEAP_HOT_UPDATED) != 0 &&
+				   ItemPointerGetBlockNumber(&walk_tup->t_ctid) ==
+				   BufferGetBlockNumber(buffer))
+			{
+				ItemId		next_lp;
+
+				walk_off = ItemPointerGetOffsetNumber(&walk_tup->t_ctid);
+				if (walk_off < FirstOffsetNumber ||
+					walk_off > PageGetMaxOffsetNumber(page))
+					break;
+				next_lp = PageGetItemId(page, walk_off);
+				if (!ItemIdIsNormal(next_lp))
+					break;
+				walk_tup = (HeapTupleHeader) PageGetItem(page, next_lp);
+				chain_len++;
+			}
+
+			if (chain_len >= chain_max)
+				hot_mode = HEAP_HOT_MODE_NO;
+		}
+
+		if (hot_mode != HEAP_HOT_MODE_NO)
+			use_hot_update = true;
 	}
 	else
 	{
 		/* Set a hint that the old page could use prune/defrag */
 		PageSetFull(page);
+	}
+
+	/*
+	 * If we are going HOT-indexed, allocate the tombstone scratch buffer and
+	 * build its contents *now*, before the critical section. Doing the palloc
+	 * inside the critical section could PANIC on OOM; building the payload
+	 * here also keeps the critical section small.
+	 */
+	if (use_hot_update && hot_mode == HEAP_HOT_MODE_INDEXED)
+	{
+		int			natts = RelationGetNumberOfAttributes(relation);
+
+		tombstone_item_size = HotIndexedTombstoneSize(natts);
+		tombstone_buf = (char *) palloc(tombstone_item_size);
 	}
 
 	/*
@@ -4005,8 +4175,7 @@ l2:
 	 * columns are modified or it has external data.
 	 */
 	old_key_tuple = ExtractReplicaIdentity(relation, &oldtup,
-										   bms_overlap(modified_attrs, id_attrs) ||
-										   id_has_external,
+										   rep_id_key_required,
 										   &old_key_copied);
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
@@ -4034,6 +4203,19 @@ l2:
 		HeapTupleSetHeapOnly(heaptup);
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
+
+		/*
+		 * For a HOT-indexed update, the new live tuple also carries
+		 * HEAP_INDEXED_UPDATED so index scans walking the chain know a
+		 * tombstone with the per-update modified-attrs bitmap is present on
+		 * the same page.
+		 */
+		if (hot_mode == HEAP_HOT_MODE_INDEXED)
+		{
+			heaptup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
+			newtup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
+			emit_tombstone = true;
+		}
 	}
 	else
 	{
@@ -4044,6 +4226,34 @@ l2:
 	}
 
 	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
+
+	/*
+	 * For HOT-indexed updates, emit the tombstone adjacent to the live
+	 * hot-indexed tuple.  heaptup->t_self was populated by
+	 * RelationPutHeapTuple.  The scratch buffer was palloc'd and sized above,
+	 * before entering the critical section, so this block does no allocation
+	 * and cannot ERROR except by the defensive PANIC which the fit check
+	 * should prevent.
+	 */
+	if (emit_tombstone)
+	{
+		int			natts = RelationGetNumberOfAttributes(relation);
+		OffsetNumber target = ItemPointerGetOffsetNumber(&heaptup->t_self);
+
+		Assert(tombstone_buf != NULL);
+		Assert(tombstone_item_size == HotIndexedTombstoneSize(natts));
+		(void) heap_build_hot_indexed_tombstone(tombstone_buf, target, natts,
+												modified_idx_attrs);
+		tombstone_offnum = PageAddItemExtended(page,
+											   tombstone_buf,
+											   tombstone_item_size,
+											   InvalidOffsetNumber,
+											   PAI_IS_HEAP);
+		if (tombstone_offnum == InvalidOffsetNumber)
+			ereport(PANIC,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg_internal("could not add HOT-indexed tombstone item to page")));
+	}
 
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
@@ -4099,7 +4309,10 @@ l2:
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new,
-								 walLogical);
+								 walLogical,
+								 tombstone_offnum,
+								 emit_tombstone ? tombstone_buf : NULL,
+								 tombstone_item_size);
 		if (newbuf != buffer)
 		{
 			PageSetLSN(newpage, recptr);
@@ -4136,9 +4349,10 @@ l2:
 	 * Release the lmgr tuple lock, if we had it.
 	 */
 	if (have_tuple_lock)
-		UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
+		UnlockTupleTuplock(relation, &(oldtup.t_self), lockmode);
 
-	pgstat_count_heap_update(relation, use_hot_update, newbuf != buffer);
+	pgstat_count_heap_update(relation, use_hot_update, emit_tombstone,
+							 newbuf != buffer);
 
 	/*
 	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
@@ -4150,31 +4364,12 @@ l2:
 		heap_freetuple(heaptup);
 	}
 
-	/*
-	 * If it is a HOT update, the update may still need to update summarized
-	 * indexes, lest we fail to update those summaries and get incorrect
-	 * results (for example, minmax bounds of the block may change with this
-	 * update).
-	 */
-	if (use_hot_update)
-	{
-		if (summarized_update)
-			*update_indexes = TU_Summarizing;
-		else
-			*update_indexes = TU_None;
-	}
-	else
-		*update_indexes = TU_All;
-
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
 
-	bms_free(hot_attrs);
-	bms_free(sum_attrs);
-	bms_free(key_attrs);
 	bms_free(id_attrs);
-	bms_free(modified_attrs);
-	bms_free(interesting_attrs);
+	bms_free(idx_attrs);
+	/* modified_idx_attrs is owned by the caller, don't free it */
 
 	return TM_Ok;
 }
@@ -4347,28 +4542,222 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 }
 
 /*
- * Check which columns are being updated.
+ * HeapUpdateHotAllowable --
  *
- * Given an updated tuple, determine (and return into the output bitmapset),
- * from those listed as interesting, the set of columns that changed.
+ * Classify an UPDATE for HOT eligibility based on which indexed attributes
+ * changed (the `modified_idx_attrs` bitmap, computed by the executor).  The
+ * return value tells heap_update() both whether HOT is permitted and, if so,
+ * whether a HOT-indexed tombstone must accompany the new tuple to carry
+ * the per-update modified-attrs bitmap.
  *
- * has_external indicates if any of the unmodified attributes (from those
- * listed as interesting) of the old tuple is a member of external_cols and is
- * stored externally.
+ * Returns:
+ *   HEAP_HOT_MODE_NO       -- HOT is not permitted; heap_update writes the
+ *                             new tuple on a fresh page and inserts into
+ *                             every index.
+ *   HEAP_HOT_MODE_CLASSIC  -- classic HOT.  No index changes whatsoever; the
+ *                             new tuple lives at the existing chain root via
+ *                             t_ctid forward link.
+ *   HEAP_HOT_MODE_INDEXED  -- HOT-indexed.  At least one non-summarizing
+ *                             index's attribute changed, but heap_update can
+ *                             keep the new tuple on the same page provided
+ *                             room exists for both the new tuple and a
+ *                             32-byte modified-attrs tombstone.
+ *
+ * heap_update() then chooses the actual write path based on page geometry.
+ */
+HeapUpdateHotMode
+HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
+{
+	Bitmapset  *all_idx_attrs = NULL;
+	Bitmapset  *pk_attrs = NULL;
+	HeapUpdateHotMode result;
+
+	/*
+	 * Case (a): no indexed attribute was modified -> classic HOT.
+	 */
+	if (bms_is_empty(modified_idx_attrs))
+		return HEAP_HOT_MODE_CLASSIC;
+
+	/*
+	 * Case (b): at least one indexed attribute changed.  If all of them are
+	 * used only by summarizing indexes, we can still take the classic HOT
+	 * path -- the summarizing index AM gets a new entry via aminsert and no
+	 * non-summarizing index needs to change.
+	 */
+	{
+		Bitmapset  *sum_attrs = RelationGetIndexAttrBitmap(relation,
+														   INDEX_ATTR_BITMAP_SUMMARIZED);
+		bool		all_summarizing = bms_is_subset(modified_idx_attrs, sum_attrs);
+
+		bms_free(sum_attrs);
+
+		if (all_summarizing)
+			return HEAP_HOT_MODE_CLASSIC;
+	}
+
+	/*
+	 * A non-summarizing indexed attribute changed.  HOT-indexed is supported
+	 * whenever the relation can tolerate extra index entries in a chain whose
+	 * per-chain-member keys may differ.  System catalogs participate as of
+	 * commit 5b798829a0a (see README.HOT-INDEXED "Catalog Enablement").
+	 * HEAP_HOT_MODE_NO triggers below are:
+	 *
+	 * 1) Logical replication apply path under hot_indexed_on_apply gating.
+	 *
+	 * 2) Relations with any exclusion constraint, because
+	 * check_exclusion_or_unique_constraint relies on "one live tuple per
+	 * (key, TID)".  Temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into this
+	 * category via its internal exclusion constraint.
+	 *
+	 * 3) hot_indexed_update_threshold caps eligibility by share of indexed
+	 * attrs touched.
+	 *
+	 * 4) Per-relation chain-length cap (see RelationGetHotIndexedChainMax),
+	 * enforced in heap_update.
+	 *
+	 * Fetch the indexed-attribute bitmap once up front; the apply-path branch
+	 * may also need PRIMARY_KEY.  Both bitmaps are freed once on the way out.
+	 */
+	all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+											   INDEX_ATTR_BITMAP_INDEXED);
+
+	if (IsLogicalWorker())
+	{
+		char		mode = GetHotIndexedApplyMode();
+
+		if (mode == LOGICALREP_HOT_INDEXED_OFF)
+		{
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+
+			if (!bms_equal(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
+		}
+		else if (mode == LOGICALREP_HOT_INDEXED_SUBSET_ONLY)
+		{
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+
+			if (!bms_is_subset(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
+		}
+		/* LOGICALREP_HOT_INDEXED_ALWAYS: no apply-path gating. */
+	}
+
+	if (RelationHasExclusionConstraint(relation))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	if (hot_indexed_update_threshold < 100)
+	{
+		int			n_all = bms_num_members(all_idx_attrs);
+		int			n_mod = bms_num_members(modified_idx_attrs);
+
+		if (hot_indexed_update_threshold == 0)
+		{
+			result = HEAP_HOT_MODE_NO;
+			goto out;
+		}
+
+		/*
+		 * Integer-only comparison: n_mod * 100 > n_all * threshold means more
+		 * than `threshold`% of indexed attrs were touched.  Equal counts at
+		 * the cap are allowed (e.g., threshold=100 permits full coverage).
+		 * n_all == 0 shouldn't happen here because modified_idx_attrs is
+		 * non-empty, but guard anyway.
+		 */
+		if (n_all == 0 ||
+			n_mod * 100 > n_all * hot_indexed_update_threshold)
+		{
+			result = HEAP_HOT_MODE_NO;
+			goto out;
+		}
+	}
+
+	result = HEAP_HOT_MODE_INDEXED;
+
+out:
+	bms_free(all_idx_attrs);
+	bms_free(pk_attrs);
+	return result;
+}
+
+/*
+ * If we're not updating any attributes used when forming the index keys we can
+ * grab a weaker lock type. This allows for more concurrency when we are
+ * running simultaneously with foreign key checks.
+ */
+LockTupleMode
+HeapUpdateDetermineLockmode(Relation relation, const Bitmapset *modified_idx_attrs)
+{
+	LockTupleMode lockmode = LockTupleExclusive;
+	const Bitmapset *key_attrs;
+
+	/*
+	 * Common fast path: when no indexed attribute changed (e.g. pgbench-style
+	 * "UPDATE t SET non_idx_col = ..." or the wide_0 "UPDATE t SET id = id"
+	 * workload after the executor's fast path in ExecUpdateModifiedIdxAttrs),
+	 * modified_idx_attrs is empty and a key column cannot have changed.  Skip
+	 * the relcache lookup and return the weaker lock immediately.  At high
+	 * TPS this avoids a per-UPDATE RelationGetIndexAttrBitmap call (and its
+	 * bms_copy) on the KEY bitmap.
+	 */
+	if (bms_is_empty(modified_idx_attrs))
+		return LockTupleNoKeyExclusive;
+
+	/*
+	 * Borrow the cached bitmap rather than copying it; we only test overlap
+	 * and never mutate or free key_attrs.  HeapUpdateDetermineLockmode runs
+	 * without buffer locks but the relcache entry is pinned by the caller's
+	 * lock on the relation, and we touch nothing between fetch and the
+	 * bms_overlap that could trigger a relcache invalidation.
+	 */
+	key_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
+												 INDEX_ATTR_BITMAP_KEY);
+
+	if (!bms_overlap(modified_idx_attrs, key_attrs))
+		lockmode = LockTupleNoKeyExclusive;
+
+	return lockmode;
+}
+
+/*
+ * Return a Bitmapset that contains the set of modified (changed) indexed
+ * attributes between oldtup and newtup.
  */
 static Bitmapset *
-HeapDetermineColumnsInfo(Relation relation,
-						 Bitmapset *interesting_cols,
-						 Bitmapset *external_cols,
-						 HeapTuple oldtup, HeapTuple newtup,
-						 bool *has_external)
+HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup)
 {
 	int			attidx;
-	Bitmapset  *modified = NULL;
+	Bitmapset  *attrs,
+			   *modified_idx_attrs = NULL;
 	TupleDesc	tupdesc = RelationGetDescr(relation);
 
+	/* Get the set of all attributes across all indexes for this relation */
+	attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
+
+	/* No indexed attributes, we're done */
+	if (bms_is_empty(attrs))
+		return NULL;
+
+	/*
+	 * This heap update function is used outside the executor and so unlike
+	 * heapam_tuple_update() where there is ResultRelInfo and EState to
+	 * provide the concise set of attributes that might have been modified
+	 * (via ExecGetAllUpdatedCols()) we simply check all indexed attributes to
+	 * find the subset that changed value.  That's the "modified indexed
+	 * attributes" or "modified_idx_attrs".
+	 */
 	attidx = -1;
-	while ((attidx = bms_next_member(interesting_cols, attidx)) >= 0)
+	while ((attidx = bms_next_member(attrs, attidx)) >= 0)
 	{
 		/* attidx is zero-based, attrnum is the normal attribute number */
 		AttrNumber	attrnum = attidx + FirstLowInvalidHeapAttributeNumber;
@@ -4384,7 +4773,7 @@ HeapDetermineColumnsInfo(Relation relation,
 		 */
 		if (attrnum == 0)
 		{
-			modified = bms_add_member(modified, attidx);
+			modified_idx_attrs = bms_add_member(modified_idx_attrs, attidx);
 			continue;
 		}
 
@@ -4397,7 +4786,7 @@ HeapDetermineColumnsInfo(Relation relation,
 		{
 			if (attrnum != TableOidAttributeNumber)
 			{
-				modified = bms_add_member(modified, attidx);
+				modified_idx_attrs = bms_add_member(modified_idx_attrs, attidx);
 				continue;
 			}
 		}
@@ -4413,29 +4802,12 @@ HeapDetermineColumnsInfo(Relation relation,
 
 		if (!heap_attr_equals(tupdesc, attrnum, value1,
 							  value2, isnull1, isnull2))
-		{
-			modified = bms_add_member(modified, attidx);
-			continue;
-		}
-
-		/*
-		 * No need to check attributes that can't be stored externally. Note
-		 * that system attributes can't be stored externally.
-		 */
-		if (attrnum < 0 || isnull1 ||
-			TupleDescCompactAttr(tupdesc, attrnum - 1)->attlen != -1)
-			continue;
-
-		/*
-		 * Check if the old tuple's attribute is stored externally and is a
-		 * member of external_cols.
-		 */
-		if (VARATT_IS_EXTERNAL((varlena *) DatumGetPointer(value1)) &&
-			bms_is_member(attidx, external_cols))
-			*has_external = true;
+			modified_idx_attrs = bms_add_member(modified_idx_attrs, attidx);
 	}
 
-	return modified;
+	bms_free(attrs);
+
+	return modified_idx_attrs;
 }
 
 /*
@@ -4448,17 +4820,105 @@ HeapDetermineColumnsInfo(Relation relation,
  */
 void
 simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup,
-				   TU_UpdateIndexes *update_indexes)
+				   TM_IndexUpdateInfo *upd_info)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
 	LockTupleMode lockmode;
+	TupleTableSlot *slot;
+	BufferHeapTupleTableSlot *bslot;
+	HeapTuple	oldtup;
+	bool		shouldFree = true;
+	Bitmapset  *idx_attrs;
+	Bitmapset  *local_modified_idx_attrs;
+	HeapUpdateHotMode hot_mode;
+	Buffer		buffer;
 
-	result = heap_update(relation, otid, tup,
-						 GetCurrentCommandId(true), 0,
-						 InvalidSnapshot,
-						 true /* wait for commit */ ,
-						 &tmfd, &lockmode, update_indexes);
+	Assert(ItemPointerIsValid(otid));
+	Assert(upd_info != NULL);
+
+	upd_info->modified_attrs = NULL;
+	upd_info->update_all_indexes = false;
+
+	/*
+	 * Fetch this bitmap of interesting attributes from relcache before
+	 * obtaining a buffer lock because if we are doing an update on one of the
+	 * relevant system catalogs we could deadlock if we try to fetch them
+	 * later on. Relcache will return copies of each bitmap, so we need not
+	 * worry about relcache flush happening midway through this operation.
+	 */
+	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
+
+	INJECTION_POINT("simple_heap_update-before-pin", NULL);
+
+	/*
+	 * To update a heap tuple we need to find the set of modified indexed
+	 * attributes ("modified_idx_attrs") and use that to determine if a HOT
+	 * update is allowable or not. When updating heap tuples via execution of
+	 * UPDATE statements this set is constructed before calling into the table
+	 * AM's update function by ExecUpdateModifiedIdxAttrs() which compares the
+	 * old/new TupleTableSlots.
+	 *
+	 * Here things are a bit different, we have the old TID and the new tuple,
+	 * not two TupleTableSlots, but we still need to construct a similar
+	 * bitmap so as to be able to know if HOT updates are allowed or not.
+	 *
+	 * To do that we first have to fetch the old tuple itself, but because
+	 * heapam_fetch_row_version() is static, we replicate in part that code
+	 * here.
+	 *
+	 * This is a bit repetitive because heap_update() will again find and form
+	 * the old HeapTuple from the old TID and in most cases the callers
+	 * (ignoring extensions, are always catalog tuple updates) already had the
+	 * set of changed attributes (the "replaces" array), but for now this
+	 * minor repetition of work is necessary.
+	 */
+	slot = MakeTupleTableSlot(RelationGetDescr(relation), &TTSOpsBufferHeapTuple, 0);
+	bslot = (BufferHeapTupleTableSlot *) slot;
+
+	/*
+	 * Set the TID in the slot and then fetch the old tuple so we can examine
+	 * it
+	 */
+	bslot->base.tupdata.t_self = *otid;
+	if (!heap_fetch(relation, SnapshotAny, &bslot->base.tupdata, &buffer, false))
+	{
+		/*
+		 * heap_update() checks for !ItemIdIsNormal(lp) and will return false
+		 * in those cases.
+		 */
+		Assert(RelationSupportsSysCache(RelationGetRelid(relation)));
+
+		/* modified_idx_attrs not yet initialized */
+		bms_free(idx_attrs);
+		ExecDropSingleTupleTableSlot(slot);
+
+		elog(ERROR, "tuple concurrently deleted");
+
+		return;
+	}
+
+	Assert(buffer != InvalidBuffer);
+
+	/* Store in slot, transferring existing pin */
+	ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
+	oldtup = ExecFetchSlotHeapTuple(slot, false, &shouldFree);
+
+	local_modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
+	lockmode = HeapUpdateDetermineLockmode(relation, local_modified_idx_attrs);
+	hot_mode = HeapUpdateHotAllowable(relation, local_modified_idx_attrs);
+
+	result = heap_update(relation, otid, tup, GetCurrentCommandId(true),
+						 0 /* options */ ,
+						 InvalidSnapshot, true /* wait for commit */ ,
+						 &tmfd, lockmode, local_modified_idx_attrs, hot_mode);
+
+	if (shouldFree)
+		heap_freetuple(oldtup);
+
+	ExecDropSingleTupleTableSlot(slot);
+	bms_free(idx_attrs);
+
 	switch (result)
 	{
 		case TM_SelfModified:
@@ -4467,7 +4927,14 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			break;
 
 		case TM_Ok:
-			/* done successfully */
+
+			/*
+			 * If the tuple returned from heap_update() is marked heap-only,
+			 * this was a HOT update and (subject to per-index checks) only
+			 * summarizing indexes need a new entry.  Otherwise every index
+			 * must get an entry pointing to the new tuple's TID.
+			 */
+			upd_info->update_all_indexes = !HeapTupleIsHeapOnly(tup);
 			break;
 
 		case TM_Updated:
@@ -4482,6 +4949,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 			break;
 	}
+
+	upd_info->modified_attrs = local_modified_idx_attrs;
 }
 
 
@@ -8046,23 +8515,28 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 	Assert(OffsetNumberIsValid(istatus->idxoffnum));
 
 	if (unlikely(indexpagehoffnum > maxoff))
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg_internal("heap tid from index tuple (%u,%u) points past end of heap page line pointer array at offset %u of block %u in index \"%s\"",
-								 ItemPointerGetBlockNumber(htid),
-								 indexpagehoffnum,
-								 istatus->idxoffnum, delstate->iblknum,
-								 RelationGetRelationName(delstate->irel))));
+	{
+		/*
+		 * Under HOT-indexed updates, a stale btree entry can outlive heap
+		 * pruning/vacuum of the page it targets; if the target offset is past
+		 * the current max, treat as vacuumable instead of raising an
+		 * index-corruption error.
+		 */
+		return;
+	}
 
 	iid = PageGetItemId(page, indexpagehoffnum);
 	if (unlikely(!ItemIdIsUsed(iid)))
-		ereport(ERROR,
-				(errcode(ERRCODE_INDEX_CORRUPTED),
-				 errmsg_internal("heap tid from index tuple (%u,%u) points to unused heap page item at offset %u of block %u in index \"%s\"",
-								 ItemPointerGetBlockNumber(htid),
-								 indexpagehoffnum,
-								 istatus->idxoffnum, delstate->iblknum,
-								 RelationGetRelationName(delstate->irel))));
+	{
+		/*
+		 * Under HOT-indexed updates, a stale btree entry can legitimately
+		 * point at an LP that has since been reclaimed to LP_UNUSED by
+		 * pruning before VACUUM processed the index.  Treat that as "the
+		 * chain is vacuumable" (caller's downstream chain walk will reach the
+		 * same conclusion) rather than an index-corruption error.
+		 */
+		return;
+	}
 
 	if (ItemIdHasStorage(iid))
 	{
@@ -8072,13 +8546,17 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 		htup = (HeapTupleHeader) PageGetItem(page, iid);
 
 		if (unlikely(HeapTupleHeaderIsHeapOnly(htup)))
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg_internal("heap tid from index tuple (%u,%u) points to heap-only tuple at offset %u of block %u in index \"%s\"",
-									 ItemPointerGetBlockNumber(htid),
-									 indexpagehoffnum,
-									 istatus->idxoffnum, delstate->iblknum,
-									 RelationGetRelationName(delstate->irel))));
+		{
+			/*
+			 * A HOT-indexed update plants a fresh index entry that points
+			 * directly at a heap-only tuple; those tuples carry
+			 * HEAP_INDEXED_UPDATED.  A stale btree entry can also arrive at a
+			 * heap-only tuple when a chain root got pruned out.  Both are
+			 * legal under HOT-indexed; exempt them from the "index entries
+			 * must target chain roots" invariant and let the caller's chain
+			 * walk decide whether the entry is deletable.
+			 */
+		}
 	}
 }
 
@@ -8293,7 +8771,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 
 			/* Are any tuples from this HOT chain non-vacuumable? */
 			if (heap_hot_search_buffer(&tmp, rel, buf, &SnapshotNonVacuumable,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, NULL))
 				continue;		/* can't delete entry */
 
 			/* Caller will delete, since whole HOT chain is vacuumable */
@@ -8776,7 +9254,10 @@ log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup, HeapTuple newtup,
 				HeapTuple old_key_tuple,
 				bool all_visible_cleared, bool new_all_visible_cleared,
-				bool walLogical)
+				bool walLogical,
+				OffsetNumber tombstone_offnum,
+				const char *tombstone_item,
+				Size tombstone_item_size)
 {
 	xl_heap_update xlrec;
 	xl_heap_header xlhdr;
@@ -8785,6 +9266,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	uint16		prefix_suffix[2];
 	uint16		prefixlen = 0,
 				suffixlen = 0;
+	uint16		tombstone_trailer_len = 0;
+	uint16		tombstone_size16 = 0;
 	XLogRecPtr	recptr;
 	Page		page = BufferGetPage(newbuf);
 	bool		need_tuple_data = walLogical && RelationIsLogicallyLogged(reln);
@@ -8875,6 +9358,18 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		}
 	}
 
+	/*
+	 * If a HOT-indexed tombstone was placed adjacent to the new tuple on
+	 * `newbuf`, log it so replay can recreate it.  The data is attached to
+	 * block 0 (the new buffer) after the main rdata chain.
+	 */
+	if (tombstone_item_size > 0)
+	{
+		Assert(tombstone_item != NULL);
+		Assert(OffsetNumberIsValid(tombstone_offnum));
+		xlrec.flags |= XLH_UPDATE_CONTAINS_TOMBSTONE;
+	}
+
 	/* If new tuple is the single and first tuple on page... */
 	if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
 		PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
@@ -8939,6 +9434,22 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	 * The 'data' doesn't include the common prefix or suffix.
 	 */
 	XLogRegisterBufData(0, &xlhdr, SizeOfHeapHeader);
+
+	/*
+	 * HOT-indexed tombstones: write a uint16 trailer length right after xlhdr
+	 * so replay can subtract it from the block's data length to recover the
+	 * true tuple body length.  The trailer itself (OffsetNumber + uint16 +
+	 * raw bytes) is appended at the end of the rdata chain below.
+	 */
+	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+	{
+		tombstone_trailer_len = (uint16) (sizeof(OffsetNumber) +
+										  sizeof(uint16) +
+										  tombstone_item_size);
+
+		XLogRegisterBufData(0, &tombstone_trailer_len, sizeof(uint16));
+	}
+
 	if (prefixlen == 0)
 	{
 		XLogRegisterBufData(0,
@@ -8978,6 +9489,21 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 		XLogRegisterData((char *) old_key_tuple->t_data + SizeofHeapTupleHeader,
 						 old_key_tuple->t_len - SizeofHeapTupleHeader);
+	}
+
+	/*
+	 * HOT-indexed tombstone: log the recorded offset, byte count, and the raw
+	 * item bytes as buffer data on block 0 so replay can PageAddItemExtended
+	 * it at the same offset.
+	 */
+	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+	{
+		tombstone_size16 = (uint16) tombstone_item_size;
+
+		Assert(tombstone_item_size > 0 && tombstone_item_size <= UINT16_MAX);
+		XLogRegisterBufData(0, &tombstone_offnum, sizeof(OffsetNumber));
+		XLogRegisterBufData(0, &tombstone_size16, sizeof(uint16));
+		XLogRegisterBufData(0, unconstify(char *, tombstone_item), tombstone_item_size);
 	}
 
 	/* filtering by origin on a row level is much more efficient */
