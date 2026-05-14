@@ -623,20 +623,36 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	 * it doesn't exist or has the wrong owner.  Not needed for in-place mode,
 	 * because in that case we created the directory with the desired
 	 * permissions.
+	 *
+	 * Outside recovery, route through FileOpsChmod so a transaction abort
+	 * restores the prior mode via the FILEOPS UNDO record.  In recovery
+	 * (where there is no surrounding transaction) issue chmod directly.
+	 * On Windows, chmod is partial (only the read-only bit is meaningful);
+	 * FileOpsChmod handles platform differences.
 	 */
-	if (!in_place && chmod(location, pg_dir_create_mode) != 0)
+	if (!in_place)
 	{
-		if (errno == ENOENT)
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_FILE),
-					 errmsg("directory \"%s\" does not exist", location),
-					 InRecovery ? errhint("Create this directory for the tablespace before "
-										  "restarting the server.") : 0));
+		int			rc;
+
+		if (InRecovery)
+			rc = chmod(location, pg_dir_create_mode);
 		else
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not set permissions on directory \"%s\": %m",
-							location)));
+			rc = FileOpsChmod(location, pg_dir_create_mode);
+
+		if (rc != 0)
+		{
+			if (errno == ENOENT)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_FILE),
+						 errmsg("directory \"%s\" does not exist", location),
+						 InRecovery ? errhint("Create this directory for the tablespace before "
+											  "restarting the server.") : 0));
+			else
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not set permissions on directory \"%s\": %m",
+								location)));
+		}
 	}
 
 	/*
@@ -788,30 +804,50 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 			return false;
 		}
 
-		/* remove empty directory */
-		if (rmdir(subfile) < 0)
-			ereport(redo ? LOG : WARNING,
-					(errcode_for_file_access(),
-					 errmsg("could not remove directory \"%s\": %m",
-							subfile)));
+		/*
+		 * Remove empty directory.  Outside recovery, defer to commit time so
+		 * a transaction abort leaves the per-DB tablespace subdirectory
+		 * intact.  In recovery, issue rmdir directly because the redo
+		 * handler is itself the recovery action.
+		 */
+		if (redo)
+		{
+			if (rmdir(subfile) < 0)
+				ereport(LOG,
+						(errcode_for_file_access(),
+						 errmsg("could not remove directory \"%s\": %m",
+								subfile)));
+		}
+		else
+		{
+			FileOpsRmdir(subfile, true /* at_commit */);
+		}
 
 		pfree(subfile);
 	}
 
 	FreeDir(dirdesc);
 
-	/* remove version directory */
-	if (rmdir(linkloc_with_version_dir) < 0)
+	/*
+	 * Remove version directory.  Same forward / redo split as above:
+	 * defer to commit outside recovery so abort restores the version dir;
+	 * issue rmdir directly during redo.
+	 */
+	if (redo)
 	{
-		ereport(redo ? LOG : WARNING,
-				(errcode_for_file_access(),
-				 errmsg("could not remove directory \"%s\": %m",
-						linkloc_with_version_dir)));
-		if (redo)
+		if (rmdir(linkloc_with_version_dir) < 0)
 		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not remove directory \"%s\": %m",
+							linkloc_with_version_dir)));
 			pfree(linkloc_with_version_dir);
 			return false;
 		}
+	}
+	else
+	{
+		FileOpsRmdir(linkloc_with_version_dir, true /* at_commit */);
 	}
 
 	/*
@@ -837,26 +873,53 @@ remove_symlink:
 	}
 	else if (S_ISDIR(st.st_mode))
 	{
-		if (rmdir(linkloc) < 0)
+		/*
+		 * Junction-style entry (Windows) or stale directory (any platform).
+		 * In redo, remove now; outside redo, defer to commit so abort
+		 * restores the entry.
+		 */
+		if (redo)
 		{
-			int			saved_errno = errno;
+			if (rmdir(linkloc) < 0)
+			{
+				int			saved_errno = errno;
 
-			ereport(saved_errno == ENOENT ? LOG : LOG,
-					(errcode_for_file_access(),
-					 errmsg("could not remove directory \"%s\": %m",
-							linkloc)));
+				ereport(saved_errno == ENOENT ? LOG : LOG,
+						(errcode_for_file_access(),
+						 errmsg("could not remove directory \"%s\": %m",
+								linkloc)));
+			}
+		}
+		else
+		{
+			FileOpsRmdir(linkloc, true /* at_commit */);
 		}
 	}
 	else if (S_ISLNK(st.st_mode))
 	{
-		if (unlink(linkloc) < 0)
+		/*
+		 * Tablespace symlink under PGDATA/pg_tblspc/.  Symmetric with
+		 * FileOpsSymlink on the create path: defer the unlink to commit so
+		 * abort restores the symlink, closing the long-standing
+		 * crash-asymmetry between CREATE TABLESPACE and DROP TABLESPACE.
+		 * In redo, issue unlink directly because the redo handler is itself
+		 * the recovery action.
+		 */
+		if (redo)
 		{
-			int			saved_errno = errno;
+			if (unlink(linkloc) < 0)
+			{
+				int			saved_errno = errno;
 
-			ereport(saved_errno == ENOENT ? LOG : LOG,
-					(errcode_for_file_access(),
-					 errmsg("could not remove symbolic link \"%s\": %m",
-							linkloc)));
+				ereport(saved_errno == ENOENT ? LOG : LOG,
+						(errcode_for_file_access(),
+						 errmsg("could not remove symbolic link \"%s\": %m",
+								linkloc)));
+			}
+		}
+		else
+		{
+			FileOpsDelete(linkloc, true /* at_commit */);
 		}
 	}
 	else
