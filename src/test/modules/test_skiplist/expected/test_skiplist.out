@@ -1,0 +1,26 @@
+CREATE EXTENSION test_skiplist;
+--
+-- All the logic is in the test_skiplist() function. It will throw
+-- an error if something fails.
+--
+SELECT test_skiplist();
+NOTICE:  testing init and empty list operations
+NOTICE:  testing insert and search
+NOTICE:  testing insertion ordering
+NOTICE:  testing duplicate insert rejection
+NOTICE:  testing remove
+NOTICE:  testing access API (put/get/contains/del)
+NOTICE:  testing navigation (head/tail/next/prev)
+NOTICE:  testing position variants (gte/gt/lte/lt)
+NOTICE:  testing edge cases
+NOTICE:  testing tail regression (0, 1, 2 elements)
+NOTICE:  testing stress (insert 1000, remove odds, verify evens)
+NOTICE:  testing integrity validation
+NOTICE:  testing head height growth and shrinkage
+NOTICE:  testing update
+NOTICE:  testing foreach iteration macros
+ test_skiplist 
+---------------
+ 
+(1 row)
+
