@@ -5804,6 +5804,68 @@ restart:
 }
 
 /*
+ * RelationGetIndexAttrBitmapNoCopy -- borrowing variant of
+ *		RelationGetIndexAttrBitmap
+ *
+ * Returns a pointer to the relcache-owned bitmap for the given attrKind
+ * without making a defensive copy.  This is a hot-path optimization for
+ * read-only callers that perform set operations like bms_overlap,
+ * bms_is_subset, bms_equal, or bms_num_members and never mutate the
+ * returned bitmap.  The result is conceptually `const Bitmapset *`; callers
+ * must not pass it to anything that could free or modify the underlying
+ * memory (e.g., bms_add_member, bms_int_members, bms_free).
+ *
+ * Lifetime: the pointer is valid only until the next event that could
+ * trigger a relcache invalidation on `relation`.  Callers must not invoke
+ * any code that opens a relation, runs catalog lookups, or otherwise
+ * accepts invalidation messages between the fetch and the last use.
+ *
+ * For the common case the relcache entry's attribute bitmaps are already
+ * computed (rd_attrsvalid is true).  When they aren't, we go through
+ * RelationGetIndexAttrBitmap to populate the cache (which costs one
+ * throwaway bms_copy on first use) and then return the cached pointer on
+ * the second pass.  The first-use path is rare and never on the bench hot
+ * path, so the simplicity is preferred over open-coding the populate-only
+ * variant.
+ */
+const Bitmapset *
+RelationGetIndexAttrBitmapNoCopy(Relation relation, IndexAttrBitmapKind attrKind)
+{
+	if (!relation->rd_attrsvalid)
+	{
+		Bitmapset  *populated;
+
+		/* Populate rd_*attr fields; discard the returned copy. */
+		populated = RelationGetIndexAttrBitmap(relation, attrKind);
+		bms_free(populated);
+
+		/*
+		 * If the relation has no indexes, RelationGetIndexAttrBitmap returns
+		 * NULL without setting rd_attrsvalid.  Mirror that here.
+		 */
+		if (!relation->rd_attrsvalid)
+			return NULL;
+	}
+
+	switch (attrKind)
+	{
+		case INDEX_ATTR_BITMAP_KEY:
+			return relation->rd_keyattr;
+		case INDEX_ATTR_BITMAP_PRIMARY_KEY:
+			return relation->rd_pkattr;
+		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
+			return relation->rd_idattr;
+		case INDEX_ATTR_BITMAP_INDEXED:
+			return relation->rd_indexedattr;
+		case INDEX_ATTR_BITMAP_SUMMARIZED:
+			return relation->rd_summarizedattr;
+		default:
+			elog(ERROR, "unknown attrKind %u", attrKind);
+			return NULL;
+	}
+}
+
+/*
  * RelationGetIdentityKeyBitmap -- get a bitmap of replica identity attribute
  * numbers
  *

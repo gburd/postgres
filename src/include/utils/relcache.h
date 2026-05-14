@@ -100,6 +100,9 @@ typedef enum IndexAttrBitmapKind
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,
 											 IndexAttrBitmapKind attrKind);
 
+extern const Bitmapset *RelationGetIndexAttrBitmapNoCopy(Relation relation,
+														 IndexAttrBitmapKind attrKind);
+
 extern Bitmapset *RelationGetIdentityKeyBitmap(Relation relation);
 
 extern void RelationGetExclusionInfo(Relation indexRelation,
