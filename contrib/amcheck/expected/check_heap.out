@@ -231,6 +231,47 @@ SELECT * FROM verify_heapam('test_foreign_table',
 							endblock := NULL);
 ERROR:  cannot check relation "test_foreign_table"
 DETAIL:  This operation is not supported for foreign tables.
+-- HOT-indexed tombstones (Tepid):
+--
+-- A HOT-indexed UPDATE plants two distinct on-page artifacts that classic
+-- HOT did not produce: an "adjacent" tombstone carrying the modified
+-- indexed-attrs bitmap next to the live HOT-indexed tuple, and a "bridge"
+-- tombstone left behind by pruneheap when a mid-chain HOT-indexed LP cannot
+-- yet be reclaimed (its btree entries may still be stale).  Both items are
+-- LP_NORMAL with HeapTupleHeaderGetNatts == 0 and HEAP_INDEXED_UPDATED set,
+-- and verify_heapam validates their on-disk format explicitly.  This
+-- scenario exercises both kinds and asserts that verify_heapam reports zero
+-- corruption against legitimate HOT-indexed activity.
+CREATE TABLE hot_indexed_check (id int PRIMARY KEY, c1 int, c2 int, c3 int)
+	WITH (fillfactor = 70);
+CREATE INDEX hot_indexed_check_c1 ON hot_indexed_check (c1);
+CREATE INDEX hot_indexed_check_c2 ON hot_indexed_check (c2);
+INSERT INTO hot_indexed_check
+	SELECT g, g, g, g FROM generate_series(1, 200) g;
+-- Single-step UPDATEs: each row gets one HOT-indexed update.  Each
+-- successful HOT-indexed update emits one adjacent tombstone next to the
+-- new live tuple.
+UPDATE hot_indexed_check SET c1 = c1 + 1000;
+-- Multi-step UPDATEs: drive several successive HOT-indexed updates against
+-- the same rows so prune sees a chain of dead intermediates and converts
+-- the dead-with-stale-btree LPs into bridge tombstones.  An explicit VACUUM
+-- runs the prune path and exercises bridge creation.
+UPDATE hot_indexed_check SET c2 = c2 + 1 WHERE id <= 50;
+UPDATE hot_indexed_check SET c2 = c2 + 1 WHERE id <= 50;
+UPDATE hot_indexed_check SET c2 = c2 + 1 WHERE id <= 50;
+VACUUM (INDEX_CLEANUP off) hot_indexed_check;
+-- verify_heapam must not report any corruption against legitimate HOT-
+-- indexed artifacts.  Selecting the corrupting message makes any
+-- regression unmistakable in the regress diff.
+SELECT blkno, offnum, attnum, msg
+	FROM verify_heapam('hot_indexed_check',
+					   startblock := NULL,
+					   endblock := NULL);
+ blkno | offnum | attnum | msg 
+-------+--------+--------+-----
+(0 rows)
+
+DROP TABLE hot_indexed_check;
 -- cleanup
 DROP TABLE heaptest;
 DROP TABLESPACE regress_test_stats_tblspc;
