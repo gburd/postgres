@@ -354,6 +354,22 @@ typedef struct xl_heap_prune
 /* (1 << 11) is reserved; see README.HOT-INDEXED "Chain Promotion" notes. */
 
 /*
+ * XLHP_HAS_TOMBSTONE_UNIONS indicates that an xlhp_prune_items sub-record
+ * with (target, source) OffsetNumber pairs follows.  Each pair describes
+ * a HOT-indexed adjacent-tombstone whose modified-attrs bitmap is being
+ * OR-merged into another tombstone on the same page at chain-collapse
+ * time.  Replay reads the source tombstone's bitmap, ORs it into the
+ * target tombstone's bitmap byte-by-byte, and leaves the source LP for
+ * the accompanying XLHP_HAS_NOW_UNUSED_ITEMS sub-record to reclaim.
+ *
+ * Adjacent tombstones for the same relation always carry an identical
+ * t_nbytes (every per-update modified-attrs bitmap covers the whole
+ * relation's attribute count), so the byte-by-byte OR is well-defined.
+ * See access/hot_indexed.h for the on-disk tombstone layout.
+ */
+#define		XLHP_HAS_TOMBSTONE_UNIONS	(1 << 12)
+
+/*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
  * (appears in xl_heap_prune's xlhp_freeze_plans sub-record)
  */
@@ -507,6 +523,7 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused,
-												   int *nbridges, OffsetNumber **bridges);
+												   int *nbridges, OffsetNumber **bridges,
+												   int *nunions, OffsetNumber **tombstone_unions);
 
 #endif							/* HEAPAM_XLOG_H */

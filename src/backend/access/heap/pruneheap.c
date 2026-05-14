@@ -69,6 +69,7 @@ typedef struct
 	int			ndead;
 	int			nunused;
 	int			nbridges;		/* count of HOT-indexed bridge conversions */
+	int			ntombstone_unions;	/* count of tombstone bitmap unions */
 	int			nfrozen;
 	/* arrays that accumulate indexes of items to be changed */
 	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
@@ -80,6 +81,15 @@ typedef struct
 	 * layout minimal.
 	 */
 	OffsetNumber bridges[MaxHeapTuplesPerPage * 2];
+	/*
+	 * Tombstone bitmap unions: stored as (target_offnum, source_offnum)
+	 * pairs.  At apply time the source tombstone's modified-attrs bitmap is
+	 * OR-merged into the target tombstone's bitmap byte-by-byte (adjacent
+	 * tombstones for the same relation always carry the same t_nbytes), and
+	 * the source LP is reclaimed via the existing nowunused flow.  See
+	 * heap_prune_record_tombstone_union().
+	 */
+	OffsetNumber tombstone_unions[MaxHeapTuplesPerPage * 2];
 	HeapTupleFreeze frozen[MaxHeapTuplesPerPage];
 
 	/*
@@ -262,6 +272,11 @@ static OffsetNumber heap_prune_find_live_chain_root(Page page, BlockNumber blkno
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
+static OffsetNumber heap_prune_find_tombstone_for(PruneState *prstate,
+												  OffsetNumber target_off);
+static void heap_prune_record_tombstone_union(PruneState *prstate,
+											  OffsetNumber target,
+											  OffsetNumber source);
 
 static void page_verify_redirects(Page page);
 
@@ -472,6 +487,7 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->latest_xid_removed = InvalidTransactionId;
 	prstate->nredirected = prstate->ndead = prstate->nunused = 0;
 	prstate->nbridges = 0;
+	prstate->ntombstone_unions = 0;
 	prstate->nfrozen = 0;
 	prstate->nroot_items = 0;
 	prstate->nheaponly_items = 0;
@@ -1415,7 +1431,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									prstate.redirected, prstate.nredirected,
 									prstate.nowdead, prstate.ndead,
 									prstate.nowunused, prstate.nunused,
-									prstate.bridges, prstate.nbridges);
+									prstate.bridges, prstate.nbridges,
+									prstate.tombstone_unions, prstate.ntombstone_unions);
 		}
 
 		if (do_freeze)
@@ -1459,7 +1476,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									  prstate.redirected, prstate.nredirected,
 									  prstate.nowdead, prstate.ndead,
 									  prstate.nowunused, prstate.nunused,
-									  prstate.bridges, prstate.nbridges);
+									  prstate.bridges, prstate.nbridges,
+									  prstate.tombstone_unions, prstate.ntombstone_unions);
 		}
 	}
 
@@ -1839,17 +1857,56 @@ process_chain:
 		 * first live chain member (HOT-indexed: stale btree entries may
 		 * still point at this LP).  The classifier
 		 * heap_prune_item_preserves_hot_indexed decides per LP.
+		 *
+		 * For each intermediate dead member that becomes a bridge, its
+		 * adjacent tombstone (if any) is no longer referenced through
+		 * that LP.  When first_live also has an adjacent tombstone, we
+		 * OR-merge the dying tombstone's modified-attrs bitmap into
+		 * first_live's tombstone, then reclaim the source tombstone's
+		 * LP.  This reduces tombstone LP count after a chain collapse
+		 * and preserves the union of "attributes that ever changed across
+		 * the collapsed chain" in a single bitmap, ready for any future
+		 * reader that consults it (none consult it today; the
+		 * leaf-key recheck via amrecheck_leaf_key is the canonical
+		 * stale-leaf filter).
 		 */
 		OffsetNumber	first_live = chainitems[ndeadchain];
+		OffsetNumber	target_tomb;
 
 		heap_prune_record_redirect(prstate, rootoffnum, first_live,
 								   ItemIdIsNormal(rootlp));
+
+		target_tomb = heap_prune_find_tombstone_for(prstate, first_live);
+
 		for (int i = 1; i < ndeadchain; i++)
 		{
 			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
+			{
 				heap_prune_record_bridge(prstate, chainitems[i], first_live);
+
+				/*
+				 * Union the displaced tombstone's bitmap into first_live's
+				 * tombstone.  The source tombstone's LP will be reclaimed
+				 * later by prune_handle_tombstones() (because its target,
+				 * chainitems[i], is now a bridge -- handled by the
+				 * tombstone-target-now-bridge check in that function).
+				 */
+				if (OffsetNumberIsValid(target_tomb))
+				{
+					OffsetNumber source_tomb;
+
+					source_tomb = heap_prune_find_tombstone_for(prstate,
+																chainitems[i]);
+					if (OffsetNumberIsValid(source_tomb))
+						heap_prune_record_tombstone_union(prstate,
+															  target_tomb,
+															  source_tomb);
+				}
+			}
 			else
+			{
 				heap_prune_record_unused(prstate, chainitems[i], true);
+			}
 		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
@@ -2152,6 +2209,64 @@ heap_prune_record_bridge(PruneState *prstate,
 	 */
 	prstate->set_all_visible = false;
 	prstate->set_all_frozen = false;
+}
+
+/*
+ * heap_prune_find_tombstone_for
+ *		Find the adjacent tombstone whose t_target points at `target_off`.
+ *
+ * Returns the tombstone's own LP offset, or InvalidOffsetNumber if no
+ * tombstone for that target exists in prstate->tombstones[].  The array
+ * is fully populated by the time the chain-collapse path runs, so a
+ * linear scan is correct and fast in practice (typical pages carry
+ * single-digit tombstone counts).
+ */
+static OffsetNumber
+heap_prune_find_tombstone_for(PruneState *prstate, OffsetNumber target_off)
+{
+	for (int i = 0; i < prstate->ntombstones; i++)
+	{
+		if (prstate->tombstones[i].target == target_off)
+			return prstate->tombstones[i].offnum;
+	}
+	return InvalidOffsetNumber;
+}
+
+/*
+ * heap_prune_record_tombstone_union
+ *		Record that the source tombstone's modified-attrs bitmap should be
+ *		OR-merged into the target tombstone's bitmap before reclaim.
+ *
+ * Used during chain collapse: when an intermediate dead chain member
+ * (with HEAP_INDEXED_UPDATED) is rewritten to a bridge or reclaimed to
+ * LP_UNUSED, its adjacent tombstone is no longer referenced through
+ * that LP.  But the leaf entries the tombstone described still chain-walk
+ * to the surviving live tuple after collapse; if a future reader
+ * consults the bitmap (today none do, but the apply-path follow-ups for
+ * temporal exclusion-constraint recheck and the per-mode subscriber
+ * INSERT case may), the union of the discarded source's bitmap with the
+ * surviving target's bitmap correctly over-approximates the set of
+ * indexed attributes that ever changed across the collapsed chain.
+ *
+ * The actual byte-OR happens in heap_page_prune_execute inside the
+ * critical section; we only stash the pair here.  The source tombstone's
+ * LP must already be queued for LP_UNUSED via heap_prune_record_unused()
+ * (or its bridge-target reclaim path); this function does not reclaim
+ * the source itself.
+ */
+static void
+heap_prune_record_tombstone_union(PruneState *prstate,
+								  OffsetNumber target,
+								  OffsetNumber source)
+{
+	Assert(OffsetNumberIsValid(target));
+	Assert(OffsetNumberIsValid(source));
+	Assert(target != source);
+	Assert(prstate->ntombstone_unions < MaxHeapTuplesPerPage);
+
+	prstate->tombstone_unions[prstate->ntombstone_unions * 2] = target;
+	prstate->tombstone_unions[prstate->ntombstone_unions * 2 + 1] = source;
+	prstate->ntombstone_unions++;
 }
 
 /*
@@ -2561,7 +2676,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 						OffsetNumber *redirected, int nredirected,
 						OffsetNumber *nowdead, int ndead,
 						OffsetNumber *nowunused, int nunused,
-						OffsetNumber *bridges, int nbridges)
+						OffsetNumber *bridges, int nbridges,
+						OffsetNumber *tombstone_unions, int nunions)
 {
 	Page		page = BufferGetPage(buffer);
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
@@ -2569,11 +2685,12 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
 
 	/* Shouldn't be called unless there's something to do */
-	Assert(nredirected > 0 || ndead > 0 || nunused > 0 || nbridges > 0);
+	Assert(nredirected > 0 || ndead > 0 || nunused > 0 ||
+		   nbridges > 0 || nunions > 0);
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
 	Assert(!lp_truncate_only ||
-		   (nredirected == 0 && ndead == 0 && nbridges == 0));
+		   (nredirected == 0 && ndead == 0 && nbridges == 0 && nunions == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -2662,6 +2779,58 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 #endif
 
 		ItemIdSetDead(lp);
+	}
+
+	/*
+	 * Apply HOT-indexed tombstone bitmap unions BEFORE the LP_UNUSED loop.
+	 * Each (target, source) pair OR-merges the source tombstone's
+	 * modified-attrs bitmap into the target tombstone's bitmap.  Source
+	 * tombstone LPs are queued for reclaim via the nowunused array (added
+	 * by prune_handle_tombstones() once chain processing decides their
+	 * target is no longer a live HOT-indexed tuple), so we must read the
+	 * source body before its LP gets converted to LP_UNUSED below.
+	 *
+	 * Adjacent tombstones for the same relation always carry an identical
+	 * t_nbytes (every per-update modified-attrs bitmap covers the whole
+	 * relation's attribute count), so the byte-by-byte OR is well-defined.
+	 */
+	offnum = tombstone_unions;
+	for (int i = 0; i < nunions; i++)
+	{
+		OffsetNumber	target_off = *offnum++;
+		OffsetNumber	source_off = *offnum++;
+		ItemId			target_lp = PageGetItemId(page, target_off);
+		ItemId			source_lp = PageGetItemId(page, source_off);
+		HeapTupleHeader	target_tup;
+		HeapTupleHeader	source_tup;
+		HotIndexedTombstonePayload *target_payload;
+		const HotIndexedTombstonePayload *source_payload;
+		uint16			nbytes;
+
+		Assert(ItemIdIsNormal(target_lp));
+		Assert(ItemIdIsNormal(source_lp));
+
+		target_tup = (HeapTupleHeader) PageGetItem(page, target_lp);
+		source_tup = (HeapTupleHeader) PageGetItem(page, source_lp);
+
+		Assert(HeapTupleHeaderIsHotIndexedTombstone(target_tup));
+		Assert(HeapTupleHeaderIsHotIndexedTombstone(source_tup));
+		Assert(!HeapTupleHeaderIsHotIndexedBridge(target_tup));
+		Assert(!HeapTupleHeaderIsHotIndexedBridge(source_tup));
+
+		target_payload = HotIndexedTombstoneGetPayload(target_tup);
+		source_payload = HotIndexedTombstoneGetPayloadConst(source_tup);
+
+		/*
+		 * Both tombstones describe the same relation; they must agree on
+		 * the bitmap byte count.  If they don't, the chain crossed a
+		 * relcache change that should have invalidated us long before.
+		 */
+		nbytes = target_payload->t_nbytes;
+		Assert(nbytes == source_payload->t_nbytes);
+
+		for (uint16 b = 0; b < nbytes; b++)
+			target_payload->t_bitmap[b] |= source_payload->t_bitmap[b];
 	}
 
 	/* Update all now-unused line pointers */
@@ -3105,7 +3274,8 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 						  OffsetNumber *redirected, int nredirected,
 						  OffsetNumber *dead, int ndead,
 						  OffsetNumber *unused, int nunused,
-						  OffsetNumber *bridges, int nbridges)
+						  OffsetNumber *bridges, int nbridges,
+						  OffsetNumber *tombstone_unions, int nunions)
 {
 	xl_heap_prune xlrec;
 	XLogRecPtr	recptr;
@@ -3121,9 +3291,10 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xlhp_prune_items dead_items;
 	xlhp_prune_items unused_items;
 	xlhp_prune_items bridge_items;
+	xlhp_prune_items union_items;
 	OffsetNumber frz_offsets[MaxHeapTuplesPerPage];
 	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
-		nbridges > 0;
+		nbridges > 0 || nunions > 0;
 	bool		do_set_vm = vmflags & VISIBILITYMAP_VALID_BITS;
 	bool		heap_fpi_allowed = true;
 
@@ -3220,6 +3391,16 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 							offsetof(xlhp_prune_items, data));
 		XLogRegisterBufData(0, bridges,
 							sizeof(OffsetNumber[2]) * nbridges);
+	}
+	if (nunions > 0)
+	{
+		xlrec.flags |= XLHP_HAS_TOMBSTONE_UNIONS;
+
+		union_items.ntargets = nunions;
+		XLogRegisterBufData(0, &union_items,
+							offsetof(xlhp_prune_items, data));
+		XLogRegisterBufData(0, tombstone_unions,
+							sizeof(OffsetNumber[2]) * nunions);
 	}
 	if (nfrozen > 0)
 		XLogRegisterBufData(0, frz_offsets,
