@@ -2709,6 +2709,19 @@ ninja install
       </listitem>
      </varlistentry>
 
+     <varlistentry id="configure-with-recno-meson">
+      <term><option>-Drecno={ enabled | disabled }</option></term>
+      <listitem>
+       <para>
+        Build with RECNO table access method support.  RECNO provides
+        time-based MVCC, in-place updates, integrated compression, and
+        overflow pages as an alternative to the default heap storage.
+        Defaults to disabled.  See <xref linkend="storage-recno"/> for
+        details on RECNO features and tuning.
+       </para>
+      </listitem>
+     </varlistentry>
+
     </variablelist>
    </sect3>
 

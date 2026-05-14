@@ -73,3 +73,7 @@ src/backend/lib/sparsemap\.c$
 # block arguments that confuse pg_bsd_indent's parser.
 src/include/lib/skiplist\.h$
 src/test/modules/test_skiplist/test_skiplist\.c$
+#
+# slog.c uses SKIPLIST_DECL() macro invocations that confuse pg_bsd_indent
+# even with INDENT-OFF markers (pg_bsd_indent 2.1.2 limitation).
+src/backend/access/undo/slog\.c$
