@@ -1,0 +1,73 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_insert_1 s2_insert_3 s1_insert_2 s2_insert_4 s1_read s2_read s1_commit s2_commit s3_read
+step s1_insert_1: INSERT INTO recno_ci VALUES (1, 'from_s1');
+step s2_insert_3: INSERT INTO recno_ci VALUES (3, 'from_s2');
+step s1_insert_2: INSERT INTO recno_ci VALUES (2, 'from_s1');
+step s2_insert_4: INSERT INTO recno_ci VALUES (4, 'from_s2');
+step s1_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 2|from_s1
+ 3|from_s2
+ 4|from_s2
+(4 rows)
+
+step s2_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 2|from_s1
+ 3|from_s2
+ 4|from_s2
+(4 rows)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 2|from_s1
+ 3|from_s2
+ 4|from_s2
+(4 rows)
+
+
+starting permutation: s1_insert_1 s1_commit s2_insert_3 s2_read s2_commit s3_read
+step s1_insert_1: INSERT INTO recno_ci VALUES (1, 'from_s1');
+step s1_commit: COMMIT;
+step s2_insert_3: INSERT INTO recno_ci VALUES (3, 'from_s2');
+step s2_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 3|from_s2
+(2 rows)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 3|from_s2
+(2 rows)
+
+
+starting permutation: s1_insert_1 s1_insert_2 s2_insert_3 s2_insert_4 s1_commit s2_commit s3_read
+step s1_insert_1: INSERT INTO recno_ci VALUES (1, 'from_s1');
+step s1_insert_2: INSERT INTO recno_ci VALUES (2, 'from_s1');
+step s2_insert_3: INSERT INTO recno_ci VALUES (3, 'from_s2');
+step s2_insert_4: INSERT INTO recno_ci VALUES (4, 'from_s2');
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_ci ORDER BY id;
+id|val    
+--+-------
+ 1|from_s1
+ 2|from_s1
+ 3|from_s2
+ 4|from_s2
+(4 rows)
+

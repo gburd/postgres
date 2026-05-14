@@ -23,6 +23,7 @@
 #include "access/commit_ts.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
+#include "access/recno.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -2787,6 +2788,7 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
+	AtPrepare_Recno();
 
 	/*
 	 * Here is where we really truly prepare.
