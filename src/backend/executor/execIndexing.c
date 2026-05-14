@@ -446,6 +446,21 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 													indexInfo,
 													indexRelation));
 
+		/*
+		 * For a table AM that performs UPDATE in place (keeping the same TID),
+		 * an index whose key is unchanged by the UPDATE already has a valid
+		 * (key, TID) entry that survives the update.  Re-inserting it would
+		 * create a duplicate (key, TID) pair and violate index-AM invariants
+		 * (e.g. nbtree posting-list dedup requires strictly increasing heap
+		 * TIDs).  Skip the redundant insert for non-partial indexes.  Partial
+		 * indexes are excluded because row membership can change even when the
+		 * key columns do not, so a genuinely new entry may still be required.
+		 */
+		if (indexUnchanged &&
+			heapRelation->rd_tableam->am_inplace_update_keeps_tid &&
+			indexInfo->ii_Predicate == NIL)
+			continue;
+
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
 						 values,	/* array of index Datums */

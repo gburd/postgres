@@ -3205,6 +3205,67 @@ MarkBufferDirty(Buffer buffer)
 }
 
 /*
+ * MarkBufferDirtyShared
+ *
+ *	Like MarkBufferDirty, but callable while holding only a SHARED content
+ *	lock on the buffer.  The BM_DIRTY bit is set atomically via CAS on the
+ *	buffer header state word, which is safe regardless of lock mode.
+ *
+ *	The caller MUST ensure that either:
+ *	  (a) a WAL record covering the modification has already been inserted
+ *		  (so the WAL flush in the checkpointer will find the record), or
+ *	  (b) full_page_writes will capture a consistent image (the modification
+ *		  is protected by a per-tuple lock that prevents torn pages).
+ *
+ *	This is used by RECNO's tuple-level CAS update path where per-tuple
+ *	atomics protect individual tuple data under a shared page lock.
+ */
+void
+MarkBufferDirtyShared(Buffer buffer)
+{
+	BufferDesc *bufHdr;
+	uint64		buf_state;
+	uint64		old_buf_state;
+
+	if (!BufferIsValid(buffer))
+		elog(ERROR, "bad buffer ID: %d", buffer);
+
+	if (BufferIsLocal(buffer))
+	{
+		MarkLocalBufferDirty(buffer);
+		return;
+	}
+
+	bufHdr = GetBufferDescriptor(buffer - 1);
+
+	Assert(BufferIsPinned(buffer));
+	/* Caller holds at least BUFFER_LOCK_SHARE -- no exclusive assertion */
+
+	old_buf_state = pg_atomic_read_u64(&bufHdr->state);
+	for (;;)
+	{
+		if (old_buf_state & BM_LOCKED)
+			old_buf_state = WaitBufHdrUnlocked(bufHdr);
+
+		buf_state = old_buf_state;
+
+		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
+		buf_state |= BM_DIRTY;
+
+		if (pg_atomic_compare_exchange_u64(&bufHdr->state, &old_buf_state,
+										   buf_state))
+			break;
+	}
+
+	if (!(old_buf_state & BM_DIRTY))
+	{
+		pgBufferUsage.shared_blks_dirtied++;
+		if (VacuumCostActive)
+			VacuumCostBalance += VacuumCostPageDirty;
+	}
+}
+
+/*
  * ReleaseAndReadBuffer -- combine ReleaseBuffer() and ReadBuffer()
  *
  * Formerly, this saved one cycle of acquiring/releasing the BufMgrLock
