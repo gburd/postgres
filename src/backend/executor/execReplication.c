@@ -951,7 +951,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
-														searchslot, slot);
+														searchslot, slot,
+														estate);
 		upd_info.modified_attrs = modified_idx_attrs;
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,

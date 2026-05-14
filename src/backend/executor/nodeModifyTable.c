@@ -231,15 +231,45 @@ static void fireASTriggers(ModifyTableState *node);
 Bitmapset *
 ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 						   TupleTableSlot *old_tts,
-						   TupleTableSlot *new_tts)
+						   TupleTableSlot *new_tts,
+						   EState *estate)
 {
 	Relation	relation = resultRelInfo->ri_RelationDesc;
 	TupleDesc	tupdesc = RelationGetDescr(relation);
+	const Bitmapset *idx_attrs;
+	Bitmapset  *targeted;
 	Bitmapset  *attrs;
 
 	/* If no indexes, we're done */
 	if (resultRelInfo->ri_NumIndices == 0)
 		return NULL;
+
+	/*
+	 * Fast path: if the SQL UPDATE's target list -- including any generated
+	 * columns the planner added -- doesn't intersect the relation's indexed
+	 * attribute bitmap, no indexed column can have changed value, so the
+	 * slot-by-slot comparison below has nothing to find.  Skip it.  This
+	 * matters at high TPS on wide tables where ExecCompareSlotAttrs would
+	 * otherwise iterate every indexed attribute and call slot_getattr twice
+	 * per attribute only to discard an empty result.
+	 *
+	 * The fast path is unsafe when a BEFORE UPDATE or INSTEAD OF UPDATE row
+	 * trigger is attached to the relation: those triggers can replace any
+	 * column of the new tuple via heap_modify_tuple() (see the
+	 * tsvector_update_trigger() in tsearch.sql), and ExecGetAllUpdatedCols()
+	 * does not record such mutations.  Fall through to the full comparison
+	 * in that case.
+	 */
+	if (resultRelInfo->ri_TrigDesc == NULL ||
+		(!resultRelInfo->ri_TrigDesc->trig_update_before_row &&
+		 !resultRelInfo->ri_TrigDesc->trig_update_instead_row))
+	{
+		targeted = ExecGetAllUpdatedCols(resultRelInfo, estate);
+		idx_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
+													 INDEX_ATTR_BITMAP_INDEXED);
+		if (!bms_overlap(targeted, idx_attrs))
+			return NULL;
+	}
 
 	/*
 	 * Get the set of all attributes across all indexes for this relation from
@@ -2659,7 +2689,7 @@ lreplace:
 	 * which are not known to ExecGetUpdatedCols().
 	 */
 	updateCxt->upd_info.modified_attrs =
-		ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot);
+		ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot, estate);
 
 	/*
 	 * Call into the table AM to update the heap tuple.
