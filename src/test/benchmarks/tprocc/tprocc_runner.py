@@ -43,13 +43,10 @@ class TproccBenchmark:
         return self._run_dir
 
     def setup(self) -> None:
-        """Create tables, populate data, and flush all dirty pages.
+        """Create tables, populate data, and flush dirty pages.
 
-        Issues an explicit CHECKPOINT after all population is complete to
-        ensure background I/O from data loading doesn't overlap with the
-        measurement phase.  On large datasets (W=10+), the automatic
-        checkpoint from population can take 5-10 minutes and severely
-        degrade benchmark results if it runs concurrently.
+        Issues CHECKPOINT after population to prevent background checkpoint
+        I/O from overlapping with measurement.
         """
         if self.config.skip_init:
             logger.info("Skipping initialization (--skip-init)")
@@ -60,11 +57,10 @@ class TproccBenchmark:
             populate_all(self.config, am)
             vacuum_tables(self.config, am)
 
-        # Force checkpoint to flush all dirty pages from population.
-        # This prevents checkpoint I/O from overlapping with measurement.
+        # Force checkpoint so population I/O doesn't overlap measurement
         logger.info("Forcing CHECKPOINT to flush population data...")
         run_sql("CHECKPOINT;", self.config)
-        logger.info("CHECKPOINT complete — ready for benchmarking")
+        logger.info("CHECKPOINT complete")
 
     def _build_pgbench_cmd(self, am: AccessMethod, clients: int,
                            script_paths: dict) -> List[str]:
