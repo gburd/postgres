@@ -1,0 +1,61 @@
+RECNO vs Heap Performance Benchmark Suite
+==========================================
+
+This directory contains SQL-based benchmarks comparing the RECNO table access
+method against the standard heap storage engine in PostgreSQL.
+
+Prerequisites
+-------------
+- PostgreSQL built with RECNO support (--with-recno or -Drecno=true)
+- A running PostgreSQL instance with a database to test against
+- Sufficient shared_buffers for the workload (at least 256MB recommended)
+
+Running the benchmarks
+----------------------
+To run all benchmarks via the driver:
+
+    psql -d <dbname> -f src/test/storageperf/driver.sql
+
+To run an individual benchmark:
+
+    psql -d <dbname> -f src/test/storageperf/sql/insert_throughput.sql
+
+Benchmark descriptions
+----------------------
+insert_throughput.sql   - Bulk and individual insert performance comparison
+update_performance.sql  - In-place (RECNO) vs copy-on-write (heap) updates
+vacuum_overhead.sql     - RECNO UNDO cleanup vs heap dead-tuple VACUUM
+rollback_cost.sql       - ATM instant abort vs synchronous UNDO rollback
+storage_footprint.sql   - Compression ratios and per-row storage overhead
+read_under_writes.sql   - Read performance with concurrent write pressure
+toast_overflow.sql      - HEAP TOAST vs RECNO overflow at large value sizes
+toast_overflow_nocomp.sql - TOAST vs overflow storage model, compression OFF
+                          (speed, space, buffers-touched IO proxy, dead tuples)
+compression_matrix.sql  - RECNO compression configs (none/lz4/zstd x level x
+                          dict) vs HEAP TOAST (pglz/lz4) over three payloads
+
+Scaled harness (separate from driver.sql)
+------------------------------------------
+run_scaled.sh + sql/recno_vs_heap_scaled.sql run the storage-model and
+compression SQL plus a scaled RECNO-vs-HEAP comparison against a fresh cluster
+with a fixed, small shared_buffers, at two scales: a working set that fits in
+shared_buffers and one that greatly exceeds it. This exposes buffer-manager
+behavior (eviction, re-read) rather than only cache-resident numbers. The
+scaled section sets recno_enable_compression=off and heap STORAGE EXTERNAL so
+on-disk size tracks raw volume and the fits/exceeds split is honest. The data
+dir must live on real disk, never tmpfs (tmpfs gives misleading IO numbers).
+
+    run_scaled.sh <bindir> <datadir-parent> <port> <shared_buffers> \
+                  <fits_scale> <exceeds_scale> <valbytes> <sqldir> <outfile>
+
+Output
+------
+Each benchmark prints timing information (\timing on) and a summary table
+comparing heap and RECNO metrics. The driver.sql aggregates results into a
+final comparison table at the end.
+
+Notes
+-----
+- Results will vary by hardware, configuration, and data distribution.
+- Run benchmarks on an idle system for more consistent results.
+- The benchmarks create and drop their own tables; no persistent state remains.
