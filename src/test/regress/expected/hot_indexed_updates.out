@@ -998,6 +998,141 @@ SELECT id FROM hi_reindex WHERE b = 2;            -- via freshly built index -> 
 RESET enable_seqscan;
 DROP TABLE hi_reindex;
 -- ---------------------------------------------------------------------------
+-- 18. DROP every index over live HOT-indexed chains, then VACUUM
+--
+-- After all indexes are dropped, heap pages may still carry HOT-indexed bridge
+-- tombstones left by earlier updates.  VACUUM of such a no-index relation must
+-- not enroll those bridges for index cleanup (the indexed bridge-reclamation
+-- path asserts nindexes > 0); it must complete without error and reads must
+-- stay correct via transparent bridge following.
+-- ---------------------------------------------------------------------------
+CREATE TABLE hi_dropidx (id int PRIMARY KEY, a int) WITH (fillfactor = 50);
+CREATE INDEX hi_dropidx_a ON hi_dropidx(a);
+INSERT INTO hi_dropidx SELECT g, g FROM generate_series(1, 6) g;
+UPDATE hi_dropidx SET a = a + 100;                -- HOT-indexed on a
+UPDATE hi_dropidx SET a = a + 100;                -- again -> chains/tombstones
+SELECT n_tombstones > 0 AS made_tombstones
+  FROM pg_relation_hot_indexed_stats('hi_dropidx');
+ made_tombstones 
+-----------------
+ t
+(1 row)
+
+-- Drop every index, leaving bridge tombstones with no index to sweep.
+DROP INDEX hi_dropidx_a;
+ALTER TABLE hi_dropidx DROP CONSTRAINT hi_dropidx_pkey;
+-- Must not crash on the no-index bridge path; two passes exercise the
+-- second-pass reclaim guard as well.
+VACUUM hi_dropidx;
+VACUUM hi_dropidx;
+-- Reads remain correct after the indexes are gone.
+SELECT id, a FROM hi_dropidx ORDER BY id;
+ id |  a  
+----+-----
+  1 | 201
+  2 | 202
+  3 | 203
+  4 | 204
+  5 | 205
+  6 | 206
+(6 rows)
+
+DROP TABLE hi_dropidx;
+-- ---------------------------------------------------------------------------
+-- 19. Re-collapse of a data-redirect chain across partial VACUUMs
+--
+-- A chain that collapses to a HOT-indexed data redirect, is vacuumed with
+-- INDEX_CLEANUP off (so the stale leaves and the redirect survive), then
+-- receives further HOT-indexed updates that re-collapse the chain and
+-- re-point the redirect at a new live tuple, must not leave the redirect
+-- dangling.  A subsequent full VACUUM must complete without error, leave the
+-- heap consistent (verify_heapam reports nothing), and reads must stay
+-- correct.  (Regression: an earlier revision crashed reclaiming a mid-chain
+-- member while a data redirect still pointed past it.)
+-- ---------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE TABLE hi_recollapse (id int PRIMARY KEY, a int) WITH (fillfactor = 50);
+CREATE INDEX hi_recollapse_a ON hi_recollapse(a);
+INSERT INTO hi_recollapse VALUES (1, 1);
+-- First chain: two HOT-indexed updates, then prune to a data redirect while
+-- leaving the stale btree leaves in place (INDEX_CLEANUP off).
+UPDATE hi_recollapse SET a = 2 WHERE id = 1;
+UPDATE hi_recollapse SET a = 3 WHERE id = 1;
+VACUUM (INDEX_CLEANUP off) hi_recollapse;
+-- Re-collapse: more HOT-indexed updates extend the chain past the redirect
+-- target; the next prune re-points the data redirect at the new first live
+-- tuple and extends its union.
+UPDATE hi_recollapse SET a = 4 WHERE id = 1;
+UPDATE hi_recollapse SET a = 5 WHERE id = 1;
+VACUUM (INDEX_CLEANUP off) hi_recollapse;
+-- Full vacuum now reclaims the dead chain; the re-pointed redirect must not
+-- dangle.  Two passes also exercise the bridge second-pass reclaim.
+VACUUM hi_recollapse;
+VACUUM hi_recollapse;
+-- Heap must be structurally consistent (no rows == no corruption).
+SELECT * FROM verify_heapam('hi_recollapse');
+ blkno | offnum | attnum | msg 
+-------+--------+--------+-----
+(0 rows)
+
+SET enable_seqscan = off;
+SELECT id, a FROM hi_recollapse WHERE a = 5;     -- current value -> id 1
+ id | a 
+----+---
+  1 | 5
+(1 row)
+
+SELECT count(*) FROM hi_recollapse WHERE a = 3;  -- obsolete value -> 0
+ count 
+-------
+     0
+(1 row)
+
+RESET enable_seqscan;
+SELECT id, a FROM hi_recollapse ORDER BY id;
+ id | a 
+----+---
+  1 | 5
+(1 row)
+
+DROP TABLE hi_recollapse;
+-- ---------------------------------------------------------------------------
+-- 20. Index deletion over an entry that points at a data-redirect root
+--
+-- A data redirect is an LP_REDIRECT that carries a bitmap, so it reports
+-- lp_len > 0 (ItemIdHasStorage true) even though it is not a normal tuple.
+-- index_delete_check_htid must treat it as a redirect, not read its blob as a
+-- HeapTupleHeader.  Reproduce: collapse a chain root to a data redirect while
+-- keeping the stale leaf that points at it (INDEX_CLEANUP off), then insert
+-- many duplicates of the stale key so btree bottom-up deletion runs
+-- heap_index_delete_tuples over that stale entry.
+-- ---------------------------------------------------------------------------
+CREATE TABLE hi_iddel (id int, a int) WITH (fillfactor = 50);
+CREATE INDEX hi_iddel_a ON hi_iddel(a);
+INSERT INTO hi_iddel VALUES (1, 1);
+UPDATE hi_iddel SET a = a + 1 WHERE id = 1;          -- HOT-indexed
+UPDATE hi_iddel SET a = a + 1 WHERE id = 1;          -- multi-hop chain
+VACUUM (INDEX_CLEANUP off) hi_iddel;                 -- root -> data redirect, keep stale a=1 leaf
+-- Many duplicates of the stale key fill the leaf and trigger bottom-up
+-- deletion, which feeds the stale a=1 entry (htid -> the data-redirect root)
+-- to heap_index_delete_tuples.  Must not crash or misread the blob.
+INSERT INTO hi_iddel SELECT g, 1 FROM generate_series(2, 3000) g;
+VACUUM hi_iddel;
+SELECT * FROM verify_heapam('hi_iddel');
+ blkno | offnum | attnum | msg 
+-------+--------+--------+-----
+(0 rows)
+
+SET enable_seqscan = off;
+SELECT id, a FROM hi_iddel WHERE id = 1;             -- current value -> a = 3
+ id | a 
+----+---
+  1 | 3
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE hi_iddel;
+-- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------
 DROP FUNCTION get_hi_count(text);
