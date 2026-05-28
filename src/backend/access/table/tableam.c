@@ -242,19 +242,23 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  const Bitmapset *index_attrs,
+							  bool *hot_indexed_stale,
+							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
 	bool		call_again = false;
 	bool		found;
 
-	slot = table_slot_create(rel, NULL);
+	slot = keep_slot ? keep_slot : table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
-									all_dead);
+									all_dead, index_attrs, hot_indexed_stale);
 	table_index_fetch_end(scan);
-	ExecDropSingleTupleTableSlot(slot);
+	if (keep_slot == NULL)
+		ExecDropSingleTupleTableSlot(slot);
 
 	return found;
 }

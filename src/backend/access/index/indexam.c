@@ -406,6 +406,13 @@ index_endscan(IndexScanDesc scan)
 	/* End the AM's scan */
 	scan->indexRelation->rd_indam->amendscan(scan);
 
+	/* Free the cached HOT-indexed attribute set, if any */
+	if (scan->xs_hot_indexed_attrs != NULL)
+	{
+		bms_free(scan->xs_hot_indexed_attrs);
+		scan->xs_hot_indexed_attrs = NULL;
+	}
+
 	/* Release index refcount acquired by index_beginscan */
 	RelationDecrementReferenceCount(scan->indexRelation);
 
@@ -607,6 +614,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * Reset the HOT-indexed recheck flag: it is set by the heap AM during
+	 * index_fetch_heap and is per-fetched-tuple, not per-index-entry. For
+	 * IndexOnlyScan, which may skip index_fetch_heap when the VM says the
+	 * entry is visible-to-all, this ensures we don't carry a stale value from
+	 * a previous entry.
+	 */
+	scan->xs_hot_indexed_stale = false;
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -657,14 +673,36 @@ bool
 index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 {
 	bool		all_dead = false;
+	bool		hot_indexed_stale = false;
 	bool		found;
+
+	/*
+	 * Cache the set of heap attributes this index covers, for the heap AM's
+	 * per-hop HOT-indexed staleness test.  Computed once per scan; freed at
+	 * index_endscan.  Every index references at least one heap attribute, so
+	 * a NULL cache unambiguously means "not yet computed".
+	 */
+	if (scan->xs_hot_indexed_attrs == NULL)
+		scan->xs_hot_indexed_attrs = RelationGetIndexedAttrs(scan->indexRelation);
 
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
-									&scan->xs_heap_continue, &all_dead);
+									&scan->xs_heap_continue, &all_dead,
+									scan->xs_hot_indexed_attrs,
+									&hot_indexed_stale);
 
 	if (found)
 		pgstat_count_heap_fetch(scan->indexRelation);
+
+	/*
+	 * If the index entry that reached this tuple is stale for this index (a
+	 * HOT-indexed hop changed one of the index's attributes between the entry
+	 * and the live tuple), surface that on xs_hot_indexed_stale. Keeping it
+	 * distinct from xs_recheck lets the executor drop a stale HOT-indexed
+	 * leaf (the fresh entry returns the row via its own path) rather than
+	 * re-evaluating quals as for a lossy-index recheck.
+	 */
+	scan->xs_hot_indexed_stale = (found && hot_indexed_stale);
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
