@@ -488,12 +488,20 @@ typedef struct TableAmRoutine
 	 * index_fetch_tuple iff it is guaranteed that no backend needs to see
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
+	 *
+	 * *hot_indexed_recheck, if not NULL, should be set to true iff the tuple
+	 * or any HOT chain member traversed to reach it carried a
+	 * HEAP_INDEXED_UPDATED marker (HOT-indexed update).  Callers use this to
+	 * decide whether the index scan must rerun its original quals against the
+	 * heap tuple because the index entry's key may no longer agree with the
+	 * heap tuple's attribute values.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
-									  bool *call_again, bool *all_dead);
+									  bool *call_again, bool *all_dead,
+									  bool *hot_indexed_recheck);
 
 
 	/* ------------------------------------------------------------------------
@@ -1306,11 +1314,13 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 						ItemPointer tid,
 						Snapshot snapshot,
 						TupleTableSlot *slot,
-						bool *call_again, bool *all_dead)
+						bool *call_again, bool *all_dead,
+						bool *hot_indexed_recheck)
 {
 	return scan->rel->rd_tableam->index_fetch_tuple(scan, tid, snapshot,
 													slot, call_again,
-													all_dead);
+													all_dead,
+													hot_indexed_recheck);
 }
 
 /*
@@ -1318,11 +1328,20 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
  * returns whether there are table tuple items corresponding to an index
  * entry.  This likely is only useful to verify if there's a conflict in a
  * unique index.
+ *
+ * If keep_slot is non-NULL, on a positive result the function stores the
+ * fetched tuple into *keep_slot (which must be a valid slot of the
+ * relation's type) and returns with the slot populated; the caller is
+ * responsible for clearing the slot.  When keep_slot is NULL a temporary
+ * slot is created internally and dropped before return, matching the
+ * pre-existing behaviour.
  */
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  bool *hot_indexed_recheck,
+										  TupleTableSlot *keep_slot);
 
 
 /* ------------------------------------------------------------------------
