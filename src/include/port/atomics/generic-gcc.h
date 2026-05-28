@@ -237,6 +237,47 @@ pg_atomic_fetch_or_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 or_)
 #endif
 
 
+/*
+ * AcqRel fetch_add using __atomic builtins.
+ * Lighter than SeqCst on architectures like ARM/aarch64.
+ */
+#if !defined(PG_HAVE_ATOMIC_FETCH_ADD_ACQREL_U32) && defined(HAVE_GCC__ATOMIC_INT32_CAS)
+#define PG_HAVE_ATOMIC_FETCH_ADD_ACQREL_U32
+static inline uint32
+pg_atomic_fetch_add_acqrel_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
+{
+	return __atomic_fetch_add(&ptr->value, add_, __ATOMIC_ACQ_REL);
+}
+#endif
+
+/*
+ * SeqCst memory fence using __atomic builtins.
+ * Standalone total ordering fence.
+ */
+#if !defined(PG_HAVE_ATOMIC_SEQ_CST_FENCE) && defined(HAVE_GCC__ATOMIC_INT32_CAS)
+#define PG_HAVE_ATOMIC_SEQ_CST_FENCE
+static inline void
+pg_atomic_seq_cst_fence_impl(void)
+{
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+#endif
+
+/*
+ * Acquire load using __atomic builtins.
+ * Stronger than pg_atomic_read_u32 (no barrier), lighter than
+ * pg_atomic_read_membarrier_u32 (full barrier).
+ */
+#if !defined(PG_HAVE_ATOMIC_READ_ACQUIRE_U32) && defined(HAVE_GCC__ATOMIC_INT32_CAS)
+#define PG_HAVE_ATOMIC_READ_ACQUIRE_U32
+static inline uint32
+pg_atomic_read_acquire_u32_impl(volatile pg_atomic_uint32 *ptr)
+{
+	return __atomic_load_n(&ptr->value, __ATOMIC_ACQUIRE);
+}
+#endif
+
+
 #if !defined(PG_DISABLE_64_BIT_ATOMICS)
 
 #if !defined(PG_HAVE_ATOMIC_COMPARE_EXCHANGE_U64) && defined(HAVE_GCC__ATOMIC_INT64_CAS)

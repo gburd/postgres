@@ -443,6 +443,47 @@ pg_atomic_sub_fetch_u32(volatile pg_atomic_uint32 *ptr, int32 sub_)
 	return pg_atomic_sub_fetch_u32_impl(ptr, sub_);
 }
 
+/*
+ * pg_atomic_fetch_add_acqrel_u32 - atomically add to variable
+ *
+ * Returns the value of ptr before the arithmetic operation.
+ *
+ * Acquire-Release barrier semantics -- lighter than full barrier on
+ * architectures like ARM/aarch64.  On x86 TSO, equivalent to SeqCst.
+ */
+static inline uint32
+pg_atomic_fetch_add_acqrel_u32(volatile pg_atomic_uint32 *ptr, int32 add_)
+{
+	AssertPointerAlignment(ptr, 4);
+	return pg_atomic_fetch_add_acqrel_u32_impl(ptr, add_);
+}
+
+/*
+ * pg_atomic_seq_cst_fence - standalone SeqCst memory fence
+ *
+ * Provides total ordering.  Use when you need a fence separate from
+ * an atomic RMW operation.
+ */
+static inline void
+pg_atomic_seq_cst_fence(void)
+{
+	pg_atomic_seq_cst_fence_impl();
+}
+
+/*
+ * pg_atomic_read_acquire_u32 - read with acquire semantics
+ *
+ * Stronger than pg_atomic_read_u32 (no barrier), lighter than
+ * pg_atomic_read_membarrier_u32 (full barrier).  Guarantees that
+ * loads/stores after this read are not reordered before it.
+ */
+static inline uint32
+pg_atomic_read_acquire_u32(volatile pg_atomic_uint32 *ptr)
+{
+	AssertPointerAlignment(ptr, 4);
+	return pg_atomic_read_acquire_u32_impl(ptr);
+}
+
 /* ----
  * The 64 bit operations have the same semantics as their 32bit counterparts
  * if they are available. Check the corresponding 32bit function for
