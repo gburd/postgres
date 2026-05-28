@@ -435,11 +435,15 @@ extern void heapam_index_fetch_reset(IndexFetchTableData *scan);
 extern void heapam_index_fetch_end(IndexFetchTableData *scan);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
-								   bool *all_dead, bool first_call);
+								   bool *all_dead, bool first_call,
+								   const Bitmapset *index_attrs,
+								   bool *hot_indexed_stale);
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 									 ItemPointer tid, Snapshot snapshot,
 									 TupleTableSlot *slot, bool *heap_continue,
-									 bool *all_dead);
+									 bool *all_dead,
+									 const Bitmapset *index_attrs,
+									 bool *hot_indexed_stale);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,

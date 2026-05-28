@@ -562,7 +562,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 */
 				else if (table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
-													   &all_dead))
+													   &all_dead, NULL, NULL, NULL))
 				{
 					TransactionId xwait;
 
@@ -619,7 +619,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					htid = itup->t_tid;
 					if (table_index_fetch_tuple_check(heapRel, &htid,
-													  SnapshotSelf, NULL))
+													  SnapshotSelf, NULL,
+													  NULL, NULL, NULL))
 					{
 						/* Normal case --- it's still live */
 					}

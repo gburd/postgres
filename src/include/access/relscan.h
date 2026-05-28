@@ -197,6 +197,25 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
 	/*
+	 * T means the index entry that reached xs_heaptid is stale: the HOT chain
+	 * walked to reach the tuple crossed a HOT-indexed (HOT-indexed update)
+	 * hop that changed an attribute this index covers, so the arriving leaf's
+	 * key no longer matches the live tuple.  The executor drops such a tuple;
+	 * the row is re-supplied by the fresh entry inserted for the new value.
+	 * Unlike xs_recheck (set by lossy AMs such as GiST and GIN), this is set
+	 * by the heap AM during chain-walking, using xs_hot_indexed_attrs to test
+	 * the per-hop modified-attrs bitmaps left on the page.
+	 */
+	bool		xs_hot_indexed_stale;
+
+	/*
+	 * Heap attributes this index covers (RelationGetIndexedAttrs convention),
+	 * cached for the scan's lifetime and passed to the heap AM so it can test
+	 * per-hop overlap.  NULL until first computed; freed at index_endscan.
+	 */
+	struct Bitmapset *xs_hot_indexed_attrs;
+
+	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY
 	 * expressions of the last returned tuple, according to the index.  If
 	 * xs_recheckorderby is true, these need to be rechecked just like the
