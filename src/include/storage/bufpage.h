@@ -209,13 +209,29 @@ typedef PageHeaderData *PageHeader;
  * PD_PAGE_FULL is set if an UPDATE doesn't find enough free space in the
  * page for its new tuple version; this suggests that a prune is needed.
  * Again, this is just a hint.
+ *
+ * PD_HAS_HOT_INDEXED_BRIDGES is set when pruneheap has converted a dead mid-chain
+ * HOT-indexed heap-only tuple into a bridge tombstone instead of reclaiming
+ * its LP to LP_UNUSED.  Bridges preserve the walkable chain hop but leave
+ * stale btree entries pointing at the LP until vacuum's next index-cleanup
+ * pass sweeps them; the flag is a fast check that a page may contain such
+ * deferred-reclaim LPs so vacuum's second pass can skip pages that do not.
+ * Cleared by vacuum once every bridge on the page has been reclaimed.
+ * Classic HOT paths never look at this bit.
+ *
+ * The bit is set and cleared by heap-side code only.  Index pages never
+ * carry it (the page-flag namespace is shared between heap and index
+ * pages, but readers of index pages should not consult this bit; the heap
+ * AM is the only producer and consumer).
  */
 #define PD_HAS_FREE_LINES	0x0001	/* are there any unused line pointers? */
 #define PD_PAGE_FULL		0x0002	/* not enough free space for new tuple? */
 #define PD_ALL_VISIBLE		0x0004	/* all tuples on page are visible to
 									 * everyone */
+#define PD_HAS_HOT_INDEXED_BRIDGES	0x0008	/* page has HOT-indexed bridge
+											 * tombstones awaiting reclaim */
 
-#define PD_VALID_FLAG_BITS	0x0007	/* OR of all valid pd_flags bits */
+#define PD_VALID_FLAG_BITS	0x000F	/* OR of all valid pd_flags bits */
 
 /*
  * Page layout version number 0 is for pre-7.3 Postgres releases.
@@ -465,6 +481,32 @@ static inline void
 PageClearAllVisible(Page page)
 {
 	((PageHeader) page)->pd_flags &= ~PD_ALL_VISIBLE;
+}
+
+/*
+ * PageHasHotIndexedBridges / PageSetHasHotIndexedBridges / PageClearHasHotIndexedBridges
+ *
+ * Accessors for PD_HAS_HOT_INDEXED_BRIDGES.  The bit is set by pruneheap when
+ * a dead mid-chain HOT-indexed heap-only tuple is converted to a
+ * bridge tombstone (preserving the walkable LP while deferring reclaim
+ * to vacuum) and cleared by vacuum's second pass once every bridge
+ * on the page has been reclaimed.  Callers that do not participate in
+ * HOT-indexed can ignore the bit.
+ */
+static inline bool
+PageHasHotIndexedBridges(const PageData *page)
+{
+	return (((const PageHeaderData *) page)->pd_flags & PD_HAS_HOT_INDEXED_BRIDGES) != 0;
+}
+static inline void
+PageSetHasHotIndexedBridges(Page page)
+{
+	((PageHeader) page)->pd_flags |= PD_HAS_HOT_INDEXED_BRIDGES;
+}
+static inline void
+PageClearHasHotIndexedBridges(Page page)
+{
+	((PageHeader) page)->pd_flags &= ~PD_HAS_HOT_INDEXED_BRIDGES;
 }
 
 static inline TransactionId
