@@ -90,6 +90,8 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
+/* HOT-indexed tombstone item logged alongside the new tuple */
+#define XLH_UPDATE_CONTAINS_TOMBSTONE			(1<<7)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\
@@ -342,6 +344,25 @@ typedef struct xl_heap_prune
 #define		XLHP_VM_ALL_FROZEN			(1 << 9)
 
 /*
+ * XLHP_HAS_HOT_INDEXED_BRIDGES indicates that an xlhp_prune_items sub-record
+ * with (offnum, forward) pairs follows, describing LPs that pruneheap
+ * rewrote in place as HOT-indexed bridge tombstones.  Replay applies the
+ * same in-place rewrite.  See access/hot_indexed.h for the bridge layout.
+ */
+#define		XLHP_HAS_HOT_INDEXED_BRIDGES   (1 << 10)
+
+/*
+ * XLHP_HAS_REDIRECT_DATA indicates that an xlhp_prune_items sub-record with
+ * (root, target) pairs follows, describing chain roots that pruneheap
+ * collapsed to HOT-indexed data redirects (an LP_REDIRECT carrying the first
+ * hop's modified-attrs bitmap in the dead root's freed bytes).  Replay rebuilds
+ * each blob by reading the target's adjacent tombstone, which is still present
+ * on the page (it is reclaimed by the accompanying XLHP_HAS_NOW_UNUSED_ITEMS
+ * sub-record), so no bitmap bytes are logged.  See access/hot_indexed.h.
+ */
+#define		XLHP_HAS_REDIRECT_DATA		   (1 << 12)
+
+/*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
  * (appears in xl_heap_prune's xlhp_freeze_plans sub-record)
  */
@@ -494,6 +515,9 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   OffsetNumber **frz_offsets,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
-												   int *nunused, OffsetNumber **nowunused);
+												   int *nunused, OffsetNumber **nowunused,
+												   int *nbridges, OffsetNumber **bridges,
+												   int *ndata_redirects,
+												   OffsetNumber **data_redirects);
 
 #endif							/* HEAPAM_XLOG_H */

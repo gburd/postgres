@@ -8335,7 +8335,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 			lp = PageGetItemId(page, offnum);
 			if (ItemIdIsRedirected(lp))
 			{
-				offnum = ItemIdGetRedirect(lp);
+				offnum = HotIndexedRedirectGetTarget(page, lp);
 				continue;
 			}
 
