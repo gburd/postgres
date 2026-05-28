@@ -1234,6 +1234,16 @@
   boot_val => 'NULL',
 },
 
+{ name => 'hot_indexed_update_threshold', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
+  short_desc => 'Max percentage of indexed attributes modified for an UPDATE to take the HOT-indexed path.',
+  long_desc => 'When an UPDATE modifies more than this percentage of a relation\'s indexed attributes, heap_update falls back to the pre-HOT-indexed non-HOT path.  100 applies HOT-indexed to every otherwise-eligible update; 0 disables HOT-indexed updates entirely (classic HOT still applies to updates that touch no indexed attribute).',
+  flags => 'GUC_EXPLAIN',
+  variable => 'hot_indexed_update_threshold',
+  boot_val => '80',
+  min => '0',
+  max => '100',
+},
+
 { name => 'hot_standby', type => 'bool', context => 'PGC_POSTMASTER', group => 'REPLICATION_STANDBY',
   short_desc => 'Allows connections and queries during recovery.',
   variable => 'EnableHotStandby',
