@@ -485,6 +485,9 @@
 # - Other Planner Options -
 
 #default_statistics_target = 100        # range 1-10000
+#hot_indexed_update_threshold = 80      # percent (0..100); cap on share of
+                                        # indexed attrs an UPDATE may modify
+                                        # to stay HOT-indexed
 #constraint_exclusion = partition       # on, off, or partition
 #cursor_tuple_fraction = 0.1            # range 0.0-1.0
 #from_collapse_limit = 8
