@@ -44,6 +44,13 @@
 #define HEAP_PAGE_PRUNE_ALLOW_FAST_PATH		(1 << 2)
 #define HEAP_PAGE_PRUNE_SET_VM				(1 << 3)
 
+/*
+ * GUC: upper bound (percent) on the share of indexed attributes an UPDATE
+ * may modify and still take the HOT-indexed path.  0 disables hot-indexed;
+ * 100 applies hot-indexed to every otherwise-eligible update.  Default 80.
+ */
+extern PGDLLIMPORT int hot_indexed_update_threshold;
+
 typedef struct BulkInsertStateData *BulkInsertState;
 typedef struct GlobalVisState GlobalVisState;
 typedef struct TupleTableSlot TupleTableSlot;
@@ -384,12 +391,47 @@ extern TM_Result heap_delete(Relation relation, const ItemPointerData *tid,
 							 bool wait, TM_FailureData *tmfd);
 extern void heap_finish_speculative(Relation relation, const ItemPointerData *tid);
 extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid);
+
+/*
+ * HeapUpdateHotMode --
+ *	Three-valued classification returned by HeapUpdateHotAllowable() that
+ *	tells heap_update() whether a HOT update is permitted for this tuple,
+ *	and if so, whether the caller must emit a HOT-indexed tombstone
+ *	carrying the per-update modified-attrs bitmap.
+ *
+ *	HEAP_HOT_MODE_NO
+ *		HOT is not allowed; the new tuple must go on its own TID and every
+ *		index receives a fresh entry.  This is the pre-hot-indexed classic behavior
+ *		for updates that modify a non-summarizing indexed attribute.
+ *
+ *	HEAP_HOT_MODE_CLASSIC
+ *		Classic HOT update: no indexed attributes changed (or only summarizing
+ *		ones did), so no tombstone is needed and non-summarizing indexes are
+ *		not touched.
+ *
+ *	HEAP_HOT_MODE_INDEXED
+ *		HOT-indexed (HOT-indexed update): modified attributes affect one
+ *		or more non-summarizing indexes, but the update can still be kept on
+ *		the same page provided a tombstone line pointer is allocated to carry
+ *		the modified-attrs bitmap.  Callers must be prepared for heap_update()
+ *		to downgrade to a non-HOT update if the tombstone doesn't fit.
+ *
+ *	The enum is ordered so that "more permissive" modes compare greater; tests
+ *	should spell the exact mode they care about rather than relying on that.
+ */
+typedef enum HeapUpdateHotMode
+{
+	HEAP_HOT_MODE_NO = 0,
+	HEAP_HOT_MODE_CLASSIC = 1,
+	HEAP_HOT_MODE_INDEXED = 2,
+} HeapUpdateHotMode;
+
 extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
-							 HeapTuple newtup,
-							 CommandId cid, uint32 options,
+							 HeapTuple newtup, CommandId cid, uint32 options,
 							 Snapshot crosscheck, bool wait,
-							 TM_FailureData *tmfd, LockTupleMode *lockmode,
-							 TU_UpdateIndexes *update_indexes);
+							 TM_FailureData *tmfd, const LockTupleMode lockmode,
+							 const Bitmapset *modified_idx_attrs,
+							 HeapUpdateHotMode hot_mode);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -424,7 +466,7 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
 extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, TU_UpdateIndexes *update_indexes);
+							   HeapTuple tup, TM_IndexUpdateInfo *upd_info);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -436,12 +478,14 @@ extern void heapam_index_fetch_end(IndexFetchTableData *scan);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
 								   bool *all_dead, bool first_call,
-								   bool *hot_indexed_recheck);
+								   const Bitmapset *index_attrs,
+								   bool *hot_indexed_stale);
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 									 ItemPointer tid, Snapshot snapshot,
 									 TupleTableSlot *slot, bool *heap_continue,
 									 bool *all_dead,
-									 bool *hot_indexed_recheck);
+									 const Bitmapset *index_attrs,
+									 bool *hot_indexed_stale);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,
@@ -456,7 +500,7 @@ extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *nowdead, int ndead,
 									OffsetNumber *nowunused, int nunused,
 									OffsetNumber *bridges, int nbridges,
-									OffsetNumber *tombstone_unions, int nunions);
+									OffsetNumber *data_redirects, int ndata_redirects);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
 extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  Buffer vmbuffer, uint8 vmflags,
@@ -468,8 +512,15 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused,
 									  OffsetNumber *bridges, int nbridges,
-									  OffsetNumber *tombstone_unions,
-									  int nunions);
+									  OffsetNumber *data_redirects,
+									  int ndata_redirects);
+
+/* in heap/heapam.c */
+
+extern HeapUpdateHotMode HeapUpdateHotAllowable(Relation relation,
+												const Bitmapset *modified_idx_attrs);
+extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
+												 const Bitmapset *modified_idx_attrs);
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,

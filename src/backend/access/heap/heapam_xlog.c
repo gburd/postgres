@@ -100,7 +100,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		int			ndead;
 		int			nunused;
 		int			nbridges;
-		int			nunions;
+		int			ndata_redirects;
 		int			nplans;
 		Size		datalen;
 		xlhp_freeze_plan *plans;
@@ -116,10 +116,10 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 											   &ndead, &nowdead,
 											   &nunused, &nowunused,
 											   &nbridges, &bridges,
-											   &nunions, &tombstone_unions);
+											   &ndata_redirects, &data_redirects);
 
 		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
-			nbridges > 0 || nunions > 0;
+			nbridges > 0 || ndata_redirects > 0;
 		/* Ensure the record does something */
 		Assert(do_prune || nplans > 0 || vmflags & VISIBILITYMAP_VALID_BITS);
 
@@ -134,7 +134,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 									nowdead, ndead,
 									nowunused, nunused,
 									bridges, nbridges,
-									tombstone_unions, nunions);
+									data_redirects, ndata_redirects);
 
 		/* Freeze tuples */
 		for (int p = 0; p < nplans; p++)
@@ -727,7 +727,6 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		char		data[MaxHeapTupleSize];
 	}			tbuf;
 	xl_heap_header xlhdr;
-	uint16		tombstone_trailer_len;
 	uint32		newlen;
 	Size		freespace = 0;
 	XLogRedoAction oldaction;
@@ -880,19 +879,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		memcpy(&xlhdr, recdata, SizeOfHeapHeader);
 		recdata += SizeOfHeapHeader;
 
-		/*
-		 * If a HOT-indexed tombstone rides along with this update, read its
-		 * total trailer length (OffsetNumber + uint16 + raw bytes) right
-		 * after xlhdr so the tuple body length can be derived correctly.
-		 */
-		tombstone_trailer_len = 0;
-		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
-		{
-			memcpy(&tombstone_trailer_len, recdata, sizeof(uint16));
-			recdata += sizeof(uint16);
-		}
-
-		tuplen = (recdata_end - recdata) - tombstone_trailer_len;
+		tuplen = recdata_end - recdata;
 		Assert(tuplen <= MaxHeapTupleSize);
 
 		htup = &tbuf.hdr;
@@ -953,36 +940,33 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		if (offnum == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
 
+		/* Block-0 data holds exactly the new tuple body. */
+		if (recdata != recdata_end)
+			elog(PANIC, "unexpected trailing data in xl_heap_update block data: %ld bytes",
+				 (long) (recdata_end - recdata));
+
 		/*
 		 * Reinstall the HOT-indexed tombstone that accompanied the new tuple,
-		 * if any.  The remaining block-0 data holds {OffsetNumber
-		 * tombstone_offnum, uint16 tombstone_size, raw_item_bytes}.
+		 * if any.  It is carried in the main record data, immediately after
+		 * xl_heap_update, as {OffsetNumber offnum, uint16 size, raw bytes}.
 		 */
 		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
 		{
+			char	   *tdata = (char *) xlrec + SizeOfHeapUpdate;
 			OffsetNumber tomb_offnum;
 			uint16		tomb_size;
 			OffsetNumber placed;
 
-			if ((recdata_end - recdata) < (Size) (sizeof(OffsetNumber) + sizeof(uint16)))
-				elog(PANIC, "truncated HOT-indexed tombstone in xl_heap_update");
-			memcpy(&tomb_offnum, recdata, sizeof(OffsetNumber));
-			recdata += sizeof(OffsetNumber);
-			memcpy(&tomb_size, recdata, sizeof(uint16));
-			recdata += sizeof(uint16);
-			if ((recdata_end - recdata) < (Size) tomb_size)
-				elog(PANIC, "truncated HOT-indexed tombstone payload in xl_heap_update");
-			placed = PageAddItem(npage, recdata, tomb_size, tomb_offnum,
+			memcpy(&tomb_offnum, tdata, sizeof(OffsetNumber));
+			tdata += sizeof(OffsetNumber);
+			memcpy(&tomb_size, tdata, sizeof(uint16));
+			tdata += sizeof(uint16);
+			placed = PageAddItem(npage, tdata, tomb_size, tomb_offnum,
 								 true /* overwrite */ , true /* is_heap */ );
 			if (placed != tomb_offnum)
 				elog(PANIC, "failed to replay HOT-indexed tombstone at offnum %u",
 					 tomb_offnum);
-			recdata += tomb_size;
 		}
-
-		if (recdata != recdata_end)
-			elog(PANIC, "unexpected trailing data in xl_heap_update tombstone trailer: %ld bytes",
-				 (long) (recdata_end - recdata));
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(npage);

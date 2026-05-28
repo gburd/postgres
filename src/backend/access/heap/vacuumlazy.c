@@ -1974,6 +1974,7 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 										  NULL, 0,
 										  NULL, 0,
 										  NULL, 0,
+										  NULL, 0,
 										  NULL, 0);
 
 			END_CRIT_SECTION();

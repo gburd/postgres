@@ -5507,96 +5507,6 @@ RelationHasExclusionConstraint(Relation relation)
 }
 
 /*
- * RelationHotIndexedReadUnsafe -- true iff this relation has any
- * non-summarizing index that the HOT-indexed read-side recheck cannot
- * handle, so heap_update must not take the HOT-indexed path.
- *
- * The chain-walk recheck (heap_hot_search_buffer + amrecheck_leaf_key) can
- * only distinguish a stale leaf from a current one for plain (non-expression)
- * btree indexes: only nbtree implements amrecheck_leaf_key, and only over
- * simple key columns whose values can be compared directly against the live
- * tuple.  For any other non-summarizing index -- a non-btree AM (GiST, GIN,
- * hash, ...) or a btree with expression keys -- the recheck has no way to
- * validate the leaf and would conservatively drop even the fresh, correct
- * entry, losing rows on read.  Such relations must stay on the classic
- * (non-HOT) update path when an indexed attribute changes.
- *
- * Summarizing indexes (e.g. BRIN) are ignored here: their attribute changes
- * are handled via the classic-HOT summarizing path, never via a tombstone
- * chain hop, so they do not constrain HOT-indexed safety.
- *
- * Result is cached on Relation->rd_hotindexed_unsafe (tristate, reset on
- * relcache rebuild).  Called from HeapUpdateHotAllowable on UPDATEs that
- * modify an indexed attribute.
- */
-bool
-RelationHotIndexedReadUnsafe(Relation relation)
-{
-	List	   *indexoids;
-	ListCell   *lc;
-	bool		unsafe = false;
-
-	Assert(relation->rd_rel->relkind != RELKIND_INDEX &&
-		   relation->rd_rel->relkind != RELKIND_PARTITIONED_INDEX);
-
-	if (relation->rd_hotindexed_unsafe == RD_HOTIDX_SAFE)
-		return false;
-	if (relation->rd_hotindexed_unsafe == RD_HOTIDX_UNSAFE)
-		return true;
-
-	if (!relation->rd_rel->relhasindex)
-	{
-		relation->rd_hotindexed_unsafe = RD_HOTIDX_SAFE;
-		return false;
-	}
-
-	indexoids = RelationGetIndexList(relation);
-	foreach(lc, indexoids)
-	{
-		Oid			idxoid = lfirst_oid(lc);
-		Relation	idx = index_open(idxoid, NoLock);
-
-		/* Summarizing indexes never participate in HOT-indexed chains. */
-		if (idx->rd_indam->amsummarizing)
-		{
-			index_close(idx, NoLock);
-			continue;
-		}
-
-		/*
-		 * Non-btree indexes cannot be rechecked (only nbtree implements
-		 * amrecheck_leaf_key).  A btree with any expression key column
-		 * (indkey value 0) cannot be rechecked either, because the recheck
-		 * compares stored key datums directly and cannot evaluate the index
-		 * expression from the read path.
-		 */
-		if (idx->rd_rel->relam != BTREE_AM_OID)
-			unsafe = true;
-		else
-		{
-			for (int i = 0; i < idx->rd_index->indnkeyatts; i++)
-			{
-				if (idx->rd_index->indkey.values[i] == 0)
-				{
-					unsafe = true;
-					break;
-				}
-			}
-		}
-
-		index_close(idx, NoLock);
-
-		if (unsafe)
-			break;
-	}
-
-	list_free(indexoids);
-	relation->rd_hotindexed_unsafe = unsafe ? RD_HOTIDX_UNSAFE
-		: RD_HOTIDX_SAFE;
-	return unsafe;
-}
-
-/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
@@ -5843,15 +5753,22 @@ restart:
 	/*
 	 * Record which attributes are referenced only by summarizing indexes, so
 	 * INDEX_ATTR_BITMAP_SUMMARIZED reports columns whose sole indexes are
-	 * summarizing ones.  A column that also appears in a non-summarizing index
-	 * stays in indexedattrs and is removed from summarizedattrs here.
+	 * summarizing ones, then fold those columns into indexedattrs as well.
 	 *
-	 * indexedattrs (INDEX_ATTR_BITMAP_INDEXED) therefore holds exactly the
-	 * attributes referenced by non-summarizing indexes -- the set whose
-	 * modification blocks a classic HOT update.  (A later commit folds the
-	 * summarizing-only attributes in as well, once a consumer needs them.)
+	 * INDEX_ATTR_BITMAP_INDEXED must include summarizing-index columns for the
+	 * HOT-indexed write path: ExecUpdateModifiedIdxAttrs compares the old and
+	 * new tuples over this bitmap to build modified_idx_attrs, and ExecUpdate
+	 * only calls ExecInsertIndexTuples when that set is non-empty (or the
+	 * update is non-HOT).  A change to a column indexed only by a summarizing
+	 * index must therefore appear in the bitmap so the summarizing index gets
+	 * its block summary refreshed.  HeapUpdateHotAllowable's all_summarizing
+	 * check still keeps such an update on the classic-HOT path (it builds no
+	 * tombstone, since INDEX_ATTR_BITMAP_SUMMARIZED -- summarizing-only -- is a
+	 * superset of the modified attributes), and the summarizing index inserts
+	 * unconditionally via its ii_Summarizing flag.
 	 */
 	summarizedattrs = bms_del_members(summarizedattrs, indexedattrs);
+	indexedattrs = bms_add_members(indexedattrs, summarizedattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;

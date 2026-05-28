@@ -6909,6 +6909,30 @@ SELECT * FROM parent WHERE key = 2400;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-hot-indexed-update-threshold" xreflabel="hot_indexed_update_threshold">
+      <term><varname>hot_indexed_update_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>hot_indexed_update_threshold</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls how aggressively an <command>UPDATE</command> that changes
+        indexed columns may use the HOT-indexed path, in which the new row
+        version stays on the same heap page as a heap-only tuple and only
+        the indexes whose attributes changed receive a new entry.  The value
+        is the maximum percentage of a relation's indexed attributes that an
+        <command>UPDATE</command> may modify and still take that path;
+        updates touching a larger share fall back to a regular
+        (non-<acronym>HOT</acronym>) update.  The default is
+        <literal>80</literal>.  <literal>100</literal> permits the HOT-indexed
+        path for every otherwise-eligible update, and <literal>0</literal>
+        disables it entirely (classic <acronym>HOT</acronym> still applies to
+        updates that change no indexed column).
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
    </sect1>

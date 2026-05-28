@@ -110,7 +110,8 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   int *ndead, OffsetNumber **nowdead,
 									   int *nunused, OffsetNumber **nowunused,
 									   int *nbridges, OffsetNumber **bridges,
-									   int *nunions, OffsetNumber **tombstone_unions)
+								   int *ndata_redirects,
+								   OffsetNumber **data_redirects)
 {
 	if (flags & XLHP_HAS_FREEZE_PLANS)
 	{
@@ -250,6 +251,17 @@ heap_desc(StringInfo buf, XLogReaderState *record)
 		infobits_desc(buf, xlrec->old_infobits_set, "old_infobits");
 		appendStringInfo(buf, ", flags: 0x%02X, new_xmax: %u, new_off: %u",
 						 xlrec->flags, xlrec->new_xmax, xlrec->new_offnum);
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			char	   *tdata = rec + SizeOfHeapUpdate;
+			OffsetNumber tomb_off;
+			uint16		tomb_size;
+
+			memcpy(&tomb_off, tdata, sizeof(OffsetNumber));
+			memcpy(&tomb_size, tdata + sizeof(OffsetNumber), sizeof(uint16));
+			appendStringInfo(buf, ", tombstone_off: %u, tombstone_size: %u",
+							 tomb_off, tomb_size);
+		}
 	}
 	else if (info == XLOG_HEAP_HOT_UPDATE)
 	{
@@ -260,6 +272,17 @@ heap_desc(StringInfo buf, XLogReaderState *record)
 		infobits_desc(buf, xlrec->old_infobits_set, "old_infobits");
 		appendStringInfo(buf, ", flags: 0x%02X, new_xmax: %u, new_off: %u",
 						 xlrec->flags, xlrec->new_xmax, xlrec->new_offnum);
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			char	   *tdata = rec + SizeOfHeapUpdate;
+			OffsetNumber tomb_off;
+			uint16		tomb_size;
+
+			memcpy(&tomb_off, tdata, sizeof(OffsetNumber));
+			memcpy(&tomb_size, tdata + sizeof(OffsetNumber), sizeof(uint16));
+			appendStringInfo(buf, ", tombstone_off: %u, tombstone_size: %u",
+							 tomb_off, tomb_size);
+		}
 	}
 	else if (info == XLOG_HEAP_TRUNCATE)
 	{
@@ -357,10 +380,10 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 												   &ndead, &nowdead,
 												   &nunused, &nowunused,
 												   &nbridges, &bridges,
-												   &nunions, &tombstone_unions);
+												   &ndata_redirects, &data_redirects);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u, nunions: %u",
-							 nplans, nredirected, ndead, nunused, nbridges, nunions);
+			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u, ndata_redirects: %u",
+							 nplans, nredirected, ndead, nunused, nbridges, ndata_redirects);
 
 			if (nplans > 0)
 			{
