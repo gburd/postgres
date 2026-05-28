@@ -192,6 +192,25 @@ pg_atomic_fetch_add_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
 	return res;
 }
 
+/*
+ * AcqRel fetch_add for x86.
+ * On x86, lock xadd already provides acquire+release semantics.
+ * Same instruction as SeqCst variant -- x86 TSO makes them equivalent.
+ */
+#define PG_HAVE_ATOMIC_FETCH_ADD_ACQREL_U32
+static inline uint32
+pg_atomic_fetch_add_acqrel_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
+{
+	uint32 res;
+	__asm__ __volatile__(
+		"	lock				\n"
+		"	xaddl	%0,%1		\n"
+:		"=q"(res), "=m"(ptr->value)
+:		"0" (add_), "m"(ptr->value)
+:		"memory", "cc");
+	return res;
+}
+
 #ifdef __x86_64__
 
 #define PG_HAVE_ATOMIC_COMPARE_EXCHANGE_U64
