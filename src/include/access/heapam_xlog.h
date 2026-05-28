@@ -90,6 +90,8 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
+/* HOT-indexed tombstone item logged alongside the new tuple */
+#define XLH_UPDATE_CONTAINS_TOMBSTONE			(1<<7)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\
@@ -342,6 +344,32 @@ typedef struct xl_heap_prune
 #define		XLHP_VM_ALL_FROZEN			(1 << 9)
 
 /*
+ * XLHP_HAS_HOT_INDEXED_BRIDGES indicates that an xlhp_prune_items sub-record
+ * with (offnum, forward) pairs follows, describing LPs that pruneheap
+ * rewrote in place as HOT-indexed bridge tombstones.  Replay applies the
+ * same in-place rewrite.  See access/hot_indexed.h for the bridge layout.
+ */
+#define		XLHP_HAS_HOT_INDEXED_BRIDGES   (1 << 10)
+
+/* (1 << 11) is reserved; see README.HOT-INDEXED "Chain Promotion" notes. */
+
+/*
+ * XLHP_HAS_TOMBSTONE_UNIONS indicates that an xlhp_prune_items sub-record
+ * with (target, source) OffsetNumber pairs follows.  Each pair describes
+ * a HOT-indexed adjacent-tombstone whose modified-attrs bitmap is being
+ * OR-merged into another tombstone on the same page at chain-collapse
+ * time.  Replay reads the source tombstone's bitmap, ORs it into the
+ * target tombstone's bitmap byte-by-byte, and leaves the source LP for
+ * the accompanying XLHP_HAS_NOW_UNUSED_ITEMS sub-record to reclaim.
+ *
+ * Adjacent tombstones for the same relation always carry an identical
+ * t_nbytes (every per-update modified-attrs bitmap covers the whole
+ * relation's attribute count), so the byte-by-byte OR is well-defined.
+ * See access/hot_indexed.h for the on-disk tombstone layout.
+ */
+#define		XLHP_HAS_TOMBSTONE_UNIONS	(1 << 12)
+
+/*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
  * (appears in xl_heap_prune's xlhp_freeze_plans sub-record)
  */
@@ -494,6 +522,8 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   OffsetNumber **frz_offsets,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
-												   int *nunused, OffsetNumber **nowunused);
+												   int *nunused, OffsetNumber **nowunused,
+												   int *nbridges, OffsetNumber **bridges,
+												   int *nunions, OffsetNumber **tombstone_unions);
 
 #endif							/* HEAPAM_XLOG_H */
