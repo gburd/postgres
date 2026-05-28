@@ -34,6 +34,7 @@
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/hio.h"
+#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"
@@ -8335,7 +8336,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 			lp = PageGetItemId(page, offnum);
 			if (ItemIdIsRedirected(lp))
 			{
-				offnum = ItemIdGetRedirect(lp);
+				offnum = HotIndexedRedirectGetTarget(page, lp);
 				continue;
 			}
 

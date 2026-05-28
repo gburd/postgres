@@ -108,7 +108,10 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   OffsetNumber **frz_offsets,
 									   int *nredirected, OffsetNumber **redirected,
 									   int *ndead, OffsetNumber **nowdead,
-									   int *nunused, OffsetNumber **nowunused)
+									   int *nunused, OffsetNumber **nowunused,
+									   int *nbridges, OffsetNumber **bridges,
+									   int *ndata_redirects, OffsetNumber **data_redirects,
+									   const char **redirect_unions)
 {
 	if (flags & XLHP_HAS_FREEZE_PLANS)
 	{
@@ -176,6 +179,56 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 	{
 		*nunused = 0;
 		*nowunused = NULL;
+	}
+
+	if (flags & XLHP_HAS_HOT_INDEXED_BRIDGES)
+	{
+		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
+
+		*nbridges = subrecord->ntargets;
+		Assert(*nbridges > 0);
+		*bridges = &subrecord->data[0];
+
+		cursor += offsetof(xlhp_prune_items, data);
+		cursor += sizeof(OffsetNumber[2]) * *nbridges;
+	}
+	else
+	{
+		*nbridges = 0;
+		*bridges = NULL;
+	}
+
+	if (flags & XLHP_HAS_REDIRECT_DATA)
+	{
+		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
+
+		*ndata_redirects = subrecord->ntargets;
+		Assert(*ndata_redirects > 0);
+		*data_redirects = &subrecord->data[0];
+
+		cursor += offsetof(xlhp_prune_items, data);
+		cursor += sizeof(OffsetNumber[2]) * *ndata_redirects;
+
+		/*
+		 * One variable-length union entry per redirect follows, in the same
+		 * order: uint16 byte count + that many bitmap bytes, padded to even
+		 * length to keep the cursor 2-byte aligned.  Replay reads these
+		 * directly instead of recomputing the union from the on-page chain.
+		 */
+		*redirect_unions = cursor;
+		for (int i = 0; i < *ndata_redirects; i++)
+		{
+			uint16		nb;
+
+			memcpy(&nb, cursor, sizeof(uint16));
+			cursor += sizeof(uint16) + nb + (nb & 1);
+		}
+	}
+	else
+	{
+		*ndata_redirects = 0;
+		*data_redirects = NULL;
+		*redirect_unions = NULL;
 	}
 
 	*frz_offsets = (OffsetNumber *) cursor;
@@ -302,12 +355,17 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			OffsetNumber *redirected;
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
+			OffsetNumber *bridges;
+			OffsetNumber *data_redirects;
 			int			nredirected;
 			int			nunused;
 			int			ndead;
+			int			nbridges;
+			int			ndata_redirects;
 			int			nplans;
 			xlhp_freeze_plan *plans;
 			OffsetNumber *frz_offsets;
+			const char *redirect_unions;
 
 			char	   *cursor = XLogRecGetBlockData(record, 0, &datalen);
 
@@ -315,10 +373,13 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 												   &nplans, &plans, &frz_offsets,
 												   &nredirected, &redirected,
 												   &ndead, &nowdead,
-												   &nunused, &nowunused);
+												   &nunused, &nowunused,
+												   &nbridges, &bridges,
+												   &ndata_redirects, &data_redirects,
+												   &redirect_unions);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u",
-							 nplans, nredirected, ndead, nunused);
+			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u, ndata_redirects: %u",
+							 nplans, nredirected, ndead, nunused, nbridges, ndata_redirects);
 
 			if (nplans > 0)
 			{
@@ -346,6 +407,20 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfoString(buf, ", unused:");
 				array_desc(buf, nowunused, sizeof(OffsetNumber), nunused,
 						   &offset_elem_desc, NULL);
+			}
+
+			if (nbridges > 0)
+			{
+				appendStringInfoString(buf, ", bridges:");
+				array_desc(buf, bridges, sizeof(OffsetNumber) * 2,
+						   nbridges, &redirect_elem_desc, NULL);
+			}
+
+			if (ndata_redirects > 0)
+			{
+				appendStringInfoString(buf, ", data_redirects:");
+				array_desc(buf, data_redirects, sizeof(OffsetNumber) * 2,
+						   ndata_redirects, &redirect_elem_desc, NULL);
 			}
 		}
 	}
