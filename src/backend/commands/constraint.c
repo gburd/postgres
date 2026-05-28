@@ -111,7 +111,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 		bool		call_again = false;
 
 		if (!table_index_fetch_tuple(scan, &tmptid, SnapshotSelf, slot,
-									 &call_again, NULL))
+									 &call_again, NULL, NULL))
 		{
 			/*
 			 * All rows referenced by the index entry are dead, so skip the

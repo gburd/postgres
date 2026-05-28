@@ -607,6 +607,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * Reset the HOT-indexed recheck flag: it is set by the heap AM during
+	 * index_fetch_heap and is per-fetched-tuple, not per-index-entry. For
+	 * IndexOnlyScan, which may skip index_fetch_heap when the VM says the
+	 * entry is visible-to-all, this ensures we don't carry a stale value from
+	 * a previous entry.
+	 */
+	scan->xs_hot_indexed_recheck = false;
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -657,14 +666,27 @@ bool
 index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 {
 	bool		all_dead = false;
+	bool		hot_indexed_recheck = false;
 	bool		found;
 
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
-									&scan->xs_heap_continue, &all_dead);
+									&scan->xs_heap_continue, &all_dead,
+									&hot_indexed_recheck);
 
 	if (found)
 		pgstat_count_heap_fetch(scan->indexRelation);
+
+	/*
+	 * If the HOT chain we followed contained a HOT-indexed update
+	 * (HOT-indexed), surface the recheck requirement on the separate
+	 * xs_hot_indexed_recheck flag (not xs_recheck).  Keeping them distinct
+	 * lets the executor tell a lossy-index recheck (needs qual re-eval) apart
+	 * from an hot-indexed stale entry (which should be dropped when no qual
+	 * is available, since the canonical fresh entry will return the same
+	 * tuple via its direct path).
+	 */
+	scan->xs_hot_indexed_recheck = (found && hot_indexed_recheck);
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index

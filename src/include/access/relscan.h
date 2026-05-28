@@ -197,6 +197,19 @@ typedef struct IndexScanDescData
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 
 	/*
+	 * T means the HOT chain we walked to reach xs_heaptid crossed a
+	 * HOT-indexed (HOT-indexed update) hop: the index entry's key may no
+	 * longer match the heap tuple's current values.  Unlike xs_recheck --
+	 * which is set by lossy index AMs such as GiST and GIN -- this flag is
+	 * set by the heap AM during chain-walking. Executor code uses it to
+	 * decide between "recheck against heap tuple" (same as xs_recheck when
+	 * the query has a qual) and "drop as a stale duplicate" (when the
+	 * canonical hot-indexed-inserted entry will return the same tuple via a
+	 * direct path).
+	 */
+	bool		xs_hot_indexed_recheck;
+
+	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY
 	 * expressions of the last returned tuple, according to the index.  If
 	 * xs_recheckorderby is true, these need to be rechecked just like the
@@ -231,6 +244,26 @@ typedef struct SysScanDescData
 	struct IndexScanDescData *iscan;	/* only valid in index-scan case */
 	struct SnapshotData *snapshot;	/* snapshot to unregister at end of scan */
 	struct TupleTableSlot *slot;
+
+	/*
+	 * Heap-attnum scan keys, captured during systable_beginscan().  Distinct
+	 * from iscan->keyData, whose sk_attno values have been translated to
+	 * index column positions.  Used during HOT-indexed recheck so we can
+	 * evaluate the original catalog key against the heap tuple.  NULL if
+	 * nkeys_heap == 0.
+	 */
+	int			nkeys_heap;
+	struct ScanKeyData *heap_keys;
+
+	/*
+	 * HOT-indexed chains can accumulate multiple btree entries that all
+	 * chain-walk to the same live heap tuple (e.g. RENAME X -> Y -> X cycles
+	 * an index key; both the original "X" leaf and the fresh "X" leaf then
+	 * cover the same row).  Track already-returned live TIDs in this scan so
+	 * systable_getnext can filter the duplicate hit.  NULL until first
+	 * HOT-indexed hit hit.
+	 */
+	struct HTAB *hot_indexed_seen_tids;
 } SysScanDescData;
 
 #endif							/* RELSCAN_H */
