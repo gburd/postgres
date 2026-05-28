@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/relscan.h"
 #include "storage/predicate.h"
 
@@ -67,6 +68,51 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 }
 
 /*
+ * hot_indexed_path_overlaps
+ *		True iff any chain hop crossed during a walk (whose member offsets are
+ *		listed in crossed[0 .. ncrossed-1]) changed an attribute that
+ *		index_attrs covers.  Each crossed member's per-hop modified-attrs
+ *		bitmap lives in the adjacent tombstone whose target is that member's
+ *		offset; we scan the page once for those tombstones.  Bridges carry no
+ *		payload of their own -- the bridged tuple's adjacent tombstone is
+ *		retained across collapse and still targets the bridge's offset, so the
+ *		same lookup serves live tuples and bridges alike.
+ */
+static bool
+hot_indexed_path_overlaps(Page page, const OffsetNumber *crossed, int ncrossed,
+						  const Bitmapset *index_attrs)
+{
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+	for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
+		 off = OffsetNumberNext(off))
+	{
+		ItemId		lp = PageGetItemId(page, off);
+		HeapTupleHeader htup;
+		OffsetNumber target;
+
+		if (!ItemIdIsNormal(lp))
+			continue;
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+		if (!HeapTupleHeaderIsHotIndexedTombstone(htup) ||
+			HeapTupleHeaderIsHotIndexedBridge(htup))
+			continue;
+		target = HotIndexedTombstoneGetTarget(htup);
+
+		for (int i = 0; i < ncrossed; i++)
+		{
+			if (crossed[i] != target)
+				continue;
+			if (heap_hot_indexed_payload_overlaps(HotIndexedTombstoneGetPayloadConst(htup),
+												  index_attrs))
+				return true;
+			break;
+		}
+	}
+	return false;
+}
+
+/*
  *	heap_hot_search_buffer	- search HOT chain for tuple satisfying snapshot
  *
  * On entry, *tid is the TID of a tuple (either a simple tuple, or the root
@@ -83,13 +129,37 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
+ * If hot_indexed_stale is not NULL, it reports whether the index entry that
+ * the caller arrived through is stale for the tuple returned, using the
+ * per-hop modified-attrs bitmaps left by HOT-indexed (Selective Index Update)
+ * updates:
+ *
+ *   - When index_attrs is not NULL (a single-index scan or unique check), it
+ *     is the set of heap attributes that index covers (RelationGetIndexedAttrs
+ *     convention).  *hot_indexed_stale is set true iff some hop strictly after
+ *     the entry tuple, up to the returned tuple, changed one of those
+ *     attributes -- i.e. the arriving leaf's key no longer agrees with the
+ *     live tuple and the row is re-supplied by a fresh entry.  The entry
+ *     tuple's own producing hop is excluded, so a fresh entry pointing into
+ *     the chain is kept.
+ *
+ *   - When index_attrs is NULL (e.g. a bitmap heap scan, where the originating
+ *     index is no longer identifiable), *hot_indexed_stale is set true iff the
+ *     walk crossed any HOT-indexed hop at all; the caller then forces its
+ *     recheck qual.
+ *
+ * When the chain contains no HOT-indexed hop, *hot_indexed_stale is left
+ * false.
+ *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
  */
 bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call)
+					   bool *all_dead, bool first_call,
+					   const Bitmapset *index_attrs,
+					   bool *hot_indexed_stale)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -99,10 +169,22 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		valid;
 	bool		skip;
 	GlobalVisState *vistest = NULL;
+	OffsetNumber crossed[MaxHeapTuplesPerPage];
+	int			ncrossed = 0;
+	bool		crossed_hi = false;
+	bool		redir_stale = false;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
 		*all_dead = first_call;
+
+	/*
+	 * On the first call, clear any stale value left by a previous call. On
+	 * subsequent calls (same chain continuing), preserve whatever the earlier
+	 * hop observed.
+	 */
+	if (hot_indexed_stale && first_call)
+		*hot_indexed_stale = false;
 
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
@@ -130,8 +212,23 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			/* We should only see a redirect at start of chain */
 			if (ItemIdIsRedirected(lp) && at_chain_start)
 			{
+				/*
+				 * A HOT-indexed data redirect carries the (single) hop's
+				 * modified-attrs bitmap that the reclaimed successor tombstone
+				 * used to hold.  An entry arriving through it crosses that hop,
+				 * so fold the bitmap into the staleness decision (and flag the
+				 * chain hot-indexed for the bitmap-heap NULL case).
+				 */
+				if (HotIndexedRedirectIsData(lp))
+				{
+					crossed_hi = true;
+					if (index_attrs != NULL &&
+						heap_hot_indexed_redirect_overlaps(HotIndexedRedirectGetData(page, lp),
+														   index_attrs))
+						redir_stale = true;
+				}
 				/* Follow the redirect */
-				offnum = ItemIdGetRedirect(lp);
+				offnum = HotIndexedRedirectGetTarget(page, lp);
 				at_chain_start = false;
 				continue;
 			}
@@ -151,10 +248,86 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
 
 		/*
-		 * Shouldn't see a HEAP_ONLY tuple at chain start.
+		 * HOT-indexed tombstones (two variants) are never visible tuples.
+		 *
+		 * - Adjacent-to-live tombstones have t_ctid.blockno =
+		 * InvalidBlockNumber; they sit next to a newly-written HOT-indexed
+		 * tuple and carry its modified-attrs bitmap.  A stale btree entry
+		 * that lands on one has no forward link to follow -- treat as end of
+		 * chain.
+		 *
+		 * - Bridge tombstones have a valid same-page forward t_ctid, placed
+		 * by pruneheap in the slot a dead mid-chain HOT-indexed heap-only
+		 * tuple used to occupy.  Stale btree entries pointing at the bridge's
+		 * LP still resolve to the live tuple by following the forward link.
+		 * Skip the bridge transparently: don't apply the xmin/xmax chain
+		 * match (bridges carry neither), count it as a crossed hop so the
+		 * bitmap-overlap test sees its retained tombstone's modified attrs,
+		 * and continue the walk.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(heapTuple->t_data))
+		{
+			if (HeapTupleHeaderIsHotIndexedBridge(heapTuple->t_data))
+			{
+				crossed_hi = true;
+
+				/*
+				 * A bridge advanced to (not the entry item) is a crossed hop;
+				 * its modified-attrs bitmap lives in the retained adjacent
+				 * tombstone targeting this offset.  When the bridge IS the
+				 * entry item (at_chain_start), its own hop is excluded -- the
+				 * arriving entry already reflects that value.
+				 */
+				if (!at_chain_start && ncrossed < (int) lengthof(crossed))
+					crossed[ncrossed++] = offnum;
+				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
+				at_chain_start = false;
+
+				/*
+				 * prev_xmax intentionally not updated: bridges don't advance
+				 * it
+				 */
+				continue;
+			}
+			break;
+		}
+
+		/*
+		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
+		 * is the target of a freshly-inserted hot-indexed index entry: then
+		 * arriving directly at a heap-only HOT-indexed tuple is legal and the
+		 * tuple is the canonical visible version, so we fall through and
+		 * apply normal visibility checks to it.  Otherwise, treat it as a
+		 * broken chain.
 		 */
 		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple))
-			break;
+		{
+			if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+				break;
+
+			/*
+			 * We were pointed directly at this hot-indexed tuple.  The index
+			 * entry we arrived through was inserted *for* this update, so it
+			 * reflects this tuple's current attribute values: its own
+			 * producing hop is excluded from the staleness test.  We still
+			 * note that the chain is hot-indexed (crossed_hi) so a bitmap
+			 * heap scan, which cannot identify the originating index, falls
+			 * back to its recheck qual.
+			 */
+			crossed_hi = true;
+		}
+		else if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		{
+			/*
+			 * A hot-indexed hop reached by following the chain from an
+			 * earlier entry: this hop is crossed.  Record its offset so the
+			 * post-walk overlap test can consult its adjacent tombstone's
+			 * modified-attrs bitmap.
+			 */
+			crossed_hi = true;
+			if (ncrossed < (int) lengthof(crossed))
+				crossed[ncrossed++] = offnum;
+		}
 
 		/*
 		 * The xmin should match the previous xmax value, else chain is
@@ -186,6 +359,20 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 								 HeapTupleHeaderGetXmin(heapTuple->t_data));
 				if (all_dead)
 					*all_dead = false;
+
+				if (hot_indexed_stale != NULL)
+				{
+					bool		this_stale;
+
+					if (index_attrs == NULL)
+						this_stale = crossed_hi;
+					else
+						this_stale = redir_stale ||
+							((ncrossed > 0) &&
+							 hot_indexed_path_overlaps(page, crossed, ncrossed,
+													   index_attrs));
+					*hot_indexed_stale |= this_stale;
+				}
 				return true;
 			}
 		}
@@ -233,7 +420,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 						 ItemPointer tid,
 						 Snapshot snapshot,
 						 TupleTableSlot *slot,
-						 bool *heap_continue, bool *all_dead)
+						 bool *heap_continue, bool *all_dead,
+						 const Bitmapset *index_attrs,
+						 bool *hot_indexed_stale)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
@@ -273,7 +462,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											snapshot,
 											&bslot->base.tupdata,
 											all_dead,
-											!*heap_continue);
+											!*heap_continue,
+											index_attrs,
+											hot_indexed_stale);
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 
