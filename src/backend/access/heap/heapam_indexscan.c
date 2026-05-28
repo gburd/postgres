@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/relscan.h"
 #include "storage/predicate.h"
 
@@ -83,13 +84,25 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
+ * If hot_indexed_recheck is not NULL, it is set to true iff any tuple
+ * visited along the chain (including the returned one) carries
+ * HEAP_INDEXED_UPDATED.  Callers use this to know that at least one
+ * HOT-indexed update has occurred in the chain, and therefore an
+ * index-scan that arrived via this chain must recheck its scan keys
+ * against the returned tuple's attribute values -- the index entry's
+ * key may no longer agree with the heap tuple for attributes covered by
+ * one of the encountered tombstones.  This is a conservative signal:
+ * Phase 3.1e will refine it with per-index attr matching.  When there
+ * was no hot-indexed in the chain, *hot_indexed_recheck is left set to false.
+ *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
  */
 bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call)
+					   bool *all_dead, bool first_call,
+					   bool *hot_indexed_recheck)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -103,6 +116,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
 		*all_dead = first_call;
+
+	/*
+	 * On the first call, clear any stale value left by a previous call. On
+	 * subsequent calls (same chain continuing), preserve whatever the earlier
+	 * hop observed.
+	 */
+	if (hot_indexed_recheck && first_call)
+		*hot_indexed_recheck = false;
 
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
@@ -151,10 +172,78 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
 
 		/*
-		 * Shouldn't see a HEAP_ONLY tuple at chain start.
+		 * HOT-indexed tombstones (two variants) are never visible tuples.
+		 *
+		 * - Adjacent-to-live tombstones have t_ctid.blockno =
+		 * InvalidBlockNumber; they sit next to a newly-written HOT-indexed
+		 * tuple and carry its modified-attrs bitmap.  A stale btree entry
+		 * that lands on one has no forward link to follow -- treat as end of
+		 * chain.
+		 *
+		 * - Bridge tombstones have a valid same-page forward t_ctid, placed
+		 * by pruneheap in the slot a dead mid-chain HOT-indexed heap-only
+		 * tuple used to occupy.  Stale btree entries pointing at the bridge's
+		 * LP still resolve to the live tuple by following the forward link.
+		 * Skip the bridge transparently: don't apply the xmin/xmax chain
+		 * match (bridges carry neither), raise the recheck signal so readers
+		 * compare the stored leaf key against the live tuple's current index
+		 * form, and continue the walk.
+		 */
+		if (HeapTupleHeaderIsHotIndexedTombstone(heapTuple->t_data))
+		{
+			if (HeapTupleHeaderIsHotIndexedBridge(heapTuple->t_data))
+			{
+				if (hot_indexed_recheck != NULL)
+					*hot_indexed_recheck = true;
+				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
+				at_chain_start = false;
+
+				/*
+				 * prev_xmax intentionally not updated: bridges don't advance
+				 * it
+				 */
+				continue;
+			}
+			break;
+		}
+
+		/*
+		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
+		 * is the target of a freshly-inserted hot-indexed index entry: then
+		 * arriving directly at a heap-only HOT-indexed tuple is legal and the
+		 * tuple is the canonical visible version, so we fall through and
+		 * apply normal visibility checks to it.  Otherwise, treat it as a
+		 * broken chain.
 		 */
 		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple))
-			break;
+		{
+			if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+				break;
+
+			/*
+			 * We were pointed directly at this hot-indexed tuple.  The index
+			 * entry we arrived through was inserted *for* this update, so it
+			 * agrees with the current tuple's attribute values and the
+			 * executor does not strictly have to recheck quals.  We still
+			 * raise the recheck flag, though, so higher-level readers (e.g.
+			 * systable_getnext) can dedup against other btree entries whose
+			 * chain walks end at this same live TID -- the case of an index
+			 * key that was cycled back to itself by a HOT-indexed rename.
+			 */
+			if (hot_indexed_recheck != NULL)
+				*hot_indexed_recheck = true;
+		}
+		else if (hot_indexed_recheck != NULL &&
+				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		{
+			/*
+			 * We walked through a HOT-indexed hop reached via an older index
+			 * entry.  The scan key that got us here may no longer agree with
+			 * the heap tuple's current attribute values -- force the executor
+			 * to recheck quals against the returned tuple.
+			 */
+			*hot_indexed_recheck = true;
+		}
 
 		/*
 		 * The xmin should match the previous xmax value, else chain is
@@ -233,7 +322,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 						 ItemPointer tid,
 						 Snapshot snapshot,
 						 TupleTableSlot *slot,
-						 bool *heap_continue, bool *all_dead)
+						 bool *heap_continue, bool *all_dead,
+						 bool *hot_indexed_recheck)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
@@ -273,7 +363,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											snapshot,
 											&bslot->base.tupdata,
 											all_dead,
-											!*heap_continue);
+											!*heap_continue,
+											hot_indexed_recheck);
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 

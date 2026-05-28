@@ -31,6 +31,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/tupdesc.h"
@@ -172,6 +173,51 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
 				continue;		/* no visible tuple, try next index entry */
 
+			/*
+			 * HOT-indexed: if the chain walk crossed a HOT-indexed hop, the
+			 * index leaf's stored key may disagree with the live tuple's
+			 * current index form.  For IOS we serve values out of xs_itup, so
+			 * a stale leaf would surface the wrong values.  Compare the leaf
+			 * against the live tuple we just fetched; if they disagree this
+			 * leaf is stale for this index and the canonical fresh entry will
+			 * return the tuple with the correct current values.
+			 */
+			if (scandesc->xs_hot_indexed_recheck)
+			{
+				bool		keep = false;
+
+				/*
+				 * Dispatch to the index AM's leaf-key recheck if it
+				 * implements the optional amrecheck_leaf_key callback and we
+				 * have both the leaf IndexTuple (xs_itup, requires want_itup
+				 * on the scan) and a populated heap slot.  The callback
+				 * returns true iff the leaf is still valid for this index:
+				 * its key matches the live tuple's current index form.  AMs
+				 * without the callback fall through to the permissive drop
+				 * path, matching the pre-feature behaviour.
+				 */
+				if (scandesc->xs_itup != NULL)
+				{
+					TupleTableSlot *heap_slot = node->ioss_TableSlot;
+					const IndexAmRoutine *amroutine =
+						scandesc->indexRelation->rd_indam;
+
+					if (heap_slot != NULL && !TTS_EMPTY(heap_slot) &&
+						amroutine->amrecheck_leaf_key != NULL &&
+						amroutine->amrecheck_leaf_key(scandesc->indexRelation,
+													  scandesc->xs_itup,
+													  heap_slot))
+						keep = true;
+				}
+
+				if (!keep)
+				{
+					InstrCountFiltered2(node, 1);
+					ExecClearTuple(node->ioss_TableSlot);
+					continue;
+				}
+			}
+
 			ExecClearTuple(node->ioss_TableSlot);
 
 			/*
@@ -227,6 +273,19 @@ IndexOnlyNext(IndexOnlyScanState *node)
 				InstrCountFiltered2(node, 1);
 				continue;
 			}
+		}
+
+		/*
+		 * HOT-indexed recheck for the VM-all-visible path: if we skipped the
+		 * heap fetch (no TableSlot available) but the scan still flags a
+		 * HOT-indexed hop, drop conservatively -- we have no way to compare
+		 * the leaf key against the live tuple's current form without a fetch,
+		 * and the canonical fresh leaf will re-produce the tuple.
+		 */
+		if (scandesc->xs_hot_indexed_recheck && !tuple_from_heap)
+		{
+			InstrCountFiltered2(node, 1);
+			continue;
 		}
 
 		/*
