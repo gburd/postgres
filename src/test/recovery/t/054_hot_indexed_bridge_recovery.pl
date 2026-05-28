@@ -1,0 +1,152 @@
+
+# Copyright (c) 2026, PostgreSQL Global Development Group
+
+# Crash-recovery coverage for HOT-indexed bridge tombstones.
+#
+# Build a HOT-indexed chain by repeatedly UPDATEing a single row,
+# changing one indexed (non-PK) column each time.  Force a prune so
+# the dead chain members convert to bridge tombstones (visible via
+# pg_relation_hot_indexed_stats as n_tombstones > 0).  Crash-recover
+# the primary with stop('immediate') so the tombstones come back
+# from WAL or from the FPI.  After restart, verify:
+#
+#   1. an index lookup walking the chain returns the live tuple,
+#   2. pg_amcheck (verify_heapam) reports no errors on the relation,
+#   3. VACUUM reclaims the bridges (n_tombstones drops to 0).
+#
+use strict;
+use warnings FATAL => 'all';
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
+use Test::More;
+
+my $node = PostgreSQL::Test::Cluster->new('primary');
+$node->init;
+# Disable autovacuum to keep the chain shape stable up to the explicit
+# prune we trigger below.
+$node->append_conf('postgresql.conf', q{autovacuum = off
+wal_consistency_checking = 'all'});
+$node->start;
+
+# amcheck (verify_heapam) is shipped as a contrib extension; we use it
+# from SQL after the crash-restart cycle.
+$node->safe_psql('postgres', q{CREATE EXTENSION amcheck});
+
+# Wide-ish table: PK + four indexed columns plus a non-indexed payload
+# so HOT-indexed updates have width to amortise.  fillfactor = 50 keeps
+# free space on-page for HOT-indexed continuations.
+$node->safe_psql('postgres', q{
+	CREATE TABLE bridge_recov (
+		id      int PRIMARY KEY,
+		c1      int,
+		c2      int,
+		c3      int,
+		c4      int,
+		payload text
+	) WITH (fillfactor = 50);
+	CREATE INDEX bridge_recov_c1 ON bridge_recov(c1);
+	CREATE INDEX bridge_recov_c2 ON bridge_recov(c2);
+	CREATE INDEX bridge_recov_c3 ON bridge_recov(c3);
+	CREATE INDEX bridge_recov_c4 ON bridge_recov(c4);
+	INSERT INTO bridge_recov VALUES (1, 100, 200, 300, 400, 'payload');
+});
+
+# Build a HOT-indexed chain: five UPDATEs, each touching one indexed
+# column.  Every UPDATE leaves an adjacent tombstone on the previous
+# version because c1 is indexed and changed.  Use a SQL transaction-
+# range loop so each UPDATE is its own xact (xmin/xmax distinct).
+for my $i (1 .. 5)
+{
+	my $newval = 100 + $i;
+	$node->safe_psql('postgres',
+		"UPDATE bridge_recov SET c1 = $newval WHERE id = 1");
+}
+
+my $pre_tomb = $node->safe_psql('postgres',
+	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+cmp_ok($pre_tomb, '>', 0,
+	'HOT-indexed chain leaves at least one tombstone before prune');
+
+# Force a prune.  The chain has dead heap-only members from the early
+# UPDATEs (their xmins are now committed and below the snapshot horizon).
+# A SELECT under default isolation visits the page; under
+# default_statistics_target etc. that's not enough on its own to trigger
+# prune.  The reliable way to drive opportunistic prune is a query that
+# exercises the heap_page_prune_opt path, which fires from an indexscan
+# that finds the page non-all-visible.  Use a sequential scan plus a
+# subsequent UPDATE that itself looks for free space (heap_update calls
+# heap_page_prune_opt).
+$node->safe_psql('postgres', q{
+	SET enable_indexscan = off;
+	SELECT count(*) FROM bridge_recov;
+	UPDATE bridge_recov SET payload = 'pruned' WHERE id = 1;
+});
+
+# Read tombstone state after the prune.  Bridges are tombstones too.
+my $post_tomb = $node->safe_psql('postgres',
+	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+cmp_ok($post_tomb, '>', 0,
+	'tombstones survive opportunistic prune (bridge or adjacent)');
+
+# Crash-restart.  stop('immediate') is the standard "kill -9" simulation
+# used elsewhere in src/test/recovery/.  We intentionally do NOT issue a
+# CHECKPOINT first: that would advance the redo point past the HOT-indexed
+# UPDATE/prune records and leave nothing for recovery to replay.  Crashing
+# without a checkpoint forces startup redo to reconstruct the tombstones and
+# bridges from WAL, and wal_consistency_checking = 'all' (set above) compares
+# each replayed page against its full-page image, catching any divergence
+# between the write path and the redo path.
+$node->stop('immediate');
+$node->start;
+
+# 1. Chain walk via the indexed column on the live row returns the
+#    correct (and only the correct) tuple.  c1 = 105 was the last
+#    UPDATE, so the live tuple has c1 = 105 and c2..c4 unchanged.
+my $live = $node->safe_psql('postgres', q{
+	SET enable_seqscan = off;
+	SELECT id, c1, c2, c3, c4, payload FROM bridge_recov WHERE c1 = 105;
+});
+is($live, "1|105|200|300|400|pruned",
+	'index lookup on chain returns the post-prune live tuple');
+
+# Older c1 values are not reachable: all stale btree entries that point
+# through bridges must be dropped by the read-side bitmap-overlap test on
+# equality.
+my $stale_count = $node->safe_psql('postgres',
+	q{SELECT count(*) FROM bridge_recov WHERE c1 = 100});
+is($stale_count, '0',
+	'stale btree entries through bridges are filtered on equality');
+
+# 2. verify_heapam reports no errors on the relation (skip_option =
+#    'all-frozen' is the default; we want to scan everything).
+my $heapcheck = $node->safe_psql('postgres', q{
+	SELECT count(*) FROM verify_heapam('bridge_recov',
+	                                   skip := 'none',
+	                                   check_toast := false);
+});
+is($heapcheck, '0',
+	'verify_heapam reports zero errors after crash recovery');
+
+# 3. Reclamation: VACUUM (FREEZE) drives prune to revisit the page and
+#    run prune_handle_tombstones, which reclaims orphaned adjacent
+#    tombstones once the live row is gone, plus any bridges that
+#    survived the crash.  After DELETE + VACUUM (FREEZE), n_tombstones
+#    must be zero.  (Plain VACUUM may leave tombstones behind on a page
+#    whose only dirty work is the orphaned-tombstone path; that is the
+#    audit-tracked gap 7.5(b), not a recovery-correctness issue.)
+$node->safe_psql('postgres', q{DELETE FROM bridge_recov WHERE id = 1});
+# Two VACUUMs: the first removes the dead live tuple's index entries
+# and reduces its LP to LP_DEAD/LP_UNUSED; the second drives the prune
+# pass that reclaims orphaned tombstones via prune_handle_tombstones.
+$node->safe_psql('postgres',
+	q{VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bridge_recov});
+$node->safe_psql('postgres',
+	q{VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bridge_recov});
+my $final_tomb = $node->safe_psql('postgres',
+	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+is($final_tomb, '0',
+	'two VACUUM (FREEZE) passes after DELETE reclaim every tombstone post-recovery');
+
+$node->stop;
+
+done_testing();

@@ -1018,6 +1018,24 @@ DecodeUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		/* caution, remaining data in record is not aligned */
 		data = XLogRecGetData(r) + SizeOfHeapUpdate;
 		datalen = XLogRecGetDataLen(r) - SizeOfHeapUpdate;
+
+		/*
+		 * A HOT-indexed tombstone, when present, is logged in the main record
+		 * data immediately after xl_heap_update and ahead of the old-tuple
+		 * identity.  Skip past its self-describing chunk
+		 * ([OffsetNumber][uint16 size][bytes]) to reach the old tuple.
+		 */
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			uint16		tomb_size;
+			Size		tomb_chunk;
+
+			memcpy(&tomb_size, data + sizeof(OffsetNumber), sizeof(uint16));
+			tomb_chunk = sizeof(OffsetNumber) + sizeof(uint16) + tomb_size;
+			data += tomb_chunk;
+			datalen -= tomb_chunk;
+		}
+
 		tuplelen = datalen - SizeOfHeapHeader;
 
 		change->data.tp.oldtuple =
