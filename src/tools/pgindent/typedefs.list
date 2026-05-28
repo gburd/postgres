@@ -1278,6 +1278,7 @@ HistControl
 HostCacheEntry
 HostsFileLoadResult
 HostsLine
+HotIndexedTombstonePayload
 HotStandbyState
 I32
 ICU_Convert_Func
