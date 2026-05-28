@@ -251,6 +251,38 @@ pg_atomic_write_membarrier_u32_impl(volatile pg_atomic_uint32 *ptr, uint32 val)
 }
 #endif
 
+/* --- AcqRel / SeqCst fence / Acquire-load fallbacks --- */
+
+#if !defined(PG_HAVE_ATOMIC_FETCH_ADD_ACQREL_U32) && defined(PG_HAVE_ATOMIC_FETCH_ADD_U32)
+#define PG_HAVE_ATOMIC_FETCH_ADD_ACQREL_U32
+static inline uint32
+pg_atomic_fetch_add_acqrel_u32_impl(volatile pg_atomic_uint32 *ptr, int32 add_)
+{
+	/* Fallback: SeqCst is always safe where AcqRel suffices */
+	return pg_atomic_fetch_add_u32_impl(ptr, add_);
+}
+#endif
+
+#if !defined(PG_HAVE_ATOMIC_SEQ_CST_FENCE)
+#define PG_HAVE_ATOMIC_SEQ_CST_FENCE
+static inline void
+pg_atomic_seq_cst_fence_impl(void)
+{
+	pg_memory_barrier_impl();
+}
+#endif
+
+#if !defined(PG_HAVE_ATOMIC_READ_ACQUIRE_U32) && defined(PG_HAVE_ATOMIC_READ_U32)
+#define PG_HAVE_ATOMIC_READ_ACQUIRE_U32
+static inline uint32
+pg_atomic_read_acquire_u32_impl(volatile pg_atomic_uint32 *ptr)
+{
+	uint32 val = pg_atomic_read_u32_impl(ptr);
+	pg_read_barrier_impl();
+	return val;
+}
+#endif
+
 #if !defined(PG_HAVE_ATOMIC_EXCHANGE_U64) && defined(PG_HAVE_ATOMIC_COMPARE_EXCHANGE_U64)
 #define PG_HAVE_ATOMIC_EXCHANGE_U64
 static inline uint64
