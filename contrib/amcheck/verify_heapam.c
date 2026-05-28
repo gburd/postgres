@@ -13,8 +13,10 @@
 #include "access/detoast.h"
 #include "access/genam.h"
 #include "access/heaptoast.h"
+#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/relation.h"
+
 #include "access/table.h"
 #include "access/toast_internals.h"
 #include "access/visibilitymap.h"
@@ -196,6 +198,8 @@ static bool check_tuple_attribute(HeapCheckContext *ctx);
 static void check_toasted_attribute(HeapCheckContext *ctx,
 									ToastedAttribute *ta);
 
+static void check_hot_indexed_tombstone(HeapCheckContext *ctx,
+										OffsetNumber maxoff);
 static bool check_tuple_header(HeapCheckContext *ctx);
 static bool check_tuple_visibility(HeapCheckContext *ctx,
 								   bool *xmin_commit_status_ok,
@@ -522,8 +526,50 @@ verify_heapam(PG_FUNCTION_ARGS)
 			 */
 			if (ItemIdIsRedirected(ctx.itemid))
 			{
-				OffsetNumber rdoffnum = ItemIdGetRedirect(ctx.itemid);
+				OffsetNumber rdoffnum;
 				ItemId		rditem;
+
+				/*
+				 * Resolve the redirect's target offset.  A HOT-indexed data
+				 * redirect carries a bitmap blob in the dead root's freed
+				 * bytes (lp_len > 0) with the target offset inside that blob;
+				 * a plain redirect stores the target offset directly in
+				 * lp_off.
+				 *
+				 * For a data redirect, bounds-check the blob before
+				 * dereferencing it so a corrupt line pointer cannot drive
+				 * amcheck itself out of bounds.  If the blob storage is out
+				 * of range the item is indistinguishable from a corrupt plain
+				 * redirect, so fall back to treating lp_off as the (raw)
+				 * target offset; the offset-range checks below then reject it
+				 * exactly as for any out-of-range redirect.
+				 */
+				if (HotIndexedRedirectIsData(ctx.itemid))
+				{
+					uint32		roff = ItemIdGetOffset(ctx.itemid);
+					uint32		rlen = ItemIdGetLength(ctx.itemid);
+
+					if (roff == MAXALIGN(roff) &&
+						rlen >= SizeOfHotIndexedRedirectData &&
+						(uint32) roff + rlen <= BLCKSZ)
+					{
+						HotIndexedRedirectData *rd =
+							(HotIndexedRedirectData *) (ctx.page + roff);
+
+						if (rlen != SizeOfHotIndexedRedirectData + rd->rd_nbytes)
+						{
+							report_corruption(&ctx,
+											  psprintf("HOT-indexed data redirect length %u does not match its bitmap size %u",
+													   rlen, rd->rd_nbytes));
+							continue;
+						}
+						rdoffnum = rd->rd_target;
+					}
+					else
+						rdoffnum = (OffsetNumber) ItemIdGetOffset(ctx.itemid);
+				}
+				else
+					rdoffnum = ItemIdGetRedirect(ctx.itemid);
 
 				if (rdoffnum < FirstOffsetNumber)
 				{
@@ -615,6 +661,38 @@ verify_heapam(PG_FUNCTION_ARGS)
 			ctx.tuphdr = (HeapTupleHeader) PageGetItem(ctx.page, ctx.itemid);
 			ctx.natts = HeapTupleHeaderGetNatts(ctx.tuphdr);
 
+			/*
+			 * HOT-indexed tombstone items have a fixed sentinel format and
+			 * carry no user data, so we run dedicated structural checks and
+			 * skip the standard per-tuple checks (which are written for real
+			 * tuples).  Tombstones are invisible (HEAP_XMIN_INVALID), so the
+			 * generic visibility check would already short-circuit them, but
+			 * doing the format check explicitly catches forged or truncated
+			 * tombstone items that the existing checks would silently accept.
+			 */
+			if (HeapTupleHeaderIsHotIndexedTombstone(ctx.tuphdr))
+			{
+				check_hot_indexed_tombstone(&ctx, maxoff);
+
+				/*
+				 * Bridges forward chain walkers via t_ctid; record the
+				 * forward link as a successor so chain validation can see the
+				 * connection.  Adjacent tombstones have t_ctid.blkno ==
+				 * InvalidBlockNumber and so are not part of any chain.
+				 */
+				if (HeapTupleHeaderIsHotIndexedBridge(ctx.tuphdr))
+				{
+					nextblkno = ItemPointerGetBlockNumber(&(ctx.tuphdr)->t_ctid);
+					nextoffnum = ItemPointerGetOffsetNumber(&(ctx.tuphdr)->t_ctid);
+					if (nextblkno == ctx.blkno &&
+						nextoffnum != ctx.offnum &&
+						nextoffnum >= FirstOffsetNumber &&
+						nextoffnum <= maxoff)
+						successor[ctx.offnum] = nextoffnum;
+				}
+				continue;
+			}
+
 			/* Ok, ready to check this next tuple */
 			check_tuple(&ctx,
 						&xmin_commit_status_ok[ctx.offnum],
@@ -677,7 +755,9 @@ verify_heapam(PG_FUNCTION_ARGS)
 
 				/* Can only redirect to a HOT tuple. */
 				next_htup = (HeapTupleHeader) PageGetItem(ctx.page, next_lp);
-				if (!HeapTupleHeaderIsHeapOnly(next_htup))
+				if (!HeapTupleHeaderIsHeapOnly(next_htup) &&
+					!(HotIndexedRedirectIsData(curr_lp) &&
+					  HeapTupleHeaderIsHotIndexedTombstone(next_htup)))
 				{
 					report_corruption(&ctx,
 									  psprintf("redirected line pointer points to a non-heap-only tuple at offset %d",
@@ -1076,6 +1156,154 @@ check_tuple_header(HeapCheckContext *ctx)
 	}
 
 	return result;
+}
+
+/*
+ * Validate a HOT-indexed tombstone item.
+ *
+ * Tombstones are LP_NORMAL items written by the HOT-indexed update path
+ * to carry the per-update modified-attrs bitmap (adjacent variant) or to
+ * forward chain walkers past a dead mid-chain HOT-indexed LP whose btree
+ * entries have not yet been cleaned up (bridge variant).  Both variants
+ * share a fixed sentinel format documented in access/hot_indexed.h:
+ *   - HeapTupleHeaderGetNatts == 0
+ *   - HEAP_INDEXED_UPDATED set in t_infomask2
+ *   - HEAP_XMIN_INVALID and HEAP_XMAX_INVALID set in t_infomask
+ *   - t_hoff == MAXALIGN(SizeofHeapTupleHeader)
+ *   - Adjacent: t_ctid.blkno == InvalidBlockNumber, t_ctid.offnum is the
+ *     offset of the live HOT-indexed tuple this tombstone describes; the
+ *     LP length matches HotIndexedTombstoneSize for the relation's natts.
+ *   - Bridge:   t_ctid.blkno == current blkno, t_ctid.offnum is a valid
+ *     same-page forward target; LP length is HOT_INDEXED_BRIDGE_SIZE.
+ *
+ * Reviewer guidance (Plageman, Lane): explicit checks are required
+ * because the standard per-tuple validation is silent on tombstones (it
+ * sees them as "invisible" via HEAP_XMIN_INVALID and short-circuits),
+ * which would otherwise let a forged or truncated tombstone through.
+ */
+static void
+check_hot_indexed_tombstone(HeapCheckContext *ctx, OffsetNumber maxoff)
+{
+	HeapTupleHeader tuphdr = ctx->tuphdr;
+	uint16		infomask = tuphdr->t_infomask;
+	uint16		infomask2 = tuphdr->t_infomask2;
+	BlockNumber tblk;
+	OffsetNumber toff;
+	unsigned	expected_hoff = MAXALIGN(SizeofHeapTupleHeader);
+	Size		expected_lp_len;
+
+	Assert(HeapTupleHeaderIsHotIndexedTombstone(tuphdr));
+
+	/*
+	 * A page that carries a tombstone (adjacent or bridge) must never be
+	 * marked all-visible: tombstones are invisible (HEAP_XMIN_INVALID), and
+	 * the all-visible seqscan fast path skips per-tuple visibility checks and
+	 * would surface the tombstone's payload bytes as a phantom live row.  The
+	 * prune/vacuum paths enforce this by refusing to set PD_ALL_VISIBLE while
+	 * a tombstone is present; verify the on-disk result here.
+	 */
+	if (PageIsAllVisible(ctx->page))
+		report_corruption(ctx,
+						  pstrdup("HOT-indexed tombstone found on an all-visible page"));
+
+	/* natts must be exactly zero (the tombstone signature). */
+	if (ctx->natts != 0)
+		report_corruption(ctx,
+						  psprintf("HOT-indexed tombstone has natts %u (expected 0)",
+								   ctx->natts));
+
+	/* HEAP_INDEXED_UPDATED is what marks an LP_NORMAL as a tombstone. */
+	if ((infomask2 & HEAP_INDEXED_UPDATED) == 0)
+		report_corruption(ctx,
+						  pstrdup("HOT-indexed tombstone missing HEAP_INDEXED_UPDATED"));
+
+	/* xmin and xmax must both be marked invalid; tombstones are invisible. */
+	if ((infomask & HEAP_XMIN_INVALID) == 0)
+		report_corruption(ctx,
+						  pstrdup("HOT-indexed tombstone missing HEAP_XMIN_INVALID"));
+	if ((infomask & HEAP_XMAX_INVALID) == 0)
+		report_corruption(ctx,
+						  pstrdup("HOT-indexed tombstone missing HEAP_XMAX_INVALID"));
+
+	/* t_hoff is fixed at MAXALIGN(SizeofHeapTupleHeader); no nulls bitmap. */
+	if (tuphdr->t_hoff != expected_hoff)
+		report_corruption(ctx,
+						  psprintf("HOT-indexed tombstone t_hoff %u differs from expected %u",
+								   tuphdr->t_hoff, expected_hoff));
+
+	tblk = ItemPointerGetBlockNumberNoCheck(&tuphdr->t_ctid);
+	toff = ItemPointerGetOffsetNumberNoCheck(&tuphdr->t_ctid);
+
+	if (HeapTupleHeaderIsHotIndexedBridge(tuphdr))
+	{
+		/*
+		 * Bridge tombstone: forwards the HOT chain to a same-page offset. We
+		 * validate that the forward link names this page and an offset within
+		 * the line-pointer array (other than itself).  We do NOT require that
+		 * offset to currently be LP_NORMAL: a bridge may legitimately forward
+		 * to a chain member that a later prune has already turned into
+		 * LP_DEAD/LP_UNUSED (a chain walker simply stops there), so an
+		 * LP_NORMAL requirement would raise false positives.
+		 */
+		if (tblk != ctx->blkno)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed bridge forwards to block %u (expected current block %u)",
+									   tblk, ctx->blkno));
+		if (toff < FirstOffsetNumber || toff > maxoff || toff == ctx->offnum)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed bridge has out-of-range forward offset %u (page maxoff %u)",
+									   toff, maxoff));
+
+		expected_lp_len = HOT_INDEXED_BRIDGE_SIZE;
+		if (ctx->lp_len != expected_lp_len)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed bridge length %u differs from expected %zu",
+									   ctx->lp_len, (size_t) expected_lp_len));
+	}
+	else
+	{
+		HotIndexedTombstonePayload *payload;
+		uint16		t_nbytes;
+		uint16		expected_nbytes;
+		int			rel_natts = RelationGetNumberOfAttributes(ctx->rel);
+
+		/*
+		 * Adjacent tombstone: t_ctid points to (InvalidBlockNumber,
+		 * live_offset) where live_offset is a real LP on the same page.
+		 */
+		if (tblk != InvalidBlockNumber)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed adjacent tombstone has non-Invalid block %u",
+									   tblk));
+		if (toff < FirstOffsetNumber || toff > maxoff || toff == ctx->offnum)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed adjacent tombstone has out-of-range back-pointer offset %u (page maxoff %u)",
+									   toff, maxoff));
+
+		/*
+		 * Adjacent tombstones carry a per-relation-natts bitmap.  If the page
+		 * outlived a relation-altering operation that changed the attribute
+		 * count, the LP length will not match; flag that.
+		 */
+		expected_lp_len = HotIndexedTombstoneSize(rel_natts);
+		if (ctx->lp_len != expected_lp_len)
+		{
+			report_corruption(ctx,
+							  psprintf("HOT-indexed adjacent tombstone length %u does not match expected %zu for %d-attribute relation",
+									   ctx->lp_len, (size_t) expected_lp_len, rel_natts));
+			return;
+		}
+
+		/* Payload sanity: t_nbytes covers the relation's attribute count. */
+		payload = HotIndexedTombstoneGetPayload(tuphdr);
+		t_nbytes = payload->t_nbytes;
+		expected_nbytes = (uint16) ((rel_natts + 7) / 8);
+
+		if (t_nbytes != expected_nbytes)
+			report_corruption(ctx,
+							  psprintf("HOT-indexed adjacent tombstone payload t_nbytes %u differs from expected %u",
+									   t_nbytes, expected_nbytes));
+	}
 }
 
 /*
