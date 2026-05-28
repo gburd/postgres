@@ -79,6 +79,7 @@
 #define SUBOPT_WAL_RECEIVER_TIMEOUT			0x00010000
 #define SUBOPT_LSN					0x00020000
 #define SUBOPT_ORIGIN				0x00040000
+#define SUBOPT_HOT_INDEXED_ON_APPLY	0x00080000
 
 /* check if the 'val' has 'bits' set */
 #define IsSet(val, bits)  (((val) & (bits)) == (bits))
@@ -109,6 +110,7 @@ typedef struct SubOpts
 	char	   *origin;
 	XLogRecPtr	lsn;
 	char	   *wal_receiver_timeout;
+	char		hotindexedmode;
 } SubOpts;
 
 /*
@@ -196,6 +198,8 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 		opts->maxretention = 0;
 	if (IsSet(supported_opts, SUBOPT_ORIGIN))
 		opts->origin = pstrdup(LOGICALREP_ORIGIN_ANY);
+	if (IsSet(supported_opts, SUBOPT_HOT_INDEXED_ON_APPLY))
+		opts->hotindexedmode = LOGICALREP_HOT_INDEXED_SUBSET_ONLY;
 
 	/* Parse options */
 	foreach(lc, stmt_options)
@@ -431,6 +435,30 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 										 PGC_BACKEND, PGC_S_TEST, GUC_ACTION_SET,
 										 false, 0, false);
 		}
+		else if (IsSet(supported_opts, SUBOPT_HOT_INDEXED_ON_APPLY) &&
+				 strcmp(defel->defname, "hot_indexed_on_apply") == 0)
+		{
+			char	   *val;
+
+			if (IsSet(opts->specified_opts, SUBOPT_HOT_INDEXED_ON_APPLY))
+				errorConflictingDefElem(defel, pstate);
+
+			opts->specified_opts |= SUBOPT_HOT_INDEXED_ON_APPLY;
+			val = defGetString(defel);
+
+			if (pg_strcasecmp(val, "off") == 0)
+				opts->hotindexedmode = LOGICALREP_HOT_INDEXED_OFF;
+			else if (pg_strcasecmp(val, "subset_only") == 0)
+				opts->hotindexedmode = LOGICALREP_HOT_INDEXED_SUBSET_ONLY;
+			else if (pg_strcasecmp(val, "always") == 0)
+				opts->hotindexedmode = LOGICALREP_HOT_INDEXED_ALWAYS;
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("unrecognized value for subscription parameter \"%s\": \"%s\"",
+								"hot_indexed_on_apply", val),
+						 errhint("Valid values are \"off\", \"subset_only\", and \"always\".")));
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -643,7 +671,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 					  SUBOPT_RUN_AS_OWNER | SUBOPT_FAILOVER |
 					  SUBOPT_RETAIN_DEAD_TUPLES |
 					  SUBOPT_MAX_RETENTION_DURATION |
-					  SUBOPT_WAL_RECEIVER_TIMEOUT | SUBOPT_ORIGIN);
+					  SUBOPT_WAL_RECEIVER_TIMEOUT | SUBOPT_ORIGIN |
+					  SUBOPT_HOT_INDEXED_ON_APPLY);
 	parse_subscription_options(pstate, stmt->options, supported_opts, &opts);
 
 	/*
@@ -797,6 +826,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		Int32GetDatum(opts.maxretention);
 	values[Anum_pg_subscription_subretentionactive - 1] =
 		BoolGetDatum(opts.retaindeadtuples);
+	values[Anum_pg_subscription_subhotindexedonapply - 1] =
+		CharGetDatum(opts.hotindexedmode);
 	values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(serverid);
 	if (!OidIsValid(serverid))
 		values[Anum_pg_subscription_subconninfo - 1] =
@@ -1501,7 +1532,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								  SUBOPT_RETAIN_DEAD_TUPLES |
 								  SUBOPT_MAX_RETENTION_DURATION |
 								  SUBOPT_WAL_RECEIVER_TIMEOUT |
-								  SUBOPT_ORIGIN);
+								  SUBOPT_ORIGIN |
+								  SUBOPT_HOT_INDEXED_ON_APPLY);
 
 				parse_subscription_options(pstate, stmt->options,
 										   supported_opts, &opts);
@@ -1761,6 +1793,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					values[Anum_pg_subscription_subwalrcvtimeout - 1] =
 						CStringGetTextDatum(opts.wal_receiver_timeout);
 					replaces[Anum_pg_subscription_subwalrcvtimeout - 1] = true;
+				}
+
+				if (IsSet(opts.specified_opts, SUBOPT_HOT_INDEXED_ON_APPLY))
+				{
+					values[Anum_pg_subscription_subhotindexedonapply - 1] =
+						CharGetDatum(opts.hotindexedmode);
+					replaces[Anum_pg_subscription_subhotindexedonapply - 1] = true;
 				}
 
 				update_tuple = true;
