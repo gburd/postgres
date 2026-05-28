@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/parallel.h"
@@ -454,6 +455,11 @@ AllocateRelationDesc(Form_pg_class relp)
 	relation->rd_att->tdrefcount = 1;
 
 	MemoryContextSwitchTo(oldcxt);
+
+	/* Initialize HOT-indexed eligibility index counts to -1 (not yet computed) */
+	relation->rd_expr_indexes = -1;
+	relation->rd_regular_indexes = -1;
+	relation->rd_partial_indexes = -1;
 
 	return relation;
 }
@@ -1584,6 +1590,7 @@ RelationInitIndexAccessInfo(Relation relation)
 	 */
 	relation->rd_indexprs = NIL;
 	relation->rd_indpred = NIL;
+	relation->rd_indattr = NULL;
 	relation->rd_exclops = NULL;
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
@@ -2480,7 +2487,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_keyattr);
 	bms_free(relation->rd_pkattr);
 	bms_free(relation->rd_idattr);
-	bms_free(relation->rd_hotblockingattr);
+	bms_free(relation->rd_indexedattr);
 	bms_free(relation->rd_summarizedattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
@@ -5267,6 +5274,241 @@ RelationGetIndexPredicate(Relation relation)
 }
 
 /*
+ * RelationGetIndexedAttrs -- palloc'd Bitmapset of heap attrs this index
+ * references.
+ *
+ * Includes attributes used as simple key columns, INCLUDE columns, inside
+ * expression columns, and inside the partial-index predicate.  Attribute
+ * numbers use the FirstLowInvalidHeapAttributeNumber offset convention so
+ * that system attributes are representable alongside user attributes.
+ *
+ * The function builds up the bitmap from:
+ *   - rd_index->indkey           (keys + INCLUDE)
+ *   - RelationGetIndexExpressions (parsed expression trees, already cached)
+ *   - RelationGetIndexPredicate   (parsed predicate tree, already cached)
+ * and caches a copy in rd_indexedattr, which lives in rd_indexcxt.
+ *
+ * The returned Bitmapset is allocated in the caller's current memory
+ * context; the caller owns it and must bms_free when done.  We never hand
+ * out a borrowed pointer to the cached copy because relcache invalidation
+ * can rebuild rd_indexcxt in place even while a refcount is held.
+ *
+ * Caller must hold an open lock on the index relation.
+ */
+Bitmapset *
+RelationGetIndexedAttrs(Relation indexRel)
+{
+	Bitmapset  *attrs = NULL;
+	Form_pg_index indexStruct;
+	List	   *indexprs;
+	List	   *indpred;
+	MemoryContext oldcxt;
+
+	Assert(indexRel->rd_rel->relkind == RELKIND_INDEX ||
+		   indexRel->rd_rel->relkind == RELKIND_PARTITIONED_INDEX);
+
+	/* Fast path: return a copy of the cached bitmap. */
+	if (indexRel->rd_indattr != NULL)
+		return bms_copy(indexRel->rd_indattr);
+
+	indexStruct = indexRel->rd_index;
+
+	/*
+	 * During very early bootstrap rd_indextuple may not be populated yet. In
+	 * that case we fall back to just the key columns without caching.
+	 */
+	if (indexRel->rd_indextuple == NULL)
+	{
+		for (int i = 0; i < indexStruct->indnkeyatts; i++)
+		{
+			AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+			if (attrnum != 0)
+				attrs = bms_add_member(attrs,
+									   attrnum - FirstLowInvalidHeapAttributeNumber);
+		}
+		return attrs;
+	}
+
+	/*
+	 * Key columns only.  INCLUDE columns (attnums past indnkeyatts) are not
+	 * considered: their values do not affect index lookups, so a change to an
+	 * INCLUDE column does not require a new index entry even though the
+	 * column is present in the index.  Callers needing the full key+include
+	 * set should use RelationGetIndexAttrBitmap(...,
+	 * INDEX_ATTR_BITMAP_INDEXED).
+	 */
+	for (int i = 0; i < indexStruct->indnkeyatts; i++)
+	{
+		AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+		/* attnum 0 means "expression"; those attrs are picked up below. */
+		if (attrnum != 0)
+			attrs = bms_add_member(attrs,
+								   attrnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* Expression columns (via already-parsed tree, reusing relcache). */
+	indexprs = RelationGetIndexExpressions(indexRel);
+	if (indexprs != NIL)
+		pull_varattnos((Node *) indexprs, 1, &attrs);
+
+	/* Partial-index predicate columns. */
+	indpred = RelationGetIndexPredicate(indexRel);
+	if (indpred != NIL)
+		pull_varattnos((Node *) indpred, 1, &attrs);
+
+	/*
+	 * Cache a copy inside rd_indexcxt so subsequent calls are cheap.  The
+	 * cached bitmap is freed along with rd_indexcxt on relcache rebuild, so
+	 * it's safe to stash here.
+	 */
+	if (indexRel->rd_indexcxt != NULL)
+	{
+		oldcxt = MemoryContextSwitchTo(indexRel->rd_indexcxt);
+		indexRel->rd_indattr = bms_copy(attrs);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	return attrs;
+}
+
+/*
+ * RelationGetHotIndexedChainMax
+ *
+ * Return the maximum HOT-indexed chain length heap_update should allow for
+ * this relation.  The cap is derived lazily from the relation's fillfactor
+ * and estimated average tuple size, so narrow tables get long chains and
+ * wide tables get short chains; neither a fixed constant nor a system-wide
+ * GUC would fit as well.
+ *
+ * Heuristic: page_budget = BLCKSZ * fillfactor / 100
+ *            cap = (page_budget - overhead) / (avg_tuple + tombstone)
+ *
+ * The answer is cached in rel->rd_hotidx_chainmax.  Zero (the initial
+ * memset value) means "not yet computed".  A relcache invalidation
+ * destroys the Relation and a fresh one reinitialises to zero, so the
+ * value is naturally re-derived after any DDL that could change it
+ * (ALTER TABLE ... SET (fillfactor = ...), ADD/DROP COLUMN, etc.).
+ *
+ * This function is safe to call on any relkind but the cap only guides
+ * HOT-indexed decisions on ordinary and matview heaps; other relkinds
+ * see it but never consult it.
+ */
+int
+RelationGetHotIndexedChainMax(Relation relation)
+{
+	int			fillfactor;
+	Size		page_budget;
+	Size		overhead;
+	Size		avg_tuple;
+	Size		tombstone;
+	int			cap;
+
+	if (relation->rd_hotidx_chainmax > 0)
+		return relation->rd_hotidx_chainmax;
+
+	fillfactor = RelationGetFillFactor(relation, HEAP_DEFAULT_FILLFACTOR);
+	page_budget = BLCKSZ * fillfactor / 100;
+
+	/*
+	 * Overhead reserved on the page: the page header plus a small slop
+	 * reserve for ItemIdData slots that may be added by chain extensions and
+	 * concurrent inserts on the same page.  Eight slots is a round number
+	 * well below MaxHeapTuplesPerPage and corresponds to roughly two cache
+	 * lines of LP space; multiplying by sizeof(ItemIdData) makes the unit
+	 * (bytes) explicit at the call site rather than buried in a magic
+	 * constant.
+	 */
+	overhead = SizeOfPageHeaderData + 8 * sizeof(ItemIdData);
+
+	/*
+	 * Average tuple estimate.  We deliberately avoid consulting
+	 * pg_class.reltuples/relpages here: autovacuum's statistics may lag
+	 * behind reality, and the cap should be stable per-DDL rather than
+	 * swinging with row counts.  The per-column 8-byte term is a generous
+	 * approximation for typical narrow tables; wide text/bytea columns just
+	 * mean the cap becomes smaller, which is the behaviour we want.
+	 */
+	avg_tuple = MAXALIGN(sizeof(HeapTupleHeaderData)) +
+		RelationGetDescr(relation)->natts * 8;
+
+	/*
+	 * Tombstone size upper bound.  HotIndexedTombstoneSize() is the
+	 * authoritative on-page size for the worst-case attribute count, so by
+	 * passing MaxHeapAttributeNumber here we get an upper bound that scales
+	 * automatically if the tombstone format ever grows.  A StaticAssertDecl
+	 * in hot_indexed.c bounds this at 64 bytes, which is small enough that an
+	 * off-by-a-few estimate cannot push the cap into a degenerate range.
+	 */
+	tombstone = HotIndexedTombstoneSize(MaxHeapAttributeNumber);
+
+	if (page_budget <= overhead)
+		cap = 1;
+	else
+		cap = (int) ((page_budget - overhead) / (avg_tuple + tombstone));
+
+	if (cap < 1)
+		cap = 1;
+	if (cap > MaxHeapTuplesPerPage)
+		cap = MaxHeapTuplesPerPage;
+
+	relation->rd_hotidx_chainmax = cap;
+	return cap;
+}
+
+/*
+ * RelationHasExclusionConstraint -- true iff any index on `relation`
+ * is an exclusion constraint (pg_index.indisexclusion = true).
+ *
+ * Caches the result on Relation->rd_has_exclusion (tristate, reset on
+ * relcache rebuild).  HeapUpdateHotAllowable calls this on every UPDATE,
+ * so on relations with many indexes the previous walk-and-open-each-index
+ * implementation showed up in profiles.
+ */
+bool
+RelationHasExclusionConstraint(Relation relation)
+{
+	List	   *indexoids;
+	ListCell   *lc;
+	bool		has_excl = false;
+
+	Assert(relation->rd_rel->relkind != RELKIND_INDEX &&
+		   relation->rd_rel->relkind != RELKIND_PARTITIONED_INDEX);
+
+	if (relation->rd_has_exclusion == RD_HAS_EXCLUSION_YES)
+		return true;
+	if (relation->rd_has_exclusion == RD_HAS_EXCLUSION_NO)
+		return false;
+
+	if (!relation->rd_rel->relhasindex)
+	{
+		relation->rd_has_exclusion = RD_HAS_EXCLUSION_NO;
+		return false;
+	}
+
+	indexoids = RelationGetIndexList(relation);
+	foreach(lc, indexoids)
+	{
+		Oid			idxoid = lfirst_oid(lc);
+		Relation	idx = index_open(idxoid, NoLock);
+
+		if (idx->rd_index != NULL && idx->rd_index->indisexclusion)
+			has_excl = true;
+
+		index_close(idx, NoLock);
+
+		if (has_excl)
+			break;
+	}
+
+	list_free(indexoids);
+	relation->rd_has_exclusion = has_excl ? RD_HAS_EXCLUSION_YES
+		: RD_HAS_EXCLUSION_NO;
+	return has_excl;
+}
+
+/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
@@ -5282,8 +5524,8 @@ RelationGetIndexPredicate(Relation relation)
  *									(beware: even if PK is deferrable!)
  *	INDEX_ATTR_BITMAP_IDENTITY_KEY	Columns in the table's replica identity
  *									index (empty if FULL)
- *	INDEX_ATTR_BITMAP_HOT_BLOCKING	Columns that block updates from being HOT
- *	INDEX_ATTR_BITMAP_SUMMARIZED	Columns included in summarizing indexes
+ *	INDEX_ATTR_BITMAP_INDEXED		Columns referenced by indexes
+ *	INDEX_ATTR_BITMAP_SUMMARIZED	Columns only included in summarizing indexes
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
  * we can include system attributes (e.g., OID) in the bitmap representation.
@@ -5306,8 +5548,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *uindexattrs;	/* columns in unique indexes */
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
-	Bitmapset  *hotblockingattrs;	/* columns with HOT blocking indexes */
-	Bitmapset  *summarizedattrs;	/* columns with summarizing indexes */
+	Bitmapset  *indexedattrs;	/* columns referenced by indexes */
+	Bitmapset  *summarizedattrs;	/* columns only in summarizing indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5326,8 +5568,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_pkattr);
 			case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 				return bms_copy(relation->rd_idattr);
-			case INDEX_ATTR_BITMAP_HOT_BLOCKING:
-				return bms_copy(relation->rd_hotblockingattr);
+			case INDEX_ATTR_BITMAP_INDEXED:
+				return bms_copy(relation->rd_indexedattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
 			default:
@@ -5372,7 +5614,7 @@ restart:
 	uindexattrs = NULL;
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
-	hotblockingattrs = NULL;
+	indexedattrs = NULL;
 	summarizedattrs = NULL;
 	foreach(l, indexoidlist)
 	{
@@ -5432,7 +5674,7 @@ restart:
 		if (indexDesc->rd_indam->amsummarizing)
 			attrs = &summarizedattrs;
 		else
-			attrs = &hotblockingattrs;
+			attrs = &indexedattrs;
 
 		/* Collect simple attribute references */
 		for (i = 0; i < indexDesc->rd_index->indnatts; i++)
@@ -5441,9 +5683,9 @@ restart:
 
 			/*
 			 * Since we have covering indexes with non-key columns, we must
-			 * handle them accurately here. non-key columns must be added into
-			 * hotblockingattrs or summarizedattrs, since they are in index,
-			 * and update shouldn't miss them.
+			 * handle them accurately here. Non-key columns must be added into
+			 * indexedattrs or summarizedattrs, since they are in index, and
+			 * update shouldn't miss them.
 			 *
 			 * Summarizing indexes do not block HOT, but do need to be updated
 			 * when the column value changes, thus require a separate
@@ -5504,11 +5746,24 @@ restart:
 		bms_free(uindexattrs);
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
-		bms_free(hotblockingattrs);
+		bms_free(indexedattrs);
 		bms_free(summarizedattrs);
 
 		goto restart;
 	}
+
+	/*
+	 * Record which attributes are referenced only by summarizing indexes, so
+	 * INDEX_ATTR_BITMAP_SUMMARIZED reports columns whose sole indexes are
+	 * summarizing ones.  A column that also appears in a non-summarizing index
+	 * stays in indexedattrs and is removed from summarizedattrs here.
+	 *
+	 * indexedattrs (INDEX_ATTR_BITMAP_INDEXED) therefore holds exactly the
+	 * attributes referenced by non-summarizing indexes -- the set whose
+	 * modification blocks a classic HOT update.  (A later commit folds the
+	 * summarizing-only attributes in as well, once a consumer needs them.)
+	 */
+	summarizedattrs = bms_del_members(summarizedattrs, indexedattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5518,8 +5773,8 @@ restart:
 	relation->rd_pkattr = NULL;
 	bms_free(relation->rd_idattr);
 	relation->rd_idattr = NULL;
-	bms_free(relation->rd_hotblockingattr);
-	relation->rd_hotblockingattr = NULL;
+	bms_free(relation->rd_indexedattr);
+	relation->rd_indexedattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
 
@@ -5534,7 +5789,7 @@ restart:
 	relation->rd_keyattr = bms_copy(uindexattrs);
 	relation->rd_pkattr = bms_copy(pkindexattrs);
 	relation->rd_idattr = bms_copy(idindexattrs);
-	relation->rd_hotblockingattr = bms_copy(hotblockingattrs);
+	relation->rd_indexedattr = bms_copy(indexedattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
@@ -5548,10 +5803,72 @@ restart:
 			return pkindexattrs;
 		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 			return idindexattrs;
-		case INDEX_ATTR_BITMAP_HOT_BLOCKING:
-			return hotblockingattrs;
+		case INDEX_ATTR_BITMAP_INDEXED:
+			return indexedattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		default:
+			elog(ERROR, "unknown attrKind %u", attrKind);
+			return NULL;
+	}
+}
+
+/*
+ * RelationGetIndexAttrBitmapNoCopy -- borrowing variant of
+ *		RelationGetIndexAttrBitmap
+ *
+ * Returns a pointer to the relcache-owned bitmap for the given attrKind
+ * without making a defensive copy.  This is a hot-path optimization for
+ * read-only callers that perform set operations like bms_overlap,
+ * bms_is_subset, bms_equal, or bms_num_members and never mutate the
+ * returned bitmap.  The result is conceptually `const Bitmapset *`; callers
+ * must not pass it to anything that could free or modify the underlying
+ * memory (e.g., bms_add_member, bms_int_members, bms_free).
+ *
+ * Lifetime: the pointer is valid only until the next event that could
+ * trigger a relcache invalidation on `relation`.  Callers must not invoke
+ * any code that opens a relation, runs catalog lookups, or otherwise
+ * accepts invalidation messages between the fetch and the last use.
+ *
+ * For the common case the relcache entry's attribute bitmaps are already
+ * computed (rd_attrsvalid is true).  When they aren't, we go through
+ * RelationGetIndexAttrBitmap to populate the cache (which costs one
+ * throwaway bms_copy on first use) and then return the cached pointer on
+ * the second pass.  The first-use path is rare and never on the bench hot
+ * path, so the simplicity is preferred over open-coding the populate-only
+ * variant.
+ */
+const Bitmapset *
+RelationGetIndexAttrBitmapNoCopy(Relation relation, IndexAttrBitmapKind attrKind)
+{
+	if (!relation->rd_attrsvalid)
+	{
+		Bitmapset  *populated;
+
+		/* Populate rd_*attr fields; discard the returned copy. */
+		populated = RelationGetIndexAttrBitmap(relation, attrKind);
+		bms_free(populated);
+
+		/*
+		 * If the relation has no indexes, RelationGetIndexAttrBitmap returns
+		 * NULL without setting rd_attrsvalid.  Mirror that here.
+		 */
+		if (!relation->rd_attrsvalid)
+			return NULL;
+	}
+
+	switch (attrKind)
+	{
+		case INDEX_ATTR_BITMAP_KEY:
+			return relation->rd_keyattr;
+		case INDEX_ATTR_BITMAP_PRIMARY_KEY:
+			return relation->rd_pkattr;
+		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
+			return relation->rd_idattr;
+		case INDEX_ATTR_BITMAP_INDEXED:
+			return relation->rd_indexedattr;
+		case INDEX_ATTR_BITMAP_SUMMARIZED:
+			return relation->rd_summarizedattr;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
@@ -6491,6 +6808,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_partcheckcxt = NULL;
 		rel->rd_indexprs = NIL;
 		rel->rd_indpred = NIL;
+		rel->rd_indattr = NULL;
 		rel->rd_exclops = NULL;
 		rel->rd_exclprocs = NULL;
 		rel->rd_exclstrats = NULL;
