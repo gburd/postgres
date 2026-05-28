@@ -1274,6 +1274,7 @@ HeapTupleFreeze
 HeapTupleHeader
 HeapTupleHeaderData
 HeapTupleTableSlot
+HeapUpdateHotMode
 HistControl
 HostCacheEntry
 HostsFileLoadResult
@@ -3098,6 +3099,7 @@ TM_FailureData
 TM_IndexDelete
 TM_IndexDeleteOp
 TM_IndexStatus
+TM_IndexUpdateInfo
 TM_Result
 TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
@@ -3139,7 +3141,6 @@ TSVectorStat
 TState
 TStatus
 TStoreState
-TU_UpdateIndexes
 TXNEntryFile
 TYPCATEGORY
 T_Action

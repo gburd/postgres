@@ -2484,6 +2484,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_idattr);
 	bms_free(relation->rd_indexedattr);
 	bms_free(relation->rd_summarizedattr);
+	bms_free(relation->rd_exprindexattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5544,6 +5545,7 @@ Bitmapset *
 RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 {
 	Bitmapset  *uindexattrs;	/* columns in unique indexes */
+	Bitmapset  *exprindexattrs; /* columns referenced by expression indexes */
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *indexedattrs;	/* columns referenced by indexes */
@@ -5570,6 +5572,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_indexedattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_EXPRESSION:
+				return bms_copy(relation->rd_exprindexattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5614,6 +5618,7 @@ restart:
 	idindexattrs = NULL;
 	indexedattrs = NULL;
 	summarizedattrs = NULL;
+	exprindexattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5718,6 +5723,28 @@ restart:
 		/* Collect all attributes in the index predicate, too */
 		pull_varattnos(indexPredicate, 1, attrs);
 
+		/*
+		 * If this index evaluates an expression, record every heap attribute
+		 * it references (key columns, expression vars, predicate vars) in
+		 * exprindexattrs.  HeapUpdateHotAllowable() disqualifies the
+		 * HOT-indexed path for an UPDATE that touches one of these, because
+		 * expression-aware selective index maintenance is not implemented
+		 * yet.
+		 */
+		if (indexExpressions != NULL)
+		{
+			for (i = 0; i < indexDesc->rd_index->indnatts; i++)
+			{
+				int			attrnum = indexDesc->rd_index->indkey.values[i];
+
+				if (attrnum != 0)
+					exprindexattrs = bms_add_member(exprindexattrs,
+													attrnum - FirstLowInvalidHeapAttributeNumber);
+			}
+			pull_varattnos(indexExpressions, 1, &exprindexattrs);
+			pull_varattnos(indexPredicate, 1, &exprindexattrs);
+		}
+
 		index_close(indexDesc, AccessShareLock);
 	}
 
@@ -5746,6 +5773,7 @@ restart:
 		bms_free(idindexattrs);
 		bms_free(indexedattrs);
 		bms_free(summarizedattrs);
+		bms_free(exprindexattrs);
 
 		goto restart;
 	}
@@ -5753,15 +5781,23 @@ restart:
 	/*
 	 * Record which attributes are referenced only by summarizing indexes, so
 	 * INDEX_ATTR_BITMAP_SUMMARIZED reports columns whose sole indexes are
-	 * summarizing ones.  A column that also appears in a non-summarizing
-	 * index stays in indexedattrs and is removed from summarizedattrs here.
+	 * summarizing ones, then fold those columns into indexedattrs as well.
 	 *
-	 * indexedattrs (INDEX_ATTR_BITMAP_INDEXED) therefore holds exactly the
-	 * attributes referenced by non-summarizing indexes -- the set whose
-	 * modification blocks a classic HOT update.  (A later commit folds the
-	 * summarizing-only attributes in as well, once a consumer needs them.)
+	 * INDEX_ATTR_BITMAP_INDEXED must include summarizing-index columns for
+	 * the HOT-indexed write path: ExecUpdateModifiedIdxAttrs compares the old
+	 * and new tuples over this bitmap to build modified_idx_attrs, and
+	 * ExecUpdate only calls ExecInsertIndexTuples when that set is non-empty
+	 * (or the update is non-HOT).  A change to a column indexed only by a
+	 * summarizing index must therefore appear in the bitmap so the
+	 * summarizing index gets its block summary refreshed.
+	 * HeapUpdateHotAllowable's all_summarizing check still keeps such an
+	 * update on the classic-HOT path (it builds no tombstone, since
+	 * INDEX_ATTR_BITMAP_SUMMARIZED -- summarizing-only -- is a superset of
+	 * the modified attributes), and the summarizing index inserts
+	 * unconditionally via its ii_Summarizing flag.
 	 */
 	summarizedattrs = bms_del_members(summarizedattrs, indexedattrs);
+	indexedattrs = bms_add_members(indexedattrs, summarizedattrs);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
@@ -5775,6 +5811,8 @@ restart:
 	relation->rd_indexedattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_exprindexattr);
+	relation->rd_exprindexattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5789,6 +5827,7 @@ restart:
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_indexedattr = bms_copy(indexedattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_exprindexattr = bms_copy(exprindexattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5805,6 +5844,8 @@ restart:
 			return indexedattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return exprindexattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
@@ -5867,6 +5908,8 @@ RelationGetIndexAttrBitmapNoCopy(Relation relation, IndexAttrBitmapKind attrKind
 			return relation->rd_indexedattr;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return relation->rd_summarizedattr;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return relation->rd_exprindexattr;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
