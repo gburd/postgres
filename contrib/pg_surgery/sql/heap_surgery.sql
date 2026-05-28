@@ -83,6 +83,32 @@ create view vw as select 1;
 select heap_force_kill('vw'::regclass, ARRAY['(0, 1)']::tid[]);
 select heap_force_freeze('vw'::regclass, ARRAY['(0, 1)']::tid[]);
 
+-- HOT-indexed tombstones are LP_NORMAL items that are not real tuples; forcing
+-- them would corrupt the heap (freeze would surface a phantom natts==0 row,
+-- kill would drop a chain hop), so both functions must skip them.
+create extension pageinspect;
+create table htomb (id int primary key, a int, b int) with (fillfactor = 50);
+create index htomb_a on htomb(a);
+insert into htomb values (1, 10, 20);
+-- changes one of two indexed attrs (<= threshold) -> HOT-indexed -> tombstone
+update htomb set a = 11 where id = 1;
+select n_tombstones > 0 as have_tombstone
+  from pg_relation_hot_indexed_stats('htomb');
+-- locate the tombstone on block 0: LP_NORMAL item with HEAP_INDEXED_UPDATED
+-- (infomask2 & 0x0800) set and natts (infomask2 & 0x07FF) zero.
+select lp as tomb_off
+  from heap_page_items(get_raw_page('htomb', 0))
+ where lp_flags = 1 and (t_infomask2 & 2048) <> 0 and (t_infomask2 & 2047) = 0 \gset
+-- both surgery ops must skip it (NOTICE), leaving the heap unchanged
+select heap_force_freeze('htomb'::regclass, ARRAY[('(0,' || :tomb_off || ')')::tid]);
+select heap_force_kill('htomb'::regclass, ARRAY[('(0,' || :tomb_off || ')')::tid]);
+-- live row intact, no phantom, tombstone still present
+select id, a, b from htomb;
+select n_tombstones > 0 as still_have_tombstone
+  from pg_relation_hot_indexed_stats('htomb');
+drop table htomb;
+drop extension pageinspect;
+
 -- cleanup.
 drop view vw;
 drop extension pg_surgery;
