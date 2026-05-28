@@ -1,0 +1,544 @@
+src/backend/access/heap/README.HOT-INDEXED
+
+HOT-indexed updates (Selective Index Update, "SIU")
+====================================================
+
+Classic HOT (see README.HOT) keeps an UPDATE off the indexes only when the
+update changes NO indexed column: the new tuple becomes a heap-only member of
+the same t_ctid chain, every index entry keeps pointing at the chain root, and
+because all live versions share the same indexed values a reader that walks the
+chain always lands on a tuple whose values match the index entry it arrived
+through.
+
+HOT-indexed relaxes that to "the update may change indexed columns and still
+stay on the same page", by inserting a fresh index entry only into the indexes
+whose attributes actually changed, and leaving a per-hop record on the page of
+which indexed attributes changed.  The old index entries are now potentially
+STALE -- an entry for an old key still chain-leads to the live tuple, whose
+current key is different -- so readers must be taught to recognise and discard
+a stale arrival.
+
+This file documents the on-disk encoding, the eligibility rules, the write and
+read paths, chain pruning/vacuum, crash recovery, and the limitations.  It uses
+the following notation throughout:
+
+    LP[n]                 line pointer at offset n on the page
+    vN                    the N'th heap tuple version in a chain
+    INDEXED_UPDATED{a,b}  tuple carries HEAP_INDEXED_UPDATED; this hop changed
+                          indexed attributes a and b
+    idx_a: (a=11) -> LP[2] an idx_a leaf with key a=11 pointing at LP[2]
+    1. ... -> ...         a numbered step in a chain walk; the trailing "keep"
+                          or "drop" marks the read-side staleness outcome
+
+
+The classic-HOT invariant we are relaxing
+------------------------------------------
+
+Classic HOT relies on: every live btree leaf resolves, via a same-page t_ctid
+walk, to a live heap tuple whose indexed values equal the leaf's key.
+
+HOT-indexed breaks the "values equal the leaf's key" half: a chain may contain
+tuples with different indexed values, and a leaf for an old value still reaches
+the live tuple.  Two mechanisms restore correctness:
+
+  - a per-hop on-page record (the "tombstone") naming which indexed attributes
+    changed, and
+  - a read-side test that, for the index a scan arrived through, asks whether
+    any hop crossed between the arriving leaf's target and the live tuple
+    changed an attribute that index covers.  If so the leaf is stale and is
+    discarded; if not the leaf still matches and the tuple is kept.  The test
+    is a bitmap overlap (no key comparison and no index tuple required).
+
+
+The tombstone line pointer
+--------------------------
+
+A tombstone is an LP_NORMAL line pointer whose HeapTupleHeader is NOT a real
+tuple.  It is distinguished from a real tuple by the pair
+
+    (t_infomask2 & HEAP_INDEXED_UPDATED) != 0   AND   HeapTupleHeaderGetNatts == 0
+
+No real heap tuple ever sets HEAP_INDEXED_UPDATED, so the pair is a signature no
+genuine tuple can produce.  (natts == 0 alone is not exclusive to tombstones --
+a zero-column relation stores rows with natts == 0 -- but such relations have no
+indexed attributes and never carry HEAP_INDEXED_UPDATED, so the conjunction is
+unambiguous.)  Tombstones set HEAP_XMIN_INVALID | HEAP_XMAX_INVALID, so every
+visibility routine treats them as not-a-tuple and skips them.
+
+There are two variants:
+
+    Adjacent tombstone   written by heap_update next to a new HOT-indexed tuple.
+                         t_ctid = (InvalidBlockNumber, target_offnum), where
+                         target_offnum is the live HOT-indexed tuple it
+                         describes.  Body: uint16 t_nbytes + uint8 bitmap[],
+                         the per-update modified-indexed-attrs bitmap.
+
+    Bridge tombstone     written by pruneheap in place of a dead mid-chain
+                         HOT-indexed heap-only tuple whose LP cannot yet be
+                         reclaimed (stale leaves still point at it).
+                         t_ctid = (current_blkno, forward_offnum) -- a same-page
+                         forward chain link.  No bitmap.  Fixed size
+                         HOT_INDEXED_BRIDGE_SIZE = MAXALIGN(SizeofHeapTupleHeader).
+
+The target/forward offset is read from t_ctid.offnum
+(HotIndexedTombstoneGetTarget); it is not duplicated in the body.
+HeapTupleHeaderIsHotIndexedTombstone matches both variants;
+HeapTupleHeaderIsHotIndexedBridge (t_ctid.blockno is valid) tells them apart.
+
+See access/hot_indexed.h for the accessors and the StaticAssertDecls that pin
+the layout.
+
+
+Eligibility: HeapUpdateHotAllowable
+-----------------------------------
+
+The executor computes modified_idx_attrs (the indexed attributes this UPDATE
+changed; INDEX_ATTR_BITMAP_INDEXED, which includes key, INCLUDE, expression and
+partial-predicate columns).  HeapUpdateHotAllowable() returns one of:
+
+    HEAP_HOT_MODE_NO        non-HOT update: new tuple on a fresh TID, every
+                            index gets a fresh entry (the pre-HOT-indexed path).
+    HEAP_HOT_MODE_CLASSIC   classic HOT: no index changes at all.
+    HEAP_HOT_MODE_INDEXED   HOT-indexed: heap-only new tuple + adjacent
+                            tombstone; only changed-attr indexes get a fresh
+                            entry.
+
+Decision order:
+
+    1. modified_idx_attrs empty                         -> CLASSIC
+    2. all modified attrs belong only to summarizing
+       indexes (BRIN, ...)                              -> CLASSIC
+    3. relation is a system catalog                     -> NO
+    4. relation has an exclusion constraint             -> NO
+    5. UPDATE touches more than hot_indexed_update_
+       threshold percent of indexed attrs (default 80)  -> NO
+    6. otherwise                                        -> INDEXED
+       (heap_update further caps chain length, below)
+
+Steps 1 and 2 are reached before step 3, so system catalogs keep classic HOT
+unchanged; only catalog updates that would otherwise be HOT-indexed fall back to
+a non-HOT update.  See "System catalogs" below.
+
+Non-btree and expression indexes need no exemption: the read-side test is a
+bitmap overlap on the index's referenced heap attributes
+(RelationGetIndexedAttrs), which is defined for every access method and needs
+no key evaluation, so a stale leaf is recognised for any index kind.
+
+
+The write path
+--------------
+
+For HEAP_HOT_MODE_INDEXED, heap_update:
+
+  1. checks the page has room for BOTH the new tuple and an adjacent tombstone;
+     if not, it downgrades to HEAP_HOT_MODE_NO (off-page, fully indexed);
+  2. writes the new heap-only tuple, t_ctid-linked into the chain, with
+     HEAP_INDEXED_UPDATED set;
+  3. writes an adjacent tombstone (heap_build_hot_indexed_tombstone) carrying
+     the modified-attrs bitmap for this hop;
+  4. emits an UPDATE WAL record flagged XLH_UPDATE_CONTAINS_TOMBSTONE that
+     carries the tombstone bytes so replay reconstructs both items.
+
+Which indexes get a fresh entry is decided by ExecSetIndexUnchanged(): for each
+index it consults RelationGetIndexedAttrs() (the per-index attribute set,
+including INCLUDE columns) and sets ii_IndexUnchanged when that set does not
+overlap modified_idx_attrs.  Unchanged non-summarizing indexes are skipped;
+changed indexes (and all summarizing indexes) receive a fresh entry whose TID
+points directly at the new heap-only tuple.
+
+
+The chain and the two kinds of leaf entry
+------------------------------------------
+
+After a HOT-indexed update there are two kinds of btree leaf for an indexed
+column:
+
+    Fresh entry   inserted by the update; its key is the new value and its TID
+                  points directly at the heap-only tuple that was current at
+                  insert time.
+
+    Stale entry   the pre-update entry; its key is an old value and its TID
+                  still points at the chain root (or an earlier member).
+
+A chain walk that crosses a tuple carrying HEAP_INDEXED_UPDATED, or that lands
+directly on a live HOT-indexed heap-only tuple, is a "hot-indexed hop".  The
+read side decides staleness from the modified-attrs bitmaps of the hops crossed
+strictly after the arriving leaf's target.
+
+
+Read-side correctness: bitmap overlap
+-------------------------------------
+
+heap_hot_search_buffer walks the chain, transparently following bridge
+tombstones (HotIndexedBridgeGetForward) and stopping at adjacent tombstones.
+For each chain member it advances to *after* the entry tuple it records the
+member's offset; on reaching the visible tuple it tests, for each recorded
+member, that member's modified-attrs bitmap (read from its retained adjacent
+tombstone) against index_attrs -- the set of heap attributes the arriving index
+covers (RelationGetIndexedAttrs, cached by index_fetch_heap and passed down):
+
+    overlap empty     -> none of this index's attributes changed between the
+                         leaf's target and the live tuple; the leaf still
+                         matches.  Keep the tuple.
+    overlap non-empty -> an attribute the index covers changed on the way; the
+                         leaf is stale.  Drop it.  The fresh entry for the live
+                         tuple's current value returns the row through its own
+                         path.
+
+The entry tuple's own producing hop is excluded (a fresh entry pointing directly
+at the tuple it was inserted for is never dropped).  The result is surfaced as
+IndexScanDesc.xs_hot_indexed_stale; IndexScan and IndexOnlyScan drop the tuple
+when it is set.  BitmapHeapScan cannot identify the originating index, so for it
+index_attrs is NULL and the flag instead means "a hot-indexed hop was crossed",
+which forces the bitmap scan's recheck qual.
+
+This "fresh entry re-supplies the row" property is why dropping a stale leaf
+never loses a row: the live tuple's current value always has a fresh entry, and
+a scan for that value finds it.
+
+Worked example.  User table siu_demo(id, a, b, c) with btree indexes idx_a,
+idx_b, idx_c, fillfactor leaving page room.  Three single-column updates:
+
+    UPDATE a=11;  UPDATE b=21;  UPDATE c=31;
+
+  Chain on one page (t_ctid: LP[1]->LP[3]->LP[5]->LP[7]; adjacent tombstones at
+  the even LPs, each carrying its hop's modified-attrs bitmap):
+    LP[1]: v1  a=10 b=20 c=30   root, dead
+    LP[3]: v2  a=11 b=20 c=30   heap-only, dead,  INDEXED_UPDATED{a}
+    LP[5]: v3  a=11 b=21 c=30   heap-only, dead,  INDEXED_UPDATED{b}
+    LP[7]: v4  a=11 b=21 c=31   heap-only, LIVE,  INDEXED_UPDATED{c}
+
+  Index entries (fresh point at the version current when the value was set):
+    idx_a:  (a=10) -> LP[1]  stale     (a=11) -> LP[3]  fresh
+    idx_b:  (b=20) -> LP[1]  stale     (b=21) -> LP[5]  fresh
+    idx_c:  (c=30) -> LP[1]  stale     (c=31) -> LP[7]  fresh
+
+  Query 1 -- current value via fresh entry:  WHERE a = 11   (idx_a -> LP[3])
+    1. enter LP[3] (v2); hops crossed after it: {b} at LP[5], {c} at LP[7]
+    2. walk LP[3] -> LP[5] -> LP[7] LIVE, return v4
+    3. overlap(idx_a {a}, {b,c}) = empty -> keep
+  Query 2 -- obsolete value via stale entry:  WHERE a = 10   (idx_a -> LP[1])
+    1. enter LP[1] (v1, dead root); hops crossed after it: {a},{b},{c}
+    2. walk LP[1] -> ... -> LP[7] LIVE, return v4
+    3. overlap(idx_a {a}, {a,b,c}) = {a} -> drop
+       (a=10 no longer exists; correctly returns no row through this entry)
+  Query 3 -- current value whose fresh entry is direct:  WHERE c = 31
+    1. enter LP[7] (v4, live); it is the entry tuple, its own {c} hop excluded
+    2. no hops crossed after it
+    3. overlap(idx_c {c}, {}) = empty -> keep
+
+The same test serves equality, range and inequality IndexScans: the leaf was
+returned by the index only because its key satisfied the scan, and overlap-empty
+means that key still describes the live tuple, so keeping it is correct for any
+scan shape.
+
+The test needs only the index's referenced heap attributes, available for every
+access method, so all non-summarizing indexes -- including non-btree AMs and
+btree indexes with expression keys -- participate.  Expression, predicate and
+INCLUDE columns are covered because RelationGetIndexedAttrs reports the heap
+attributes they reference.
+
+Unique checks.  _bt_check_unique fetches the conflicting tuple under
+SnapshotDirty, passing the unique index's attribute set, and applies the same
+overlap test.  A non-empty overlap means the candidate leaf is stale for this
+index and is skipped (not a conflict); this also subsumes an index key cycled
+X -> Y -> X, since the X attribute changed along the path and so overlaps.  Such
+skipped-but-live arrivals set prevalldead = false so the still-live-resolving
+leaf is never marked LP_DEAD.
+
+
+The read side needs no index tuple
+----------------------------------
+
+The bitmap-overlap test reads only the per-hop tombstones on the heap page and
+the arriving index's attribute set; it never inspects the stored leaf key.  So
+plain index scans do not request xs_want_itup for HOT-indexed purposes, and no
+"this relation may contain tombstones" predicate is needed: a scan that crosses
+no hot-indexed hop computes an empty overlap and keeps every tuple, exactly as
+before the feature.  (IndexOnlyScan still sets xs_want_itup for its own reason
+-- it serves values out of the index tuple.)
+
+
+Bridge tombstones (mid-chain preservation)
+------------------------------------------
+
+When pruneheap finds a dead mid-chain HOT-indexed heap-only tuple it cannot
+simply reclaim the LP to LP_UNUSED: a stale btree leaf may still point at it,
+and a reused LP would make that leaf resolve to an unrelated tuple.  Instead it
+rewrites the LP in place as a bridge tombstone.  To keep the read-side
+bitmap-overlap test correct, bridges are linked in chain order rather than all
+jumping to the first live member: each bridge forwards to the NEXT surviving
+member (the last to first_live), and the bridged tuple's own adjacent tombstone
+is retained, keyed by the bridge's offset.  A reader arriving through any stale
+leaf thus traverses every surviving hop in turn and picks up each hop's
+modified-attrs bitmap, so the overlap it computes is exactly the set of
+attributes changed between its leaf's target and the live tuple.  When the
+collapsed prefix contains a HOT-indexed hop the chain root is collapsed to a
+HOT-indexed data redirect (an LP_REDIRECT carrying a bitmap, see below) that
+points straight at first_live; a purely classic dead prefix uses a plain
+LP_REDIRECT to first_live.  The next index-cleanup pass of VACUUM removes the
+stale leaves, after which the bridges (and their retained tombstones) are
+reclaimed.
+
+HOT-indexed data redirect.  A plain LP_REDIRECT carries no bitmap, so a leaf
+pointing at the root cannot be tested for staleness without traversing the
+chain -- and the chain members it would traverse are exactly the ones VACUUM
+wants to reclaim.  The chain root is therefore collapsed to a *data* redirect:
+an LP_REDIRECT with lp_len > 0 whose body (HotIndexedRedirectData, written over
+the dead root tuple's freed bytes) holds the redirect target plus the union of
+the modified-attrs bitmaps of every hop from the root to first_live.  The
+target is always first_live (a live tuple, never a reclaimable bridge), so the
+redirect never dangles when an intermediate bridge is later reclaimed.  A
+root-pointing leaf reads the union directly (heap_hot_indexed_redirect_overlaps)
+and is dropped if it overlaps the scanning index -- no traversal needed.  The
+union is computed at prune time by heap_page_prune_execute, which walks the
+on-page chain (still intact -- the now-unused reclaim runs afterwards) OR-ing
+each crossed member's adjacent-tombstone bitmap.  A single-hop chain (a dead
+root over its immediate live successor) has no mid-chain leaves, so the lone
+successor tombstone is reclaimed -- its bitmap now lives in the redirect.  A
+multi-hop chain keeps every tombstone (mid-chain leaves still consult them) and
+the union duplicates them.  A re-collapse (the root is already a data redirect
+whose target has since died) re-points the redirect at the new first_live,
+seeding the union from the existing blob and extending it across the new hops.
+
+Collapse transition.  Take the worked example's chain after v1, v2 and v3 have
+died (only v4 is live).  Before pruning the page holds the tuples and their
+adjacent tombstones (t_ctid forward links shown with ->):
+
+    LP[1]: v1  root, dead                -> LP[3]
+    LP[3]: v2  dead, INDEXED_UPDATED{a}  -> LP[5]
+    LP[5]: v3  dead, INDEXED_UPDATED{b}  -> LP[7]
+    LP[7]: v4  LIVE, INDEXED_UPDATED{c}
+    LP[2],LP[4],LP[6]: tombstones for {a},{b},{c} (target LP[3],LP[5],LP[7])
+
+After the collapse the root becomes a data redirect to first_live carrying the
+union {a,b,c}; each dead mid-chain member becomes a bridge to the next
+survivor, and the mid-chain tombstones are kept:
+
+    LP[1]: data-redirect{a,b,c} -> LP[7]   (was v1 root)
+    LP[3]: bridge -> LP[5]    (was v2)
+    LP[5]: bridge -> LP[7]    (was v3)
+    LP[7]: v4  LIVE, INDEXED_UPDATED{c}
+    LP[4],LP[6]: tombstones {b},{c}, retained for mid-chain leaves
+
+A stale idx_a: (a=10) -> LP[1] reads the redirect union {a,b,c} directly; the
+overlap with idx_a's {a} is non-empty, so the stale leaf is dropped.  A
+mid-chain stale leaf idx_b: -> LP[3] still walks LP[3] -> LP[5] -> LP[7],
+crossing tombstones {b},{c}.
+
+Chain-root lookups during pruning use a per-page predecessor map built once
+(heap_prune_build_pred_map / PruneState.pred[]); the page is not modified during
+the planning phase, so a single O(maxoff) build serves every lookup and the walk
+itself is O(chain length).
+
+Chain-match relaxation.  Classic HOT requires prev_xmax of step N to equal xmin
+of step N+1.  Bridges carry HEAP_XMIN_INVALID | HEAP_XMAX_INVALID, so
+heap_hot_search_buffer does not advance prev_xmax across a bridge hop; the chain
+check resumes at the bridge's forward target.  Bridges deliberately relax the
+strict chain-match on the hop they replace; the bitmap-overlap test on the
+reader side absorbs the relaxation.
+
+Crash recovery.  Bridges are produced by the prune WAL record
+(XLHP_HAS_HOT_INDEXED_BRIDGES) and reproduced byte-for-byte by replay, which
+also sets PD_HAS_HOT_INDEXED_BRIDGES so post-recovery VACUUM still finds the
+pages.  Data redirects are logged as (root, first_live) offset pairs
+(XLHP_HAS_REDIRECT_DATA); replay recomputes each union by re-running the same
+on-page chain walk heap_page_prune_execute uses online (the tombstones it reads
+are still present at replay), so the union bytes themselves are not logged.
+Replay is idempotent: re-applying the prune record writes the same bridge and
+redirect bytes at the same LPs.  054_hot_indexed_bridge_recovery.pl exercises
+this under wal_consistency_checking = all (with no pre-crash checkpoint, so the
+tombstone/bridge/redirect redo paths actually run and are byte-compared to their
+FPIs).
+
+
+Novel line-pointer states and their invariants
+-----------------------------------------------
+
+HOT-indexed produces two line-pointer states classic HOT never does; both are
+exercised by 054 under wal_consistency_checking.
+
+  1. LP_DEAD on a heap-only tuple (aborted orphan).  An aborted HOT-indexed
+     update leaves a dead heap-only tuple whose fresh btree leaf survives
+     ROLLBACK until ambulkdelete sweeps it.  If no live chain root is reachable
+     on the page to forward a bridge to, the LP is marked LP_DEAD (not
+     LP_UNUSED): LP_DEAD pins the slot against reuse and enrols the TID in the
+     dead-items array so ambulkdelete removes the stale leaf and a later VACUUM
+     reclaims the LP.  heap_page_prune_execute's LP_DEAD assertion permits a
+     heap-only tuple only when HEAP_INDEXED_UPDATED is set with natts > 0.
+
+  2. A bridge forwarding to a non-live LP.  In the fully-dead-chain branch a
+     bridge forwards to the chain root that the same prune is marking
+     LP_DEAD/LP_UNUSED.  A reader following the bridge lands on the non-normal
+     LP, where heap_hot_search_buffer terminates the walk -- correct for a dead
+     chain.  amcheck therefore validates only that a bridge's forward offset is
+     on the page and in range, NOT that it is currently LP_NORMAL.
+
+  3. LP_REDIRECT with storage (a HOT-indexed data redirect).  Classic HOT
+     redirects have lp_len == 0; a data redirect sets lp_len > 0 and stores a
+     HotIndexedRedirectData body (HotIndexedRedirectIsData() is the
+     discriminator).  Chain walkers read its target via
+     HotIndexedRedirectGetTarget() instead of ItemIdGetRedirect().  When such a
+     chain becomes fully dead the redirect is marked LP_DEAD like any redirect
+     (its body dropped with the line pointer); heap_page_prune_execute's LP_DEAD
+     assertion permits a redirect-with-storage for this case.
+
+
+Tombstone reclamation
+---------------------
+
+  - Adjacent tombstone: prune_handle_tombstones keeps it while its target is a
+    live HOT-indexed tuple OR a bridge (the per-hop bitmap is needed for the
+    read-side overlap test as long as a stale leaf can reach the chain through
+    that offset), and reclaims it to LP_UNUSED once the target becomes LP_UNUSED
+    or LP_DEAD.  Consequently a tombstone whose tuple was just rewritten as a
+    bridge survives one extra cycle: it is reclaimed by the VACUUM that reclaims
+    the bridge, after ambulkdelete has swept the stale leaves.  Exception: at a
+    single-hop collapse the live successor's tombstone is reclaimed immediately
+    -- its bitmap is folded into the data redirect's union and a single-hop
+    chain has no mid-chain leaf that would still consult it.
+  - Bridge tombstone: reclaimed by lazy_vacuum_heap_page after ambulkdelete has
+    swept the stale leaves that pointed at it.  When the last bridge on a page is
+    reclaimed, PD_HAS_HOT_INDEXED_BRIDGES is cleared.
+
+Per-hop tombstones are never coalesced.  Each hop's modified-attrs bitmap stays
+in its own tombstone for the life of that hop; merging the mid-chain tombstones
+into one bitmap would over-approximate the change set for a leaf pointing into
+the middle of the chain and could drop a still-current row.  The data redirect's
+union bitmap is not a counterexample: it is read only by a leaf pointing at the
+chain root, which legitimately crosses every hop to first_live, so the union is
+exactly that leaf's change set.  Mid-chain leaves never read the union; they
+traverse the per-hop bridges and tombstones.
+
+
+All-visible vs tombstones
+-------------------------
+
+A page that holds any tombstone must never be marked PD_ALL_VISIBLE: the
+all-visible seqscan fast path skips per-tuple visibility checks and would surface
+a tombstone's payload bytes as a phantom row.  The prune/vacuum paths refuse to
+set all-visible while a tombstone is present, and verify_heapam reports a
+tombstone on an all-visible page as corruption.  A data redirect or bridge also
+forces the page not-all-visible (an index-only scan must heap-fetch through the
+chain so the read-side overlap test can filter stale leaves); the recorders set
+prstate->set_all_visible = false.
+
+
+CREATE INDEX / REINDEX
+----------------------
+
+A freshly built index is never stale: the build scans live tuples and inserts
+entries with their current values.  For a HOT-indexed live tuple (one carrying
+HEAP_INDEXED_UPDATED) the build points the new entry at the tuple's OWN TID, not
+the chain root (heapam_index_build_range_scan / validate_scan), so the entry has
+no crossed hop after it and the overlap test keeps it -- pointing such an entry
+at the root would make the dead-prefix hops overlap and wrongly drop the row.
+Tombstones are invisible to the build (HEAP_XMIN_INVALID), so they are skipped.
+Build/REINDEX/CONCURRENTLY over tombstone-bearing pages is covered by the
+hot_indexed_updates regression test.
+
+
+Statistics and monitoring
+-------------------------
+
+  - pg_stat_all_tables.n_tup_hot_indexed_upd counts updates that took the
+    HOT-indexed path (also counted in n_tup_hot_upd).
+  - pg_stat_all_indexes.n_tup_hot_indexed_upd_{skipped,matched} count, per
+    index, how many HOT-indexed updates skipped versus inserted into it.
+  - pg_relation_hot_indexed_stats(regclass) returns
+    (n_tombstones, n_chains, avg_chain_len, max_chain_len) under AccessShareLock.
+
+
+GUC controls
+------------
+
+  hot_indexed_update_threshold (PGC_USERSET, 0..100, default 80)
+      Upper bound on the percentage of a relation's indexed attributes an UPDATE
+      may touch and still take the HOT-indexed path.  100 allows it for every
+      otherwise-eligible update; 0 disables HOT-indexed entirely (classic HOT
+      still applies to updates that touch no indexed attribute).
+
+Chain-length cap.  RelationGetHotIndexedChainMax derives a per-relation maximum
+chain length from fillfactor and estimated tuple size against the worst-case
+tombstone size; heap_update downgrades to non-HOT when the cap is reached, so a
+hot row cannot grow an unbounded same-page chain.
+
+
+Logical replication apply
+--------------------------
+
+Logical decoding strips the tombstone trailer from the UPDATE record
+(DecodeUpdate) so subscribers receive an ordinary UPDATE.  Whether the apply
+worker itself uses the HOT-indexed path is gated per subscription by
+pg_subscription.subhotindexedonapply (GetHotIndexedApplyMode):
+
+    off          force non-HOT when the subscriber carries any indexed
+                 attribute beyond its primary key
+    subset_only  allow HOT-indexed when the subscriber's indexed-attr set is a
+                 subset of its PK attrs (default)
+    always       unconditional
+
+
+System catalogs
+---------------
+
+System catalogs keep classic HOT (eligibility steps 1-2), but do NOT take the
+HOT-indexed path (step 3): a catalog update that changes a non-summarizing
+indexed attribute falls back to a non-HOT update, exactly as before this
+feature.  Catalogs are reached through many access paths -- systable index
+scans, SnapshotDirty unique checks, and seqscans in orderings the chain-walk
+dedup does not cover -- and not all of them have been proven safe against stale
+chain entries, so enabling HOT-indexed on catalogs is deliberately out of scope.
+Because catalogs never take the HOT-indexed path, a catalog chain never carries
+a tombstone and a systable scan never sees xs_hot_indexed_stale; the read path
+therefore needs no catalog-specific handling.
+
+
+Limitations and restrictions
+----------------------------
+
+  - System catalogs: classic HOT only; HOT-indexed disabled (see above).
+  - Exclusion constraints (including temporal PRIMARY KEY ... WITHOUT OVERLAPS):
+    relation exempted; check_exclusion_or_unique_constraint relies on "one live
+    tuple per (key, TID)", which stale chain entries break.
+  - hot_indexed_update_threshold caps the share of indexed attributes an UPDATE
+    may touch (default 80).
+
+All non-summarizing index kinds participate, including non-btree access methods
+and btree indexes with expression keys: the read-side overlap test uses only the
+index's referenced heap attributes, so it needs neither a key comparison nor an
+index tuple.
+
+
+Glossary
+--------
+
+Fresh leaf entry
+    A btree leaf inserted by a HOT-indexed update.  Its TID points directly at
+    the heap-only tuple current at insert time.  A reader reaching the live
+    tuple through a fresh entry computes an empty overlap (no covered attribute
+    changed after the entry's target) and keeps the row.
+
+Stale leaf entry
+    A pre-update leaf whose key is an old value and whose TID still reaches the
+    chain through the root (or an earlier member).  A chain walk through it
+    crosses a HOT-indexed hop that changed a covered attribute; the overlap is
+    non-empty and the leaf is discarded.
+
+HEAP_INDEXED_UPDATED
+    An infomask2 bit (0x0800).  Set on heap tuples and chain members produced by
+    a HOT-indexed update, and on tombstones.  On a tuple it tells readers the
+    next hop crossed a HOT-indexed write; on an item with natts == 0 it marks the
+    item as a tombstone rather than a live tuple.
+
+Modified-attrs bitmap
+    A bitmap in an adjacent tombstone's body listing the indexed attributes that
+    changed in that update hop.  The read-side overlap test ORs the bitmaps of
+    the hops crossed after a leaf's target and intersects them with the arriving
+    index's attribute set; the same bitmaps feed pg_relation_hot_indexed_stats.
+
+hot-indexed hop
+    A chain step whose source tuple has HEAP_INDEXED_UPDATED set.  Crossing at
+    least one such hop after a leaf's target can set
+    IndexScanDesc.xs_hot_indexed_stale on the returned tuple, depending on
+    whether the hop's bitmap overlaps the index's attributes.
