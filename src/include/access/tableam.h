@@ -488,12 +488,23 @@ typedef struct TableAmRoutine
 	 * index_fetch_tuple iff it is guaranteed that no backend needs to see
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
+	 *
+	 * index_attrs, if not NULL, is the set of heap attributes the originating
+	 * index covers (RelationGetIndexedAttrs convention); the AM sets
+	 * *hot_indexed_stale true iff a HOT-indexed (HOT-indexed update) hop
+	 * crossed to reach the tuple changed one of those attributes, meaning the
+	 * arriving leaf is stale and must be dropped.  When index_attrs is NULL
+	 * (the originating index is not identifiable, e.g. a bitmap heap scan),
+	 * *hot_indexed_stale is set true iff any HOT-indexed hop was crossed, and
+	 * the caller falls back to rerunning its recheck qual.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
-									  bool *call_again, bool *all_dead);
+									  bool *call_again, bool *all_dead,
+									  const Bitmapset *index_attrs,
+									  bool *hot_indexed_stale);
 
 
 	/* ------------------------------------------------------------------------
@@ -1306,11 +1317,15 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 						ItemPointer tid,
 						Snapshot snapshot,
 						TupleTableSlot *slot,
-						bool *call_again, bool *all_dead)
+						bool *call_again, bool *all_dead,
+						const Bitmapset *index_attrs,
+						bool *hot_indexed_stale)
 {
 	return scan->rel->rd_tableam->index_fetch_tuple(scan, tid, snapshot,
 													slot, call_again,
-													all_dead);
+													all_dead,
+													index_attrs,
+													hot_indexed_stale);
 }
 
 /*
@@ -1318,11 +1333,21 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
  * returns whether there are table tuple items corresponding to an index
  * entry.  This likely is only useful to verify if there's a conflict in a
  * unique index.
+ *
+ * If keep_slot is non-NULL, on a positive result the function stores the
+ * fetched tuple into *keep_slot (which must be a valid slot of the
+ * relation's type) and returns with the slot populated; the caller is
+ * responsible for clearing the slot.  When keep_slot is NULL a temporary
+ * slot is created internally and dropped before return, matching the
+ * pre-existing behaviour.
  */
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  const Bitmapset *index_attrs,
+										  bool *hot_indexed_stale,
+										  TupleTableSlot *keep_slot);
 
 
 /* ------------------------------------------------------------------------
