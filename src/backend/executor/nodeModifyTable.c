@@ -18,6 +18,7 @@
  *		ExecModifyTable		- retrieve the next tuple from the node
  *		ExecEndModifyTable	- shut down the ModifyTable node
  *		ExecReScanModifyTable - rescan the ModifyTable node
+ *		ExecUpdateModifiedIdxAttrs - find set of updated indexed columns
  *
  *	 NOTES
  *		The ModifyTable node receives input from its outerPlan, which is
@@ -56,6 +57,7 @@
 #include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/tupconvert.h"
+#include "access/tupdesc.h"
 #include "access/xact.h"
 #include "commands/trigger.h"
 #include "executor/execPartition.h"
@@ -128,7 +130,13 @@ typedef struct ModifyTableContext
 typedef struct UpdateContext
 {
 	bool		crossPartUpdate;	/* was it a cross-partition update? */
-	TU_UpdateIndexes updateIndexes; /* Which index updates are required? */
+
+	/*
+	 * Information returned by the table AM's update callback about which
+	 * indexes need new entries.  Populated by ExecUpdateAct and consumed by
+	 * ExecUpdateEpilogue.
+	 */
+	TM_IndexUpdateInfo upd_info;
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -200,6 +208,123 @@ static void ExecSetupTransitionCaptureState(ModifyTableState *mtstate, EState *e
 static void fireBSTriggers(ModifyTableState *node);
 static void fireASTriggers(ModifyTableState *node);
 
+/*
+ * ExecUpdateModifiedIdxAttrs
+ *
+ * Find the set of attributes referenced by this relation and used in this
+ * UPDATE that now differ in value.  This is done by reviewing slot datum that
+ * are in the UPDATE statment and are known to be referenced by at least one
+ * index in some way.  This set is called the "modified indexed attributes" or
+ * "modified_idx_attrs".  An overlap of a single index's attributes and this
+ * modified_idx_attrs set signals that the attributes in the new_tts used to
+ * form the index datum have changed.
+ *
+ * Return a Bitmapset that contains the set of modified (changed) indexed
+ * attributes between oldtup and newtup.
+ *
+ * Note: There is a similar function called HeapUpdateModifiedIdxAttrs() that operates
+ * on the old TID and new HeapTuple rather than the old/new TupleTableSlots as
+ * this function does.  These two functions should mirror one another until
+ * someday when catalog tuple updates track their changes avoiding the need to
+ * re-discover them in simple_heap_update().
+ */
+Bitmapset *
+ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
+						   TupleTableSlot *old_tts,
+						   TupleTableSlot *new_tts,
+						   EState *estate)
+{
+	Relation	relation = resultRelInfo->ri_RelationDesc;
+	TupleDesc	tupdesc = RelationGetDescr(relation);
+	const Bitmapset *idx_attrs;
+	Bitmapset  *targeted;
+	Bitmapset  *attrs;
+
+	/* If no indexes, we're done */
+	if (resultRelInfo->ri_NumIndices == 0)
+		return NULL;
+
+	/*
+	 * Fast path: if the SQL UPDATE's target list -- including any generated
+	 * columns the planner added -- doesn't intersect the relation's indexed
+	 * attribute bitmap, no indexed column can have changed value, so the
+	 * slot-by-slot comparison below has nothing to find.  Skip it.  This
+	 * matters at high TPS on wide tables where ExecCompareSlotAttrs would
+	 * otherwise iterate every indexed attribute and call slot_getattr twice
+	 * per attribute only to discard an empty result.
+	 *
+	 * The fast path is unsafe when:
+	 *
+	 * - A BEFORE UPDATE or INSTEAD OF UPDATE row trigger is attached: those
+	 * triggers can replace any column of the new tuple via
+	 * heap_modify_tuple() (see tsvector_update_trigger() in tsearch.sql), and
+	 * ExecGetAllUpdatedCols() does not record such mutations.
+	 *
+	 * - The UPDATE is FOR PORTION OF: the temporal-range column is bounded
+	 * implicitly by the FOR PORTION OF machinery rather than listed in the
+	 * SET clause, so it is not in ExecGetAllUpdatedCols(). A short-circuit
+	 * here would tell heap_update no indexed column changed and miss the
+	 * row-split that FOR PORTION OF requires.
+	 *
+	 * - The relation has an exclusion constraint: temporal PRIMARY KEY ...
+	 * WITHOUT OVERLAPS is internally an exclusion constraint, and similar
+	 * custom range/overlap constraints can drive value mutations through
+	 * paths the SQL target list doesn't capture.  HeapUpdateHotAllowable
+	 * already demotes such relations to non-HOT, but the fast path runs
+	 * before that decision and must not pre-empty modified_idx_attrs.
+	 *
+	 * - The caller is not a genuine SQL UPDATE through ModifyTable.  REPACK
+	 * (CONCURRENTLY) and logical-replication apply both reach heap_update
+	 * through a synthetic ResultRelInfo and apply pre-built old/new tuples.
+	 * For such callers ExecGetAllUpdatedCols() is authoritative only when the
+	 * relinfo has RTE permission info to read updatedCols from; REPACK builds
+	 * its ResultRelInfo with ri_RangeTableIndex == 0 and never populates
+	 * updatedCols, so the SQL-target-list shortcut would wrongly report an
+	 * empty set and tell heap_update no indexed column changed.  Require an
+	 * authoritative updated-cols source (a real range-table entry, or an
+	 * inheritance root that has one) before trusting the fast path.
+	 *
+	 * Fall through to the full comparison in any of these cases.
+	 */
+	if ((resultRelInfo->ri_RangeTableIndex != 0 ||
+		 resultRelInfo->ri_RootResultRelInfo != NULL) &&
+		(resultRelInfo->ri_TrigDesc == NULL ||
+		 (!resultRelInfo->ri_TrigDesc->trig_update_before_row &&
+		  !resultRelInfo->ri_TrigDesc->trig_update_instead_row)) &&
+		resultRelInfo->ri_forPortionOf == NULL &&
+		!RelationHasExclusionConstraint(relation))
+	{
+		targeted = ExecGetAllUpdatedCols(resultRelInfo, estate);
+		idx_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
+													 INDEX_ATTR_BITMAP_INDEXED);
+		if (!bms_overlap(targeted, idx_attrs))
+			return NULL;
+	}
+
+	/*
+	 * Get the set of all attributes across all indexes for this relation from
+	 * the relcache, it returns us a copy of the bitmap so we can modify it.
+	 *
+	 * Note: We intentionally scan all indexed columns when looking for
+	 * changes rather than reduce that set by intersecting it with
+	 * ExecGetAllUpdatedCols().  Desipte the name it provides the set of
+	 * targeted attributes in the SQL used for the UPDATE and any triggers,
+	 * but that doesn't include any attributes updated using
+	 * heap_modifiy_tuple(). There is one test in tsearch.sql that does just
+	 * that, modifies an indexed attribute that isn't specified in the SQL and
+	 * so isn't present in that bitmapset.
+	 */
+	attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
+
+	/*
+	 * When there are indexed attributes mentioned in the UPDATE then we need
+	 * to find the subset that changed value.  That's the
+	 * "modified_idx_attrs".
+	 */
+	attrs = ExecCompareSlotAttrs(attrs, tupdesc, old_tts, new_tts);
+
+	return attrs;
+}
 
 /*
  * Verify that the tuples to be produced by INSERT match the
@@ -2459,13 +2584,17 @@ ExecUpdatePrepareSlot(ResultRelInfo *resultRelInfo,
  */
 static TM_Result
 ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
-			  ItemPointer tupleid, HeapTuple oldtuple, TupleTableSlot *slot,
-			  bool canSetTag, UpdateContext *updateCxt)
+			  ItemPointer tupleid, HeapTuple oldtuple, TupleTableSlot *oldSlot,
+			  TupleTableSlot *slot, bool canSetTag, UpdateContext *updateCxt)
 {
 	EState	   *estate = context->estate;
 	Relation	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 	bool		partition_constraint_failed;
 	TM_Result	result;
+
+	/* Reset any state left over from a previous call */
+	updateCxt->upd_info.modified_attrs = NULL;
+	updateCxt->upd_info.update_all_indexes = false;
 
 	updateCxt->crossPartUpdate = false;
 
@@ -2583,7 +2712,17 @@ lreplace:
 		ExecConstraints(resultRelInfo, slot, estate);
 
 	/*
-	 * replace the heap tuple
+	 * Next up we need to find out the set of indexed attributes that have
+	 * changed in value and should trigger a new index tuple.  We could start
+	 * with the set of updated columns via ExecGetUpdatedCols(), but if we do
+	 * we will overlook attributes directly modified by heap_modify_tuple()
+	 * which are not known to ExecGetUpdatedCols().
+	 */
+	updateCxt->upd_info.modified_attrs =
+		ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot, estate);
+
+	/*
+	 * Call into the table AM to update the heap tuple.
 	 *
 	 * Note: if es_crosscheck_snapshot isn't InvalidSnapshot, we check that
 	 * the row to be updated is visible to that snapshot, and throw a
@@ -2598,7 +2737,7 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->updateIndexes);
+								&updateCxt->upd_info);
 
 	return result;
 }
@@ -2619,14 +2758,25 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 	List	   *recheckIndexes = NIL;
 
 	/* insert index entries for tuple if necessary */
-	if (resultRelInfo->ri_NumIndices > 0 && (updateCxt->updateIndexes != TU_None))
+	if (resultRelInfo->ri_NumIndices > 0 &&
+		(updateCxt->upd_info.update_all_indexes ||
+		 !bms_is_empty(updateCxt->upd_info.modified_attrs)))
 	{
-		uint32		flags = EIIT_IS_UPDATE;
+		/*
+		 * Populate per-index ii_IndexUnchanged before inserting.  For a
+		 * non-HOT update (update_all_indexes) every index needs a fresh
+		 * entry; for a HOT update only those whose key attributes overlap the
+		 * modified set do.
+		 */
+		ExecSetIndexUnchanged(resultRelInfo,
+							  updateCxt->upd_info.update_all_indexes,
+							  updateCxt->upd_info.modified_attrs);
 
-		if (updateCxt->updateIndexes == TU_Summarizing)
-			flags |= EIIT_ONLY_SUMMARIZING;
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
-											   flags, slot, NIL,
+											   EIIT_IS_UPDATE |
+											   (updateCxt->upd_info.update_all_indexes ?
+												0 : EIIT_IS_HOT_INDEXED),
+											   slot, NIL,
 											   NULL);
 	}
 
@@ -2825,8 +2975,8 @@ ExecUpdate(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 		 */
 redo_act:
 		lockedtid = *tupleid;
-		result = ExecUpdateAct(context, resultRelInfo, tupleid, oldtuple, slot,
-							   canSetTag, &updateCxt);
+		result = ExecUpdateAct(context, resultRelInfo, tupleid, oldtuple, oldSlot,
+							   slot, canSetTag, &updateCxt);
 
 		/*
 		 * If ExecUpdateAct reports that a cross-partition update was done,
@@ -3676,8 +3826,8 @@ lmerge_matched:
 					Assert(oldtuple == NULL);
 
 					result = ExecUpdateAct(context, resultRelInfo, tupleid,
-										   NULL, newslot, canSetTag,
-										   &updateCxt);
+										   NULL, resultRelInfo->ri_oldTupleSlot,
+										   newslot, canSetTag, &updateCxt);
 
 					/*
 					 * As in ExecUpdate(), if ExecUpdateAct() reports that a
@@ -4814,7 +4964,7 @@ ExecModifyTable(PlanState *pstate)
 		 * For UPDATE/DELETE/MERGE, fetch the row identity info for the tuple
 		 * to be updated/deleted/merged.  For a heap relation, that's a TID;
 		 * otherwise we may have a wholerow junk attr that carries the old
-		 * tuple in toto.  Keep this in step with the part of
+		 * tuple in total.  Keep this in step with the part of
 		 * ExecInitModifyTable that sets up ri_RowIdAttNo.
 		 */
 		if (operation == CMD_UPDATE || operation == CMD_DELETE ||

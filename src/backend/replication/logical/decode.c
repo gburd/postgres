@@ -1002,6 +1002,46 @@ DecodeUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 		data = XLogRecGetBlockData(r, 0, &datalen);
 
+		/*
+		 * Updates that carry a HOT-indexed tombstone splice two pieces of
+		 * metadata through the block-0 buffer data: a uint16 trailer length
+		 * placed immediately after xlhdr, and the raw tombstone bytes at the
+		 * tail.  heap_xlog_update uses both during physical replay to
+		 * reconstruct the tuple and place the tombstone at its recorded
+		 * offset.  For logical decoding we only want the xlhdr + tuple body,
+		 * so we rewrite the buffer into a contiguous [xlhdr][tuple body] blob
+		 * in a local allocation and feed that to DecodeXLogTuple.
+		 *
+		 * In practice TOMBSTONE cannot coexist with PREFIX_FROM_OLD /
+		 * SUFFIX_FROM_OLD because prefix/suffix compression only runs when
+		 * need_tuple_data is false (no XLH_UPDATE_CONTAINS_NEW_TUPLE), and
+		 * TOMBSTONE ... NEW_TUPLE together imply need_tuple_data == true.
+		 */
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			uint16		tombstone_trailer_len;
+			Size		body_len;
+			char	   *rewrite;
+
+			Assert((xlrec->flags & XLH_UPDATE_PREFIX_FROM_OLD) == 0);
+			Assert((xlrec->flags & XLH_UPDATE_SUFFIX_FROM_OLD) == 0);
+
+			memcpy(&tombstone_trailer_len, data + SizeOfHeapHeader,
+				   sizeof(uint16));
+
+			body_len = datalen - SizeOfHeapHeader - sizeof(uint16)
+				- tombstone_trailer_len;
+
+			rewrite = palloc(SizeOfHeapHeader + body_len);
+			memcpy(rewrite, data, SizeOfHeapHeader);
+			memcpy(rewrite + SizeOfHeapHeader,
+				   data + SizeOfHeapHeader + sizeof(uint16),
+				   body_len);
+
+			data = rewrite;
+			datalen = SizeOfHeapHeader + body_len;
+		}
+
 		tuplelen = datalen - SizeOfHeapHeader;
 
 		change->data.tp.newtuple =
