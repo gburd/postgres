@@ -99,10 +99,15 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		int			nredirected;
 		int			ndead;
 		int			nunused;
+		int			nbridges;
+		int			ndata_redirects;
 		int			nplans;
 		Size		datalen;
 		xlhp_freeze_plan *plans;
 		OffsetNumber *frz_offsets;
+		OffsetNumber *bridges;
+		OffsetNumber *data_redirects;
+		const char *redirect_unions;
 		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 		bool		do_prune;
 
@@ -110,10 +115,13 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
 											   &ndead, &nowdead,
-											   &nunused, &nowunused);
+											   &nunused, &nowunused,
+											   &nbridges, &bridges,
+											   &ndata_redirects, &data_redirects,
+											   &redirect_unions);
 
-		do_prune = nredirected > 0 || ndead > 0 || nunused > 0;
-
+		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
+			nbridges > 0 || ndata_redirects > 0;
 		/* Ensure the record does something */
 		Assert(do_prune || nplans > 0 || vmflags & VISIBILITYMAP_VALID_BITS);
 
@@ -126,7 +134,10 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 									(xlrec.flags & XLHP_CLEANUP_LOCK) == 0,
 									redirected, nredirected,
 									nowdead, ndead,
-									nowunused, nunused);
+									nowunused, nunused,
+									bridges, nbridges,
+									data_redirects, ndata_redirects,
+									redirect_unions);
 
 		/* Freeze tuples */
 		for (int p = 0; p < nplans; p++)
@@ -645,7 +656,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * PD_ALL_VISIBLE must be set on the heap page if the VM bit is set.
 	 *
 	 * Note that we released the heap page lock above. During normal
-	 * operation, this would be unsafe — a concurrent modification could
+	 * operation, this would be unsafe -- a concurrent modification could
 	 * clear PD_ALL_VISIBLE while the VM bit remained set, violating the
 	 * invariant.
 	 *
@@ -719,6 +730,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		char		data[MaxHeapTupleSize];
 	}			tbuf;
 	xl_heap_header xlhdr;
+	uint16		tombstone_trailer_len;
 	uint32		newlen;
 	Size		freespace = 0;
 	XLogRedoAction oldaction;
@@ -871,7 +883,19 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		memcpy(&xlhdr, recdata, SizeOfHeapHeader);
 		recdata += SizeOfHeapHeader;
 
-		tuplen = recdata_end - recdata;
+		/*
+		 * If a HOT-indexed tombstone rides along with this update, read its
+		 * total trailer length (OffsetNumber + uint16 + raw bytes) right
+		 * after xlhdr so the tuple body length can be derived correctly.
+		 */
+		tombstone_trailer_len = 0;
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			memcpy(&tombstone_trailer_len, recdata, sizeof(uint16));
+			recdata += sizeof(uint16);
+		}
+
+		tuplen = (recdata_end - recdata) - tombstone_trailer_len;
 		Assert(tuplen <= MaxHeapTupleSize);
 
 		htup = &tbuf.hdr;
@@ -912,7 +936,6 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			recdata += tuplen;
 			newp += tuplen;
 		}
-		Assert(recdata == recdata_end);
 
 		/* copy suffix from old tuple */
 		if (suffixlen > 0)
@@ -932,6 +955,37 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		offnum = PageAddItem(npage, htup, newlen, offnum, true, true);
 		if (offnum == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
+
+		/*
+		 * Reinstall the HOT-indexed tombstone that accompanied the new tuple,
+		 * if any.  The remaining block-0 data holds {OffsetNumber
+		 * tombstone_offnum, uint16 tombstone_size, raw_item_bytes}.
+		 */
+		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
+		{
+			OffsetNumber tomb_offnum;
+			uint16		tomb_size;
+			OffsetNumber placed;
+
+			if ((recdata_end - recdata) < (Size) (sizeof(OffsetNumber) + sizeof(uint16)))
+				elog(PANIC, "truncated HOT-indexed tombstone in xl_heap_update");
+			memcpy(&tomb_offnum, recdata, sizeof(OffsetNumber));
+			recdata += sizeof(OffsetNumber);
+			memcpy(&tomb_size, recdata, sizeof(uint16));
+			recdata += sizeof(uint16);
+			if ((recdata_end - recdata) < (Size) tomb_size)
+				elog(PANIC, "truncated HOT-indexed tombstone payload in xl_heap_update");
+			placed = PageAddItem(npage, recdata, tomb_size, tomb_offnum,
+								 true /* overwrite */ , true /* is_heap */ );
+			if (placed != tomb_offnum)
+				elog(PANIC, "failed to replay HOT-indexed tombstone at offnum %u",
+					 tomb_offnum);
+			recdata += tomb_size;
+		}
+
+		if (recdata != recdata_end)
+			elog(PANIC, "unexpected trailing data in xl_heap_update tombstone trailer: %ld bytes",
+				 (long) (recdata_end - recdata));
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(npage);

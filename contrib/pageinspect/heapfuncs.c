@@ -198,8 +198,13 @@ heap_page_items(PG_FUNCTION_ARGS)
 		 * We do just enough validity checking to make sure we don't reference
 		 * data outside the page passed to us. The page could be corrupt in
 		 * many other ways, but at least we won't crash.
+		 *
+		 * Test ItemIdIsNormal rather than ItemIdHasStorage: a HOT-indexed
+		 * data redirect is an LP_REDIRECT that carries a bitmap blob (lp_len
+		 * > 0), so it has storage but is not a heap tuple and must not be
+		 * decoded as a tuple header.
 		 */
-		if (ItemIdHasStorage(id) &&
+		if (ItemIdIsNormal(id) &&
 			lp_len >= MinHeapTupleSize &&
 			lp_offset == MAXALIGN(lp_offset) &&
 			lp_offset + lp_len <= BLCKSZ)
