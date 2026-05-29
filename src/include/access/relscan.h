@@ -154,6 +154,13 @@ typedef struct IndexScanDescData
 	struct ScanKeyData *keyData;	/* array of index qualifier descriptors */
 	struct ScanKeyData *orderByData;	/* array of ordering op descriptors */
 	bool		xs_want_itup;	/* caller requests index tuples */
+	bool		xs_index_only;	/* caller is an index-only scan that may
+								 * return tuples without fetching the heap;
+								 * AMs must retain leaf-page pins for such
+								 * scans (VM all-visible / TID-recycle race),
+								 * whereas a plain scan that sets xs_want_itup
+								 * only to inspect the index tuple still
+								 * fetches the heap and may drop pins */
 	bool		xs_temp_snap;	/* unregister snapshot at scan end? */
 
 	/* signaling to index AM about killing index tuples */
