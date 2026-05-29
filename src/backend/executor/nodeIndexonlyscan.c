@@ -104,6 +104,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 		/* Set it up for index-only scan */
 		node->ioss_ScanDesc->xs_want_itup = true;
+		node->ioss_ScanDesc->xs_index_only = true;
 		node->ioss_VMBuffer = InvalidBuffer;
 
 		/*
@@ -775,6 +776,7 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 	node->ioss_ScanDesc->xs_want_itup = true;
+	node->ioss_ScanDesc->xs_index_only = true;
 	node->ioss_VMBuffer = InvalidBuffer;
 
 	/*
@@ -825,6 +827,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 	node->ioss_ScanDesc->xs_want_itup = true;
+	node->ioss_ScanDesc->xs_index_only = true;
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass
