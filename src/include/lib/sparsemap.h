@@ -133,6 +133,20 @@ typedef struct sparsemap
 	size_t		m_capacity;		/* total buffer capacity in bytes */
 	size_t		m_data_used;	/* bytes currently used in the buffer */
 	uint8	   *m_data;			/* pointer to the data buffer */
+
+	/*
+	 * Tail-chunk cursor (in-memory only; not serialized).  Caches the
+	 * (offset, chunk_index, start_idx) of the most-recently-located
+	 * chunk so that ascending-order builds and forward iteration can
+	 * resume the chunk walk from the cursor instead of from chunk 0.
+	 * Invalidated by any operation that shifts chunk bytes at or before
+	 * the cursor's offset.  Not part of the on-disk format.
+	 */
+	size_t		m_cursor_offset;	/* byte offset of the cached chunk */
+	size_t		m_cursor_chunk_index;	/* index of the cached chunk */
+	uint32		m_cursor_start_idx;	/* start bit index of the cached chunk */
+	uint8		m_cursor_valid;	/* nonzero when the cursor fields are live */
+
 	uint8		m_alloc_kind;	/* allocation lineage tag */
 	sm_allocator_t m_allocator; /* per-map allocator hooks (v2.2.0) */
 }			sparsemap_t;
