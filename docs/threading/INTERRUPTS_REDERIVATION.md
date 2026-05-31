@@ -1,13 +1,13 @@
 # Interrupt Re-derivation — replacing Latches with Interrupts on current master
 
-Status: **DESIGN / NOT YET IMPLEMENTED.** This document plans the
+Status: **STEPS 1–2 IMPLEMENTED & BUILD-VERIFIED.** This document plans the
 re-derivation of Heikki Linnakangas's "Replace Latches with Interrupts"
 refactor against current master (`7ea22d4c950`), as the first structural
 piece of the PG-on-xtc work beyond Phase 0 tooling. It is the reference
-design for the implementation commits that follow; it is intentionally
-reviewable *before* any code lands, because none of it can be
-build-verified in the current environment (unconfigured tree, no PG
-build, no clang/LLVM).
+design for the implementation commits. Steps 1 (interrupt bitmask core)
+and 2 (WaitEventSet WL_INTERRUPT source) have landed and build cleanly
+(backend + libpq + contrib/postgres_fdw, meson/ninja, gcc 14, cassert);
+steps 3–7 (the CFI/ProcessInterrupts conversion sweep) remain.
 
 This is a substrate change with **zero intended behaviour change** while
 `multithreaded=off`: in the process model the new interrupt bitmask is a
@@ -157,7 +157,7 @@ These are the concrete deltas found by diffing Heikki's `interrupt.c`/
 The series is ordered so the tree keeps building after each step. Steps
 1–2 are the "core" this session targets; 3–7 are the conversion sweep.
 
-1. **Add the interrupt core, coexisting with latches.** New
+1. **[DONE — commit `8eb9e96`] Add the interrupt core, coexisting with latches.** New
    `src/include/storage/interrupt.h` (enum, masks, inline accessors, API
    decls) and `src/backend/storage/ipc/interrupt.c` (`MyPendingInterrupts`,
    `LocalPendingInterrupts`, `Switch*Interrupts`, `Raise/SendInterrupt`,
@@ -169,7 +169,7 @@ The series is ordered so the tree keeps building after each step. Steps
    `Makefile` in `storage/ipc`). **No call sites converted.** latch.c
    untouched. Tree builds; behaviour unchanged.
 
-2. **Teach WaitEventSet about the interrupt word.** Add `WL_INTERRUPT`,
+2. **[DONE — commit `24bf685`] Teach WaitEventSet about the interrupt word.** Add `WL_INTERRUPT`,
    give `AddWaitEventToSet`/`ModifyWaitEvent` the ability to register the
    interrupt word as an event source (parallel to the latch source,
    initially — both can coexist). This is the minimal waiteventset.c
@@ -205,43 +205,42 @@ The series is ordered so the tree keeps building after each step. Steps
    wakeup path (item 4 in Divergences).
 
 ------------------------------------------------------------------------
-## What this session implements
+## What has been implemented
 
-Step **1 only** (the bitmask core), as one reviewable commit. Step 2 (the
-WaitEventSet wait-source rewrite) is deferred to a follow-up because the
-latch source is woven through `WaitEventSetWaitBlock` for all four
-backends (epoll/kqueue/poll/win32), making it a large, separately
-reviewable change:
+Steps **1 and 2** have landed on branch `xtc`:
 
-* `src/include/storage/interrupt.h` — re-derived from Heikki, comments
-  preserved, copyright year updated, includes adjusted for master. The
-  wait entry points (`WaitInterrupt`, `WaitInterruptOrSocket`,
-  `InitializeInterruptWaitSet`) are declared as the stable target ABI but
-  noted as implemented in step 2.
-* `src/backend/storage/ipc/interrupt.c` — bitmask core only:
+* Step 1 — commit `8eb9e96` "Add the interrupt bitmask core, coexisting
+  with latches": `storage/interrupt.h` (enum, masks, inline accessors,
+  API decls), `storage/ipc/interrupt.c` (bitmask core:
   `MyPendingInterrupts`, `LocalPendingInterrupts`,
-  `InitializeInterruptSupport` (with explicit `pg_atomic_init_u32`),
-  `Switch{Local,Shared}Interrupts`, `RaiseInterrupt`, `SendInterrupt`
-  (adapted to `WakeupOtherProc(proc->pid)`). The three wait-dependent
-  functions are deferred to step 2.
-* `src/include/storage/proc.h` — add `pg_atomic_uint32 pendingInterrupts`
-  to PGPROC, alongside `procLatch` (no removal yet).
-* `src/backend/storage/lmgr/proc.c` — `pg_atomic_init_u32` the new field
-  next to `InitSharedLatch(&proc->procLatch)`.
-* `src/backend/storage/ipc/waiteventset.c` — call
-  `InitializeInterruptSupport()` from the tail of
-  `InitializeWaitEventSupport()` (and `#include "storage/interrupt.h"`),
-  so `MyPendingInterrupts` is non-NULL in every waiting process. No
-  `WL_INTERRUPT` and no wait-source changes yet (step 2).
-* build wiring: add `interrupt.c` to `storage/ipc/meson.build` and
-  `Makefile`.
+  `InitializeInterruptSupport`, `Switch{Local,Shared}Interrupts`,
+  `RaiseInterrupt`, `SendInterrupt` adapted to `WakeupOtherProc(proc->pid)`),
+  `PGPROC.pendingInterrupts` + proc.c init, and the
+  `InitializeInterruptSupport()` call from the tail of
+  `InitializeWaitEventSupport()`.  No call sites converted; `latch.c`
+  untouched.
 
-**No call sites are converted; `latch.c` is untouched; `multithreaded`
-stays off.** The tree should build with zero behaviour change. Because no
-PG build is available here, verification is limited to: header/syntax
-review, confirming signatures against master, and confirming the enum
-fits 32 bits. A full `meson`/`make` build on a configured host is a
-required follow-up before step 2+.
+* Step 2 — commit `24bf685` "Teach WaitEventSet about the interrupt word
+  (WL_INTERRUPT)": `WL_INTERRUPT` (bit `1<<9`, a free bit since we keep
+  `WL_LATCH_SET` at `1<<0`); `WaitEventSet.interrupt_mask`/`interrupt_pos`
+  alongside the latch fields; `interruptMask` parameter added to
+  `AddWaitEventToSet`/`ModifyWaitEvent` (all ~30 call sites pass `0`);
+  WL_INTERRUPT handled like WL_LATCH_SET in the epoll/poll/kqueue adjust
+  and wait-block paths (win32 deferred via `elog(ERROR)`);
+  `WaitEventSetWait` fast path advertises/clears `SLEEPING_ON_INTERRUPTS`;
+  and the real `InitializeInterruptWaitSet`/`WaitInterrupt`/
+  `WaitInterruptOrSocket` in interrupt.c.  The inline accessor was renamed
+  `InterruptPending` -> `IsInterruptPending` to avoid colliding with the
+  legacy `volatile sig_atomic_t InterruptPending` global during
+  coexistence.
+
+  A prerequisite build fix (commit `63541bf`) moved the GUC lifetime
+  macros from postgres.h to postgres_ext.h so c.h-only TUs compile, and
+  made the pgguclifetimes tool's libclang dependency optional.
+
+**No CFI call sites are converted yet; `latch.c` remains; `multithreaded`
+stays off.** Behaviour is unchanged in the process model.  Steps 3–7
+(below) are the conversion sweep that follows.
 
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
