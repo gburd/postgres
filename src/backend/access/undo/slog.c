@@ -1416,35 +1416,49 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 	{
 		static uint64 slog_cached_oldest_hlc = 0;
 		static TimestampTz slog_last_hlc_refresh = 0;
-		TimestampTz now_ts = GetCurrentTimestamp();
-
-		if (now_ts - slog_last_hlc_refresh > 100000)	/* 100ms */
-		{
-			slog_cached_oldest_hlc = RecnoGetOldestActiveSnapshotHLC();
-			slog_last_hlc_refresh = now_ts;
-		}
+		static uint32 slog_insert_clock_skip = 0;
 
 		/*
-		 * Periodically run retained-entry cleanup to free DSA before-images
-		 * that are no longer visible to any active snapshot.  This prevents
-		 * the slog_dsa_max_size_mb area from filling up during sustained
-		 * high-TPS workloads when max_logical_revert_workers=0 (the UNDO
-		 * background worker that normally calls this is disabled).
-		 *
-		 * Every ~5 seconds, each backend that calls SLogTupleInsert will
-		 * do a cleanup pass.  The function is safe to call from any backend
-		 * (acquires partition writer locks internally).
+		 * GetCurrentTimestamp() is a syscall (clock_gettime); calling it on
+		 * every insert dominates the CAS-update hot path under TPROC-C.  The
+		 * clock is only needed to drive two coarse throttles (100ms HLC
+		 * refresh, 5s cleanup), so sample it once per SLOG_INSERT_CLOCK_PERIOD
+		 * inserts.  Off-cycle inserts reuse the cached horizon, which is safe:
+		 * a staler (older) horizon only makes per-TID reclamation MORE
+		 * conservative and never frees a before-image an active reader needs.
 		 */
+#define SLOG_INSERT_CLOCK_PERIOD 256
+		if ((slog_insert_clock_skip++ % SLOG_INSERT_CLOCK_PERIOD) == 0)
 		{
-			static TimestampTz slog_last_cleanup = 0;
+			TimestampTz now_ts = GetCurrentTimestamp();
 
-			if (slog_cached_oldest_hlc > 0 &&
-				now_ts - slog_last_cleanup > 5000000)	/* 5 seconds */
+			if (now_ts - slog_last_hlc_refresh > 100000)	/* 100ms */
 			{
-				slog_last_cleanup = now_ts;
-				SLogTupleCleanupRetained(slog_cached_oldest_hlc);
+				slog_cached_oldest_hlc = RecnoGetOldestActiveSnapshotHLC();
+				slog_last_hlc_refresh = now_ts;
+			}
+
+			/*
+			 * Periodically run retained-entry cleanup to free DSA
+			 * before-images that are no longer visible to any active
+			 * snapshot.  This prevents the slog_dsa_max_size_mb area from
+			 * filling up during sustained high-TPS workloads when
+			 * max_logical_revert_workers=0 (the UNDO background worker that
+			 * normally calls this is disabled).  Safe to call from any
+			 * backend (acquires partition writer locks internally).
+			 */
+			{
+				static TimestampTz slog_last_cleanup = 0;
+
+				if (slog_cached_oldest_hlc > 0 &&
+					now_ts - slog_last_cleanup > 5000000)	/* 5 seconds */
+				{
+					slog_last_cleanup = now_ts;
+					SLogTupleCleanupRetained(slog_cached_oldest_hlc);
+				}
 			}
 		}
+#undef SLOG_INSERT_CLOCK_PERIOD
 
 		/* Build the flat hash op */
 		memset(&flat_op, 0, sizeof(flat_op));
@@ -1816,6 +1830,103 @@ SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc)
 
 	if (nentries == 0)
 		return;
+
+	/*
+	 * Commit-time before-image publication (deferred from write time).
+	 *
+	 * The shared DSA before-image only ever serves a snapshot-isolation
+	 * reader (REPEATABLE READ / SERIALIZABLE) whose snapshot HLC predates our
+	 * commit HLC.  Under READ COMMITTED-only workloads no such reader exists,
+	 * so we skip the allocation entirely and the COMMIT_XID step below drops
+	 * every op (no retained image to stamp).
+	 *
+	 * The gate is sound against a reader that started after our last write:
+	 * the reader bumps active_iso_readers (seq-cst) before taking its
+	 * snapshot HLC (seq-cst RMW), and we read the counter here AFTER our
+	 * commit HLC was stamped (also a seq-cst RMW, in RecnoClearUncommittedFlags
+	 * at PRE_COMMIT).  In the single total order over those RMWs, any reader
+	 * with snapshot < our commit has its increment ordered before our read,
+	 * so RecnoHasActiveIsoReaders() returns true and we publish the image.
+	 *
+	 * We publish ONE image per distinct updated key: the deepest tracked-key
+	 * node for a key (the list is newest-first, so the last match while
+	 * walking) holds the true pre-transaction state.  Shallower nodes are
+	 * intra-transaction post-images and must not overwrite it.
+	 */
+	if (RecnoHasActiveIsoReaders())
+	{
+		for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
+		{
+			SLogTrackedKey *deeper;
+			SLogFlatOp	update_op;
+			dsa_pointer dp;
+			bool		is_deepest = true;
+
+			if (!TransactionIdEquals(tk->xid, xid) || tk->local_only)
+				continue;
+			if (tk->op_type != SLOG_OP_UPDATE)
+				continue;
+			if (tk->before_image == NULL)
+				continue;
+
+			/* Skip unless this is the deepest (oldest) node for its key */
+			for (deeper = tk->next; deeper != NULL; deeper = deeper->next)
+			{
+				if (!TransactionIdEquals(deeper->xid, xid) ||
+					deeper->local_only ||
+					deeper->op_type != SLOG_OP_UPDATE)
+					continue;
+				if (deeper->key.relid == tk->key.relid &&
+					ItemPointerEquals(&deeper->key.tid, &tk->key.tid))
+				{
+					is_deepest = false;
+					break;
+				}
+			}
+			if (!is_deepest)
+				continue;
+
+			dp = SLogDsaAllocateBeforeImage(tk->before_image,
+											tk->before_image_len,
+											tk->before_flags,
+											tk->before_commit_ts);
+			if (!DsaPointerIsValid(dp))
+			{
+				TimestampTz now = GetCurrentTimestamp();
+
+				if (slog_overflow_last_warning == 0 ||
+					TimestampDifferenceExceeds(slog_overflow_last_warning,
+											   now, 10000))
+				{
+					slog_overflow_last_warning = now;
+					elog(WARNING, "sLog: DSA before-image allocation failed "
+						 "(limit %d MB); MVCC before-image serving degraded "
+						 "for rel %u tid (%u,%u)",
+						 slog_dsa_max_size_mb,
+						 tk->key.relid,
+						 ItemPointerGetBlockNumber(&tk->key.tid),
+						 ItemPointerGetOffsetNumber(&tk->key.tid));
+				}
+				continue;
+			}
+
+			tk->before_image_dp = dp;
+
+			memset(&update_op, 0, sizeof(update_op));
+			update_op.kind = SLOG_FLAT_OP_UPDATE_OP;
+			update_op.key = tk->key;
+			update_op.xid = xid;
+			update_op.before_image_dp = dp;
+
+			LWLockAcquire(SLOG_PART_WRITER_LOCK(&tk->key), LW_EXCLUSIVE);
+			LRLockWriteBegin(SLOG_PART_LRLOCK(&tk->key));
+			LRLockApplyOp(SLOG_PART_LRLOCK(&tk->key), &update_op,
+						  sizeof(update_op));
+			LRLockPublish(SLOG_PART_LRLOCK(&tk->key));
+			LRLockWriteEnd(SLOG_PART_LRLOCK(&tk->key));
+			LWLockRelease(SLOG_PART_WRITER_LOCK(&tk->key));
+		}
+	}
 
 	/* Batch apply COMMIT_XID ops grouped by partition */
 	{
@@ -2844,55 +2955,6 @@ fallback_linked_list:
 }
 
 /*
- * SLogTupleHasSharedBeforeImage
- *		Check whether the shared sLog already has a before-image DSA pointer
- *		for this (relid, tid, xid).
- *
- * Used to prevent overwriting the original pre-transaction before-image
- * when the same row is updated multiple times within a single transaction.
- */
-static bool
-SLogTupleHasSharedBeforeImage(Oid relid, ItemPointer tid, TransactionId xid)
-{
-	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
-	bool		has_bi = false;
-
-	if (SLogState == NULL)
-		return false;
-
-	memset(&key, 0, sizeof(key));
-	key.relid = relid;
-	ItemPointerCopy(tid, &key.tid);
-
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
-
-	bucket = SLogFlatHashProbe(ht, &key);
-	if (bucket != NULL)
-	{
-		const SLogTupleEntry *entry = &bucket->entry;
-		int		i;
-
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
-		{
-			if (entry->ops[i].in_use &&
-				TransactionIdEquals(entry->ops[i].xid, xid) &&
-				entry->ops[i].op_type == SLOG_OP_UPDATE &&
-				DsaPointerIsValid(entry->ops[i].before_image_dp))
-			{
-				has_bi = true;
-				break;
-			}
-		}
-	}
-
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
-
-	return has_bi;
-}
-
-/*
  * SLogTupleStoreBeforeImage
  *		Attach a before-image to the most recent tracked key for the given
  *		(relid, tid, xid) combination.
@@ -2918,7 +2980,6 @@ SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 {
 	SLogTrackedKey *tk;
 	MemoryContext oldcxt;
-	dsa_pointer dp;
 
 	/* Enforce size cap */
 	if (len > RECNO_BEFORE_IMAGE_MAX_SIZE)
@@ -2946,58 +3007,30 @@ SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 		MemoryContextSwitchTo(oldcxt);
 
 		/*
-		 * Allocate shared DSA copy for cross-backend MVCC reads — but
-		 * only if no prior update within this transaction already stored
-		 * one.  The FIRST before-image is the true pre-transaction state
-		 * that MVCC readers should see; subsequent in-place updates within
-		 * the same transaction must not overwrite it.
+		 * The shared DSA before-image (for cross-backend MVCC reads by
+		 * snapshot-isolation transactions) is NOT allocated here.  It is
+		 * deferred to commit time (SLogTupleCommitByXid), gated on whether
+		 * any REPEATABLE READ / SERIALIZABLE reader is actually active.
+		 *
+		 * The shared copy is invisible to readers until its op carries a
+		 * committed commit_hlc, so allocating it at write time serves no
+		 * reader before commit anyway.  Under READ COMMITTED-only workloads
+		 * (the common case) no isolation reader ever exists, so the
+		 * allocation plus the extra exclusive-LWLock UPDATE_OP publish cycle
+		 * done here per update were pure waste.
+		 *
+		 * Deferring to commit is also the only SOUND gate: a reader that
+		 * starts AFTER this write but BEFORE our commit still needs the
+		 * image, so a write-time RecnoHasActiveIsoReaders() check would miss
+		 * it.  At commit the seq-cst publish-before-snapshot handshake
+		 * (reader bumps active_iso_readers before taking its snapshot HLC; we
+		 * read the counter after stamping our commit HLC) guarantees we
+		 * observe every reader whose snapshot precedes our commit.
+		 *
+		 * The local copy stored above still covers savepoint rollback, which
+		 * is backend-local and does not depend on the DSA copy.
 		 */
-		dp = InvalidDsaPointer;
-		if (!SLogTupleHasSharedBeforeImage(relid, tid, xid))
-		{
-			dp = SLogDsaAllocateBeforeImage(data, len, flags, commit_ts);
-
-			if (!DsaPointerIsValid(dp))
-			{
-				/*
-				 * Rate-limit this WARNING: emit at most once per 10 seconds
-				 * per backend to avoid log flooding under sustained pressure.
-				 */
-				TimestampTz now = GetCurrentTimestamp();
-
-				if (slog_overflow_last_warning == 0 ||
-					TimestampDifferenceExceeds(slog_overflow_last_warning, now, 10000))
-				{
-					slog_overflow_last_warning = now;
-					elog(WARNING, "sLog: DSA before-image allocation failed "
-						 "(limit %d MB); MVCC before-image serving degraded "
-						 "for rel %u tid (%u,%u)",
-						 slog_dsa_max_size_mb,
-						 relid, ItemPointerGetBlockNumber(tid),
-						 ItemPointerGetOffsetNumber(tid));
-				}
-			}
-		}
-		tk->before_image_dp = dp;
-
-		if (DsaPointerIsValid(dp) && !tk->local_only)
-		{
-			/* Store dp in the shared sLog op via flat hash UPDATE_OP */
-			SLogFlatOp	update_op;
-
-			memset(&update_op, 0, sizeof(update_op));
-			update_op.kind = SLOG_FLAT_OP_UPDATE_OP;
-			update_op.key = tk->key;
-			update_op.xid = xid;
-			update_op.before_image_dp = dp;
-
-			LWLockAcquire(SLOG_PART_WRITER_LOCK(&tk->key), LW_EXCLUSIVE);
-			LRLockWriteBegin(SLOG_PART_LRLOCK(&tk->key));
-			LRLockApplyOp(SLOG_PART_LRLOCK(&tk->key), &update_op, sizeof(update_op));
-			LRLockPublish(SLOG_PART_LRLOCK(&tk->key));
-			LRLockWriteEnd(SLOG_PART_LRLOCK(&tk->key));
-			LWLockRelease(SLOG_PART_WRITER_LOCK(&tk->key));
-		}
+		tk->before_image_dp = InvalidDsaPointer;
 
 		return;
 	}

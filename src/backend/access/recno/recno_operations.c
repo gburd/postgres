@@ -1626,6 +1626,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	uint64		defrag_oldest_ts = 0;
 	Buffer		upd_undo_buffer = InvalidBuffer;
 	RelUndoRecPtr upd_undo_ptr = InvalidRelUndoRecPtr;
+	RecnoDiffRecord *upd_diff = NULL;
 
 	/* Extract block and offset from old TID */
 	blkno = ItemPointerGetBlockNumber(otid);
@@ -1787,8 +1788,38 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							char	   *cas_old_copy = palloc(cas_old_len);
 							Buffer		cas_undo_buffer = InvalidBuffer;
 							RelUndoRecPtr cas_undo_ptr = InvalidRelUndoRecPtr;
+							RecnoDiffRecord *cas_diff;
+							Size		cas_undo_reserve;
 
 							memcpy(cas_old_copy, old_tuple_hdr, cas_old_len);
+
+							/*
+							 * Compute a compact byte-diff of the change so the
+							 * UNDO record stores only the changed bytes instead of
+							 * the full old tuple.  A same-size CAS update (the only
+							 * kind reaching this path) always permits the
+							 * offset-based diff; if the change is too large cas_diff
+							 * is NULL and we fall back to the full-tuple record.
+							 * This roughly halves per-UPDATE UNDO WAL volume.
+							 */
+							cas_diff = RecnoComputeTupleDiff(cas_old_copy, cas_old_len,
+							                                 (char *) cas_new_tuple->t_data,
+							                                 cas_new_size);
+							if (cas_diff != NULL &&
+								RecnoDiffIsCompact(cas_diff, cas_old_len))
+								cas_undo_reserve = SizeOfRelUndoRecordHeader +
+									SizeOfRelUndoDeltaUpdatePayload +
+									cas_diff->total_size;
+							else
+							{
+								if (cas_diff != NULL)
+								{
+									pfree(cas_diff);
+									cas_diff = NULL;
+								}
+								cas_undo_reserve = SizeOfRelUndoRecordHeader +
+									sizeof(RelUndoUpdatePayload) + cas_old_len;
+							}
 
 							/*
 							 * Reserve per-relation UNDO space BEFORE the critical
@@ -1798,9 +1829,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							 */
 							if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
 								cas_undo_ptr = RelUndoReserve(relation,
-															  SizeOfRelUndoRecordHeader +
-															  sizeof(RelUndoUpdatePayload) +
-															  cas_old_len,
+															  cas_undo_reserve,
 															  &cas_undo_buffer);
 
 							/* Critical section: modify page + WAL */
@@ -1889,8 +1918,57 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							 * insertion works from cas_old_copy and needs no
 							 * page lock.
 							 */
-							if (RelUndoRecPtrIsValid(cas_undo_ptr))
+							if (RelUndoRecPtrIsValid(cas_undo_ptr) && cas_diff != NULL)
 							{
+								/*
+								 * Compact path: store only the byte-diff.  The apply
+								 * side (RELUNDO_DELTA_UPDATE) reads the new tuple from
+								 * the page and reverse-applies the diff to reconstruct
+								 * the old image, then clears transient flags -- the
+								 * same end-state as the full-tuple restore, at roughly
+								 * half the UNDO volume.  Layout: [header][payload][diff].
+								 */
+								RelUndoRecordHeader cas_undo_hdr;
+								RelUndoDeltaUpdatePayload cas_undo_payload;
+								char	   *cas_combined;
+								Size		cas_payload_total;
+
+								cas_undo_hdr.urec_type = RELUNDO_DELTA_UPDATE;
+								cas_undo_hdr.urec_len = (uint16)
+									(SizeOfRelUndoRecordHeader +
+									 SizeOfRelUndoDeltaUpdatePayload +
+									 cas_diff->total_size);
+								cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+								cas_undo_hdr.urec_prevundorec =
+									GetPerRelUndoPtr(RelationGetRelid(relation));
+								cas_undo_hdr.info_flags = RELUNDO_INFO_PARTIAL_TUPLE;
+								cas_undo_hdr.tuple_len = 0;
+
+								cas_undo_payload.oldtid = slot->tts_tid;
+								cas_undo_payload.newtid = slot->tts_tid;
+								cas_undo_payload.diff_len = (uint16) cas_diff->total_size;
+
+								cas_payload_total = SizeOfRelUndoDeltaUpdatePayload +
+									cas_diff->total_size;
+								cas_combined = palloc(cas_payload_total);
+								memcpy(cas_combined, &cas_undo_payload,
+									   SizeOfRelUndoDeltaUpdatePayload);
+								memcpy(cas_combined + SizeOfRelUndoDeltaUpdatePayload,
+									   cas_diff, cas_diff->total_size);
+
+								RelUndoFinish(relation, cas_undo_buffer, cas_undo_ptr,
+											  &cas_undo_hdr, cas_combined,
+											  cas_payload_total);
+								RegisterPerRelUndo(RelationGetRelid(relation),
+												   cas_undo_ptr);
+								pfree(cas_combined);
+							}
+							else if (RelUndoRecPtrIsValid(cas_undo_ptr))
+							{
+								/*
+								 * Fall-back path: the change was too large to diff
+								 * compactly, so store the full old tuple as before.
+								 */
 								RelUndoRecordHeader cas_undo_hdr;
 								RelUndoUpdatePayload cas_undo_payload;
 								char	   *cas_combined;
@@ -1923,6 +2001,12 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								RegisterPerRelUndo(RelationGetRelid(relation),
 												   cas_undo_ptr);
 								pfree(cas_combined);
+							}
+							else if (cas_diff != NULL)
+								{
+								/* No UNDO fork (e.g. unlogged/temp): drop the diff. */
+								pfree(cas_diff);
+								cas_diff = NULL;
 							}
 
 							/*
@@ -2839,11 +2923,58 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * UNDO buffer.
 	 */
 	if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
-		upd_undo_ptr = RelUndoReserve(relation,
-									  SizeOfRelUndoRecordHeader +
-									  sizeof(RelUndoUpdatePayload) +
-									  old_tuple_for_inplace_wal->t_len,
+	{
+		Size		upd_undo_reserve;
+
+		/*
+		 * Compute a compact byte-diff of the change so the UNDO record stores
+		 * only the changed bytes instead of the full old tuple, mirroring the
+		 * CAS fast path.  The diff is only valid for a same-size in-place
+		 * overwrite (RecnoComputeTupleDiff requires equal lengths), which is
+		 * exactly the new_tuple_size == old_len case below; grow/shrink updates
+		 * leave upd_diff NULL and fall back to the full-tuple record.
+		 *
+		 * The new tuple's transient MVCC flags (RECNO_TUPLE_UPDATED set,
+		 * RECNO_TUPLE_UNCOMMITTED cleared) and t_ctid are finalized inside the
+		 * critical section below, AFTER this reservation runs.  To diff against
+		 * the exact bytes that will land on the page, replicate those mutations
+		 * on a throwaway copy here without disturbing new_tuple (whose current
+		 * state still feeds the pre-ctid logical-decoding image).
+		 */
+		if (new_tuple_size == old_tuple_for_inplace_wal->t_len)
+		{
+			char	   *upd_new_preview = palloc(new_tuple_size);
+			RecnoTupleHeader *preview_hdr;
+
+			memcpy(upd_new_preview, new_tuple->t_data, new_tuple_size);
+			preview_hdr = (RecnoTupleHeader *) upd_new_preview;
+			preview_hdr->t_flags |= RECNO_TUPLE_UPDATED;
+			preview_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+			ItemPointerSet(&preview_hdr->t_ctid, blkno, offnum);
+
+			upd_diff = RecnoComputeTupleDiff((char *) old_tuple_for_inplace_wal->t_data,
+											 old_tuple_for_inplace_wal->t_len,
+											 upd_new_preview, new_tuple_size);
+			if (upd_diff != NULL &&
+				!RecnoDiffIsCompact(upd_diff, old_tuple_for_inplace_wal->t_len))
+			{
+				pfree(upd_diff);
+				upd_diff = NULL;
+			}
+			pfree(upd_new_preview);
+		}
+
+		if (upd_diff != NULL)
+			upd_undo_reserve = SizeOfRelUndoRecordHeader +
+				SizeOfRelUndoDeltaUpdatePayload + upd_diff->total_size;
+		else
+			upd_undo_reserve = SizeOfRelUndoRecordHeader +
+				sizeof(RelUndoUpdatePayload) +
+				old_tuple_for_inplace_wal->t_len;
+
+		upd_undo_ptr = RelUndoReserve(relation, upd_undo_reserve,
 									  &upd_undo_buffer);
+	}
 
 	/*
 	 * SSI: check for rw-conflict in.  If a concurrent serializable
@@ -3050,7 +3181,49 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * Write a full-tuple RELUNDO_UPDATE record with old/new TID mapping and
 	 * the old tuple data so that rollback can restore it.
 	 */
-	if (RelUndoRecPtrIsValid(upd_undo_ptr))
+	if (RelUndoRecPtrIsValid(upd_undo_ptr) && upd_diff != NULL)
+	{
+		/*
+		 * Compact path: store only the byte-diff.  The apply side
+		 * (RELUNDO_DELTA_UPDATE) reads the new tuple from the page and
+		 * reverse-applies the diff to reconstruct the old image, at roughly
+		 * half the UNDO volume.  Layout: [header][payload][diff].  Only reached
+		 * for a same-size in-place overwrite (see reservation above).
+		 */
+		RelUndoRecordHeader upd_undo_hdr;
+		RelUndoDeltaUpdatePayload upd_undo_payload;
+		char	   *upd_combined;
+		Size		upd_payload_total;
+
+		upd_undo_hdr.urec_type = RELUNDO_DELTA_UPDATE;
+		upd_undo_hdr.urec_len = (uint16)
+			(SizeOfRelUndoRecordHeader + SizeOfRelUndoDeltaUpdatePayload +
+			 upd_diff->total_size);
+		upd_undo_hdr.urec_xid = GetCurrentTransactionId();
+		upd_undo_hdr.urec_prevundorec =
+			GetPerRelUndoPtr(RelationGetRelid(relation));
+		upd_undo_hdr.info_flags = RELUNDO_INFO_PARTIAL_TUPLE;
+		upd_undo_hdr.tuple_len = 0;
+
+		upd_undo_payload.oldtid = *otid;
+		upd_undo_payload.newtid = slot->tts_tid;
+		upd_undo_payload.diff_len = (uint16) upd_diff->total_size;
+
+		upd_payload_total = SizeOfRelUndoDeltaUpdatePayload +
+			upd_diff->total_size;
+		upd_combined = palloc(upd_payload_total);
+		memcpy(upd_combined, &upd_undo_payload, SizeOfRelUndoDeltaUpdatePayload);
+		memcpy(upd_combined + SizeOfRelUndoDeltaUpdatePayload,
+			   upd_diff, upd_diff->total_size);
+
+		RelUndoFinish(relation, upd_undo_buffer, upd_undo_ptr,
+					  &upd_undo_hdr, upd_combined, upd_payload_total);
+		RegisterPerRelUndo(RelationGetRelid(relation), upd_undo_ptr);
+		pfree(upd_combined);
+		pfree(upd_diff);
+		upd_diff = NULL;
+	}
+	else if (RelUndoRecPtrIsValid(upd_undo_ptr))
 	{
 		RelUndoRecordHeader upd_undo_hdr;
 		RelUndoUpdatePayload upd_undo_payload;
@@ -3087,6 +3260,12 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					  &upd_undo_hdr, upd_combined, upd_payload_total);
 		RegisterPerRelUndo(RelationGetRelid(relation), upd_undo_ptr);
 		pfree(upd_combined);
+	}
+	else if (upd_diff != NULL)
+	{
+		/* No UNDO fork (e.g. unlogged/temp): drop the diff. */
+		pfree(upd_diff);
+		upd_diff = NULL;
 	}
 
 	/*
@@ -5051,6 +5230,20 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 				{
 					RecnoClearUncommittedFlags(xid);
 					RecnoProcessAbortedEntries(xid);
+
+					/*
+					 * Stamp commit_hlc on retained UPDATE entries and publish
+					 * before-images HERE, before the point of no return.  This
+					 * must precede ProcArrayEndTransaction: if it ran at
+					 * XACT_EVENT_COMMIT (post-proc-array, inside the no-abort
+					 * region), a concurrent reader could observe a
+					 * committed-but-unstamped (commit_hlc==0) op after the
+					 * writer left the proc array and wrongly treat the live
+					 * tuple as deleted (c=8 "expected one row, got 0").  It
+					 * also keeps DSA allocation in an abort-legal phase,
+					 * avoiding the post-commit OOM->PANIC.
+					 */
+					SLogTupleCommitByXid(xid, recno_pending_commit_hlc);
 				}
 			}
 			break;
@@ -5082,18 +5275,12 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 		case XACT_EVENT_COMMIT:
 		case XACT_EVENT_PARALLEL_COMMIT:
 			{
-				TransactionId xid = GetCurrentTransactionIdIfAny();
-
-				if (TransactionIdIsValid(xid))
-				{
-					/*
-					 * Retain committed UPDATE entries that have before-images
-					 * (for MVCC serving to readers with older snapshots).
-					 * INSERT/DELETE/LOCK entries are removed immediately.
-					 */
-					SLogTupleCommitByXid(xid, recno_pending_commit_hlc);
-				}
-
+				/*
+				 * commit_hlc stamping and before-image publication already
+				 * happened at XACT_EVENT_PRE_COMMIT (see above).  Here we only
+				 * release backend-local tracking state, which is safe in the
+				 * post-commit no-abort region.
+				 */
 				recno_pending_commit_hlc = 0;
 
 				/* Decrement dirty map counters for all tracked blocks */

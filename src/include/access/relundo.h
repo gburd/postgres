@@ -229,6 +229,15 @@ typedef struct RelUndoDeltaUpdatePayload
 } RelUndoDeltaUpdatePayload;
 
 /*
+ * On-disk size of the fixed portion of a RELUNDO_DELTA_UPDATE payload.  The
+ * diff data is written immediately after diff_len, so the apply path reads it
+ * at this offset.  Use this rather than sizeof() to avoid any trailing struct
+ * padding being mistaken for diff bytes.
+ */
+#define SizeOfRelUndoDeltaUpdatePayload \
+	(offsetof(RelUndoDeltaUpdatePayload, diff_len) + sizeof(uint16))
+
+/*
  * Per-relation UNDO metapage structure
  *
  * Stored at block 0 of the relation's UNDO fork. Tracks the head/tail

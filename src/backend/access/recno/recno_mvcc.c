@@ -132,6 +132,14 @@ typedef struct RecnoMvccShmemData
 												 * invalidated */
 	pg_atomic_uint32 active_xact_count; /* Number of active transactions
 										 * (atomic) */
+	pg_atomic_uint32 active_iso_readers;	/* Number of active
+											 * snapshot-isolation (REPEATABLE
+											 * READ / SERIALIZABLE) transactions.
+											 * Gates shared before-image
+											 * allocation: when zero, no reader
+											 * can ever consume a committed
+											 * before-image, so the DSA copy is
+											 * skipped entirely. */
 
 	/*
 	 * Per-backend active transaction start timestamps.  Each backend slot
@@ -171,6 +179,7 @@ struct RecnoTransactionState
 	HLCTimestamp xact_commit_hlc;	/* Transaction commit HLC (HLC mode) */
 	bool		is_serializable;	/* Serializable isolation level */
 	bool		is_read_only;	/* Transaction has not performed writes */
+	bool		is_iso_reader;	/* Counted in active_iso_readers (RR/SER) */
 
 	/* Uncertainty handling for distributed scenarios */
 	bool		needs_restart;	/* Transaction needs to restart */
@@ -332,6 +341,7 @@ RecnoMvccShmemInit(void)
 		pg_atomic_init_u32(&RecnoMvccShmem->oldest_active_generation, 0);
 		RecnoMvccShmem->serializable_horizon = 1;
 		pg_atomic_init_u32(&RecnoMvccShmem->active_xact_count, 0);
+		pg_atomic_init_u32(&RecnoMvccShmem->active_iso_readers, 0);
 
 		/* Initialize per-backend active timestamp slots to 0 (idle) */
 		RecnoMvccShmem->num_xact_slots = total_procs;
@@ -579,6 +589,25 @@ RecnoInitTransactionState(void)
 	memset(&MyRecnoXactStateData, 0, sizeof(RecnoTransactionState));
 	MyRecnoXactState = &MyRecnoXactStateData;
 
+	/*
+	 * Register as an active snapshot-isolation reader BEFORE acquiring the
+	 * transaction-start HLC.  Only REPEATABLE READ / SERIALIZABLE take a
+	 * point-in-time snapshot that can consume a committed before-image; READ
+	 * COMMITTED re-reads the current HLC per visibility check and therefore
+	 * never needs one.
+	 *
+	 * The increment uses a sequentially-consistent atomic, and HLCNow() below
+	 * is itself a seq-cst RMW on the global clock, so the increment is ordered
+	 * before our snapshot HLC.  A committer that stamps its commit HLC after
+	 * our snapshot HLC (the only case in which we could need its before-image)
+	 * is guaranteed to observe this increment when it reads the counter after
+	 * generating its commit HLC.  This is the publish-before-snapshot half of
+	 * the handshake that makes commit-time before-image allocation sound.
+	 */
+	MyRecnoXactState->is_iso_reader = IsolationUsesXactSnapshot();
+	if (MyRecnoXactState->is_iso_reader && RecnoMvccShmem != NULL)
+		pg_atomic_fetch_add_u32(&RecnoMvccShmem->active_iso_readers, 1);
+
 	if (recno_use_hlc)
 	{
 		/*
@@ -655,6 +684,18 @@ RecnoCleanupTransactionState(void)
 		}
 
 		pg_atomic_fetch_sub_u32(&RecnoMvccShmem->active_xact_count, 1);
+
+		/*
+		 * Drop our snapshot-isolation reader registration.  Decrementing only
+		 * after our snapshot is fully retired is safe: a committer that no
+		 * longer observes us cannot have stamped a commit HLC that precedes a
+		 * snapshot we still hold.
+		 */
+		if (MyRecnoXactState->is_iso_reader)
+		{
+			pg_atomic_fetch_sub_u32(&RecnoMvccShmem->active_iso_readers, 1);
+			MyRecnoXactState->is_iso_reader = false;
+		}
 
 		/*
 		 * Invalidate the cached oldest_active_ts if we might have been the
@@ -1477,6 +1518,28 @@ HLCTimestamp
 RecnoGetOldestActiveHLC(void)
 {
 	return (HLCTimestamp) RecnoGetOldestActiveTimestamp();
+}
+
+/*
+ * RecnoHasActiveIsoReaders -- is any snapshot-isolation reader active?
+ *
+ * Returns true if at least one REPEATABLE READ / SERIALIZABLE transaction is
+ * currently running cluster-wide.  Only such transactions can consume a
+ * committed before-image (READ COMMITTED re-reads the live HLC per visibility
+ * check and never needs one), so when this returns false the shared DSA
+ * before-image can be skipped entirely.
+ *
+ * Callers must observe this AFTER generating their commit HLC (and the seq-cst
+ * RMW in HLCNow() supplies the necessary ordering): see the publish-before-
+ * snapshot handshake in RecnoInitTransactionState().
+ */
+bool
+RecnoHasActiveIsoReaders(void)
+{
+	if (RecnoMvccShmem == NULL)
+		return false;
+
+	return pg_atomic_read_u32(&RecnoMvccShmem->active_iso_readers) > 0;
 }
 
 /*
