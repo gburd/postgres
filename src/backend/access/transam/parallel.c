@@ -769,12 +769,12 @@ WaitForParallelWorkersToAttach(ParallelContext *pcxt)
 				 * might also get set for some other reason, but if so we'll
 				 * just end up waiting for the same worker again.
 				 */
-				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+				rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							   WL_INTERRUPT | WL_EXIT_ON_PM_DEATH,
 							   -1, WAIT_EVENT_BGWORKER_STARTUP);
 
-				if (rc & WL_LATCH_SET)
-					ResetLatch(MyLatch);
+				if (rc & WL_INTERRUPT)
+					ClearInterrupt(INTERRUPT_GENERAL);
 			}
 		}
 
@@ -889,9 +889,10 @@ WaitForParallelWorkersToFinish(ParallelContext *pcxt)
 			}
 		}
 
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, -1,
 						 WAIT_EVENT_PARALLEL_FINISH);
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 	}
 
 	if (pcxt->toc != NULL)
