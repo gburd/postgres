@@ -169,11 +169,11 @@ wait_for_table_state_change(Oid relid, char expected_state)
 		if (!worker)
 			break;
 
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 1000L, WAIT_EVENT_LOGICAL_SYNC_STATE_CHANGE);
 
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 	}
 
 	return false;
@@ -223,12 +223,12 @@ wait_for_worker_state_change(char expected_state)
 		 * Wait.  We expect to get a latch signal back from the apply worker,
 		 * but use a timeout in case it dies without sending one.
 		 */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+					   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   1000L, WAIT_EVENT_LOGICAL_SYNC_STATE_CHANGE);
 
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
+		if (rc & WL_INTERRUPT)
+			ClearInterrupt(INTERRUPT_GENERAL);
 	}
 
 	return false;
@@ -701,12 +701,12 @@ copy_read_data(void *outbuf, int minread, int maxread)
 		/*
 		 * Wait for more data or latch.
 		 */
-		(void) WaitLatchOrSocket(MyLatch,
-								 WL_SOCKET_READABLE | WL_LATCH_SET |
+		(void) WaitInterruptOrSocket(CheckForInterruptsMask | INTERRUPT_GENERAL,
+								 WL_SOCKET_READABLE | WL_INTERRUPT |
 								 WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 								 fd, 1000L, WAIT_EVENT_LOGICAL_SYNC_DATA);
 
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 	}
 
 	return bytesread;

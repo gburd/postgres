@@ -4208,15 +4208,15 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 				wait_time = Min(wait_time, MySubscription->maxretention);
 		}
 
-		rc = WaitLatchOrSocket(MyLatch,
-							   WL_SOCKET_READABLE | WL_LATCH_SET |
+		rc = WaitInterruptOrSocket(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							   WL_SOCKET_READABLE | WL_INTERRUPT |
 							   WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							   fd, wait_time,
 							   WAIT_EVENT_LOGICAL_APPLY_MAIN);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			CHECK_FOR_INTERRUPTS();
 		}
 
