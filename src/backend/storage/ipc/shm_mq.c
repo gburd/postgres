@@ -216,7 +216,7 @@ shm_mq_set_receiver(shm_mq *mq, PGPROC *proc)
 	SpinLockRelease(&mq->mq_mutex);
 
 	if (sender != NULL)
-		SetLatch(&sender->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(sender));
 }
 
 /*
@@ -234,7 +234,7 @@ shm_mq_set_sender(shm_mq *mq, PGPROC *proc)
 	SpinLockRelease(&mq->mq_mutex);
 
 	if (receiver != NULL)
-		SetLatch(&receiver->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(receiver));
 }
 
 /*
@@ -541,7 +541,7 @@ shm_mq_sendv(shm_mq_handle *mqh, shm_mq_iovec *iov, int iovcnt, bool nowait,
 	{
 		shm_mq_inc_bytes_written(mq, mqh->mqh_send_pending);
 		if (receiver != NULL)
-			SetLatch(&receiver->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(receiver));
 		mqh->mqh_send_pending = 0;
 	}
 
@@ -897,7 +897,7 @@ shm_mq_detach_internal(shm_mq *mq)
 	SpinLockRelease(&mq->mq_mutex);
 
 	if (victim != NULL)
-		SetLatch(&victim->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(victim));
 }
 
 /*
@@ -995,7 +995,7 @@ shm_mq_send_bytes(shm_mq_handle *mqh, Size nbytes, const void *data,
 			 * Therefore, we can read it without acquiring the spinlock.
 			 */
 			Assert(mqh->mqh_counterparty_attached);
-			SetLatch(&mq->mq_receiver->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(mq->mq_receiver));
 
 			/*
 			 * We have just updated the mqh_send_pending bytes in the shared
@@ -1017,11 +1017,12 @@ shm_mq_send_bytes(shm_mq_handle *mqh, Size nbytes, const void *data,
 			 * at top of loop, because setting an already-set latch is much
 			 * cheaper than setting one that has been reset.
 			 */
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
+			(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+								 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
 							 WAIT_EVENT_MESSAGE_QUEUE_SEND);
 
-			/* Reset the latch so we don't spin. */
-			ResetLatch(MyLatch);
+			/* Reset the interrupt so we don't spin. */
+			ClearInterrupt(INTERRUPT_GENERAL);
 
 			/* An interrupt may have occurred while we were waiting. */
 			CHECK_FOR_INTERRUPTS();
@@ -1163,11 +1164,12 @@ shm_mq_receive_bytes(shm_mq_handle *mqh, Size bytes_needed, bool nowait,
 		 * loop, because setting an already-set latch is much cheaper than
 		 * setting one that has been reset.
 		 */
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
 						 WAIT_EVENT_MESSAGE_QUEUE_RECEIVE);
 
-		/* Reset the latch so we don't spin. */
-		ResetLatch(MyLatch);
+		/* Reset the interrupt so we don't spin. */
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/* An interrupt may have occurred while we were waiting. */
 		CHECK_FOR_INTERRUPTS();
@@ -1252,11 +1254,12 @@ shm_mq_wait_internal(shm_mq *mq, PGPROC **ptr, BackgroundWorkerHandle *handle)
 		}
 
 		/* Wait to be signaled. */
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
 						 WAIT_EVENT_MESSAGE_QUEUE_INTERNAL);
 
-		/* Reset the latch so we don't spin. */
-		ResetLatch(MyLatch);
+		/* Reset the interrupt so we don't spin. */
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/* An interrupt may have occurred while we were waiting. */
 		CHECK_FOR_INTERRUPTS();
@@ -1295,7 +1298,7 @@ shm_mq_inc_bytes_read(shm_mq *mq, Size n)
 	 */
 	sender = mq->mq_sender;
 	Assert(sender != NULL);
-	SetLatch(&sender->procLatch);
+	SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(sender));
 }
 
 /*
