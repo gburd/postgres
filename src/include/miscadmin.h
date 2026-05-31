@@ -172,6 +172,8 @@ extern PGDLLIMPORT bool IsBinaryUpgrade;
 
 extern PGDLLIMPORT bool ExitOnAnyError;
 
+extern PGDLLIMPORT postmaster_guc bool IsMultiThreaded;
+
 extern PGDLLIMPORT char *DataDir;
 extern PGDLLIMPORT int data_directory_mode;
 

@@ -27,6 +27,34 @@
 #include <stdint.h>
 
 /*
+ * Global-variable storage-lifetime annotations.
+ *
+ * PostgreSQL uses global variables for many different things: some are
+ * effectively constants initialized at postmaster startup, some hold GUC
+ * values, some hold per-session state.  These annotations document how a
+ * global is used.  They are checked by the pgguclifetimes tool (in
+ * src/tools/pgguclifetimes).  When the compiler lacks
+ * __attribute__((annotate(...))) they reduce to nothing.
+ *
+ * When PostgreSQL runs in the multithreaded thread-per-connection model,
+ * the per-session variables (session_local) become thread-local.
+ *
+ * GUC-specific lifetime annotations (postmaster_guc, session_guc, ...)
+ * are backend-only and live in postgres.h.
+ */
+#if __has_attribute (annotate)
+#define pg_global __attribute__((annotate("pg_global")))
+#define dynamic_singleton __attribute__((annotate("dynamic_singleton")))
+#define static_singleton __attribute__((annotate("static_singleton")))
+#define session_local __thread __attribute__((annotate("session_local")))
+#else
+#define pg_global
+#define dynamic_singleton
+#define static_singleton
+#define session_local __thread
+#endif
+
+/*
  * Object ID is a fundamental type in Postgres.
  */
 typedef unsigned int Oid;

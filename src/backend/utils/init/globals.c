@@ -124,6 +124,8 @@ bool		IsBinaryUpgrade = false;
 
 bool		ExitOnAnyError = false;
 
+postmaster_guc bool IsMultiThreaded = false;	/* GUC: use threads, not processes */
+
 int			DateStyle = USE_ISO_DATES;
 int			DateOrder = DATEORDER_MDY;
 int			IntervalStyle = INTSTYLE_POSTGRES;

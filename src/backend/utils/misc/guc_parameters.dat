@@ -2253,6 +2253,13 @@
   max => 'MAX_KILOBYTES',
 },
 
+{ name => 'multithreaded', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Use a multi-threaded model instead of a process model.',
+  flags => 'GUC_SUPERUSER_ONLY | GUC_NO_RESET_ALL | GUC_NO_RESET | GUC_NOT_IN_SAMPLE',
+  variable => 'IsMultiThreaded',
+  boot_val => 'false',
+},
+
 { name => 'multixact_member_buffers', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Sets the size of the dedicated buffer pool used for the MultiXact member cache.',
   flags => 'GUC_UNIT_BLOCKS',

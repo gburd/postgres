@@ -12895,6 +12895,24 @@ dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
         This parameter cannot be changed after session start.
        </para>
       </listitem>
+      </varlistentry>
+
+     <varlistentry id="guc-multithreaded" xreflabel="multithreaded">
+      <term><varname>multithreaded</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>multithreaded</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>on</literal>, <productname>PostgreSQL</productname>
+        runs backends as threads of a single server process instead of as
+        separate operating-system processes.  This option is intended for
+        development and testing of multithreading support; it is not yet
+        suitable for production use.
+        This parameter can only be set at server start.
+       </para>
+      </listitem>
      </varlistentry>
 
      <varlistentry id="guc-post-auth-delay" xreflabel="post_auth_delay">
