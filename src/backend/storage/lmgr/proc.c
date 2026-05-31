@@ -1409,15 +1409,15 @@ ProcSleep(LOCALLOCK *locallock)
 	}
 
 	/*
-	 * If somebody wakes us between LWLockRelease and WaitLatch, the latch
-	 * will not wait. But a set latch does not necessarily mean that the lock
-	 * is free now, as there are many other sources for latch sets than
-	 * somebody releasing the lock.
+	 * If somebody wakes us between LWLockRelease and WaitInterrupt, the
+	 * interrupt will not wait. But a raised interrupt does not necessarily
+	 * mean that the lock is free now, as there are many other sources for
+	 * interrupts than somebody releasing the lock.
 	 *
-	 * We process interrupts whenever the latch has been set, so cancel/die
-	 * interrupts are processed quickly. This means we must not mind losing
-	 * control to a cancel/die interrupt here.  We don't, because we have no
-	 * shared-state-change work to do after being granted the lock (the
+	 * We process interrupts whenever an interrupt has been raised, so
+	 * cancel/die interrupts are processed quickly. This means we must not mind
+	 * losing control to a cancel/die interrupt here.  We don't, because we
+	 * have no shared-state-change work to do after being granted the lock (the
 	 * grantor did it all).  We do have to worry about canceling the deadlock
 	 * timeout and updating the locallock table, but if we lose control to an
 	 * error, LockErrorCleanup will fix that up.
@@ -1466,9 +1466,10 @@ ProcSleep(LOCALLOCK *locallock)
 		}
 		else
 		{
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-							 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
-			ResetLatch(MyLatch);
+			(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+								 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
+								 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			/* check for deadlocks first, as that's probably log-worthy */
 			if (got_deadlock_timeout)
 			{
@@ -1741,7 +1742,7 @@ ProcSleep(LOCALLOCK *locallock)
 
 
 /*
- * ProcWakeup -- wake up a process by setting its latch.
+ * ProcWakeup -- wake up a process by raising its interrupt.
  *
  *	 Also remove the process from the wait queue and set its waitLink invalid.
  *
@@ -1770,7 +1771,7 @@ ProcWakeup(PGPROC *proc, ProcWaitStatus waitStatus)
 	pg_atomic_write_u64(&proc->waitStart, 0);
 
 	/* And awaken it */
-	SetLatch(&proc->procLatch);
+	SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(proc));
 }
 
 /*
@@ -1926,11 +1927,12 @@ CheckDeadLockAlert(void)
 	got_deadlock_timeout = true;
 
 	/*
-	 * Have to set the latch again, even if handle_sig_alarm already did. Back
-	 * then got_deadlock_timeout wasn't yet set... It's unlikely that this
-	 * ever would be a problem, but setting a set latch again is cheap.
+	 * Have to raise the interrupt again, even if handle_sig_alarm already
+	 * did. Back then got_deadlock_timeout wasn't yet set... It's unlikely
+	 * that this ever would be a problem, but raising a raised interrupt again
+	 * is cheap.
 	 */
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 	errno = save_errno;
 }
 
@@ -2012,21 +2014,22 @@ GetLockHoldersAndWaiters(LOCALLOCK *locallock, StringInfo lock_holders_sbuf,
 /*
  * ProcWaitForSignal - wait for a signal from another backend.
  *
- * As this uses the generic process latch the caller has to be robust against
- * unrelated wakeups: Always check that the desired state has occurred, and
- * wait again if not.
+ * As this uses the generic process interrupt the caller has to be robust
+ * against unrelated wakeups: Always check that the desired state has occurred,
+ * and wait again if not.
  */
 void
 ProcWaitForSignal(uint32 wait_event_info)
 {
-	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-					 wait_event_info);
-	ResetLatch(MyLatch);
+	(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
+						 wait_event_info);
+	ClearInterrupt(INTERRUPT_GENERAL);
 	CHECK_FOR_INTERRUPTS();
 }
 
 /*
- * ProcSendSignal - set the latch of a backend identified by ProcNumber
+ * ProcSendSignal - raise the interrupt of a backend identified by ProcNumber
  */
 void
 ProcSendSignal(ProcNumber procNumber)
@@ -2034,7 +2037,7 @@ ProcSendSignal(ProcNumber procNumber)
 	if (procNumber < 0 || procNumber >= ProcGlobal->allProcCount)
 		elog(ERROR, "procNumber out of range");
 
-	SetLatch(&GetPGProcByNumber(procNumber)->procLatch);
+	SendInterrupt(INTERRUPT_GENERAL, procNumber);
 }
 
 /*

@@ -839,8 +839,8 @@ ResolveRecoveryConflictWithBufferPin(void)
 	 *
 	 * We assume that only UnpinBuffer() and the timeout requests established
 	 * above can wake us up here. WakeupRecovery() called by walreceiver or
-	 * SIGHUP signal handler, etc cannot do that because it uses the different
-	 * latch from that ProcWaitForSignal() waits on.
+	 * SIGHUP signal handler, etc cannot do that because it uses a different
+	 * wakeup mechanism from the one ProcWaitForSignal() waits on.
 	 */
 	ProcWaitForSignal(WAIT_EVENT_BUFFER_CLEANUP);
 

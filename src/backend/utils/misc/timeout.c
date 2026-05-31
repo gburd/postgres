@@ -372,9 +372,14 @@ handle_sig_alarm(SIGNAL_ARGS)
 
 	/*
 	 * SIGALRM is always cause for waking anything waiting on the process
-	 * latch.
+	 * latch.  Additively raise INTERRUPT_GENERAL too, so waiters that have
+	 * moved to WaitInterrupt (e.g. ProcSleep's deadlock timeout and the
+	 * hot-standby ProcWaitForSignal timeouts) are woken; the SetLatch stays
+	 * for waiters still on the latch (coexistence, removed once all wait
+	 * sites use WaitInterrupt).
 	 */
 	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 
 	/*
 	 * Always reset signal_pending, even if !alarm_enabled, since indeed no
