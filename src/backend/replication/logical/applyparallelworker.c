@@ -803,13 +803,14 @@ LogicalParallelApplyLoop(shm_mq_handle *mqh)
 				int			rc;
 
 				/* Wait for more work. */
-				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+				rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL |
+								   INTERRUPT_CONFIG_RELOAD,
+								   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							   1000L,
 							   WAIT_EVENT_LOGICAL_PARALLEL_APPLY_MAIN);
 
-				if (rc & WL_LATCH_SET)
-					ResetLatch(MyLatch);
+				if (rc & WL_INTERRUPT)
+					ClearInterrupt(INTERRUPT_GENERAL);
 
 				/*
 				 * Force stats reporting to avoid long delays. There can be
@@ -1178,14 +1179,14 @@ pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes, const void *data)
 		Assert(result == SHM_MQ_WOULD_BLOCK);
 
 		/* Wait before retrying. */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   SHM_SEND_RETRY_INTERVAL_MS,
 					   WAIT_EVENT_LOGICAL_APPLY_SEND_DATA);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			CHECK_FOR_INTERRUPTS();
 		}
 
@@ -1250,13 +1251,13 @@ pa_wait_for_xact_state(ParallelApplyWorkerInfo *winfo,
 			break;
 
 		/* Wait to be signalled. */
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 10L,
 						 WAIT_EVENT_LOGICAL_PARALLEL_APPLY_STATE_CHANGE);
 
-		/* Reset the latch so we don't spin. */
-		ResetLatch(MyLatch);
+		/* Reset the interrupt so we don't spin. */
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/* An interrupt may have occurred while we were waiting. */
 		CHECK_FOR_INTERRUPTS();

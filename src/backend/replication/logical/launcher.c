@@ -193,7 +193,6 @@ WaitForReplicationWorkerAttach(LogicalRepWorker *worker,
 							   BackgroundWorkerHandle *handle)
 {
 	bool		result = false;
-	bool		dropped_latch = false;
 
 	for (;;)
 	{
@@ -232,24 +231,16 @@ WaitForReplicationWorkerAttach(LogicalRepWorker *worker,
 		 * We need timeout because we generally don't get notified via latch
 		 * about the worker attach.  But we don't expect to have to wait long.
 		 */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   10L, WAIT_EVENT_BGWORKER_STARTUP);
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						   10L, WAIT_EVENT_BGWORKER_STARTUP);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
 			CHECK_FOR_INTERRUPTS();
-			dropped_latch = true;
+			ClearInterrupt(INTERRUPT_GENERAL);
 		}
 	}
-
-	/*
-	 * If we had to clear a latch event in order to wait, be sure to restore
-	 * it before exiting.  Otherwise caller may miss events.
-	 */
-	if (dropped_latch)
-		SetLatch(MyLatch);
 
 	return result;
 }
@@ -600,13 +591,13 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 		LWLockRelease(LogicalRepWorkerLock);
 
 		/* Wait a bit --- we don't expect to have to wait long. */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   10L, WAIT_EVENT_BGWORKER_STARTUP);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			CHECK_FOR_INTERRUPTS();
 		}
 
@@ -641,13 +632,13 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 		LWLockRelease(LogicalRepWorkerLock);
 
 		/* Wait a bit --- we don't expect to have to wait long. */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   10L, WAIT_EVENT_BGWORKER_SHUTDOWN);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			CHECK_FOR_INTERRUPTS();
 		}
 
@@ -758,7 +749,7 @@ logicalrep_worker_wakeup_ptr(LogicalRepWorker *worker)
 {
 	Assert(LWLockHeldByMe(LogicalRepWorkerLock));
 
-	SetLatch(&worker->proc->procLatch);
+	SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(worker->proc));
 }
 
 /*
@@ -1419,14 +1410,15 @@ ApplyLauncherMain(Datum main_arg)
 		MemoryContextDelete(subctx);
 
 		/* Wait for more work. */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL |
+						   INTERRUPT_CONFIG_RELOAD,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 					   wait_time,
 					   WAIT_EVENT_LOGICAL_LAUNCHER_MAIN);
 
-		if (rc & WL_LATCH_SET)
+		if (rc & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			CHECK_FOR_INTERRUPTS();
 		}
 
