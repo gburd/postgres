@@ -516,7 +516,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 
 				/*
 				 * Ideally we would reuse a WaitEventSet object repeatedly
-				 * here to avoid the overheads of WaitLatchOrSocket on epoll
+				 * here to avoid the overheads of WaitInterruptOrSocket on epoll
 				 * systems, but we can't be sure that libpq (or any other
 				 * walreceiver implementation) has the same socket (even if
 				 * the fd is the same number, it may have been closed and
@@ -526,15 +526,15 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 				 * avoiding some system calls.
 				 */
 				Assert(wait_fd != PGINVALID_SOCKET);
-				rc = WaitLatchOrSocket(MyLatch,
+				rc = WaitInterruptOrSocket(CheckForInterruptsMask | INTERRUPT_GENERAL,
 									   WL_EXIT_ON_PM_DEATH | WL_SOCKET_READABLE |
-									   WL_TIMEOUT | WL_LATCH_SET,
+									   WL_TIMEOUT | WL_INTERRUPT,
 									   wait_fd,
 									   nap,
 									   WAIT_EVENT_WAL_RECEIVER_MAIN);
-				if (rc & WL_LATCH_SET)
+				if (rc & WL_INTERRUPT)
 				{
-					ResetLatch(MyLatch);
+					ClearInterrupt(INTERRUPT_GENERAL);
 					CHECK_FOR_INTERRUPTS();
 
 					if (walrcv->apply_reply_requested)
@@ -682,7 +682,7 @@ WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI)
 	WakeupRecovery();
 	for (;;)
 	{
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -714,7 +714,8 @@ WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI)
 		}
 		SpinLockRelease(&walrcv->mutex);
 
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
 						 WAIT_EVENT_WAL_RECEIVER_WAIT_START);
 	}
 
@@ -1400,7 +1401,7 @@ WalRcvRequestApplyReply(void)
 	procno = WalRcv->procno;
 	SpinLockRelease(&WalRcv->mutex);
 	if (procno != INVALID_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(procno)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, procno);
 }
 
 /*

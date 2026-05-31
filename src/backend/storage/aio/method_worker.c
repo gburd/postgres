@@ -395,7 +395,7 @@ pgaio_worker_wake(int worker)
 	 */
 	proc_number = io_worker_control->workers[worker].proc_number;
 	if (proc_number != INVALID_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(proc_number)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, proc_number);
 }
 
 /*
@@ -986,9 +986,10 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			set_ps_display(cmd);
 #endif
 
-			if (WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
-						  timeout_ms,
-						  WAIT_EVENT_IO_WORKER_MAIN) == WL_TIMEOUT)
+			if (WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							  WL_INTERRUPT | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
+							  timeout_ms,
+							  WAIT_EVENT_IO_WORKER_MAIN) == WL_TIMEOUT)
 			{
 				/* WL_TIMEOUT */
 				if (pgaio_worker_can_timeout())
@@ -997,14 +998,14 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			}
 			else
 			{
-				/* WL_LATCH_SET */
+				/* WL_INTERRUPT */
 				if (++hist_wakeups == PGAIO_WORKER_WAKEUP_RATIO_SATURATE)
 				{
 					hist_wakeups /= 2;
 					hist_ios /= 2;
 				}
 			}
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 		}
 
 		CHECK_FOR_INTERRUPTS();
