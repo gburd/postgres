@@ -315,10 +315,10 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 		 * So a really fast retry time doesn't seem to be especially
 		 * beneficial, and it will clutter the logs.
 		 */
-		(void) WaitLatch(NULL,
-						 WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 10000,
-						 WAIT_EVENT_WAL_SUMMARIZER_ERROR);
+		(void) WaitInterrupt(0,
+							 WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 10000,
+							 WAIT_EVENT_WAL_SUMMARIZER_ERROR);
 	}
 
 	/* We can now handle ereport(ERROR) */
@@ -646,7 +646,7 @@ WakeupWalSummarizer(void)
 	LWLockRelease(WALSummarizerLock);
 
 	if (pgprocno != INVALID_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(pgprocno)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, pgprocno);
 }
 
 /*
@@ -1650,11 +1650,11 @@ summarizer_wait_for_wal(void)
 	pgstat_report_wal(false);
 
 	/* OK, now sleep. */
-	(void) WaitLatch(MyLatch,
-					 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					 sleep_quanta * MS_PER_SLEEP_QUANTUM,
-					 WAIT_EVENT_WAL_SUMMARIZER_WAL);
-	ResetLatch(MyLatch);
+	(void) WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK | INTERRUPT_GENERAL,
+						 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 sleep_quanta * MS_PER_SLEEP_QUANTUM,
+						 WAIT_EVENT_WAL_SUMMARIZER_WAL);
+	ClearInterrupt(INTERRUPT_GENERAL);
 
 	/* Reset count of pages read. */
 	pages_read_since_last_sleep = 0;

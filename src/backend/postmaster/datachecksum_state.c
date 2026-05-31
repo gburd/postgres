@@ -930,9 +930,9 @@ launcher_cancel_handler(SIGNAL_ARGS)
 	 * There is no sleeping in the main loop, the flag will be checked
 	 * periodically in ProcessSingleRelationFork. The worker does however
 	 * sleep when waiting for concurrent transactions to end so we still need
-	 * to set the latch.
+	 * to raise the interrupt.
 	 */
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 
 	errno = save_errno;
 }
@@ -971,11 +971,11 @@ WaitForAllTransactionsToFinish(void)
 		pgstat_report_activity(STATE_RUNNING, activity);
 
 		/* Retry every 3 seconds */
-		ResetLatch(MyLatch);
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   3000,
-					   WAIT_EVENT_CHECKSUM_ENABLE_STARTCONDITION);
+		ClearInterrupt(INTERRUPT_GENERAL);
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+						   3000,
+						   WAIT_EVENT_CHECKSUM_ENABLE_STARTCONDITION);
 
 		/*
 		 * If the postmaster died we won't be able to enable checksums
@@ -1603,11 +1603,11 @@ DataChecksumsWorkerMain(Datum arg)
 		pgstat_report_activity(STATE_RUNNING, activity);
 
 		/* Retry every 3 seconds */
-		ResetLatch(MyLatch);
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 3000,
-						 WAIT_EVENT_CHECKSUM_ENABLE_TEMPTABLE_WAIT);
+		ClearInterrupt(INTERRUPT_GENERAL);
+		(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 3000,
+							 WAIT_EVENT_CHECKSUM_ENABLE_TEMPTABLE_WAIT);
 
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 		aborted = DataChecksumState->launch_operation != operation;
