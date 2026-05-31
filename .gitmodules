@@ -1,0 +1,3 @@
+[submodule "contrib/libxtc"]
+	path = contrib/libxtc
+	url = ssh://git@codeberg.org/gregburd/libxtc.git
