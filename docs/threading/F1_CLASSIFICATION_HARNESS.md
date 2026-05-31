@@ -161,7 +161,7 @@ single-file amalgamation, not a separately built `libxtc.a` linked via
 `--with-xtc`:**
 
 **Status (Phase 0, done):** submodule added at `contrib/libxtc`,
-pinned to `4a9a1e0` (= `v0.4.0-26`; current `origin/main` tip). The R1
+pinned to `6bc9107` (= `v0.4.0-36`; current `origin/main` tip). The R1
 `at_exit`/`mctx`/`down_decode` helpers the F5 spike depends on landed at
 `2eba22b` (`v0.4.0-7`); this newer pin additionally carries the R1
 async-signal-safety + Windows-SEH hardening (commit `22c277a`), the
