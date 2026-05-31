@@ -261,6 +261,15 @@ typedef struct PGPROC
 
 	Latch		procLatch;		/* generic latch for process */
 
+	/*
+	 * Pending interrupts for this process, set by other backends via
+	 * SendInterrupt().  Added by the PG-on-xtc interrupt re-derivation
+	 * alongside procLatch; the two coexist until the latch wait/wake call
+	 * sites are converted and the Latch is removed.  See
+	 * docs/threading/INTERRUPTS_REDERIVATION.md.
+	 */
+	pg_atomic_uint32 pendingInterrupts;
+
 	PGSemaphore sem;			/* ONE semaphore to sleep on */
 
 	int			delayChkptFlags;	/* for DELAY_CHKPT_* flags */

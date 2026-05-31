@@ -321,6 +321,7 @@ ProcGlobalShmemInit(void *arg)
 		{
 			proc->sem = PGSemaphoreCreate();
 			InitSharedLatch(&(proc->procLatch));
+			pg_atomic_init_u32(&(proc->pendingInterrupts), 0);
 			LWLockInitialize(&(proc->fpInfoLock), LWTRANCHE_LOCK_FASTPATH);
 		}
 

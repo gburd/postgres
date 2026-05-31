@@ -71,6 +71,7 @@
 #include "portability/instr_time.h"
 #include "postmaster/postmaster.h"
 #include "storage/fd.h"
+#include "storage/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
 #include "storage/latch.h"
@@ -350,6 +351,14 @@ InitializeWaitEventSupport(void)
 	/* Ignore SIGURG, because we'll receive it via kqueue. */
 	pqsignal(SIGURG, PG_SIG_IGN);
 #endif
+
+	/*
+	 * Point MyPendingInterrupts at the process-local interrupt word so that
+	 * RaiseInterrupt() is usable from here on, independently of having a
+	 * PGPROC.  This is behaviour-neutral until something raises or waits on an
+	 * interrupt (see docs/threading/INTERRUPTS_REDERIVATION.md).
+	 */
+	InitializeInterruptSupport();
 }
 
 /*
