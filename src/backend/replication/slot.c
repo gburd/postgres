@@ -2131,7 +2131,7 @@ InvalidatePossiblyObsoleteSlot(uint32 possible_causes,
 				if (MyBackendType == B_STARTUP)
 					(void) SignalRecoveryConflict(GetPGProcByNumber(active_proc),
 												  active_pid,
-												  RECOVERY_CONFLICT_LOGICALSLOT);
+												  INTERRUPT_RECOVERY_CONFLICT_LOGICALSLOT);
 				else
 					(void) kill(active_pid, SIGTERM);
 

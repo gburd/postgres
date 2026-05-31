@@ -6713,7 +6713,7 @@ LockBufferForCleanup(Buffer buffer)
 			 * deadlock_timeout for it.
 			 */
 			if (logged_recovery_conflict)
-				LogRecoveryConflict(RECOVERY_CONFLICT_BUFFERPIN,
+				LogRecoveryConflict(INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN,
 									waitStart, GetCurrentTimestamp(),
 									NULL, false);
 
@@ -6764,7 +6764,7 @@ LockBufferForCleanup(Buffer buffer)
 				if (TimestampDifferenceExceeds(waitStart, now,
 											   DeadlockTimeout))
 				{
-					LogRecoveryConflict(RECOVERY_CONFLICT_BUFFERPIN,
+				LogRecoveryConflict(INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN,
 										waitStart, now, NULL, true);
 					logged_recovery_conflict = true;
 				}

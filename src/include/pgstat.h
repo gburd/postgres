@@ -15,6 +15,7 @@
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"	/* for MAX_XFN_CHARS */
 #include "replication/conflict.h"
+#include "storage/interrupt.h"
 #include "storage/locktag.h"
 #include "utils/backend_progress.h" /* for backward compatibility */	/* IWYU pragma: export */
 #include "utils/backend_status.h"	/* for backward compatibility */	/* IWYU pragma: export */
@@ -647,7 +648,7 @@ extern PgStat_Lock *pgstat_fetch_stat_lock(void);
 
 extern void pgstat_drop_database(Oid databaseid);
 extern void pgstat_report_autovac(Oid dboid);
-extern void pgstat_report_recovery_conflict(int reason);
+extern void pgstat_report_recovery_conflict(InterruptType reason);
 extern void pgstat_report_deadlock(void);
 extern void pgstat_prepare_report_checksum_failure(Oid dboid);
 extern void pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount);

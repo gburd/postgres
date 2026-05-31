@@ -17,6 +17,7 @@
 
 #include "postgres.h"
 
+#include "storage/interrupt.h"
 #include "storage/standby.h"
 #include "utils/pgstat_internal.h"
 #include "utils/timestamp.h"
@@ -78,7 +79,7 @@ pgstat_report_autovac(Oid dboid)
  * Report a Hot Standby recovery conflict.
  */
 void
-pgstat_report_recovery_conflict(int reason)
+pgstat_report_recovery_conflict(InterruptType reason)
 {
 	PgStat_StatDBEntry *dbentry;
 
@@ -88,43 +89,35 @@ pgstat_report_recovery_conflict(int reason)
 
 	dbentry = pgstat_prep_database_pending(MyDatabaseId);
 
-	switch ((RecoveryConflictReason) reason)
+	switch (reason)
 	{
-		case RECOVERY_CONFLICT_DATABASE:
+		case INTERRUPT_RECOVERY_CONFLICT_DATABASE:
 
 			/*
 			 * Since we drop the information about the database as soon as it
 			 * replicates, there is no point in counting these conflicts.
 			 */
 			break;
-		case RECOVERY_CONFLICT_TABLESPACE:
+		case INTERRUPT_RECOVERY_CONFLICT_TABLESPACE:
 			dbentry->conflict_tablespace++;
 			break;
-		case RECOVERY_CONFLICT_LOCK:
+		case INTERRUPT_RECOVERY_CONFLICT_LOCK:
 			dbentry->conflict_lock++;
 			break;
-		case RECOVERY_CONFLICT_SNAPSHOT:
+		case INTERRUPT_RECOVERY_CONFLICT_SNAPSHOT:
 			dbentry->conflict_snapshot++;
 			break;
-		case RECOVERY_CONFLICT_BUFFERPIN:
+		case INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN:
 			dbentry->conflict_bufferpin++;
 			break;
-		case RECOVERY_CONFLICT_LOGICALSLOT:
+		case INTERRUPT_RECOVERY_CONFLICT_LOGICALSLOT:
 			dbentry->conflict_logicalslot++;
 			break;
-		case RECOVERY_CONFLICT_STARTUP_DEADLOCK:
+		case INTERRUPT_RECOVERY_CONFLICT_STARTUP_DEADLOCK:
 			dbentry->conflict_startup_deadlock++;
 			break;
-		case RECOVERY_CONFLICT_BUFFERPIN_DEADLOCK:
-
-			/*
-			 * The difference between RECOVERY_CONFLICT_STARTUP_DEADLOCK and
-			 * RECOVERY_CONFLICT_BUFFERPIN_DEADLOCK is merely whether a buffer
-			 * pin was part of the deadlock. We use the same counter for both
-			 * reasons.
-			 */
-			dbentry->conflict_startup_deadlock++;
-			break;
+		default:
+			elog(LOG, "unexpected recovery conflict reason %u", (unsigned int) reason);
 	}
 }
 

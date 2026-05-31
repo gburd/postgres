@@ -274,16 +274,6 @@ typedef struct PGPROC
 
 	int			delayChkptFlags;	/* for DELAY_CHKPT_* flags */
 
-	/*
-	 * While in hot standby mode, shows that a conflict signal has been sent
-	 * for the current transaction. Set/cleared while holding ProcArrayLock,
-	 * though not required. Accessed without lock, if needed.
-	 *
-	 * This is a bitmask; each bit corresponds to a RecoveryConflictReason
-	 * enum value.
-	 */
-	pg_atomic_uint32 pendingRecoveryConflicts;
-
 	/************************************************************************
 	 * LWLock waiting
 	 ************************************************************************/

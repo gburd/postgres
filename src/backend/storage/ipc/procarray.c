@@ -3464,7 +3464,7 @@ GetConflictingVirtualXIDs(TransactionId limitXmin, Oid dbOid)
  * Returns true if the process was signaled, or false if not found.
  */
 bool
-SignalRecoveryConflict(PGPROC *proc, pid_t pid, RecoveryConflictReason reason)
+SignalRecoveryConflict(PGPROC *proc, pid_t pid, InterruptType reason)
 {
 	bool		found = false;
 
@@ -3476,16 +3476,8 @@ SignalRecoveryConflict(PGPROC *proc, pid_t pid, RecoveryConflictReason reason)
 	 */
 	if (proc->pid == pid)
 	{
-		(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
-
-		/*
-		 * Wake up the process.  During the interrupt re-derivation coexistence
-		 * phase the reason is carried in pendingRecoveryConflicts; the
-		 * interrupt bit only triggers re-entry into ProcessInterrupts(), which
-		 * then consults that bitmask, so any bit in the recovery-conflict mask
-		 * suffices here.
-		 */
-		SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, GetNumberFromPGProc(proc));
+		/* wake up the process */
+		SendInterrupt(reason, GetNumberFromPGProc(proc));
 		found = true;
 	}
 
@@ -3500,7 +3492,7 @@ SignalRecoveryConflict(PGPROC *proc, pid_t pid, RecoveryConflictReason reason)
  * Like SignalRecoveryConflict, but the target is identified by VXID
  */
 bool
-SignalRecoveryConflictWithVirtualXID(VirtualTransactionId vxid, RecoveryConflictReason reason)
+SignalRecoveryConflictWithVirtualXID(VirtualTransactionId vxid, InterruptType reason)
 {
 	ProcArrayStruct *arrayP = procArray;
 	int			index;
@@ -3522,10 +3514,8 @@ SignalRecoveryConflictWithVirtualXID(VirtualTransactionId vxid, RecoveryConflict
 			pid = proc->pid;
 			if (pid != 0)
 			{
-				(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
-
 				/* wake up the process (see SignalRecoveryConflict) */
-				SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, vxid.procNumber);
+				SendInterrupt(reason, vxid.procNumber);
 			}
 			break;
 		}
@@ -3542,7 +3532,7 @@ SignalRecoveryConflictWithVirtualXID(VirtualTransactionId vxid, RecoveryConflict
  * Like SignalRecoveryConflict, but signals all backends using the database.
  */
 void
-SignalRecoveryConflictWithDatabase(Oid databaseid, RecoveryConflictReason reason)
+SignalRecoveryConflictWithDatabase(Oid databaseid, InterruptType reason)
 {
 	ProcArrayStruct *arrayP = procArray;
 	int			index;
@@ -3565,10 +3555,8 @@ SignalRecoveryConflictWithDatabase(Oid databaseid, RecoveryConflictReason reason
 			pid = proc->pid;
 			if (pid != 0)
 			{
-				(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
-
 				/* wake up the process (see SignalRecoveryConflict) */
-				SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, procvxid.procNumber);
+				SendInterrupt(reason, procvxid.procNumber);
 			}
 		}
 	}
