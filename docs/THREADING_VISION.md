@@ -319,8 +319,12 @@ satellites are just more supervised children.
   in-thread = cooperative (place yield points); un-cooperative work =
   fork-required tier.
 - xtc is pre-1.0, but the lock ABI for the PG adapter is now frozen:\n  `xtc_lwlock_t` / `xtc_lrlock_t` / `xtc_lockmgr_t` (+ option/stats\n  structs and entry points) are SemVer-stable as of xtc 0.4.0\n  (`docs/abi-stability.md`), layout changes via the deprecation cycle\n  only. Still freeze the `pg_xtc_glue.h` surface early on our side.
-- Windows SEH-based containment is deferred upstream (the fault guard
-  is a no-op there); threaded mode on Windows has no crash containment
-  until that lands.
+- Windows SEH-based containment landed upstream (xtc `22c277a`,
+  v0.4.0-19): `xtc_fault_guard_install` registers a Vectored Exception
+  Handler and recovery is a `CONTEXT` capture/restore (not
+  setjmp/longjmp, which corrupts the CRT on a fiber stack). The public
+  `xtc_proc_recovery_arm()` surface is identical across platforms, so
+  the F5 spike is unchanged. Threaded mode now has crash containment on
+  Windows as well as POSIX.
 - Effort: ~13 person-weeks to a "1 process, N backends" prototype
   (M16 estimate), plus the rebase, plus >= a quarter to harden.

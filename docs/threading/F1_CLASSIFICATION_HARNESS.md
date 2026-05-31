@@ -161,13 +161,19 @@ single-file amalgamation, not a separately built `libxtc.a` linked via
 `--with-xtc`:**
 
 **Status (Phase 0, done):** submodule added at `contrib/libxtc`,
-pinned to `2eba22b` (= `v0.4.0-7`; the commit that landed the R1
-`at_exit`/`mctx`/`down_decode` helpers the F5 spike depends on -- note
-this is 7 commits *after* the `v0.4.0` tag `86db811`, not the tag).
+pinned to `4a9a1e0` (= `v0.4.0-26`; current `origin/main` tip). The R1
+`at_exit`/`mctx`/`down_decode` helpers the F5 spike depends on landed at
+`2eba22b` (`v0.4.0-7`); this newer pin additionally carries the R1
+async-signal-safety + Windows-SEH hardening (commit `22c277a`), the
+ready R2 `xtc_net_send_frame/recv_frame`, R4 `xtc_sup_add_child`, A8
+`xtc_svr_call_abortable`, and the cooperative yield watchdog -- all
+verified additive (the POSIX `xtc_proc_recovery_arm()` macro is
+unchanged, so the F5 spike needs no source change).
 Generator script `src/tools/gen_xtc_amalgamation.sh` regenerates
 `xtc.h`+`xtc.c` from the submodule into a build-local `xtc-amalg/`
-(gitignored). Verified: generates (43 .c, 29 public + 33 stub headers)
-and compiles clean, both release and `-DDEBUG -DXTC_RELATIVE_LOC`.
+(gitignored). Verified: generates (44 .c, 30 public + 34 stub headers)
+and compiles clean, both release and `-DDEBUG -DXTC_RELATIVE_LOC`, and
+links + runs a smoke test (`-pthread -ldl -lm`).
 
 - Generate `xtc.h` + `xtc.c` with `dist/mkamalgamation.py`
   (SQLite-style single-file), wrapped by
