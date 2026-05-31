@@ -405,17 +405,38 @@ Steps **1 and 2** have landed on branch `xtc`:
 
   **Deferred to step 6 (NOT done in this batch):** `proc.c` waiters
   (`ProcSleep`, `ProcWaitForSignal`) and their many cross-file wakers
-  (condition_variable.c, syncrep.c, walreceiver*, method_worker.c,
-  xlogwait.c, pgarch.c, walsummarizer.c) are LEFT on the latch — leaving
-  both the waiter and its wakers on the latch builds and runs correctly
-  under coexistence. The belt-and-suspenders `SetLatch` inside
-  `RaiseInterrupt`/`SendInterrupt` therefore STAYS for now (it is what
-  keeps those still-latched waiters waking); it is removed in step 6 once
-  the remaining waiters move to `WaitInterrupt`.
+  (syncrep.c, walreceiver*, method_worker.c, xlogwait.c, pgarch.c,
+  walsummarizer.c) are LEFT on the latch — leaving both the waiter and its
+  wakers on the latch builds and runs correctly under coexistence. The
+  belt-and-suspenders `SetLatch` inside `RaiseInterrupt`/`SendInterrupt`
+  therefore STAYS for now (it is what keeps those still-latched waiters
+  waking); it is removed in step 6 once the remaining waiters move to
+  `WaitInterrupt`.
 
-**Latch wait/wake conversion is partial: the aux-loop and shm_mq sites are
-on `WaitInterrupt`, but `proc.c` and the condition-variable / syncrep /
-walreceiver family remain on the latch; `latch.c` remains; the
+* Step 5 — **Convert latch wait/wake call sites** (second batch), landed
+  in one commit:
+  - `3928b31` — condition variables. `ConditionVariable` is a
+    self-contained waiter/waker island: the single waiter loop
+    (`ConditionVariableTimedSleep`) and both wakers
+    (`ConditionVariableSignal`, `ConditionVariableBroadcast`) live in
+    `condition_variable.c`, and every CV waker across the tree funnels
+    through those two functions, so the pair converts together with no
+    mixed latch/interrupt wakeup path. Wait mask `CheckForInterruptsMask |
+    INTERRUPT_GENERAL` (`WL_INTERRUPT [| WL_TIMEOUT] | WL_EXIT_ON_PM_DEATH`);
+    `ResetLatch` -> `ClearInterrupt(INTERRUPT_GENERAL)`; wakers'
+    `SetLatch(&proc->procLatch)` ->
+    `SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(proc))`.
+
+  Build-green and runtime smoke-verified: clean startup (no barrier hang),
+  `SELECT`, parallel seq scan and parallel index build (the
+  `workersdonecv` waker/waiter path), LISTEN/NOTIFY, self and
+  cross-process-to-checkpointer `pg_log_backend_memory_contexts`, logical
+  replication slot create/drop (`active_cv` broadcast), `pg_reload_conf()`,
+  and `pg_ctl -m fast stop`.
+
+**Latch wait/wake conversion is partial: the aux-loop, shm_mq and
+condition-variable sites are on `WaitInterrupt`, but `proc.c` and the
+syncrep / walreceiver family remain on the latch; `latch.c` remains; the
 `multithreaded` build stays off.** Steps 5 (remainder) through 7 (below)
 complete the sweep.
 
