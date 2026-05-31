@@ -259,7 +259,7 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 					Size		old_tuple_len;
 
 					diff_data = (char *) payload +
-						offsetof(RelUndoDeltaUpdatePayload, diff_len) + sizeof(uint16);
+						SizeOfRelUndoDeltaUpdatePayload;
 					diff = (RecnoDiffRecord *) diff_data;
 
 					/* Read the current (new) tuple from the page */

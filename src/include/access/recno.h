@@ -652,6 +652,7 @@ extern HLCTimestamp RecnoGetCommitHLC(HLCTimestamp msg_hlc);
 extern HLCTimestamp RecnoGetTransactionHLC(void);
 extern HLCTimestamp RecnoGetOldestActiveHLC(void);
 extern uint64 RecnoGetOldestActiveSnapshotHLC(void);
+extern bool RecnoHasActiveIsoReaders(void);
 extern HLCTimestamp RecnoGetSnapshotHLC(Snapshot snapshot);
 extern bool RecnoTupleVisibleHLC(RecnoTupleHeader *tuple,
 								 HLCTimestamp snapshot_hlc,
