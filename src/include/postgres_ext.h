@@ -39,19 +39,34 @@
  * When PostgreSQL runs in the multithreaded thread-per-connection model,
  * the per-session variables (session_local) become thread-local.
  *
- * GUC-specific lifetime annotations (postmaster_guc, session_guc, ...)
- * are backend-only and live in postgres.h.
+ * GUC-specific lifetime annotations (internal_guc, postmaster_guc,
+ * session_guc, ...) document which GUC context governs a global that backs a
+ * GUC.  They live here (rather than in postgres.h) so that they are available
+ * in translation units that include only c.h / postgres_ext.h, such as the
+ * src/port files that pull in miscadmin.h without postgres.h.
  */
 #if __has_attribute (annotate)
 #define pg_global __attribute__((annotate("pg_global")))
 #define dynamic_singleton __attribute__((annotate("dynamic_singleton")))
 #define static_singleton __attribute__((annotate("static_singleton")))
 #define session_local __thread __attribute__((annotate("session_local")))
+#define internal_guc __attribute__((annotate("internal_guc")))
+#define postmaster_guc __attribute__((annotate("postmaster_guc")))
+#define session_guc __thread __attribute__((annotate("session_guc")))
+#define sighup_guc __thread __attribute__((annotate("sighup_guc")))
+#define suset_guc __thread __attribute__((annotate("suset_guc")))
+#define userset_guc __thread __attribute__((annotate("userset_guc")))
 #else
 #define pg_global
 #define dynamic_singleton
 #define static_singleton
 #define session_local __thread
+#define internal_guc
+#define postmaster_guc
+#define session_guc __thread
+#define sighup_guc __thread
+#define suset_guc __thread
+#define userset_guc __thread
 #endif
 
 /*

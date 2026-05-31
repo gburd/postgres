@@ -12,9 +12,10 @@ libclang_dep = dependency(
     required: false
 )
 if not libclang_dep.found()
-    libclang_dep = cc.find_library('clang')
+    libclang_dep = cc.find_library('clang', required: false)
 endif
 
+if libclang_dep.found()
 if host_system == 'windows'
   pgguclifetimes_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
     '--NAME', 'pgguclifetimes',
@@ -46,3 +47,4 @@ tests += {
     ],
   },
 }
+endif
