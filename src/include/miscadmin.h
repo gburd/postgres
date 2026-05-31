@@ -90,17 +90,13 @@
 
 /* in globals.c */
 /*
- * These pending-flag globals (ProcSignalBarrierPending,
- * LogMemoryContextPending, ...) are still part of the legacy machinery
- * during the coexistence phase; they are absorbed into the interrupt
- * bitmask in a later step (ProcSignal).  The CFI-handled flags
- * (InterruptPending, QueryCancelPending, ProcDiePending, the timeout
- * flags, CheckClientConnectionPending, ClientConnectionLost) have been
- * converted to INTERRUPT_* bits and no longer exist here; test them with
- * IsInterruptPending()/ConsumeInterrupt() from storage/interrupt.h.
+ * The former CFI-handled and pending-flag globals (InterruptPending,
+ * QueryCancelPending, ProcDiePending, the timeout flags,
+ * CheckClientConnectionPending, ClientConnectionLost, ProcSignalBarrierPending,
+ * LogMemoryContextPending, ...) have been converted to INTERRUPT_* bits and no
+ * longer exist here; test them with IsInterruptPending()/ConsumeInterrupt()
+ * from storage/interrupt.h.
  */
-extern PGDLLIMPORT volatile sig_atomic_t ProcSignalBarrierPending;
-extern PGDLLIMPORT volatile sig_atomic_t LogMemoryContextPending;
 
 /* these are marked volatile because they are examined by signal handlers: */
 extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;

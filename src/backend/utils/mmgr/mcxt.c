@@ -1315,15 +1315,13 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
  * ProcessLogMemoryContextInterrupt
  * 		Perform logging of memory contexts of this backend process.
  *
- * Any backend that participates in ProcSignal signaling must arrange
- * to call this function if we see LogMemoryContextPending set.
- * It is called from CHECK_FOR_INTERRUPTS(), which is enough because
+ * This is called from CHECK_FOR_INTERRUPTS() when the
+ * INTERRUPT_LOG_MEMORY_CONTEXT interrupt is pending, which is enough because
  * the target process for logging of memory contexts is a backend.
  */
 void
 ProcessLogMemoryContextInterrupt(void)
 {
-	LogMemoryContextPending = false;
 
 	/*
 	 * Exit immediately if memory context logging is already in progress. This

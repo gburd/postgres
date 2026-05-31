@@ -34,8 +34,7 @@ ProtocolVersion FrontendProtocol;
  * globals (InterruptPending, QueryCancelPending, ProcDiePending, the timeout
  * flags, CheckClientConnectionPending, ClientConnectionLost,
  * ProcDieSender{Pid,Uid}) have been converted to INTERRUPT_* bits and live in
- * the per-process interrupt word now; only ProcSignalBarrierPending and
- * LogMemoryContextPending remain here pending the ProcSignal absorption step.
+ * the per-process interrupt word now.
  *
  * CheckForInterruptsMask holds the set of interrupt bits that a
  * CHECK_FOR_INTERRUPTS() may currently act on.  It is initialized to the full
@@ -43,8 +42,6 @@ ProtocolVersion FrontendProtocol;
  * clears the CFI bits and RESUME_INTERRUPTS() restores them.
  */
 volatile uint32 CheckForInterruptsMask = INTERRUPT_CFI_MASK;
-volatile sig_atomic_t ProcSignalBarrierPending = false;
-volatile sig_atomic_t LogMemoryContextPending = false;
 volatile uint32 InterruptHoldoffCount = 0;
 volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;

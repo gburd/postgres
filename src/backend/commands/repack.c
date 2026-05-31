@@ -139,12 +139,6 @@ typedef struct DecodingWorker
 /* Pointer to currently running decoding worker. */
 static DecodingWorker *decoding_worker = NULL;
 
-/*
- * Is there a message sent by a repack worker that the backend needs to
- * receive?
- */
-volatile sig_atomic_t RepackMessagePending = false;
-
 static LOCKMODE RepackLockLevel(bool concurrent);
 static bool cluster_rel_recheck(RepackCommand cmd, Relation OldHeap,
 								Oid indexOid, Oid userid, LOCKMODE lmode,
@@ -3495,20 +3489,6 @@ DecodingWorkerFileName(char *fname, Oid relid, uint32 seq)
 }
 
 /*
- * Handle receipt of an interrupt indicating a repack worker message.
- *
- * Note: this is called within a signal handler!  All we can do is set
- * a flag that will cause the next CHECK_FOR_INTERRUPTS() to invoke
- * ProcessRepackMessages().
- */
-void
-HandleRepackMessageInterrupt(void)
-{
-	RepackMessagePending = true;
-	RaiseInterrupt(INTERRUPT_GENERAL);
-}
-
-/*
  * Process any queued protocol messages received from the repack worker.
  */
 void
@@ -3547,8 +3527,7 @@ ProcessRepackMessages(void)
 
 	oldcontext = MemoryContextSwitchTo(hpm_context);
 
-	/* OK to process messages.  Reset the flag saying there are more to do. */
-	RepackMessagePending = false;
+	/* OK to process messages. */
 
 	/*
 	 * Read as many messages as we can from the worker, but stop when no more

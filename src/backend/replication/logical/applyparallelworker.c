@@ -243,12 +243,6 @@ static List *ParallelApplyWorkerPool = NIL;
 ParallelApplyWorkerShared *MyParallelShared = NULL;
 
 /*
- * Is there a message sent by a parallel apply worker that the leader apply
- * worker needs to receive?
- */
-volatile sig_atomic_t ParallelApplyMessagePending = false;
-
-/*
  * Cache the parallel apply worker information required for applying the
  * current streaming transaction. It is used to save the cost of searching the
  * hash table when applying the changes between STREAM_START and STREAM_STOP.
@@ -1093,8 +1087,6 @@ ProcessParallelApplyMessages(void)
 		MemoryContextReset(hpam_context);
 
 	oldcontext = MemoryContextSwitchTo(hpam_context);
-
-	ParallelApplyMessagePending = false;
 
 	foreach(lc, ParallelApplyWorkerPool)
 	{

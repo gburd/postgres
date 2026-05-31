@@ -116,9 +116,6 @@ typedef struct FixedParallelState
  */
 int			ParallelWorkerNumber = -1;
 
-/* Is there a parallel message pending which we need to receive? */
-volatile sig_atomic_t ParallelMessagePending = false;
-
 /* Are we initializing a parallel worker? */
 bool		InitializingParallelWorker = false;
 
@@ -1068,9 +1065,6 @@ ProcessParallelMessages(void)
 		MemoryContextReset(hpm_context);
 
 	oldcontext = MemoryContextSwitchTo(hpm_context);
-
-	/* OK to process messages.  Reset the flag saying there are more to do. */
-	ParallelMessagePending = false;
 
 	dlist_foreach(iter, &pcxt_list)
 	{

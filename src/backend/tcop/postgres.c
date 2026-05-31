@@ -3505,15 +3505,10 @@ ProcessInterrupts(void)
 	if (ConsumeInterrupt(INTERRUPT_SINVAL_CATCHUP))
 		catchupInterruptPending = true;
 
-	/*
-	 * Repack has no dedicated interrupt bit consumed here yet (its legacy
-	 * RepackMessagePending flag is still set by its handler and converted in a
-	 * later step); slotsync now has its own INTERRUPT_SLOTSYNC bit.
-	 */
 	if (ConsumeInterrupt(INTERRUPT_SLOTSYNC))
 		ProcessSlotSyncMessage();
 
-	if (RepackMessagePending)
+	if (ConsumeInterrupt(INTERRUPT_REPACK))
 		ProcessRepackMessages();
 }
 
