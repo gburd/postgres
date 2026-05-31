@@ -131,6 +131,7 @@ InitPostmasterChild(void)
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
 	InitializeLatchWaitSet();
+	InitializeInterruptWaitSet();
 
 	/*
 	 * If possible, make this process a group leader, so that the postmaster
@@ -192,6 +193,7 @@ InitStandaloneProcess(const char *argv0)
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
 	InitializeLatchWaitSet();
+	InitializeInterruptWaitSet();
 
 	/*
 	 * For consistency with InitPostmasterChild, initialize signal mask here.
