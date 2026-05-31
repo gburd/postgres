@@ -61,7 +61,7 @@ void
 SignalHandlerForConfigReload(SIGNAL_ARGS)
 {
 	ConfigReloadPending = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_CONFIG_RELOAD);
 }
 
 /*
@@ -104,5 +104,5 @@ void
 SignalHandlerForShutdownRequest(SIGNAL_ARGS)
 {
 	ShutdownRequestPending = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_SHUTDOWN_AUX);
 }
