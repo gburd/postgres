@@ -73,10 +73,6 @@ static void RecnoSLogSubXactCallback(SubXactEvent event,
 									 SubTransactionId mySubid,
 									 SubTransactionId parentSubid,
 									 void *arg);
-static void RecnoFreeDsaBeforeImages(TransactionId xid);
-static bool recno_free_dsa_bi_cb(const SLogTupleKey *key,
-								 TransactionId xid, TransactionId subxid,
-								 bool local_only, void *arg);
 
 
 /*
@@ -731,7 +727,8 @@ have_page:
 		XLogRecPtr	recptr = RecnoXLogInsert(relation, buffer, offnum,
 											 recno_tuple, current_ts,
 											 &overflow_buffers,
-											 &insert_logical_img);
+											 &insert_logical_img,
+											 false);
 
 		PageSetLSN(page, recptr);
 	}
@@ -3331,7 +3328,8 @@ recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 				recptr = RecnoXLogInsert(relation, buffer,
 										 ItemPointerGetOffsetNumber(&slots[batch_start]->tts_tid),
 										 formed_tuples[batch_start],
-										 current_ts, NULL, &batch_logical_img);
+										 current_ts, NULL, &batch_logical_img,
+										 batch_count > 1);
 				PageSetLSN(page, recptr);
 			}
 		}
@@ -4952,49 +4950,6 @@ RecnoClearUncommittedFlags(TransactionId xid)
 }
 
 /*
- * recno_free_dsa_bi_cb -- callback to free a single DSA before-image.
- *
- * Looks up the shared sLog ops for the given key and frees any DSA
- * before-image allocations belonging to this transaction.
- */
-static bool
-recno_free_dsa_bi_cb(const SLogTupleKey *key, TransactionId xid,
-					 TransactionId subxid, bool local_only, void *arg)
-{
-	SLogTupleOp ops[SLOG_MAX_TUPLE_OPS];
-	int			nfound;
-	int			i;
-
-	if (local_only)
-		return true;
-
-	/* Find the shared op and free its DSA allocation */
-	nfound = SLogTupleLookupFiltered(key->relid,
-									 (ItemPointer) &key->tid,
-									 xid, ops, SLOG_MAX_TUPLE_OPS);
-	for (i = 0; i < nfound; i++)
-	{
-		if (DsaPointerIsValid(ops[i].before_image_dp))
-			SLogDsaFreeBeforeImage(ops[i].before_image_dp);
-	}
-
-	return true;
-}
-
-/*
- * RecnoFreeDsaBeforeImages -- free DSA before-images on abort.
- *
- * Walk the backend-local tracked key list and free any DSA allocations
- * made for before-images by this transaction.  Must be called BEFORE
- * SLogTupleMarkAborted, because marking aborted doesn't free DSA memory.
- */
-static void
-RecnoFreeDsaBeforeImages(TransactionId xid)
-{
-	SLogTupleIterateTrackedKeys(xid, recno_free_dsa_bi_cb, NULL);
-}
-
-/*
  * RecnoSLogXactCallback -- clean up sLog entries at transaction end.
  */
 /*
@@ -5174,11 +5129,12 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 				if (TransactionIdIsValid(xid))
 				{
 					/*
-					 * Free any DSA before-images allocated by this backend
-					 * before marking ops as aborted.  Walk the local tracking
-					 * list since it's the only way to find our DSA pointers.
+					 * Mark this transaction's shared sLog ops ABORTED.  The DSA
+					 * before-images are freed inside SLogTupleMarkAborted under
+					 * the partition writer lock (single-owner), so we must not
+					 * free them here: an unlocked free races the UNDO worker's
+					 * SLogTupleRemoveByXidGlobal and corrupts the DSA heap.
 					 */
-					RecnoFreeDsaBeforeImages(xid);
 					SLogTupleMarkAborted(xid);
 				}
 

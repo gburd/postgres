@@ -365,7 +365,8 @@ extern void RecnoXLogReleaseLogicalImage(RecnoLogicalImage *img);
 extern XLogRecPtr RecnoXLogInsert(Relation rel, Buffer buffer, OffsetNumber offnum,
 								  RecnoTuple tuple, uint64 commit_ts,
 								  RecnoOverflowBuffers *overflow_buffers,
-								  RecnoLogicalImage *logical_img);
+								  RecnoLogicalImage *logical_img,
+								  bool force_page_image);
 extern XLogRecPtr RecnoXLogUpdate(Relation rel, Buffer buffer, OffsetNumber offnum,
 								  RecnoTuple old_tuple, RecnoTuple new_tuple,
 								  uint64 old_commit_ts, uint64 new_commit_ts,

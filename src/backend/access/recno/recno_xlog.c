@@ -304,14 +304,28 @@ XLogRecPtr
 RecnoXLogInsert(Relation rel, Buffer buffer, OffsetNumber offnum,
 				RecnoTuple tuple, uint64 commit_ts,
 				RecnoOverflowBuffers *overflow_buffers,
-				RecnoLogicalImage *logical_img)
+				RecnoLogicalImage *logical_img,
+				bool force_page_image)
 {
 	xl_recno_insert xlrec;
 	XLogRecPtr	recptr;
 	Page		page = BufferGetPage(buffer);
 	uint8		info = XLOG_RECNO_INSERT;
+	uint8		main_buf_flags = REGBUF_STANDARD;
 	int			i;
 	xl_recno_overflow_write ovf_xlrecs[MAX_OVERFLOW_BUFFERS];
+
+	/*
+	 * The multi-insert (COPY/bulk) path adds many tuples to one page but emits
+	 * a single INSERT record describing only the first tuple.  Under
+	 * full_page_writes the page's initial touch captures the whole page, so
+	 * redo restores every tuple.  With full_page_writes off there is no such
+	 * image, and the unlogged tuples vanish on crash recovery, leaving later
+	 * CAS_UPDATE redo to PANIC on a missing item.  Force a full-page image so
+	 * the batch is crash-safe regardless of full_page_writes.
+	 */
+	if (force_page_image)
+		main_buf_flags |= REGBUF_FORCE_IMAGE;
 
 	/* Fill in the insert record */
 	xlrec.offnum = offnum;
@@ -331,7 +345,7 @@ RecnoXLogInsert(Relation rel, Buffer buffer, OffsetNumber offnum,
 	XLogBeginInsert();
 
 	/* Register buffer FIRST, before any data */
-	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+	XLogRegisterBuffer(0, buffer, main_buf_flags);
 
 	/*
 	 * Register all overflow buffers (buffers 1..N) for atomic WAL logging.
@@ -1250,6 +1264,7 @@ recno_xlog_insert_redo(XLogReaderState *record)
 		RecnoTupleHeader *tuple_hdr = (RecnoTupleHeader *) tuple_data;
 		XLogRedoAction action;
 		OffsetNumber final_offnum = InvalidOffsetNumber;
+		bool		tuple_uncommitted = false;
 
 		/* Process HLC uncertainty data on standby */
 		recno_redo_handle_hlc(record, xlrec->flags);
@@ -1343,6 +1358,28 @@ recno_xlog_insert_redo(XLogReaderState *record)
 			}
 
 			/*
+			 * Validate that the record actually carries a tuple body of the
+			 * advertised length before dereferencing it.  The speculative
+			 * INSERT writers (INSERT ... ON CONFLICT confirm/abort) historically
+			 * emitted body-less records and relied solely on a full-page image;
+			 * such a record must never reach this non-FPI path, but if it does
+			 * (or tuple_len is otherwise inconsistent with the main data),
+			 * reading PageAddItem(page, tuple_hdr, tuple_len) would walk off the
+			 * end of the WAL record and SIGSEGV.  Treat a missing/short body as
+			 * "nothing to replay here" rather than crashing recovery.
+			 */
+			if (xlrec->tuple_len == 0 ||
+				XLogRecGetDataLen(record) <
+				sizeof(xl_recno_insert) + xlrec->tuple_len)
+			{
+				elog(WARNING, "RECNO INSERT redo: record on block %u lacks a "
+					 "tuple body (data_len=%u, need=%zu); skipping tuple redo",
+					 blkno, XLogRecGetDataLen(record),
+					 sizeof(xl_recno_insert) + (Size) xlrec->tuple_len);
+				goto insert_skip_tuple;
+			}
+
+			/*
 			 * Now replay the main tuple. Use InvalidOffsetNumber to let
 			 * PageAddItem choose the next sequential offset after any
 			 * overflow records we just added.
@@ -1376,14 +1413,19 @@ recno_xlog_insert_redo(XLogReaderState *record)
 			 * recno_tuple_insert after we know the final TID. During redo, we
 			 * must fix it here.
 			 *
-			 * Defensive: validate ItemId is LP_NORMAL before dereferencing
-			 * via PageGetItem.  After crash recovery involving the UNDO
-			 * revert worker, the slot could be in an unexpected state.
+			 * Defensive: validate the ItemId is LP_NORMAL *and* has storage
+			 * before dereferencing via PageGetItem.  PageGetItem asserts
+			 * ItemIdHasStorage (lp_len != 0), which ItemIdIsNormal does not
+			 * imply: PageAddItem can produce an LP_NORMAL line pointer with
+			 * lp_len == 0 for a zero-length payload, and after crash recovery
+			 * involving the UNDO revert worker the slot could be in an
+			 * unexpected state.  Skipping the t_ctid fixup for a zero-storage
+			 * item is safe (there is no tuple body to point at).
 			 */
 			{
 				ItemId		itemid = PageGetItemId(page, inserted_offnum);
 
-				if (ItemIdIsNormal(itemid))
+				if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 				{
 					RecnoTupleHeader *inserted_hdr =
 						(RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -1417,6 +1459,32 @@ recno_xlog_insert_redo(XLogReaderState *record)
 			PageSetLSN(page, record->EndRecPtr);
 			MarkBufferDirty(buffer);
 		}
+
+		/*
+		 * Capture the UNCOMMITTED flag from the replayed page tuple while we
+		 * still hold the buffer.  Reading it from the WAL main-data header is
+		 * wrong for the speculative INSERT variants, which restore the tuple
+		 * via a full-page image and carry no tuple body in main data.
+		 */
+		if (final_offnum != InvalidOffsetNumber && BufferIsValid(buffer))
+		{
+			Page		curpage = BufferGetPage(buffer);
+
+			if (final_offnum <= PageGetMaxOffsetNumber(curpage))
+			{
+				ItemId		curiid = PageGetItemId(curpage, final_offnum);
+
+				if (ItemIdIsNormal(curiid) && ItemIdHasStorage(curiid))
+				{
+					RecnoTupleHeader *curhdr =
+						(RecnoTupleHeader *) PageGetItem(curpage, curiid);
+
+					tuple_uncommitted =
+						(curhdr->t_flags & RECNO_TUPLE_UNCOMMITTED) != 0;
+				}
+			}
+		}
+
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
 
@@ -1434,8 +1502,7 @@ recno_xlog_insert_redo(XLogReaderState *record)
 		 * For aborted transactions, the CLR sets DELETED, making the sLog
 		 * entry irrelevant for visibility.
 		 */
-		if (final_offnum != InvalidOffsetNumber &&
-			(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED))
+		if (final_offnum != InvalidOffsetNumber && tuple_uncommitted)
 		{
 			TransactionId redo_xid = XLogRecGetXid(record);
 
@@ -1653,7 +1720,7 @@ recno_xlog_update_inplace_redo(XLogReaderState *record)
 			 * code path.
 			 */
 			itemid = PageGetItemId(page, xlrec->offnum);
-			if (ItemIdIsNormal(itemid))
+			if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 			{
 				RecnoTupleHeader *existing_tuple =
 					(RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -1858,7 +1925,7 @@ recno_xlog_delete_redo(XLogReaderState *record)
 
 			/* REDO: Mark tuple as deleted */
 			itemid = PageGetItemId(page, xlrec->offnum);
-			if (ItemIdIsNormal(itemid))
+			if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 			{
 				RecnoTupleHeader *tuple =
 					(RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -1963,7 +2030,7 @@ recno_xlog_overflow_write_redo(XLogReaderState *record)
 				ItemId		itemid;
 
 				itemid = PageGetItemId(page, xlrec->offnum);
-				if (ItemIdIsNormal(itemid))
+				if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 				{
 					RecnoOverflowRecordHeader *existing_hdr =
 						(RecnoOverflowRecordHeader *) PageGetItem(page, itemid);
@@ -2029,7 +2096,7 @@ recno_xlog_compress_redo(XLogReaderState *record)
 
 			/* Apply compression to the tuple attribute */
 			itemid = PageGetItemId(page, xlrec->offnum);
-			if (ItemIdIsNormal(itemid))
+			if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 			{
 				RecnoTupleHeader *tuple =
 					(RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -2138,9 +2205,12 @@ recno_xlog_cross_page_defrag_redo(XLogReaderState *record)
 
 				XLogRecGetBlockTag(record, 0, NULL, NULL, &dst_blkno);
 				dst_itemid = PageGetItemId(page, xlrec->dst_offnum);
-				dst_hdr = (RecnoTupleHeader *) PageGetItem(page, dst_itemid);
-				ItemPointerSet(&dst_hdr->t_ctid, dst_blkno,
-							   xlrec->dst_offnum);
+				if (ItemIdIsNormal(dst_itemid) && ItemIdHasStorage(dst_itemid))
+				{
+					dst_hdr = (RecnoTupleHeader *) PageGetItem(page, dst_itemid);
+					ItemPointerSet(&dst_hdr->t_ctid, dst_blkno,
+								   xlrec->dst_offnum);
+				}
 			}
 
 			PageSetLSN(page, record->EndRecPtr);
@@ -2278,7 +2348,7 @@ recno_xlog_lock_redo(XLogReaderState *record)
 			}
 
 			itemid = PageGetItemId(page, xlrec->offnum);
-			if (ItemIdIsNormal(itemid))
+			if (ItemIdIsNormal(itemid) && ItemIdHasStorage(itemid))
 			{
 				RecnoTupleHeader *tuple =
 					(RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -2318,7 +2388,7 @@ recno_xlog_cas_update_redo(XLogReaderState *record)
 		RecnoTupleHeader *tuple;
 
 		itemid = PageGetItemId(page, xlrec->offnum);
-		if (!ItemIdIsNormal(itemid))
+		if (!ItemIdIsNormal(itemid) || !ItemIdHasStorage(itemid))
 			elog(PANIC, "RECNO CAS_UPDATE redo: invalid item at offset %u",
 				 xlrec->offnum);
 
@@ -2460,7 +2530,7 @@ recno_mask(char *page, BlockNumber blkno)
 		ItemId		itemid = PageGetItemId(recno_page, offnum);
 		RecnoTupleHeader *tuple_hdr;
 
-		if (!ItemIdIsNormal(itemid))
+		if (!ItemIdIsNormal(itemid) || !ItemIdHasStorage(itemid))
 			continue;
 
 		tuple_hdr = (RecnoTupleHeader *) PageGetItem(recno_page, itemid);
