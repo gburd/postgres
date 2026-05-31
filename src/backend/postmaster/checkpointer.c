@@ -379,7 +379,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		bool		chkpt_or_rstpt_timed = false;
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/*
 		 * Process any requests or signals received recently.
@@ -605,10 +605,14 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 			cur_timeout = Min(cur_timeout, XLogArchiveTimeout - elapsed_secs);
 		}
 
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 cur_timeout * 1000L /* convert to ms */ ,
-						 WAIT_EVENT_CHECKPOINTER_MAIN);
+		(void) WaitInterrupt(INTERRUPT_GENERAL |
+							 INTERRUPT_SHUTDOWN_AUX |
+							 INTERRUPT_BARRIER |
+							 INTERRUPT_LOG_MEMORY_CONTEXT |
+							 INTERRUPT_CONFIG_RELOAD,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 cur_timeout * 1000L /* convert to ms */ ,
+							 WAIT_EVENT_CHECKPOINTER_MAIN);
 	}
 
 	/*
@@ -646,17 +650,20 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	for (;;)
 	{
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		ProcessCheckpointerInterrupts();
 
 		if (ShutdownRequestPending)
 			break;
 
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
-						 0,
-						 WAIT_EVENT_CHECKPOINTER_SHUTDOWN);
+		(void) WaitInterrupt(INTERRUPT_SHUTDOWN_AUX |
+							 INTERRUPT_BARRIER |
+							 INTERRUPT_LOG_MEMORY_CONTEXT |
+							 INTERRUPT_CONFIG_RELOAD,
+							 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH,
+							 0,
+							 WAIT_EVENT_CHECKPOINTER_SHUTDOWN);
 	}
 
 	/* Normal exit from the checkpointer is here */
@@ -837,10 +844,10 @@ CheckpointWriteDelay(int flags, double progress)
 		 * Checkpointer and bgwriter are no longer related so take the Big
 		 * Sleep.
 		 */
-		WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
-				  100,
-				  WAIT_EVENT_CHECKPOINT_WRITE_DELAY);
-		ResetLatch(MyLatch);
+		WaitInterrupt(INTERRUPT_GENERAL, WL_INTERRUPT | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
+					  100,
+					  WAIT_EVENT_CHECKPOINT_WRITE_DELAY);
+		ClearInterrupt(INTERRUPT_GENERAL);
 	}
 	else if (--absorb_counter <= 0)
 	{
@@ -949,7 +956,7 @@ static void
 ReqShutdownXLOG(SIGNAL_ARGS)
 {
 	ShutdownXLOGPending = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 
@@ -1133,7 +1140,7 @@ RequestCheckpoint(int flags)
 		}
 		else
 		{
-			SetLatch(&GetPGProcByNumber(checkpointerProc)->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, checkpointerProc);
 			/* notified successfully */
 			break;
 		}
@@ -1265,7 +1272,7 @@ ForwardSyncRequest(const FileTag *ftag, SyncRequestType type)
 		ProcNumber	checkpointerProc = procglobal->checkpointerProc;
 
 		if (checkpointerProc != INVALID_PROC_NUMBER)
-			SetLatch(&GetPGProcByNumber(checkpointerProc)->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, checkpointerProc);
 	}
 
 	return true;
@@ -1546,5 +1553,5 @@ WakeupCheckpointer(void)
 	ProcNumber	checkpointerProc = procglobal->checkpointerProc;
 
 	if (checkpointerProc != INVALID_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(checkpointerProc)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, checkpointerProc);
 }

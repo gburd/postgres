@@ -235,7 +235,7 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 		}
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/* Process any signals received recently */
 		ProcessMainLoopInterrupts();
@@ -262,9 +262,9 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 		else
 			cur_timeout = WalWriterDelay * HIBERNATE_FACTOR;
 
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 cur_timeout,
-						 WAIT_EVENT_WAL_WRITER_MAIN);
+		(void) WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK | INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 cur_timeout,
+							 WAIT_EVENT_WAL_WRITER_MAIN);
 	}
 }

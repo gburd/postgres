@@ -2675,7 +2675,7 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 		ProcNumber	walwriterProc = procglobal->walwriterProc;
 
 		if (walwriterProc != INVALID_PROC_NUMBER)
-			SetLatch(&GetPGProcByNumber(walwriterProc)->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, walwriterProc);
 	}
 }
 

@@ -631,16 +631,20 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 
 		/*
 		 * Wait until naptime expires or we get some type of signal (all the
-		 * signal handlers will wake us by calling SetLatch).
+		 * signal handlers will wake us by calling RaiseInterrupt).
 		 */
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 (nap.tv_sec * 1000L) + (nap.tv_usec / 1000L),
-						 WAIT_EVENT_AUTOVACUUM_MAIN);
-
-		ResetLatch(MyLatch);
+		(void) WaitInterrupt(INTERRUPT_SHUTDOWN_AUX |
+							 INTERRUPT_CONFIG_RELOAD |
+							 INTERRUPT_BARRIER |
+							 INTERRUPT_LOG_MEMORY_CONTEXT |
+							 INTERRUPT_GENERAL,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 (nap.tv_sec * 1000L) + (nap.tv_usec / 1000L),
+							 WAIT_EVENT_AUTOVACUUM_MAIN);
 
 		ProcessAutoVacLauncherInterrupts();
+
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/*
 		 * a worker finished, or postmaster signaled failure to start a worker
@@ -1409,7 +1413,7 @@ static void
 avl_sigusr2_handler(SIGNAL_ARGS)
 {
 	got_SIGUSR2 = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 

@@ -19,6 +19,7 @@
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/interrupt.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
@@ -223,10 +224,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 
 		/*
 		 * Not acquiring ProcArrayLock here which is slightly icky. It's
-		 * actually fine because procLatch isn't ever freed, so we just can
-		 * potentially set the wrong process' (or no process') latch.
+		 * actually fine because the interrupt machinery isn't ever freed, so
+		 * we just can potentially interrupt the wrong process (or no process).
 		 */
-		SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, bgwprocno);
 	}
 
 	/*

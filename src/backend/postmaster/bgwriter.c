@@ -226,7 +226,7 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 		int			rc;
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		ProcessMainLoopInterrupts();
 
@@ -304,9 +304,9 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 		 * down with latch events that are likely to happen frequently during
 		 * normal operation.
 		 */
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					   BgWriterDelay /* ms */ , WAIT_EVENT_BGWRITER_MAIN);
+		rc = WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						   BgWriterDelay /* ms */ , WAIT_EVENT_BGWRITER_MAIN);
 
 		/*
 		 * If no latch event and BgBufferSync says nothing's happening, extend
@@ -328,13 +328,17 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 		 */
 		if (rc == WL_TIMEOUT && can_hibernate && prev_hibernate)
 		{
+			/* Clear any already-pending wakeups */
+			ClearInterrupt(INTERRUPT_GENERAL);
+
 			/* Ask for notification at next buffer allocation */
 			StrategyNotifyBgWriter(MyProcNumber);
 			/* Sleep ... */
-			(void) WaitLatch(MyLatch,
-							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-							 BgWriterDelay * HIBERNATE_FACTOR,
-							 WAIT_EVENT_BGWRITER_HIBERNATE);
+			(void) WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK |
+								 INTERRUPT_GENERAL,
+								 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+								 BgWriterDelay * HIBERNATE_FACTOR,
+								 WAIT_EVENT_BGWRITER_HIBERNATE);
 			/* Reset the notification request in case we timed out */
 			StrategyNotifyBgWriter(-1);
 		}
