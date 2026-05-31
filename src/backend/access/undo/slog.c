@@ -194,6 +194,23 @@ SKIPLIST_DECL_POOL(slog_txn, sl_, entries, SLOG_TXN_POOL_CAPACITY)
 #define SLOG_DSA_INIT_SIZE		(512 * 1024)	/* 512 KB */
 #define SLOG_DSA_MAX_SIZE_MB	256				/* default max: 256 MB */
 
+/*
+ * Maximum number of abort ops applied to an LRLock partition between
+ * LRLockPublish calls in SLogTupleMarkAborted.
+ *
+ * The LRLock oplog lives in the fixed main shared-memory arena.  When a
+ * single publish cycle overflows its initial 4 KB capacity the oplog is
+ * regrown with a runtime ShmemAlloc that doubles and never frees the old
+ * buffer; a very large rollback applying that many ops before one publish
+ * exhausts main shared memory and crashes the whole server.  Publishing every
+ * SLOG_ABORT_PUBLISH_BATCH ops resets oplog_used to 0, so we must keep one
+ * batch comfortably below the oplog's initial capacity to guarantee the
+ * runtime ShmemAlloc is never triggered.  Each entry is an 8-byte header plus
+ * MAXALIGN(sizeof(SLogFlatOp)) (~96 bytes); 24 entries (~2.3 KB) leaves margin
+ * under the 4 KB LRLOCK_OPLOG_INITIAL_CAPACITY even if the op struct grows.
+ */
+#define SLOG_ABORT_PUBLISH_BATCH	24
+
 /* ----------------------------------------------------------------
  * Shared state definition
  * ----------------------------------------------------------------
@@ -2057,9 +2074,15 @@ SLogTupleMarkAborted(TransactionId xid)
 	SLogTrackedKey *tk;
 	SLogInsertMap *im;
 	int			part;
+	dsa_pointer *freedps;
+	int			nfreedps = 0;
+	int			maxfreedps = 16;
+	int			ops_since_publish;
 
 	if (SLogState == NULL)
 		return;
+
+	freedps = (dsa_pointer *) palloc(maxfreedps * sizeof(dsa_pointer));
 
 	/*
 	 * Process all entries grouped by partition.  For each partition, acquire
@@ -2096,7 +2119,83 @@ SLogTupleMarkAborted(TransactionId xid)
 			continue;
 
 		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
+
+		/*
+		 * Collect the live before-image pointers for this transaction's
+		 * shared ops in this partition.  We are the single owner of these
+		 * frees: this runs under the partition writer lock, so the UNDO
+		 * worker's SLogTupleRemoveByXidGlobal (which also takes the writer
+		 * lock and only frees still-valid dps) cannot race us, and the
+		 * MARK_ABORTED op below nulls before_image_dp in both copies so the
+		 * worker sees InvalidDsaPointer afterward.  We record the dps now but
+		 * free them only after LRLockPublish has drained readers off the old
+		 * copy, so no wait-free reader can dereference a freed pointer.
+		 */
+		{
+			const SLogFlatHash *rht = (const SLogFlatHash *)
+				LRLockGetReadData(fp->lrlock);
+
+			for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
+			{
+				const SLogFlatBucket *bucket;
+
+				if (!TransactionIdEquals(tk->xid, xid) || tk->local_only)
+					continue;
+				if (SLogFlatHashPartitionIndex(&tk->key) != part)
+					continue;
+
+				bucket = SLogFlatHashProbe(rht, &tk->key);
+				if (bucket == NULL)
+					continue;
+
+				for (int j = 0; j < SLOG_MAX_TUPLE_OPS; j++)
+				{
+					if (bucket->entry.ops[j].in_use &&
+						TransactionIdEquals(bucket->entry.ops[j].xid, xid) &&
+						DsaPointerIsValid(bucket->entry.ops[j].before_image_dp))
+					{
+						if (nfreedps >= maxfreedps)
+						{
+							maxfreedps *= 2;
+							freedps = (dsa_pointer *)
+								repalloc(freedps,
+										 maxfreedps * sizeof(dsa_pointer));
+						}
+						freedps[nfreedps++] =
+							bucket->entry.ops[j].before_image_dp;
+					}
+				}
+			}
+		}
+
 		LRLockWriteBegin(fp->lrlock);
+
+		/*
+		 * Publish-and-recycle periodically inside the apply loops.  This
+		 * bounds two resources that an unbounded single publish cycle would
+		 * blow on a very large rollback (hundreds of thousands of tuples):
+		 *
+		 *   1. The LRLock oplog, which lives in the fixed main shared-memory
+		 *      arena and is regrown (doubling, never freeing the old buffer)
+		 *      via a runtime ShmemAlloc whenever a single cycle overflows its
+		 *      initial 4 KB.  Each LRLockPublish resets oplog_used to 0.
+		 *
+		 *   2. The LRLock writer spinlock (writer_mutex), held from
+		 *      LRLockWriteBegin to LRLockWriteEnd.  Holding a spinlock across
+		 *      that many ops trips the stuck-spinlock detector (PANIC).  We
+		 *      therefore call WriteEnd + WriteBegin at each batch boundary to
+		 *      release and re-acquire it, keeping the hold time bounded.
+		 *
+		 * Correctness across the recycle: each tuple's abort visibility is
+		 * resolved independently, and a publish leaves both copies in sync, so
+		 * dropping the spinlock at a batch boundary leaves the partition
+		 * consistent for any other writer that interleaves a complete cycle.
+		 * The partition writer LWLock (held for the whole function) still
+		 * serializes us against SLogTupleRemoveByXidGlobal, the only other
+		 * before-image freer, so deferring the dsa_free calls until after the
+		 * final publish remains safe.
+		 */
+		ops_since_publish = 0;
 
 		/* Process sparsemap-based local-only INSERTs for this partition */
 		for (im = slog_insert_maps; im != NULL; im = im->next)
@@ -2124,6 +2223,14 @@ SLogTupleMarkAborted(TransactionId xid)
 					flat_op.xid = xid;
 					flat_op.subxid = InvalidTransactionId;
 					LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+
+					if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
+					{
+						LRLockPublish(fp->lrlock);
+						LRLockWriteEnd(fp->lrlock);
+						LRLockWriteBegin(fp->lrlock);
+						ops_since_publish = 0;
+					}
 				}
 
 				idx = sm_next_member(im->map, idx);
@@ -2156,12 +2263,36 @@ SLogTupleMarkAborted(TransactionId xid)
 			}
 
 			LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+
+			if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
+			{
+				LRLockPublish(fp->lrlock);
+				LRLockWriteEnd(fp->lrlock);
+				LRLockWriteBegin(fp->lrlock);
+				ops_since_publish = 0;
+			}
 		}
 
 		LRLockPublish(fp->lrlock);
 		LRLockWriteEnd(fp->lrlock);
+
+		/*
+		 * Readers have now been drained off the old copy by LRLockPublish, so
+		 * the before-images are unreachable.  Free them while still holding
+		 * the writer lock (single-owner guarantee).
+		 */
+		if (nfreedps > 0)
+		{
+			SLogEnsureDsaAttached();
+			for (int j = 0; j < nfreedps; j++)
+				dsa_free(slog_dsa_handle, freedps[j]);
+			nfreedps = 0;
+		}
+
 		LWLockRelease(&fp->writer_lock.lock);
 	}
+
+	pfree(freedps);
 }
 
 /*
@@ -2177,7 +2308,6 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 {
 	SLogTupleKey *collected_keys;
 	dsa_pointer *collected_dps;
-	int			nkeys = 0;
 	int			max_keys;
 	int			part;
 
@@ -2185,13 +2315,30 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 		return;
 
 	max_keys = SLogTupleNumEntries();
+	if (max_keys <= 0)
+		return;
+
+	SLogEnsureDsaAttached();
+
 	collected_keys = (SLogTupleKey *)
 		palloc(sizeof(SLogTupleKey) * max_keys);
 	collected_dps = (dsa_pointer *)
 		palloc(sizeof(dsa_pointer) * max_keys);
 
 	/*
-	 * Phase 1: Scan each partition under read-side lock to collect keys.
+	 * Process each partition while holding its exclusive writer lock.  The
+	 * writer lock serializes all writers for the partition, which is
+	 * essential: this function (run by the UNDO worker) and the inline
+	 * SLogTupleCleanupRetained / abort paths run concurrently and would
+	 * otherwise collect the same before_image_dp under wait-free reads and
+	 * dsa_free() it more than once (a double-free that trips the dsa.c
+	 * superblock/alignment assertions).
+	 *
+	 * Holding the LWLock guarantees no LRLock publish can occur for this
+	 * partition, so the read copy is stable.  We free the before-images here
+	 * (under the LWLock but outside the LRLock spinlock section, since
+	 * dsa_free() may take an LWLock) and then apply REMOVE_XID, which also
+	 * nulls before_image_dp in both copies.  Each dp is freed exactly once.
 	 */
 	for (part = 0; part < SLogNumPartitions; part++)
 	{
@@ -2199,14 +2346,17 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 		const SLogFlatHash *ht;
 		SLogFlatHashScanState scan;
 		const SLogFlatBucket *bucket;
+		int			nkeys = 0;
+		int			ndps = 0;
+		int			i;
 
-		ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
+		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
+		ht = (const SLogFlatHash *) LRLockGetReadData(fp->lrlock);
 		SLogFlatHashScanInit(&scan);
 		while ((bucket = SLogFlatHashScanNext(ht, &scan)) != NULL)
 		{
 			const SLogTupleEntry *entry = &bucket->entry;
-			int			i;
 
 			for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
 			{
@@ -2215,64 +2365,26 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 				{
 					if (nkeys < max_keys)
 					{
-						collected_keys[nkeys] = bucket->key;
-						collected_dps[nkeys] = entry->ops[i].before_image_dp;
-						nkeys++;
+						collected_keys[nkeys++] = bucket->key;
+						if (DsaPointerIsValid(entry->ops[i].before_image_dp))
+							collected_dps[ndps++] = entry->ops[i].before_image_dp;
 					}
 					break;
 				}
 			}
 		}
 
-		LRLockReadEnd(fp->lrlock);
-	}
+		/* Free before-images (under LWLock, outside the LRLock spinlock). */
+		for (i = 0; i < ndps; i++)
+			dsa_free(slog_dsa_handle, collected_dps[i]);
 
-	/*
-	 * Phase 2: Free DSA before-images (outside any lock).
-	 */
-	if (nkeys > 0)
-	{
-		int			i;
-
-		SLogEnsureDsaAttached();
-		for (i = 0; i < nkeys; i++)
+		/* Null the dangling pointers in both copies and drop the slots. */
+		if (nkeys > 0)
 		{
-			if (DsaPointerIsValid(collected_dps[i]))
-				dsa_free(slog_dsa_handle, collected_dps[i]);
-		}
-	}
-
-	/*
-	 * Phase 3: Apply REMOVE_XID ops grouped by partition.
-	 */
-	if (nkeys > 0)
-	{
-		for (part = 0; part < SLogNumPartitions; part++)
-		{
-			SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
-			bool		has_keys = false;
-			int			i;
-
-			for (i = 0; i < nkeys; i++)
-			{
-				if (SLogFlatHashPartitionIndex(&collected_keys[i]) == part)
-				{
-					has_keys = true;
-					break;
-				}
-			}
-			if (!has_keys)
-				continue;
-
-			LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 			LRLockWriteBegin(fp->lrlock);
-
 			for (i = 0; i < nkeys; i++)
 			{
 				SLogFlatOp	flat_op;
-
-				if (SLogFlatHashPartitionIndex(&collected_keys[i]) != part)
-					continue;
 
 				memset(&flat_op, 0, sizeof(flat_op));
 				flat_op.kind = SLOG_FLAT_OP_REMOVE_XID;
@@ -2280,11 +2392,11 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 				flat_op.xid = xid;
 				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
 			}
-
 			LRLockPublish(fp->lrlock);
 			LRLockWriteEnd(fp->lrlock);
-			LWLockRelease(&fp->writer_lock.lock);
 		}
+
+		LWLockRelease(&fp->writer_lock.lock);
 	}
 
 	pfree(collected_keys);
@@ -3070,10 +3182,8 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 {
 	SLogTupleKey *collected_keys;
 	dsa_pointer *collected_dps;
-	int			nkeys = 0;
-	int			ndps = 0;
-	int			part;
 	int			max_keys = 256;
+	int			part;
 	int			i;
 
 	if (SLogState == NULL || oldest_snapshot_hlc == 0)
@@ -3087,7 +3197,20 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 		palloc(max_keys * sizeof(dsa_pointer));
 
 	/*
-	 * Phase 1: scan each partition under read-side lock to collect expired keys.
+	 * Process each partition independently while holding its exclusive
+	 * writer lock.  The writer lock serializes all writers (other cleanup
+	 * runs and forward-path inserts) for the partition, which is essential:
+	 * SLogTupleCleanupRetained runs inline in every backend, so without this
+	 * mutual exclusion two backends would scan the same partition, collect
+	 * the same before_image_dp, and dsa_free() it twice (a double-free that
+	 * trips the index < DSA_MAX_SEGMENTS assertion in dsa.c).
+	 *
+	 * Holding the LWLock also guarantees no LRLock publish can occur for this
+	 * partition, so the read copy is stable to scan.  We free the DSA
+	 * before-images here (under the LWLock but outside the LRLock spinlock
+	 * section, since dsa_free() may itself take an LWLock) and then apply the
+	 * CLEANUP_RETAINED ops that null out the now-dangling pointers in both
+	 * copies.  Each before-image is therefore freed exactly once.
 	 */
 	for (part = 0; part < SLogNumPartitions; part++)
 	{
@@ -3095,9 +3218,16 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 		const SLogFlatHash *ht;
 		SLogFlatHashScanState scan;
 		const SLogFlatBucket *bucket;
+		int			nkeys = 0;
+		int			ndps = 0;
 
-		ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
+		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
+		/*
+		 * Scan the current read copy to collect expired keys and their
+		 * before-image pointers.  Stable because we hold the writer lock.
+		 */
+		ht = (const SLogFlatHash *) LRLockGetReadData(fp->lrlock);
 		SLogFlatHashScanInit(&scan);
 		while ((bucket = SLogFlatHashScanNext(ht, &scan)) != NULL)
 		{
@@ -3115,7 +3245,6 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 				if (entry->ops[i].commit_hlc >= oldest_snapshot_hlc)
 					continue;
 
-				/* Found an expired entry */
 				if (!has_expired)
 				{
 					if (nkeys >= max_keys)
@@ -3128,12 +3257,10 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 							repalloc(collected_dps,
 									 max_keys * sizeof(dsa_pointer));
 					}
-					collected_keys[nkeys] = bucket->key;
-					nkeys++;
+					collected_keys[nkeys++] = bucket->key;
 					has_expired = true;
 				}
 
-				/* Collect DSA pointer for freeing */
 				if (DsaPointerIsValid(entry->ops[i].before_image_dp))
 				{
 					if (ndps >= max_keys)
@@ -3151,46 +3278,20 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 			}
 		}
 
-		LRLockReadEnd(fp->lrlock);
-	}
-
-	/* Phase 2: Free DSA before-images */
-	for (i = 0; i < ndps; i++)
-	{
-		if (DsaPointerIsValid(collected_dps[i]))
-			dsa_free(slog_dsa_handle, collected_dps[i]);
-	}
-
-	/*
-	 * Phase 3: Apply CLEANUP_RETAINED ops grouped by partition.
-	 */
-	if (nkeys > 0)
-	{
-		for (part = 0; part < SLogNumPartitions; part++)
+		/* Free before-images (under LWLock, outside the LRLock spinlock). */
+		for (i = 0; i < ndps; i++)
 		{
-			SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
-			bool		has_keys = false;
+			if (DsaPointerIsValid(collected_dps[i]))
+				dsa_free(slog_dsa_handle, collected_dps[i]);
+		}
 
-			for (i = 0; i < nkeys; i++)
-			{
-				if (SLogFlatHashPartitionIndex(&collected_keys[i]) == part)
-				{
-					has_keys = true;
-					break;
-				}
-			}
-			if (!has_keys)
-				continue;
-
-			LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
+		/* Null the now-dangling pointers in both copies and drop the slots. */
+		if (nkeys > 0)
+		{
 			LRLockWriteBegin(fp->lrlock);
-
 			for (i = 0; i < nkeys; i++)
 			{
 				SLogFlatOp	flat_op;
-
-				if (SLogFlatHashPartitionIndex(&collected_keys[i]) != part)
-					continue;
 
 				memset(&flat_op, 0, sizeof(flat_op));
 				flat_op.kind = SLOG_FLAT_OP_CLEANUP_RETAINED;
@@ -3198,11 +3299,11 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 				flat_op.commit_hlc = oldest_snapshot_hlc;
 				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
 			}
-
 			LRLockPublish(fp->lrlock);
 			LRLockWriteEnd(fp->lrlock);
-			LWLockRelease(&fp->writer_lock.lock);
 		}
+
+		LWLockRelease(&fp->writer_lock.lock);
 	}
 
 	pfree(collected_keys);
