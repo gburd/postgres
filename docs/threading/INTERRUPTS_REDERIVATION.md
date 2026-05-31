@@ -1,6 +1,6 @@
 # Interrupt Re-derivation — replacing Latches with Interrupts on current master
 
-Status: **STEPS 1–2 IMPLEMENTED & BUILD-VERIFIED.** This document plans the
+Status: **STEPS 1–3 IMPLEMENTED & BUILD-VERIFIED.** This document plans the
 re-derivation of Heikki Linnakangas's "Replace Latches with Interrupts"
 refactor against current master (`7ea22d4c950`), as the first structural
 piece of the PG-on-xtc work beyond Phase 0 tooling. It is the reference
@@ -16,6 +16,30 @@ is in the thread model, where a per-process atomic bitmask reached via a
 `session_local` pointer is exactly what a shared-address-space backend
 needs, and where the old `MyLatch`/per-PGPROC `procLatch` ownership dance
 does not translate.
+
+------------------------------------------------------------------------
+## Steering principles (project-wide, set by the maintainer)
+
+These two statements govern every design decision in the PG-on-xtc work,
+not just this re-derivation:
+
+1. **Ultimate goal.** The end state is a **libxtc-based, fully concurrent,
+   multi-threaded PostgreSQL** that can still **fork a backend when
+   necessary to run non-compliant (thread-unsafe) extensions**. Every
+   structural change should move toward that target: a shared-address-space
+   server of cooperatively-scheduled backends, with process-isolation
+   available on demand as the compatibility escape hatch — not the default.
+
+2. **Coexistence-vs-conversion rule.** The default transition strategy is
+   **additive coexistence**: new interrupt machinery lives *alongside* the
+   legacy latch / pending-flag machinery so the tree keeps building and
+   behaviour is unchanged at each step. **But when clean coexistence of the
+   two mechanisms is not possible, choose the path that takes us toward the
+   ultimate goal above** — i.e. complete the conversion to the
+   thread-ready interrupt mechanism (Heikki-style) rather than preserving
+   legacy machinery for its own sake. Do not contort the design to keep a
+   dead-end mechanism alive when doing so blocks progress toward the
+   threaded end state.
 
 ------------------------------------------------------------------------
 ## Why re-derive instead of cherry-pick
@@ -175,14 +199,70 @@ The series is ordered so the tree keeps building after each step. Steps
    initially — both can coexist). This is the minimal waiteventset.c
    change that makes `WaitInterrupt` real.
 
-3. **Convert the pending-flag globals** (`ProcDiePending`,
-   `QueryCancelPending`, timeout flags, `ProcSignalBarrierPending`,
-   `LogMemoryContextPending`, ...) to `INTERRUPT_*` bits; rewrite
+3. **[DONE] Convert the pending-flag globals** (`ProcDiePending`,
+   `QueryCancelPending`, the timeout flags, `CheckClientConnectionPending`,
+   `ClientConnectionLost`, ...) to `INTERRUPT_*` bits; rewrite
    `ProcessInterrupts()` (`postgres.c:3361`) as a chain of
    `ConsumeInterrupt(INTERRUPT_X)` branches gated by `CheckForInterrupts
    Mask`; update `CHECK_FOR_INTERRUPTS()`/`HOLD_INTERRUPTS()` in
    `miscadmin.h`. Update signal handlers `die()`/`StatementCancelHandler()`
    to `RaiseInterrupt(...)`.
+
+   **Coexistence note (per steering rule 2):** the CFI pending-flag
+   globals (`InterruptPending`, `QueryCancelPending`, `ProcDiePending`,
+   `ProcDieSender{Pid,Uid}`, `CheckClientConnectionPending`,
+   `ClientConnectionLost`, `TransactionTimeoutPending`,
+   `IdleSessionTimeoutPending`, `IdleInTransactionSessionTimeoutPending`,
+   `IdleStatsUpdateTimeoutPending`) cannot cleanly coexist with the
+   bitmask — every reader would have to consult both systems and the two
+   would drift. So these globals are **removed** in this step and all
+   readers/writers (postgres.c, postinit.c timeout handlers, pqcomm.c,
+   ipc.c, syncrep.c, autovacuum.c, vacuum.c) are converted to
+   `IsInterruptPending`/`ConsumeInterrupt`/`ClearInterrupt`/`RaiseInterrupt`.
+   `ProcSignalBarrierPending`, `LogMemoryContextPending`,
+   `ParallelMessagePending` and the recovery-conflict flags are NOT part
+   of this step — they are absorbed in step 4 (ProcSignal). The legacy
+   `SetLatch(MyLatch)` wakeups left behind by converted handlers stay
+   until step 5 (they still function: the latch and the interrupt word are
+   both wired into the same WaitEventSet wakeup).
+   `CheckForInterruptsMask` is initialized to `INTERRUPT_CFI_MASK` at its
+   definition in globals.c (a deliberate divergence from Heikki, who
+   leaves it 0 and relies on the first HOLD/RESUME pair; the full-mask
+   default equals the resumed steady state and is robust against ordering).
+
+   **As-built notes (step 3, this commit):**
+   - `ProcessInterrupts()` rewritten as `ConsumeInterrupt`/`IsInterruptPending`
+     chains; the holdoff/critsection gate moved into `CHECK_FOR_INTERRUPTS()`
+     so the function head is now `Assert(InterruptHoldoffCount == 0)` /
+     `Assert(CritSectionCount == 0)`. `ERRDETAIL_SIGNAL_SENDER` dropped from
+     the DIE branch (the `ProcDieSender{Pid,Uid}` globals are gone), and the
+     same sender reporting dropped from `syncrep.c`.
+   - **Recovery-conflict bridge:** `MyProc->pendingRecoveryConflicts` stays the
+     source of truth (step-4 scope). A postgres.c-local
+     `RECOVERY_CONFLICT_INTERRUPT_MASK` (OR of the 7
+     `INTERRUPT_RECOVERY_CONFLICT_*` bits) is an opaque recheck trigger:
+     `HandleRecoveryConflictInterrupt` raises it, and `ProcessInterrupts`
+     `ConsumeInterrupt`s it before the atomic check to avoid a CFI loop.
+   - **Deferred-flag bridge (step 4):** the bits that already exist
+     (`INTERRUPT_BARRIER`, `INTERRUPT_PARALLEL_MESSAGE`,
+     `INTERRUPT_LOG_MEMORY_CONTEXT`, `INTERRUPT_PARALLEL_APPLY_MESSAGE`) were
+     wired through directly — their handlers now `RaiseInterrupt(...)` and
+     `ProcessInterrupts` `ConsumeInterrupt`s them (the `*Pending` bools become
+     unused, retired in step 4). The two flags WITHOUT a bit
+     (`SlotSyncShutdownPending`, `RepackMessagePending`) keep their bool and
+     their handlers `RaiseInterrupt(INTERRUPT_GENERAL)`; `INTERRUPT_GENERAL`
+     was added to `INTERRUPT_CFI_MASK` and is consumed at the top of
+     `ProcessInterrupts` (mirroring the old `InterruptPending = false`).
+   - `INTERRUPT_IDLE_STATS_TIMEOUT` added to `INTERRUPT_CFI_MASK` (it is
+     serviced inside CFI).
+   - **Header hygiene:** `miscadmin.h` includes `storage/interrupt.h` under
+     `#ifndef FRONTEND`. That include pulls `waiteventset.h`, which used to
+     `#include "utils/resowner.h"` — but resowner.h needs `Datum`
+     (postgres.h), which several `src/port` files (compiled with only `c.h`)
+     don't have. Fixed at the root: `waiteventset.h` now forward-declares
+     `ResourceOwner` instead of including resowner.h. Three files that relied
+     on the transitive pull (`nodeAppend.c`, `auxprocess.c`, `interrupt.c`)
+     gained an explicit `#include "utils/resowner.h"`.
 
 4. **Absorb ProcSignal** (`6e11847ca79`): `PROCSIG_*` reasons → interrupt
    bits; `procsignal.c` consumers and senders move to `SendInterrupt`.

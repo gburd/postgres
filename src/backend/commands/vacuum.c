@@ -2437,7 +2437,7 @@ vacuum_delay_point(bool is_analyze)
 	/* Always check for interrupts */
 	CHECK_FOR_INTERRUPTS();
 
-	if (InterruptPending)
+	if (IsInterruptPending(INTERRUPT_CFI_MASK))
 		return;
 
 	if (IsParallelWorker())

@@ -25,7 +25,13 @@
 #ifndef WAITEVENTSET_H
 #define WAITEVENTSET_H
 
-#include "utils/resowner.h"
+/*
+ * Forward declaration to avoid including utils/resowner.h here.  resowner.h
+ * requires Datum (from postgres.h), but waiteventset.h must be includable from
+ * contexts that only have c.h (e.g. miscadmin.h pulled into src/port files).
+ */
+struct ResourceOwnerData;
+typedef struct ResourceOwnerData *ResourceOwner;
 
 /*
  * Bitmasks for events that may wake-up WaitLatch(), WaitLatchOrSocket(), or

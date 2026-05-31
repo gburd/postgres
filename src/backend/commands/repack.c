@@ -3504,9 +3504,8 @@ DecodingWorkerFileName(char *fname, Oid relid, uint32 seq)
 void
 HandleRepackMessageInterrupt(void)
 {
-	InterruptPending = true;
 	RepackMessagePending = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*

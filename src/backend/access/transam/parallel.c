@@ -244,7 +244,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	 * We can deal with that edge case by pretending no workers were
 	 * requested.
 	 */
-	if (!INTERRUPTS_CAN_BE_PROCESSED())
+	if (!INTERRUPTS_CAN_BE_PROCESSED(INTERRUPT_CFI_MASK))
 		pcxt->nworkers = 0;
 
 	/*
@@ -1045,9 +1045,8 @@ ParallelContextActive(void)
 void
 HandleParallelMessageInterrupt(void)
 {
-	InterruptPending = true;
-	ParallelMessagePending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+	RaiseInterrupt(INTERRUPT_PARALLEL_MESSAGE);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*

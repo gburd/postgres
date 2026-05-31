@@ -1322,9 +1322,8 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 void
 HandleLogMemoryContextInterrupt(void)
 {
-	InterruptPending = true;
-	LogMemoryContextPending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+	RaiseInterrupt(INTERRUPT_LOG_MEMORY_CONTEXT);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*

@@ -1412,8 +1412,7 @@ internal_flush_buffer(const char *buf, size_t *start, size_t *end)
 			 * the connection.
 			 */
 			*start = *end = 0;
-			ClientConnectionLost = 1;
-			InterruptPending = 1;
+			RaiseInterrupt(INTERRUPT_CLIENT_CONNECTION_LOST);
 			return EOF;
 		}
 

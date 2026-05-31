@@ -496,7 +496,7 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 
 		/* Forget any pending QueryCancel or timeout request */
 		disable_all_timeouts(false);
-		QueryCancelPending = false; /* second to avoid race condition */
+		ClearInterrupt(INTERRUPT_QUERY_CANCEL); /* second to avoid race condition */
 
 		/* Report the error to the server log */
 		EmitErrorReport();
@@ -2522,7 +2522,7 @@ do_autovacuum(void)
 			 * current table (we're done with it, so it would make no sense to
 			 * cancel at this point.)
 			 */
-			QueryCancelPending = false;
+			ClearInterrupt(INTERRUPT_QUERY_CANCEL);
 		}
 		PG_CATCH();
 		{
@@ -2735,7 +2735,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 		 * (we're done with it, so it would make no sense to cancel at this
 		 * point.)
 		 */
-		QueryCancelPending = false;
+		ClearInterrupt(INTERRUPT_QUERY_CANCEL);
 	}
 	PG_CATCH();
 	{

@@ -27,6 +27,9 @@
 
 #include "datatype/timestamp.h" /* for TimestampTz */
 #include "pgtime.h"				/* for pg_time_t */
+#ifndef FRONTEND
+#include "storage/interrupt.h" /* for IsInterruptPending(), INTERRUPT_* */
+#endif
 
 
 #define InvalidPid				(-1)
@@ -86,67 +89,83 @@
  *****************************************************************************/
 
 /* in globals.c */
-/* these are marked volatile because they are set by signal handlers: */
-extern PGDLLIMPORT volatile sig_atomic_t InterruptPending;
-extern PGDLLIMPORT volatile sig_atomic_t QueryCancelPending;
-extern PGDLLIMPORT volatile sig_atomic_t ProcDiePending;
-extern PGDLLIMPORT volatile int ProcDieSenderPid;
-extern PGDLLIMPORT volatile int ProcDieSenderUid;
-extern PGDLLIMPORT volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
-extern PGDLLIMPORT volatile sig_atomic_t TransactionTimeoutPending;
-extern PGDLLIMPORT volatile sig_atomic_t IdleSessionTimeoutPending;
+/*
+ * These pending-flag globals (ProcSignalBarrierPending,
+ * LogMemoryContextPending, ...) are still part of the legacy machinery
+ * during the coexistence phase; they are absorbed into the interrupt
+ * bitmask in a later step (ProcSignal).  The CFI-handled flags
+ * (InterruptPending, QueryCancelPending, ProcDiePending, the timeout
+ * flags, CheckClientConnectionPending, ClientConnectionLost) have been
+ * converted to INTERRUPT_* bits and no longer exist here; test them with
+ * IsInterruptPending()/ConsumeInterrupt() from storage/interrupt.h.
+ */
 extern PGDLLIMPORT volatile sig_atomic_t ProcSignalBarrierPending;
 extern PGDLLIMPORT volatile sig_atomic_t LogMemoryContextPending;
-extern PGDLLIMPORT volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
-
-extern PGDLLIMPORT volatile sig_atomic_t CheckClientConnectionPending;
-extern PGDLLIMPORT volatile sig_atomic_t ClientConnectionLost;
 
 /* these are marked volatile because they are examined by signal handlers: */
 extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
 extern PGDLLIMPORT volatile uint32 QueryCancelHoldoffCount;
 extern PGDLLIMPORT volatile uint32 CritSectionCount;
 
+/* If you would call ProcessInterrupts now, it could handle these interrupts */
+extern PGDLLIMPORT volatile uint32 CheckForInterruptsMask;
+
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
 
 /* Test whether an interrupt is pending */
 #ifndef WIN32
-#define INTERRUPTS_PENDING_CONDITION() \
-	(unlikely(InterruptPending))
+#define INTERRUPTS_PENDING_CONDITION(mask) \
+	(unlikely(IsInterruptPending(mask)))
 #else
-#define INTERRUPTS_PENDING_CONDITION() \
+#define INTERRUPTS_PENDING_CONDITION(mask) \
 	(unlikely(UNBLOCKED_SIGNAL_QUEUE()) ? \
 	 pgwin32_dispatch_queued_signals() : (void) 0, \
-	 unlikely(InterruptPending))
+	 unlikely(IsInterruptPending(mask)))
 #endif
 
 /* Service interrupt, if one is pending and it's safe to service it now */
 #define CHECK_FOR_INTERRUPTS() \
 do { \
-	if (INTERRUPTS_PENDING_CONDITION()) \
+	if (INTERRUPTS_PENDING_CONDITION(CheckForInterruptsMask) && \
+		CritSectionCount == 0) \
 		ProcessInterrupts(); \
 } while(0)
 
-/* Is ProcessInterrupts() guaranteed to clear InterruptPending? */
-#define INTERRUPTS_CAN_BE_PROCESSED() \
-	(InterruptHoldoffCount == 0 && CritSectionCount == 0 && \
-	 QueryCancelHoldoffCount == 0)
+/* Is ProcessInterrupts() guaranteed to clear all the bits in 'mask'? */
+#define INTERRUPTS_CAN_BE_PROCESSED(mask) \
+	(((mask) & ~CheckForInterruptsMask) == 0 && CritSectionCount == 0)
 
-#define HOLD_INTERRUPTS()  (InterruptHoldoffCount++)
+#define HOLD_INTERRUPTS() \
+do { \
+	CheckForInterruptsMask &= ~INTERRUPT_CFI_MASK; \
+	InterruptHoldoffCount++; \
+} while(0)
 
 #define RESUME_INTERRUPTS() \
 do { \
 	Assert(InterruptHoldoffCount > 0); \
 	InterruptHoldoffCount--; \
+	if (InterruptHoldoffCount == 0) \
+	{ \
+		CheckForInterruptsMask |= INTERRUPT_CFI_MASK; \
+		if (QueryCancelHoldoffCount > 0) \
+			CheckForInterruptsMask &= ~INTERRUPT_QUERY_CANCEL; \
+	} \
 } while(0)
 
-#define HOLD_CANCEL_INTERRUPTS()  (QueryCancelHoldoffCount++)
+#define HOLD_CANCEL_INTERRUPTS() \
+do { \
+	CheckForInterruptsMask &= ~INTERRUPT_QUERY_CANCEL; \
+	QueryCancelHoldoffCount++; \
+} while(0)
 
 #define RESUME_CANCEL_INTERRUPTS() \
 do { \
 	Assert(QueryCancelHoldoffCount > 0); \
 	QueryCancelHoldoffCount--; \
+	if (QueryCancelHoldoffCount == 0 && InterruptHoldoffCount == 0) \
+		CheckForInterruptsMask |= INTERRUPT_QUERY_CANCEL; \
 } while(0)
 
 #define START_CRIT_SECTION()  (CritSectionCount++)

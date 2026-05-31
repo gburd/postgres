@@ -486,9 +486,8 @@ WaitForProcSignalBarrier(uint64 generation)
 static void
 HandleProcSignalBarrierInterrupt(void)
 {
-	InterruptPending = true;
-	ProcSignalBarrierPending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+	RaiseInterrupt(INTERRUPT_BARRIER);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*
@@ -650,8 +649,7 @@ static void
 ResetProcSignalBarrierBits(uint32 flags)
 {
 	pg_atomic_fetch_or_u32(&MyProcSignalSlot->pss_barrierCheckMask, flags);
-	ProcSignalBarrierPending = true;
-	InterruptPending = true;
+	RaiseInterrupt(INTERRUPT_BARRIER);
 }
 
 /*

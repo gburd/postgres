@@ -70,6 +70,7 @@
 #include "replication/slotsync.h"
 #include "replication/snapbuild.h"
 #include "storage/ipc.h"
+#include "storage/interrupt.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -1330,9 +1331,9 @@ slotsync_reread_config(void)
 void
 HandleSlotSyncMessageInterrupt(void)
 {
-	InterruptPending = true;
 	SlotSyncShutdownPending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+	RaiseInterrupt(INTERRUPT_GENERAL);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*

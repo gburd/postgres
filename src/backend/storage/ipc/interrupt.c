@@ -30,6 +30,7 @@
 #include "storage/interrupt.h"
 #include "storage/proc.h"
 #include "storage/waiteventset.h"
+#include "utils/resowner.h"
 
 static session_local pg_atomic_uint32 LocalPendingInterrupts;
 

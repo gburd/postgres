@@ -527,7 +527,7 @@ ProcessClientReadInterrupt(bool blocked)
 		if (notifyInterruptPending)
 			ProcessNotifyInterrupt(true);
 	}
-	else if (ProcDiePending)
+	else if (IsInterruptPending(INTERRUPT_DIE))
 	{
 		/*
 		 * We're dying.  If there is no data available to read, then it's safe
@@ -560,7 +560,7 @@ ProcessClientWriteInterrupt(bool blocked)
 {
 	int			save_errno = errno;
 
-	if (ProcDiePending)
+	if (IsInterruptPending(INTERRUPT_DIE))
 	{
 		/*
 		 * We're dying.  If it's not possible to write, then we should handle
@@ -575,7 +575,7 @@ ProcessClientWriteInterrupt(bool blocked)
 		{
 			/*
 			 * Don't mess with whereToSendOutput if ProcessInterrupts wouldn't
-			 * service ProcDiePending.
+			 * service INTERRUPT_DIE.
 			 */
 			if (InterruptHoldoffCount == 0 && CritSectionCount == 0)
 			{
@@ -3024,31 +3024,14 @@ die(SIGNAL_ARGS)
 {
 	/* Don't joggle the elbow of proc_exit */
 	if (!proc_exit_inprogress)
-	{
-		InterruptPending = true;
-		ProcDiePending = true;
-
-		/*
-		 * Record who sent the signal.  Will be 0 on platforms without
-		 * SA_SIGINFO, which is fine -- ProcessInterrupts() checks for that.
-		 * Only set on the first SIGTERM so we report the original sender.
-		 */
-		if (ProcDieSenderPid == 0)
-		{
-			ProcDieSenderPid = pg_siginfo->pid;
-			ProcDieSenderUid = pg_siginfo->uid;
-		}
-	}
+		RaiseInterrupt(INTERRUPT_DIE);
 
 	/* for the cumulative stats system */
 	pgStatSessionEndCause = DISCONNECT_KILLED;
 
-	/* If we're still here, waken anything waiting on the process latch */
-	SetLatch(MyLatch);
-
 	/*
 	 * If we're in single user mode, we want to quit immediately - we can't
-	 * rely on latches as they wouldn't work when stdin/stdout is a file.
+	 * rely on interrupts as they wouldn't work when stdin/stdout is a file.
 	 * Rather ugly, but it's unlikely to be worthwhile to invest much more
 	 * effort just for the benefit of single user mode.
 	 */
@@ -3067,13 +3050,7 @@ StatementCancelHandler(SIGNAL_ARGS)
 	 * Don't joggle the elbow of proc_exit
 	 */
 	if (!proc_exit_inprogress)
-	{
-		InterruptPending = true;
-		QueryCancelPending = true;
-	}
-
-	/* If we're still here, waken anything waiting on the process latch */
-	SetLatch(MyLatch);
+		RaiseInterrupt(INTERRUPT_QUERY_CANCEL);
 }
 
 /* signal handler for floating point exception */
@@ -3093,12 +3070,30 @@ FloatExceptionHandler(SIGNAL_ARGS)
  * Tell the next CHECK_FOR_INTERRUPTS() to process recovery conflicts.  Runs
  * in a SIGUSR1 handler.
  */
+/*
+ * The set of interrupt bits used as an opaque "recheck recovery conflicts"
+ * trigger.  During the interrupt re-derivation's coexistence phase, the
+ * authoritative per-reason state still lives in MyProc->pendingRecoveryConflicts
+ * (a RecoveryConflictReason bitmask); these CFI interrupt bits only serve to
+ * make CHECK_FOR_INTERRUPTS() re-enter ProcessInterrupts(), which then consults
+ * pendingRecoveryConflicts.  Step 4 (ProcSignal absorption) will make these
+ * bits the authoritative per-reason state and retire pendingRecoveryConflicts.
+ */
+#define RECOVERY_CONFLICT_INTERRUPT_MASK \
+	(INTERRUPT_RECOVERY_CONFLICT_DATABASE | \
+	 INTERRUPT_RECOVERY_CONFLICT_TABLESPACE | \
+	 INTERRUPT_RECOVERY_CONFLICT_LOCK | \
+	 INTERRUPT_RECOVERY_CONFLICT_SNAPSHOT | \
+	 INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN | \
+	 INTERRUPT_RECOVERY_CONFLICT_STARTUP_DEADLOCK | \
+	 INTERRUPT_RECOVERY_CONFLICT_LOGICALSLOT)
+
 void
 HandleRecoveryConflictInterrupt(void)
 {
 	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
-		InterruptPending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+		RaiseInterrupt(RECOVERY_CONFLICT_INTERRUPT_MASK);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*
@@ -3272,7 +3267,7 @@ report_recovery_conflict(RecoveryConflictReason reason)
 				 * code in ProcessInterrupts().
 				 */
 				(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
-				InterruptPending = true;
+				RaiseInterrupt(RECOVERY_CONFLICT_INTERRUPT_MASK);
 				return;
 			}
 
@@ -3348,11 +3343,11 @@ ProcessRecoveryConflictInterrupts(void)
  * ProcessInterrupts: out-of-line portion of CHECK_FOR_INTERRUPTS() macro
  *
  * If an interrupt condition is pending, and it's safe to service it,
- * then clear the flag and accept the interrupt.  Called only when
- * InterruptPending is true.
+ * then clear the bit and accept the interrupt.  Called only when at least
+ * one bit in CheckForInterruptsMask is pending.
  *
  * Note: if INTERRUPTS_CAN_BE_PROCESSED() is true, then ProcessInterrupts
- * is guaranteed to clear the InterruptPending flag before returning.
+ * is guaranteed to clear the pending interrupt bits before returning.
  * (This is not the same as guaranteeing that it's still clear when we
  * return; another interrupt could have arrived.  But we promise that
  * any pre-existing one will have been serviced.)
@@ -3360,20 +3355,26 @@ ProcessRecoveryConflictInterrupts(void)
 void
 ProcessInterrupts(void)
 {
-	/* OK to accept any interrupts now? */
-	if (InterruptHoldoffCount != 0 || CritSectionCount != 0)
-		return;
-	InterruptPending = false;
+	/*
+	 * OK to accept any interrupts now?  The mask gating now lives in the
+	 * CHECK_FOR_INTERRUPTS() macro, so by the time we reach here it must be
+	 * safe to process the maskable interrupts.
+	 */
+	Assert(InterruptHoldoffCount == 0);
+	Assert(CritSectionCount == 0);
 
-	if (ProcDiePending)
+	/*
+	 * Consume the general-purpose wakeup bit.  Some deferred interrupt
+	 * sources (slotsync/repack) that don't yet have their own bit raise
+	 * INTERRUPT_GENERAL to trigger this function; consuming it here mirrors
+	 * the old "InterruptPending = false" at the top of the legacy version and
+	 * avoids looping in CHECK_FOR_INTERRUPTS().
+	 */
+	ConsumeInterrupt(INTERRUPT_GENERAL);
+
+	if (ConsumeInterrupt(INTERRUPT_DIE))
 	{
-		int			sender_pid = ProcDieSenderPid;
-		int			sender_uid = ProcDieSenderUid;
-
-		ProcDiePending = false;
-		ProcDieSenderPid = 0;
-		ProcDieSenderUid = 0;
-		QueryCancelPending = false; /* ProcDie trumps QueryCancel */
+		ClearInterrupt(INTERRUPT_QUERY_CANCEL); /* ProcDie trumps QueryCancel */
 		LockErrorCleanup();
 		/* As in quickdie, don't risk sending to client during auth */
 		if (ClientAuthInProgress && whereToSendOutput == DestRemote)
@@ -3385,18 +3386,15 @@ ProcessInterrupts(void)
 		else if (AmAutoVacuumWorkerProcess())
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
-					 errmsg("terminating autovacuum process due to administrator command"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					 errmsg("terminating autovacuum process due to administrator command")));
 		else if (IsLogicalWorker())
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
-					 errmsg("terminating logical replication worker due to administrator command"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					 errmsg("terminating logical replication worker due to administrator command")));
 		else if (IsLogicalLauncher())
 		{
 			ereport(DEBUG1,
-					(errmsg_internal("logical replication launcher shutting down"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					(errmsg_internal("logical replication launcher shutting down")));
 
 			/*
 			 * The logical replication launcher can be stopped at any time.
@@ -3407,33 +3405,27 @@ ProcessInterrupts(void)
 		else if (AmWalReceiverProcess())
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
-					 errmsg("terminating walreceiver process due to administrator command"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					 errmsg("terminating walreceiver process due to administrator command")));
 		else if (AmBackgroundWorkerProcess())
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating background worker \"%s\" due to administrator command",
-							MyBgworkerEntry->bgw_type),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+							MyBgworkerEntry->bgw_type)));
 		else if (AmIoWorkerProcess())
 		{
 			ereport(DEBUG1,
-					(errmsg_internal("io worker shutting down due to administrator command"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					(errmsg_internal("io worker shutting down due to administrator command")));
 
 			proc_exit(0);
 		}
 		else
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
-					 errmsg("terminating connection due to administrator command"),
-					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
+					 errmsg("terminating connection due to administrator command")));
 	}
 
-	if (CheckClientConnectionPending)
+	if (ConsumeInterrupt(INTERRUPT_CLIENT_CHECK_TIMEOUT))
 	{
-		CheckClientConnectionPending = false;
-
 		/*
 		 * Check for lost connection and re-arm, if still configured, but not
 		 * if we've arrived back at DoingCommandRead state.  We don't want to
@@ -3443,16 +3435,16 @@ ProcessInterrupts(void)
 		if (!DoingCommandRead && client_connection_check_interval > 0)
 		{
 			if (!pq_check_connection())
-				ClientConnectionLost = true;
+				RaiseInterrupt(INTERRUPT_CLIENT_CONNECTION_LOST);
 			else
 				enable_timeout_after(CLIENT_CONNECTION_CHECK_TIMEOUT,
 									 client_connection_check_interval);
 		}
 	}
 
-	if (ClientConnectionLost)
+	if (IsInterruptPending(INTERRUPT_CLIENT_CONNECTION_LOST))
 	{
-		QueryCancelPending = false; /* lost connection trumps QueryCancel */
+		ClearInterrupt(INTERRUPT_QUERY_CANCEL); /* lost connection trumps QueryCancel */
 		LockErrorCleanup();
 		/* don't send to client, we already know the connection to be dead. */
 		whereToSendOutput = DestNone;
@@ -3469,24 +3461,17 @@ ProcessInterrupts(void)
 	 *
 	 * See similar logic in ProcessRecoveryConflictInterrupts().
 	 */
-	if (QueryCancelPending && QueryCancelHoldoffCount != 0)
+	if (IsInterruptPending(INTERRUPT_QUERY_CANCEL) && QueryCancelHoldoffCount != 0)
 	{
 		/*
-		 * Re-arm InterruptPending so that we process the cancel request as
-		 * soon as we're done reading the message.  (XXX this is seriously
-		 * ugly: it complicates INTERRUPTS_CAN_BE_PROCESSED(), and it means we
-		 * can't use that macro directly as the initial test in this function,
-		 * meaning that this code also creates opportunities for other bugs to
-		 * appear.)
+		 * Leave the interrupt set so that we process the cancel request as
+		 * soon as we're done reading the message.
 		 */
-		InterruptPending = true;
 	}
-	else if (QueryCancelPending)
+	else if (ConsumeInterrupt(INTERRUPT_QUERY_CANCEL))
 	{
 		bool		lock_timeout_occurred;
 		bool		stmt_timeout_occurred;
-
-		QueryCancelPending = false;
 
 		/*
 		 * If LOCK_TIMEOUT and STATEMENT_TIMEOUT indicators are both set, we
@@ -3541,10 +3526,18 @@ ProcessInterrupts(void)
 		}
 	}
 
-	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
+	/*
+	 * Recovery conflicts.  Step-3 bridge: pendingRecoveryConflicts (an atomic
+	 * RecoveryConflictReason bitmask in MyProc) remains the source of truth;
+	 * the INTERRUPT_RECOVERY_CONFLICT_* bits act as an opaque re-check trigger
+	 * that is wired into the interrupt word.  Consume those bits first so we
+	 * don't loop in CHECK_FOR_INTERRUPTS().  Full conversion is step-4 scope.
+	 */
+	if (ConsumeInterrupt(RECOVERY_CONFLICT_INTERRUPT_MASK) ||
+		pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
 		ProcessRecoveryConflictInterrupts();
 
-	if (IdleInTransactionSessionTimeoutPending)
+	if (ConsumeInterrupt(INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT))
 	{
 		/*
 		 * If the GUC has been reset to zero, ignore the signal.  This is
@@ -3552,7 +3545,6 @@ ProcessInterrupts(void)
 		 * interrupt.  We need to unset the flag before the injection point,
 		 * otherwise we could loop in interrupts checking.
 		 */
-		IdleInTransactionSessionTimeoutPending = false;
 		if (IdleInTransactionSessionTimeout > 0)
 		{
 			INJECTION_POINT("idle-in-transaction-session-timeout", NULL);
@@ -3562,10 +3554,9 @@ ProcessInterrupts(void)
 		}
 	}
 
-	if (TransactionTimeoutPending)
+	if (ConsumeInterrupt(INTERRUPT_TRANSACTION_TIMEOUT))
 	{
 		/* As above, ignore the signal if the GUC has been reset to zero. */
-		TransactionTimeoutPending = false;
 		if (TransactionTimeout > 0)
 		{
 			INJECTION_POINT("transaction-timeout", NULL);
@@ -3575,10 +3566,9 @@ ProcessInterrupts(void)
 		}
 	}
 
-	if (IdleSessionTimeoutPending)
+	if (ConsumeInterrupt(INTERRUPT_IDLE_SESSION_TIMEOUT))
 	{
 		/* As above, ignore the signal if the GUC has been reset to zero. */
-		IdleSessionTimeoutPending = false;
 		if (IdleSessionTimeout > 0)
 		{
 			INJECTION_POINT("idle-session-timeout", NULL);
@@ -3592,25 +3582,29 @@ ProcessInterrupts(void)
 	 * If there are pending stats updates and we currently are truly idle
 	 * (matching the conditions in PostgresMain(), report stats now.
 	 */
-	if (IdleStatsUpdateTimeoutPending &&
-		DoingCommandRead && !IsTransactionOrTransactionBlock())
+	if (DoingCommandRead && !IsTransactionOrTransactionBlock() &&
+		ConsumeInterrupt(INTERRUPT_IDLE_STATS_TIMEOUT))
 	{
-		IdleStatsUpdateTimeoutPending = false;
 		pgstat_report_stat(true);
 	}
 
-	if (ProcSignalBarrierPending)
+	if (ConsumeInterrupt(INTERRUPT_BARRIER))
 		ProcessProcSignalBarrier();
 
-	if (ParallelMessagePending)
+	if (ConsumeInterrupt(INTERRUPT_PARALLEL_MESSAGE))
 		ProcessParallelMessages();
 
-	if (LogMemoryContextPending)
+	if (ConsumeInterrupt(INTERRUPT_LOG_MEMORY_CONTEXT))
 		ProcessLogMemoryContextInterrupt();
 
-	if (ParallelApplyMessagePending)
+	if (ConsumeInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE))
 		ProcessParallelApplyMessages();
 
+	/*
+	 * Step-3 bridge: slotsync/repack have no dedicated interrupt bit yet
+	 * (deferred to step 4).  Their handlers raise INTERRUPT_GENERAL (consumed
+	 * at the top of this function) and set these legacy flags.
+	 */
 	if (SlotSyncShutdownPending)
 		ProcessSlotSyncMessage();
 
@@ -4507,7 +4501,7 @@ PostgresMain(const char *dbname, const char *username)
 		 * forgetting a timeout cancel.
 		 */
 		disable_all_timeouts(false);	/* do first to avoid race condition */
-		QueryCancelPending = false;
+		ClearInterrupt(INTERRUPT_QUERY_CANCEL);
 		idle_in_transaction_timeout_enabled = false;
 		idle_session_timeout_enabled = false;
 

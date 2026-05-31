@@ -166,6 +166,7 @@
 #include "replication/origin.h"
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
+#include "storage/interrupt.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -1007,9 +1008,8 @@ ParallelApplyWorkerMain(Datum main_arg)
 void
 HandleParallelApplyMessageInterrupt(void)
 {
-	InterruptPending = true;
-	ParallelApplyMessagePending = true;
-	/* latch will be set by procsignal_sigusr1_handler */
+	RaiseInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE);
+	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*

@@ -2036,7 +2036,7 @@ spgdoinsert(Relation index, SpGistState *state,
 		 * Set result = false because we must restart the insertion if the
 		 * interrupt isn't a query-cancel-or-die case.
 		 */
-		if (INTERRUPTS_PENDING_CONDITION())
+			if (INTERRUPTS_PENDING_CONDITION(INTERRUPT_CFI_MASK))
 		{
 			result = false;
 			break;
@@ -2162,7 +2162,7 @@ spgdoinsert(Relation index, SpGistState *state,
 			 * repeatedly, check for query cancel (see comments above).
 			 */
 	process_inner_tuple:
-			if (INTERRUPTS_PENDING_CONDITION())
+		if (INTERRUPTS_PENDING_CONDITION(INTERRUPT_CFI_MASK))
 			{
 				result = false;
 				break;
@@ -2338,7 +2338,7 @@ spgdoinsert(Relation index, SpGistState *state,
 	 * were the case, telling the caller to retry would create an infinite
 	 * loop.
 	 */
-	Assert(INTERRUPTS_CAN_BE_PROCESSED());
+	Assert(INTERRUPTS_CAN_BE_PROCESSED(INTERRUPT_CFI_MASK));
 
 	/*
 	 * Finally, check for interrupts again.  If there was a query cancel,
