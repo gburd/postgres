@@ -139,6 +139,18 @@ struct WaitEventSet
 	int			latch_pos;
 
 	/*
+	 * If WL_INTERRUPT is specified in any wait event, interrupt_mask is the
+	 * set of interrupts to wait for, and interrupt_pos the offset in the
+	 * ->events array.  Like the latch above, this lets us check for pending
+	 * interrupts before doing syscalls related to waiting.  This is the
+	 * PG-on-xtc interrupt machinery (see storage/interrupt.h); it coexists
+	 * with the latch fields above until the conversion sweep replaces latch
+	 * waits with interrupt waits.
+	 */
+	uint32		interrupt_mask;
+	int			interrupt_pos;
+
+	/*
 	 * WL_EXIT_ON_PM_DEATH is converted to WL_POSTMASTER_DEATH, but this flag
 	 * is set so that we'll exit immediately if postmaster death is detected,
 	 * instead of returning.
@@ -423,6 +435,8 @@ CreateWaitEventSet(ResourceOwner resowner, int nevents)
 #endif
 
 	set->latch = NULL;
+	set->interrupt_mask = 0;
+	set->interrupt_pos = -1;
 	set->nevents_space = nevents;
 	set->exit_on_postmaster_death = false;
 
@@ -577,7 +591,7 @@ FreeWaitEventSetAfterFork(WaitEventSet *set)
  */
 int
 AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
-				  void *user_data)
+				  uint32 interruptMask, void *user_data)
 {
 	WaitEvent  *event;
 
@@ -605,6 +619,20 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 			elog(ERROR, "cannot wait on latch without a specified latch");
 	}
 
+	/*
+	 * It doesn't make much sense to wait for WL_INTERRUPT with an empty
+	 * interruptMask, but we allow it so that you can use ModifyWaitEvent to
+	 * set the interruptMask later.  A non-zero interruptMask without
+	 * WL_INTERRUPT, however, indicates a bug.
+	 */
+	if (interruptMask != 0)
+	{
+		if ((events & WL_INTERRUPT) != WL_INTERRUPT)
+			elog(ERROR, "interrupt mask only supported with WL_INTERRUPT");
+		if (set->interrupt_mask != 0 || set->interrupt_pos != -1)
+			elog(ERROR, "cannot wait on more than one interrupt");
+	}
+
 	/* waiting for socket readiness without a socket indicates a bug */
 	if (fd == PGINVALID_SOCKET && (events & WL_SOCKET_MASK))
 		elog(ERROR, "cannot wait on socket event without a socket");
@@ -622,6 +650,25 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 	{
 		set->latch = latch;
 		set->latch_pos = event->pos;
+#if defined(WAIT_USE_SELF_PIPE)
+		event->fd = selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+		event->fd = signal_fd;
+#else
+		event->fd = PGINVALID_SOCKET;
+#ifdef WAIT_USE_EPOLL
+		return event->pos;
+#endif
+#endif
+	}
+	else if (events == WL_INTERRUPT)
+	{
+		/*
+		 * The interrupt word is woken via the same self-pipe / signalfd /
+		 * SIGURG primitive as the latch, so the registered fd is identical.
+		 */
+		set->interrupt_mask = interruptMask;
+		set->interrupt_pos = event->pos;
 #if defined(WAIT_USE_SELF_PIPE)
 		event->fd = selfpipe_readfd;
 #elif defined(WAIT_USE_SIGNALFD)
@@ -659,10 +706,15 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
  * with the WaitEvent.  The latch may be changed to NULL to disable the latch
  * temporarily, and then set back to a latch later.
  *
+ * In the WL_INTERRUPT case, interruptMask is the new set of interrupts to
+ * wait for; it may be changed without restriction since all interrupt waits
+ * share the same wakeup primitive.
+ *
  * 'pos' is the id returned by AddWaitEventToSet.
  */
 void
-ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
+ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch,
+				uint32 interruptMask)
 {
 	WaitEvent  *event;
 #if defined(WAIT_USE_KQUEUE)
@@ -698,11 +750,15 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 	 * waiting on writes.
 	 */
 	if (events == event->events &&
-		(!(event->events & WL_LATCH_SET) || set->latch == latch))
+		(!(event->events & WL_LATCH_SET) || set->latch == latch) &&
+		(!(event->events & WL_INTERRUPT) || set->interrupt_mask == interruptMask))
 		return;
 
 	if (event->events & WL_LATCH_SET && events != event->events)
 		elog(ERROR, "cannot modify latch event");
+
+	if (event->events & WL_INTERRUPT && events != event->events)
+		elog(ERROR, "cannot modify interrupt event");
 
 	/* FIXME: validate event mask */
 	event->events = events;
@@ -723,6 +779,23 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 #if defined(WAIT_USE_WIN32)
 		if (!latch)
 			return;
+#else
+		return;
+#endif
+	}
+
+	if (events == WL_INTERRUPT)
+	{
+		set->interrupt_mask = interruptMask;
+
+		/*
+		 * As with the latch, the underlying wakeup primitive is shared by all
+		 * interrupt waits, so on Unix there is no kernel object to modify and
+		 * we can return immediately.  On Windows we leave the existing handle
+		 * in place and tolerate spurious wakeups.
+		 */
+#if defined(WAIT_USE_WIN32)
+		return;
 #else
 		return;
 #endif
@@ -755,9 +828,9 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 	epoll_ev.events = EPOLLERR | EPOLLHUP;
 
 	/* prepare pollfd entry once */
-	if (event->events == WL_LATCH_SET)
+	if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
 	{
-		Assert(set->latch != NULL);
+		Assert(event->events != WL_LATCH_SET || set->latch != NULL);
 		epoll_ev.events |= EPOLLIN;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
@@ -804,9 +877,9 @@ WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event)
 	pollfd->fd = event->fd;
 
 	/* prepare pollfd entry once */
-	if (event->events == WL_LATCH_SET)
+	if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
 	{
-		Assert(set->latch != NULL);
+		Assert(event->events != WL_LATCH_SET || set->latch != NULL);
 		pollfd->events = POLLIN;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
@@ -898,6 +971,7 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 
 	Assert(event->events != WL_LATCH_SET || set->latch != NULL);
 	Assert(event->events == WL_LATCH_SET ||
+		   event->events == WL_INTERRUPT ||
 		   event->events == WL_POSTMASTER_DEATH ||
 		   (event->events & (WL_SOCKET_READABLE |
 							 WL_SOCKET_WRITEABLE |
@@ -912,9 +986,9 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 		 */
 		WaitEventAdjustKqueueAddPostmaster(&k_ev[count++], event);
 	}
-	else if (event->events == WL_LATCH_SET)
+	else if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
 	{
-		/* We detect latch wakeup using a signal event. */
+		/* We detect latch/interrupt wakeup using a signal event. */
 		WaitEventAdjustKqueueAddLatch(&k_ev[count++], event);
 	}
 	else
@@ -1000,6 +1074,16 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 		Assert(set->latch != NULL);
 		*handle = set->latch->event;
 	}
+	else if (event->events == WL_INTERRUPT)
+	{
+		/*
+		 * XXX: Windows wakeup wiring for the interrupt word is deferred.  In
+		 * the process model the latch path remains in use; threaded-mode
+		 * Windows support requires a shared wakeup HANDLE here (see
+		 * docs/threading/INTERRUPTS_REDERIVATION.md).
+		 */
+		elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
+	}
 	else if (event->events == WL_POSTMASTER_DEATH)
 	{
 		*handle = PostmasterHandle;
@@ -1054,6 +1138,7 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	instr_time	start_time;
 	instr_time	cur_time;
 	long		cur_timeout = -1;
+	bool		sleeping_flag_armed = false;
 
 	Assert(nevents > 0);
 
@@ -1143,6 +1228,51 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 		}
 
 		/*
+		 * Same as the latch fast-path above, but for the interrupt word.
+		 * Atomically advertise that we are about to sleep (the
+		 * SLEEPING_ON_INTERRUPTS bit) and re-check whether an interrupt is
+		 * already pending; if so, avoid blocking altogether.  If someone sets
+		 * an interrupt bit after this, the setter will see
+		 * SLEEPING_ON_INTERRUPTS and wake us via the same self-pipe / SIGURG
+		 * primitive used for latches.
+		 */
+		if (set->interrupt_mask != 0 && !sleeping_flag_armed)
+		{
+			uint32		old_mask;
+			bool		already_pending;
+
+			/* fast path: plain atomic read first */
+			old_mask = pg_atomic_read_u32(MyPendingInterrupts);
+			already_pending = ((old_mask & set->interrupt_mask) != 0);
+
+			if (!already_pending)
+			{
+				old_mask = pg_atomic_fetch_or_u32(MyPendingInterrupts,
+												  SLEEPING_ON_INTERRUPTS);
+				already_pending = ((old_mask & set->interrupt_mask) != 0);
+				/* remember to clear the SLEEPING_ON_INTERRUPTS flag later */
+				sleeping_flag_armed = true;
+			}
+
+			if (already_pending)
+			{
+				occurred_events->fd = PGINVALID_SOCKET;
+				occurred_events->pos = set->interrupt_pos;
+				occurred_events->user_data =
+					set->events[set->interrupt_pos].user_data;
+				occurred_events->events = WL_INTERRUPT;
+				occurred_events++;
+				returned_events++;
+
+				if (returned_events == nevents)
+					break;		/* output buffer full already */
+
+				cur_timeout = 0;
+				timeout = 0;
+			}
+		}
+
+		/*
 		 * Wait for events using the readiness primitive chosen at the top of
 		 * this file. If -1 is returned, a timeout has occurred, if 0 we have
 		 * to retry, everything >= 1 is the number of returned events.
@@ -1172,6 +1302,11 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 #ifndef WIN32
 	waiting = false;
 #endif
+
+	/* If we set the SLEEPING_ON_INTERRUPTS flag, reset it again */
+	if (sleeping_flag_armed)
+		pg_atomic_fetch_and_u32(MyPendingInterrupts,
+								~((uint32) SLEEPING_ON_INTERRUPTS));
 
 	pgstat_report_wait_end();
 
@@ -1249,6 +1384,21 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			{
 				occurred_events->fd = PGINVALID_SOCKET;
 				occurred_events->events = WL_LATCH_SET;
+				occurred_events++;
+				returned_events++;
+			}
+		}
+		else if (cur_event->events == WL_INTERRUPT &&
+				 cur_epoll_event->events & (EPOLLIN | EPOLLERR | EPOLLHUP))
+		{
+			/* Drain the signalfd / self-pipe. */
+			drain();
+
+			if (set->interrupt_mask != 0 &&
+				(pg_atomic_read_u32(MyPendingInterrupts) & set->interrupt_mask) != 0)
+			{
+				occurred_events->fd = PGINVALID_SOCKET;
+				occurred_events->events = WL_INTERRUPT;
 				occurred_events++;
 				returned_events++;
 			}
@@ -1412,6 +1562,18 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 				returned_events++;
 			}
 		}
+		else if (cur_event->events == WL_INTERRUPT &&
+				 cur_kqueue_event->filter == EVFILT_SIGNAL)
+		{
+			if (set->interrupt_mask != 0 &&
+				(pg_atomic_read_u32(MyPendingInterrupts) & set->interrupt_mask) != 0)
+			{
+				occurred_events->fd = PGINVALID_SOCKET;
+				occurred_events->events = WL_INTERRUPT;
+				occurred_events++;
+				returned_events++;
+			}
+		}
 		else if (cur_event->events == WL_POSTMASTER_DEATH &&
 				 cur_kqueue_event->filter == EVFILT_PROC &&
 				 (cur_kqueue_event->fflags & NOTE_EXIT) != 0)
@@ -1533,6 +1695,21 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			{
 				occurred_events->fd = PGINVALID_SOCKET;
 				occurred_events->events = WL_LATCH_SET;
+				occurred_events++;
+				returned_events++;
+			}
+		}
+		else if (cur_event->events == WL_INTERRUPT &&
+				 (cur_pollfd->revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
+		{
+			/* There's data in the self-pipe, clear it. */
+			drain();
+
+			if (set->interrupt_mask != 0 &&
+				(pg_atomic_read_u32(MyPendingInterrupts) & set->interrupt_mask) != 0)
+			{
+				occurred_events->fd = PGINVALID_SOCKET;
+				occurred_events->events = WL_INTERRUPT;
 				occurred_events++;
 				returned_events++;
 			}
@@ -1752,6 +1929,17 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 				occurred_events++;
 				returned_events++;
 			}
+		}
+		else if (cur_event->events == WL_INTERRUPT)
+		{
+			/*
+			 * WL_INTERRUPT is not yet supported on Windows: AddWaitEventToSet
+			 * / WaitEventAdjustWin32 reject it before we ever get here, so we
+			 * should never observe an interrupt event in this loop.  Keep a
+			 * parallel branch for structural symmetry with the latch case and
+			 * to fail loudly if that invariant is ever violated.
+			 */
+			elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
 		}
 		else if (cur_event->events == WL_POSTMASTER_DEATH)
 		{

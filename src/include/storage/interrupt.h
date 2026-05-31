@@ -306,9 +306,15 @@ typedef enum InterruptType
 
 /*
  * Test an interrupt flag (or flags).
+ *
+ * NB: This is named IsInterruptPending rather than InterruptPending (which is
+ * the canonical name in Heikki's fully-converted tree) because, during the
+ * coexistence phase, the legacy global "volatile sig_atomic_t
+ * InterruptPending" still exists in miscadmin.h.  Once the legacy CFI globals
+ * are retired this can be renamed to the canonical InterruptPending().
  */
 static inline bool
-InterruptPending(uint32 interruptMask)
+IsInterruptPending(uint32 interruptMask)
 {
 	pg_read_barrier();
 	return (pg_atomic_read_u32(MyPendingInterrupts) & interruptMask) != 0;
@@ -330,7 +336,7 @@ ClearInterrupt(uint32 interruptMask)
 static inline bool
 ConsumeInterrupt(uint32 interruptMask)
 {
-	if (likely(!InterruptPending(interruptMask)))
+	if (likely(!IsInterruptPending(interruptMask)))
 		return false;
 
 	ClearInterrupt(interruptMask);
@@ -345,11 +351,10 @@ extern void SwitchToSharedInterrupts(void);
 extern void InitializeInterruptSupport(void);
 
 /*
- * The wait entry points and the shared WaitEventSet initializer depend on
- * WaitEventSet learning about the interrupt word as an event source
- * (WL_INTERRUPT).  They are declared here as the stable target ABI, but are
- * implemented in the follow-up commit that adds the interrupt event source to
- * waiteventset.c.  See docs/threading/INTERRUPTS_REDERIVATION.md, steps 2.
+ * Interrupt-aware wait entry points and the shared WaitEventSet initializer.
+ * These build on WaitEventSet's WL_INTERRUPT event source (waiteventset.c),
+ * which watches the per-process interrupt word alongside latches.  See
+ * docs/threading/INTERRUPTS_REDERIVATION.md, step 2.
  */
 extern int	WaitInterrupt(uint32 interruptMask, int wakeEvents, long timeout,
 						  uint32 wait_event_info);

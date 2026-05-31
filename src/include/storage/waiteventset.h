@@ -51,10 +51,20 @@
 #define WL_SOCKET_ACCEPT	WL_SOCKET_READABLE
 #endif
 #define WL_SOCKET_MASK		(WL_SOCKET_READABLE | \
-							 WL_SOCKET_WRITEABLE | \
-							 WL_SOCKET_CONNECTED | \
-							 WL_SOCKET_ACCEPT | \
-							 WL_SOCKET_CLOSED)
+ 							 WL_SOCKET_WRITEABLE | \
+ 							 WL_SOCKET_CONNECTED | \
+ 							 WL_SOCKET_ACCEPT | \
+ 							 WL_SOCKET_CLOSED)
+
+/*
+ * Wake up when one of the interrupts in the given mask becomes pending.
+ *
+ * This coexists with WL_LATCH_SET: an event registered with WL_INTERRUPT
+ * watches the per-process pending-interrupt word (see storage/interrupt.h)
+ * rather than a Latch, but shares the same underlying OS wakeup primitive.
+ * A free bit is used so both kinds of event can appear in the same set.
+ */
+#define WL_INTERRUPT		 (1 << 9)
 
 typedef struct WaitEvent
 {
@@ -81,9 +91,10 @@ extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
 extern void FreeWaitEventSetAfterFork(WaitEventSet *set);
 extern int	AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd,
-							  struct Latch *latch, void *user_data);
+							  struct Latch *latch, uint32 interruptMask,
+							  void *user_data);
 extern void ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events,
-							struct Latch *latch);
+							struct Latch *latch, uint32 interruptMask);
 extern int	WaitEventSetWait(WaitEventSet *set, long timeout,
 							 WaitEvent *occurred_events, int nevents,
 							 uint32 wait_event_info);
