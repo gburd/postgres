@@ -744,10 +744,10 @@ pg_promote(PG_FUNCTION_ARGS)
 
 		CHECK_FOR_INTERRUPTS();
 
-		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   100L,
-					   WAIT_EVENT_PROMOTE);
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+						   100L,
+						   WAIT_EVENT_PROMOTE);
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the

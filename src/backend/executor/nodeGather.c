@@ -383,9 +383,10 @@ gather_readnext(GatherState *gatherstate)
 				return NULL;
 
 			/* Nothing to do except wait for developments. */
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-							 WAIT_EVENT_EXECUTE_GATHER);
-			ResetLatch(MyLatch);
+			(void) WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+								 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
+								 WAIT_EVENT_EXECUTE_GATHER);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			nvisited = 0;
 		}
 	}
