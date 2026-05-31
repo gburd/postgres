@@ -234,7 +234,8 @@ typedef enum InterruptType
 	/* Ask backend to log the memory contexts */
 	INTERRUPT_LOG_MEMORY_CONTEXT = 1 << 25,
 
-	INTERRUPT_GET_MEMORY_CONTEXT = 1 << 26,
+	/* ask slot synchronization worker to stop */
+	INTERRUPT_SLOTSYNC = 1 << 26,
 
 	/* Message from a cooperating parallel backend */
 	INTERRUPT_PARALLEL_MESSAGE = 1 << 27,
@@ -244,6 +245,9 @@ typedef enum InterruptType
 
 	/* procsignal global barrier interrupt  */
 	INTERRUPT_BARRIER = 1 << 29,
+
+	/* Message from a repack worker */
+	INTERRUPT_REPACK = 1 << 30,
 
 	/*---- end of interrupts handled by CHECK_FOR_INTERRUPTS() ----*/
 
@@ -284,10 +288,11 @@ typedef enum InterruptType
 		INTERRUPT_CLIENT_CHECK_TIMEOUT |				\
 		INTERRUPT_CLIENT_CONNECTION_LOST |				\
 		INTERRUPT_LOG_MEMORY_CONTEXT |					\
-		INTERRUPT_GET_MEMORY_CONTEXT |					\
+		INTERRUPT_SLOTSYNC |							\
 		INTERRUPT_PARALLEL_MESSAGE |					\
 		INTERRUPT_PARALLEL_APPLY_MESSAGE |				\
-		INTERRUPT_BARRIER								\
+		INTERRUPT_BARRIER |								\
+		INTERRUPT_REPACK								\
 		)
 
 /* This is the set of interrupts that are processed by ProcessStartupProcInterrupts */
