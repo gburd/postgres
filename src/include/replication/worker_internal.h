@@ -83,6 +83,12 @@ typedef struct LogicalRepWorker
 	 */
 	pid_t		leader_pid;
 
+	/*
+	 * ProcNumber of leader apply worker, for SendInterrupt; INVALID_PROC_NUMBER
+	 * when leader_pid is InvalidPid.
+	 */
+	ProcNumber	leader_pgprocno;
+
 	/* Indicates whether apply can be performed in parallel. */
 	bool		parallel_apply;
 

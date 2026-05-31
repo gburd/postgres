@@ -99,7 +99,7 @@ pg_stash_advice_worker_main(Datum main_arg)
 	/* Establish signal handlers; once that's done, unblock signals. */
 	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR1, PG_SIG_IGN);
 	BackgroundWorkerUnblockSignals();
 
 	/* Log a debug message */

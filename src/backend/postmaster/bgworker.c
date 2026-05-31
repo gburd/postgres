@@ -778,7 +778,7 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 		 * SIGINT is used to signal canceling the current action
 		 */
 		pqsignal(SIGINT, StatementCancelHandler);
-		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR1, PG_SIG_IGN);
 		pqsignal(SIGFPE, FloatExceptionHandler);
 
 		/* XXX Any other handlers needed here? */

@@ -2400,8 +2400,7 @@ SignalBackends(void)
 		 * NotifyQueueLock; which is unlikely but certainly possible. So we
 		 * just log a low-level debug message if it happens.
 		 */
-		if (SendProcSignal(pid, PROCSIG_NOTIFY_INTERRUPT, signalProcnos[i]) < 0)
-			elog(DEBUG3, "could not signal backend with PID %d: %m", pid);
+		SendInterrupt(INTERRUPT_ASYNC_NOTIFY, signalProcnos[i]);
 	}
 }
 
@@ -2536,28 +2535,6 @@ AtSubAbort_Notify(void)
 		pendingNotifies = pendingNotifies->upper;
 		pfree(childPendingNotifies);
 	}
-}
-
-/*
- * HandleNotifyInterrupt
- *
- *		Signal handler portion of interrupt handling. Let the backend know
- *		that there's a pending notify interrupt. If we're currently reading
- *		from the client, this will interrupt the read and
- *		ProcessClientReadInterrupt() will call ProcessNotifyInterrupt().
- */
-void
-HandleNotifyInterrupt(void)
-{
-	/*
-	 * Note: this is called by a SIGNAL HANDLER. You must be very wary what
-	 * you do here.
-	 */
-
-	/* signal that work needs to be done */
-	notifyInterruptPending = true;
-
-	/* latch will be set by procsignal_sigusr1_handler */
 }
 
 /*

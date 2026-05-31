@@ -45,6 +45,7 @@
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
+#include "storage/interrupt.h"
 #include "storage/lmgr.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
@@ -540,6 +541,9 @@ InitProcess(void)
 	OwnLatch(&MyProc->procLatch);
 	SwitchToSharedLatch();
 
+	/* Start accepting interrupts from other processes */
+	SwitchToSharedInterrupts();
+
 	/* now that we have a proc, report wait events to shared memory */
 	pgstat_set_wait_event_storage(&MyProc->wait_event_info);
 
@@ -711,6 +715,9 @@ InitAuxiliaryProcess(void)
 	 */
 	OwnLatch(&MyProc->procLatch);
 	SwitchToSharedLatch();
+
+	/* Start accepting interrupts from other processes */
+	SwitchToSharedInterrupts();
 
 	/* now that we have a proc, report wait events to shared memory */
 	pgstat_set_wait_event_storage(&MyProc->wait_event_info);
@@ -1003,6 +1010,7 @@ ProcKill(int code, Datum arg)
 	 * After that clear MyProc and disown the shared latch.
 	 */
 	SwitchBackToLocalLatch();
+	SwitchToLocalInterrupts();
 	pgstat_reset_wait_event_storage();
 
 	proc = MyProc;
@@ -1068,6 +1076,7 @@ AuxiliaryProcKill(int code, Datum arg)
 
 	/* look at the equivalent ProcKill() code for comments */
 	SwitchBackToLocalLatch();
+	SwitchToLocalInterrupts();
 	pgstat_reset_wait_event_storage();
 
 	proc = MyProc;
@@ -1922,9 +1931,6 @@ CheckDeadLockAlert(void)
 	 * Have to set the latch again, even if handle_sig_alarm already did. Back
 	 * then got_deadlock_timeout wasn't yet set... It's unlikely that this
 	 * ever would be a problem, but setting a set latch again is cheap.
-	 *
-	 * Note that, when this function runs inside procsignal_sigusr1_handler(),
-	 * the handler function sets the latch again after the latch is set here.
 	 */
 	SetLatch(MyLatch);
 	errno = save_errno;

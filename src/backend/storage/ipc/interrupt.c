@@ -125,9 +125,26 @@ RaiseInterrupt(uint32 interruptMask)
 	/*
 	 * If the process is currently blocked waiting for an interrupt to arrive,
 	 * and the interrupt wasn't already pending, wake it up.
+	 *
+	 * Coexistence phase: callers may still be parked in a legacy WaitLatch()
+	 * rather than WaitInterrupt(), in which case SLEEPING_ON_INTERRUPTS is not
+	 * armed.  The latch wait is woken by the same SIGURG / self-pipe primitive,
+	 * so always poke ourselves when the interrupt was newly raised; the extra
+	 * wakeup is harmless.  This unconditional path can be tightened back to the
+	 * SLEEPING_ON_INTERRUPTS test once all wait sites are interrupt-aware.
 	 */
-	if ((old_pending & (interruptMask | SLEEPING_ON_INTERRUPTS)) == SLEEPING_ON_INTERRUPTS)
+	if ((old_pending & interruptMask) != interruptMask)
+	{
 		WakeupMyProc();
+
+		/*
+		 * Coexistence phase: a legacy WaitLatch() caller re-sleeps unless the
+		 * latch's is_set flag is true, which a bare SIGURG (WakeupMyProc) does
+		 * not set.  Also set our own latch so the waiter observes the
+		 * interrupt.  Drop this once all wait sites use WaitInterrupt().
+		 */
+		SetLatch(MyLatch);
+	}
 }
 
 /*
@@ -150,14 +167,32 @@ SendInterrupt(uint32 interruptMask, ProcNumber pgprocno)
 	old_pending = pg_atomic_fetch_or_u32(&proc->pendingInterrupts, interruptMask);
 
 	/*
-	 * If the process is currently blocked waiting for an interrupt to arrive,
-	 * and the interrupt wasn't already pending, wake it up.
+	 * Wake the target if the interrupt was newly raised.
 	 *
 	 * Master's WakeupOtherProc() takes a pid (kill(pid, SIGURG)), so unlike
 	 * Heikki's PGPROC*-based call we pass proc->pid.
+	 *
+	 * Coexistence phase: the target may be parked in a legacy WaitLatch()
+	 * rather than WaitInterrupt(), so SLEEPING_ON_INTERRUPTS may not be armed.
+	 * Both waits are woken by the same SIGURG primitive, so we send the wakeup
+	 * whenever the bit was newly set rather than gating on
+	 * SLEEPING_ON_INTERRUPTS.  The extra wakeup is harmless and this can be
+	 * tightened once every wait site is interrupt-aware.
 	 */
-	if ((old_pending & (interruptMask | SLEEPING_ON_INTERRUPTS)) == SLEEPING_ON_INTERRUPTS)
+	if ((old_pending & interruptMask) != interruptMask)
+	{
 		WakeupOtherProc(proc->pid);
+
+		/*
+		 * Coexistence phase: most wait sites are still legacy WaitLatch()
+		 * callers, which only return when the latch's is_set flag is true.  A
+		 * bare SIGURG (WakeupOtherProc) wakes the epoll but the latch-wait loop
+		 * re-sleeps because is_set is false.  So also set the target's latch to
+		 * guarantee the waiter observes the interrupt.  This belt-and-suspenders
+		 * wakeup can be dropped once all wait sites use WaitInterrupt().
+		 */
+		SetLatch(&proc->procLatch);
+	}
 }
 
 /*

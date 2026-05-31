@@ -38,7 +38,6 @@ extern void AtSubAbort_Notify(void);
 extern void AtPrepare_Notify(void);
 
 /* signal handler for inbound notifies (PROCSIG_NOTIFY_INTERRUPT) */
-extern void HandleNotifyInterrupt(void);
 
 /* process interrupts */
 extern void ProcessNotifyInterrupt(bool flush);

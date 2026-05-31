@@ -142,28 +142,6 @@ ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *m
 
 
 /*
- * HandleCatchupInterrupt
- *
- * This is called when PROCSIG_CATCHUP_INTERRUPT is received.
- *
- * We used to directly call ProcessCatchupEvent directly when idle. These days
- * we just set a flag to do it later and notify the process of that fact by
- * setting the process's latch.
- */
-void
-HandleCatchupInterrupt(void)
-{
-	/*
-	 * Note: this is called by a SIGNAL HANDLER. You must be very wary what
-	 * you do here.
-	 */
-
-	catchupInterruptPending = true;
-
-	/* latch will be set by procsignal_sigusr1_handler */
-}
-
-/*
  * ProcessCatchupInterrupt
  *
  * The portion of catchup interrupt handling that runs outside of the signal

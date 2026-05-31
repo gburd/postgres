@@ -3088,14 +3088,6 @@ FloatExceptionHandler(SIGNAL_ARGS)
 	 INTERRUPT_RECOVERY_CONFLICT_STARTUP_DEADLOCK | \
 	 INTERRUPT_RECOVERY_CONFLICT_LOGICALSLOT)
 
-void
-HandleRecoveryConflictInterrupt(void)
-{
-	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
-		RaiseInterrupt(RECOVERY_CONFLICT_INTERRUPT_MASK);
-	/* wakeup will be done by procsignal_sigusr1_handler */
-}
-
 /*
  * Check one individual conflict reason.
  */
@@ -3372,6 +3364,9 @@ ProcessInterrupts(void)
 	 */
 	ConsumeInterrupt(INTERRUPT_GENERAL);
 
+	if (ConsumeInterrupt(INTERRUPT_WALSND_INIT_STOPPING))
+		HandleWalSndInitStopping();
+
 	if (ConsumeInterrupt(INTERRUPT_DIE))
 	{
 		ClearInterrupt(INTERRUPT_QUERY_CANCEL); /* ProcDie trumps QueryCancel */
@@ -3588,7 +3583,7 @@ ProcessInterrupts(void)
 		pgstat_report_stat(true);
 	}
 
-	if (ConsumeInterrupt(INTERRUPT_BARRIER))
+	if (IsInterruptPending(INTERRUPT_BARRIER))
 		ProcessProcSignalBarrier();
 
 	if (ConsumeInterrupt(INTERRUPT_PARALLEL_MESSAGE))
@@ -3601,11 +3596,25 @@ ProcessInterrupts(void)
 		ProcessParallelApplyMessages();
 
 	/*
-	 * Step-3 bridge: slotsync/repack have no dedicated interrupt bit yet
-	 * (deferred to step 4).  Their handlers raise INTERRUPT_GENERAL (consumed
-	 * at the top of this function) and set these legacy flags.
+	 * Coexistence bridge: notify/sinval-catchup are still consumed in the
+	 * client-read path (ProcessClientReadInterrupt) via the legacy
+	 * notifyInterruptPending/catchupInterruptPending flags.  Now that
+	 * ProcSignal no longer routes through procsignal_sigusr1_handler, the
+	 * sender just sets the interrupt bit; translate those bits back into the
+	 * legacy flags here.  Converting the flags away is later-step scope.
 	 */
-	if (SlotSyncShutdownPending)
+	if (ConsumeInterrupt(INTERRUPT_ASYNC_NOTIFY))
+		notifyInterruptPending = true;
+
+	if (ConsumeInterrupt(INTERRUPT_SINVAL_CATCHUP))
+		catchupInterruptPending = true;
+
+	/*
+	 * Repack has no dedicated interrupt bit consumed here yet (its legacy
+	 * RepackMessagePending flag is still set by its handler and converted in a
+	 * later step); slotsync now has its own INTERRUPT_SLOTSYNC bit.
+	 */
+	if (ConsumeInterrupt(INTERRUPT_SLOTSYNC))
 		ProcessSlotSyncMessage();
 
 	if (RepackMessagePending)
@@ -4322,7 +4331,7 @@ PostgresMain(const char *dbname, const char *username)
 		 * midst of output during who-knows-what operation...
 		 */
 		pqsignal(SIGPIPE, PG_SIG_IGN);
-		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR1, PG_SIG_IGN);
 		pqsignal(SIGUSR2, PG_SIG_IGN);
 		pqsignal(SIGFPE, FloatExceptionHandler);
 

@@ -24,6 +24,7 @@
 #include "libpq/pqmq.h"
 #include "replication/snapbuild.h"
 #include "storage/ipc.h"
+#include "storage/interrupt.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
@@ -176,9 +177,7 @@ RepackWorkerShutdown(int code, Datum arg)
 {
 	DecodingWorkerShared *shared = (DecodingWorkerShared *) DatumGetPointer(arg);
 
-	SendProcSignal(shared->backend_pid,
-				   PROCSIG_REPACK_MESSAGE,
-				   shared->backend_proc_number);
+	SendInterrupt(INTERRUPT_REPACK, shared->backend_proc_number);
 
 	dsm_detach(worker_dsm_segment);
 }

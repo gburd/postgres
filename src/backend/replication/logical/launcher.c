@@ -483,6 +483,7 @@ retry:
 	worker->relstate_lsn = InvalidXLogRecPtr;
 	worker->stream_fileset = NULL;
 	worker->leader_pid = is_parallel_apply_worker ? MyProcPid : InvalidPid;
+	worker->leader_pgprocno = is_parallel_apply_worker ? MyProcNumber : INVALID_PROC_NUMBER;
 	worker->parallel_apply = is_parallel_apply_worker;
 	worker->oldest_nonremovable_xid = retain_dead_tuples
 		? MyReplicationSlot->data.xmin
@@ -857,6 +858,7 @@ logicalrep_worker_cleanup(LogicalRepWorker *worker)
 	worker->subid = InvalidOid;
 	worker->relid = InvalidOid;
 	worker->leader_pid = InvalidPid;
+	worker->leader_pgprocno = INVALID_PROC_NUMBER;
 	worker->parallel_apply = false;
 }
 

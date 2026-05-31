@@ -175,19 +175,16 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 		if (pq_mq_parallel_leader_pid != 0)
 		{
 			if (IsLogicalParallelApplyWorker())
-				SendProcSignal(pq_mq_parallel_leader_pid,
-							   PROCSIG_PARALLEL_APPLY_MESSAGE,
-							   pq_mq_parallel_leader_proc_number);
+				SendInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE,
+							  pq_mq_parallel_leader_proc_number);
 			else if (AmRepackWorker())
-				SendProcSignal(pq_mq_parallel_leader_pid,
-							   PROCSIG_REPACK_MESSAGE,
-							   pq_mq_parallel_leader_proc_number);
+				SendInterrupt(INTERRUPT_REPACK,
+							  pq_mq_parallel_leader_proc_number);
 			else
 			{
 				Assert(IsParallelWorker());
-				SendProcSignal(pq_mq_parallel_leader_pid,
-							   PROCSIG_PARALLEL_MESSAGE,
-							   pq_mq_parallel_leader_proc_number);
+				SendInterrupt(INTERRUPT_PARALLEL_MESSAGE,
+							  pq_mq_parallel_leader_proc_number);
 			}
 		}
 

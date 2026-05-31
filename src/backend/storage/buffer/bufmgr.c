@@ -3620,7 +3620,7 @@ BufferSync(int flags)
 						0);
 
 		/* Check for barrier events in case NBuffers is large. */
-		if (ProcSignalBarrierPending)
+		if (IsInterruptPending(INTERRUPT_BARRIER))
 			ProcessProcSignalBarrier();
 	}
 
@@ -3701,7 +3701,7 @@ BufferSync(int flags)
 		s->num_to_scan++;
 
 		/* Check for barrier events. */
-		if (ProcSignalBarrierPending)
+		if (IsInterruptPending(INTERRUPT_BARRIER))
 			ProcessProcSignalBarrier();
 	}
 

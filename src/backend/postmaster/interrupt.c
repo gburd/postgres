@@ -33,7 +33,7 @@ volatile sig_atomic_t ShutdownRequestPending = false;
 void
 ProcessMainLoopInterrupts(void)
 {
-	if (ProcSignalBarrierPending)
+	if (IsInterruptPending(INTERRUPT_BARRIER))
 		ProcessProcSignalBarrier();
 
 	if (ConfigReloadPending)
@@ -46,7 +46,7 @@ ProcessMainLoopInterrupts(void)
 		proc_exit(0);
 
 	/* Perform logging of memory contexts of this process */
-	if (LogMemoryContextPending)
+	if (ConsumeInterrupt(INTERRUPT_LOG_MEMORY_CONTEXT))
 		ProcessLogMemoryContextInterrupt();
 }
 

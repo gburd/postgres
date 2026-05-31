@@ -1036,20 +1036,6 @@ ParallelContextActive(void)
 }
 
 /*
- * Handle receipt of an interrupt indicating a parallel worker message.
- *
- * Note: this is called within a signal handler!  All we can do is set
- * a flag that will cause the next CHECK_FOR_INTERRUPTS() to invoke
- * ProcessParallelMessages().
- */
-void
-HandleParallelMessageInterrupt(void)
-{
-	RaiseInterrupt(INTERRUPT_PARALLEL_MESSAGE);
-	/* wakeup will be done by procsignal_sigusr1_handler */
-}
-
-/*
  * Process any queued protocol messages received from parallel workers.
  */
 void
@@ -1620,9 +1606,7 @@ ParallelWorkerReportLastRecEnd(XLogRecPtr last_xlog_end)
 static void
 ParallelWorkerShutdown(int code, Datum arg)
 {
-	SendProcSignal(ParallelLeaderPid,
-				   PROCSIG_PARALLEL_MESSAGE,
-				   ParallelLeaderProcNumber);
+	SendInterrupt(INTERRUPT_PARALLEL_MESSAGE, ParallelLeaderProcNumber);
 
 	dsm_detach((dsm_segment *) DatumGetPointer(arg));
 }

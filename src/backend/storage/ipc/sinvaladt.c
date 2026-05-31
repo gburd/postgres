@@ -673,7 +673,7 @@ SICleanupQueue(bool callerHasWriteLock, int minFree)
 		LWLockRelease(SInvalReadLock);
 		LWLockRelease(SInvalWriteLock);
 		elog(DEBUG4, "sending sinval catchup signal to PID %d", (int) his_pid);
-		SendProcSignal(his_pid, PROCSIG_CATCHUP_INTERRUPT, his_procNumber);
+		SendInterrupt(INTERRUPT_SINVAL_CATCHUP, his_procNumber);
 		if (callerHasWriteLock)
 			LWLockAcquire(SInvalWriteLock, LW_EXCLUSIVE);
 	}

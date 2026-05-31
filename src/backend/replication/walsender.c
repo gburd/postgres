@@ -3173,6 +3173,7 @@ InitWalSenderSlot(void)
 			/*
 			 * Found a free slot. Reserve it for us.
 			 */
+			walsnd->pgprocno = MyProcNumber;
 			walsnd->pid = MyProcPid;
 			walsnd->state = WALSNDSTATE_STARTUP;
 			walsnd->sentPtr = InvalidXLogRecPtr;
@@ -3229,6 +3230,7 @@ WalSndKill(int code, Datum arg)
 	SpinLockAcquire(&walsnd->mutex);
 	/* Mark WalSnd struct as no longer being in use. */
 	walsnd->pid = 0;
+	walsnd->pgprocno = INVALID_PROC_NUMBER;
 	SpinLockRelease(&walsnd->mutex);
 }
 
@@ -3854,7 +3856,7 @@ WalSndRqstFileReload(void)
 }
 
 /*
- * Handle PROCSIG_WALSND_INIT_STOPPING signal.
+ * Process INTERRUPT_WALSND_INIT_STOPPING interrupt.
  */
 void
 HandleWalSndInitStopping(void)
@@ -3871,8 +3873,6 @@ HandleWalSndInitStopping(void)
 		kill(MyProcPid, SIGTERM);
 	else
 		got_STOPPING = true;
-
-	/* latch will be set by procsignal_sigusr1_handler */
 }
 
 /*
@@ -3898,7 +3898,7 @@ WalSndSignals(void)
 	/* SIGQUIT handler was already set up by InitPostmasterChild */
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR1, PG_SIG_IGN);
 	pqsignal(SIGUSR2, WalSndLastCycleHandler);	/* request a last cycle and
 												 * shutdown */
 
@@ -4041,16 +4041,16 @@ WalSndInitStopping(void)
 	for (i = 0; i < max_wal_senders; i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
-		pid_t		pid;
+		ProcNumber	procno;
 
 		SpinLockAcquire(&walsnd->mutex);
-		pid = walsnd->pid;
+		procno = walsnd->pgprocno;
 		SpinLockRelease(&walsnd->mutex);
 
-		if (pid == 0)
+		if (procno == INVALID_PROC_NUMBER)
 			continue;
 
-		SendProcSignal(pid, PROCSIG_WALSND_INIT_STOPPING, INVALID_PROC_NUMBER);
+		SendInterrupt(INTERRUPT_WALSND_INIT_STOPPING, procno);
 	}
 }
 

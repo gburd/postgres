@@ -20,6 +20,7 @@
 #include "mb/pg_wchar.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/interrupt.h"
 #include "storage/procsignal.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -298,13 +299,7 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	}
 
 	procNumber = GetNumberFromPGProc(proc);
-	if (SendProcSignal(pid, PROCSIG_LOG_MEMORY_CONTEXT, procNumber) < 0)
-	{
-		/* Again, just a warning to allow loops */
-		ereport(WARNING,
-				(errmsg("could not send signal to process %d: %m", pid)));
-		PG_RETURN_BOOL(false);
-	}
+	SendInterrupt(INTERRUPT_LOG_MEMORY_CONTEXT, procNumber);
 
 	PG_RETURN_BOOL(true);
 }

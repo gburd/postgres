@@ -113,6 +113,7 @@
 typedef struct SlotSyncCtxStruct
 {
 	pid_t		pid;
+	ProcNumber	procnum;		/* procno of the sync process, for SendInterrupt */
 	bool		stopSignaled;
 	bool		syncing;
 	time_t		last_start_time;
@@ -151,13 +152,6 @@ static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
  * performing slot synchronization.
  */
 static bool syncing_slots = false;
-
-/*
- * Interrupt flag set when PROCSIG_SLOTSYNC_MESSAGE is received, asking the
- * slotsync worker or pg_sync_replication_slots() to stop because
- * standby promotion has been triggered.
- */
-volatile sig_atomic_t SlotSyncShutdownPending = false;
 
 /*
  * Structure to hold information fetched from the primary server about a logical
@@ -1322,22 +1316,7 @@ slotsync_reread_config(void)
 }
 
 /*
- * Handle receipt of an interrupt indicating a slotsync shutdown message.
- *
- * This is called within the SIGUSR1 handler.  All we do here is set a flag
- * that will cause the next CHECK_FOR_INTERRUPTS() to invoke
- * ProcessSlotSyncMessage().
- */
-void
-HandleSlotSyncMessageInterrupt(void)
-{
-	SlotSyncShutdownPending = true;
-	RaiseInterrupt(INTERRUPT_GENERAL);
-	/* wakeup will be done by procsignal_sigusr1_handler */
-}
-
-/*
- * Handle a PROCSIG_SLOTSYNC_MESSAGE signal, called from ProcessInterrupts().
+ * Handle a slotsync shutdown message, called from ProcessInterrupts().
  *
  * If the current process is the slotsync background worker, log a message
  * and exit cleanly.  If it is a backend executing pg_sync_replication_slots(),
@@ -1347,8 +1326,6 @@ HandleSlotSyncMessageInterrupt(void)
 void
 ProcessSlotSyncMessage(void)
 {
-	SlotSyncShutdownPending = false;
-
 	if (AmLogicalSlotSyncWorkerProcess())
 	{
 		ereport(LOG,
@@ -1411,6 +1388,7 @@ slotsync_worker_onexit(int code, Datum arg)
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 
 	SlotSyncCtx->pid = InvalidPid;
+	SlotSyncCtx->procnum = INVALID_PROC_NUMBER;
 
 	/*
 	 * If syncing_slots is true, it indicates that the process errored out
@@ -1520,6 +1498,7 @@ check_and_set_sync_info(pid_t sync_process_pid)
 	 * slot sync process on promotion.
 	 */
 	SlotSyncCtx->pid = sync_process_pid;
+	SlotSyncCtx->procnum = MyProcNumber;
 
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
@@ -1535,6 +1514,7 @@ reset_syncing_flag(void)
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 	SlotSyncCtx->syncing = false;
 	SlotSyncCtx->pid = InvalidPid;
+	SlotSyncCtx->procnum = INVALID_PROC_NUMBER;
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
 	syncing_slots = false;
@@ -1620,7 +1600,7 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, die);
 	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR1, PG_SIG_IGN);
 	pqsignal(SIGUSR2, PG_SIG_IGN);
 	pqsignal(SIGPIPE, PG_SIG_IGN);
 	pqsignal(SIGCHLD, PG_SIG_DFL);
@@ -1812,6 +1792,7 @@ void
 ShutDownSlotSync(void)
 {
 	pid_t		sync_process_pid;
+	ProcNumber	sync_process_procnum;
 
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 
@@ -1829,6 +1810,7 @@ ShutDownSlotSync(void)
 	}
 
 	sync_process_pid = SlotSyncCtx->pid;
+	sync_process_procnum = SlotSyncCtx->procnum;
 
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
@@ -1836,8 +1818,7 @@ ShutDownSlotSync(void)
 	 * Signal process doing slotsync, if any, asking it to stop.
 	 */
 	if (sync_process_pid != InvalidPid)
-		SendProcSignal(sync_process_pid, PROCSIG_SLOTSYNC_MESSAGE,
-					   INVALID_PROC_NUMBER);
+		SendInterrupt(INTERRUPT_SLOTSYNC, sync_process_procnum);
 
 	/* Wait for slot sync to end */
 	for (;;)

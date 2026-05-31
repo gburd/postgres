@@ -857,9 +857,8 @@ LogicalParallelApplyLoop(shm_mq_handle *mqh)
 static void
 pa_shutdown(int code, Datum arg)
 {
-	SendProcSignal(MyLogicalRepWorker->leader_pid,
-				   PROCSIG_PARALLEL_APPLY_MESSAGE,
-				   INVALID_PROC_NUMBER);
+	SendInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE,
+				  MyLogicalRepWorker->leader_pgprocno);
 
 	dsm_detach((dsm_segment *) DatumGetPointer(arg));
 }
@@ -996,20 +995,6 @@ ParallelApplyWorkerMain(Datum main_arg)
 	 * cases will allow the code to reach here.
 	 */
 	Assert(false);
-}
-
-/*
- * Handle receipt of an interrupt indicating a parallel apply worker message.
- *
- * Note: this is called within a signal handler! All we can do is set a flag
- * that will cause the next CHECK_FOR_INTERRUPTS() to invoke
- * ProcessParallelApplyMessages().
- */
-void
-HandleParallelApplyMessageInterrupt(void)
-{
-	RaiseInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE);
-	/* wakeup will be done by procsignal_sigusr1_handler */
 }
 
 /*

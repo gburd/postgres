@@ -185,12 +185,14 @@ ProcessStartupProcInterrupts(void)
 		!PostmasterIsAlive())
 		exit(1);
 
-	/* Process barrier events */
-	if (ProcSignalBarrierPending)
-		ProcessProcSignalBarrier();
+	/*
+	 * Process barrier events.  ProcessProcSignalBarrier() consumes
+	 * INTERRUPT_BARRIER itself and returns quickly if nothing is pending.
+	 */
+	ProcessProcSignalBarrier();
 
 	/* Perform logging of memory contexts of this process */
-	if (LogMemoryContextPending)
+	if (ConsumeInterrupt(INTERRUPT_LOG_MEMORY_CONTEXT))
 		ProcessLogMemoryContextInterrupt();
 }
 
@@ -231,7 +233,7 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/* SIGQUIT handler was already set up by InitPostmasterChild */
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGUSR1, PG_SIG_IGN);
 	pqsignal(SIGUSR2, StartupProcTriggerHandler);
 
 	/*

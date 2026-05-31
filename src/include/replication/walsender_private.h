@@ -18,6 +18,7 @@
 #include "nodes/replnodes.h"
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
+#include "storage/procnumber.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
 
@@ -40,6 +41,8 @@ typedef enum WalSndState
  */
 typedef struct WalSnd
 {
+	ProcNumber	pgprocno;		/* this walsender's ProcNumber, or invalid if
+								 * not active */
 	pid_t		pid;			/* this walsender's PID, or 0 if not active */
 
 	WalSndState state;			/* this walsender's state */

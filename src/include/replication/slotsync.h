@@ -18,9 +18,6 @@
 
 extern PGDLLIMPORT bool sync_replication_slots;
 
-/* Interrupt flag set by HandleSlotSyncMessageInterrupt() */
-extern PGDLLIMPORT volatile sig_atomic_t SlotSyncShutdownPending;
-
 /*
  * GUCs needed by slot sync worker to connect to the primary
  * server and carry on with slots synchronization.

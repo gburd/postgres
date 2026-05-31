@@ -3478,8 +3478,14 @@ SignalRecoveryConflict(PGPROC *proc, pid_t pid, RecoveryConflictReason reason)
 	{
 		(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
 
-		/* wake up the process */
-		(void) SendProcSignal(pid, PROCSIG_RECOVERY_CONFLICT, GetNumberFromPGProc(proc));
+		/*
+		 * Wake up the process.  During the interrupt re-derivation coexistence
+		 * phase the reason is carried in pendingRecoveryConflicts; the
+		 * interrupt bit only triggers re-entry into ProcessInterrupts(), which
+		 * then consults that bitmask, so any bit in the recovery-conflict mask
+		 * suffices here.
+		 */
+		SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, GetNumberFromPGProc(proc));
 		found = true;
 	}
 
@@ -3518,11 +3524,8 @@ SignalRecoveryConflictWithVirtualXID(VirtualTransactionId vxid, RecoveryConflict
 			{
 				(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
 
-				/*
-				 * Kill the pid if it's still here. If not, that's what we
-				 * wanted so ignore any errors.
-				 */
-				(void) SendProcSignal(pid, PROCSIG_RECOVERY_CONFLICT, vxid.procNumber);
+				/* wake up the process (see SignalRecoveryConflict) */
+				SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, vxid.procNumber);
 			}
 			break;
 		}
@@ -3564,11 +3567,8 @@ SignalRecoveryConflictWithDatabase(Oid databaseid, RecoveryConflictReason reason
 			{
 				(void) pg_atomic_fetch_or_u32(&proc->pendingRecoveryConflicts, (1 << reason));
 
-				/*
-				 * Kill the pid if it's still here. If not, that's what we
-				 * wanted so ignore any errors.
-				 */
-				(void) SendProcSignal(pid, PROCSIG_RECOVERY_CONFLICT, procvxid.procNumber);
+				/* wake up the process (see SignalRecoveryConflict) */
+				SendInterrupt(INTERRUPT_RECOVERY_CONFLICT_DATABASE, procvxid.procNumber);
 			}
 		}
 	}
