@@ -341,8 +341,8 @@ Steps **1 and 2** have landed on branch `xtc`:
     `Switch{Shared,Local}Interrupts()` calls in proc.c; and the
     cross-process wakeup gate — `SendInterrupt`/`RaiseInterrupt` now wake on
     a newly-set bit **and** additionally `SetLatch` the target as a
-    coexistence belt-and-suspenders (removed in step 5 once all wait sites
-    use `WaitInterrupt`).
+    coexistence belt-and-suspenders (kept through step 5; removed in
+    step 6 once all wait sites use `WaitInterrupt`).
   - **C3** `ac908f9` (12 files) — delete the `RecoveryConflictReason` enum
     and `PGPROC.pendingRecoveryConflicts`; senders take an `InterruptType
     reason` and `SendInterrupt` that exact recovery bit; `ProcessInterrupts`
@@ -360,9 +360,64 @@ Steps **1 and 2** have landed on branch `xtc`:
   startup with no barrier hang, basic query, NOTIFY/LISTEN, cross-process
   `pg_log_backend_memory_contexts`, clean fast shutdown).
 
-**No latch wait/wake call sites are converted yet; `latch.c` remains; the
-`multithreaded` build stays off.** Behaviour is unchanged in the process
-model.  Steps 5–7 (below) are the conversion sweep that follows.
+* Step 5 — **Convert latch wait/wake call sites** (a first batch), landed
+  in five commits:
+  - `875a2e1` — wire `InitializeInterruptWaitSet()` into process startup
+    (after `InitializeLatchWaitSet()` in both `InitPostmasterChild` and
+    `InitStandaloneProcess`). The wait set was defined in step 2 but never
+    called, so the first `WaitInterrupt()` dereferenced a NULL
+    `WaitEventSet`. A clean build does NOT catch this — only runtime smoke
+    does.
+  - `a4e8e8a` — shared aux signal handlers `SignalHandlerForConfigReload`
+    / `SignalHandlerForShutdownRequest` now also `RaiseInterrupt`
+    (`INTERRUPT_CONFIG_RELOAD` / `INTERRUPT_SHUTDOWN_AUX`). Legacy
+    `ConfigReloadPending` / `ShutdownRequestPending` globals stay set
+    (additive coexistence) because many direct readers remain.
+  - `56d2bec` — checkpointer, bgwriter, walwriter and autovacuum-launcher
+    loops to `WaitInterrupt`; their wakers (`RequestCheckpoint`,
+    `ForwardSyncRequest`, `WakeupCheckpointer`, `ReqShutdownXLOG`,
+    `avl_sigusr2_handler`, `freelist.c` bgwriter waker, `xlog.c`
+    `XLogSetAsyncXactLSN` walwriter waker) to `Raise/SendInterrupt`.
+  - `859698b` — logical-replication launcher + parallel-apply worker
+    loops; `logicalrep_worker_wakeup_ptr` to `SendInterrupt`.
+  - `3f8e81d` — `shm_mq` (a self-contained 3-waiter / 6-waker island)
+    converted in full.
+
+  **THE coexistence rule learned here:** a `WL_INTERRUPT` wait returns only
+  when `MyPendingInterrupts & set->interrupt_mask != 0`; SIGURG wakes the
+  epoll but the loop re-sleeps if the pending bit is not in the mask. So
+  (a) every waker of a converted loop must raise an interrupt bit (raw
+  `SetLatch(&proc->procLatch)` does NOT), and (b) the wait's mask must be a
+  superset of every bit the loop's process-interrupts function consumes.
+  Getting the checkpointer mask too narrow (missing `INTERRUPT_BARRIER`)
+  hung `WaitForProcSignalBarrier` at startup; the same under-masking on the
+  launcher/parallel-apply main loops (missing `INTERRUPT_CONFIG_RELOAD`)
+  merely delayed config reload. Final masks: checkpointer/autovacuum =
+  GENERAL|SHUTDOWN_AUX|BARRIER|LOG_MEMORY_CONTEXT|CONFIG_RELOAD;
+  bgwriter/walwriter = `INTERRUPT_MAIN_LOOP_MASK` (+GENERAL);
+  launcher/parallel-apply main loops = `CheckForInterruptsMask` |
+  GENERAL | CONFIG_RELOAD; shm_mq = `CheckForInterruptsMask` | GENERAL.
+
+  Build-green and runtime smoke-verified on a live cluster: clean startup
+  (no barrier hang), `SELECT 1+1`, LISTEN/NOTIFY delivery, self and
+  cross-process-to-checkpointer `pg_log_backend_memory_contexts`,
+  `pg_reload_conf()` (SIGHUP), and `pg_ctl -m fast stop`.
+
+  **Deferred to step 6 (NOT done in this batch):** `proc.c` waiters
+  (`ProcSleep`, `ProcWaitForSignal`) and their many cross-file wakers
+  (condition_variable.c, syncrep.c, walreceiver*, method_worker.c,
+  xlogwait.c, pgarch.c, walsummarizer.c) are LEFT on the latch — leaving
+  both the waiter and its wakers on the latch builds and runs correctly
+  under coexistence. The belt-and-suspenders `SetLatch` inside
+  `RaiseInterrupt`/`SendInterrupt` therefore STAYS for now (it is what
+  keeps those still-latched waiters waking); it is removed in step 6 once
+  the remaining waiters move to `WaitInterrupt`.
+
+**Latch wait/wake conversion is partial: the aux-loop and shm_mq sites are
+on `WaitInterrupt`, but `proc.c` and the condition-variable / syncrep /
+walreceiver family remain on the latch; `latch.c` remains; the
+`multithreaded` build stays off.** Steps 5 (remainder) through 7 (below)
+complete the sweep.
 
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
