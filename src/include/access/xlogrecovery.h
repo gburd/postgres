@@ -15,7 +15,7 @@
 #include "catalog/pg_control.h"
 #include "lib/stringinfo.h"
 #include "storage/condition_variable.h"
-#include "storage/latch.h"
+#include "storage/procnumber.h"
 #include "utils/timestamp.h"
 
 /*
@@ -78,21 +78,21 @@ typedef struct XLogRecoveryCtlData
 	bool		SharedPromoteIsTriggered;
 
 	/*
-	 * recoveryWakeupLatch is used to wake up the startup process to continue
-	 * WAL replay, if it is waiting for WAL to arrive or promotion to be
-	 * requested.
+	 * startupProcNumber is the ProcNumber of the startup process, recorded so
+	 * that WakeupRecovery() can send it INTERRUPT_RECOVERY_CONTINUE to wake it
+	 * up to continue WAL replay, if it is waiting for WAL to arrive or
+	 * promotion to be requested.
 	 *
-	 * Note that the startup process also uses another latch, its procLatch,
-	 * to wait for recovery conflict. If we get rid of recoveryWakeupLatch for
-	 * signaling the startup process in favor of using its procLatch, which
-	 * comports better with possible generic signal handlers using that latch.
-	 * But we should not do that because the startup process doesn't assume
-	 * that it's waken up by walreceiver process or SIGHUP signal handler
-	 * while it's waiting for recovery conflict. The separate latches,
-	 * recoveryWakeupLatch and procLatch, should be used for inter-process
-	 * communication for WAL replay and recovery conflict, respectively.
+	 * Note that the startup process also responds to other interrupts (e.g.
+	 * its recovery-conflict interrupt bits) to wait for recovery conflict.  We
+	 * deliberately use a dedicated INTERRUPT_RECOVERY_CONTINUE bit for WAL
+	 * replay signaling rather than INTERRUPT_GENERAL, so that the startup
+	 * process doesn't assume it was woken by walreceiver or a SIGHUP handler
+	 * while it's waiting for recovery conflict.  The separate interrupt bits
+	 * are used for inter-process communication for WAL replay and recovery
+	 * conflict, respectively.
 	 */
-	Latch		recoveryWakeupLatch;
+	ProcNumber	startupProcNumber;
 
 	/*
 	 * Last record successfully replayed.

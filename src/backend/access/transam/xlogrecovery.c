@@ -54,7 +54,7 @@
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/pmsignal.h"
 #include "storage/procarray.h"
 #include "storage/spin.h"
@@ -411,7 +411,7 @@ XLogRecoveryShmemInit(void *arg)
 	memset(XLogRecoveryCtl, 0, sizeof(XLogRecoveryCtlData));
 
 	SpinLockInit(&XLogRecoveryCtl->info_lck);
-	InitSharedLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+	XLogRecoveryCtl->startupProcNumber = INVALID_PROC_NUMBER;
 	ConditionVariableInit(&XLogRecoveryCtl->recoveryNotPausedCV);
 }
 
@@ -486,11 +486,11 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 	validateRecoveryParameters();
 
 	/*
-	 * Take ownership of the wakeup latch if we're going to sleep during
-	 * recovery, if required.
+	 * Record our proc number so that WakeupRecovery() can send us
+	 * INTERRUPT_RECOVERY_CONTINUE while we sleep during recovery, if required.
 	 */
 	if (ArchiveRecoveryRequested)
-		OwnLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+		XLogRecoveryCtl->startupProcNumber = MyProcNumber;
 
 	/*
 	 * Set the WAL reading processor now, as it will be needed when reading
@@ -1596,11 +1596,11 @@ ShutdownWalRecovery(void)
 	}
 
 	/*
-	 * We don't need the latch anymore. It's not strictly necessary to disown
-	 * it, but let's do it for the sake of tidiness.
+	 * We don't need to be woken for recovery anymore.  It's not strictly
+	 * necessary to clear this, but let's do it for the sake of tidiness.
 	 */
 	if (ArchiveRecoveryRequested)
-		DisownLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+		XLogRecoveryCtl->startupProcNumber = INVALID_PROC_NUMBER;
 }
 
 /*
@@ -3004,7 +3004,7 @@ recoveryApplyDelay(XLogReaderState *record)
 
 	while (true)
 	{
-		ResetLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+		ClearInterrupt(INTERRUPT_RECOVERY_CONTINUE);
 
 		/* This might change recovery_min_apply_delay. */
 		ProcessStartupProcInterrupts();
@@ -3029,8 +3029,8 @@ recoveryApplyDelay(XLogReaderState *record)
 
 		elog(DEBUG2, "recovery apply delay %ld milliseconds", msecs);
 
-		(void) WaitLatch(&XLogRecoveryCtl->recoveryWakeupLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+		(void) WaitInterrupt(INTERRUPT_STARTUP_PROC_MASK | INTERRUPT_RECOVERY_CONTINUE,
+						 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 msecs,
 						 WAIT_EVENT_RECOVERY_APPLY_DELAY);
 	}
@@ -3710,12 +3710,12 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						/* Do background tasks that might benefit us later. */
 						KnownAssignedTransactionIdsIdleMaintenance();
 
-						(void) WaitLatch(&XLogRecoveryCtl->recoveryWakeupLatch,
-										 WL_LATCH_SET | WL_TIMEOUT |
+						(void) WaitInterrupt(INTERRUPT_STARTUP_PROC_MASK | INTERRUPT_RECOVERY_CONTINUE,
+										 WL_INTERRUPT | WL_TIMEOUT |
 										 WL_EXIT_ON_PM_DEATH,
 										 wait_time,
 										 WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL);
-						ResetLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+						ClearInterrupt(INTERRUPT_RECOVERY_CONTINUE);
 						now = GetCurrentTimestamp();
 
 						/* Handle interrupt signals of startup process */
@@ -3985,11 +3985,11 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * Wait for more WAL to arrive, when we will be woken
 					 * immediately by the WAL receiver.
 					 */
-					(void) WaitLatch(&XLogRecoveryCtl->recoveryWakeupLatch,
-									 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+					(void) WaitInterrupt(INTERRUPT_STARTUP_PROC_MASK | INTERRUPT_RECOVERY_CONTINUE,
+									 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH,
 									 -1L,
 									 WAIT_EVENT_RECOVERY_WAL_STREAM);
-					ResetLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+					ClearInterrupt(INTERRUPT_RECOVERY_CONTINUE);
 					break;
 				}
 
@@ -4483,7 +4483,10 @@ CheckPromoteSignal(void)
 void
 WakeupRecovery(void)
 {
-	SetLatch(&XLogRecoveryCtl->recoveryWakeupLatch);
+	ProcNumber	procno = XLogRecoveryCtl->startupProcNumber;
+
+	if (procno != INVALID_PROC_NUMBER)
+		SendInterrupt(INTERRUPT_RECOVERY_CONTINUE, procno);
 }
 
 /*
