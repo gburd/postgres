@@ -285,13 +285,13 @@ PgArchWakeup(void)
 	int			arch_pgprocno = PgArch->pgprocno;
 
 	/*
-	 * We don't acquire ProcArrayLock here.  It's actually fine because
-	 * procLatch isn't ever freed, so we just can potentially set the wrong
-	 * process' (or no process') latch.  Even in that case the archiver will
+	 * We don't acquire ProcArrayLock here.  It's actually fine because the
+	 * target PGPROC isn't ever freed, so we just can potentially wake the
+	 * wrong process (or no process).  Even in that case the archiver will
 	 * be relaunched shortly and will start archiving.
 	 */
 	if (arch_pgprocno != INVALID_PROC_NUMBER)
-		SetLatch(&GetPGProcByNumber(arch_pgprocno)->procLatch);
+		SendInterrupt(INTERRUPT_GENERAL, arch_pgprocno);
 }
 
 
@@ -301,7 +301,7 @@ pgarch_waken_stop(SIGNAL_ARGS)
 {
 	/* set flag to do a final cycle and shut down afterwards */
 	ready_to_stop = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*
@@ -321,7 +321,7 @@ pgarch_MainLoop(void)
 	 */
 	do
 	{
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/* When we get SIGUSR2, we do one more archive cycle, then exit */
 		time_to_stop = ready_to_stop;
@@ -359,10 +359,10 @@ pgarch_MainLoop(void)
 		{
 			int			rc;
 
-			rc = WaitLatch(MyLatch,
-						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-						   PGARCH_AUTOWAKE_INTERVAL * 1000L,
-						   WAIT_EVENT_ARCHIVER_MAIN);
+			rc = WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK | INTERRUPT_GENERAL,
+							   WL_INTERRUPT | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+							   PGARCH_AUTOWAKE_INTERVAL * 1000L,
+							   WAIT_EVENT_ARCHIVER_MAIN);
 			if (rc & WL_POSTMASTER_DEATH)
 				time_to_stop = true;
 		}

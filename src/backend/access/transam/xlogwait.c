@@ -78,7 +78,7 @@ const ShmemCallbacks WaitLSNShmemCallbacks = {
 };
 
 /*
- * Wait event for each WaitLSNType, used with WaitLatch() to report
+ * Wait event for each WaitLSNType, used with WaitInterrupt() to report
  * the wait in pg_stat_activity.
  */
 static const uint32 WaitLSNWaitEvents[] = {
@@ -301,14 +301,14 @@ wakeupWaiters(WaitLSNType lsnType, XLogRecPtr currentLSN)
 		LWLockRelease(WaitLSNLock);
 
 		/*
-		 * Set latches for processes whose waited LSNs have been reached.
-		 * Since SetLatch() is a time-consuming operation, we do this outside
-		 * of WaitLSNLock. This is safe because procLatch is never freed, so
-		 * at worst we may set a latch for the wrong process or for no process
+		 * Raise interrupts for processes whose waited LSNs have been reached.
+		 * Since SendInterrupt() is a time-consuming operation, we do this
+		 * outside of WaitLSNLock. This is safe because the target PGPROC is
+		 * never freed, so at worst we may wake the wrong process or no process
 		 * at all, which is harmless.
 		 */
 		for (j = 0; j < numWakeUpProcs; j++)
-			SetLatch(&GetPGProcByNumber(wakeUpProcs[j])->procLatch);
+			SendInterrupt(INTERRUPT_GENERAL, wakeUpProcs[j]);
 
 	} while (numWakeUpProcs == WAKEUP_PROC_STATIC_ARRAY_SIZE);
 }
@@ -379,7 +379,7 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 {
 	XLogRecPtr	currentLSN;
 	TimestampTz endtime = 0;
-	int			wake_events = WL_LATCH_SET | WL_POSTMASTER_DEATH;
+	int			wake_events = WL_INTERRUPT | WL_POSTMASTER_DEATH;
 
 	/* Shouldn't be called when shmem isn't initialized */
 	Assert(waitLSNState);
@@ -437,8 +437,9 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 
 		CHECK_FOR_INTERRUPTS();
 
-		rc = WaitLatch(MyLatch, wake_events, delay_ms,
-					   WaitLSNWaitEvents[lsnType]);
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   wake_events, delay_ms,
+						   WaitLSNWaitEvents[lsnType]);
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
@@ -450,8 +451,8 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 					errmsg("terminating connection due to unexpected postmaster exit"),
 					errcontext("while waiting for LSN"));
 
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
+		if (rc & WL_INTERRUPT)
+			ClearInterrupt(INTERRUPT_GENERAL);
 	}
 
 	/*

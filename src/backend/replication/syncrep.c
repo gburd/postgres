@@ -266,18 +266,18 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 	/*
 	 * Wait for specified LSN to be confirmed.
 	 *
-	 * Each proc has its own wait latch, so we perform a normal latch
-	 * check/wait loop here.
+	 * Each proc has its own pending-interrupt word, so we perform a normal
+	 * interrupt check/wait loop here.
 	 */
 	for (;;)
 	{
 		int			rc;
 
-		/* Must reset the latch before testing state. */
-		ResetLatch(MyLatch);
+		/* Must clear the interrupt before testing state. */
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		/*
-		 * Acquiring the lock is not needed, the latch ensures proper
+		 * Acquiring the lock is not needed, the interrupt ensures proper
 		 * barriers. If it looks like we're done, we must really be done,
 		 * because once walsender changes the state to SYNC_REP_WAIT_COMPLETE,
 		 * it will never update it again, so we can't be seeing a stale value
@@ -326,11 +326,12 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		}
 
 		/*
-		 * Wait on latch.  Any condition that should wake us up will set the
-		 * latch, so no need for timeout.
+		 * Wait for an interrupt.  Any condition that should wake us up will
+		 * raise an interrupt, so no need for timeout.
 		 */
-		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_POSTMASTER_DEATH, -1,
-					   WAIT_EVENT_SYNC_REP);
+		rc = WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+						   WL_INTERRUPT | WL_POSTMASTER_DEATH, -1,
+						   WAIT_EVENT_SYNC_REP);
 
 		/*
 		 * If the postmaster dies, we'll probably never get an acknowledgment,
@@ -945,7 +946,7 @@ SyncRepWakeQueue(bool all, int mode)
 		/*
 		 * Wake only when we have set state and removed from queue.
 		 */
-		SetLatch(&(proc->procLatch));
+		SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(proc));
 
 		numprocs++;
 	}
