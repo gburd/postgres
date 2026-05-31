@@ -2238,12 +2238,23 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 
 		xlrec.offnum = offnum;
 		xlrec.flags = RECNO_TUPLE_SPECULATIVE;
+		xlrec.tuple_len = (uint32) tuple_size;
 		xlrec.commit_ts = commit_ts;
 
+		/*
+		 * Force a full-page image and append the tuple body to the main data
+		 * channel (matching RecnoXLogInsert's layout, which recno_xlog_insert_
+		 * redo parses).  The redo handler restores the tuple from the FPI and
+		 * never reaches the PageAddItem path for these records; the body is
+		 * carried so logical decoding and any future non-FPI replay see a
+		 * well-formed record.  Registering the body as block data instead (the
+		 * historical behavior) left tuple_len uninitialized and made redo read
+		 * past the record on a BLK_NEEDS_REDO replay.
+		 */
 		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
 		XLogRegisterData((char *) &xlrec, sizeof(xl_recno_insert));
-		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-		XLogRegisterBufData(0, (char *) tuple->t_data, tuple_size);
+		XLogRegisterData((char *) tuple->t_data, tuple_size);
 
 		/* Register overflow buffers if any */
 		if (overflow_buffers.count > 0)
@@ -2354,11 +2365,21 @@ recno_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
 
 			xlrec.offnum = ItemPointerGetOffsetNumber(tid);
 			xlrec.flags = 0;	/* cleared SPECULATIVE */
+			xlrec.tuple_len = 0;	/* no body: confirm only flips flags */
 			xlrec.commit_ts = tuple_hdr->t_commit_ts;
 
+			/*
+			 * Confirmation does not add a tuple; it clears the speculative
+			 * flag on a tuple already present on the page.  Force a full-page
+			 * image so redo restores the (already-updated) page rather than
+			 * re-adding the tuple via PageAddItem.  tuple_len == 0 keeps the
+			 * record body-less, which recno_xlog_insert_redo treats as
+			 * "nothing to add" on the (unreachable, given the forced FPI)
+			 * non-FPI path.
+			 */
 			XLogBeginInsert();
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
 			XLogRegisterData((char *) &xlrec, sizeof(xl_recno_insert));
-			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 
 			recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_INSERT);
 			PageSetLSN(page, recptr);
