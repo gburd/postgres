@@ -318,9 +318,51 @@ Steps **1 and 2** have landed on branch `xtc`:
   macros from postgres.h to postgres_ext.h so c.h-only TUs compile, and
   made the pgguclifetimes tool's libclang dependency optional.
 
-**No CFI call sites are converted yet; `latch.c` remains; `multithreaded`
-stays off.** Behaviour is unchanged in the process model.  Steps 3–7
-(below) are the conversion sweep that follows.
+* Step 3 — commit `df850ba` "Convert CFI pending-flag globals to interrupt
+  bits": `InterruptPending`, `QueryCancelPending`, `ProcDiePending`, the
+  timeout flags, `CheckClientConnectionPending`, and `ClientConnectionLost`
+  became `INTERRUPT_*` bits tested with `IsInterruptPending()`/
+  `ConsumeInterrupt()`. `CheckForInterruptsMask` (init `INTERRUPT_CFI_MASK`)
+  gates which bits a CFI may act on; HOLD/RESUME_INTERRUPTS toggle the CFI
+  bits. Header-hygiene fix: `waiteventset.h` forward-declares
+  `ResourceOwner` instead of including `resowner.h` (see step-3 notes
+  above).
+
+* Step 4 — **Absorb ProcSignal** (`6e11847ca79`), landed in four commits:
+  - **C1** `20148b0` — interrupt-bit inventory: drop the unused
+    `INTERRUPT_GET_MEMORY_CONTEXT`; add `INTERRUPT_SLOTSYNC` (`1<<26`) and
+    `INTERRUPT_REPACK` (`1<<30`).
+  - **C2** `18b3c0b` (42 files) — the bulk `PROCSIG_*` → `INTERRUPT_*`
+    conversion. `procsignal.c` is gutted (no `SendProcSignal`/
+    `CheckProcSignal`/`procsignal_sigusr1_handler`; retains the cancel-key
+    and barrier paths). Fixed four runtime hangs: bufmgr corruption; a
+    barrier double-consume (peek with `IsInterruptPending`, let
+    `ProcessProcSignalBarrier` do the authoritative consume); the missing
+    `Switch{Shared,Local}Interrupts()` calls in proc.c; and the
+    cross-process wakeup gate — `SendInterrupt`/`RaiseInterrupt` now wake on
+    a newly-set bit **and** additionally `SetLatch` the target as a
+    coexistence belt-and-suspenders (removed in step 5 once all wait sites
+    use `WaitInterrupt`).
+  - **C3** `ac908f9` (12 files) — delete the `RecoveryConflictReason` enum
+    and `PGPROC.pendingRecoveryConflicts`; senders take an `InterruptType
+    reason` and `SendInterrupt` that exact recovery bit; `ProcessInterrupts`
+    consumes each recovery bit individually. `BUFFERPIN_DEADLOCK` collapses
+    into `STARTUP_DEADLOCK` (distinguished at processing via
+    `GetStartupBufferPinWaitBufId()`).
+  - **C4** `145b494` (10 files) — remove the last legacy pending-flag
+    globals: `ParallelMessagePending`, `ParallelApplyMessagePending`,
+    `LogMemoryContextPending`, `ProcSignalBarrierPending` (reset-only —
+    readers already on `ConsumeInterrupt`), and `RepackMessagePending`
+    (reader converted to `ConsumeInterrupt(INTERRUPT_REPACK)`;
+    `HandleRepackMessageInterrupt` deleted).
+
+  Each of C2/C3/C4 is build-green and runtime smoke-verified (clean
+  startup with no barrier hang, basic query, NOTIFY/LISTEN, cross-process
+  `pg_log_backend_memory_contexts`, clean fast shutdown).
+
+**No latch wait/wake call sites are converted yet; `latch.c` remains; the
+`multithreaded` build stays off.** Behaviour is unchanged in the process
+model.  Steps 5–7 (below) are the conversion sweep that follows.
 
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
