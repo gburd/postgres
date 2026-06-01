@@ -308,8 +308,9 @@ pq_init(ClientSocket *client_sock)
 	FeBeWaitSet = CreateWaitEventSet(NULL, FeBeWaitSetNEvents);
 	socket_pos = AddWaitEventToSet(FeBeWaitSet, WL_SOCKET_WRITEABLE,
 								   port->sock, NULL, 0, NULL);
-	latch_pos = AddWaitEventToSet(FeBeWaitSet, WL_LATCH_SET, PGINVALID_SOCKET,
-								  MyLatch, 0, NULL);
+	latch_pos = AddWaitEventToSet(FeBeWaitSet, WL_INTERRUPT, PGINVALID_SOCKET,
+								  NULL, CheckForInterruptsMask | INTERRUPT_GENERAL,
+								  NULL);
 	AddWaitEventToSet(FeBeWaitSet, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
 					  NULL, 0, NULL);
 
@@ -2070,15 +2071,15 @@ retry:
 	{
 		if (events[i].events & WL_SOCKET_CLOSED)
 			return false;
-		if (events[i].events & WL_LATCH_SET)
+		if (events[i].events & WL_INTERRUPT)
 		{
 			/*
-			 * A latch event might be preventing other events from being
-			 * reported.  Reset it and poll again.  No need to restore it
-			 * because no code should expect latches to survive across
+			 * An interrupt event might be preventing other events from being
+			 * reported.  Clear it and poll again.  No need to restore it
+			 * because no code should expect interrupts to survive across
 			 * CHECK_FOR_INTERRUPTS().
 			 */
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			goto retry;
 		}
 	}

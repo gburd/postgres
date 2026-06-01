@@ -245,9 +245,9 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET)
+		if (event.events & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			ProcessClientReadInterrupt(true);
 
 			/*
@@ -354,9 +354,9 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET)
+		if (event.events & WL_INTERRUPT)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(INTERRUPT_GENERAL);
 			ProcessClientWriteInterrupt(true);
 
 			/*

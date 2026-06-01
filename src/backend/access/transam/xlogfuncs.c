@@ -737,7 +737,7 @@ pg_promote(PG_FUNCTION_ARGS)
 	{
 		int			rc;
 
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		if (!RecoveryInProgress())
 			PG_RETURN_BOOL(true);

@@ -164,9 +164,9 @@ throttle(bbsink_throttle *sink, size_t increment)
 		if (sleep <= 0)
 			break;
 
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
-		/* We're eating a potentially set latch, so check for interrupts */
+		/* We're eating a potentially set interrupt, so check for interrupts */
 		CHECK_FOR_INTERRUPTS();
 
 		/*

@@ -222,9 +222,11 @@ SwitchToSharedLatch(void)
 
 	MyLatch = &MyProc->procLatch;
 
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
-						MyLatch, 0);
+	/*
+	 * The FeBeWaitSet interrupt event watches the process-wide wakeup
+	 * primitive, not a specific latch, so it needs no update when switching
+	 * the latch/interrupt-word destination.
+	 */
 
 	/*
 	 * Set the shared latch as the local one might have been set. This
@@ -249,9 +251,7 @@ SwitchBackToLocalLatch(void)
 
 	MyLatch = &LocalLatchData;
 
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
-						MyLatch, 0);
+	/* See SwitchToSharedLatch: the FeBeWaitSet interrupt event is unaffected. */
 
 	SetLatch(MyLatch);
 }

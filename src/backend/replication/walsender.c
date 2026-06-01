@@ -1702,7 +1702,7 @@ ProcessPendingWrites(void)
 				   WAIT_EVENT_WAL_SENDER_WRITE_DATA);
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1714,8 +1714,8 @@ ProcessPendingWrites(void)
 			WalSndShutdown();
 	}
 
-	/* reactivate latch so WalSndLoop knows to continue */
-	SetLatch(MyLatch);
+	/* reactivate the interrupt so WalSndLoop knows to continue */
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*
@@ -1905,7 +1905,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		TimestampTz now;
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -2043,8 +2043,8 @@ WalSndWaitForWal(XLogRecPtr loc)
 		WalSndWait(wakeEvents, sleeptime, wait_event);
 	}
 
-	/* reactivate latch so WalSndLoop knows to continue */
-	SetLatch(MyLatch);
+	/* reactivate the interrupt so WalSndLoop knows to continue */
+	RaiseInterrupt(INTERRUPT_GENERAL);
 	return RecentFlushPtr;
 }
 
@@ -3016,7 +3016,7 @@ WalSndLoop(WalSndSendDataCallback send_data)
 	for (;;)
 	{
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_GENERAL);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -3884,7 +3884,7 @@ static void
 WalSndLastCycleHandler(SIGNAL_ARGS)
 {
 	got_SIGUSR2 = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /* Set up signal handlers */
@@ -3992,8 +3992,8 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 	 * ConditionVariableSleep()). It still uses WaitEventSetWait() for
 	 * waiting, because we also need to wait for socket events. The processes
 	 * (startup process, walreceiver etc.) wanting to wake up walsenders use
-	 * ConditionVariableBroadcast(), which in turn calls SetLatch(), helping
-	 * walsenders come out of WaitEventSetWait().
+	 * ConditionVariableBroadcast(), which in turn raises INTERRUPT_GENERAL on
+	 * the target, helping walsenders come out of WaitEventSetWait().
 	 *
 	 * This approach is simple and efficient because, one doesn't have to loop
 	 * through all the walsenders slots, with a spinlock acquisition and
