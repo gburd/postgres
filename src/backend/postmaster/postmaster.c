@@ -1659,8 +1659,8 @@ ConfigurePostmasterWaitSet(bool accept_connections)
 
 	pm_wait_set = CreateWaitEventSet(NULL,
 									 accept_connections ? (1 + NumListenSockets) : 1);
-	AddWaitEventToSet(pm_wait_set, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch,
-					  0, NULL);
+	AddWaitEventToSet(pm_wait_set, WL_INTERRUPT, PGINVALID_SOCKET, NULL,
+					  INTERRUPT_GENERAL, NULL);
 
 	if (accept_connections)
 	{
@@ -1700,12 +1700,12 @@ ServerLoop(void)
 		 */
 		for (int i = 0; i < nevents; i++)
 		{
-			if (events[i].events & WL_LATCH_SET)
-				ResetLatch(MyLatch);
+			if (events[i].events & WL_INTERRUPT)
+				ClearInterrupt(INTERRUPT_GENERAL);
 
 			/*
 			 * The following requests are handled unconditionally, even if we
-			 * didn't see WL_LATCH_SET.  This gives high priority to shutdown
+			 * didn't see WL_INTERRUPT.  This gives high priority to shutdown
 			 * and reload requests where the latch happens to appear later in
 			 * events[] or will be reported by a later call to
 			 * WaitEventSetWait().
@@ -2002,7 +2002,7 @@ static void
 handle_pm_pmsignal_signal(SIGNAL_ARGS)
 {
 	pending_pm_pmsignal = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*
@@ -2012,7 +2012,7 @@ static void
 handle_pm_reload_request_signal(SIGNAL_ARGS)
 {
 	pending_pm_reload_request = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*
@@ -2089,7 +2089,7 @@ handle_pm_shutdown_request_signal(SIGNAL_ARGS)
 			pending_pm_shutdown_request = true;
 			break;
 	}
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*
@@ -2250,7 +2250,7 @@ static void
 handle_pm_child_exit_signal(SIGNAL_ARGS)
 {
 	pending_pm_child_exit = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
 /*

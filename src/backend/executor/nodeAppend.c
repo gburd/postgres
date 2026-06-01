@@ -1081,8 +1081,8 @@ ExecAppendAsyncEventWait(AppendState *node)
 	 * we cannot change it now.  The pattern has possibly been copied to other
 	 * extensions too.
 	 */
-	AddWaitEventToSet(node->as_eventset, WL_LATCH_SET, PGINVALID_SOCKET,
-					  MyLatch, 0, NULL);
+	AddWaitEventToSet(node->as_eventset, WL_INTERRUPT, PGINVALID_SOCKET,
+					  NULL, CheckForInterruptsMask, NULL);
 
 	/* Return at most EVENT_BUFFER_SIZE events in one call. */
 	if (nevents > EVENT_BUFFER_SIZE)
@@ -1127,9 +1127,9 @@ ExecAppendAsyncEventWait(AppendState *node)
 		}
 
 		/* Handle standard interrupts */
-		if ((w->events & WL_LATCH_SET) != 0)
+		if ((w->events & WL_INTERRUPT) != 0)
 		{
-			ResetLatch(MyLatch);
+			ClearInterrupt(CheckForInterruptsMask);
 			CHECK_FOR_INTERRUPTS();
 		}
 	}

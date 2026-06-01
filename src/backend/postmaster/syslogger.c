@@ -338,7 +338,8 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	 * (including the postmaster).
 	 */
 	wes = CreateWaitEventSet(NULL, 2);
-	AddWaitEventToSet(wes, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch, 0, NULL);
+	AddWaitEventToSet(wes, WL_INTERRUPT, PGINVALID_SOCKET, NULL,
+					  INTERRUPT_CONFIG_RELOAD | INTERRUPT_GENERAL, NULL);
 #ifndef WIN32
 	AddWaitEventToSet(wes, WL_SOCKET_READABLE, syslogPipe[0], NULL, 0, NULL);
 #endif
@@ -356,7 +357,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 #endif
 
 		/* Clear any already-pending wakeups */
-		ResetLatch(MyLatch);
+		ClearInterrupt(INTERRUPT_CONFIG_RELOAD | INTERRUPT_GENERAL);
 
 		/*
 		 * Process any requests or signals received recently.
@@ -1188,7 +1189,7 @@ pipeThread(void *arg)
 				 ftello(csvlogFile) >= Log_RotationSize * (pgoff_t) 1024) ||
 				(jsonlogFile != NULL &&
 				 ftello(jsonlogFile) >= Log_RotationSize * (pgoff_t) 1024))
-				SetLatch(MyLatch);
+				RaiseInterrupt(INTERRUPT_GENERAL);
 		}
 		LeaveCriticalSection(&sysloggerSection);
 	}
@@ -1200,7 +1201,7 @@ pipeThread(void *arg)
 	flush_pipe_input(logbuffer, &bytes_in_logbuffer);
 
 	/* set the latch to waken the main thread, which will quit */
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 
 	LeaveCriticalSection(&sysloggerSection);
 	_endthread();
@@ -1595,5 +1596,5 @@ static void
 sigUsr1Handler(SIGNAL_ARGS)
 {
 	rotation_requested = true;
-	SetLatch(MyLatch);
+	RaiseInterrupt(INTERRUPT_GENERAL);
 }
