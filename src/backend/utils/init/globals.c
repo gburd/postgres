@@ -41,10 +41,10 @@ ProtocolVersion FrontendProtocol;
  * INTERRUPT_CFI_MASK (the "interrupts enabled" steady state); HOLD_INTERRUPTS()
  * clears the CFI bits and RESUME_INTERRUPTS() restores them.
  */
-volatile uint32 CheckForInterruptsMask = INTERRUPT_CFI_MASK;
-volatile uint32 InterruptHoldoffCount = 0;
-volatile uint32 QueryCancelHoldoffCount = 0;
-volatile uint32 CritSectionCount = 0;
+session_local volatile uint32 CheckForInterruptsMask = INTERRUPT_CFI_MASK;
+session_local volatile uint32 InterruptHoldoffCount = 0;
+session_local volatile uint32 QueryCancelHoldoffCount = 0;
+session_local volatile uint32 CritSectionCount = 0;
 
 int			MyProcPid;
 pg_time_t	MyStartTime;

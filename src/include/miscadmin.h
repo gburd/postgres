@@ -99,12 +99,12 @@
  */
 
 /* these are marked volatile because they are examined by signal handlers: */
-extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
-extern PGDLLIMPORT volatile uint32 QueryCancelHoldoffCount;
-extern PGDLLIMPORT volatile uint32 CritSectionCount;
+extern PGDLLIMPORT session_local volatile uint32 InterruptHoldoffCount;
+extern PGDLLIMPORT session_local volatile uint32 QueryCancelHoldoffCount;
+extern PGDLLIMPORT session_local volatile uint32 CritSectionCount;
 
 /* If you would call ProcessInterrupts now, it could handle these interrupts */
-extern PGDLLIMPORT volatile uint32 CheckForInterruptsMask;
+extern PGDLLIMPORT session_local volatile uint32 CheckForInterruptsMask;
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
