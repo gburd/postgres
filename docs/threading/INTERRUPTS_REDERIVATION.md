@@ -518,6 +518,49 @@ path), `miscinit.c` (latch-switch), and `timeout.c` (which already
 complete the sweep (convert/retire the three islands, remove `procLatch`/
 `MyLatch`/`latch.c`, drop the belt-and-suspenders `SetLatch`).
 
+* Step 6 — **Remove the Latch**, landed in three commits:
+
+  - `d14fa08` — convert the last three `WL_LATCH_SET` islands:
+    `nodeAppend.c` (mask `CheckForInterruptsMask`), `postmaster.c` (mask
+    `INTERRUPT_GENERAL`; the four signal-handler `SetLatch(MyLatch)` wakers
+    become `RaiseInterrupt(INTERRUPT_GENERAL)` — the postmaster is
+    PGPROC-less and uses `LocalPendingInterrupts`), and `syslogger.c` (mask
+    `INTERRUPT_CONFIG_RELOAD | INTERRUPT_GENERAL`; sigUsr1Handler + WIN32
+    pipe-thread nudges).
+
+  - `8ba9488` — **drop the belt-and-suspenders `SetLatch`** from
+    `RaiseInterrupt`/`SendInterrupt`, tightening the wakeup back to the
+    Heikki design: wake only when the bit is newly raised AND the target is
+    `SLEEPING_ON_INTERRUPTS`. Retire the residual self-wakers in
+    `timeout.c` (`handle_sig_alarm`) and `postgres.c`
+    (`ProcessClientRead/WriteInterrupt` DIE path).
+
+  - `a8641e0` — **delete the Latch.** Drop the `struct Latch *latch`
+    parameter from `AddWaitEventToSet`/`ModifyWaitEvent` and fix all call
+    sites; remove `WL_LATCH_SET` and `struct Latch` from `waiteventset.h`.
+    Convert the last contrib latch-API holdouts (`pg_prewarm`,
+    `pg_stash_advice`, `postgres_fdw/connection.c`). Delete `latch.c` and
+    `latch.h` (drop from `meson.build`/`Makefile`) and replace every
+    `#include "storage/latch.h"` with `"storage/interrupt.h"`. Remove
+    `MyLatch` (globals.c, miscadmin.h), `PGPROC.procLatch` (proc.h), and
+    the latch-switch plumbing in proc.c / miscinit.c that paralleled
+    `SwitchTo{Shared,Local}Interrupts()`. Net ≈1000 lines removed.
+
+  The process model is unchanged — SIGURG is still the underlying wakeup
+  primitive. Build green; the full smoke suite (startup, SELECT, parallel
+  scan/CREATE INDEX, LISTEN/NOTIFY, self+cross-proc memctx,
+  `pg_cancel_backend`, `pg_reload_conf`, **fast-stop with a live
+  `pg_receivewal` walsender**) passes after each commit. The
+  `multithreaded` build stays OFF.
+
+  Local-build note: the standalone (outside the dev shell) meson build
+  needs `-Db_pie=true` so executables compile and link PIE-consistently
+  against this NixOS GCC's default-PIE; shared objects keep `-fPIC`.
+
+**Remaining: Step 7** — `session_local` annotations on the interrupt
+session state and the Windows wakeup path (the thread-correctness layer);
+no further latch work is outstanding.
+
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
 
