@@ -34,6 +34,7 @@
 #include "datatype/timestamp.h"
 #include "storage/itemptr.h"
 #include "storage/lwlock.h"
+#include "storage/relfilelocator.h"
 #include "storage/spin.h"
 #include "utils/dsa.h"
 
@@ -347,11 +348,15 @@ extern void SLogTupleIterateTrackedKeysForSubXid(TransactionId xid,
 extern void SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid,
 									  TransactionId xid,
 									  const char *data, int len,
-									  uint16 flags, uint64 commit_ts);
+									  uint16 flags, uint64 commit_ts,
+									  RelFileLocator rlocator,
+									  char relpersistence);
 extern bool SLogTupleGetBeforeImage(Oid relid, ItemPointer tid,
 									TransactionId xid, TransactionId subxid,
 									char **data_out, int *len_out,
-									uint16 *flags_out, uint64 *commit_ts_out);
+									uint16 *flags_out, uint64 *commit_ts_out,
+									RelFileLocator *rlocator_out,
+									char *relpersistence_out);
 
 /* Commit retention: retain committed UPDATE entries with before-images */
 extern void SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc);

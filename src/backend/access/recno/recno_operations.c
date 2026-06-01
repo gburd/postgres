@@ -906,18 +906,82 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
 
-	/* Check if tuple is already deleted (tombstone exists) */
+	/*
+	 * Check if tuple is already deleted (tombstone exists).  A DELETED flag can
+	 * mean either a committed delete OR an in-progress delete by a concurrent
+	 * transaction (which now also leaves UNCOMMITTED set).  Distinguish the two:
+	 * if another in-progress transaction owns the delete, wait for it and retry,
+	 * matching heap's behavior where the second DELETE blocks behind the first.
+	 * Only report TM_Deleted once the delete is genuinely committed (or ours).
+	 */
 	if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 	{
-		if (tmfd)
+		TransactionId del_xid = InvalidTransactionId;
+		bool		del_is_insert = false;
+
+		if (tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+			del_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
+										   tid, &del_is_insert);
+
+		if (wait && TransactionIdIsValid(del_xid) &&
+			!TransactionIdIsCurrentTransactionId(del_xid) &&
+			!del_is_insert)
 		{
-			tmfd->ctid = *tid;
-			tmfd->xmax = GetCurrentTransactionId();
-			tmfd->cmax = InvalidCommandId;
-			tmfd->traversed = false;
+			TransactionId wait_xid = del_xid;
+
+			UnlockReleaseBuffer(buffer);
+			XactLockTableWait(wait_xid, relation, tid, XLTW_Delete);
+
+			/* Re-read after waking; the delete committed or aborted. */
+			buffer = ReadBuffer(relation, blkno);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			page = BufferGetPage(buffer);
+
+			if (offnum < FirstOffsetNumber ||
+				offnum > PageGetMaxOffsetNumber(page))
+			{
+				UnlockReleaseBuffer(buffer);
+				return TM_Invisible;
+			}
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				UnlockReleaseBuffer(buffer);
+				return TM_Invisible;
+			}
+			tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/*
+			 * If the delete committed, the tombstone remains: report it as
+			 * deleted so the executor can re-evaluate via EPQ.  If it aborted,
+			 * the before-image was restored (DELETED cleared) and we fall
+			 * through to perform our own delete.
+			 */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+			{
+				if (tmfd)
+				{
+					tmfd->ctid = *tid;
+					tmfd->xmax = wait_xid;
+					tmfd->cmax = InvalidCommandId;
+					tmfd->traversed = false;
+				}
+				UnlockReleaseBuffer(buffer);
+				return TM_Deleted;
+			}
 		}
-		UnlockReleaseBuffer(buffer);
-		return TM_Deleted;
+		else
+		{
+			if (tmfd)
+			{
+				tmfd->ctid = *tid;
+				tmfd->xmax = GetCurrentTransactionId();
+				tmfd->cmax = InvalidCommandId;
+				tmfd->traversed = false;
+			}
+			UnlockReleaseBuffer(buffer);
+			return TM_Deleted;
+		}
 	}
 
 	/*
@@ -1356,14 +1420,15 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 	/*
 	 * Mark tuple as deleted with tombstone - this is the key RECNO feature.
-	 * Clear UNCOMMITTED: a tuple being deleted means its INSERT has committed
-	 * (otherwise it wouldn't be visible to delete).  For self-deletes (INSERT
-	 * + DELETE in same txn), UNDO handles rollback.  Clearing UNCOMMITTED
-	 * ensures VACUUM can correctly identify committed deletes without
-	 * consulting the sLog.
+	 * Set UNCOMMITTED so concurrent writers/readers consult the sLog while the
+	 * delete is in flight: a second DELETE or UPDATE on this TID must detect
+	 * the in-progress delete (via SLogTupleGetDirtyXid) and block on it, rather
+	 * than racing ahead.  The flag is cleared at commit by
+	 * recno_stamp_tuple_committed (which also stamps commit_ts), so VACUUM still
+	 * sees a clean committed delete without consulting the sLog.
 	 */
 	tuple_hdr->t_flags |= RECNO_TUPLE_DELETED;
-	tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+	tuple_hdr->t_flags |= RECNO_TUPLE_UNCOMMITTED;
 	tuple_hdr->t_commit_ts = current_ts;
 	/* Keep the original t_ctid for potential update chains */
 	ItemPointerCopy(tid, &tuple_hdr->t_ctid);
@@ -1472,7 +1537,9 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 								  (const char *) old_tuple_for_delete_wal->t_data,
 								  old_tuple_for_delete_wal->t_len,
 								  old_tuple_for_delete_wal->t_data->t_flags,
-								  old_tuple_for_delete_wal->t_data->t_commit_ts);
+								  old_tuple_for_delete_wal->t_data->t_commit_ts,
+								  relation->rd_locator,
+								  relation->rd_rel->relpersistence);
 
 		/* Free old_tuple copy now that before-image has been stored */
 		pfree(old_tuple_for_delete_wal->t_data);
@@ -1598,7 +1665,23 @@ recno_compute_index_update(Relation relation, RecnoTuple old_tuple,
 
 /*
  * Update a tuple in a RECNO table with versioning support
+ *
+ * RECNO_RELEASE_TUPLOCK releases the heavyweight tuple lock that competing
+ * updaters acquire before XactLockTableWait (see the wait sites below).  The
+ * lock is held continuously from acquisition through the recheck/update so it
+ * serializes racing updaters into a FIFO queue (matching heap_update); it must
+ * be released on every function-exit path so it never leaks past commit.  The
+ * have_tuple_lock guard makes the macro a no-op on paths that never acquired.
  */
+#define RECNO_RELEASE_TUPLOCK() \
+	do { \
+		if (have_tuple_lock) \
+		{ \
+			RecnoUnlockTuple(relation, otid, LockTupleNoKeyExclusive); \
+			have_tuple_lock = false; \
+		} \
+	} while (0)
+
 TM_Result
 recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
@@ -1729,7 +1812,20 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 						/* Set MVCC fields on new tuple */
 						cas_new_tuple->t_data->t_commit_ts = cas_current_ts;
 						cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
-						cas_new_tuple->t_data->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+
+						/*
+						 * Mark the in-place image UNCOMMITTED, mirroring the
+						 * regular update path.  A second writer that hits this
+						 * row sees UNCOMMITTED in the CAS eligibility gate,
+						 * bails to the regular path, and blocks on the
+						 * in-progress writer via XactLockTableWait -- without
+						 * this flag the second CAS would silently overwrite
+						 * an uncommitted update (lost update / no write-write
+						 * blocking).  PRE_COMMIT clears the flag and stamps the
+						 * real commit timestamp; readers self-heal a stale flag
+						 * via the visibility path after a crash.
+						 */
+						cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
 						cas_new_tuple->t_data->t_writer = 0;	/* clear in new image */
 						ItemPointerSet(&cas_new_tuple->t_data->t_ctid, blkno, offnum);
 
@@ -1901,7 +1997,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								GetTopTransactionId(),
 								cas_old_copy, cas_old_len,
 								((RecnoTupleHeader *) cas_old_copy)->t_flags,
-								((RecnoTupleHeader *) cas_old_copy)->t_commit_ts);
+								((RecnoTupleHeader *) cas_old_copy)->t_commit_ts,
+								relation->rd_locator,
+								relation->rd_rel->relpersistence);
 
 							LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
@@ -2071,10 +2169,14 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	buffer = ReadBuffer(relation, blkno);
 
 	/*
-	 * Lock the buffer exclusively.  The exclusive buffer lock is sufficient
-	 * to prevent concurrent modifications — heavyweight tuple locks are
-	 * only needed for SELECT FOR UPDATE/SHARE (recno_tuple_lock), not for
-	 * regular UPDATE.  This matches heap's approach.
+	 * Lock the buffer exclusively.  The exclusive buffer lock prevents
+	 * concurrent modification while we hold it, but it is dropped while we
+	 * XactLockTableWait on a conflicting in-progress writer (the wait sites
+	 * below).  To stop two backends that each see the other's in-progress
+	 * write from mutually waiting and deadlocking, an updater first takes a
+	 * heavyweight tuple lock (have_tuple_lock) that serializes them into a
+	 * FIFO queue, held continuously through the recheck/update and released on
+	 * every exit via RECNO_RELEASE_TUPLOCK().  This matches heap_update.
 	 */
 	have_tuple_lock = false;
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -2100,18 +2202,93 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	/* Check if old tuple has overflow chains to clean up later */
 	old_has_overflow = (old_tuple_hdr->t_flags & RECNO_TUPLE_HAS_OVERFLOW) != 0;
 
-	/* Check if tuple is already deleted */
+	/*
+	 * Check if tuple is already deleted.  As in the delete path, a DELETED flag
+	 * may reflect an in-progress delete by a concurrent transaction (which also
+	 * sets UNCOMMITTED).  If so, wait for that transaction and retry rather than
+	 * reporting TM_Deleted immediately -- this matches heap, where an UPDATE
+	 * blocks behind a concurrent in-progress DELETE.
+	 */
 	if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 	{
-		if (tmfd)
+		TransactionId del_xid = InvalidTransactionId;
+		bool		del_is_insert = false;
+
+		if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+			del_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
+										   otid, &del_is_insert);
+
+		if (wait && TransactionIdIsValid(del_xid) &&
+			!TransactionIdIsCurrentTransactionId(del_xid) &&
+			!del_is_insert)
 		{
-			tmfd->ctid = *otid;
-			tmfd->xmax = GetCurrentTransactionId();
-			tmfd->cmax = InvalidCommandId;
-			tmfd->traversed = false;
+			TransactionId wait_xid = del_xid;
+
+			/*
+			 * Acquire a heavyweight tuple lock before sleeping on the
+			 * conflicting xid.  This serializes competing updaters of the
+			 * same tuple into a FIFO queue; without it, two backends that
+			 * each see the other's in-progress write would mutually
+			 * XactLockTableWait and deadlock.  Matches heap_update.
+			 */
+			UnlockReleaseBuffer(buffer);
+			if (!have_tuple_lock)
+				RecnoLockTuple(relation, otid, LockTupleNoKeyExclusive,
+							   true, &have_tuple_lock);
+			XactLockTableWait(wait_xid, relation, otid, XLTW_Update);
+
+			buffer = ReadBuffer(relation, blkno);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			page = BufferGetPage(buffer);
+
+			if (offnum < FirstOffsetNumber ||
+				offnum > PageGetMaxOffsetNumber(page))
+			{
+				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Invisible;
+			}
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Invisible;
+			}
+			old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/*
+			 * Delete committed -> tombstone persists, report TM_Deleted for EPQ.
+			 * Delete aborted -> before-image restored (DELETED cleared), fall
+			 * through to perform the update.
+			 */
+			if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
+			{
+				if (tmfd)
+				{
+					tmfd->ctid = *otid;
+					tmfd->xmax = wait_xid;
+					tmfd->cmax = InvalidCommandId;
+					tmfd->traversed = false;
+				}
+				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Deleted;
+			}
 		}
-		UnlockReleaseBuffer(buffer);
-		return TM_Deleted;
+		else
+		{
+			if (tmfd)
+			{
+				tmfd->ctid = *otid;
+				tmfd->xmax = GetCurrentTransactionId();
+				tmfd->cmax = InvalidCommandId;
+				tmfd->traversed = false;
+			}
+			UnlockReleaseBuffer(buffer);
+			RECNO_RELEASE_TUPLOCK();
+			return TM_Deleted;
+		}
 	}
 
 	/*
@@ -2213,6 +2390,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					tmfd->traversed = false;
 				}
 				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
 				return TM_Deleted;
 			}
 
@@ -2235,6 +2413,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 						tmfd->traversed = false;
 					}
 					UnlockReleaseBuffer(buffer);
+					RECNO_RELEASE_TUPLOCK();
 					return TM_Invisible;
 				}
 
@@ -2249,7 +2428,16 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					{
 						TransactionId wait_xid = dirty_xid;
 
+						/*
+						 * Serialize competing updaters via a heavyweight tuple
+						 * lock before sleeping on the conflicting xid, so two
+						 * backends racing on the same tuple queue instead of
+						 * deadlocking.  Matches heap_update.
+						 */
 						UnlockReleaseBuffer(buffer);
+						if (!have_tuple_lock)
+							RecnoLockTuple(relation, otid, LockTupleNoKeyExclusive,
+										   true, &have_tuple_lock);
 						XactLockTableWait(wait_xid, relation,
 										  otid, XLTW_Update);
 
@@ -2262,12 +2450,14 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							offnum > PageGetMaxOffsetNumber(page))
 						{
 							UnlockReleaseBuffer(buffer);
+							RECNO_RELEASE_TUPLOCK();
 							return TM_Invisible;
 						}
 						itemid = PageGetItemId(page, offnum);
 						if (!ItemIdIsNormal(itemid))
 						{
 							UnlockReleaseBuffer(buffer);
+							RECNO_RELEASE_TUPLOCK();
 							return TM_Invisible;
 						}
 						old_tuple_hdr = (RecnoTupleHeader *)
@@ -2284,6 +2474,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								tmfd->traversed = false;
 							}
 							UnlockReleaseBuffer(buffer);
+							RECNO_RELEASE_TUPLOCK();
 							return TM_Deleted;
 						}
 
@@ -2361,6 +2552,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 										tmfd->traversed = false;
 									}
 									UnlockReleaseBuffer(buffer);
+									RECNO_RELEASE_TUPLOCK();
 									return TM_Updated;
 								}
 							}
@@ -2374,6 +2566,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 									tmfd->traversed = false;
 								}
 								UnlockReleaseBuffer(buffer);
+								RECNO_RELEASE_TUPLOCK();
 								return TM_Updated;
 							}
 						}
@@ -2390,6 +2583,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							tmfd->traversed = false;
 						}
 						UnlockReleaseBuffer(buffer);
+						RECNO_RELEASE_TUPLOCK();
 						return TM_WouldBlock;
 					}
 				}
@@ -2442,6 +2636,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								tmfd->traversed = false;
 							}
 							UnlockReleaseBuffer(buffer);
+							RECNO_RELEASE_TUPLOCK();
 							return TM_Updated;
 						}
 					}
@@ -2455,6 +2650,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							tmfd->traversed = false;
 						}
 						UnlockReleaseBuffer(buffer);
+						RECNO_RELEASE_TUPLOCK();
 						return TM_Updated;
 					}
 				}
@@ -2502,7 +2698,16 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			{
 				TransactionId wait_xid = dirty_xid;
 
+				/*
+				 * Serialize competing updaters via a heavyweight tuple lock
+				 * before sleeping on the conflicting xid, so two backends
+				 * racing on the same tuple queue instead of deadlocking.
+				 * Matches heap_update.
+				 */
 				UnlockReleaseBuffer(buffer);
+				if (!have_tuple_lock)
+					RecnoLockTuple(relation, otid, LockTupleNoKeyExclusive,
+								   true, &have_tuple_lock);
 				XactLockTableWait(wait_xid, relation, otid, XLTW_Update);
 
 				/* Re-read page after waking */
@@ -2514,12 +2719,14 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					offnum > PageGetMaxOffsetNumber(page))
 				{
 					UnlockReleaseBuffer(buffer);
+					RECNO_RELEASE_TUPLOCK();
 					return TM_Invisible;
 				}
 				itemid = PageGetItemId(page, offnum);
 				if (!ItemIdIsNormal(itemid))
 				{
 					UnlockReleaseBuffer(buffer);
+					RECNO_RELEASE_TUPLOCK();
 					return TM_Invisible;
 				}
 				old_tuple_hdr = (RecnoTupleHeader *)
@@ -2536,14 +2743,30 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 						tmfd->traversed = false;
 					}
 					UnlockReleaseBuffer(buffer);
+					RECNO_RELEASE_TUPLOCK();
 					return TM_Deleted;
 				}
 
 				/*
-				 * The waited-on txn committed its update.  Under READ
-				 * COMMITTED, we should see the new data.  Return TM_Updated
-				 * to trigger EPQ re-evaluation with the latest committed
-				 * state.
+				 * The waited-on txn finished (committed or aborted).  Return
+				 * TM_Updated to force the executor to re-evaluate via EPQ
+				 * against the now-stable page.
+				 *
+				 * This is required even on ABORT, and is where RECNO differs
+				 * from heap.  RECNO updates in place, so a READ COMMITTED scan
+				 * that ran while the other writer was in progress dirty-read
+				 * that writer's uncommitted value as the base for the new
+				 * tuple's expression (e.g. counter = counter + 10 computed off
+				 * the in-flight value).  Heap never sees this because its scan
+				 * reads the prior committed version.  By the time we get here:
+				 *   - COMMIT: the page holds the other writer's committed value;
+				 *     EPQ recomputes on top of it.
+				 *   - ABORT: ApplyPerRelUndo() has already restored the
+				 *     pre-update image inline (before the conflicting XID left
+				 *     the proc array), so the page holds the original committed
+				 *     value; EPQ recomputes on top of that.
+				 * Either way EPQ re-reads the correct base and recomputes,
+				 * matching heap's final result.
 				 */
 				if (tmfd)
 				{
@@ -2553,6 +2776,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					tmfd->traversed = false;
 				}
 				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
 				return TM_Updated;
 			}
 			else
@@ -2566,6 +2790,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					tmfd->traversed = false;
 				}
 				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
 				return TM_WouldBlock;
 			}
 		}
@@ -2691,6 +2916,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			{
 				UnlockReleaseBuffer(buffer);
 				pfree(new_tuple);
+				RECNO_RELEASE_TUPLOCK();
 				return TM_Invisible;
 			}
 			old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
@@ -2998,7 +3224,6 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * snapshots predate the update.
 	 */
 	new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
-	new_tuple->t_data->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
 
 	/*
 	 * Build the heap-format logical-decoding images (old and new) BEFORE the
@@ -3162,7 +3387,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								  (const char *) old_tuple_for_inplace_wal->t_data,
 								  old_tuple_for_inplace_wal->t_len,
 								  old_tuple_for_inplace_wal->t_data->t_flags,
-								  old_tuple_for_inplace_wal->t_data->t_commit_ts);
+								  old_tuple_for_inplace_wal->t_data->t_commit_ts,
+								  relation->rd_locator,
+								  relation->rd_rel->relpersistence);
 
 		/* Release the main buffer lock — sLog registered, no race. */
 		UnlockReleaseBuffer(buffer);
@@ -3315,17 +3542,16 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		 * so UNDO log pruning can also clean up overflow chains.
 		 */
 		(void) old_has_overflow;	/* Suppress unused variable warning */
-
-		/* Release tuple lock */
-		if (have_tuple_lock)
-			RecnoUnlockTuple(relation, otid, LockTupleExclusive);
 	}
 
 	if (update_indexes)
 		pfree(new_tuple);
 
+	RECNO_RELEASE_TUPLOCK();
 	return TM_Ok;
 }
+
+#undef RECNO_RELEASE_TUPLOCK
 
 
 
@@ -5362,27 +5588,28 @@ recno_restore_before_image_cb(const SLogTupleKey *key,
 	int			before_len;
 	uint16		before_flags;
 	uint64		before_commit_ts;
+	RelFileLocator before_rlocator;
+	char		before_relpersistence;
 
 	/* Check if this tracked key has a before-image */
 	if (!SLogTupleGetBeforeImage(key->relid, (ItemPointer) &key->tid,
 								 xid, subxid,
 								 &before_data, &before_len,
-								 &before_flags, &before_commit_ts))
+								 &before_flags, &before_commit_ts,
+								 &before_rlocator, &before_relpersistence))
 		return true;			/* No before-image (INSERT), continue */
 
 	/*
-	 * Bail out if we are not in a usable transaction state.  Subxact-abort
-	 * callbacks can fire from proc_exit / AbortOutOfAnyTransaction after the
-	 * top-level transaction has already moved past TRANS_INPROGRESS.  In
-	 * that case try_relation_open below would trip the IsTransactionState()
-	 * assertion in AssertCouldGetRelation; we have nothing useful to do
-	 * here either, since the buffer pool is being torn down.
-	 */
-	if (!IsTransactionState())
-		return true;
-
-	/*
-	 * We have a before-image -- restore the physical tuple on the page.
+	 * Restore the physical tuple on the page.
+	 *
+	 * This callback fires from SUBXACT_EVENT_ABORT_SUB, by which point the
+	 * subtransaction is already in TRANS_ABORT state (AbortSubTransaction
+	 * sets the state before invoking subxact callbacks).  That makes any
+	 * relcache access -- relation_open and friends -- unsafe: it would trip
+	 * the IsTransactionState() assertion in AssertCouldGetRelation.  We
+	 * therefore go straight to the buffer manager using the RelFileLocator
+	 * captured at store time, which needs no relcache and works regardless
+	 * of transaction state (including proc_exit teardown).
 	 */
 	{
 		Buffer		buf = InvalidBuffer;
@@ -5390,15 +5617,13 @@ recno_restore_before_image_cb(const SLogTupleKey *key,
 		ItemId		itemid;
 		RecnoTupleHeader *tuple_hdr;
 		OffsetNumber offnum;
-		Relation	rel;
-
-		rel = try_relation_open(key->relid, AccessShareLock);
-		if (rel == NULL)
-			return true;
+		bool		permanent = (before_relpersistence == RELPERSISTENCE_PERMANENT);
 
 		PG_TRY();
 		{
-			buf = ReadBuffer(rel, ItemPointerGetBlockNumber((ItemPointer) &key->tid));
+			buf = ReadBufferWithoutRelcache(before_rlocator, MAIN_FORKNUM,
+											ItemPointerGetBlockNumber((ItemPointer) &key->tid),
+											RBM_NORMAL, NULL, permanent);
 			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 			page = BufferGetPage(buf);
 			offnum = ItemPointerGetOffsetNumber((ItemPointer) &key->tid);
@@ -5433,15 +5658,11 @@ recno_restore_before_image_cb(const SLogTupleKey *key,
 
 			UnlockReleaseBuffer(buf);
 			buf = InvalidBuffer;
-			relation_close(rel, AccessShareLock);
-			rel = NULL;
 		}
 		PG_CATCH();
 		{
 			if (BufferIsValid(buf))
 				UnlockReleaseBuffer(buf);
-			if (rel != NULL)
-				relation_close(rel, AccessShareLock);
 			EmitErrorReport();
 			FlushErrorState();
 		}

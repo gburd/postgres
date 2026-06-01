@@ -83,7 +83,7 @@ typedef RecnoPageOpaqueData *RecnoPageOpaque;
  * Reduced from 64 bytes to 32 bytes (MAXALIGN'd) by removing:
  *   - t_xmin (4B) -- replaced by sLog self-visibility check
  *   - t_xmax (4B) -- replaced by sLog lock/delete tracking
- *   - t_xact_ts (8B) -- DVV removed, HLC is sole clock
+ *   - t_xact_ts (8B) -- HLC is sole clock
  *   - t_infomask2 (2B) -- merged into t_flags
  *   - t_inline_diff (14B) -- moved to conditional position after bitmap
  *
@@ -371,11 +371,6 @@ typedef uint64 HLCTimestamp;
 #define HLCAfterOrEqual(a, b)	((a) >= (b))
 
 /*
- * DVV (Dotted Version Vector) has been removed.
- * HLC (Hybrid Logical Clock) is the sole clock mechanism.
- */
-
-/*
  * Tuple header field accessors for HLC mode.
  */
 #define RecnoTupleGetHLC(tup)		((HLCTimestamp)(tup)->t_commit_ts)
@@ -646,7 +641,7 @@ extern void RecnoCheckForSerializableConflictOut(Relation relation,
 												 Buffer buffer,
 												 Snapshot snapshot);
 
-/* HLC MVCC functions (dual-mode wrappers; DVV removed) */
+/* HLC MVCC functions (dual-mode wrappers) */
 extern HLCTimestamp RecnoGetDmlTimestamp(void);
 extern HLCTimestamp RecnoGetCommitHLC(HLCTimestamp msg_hlc);
 extern HLCTimestamp RecnoGetTransactionHLC(void);
@@ -703,13 +698,7 @@ extern Size RecnoDirtyMapShmemSize(void);
 extern void RecnoDirtyMapShmemInit(void);
 extern const ShmemCallbacks RecnoDirtyMapShmemCallbacks;
 
-/*
- * DVV (Dotted Version Vector) functions have been removed.
- * HLC (Hybrid Logical Clock) is now the sole clock mechanism.
- * DVVInit/DVVGetNext/etc. no longer exist.
- */
-
-/* HLC/DVV GUC variables and hooks */
+/* HLC GUC variables and hooks */
 extern int	recno_node_id;
 extern int	recno_max_clock_offset_ms;
 extern bool recno_use_hlc;

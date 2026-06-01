@@ -59,7 +59,7 @@ step s3_verify: SELECT id, val FROM recno_g1c ORDER BY id;
 id|val
 --+---
  1| 11
- 2| 22
+ 2| 20
 (2 rows)
 
 

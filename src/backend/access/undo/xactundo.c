@@ -62,6 +62,7 @@
 #include "access/atm.h"
 #include "access/relundo.h"
 #include "access/relundo_worker.h"
+#include "access/slog.h"
 #include "access/undo.h"
 #include "access/undo_flush.h"
 #include "access/undo_xlog.h"
@@ -599,15 +600,82 @@ ApplyPerRelUndo(void)
 {
 	PerRelUndoEntry *entry;
 	TransactionId xid = GetCurrentTransactionIdIfAny();
+	bool		all_applied = true;
 
 	if (XactUndo.relundo_list == NULL)
 		return;
 
+	/*
+	 * Apply each relation's UNDO chain INLINE, in this backend, BEFORE the
+	 * caller (AbortTransaction) reaches ProcArrayEndTransaction and releases
+	 * the transaction lock that conflicting writers wait on.
+	 *
+	 * This ordering is mandatory for RECNO's in-place MVCC: a second writer
+	 * blocked in XactLockTableWait wakes the instant our XID leaves the proc
+	 * array.  If the before-image were restored asynchronously by the
+	 * background worker (which runs only after lock release), the waiter would
+	 * read our not-yet-reverted in-place value, write on top of it, commit,
+	 * and then the worker would clobber the waiter's committed value with our
+	 * stale before-image -- a lost update.  Restoring synchronously here
+	 * closes that window: the page already holds the pre-abort image when the
+	 * waiter wakes.
+	 *
+	 * We are in TRANS_ABORT but all backing resources (relcache, locks,
+	 * resource owner) are still live, so present TRANS_INPROGRESS for the
+	 * duration of the apply (table_open asserts IsTransactionState()).  The
+	 * RowExclusiveLock we already hold from our own DML makes the re-open a
+	 * no-op at the lock manager.
+	 */
 	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
-		RelUndoQueueAdd(MyDatabaseId, entry->relid,
-						entry->start_urec_ptr, xid);
+	{
+		int			saved_trans_state;
+		bool		applied = false;
 
-	StartRelUndoWorker(MyDatabaseId);
+		saved_trans_state = EnterInlineUndoApplyState();
+		PG_TRY();
+		{
+			Relation	rel = table_open(entry->relid, RowExclusiveLock);
+
+			RelUndoApplyChain(rel, entry->start_urec_ptr);
+			table_close(rel, RowExclusiveLock);
+			applied = true;
+		}
+		PG_CATCH();
+		{
+			EmitErrorReport();
+			FlushErrorState();
+			applied = false;
+		}
+		PG_END_TRY();
+		LeaveInlineUndoApplyState(saved_trans_state);
+
+		if (!applied)
+			all_applied = false;
+	}
+
+	if (all_applied)
+	{
+		/*
+		 * Every page is physically restored.  Remove the ABORTED sLog entries
+		 * (kept until now so visibility checks treated the tuples as live).
+		 */
+		if (TransactionIdIsValid(xid))
+			SLogTupleRemoveByXidGlobal(xid);
+	}
+	else
+	{
+		/*
+		 * At least one relation could not be restored inline (dropped, error).
+		 * Fall back to the background worker for those; queue every entry and
+		 * let the worker's idempotent already-applied check skip the ones we
+		 * already reverted.
+		 */
+		for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
+			RelUndoQueueAdd(MyDatabaseId, entry->relid,
+							entry->start_urec_ptr, xid);
+
+		StartRelUndoWorker(MyDatabaseId);
+	}
 }
 
 /*

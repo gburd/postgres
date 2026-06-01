@@ -60,16 +60,26 @@ RecnoLockTuple(Relation rel, ItemPointer tid, LockTupleMode mode,
 
 	*have_tuple_lock = false;
 
-	/* Convert tuple lock mode to standard lock mode */
+	/*
+	 * Convert tuple lock mode to standard lock mode using the same mapping as
+	 * heap (tupleLockExtraInfo in heapam.c).  The four modes MUST map to four
+	 * distinct LOCKMODEs: collapsing KeyShare/Share or NoKeyExclusive/Exclusive
+	 * makes an FK key-share lock conflict with a concurrent no-key UPDATE,
+	 * manufacturing deadlocks that heap never suffers.
+	 */
 	switch (mode)
 	{
 		case LockTupleKeyShare:
+			lockmode = AccessShareLock;
+			break;
 		case LockTupleShare:
-			lockmode = ShareLock;
+			lockmode = RowShareLock;
 			break;
 		case LockTupleNoKeyExclusive:
-		case LockTupleExclusive:
 			lockmode = ExclusiveLock;
+			break;
+		case LockTupleExclusive:
+			lockmode = AccessExclusiveLock;
 			break;
 		default:
 			elog(ERROR, "invalid tuple lock mode: %d", mode);
@@ -115,16 +125,26 @@ RecnoUnlockTuple(Relation rel, ItemPointer tid, LockTupleMode mode)
 	LOCKTAG		tag;
 	LOCKMODE	lockmode;
 
-	/* Convert tuple lock mode to standard lock mode */
+	/*
+	 * Convert tuple lock mode to standard lock mode using the same mapping as
+	 * heap (tupleLockExtraInfo in heapam.c).  The four modes MUST map to four
+	 * distinct LOCKMODEs: collapsing KeyShare/Share or NoKeyExclusive/Exclusive
+	 * makes an FK key-share lock conflict with a concurrent no-key UPDATE,
+	 * manufacturing deadlocks that heap never suffers.
+	 */
 	switch (mode)
 	{
 		case LockTupleKeyShare:
+			lockmode = AccessShareLock;
+			break;
 		case LockTupleShare:
-			lockmode = ShareLock;
+			lockmode = RowShareLock;
 			break;
 		case LockTupleNoKeyExclusive:
-		case LockTupleExclusive:
 			lockmode = ExclusiveLock;
+			break;
+		case LockTupleExclusive:
+			lockmode = AccessExclusiveLock;
 			break;
 		default:
 			elog(ERROR, "invalid tuple lock mode: %d", mode);
