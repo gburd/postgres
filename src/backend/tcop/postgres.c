@@ -529,15 +529,14 @@ ProcessClientReadInterrupt(bool blocked)
 		/*
 		 * We're dying.  If there is no data available to read, then it's safe
 		 * (and sane) to handle that now.  If we haven't tried to read yet,
-		 * make sure the process latch is set, so that if there is no data
-		 * then we'll come back here and die.  If we're done reading, also
-		 * make sure the process latch is set, as we might've undesirably
-		 * cleared it while reading.
+		 * re-raise the wakeup, so that if there is no data then we'll come
+		 * back here and die.  If we're done reading, also re-raise, as we
+		 * might've undesirably cleared it while reading.
 		 */
 		if (blocked)
 			CHECK_FOR_INTERRUPTS();
 		else
-			SetLatch(MyLatch);
+			RaiseInterrupt(INTERRUPT_GENERAL);
 	}
 
 	errno = save_errno;
@@ -562,11 +561,10 @@ ProcessClientWriteInterrupt(bool blocked)
 		/*
 		 * We're dying.  If it's not possible to write, then we should handle
 		 * that immediately, else a stuck client could indefinitely delay our
-		 * response to the signal.  If we haven't tried to write yet, make
-		 * sure the process latch is set, so that if the write would block
-		 * then we'll come back here and die.  If we're done writing, also
-		 * make sure the process latch is set, as we might've undesirably
-		 * cleared it while writing.
+		 * response to the signal.  If we haven't tried to write yet, re-raise
+		 * the wakeup, so that if the write would block then we'll come back
+		 * here and die.  If we're done writing, also re-raise, as we
+		 * might've undesirably cleared it while writing.
 		 */
 		if (blocked)
 		{
@@ -589,7 +587,7 @@ ProcessClientWriteInterrupt(bool blocked)
 			}
 		}
 		else
-			SetLatch(MyLatch);
+			RaiseInterrupt(INTERRUPT_GENERAL);
 	}
 
 	errno = save_errno;
