@@ -986,7 +986,8 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			set_ps_display(cmd);
 #endif
 
-			if (WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL,
+			if (WaitInterrupt(CheckForInterruptsMask | INTERRUPT_GENERAL |
+							  INTERRUPT_SHUTDOWN_AUX,
 							  WL_INTERRUPT | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT,
 							  timeout_ms,
 							  WAIT_EVENT_IO_WORKER_MAIN) == WL_TIMEOUT)
