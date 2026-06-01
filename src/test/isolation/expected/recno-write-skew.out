@@ -22,7 +22,7 @@ step s3_verify: SELECT id, name, on_call FROM recno_oncall ORDER BY id;
 id|name |on_call
 --+-----+-------
  1|Alice|f      
- 2|Bob  |f      
+ 2|Bob  |t      
 (2 rows)
 
 
@@ -47,7 +47,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
 step s3_verify: SELECT id, name, on_call FROM recno_oncall ORDER BY id;
 id|name |on_call
 --+-----+-------
- 1|Alice|f      
+ 1|Alice|t      
  2|Bob  |f      
 (2 rows)
 

@@ -24,9 +24,8 @@
  *	  store and compare uint64 commit timestamps need no structural
  *	  changes because HLCTimestamp is a typedef for uint64.
  *
- *	  DVV (Dotted Version Vector) support has been removed.  HLC is now
- *	  the sole clock mechanism.  Concurrent tuple locking is handled by
- *	  the sLog (recno_slog.c).
+ *	  HLC is the sole clock mechanism.  Concurrent tuple locking is
+ *	  handled by the sLog (recno_slog.c).
  *
  *-------------------------------------------------------------------------
  */

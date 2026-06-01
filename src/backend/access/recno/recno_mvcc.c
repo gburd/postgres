@@ -21,9 +21,8 @@
  *	  cleared at commit.  When this flag is set, the sLog must be
  *	  consulted to determine visibility.
  *
- *	  DVV (Dotted Version Vectors) have been removed.  HLC is the sole
- *	  clock mechanism.  MultiXact support has been removed; concurrent
- *	  tuple locking is tracked via the sLog.
+ *	  HLC is the sole clock mechanism.  MultiXact support has been
+ *	  removed; concurrent tuple locking is tracked via the sLog.
  *
  * ISOLATION LEVEL SEMANTICS
  *
@@ -168,7 +167,6 @@ static RecnoMvccShmemData * RecnoMvccShmem = NULL;
  * CheckForSerializableConflictIn/Out() in the DML paths.  The private
  * rw-conflict graph that was previously here has been removed.
  *
- * DVV fields (xact_start_dvv, xact_commit_dvv) have been removed.
  * HLC is the sole clock mechanism.
  */
 struct RecnoTransactionState
@@ -518,8 +516,6 @@ const ShmemCallbacks RecnoMvccShmemCallbacks = {
  * In legacy mode, it is a plain wall-clock timestamp from
  * RecnoGetCommitTimestamp().  Either way, the uint64 xact_start_ts field
  * holds the value for per-backend slot tracking.
- *
- * DVV has been removed; HLC is the sole clock mechanism.
  */
 /*
  * Transaction callback for RECNO MVCC cleanup.
@@ -612,7 +608,7 @@ RecnoInitTransactionState(void)
 	{
 		/*
 		 * HLC mode: get a causally-consistent HLC timestamp for transaction
-		 * start.  DVV has been removed; HLC is the sole clock.
+		 * start.
 		 */
 		MyRecnoXactState->xact_start_hlc = HLCNow(InvalidHLCTimestamp);
 		MyRecnoXactState->xact_start_ts = (uint64) MyRecnoXactState->xact_start_hlc;
@@ -794,8 +790,6 @@ RecnoCheckForSerializableConflictOut(Relation relation,
  * In HLC mode, the commit HLC captures causal ordering: it is guaranteed
  * to be greater than any HLC this transaction has observed (via the
  * msg_hlc=0 local-event path).
- *
- * DVV has been removed; HLC is the sole clock mechanism.
  */
 void
 RecnoCommitTransaction(void)
@@ -1457,8 +1451,6 @@ RecnoCanVacuumTimestamp(uint64 vacuum_ts)
  * These functions provide the HLC-aware MVCC interface.  When
  * recno_use_hlc is true, they use HLC timestamps.  When false,
  * they delegate to the legacy timestamp functions.
- *
- * DVV has been removed; HLC is the sole clock mechanism.
  *
  * The key insight is that HLCTimestamp is uint64 and HLC values are
  * always numerically larger than legacy timestamps (because the
@@ -2247,7 +2239,6 @@ RecnoCanPruneHLC(RecnoTupleHeader *tuple, HLCTimestamp prune_horizon)
  * RecnoPruneDecision -- HLC-only pruning decision.
  *
  * Uses the HLC horizon (time-based) to determine pruning action.
- * DVV dominance checks have been removed; HLC is the sole clock.
  *
  * Parameters:
  *   tuple          - the tuple version to evaluate

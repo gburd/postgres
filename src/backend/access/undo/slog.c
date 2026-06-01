@@ -375,6 +375,14 @@ typedef struct SLogTrackedKey
 	uint16		before_flags;	/* original t_flags before DML */
 	uint64		before_commit_ts;	/* original t_commit_ts before DML */
 
+	/*
+	 * Physical relation locator captured at store time.  Savepoint-abort
+	 * restore runs in TRANS_ABORT state where relation_open's relcache lookup
+	 * is unsafe, so we read the buffer via ReadBufferWithoutRelcache instead.
+	 */
+	RelFileLocator before_rlocator;
+	char		before_relpersistence;
+
 	/* DSA pointer to shared before-image (for abort/rollback cleanup) */
 	dsa_pointer before_image_dp;	/* InvalidDsaPointer if none */
 
@@ -2976,7 +2984,8 @@ fallback_linked_list:
 void
 SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 						  const char *data, int len,
-						  uint16 flags, uint64 commit_ts)
+						  uint16 flags, uint64 commit_ts,
+						  RelFileLocator rlocator, char relpersistence)
 {
 	SLogTrackedKey *tk;
 	MemoryContext oldcxt;
@@ -3003,6 +3012,8 @@ SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 		tk->before_image_len = len;
 		tk->before_flags = flags;
 		tk->before_commit_ts = commit_ts;
+		tk->before_rlocator = rlocator;
+		tk->before_relpersistence = relpersistence;
 
 		MemoryContextSwitchTo(oldcxt);
 
@@ -3080,7 +3091,8 @@ bool
 SLogTupleGetBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 						TransactionId subxid,
 						char **data_out, int *len_out,
-						uint16 *flags_out, uint64 *commit_ts_out)
+						uint16 *flags_out, uint64 *commit_ts_out,
+						RelFileLocator *rlocator_out, char *relpersistence_out)
 {
 	SLogTrackedKey *tk;
 
@@ -3102,6 +3114,8 @@ SLogTupleGetBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 		*len_out = tk->before_image_len;
 		*flags_out = tk->before_flags;
 		*commit_ts_out = tk->before_commit_ts;
+		*rlocator_out = tk->before_rlocator;
+		*relpersistence_out = tk->before_relpersistence;
 		return true;
 	}
 

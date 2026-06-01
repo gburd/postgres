@@ -123,12 +123,11 @@ support.
 2.3 HLC WAL Extension
 -----------------------
 
-When RECNO_WAL_HAS_HLC is set in the record flags, a 32-byte
+When RECNO_WAL_HAS_HLC is set in the record flags, a 24-byte
 xl_recno_hlc_info is appended:
 
     typedef struct xl_recno_hlc_info {
         uint64  commit_hlc;          /* Commit HLC timestamp */
-        uint64  commit_dvv;          /* Reserved (unused) */
         uint64  uncertainty_lower;   /* Lower bound of uncertainty */
         uint64  uncertainty_upper;   /* Upper bound of uncertainty */
     } xl_recno_hlc_info;
@@ -262,6 +261,19 @@ restart advances the snapshot HLC past the uncertainty window.
 For single-node RECNO, uncertainty intervals are unnecessary because
 all events share the same HLC state (same LWLock serializes all
 assignments).
+
+To build intuition for the snapshot-vs-commit-HLC comparison above,
+an interactive HLC visualizer is available:
+
+    https://muratdem.github.io/hlc-visualizer
+
+Use the visualizer's "snapshot" feature to see how a reader's
+snapshot HLC S relates to tuples' commit HLC C across nodes.  The
+tool renders the causal/snapshot relationship that RECNO depends on
+for MVCC visibility: a snapshot at S sees exactly those commits whose
+HLC C precedes it in causal order, and the snapshot view makes the
+S < C invisible, S >= C visible, and S in [C, C + epsilon] ambiguous
+cases concrete across distributed events.
 
 4.3 Clock Health Monitoring
 -----------------------------

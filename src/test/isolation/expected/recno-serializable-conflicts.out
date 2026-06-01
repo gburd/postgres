@@ -22,6 +22,6 @@ step s3_read: SELECT id, name, on_call FROM recno_doctors ORDER BY id;
 id|name |on_call
 --+-----+-------
  1|Alice|f      
- 2|Bob  |f      
+ 2|Bob  |t      
 (2 rows)
 

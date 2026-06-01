@@ -29,8 +29,9 @@ step s2_update: <... completed>
 step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
 id|val    
 --+-------
+ 1|from_s2
  2|initial
-(1 row)
+(2 rows)
 
 step s2_commit: COMMIT;
 step s3_read: SELECT id, val FROM recno_dw ORDER BY id;
@@ -43,8 +44,9 @@ id|val
 
 starting permutation: s1_delete s2_delete s1_commit s2_read s2_commit s3_read
 step s1_delete: DELETE FROM recno_dw WHERE id = 2;
-step s2_delete: DELETE FROM recno_dw WHERE id = 2;
+step s2_delete: DELETE FROM recno_dw WHERE id = 2; <waiting ...>
 step s1_commit: COMMIT;
+step s2_delete: <... completed>
 step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
 id|val    
 --+-------
