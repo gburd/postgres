@@ -72,6 +72,15 @@ SwitchToLocalInterrupts(void)
 
 	MyPendingInterrupts = &LocalPendingInterrupts;
 
+#ifdef WIN32
+
+	/*
+	 * Other backends can no longer wake us, so fall back to our process-local
+	 * wakeup event (the analog of giving up MyProc's shared Latch).
+	 */
+	SetMyInterruptEvent(NULL);
+#endif
+
 	/*
 	 * Make sure that SIGALRM handlers that call RaiseInterrupt() are now
 	 * seeing the new MyPendingInterrupts destination.
@@ -100,6 +109,15 @@ SwitchToSharedInterrupts(void)
 		return;
 
 	MyPendingInterrupts = &MyProc->pendingInterrupts;
+
+#ifdef WIN32
+
+	/*
+	 * Accept wakeups from other backends: use MyProc's inheritable event
+	 * HANDLE as our wakeup doorbell (the analog of OwnLatch()).
+	 */
+	SetMyInterruptEvent(MyProc->interruptEvent);
+#endif
 
 	/*
 	 * Make sure that SIGALRM handlers that call RaiseInterrupt() are now
@@ -154,12 +172,18 @@ SendInterrupt(uint32 interruptMask, ProcNumber pgprocno)
 
 	/*
 	 * Wake the target if the interrupt was newly raised and it is blocked
-	 * waiting for one.  Master's WakeupOtherProc() takes a pid (kill(pid,
-	 * SIGURG)), so unlike Heikki's PGPROC*-based call we pass proc->pid.
+	 * waiting for one.  On Unix WakeupOtherProc() takes a pid (kill(pid,
+	 * SIGURG)); on Windows there is no signal, so we hand it the target's
+	 * interrupt-wakeup event HANDLE (read from shared memory, valid in every
+	 * process via CreateProcess handle inheritance) to SetEvent() directly.
 	 */
 	if ((old_pending & interruptMask) != interruptMask &&
 		(old_pending & SLEEPING_ON_INTERRUPTS) != 0)
+#ifndef WIN32
 		WakeupOtherProc(proc->pid);
+#else
+		WakeupOtherProc(proc->interruptEvent);
+#endif
 }
 
 /*

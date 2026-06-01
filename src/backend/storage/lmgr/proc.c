@@ -322,6 +322,29 @@ ProcGlobalShmemInit(void *arg)
 		{
 			proc->sem = PGSemaphoreCreate();
 			pg_atomic_init_u32(&(proc->pendingInterrupts), 0);
+#ifdef WIN32
+
+			/*
+			 * Create this PGPROC's Windows interrupt-wakeup event.  This must
+			 * happen here in the postmaster, before any child is forked, and
+			 * the event must be inheritable so that every child inherits it
+			 * with the same numeric HANDLE value (the same requirement the old
+			 * shared Latch had; see proc.h and
+			 * docs/threading/INTERRUPTS_REDERIVATION.md).
+			 */
+			{
+				SECURITY_ATTRIBUTES sa;
+
+				ZeroMemory(&sa, sizeof(sa));
+				sa.nLength = sizeof(sa);
+				sa.bInheritHandle = TRUE;
+
+				proc->interruptEvent = CreateEvent(&sa, TRUE, FALSE, NULL);
+				if (proc->interruptEvent == NULL)
+					elog(FATAL, "CreateEvent failed: error code %lu",
+						 GetLastError());
+			}
+#endif
 			LWLockInitialize(&(proc->fpInfoLock), LWTRANCHE_LOCK_FASTPATH);
 		}
 

@@ -174,6 +174,23 @@ struct WaitEventSet
 static session_local volatile sig_atomic_t waiting = false;
 #endif
 
+#ifdef WIN32
+/*
+ * This process's interrupt-wakeup event HANDLE: the doorbell that other
+ * processes (via SendInterrupt) and this process (via WakeupMyProc) ring to
+ * break us out of WaitForMultipleObjects().  It is the per-process event from
+ * MyProc->interruptEvent once we have a PGPROC and are accepting shared
+ * interrupts, or LocalInterruptEvent (a freshly created process-local event)
+ * for PGPROC-less processes and while on local-only interrupts.  See
+ * InitializeWaitEventSupport(), SetMyInterruptEvent(), and
+ * docs/threading/INTERRUPTS_REDERIVATION.md.
+ */
+static session_local HANDLE MyInterruptEvent = NULL;
+
+/* The process-local wakeup event, created in InitializeWaitEventSupport(). */
+static session_local HANDLE LocalInterruptEvent = NULL;
+#endif
+
 #ifdef WAIT_USE_SIGNALFD
 /* On Linux, we'll receive SIGURG via a signalfd file descriptor. */
 static session_local int	signal_fd = -1;
@@ -351,6 +368,22 @@ InitializeWaitEventSupport(void)
 #ifdef WAIT_USE_KQUEUE
 	/* Ignore SIGURG, because we'll receive it via kqueue. */
 	pqsignal(SIGURG, PG_SIG_IGN);
+#endif
+
+#ifdef WIN32
+
+	/*
+	 * Create this process's own (non-inheritable) interrupt-wakeup event.
+	 * Processes that have a PGPROC will rebind MyInterruptEvent to the shared,
+	 * inheritable MyProc->interruptEvent in SwitchToSharedInterrupts(); but
+	 * PGPROC-less processes (postmaster, syslogger) wake themselves through
+	 * this local event, and it also serves as the fallback after
+	 * SwitchToLocalInterrupts().  Manual-reset, initially unsignaled.
+	 */
+	MyInterruptEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (MyInterruptEvent == NULL)
+		elog(FATAL, "CreateEvent failed: error code %lu", GetLastError());
+	LocalInterruptEvent = MyInterruptEvent;
 #endif
 
 	/*
@@ -988,11 +1021,12 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 	if (event->events == WL_INTERRUPT)
 	{
 		/*
-		 * XXX: Windows wakeup wiring for the interrupt word is deferred.
-		 * Threaded-mode Windows support requires a shared wakeup HANDLE here
-		 * (see docs/threading/INTERRUPTS_REDERIVATION.md).
+		 * The interrupt word is woken via this process's interrupt-wakeup
+		 * event (set by SwitchToShared/LocalInterrupts()).  Wait on it
+		 * directly, the way we used to wait on the Latch's event HANDLE.
 		 */
-		elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
+		Assert(MyInterruptEvent != NULL);
+		*handle = MyInterruptEvent;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
 	{
@@ -1629,6 +1663,16 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	DWORD		rc;
 	WaitEvent  *cur_event;
 
+	/*
+	 * The interrupt event's wakeup HANDLE can change underneath a long-lived
+	 * WaitEventSet (e.g. InterruptWaitSet) when the process switches between
+	 * shared and local interrupts (SwitchToShared/LocalInterrupts rebind
+	 * MyInterruptEvent).  ModifyWaitEvent() does not re-run WaitEventAdjustWin32
+	 * for WL_INTERRUPT, so refresh the stored handle here, before waiting.
+	 */
+	if (set->interrupt_pos >= 0)
+		set->handles[set->interrupt_pos + 1] = MyInterruptEvent;
+
 	/* Reset any wait events that need it */
 	for (cur_event = set->events;
 		 cur_event < (set->events + set->nevents);
@@ -1748,11 +1792,26 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		if (cur_event->events == WL_INTERRUPT)
 		{
 			/*
-			 * WL_INTERRUPT is not yet supported on Windows: AddWaitEventToSet
-			 * / WaitEventAdjustWin32 reject it before we ever get here, so we
-			 * should never observe an interrupt event in this loop.
+			 * Clear the wakeup event before re-checking the interrupt word,
+			 * so that an interrupt raised after this point reliably re-signals
+			 * the event (mirrors draining the self-pipe / signalfd on Unix and
+			 * the old WL_LATCH_SET ResetEvent path).
+			 *
+			 * We must reset the handle actually waited on, which is the one in
+			 * the handles array, not necessarily MyInterruptEvent if it has
+			 * since been rebound.
 			 */
-			elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
+			if (!ResetEvent(set->handles[cur_event->pos + 1]))
+				elog(ERROR, "ResetEvent failed: error code %lu", GetLastError());
+
+			if (set->interrupt_mask != 0 &&
+				(pg_atomic_read_u32(MyPendingInterrupts) & set->interrupt_mask) != 0)
+			{
+				occurred_events->fd = PGINVALID_SOCKET;
+				occurred_events->events = WL_INTERRUPT;
+				occurred_events++;
+				returned_events++;
+			}
 		}
 		else if (cur_event->events == WL_POSTMASTER_DEATH)
 		{
@@ -2047,4 +2106,48 @@ WakeupOtherProc(int pid)
 {
 	kill(pid, SIGURG);
 }
-#endif
+#else							/* WIN32 */
+
+/*
+ * Bind the event HANDLE that wakes this process out of
+ * WaitForMultipleObjects().  Called from SwitchToShared/LocalInterrupts():
+ * when accepting shared interrupts we use MyProc's inheritable event (so other
+ * processes can SetEvent it), otherwise we fall back to the process-local
+ * event created in InitializeWaitEventSupport().  A NULL argument restores the
+ * process-local event.
+ */
+void
+SetMyInterruptEvent(HANDLE event)
+{
+	MyInterruptEvent = (event != NULL) ? event : LocalInterruptEvent;
+}
+
+/*
+ * Wake up my process if it's currently sleeping in WaitEventSetWaitBlock().
+ *
+ * Unlike the Unix self-pipe / SIGURG path there is no "waiting" flag to gate
+ * on: the event is manual-reset, so signaling it when we are not (yet) blocked
+ * simply means the next WaitForMultipleObjects() returns immediately, and the
+ * post-wait check re-validates against the pending interrupt word.  Safe to
+ * call from critical sections.
+ */
+void
+WakeupMyProc(void)
+{
+	if (MyInterruptEvent != NULL)
+		SetEvent(MyInterruptEvent);
+}
+
+/*
+ * Wake up another process.  On Windows we cannot deliver a signal, so the
+ * caller passes the target PGPROC's interruptEvent HANDLE (read from shared
+ * memory; valid in every process thanks to CreateProcess handle inheritance)
+ * and we ring its doorbell directly.
+ */
+void
+WakeupOtherProc(HANDLE event)
+{
+	if (event != NULL)
+		SetEvent(event);
+}
+#endif							/* WIN32 */

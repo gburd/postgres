@@ -105,6 +105,10 @@ extern bool WaitEventSetCanReportClosed(void);
 #ifndef WIN32
 extern void WakeupMyProc(void);
 extern void WakeupOtherProc(int pid);
+#else
+extern void SetMyInterruptEvent(HANDLE event);
+extern void WakeupMyProc(void);
+extern void WakeupOtherProc(HANDLE event);
 #endif
 
 #endif							/* WAITEVENTSET_H */

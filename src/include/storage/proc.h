@@ -267,6 +267,20 @@ typedef struct PGPROC
 	 */
 	pg_atomic_uint32 pendingInterrupts;
 
+#ifdef WIN32
+	/*
+	 * Windows wakeup doorbell for the interrupt word.  There is no signal we
+	 * can deliver to another process the way kill(pid, SIGURG) works on Unix,
+	 * so each PGPROC carries a manual-reset event HANDLE that SendInterrupt()
+	 * SetEvent()s to wake the owning process out of WaitForMultipleObjects().
+	 * It is the direct analog of the old shared Latch's event HANDLE: created
+	 * inheritable by the postmaster in InitProcGlobal() before any child is
+	 * spawned, stored here in shared memory, and inherited by every child with
+	 * the same numeric value (see docs/threading/INTERRUPTS_REDERIVATION.md).
+	 */
+	HANDLE		interruptEvent;
+#endif
+
 	PGSemaphore sem;			/* ONE semaphore to sleep on */
 
 	int			delayChkptFlags;	/* for DELAY_CHKPT_* flags */
