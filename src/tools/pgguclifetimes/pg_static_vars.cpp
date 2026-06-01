@@ -22,6 +22,7 @@
 #include <set>
 #include <iostream>
 #include <sstream>
+#include <cstring>
 
 #include <clang-c/Index.h>
 #include <clang-c/CXCompilationDatabase.h>

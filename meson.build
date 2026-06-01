@@ -4151,6 +4151,28 @@ run_target('cpluspluscheck',
 
 
 ###############################################################
+# threadcheck (thread-classification harness, F1)
+###############################################################
+
+# Runs the GUC/global lifetime-annotation checkers over the backend compile
+# database and enforces a ratcheting baseline.  Requires the 'pgguclifetimes'
+# target, i.e. a build configured with -Dllvm=enabled (see
+# docs/threading/F1_CLASSIFICATION_HARNESS.md).
+threadcheck = files('src/tools/threadcheck/threadcheck.py')
+run_target('threadcheck',
+  command: [python, threadcheck, meson.project_source_root(), meson.project_build_root()]
+)
+
+# srclint is the cheap, LLVM-free pre-gate (F1.3): regex lints for new raw
+# signal()/sigaction(), thread-unsafe libc calls, and bare mutable statics.
+srclint = files('src/tools/threadcheck/srclint.py')
+run_target('srclint',
+  command: [python, srclint, meson.project_source_root()]
+)
+
+
+
+###############################################################
 # Pseudo targets
 ###############################################################
 

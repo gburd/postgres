@@ -121,6 +121,13 @@ option('libxslt', type: 'feature', value: 'auto',
 option('llvm', type: 'feature', value: 'disabled',
   description: 'LLVM support')
 
+option('clang_c_includedir', type: 'string', value: '',
+  description: 'Directory containing the clang-c/ headers (libclang C API), '
+    + 'used to build the src/tools/pgguclifetimes annotation checkers when '
+    + 'they are not auto-discovered via the Clang CMake package or llvm-config '
+    + '(e.g. distributions that split the libclang dev headers into a separate '
+    + 'output)')
+
 option('lz4', type: 'feature', value: 'auto',
   description: 'LZ4 support')
 

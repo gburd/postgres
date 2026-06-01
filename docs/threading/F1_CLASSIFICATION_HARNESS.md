@@ -1,8 +1,27 @@
 # F1 - The Classification Harness
 
-**Status:** plan. The prerequisite to all per-global conversion work.
+**Status:** F1.1-F1.3 + F1.5 implemented on branch `xtc` (the
+lifetime-annotation checkers build under meson, and the `threadcheck`
+(libclang) + `srclint` (LLVM-free regex) run-targets enforce ratcheting
+baselines). F1.4 (TSan profile) and F1.6 (xtc amalgamation wiring) remain.
 **Lives:** `~/ws/postgres/xtc` (the fork worktree).
 **Depends on:** clang/LLVM (already a PG optional dep for JIT).
+
+## Implementation map (what runs today)
+
+| Piece | Where | Run via |
+|---|---|---|
+| `pgguclifetimes` (file-scope globals) | `src/tools/pgguclifetimes/` | built by `-Dllvm=enabled` |
+| `pg_static_vars` (function-scope statics) | `src/tools/pgguclifetimes/` | built when a C++ compiler is present |
+| `threadcheck` driver + baseline | `src/tools/threadcheck/threadcheck.py`, `baseline.txt` (2,791 core) | `ninja threadcheck` |
+| `srclint` (s_globals/s_signals/s_libc) + baseline | `src/tools/threadcheck/srclint.py`, `srclint-baseline.txt` (2,198) | `ninja srclint` |
+
+Both drivers normalise offenders to line-independent `relpath:symbol`
+keys, exclude vendored trees, and exit 1 only when the offender set
+*grows* past the committed baseline (regenerate with
+`--update-baseline`). Canary-verified: injecting a bare global / raw
+`signal()` / `getenv()` flags it with `file:line` and fails the gate.
+The `srclint` gate needs no LLVM and is the fast pre-clang pre-check.
 
 ## Why this is the foundation of the foundation
 
@@ -117,7 +136,9 @@ conscious choice per global.
   `compile_commands.json` natively; for autoconf use `bear` or
   `compiledb`).
 
-### F1.2 - A `make threadcheck` target
+### F1.2 - A `make threadcheck` target  **[DONE]**
+Implemented as the meson `threadcheck` run-target driving
+`src/tools/threadcheck/threadcheck.py`.
 - Runs `pgguclifetimes` + `pg_static_vars` over the whole backend
   compilation database.
 - Exit non-zero on: any unannotated mutable global, any
@@ -126,7 +147,9 @@ conscious choice per global.
 - Emits a categorised report (counts per lifetime, list of
   offenders with `file:line`).
 
-### F1.3 - Source lints (cheap, fast, pre-clang gate)
+### F1.3 - Source lints (cheap, fast, pre-clang gate)  **[DONE]**
+Implemented as the meson `srclint` run-target driving
+`src/tools/threadcheck/srclint.py` (no LLVM dependency).
 Port xtc's `dist/s_globals` / `dist/s_signals` style grep-lints as
 fast pre-checks that run without LLVM:
 - `s_globals`: forbid a *new* bare `static T x;` (mutable, file or
@@ -145,9 +168,12 @@ the heavier clang pass.
 - Starts as a non-gating nightly; becomes gating once threaded mode
   passes clean (mirrors the PG workplan "TSan in CI from CF1").
 
-### F1.5 - The baseline + ratchet
+### F1.5 - The baseline + ratchet  **[DONE]**
+Both drivers ship a committed baseline and fail only on growth; the
+`--update-baseline` flag regenerates each.
 - Record the current offender list as a baseline allowlist
-  (`src/tools/threadcheck/baseline.txt`).
+  (`src/tools/threadcheck/baseline.txt`; `srclint-baseline.txt` for the
+  regex lints).
 - CI fails if the offender set *grows*. Each converted subsystem
   removes lines from the baseline. The baseline only ever shrinks.
 - This lets us land F1 immediately without first converting all
