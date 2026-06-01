@@ -1,10 +1,11 @@
 # F1 - The Classification Harness
 
-**Status:** F1.1-F1.5 implemented on branch `xtc` (the
+**Status:** F1.1-F1.6 implemented on branch `xtc` (the
 lifetime-annotation checkers build under meson; the `threadcheck`
 (libclang) + `srclint` (LLVM-free regex) run-targets enforce ratcheting
-baselines; the `tsan-profile.sh` non-gating TSan profile is wired). Only
-F1.6 (xtc amalgamation wiring) remains.
+baselines; the `tsan-profile.sh` non-gating TSan profile is wired; the
+xtc amalgamation is vendored and gated behind `-Dmultithreaded`). The
+F1 harness is complete.
 **Lives:** `~/ws/postgres/xtc` (the fork worktree).
 **Depends on:** clang/LLVM (already a PG optional dep for JIT).
 
@@ -197,13 +198,29 @@ Both drivers ship a committed baseline and fail only on growth; the
   ~670 existing globals -- it just stops the bleeding and tracks
   burn-down.
 
-### F1.6 - Vendor xtc as the amalgamation + wire the build
+### F1.6 - Vendor xtc as the amalgamation + wire the build  **[DONE]**
 F1 ships in the same Phase 0 commit that first brings xtc into the
 tree, so the build wiring lands here. **xtc is vendored as the
 single-file amalgamation, not a separately built `libxtc.a` linked via
 `--with-xtc`:**
 
-**Status (Phase 0, done):** submodule added at `contrib/libxtc`,
+**Status (DONE):** the meson build wiring landed. A boolean
+`multithreaded` option (default `false`, `meson_options.txt`) drives a
+`USE_MULTITHREADED` cdata flag and, when on, a `custom_target`
+(`xtc-amalgamation`) runs `gen_xtc_amalgamation.sh` to emit `xtc.c`/`xtc.h`
+into the build dir; `xtc.c` is compiled (`-std=c11 -D_GNU_SOURCE`) into a
+static `libxtc.a` that is appended to `backend_link_with` and force-included
+into the backend via the existing `link_whole:`. When off (default) `xtc_lib`
+is `[]`, so nothing is generated or linked and the process model is unchanged.
+Verified: `-Dmultithreaded=false` builds and passes the full smoke suite
+(incl. live-walsender fast-stop); `-Dmultithreaded=true` generates the
+amalgamation, compiles `libxtc.a`, and links the `postgres` backend cleanly
+(xtc symbols present in the binary, confirming the dormant runtime is linked
+in). The runtime is present-but-dormant: building it in does not switch
+PostgreSQL to threads. Autoconf wiring is intentionally not added (meson is
+the forward build system).
+
+**Submodule provenance:** submodule added at `contrib/libxtc`,
 pinned to `6bc9107` (= `v0.4.0-36`; current `origin/main` tip). The R1
 `at_exit`/`mctx`/`down_decode` helpers the F5 spike depends on landed at
 `2eba22b` (`v0.4.0-7`); this newer pin additionally carries the R1

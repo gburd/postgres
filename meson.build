@@ -505,6 +505,7 @@ meson_bin = find_program(meson_binpath, native: true)
 
 cdata.set('USE_ASSERT_CHECKING', get_option('cassert') ? 1 : false)
 cdata.set('USE_INJECTION_POINTS', get_option('injection_points') ? 1 : false)
+cdata.set('USE_MULTITHREADED', get_option('multithreaded') ? 1 : false)
 
 blocksize = get_option('blocksize').to_int() * 1024
 
@@ -3694,6 +3695,37 @@ test_install_libs = []
 # Then through the main sources. That way contrib can have dependencies on
 # main sources. Note that this explicitly doesn't enter src/test, right now a
 # few regression tests depend on contrib files.
+
+###############################################################
+# Threaded runtime (xtc) -- F1.6
+###############################################################
+#
+# xtc is vendored as a SQLite-style single-file amalgamation generated from the
+# contrib/libxtc submodule (NOT a separately built libxtc.a).  When the
+# 'multithreaded' option is on we regenerate xtc.c/xtc.h at configure/build
+# time and compile xtc.c into a static library that is linked into the backend;
+# when off (the default) nothing is generated or linked and the process model
+# is unchanged.  The runtime is present-but-dormant: building it in does not by
+# itself switch PostgreSQL to threads.  See
+# docs/threading/F1_CLASSIFICATION_HARNESS.md (F1.6).
+xtc_lib = []
+if get_option('multithreaded')
+  gen_xtc_amalgamation = files('src/tools/gen_xtc_amalgamation.sh')
+  xtc_amalg = custom_target('xtc-amalgamation',
+    output: ['xtc.c', 'xtc.h'],
+    command: [gen_xtc_amalgamation, '@OUTDIR@'],
+  )
+  # The amalgamation's internal "#define _GNU_SOURCE" lands after the first
+  # system header, so it is ineffective on glibc; pass it on the command line
+  # (and -std=c11, as the runtime requires C11).  -Wno-* keep the vendored
+  # single file from tripping PG's strict warning set.
+  xtc_lib = static_library('xtc',
+    xtc_amalg[0],
+    c_args: ['-std=c11', '-D_GNU_SOURCE', '-w'],
+    dependencies: [thread_dep],
+    install: false,
+  )
+endif
 
 subdir('src')
 

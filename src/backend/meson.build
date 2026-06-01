@@ -4,6 +4,10 @@ backend_build_deps = [backend_code]
 backend_sources = []
 backend_link_with = [pgport_srv, common_srv]
 
+# When built with -Dmultithreaded=true, link in the (dormant) xtc runtime.
+# xtc_lib is [] otherwise, so this is a no-op for the default build.
+backend_link_with += xtc_lib
+
 generated_backend_sources = []
 post_export_backend_sources = []
 

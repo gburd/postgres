@@ -46,6 +46,11 @@ option('tap_tests', type: 'feature', value: 'auto',
 option('injection_points', type: 'boolean', value: false,
   description: 'Enable injection points')
 
+option('multithreaded', type: 'boolean', value: false,
+  description: 'Build the threaded runtime (xtc). EXPERIMENTAL and dormant: '
+    + 'when off (the default) the vendored xtc runtime is not compiled in and '
+    + 'the process model is unchanged. See docs/threading.')
+
 option('PG_TEST_EXTRA', type: 'string', value: '',
   description: 'Enable selected extra tests. Overridden by PG_TEST_EXTRA environment variable.')
 
