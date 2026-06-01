@@ -153,7 +153,11 @@ These are the concrete deltas found by diffing Heikki's `interrupt.c`/
    mechanism needs a Windows wakeup path that does not depend on a Latch
    struct. **Decision: defer Windows wakeup wiring to a follow-up**; the
    first core commit targets the POSIX self-pipe/SIGURG path (matches our
-   F5/spike platform and the dev environment). Tracked as an open item.
+   F5/spike platform and the dev environment). **Resolved in Step 7**
+   (`4616f22`): a per-PGPROC inheritable WIN32 event `HANDLE` plus a
+   process-local doorbell for the postmaster/syslogger; `SendInterrupt`
+   does `SetEvent(proc->interruptEvent)` on WIN32. No Latch struct
+   involved.
 
 5. **PGPROC field.** Master `proc.h:262` `Latch procLatch;` →
    `pg_atomic_uint32 pendingInterrupts;`. **Decision: in the first core
@@ -557,9 +561,43 @@ complete the sweep (convert/retire the three islands, remove `procLatch`/
   needs `-Db_pie=true` so executables compile and link PIE-consistently
   against this NixOS GCC's default-PIE; shared objects keep `-fPIC`.
 
-**Remaining: Step 7** — `session_local` annotations on the interrupt
-session state and the Windows wakeup path (the thread-correctness layer);
-no further latch work is outstanding.
+**Remaining: none.** Step 7 below closes out the re-derivation; the
+interrupt bitmask is thread-ready and the Windows wakeup path is wired.
+
+* Step 7 — **Annotations + Windows**, landed in three commits:
+
+  - `d30740b` — annotate the per-process interrupt/CFI globals
+    `session_local` (broad scope, per the F1 taxonomy: every per-process
+    global the interrupt mechanism relies on gets a conscious lifetime
+    classification rather than defaulting): `CheckForInterruptsMask`,
+    `InterruptHoldoffCount`, `QueryCancelHoldoffCount`, `CritSectionCount`
+    (globals.c defs + miscadmin.h externs), plus the waiteventset.c SIGURG
+    self-pipe statics (`waiting`, `signal_fd`, `selfpipe_{readfd,writefd}`,
+    `selfpipe_owner_pid`). `MyPendingInterrupts` was already annotated.
+
+  - `8ed3c67` — **make the `session_local` annotation MSVC-safe across DLL
+    boundaries.** On MSVC `__declspec(thread)` cannot carry the dll
+    interface (C2492) and cannot be linked across a DLL by name, yet
+    loadable modules (e.g. libpqwalreceiver) read these globals directly.
+    The thread-local qualifier now expands to nothing on MSVC — the
+    variables stay ordinary `PGDLLIMPORT` process-globals there — while
+    GCC/Clang keep `__thread`. `PGDLLIMPORT_TLS` marks the affected
+    externs.
+
+  - `4616f22` — **wire the Windows wakeup path** (Divergence item 4):
+    per-PGPROC inheritable WIN32 `HANDLE interruptEvent` created in
+    `InitProcGlobal`; `session_local HANDLE MyInterruptEvent` in
+    waiteventset.c (the process doorbell), with a process-local event for
+    the PGPROC-less postmaster/syslogger; `WaitEventAdjustWin32` +
+    the WIN32 wait block map/refresh/reset it and report `WL_INTERRUPT` on
+    a pending-mask match; `SendInterrupt` signals via
+    `SetEvent(proc->interruptEvent)` on WIN32 (`kill(SIGURG)` on POSIX).
+
+  The `multithreaded` build stays OFF and the process model is unchanged.
+  Verified on Linux (full smoke suite after each commit, incl. fast-stop
+  with a live `pg_receivewal` walsender) and on Windows (arm64, MSVC 19.50:
+  build, initdb, queries, and fast-stop with a live walsender — 0.15s,
+  clean).
 
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
