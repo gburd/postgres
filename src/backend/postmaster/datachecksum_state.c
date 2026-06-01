@@ -206,7 +206,7 @@
 #include "storage/bufmgr.h"
 #include "storage/checksum.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "storage/procarray.h"

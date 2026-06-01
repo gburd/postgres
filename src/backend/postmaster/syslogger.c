@@ -45,7 +45,7 @@
 #include "storage/dsm.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/pg_shmem.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
@@ -338,10 +338,10 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	 * (including the postmaster).
 	 */
 	wes = CreateWaitEventSet(NULL, 2);
-	AddWaitEventToSet(wes, WL_INTERRUPT, PGINVALID_SOCKET, NULL,
+	AddWaitEventToSet(wes, WL_INTERRUPT, PGINVALID_SOCKET,
 					  INTERRUPT_CONFIG_RELOAD | INTERRUPT_GENERAL, NULL);
 #ifndef WIN32
-	AddWaitEventToSet(wes, WL_SOCKET_READABLE, syslogPipe[0], NULL, 0, NULL);
+	AddWaitEventToSet(wes, WL_SOCKET_READABLE, syslogPipe[0], 0, NULL);
 #endif
 
 	/* main worker loop */

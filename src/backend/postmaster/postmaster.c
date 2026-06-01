@@ -563,7 +563,6 @@ PostmasterMain(int argc, char *argv[])
 
 	/* This may configure SIGURG, depending on platform. */
 	InitializeWaitEventSupport();
-	InitProcessLocalLatch();
 
 	/*
 	 * No other place in Postgres should touch SIGTTIN/SIGTTOU handling.  We
@@ -1659,14 +1658,14 @@ ConfigurePostmasterWaitSet(bool accept_connections)
 
 	pm_wait_set = CreateWaitEventSet(NULL,
 									 accept_connections ? (1 + NumListenSockets) : 1);
-	AddWaitEventToSet(pm_wait_set, WL_INTERRUPT, PGINVALID_SOCKET, NULL,
+	AddWaitEventToSet(pm_wait_set, WL_INTERRUPT, PGINVALID_SOCKET,
 					  INTERRUPT_GENERAL, NULL);
 
 	if (accept_connections)
 	{
 		for (int i = 0; i < NumListenSockets; i++)
 			AddWaitEventToSet(pm_wait_set, WL_SOCKET_ACCEPT, ListenSockets[i],
-							  NULL, 0, NULL);
+							  0, NULL);
 	}
 }
 

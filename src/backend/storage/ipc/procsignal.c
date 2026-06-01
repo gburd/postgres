@@ -31,7 +31,6 @@
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/interrupt.h"
-#include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/sinval.h"

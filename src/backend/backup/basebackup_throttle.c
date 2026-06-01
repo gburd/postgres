@@ -17,7 +17,7 @@
 #include "backup/basebackup_sink.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 

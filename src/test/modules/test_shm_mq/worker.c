@@ -21,7 +21,7 @@
 
 #include "miscadmin.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/shm_mq.h"
@@ -124,7 +124,7 @@ test_shm_mq_main(Datum main_arg)
 		elog(DEBUG1, "registrant backend has exited prematurely");
 		proc_exit(1);
 	}
-	SetLatch(&registrant->procLatch);
+	SendInterrupt(INTERRUPT_GENERAL, GetNumberFromPGProc(registrant));
 
 	/* Do the work. */
 	copy_messages(inqh, outqh);

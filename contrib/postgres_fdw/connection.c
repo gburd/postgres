@@ -28,7 +28,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postgres_fdw.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -1816,12 +1816,12 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 				pgfdw_we_cleanup_result = WaitEventExtensionNew("PostgresFdwCleanupResult");
 
 			/* Sleep until there's something to do */
-			wc = WaitLatchOrSocket(MyLatch,
-								   WL_LATCH_SET | WL_SOCKET_READABLE |
-								   WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-								   PQsocket(conn),
-								   cur_timeout, pgfdw_we_cleanup_result);
-			ResetLatch(MyLatch);
+			wc = WaitInterruptOrSocket(CheckForInterruptsMask,
+									   WL_INTERRUPT | WL_SOCKET_READABLE |
+									   WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+									   PQsocket(conn),
+									   cur_timeout, pgfdw_we_cleanup_result);
+			ClearInterrupt(CheckForInterruptsMask);
 
 			CHECK_FOR_INTERRUPTS();
 

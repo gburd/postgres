@@ -178,10 +178,10 @@ InitializeInterruptWaitSet(void)
 	/* Set up the WaitEventSet used by WaitInterrupt(). */
 	InterruptWaitSet = CreateWaitEventSet(NULL, 2);
 	interrupt_pos = AddWaitEventToSet(InterruptWaitSet, WL_INTERRUPT,
-									  PGINVALID_SOCKET, NULL, 0, NULL);
+									  PGINVALID_SOCKET, 0, NULL);
 	if (IsUnderPostmaster)
 		AddWaitEventToSet(InterruptWaitSet, WL_EXIT_ON_PM_DEATH,
-						  PGINVALID_SOCKET, NULL, 0, NULL);
+						  PGINVALID_SOCKET, 0, NULL);
 
 	Assert(interrupt_pos == InterruptWaitSetInterruptPos);
 }
@@ -221,11 +221,11 @@ WaitInterrupt(uint32 interruptMask, int wakeEvents, long timeout,
 	if (!(wakeEvents & WL_INTERRUPT))
 		interruptMask = 0;
 	ModifyWaitEvent(InterruptWaitSet, InterruptWaitSetInterruptPos,
-					WL_INTERRUPT, NULL, interruptMask);
+					WL_INTERRUPT, interruptMask);
 
 	ModifyWaitEvent(InterruptWaitSet, InterruptWaitSetPostmasterDeathPos,
 					(wakeEvents & (WL_EXIT_ON_PM_DEATH | WL_POSTMASTER_DEATH)),
-					NULL, 0);
+					0);
 
 	if (WaitEventSetWait(InterruptWaitSet,
 						 (wakeEvents & WL_TIMEOUT) ? timeout : -1,
@@ -269,7 +269,7 @@ WaitInterruptOrSocket(uint32 interruptMask, int wakeEvents, pgsocket sock,
 
 	if (wakeEvents & WL_INTERRUPT)
 		AddWaitEventToSet(set, WL_INTERRUPT, PGINVALID_SOCKET,
-						  NULL, interruptMask, NULL);
+						  interruptMask, NULL);
 
 	/* Postmaster-managed callers must handle postmaster death somehow. */
 	Assert(!IsUnderPostmaster ||
@@ -278,18 +278,18 @@ WaitInterruptOrSocket(uint32 interruptMask, int wakeEvents, pgsocket sock,
 
 	if ((wakeEvents & WL_POSTMASTER_DEATH) && IsUnderPostmaster)
 		AddWaitEventToSet(set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
-						  NULL, 0, NULL);
+						  0, NULL);
 
 	if ((wakeEvents & WL_EXIT_ON_PM_DEATH) && IsUnderPostmaster)
 		AddWaitEventToSet(set, WL_EXIT_ON_PM_DEATH, PGINVALID_SOCKET,
-						  NULL, 0, NULL);
+						  0, NULL);
 
 	if (wakeEvents & WL_SOCKET_MASK)
 	{
 		int			ev;
 
 		ev = wakeEvents & WL_SOCKET_MASK;
-		AddWaitEventToSet(set, ev, sock, NULL, 0, NULL);
+		AddWaitEventToSet(set, ev, sock, 0, NULL);
 	}
 
 	rc = WaitEventSetWait(set, timeout, &event, 1, wait_event_info);

@@ -8,8 +8,8 @@
  * pselect() (as opposed to plain poll()/select()).
  *
  * You can wait for:
- * - a latch being set from another process or from signal handler in the same
- *   process (WL_LATCH_SET)
+ * - an interrupt being raised from another process or from a signal handler
+ *   in the same process (WL_INTERRUPT)
  * - data to become readable or writeable on a socket (WL_SOCKET_*)
  * - postmaster death (WL_POSTMASTER_DEATH or WL_EXIT_ON_PM_DEATH)
  * - timeout (WL_TIMEOUT)
@@ -19,8 +19,9 @@
  *
  * The poll() implementation uses the so-called self-pipe trick to overcome the
  * race condition involved with poll() and setting a global flag in the signal
- * handler. When a latch is set and the current process is waiting for it, the
- * signal handler wakes up the poll() in WaitLatch by writing a byte to a pipe.
+ * handler. When an interrupt is raised and the current process is waiting for
+ * it, the signal handler wakes up the poll() in WaitInterrupt by writing a byte
+ * to a pipe.
  * A signal by itself doesn't interrupt poll() on all platforms, and even on
  * platforms where it does, a signal that arrives just before the poll() call
  * does not prevent poll() from entering sleep. An incoming byte on a pipe
@@ -74,7 +75,6 @@
 #include "storage/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
-#include "storage/latch.h"
 #include "storage/waiteventset.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -130,22 +130,11 @@ struct WaitEventSet
 	WaitEvent  *events;
 
 	/*
-	 * If WL_LATCH_SET is specified in any wait event, latch is a pointer to
-	 * said latch, and latch_pos the offset in the ->events array. This is
-	 * useful because we check the state of the latch before performing doing
-	 * syscalls related to waiting.
-	 */
-	Latch	   *latch;
-	int			latch_pos;
-
-	/*
 	 * If WL_INTERRUPT is specified in any wait event, interrupt_mask is the
 	 * set of interrupts to wait for, and interrupt_pos the offset in the
-	 * ->events array.  Like the latch above, this lets us check for pending
-	 * interrupts before doing syscalls related to waiting.  This is the
-	 * PG-on-xtc interrupt machinery (see storage/interrupt.h); it coexists
-	 * with the latch fields above until the conversion sweep replaces latch
-	 * waits with interrupt waits.
+	 * ->events array.  This lets us check for pending interrupts before doing
+	 * syscalls related to waiting.  This is the PG-on-xtc interrupt machinery
+	 * (see storage/interrupt.h).
 	 */
 	uint32		interrupt_mask;
 	int			interrupt_pos;
@@ -181,7 +170,7 @@ struct WaitEventSet
 };
 
 #ifndef WIN32
-/* Are we currently in WaitLatch? The signal handler would like to know. */
+/* Are we currently in WaitInterrupt? The signal handler would like to know. */
 static volatile sig_atomic_t waiting = false;
 #endif
 
@@ -249,7 +238,7 @@ ResourceOwnerForgetWaitEventSet(ResourceOwner owner, WaitEventSet *set)
  * Initialize the process-local wait event infrastructure.
  *
  * This must be called once during startup of any process that can wait on
- * latches, before it issues any InitLatch() or OwnLatch() calls.
+ * interrupts, before it issues any wait calls.
  */
 void
 InitializeWaitEventSupport(void)
@@ -299,8 +288,8 @@ InitializeWaitEventSupport(void)
 
 	/*
 	 * Set up the self-pipe that allows a signal handler to wake up the
-	 * poll()/epoll_wait() in WaitLatch. Make the write-end non-blocking, so
-	 * that SetLatch won't block if the event has already been set many times
+	 * poll()/epoll_wait() in WaitInterrupt. Make the write-end non-blocking, so
+	 * that the wakeup won't block if the event has already been set many times
 	 * filling the kernel buffer. Make the read-end non-blocking too, so that
 	 * we can easily clear the pipe by reading until EAGAIN or EWOULDBLOCK.
 	 * Also, make both FDs close-on-exec, since we surely do not want any
@@ -434,7 +423,6 @@ CreateWaitEventSet(ResourceOwner resowner, int nevents)
 	data += MAXALIGN(sizeof(HANDLE) * nevents);
 #endif
 
-	set->latch = NULL;
 	set->interrupt_mask = 0;
 	set->interrupt_pos = -1;
 	set->nevents_space = nevents;
@@ -520,11 +508,7 @@ FreeWaitEventSet(WaitEventSet *set)
 		 cur_event < (set->events + set->nevents);
 		 cur_event++)
 	{
-		if (cur_event->events & WL_LATCH_SET)
-		{
-			/* uses the latch's HANDLE */
-		}
-		else if (cur_event->events & WL_POSTMASTER_DEATH)
+		if (cur_event->events & WL_POSTMASTER_DEATH)
 		{
 			/* uses PostmasterHandle */
 		}
@@ -559,7 +543,7 @@ FreeWaitEventSetAfterFork(WaitEventSet *set)
 
 /* ---
  * Add an event to the set. Possible events are:
- * - WL_LATCH_SET: Wait for the latch to be set
+ * - WL_INTERRUPT: Wait for an interrupt in interruptMask to be raised
  * - WL_POSTMASTER_DEATH: Wait for postmaster to die
  * - WL_SOCKET_READABLE: Wait for socket to become readable,
  *	 can be combined in one event with other WL_SOCKET_* events
@@ -577,10 +561,6 @@ FreeWaitEventSetAfterFork(WaitEventSet *set)
  * Returns the offset in WaitEventSet->events (starting from 0), which can be
  * used to modify previously added wait events using ModifyWaitEvent().
  *
- * In the WL_LATCH_SET case the latch must be owned by the current process,
- * i.e. it must be a process-local latch initialized with InitLatch, or a
- * shared latch associated with the current process by calling OwnLatch.
- *
  * In the WL_SOCKET_READABLE/WRITEABLE/CONNECTED/ACCEPT cases, EOF and error
  * conditions cause the socket to be reported as readable/writable/connected,
  * so that the caller can deal with the condition.
@@ -590,7 +570,7 @@ FreeWaitEventSetAfterFork(WaitEventSet *set)
  * events.
  */
 int
-AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
+AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd,
 				  uint32 interruptMask, void *user_data)
 {
 	WaitEvent  *event;
@@ -602,21 +582,6 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 	{
 		events = WL_POSTMASTER_DEATH;
 		set->exit_on_postmaster_death = true;
-	}
-
-	if (latch)
-	{
-		if (latch->owner_pid != MyProcPid)
-			elog(ERROR, "cannot wait on a latch owned by another process");
-		if (set->latch)
-			elog(ERROR, "cannot wait on more than one latch");
-		if ((events & WL_LATCH_SET) != WL_LATCH_SET)
-			elog(ERROR, "latch events only support being set");
-	}
-	else
-	{
-		if (events & WL_LATCH_SET)
-			elog(ERROR, "cannot wait on latch without a specified latch");
 	}
 
 	/*
@@ -646,26 +611,11 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 	event->reset = false;
 #endif
 
-	if (events == WL_LATCH_SET)
-	{
-		set->latch = latch;
-		set->latch_pos = event->pos;
-#if defined(WAIT_USE_SELF_PIPE)
-		event->fd = selfpipe_readfd;
-#elif defined(WAIT_USE_SIGNALFD)
-		event->fd = signal_fd;
-#else
-		event->fd = PGINVALID_SOCKET;
-#ifdef WAIT_USE_EPOLL
-		return event->pos;
-#endif
-#endif
-	}
-	else if (events == WL_INTERRUPT)
+	if (events == WL_INTERRUPT)
 	{
 		/*
-		 * The interrupt word is woken via the same self-pipe / signalfd /
-		 * SIGURG primitive as the latch, so the registered fd is identical.
+		 * The interrupt word is woken via the self-pipe / signalfd / SIGURG
+		 * primitive, so the registered fd is the wakeup descriptor.
 		 */
 		set->interrupt_mask = interruptMask;
 		set->interrupt_pos = event->pos;
@@ -702,9 +652,8 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 }
 
 /*
- * Change the event mask and, in the WL_LATCH_SET case, the latch associated
- * with the WaitEvent.  The latch may be changed to NULL to disable the latch
- * temporarily, and then set back to a latch later.
+ * Change the event mask and, in the WL_INTERRUPT case, the set of interrupts
+ * associated with the WaitEvent.
  *
  * In the WL_INTERRUPT case, interruptMask is the new set of interrupts to
  * wait for; it may be changed without restriction since all interrupt waits
@@ -713,7 +662,7 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
  * 'pos' is the id returned by AddWaitEventToSet.
  */
 void
-ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch,
+ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events,
 				uint32 interruptMask)
 {
 	WaitEvent  *event;
@@ -744,18 +693,14 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch,
 	}
 
 	/*
-	 * If neither the event mask nor the associated latch changes, return
-	 * early. That's an important optimization for some sockets, where
+	 * If neither the event mask nor the associated interrupt set changes,
+	 * return early. That's an important optimization for some sockets, where
 	 * ModifyWaitEvent is frequently used to switch from waiting for reads to
 	 * waiting on writes.
 	 */
 	if (events == event->events &&
-		(!(event->events & WL_LATCH_SET) || set->latch == latch) &&
 		(!(event->events & WL_INTERRUPT) || set->interrupt_mask == interruptMask))
 		return;
-
-	if (event->events & WL_LATCH_SET && events != event->events)
-		elog(ERROR, "cannot modify latch event");
 
 	if (event->events & WL_INTERRUPT && events != event->events)
 		elog(ERROR, "cannot modify interrupt event");
@@ -763,42 +708,17 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch,
 	/* FIXME: validate event mask */
 	event->events = events;
 
-	if (events == WL_LATCH_SET)
-	{
-		if (latch && latch->owner_pid != MyProcPid)
-			elog(ERROR, "cannot wait on a latch owned by another process");
-		set->latch = latch;
-
-		/*
-		 * On Unix, we don't need to modify the kernel object because the
-		 * underlying pipe (if there is one) is the same for all latches so we
-		 * can return immediately.  On Windows, we need to update our array of
-		 * handles, but we leave the old one in place and tolerate spurious
-		 * wakeups if the latch is disabled.
-		 */
-#if defined(WAIT_USE_WIN32)
-		if (!latch)
-			return;
-#else
-		return;
-#endif
-	}
-
 	if (events == WL_INTERRUPT)
 	{
 		set->interrupt_mask = interruptMask;
 
 		/*
-		 * As with the latch, the underlying wakeup primitive is shared by all
-		 * interrupt waits, so on Unix there is no kernel object to modify and
-		 * we can return immediately.  On Windows we leave the existing handle
-		 * in place and tolerate spurious wakeups.
+		 * The underlying wakeup primitive is shared by all interrupt waits,
+		 * so on Unix there is no kernel object to modify and we can return
+		 * immediately.  On Windows we leave the existing handle in place and
+		 * tolerate spurious wakeups.
 		 */
-#if defined(WAIT_USE_WIN32)
 		return;
-#else
-		return;
-#endif
 	}
 
 #if defined(WAIT_USE_EPOLL)
@@ -828,9 +748,8 @@ WaitEventAdjustEpoll(WaitEventSet *set, WaitEvent *event, int action)
 	epoll_ev.events = EPOLLERR | EPOLLHUP;
 
 	/* prepare pollfd entry once */
-	if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
+	if (event->events == WL_INTERRUPT)
 	{
-		Assert(event->events != WL_LATCH_SET || set->latch != NULL);
 		epoll_ev.events |= EPOLLIN;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
@@ -877,9 +796,8 @@ WaitEventAdjustPoll(WaitEventSet *set, WaitEvent *event)
 	pollfd->fd = event->fd;
 
 	/* prepare pollfd entry once */
-	if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
+	if (event->events == WL_INTERRUPT)
 	{
-		Assert(event->events != WL_LATCH_SET || set->latch != NULL);
 		pollfd->events = POLLIN;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
@@ -943,7 +861,7 @@ WaitEventAdjustKqueueAddPostmaster(struct kevent *k_ev, WaitEvent *event)
 static inline void
 WaitEventAdjustKqueueAddLatch(struct kevent *k_ev, WaitEvent *event)
 {
-	/* For now latch can only be added, not removed. */
+	/* For now the interrupt wakeup can only be added, not removed. */
 	k_ev->ident = SIGURG;
 	k_ev->filter = EVFILT_SIGNAL;
 	k_ev->flags = EV_ADD;
@@ -969,9 +887,7 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 	if (old_events == event->events)
 		return;
 
-	Assert(event->events != WL_LATCH_SET || set->latch != NULL);
-	Assert(event->events == WL_LATCH_SET ||
-		   event->events == WL_INTERRUPT ||
+	Assert(event->events == WL_INTERRUPT ||
 		   event->events == WL_POSTMASTER_DEATH ||
 		   (event->events & (WL_SOCKET_READABLE |
 							 WL_SOCKET_WRITEABLE |
@@ -986,9 +902,9 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 		 */
 		WaitEventAdjustKqueueAddPostmaster(&k_ev[count++], event);
 	}
-	else if (event->events == WL_LATCH_SET || event->events == WL_INTERRUPT)
+	else if (event->events == WL_INTERRUPT)
 	{
-		/* We detect latch/interrupt wakeup using a signal event. */
+		/* We detect interrupt wakeup using a signal event. */
 		WaitEventAdjustKqueueAddLatch(&k_ev[count++], event);
 	}
 	else
@@ -1069,18 +985,12 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 {
 	HANDLE	   *handle = &set->handles[event->pos + 1];
 
-	if (event->events == WL_LATCH_SET)
-	{
-		Assert(set->latch != NULL);
-		*handle = set->latch->event;
-	}
-	else if (event->events == WL_INTERRUPT)
+	if (event->events == WL_INTERRUPT)
 	{
 		/*
-		 * XXX: Windows wakeup wiring for the interrupt word is deferred.  In
-		 * the process model the latch path remains in use; threaded-mode
-		 * Windows support requires a shared wakeup HANDLE here (see
-		 * docs/threading/INTERRUPTS_REDERIVATION.md).
+		 * XXX: Windows wakeup wiring for the interrupt word is deferred.
+		 * Threaded-mode Windows support requires a shared wakeup HANDLE here
+		 * (see docs/threading/INTERRUPTS_REDERIVATION.md).
 		 */
 		elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
 	}
@@ -1160,7 +1070,7 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 #ifndef WIN32
 	waiting = true;
 #else
-	/* Ensure that signals are serviced even if latch is already set */
+	/* Ensure that signals are serviced even if an interrupt is already pending */
 	pgwin32_dispatch_queued_signals();
 #endif
 	while (returned_events == 0)
@@ -1168,73 +1078,38 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 		int			rc;
 
 		/*
-		 * Check if the latch is set already first.  If so, we either exit
+		 * Check if an interrupt is pending already.  If so, we either exit
 		 * immediately or ask the kernel for further events available right
 		 * now without waiting, depending on how many events the caller wants.
 		 *
-		 * If someone sets the latch between this and the
+		 * If someone raises an interrupt between this and the
 		 * WaitEventSetWaitBlock() below, the setter will write a byte to the
 		 * pipe (or signal us and the signal handler will do that), and the
 		 * readiness routine will return immediately.
 		 *
 		 * On unix, If there's a pending byte in the self pipe, we'll notice
 		 * whenever blocking. Only clearing the pipe in that case avoids
-		 * having to drain it every time WaitLatchOrSocket() is used. Should
-		 * the pipe-buffer fill up we're still ok, because the pipe is in
+		 * having to drain it every time WaitInterrupt() is used. Should the
+		 * pipe-buffer fill up we're still ok, because the pipe is in
 		 * nonblocking mode. It's unlikely for that to happen, because the
 		 * self pipe isn't filled unless we're blocking (waiting = true), or
 		 * from inside a signal handler in latch_sigurg_handler().
 		 *
-		 * On windows, we'll also notice if there's a pending event for the
-		 * latch when blocking, but there's no danger of anything filling up,
-		 * as "Setting an event that is already set has no effect.".
+		 * On windows, we'll also notice if there's a pending event when
+		 * blocking, but there's no danger of anything filling up, as "Setting
+		 * an event that is already set has no effect.".
 		 *
-		 * Note: we assume that the kernel calls involved in latch management
-		 * will provide adequate synchronization on machines with weak memory
-		 * ordering, so that we cannot miss seeing is_set if a notification
-		 * has already been queued.
-		 */
-		if (set->latch && !set->latch->is_set)
-		{
-			/* about to sleep on a latch */
-			set->latch->maybe_sleeping = true;
-			pg_memory_barrier();
-			/* and recheck */
-		}
-
-		if (set->latch && set->latch->is_set)
-		{
-			occurred_events->fd = PGINVALID_SOCKET;
-			occurred_events->pos = set->latch_pos;
-			occurred_events->user_data =
-				set->events[set->latch_pos].user_data;
-			occurred_events->events = WL_LATCH_SET;
-			occurred_events++;
-			returned_events++;
-
-			/* could have been set above */
-			set->latch->maybe_sleeping = false;
-
-			if (returned_events == nevents)
-				break;			/* output buffer full already */
-
-			/*
-			 * Even though we already have an event, we'll poll just once with
-			 * zero timeout to see what non-latch events we can fit into the
-			 * output buffer at the same time.
-			 */
-			cur_timeout = 0;
-			timeout = 0;
-		}
-
-		/*
-		 * Same as the latch fast-path above, but for the interrupt word.
+		 * Note: we assume that the kernel calls involved in interrupt
+		 * management will provide adequate synchronization on machines with
+		 * weak memory ordering, so that we cannot miss seeing a pending
+		 * interrupt if a notification has already been queued.
+		 *
 		 * Atomically advertise that we are about to sleep (the
 		 * SLEEPING_ON_INTERRUPTS bit) and re-check whether an interrupt is
 		 * already pending; if so, avoid blocking altogether.  If someone sets
 		 * an interrupt bit after this, the setter will see
-		 * SLEEPING_ON_INTERRUPTS and wake us via the same self-pipe / SIGURG
-		 * primitive used for latches.
+		 * SLEEPING_ON_INTERRUPTS and wake us via the self-pipe / SIGURG
+		 * primitive.
 		 */
 		if (set->interrupt_mask != 0 && !sleeping_flag_armed)
 		{
@@ -1279,10 +1154,6 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 		 */
 		rc = WaitEventSetWaitBlock(set, cur_timeout,
 								   occurred_events, nevents - returned_events);
-
-		if (set->latch &&
-			set->latch->maybe_sleeping)
-			set->latch->maybe_sleeping = false;
 
 		if (rc == -1)
 			break;				/* timeout occurred */
@@ -1374,21 +1245,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
-		if (cur_event->events == WL_LATCH_SET &&
-			cur_epoll_event->events & (EPOLLIN | EPOLLERR | EPOLLHUP))
-		{
-			/* Drain the signalfd. */
-			drain();
-
-			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
-			{
-				occurred_events->fd = PGINVALID_SOCKET;
-				occurred_events->events = WL_LATCH_SET;
-				occurred_events++;
-				returned_events++;
-			}
-		}
-		else if (cur_event->events == WL_INTERRUPT &&
+		if (cur_event->events == WL_INTERRUPT &&
 				 cur_epoll_event->events & (EPOLLIN | EPOLLERR | EPOLLHUP))
 		{
 			/* Drain the signalfd / self-pipe. */
@@ -1551,18 +1408,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
-		if (cur_event->events == WL_LATCH_SET &&
-			cur_kqueue_event->filter == EVFILT_SIGNAL)
-		{
-			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
-			{
-				occurred_events->fd = PGINVALID_SOCKET;
-				occurred_events->events = WL_LATCH_SET;
-				occurred_events++;
-				returned_events++;
-			}
-		}
-		else if (cur_event->events == WL_INTERRUPT &&
+		if (cur_event->events == WL_INTERRUPT &&
 				 cur_kqueue_event->filter == EVFILT_SIGNAL)
 		{
 			if (set->interrupt_mask != 0 &&
@@ -1685,21 +1531,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
-		if (cur_event->events == WL_LATCH_SET &&
-			(cur_pollfd->revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
-		{
-			/* There's data in the self-pipe, clear it. */
-			drain();
-
-			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
-			{
-				occurred_events->fd = PGINVALID_SOCKET;
-				occurred_events->events = WL_LATCH_SET;
-				occurred_events++;
-				returned_events++;
-			}
-		}
-		else if (cur_event->events == WL_INTERRUPT &&
+		if (cur_event->events == WL_INTERRUPT &&
 				 (cur_pollfd->revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)))
 		{
 			/* There's data in the self-pipe, clear it. */
@@ -1913,31 +1745,12 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
-		if (cur_event->events == WL_LATCH_SET)
-		{
-			/*
-			 * We cannot use set->latch->event to reset the fired event if we
-			 * aren't waiting on this latch now.
-			 */
-			if (!ResetEvent(set->handles[cur_event->pos + 1]))
-				elog(ERROR, "ResetEvent failed: error code %lu", GetLastError());
-
-			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
-			{
-				occurred_events->fd = PGINVALID_SOCKET;
-				occurred_events->events = WL_LATCH_SET;
-				occurred_events++;
-				returned_events++;
-			}
-		}
-		else if (cur_event->events == WL_INTERRUPT)
+		if (cur_event->events == WL_INTERRUPT)
 		{
 			/*
 			 * WL_INTERRUPT is not yet supported on Windows: AddWaitEventToSet
 			 * / WaitEventAdjustWin32 reject it before we ever get here, so we
-			 * should never observe an interrupt event in this loop.  Keep a
-			 * parallel branch for structural symmetry with the latch case and
-			 * to fail loudly if that invariant is ever violated.
+			 * should never observe an interrupt event in this loop.
 			 */
 			elog(ERROR, "WL_INTERRUPT is not yet supported on Windows");
 		}
@@ -2087,9 +1900,10 @@ GetNumRegisteredWaitEvents(WaitEventSet *set)
 #if defined(WAIT_USE_SELF_PIPE)
 
 /*
- * SetLatch uses SIGURG to wake up the process waiting on the latch.
+ * The wakeup primitive uses SIGURG to wake up the process waiting on an
+ * interrupt.
  *
- * Wake up WaitLatch, if we're waiting.
+ * Wake up WaitInterrupt, if we're waiting.
  */
 static void
 latch_sigurg_handler(SIGNAL_ARGS)
@@ -2098,7 +1912,7 @@ latch_sigurg_handler(SIGNAL_ARGS)
 		sendSelfPipeByte();
 }
 
-/* Send one byte to the self-pipe, to wake up WaitLatch */
+/* Send one byte to the self-pipe, to wake up WaitInterrupt */
 static void
 sendSelfPipeByte(void)
 {
@@ -2115,7 +1929,7 @@ retry:
 
 		/*
 		 * If the pipe is full, we don't need to retry, the data that's there
-		 * already is enough to wake up WaitLatch.
+		 * already is enough to wake up WaitInterrupt.
 		 */
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return;
@@ -2213,7 +2027,7 @@ ResOwnerReleaseWaitEventSet(Datum res)
  * NB: this function is called from critical sections and signal handlers so
  * throwing an error is not a good idea.
  *
- * On Windows, Latch uses SetEvent directly and this is not used.
+ * On Windows, this is not used.
  */
 void
 WakeupMyProc(void)

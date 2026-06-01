@@ -89,7 +89,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/large_object.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"

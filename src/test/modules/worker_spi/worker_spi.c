@@ -26,7 +26,7 @@
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 
 /* these headers are used by this particular worker's code */
 #include "access/xact.h"
@@ -218,11 +218,11 @@ worker_spi_main(Datum main_arg)
 		 * necessary, but is awakened if postmaster dies.  That way the
 		 * background process goes away immediately in an emergency.
 		 */
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 worker_spi_naptime * 1000L,
-						 worker_spi_wait_event_main);
-		ResetLatch(MyLatch);
+		(void) WaitInterrupt(CheckForInterruptsMask,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 worker_spi_naptime * 1000L,
+							 worker_spi_wait_event_main);
+		ClearInterrupt(CheckForInterruptsMask);
 
 		CHECK_FOR_INTERRUPTS();
 

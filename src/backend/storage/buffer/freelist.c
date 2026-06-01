@@ -207,19 +207,19 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	/*
 	 * If asked, we need to waken the bgwriter. Since we don't want to rely on
 	 * a spinlock for this we force a read from shared memory once, and then
-	 * set the latch based on that value. We need to go through that length
-	 * because otherwise bgwprocno might be reset while/after we check because
-	 * the compiler might just reread from memory.
+	 * raise an interrupt based on that value. We need to go through that
+	 * length because otherwise bgwprocno might be reset while/after we check
+	 * because the compiler might just reread from memory.
 	 *
-	 * This can possibly set the latch of the wrong process if the bgwriter
-	 * dies in the wrong moment. But since PGPROC->procLatch is never
-	 * deallocated the worst consequence of that is that we set the latch of
+	 * This can possibly interrupt the wrong process if the bgwriter
+	 * dies in the wrong moment. But since the interrupt machinery is never
+	 * deallocated the worst consequence of that is that we interrupt
 	 * some arbitrary process.
 	 */
 	bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
 	if (bgwprocno != -1)
 	{
-		/* reset bgwprocno first, before setting the latch */
+		/* reset bgwprocno first, before raising the interrupt */
 		StrategyControl->bgwprocno = -1;
 
 		/*

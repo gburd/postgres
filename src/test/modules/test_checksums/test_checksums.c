@@ -15,7 +15,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/datachecksum_state.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "utils/injection_point.h"
 #include "utils/wait_event.h"
 
@@ -34,10 +34,10 @@ dc_delay_barrier(const char *name, const void *private_data, void *arg)
 	(void) name;
 	(void) private_data;
 
-	(void) WaitLatch(MyLatch,
-					 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-					 (3 * 1000),
-					 WAIT_EVENT_PG_SLEEP);
+	(void) WaitInterrupt(CheckForInterruptsMask,
+						 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 (3 * 1000),
+						 WAIT_EVENT_PG_SLEEP);
 }
 
 PG_FUNCTION_INFO_V1(dcw_inject_delay_barrier);

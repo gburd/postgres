@@ -20,13 +20,14 @@
 #include "postmaster/interrupt.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "utils/backend_status.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 typedef struct pgsa_writer_context
 {
@@ -163,8 +164,8 @@ pg_stash_advice_worker_main(Datum main_arg)
 		if (pg_stash_advice_persist_interval <= 0)
 		{
 			/* Only writing at shutdown, so just wait forever. */
-			(void) WaitLatch(MyLatch,
-							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+			(void) WaitInterrupt(CheckForInterruptsMask,
+							 WL_INTERRUPT | WL_EXIT_ON_PM_DEATH,
 							 -1L,
 							 PG_WAIT_EXTENSION);
 		}
@@ -201,13 +202,13 @@ pg_stash_advice_worker_main(Datum main_arg)
 			}
 
 			/* Sleep until the next write time. */
-			(void) WaitLatch(MyLatch,
-							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+			(void) WaitInterrupt(CheckForInterruptsMask,
+							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							 delay_in_ms,
 							 PG_WAIT_EXTENSION);
 		}
 
-		ResetLatch(MyLatch);
+		ClearInterrupt(CheckForInterruptsMask);
 	}
 
 	/* Write one last time before exiting. */

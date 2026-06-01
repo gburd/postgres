@@ -149,7 +149,7 @@
 #include "postmaster/autovacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/lmgr.h"
 #include "storage/read_stream.h"
 #include "utils/injection_point.h"

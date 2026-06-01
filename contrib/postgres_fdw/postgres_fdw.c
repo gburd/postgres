@@ -43,7 +43,7 @@
 #include "parser/parsetree.h"
 #include "postgres_fdw.h"
 #include "statistics/statistics.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
 #include "utils/guc.h"
@@ -8205,7 +8205,7 @@ postgresForeignAsyncConfigureWait(AsyncRequest *areq)
 		Assert(pendingAreq == areq);
 
 	AddWaitEventToSet(set, WL_SOCKET_READABLE, PQsocket(fsstate->conn),
-					  NULL, 0, areq);
+					  0, areq);
 }
 
 /*

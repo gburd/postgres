@@ -3980,7 +3980,7 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 {
 	WaitEvent	event;
 
-	ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, socket_events, NULL, 0);
+	ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, socket_events, 0);
 
 	/*
 	 * We use a condition variable to efficiently wake up walsenders in

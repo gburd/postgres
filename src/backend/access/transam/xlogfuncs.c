@@ -30,7 +30,7 @@
 #include "utils/acl.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/standby.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"

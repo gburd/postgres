@@ -17,7 +17,7 @@
 #include "access/xlogdefs.h"
 #include "lib/ilist.h"
 #include "miscadmin.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
 #include "storage/proclist_types.h"
@@ -259,13 +259,10 @@ typedef struct PGPROC
 	 * Inter-process signaling
 	 ************************************************************************/
 
-	Latch		procLatch;		/* generic latch for process */
-
 	/*
 	 * Pending interrupts for this process, set by other backends via
-	 * SendInterrupt().  Added by the PG-on-xtc interrupt re-derivation
-	 * alongside procLatch; the two coexist until the latch wait/wake call
-	 * sites are converted and the Latch is removed.  See
+	 * SendInterrupt() and by this process via RaiseInterrupt().  This is the
+	 * process's shared interrupt word; see
 	 * docs/threading/INTERRUPTS_REDERIVATION.md.
 	 */
 	pg_atomic_uint32 pendingInterrupts;

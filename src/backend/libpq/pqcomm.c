@@ -78,7 +78,7 @@
 #include "port/pg_bswap.h"
 #include "postmaster/postmaster.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 
@@ -307,12 +307,12 @@ pq_init(ClientSocket *client_sock)
 
 	FeBeWaitSet = CreateWaitEventSet(NULL, FeBeWaitSetNEvents);
 	socket_pos = AddWaitEventToSet(FeBeWaitSet, WL_SOCKET_WRITEABLE,
-								   port->sock, NULL, 0, NULL);
+								   port->sock, 0, NULL);
 	latch_pos = AddWaitEventToSet(FeBeWaitSet, WL_INTERRUPT, PGINVALID_SOCKET,
-								  NULL, CheckForInterruptsMask | INTERRUPT_GENERAL,
+								  CheckForInterruptsMask | INTERRUPT_GENERAL,
 								  NULL);
 	AddWaitEventToSet(FeBeWaitSet, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
-					  NULL, 0, NULL);
+					  0, NULL);
 
 	/*
 	 * The event positions match the order we added them, but let's sanity
@@ -2063,7 +2063,7 @@ pq_check_connection(void)
 	 * It's OK to modify the socket event filter without restoring, because
 	 * all FeBeWaitSet socket wait sites do the same.
 	 */
-	ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, WL_SOCKET_CLOSED, NULL, 0);
+	ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, WL_SOCKET_CLOSED, 0);
 
 retry:
 	rc = WaitEventSetWait(FeBeWaitSet, 0, events, lengthof(events), 0);

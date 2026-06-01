@@ -19,7 +19,7 @@
 #include "miscadmin.h"
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/procsignal.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"

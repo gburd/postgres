@@ -321,7 +321,6 @@ ProcGlobalShmemInit(void *arg)
 		if (i < FIRST_PREPARED_XACT_PROC_NUMBER)
 		{
 			proc->sem = PGSemaphoreCreate();
-			InitSharedLatch(&(proc->procLatch));
 			pg_atomic_init_u32(&(proc->pendingInterrupts), 0);
 			LWLockInitialize(&(proc->fpInfoLock), LWTRANCHE_LOCK_FASTPATH);
 		}
@@ -532,14 +531,6 @@ InitProcess(void)
 	MyProc->clogGroupMemberLsn = InvalidXLogRecPtr;
 	Assert(pg_atomic_read_u32(&MyProc->clogGroupNext) == INVALID_PROC_NUMBER);
 
-	/*
-	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
-	 * on it.  That allows us to repoint the process latch, which so far
-	 * points to process local one, to the shared one.
-	 */
-	OwnLatch(&MyProc->procLatch);
-	SwitchToSharedLatch();
-
 	/* Start accepting interrupts from other processes */
 	SwitchToSharedInterrupts();
 
@@ -705,14 +696,6 @@ InitAuxiliaryProcess(void)
 			Assert(dlist_is_empty(&(MyProc->myProcLocks[i])));
 	}
 #endif
-
-	/*
-	 * Acquire ownership of the PGPROC's latch, so that we can use WaitLatch
-	 * on it.  That allows us to repoint the process latch, which so far
-	 * points to process local one, to the shared one.
-	 */
-	OwnLatch(&MyProc->procLatch);
-	SwitchToSharedLatch();
 
 	/* Start accepting interrupts from other processes */
 	SwitchToSharedInterrupts();
@@ -999,22 +982,20 @@ ProcKill(int code, Datum arg)
 	}
 
 	/*
-	 * Reset MyLatch to the process local one.  This is so that signal
-	 * handlers et al can continue using the latch after the shared latch
-	 * isn't ours anymore.
+	 * Stop accepting interrupts from other processes by switching back to the
+	 * process-local pending-interrupt word, so that signal handlers et al can
+	 * continue raising interrupts after our shared slot isn't ours anymore.
 	 *
 	 * Similarly, stop reporting wait events to MyProc->wait_event_info.
 	 *
-	 * After that clear MyProc and disown the shared latch.
+	 * After that clear MyProc.
 	 */
-	SwitchBackToLocalLatch();
 	SwitchToLocalInterrupts();
 	pgstat_reset_wait_event_storage();
 
 	proc = MyProc;
 	MyProc = NULL;
 	MyProcNumber = INVALID_PROC_NUMBER;
-	DisownLatch(&proc->procLatch);
 
 	/* Mark the proc no longer in use */
 	proc->pid = 0;
@@ -1073,14 +1054,12 @@ AuxiliaryProcKill(int code, Datum arg)
 	ConditionVariableCancelSleep();
 
 	/* look at the equivalent ProcKill() code for comments */
-	SwitchBackToLocalLatch();
 	SwitchToLocalInterrupts();
 	pgstat_reset_wait_event_storage();
 
 	proc = MyProc;
 	MyProc = NULL;
 	MyProcNumber = INVALID_PROC_NUMBER;
-	DisownLatch(&proc->procLatch);
 
 	SpinLockAcquire(&ProcGlobal->freeProcsLock);
 

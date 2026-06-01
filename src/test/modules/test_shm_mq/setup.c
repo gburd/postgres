@@ -288,11 +288,11 @@ wait_for_workers_to_become_ready(worker_state *wstate,
 			we_bgworker_startup = WaitEventExtensionNew("TestShmMqBgWorkerStartup");
 
 		/* Wait to be signaled. */
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-						 we_bgworker_startup);
+		(void) WaitInterrupt(CheckForInterruptsMask, WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
+							 we_bgworker_startup);
 
-		/* Reset the latch so we don't spin. */
-		ResetLatch(MyLatch);
+		/* Clear the interrupt so we don't spin. */
+		ClearInterrupt(CheckForInterruptsMask);
 
 		/* An interrupt may have occurred while we were waiting. */
 		CHECK_FOR_INTERRUPTS();

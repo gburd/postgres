@@ -42,7 +42,7 @@
 #include "storage/aio_subsys.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"

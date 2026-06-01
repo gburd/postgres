@@ -21,7 +21,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "replication/logicalworker.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/wait_event.h"

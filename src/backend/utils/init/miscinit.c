@@ -43,7 +43,7 @@
 #include "replication/slotsync.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
-#include "storage/latch.h"
+#include "storage/interrupt.h"
 #include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
@@ -66,8 +66,6 @@ BackendType MyBackendType;
 
 /* List of lock files to be removed at proc exit */
 static List *lock_files = NIL;
-
-static Latch LocalLatchData;
 
 /* ----------------------------------------------------------------
  *		ignoring system indexes support stuff
@@ -127,10 +125,8 @@ InitPostmasterChild(void)
 	pqinitmask();
 #endif
 
-	/* Initialize process-local latch support */
+	/* Initialize process-local interrupt support */
 	InitializeWaitEventSupport();
-	InitProcessLocalLatch();
-	InitializeLatchWaitSet();
 	InitializeInterruptWaitSet();
 
 	/*
@@ -189,10 +185,8 @@ InitStandaloneProcess(const char *argv0)
 
 	InitProcessGlobals();
 
-	/* Initialize process-local latch support */
+	/* Initialize process-local interrupt support */
 	InitializeWaitEventSupport();
-	InitProcessLocalLatch();
-	InitializeLatchWaitSet();
 	InitializeInterruptWaitSet();
 
 	/*
@@ -212,48 +206,6 @@ InitStandaloneProcess(const char *argv0)
 
 	if (pkglib_path[0] == '\0')
 		get_pkglib_path(my_exec_path, pkglib_path);
-}
-
-void
-SwitchToSharedLatch(void)
-{
-	Assert(MyLatch == &LocalLatchData);
-	Assert(MyProc != NULL);
-
-	MyLatch = &MyProc->procLatch;
-
-	/*
-	 * The FeBeWaitSet interrupt event watches the process-wide wakeup
-	 * primitive, not a specific latch, so it needs no update when switching
-	 * the latch/interrupt-word destination.
-	 */
-
-	/*
-	 * Set the shared latch as the local one might have been set. This
-	 * shouldn't normally be necessary as code is supposed to check the
-	 * condition before waiting for the latch, but a bit care can't hurt.
-	 */
-	SetLatch(MyLatch);
-}
-
-void
-InitProcessLocalLatch(void)
-{
-	MyLatch = &LocalLatchData;
-	InitLatch(MyLatch);
-}
-
-void
-SwitchBackToLocalLatch(void)
-{
-	Assert(MyLatch != &LocalLatchData);
-	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
-
-	MyLatch = &LocalLatchData;
-
-	/* See SwitchToSharedLatch: the FeBeWaitSet interrupt event is unaffected. */
-
-	SetLatch(MyLatch);
 }
 
 /*

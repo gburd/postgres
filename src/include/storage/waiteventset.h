@@ -37,7 +37,6 @@ typedef struct ResourceOwnerData *ResourceOwner;
  * Bitmasks for events that may wake-up WaitLatch(), WaitLatchOrSocket(), or
  * WaitEventSetWait().
  */
-#define WL_LATCH_SET		 (1 << 0)
 #define WL_SOCKET_READABLE	 (1 << 1)
 #define WL_SOCKET_WRITEABLE  (1 << 2)
 #define WL_TIMEOUT			 (1 << 3)	/* not for WaitEventSetWait() */
@@ -65,10 +64,9 @@ typedef struct ResourceOwnerData *ResourceOwner;
 /*
  * Wake up when one of the interrupts in the given mask becomes pending.
  *
- * This coexists with WL_LATCH_SET: an event registered with WL_INTERRUPT
- * watches the per-process pending-interrupt word (see storage/interrupt.h)
- * rather than a Latch, but shares the same underlying OS wakeup primitive.
- * A free bit is used so both kinds of event can appear in the same set.
+ * An event registered with WL_INTERRUPT watches the per-process
+ * pending-interrupt word (see storage/interrupt.h), woken via the process's
+ * SIGURG self-wakeup primitive.
  */
 #define WL_INTERRUPT		 (1 << 9)
 
@@ -86,8 +84,6 @@ typedef struct WaitEvent
 /* forward declarations to avoid exposing waiteventset.c implementation details */
 typedef struct WaitEventSet WaitEventSet;
 
-struct Latch;
-
 /*
  * prototypes for functions in waiteventset.c
  */
@@ -97,10 +93,9 @@ extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
 extern void FreeWaitEventSetAfterFork(WaitEventSet *set);
 extern int	AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd,
-							  struct Latch *latch, uint32 interruptMask,
-							  void *user_data);
+							  uint32 interruptMask, void *user_data);
 extern void ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events,
-							struct Latch *latch, uint32 interruptMask);
+							uint32 interruptMask);
 extern int	WaitEventSetWait(WaitEventSet *set, long timeout,
 							 WaitEvent *occurred_events, int nevents,
 							 uint32 wait_event_info);

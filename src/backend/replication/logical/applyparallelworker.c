@@ -167,7 +167,6 @@
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
 #include "storage/interrupt.h"
-#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"

@@ -240,9 +240,9 @@ test_shm_mq_pipelined(PG_FUNCTION_ARGS)
 			 * have read or written data and therefore there may now be work
 			 * for us to do.
 			 */
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-							 we_message_queue);
-			ResetLatch(MyLatch);
+			(void) WaitInterrupt(CheckForInterruptsMask, WL_INTERRUPT | WL_EXIT_ON_PM_DEATH, 0,
+								 we_message_queue);
+			ClearInterrupt(CheckForInterruptsMask);
 			CHECK_FOR_INTERRUPTS();
 		}
 	}

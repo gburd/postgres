@@ -8,7 +8,6 @@ backend_sources += files(
   'interrupt.c',
   'ipc.c',
   'ipci.c',
-  'latch.c',
   'pmsignal.c',
   'procarray.c',
   'procsignal.c',
