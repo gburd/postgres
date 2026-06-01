@@ -1,6 +1,7 @@
 # Interrupt Re-derivation — replacing Latches with Interrupts on current master
 
-Status: **STEPS 1–3 IMPLEMENTED & BUILD-VERIFIED.** This document plans the
+Status: **STEPS 1–4 COMPLETE; STEP 5 EFFECTIVELY COMPLETE (build-green +
+runtime smoke-verified).** This document plans the
 re-derivation of Heikki Linnakangas's "Replace Latches with Interrupts"
 refactor against current master (`7ea22d4c950`), as the first structural
 piece of the PG-on-xtc work beyond Phase 0 tooling. It is the reference
@@ -434,11 +435,88 @@ Steps **1 and 2** have landed on branch `xtc`:
   replication slot create/drop (`active_cv` broadcast), `pg_reload_conf()`,
   and `pg_ctl -m fast stop`.
 
-**Latch wait/wake conversion is partial: the aux-loop, shm_mq and
-condition-variable sites are on `WaitInterrupt`, but `proc.c` and the
-syncrep / walreceiver family remain on the latch; `latch.c` remains; the
-`multithreaded` build stays off.** Steps 5 (remainder) through 7 (below)
-complete the sweep.
+* Step 5 — **Convert latch wait/wake call sites** (third batch — the
+  proc.c / syncrep / walreceiver family previously deferred), landed in
+  ten commits `848324e`..`df63e1c`:
+  - `848324e` — `proc.c` lock/signal waiters (`ProcSleep`,
+    `ProcWaitForSignal`) to `WaitInterrupt`.
+  - `2a92d63` — `xlogwait.c`, `pgarch.c`, `syncrep.c` waiters.
+  - `3dc77fe` — remaining simple self-waiter loops.
+  - `d75dd1c` — `walsummarizer.c`, bgworker, datachecksum, slotsync.
+  - `4bd4691` — `walreceiver` and AIO io-worker waiters.
+  - `6f691e4` — logical-replication apply/tablesync waiters.
+  - `02de592` — parallel worker and xlog backup waiters.
+  - `8f53846` — GSSAPI/TLS handshake socket waits to
+    `WaitInterruptOrSocket`.
+  - `df63e1c` — `recoveryWakeupLatch` to `INTERRUPT_RECOVERY_CONTINUE`.
+
+  **Root-cause bug fixed (`ba40e1f`).** `4bd4691` armed the AIO io-worker
+  wait with mask `CheckForInterruptsMask | INTERRUPT_GENERAL` and an
+  infinite timeout, but the io worker is shut down via SIGUSR2 →
+  `SignalHandlerForShutdownRequest`, which raises `INTERRUPT_SHUTDOWN_AUX`
+  — a bit NOT in `INTERRUPT_CFI_MASK`. So io workers never woke for
+  shutdown and `pg_ctl -m fast stop` hung on *any* cluster (bisected:
+  parent `d75dd1c` clean, `4bd4691` hangs). Fix: add
+  `INTERRUPT_SHUTDOWN_AUX` to the IoWorkerMain wait mask
+  (`method_worker.c`). General rule reaffirmed: a wait mask of
+  `CheckForInterruptsMask | INTERRUPT_GENERAL` is **missing**
+  `INTERRUPT_SHUTDOWN_AUX` (which lives in `INTERRUPT_MAIN_LOOP_MASK`, not
+  the CFI mask); any aux waiter that can be shut down via the aux-shutdown
+  path must add it explicitly. (`applyparallelworker.c` has the same
+  narrow mask but every wait there is `WL_TIMEOUT`-bounded, so it cannot
+  hang indefinitely — left as-is to avoid scope creep, noted here.)
+
+* Step 5 — **Convert latch wait/wake call sites** (fourth batch — the
+  FeBe / client-socket / walsender island), landed in one commit:
+  - `ece8ef2` — `pqcomm.c` (the shared `FeBeWaitSet` latch slot →
+    `WL_INTERRUPT`, mask `CheckForInterruptsMask | INTERRUPT_GENERAL`),
+    `be-secure.c` (`secure_read`/`secure_write` socket waits),
+    `miscinit.c` (`SwitchToSharedLatch`/`SwitchBackToLocalLatch` no longer
+    `ModifyWaitEvent` on the latch switch — the FeBe interrupt event
+    watches the process-wide wakeup primitive, not a specific latch),
+    `walsender.c` (`ResetLatch`/`SetLatch(MyLatch)` →
+    `ClearInterrupt`/`RaiseInterrupt(INTERRUPT_GENERAL)`, incl.
+    `WalSndLastCycleHandler`), plus residual `ResetLatch`→`ClearInterrupt`
+    cleanups in `xlogfuncs.c` (`pg_promote`) and `basebackup_throttle.c`.
+
+  **Lockstep rule learned here (the hard way):** `FeBeWaitSet` is SHARED by
+  regular backends AND walsenders. Once `pq_init` registers the FeBe slot
+  as `WL_INTERRUPT`, walsender.c MUST convert in the same batch — otherwise
+  walsender's `SetLatch(MyLatch)` self-wakes (`WalSndLastCycleHandler`
+  SIGUSR2, main-loop reactivation) no longer wake `WaitEventSetWait`, and
+  **fast-stop hangs with a live walsender** ("server does not shut down").
+  An idle cluster does not exercise this — always smoke-test fast-stop WITH
+  a live walsender (`pg_receivewal` / `-X stream`).
+
+  Build-green and runtime smoke-verified — including the previously-hanging
+  `pg_ctl -m fast stop` with BOTH a live `pg_receivewal` walsender AND io
+  workers running — plus `SELECT`, parallel scan, parallel CREATE INDEX,
+  LISTEN/NOTIFY, self + cross-process memctx logging, `pg_cancel_backend`
+  on a sleeping backend, and `pg_reload_conf()`.
+
+**Step 5 is effectively complete.** Every waiter that uses a PGPROC and the
+shared wakeup machinery is now on `WaitInterrupt`/`WaitInterruptOrSocket`.
+The only remaining `WL_LATCH_SET` *waiters* tree-wide are three
+self-consistent latch islands deliberately deferred to step 6:
+  - `executor/nodeAppend.c` — async-append regular-backend waiter (a
+    transient per-call event set; works under coexistence).
+  - `postmaster/postmaster.c` — the postmaster main loop (PGPROC-less; its
+    `SetLatch(MyLatch)` wakers at ~2005/2015/2092/2253 are postmaster
+    signal handlers).
+  - `postmaster/syslogger.c` — the syslogger (PGPROC-less, crash-survivable
+    by design; self-wakers at ~1191/1203/1598).
+
+These three keep `WL_LATCH_SET` + `SetLatch(MyLatch)` internally, so each is
+a closed island that wakes correctly under coexistence and does not depend
+on — nor block — the belt-and-suspenders `SetLatch` in
+`RaiseInterrupt`/`SendInterrupt`. The residual self-`SetLatch(MyLatch)`
+coexistence wakers in `postgres.c` (`ProcessClientRead/WriteInterrupt` DIE
+path), `miscinit.c` (latch-switch), and `timeout.c` (which already
+*additively* raises `INTERRUPT_GENERAL`) likewise stay until step 6.
+
+`latch.c` remains; the `multithreaded` build stays off. Steps 6–7 below
+complete the sweep (convert/retire the three islands, remove `procLatch`/
+`MyLatch`/`latch.c`, drop the belt-and-suspenders `SetLatch`).
 
 ------------------------------------------------------------------------
 ## xtc relationship (forward-looking, not implemented here)
