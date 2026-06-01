@@ -4170,6 +4170,14 @@ run_target('srclint',
   command: [python, srclint, meson.project_source_root()]
 )
 
+# cocci runs the project's checked-in Coccinelle semantic patches (mechanical
+# C-to-C transforms for the threading conversion).  Dry-run by default (exits
+# non-zero if a patch would change the tree); requires spatch (Coccinelle).
+run_cocci = files('src/tools/cocci/run-cocci.py')
+run_target('cocci',
+  command: [python, run_cocci, '--source-root', meson.project_source_root()]
+)
+
 
 
 ###############################################################
