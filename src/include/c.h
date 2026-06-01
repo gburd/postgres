@@ -1425,6 +1425,21 @@ extern int	fdatasync(int fd);
 #endif
 
 /*
+ * Variant of PGDLLIMPORT for variables that also carry the session_local
+ * annotation (thread-local storage in the multithreaded model).
+ *
+ * On GCC/Clang the annotation expands to __thread, which combines with
+ * PGDLLIMPORT normally, so this is just PGDLLIMPORT.
+ *
+ * On MSVC the session_local annotation expands to nothing (see
+ * pg_attribute_thread_local in postgres_ext.h): __declspec(thread) cannot
+ * coexist with the dll interface (C2492) and would not link across DLLs
+ * anyway.  The variable is therefore an ordinary exported global and uses the
+ * normal PGDLLIMPORT marking so loadable modules resolve it.
+ */
+#define PGDLLIMPORT_TLS PGDLLIMPORT
+
+/*
  * Use "extern PGDLLEXPORT ..." to declare functions that are defined in
  * loadable modules and need to be callable by the core backend or other
  * loadable modules.

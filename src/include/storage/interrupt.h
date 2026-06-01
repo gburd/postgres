@@ -109,7 +109,7 @@
 #include "storage/procnumber.h"
 #include "storage/waiteventset.h"		/* WL_* are defined in waiteventset.h */
 
-extern PGDLLIMPORT session_local pg_atomic_uint32 *MyPendingInterrupts;
+extern PGDLLIMPORT_TLS session_local pg_atomic_uint32 *MyPendingInterrupts;
 
 /*
  * Flags in the pending interrupts bitmask. Each value represents one bit in

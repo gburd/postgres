@@ -45,28 +45,49 @@
  * in translation units that include only c.h / postgres_ext.h, such as the
  * src/port files that pull in miscadmin.h without postgres.h.
  */
-#if __has_attribute (annotate)
+/*
+ * session_local (and the GUC annotations that become thread-local in the
+ * multithreaded model) must expand to a thread-local storage qualifier that
+ * the active compiler accepts: GCC/Clang spell it __thread.
+ *
+ * MSVC is deliberately excluded: __declspec(thread) cannot be combined with
+ * __declspec(dllimport)/dllexport (C2492), and MSVC cannot resolve a
+ * thread-local symbol referenced by name across a DLL boundary at link time.
+ * Several of these globals (e.g. MyPendingInterrupts, CheckForInterruptsMask)
+ * are read directly by loadable modules.  Since the multithreaded build is not
+ * enabled on Windows, the annotation expands to nothing there: the variable
+ * stays an ordinary process-global exported via PGDLLIMPORT, with no change in
+ * the process model.  The session_local intent is still recorded in source for
+ * the platforms that actually thread.
+ */
+#if defined(_MSC_VER)
+#define pg_attribute_thread_local
+#else
+#define pg_attribute_thread_local __thread
+#endif
+
+#if defined(__has_attribute) && __has_attribute (annotate)
 #define pg_global __attribute__((annotate("pg_global")))
 #define dynamic_singleton __attribute__((annotate("dynamic_singleton")))
 #define static_singleton __attribute__((annotate("static_singleton")))
-#define session_local __thread __attribute__((annotate("session_local")))
+#define session_local pg_attribute_thread_local __attribute__((annotate("session_local")))
 #define internal_guc __attribute__((annotate("internal_guc")))
 #define postmaster_guc __attribute__((annotate("postmaster_guc")))
-#define session_guc __thread __attribute__((annotate("session_guc")))
-#define sighup_guc __thread __attribute__((annotate("sighup_guc")))
-#define suset_guc __thread __attribute__((annotate("suset_guc")))
-#define userset_guc __thread __attribute__((annotate("userset_guc")))
+#define session_guc pg_attribute_thread_local __attribute__((annotate("session_guc")))
+#define sighup_guc pg_attribute_thread_local __attribute__((annotate("sighup_guc")))
+#define suset_guc pg_attribute_thread_local __attribute__((annotate("suset_guc")))
+#define userset_guc pg_attribute_thread_local __attribute__((annotate("userset_guc")))
 #else
 #define pg_global
 #define dynamic_singleton
 #define static_singleton
-#define session_local __thread
+#define session_local pg_attribute_thread_local
 #define internal_guc
 #define postmaster_guc
-#define session_guc __thread
-#define sighup_guc __thread
-#define suset_guc __thread
-#define userset_guc __thread
+#define session_guc pg_attribute_thread_local
+#define sighup_guc pg_attribute_thread_local
+#define suset_guc pg_attribute_thread_local
+#define userset_guc pg_attribute_thread_local
 #endif
 
 /*
