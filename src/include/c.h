@@ -204,6 +204,20 @@ extern "C++"
 #endif
 
 /*
+ * This macro will disable thread safety (data race) instrumentation for a
+ * function when running with "-fsanitize=thread".  Use it only on functions
+ * that are known race-free by construction (e.g. lock-free fast paths the
+ * sanitizer cannot reason about), and document why at each use.
+ */
+#if defined(__clang__) || __GNUC__ >= 8
+#define pg_attribute_no_sanitize_thread() __attribute__((no_sanitize("thread")))
+#elif __has_attribute(no_sanitize_thread)
+#define pg_attribute_no_sanitize_thread() __attribute__((no_sanitize_thread))
+#else
+#define pg_attribute_no_sanitize_thread()
+#endif
+
+/*
  * Place this macro before functions that should be allowed to make misaligned
  * accesses.  Think twice before using it on non-x86-specific code!
  * Testing can be done with "-fsanitize=alignment -fsanitize-trap=alignment"

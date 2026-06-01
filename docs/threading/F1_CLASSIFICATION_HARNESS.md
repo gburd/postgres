@@ -1,9 +1,10 @@
 # F1 - The Classification Harness
 
-**Status:** F1.1-F1.3 + F1.5 implemented on branch `xtc` (the
-lifetime-annotation checkers build under meson, and the `threadcheck`
+**Status:** F1.1-F1.5 implemented on branch `xtc` (the
+lifetime-annotation checkers build under meson; the `threadcheck`
 (libclang) + `srclint` (LLVM-free regex) run-targets enforce ratcheting
-baselines). F1.4 (TSan profile) and F1.6 (xtc amalgamation wiring) remain.
+baselines; the `tsan-profile.sh` non-gating TSan profile is wired). Only
+F1.6 (xtc amalgamation wiring) remains.
 **Lives:** `~/ws/postgres/xtc` (the fork worktree).
 **Depends on:** clang/LLVM (already a PG optional dep for JIT).
 
@@ -15,6 +16,7 @@ baselines). F1.4 (TSan profile) and F1.6 (xtc amalgamation wiring) remain.
 | `pg_static_vars` (function-scope statics) | `src/tools/pgguclifetimes/` | built when a C++ compiler is present |
 | `threadcheck` driver + baseline | `src/tools/threadcheck/threadcheck.py`, `baseline.txt` (2,791 core) | `ninja threadcheck` |
 | `srclint` (s_globals/s_signals/s_libc) + baseline | `src/tools/threadcheck/srclint.py`, `srclint-baseline.txt` (2,198) | `ninja srclint` |
+| TSan profile + suppressions | `src/tools/threadcheck/tsan-profile.sh`, `tsan_suppressions.txt` | `tsan-profile.sh [builddir]` (nightly) |
 
 Both drivers normalise offenders to line-independent `relpath:symbol`
 keys, exclude vendored trees, and exit 1 only when the offender set
@@ -162,11 +164,26 @@ fast pre-checks that run without LLVM:
 These run on every PR in seconds and catch 90% of regressions before
 the heavier clang pass.
 
-### F1.4 - TSan build profile
+### F1.4 - TSan build profile  **[DONE]**
+Implemented as `src/tools/threadcheck/tsan-profile.sh`, a non-gating
+driver that configures a `-Db_sanitize=thread` build, runs the core
+regression suite under TSan, and tallies race reports.
 - `--enable-sanitize=thread` (meson `-Db_sanitize=thread`) build that
   runs the core regression suite in threaded mode.
 - Starts as a non-gating nightly; becomes gating once threaded mode
-  passes clean (mirrors the PG workplan "TSan in CI from CF1").
+  passes clean (mirrors the PG workplan "TSan in CI from CF1"). The
+  script exits 0 by design; flip the final line to gate.
+- `__tsan_default_options()` (src/backend/main/main.c) mirrors the
+  existing UBSan hook so TSan reads `TSAN_OPTIONS` (incl. the
+  suppressions file) only after `main` is reached.
+- `tsan_suppressions.txt` is the TSan analogue of the threadcheck /
+  srclint ratcheting baselines: suppress narrowly by symbol with a
+  one-line justification, and drive it to empty as subsystems convert.
+- `pg_attribute_no_sanitize_thread()` (src/include/c.h) annotates the
+  few functions that are race-free by construction.
+- NOTE: TSan's runtime needs a compatible address-space layout; some
+  sandboxed/older kernels reject it with "unexpected memory mapping".
+  Run this profile in a CI environment that permits TSan's mappings.
 
 ### F1.5 - The baseline + ratchet  **[DONE]**
 Both drivers ship a committed baseline and fail only on growth; the

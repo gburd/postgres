@@ -1,0 +1,34 @@
+# ThreadSanitizer suppressions for the PostgreSQL TSan build profile (F1.4).
+#
+# See docs/threading/F1_CLASSIFICATION_HARNESS.md.  This file is loaded by the
+# __tsan_default_options() hook in src/backend/main/main.c when TSAN_OPTIONS
+# names it (suppressions=.../tsan_suppressions.txt), or pass it explicitly.
+#
+# The TSan profile starts NON-GATING: PostgreSQL's process model is still
+# multi-process (the threaded runtime is dormant while multithreaded=off), so
+# almost every "race" TSan reports today is either (a) a deliberate
+# lock-free/atomic pattern it cannot model, or (b) a known pre-existing issue
+# tracked for the threaded conversion.  Suppress narrowly, by symbol, and add a
+# one-line justification for each entry.  The goal is to drive this file to
+# empty as subsystems are converted -- it is the TSan analogue of the
+# threadcheck/srclint ratcheting baselines.
+#
+# Syntax: https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+#   race:<function-or-file>           suppress data races touching that symbol
+#   deadlock:<function>               suppress lock-order reports
+#   called_from_lib:<library>         suppress everything from a shared lib
+#
+# --- Deliberate lock-free / signal-handler patterns -------------------------
+# Interrupt delivery uses sig_atomic_t flags written from signal handlers and
+# read on the fast path; this is intentional and async-signal-safe by design
+# (see the Latch -> Interrupt re-derivation).  Revisit once the threaded
+# wakeup path is the only path.
+race:HandleInterrupts
+race:ProcessInterrupts
+
+# --- Third-party / runtime code we do not own -------------------------------
+# The vendored xtc runtime carries its own thread-safety discipline and is
+# dormant under multithreaded=off; do not attribute its internals to PG core.
+called_from_lib:libxtc
+
+# (Add further entries below as the nightly surfaces them, each justified.)

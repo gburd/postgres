@@ -518,3 +518,26 @@ __ubsan_default_options(void)
 
 	return getenv("UBSAN_OPTIONS");
 }
+
+/*
+ * The same reasoning as for __ubsan_default_options() applies to
+ * ThreadSanitizer: it reads its configuration (including a suppressions file)
+ * via a weak __tsan_default_options() hook, and may call it before getenv() is
+ * safe.  Mirror the UBSan handling so TSan picks up TSAN_OPTIONS from the
+ * environment once main has been reached.  See the F1.4 TSan profile in
+ * docs/threading/F1_CLASSIFICATION_HARNESS.md.
+ */
+const char *__tsan_default_options(void);
+
+#if __has_attribute(disable_sanitizer_instrumentation)
+__attribute__((disable_sanitizer_instrumentation))
+#endif
+const char *
+__tsan_default_options(void)
+{
+	/* don't call libc before it's guaranteed to be initialized */
+	if (!reached_main)
+		return "";
+
+	return getenv("TSAN_OPTIONS");
+}
