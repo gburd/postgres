@@ -169,40 +169,69 @@ struct WaitEventSet
 #endif
 };
 
+/*
+ * Per-session wait/interrupt machinery state.  Each member is guarded by the
+ * same platform #if that gated the original file-local static it replaces, so
+ * the per-platform layout is unchanged.
+ */
+typedef struct WaitEventState
+{
 #ifndef WIN32
-/* Are we currently in WaitInterrupt? The signal handler would like to know. */
-static session_local volatile sig_atomic_t waiting = false;
+	/* Are we currently in WaitInterrupt? The signal handler would like to know. */
+	volatile sig_atomic_t waiting;
 #endif
 
 #ifdef WIN32
-/*
- * This process's interrupt-wakeup event HANDLE: the doorbell that other
- * processes (via SendInterrupt) and this process (via WakeupMyProc) ring to
- * break us out of WaitForMultipleObjects().  It is the per-process event from
- * MyProc->interruptEvent once we have a PGPROC and are accepting shared
- * interrupts, or LocalInterruptEvent (a freshly created process-local event)
- * for PGPROC-less processes and while on local-only interrupts.  See
- * InitializeWaitEventSupport(), SetMyInterruptEvent(), and
- * docs/threading/INTERRUPTS_REDERIVATION.md.
- */
-static session_local HANDLE MyInterruptEvent = NULL;
+	/*
+	 * This process's interrupt-wakeup event HANDLE: the doorbell that other
+	 * processes (via SendInterrupt) and this process (via WakeupMyProc) ring
+	 * to break us out of WaitForMultipleObjects().  It is the per-process
+	 * event from MyProc->interruptEvent once we have a PGPROC and are
+	 * accepting shared interrupts, or LocalInterruptEvent (a freshly created
+	 * process-local event) for PGPROC-less processes and while on local-only
+	 * interrupts.  See InitializeWaitEventSupport(), SetMyInterruptEvent(),
+	 * and docs/threading/INTERRUPTS_REDERIVATION.md.
+	 */
+	HANDLE		MyInterruptEvent;
 
-/* The process-local wakeup event, created in InitializeWaitEventSupport(). */
-static session_local HANDLE LocalInterruptEvent = NULL;
+	/* The process-local wakeup event, created in InitializeWaitEventSupport(). */
+	HANDLE		LocalInterruptEvent;
 #endif
 
 #ifdef WAIT_USE_SIGNALFD
-/* On Linux, we'll receive SIGURG via a signalfd file descriptor. */
-static session_local int	signal_fd = -1;
+	/* On Linux, we'll receive SIGURG via a signalfd file descriptor. */
+	int			signal_fd;
 #endif
 
 #ifdef WAIT_USE_SELF_PIPE
-/* Read and write ends of the self-pipe */
-static session_local int	selfpipe_readfd = -1;
-static session_local int	selfpipe_writefd = -1;
+	/* Read and write ends of the self-pipe */
+	int			selfpipe_readfd;
+	int			selfpipe_writefd;
 
-/* Process owning the self-pipe --- needed for checking purposes */
-static session_local int	selfpipe_owner_pid = 0;
+	/* Process owning the self-pipe --- needed for checking purposes */
+	int			selfpipe_owner_pid;
+#endif
+} WaitEventState;
+
+static session_local WaitEventState wait_event_state = {
+#ifndef WIN32
+	.waiting = false,
+#endif
+#ifdef WIN32
+	.MyInterruptEvent = NULL,
+	.LocalInterruptEvent = NULL,
+#endif
+#ifdef WAIT_USE_SIGNALFD
+	.signal_fd = -1,
+#endif
+#ifdef WAIT_USE_SELF_PIPE
+	.selfpipe_readfd = -1,
+	.selfpipe_writefd = -1,
+	.selfpipe_owner_pid = 0,
+#endif
+};
+
+#ifdef WAIT_USE_SELF_PIPE
 
 /* Private function prototypes */
 static void latch_sigurg_handler(SIGNAL_ARGS);
@@ -271,16 +300,16 @@ InitializeWaitEventSupport(void)
 		 * self-pipes, of course, and we really want them to close the
 		 * inherited FDs for safety's sake.
 		 */
-		if (selfpipe_owner_pid != 0)
+		if (wait_event_state.selfpipe_owner_pid != 0)
 		{
 			/* Assert we go through here but once in a child process */
-			Assert(selfpipe_owner_pid != MyProcPid);
+			Assert(wait_event_state.selfpipe_owner_pid != MyProcPid);
 			/* Release postmaster's pipe FDs; ignore any error */
-			(void) close(selfpipe_readfd);
-			(void) close(selfpipe_writefd);
+			(void) close(wait_event_state.selfpipe_readfd);
+			(void) close(wait_event_state.selfpipe_writefd);
 			/* Clean up, just for safety's sake; we'll set these below */
-			selfpipe_readfd = selfpipe_writefd = -1;
-			selfpipe_owner_pid = 0;
+			wait_event_state.selfpipe_readfd = wait_event_state.selfpipe_writefd = -1;
+			wait_event_state.selfpipe_owner_pid = 0;
 			/* Keep fd.c's accounting straight */
 			ReleaseExternalFD();
 			ReleaseExternalFD();
@@ -293,14 +322,14 @@ InitializeWaitEventSupport(void)
 			 * postmaster's pipe FDs were closed by the action of FD_CLOEXEC.
 			 * fd.c won't have state to clean up, either.
 			 */
-			Assert(selfpipe_readfd == -1);
+			Assert(wait_event_state.selfpipe_readfd == -1);
 		}
 	}
 	else
 	{
 		/* In postmaster or standalone backend, assert we do this but once */
-		Assert(selfpipe_readfd == -1);
-		Assert(selfpipe_owner_pid == 0);
+		Assert(wait_event_state.selfpipe_readfd == -1);
+		Assert(wait_event_state.selfpipe_owner_pid == 0);
 	}
 
 	/*
@@ -323,9 +352,9 @@ InitializeWaitEventSupport(void)
 	if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1)
 		elog(FATAL, "fcntl(F_SETFD) failed on write-end of self-pipe: %m");
 
-	selfpipe_readfd = pipefd[0];
-	selfpipe_writefd = pipefd[1];
-	selfpipe_owner_pid = MyProcPid;
+	wait_event_state.selfpipe_readfd = pipefd[0];
+	wait_event_state.selfpipe_writefd = pipefd[1];
+	wait_event_state.selfpipe_owner_pid = MyProcPid;
 
 	/* Tell fd.c about these two long-lived FDs */
 	ReserveExternalFD();
@@ -344,11 +373,11 @@ InitializeWaitEventSupport(void)
 		 * signalfds only see the current process's pending signals, but it
 		 * seems less surprising to close it and create our own.
 		 */
-		if (signal_fd != -1)
+		if (wait_event_state.signal_fd != -1)
 		{
 			/* Release postmaster's signal FD; ignore any error */
-			(void) close(signal_fd);
-			signal_fd = -1;
+			(void) close(wait_event_state.signal_fd);
+			wait_event_state.signal_fd = -1;
 			ReleaseExternalFD();
 		}
 	}
@@ -359,8 +388,8 @@ InitializeWaitEventSupport(void)
 	/* Set up the signalfd to receive SIGURG notifications. */
 	sigemptyset(&signalfd_mask);
 	sigaddset(&signalfd_mask, SIGURG);
-	signal_fd = signalfd(-1, &signalfd_mask, SFD_NONBLOCK | SFD_CLOEXEC);
-	if (signal_fd < 0)
+	wait_event_state.signal_fd = signalfd(-1, &signalfd_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+	if (wait_event_state.signal_fd < 0)
 		elog(FATAL, "signalfd() failed");
 	ReserveExternalFD();
 #endif
@@ -380,10 +409,10 @@ InitializeWaitEventSupport(void)
 	 * this local event, and it also serves as the fallback after
 	 * SwitchToLocalInterrupts().  Manual-reset, initially unsignaled.
 	 */
-	MyInterruptEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-	if (MyInterruptEvent == NULL)
+	wait_event_state.MyInterruptEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	if (wait_event_state.MyInterruptEvent == NULL)
 		elog(FATAL, "CreateEvent failed: error code %lu", GetLastError());
-	LocalInterruptEvent = MyInterruptEvent;
+	wait_event_state.LocalInterruptEvent = wait_event_state.MyInterruptEvent;
 #endif
 
 	/*
@@ -653,9 +682,9 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd,
 		set->interrupt_mask = interruptMask;
 		set->interrupt_pos = event->pos;
 #if defined(WAIT_USE_SELF_PIPE)
-		event->fd = selfpipe_readfd;
+		event->fd = wait_event_state.selfpipe_readfd;
 #elif defined(WAIT_USE_SIGNALFD)
-		event->fd = signal_fd;
+		event->fd = wait_event_state.signal_fd;
 #else
 		event->fd = PGINVALID_SOCKET;
 #ifdef WAIT_USE_EPOLL
@@ -1025,7 +1054,7 @@ WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event)
 		 * event (set by SwitchToShared/LocalInterrupts()).  Wait on it
 		 * directly, the way we used to wait on the Latch's event HANDLE.
 		 */
-		Assert(MyInterruptEvent != NULL);
+		Assert(wait_event_state.MyInterruptEvent != NULL);
 		*handle = MyInterruptEvent;
 	}
 	else if (event->events == WL_POSTMASTER_DEATH)
@@ -1102,7 +1131,7 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	pgstat_report_wait_start(wait_event_info);
 
 #ifndef WIN32
-	waiting = true;
+	wait_event_state.waiting = true;
 #else
 	/* Ensure that signals are serviced even if an interrupt is already pending */
 	pgwin32_dispatch_queued_signals();
@@ -1205,7 +1234,7 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 		}
 	}
 #ifndef WIN32
-	waiting = false;
+	wait_event_state.waiting = false;
 #endif
 
 	/* If we set the SLEEPING_ON_INTERRUPTS flag, reset it again */
@@ -1248,7 +1277,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		/* EINTR is okay, otherwise complain */
 		if (errno != EINTR)
 		{
-			waiting = false;
+			wait_event_state.waiting = false;
 			ereport(ERROR,
 					(errcode_for_socket_access(),
 					 errmsg("%s() failed: %m",
@@ -1411,7 +1440,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		/* EINTR is okay, otherwise complain */
 		if (errno != EINTR)
 		{
-			waiting = false;
+			wait_event_state.waiting = false;
 			ereport(ERROR,
 					(errcode_for_socket_access(),
 					 errmsg("%s() failed: %m",
@@ -1538,7 +1567,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		/* EINTR is okay, otherwise complain */
 		if (errno != EINTR)
 		{
-			waiting = false;
+			wait_event_state.waiting = false;
 			ereport(ERROR,
 					(errcode_for_socket_access(),
 					 errmsg("%s() failed: %m",
@@ -1671,7 +1700,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	 * for WL_INTERRUPT, so refresh the stored handle here, before waiting.
 	 */
 	if (set->interrupt_pos >= 0)
-		set->handles[set->interrupt_pos + 1] = MyInterruptEvent;
+		set->handles[set->interrupt_pos + 1] = wait_event_state.MyInterruptEvent;
 
 	/* Reset any wait events that need it */
 	for (cur_event = set->events;
@@ -1967,7 +1996,7 @@ GetNumRegisteredWaitEvents(WaitEventSet *set)
 static void
 latch_sigurg_handler(SIGNAL_ARGS)
 {
-	if (waiting)
+	if (wait_event_state.waiting)
 		sendSelfPipeByte();
 }
 
@@ -1979,7 +2008,7 @@ sendSelfPipeByte(void)
 	char		dummy = 0;
 
 retry:
-	rc = write(selfpipe_writefd, &dummy, 1);
+	rc = write(wait_event_state.selfpipe_writefd, &dummy, 1);
 	if (rc < 0)
 	{
 		/* If interrupted by signal, just retry */
@@ -2021,9 +2050,9 @@ drain(void)
 	int			fd;
 
 #ifdef WAIT_USE_SELF_PIPE
-	fd = selfpipe_readfd;
+	fd = wait_event_state.selfpipe_readfd;
 #else
-	fd = signal_fd;
+	fd = wait_event_state.signal_fd;
 #endif
 
 	for (;;)
@@ -2037,7 +2066,7 @@ drain(void)
 				continue;		/* retry */
 			else
 			{
-				waiting = false;
+				wait_event_state.waiting = false;
 #ifdef WAIT_USE_SELF_PIPE
 				elog(ERROR, "read() on self-pipe failed: %m");
 #else
@@ -2047,7 +2076,7 @@ drain(void)
 		}
 		else if (rc == 0)
 		{
-			waiting = false;
+			wait_event_state.waiting = false;
 #ifdef WAIT_USE_SELF_PIPE
 			elog(ERROR, "unexpected EOF on self-pipe");
 #else
@@ -2092,10 +2121,10 @@ void
 WakeupMyProc(void)
 {
 #if defined(WAIT_USE_SELF_PIPE)
-	if (waiting)
+	if (wait_event_state.waiting)
 		sendSelfPipeByte();
 #else
-	if (waiting)
+	if (wait_event_state.waiting)
 		kill(MyProcPid, SIGURG);
 #endif
 }
@@ -2119,7 +2148,7 @@ WakeupOtherProc(int pid)
 void
 SetMyInterruptEvent(HANDLE event)
 {
-	MyInterruptEvent = (event != NULL) ? event : LocalInterruptEvent;
+	wait_event_state.MyInterruptEvent = (event != NULL) ? event : wait_event_state.LocalInterruptEvent;
 }
 
 /*
@@ -2134,8 +2163,8 @@ SetMyInterruptEvent(HANDLE event)
 void
 WakeupMyProc(void)
 {
-	if (MyInterruptEvent != NULL)
-		SetEvent(MyInterruptEvent);
+	if (wait_event_state.MyInterruptEvent != NULL)
+		SetEvent(wait_event_state.MyInterruptEvent);
 }
 
 /*

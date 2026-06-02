@@ -99,6 +99,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 13 | `utils/cache/syscache.c` | `SysCacheState` / `sys_cache_state` | 6 | All file-local statics, zero externs: the system-cache pointer array (`SysCache[SysCacheSize]`), the `CacheInitialized` flag, and the two sorted relation-OID arrays with their sizes (`SysCacheRelationOid`/`SysCacheRelationOidSize`, `SysCacheSupportingRelOid`/`SysCacheSupportingRelOidSize`). `SysCacheSize` is the enum array-dimension constant (not a var) and is left untouched; the many `\bSysCache\b`-prefixed function/enum names (`SearchSysCache`, `ReleaseSysCache`, `SysCacheGetAttr`, `SysCacheIdentifier`, `SysCacheSize`, …) are skipped by the word boundary. |
 
+| 14 | `storage/ipc/waiteventset.c` | `WaitEventState` / `wait_event_state` | 7 | All file-local statics, zero externs, but heavily platform-`#if`-gated. The seven members live in mutually-exclusive guards, each preserved on the struct member and the initializer: `waiting` (`#ifndef WIN32`, kept `volatile sig_atomic_t` — the SIGURG handler reads it); `MyInterruptEvent` / `LocalInterruptEvent` (`#ifdef WIN32`, `HANDLE`); `signal_fd` (`#ifdef WAIT_USE_SIGNALFD`); `selfpipe_readfd` / `selfpipe_writefd` / `selfpipe_owner_pid` (`#ifdef WAIT_USE_SELF_PIPE`). `waiting` is an extremely common English word in this file's prose, so the comment-FP revert pass removed 19 false positives, leaving exactly the 10 real code uses. Smoke's interrupt-driven paths (pg_cancel_backend, NOTIFY, live-walsender fast-stop) exercise this machinery. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
