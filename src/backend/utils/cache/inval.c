@@ -178,8 +178,6 @@ typedef struct InvalMessageArray
 	int			maxmsgs;		/* current allocated size of array */
 } InvalMessageArray;
 
-static session_local InvalMessageArray InvalMessageArrays[2];
-
 /* Control information for one logical group of messages */
 typedef struct InvalidationMsgsGroup
 {
@@ -252,8 +250,6 @@ typedef struct TransInvalidationInfo
 	int			my_level;
 } TransInvalidationInfo;
 
-static session_local TransInvalidationInfo *transInvalInfo = NULL;
-
 static InvalidationInfo *inplaceInvalInfo = NULL;
 
 /* GUC storage */
@@ -273,25 +269,50 @@ session_guc int			debug_discard_caches = 0;
 #define MAX_RELCACHE_CALLBACKS 10
 #define MAX_RELSYNC_CALLBACKS 10
 
-static session_local struct SYSCACHECALLBACK
+typedef struct SyscacheCallback
 {
 	int16		id;				/* cache number */
 	int16		link;			/* next callback index+1 for same cache */
 	SyscacheCallbackFunction function;
 	Datum		arg;
-}			syscache_callback_list[MAX_SYSCACHE_CALLBACKS];
+} SyscacheCallback;
 
-static session_local int16 syscache_callback_links[SysCacheSize];
-
-static session_local int	syscache_callback_count = 0;
-
-static session_local struct RELCACHECALLBACK
+typedef struct RelcacheCallback
 {
 	RelcacheCallbackFunction function;
 	Datum		arg;
-}			relcache_callback_list[MAX_RELCACHE_CALLBACKS];
+} RelcacheCallback;
 
-static session_local int	relcache_callback_count = 0;
+/*
+ * Per-session state for the invalidation machinery.  These used to be
+ * individual file-local statics; they are collected here so the message
+ * arrays, the transaction-invalidation info and the syscache/relcache
+ * callback registries live behind a single thread-local instance
+ * (inval_state) for the threading model.
+ *
+ * Note: inplaceInvalInfo, the RELSYNCCALLBACK registry and the
+ * debug_discard_caches GUC are deliberately NOT part of this struct; they are
+ * not session_local and keep their own storage.
+ */
+typedef struct InvalState
+{
+	InvalMessageArray InvalMessageArrays[2];
+
+	TransInvalidationInfo *transInvalInfo;
+
+	SyscacheCallback syscache_callback_list[MAX_SYSCACHE_CALLBACKS];
+	int16		syscache_callback_links[SysCacheSize];
+	int			syscache_callback_count;
+
+	RelcacheCallback relcache_callback_list[MAX_RELCACHE_CALLBACKS];
+	int			relcache_callback_count;
+} InvalState;
+
+static session_local InvalState inval_state = {
+	.transInvalInfo = NULL,
+	.syscache_callback_count = 0,
+	.relcache_callback_count = 0,
+};
 
 static struct RELSYNCCALLBACK
 {
@@ -320,7 +341,7 @@ static void
 AddInvalidationMessage(InvalidationMsgsGroup *group, int subgroup,
 					   const SharedInvalidationMessage *msg)
 {
-	InvalMessageArray *ima = &InvalMessageArrays[subgroup];
+	InvalMessageArray *ima = &inval_state.InvalMessageArrays[subgroup];
 	int			nextindex = group->nextmsg[subgroup];
 
 	if (nextindex >= ima->maxmsgs)
@@ -388,7 +409,7 @@ AppendInvalidationMessageSubGroup(InvalidationMsgsGroup *dest,
 		for (; _msgindex < _endmsg; _msgindex++) \
 		{ \
 			SharedInvalidationMessage *msg = \
-				&InvalMessageArrays[subgroup].msgs[_msgindex]; \
+				&inval_state.InvalMessageArrays[subgroup].msgs[_msgindex]; \
 			codeFragment; \
 		} \
 	} while (0)
@@ -404,7 +425,7 @@ AppendInvalidationMessageSubGroup(InvalidationMsgsGroup *dest,
 		int		n = NumMessagesInSubGroup(group, subgroup); \
 		if (n > 0) { \
 			SharedInvalidationMessage *msgs = \
-				&InvalMessageArrays[subgroup].msgs[(group)->firstmsg[subgroup]]; \
+				&inval_state.InvalMessageArrays[subgroup].msgs[(group)->firstmsg[subgroup]]; \
 			codeFragment; \
 		} \
 	} while (0)
@@ -688,21 +709,21 @@ PrepareInvalidationState(void)
 	/* Can't queue transactional message while collecting inplace messages. */
 	Assert(inplaceInvalInfo == NULL);
 
-	if (transInvalInfo != NULL &&
-		transInvalInfo->my_level == GetCurrentTransactionNestLevel())
-		return (InvalidationInfo *) transInvalInfo;
+	if (inval_state.transInvalInfo != NULL &&
+		inval_state.transInvalInfo->my_level == GetCurrentTransactionNestLevel())
+		return (InvalidationInfo *) inval_state.transInvalInfo;
 
 	myInfo = (TransInvalidationInfo *)
 		MemoryContextAllocZero(TopTransactionContext,
 							   sizeof(TransInvalidationInfo));
-	myInfo->parent = transInvalInfo;
+	myInfo->parent = inval_state.transInvalInfo;
 	myInfo->my_level = GetCurrentTransactionNestLevel();
 
 	/* Now, do we have a previous stack entry? */
-	if (transInvalInfo != NULL)
+	if (inval_state.transInvalInfo != NULL)
 	{
 		/* Yes; this one should be for a deeper nesting level. */
-		Assert(myInfo->my_level > transInvalInfo->my_level);
+		Assert(myInfo->my_level > inval_state.transInvalInfo->my_level);
 
 		/*
 		 * The parent (sub)transaction must not have any current (i.e.,
@@ -713,7 +734,7 @@ PrepareInvalidationState(void)
 		 * counter.  This is a convenient place to check for that, as well as
 		 * being important to keep management of the message arrays simple.
 		 */
-		if (NumMessagesInGroup(&transInvalInfo->ii.CurrentCmdInvalidMsgs) != 0)
+		if (NumMessagesInGroup(&inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs) != 0)
 			elog(ERROR, "cannot start a subtransaction when there are unprocessed inval messages");
 
 		/*
@@ -722,7 +743,7 @@ PrepareInvalidationState(void)
 		 * to update them to follow whatever is already in the arrays.
 		 */
 		SetGroupToFollow(&myInfo->PriorCmdInvalidMsgs,
-						 &transInvalInfo->ii.CurrentCmdInvalidMsgs);
+						 &inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs);
 		SetGroupToFollow(&myInfo->ii.CurrentCmdInvalidMsgs,
 						 &myInfo->PriorCmdInvalidMsgs);
 	}
@@ -732,13 +753,13 @@ PrepareInvalidationState(void)
 		 * Here, we need only clear any array pointers left over from a prior
 		 * transaction.
 		 */
-		InvalMessageArrays[CatCacheMsgs].msgs = NULL;
-		InvalMessageArrays[CatCacheMsgs].maxmsgs = 0;
-		InvalMessageArrays[RelCacheMsgs].msgs = NULL;
-		InvalMessageArrays[RelCacheMsgs].maxmsgs = 0;
+		inval_state.InvalMessageArrays[CatCacheMsgs].msgs = NULL;
+		inval_state.InvalMessageArrays[CatCacheMsgs].maxmsgs = 0;
+		inval_state.InvalMessageArrays[RelCacheMsgs].msgs = NULL;
+		inval_state.InvalMessageArrays[RelCacheMsgs].maxmsgs = 0;
 	}
 
-	transInvalInfo = myInfo;
+	inval_state.transInvalInfo = myInfo;
 	return (InvalidationInfo *) myInfo;
 }
 
@@ -761,15 +782,15 @@ PrepareInplaceInvalidationState(void)
 	myInfo = palloc0_object(InvalidationInfo);
 
 	/* Stash our messages past end of the transactional messages, if any. */
-	if (transInvalInfo != NULL)
+	if (inval_state.transInvalInfo != NULL)
 		SetGroupToFollow(&myInfo->CurrentCmdInvalidMsgs,
-						 &transInvalInfo->ii.CurrentCmdInvalidMsgs);
+						 &inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs);
 	else
 	{
-		InvalMessageArrays[CatCacheMsgs].msgs = NULL;
-		InvalMessageArrays[CatCacheMsgs].maxmsgs = 0;
-		InvalMessageArrays[RelCacheMsgs].msgs = NULL;
-		InvalMessageArrays[RelCacheMsgs].maxmsgs = 0;
+		inval_state.InvalMessageArrays[CatCacheMsgs].msgs = NULL;
+		inval_state.InvalMessageArrays[CatCacheMsgs].maxmsgs = 0;
+		inval_state.InvalMessageArrays[RelCacheMsgs].msgs = NULL;
+		inval_state.InvalMessageArrays[RelCacheMsgs].maxmsgs = 0;
 	}
 
 	inplaceInvalInfo = myInfo;
@@ -790,16 +811,16 @@ InvalidateSystemCachesExtended(bool debug_discard)
 	ResetCatalogCachesExt(debug_discard);
 	RelationCacheInvalidate(debug_discard); /* gets smgr and relmap too */
 
-	for (i = 0; i < syscache_callback_count; i++)
+	for (i = 0; i < inval_state.syscache_callback_count; i++)
 	{
-		struct SYSCACHECALLBACK *ccitem = syscache_callback_list + i;
+		SyscacheCallback *ccitem = inval_state.syscache_callback_list + i;
 
 		ccitem->function(ccitem->arg, ccitem->id, 0);
 	}
 
-	for (i = 0; i < relcache_callback_count; i++)
+	for (i = 0; i < inval_state.relcache_callback_count; i++)
 	{
-		struct RELCACHECALLBACK *ccitem = relcache_callback_list + i;
+		RelcacheCallback *ccitem = inval_state.relcache_callback_list + i;
 
 		ccitem->function(ccitem->arg, InvalidOid);
 	}
@@ -855,9 +876,9 @@ LocalExecuteInvalidationMessage(SharedInvalidationMessage *msg)
 			else
 				RelationCacheInvalidateEntry(msg->rc.relId);
 
-			for (i = 0; i < relcache_callback_count; i++)
+			for (i = 0; i < inval_state.relcache_callback_count; i++)
 			{
-				struct RELCACHECALLBACK *ccitem = relcache_callback_list + i;
+				RelcacheCallback *ccitem = inval_state.relcache_callback_list + i;
 
 				ccitem->function(ccitem->arg, msg->rc.relId);
 			}
@@ -1017,7 +1038,7 @@ xactGetCommittedInvalidationMessages(SharedInvalidationMessage **msgs,
 	int			nmsgs;
 
 	/* Quick exit if we haven't done anything with invalidation messages. */
-	if (transInvalInfo == NULL)
+	if (inval_state.transInvalInfo == NULL)
 	{
 		*RelcacheInitFileInval = false;
 		*msgs = NULL;
@@ -1025,14 +1046,14 @@ xactGetCommittedInvalidationMessages(SharedInvalidationMessage **msgs,
 	}
 
 	/* Must be at top of stack */
-	Assert(transInvalInfo->my_level == 1 && transInvalInfo->parent == NULL);
+	Assert(inval_state.transInvalInfo->my_level == 1 && inval_state.transInvalInfo->parent == NULL);
 
 	/*
 	 * Relcache init file invalidation requires processing both before and
 	 * after we send the SI messages.  However, we need not do anything unless
 	 * we committed.
 	 */
-	*RelcacheInitFileInval = transInvalInfo->ii.RelcacheInitFileInval;
+	*RelcacheInitFileInval = inval_state.transInvalInfo->ii.RelcacheInitFileInval;
 
 	/*
 	 * Collect all the pending messages into a single contiguous array of
@@ -1042,33 +1063,33 @@ xactGetCommittedInvalidationMessages(SharedInvalidationMessage **msgs,
 	 * is as similar as possible to original.  We want the same bugs, if any,
 	 * not new ones.
 	 */
-	nummsgs = NumMessagesInGroup(&transInvalInfo->PriorCmdInvalidMsgs) +
-		NumMessagesInGroup(&transInvalInfo->ii.CurrentCmdInvalidMsgs);
+	nummsgs = NumMessagesInGroup(&inval_state.transInvalInfo->PriorCmdInvalidMsgs) +
+		NumMessagesInGroup(&inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs);
 
 	*msgs = msgarray = (SharedInvalidationMessage *)
 		MemoryContextAlloc(CurTransactionContext,
 						   nummsgs * sizeof(SharedInvalidationMessage));
 
 	nmsgs = 0;
-	ProcessMessageSubGroupMulti(&transInvalInfo->PriorCmdInvalidMsgs,
+	ProcessMessageSubGroupMulti(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
 								CatCacheMsgs,
 								(memcpy(msgarray + nmsgs,
 										msgs,
 										n * sizeof(SharedInvalidationMessage)),
 								 nmsgs += n));
-	ProcessMessageSubGroupMulti(&transInvalInfo->ii.CurrentCmdInvalidMsgs,
+	ProcessMessageSubGroupMulti(&inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs,
 								CatCacheMsgs,
 								(memcpy(msgarray + nmsgs,
 										msgs,
 										n * sizeof(SharedInvalidationMessage)),
 								 nmsgs += n));
-	ProcessMessageSubGroupMulti(&transInvalInfo->PriorCmdInvalidMsgs,
+	ProcessMessageSubGroupMulti(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
 								RelCacheMsgs,
 								(memcpy(msgarray + nmsgs,
 										msgs,
 										n * sizeof(SharedInvalidationMessage)),
 								 nmsgs += n));
-	ProcessMessageSubGroupMulti(&transInvalInfo->ii.CurrentCmdInvalidMsgs,
+	ProcessMessageSubGroupMulti(&inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs,
 								RelCacheMsgs,
 								(memcpy(msgarray + nmsgs,
 										msgs,
@@ -1201,11 +1222,11 @@ AtEOXact_Inval(bool isCommit)
 	inplaceInvalInfo = NULL;
 
 	/* Quick exit if no transactional messages */
-	if (transInvalInfo == NULL)
+	if (inval_state.transInvalInfo == NULL)
 		return;
 
 	/* Must be at top of stack */
-	Assert(transInvalInfo->my_level == 1 && transInvalInfo->parent == NULL);
+	Assert(inval_state.transInvalInfo->my_level == 1 && inval_state.transInvalInfo->parent == NULL);
 
 	INJECTION_POINT("transaction-end-process-inval", NULL);
 
@@ -1216,26 +1237,26 @@ AtEOXact_Inval(bool isCommit)
 		 * after we send the SI messages.  However, we need not do anything
 		 * unless we committed.
 		 */
-		if (transInvalInfo->ii.RelcacheInitFileInval)
+		if (inval_state.transInvalInfo->ii.RelcacheInitFileInval)
 			RelationCacheInitFilePreInvalidate();
 
-		AppendInvalidationMessages(&transInvalInfo->PriorCmdInvalidMsgs,
-								   &transInvalInfo->ii.CurrentCmdInvalidMsgs);
+		AppendInvalidationMessages(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
+								   &inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs);
 
-		ProcessInvalidationMessagesMulti(&transInvalInfo->PriorCmdInvalidMsgs,
+		ProcessInvalidationMessagesMulti(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
 										 SendSharedInvalidMessages);
 
-		if (transInvalInfo->ii.RelcacheInitFileInval)
+		if (inval_state.transInvalInfo->ii.RelcacheInitFileInval)
 			RelationCacheInitFilePostInvalidate();
 	}
 	else
 	{
-		ProcessInvalidationMessages(&transInvalInfo->PriorCmdInvalidMsgs,
+		ProcessInvalidationMessages(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
 									LocalExecuteInvalidationMessage);
 	}
 
 	/* Need not free anything explicitly */
-	transInvalInfo = NULL;
+	inval_state.transInvalInfo = NULL;
 }
 
 /*
@@ -1323,7 +1344,7 @@ AtEOSubXact_Inval(bool isCommit)
 		inplaceInvalInfo = NULL;
 
 	/* Quick exit if no transactional messages. */
-	myInfo = transInvalInfo;
+	myInfo = inval_state.transInvalInfo;
 	if (myInfo == NULL)
 		return;
 
@@ -1372,7 +1393,7 @@ AtEOSubXact_Inval(bool isCommit)
 			myInfo->parent->ii.RelcacheInitFileInval = true;
 
 		/* Pop the transaction state stack */
-		transInvalInfo = myInfo->parent;
+		inval_state.transInvalInfo = myInfo->parent;
 
 		/* Need not free anything else explicitly */
 		pfree(myInfo);
@@ -1383,7 +1404,7 @@ AtEOSubXact_Inval(bool isCommit)
 									LocalExecuteInvalidationMessage);
 
 		/* Pop the transaction state stack */
-		transInvalInfo = myInfo->parent;
+		inval_state.transInvalInfo = myInfo->parent;
 
 		/* Need not free anything else explicitly */
 		pfree(myInfo);
@@ -1413,18 +1434,18 @@ CommandEndInvalidationMessages(void)
 	 * bootstrap does it, and also ABORT issued when not in a transaction. So
 	 * just quietly return if no state to work on.
 	 */
-	if (transInvalInfo == NULL)
+	if (inval_state.transInvalInfo == NULL)
 		return;
 
-	ProcessInvalidationMessages(&transInvalInfo->ii.CurrentCmdInvalidMsgs,
+	ProcessInvalidationMessages(&inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs,
 								LocalExecuteInvalidationMessage);
 
 	/* WAL Log per-command invalidation messages for logical decoding */
 	if (XLogLogicalInfoActive())
 		LogLogicalInvalidations();
 
-	AppendInvalidationMessages(&transInvalInfo->PriorCmdInvalidMsgs,
-							   &transInvalInfo->ii.CurrentCmdInvalidMsgs);
+	AppendInvalidationMessages(&inval_state.transInvalInfo->PriorCmdInvalidMsgs,
+							   &inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs);
 }
 
 
@@ -1819,30 +1840,30 @@ CacheRegisterSyscacheCallback(SysCacheIdentifier cacheid,
 {
 	if (cacheid < 0 || cacheid >= SysCacheSize)
 		elog(FATAL, "invalid cache ID: %d", cacheid);
-	if (syscache_callback_count >= MAX_SYSCACHE_CALLBACKS)
-		elog(FATAL, "out of syscache_callback_list slots");
+	if (inval_state.syscache_callback_count >= MAX_SYSCACHE_CALLBACKS)
+		elog(FATAL, "out of inval_state.syscache_callback_list slots");
 
-	if (syscache_callback_links[cacheid] == 0)
+	if (inval_state.syscache_callback_links[cacheid] == 0)
 	{
 		/* first callback for this cache */
-		syscache_callback_links[cacheid] = syscache_callback_count + 1;
+		inval_state.syscache_callback_links[cacheid] = inval_state.syscache_callback_count + 1;
 	}
 	else
 	{
 		/* add to end of chain, so that older callbacks are called first */
-		int			i = syscache_callback_links[cacheid] - 1;
+		int			i = inval_state.syscache_callback_links[cacheid] - 1;
 
-		while (syscache_callback_list[i].link > 0)
-			i = syscache_callback_list[i].link - 1;
-		syscache_callback_list[i].link = syscache_callback_count + 1;
+		while (inval_state.syscache_callback_list[i].link > 0)
+			i = inval_state.syscache_callback_list[i].link - 1;
+		inval_state.syscache_callback_list[i].link = inval_state.syscache_callback_count + 1;
 	}
 
-	syscache_callback_list[syscache_callback_count].id = cacheid;
-	syscache_callback_list[syscache_callback_count].link = 0;
-	syscache_callback_list[syscache_callback_count].function = func;
-	syscache_callback_list[syscache_callback_count].arg = arg;
+	inval_state.syscache_callback_list[inval_state.syscache_callback_count].id = cacheid;
+	inval_state.syscache_callback_list[inval_state.syscache_callback_count].link = 0;
+	inval_state.syscache_callback_list[inval_state.syscache_callback_count].function = func;
+	inval_state.syscache_callback_list[inval_state.syscache_callback_count].arg = arg;
 
-	++syscache_callback_count;
+	++inval_state.syscache_callback_count;
 }
 
 /*
@@ -1858,13 +1879,13 @@ void
 CacheRegisterRelcacheCallback(RelcacheCallbackFunction func,
 							  Datum arg)
 {
-	if (relcache_callback_count >= MAX_RELCACHE_CALLBACKS)
-		elog(FATAL, "out of relcache_callback_list slots");
+	if (inval_state.relcache_callback_count >= MAX_RELCACHE_CALLBACKS)
+		elog(FATAL, "out of inval_state.relcache_callback_list slots");
 
-	relcache_callback_list[relcache_callback_count].function = func;
-	relcache_callback_list[relcache_callback_count].arg = arg;
+	inval_state.relcache_callback_list[inval_state.relcache_callback_count].function = func;
+	inval_state.relcache_callback_list[inval_state.relcache_callback_count].arg = arg;
 
-	++relcache_callback_count;
+	++inval_state.relcache_callback_count;
 }
 
 /*
@@ -1902,10 +1923,10 @@ CallSyscacheCallbacks(SysCacheIdentifier cacheid, uint32 hashvalue)
 	if (cacheid < 0 || cacheid >= SysCacheSize)
 		elog(ERROR, "invalid cache ID: %d", cacheid);
 
-	i = syscache_callback_links[cacheid] - 1;
+	i = inval_state.syscache_callback_links[cacheid] - 1;
 	while (i >= 0)
 	{
-		struct SYSCACHECALLBACK *ccitem = syscache_callback_list + i;
+		SyscacheCallback *ccitem = inval_state.syscache_callback_list + i;
 
 		Assert(ccitem->id == cacheid);
 		ccitem->function(ccitem->arg, cacheid, hashvalue);
@@ -1943,10 +1964,10 @@ LogLogicalInvalidations(void)
 	int			nmsgs;
 
 	/* Quick exit if we haven't done anything with invalidation messages. */
-	if (transInvalInfo == NULL)
+	if (inval_state.transInvalInfo == NULL)
 		return;
 
-	group = &transInvalInfo->ii.CurrentCmdInvalidMsgs;
+	group = &inval_state.transInvalInfo->ii.CurrentCmdInvalidMsgs;
 	nmsgs = NumMessagesInGroup(group);
 
 	if (nmsgs > 0)
