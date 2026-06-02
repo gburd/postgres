@@ -89,32 +89,56 @@ typedef struct
 	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
-static session_local registered_buffer *registered_buffers;
-static session_local int	max_registered_buffers; /* allocated size */
-static session_local int	max_registered_block_id = 0;	/* highest block_id + 1 currently
+/*
+ * State for the WAL record currently being constructed by this session's
+ * XLogRegister* / XLogInsert calls.  Consolidated into a single struct so the
+ * whole in-progress insertion is one thread-local object with an explicit
+ * reset point (XLogResetInsertion()).
+ */
+typedef struct XLogInsertState
+{
+	registered_buffer *registered_buffers;
+	int			max_registered_buffers; /* allocated size */
+	int			max_registered_block_id;	/* highest block_id + 1 currently
 											 * registered */
 
-/*
- * A chain of XLogRecDatas to hold the "main data" of a WAL record, registered
- * with XLogRegisterData(...).
- */
-static session_local XLogRecData *mainrdata_head;
-static session_local XLogRecData *mainrdata_last;
-static session_local uint64 mainrdata_len;	/* total # of bytes in chain */
+	/*
+	 * A chain of XLogRecDatas to hold the "main data" of a WAL record,
+	 * registered with XLogRegisterData(...).
+	 */
+	XLogRecData *mainrdata_head;
+	XLogRecData *mainrdata_last;
+	uint64		mainrdata_len;	/* total # of bytes in chain */
 
-/* flags for the in-progress insertion */
-static session_local uint8 curinsert_flags = 0;
+	/* flags for the in-progress insertion */
+	uint8		curinsert_flags;
 
-/*
- * These are used to hold the record header while constructing a record.
- * 'hdr_scratch' is not a plain variable, but is palloc'd at initialization,
- * because we want it to be MAXALIGNed and padding bytes zeroed.
- *
- * For simplicity, it's allocated large enough to hold the headers for any
- * WAL record.
- */
-static session_local XLogRecData hdr_rdt;
-static session_local char *hdr_scratch = NULL;
+	/*
+	 * These are used to hold the record header while constructing a record.
+	 * 'hdr_scratch' is not a plain variable, but is palloc'd at
+	 * initialization, because we want it to be MAXALIGNed and padding bytes
+	 * zeroed.
+	 *
+	 * For simplicity, it's allocated large enough to hold the headers for any
+	 * WAL record.
+	 */
+	XLogRecData hdr_rdt;
+	char	   *hdr_scratch;
+
+	/*
+	 * An array of XLogRecData structs, to hold registered data.
+	 */
+	XLogRecData *rdatas;
+	int			num_rdatas;		/* entries currently used */
+	int			max_rdatas;		/* allocated size */
+
+	bool		begininsert_called;
+
+	/* Memory context to hold the registered buffer and data references. */
+	MemoryContext xloginsert_cxt;
+} XLogInsertState;
+
+static session_local XLogInsertState xlog_insert_state;
 
 #define SizeOfXlogOrigin	(sizeof(ReplOriginId) + sizeof(char))
 #define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
@@ -125,17 +149,6 @@ static session_local char *hdr_scratch = NULL;
 	 SizeOfXLogRecordDataHeaderLong + SizeOfXlogOrigin + \
 	 SizeOfXLogTransactionId)
 
-/*
- * An array of XLogRecData structs, to hold registered data.
- */
-static session_local XLogRecData *rdatas;
-static session_local int	num_rdatas;			/* entries currently used */
-static session_local int	max_rdatas;			/* allocated size */
-
-static session_local bool begininsert_called = false;
-
-/* Memory context to hold the registered buffer and data references. */
-static session_local MemoryContext xloginsert_cxt;
 
 static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
@@ -152,18 +165,18 @@ static bool XLogCompressBackupBlock(const PageData *page, uint16 hole_offset,
 void
 XLogBeginInsert(void)
 {
-	Assert(max_registered_block_id == 0);
-	Assert(mainrdata_last == (XLogRecData *) &mainrdata_head);
-	Assert(mainrdata_len == 0);
+	Assert(xlog_insert_state.max_registered_block_id == 0);
+	Assert(xlog_insert_state.mainrdata_last == (XLogRecData *) &xlog_insert_state.mainrdata_head);
+	Assert(xlog_insert_state.mainrdata_len == 0);
 
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
 		elog(ERROR, "cannot make new WAL entries during recovery");
 
-	if (begininsert_called)
+	if (xlog_insert_state.begininsert_called)
 		elog(ERROR, "XLogBeginInsert was already called");
 
-	begininsert_called = true;
+	xlog_insert_state.begininsert_called = true;
 }
 
 /*
@@ -198,24 +211,24 @@ XLogEnsureRecordSpace(int max_block_id, int ndatas)
 		elog(ERROR, "maximum number of WAL record block references exceeded");
 	nbuffers = max_block_id + 1;
 
-	if (nbuffers > max_registered_buffers)
+	if (nbuffers > xlog_insert_state.max_registered_buffers)
 	{
-		registered_buffers = (registered_buffer *)
-			repalloc(registered_buffers, sizeof(registered_buffer) * nbuffers);
+		xlog_insert_state.registered_buffers = (registered_buffer *)
+			repalloc(xlog_insert_state.registered_buffers, sizeof(registered_buffer) * nbuffers);
 
 		/*
 		 * At least the padding bytes in the structs must be zeroed, because
 		 * they are included in WAL data, but initialize it all for tidiness.
 		 */
-		MemSet(&registered_buffers[max_registered_buffers], 0,
-			   (nbuffers - max_registered_buffers) * sizeof(registered_buffer));
-		max_registered_buffers = nbuffers;
+		MemSet(&xlog_insert_state.registered_buffers[xlog_insert_state.max_registered_buffers], 0,
+			   (nbuffers - xlog_insert_state.max_registered_buffers) * sizeof(registered_buffer));
+		xlog_insert_state.max_registered_buffers = nbuffers;
 	}
 
-	if (ndatas > max_rdatas)
+	if (ndatas > xlog_insert_state.max_rdatas)
 	{
-		rdatas = (XLogRecData *) repalloc(rdatas, sizeof(XLogRecData) * ndatas);
-		max_rdatas = ndatas;
+		xlog_insert_state.rdatas = (XLogRecData *) repalloc(xlog_insert_state.rdatas, sizeof(XLogRecData) * ndatas);
+		xlog_insert_state.max_rdatas = ndatas;
 	}
 }
 
@@ -227,15 +240,15 @@ XLogResetInsertion(void)
 {
 	int			i;
 
-	for (i = 0; i < max_registered_block_id; i++)
-		registered_buffers[i].in_use = false;
+	for (i = 0; i < xlog_insert_state.max_registered_block_id; i++)
+		xlog_insert_state.registered_buffers[i].in_use = false;
 
-	num_rdatas = 0;
-	max_registered_block_id = 0;
-	mainrdata_len = 0;
-	mainrdata_last = (XLogRecData *) &mainrdata_head;
-	curinsert_flags = 0;
-	begininsert_called = false;
+	xlog_insert_state.num_rdatas = 0;
+	xlog_insert_state.max_registered_block_id = 0;
+	xlog_insert_state.mainrdata_len = 0;
+	xlog_insert_state.mainrdata_last = (XLogRecData *) &xlog_insert_state.mainrdata_head;
+	xlog_insert_state.curinsert_flags = 0;
+	xlog_insert_state.begininsert_called = false;
 }
 
 /*
@@ -249,7 +262,7 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 
 	/* NO_IMAGE doesn't make sense with FORCE_IMAGE */
 	Assert(!((flags & REGBUF_FORCE_IMAGE) && (flags & (REGBUF_NO_IMAGE))));
-	Assert(begininsert_called);
+	Assert(xlog_insert_state.begininsert_called);
 
 	/*
 	 * Ordinarily, the buffer should be exclusive-locked (or share-exclusive
@@ -269,14 +282,14 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 	}
 #endif
 
-	if (block_id >= max_registered_block_id)
+	if (block_id >= xlog_insert_state.max_registered_block_id)
 	{
-		if (block_id >= max_registered_buffers)
+		if (block_id >= xlog_insert_state.max_registered_buffers)
 			elog(ERROR, "too many registered buffers");
-		max_registered_block_id = block_id + 1;
+		xlog_insert_state.max_registered_block_id = block_id + 1;
 	}
 
-	regbuf = &registered_buffers[block_id];
+	regbuf = &xlog_insert_state.registered_buffers[block_id];
 
 	BufferGetTag(buffer, &regbuf->rlocator, &regbuf->forkno, &regbuf->block);
 	regbuf->page = BufferGetPage(buffer);
@@ -292,9 +305,9 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 	{
 		int			i;
 
-		for (i = 0; i < max_registered_block_id; i++)
+		for (i = 0; i < xlog_insert_state.max_registered_block_id; i++)
 		{
-			registered_buffer *regbuf_old = &registered_buffers[i];
+			registered_buffer *regbuf_old = &xlog_insert_state.registered_buffers[i];
 
 			if (i == block_id || !regbuf_old->in_use)
 				continue;
@@ -319,15 +332,15 @@ XLogRegisterBlock(uint8 block_id, RelFileLocator *rlocator, ForkNumber forknum,
 {
 	registered_buffer *regbuf;
 
-	Assert(begininsert_called);
+	Assert(xlog_insert_state.begininsert_called);
 
-	if (block_id >= max_registered_block_id)
-		max_registered_block_id = block_id + 1;
+	if (block_id >= xlog_insert_state.max_registered_block_id)
+		xlog_insert_state.max_registered_block_id = block_id + 1;
 
-	if (block_id >= max_registered_buffers)
+	if (block_id >= xlog_insert_state.max_registered_buffers)
 		elog(ERROR, "too many registered buffers");
 
-	regbuf = &registered_buffers[block_id];
+	regbuf = &xlog_insert_state.registered_buffers[block_id];
 
 	regbuf->rlocator = *rlocator;
 	regbuf->forkno = forknum;
@@ -345,9 +358,9 @@ XLogRegisterBlock(uint8 block_id, RelFileLocator *rlocator, ForkNumber forknum,
 	{
 		int			i;
 
-		for (i = 0; i < max_registered_block_id; i++)
+		for (i = 0; i < xlog_insert_state.max_registered_block_id; i++)
 		{
-			registered_buffer *regbuf_old = &registered_buffers[i];
+			registered_buffer *regbuf_old = &xlog_insert_state.registered_buffers[i];
 
 			if (i == block_id || !regbuf_old->in_use)
 				continue;
@@ -373,14 +386,14 @@ XLogRegisterData(const void *data, uint32 len)
 {
 	XLogRecData *rdata;
 
-	Assert(begininsert_called);
+	Assert(xlog_insert_state.begininsert_called);
 
-	if (num_rdatas >= max_rdatas)
+	if (xlog_insert_state.num_rdatas >= xlog_insert_state.max_rdatas)
 		ereport(ERROR,
 				(errmsg_internal("too much WAL data"),
 				 errdetail_internal("%d out of %d data segments are already in use.",
-									num_rdatas, max_rdatas)));
-	rdata = &rdatas[num_rdatas++];
+									xlog_insert_state.num_rdatas, xlog_insert_state.max_rdatas)));
+	rdata = &xlog_insert_state.rdatas[xlog_insert_state.num_rdatas++];
 
 	rdata->data = data;
 	rdata->len = len;
@@ -390,10 +403,10 @@ XLogRegisterData(const void *data, uint32 len)
 	 * need to clear 'next' here.
 	 */
 
-	mainrdata_last->next = rdata;
-	mainrdata_last = rdata;
+	xlog_insert_state.mainrdata_last->next = rdata;
+	xlog_insert_state.mainrdata_last = rdata;
 
-	mainrdata_len += len;
+	xlog_insert_state.mainrdata_len += len;
 }
 
 /*
@@ -415,32 +428,32 @@ XLogRegisterBufData(uint8 block_id, const void *data, uint32 len)
 	registered_buffer *regbuf;
 	XLogRecData *rdata;
 
-	Assert(begininsert_called);
+	Assert(xlog_insert_state.begininsert_called);
 
 	/* find the registered buffer struct */
-	regbuf = &registered_buffers[block_id];
+	regbuf = &xlog_insert_state.registered_buffers[block_id];
 	if (!regbuf->in_use)
 		elog(ERROR, "no block with id %d registered with WAL insertion",
 			 block_id);
 
 	/*
-	 * Check against max_rdatas and ensure we do not register more data per
+	 * Check against xlog_insert_state.max_rdatas and ensure we do not register more data per
 	 * buffer than can be handled by the physical data format; i.e. that
 	 * regbuf->rdata_len does not grow beyond what
 	 * XLogRecordBlockHeader->data_length can hold.
 	 */
-	if (num_rdatas >= max_rdatas)
+	if (xlog_insert_state.num_rdatas >= xlog_insert_state.max_rdatas)
 		ereport(ERROR,
 				(errmsg_internal("too much WAL data"),
 				 errdetail_internal("%d out of %d data segments are already in use.",
-									num_rdatas, max_rdatas)));
+									xlog_insert_state.num_rdatas, xlog_insert_state.max_rdatas)));
 	if (regbuf->rdata_len + len > UINT16_MAX || len > UINT16_MAX)
 		ereport(ERROR,
 				(errmsg_internal("too much WAL data"),
 				 errdetail_internal("Registering more than maximum %u bytes allowed to block %u: current %u bytes, adding %u bytes.",
 									UINT16_MAX, block_id, regbuf->rdata_len, len)));
 
-	rdata = &rdatas[num_rdatas++];
+	rdata = &xlog_insert_state.rdatas[xlog_insert_state.num_rdatas++];
 
 	rdata->data = data;
 	rdata->len = len;
@@ -463,8 +476,8 @@ XLogRegisterBufData(uint8 block_id, const void *data, uint32 len)
 void
 XLogSetRecordFlags(uint8 flags)
 {
-	Assert(begininsert_called);
-	curinsert_flags |= flags;
+	Assert(xlog_insert_state.begininsert_called);
+	xlog_insert_state.curinsert_flags |= flags;
 }
 
 /*
@@ -484,7 +497,7 @@ XLogInsert(RmgrId rmid, uint8 info)
 	XLogRecPtr	EndPos;
 
 	/* XLogBeginInsert() must have been called. */
-	if (!begininsert_called)
+	if (!xlog_insert_state.begininsert_called)
 		elog(ERROR, "XLogBeginInsert was not called");
 
 	/*
@@ -530,7 +543,7 @@ XLogInsert(RmgrId rmid, uint8 info)
 								 &fpw_lsn, &num_fpi, &fpi_bytes,
 								 &topxid_included);
 
-		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
+		EndPos = XLogInsertRecord(rdt, fpw_lsn, xlog_insert_state.curinsert_flags, num_fpi,
 								  fpi_bytes, topxid_included);
 	} while (!XLogRecPtrIsValid(EndPos));
 
@@ -630,7 +643,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	registered_buffer *prev_regbuf = NULL;
 	XLogRecData *rdt_datas_last;
 	XLogRecord *rechdr;
-	char	   *scratch = hdr_scratch;
+	char	   *scratch = xlog_insert_state.hdr_scratch;
 
 	/*
 	 * Note: this function can be called multiple times for the same record.
@@ -641,9 +654,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr = (XLogRecord *) scratch;
 	scratch += SizeOfXLogRecord;
 
-	hdr_rdt.next = NULL;
-	rdt_datas_last = &hdr_rdt;
-	hdr_rdt.data = hdr_scratch;
+	xlog_insert_state.hdr_rdt.next = NULL;
+	rdt_datas_last = &xlog_insert_state.hdr_rdt;
+	xlog_insert_state.hdr_rdt.data = xlog_insert_state.hdr_scratch;
 
 	/*
 	 * Enforce consistency checks for this record if user is looking for it.
@@ -660,9 +673,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * the headers for the block references in the scratch buffer.
 	 */
 	*fpw_lsn = InvalidXLogRecPtr;
-	for (block_id = 0; block_id < max_registered_block_id; block_id++)
+	for (block_id = 0; block_id < xlog_insert_state.max_registered_block_id; block_id++)
 	{
-		registered_buffer *regbuf = &registered_buffers[block_id];
+		registered_buffer *regbuf = &xlog_insert_state.registered_buffers[block_id];
 		bool		needs_backup;
 		bool		needs_data;
 		XLogRecordBlockHeader bkpb;
@@ -915,7 +928,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	}
 
 	/* followed by the record's origin, if any */
-	if ((curinsert_flags & XLOG_INCLUDE_ORIGIN) &&
+	if ((xlog_insert_state.curinsert_flags & XLOG_INCLUDE_ORIGIN) &&
 		replorigin_xact_state.origin != InvalidReplOriginId)
 	{
 		*(scratch++) = (char) XLR_BLOCK_ID_ORIGIN;
@@ -937,20 +950,20 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	}
 
 	/* followed by main data, if any */
-	if (mainrdata_len > 0)
+	if (xlog_insert_state.mainrdata_len > 0)
 	{
-		if (mainrdata_len > 255)
+		if (xlog_insert_state.mainrdata_len > 255)
 		{
 			uint32		mainrdata_len_4b;
 
-			if (mainrdata_len > PG_UINT32_MAX)
+			if (xlog_insert_state.mainrdata_len > PG_UINT32_MAX)
 				ereport(ERROR,
 						(errmsg_internal("too much WAL data"),
 						 errdetail_internal("Main data length is %" PRIu64 " bytes for a maximum of %u bytes.",
-											mainrdata_len,
+											xlog_insert_state.mainrdata_len,
 											PG_UINT32_MAX)));
 
-			mainrdata_len_4b = (uint32) mainrdata_len;
+			mainrdata_len_4b = (uint32) xlog_insert_state.mainrdata_len;
 			*(scratch++) = (char) XLR_BLOCK_ID_DATA_LONG;
 			memcpy(scratch, &mainrdata_len_4b, sizeof(uint32));
 			scratch += sizeof(uint32);
@@ -958,16 +971,16 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		else
 		{
 			*(scratch++) = (char) XLR_BLOCK_ID_DATA_SHORT;
-			*(scratch++) = (uint8) mainrdata_len;
+			*(scratch++) = (uint8) xlog_insert_state.mainrdata_len;
 		}
-		rdt_datas_last->next = mainrdata_head;
-		rdt_datas_last = mainrdata_last;
-		total_len += mainrdata_len;
+		rdt_datas_last->next = xlog_insert_state.mainrdata_head;
+		rdt_datas_last = xlog_insert_state.mainrdata_last;
+		total_len += xlog_insert_state.mainrdata_len;
 	}
 	rdt_datas_last->next = NULL;
 
-	hdr_rdt.len = (scratch - hdr_scratch);
-	total_len += hdr_rdt.len;
+	xlog_insert_state.hdr_rdt.len = (scratch - xlog_insert_state.hdr_scratch);
+	total_len += xlog_insert_state.hdr_rdt.len;
 
 	/*
 	 * Calculate CRC of the data
@@ -978,8 +991,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * header.
 	 */
 	INIT_CRC32C(rdata_crc);
-	COMP_CRC32C(rdata_crc, hdr_scratch + SizeOfXLogRecord, hdr_rdt.len - SizeOfXLogRecord);
-	for (rdt = hdr_rdt.next; rdt != NULL; rdt = rdt->next)
+	COMP_CRC32C(rdata_crc, xlog_insert_state.hdr_scratch + SizeOfXLogRecord, xlog_insert_state.hdr_rdt.len - SizeOfXLogRecord);
+	for (rdt = xlog_insert_state.hdr_rdt.next; rdt != NULL; rdt = rdt->next)
 		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
 
 	/*
@@ -1007,7 +1020,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr->xl_prev = InvalidXLogRecPtr;
 	rechdr->xl_crc = rdata_crc;
 
-	return &hdr_rdt;
+	return &xlog_insert_state.hdr_rdt;
 }
 
 /*
@@ -1411,33 +1424,33 @@ InitXLogInsert(void)
 #endif
 
 	/* Initialize the working areas */
-	if (xloginsert_cxt == NULL)
+	if (xlog_insert_state.xloginsert_cxt == NULL)
 	{
-		xloginsert_cxt = AllocSetContextCreate(TopMemoryContext,
+		xlog_insert_state.xloginsert_cxt = AllocSetContextCreate(TopMemoryContext,
 											   "WAL record construction",
 											   ALLOCSET_DEFAULT_SIZES);
 	}
 
-	if (registered_buffers == NULL)
+	if (xlog_insert_state.registered_buffers == NULL)
 	{
-		registered_buffers = (registered_buffer *)
-			MemoryContextAllocZero(xloginsert_cxt,
+		xlog_insert_state.registered_buffers = (registered_buffer *)
+			MemoryContextAllocZero(xlog_insert_state.xloginsert_cxt,
 								   sizeof(registered_buffer) * (XLR_NORMAL_MAX_BLOCK_ID + 1));
-		max_registered_buffers = XLR_NORMAL_MAX_BLOCK_ID + 1;
+		xlog_insert_state.max_registered_buffers = XLR_NORMAL_MAX_BLOCK_ID + 1;
 	}
-	if (rdatas == NULL)
+	if (xlog_insert_state.rdatas == NULL)
 	{
-		rdatas = MemoryContextAlloc(xloginsert_cxt,
+		xlog_insert_state.rdatas = MemoryContextAlloc(xlog_insert_state.xloginsert_cxt,
 									sizeof(XLogRecData) * XLR_NORMAL_RDATAS);
-		max_rdatas = XLR_NORMAL_RDATAS;
+		xlog_insert_state.max_rdatas = XLR_NORMAL_RDATAS;
 	}
 
 	/*
 	 * Allocate a buffer to hold the header information for a WAL record.
 	 */
-	if (hdr_scratch == NULL)
-		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
+	if (xlog_insert_state.hdr_scratch == NULL)
+		xlog_insert_state.hdr_scratch = MemoryContextAllocZero(xlog_insert_state.xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
 
-	mainrdata_last = (XLogRecData *) &mainrdata_head;
+	xlog_insert_state.mainrdata_last = (XLogRecData *) &xlog_insert_state.mainrdata_head;
 }
