@@ -989,6 +989,21 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
 			ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, offnum);
 
+			/*
+			 * RECNO updates in place (am_inplace_update_keeps_tid), so a
+			 * changed indexed column leaves a stale (oldkey -> tid) secondary
+			 * entry beside the new one.  Plain and index-only scans run
+			 * ExecIndexInplaceEntryIsStale to drop the stale entry, but a
+			 * bitmap scan keeps only TIDs and discards the index tuple, so that
+			 * recheck cannot run.  Force the executor to re-evaluate
+			 * bitmapqualorig against the live tuple whenever we return a
+			 * committed in-place UPDATE: an exact (non-lossy) bitmap would
+			 * otherwise trust the stale index entry and return a row whose live
+			 * key no longer matches the scan key.
+			 */
+			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
+				*recheck = true;
+
 			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
 			return true;
@@ -1210,11 +1225,23 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 	ItemId		itemid;
 	RecnoTupleHeader *tuple_hdr;
 	bool		visible = false;
+	uint16		orig_flags = 0;
 
 	/* Initialize output parameters */
 	*call_again = false;
 	if (all_dead)
 		*all_dead = scan->all_dead;
+
+	/*
+	 * Quick-scankey-check optimization for the secondary-index stale-entry
+	 * recheck.  RECNO updates in place (am_inplace_update_keeps_tid), so a
+	 * changed indexed column leaves both (oldkey -> tid) and (newkey -> tid)
+	 * in the index pointing at the one live tuple.  We set this flag below
+	 * only when the tuple we return is a committed in-place UPDATE; for the
+	 * overwhelmingly common non-updated tuple the flag stays false and the
+	 * executor does zero recheck work.
+	 */
+	scan->base.xs_inplace_maybe_stale = false;
 
 	/* Clear the slot */
 	ExecClearTuple(tts);
@@ -1253,6 +1280,17 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 
 	/* Get tuple header */
 	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+	/*
+	 * Capture the on-entry flags before any visibility-driven hint-bit
+	 * clearing.  We use these to decide whether the entry that led here may be
+	 * stale: a committed in-place UPDATE (RECNO_TUPLE_UPDATED set, not
+	 * UNCOMMITTED) is exactly the case where a stale (oldkey -> tid) secondary
+	 * entry can exist.  Even when the visibility logic clears the on-page
+	 * UPDATED marker via hint bits, the stale index entry still exists, so we
+	 * must trigger the executor recheck off the original flags.
+	 */
+	orig_flags = tuple_hdr->t_flags;
 
 	/* Check visibility (dual-mode: HLC or legacy) */
 	if (snapshot)
@@ -1702,6 +1740,25 @@ visibility_done:
 		tts->tts_tableOid = RelationGetRelid(rel);
 		tts->tts_tid = *tid;
 		/* Slot is already marked valid by RecnoTupleToSlotWithOverflow */
+
+		/*
+		 * Signal the executor to recheck the index entry's stored key
+		 * whenever we return a tuple that was updated in place.  The slot
+		 * holds the value this snapshot should see, so a stale (oldkey -> tid)
+		 * entry will mismatch the reformed live key and be dropped, while the
+		 * (newkey -> tid) entry will match and be kept.
+		 *
+		 * We do NOT exclude RECNO_TUPLE_UNCOMMITTED: that bit is a lazy hint
+		 * that lingers even after the updating transaction commits (it is
+		 * cleared opportunistically on a later visibility check), so requiring
+		 * it to be clear would miss our own just-committed update.  Triggering
+		 * the recheck for an update that really is still uncommitted is
+		 * harmless -- the recheck only drops a row when the stored key differs
+		 * from the value the fetch actually returned, which never happens for
+		 * a correctly-visible row.
+		 */
+		if (orig_flags & RECNO_TUPLE_UPDATED)
+			scan->base.xs_inplace_maybe_stale = true;
 	}
 	else
 	{

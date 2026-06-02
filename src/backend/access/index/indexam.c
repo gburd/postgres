@@ -288,6 +288,26 @@ index_beginscan(Relation heapRelation,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, flags);
 
+	/*
+	 * For a table AM that updates in place keeping the same TID
+	 * (am_inplace_update_keeps_tid), a changed indexed column leaves a stale
+	 * (oldkey -> tid) secondary entry alongside the new one.  The executor
+	 * detects this by comparing the stored index key against the live tuple's
+	 * reformed key, which requires the AM to return the index tuple in
+	 * xs_itup.  Force xs_want_itup so xs_itup is populated even for plain
+	 * index scans, where it would normally stay off.
+	 *
+	 * Consequence for nbtree (RECNO secondary indexes are nbtree): forcing
+	 * xs_want_itup makes _bt_first set so->dropPin false, which RETAINS the
+	 * leaf pin across tuple processing and can make VACUUM wait for a cleanup
+	 * lock.  That is intentional and correctness-safe here -- the alternative
+	 * (no stored key to compare) yields wrong query results for in-place AMs.
+	 */
+	if (heapRelation != NULL &&
+		heapRelation->rd_tableam != NULL &&
+		heapRelation->rd_tableam->am_inplace_update_keeps_tid)
+		scan->xs_want_itup = true;
+
 	return scan;
 }
 
@@ -665,6 +685,18 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 
 	if (found)
 		pgstat_count_heap_fetch(scan->indexRelation);
+
+	/*
+	 * Surface the in-place-stale signal to the executor.  For an in-place
+	 * table AM (am_inplace_update_keeps_tid) an UPDATE keeps the TID, so a
+	 * changed indexed column leaves a stale (oldkey -> tid) secondary entry.
+	 * We cannot do the key comparison here (no IndexInfo/EState in scope), so
+	 * we only relay the AM's per-fetch flag; the executor performs the actual
+	 * stored-key vs live-key recheck.  Heap-style AMs always leave the source
+	 * flag false, so xs_inplace_recheck stays false and the recheck is a no-op.
+	 */
+	scan->xs_inplace_recheck =
+		scan->xs_heapfetch->xs_inplace_maybe_stale;
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
