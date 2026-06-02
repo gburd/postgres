@@ -133,36 +133,82 @@
 
 /* These variables define the actually active state: */
 
-static session_local List *activeSearchPath = NIL;
-
-/* default place to create stuff; if InvalidOid, no default */
-static session_local Oid	activeCreationNamespace = InvalidOid;
-
-/* if true, activeCreationNamespace is wrong, it should be temp namespace */
-static session_local bool activeTempCreationPending = false;
-
-/* current generation counter; make sure this is never zero */
-static session_local uint64 activePathGeneration = 1;
-
-/* These variables are the values last derived from namespace_search_path: */
-
-static session_local List *baseSearchPath = NIL;
-
-static session_local Oid	baseCreationNamespace = InvalidOid;
-
-static session_local bool baseTempCreationPending = false;
-
-static session_local Oid	namespaceUser = InvalidOid;
-
-/* The above four values are valid only if baseSearchPathValid */
-static session_local bool baseSearchPathValid = true;
-
 /*
- * Storage for search path cache.  Clear searchPathCacheValid as a simple
- * way to invalidate *all* the cache entries, not just the active one.
+ * Per-session state for the namespace / search-path machinery.  These used to
+ * be individual file-local statics; they are collected here so the active and
+ * base search-path state, the search-path cache validity flags, and the
+ * per-session temp-namespace OIDs live behind a single thread-local instance
+ * (namespace_state) for the threading model.
  */
-static session_local bool searchPathCacheValid = false;
-static session_local MemoryContext SearchPathCacheContext = NULL;
+typedef struct NamespaceState
+{
+	/* These define the actually active state: */
+	List	   *activeSearchPath;
+
+	/* default place to create stuff; if InvalidOid, no default */
+	Oid			activeCreationNamespace;
+
+	/* if true, activeCreationNamespace is wrong, it should be temp namespace */
+	bool		activeTempCreationPending;
+
+	/* current generation counter; make sure this is never zero */
+	uint64		activePathGeneration;
+
+	/* These are the values last derived from namespace_search_path: */
+	List	   *baseSearchPath;
+	Oid			baseCreationNamespace;
+	bool		baseTempCreationPending;
+	Oid			namespaceUser;
+
+	/* The above four values are valid only if baseSearchPathValid */
+	bool		baseSearchPathValid;
+
+	/*
+	 * Storage for search path cache.  Clear searchPathCacheValid as a simple
+	 * way to invalidate *all* the cache entries, not just the active one.
+	 */
+	bool		searchPathCacheValid;
+	MemoryContext SearchPathCacheContext;
+
+	/*
+	 * myTempNamespace is InvalidOid until and unless a TEMP namespace is set
+	 * up in a particular backend session (this happens when a CREATE TEMP
+	 * TABLE command is first executed).  Thereafter it's the OID of the temp
+	 * namespace.
+	 *
+	 * myTempToastNamespace is the OID of the namespace for my temp tables'
+	 * toast tables.  It is set when myTempNamespace is, and is InvalidOid
+	 * before that.
+	 *
+	 * myTempNamespaceSubID shows whether we've created the TEMP namespace in
+	 * the current subtransaction.  The flag propagates up the subtransaction
+	 * tree, so the main transaction will correctly recognize the flag if all
+	 * intermediate subtransactions commit.  When it is
+	 * InvalidSubTransactionId, we either haven't made the TEMP namespace yet,
+	 * or have successfully committed its creation, depending on whether
+	 * myTempNamespace is valid.
+	 */
+	Oid			myTempNamespace;
+	Oid			myTempToastNamespace;
+	SubTransactionId myTempNamespaceSubID;
+} NamespaceState;
+
+static session_local NamespaceState namespace_state = {
+	.activeSearchPath = NIL,
+	.activeCreationNamespace = InvalidOid,
+	.activeTempCreationPending = false,
+	.activePathGeneration = 1,
+	.baseSearchPath = NIL,
+	.baseCreationNamespace = InvalidOid,
+	.baseTempCreationPending = false,
+	.namespaceUser = InvalidOid,
+	.baseSearchPathValid = true,
+	.searchPathCacheValid = false,
+	.SearchPathCacheContext = NULL,
+	.myTempNamespace = InvalidOid,
+	.myTempToastNamespace = InvalidOid,
+	.myTempNamespaceSubID = InvalidSubTransactionId,
+};
 
 typedef struct SearchPathCacheKey
 {
@@ -182,27 +228,6 @@ typedef struct SearchPathCacheEntry
 	/* needed for simplehash */
 	char		status;
 } SearchPathCacheEntry;
-
-/*
- * myTempNamespace is InvalidOid until and unless a TEMP namespace is set up
- * in a particular backend session (this happens when a CREATE TEMP TABLE
- * command is first executed).  Thereafter it's the OID of the temp namespace.
- *
- * myTempToastNamespace is the OID of the namespace for my temp tables' toast
- * tables.  It is set when myTempNamespace is, and is InvalidOid before that.
- *
- * myTempNamespaceSubID shows whether we've created the TEMP namespace in the
- * current subtransaction.  The flag propagates up the subtransaction tree,
- * so the main transaction will correctly recognize the flag if all
- * intermediate subtransactions commit.  When it is InvalidSubTransactionId,
- * we either haven't made the TEMP namespace yet, or have successfully
- * committed its creation, depending on whether myTempNamespace is valid.
- */
-static session_local Oid	myTempNamespace = InvalidOid;
-
-static session_local Oid	myTempToastNamespace = InvalidOid;
-
-static session_local SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
 
 /*
  * This is the user's textual search path specification --- it's the value
@@ -306,12 +331,12 @@ static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
 static void
 spcache_init(void)
 {
-	if (SearchPathCache && searchPathCacheValid &&
+	if (SearchPathCache && namespace_state.searchPathCacheValid &&
 		SearchPathCache->members < SPCACHE_RESET_THRESHOLD)
 		return;
 
-	searchPathCacheValid = false;
-	baseSearchPathValid = false;
+	namespace_state.searchPathCacheValid = false;
+	namespace_state.baseSearchPathValid = false;
 
 	/*
 	 * Make sure we don't leave dangling pointers if a failure happens during
@@ -320,21 +345,21 @@ spcache_init(void)
 	SearchPathCache = NULL;
 	LastSearchPathCacheEntry = NULL;
 
-	if (SearchPathCacheContext == NULL)
+	if (namespace_state.SearchPathCacheContext == NULL)
 	{
 		/* Make the context we'll keep search path cache hashtable in */
-		SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
+		namespace_state.SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
 													   "search_path processing cache",
 													   ALLOCSET_DEFAULT_SIZES);
 	}
 	else
 	{
-		MemoryContextReset(SearchPathCacheContext);
+		MemoryContextReset(namespace_state.SearchPathCacheContext);
 	}
 
 	/* arbitrary initial starting size of 16 elements */
-	SearchPathCache = nsphash_create(SearchPathCacheContext, 16, NULL);
-	searchPathCacheValid = true;
+	SearchPathCache = nsphash_create(namespace_state.SearchPathCacheContext, 16, NULL);
+	namespace_state.searchPathCacheValid = true;
 }
 
 /*
@@ -398,7 +423,7 @@ spcache_insert(const char *searchPath, Oid roleid)
 		{
 			bool		found;
 
-			cachekey.searchPath = MemoryContextStrdup(SearchPathCacheContext, searchPath);
+			cachekey.searchPath = MemoryContextStrdup(namespace_state.SearchPathCacheContext, searchPath);
 			entry = nsphash_insert(SearchPathCache, cachekey, &found);
 			Assert(!found);
 
@@ -500,7 +525,7 @@ RangeVarGetRelidExtended(const RangeVar *relation, LOCKMODE lockmode,
 		 */
 		if (relation->relpersistence == RELPERSISTENCE_TEMP)
 		{
-			if (!OidIsValid(myTempNamespace))
+			if (!OidIsValid(namespace_state.myTempNamespace))
 				relId = InvalidOid; /* this probably can't happen? */
 			else
 			{
@@ -514,13 +539,13 @@ RangeVarGetRelidExtended(const RangeVar *relation, LOCKMODE lockmode,
 					 * For missing_ok, allow a non-existent schema name to
 					 * return InvalidOid.
 					 */
-					if (namespaceId != myTempNamespace)
+					if (namespaceId != namespace_state.myTempNamespace)
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 								 errmsg("temporary tables cannot specify a schema name")));
 				}
 
-				relId = get_relname_relid(relation->relname, myTempNamespace);
+				relId = get_relname_relid(relation->relname, namespace_state.myTempNamespace);
 			}
 		}
 		else if (relation->schemaname)
@@ -676,7 +701,7 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
 		{
 			/* Initialize temp namespace */
 			AccessTempTableNamespace(false);
-			return myTempNamespace;
+			return namespace_state.myTempNamespace;
 		}
 		/* use exact schema given */
 		namespaceId = get_namespace_oid(newRelation->schemaname, false);
@@ -686,19 +711,19 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
 	{
 		/* Initialize temp namespace */
 		AccessTempTableNamespace(false);
-		return myTempNamespace;
+		return namespace_state.myTempNamespace;
 	}
 	else
 	{
 		/* use the default creation namespace */
 		recomputeNamespacePath();
-		if (activeTempCreationPending)
+		if (namespace_state.activeTempCreationPending)
 		{
 			/* Need to initialize temp namespace */
 			AccessTempTableNamespace(true);
-			return myTempNamespace;
+			return namespace_state.myTempNamespace;
 		}
-		namespaceId = activeCreationNamespace;
+		namespaceId = namespace_state.activeCreationNamespace;
 		if (!OidIsValid(namespaceId))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_SCHEMA),
@@ -890,7 +915,7 @@ RelnameGetRelid(const char *relname)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
@@ -951,7 +976,7 @@ RelationIsVisibleExt(Oid relid, bool *is_missing)
 	 */
 	relnamespace = relform->relnamespace;
 	if (relnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, relnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, relnamespace))
 		visible = false;
 	else
 	{
@@ -964,7 +989,7 @@ RelationIsVisibleExt(Oid relid, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
@@ -1013,11 +1038,11 @@ TypenameGetTypidExtended(const char *typname, bool temp_ok)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (!temp_ok && namespaceId == myTempNamespace)
+		if (!temp_ok && namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		typid = GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid,
@@ -1078,7 +1103,7 @@ TypeIsVisibleExt(Oid typid, bool *is_missing)
 	 */
 	typnamespace = typform->typnamespace;
 	if (typnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, typnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, typnamespace))
 		visible = false;
 	else
 	{
@@ -1091,7 +1116,7 @@ TypeIsVisibleExt(Oid typid, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
@@ -1267,10 +1292,10 @@ FuncnameGetCandidates(List *names, int nargs, List *argnames,
 			 */
 			ListCell   *nsp;
 
-			foreach(nsp, activeSearchPath)
+			foreach(nsp, namespace_state.activeSearchPath)
 			{
 				if (procform->pronamespace == lfirst_oid(nsp) &&
-					procform->pronamespace != myTempNamespace)
+					procform->pronamespace != namespace_state.myTempNamespace)
 					break;
 				pathpos++;
 			}
@@ -1780,7 +1805,7 @@ FunctionIsVisibleExt(Oid funcid, bool *is_missing)
 	 */
 	pronamespace = procform->pronamespace;
 	if (pronamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, pronamespace))
+		!list_member_oid(namespace_state.activeSearchPath, pronamespace))
 		visible = false;
 	else
 	{
@@ -1889,12 +1914,12 @@ OpernameGetOprid(List *names, Oid oprleft, Oid oprright)
 	 */
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 		int			i;
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		for (i = 0; i < catlist->n_members; i++)
@@ -2024,10 +2049,10 @@ OpernameGetCandidates(List *names, char oprkind, bool missing_schema_ok,
 			 */
 			ListCell   *nsp;
 
-			foreach(nsp, activeSearchPath)
+			foreach(nsp, namespace_state.activeSearchPath)
 			{
 				if (operform->oprnamespace == lfirst_oid(nsp) &&
-					operform->oprnamespace != myTempNamespace)
+					operform->oprnamespace != namespace_state.myTempNamespace)
 					break;
 				pathpos++;
 			}
@@ -2155,7 +2180,7 @@ OperatorIsVisibleExt(Oid oprid, bool *is_missing)
 	 */
 	oprnamespace = oprform->oprnamespace;
 	if (oprnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, oprnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, oprnamespace))
 		visible = false;
 	else
 	{
@@ -2194,11 +2219,11 @@ OpclassnameGetOpcid(Oid amid, const char *opcname)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		opcid = GetSysCacheOid3(CLAAMNAMENSP, Anum_pg_opclass_oid,
@@ -2260,7 +2285,7 @@ OpclassIsVisibleExt(Oid opcid, bool *is_missing)
 	 */
 	opcnamespace = opcform->opcnamespace;
 	if (opcnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, opcnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, opcnamespace))
 		visible = false;
 	else
 	{
@@ -2296,11 +2321,11 @@ OpfamilynameGetOpfid(Oid amid, const char *opfname)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		opfid = GetSysCacheOid3(OPFAMILYAMNAMENSP, Anum_pg_opfamily_oid,
@@ -2362,7 +2387,7 @@ OpfamilyIsVisibleExt(Oid opfid, bool *is_missing)
 	 */
 	opfnamespace = opfform->opfnamespace;
 	if (opfnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, opfnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, opfnamespace))
 		visible = false;
 	else
 	{
@@ -2446,12 +2471,12 @@ CollationGetCollid(const char *collname)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 		Oid			collid;
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		collid = lookup_collation(collname, namespaceId, dbencoding);
@@ -2513,7 +2538,7 @@ CollationIsVisibleExt(Oid collid, bool *is_missing)
 	 */
 	collnamespace = collform->collnamespace;
 	if (collnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, collnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, collnamespace))
 		visible = false;
 	else
 	{
@@ -2550,11 +2575,11 @@ ConversionGetConid(const char *conname)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		conid = GetSysCacheOid2(CONNAMENSP, Anum_pg_conversion_oid,
@@ -2615,7 +2640,7 @@ ConversionIsVisibleExt(Oid conid, bool *is_missing)
 	 */
 	connamespace = conform->connamespace;
 	if (connamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, connamespace))
+		!list_member_oid(namespace_state.activeSearchPath, connamespace))
 		visible = false;
 	else
 	{
@@ -2668,11 +2693,11 @@ get_statistics_object_oid(List *names, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 			stats_oid = GetSysCacheOid2(STATEXTNAMENSP, Anum_pg_statistic_ext_oid,
 										PointerGetDatum(stats_name),
@@ -2738,7 +2763,7 @@ StatisticsObjIsVisibleExt(Oid stxid, bool *is_missing)
 	 */
 	stxnamespace = stxform->stxnamespace;
 	if (stxnamespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, stxnamespace))
+		!list_member_oid(namespace_state.activeSearchPath, stxnamespace))
 		visible = false;
 	else
 	{
@@ -2751,11 +2776,11 @@ StatisticsObjIsVisibleExt(Oid stxid, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			if (namespaceId == stxnamespace)
@@ -2812,11 +2837,11 @@ get_ts_parser_oid(List *names, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			prsoid = GetSysCacheOid2(TSPARSERNAMENSP, Anum_pg_ts_parser_oid,
@@ -2883,7 +2908,7 @@ TSParserIsVisibleExt(Oid prsId, bool *is_missing)
 	 */
 	namespace = form->prsnamespace;
 	if (namespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, namespace))
+		!list_member_oid(namespace_state.activeSearchPath, namespace))
 		visible = false;
 	else
 	{
@@ -2896,11 +2921,11 @@ TSParserIsVisibleExt(Oid prsId, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			if (namespaceId == namespace)
@@ -2957,11 +2982,11 @@ get_ts_dict_oid(List *names, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			dictoid = GetSysCacheOid2(TSDICTNAMENSP, Anum_pg_ts_dict_oid,
@@ -3029,7 +3054,7 @@ TSDictionaryIsVisibleExt(Oid dictId, bool *is_missing)
 	 */
 	namespace = form->dictnamespace;
 	if (namespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, namespace))
+		!list_member_oid(namespace_state.activeSearchPath, namespace))
 		visible = false;
 	else
 	{
@@ -3042,11 +3067,11 @@ TSDictionaryIsVisibleExt(Oid dictId, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			if (namespaceId == namespace)
@@ -3103,11 +3128,11 @@ get_ts_template_oid(List *names, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			tmploid = GetSysCacheOid2(TSTEMPLATENAMENSP, Anum_pg_ts_template_oid,
@@ -3174,7 +3199,7 @@ TSTemplateIsVisibleExt(Oid tmplId, bool *is_missing)
 	 */
 	namespace = form->tmplnamespace;
 	if (namespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, namespace))
+		!list_member_oid(namespace_state.activeSearchPath, namespace))
 		visible = false;
 	else
 	{
@@ -3187,11 +3212,11 @@ TSTemplateIsVisibleExt(Oid tmplId, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			if (namespaceId == namespace)
@@ -3248,11 +3273,11 @@ get_ts_config_oid(List *names, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			cfgoid = GetSysCacheOid2(TSCONFIGNAMENSP, Anum_pg_ts_config_oid,
@@ -3320,7 +3345,7 @@ TSConfigIsVisibleExt(Oid cfgid, bool *is_missing)
 	 */
 	namespace = form->cfgnamespace;
 	if (namespace != PG_CATALOG_NAMESPACE &&
-		!list_member_oid(activeSearchPath, namespace))
+		!list_member_oid(namespace_state.activeSearchPath, namespace))
 		visible = false;
 	else
 	{
@@ -3333,11 +3358,11 @@ TSConfigIsVisibleExt(Oid cfgid, bool *is_missing)
 		ListCell   *l;
 
 		visible = false;
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			Oid			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			if (namespaceId == namespace)
@@ -3429,10 +3454,10 @@ LookupNamespaceNoError(const char *nspname)
 	/* check for pg_temp alias */
 	if (strcmp(nspname, "pg_temp") == 0)
 	{
-		if (OidIsValid(myTempNamespace))
+		if (OidIsValid(namespace_state.myTempNamespace))
 		{
-			InvokeNamespaceSearchHook(myTempNamespace, true);
-			return myTempNamespace;
+			InvokeNamespaceSearchHook(namespace_state.myTempNamespace, true);
+			return namespace_state.myTempNamespace;
 		}
 
 		/*
@@ -3462,8 +3487,8 @@ LookupExplicitNamespace(const char *nspname, bool missing_ok)
 	/* check for pg_temp alias */
 	if (strcmp(nspname, "pg_temp") == 0)
 	{
-		if (OidIsValid(myTempNamespace))
-			return myTempNamespace;
+		if (OidIsValid(namespace_state.myTempNamespace))
+			return namespace_state.myTempNamespace;
 
 		/*
 		 * Since this is used only for looking up existing objects, there is
@@ -3507,7 +3532,7 @@ LookupCreationNamespace(const char *nspname)
 	{
 		/* Initialize temp namespace */
 		AccessTempTableNamespace(false);
-		return myTempNamespace;
+		return namespace_state.myTempNamespace;
 	}
 
 	namespaceId = get_namespace_oid(nspname, false);
@@ -3571,7 +3596,7 @@ QualifiedNameGetCreationNamespace(const List *names, char **objname_p)
 		{
 			/* Initialize temp namespace */
 			AccessTempTableNamespace(false);
-			return myTempNamespace;
+			return namespace_state.myTempNamespace;
 		}
 		/* use exact schema given */
 		namespaceId = get_namespace_oid(schemaname, false);
@@ -3581,13 +3606,13 @@ QualifiedNameGetCreationNamespace(const List *names, char **objname_p)
 	{
 		/* use the default creation namespace */
 		recomputeNamespacePath();
-		if (activeTempCreationPending)
+		if (namespace_state.activeTempCreationPending)
 		{
 			/* Need to initialize temp namespace */
 			AccessTempTableNamespace(true);
-			return myTempNamespace;
+			return namespace_state.myTempNamespace;
 		}
-		namespaceId = activeCreationNamespace;
+		namespaceId = namespace_state.activeCreationNamespace;
 		if (!OidIsValid(namespaceId))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_SCHEMA),
@@ -3720,7 +3745,7 @@ NameListToQuotedString(const List *names)
 bool
 isTempNamespace(Oid namespaceId)
 {
-	if (OidIsValid(myTempNamespace) && myTempNamespace == namespaceId)
+	if (OidIsValid(namespace_state.myTempNamespace) && namespace_state.myTempNamespace == namespaceId)
 		return true;
 	return false;
 }
@@ -3732,7 +3757,7 @@ isTempNamespace(Oid namespaceId)
 bool
 isTempToastNamespace(Oid namespaceId)
 {
-	if (OidIsValid(myTempToastNamespace) && myTempToastNamespace == namespaceId)
+	if (OidIsValid(namespace_state.myTempToastNamespace) && namespace_state.myTempToastNamespace == namespaceId)
 		return true;
 	return false;
 }
@@ -3744,8 +3769,8 @@ isTempToastNamespace(Oid namespaceId)
 bool
 isTempOrTempToastNamespace(Oid namespaceId)
 {
-	if (OidIsValid(myTempNamespace) &&
-		(myTempNamespace == namespaceId || myTempToastNamespace == namespaceId))
+	if (OidIsValid(namespace_state.myTempNamespace) &&
+		(namespace_state.myTempNamespace == namespaceId || namespace_state.myTempToastNamespace == namespaceId))
 		return true;
 	return false;
 }
@@ -3862,8 +3887,8 @@ GetTempNamespaceProcNumber(Oid namespaceId)
 Oid
 GetTempToastNamespace(void)
 {
-	Assert(OidIsValid(myTempToastNamespace));
-	return myTempToastNamespace;
+	Assert(OidIsValid(namespace_state.myTempToastNamespace));
+	return namespace_state.myTempToastNamespace;
 }
 
 
@@ -3877,8 +3902,8 @@ void
 GetTempNamespaceState(Oid *tempNamespaceId, Oid *tempToastNamespaceId)
 {
 	/* Return namespace OIDs, or 0 if session has not created temp namespace */
-	*tempNamespaceId = myTempNamespace;
-	*tempToastNamespaceId = myTempToastNamespace;
+	*tempNamespaceId = namespace_state.myTempNamespace;
+	*tempToastNamespaceId = namespace_state.myTempToastNamespace;
 }
 
 /*
@@ -3893,13 +3918,13 @@ void
 SetTempNamespaceState(Oid tempNamespaceId, Oid tempToastNamespaceId)
 {
 	/* Worker should not have created its own namespaces ... */
-	Assert(myTempNamespace == InvalidOid);
-	Assert(myTempToastNamespace == InvalidOid);
-	Assert(myTempNamespaceSubID == InvalidSubTransactionId);
+	Assert(namespace_state.myTempNamespace == InvalidOid);
+	Assert(namespace_state.myTempToastNamespace == InvalidOid);
+	Assert(namespace_state.myTempNamespaceSubID == InvalidSubTransactionId);
 
 	/* Assign same namespace OIDs that leader has */
-	myTempNamespace = tempNamespaceId;
-	myTempToastNamespace = tempToastNamespaceId;
+	namespace_state.myTempNamespace = tempNamespaceId;
+	namespace_state.myTempToastNamespace = tempToastNamespaceId;
 
 	/*
 	 * It's fine to leave myTempNamespaceSubID == InvalidSubTransactionId.
@@ -3908,8 +3933,8 @@ SetTempNamespaceState(Oid tempNamespaceId, Oid tempToastNamespaceId)
 	 * to destroy it.
 	 */
 
-	baseSearchPathValid = false;	/* may need to rebuild list */
-	searchPathCacheValid = false;
+	namespace_state.baseSearchPathValid = false;	/* may need to rebuild list */
+	namespace_state.searchPathCacheValid = false;
 }
 
 
@@ -3932,10 +3957,10 @@ GetSearchPathMatcher(MemoryContext context)
 	oldcxt = MemoryContextSwitchTo(context);
 
 	result = palloc0_object(SearchPathMatcher);
-	schemas = list_copy(activeSearchPath);
-	while (schemas && linitial_oid(schemas) != activeCreationNamespace)
+	schemas = list_copy(namespace_state.activeSearchPath);
+	while (schemas && linitial_oid(schemas) != namespace_state.activeCreationNamespace)
 	{
-		if (linitial_oid(schemas) == myTempNamespace)
+		if (linitial_oid(schemas) == namespace_state.myTempNamespace)
 			result->addTemp = true;
 		else
 		{
@@ -3945,7 +3970,7 @@ GetSearchPathMatcher(MemoryContext context)
 		schemas = list_delete_first(schemas);
 	}
 	result->schemas = schemas;
-	result->generation = activePathGeneration;
+	result->generation = namespace_state.activePathGeneration;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -3988,17 +4013,17 @@ SearchPathMatchesCurrentEnvironment(SearchPathMatcher *path)
 	recomputeNamespacePath();
 
 	/* Quick out if already known equal to active path. */
-	if (path->generation == activePathGeneration)
+	if (path->generation == namespace_state.activePathGeneration)
 		return true;
 
 	/* We scan down the activeSearchPath to see if it matches the input. */
-	lc = list_head(activeSearchPath);
+	lc = list_head(namespace_state.activeSearchPath);
 
 	/* If path->addTemp, first item should be my temp namespace. */
 	if (path->addTemp)
 	{
-		if (lc && lfirst_oid(lc) == myTempNamespace)
-			lc = lnext(activeSearchPath, lc);
+		if (lc && lfirst_oid(lc) == namespace_state.myTempNamespace)
+			lc = lnext(namespace_state.activeSearchPath, lc);
 		else
 			return false;
 	}
@@ -4006,18 +4031,18 @@ SearchPathMatchesCurrentEnvironment(SearchPathMatcher *path)
 	if (path->addCatalog)
 	{
 		if (lc && lfirst_oid(lc) == PG_CATALOG_NAMESPACE)
-			lc = lnext(activeSearchPath, lc);
+			lc = lnext(namespace_state.activeSearchPath, lc);
 		else
 			return false;
 	}
 	/* We should now be looking at the activeCreationNamespace. */
-	if (activeCreationNamespace != (lc ? lfirst_oid(lc) : InvalidOid))
+	if (namespace_state.activeCreationNamespace != (lc ? lfirst_oid(lc) : InvalidOid))
 		return false;
 	/* The remainder of activeSearchPath should match path->schemas. */
 	foreach(lcp, path->schemas)
 	{
 		if (lc && lfirst_oid(lc) == lfirst_oid(lcp))
-			lc = lnext(activeSearchPath, lc);
+			lc = lnext(namespace_state.activeSearchPath, lc);
 		else
 			return false;
 	}
@@ -4028,7 +4053,7 @@ SearchPathMatchesCurrentEnvironment(SearchPathMatcher *path)
 	 * Update path->generation so that future tests will return quickly, so
 	 * long as the active search path doesn't change.
 	 */
-	path->generation = activePathGeneration;
+	path->generation = namespace_state.activePathGeneration;
 
 	return true;
 }
@@ -4068,11 +4093,11 @@ get_collation_oid(List *collname, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			colloid = lookup_collation(collation_name, namespaceId, dbencoding);
@@ -4121,11 +4146,11 @@ get_conversion_oid(List *conname, bool missing_ok)
 		/* search for it in search path */
 		recomputeNamespacePath();
 
-		foreach(l, activeSearchPath)
+		foreach(l, namespace_state.activeSearchPath)
 		{
 			namespaceId = lfirst_oid(l);
 
-			if (namespaceId == myTempNamespace)
+			if (namespaceId == namespace_state.myTempNamespace)
 				continue;		/* do not look in temp namespace */
 
 			conoid = GetSysCacheOid2(CONNAMENSP, Anum_pg_conversion_oid,
@@ -4156,11 +4181,11 @@ FindDefaultConversionProc(int32 for_encoding, int32 to_encoding)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not look in temp namespace */
 
 		proc = FindDefaultConversion(namespaceId, for_encoding, to_encoding);
@@ -4230,8 +4255,8 @@ preprocessNamespacePath(const char *searchPath, Oid roleid,
 		else if (strcmp(curname, "pg_temp") == 0)
 		{
 			/* pg_temp --- substitute temp namespace, if any */
-			if (OidIsValid(myTempNamespace))
-				oidlist = lappend_oid(oidlist, myTempNamespace);
+			if (OidIsValid(namespace_state.myTempNamespace))
+				oidlist = lappend_oid(oidlist, namespace_state.myTempNamespace);
 			else
 			{
 				/* If it ought to be the creation namespace, set flag */
@@ -4301,9 +4326,9 @@ finalNamespacePath(List *oidlist, Oid *firstNS)
 	if (!list_member_oid(finalPath, PG_CATALOG_NAMESPACE))
 		finalPath = lcons_oid(PG_CATALOG_NAMESPACE, finalPath);
 
-	if (OidIsValid(myTempNamespace) &&
-		!list_member_oid(finalPath, myTempNamespace))
-		finalPath = lcons_oid(myTempNamespace, finalPath);
+	if (OidIsValid(namespace_state.myTempNamespace) &&
+		!list_member_oid(finalPath, namespace_state.myTempNamespace))
+		finalPath = lcons_oid(namespace_state.myTempNamespace, finalPath);
 
 	return finalPath;
 }
@@ -4329,7 +4354,7 @@ cachedNamespacePath(const char *searchPath, Oid roleid)
 
 	if (entry->oidlist == NIL)
 	{
-		oldcxt = MemoryContextSwitchTo(SearchPathCacheContext);
+		oldcxt = MemoryContextSwitchTo(namespace_state.SearchPathCacheContext);
 		entry->oidlist = preprocessNamespacePath(searchPath, roleid,
 												 &entry->temp_missing);
 		MemoryContextSwitchTo(oldcxt);
@@ -4347,7 +4372,7 @@ cachedNamespacePath(const char *searchPath, Oid roleid)
 		list_free(entry->finalPath);
 		entry->finalPath = NIL;
 
-		oldcxt = MemoryContextSwitchTo(SearchPathCacheContext);
+		oldcxt = MemoryContextSwitchTo(namespace_state.SearchPathCacheContext);
 		entry->finalPath = finalNamespacePath(entry->oidlist,
 											  &entry->firstNS);
 		MemoryContextSwitchTo(oldcxt);
@@ -4375,15 +4400,15 @@ recomputeNamespacePath(void)
 	const SearchPathCacheEntry *entry;
 
 	/* Do nothing if path is already valid. */
-	if (baseSearchPathValid && namespaceUser == roleid)
+	if (namespace_state.baseSearchPathValid && namespace_state.namespaceUser == roleid)
 		return;
 
 	entry = cachedNamespacePath(GetGUCString(GUC_namespace_search_path),
 				    roleid);
 
-	if (baseCreationNamespace == entry->firstNS &&
-		baseTempCreationPending == entry->temp_missing &&
-		equal(entry->finalPath, baseSearchPath))
+	if (namespace_state.baseCreationNamespace == entry->firstNS &&
+		namespace_state.baseTempCreationPending == entry->temp_missing &&
+		equal(entry->finalPath, namespace_state.baseSearchPath))
 	{
 		pathChanged = false;
 	}
@@ -4400,27 +4425,27 @@ recomputeNamespacePath(void)
 		MemoryContextSwitchTo(oldcxt);
 
 		/* Now safe to assign to state variables. */
-		list_free(baseSearchPath);
-		baseSearchPath = newpath;
-		baseCreationNamespace = entry->firstNS;
-		baseTempCreationPending = entry->temp_missing;
+		list_free(namespace_state.baseSearchPath);
+		namespace_state.baseSearchPath = newpath;
+		namespace_state.baseCreationNamespace = entry->firstNS;
+		namespace_state.baseTempCreationPending = entry->temp_missing;
 	}
 
 	/* Mark the path valid. */
-	baseSearchPathValid = true;
-	namespaceUser = roleid;
+	namespace_state.baseSearchPathValid = true;
+	namespace_state.namespaceUser = roleid;
 
 	/* And make it active. */
-	activeSearchPath = baseSearchPath;
-	activeCreationNamespace = baseCreationNamespace;
-	activeTempCreationPending = baseTempCreationPending;
+	namespace_state.activeSearchPath = namespace_state.baseSearchPath;
+	namespace_state.activeCreationNamespace = namespace_state.baseCreationNamespace;
+	namespace_state.activeTempCreationPending = namespace_state.baseTempCreationPending;
 
 	/*
 	 * Bump the generation only if something actually changed.  (Notice that
 	 * what we compared to was the old state of the base path variables.)
 	 */
 	if (pathChanged)
-		activePathGeneration++;
+		namespace_state.activePathGeneration++;
 }
 
 /*
@@ -4445,7 +4470,7 @@ AccessTempTableNamespace(bool force)
 	 * creation of the namespace to be pending and should be enforced, then go
 	 * through the creation.
 	 */
-	if (!force && OidIsValid(myTempNamespace))
+	if (!force && OidIsValid(namespace_state.myTempNamespace))
 		return;
 
 	/*
@@ -4466,7 +4491,7 @@ InitTempTableNamespace(void)
 	Oid			namespaceId;
 	Oid			toastspaceId;
 
-	Assert(!OidIsValid(myTempNamespace));
+	Assert(!OidIsValid(namespace_state.myTempNamespace));
 
 	/*
 	 * First, do permission check to see if we are authorized to make temp
@@ -4555,8 +4580,8 @@ InitTempTableNamespace(void)
 	 * so all our work could be undone by transaction rollback.  Set flag for
 	 * AtEOXact_Namespace to know what to do.
 	 */
-	myTempNamespace = namespaceId;
-	myTempToastNamespace = toastspaceId;
+	namespace_state.myTempNamespace = namespaceId;
+	namespace_state.myTempToastNamespace = toastspaceId;
 
 	/*
 	 * Mark MyProc as owning this namespace which other processes can use to
@@ -4571,11 +4596,11 @@ InitTempTableNamespace(void)
 	MyProc->tempNamespaceId = namespaceId;
 
 	/* It should not be done already. */
-	Assert(myTempNamespaceSubID == InvalidSubTransactionId);
-	myTempNamespaceSubID = GetCurrentSubTransactionId();
+	Assert(namespace_state.myTempNamespaceSubID == InvalidSubTransactionId);
+	namespace_state.myTempNamespaceSubID = GetCurrentSubTransactionId();
 
-	baseSearchPathValid = false;	/* need to rebuild list */
-	searchPathCacheValid = false;
+	namespace_state.baseSearchPathValid = false;	/* need to rebuild list */
+	namespace_state.searchPathCacheValid = false;
 }
 
 /*
@@ -4592,16 +4617,16 @@ AtEOXact_Namespace(bool isCommit, bool parallel)
 	 * at backend shutdown.  (We only want to register the callback once per
 	 * session, so this is a good place to do it.)
 	 */
-	if (myTempNamespaceSubID != InvalidSubTransactionId && !parallel)
+	if (namespace_state.myTempNamespaceSubID != InvalidSubTransactionId && !parallel)
 	{
 		if (isCommit)
 			before_shmem_exit(RemoveTempRelationsCallback, 0);
 		else
 		{
-			myTempNamespace = InvalidOid;
-			myTempToastNamespace = InvalidOid;
-			baseSearchPathValid = false;	/* need to rebuild list */
-			searchPathCacheValid = false;
+			namespace_state.myTempNamespace = InvalidOid;
+			namespace_state.myTempToastNamespace = InvalidOid;
+			namespace_state.baseSearchPathValid = false;	/* need to rebuild list */
+			namespace_state.searchPathCacheValid = false;
 
 			/*
 			 * Reset the temporary namespace flag in MyProc.  We assume that
@@ -4614,7 +4639,7 @@ AtEOXact_Namespace(bool isCommit, bool parallel)
 			 */
 			MyProc->tempNamespaceId = InvalidOid;
 		}
-		myTempNamespaceSubID = InvalidSubTransactionId;
+		namespace_state.myTempNamespaceSubID = InvalidSubTransactionId;
 	}
 
 }
@@ -4632,18 +4657,18 @@ AtEOSubXact_Namespace(bool isCommit, SubTransactionId mySubid,
 					  SubTransactionId parentSubid)
 {
 
-	if (myTempNamespaceSubID == mySubid)
+	if (namespace_state.myTempNamespaceSubID == mySubid)
 	{
 		if (isCommit)
-			myTempNamespaceSubID = parentSubid;
+			namespace_state.myTempNamespaceSubID = parentSubid;
 		else
 		{
-			myTempNamespaceSubID = InvalidSubTransactionId;
+			namespace_state.myTempNamespaceSubID = InvalidSubTransactionId;
 			/* TEMP namespace creation failed, so reset state */
-			myTempNamespace = InvalidOid;
-			myTempToastNamespace = InvalidOid;
-			baseSearchPathValid = false;	/* need to rebuild list */
-			searchPathCacheValid = false;
+			namespace_state.myTempNamespace = InvalidOid;
+			namespace_state.myTempToastNamespace = InvalidOid;
+			namespace_state.baseSearchPathValid = false;	/* need to rebuild list */
+			namespace_state.searchPathCacheValid = false;
 
 			/*
 			 * Reset the temporary namespace flag in MyProc.  We assume that
@@ -4696,14 +4721,14 @@ RemoveTempRelations(Oid tempNamespaceId)
 static void
 RemoveTempRelationsCallback(int code, Datum arg)
 {
-	if (OidIsValid(myTempNamespace))	/* should always be true */
+	if (OidIsValid(namespace_state.myTempNamespace))	/* should always be true */
 	{
 		/* Need to ensure we have a usable transaction. */
 		AbortOutOfAnyTransaction();
 		StartTransactionCommand();
 		PushActiveSnapshot(GetTransactionSnapshot());
 
-		RemoveTempRelations(myTempNamespace);
+		RemoveTempRelations(namespace_state.myTempNamespace);
 
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -4716,8 +4741,8 @@ RemoveTempRelationsCallback(int code, Datum arg)
 void
 ResetTempTableNamespace(void)
 {
-	if (OidIsValid(myTempNamespace))
-		RemoveTempRelations(myTempNamespace);
+	if (OidIsValid(namespace_state.myTempNamespace))
+		RemoveTempRelations(namespace_state.myTempNamespace);
 }
 
 
@@ -4733,7 +4758,7 @@ check_search_path(char **newval, void **extra, GucSource source)
 	const char *searchPath = *newval;
 	char	   *rawname;
 	List	   *namelist;
-	bool		use_cache = (SearchPathCacheContext != NULL);
+	bool		use_cache = (namespace_state.SearchPathCacheContext != NULL);
 
 	/*
 	 * We used to try to check that the named schemas exist, but there are
@@ -4797,7 +4822,7 @@ assign_search_path(const char *newval, void *extra)
 	 * been previously set and no syscache invalidations happened,
 	 * recomputation may not be necessary.
 	 */
-	baseSearchPathValid = false;
+	namespace_state.baseSearchPathValid = false;
 }
 
 /*
@@ -4817,16 +4842,16 @@ InitializeSearchPath(void)
 		MemoryContext oldcxt;
 
 		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		baseSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
+		namespace_state.baseSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
 		MemoryContextSwitchTo(oldcxt);
-		baseCreationNamespace = PG_CATALOG_NAMESPACE;
-		baseTempCreationPending = false;
-		baseSearchPathValid = true;
-		namespaceUser = GetUserId();
-		activeSearchPath = baseSearchPath;
-		activeCreationNamespace = baseCreationNamespace;
-		activeTempCreationPending = baseTempCreationPending;
-		activePathGeneration++; /* pro forma */
+		namespace_state.baseCreationNamespace = PG_CATALOG_NAMESPACE;
+		namespace_state.baseTempCreationPending = false;
+		namespace_state.baseSearchPathValid = true;
+		namespace_state.namespaceUser = GetUserId();
+		namespace_state.activeSearchPath = namespace_state.baseSearchPath;
+		namespace_state.activeCreationNamespace = namespace_state.baseCreationNamespace;
+		namespace_state.activeTempCreationPending = namespace_state.baseTempCreationPending;
+		namespace_state.activePathGeneration++; /* pro forma */
 	}
 	else
 	{
@@ -4856,8 +4881,8 @@ InitializeSearchPath(void)
 									  (Datum) 0);
 
 		/* Force search path to be recomputed on next use */
-		baseSearchPathValid = false;
-		searchPathCacheValid = false;
+		namespace_state.baseSearchPathValid = false;
+		namespace_state.searchPathCacheValid = false;
 	}
 }
 
@@ -4873,8 +4898,8 @@ InvalidationCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	 * search path cache (because namespace names, ACLs, or role names may
 	 * have changed).
 	 */
-	baseSearchPathValid = false;
-	searchPathCacheValid = false;
+	namespace_state.baseSearchPathValid = false;
+	namespace_state.searchPathCacheValid = false;
 }
 
 /*
@@ -4902,16 +4927,16 @@ fetch_search_path(bool includeImplicit)
 	 * current_schema() is supposedly a stable function without side-effects,
 	 * but the alternatives seem worse.
 	 */
-	if (activeTempCreationPending)
+	if (namespace_state.activeTempCreationPending)
 	{
 		AccessTempTableNamespace(true);
 		recomputeNamespacePath();
 	}
 
-	result = list_copy(activeSearchPath);
+	result = list_copy(namespace_state.activeSearchPath);
 	if (!includeImplicit)
 	{
-		while (result && linitial_oid(result) != activeCreationNamespace)
+		while (result && linitial_oid(result) != namespace_state.activeCreationNamespace)
 			result = list_delete_first(result);
 	}
 
@@ -4936,11 +4961,11 @@ fetch_search_path_array(Oid *sarray, int sarray_len)
 
 	recomputeNamespacePath();
 
-	foreach(l, activeSearchPath)
+	foreach(l, namespace_state.activeSearchPath)
 	{
 		Oid			namespaceId = lfirst_oid(l);
 
-		if (namespaceId == myTempNamespace)
+		if (namespaceId == namespace_state.myTempNamespace)
 			continue;			/* do not include temp namespace */
 
 		if (count < sarray_len)
@@ -5148,7 +5173,7 @@ pg_ts_config_is_visible(PG_FUNCTION_ARGS)
 Datum
 pg_my_temp_schema(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_OID(myTempNamespace);
+	PG_RETURN_OID(namespace_state.myTempNamespace);
 }
 
 Datum
