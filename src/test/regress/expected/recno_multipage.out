@@ -302,8 +302,6 @@ INFO:  index "recno_mp_vacuum_verbose_pkey" now contains 200 row versions in 5 p
 DETAIL:  600 index row versions were removed.
 0 index pages were newly deleted.
 0 index pages are currently deleted, of which 0 are currently reusable.
-INFO:  table "recno_mp_vacuum_verbose": starting cross-page defragmentation from block 7
-INFO:  table "recno_mp_vacuum_verbose": cross-page defrag moved 14 tuples, emptied 0 pages
 INFO:  RECNO vacuum "recno_mp_vacuum_verbose": found 800 tuples (200 live, 600 dead), vacuumed 8 pages, truncated 0 pages, cleaned 1 indexes
 -- Verify remaining data
 SELECT COUNT(*) AS remaining FROM recno_mp_vacuum_verbose;
