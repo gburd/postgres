@@ -314,7 +314,7 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 						RelationGetRelationName(rel)),
 				 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
 
-	if (!allowSystemTableMods && IsSystemRelation(rel))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -1333,7 +1333,7 @@ RemoveTriggerById(Oid trigOid)
 						RelationGetRelationName(rel)),
 				 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
 
-	if (!allowSystemTableMods && IsSystemRelation(rel))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -1443,7 +1443,7 @@ RangeVarCallbackForRenameTrigger(const RangeVar *rv, Oid relid, Oid oldrelid,
 	/* you must own the table to rename one of its triggers */
 	if (!object_ownercheck(RelationRelationId, relid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
-	if (!allowSystemTableMods && IsSystemClass(relid, form))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relid, form))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -3487,7 +3487,7 @@ TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
 			   TupleTableSlot *oldslot, TupleTableSlot *newslot)
 {
 	/* Check replication-role-dependent enable state */
-	if (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA)
+	if (GetGUCEnum(GUC_SessionReplicationRole) == SESSION_REPLICATION_ROLE_REPLICA)
 	{
 		if (trigger->tgenabled == TRIGGER_FIRES_ON_ORIGIN ||
 			trigger->tgenabled == TRIGGER_DISABLED)
@@ -4009,7 +4009,8 @@ GetCurrentFDWTuplestore(void)
 		saveResourceOwner = CurrentResourceOwner;
 		CurrentResourceOwner = CurTransactionResourceOwner;
 
-		ret = tuplestore_begin_heap(false, false, work_mem);
+		ret = tuplestore_begin_heap(false, false,
+					    GetGUCInt(GUC_work_mem));
 
 		CurrentResourceOwner = saveResourceOwner;
 		MemoryContextSwitchTo(oldcxt);
@@ -5070,13 +5071,17 @@ MakeTransitionCaptureState(TriggerDesc *trigdesc, Oid relid, CmdType cmdType)
 	CurrentResourceOwner = CurTransactionResourceOwner;
 
 	if (need_old_upd && upd_table->old_tuplestore == NULL)
-		upd_table->old_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		upd_table->old_tuplestore = tuplestore_begin_heap(false, false,
+								  GetGUCInt(GUC_work_mem));
 	if (need_new_upd && upd_table->new_tuplestore == NULL)
-		upd_table->new_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		upd_table->new_tuplestore = tuplestore_begin_heap(false, false,
+								  GetGUCInt(GUC_work_mem));
 	if (need_old_del && del_table->old_tuplestore == NULL)
-		del_table->old_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		del_table->old_tuplestore = tuplestore_begin_heap(false, false,
+								  GetGUCInt(GUC_work_mem));
 	if (need_new_ins && ins_table->new_tuplestore == NULL)
-		ins_table->new_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		ins_table->new_tuplestore = tuplestore_begin_heap(false, false,
+								  GetGUCInt(GUC_work_mem));
 
 	CurrentResourceOwner = saveResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
@@ -6771,7 +6776,7 @@ assign_session_replication_role(int newval, void *extra)
 	 * Must flush the plan cache when changing replication role; but don't
 	 * flush unnecessarily.
 	 */
-	if (SessionReplicationRole != newval)
+	if (GetGUCEnum(GUC_SessionReplicationRole) != newval)
 		ResetPlanCache();
 }
 

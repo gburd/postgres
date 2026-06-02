@@ -409,7 +409,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		 */
 		now = (pg_time_t) time(NULL);
 		elapsed_secs = now - last_checkpoint_time;
-		if (elapsed_secs >= CheckPointTimeout)
+		if (elapsed_secs >= GetGUCInt(GUC_CheckPointTimeout))
 		{
 			if (!do_checkpoint)
 				chkpt_or_rstpt_timed = true;
@@ -475,7 +475,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 			 */
 			if (!do_restartpoint &&
 				(flags & CHECKPOINT_CAUSE_XLOG) &&
-				elapsed_secs < CheckPointWarning)
+				elapsed_secs < GetGUCInt(GUC_CheckPointWarning))
 				ereport(LOG,
 						(errmsg_plural("checkpoints are occurring too frequently (%d second apart)",
 									   "checkpoints are occurring too frequently (%d seconds apart)",
@@ -553,7 +553,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 					 * WAL records since the last restartpoint. Try again in
 					 * 15 s.
 					 */
-					last_checkpoint_time = now - CheckPointTimeout + 15;
+					last_checkpoint_time = now - GetGUCInt(GUC_CheckPointTimeout) + 15;
 				}
 			}
 
@@ -594,15 +594,16 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		 */
 		now = (pg_time_t) time(NULL);
 		elapsed_secs = now - last_checkpoint_time;
-		if (elapsed_secs >= CheckPointTimeout)
+		if (elapsed_secs >= GetGUCInt(GUC_CheckPointTimeout))
 			continue;			/* no sleep for us ... */
-		cur_timeout = CheckPointTimeout - elapsed_secs;
-		if (XLogArchiveTimeout > 0 && !RecoveryInProgress())
+		cur_timeout = GetGUCInt(GUC_CheckPointTimeout) - elapsed_secs;
+		if (GetGUCInt(GUC_XLogArchiveTimeout) > 0 && !RecoveryInProgress())
 		{
 			elapsed_secs = now - last_xlog_switch_time;
-			if (elapsed_secs >= XLogArchiveTimeout)
+			if (elapsed_secs >= GetGUCInt(GUC_XLogArchiveTimeout))
 				continue;		/* no sleep for us ... */
-			cur_timeout = Min(cur_timeout, XLogArchiveTimeout - elapsed_secs);
+			cur_timeout = Min(cur_timeout,
+					  GetGUCInt(GUC_XLogArchiveTimeout) - elapsed_secs);
 		}
 
 		(void) WaitInterrupt(INTERRUPT_GENERAL |
@@ -722,13 +723,13 @@ CheckArchiveTimeout(void)
 	pg_time_t	last_time;
 	XLogRecPtr	last_switch_lsn;
 
-	if (XLogArchiveTimeout <= 0 || RecoveryInProgress())
+	if (GetGUCInt(GUC_XLogArchiveTimeout) <= 0 || RecoveryInProgress())
 		return;
 
 	now = (pg_time_t) time(NULL);
 
 	/* First we do a quick check using possibly-stale local state. */
-	if ((int) (now - last_xlog_switch_time) < XLogArchiveTimeout)
+	if ((int) (now - last_xlog_switch_time) < GetGUCInt(GUC_XLogArchiveTimeout))
 		return;
 
 	/*
@@ -740,7 +741,7 @@ CheckArchiveTimeout(void)
 	last_xlog_switch_time = Max(last_xlog_switch_time, last_time);
 
 	/* Now we can do the real checks */
-	if ((int) (now - last_xlog_switch_time) >= XLogArchiveTimeout)
+	if ((int) (now - last_xlog_switch_time) >= GetGUCInt(GUC_XLogArchiveTimeout))
 	{
 		/*
 		 * Switch segment only when "important" WAL has been logged since the
@@ -758,9 +759,9 @@ CheckArchiveTimeout(void)
 			 * If the returned pointer points exactly to a segment boundary,
 			 * assume nothing happened.
 			 */
-			if (XLogSegmentOffset(switchpoint, wal_segment_size) != 0)
+			if (XLogSegmentOffset(switchpoint, GetGUCInt(GUC_wal_segment_size)) != 0)
 				elog(DEBUG1, "write-ahead log switch forced (\"archive_timeout\"=%d)",
-					 XLogArchiveTimeout);
+					 GetGUCInt(GUC_XLogArchiveTimeout));
 		}
 
 		/*
@@ -884,7 +885,7 @@ IsCheckpointOnSchedule(double progress)
 	Assert(ckpt_active);
 
 	/* Scale progress according to checkpoint_completion_target. */
-	progress *= CheckPointCompletionTarget;
+	progress *= GetGUCReal(GUC_CheckPointCompletionTarget);
 
 	/*
 	 * Check against the cached value first. Only do the more expensive
@@ -920,7 +921,7 @@ IsCheckpointOnSchedule(double progress)
 	else
 		recptr = GetInsertRecPtr();
 	elapsed_xlogs = (((double) (recptr - ckpt_start_recptr)) /
-					 wal_segment_size) / CheckPointSegments;
+					 GetGUCInt(GUC_wal_segment_size)) / CheckPointSegments;
 
 	if (progress < elapsed_xlogs)
 	{
@@ -933,7 +934,7 @@ IsCheckpointOnSchedule(double progress)
 	 */
 	gettimeofday(&now, NULL);
 	elapsed_time = ((double) ((pg_time_t) now.tv_sec - ckpt_start_time) +
-					now.tv_usec / 1000000.0) / CheckPointTimeout;
+					now.tv_usec / 1000000.0) / GetGUCInt(GUC_CheckPointTimeout);
 
 	if (progress < elapsed_time)
 	{
@@ -980,7 +981,7 @@ CheckpointerShmemRequest(void *arg)
 	 * too many checkpoint requests in the ring buffer.
 	 */
 	size = offsetof(CheckpointerShmemStruct, requests);
-	size = add_size(size, mul_size(Min(NBuffers,
+	size = add_size(size, mul_size(Min(GetGUCInt(GUC_NBuffers),
 									   MAX_CHECKPOINT_REQUESTS),
 								   sizeof(CheckpointerRequest)));
 	ShmemRequestStruct(.name = "Checkpointer Data",
@@ -997,7 +998,8 @@ static void
 CheckpointerShmemInit(void *arg)
 {
 	SpinLockInit(&CheckpointerShmem->ckpt_lck);
-	CheckpointerShmem->max_requests = Min(NBuffers, MAX_CHECKPOINT_REQUESTS);
+	CheckpointerShmem->max_requests = Min(GetGUCInt(GUC_NBuffers),
+					      MAX_CHECKPOINT_REQUESTS);
 	CheckpointerShmem->head = CheckpointerShmem->tail = 0;
 	ConditionVariableInit(&CheckpointerShmem->start_cv);
 	ConditionVariableInit(&CheckpointerShmem->done_cv);

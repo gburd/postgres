@@ -84,7 +84,7 @@ pgstat_report_recovery_conflict(InterruptType reason)
 	PgStat_StatDBEntry *dbentry;
 
 	Assert(IsUnderPostmaster);
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	dbentry = pgstat_prep_database_pending(MyDatabaseId);
@@ -129,7 +129,7 @@ pgstat_report_deadlock(void)
 {
 	PgStat_StatDBEntry *dbent;
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	dbent = pgstat_prep_database_pending(MyDatabaseId);
@@ -171,7 +171,7 @@ pgstat_report_checksum_failures_in_db(Oid dboid, int failurecount)
 	PgStat_EntryRef *entry_ref;
 	PgStatShared_Database *sharedent;
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	/*
@@ -215,7 +215,7 @@ pgstat_report_tempfile(size_t filesize)
 {
 	PgStat_StatDBEntry *dbent;
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	dbent = pgstat_prep_database_pending(MyDatabaseId);

@@ -449,7 +449,7 @@ get_local_synced_slots(void)
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 
@@ -639,7 +639,8 @@ reserve_wal_for_local_slot(XLogRecPtr restart_lsn)
 
 	ReplicationSlotsComputeRequiredLSN();
 
-	XLByteToSeg(slot->data.restart_lsn, segno, wal_segment_size);
+	XLByteToSeg(slot->data.restart_lsn, segno,
+		    GetGUCInt(GUC_wal_segment_size));
 	if (XLogGetLastRemovedSegno() >= segno)
 		elog(ERROR, "WAL required by replication slot %s has been removed concurrently",
 			 NameStr(slot->data.name));
@@ -1082,7 +1083,7 @@ validate_remote_info(WalReceiverConn *wrconn)
 					 "SELECT pg_is_in_recovery(), count(*) = 1"
 					 " FROM pg_catalog.pg_replication_slots"
 					 " WHERE slot_type='physical' AND slot_name=%s",
-					 quote_literal_cstr(PrimarySlotName));
+					 quote_literal_cstr(GetGUCString(GUC_PrimarySlotName)));
 
 	/* The syscache access in walrcv_exec() needs a transaction env. */
 	if (!IsTransactionState())
@@ -1097,7 +1098,7 @@ validate_remote_info(WalReceiverConn *wrconn)
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
 				errmsg("could not fetch primary slot name \"%s\" info from the primary server: %s",
-					   PrimarySlotName, res->err),
+					   GetGUCString(GUC_PrimarySlotName), res->err),
 				errhint("Check if \"primary_slot_name\" is configured correctly."));
 
 	tupslot = MakeSingleTupleTableSlot(res->tupledesc, &TTSOpsMinimalTuple);
@@ -1128,7 +1129,7 @@ validate_remote_info(WalReceiverConn *wrconn)
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 		/* translator: second %s is a GUC variable name */
 				errmsg("replication slot \"%s\" specified by \"%s\" does not exist on primary server",
-					   PrimarySlotName, "primary_slot_name"));
+					   GetGUCString(GUC_PrimarySlotName), "primary_slot_name"));
 
 	ExecClearTuple(tupslot);
 	walrcv_clear_result(res);
@@ -1151,7 +1152,7 @@ CheckAndGetDbnameFromConninfo(void)
 	 * The slot synchronization needs a database connection for walrcv_exec to
 	 * work.
 	 */
-	dbname = walrcv_get_dbname_from_conninfo(PrimaryConnInfo);
+	dbname = walrcv_get_dbname_from_conninfo(GetGUCString(GUC_PrimaryConnInfo));
 	if (dbname == NULL)
 		ereport(ERROR,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1191,7 +1192,7 @@ ValidateSlotSyncParams(int elevel)
 	 * after restarting, so that the synchronized slot on the standby will not
 	 * be invalidated.
 	 */
-	if (PrimarySlotName == NULL || *PrimarySlotName == '\0')
+	if (GetGUCString(GUC_PrimarySlotName) == NULL || *GetGUCString(GUC_PrimarySlotName) == '\0')
 	{
 		ereport(elevel,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1205,7 +1206,7 @@ ValidateSlotSyncParams(int elevel)
 	 * replication slot, which allows informing the primary about the xmin and
 	 * catalog_xmin values on the standby.
 	 */
-	if (!hot_standby_feedback)
+	if (!GetGUCBool(GUC_hot_standby_feedback))
 	{
 		ereport(elevel,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1219,7 +1220,7 @@ ValidateSlotSyncParams(int elevel)
 	 * The primary_conninfo is required to make connection to primary for
 	 * getting slots information.
 	 */
-	if (PrimaryConnInfo == NULL || *PrimaryConnInfo == '\0')
+	if (GetGUCString(GUC_PrimaryConnInfo) == NULL || *GetGUCString(GUC_PrimaryConnInfo) == '\0')
 	{
 		ereport(elevel,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1241,27 +1242,29 @@ ValidateSlotSyncParams(int elevel)
 static void
 slotsync_reread_config(void)
 {
-	char	   *old_primary_conninfo = pstrdup(PrimaryConnInfo);
-	char	   *old_primary_slotname = pstrdup(PrimarySlotName);
-	bool		old_sync_replication_slots = sync_replication_slots;
-	bool		old_hot_standby_feedback = hot_standby_feedback;
+	char	   *old_primary_conninfo = pstrdup(GetGUCString(GUC_PrimaryConnInfo));
+	char	   *old_primary_slotname = pstrdup(GetGUCString(GUC_PrimarySlotName));
+	bool		old_sync_replication_slots = GetGUCBool(GUC_sync_replication_slots);
+	bool		old_hot_standby_feedback = GetGUCBool(GUC_hot_standby_feedback);
 	bool		conninfo_changed;
 	bool		primary_slotname_changed;
 	bool		is_slotsync_worker = AmLogicalSlotSyncWorkerProcess();
 	bool		parameter_changed = false;
 
 	if (is_slotsync_worker)
-		Assert(sync_replication_slots);
+		Assert(GetGUCBool(GUC_sync_replication_slots));
 
 	ConfigReloadPending = false;
 	ProcessConfigFile(PGC_SIGHUP);
 
-	conninfo_changed = strcmp(old_primary_conninfo, PrimaryConnInfo) != 0;
-	primary_slotname_changed = strcmp(old_primary_slotname, PrimarySlotName) != 0;
+	conninfo_changed = strcmp(old_primary_conninfo,
+				  GetGUCString(GUC_PrimaryConnInfo)) != 0;
+	primary_slotname_changed = strcmp(old_primary_slotname,
+					  GetGUCString(GUC_PrimarySlotName)) != 0;
 	pfree(old_primary_conninfo);
 	pfree(old_primary_slotname);
 
-	if (old_sync_replication_slots != sync_replication_slots)
+	if (old_sync_replication_slots != GetGUCBool(GUC_sync_replication_slots))
 	{
 		if (is_slotsync_worker)
 		{
@@ -1279,7 +1282,7 @@ slotsync_reread_config(void)
 	{
 		if (conninfo_changed ||
 			primary_slotname_changed ||
-			(old_hot_standby_feedback != hot_standby_feedback))
+			(old_hot_standby_feedback != GetGUCBool(GUC_hot_standby_feedback)))
 		{
 
 			if (is_slotsync_worker)
@@ -1654,8 +1657,10 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	SetProcessingMode(NormalProcessing);
 
 	initStringInfo(&app_name);
-	if (cluster_name[0])
-		appendStringInfo(&app_name, "%s_%s", cluster_name, "slotsync worker");
+	if (GetGUCString(GUC_cluster_name)[0])
+		appendStringInfo(&app_name, "%s_%s",
+				 GetGUCString(GUC_cluster_name),
+				 "slotsync worker");
 	else
 		appendStringInfoString(&app_name, "slotsync worker");
 
@@ -1663,7 +1668,8 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * Establish the connection to the primary server for slot
 	 * synchronization.
 	 */
-	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
+	wrconn = walrcv_connect(GetGUCString(GUC_PrimaryConnInfo), false,
+				false, false,
 							app_name.data, &err);
 
 	if (!wrconn)
@@ -1756,7 +1762,7 @@ update_synced_slots_inactive_since(void)
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 

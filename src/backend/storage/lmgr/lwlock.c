@@ -257,7 +257,7 @@ inline static void
 PRINT_LWDEBUG(const char *where, LWLock *lock, LWLockMode mode)
 {
 	/* hide statement & context here, otherwise the log is just too verbose */
-	if (Trace_lwlocks)
+	if (GetGUCBool(GUC_Trace_lwlocks))
 	{
 		uint32		state = pg_atomic_read_u32(&lock->state);
 
@@ -279,7 +279,7 @@ inline static void
 LOG_LWDEBUG(const char *where, LWLock *lock, const char *msg)
 {
 	/* hide statement & context here, otherwise the log is just too verbose */
-	if (Trace_lwlocks)
+	if (GetGUCBool(GUC_Trace_lwlocks))
 	{
 		ereport(LOG,
 				(errhidestmt(true),

@@ -1287,7 +1287,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	}
 
 	/* If appropriate, consider async append */
-	consider_async = (enable_async_append && pathkeys == NIL &&
+	consider_async = (GetGUCBool(GUC_enable_async_append) && pathkeys == NIL &&
 					  !best_path->path.parallel_safe &&
 					  list_length(best_path->subpaths) > 1);
 
@@ -1356,7 +1356,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 				 * We choose to use incremental sort if it is enabled and
 				 * there are presorted keys; otherwise we use full sort.
 				 */
-				if (enable_incremental_sort && presorted_keys > 0)
+				if (GetGUCBool(GUC_enable_incremental_sort) && presorted_keys > 0)
 				{
 					sort_plan = (Plan *)
 						make_incrementalsort(subplan, numsortkeys, presorted_keys,
@@ -1400,7 +1400,7 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	 * pruning during execution.  Gather information needed by the executor to
 	 * do partition pruning.
 	 */
-	if (enable_partition_pruning)
+	if (GetGUCBool(GUC_enable_partition_pruning))
 	{
 		List	   *prunequal;
 
@@ -1554,7 +1554,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 			 * We choose to use incremental sort if it is enabled and there
 			 * are presorted keys; otherwise we use full sort.
 			 */
-			if (enable_incremental_sort && presorted_keys > 0)
+			if (GetGUCBool(GUC_enable_incremental_sort) && presorted_keys > 0)
 			{
 				sort_plan = (Plan *)
 					make_incrementalsort(subplan, numsortkeys, presorted_keys,
@@ -1590,7 +1590,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 	 * pruning during execution.  Gather information needed by the executor to
 	 * do partition pruning.
 	 */
-	if (enable_partition_pruning)
+	if (GetGUCBool(GUC_enable_partition_pruning))
 	{
 		List	   *prunequal;
 
@@ -4440,7 +4440,7 @@ create_mergejoin_plan(PlannerInfo *root,
 		 * We choose to use incremental sort if it is enabled and there are
 		 * presorted keys; otherwise we use full sort.
 		 */
-		if (enable_incremental_sort && best_path->outer_presorted_keys > 0)
+		if (GetGUCBool(GUC_enable_incremental_sort) && best_path->outer_presorted_keys > 0)
 		{
 			sort_plan = (Plan *)
 				make_incrementalsort_from_pathkeys(outer_plan,
@@ -4512,7 +4512,7 @@ create_mergejoin_plan(PlannerInfo *root,
 		 * sync with final_cost_mergejoin.)
 		 */
 		copy_plan_costsize(matplan, inner_plan);
-		matplan->total_cost += cpu_operator_cost * matplan->plan_rows;
+		matplan->total_cost += GetGUCReal(GUC_cpu_operator_cost) * matplan->plan_rows;
 
 		inner_plan = matplan;
 	}
@@ -5309,7 +5309,7 @@ order_qual_clauses(PlannerInfo *root, List *clauses)
 			 * security level, which is not so great, but we can alleviate
 			 * that risk by applying the cost limit cutoff.
 			 */
-			if (rinfo->leakproof && items[i].cost < 10 * cpu_operator_cost)
+			if (rinfo->leakproof && items[i].cost < 10 * GetGUCReal(GUC_cpu_operator_cost))
 				items[i].security_level = 0;
 			else
 				items[i].security_level = rinfo->security_level;
@@ -5409,7 +5409,7 @@ label_sort_with_costsize(PlannerInfo *root, Sort *plan, double limit_tuples)
 			  lefttree->plan_rows,
 			  lefttree->plan_width,
 			  0.0,
-			  work_mem,
+			  GetGUCInt(GUC_work_mem),
 			  limit_tuples);
 	plan->plan.startup_cost = sort_path.startup_cost;
 	plan->plan.total_cost = sort_path.total_cost;
@@ -5440,7 +5440,7 @@ label_incrementalsort_with_costsize(PlannerInfo *root, IncrementalSort *plan,
 						  lefttree->plan_rows,
 						  lefttree->plan_width,
 						  0.0,
-						  work_mem,
+						  GetGUCInt(GUC_work_mem),
 						  limit_tuples);
 	plan->sort.plan.startup_cost = sort_path.startup_cost;
 	plan->sort.plan.total_cost = sort_path.total_cost;
@@ -6057,7 +6057,7 @@ make_sort(Plan *lefttree, int numCols,
 
 	plan = &node->plan;
 	plan->targetlist = lefttree->targetlist;
-	plan->disabled_nodes = lefttree->disabled_nodes + (enable_sort == false);
+	plan->disabled_nodes = lefttree->disabled_nodes + (GetGUCBool(GUC_enable_sort) == false);
 	plan->qual = NIL;
 	plan->lefttree = lefttree;
 	plan->righttree = NULL;
@@ -6532,7 +6532,7 @@ materialize_finished_plan(Plan *subplan)
 
 	/* Set cost data */
 	cost_material(&matpath,
-				  enable_material,
+				  GetGUCBool(GUC_enable_material),
 				  subplan->disabled_nodes,
 				  subplan->startup_cost,
 				  subplan->total_cost,

@@ -72,8 +72,8 @@ int			recovery_prefetch = RECOVERY_PREFETCH_TRY;
 
 #ifdef USE_PREFETCH
 #define RecoveryPrefetchEnabled() \
-		(recovery_prefetch != RECOVERY_PREFETCH_OFF && \
-		 maintenance_io_concurrency > 0)
+		(GetGUCEnum(GUC_recovery_prefetch) != RECOVERY_PREFETCH_OFF && \
+		 GetGUCInt(GUC_maintenance_io_concurrency) > 0)
 #else
 #define RecoveryPrefetchEnabled() false
 #endif
@@ -1002,8 +1002,8 @@ XLogPrefetcherReadRecord(XLogPrefetcher *prefetcher, char **errmsg)
 
 		if (RecoveryPrefetchEnabled())
 		{
-			Assert(maintenance_io_concurrency > 0);
-			max_inflight = maintenance_io_concurrency;
+			Assert(GetGUCInt(GUC_maintenance_io_concurrency) > 0);
+			max_inflight = GetGUCInt(GUC_maintenance_io_concurrency);
 			max_distance = max_inflight * XLOGPREFETCHER_DISTANCE_MULTIPLIER;
 		}
 		else

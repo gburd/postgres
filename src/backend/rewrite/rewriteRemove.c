@@ -68,7 +68,7 @@ RemoveRewriteRuleById(Oid ruleOid)
 	eventRelationOid = ((Form_pg_rewrite) GETSTRUCT(tuple))->ev_class;
 	event_relation = table_open(eventRelationOid, AccessExclusiveLock);
 
-	if (!allowSystemTableMods && IsSystemRelation(event_relation))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(event_relation))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",

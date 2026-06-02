@@ -148,7 +148,7 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 						   RelationGetRelationName(rel));
 
 		/* Creating statistics on system catalogs is not allowed */
-		if (!allowSystemTableMods && IsSystemRelation(rel))
+		if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(rel))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied: \"%s\" is a system catalog",

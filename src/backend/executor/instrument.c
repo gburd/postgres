@@ -425,7 +425,7 @@ assign_timing_clock_source(int newval, void *extra)
 const char *
 show_timing_clock_source(void)
 {
-	switch (timing_clock_source)
+	switch (GetGUCEnum(GUC_timing_clock_source))
 	{
 		case TIMING_CLOCK_SOURCE_AUTO:
 #if PG_INSTR_TSC_CLOCK

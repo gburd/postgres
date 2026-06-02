@@ -258,9 +258,9 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 		 * sleep time so as to reduce the server's idle power consumption.
 		 */
 		if (left_till_hibernate > 0)
-			cur_timeout = WalWriterDelay;	/* in ms */
+			cur_timeout = GetGUCInt(GUC_WalWriterDelay);	/* in ms */
 		else
-			cur_timeout = WalWriterDelay * HIBERNATE_FACTOR;
+			cur_timeout = GetGUCInt(GUC_WalWriterDelay) * HIBERNATE_FACTOR;
 
 		(void) WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK | INTERRUPT_GENERAL,
 							 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,

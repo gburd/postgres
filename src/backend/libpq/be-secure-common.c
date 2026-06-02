@@ -123,12 +123,12 @@ check_ssl_key_file_permissions(const char *ssl_key_file, bool isServerStart)
 	int			loglevel = isServerStart ? FATAL : LOG;
 	struct stat buf;
 
-	if (stat(ssl_key_file, &buf) != 0)
+	if (stat(GetGUCString(GUC_ssl_key_file), &buf) != 0)
 	{
 		ereport(loglevel,
 				(errcode_for_file_access(),
 				 errmsg("could not access private key file \"%s\": %m",
-						ssl_key_file)));
+						GetGUCString(GUC_ssl_key_file))));
 		return false;
 	}
 
@@ -138,7 +138,7 @@ check_ssl_key_file_permissions(const char *ssl_key_file, bool isServerStart)
 		ereport(loglevel,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("private key file \"%s\" is not a regular file",
-						ssl_key_file)));
+						GetGUCString(GUC_ssl_key_file))));
 		return false;
 	}
 
@@ -164,7 +164,7 @@ check_ssl_key_file_permissions(const char *ssl_key_file, bool isServerStart)
 		ereport(loglevel,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("private key file \"%s\" must be owned by the database user or root",
-						ssl_key_file)));
+						GetGUCString(GUC_ssl_key_file))));
 		return false;
 	}
 
@@ -174,7 +174,7 @@ check_ssl_key_file_permissions(const char *ssl_key_file, bool isServerStart)
 		ereport(loglevel,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("private key file \"%s\" has group or world access",
-						ssl_key_file),
+						GetGUCString(GUC_ssl_key_file)),
 				 errdetail("File must have permissions u=rw (0600) or less if owned by the database user, or permissions u=rw,g=r (0640) or less if owned by root.")));
 		return false;
 	}
@@ -379,7 +379,7 @@ load_hosts(List **hosts, char **err_msg)
 	{
 		if (err_msg)
 			*err_msg = psprintf("cannot load config from \"%s\", return variable missing",
-								HostsFileName);
+								GetGUCString(GUC_HostsFileName));
 		return HOSTSFILE_LOAD_FAILED;
 	}
 	*hosts = NIL;
@@ -390,7 +390,8 @@ load_hosts(List **hosts, char **err_msg)
 	 * A future TODO might be to rename the supporting code with a more
 	 * generic name?
 	 */
-	file = open_auth_file(HostsFileName, LOG, 0, err_msg);
+	file = open_auth_file(GetGUCString(GUC_HostsFileName), LOG, 0,
+			      err_msg);
 	if (file == NULL)
 	{
 		if (errno == ENOENT)
@@ -399,7 +400,8 @@ load_hosts(List **hosts, char **err_msg)
 		return HOSTSFILE_LOAD_FAILED;
 	}
 
-	tokenize_auth_file(HostsFileName, file, &hosts_lines, LOG, 0);
+	tokenize_auth_file(GetGUCString(GUC_HostsFileName), file,
+			   &hosts_lines, LOG, 0);
 
 	foreach(line, hosts_lines)
 	{
@@ -427,7 +429,7 @@ load_hosts(List **hosts, char **err_msg)
 	{
 		if (err_msg)
 			*err_msg = psprintf("loading config from \"%s\" failed due to parsing error",
-								HostsFileName);
+								GetGUCString(GUC_HostsFileName));
 		return HOSTSFILE_LOAD_FAILED;
 	}
 

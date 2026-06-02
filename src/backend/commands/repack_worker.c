@@ -277,7 +277,7 @@ repack_setup_logical_decoding(Oid relid)
 	 * boundaries.
 	 */
 	XLByteToSeg(ctx->reader->EndRecPtr, repack_current_segment,
-				wal_segment_size);
+				GetGUCInt(GUC_wal_segment_size));
 
 	/* Our private state belongs to the decoding context. */
 	oldcxt = MemoryContextSwitchTo(ctx->context);
@@ -399,7 +399,8 @@ decode_concurrent_changes(LogicalDecodingContext *ctx,
 			 * system that the catalog_xmin can advance.
 			 */
 			end_lsn = ctx->reader->EndRecPtr;
-			XLByteToSeg(end_lsn, segno_new, wal_segment_size);
+			XLByteToSeg(end_lsn, segno_new,
+				    GetGUCInt(GUC_wal_segment_size));
 			if (segno_new != repack_current_segment)
 			{
 				LogicalConfirmReceivedLocation(end_lsn);

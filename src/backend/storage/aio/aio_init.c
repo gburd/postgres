@@ -65,11 +65,11 @@ AioHandleShmemSize(void)
 	Size		sz;
 
 	/* verify AioChooseMaxConcurrency() did its thing */
-	Assert(io_max_concurrency > 0);
+	Assert(GetGUCInt(GUC_io_max_concurrency) > 0);
 
 	/* io handles */
 	sz = mul_size(AioProcs(),
-				  mul_size(io_max_concurrency, sizeof(PgAioHandle)));
+				  mul_size(GetGUCInt(GUC_io_max_concurrency), sizeof(PgAioHandle)));
 
 	return sz;
 }
@@ -79,8 +79,8 @@ AioHandleIOVShmemSize(void)
 {
 	/* each IO handle can have up to io_max_combine_limit iovec objects */
 	return mul_size(sizeof(struct iovec),
-					mul_size(mul_size(io_max_combine_limit, AioProcs()),
-							 io_max_concurrency));
+					mul_size(mul_size(GetGUCInt(GUC_io_max_combine_limit), AioProcs()),
+							 GetGUCInt(GUC_io_max_concurrency)));
 }
 
 static Size
@@ -88,8 +88,8 @@ AioHandleDataShmemSize(void)
 {
 	/* each buffer referenced by an iovec can have associated data */
 	return mul_size(sizeof(uint64),
-					mul_size(mul_size(io_max_combine_limit, AioProcs()),
-							 io_max_concurrency));
+					mul_size(mul_size(GetGUCInt(GUC_io_max_combine_limit), AioProcs()),
+							 GetGUCInt(GUC_io_max_concurrency)));
 }
 
 /*
@@ -109,7 +109,7 @@ AioChooseMaxConcurrency(void)
 
 	/* Similar logic to LimitAdditionalPins() */
 	max_backends = MaxBackends + NUM_AUXILIARY_PROCS;
-	max_proportional_pins = NBuffers / max_backends;
+	max_proportional_pins = GetGUCInt(GUC_NBuffers) / max_backends;
 
 	max_proportional_pins = Max(max_proportional_pins, 1);
 
@@ -131,14 +131,14 @@ AioShmemRequest(void *arg)
 	 * config file, then PGC_S_DYNAMIC_DEFAULT will fail to override that and
 	 * we must force the matter with PGC_S_OVERRIDE.
 	 */
-	if (io_max_concurrency == -1)
+	if (GetGUCInt(GUC_io_max_concurrency) == -1)
 	{
 		char		buf[32];
 
 		snprintf(buf, sizeof(buf), "%d", AioChooseMaxConcurrency());
 		SetConfigOption("io_max_concurrency", buf, PGC_POSTMASTER,
 						PGC_S_DYNAMIC_DEFAULT);
-		if (io_max_concurrency == -1)	/* failed to apply it? */
+		if (GetGUCInt(GUC_io_max_concurrency) == -1)	/* failed to apply it? */
 			SetConfigOption("io_max_concurrency", buf, PGC_POSTMASTER,
 							PGC_S_OVERRIDE);
 	}
@@ -180,9 +180,9 @@ AioShmemInit(void *arg)
 {
 	uint32		io_handle_off = 0;
 	uint32		iovec_off = 0;
-	uint32		per_backend_iovecs = io_max_concurrency * io_max_combine_limit;
+	uint32		per_backend_iovecs = GetGUCInt(GUC_io_max_concurrency) * GetGUCInt(GUC_io_max_combine_limit);
 
-	pgaio_ctl->io_handle_count = AioProcs() * io_max_concurrency;
+	pgaio_ctl->io_handle_count = AioProcs() * GetGUCInt(GUC_io_max_concurrency);
 	pgaio_ctl->iovec_count = AioProcs() * per_backend_iovecs;
 
 	pgaio_ctl->backend_state = AioBackendShmemPtr;
@@ -195,14 +195,14 @@ AioShmemInit(void *arg)
 		PgAioBackend *bs = &pgaio_ctl->backend_state[procno];
 
 		bs->io_handle_off = io_handle_off;
-		io_handle_off += io_max_concurrency;
+		io_handle_off += GetGUCInt(GUC_io_max_concurrency);
 
 		dclist_init(&bs->idle_ios);
 		memset(bs->staged_ios, 0, sizeof(PgAioHandle *) * PGAIO_SUBMIT_BATCH_SIZE);
 		dclist_init(&bs->in_flight_ios);
 
 		/* initialize per-backend IOs */
-		for (int i = 0; i < io_max_concurrency; i++)
+		for (int i = 0; i < GetGUCInt(GUC_io_max_concurrency); i++)
 		{
 			PgAioHandle *ioh = &pgaio_ctl->io_handles[bs->io_handle_off + i];
 
@@ -219,7 +219,7 @@ AioShmemInit(void *arg)
 			ConditionVariableInit(&ioh->cv);
 
 			dclist_push_tail(&bs->idle_ios, &ioh->node);
-			iovec_off += io_max_combine_limit;
+			iovec_off += GetGUCInt(GUC_io_max_combine_limit);
 		}
 	}
 

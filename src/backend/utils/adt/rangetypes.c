@@ -3079,7 +3079,7 @@ find_simplified_clause(PlannerInfo *root, Expr *rangeExpr, Expr *elemExpr)
 				return NULL;
 			cost_qual_eval_node(&eval_cost, (Node *) elemExpr, root);
 			if (eval_cost.startup + eval_cost.per_tuple >
-				10 * cpu_operator_cost)
+				10 * GetGUCReal(GUC_cpu_operator_cost))
 				return NULL;
 		}
 

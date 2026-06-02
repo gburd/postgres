@@ -59,7 +59,7 @@ BufTableShmemRequest(void *arg)
 	 * happening in each partition concurrently, so we could need as many as
 	 * NBuffers + NUM_BUFFER_PARTITIONS entries.
 	 */
-	size = NBuffers + NUM_BUFFER_PARTITIONS;
+	size = GetGUCInt(GUC_NBuffers) + NUM_BUFFER_PARTITIONS;
 
 	ShmemRequestHash(.name = "Shared Buffer Lookup Table",
 					 .nelems = size,

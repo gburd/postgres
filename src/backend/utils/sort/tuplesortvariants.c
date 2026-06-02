@@ -194,7 +194,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 
 	Assert(nkeys > 0);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 nkeys, workMem, sortopt & TUPLESORT_RANDOMACCESS ? 't' : 'f');
@@ -269,7 +269,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 	arg = palloc0_object(TuplesortClusterArg);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 RelationGetNumberOfAttributes(indexRel),
@@ -376,7 +376,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 	arg = palloc_object(TuplesortIndexBTreeArg);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin index sort: unique = %c, workMem = %d, randomAccess = %c",
 			 enforceUnique ? 't' : 'f',
@@ -457,7 +457,7 @@ tuplesort_begin_index_hash(Relation heapRel,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 	arg = palloc_object(TuplesortIndexHashArg);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin index sort: high_mask = 0x%x, low_mask = 0x%x, "
 			 "max_buckets = 0x%x, workMem = %d, randomAccess = %c",
@@ -506,7 +506,7 @@ tuplesort_begin_index_gist(Relation heapRel,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 	arg = palloc_object(TuplesortIndexBTreeArg);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin index sort: workMem = %d, randomAccess = %c",
 			 workMem, sortopt & TUPLESORT_RANDOMACCESS ? 't' : 'f');
@@ -561,7 +561,7 @@ tuplesort_begin_index_brin(int workMem,
 												   sortopt);
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin index sort: workMem = %d, randomAccess = %c",
 			 workMem,
@@ -595,7 +595,7 @@ tuplesort_begin_index_gin(Relation heapRel,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 
 #ifdef TRACE_SORT
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin index sort: workMem = %d, randomAccess = %c",
 			 workMem,
@@ -681,7 +681,7 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 	arg = palloc_object(TuplesortDatumArg);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "begin datum sort: workMem = %d, randomAccess = %c",
 			 workMem, sortopt & TUPLESORT_RANDOMACCESS ? 't' : 'f');

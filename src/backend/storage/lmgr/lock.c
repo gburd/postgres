@@ -57,7 +57,7 @@ int			max_locks_per_xact; /* used to set the lock table size */
 bool		log_lock_failures = false;
 
 #define NLOCKENTS() \
-	mul_size(max_locks_per_xact, add_size(MaxBackends, max_prepared_xacts))
+	mul_size(GetGUCInt(GUC_max_locks_per_xact), add_size(MaxBackends, GetGUCInt(GUC_max_prepared_xacts)))
 
 
 /*
@@ -134,7 +134,7 @@ static const LockMethodData default_lockmethod = {
 #else
 	&Dummy_trace
 #endif
-};
+	};
 
 static const LockMethodData user_lockmethod = {
 	MaxLockMode,
@@ -145,7 +145,7 @@ static const LockMethodData user_lockmethod = {
 #else
 	&Dummy_trace
 #endif
-};
+	};
 
 /*
  * map from lock method id to the lock table data structures
@@ -371,9 +371,9 @@ LOCK_DEBUG_ENABLED(const LOCKTAG *tag)
 {
 	return
 		(*(LockMethods[tag->locktag_lockmethodid]->trace_flag) &&
-		 ((Oid) tag->locktag_field2 >= (Oid) Trace_lock_oidmin))
-		|| (Trace_lock_table &&
-			(tag->locktag_field2 == Trace_lock_table));
+		 ((Oid) tag->locktag_field2 >= (Oid) GetGUCInt(GUC_Trace_lock_oidmin)))
+		|| (GetGUCInt(GUC_Trace_lock_table) &&
+			(tag->locktag_field2 == GetGUCInt(GUC_Trace_lock_table)));
 }
 
 
@@ -3106,10 +3106,11 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 			vxids = (VirtualTransactionId *)
 				MemoryContextAlloc(TopMemoryContext,
 								   sizeof(VirtualTransactionId) *
-								   (MaxBackends + max_prepared_xacts + 1));
+								   (MaxBackends + GetGUCInt(GUC_max_prepared_xacts) + 1));
 	}
 	else
-		vxids = palloc0_array(VirtualTransactionId, (MaxBackends + max_prepared_xacts + 1));
+		vxids = palloc0_array(VirtualTransactionId,
+				      (MaxBackends + GetGUCInt(GUC_max_prepared_xacts) + 1));
 
 	/* Compute hash code and partition lock, and look up conflicting modes. */
 	hashcode = LockTagHashCode(locktag);
@@ -3268,7 +3269,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 	LWLockRelease(partitionLock);
 
-	if (count > MaxBackends + max_prepared_xacts)	/* should never happen */
+	if (count > MaxBackends + GetGUCInt(GUC_max_prepared_xacts))	/* should never happen */
 		elog(PANIC, "too many conflicting locks found");
 
 	vxids[count].procNumber = INVALID_PROC_NUMBER;
@@ -4678,7 +4679,7 @@ XactLockForVirtualXact(VirtualTransactionId vxid,
 	bool		more = false;
 
 	/* There is no point to wait for 2PCs if you have no 2PCs. */
-	if (max_prepared_xacts == 0)
+	if (GetGUCInt(GUC_max_prepared_xacts) == 0)
 		return true;
 
 	do

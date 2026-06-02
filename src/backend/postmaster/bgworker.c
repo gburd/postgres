@@ -183,7 +183,7 @@ BackgroundWorkerShmemRequest(void *arg)
 
 	/* Array of workers is variably sized. */
 	size = offsetof(BackgroundWorkerArray, slot);
-	size = add_size(size, mul_size(max_worker_processes,
+	size = add_size(size, mul_size(GetGUCInt(GUC_max_worker_processes),
 								   sizeof(BackgroundWorkerSlot)));
 	ShmemRequestStruct(.name = "Background Worker Data",
 					   .size = size,
@@ -200,7 +200,7 @@ BackgroundWorkerShmemInit(void *arg)
 	dlist_iter	iter;
 	int			slotno = 0;
 
-	BackgroundWorkerData->total_slots = max_worker_processes;
+	BackgroundWorkerData->total_slots = GetGUCInt(GUC_max_worker_processes);
 	BackgroundWorkerData->parallel_register_count = 0;
 	BackgroundWorkerData->parallel_terminate_count = 0;
 
@@ -216,7 +216,7 @@ BackgroundWorkerShmemInit(void *arg)
 		RegisteredBgWorker *rw;
 
 		rw = dlist_container(RegisteredBgWorker, rw_lnode, iter.cur);
-		Assert(slotno < max_worker_processes);
+		Assert(slotno < GetGUCInt(GUC_max_worker_processes));
 		slot->in_use = true;
 		slot->terminate = false;
 		slot->pid = InvalidPid;
@@ -230,7 +230,7 @@ BackgroundWorkerShmemInit(void *arg)
 	/*
 	 * Mark any remaining slots as not in use.
 	 */
-	while (slotno < max_worker_processes)
+	while (slotno < GetGUCInt(GUC_max_worker_processes))
 	{
 		BackgroundWorkerSlot *slot = &BackgroundWorkerData->slot[slotno];
 
@@ -280,11 +280,11 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 	 * max_worker_processes, in case shared memory gets corrupted while we're
 	 * looping.
 	 */
-	if (max_worker_processes != BackgroundWorkerData->total_slots)
+	if (GetGUCInt(GUC_max_worker_processes) != BackgroundWorkerData->total_slots)
 	{
 		ereport(LOG,
 				(errmsg("inconsistent background worker state (\"max_worker_processes\"=%d, total slots=%d)",
-						max_worker_processes,
+						GetGUCInt(GUC_max_worker_processes),
 						BackgroundWorkerData->total_slots)));
 		return;
 	}
@@ -293,7 +293,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 	 * Iterate through slots, looking for newly-registered workers or workers
 	 * who must die.
 	 */
-	for (slotno = 0; slotno < max_worker_processes; ++slotno)
+	for (slotno = 0; slotno < GetGUCInt(GUC_max_worker_processes); ++slotno)
 	{
 		BackgroundWorkerSlot *slot = &BackgroundWorkerData->slot[slotno];
 		RegisteredBgWorker *rw;
@@ -456,7 +456,7 @@ ForgetBackgroundWorker(RegisteredBgWorker *rw)
 {
 	BackgroundWorkerSlot *slot;
 
-	Assert(rw->rw_shmem_slot < max_worker_processes);
+	Assert(rw->rw_shmem_slot < GetGUCInt(GUC_max_worker_processes));
 	slot = &BackgroundWorkerData->slot[rw->rw_shmem_slot];
 	Assert(slot->in_use);
 
@@ -488,7 +488,7 @@ ReportBackgroundWorkerPID(RegisteredBgWorker *rw)
 {
 	BackgroundWorkerSlot *slot;
 
-	Assert(rw->rw_shmem_slot < max_worker_processes);
+	Assert(rw->rw_shmem_slot < GetGUCInt(GUC_max_worker_processes));
 	slot = &BackgroundWorkerData->slot[rw->rw_shmem_slot];
 	slot->pid = rw->rw_pid;
 
@@ -511,7 +511,7 @@ ReportBackgroundWorkerExit(RegisteredBgWorker *rw)
 	BackgroundWorkerSlot *slot;
 	int			notify_pid;
 
-	Assert(rw->rw_shmem_slot < max_worker_processes);
+	Assert(rw->rw_shmem_slot < GetGUCInt(GUC_max_worker_processes));
 	slot = &BackgroundWorkerData->slot[rw->rw_shmem_slot];
 	slot->pid = rw->rw_pid;
 	notify_pid = rw->rw_worker.bgw_notify_pid;
@@ -574,7 +574,7 @@ ForgetUnstartedBackgroundWorkers(void)
 		BackgroundWorkerSlot *slot;
 
 		rw = dlist_container(RegisteredBgWorker, rw_lnode, iter.cur);
-		Assert(rw->rw_shmem_slot < max_worker_processes);
+		Assert(rw->rw_shmem_slot < GetGUCInt(GUC_max_worker_processes));
 		slot = &BackgroundWorkerData->slot[rw->rw_shmem_slot];
 
 		/* If it's not yet started, and there's someone waiting ... */
@@ -766,8 +766,8 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	Assert(GetProcessingMode() == InitProcessing);
 
 	/* Apply PostAuthDelay */
-	if (PostAuthDelay > 0)
-		pg_usleep(PostAuthDelay * 1000000L);
+	if (GetGUCInt(GUC_PostAuthDelay) > 0)
+		pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 	/*
 	 * Set up signal handlers.
@@ -1019,15 +1019,15 @@ RegisterBackgroundWorker(BackgroundWorker *worker)
 	 * towards the MAX_BACKENDS limit elsewhere.  For now, it doesn't seem
 	 * important to relax this restriction.
 	 */
-	if (++numworkers > max_worker_processes)
+	if (++numworkers > GetGUCInt(GUC_max_worker_processes))
 	{
 		ereport(LOG,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("too many background workers"),
 				 errdetail_plural("Up to %d background worker can be registered with the current settings.",
 								  "Up to %d background workers can be registered with the current settings.",
-								  max_worker_processes,
-								  max_worker_processes),
+								  GetGUCInt(GUC_max_worker_processes),
+								  GetGUCInt(GUC_max_worker_processes)),
 				 errhint("Consider increasing the configuration parameter \"%s\".", "max_worker_processes")));
 		return;
 	}
@@ -1102,7 +1102,7 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
 	 */
 	if (parallel && (BackgroundWorkerData->parallel_register_count -
 					 BackgroundWorkerData->parallel_terminate_count) >=
-		max_parallel_workers)
+		GetGUCInt(GUC_max_parallel_workers))
 	{
 		Assert(BackgroundWorkerData->parallel_register_count -
 			   BackgroundWorkerData->parallel_terminate_count <=
@@ -1182,7 +1182,7 @@ GetBackgroundWorkerPid(BackgroundWorkerHandle *handle, pid_t *pidp)
 	BackgroundWorkerSlot *slot;
 	pid_t		pid;
 
-	Assert(handle->slot < max_worker_processes);
+	Assert(handle->slot < GetGUCInt(GUC_max_worker_processes));
 	slot = &BackgroundWorkerData->slot[handle->slot];
 
 	/*
@@ -1321,7 +1321,7 @@ TerminateBackgroundWorker(BackgroundWorkerHandle *handle)
 	BackgroundWorkerSlot *slot;
 	bool		signal_postmaster = false;
 
-	Assert(handle->slot < max_worker_processes);
+	Assert(handle->slot < GetGUCInt(GUC_max_worker_processes));
 	slot = &BackgroundWorkerData->slot[handle->slot];
 
 	/* Set terminate flag in shared memory, unless slot has been reused. */

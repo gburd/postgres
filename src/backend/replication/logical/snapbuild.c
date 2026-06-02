@@ -463,7 +463,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	TransactionId *newxip;
 	int			newxcnt = 0;
 
-	Assert(XactIsoLevel == XACT_REPEATABLE_READ);
+	Assert(GetGUCEnum(GUC_XactIsoLevel) == XACT_REPEATABLE_READ);
 	Assert(builder->building_full_snapshot);
 
 	/* don't allow older snapshots */

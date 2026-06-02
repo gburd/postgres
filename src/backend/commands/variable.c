@@ -545,7 +545,7 @@ assign_timezone_abbreviations(const char *newval, void *extra)
 bool
 check_transaction_read_only(bool *newval, void **extra, GucSource source)
 {
-	if (*newval == false && XactReadOnly && IsTransactionState() && !InitializingParallelWorker)
+	if (*newval == false && GetGUCBool(GUC_XactReadOnly) && IsTransactionState() && !InitializingParallelWorker)
 	{
 		/* Can't go to r/w mode inside a r/o transaction */
 		if (IsSubTransaction())
@@ -587,7 +587,7 @@ check_transaction_isolation(int *newval, void **extra, GucSource source)
 {
 	int			newXactIsoLevel = *newval;
 
-	if (newXactIsoLevel != XactIsoLevel &&
+	if (newXactIsoLevel != GetGUCEnum(GUC_XactIsoLevel) &&
 		IsTransactionState() && !InitializingParallelWorker)
 	{
 		if (FirstSnapshotSet)
@@ -952,7 +952,7 @@ check_role(char **newval, void **extra, GucSource source)
 		 * already installed the correct role OID and superuser state.
 		 */
 		roleid = GetCurrentRoleId();
-		is_superuser = current_role_is_superuser;
+		is_superuser = GetGUCBool(GUC_current_role_is_superuser);
 	}
 	else
 	{
@@ -1044,7 +1044,7 @@ show_role(void)
 		return "none";
 
 	/* Otherwise we can just use the GUC string */
-	return role_string ? role_string : "none";
+	return GetGUCString(GUC_role_string) ? GetGUCString(GUC_role_string) : "none";
 }
 
 
@@ -1163,12 +1163,12 @@ assign_maintenance_io_concurrency(int newval, void *extra)
 void
 assign_io_max_combine_limit(int newval, void *extra)
 {
-	io_combine_limit = Min(newval, io_combine_limit_guc);
+	io_combine_limit = Min(newval, GetGUCInt(GUC_io_combine_limit_guc));
 }
 void
 assign_io_combine_limit(int newval, void *extra)
 {
-	io_combine_limit = Min(io_max_combine_limit, newval);
+	io_combine_limit = Min(GetGUCInt(GUC_io_max_combine_limit), newval);
 }
 
 /*
@@ -1183,7 +1183,7 @@ show_data_directory_mode(void)
 {
 	static char buf[12];
 
-	snprintf(buf, sizeof(buf), "%04o", data_directory_mode);
+	snprintf(buf, sizeof(buf), "%04o", GetGUCInt(GUC_data_directory_mode));
 	return buf;
 }
 
@@ -1195,7 +1195,7 @@ show_log_file_mode(void)
 {
 	static char buf[12];
 
-	snprintf(buf, sizeof(buf), "%04o", Log_file_mode);
+	snprintf(buf, sizeof(buf), "%04o", GetGUCInt(GUC_Log_file_mode));
 	return buf;
 }
 
@@ -1207,7 +1207,8 @@ show_unix_socket_permissions(void)
 {
 	static char buf[12];
 
-	snprintf(buf, sizeof(buf), "%04o", Unix_socket_permissions);
+	snprintf(buf, sizeof(buf), "%04o",
+		 GetGUCInt(GUC_Unix_socket_permissions));
 	return buf;
 }
 

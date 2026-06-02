@@ -122,7 +122,7 @@ BufferManagerShmemInit(void *arg)
 	/*
 	 * Initialize all the buffer headers.
 	 */
-	for (int i = 0; i < NBuffers; i++)
+	for (int i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		BufferDesc *buf = GetBufferDescriptor(i);
 

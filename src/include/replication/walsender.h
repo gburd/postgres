@@ -66,7 +66,7 @@ WalSndWakeupProcessRequests(bool physical, bool logical)
 	if (wake_wal_senders)
 	{
 		wake_wal_senders = false;
-		if (max_wal_senders > 0)
+		if (GetGUCInt(GUC_max_wal_senders) > 0)
 			WalSndWakeup(physical, logical);
 	}
 }

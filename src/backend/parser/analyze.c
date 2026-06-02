@@ -343,7 +343,7 @@ transformStmt(ParseState *pstate, Node *parseTree)
 	 * raw_expression_tree_walker() doesn't claim to handle utility
 	 * statements.
 	 */
-	if (Debug_raw_expression_coverage_test)
+	if (GetGUCBool(GUC_Debug_raw_expression_coverage_test))
 	{
 		switch (nodeTag(parseTree))
 		{

@@ -201,12 +201,12 @@ ReplicationSlotsShmemRequest(void *arg)
 {
 	Size		size;
 
-	if (max_replication_slots + max_repack_replication_slots == 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) == 0)
 		return;
 
 	size = offsetof(ReplicationSlotCtlData, replication_slots);
 	size = add_size(size,
-					mul_size(max_replication_slots + max_repack_replication_slots,
+					mul_size(GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots),
 							 sizeof(ReplicationSlot)));
 	ShmemRequestStruct(.name = "ReplicationSlot Ctl",
 					   .size = size,
@@ -220,7 +220,7 @@ ReplicationSlotsShmemRequest(void *arg)
 static void
 ReplicationSlotsShmemInit(void *arg)
 {
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *slot = &ReplicationSlotCtl->replication_slots[i];
 
@@ -437,9 +437,9 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	 * can change the in_use flags while we're looking at them.
 	 */
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	startpoint = !repack ? 0 : max_replication_slots;
-	endpoint = max_replication_slots + (repack ? max_repack_replication_slots : 0);
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	startpoint = !repack ? 0 : GetGUCInt(GUC_max_replication_slots);
+	endpoint = GetGUCInt(GUC_max_replication_slots) + (repack ? GetGUCInt(GUC_max_repack_replication_slots) : 0);
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 
@@ -553,7 +553,7 @@ SearchNamedReplicationSlot(const char *name, bool need_lock)
 	if (need_lock)
 		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 
@@ -582,7 +582,7 @@ ReplicationSlotIndex(ReplicationSlot *slot)
 {
 	Assert(slot >= ReplicationSlotCtl->replication_slots &&
 		   slot < ReplicationSlotCtl->replication_slots +
-		   (max_replication_slots + max_repack_replication_slots));
+		   (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots)));
 
 	return slot - ReplicationSlotCtl->replication_slots;
 }
@@ -750,7 +750,7 @@ retry:
 
 	if (am_walsender)
 	{
-		ereport(log_replication_commands ? LOG : DEBUG1,
+		ereport(GetGUCBool(GUC_log_replication_commands) ? LOG : DEBUG1,
 				SlotIsLogical(s)
 				? errmsg("acquired logical replication slot \"%s\"",
 						 NameStr(s->data.name))
@@ -844,7 +844,7 @@ ReplicationSlotRelease(void)
 
 	if (am_walsender)
 	{
-		ereport(log_replication_commands ? LOG : DEBUG1,
+		ereport(GetGUCBool(GUC_log_replication_commands) ? LOG : DEBUG1,
 				is_logical
 				? errmsg("released logical replication slot \"%s\"",
 						 slotname)
@@ -876,7 +876,7 @@ ReplicationSlotCleanup(bool synced_only)
 restart:
 	found_valid_logicalslot = false;
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 
@@ -1258,7 +1258,7 @@ ReplicationSlotsComputeRequiredXmin(bool already_locked)
 	if (!already_locked)
 		LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		TransactionId effective_xmin;
@@ -1313,7 +1313,7 @@ ReplicationSlotsComputeRequiredLSN(void)
 	Assert(ReplicationSlotCtl != NULL);
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		XLogRecPtr	restart_lsn;
@@ -1380,12 +1380,12 @@ ReplicationSlotsComputeLogicalRestartLSN(void)
 	XLogRecPtr	result = InvalidXLogRecPtr;
 	int			i;
 
-	if (max_replication_slots + max_repack_replication_slots <= 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) <= 0)
 		return InvalidXLogRecPtr;
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s;
 		XLogRecPtr	restart_lsn;
@@ -1460,11 +1460,11 @@ ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive)
 
 	*nslots = *nactive = 0;
 
-	if (max_replication_slots + max_repack_replication_slots <= 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) <= 0)
 		return false;
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s;
 
@@ -1521,13 +1521,13 @@ ReplicationSlotsDropDBSlots(Oid dboid)
 	bool		found_valid_logicalslot;
 	bool		dropped = false;
 
-	if (max_replication_slots + max_repack_replication_slots <= 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) <= 0)
 		return;
 
 restart:
 	found_valid_logicalslot = false;
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s;
 		char	   *slotname;
@@ -1624,11 +1624,11 @@ CheckLogicalSlotExists(void)
 {
 	bool		found = false;
 
-	if (max_replication_slots + max_repack_replication_slots <= 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) <= 0)
 		return false;
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s;
 		bool		invalidated;
@@ -1669,19 +1669,19 @@ CheckSlotRequirements(bool repack)
 	 * needs the same check.
 	 */
 
-	if (!repack && max_replication_slots == 0)
+	if (!repack && GetGUCInt(GUC_max_replication_slots) == 0)
 		ereport(ERROR,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg("replication slots can only be used if \"%s\" > 0",
 					   "max_replication_slots"));
 
-	if (repack && max_repack_replication_slots == 0)
+	if (repack && GetGUCInt(GUC_max_repack_replication_slots) == 0)
 		ereport(ERROR,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg("REPACK can only be used if \"%s\" > 0",
 					   "max_repack_replication_slots"));
 
-	if (wal_level < WAL_LEVEL_REPLICA)
+	if (GetGUCEnum(GUC_wal_level) < WAL_LEVEL_REPLICA)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("replication slots can only be used if \"wal_level\" >= \"replica\"")));
@@ -1764,7 +1764,8 @@ ReplicationSlotReserveWal(void)
 	ReplicationSlotsComputeRequiredLSN();
 
 	/* Checkpoint shouldn't remove the required WAL. */
-	XLByteToSeg(slot->data.restart_lsn, segno, wal_segment_size);
+	XLByteToSeg(slot->data.restart_lsn, segno,
+		    GetGUCInt(GUC_wal_segment_size));
 	if (XLogGetLastRemovedSegno() >= segno)
 		elog(ERROR, "WAL required by replication slot %s has been removed concurrently",
 			 NameStr(slot->data.name));
@@ -1833,7 +1834,7 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 				/* translator: %s is a GUC variable name */
 				appendStringInfo(&err_detail, _("The slot's idle time of %lds exceeds the configured \"%s\" duration of %ds."),
 								 slot_idle_seconds, "idle_replication_slot_timeout",
-								 idle_replication_slot_timeout_secs);
+								 GetGUCInt(GUC_idle_replication_slot_timeout_secs));
 				/* translator: %s is a GUC variable name */
 				appendStringInfo(&err_hint, _("You might need to increase \"%s\"."),
 								 "idle_replication_slot_timeout");
@@ -1871,7 +1872,7 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 static inline bool
 CanInvalidateIdleSlot(ReplicationSlot *s)
 {
-	return (idle_replication_slot_timeout_secs != 0 &&
+	return (GetGUCInt(GUC_idle_replication_slot_timeout_secs) != 0 &&
 			XLogRecPtrIsValid(s->data.restart_lsn) &&
 			s->inactive_since > 0 &&
 			!(RecoveryInProgress() && s->data.synced));
@@ -1951,7 +1952,7 @@ DetermineSlotInvalidationCause(uint32 possible_causes, ReplicationSlot *s,
 			 * idle_replication_slot_timeout GUC.
 			 */
 			if (TimestampDifferenceExceedsSeconds(s->inactive_since, now,
-												  idle_replication_slot_timeout_secs))
+												  GetGUCInt(GUC_idle_replication_slot_timeout_secs)))
 			{
 				*inactive_since = s->inactive_since;
 				return RS_INVAL_IDLE_TIMEOUT;
@@ -2230,15 +2231,16 @@ InvalidateObsoleteReplicationSlots(uint32 possible_causes,
 	Assert(!(possible_causes & RS_INVAL_WAL_REMOVED) || oldestSegno > 0);
 	Assert(possible_causes != RS_INVAL_NONE);
 
-	if (max_replication_slots == 0 && max_repack_replication_slots == 0)
+	if (GetGUCInt(GUC_max_replication_slots) == 0 && GetGUCInt(GUC_max_repack_replication_slots) == 0)
 		return invalidated;
 
-	XLogSegNoOffsetToRecPtr(oldestSegno, 0, wal_segment_size, oldestLSN);
+	XLogSegNoOffsetToRecPtr(oldestSegno, 0,
+				GetGUCInt(GUC_wal_segment_size), oldestLSN);
 
 restart:
 	found_valid_logicalslot = false;
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		bool		released_lock = false;
@@ -2343,7 +2345,7 @@ CheckPointReplicationSlots(bool is_shutdown)
 	 */
 	LWLockAcquire(ReplicationSlotAllocationLock, LW_SHARED);
 
-	for (i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		char		path[MAXPGPATH];
@@ -2444,7 +2446,7 @@ StartupReplicationSlots(void)
 	FreeDir(replication_dir);
 
 	/* currently no slots exist, we're done. */
-	if (max_replication_slots + max_repack_replication_slots <= 0)
+	if (GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots) <= 0)
 		return;
 
 	/* Now that we have recovered all the data, compute replication xmin */
@@ -2844,7 +2846,7 @@ RestoreSlotFromDisk(const char *name)
 	 */
 	if (cp.slotdata.database != InvalidOid)
 	{
-		if (wal_level < WAL_LEVEL_REPLICA)
+		if (GetGUCEnum(GUC_wal_level) < WAL_LEVEL_REPLICA)
 			ereport(FATAL,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("logical replication slot \"%s\" exists, but \"wal_level\" < \"replica\"",
@@ -2859,14 +2861,14 @@ RestoreSlotFromDisk(const char *name)
 		 * disabled, primary disable logical decoding while hot standby is
 		 * disabled, logical slots would remain valid even after promotion.
 		 */
-		if (StandbyMode && !EnableHotStandby)
+		if (StandbyMode && !GetGUCBool(GUC_EnableHotStandby))
 			ereport(FATAL,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("logical replication slot \"%s\" exists on the standby, but \"hot_standby\" = \"off\"",
 							NameStr(cp.slotdata.name)),
 					 errhint("Change \"hot_standby\" to be \"on\".")));
 	}
-	else if (wal_level < WAL_LEVEL_REPLICA)
+	else if (GetGUCEnum(GUC_wal_level) < WAL_LEVEL_REPLICA)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("physical replication slot \"%s\" exists, but \"wal_level\" < \"replica\"",
@@ -2880,7 +2882,7 @@ RestoreSlotFromDisk(const char *name)
 	 * there were more slots before the shutdown than what it is set up to
 	 * now.
 	 */
-	for (i = 0; i < max_replication_slots; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_replication_slots); i++)
 	{
 		ReplicationSlot *slot;
 

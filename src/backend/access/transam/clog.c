@@ -777,10 +777,11 @@ static int
 CLOGShmemBuffers(void)
 {
 	/* auto-tune based on shared buffers */
-	if (transaction_buffers == 0)
+	if (GetGUCInt(GUC_transaction_buffers) == 0)
 		return SimpleLruAutotuneBuffers(512, 1024);
 
-	return Min(Max(16, transaction_buffers), CLOG_MAX_ALLOWED_BUFFERS);
+	return Min(Max(16, GetGUCInt(GUC_transaction_buffers)),
+		   CLOG_MAX_ALLOWED_BUFFERS);
 }
 
 /*
@@ -790,7 +791,7 @@ static void
 CLOGShmemRequest(void *arg)
 {
 	/* If auto-tuning is requested, now is the time to do it */
-	if (transaction_buffers == 0)
+	if (GetGUCInt(GUC_transaction_buffers) == 0)
 	{
 		char		buf[32];
 
@@ -804,11 +805,11 @@ CLOGShmemRequest(void *arg)
 		 * config file, then PGC_S_DYNAMIC_DEFAULT will fail to override that
 		 * and we must force the matter with PGC_S_OVERRIDE.
 		 */
-		if (transaction_buffers == 0)	/* failed to apply it? */
+		if (GetGUCInt(GUC_transaction_buffers) == 0)	/* failed to apply it? */
 			SetConfigOption("transaction_buffers", buf, PGC_POSTMASTER,
 							PGC_S_OVERRIDE);
 	}
-	Assert(transaction_buffers != 0);
+	Assert(GetGUCInt(GUC_transaction_buffers) != 0);
 	SimpleLruRequest(.desc = &XactSlruDesc,
 					 .name = "transaction",
 					 .Dir = "pg_xact",

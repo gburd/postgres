@@ -121,7 +121,7 @@ check_enable_rls(Oid relid, Oid checkAsUser, bool noError)
 	 * We should apply RLS.  However, the user may turn off the row_security
 	 * GUC to get a forced error instead.
 	 */
-	if (!row_security && !noError)
+	if (!GetGUCBool(GUC_row_security) && !noError)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("query would be affected by row-level security policy for table \"%s\"",

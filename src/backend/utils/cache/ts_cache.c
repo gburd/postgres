@@ -565,7 +565,7 @@ getTSCurrentConfig(bool emitError)
 		return TSCurrentConfigCache;
 
 	/* fail if GUC hasn't been set up yet */
-	if (TSCurrentConfig == NULL || *TSCurrentConfig == '\0')
+	if (GetGUCString(GUC_TSCurrentConfig) == NULL || *GetGUCString(GUC_TSCurrentConfig) == '\0')
 	{
 		if (emitError)
 			elog(ERROR, "text search configuration isn't set");
@@ -582,14 +582,15 @@ getTSCurrentConfig(bool emitError)
 	/* Look up the config */
 	if (emitError)
 	{
-		namelist = stringToQualifiedNameList(TSCurrentConfig, NULL);
+		namelist = stringToQualifiedNameList(GetGUCString(GUC_TSCurrentConfig),
+						     NULL);
 		TSCurrentConfigCache = get_ts_config_oid(namelist, false);
 	}
 	else
 	{
 		ErrorSaveContext escontext = {T_ErrorSaveContext};
 
-		namelist = stringToQualifiedNameList(TSCurrentConfig,
+		namelist = stringToQualifiedNameList(GetGUCString(GUC_TSCurrentConfig),
 											 (Node *) &escontext);
 		if (namelist != NIL)
 			TSCurrentConfigCache = get_ts_config_oid(namelist, true);

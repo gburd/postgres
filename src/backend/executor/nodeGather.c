@@ -70,7 +70,7 @@ ExecInitGather(Gather *node, EState *estate, int eflags)
 
 	gatherstate->initialized = false;
 	gatherstate->need_to_scan_locally =
-		!node->single_copy && parallel_leader_participation;
+		!node->single_copy && GetGUCBool(GUC_parallel_leader_participation);
 	gatherstate->tuples_needed = -1;
 
 	/*
@@ -212,7 +212,7 @@ ExecGather(PlanState *pstate)
 
 		/* Run plan locally if no workers or enabled and not single-copy. */
 		node->need_to_scan_locally = (node->nreaders == 0)
-			|| (!gather->single_copy && parallel_leader_participation);
+			|| (!gather->single_copy && GetGUCBool(GUC_parallel_leader_participation));
 		node->initialized = true;
 	}
 

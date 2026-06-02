@@ -144,7 +144,7 @@ void
 StartupLogicalDecodingStatus(bool last_status)
 {
 	/* Logical decoding is always disabled when 'minimal' WAL level */
-	if (wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		return;
 
 	/*
@@ -303,10 +303,10 @@ void
 EnsureLogicalDecodingEnabled(void)
 {
 	Assert(MyReplicationSlot);
-	Assert(wal_level >= WAL_LEVEL_REPLICA);
+	Assert(GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA);
 
 	/* Logical decoding is always enabled */
-	if (wal_level >= WAL_LEVEL_LOGICAL)
+	if (GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_LOGICAL)
 		return;
 
 	if (RecoveryInProgress())
@@ -430,7 +430,7 @@ EnableLogicalDecoding(void)
 void
 RequestDisableLogicalDecoding(void)
 {
-	if (wal_level != WAL_LEVEL_REPLICA)
+	if (GetGUCEnum(GUC_wal_level) != WAL_LEVEL_REPLICA)
 		return;
 
 	/*
@@ -459,7 +459,7 @@ DisableLogicalDecodingIfNecessary(void)
 {
 	bool		pending_disable;
 
-	if (wal_level != WAL_LEVEL_REPLICA)
+	if (GetGUCEnum(GUC_wal_level) != WAL_LEVEL_REPLICA)
 		return;
 
 	/*
@@ -559,7 +559,7 @@ UpdateLogicalDecodingStatusEndOfRecovery(void)
 	 * recovery. Logical decoding is always disabled, so there is no need to
 	 * synchronize XLogLogicalInfo.
 	 */
-	if (wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 	{
 		Assert(!IsXLogLogicalInfoEnabled() && !IsLogicalDecodingEnabled());
 		return;
@@ -567,7 +567,7 @@ UpdateLogicalDecodingStatusEndOfRecovery(void)
 
 	LWLockAcquire(LogicalDecodingControlLock, LW_EXCLUSIVE);
 
-	if (wal_level == WAL_LEVEL_LOGICAL || CheckLogicalSlotExists())
+	if (GetGUCEnum(GUC_wal_level) == WAL_LEVEL_LOGICAL || CheckLogicalSlotExists())
 		new_status = true;
 
 	/*

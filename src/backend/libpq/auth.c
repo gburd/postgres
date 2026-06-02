@@ -847,7 +847,7 @@ CheckPWChallengeAuth(Port *port, const char **logdetail)
 	 * had a password of that type, too, it "blends in" best.
 	 */
 	if (!shadow_pass)
-		pwtype = Password_encryption;
+		pwtype = GetGUCEnum(GUC_Password_encryption);
 	else
 		pwtype = get_password_type(shadow_pass);
 
@@ -939,9 +939,9 @@ pg_GSS_recvauth(Port *port)
 	 * Kerberos, we might consider using the credential store extensions in
 	 * the future instead of the environment variable.
 	 */
-	if (pg_krb_server_keyfile != NULL && pg_krb_server_keyfile[0] != '\0')
+	if (GetGUCString(GUC_pg_krb_server_keyfile) != NULL && GetGUCString(GUC_pg_krb_server_keyfile)[0] != '\0')
 	{
-		if (setenv("KRB5_KTNAME", pg_krb_server_keyfile, 1) != 0)
+		if (setenv("KRB5_KTNAME", GetGUCString(GUC_pg_krb_server_keyfile), 1) != 0)
 		{
 			/* The only likely failure cause is OOM, so use that errcode */
 			ereport(FATAL,
@@ -1016,7 +1016,7 @@ pg_GSS_recvauth(Port *port)
 										  &port->gss->outbuf,
 										  &gflags,
 										  NULL,
-										  pg_gss_accept_delegation ? &delegated_creds : NULL);
+										  GetGUCBool(GUC_pg_gss_accept_delegation) ? &delegated_creds : NULL);
 
 		/* gbuf no longer used */
 		pfree(buf.data);
@@ -1138,7 +1138,7 @@ pg_GSS_checkauth(Port *port)
 			/*
 			 * Match the realm part of the name first
 			 */
-			if (pg_krb_caseins_users)
+			if (GetGUCBool(GUC_pg_krb_caseins_users))
 				ret = pg_strcasecmp(port->hba->krb_realm, cp);
 			else
 				ret = strcmp(port->hba->krb_realm, cp);
@@ -1163,7 +1163,7 @@ pg_GSS_checkauth(Port *port)
 	}
 
 	ret = check_usermap(port->hba->usermap, port->user_name, princ,
-						pg_krb_caseins_users);
+						GetGUCBool(GUC_pg_krb_caseins_users));
 
 	pfree(princ);
 

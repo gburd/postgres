@@ -733,7 +733,7 @@ ProcedureCreate(const char *procedureName,
 		 * shouldn't complain about anything that might depend on a GUC
 		 * parameter when check_function_bodies is off.
 		 */
-		if (check_function_bodies)
+		if (GetGUCBool(GUC_check_function_bodies))
 		{
 			set_items = (ArrayType *) DatumGetPointer(proconfig);
 			if (set_items)		/* Need a new GUC nesting level */
@@ -907,7 +907,7 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 	}
 
 	/* Postpone body checks if !check_function_bodies */
-	if (check_function_bodies)
+	if (GetGUCBool(GUC_check_function_bodies))
 	{
 		tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_prosrc);
 		prosrc = TextDatumGetCString(tmp);

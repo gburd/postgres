@@ -165,7 +165,7 @@ dsm_impl_op(dsm_op op, dsm_handle handle, Size request_size,
 	Assert((op != DSM_OP_CREATE && op != DSM_OP_ATTACH) ||
 		   (*mapped_address == NULL && *mapped_size == 0));
 
-	switch (dynamic_shared_memory_type)
+	switch (GetGUCEnum(GUC_dynamic_shared_memory_type))
 	{
 #ifdef USE_DSM_POSIX
 		case DSM_IMPL_POSIX:
@@ -189,7 +189,7 @@ dsm_impl_op(dsm_op op, dsm_handle handle, Size request_size,
 #endif
 		default:
 			elog(ERROR, "unexpected dynamic shared memory type: %d",
-				 dynamic_shared_memory_type);
+				 GetGUCEnum(GUC_dynamic_shared_memory_type));
 			return false;
 	}
 }
@@ -964,7 +964,7 @@ void
 dsm_impl_pin_segment(dsm_handle handle, void *impl_private,
 					 void **impl_private_pm_handle)
 {
-	switch (dynamic_shared_memory_type)
+	switch (GetGUCEnum(GUC_dynamic_shared_memory_type))
 	{
 #ifdef USE_DSM_WINDOWS
 		case DSM_IMPL_WINDOWS:
@@ -1014,7 +1014,7 @@ dsm_impl_pin_segment(dsm_handle handle, void *impl_private,
 void
 dsm_impl_unpin_segment(dsm_handle handle, void **impl_private)
 {
-	switch (dynamic_shared_memory_type)
+	switch (GetGUCEnum(GUC_dynamic_shared_memory_type))
 	{
 #ifdef USE_DSM_WINDOWS
 		case DSM_IMPL_WINDOWS:

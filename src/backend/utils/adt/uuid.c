@@ -343,7 +343,7 @@ uuid_abbrev_abort(int memtupcount, SortSupport ssup)
 	 */
 	if (abbr_card > 100000.0)
 	{
-		if (trace_sort)
+		if (GetGUCBool(GUC_trace_sort))
 			elog(LOG,
 				 "uuid_abbrev: estimation ends at cardinality %f"
 				 " after " INT64_FORMAT " values (%d rows)",
@@ -360,7 +360,7 @@ uuid_abbrev_abort(int memtupcount, SortSupport ssup)
 	 */
 	if (abbr_card < uss->input_count / 2000.0 + 0.5)
 	{
-		if (trace_sort)
+		if (GetGUCBool(GUC_trace_sort))
 			elog(LOG,
 				 "uuid_abbrev: aborting abbreviation at cardinality %f"
 				 " below threshold %f after " INT64_FORMAT " values (%d rows)",
@@ -369,7 +369,7 @@ uuid_abbrev_abort(int memtupcount, SortSupport ssup)
 		return true;
 	}
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "uuid_abbrev: cardinality %f after " INT64_FORMAT
 			 " values (%d rows)", abbr_card, uss->input_count, memtupcount);

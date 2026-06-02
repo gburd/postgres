@@ -967,7 +967,7 @@ AcceptInvalidationMessages(void)
 	{
 		static int	recursion_depth = 0;
 
-		if (recursion_depth < debug_discard_caches)
+		if (recursion_depth < GetGUCInt(GUC_debug_discard_caches))
 		{
 			recursion_depth++;
 			InvalidateSystemCachesExtended(true);

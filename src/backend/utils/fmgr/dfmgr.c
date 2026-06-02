@@ -475,7 +475,10 @@ expand_dynamic_library_name(const char *name)
 
 	if (!have_slash)
 	{
-		full = find_in_path(name, Dynamic_library_path, "dynamic_library_path", "$libdir", pkglib_path);
+		full = find_in_path(name,
+				    GetGUCString(GUC_Dynamic_library_path),
+				    "dynamic_library_path", "$libdir",
+				    pkglib_path);
 		if (full)
 			return full;
 	}
@@ -491,7 +494,10 @@ expand_dynamic_library_name(const char *name)
 
 	if (!have_slash)
 	{
-		full = find_in_path(new, Dynamic_library_path, "dynamic_library_path", "$libdir", pkglib_path);
+		full = find_in_path(new,
+				    GetGUCString(GUC_Dynamic_library_path),
+				    "dynamic_library_path", "$libdir",
+				    pkglib_path);
 		pfree(new);
 		if (full)
 			return full;

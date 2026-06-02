@@ -1198,8 +1198,8 @@ ExportSnapshot(Snapshot snapshot)
 	appendStringInfo(&buf, "vxid:%d/%u\n", MyProc->vxid.procNumber, MyProc->vxid.lxid);
 	appendStringInfo(&buf, "pid:%d\n", MyProcPid);
 	appendStringInfo(&buf, "dbid:%u\n", MyDatabaseId);
-	appendStringInfo(&buf, "iso:%d\n", XactIsoLevel);
-	appendStringInfo(&buf, "ro:%d\n", XactReadOnly);
+	appendStringInfo(&buf, "iso:%d\n", GetGUCEnum(GUC_XactIsoLevel));
+	appendStringInfo(&buf, "ro:%d\n", GetGUCBool(GUC_XactReadOnly));
 
 	appendStringInfo(&buf, "xmin:%u\n", snapshot->xmin);
 	appendStringInfo(&buf, "xmax:%u\n", snapshot->xmax);
@@ -1542,7 +1542,7 @@ ImportSnapshot(const char *idstr)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("a serializable transaction cannot import a snapshot from a non-serializable transaction")));
-		if (src_readonly && !XactReadOnly)
+		if (src_readonly && !GetGUCBool(GUC_XactReadOnly))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("a non-read-only serializable transaction cannot import a snapshot from a read-only transaction")));

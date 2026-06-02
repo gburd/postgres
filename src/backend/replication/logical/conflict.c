@@ -76,7 +76,7 @@ GetTupleTransactionInfo(TupleTableSlot *localslot, TransactionId *xmin,
 	 * The commit timestamp data is not available if track_commit_timestamp is
 	 * disabled.
 	 */
-	if (!track_commit_timestamp)
+	if (!GetGUCBool(GUC_track_commit_timestamp))
 	{
 		*localorigin = InvalidReplOriginId;
 		*localts = 0;

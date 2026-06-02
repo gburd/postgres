@@ -251,7 +251,7 @@ ExecGatherMerge(PlanState *pstate)
 		}
 
 		/* allow leader to participate if enabled or no choice */
-		if (parallel_leader_participation || node->nreaders == 0)
+		if (GetGUCBool(GUC_parallel_leader_participation) || node->nreaders == 0)
 			node->need_to_scan_locally = true;
 		node->initialized = true;
 	}

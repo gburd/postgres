@@ -268,7 +268,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/* Establish the connection to the primary for XLOG streaming */
-	appname = cluster_name[0] ? cluster_name : "walreceiver";
+	appname = GetGUCString(GUC_cluster_name)[0] ? GetGUCString(GUC_cluster_name) : "walreceiver";
 	wrconn = walrcv_connect(conninfo, true, false, false, appname, &err);
 	if (!wrconn)
 		ereport(ERROR,
@@ -625,7 +625,8 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			char		xlogfname[MAXFNAMELEN];
 
 			XLogWalRcvFlush(false, startpointTLI);
-			XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
+			XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+				     GetGUCInt(GUC_wal_segment_size));
 			if (close(recvFile) != 0)
 				ereport(PANIC,
 						(errcode_for_file_access(),
@@ -636,7 +637,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			 * Create .done file forcibly to prevent the streamed segment from
 			 * being archived later.
 			 */
-			if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+			if (GetGUCEnum(GUC_XLogArchiveMode) != ARCHIVE_MODE_ALWAYS)
 				XLogArchiveForceDone(xlogfname);
 			else
 				XLogArchiveNotify(xlogfname);
@@ -719,7 +720,7 @@ WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI)
 						 WAIT_EVENT_WAL_RECEIVER_WAIT_START);
 	}
 
-	if (update_process_title)
+	if (GetGUCBool(GUC_update_process_title))
 	{
 		char		activitymsg[50];
 
@@ -775,7 +776,7 @@ WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 			 * Mark the streamed history file as ready for archiving if
 			 * archive_mode is always.
 			 */
-			if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+			if (GetGUCEnum(GUC_XLogArchiveMode) != ARCHIVE_MODE_ALWAYS)
 				XLogArchiveForceDone(fname);
 			else
 				XLogArchiveNotify(fname);
@@ -913,22 +914,24 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		int			segbytes;
 
 		/* Close the current segment if it's completed */
-		if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, wal_segment_size))
+		if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)))
 			XLogWalRcvClose(recptr, tli);
 
 		if (recvFile < 0)
 		{
 			/* Create/use new log file */
-			XLByteToSeg(recptr, recvSegNo, wal_segment_size);
+			XLByteToSeg(recptr, recvSegNo,
+				    GetGUCInt(GUC_wal_segment_size));
 			recvFile = XLogFileInit(recvSegNo, tli);
 			recvFileTLI = tli;
 		}
 
 		/* Calculate the start offset of the received logs */
-		startoff = XLogSegmentOffset(recptr, wal_segment_size);
+		startoff = XLogSegmentOffset(recptr,
+				             GetGUCInt(GUC_wal_segment_size));
 
-		if (startoff + nbytes > wal_segment_size)
-			segbytes = wal_segment_size - startoff;
+		if (startoff + nbytes > GetGUCInt(GUC_wal_segment_size))
+			segbytes = GetGUCInt(GUC_wal_segment_size) - startoff;
 		else
 			segbytes = nbytes;
 
@@ -938,7 +941,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		/*
 		 * Measure I/O timing to write WAL data, for pg_stat_io.
 		 */
-		start = pgstat_prepare_io_time(track_wal_io_timing);
+		start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 		pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
 		byteswritten = pg_pwrite(recvFile, buf, segbytes, (pgoff_t) startoff);
@@ -957,7 +960,8 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 				errno = ENOSPC;
 
 			save_errno = errno;
-			XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
+			XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+				     GetGUCInt(GUC_wal_segment_size));
 			errno = save_errno;
 			ereport(PANIC,
 					(errcode_for_file_access(),
@@ -992,7 +996,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 	 * archiving of the segment will be delayed until any data in the next
 	 * segment is received and written.
 	 */
-	if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, wal_segment_size))
+	if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)))
 		XLogWalRcvClose(recptr, tli);
 }
 
@@ -1040,7 +1044,7 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 			WalSndWakeup(true, false);
 
 		/* Report XLOG streaming progress in PS display */
-		if (update_process_title)
+		if (GetGUCBool(GUC_update_process_title))
 		{
 			char		activitymsg[50];
 
@@ -1071,7 +1075,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 {
 	char		xlogfname[MAXFNAMELEN];
 
-	Assert(recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, wal_segment_size));
+	Assert(recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)));
 	Assert(tli != 0);
 
 	/*
@@ -1080,7 +1084,8 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 	 */
 	XLogWalRcvFlush(false, tli);
 
-	XLogFileName(xlogfname, recvFileTLI, recvSegNo, wal_segment_size);
+	XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+		     GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * XLOG segment files will be re-read by recovery in startup process soon,
@@ -1097,7 +1102,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 	 * Create .done file forcibly to prevent the streamed segment from being
 	 * archived later.
 	 */
-	if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+	if (GetGUCEnum(GUC_XLogArchiveMode) != ARCHIVE_MODE_ALWAYS)
 		XLogArchiveForceDone(xlogfname);
 	else
 		XLogArchiveNotify(xlogfname);
@@ -1141,7 +1146,7 @@ XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply)
 	 * If the user doesn't want status to be reported to the primary, be sure
 	 * to exit before doing anything at all.
 	 */
-	if (!force && wal_receiver_status_interval <= 0)
+	if (!force && GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
 		return;
 
 	/* Get current timestamp. */
@@ -1219,7 +1224,7 @@ XLogWalRcvSendHSFeedback(bool immed)
 	 * If the user doesn't want status to be reported to the primary, be sure
 	 * to exit before doing anything at all.
 	 */
-	if ((wal_receiver_status_interval <= 0 || !hot_standby_feedback) &&
+	if ((GetGUCInt(GUC_wal_receiver_status_interval) <= 0 || !GetGUCBool(GUC_hot_standby_feedback)) &&
 		!primary_has_standby_xmin)
 		return;
 
@@ -1250,7 +1255,7 @@ XLogWalRcvSendHSFeedback(bool immed)
 	 * Make the expensive call to get the oldest xmin once we are certain
 	 * everything else has been checked.
 	 */
-	if (hot_standby_feedback)
+	if (GetGUCBool(GUC_hot_standby_feedback))
 	{
 		GetReplicationHorizons(&xmin, &catalog_xmin);
 	}
@@ -1355,28 +1360,32 @@ WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now)
 	switch (reason)
 	{
 		case WALRCV_WAKEUP_TERMINATE:
-			if (wal_receiver_timeout <= 0)
+			if (GetGUCInt(GUC_wal_receiver_timeout) <= 0)
 				wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusMilliseconds(now, wal_receiver_timeout);
+				wakeup[reason] = TimestampTzPlusMilliseconds(now,
+									     GetGUCInt(GUC_wal_receiver_timeout));
 			break;
 		case WALRCV_WAKEUP_PING:
-			if (wal_receiver_timeout <= 0)
+			if (GetGUCInt(GUC_wal_receiver_timeout) <= 0)
 				wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusMilliseconds(now, wal_receiver_timeout / 2);
+				wakeup[reason] = TimestampTzPlusMilliseconds(now,
+									     GetGUCInt(GUC_wal_receiver_timeout) / 2);
 			break;
 		case WALRCV_WAKEUP_HSFEEDBACK:
-			if (!hot_standby_feedback || wal_receiver_status_interval <= 0)
+			if (!GetGUCBool(GUC_hot_standby_feedback) || GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
 				wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusSeconds(now, wal_receiver_status_interval);
+				wakeup[reason] = TimestampTzPlusSeconds(now,
+									GetGUCInt(GUC_wal_receiver_status_interval));
 			break;
 		case WALRCV_WAKEUP_REPLY:
-			if (wal_receiver_status_interval <= 0)
+			if (GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
 				wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusSeconds(now, wal_receiver_status_interval);
+				wakeup[reason] = TimestampTzPlusSeconds(now,
+									GetGUCInt(GUC_wal_receiver_status_interval));
 			break;
 			/* there's intentionally no default: here */
 	}

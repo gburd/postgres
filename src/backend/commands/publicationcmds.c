@@ -1001,7 +1001,7 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 	 * logical decoding is automatically enabled up on a logical slot
 	 * creation.
 	 */
-	if (wal_level < WAL_LEVEL_REPLICA)
+	if (GetGUCEnum(GUC_wal_level) < WAL_LEVEL_REPLICA)
 		ereport(WARNING,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("logical decoding must be enabled to publish logical changes"),

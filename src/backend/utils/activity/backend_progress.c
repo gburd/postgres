@@ -29,7 +29,7 @@ pgstat_progress_start_command(ProgressCommandType cmdtype, Oid relid)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
@@ -52,7 +52,7 @@ pgstat_progress_update_param(int index, int64 val)
 
 	Assert(index >= 0 && index < PGSTAT_NUM_PROGRESS_PARAM);
 
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
@@ -73,7 +73,7 @@ pgstat_progress_incr_param(int index, int64 incr)
 
 	Assert(index >= 0 && index < PGSTAT_NUM_PROGRESS_PARAM);
 
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
@@ -125,7 +125,7 @@ pgstat_progress_update_multi_param(int nparam, const int *index,
 	volatile PgBackendStatus *beentry = MyBEEntry;
 	int			i;
 
-	if (!beentry || !pgstat_track_activities || nparam == 0)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities) || nparam == 0)
 		return;
 
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
@@ -152,7 +152,7 @@ pgstat_progress_end_command(void)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	if (beentry->st_progress_command == PROGRESS_COMMAND_INVALID)

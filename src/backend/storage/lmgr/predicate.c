@@ -261,7 +261,7 @@
 	(&MainLWLockArray[PREDICATELOCK_MANAGER_LWLOCK_OFFSET + (i)].lock)
 
 #define NPREDICATELOCKTARGETENTS() \
-	mul_size(max_predicate_locks_per_xact, add_size(MaxBackends, max_prepared_xacts))
+	mul_size(GetGUCInt(GUC_max_predicate_locks_per_xact), add_size(MaxBackends, GetGUCInt(GUC_max_prepared_xacts)))
 
 #define SxactIsOnFinishedList(sxact) (!dlist_node_is_detached(&(sxact)->finishedLink))
 
@@ -1489,7 +1489,7 @@ GetSafeSnapshot(Snapshot origSnapshot)
 {
 	Snapshot	snapshot;
 
-	Assert(XactReadOnly && XactDeferrable);
+	Assert(GetGUCBool(GUC_XactReadOnly) && GetGUCBool(GUC_XactDeferrable));
 
 	while (true)
 	{
@@ -1631,7 +1631,7 @@ GetSerializableTransactionSnapshot(Snapshot snapshot)
 	 * DEFERRABLE transactions -- we can wait for a suitable snapshot and
 	 * thereby avoid all SSI overhead once it's running.
 	 */
-	if (XactReadOnly && XactDeferrable)
+	if (GetGUCBool(GUC_XactReadOnly) && GetGUCBool(GUC_XactDeferrable))
 		return GetSafeSnapshot(snapshot);
 
 	return GetSerializableTransactionSnapshotInt(snapshot,
@@ -1672,7 +1672,7 @@ SetSerializableTransactionSnapshot(Snapshot snapshot,
 	 * we're using the snap we're told to.  (XXX instead of throwing an error,
 	 * we could just ignore the XactDeferrable flag?)
 	 */
-	if (XactReadOnly && XactDeferrable)
+	if (GetGUCBool(GUC_XactReadOnly) && GetGUCBool(GUC_XactDeferrable))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("a snapshot-importing transaction must not be READ ONLY DEFERRABLE")));
@@ -1771,7 +1771,7 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	 * overlap this one, but it can't meet the other condition of overlapping
 	 * a transaction which committed before this one started.
 	 */
-	if (XactReadOnly && PredXact->WritableSxactCount == 0)
+	if (GetGUCBool(GUC_XactReadOnly) && PredXact->WritableSxactCount == 0)
 	{
 		ReleasePredXact(sxact);
 		LWLockRelease(SerializableXactHashLock);
@@ -1794,7 +1794,7 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	dlist_init(&sxact->predicateLocks);
 	dlist_node_init(&sxact->finishedLink);
 	sxact->flags = 0;
-	if (XactReadOnly)
+	if (GetGUCBool(GUC_XactReadOnly))
 	{
 		dlist_iter	iter;
 
@@ -1835,7 +1835,7 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	{
 		++(PredXact->WritableSxactCount);
 		Assert(PredXact->WritableSxactCount <=
-			   (MaxBackends + max_prepared_xacts));
+			   (MaxBackends + GetGUCInt(GUC_max_prepared_xacts)));
 	}
 
 	/* Maintain serializable global xmin info. */
@@ -1876,7 +1876,7 @@ CreateLocalPredicateLockHash(void)
 	hash_ctl.keysize = sizeof(PREDICATELOCKTARGETTAG);
 	hash_ctl.entrysize = sizeof(LOCALPREDICATELOCK);
 	LocalPredicateLockHash = hash_create("Local predicate lock",
-										 max_predicate_locks_per_xact,
+										 GetGUCInt(GUC_max_predicate_locks_per_xact),
 										 &hash_ctl,
 										 HASH_ELEM | HASH_BLOBS);
 }
@@ -2221,13 +2221,13 @@ MaxPredicateChildLocks(const PREDICATELOCKTARGETTAG *tag)
 	switch (GET_PREDICATELOCKTARGETTAG_TYPE(*tag))
 	{
 		case PREDLOCKTAG_RELATION:
-			return max_predicate_locks_per_relation < 0
-				? (max_predicate_locks_per_xact
-				   / (-max_predicate_locks_per_relation)) - 1
-				: max_predicate_locks_per_relation;
+			return GetGUCInt(GUC_max_predicate_locks_per_relation) < 0
+				? (GetGUCInt(GUC_max_predicate_locks_per_xact)
+					   / (-GetGUCInt(GUC_max_predicate_locks_per_relation))) - 1
+				: GetGUCInt(GUC_max_predicate_locks_per_relation);
 
 		case PREDLOCKTAG_PAGE:
-			return max_predicate_locks_per_page;
+			return GetGUCInt(GUC_max_predicate_locks_per_page);
 
 		case PREDLOCKTAG_TUPLE:
 
@@ -4898,7 +4898,7 @@ predicatelock_twophase_recover(FullTransactionId fxid, uint16 info,
 		{
 			++(PredXact->WritableSxactCount);
 			Assert(PredXact->WritableSxactCount <=
-				   (MaxBackends + max_prepared_xacts));
+				   (MaxBackends + GetGUCInt(GUC_max_prepared_xacts)));
 		}
 
 		/*

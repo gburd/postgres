@@ -411,7 +411,7 @@ bool
 AbsorbDataChecksumsBarrier(ProcSignalBarrierType barrier)
 {
 	uint32		target_state;
-	int			current = data_checksums;
+	int			current = GetGUCEnum(GUC_data_checksums);
 	bool		found = false;
 
 	/*
@@ -1496,7 +1496,7 @@ DataChecksumsWorkerMain(Datum arg)
 	Assert(DataChecksumState->operation == ENABLE_DATACHECKSUMS);
 	VacuumCostDelay = DataChecksumState->cost_delay;
 	VacuumCostLimit = DataChecksumState->cost_limit;
-	VacuumCostActive = (VacuumCostDelay > 0);
+	VacuumCostActive = (GetGUCReal(GUC_VacuumCostDelay) > 0);
 	VacuumCostBalance = 0;
 	VacuumCostPageHit = 0;
 	VacuumCostPageMiss = 0;

@@ -1079,7 +1079,7 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	MemoryContext tmpcxt = NULL;
 	MemoryContext oldcxt = NULL;
 
-	if (RECOVER_RELATION_BUILD_MEMORY || debug_discard_caches > 0)
+	if (RECOVER_RELATION_BUILD_MEMORY || GetGUCInt(GUC_debug_discard_caches) > 0)
 	{
 		tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
 									   "RelationBuildDesc workspace",
@@ -1707,7 +1707,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 	 * expense, we enable it only for high values of debug_discard_caches.
 	 */
 #ifdef DISCARD_CACHES_ENABLED
-	if (debug_discard_caches > 2)
+	if (GetGUCInt(GUC_debug_discard_caches) > 2)
 		opcentry->valid = false;
 #endif
 

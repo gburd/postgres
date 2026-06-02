@@ -451,7 +451,7 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 
 		/* Update RLS info as well. */
 		plansource->rewriteRoleId = GetUserId();
-		plansource->rewriteRowSecurity = row_security;
+		plansource->rewriteRowSecurity = GetGUCBool(GUC_row_security);
 
 		/*
 		 * Also save the current search_path in the query_context.  (This
@@ -730,7 +730,7 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	 */
 	if (plansource->is_valid && plansource->dependsOnRLS &&
 		(plansource->rewriteRoleId != GetUserId() ||
-		 plansource->rewriteRowSecurity != row_security))
+		 plansource->rewriteRowSecurity != GetGUCBool(GUC_row_security)))
 		plansource->is_valid = false;
 
 	/*
@@ -907,7 +907,7 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 
 	/* Update RLS info as well. */
 	plansource->rewriteRoleId = GetUserId();
-	plansource->rewriteRowSecurity = row_security;
+	plansource->rewriteRowSecurity = GetGUCBool(GUC_row_security);
 
 	/*
 	 * Also save the current search_path in the query_context.  (This should
@@ -1188,9 +1188,9 @@ choose_custom_plan(CachedPlanSource *plansource, ParamListInfo boundParams)
 		return false;
 
 	/* Let settings force the decision */
-	if (plan_cache_mode == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN)
+	if (GetGUCEnum(GUC_plan_cache_mode) == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN)
 		return false;
-	if (plan_cache_mode == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN)
+	if (GetGUCEnum(GUC_plan_cache_mode) == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN)
 		return true;
 
 	/* See if caller wants to force the decision */
@@ -1268,7 +1268,7 @@ cached_plan_cost(CachedPlan *plan, bool include_planner)
 			 */
 			int			nrelations = list_length(plannedstmt->rtable);
 
-			result += 1000.0 * cpu_operator_cost * (nrelations + 1);
+			result += 1000.0 * GetGUCReal(GUC_cpu_operator_cost) * (nrelations + 1);
 		}
 	}
 

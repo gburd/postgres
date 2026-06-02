@@ -56,7 +56,7 @@ toast_compress_datum(Datum value, char cmethod)
 
 	/* If the compression method is not valid, use the current default */
 	if (!CompressionMethodIsValid(cmethod))
-		cmethod = default_toast_compression;
+		cmethod = GetGUCEnum(GUC_default_toast_compression);
 
 	/*
 	 * Call appropriate compression routine for the compression method.

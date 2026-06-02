@@ -262,7 +262,7 @@ DefineQueryRewrite(const char *rulename,
 						RelationGetRelationName(event_relation)),
 				 errdetail_relkind_not_supported(event_relation->rd_rel->relkind)));
 
-	if (!allowSystemTableMods && IsSystemRelation(event_relation))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(event_relation))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -772,7 +772,7 @@ RangeVarCallbackForRenameRule(const RangeVar *rv, Oid relid, Oid oldrelid,
 				 errmsg("relation \"%s\" cannot have rules", rv->relname),
 				 errdetail_relkind_not_supported(form->relkind)));
 
-	if (!allowSystemTableMods && IsSystemClass(relid, form))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relid, form))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",

@@ -80,7 +80,7 @@ RangeVarCallbackForPolicy(const RangeVar *rv, Oid relid, Oid oldrelid,
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
 
 	/* No system table modifications unless explicitly allowed. */
-	if (!allowSystemTableMods && IsSystemClass(relid, classform))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relid, classform))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -373,7 +373,7 @@ RemovePolicyById(Oid policy_id)
 				 errmsg("\"%s\" is not a table",
 						RelationGetRelationName(rel))));
 
-	if (!allowSystemTableMods && IsSystemRelation(rel))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",

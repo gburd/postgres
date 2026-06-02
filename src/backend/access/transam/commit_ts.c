@@ -515,10 +515,11 @@ static int
 CommitTsShmemBuffers(void)
 {
 	/* auto-tune based on shared buffers */
-	if (commit_timestamp_buffers == 0)
+	if (GetGUCInt(GUC_commit_timestamp_buffers) == 0)
 		return SimpleLruAutotuneBuffers(512, 1024);
 
-	return Min(Max(16, commit_timestamp_buffers), SLRU_MAX_ALLOWED_BUFFERS);
+	return Min(Max(16, GetGUCInt(GUC_commit_timestamp_buffers)),
+		   SLRU_MAX_ALLOWED_BUFFERS);
 }
 
 /*
@@ -529,7 +530,7 @@ static void
 CommitTsShmemRequest(void *arg)
 {
 	/* If auto-tuning is requested, now is the time to do it */
-	if (commit_timestamp_buffers == 0)
+	if (GetGUCInt(GUC_commit_timestamp_buffers) == 0)
 	{
 		char		buf[32];
 
@@ -543,11 +544,11 @@ CommitTsShmemRequest(void *arg)
 		 * the config file, then PGC_S_DYNAMIC_DEFAULT will fail to override
 		 * that and we must force the matter with PGC_S_OVERRIDE.
 		 */
-		if (commit_timestamp_buffers == 0)	/* failed to apply it? */
+		if (GetGUCInt(GUC_commit_timestamp_buffers) == 0)	/* failed to apply it? */
 			SetConfigOption("commit_timestamp_buffers", buf, PGC_POSTMASTER,
 							PGC_S_OVERRIDE);
 	}
-	Assert(commit_timestamp_buffers != 0);
+	Assert(GetGUCInt(GUC_commit_timestamp_buffers) != 0);
 	SimpleLruRequest(.desc = &CommitTsSlruDesc,
 					 .name = "commit_timestamp",
 					 .Dir = "pg_commit_ts",
@@ -631,7 +632,7 @@ CompleteCommitTsInitialization(void)
 	 * control file contents at the beginning of recovery or when a
 	 * XLOG_PARAMETER_CHANGE is replayed.
 	 */
-	if (!track_commit_timestamp)
+	if (!GetGUCBool(GUC_track_commit_timestamp))
 		DeactivateCommitTs();
 	else
 		ActivateCommitTs();

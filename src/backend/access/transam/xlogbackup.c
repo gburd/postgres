@@ -41,8 +41,10 @@ build_backup_content(BackupState *state, bool ishistoryfile)
 	pg_strftime(startstrbuf, sizeof(startstrbuf), "%Y-%m-%d %H:%M:%S %Z",
 				pg_localtime(&state->starttime, log_timezone));
 
-	XLByteToSeg(state->startpoint, startsegno, wal_segment_size);
-	XLogFileName(startxlogfile, state->starttli, startsegno, wal_segment_size);
+	XLByteToSeg(state->startpoint, startsegno,
+		    GetGUCInt(GUC_wal_segment_size));
+	XLogFileName(startxlogfile, state->starttli, startsegno,
+		     GetGUCInt(GUC_wal_segment_size));
 	appendStringInfo(&result, "START WAL LOCATION: %X/%08X (file %s)\n",
 					 LSN_FORMAT_ARGS(state->startpoint), startxlogfile);
 
@@ -51,8 +53,10 @@ build_backup_content(BackupState *state, bool ishistoryfile)
 		char		stopxlogfile[MAXFNAMELEN];	/* backup stop WAL file */
 		XLogSegNo	stopsegno;
 
-		XLByteToSeg(state->stoppoint, stopsegno, wal_segment_size);
-		XLogFileName(stopxlogfile, state->stoptli, stopsegno, wal_segment_size);
+		XLByteToSeg(state->stoppoint, stopsegno,
+			    GetGUCInt(GUC_wal_segment_size));
+		XLogFileName(stopxlogfile, state->stoptli, stopsegno,
+			     GetGUCInt(GUC_wal_segment_size));
 		appendStringInfo(&result, "STOP WAL LOCATION: %X/%08X (file %s)\n",
 						 LSN_FORMAT_ARGS(state->stoppoint), stopxlogfile);
 	}

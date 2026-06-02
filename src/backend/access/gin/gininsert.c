@@ -463,7 +463,7 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 							   values[i], isnull[i], tid);
 
 	/* If we've maxed out our available memory, dump everything to the index */
-	if (buildstate->accum.allocatedMemory >= maintenance_work_mem * (Size) 1024)
+	if (buildstate->accum.allocatedMemory >= GetGUCInt(GUC_maintenance_work_mem) * (Size) 1024)
 	{
 		ItemPointerData *list;
 		Datum		key;
@@ -743,7 +743,8 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 		state->bs_sortstate =
 			tuplesort_begin_index_gin(heap, index,
-									  maintenance_work_mem, coordinate,
+									  GetGUCInt(GUC_maintenance_work_mem),
+									  coordinate,
 									  TUPLESORT_NONE);
 
 		/* scan the relation in parallel and merge per-worker results */
@@ -1828,7 +1829,7 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / ginleader->nparticipanttuplesorts;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / ginleader->nparticipanttuplesorts;
 
 	/* Perform work common to all participants */
 	_gin_parallel_scan_and_build(buildstate, ginleader->ginshared,
@@ -2193,7 +2194,7 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / ginshared->scantuplesortstates;
 
 	_gin_parallel_scan_and_build(&buildstate, ginshared, sharedsort,
 								 heapRel, indexRel, sortmem, false);

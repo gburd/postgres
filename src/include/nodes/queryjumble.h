@@ -106,9 +106,9 @@ extern PGDLLIMPORT bool query_id_enabled;
 static inline bool
 IsQueryIdEnabled(void)
 {
-	if (compute_query_id == COMPUTE_QUERY_ID_OFF)
+	if (GetGUCEnum(GUC_compute_query_id) == COMPUTE_QUERY_ID_OFF)
 		return false;
-	if (compute_query_id == COMPUTE_QUERY_ID_ON)
+	if (GetGUCEnum(GUC_compute_query_id) == COMPUTE_QUERY_ID_ON)
 		return true;
 	return query_id_enabled;
 }

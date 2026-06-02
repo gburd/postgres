@@ -2811,7 +2811,7 @@ ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args, Oid funcid,
 	}
 
 	/* Insert appropriate opcode depending on strictness and stats level */
-	if (pgstat_track_functions <= flinfo->fn_stats)
+	if (GetGUCEnum(GUC_pgstat_track_functions) <= flinfo->fn_stats)
 	{
 		if (flinfo->fn_strict && nargs > 0)
 		{

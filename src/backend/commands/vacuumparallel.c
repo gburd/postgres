@@ -636,9 +636,9 @@ parallel_vacuum_set_cost_parameters(PVSharedCostParams *params)
 {
 	params->cost_delay = vacuum_cost_delay;
 	params->cost_limit = vacuum_cost_limit;
-	params->cost_page_dirty = VacuumCostPageDirty;
-	params->cost_page_hit = VacuumCostPageHit;
-	params->cost_page_miss = VacuumCostPageMiss;
+	params->cost_page_dirty = GetGUCInt(GUC_VacuumCostPageDirty);
+	params->cost_page_hit = GetGUCInt(GUC_VacuumCostPageHit);
+	params->cost_page_miss = GetGUCInt(GUC_VacuumCostPageMiss);
 }
 
 /*
@@ -681,9 +681,9 @@ parallel_vacuum_update_shared_delay_params(void)
 		 "parallel autovacuum worker updated cost params: cost_limit=%d, cost_delay=%g, cost_page_miss=%d, cost_page_dirty=%d, cost_page_hit=%d",
 		 vacuum_cost_limit,
 		 vacuum_cost_delay,
-		 VacuumCostPageMiss,
-		 VacuumCostPageDirty,
-		 VacuumCostPageHit);
+		 GetGUCInt(GUC_VacuumCostPageMiss),
+		 GetGUCInt(GUC_VacuumCostPageDirty),
+		 GetGUCInt(GUC_VacuumCostPageHit));
 }
 
 /*
@@ -708,9 +708,9 @@ parallel_vacuum_propagate_shared_delay_params(void)
 	 */
 	if (vacuum_cost_delay == pv_shared_cost_params->cost_delay &&
 		vacuum_cost_limit == pv_shared_cost_params->cost_limit &&
-		VacuumCostPageDirty == pv_shared_cost_params->cost_page_dirty &&
-		VacuumCostPageHit == pv_shared_cost_params->cost_page_hit &&
-		VacuumCostPageMiss == pv_shared_cost_params->cost_page_miss)
+		GetGUCInt(GUC_VacuumCostPageDirty) == pv_shared_cost_params->cost_page_dirty &&
+		GetGUCInt(GUC_VacuumCostPageHit) == pv_shared_cost_params->cost_page_hit &&
+		GetGUCInt(GUC_VacuumCostPageMiss) == pv_shared_cost_params->cost_page_miss)
 		return;
 
 	/* Update the shared delay parameters */
@@ -749,8 +749,8 @@ parallel_vacuum_compute_workers(Relation *indrels, int nindexes, int nrequested,
 	int			max_workers;
 
 	max_workers = AmAutoVacuumWorkerProcess() ?
-		autovacuum_max_parallel_workers :
-		max_parallel_maintenance_workers;
+		GetGUCInt(GUC_autovacuum_max_parallel_workers) :
+		GetGUCInt(GUC_max_parallel_maintenance_workers);
 
 	/*
 	 * We don't allow performing parallel operation in standalone backend or
@@ -769,7 +769,7 @@ parallel_vacuum_compute_workers(Relation *indrels, int nindexes, int nrequested,
 
 		/* Skip index that is not a suitable target for parallel index vacuum */
 		if (vacoptions == VACUUM_OPTION_NO_PARALLEL ||
-			RelationGetNumberOfBlocks(indrel) < min_parallel_index_scan_size)
+			RelationGetNumberOfBlocks(indrel) < GetGUCInt(GUC_min_parallel_index_scan_size))
 			continue;
 
 		will_parallel_vacuum[i] = true;
@@ -1317,7 +1317,7 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 						  &wal_usage[ParallelWorkerNumber]);
 
 	/* Report any remaining cost-based vacuum delay time */
-	if (track_cost_delay_timing)
+	if (GetGUCBool(GUC_track_cost_delay_timing))
 		pgstat_progress_parallel_incr_param(PROGRESS_VACUUM_DELAY_TIME,
 											parallel_vacuum_worker_delay_ns);
 

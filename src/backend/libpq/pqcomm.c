@@ -642,7 +642,7 @@ ListenServerPort(int family, const char *hostName, unsigned short portNumber,
 		 * to use a value similar to the maximum number of child processes
 		 * that the postmaster will permit.
 		 */
-		maxconn = MaxConnections * 2;
+		maxconn = GetGUCInt(GUC_MaxConnections) * 2;
 
 		err = listen(fd, maxconn);
 		if (err < 0)
@@ -730,8 +730,8 @@ Setup_AF_UNIX(const char *sock_path)
 	 * before we listen() to avoid a window where unwanted connections could
 	 * get accepted.
 	 */
-	Assert(Unix_socket_group);
-	if (Unix_socket_group[0] != '\0')
+	Assert(GetGUCString(GUC_Unix_socket_group));
+	if (GetGUCString(GUC_Unix_socket_group)[0] != '\0')
 	{
 #ifdef WIN32
 		elog(WARNING, "configuration item \"unix_socket_group\" is not supported on this platform");
@@ -740,7 +740,8 @@ Setup_AF_UNIX(const char *sock_path)
 		unsigned long val;
 		gid_t		gid;
 
-		val = strtoul(Unix_socket_group, &endptr, 10);
+		val = strtoul(GetGUCString(GUC_Unix_socket_group), &endptr,
+			      10);
 		if (*endptr == '\0')
 		{						/* numeric group id */
 			gid = val;
@@ -749,12 +750,12 @@ Setup_AF_UNIX(const char *sock_path)
 		{						/* convert group name to id */
 			struct group *gr;
 
-			gr = getgrnam(Unix_socket_group);
+			gr = getgrnam(GetGUCString(GUC_Unix_socket_group));
 			if (!gr)
 			{
 				ereport(LOG,
 						(errmsg("group \"%s\" does not exist",
-								Unix_socket_group)));
+								GetGUCString(GUC_Unix_socket_group))));
 				return STATUS_ERROR;
 			}
 			gid = gr->gr_gid;
@@ -770,7 +771,7 @@ Setup_AF_UNIX(const char *sock_path)
 #endif
 	}
 
-	if (chmod(sock_path, Unix_socket_permissions) == -1)
+	if (chmod(sock_path, GetGUCInt(GUC_Unix_socket_permissions)) == -1)
 	{
 		ereport(LOG,
 				(errcode_for_file_access(),

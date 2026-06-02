@@ -327,7 +327,7 @@ init_ps_display(const char *fixed_part)
 #define PROGRAM_NAME_PREFIX "postgres: "
 #endif
 
-	if (*cluster_name == '\0')
+	if (*GetGUCString(GUC_cluster_name) == '\0')
 	{
 		snprintf(ps_buffer, ps_buffer_size,
 				 PROGRAM_NAME_PREFIX "%s ",
@@ -337,7 +337,7 @@ init_ps_display(const char *fixed_part)
 	{
 		snprintf(ps_buffer, ps_buffer_size,
 				 PROGRAM_NAME_PREFIX "%s: %s ",
-				 cluster_name, fixed_part);
+				 GetGUCString(GUC_cluster_name), fixed_part);
 	}
 
 	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
@@ -345,7 +345,7 @@ init_ps_display(const char *fixed_part)
 	/*
 	 * On the first run, force the update.
 	 */
-	save_update_process_title = update_process_title;
+	save_update_process_title = GetGUCBool(GUC_update_process_title);
 	update_process_title = true;
 	set_ps_display("");
 	update_process_title = save_update_process_title;
@@ -362,7 +362,7 @@ static bool
 update_ps_display_precheck(void)
 {
 	/* update_process_title=off disables updates */
-	if (!update_process_title)
+	if (!GetGUCBool(GUC_update_process_title))
 		return false;
 
 	/* no ps display for stand-alone backend */

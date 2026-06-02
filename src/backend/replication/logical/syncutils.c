@@ -124,14 +124,14 @@ launch_sync_worker(LogicalRepWorkerType wtype, int nsyncworkers, Oid relid,
 		   (wtype == WORKERTYPE_SEQUENCESYNC && !OidIsValid(relid)));
 
 	/* If there is a free sync worker slot, start a new sync worker */
-	if (nsyncworkers >= max_sync_workers_per_subscription)
+	if (nsyncworkers >= GetGUCInt(GUC_max_sync_workers_per_subscription))
 		return;
 
 	now = GetCurrentTimestamp();
 
 	if (!(*last_start_time) ||
 		TimestampDifferenceExceeds(*last_start_time, now,
-								   wal_retrieve_retry_interval))
+								   GetGUCInt(GUC_wal_retrieve_retry_interval)))
 	{
 		/*
 		 * Set the last_start_time even if we fail to start the worker, so

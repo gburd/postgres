@@ -1259,7 +1259,8 @@ DefineIndex(ParseState *pstate,
 					 collationIds, opclassIds, opclassOptions,
 					 coloptions, NULL, reloptions,
 					 flags, constr_flags,
-					 allowSystemTableMods, !check_rights,
+					 GetGUCBool(GUC_allowSystemTableMods),
+					 !check_rights,
 					 &createdConstraintId);
 
 	ObjectAddressSet(address, RelationRelationId, indexRelationId);

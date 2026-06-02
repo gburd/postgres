@@ -124,24 +124,24 @@ StartupProcShutdownHandler(SIGNAL_ARGS)
 static void
 StartupRereadConfig(void)
 {
-	char	   *conninfo = pstrdup(PrimaryConnInfo);
-	char	   *slotname = pstrdup(PrimarySlotName);
-	bool		tempSlot = wal_receiver_create_temp_slot;
+	char	   *conninfo = pstrdup(GetGUCString(GUC_PrimaryConnInfo));
+	char	   *slotname = pstrdup(GetGUCString(GUC_PrimarySlotName));
+	bool		tempSlot = GetGUCBool(GUC_wal_receiver_create_temp_slot);
 	bool		conninfoChanged;
 	bool		slotnameChanged;
 	bool		tempSlotChanged = false;
 
 	ProcessConfigFile(PGC_SIGHUP);
 
-	conninfoChanged = strcmp(conninfo, PrimaryConnInfo) != 0;
-	slotnameChanged = strcmp(slotname, PrimarySlotName) != 0;
+	conninfoChanged = strcmp(conninfo, GetGUCString(GUC_PrimaryConnInfo)) != 0;
+	slotnameChanged = strcmp(slotname, GetGUCString(GUC_PrimarySlotName)) != 0;
 
 	/*
 	 * wal_receiver_create_temp_slot is used only when we have no slot
 	 * configured.  We do not need to track this change if it has no effect.
 	 */
-	if (!slotnameChanged && strcmp(PrimarySlotName, "") == 0)
-		tempSlotChanged = tempSlot != wal_receiver_create_temp_slot;
+	if (!slotnameChanged && strcmp(GetGUCString(GUC_PrimarySlotName), "") == 0)
+		tempSlotChanged = tempSlot != GetGUCBool(GUC_wal_receiver_create_temp_slot);
 	pfree(conninfo);
 	pfree(slotname);
 
@@ -310,7 +310,7 @@ void
 disable_startup_progress_timeout(void)
 {
 	/* Feature is disabled. */
-	if (log_startup_progress_interval == 0)
+	if (GetGUCInt(GUC_log_startup_progress_interval) == 0)
 		return;
 
 	disable_timeout(STARTUP_PROGRESS_TIMEOUT, false);
@@ -326,14 +326,14 @@ enable_startup_progress_timeout(void)
 	TimestampTz fin_time;
 
 	/* Feature is disabled. */
-	if (log_startup_progress_interval == 0)
+	if (GetGUCInt(GUC_log_startup_progress_interval) == 0)
 		return;
 
 	startup_progress_phase_start_time = GetCurrentTimestamp();
 	fin_time = TimestampTzPlusMilliseconds(startup_progress_phase_start_time,
-										   log_startup_progress_interval);
+										   GetGUCInt(GUC_log_startup_progress_interval));
 	enable_timeout_every(STARTUP_PROGRESS_TIMEOUT, fin_time,
-						 log_startup_progress_interval);
+						 GetGUCInt(GUC_log_startup_progress_interval));
 }
 
 /*
@@ -344,7 +344,7 @@ void
 begin_startup_progress_phase(void)
 {
 	/* Feature is disabled. */
-	if (log_startup_progress_interval == 0)
+	if (GetGUCInt(GUC_log_startup_progress_interval) == 0)
 		return;
 
 	disable_startup_progress_timeout();

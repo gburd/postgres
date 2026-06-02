@@ -4378,7 +4378,8 @@ recomputeNamespacePath(void)
 	if (baseSearchPathValid && namespaceUser == roleid)
 		return;
 
-	entry = cachedNamespacePath(namespace_search_path, roleid);
+	entry = cachedNamespacePath(GetGUCString(GUC_namespace_search_path),
+				    roleid);
 
 	if (baseCreationNamespace == entry->firstNS &&
 		baseTempCreationPending == entry->temp_missing &&

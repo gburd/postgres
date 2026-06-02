@@ -208,10 +208,11 @@ static int
 SUBTRANSShmemBuffers(void)
 {
 	/* auto-tune based on shared buffers */
-	if (subtransaction_buffers == 0)
+	if (GetGUCInt(GUC_subtransaction_buffers) == 0)
 		return SimpleLruAutotuneBuffers(512, 1024);
 
-	return Min(Max(16, subtransaction_buffers), SLRU_MAX_ALLOWED_BUFFERS);
+	return Min(Max(16, GetGUCInt(GUC_subtransaction_buffers)),
+		   SLRU_MAX_ALLOWED_BUFFERS);
 }
 
 
@@ -223,7 +224,7 @@ static void
 SUBTRANSShmemRequest(void *arg)
 {
 	/* If auto-tuning is requested, now is the time to do it */
-	if (subtransaction_buffers == 0)
+	if (GetGUCInt(GUC_subtransaction_buffers) == 0)
 	{
 		char		buf[32];
 
@@ -237,11 +238,11 @@ SUBTRANSShmemRequest(void *arg)
 		 * the config file, then PGC_S_DYNAMIC_DEFAULT will fail to override
 		 * that and we must force the matter with PGC_S_OVERRIDE.
 		 */
-		if (subtransaction_buffers == 0)	/* failed to apply it? */
+		if (GetGUCInt(GUC_subtransaction_buffers) == 0)	/* failed to apply it? */
 			SetConfigOption("subtransaction_buffers", buf, PGC_POSTMASTER,
 							PGC_S_OVERRIDE);
 	}
-	Assert(subtransaction_buffers != 0);
+	Assert(GetGUCInt(GUC_subtransaction_buffers) != 0);
 
 	SimpleLruRequest(.desc = &SubTransSlruDesc,
 					 .name = "subtransaction",

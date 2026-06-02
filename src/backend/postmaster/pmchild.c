@@ -108,10 +108,10 @@ InitPostmasterChildSlots(void)
 	 *
 	 * WAL senders start out as regular backends, so they share the same pool.
 	 */
-	pmchild_pools[B_BACKEND].size = 2 * (MaxConnections + max_wal_senders);
+	pmchild_pools[B_BACKEND].size = 2 * (GetGUCInt(GUC_MaxConnections) + GetGUCInt(GUC_max_wal_senders));
 
-	pmchild_pools[B_AUTOVAC_WORKER].size = autovacuum_worker_slots;
-	pmchild_pools[B_BG_WORKER].size = max_worker_processes;
+	pmchild_pools[B_AUTOVAC_WORKER].size = GetGUCInt(GUC_autovacuum_worker_slots);
+	pmchild_pools[B_BG_WORKER].size = GetGUCInt(GUC_max_worker_processes);
 	pmchild_pools[B_IO_WORKER].size = MAX_IO_WORKERS;
 
 	/*

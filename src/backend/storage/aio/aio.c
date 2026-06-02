@@ -773,7 +773,7 @@ pgaio_io_wait_for_free(void)
 	 * below, but that'd potentially lead us to wait for some IO submitted
 	 * before.
 	 */
-	for (int i = 0; i < io_max_concurrency; i++)
+	for (int i = 0; i < GetGUCInt(GUC_io_max_concurrency); i++)
 	{
 		PgAioHandle *ioh = &pgaio_ctl->io_handles[pgaio_my_backend->io_handle_off + i];
 

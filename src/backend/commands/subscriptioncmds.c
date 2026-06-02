@@ -3036,13 +3036,13 @@ CheckSubDeadTupleRetention(bool check_guc, bool sub_disabled,
 
 	if (retain_dead_tuples)
 	{
-		if (check_guc && wal_level < WAL_LEVEL_REPLICA)
+		if (check_guc && GetGUCEnum(GUC_wal_level) < WAL_LEVEL_REPLICA)
 			ereport(ERROR,
 					errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					errmsg("\"wal_level\" is insufficient to create the replication slot required by retain_dead_tuples"),
 					errhint("\"wal_level\" must be set to \"replica\" or \"logical\" at server start."));
 
-		if (check_guc && !track_commit_timestamp)
+		if (check_guc && !GetGUCBool(GUC_track_commit_timestamp))
 			ereport(WARNING,
 					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					errmsg("commit timestamp and origin data required for detecting conflicts won't be retained"),

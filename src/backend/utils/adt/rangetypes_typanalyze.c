@@ -52,7 +52,7 @@ range_typanalyze(PG_FUNCTION_ARGS)
 	typcache = range_get_typcache(fcinfo, getBaseType(stats->attrtypid));
 
 	if (stats->attstattarget < 0)
-		stats->attstattarget = default_statistics_target;
+		stats->attstattarget = GetGUCInt(GUC_default_statistics_target);
 
 	stats->compute_stats = compute_range_stats;
 	stats->extra_data = typcache;
@@ -78,7 +78,7 @@ multirange_typanalyze(PG_FUNCTION_ARGS)
 	typcache = multirange_get_typcache(fcinfo, getBaseType(stats->attrtypid));
 
 	if (stats->attstattarget < 0)
-		stats->attstattarget = default_statistics_target;
+		stats->attstattarget = GetGUCInt(GUC_default_statistics_target);
 
 	stats->compute_stats = compute_range_stats;
 	stats->extra_data = typcache;

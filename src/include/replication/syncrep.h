@@ -16,7 +16,7 @@
 #include "access/xlogdefs.h"
 
 #define SyncRepRequested() \
-	(max_wal_senders > 0 && synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
+	(GetGUCInt(GUC_max_wal_senders) > 0 && GetGUCEnum(GUC_synchronous_commit) > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
 
 /* SyncRepWaitMode */
 #define SYNC_REP_NO_WAIT		(-1)

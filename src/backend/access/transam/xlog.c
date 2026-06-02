@@ -1030,7 +1030,8 @@ XLogInsertRecord(XLogRecData *rdata,
 			EndPos = StartPos + SizeOfXLogRecord;
 			if (StartPos / XLOG_BLCKSZ != EndPos / XLOG_BLCKSZ)
 			{
-				uint64		offset = XLogSegmentOffset(EndPos, wal_segment_size);
+				uint64		offset = XLogSegmentOffset(EndPos,
+										 GetGUCInt(GUC_wal_segment_size));
 
 				if (offset == EndPos % XLOG_BLCKSZ)
 					EndPos += SizeOfXLogLongPHD;
@@ -1041,7 +1042,7 @@ XLogInsertRecord(XLogRecData *rdata,
 	}
 
 #ifdef WAL_DEBUG
-	if (XLOG_DEBUG)
+	if (GetGUCBool(GUC_XLOG_DEBUG))
 	{
 		static XLogReaderState *debug_reader = NULL;
 		XLogRecord *record;
@@ -1223,7 +1224,7 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 	startbytepos = Insert->CurrBytePos;
 
 	ptr = XLogBytePosToEndRecPtr(startbytepos);
-	if (XLogSegmentOffset(ptr, wal_segment_size) == 0)
+	if (XLogSegmentOffset(ptr, GetGUCInt(GUC_wal_segment_size)) == 0)
 	{
 		SpinLockRelease(&Insert->insertpos_lck);
 		*EndPos = *StartPos = ptr;
@@ -1236,8 +1237,9 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 	*StartPos = XLogBytePosToRecPtr(startbytepos);
 	*EndPos = XLogBytePosToEndRecPtr(endbytepos);
 
-	segleft = wal_segment_size - XLogSegmentOffset(*EndPos, wal_segment_size);
-	if (segleft != wal_segment_size)
+	segleft = GetGUCInt(GUC_wal_segment_size) - XLogSegmentOffset(*EndPos,
+								      GetGUCInt(GUC_wal_segment_size));
+	if (segleft != GetGUCInt(GUC_wal_segment_size))
 	{
 		/* consume the rest of the segment */
 		*EndPos += segleft;
@@ -1250,7 +1252,7 @@ ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos, XLogRecPtr *PrevPtr)
 
 	*PrevPtr = XLogBytePosToRecPtr(prevbytepos);
 
-	Assert(XLogSegmentOffset(*EndPos, wal_segment_size) == 0);
+	Assert(XLogSegmentOffset(*EndPos, GetGUCInt(GUC_wal_segment_size)) == 0);
 	Assert(XLogRecPtrToBytePos(*EndPos) == endbytepos);
 	Assert(XLogRecPtrToBytePos(*StartPos) == startbytepos);
 	Assert(XLogRecPtrToBytePos(*PrevPtr) == prevbytepos);
@@ -1320,7 +1322,7 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 			pagehdr->xlp_info |= XLP_FIRST_IS_CONTRECORD;
 
 			/* skip over the page header */
-			if (XLogSegmentOffset(CurrPos, wal_segment_size) == 0)
+			if (XLogSegmentOffset(CurrPos, GetGUCInt(GUC_wal_segment_size)) == 0)
 			{
 				CurrPos += SizeOfXLogLongPHD;
 				currpos += SizeOfXLogLongPHD;
@@ -1349,13 +1351,13 @@ CopyXLogRecordToWAL(int write_len, bool isLogSwitch, XLogRecData *rdata,
 	 * we also have to consume all the remaining space in the WAL segment.  We
 	 * have already reserved that space, but we need to actually fill it.
 	 */
-	if (isLogSwitch && XLogSegmentOffset(CurrPos, wal_segment_size) != 0)
+	if (isLogSwitch && XLogSegmentOffset(CurrPos, GetGUCInt(GUC_wal_segment_size)) != 0)
 	{
 		/* An xlog-switch record doesn't contain any data besides the header */
 		Assert(write_len == SizeOfXLogRecord);
 
 		/* Assert that we did reserve the right amount of space */
-		Assert(XLogSegmentOffset(EndPos, wal_segment_size) == 0);
+		Assert(XLogSegmentOffset(EndPos, GetGUCInt(GUC_wal_segment_size)) == 0);
 
 		/* Use up all the remaining space on the current page */
 		CurrPos += freespace;
@@ -1732,10 +1734,10 @@ GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 		 * the page header.
 		 */
 		if (ptr % XLOG_BLCKSZ == SizeOfXLogShortPHD &&
-			XLogSegmentOffset(ptr, wal_segment_size) > XLOG_BLCKSZ)
+			XLogSegmentOffset(ptr, GetGUCInt(GUC_wal_segment_size)) > XLOG_BLCKSZ)
 			initializedUpto = ptr - SizeOfXLogShortPHD;
 		else if (ptr % XLOG_BLCKSZ == SizeOfXLogLongPHD &&
-				 XLogSegmentOffset(ptr, wal_segment_size) < XLOG_BLCKSZ)
+				 XLogSegmentOffset(ptr, GetGUCInt(GUC_wal_segment_size)) < XLOG_BLCKSZ)
 			initializedUpto = ptr - SizeOfXLogLongPHD;
 		else
 			initializedUpto = ptr;
@@ -1924,7 +1926,8 @@ XLogBytePosToRecPtr(uint64 bytepos)
 		seg_offset += fullpages * XLOG_BLCKSZ + bytesleft + SizeOfXLogShortPHD;
 	}
 
-	XLogSegNoOffsetToRecPtr(fullsegs, seg_offset, wal_segment_size, result);
+	XLogSegNoOffsetToRecPtr(fullsegs, seg_offset,
+				GetGUCInt(GUC_wal_segment_size), result);
 
 	return result;
 }
@@ -1970,7 +1973,8 @@ XLogBytePosToEndRecPtr(uint64 bytepos)
 			seg_offset += fullpages * XLOG_BLCKSZ + bytesleft + SizeOfXLogShortPHD;
 	}
 
-	XLogSegNoOffsetToRecPtr(fullsegs, seg_offset, wal_segment_size, result);
+	XLogSegNoOffsetToRecPtr(fullsegs, seg_offset,
+				GetGUCInt(GUC_wal_segment_size), result);
 
 	return result;
 }
@@ -1986,9 +1990,9 @@ XLogRecPtrToBytePos(XLogRecPtr ptr)
 	uint32		offset;
 	uint64		result;
 
-	XLByteToSeg(ptr, fullsegs, wal_segment_size);
+	XLByteToSeg(ptr, fullsegs, GetGUCInt(GUC_wal_segment_size));
 
-	fullpages = (XLogSegmentOffset(ptr, wal_segment_size)) / XLOG_BLCKSZ;
+	fullpages = (XLogSegmentOffset(ptr, GetGUCInt(GUC_wal_segment_size))) / XLOG_BLCKSZ;
 	offset = ptr % XLOG_BLCKSZ;
 
 	if (fullpages == 0)
@@ -2207,8 +2211,9 @@ CalculateCheckpointSegments(void)
 	 *	  number of segments consumed between checkpoints.
 	 *-------
 	 */
-	target = (double) ConvertToXSegs(max_wal_size_mb, wal_segment_size) /
-		(1.0 + CheckPointCompletionTarget);
+	target = (double) ConvertToXSegs(GetGUCInt(GUC_max_wal_size_mb),
+				         GetGUCInt(GUC_wal_segment_size)) /
+		(1.0 + GetGUCReal(GUC_CheckPointCompletionTarget));
 
 	/* round down */
 	CheckPointSegments = (int) target;
@@ -2260,10 +2265,12 @@ XLOGfileslop(XLogRecPtr lastredoptr)
 	 * correspond to. Always recycle enough segments to meet the minimum, and
 	 * remove enough segments to stay below the maximum.
 	 */
-	minSegNo = lastredoptr / wal_segment_size +
-		ConvertToXSegs(min_wal_size_mb, wal_segment_size) - 1;
-	maxSegNo = lastredoptr / wal_segment_size +
-		ConvertToXSegs(max_wal_size_mb, wal_segment_size) - 1;
+	minSegNo = lastredoptr / GetGUCInt(GUC_wal_segment_size) +
+		ConvertToXSegs(GetGUCInt(GUC_min_wal_size_mb),
+			       GetGUCInt(GUC_wal_segment_size)) - 1;
+	maxSegNo = lastredoptr / GetGUCInt(GUC_wal_segment_size) +
+		ConvertToXSegs(GetGUCInt(GUC_max_wal_size_mb),
+			       GetGUCInt(GUC_wal_segment_size)) - 1;
 
 	/*
 	 * Between those limits, recycle enough segments to get us through to the
@@ -2273,12 +2280,12 @@ XLOGfileslop(XLogRecPtr lastredoptr)
 	 * system runs steadily consuming CheckPointDistanceEstimate bytes between
 	 * every checkpoint.
 	 */
-	distance = (1.0 + CheckPointCompletionTarget) * CheckPointDistanceEstimate;
+	distance = (1.0 + GetGUCReal(GUC_CheckPointCompletionTarget)) * CheckPointDistanceEstimate;
 	/* add 10% for good measure. */
 	distance *= 1.10;
 
 	recycleSegNo = (XLogSegNo) ceil(((double) lastredoptr + distance) /
-									wal_segment_size);
+									GetGUCInt(GUC_wal_segment_size));
 
 	if (recycleSegNo < minSegNo)
 		recycleSegNo = minSegNo;
@@ -2302,7 +2309,7 @@ XLogCheckpointNeeded(XLogSegNo new_segno)
 {
 	XLogSegNo	old_segno;
 
-	XLByteToSeg(RedoRecPtr, old_segno, wal_segment_size);
+	XLByteToSeg(RedoRecPtr, old_segno, GetGUCInt(GUC_wal_segment_size));
 
 	if (new_segno >= old_segno + (uint64) (CheckPointSegments - 1))
 		return true;
@@ -2379,7 +2386,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		ispartialpage = WriteRqst.Write < LogwrtResult.Write;
 
 		if (!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
-							 wal_segment_size))
+							 GetGUCInt(GUC_wal_segment_size)))
 		{
 			/*
 			 * Switch to new logfile segment.  We cannot have any pending
@@ -2389,7 +2396,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			if (openLogFile >= 0)
 				XLogFileClose();
 			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
-							wal_segment_size);
+							GetGUCInt(GUC_wal_segment_size));
 			openLogTLI = tli;
 
 			/* create/use new log file */
@@ -2401,7 +2408,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		if (openLogFile < 0)
 		{
 			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
-							wal_segment_size);
+							GetGUCInt(GUC_wal_segment_size));
 			openLogTLI = tli;
 			openLogFile = XLogFileOpen(openLogSegNo, tli);
 			ReserveExternalFD();
@@ -2413,7 +2420,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			/* first of group */
 			startidx = curridx;
 			startoffset = XLogSegmentOffset(LogwrtResult.Write - XLOG_BLCKSZ,
-											wal_segment_size);
+											GetGUCInt(GUC_wal_segment_size));
 		}
 		npages++;
 
@@ -2426,7 +2433,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		last_iteration = WriteRqst.Write <= LogwrtResult.Write;
 
 		finishing_seg = !ispartialpage &&
-			(startoffset + npages * XLOG_BLCKSZ) >= wal_segment_size;
+			(startoffset + npages * XLOG_BLCKSZ) >= GetGUCInt(GUC_wal_segment_size);
 
 		if (last_iteration ||
 			curridx == XLogCtl->XLogCacheBlck ||
@@ -2449,7 +2456,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				/*
 				 * Measure I/O timing to write WAL data, for pg_stat_io.
 				 */
-				start = pgstat_prepare_io_time(track_wal_io_timing);
+				start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
 				written = pg_pwrite(openLogFile, from, nleft, startoffset);
@@ -2468,7 +2475,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 
 					save_errno = errno;
 					XLogFileName(xlogfname, tli, openLogSegNo,
-								 wal_segment_size);
+								 GetGUCInt(GUC_wal_segment_size));
 					errno = save_errno;
 					ereport(PANIC,
 							(errcode_for_file_access(),
@@ -2552,17 +2559,17 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		 * have no open file or the wrong one.  However, we do not need to
 		 * fsync more than one file.
 		 */
-		if (wal_sync_method != WAL_SYNC_METHOD_OPEN &&
-			wal_sync_method != WAL_SYNC_METHOD_OPEN_DSYNC)
+		if (GetGUCEnum(GUC_wal_sync_method) != WAL_SYNC_METHOD_OPEN &&
+			GetGUCEnum(GUC_wal_sync_method) != WAL_SYNC_METHOD_OPEN_DSYNC)
 		{
 			if (openLogFile >= 0 &&
 				!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
-								 wal_segment_size))
+								 GetGUCInt(GUC_wal_segment_size)))
 				XLogFileClose();
 			if (openLogFile < 0)
 			{
 				XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
-								wal_segment_size);
+								GetGUCInt(GUC_wal_segment_size));
 				openLogTLI = tli;
 				openLogFile = XLogFileOpen(openLogSegNo, tli);
 				ReserveExternalFD();
@@ -2665,7 +2672,7 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 		flushblocks =
 			WriteRqstPtr / XLOG_BLCKSZ - LogwrtResult.Flush / XLOG_BLCKSZ;
 
-		if (WalWriterFlushAfter == 0 || flushblocks >= WalWriterFlushAfter)
+		if (GetGUCInt(GUC_WalWriterFlushAfter) == 0 || flushblocks >= GetGUCInt(GUC_WalWriterFlushAfter))
 			wakeup = true;
 	}
 
@@ -2822,7 +2829,7 @@ XLogFlush(XLogRecPtr record)
 		return;
 
 #ifdef WAL_DEBUG
-	if (XLOG_DEBUG)
+	if (GetGUCBool(GUC_XLOG_DEBUG))
 		elog(LOG, "xlog flush request %X/%08X; write %X/%08X; flush %X/%08X",
 			 LSN_FORMAT_ARGS(record),
 			 LSN_FORMAT_ARGS(LogwrtResult.Write),
@@ -2899,11 +2906,11 @@ XLogFlush(XLogRecPtr record)
 		 * We do not sleep if enableFsync is not turned on, nor if there are
 		 * fewer than CommitSiblings other backends with active transactions.
 		 */
-		if (CommitDelay > 0 && enableFsync &&
-			MinimumActiveBackends(CommitSiblings))
+		if (GetGUCInt(GUC_CommitDelay) > 0 && GetGUCBool(GUC_enableFsync) &&
+			MinimumActiveBackends(GetGUCInt(GUC_CommitSiblings)))
 		{
 			pgstat_report_wait_start(WAIT_EVENT_COMMIT_DELAY);
-			pg_usleep(CommitDelay);
+			pg_usleep(GetGUCInt(GUC_CommitDelay));
 			pgstat_report_wait_end();
 
 			/*
@@ -3050,7 +3057,7 @@ XLogBackgroundFlush(void)
 		if (openLogFile >= 0)
 		{
 			if (!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
-								 wal_segment_size))
+								 GetGUCInt(GUC_wal_segment_size)))
 			{
 				XLogFileClose();
 			}
@@ -3070,13 +3077,13 @@ XLogBackgroundFlush(void)
 	flushblocks =
 		WriteRqst.Write / XLOG_BLCKSZ - LogwrtResult.Flush / XLOG_BLCKSZ;
 
-	if (WalWriterFlushAfter == 0 || lastflush == 0)
+	if (GetGUCInt(GUC_WalWriterFlushAfter) == 0 || lastflush == 0)
 	{
 		/* first call, or block based limits disabled */
 		WriteRqst.Flush = WriteRqst.Write;
 		lastflush = now;
 	}
-	else if (TimestampDifferenceExceeds(lastflush, now, WalWriterDelay))
+	else if (TimestampDifferenceExceeds(lastflush, now, GetGUCInt(GUC_WalWriterDelay)))
 	{
 		/*
 		 * Flush the writes at least every WalWriterDelay ms. This is
@@ -3086,7 +3093,7 @@ XLogBackgroundFlush(void)
 		WriteRqst.Flush = WriteRqst.Write;
 		lastflush = now;
 	}
-	else if (flushblocks >= WalWriterFlushAfter)
+	else if (flushblocks >= GetGUCInt(GUC_WalWriterFlushAfter))
 	{
 		/* exceeded wal_writer_flush_after blocks, flush */
 		WriteRqst.Flush = WriteRqst.Write;
@@ -3099,7 +3106,7 @@ XLogBackgroundFlush(void)
 	}
 
 #ifdef WAL_DEBUG
-	if (XLOG_DEBUG)
+	if (GetGUCBool(GUC_XLOG_DEBUG))
 		elog(LOG, "xlog bg flush request write %X/%08X; flush: %X/%08X, current is write %X/%08X; flush %X/%08X",
 			 LSN_FORMAT_ARGS(WriteRqst.Write),
 			 LSN_FORMAT_ARGS(WriteRqst.Flush),
@@ -3257,14 +3264,14 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 
 	Assert(logtli != 0);
 
-	XLogFilePath(path, logtli, logsegno, wal_segment_size);
+	XLogFilePath(path, logtli, logsegno, GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * Try to use existent file (checkpoint maker may have created it already)
 	 */
 	*added = false;
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
-					   get_sync_bit(wal_sync_method));
+					   get_sync_bit(GetGUCEnum(GUC_wal_sync_method)));
 	if (fd < 0)
 	{
 		if (errno != ENOENT)
@@ -3298,11 +3305,11 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 				 errmsg("could not create file \"%s\": %m", tmppath)));
 
 	/* Measure I/O timing when initializing segment */
-	io_start = pgstat_prepare_io_time(track_wal_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_WRITE);
 	save_errno = 0;
-	if (wal_init_zero)
+	if (GetGUCBool(GUC_wal_init_zero))
 	{
 		ssize_t		rc;
 
@@ -3315,7 +3322,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * indirect blocks are down on disk.  Therefore, fdatasync(2) or
 		 * O_DSYNC will be sufficient to sync future writes to the log file.
 		 */
-		rc = pg_pwrite_zeros(fd, wal_segment_size, 0);
+		rc = pg_pwrite_zeros(fd, GetGUCInt(GUC_wal_segment_size), 0);
 
 		if (rc < 0)
 			save_errno = errno;
@@ -3327,7 +3334,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * enough.
 		 */
 		errno = 0;
-		if (pg_pwrite(fd, "\0", 1, wal_segment_size - 1) != 1)
+		if (pg_pwrite(fd, "\0", 1, GetGUCInt(GUC_wal_segment_size) - 1) != 1)
 		{
 			/* if write didn't set errno, assume no disk space */
 			save_errno = errno ? errno : ENOSPC;
@@ -3341,7 +3348,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	 */
 	pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_INIT, IOOP_WRITE,
 							io_start, 1,
-							wal_init_zero ? wal_segment_size : 1);
+							GetGUCBool(GUC_wal_init_zero) ? GetGUCInt(GUC_wal_segment_size) : 1);
 
 	if (save_errno)
 	{
@@ -3360,7 +3367,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	}
 
 	/* Measure I/O timing when flushing segment */
-	io_start = pgstat_prepare_io_time(track_wal_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_INIT_SYNC);
 	if (pg_fsync(fd) != 0)
@@ -3446,7 +3453,7 @@ XLogFileInit(XLogSegNo logsegno, TimeLineID logtli)
 
 	/* Now open original target segment (might not be file I just made) */
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
-					   get_sync_bit(wal_sync_method));
+					   get_sync_bit(GetGUCEnum(GUC_wal_sync_method)));
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3484,7 +3491,7 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 	/*
 	 * Open the source file
 	 */
-	XLogFilePath(path, srcTLI, srcsegno, wal_segment_size);
+	XLogFilePath(path, srcTLI, srcsegno, GetGUCInt(GUC_wal_segment_size));
 	srcfd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
 	if (srcfd < 0)
 		ereport(ERROR,
@@ -3508,7 +3515,7 @@ XLogFileCopy(TimeLineID destTLI, XLogSegNo destsegno,
 	/*
 	 * Do the data copying.
 	 */
-	for (nbytes = 0; nbytes < wal_segment_size; nbytes += sizeof(buffer))
+	for (nbytes = 0; nbytes < GetGUCInt(GUC_wal_segment_size); nbytes += sizeof(buffer))
 	{
 		int			nread;
 
@@ -3623,7 +3630,7 @@ InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 
 	Assert(tli != 0);
 
-	XLogFilePath(path, tli, *segno, wal_segment_size);
+	XLogFilePath(path, tli, *segno, GetGUCInt(GUC_wal_segment_size));
 
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	if (!XLogCtl->InstallXLogFileSegmentActive)
@@ -3649,7 +3656,8 @@ InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 				return false;
 			}
 			(*segno)++;
-			XLogFilePath(path, tli, *segno, wal_segment_size);
+			XLogFilePath(path, tli, *segno,
+				     GetGUCInt(GUC_wal_segment_size));
 		}
 	}
 
@@ -3675,10 +3683,10 @@ XLogFileOpen(XLogSegNo segno, TimeLineID tli)
 	char		path[MAXPGPATH];
 	int			fd;
 
-	XLogFilePath(path, tli, segno, wal_segment_size);
+	XLogFilePath(path, tli, segno, GetGUCInt(GUC_wal_segment_size));
 
 	fd = BasicOpenFile(path, O_RDWR | PG_BINARY | O_CLOEXEC |
-					   get_sync_bit(wal_sync_method));
+					   get_sync_bit(GetGUCEnum(GUC_wal_sync_method)));
 	if (fd < 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -3711,7 +3719,8 @@ XLogFileClose(void)
 		char		xlogfname[MAXFNAMELEN];
 		int			save_errno = errno;
 
-		XLogFileName(xlogfname, openLogTLI, openLogSegNo, wal_segment_size);
+		XLogFileName(xlogfname, openLogTLI, openLogSegNo,
+			     GetGUCInt(GUC_wal_segment_size));
 		errno = save_errno;
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -3753,9 +3762,10 @@ PreallocXlogFiles(XLogRecPtr endptr, TimeLineID tli)
 	if (!XLogCtl->InstallXLogFileSegmentActive)
 		return;					/* unlocked check says no */
 
-	XLByteToPrevSeg(endptr, _logSegNo, wal_segment_size);
-	offset = XLogSegmentOffset(endptr - 1, wal_segment_size);
-	if (offset >= (uint32) (0.75 * wal_segment_size))
+	XLByteToPrevSeg(endptr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
+	offset = XLogSegmentOffset(endptr - 1,
+				   GetGUCInt(GUC_wal_segment_size));
+	if (offset >= (uint32) (0.75 * GetGUCInt(GUC_wal_segment_size)))
 	{
 		_logSegNo++;
 		lf = XLogFileInitInternal(_logSegNo, tli, &added, path);
@@ -3792,7 +3802,8 @@ CheckXLogRemoved(XLogSegNo segno, TimeLineID tli)
 	{
 		char		filename[MAXFNAMELEN];
 
-		XLogFileName(filename, tli, segno, wal_segment_size);
+		XLogFileName(filename, tli, segno,
+			     GetGUCInt(GUC_wal_segment_size));
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3844,7 +3855,7 @@ XLogGetOldestSegno(TimeLineID tli)
 
 		/* Parse filename to get TLI and segno. */
 		XLogFromFileName(xlde->d_name, &file_tli, &file_segno,
-						 wal_segment_size);
+						 GetGUCInt(GUC_wal_segment_size));
 
 		/* Ignore anything that's not from the TLI of interest. */
 		if (tli != file_tli)
@@ -3869,7 +3880,8 @@ UpdateLastRemovedPtr(char *filename)
 	uint32		tli;
 	XLogSegNo	segno;
 
-	XLogFromFileName(filename, &tli, &segno, wal_segment_size);
+	XLogFromFileName(filename, &tli, &segno,
+			 GetGUCInt(GUC_wal_segment_size));
 
 	SpinLockAcquire(&XLogCtl->info_lck);
 	if (segno > XLogCtl->lastRemovedSegNo)
@@ -3927,7 +3939,7 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr,
 	XLogSegNo	recycleSegNo;
 
 	/* Initialize info about where to try to recycle to */
-	XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
+	XLByteToSeg(endptr, endlogSegNo, GetGUCInt(GUC_wal_segment_size));
 	recycleSegNo = XLOGfileslop(lastredoptr);
 
 	/*
@@ -3935,7 +3947,7 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr,
 	 * doesn't matter, we ignore that in the comparison. (During recovery,
 	 * InsertTimeLineID isn't set, so we can't use that.)
 	 */
-	XLogFileName(lastoff, 0, segno, wal_segment_size);
+	XLogFileName(lastoff, 0, segno, GetGUCInt(GUC_wal_segment_size));
 
 	elog(DEBUG2, "attempting to remove WAL segments older than log file %s",
 		 lastoff);
@@ -4005,14 +4017,16 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	 * Initialize info about where to begin the work.  This will recycle,
 	 * somewhat arbitrarily, 10 future segments.
 	 */
-	XLByteToPrevSeg(switchpoint, switchLogSegNo, wal_segment_size);
-	XLByteToSeg(switchpoint, endLogSegNo, wal_segment_size);
+	XLByteToPrevSeg(switchpoint, switchLogSegNo,
+			GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(switchpoint, endLogSegNo, GetGUCInt(GUC_wal_segment_size));
 	recycleSegNo = endLogSegNo + 10;
 
 	/*
 	 * Construct a filename of the last segment to be kept.
 	 */
-	XLogFileName(switchseg, newTLI, switchLogSegNo, wal_segment_size);
+	XLogFileName(switchseg, newTLI, switchLogSegNo,
+		     GetGUCInt(GUC_wal_segment_size));
 
 	elog(DEBUG2, "attempting to remove WAL segments newer than log file %s",
 		 switchseg);
@@ -4078,7 +4092,7 @@ RemoveXlogFile(const struct dirent *segment_de,
 	 * segment. Only recycle normal files, because we don't want to recycle
 	 * symbolic links pointing to a separate archive directory.
 	 */
-	if (wal_recycle &&
+	if (GetGUCBool(GUC_wal_recycle) &&
 		*endlogSegNo <= recycleSegNo &&
 		XLogCtl->InstallXLogFileSegmentActive &&	/* callee rechecks this */
 		get_dirent_type(path, segment_de, false, DEBUG2) == PGFILETYPE_REG &&
@@ -4279,14 +4293,14 @@ InitControlFile(uint64 sysidentifier, uint32 data_checksum_version)
 	ControlFile->unloggedLSN = FirstNormalUnloggedLSN;
 
 	/* Set important parameter values for use when replaying WAL */
-	ControlFile->MaxConnections = MaxConnections;
-	ControlFile->max_worker_processes = max_worker_processes;
-	ControlFile->max_wal_senders = max_wal_senders;
-	ControlFile->max_prepared_xacts = max_prepared_xacts;
-	ControlFile->max_locks_per_xact = max_locks_per_xact;
-	ControlFile->wal_level = wal_level;
-	ControlFile->wal_log_hints = wal_log_hints;
-	ControlFile->track_commit_timestamp = track_commit_timestamp;
+	ControlFile->MaxConnections = GetGUCInt(GUC_MaxConnections);
+	ControlFile->max_worker_processes = GetGUCInt(GUC_max_worker_processes);
+	ControlFile->max_wal_senders = GetGUCInt(GUC_max_wal_senders);
+	ControlFile->max_prepared_xacts = GetGUCInt(GUC_max_prepared_xacts);
+	ControlFile->max_locks_per_xact = GetGUCInt(GUC_max_locks_per_xact);
+	ControlFile->wal_level = GetGUCEnum(GUC_wal_level);
+	ControlFile->wal_log_hints = GetGUCBool(GUC_wal_log_hints);
+	ControlFile->track_commit_timestamp = GetGUCBool(GUC_track_commit_timestamp);
 	ControlFile->data_checksum_version = data_checksum_version;
 
 	/*
@@ -4315,7 +4329,7 @@ WriteControlFile(void)
 	ControlFile->relseg_size = RELSEG_SIZE;
 	ControlFile->slru_pages_per_segment = SLRU_PAGES_PER_SEGMENT;
 	ControlFile->xlog_blcksz = XLOG_BLCKSZ;
-	ControlFile->xlog_seg_size = wal_segment_size;
+	ControlFile->xlog_seg_size = GetGUCInt(GUC_wal_segment_size);
 
 	ControlFile->nameDataLen = NAMEDATALEN;
 	ControlFile->indexMaxKeys = INDEX_MAX_KEYS;
@@ -4598,33 +4612,34 @@ ReadControlFile(void)
 
 	wal_segment_size = ControlFile->xlog_seg_size;
 
-	if (!IsValidWalSegSize(wal_segment_size))
+	if (!IsValidWalSegSize(GetGUCInt(GUC_wal_segment_size)))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						errmsg_plural("invalid WAL segment size in control file (%d byte)",
 									  "invalid WAL segment size in control file (%d bytes)",
-									  wal_segment_size,
-									  wal_segment_size),
+									  GetGUCInt(GUC_wal_segment_size),
+									  GetGUCInt(GUC_wal_segment_size)),
 						errdetail("The WAL segment size must be a power of two between 1 MB and 1 GB.")));
 
-	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d", wal_segment_size);
+	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d",
+		 GetGUCInt(GUC_wal_segment_size));
 	SetConfigOption("wal_segment_size", wal_segsz_str, PGC_INTERNAL,
 					PGC_S_DYNAMIC_DEFAULT);
 
 	/* check and update variables dependent on wal_segment_size */
-	if (ConvertToXSegs(min_wal_size_mb, wal_segment_size) < 2)
+	if (ConvertToXSegs(GetGUCInt(GUC_min_wal_size_mb), GetGUCInt(GUC_wal_segment_size)) < 2)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 		/* translator: both %s are GUC names */
 						errmsg("\"%s\" must be at least twice \"%s\"",
 							   "min_wal_size", "wal_segment_size")));
 
-	if (ConvertToXSegs(max_wal_size_mb, wal_segment_size) < 2)
+	if (ConvertToXSegs(GetGUCInt(GUC_max_wal_size_mb), GetGUCInt(GUC_wal_segment_size)) < 2)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 		/* translator: both %s are GUC names */
 						errmsg("\"%s\" must be at least twice \"%s\"",
 							   "max_wal_size", "wal_segment_size")));
 
 	UsableBytesInSegment =
-		(wal_segment_size / XLOG_BLCKSZ * UsableBytesInPage) -
+		(GetGUCInt(GUC_wal_segment_size) / XLOG_BLCKSZ * UsableBytesInPage) -
 		(SizeOfXLogLongPHD - SizeOfXLogShortPHD);
 
 	CalculateCheckpointSegments();
@@ -5024,9 +5039,9 @@ XLOGChooseNumBuffers(void)
 {
 	int			xbuffers;
 
-	xbuffers = NBuffers / 32;
-	if (xbuffers > (wal_segment_size / XLOG_BLCKSZ))
-		xbuffers = (wal_segment_size / XLOG_BLCKSZ);
+	xbuffers = GetGUCInt(GUC_NBuffers) / 32;
+	if (xbuffers > (GetGUCInt(GUC_wal_segment_size) / XLOG_BLCKSZ))
+		xbuffers = (GetGUCInt(GUC_wal_segment_size) / XLOG_BLCKSZ);
 	if (xbuffers < 8)
 		xbuffers = 8;
 	return xbuffers;
@@ -5047,7 +5062,7 @@ check_wal_buffers(int *newval, void **extra, GucSource source)
 		 * If we haven't yet changed the boot_val default of -1, just let it
 		 * be.  We'll fix it when XLOGShmemSize is called.
 		 */
-		if (XLOGbuffers == -1)
+		if (GetGUCInt(GUC_XLOGbuffers) == -1)
 			return true;
 
 		/* Otherwise, substitute the auto-tune value */
@@ -5198,7 +5213,7 @@ InitializeWalConsistencyChecking(void)
 		check_wal_consistency_checking_deferred = false;
 
 		set_config_option_ext("wal_consistency_checking",
-							  wal_consistency_checking_string,
+							  GetGUCString(GUC_wal_consistency_checking_string),
 							  guc->scontext, guc->source, guc->srole,
 							  GUC_ACTION_SET, true, ERROR, false);
 
@@ -5214,7 +5229,7 @@ const char *
 show_archive_command(void)
 {
 	if (XLogArchivingActive())
-		return XLogArchiveCommand;
+		return GetGUCString(GUC_XLogArchiveCommand);
 	else
 		return "(disabled)";
 }
@@ -5240,7 +5255,7 @@ show_in_hot_standby(void)
 const char *
 show_effective_wal_level(void)
 {
-	if (wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		return "minimal";
 
 	/*
@@ -5305,18 +5320,18 @@ XLOGShmemRequest(void *arg)
 	 * then PGC_S_DYNAMIC_DEFAULT will fail to override that and we must force
 	 * the matter with PGC_S_OVERRIDE.
 	 */
-	if (XLOGbuffers == -1)
+	if (GetGUCInt(GUC_XLOGbuffers) == -1)
 	{
 		char		buf[32];
 
 		snprintf(buf, sizeof(buf), "%d", XLOGChooseNumBuffers());
 		SetConfigOption("wal_buffers", buf, PGC_POSTMASTER,
 						PGC_S_DYNAMIC_DEFAULT);
-		if (XLOGbuffers == -1)	/* failed to apply it? */
+		if (GetGUCInt(GUC_XLOGbuffers) == -1)	/* failed to apply it? */
 			SetConfigOption("wal_buffers", buf, PGC_POSTMASTER,
 							PGC_S_OVERRIDE);
 	}
-	Assert(XLOGbuffers > 0);
+	Assert(GetGUCInt(GUC_XLOGbuffers) > 0);
 
 	/* XLogCtl */
 	size = sizeof(XLogCtlData);
@@ -5324,11 +5339,13 @@ XLOGShmemRequest(void *arg)
 	/* WAL insertion locks, plus alignment */
 	size = add_size(size, mul_size(sizeof(WALInsertLockPadded), NUM_XLOGINSERT_LOCKS + 1));
 	/* xlblocks array */
-	size = add_size(size, mul_size(sizeof(pg_atomic_uint64), XLOGbuffers));
+	size = add_size(size,
+			mul_size(sizeof(pg_atomic_uint64), GetGUCInt(GUC_XLOGbuffers)));
 	/* extra alignment padding for XLOG I/O buffers */
 	size = add_size(size, Max(XLOG_BLCKSZ, PG_IO_ALIGN_SIZE));
 	/* and the buffers themselves */
-	size = add_size(size, mul_size(XLOG_BLCKSZ, XLOGbuffers));
+	size = add_size(size,
+			mul_size(XLOG_BLCKSZ, GetGUCInt(GUC_XLOGbuffers)));
 
 	ShmemRequestStruct(.name = "XLOG Ctl",
 					   .size = size,
@@ -5385,9 +5402,9 @@ XLOGShmemInit(void *arg)
 	 */
 	allocptr = ((char *) XLogCtl) + sizeof(XLogCtlData);
 	XLogCtl->xlblocks = (pg_atomic_uint64 *) allocptr;
-	allocptr += sizeof(pg_atomic_uint64) * XLOGbuffers;
+	allocptr += sizeof(pg_atomic_uint64) * GetGUCInt(GUC_XLOGbuffers);
 
-	for (i = 0; i < XLOGbuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_XLOGbuffers); i++)
 	{
 		pg_atomic_init_u64(&XLogCtl->xlblocks[i], InvalidXLogRecPtr);
 	}
@@ -5413,13 +5430,14 @@ XLOGShmemInit(void *arg)
 	 */
 	allocptr = (char *) TYPEALIGN(XLOG_BLCKSZ, allocptr);
 	XLogCtl->pages = allocptr;
-	memset(XLogCtl->pages, 0, (Size) XLOG_BLCKSZ * XLOGbuffers);
+	memset(XLogCtl->pages, 0,
+	       (Size) XLOG_BLCKSZ * GetGUCInt(GUC_XLOGbuffers));
 
 	/*
 	 * Do basic initialization of XLogCtl shared data. (StartupXLOG will fill
 	 * in additional info.)
 	 */
-	XLogCtl->XLogCacheBlck = XLOGbuffers - 1;
+	XLogCtl->XLogCacheBlck = GetGUCInt(GUC_XLOGbuffers) - 1;
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	XLogCtl->WalWriterSleeping = false;
@@ -5493,12 +5511,12 @@ BootStrapXLOG(uint32 data_checksum_version)
 	 * segment with logid=0 logseg=1. The very first WAL segment, 0/0, is not
 	 * used, so that we can use 0/0 to mean "before any valid WAL segment".
 	 */
-	checkPoint.redo = wal_segment_size + SizeOfXLogLongPHD;
+	checkPoint.redo = GetGUCInt(GUC_wal_segment_size) + SizeOfXLogLongPHD;
 	checkPoint.ThisTimeLineID = BootstrapTimeLineID;
 	checkPoint.PrevTimeLineID = BootstrapTimeLineID;
-	checkPoint.fullPageWrites = fullPageWrites;
-	checkPoint.logicalDecodingEnabled = (wal_level == WAL_LEVEL_LOGICAL);
-	checkPoint.wal_level = wal_level;
+	checkPoint.fullPageWrites = GetGUCBool(GUC_fullPageWrites);
+	checkPoint.logicalDecodingEnabled = (GetGUCEnum(GUC_wal_level) == WAL_LEVEL_LOGICAL);
+	checkPoint.wal_level = GetGUCEnum(GUC_wal_level);
 	checkPoint.nextXid =
 		FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
 	checkPoint.nextOid = FirstGenbkiObjectId;
@@ -5527,10 +5545,10 @@ BootStrapXLOG(uint32 data_checksum_version)
 	page->xlp_magic = XLOG_PAGE_MAGIC;
 	page->xlp_info = XLP_LONG_HEADER;
 	page->xlp_tli = BootstrapTimeLineID;
-	page->xlp_pageaddr = wal_segment_size;
+	page->xlp_pageaddr = GetGUCInt(GUC_wal_segment_size);
 	longpage = (XLogLongPageHeader) page;
 	longpage->xlp_sysid = sysidentifier;
-	longpage->xlp_seg_size = wal_segment_size;
+	longpage->xlp_seg_size = GetGUCInt(GUC_wal_segment_size);
 	longpage->xlp_xlog_blcksz = XLOG_BLCKSZ;
 
 	/* Insert the initial checkpoint record */
@@ -5648,8 +5666,9 @@ XLogInitNewTimeline(TimeLineID endTLI, XLogRecPtr endOfLog, TimeLineID newTLI)
 	 * they are the same, but if the switch happens exactly at a segment
 	 * boundary, startLogSegNo will be endLogSegNo + 1.
 	 */
-	XLByteToPrevSeg(endOfLog, endLogSegNo, wal_segment_size);
-	XLByteToSeg(endOfLog, startLogSegNo, wal_segment_size);
+	XLByteToPrevSeg(endOfLog, endLogSegNo,
+			GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(endOfLog, startLogSegNo, GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * Initialize the starting WAL segment for the new timeline. If the switch
@@ -5667,7 +5686,7 @@ XLogInitNewTimeline(TimeLineID endTLI, XLogRecPtr endOfLog, TimeLineID newTLI)
 		 * avoid emplacing a bogus file.
 		 */
 		XLogFileCopy(newTLI, endLogSegNo, endTLI, endLogSegNo,
-					 XLogSegmentOffset(endOfLog, wal_segment_size));
+					 XLogSegmentOffset(endOfLog, GetGUCInt(GUC_wal_segment_size)));
 	}
 	else
 	{
@@ -5683,7 +5702,8 @@ XLogInitNewTimeline(TimeLineID endTLI, XLogRecPtr endOfLog, TimeLineID newTLI)
 		{
 			int			save_errno = errno;
 
-			XLogFileName(xlogfname, newTLI, startLogSegNo, wal_segment_size);
+			XLogFileName(xlogfname, newTLI, startLogSegNo,
+				     GetGUCInt(GUC_wal_segment_size));
 			errno = save_errno;
 			ereport(ERROR,
 					(errcode_for_file_access(),
@@ -5695,7 +5715,8 @@ XLogInitNewTimeline(TimeLineID endTLI, XLogRecPtr endOfLog, TimeLineID newTLI)
 	 * Let's just make real sure there are not .ready or .done flags posted
 	 * for the new segment.
 	 */
-	XLogFileName(xlogfname, newTLI, startLogSegNo, wal_segment_size);
+	XLogFileName(xlogfname, newTLI, startLogSegNo,
+		     GetGUCInt(GUC_wal_segment_size));
 	XLogArchiveCleanup(xlogfname);
 }
 
@@ -5709,8 +5730,8 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 	/*
 	 * Execute the recovery_end_command, if any.
 	 */
-	if (recoveryEndCommand && strcmp(recoveryEndCommand, "") != 0)
-		ExecuteRecoveryCommand(recoveryEndCommand,
+	if (GetGUCString(GUC_recoveryEndCommand) && strcmp(GetGUCString(GUC_recoveryEndCommand), "") != 0)
+		ExecuteRecoveryCommand(GetGUCString(GUC_recoveryEndCommand),
 							   "recovery_end_command",
 							   true,
 							   WAIT_EVENT_RECOVERY_END_COMMAND);
@@ -5752,14 +5773,16 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 	 * it be archived normally. (In particular, if it was restored from the
 	 * archive to begin with, it's expected to have a .done file).
 	 */
-	if (XLogSegmentOffset(EndOfLog, wal_segment_size) != 0 &&
+	if (XLogSegmentOffset(EndOfLog, GetGUCInt(GUC_wal_segment_size)) != 0 &&
 		XLogArchivingActive())
 	{
 		char		origfname[MAXFNAMELEN];
 		XLogSegNo	endLogSegNo;
 
-		XLByteToPrevSeg(EndOfLog, endLogSegNo, wal_segment_size);
-		XLogFileName(origfname, EndOfLogTLI, endLogSegNo, wal_segment_size);
+		XLByteToPrevSeg(EndOfLog, endLogSegNo,
+				GetGUCInt(GUC_wal_segment_size));
+		XLogFileName(origfname, EndOfLogTLI, endLogSegNo,
+			     GetGUCInt(GUC_wal_segment_size));
 
 		if (!XLogArchiveIsReadyOrDone(origfname))
 		{
@@ -5771,10 +5794,11 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 			 * If we're summarizing WAL, we can't rename the partial file
 			 * until the summarizer finishes with it, else it will fail.
 			 */
-			if (summarize_wal)
+			if (GetGUCBool(GUC_summarize_wal))
 				WaitForWalSummarization(EndOfLog);
 
-			XLogFilePath(origpath, EndOfLogTLI, endLogSegNo, wal_segment_size);
+			XLogFilePath(origpath, EndOfLogTLI, endLogSegNo,
+				     GetGUCInt(GUC_wal_segment_size));
 			snprintf(partialfname, MAXFNAMELEN, "%s.partial", origfname);
 			snprintf(partialpath, MAXPGPATH, "%s.partial", origpath);
 
@@ -5818,23 +5842,23 @@ CheckRequiredParameterValues(void)
 	 * For Hot Standby, the WAL must be generated with 'replica' mode, and we
 	 * must have at least as many backend slots as the primary.
 	 */
-	if (ArchiveRecoveryRequested && EnableHotStandby)
+	if (ArchiveRecoveryRequested && GetGUCBool(GUC_EnableHotStandby))
 	{
 		/* We ignore autovacuum_worker_slots when we make this test. */
 		RecoveryRequiresIntParameter("max_connections",
-									 MaxConnections,
+									 GetGUCInt(GUC_MaxConnections),
 									 ControlFile->MaxConnections);
 		RecoveryRequiresIntParameter("max_worker_processes",
-									 max_worker_processes,
+									 GetGUCInt(GUC_max_worker_processes),
 									 ControlFile->max_worker_processes);
 		RecoveryRequiresIntParameter("max_wal_senders",
-									 max_wal_senders,
+									 GetGUCInt(GUC_max_wal_senders),
 									 ControlFile->max_wal_senders);
 		RecoveryRequiresIntParameter("max_prepared_transactions",
-									 max_prepared_xacts,
+									 GetGUCInt(GUC_max_prepared_xacts),
 									 ControlFile->max_prepared_xacts);
 		RecoveryRequiresIntParameter("max_locks_per_transaction",
-									 max_locks_per_xact,
+									 GetGUCInt(GUC_max_locks_per_xact),
 									 ControlFile->max_locks_per_xact);
 	}
 }
@@ -6210,7 +6234,7 @@ StartupXLOG(void)
 		 * control file and we've established a recovery snapshot from a
 		 * running-xacts WAL record.
 		 */
-		if (ArchiveRecoveryRequested && EnableHotStandby)
+		if (ArchiveRecoveryRequested && GetGUCBool(GUC_EnableHotStandby))
 		{
 			TransactionId *xids;
 			int			nxids;
@@ -7207,7 +7231,7 @@ LogCheckpointEnd(bool restartpoint, int flags)
 	 * All of the published timing statistics are accounted for.  Only
 	 * continue if a log message is to be written.
 	 */
-	if (!log_checkpoints)
+	if (!GetGUCBool(GUC_log_checkpoints))
 		return;
 
 	total_msecs = TimestampDifferenceMilliseconds(CheckpointStats.ckpt_start_t,
@@ -7240,7 +7264,7 @@ LogCheckpointEnd(bool restartpoint, int flags)
 						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X",
 						CheckpointFlagsString(flags),
 						CheckpointStats.ckpt_bufs_written,
-						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						(double) CheckpointStats.ckpt_bufs_written * 100 / GetGUCInt(GUC_NBuffers),
 						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
@@ -7265,7 +7289,7 @@ LogCheckpointEnd(bool restartpoint, int flags)
 						"estimate=%d kB; lsn=%X/%08X, redo lsn=%X/%08X",
 						CheckpointFlagsString(flags),
 						CheckpointStats.ckpt_bufs_written,
-						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						(double) CheckpointStats.ckpt_bufs_written * 100 / GetGUCInt(GUC_NBuffers),
 						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
@@ -7511,7 +7535,7 @@ CreateCheckPoint(int flags)
 	WALInsertLockAcquireExclusive();
 
 	checkPoint.fullPageWrites = Insert->fullPageWrites;
-	checkPoint.wal_level = wal_level;
+	checkPoint.wal_level = GetGUCEnum(GUC_wal_level);
 
 	/*
 	 * Get the current data_checksum_version value from xlogctl, valid at the
@@ -7532,7 +7556,7 @@ CreateCheckPoint(int flags)
 		freespace = INSERT_FREESPACE(curInsert);
 		if (freespace == 0)
 		{
-			if (XLogSegmentOffset(curInsert, wal_segment_size) == 0)
+			if (XLogSegmentOffset(curInsert, GetGUCInt(GUC_wal_segment_size)) == 0)
 				curInsert += SizeOfXLogLongPHD;
 			else
 				curInsert += SizeOfXLogShortPHD;
@@ -7574,7 +7598,7 @@ CreateCheckPoint(int flags)
 		xl_checkpoint_redo redo_rec;
 
 		WALInsertLockAcquire();
-		redo_rec.wal_level = wal_level;
+		redo_rec.wal_level = GetGUCEnum(GUC_wal_level);
 		SpinLockAcquire(&XLogCtl->info_lck);
 		redo_rec.data_checksum_version = XLogCtl->data_checksum_version;
 		SpinLockRelease(&XLogCtl->info_lck);
@@ -7603,7 +7627,7 @@ CreateCheckPoint(int flags)
 	 * If enabled, log checkpoint start.  We postpone this until now so as not
 	 * to log anything if we decided to skip the checkpoint.
 	 */
-	if (log_checkpoints)
+	if (GetGUCBool(GUC_log_checkpoints))
 		LogCheckpointStart(flags, false);
 
 	INJECTION_POINT_CACHED("create-checkpoint-run", NULL);
@@ -7847,7 +7871,7 @@ CreateCheckPoint(int flags)
 	 * Delete old log files, those no longer needed for last checkpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+	XLByteToSeg(RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
 	KeepLogSeg(recptr, &_logSegNo);
 	if (InvalidateObsoleteReplicationSlots(RS_INVAL_WAL_REMOVED | RS_INVAL_IDLE_TIMEOUT,
 										   _logSegNo, InvalidOid,
@@ -7857,7 +7881,8 @@ CreateCheckPoint(int flags)
 		 * Some slots have been invalidated; recalculate the old-segment
 		 * horizon, starting again from RedoRecPtr.
 		 */
-		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+		XLByteToSeg(RedoRecPtr, _logSegNo,
+			    GetGUCInt(GUC_wal_segment_size));
 		KeepLogSeg(recptr, &_logSegNo);
 	}
 	_logSegNo--;
@@ -7888,7 +7913,7 @@ CreateCheckPoint(int flags)
 	update_checkpoint_display(flags, false, true);
 
 	TRACE_POSTGRESQL_CHECKPOINT_DONE(CheckpointStats.ckpt_bufs_written,
-									 NBuffers,
+									 GetGUCInt(GUC_NBuffers),
 									 CheckpointStats.ckpt_segs_added,
 									 CheckpointStats.ckpt_segs_removed,
 									 CheckpointStats.ckpt_segs_recycled);
@@ -7915,7 +7940,7 @@ CreateEndOfRecoveryRecord(void)
 		elog(ERROR, "can only be used to end recovery");
 
 	xlrec.end_time = GetCurrentTimestamp();
-	xlrec.wal_level = wal_level;
+	xlrec.wal_level = GetGUCEnum(GUC_wal_level);
 
 	WALInsertLockAcquireExclusive();
 	xlrec.ThisTimeLineID = XLogCtl->InsertTimeLineID;
@@ -7993,7 +8018,7 @@ CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn, XLogRecPtr pagePtr,
 
 	/* The current WAL insert position should be right after the page header */
 	startPos = pagePtr;
-	if (XLogSegmentOffset(startPos, wal_segment_size) == 0)
+	if (XLogSegmentOffset(startPos, GetGUCInt(GUC_wal_segment_size)) == 0)
 		startPos += SizeOfXLogLongPHD;
 	else
 		startPos += SizeOfXLogShortPHD;
@@ -8220,7 +8245,7 @@ CreateRestartPoint(int flags)
 	MemSet(&CheckpointStats, 0, sizeof(CheckpointStats));
 	CheckpointStats.ckpt_start_t = GetCurrentTimestamp();
 
-	if (log_checkpoints)
+	if (GetGUCBool(GUC_log_checkpoints))
 		LogCheckpointStart(flags, true);
 
 	/* Update the process title */
@@ -8303,7 +8328,7 @@ CreateRestartPoint(int flags)
 	 * Delete old log files, those no longer needed for last restartpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+	XLByteToSeg(RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * Retreat _logSegNo using the current end of xlog replayed or received,
@@ -8324,7 +8349,8 @@ CreateRestartPoint(int flags)
 		 * Some slots have been invalidated; recalculate the old-segment
 		 * horizon, starting again from RedoRecPtr.
 		 */
-		XLByteToSeg(RedoRecPtr, _logSegNo, wal_segment_size);
+		XLByteToSeg(RedoRecPtr, _logSegNo,
+			    GetGUCInt(GUC_wal_segment_size));
 		KeepLogSeg(endptr, &_logSegNo);
 	}
 	_logSegNo--;
@@ -8359,7 +8385,7 @@ CreateRestartPoint(int flags)
 	 * in subtrans.c).  When hot standby is disabled, though, we mustn't do
 	 * this because StartupSUBTRANS hasn't been called yet.
 	 */
-	if (EnableHotStandby)
+	if (GetGUCBool(GUC_EnableHotStandby))
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
 
 	/* Real work is done; log and update stats. */
@@ -8369,7 +8395,7 @@ CreateRestartPoint(int flags)
 	update_checkpoint_display(flags, true, true);
 
 	xtime = GetLatestXTime();
-	ereport((log_checkpoints ? LOG : DEBUG2),
+	ereport((GetGUCBool(GUC_log_checkpoints) ? LOG : DEBUG2),
 			errmsg("recovery restart point at %X/%08X",
 				   LSN_FORMAT_ARGS(lastCheckPoint.redo)),
 			xtime ? errdetail("Last completed transaction was at log time %s.",
@@ -8378,8 +8404,8 @@ CreateRestartPoint(int flags)
 	/*
 	 * Finally, execute archive_cleanup_command, if any.
 	 */
-	if (archiveCleanupCommand && strcmp(archiveCleanupCommand, "") != 0)
-		ExecuteRecoveryCommand(archiveCleanupCommand,
+	if (GetGUCString(GUC_archiveCleanupCommand) && strcmp(GetGUCString(GUC_archiveCleanupCommand), "") != 0)
+		ExecuteRecoveryCommand(GetGUCString(GUC_archiveCleanupCommand),
 							   "archive_cleanup_command",
 							   false,
 							   WAIT_EVENT_ARCHIVE_CLEANUP_COMMAND);
@@ -8433,7 +8459,7 @@ GetWALAvailability(XLogRecPtr targetLSN)
 	 * oldestSlotSeg to the current segment.
 	 */
 	currpos = GetXLogWriteRecPtr();
-	XLByteToSeg(currpos, oldestSlotSeg, wal_segment_size);
+	XLByteToSeg(currpos, oldestSlotSeg, GetGUCInt(GUC_wal_segment_size));
 	KeepLogSeg(currpos, &oldestSlotSeg);
 
 	/*
@@ -8444,8 +8470,9 @@ GetWALAvailability(XLogRecPtr targetLSN)
 	oldestSeg = XLogGetLastRemovedSegno() + 1;
 
 	/* calculate oldest segment by max_wal_size */
-	XLByteToSeg(currpos, currSeg, wal_segment_size);
-	keepSegs = ConvertToXSegs(max_wal_size_mb, wal_segment_size) + 1;
+	XLByteToSeg(currpos, currSeg, GetGUCInt(GUC_wal_segment_size));
+	keepSegs = ConvertToXSegs(GetGUCInt(GUC_max_wal_size_mb),
+				  GetGUCInt(GUC_wal_segment_size)) + 1;
 
 	if (currSeg > keepSegs)
 		oldestSegMaxWalSize = currSeg - keepSegs;
@@ -8453,7 +8480,7 @@ GetWALAvailability(XLogRecPtr targetLSN)
 		oldestSegMaxWalSize = 1;
 
 	/* the segment we care about */
-	XLByteToSeg(targetLSN, targetSeg, wal_segment_size);
+	XLByteToSeg(targetLSN, targetSeg, GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * No point in returning reserved or extended status values if the
@@ -8501,14 +8528,14 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 	XLogSegNo	segno;
 	XLogRecPtr	keep;
 
-	XLByteToSeg(recptr, currSegNo, wal_segment_size);
+	XLByteToSeg(recptr, currSegNo, GetGUCInt(GUC_wal_segment_size));
 	segno = currSegNo;
 
 	/* Calculate how many segments are kept by slots. */
 	keep = XLogGetReplicationSlotMinimumLSN();
 	if (XLogRecPtrIsValid(keep) && keep < recptr)
 	{
-		XLByteToSeg(keep, segno, wal_segment_size);
+		XLByteToSeg(keep, segno, GetGUCInt(GUC_wal_segment_size));
 
 		/*
 		 * Account for max_slot_wal_keep_size to avoid keeping more than
@@ -8516,12 +8543,13 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 		 * slots were to be invalidated because of this, it would not be
 		 * possible to preserve logical ones during the upgrade.
 		 */
-		if (max_slot_wal_keep_size_mb >= 0 && !IsBinaryUpgrade)
+		if (GetGUCInt(GUC_max_slot_wal_keep_size_mb) >= 0 && !IsBinaryUpgrade)
 		{
 			uint64		slot_keep_segs;
 
 			slot_keep_segs =
-				ConvertToXSegs(max_slot_wal_keep_size_mb, wal_segment_size);
+				ConvertToXSegs(GetGUCInt(GUC_max_slot_wal_keep_size_mb),
+				               GetGUCInt(GUC_wal_segment_size));
 
 			if (currSegNo - segno > slot_keep_segs)
 				segno = currSegNo - slot_keep_segs;
@@ -8537,17 +8565,19 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 	{
 		XLogSegNo	unsummarized_segno;
 
-		XLByteToSeg(keep, unsummarized_segno, wal_segment_size);
+		XLByteToSeg(keep, unsummarized_segno,
+		            GetGUCInt(GUC_wal_segment_size));
 		if (unsummarized_segno < segno)
 			segno = unsummarized_segno;
 	}
 
 	/* but, keep at least wal_keep_size if that's set */
-	if (wal_keep_size_mb > 0)
+	if (GetGUCInt(GUC_wal_keep_size_mb) > 0)
 	{
 		uint64		keep_segs;
 
-		keep_segs = ConvertToXSegs(wal_keep_size_mb, wal_segment_size);
+		keep_segs = ConvertToXSegs(GetGUCInt(GUC_wal_keep_size_mb),
+				           GetGUCInt(GUC_wal_segment_size));
 		if (currSegNo - segno < keep_segs)
 		{
 			/* avoid underflow, don't go below 1 */
@@ -8673,14 +8703,14 @@ XLogAssignLSN(void)
 static void
 XLogReportParameters(void)
 {
-	if (wal_level != ControlFile->wal_level ||
-		wal_log_hints != ControlFile->wal_log_hints ||
-		MaxConnections != ControlFile->MaxConnections ||
-		max_worker_processes != ControlFile->max_worker_processes ||
-		max_wal_senders != ControlFile->max_wal_senders ||
-		max_prepared_xacts != ControlFile->max_prepared_xacts ||
-		max_locks_per_xact != ControlFile->max_locks_per_xact ||
-		track_commit_timestamp != ControlFile->track_commit_timestamp)
+	if (GetGUCEnum(GUC_wal_level) != ControlFile->wal_level ||
+		GetGUCBool(GUC_wal_log_hints) != ControlFile->wal_log_hints ||
+		GetGUCInt(GUC_MaxConnections) != ControlFile->MaxConnections ||
+		GetGUCInt(GUC_max_worker_processes) != ControlFile->max_worker_processes ||
+		GetGUCInt(GUC_max_wal_senders) != ControlFile->max_wal_senders ||
+		GetGUCInt(GUC_max_prepared_xacts) != ControlFile->max_prepared_xacts ||
+		GetGUCInt(GUC_max_locks_per_xact) != ControlFile->max_locks_per_xact ||
+		GetGUCBool(GUC_track_commit_timestamp) != ControlFile->track_commit_timestamp)
 	{
 		/*
 		 * The change in number of backend slots doesn't need to be WAL-logged
@@ -8689,19 +8719,19 @@ XLogReportParameters(void)
 		 * values in pg_control either if wal_level=minimal, but seems better
 		 * to keep them up-to-date to avoid confusion.
 		 */
-		if (wal_level != ControlFile->wal_level || XLogIsNeeded())
+		if (GetGUCEnum(GUC_wal_level) != ControlFile->wal_level || XLogIsNeeded())
 		{
 			xl_parameter_change xlrec;
 			XLogRecPtr	recptr;
 
-			xlrec.MaxConnections = MaxConnections;
-			xlrec.max_worker_processes = max_worker_processes;
-			xlrec.max_wal_senders = max_wal_senders;
-			xlrec.max_prepared_xacts = max_prepared_xacts;
-			xlrec.max_locks_per_xact = max_locks_per_xact;
-			xlrec.wal_level = wal_level;
-			xlrec.wal_log_hints = wal_log_hints;
-			xlrec.track_commit_timestamp = track_commit_timestamp;
+			xlrec.MaxConnections = GetGUCInt(GUC_MaxConnections);
+			xlrec.max_worker_processes = GetGUCInt(GUC_max_worker_processes);
+			xlrec.max_wal_senders = GetGUCInt(GUC_max_wal_senders);
+			xlrec.max_prepared_xacts = GetGUCInt(GUC_max_prepared_xacts);
+			xlrec.max_locks_per_xact = GetGUCInt(GUC_max_locks_per_xact);
+			xlrec.wal_level = GetGUCEnum(GUC_wal_level);
+			xlrec.wal_log_hints = GetGUCBool(GUC_wal_log_hints);
+			xlrec.track_commit_timestamp = GetGUCBool(GUC_track_commit_timestamp);
 
 			XLogBeginInsert();
 			XLogRegisterData(&xlrec, sizeof(xlrec));
@@ -8712,14 +8742,14 @@ XLogReportParameters(void)
 
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
-		ControlFile->MaxConnections = MaxConnections;
-		ControlFile->max_worker_processes = max_worker_processes;
-		ControlFile->max_wal_senders = max_wal_senders;
-		ControlFile->max_prepared_xacts = max_prepared_xacts;
-		ControlFile->max_locks_per_xact = max_locks_per_xact;
-		ControlFile->wal_level = wal_level;
-		ControlFile->wal_log_hints = wal_log_hints;
-		ControlFile->track_commit_timestamp = track_commit_timestamp;
+		ControlFile->MaxConnections = GetGUCInt(GUC_MaxConnections);
+		ControlFile->max_worker_processes = GetGUCInt(GUC_max_worker_processes);
+		ControlFile->max_wal_senders = GetGUCInt(GUC_max_wal_senders);
+		ControlFile->max_prepared_xacts = GetGUCInt(GUC_max_prepared_xacts);
+		ControlFile->max_locks_per_xact = GetGUCInt(GUC_max_locks_per_xact);
+		ControlFile->wal_level = GetGUCEnum(GUC_wal_level);
+		ControlFile->wal_log_hints = GetGUCBool(GUC_wal_log_hints);
+		ControlFile->track_commit_timestamp = GetGUCBool(GUC_track_commit_timestamp);
 		UpdateControlFile();
 
 		LWLockRelease(ControlFileLock);
@@ -8764,7 +8794,7 @@ UpdateFullPageWrites(void)
 	 * because we assume that there is no concurrently running process which
 	 * can update it.
 	 */
-	if (fullPageWrites == Insert->fullPageWrites)
+	if (GetGUCBool(GUC_fullPageWrites) == Insert->fullPageWrites)
 		return;
 
 	/*
@@ -8783,7 +8813,7 @@ UpdateFullPageWrites(void)
 	 * setting it to false, first write the WAL record and then set the global
 	 * flag.
 	 */
-	if (fullPageWrites)
+	if (GetGUCBool(GUC_fullPageWrites))
 	{
 		WALInsertLockAcquireExclusive();
 		Insert->fullPageWrites = true;
@@ -8802,7 +8832,7 @@ UpdateFullPageWrites(void)
 		XLogInsert(RM_XLOG_ID, XLOG_FPW_CHANGE);
 	}
 
-	if (!fullPageWrites)
+	if (!GetGUCBool(GUC_fullPageWrites))
 	{
 		WALInsertLockAcquireExclusive();
 		Insert->fullPageWrites = false;
@@ -9236,7 +9266,7 @@ xlog_redo(XLogReaderState *record)
 												   0, InvalidOid,
 												   InvalidTransactionId);
 			}
-			else if (sync_replication_slots)
+			else if (GetGUCBool(GUC_sync_replication_slots))
 			{
 				/*
 				 * Signal the postmaster to launch the slotsync worker.
@@ -9295,7 +9325,7 @@ get_sync_bit(int method)
 		o_direct_flag = PG_O_DIRECT;
 
 	/* If fsync is disabled, never open in sync mode */
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return o_direct_flag;
 
 	switch (method)
@@ -9331,7 +9361,7 @@ get_sync_bit(int method)
 void
 assign_wal_sync_method(int new_wal_sync_method, void *extra)
 {
-	if (wal_sync_method != new_wal_sync_method)
+	if (GetGUCEnum(GUC_wal_sync_method) != new_wal_sync_method)
 	{
 		/*
 		 * To ensure that no blocks escape unsynced, force an fsync on the
@@ -9349,7 +9379,7 @@ assign_wal_sync_method(int new_wal_sync_method, void *extra)
 
 				save_errno = errno;
 				XLogFileName(xlogfname, openLogTLI, openLogSegNo,
-							 wal_segment_size);
+							 GetGUCInt(GUC_wal_segment_size));
 				errno = save_errno;
 				ereport(PANIC,
 						(errcode_for_file_access(),
@@ -9357,7 +9387,7 @@ assign_wal_sync_method(int new_wal_sync_method, void *extra)
 			}
 
 			pgstat_report_wait_end();
-			if (get_sync_bit(wal_sync_method) != get_sync_bit(new_wal_sync_method))
+			if (get_sync_bit(GetGUCEnum(GUC_wal_sync_method)) != get_sync_bit(new_wal_sync_method))
 				XLogFileClose();
 		}
 	}
@@ -9382,18 +9412,18 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 	 * Quick exit if fsync is disabled or write() has already synced the WAL
 	 * file.
 	 */
-	if (!enableFsync ||
-		wal_sync_method == WAL_SYNC_METHOD_OPEN ||
-		wal_sync_method == WAL_SYNC_METHOD_OPEN_DSYNC)
+	if (!GetGUCBool(GUC_enableFsync) ||
+		GetGUCEnum(GUC_wal_sync_method) == WAL_SYNC_METHOD_OPEN ||
+		GetGUCEnum(GUC_wal_sync_method) == WAL_SYNC_METHOD_OPEN_DSYNC)
 		return;
 
 	/*
 	 * Measure I/O timing to sync the WAL file for pg_stat_io.
 	 */
-	start = pgstat_prepare_io_time(track_wal_io_timing);
+	start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC);
-	switch (wal_sync_method)
+	switch (GetGUCEnum(GUC_wal_sync_method))
 	{
 		case WAL_SYNC_METHOD_FSYNC:
 			if (pg_fsync_no_writethrough(fd) != 0)
@@ -9417,7 +9447,7 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 		default:
 			ereport(PANIC,
 					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					errmsg_internal("unrecognized \"wal_sync_method\": %d", wal_sync_method));
+					errmsg_internal("unrecognized \"wal_sync_method\": %d", GetGUCEnum(GUC_wal_sync_method)));
 			break;
 	}
 
@@ -9427,7 +9457,8 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 		char		xlogfname[MAXFNAMELEN];
 		int			save_errno = errno;
 
-		XLogFileName(xlogfname, tli, segno, wal_segment_size);
+		XLogFileName(xlogfname, tli, segno,
+			     GetGUCInt(GUC_wal_segment_size));
 		errno = save_errno;
 		ereport(PANIC,
 				(errcode_for_file_access(),
@@ -9942,9 +9973,11 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 		/*
 		 * Write the backup history file
 		 */
-		XLByteToSeg(state->startpoint, _logSegNo, wal_segment_size);
+		XLByteToSeg(state->startpoint, _logSegNo,
+		            GetGUCInt(GUC_wal_segment_size));
 		BackupHistoryFilePath(histfilepath, state->stoptli, _logSegNo,
-							  state->startpoint, wal_segment_size);
+							  state->startpoint,
+							  GetGUCInt(GUC_wal_segment_size));
 		fp = AllocateFile(histfilepath, "w");
 		if (!fp)
 			ereport(ERROR,
@@ -9997,13 +10030,16 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 		((!backup_stopped_in_recovery && XLogArchivingActive()) ||
 		 (backup_stopped_in_recovery && XLogArchivingAlways())))
 	{
-		XLByteToPrevSeg(state->stoppoint, _logSegNo, wal_segment_size);
+		XLByteToPrevSeg(state->stoppoint, _logSegNo,
+				GetGUCInt(GUC_wal_segment_size));
 		XLogFileName(lastxlogfilename, state->stoptli, _logSegNo,
-					 wal_segment_size);
+					 GetGUCInt(GUC_wal_segment_size));
 
-		XLByteToSeg(state->startpoint, _logSegNo, wal_segment_size);
+		XLByteToSeg(state->startpoint, _logSegNo,
+		            GetGUCInt(GUC_wal_segment_size));
 		BackupHistoryFileName(histfilename, state->stoptli, _logSegNo,
-							  state->startpoint, wal_segment_size);
+							  state->startpoint,
+							  GetGUCInt(GUC_wal_segment_size));
 
 		seconds_before_warning = 60;
 		waits = 0;

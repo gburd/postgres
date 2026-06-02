@@ -840,24 +840,25 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * Check for invalid combinations of GUC settings.
 	 */
-	if (SuperuserReservedConnections + ReservedConnections >= MaxConnections)
+	if (GetGUCInt(GUC_SuperuserReservedConnections) + GetGUCInt(GUC_ReservedConnections) >= GetGUCInt(GUC_MaxConnections))
 	{
 		write_stderr("%s: \"superuser_reserved_connections\" (%d) plus \"reserved_connections\" (%d) must be less than \"max_connections\" (%d)\n",
 					 progname,
-					 SuperuserReservedConnections, ReservedConnections,
-					 MaxConnections);
+					 GetGUCInt(GUC_SuperuserReservedConnections),
+					 GetGUCInt(GUC_ReservedConnections),
+					 GetGUCInt(GUC_MaxConnections));
 		ExitPostmaster(1);
 	}
-	if (XLogArchiveMode > ARCHIVE_MODE_OFF && wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCEnum(GUC_XLogArchiveMode) > ARCHIVE_MODE_OFF && GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL archival cannot be enabled when \"wal_level\" is \"minimal\"")));
-	if (max_wal_senders > 0 && wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCInt(GUC_max_wal_senders) > 0 && GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL streaming (\"max_wal_senders\" > 0) requires \"wal_level\" to be \"replica\" or \"logical\"")));
-	if (summarize_wal && wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCBool(GUC_summarize_wal) && GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL cannot be summarized when \"wal_level\" is \"minimal\"")));
-	if (sync_replication_slots && wal_level == WAL_LEVEL_MINIMAL)
+	if (GetGUCBool(GUC_sync_replication_slots) && GetGUCEnum(GUC_wal_level) == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("replication slot synchronization (\"sync_replication_slots\" = on) requires \"wal_level\" to be \"replica\" or \"logical\"")));
 
@@ -937,7 +938,7 @@ PostmasterMain(int argc, char *argv[])
 	 * Initialize SSL library, if specified.
 	 */
 #ifdef USE_SSL
-	if (EnableSSL)
+	if (GetGUCBool(GUC_EnableSSL))
 	{
 		(void) secure_initialize(true);
 		LoadedSSL = true;
@@ -1085,7 +1086,7 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * If enabled, start up syslogger collection subprocess
 	 */
-	if (Logging_collector)
+	if (GetGUCBool(GUC_Logging_collector))
 		StartSysLogger();
 
 	/*
@@ -1103,7 +1104,7 @@ PostmasterMain(int argc, char *argv[])
 		ereport(LOG,
 				(errmsg("ending log output to stderr"),
 				 errhint("Future log output will go to log destination \"%s\".",
-						 Log_destination_string)));
+						 GetGUCString(GUC_Log_destination_string))));
 
 	whereToSendOutput = DestNone;
 
@@ -1124,7 +1125,7 @@ PostmasterMain(int argc, char *argv[])
 	ListenSockets = palloc(MAXLISTEN * sizeof(pgsocket));
 	on_proc_exit(CloseServerPorts, 0);
 
-	if (ListenAddresses)
+	if (GetGUCString(GUC_ListenAddresses))
 	{
 		char	   *rawstring;
 		List	   *elemlist;
@@ -1132,7 +1133,7 @@ PostmasterMain(int argc, char *argv[])
 		int			success = 0;
 
 		/* Need a modifiable copy of ListenAddresses */
-		rawstring = pstrdup(ListenAddresses);
+		rawstring = pstrdup(GetGUCString(GUC_ListenAddresses));
 
 		/* Parse string into list of hostnames */
 		if (!SplitGUCList(rawstring, ',', &elemlist))
@@ -1150,14 +1151,14 @@ PostmasterMain(int argc, char *argv[])
 
 			if (strcmp(curhost, "*") == 0)
 				status = ListenServerPort(AF_UNSPEC, NULL,
-										  (unsigned short) PostPortNumber,
+										  (unsigned short) GetGUCInt(GUC_PostPortNumber),
 										  NULL,
 										  ListenSockets,
 										  &NumListenSockets,
 										  MAXLISTEN);
 			else
 				status = ListenServerPort(AF_UNSPEC, curhost,
-										  (unsigned short) PostPortNumber,
+										  (unsigned short) GetGUCInt(GUC_PostPortNumber),
 										  NULL,
 										  ListenSockets,
 										  &NumListenSockets,
@@ -1189,7 +1190,7 @@ PostmasterMain(int argc, char *argv[])
 
 #ifdef USE_BONJOUR
 	/* Register for Bonjour only if we opened TCP socket(s) */
-	if (enable_bonjour && NumListenSockets > 0)
+	if (GetGUCBool(GUC_enable_bonjour) && NumListenSockets > 0)
 	{
 		DNSServiceErrorType err;
 
@@ -1202,11 +1203,11 @@ PostmasterMain(int argc, char *argv[])
 		err = DNSServiceRegister(&bonjour_sdref,
 								 0,
 								 0,
-								 bonjour_name,
+								 GetGUCString(GUC_bonjour_name),
 								 "_postgresql._tcp.",
 								 NULL,
 								 NULL,
-								 pg_hton16(PostPortNumber),
+								 pg_hton16(GetGUCInt(GUC_PostPortNumber)),
 								 0,
 								 NULL,
 								 NULL,
@@ -1226,7 +1227,7 @@ PostmasterMain(int argc, char *argv[])
 	}
 #endif
 
-	if (Unix_socket_directories)
+	if (GetGUCString(GUC_Unix_socket_directories))
 	{
 		char	   *rawstring;
 		List	   *elemlist;
@@ -1234,7 +1235,7 @@ PostmasterMain(int argc, char *argv[])
 		int			success = 0;
 
 		/* Need a modifiable copy of Unix_socket_directories */
-		rawstring = pstrdup(Unix_socket_directories);
+		rawstring = pstrdup(GetGUCString(GUC_Unix_socket_directories));
 
 		/* Parse string into list of directories */
 		if (!SplitDirectoriesString(rawstring, ',', &elemlist))
@@ -1251,7 +1252,7 @@ PostmasterMain(int argc, char *argv[])
 			char	   *socketdir = (char *) lfirst(l);
 
 			status = ListenServerPort(AF_UNIX, NULL,
-									  (unsigned short) PostPortNumber,
+									  (unsigned short) GetGUCInt(GUC_PostPortNumber),
 									  socketdir,
 									  ListenSockets,
 									  &NumListenSockets,
@@ -1303,9 +1304,10 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * Write the external PID file if requested
 	 */
-	if (external_pid_file)
+	if (GetGUCString(GUC_external_pid_file))
 	{
-		FILE	   *fpidfile = fopen(external_pid_file, "w");
+		FILE	   *fpidfile = fopen(GetGUCString(GUC_external_pid_file),
+						 "w");
 
 		if (fpidfile)
 		{
@@ -1313,13 +1315,15 @@ PostmasterMain(int argc, char *argv[])
 			fclose(fpidfile);
 
 			/* Make PID file world readable */
-			if (chmod(external_pid_file, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) != 0)
+			if (chmod(GetGUCString(GUC_external_pid_file), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) != 0)
 				write_stderr("%s: could not change permissions of external PID file \"%s\": %m\n",
-							 progname, external_pid_file);
+							 progname,
+							 GetGUCString(GUC_external_pid_file));
 		}
 		else
 			write_stderr("%s: could not write external PID file \"%s\": %m\n",
-						 progname, external_pid_file);
+						 progname,
+						 GetGUCString(GUC_external_pid_file));
 
 		on_proc_exit(unlink_external_pid_file, 0);
 	}
@@ -1346,7 +1350,7 @@ PostmasterMain(int argc, char *argv[])
 		 */
 		ereport(FATAL,
 		/* translator: %s is a configuration file */
-				(errmsg("could not load %s", HbaFileName)));
+				(errmsg("could not load %s", GetGUCString(GUC_HbaFileName))));
 	}
 	if (!load_ident())
 	{
@@ -1461,8 +1465,8 @@ CloseServerPorts(int status, Datum arg)
 static void
 unlink_external_pid_file(int status, Datum arg)
 {
-	if (external_pid_file)
-		unlink(external_pid_file);
+	if (GetGUCString(GUC_external_pid_file))
+		unlink(GetGUCString(GUC_external_pid_file));
 }
 
 
@@ -1784,8 +1788,8 @@ ServerLoop(void)
 			ereport(LOG,
 			/* translator: %s is SIGKILL or SIGABRT */
 					(errmsg("issuing %s to recalcitrant children",
-							send_abort_for_kill ? "SIGABRT" : "SIGKILL")));
-			TerminateChildren(send_abort_for_kill ? SIGABRT : SIGKILL);
+							GetGUCBool(GUC_send_abort_for_kill) ? "SIGABRT" : "SIGKILL")));
+			TerminateChildren(GetGUCBool(GUC_send_abort_for_kill) ? SIGABRT : SIGKILL);
 			/* reset flag so we don't SIGKILL again */
 			AbortStartTime = 0;
 		}
@@ -2036,15 +2040,15 @@ process_pm_reload_request(void)
 		if (!load_hba())
 			ereport(LOG,
 			/* translator: %s is a configuration file */
-					(errmsg("%s was not reloaded", HbaFileName)));
+					(errmsg("%s was not reloaded", GetGUCString(GUC_HbaFileName))));
 
 		if (!load_ident())
 			ereport(LOG,
-					(errmsg("%s was not reloaded", IdentFileName)));
+					(errmsg("%s was not reloaded", GetGUCString(GUC_IdentFileName))));
 
 #ifdef USE_SSL
 		/* Reload SSL configuration as well */
-		if (EnableSSL)
+		if (GetGUCBool(GUC_EnableSSL))
 		{
 			if (secure_initialize(false) == 0)
 				LoadedSSL = true;
@@ -2517,7 +2521,7 @@ process_pm_child_exit(void)
 			SysLoggerPMChild = NULL;
 
 			/* for safety's sake, launch new logger *first* */
-			if (Logging_collector)
+			if (GetGUCBool(GUC_Logging_collector))
 				StartSysLogger();
 
 			if (!EXIT_STATUS_0(exitstatus))
@@ -2752,7 +2756,7 @@ HandleFatalError(QuitSignalReason reason, bool consider_sigabrt)
 
 	SetQuitSignalReason(reason);
 
-	if (consider_sigabrt && send_abort_for_crash)
+	if (consider_sigabrt && GetGUCBool(GUC_send_abort_for_crash))
 		sigtosend = SIGABRT;
 	else
 		sigtosend = SIGQUIT;
@@ -3237,7 +3241,7 @@ PostmasterStateMachine(void)
 					(errmsg("shutting down due to startup process failure")));
 			ExitPostmaster(1);
 		}
-		if (!restart_after_crash)
+		if (!GetGUCBool(GUC_restart_after_crash))
 		{
 			ereport(LOG,
 					(errmsg("shutting down because \"restart_after_crash\" is off")));
@@ -3255,7 +3259,7 @@ PostmasterStateMachine(void)
 				(errmsg("all server processes terminated; reinitializing")));
 
 		/* remove leftover temporary files after a crash */
-		if (remove_temp_files_after_crash)
+		if (GetGUCBool(GUC_remove_temp_files_after_crash))
 			RemovePgTempFiles();
 
 		/* allow background workers to immediately restart */
@@ -3342,7 +3346,7 @@ static void
 LaunchMissingBackgroundProcesses(void)
 {
 	/* Syslogger is active in all states */
-	if (SysLoggerPMChild == NULL && Logging_collector)
+	if (SysLoggerPMChild == NULL && GetGUCBool(GUC_Logging_collector))
 		StartSysLogger();
 
 	/*
@@ -3413,7 +3417,7 @@ LaunchMissingBackgroundProcesses(void)
 	 * enough time has passed since the worker was launched last.
 	 */
 	if (SlotSyncWorkerPMChild == NULL && pmState == PM_HOT_STANDBY &&
-		Shutdown <= SmartShutdown && sync_replication_slots &&
+		Shutdown <= SmartShutdown && GetGUCBool(GUC_sync_replication_slots) &&
 		ValidateSlotSyncParams(LOG) && SlotSyncWorkerCanRestart())
 		SlotSyncWorkerPMChild = StartChildProcess(B_SLOTSYNC_WORKER);
 
@@ -3444,7 +3448,7 @@ LaunchMissingBackgroundProcesses(void)
 	}
 
 	/* If we need to start a WAL summarizer, try to do that now */
-	if (summarize_wal && WalSummarizerPMChild == NULL &&
+	if (GetGUCBool(GUC_summarize_wal) && WalSummarizerPMChild == NULL &&
 		(pmState == PM_RUN || pmState == PM_HOT_STANDBY) &&
 		Shutdown <= SmartShutdown)
 		WalSummarizerPMChild = StartChildProcess(B_WAL_SUMMARIZER);
@@ -3778,7 +3782,7 @@ process_pm_pmsignal(void)
 		 * RECOVERY_STARTED as meaning we're out of startup, and report status
 		 * accordingly.
 		 */
-		if (!EnableHotStandby)
+		if (!GetGUCBool(GUC_EnableHotStandby))
 		{
 			AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_STANDBY);
 #ifdef USE_SYSTEMD
@@ -4462,11 +4466,11 @@ maybe_start_io_workers_scheduled_at(void)
 	 * exit when the GUC is lowered, but the count can be temporarily too high
 	 * until they are reaped.)
 	 */
-	if (io_worker_count >= io_max_workers)
+	if (io_worker_count >= GetGUCInt(GUC_io_max_workers))
 		return 0;
 
 	/* If we're under the minimum, start a worker as soon as possible. */
-	if (io_worker_count < io_min_workers)
+	if (io_worker_count < GetGUCInt(GUC_io_min_workers))
 		return TIMESTAMP_MINUS_INFINITY;	/* start worker ASAP */
 
 	/* Only proceed if a "grow" signal has been received from a worker. */
@@ -4510,7 +4514,7 @@ maybe_start_io_workers(void)
 		 */
 		io_worker_launch_next_time =
 			TimestampTzPlusMilliseconds(io_worker_launch_next_time,
-										io_worker_launch_interval);
+										GetGUCInt(GUC_io_worker_launch_interval));
 
 		/*
 		 * If that's already in the past, the interval is either impossibly
@@ -4519,7 +4523,8 @@ maybe_start_io_workers(void)
 		 */
 		if (io_worker_launch_next_time <= now)
 			io_worker_launch_next_time =
-				TimestampTzPlusMilliseconds(now, io_worker_launch_interval);
+				TimestampTzPlusMilliseconds(now,
+							    GetGUCInt(GUC_io_worker_launch_interval));
 
 		/*
 		 * Check if a grow signal has been received, but the grow request has
@@ -4527,7 +4532,7 @@ maybe_start_io_workers(void)
 		 * advanced the next launch time, to suppress repeat signals from
 		 * workers until then.
 		 */
-		if (io_worker_count >= io_min_workers && !pgaio_worker_pm_test_grow())
+		if (io_worker_count >= GetGUCInt(GUC_io_min_workers) && !pgaio_worker_pm_test_grow())
 		{
 			pgaio_worker_pm_clear_grow_signal_sent();
 			break;

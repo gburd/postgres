@@ -248,7 +248,7 @@ computeDelta(GenericXLogPageData *pageData, Page curpage, Page targetpage)
 	 * application to curpage should be equivalent to targetpage.
 	 */
 #ifdef WAL_DEBUG
-	if (XLOG_DEBUG)
+	if (GetGUCBool(GUC_XLOG_DEBUG))
 	{
 		PGAlignedBlock tmp;
 

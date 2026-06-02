@@ -106,7 +106,7 @@ BackendStatusShmemRequest(void *arg)
 					   .ptr = (void **) &BackendClientHostnameBuffer,
 		);
 
-	BackendActivityBufferSize = mul_size(pgstat_track_activity_query_size,
+	BackendActivityBufferSize = mul_size(GetGUCInt(GUC_pgstat_track_activity_query_size),
 										 NumBackendStatSlots);
 	ShmemRequestStruct(.name = "Backend Activity Buffer",
 					   .size = BackendActivityBufferSize,
@@ -159,7 +159,7 @@ BackendStatusShmemInit(void *arg)
 	for (i = 0; i < NumBackendStatSlots; i++)
 	{
 		BackendStatusArray[i].st_activity_raw = buffer;
-		buffer += pgstat_track_activity_query_size;
+		buffer += GetGUCInt(GUC_pgstat_track_activity_query_size);
 	}
 
 #ifdef USE_SSL
@@ -194,7 +194,7 @@ BackendStatusShmemInit(void *arg)
 static void
 BackendStatusShmemAttach(void *arg)
 {
-	BackendActivityBufferSize = mul_size(pgstat_track_activity_query_size,
+	BackendActivityBufferSize = mul_size(GetGUCInt(GUC_pgstat_track_activity_query_size),
 										 NumBackendStatSlots);
 }
 
@@ -323,7 +323,7 @@ pgstat_bestart_initial(void)
 	/* Also make sure the last byte in each string area is always 0 */
 	lbeentry.st_appname[NAMEDATALEN - 1] = '\0';
 	lbeentry.st_clienthostname[NAMEDATALEN - 1] = '\0';
-	lbeentry.st_activity_raw[pgstat_track_activity_query_size - 1] = '\0';
+	lbeentry.st_activity_raw[GetGUCInt(GUC_pgstat_track_activity_query_size) - 1] = '\0';
 
 	/* These structs can just start from zeroes each time */
 #ifdef USE_SSL
@@ -463,8 +463,8 @@ pgstat_bestart_final(void)
 		pgstat_create_backend(MyProcNumber);
 
 	/* Update app name to current GUC setting */
-	if (application_name)
-		pgstat_report_appname(application_name);
+	if (GetGUCString(GUC_application_name))
+		pgstat_report_appname(GetGUCString(GUC_application_name));
 }
 
 /*
@@ -546,7 +546,7 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 	if (!beentry)
 		return;
 
-	if (!pgstat_track_activities)
+	if (!GetGUCBool(GUC_pgstat_track_activities))
 	{
 		if (beentry->st_state != STATE_DISABLED)
 		{
@@ -584,7 +584,8 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 		 * characters. For speed reasons that'll get corrected on read, rather
 		 * than computed every write.
 		 */
-		len = Min(strlen(cmd_str), pgstat_track_activity_query_size - 1);
+		len = Min(strlen(cmd_str),
+			  GetGUCInt(GUC_pgstat_track_activity_query_size) - 1);
 	}
 	current_timestamp = GetCurrentTimestamp();
 
@@ -656,7 +657,7 @@ pgstat_report_query_id(int64 query_id, bool force)
 	 * if track_activities is disabled, st_query_id should already have been
 	 * reset
 	 */
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	/*
@@ -695,7 +696,7 @@ pgstat_report_plan_id(int64 plan_id, bool force)
 	 * if track_activities is disabled, st_plan_id should already have been
 	 * reset
 	 */
-	if (!beentry || !pgstat_track_activities)
+	if (!beentry || !GetGUCBool(GUC_pgstat_track_activities))
 		return;
 
 	/*
@@ -759,7 +760,7 @@ pgstat_report_xact_timestamp(TimestampTz tstamp)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 
-	if (!pgstat_track_activities || !beentry)
+	if (!GetGUCBool(GUC_pgstat_track_activities) || !beentry)
 		return;
 
 	/*
@@ -822,7 +823,7 @@ pgstat_read_current_status(void)
 						   NAMEDATALEN * NumBackendStatSlots);
 	localactivity = (char *)
 		MemoryContextAllocHuge(backendStatusSnapContext,
-							   (Size) pgstat_track_activity_query_size *
+							   (Size) GetGUCInt(GUC_pgstat_track_activity_query_size) *
 							   (Size) NumBackendStatSlots);
 #ifdef USE_SSL
 	localsslstatus = (PgBackendSSLStatus *)
@@ -920,7 +921,7 @@ pgstat_read_current_status(void)
 			localentry++;
 			localappname += NAMEDATALEN;
 			localclienthostname += NAMEDATALEN;
-			localactivity += pgstat_track_activity_query_size;
+			localactivity += GetGUCInt(GUC_pgstat_track_activity_query_size);
 #ifdef USE_SSL
 			localsslstatus++;
 #endif
@@ -1065,7 +1066,7 @@ pgstat_get_crashed_backend_activity(int pid, char *buffer, int buflen)
 			 * buffer, subtract one activity length from the buffer size.
 			 */
 			activity_last = BackendActivityBuffer + BackendActivityBufferSize
-				- pgstat_track_activity_query_size;
+				- GetGUCInt(GUC_pgstat_track_activity_query_size);
 
 			if (activity < BackendActivityBuffer ||
 				activity > activity_last)
@@ -1082,7 +1083,7 @@ pgstat_get_crashed_backend_activity(int pid, char *buffer, int buflen)
 			 * doesn't seem necessary to perform multibyte aware clipping.
 			 */
 			ascii_safe_strlcpy(buffer, activity,
-							   Min(buflen, pgstat_track_activity_query_size));
+							   Min(buflen, GetGUCInt(GUC_pgstat_track_activity_query_size)));
 
 			return buffer;
 		}
@@ -1266,7 +1267,8 @@ pgstat_clip_activity(const char *raw_activity)
 	 * underlying buffer is guaranteed to be pgstat_track_activity_query_size
 	 * large.
 	 */
-	activity = pnstrdup(raw_activity, pgstat_track_activity_query_size - 1);
+	activity = pnstrdup(raw_activity,
+			    GetGUCInt(GUC_pgstat_track_activity_query_size) - 1);
 
 	/* now double-guaranteed to be NUL terminated */
 	rawlen = strlen(activity);
@@ -1280,7 +1282,7 @@ pgstat_clip_activity(const char *raw_activity)
 	 * character.
 	 */
 	cliplen = pg_mbcliplen(activity, rawlen,
-						   pgstat_track_activity_query_size - 1);
+						   GetGUCInt(GUC_pgstat_track_activity_query_size) - 1);
 
 	activity[cliplen] = '\0';
 

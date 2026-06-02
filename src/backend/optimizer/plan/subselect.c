@@ -540,7 +540,7 @@ build_subplan(PlannerInfo *root, Plan *plan, Path *path,
 		 * is false, then the user does not want us to materialize anything
 		 * unnecessarily, so we don't.
 		 */
-		else if (splan->parParam == NIL && enable_material &&
+		else if (splan->parParam == NIL && GetGUCBool(GUC_enable_material) &&
 				 !ExecMaterializesOutput(nodeTag(plan)))
 			plan = materialize_finished_plan(plan);
 

@@ -103,7 +103,7 @@ pgstat_init_relation(Relation rel)
 		return;
 	}
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 	{
 		if (rel->pgstat_info)
 			pgstat_unlink_relation(rel);
@@ -218,7 +218,7 @@ pgstat_report_vacuum(Relation rel, PgStat_Counter livetuples,
 	TimestampTz ts;
 	PgStat_Counter elapsedtime;
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	/* Store the data in the table's hash table entry. */
@@ -290,7 +290,7 @@ pgstat_report_analyze(Relation rel,
 	TimestampTz ts;
 	PgStat_Counter elapsedtime;
 
-	if (!pgstat_track_counts)
+	if (!GetGUCBool(GUC_pgstat_track_counts))
 		return;
 
 	/*

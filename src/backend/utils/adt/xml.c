@@ -284,7 +284,8 @@ xml_in(PG_FUNCTION_ARGS)
 	 *
 	 * Note: we don't need to worry about whether a soft error is detected.
 	 */
-	doc = xml_parse(vardata, xmloption, true, GetDatabaseEncoding(),
+	doc = xml_parse(vardata, GetGUCEnum(GUC_xmloption), true,
+					GetDatabaseEncoding(),
 					NULL, NULL, fcinfo->context);
 	if (doc != NULL)
 		xmlFreeDoc(doc);
@@ -413,7 +414,8 @@ xml_recv(PG_FUNCTION_ARGS)
 	 * Parse the data to check if it is well-formed XML data.  Assume that
 	 * xml_parse will throw ERROR if not.
 	 */
-	doc = xml_parse(result, xmloption, true, encoding, NULL, NULL, NULL);
+	doc = xml_parse(result, GetGUCEnum(GUC_xmloption), true, encoding,
+			NULL, NULL, NULL);
 	xmlFreeDoc(doc);
 
 	/* Now that we know what we're dealing with, convert to server encoding */
@@ -660,7 +662,7 @@ texttoxml(PG_FUNCTION_ARGS)
 {
 	text	   *data = PG_GETARG_TEXT_PP(0);
 
-	PG_RETURN_XML_P(xmlparse(data, xmloption, true, fcinfo->context));
+	PG_RETURN_XML_P(xmlparse(data, GetGUCEnum(GUC_xmloption), true, fcinfo->context));
 }
 
 
@@ -2676,7 +2678,7 @@ map_sql_value_to_xml_value(Datum value, Oid type, bool xml_escape_strings)
 							xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 										"could not allocate xmlTextWriter");
 
-						if (xmlbinary == XMLBINARY_BASE64)
+						if (GetGUCEnum(GUC_xmlbinary) == XMLBINARY_BASE64)
 							xmlTextWriterWriteBase64(writer, VARDATA_ANY(bstr),
 													 0, VARSIZE_ANY_EXHDR(bstr));
 						else
@@ -3989,7 +3991,7 @@ map_sql_type_to_xmlschema_type(Oid typeoid, int typmod)
 				appendStringInfo(&result,
 								 "  <xsd:restriction base=\"xsd:%s\">\n"
 								 "  </xsd:restriction>\n",
-								 xmlbinary == XMLBINARY_BASE64 ? "base64Binary" : "hexBinary");
+								 GetGUCEnum(GUC_xmlbinary) == XMLBINARY_BASE64 ? "base64Binary" : "hexBinary");
 				break;
 
 			case NUMERICOID:
@@ -4660,7 +4662,7 @@ xml_is_well_formed(PG_FUNCTION_ARGS)
 #ifdef USE_LIBXML
 	text	   *data = PG_GETARG_TEXT_PP(0);
 
-	PG_RETURN_BOOL(wellformed_xml(data, xmloption));
+	PG_RETURN_BOOL(wellformed_xml(data, GetGUCEnum(GUC_xmloption)));
 #else
 	NO_XML_SUPPORT();
 	return 0;

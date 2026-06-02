@@ -51,19 +51,76 @@ def patch_target_dirs(source_root):
             os.path.join(source_root, "src", "bin")]
 
 
+# Per-patch scoping overrides, keyed by .cocci basename.  Most patches run
+# against the default target dirs above; a few must be narrowed.  Each entry:
+#   "dirs":    target directories (relative to source_root), instead of the
+#              default set -- used when a patch must not touch frontend trees
+#              (src/common, src/bin compile with -DFRONTEND and do not include
+#              the backend-only headers some sweeps rewrite into);
+#   "exclude": path suffixes to skip even within those dirs (e.g. the GUC
+#              storage-owning files, which must keep reading the globals raw).
+PATCH_SCOPE = {
+    # The GUC read-accessor sweep is backend-only: utils/guc_accessors.h is
+    # reachable solely via postgres.h, and src/common/src/bin contain locals
+    # named like GUCs.  It also must not rewrite the three GUC storage-owning
+    # files, which write the globals through &variable in the GUC table.
+    "guc_accessors.cocci": {
+        "dirs": [os.path.join("src", "backend"),
+                 os.path.join("src", "include")],
+        "exclude": [
+            os.path.join("utils", "misc", "guc.c"),
+            os.path.join("utils", "misc", "guc_tables.c"),
+            os.path.join("utils", "misc", "guc_funcs.c"),
+            os.path.join("utils", "misc", "guc_tables.inc.c"),
+            os.path.join("utils", "guc_accessors.h"),
+        ],
+    },
+}
+
+
+def _iter_c_sources(root):
+    for dirpath, _dirs, files in os.walk(root):
+        for fn in files:
+            if fn.endswith((".c", ".h")):
+                yield os.path.join(dirpath, fn)
+
+
 def run_one(spatch, cocci, source_root, apply):
-    dirs = [d for d in patch_target_dirs(source_root) if os.path.isdir(d)]
+    scope = PATCH_SCOPE.get(os.path.basename(cocci))
     out_all = ""
     err_all = ""
     rc = 0
-    # spatch's --dir takes a single directory, so iterate.
-    for d in dirs:
-        cmd = [spatch, "--sp-file", cocci, "--include-headers", "--dir", d]
+
+    if scope is None:
+        # Default: run against the broad target dirs, reparsing includes.
+        dirs = [d for d in patch_target_dirs(source_root) if os.path.isdir(d)]
+        targets = [("--include-headers", "--dir", d) for d in dirs]
+    else:
+        # Scoped patch: restrict to the given dirs and skip excluded files.
+        # We pass an explicit file list (so individual files can be excluded,
+        # which --dir cannot do) and omit --include-headers (any header the
+        # patch must touch is already inside the scoped dirs).
+        excludes = scope.get("exclude", [])
+        files = []
+        for rel in scope["dirs"]:
+            base = os.path.join(source_root, rel)
+            if not os.path.isdir(base):
+                continue
+            for f in _iter_c_sources(base):
+                if any(f.endswith(os.sep + ex) or f.endswith(ex)
+                       for ex in excludes):
+                    continue
+                files.append(f)
+        targets = [tuple(files)] if files else []
+
+    for tgt in targets:
+        cmd = [spatch, "--sp-file", cocci]
         if apply:
             cmd[1:1] = ["--very-quiet", "--in-place"]
         else:
             # dry run: emit a unified diff without modifying any file
             cmd[1:1] = ["--quiet", "--show-diff"]
+        cmd.extend(tgt)
         proc = subprocess.run(cmd, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, universal_newlines=True)
         out_all += proc.stdout

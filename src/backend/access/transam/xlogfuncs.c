@@ -436,9 +436,9 @@ pg_walfile_name_offset(PG_FUNCTION_ARGS)
 	/*
 	 * xlogfilename
 	 */
-	XLByteToSeg(locationpoint, xlogsegno, wal_segment_size);
+	XLByteToSeg(locationpoint, xlogsegno, GetGUCInt(GUC_wal_segment_size));
 	XLogFileName(xlogfilename, GetWALInsertionTimeLine(), xlogsegno,
-				 wal_segment_size);
+				 GetGUCInt(GUC_wal_segment_size));
 
 	values[0] = CStringGetTextDatum(xlogfilename);
 	isnull[0] = false;
@@ -446,7 +446,8 @@ pg_walfile_name_offset(PG_FUNCTION_ARGS)
 	/*
 	 * offset
 	 */
-	xrecoff = XLogSegmentOffset(locationpoint, wal_segment_size);
+	xrecoff = XLogSegmentOffset(locationpoint,
+				    GetGUCInt(GUC_wal_segment_size));
 
 	values[1] = UInt32GetDatum(xrecoff);
 	isnull[1] = false;
@@ -479,9 +480,9 @@ pg_walfile_name(PG_FUNCTION_ARGS)
 				 errhint("%s cannot be executed during recovery.",
 						 "pg_walfile_name()")));
 
-	XLByteToSeg(locationpoint, xlogsegno, wal_segment_size);
+	XLByteToSeg(locationpoint, xlogsegno, GetGUCInt(GUC_wal_segment_size));
 	XLogFileName(xlogfilename, GetWALInsertionTimeLine(), xlogsegno,
-				 wal_segment_size);
+				 GetGUCInt(GUC_wal_segment_size));
 
 	PG_RETURN_TEXT_P(cstring_to_text(xlogfilename));
 }
@@ -517,7 +518,8 @@ pg_split_walfile_name(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid WAL file name \"%s\"", fname)));
 
-	XLogFromFileName(fname_upper, &tli, &segno, wal_segment_size);
+	XLogFromFileName(fname_upper, &tli, &segno,
+			 GetGUCInt(GUC_wal_segment_size));
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");

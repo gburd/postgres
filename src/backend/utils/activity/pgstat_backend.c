@@ -56,7 +56,7 @@ void
 pgstat_count_backend_io_op_time(IOObject io_object, IOContext io_context,
 								IOOp io_op, instr_time io_time)
 {
-	Assert(track_io_timing || track_wal_io_timing);
+	Assert(GetGUCBool(GUC_track_io_timing) || GetGUCBool(GUC_track_wal_io_timing));
 
 	if (!pgstat_tracks_backend_bktype(MyBackendType))
 		return;

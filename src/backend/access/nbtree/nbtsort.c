@@ -303,7 +303,7 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	double		reltuples;
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 		ResetUsage();
 #endif							/* BTREE_BUILD_STATS */
 
@@ -344,7 +344,7 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	result->index_tuples = buildstate.indtuples;
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 	{
 		ShowUsage("BTREE BUILD STATS");
 		ResetUsage();
@@ -433,7 +433,8 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 	buildstate->spool->sortstate =
 		tuplesort_begin_index_btree(heap, index, buildstate->isunique,
 									buildstate->nulls_not_distinct,
-									maintenance_work_mem, coordinate,
+									GetGUCInt(GUC_maintenance_work_mem),
+									coordinate,
 									TUPLESORT_NONE);
 
 	/*
@@ -472,7 +473,8 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 		 * full, so we give it only work_mem
 		 */
 		buildstate->spool2->sortstate =
-			tuplesort_begin_index_btree(heap, index, false, false, work_mem,
+			tuplesort_begin_index_btree(heap, index, false, false,
+										GetGUCInt(GUC_work_mem),
 										coordinate2, TUPLESORT_NONE);
 	}
 
@@ -544,7 +546,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 	BTWriteState wstate;
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 	{
 		ShowUsage("BTREE BUILD (Spool) STATISTICS");
 		ResetUsage();
@@ -1721,7 +1723,7 @@ _bt_leader_participate_as_worker(BTBuildState *buildstate)
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / btleader->nparticipanttuplesorts;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / btleader->nparticipanttuplesorts;
 
 	/* Perform work common to all participants */
 	_bt_parallel_scan_and_sort(leaderworker, leaderworker2, btleader->btshared,
@@ -1729,7 +1731,7 @@ _bt_leader_participate_as_worker(BTBuildState *buildstate)
 							   sortmem, true);
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 	{
 		ShowUsage("BTREE BUILD (Leader Partial Spool) STATISTICS");
 		ResetUsage();
@@ -1758,7 +1760,7 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	int			sortmem;
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 		ResetUsage();
 #endif							/* BTREE_BUILD_STATS */
 
@@ -1831,7 +1833,7 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	InstrStartParallelQuery();
 
 	/* Perform sorting of spool, and possibly a spool2 */
-	sortmem = maintenance_work_mem / btshared->scantuplesortstates;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / btshared->scantuplesortstates;
 	_bt_parallel_scan_and_sort(btspool, btspool2, btshared, sharedsort,
 							   sharedsort2, sortmem, false);
 
@@ -1842,7 +1844,7 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 						  &walusage[ParallelWorkerNumber]);
 
 #ifdef BTREE_BUILD_STATS
-	if (log_btree_build_stats)
+	if (GetGUCBool(GUC_log_btree_build_stats))
 	{
 		ShowUsage("BTREE BUILD (Worker Partial Spool) STATISTICS");
 		ResetUsage();
@@ -1910,7 +1912,8 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 		coordinate2->sharedsort = sharedsort2;
 		btspool2->sortstate =
 			tuplesort_begin_index_btree(btspool->heap, btspool->index, false, false,
-										Min(sortmem, work_mem), coordinate2,
+										Min(sortmem, GetGUCInt(GUC_work_mem)),
+										coordinate2,
 										false);
 	}
 

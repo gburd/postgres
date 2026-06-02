@@ -530,7 +530,7 @@ initialize_phase(AggState *aggstate, int newphase)
 												  sortnode->sortOperators,
 												  sortnode->collations,
 												  sortnode->nullsFirst,
-												  work_mem,
+												  GetGUCInt(GUC_work_mem),
 												  NULL, TUPLESORT_NONE);
 	}
 
@@ -608,7 +608,9 @@ initialize_aggregate(AggState *aggstate, AggStatePerTrans pertrans,
 									  pertrans->sortOperators[0],
 									  pertrans->sortCollations[0],
 									  pertrans->sortNullsFirst[0],
-									  work_mem, NULL, TUPLESORT_NONE);
+									  GetGUCInt(GUC_work_mem),
+									  NULL,
+									  TUPLESORT_NONE);
 		}
 		else
 			pertrans->sortstates[aggstate->current_set] =
@@ -618,7 +620,9 @@ initialize_aggregate(AggState *aggstate, AggStatePerTrans pertrans,
 									 pertrans->sortOperators,
 									 pertrans->sortCollations,
 									 pertrans->sortNullsFirst,
-									 work_mem, NULL, TUPLESORT_NONE);
+									 GetGUCInt(GUC_work_mem),
+									 NULL,
+									 TUPLESORT_NONE);
 	}
 
 	/*
@@ -2034,7 +2038,7 @@ hash_create_memory(AggState *aggstate)
 	 * Like CreateWorkExprContext(), use smaller sizings for smaller work_mem,
 	 * to avoid large jumps in memory usage.
 	 */
-	maxBlockSize = pg_prevpower2_size_t(work_mem * (Size) 1024 / 16);
+	maxBlockSize = pg_prevpower2_size_t(GetGUCInt(GUC_work_mem) * (Size) 1024 / 16);
 
 	/* But no bigger than ALLOCSET_DEFAULT_MAXSIZE */
 	maxBlockSize = Min(maxBlockSize, ALLOCSET_DEFAULT_MAXSIZE);

@@ -190,7 +190,9 @@ pgaio_uring_check_capabilities(void)
 				 "mmap(%zu) to determine io_uring_queue_init_mem() support failed: %m",
 				 ring_size);
 
-		ret = io_uring_queue_init_mem(io_max_concurrency, &test_ring, &p, ring_ptr, ring_size);
+		ret = io_uring_queue_init_mem(GetGUCInt(GUC_io_max_concurrency),
+					      &test_ring, &p, ring_ptr,
+					      ring_size);
 		if (ret > 0)
 		{
 			pgaio_uring_caps.mem_init_size = ret;
@@ -356,7 +358,10 @@ pgaio_uring_shmem_init(void *arg)
 		{
 			struct io_uring_params p = {0};
 
-			ret = io_uring_queue_init_mem(io_max_concurrency, &context->io_uring_ring, &p, ring_mem_next, ring_mem_remain);
+			ret = io_uring_queue_init_mem(GetGUCInt(GUC_io_max_concurrency),
+						      &context->io_uring_ring,
+						      &p, ring_mem_next,
+						      ring_mem_remain);
 
 			ring_mem_remain -= ret;
 			ring_mem_next += ret;
@@ -364,7 +369,8 @@ pgaio_uring_shmem_init(void *arg)
 		else
 #endif
 		{
-			ret = io_uring_queue_init(io_max_concurrency, &context->io_uring_ring, 0);
+			ret = io_uring_queue_init(GetGUCInt(GUC_io_max_concurrency),
+						  &context->io_uring_ring, 0);
 		}
 
 		if (ret < 0)
@@ -382,7 +388,7 @@ pgaio_uring_shmem_init(void *arg)
 			{
 				err = ERRCODE_INSUFFICIENT_RESOURCES;
 				hint = psprintf(_("Consider increasing \"ulimit -n\" to at least %d."),
-								TotalProcs + max_files_per_process);
+								TotalProcs + GetGUCInt(GUC_max_files_per_process));
 			}
 			else if (-ret == ENOSYS)
 			{

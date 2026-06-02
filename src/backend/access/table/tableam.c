@@ -418,9 +418,9 @@ table_block_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	bpscan->base.phs_locator = rel->rd_locator;
 	bpscan->phs_nblocks = RelationGetNumberOfBlocks(rel);
 	/* compare phs_syncscan initialization to similar logic in initscan */
-	bpscan->base.phs_syncscan = synchronize_seqscans &&
+	bpscan->base.phs_syncscan = GetGUCBool(GUC_synchronize_seqscans) &&
 		!RelationUsesLocalBuffers(rel) &&
-		bpscan->phs_nblocks > NBuffers / 4;
+		bpscan->phs_nblocks > GetGUCInt(GUC_NBuffers) / 4;
 	SpinLockInit(&bpscan->phs_mutex);
 	bpscan->phs_startblock = InvalidBlockNumber;
 	bpscan->phs_numblock = InvalidBlockNumber;

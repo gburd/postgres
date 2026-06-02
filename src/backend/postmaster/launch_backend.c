@@ -1013,7 +1013,7 @@ restore_backend_variables(BackendParameters *param)
 
 	/* Re-run logic usually done by assign_timing_clock_source */
 	pg_initialize_timing();
-	pg_set_timing_clock_source(timing_clock_source);
+	pg_set_timing_clock_source(GetGUCEnum(GUC_timing_clock_source));
 
 #ifdef WIN32
 	PostmasterHandle = param->PostmasterHandle;

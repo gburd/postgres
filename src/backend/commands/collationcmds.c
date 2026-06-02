@@ -290,7 +290,7 @@ DefineCollation(ParseState *pstate, List *names, List *parameters, bool if_not_e
 			if (!IsBinaryUpgrade)
 			{
 				char	   *langtag = icu_language_tag(colllocale,
-													   icu_validation_level);
+													   GetGUCEnum(GUC_icu_validation_level));
 
 				if (langtag && strcmp(colllocale, langtag) != 0)
 				{

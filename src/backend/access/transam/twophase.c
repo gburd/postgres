@@ -252,10 +252,10 @@ TwoPhaseShmemRequest(void *arg)
 
 	/* Need the fixed struct, the array of pointers, and the GTD structs */
 	size = offsetof(TwoPhaseStateData, prepXacts);
-	size = add_size(size, mul_size(max_prepared_xacts,
+	size = add_size(size, mul_size(GetGUCInt(GUC_max_prepared_xacts),
 								   sizeof(GlobalTransaction)));
 	size = MAXALIGN(size);
-	size = add_size(size, mul_size(max_prepared_xacts,
+	size = add_size(size, mul_size(GetGUCInt(GUC_max_prepared_xacts),
 								   sizeof(GlobalTransactionData)));
 	ShmemRequestStruct(.name = "Prepared Transaction Table",
 					   .size = size,
@@ -281,8 +281,8 @@ TwoPhaseShmemInit(void *arg)
 	gxacts = (GlobalTransaction)
 		((char *) TwoPhaseState +
 		 MAXALIGN(offsetof(TwoPhaseStateData, prepXacts) +
-				  sizeof(GlobalTransaction) * max_prepared_xacts));
-	for (i = 0; i < max_prepared_xacts; i++)
+				  sizeof(GlobalTransaction) * GetGUCInt(GUC_max_prepared_xacts)));
+	for (i = 0; i < GetGUCInt(GUC_max_prepared_xacts); i++)
 	{
 		/* insert into linked list */
 		gxacts[i].next = TwoPhaseState->freeGXacts;
@@ -375,7 +375,7 @@ MarkAsPreparing(FullTransactionId fxid, const char *gid,
 						gid)));
 
 	/* fail immediately if feature is disabled */
-	if (max_prepared_xacts == 0)
+	if (GetGUCInt(GUC_max_prepared_xacts) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("prepared transactions are disabled"),
@@ -409,7 +409,7 @@ MarkAsPreparing(FullTransactionId fxid, const char *gid,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("maximum number of prepared transactions reached"),
 				 errhint("Increase \"max_prepared_transactions\" (currently %d).",
-						 max_prepared_xacts)));
+						 GetGUCInt(GUC_max_prepared_xacts))));
 	gxact = TwoPhaseState->freeGXacts;
 	TwoPhaseState->freeGXacts = gxact->next;
 
@@ -418,7 +418,7 @@ MarkAsPreparing(FullTransactionId fxid, const char *gid,
 	gxact->ondisk = false;
 
 	/* And insert it into the active array */
-	Assert(TwoPhaseState->numPrepXacts < max_prepared_xacts);
+	Assert(TwoPhaseState->numPrepXacts < GetGUCInt(GUC_max_prepared_xacts));
 	TwoPhaseState->prepXacts[TwoPhaseState->numPrepXacts++] = gxact;
 
 	LWLockRelease(TwoPhaseStateLock);
@@ -1479,7 +1479,7 @@ StandbyTransactionIdIsPrepared(TransactionId xid)
 
 	Assert(TransactionIdIsValid(xid));
 
-	if (max_prepared_xacts <= 0)
+	if (GetGUCInt(GUC_max_prepared_xacts) <= 0)
 		return false;			/* nothing to do */
 
 	/* Read and validate file */
@@ -1830,7 +1830,7 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 	int			i;
 	int			serialized_xacts = 0;
 
-	if (max_prepared_xacts <= 0)
+	if (GetGUCInt(GUC_max_prepared_xacts) <= 0)
 		return;					/* nothing to do */
 
 	TRACE_POSTGRESQL_TWOPHASE_CHECKPOINT_START();
@@ -1888,7 +1888,7 @@ CheckPointTwoPhase(XLogRecPtr redo_horizon)
 
 	TRACE_POSTGRESQL_TWOPHASE_CHECKPOINT_DONE();
 
-	if (log_checkpoints && serialized_xacts > 0)
+	if (GetGUCBool(GUC_log_checkpoints) && serialized_xacts > 0)
 		ereport(LOG,
 				(errmsg_plural("%u two-phase state file was written "
 							   "for a long-running prepared transaction",
@@ -2582,7 +2582,7 @@ PrepareRedoAdd(FullTransactionId fxid, char *buf,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("maximum number of prepared transactions reached"),
 				 errhint("Increase \"max_prepared_transactions\" (currently %d).",
-						 max_prepared_xacts)));
+						 GetGUCInt(GUC_max_prepared_xacts))));
 	gxact = TwoPhaseState->freeGXacts;
 	TwoPhaseState->freeGXacts = gxact->next;
 
@@ -2598,7 +2598,7 @@ PrepareRedoAdd(FullTransactionId fxid, char *buf,
 	strcpy(gxact->gid, gid);
 
 	/* And insert it into the active array */
-	Assert(TwoPhaseState->numPrepXacts < max_prepared_xacts);
+	Assert(TwoPhaseState->numPrepXacts < GetGUCInt(GUC_max_prepared_xacts));
 	TwoPhaseState->prepXacts[TwoPhaseState->numPrepXacts++] = gxact;
 
 	if (origin_id != InvalidReplOriginId)

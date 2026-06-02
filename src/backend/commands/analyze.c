@@ -377,7 +377,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	 */
 	if (instrument)
 	{
-		if (track_io_timing)
+		if (GetGUCBool(GUC_track_io_timing))
 		{
 			startreadtime = pgStatBlockReadTime;
 			startwritetime = pgStatBlockWriteTime;
@@ -819,7 +819,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 							 get_database_name(MyDatabaseId),
 							 get_namespace_name(RelationGetNamespace(onerel)),
 							 RelationGetRelationName(onerel));
-			if (track_cost_delay_timing)
+			if (GetGUCBool(GUC_track_cost_delay_timing))
 			{
 				/*
 				 * We bypass the changecount mechanism because this value is
@@ -828,7 +828,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 				appendStringInfo(&buf, _("delay time: %.3f ms\n"),
 								 (double) MyBEEntry->st_progress_param[PROGRESS_ANALYZE_DELAY_TIME] / 1000000.0);
 			}
-			if (track_io_timing)
+			if (GetGUCBool(GUC_track_io_timing))
 			{
 				double		read_ms = (double) (pgStatBlockReadTime - startreadtime) / 1000;
 				double		write_ms = (double) (pgStatBlockWriteTime - startwritetime) / 1000;
@@ -1954,7 +1954,7 @@ std_typanalyze(VacAttrStats *stats)
 
 	/* If the attstattarget column is negative, use the default value */
 	if (stats->attstattarget < 0)
-		stats->attstattarget = default_statistics_target;
+		stats->attstattarget = GetGUCInt(GUC_default_statistics_target);
 
 	/* Look for default "<" and "=" operators for column's type */
 	get_sort_group_operators(stats->attrtypid,

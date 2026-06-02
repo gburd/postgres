@@ -948,7 +948,7 @@ transformAExprOp(ParseState *pstate, A_Expr *a)
 	 * generated internally from a CASE-WHEN expression, and
 	 * transform_null_equals does not apply.)
 	 */
-	if (Transform_null_equals &&
+	if (GetGUCBool(GUC_Transform_null_equals) &&
 		list_length(a->name) == 1 &&
 		strcmp(strVal(linitial(a->name)), "=") == 0 &&
 		(exprIsNullConstant(lexpr) || exprIsNullConstant(rexpr)) &&

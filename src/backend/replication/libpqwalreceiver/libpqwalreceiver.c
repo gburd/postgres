@@ -1066,7 +1066,8 @@ libpqrcv_processTuples(PGresult *pgres, WalRcvExecResult *walres,
 				 errdetail("Expected %d fields, got %d fields.",
 						   nRetTypes, nfields)));
 
-	walres->tuplestore = tuplestore_begin_heap(true, false, work_mem);
+	walres->tuplestore = tuplestore_begin_heap(true, false,
+						   GetGUCInt(GUC_work_mem));
 
 	/* Create tuple descriptor corresponding to expected result. */
 	walres->tupledesc = CreateTemplateTupleDesc(nRetTypes);

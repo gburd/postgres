@@ -60,7 +60,7 @@ CreateSchemaCommand(ParseState *pstate, CreateSchemaStmt *stmt,
 	Oid			saved_uid;
 	int			save_sec_context;
 	int			save_nestlevel;
-	char	   *nsp = namespace_search_path;
+	char	   *nsp = GetGUCString(GUC_namespace_search_path);
 	AclResult	aclresult;
 	ObjectAddress address;
 	StringInfoData pathbuf;
@@ -103,7 +103,7 @@ CreateSchemaCommand(ParseState *pstate, CreateSchemaStmt *stmt,
 	check_can_set_role(saved_uid, owner_uid);
 
 	/* Additional check to protect reserved schema names */
-	if (!allowSystemTableMods && IsReservedName(schemaName))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsReservedName(schemaName))
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
 				 errmsg("unacceptable schema name \"%s\"", schemaName),
@@ -284,7 +284,7 @@ RenameSchema(const char *oldname, const char *newname)
 		aclcheck_error(aclresult, OBJECT_DATABASE,
 					   get_database_name(MyDatabaseId));
 
-	if (!allowSystemTableMods && IsReservedName(newname))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsReservedName(newname))
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
 				 errmsg("unacceptable schema name \"%s\"", newname),

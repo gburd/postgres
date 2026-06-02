@@ -135,7 +135,8 @@ XLogReaderAllocate(int wal_segment_size, const char *waldir,
 	}
 
 	/* Initialize segment info. */
-	WALOpenSegmentInit(&state->seg, &state->segcxt, wal_segment_size,
+	WALOpenSegmentInit(&state->seg, &state->segcxt,
+					   GetGUCInt(GUC_wal_segment_size),
 					   waldir);
 
 	/* system_identifier initialized to zeroes above */
@@ -1586,7 +1587,7 @@ WALRead(XLogReaderState *state,
 
 #ifndef FRONTEND
 		/* Measure I/O timing when reading segment */
-		io_start = pgstat_prepare_io_time(track_wal_io_timing);
+		io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
 #endif

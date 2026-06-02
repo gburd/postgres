@@ -302,7 +302,7 @@ cost_seqscan(Path *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	cpu_run_cost = cpu_per_tuple * baserel->tuples;
 	/* tlist eval costs are paid per output row, not per tuple scanned */
 	startup_cost += path->pathtarget->cost.startup;
@@ -401,7 +401,7 @@ cost_samplescan(Path *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 	/* tlist eval costs are paid per output row, not per tuple scanned */
 	startup_cost += path->pathtarget->cost.startup;
@@ -447,8 +447,8 @@ cost_gather(GatherPath *path, PlannerInfo *root,
 	run_cost = path->subpath->total_cost - path->subpath->startup_cost;
 
 	/* Parallel setup and communication cost. */
-	startup_cost += parallel_setup_cost;
-	run_cost += parallel_tuple_cost * path->path.rows;
+	startup_cost += GetGUCReal(GUC_parallel_setup_cost);
+	run_cost += GetGUCReal(GUC_parallel_tuple_cost) * path->path.rows;
 
 	path->path.disabled_nodes = path->subpath->disabled_nodes
 		+ ((rel->pgs_mask & PGS_GATHER) != 0 ? 0 : 1);
@@ -497,7 +497,7 @@ cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
 	logN = LOG2(N);
 
 	/* Assumed cost per tuple comparison */
-	comparison_cost = 2.0 * cpu_operator_cost;
+	comparison_cost = 2.0 * GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Heap creation cost */
 	startup_cost += comparison_cost * N * logN;
@@ -506,7 +506,7 @@ cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
 	run_cost += path->path.rows * comparison_cost * logN;
 
 	/* small cost for heap management, like cost_merge_append */
-	run_cost += cpu_operator_cost * path->path.rows;
+	run_cost += GetGUCReal(GUC_cpu_operator_cost) * path->path.rows;
 
 	/*
 	 * Parallel setup and communication cost.  Since Gather Merge, unlike
@@ -514,8 +514,8 @@ cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
 	 * worker, we bump the IPC cost up a little bit as compared with Gather.
 	 * For lack of a better idea, charge an extra 5%.
 	 */
-	startup_cost += parallel_setup_cost;
-	run_cost += parallel_tuple_cost * path->path.rows * 1.05;
+	startup_cost += GetGUCReal(GUC_parallel_setup_cost);
+	run_cost += GetGUCReal(GUC_parallel_tuple_cost) * path->path.rows * 1.05;
 
 	path->path.disabled_nodes = path->subpath->disabled_nodes
 		+ ((rel->pgs_mask & PGS_GATHER_MERGE) != 0 ? 0 : 1);
@@ -764,7 +764,7 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 		path->path.parallel_workers = compute_parallel_worker(baserel,
 															  rand_heap_pages,
 															  index_pages,
-															  max_parallel_workers_per_gather);
+															  GetGUCInt(GUC_max_parallel_workers_per_gather));
 
 		/*
 		 * Fall out if workers can't be assigned for parallel scan, because in
@@ -794,7 +794,7 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 	cost_qual_eval(&qpqual_cost, qpquals, root);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 
 	cpu_run_cost += cpu_per_tuple * tuples_fetched;
 
@@ -911,7 +911,7 @@ index_pages_fetched(double tuples_fetched, BlockNumber pages,
 	Assert(T <= total_pages);
 
 	/* b is pro-rated share of effective_cache_size */
-	b = (double) effective_cache_size * T / total_pages;
+	b = (double) GetGUCInt(GUC_effective_cache_size) * T / total_pages;
 
 	/* force it positive and integral */
 	if (b <= 1.0)
@@ -1078,7 +1078,7 @@ cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	cpu_run_cost = cpu_per_tuple * tuples_fetched;
 
 	/* Adjust costing for parallelism, if used. */
@@ -1125,7 +1125,7 @@ cost_bitmap_tree_node(Path *path, Cost *cost, Selectivity *selec)
 		 * scan doesn't look to be the same cost as an indexscan to retrieve a
 		 * single tuple.
 		 */
-		*cost += 0.1 * cpu_operator_cost * path->rows;
+		*cost += 0.1 * GetGUCReal(GUC_cpu_operator_cost) * path->rows;
 	}
 	else if (IsA(path, BitmapAndPath))
 	{
@@ -1184,7 +1184,7 @@ cost_bitmap_and_node(BitmapAndPath *path, PlannerInfo *root)
 
 		totalCost += subCost;
 		if (l != list_head(path->bitmapquals))
-			totalCost += 100.0 * cpu_operator_cost;
+			totalCost += 100.0 * GetGUCReal(GUC_cpu_operator_cost);
 	}
 	path->bitmapselectivity = selec;
 	path->path.rows = 0;		/* per above, not used */
@@ -1231,7 +1231,7 @@ cost_bitmap_or_node(BitmapOrPath *path, PlannerInfo *root)
 		totalCost += subCost;
 		if (l != list_head(path->bitmapquals) &&
 			!IsA(subpath, IndexPath))
-			totalCost += 100.0 * cpu_operator_cost;
+			totalCost += 100.0 * GetGUCReal(GUC_cpu_operator_cost);
 	}
 	path->bitmapselectivity = Min(selec, 1.0);
 	path->path.rows = 0;		/* per above, not used */
@@ -1326,7 +1326,7 @@ cost_tidscan(Path *path, PlannerInfo *root,
 
 	/* XXX currently we assume TID quals are a subset of qpquals */
 	startup_cost += qpqual_cost.startup + tid_qual_cost.per_tuple;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple -
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple -
 		tid_qual_cost.per_tuple;
 	run_cost += cpu_per_tuple * ntuples;
 
@@ -1430,7 +1430,7 @@ cost_tidrangescan(Path *path, PlannerInfo *root,
 	 * the CPU cost a bit.)
 	 */
 	startup_cost = qpqual_cost.startup + tid_qual_cost.per_tuple;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple -
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple -
 		tid_qual_cost.per_tuple;
 	cpu_run_cost = cpu_per_tuple * ntuples;
 
@@ -1541,7 +1541,7 @@ cost_subqueryscan(SubqueryScanPath *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost = qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost = cpu_per_tuple * path->subpath->rows;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1603,7 +1603,7 @@ cost_functionscan(Path *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1664,7 +1664,7 @@ cost_tablefuncscan(Path *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1710,13 +1710,13 @@ cost_valuesscan(Path *path, PlannerInfo *root,
 	 * For now, estimate list evaluation cost at one operator eval per list
 	 * (probably pretty bogus, but is it worth being smarter?)
 	 */
-	cpu_per_tuple = cpu_operator_cost;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Add scanning CPU costs */
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple += GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1762,13 +1762,13 @@ cost_ctescan(Path *path, PlannerInfo *root,
 		path->rows = baserel->rows;
 
 	/* Charge one CPU tuple cost per row for tuplestore manipulation */
-	cpu_per_tuple = cpu_tuple_cost;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost);
 
 	/* Add scanning CPU costs */
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple += GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -1808,13 +1808,13 @@ cost_namedtuplestorescan(Path *path, PlannerInfo *root,
 		path->rows = baserel->rows;
 
 	/* Charge one CPU tuple cost per row for tuplestore manipulation */
-	cpu_per_tuple = cpu_tuple_cost;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost);
 
 	/* Add scanning CPU costs */
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple += GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	if (path->parallel_workers == 0)
@@ -1853,7 +1853,7 @@ cost_resultscan(Path *path, PlannerInfo *root,
 	get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
 
 	startup_cost += qpqual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qpqual_cost.per_tuple;
 	run_cost += cpu_per_tuple * baserel->tuples;
 
 	if (path->parallel_workers == 0)
@@ -1898,7 +1898,7 @@ cost_recursive_union(Path *runion, Path *nrterm, Path *rterm)
 	 * manipulating the tuplestores.  (We don't worry about possible
 	 * spill-to-disk costs.)
 	 */
-	total_cost += cpu_tuple_cost * total_rows;
+	total_cost += GetGUCReal(GUC_cpu_tuple_cost) * total_rows;
 
 	if (runion->parallel_workers == 0)
 		enable_mask |= PGS_CONSIDER_NONPARTIAL;
@@ -1966,7 +1966,7 @@ cost_tuplesort(Cost *startup_cost, Cost *run_cost,
 		tuples = 2.0;
 
 	/* Include the default cost-per-comparison */
-	comparison_cost += 2.0 * cpu_operator_cost;
+	comparison_cost += 2.0 * GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Do we have a useful LIMIT? */
 	if (limit_tuples > 0 && limit_tuples < tuples)
@@ -2008,7 +2008,7 @@ cost_tuplesort(Cost *startup_cost, Cost *run_cost,
 		npageaccesses = 2.0 * npages * log_runs;
 		/* Assume 3/4ths of accesses are sequential, 1/4th are not */
 		*startup_cost += npageaccesses *
-			(seq_page_cost * 0.75 + random_page_cost * 0.25);
+			(GetGUCReal(GUC_seq_page_cost) * 0.75 + GetGUCReal(GUC_random_page_cost) * 0.25);
 	}
 	else if (tuples > 2 * output_tuples || input_bytes > sort_mem_bytes)
 	{
@@ -2034,7 +2034,7 @@ cost_tuplesort(Cost *startup_cost, Cost *run_cost,
 	 * here --- the upper LIMIT will pro-rate the run cost so we'd be double
 	 * counting the LIMIT otherwise.
 	 */
-	*run_cost = cpu_operator_cost * tuples;
+	*run_cost = GetGUCReal(GUC_cpu_operator_cost) * tuples;
 }
 
 /*
@@ -2163,13 +2163,13 @@ cost_incremental_sort(Path *path,
 	 * detect the sort groups. This is roughly equal to one extra copy and
 	 * comparison per tuple.
 	 */
-	run_cost += (cpu_tuple_cost + comparison_cost) * input_tuples;
+	run_cost += (GetGUCReal(GUC_cpu_tuple_cost) + comparison_cost) * input_tuples;
 
 	/*
 	 * Additionally, we charge double cpu_tuple_cost for each input group to
 	 * account for the tuplesort_reset that's performed after each group.
 	 */
-	run_cost += 2.0 * cpu_tuple_cost * input_groups;
+	run_cost += 2.0 * GetGUCReal(GUC_cpu_tuple_cost) * input_groups;
 
 	path->rows = input_tuples;
 
@@ -2178,7 +2178,7 @@ cost_incremental_sort(Path *path,
 	 * We can ignore PGS_CONSIDER_NONPARTIAL here, because if it's relevant,
 	 * it will have already affected the input path.
 	 */
-	Assert(enable_incremental_sort);
+	Assert(GetGUCBool(GUC_enable_incremental_sort));
 	path->disabled_nodes = input_disabled_nodes;
 
 	path->startup_cost = startup_cost;
@@ -2220,7 +2220,7 @@ cost_sort(Path *path, PlannerInfo *root,
 	 * it will have already affected the input path.
 	 */
 	path->rows = tuples;
-	path->disabled_nodes = input_disabled_nodes + (enable_sort ? 0 : 1);
+	path->disabled_nodes = input_disabled_nodes + (GetGUCBool(GUC_enable_sort) ? 0 : 1);
 	path->startup_cost = startup_cost;
 	path->total_cost = startup_cost + run_cost;
 }
@@ -2393,7 +2393,7 @@ cost_append(AppendPath *apath, PlannerInfo *root)
 					 * certainly won't pull more than that many tuples from
 					 * any child.
 					 */
-					if (enable_incremental_sort && presorted_keys > 0)
+					if (GetGUCBool(GUC_enable_incremental_sort) && presorted_keys > 0)
 					{
 						cost_incremental_sort(&sort_path,
 											  root,
@@ -2405,7 +2405,7 @@ cost_append(AppendPath *apath, PlannerInfo *root)
 											  subpath->rows,
 											  subpath->pathtarget->width,
 											  0.0,
-											  work_mem,
+											  GetGUCInt(GUC_work_mem),
 											  apath->limit_tuples);
 					}
 					else
@@ -2418,7 +2418,7 @@ cost_append(AppendPath *apath, PlannerInfo *root)
 								  subpath->rows,
 								  subpath->pathtarget->width,
 								  0.0,
-								  work_mem,
+								  GetGUCInt(GUC_work_mem),
 								  apath->limit_tuples);
 					}
 
@@ -2493,7 +2493,7 @@ cost_append(AppendPath *apath, PlannerInfo *root)
 	 * add a small per-tuple overhead.
 	 */
 	apath->path.total_cost +=
-		cpu_tuple_cost * APPEND_CPU_COST_MULTIPLIER * apath->path.rows;
+		GetGUCReal(GUC_cpu_tuple_cost) * APPEND_CPU_COST_MULTIPLIER * apath->path.rows;
 }
 
 /*
@@ -2546,7 +2546,7 @@ cost_merge_append(Path *path, PlannerInfo *root,
 	logN = LOG2(N);
 
 	/* Assumed cost per tuple comparison */
-	comparison_cost = 2.0 * cpu_operator_cost;
+	comparison_cost = 2.0 * GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Heap creation cost */
 	startup_cost += comparison_cost * N * logN;
@@ -2558,7 +2558,7 @@ cost_merge_append(Path *path, PlannerInfo *root,
 	 * Although MergeAppend does not do any selection or projection, it's not
 	 * free; add a small per-tuple overhead.
 	 */
-	run_cost += cpu_tuple_cost * APPEND_CPU_COST_MULTIPLIER * tuples;
+	run_cost += GetGUCReal(GUC_cpu_tuple_cost) * APPEND_CPU_COST_MULTIPLIER * tuples;
 
 	path->disabled_nodes =
 		(rel->pgs_mask & enable_mask) == enable_mask ? 0 : 1;
@@ -2588,7 +2588,7 @@ cost_material(Path *path,
 	Cost		startup_cost = input_startup_cost;
 	Cost		run_cost = input_total_cost - input_startup_cost;
 	double		nbytes = relation_byte_size(tuples, width);
-	double		work_mem_bytes = work_mem * (Size) 1024;
+	double		work_mem_bytes = GetGUCInt(GUC_work_mem) * (Size) 1024;
 
 	path->rows = tuples;
 
@@ -2604,7 +2604,7 @@ cost_material(Path *path,
 	 * doesn't do qual-checking or projection, so it's got less overhead than
 	 * most plan nodes.
 	 */
-	run_cost += 2 * cpu_operator_cost * tuples;
+	run_cost += 2 * GetGUCReal(GUC_cpu_operator_cost) * tuples;
 
 	/*
 	 * If we will spill to disk, charge at the rate of seq_page_cost per page.
@@ -2616,7 +2616,7 @@ cost_material(Path *path,
 	{
 		double		npages = ceil(nbytes / BLCKSZ);
 
-		run_cost += seq_page_cost * npages;
+		run_cost += GetGUCReal(GUC_seq_page_cost) * npages;
 	}
 
 	path->disabled_nodes = input_disabled_nodes + (enabled ? 0 : 1);
@@ -2734,19 +2734,19 @@ cost_memoize_rescan(PlannerInfo *root, MemoizePath *mpath,
 	 * also add on a cpu_operator_cost to account for a cache lookup. This
 	 * will happen regardless of whether it's a cache hit or not.
 	 */
-	total_cost = input_total_cost * (1.0 - hit_ratio) + cpu_operator_cost;
+	total_cost = input_total_cost * (1.0 - hit_ratio) + GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Now adjust the total cost to account for cache evictions */
 
 	/* Charge a cpu_tuple_cost for evicting the actual cache entry */
-	total_cost += cpu_tuple_cost * evict_ratio;
+	total_cost += GetGUCReal(GUC_cpu_tuple_cost) * evict_ratio;
 
 	/*
 	 * Charge a 10th of cpu_operator_cost to evict every tuple in that entry.
 	 * The per-tuple eviction is really just a pfree, so charging a whole
 	 * cpu_operator_cost seems a little excessive.
 	 */
-	total_cost += cpu_operator_cost / 10.0 * evict_ratio * tuples;
+	total_cost += GetGUCReal(GUC_cpu_operator_cost) / 10.0 * evict_ratio * tuples;
 
 	/*
 	 * Now adjust for storing things in the cache, since that's not free
@@ -2755,7 +2755,7 @@ cost_memoize_rescan(PlannerInfo *root, MemoizePath *mpath,
 	 * cpu_tuple_cost for the creation of the cache entry and also a
 	 * cpu_operator_cost for each tuple we expect to cache.
 	 */
-	total_cost += cpu_tuple_cost + cpu_operator_cost * tuples;
+	total_cost += GetGUCReal(GUC_cpu_tuple_cost) + GetGUCReal(GUC_cpu_operator_cost) * tuples;
 
 	/*
 	 * Getting the first row must be also be proportioned according to the
@@ -2767,7 +2767,7 @@ cost_memoize_rescan(PlannerInfo *root, MemoizePath *mpath,
 	 * Additionally we charge a cpu_tuple_cost to account for cache lookups,
 	 * which we'll do regardless of whether it was a cache hit or not.
 	 */
-	startup_cost += cpu_tuple_cost;
+	startup_cost += GetGUCReal(GUC_cpu_tuple_cost);
 
 	*rescan_startup_cost = startup_cost;
 	*rescan_total_cost = total_cost;
@@ -2835,7 +2835,7 @@ cost_agg(Path *path, PlannerInfo *root,
 		startup_cost += aggcosts->finalCost.startup;
 		startup_cost += aggcosts->finalCost.per_tuple;
 		/* we aren't grouping */
-		total_cost = startup_cost + cpu_tuple_cost;
+		total_cost = startup_cost + GetGUCReal(GUC_cpu_tuple_cost);
 		output_tuples = 1;
 	}
 	else if (aggstrategy == AGG_SORTED || aggstrategy == AGG_MIXED)
@@ -2843,33 +2843,33 @@ cost_agg(Path *path, PlannerInfo *root,
 		/* Here we are able to deliver output on-the-fly */
 		startup_cost = input_startup_cost;
 		total_cost = input_total_cost;
-		if (aggstrategy == AGG_MIXED && !enable_hashagg)
+		if (aggstrategy == AGG_MIXED && !GetGUCBool(GUC_enable_hashagg))
 			++disabled_nodes;
 		/* calcs phrased this way to match HASHED case, see note above */
 		total_cost += aggcosts->transCost.startup;
 		total_cost += aggcosts->transCost.per_tuple * input_tuples;
-		total_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
+		total_cost += (GetGUCReal(GUC_cpu_operator_cost) * numGroupCols) * input_tuples;
 		total_cost += aggcosts->finalCost.startup;
 		total_cost += aggcosts->finalCost.per_tuple * numGroups;
-		total_cost += cpu_tuple_cost * numGroups;
+		total_cost += GetGUCReal(GUC_cpu_tuple_cost) * numGroups;
 		output_tuples = numGroups;
 	}
 	else
 	{
 		/* must be AGG_HASHED */
 		startup_cost = input_total_cost;
-		if (!enable_hashagg)
+		if (!GetGUCBool(GUC_enable_hashagg))
 			++disabled_nodes;
 		startup_cost += aggcosts->transCost.startup;
 		startup_cost += aggcosts->transCost.per_tuple * input_tuples;
 		/* cost of computing hash value */
-		startup_cost += (cpu_operator_cost * numGroupCols) * input_tuples;
+		startup_cost += (GetGUCReal(GUC_cpu_operator_cost) * numGroupCols) * input_tuples;
 		startup_cost += aggcosts->finalCost.startup;
 
 		total_cost = startup_cost;
 		total_cost += aggcosts->finalCost.per_tuple * numGroups;
 		/* cost of retrieving from hash table */
-		total_cost += cpu_tuple_cost * numGroups;
+		total_cost += GetGUCReal(GUC_cpu_tuple_cost) * numGroups;
 		output_tuples = numGroups;
 	}
 
@@ -2937,12 +2937,12 @@ cost_agg(Path *path, PlannerInfo *root,
 		pages_read *= 2.0;
 		pages_written *= 2.0;
 
-		startup_cost += pages_written * random_page_cost;
-		total_cost += pages_written * random_page_cost;
-		total_cost += pages_read * seq_page_cost;
+		startup_cost += pages_written * GetGUCReal(GUC_random_page_cost);
+		total_cost += pages_written * GetGUCReal(GUC_random_page_cost);
+		total_cost += pages_read * GetGUCReal(GUC_seq_page_cost);
 
 		/* account for CPU cost of spilling a tuple and reading it back */
-		spill_cost = depth * input_tuples * 2.0 * cpu_tuple_cost;
+		spill_cost = depth * input_tuples * 2.0 * GetGUCReal(GUC_cpu_tuple_cost);
 		startup_cost += spill_cost;
 		total_cost += spill_cost;
 	}
@@ -3265,8 +3265,8 @@ cost_windowagg(Path *path, PlannerInfo *root,
 	 * XXX this neglects costs of spooling the data to disk when it overflows
 	 * work_mem.  Sooner or later that should get accounted for.
 	 */
-	total_cost += cpu_operator_cost * (numPartCols + numOrderCols) * input_tuples;
-	total_cost += cpu_tuple_cost * input_tuples;
+	total_cost += GetGUCReal(GUC_cpu_operator_cost) * (numPartCols + numOrderCols) * input_tuples;
+	total_cost += GetGUCReal(GUC_cpu_tuple_cost) * input_tuples;
 
 	path->rows = input_tuples;
 	path->disabled_nodes = input_disabled_nodes;
@@ -3317,7 +3317,7 @@ cost_group(Path *path, PlannerInfo *root,
 	 * Charge one cpu_operator_cost per comparison per input tuple. We assume
 	 * all columns get compared at most of the tuples.
 	 */
-	total_cost += cpu_operator_cost * input_tuples * numGroupCols;
+	total_cost += GetGUCReal(GUC_cpu_operator_cost) * input_tuples * numGroupCols;
 
 	/*
 	 * If there are quals (HAVING quals), account for their cost and
@@ -3611,7 +3611,7 @@ final_cost_nestloop(PlannerInfo *root, NestPath *path,
 	/* CPU costs */
 	cost_qual_eval(&restrict_qual_cost, path->jpath.joinrestrictinfo, root);
 	startup_cost += restrict_qual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + restrict_qual_cost.per_tuple;
 	run_cost += cpu_per_tuple * ntuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -3814,7 +3814,7 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 		 * We choose to use incremental sort if it is enabled and there are
 		 * presorted keys; otherwise we use full sort.
 		 */
-		if (enable_incremental_sort && outer_presorted_keys > 0)
+		if (GetGUCBool(GUC_enable_incremental_sort) && outer_presorted_keys > 0)
 		{
 			cost_incremental_sort(&sort_path,
 								  root,
@@ -3826,7 +3826,7 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 								  outer_path_rows,
 								  outer_path->pathtarget->width,
 								  0.0,
-								  work_mem,
+								  GetGUCInt(GUC_work_mem),
 								  -1.0);
 		}
 		else
@@ -3839,7 +3839,7 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 					  outer_path_rows,
 					  outer_path->pathtarget->width,
 					  0.0,
-					  work_mem,
+					  GetGUCInt(GUC_work_mem),
 					  -1.0);
 		}
 
@@ -3882,7 +3882,7 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 				  inner_path_rows,
 				  inner_path->pathtarget->width,
 				  0.0,
-				  work_mem,
+				  GetGUCInt(GUC_work_mem),
 				  -1.0);
 		disabled_nodes += sort_path.disabled_nodes;
 		startup_cost += sort_path.startup_cost;
@@ -4097,7 +4097,7 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 	 * of the generated Material node.
 	 */
 	mat_inner_cost = inner_run_cost +
-		cpu_operator_cost * inner_rows * rescanratio;
+		GetGUCReal(GUC_cpu_operator_cost) * inner_rows * rescanratio;
 
 	/*
 	 * If we don't need mark/restore at all, we don't need materialization.
@@ -4147,7 +4147,7 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 			 innersortkeys != NIL &&
 			 relation_byte_size(inner_path_rows,
 								inner_path->pathtarget->width) >
-			 work_mem * (Size) 1024)
+			 GetGUCInt(GUC_work_mem) * (Size) 1024)
 		path->materialize_inner = true;
 	else
 		path->materialize_inner = false;
@@ -4200,7 +4200,7 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 	 * evaluations here, but it's probably not worth the trouble.
 	 */
 	startup_cost += qp_qual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qp_qual_cost.per_tuple;
 	run_cost += cpu_per_tuple * mergejointuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -4337,9 +4337,9 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * should charge the extra eval costs of the left or right side, as
 	 * appropriate, here.  This seems more work than it's worth at the moment.
 	 */
-	startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost)
+	startup_cost += (GetGUCReal(GUC_cpu_operator_cost) * num_hashclauses + GetGUCReal(GUC_cpu_tuple_cost))
 		* inner_path_rows;
-	run_cost += cpu_operator_cost * num_hashclauses * outer_path_rows;
+	run_cost += GetGUCReal(GUC_cpu_operator_cost) * num_hashclauses * outer_path_rows;
 
 	/*
 	 * If this is a parallel hash build, then the value we have for
@@ -4384,8 +4384,8 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 		double		innerpages = page_size(inner_path_rows,
 										   inner_path->pathtarget->width);
 
-		startup_cost += seq_page_cost * innerpages;
-		run_cost += seq_page_cost * (innerpages + 2 * outerpages);
+		startup_cost += GetGUCReal(GUC_seq_page_cost) * innerpages;
+		run_cost += GetGUCReal(GUC_seq_page_cost) * (innerpages + 2 * outerpages);
 	}
 
 	/* CPU costs left for later */
@@ -4654,7 +4654,7 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	 * not all of the quals may get evaluated at each tuple.)
 	 */
 	startup_cost += qp_qual_cost.startup;
-	cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+	cpu_per_tuple = GetGUCReal(GUC_cpu_tuple_cost) + qp_qual_cost.per_tuple;
 	run_cost += cpu_per_tuple * hashjointuples;
 
 	/* tlist eval costs are paid per output row, not per tuple scanned */
@@ -4706,7 +4706,7 @@ cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan)
 		 * too.
 		 */
 		sp_cost.startup += plan->total_cost +
-			cpu_operator_cost * plan->plan_rows;
+			GetGUCReal(GUC_cpu_operator_cost) * plan->plan_rows;
 
 		/*
 		 * The per-tuple costs include the cost of evaluating the lefthand
@@ -4739,7 +4739,7 @@ cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan)
 			/* assume we need 50% of the tuples */
 			sp_cost.per_tuple += 0.50 * plan_run_cost;
 			/* also charge a cpu_operator_cost per row examined */
-			sp_cost.per_tuple += 0.50 * plan->plan_rows * cpu_operator_cost;
+			sp_cost.per_tuple += 0.50 * plan->plan_rows * GetGUCReal(GUC_cpu_operator_cost);
 		}
 		else
 		{
@@ -4828,17 +4828,17 @@ cost_rescan(PlannerInfo *root, Path *path,
 				 * cpu_tuple_cost per tuple, unless the result is large enough
 				 * to spill to disk.
 				 */
-				Cost		run_cost = cpu_tuple_cost * path->rows;
+				Cost		run_cost = GetGUCReal(GUC_cpu_tuple_cost) * path->rows;
 				double		nbytes = relation_byte_size(path->rows,
 														path->pathtarget->width);
-				double		work_mem_bytes = work_mem * (Size) 1024;
+				double		work_mem_bytes = GetGUCInt(GUC_work_mem) * (Size) 1024;
 
 				if (nbytes > work_mem_bytes)
 				{
 					/* It will spill, so account for re-read cost */
 					double		npages = ceil(nbytes / BLCKSZ);
 
-					run_cost += seq_page_cost * npages;
+					run_cost += GetGUCReal(GUC_seq_page_cost) * npages;
 				}
 				*rescan_startup_cost = 0;
 				*rescan_total_cost = run_cost;
@@ -4855,17 +4855,17 @@ cost_rescan(PlannerInfo *root, Path *path,
 				 * the run_cost charge in cost_sort, and also see comments in
 				 * cost_material before you change it.)
 				 */
-				Cost		run_cost = cpu_operator_cost * path->rows;
+				Cost		run_cost = GetGUCReal(GUC_cpu_operator_cost) * path->rows;
 				double		nbytes = relation_byte_size(path->rows,
 														path->pathtarget->width);
-				double		work_mem_bytes = work_mem * (Size) 1024;
+				double		work_mem_bytes = GetGUCInt(GUC_work_mem) * (Size) 1024;
 
 				if (nbytes > work_mem_bytes)
 				{
 					/* It will spill, so account for re-read cost */
 					double		npages = ceil(nbytes / BLCKSZ);
 
-					run_cost += seq_page_cost * npages;
+					run_cost += GetGUCReal(GUC_seq_page_cost) * npages;
 				}
 				*rescan_startup_cost = 0;
 				*rescan_total_cost = run_cost;
@@ -5087,7 +5087,7 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 	else if (IsA(node, GroupingFunc))
 	{
 		/* Treat this as having cost 1 */
-		context->total.per_tuple += cpu_operator_cost;
+		context->total.per_tuple += GetGUCReal(GUC_cpu_operator_cost);
 		return false;			/* don't recurse into children */
 	}
 	else if (IsA(node, CoerceViaIO))
@@ -5142,7 +5142,7 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
 			 IsA(node, JsonExpr))
 	{
 		/* Treat all these as having cost 1 */
-		context->total.per_tuple += cpu_operator_cost;
+		context->total.per_tuple += GetGUCReal(GUC_cpu_operator_cost);
 	}
 	else if (IsA(node, SubLink))
 	{
@@ -6232,7 +6232,7 @@ set_cte_size_estimates(PlannerInfo *root, RelOptInfo *rel, double cte_rows)
 		 * multiple of the nonrecursive term's size.  The best multiplier will
 		 * vary depending on query "fan-out", so make its value adjustable.
 		 */
-		rel->tuples = clamp_row_est(recursive_worktable_factor * cte_rows);
+		rel->tuples = clamp_row_est(GetGUCReal(GUC_recursive_worktable_factor) * cte_rows);
 	}
 	else
 	{
@@ -6630,7 +6630,7 @@ get_parallel_divisor(Path *path)
 	 * its time servicing each worker, and the remainder executing the
 	 * parallel plan.
 	 */
-	if (parallel_leader_participation)
+	if (GetGUCBool(GUC_parallel_leader_participation))
 	{
 		double		leader_contribution;
 
@@ -6696,7 +6696,7 @@ compute_bitmap_pages(PlannerInfo *root, RelOptInfo *baserel,
 	 * the bitmap at one time.)
 	 */
 	heap_pages = Min(pages_fetched, baserel->pages);
-	maxentries = tbm_calculate_entries(work_mem * (Size) 1024);
+	maxentries = tbm_calculate_entries(GetGUCInt(GUC_work_mem) * (Size) 1024);
 
 	if (loop_count > 1)
 	{

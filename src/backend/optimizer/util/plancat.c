@@ -200,7 +200,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	 * whether they're unique indexes or not.
 	 */
 	if ((inhparent && relation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
-		|| (IgnoreSystemIndexes && IsSystemRelation(relation)))
+		|| (GetGUCBool(GUC_IgnoreSystemIndexes) && IsSystemRelation(relation)))
 		hasindex = false;
 	else
 		hasindex = relation->rd_rel->relhasindex;
@@ -1894,7 +1894,7 @@ relation_excluded_by_constraints(PlannerInfo *root,
 	/*
 	 * Skip further tests, depending on constraint_exclusion.
 	 */
-	switch (constraint_exclusion)
+	switch (GetGUCEnum(GUC_constraint_exclusion))
 	{
 		case CONSTRAINT_EXCLUSION_OFF:
 			/* In 'off' mode, never make any further tests */
@@ -2395,7 +2395,7 @@ add_function_cost(PlannerInfo *root, Oid funcid, Node *node,
 	}
 
 	/* No support function, or it failed, so rely on procost */
-	cost->per_tuple += procform->procost * cpu_operator_cost;
+	cost->per_tuple += procform->procost * GetGUCReal(GUC_cpu_operator_cost);
 
 	ReleaseSysCache(proctup);
 }

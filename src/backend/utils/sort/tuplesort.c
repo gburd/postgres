@@ -584,7 +584,7 @@ tuplesort_begin_common(int workMem, SortCoordinate coordinate, int sortopt)
 
 	state = palloc0_object(Tuplesortstate);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		pg_rusage_init(&state->ru_start);
 
 	state->base.sortopt = sortopt;
@@ -749,7 +749,7 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 
 #ifdef DEBUG_BOUNDED_SORT
 	/* Honor GUC setting that disables the feature (for easy testing) */
-	if (!optimize_bounded_sort)
+	if (!GetGUCBool(GUC_optimize_bounded_sort))
 		return;
 #endif
 
@@ -812,7 +812,7 @@ tuplesort_free(Tuplesortstate *state)
 	if (state->tapeset)
 		LogicalTapeSetClose(state->tapeset);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 	{
 		if (state->tapeset)
 			elog(LOG, "%s of worker %d ended, %" PRId64 " disk blocks used: %s",
@@ -1139,7 +1139,7 @@ tuplesort_puttuple_common(Tuplesortstate *state, SortTuple *tuple,
 				(state->memtupcount > state->bound * 2 ||
 				 (state->memtupcount > state->bound && LACKMEM(state))))
 			{
-				if (trace_sort)
+				if (GetGUCBool(GUC_trace_sort))
 					elog(LOG, "switching to bounded heapsort at %d tuples: %s",
 						 state->memtupcount,
 						 pg_rusage_show(&state->ru_start));
@@ -1261,7 +1261,7 @@ tuplesort_performsort(Tuplesortstate *state)
 {
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->base.sortcontext);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "performsort of worker %d starting: %s",
 			 state->worker, pg_rusage_show(&state->ru_start));
 
@@ -1342,7 +1342,7 @@ tuplesort_performsort(Tuplesortstate *state)
 			break;
 	}
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 	{
 		if (state->status == TSS_FINALMERGE)
 			elog(LOG, "performsort of worker %d done (except %d-way final merge): %s",
@@ -1775,7 +1775,7 @@ inittapes(Tuplesortstate *state, bool mergeruns)
 		state->maxTapes = MINORDER;
 	}
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "worker %d switching to external sort with %d tapes: %s",
 			 state->worker, state->maxTapes, pg_rusage_show(&state->ru_start));
 
@@ -1986,7 +1986,7 @@ mergeruns(Tuplesortstate *state)
 	 */
 	state->tape_buffer_mem = state->availMem;
 	USEMEM(state, state->tape_buffer_mem);
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "worker %d using %zu KB of memory for tape buffers",
 			 state->worker, state->tape_buffer_mem / 1024);
 
@@ -2033,7 +2033,7 @@ mergeruns(Tuplesortstate *state)
 													   state->nInputRuns,
 													   state->maxTapes);
 
-			if (trace_sort)
+			if (GetGUCBool(GUC_trace_sort))
 				elog(LOG, "starting merge pass of %d input runs on %d tapes, " INT64_FORMAT " KB of memory for each input tape: %s",
 					 state->nInputRuns, state->nInputTapes, input_buffer_size / 1024,
 					 pg_rusage_show(&state->ru_start));
@@ -2242,7 +2242,7 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 
 	state->currentRun++;
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "worker %d starting quicksort of run %d: %s",
 			 state->worker, state->currentRun,
 			 pg_rusage_show(&state->ru_start));
@@ -2253,7 +2253,7 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 	 */
 	tuplesort_sort_memtuples(state);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "worker %d finished quicksort of run %d: %s",
 			 state->worker, state->currentRun,
 			 pg_rusage_show(&state->ru_start));
@@ -2286,7 +2286,7 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 
 	markrunend(state->destTape);
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "worker %d finished writing run %d to tape %d: %s",
 			 state->worker, state->currentRun, (state->currentRun - 1) % state->nOutputTapes + 1,
 			 pg_rusage_show(&state->ru_start));

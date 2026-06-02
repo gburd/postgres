@@ -428,8 +428,8 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	ereport(DEBUG1,
 			(errmsg_internal("autovacuum launcher started")));
 
-	if (PostAuthDelay)
-		pg_usleep(PostAuthDelay * 1000000L);
+	if (GetGUCInt(GUC_PostAuthDelay))
+		pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 	Assert(GetProcessingMode() == InitProcessing);
 
@@ -713,7 +713,7 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 			 * before the worker removes the WorkerInfo from the
 			 * startingWorker pointer.
 			 */
-			waittime = Min(autovacuum_naptime, 60) * 1000;
+			waittime = Min(GetGUCInt(GUC_autovacuum_naptime), 60) * 1000;
 			if (TimestampDifferenceExceeds(worker->wi_launchtime, current_time,
 										   waittime))
 			{
@@ -800,7 +800,7 @@ ProcessAutoVacLauncherInterrupts(void)
 
 	if (ConfigReloadPending)
 	{
-		int			autovacuum_max_workers_prev = autovacuum_max_workers;
+		int			autovacuum_max_workers_prev = GetGUCInt(GUC_autovacuum_max_workers);
 
 		ConfigReloadPending = false;
 		ProcessConfigFile(PGC_SIGHUP);
@@ -814,7 +814,7 @@ ProcessAutoVacLauncherInterrupts(void)
 		 * autovacuum_worker_slots < autovacuum_max_workers.  If it didn't
 		 * change, skip this to avoid too many repeated log messages.
 		 */
-		if (autovacuum_max_workers_prev != autovacuum_max_workers)
+		if (autovacuum_max_workers_prev != GetGUCInt(GUC_autovacuum_max_workers))
 			check_av_worker_gucs();
 
 		/* rebuild the list in case the naptime changed */
@@ -864,7 +864,7 @@ launcher_determine_sleep(bool canlaunch, bool recursing, struct timeval *nap)
 	 */
 	if (!canlaunch)
 	{
-		nap->tv_sec = autovacuum_naptime;
+		nap->tv_sec = GetGUCInt(GUC_autovacuum_naptime);
 		nap->tv_usec = 0;
 	}
 	else if (!dlist_is_empty(&DatabaseList))
@@ -886,7 +886,7 @@ launcher_determine_sleep(bool canlaunch, bool recursing, struct timeval *nap)
 	else
 	{
 		/* list is empty, sleep for whole autovacuum_naptime seconds  */
-		nap->tv_sec = autovacuum_naptime;
+		nap->tv_sec = GetGUCInt(GUC_autovacuum_naptime);
 		nap->tv_usec = 0;
 	}
 
@@ -1088,7 +1088,7 @@ rebuild_database_list(Oid newdb)
 		 * coded not to allow), silently use a larger naptime (but don't touch
 		 * the GUC variable).
 		 */
-		millis_increment = 1000.0 * autovacuum_naptime / nelems;
+		millis_increment = 1000.0 * GetGUCInt(GUC_autovacuum_naptime) / nelems;
 		if (millis_increment <= MIN_AUTOVAC_SLEEPTIME)
 			millis_increment = MIN_AUTOVAC_SLEEPTIME * 1.1;
 
@@ -1181,7 +1181,7 @@ do_start_worker(void)
 	 * particular tables, but not loosened.)
 	 */
 	recentXid = ReadNextTransactionId();
-	xidForceLimit = recentXid - autovacuum_freeze_max_age;
+	xidForceLimit = recentXid - GetGUCInt(GUC_autovacuum_freeze_max_age);
 	/* ensure it's a "normal" XID, else TransactionIdPrecedes misbehaves */
 	/* this can cause the limit to go backwards by 3, but that's OK */
 	if (xidForceLimit < FirstNormalTransactionId)
@@ -1279,7 +1279,7 @@ do_start_worker(void)
 												current_time, 0) &&
 					!TimestampDifferenceExceeds(current_time,
 												dbp->adl_next_worker,
-												autovacuum_naptime * 1000))
+												GetGUCInt(GUC_autovacuum_naptime) * 1000))
 					skipit = true;
 
 				break;
@@ -1378,7 +1378,8 @@ launch_worker(TimestampTz now)
 				 * that as the new "next_worker" field for this database.
 				 */
 				avdb->adl_next_worker =
-					TimestampTzPlusMilliseconds(now, autovacuum_naptime * 1000);
+					TimestampTzPlusMilliseconds(now,
+								    GetGUCInt(GUC_autovacuum_naptime) * 1000);
 
 				dlist_move_head(&DatabaseList, iter.cur);
 				break;
@@ -1550,7 +1551,7 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * we are waiting for standbys to connect. This is important to ensure we
 	 * aren't blocked from performing anti-wraparound tasks.
 	 */
-	if (synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
+	if (GetGUCEnum(GUC_synchronous_commit) > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
 		SetConfigOption("synchronous_commit", "local",
 						PGC_SUSET, PGC_S_OVERRIDE);
 
@@ -1632,8 +1633,8 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		ereport(DEBUG1,
 				(errmsg_internal("autovacuum: processing database \"%s\"", dbname)));
 
-		if (PostAuthDelay)
-			pg_usleep(PostAuthDelay * 1000000L);
+		if (GetGUCInt(GUC_PostAuthDelay))
+			pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 		/* And do an appropriate amount of work */
 		recentXid = ReadNextTransactionId();
@@ -1689,19 +1690,19 @@ VacuumUpdateCosts(void)
 	{
 		if (av_storage_param_cost_delay >= 0)
 			vacuum_cost_delay = av_storage_param_cost_delay;
-		else if (autovacuum_vac_cost_delay >= 0)
-			vacuum_cost_delay = autovacuum_vac_cost_delay;
+		else if (GetGUCReal(GUC_autovacuum_vac_cost_delay) >= 0)
+			vacuum_cost_delay = GetGUCReal(GUC_autovacuum_vac_cost_delay);
 		else
 			/* fall back to VacuumCostDelay */
-			vacuum_cost_delay = VacuumCostDelay;
+			vacuum_cost_delay = GetGUCReal(GUC_VacuumCostDelay);
 
 		AutoVacuumUpdateCostLimit();
 	}
 	else
 	{
 		/* Must be explicit VACUUM or ANALYZE or parallel autovacuum worker */
-		vacuum_cost_delay = VacuumCostDelay;
-		vacuum_cost_limit = VacuumCostLimit;
+		vacuum_cost_delay = GetGUCReal(GUC_VacuumCostDelay);
+		vacuum_cost_limit = GetGUCInt(GUC_VacuumCostLimit);
 	}
 
 	/*
@@ -1768,10 +1769,10 @@ AutoVacuumUpdateCostLimit(void)
 	{
 		int			nworkers_for_balance;
 
-		if (autovacuum_vac_cost_limit > 0)
-			vacuum_cost_limit = autovacuum_vac_cost_limit;
+		if (GetGUCInt(GUC_autovacuum_vac_cost_limit) > 0)
+			vacuum_cost_limit = GetGUCInt(GUC_autovacuum_vac_cost_limit);
 		else
-			vacuum_cost_limit = VacuumCostLimit;
+			vacuum_cost_limit = GetGUCInt(GUC_VacuumCostLimit);
 
 		/* Only balance limit if no cost-related storage parameters specified */
 		if (pg_atomic_unlocked_test_flag(&MyWorkerInfo->wi_dobalance))
@@ -1991,10 +1992,10 @@ do_autovacuum(void)
 	}
 	else
 	{
-		default_freeze_min_age = vacuum_freeze_min_age;
-		default_freeze_table_age = vacuum_freeze_table_age;
-		default_multixact_freeze_min_age = vacuum_multixact_freeze_min_age;
-		default_multixact_freeze_table_age = vacuum_multixact_freeze_table_age;
+		default_freeze_min_age = GetGUCInt(GUC_vacuum_freeze_min_age);
+		default_freeze_table_age = GetGUCInt(GUC_vacuum_freeze_table_age);
+		default_multixact_freeze_min_age = GetGUCInt(GUC_vacuum_multixact_freeze_min_age);
+		default_multixact_freeze_table_age = GetGUCInt(GUC_vacuum_multixact_freeze_table_age);
 	}
 
 	ReleaseSysCache(tuple);
@@ -2317,11 +2318,11 @@ do_autovacuum(void)
 	 * probably not necessary, but we want to ensure folks have a guaranteed
 	 * escape hatch from the scoring system.
 	 */
-	if (autovacuum_freeze_score_weight != 0.0 ||
-		autovacuum_multixact_freeze_score_weight != 0.0 ||
-		autovacuum_vacuum_score_weight != 0.0 ||
-		autovacuum_vacuum_insert_score_weight != 0.0 ||
-		autovacuum_analyze_score_weight != 0.0)
+	if (GetGUCReal(GUC_autovacuum_freeze_score_weight) != 0.0 ||
+		GetGUCReal(GUC_autovacuum_multixact_freeze_score_weight) != 0.0 ||
+		GetGUCReal(GUC_autovacuum_vacuum_score_weight) != 0.0 ||
+		GetGUCReal(GUC_autovacuum_vacuum_insert_score_weight) != 0.0 ||
+		GetGUCReal(GUC_autovacuum_analyze_score_weight) != 0.0)
 		list_sort(tables_to_process, TableToProcessComparator);
 
 	/*
@@ -2339,7 +2340,8 @@ do_autovacuum(void)
 	 * XXX should we consider adding code to adjust the size of this if
 	 * VacuumBufferUsageLimit changes?
 	 */
-	bstrategy = GetAccessStrategyWithSize(BAS_VACUUM, VacuumBufferUsageLimit);
+	bstrategy = GetAccessStrategyWithSize(BAS_VACUUM,
+					      GetGUCInt(GUC_VacuumBufferUsageLimit));
 
 	/*
 	 * create a memory context to act as fake PortalContext, so that the
@@ -2884,12 +2886,12 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		/* -1 in autovac setting means use log_autovacuum_min_duration */
 		log_vacuum_min_duration = (avopts && avopts->log_vacuum_min_duration >= 0)
 			? avopts->log_vacuum_min_duration
-			: Log_autovacuum_min_duration;
+			: GetGUCInt(GUC_Log_autovacuum_min_duration);
 
 		/* -1 in autovac setting means use log_autoanalyze_min_duration */
 		log_analyze_min_duration = (avopts && avopts->log_analyze_min_duration >= 0)
 			? avopts->log_analyze_min_duration
-			: Log_autoanalyze_min_duration;
+			: GetGUCInt(GUC_Log_autoanalyze_min_duration);
 
 		/* these do not have autovacuum-specific settings */
 		freeze_min_age = (avopts && avopts->freeze_min_age >= 0)
@@ -2966,7 +2968,7 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		 * Later, in vacuum_rel(), we check reloptions for any
 		 * vacuum_max_eager_freeze_failure_rate override.
 		 */
-		tab->at_params.max_eager_freeze_failure_rate = vacuum_max_eager_freeze_failure_rate;
+		tab->at_params.max_eager_freeze_failure_rate = GetGUCReal(GUC_vacuum_max_eager_freeze_failure_rate);
 		tab->at_storage_param_vac_cost_limit = avopts ?
 			avopts->vacuum_cost_limit : 0;
 		tab->at_storage_param_vac_cost_delay = avopts ?
@@ -3138,37 +3140,38 @@ relation_needs_vacanalyze(Oid relid,
 	/* -1 in autovac setting means use plain vacuum_scale_factor */
 	vac_scale_factor = (relopts && relopts->vacuum_scale_factor >= 0)
 		? relopts->vacuum_scale_factor
-		: autovacuum_vac_scale;
+		: GetGUCReal(GUC_autovacuum_vac_scale);
 
 	vac_base_thresh = (relopts && relopts->vacuum_threshold >= 0)
 		? relopts->vacuum_threshold
-		: autovacuum_vac_thresh;
+		: GetGUCInt(GUC_autovacuum_vac_thresh);
 
 	/* -1 is used to disable max threshold */
 	vac_max_thresh = (relopts && relopts->vacuum_max_threshold >= -1)
 		? relopts->vacuum_max_threshold
-		: autovacuum_vac_max_thresh;
+		: GetGUCInt(GUC_autovacuum_vac_max_thresh);
 
 	vac_ins_scale_factor = (relopts && relopts->vacuum_ins_scale_factor >= 0)
 		? relopts->vacuum_ins_scale_factor
-		: autovacuum_vac_ins_scale;
+		: GetGUCReal(GUC_autovacuum_vac_ins_scale);
 
 	/* -1 is used to disable insert vacuums */
 	vac_ins_base_thresh = (relopts && relopts->vacuum_ins_threshold >= -1)
 		? relopts->vacuum_ins_threshold
-		: autovacuum_vac_ins_thresh;
+		: GetGUCInt(GUC_autovacuum_vac_ins_thresh);
 
 	anl_scale_factor = (relopts && relopts->analyze_scale_factor >= 0)
 		? relopts->analyze_scale_factor
-		: autovacuum_anl_scale;
+		: GetGUCReal(GUC_autovacuum_anl_scale);
 
 	anl_base_thresh = (relopts && relopts->analyze_threshold >= 0)
 		? relopts->analyze_threshold
-		: autovacuum_anl_thresh;
+		: GetGUCInt(GUC_autovacuum_anl_thresh);
 
 	freeze_max_age = (relopts && relopts->freeze_max_age >= 0)
-		? Min(relopts->freeze_max_age, autovacuum_freeze_max_age)
-		: autovacuum_freeze_max_age;
+		? Min(relopts->freeze_max_age,
+		      GetGUCInt(GUC_autovacuum_freeze_max_age))
+		: GetGUCInt(GUC_autovacuum_freeze_max_age);
 
 	multixact_freeze_max_age = (relopts && relopts->multixact_freeze_max_age >= 0)
 		? Min(relopts->multixact_freeze_max_age, effective_multixact_freeze_max_age)
@@ -3221,23 +3224,23 @@ relation_needs_vacanalyze(Oid relid,
 	 * parameters so that increasing them lowers the ages at which we begin
 	 * scaling aggressively.
 	 */
-	effective_xid_failsafe_age = Max(vacuum_failsafe_age,
-									 autovacuum_freeze_max_age * 1.05);
-	effective_mxid_failsafe_age = Max(vacuum_multixact_failsafe_age,
-									  autovacuum_multixact_freeze_max_age * 1.05);
+	effective_xid_failsafe_age = Max(GetGUCInt(GUC_vacuum_failsafe_age),
+									 GetGUCInt(GUC_autovacuum_freeze_max_age) * 1.05);
+	effective_mxid_failsafe_age = Max(GetGUCInt(GUC_vacuum_multixact_failsafe_age),
+									  GetGUCInt(GUC_autovacuum_multixact_freeze_max_age) * 1.05);
 
-	if (autovacuum_freeze_score_weight > 1.0)
-		effective_xid_failsafe_age /= autovacuum_freeze_score_weight;
-	if (autovacuum_multixact_freeze_score_weight > 1.0)
-		effective_mxid_failsafe_age /= autovacuum_multixact_freeze_score_weight;
+	if (GetGUCReal(GUC_autovacuum_freeze_score_weight) > 1.0)
+		effective_xid_failsafe_age /= GetGUCReal(GUC_autovacuum_freeze_score_weight);
+	if (GetGUCReal(GUC_autovacuum_multixact_freeze_score_weight) > 1.0)
+		effective_mxid_failsafe_age /= GetGUCReal(GUC_autovacuum_multixact_freeze_score_weight);
 
 	if (xid_age >= effective_xid_failsafe_age)
 		scores->xid = pow(scores->xid, Max(1.0, (double) xid_age / 100000000));
 	if (mxid_age >= effective_mxid_failsafe_age)
 		scores->mxid = pow(scores->mxid, Max(1.0, (double) mxid_age / 100000000));
 
-	scores->xid *= autovacuum_freeze_score_weight;
-	scores->mxid *= autovacuum_multixact_freeze_score_weight;
+	scores->xid *= GetGUCReal(GUC_autovacuum_freeze_score_weight);
+	scores->mxid *= GetGUCReal(GUC_autovacuum_multixact_freeze_score_weight);
 
 	scores->max = Max(scores->xid, scores->mxid);
 	if (force_vacuum)
@@ -3290,7 +3293,7 @@ relation_needs_vacanalyze(Oid relid,
 
 	/* Determine if this table needs vacuum, and update the score. */
 	scores->vac = (double) vactuples / Max(vacthresh, 1);
-	scores->vac *= autovacuum_vacuum_score_weight;
+	scores->vac *= GetGUCReal(GUC_autovacuum_vacuum_score_weight);
 	scores->max = Max(scores->max, scores->vac);
 	if (av_enabled && vactuples > vacthresh)
 		*dovacuum = true;
@@ -3298,7 +3301,7 @@ relation_needs_vacanalyze(Oid relid,
 	if (vac_ins_base_thresh >= 0)
 	{
 		scores->vac_ins = (double) instuples / Max(vacinsthresh, 1);
-		scores->vac_ins *= autovacuum_vacuum_insert_score_weight;
+		scores->vac_ins *= GetGUCReal(GUC_autovacuum_vacuum_insert_score_weight);
 		scores->max = Max(scores->max, scores->vac_ins);
 		if (av_enabled && instuples > vacinsthresh)
 			*dovacuum = true;
@@ -3312,7 +3315,7 @@ relation_needs_vacanalyze(Oid relid,
 		classForm->relkind != RELKIND_TOASTVALUE)
 	{
 		scores->anl = (double) anltuples / Max(anlthresh, 1);
-		scores->anl *= autovacuum_analyze_score_weight;
+		scores->anl *= GetGUCReal(GUC_autovacuum_analyze_score_weight);
 		scores->max = Max(scores->max, scores->anl);
 		if (av_enabled && anltuples > anlthresh)
 			*doanalyze = true;
@@ -3462,7 +3465,7 @@ autovac_report_workitem(AutoVacuumWorkItem *workitem,
 bool
 AutoVacuumingActive(void)
 {
-	if (!autovacuum_start_daemon || !pgstat_track_counts)
+	if (!GetGUCBool(GUC_autovacuum_start_daemon) || !GetGUCBool(GUC_pgstat_track_counts))
 		return false;
 	return true;
 }
@@ -3516,9 +3519,9 @@ AutoVacuumRequestWork(AutoVacuumWorkItemType type, Oid relationId,
 void
 autovac_init(void)
 {
-	if (!autovacuum_start_daemon)
+	if (!GetGUCBool(GUC_autovacuum_start_daemon))
 		return;
-	else if (!pgstat_track_counts)
+	else if (!GetGUCBool(GUC_pgstat_track_counts))
 		ereport(WARNING,
 				(errmsg("autovacuum not started because of misconfiguration"),
 				 errhint("Enable the \"track_counts\" option.")));
@@ -3540,7 +3543,7 @@ AutoVacuumShmemRequest(void *arg)
 	 */
 	size = sizeof(AutoVacuumShmemStruct);
 	size = MAXALIGN(size);
-	size = add_size(size, mul_size(autovacuum_worker_slots,
+	size = add_size(size, mul_size(GetGUCInt(GUC_autovacuum_worker_slots),
 								   sizeof(WorkerInfoData)));
 
 	ShmemRequestStruct(.name = "AutoVacuum Data",
@@ -3569,7 +3572,7 @@ AutoVacuumShmemInit(void *arg)
 						   MAXALIGN(sizeof(AutoVacuumShmemStruct)));
 
 	/* initialize the WorkerInfo free list */
-	for (int i = 0; i < autovacuum_worker_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_autovacuum_worker_slots); i++)
 	{
 		dclist_push_head(&AutoVacuumShmem->av_freeWorkers,
 						 &worker[i].wi_links);
@@ -3616,7 +3619,7 @@ av_worker_available(void)
 
 	free_slots = dclist_count(&AutoVacuumShmem->av_freeWorkers);
 
-	reserved_slots = autovacuum_worker_slots - autovacuum_max_workers;
+	reserved_slots = GetGUCInt(GUC_autovacuum_worker_slots) - GetGUCInt(GUC_autovacuum_max_workers);
 	reserved_slots = Max(0, reserved_slots);
 
 	return free_slots > reserved_slots;
@@ -3628,13 +3631,13 @@ av_worker_available(void)
 static void
 check_av_worker_gucs(void)
 {
-	if (autovacuum_worker_slots < autovacuum_max_workers)
+	if (GetGUCInt(GUC_autovacuum_worker_slots) < GetGUCInt(GUC_autovacuum_max_workers))
 		ereport(WARNING,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("\"autovacuum_max_workers\" (%d) should be less than or equal to \"autovacuum_worker_slots\" (%d)",
-						autovacuum_max_workers, autovacuum_worker_slots),
+						GetGUCInt(GUC_autovacuum_max_workers), GetGUCInt(GUC_autovacuum_worker_slots)),
 				 errdetail("The server will only start up to \"autovacuum_worker_slots\" (%d) autovacuum workers at a given time.",
-						   autovacuum_worker_slots)));
+						   GetGUCInt(GUC_autovacuum_worker_slots))));
 }
 
 /*

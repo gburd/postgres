@@ -1977,7 +1977,7 @@ array_sort_internal(ArrayType *array, bool descending, bool nulls_first,
 										   sort_opr,
 										   collation,
 										   nulls_first,
-										   work_mem,
+										   GetGUCInt(GUC_work_mem),
 										   NULL,
 										   TUPLESORT_NONE);
 

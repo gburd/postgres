@@ -46,7 +46,7 @@ shell_archive_init(void)
 static bool
 shell_archive_configured(ArchiveModuleState *state)
 {
-	if (XLogArchiveCommand[0] != '\0')
+	if (GetGUCString(GUC_XLogArchiveCommand)[0] != '\0')
 		return true;
 
 	arch_module_check_errdetail("\"%s\" is not set.",
@@ -68,7 +68,7 @@ shell_archive_file(ArchiveModuleState *state, const char *file,
 		make_native_path(nativePath);
 	}
 
-	xlogarchcmd = replace_percent_placeholders(XLogArchiveCommand,
+	xlogarchcmd = replace_percent_placeholders(GetGUCString(GUC_XLogArchiveCommand),
 											   "archive_command", "fp",
 											   file, nativePath);
 

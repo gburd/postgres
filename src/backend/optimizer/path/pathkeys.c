@@ -484,7 +484,7 @@ get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 	 * not, we produce only the order specified in the query, i.e. the
 	 * optimization is effectively disabled.
 	 */
-	if (!enable_group_by_reordering)
+	if (!GetGUCBool(GUC_enable_group_by_reordering))
 		return infos;
 
 	/*
@@ -507,7 +507,7 @@ get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 										   root->num_groupby_pathkeys);
 
 		if (n > 0 &&
-			(enable_incremental_sort || n == root->num_groupby_pathkeys) &&
+			(GetGUCBool(GUC_enable_incremental_sort) || n == root->num_groupby_pathkeys) &&
 			compare_pathkeys(pathkeys, root->group_pathkeys) != PATHKEYS_EQUAL)
 		{
 			info = makeNode(GroupByOrdering);

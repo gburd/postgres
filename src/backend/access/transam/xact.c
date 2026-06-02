@@ -1063,7 +1063,7 @@ GetTopReadOnlyTransactionNestLevel(void)
 {
 	TransactionState s = CurrentTransactionState;
 
-	if (!XactReadOnly)
+	if (!GetGUCBool(GUC_XactReadOnly))
 		return 0;
 	while (s->nestingLevel > 1)
 	{
@@ -1538,7 +1538,7 @@ RecordTransactionCommit(void)
 	 * anyway if we crash.)
 	 */
 	if ((wrote_xlog && markXidCommitted &&
-		 synchronous_commit > SYNCHRONOUS_COMMIT_OFF) ||
+		 GetGUCEnum(GUC_synchronous_commit) > SYNCHRONOUS_COMMIT_OFF) ||
 		forceSyncCommit || nrels > 0)
 	{
 		XLogFlush(XactLastRecEnd);
@@ -2129,9 +2129,9 @@ StartTransaction(void)
 	s->fullTransactionId = InvalidFullTransactionId;	/* until assigned */
 
 	/* Determine if statements are logged in this transaction */
-	xact_is_sampled = log_xact_sample_rate != 0 &&
-		(log_xact_sample_rate == 1 ||
-		 pg_prng_double(&pg_global_prng_state) <= log_xact_sample_rate);
+	xact_is_sampled = GetGUCReal(GUC_log_xact_sample_rate) != 0 &&
+		(GetGUCReal(GUC_log_xact_sample_rate) == 1 ||
+		 pg_prng_double(&pg_global_prng_state) <= GetGUCReal(GUC_log_xact_sample_rate));
 
 	/*
 	 * initialize current transaction state fields
@@ -2169,10 +2169,10 @@ StartTransaction(void)
 	else
 	{
 		s->startedInRecovery = false;
-		XactReadOnly = DefaultXactReadOnly;
+		XactReadOnly = GetGUCBool(GUC_DefaultXactReadOnly);
 	}
-	XactDeferrable = DefaultXactDeferrable;
-	XactIsoLevel = DefaultXactIsoLevel;
+	XactDeferrable = GetGUCBool(GUC_DefaultXactDeferrable);
+	XactIsoLevel = GetGUCEnum(GUC_DefaultXactIsoLevel);
 	forceSyncCommit = false;
 	MyXactFlags = 0;
 
@@ -2254,8 +2254,9 @@ StartTransaction(void)
 	s->state = TRANS_INPROGRESS;
 
 	/* Schedule transaction timeout */
-	if (TransactionTimeout > 0)
-		enable_timeout_after(TRANSACTION_TIMEOUT, TransactionTimeout);
+	if (GetGUCInt(GUC_TransactionTimeout) > 0)
+		enable_timeout_after(TRANSACTION_TIMEOUT,
+				     GetGUCInt(GUC_TransactionTimeout));
 
 	ShowTransactionState("StartTransaction");
 }
@@ -2395,7 +2396,7 @@ CommitTransaction(void)
 	s->parallelChildXact = false;	/* should be false already */
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (GetGUCInt(GUC_TransactionTimeout) > 0)
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	if (!is_parallel_worker)
@@ -2678,7 +2679,7 @@ PrepareTransaction(void)
 	s->state = TRANS_PREPARE;
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (GetGUCInt(GUC_TransactionTimeout) > 0)
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	prepared_at = GetCurrentTimestamp();
@@ -2860,7 +2861,7 @@ AbortTransaction(void)
 	HOLD_INTERRUPTS();
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (GetGUCInt(GUC_TransactionTimeout) > 0)
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	/* Make sure we have a valid memory context and resource owner */
@@ -3185,9 +3186,9 @@ StartTransactionCommand(void)
 void
 SaveTransactionCharacteristics(SavedTransactionCharacteristics *s)
 {
-	s->save_XactIsoLevel = XactIsoLevel;
-	s->save_XactReadOnly = XactReadOnly;
-	s->save_XactDeferrable = XactDeferrable;
+	s->save_XactIsoLevel = GetGUCEnum(GUC_XactIsoLevel);
+	s->save_XactReadOnly = GetGUCBool(GUC_XactReadOnly);
+	s->save_XactDeferrable = GetGUCBool(GUC_XactDeferrable);
 }
 
 void
@@ -4745,7 +4746,7 @@ void
 BeginInternalSubTransaction(const char *name)
 {
 	TransactionState s = CurrentTransactionState;
-	bool		save_ExitOnAnyError = ExitOnAnyError;
+	bool		save_ExitOnAnyError = GetGUCBool(GUC_ExitOnAnyError);
 
 	/*
 	 * Errors within this function are improbable, but if one does happen we
@@ -5502,7 +5503,7 @@ PushTransaction(void)
 	s->state = TRANS_DEFAULT;
 	s->blockState = TBLOCK_SUBBEGIN;
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
-	s->prevXactReadOnly = XactReadOnly;
+	s->prevXactReadOnly = GetGUCBool(GUC_XactReadOnly);
 	s->startedInRecovery = p->startedInRecovery;
 	s->parallelModeLevel = 0;
 	s->parallelChildXact = (p->parallelModeLevel != 0 || p->parallelChildXact);
@@ -5598,8 +5599,8 @@ SerializeTransactionState(Size maxsize, char *start_address)
 
 	result = (SerializedTransactionState *) start_address;
 
-	result->xactIsoLevel = XactIsoLevel;
-	result->xactDeferrable = XactDeferrable;
+	result->xactIsoLevel = GetGUCEnum(GUC_XactIsoLevel);
+	result->xactDeferrable = GetGUCBool(GUC_XactDeferrable);
 	result->topFullTransactionId = XactTopFullTransactionId;
 	result->currentFullTransactionId =
 		CurrentTransactionState->fullTransactionId;
@@ -5907,7 +5908,7 @@ XactLogCommitRecord(TimestampTz commit_time,
 	 * Check if the caller would like to ask standbys for immediate feedback
 	 * once this commit is applied.
 	 */
-	if (synchronous_commit >= SYNCHRONOUS_COMMIT_REMOTE_APPLY)
+	if (GetGUCEnum(GUC_synchronous_commit) >= SYNCHRONOUS_COMMIT_REMOTE_APPLY)
 		xl_xinfo.xinfo |= XACT_COMPLETION_APPLY_FEEDBACK;
 
 	/*

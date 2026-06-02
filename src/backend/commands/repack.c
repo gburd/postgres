@@ -602,7 +602,7 @@ cluster_rel(RepackCommand cmd, Relation OldHeap, Oid indexOid,
 	 * allowed.
 	 */
 	if (cmd != REPACK_COMMAND_CLUSTER &&
-		!allowSystemTableMods && OidIsValid(indexOid) &&
+		!GetGUCBool(GUC_allowSystemTableMods) && OidIsValid(indexOid) &&
 		IsCatalogRelation(OldHeap) && !index->rd_index->indisclustered)
 		ereport(ERROR,
 				errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

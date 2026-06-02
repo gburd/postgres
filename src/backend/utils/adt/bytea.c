@@ -279,7 +279,7 @@ byteaout(PG_FUNCTION_ARGS)
 	char	   *result;
 	char	   *rp;
 
-	if (bytea_output == BYTEA_OUTPUT_HEX)
+	if (GetGUCEnum(GUC_bytea_output) == BYTEA_OUTPUT_HEX)
 	{
 		/* Print hex format */
 		rp = result = palloc(VARSIZE_ANY_EXHDR(vlena) * 2 + 2 + 1);
@@ -287,7 +287,7 @@ byteaout(PG_FUNCTION_ARGS)
 		*rp++ = 'x';
 		rp += hex_encode(VARDATA_ANY(vlena), VARSIZE_ANY_EXHDR(vlena), rp);
 	}
-	else if (bytea_output == BYTEA_OUTPUT_ESCAPE)
+	else if (GetGUCEnum(GUC_bytea_output) == BYTEA_OUTPUT_ESCAPE)
 	{
 		/* Print traditional escaped format */
 		char	   *vp;
@@ -345,7 +345,7 @@ byteaout(PG_FUNCTION_ARGS)
 	else
 	{
 		elog(ERROR, "unrecognized \"bytea_output\" setting: %d",
-			 bytea_output);
+			 GetGUCEnum(GUC_bytea_output));
 		rp = result = NULL;		/* keep compiler quiet */
 	}
 	*rp = '\0';
@@ -1175,7 +1175,7 @@ bytea_abbrev_abort(int memtupcount, SortSupport ssup)
 	if (key_distinct < 1.0)
 		key_distinct = 1.0;
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 	{
 		double		norm_abbrev_card = abbrev_distinct / (double) memtupcount;
 
@@ -1203,7 +1203,7 @@ bytea_abbrev_abort(int memtupcount, SortSupport ssup)
 	/*
 	 * Abort abbreviation strategy.
 	 */
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG, "bytea_abbrev: aborted abbreviation at %d "
 			 "(abbrev_distinct: %f, key_distinct: %f, prop_card: %f)",
 			 memtupcount, abbrev_distinct, key_distinct, bss->prop_card);

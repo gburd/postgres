@@ -111,7 +111,7 @@ geqo(PlannerInfo *root, int number_of_rels, List *initial_rels)
 	root->assumeReplanning = true;
 
 /* initialize private number generator */
-	geqo_set_seed(root, Geqo_seed);
+	geqo_set_seed(root, GetGUCReal(GUC_Geqo_seed));
 
 /* set GA parameters */
 	pool_size = gimme_pool_size(number_of_rels);
@@ -191,7 +191,8 @@ geqo(PlannerInfo *root, int number_of_rels, List *initial_rels)
 	for (generation = 0; generation < number_generations; generation++)
 	{
 		/* SELECTION: using linear bias function */
-		geqo_selection(root, momma, daddy, pool, Geqo_selection_bias);
+		geqo_selection(root, momma, daddy, pool,
+			       GetGUCReal(GUC_Geqo_selection_bias));
 
 #if defined (ERX)
 		/* EDGE RECOMBINATION CROSSOVER */
@@ -332,16 +333,16 @@ gimme_pool_size(int nr_rel)
 	int			maxsize;
 
 	/* Legal pool size *must* be at least 2, so ignore attempt to select 1 */
-	if (Geqo_pool_size >= 2)
-		return Geqo_pool_size;
+	if (GetGUCInt(GUC_Geqo_pool_size) >= 2)
+		return GetGUCInt(GUC_Geqo_pool_size);
 
 	size = pow(2.0, nr_rel + 1.0);
 
-	maxsize = 50 * Geqo_effort; /* 50 to 500 individuals */
+	maxsize = 50 * GetGUCInt(GUC_Geqo_effort); /* 50 to 500 individuals */
 	if (size > maxsize)
 		return maxsize;
 
-	minsize = 10 * Geqo_effort; /* 10 to 100 individuals */
+	minsize = 10 * GetGUCInt(GUC_Geqo_effort); /* 10 to 100 individuals */
 	if (size < minsize)
 		return minsize;
 
@@ -359,8 +360,8 @@ gimme_pool_size(int nr_rel)
 static int
 gimme_number_generations(int pool_size)
 {
-	if (Geqo_generations > 0)
-		return Geqo_generations;
+	if (GetGUCInt(GUC_Geqo_generations) > 0)
+		return GetGUCInt(GUC_Geqo_generations);
 
 	return pool_size;
 }

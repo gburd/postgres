@@ -401,7 +401,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		IsUnderPostmaster &&
 		parse->commandType == CMD_SELECT &&
 		!parse->hasModifyingCTE &&
-		max_parallel_workers_per_gather > 0 &&
+		GetGUCInt(GUC_max_parallel_workers_per_gather) > 0 &&
 		!IsParallelWorker())
 	{
 		/* all the cheap tests pass, so scan the query tree */
@@ -433,7 +433,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 * parallel-unsafe, or else the query planner itself has a bug.
 	 */
 	glob->parallelModeNeeded = glob->parallelModeOK &&
-		(debug_parallel_query != DEBUG_PARALLEL_OFF);
+		(GetGUCEnum(GUC_debug_parallel_query) != DEBUG_PARALLEL_OFF);
 
 	/* Determine what fraction of the plan is likely to be scanned */
 	if (cursorOptions & CURSOR_OPT_FAST_PLAN)
@@ -445,7 +445,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		 * process some of the tuples sooner.  Use a GUC parameter to decide
 		 * what fraction to optimize for.
 		 */
-		tuple_fraction = cursor_tuple_fraction;
+		tuple_fraction = GetGUCReal(GUC_cursor_tuple_fraction);
 
 		/*
 		 * We document cursor_tuple_fraction as simply being a fraction, which
@@ -479,35 +479,35 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 */
 	glob->default_pgs_mask = PGS_APPEND | PGS_MERGE_APPEND | PGS_FOREIGNJOIN |
 		PGS_GATHER | PGS_CONSIDER_NONPARTIAL;
-	if (enable_tidscan)
+	if (GetGUCBool(GUC_enable_tidscan))
 		glob->default_pgs_mask |= PGS_TIDSCAN;
-	if (enable_seqscan)
+	if (GetGUCBool(GUC_enable_seqscan))
 		glob->default_pgs_mask |= PGS_SEQSCAN;
-	if (enable_indexscan)
+	if (GetGUCBool(GUC_enable_indexscan))
 		glob->default_pgs_mask |= PGS_INDEXSCAN | PGS_INDEXONLYSCAN;
-	if (enable_indexonlyscan)
+	if (GetGUCBool(GUC_enable_indexonlyscan))
 		glob->default_pgs_mask |= PGS_CONSIDER_INDEXONLY;
-	if (enable_bitmapscan)
+	if (GetGUCBool(GUC_enable_bitmapscan))
 		glob->default_pgs_mask |= PGS_BITMAPSCAN;
-	if (enable_mergejoin)
+	if (GetGUCBool(GUC_enable_mergejoin))
 	{
 		glob->default_pgs_mask |= PGS_MERGEJOIN_PLAIN;
-		if (enable_material)
+		if (GetGUCBool(GUC_enable_material))
 			glob->default_pgs_mask |= PGS_MERGEJOIN_MATERIALIZE;
 	}
-	if (enable_nestloop)
+	if (GetGUCBool(GUC_enable_nestloop))
 	{
 		glob->default_pgs_mask |= PGS_NESTLOOP_PLAIN;
-		if (enable_material)
+		if (GetGUCBool(GUC_enable_material))
 			glob->default_pgs_mask |= PGS_NESTLOOP_MATERIALIZE;
-		if (enable_memoize)
+		if (GetGUCBool(GUC_enable_memoize))
 			glob->default_pgs_mask |= PGS_NESTLOOP_MEMOIZE;
 	}
-	if (enable_hashjoin)
+	if (GetGUCBool(GUC_enable_hashjoin))
 		glob->default_pgs_mask |= PGS_HASHJOIN;
-	if (enable_gathermerge)
+	if (GetGUCBool(GUC_enable_gathermerge))
 		glob->default_pgs_mask |= PGS_GATHER_MERGE;
-	if (enable_partitionwise_join)
+	if (GetGUCBool(GUC_enable_partitionwise_join))
 		glob->default_pgs_mask |= PGS_CONSIDER_PARTITIONWISE;
 
 	/* Allow plugins to take control after we've initialized "glob" */
@@ -547,10 +547,10 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 * them to disappear from EXPLAIN output.  That doesn't seem worth kluging
 	 * EXPLAIN to hide, so skip it when debug_parallel_query = regress.
 	 */
-	if (debug_parallel_query != DEBUG_PARALLEL_OFF &&
+	if (GetGUCEnum(GUC_debug_parallel_query) != DEBUG_PARALLEL_OFF &&
 		top_plan->parallel_safe &&
 		(top_plan->initPlan == NIL ||
-		 debug_parallel_query != DEBUG_PARALLEL_REGRESS))
+		 GetGUCEnum(GUC_debug_parallel_query) != DEBUG_PARALLEL_REGRESS))
 	{
 		Gather	   *gather = makeNode(Gather);
 		Cost		initplan_cost;
@@ -562,7 +562,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		gather->plan.righttree = NULL;
 		gather->num_workers = 1;
 		gather->single_copy = true;
-		gather->invisible = (debug_parallel_query == DEBUG_PARALLEL_REGRESS);
+		gather->invisible = (GetGUCEnum(GUC_debug_parallel_query) == DEBUG_PARALLEL_REGRESS);
 
 		/* Transfer any initPlans to the new top node */
 		gather->plan.initPlan = top_plan->initPlan;
@@ -579,9 +579,9 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		 * to satisfy it doesn't seem much cleaner than knowing what it does.
 		 */
 		gather->plan.startup_cost = top_plan->startup_cost +
-			parallel_setup_cost;
+			GetGUCReal(GUC_parallel_setup_cost);
 		gather->plan.total_cost = top_plan->total_cost +
-			parallel_setup_cost + parallel_tuple_cost * top_plan->plan_rows;
+			GetGUCReal(GUC_parallel_setup_cost) + GetGUCReal(GUC_parallel_tuple_cost) * top_plan->plan_rows;
 		gather->plan.plan_rows = top_plan->plan_rows;
 		gather->plan.plan_width = top_plan->plan_width;
 		gather->plan.parallel_aware = false;
@@ -683,27 +683,27 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	result->stmt_len = parse->stmt_len;
 
 	result->jitFlags = PGJIT_NONE;
-	if (jit_enabled && jit_above_cost >= 0 &&
-		top_plan->total_cost > jit_above_cost)
+	if (GetGUCBool(GUC_jit_enabled) && GetGUCReal(GUC_jit_above_cost) >= 0 &&
+		top_plan->total_cost > GetGUCReal(GUC_jit_above_cost))
 	{
 		result->jitFlags |= PGJIT_PERFORM;
 
 		/*
 		 * Decide how much effort should be put into generating better code.
 		 */
-		if (jit_optimize_above_cost >= 0 &&
-			top_plan->total_cost > jit_optimize_above_cost)
+		if (GetGUCReal(GUC_jit_optimize_above_cost) >= 0 &&
+			top_plan->total_cost > GetGUCReal(GUC_jit_optimize_above_cost))
 			result->jitFlags |= PGJIT_OPT3;
-		if (jit_inline_above_cost >= 0 &&
-			top_plan->total_cost > jit_inline_above_cost)
+		if (GetGUCReal(GUC_jit_inline_above_cost) >= 0 &&
+			top_plan->total_cost > GetGUCReal(GUC_jit_inline_above_cost))
 			result->jitFlags |= PGJIT_INLINE;
 
 		/*
 		 * Decide which operations should be JITed.
 		 */
-		if (jit_expressions)
+		if (GetGUCBool(GUC_jit_expressions))
 			result->jitFlags |= PGJIT_EXPR;
-		if (jit_tuple_deforming)
+		if (GetGUCBool(GUC_jit_tuple_deforming))
 			result->jitFlags |= PGJIT_DEFORM;
 	}
 
@@ -3340,7 +3340,7 @@ adjust_group_pathkeys_for_groupagg(PlannerInfo *root)
 	Assert(root->numOrderedAggs > 0);
 
 	/* Do nothing if disabled */
-	if (!enable_presorted_aggregate)
+	if (!GetGUCBool(GUC_enable_presorted_aggregate))
 		return;
 
 	/*
@@ -3966,7 +3966,7 @@ create_grouping_paths(PlannerInfo *root,
 		 * support grouping sets.  create_ordinary_grouping_paths() will check
 		 * additional conditions, such as whether input_rel is partitioned.
 		 */
-		if (enable_partitionwise_aggregate && !parse->groupingSets)
+		if (GetGUCBool(GUC_enable_partitionwise_aggregate) && !parse->groupingSets)
 			extra.patype = PARTITIONWISE_AGGREGATE_FULL;
 		else
 			extra.patype = PARTITIONWISE_AGGREGATE_NONE;
@@ -4763,7 +4763,7 @@ create_one_window_path(PlannerInfo *root,
 			 * No presorted keys or incremental sort disabled, just perform a
 			 * complete sort.
 			 */
-			if (presorted_keys == 0 || !enable_incremental_sort)
+			if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 				path = (Path *) create_sort_path(root, window_rel,
 												 path,
 												 window_pathkeys,
@@ -5077,7 +5077,7 @@ create_partial_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	 * path here, we treat enable_hashagg as a hard off-switch rather than the
 	 * slightly softer variant in create_final_distinct_paths.
 	 */
-	if (enable_hashagg && grouping_is_hashable(root->processed_distinctClause))
+	if (GetGUCBool(GUC_enable_hashagg) && grouping_is_hashable(root->processed_distinctClause))
 	{
 		add_partial_path(partial_distinct_rel, (Path *)
 						 create_agg_path(root,
@@ -5279,7 +5279,7 @@ create_final_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	 */
 	if (distinct_rel->pathlist == NIL)
 		allow_hash = true;		/* we have no alternatives */
-	else if (parse->hasDistinctOn || !enable_hashagg)
+	else if (parse->hasDistinctOn || !GetGUCBool(GUC_enable_hashagg))
 		allow_hash = false;		/* policy-based decision not to hash */
 	else
 		allow_hash = true;		/* default */
@@ -5322,7 +5322,7 @@ get_useful_pathkeys_for_distinct(PlannerInfo *root, List *needed_pathkeys,
 	useful_pathkeys_list = lappend(useful_pathkeys_list,
 								   needed_pathkeys);
 
-	if (!enable_distinct_reordering)
+	if (!GetGUCBool(GUC_enable_distinct_reordering))
 		return useful_pathkeys_list;
 
 	/*
@@ -5358,7 +5358,7 @@ get_useful_pathkeys_for_distinct(PlannerInfo *root, List *needed_pathkeys,
 	 * incremental sort.
 	 */
 	if (list_length(useful_pathkeys) < list_length(needed_pathkeys) &&
-		!enable_incremental_sort)
+		!GetGUCBool(GUC_enable_incremental_sort))
 		return useful_pathkeys_list;
 
 	/* Append the remaining PathKey nodes in needed_pathkeys */
@@ -5451,7 +5451,7 @@ create_ordered_paths(PlannerInfo *root,
 			 * input path).
 			 */
 			if (input_path != cheapest_input_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -5459,7 +5459,7 @@ create_ordered_paths(PlannerInfo *root,
 			 * We'll just do a sort if there are no presorted keys and an
 			 * incremental sort when there are presorted keys.
 			 */
-			if (presorted_keys == 0 || !enable_incremental_sort)
+			if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 				sorted_path = (Path *) create_sort_path(root,
 														ordered_rel,
 														input_path,
@@ -5526,7 +5526,7 @@ create_ordered_paths(PlannerInfo *root,
 			 * partial path).
 			 */
 			if (input_path != cheapest_partial_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -5534,7 +5534,7 @@ create_ordered_paths(PlannerInfo *root,
 			 * We'll just do a sort if there are no presorted keys and an
 			 * incremental sort when there are presorted keys.
 			 */
-			if (presorted_keys == 0 || !enable_incremental_sort)
+			if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 				sorted_path = (Path *) create_sort_path(root,
 														ordered_rel,
 														input_path,
@@ -6576,7 +6576,7 @@ make_sort_input_target(PlannerInfo *root,
 				 * cpu_operator_cost".  Note this will take in any PL function
 				 * with default cost.
 				 */
-				if (cost.per_tuple > 10 * cpu_operator_cost)
+				if (cost.per_tuple > 10 * GetGUCReal(GUC_cpu_operator_cost))
 				{
 					postpone_col[i] = true;
 					have_expensive = true;
@@ -6932,7 +6932,7 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 	ListCell   *lc;
 
 	/* We can short-circuit the cost comparison if indexscans are disabled */
-	if (!enable_indexscan)
+	if (!GetGUCBool(GUC_enable_indexscan))
 		return true;			/* use sort */
 
 	/* Set up mostly-dummy planner state */
@@ -7009,7 +7009,8 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid)
 	cost_sort(&seqScanAndSortPath, root, NIL,
 			  seqScanPath->disabled_nodes,
 			  seqScanPath->total_cost, rel->tuples, rel->reltarget->width,
-			  comparisonCost, maintenance_work_mem, -1.0);
+			  comparisonCost, GetGUCInt(GUC_maintenance_work_mem),
+			  -1.0);
 
 	/* Estimate the cost of index scan */
 	indexScanPath = create_index_path(root, indexInfo,
@@ -7056,7 +7057,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	 * We don't allow performing parallel operation in standalone backend or
 	 * when parallelism is disabled.
 	 */
-	if (!IsUnderPostmaster || max_parallel_maintenance_workers == 0)
+	if (!IsUnderPostmaster || GetGUCInt(GUC_max_parallel_maintenance_workers) == 0)
 		return 0;
 
 	/* Set up largely-dummy planner state */
@@ -7127,7 +7128,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	if (rel->rel_parallel_workers != -1)
 	{
 		parallel_workers = Min(rel->rel_parallel_workers,
-							   max_parallel_maintenance_workers);
+							   GetGUCInt(GUC_max_parallel_maintenance_workers));
 		goto done;
 	}
 
@@ -7142,7 +7143,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	 * model
 	 */
 	parallel_workers = compute_parallel_worker(rel, heap_blocks, -1,
-											   max_parallel_maintenance_workers);
+											   GetGUCInt(GUC_max_parallel_maintenance_workers));
 
 	/*
 	 * Cap workers based on available maintenance_work_mem as needed.
@@ -7155,7 +7156,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
 	 * parallel worker to sort.
 	 */
 	while (parallel_workers > 0 &&
-		   maintenance_work_mem / (parallel_workers + 1) < 32 * 1024)
+		   GetGUCInt(GUC_maintenance_work_mem) / (parallel_workers + 1) < 32 * 1024)
 		parallel_workers--;
 
 done:
@@ -7803,7 +7804,7 @@ make_ordered_path(PlannerInfo *root, RelOptInfo *rel, Path *path,
 		 * disabled unless it's the cheapest input path).
 		 */
 		if (path != cheapest_path &&
-			(presorted_keys == 0 || !enable_incremental_sort))
+			(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 			return NULL;
 
 		/*
@@ -7811,7 +7812,7 @@ make_ordered_path(PlannerInfo *root, RelOptInfo *rel, Path *path,
 		 * just do a sort if there are no presorted keys and an incremental
 		 * sort when there are presorted keys.
 		 */
-		if (presorted_keys == 0 || !enable_incremental_sort)
+		if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 			path = (Path *) create_sort_path(root,
 											 rel,
 											 path,
@@ -7886,7 +7887,7 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 		 * disabled unless it's the cheapest input path).
 		 */
 		if (path != cheapest_partial_path &&
-			(presorted_keys == 0 || !enable_incremental_sort))
+			(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 			continue;
 
 		/*
@@ -7894,7 +7895,7 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 		 * just do a sort if there are no presorted keys and an incremental
 		 * sort when there are presorted keys.
 		 */
-		if (presorted_keys == 0 || !enable_incremental_sort)
+		if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 			path = (Path *) create_sort_path(root, rel, path,
 											 groupby_pathkeys,
 											 -1.0);
@@ -8809,7 +8810,7 @@ create_final_unique_paths(PlannerInfo *root, RelOptInfo *input_rel,
 			 * which have presorted keys when incremental sort is disabled).
 			 */
 			if (!is_sorted && input_path != cheapest_input_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -8827,7 +8828,7 @@ create_final_unique_paths(PlannerInfo *root, RelOptInfo *input_rel,
 				 * We'll just do a sort if there are no presorted keys and an
 				 * incremental sort when there are presorted keys.
 				 */
-				if (presorted_keys == 0 || !enable_incremental_sort)
+				if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 					path = (Path *) create_sort_path(root,
 													 unique_rel,
 													 path,
@@ -8951,7 +8952,7 @@ create_partial_unique_paths(PlannerInfo *root, RelOptInfo *input_rel,
 			 * which have presorted keys when incremental sort is disabled).
 			 */
 			if (!is_sorted && input_path != cheapest_partial_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -8969,7 +8970,7 @@ create_partial_unique_paths(PlannerInfo *root, RelOptInfo *input_rel,
 				 * We'll just do a sort if there are no presorted keys and an
 				 * incremental sort when there are presorted keys.
 				 */
-				if (presorted_keys == 0 || !enable_incremental_sort)
+				if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 					path = (Path *) create_sort_path(root,
 													 partial_unique_rel,
 													 path,

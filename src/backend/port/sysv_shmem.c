@@ -518,10 +518,10 @@ GetHugePageSize(Size *hugepagesize, int *mmap_flags)
 	}
 #endif							/* __linux__ */
 
-	if (huge_page_size != 0)
+	if (GetGUCInt(GUC_huge_page_size) != 0)
 	{
 		/* If huge page size is requested explicitly, use that. */
-		hugepagesize_local = (Size) huge_page_size * 1024;
+		hugepagesize_local = (Size) GetGUCInt(GUC_huge_page_size) * 1024;
 	}
 	else if (default_hugepagesize != 0)
 	{
@@ -606,9 +606,9 @@ CreateAnonymousSegment(Size *size)
 
 #ifndef MAP_HUGETLB
 	/* PGSharedMemoryCreate should have dealt with this case */
-	Assert(huge_pages != HUGE_PAGES_ON);
+	Assert(GetGUCEnum(GUC_huge_pages) != HUGE_PAGES_ON);
 #else
-	if (huge_pages == HUGE_PAGES_ON || huge_pages == HUGE_PAGES_TRY)
+	if (GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON || GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_TRY)
 	{
 		/*
 		 * Round up the request size to a suitable large value.
@@ -624,7 +624,7 @@ CreateAnonymousSegment(Size *size)
 		ptr = mmap(NULL, allocsize, PROT_READ | PROT_WRITE,
 				   mmap_flags | huge_mmap_flags, -1, 0);
 		mmap_errno = errno;
-		if (huge_pages == HUGE_PAGES_TRY && ptr == MAP_FAILED)
+		if (GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_TRY && ptr == MAP_FAILED)
 			elog(DEBUG1, "mmap(%zu) with MAP_HUGETLB failed, huge pages disabled: %m",
 				 allocsize);
 	}
@@ -638,7 +638,7 @@ CreateAnonymousSegment(Size *size)
 	SetConfigOption("huge_pages_status", (ptr == MAP_FAILED) ? "off" : "on",
 					PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
 
-	if (ptr == MAP_FAILED && huge_pages != HUGE_PAGES_ON)
+	if (ptr == MAP_FAILED && GetGUCEnum(GUC_huge_pages) != HUGE_PAGES_ON)
 	{
 		/*
 		 * Use the original size, not the rounded-up value, when falling back
@@ -721,14 +721,14 @@ PGSharedMemoryCreate(Size size,
 
 	/* Complain if hugepages demanded but we can't possibly support them */
 #if !defined(MAP_HUGETLB)
-	if (huge_pages == HUGE_PAGES_ON)
+	if (GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("huge pages not supported on this platform")));
 #endif
 
 	/* For now, we don't support huge pages in SysV memory */
-	if (huge_pages == HUGE_PAGES_ON && shared_memory_type != SHMEM_TYPE_MMAP)
+	if (GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON && GetGUCEnum(GUC_shared_memory_type) != SHMEM_TYPE_MMAP)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("huge pages not supported with the current \"shared_memory_type\" setting")));
@@ -736,7 +736,7 @@ PGSharedMemoryCreate(Size size,
 	/* Room for a header? */
 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
 
-	if (shared_memory_type == SHMEM_TYPE_MMAP)
+	if (GetGUCEnum(GUC_shared_memory_type) == SHMEM_TYPE_MMAP)
 	{
 		AnonymousShmem = CreateAnonymousSegment(&size);
 		AnonymousShmemSize = size;

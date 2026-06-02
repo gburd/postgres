@@ -394,7 +394,7 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * if you change this, consider changing that one, too.
 	 */
 	if (!RelationUsesLocalBuffers(scan->rs_base.rs_rd) &&
-		scan->rs_nblocks > NBuffers / 4)
+		scan->rs_nblocks > GetGUCInt(GUC_NBuffers) / 4)
 	{
 		allow_strat = (scan->rs_base.rs_flags & SO_ALLOW_STRAT) != 0;
 		allow_sync = (scan->rs_base.rs_flags & SO_ALLOW_SYNC) != 0;
@@ -442,12 +442,12 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 			 * setting, so that rewinding a cursor doesn't generate surprising
 			 * results.  Reset the active syncscan setting, though.
 			 */
-			if (allow_sync && synchronize_seqscans)
+			if (allow_sync && GetGUCBool(GUC_synchronize_seqscans))
 				scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
 			else
 				scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 		}
-		else if (allow_sync && synchronize_seqscans)
+		else if (allow_sync && GetGUCBool(GUC_synchronize_seqscans))
 		{
 			scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
 			scan->rs_startblock = ss_get_location(scan->rs_base.rs_rd, scan->rs_nblocks);
@@ -4951,7 +4951,7 @@ l3:
 					case LockWaitError:
 						if (!ConditionalMultiXactIdWait((MultiXactId) xwait,
 														status, infomask, relation,
-														NULL, log_lock_failures))
+														NULL, GetGUCBool(GUC_log_lock_failures)))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 									 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -4989,7 +4989,7 @@ l3:
 						}
 						break;
 					case LockWaitError:
-						if (!ConditionalXactLockTableWait(xwait, log_lock_failures))
+						if (!ConditionalXactLockTableWait(xwait, GetGUCBool(GUC_log_lock_failures)))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 									 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -5256,7 +5256,7 @@ heap_acquire_tuplock(Relation relation, const ItemPointerData *tid, LockTupleMod
 			break;
 
 		case LockWaitError:
-			if (!ConditionalLockTupleTuplock(relation, tid, mode, log_lock_failures))
+			if (!ConditionalLockTupleTuplock(relation, tid, mode, GetGUCBool(GUC_log_lock_failures)))
 				ereport(ERROR,
 						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 						 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -8150,7 +8150,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	 * syscache lookups, to avoid risk of deadlock.
 	 */
 	if (IsCatalogRelation(rel))
-		prefetch_distance = maintenance_io_concurrency;
+		prefetch_distance = GetGUCInt(GUC_maintenance_io_concurrency);
 	else
 		prefetch_distance =
 			get_tablespace_maintenance_io_concurrency(rel->rd_rel->reltablespace);

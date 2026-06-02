@@ -159,7 +159,8 @@ ProcGlobalShmemRequest(void *arg)
 	 * one of these purposes, and they do not move between groups.
 	 */
 	TotalProcs =
-		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
+		add_size(MaxBackends,
+			 add_size(NUM_AUXILIARY_PROCS, GetGUCInt(GUC_max_prepared_xacts)));
 
 	size = 0;
 	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC)));
@@ -357,19 +358,19 @@ ProcGlobalShmemInit(void *arg)
 		 * for prepared transactions are added to a free list by
 		 * TwoPhaseShmemInit().
 		 */
-		if (i < MaxConnections)
+		if (i < GetGUCInt(GUC_MaxConnections))
 		{
 			/* PGPROC for normal backend, add to freeProcs list */
 			dlist_push_tail(&ProcGlobal->freeProcs, &proc->freeProcsLink);
 			proc->procgloballist = &ProcGlobal->freeProcs;
 		}
-		else if (i < MaxConnections + autovacuum_worker_slots + NUM_SPECIAL_WORKER_PROCS)
+		else if (i < GetGUCInt(GUC_MaxConnections) + GetGUCInt(GUC_autovacuum_worker_slots) + NUM_SPECIAL_WORKER_PROCS)
 		{
 			/* PGPROC for AV or special worker, add to autovacFreeProcs list */
 			dlist_push_tail(&ProcGlobal->autovacFreeProcs, &proc->freeProcsLink);
 			proc->procgloballist = &ProcGlobal->autovacFreeProcs;
 		}
-		else if (i < MaxConnections + autovacuum_worker_slots + NUM_SPECIAL_WORKER_PROCS + max_worker_processes)
+		else if (i < GetGUCInt(GUC_MaxConnections) + GetGUCInt(GUC_autovacuum_worker_slots) + NUM_SPECIAL_WORKER_PROCS + GetGUCInt(GUC_max_worker_processes))
 		{
 			/* PGPROC for bgworker, add to bgworkerFreeProcs list */
 			dlist_push_tail(&ProcGlobal->bgworkerFreeProcs, &proc->freeProcsLink);
@@ -477,7 +478,7 @@ InitProcess(void)
 			ereport(FATAL,
 					(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 					 errmsg("number of requested standby connections exceeds \"max_wal_senders\" (currently %d)",
-							max_wal_senders)));
+							GetGUCInt(GUC_max_wal_senders))));
 		ereport(FATAL,
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 				 errmsg("sorry, too many clients already")));
@@ -1369,20 +1370,21 @@ ProcSleep(LOCALLOCK *locallock)
 	 */
 	if (!InHotStandby)
 	{
-		if (LockTimeout > 0)
+		if (GetGUCInt(GUC_LockTimeout) > 0)
 		{
 			EnableTimeoutParams timeouts[2];
 
 			timeouts[0].id = DEADLOCK_TIMEOUT;
 			timeouts[0].type = TMPARAM_AFTER;
-			timeouts[0].delay_ms = DeadlockTimeout;
+			timeouts[0].delay_ms = GetGUCInt(GUC_DeadlockTimeout);
 			timeouts[1].id = LOCK_TIMEOUT;
 			timeouts[1].type = TMPARAM_AFTER;
-			timeouts[1].delay_ms = LockTimeout;
+			timeouts[1].delay_ms = GetGUCInt(GUC_LockTimeout);
 			enable_timeouts(timeouts, 2);
 		}
 		else
-			enable_timeout_after(DEADLOCK_TIMEOUT, DeadlockTimeout);
+			enable_timeout_after(DEADLOCK_TIMEOUT,
+					     GetGUCInt(GUC_DeadlockTimeout));
 
 		/*
 		 * Use the current time obtained for the deadlock timeout timer as
@@ -1401,7 +1403,7 @@ ProcSleep(LOCALLOCK *locallock)
 		pg_atomic_write_u64(&MyProc->waitStart,
 							get_timeout_start_time(DEADLOCK_TIMEOUT));
 	}
-	else if (log_recovery_conflict_waits)
+	else if (GetGUCBool(GUC_log_recovery_conflict_waits))
 	{
 		/*
 		 * Set the wait start timestamp if logging is enabled and in hot
@@ -1444,7 +1446,7 @@ ProcSleep(LOCALLOCK *locallock)
 				TimestampTz now = GetCurrentTimestamp();
 
 				if (TimestampDifferenceExceeds(standbyWaitStart, now,
-											   DeadlockTimeout))
+											   GetGUCInt(GUC_DeadlockTimeout)))
 				{
 					VirtualTransactionId *vxids;
 					int			cnt;
@@ -1593,7 +1595,7 @@ ProcSleep(LOCALLOCK *locallock)
 			if (myWaitStatus == PROC_WAIT_STATUS_OK)
 				pgstat_count_lock_waits(locallock->tag.lock.locktag_type, msecs);
 
-			if (log_lock_waits)
+			if (GetGUCBool(GUC_log_lock_waits))
 			{
 				StringInfoData buf,
 							lock_waiters_sbuf,
@@ -1711,7 +1713,7 @@ ProcSleep(LOCALLOCK *locallock)
 	 */
 	if (!InHotStandby)
 	{
-		if (LockTimeout > 0)
+		if (GetGUCInt(GUC_LockTimeout) > 0)
 		{
 			DisableTimeoutParams timeouts[2];
 
@@ -1866,7 +1868,7 @@ CheckDeadLock(void)
 	}
 
 #ifdef LOCK_DEBUG
-	if (Debug_deadlocks)
+	if (GetGUCBool(GUC_Debug_deadlocks))
 		DumpAllLocks();
 #endif
 

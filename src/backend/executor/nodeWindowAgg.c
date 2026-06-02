@@ -1139,7 +1139,8 @@ prepare_tuplestore(WindowAggState *winstate)
 	Assert(winstate->buffer == NULL);
 
 	/* Create new tuplestore */
-	winstate->buffer = tuplestore_begin_heap(false, false, work_mem);
+	winstate->buffer = tuplestore_begin_heap(false, false,
+						 GetGUCInt(GUC_work_mem));
 
 	/*
 	 * Set up read pointers for the tuplestore.  The current pointer doesn't

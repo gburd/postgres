@@ -116,7 +116,7 @@ log_invalid_page(RelFileLocator locator, ForkNumber forkno, BlockNumber blkno,
 	if (reachedConsistency)
 	{
 		report_invalid_page(WARNING, locator, forkno, blkno, present);
-		elog(ignore_invalid_pages ? WARNING : PANIC,
+		elog(GetGUCBool(GUC_ignore_invalid_pages) ? WARNING : PANIC,
 			 "WAL contains references to invalid pages");
 	}
 
@@ -254,7 +254,7 @@ XLogCheckInvalidPages(void)
 	}
 
 	if (foundone)
-		elog(ignore_invalid_pages ? WARNING : PANIC,
+		elog(GetGUCBool(GUC_ignore_invalid_pages) ? WARNING : PANIC,
 			 "WAL contains references to invalid pages");
 
 	hash_destroy(invalid_page_tab);
@@ -1013,7 +1013,8 @@ WALReadRaiseError(WALReadError *errinfo)
 	WALOpenSegment *seg = &errinfo->wre_seg;
 	char		fname[MAXFNAMELEN];
 
-	XLogFileName(fname, seg->ws_tli, seg->ws_segno, wal_segment_size);
+	XLogFileName(fname, seg->ws_tli, seg->ws_segno,
+		     GetGUCInt(GUC_wal_segment_size));
 
 	if (errinfo->wre_read < 0)
 	{

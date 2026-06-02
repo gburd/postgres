@@ -863,7 +863,7 @@ check_oauth_validator(HbaLine *hbaline, int elevel, char **err_msg)
 
 	*err_msg = NULL;
 
-	if (oauth_validator_libraries_string[0] == '\0')
+	if (GetGUCString(GUC_oauth_validator_libraries_string)[0] == '\0')
 	{
 		ereport(elevel,
 				errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -877,7 +877,7 @@ check_oauth_validator(HbaLine *hbaline, int elevel, char **err_msg)
 	}
 
 	/* SplitDirectoriesString needs a modifiable copy */
-	rawstring = pstrdup(oauth_validator_libraries_string);
+	rawstring = pstrdup(GetGUCString(GUC_oauth_validator_libraries_string));
 
 	if (!SplitDirectoriesString(rawstring, ',', &elemlist))
 	{

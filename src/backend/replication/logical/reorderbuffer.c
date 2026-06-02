@@ -1775,7 +1775,7 @@ static bool
 ReorderBufferCheckAndTruncateAbortedTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 {
 	/* Quick return for regression tests */
-	if (unlikely(debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE))
+	if (unlikely(GetGUCEnum(GUC_debug_logical_replication_streaming) == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE))
 		return false;
 
 	/*
@@ -3896,7 +3896,7 @@ ReorderBufferCheckMemoryLimit(ReorderBuffer *rb)
 	ReorderBufferTXN *txn;
 	bool		update_stats = true;
 
-	if (rb->size >= logical_decoding_work_mem * (Size) 1024)
+	if (rb->size >= GetGUCInt(GUC_logical_decoding_work_mem) * (Size) 1024)
 	{
 		/*
 		 * Update the statistics as the memory usage has reached the limit. We
@@ -3906,7 +3906,7 @@ ReorderBufferCheckMemoryLimit(ReorderBuffer *rb)
 		 */
 		rb->memExceededCount += 1;
 	}
-	else if (debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_BUFFERED)
+	else if (GetGUCEnum(GUC_debug_logical_replication_streaming) == DEBUG_LOGICAL_REP_STREAMING_BUFFERED)
 	{
 		/*
 		 * Bail out if debug_logical_replication_streaming is buffered and we
@@ -3925,8 +3925,8 @@ ReorderBufferCheckMemoryLimit(ReorderBuffer *rb)
 	 * because a user can reduce the logical_decoding_work_mem to a smaller
 	 * value before the most recent change.
 	 */
-	while (rb->size >= logical_decoding_work_mem * (Size) 1024 ||
-		   (debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE &&
+	while (rb->size >= GetGUCInt(GUC_logical_decoding_work_mem) * (Size) 1024 ||
+		   (GetGUCEnum(GUC_debug_logical_replication_streaming) == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE &&
 			rb->size > 0))
 	{
 		/*
@@ -3985,7 +3985,7 @@ ReorderBufferCheckMemoryLimit(ReorderBuffer *rb)
 		UpdateDecodingStats((LogicalDecodingContext *) rb->private_data);
 
 	/* We must be under the memory limit now. */
-	Assert(rb->size < logical_decoding_work_mem * (Size) 1024);
+	Assert(rb->size < GetGUCInt(GUC_logical_decoding_work_mem) * (Size) 1024);
 }
 
 /*
@@ -4025,14 +4025,15 @@ ReorderBufferSerializeTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		 * multiple segments tho
 		 */
 		if (fd == -1 ||
-			!XLByteInSeg(change->lsn, curOpenSegNo, wal_segment_size))
+			!XLByteInSeg(change->lsn, curOpenSegNo, GetGUCInt(GUC_wal_segment_size)))
 		{
 			char		path[MAXPGPATH];
 
 			if (fd != -1)
 				CloseTransientFile(fd);
 
-			XLByteToSeg(change->lsn, curOpenSegNo, wal_segment_size);
+			XLByteToSeg(change->lsn, curOpenSegNo,
+				    GetGUCInt(GUC_wal_segment_size));
 
 			/*
 			 * No need to care about TLIs here, only used during a single run,
@@ -4562,7 +4563,8 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	txn->nentries_mem = 0;
 	Assert(dlist_is_empty(&txn->changes));
 
-	XLByteToSeg(txn->final_lsn, last_segno, wal_segment_size);
+	XLByteToSeg(txn->final_lsn, last_segno,
+		    GetGUCInt(GUC_wal_segment_size));
 
 	while (restored < max_changes_in_memory && *segno <= last_segno)
 	{
@@ -4577,7 +4579,8 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 			/* first time in */
 			if (*segno == 0)
-				XLByteToSeg(txn->first_lsn, *segno, wal_segment_size);
+				XLByteToSeg(txn->first_lsn, *segno,
+					    GetGUCInt(GUC_wal_segment_size));
 
 			Assert(*segno != 0 || dlist_is_empty(&txn->changes));
 
@@ -4858,8 +4861,8 @@ ReorderBufferRestoreCleanup(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	Assert(XLogRecPtrIsValid(txn->first_lsn));
 	Assert(XLogRecPtrIsValid(txn->final_lsn));
 
-	XLByteToSeg(txn->first_lsn, first, wal_segment_size);
-	XLByteToSeg(txn->final_lsn, last, wal_segment_size);
+	XLByteToSeg(txn->first_lsn, first, GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(txn->final_lsn, last, GetGUCInt(GUC_wal_segment_size));
 
 	/* iterate over all possible filenames, and delete them */
 	for (cur = first; cur <= last; cur++)
@@ -4923,7 +4926,8 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 {
 	XLogRecPtr	recptr;
 
-	XLogSegNoOffsetToRecPtr(segno, 0, wal_segment_size, recptr);
+	XLogSegNoOffsetToRecPtr(segno, 0, GetGUCInt(GUC_wal_segment_size),
+				recptr);
 
 	snprintf(path, MAXPGPATH, "%s/%s/xid-%u-lsn-%X-%X.spill",
 			 PG_REPLSLOT_DIR,

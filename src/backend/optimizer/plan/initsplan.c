@@ -645,7 +645,7 @@ setup_eager_aggregation(PlannerInfo *root)
 	/*
 	 * Don't apply eager aggregation if disabled by user.
 	 */
-	if (!enable_eager_aggregate)
+	if (!GetGUCBool(GUC_enable_eager_aggregate))
 		return;
 
 	/*
@@ -1618,7 +1618,7 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 			sub_members = list_length(sub_joinlist);
 			remaining--;
 			if (sub_members <= 1 ||
-				list_length(joinlist) + sub_members + remaining <= from_collapse_limit)
+				list_length(joinlist) + sub_members + remaining <= GetGUCInt(GUC_from_collapse_limit))
 				joinlist = list_concat(joinlist, sub_joinlist);
 			else
 				joinlist = lappend(joinlist, sub_joinlist);
@@ -1804,7 +1804,7 @@ deconstruct_recurse(PlannerInfo *root, Node *jtnode,
 			joinlist = list_make1(list_make2(leftjoinlist, rightjoinlist));
 		}
 		else if (list_length(leftjoinlist) + list_length(rightjoinlist) <=
-				 join_collapse_limit)
+				 GetGUCInt(GUC_join_collapse_limit))
 		{
 			/* OK to combine subproblems */
 			joinlist = list_concat(leftjoinlist, rightjoinlist);
@@ -2479,7 +2479,7 @@ compute_semijoin_info(PlannerInfo *root, SpecialJoinInfo *sjinfo, List *clause)
 	semi_operators = NIL;
 	semi_rhs_exprs = NIL;
 	all_btree = true;
-	all_hash = enable_hashagg;	/* don't consider hash if not enabled */
+	all_hash = GetGUCBool(GUC_enable_hashagg);	/* don't consider hash if not enabled */
 	foreach(lc, clause)
 	{
 		OpExpr	   *op = (OpExpr *) lfirst(lc);

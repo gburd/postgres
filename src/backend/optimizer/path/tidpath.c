@@ -562,7 +562,7 @@ create_tidscan_paths(PlannerInfo *root, RelOptInfo *rel)
 			int			parallel_workers;
 
 			parallel_workers = compute_parallel_worker(rel, rel->pages, -1,
-													   max_parallel_workers_per_gather);
+													   GetGUCInt(GUC_max_parallel_workers_per_gather));
 
 			if (parallel_workers > 0)
 				add_partial_path(rel, (Path *) create_tidrangescan_path(root,

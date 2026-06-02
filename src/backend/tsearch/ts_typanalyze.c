@@ -61,7 +61,7 @@ ts_typanalyze(PG_FUNCTION_ARGS)
 
 	/* If the attstattarget column is negative, use the default value */
 	if (stats->attstattarget < 0)
-		stats->attstattarget = default_statistics_target;
+		stats->attstattarget = GetGUCInt(GUC_default_statistics_target);
 
 	stats->compute_stats = compute_tsvector_stats;
 	/* see comment about the choice of minrows in commands/analyze.c */

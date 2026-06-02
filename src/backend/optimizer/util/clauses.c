@@ -5566,7 +5566,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 				goto fail;
 			cost_qual_eval(&eval_cost, list_make1(param), NULL);
 			if (eval_cost.startup + eval_cost.per_tuple >
-				10 * cpu_operator_cost)
+				10 * GetGUCReal(GUC_cpu_operator_cost))
 				goto fail;
 
 			/*

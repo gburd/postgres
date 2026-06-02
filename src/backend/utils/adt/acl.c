@@ -4746,7 +4746,7 @@ has_lo_priv_byid(Oid roleid, Oid lobjId, AclMode priv, bool *is_missing)
 		return false;
 	}
 
-	if (lo_compat_privileges)
+	if (GetGUCBool(GUC_lo_compat_privileges))
 		return true;
 
 	aclresult = pg_largeobject_aclcheck_snapshot(lobjId,
@@ -5142,7 +5142,8 @@ roles_list_append(List *roles_list, bloom_filter **bf, Oid role)
 		if (*bf == NULL &&
 			list_length(roles_list) > ROLES_LIST_BLOOM_THRESHOLD)
 		{
-			*bf = bloom_create(ROLES_LIST_BLOOM_THRESHOLD * 10, work_mem, 0);
+			*bf = bloom_create(ROLES_LIST_BLOOM_THRESHOLD * 10,
+					   GetGUCInt(GUC_work_mem), 0);
 			foreach_oid(roleid, roles_list)
 				bloom_add_element(*bf, (unsigned char *) &roleid, sizeof(Oid));
 		}

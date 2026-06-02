@@ -3006,7 +3006,7 @@ _bt_pendingfsm_init(Relation rel, BTVacState *vstate, bool cleanuponly)
 	 * int overflow here.
 	 */
 	vstate->bufsize = 256;
-	maxbufsize = (work_mem * (Size) 1024) / sizeof(BTPendingFSM);
+	maxbufsize = (GetGUCInt(GUC_work_mem) * (Size) 1024) / sizeof(BTPendingFSM);
 	maxbufsize = Min(maxbufsize, MaxAllocSize / sizeof(BTPendingFSM));
 	/* BTVacState.maxbufsize has type int */
 	maxbufsize = Min(maxbufsize, INT_MAX);

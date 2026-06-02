@@ -218,7 +218,7 @@ typedef struct MultiXactStateData
 /*
  * Sizes of OldestMemberMXactId and OldestVisibleMXactId arrays.
  */
-#define NumMemberSlots		(MaxBackends + max_prepared_xacts)
+#define NumMemberSlots		(MaxBackends + GetGUCInt(GUC_max_prepared_xacts))
 #define NumVisibleSlots		MaxBackends
 
 /* Pointers to the state data in shared memory */
@@ -2131,7 +2131,7 @@ SetMultiXactIdLimit(MultiXactId oldest_datminmxid, Oid oldest_datoid)
 	 * so that we don't have to worry about dealing with on-the-fly changes in
 	 * its value.  See SetTransactionIdLimit.
 	 */
-	multiVacLimit = oldest_datminmxid + autovacuum_multixact_freeze_max_age;
+	multiVacLimit = oldest_datminmxid + GetGUCInt(GUC_autovacuum_multixact_freeze_max_age);
 	if (multiVacLimit < FirstMultiXactId)
 		multiVacLimit += FirstMultiXactId;
 
@@ -2604,7 +2604,7 @@ MultiXactMemberFreezeThreshold(void)
 
 	/* If member space utilization is low, no special action is required. */
 	if (members <= MULTIXACT_MEMBER_LOW_THRESHOLD)
-		return autovacuum_multixact_freeze_max_age;
+		return GetGUCInt(GUC_autovacuum_multixact_freeze_max_age);
 
 	/*
 	 * Compute a target for relminmxid advancement.  The number of multixacts
@@ -2632,7 +2632,7 @@ MultiXactMemberFreezeThreshold(void)
 	 * Clamp to autovacuum_multixact_freeze_max_age, so that we never make
 	 * autovacuum less aggressive than it would otherwise be.
 	 */
-	return Min(result, autovacuum_multixact_freeze_max_age);
+	return Min(result, GetGUCInt(GUC_autovacuum_multixact_freeze_max_age));
 }
 
 

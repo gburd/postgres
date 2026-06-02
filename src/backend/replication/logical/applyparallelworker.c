@@ -573,7 +573,7 @@ pa_free_worker(ParallelApplyWorkerInfo *winfo)
 	 */
 	if (winfo->serialize_changes ||
 		list_length(ParallelApplyWorkerPool) >
-		(max_parallel_apply_workers_per_subscription / 2))
+		(GetGUCInt(GUC_max_parallel_apply_workers_per_subscription) / 2))
 	{
 		logicalrep_pa_worker_stop(winfo);
 		pa_free_worker_info(winfo);
@@ -1152,7 +1152,7 @@ pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes, const void *data)
 	 * We don't try to send data to parallel worker for 'immediate' mode. This
 	 * is primarily used for testing purposes.
 	 */
-	if (unlikely(debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE))
+	if (unlikely(GetGUCEnum(GUC_debug_logical_replication_streaming) == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE))
 		return false;
 
 /*

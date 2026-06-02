@@ -1219,7 +1219,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 * factor.
 		 */
 		state->bs_sortstate =
-			tuplesort_begin_index_brin(maintenance_work_mem, coordinate,
+			tuplesort_begin_index_brin(GetGUCInt(GUC_maintenance_work_mem),
+									   coordinate,
 									   TUPLESORT_NONE);
 
 		/* scan the relation and merge per-worker results */
@@ -2801,7 +2802,7 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / brinleader->nparticipanttuplesorts;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / brinleader->nparticipanttuplesorts;
 
 	/* Perform work common to all participants */
 	_brin_parallel_scan_and_build(buildstate, brinleader->brinshared,
@@ -2943,7 +2944,7 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	 * (when requested number of workers were not launched, this will be
 	 * somewhat higher than it is for other workers).
 	 */
-	sortmem = maintenance_work_mem / brinshared->scantuplesortstates;
+	sortmem = GetGUCInt(GUC_maintenance_work_mem) / brinshared->scantuplesortstates;
 
 	_brin_parallel_scan_and_build(buildstate, brinshared, sharedsort,
 								  heapRel, indexRel, sortmem, false);

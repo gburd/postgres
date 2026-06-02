@@ -272,8 +272,9 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	 * being created by XLOG streaming, which might cause trouble later on if
 	 * the segment is e.g archived.
 	 */
-	if (XLogSegmentOffset(recptr, wal_segment_size) != 0)
-		recptr -= XLogSegmentOffset(recptr, wal_segment_size);
+	if (XLogSegmentOffset(recptr, GetGUCInt(GUC_wal_segment_size)) != 0)
+		recptr -= XLogSegmentOffset(recptr,
+				            GetGUCInt(GUC_wal_segment_size));
 
 	SpinLockAcquire(&walrcv->mutex);
 

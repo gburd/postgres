@@ -306,7 +306,8 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 		 */
 		rc = WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK,
 						   WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						   BgWriterDelay /* ms */ , WAIT_EVENT_BGWRITER_MAIN);
+						   GetGUCInt(GUC_BgWriterDelay) /* ms */ ,
+						   WAIT_EVENT_BGWRITER_MAIN);
 
 		/*
 		 * If no latch event and BgBufferSync says nothing's happening, extend
@@ -337,7 +338,7 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 			(void) WaitInterrupt(INTERRUPT_MAIN_LOOP_MASK |
 								 INTERRUPT_GENERAL,
 								 WL_INTERRUPT | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-								 BgWriterDelay * HIBERNATE_FACTOR,
+								 GetGUCInt(GUC_BgWriterDelay) * HIBERNATE_FACTOR,
 								 WAIT_EVENT_BGWRITER_HIBERNATE);
 			/* Reset the notification request in case we timed out */
 			StrategyNotifyBgWriter(-1);

@@ -730,7 +730,7 @@ llvm_compile_module(LLVMJitContext *context)
 							  endtime, starttime);
 	}
 
-	if (jit_dump_bitcode)
+	if (GetGUCBool(GUC_jit_dump_bitcode))
 	{
 		char	   *filename;
 
@@ -749,7 +749,7 @@ llvm_compile_module(LLVMJitContext *context)
 	INSTR_TIME_ACCUM_DIFF(context->base.instr.optimization_counter,
 						  endtime, starttime);
 
-	if (jit_dump_bitcode)
+	if (GetGUCBool(GUC_jit_dump_bitcode))
 	{
 		char	   *filename;
 
@@ -1187,14 +1187,14 @@ llvm_create_object_layer(void *Ctx, LLVMOrcExecutionSessionRef ES, const char *T
 		LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager(ES);
 #endif
 
-	if (jit_debugging_support)
+	if (GetGUCBool(GUC_jit_debugging_support))
 	{
 		LLVMJITEventListenerRef l = LLVMCreateGDBRegistrationListener();
 
 		LLVMOrcRTDyldObjectLinkingLayerRegisterJITEventListener(objlayer, l);
 	}
 
-	if (jit_profiling_support)
+	if (GetGUCBool(GUC_jit_profiling_support))
 	{
 		LLVMJITEventListenerRef l = LLVMCreatePerfJITEventListener();
 

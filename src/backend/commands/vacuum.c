@@ -419,7 +419,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 	/*
 	 * Later, in vacuum_rel(), we check if a reloption override was specified.
 	 */
-	params.max_eager_freeze_failure_rate = vacuum_max_eager_freeze_failure_rate;
+	params.max_eager_freeze_failure_rate = GetGUCReal(GUC_vacuum_max_eager_freeze_failure_rate);
 
 	/*
 	 * Create special memory context for cross-transaction storage.
@@ -454,7 +454,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 		 * return NULL, effectively allowing full use of shared buffers.
 		 */
 		if (ring_size == -1)
-			ring_size = VacuumBufferUsageLimit;
+			ring_size = GetGUCInt(GUC_VacuumBufferUsageLimit);
 
 		bstrategy = GetAccessStrategyWithSize(BAS_VACUUM, ring_size);
 
@@ -1157,7 +1157,7 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * Almost ready to set freeze output parameters; check if OldestXmin or
 	 * OldestMxact are held back to an unsafe degree before we start on that
 	 */
-	safeOldestXmin = nextXID - autovacuum_freeze_max_age;
+	safeOldestXmin = nextXID - GetGUCInt(GUC_autovacuum_freeze_max_age);
 	if (!TransactionIdIsNormal(safeOldestXmin))
 		safeOldestXmin = FirstNormalTransactionId;
 	safeOldestMxact = nextMXID - effective_multixact_freeze_max_age;
@@ -1181,8 +1181,9 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * wraparound won't occur too frequently.
 	 */
 	if (freeze_min_age < 0)
-		freeze_min_age = vacuum_freeze_min_age;
-	freeze_min_age = Min(freeze_min_age, autovacuum_freeze_max_age / 2);
+		freeze_min_age = GetGUCInt(GUC_vacuum_freeze_min_age);
+	freeze_min_age = Min(freeze_min_age,
+			     GetGUCInt(GUC_autovacuum_freeze_max_age) / 2);
 	Assert(freeze_min_age >= 0);
 
 	/* Compute FreezeLimit, being careful to generate a normal XID */
@@ -1200,7 +1201,7 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * prevent MultiXact wraparound won't occur too frequently.
 	 */
 	if (multixact_freeze_min_age < 0)
-		multixact_freeze_min_age = vacuum_multixact_freeze_min_age;
+		multixact_freeze_min_age = GetGUCInt(GUC_vacuum_multixact_freeze_min_age);
 	multixact_freeze_min_age = Min(multixact_freeze_min_age,
 								   effective_multixact_freeze_max_age / 2);
 	Assert(multixact_freeze_min_age >= 0);
@@ -1223,8 +1224,9 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * anti-wraparound autovacuum is launched.
 	 */
 	if (freeze_table_age < 0)
-		freeze_table_age = vacuum_freeze_table_age;
-	freeze_table_age = Min(freeze_table_age, autovacuum_freeze_max_age * 0.95);
+		freeze_table_age = GetGUCInt(GUC_vacuum_freeze_table_age);
+	freeze_table_age = Min(freeze_table_age,
+			       GetGUCInt(GUC_autovacuum_freeze_max_age) * 0.95);
 	Assert(freeze_table_age >= 0);
 	aggressiveXIDCutoff = nextXID - freeze_table_age;
 	if (!TransactionIdIsNormal(aggressiveXIDCutoff))
@@ -1242,7 +1244,7 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * multixacts before anti-wraparound autovacuum is launched.
 	 */
 	if (multixact_freeze_table_age < 0)
-		multixact_freeze_table_age = vacuum_multixact_freeze_table_age;
+		multixact_freeze_table_age = GetGUCInt(GUC_vacuum_multixact_freeze_table_age);
 	multixact_freeze_table_age =
 		Min(multixact_freeze_table_age,
 			effective_multixact_freeze_max_age * 0.95);
@@ -1281,7 +1283,8 @@ vacuum_xid_failsafe_check(const struct VacuumCutoffs *cutoffs)
 	 * Determine the index skipping age to use. In any case no less than
 	 * autovacuum_freeze_max_age * 1.05.
 	 */
-	skip_index_vacuum = Max(vacuum_failsafe_age, autovacuum_freeze_max_age * 1.05);
+	skip_index_vacuum = Max(GetGUCInt(GUC_vacuum_failsafe_age),
+				GetGUCInt(GUC_autovacuum_freeze_max_age) * 1.05);
 
 	xid_skip_limit = ReadNextTransactionId() - skip_index_vacuum;
 	if (!TransactionIdIsNormal(xid_skip_limit))
@@ -1298,8 +1301,8 @@ vacuum_xid_failsafe_check(const struct VacuumCutoffs *cutoffs)
 	 * multixact. In any case no less than autovacuum_multixact_freeze_max_age *
 	 * 1.05.
 	 */
-	skip_index_vacuum = Max(vacuum_multixact_failsafe_age,
-							autovacuum_multixact_freeze_max_age * 1.05);
+	skip_index_vacuum = Max(GetGUCInt(GUC_vacuum_multixact_failsafe_age),
+							GetGUCInt(GUC_autovacuum_multixact_freeze_max_age) * 1.05);
 
 	multi_skip_limit = ReadNextMultiXactId() - skip_index_vacuum;
 	if (multi_skip_limit < FirstMultiXactId)
@@ -2236,7 +2239,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 			else
 				params.truncate = VACOPTVALUE_DISABLED;
 		}
-		else if (vacuum_truncate)
+		else if (GetGUCBool(GUC_vacuum_truncate))
 			params.truncate = VACOPTVALUE_ENABLED;
 		else
 			params.truncate = VACOPTVALUE_DISABLED;
@@ -2496,14 +2499,14 @@ vacuum_delay_point(bool is_analyze)
 		if (msec > vacuum_cost_delay * 4)
 			msec = vacuum_cost_delay * 4;
 
-		if (track_cost_delay_timing)
+		if (GetGUCBool(GUC_track_cost_delay_timing))
 			INSTR_TIME_SET_CURRENT(delay_start);
 
 		pgstat_report_wait_start(WAIT_EVENT_VACUUM_DELAY);
 		pg_usleep(msec * 1000);
 		pgstat_report_wait_end();
 
-		if (track_cost_delay_timing)
+		if (GetGUCBool(GUC_track_cost_delay_timing))
 		{
 			instr_time	delay_end;
 			instr_time	delay;

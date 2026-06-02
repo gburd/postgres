@@ -522,7 +522,7 @@ get_extension_control_directories(void)
 
 	system_dir = psprintf("%s/extension", sharepath);
 
-	if (strlen(Extension_control_path) == 0)
+	if (strlen(GetGUCString(GUC_Extension_control_path)) == 0)
 	{
 		ExtensionLocation *location = palloc_object(ExtensionLocation);
 
@@ -533,7 +533,7 @@ get_extension_control_directories(void)
 	else
 	{
 		/* Duplicate the string so we can modify it */
-		ecp = pstrdup(Extension_control_path);
+		ecp = pstrdup(GetGUCString(GUC_Extension_control_path));
 
 		for (;;)
 		{
@@ -1318,7 +1318,7 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 	 */
 	save_nestlevel = NewGUCNestLevel();
 
-	if (client_min_messages < WARNING)
+	if (GetGUCEnum(GUC_client_min_messages) < WARNING)
 		(void) set_config_option("client_min_messages", "warning",
 								 PGC_USERSET, PGC_S_SESSION,
 								 GUC_ACTION_SAVE, true, 0, false);
@@ -1332,7 +1332,7 @@ execute_extension_script(Oid extensionOid, ExtensionControlFile *control,
 	 * Similarly disable check_function_bodies, to ensure that SQL functions
 	 * won't be parsed during creation.
 	 */
-	if (check_function_bodies)
+	if (GetGUCBool(GUC_check_function_bodies))
 		(void) set_config_option("check_function_bodies", "off",
 								 PGC_USERSET, PGC_S_SESSION,
 								 GUC_ACTION_SAVE, true, 0, false);

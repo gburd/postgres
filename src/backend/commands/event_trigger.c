@@ -603,7 +603,7 @@ filter_event_trigger(CommandTag tag, EventTriggerCacheItem *item)
 	 * Filter by session replication role, knowing that we never see disabled
 	 * items down here.
 	 */
-	if (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA)
+	if (GetGUCEnum(GUC_SessionReplicationRole) == SESSION_REPLICATION_ROLE_REPLICA)
 	{
 		if (item->enabled == TRIGGER_FIRES_ON_ORIGIN)
 			return false;
@@ -748,7 +748,7 @@ EventTriggerDDLCommandStart(Node *parsetree)
 	 * Additionally, event triggers can be disabled with a superuser-only GUC
 	 * to make fixing database easier as per 1 above.
 	 */
-	if (!IsUnderPostmaster || !event_triggers)
+	if (!IsUnderPostmaster || !GetGUCBool(GUC_event_triggers))
 		return;
 
 	runlist = EventTriggerCommonSetup(parsetree,
@@ -784,7 +784,7 @@ EventTriggerDDLCommandEnd(Node *parsetree)
 	 * See EventTriggerDDLCommandStart for a discussion about why event
 	 * triggers are disabled in single user mode or via GUC.
 	 */
-	if (!IsUnderPostmaster || !event_triggers)
+	if (!IsUnderPostmaster || !GetGUCBool(GUC_event_triggers))
 		return;
 
 	/*
@@ -832,7 +832,7 @@ EventTriggerSQLDrop(Node *parsetree)
 	 * See EventTriggerDDLCommandStart for a discussion about why event
 	 * triggers are disabled in single user mode or via a GUC.
 	 */
-	if (!IsUnderPostmaster || !event_triggers)
+	if (!IsUnderPostmaster || !GetGUCBool(GUC_event_triggers))
 		return;
 
 	/*
@@ -906,7 +906,7 @@ EventTriggerOnLogin(void)
 	 * triggers are disabled in single user mode or via a GUC.  We also need a
 	 * database connection (some background workers don't have it).
 	 */
-	if (!IsUnderPostmaster || !event_triggers ||
+	if (!IsUnderPostmaster || !GetGUCBool(GUC_event_triggers) ||
 		!OidIsValid(MyDatabaseId) || !MyDatabaseHasLoginEventTriggers)
 		return;
 
@@ -1011,7 +1011,7 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	 * See EventTriggerDDLCommandStart for a discussion about why event
 	 * triggers are disabled in single user mode or via a GUC.
 	 */
-	if (!IsUnderPostmaster || !event_triggers)
+	if (!IsUnderPostmaster || !GetGUCBool(GUC_event_triggers))
 		return;
 
 	/*

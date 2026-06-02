@@ -266,7 +266,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 */
 		buildstate.sortstate = tuplesort_begin_index_gist(heap,
 														  index,
-														  maintenance_work_mem,
+														  GetGUCInt(GUC_maintenance_work_mem),
 														  NULL,
 														  TUPLESORT_NONE);
 
@@ -731,11 +731,11 @@ gistInitBuffering(GISTBuildState *buildstate)
 		maxlowestlevelpages = pow(maxIndexTuplesPerPage, (double) levelStep);
 
 		/* subtree must fit in cache (with safety factor of 4) */
-		if (subtreesize > effective_cache_size / 4)
+		if (subtreesize > GetGUCInt(GUC_effective_cache_size) / 4)
 			break;
 
 		/* each node in the lowest level of a subtree has one page in memory */
-		if (maxlowestlevelpages > ((double) maintenance_work_mem * 1024) / BLCKSZ)
+		if (maxlowestlevelpages > ((double) GetGUCInt(GUC_maintenance_work_mem) * 1024) / BLCKSZ)
 			break;
 
 		/* Good, we can handle this levelStep. See if we can go one higher. */
@@ -889,7 +889,7 @@ gistBuildCallback(Relation index,
 	 */
 	if ((buildstate->buildMode == GIST_BUFFERING_AUTO &&
 		 buildstate->indtuples % BUFFERING_MODE_SWITCH_CHECK_STEP == 0 &&
-		 effective_cache_size < smgrnblocks(RelationGetSmgr(index),
+		 GetGUCInt(GUC_effective_cache_size) < smgrnblocks(RelationGetSmgr(index),
 											MAIN_FORKNUM)) ||
 		(buildstate->buildMode == GIST_BUFFERING_STATS &&
 		 buildstate->indtuples >= BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET))

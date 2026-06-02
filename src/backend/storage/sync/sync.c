@@ -382,7 +382,7 @@ ProcessSyncRequests(void)
 		 * all.  (We delay checking until this point so that changing fsync on
 		 * the fly behaves sensibly.)
 		 */
-		if (enableFsync)
+		if (GetGUCBool(GUC_enableFsync))
 		{
 			/*
 			 * If in checkpointer, we want to absorb pending requests every so
@@ -426,7 +426,7 @@ ProcessSyncRequests(void)
 					total_elapsed += elapsed;
 					processed++;
 
-					if (log_checkpoints)
+					if (GetGUCBool(GUC_log_checkpoints))
 						elog(DEBUG1, "checkpoint sync: number=%d file=%s time=%.3f ms",
 							 processed,
 							 path,

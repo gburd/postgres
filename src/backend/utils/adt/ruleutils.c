@@ -13716,7 +13716,7 @@ quote_identifier(const char *ident)
 		}
 	}
 
-	if (quote_all_identifiers)
+	if (GetGUCBool(GUC_quote_all_identifiers))
 		safe = false;
 
 	if (safe)

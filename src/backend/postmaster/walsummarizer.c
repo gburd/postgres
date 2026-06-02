@@ -515,7 +515,7 @@ GetOldestUnsummarizedLSN(TimeLineID *tli, bool *lsn_is_exact)
 	bool		am_wal_summarizer = AmWalSummarizerProcess();
 
 	/* If not summarizing WAL, do nothing. */
-	if (!summarize_wal)
+	if (!GetGUCBool(GUC_summarize_wal))
 		return InvalidXLogRecPtr;
 
 	/*
@@ -563,7 +563,8 @@ GetOldestUnsummarizedLSN(TimeLineID *tli, bool *lsn_is_exact)
 		if (oldest_segno != 0)
 		{
 			/* Compute oldest LSN that still exists on disk. */
-			XLogSegNoOffsetToRecPtr(oldest_segno, 0, wal_segment_size,
+			XLogSegNoOffsetToRecPtr(oldest_segno, 0,
+									GetGUCInt(GUC_wal_segment_size),
 									unsummarized_lsn);
 
 			unsummarized_tli = tle->tli;
@@ -676,7 +677,7 @@ WaitForWalSummarization(XLogRecPtr lsn)
 		CHECK_FOR_INTERRUPTS();
 
 		/* If WAL summarization is disabled while we're waiting, give up. */
-		if (!summarize_wal)
+		if (!GetGUCBool(GUC_summarize_wal))
 			return;
 
 		/*
@@ -866,7 +867,7 @@ ProcessWalSummarizerInterrupts(void)
 		ProcessConfigFile(PGC_SIGHUP);
 	}
 
-	if (ShutdownRequestPending || !summarize_wal)
+	if (ShutdownRequestPending || !GetGUCBool(GUC_summarize_wal))
 	{
 		ereport(DEBUG1,
 				errmsg_internal("WAL summarizer shutting down"));
@@ -1671,7 +1672,7 @@ MaybeRemoveOldWalSummaries(void)
 	time_t		cutoff_time;
 
 	/* If WAL summary removal is disabled, don't do anything. */
-	if (wal_summary_keep_time == 0)
+	if (GetGUCInt(GUC_wal_summary_keep_time) == 0)
 		return;
 
 	/*
@@ -1688,7 +1689,7 @@ MaybeRemoveOldWalSummaries(void)
 	 * Files should only be removed if the last modification time precedes the
 	 * cutoff time we compute here.
 	 */
-	cutoff_time = time(NULL) - wal_summary_keep_time * SECS_PER_MINUTE;
+	cutoff_time = time(NULL) - GetGUCInt(GUC_wal_summary_keep_time) * SECS_PER_MINUTE;
 
 	/* Get all the summaries that currently exist. */
 	wslist = GetWalSummaries(0, InvalidXLogRecPtr, InvalidXLogRecPtr);
@@ -1711,7 +1712,8 @@ MaybeRemoveOldWalSummaries(void)
 		selected_tli = ((WalSummaryFile *) linitial(wslist))->tli;
 		oldest_segno = XLogGetOldestSegno(selected_tli);
 		if (oldest_segno != 0)
-			XLogSegNoOffsetToRecPtr(oldest_segno, 0, wal_segment_size,
+			XLogSegNoOffsetToRecPtr(oldest_segno, 0,
+									GetGUCInt(GUC_wal_segment_size),
 									oldest_lsn);
 
 

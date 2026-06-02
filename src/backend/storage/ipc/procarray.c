@@ -392,7 +392,7 @@ static void GlobalVisUpdateApply(ComputeXidHorizonsResult *horizons);
 static void
 ProcArrayShmemRequest(void *arg)
 {
-#define PROCARRAY_MAXPROCS	(MaxBackends + max_prepared_xacts)
+#define PROCARRAY_MAXPROCS	(MaxBackends + GetGUCInt(GUC_max_prepared_xacts))
 
 	/*
 	 * During Hot Standby processing we have a data structure called
@@ -410,7 +410,7 @@ ProcArrayShmemRequest(void *arg)
 #define TOTAL_MAX_CACHED_SUBXIDS \
 	((PGPROC_MAX_CACHED_SUBXIDS + 1) * PROCARRAY_MAXPROCS)
 
-	if (EnableHotStandby)
+	if (GetGUCBool(GUC_EnableHotStandby))
 	{
 		ShmemRequestStruct(.name = "KnownAssignedXids",
 						   .size = mul_size(sizeof(TransactionId), TOTAL_MAX_CACHED_SUBXIDS),

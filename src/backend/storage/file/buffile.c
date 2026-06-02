@@ -450,7 +450,7 @@ BufFileLoadBuffer(BufFile *file)
 
 	thisfile = file->files[file->curFile];
 
-	if (track_io_timing)
+	if (GetGUCBool(GUC_track_io_timing))
 		INSTR_TIME_SET_CURRENT(io_start);
 	else
 		INSTR_TIME_SET_ZERO(io_start);
@@ -472,7 +472,7 @@ BufFileLoadBuffer(BufFile *file)
 						FilePathName(thisfile))));
 	}
 
-	if (track_io_timing)
+	if (GetGUCBool(GUC_track_io_timing))
 	{
 		INSTR_TIME_SET_CURRENT(io_time);
 		INSTR_TIME_ACCUM_DIFF(pgBufferUsage.temp_blk_read_time, io_time, io_start);
@@ -530,7 +530,7 @@ BufFileDumpBuffer(BufFile *file)
 
 		thisfile = file->files[file->curFile];
 
-		if (track_io_timing)
+		if (GetGUCBool(GUC_track_io_timing))
 			INSTR_TIME_SET_CURRENT(io_start);
 		else
 			INSTR_TIME_SET_ZERO(io_start);
@@ -546,7 +546,7 @@ BufFileDumpBuffer(BufFile *file)
 					 errmsg("could not write to file \"%s\": %m",
 							FilePathName(thisfile))));
 
-		if (track_io_timing)
+		if (GetGUCBool(GUC_track_io_timing))
 		{
 			INSTR_TIME_SET_CURRENT(io_time);
 			INSTR_TIME_ACCUM_DIFF(pgBufferUsage.temp_blk_write_time, io_time, io_start);

@@ -45,7 +45,7 @@ get_wal_level_string(int wal_level)
 
 	for (entry = wal_level_options; entry->name; entry++)
 	{
-		if (entry->val == wal_level)
+		if (entry->val == GetGUCEnum(GUC_wal_level))
 		{
 			wal_level_str = entry->name;
 			break;

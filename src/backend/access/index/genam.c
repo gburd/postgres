@@ -403,7 +403,7 @@ systable_beginscan(Relation heapRelation,
 		   !heapRelation->rd_rel->relisshared);
 
 	if (indexOK &&
-		!IgnoreSystemIndexes &&
+		!GetGUCBool(GUC_IgnoreSystemIndexes) &&
 		!ReindexIsProcessingIndex(indexId))
 		irel = index_open(indexId, AccessShareLock);
 	else
@@ -672,7 +672,7 @@ systable_beginscan_ordered(Relation heapRelation,
 				 errmsg("cannot access index \"%s\" while it is being reindexed",
 						RelationGetRelationName(indexRelation))));
 	/* ... but we only throw a warning about violating IgnoreSystemIndexes */
-	if (IgnoreSystemIndexes)
+	if (GetGUCBool(GUC_IgnoreSystemIndexes))
 		elog(WARNING, "using index \"%s\" despite IgnoreSystemIndexes",
 			 RelationGetRelationName(indexRelation));
 

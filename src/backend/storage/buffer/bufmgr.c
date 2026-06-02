@@ -92,7 +92,7 @@
  * being dropped. For the relations with size below this threshold, we find
  * the buffers by doing lookups in BufMapping table.
  */
-#define BUF_DROP_FULL_SCAN_THRESHOLD		(uint64) (NBuffers / 32)
+#define BUF_DROP_FULL_SCAN_THRESHOLD		(uint64) (GetGUCInt(GUC_NBuffers) / 32)
 
 /*
  * This is separated out from PrivateRefCountEntry to allow for copying all
@@ -1527,7 +1527,7 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 	 * asynchronously, but without the check here we'd execute IO earlier than
 	 * we used to. Eventually this IOMETHOD_SYNC specific path should go away.
 	 */
-	if (io_method != IOMETHOD_SYNC)
+	if (GetGUCEnum(GUC_io_method) != IOMETHOD_SYNC)
 	{
 		/*
 		 * Try to start IO asynchronously. It's possible that no IO needs to
@@ -1691,7 +1691,7 @@ TrackBufferHit(IOObject io_object, IOContext io_context,
 	pgstat_count_io_op(io_object, io_context, IOOP_HIT, 1, 0);
 
 	if (VacuumCostActive)
-		VacuumCostBalance += VacuumCostPageHit;
+		VacuumCostBalance += GetGUCInt(GUC_VacuumCostPageHit);
 
 	if (rel)
 		pgstat_count_buffer_hit(rel);
@@ -1776,7 +1776,7 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 	 *
 	 * This path is expected to eventually go away.
 	 */
-	if (!pgaio_wref_valid(&operation->io_wref) && io_method != IOMETHOD_SYNC)
+	if (!pgaio_wref_valid(&operation->io_wref) && GetGUCEnum(GUC_io_method) != IOMETHOD_SYNC)
 		elog(ERROR, "waiting for read operation that didn't read");
 
 	/*
@@ -1814,7 +1814,7 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 			if ((operation->foreign_io || aio_ret->result.status == PGAIO_RS_UNKNOWN) &&
 				!pgaio_wref_check_done(&operation->io_wref))
 			{
-				instr_time	io_start = pgstat_prepare_io_time(track_io_timing);
+				instr_time	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 				pgaio_wref_wait(&operation->io_wref);
 				needed_wait = true;
@@ -1977,14 +1977,14 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 	 * zero_damaged_pages, so we can report different log levels / error codes
 	 * for zero_damaged_pages and ZERO_ON_ERROR.
 	 */
-	if (zero_damaged_pages)
+	if (GetGUCBool(GUC_zero_damaged_pages))
 		flags |= READ_BUFFERS_ZERO_ON_ERROR;
 
 	/*
 	 * For the same reason as with zero_damaged_pages we need to use this
 	 * backend's ignore_checksum_failure value.
 	 */
-	if (ignore_checksum_failure)
+	if (GetGUCBool(GUC_ignore_checksum_failure))
 		flags |= READ_BUFFERS_IGNORE_CHECKSUM_FAILURES;
 
 
@@ -2140,7 +2140,7 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 	 *   table)
 	 * ---
 	 */
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 	smgrstartreadv(ioh, operation->smgr, forknum,
 				   blocknum,
 				   io_pages, io_buffers_len);
@@ -2158,7 +2158,7 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 	 * cost limit.
 	 */
 	if (VacuumCostActive)
-		VacuumCostBalance += VacuumCostPageMiss * io_buffers_len;
+		VacuumCostBalance += GetGUCInt(GUC_VacuumCostPageMiss) * io_buffers_len;
 
 	*nblocks_progress = io_buffers_len;
 
@@ -2994,7 +2994,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 		}
 	}
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	/*
 	 * Note: if smgrzeroextend fails, we will end up with buffers that are
@@ -3191,7 +3191,7 @@ MarkBufferDirty(Buffer buffer)
 	{
 		pgBufferUsage.shared_blks_dirtied++;
 		if (VacuumCostActive)
-			VacuumCostBalance += VacuumCostPageDirty;
+			VacuumCostBalance += GetGUCInt(GUC_VacuumCostPageDirty);
 	}
 }
 
@@ -3590,7 +3590,7 @@ BufferSync(int flags)
 	 * certainly need to be written for the next checkpoint attempt, too.
 	 */
 	num_to_scan = 0;
-	for (buf_id = 0; buf_id < NBuffers; buf_id++)
+	for (buf_id = 0; buf_id < GetGUCInt(GUC_NBuffers); buf_id++)
 	{
 		BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
 		uint64		set_bits = 0;
@@ -3629,7 +3629,8 @@ BufferSync(int flags)
 
 	WritebackContextInit(&wb_context, &checkpoint_flush_after);
 
-	TRACE_POSTGRESQL_BUFFER_SYNC_START(NBuffers, num_to_scan);
+	TRACE_POSTGRESQL_BUFFER_SYNC_START(GetGUCInt(GUC_NBuffers),
+					   num_to_scan);
 
 	/*
 	 * Sort buffers that need to be written to reduce the likelihood of random
@@ -3813,7 +3814,8 @@ BufferSync(int flags)
 	 */
 	CheckpointStats.ckpt_bufs_written += num_written;
 
-	TRACE_POSTGRESQL_BUFFER_SYNC_DONE(NBuffers, num_written, num_to_scan);
+	TRACE_POSTGRESQL_BUFFER_SYNC_DONE(GetGUCInt(GUC_NBuffers),
+					  num_written, num_to_scan);
 }
 
 /*
@@ -3885,7 +3887,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * stuff.  We mark the saved state invalid so that we can recover sanely
 	 * if LRU scan is turned back on later.
 	 */
-	if (bgwriter_lru_maxpages <= 0)
+	if (GetGUCInt(GUC_bgwriter_lru_maxpages) <= 0)
 	{
 		saved_info_valid = false;
 		return true;
@@ -3904,7 +3906,7 @@ BgBufferSync(WritebackContext *wb_context)
 		int32		passes_delta = strategy_passes - prev_strategy_passes;
 
 		strategy_delta = strategy_buf_id - prev_strategy_buf_id;
-		strategy_delta += (long) passes_delta * NBuffers;
+		strategy_delta += (long) passes_delta * GetGUCInt(GUC_NBuffers);
 
 		Assert(strategy_delta >= 0);
 
@@ -3923,7 +3925,7 @@ BgBufferSync(WritebackContext *wb_context)
 				 next_to_clean >= strategy_buf_id)
 		{
 			/* on same pass, but ahead or at least not behind */
-			bufs_to_lap = NBuffers - (next_to_clean - strategy_buf_id);
+			bufs_to_lap = GetGUCInt(GUC_NBuffers) - (next_to_clean - strategy_buf_id);
 #ifdef BGW_DEBUG
 			elog(DEBUG2, "bgwriter ahead: bgw %u-%u strategy %u-%u delta=%ld lap=%d",
 				 next_passes, next_to_clean,
@@ -3945,7 +3947,7 @@ BgBufferSync(WritebackContext *wb_context)
 #endif
 			next_to_clean = strategy_buf_id;
 			next_passes = strategy_passes;
-			bufs_to_lap = NBuffers;
+			bufs_to_lap = GetGUCInt(GUC_NBuffers);
 		}
 	}
 	else
@@ -3961,7 +3963,7 @@ BgBufferSync(WritebackContext *wb_context)
 		strategy_delta = 0;
 		next_to_clean = strategy_buf_id;
 		next_passes = strategy_passes;
-		bufs_to_lap = NBuffers;
+		bufs_to_lap = GetGUCInt(GUC_NBuffers);
 	}
 
 	/* Update saved info for next time */
@@ -3987,7 +3989,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * strategy point and where we've scanned ahead to, based on the smoothed
 	 * density estimate.
 	 */
-	bufs_ahead = NBuffers - bufs_to_lap;
+	bufs_ahead = GetGUCInt(GUC_NBuffers) - bufs_to_lap;
 	reusable_buffers_est = (float) bufs_ahead / smoothed_density;
 
 	/*
@@ -4002,7 +4004,7 @@ BgBufferSync(WritebackContext *wb_context)
 			smoothing_samples;
 
 	/* Scale the estimate by a GUC to allow more aggressive tuning. */
-	upcoming_alloc_est = (int) (smoothed_alloc * bgwriter_lru_multiplier);
+	upcoming_alloc_est = (int) (smoothed_alloc * GetGUCReal(GUC_bgwriter_lru_multiplier));
 
 	/*
 	 * If recent_alloc remains at zero for many cycles, smoothed_alloc will
@@ -4025,7 +4027,7 @@ BgBufferSync(WritebackContext *wb_context)
 	 * the BGW will be called during the scan_whole_pool time; slice the
 	 * buffer pool into that many sections.
 	 */
-	min_scan_buffers = (int) (NBuffers / (scan_whole_pool_milliseconds / BgWriterDelay));
+	min_scan_buffers = (int) (GetGUCInt(GUC_NBuffers) / (scan_whole_pool_milliseconds / GetGUCInt(GUC_BgWriterDelay)));
 
 	if (upcoming_alloc_est < (min_scan_buffers + reusable_buffers_est))
 	{
@@ -4053,7 +4055,7 @@ BgBufferSync(WritebackContext *wb_context)
 		int			sync_state = SyncOneBuffer(next_to_clean, true,
 											   wb_context);
 
-		if (++next_to_clean >= NBuffers)
+		if (++next_to_clean >= GetGUCInt(GUC_NBuffers))
 		{
 			next_to_clean = 0;
 			next_passes++;
@@ -4063,7 +4065,7 @@ BgBufferSync(WritebackContext *wb_context)
 		if (sync_state & BUF_WRITTEN)
 		{
 			reusable_buffers++;
-			if (++num_written >= bgwriter_lru_maxpages)
+			if (++num_written >= GetGUCInt(GUC_bgwriter_lru_maxpages))
 			{
 				PendingBgWriterStats.maxwritten_clean++;
 				break;
@@ -4222,7 +4224,7 @@ InitBufferManagerAccess(void)
 	 * allow plenty of pins.  LimitAdditionalPins() and
 	 * GetAdditionalPinLimit() can be used to check the remaining balance.
 	 */
-	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
+	MaxProportionalPins = GetGUCInt(GUC_NBuffers) / (MaxBackends + NUM_AUXILIARY_PROCS);
 
 	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
 	memset(&PrivateRefCountArrayKeys, 0, sizeof(PrivateRefCountArrayKeys));
@@ -4572,7 +4574,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	/* Update page checksum if desired. */
 	PageSetChecksum((Page) bufBlock, buf->tag.blockNum);
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	smgrwrite(reln,
 			  BufTagGetForkNum(&buf->tag),
@@ -4833,7 +4835,7 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 		return;
 	}
 
-	for (i = 0; i < NBuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		BufferDesc *bufHdr = GetBufferDescriptor(i);
 
@@ -5121,7 +5123,7 @@ DropDatabaseBuffers(Oid dbid)
 	 * database isn't our own.
 	 */
 
-	for (i = 0; i < NBuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		BufferDesc *bufHdr = GetBufferDescriptor(i);
 
@@ -5207,7 +5209,7 @@ FlushRelationBuffers(Relation rel)
 		return;
 	}
 
-	for (i = 0; i < NBuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		uint64		buf_state;
 
@@ -5277,7 +5279,7 @@ FlushRelationsAllBuffers(SMgrRelation *smgrs, int nrels)
 	if (use_bsearch)
 		qsort(srels, nrels, sizeof(SMgrSortArray), rlocator_comparator);
 
-	for (i = 0; i < NBuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		SMgrSortArray *srelent = NULL;
 		BufferDesc *bufHdr = GetBufferDescriptor(i);
@@ -5528,7 +5530,7 @@ FlushDatabaseBuffers(Oid dbid)
 	int			i;
 	BufferDesc *bufHdr;
 
-	for (i = 0; i < NBuffers; i++)
+	for (i = 0; i < GetGUCInt(GUC_NBuffers); i++)
 	{
 		uint64		buf_state;
 
@@ -5798,7 +5800,7 @@ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
 
 		pgBufferUsage.shared_blks_dirtied++;
 		if (VacuumCostActive)
-			VacuumCostBalance += VacuumCostPageDirty;
+			VacuumCostBalance += GetGUCInt(GUC_VacuumCostPageDirty);
 	}
 }
 
@@ -6762,7 +6764,7 @@ LockBufferForCleanup(Buffer buffer)
 				TimestampTz now = GetCurrentTimestamp();
 
 				if (TimestampDifferenceExceeds(waitStart, now,
-											   DeadlockTimeout))
+											   GetGUCInt(GUC_DeadlockTimeout)))
 				{
 				LogRecoveryConflict(INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN,
 										waitStart, now, NULL, true);
@@ -6774,7 +6776,7 @@ LockBufferForCleanup(Buffer buffer)
 			 * Set the wait start timestamp if logging is enabled and first
 			 * time through.
 			 */
-			if (log_recovery_conflict_waits && waitStart == 0)
+			if (GetGUCBool(GUC_log_recovery_conflict_waits) && waitStart == 0)
 				waitStart = GetCurrentTimestamp();
 
 			/* Publish the bufid that Startup process waits on */
@@ -7697,7 +7699,7 @@ ScheduleBufferTagForWriteback(WritebackContext *wb_context, IOContext io_context
 	 * point in tracking in that case.
 	 */
 	if (io_direct_flags & IO_DIRECT_DATA ||
-		!enableFsync)
+		!GetGUCBool(GUC_enableFsync))
 		return;
 
 	/*
@@ -7752,7 +7754,7 @@ IssuePendingWritebacks(WritebackContext *wb_context, IOContext io_context)
 	sort_pending_writebacks(wb_context->pending_writebacks,
 							wb_context->nr_pending);
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	/*
 	 * Coalesce neighbouring writes, but nothing else. For that we iterate
@@ -7986,7 +7988,7 @@ EvictAllUnpinnedBuffers(int32 *buffers_evicted, int32 *buffers_flushed,
 	*buffers_skipped = 0;
 	*buffers_flushed = 0;
 
-	for (int buf = 1; buf <= NBuffers; buf++)
+	for (int buf = 1; buf <= GetGUCInt(GUC_NBuffers); buf++)
 	{
 		BufferDesc *desc = GetBufferDescriptor(buf - 1);
 		uint64		buf_state;
@@ -8038,7 +8040,7 @@ EvictRelUnpinnedBuffers(Relation rel, int32 *buffers_evicted,
 	*buffers_evicted = 0;
 	*buffers_flushed = 0;
 
-	for (int buf = 1; buf <= NBuffers; buf++)
+	for (int buf = 1; buf <= GetGUCInt(GUC_NBuffers); buf++)
 	{
 		BufferDesc *desc = GetBufferDescriptor(buf - 1);
 		uint64		buf_state = pg_atomic_read_u64(&(desc->state));
@@ -8183,7 +8185,7 @@ MarkDirtyRelUnpinnedBuffers(Relation rel,
 	*buffers_already_dirty = 0;
 	*buffers_skipped = 0;
 
-	for (int buf = 1; buf <= NBuffers; buf++)
+	for (int buf = 1; buf <= GetGUCInt(GUC_NBuffers); buf++)
 	{
 		BufferDesc *desc = GetBufferDescriptor(buf - 1);
 		uint64		buf_state = pg_atomic_read_u64(&(desc->state));
@@ -8237,7 +8239,7 @@ MarkDirtyAllUnpinnedBuffers(int32 *buffers_dirtied,
 	*buffers_already_dirty = 0;
 	*buffers_skipped = 0;
 
-	for (int buf = 1; buf <= NBuffers; buf++)
+	for (int buf = 1; buf <= GetGUCInt(GUC_NBuffers); buf++)
 	{
 		BufferDesc *desc = GetBufferDescriptor(buf - 1);
 		uint64		buf_state;

@@ -202,7 +202,7 @@ FlushLocalBuffer(BufferDesc *bufHdr, SMgrRelation reln)
 
 	PageSetChecksum(localpage, bufHdr->tag.blockNum);
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	/* And write... */
 	smgrwrite(reln,
@@ -308,15 +308,15 @@ uint32
 GetLocalPinLimit(void)
 {
 	/* Every backend has its own temporary buffers, and can pin them all. */
-	return num_temp_buffers;
+	return GetGUCInt(GUC_num_temp_buffers);
 }
 
 /* see GetAdditionalPinLimit() */
 uint32
 GetAdditionalLocalPinLimit(void)
 {
-	Assert(NLocalPinnedBuffers <= num_temp_buffers);
-	return num_temp_buffers - NLocalPinnedBuffers;
+	Assert(NLocalPinnedBuffers <= GetGUCInt(GUC_num_temp_buffers));
+	return GetGUCInt(GUC_num_temp_buffers) - NLocalPinnedBuffers;
 }
 
 /* see LimitAdditionalPins() */
@@ -333,7 +333,7 @@ LimitAdditionalLocalPins(uint32 *additional_pins)
 	 * here. We can allow up to NLocBuffer pins in total, but it might not be
 	 * initialized yet so read num_temp_buffers.
 	 */
-	max_pins = (num_temp_buffers - NLocalPinnedBuffers);
+	max_pins = (GetGUCInt(GUC_num_temp_buffers) - NLocalPinnedBuffers);
 
 	if (*additional_pins >= max_pins)
 		*additional_pins = max_pins;
@@ -456,7 +456,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 		}
 	}
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	/* actually extend relation */
 	smgrzeroextend(BMR_GET_SMGR(bmr), fork, first_block, extend_by, false);
@@ -743,7 +743,7 @@ DropRelationAllLocalBuffers(RelFileLocator rlocator)
 static void
 InitLocalBuffers(void)
 {
-	int			nbufs = num_temp_buffers;
+	int			nbufs = GetGUCInt(GUC_num_temp_buffers);
 	HASHCTL		info;
 	int			i;
 

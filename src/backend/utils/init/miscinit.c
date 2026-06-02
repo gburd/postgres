@@ -1340,7 +1340,7 @@ CreateLockFile(const char *filename, bool amPostmaster,
 			 amPostmaster ? (int) my_pid : -((int) my_pid),
 			 DataDir,
 			 MyStartTime,
-			 PostPortNumber,
+			 GetGUCInt(GUC_PostPortNumber),
 			 socketDir);
 
 	/*
@@ -1807,7 +1807,7 @@ void
 process_shared_preload_libraries(void)
 {
 	process_shared_preload_libraries_in_progress = true;
-	load_libraries(shared_preload_libraries_string,
+	load_libraries(GetGUCString(GUC_shared_preload_libraries_string),
 				   "shared_preload_libraries",
 				   false);
 	process_shared_preload_libraries_in_progress = false;
@@ -1820,10 +1820,10 @@ process_shared_preload_libraries(void)
 void
 process_session_preload_libraries(void)
 {
-	load_libraries(session_preload_libraries_string,
+	load_libraries(GetGUCString(GUC_session_preload_libraries_string),
 				   "session_preload_libraries",
 				   false);
-	load_libraries(local_preload_libraries_string,
+	load_libraries(GetGUCString(GUC_local_preload_libraries_string),
 				   "local_preload_libraries",
 				   true);
 }

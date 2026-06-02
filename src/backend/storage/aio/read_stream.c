@@ -790,7 +790,7 @@ read_stream_begin_impl(int flags,
 		 * Avoid circularity while trying to look up tablespace settings or
 		 * before spccache.c is ready.
 		 */
-		max_ios = effective_io_concurrency;
+		max_ios = GetGUCInt(GUC_effective_io_concurrency);
 	}
 	else if (flags & READ_STREAM_MAINTENANCE)
 		max_ios = get_tablespace_maintenance_io_concurrency(tablespace_id);
@@ -875,7 +875,7 @@ read_stream_begin_impl(int flags,
 		stream->per_buffer_data = (void *)
 			MAXALIGN(&stream->ios[Max(1, max_ios)]);
 
-	stream->sync_mode = io_method == IOMETHOD_SYNC;
+	stream->sync_mode = GetGUCEnum(GUC_io_method) == IOMETHOD_SYNC;
 	stream->batch_mode = flags & READ_STREAM_USE_BATCHING;
 
 #ifdef USE_PREFETCH

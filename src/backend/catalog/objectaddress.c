@@ -2569,7 +2569,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 							   NameListToString(castNode(List, object)));
 			break;
 		case OBJECT_LARGEOBJECT:
-			if (!lo_compat_privileges &&
+			if (!GetGUCBool(GUC_lo_compat_privileges) &&
 				!object_ownercheck(address.classId, address.objectId, roleid))
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

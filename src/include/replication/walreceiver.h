@@ -37,7 +37,7 @@ extern PGDLLIMPORT bool hot_standby_feedback;
 #define MAXCONNINFO		1024
 
 /* Can we allow the standby to accept replication connection from another standby? */
-#define AllowCascadeReplication() (EnableHotStandby && max_wal_senders > 0)
+#define AllowCascadeReplication() (GetGUCBool(GUC_EnableHotStandby) && GetGUCInt(GUC_max_wal_senders) > 0)
 
 /*
  * Values for WalRcv->walRcvState.

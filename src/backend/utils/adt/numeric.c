@@ -2228,7 +2228,7 @@ numeric_abbrev_abort(int memtupcount, SortSupport ssup)
 	 */
 	if (abbr_card > 100000.0)
 	{
-		if (trace_sort)
+		if (GetGUCBool(GUC_trace_sort))
 			elog(LOG,
 				 "numeric_abbrev: estimation ends at cardinality %f"
 				 " after " INT64_FORMAT " values (%d rows)",
@@ -2248,7 +2248,7 @@ numeric_abbrev_abort(int memtupcount, SortSupport ssup)
 	 */
 	if (abbr_card < nss->input_count / 10000.0 + 0.5)
 	{
-		if (trace_sort)
+		if (GetGUCBool(GUC_trace_sort))
 			elog(LOG,
 				 "numeric_abbrev: aborting abbreviation at cardinality %f"
 				 " below threshold %f after " INT64_FORMAT " values (%d rows)",
@@ -2257,7 +2257,7 @@ numeric_abbrev_abort(int memtupcount, SortSupport ssup)
 		return true;
 	}
 
-	if (trace_sort)
+	if (GetGUCBool(GUC_trace_sort))
 		elog(LOG,
 			 "numeric_abbrev: cardinality %f"
 			 " after " INT64_FORMAT " values (%d rows)",

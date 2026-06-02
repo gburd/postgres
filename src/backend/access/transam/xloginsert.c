@@ -759,7 +759,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			/*
 			 * Try to compress a block image if wal_compression is enabled
 			 */
-			if (wal_compression != WAL_COMPRESSION_NONE)
+			if (GetGUCEnum(GUC_wal_compression) != WAL_COMPRESSION_NONE)
 			{
 				is_compressed =
 					XLogCompressBackupBlock(page, bimg.hole_offset,
@@ -800,7 +800,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 				bimg.length = compressed_len;
 
 				/* Set the compression method used for this block */
-				switch ((WalCompression) wal_compression)
+				switch ((WalCompression) GetGUCEnum(GUC_wal_compression))
 				{
 					case WAL_COMPRESSION_PGLZ:
 						bimg.bimg_info |= BKPIMAGE_COMPRESS_PGLZ;
@@ -1045,7 +1045,7 @@ XLogCompressBackupBlock(const PageData *page, uint16 hole_offset, uint16 hole_le
 	else
 		source = page;
 
-	switch ((WalCompression) wal_compression)
+	switch ((WalCompression) GetGUCEnum(GUC_wal_compression))
 	{
 		case WAL_COMPRESSION_PGLZ:
 			len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);

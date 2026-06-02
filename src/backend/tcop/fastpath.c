@@ -227,7 +227,7 @@ HandleFunctionRequest(StringInfo msgBuf)
 	fetch_fp_info(fid, fip);
 
 	/* Log as soon as we have the function OID and name */
-	if (log_statement == LOGSTMT_ALL)
+	if (GetGUCEnum(GUC_log_statement) == LOGSTMT_ALL)
 	{
 		ereport(LOG,
 				(errmsg("fastpath function call: \"%s\" (OID %u)",

@@ -267,7 +267,7 @@ ss_get_location(Relation rel, BlockNumber relnblocks)
 		startloc = 0;
 
 #ifdef TRACE_SYNCSCAN
-	if (trace_syncscan)
+	if (GetGUCBool(GUC_trace_syncscan))
 		elog(LOG,
 			 "SYNC_SCAN: start \"%s\" (size %u) at %u",
 			 RelationGetRelationName(rel), relnblocks, startloc);
@@ -287,7 +287,7 @@ void
 ss_report_location(Relation rel, BlockNumber location)
 {
 #ifdef TRACE_SYNCSCAN
-	if (trace_syncscan)
+	if (GetGUCBool(GUC_trace_syncscan))
 	{
 		if ((location % 1024) == 0)
 			elog(LOG,
@@ -312,7 +312,7 @@ ss_report_location(Relation rel, BlockNumber location)
 			LWLockRelease(SyncScanLock);
 		}
 #ifdef TRACE_SYNCSCAN
-		else if (trace_syncscan)
+		else if (GetGUCBool(GUC_trace_syncscan))
 			elog(LOG,
 				 "SYNC_SCAN: missed update for \"%s\" at %u",
 				 RelationGetRelationName(rel), location);

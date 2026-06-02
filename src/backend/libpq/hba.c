@@ -1375,7 +1375,7 @@ parse_hba_line(TokenizedAuthLine *tok_line, int elevel)
 			parsedline->conntype = ctHostSSL;
 			/* Log a warning if SSL support is not active */
 #ifdef USE_SSL
-			if (!EnableSSL)
+			if (!GetGUCBool(GUC_EnableSSL))
 			{
 				ereport(elevel,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -2459,14 +2459,15 @@ load_hba(void)
 	MemoryContext oldcxt;
 	MemoryContext hbacxt;
 
-	file = open_auth_file(HbaFileName, LOG, 0, NULL);
+	file = open_auth_file(GetGUCString(GUC_HbaFileName), LOG, 0, NULL);
 	if (file == NULL)
 	{
 		/* error already logged */
 		return false;
 	}
 
-	tokenize_auth_file(HbaFileName, file, &hba_lines, LOG, 0);
+	tokenize_auth_file(GetGUCString(GUC_HbaFileName), file, &hba_lines,
+			   LOG, 0);
 
 	/* Now parse all the lines */
 	Assert(PostmasterContext);
@@ -2512,7 +2513,7 @@ load_hba(void)
 		ereport(LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("configuration file \"%s\" contains no entries",
-						HbaFileName)));
+						GetGUCString(GUC_HbaFileName))));
 		ok = false;
 	}
 
@@ -2855,14 +2856,15 @@ load_ident(void)
 	IdentLine  *newline;
 
 	/* not FATAL ... we just won't do any special ident maps */
-	file = open_auth_file(IdentFileName, LOG, 0, NULL);
+	file = open_auth_file(GetGUCString(GUC_IdentFileName), LOG, 0, NULL);
 	if (file == NULL)
 	{
 		/* error already logged */
 		return false;
 	}
 
-	tokenize_auth_file(IdentFileName, file, &ident_lines, LOG, 0);
+	tokenize_auth_file(GetGUCString(GUC_IdentFileName), file,
+			   &ident_lines, LOG, 0);
 
 	/* Now parse all the lines */
 	Assert(PostmasterContext);

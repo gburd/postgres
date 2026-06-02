@@ -519,7 +519,7 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 		smgrread(src, forkNum, blkno, (Page) buf);
 
 		piv_flags = PIV_LOG_WARNING;
-		if (ignore_checksum_failure)
+		if (GetGUCBool(GUC_ignore_checksum_failure))
 			piv_flags |= PIV_IGNORE_CHECKSUM_FAILURE;
 		verified = PageIsVerified((Page) buf, blkno, piv_flags,
 								  &checksum_failure);
@@ -823,7 +823,7 @@ smgrDoPendingSyncs(bool isCommit, bool isParallelWorker)
 		 * main fork is longer than ever but FSM fork gets shorter.
 		 */
 		if (pendingsync->is_truncated ||
-			total_blocks >= wal_skip_threshold * (uint64) 1024 / BLCKSZ)
+			total_blocks >= GetGUCInt(GUC_wal_skip_threshold) * (uint64) 1024 / BLCKSZ)
 		{
 			/* allocate the initial array, or extend it, if needed */
 			if (maxrels == 0)

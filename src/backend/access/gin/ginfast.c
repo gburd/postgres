@@ -812,8 +812,8 @@ ginInsertCleanup(GinState *ginstate, bool full_clean,
 		 */
 		LockPage(index, GIN_METAPAGE_BLKNO, ExclusiveLock);
 		workMemory =
-			(AmAutoVacuumWorkerProcess() && autovacuum_work_mem != -1) ?
-			autovacuum_work_mem : maintenance_work_mem;
+			(AmAutoVacuumWorkerProcess() && GetGUCInt(GUC_autovacuum_work_mem) != -1) ?
+			GetGUCInt(GUC_autovacuum_work_mem) : GetGUCInt(GUC_maintenance_work_mem);
 	}
 	else
 	{
@@ -824,7 +824,7 @@ ginInsertCleanup(GinState *ginstate, bool full_clean,
 		 */
 		if (!ConditionalLockPage(index, GIN_METAPAGE_BLKNO, ExclusiveLock))
 			return;
-		workMemory = work_mem;
+		workMemory = GetGUCInt(GUC_work_mem);
 	}
 
 	metabuffer = ReadBuffer(index, GIN_METAPAGE_BLKNO);

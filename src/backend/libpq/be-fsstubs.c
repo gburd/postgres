@@ -327,7 +327,7 @@ be_lo_unlink(PG_FUNCTION_ARGS)
 	 * in inv_drop(), but we want to throw the error before not after closing
 	 * relevant FDs.
 	 */
-	if (!lo_compat_privileges &&
+	if (!GetGUCBool(GUC_lo_compat_privileges) &&
 		!object_ownercheck(LargeObjectRelationId, lobjId, GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

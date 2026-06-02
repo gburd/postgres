@@ -100,16 +100,16 @@ extern PGDLLIMPORT bool XLogLogicalInfo;
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
 #define XLogArchivingActive() \
-	(AssertMacro(XLogArchiveMode == ARCHIVE_MODE_OFF || wal_level >= WAL_LEVEL_REPLICA), XLogArchiveMode > ARCHIVE_MODE_OFF)
+	(AssertMacro(GetGUCEnum(GUC_XLogArchiveMode) == ARCHIVE_MODE_OFF || GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA), GetGUCEnum(GUC_XLogArchiveMode) > ARCHIVE_MODE_OFF)
 /* Is WAL archiving enabled always (even during recovery)? */
 #define XLogArchivingAlways() \
-	(AssertMacro(XLogArchiveMode == ARCHIVE_MODE_OFF || wal_level >= WAL_LEVEL_REPLICA), XLogArchiveMode == ARCHIVE_MODE_ALWAYS)
+	(AssertMacro(GetGUCEnum(GUC_XLogArchiveMode) == ARCHIVE_MODE_OFF || GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA), GetGUCEnum(GUC_XLogArchiveMode) == ARCHIVE_MODE_ALWAYS)
 
 /*
  * Is WAL-logging necessary for archival or log-shipping, or can we skip
  * WAL-logging if we fsync() the data before committing instead?
  */
-#define XLogIsNeeded() (wal_level >= WAL_LEVEL_REPLICA)
+#define XLogIsNeeded() (GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA)
 
 /*
  * Is a full-page image needed for hint bit updates?
@@ -120,10 +120,10 @@ extern PGDLLIMPORT bool XLogLogicalInfo;
  * of the bits make it to disk, but the checksum wouldn't match.  Also WAL-log
  * them if forced by wal_log_hints=on.
  */
-#define XLogHintBitIsNeeded() (wal_log_hints || DataChecksumsNeedWrite())
+#define XLogHintBitIsNeeded() (GetGUCBool(GUC_wal_log_hints) || DataChecksumsNeedWrite())
 
 /* Do we need to WAL-log information required only for Hot Standby and logical replication? */
-#define XLogStandbyInfoActive() (wal_level >= WAL_LEVEL_REPLICA)
+#define XLogStandbyInfoActive() (GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA)
 
 /*
  * Do we need to WAL-log information required only for logical replication?
@@ -135,7 +135,7 @@ extern PGDLLIMPORT bool XLogLogicalInfo;
  * ensures that the same result is returned within an XID-assigned transaction.
  */
 #define XLogLogicalInfoActive() \
-	 (wal_level >= WAL_LEVEL_LOGICAL || XLogLogicalInfo)
+	 (GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_LOGICAL || XLogLogicalInfo)
 
 #ifdef WAL_DEBUG
 extern PGDLLIMPORT bool XLOG_DEBUG;

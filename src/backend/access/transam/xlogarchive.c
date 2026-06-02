@@ -73,7 +73,7 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 		goto not_available;
 
 	/* In standby mode, restore_command might not be supplied */
-	if (recoveryRestoreCommand == NULL || strcmp(recoveryRestoreCommand, "") == 0)
+	if (GetGUCString(GUC_recoveryRestoreCommand) == NULL || strcmp(GetGUCString(GUC_recoveryRestoreCommand), "") == 0)
 		goto not_available;
 
 	/*
@@ -141,17 +141,19 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 	if (cleanupEnabled)
 	{
 		GetOldestRestartPoint(&restartRedoPtr, &restartTli);
-		XLByteToSeg(restartRedoPtr, restartSegNo, wal_segment_size);
+		XLByteToSeg(restartRedoPtr, restartSegNo,
+			    GetGUCInt(GUC_wal_segment_size));
 		XLogFileName(lastRestartPointFname, restartTli, restartSegNo,
-					 wal_segment_size);
+					 GetGUCInt(GUC_wal_segment_size));
 		/* we shouldn't need anything earlier than last restart point */
 		Assert(strcmp(lastRestartPointFname, xlogfname) <= 0);
 	}
 	else
-		XLogFileName(lastRestartPointFname, 0, 0, wal_segment_size);
+		XLogFileName(lastRestartPointFname, 0, 0,
+			     GetGUCInt(GUC_wal_segment_size));
 
 	/* Build the restore command to execute */
-	xlogRestoreCmd = BuildRestoreCommand(recoveryRestoreCommand,
+	xlogRestoreCmd = BuildRestoreCommand(GetGUCString(GUC_recoveryRestoreCommand),
 										 xlogpath, xlogfname,
 										 lastRestartPointFname);
 
@@ -311,9 +313,10 @@ ExecuteRecoveryCommand(const char *command, const char *commandName,
 	 * archive, though there is no requirement to do so.
 	 */
 	GetOldestRestartPoint(&restartRedoPtr, &restartTli);
-	XLByteToSeg(restartRedoPtr, restartSegNo, wal_segment_size);
+	XLByteToSeg(restartRedoPtr, restartSegNo,
+		    GetGUCInt(GUC_wal_segment_size));
 	XLogFileName(lastRestartPointFname, restartTli, restartSegNo,
-				 wal_segment_size);
+				 GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * construct the command to be executed
@@ -408,7 +411,7 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 	 * Create .done file forcibly to prevent the restored segment from being
 	 * archived again later.
 	 */
-	if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+	if (GetGUCEnum(GUC_XLogArchiveMode) != ARCHIVE_MODE_ALWAYS)
 		XLogArchiveForceDone(xlogfname);
 	else
 		XLogArchiveNotify(xlogfname);
@@ -496,7 +499,7 @@ XLogArchiveNotifySeg(XLogSegNo segno, TimeLineID tli)
 
 	Assert(tli != 0);
 
-	XLogFileName(xlog, tli, segno, wal_segment_size);
+	XLogFileName(xlog, tli, segno, GetGUCInt(GUC_wal_segment_size));
 	XLogArchiveNotify(xlog);
 }
 

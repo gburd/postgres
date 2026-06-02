@@ -405,7 +405,7 @@ statext_compute_stattarget(int stattarget, int nattrs, VacAttrStats **stats)
 	 * default target.
 	 */
 	if (stattarget < 0)
-		stattarget = default_statistics_target;
+		stattarget = GetGUCInt(GUC_default_statistics_target);
 
 	/* As this point we should have a valid statistics target. */
 	Assert((stattarget >= 0) && (stattarget <= MAX_STATISTICS_TARGET));

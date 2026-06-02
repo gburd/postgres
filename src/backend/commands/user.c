@@ -449,7 +449,8 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		else
 		{
 			/* Encrypt the password to the requested format. */
-			shadow_pass = encrypt_password(Password_encryption, stmt->role,
+			shadow_pass = encrypt_password(GetGUCEnum(GUC_Password_encryption),
+										   stmt->role,
 										   password);
 			new_record[Anum_pg_authid_rolpassword - 1] =
 				CStringGetTextDatum(shadow_pass);
@@ -934,7 +935,8 @@ AlterRole(ParseState *pstate, AlterRoleStmt *stmt)
 		else
 		{
 			/* Encrypt the password to the requested format. */
-			shadow_pass = encrypt_password(Password_encryption, rolename,
+			shadow_pass = encrypt_password(GetGUCEnum(GUC_Password_encryption),
+										   rolename,
 										   password);
 			new_record[Anum_pg_authid_rolpassword - 1] =
 				CStringGetTextDatum(shadow_pass);

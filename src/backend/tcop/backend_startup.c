@@ -95,7 +95,7 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 	 * enough to do it in backend children.
 	 */
 #ifdef USE_SSL
-	if (EnableSSL)
+	if (GetGUCBool(GUC_EnableSSL))
 	{
 		if (secure_initialize(false) == 0)
 			LoadedSSL = true;
@@ -158,8 +158,8 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * PostAuthDelay, which we allow clients to pass through PGOPTIONS, but it
 	 * is not honored until after authentication.)
 	 */
-	if (PreAuthDelay > 0)
-		pg_usleep(PreAuthDelay * 1000000L);
+	if (GetGUCInt(GUC_PreAuthDelay) > 0)
+		pg_usleep(GetGUCInt(GUC_PreAuthDelay) * 1000000L);
 
 	/* This flag will remain set until InitPostgres finishes authentication */
 	ClientAuthInProgress = true;	/* limit visibility of log messages */
@@ -206,7 +206,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	if ((ret = pg_getnameinfo_all(&port->raddr.addr, port->raddr.salen,
 								  remote_host, sizeof(remote_host),
 								  remote_port, sizeof(remote_port),
-								  (log_hostname ? 0 : NI_NUMERICHOST) | NI_NUMERICSERV)) != 0)
+								  (GetGUCBool(GUC_log_hostname) ? 0 : NI_NUMERICHOST) | NI_NUMERICSERV)) != 0)
 		ereport(WARNING,
 				(errmsg_internal("pg_getnameinfo_all() failed: %s",
 								 gai_strerror(ret))));
@@ -258,7 +258,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * sometimes classify a hostname as numeric, but an error in that
 	 * direction is safe; it only results in a possible extra lookup.)
 	 */
-	if (log_hostname &&
+	if (GetGUCBool(GUC_log_hostname) &&
 		ret == 0 &&
 		strspn(remote_host, "0123456789.") < strlen(remote_host) &&
 		strspn(remote_host, "0123456789ABCDEFabcdef:") < strlen(remote_host))
@@ -282,7 +282,8 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * since we never use it again after this function.
 	 */
 	RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
-	enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
+	enable_timeout_after(STARTUP_PACKET_TIMEOUT,
+			     GetGUCInt(GUC_AuthenticationTimeout) * 1000);
 
 	/* Handle direct SSL handshake */
 	status = ProcessSSLStartup(port);
@@ -309,7 +310,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 						 errmsg("the database system is starting up")));
 				break;
 			case CAC_NOTHOTSTANDBY:
-				if (!EnableHotStandby)
+				if (!GetGUCBool(GUC_EnableHotStandby))
 					ereport(FATAL,
 							(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 							 errmsg("the database system is not accepting connections"),
@@ -454,7 +455,7 @@ ProcessSSLStartup(Port *port)
 		goto reject;
 	}
 
-	if (Trace_connection_negotiation)
+	if (GetGUCBool(GUC_Trace_connection_negotiation))
 		ereport(LOG,
 				(errmsg("direct SSL connection accepted")));
 	return STATUS_OK;
@@ -464,7 +465,7 @@ ProcessSSLStartup(Port *port)
 #endif
 
 reject:
-	if (Trace_connection_negotiation)
+	if (GetGUCBool(GUC_Trace_connection_negotiation))
 		ereport(LOG,
 				(errmsg("direct SSL connection rejected")));
 	return STATUS_ERROR;
@@ -590,7 +591,7 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 		SSLok = 'N';			/* No support for SSL */
 #endif
 
-		if (Trace_connection_negotiation)
+		if (GetGUCBool(GUC_Trace_connection_negotiation))
 		{
 			if (SSLok == 'S')
 				ereport(LOG,
@@ -646,7 +647,7 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 			GSSok = 'G';
 #endif
 
-		if (Trace_connection_negotiation)
+		if (GetGUCBool(GUC_Trace_connection_negotiation))
 		{
 			if (GSSok == 'G')
 				ereport(LOG,

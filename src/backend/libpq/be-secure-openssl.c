@@ -204,7 +204,7 @@ be_tls_init(bool isServerStart)
 	 * we set res to the state and continue with a new conditional instead of
 	 * duplicating logic and risk it diverging over time.
 	 */
-	if (ssl_sni)
+	if (GetGUCBool(GUC_ssl_sni))
 	{
 		/*
 		 * The GUC check hook should have already blocked this but to be on
@@ -245,7 +245,7 @@ be_tls_init(bool isServerStart)
 	 */
 	if (res == HOSTSFILE_LOAD_OK)
 	{
-		Assert(ssl_sni);
+		Assert(GetGUCBool(GUC_ssl_sni));
 
 		foreach(line, pg_hosts)
 		{
@@ -337,14 +337,14 @@ be_tls_init(bool isServerStart)
 
 #ifdef USE_ASSERT_CHECKING
 		if (res == HOSTSFILE_DISABLED)
-			Assert(ssl_sni == false);
+			Assert(GetGUCBool(GUC_ssl_sni) == false);
 #endif
 
-		pgconf->ssl_cert = ssl_cert_file;
-		pgconf->ssl_key = ssl_key_file;
-		pgconf->ssl_ca = ssl_ca_file;
-		pgconf->ssl_passphrase_cmd = ssl_passphrase_command;
-		pgconf->ssl_passphrase_reload = ssl_passphrase_command_supports_reload;
+		pgconf->ssl_cert = GetGUCString(GUC_ssl_cert_file);
+		pgconf->ssl_key = GetGUCString(GUC_ssl_key_file);
+		pgconf->ssl_ca = GetGUCString(GUC_ssl_ca_file);
+		pgconf->ssl_passphrase_cmd = GetGUCString(GUC_ssl_passphrase_command);
+		pgconf->ssl_passphrase_reload = GetGUCBool(GUC_ssl_passphrase_command_supports_reload);
 
 		if (!init_host_context(pgconf, isServerStart))
 			goto error;
@@ -414,9 +414,9 @@ be_tls_init(bool isServerStart)
 	 */
 	SSL_CTX_set_mode(context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
-	if (ssl_min_protocol_version)
+	if (GetGUCEnum(GUC_ssl_min_protocol_version))
 	{
-		ssl_ver_min = ssl_protocol_version_to_openssl(ssl_min_protocol_version);
+		ssl_ver_min = ssl_protocol_version_to_openssl(GetGUCEnum(GUC_ssl_min_protocol_version));
 
 		if (ssl_ver_min == -1)
 		{
@@ -437,9 +437,9 @@ be_tls_init(bool isServerStart)
 		}
 	}
 
-	if (ssl_max_protocol_version)
+	if (GetGUCEnum(GUC_ssl_max_protocol_version))
 	{
-		ssl_ver_max = ssl_protocol_version_to_openssl(ssl_max_protocol_version);
+		ssl_ver_max = ssl_protocol_version_to_openssl(GetGUCEnum(GUC_ssl_max_protocol_version));
 
 		if (ssl_ver_max == -1)
 		{
@@ -461,8 +461,8 @@ be_tls_init(bool isServerStart)
 	}
 
 	/* Check compatibility of min/max protocols */
-	if (ssl_min_protocol_version &&
-		ssl_max_protocol_version)
+	if (GetGUCEnum(GUC_ssl_min_protocol_version) &&
+		GetGUCEnum(GUC_ssl_max_protocol_version))
 	{
 		/*
 		 * No need to check for invalid values (-1) for each protocol number
@@ -522,7 +522,7 @@ be_tls_init(bool isServerStart)
 		goto error;
 
 	/* set up the allowed cipher list for TLSv1.2 and below */
-	if (SSL_CTX_set_cipher_list(context, SSLCipherList) != 1)
+	if (SSL_CTX_set_cipher_list(context, GetGUCString(GUC_SSLCipherList)) != 1)
 	{
 		ereport(isServerStart ? FATAL : LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -534,10 +534,10 @@ be_tls_init(bool isServerStart)
 	 * Set up the allowed cipher suites for TLSv1.3. If the GUC is an empty
 	 * string we leave the allowed suites to be the OpenSSL default value.
 	 */
-	if (SSLCipherSuites[0])
+	if (GetGUCString(GUC_SSLCipherSuites)[0])
 	{
 		/* set up the allowed cipher suites */
-		if (SSL_CTX_set_ciphersuites(context, SSLCipherSuites) != 1)
+		if (SSL_CTX_set_ciphersuites(context, GetGUCString(GUC_SSLCipherSuites)) != 1)
 		{
 			ereport(isServerStart ? FATAL : LOG,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -547,7 +547,7 @@ be_tls_init(bool isServerStart)
 	}
 
 	/* Let server choose order */
-	if (SSLPreferServerCiphers)
+	if (GetGUCBool(GUC_SSLPreferServerCiphers))
 		SSL_CTX_set_options(context, SSL_OP_CIPHER_SERVER_PREFERENCE);
 
 	/*
@@ -632,7 +632,7 @@ init_host_context(HostsLine *host, bool isServerStart)
 	 *
 	 * If SNI is enabled, we set password callback based what was configured.
 	 */
-	if (!ssl_sni)
+	if (!GetGUCBool(GUC_ssl_sni))
 		(*openssl_tls_init_hook) (ctx, isServerStart);
 	else
 	{
@@ -769,7 +769,7 @@ init_host_context(HostsLine *host, bool isServerStart)
 	 * http://searchsecurity.techtarget.com/sDefinition/0,,sid14_gci803160,00.html
 	 *----------
 	 */
-	if (ssl_crl_file[0] || ssl_crl_dir[0])
+	if (GetGUCString(GUC_ssl_crl_file)[0] || GetGUCString(GUC_ssl_crl_dir)[0])
 	{
 		X509_STORE *cvstore = SSL_CTX_get_cert_store(ctx);
 
@@ -777,27 +777,27 @@ init_host_context(HostsLine *host, bool isServerStart)
 		{
 			/* Set the flags to check against the complete CRL chain */
 			if (X509_STORE_load_locations(cvstore,
-										  ssl_crl_file[0] ? ssl_crl_file : NULL,
-										  ssl_crl_dir[0] ? ssl_crl_dir : NULL)
+										  GetGUCString(GUC_ssl_crl_file)[0] ? GetGUCString(GUC_ssl_crl_file) : NULL,
+										  GetGUCString(GUC_ssl_crl_dir)[0] ? GetGUCString(GUC_ssl_crl_dir) : NULL)
 				== 1)
 			{
 				X509_STORE_set_flags(cvstore,
 									 X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
 			}
-			else if (ssl_crl_dir[0] == 0)
+			else if (GetGUCString(GUC_ssl_crl_dir)[0] == 0)
 			{
 				ereport(isServerStart ? FATAL : LOG,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("could not load SSL certificate revocation list file \"%s\": %s",
-								ssl_crl_file, SSLerrmessage(ERR_get_error()))));
+								GetGUCString(GUC_ssl_crl_file), SSLerrmessage(ERR_get_error()))));
 				goto error;
 			}
-			else if (ssl_crl_file[0] == 0)
+			else if (GetGUCString(GUC_ssl_crl_file)[0] == 0)
 			{
 				ereport(isServerStart ? FATAL : LOG,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("could not load SSL certificate revocation list directory \"%s\": %s",
-								ssl_crl_dir, SSLerrmessage(ERR_get_error()))));
+								GetGUCString(GUC_ssl_crl_dir), SSLerrmessage(ERR_get_error()))));
 				goto error;
 			}
 			else
@@ -805,7 +805,7 @@ init_host_context(HostsLine *host, bool isServerStart)
 				ereport(isServerStart ? FATAL : LOG,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("could not load SSL certificate revocation list file \"%s\" or directory \"%s\": %s",
-								ssl_crl_file, ssl_crl_dir,
+								GetGUCString(GUC_ssl_crl_file), GetGUCString(GUC_ssl_crl_dir),
 								SSLerrmessage(ERR_get_error()))));
 				goto error;
 			}
@@ -1011,11 +1011,11 @@ aloop:
 						 err_context.cert_errdetail ? errdetail_internal("%s", err_context.cert_errdetail) : 0,
 						 give_proto_hint ?
 						 errhint("This may indicate that the client does not support any SSL protocol version between %s and %s.",
-								 ssl_min_protocol_version ?
-								 ssl_protocol_version_to_string(ssl_min_protocol_version) :
+								 GetGUCEnum(GUC_ssl_min_protocol_version) ?
+								 ssl_protocol_version_to_string(GetGUCEnum(GUC_ssl_min_protocol_version)) :
 								 MIN_OPENSSL_TLS_VERSION,
-								 ssl_max_protocol_version ?
-								 ssl_protocol_version_to_string(ssl_max_protocol_version) :
+								 GetGUCEnum(GUC_ssl_max_protocol_version) ?
+								 ssl_protocol_version_to_string(GetGUCEnum(GUC_ssl_max_protocol_version)) :
 								 MAX_OPENSSL_TLS_VERSION) : 0));
 				if (err_context.cert_errdetail)
 					pfree(err_context.cert_errdetail);
@@ -1924,7 +1924,7 @@ sni_clienthello_cb(SSL *ssl, int *al, void *arg)
 				len;
 	HostsLine  *install_config = NULL;
 
-	if (!ssl_sni)
+	if (!GetGUCBool(GUC_ssl_sni))
 	{
 		install_config = SSL_hosts->default_host;
 		goto found;
@@ -2081,8 +2081,9 @@ initialize_dh(SSL_CTX *context, bool isServerStart)
 
 	SSL_CTX_set_options(context, SSL_OP_SINGLE_DH_USE);
 
-	if (ssl_dh_params_file[0])
-		dh = load_dh_file(ssl_dh_params_file, isServerStart);
+	if (GetGUCString(GUC_ssl_dh_params_file)[0])
+		dh = load_dh_file(GetGUCString(GUC_ssl_dh_params_file),
+				  isServerStart);
 	if (!dh)
 		dh = load_dh_buffer(FILE_DH2048, sizeof(FILE_DH2048));
 	if (!dh)
@@ -2116,7 +2117,7 @@ static bool
 initialize_ecdh(SSL_CTX *context, bool isServerStart)
 {
 #ifndef OPENSSL_NO_ECDH
-	if (SSL_CTX_set1_groups_list(context, SSLECDHCurve) != 1)
+	if (SSL_CTX_set1_groups_list(context, GetGUCString(GUC_SSLECDHCurve)) != 1)
 	{
 		/*
 		 * OpenSSL 3.3.0 introduced proper error messages for group parsing
@@ -2480,18 +2481,20 @@ default_openssl_tls_init(SSL_CTX *context, bool isServerStart)
 {
 	if (isServerStart)
 	{
-		if (ssl_passphrase_command[0])
+		if (GetGUCString(GUC_ssl_passphrase_command)[0])
 		{
 			SSL_CTX_set_default_passwd_cb(context, ssl_external_passwd_cb);
-			SSL_CTX_set_default_passwd_cb_userdata(context, ssl_passphrase_command);
+			SSL_CTX_set_default_passwd_cb_userdata(context,
+							       GetGUCString(GUC_ssl_passphrase_command));
 		}
 	}
 	else
 	{
-		if (ssl_passphrase_command[0] && ssl_passphrase_command_supports_reload)
+		if (GetGUCString(GUC_ssl_passphrase_command)[0] && GetGUCBool(GUC_ssl_passphrase_command_supports_reload))
 		{
 			SSL_CTX_set_default_passwd_cb(context, ssl_external_passwd_cb);
-			SSL_CTX_set_default_passwd_cb_userdata(context, ssl_passphrase_command);
+			SSL_CTX_set_default_passwd_cb_userdata(context,
+							       GetGUCString(GUC_ssl_passphrase_command));
 		}
 		else
 

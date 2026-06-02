@@ -123,7 +123,7 @@ CheckLogicalDecodingRequirements(bool repack)
 				 errmsg("logical decoding requires a database connection")));
 
 	/* CheckSlotRequirements() has already checked if wal_level >= 'replica' */
-	Assert(wal_level >= WAL_LEVEL_REPLICA);
+	Assert(GetGUCEnum(GUC_wal_level) >= WAL_LEVEL_REPLICA);
 
 	/* Check if logical decoding is available on standby */
 	if (RecoveryInProgress() && !IsLogicalDecodingEnabled())
@@ -194,7 +194,8 @@ StartupDecodingContext(List *output_plugin_options,
 
 	ctx->slot = slot;
 
-	ctx->reader = XLogReaderAllocate(wal_segment_size, NULL, xl_routine, ctx);
+	ctx->reader = XLogReaderAllocate(GetGUCInt(GUC_wal_segment_size),
+					 NULL, xl_routine, ctx);
 	if (!ctx->reader)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),

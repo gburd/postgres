@@ -388,9 +388,10 @@ fill_hba_view(Tuplestorestate *tuple_store, TupleDesc tupdesc)
 	 * (Most other error conditions should result in a message in a view
 	 * entry.)
 	 */
-	file = open_auth_file(HbaFileName, ERROR, 0, NULL);
+	file = open_auth_file(GetGUCString(GUC_HbaFileName), ERROR, 0, NULL);
 
-	tokenize_auth_file(HbaFileName, file, &hba_lines, DEBUG3, 0);
+	tokenize_auth_file(GetGUCString(GUC_HbaFileName), file, &hba_lines,
+			   DEBUG3, 0);
 
 	/* Now parse all the lines */
 	hbacxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -535,9 +536,10 @@ fill_ident_view(Tuplestorestate *tuple_store, TupleDesc tupdesc)
 	 * (Most other error conditions should result in a message in a view
 	 * entry.)
 	 */
-	file = open_auth_file(IdentFileName, ERROR, 0, NULL);
+	file = open_auth_file(GetGUCString(GUC_IdentFileName), ERROR, 0, NULL);
 
-	tokenize_auth_file(IdentFileName, file, &ident_lines, DEBUG3, 0);
+	tokenize_auth_file(GetGUCString(GUC_IdentFileName), file,
+			   &ident_lines, DEBUG3, 0);
 
 	/* Now parse all the lines */
 	identcxt = AllocSetContextCreate(CurrentMemoryContext,

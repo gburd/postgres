@@ -985,11 +985,11 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 	key.objid = objid;
 
 	/* if we need to build a full snapshot, do so */
-	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 		pgstat_build_snapshot();
 
 	/* if caching is desired, look up in cache */
-	if (pgstat_fetch_consistency > PGSTAT_FETCH_CONSISTENCY_NONE)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) > PGSTAT_FETCH_CONSISTENCY_NONE)
 	{
 		PgStat_SnapshotEntry *entry = NULL;
 
@@ -1002,18 +1002,18 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 		 * If we built a full snapshot and the key is not in
 		 * pgStatLocal.snapshot.stats, there are no matching stats.
 		 */
-		if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
+		if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 			return NULL;
 	}
 
-	pgStatLocal.snapshot.mode = pgstat_fetch_consistency;
+	pgStatLocal.snapshot.mode = GetGUCEnum(GUC_pgstat_fetch_consistency);
 
 	entry_ref = pgstat_get_entry_ref(kind, dboid, objid, false, NULL);
 
 	if (entry_ref == NULL || entry_ref->shared_entry->dropped)
 	{
 		/* create empty entry when using PGSTAT_FETCH_CONSISTENCY_CACHE */
-		if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_CACHE)
+		if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_CACHE)
 		{
 			PgStat_SnapshotEntry *entry = NULL;
 			bool		found;
@@ -1030,7 +1030,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 	 * otherwise we could quickly end up with a fair bit of memory used due to
 	 * repeated accesses.
 	 */
-	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_NONE)
 	{
 		stats_data = palloc(kind_info->shared_data_len);
 
@@ -1051,7 +1051,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 		   kind_info->shared_data_len);
 	pgstat_unlock_entry(entry_ref);
 
-	if (pgstat_fetch_consistency > PGSTAT_FETCH_CONSISTENCY_NONE)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) > PGSTAT_FETCH_CONSISTENCY_NONE)
 	{
 		PgStat_SnapshotEntry *entry = NULL;
 		bool		found;
@@ -1110,7 +1110,7 @@ pgstat_snapshot_fixed(PgStat_Kind kind)
 	if (force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
-	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 		pgstat_build_snapshot();
 	else
 		pgstat_build_snapshot_fixed(kind);
@@ -1146,7 +1146,7 @@ pgstat_prep_snapshot(void)
 	if (force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
-	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE ||
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_NONE ||
 		pgStatLocal.snapshot.stats != NULL)
 		return;
 
@@ -1168,7 +1168,7 @@ pgstat_build_snapshot(void)
 	PgStatShared_HashEntry *p;
 
 	/* should only be called when we need a snapshot */
-	Assert(pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT);
+	Assert(GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT);
 
 	/* snapshot already built */
 	if (pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
@@ -1273,7 +1273,7 @@ pgstat_build_snapshot_fixed(PgStat_Kind kind)
 	Assert(kind_info->fixed_amount);
 	Assert(kind_info->snapshot_cb != NULL);
 
-	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_NONE)
 	{
 		/* rebuild every time */
 		valid[idx] = false;
@@ -1281,7 +1281,7 @@ pgstat_build_snapshot_fixed(PgStat_Kind kind)
 	else if (valid[idx])
 	{
 		/* in snapshot mode we shouldn't get called again */
-		Assert(pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_CACHE);
+		Assert(GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_CACHE);
 		return;
 	}
 
@@ -2150,6 +2150,6 @@ assign_stats_fetch_consistency(int newval, void *extra)
 	 * inconsistencies, so force a clear of the current snapshot on the next
 	 * snapshot build attempt.
 	 */
-	if (pgstat_fetch_consistency != newval)
+	if (GetGUCEnum(GUC_pgstat_fetch_consistency) != newval)
 		force_stats_snapshot_clear = true;
 }

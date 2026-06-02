@@ -408,7 +408,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 void
 PreventCommandIfReadOnly(const char *cmdname)
 {
-	if (XactReadOnly)
+	if (GetGUCBool(GUC_XactReadOnly))
 		ereport(ERROR,
 				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
 		/* translator: %s is name of a SQL command, eg CREATE */
@@ -578,7 +578,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 	/* Prohibit read/write commands in read-only states. */
 	readonly_flags = ClassifyUtilityCommandAsReadOnly(parsetree);
 	if (readonly_flags != COMMAND_IS_STRICTLY_READ_ONLY &&
-		(XactReadOnly || IsInParallelMode()))
+		(GetGUCBool(GUC_XactReadOnly) || IsInParallelMode()))
 	{
 		CommandTag	commandtag = CreateCommandTag(parsetree);
 

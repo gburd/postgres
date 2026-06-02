@@ -236,7 +236,7 @@ SimpleLruAutotuneBuffers(int divisor, int max)
 {
 	return Min(max - (max % SLRU_BANK_SIZE),
 			   Max(SLRU_BANK_SIZE,
-				   NBuffers / divisor - (NBuffers / divisor) % SLRU_BANK_SIZE));
+				   GetGUCInt(GUC_NBuffers) / divisor - (GetGUCInt(GUC_NBuffers) / divisor) % SLRU_BANK_SIZE));
 }
 
 /*

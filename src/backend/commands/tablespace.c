@@ -249,7 +249,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("tablespace name \"%s\" contains a newline or carriage return character", stmt->tablespacename)));
 
-	in_place = allow_in_place_tablespaces && strlen(location) == 0;
+	in_place = GetGUCBool(GUC_allow_in_place_tablespaces) && strlen(location) == 0;
 
 	/*
 	 * Allowing relative paths seems risky
@@ -285,7 +285,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 * Disallow creation of tablespaces named "pg_xxx"; we reserve this
 	 * namespace for system purposes.
 	 */
-	if (!allowSystemTableMods && IsReservedName(stmt->tablespacename))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsReservedName(stmt->tablespacename))
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
 				 errmsg("unacceptable tablespace name \"%s\"",
@@ -972,7 +972,7 @@ RenameTableSpace(const char *oldname, const char *newname)
 		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLESPACE, oldname);
 
 	/* Validate new name */
-	if (!allowSystemTableMods && IsReservedName(newname))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsReservedName(newname))
 		ereport(ERROR,
 				(errcode(ERRCODE_RESERVED_NAME),
 				 errmsg("unacceptable tablespace name \"%s\"", newname),
@@ -1166,7 +1166,7 @@ GetDefaultTablespace(char relpersistence, bool partitioned)
 	}
 
 	/* Fast path for default_tablespace == "" */
-	if (default_tablespace == NULL || default_tablespace[0] == '\0')
+	if (GetGUCString(GUC_default_tablespace) == NULL || GetGUCString(GUC_default_tablespace)[0] == '\0')
 		return InvalidOid;
 
 	/*
@@ -1176,7 +1176,8 @@ GetDefaultTablespace(char relpersistence, bool partitioned)
 	 * to refer to an existing tablespace; we just silently return InvalidOid,
 	 * causing the new object to be created in the database's tablespace.
 	 */
-	result = get_tablespace_oid(default_tablespace, true);
+	result = get_tablespace_oid(GetGUCString(GUC_default_tablespace),
+				    true);
 
 	/*
 	 * Allow explicit specification of database's default tablespace in
@@ -1365,7 +1366,7 @@ PrepareTempTablespaces(void)
 		return;
 
 	/* Need a modifiable copy of string */
-	rawname = pstrdup(temp_tablespaces);
+	rawname = pstrdup(GetGUCString(GUC_temp_tablespaces));
 
 	/* Parse string into list of identifiers */
 	if (!SplitIdentifierString(rawname, ',', &namelist))

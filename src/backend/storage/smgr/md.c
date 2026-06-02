@@ -604,12 +604,12 @@ mdzeroextend(SMgrRelation reln, ForkNumber forknum,
 		 * 8, anything between 4 and 8 worked OK in some local testing.
 		 */
 		if (numblocks > 8 &&
-			file_extend_method != FILE_EXTEND_METHOD_WRITE_ZEROS)
+			GetGUCEnum(GUC_file_extend_method) != FILE_EXTEND_METHOD_WRITE_ZEROS)
 		{
 			int			ret = 0;
 
 #ifdef HAVE_POSIX_FALLOCATE
-			if (file_extend_method == FILE_EXTEND_METHOD_POSIX_FALLOCATE)
+			if (GetGUCEnum(GUC_file_extend_method) == FILE_EXTEND_METHOD_POSIX_FALLOCATE)
 			{
 				ret = FileFallocate(v->mdfd_vfd,
 									seekpos, (pgoff_t) BLCKSZ * numblocks,
@@ -619,7 +619,7 @@ mdzeroextend(SMgrRelation reln, ForkNumber forknum,
 #endif
 			{
 				elog(ERROR, "unsupported file_extend_method: %d",
-					 file_extend_method);
+					 GetGUCEnum(GUC_file_extend_method));
 			}
 			if (ret != 0)
 			{
@@ -952,7 +952,7 @@ mdreadv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 				 * continuing to work in production builds). Afterwards we
 				 * plan to remove this code entirely.
 				 */
-				if (zero_damaged_pages || InRecovery)
+				if (GetGUCBool(GUC_zero_damaged_pages) || InRecovery)
 				{
 					Assert(false);	/* see comment above */
 
@@ -1532,7 +1532,7 @@ register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 		ereport(DEBUG1,
 				(errmsg_internal("could not forward fsync request because request queue is full")));
 
-		io_start = pgstat_prepare_io_time(track_io_timing);
+		io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 		if (FileSync(seg->mdfd_vfd, WAIT_EVENT_DATA_FILE_SYNC) < 0)
 			ereport(data_sync_elevel(ERROR),
@@ -1931,7 +1931,7 @@ mdsyncfiletag(const FileTag *ftag, char *path)
 		need_to_close = true;
 	}
 
-	io_start = pgstat_prepare_io_time(track_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_io_timing));
 
 	/* Sync the file. */
 	result = FileSync(file, WAIT_EVENT_DATA_FILE_SYNC);

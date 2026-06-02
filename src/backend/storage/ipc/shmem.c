@@ -1314,9 +1314,9 @@ pg_get_shmem_pagesize(void)
 #endif
 
 	Assert(IsUnderPostmaster);
-	Assert(huge_pages_status != HUGE_PAGES_UNKNOWN);
+	Assert(GetGUCEnum(GUC_huge_pages_status) != HUGE_PAGES_UNKNOWN);
 
-	if (huge_pages_status == HUGE_PAGES_ON)
+	if (GetGUCEnum(GUC_huge_pages_status) == HUGE_PAGES_ON)
 		GetHugePageSize(&os_page_size, NULL);
 
 	return os_page_size;

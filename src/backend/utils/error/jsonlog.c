@@ -250,7 +250,7 @@ write_jsonlog(ErrorData *edata)
 	}
 
 	/* file error location */
-	if (Log_error_verbosity >= PGERROR_VERBOSE)
+	if (GetGUCEnum(GUC_Log_error_verbosity) >= PGERROR_VERBOSE)
 	{
 		if (edata->funcname)
 			appendJSONKeyValue(&buf, "func_name", edata->funcname, true);
@@ -263,8 +263,9 @@ write_jsonlog(ErrorData *edata)
 	}
 
 	/* Application name */
-	if (application_name && application_name[0] != '\0')
-		appendJSONKeyValue(&buf, "application_name", application_name, true);
+	if (GetGUCString(GUC_application_name) && GetGUCString(GUC_application_name)[0] != '\0')
+		appendJSONKeyValue(&buf, "application_name",
+				   GetGUCString(GUC_application_name), true);
 
 	/* backend type */
 	appendJSONKeyValue(&buf, "backend_type", get_backend_type_for_log(), true);

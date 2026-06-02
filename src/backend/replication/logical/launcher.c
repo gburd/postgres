@@ -267,7 +267,7 @@ logicalrep_worker_find(LogicalRepWorkerType wtype, Oid subid, Oid relid,
 	Assert(LWLockHeldByMe(LogicalRepWorkerLock));
 
 	/* Search for an attached worker that matches the specified criteria. */
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -302,7 +302,7 @@ logicalrep_workers_find(Oid subid, bool only_running, bool acquire_lock)
 	Assert(LWLockHeldByMe(LogicalRepWorkerLock));
 
 	/* Search for attached worker for a given subscription id. */
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -358,7 +358,7 @@ logicalrep_worker_launch(LogicalRepWorkerType wtype,
 							 subname)));
 
 	/* Report this after the initial starting message for consistency. */
-	if (max_active_replication_origins == 0)
+	if (GetGUCInt(GUC_max_active_replication_origins) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("cannot start logical replication workers when \"max_active_replication_origins\" is 0")));
@@ -371,7 +371,7 @@ logicalrep_worker_launch(LogicalRepWorkerType wtype,
 
 retry:
 	/* Find unused worker slot. */
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -392,11 +392,11 @@ retry:
 	 * reason we do this is because if some worker failed to start up and its
 	 * parent has crashed while waiting, the in_use state was never cleared.
 	 */
-	if (worker == NULL || nsyncworkers >= max_sync_workers_per_subscription)
+	if (worker == NULL || nsyncworkers >= GetGUCInt(GUC_max_sync_workers_per_subscription))
 	{
 		bool		did_cleanup = false;
 
-		for (i = 0; i < max_logical_replication_workers; i++)
+		for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 		{
 			LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -406,7 +406,7 @@ retry:
 			 */
 			if (w->in_use && !w->proc &&
 				TimestampDifferenceExceeds(w->launch_time, now,
-										   wal_receiver_timeout))
+										   GetGUCInt(GUC_wal_receiver_timeout)))
 			{
 				elog(WARNING,
 					 "logical replication worker for subscription %u took too long to start; canceled",
@@ -427,7 +427,7 @@ retry:
 	 * might get here because of an otherwise harmless race condition.
 	 */
 	if ((is_tablesync_worker || is_sequencesync_worker) &&
-		nsyncworkers >= max_sync_workers_per_subscription)
+		nsyncworkers >= GetGUCInt(GUC_max_sync_workers_per_subscription))
 	{
 		LWLockRelease(LogicalRepWorkerLock);
 		return false;
@@ -440,7 +440,7 @@ retry:
 	 * per subscription.
 	 */
 	if (is_parallel_apply_worker &&
-		nparallelapplyworkers >= max_parallel_apply_workers_per_subscription)
+		nparallelapplyworkers >= GetGUCInt(GUC_max_parallel_apply_workers_per_subscription))
 	{
 		LWLockRelease(LogicalRepWorkerLock);
 		return false;
@@ -689,7 +689,7 @@ logicalrep_pa_worker_stop(ParallelApplyWorkerInfo *winfo)
 	slot_no = winfo->shared->logicalrep_worker_slot_no;
 	SpinLockRelease(&winfo->shared->mutex);
 
-	Assert(slot_no >= 0 && slot_no < max_logical_replication_workers);
+	Assert(slot_no >= 0 && slot_no < GetGUCInt(GUC_max_logical_replication_workers));
 
 	/*
 	 * Detach from the error_mq_handle for the parallel apply worker before
@@ -761,7 +761,7 @@ logicalrep_worker_attach(int slot)
 	/* Block concurrent access. */
 	LWLockAcquire(LogicalRepWorkerLock, LW_EXCLUSIVE);
 
-	Assert(slot >= 0 && slot < max_logical_replication_workers);
+	Assert(slot >= 0 && slot < GetGUCInt(GUC_max_logical_replication_workers));
 	MyLogicalRepWorker = &LogicalRepCtx->workers[slot];
 
 	if (!MyLogicalRepWorker->in_use)
@@ -935,7 +935,7 @@ logicalrep_sync_worker_count(Oid subid)
 	Assert(LWLockHeldByMe(LogicalRepWorkerLock));
 
 	/* Search for attached worker for a given subscription id. */
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -962,7 +962,7 @@ logicalrep_pa_worker_count(Oid subid)
 	 * Scan all attached parallel apply workers, only counting those which
 	 * have the given subscription id.
 	 */
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -987,7 +987,7 @@ ApplyLauncherShmemRequest(void *arg)
 	 */
 	size = sizeof(LogicalRepCtxStruct);
 	size = MAXALIGN(size);
-	size = add_size(size, mul_size(max_logical_replication_workers,
+	size = add_size(size, mul_size(GetGUCInt(GUC_max_logical_replication_workers),
 								   sizeof(LogicalRepWorker)));
 	ShmemRequestStruct(.name = "Logical Replication Launcher Data",
 					   .size = size,
@@ -1011,7 +1011,7 @@ ApplyLauncherRegister(void)
 	 * copied to the target cluster, potentially creating conflicts with the
 	 * copied data files.
 	 */
-	if (max_logical_replication_workers == 0 || IsBinaryUpgrade)
+	if (GetGUCInt(GUC_max_logical_replication_workers) == 0 || IsBinaryUpgrade)
 		return;
 
 	memset(&bgw, 0, sizeof(bgw));
@@ -1044,7 +1044,7 @@ ApplyLauncherShmemInit(void *arg)
 	LogicalRepCtx->last_start_dsh = DSHASH_HANDLE_INVALID;
 
 	/* Initialize memory and spin locks for each worker slot. */
-	for (slot = 0; slot < max_logical_replication_workers; slot++)
+	for (slot = 0; slot < GetGUCInt(GUC_max_logical_replication_workers); slot++)
 	{
 		LogicalRepWorker *worker = &LogicalRepCtx->workers[slot];
 
@@ -1357,7 +1357,7 @@ ApplyLauncherMain(Datum main_arg)
 			last_start = ApplyLauncherGetWorkerStartTime(sub->oid);
 			now = GetCurrentTimestamp();
 			if (last_start == 0 ||
-				(elapsed = TimestampDifferenceMilliseconds(last_start, now)) >= wal_retrieve_retry_interval)
+				(elapsed = TimestampDifferenceMilliseconds(last_start, now)) >= GetGUCInt(GUC_wal_retrieve_retry_interval))
 			{
 				ApplyLauncherSetWorkerStartTime(sub->oid, now);
 				if (!logicalrep_worker_launch(WORKERTYPE_APPLY,
@@ -1375,13 +1375,13 @@ ApplyLauncherMain(Datum main_arg)
 					 * wal_retrieve_retry_interval.
 					 */
 					wait_time = Min(wait_time,
-									wal_retrieve_retry_interval);
+									GetGUCInt(GUC_wal_retrieve_retry_interval));
 				}
 			}
 			else
 			{
 				wait_time = Min(wait_time,
-								wal_retrieve_retry_interval - elapsed);
+								GetGUCInt(GUC_wal_retrieve_retry_interval) - elapsed);
 			}
 		}
 
@@ -1595,7 +1595,7 @@ GetLeaderApplyWorkerPid(pid_t pid)
 
 	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
 
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
@@ -1627,7 +1627,7 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 	/* Make sure we get consistent view of the workers. */
 	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
 
-	for (i = 0; i < max_logical_replication_workers; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_logical_replication_workers); i++)
 	{
 		/* for each row */
 		Datum		values[PG_STAT_GET_SUBSCRIPTION_COLS] = {0};

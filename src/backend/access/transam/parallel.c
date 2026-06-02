@@ -346,7 +346,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->outer_user_id = GetCurrentRoleId();
 	GetUserIdAndSecContext(&fps->current_user_id, &fps->sec_context);
 	fps->session_user_is_superuser = GetSessionUserIsSuperuser();
-	fps->role_is_superuser = current_role_is_superuser;
+	fps->role_is_superuser = GetGUCBool(GUC_current_role_is_superuser);
 	GetTempNamespaceState(&fps->temp_namespace_id,
 						  &fps->temp_toast_namespace_id);
 	fps->parallel_leader_pgproc = MyProc;
@@ -1158,7 +1158,7 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 				 * because it causes test-result instability depending on
 				 * whether a parallel worker is actually used or not.)
 				 */
-				if (debug_parallel_query != DEBUG_PARALLEL_REGRESS)
+				if (GetGUCEnum(GUC_debug_parallel_query) != DEBUG_PARALLEL_REGRESS)
 				{
 					if (edata.context)
 						edata.context = psprintf("%s\n%s", edata.context,

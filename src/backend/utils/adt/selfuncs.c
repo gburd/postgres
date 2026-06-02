@@ -7587,12 +7587,12 @@ genericcostestimate(PlannerInfo *root,
 	 */
 	qual_arg_cost = index_other_operands_eval_cost(root, indexQuals) +
 		index_other_operands_eval_cost(root, indexOrderBys);
-	qual_op_cost = cpu_operator_cost *
+	qual_op_cost = GetGUCReal(GUC_cpu_operator_cost) *
 		(list_length(indexQuals) + list_length(indexOrderBys));
 
 	indexStartupCost = qual_arg_cost;
 	indexTotalCost += qual_arg_cost;
-	indexTotalCost += numIndexTuples * num_sa_scans * (cpu_index_tuple_cost + qual_op_cost);
+	indexTotalCost += numIndexTuples * num_sa_scans * (GetGUCReal(GUC_cpu_index_tuple_cost) + qual_op_cost);
 
 	/*
 	 * Generic assumption about index correlation: there isn't any.
@@ -8131,7 +8131,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	if (index->tuples > 1)		/* avoid computing log(0) */
 	{
-		descentCost = ceil(log(index->tuples) / log(2.0)) * cpu_operator_cost;
+		descentCost = ceil(log(index->tuples) / log(2.0)) * GetGUCReal(GUC_cpu_operator_cost);
 		costs.indexStartupCost += descentCost;
 		costs.indexTotalCost += costs.num_sa_scans * descentCost;
 	}
@@ -8147,7 +8147,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * we charge for the leaf page too).  As above, charge once per estimated
 	 * SAOP/skip array descent.
 	 */
-	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 	costs.indexStartupCost += descentCost;
 	costs.indexTotalCost += costs.num_sa_scans * descentCost;
 
@@ -8254,7 +8254,7 @@ gistcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	if (index->tuples > 1)		/* avoid computing log(0) */
 	{
-		descentCost = ceil(log(index->tuples)) * cpu_operator_cost;
+		descentCost = ceil(log(index->tuples)) * GetGUCReal(GUC_cpu_operator_cost);
 		costs.indexStartupCost += descentCost;
 		costs.indexTotalCost += costs.num_sa_scans * descentCost;
 	}
@@ -8262,7 +8262,7 @@ gistcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	/*
 	 * Likewise add a per-page charge, calculated the same as for btrees.
 	 */
-	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 	costs.indexStartupCost += descentCost;
 	costs.indexTotalCost += costs.num_sa_scans * descentCost;
 
@@ -8312,7 +8312,7 @@ spgcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	if (index->tuples > 1)		/* avoid computing log(0) */
 	{
-		descentCost = ceil(log(index->tuples)) * cpu_operator_cost;
+		descentCost = ceil(log(index->tuples)) * GetGUCReal(GUC_cpu_operator_cost);
 		costs.indexStartupCost += descentCost;
 		costs.indexTotalCost += costs.num_sa_scans * descentCost;
 	}
@@ -8320,7 +8320,7 @@ spgcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	/*
 	 * Likewise add a per-page charge, calculated the same as for btrees.
 	 */
-	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 	costs.indexStartupCost += descentCost;
 	costs.indexTotalCost += costs.num_sa_scans * descentCost;
 
@@ -8898,7 +8898,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	if (numEntries > 1)			/* avoid computing log(0) */
 	{
-		descentCost = ceil(log(numEntries) / log(2.0)) * cpu_operator_cost;
+		descentCost = ceil(log(numEntries) / log(2.0)) * GetGUCReal(GUC_cpu_operator_cost);
 		*indexStartupCost += descentCost * counts.searchEntries;
 		*indexTotalCost += counts.arrayScans * descentCost * counts.searchEntries;
 	}
@@ -8907,21 +8907,21 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * Add a cpu cost per entry-page fetched. This is not amortized over a
 	 * loop.
 	 */
-	*indexStartupCost += entryPagesFetched * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
-	*indexTotalCost += entryPagesFetched * counts.arrayScans * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	*indexStartupCost += entryPagesFetched * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
+	*indexTotalCost += entryPagesFetched * counts.arrayScans * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 
 	/*
 	 * Add a cpu cost per data-page fetched. This is also not amortized over a
 	 * loop. Since those are the data pages from the partial match algorithm,
 	 * charge them as startup cost.
 	 */
-	*indexStartupCost += DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost * dataPagesFetched;
+	*indexStartupCost += DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost) * dataPagesFetched;
 
 	/*
 	 * Since we add the startup cost to the total cost later on, remove the
 	 * initial arrayscan from the total.
 	 */
-	*indexTotalCost += dataPagesFetched * (counts.arrayScans - 1) * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	*indexTotalCost += dataPagesFetched * (counts.arrayScans - 1) * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 
 	/*
 	 * Calculate cache effects if more than one scan due to nestloops or array
@@ -8975,13 +8975,13 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		dataPagesFetched = dataPagesFetchedBySel;
 
 	/* Add one page cpu-cost to the startup cost */
-	*indexStartupCost += DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost * counts.searchEntries;
+	*indexStartupCost += DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost) * counts.searchEntries;
 
 	/*
 	 * Add once again a CPU-cost for those data pages, before amortizing for
 	 * cache.
 	 */
-	*indexTotalCost += dataPagesFetched * counts.arrayScans * DEFAULT_PAGE_CPU_MULTIPLIER * cpu_operator_cost;
+	*indexTotalCost += dataPagesFetched * counts.arrayScans * DEFAULT_PAGE_CPU_MULTIPLIER * GetGUCReal(GUC_cpu_operator_cost);
 
 	/* Account for cache effects, the same as above */
 	if (outer_scans > 1 || counts.arrayScans > 1)
@@ -9003,7 +9003,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * those.
 	 */
 	qual_arg_cost = index_other_operands_eval_cost(root, indexQuals);
-	qual_op_cost = cpu_operator_cost * list_length(indexQuals);
+	qual_op_cost = GetGUCReal(GUC_cpu_operator_cost) * list_length(indexQuals);
 
 	*indexStartupCost += qual_arg_cost;
 	*indexTotalCost += qual_arg_cost;
@@ -9014,7 +9014,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 */
 	*indexTotalCost += (counts.searchEntries * counts.arrayScans) * (qual_op_cost);
 	/* Now add a cpu cost per tuple in the posting lists / trees */
-	*indexTotalCost += (numTuples * *indexSelectivity) * (cpu_index_tuple_cost);
+	*indexTotalCost += (numTuples * *indexSelectivity) * (GetGUCReal(GUC_cpu_index_tuple_cost));
 	*indexPages = dataPagesFetched;
 }
 
@@ -9233,7 +9233,7 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	 * range, so we must multiply the charge by the number of pages in the
 	 * range.
 	 */
-	*indexTotalCost += 0.1 * cpu_operator_cost * estimatedRanges *
+	*indexTotalCost += 0.1 * GetGUCReal(GUC_cpu_operator_cost) * estimatedRanges *
 		statsData.pagesPerRange;
 
 	*indexPages = index->pages;

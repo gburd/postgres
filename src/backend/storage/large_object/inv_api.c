@@ -249,7 +249,7 @@ inv_open(Oid lobjId, int flags, MemoryContext mcxt)
 	/* Apply permission checks, again specifying snapshot */
 	if ((descflags & IFS_RDLOCK) != 0)
 	{
-		if (!lo_compat_privileges &&
+		if (!GetGUCBool(GUC_lo_compat_privileges) &&
 			pg_largeobject_aclcheck_snapshot(lobjId,
 											 GetUserId(),
 											 ACL_SELECT,
@@ -261,7 +261,7 @@ inv_open(Oid lobjId, int flags, MemoryContext mcxt)
 	}
 	if ((descflags & IFS_WRLOCK) != 0)
 	{
-		if (!lo_compat_privileges &&
+		if (!GetGUCBool(GUC_lo_compat_privileges) &&
 			pg_largeobject_aclcheck_snapshot(lobjId,
 											 GetUserId(),
 											 ACL_UPDATE,

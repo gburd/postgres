@@ -503,7 +503,8 @@ pg_be_scram_build_secret(const char *password)
 
 	result = scram_build_secret(PG_SHA256, SCRAM_SHA_256_KEY_LEN,
 								saltbuf, SCRAM_DEFAULT_SALT_LEN,
-								scram_sha_256_iterations, password,
+								GetGUCInt(GUC_scram_sha_256_iterations),
+								password,
 								&errstr);
 
 	if (prep_password)

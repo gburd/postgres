@@ -49,8 +49,8 @@ extern PGDLLIMPORT int XactIsoLevel;
  * These macros can be used to determine which implementation to use
  * depending on the prevailing serialization level.
  */
-#define IsolationUsesXactSnapshot() (XactIsoLevel >= XACT_REPEATABLE_READ)
-#define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
+#define IsolationUsesXactSnapshot() (GetGUCEnum(GUC_XactIsoLevel) >= XACT_REPEATABLE_READ)
+#define IsolationIsSerializable() (GetGUCEnum(GUC_XactIsoLevel) == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
 extern PGDLLIMPORT bool DefaultXactReadOnly;

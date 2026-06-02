@@ -2742,7 +2742,7 @@ create_rel_agg_info(PlannerInfo *root, RelOptInfo *rel,
 			 * min_eager_agg_group_size.
 			 */
 			agg_info->agg_useful =
-				(rel->rows / agg_info->grouped_rows) >= min_eager_agg_group_size;
+				(rel->rows / agg_info->grouped_rows) >= GetGUCReal(GUC_min_eager_agg_group_size);
 		}
 
 		return agg_info;
@@ -2807,7 +2807,7 @@ create_rel_agg_info(PlannerInfo *root, RelOptInfo *rel,
 		 * the average group size is no less than min_eager_agg_group_size.
 		 */
 		result->agg_useful =
-			(rel->rows / result->grouped_rows) >= min_eager_agg_group_size;
+			(rel->rows / result->grouped_rows) >= GetGUCReal(GUC_min_eager_agg_group_size);
 	}
 
 	return result;

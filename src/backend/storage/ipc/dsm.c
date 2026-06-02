@@ -198,7 +198,7 @@ dsm_postmaster_startup(PGShmemHeader *shim)
 	 * POSIX and System V shared memory, via a direct call to
 	 * dsm_cleanup_using_control_segment.
 	 */
-	if (dynamic_shared_memory_type == DSM_IMPL_MMAP)
+	if (GetGUCEnum(GUC_dynamic_shared_memory_type) == DSM_IMPL_MMAP)
 		dsm_cleanup_for_mmap();
 
 	/* Determine size for new control segment. */
@@ -479,7 +479,7 @@ dsm_set_control_handle(dsm_handle h)
 static void
 dsm_main_space_request(void *arg)
 {
-	dsm_main_space_size = 1024 * 1024 * (size_t) min_dynamic_shared_memory;
+	dsm_main_space_size = 1024 * 1024 * (size_t) GetGUCInt(GUC_min_dynamic_shared_memory);
 
 	if (dsm_main_space_size == 0)
 		return;

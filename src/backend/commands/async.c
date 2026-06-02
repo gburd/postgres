@@ -902,7 +902,7 @@ Async_Notify(const char *channel, const char *payload)
 	if (IsParallelWorker())
 		elog(ERROR, "cannot send notifications from a parallel worker");
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "Async_Notify(%s)", channel);
 
 	channel_len = channel ? strlen(channel) : 0;
@@ -1042,7 +1042,7 @@ queue_listen(ListenActionKind action, const char *channel)
 void
 Async_Listen(const char *channel)
 {
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "Async_Listen(%s,%d)", channel, MyProcPid);
 
 	queue_listen(LISTEN_LISTEN, channel);
@@ -1056,7 +1056,7 @@ Async_Listen(const char *channel)
 void
 Async_Unlisten(const char *channel)
 {
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "Async_Unlisten(%s,%d)", channel, MyProcPid);
 
 	/* If we couldn't possibly be listening, no need to queue anything */
@@ -1074,7 +1074,7 @@ Async_Unlisten(const char *channel)
 void
 Async_UnlistenAll(void)
 {
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "Async_UnlistenAll(%d)", MyProcPid);
 
 	/* If we couldn't possibly be listening, no need to queue anything */
@@ -1189,7 +1189,7 @@ PreCommit_Notify(void)
 	if (!pendingActions && !pendingNotifies)
 		return;					/* no relevant statements in this xact */
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "PreCommit_Notify");
 
 	/* Preflight for any pending listen/unlisten actions */
@@ -1384,7 +1384,7 @@ AtCommit_Notify(void)
 	if (!pendingActions && !pendingNotifies)
 		return;
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "AtCommit_Notify");
 
 	/* Apply staged listen/unlisten changes */
@@ -1440,7 +1440,7 @@ BecomeRegisteredListener(void)
 	if (amRegisteredListener)
 		return;
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "BecomeRegisteredListener(%d)", MyProcPid);
 
 	/*
@@ -1848,7 +1848,7 @@ CleanupListenersOnExit(void)
 	dshash_seq_status status;
 	GlobalChannelEntry *entry;
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "CleanupListenersOnExit(%d)", MyProcPid);
 
 	/* Clear our local cache (not really necessary, but be consistent) */
@@ -1962,7 +1962,7 @@ asyncQueueIsFull(void)
 	int64		tailPage = QUEUE_POS_PAGE(QUEUE_TAIL);
 	int64		occupied = headPage - tailPage;
 
-	return occupied >= max_notify_queue_pages;
+	return occupied >= GetGUCInt(GUC_max_notify_queue_pages);
 }
 
 /*
@@ -2199,7 +2199,7 @@ asyncQueueUsage(void)
 	if (occupied == 0)
 		return (double) 0;		/* fast exit for common case */
 
-	return (double) occupied / (double) max_notify_queue_pages;
+	return (double) occupied / (double) GetGUCInt(GUC_max_notify_queue_pages);
 }
 
 /*
@@ -2656,7 +2656,7 @@ asyncQueueReadAllNotifications(void)
 	 * notifications.
 	 */
 	{
-		bool		save_ExitOnAnyError = ExitOnAnyError;
+		bool		save_ExitOnAnyError = GetGUCBool(GUC_ExitOnAnyError);
 		bool		reachedStop;
 
 		ExitOnAnyError = true;
@@ -3039,7 +3039,7 @@ ProcessIncomingNotify(bool flush)
 	if (LocalChannelTableIsEmpty())
 		return;
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "ProcessIncomingNotify");
 
 	set_ps_display("notify interrupt");
@@ -3063,7 +3063,7 @@ ProcessIncomingNotify(bool flush)
 
 	set_ps_display("idle");
 
-	if (Trace_notify)
+	if (GetGUCBool(GUC_Trace_notify))
 		elog(DEBUG1, "ProcessIncomingNotify: done");
 }
 

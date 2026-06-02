@@ -3284,7 +3284,7 @@ FindDeletedTupleInLocalRel(Relation localrel, Oid localidxoid,
 	 * Return false if either dead tuples are not retained or commit timestamp
 	 * data is not available.
 	 */
-	if (!MySubscription->retaindeadtuples || !track_commit_timestamp)
+	if (!MySubscription->retaindeadtuples || !GetGUCBool(GUC_track_commit_timestamp))
 		return false;
 
 	/*
@@ -4190,7 +4190,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 		 * signal.
 		 */
 		if (!dlist_is_empty(&lsn_mapping))
-			wait_time = WalWriterDelay;
+			wait_time = GetGUCInt(GUC_WalWriterDelay);
 		else
 			wait_time = NAPTIME_PER_CYCLE;
 
@@ -4242,14 +4242,14 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			 * Check if time since last receive from primary has reached the
 			 * configured limit.
 			 */
-			if (wal_receiver_timeout > 0)
+			if (GetGUCInt(GUC_wal_receiver_timeout) > 0)
 			{
 				TimestampTz now = GetCurrentTimestamp();
 				TimestampTz timeout;
 
 				timeout =
 					TimestampTzPlusMilliseconds(last_recv_timestamp,
-												wal_receiver_timeout);
+												GetGUCInt(GUC_wal_receiver_timeout));
 
 				if (now >= timeout)
 					ereport(ERROR,
@@ -4260,7 +4260,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 				if (!ping_sent)
 				{
 					timeout = TimestampTzPlusMilliseconds(last_recv_timestamp,
-														  (wal_receiver_timeout / 2));
+														  (GetGUCInt(GUC_wal_receiver_timeout) / 2));
 					if (now >= timeout)
 					{
 						requestReply = true;
@@ -4318,7 +4318,7 @@ send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 	 * If the user doesn't want status to be reported to the publisher, be
 	 * sure to exit before doing anything at all.
 	 */
-	if (!force && wal_receiver_status_interval <= 0)
+	if (!force && GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
 		return;
 
 	/* It's legal to not pass a recvpos */
@@ -4347,7 +4347,7 @@ send_feedback(XLogRecPtr recvpos, bool force, bool requestReply)
 		writepos == last_writepos &&
 		flushpos == last_flushpos &&
 		!TimestampDifferenceExceeds(send_time, now,
-									wal_receiver_status_interval * 1000))
+									GetGUCInt(GUC_wal_receiver_status_interval) * 1000))
 		return;
 	send_time = now;
 
@@ -4710,7 +4710,7 @@ wait_for_local_flush(RetainDeadTuplesData *rdt_data)
 	 */
 	if (last_flushpos < rdt_data->remote_lsn && rdt_data->last_recv_time &&
 		TimestampDifferenceExceeds(rdt_data->flushpos_update_time,
-								   rdt_data->last_recv_time, WalWriterDelay))
+								   rdt_data->last_recv_time, GetGUCInt(GUC_WalWriterDelay)))
 	{
 		XLogRecPtr	writepos;
 		XLogRecPtr	flushpos;
@@ -4963,8 +4963,8 @@ adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data, bool new_xid_found)
 {
 	if (rdt_data->xid_advance_interval && !new_xid_found)
 	{
-		int			max_interval = wal_receiver_status_interval
-			? wal_receiver_status_interval * 1000
+		int			max_interval = GetGUCInt(GUC_wal_receiver_status_interval)
+			? GetGUCInt(GUC_wal_receiver_status_interval) * 1000
 			: MAX_XID_ADVANCE_INTERVAL;
 
 		/*
@@ -5176,7 +5176,7 @@ set_wal_receiver_timeout(void)
 {
 	bool		parsed;
 	int			val;
-	int			prev_timeout = wal_receiver_timeout;
+	int			prev_timeout = GetGUCInt(GUC_wal_receiver_timeout);
 
 	/*
 	 * Set the wal_receiver_timeout GUC to MySubscription->walrcvtimeout,
@@ -5196,9 +5196,10 @@ set_wal_receiver_timeout(void)
 	 * Log the wal_receiver_timeout setting (in milliseconds) as a debug
 	 * message when it changes, to verify it was set correctly.
 	 */
-	if (prev_timeout != wal_receiver_timeout)
+	if (prev_timeout != GetGUCInt(GUC_wal_receiver_timeout))
 		elog(DEBUG1, "logical replication worker for subscription \"%s\" wal_receiver_timeout: %d ms",
-			 MySubscription->name, wal_receiver_timeout);
+			 MySubscription->name,
+			 GetGUCInt(GUC_wal_receiver_timeout));
 }
 
 /*

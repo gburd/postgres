@@ -1688,7 +1688,7 @@ matchLocks(CmdType event,
 		 */
 		if (oneLock->event != CMD_SELECT)
 		{
-			if (SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA)
+			if (GetGUCEnum(GUC_SessionReplicationRole) == SESSION_REPLICATION_ROLE_REPLICA)
 			{
 				if (oneLock->enabled == RULE_FIRES_ON_ORIGIN ||
 					oneLock->enabled == RULE_DISABLED)

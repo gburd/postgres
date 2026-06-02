@@ -976,7 +976,7 @@ interval_out(PG_FUNCTION_ARGS)
 	else
 	{
 		interval2itm(*span, itm);
-		EncodeInterval(itm, IntervalStyle, buf);
+		EncodeInterval(itm, GetGUCEnum(GUC_IntervalStyle), buf);
 	}
 
 	result = pstrdup(buf);

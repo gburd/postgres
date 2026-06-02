@@ -373,7 +373,7 @@ tuple_lock_retry:
 									return TM_WouldBlock;
 								break;
 							case LockWaitError:
-								if (!ConditionalXactLockTableWait(SnapshotDirty.xmax, log_lock_failures))
+								if (!ConditionalXactLockTableWait(SnapshotDirty.xmax, GetGUCBool(GUC_log_lock_failures)))
 									ereport(ERROR,
 											(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 											 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -651,7 +651,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	/* Set up sorting if wanted */
 	if (use_sort)
 		tuplesort = tuplesort_begin_cluster(oldTupDesc, OldIndex,
-											maintenance_work_mem,
+											GetGUCInt(GUC_maintenance_work_mem),
 											NULL, TUPLESORT_NONE);
 	else
 		tuplesort = NULL;

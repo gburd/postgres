@@ -650,7 +650,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 	if (instrument)
 	{
 		pg_rusage_init(&ru0);
-		if (track_io_timing)
+		if (GetGUCBool(GUC_track_io_timing))
 		{
 			startreadtime = pgStatBlockReadTime;
 			startwritetime = pgStatBlockWriteTime;
@@ -1164,7 +1164,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 								 istat->pages_deleted,
 								 istat->pages_free);
 			}
-			if (track_cost_delay_timing)
+			if (GetGUCBool(GUC_track_cost_delay_timing))
 			{
 				/*
 				 * We bypass the changecount mechanism because this value is
@@ -1175,7 +1175,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 				appendStringInfo(&buf, _("delay time: %.3f ms\n"),
 								 (double) MyBEEntry->st_progress_param[PROGRESS_VACUUM_DELAY_TIME] / 1000000.0);
 			}
-			if (track_io_timing)
+			if (GetGUCBool(GUC_track_io_timing))
 			{
 				double		read_ms = (double) (pgStatBlockReadTime - startreadtime) / 1000;
 				double		write_ms = (double) (pgStatBlockWriteTime - startwritetime) / 1000;
@@ -3417,8 +3417,8 @@ dead_items_alloc(LVRelState *vacrel, int nworkers)
 {
 	VacDeadItemsInfo *dead_items_info;
 	int			vac_work_mem = AmAutoVacuumWorkerProcess() &&
-		autovacuum_work_mem != -1 ?
-		autovacuum_work_mem : maintenance_work_mem;
+		GetGUCInt(GUC_autovacuum_work_mem) != -1 ?
+		GetGUCInt(GUC_autovacuum_work_mem) : GetGUCInt(GUC_maintenance_work_mem);
 
 	/*
 	 * Initialize state for a parallel vacuum.  As of now, only one worker can

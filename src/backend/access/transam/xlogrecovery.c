@@ -514,7 +514,8 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 	 * Set the WAL decode buffer size.  This limits how far ahead we can read
 	 * in the WAL.
 	 */
-	XLogReaderSetDecodeBuffer(xlogreader, NULL, wal_decode_buffer_size);
+	XLogReaderSetDecodeBuffer(xlogreader, NULL,
+				  GetGUCInt(GUC_wal_decode_buffer_size));
 
 	/* Create a WAL prefetcher. */
 	xlogprefetcher = XLogPrefetcherAllocate(xlogreader);
@@ -1075,16 +1076,16 @@ validateRecoveryParameters(void)
 	 */
 	if (StandbyModeRequested)
 	{
-		if ((PrimaryConnInfo == NULL || strcmp(PrimaryConnInfo, "") == 0) &&
-			(recoveryRestoreCommand == NULL || strcmp(recoveryRestoreCommand, "") == 0))
+		if ((GetGUCString(GUC_PrimaryConnInfo) == NULL || strcmp(GetGUCString(GUC_PrimaryConnInfo), "") == 0) &&
+			(GetGUCString(GUC_recoveryRestoreCommand) == NULL || strcmp(GetGUCString(GUC_recoveryRestoreCommand), "") == 0))
 			ereport(WARNING,
 					(errmsg("specified neither \"primary_conninfo\" nor \"restore_command\""),
 					 errhint("The database server will regularly poll the pg_wal subdirectory to check for files placed there.")));
 	}
 	else
 	{
-		if (recoveryRestoreCommand == NULL ||
-			strcmp(recoveryRestoreCommand, "") == 0)
+		if (GetGUCString(GUC_recoveryRestoreCommand) == NULL ||
+			strcmp(GetGUCString(GUC_recoveryRestoreCommand), "") == 0)
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("must specify \"restore_command\" when standby mode is not enabled")));
@@ -1095,8 +1096,8 @@ validateRecoveryParameters(void)
 	 * behaviour in 9.5; prior to this we simply ignored a request to pause if
 	 * hot_standby = off, which was surprising behaviour.
 	 */
-	if (recoveryTargetAction == RECOVERY_TARGET_ACTION_PAUSE &&
-		!EnableHotStandby)
+	if (GetGUCEnum(GUC_recoveryTargetAction) == RECOVERY_TARGET_ACTION_PAUSE &&
+		!GetGUCBool(GUC_EnableHotStandby))
 		recoveryTargetAction = RECOVERY_TARGET_ACTION_SHUTDOWN;
 
 	/*
@@ -1106,7 +1107,7 @@ validateRecoveryParameters(void)
 	if (recoveryTarget == RECOVERY_TARGET_TIME)
 	{
 		recoveryTargetTime = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
-																	 CStringGetDatum(recovery_target_time_string),
+																	 CStringGetDatum(GetGUCString(GUC_recovery_target_time_string)),
 																	 ObjectIdGetDatum(InvalidOid),
 																	 Int32GetDatum(-1)));
 	}
@@ -1524,7 +1525,7 @@ FinishWalRecovery(void)
 		XLogRecPtr	pageBeginPtr;
 
 		pageBeginPtr = endOfLog - (endOfLog % XLOG_BLCKSZ);
-		Assert(readOff == XLogSegmentOffset(pageBeginPtr, wal_segment_size));
+		Assert(readOff == XLogSegmentOffset(pageBeginPtr, GetGUCInt(GUC_wal_segment_size)));
 
 		/* Copy the valid part of the last block */
 		len = endOfLog % XLOG_BLCKSZ;
@@ -1714,7 +1715,7 @@ PerformWalRecovery(void)
 										 LSN_FORMAT_ARGS(xlogreader->ReadRecPtr));
 
 #ifdef WAL_DEBUG
-			if (XLOG_DEBUG)
+			if (GetGUCBool(GUC_XLOG_DEBUG))
 			{
 				StringInfoData buf;
 
@@ -1818,7 +1819,7 @@ PerformWalRecovery(void)
 			 * Resource Managers may choose to do permanent corrective actions
 			 * at end of recovery.
 			 */
-			switch (recoveryTargetAction)
+			switch (GetGUCEnum(GUC_recoveryTargetAction))
 			{
 				case RECOVERY_TARGET_ACTION_SHUTDOWN:
 
@@ -2129,7 +2130,7 @@ CheckTablespaceDirectory(void)
 		snprintf(path, sizeof(path), "%s/%s", PG_TBLSPC_DIR, de->d_name);
 
 		if (get_dirent_type(path, de, false, ERROR) != PGFILETYPE_LNK)
-			ereport(allow_in_place_tablespaces ? WARNING : PANIC,
+			ereport(GetGUCBool(GUC_allow_in_place_tablespaces) ? WARNING : PANIC,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("unexpected directory entry \"%s\" found in %s",
 							de->d_name, PG_TBLSPC_DIR),
@@ -2575,7 +2576,7 @@ recoveryStopsBefore(XLogReaderState *record)
 
 	/* Check if target LSN has been reached */
 	if (recoveryTarget == RECOVERY_TARGET_LSN &&
-		!recoveryTargetInclusive &&
+		!GetGUCBool(GUC_recoveryTargetInclusive) &&
 		record->ReadRecPtr >= recoveryTargetLSN)
 	{
 		recoveryStopAfter = false;
@@ -2630,7 +2631,7 @@ recoveryStopsBefore(XLogReaderState *record)
 	else
 		return false;
 
-	if (recoveryTarget == RECOVERY_TARGET_XID && !recoveryTargetInclusive)
+	if (recoveryTarget == RECOVERY_TARGET_XID && !GetGUCBool(GUC_recoveryTargetInclusive))
 	{
 		/*
 		 * There can be only one transaction end record with this exact
@@ -2657,7 +2658,7 @@ recoveryStopsBefore(XLogReaderState *record)
 		 * we stop after the last one, if we are inclusive, or stop at the
 		 * first one if we are exclusive
 		 */
-		if (recoveryTargetInclusive)
+		if (GetGUCBool(GUC_recoveryTargetInclusive))
 			stopsHere = (recordXtime > recoveryTargetTime);
 		else
 			stopsHere = (recordXtime >= recoveryTargetTime);
@@ -2743,7 +2744,7 @@ recoveryStopsAfter(XLogReaderState *record)
 
 	/* Check if the target LSN has been reached */
 	if (recoveryTarget == RECOVERY_TARGET_LSN &&
-		recoveryTargetInclusive &&
+		GetGUCBool(GUC_recoveryTargetInclusive) &&
 		record->ReadRecPtr >= recoveryTargetLSN)
 	{
 		recoveryStopAfter = true;
@@ -2806,7 +2807,7 @@ recoveryStopsAfter(XLogReaderState *record)
 		 * they complete. A higher numbered xid will complete before you about
 		 * 50% of the time...
 		 */
-		if (recoveryTarget == RECOVERY_TARGET_XID && recoveryTargetInclusive &&
+		if (recoveryTarget == RECOVERY_TARGET_XID && GetGUCBool(GUC_recoveryTargetInclusive) &&
 			recordXid == recoveryTargetXid)
 		{
 			recoveryStopAfter = true;
@@ -2961,7 +2962,7 @@ recoveryApplyDelay(XLogReaderState *record)
 	long		msecs;
 
 	/* nothing to do if no delay configured */
-	if (recovery_min_apply_delay <= 0)
+	if (GetGUCInt(GUC_recovery_min_apply_delay) <= 0)
 		return false;
 
 	/* no delay is applied on a database not yet consistent */
@@ -2992,7 +2993,8 @@ recoveryApplyDelay(XLogReaderState *record)
 	if (!getRecordTimestamp(record, &xtime))
 		return false;
 
-	delayUntil = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay);
+	delayUntil = TimestampTzPlusMilliseconds(xtime,
+						 GetGUCInt(GUC_recovery_min_apply_delay));
 
 	/*
 	 * Exit without arming the latch if it's already past time to apply this
@@ -3016,7 +3018,8 @@ recoveryApplyDelay(XLogReaderState *record)
 		 * Recalculate delayUntil as recovery_min_apply_delay could have
 		 * changed while waiting in this loop.
 		 */
-		delayUntil = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay);
+		delayUntil = TimestampTzPlusMilliseconds(xtime,
+							 GetGUCInt(GUC_recovery_min_apply_delay));
 
 		/*
 		 * Wait for difference between GetCurrentTimestamp() and delayUntil.
@@ -3172,11 +3175,12 @@ ReadRecord(XLogPrefetcher *xlogprefetcher, int emode,
 			XLogSegNo	segno;
 			int32		offset;
 
-			XLByteToSeg(xlogreader->latestPagePtr, segno, wal_segment_size);
+			XLByteToSeg(xlogreader->latestPagePtr, segno,
+				    GetGUCInt(GUC_wal_segment_size));
 			offset = XLogSegmentOffset(xlogreader->latestPagePtr,
-									   wal_segment_size);
+									   GetGUCInt(GUC_wal_segment_size));
 			XLogFileName(fname, xlogreader->seg.ws_tli, segno,
-						 wal_segment_size);
+						 GetGUCInt(GUC_wal_segment_size));
 			ereport(emode_for_corrupt_record(emode, xlogreader->EndRecPtr),
 					errmsg("unexpected timeline ID %u in WAL segment %s, LSN %X/%08X, offset %u",
 						   xlogreader->latestPageTLI,
@@ -3284,15 +3288,17 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 
 	Assert(AmStartupProcess() || !IsUnderPostmaster);
 
-	XLByteToSeg(targetPagePtr, targetSegNo, wal_segment_size);
-	targetPageOff = XLogSegmentOffset(targetPagePtr, wal_segment_size);
+	XLByteToSeg(targetPagePtr, targetSegNo,
+		    GetGUCInt(GUC_wal_segment_size));
+	targetPageOff = XLogSegmentOffset(targetPagePtr,
+				          GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * See if we need to switch to a new segment because the requested record
 	 * is not in the currently open one.
 	 */
 	if (readFile >= 0 &&
-		!XLByteInSeg(targetPagePtr, readSegNo, wal_segment_size))
+		!XLByteInSeg(targetPagePtr, readSegNo, GetGUCInt(GUC_wal_segment_size)))
 	{
 		/*
 		 * Request a restartpoint if we've replayed too much xlog since the
@@ -3313,7 +3319,7 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 		readSource = XLOG_FROM_ANY;
 	}
 
-	XLByteToSeg(targetPagePtr, readSegNo, wal_segment_size);
+	XLByteToSeg(targetPagePtr, readSegNo, GetGUCInt(GUC_wal_segment_size));
 
 retry:
 	/* See if we need to retrieve more data */
@@ -3366,7 +3372,8 @@ retry:
 		if (((targetPagePtr) / XLOG_BLCKSZ) != (flushedUpto / XLOG_BLCKSZ))
 			readLen = XLOG_BLCKSZ;
 		else
-			readLen = XLogSegmentOffset(flushedUpto, wal_segment_size) -
+			readLen = XLogSegmentOffset(flushedUpto,
+						    GetGUCInt(GUC_wal_segment_size)) -
 				targetPageOff;
 	}
 	else
@@ -3376,7 +3383,7 @@ retry:
 	readOff = targetPageOff;
 
 	/* Measure I/O timing when reading segment */
-	io_start = pgstat_prepare_io_time(track_wal_io_timing);
+	io_start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
 	r = pg_pread(readFile, readBuf, XLOG_BLCKSZ, (pgoff_t) readOff);
@@ -3390,7 +3397,8 @@ retry:
 		pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL, IOOP_READ,
 								io_start, 1, r);
 
-		XLogFileName(fname, curFileTLI, readSegNo, wal_segment_size);
+		XLogFileName(fname, curFileTLI, readSegNo,
+		             GetGUCInt(GUC_wal_segment_size));
 		if (r < 0)
 		{
 			errno = save_errno;
@@ -3452,7 +3460,7 @@ retry:
 	 * responsible for the validation.
 	 */
 	if (StandbyMode &&
-		(targetPagePtr % wal_segment_size) == 0 &&
+		(targetPagePtr % GetGUCInt(GUC_wal_segment_size)) == 0 &&
 		!XLogReaderValidatePageHeader(xlogreader, targetPagePtr, readBuf))
 	{
 		/*
@@ -3697,11 +3705,11 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 */
 					now = GetCurrentTimestamp();
 					if (!TimestampDifferenceExceeds(last_fail_time, now,
-													wal_retrieve_retry_interval))
+													GetGUCInt(GUC_wal_retrieve_retry_interval)))
 					{
 						long		wait_time;
 
-						wait_time = wal_retrieve_retry_interval -
+						wait_time = GetGUCInt(GUC_wal_retrieve_retry_interval) -
 							TimestampDifferenceMilliseconds(last_fail_time, now);
 
 						elog(LOG, "waiting for WAL to become available at %X/%08X",
@@ -3829,7 +3837,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * RedoStartLSN, we will have the logs streamed already.
 					 */
 					if (startWalReceiver &&
-						PrimaryConnInfo && strcmp(PrimaryConnInfo, "") != 0)
+						GetGUCString(GUC_PrimaryConnInfo) && strcmp(GetGUCString(GUC_PrimaryConnInfo), "") != 0)
 					{
 						XLogRecPtr	ptr;
 						TimeLineID	tli;
@@ -3856,9 +3864,10 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						}
 						curFileTLI = tli;
 						SetInstallXLogFileSegmentActive();
-						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
-											 PrimarySlotName,
-											 wal_receiver_create_temp_slot);
+						RequestXLogStreaming(tli, ptr,
+											 GetGUCString(GUC_PrimaryConnInfo),
+											 GetGUCString(GUC_PrimarySlotName),
+											 GetGUCBool(GUC_wal_receiver_create_temp_slot));
 						flushedUpto = InvalidXLogRecPtr;
 					}
 
@@ -4204,7 +4213,7 @@ XLogFileRead(XLogSegNo segno, TimeLineID tli,
 	char		path[MAXPGPATH];
 	int			fd;
 
-	XLogFileName(xlogfname, tli, segno, wal_segment_size);
+	XLogFileName(xlogfname, tli, segno, GetGUCInt(GUC_wal_segment_size));
 
 	switch (source)
 	{
@@ -4216,14 +4225,15 @@ XLogFileRead(XLogSegNo segno, TimeLineID tli,
 
 			if (!RestoreArchivedFile(path, xlogfname,
 									 "RECOVERYXLOG",
-									 wal_segment_size,
+									 GetGUCInt(GUC_wal_segment_size),
 									 InRedo))
 				return -1;
 			break;
 
 		case XLOG_FROM_PG_WAL:
 		case XLOG_FROM_STREAM:
-			XLogFilePath(path, tli, segno, wal_segment_size);
+			XLogFilePath(path, tli, segno,
+				     GetGUCInt(GUC_wal_segment_size));
 			break;
 
 		default:
@@ -4324,7 +4334,8 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 		{
 			XLogSegNo	beginseg = 0;
 
-			XLByteToSeg(hent->begin, beginseg, wal_segment_size);
+			XLByteToSeg(hent->begin, beginseg,
+				    GetGUCInt(GUC_wal_segment_size));
 
 			/*
 			 * The logfile segment that doesn't belong to the timeline is
@@ -4365,7 +4376,8 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 	}
 
 	/* Couldn't find it.  For simplicity, complain about front timeline */
-	XLogFilePath(path, recoveryTargetTLI, segno, wal_segment_size);
+	XLogFilePath(path, recoveryTargetTLI, segno,
+		     GetGUCInt(GUC_wal_segment_size));
 	errno = ENOENT;
 	ereport(DEBUG2,
 			(errcode_for_file_access(),

@@ -170,7 +170,7 @@ JumbleQuery(Query *query)
 void
 EnableQueryId(void)
 {
-	if (compute_query_id != COMPUTE_QUERY_ID_OFF)
+	if (GetGUCEnum(GUC_compute_query_id) != COMPUTE_QUERY_ID_OFF)
 		query_id_enabled = true;
 }
 

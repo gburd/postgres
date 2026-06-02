@@ -1069,7 +1069,8 @@ perform_relmap_update(bool shared, const RelMapFile *updates)
 	 * Apply the updates to newmap.  No new mappings should appear, unless
 	 * somebody is adding indexes to system catalogs.
 	 */
-	merge_map_updates(&newmap, updates, allowSystemTableMods);
+	merge_map_updates(&newmap, updates,
+			  GetGUCBool(GUC_allowSystemTableMods));
 
 	/* Write out the updated map and do other necessary tasks */
 	write_relmap_file(&newmap, true, true, true,

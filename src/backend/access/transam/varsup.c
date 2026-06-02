@@ -430,7 +430,7 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	 * to shared memory).  Perhaps this can be improved someday.  See also
 	 * SetMultiXactIdLimit.
 	 */
-	xidVacLimit = oldest_datfrozenxid + autovacuum_freeze_max_age;
+	xidVacLimit = oldest_datfrozenxid + GetGUCInt(GUC_autovacuum_freeze_max_age);
 	if (xidVacLimit < FirstNormalTransactionId)
 		xidVacLimit += FirstNormalTransactionId;
 

@@ -205,7 +205,7 @@ write_csvlog(ErrorData *edata)
 	appendStringInfoChar(&buf, ',');
 
 	/* file error location */
-	if (Log_error_verbosity >= PGERROR_VERBOSE)
+	if (GetGUCEnum(GUC_Log_error_verbosity) >= PGERROR_VERBOSE)
 	{
 		StringInfoData msgbuf;
 
@@ -224,8 +224,8 @@ write_csvlog(ErrorData *edata)
 	appendStringInfoChar(&buf, ',');
 
 	/* application name */
-	if (application_name)
-		appendCSVLiteral(&buf, application_name);
+	if (GetGUCString(GUC_application_name))
+		appendCSVLiteral(&buf, GetGUCString(GUC_application_name));
 
 	appendStringInfoChar(&buf, ',');
 

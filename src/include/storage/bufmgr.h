@@ -418,7 +418,7 @@ extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 static inline bool
 BufferIsValid(Buffer bufnum)
 {
-	Assert(bufnum <= NBuffers);
+	Assert(bufnum <= GetGUCInt(GUC_NBuffers));
 	Assert(bufnum >= -NLocBuffer);
 
 	return bufnum != InvalidBuffer;

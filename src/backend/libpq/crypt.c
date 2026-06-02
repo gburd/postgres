@@ -101,7 +101,7 @@ get_role_password(const char *role, const char **logdetail)
 		 * the warning message using StoreConnectionWarning() so that it will
 		 * be emitted at the end of InitPostgres(), and we return normally.
 		 */
-		if (expire_time / USECS_PER_SEC < password_expiration_warning_threshold)
+		if (expire_time / USECS_PER_SEC < GetGUCInt(GUC_password_expiration_warning_threshold))
 		{
 			MemoryContext oldcontext;
 			int			days;
@@ -239,7 +239,7 @@ encrypt_password(PasswordType target_type, const char *role,
 						   MAX_ENCRYPTED_PASSWORD_LEN)));
 	}
 
-	if (md5_password_warnings &&
+	if (GetGUCBool(GUC_md5_password_warnings) &&
 		get_password_type(encrypted_password) == PASSWORD_TYPE_MD5)
 		ereport(WARNING,
 				(errcode(ERRCODE_WARNING_DEPRECATED_FEATURE),
@@ -297,7 +297,7 @@ md5_crypt_verify(const char *role, const char *shadow_pass,
 	{
 		retval = STATUS_OK;
 
-		if (md5_password_warnings)
+		if (GetGUCBool(GUC_md5_password_warnings))
 		{
 			MemoryContext oldcontext;
 			char	   *warning;

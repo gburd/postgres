@@ -76,7 +76,7 @@ pgstat_init_function_usage(FunctionCallInfo fcinfo,
 	PgStat_FunctionCounts *pending;
 	bool		created_entry;
 
-	if (pgstat_track_functions <= fcinfo->flinfo->fn_stats)
+	if (GetGUCEnum(GUC_pgstat_track_functions) <= fcinfo->flinfo->fn_stats)
 	{
 		/* stats not wanted */
 		fcu->fs = NULL;

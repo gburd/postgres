@@ -233,7 +233,8 @@ ExecInitCteScan(CteScan *node, EState *estate, int eflags)
 		/* I am the leader */
 		prmdata->value = PointerGetDatum(scanstate);
 		scanstate->leader = scanstate;
-		scanstate->cte_table = tuplestore_begin_heap(true, false, work_mem);
+		scanstate->cte_table = tuplestore_begin_heap(true, false,
+							     GetGUCInt(GUC_work_mem));
 		tuplestore_set_eflags(scanstate->cte_table, scanstate->eflags);
 		scanstate->readptr = 0;
 	}

@@ -77,8 +77,8 @@ convert_and_check_filename(text *arg)
 		 * though Log_directory might be outside DataDir.
 		 */
 		if (!path_is_prefix_of_path(DataDir, filename) &&
-			(!is_absolute_path(Log_directory) ||
-			 !path_is_prefix_of_path(Log_directory, filename)))
+			(!is_absolute_path(GetGUCString(GUC_Log_directory)) ||
+			 !path_is_prefix_of_path(GetGUCString(GUC_Log_directory), filename)))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("absolute path not allowed")));
@@ -633,7 +633,7 @@ pg_ls_dir_files(FunctionCallInfo fcinfo, const char *dir, bool missing_ok)
 Datum
 pg_ls_logdir(PG_FUNCTION_ARGS)
 {
-	return pg_ls_dir_files(fcinfo, Log_directory, false);
+	return pg_ls_dir_files(fcinfo, GetGUCString(GUC_Log_directory), false);
 }
 
 /* Function to return the list of files in the WAL directory */

@@ -271,7 +271,7 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 	currlsn = GetXLogWriteRecPtr();
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
-	for (slotno = 0; slotno < max_replication_slots + max_repack_replication_slots; slotno++)
+	for (slotno = 0; slotno < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); slotno++)
 	{
 		ReplicationSlot *slot = &ReplicationSlotCtl->replication_slots[slotno];
 		ReplicationSlot slot_contents;
@@ -400,7 +400,7 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 		 * safe_wal_size is only computed for slots that have not been lost,
 		 * and only if there's a configured maximum size.
 		 */
-		if (walstate == WALAVAIL_REMOVED || max_slot_wal_keep_size_mb < 0)
+		if (walstate == WALAVAIL_REMOVED || GetGUCInt(GUC_max_slot_wal_keep_size_mb) < 0)
 			nulls[i++] = true;
 		else
 		{
@@ -410,16 +410,21 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 			XLogSegNo	failSeg;
 			XLogRecPtr	failLSN;
 
-			XLByteToSeg(slot_contents.data.restart_lsn, targetSeg, wal_segment_size);
+			XLByteToSeg(slot_contents.data.restart_lsn, targetSeg,
+				    GetGUCInt(GUC_wal_segment_size));
 
 			/* determine how many segments can be kept by slots */
-			slotKeepSegs = XLogMBVarToSegs(max_slot_wal_keep_size_mb, wal_segment_size);
+			slotKeepSegs = XLogMBVarToSegs(GetGUCInt(GUC_max_slot_wal_keep_size_mb),
+						       GetGUCInt(GUC_wal_segment_size));
 			/* ditto for wal_keep_size */
-			keepSegs = XLogMBVarToSegs(wal_keep_size_mb, wal_segment_size);
+			keepSegs = XLogMBVarToSegs(GetGUCInt(GUC_wal_keep_size_mb),
+						   GetGUCInt(GUC_wal_segment_size));
 
 			/* if currpos reaches failLSN, we lose our segment */
 			failSeg = targetSeg + Max(slotKeepSegs, keepSegs) + 1;
-			XLogSegNoOffsetToRecPtr(failSeg, 0, wal_segment_size, failLSN);
+			XLogSegNoOffsetToRecPtr(failSeg, 0,
+						GetGUCInt(GUC_wal_segment_size),
+						failLSN);
 
 			values[i++] = Int64GetDatum(failLSN - currlsn);
 		}
@@ -666,7 +671,7 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 	 * managed to create the new slot, we advance the new slot's restart_lsn
 	 * to the source slot's updated restart_lsn the second time we lock it.
 	 */
-	for (int i = 0; i < max_replication_slots + max_repack_replication_slots; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_replication_slots) + GetGUCInt(GUC_max_repack_replication_slots); i++)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 
@@ -852,7 +857,8 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 		{
 			XLogSegNo	segno;
 
-			XLByteToSeg(copy_restart_lsn, segno, wal_segment_size);
+			XLByteToSeg(copy_restart_lsn, segno,
+				    GetGUCInt(GUC_wal_segment_size));
 			Assert(XLogGetLastRemovedSegno() < segno);
 		}
 #endif
@@ -938,13 +944,15 @@ pg_sync_replication_slots(PG_FUNCTION_ARGS)
 	(void) CheckAndGetDbnameFromConninfo();
 
 	initStringInfo(&app_name);
-	if (cluster_name[0])
-		appendStringInfo(&app_name, "%s_slotsync", cluster_name);
+	if (GetGUCString(GUC_cluster_name)[0])
+		appendStringInfo(&app_name, "%s_slotsync",
+				 GetGUCString(GUC_cluster_name));
 	else
 		appendStringInfoString(&app_name, "slotsync");
 
 	/* Connect to the primary server. */
-	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
+	wrconn = walrcv_connect(GetGUCString(GUC_PrimaryConnInfo), false,
+				false, false,
 							app_name.data, &err);
 
 	if (!wrconn)

@@ -872,7 +872,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			 * in the source cluster).
 			 */
 			if (dboid < FirstNormalObjectId &&
-				!allowSystemTableMods && !IsBinaryUpgrade)
+				!GetGUCBool(GUC_allowSystemTableMods) && !IsBinaryUpgrade)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE)),
 						errmsg("OIDs less than %u are reserved for system objects", FirstNormalObjectId));
@@ -1181,7 +1181,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		if (!IsBinaryUpgrade && dblocale != src_locale)
 		{
 			char	   *langtag = icu_language_tag(dblocale,
-												   icu_validation_level);
+												   GetGUCEnum(GUC_icu_validation_level));
 
 			if (langtag && strcmp(dblocale, langtag) != 0)
 			{
@@ -3288,7 +3288,7 @@ recovery_create_dbdir(char *path, bool only_tblspc)
 	if (only_tblspc && strstr(path, PG_TBLSPC_DIR_SLASH) == NULL)
 		elog(PANIC, "requested to created invalid directory: %s", path);
 
-	if (reachedConsistency && !allow_in_place_tablespaces)
+	if (reachedConsistency && !GetGUCBool(GUC_allow_in_place_tablespaces))
 		ereport(PANIC,
 				errmsg("missing directory \"%s\"", path));
 

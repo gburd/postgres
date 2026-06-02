@@ -874,7 +874,7 @@ create_plain_partial_paths(PlannerInfo *root, RelOptInfo *rel)
 	int			parallel_workers;
 
 	parallel_workers = compute_parallel_worker(rel, rel->pages, -1,
-											   max_parallel_workers_per_gather);
+											   GetGUCInt(GUC_max_parallel_workers_per_gather));
 
 	/* If any limit was set to zero, the user doesn't want a parallel scan. */
 	if (parallel_workers <= 0)
@@ -1041,7 +1041,7 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 	 * flag; currently, we only consider partitionwise joins with the baserel
 	 * if its targetlist doesn't contain a whole-row Var.
 	 */
-	if (enable_partitionwise_join &&
+	if (GetGUCBool(GUC_enable_partitionwise_join) &&
 		rel->reloptkind == RELOPT_BASEREL &&
 		rte->relkind == RELKIND_PARTITIONED_TABLE &&
 		bms_is_empty(rel->attr_needed[InvalidAttrNumber - rel->min_attr]))
@@ -1430,7 +1430,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 	double		partial_rows = -1;
 
 	/* If appropriate, consider parallel append */
-	parallel_append_valid = enable_parallel_append && rel->consider_parallel;
+	parallel_append_valid = GetGUCBool(GUC_enable_parallel_append) && rel->consider_parallel;
 
 	/*
 	 * For every non-dummy child, remember the cheapest path.  Also, identify
@@ -1658,19 +1658,19 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		 * partitions vs. an unpartitioned table with the same data, so the
 		 * use of some kind of log-scaling here seems to make some sense.
 		 */
-		if (enable_parallel_append)
+		if (GetGUCBool(GUC_enable_parallel_append))
 		{
 			parallel_workers = Max(parallel_workers,
 								   pg_leftmost_one_pos32(list_length(live_childrels)) + 1);
 			parallel_workers = Min(parallel_workers,
-								   max_parallel_workers_per_gather);
+								   GetGUCInt(GUC_max_parallel_workers_per_gather));
 		}
 		Assert(parallel_workers > 0);
 
 		/* Generate a partial append path. */
 		appendpath = create_append_path(root, rel, partial_only,
 										NIL, NULL, parallel_workers,
-										enable_parallel_append,
+										GetGUCBool(GUC_enable_parallel_append),
 										-1);
 
 		/*
@@ -1714,7 +1714,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		parallel_workers = Max(parallel_workers,
 							   pg_leftmost_one_pos32(list_length(live_childrels)) + 1);
 		parallel_workers = Min(parallel_workers,
-							   max_parallel_workers_per_gather);
+							   GetGUCInt(GUC_max_parallel_workers_per_gather));
 		Assert(parallel_workers > 0);
 
 		appendpath = create_append_path(root, rel, parallel_append,
@@ -3450,7 +3450,7 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 			 * input path).
 			 */
 			if (subpath != cheapest_partial_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -3465,7 +3465,7 @@ generate_useful_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_r
 			 * output. Here we add an explicit sort to match the useful
 			 * ordering.
 			 */
-			if (presorted_keys == 0 || !enable_incremental_sort)
+			if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 			{
 				subpath = (Path *) create_sort_path(root,
 													rel,
@@ -3631,7 +3631,7 @@ generate_grouped_paths(PlannerInfo *root, RelOptInfo *grouped_rel,
 			 * which have presorted keys when incremental sort is disabled).
 			 */
 			if (!is_sorted && input_path != cheapest_total_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -3651,7 +3651,7 @@ generate_grouped_paths(PlannerInfo *root, RelOptInfo *grouped_rel,
 				 * We'll just do a sort if there are no presorted keys and an
 				 * incremental sort when there are presorted keys.
 				 */
-				if (presorted_keys == 0 || !enable_incremental_sort)
+				if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
@@ -3707,7 +3707,7 @@ generate_grouped_paths(PlannerInfo *root, RelOptInfo *grouped_rel,
 			 * which have presorted keys when incremental sort is disabled).
 			 */
 			if (!is_sorted && input_path != cheapest_partial_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -3727,7 +3727,7 @@ generate_grouped_paths(PlannerInfo *root, RelOptInfo *grouped_rel,
 				 * We'll just do a sort if there are no presorted keys and an
 				 * incremental sort when there are presorted keys.
 				 */
-				if (presorted_keys == 0 || !enable_incremental_sort)
+				if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
@@ -3908,7 +3908,7 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist)
 
 		if (join_search_hook)
 			return (*join_search_hook) (root, levels_needed, initial_rels);
-		else if (enable_geqo && levels_needed >= geqo_threshold)
+		else if (GetGUCBool(GUC_enable_geqo) && levels_needed >= GetGUCInt(GUC_geqo_threshold))
 			return geqo(root, levels_needed, initial_rels);
 		else
 			return standard_join_search(root, levels_needed, initial_rels);
@@ -4766,7 +4766,7 @@ create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
 										 NULL, NULL);
 
 	parallel_workers = compute_parallel_worker(rel, pages_fetched, -1,
-											   max_parallel_workers_per_gather);
+											   GetGUCInt(GUC_max_parallel_workers_per_gather));
 
 	if (parallel_workers <= 0)
 		return;
@@ -4813,8 +4813,8 @@ compute_parallel_worker(RelOptInfo *rel, double heap_pages, double index_pages,
 		 * off.
 		 */
 		if (rel->reloptkind == RELOPT_BASEREL &&
-			((heap_pages >= 0 && heap_pages < min_parallel_table_scan_size) ||
-			 (index_pages >= 0 && index_pages < min_parallel_index_scan_size)))
+			((heap_pages >= 0 && heap_pages < GetGUCInt(GUC_min_parallel_table_scan_size)) ||
+			 (index_pages >= 0 && index_pages < GetGUCInt(GUC_min_parallel_index_scan_size))))
 			return 0;
 
 		if (heap_pages >= 0)
@@ -4829,7 +4829,8 @@ compute_parallel_worker(RelOptInfo *rel, double heap_pages, double index_pages,
 			 * the upper limit of the min_parallel_table_scan_size GUC is
 			 * chosen to prevent overflow here.
 			 */
-			heap_parallel_threshold = Max(min_parallel_table_scan_size, 1);
+			heap_parallel_threshold = Max(GetGUCInt(GUC_min_parallel_table_scan_size),
+						      1);
 			while (heap_pages >= (BlockNumber) (heap_parallel_threshold * 3))
 			{
 				heap_parallel_workers++;
@@ -4847,7 +4848,8 @@ compute_parallel_worker(RelOptInfo *rel, double heap_pages, double index_pages,
 			int			index_parallel_threshold;
 
 			/* same calculation as for heap_pages above */
-			index_parallel_threshold = Max(min_parallel_index_scan_size, 1);
+			index_parallel_threshold = Max(GetGUCInt(GUC_min_parallel_index_scan_size),
+						       1);
 			while (index_pages >= (BlockNumber) (index_parallel_threshold * 3))
 			{
 				index_parallel_workers++;

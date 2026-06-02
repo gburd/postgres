@@ -233,19 +233,19 @@ PGSharedMemoryCreate(Size size,
 
 	UsedShmemSegAddr = NULL;
 
-	if (huge_pages == HUGE_PAGES_ON || huge_pages == HUGE_PAGES_TRY)
+	if (GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON || GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_TRY)
 	{
 		/* Does the processor support large pages? */
 		largePageSize = GetLargePageMinimum();
 		if (largePageSize == 0)
 		{
-			ereport(huge_pages == HUGE_PAGES_ON ? FATAL : DEBUG1,
+			ereport(GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON ? FATAL : DEBUG1,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("the processor does not support large pages")));
 			ereport(DEBUG1,
 					(errmsg_internal("disabling huge pages")));
 		}
-		else if (!EnableLockPagesPrivilege(huge_pages == HUGE_PAGES_ON ? FATAL : DEBUG1))
+		else if (!EnableLockPagesPrivilege(GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_ON ? FATAL : DEBUG1))
 		{
 			ereport(DEBUG1,
 					(errmsg_internal("disabling huge pages")));
@@ -293,7 +293,7 @@ retry:
 		if (!hmap)
 		{
 			if (GetLastError() == ERROR_NO_SYSTEM_RESOURCES &&
-				huge_pages == HUGE_PAGES_TRY &&
+				GetGUCEnum(GUC_huge_pages) == HUGE_PAGES_TRY &&
 				(flProtect & SEC_LARGE_PAGES) != 0)
 			{
 				elog(DEBUG1, "CreateFileMapping(%zu) with SEC_LARGE_PAGES failed, "

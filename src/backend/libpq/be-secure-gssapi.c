@@ -545,9 +545,9 @@ secure_open_gssapi(Port *port)
 	 * Kerberos, we might consider using the credential store extensions in
 	 * the future instead of the environment variable.
 	 */
-	if (pg_krb_server_keyfile != NULL && pg_krb_server_keyfile[0] != '\0')
+	if (GetGUCString(GUC_pg_krb_server_keyfile) != NULL && GetGUCString(GUC_pg_krb_server_keyfile)[0] != '\0')
 	{
-		if (setenv("KRB5_KTNAME", pg_krb_server_keyfile, 1) != 0)
+		if (setenv("KRB5_KTNAME", GetGUCString(GUC_pg_krb_server_keyfile), 1) != 0)
 		{
 			/* The only likely failure cause is OOM, so use that errcode */
 			ereport(FATAL,
@@ -608,7 +608,8 @@ secure_open_gssapi(Port *port)
 									   GSS_C_NO_CREDENTIAL, &input,
 									   GSS_C_NO_CHANNEL_BINDINGS,
 									   &port->gss->name, NULL, &output, NULL,
-									   NULL, pg_gss_accept_delegation ? &delegated_creds : NULL);
+									   NULL,
+									   GetGUCBool(GUC_pg_gss_accept_delegation) ? &delegated_creds : NULL);
 
 		if (GSS_ERROR(major))
 		{

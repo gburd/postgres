@@ -231,7 +231,7 @@ PerformAuthentication(Port *port)
 		 */
 		ereport(FATAL,
 		/* translator: %s is a configuration file */
-				(errmsg("could not load %s", HbaFileName)));
+				(errmsg("could not load %s", GetGUCString(GUC_HbaFileName))));
 	}
 
 	if (!load_ident())
@@ -253,7 +253,8 @@ PerformAuthentication(Port *port)
 	 * during authentication.  Since we're inside a transaction and might do
 	 * database access, we have to use the statement_timeout infrastructure.
 	 */
-	enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
+	enable_timeout_after(STATEMENT_TIMEOUT,
+			     GetGUCInt(GUC_AuthenticationTimeout) * 1000);
 
 	/*
 	 * Now perform authentication exchange.
@@ -561,16 +562,16 @@ InitializeMaxBackends(void)
 	Assert(MaxBackends == 0);
 
 	/* Note that this does not include "auxiliary" processes */
-	MaxBackends = MaxConnections + autovacuum_worker_slots +
-		max_worker_processes + max_wal_senders + NUM_SPECIAL_WORKER_PROCS;
+	MaxBackends = GetGUCInt(GUC_MaxConnections) + GetGUCInt(GUC_autovacuum_worker_slots) +
+		GetGUCInt(GUC_max_worker_processes) + GetGUCInt(GUC_max_wal_senders) + NUM_SPECIAL_WORKER_PROCS;
 
 	if (MaxBackends > MAX_BACKENDS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("too many server processes configured"),
 				 errdetail("\"max_connections\" (%d) plus \"autovacuum_worker_slots\" (%d) plus \"max_worker_processes\" (%d) plus \"max_wal_senders\" (%d) must be less than %d.",
-						   MaxConnections, autovacuum_worker_slots,
-						   max_worker_processes, max_wal_senders,
+						   GetGUCInt(GUC_MaxConnections), GetGUCInt(GUC_autovacuum_worker_slots),
+						   GetGUCInt(GUC_max_worker_processes), GetGUCInt(GUC_max_wal_senders),
 						   MAX_BACKENDS - (NUM_SPECIAL_WORKER_PROCS - 1))));
 }
 
@@ -596,7 +597,7 @@ InitializeFastPathLocks(void)
 	 * The default max_locks_per_transaction = 128 means 8 groups by default.
 	 */
 	FastPathLockGroupsPerBackend =
-		Max(Min(pg_nextpower2_32(max_locks_per_xact) / FP_LOCK_SLOTS_PER_GROUP,
+		Max(Min(pg_nextpower2_32(GetGUCInt(GUC_max_locks_per_xact)) / FP_LOCK_SLOTS_PER_GROUP,
 				FP_LOCK_GROUPS_PER_BACKEND_MAX), 1);
 
 	/* Validate we did get a power-of-two */
@@ -960,10 +961,10 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * the reserved connection limits.
 	 */
 	if (AmRegularBackendProcess() && !am_superuser &&
-		(SuperuserReservedConnections + ReservedConnections) > 0 &&
-		!HaveNFreeProcs(SuperuserReservedConnections + ReservedConnections, &nfree))
+		(GetGUCInt(GUC_SuperuserReservedConnections) + GetGUCInt(GUC_ReservedConnections)) > 0 &&
+		!HaveNFreeProcs(GetGUCInt(GUC_SuperuserReservedConnections) + GetGUCInt(GUC_ReservedConnections), &nfree))
 	{
-		if (nfree < SuperuserReservedConnections)
+		if (nfree < GetGUCInt(GUC_SuperuserReservedConnections))
 			ereport(FATAL,
 					(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 					 errmsg("remaining connection slots are reserved for roles with the %s attribute",
@@ -1002,8 +1003,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			process_startup_options(MyProcPort, am_superuser);
 
 		/* Apply PostAuthDelay as soon as we've read all options */
-		if (PostAuthDelay > 0)
-			pg_usleep(PostAuthDelay * 1000000L);
+		if (GetGUCInt(GUC_PostAuthDelay) > 0)
+			pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 		/* initialize client encoding */
 		InitializeClientEncoding();
@@ -1228,8 +1229,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	process_settings(MyDatabaseId, GetSessionUserId());
 
 	/* Apply PostAuthDelay as soon as we've read all options */
-	if (PostAuthDelay > 0)
-		pg_usleep(PostAuthDelay * 1000000L);
+	if (GetGUCInt(GUC_PostAuthDelay) > 0)
+		pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 	/*
 	 * Initialize various default states that can't be set up until we've

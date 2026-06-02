@@ -313,9 +313,9 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 		last_json_file_name = logfile_getname(first_syslogger_file_time, ".json");
 
 	/* remember active logfile parameters */
-	currentLogDir = pstrdup(Log_directory);
-	currentLogFilename = pstrdup(Log_filename);
-	currentLogRotationAge = Log_RotationAge;
+	currentLogDir = pstrdup(GetGUCString(GUC_Log_directory));
+	currentLogFilename = pstrdup(GetGUCString(GUC_Log_filename));
+	currentLogRotationAge = GetGUCInt(GUC_Log_RotationAge);
 	/* set next planned rotation time */
 	set_next_rotation_time();
 	update_metainfo_datafile();
@@ -372,21 +372,21 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 			 * postgresql.conf. If so, force rotation to make sure we're
 			 * writing the logfiles in the right place.
 			 */
-			if (strcmp(Log_directory, currentLogDir) != 0)
+			if (strcmp(GetGUCString(GUC_Log_directory), currentLogDir) != 0)
 			{
 				pfree(currentLogDir);
-				currentLogDir = pstrdup(Log_directory);
+				currentLogDir = pstrdup(GetGUCString(GUC_Log_directory));
 				rotation_requested = true;
 
 				/*
 				 * Also, create new directory if not present; ignore errors
 				 */
-				(void) MakePGDirectory(Log_directory);
+				(void) MakePGDirectory(GetGUCString(GUC_Log_directory));
 			}
-			if (strcmp(Log_filename, currentLogFilename) != 0)
+			if (strcmp(GetGUCString(GUC_Log_filename), currentLogFilename) != 0)
 			{
 				pfree(currentLogFilename);
-				currentLogFilename = pstrdup(Log_filename);
+				currentLogFilename = pstrdup(GetGUCString(GUC_Log_filename));
 				rotation_requested = true;
 			}
 
@@ -410,9 +410,9 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 			 * If rotation time parameter changed, reset next rotation time,
 			 * but don't immediately force a rotation.
 			 */
-			if (currentLogRotationAge != Log_RotationAge)
+			if (currentLogRotationAge != GetGUCInt(GUC_Log_RotationAge))
 			{
-				currentLogRotationAge = Log_RotationAge;
+				currentLogRotationAge = GetGUCInt(GUC_Log_RotationAge);
 				set_next_rotation_time();
 			}
 
@@ -434,7 +434,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 			update_metainfo_datafile();
 		}
 
-		if (Log_RotationAge > 0 && !rotation_disabled)
+		if (GetGUCInt(GUC_Log_RotationAge) > 0 && !rotation_disabled)
 		{
 			/* Do a logfile rotation if it's time */
 			now = (pg_time_t) time(NULL);
@@ -442,22 +442,22 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 				rotation_requested = time_based_rotation = true;
 		}
 
-		if (!rotation_requested && Log_RotationSize > 0 && !rotation_disabled)
+		if (!rotation_requested && GetGUCInt(GUC_Log_RotationSize) > 0 && !rotation_disabled)
 		{
 			/* Do a rotation if file is too big */
-			if (ftello(syslogFile) >= Log_RotationSize * (pgoff_t) 1024)
+			if (ftello(syslogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024)
 			{
 				rotation_requested = true;
 				size_rotation_for |= LOG_DESTINATION_STDERR;
 			}
 			if (csvlogFile != NULL &&
-				ftello(csvlogFile) >= Log_RotationSize * (pgoff_t) 1024)
+				ftello(csvlogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024)
 			{
 				rotation_requested = true;
 				size_rotation_for |= LOG_DESTINATION_CSVLOG;
 			}
 			if (jsonlogFile != NULL &&
-				ftello(jsonlogFile) >= Log_RotationSize * (pgoff_t) 1024)
+				ftello(jsonlogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024)
 			{
 				rotation_requested = true;
 				size_rotation_for |= LOG_DESTINATION_JSONLOG;
@@ -489,7 +489,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 		 * could be more than INT_MAX msec in the future.  In that case we'll
 		 * wait no more than INT_MAX msec, and try again.
 		 */
-		if (Log_RotationAge > 0 && !rotation_disabled)
+		if (GetGUCInt(GUC_Log_RotationAge) > 0 && !rotation_disabled)
 		{
 			pg_time_t	delay;
 
@@ -599,7 +599,7 @@ SysLogger_Start(int child_slot)
 	SysloggerStartupData startup_data;
 #endif							/* EXEC_BACKEND */
 
-	Assert(Logging_collector);
+	Assert(GetGUCBool(GUC_Logging_collector));
 
 	/*
 	 * If first time through, create the pipe which will receive stderr
@@ -645,7 +645,7 @@ SysLogger_Start(int child_slot)
 	/*
 	 * Create log directory if not present; ignore errors
 	 */
-	(void) MakePGDirectory(Log_directory);
+	(void) MakePGDirectory(GetGUCString(GUC_Log_directory));
 
 	/*
 	 * The initial logfile is created right in the postmaster, to verify that
@@ -730,7 +730,7 @@ SysLogger_Start(int child_slot)
 		ereport(LOG,
 				(errmsg("redirecting log output to logging collector process"),
 				 errhint("Future log output will appear in directory \"%s\".",
-						 Log_directory)));
+						 GetGUCString(GUC_Log_directory))));
 
 #ifndef WIN32
 		fflush(stdout);
@@ -1182,13 +1182,13 @@ pipeThread(void *arg)
 		 * If we've filled the current logfile, nudge the main thread to do a
 		 * log rotation.
 		 */
-		if (Log_RotationSize > 0)
+		if (GetGUCInt(GUC_Log_RotationSize) > 0)
 		{
-			if (ftello(syslogFile) >= Log_RotationSize * (pgoff_t) 1024 ||
+			if (ftello(syslogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024 ||
 				(csvlogFile != NULL &&
-				 ftello(csvlogFile) >= Log_RotationSize * (pgoff_t) 1024) ||
+				 ftello(csvlogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024) ||
 				(jsonlogFile != NULL &&
-				 ftello(jsonlogFile) >= Log_RotationSize * (pgoff_t) 1024))
+				 ftello(jsonlogFile) >= GetGUCInt(GUC_Log_RotationSize) * (pgoff_t) 1024))
 				RaiseInterrupt(INTERRUPT_GENERAL);
 		}
 		LeaveCriticalSection(&sysloggerSection);
@@ -1226,7 +1226,7 @@ logfile_open(const char *filename, const char *mode, bool allow_errors)
 	 * Note we do not let Log_file_mode disable IWUSR, since we certainly want
 	 * to be able to write the files ourselves.
 	 */
-	oumask = umask((mode_t) ((~(Log_file_mode | S_IWUSR)) & (S_IRWXU | S_IRWXG | S_IRWXO)));
+	oumask = umask((mode_t) ((~(GetGUCInt(GUC_Log_file_mode) | S_IWUSR)) & (S_IRWXU | S_IRWXG | S_IRWXO)));
 	fh = fopen(filename, mode);
 	umask(oumask);
 
@@ -1317,7 +1317,7 @@ logfile_rotate_dest(bool time_based_rotation, int size_rotation_for,
 	 * elapsed time and not something else, and (c) the computed file name is
 	 * different from what we were previously logging into.
 	 */
-	if (Log_truncate_on_rotation && time_based_rotation &&
+	if (GetGUCBool(GUC_Log_truncate_on_rotation) && time_based_rotation &&
 		*last_file_name != NULL &&
 		strcmp(filename, *last_file_name) != 0)
 		fh = logfile_open(filename, "w", true);
@@ -1417,12 +1417,13 @@ logfile_getname(pg_time_t timestamp, const char *suffix)
 
 	filename = palloc(MAXPGPATH);
 
-	snprintf(filename, MAXPGPATH, "%s/", Log_directory);
+	snprintf(filename, MAXPGPATH, "%s/", GetGUCString(GUC_Log_directory));
 
 	len = strlen(filename);
 
 	/* treat Log_filename as a strftime pattern */
-	pg_strftime(filename + len, MAXPGPATH - len, Log_filename,
+	pg_strftime(filename + len, MAXPGPATH - len,
+				GetGUCString(GUC_Log_filename),
 				pg_localtime(&timestamp, log_timezone));
 
 	if (suffix != NULL)
@@ -1447,7 +1448,7 @@ set_next_rotation_time(void)
 	int			rotinterval;
 
 	/* nothing to do if time-based rotation is disabled */
-	if (Log_RotationAge <= 0)
+	if (GetGUCInt(GUC_Log_RotationAge) <= 0)
 		return;
 
 	/*
@@ -1456,7 +1457,7 @@ set_next_rotation_time(void)
 	 * fairly loosely.  In this version we align to log_timezone rather than
 	 * GMT.
 	 */
-	rotinterval = Log_RotationAge * SECS_PER_MINUTE;	/* convert to seconds */
+	rotinterval = GetGUCInt(GUC_Log_RotationAge) * SECS_PER_MINUTE;	/* convert to seconds */
 	now = (pg_time_t) time(NULL);
 	tm = pg_localtime(&now, log_timezone);
 	now += tm->tm_gmtoff;

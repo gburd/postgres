@@ -101,7 +101,7 @@ check_stack_depth(void)
 				 errmsg("stack depth limit exceeded"),
 				 errhint("Increase the configuration parameter \"max_stack_depth\" (currently %dkB), "
 						 "after ensuring the platform's stack depth limit is adequate.",
-						 max_stack_depth)));
+						 GetGUCInt(GUC_max_stack_depth))));
 	}
 }
 

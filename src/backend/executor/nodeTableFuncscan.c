@@ -277,7 +277,8 @@ tfuncFetchRows(TableFuncScanState *tstate, ExprContext *econtext)
 
 	/* build tuplestore for the result */
 	oldcxt = MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
-	tstate->tupstore = tuplestore_begin_heap(false, false, work_mem);
+	tstate->tupstore = tuplestore_begin_heap(false, false,
+						 GetGUCInt(GUC_work_mem));
 
 	/*
 	 * Each call to fetch a new set of rows - of which there may be very many

@@ -202,8 +202,10 @@ ExecInitRecursiveUnion(RecursiveUnion *node, EState *estate, int eflags)
 	/* initialize processing state */
 	rustate->recursing = false;
 	rustate->intermediate_empty = true;
-	rustate->working_table = tuplestore_begin_heap(false, false, work_mem);
-	rustate->intermediate_table = tuplestore_begin_heap(false, false, work_mem);
+	rustate->working_table = tuplestore_begin_heap(false, false,
+						       GetGUCInt(GUC_work_mem));
+	rustate->intermediate_table = tuplestore_begin_heap(false, false,
+							    GetGUCInt(GUC_work_mem));
 
 	/*
 	 * If hashing, we need a per-tuple memory context for comparisons, and a

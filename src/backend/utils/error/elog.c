@@ -267,7 +267,7 @@ should_output_to_client(int elevel)
 		if (ClientAuthInProgress)
 			return (elevel >= ERROR);
 		else
-			return (elevel >= client_min_messages || elevel == INFO);
+			return (elevel >= GetGUCEnum(GUC_client_min_messages) || elevel == INFO);
 	}
 	return false;
 }
@@ -387,7 +387,7 @@ errstart(int elevel, const char *domain)
 		if (elevel == ERROR)
 		{
 			if (PG_exception_stack == NULL ||
-				ExitOnAnyError ||
+				GetGUCBool(GUC_ExitOnAnyError) ||
 				proc_exit_inprogress)
 				elevel = FATAL;
 		}
@@ -507,7 +507,7 @@ errfinish(const char *filename, int lineno, const char *funcname)
 	/* Collect backtrace, if enabled and we didn't already */
 	if (!edata->backtrace &&
 		edata->funcname &&
-		backtrace_functions &&
+		GetGUCString(GUC_backtrace_functions) &&
 		matches_backtrace_functions(edata->funcname))
 		set_backtrace(edata, 2);
 
@@ -2786,7 +2786,7 @@ assign_syslog_facility(int newval, void *extra)
 	/*
 	 * As above, don't thrash the syslog connection unnecessarily.
 	 */
-	if (syslog_facility != newval)
+	if (GetGUCEnum(GUC_syslog_facility) != newval)
 	{
 		if (openlog_done)
 		{
@@ -2817,7 +2817,7 @@ write_syslog(int level, const char *line)
 	{
 		openlog(syslog_ident ? syslog_ident : "postgres",
 				LOG_PID | LOG_NDELAY | LOG_NOWAIT,
-				syslog_facility);
+				GetGUCEnum(GUC_syslog_facility));
 		openlog_done = true;
 	}
 
@@ -2837,7 +2837,7 @@ write_syslog(int level, const char *line)
 	 */
 	len = strlen(line);
 	nlpos = strchr(line, '\n');
-	if (syslog_split_messages && (len > PG_SYSLOG_LIMIT || nlpos != NULL))
+	if (GetGUCBool(GUC_syslog_split_messages) && (len > PG_SYSLOG_LIMIT || nlpos != NULL))
 	{
 		int			chunk_nr = 0;
 
@@ -2890,7 +2890,7 @@ write_syslog(int level, const char *line)
 
 			chunk_nr++;
 
-			if (syslog_sequence_numbers)
+			if (GetGUCBool(GUC_syslog_sequence_numbers))
 				syslog(level, "[%lu-%d] %s", seq, chunk_nr, buf);
 			else
 				syslog(level, "[%d] %s", chunk_nr, buf);
@@ -2902,7 +2902,7 @@ write_syslog(int level, const char *line)
 	else
 	{
 		/* message short enough */
-		if (syslog_sequence_numbers)
+		if (GetGUCBool(GUC_syslog_sequence_numbers))
 			syslog(level, "[%lu] %s", seq, line);
 		else
 			syslog(level, "%s", line);
@@ -2939,7 +2939,7 @@ write_eventlog(int level, const char *line, int len)
 	if (evtHandle == INVALID_HANDLE_VALUE)
 	{
 		evtHandle = RegisterEventSource(NULL,
-										event_source ? event_source : DEFAULT_EVENT_SOURCE);
+										GetGUCString(GUC_event_source) ? GetGUCString(GUC_event_source) : DEFAULT_EVENT_SOURCE);
 		if (evtHandle == NULL)
 		{
 			evtHandle = INVALID_HANDLE_VALUE;
@@ -3180,7 +3180,7 @@ bool
 check_log_of_query(ErrorData *edata)
 {
 	/* log required? */
-	if (!is_log_level_output(edata->elevel, log_min_error_statement))
+	if (!is_log_level_output(edata->elevel, GetGUCEnum(GUC_log_min_error_statement)))
 		return false;
 
 	/* query log wanted? */
@@ -3260,7 +3260,7 @@ process_log_prefix_padding(const char *p, int *ppadding)
 static void
 log_line_prefix(StringInfo buf, ErrorData *edata)
 {
-	log_status_format(buf, Log_line_prefix, edata);
+	log_status_format(buf, GetGUCString(GUC_Log_line_prefix), edata);
 }
 
 /*
@@ -3340,7 +3340,7 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 			case 'a':
 				if (MyProcPort)
 				{
-					const char *appname = application_name;
+					const char *appname = GetGUCString(GUC_application_name);
 
 					if (appname == NULL || *appname == '\0')
 						appname = _("[unknown]");
@@ -3682,7 +3682,7 @@ send_message_to_server_log(ErrorData *edata)
 	log_line_prefix(&buf, edata);
 	appendStringInfo(&buf, "%s:  ", _(error_severity(edata->elevel)));
 
-	if (Log_error_verbosity >= PGERROR_VERBOSE)
+	if (GetGUCEnum(GUC_Log_error_verbosity) >= PGERROR_VERBOSE)
 		appendStringInfo(&buf, "%s: ", unpack_sql_state(edata->sqlerrcode));
 
 	if (edata->message)
@@ -3699,7 +3699,7 @@ send_message_to_server_log(ErrorData *edata)
 
 	appendStringInfoChar(&buf, '\n');
 
-	if (Log_error_verbosity >= PGERROR_DEFAULT)
+	if (GetGUCEnum(GUC_Log_error_verbosity) >= PGERROR_DEFAULT)
 	{
 		if (edata->detail_log)
 		{
@@ -3736,7 +3736,7 @@ send_message_to_server_log(ErrorData *edata)
 			append_with_tabs(&buf, edata->context);
 			appendStringInfoChar(&buf, '\n');
 		}
-		if (Log_error_verbosity >= PGERROR_VERBOSE)
+		if (GetGUCEnum(GUC_Log_error_verbosity) >= PGERROR_VERBOSE)
 		{
 			/* assume no newlines in funcname or filename... */
 			if (edata->funcname && edata->filename)

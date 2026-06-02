@@ -191,7 +191,7 @@ get_tablespace_page_costs(Oid spcid,
 	if (spc_random_page_cost)
 	{
 		if (!spc->opts || spc->opts->random_page_cost < 0)
-			*spc_random_page_cost = random_page_cost;
+			*spc_random_page_cost = GetGUCReal(GUC_random_page_cost);
 		else
 			*spc_random_page_cost = spc->opts->random_page_cost;
 	}
@@ -199,7 +199,7 @@ get_tablespace_page_costs(Oid spcid,
 	if (spc_seq_page_cost)
 	{
 		if (!spc->opts || spc->opts->seq_page_cost < 0)
-			*spc_seq_page_cost = seq_page_cost;
+			*spc_seq_page_cost = GetGUCReal(GUC_seq_page_cost);
 		else
 			*spc_seq_page_cost = spc->opts->seq_page_cost;
 	}
@@ -218,7 +218,7 @@ get_tablespace_io_concurrency(Oid spcid)
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
 	if (!spc->opts || spc->opts->effective_io_concurrency < 0)
-		return effective_io_concurrency;
+		return GetGUCInt(GUC_effective_io_concurrency);
 	else
 		return spc->opts->effective_io_concurrency;
 }
@@ -232,7 +232,7 @@ get_tablespace_maintenance_io_concurrency(Oid spcid)
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
 	if (!spc->opts || spc->opts->maintenance_io_concurrency < 0)
-		return maintenance_io_concurrency;
+		return GetGUCInt(GUC_maintenance_io_concurrency);
 	else
 		return spc->opts->maintenance_io_concurrency;
 }

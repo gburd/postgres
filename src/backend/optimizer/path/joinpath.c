@@ -2347,7 +2347,7 @@ hash_inner_and_outer(PlannerInfo *root,
 			 * shared hash table in parallel?
 			 */
 			if (innerrel->partial_pathlist != NIL &&
-				enable_parallel_hash)
+				GetGUCBool(GUC_enable_parallel_hash))
 			{
 				cheapest_partial_inner =
 					(Path *) linitial(innerrel->partial_pathlist);

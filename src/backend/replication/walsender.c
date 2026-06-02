@@ -1296,12 +1296,12 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 						(errmsg("%s must be called inside a transaction",
 								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
-			if (XactIsoLevel != XACT_REPEATABLE_READ)
+			if (GetGUCEnum(GUC_XactIsoLevel) != XACT_REPEATABLE_READ)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must be called in REPEATABLE READ isolation mode transaction",
 								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
-			if (!XactReadOnly)
+			if (!GetGUCBool(GUC_XactReadOnly))
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must be called in a read-only transaction",
@@ -1629,7 +1629,7 @@ WalSndWriteData(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid,
 
 	/* Try taking fast path unless we get too close to walsender timeout. */
 	if (now < TimestampTzPlusMilliseconds(last_reply_timestamp,
-										  wal_sender_timeout / 2) &&
+										  GetGUCInt(GUC_wal_sender_timeout) / 2) &&
 		!pq_is_send_pending())
 	{
 		return;
@@ -1782,7 +1782,7 @@ WalSndUpdateProgress(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId 
 	 */
 	if (pending_writes || (!end_xact &&
 						   now >= TimestampTzPlusMilliseconds(last_reply_timestamp,
-															  wal_sender_timeout / 2)))
+															  GetGUCInt(GUC_wal_sender_timeout) / 2)))
 		ProcessPendingWrites();
 }
 
@@ -2165,7 +2165,7 @@ exec_replication_command(const char *cmd_string)
 	 * when it's disabled, log the command with DEBUG1 level for backward
 	 * compatibility.
 	 */
-	ereport(log_replication_commands ? LOG : DEBUG1,
+	ereport(GetGUCBool(GUC_log_replication_commands) ? LOG : DEBUG1,
 			(errmsg("received replication command: %s", cmd_string)));
 
 	/*
@@ -2880,14 +2880,14 @@ WalSndComputeSleeptime(TimestampTz now)
 	TimestampTz wakeup_time;
 	long		sleeptime = 10000;	/* 10 s */
 
-	if (wal_sender_timeout > 0 && last_reply_timestamp > 0)
+	if (GetGUCInt(GUC_wal_sender_timeout) > 0 && last_reply_timestamp > 0)
 	{
 		/*
 		 * At the latest stop sleeping once wal_sender_timeout has been
 		 * reached.
 		 */
 		wakeup_time = TimestampTzPlusMilliseconds(last_reply_timestamp,
-												  wal_sender_timeout);
+												  GetGUCInt(GUC_wal_sender_timeout));
 
 		/*
 		 * If no ping has been sent yet, wakeup when it's time to do so.
@@ -2896,18 +2896,18 @@ WalSndComputeSleeptime(TimestampTz now)
 		 */
 		if (!waiting_for_ping_response)
 			wakeup_time = TimestampTzPlusMilliseconds(last_reply_timestamp,
-													  wal_sender_timeout / 2);
+													  GetGUCInt(GUC_wal_sender_timeout) / 2);
 
 		/* Compute relative time until wakeup. */
 		sleeptime = TimestampDifferenceMilliseconds(now, wakeup_time);
 	}
 
-	if (shutdown_request_timestamp != 0 && wal_sender_shutdown_timeout > 0)
+	if (shutdown_request_timestamp != 0 && GetGUCInt(GUC_wal_sender_shutdown_timeout) > 0)
 	{
 		long		shutdown_sleeptime;
 
 		wakeup_time = TimestampTzPlusMilliseconds(shutdown_request_timestamp,
-												  wal_sender_shutdown_timeout);
+												  GetGUCInt(GUC_wal_sender_shutdown_timeout));
 
 		shutdown_sleeptime = TimestampDifferenceMilliseconds(now, wakeup_time);
 
@@ -2941,9 +2941,9 @@ WalSndCheckTimeOut(void)
 		return;
 
 	timeout = TimestampTzPlusMilliseconds(last_reply_timestamp,
-										  wal_sender_timeout);
+										  GetGUCInt(GUC_wal_sender_timeout));
 
-	if (wal_sender_timeout > 0 && last_processing >= timeout)
+	if (GetGUCInt(GUC_wal_sender_timeout) > 0 && last_processing >= timeout)
 	{
 		/*
 		 * Since typically expiration of replication timeout means
@@ -2971,7 +2971,7 @@ WalSndCheckShutdownTimeout(void)
 		return;
 
 	/* Terminate immediately if the timeout is set to 0 */
-	if (wal_sender_shutdown_timeout == 0)
+	if (GetGUCInt(GUC_wal_sender_shutdown_timeout) == 0)
 		WalSndDoneImmediate();
 
 	/*
@@ -2986,13 +2986,13 @@ WalSndCheckShutdownTimeout(void)
 	}
 
 	/* Do not check the timeout if it's disabled */
-	if (wal_sender_shutdown_timeout == -1)
+	if (GetGUCInt(GUC_wal_sender_shutdown_timeout) == -1)
 		return;
 
 	/* Terminate immediately if the timeout expires */
 	now = GetCurrentTimestamp();
 	if (TimestampDifferenceExceeds(shutdown_request_timestamp, now,
-								   wal_sender_shutdown_timeout))
+								   GetGUCInt(GUC_wal_sender_shutdown_timeout)))
 		WalSndDoneImmediate();
 }
 
@@ -3065,7 +3065,7 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			{
 				ereport(DEBUG1,
 						(errmsg_internal("\"%s\" has now caught up with upstream server",
-										 application_name)));
+										 GetGUCString(GUC_application_name))));
 				WalSndSetState(WALSNDSTATE_STREAMING);
 			}
 
@@ -3157,7 +3157,7 @@ InitWalSenderSlot(void)
 	 * Find a free walsender slot and reserve it. This must not fail due to
 	 * the prior check for free WAL senders in InitProcess().
 	 */
-	for (i = 0; i < max_wal_senders; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 
@@ -3289,7 +3289,8 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 		char		xlogfname[MAXFNAMELEN];
 		int			save_errno = errno;
 
-		XLogFileName(xlogfname, *tli_p, nextSegNo, wal_segment_size);
+		XLogFileName(xlogfname, *tli_p, nextSegNo,
+		             GetGUCInt(GUC_wal_segment_size));
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3610,7 +3611,7 @@ retry:
 	}
 
 	/* Report progress of XLOG streaming in PS display */
-	if (update_process_title)
+	if (GetGUCBool(GUC_update_process_title))
 	{
 		char		activitymsg[50];
 
@@ -3840,7 +3841,7 @@ WalSndRqstFileReload(void)
 {
 	int			i;
 
-	for (i = 0; i < max_wal_senders; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 
@@ -3913,7 +3914,8 @@ WalSndShmemRequest(void *arg)
 	Size		size;
 
 	size = offsetof(WalSndCtlData, walsnds);
-	size = add_size(size, mul_size(max_wal_senders, sizeof(WalSnd)));
+	size = add_size(size,
+			mul_size(GetGUCInt(GUC_max_wal_senders), sizeof(WalSnd)));
 	ShmemRequestStruct(.name = "Wal Sender Ctl",
 					   .size = size,
 					   .ptr = (void **) &WalSndCtl,
@@ -3927,7 +3929,7 @@ WalSndShmemInit(void *arg)
 	for (int i = 0; i < NUM_SYNC_REP_WAIT_MODE; i++)
 		dlist_init(&(WalSndCtl->SyncRepQueue[i]));
 
-	for (int i = 0; i < max_wal_senders; i++)
+	for (int i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 
@@ -4038,7 +4040,7 @@ WalSndInitStopping(void)
 {
 	int			i;
 
-	for (i = 0; i < max_wal_senders; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 		ProcNumber	procno;
@@ -4067,7 +4069,7 @@ WalSndWaitStopping(void)
 		int			i;
 		bool		all_stopped = true;
 
-		for (i = 0; i < max_wal_senders; i++)
+		for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 		{
 			WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 
@@ -4168,7 +4170,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	 */
 	num_standbys = SyncRepGetCandidateStandbys(&sync_standbys);
 
-	for (i = 0; i < max_wal_senders; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
 		XLogRecPtr	sent_ptr;
@@ -4354,7 +4356,7 @@ WalSndKeepaliveIfNecessary(void)
 	 * Don't send keepalive messages if timeouts are globally disabled or
 	 * we're doing something not partaking in timeouts.
 	 */
-	if (wal_sender_timeout <= 0 || last_reply_timestamp <= 0)
+	if (GetGUCInt(GUC_wal_sender_timeout) <= 0 || last_reply_timestamp <= 0)
 		return;
 
 	if (waiting_for_ping_response)
@@ -4366,7 +4368,7 @@ WalSndKeepaliveIfNecessary(void)
 	 * an immediate reply.
 	 */
 	ping_time = TimestampTzPlusMilliseconds(last_reply_timestamp,
-											wal_sender_timeout / 2);
+											GetGUCInt(GUC_wal_sender_timeout) / 2);
 	if (last_processing >= ping_time)
 	{
 		WalSndKeepalive(true, InvalidXLogRecPtr);

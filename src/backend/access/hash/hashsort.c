@@ -85,7 +85,7 @@ _h_spoolinit(Relation heap, Relation index, uint32 num_buckets)
 												   hspool->high_mask,
 												   hspool->low_mask,
 												   hspool->max_buckets,
-												   maintenance_work_mem,
+												   GetGUCInt(GUC_maintenance_work_mem),
 												   NULL,
 												   TUPLESORT_NONE);
 

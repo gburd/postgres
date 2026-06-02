@@ -2499,7 +2499,7 @@ remove_useless_self_joins(PlannerInfo *root, List *joinlist)
 	Relids		toRemove = NULL;
 	int			relid = -1;
 
-	if (!enable_self_join_elimination || joinlist == NIL ||
+	if (!GetGUCBool(GUC_enable_self_join_elimination) || joinlist == NIL ||
 		(list_length(joinlist) == 1 && !IsA(linitial(joinlist), List)))
 		return joinlist;
 

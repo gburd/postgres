@@ -872,19 +872,20 @@ ProcessPgArchInterrupts(void)
 
 	if (ConfigReloadPending)
 	{
-		char	   *archiveLib = pstrdup(XLogArchiveLibrary);
+		char	   *archiveLib = pstrdup(GetGUCString(GUC_XLogArchiveLibrary));
 		bool		archiveLibChanged;
 
 		ConfigReloadPending = false;
 		ProcessConfigFile(PGC_SIGHUP);
 
-		if (XLogArchiveLibrary[0] != '\0' && XLogArchiveCommand[0] != '\0')
+		if (GetGUCString(GUC_XLogArchiveLibrary)[0] != '\0' && GetGUCString(GUC_XLogArchiveCommand)[0] != '\0')
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("both \"archive_command\" and \"archive_library\" set"),
 					 errdetail("Only one of \"archive_command\", \"archive_library\" may be set.")));
 
-		archiveLibChanged = strcmp(XLogArchiveLibrary, archiveLib) != 0;
+		archiveLibChanged = strcmp(GetGUCString(GUC_XLogArchiveLibrary),
+					   archiveLib) != 0;
 		pfree(archiveLib);
 
 		if (archiveLibChanged)
@@ -917,7 +918,7 @@ LoadArchiveLibrary(void)
 {
 	ArchiveModuleInit archive_init;
 
-	if (XLogArchiveLibrary[0] != '\0' && XLogArchiveCommand[0] != '\0')
+	if (GetGUCString(GUC_XLogArchiveLibrary)[0] != '\0' && GetGUCString(GUC_XLogArchiveCommand)[0] != '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("both \"archive_command\" and \"archive_library\" set"),
@@ -927,11 +928,11 @@ LoadArchiveLibrary(void)
 	 * If shell archiving is enabled, use our special initialization function.
 	 * Otherwise, load the library and call its _PG_archive_module_init().
 	 */
-	if (XLogArchiveLibrary[0] == '\0')
+	if (GetGUCString(GUC_XLogArchiveLibrary)[0] == '\0')
 		archive_init = shell_archive_init;
 	else
 		archive_init = (ArchiveModuleInit)
-			load_external_function(XLogArchiveLibrary,
+			load_external_function(GetGUCString(GUC_XLogArchiveLibrary),
 								   "_PG_archive_module_init", false, NULL);
 
 	if (archive_init == NULL)

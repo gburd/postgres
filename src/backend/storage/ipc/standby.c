@@ -211,15 +211,17 @@ GetStandbyLimitTime(void)
 	GetXLogReceiptTime(&rtime, &fromStream);
 	if (fromStream)
 	{
-		if (max_standby_streaming_delay < 0)
+		if (GetGUCInt(GUC_max_standby_streaming_delay) < 0)
 			return 0;			/* wait forever */
-		return TimestampTzPlusMilliseconds(rtime, max_standby_streaming_delay);
+		return TimestampTzPlusMilliseconds(rtime,
+						   GetGUCInt(GUC_max_standby_streaming_delay));
 	}
 	else
 	{
-		if (max_standby_archive_delay < 0)
+		if (GetGUCInt(GUC_max_standby_archive_delay) < 0)
 			return 0;			/* wait forever */
-		return TimestampTzPlusMilliseconds(rtime, max_standby_archive_delay);
+		return TimestampTzPlusMilliseconds(rtime,
+						   GetGUCInt(GUC_max_standby_archive_delay));
 	}
 }
 
@@ -372,7 +374,7 @@ ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 		return;
 
 	/* Set the wait start timestamp for reporting */
-	if (report_waiting && (log_recovery_conflict_waits || update_process_title))
+	if (report_waiting && (GetGUCBool(GUC_log_recovery_conflict_waits) || GetGUCBool(GUC_update_process_title)))
 		waitStart = GetCurrentTimestamp();
 
 	while (VirtualTransactionIdIsValid(*waitlist))
@@ -408,8 +410,8 @@ ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 				bool		maybe_log_conflict;
 				bool		maybe_update_title;
 
-				maybe_log_conflict = (log_recovery_conflict_waits && !logged_recovery_conflict);
-				maybe_update_title = (update_process_title && !waiting);
+				maybe_log_conflict = (GetGUCBool(GUC_log_recovery_conflict_waits) && !logged_recovery_conflict);
+				maybe_update_title = (GetGUCBool(GUC_update_process_title) && !waiting);
 
 				/* Get the current timestamp if not report yet */
 				if (maybe_log_conflict || maybe_update_title)
@@ -431,7 +433,7 @@ ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 				 * longer than deadlock_timeout for recovery conflict.
 				 */
 				if (maybe_log_conflict &&
-					TimestampDifferenceExceeds(waitStart, now, DeadlockTimeout))
+					TimestampDifferenceExceeds(waitStart, now, GetGUCInt(GUC_DeadlockTimeout)))
 				{
 					LogRecoveryConflict(reason, waitStart, now, waitlist, true);
 					logged_recovery_conflict = true;
@@ -693,7 +695,7 @@ ResolveRecoveryConflictWithLock(LOCKTAG locktag, bool logging_conflict)
 		got_standby_deadlock_timeout = false;
 		timeouts[cnt].id = STANDBY_DEADLOCK_TIMEOUT;
 		timeouts[cnt].type = TMPARAM_AFTER;
-		timeouts[cnt].delay_ms = DeadlockTimeout;
+		timeouts[cnt].delay_ms = GetGUCInt(GUC_DeadlockTimeout);
 		cnt++;
 
 		enable_timeouts(timeouts, cnt);
@@ -827,7 +829,7 @@ ResolveRecoveryConflictWithBufferPin(void)
 		got_standby_deadlock_timeout = false;
 		timeouts[cnt].id = STANDBY_DEADLOCK_TIMEOUT;
 		timeouts[cnt].type = TMPARAM_AFTER;
-		timeouts[cnt].delay_ms = DeadlockTimeout;
+		timeouts[cnt].delay_ms = GetGUCInt(GUC_DeadlockTimeout);
 		cnt++;
 
 		enable_timeouts(timeouts, cnt);

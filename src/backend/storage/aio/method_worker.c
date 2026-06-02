@@ -282,7 +282,7 @@ pgaio_worker_request_grow(void)
 	 * maximum.  This uses an unlocked read of nworkers, but that's OK for
 	 * this heuristic purpose.
 	 */
-	if (io_worker_control->nworkers >= io_max_workers)
+	if (io_worker_control->nworkers >= GetGUCInt(GUC_io_max_workers))
 		return;
 
 	/* Already requested? */
@@ -648,7 +648,7 @@ pgaio_worker_can_timeout(void)
 {
 	PgAioWorkerSet workerset;
 
-	if (MyIoWorkerId < io_min_workers)
+	if (MyIoWorkerId < GetGUCInt(GUC_io_min_workers))
 		return false;
 
 	/* Serialize against pool size changes. */
@@ -940,7 +940,7 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			pgaio_worker_cancel_grow();
 
 			/* Compute the remaining allowed idle time. */
-			if (io_worker_idle_timeout == -1)
+			if (GetGUCInt(GUC_io_worker_idle_timeout) == -1)
 			{
 				/* Never time out. */
 				timeout_ms = -1;
@@ -951,7 +951,7 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 
 				/* If the GUC changes, reset timer. */
 				if (idle_timeout_abs != 0 &&
-					io_worker_idle_timeout != timeout_guc_used)
+					GetGUCInt(GUC_io_worker_idle_timeout) != timeout_guc_used)
 					idle_timeout_abs = 0;
 
 				/* Only the highest-numbered worker can time out. */
@@ -966,8 +966,8 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 						 */
 						idle_timeout_abs =
 							TimestampTzPlusMilliseconds(now,
-														io_worker_idle_timeout);
-						timeout_guc_used = io_worker_idle_timeout;
+														GetGUCInt(GUC_io_worker_idle_timeout));
+						timeout_guc_used = GetGUCInt(GUC_io_worker_idle_timeout);
 					}
 					timeout_ms =
 						TimestampDifferenceMilliseconds(now, idle_timeout_abs);
@@ -1017,7 +1017,7 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			ProcessConfigFile(PGC_SIGHUP);
 
 			/* If io_max_workers has been decreased, exit highest first. */
-			if (MyIoWorkerId >= io_max_workers)
+			if (MyIoWorkerId >= GetGUCInt(GUC_io_max_workers))
 				break;
 		}
 	}
@@ -1029,5 +1029,5 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 bool
 pgaio_workers_enabled(void)
 {
-	return io_method == IOMETHOD_WORKER;
+	return GetGUCEnum(GUC_io_method) == IOMETHOD_WORKER;
 }

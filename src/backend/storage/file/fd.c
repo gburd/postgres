@@ -426,7 +426,7 @@ pg_fsync(int fd)
 
 	/* #if is to skip the wal_sync_method test if there's no need for it */
 #if defined(HAVE_FSYNC_WRITETHROUGH)
-	if (wal_sync_method == WAL_SYNC_METHOD_FSYNC_WRITETHROUGH)
+	if (GetGUCEnum(GUC_wal_sync_method) == WAL_SYNC_METHOD_FSYNC_WRITETHROUGH)
 		return pg_fsync_writethrough(fd);
 	else
 #endif
@@ -443,7 +443,7 @@ pg_fsync_no_writethrough(int fd)
 {
 	int			rc;
 
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return 0;
 
 retry:
@@ -461,7 +461,7 @@ retry:
 int
 pg_fsync_writethrough(int fd)
 {
-	if (enableFsync)
+	if (GetGUCBool(GUC_enableFsync))
 	{
 #if defined(F_FULLFSYNC)
 		return (fcntl(fd, F_FULLFSYNC, 0) == -1) ? -1 : 0;
@@ -482,7 +482,7 @@ pg_fdatasync(int fd)
 {
 	int			rc;
 
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return 0;
 
 retry:
@@ -531,7 +531,7 @@ pg_flush_data(int fd, pgoff_t offset, pgoff_t nbytes)
 	 * if fsyncs are disabled - that's a decision we might want to make
 	 * configurable at some point.
 	 */
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return;
 
 	/*
@@ -1056,10 +1056,10 @@ set_max_safe_fds(void)
 	 * additional files.
 	 *----------
 	 */
-	count_usable_fds(max_files_per_process,
+	count_usable_fds(GetGUCInt(GUC_max_files_per_process),
 					 &usable_fds, &already_open);
 
-	max_safe_fds = Min(usable_fds, max_files_per_process);
+	max_safe_fds = Min(usable_fds, GetGUCInt(GUC_max_files_per_process));
 
 	/*
 	 * Take off the FDs reserved for system() etc.
@@ -1517,9 +1517,9 @@ ReportTemporaryFileUsage(const char *path, pgoff_t size)
 {
 	pgstat_report_tempfile(size);
 
-	if (log_temp_files >= 0)
+	if (GetGUCInt(GUC_log_temp_files) >= 0)
 	{
-		if ((size / 1024) >= log_temp_files)
+		if ((size / 1024) >= GetGUCInt(GUC_log_temp_files))
 			ereport(LOG,
 					(errmsg("temporary file: path \"%s\", size %lu",
 							path, (unsigned long) size)));
@@ -2255,7 +2255,7 @@ FileWriteV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset,
 	 * message if we do that.  All current callers would just throw error
 	 * immediately anyway, so this is safe at present.
 	 */
-	if (temp_file_limit >= 0 && (vfdP->fdstate & FD_TEMP_FILE_LIMIT))
+	if (GetGUCInt(GUC_temp_file_limit) >= 0 && (vfdP->fdstate & FD_TEMP_FILE_LIMIT))
 	{
 		pgoff_t		past_write = offset;
 
@@ -2267,11 +2267,11 @@ FileWriteV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset,
 			uint64		newTotal = temporary_files_size;
 
 			newTotal += past_write - vfdP->fileSize;
-			if (newTotal > (uint64) temp_file_limit * (uint64) 1024)
+			if (newTotal > (uint64) GetGUCInt(GUC_temp_file_limit) * (uint64) 1024)
 				ereport(ERROR,
 						(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 						 errmsg("temporary file size exceeds \"temp_file_limit\" (%dkB)",
-								temp_file_limit)));
+								GetGUCInt(GUC_temp_file_limit))));
 		}
 	}
 
@@ -3596,7 +3596,7 @@ SyncDataDirectory(void)
 	bool		xlog_is_symlink;
 
 	/* We can skip this whole thing if fsync is disabled. */
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return;
 
 	/*
@@ -3618,7 +3618,7 @@ SyncDataDirectory(void)
 	}
 
 #ifdef HAVE_SYNCFS
-	if (recovery_init_sync_method == DATA_DIR_SYNC_METHOD_SYNCFS)
+	if (GetGUCEnum(GUC_recovery_init_sync_method) == DATA_DIR_SYNC_METHOD_SYNCFS)
 	{
 		DIR		   *dir;
 		struct dirent *de;
@@ -3985,7 +3985,7 @@ MakePGDirectory(const char *directoryName)
 int
 data_sync_elevel(int elevel)
 {
-	return data_sync_retry ? elevel : PANIC;
+	return GetGUCBool(GUC_data_sync_retry) ? elevel : PANIC;
 }
 
 bool

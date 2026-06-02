@@ -120,12 +120,12 @@ ClockSweepTick(void)
 	victim =
 		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
 
-	if (victim >= NBuffers)
+	if (victim >= GetGUCInt(GUC_NBuffers))
 	{
 		uint32		originalVictim = victim;
 
 		/* always wrap what we look up in BufferDescriptors */
-		victim = victim % NBuffers;
+		victim = victim % GetGUCInt(GUC_NBuffers);
 
 		/*
 		 * If we're the one that just caused a wraparound, force
@@ -153,7 +153,7 @@ ClockSweepTick(void)
 				 */
 				SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 
-				wrapped = expected % NBuffers;
+				wrapped = expected % GetGUCInt(GUC_NBuffers);
 
 				success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
 														 &expected, wrapped);
@@ -238,7 +238,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 
 	/* Use the "clock sweep" algorithm to find a free buffer */
-	trycounter = NBuffers;
+	trycounter = GetGUCInt(GUC_NBuffers);
 	for (;;)
 	{
 		uint64		old_buf_state;
@@ -291,7 +291,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 												   local_buf_state))
 				{
-					trycounter = NBuffers;
+					trycounter = GetGUCInt(GUC_NBuffers);
 					break;
 				}
 			}
@@ -336,7 +336,7 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 
 	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 	nextVictimBuffer = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	result = nextVictimBuffer % NBuffers;
+	result = nextVictimBuffer % GetGUCInt(GUC_NBuffers);
 
 	if (complete_passes)
 	{
@@ -346,7 +346,7 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 		 * Additionally add the number of wraparounds that happened before
 		 * completePasses could be incremented. C.f. ClockSweepTick().
 		 */
-		*complete_passes += nextVictimBuffer / NBuffers;
+		*complete_passes += nextVictimBuffer / GetGUCInt(GUC_NBuffers);
 	}
 
 	if (num_buf_alloc)
@@ -479,7 +479,7 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 				 * AIO.
 				 */
 				ring_size_kb += (BLCKSZ / 1024) *
-					io_combine_limit * effective_io_concurrency;
+					io_combine_limit * GetGUCInt(GUC_effective_io_concurrency);
 
 				if (ring_size_kb > ring_max_kb)
 					ring_size_kb = ring_max_kb;
@@ -524,7 +524,7 @@ GetAccessStrategyWithSize(BufferAccessStrategyType btype, int ring_size_kb)
 		return NULL;
 
 	/* Cap to 1/8th of shared_buffers */
-	ring_buffers = Min(NBuffers / 8, ring_buffers);
+	ring_buffers = Min(GetGUCInt(GUC_NBuffers) / 8, ring_buffers);
 
 	/* NBuffers should never be less than 16, so this shouldn't happen */
 	Assert(ring_buffers > 0);
@@ -575,7 +575,7 @@ int
 GetAccessStrategyPinLimit(BufferAccessStrategy strategy)
 {
 	if (strategy == NULL)
-		return NBuffers;
+		return GetGUCInt(GUC_NBuffers);
 
 	switch (strategy->btype)
 	{

@@ -1066,7 +1066,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 		}
 
 		if (RELKIND_HAS_TABLE_AM(relkind) && !OidIsValid(accessMethodId))
-			accessMethodId = get_table_am_oid(default_table_access_method, false);
+			accessMethodId = get_table_am_oid(GetGUCString(GUC_default_table_access_method),
+							  false);
 	}
 
 	/*
@@ -1092,7 +1093,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  stmt->oncommit,
 										  reloptions,
 										  true,
-										  allowSystemTableMods,
+										  GetGUCBool(GUC_allowSystemTableMods),
 										  false,
 										  InvalidOid,
 										  typaddress);
@@ -1833,7 +1834,7 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	}
 
 	/* In the case of an invalid index, it is fine to bypass this check */
-	if (!invalid_system_index && !allowSystemTableMods && IsSystemClass(relOid, classform))
+	if (!invalid_system_index && !GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relOid, classform))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -2433,7 +2434,7 @@ truncate_check_rel(Oid relid, Form_pg_class reltuple)
 	 * cluster, and allowing a TRUNCATE command to be executed is the easiest
 	 * way of doing that.
 	 */
-	if (!allowSystemTableMods && IsSystemClass(relid, reltuple)
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relid, reltuple)
 		&& (!IsBinaryUpgrade ||
 			(relid != LargeObjectRelationId &&
 			 relid != LargeObjectMetadataRelationId)))
@@ -3859,7 +3860,7 @@ renameatt_check(Oid myrelid, Form_pg_class classform, bool recursing)
 	if (!object_ownercheck(RelationRelationId, myrelid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(myrelid)),
 					   NameStr(classform->relname));
-	if (!allowSystemTableMods && IsSystemClass(myrelid, classform))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(myrelid, classform))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -6861,7 +6862,7 @@ ATSimplePermissions(AlterTableType cmdtype, Relation rel, int allowed_targets)
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
 					   RelationGetRelationName(rel));
 
-	if (!allowSystemTableMods && IsSystemRelation(rel))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -9855,7 +9856,7 @@ ATExecAddIndexConstraint(AlteredTableInfo *tab, Relation rel,
 									  constraintName,
 									  constraintType,
 									  flags,
-									  allowSystemTableMods,
+									  GetGUCBool(GUC_allowSystemTableMods),
 									  false);	/* is_internal */
 
 	index_close(indexRel, NoLock);
@@ -10195,7 +10196,7 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 				 errmsg("referenced relation \"%s\" is not a table",
 						RelationGetRelationName(pkrel))));
 
-	if (!allowSystemTableMods && IsSystemRelation(pkrel))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemRelation(pkrel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -16749,7 +16750,8 @@ ATPrepSetAccessMethod(AlteredTableInfo *tab, Relation rel, const char *amname)
 	else if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		amoid = InvalidOid;
 	else
-		amoid = get_table_am_oid(default_table_access_method, false);
+		amoid = get_table_am_oid(GetGUCString(GUC_default_table_access_method),
+					 false);
 
 	/* if it's a match, phase 3 doesn't need to do anything */
 	if (rel->rd_rel->relam == amoid)
@@ -19806,7 +19808,7 @@ RangeVarCallbackOwnsRelation(const RangeVar *relation,
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relId)),
 					   relation->relname);
 
-	if (!allowSystemTableMods &&
+	if (!GetGUCBool(GUC_allowSystemTableMods) &&
 		IsSystemClass(relId, (Form_pg_class) GETSTRUCT(tuple)))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -19842,7 +19844,7 @@ RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid, Oid oldrelid,
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
 
 	/* No system table modifications unless explicitly allowed. */
-	if (!allowSystemTableMods && IsSystemClass(relid, classform))
+	if (!GetGUCBool(GUC_allowSystemTableMods) && IsSystemClass(relid, classform))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied: \"%s\" is a system catalog",
@@ -22790,7 +22792,7 @@ createPartitionTable(List **wqueue, RangeVar *newPartName,
 										ONCOMMIT_NOOP,
 										(Datum) 0,
 										true,
-										allowSystemTableMods,
+										GetGUCBool(GUC_allowSystemTableMods),
 										true,
 										InvalidOid,
 										NULL);

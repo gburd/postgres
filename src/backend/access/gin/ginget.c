@@ -125,7 +125,8 @@ collectMatchBitmap(GinBtreeData *btree, GinBtreeStack *stack,
 	CompactAttribute *attr;
 
 	/* Initialize empty bitmap result */
-	scanEntry->matchBitmap = tbm_create(work_mem * (Size) 1024, NULL);
+	scanEntry->matchBitmap = tbm_create(GetGUCInt(GUC_work_mem) * (Size) 1024,
+					    NULL);
 
 	/* Null query cannot partial-match anything */
 	if (scanEntry->isPartialMatch &&
@@ -611,7 +612,7 @@ startScan(IndexScanDesc scan)
 	for (i = 0; i < so->totalentries; i++)
 		startScanEntry(ginstate, so->entries[i], scan->xs_snapshot);
 
-	if (GinFuzzySearchLimit > 0)
+	if (GetGUCInt(GUC_GinFuzzySearchLimit) > 0)
 	{
 		/*
 		 * If all of keys more than threshold we will try to reduce result, we
@@ -623,7 +624,7 @@ startScan(IndexScanDesc scan)
 
 		for (i = 0; i < so->totalentries; i++)
 		{
-			if (so->entries[i]->predictNumberResult <= so->totalentries * GinFuzzySearchLimit)
+			if (so->entries[i]->predictNumberResult <= so->totalentries * GetGUCInt(GUC_GinFuzzySearchLimit))
 			{
 				reduce = false;
 				break;
@@ -793,7 +794,7 @@ entryLoadMoreItems(GinState *ginstate, GinScanEntry entry,
 }
 
 #define gin_rand() pg_prng_double(&pg_global_prng_state)
-#define dropItem(e) ( gin_rand() > ((double)GinFuzzySearchLimit)/((double)((e)->predictNumberResult)) )
+#define dropItem(e) ( gin_rand() > ((double) GetGUCInt(GUC_GinFuzzySearchLimit))/((double)((e)->predictNumberResult)) )
 
 /*
  * Sets entry->curItem to next heap item pointer > advancePast, for one entry

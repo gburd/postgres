@@ -2807,7 +2807,8 @@ ExecHashBuildNullTupleStore(HashJoinTable hashtable)
 	 * consumption too much.
 	 */
 	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
-	tstore = tuplestore_begin_heap(false, false, work_mem / 16);
+	tstore = tuplestore_begin_heap(false, false,
+				       GetGUCInt(GUC_work_mem) / 16);
 	MemoryContextSwitchTo(oldcxt);
 	return tstore;
 }
@@ -3682,7 +3683,7 @@ get_hash_memory_limit(void)
 	double		mem_limit;
 
 	/* Do initial calculation in double arithmetic */
-	mem_limit = (double) work_mem * hash_mem_multiplier * 1024.0;
+	mem_limit = (double) GetGUCInt(GUC_work_mem) * GetGUCReal(GUC_hash_mem_multiplier) * 1024.0;
 
 	/* Clamp in case it doesn't fit in size_t */
 	mem_limit = Min(mem_limit, (double) SIZE_MAX);

@@ -71,7 +71,7 @@ provider_init(void)
 	JitProviderInit init;
 
 	/* don't even try to load if not enabled */
-	if (!jit_enabled)
+	if (!GetGUCBool(GUC_jit_enabled))
 		return false;
 
 	/*
@@ -88,7 +88,8 @@ provider_init(void)
 	 * attempting to load the shared library (via load_external_function()),
 	 * because that'd error out in case the shlib isn't available.
 	 */
-	snprintf(path, MAXPGPATH, "%s/%s%s", pkglib_path, jit_provider, DLSUFFIX);
+	snprintf(path, MAXPGPATH, "%s/%s%s", pkglib_path,
+		 GetGUCString(GUC_jit_provider), DLSUFFIX);
 	elog(DEBUG1, "probing availability of JIT provider at %s", path);
 	if (!pg_file_exists(path))
 	{

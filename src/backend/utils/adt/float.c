@@ -361,9 +361,9 @@ float4out(PG_FUNCTION_ARGS)
 {
 	float4		num = PG_GETARG_FLOAT4(0);
 	char	   *ascii = (char *) palloc(32);
-	int			ndig = FLT_DIG + extra_float_digits;
+	int			ndig = FLT_DIG + GetGUCInt(GUC_extra_float_digits);
 
-	if (extra_float_digits > 0)
+	if (GetGUCInt(GUC_extra_float_digits) > 0)
 	{
 		float_to_shortest_decimal_buf(num, ascii);
 		PG_RETURN_CSTRING(ascii);
@@ -578,9 +578,9 @@ char *
 float8out_internal(double num)
 {
 	char	   *ascii = (char *) palloc(32);
-	int			ndig = DBL_DIG + extra_float_digits;
+	int			ndig = DBL_DIG + GetGUCInt(GUC_extra_float_digits);
 
-	if (extra_float_digits > 0)
+	if (GetGUCInt(GUC_extra_float_digits) > 0)
 	{
 		double_to_shortest_decimal_buf(num, ascii);
 		return ascii;

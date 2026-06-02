@@ -124,7 +124,7 @@ query_planner(PlannerInfo *root,
 				 */
 				if (root->glob->parallelModeOK &&
 					(root->query_level > 1 ||
-					 debug_parallel_query != DEBUG_PARALLEL_OFF))
+					 GetGUCEnum(GUC_debug_parallel_query) != DEBUG_PARALLEL_OFF))
 					final_rel->consider_parallel =
 						is_parallel_safe(root, parse->jointree->quals);
 

@@ -298,7 +298,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 												   qstate->sortOperators,
 												   qstate->sortCollations,
 												   qstate->sortNullsFirsts,
-												   work_mem,
+												   GetGUCInt(GUC_work_mem),
 												   NULL,
 												   tuplesortopt);
 	else
@@ -306,7 +306,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 													qstate->sortOperator,
 													qstate->sortCollation,
 													qstate->sortNullsFirst,
-													work_mem,
+													GetGUCInt(GUC_work_mem),
 													NULL,
 													tuplesortopt);
 

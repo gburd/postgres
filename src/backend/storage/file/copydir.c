@@ -84,7 +84,7 @@ copydir(const char *fromdir, const char *todir, bool recurse)
 		}
 		else if (xlde_type == PGFILETYPE_REG)
 		{
-			if (file_copy_method == FILE_COPY_METHOD_CLONE)
+			if (GetGUCEnum(GUC_file_copy_method) == FILE_COPY_METHOD_CLONE)
 				clone_file(fromfile, tofile);
 			else
 				copy_file(fromfile, tofile);
@@ -96,7 +96,7 @@ copydir(const char *fromdir, const char *todir, bool recurse)
 	 * Be paranoid here and fsync all files to ensure the copy is really done.
 	 * But if fsync is disabled, we're done.
 	 */
-	if (!enableFsync)
+	if (!GetGUCBool(GUC_enableFsync))
 		return;
 
 	xldir = AllocateDir(todir);

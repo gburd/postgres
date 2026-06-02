@@ -1334,7 +1334,8 @@ postquel_start(execution_state *es, SQLFunctionCachePtr fcache)
 		{
 			MemoryContextSwitchTo(fcache->tscontext);
 			fcache->tstore = tuplestore_begin_heap(fcache->randomAccess,
-												   false, work_mem);
+												   false,
+												   GetGUCInt(GUC_work_mem));
 		}
 	}
 

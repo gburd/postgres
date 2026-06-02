@@ -91,7 +91,7 @@
 char	   *SyncRepStandbyNames;
 
 #define SyncStandbysDefined() \
-	(SyncRepStandbyNames != NULL && SyncRepStandbyNames[0] != '\0')
+	(GetGUCString(GUC_SyncRepStandbyNames) != NULL && GetGUCString(GUC_SyncRepStandbyNames)[0] != '\0')
 
 static bool announce_next_takeover = true;
 
@@ -255,7 +255,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 	LWLockRelease(SyncRepLock);
 
 	/* Alter ps display to show waiting for sync rep. */
-	if (update_process_title)
+	if (GetGUCBool(GUC_update_process_title))
 	{
 		char		buffer[32];
 
@@ -360,7 +360,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 	MyProc->waitLSN = InvalidXLogRecPtr;
 
 	/* reset ps display to remove the suffix */
-	if (update_process_title)
+	if (GetGUCBool(GUC_update_process_title))
 		set_ps_display_remove_suffix();
 }
 
@@ -461,7 +461,7 @@ SyncRepInitConfig(void)
 
 		ereport(DEBUG1,
 				(errmsg_internal("standby \"%s\" now has synchronous standby priority %d",
-								 application_name, priority)));
+								 GetGUCString(GUC_application_name), priority)));
 	}
 }
 
@@ -528,11 +528,11 @@ SyncRepReleaseWaiters(void)
 		if (SyncRepConfig->syncrep_method == SYNC_REP_PRIORITY)
 			ereport(LOG,
 					(errmsg("standby \"%s\" is now a synchronous standby with priority %d",
-							application_name, MyWalSnd->sync_standby_priority)));
+							GetGUCString(GUC_application_name), MyWalSnd->sync_standby_priority)));
 		else
 			ereport(LOG,
 					(errmsg("standby \"%s\" is now a candidate for quorum synchronous standby",
-							application_name)));
+							GetGUCString(GUC_application_name))));
 	}
 
 	/*
@@ -759,7 +759,8 @@ SyncRepGetCandidateStandbys(SyncRepStandbyData **standbys)
 	int			n;
 
 	/* Create result array */
-	*standbys = palloc_array(SyncRepStandbyData, max_wal_senders);
+	*standbys = palloc_array(SyncRepStandbyData,
+				 GetGUCInt(GUC_max_wal_senders));
 
 	/* Quick exit if sync replication is not requested */
 	if (SyncRepConfig == NULL)
@@ -767,7 +768,7 @@ SyncRepGetCandidateStandbys(SyncRepStandbyData **standbys)
 
 	/* Collect raw data from shared memory */
 	n = 0;
-	for (i = 0; i < max_wal_senders; i++)
+	for (i = 0; i < GetGUCInt(GUC_max_wal_senders); i++)
 	{
 		volatile WalSnd *walsnd;	/* Use volatile pointer to prevent code
 									 * rearrangement */
@@ -877,7 +878,7 @@ SyncRepGetStandbyPriority(void)
 	standby_name = SyncRepConfig->member_names;
 	for (priority = 1; priority <= SyncRepConfig->nmembers; priority++)
 	{
-		if (pg_strcasecmp(standby_name, application_name) == 0 ||
+		if (pg_strcasecmp(standby_name, GetGUCString(GUC_application_name)) == 0 ||
 			strcmp(standby_name, "*") == 0)
 		{
 			found = true;

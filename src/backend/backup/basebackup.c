@@ -440,10 +440,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		 * shouldn't be such files, but if there are, there's little harm in
 		 * including them.
 		 */
-		XLByteToSeg(state.startptr, startsegno, wal_segment_size);
-		XLogFileName(firstoff, state.starttli, startsegno, wal_segment_size);
-		XLByteToPrevSeg(endptr, endsegno, wal_segment_size);
-		XLogFileName(lastoff, endtli, endsegno, wal_segment_size);
+		XLByteToSeg(state.startptr, startsegno,
+			    GetGUCInt(GUC_wal_segment_size));
+		XLogFileName(firstoff, state.starttli, startsegno,
+			     GetGUCInt(GUC_wal_segment_size));
+		XLByteToPrevSeg(endptr, endsegno,
+				GetGUCInt(GUC_wal_segment_size));
+		XLogFileName(lastoff, endtli, endsegno,
+			     GetGUCInt(GUC_wal_segment_size));
 
 		dir = AllocateDir("pg_wal");
 		while ((de = ReadDir(dir, "pg_wal")) != NULL)
@@ -489,13 +493,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		 * endptr, with no gaps in between.
 		 */
 		XLogFromFileName((char *) linitial(walFileList),
-						 &tli, &segno, wal_segment_size);
+						 &tli, &segno,
+						 GetGUCInt(GUC_wal_segment_size));
 		if (segno != startsegno)
 		{
 			char		startfname[MAXFNAMELEN];
 
 			XLogFileName(startfname, state.starttli, startsegno,
-						 wal_segment_size);
+						 GetGUCInt(GUC_wal_segment_size));
 			ereport(ERROR,
 					(errmsg("could not find WAL file \"%s\"", startfname)));
 		}
@@ -505,12 +510,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			XLogSegNo	currsegno = segno;
 			XLogSegNo	nextsegno = segno + 1;
 
-			XLogFromFileName(walFileName, &tli, &segno, wal_segment_size);
+			XLogFromFileName(walFileName, &tli, &segno,
+					 GetGUCInt(GUC_wal_segment_size));
 			if (!(nextsegno == segno || currsegno == segno))
 			{
 				char		nextfname[MAXFNAMELEN];
 
-				XLogFileName(nextfname, tli, nextsegno, wal_segment_size);
+				XLogFileName(nextfname, tli, nextsegno,
+					     GetGUCInt(GUC_wal_segment_size));
 				ereport(ERROR,
 						(errmsg("could not find WAL file \"%s\"", nextfname)));
 			}
@@ -519,7 +526,8 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		{
 			char		endfname[MAXFNAMELEN];
 
-			XLogFileName(endfname, endtli, endsegno, wal_segment_size);
+			XLogFileName(endfname, endtli, endsegno,
+				     GetGUCInt(GUC_wal_segment_size));
 			ereport(ERROR,
 					(errmsg("could not find WAL file \"%s\"", endfname)));
 		}
@@ -533,7 +541,8 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			pgoff_t		len = 0;
 
 			snprintf(pathbuf, MAXPGPATH, XLOGDIR "/%s", walFileName);
-			XLogFromFileName(walFileName, &tli, &segno, wal_segment_size);
+			XLogFromFileName(walFileName, &tli, &segno,
+					 GetGUCInt(GUC_wal_segment_size));
 
 			fd = OpenTransientFile(pathbuf, O_RDONLY | PG_BINARY);
 			if (fd < 0)
@@ -558,7 +567,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 						(errcode_for_file_access(),
 						 errmsg("could not stat file \"%s\": %m",
 								pathbuf)));
-			if (statbuf.st_size != wal_segment_size)
+			if (statbuf.st_size != GetGUCInt(GUC_wal_segment_size))
 			{
 				CheckXLogRemoved(segno, tli);
 				ereport(ERROR,
@@ -571,7 +580,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 
 			while ((cnt = basebackup_read_file(fd, sink->bbs_buffer,
 											   Min(sink->bbs_buffer_length,
-												   wal_segment_size - len),
+												   GetGUCInt(GUC_wal_segment_size) - len),
 											   len, pathbuf, true)) > 0)
 			{
 				CheckXLogRemoved(segno, tli);
@@ -579,11 +588,11 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 
 				len += cnt;
 
-				if (len == wal_segment_size)
+				if (len == GetGUCInt(GUC_wal_segment_size))
 					break;
 			}
 
-			if (len != wal_segment_size)
+			if (len != GetGUCInt(GUC_wal_segment_size))
 			{
 				CheckXLogRemoved(segno, tli);
 				ereport(ERROR,
@@ -595,7 +604,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			 * wal_segment_size is a multiple of TAR_BLOCK_SIZE, so no need
 			 * for padding.
 			 */
-			Assert(wal_segment_size % TAR_BLOCK_SIZE == 0);
+			Assert(GetGUCInt(GUC_wal_segment_size) % TAR_BLOCK_SIZE == 0);
 
 			CloseTransientFile(fd);
 
@@ -791,7 +800,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("duplicate option \"%s\"", defel->defname)));
 			opt->incremental = defGetBoolean(defel);
-			if (opt->incremental && !summarize_wal)
+			if (opt->incremental && !GetGUCBool(GUC_summarize_wal))
 				ereport(ERROR,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						 errmsg("incremental backups cannot be taken unless WAL summarization is enabled")));
@@ -1004,7 +1013,7 @@ SendBaseBackup(BaseBackupCmd *cmd, IncrementalBackupInfo *ib)
 
 	WalSndSetState(WALSNDSTATE_BACKUP);
 
-	if (update_process_title)
+	if (GetGUCBool(GUC_update_process_title))
 	{
 		char		activitymsg[50];
 

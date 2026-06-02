@@ -579,7 +579,7 @@ build_setop_child_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * input path).
 			 */
 			if (subpath != cheapest_input_path &&
-				(presorted_keys == 0 || !enable_incremental_sort))
+				(presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort)))
 				continue;
 
 			/*
@@ -587,7 +587,7 @@ build_setop_child_paths(PlannerInfo *root, RelOptInfo *rel,
 			 * We'll just do a sort if there are no presorted keys and an
 			 * incremental sort when there are presorted keys.
 			 */
-			if (presorted_keys == 0 || !enable_incremental_sort)
+			if (presorted_keys == 0 || !GetGUCBool(GUC_enable_incremental_sort))
 				subpath = (Path *) create_sort_path(rel->subroot,
 													final_rel,
 													subpath,
@@ -879,19 +879,20 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 		 * the children.  The precise formula is just a guess; see
 		 * add_paths_to_append_rel.
 		 */
-		if (enable_parallel_append)
+		if (GetGUCBool(GUC_enable_parallel_append))
 		{
 			parallel_workers = Max(parallel_workers,
 								   pg_leftmost_one_pos32(list_length(partial.partial_subpaths)) + 1);
 			parallel_workers = Min(parallel_workers,
-								   max_parallel_workers_per_gather);
+								   GetGUCInt(GUC_max_parallel_workers_per_gather));
 		}
 		Assert(parallel_workers > 0);
 
 		papath = (Path *)
 			create_append_path(root, result_rel, partial,
 							   NIL, NULL, parallel_workers,
-							   enable_parallel_append, -1);
+							   GetGUCBool(GUC_enable_parallel_append),
+							   -1);
 		gpath = (Path *)
 			create_gather_path(root, result_rel, papath,
 							   result_rel->reltarget, NULL, NULL);
