@@ -285,9 +285,59 @@ typedef enum KAXCompressReason
 static pg_global PGPROC *allProcs;
 
 /*
- * Cache to reduce overhead of repeated calls to TransactionIdIsInProgress()
+ * ProcArrayState consolidates this module's per-session (thread-local) state
+ * into a single struct.  See the F4 session-state consolidation work.
  */
-static session_local TransactionId cachedXidIsNotInProgress = InvalidTransactionId;
+typedef struct ProcArrayState
+{
+	/*
+	 * Cache to reduce overhead of repeated calls to
+	 * TransactionIdIsInProgress()
+	 */
+	TransactionId cachedXidIsNotInProgress;
+
+	/*
+	 * If we're in STANDBY_SNAPSHOT_PENDING state, standbySnapshotPendingXmin
+	 * is the highest xid that might still be running that we don't have in
+	 * KnownAssignedXids.
+	 */
+	TransactionId standbySnapshotPendingXmin;
+
+	/*
+	 * State for visibility checks on different types of relations. See struct
+	 * GlobalVisState for details. As shared, catalog, normal and temporary
+	 * relations can have different horizons, one such state exists for each.
+	 */
+	GlobalVisState GlobalVisSharedRels;
+	GlobalVisState GlobalVisCatalogRels;
+	GlobalVisState GlobalVisDataRels;
+	GlobalVisState GlobalVisTempRels;
+
+	/*
+	 * This backend's RecentXmin at the last time the accurate xmin horizon was
+	 * recomputed, or InvalidTransactionId if it has not. Used to limit how
+	 * many times accurate horizons are recomputed. See
+	 * GlobalVisTestShouldUpdate().
+	 */
+	TransactionId ComputeXidHorizonsResultLastXmin;
+
+#ifdef XIDCACHE_DEBUG
+	/* counters for XidCache measurement */
+	long		xc_by_recent_xmin;
+	long		xc_by_known_xact;
+	long		xc_by_my_xact;
+	long		xc_by_latest_xid;
+	long		xc_by_main_xid;
+	long		xc_by_child_xid;
+	long		xc_by_known_assigned;
+	long		xc_no_overflow;
+	long		xc_slow_answer;
+#endif
+} ProcArrayState;
+
+static session_local ProcArrayState proc_array_state = {
+	.cachedXidIsNotInProgress = InvalidTransactionId,
+};
 
 /*
  * Bookkeeping for tracking emulated transactions in recovery
@@ -299,52 +349,20 @@ static pg_global bool *KnownAssignedXidsValid;
 
 static pg_global TransactionId latestObservedXid = InvalidTransactionId;
 
-/*
- * If we're in STANDBY_SNAPSHOT_PENDING state, standbySnapshotPendingXmin is
- * the highest xid that might still be running that we don't have in
- * KnownAssignedXids.
- */
-static session_local TransactionId standbySnapshotPendingXmin;
 
-/*
- * State for visibility checks on different types of relations. See struct
- * GlobalVisState for details. As shared, catalog, normal and temporary
- * relations can have different horizons, one such state exists for each.
- */
-static session_local GlobalVisState GlobalVisSharedRels;
-static session_local GlobalVisState GlobalVisCatalogRels;
-static session_local GlobalVisState GlobalVisDataRels;
-static session_local GlobalVisState GlobalVisTempRels;
 
-/*
- * This backend's RecentXmin at the last time the accurate xmin horizon was
- * recomputed, or InvalidTransactionId if it has not. Used to limit how many
- * times accurate horizons are recomputed. See GlobalVisTestShouldUpdate().
- */
-static session_local TransactionId ComputeXidHorizonsResultLastXmin;
 
 #ifdef XIDCACHE_DEBUG
 
-/* counters for XidCache measurement */
-static session_local long xc_by_recent_xmin = 0;
-static session_local long xc_by_known_xact = 0;
-static session_local long xc_by_my_xact = 0;
-static session_local long xc_by_latest_xid = 0;
-static session_local long xc_by_main_xid = 0;
-static session_local long xc_by_child_xid = 0;
-static session_local long xc_by_known_assigned = 0;
-static session_local long xc_no_overflow = 0;
-static session_local long xc_slow_answer = 0;
-
-#define xc_by_recent_xmin_inc()		(xc_by_recent_xmin++)
-#define xc_by_known_xact_inc()		(xc_by_known_xact++)
-#define xc_by_my_xact_inc()			(xc_by_my_xact++)
-#define xc_by_latest_xid_inc()		(xc_by_latest_xid++)
-#define xc_by_main_xid_inc()		(xc_by_main_xid++)
-#define xc_by_child_xid_inc()		(xc_by_child_xid++)
-#define xc_by_known_assigned_inc()	(xc_by_known_assigned++)
-#define xc_no_overflow_inc()		(xc_no_overflow++)
-#define xc_slow_answer_inc()		(xc_slow_answer++)
+#define xc_by_recent_xmin_inc()		(proc_array_state.xc_by_recent_xmin++)
+#define xc_by_known_xact_inc()		(proc_array_state.xc_by_known_xact++)
+#define xc_by_my_xact_inc()			(proc_array_state.xc_by_my_xact++)
+#define xc_by_latest_xid_inc()		(proc_array_state.xc_by_latest_xid++)
+#define xc_by_main_xid_inc()		(proc_array_state.xc_by_main_xid++)
+#define xc_by_child_xid_inc()		(proc_array_state.xc_by_child_xid++)
+#define xc_by_known_assigned_inc()	(proc_array_state.xc_by_known_assigned++)
+#define xc_no_overflow_inc()		(proc_array_state.xc_no_overflow++)
+#define xc_slow_answer_inc()		(proc_array_state.xc_slow_answer++)
 
 static void DisplayXidCache(void);
 #else							/* !XIDCACHE_DEBUG */
@@ -1108,7 +1126,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		}
 		else
 		{
-			if (TransactionIdPrecedes(standbySnapshotPendingXmin,
+			if (TransactionIdPrecedes(proc_array_state.standbySnapshotPendingXmin,
 									  running->oldestRunningXid))
 			{
 				standbyState = STANDBY_SNAPSHOT_READY;
@@ -1119,7 +1137,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 				elog(DEBUG1,
 					 "recovery snapshot waiting for non-overflowed snapshot or "
 					 "until oldest active xid on standby is at least %u (now %u)",
-					 standbySnapshotPendingXmin,
+					 proc_array_state.standbySnapshotPendingXmin,
 					 running->oldestRunningXid);
 			return;
 		}
@@ -1253,14 +1271,14 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	{
 		standbyState = STANDBY_SNAPSHOT_PENDING;
 
-		standbySnapshotPendingXmin = latestObservedXid;
+		proc_array_state.standbySnapshotPendingXmin = latestObservedXid;
 		procArray->lastOverflowedXid = latestObservedXid;
 	}
 	else
 	{
 		standbyState = STANDBY_SNAPSHOT_READY;
 
-		standbySnapshotPendingXmin = InvalidTransactionId;
+		proc_array_state.standbySnapshotPendingXmin = InvalidTransactionId;
 
 		/*
 		 * If the 'xids' array didn't include all subtransactions, we have to
@@ -1297,7 +1315,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		elog(DEBUG1,
 			 "recovery snapshot waiting for non-overflowed snapshot or "
 			 "until oldest active xid on standby is at least %u (now %u)",
-			 standbySnapshotPendingXmin,
+			 proc_array_state.standbySnapshotPendingXmin,
 			 running->oldestRunningXid);
 }
 
@@ -1420,7 +1438,7 @@ TransactionIdIsInProgress(TransactionId xid)
 	 * already known to be completed, we can fall out without any access to
 	 * shared memory.
 	 */
-	if (TransactionIdEquals(cachedXidIsNotInProgress, xid))
+	if (TransactionIdEquals(proc_array_state.cachedXidIsNotInProgress, xid))
 	{
 		xc_by_known_xact_inc();
 		return false;
@@ -1578,7 +1596,7 @@ TransactionIdIsInProgress(TransactionId xid)
 	if (nxids == 0)
 	{
 		xc_no_overflow_inc();
-		cachedXidIsNotInProgress = xid;
+		proc_array_state.cachedXidIsNotInProgress = xid;
 		return false;
 	}
 
@@ -1594,7 +1612,7 @@ TransactionIdIsInProgress(TransactionId xid)
 
 	if (TransactionIdDidAbort(xid))
 	{
-		cachedXidIsNotInProgress = xid;
+		proc_array_state.cachedXidIsNotInProgress = xid;
 		return false;
 	}
 
@@ -1609,7 +1627,7 @@ TransactionIdIsInProgress(TransactionId xid)
 		pg_lfind32(topxid, xids, nxids))
 		return true;
 
-	cachedXidIsNotInProgress = xid;
+	proc_array_state.cachedXidIsNotInProgress = xid;
 	return false;
 }
 
@@ -2394,23 +2412,23 @@ GetSnapshotData(Snapshot snapshot)
 		 * GlobalVisUpdate() might have computed more aggressive values, don't
 		 * overwrite them if so.
 		 */
-		GlobalVisSharedRels.definitely_needed =
+		proc_array_state.GlobalVisSharedRels.definitely_needed =
 			FullTransactionIdNewer(def_vis_fxid,
-								   GlobalVisSharedRels.definitely_needed);
-		GlobalVisCatalogRels.definitely_needed =
+								   proc_array_state.GlobalVisSharedRels.definitely_needed);
+		proc_array_state.GlobalVisCatalogRels.definitely_needed =
 			FullTransactionIdNewer(def_vis_fxid,
-								   GlobalVisCatalogRels.definitely_needed);
-		GlobalVisDataRels.definitely_needed =
+								   proc_array_state.GlobalVisCatalogRels.definitely_needed);
+		proc_array_state.GlobalVisDataRels.definitely_needed =
 			FullTransactionIdNewer(def_vis_fxid_data,
-								   GlobalVisDataRels.definitely_needed);
+								   proc_array_state.GlobalVisDataRels.definitely_needed);
 		/* See temp_oldest_nonremovable computation in ComputeXidHorizons() */
 		if (TransactionIdIsNormal(myxid))
-			GlobalVisTempRels.definitely_needed =
+			proc_array_state.GlobalVisTempRels.definitely_needed =
 				FullXidRelativeTo(latest_completed, myxid);
 		else
 		{
-			GlobalVisTempRels.definitely_needed = latest_completed;
-			FullTransactionIdAdvance(&GlobalVisTempRels.definitely_needed);
+			proc_array_state.GlobalVisTempRels.definitely_needed = latest_completed;
+			FullTransactionIdAdvance(&proc_array_state.GlobalVisTempRels.definitely_needed);
 		}
 
 		/*
@@ -2421,17 +2439,17 @@ GetSnapshotData(Snapshot snapshot)
 		 * We should definitely be able to do better. We could e.g. put a
 		 * global lower bound value into TransamVariables.
 		 */
-		GlobalVisSharedRels.maybe_needed =
-			FullTransactionIdNewer(GlobalVisSharedRels.maybe_needed,
+		proc_array_state.GlobalVisSharedRels.maybe_needed =
+			FullTransactionIdNewer(proc_array_state.GlobalVisSharedRels.maybe_needed,
 								   oldestfxid);
-		GlobalVisCatalogRels.maybe_needed =
-			FullTransactionIdNewer(GlobalVisCatalogRels.maybe_needed,
+		proc_array_state.GlobalVisCatalogRels.maybe_needed =
+			FullTransactionIdNewer(proc_array_state.GlobalVisCatalogRels.maybe_needed,
 								   oldestfxid);
-		GlobalVisDataRels.maybe_needed =
-			FullTransactionIdNewer(GlobalVisDataRels.maybe_needed,
+		proc_array_state.GlobalVisDataRels.maybe_needed =
+			FullTransactionIdNewer(proc_array_state.GlobalVisDataRels.maybe_needed,
 								   oldestfxid);
 		/* accurate value known */
-		GlobalVisTempRels.maybe_needed = GlobalVisTempRels.definitely_needed;
+		proc_array_state.GlobalVisTempRels.maybe_needed = proc_array_state.GlobalVisTempRels.definitely_needed;
 	}
 
 	RecentXmin = xmin;
@@ -4088,15 +4106,15 @@ DisplayXidCache(void)
 {
 	fprintf(stderr,
 			"XidCache: xmin: %ld, known: %ld, myxact: %ld, latest: %ld, mainxid: %ld, childxid: %ld, knownassigned: %ld, nooflo: %ld, slow: %ld\n",
-			xc_by_recent_xmin,
-			xc_by_known_xact,
-			xc_by_my_xact,
-			xc_by_latest_xid,
-			xc_by_main_xid,
-			xc_by_child_xid,
-			xc_by_known_assigned,
-			xc_no_overflow,
-			xc_slow_answer);
+			proc_array_state.xc_by_recent_xmin,
+			proc_array_state.xc_by_known_xact,
+			proc_array_state.xc_by_my_xact,
+			proc_array_state.xc_by_latest_xid,
+			proc_array_state.xc_by_main_xid,
+			proc_array_state.xc_by_child_xid,
+			proc_array_state.xc_by_known_assigned,
+			proc_array_state.xc_no_overflow,
+			proc_array_state.xc_slow_answer);
 }
 #endif							/* XIDCACHE_DEBUG */
 
@@ -4122,16 +4140,16 @@ GlobalVisTestFor(Relation rel)
 	switch (GlobalVisHorizonKindForRel(rel))
 	{
 		case VISHORIZON_SHARED:
-			state = &GlobalVisSharedRels;
+			state = &proc_array_state.GlobalVisSharedRels;
 			break;
 		case VISHORIZON_CATALOG:
-			state = &GlobalVisCatalogRels;
+			state = &proc_array_state.GlobalVisCatalogRels;
 			break;
 		case VISHORIZON_DATA:
-			state = &GlobalVisDataRels;
+			state = &proc_array_state.GlobalVisDataRels;
 			break;
 		case VISHORIZON_TEMP:
-			state = &GlobalVisTempRels;
+			state = &proc_array_state.GlobalVisTempRels;
 			break;
 	}
 
@@ -4155,7 +4173,7 @@ static bool
 GlobalVisTestShouldUpdate(GlobalVisState *state)
 {
 	/* hasn't been updated yet */
-	if (!TransactionIdIsValid(ComputeXidHorizonsResultLastXmin))
+	if (!TransactionIdIsValid(proc_array_state.ComputeXidHorizonsResultLastXmin))
 		return true;
 
 	/*
@@ -4167,22 +4185,22 @@ GlobalVisTestShouldUpdate(GlobalVisState *state)
 		return false;
 
 	/* does the last snapshot built have a different xmin? */
-	return RecentXmin != ComputeXidHorizonsResultLastXmin;
+	return RecentXmin != proc_array_state.ComputeXidHorizonsResultLastXmin;
 }
 
 static void
 GlobalVisUpdateApply(ComputeXidHorizonsResult *horizons)
 {
-	GlobalVisSharedRels.maybe_needed =
+	proc_array_state.GlobalVisSharedRels.maybe_needed =
 		FullXidRelativeTo(horizons->latest_completed,
 						  horizons->shared_oldest_nonremovable);
-	GlobalVisCatalogRels.maybe_needed =
+	proc_array_state.GlobalVisCatalogRels.maybe_needed =
 		FullXidRelativeTo(horizons->latest_completed,
 						  horizons->catalog_oldest_nonremovable);
-	GlobalVisDataRels.maybe_needed =
+	proc_array_state.GlobalVisDataRels.maybe_needed =
 		FullXidRelativeTo(horizons->latest_completed,
 						  horizons->data_oldest_nonremovable);
-	GlobalVisTempRels.maybe_needed =
+	proc_array_state.GlobalVisTempRels.maybe_needed =
 		FullXidRelativeTo(horizons->latest_completed,
 						  horizons->temp_oldest_nonremovable);
 
@@ -4191,18 +4209,18 @@ GlobalVisUpdateApply(ComputeXidHorizonsResult *horizons)
 	 * previously needed to treat as running aren't around anymore. So update
 	 * definitely_needed to not be earlier than maybe_needed.
 	 */
-	GlobalVisSharedRels.definitely_needed =
-		FullTransactionIdNewer(GlobalVisSharedRels.maybe_needed,
-							   GlobalVisSharedRels.definitely_needed);
-	GlobalVisCatalogRels.definitely_needed =
-		FullTransactionIdNewer(GlobalVisCatalogRels.maybe_needed,
-							   GlobalVisCatalogRels.definitely_needed);
-	GlobalVisDataRels.definitely_needed =
-		FullTransactionIdNewer(GlobalVisDataRels.maybe_needed,
-							   GlobalVisDataRels.definitely_needed);
-	GlobalVisTempRels.definitely_needed = GlobalVisTempRels.maybe_needed;
+	proc_array_state.GlobalVisSharedRels.definitely_needed =
+		FullTransactionIdNewer(proc_array_state.GlobalVisSharedRels.maybe_needed,
+							   proc_array_state.GlobalVisSharedRels.definitely_needed);
+	proc_array_state.GlobalVisCatalogRels.definitely_needed =
+		FullTransactionIdNewer(proc_array_state.GlobalVisCatalogRels.maybe_needed,
+							   proc_array_state.GlobalVisCatalogRels.definitely_needed);
+	proc_array_state.GlobalVisDataRels.definitely_needed =
+		FullTransactionIdNewer(proc_array_state.GlobalVisDataRels.maybe_needed,
+							   proc_array_state.GlobalVisDataRels.definitely_needed);
+	proc_array_state.GlobalVisTempRels.definitely_needed = proc_array_state.GlobalVisTempRels.maybe_needed;
 
-	ComputeXidHorizonsResultLastXmin = RecentXmin;
+	proc_array_state.ComputeXidHorizonsResultLastXmin = RecentXmin;
 }
 
 /*
