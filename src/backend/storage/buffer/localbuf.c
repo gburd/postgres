@@ -40,20 +40,21 @@ typedef struct
 
 /* Note: this macro only works on local buffers, not shared ones! */
 #define LocalBufHdrGetBlock(bufHdr) \
-	LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
+	local_buffer_state.LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
 
-session_local int			NLocBuffer = 0;		/* until buffers are initialized */
-
-session_local BufferDesc *LocalBufferDescriptors = NULL;
-session_local Block	   *LocalBufferBlockPointers = NULL;
-session_local int32	   *LocalRefCount = NULL;
-
-static session_local int	nextFreeLocalBufId = 0;
-
-static session_local HTAB *LocalBufHash = NULL;
-
-/* number of local buffers pinned at least once */
-static session_local int	NLocalPinnedBuffers = 0;
+/*
+ * The single per-session instance of the consolidated local-buffer state.
+ * The LocalBufferState struct type is declared in bufmgr.h.
+ */
+session_local LocalBufferState local_buffer_state = {
+	.NLocBuffer = 0,			/* until buffers are initialized */
+	.LocalBufferDescriptors = NULL,
+	.LocalBufferBlockPointers = NULL,
+	.LocalRefCount = NULL,
+	.nextFreeLocalBufId = 0,
+	.LocalBufHash = NULL,
+	.NLocalPinnedBuffers = 0,	/* number of local buffers pinned at least once */
+};
 
 
 static void InitLocalBuffers(void);
@@ -79,12 +80,12 @@ PrefetchLocalBuffer(SMgrRelation smgr, ForkNumber forkNum,
 	InitBufferTag(&newTag, &smgr->smgr_rlocator.locator, forkNum, blockNum);
 
 	/* Initialize local buffers if first request in this session */
-	if (LocalBufHash == NULL)
+	if (local_buffer_state.LocalBufHash == NULL)
 		InitLocalBuffers();
 
 	/* See if the desired buffer already exists */
 	hresult = (LocalBufferLookupEnt *)
-		hash_search(LocalBufHash, &newTag, HASH_FIND, NULL);
+		hash_search(local_buffer_state.LocalBufHash, &newTag, HASH_FIND, NULL);
 
 	if (hresult)
 	{
@@ -129,14 +130,14 @@ LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
 	InitBufferTag(&newTag, &smgr->smgr_rlocator.locator, forkNum, blockNum);
 
 	/* Initialize local buffers if first request in this session */
-	if (LocalBufHash == NULL)
+	if (local_buffer_state.LocalBufHash == NULL)
 		InitLocalBuffers();
 
 	ResourceOwnerEnlarge(CurrentResourceOwner);
 
 	/* See if the desired buffer already exists */
 	hresult = (LocalBufferLookupEnt *)
-		hash_search(LocalBufHash, &newTag, HASH_FIND, NULL);
+		hash_search(local_buffer_state.LocalBufHash, &newTag, HASH_FIND, NULL);
 
 	if (hresult)
 	{
@@ -155,7 +156,7 @@ LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
 		bufHdr = GetLocalBufferDescriptor(bufid);
 
 		hresult = (LocalBufferLookupEnt *)
-			hash_search(LocalBufHash, &newTag, HASH_ENTER, &found);
+			hash_search(local_buffer_state.LocalBufHash, &newTag, HASH_ENTER, &found);
 		if (found)				/* shouldn't happen */
 			elog(ERROR, "local buffer hash table corrupted");
 		hresult->id = bufid;
@@ -185,7 +186,7 @@ FlushLocalBuffer(BufferDesc *bufHdr, SMgrRelation reln)
 	instr_time	io_start;
 	Page		localpage = (char *) LocalBufHdrGetBlock(bufHdr);
 
-	Assert(LocalRefCount[-BufferDescriptorGetBuffer(bufHdr) - 1] > 0);
+	Assert(local_buffer_state.LocalRefCount[-BufferDescriptorGetBuffer(bufHdr) - 1] > 0);
 
 	/*
 	 * Try to start an I/O operation.  There currently are no reasons for
@@ -234,17 +235,17 @@ GetLocalVictimBuffer(void)
 	 * Need to get a new buffer.  We use a clock-sweep algorithm (essentially
 	 * the same as what freelist.c does now...)
 	 */
-	trycounter = NLocBuffer;
+	trycounter = local_buffer_state.NLocBuffer;
 	for (;;)
 	{
-		victim_bufid = nextFreeLocalBufId;
+		victim_bufid = local_buffer_state.nextFreeLocalBufId;
 
-		if (++nextFreeLocalBufId >= NLocBuffer)
-			nextFreeLocalBufId = 0;
+		if (++local_buffer_state.nextFreeLocalBufId >= local_buffer_state.NLocBuffer)
+			local_buffer_state.nextFreeLocalBufId = 0;
 
 		bufHdr = GetLocalBufferDescriptor(victim_bufid);
 
-		if (LocalRefCount[victim_bufid] == 0)
+		if (local_buffer_state.LocalRefCount[victim_bufid] == 0)
 		{
 			uint64		buf_state = pg_atomic_read_u64(&bufHdr->state);
 
@@ -252,7 +253,7 @@ GetLocalVictimBuffer(void)
 			{
 				buf_state -= BUF_USAGECOUNT_ONE;
 				pg_atomic_unlocked_write_u64(&bufHdr->state, buf_state);
-				trycounter = NLocBuffer;
+				trycounter = local_buffer_state.NLocBuffer;
 			}
 			else if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
 			{
@@ -315,8 +316,8 @@ GetLocalPinLimit(void)
 uint32
 GetAdditionalLocalPinLimit(void)
 {
-	Assert(NLocalPinnedBuffers <= GetGUCInt(GUC_num_temp_buffers));
-	return GetGUCInt(GUC_num_temp_buffers) - NLocalPinnedBuffers;
+	Assert(local_buffer_state.NLocalPinnedBuffers <= GetGUCInt(GUC_num_temp_buffers));
+	return GetGUCInt(GUC_num_temp_buffers) - local_buffer_state.NLocalPinnedBuffers;
 }
 
 /* see LimitAdditionalPins() */
@@ -333,7 +334,7 @@ LimitAdditionalLocalPins(uint32 *additional_pins)
 	 * here. We can allow up to NLocBuffer pins in total, but it might not be
 	 * initialized yet so read num_temp_buffers.
 	 */
-	max_pins = (GetGUCInt(GUC_num_temp_buffers) - NLocalPinnedBuffers);
+	max_pins = (GetGUCInt(GUC_num_temp_buffers) - local_buffer_state.NLocalPinnedBuffers);
 
 	if (*additional_pins >= max_pins)
 		*additional_pins = max_pins;
@@ -356,7 +357,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 	instr_time	io_start;
 
 	/* Initialize local buffers if first request in this session */
-	if (LocalBufHash == NULL)
+	if (local_buffer_state.LocalBufHash == NULL)
 		InitLocalBuffers();
 
 	LimitAdditionalLocalPins(&extend_by);
@@ -414,7 +415,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 					  first_block + i);
 
 		hresult = (LocalBufferLookupEnt *)
-			hash_search(LocalBufHash, &tag, HASH_ENTER, &found);
+			hash_search(local_buffer_state.LocalBufHash, &tag, HASH_ENTER, &found);
 		if (found)
 		{
 			BufferDesc *existing_hdr;
@@ -503,7 +504,7 @@ MarkLocalBufferDirty(Buffer buffer)
 
 	bufid = -buffer - 1;
 
-	Assert(LocalRefCount[bufid] > 0);
+	Assert(local_buffer_state.LocalRefCount[bufid] > 0);
 
 	bufHdr = GetLocalBufferDescriptor(bufid);
 
@@ -646,17 +647,17 @@ InvalidateLocalBuffer(BufferDesc *bufHdr, bool check_unreferenced)
 	 * This can happen if AIO is initiated and then the query errors out.
 	 */
 	if (check_unreferenced &&
-		(LocalRefCount[bufid] != 0 || BUF_STATE_GET_REFCOUNT(buf_state) != 0))
+		(local_buffer_state.LocalRefCount[bufid] != 0 || BUF_STATE_GET_REFCOUNT(buf_state) != 0))
 		elog(ERROR, "block %u of %s is still referenced (local %d)",
 			 bufHdr->tag.blockNum,
 			 relpathbackend(BufTagGetRelFileLocator(&bufHdr->tag),
 							MyProcNumber,
 							BufTagGetForkNum(&bufHdr->tag)).str,
-			 LocalRefCount[bufid]);
+			 local_buffer_state.LocalRefCount[bufid]);
 
 	/* Remove entry from hashtable */
 	hresult = (LocalBufferLookupEnt *)
-		hash_search(LocalBufHash, &bufHdr->tag, HASH_REMOVE, NULL);
+		hash_search(local_buffer_state.LocalBufHash, &bufHdr->tag, HASH_REMOVE, NULL);
 	if (!hresult)				/* shouldn't happen */
 		elog(ERROR, "local buffer hash table corrupted");
 	/* Mark buffer invalid */
@@ -684,7 +685,7 @@ DropRelationLocalBuffers(RelFileLocator rlocator, ForkNumber *forkNum,
 	int			i;
 	int			j;
 
-	for (i = 0; i < NLocBuffer; i++)
+	for (i = 0; i < local_buffer_state.NLocBuffer; i++)
 	{
 		BufferDesc *bufHdr = GetLocalBufferDescriptor(i);
 		uint64		buf_state;
@@ -719,7 +720,7 @@ DropRelationAllLocalBuffers(RelFileLocator rlocator)
 {
 	int			i;
 
-	for (i = 0; i < NLocBuffer; i++)
+	for (i = 0; i < local_buffer_state.NLocBuffer; i++)
 	{
 		BufferDesc *bufHdr = GetLocalBufferDescriptor(i);
 		uint64		buf_state;
@@ -761,15 +762,15 @@ InitLocalBuffers(void)
 				 errmsg("cannot access temporary tables during a parallel operation")));
 
 	/* Allocate and zero buffer headers and auxiliary arrays */
-	LocalBufferDescriptors = (BufferDesc *) calloc(nbufs, sizeof(BufferDesc));
-	LocalBufferBlockPointers = (Block *) calloc(nbufs, sizeof(Block));
-	LocalRefCount = (int32 *) calloc(nbufs, sizeof(int32));
-	if (!LocalBufferDescriptors || !LocalBufferBlockPointers || !LocalRefCount)
+	local_buffer_state.LocalBufferDescriptors = (BufferDesc *) calloc(nbufs, sizeof(BufferDesc));
+	local_buffer_state.LocalBufferBlockPointers = (Block *) calloc(nbufs, sizeof(Block));
+	local_buffer_state.LocalRefCount = (int32 *) calloc(nbufs, sizeof(int32));
+	if (!local_buffer_state.LocalBufferDescriptors || !local_buffer_state.LocalBufferBlockPointers || !local_buffer_state.LocalRefCount)
 		ereport(FATAL,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
 
-	nextFreeLocalBufId = 0;
+	local_buffer_state.nextFreeLocalBufId = 0;
 
 	/* initialize fields that need to start off nonzero */
 	for (i = 0; i < nbufs; i++)
@@ -798,16 +799,16 @@ InitLocalBuffers(void)
 	info.keysize = sizeof(BufferTag);
 	info.entrysize = sizeof(LocalBufferLookupEnt);
 
-	LocalBufHash = hash_create("Local Buffer Lookup Table",
+	local_buffer_state.LocalBufHash = hash_create("Local Buffer Lookup Table",
 							   nbufs,
 							   &info,
 							   HASH_ELEM | HASH_BLOBS);
 
-	if (!LocalBufHash)
+	if (!local_buffer_state.LocalBufHash)
 		elog(ERROR, "could not initialize local buffer hash table");
 
 	/* Initialization done, mark buffers allocated */
-	NLocBuffer = nbufs;
+	local_buffer_state.NLocBuffer = nbufs;
 }
 
 /*
@@ -826,9 +827,9 @@ PinLocalBuffer(BufferDesc *buf_hdr, bool adjust_usagecount)
 
 	buf_state = pg_atomic_read_u64(&buf_hdr->state);
 
-	if (LocalRefCount[bufid] == 0)
+	if (local_buffer_state.LocalRefCount[bufid] == 0)
 	{
-		NLocalPinnedBuffers++;
+		local_buffer_state.NLocalPinnedBuffers++;
 		buf_state += BUF_REFCOUNT_ONE;
 		if (adjust_usagecount &&
 			BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
@@ -846,7 +847,7 @@ PinLocalBuffer(BufferDesc *buf_hdr, bool adjust_usagecount)
 		if (LocalBufHdrGetBlock(buf_hdr) != NULL)
 			VALGRIND_MAKE_MEM_DEFINED(LocalBufHdrGetBlock(buf_hdr), BLCKSZ);
 	}
-	LocalRefCount[bufid]++;
+	local_buffer_state.LocalRefCount[bufid]++;
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
 								BufferDescriptorGetBuffer(buf_hdr));
 
@@ -866,15 +867,15 @@ UnpinLocalBufferNoOwner(Buffer buffer)
 	int			buffid = -buffer - 1;
 
 	Assert(BufferIsLocal(buffer));
-	Assert(LocalRefCount[buffid] > 0);
-	Assert(NLocalPinnedBuffers > 0);
+	Assert(local_buffer_state.LocalRefCount[buffid] > 0);
+	Assert(local_buffer_state.NLocalPinnedBuffers > 0);
 
-	if (--LocalRefCount[buffid] == 0)
+	if (--local_buffer_state.LocalRefCount[buffid] == 0)
 	{
 		BufferDesc *buf_hdr = GetLocalBufferDescriptor(buffid);
 		uint64		buf_state;
 
-		NLocalPinnedBuffers--;
+		local_buffer_state.NLocalPinnedBuffers--;
 
 		buf_state = pg_atomic_read_u64(&buf_hdr->state);
 		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
@@ -896,7 +897,7 @@ check_temp_buffers(int *newval, void **extra, GucSource source)
 	 * Once local buffers have been initialized, it's too late to change this.
 	 * However, if this is only a test call, allow it.
 	 */
-	if (source != PGC_S_TEST && NLocBuffer && NLocBuffer != *newval)
+	if (source != PGC_S_TEST && local_buffer_state.NLocBuffer && local_buffer_state.NLocBuffer != *newval)
 	{
 		GUC_check_errdetail("\"temp_buffers\" cannot be changed after any temporary tables have been accessed in the session.");
 		return false;
@@ -924,7 +925,7 @@ GetLocalBufferStorage(void)
 
 	char	   *this_buf;
 
-	Assert(total_bufs_allocated < NLocBuffer);
+	Assert(total_bufs_allocated < local_buffer_state.NLocBuffer);
 
 	if (next_buf_in_block >= num_bufs_in_block)
 	{
@@ -945,7 +946,7 @@ GetLocalBufferStorage(void)
 		/* Start with a 16-buffer request; subsequent ones double each time */
 		num_bufs = Max(num_bufs_in_block * 2, 16);
 		/* But not more than what we need for all remaining local bufs */
-		num_bufs = Min(num_bufs, NLocBuffer - total_bufs_allocated);
+		num_bufs = Min(num_bufs, local_buffer_state.NLocBuffer - total_bufs_allocated);
 		/* And don't overflow MaxAllocSize, either */
 		num_bufs = Min(num_bufs, MaxAllocSize / BLCKSZ);
 
@@ -986,14 +987,14 @@ static void
 CheckForLocalBufferLeaks(void)
 {
 #ifdef USE_ASSERT_CHECKING
-	if (LocalRefCount)
+	if (local_buffer_state.LocalRefCount)
 	{
 		int			RefCountErrors = 0;
 		int			i;
 
-		for (i = 0; i < NLocBuffer; i++)
+		for (i = 0; i < local_buffer_state.NLocBuffer; i++)
 		{
-			if (LocalRefCount[i] != 0)
+			if (local_buffer_state.LocalRefCount[i] != 0)
 			{
 				Buffer		b = -i - 1;
 				char	   *s;

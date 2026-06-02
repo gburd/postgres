@@ -414,8 +414,7 @@ extern PGDLLIMPORT pg_global BufferDescPadded *BufferDescriptors;
 extern PGDLLIMPORT pg_global ConditionVariableMinimallyPadded *BufferIOCVArray;
 extern PGDLLIMPORT session_local WritebackContext BackendWritebackContext;
 
-/* in localbuf.c */
-extern PGDLLIMPORT session_local BufferDesc *LocalBufferDescriptors;
+/* local-buffer state (LocalBufferState) is declared in bufmgr.h */
 
 
 static inline BufferDesc *
@@ -427,7 +426,7 @@ GetBufferDescriptor(uint32 id)
 static inline BufferDesc *
 GetLocalBufferDescriptor(uint32 id)
 {
-	return &LocalBufferDescriptors[id];
+	return &local_buffer_state.LocalBufferDescriptors[id];
 }
 
 static inline Buffer

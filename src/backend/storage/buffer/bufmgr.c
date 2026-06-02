@@ -78,7 +78,7 @@
 
 /* Note: this macro only works on local buffers, not shared ones! */
 #define LocalBufHdrGetBlock(bufHdr) \
-	LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
+	local_buffer_state.LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
 
 /* Bits in SyncOneBuffer's return value */
 #define BUF_WRITTEN				0x01
@@ -602,7 +602,7 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 		false \
 	: \
 		BufferIsLocal(bufnum) ? \
-			(LocalRefCount[-(bufnum) - 1] > 0) \
+			(local_buffer_state.LocalRefCount[-(bufnum) - 1] > 0) \
 		: \
 	(GetPrivateRefCount(bufnum) > 0) \
 )
@@ -4400,7 +4400,7 @@ DebugPrintBufferRefcount(Buffer buffer)
 	if (BufferIsLocal(buffer))
 	{
 		buf = GetLocalBufferDescriptor(-buffer - 1);
-		loccount = LocalRefCount[-buffer - 1];
+		loccount = local_buffer_state.LocalRefCount[-buffer - 1];
 		backend = MyProcNumber;
 	}
 	else
@@ -5169,7 +5169,7 @@ FlushRelationBuffers(Relation rel)
 
 	if (RelationUsesLocalBuffers(rel))
 	{
-		for (i = 0; i < NLocBuffer; i++)
+		for (i = 0; i < local_buffer_state.NLocBuffer; i++)
 		{
 			uint64		buf_state;
 
@@ -5674,7 +5674,7 @@ IncrBufferRefCount(Buffer buffer)
 	Assert(BufferIsPinned(buffer));
 	ResourceOwnerEnlarge(CurrentResourceOwner);
 	if (BufferIsLocal(buffer))
-		LocalRefCount[-buffer - 1]++;
+		local_buffer_state.LocalRefCount[-buffer - 1]++;
 	else
 	{
 		PrivateRefCountEntry *ref;
@@ -6640,9 +6640,9 @@ CheckBufferIsPinnedOnce(Buffer buffer)
 {
 	if (BufferIsLocal(buffer))
 	{
-		if (LocalRefCount[-buffer - 1] != 1)
+		if (local_buffer_state.LocalRefCount[-buffer - 1] != 1)
 			elog(ERROR, "incorrect local pin count: %d",
-				 LocalRefCount[-buffer - 1]);
+				 local_buffer_state.LocalRefCount[-buffer - 1]);
 	}
 	else
 	{
@@ -6854,7 +6854,7 @@ ConditionalLockBufferForCleanup(Buffer buffer)
 
 	if (BufferIsLocal(buffer))
 	{
-		refcount = LocalRefCount[-buffer - 1];
+		refcount = local_buffer_state.LocalRefCount[-buffer - 1];
 		/* There should be exactly one pin */
 		Assert(refcount > 0);
 		if (refcount != 1)
@@ -6912,7 +6912,7 @@ IsBufferCleanupOK(Buffer buffer)
 	if (BufferIsLocal(buffer))
 	{
 		/* There should be exactly one pin */
-		if (LocalRefCount[-buffer - 1] != 1)
+		if (local_buffer_state.LocalRefCount[-buffer - 1] != 1)
 			return false;
 		/* Nobody else to wait for */
 		return true;

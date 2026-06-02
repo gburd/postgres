@@ -178,7 +178,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 		sort_threshold = Min(sort_threshold, GetGUCInt(GUC_NBuffers));
 	else
-		sort_threshold = Min(sort_threshold, NLocBuffer);
+		sort_threshold = Min(sort_threshold, local_buffer_state.NLocBuffer);
 
 	if (num_buckets >= sort_threshold)
 		buildstate.spool = _h_spoolinit(heap, index, num_buckets);

@@ -189,9 +189,29 @@ extern PGDLLIMPORT const PgAioHandleCallbacks aio_local_buffer_readv_cb;
 extern PGDLLIMPORT pg_global char *BufferBlocks;
 
 /* in localbuf.c */
-extern PGDLLIMPORT session_local int NLocBuffer;
-extern PGDLLIMPORT session_local Block *LocalBufferBlockPointers;
-extern PGDLLIMPORT session_local int32 *LocalRefCount;
+
+/*
+ * Per-session local-buffer state.  Consolidates the formerly separate
+ * local-buffer globals into one thread-local struct.  Forward declarations
+ * are used for the BufferDesc and HTAB pointer members so that this struct
+ * can live in bufmgr.h without pulling in buf_internals.h / hsearch.h; code
+ * that dereferences those members includes the appropriate header.
+ */
+struct BufferDesc;
+struct HTAB;
+
+typedef struct LocalBufferState
+{
+	int			NLocBuffer;		/* until buffers are initialized */
+	struct BufferDesc *LocalBufferDescriptors;
+	Block	   *LocalBufferBlockPointers;
+	int32	   *LocalRefCount;
+	int			nextFreeLocalBufId;
+	struct HTAB *LocalBufHash;
+	int			NLocalPinnedBuffers;	/* number of local buffers pinned at least once */
+} LocalBufferState;
+
+extern PGDLLIMPORT session_local LocalBufferState local_buffer_state;
 
 /* upper limit for effective_io_concurrency */
 #define MAX_IO_CONCURRENCY 1000
@@ -419,7 +439,7 @@ static inline bool
 BufferIsValid(Buffer bufnum)
 {
 	Assert(bufnum <= GetGUCInt(GUC_NBuffers));
-	Assert(bufnum >= -NLocBuffer);
+	Assert(bufnum >= -local_buffer_state.NLocBuffer);
 
 	return bufnum != InvalidBuffer;
 }
@@ -437,7 +457,7 @@ BufferGetBlock(Buffer buffer)
 	Assert(BufferIsValid(buffer));
 
 	if (BufferIsLocal(buffer))
-		return LocalBufferBlockPointers[-buffer - 1];
+		return local_buffer_state.LocalBufferBlockPointers[-buffer - 1];
 	else
 		return (Block) (BufferBlocks + ((Size) (buffer - 1)) * BLCKSZ);
 }
