@@ -252,13 +252,13 @@ static const datetkn deltatktbl[] = {
 
 static const int szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
 
-static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
+static userset_guc TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
 
 /* Caches of recent lookup results in the above tables */
 
-static const datetkn *datecache[MAXDATEFIELDS] = {NULL};
+static session_local const datetkn *datecache[MAXDATEFIELDS] = {NULL};
 
-static const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
+static session_local const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
 
 /* Cache for results of timezone abbreviation lookups */
 
@@ -270,7 +270,7 @@ typedef struct TzAbbrevCache
 	pg_tz	   *tz;				/* relevant zone, if variable-offset */
 } TzAbbrevCache;
 
-static TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+static session_local TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
 
 
 /*

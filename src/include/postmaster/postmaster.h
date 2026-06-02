@@ -52,29 +52,29 @@ extern PGDLLIMPORT int num_pmchild_slots;
 #endif
 
 /* GUC options */
-extern PGDLLIMPORT bool EnableSSL;
-extern PGDLLIMPORT int SuperuserReservedConnections;
-extern PGDLLIMPORT int ReservedConnections;
-extern PGDLLIMPORT int PostPortNumber;
-extern PGDLLIMPORT int Unix_socket_permissions;
-extern PGDLLIMPORT char *Unix_socket_group;
-extern PGDLLIMPORT char *Unix_socket_directories;
-extern PGDLLIMPORT char *ListenAddresses;
-extern PGDLLIMPORT bool ClientAuthInProgress;
-extern PGDLLIMPORT int PreAuthDelay;
-extern PGDLLIMPORT int AuthenticationTimeout;
-extern PGDLLIMPORT bool log_hostname;
-extern PGDLLIMPORT bool enable_bonjour;
-extern PGDLLIMPORT char *bonjour_name;
-extern PGDLLIMPORT bool restart_after_crash;
-extern PGDLLIMPORT bool remove_temp_files_after_crash;
-extern PGDLLIMPORT bool send_abort_for_crash;
-extern PGDLLIMPORT bool send_abort_for_kill;
+extern PGDLLIMPORT sighup_guc bool EnableSSL;
+extern PGDLLIMPORT postmaster_guc int SuperuserReservedConnections;
+extern PGDLLIMPORT postmaster_guc int ReservedConnections;
+extern PGDLLIMPORT postmaster_guc int PostPortNumber;
+extern PGDLLIMPORT postmaster_guc int Unix_socket_permissions;
+extern PGDLLIMPORT postmaster_guc char *Unix_socket_group;
+extern PGDLLIMPORT postmaster_guc char *Unix_socket_directories;
+extern PGDLLIMPORT postmaster_guc char *ListenAddresses;
+extern PGDLLIMPORT session_local bool ClientAuthInProgress;
+extern PGDLLIMPORT sighup_guc int PreAuthDelay;
+extern PGDLLIMPORT sighup_guc int AuthenticationTimeout;
+extern PGDLLIMPORT sighup_guc bool log_hostname;
+extern PGDLLIMPORT postmaster_guc bool enable_bonjour;
+extern PGDLLIMPORT postmaster_guc char *bonjour_name;
+extern PGDLLIMPORT sighup_guc bool restart_after_crash;
+extern PGDLLIMPORT sighup_guc bool remove_temp_files_after_crash;
+extern PGDLLIMPORT sighup_guc bool send_abort_for_crash;
+extern PGDLLIMPORT sighup_guc bool send_abort_for_kill;
 
 #ifdef WIN32
-extern PGDLLIMPORT HANDLE PostmasterHandle;
+extern PGDLLIMPORT pg_global HANDLE PostmasterHandle;
 #else
-extern PGDLLIMPORT int postmaster_alive_fds[2];
+extern PGDLLIMPORT pg_global int postmaster_alive_fds[2];
 
 /*
  * Constants that represent which of postmaster_alive_fds is held by
@@ -85,10 +85,10 @@ extern PGDLLIMPORT int postmaster_alive_fds[2];
 #define POSTMASTER_FD_OWN		1	/* kept open by postmaster only */
 #endif
 
-extern PGDLLIMPORT const char *progname;
+extern PGDLLIMPORT dynamic_singleton const char *progname;
 
-extern PGDLLIMPORT bool redirection_done;
-extern PGDLLIMPORT bool LoadedSSL;
+extern PGDLLIMPORT pg_global bool redirection_done;
+extern PGDLLIMPORT pg_global bool LoadedSSL;
 
 pg_noreturn extern void PostmasterMain(int argc, char *argv[]);
 extern void ClosePostmasterPorts(bool am_syslogger);
@@ -103,7 +103,7 @@ extern void pgwin32_register_deadchild_callback(HANDLE procHandle, DWORD procId)
 #endif
 
 /* defined in globals.c */
-extern PGDLLIMPORT struct ClientSocket *MyClientSocket;
+extern PGDLLIMPORT session_local struct ClientSocket *MyClientSocket;
 
 /* prototypes for functions in launch_backend.c */
 extern pid_t postmaster_child_launch(BackendType child_type,

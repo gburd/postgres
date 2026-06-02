@@ -28,7 +28,7 @@
 #include "utils/typcache.h"
 
 /* Hooks for plugins to get control in add_paths_to_joinrel() */
-set_join_pathlist_hook_type set_join_pathlist_hook = NULL;
+session_local set_join_pathlist_hook_type set_join_pathlist_hook = NULL;
 join_path_setup_hook_type join_path_setup_hook = NULL;
 
 /*

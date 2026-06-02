@@ -333,7 +333,7 @@ extern char *be_tls_get_certificate_hash(Port *port, size_t *len);
 /* init hook for SSL, the default sets the password callback if appropriate */
 #ifdef USE_OPENSSL
 typedef void (*openssl_tls_init_hook_typ) (SSL_CTX *context, bool isServerStart);
-extern PGDLLIMPORT openssl_tls_init_hook_typ openssl_tls_init_hook;
+extern PGDLLIMPORT pg_global openssl_tls_init_hook_typ openssl_tls_init_hook;
 #endif
 
 #endif							/* USE_SSL */
@@ -352,8 +352,8 @@ extern ssize_t be_gssapi_read(Port *port, void *ptr, size_t len);
 extern ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);
 #endif							/* ENABLE_GSS */
 
-extern PGDLLIMPORT ProtocolVersion FrontendProtocol;
-extern PGDLLIMPORT ClientConnectionInfo MyClientConnectionInfo;
+extern PGDLLIMPORT session_local ProtocolVersion FrontendProtocol;
+extern PGDLLIMPORT session_local ClientConnectionInfo MyClientConnectionInfo;
 
 /* TCP keepalives configuration. These are no-ops on an AF_UNIX socket. */
 

@@ -124,9 +124,9 @@
 #include "utils/usercontext.h"
 #include "utils/wait_event.h"
 
-List	   *table_states_not_ready = NIL;
+session_local List	   *table_states_not_ready = NIL;
 
-static StringInfo copybuf = NULL;
+static session_local StringInfo copybuf = NULL;
 
 /*
  * Wait until the relation sync state is set in the catalog to the expected

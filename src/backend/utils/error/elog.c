@@ -97,9 +97,9 @@
 
 
 /* Global variables */
-ErrorContextCallback *error_context_stack = NULL;
+session_local ErrorContextCallback *error_context_stack = NULL;
 
-sigjmp_buf *PG_exception_stack = NULL;
+session_local sigjmp_buf *PG_exception_stack = NULL;
 
 /*
  * Hook for intercepting messages before they are sent to the server log.
@@ -108,18 +108,18 @@ sigjmp_buf *PG_exception_stack = NULL;
  * libraries will miss any log messages that are generated before the
  * library is loaded.
  */
-emit_log_hook_type emit_log_hook = NULL;
+session_local emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
-int			Log_error_verbosity = PGERROR_DEFAULT;
-char	   *Log_line_prefix = NULL; /* format for extra log line info */
-int			Log_destination = LOG_DESTINATION_STDERR;
-char	   *Log_destination_string = NULL;
-bool		syslog_sequence_numbers = true;
-bool		syslog_split_messages = true;
+session_guc int			Log_error_verbosity = PGERROR_DEFAULT;
+sighup_guc char	   *Log_line_prefix = NULL; /* format for extra log line info */
+sighup_guc int			Log_destination = LOG_DESTINATION_STDERR;
+sighup_guc char	   *Log_destination_string = NULL;
+sighup_guc bool		syslog_sequence_numbers = true;
+sighup_guc bool		syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
-static char *backtrace_function_list;
+static suset_guc char *backtrace_function_list;
 
 #ifdef HAVE_SYSLOG
 
@@ -134,9 +134,9 @@ static char *backtrace_function_list;
 #define PG_SYSLOG_LIMIT 900
 #endif
 
-static bool openlog_done = false;
-static char *syslog_ident = NULL;
-static int	syslog_facility = LOG_LOCAL0;
+static session_local bool openlog_done = false;
+static sighup_guc char *syslog_ident = NULL;
+static sighup_guc int	syslog_facility = LOG_LOCAL0;
 
 static void write_syslog(int level, const char *line);
 #endif
@@ -153,22 +153,22 @@ static HANDLE backtrace_process = NULL;
 /* We provide a small stack of ErrorData records for re-entrant cases */
 #define ERRORDATA_STACK_SIZE  5
 
-static ErrorData errordata[ERRORDATA_STACK_SIZE];
+static session_local ErrorData errordata[ERRORDATA_STACK_SIZE];
 
-static int	errordata_stack_depth = -1; /* index of topmost active frame */
+static session_local int	errordata_stack_depth = -1; /* index of topmost active frame */
 
-static int	recursion_depth = 0;	/* to detect actual recursion */
+static session_local int	recursion_depth = 0;	/* to detect actual recursion */
 
 /*
  * Saved timeval and buffers for formatted timestamps that might be used by
  * log_line_prefix, csv logs and JSON logs.
  */
-static struct timeval saved_timeval;
-static bool saved_timeval_set = false;
+static session_local struct timeval saved_timeval;
+static session_local bool saved_timeval_set = false;
 
 #define FORMATTED_TS_LEN 128
-static char formatted_start_time[FORMATTED_TS_LEN];
-static char formatted_log_time[FORMATTED_TS_LEN];
+static session_local char formatted_start_time[FORMATTED_TS_LEN];
+static session_local char formatted_log_time[FORMATTED_TS_LEN];
 
 
 /* Macro for checking errordata_stack_depth is reasonable */
@@ -1834,8 +1834,8 @@ getinternalerrposition(void)
  * The result of format_elog_string() is stored in ErrorContext, and will
  * therefore survive until FlushErrorState() is called.
  */
-static int	save_format_errnumber;
-static const char *save_format_domain;
+static session_local int	save_format_errnumber;
+static session_local const char *save_format_domain;
 
 void
 pre_format_elog_string(int errnumber, const char *domain)

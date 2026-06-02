@@ -71,12 +71,21 @@
 #define dynamic_singleton __attribute__((annotate("dynamic_singleton")))
 #define static_singleton __attribute__((annotate("static_singleton")))
 #define session_local pg_attribute_thread_local __attribute__((annotate("session_local")))
+/*
+ * GUC lifetime annotations.  These classify GUC backing variables for the
+ * pgguclifetimes tool but, unlike session_local, they do NOT yet expand to
+ * thread-local storage.  The generated GUC tables (guc_tables.inc.c) populate
+ * each entry's .variable field with &SomeGlobal, which must be a compile-time
+ * constant; making the backing variables thread-local breaks that until the
+ * GUC table machinery is taught to resolve addresses at runtime (a separate
+ * step).  Until then these expand to the annotation marker only.
+ */
 #define internal_guc __attribute__((annotate("internal_guc")))
 #define postmaster_guc __attribute__((annotate("postmaster_guc")))
-#define session_guc pg_attribute_thread_local __attribute__((annotate("session_guc")))
-#define sighup_guc pg_attribute_thread_local __attribute__((annotate("sighup_guc")))
-#define suset_guc pg_attribute_thread_local __attribute__((annotate("suset_guc")))
-#define userset_guc pg_attribute_thread_local __attribute__((annotate("userset_guc")))
+#define session_guc __attribute__((annotate("session_guc")))
+#define sighup_guc __attribute__((annotate("sighup_guc")))
+#define suset_guc __attribute__((annotate("suset_guc")))
+#define userset_guc __attribute__((annotate("userset_guc")))
 #else
 #define pg_global
 #define dynamic_singleton
@@ -84,10 +93,10 @@
 #define session_local pg_attribute_thread_local
 #define internal_guc
 #define postmaster_guc
-#define session_guc pg_attribute_thread_local
-#define sighup_guc pg_attribute_thread_local
-#define suset_guc pg_attribute_thread_local
-#define userset_guc pg_attribute_thread_local
+#define session_guc
+#define sighup_guc
+#define suset_guc
+#define userset_guc
 #endif
 
 /*

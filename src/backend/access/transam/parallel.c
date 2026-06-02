@@ -114,13 +114,13 @@ typedef struct FixedParallelState
  * and < the number of workers before any user code is invoked; each parallel
  * worker will get a different parallel worker number.
  */
-int			ParallelWorkerNumber = -1;
+session_local int			ParallelWorkerNumber = -1;
 
 /* Are we initializing a parallel worker? */
-bool		InitializingParallelWorker = false;
+session_local bool		InitializingParallelWorker = false;
 
 /* Pointer to our fixed parallel state. */
-static FixedParallelState *MyFixedParallelState;
+static session_local FixedParallelState *MyFixedParallelState;
 
 /* List of active parallel contexts. */
 static dlist_head pcxt_list = DLIST_STATIC_INIT(pcxt_list);

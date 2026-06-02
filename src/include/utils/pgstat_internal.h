@@ -882,7 +882,7 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
 extern PGDLLIMPORT bool pgstat_report_fixed;
 
 /* Backend-local stats state */
-extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
+extern PGDLLIMPORT session_local PgStat_LocalState pgStatLocal;
 
 /* Helper functions for reading and writing of on-disk stats file */
 extern void pgstat_write_chunk(FILE *fpout, void *ptr, size_t len);

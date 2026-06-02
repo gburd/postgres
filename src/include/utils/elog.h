@@ -315,7 +315,7 @@ typedef struct ErrorContextCallback
 	void	   *arg;
 } ErrorContextCallback;
 
-extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
+extern PGDLLIMPORT session_local ErrorContextCallback *error_context_stack;
 
 
 /*----------
@@ -421,7 +421,7 @@ extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
 #define PG_RE_THROW()  \
 	pg_re_throw()
 
-extern PGDLLIMPORT sigjmp_buf *PG_exception_stack;
+extern PGDLLIMPORT session_local sigjmp_buf *PG_exception_stack;
 
 
 /* Stuff that error handlers might want to use */
@@ -478,7 +478,7 @@ extern char *GetErrorContextStack(void);
 
 /* Hook for intercepting messages before they are sent to the server log */
 typedef void (*emit_log_hook_type) (ErrorData *edata);
-extern PGDLLIMPORT emit_log_hook_type emit_log_hook;
+extern PGDLLIMPORT session_local emit_log_hook_type emit_log_hook;
 
 
 /* GUC-configurable parameters */
@@ -490,12 +490,12 @@ typedef enum
 	PGERROR_VERBOSE,			/* all the facts, ma'am */
 }			PGErrorVerbosity;
 
-extern PGDLLIMPORT int Log_error_verbosity;
-extern PGDLLIMPORT char *Log_line_prefix;
-extern PGDLLIMPORT int Log_destination;
-extern PGDLLIMPORT char *Log_destination_string;
-extern PGDLLIMPORT bool syslog_sequence_numbers;
-extern PGDLLIMPORT bool syslog_split_messages;
+extern PGDLLIMPORT session_guc int Log_error_verbosity;
+extern PGDLLIMPORT sighup_guc char *Log_line_prefix;
+extern PGDLLIMPORT sighup_guc int Log_destination;
+extern PGDLLIMPORT sighup_guc char *Log_destination_string;
+extern PGDLLIMPORT sighup_guc bool syslog_sequence_numbers;
+extern PGDLLIMPORT sighup_guc bool syslog_split_messages;
 
 /* Log destination bitmap */
 #define LOG_DESTINATION_STDERR	 1

@@ -240,9 +240,9 @@ static void *ShmemAllocRaw(Size size, Size alignment, Size *allocated_size);
 
 /* shared memory global variables */
 
-static PGShmemHeader *ShmemSegHdr;	/* shared mem segment header */
-static void *ShmemBase;			/* start address of shared memory */
-static void *ShmemEnd;			/* end+1 address of shared memory */
+static pg_global PGShmemHeader *ShmemSegHdr;	/* shared mem segment header */
+static pg_global void *ShmemBase;			/* start address of shared memory */
+static pg_global void *ShmemEnd;			/* end+1 address of shared memory */
 
 static ShmemAllocatorData *ShmemAllocator;
 
@@ -250,7 +250,7 @@ static ShmemAllocatorData *ShmemAllocator;
  * ShmemIndex is a global directory of shmem areas, itself also stored in the
  * shared memory.
  */
-static HTAB *ShmemIndex;
+static pg_global HTAB *ShmemIndex;
 
  /* max size of data structure string name */
 #define SHMEM_INDEX_KEYSIZE		 (48)

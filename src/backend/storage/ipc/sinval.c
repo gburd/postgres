@@ -21,7 +21,7 @@
 #include "utils/inval.h"
 
 
-uint64		SharedInvalidMessageCounter;
+session_local uint64		SharedInvalidMessageCounter;
 
 
 /*

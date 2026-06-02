@@ -44,19 +44,19 @@ static const struct config_enum_entry variable_conflict_options[] = {
 	{NULL, 0, false}
 };
 
-int			plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
+session_guc int			plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
 
-bool		plpgsql_print_strict_params = false;
+session_guc bool		plpgsql_print_strict_params = false;
 
-bool		plpgsql_check_asserts = true;
+session_guc bool		plpgsql_check_asserts = true;
 
-static char *plpgsql_extra_warnings_string = NULL;
-static char *plpgsql_extra_errors_string = NULL;
-int			plpgsql_extra_warnings;
-int			plpgsql_extra_errors;
+static session_guc char *plpgsql_extra_warnings_string = NULL;
+static session_guc char *plpgsql_extra_errors_string = NULL;
+session_local int			plpgsql_extra_warnings;
+session_local int			plpgsql_extra_errors;
 
 /* Hook for plugins */
-PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
+session_local PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
 
 
 static bool

@@ -75,14 +75,14 @@
  */
 #define GUC_SAFE_SEARCH_PATH "pg_catalog, pg_temp"
 
-static int	GUC_check_errcode_value;
+static session_local int	GUC_check_errcode_value;
 
-static List *reserved_class_prefix = NIL;
+static session_local List *reserved_class_prefix = NIL;
 
 /* global variables for check hook support */
-char	   *GUC_check_errmsg_string;
-char	   *GUC_check_errdetail_string;
-char	   *GUC_check_errhint_string;
+session_local char	   *GUC_check_errmsg_string;
+session_local char	   *GUC_check_errdetail_string;
+session_local char	   *GUC_check_errhint_string;
 
 
 /*
@@ -198,7 +198,7 @@ static const char *const map_old_guc_names[] = {
 
 
 /* Memory context holding all GUC-related data */
-static MemoryContext GUCMemoryContext;
+static session_local MemoryContext GUCMemoryContext;
 
 /*
  * We use a dynahash table to look up GUCs by name, or to iterate through
@@ -211,7 +211,7 @@ typedef struct
 	struct config_generic *gucvar;	/* -> GUC's defining structure */
 } GUCHashEntry;
 
-static HTAB *guc_hashtab;		/* entries are GUCHashEntrys */
+static session_local HTAB *guc_hashtab;		/* entries are GUCHashEntrys */
 
 /*
  * In addition to the hash table, variables having certain properties are
@@ -221,16 +221,16 @@ static HTAB *guc_hashtab;		/* entries are GUCHashEntrys */
  * and report lists is stylized enough that they can be slists, but the
  * nondef list has to be a dlist to avoid O(N) deletes in common cases.
  */
-static dlist_head guc_nondef_list;	/* list of variables that have source
+static session_local dlist_head guc_nondef_list;	/* list of variables that have source
 									 * different from PGC_S_DEFAULT */
-static slist_head guc_stack_list;	/* list of variables that have non-NULL
+static session_local slist_head guc_stack_list;	/* list of variables that have non-NULL
 									 * stack */
-static slist_head guc_report_list;	/* list of variables that have the
+static session_local slist_head guc_report_list;	/* list of variables that have the
 									 * GUC_NEEDS_REPORT bit set in status */
 
-static bool reporting_enabled;	/* true to enable GUC_REPORT */
+static session_local bool reporting_enabled;	/* true to enable GUC_REPORT */
 
-static int	GUCNestLevel = 0;	/* 1 when in main transaction */
+static session_local int	GUCNestLevel = 0;	/* 1 when in main transaction */
 
 
 static int	guc_var_compare(const void *a, const void *b);

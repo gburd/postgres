@@ -53,7 +53,7 @@ typedef uint32 pg_crc32c;
 	((crc) = pg_comp_crc32c_dispatch((crc), (data), (len)))
 #define FIN_CRC32C(crc) ((crc) ^= 0xFFFFFFFF)
 
-extern pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
+extern dynamic_singleton pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
 extern pg_crc32c pg_comp_crc32c_sse42(pg_crc32c crc, const void *data, size_t len);
 #ifdef USE_AVX512_CRC32C_WITH_RUNTIME_CHECK
 extern pg_crc32c pg_comp_crc32c_avx512(pg_crc32c crc, const void *data, size_t len);
@@ -104,7 +104,7 @@ pg_comp_crc32c_dispatch(pg_crc32c crc, const void *data, size_t len)
 #define FIN_CRC32C(crc) ((crc) ^= 0xFFFFFFFF)
 
 extern pg_crc32c pg_comp_crc32c_sb8(pg_crc32c crc, const void *data, size_t len);
-extern pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
+extern dynamic_singleton pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
 extern pg_crc32c pg_comp_crc32c_sse42(pg_crc32c crc, const void *data, size_t len);
 #ifdef USE_AVX512_CRC32C_WITH_RUNTIME_CHECK
 extern pg_crc32c pg_comp_crc32c_avx512(pg_crc32c crc, const void *data, size_t len);
@@ -130,7 +130,7 @@ extern pg_crc32c pg_comp_crc32c_avx512(pg_crc32c crc, const void *data, size_t l
 
 #define FIN_CRC32C(crc) ((crc) ^= 0xFFFFFFFF)
 
-extern pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
+extern dynamic_singleton pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
 extern pg_crc32c pg_comp_crc32c_armv8(pg_crc32c crc, const void *data, size_t len);
 #ifdef USE_PMULL_CRC32C_WITH_RUNTIME_CHECK
 extern pg_crc32c pg_comp_crc32c_pmull(pg_crc32c crc, const void *data, size_t len);
@@ -156,7 +156,7 @@ extern pg_crc32c pg_comp_crc32c_loongarch(pg_crc32c crc, const void *data, size_
 #define FIN_CRC32C(crc) ((crc) ^= 0xFFFFFFFF)
 
 extern pg_crc32c pg_comp_crc32c_sb8(pg_crc32c crc, const void *data, size_t len);
-extern pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
+extern dynamic_singleton pg_crc32c (*pg_comp_crc32c) (pg_crc32c crc, const void *data, size_t len);
 extern pg_crc32c pg_comp_crc32c_armv8(pg_crc32c crc, const void *data, size_t len);
 #ifdef USE_PMULL_CRC32C_WITH_RUNTIME_CHECK
 extern pg_crc32c pg_comp_crc32c_pmull(pg_crc32c crc, const void *data, size_t len);

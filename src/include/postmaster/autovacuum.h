@@ -27,28 +27,28 @@ typedef enum
 
 
 /* GUC variables */
-extern PGDLLIMPORT bool autovacuum_start_daemon;
-extern PGDLLIMPORT int autovacuum_worker_slots;
-extern PGDLLIMPORT int autovacuum_max_workers;
-extern PGDLLIMPORT int autovacuum_work_mem;
-extern PGDLLIMPORT int autovacuum_naptime;
-extern PGDLLIMPORT int autovacuum_vac_thresh;
-extern PGDLLIMPORT int autovacuum_vac_max_thresh;
-extern PGDLLIMPORT double autovacuum_vac_scale;
-extern PGDLLIMPORT int autovacuum_vac_ins_thresh;
-extern PGDLLIMPORT double autovacuum_vac_ins_scale;
-extern PGDLLIMPORT int autovacuum_anl_thresh;
-extern PGDLLIMPORT double autovacuum_anl_scale;
-extern PGDLLIMPORT int autovacuum_freeze_max_age;
-extern PGDLLIMPORT int autovacuum_multixact_freeze_max_age;
-extern PGDLLIMPORT double autovacuum_vac_cost_delay;
-extern PGDLLIMPORT int autovacuum_vac_cost_limit;
+extern PGDLLIMPORT sighup_guc bool autovacuum_start_daemon;
+extern PGDLLIMPORT sighup_guc int autovacuum_worker_slots;
+extern PGDLLIMPORT sighup_guc int autovacuum_max_workers;
+extern PGDLLIMPORT sighup_guc int autovacuum_work_mem;
+extern PGDLLIMPORT sighup_guc int autovacuum_naptime;
+extern PGDLLIMPORT sighup_guc int autovacuum_vac_thresh;
+extern PGDLLIMPORT sighup_guc int autovacuum_vac_max_thresh;
+extern PGDLLIMPORT sighup_guc double autovacuum_vac_scale;
+extern PGDLLIMPORT sighup_guc int autovacuum_vac_ins_thresh;
+extern PGDLLIMPORT sighup_guc double autovacuum_vac_ins_scale;
+extern PGDLLIMPORT sighup_guc int autovacuum_anl_thresh;
+extern PGDLLIMPORT sighup_guc double autovacuum_anl_scale;
+extern PGDLLIMPORT sighup_guc int autovacuum_freeze_max_age;
+extern PGDLLIMPORT sighup_guc int autovacuum_multixact_freeze_max_age;
+extern PGDLLIMPORT sighup_guc double autovacuum_vac_cost_delay;
+extern PGDLLIMPORT sighup_guc int autovacuum_vac_cost_limit;
 extern PGDLLIMPORT double autovacuum_freeze_score_weight;
 extern PGDLLIMPORT double autovacuum_multixact_freeze_score_weight;
 extern PGDLLIMPORT double autovacuum_vacuum_score_weight;
 extern PGDLLIMPORT double autovacuum_vacuum_insert_score_weight;
 extern PGDLLIMPORT double autovacuum_analyze_score_weight;
-extern PGDLLIMPORT int Log_autovacuum_min_duration;
+extern PGDLLIMPORT sighup_guc int Log_autovacuum_min_duration;
 extern PGDLLIMPORT int Log_autoanalyze_min_duration;
 
 /* Status inquiry functions */

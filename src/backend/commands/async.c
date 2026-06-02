@@ -344,7 +344,7 @@ typedef struct AsyncQueueControl
 	QueueBackendStatus backend[FLEXIBLE_ARRAY_MEMBER];
 } AsyncQueueControl;
 
-static AsyncQueueControl *asyncQueueControl;
+static pg_global AsyncQueueControl *asyncQueueControl;
 
 static void AsyncShmemRequest(void *arg);
 static void AsyncShmemInit(void *arg);
@@ -455,7 +455,7 @@ typedef struct ActionList
 	struct ActionList *upper;	/* details for upper transaction levels */
 } ActionList;
 
-static ActionList *pendingActions = NULL;
+static session_local ActionList *pendingActions = NULL;
 
 /*
  * Hash table recording the final listen/unlisten intent per channel for
@@ -531,7 +531,7 @@ struct NotificationHash
 	Notification *event;		/* => the actual Notification struct */
 };
 
-static NotificationList *pendingNotifies = NULL;
+static session_local NotificationList *pendingNotifies = NULL;
 
 /*
  * Hash entry in NotificationList.uniqueChannelHash or localChannelTable
@@ -552,10 +552,10 @@ typedef struct ChannelName
 volatile sig_atomic_t notifyInterruptPending = false;
 
 /* True if we've registered an on_shmem_exit cleanup */
-static bool unlistenExitRegistered = false;
+static session_local bool unlistenExitRegistered = false;
 
 /* True if we're currently registered as a listener in asyncQueueControl */
-static bool amRegisteredListener = false;
+static session_local bool amRegisteredListener = false;
 
 /*
  * Queue head positions for direct advancement.
@@ -575,13 +575,13 @@ static int32 *signalPids = NULL;
 static ProcNumber *signalProcnos = NULL;
 
 /* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-static bool tryAdvanceTail = false;
+static session_local bool tryAdvanceTail = false;
 
 /* GUC parameters */
-bool		Trace_notify = false;
+session_guc bool		Trace_notify = false;
 
 /* For 8 KB pages this gives 8 GB of disk space */
-int			max_notify_queue_pages = 1048576;
+postmaster_guc int			max_notify_queue_pages = 1048576;
 
 /* local function prototypes */
 static inline int64 asyncQueuePageDiff(int64 p, int64 q);

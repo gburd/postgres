@@ -108,7 +108,7 @@ static void ProcArrayShmemRequest(void *arg);
 static void ProcArrayShmemInit(void *arg);
 static void ProcArrayShmemAttach(void *arg);
 
-static ProcArrayStruct *procArray;
+static pg_global ProcArrayStruct *procArray;
 
 const struct ShmemCallbacks ProcArrayShmemCallbacks = {
 	.request_fn = ProcArrayShmemRequest,
@@ -282,59 +282,59 @@ typedef enum KAXCompressReason
 	KAX_STARTUP_PROCESS_IDLE,	/* startup process is about to sleep */
 } KAXCompressReason;
 
-static PGPROC *allProcs;
+static pg_global PGPROC *allProcs;
 
 /*
  * Cache to reduce overhead of repeated calls to TransactionIdIsInProgress()
  */
-static TransactionId cachedXidIsNotInProgress = InvalidTransactionId;
+static session_local TransactionId cachedXidIsNotInProgress = InvalidTransactionId;
 
 /*
  * Bookkeeping for tracking emulated transactions in recovery
  */
 
-static TransactionId *KnownAssignedXids;
+static pg_global TransactionId *KnownAssignedXids;
 
-static bool *KnownAssignedXidsValid;
+static pg_global bool *KnownAssignedXidsValid;
 
-static TransactionId latestObservedXid = InvalidTransactionId;
+static pg_global TransactionId latestObservedXid = InvalidTransactionId;
 
 /*
  * If we're in STANDBY_SNAPSHOT_PENDING state, standbySnapshotPendingXmin is
  * the highest xid that might still be running that we don't have in
  * KnownAssignedXids.
  */
-static TransactionId standbySnapshotPendingXmin;
+static session_local TransactionId standbySnapshotPendingXmin;
 
 /*
  * State for visibility checks on different types of relations. See struct
  * GlobalVisState for details. As shared, catalog, normal and temporary
  * relations can have different horizons, one such state exists for each.
  */
-static GlobalVisState GlobalVisSharedRels;
-static GlobalVisState GlobalVisCatalogRels;
-static GlobalVisState GlobalVisDataRels;
-static GlobalVisState GlobalVisTempRels;
+static session_local GlobalVisState GlobalVisSharedRels;
+static session_local GlobalVisState GlobalVisCatalogRels;
+static session_local GlobalVisState GlobalVisDataRels;
+static session_local GlobalVisState GlobalVisTempRels;
 
 /*
  * This backend's RecentXmin at the last time the accurate xmin horizon was
  * recomputed, or InvalidTransactionId if it has not. Used to limit how many
  * times accurate horizons are recomputed. See GlobalVisTestShouldUpdate().
  */
-static TransactionId ComputeXidHorizonsResultLastXmin;
+static session_local TransactionId ComputeXidHorizonsResultLastXmin;
 
 #ifdef XIDCACHE_DEBUG
 
 /* counters for XidCache measurement */
-static long xc_by_recent_xmin = 0;
-static long xc_by_known_xact = 0;
-static long xc_by_my_xact = 0;
-static long xc_by_latest_xid = 0;
-static long xc_by_main_xid = 0;
-static long xc_by_child_xid = 0;
-static long xc_by_known_assigned = 0;
-static long xc_no_overflow = 0;
-static long xc_slow_answer = 0;
+static session_local long xc_by_recent_xmin = 0;
+static session_local long xc_by_known_xact = 0;
+static session_local long xc_by_my_xact = 0;
+static session_local long xc_by_latest_xid = 0;
+static session_local long xc_by_main_xid = 0;
+static session_local long xc_by_child_xid = 0;
+static session_local long xc_by_known_assigned = 0;
+static session_local long xc_no_overflow = 0;
+static session_local long xc_slow_answer = 0;
 
 #define xc_by_recent_xmin_inc()		(xc_by_recent_xmin++)
 #define xc_by_known_xact_inc()		(xc_by_known_xact++)

@@ -42,7 +42,7 @@ PG_MODULE_MAGIC_EXT(
 					.version = PG_VERSION
 );
 
-static char *archive_directory = NULL;
+static sighup_guc char *archive_directory = NULL;
 
 static bool basic_archive_configured(ArchiveModuleState *state);
 static bool basic_archive_file(ArchiveModuleState *state, const char *file, const char *path);

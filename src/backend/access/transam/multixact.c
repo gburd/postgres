@@ -222,9 +222,9 @@ typedef struct MultiXactStateData
 #define NumVisibleSlots		MaxBackends
 
 /* Pointers to the state data in shared memory */
-static MultiXactStateData *MultiXactState;
-static MultiXactId *OldestMemberMXactId;
-static MultiXactId *OldestVisibleMXactId;
+static pg_global MultiXactStateData *MultiXactState;
+static pg_global MultiXactId *OldestMemberMXactId;
+static pg_global MultiXactId *OldestVisibleMXactId;
 
 static void MultiXactShmemRequest(void *arg);
 static void MultiXactShmemInit(void *arg);
@@ -298,7 +298,7 @@ typedef struct mXactCacheEnt
 
 #define MAX_CACHE_ENTRIES	256
 static dclist_head MXactCache = DCLIST_STATIC_INIT(MXactCache);
-static MemoryContext MXactContext = NULL;
+static session_local MemoryContext MXactContext = NULL;
 
 #ifdef MULTIXACT_DEBUG
 #define debug_elog2(a,b) elog(a,b)

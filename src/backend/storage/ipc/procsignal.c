@@ -115,7 +115,7 @@ const ShmemCallbacks ProcSignalShmemCallbacks = {
 
 NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
-static ProcSignalSlot *MyProcSignalSlot = NULL;
+static session_local ProcSignalSlot *MyProcSignalSlot = NULL;
 
 static void CleanupProcSignalState(int status, Datum arg);
 static void ResetProcSignalBarrierBits(uint32 flags);

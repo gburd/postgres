@@ -284,7 +284,7 @@ extern uint64 pg_popcount_masked_portable(const char *buf, int bytes, uint8 mask
  * Attempt to use specialized CPU instructions, but perform a runtime check
  * first.
  */
-extern PGDLLIMPORT uint64 (*pg_popcount_optimized) (const char *buf, int bytes);
+extern PGDLLIMPORT dynamic_singleton uint64 (*pg_popcount_optimized) (const char *buf, int bytes);
 extern PGDLLIMPORT uint64 (*pg_popcount_masked_optimized) (const char *buf, int bytes, uint8 mask);
 
 #else

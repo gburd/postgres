@@ -361,7 +361,7 @@ typedef struct RmgrData
 							  struct XLogRecordBuffer *buf);
 } RmgrData;
 
-extern PGDLLIMPORT RmgrData RmgrTable[];
+extern PGDLLIMPORT static_singleton RmgrData RmgrTable[];
 extern void RmgrStartup(void);
 extern void RmgrCleanup(void);
 extern void RmgrNotFound(RmgrId rmid);
@@ -399,9 +399,9 @@ extern void XLogRecGetBlockRefInfo(XLogReaderState *record, bool pretty,
  * Exported for the functions in timeline.c and xlogarchive.c.  Only valid
  * in the startup process.
  */
-extern PGDLLIMPORT bool ArchiveRecoveryRequested;
-extern PGDLLIMPORT bool InArchiveRecovery;
-extern PGDLLIMPORT bool StandbyMode;
-extern PGDLLIMPORT char *recoveryRestoreCommand;
+extern PGDLLIMPORT pg_global bool ArchiveRecoveryRequested;
+extern PGDLLIMPORT pg_global bool InArchiveRecovery;
+extern PGDLLIMPORT pg_global bool StandbyMode;
+extern PGDLLIMPORT sighup_guc char *recoveryRestoreCommand;
 
 #endif							/* XLOG_INTERNAL_H */

@@ -244,8 +244,8 @@ typedef struct pltcl_call_state
 /**********************************************************************
  * Global data
  **********************************************************************/
-static char *pltcl_start_proc = NULL;
-static char *pltclu_start_proc = NULL;
+static suset_guc char *pltcl_start_proc = NULL;
+static suset_guc char *pltclu_start_proc = NULL;
 static bool pltcl_pm_init_done = false;
 static Tcl_Interp *pltcl_hold_interp = NULL;
 static HTAB *pltcl_interp_htab = NULL;

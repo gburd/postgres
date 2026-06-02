@@ -65,11 +65,11 @@
  * These are needed by pgstat_report_wait_start in the standalone compile of
  * s_lock_test.
  */
-static uint32 local_my_wait_event_info;
-uint32	   *my_wait_event_info = &local_my_wait_event_info;
+static static_singleton uint32 local_my_wait_event_info;
+session_local uint32	   *my_wait_event_info = &local_my_wait_event_info;
 #endif
 
-static int	spins_per_delay = DEFAULT_SPINS_PER_DELAY;
+static session_local int	spins_per_delay = DEFAULT_SPINS_PER_DELAY;
 
 
 /*

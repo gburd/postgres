@@ -20,7 +20,7 @@
 
 PG_MODULE_MAGIC;
 
-static char *ssl_passphrase = NULL;
+static sighup_guc char *ssl_passphrase = NULL;
 
 /* callback function */
 static int	rot13_passphrase(char *buf, int size, int rwflag, void *userdata);
