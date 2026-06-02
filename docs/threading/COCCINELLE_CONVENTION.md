@@ -32,8 +32,9 @@ upcoming phases only.
 
 ```
 src/tools/cocci/
-  run-cocci.py            driver: list / dry-run / --apply the patches
-  guc_accessor_poc.cocci  proof-of-concept: GUC &global -> GetGUC<Type>()
+  run-cocci.py        driver: list / dry-run / --apply the patches
+  guc_accessors.cocci tree-wide GUC read -> GetGUC<Type>(GUC_<var>) sweep
+                      (GENERATED; see F3_GUC_ACCESSORS.md)
 ```
 
 ## Running
@@ -47,32 +48,42 @@ python3 src/tools/cocci/run-cocci.py --list      # list patches
 python3 src/tools/cocci/run-cocci.py --apply     # write changes in place
 ```
 
-The driver runs each `*.cocci` over `src/{backend,include,common,bin}`
-(one `spatch --dir` per directory — spatch accepts only one `--dir`),
-skipping vendored/generated trees.  Dry-run uses `spatch --show-diff`;
-`--apply` uses `--in-place`.
+By default the driver runs each `*.cocci` over
+`src/{backend,include,common,bin}` (one `spatch --dir` per directory —
+spatch accepts only one `--dir`), skipping vendored/generated trees.
+Dry-run uses `spatch --show-diff`; `--apply` uses `--in-place`.
+
+A patch may override that scope via the `PATCH_SCOPE` map in
+`run-cocci.py` (keyed by basename): a narrower set of target directories
+plus a list of file suffixes to exclude.  This is used by
+`guc_accessors.cocci`, which is backend-only and must skip the GUC
+storage-owning files (see below).  For scoped patches the driver passes an
+explicit file list (so individual files can be excluded — `--dir` cannot
+do that) and omits `--include-headers`.
 
 A patch named `*_poc.cocci` is treated as *illustrative*: its matches
-are reported but never fail the gate (so the `cocci` target stays green
-while shipping a not-yet-applicable proof-of-concept).  Normal-form
-patches — ones that should already be applied — fail the dry-run gate
-(exit 1) if they would still change the tree.
+are reported but never fail the gate.  Normal-form patches — ones that
+should already be applied — fail the dry-run gate (exit 1) if they would
+still change the tree.
 
-## The proof-of-concept
+## The first applied sweep: GUC read accessors (F3)
 
-`guc_accessor_poc.cocci` demonstrates the single most-cited mechanical
-sweep in the conversion: the GUC system stores each of its ~350 settings
-in a process-global that callers read directly (`a_global`).  Under
-threaded mode that storage moves behind a function-call API
-(`GetGUC<Type>()`/`SetGUC<Type>()`; xtc: `xtc_cfg`), so every direct read
-becomes an accessor call.  The patch matches reads of two real GUC
-globals — `log_duration` (bool) and `log_min_duration_statement` (int) —
-and rewrites them to `GetGUCBool(...)` / `GetGUCInt(...)`, leaving the
-storage definition and the GUC machinery's own writes alone.
+The single most-cited mechanical sweep in the conversion is the GUC one:
+the GUC system stores each of its ~440 settings in a process-global that
+callers read directly (`work_mem`).  Under threaded mode that storage
+moves behind a read accessor (`GetGUC<Type>(GUC_<var>)`), so every direct
+read becomes an accessor call.
 
-It is **illustrative, not applied**: the `GetGUC*` accessor API is an F3
-deliverable that does not yet exist on this branch, so `run-cocci.py`
-runs it in dry-run only.  When the F3 accessor layer lands, extend the
-identifier lists (or generate them from `guc_tables.c`) and apply
-tree-wide.  Verified: the dry-run produces the expected unified diff
-across `src/backend/tcop/postgres.c`.
+This sweep is now **applied tree-wide** as `guc_accessors.cocci`, a
+generated, re-runnable, idempotent semantic patch.  It is the worked
+example of the convention: a mechanical transform shipped as a checked-in
+patch rather than a one-shot hand edit, so re-running it after an
+`origin/master` merge re-converts any newly-appeared reads.  See
+[F3_GUC_ACCESSORS.md](F3_GUC_ACCESSORS.md) for the generator, the SmPL
+design (single read rule + script-selected accessor, address-of handled
+in a disjunction to stay idempotent), the backend-only scope, and the
+storage-file exclusions.
+
+(The earlier `guc_accessor_poc.cocci` proof-of-concept — which rewrote
+just `log_duration`/`log_min_duration_statement` against a not-yet-landed
+API — has been removed now that the real generated sweep exists.)
