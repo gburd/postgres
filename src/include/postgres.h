@@ -49,6 +49,14 @@
 #include "utils/elog.h"
 #include "utils/palloc.h"
 
+/*
+ * Typed GUC read accessors (GetGUCInt()/GetGUCBool()/...), generated from
+ * guc_parameters.dat.  In the process model these are zero-cost identity
+ * wrappers; they give the threaded runtime a single point at which to
+ * redirect GUC reads.  This is a backend-only header of pure macros.
+ */
+#include "utils/guc_accessors.h"
+
 /* IWYU pragma: end_exports */
 
 /* ----------------------------------------------------------------

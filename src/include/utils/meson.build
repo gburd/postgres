@@ -37,6 +37,16 @@ guc_tables = custom_target('guc_tables',
   command: [perl, files('../../backend/utils/misc/gen_guc_tables.pl'), '@INPUT@', '@OUTPUT@'])
 generated_headers += guc_tables
 
+guc_accessors = custom_target('guc_accessors',
+  input: files('../../backend/utils/misc/guc_parameters.dat'),
+  output: ['guc_accessors.h'],
+  depend_files: catalog_pm,
+  command: [perl, files('../../backend/utils/misc/gen_guc_accessors.pl'), '@INPUT@', '@OUTPUT@'],
+  install: true,
+  install_dir: dir_include_server / 'utils',
+)
+generated_headers += guc_accessors
+
 if dtrace.found()
   probes_tmp = custom_target('probes.h.tmp',
     input: files('../../backend/utils/probes.d'),
