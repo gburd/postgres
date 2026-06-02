@@ -37,6 +37,7 @@
 #include "storage/relfilelocator.h"
 #include "storage/spin.h"
 #include "utils/dsa.h"
+#include "utils/snapshot.h"
 
 /*
  * Legacy partition count retained for shared memory compatibility.
@@ -54,10 +55,14 @@
  * TM_Updated calls table_tuple_lock which adds a LOCK_EXCL sLog entry.
  * These entries persist until the owning transaction commits, so with N
  * concurrent backends hitting the same hot row, up to N-1 LOCK entries
- * can coexist.  32 slots handles realistic OLTP concurrency levels.
- * Stale-slot reclamation kicks in before the overflow ERROR.
+ * can coexist.  Additionally, committed in-place UPDATE markers are retained
+ * (one per committing xid) until the oldest-snapshot horizon advances past
+ * them, so a hot row updated repeatedly while a long reader holds a snapshot
+ * accumulates markers on top of the live LOCK entries.  128 slots handles
+ * realistic OLTP concurrency plus retained-marker headroom; per-TID
+ * reclamation of the oldest retained marker kicks in before the array fills.
  */
-#define SLOG_MAX_TUPLE_OPS		32
+#define SLOG_MAX_TUPLE_OPS		128
 
 /*
  * Tuple hash auto-sizing constants.
@@ -85,7 +90,8 @@
  * accumulate here.  4096 entries handles sustained abort rates of
  * ~100/s for 40+ seconds before the logical revert worker drains them.
  */
-#define SLOG_TXN_POOL_CAPACITY		4100	/* 4096 user + 2 sentinels + 2 margin */
+#define SLOG_TXN_POOL_CAPACITY		4100	/* 4096 user + 2 sentinels + 2
+											 * margin */
 
 /*
  * Sparsemap buffer size for XID presence bitmap (64KB).
@@ -310,11 +316,11 @@ typedef struct SLogTrackedKeyInfo
 	SLogOpType	op_type;
 	uint64		before_commit_ts;
 	bool		has_before_image;
-} SLogTrackedKeyInfo;
+}			SLogTrackedKeyInfo;
 
 /* Collect tracked keys into a sortable array (for batch commit processing) */
 extern int	SLogTupleCollectTrackedKeys(TransactionId xid,
-										SLogTrackedKeyInfo **out_keys);
+										SLogTrackedKeyInfo * *out_keys);
 
 /* Iterate tracked keys (for AM-specific pre-commit callbacks) */
 typedef bool (*SLogTrackedKeyCallback) (const SLogTupleKey *key,
@@ -369,10 +375,16 @@ extern void SLogTupleMarkAbortedSingle(Oid relid, ItemPointer tid,
 
 /* Shared before-image read API for MVCC serving */
 extern bool SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
-										  uint64 reader_snapshot_hlc,
+										  Snapshot snapshot,
 										  char **data_out, int *len_out,
 										  uint16 *flags_out,
 										  uint64 *orig_commit_ts_out);
+
+/* Write-write conflict probe for the in-place UPDATE path */
+extern bool SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
+											 Snapshot snapshot,
+											 uint64 epq_floor_hlc,
+											 TransactionId exclude_xid);
 
 /* Cleanup retained entries when no longer needed by any snapshot */
 extern void SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc);

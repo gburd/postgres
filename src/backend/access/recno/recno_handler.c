@@ -600,14 +600,20 @@ recno_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableS
 			/*
 			 * Before-image substitution for committed in-place UPDATEs.
 			 *
-			 * If this tuple was updated in-place by a committed transaction
-			 * whose commit HLC is after our snapshot, serve the before-image
-			 * from the shared sLog DSA instead of the on-page (new) data.
-			 * This restores correct REPEATABLE READ / SERIALIZABLE semantics.
+			 * If this tuple was updated in-place by a transaction not visible
+			 * to our MVCC snapshot (concurrent or later), serve the
+			 * before-image from the shared sLog DSA instead of the on-page
+			 * (new) data.  Visibility is decided by the xid snapshot, not an
+			 * HLC comparison, because a committer stamps its commit HLC at
+			 * PRE_COMMIT but exits the ProcArray strictly later -- an HLC
+			 * test would mis-serve the on-page value to a snapshot that
+			 * should still see the before-image.  This restores correct
+			 * REPEATABLE READ / SERIALIZABLE semantics.
 			 */
 			if ((tuple_header->t_flags & RECNO_TUPLE_UPDATED) &&
 				!(tuple_header->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
-				scan->rs_snapshot_hlc != InvalidHLCTimestamp)
+				scan->rs_base.rs_snapshot != NULL &&
+				IsMVCCSnapshot(scan->rs_base.rs_snapshot))
 			{
 				char	   *bi_data;
 				int			bi_len;
@@ -620,7 +626,7 @@ recno_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableS
 				if (SLogTupleGetSharedBeforeImage(
 												  RelationGetRelid(scan->rs_base.rs_rd),
 												  &item_tid,
-												  (uint64) scan->rs_snapshot_hlc,
+												  scan->rs_base.rs_snapshot,
 												  &bi_data, &bi_len, &bi_flags, &bi_commit_ts))
 				{
 					/*
@@ -1505,6 +1511,25 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
 			{
+				/*
+				 * RECNO updates in place: an UPDATED tuple whose t_ctid still
+				 * points at itself is the live current version, not a
+				 * superseded old version.  Only a genuine out-of-place move
+				 * (cross-page defrag) repoints t_ctid elsewhere.  Skip the
+				 * supersession check for in-place updates so a retained
+				 * committed UPDATE marker (kept for before-image serving)
+				 * does not make the live row vanish from a dirty-snapshot
+				 * probe -- e.g. the ON CONFLICT arbiter scan would otherwise
+				 * miss the existing row after any prior UPDATE on it.  This
+				 * mirrors the MVCC path's handling in RecnoTupleVisibleHLC.
+				 */
+				if (ItemPointerEquals(&tuple_hdr->t_ctid, tid))
+				{
+					/* In-place update: on-page tuple is live. */
+					visible = true;
+					goto visibility_done;
+				}
+
 				if (slog_nfound < 0)
 					slog_nfound = SLogTupleLookupFiltered(
 														  RelationGetRelid(rel), tid,
@@ -1546,8 +1571,8 @@ recno_index_fetch_tuple(IndexFetchTableData *iftd,
 						/*
 						 * No sLog entries but UPDATED flag is set.  This
 						 * means either: (a) the retained UPDATE entry was
-						 * reclaimed by the per-TID oldest-entry eviction
-						 * in flat_hash_apply_insert (hot row), or (b) the
+						 * reclaimed by the per-TID oldest-entry eviction in
+						 * flat_hash_apply_insert (hot row), or (b) the
 						 * background worker cleaned up the entry.
 						 *
 						 * In both cases the update committed — the tuple on
@@ -1789,6 +1814,43 @@ recno_tuple_fetch_row_version(Relation relation,
 	{
 		UnlockReleaseBuffer(buffer);
 		return false;
+	}
+
+	/*
+	 * Before-image substitution for committed in-place UPDATEs, mirroring the
+	 * sequential-scan path.  An index fetch that lands on a tuple updated in
+	 * place by a transaction not visible to our MVCC snapshot must serve the
+	 * before-image, not the on-page (new) value -- otherwise an UPDATE driven
+	 * by this fetch (e.g. UPDATE ... WHERE pk = const) would recompute on top
+	 * of a concurrent committed update and silently lose it.  Visibility is
+	 * decided by the xid snapshot (XidInMVCCSnapshot inside the callee), not
+	 * an HLC comparison, because a committer stamps its commit HLC at
+	 * PRE_COMMIT but exits the ProcArray strictly later.
+	 */
+	if ((tuple_hdr->t_flags & RECNO_TUPLE_UPDATED) &&
+		!(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
+		snapshot != NULL && IsMVCCSnapshot(snapshot))
+	{
+		char	   *bi_data;
+		int			bi_len;
+		uint16		bi_flags;
+		uint64		bi_commit_ts;
+
+		if (SLogTupleGetSharedBeforeImage(RelationGetRelid(relation),
+										  tid, snapshot,
+										  &bi_data, &bi_len,
+										  &bi_flags, &bi_commit_ts))
+		{
+			RecnoTupleHeader *bi_tuple = (RecnoTupleHeader *) bi_data;
+
+			RecnoSlotStoreMaterializedTuple(slot, bi_tuple, bi_len);
+			slot->tts_tableOid = RelationGetRelid(relation);
+			slot->tts_tid = *tid;
+
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			ReleaseBuffer(buffer);
+			return true;
+		}
 	}
 
 	/* Store tuple into slot with buffer pin for safe access */
@@ -2169,9 +2231,9 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 		if (PageGetFreeSpace(page) < tuple_size)
 		{
 			/*
-			 * Both FSM attempts returned stale pages.  Use P_NEW as
-			 * final fallback — extend the relation to get a guaranteed-
-			 * empty page.  Update FSM for accuracy on the bad page.
+			 * Both FSM attempts returned stale pages.  Use P_NEW as final
+			 * fallback — extend the relation to get a guaranteed- empty
+			 * page.  Update FSM for accuracy on the bad page.
 			 */
 			RecnoRecordFreeSpace(relation, BufferGetBlockNumber(buf),
 								 PageGetFreeSpace(page));
@@ -2185,9 +2247,9 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 	}
 
 	/*
-	 * Try adding tuple before critical section.  If the page is too full
-	 * (FSM was optimistic about alignment/line-pointer overhead), extend
-	 * the relation and use a fresh page.
+	 * Try adding tuple before critical section.  If the page is too full (FSM
+	 * was optimistic about alignment/line-pointer overhead), extend the
+	 * relation and use a fresh page.
 	 */
 	offnum = PageAddItem(page, tuple->t_data, tuple_size,
 						 InvalidOffsetNumber, false, false);
@@ -2243,13 +2305,14 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 
 		/*
 		 * Force a full-page image and append the tuple body to the main data
-		 * channel (matching RecnoXLogInsert's layout, which recno_xlog_insert_
-		 * redo parses).  The redo handler restores the tuple from the FPI and
-		 * never reaches the PageAddItem path for these records; the body is
-		 * carried so logical decoding and any future non-FPI replay see a
-		 * well-formed record.  Registering the body as block data instead (the
-		 * historical behavior) left tuple_len uninitialized and made redo read
-		 * past the record on a BLK_NEEDS_REDO replay.
+		 * channel (matching RecnoXLogInsert's layout, which
+		 * recno_xlog_insert_ redo parses).  The redo handler restores the
+		 * tuple from the FPI and never reaches the PageAddItem path for these
+		 * records; the body is carried so logical decoding and any future
+		 * non-FPI replay see a well-formed record.  Registering the body as
+		 * block data instead (the historical behavior) left tuple_len
+		 * uninitialized and made redo read past the record on a
+		 * BLK_NEEDS_REDO replay.
 		 */
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
@@ -2816,9 +2879,9 @@ recno_relation_set_new_filelocator(Relation rel,
 	/*
 	 * Initialize the per-relation UNDO fork for permanent and unlogged
 	 * relations.  This creates the UNDO fork file and writes the initial
-	 * metapage so that subsequent INSERT/UPDATE/DELETE operations can
-	 * reserve UNDO space via RelUndoReserve().  Without this, the
-	 * smgrexists() guards in the DML paths skip all UNDO record emission.
+	 * metapage so that subsequent INSERT/UPDATE/DELETE operations can reserve
+	 * UNDO space via RelUndoReserve().  Without this, the smgrexists() guards
+	 * in the DML paths skip all UNDO record emission.
 	 *
 	 * Temp tables are session-private and skip the fork.
 	 *
@@ -4051,9 +4114,10 @@ static const TableAmRoutine recno_methods = {
 	.am_supports_undo = true,
 
 	/*
-	 * RECNO updates rows in place, keeping the same TID.  ExecInsertIndexTuples()
-	 * uses this to skip re-inserting unchanged index keys, which would otherwise
-	 * create duplicate (key, TID) entries (see tableam.h).
+	 * RECNO updates rows in place, keeping the same TID.
+	 * ExecInsertIndexTuples() uses this to skip re-inserting unchanged index
+	 * keys, which would otherwise create duplicate (key, TID) entries (see
+	 * tableam.h).
 	 */
 	.am_inplace_update_keeps_tid = true,
 

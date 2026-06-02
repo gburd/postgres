@@ -82,6 +82,7 @@ slog_num_cpus(void)
 #include "storage/spin.h"
 #include "utils/dsa.h"
 #include "utils/memutils.h"
+#include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
 #include "lib/sparsemap.h"
@@ -1475,6 +1476,19 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 		flat_op.xid = xid;
 		flat_op.subxid = subxid;
 		flat_op.commit_hlc = slog_cached_oldest_hlc;	/* reclaim horizon */
+
+		/*
+		 * The xid reclaim horizon must be computed fresh on every insert, NOT
+		 * cached like the HLC above.  It drives per-TID marker reclamation on a
+		 * full hot row: a stale (too-old) horizon makes every committed marker
+		 * look still-needed, so reclamation frees nothing, the array stays
+		 * full, and the new uncommitted UPDATE registration is dropped --
+		 * leaving no marker to stamp at PRE_COMMIT and letting the next
+		 * concurrent writer clobber (lost update).  A 100ms-stale xmin lags
+		 * thousands of xids under load and reintroduces the loss; the
+		 * ProcArrayLock-shared scan is cheap enough to run unconditionally.
+		 */
+		flat_op.reclaim_xid_horizon = GetOldestNonRemovableTransactionId(NULL);
 		flat_op.tuple_op.xid = xid;
 		flat_op.tuple_op.subxid = subxid;
 		flat_op.tuple_op.op_type = op_type;
@@ -3126,19 +3140,25 @@ SLogTupleGetBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
  * SLogTupleGetSharedBeforeImage
  *		Retrieve a committed before-image from shared DSA for MVCC reads.
  *
- * Looks for a committed UPDATE entry on (relid, tid) whose commit_hlc is
- * AFTER the reader's snapshot.  If found, copies the DSA-resident
- * before-image into a palloc'd buffer and returns true.
+ * Looks for a committed UPDATE entry on (relid, tid) whose committing xid is
+ * NOT visible to the reader's MVCC snapshot (it ran concurrently with, or
+ * after, the snapshot).  If found, copies the DSA-resident before-image into
+ * a palloc'd buffer and returns true.
  *
  * The caller should serve this data instead of the on-page (post-update)
  * data when the reader's snapshot pre-dates the update commit.
+ *
+ * AUTHORITY IS THE XID SNAPSHOT, NOT THE HLC: see the rationale on
+ * SLogTupleHasCommittedUpdateAfter().  A commit_hlc comparison races with the
+ * PRE_COMMIT-stamp / ProcArray-exit ordering and would mis-serve the on-page
+ * (new) value to a snapshot that should still see the before-image.
  *
  * Safety: the DSA memory is only freed by SLogTupleCleanupRetained which
  * runs after confirming no active snapshot needs it.
  */
 bool
 SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
-							  uint64 reader_snapshot_hlc,
+							  Snapshot snapshot,
 							  char **data_out, int *len_out,
 							  uint16 *flags_out, uint64 *orig_commit_ts_out)
 {
@@ -3148,7 +3168,7 @@ SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
 	bool		found = false;
 	dsa_pointer target_dp = InvalidDsaPointer;
 
-	if (SLogState == NULL || reader_snapshot_hlc == 0)
+	if (SLogState == NULL || snapshot == NULL)
 		return false;
 
 	memset(&key, 0, sizeof(key));
@@ -3176,8 +3196,10 @@ SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
 				continue;
 			if (entry->ops[i].commit_hlc == 0)
 				continue;	/* uncommitted */
-			if (entry->ops[i].commit_hlc <= reader_snapshot_hlc)
-				continue;	/* committed before reader's snapshot */
+			if (!TransactionIdIsValid(entry->ops[i].xid))
+				continue;
+			if (!XidInMVCCSnapshot(entry->ops[i].xid, snapshot))
+				continue;	/* visible to reader: on-page value is correct */
 			if (!DsaPointerIsValid(entry->ops[i].before_image_dp))
 				continue;
 
@@ -3213,13 +3235,153 @@ SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
 }
 
 /*
+ * SLogTupleHasCommittedUpdateAfter
+ *		Write-write conflict probe for the in-place UPDATE path.
+ *
+ * Returns true if (relid, tid) has a retained committed UPDATE marker whose
+ * committing xid is NOT visible to the caller's MVCC snapshot (i.e. it ran
+ * concurrently with, or after, the snapshot) and is not exclude_xid (our own).
+ * Such a marker means another transaction updated-and-committed this tuple
+ * after our statement snapshot was taken, so proceeding with an in-place
+ * overwrite would lose that update.  The caller returns TM_Updated to drive
+ * EvalPlanQual re-evaluation, matching heap's behaviour when a scanned tuple's
+ * xmax committed concurrently with our snapshot.
+ *
+ * TWO CONFLICT ARMS, because the reader's value-read and the conflict probe
+ * live in different snapshot domains and a committer that lands in the gap
+ * between them must still be caught:
+ *
+ *   (1) XID ARM -- XidInMVCCSnapshot(xid): the committer is concurrent with
+ *       (in-progress in) our core MVCC snapshot.  This is heap's own
+ *       visibility authority.  A "commit_hlc <= anchor" test could NOT
+ *       replace this: a committer stamps its commit HLC at PRE_COMMIT but
+ *       leaves the ProcArray strictly later, so a reader still seeing it
+ *       in-progress reads a current HLC >= its commit_hlc and would wrongly
+ *       skip it.  HLC must never be used to *subtract* from the XID arm.
+ *
+ *   (2) HLC ARM -- read_anchor_hlc != 0 && commit_hlc > read_anchor_hlc:
+ *       catches the complementary skew.  Under a point-in-time snapshot
+ *       (REPEATABLE READ / SERIALIZABLE) the value read uses the
+ *       transaction-start HLC (read_anchor_hlc), which is captured at a
+ *       different instant than the core MVCC snapshot's xip list.  A
+ *       committer can have ALREADY left the ProcArray (so XidInMVCCSnapshot
+ *       returns false -- the XID arm sees no conflict) yet have committed
+ *       AFTER our read anchor (commit_hlc > read_anchor_hlc), so the reader
+ *       was served that tuple's before-image and read the stale value.
+ *       Overwriting in place would then clobber the committed update (the
+ *       residual CAS-path lost update verified empirically).  This arm only
+ *       ADDS conflicts; it is exactly heap's REPEATABLE READ rule (a row
+ *       modified after our snapshot fails an in-place UPDATE -> TM_Updated).
+ *       READ COMMITTED passes read_anchor_hlc = 0 to disable this arm: its
+ *       value read uses a floating HLCNow() per check, so a committed-after
+ *       update is meant to become visible on re-read, not raise a conflict.
+ *
+ * The EPQ dedup floor applies to BOTH arms: epq_floor_hlc (0 = none)
+ * suppresses re-firing on a marker a prior EvalPlanQual on this exact
+ * (relid, tid, curcid) already reconciled, which would otherwise livelock
+ * because EPQ reuses the same snapshot.
+ *
+ * RECNO needs this explicit probe because committed in-place UPDATEs rewind
+ * t_commit_ts to the original insert timestamp (so mid-life snapshots still
+ * see the row), erasing the "updated since you read it" signal that heap keeps
+ * in xmax.  The sLog marker is the only durable record of that event.
+ *
+ * WAIT-FREE: uses the LRLock read-side, no buffer or heavyweight locks.
+ */
+bool
+SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
+								 Snapshot snapshot,
+								 uint64 epq_floor_hlc,
+								 TransactionId exclude_xid)
+{
+	SLogTupleKey key;
+	const SLogFlatHash *ht;
+	const SLogFlatBucket *bucket;
+	bool		found = false;
+
+	if (SLogState == NULL || snapshot == NULL)
+		return false;
+
+	memset(&key, 0, sizeof(key));
+	key.relid = relid;
+	ItemPointerCopy(tid, &key.tid);
+
+	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+
+	bucket = SLogFlatHashProbe(ht, &key);
+	if (bucket != NULL)
+	{
+		const SLogTupleEntry *entry = &bucket->entry;
+		int		i;
+
+		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		{
+			if (!entry->ops[i].in_use)
+				continue;
+			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
+				continue;
+			if (entry->ops[i].commit_hlc == 0)
+				continue;		/* uncommitted: handled by dirty-xid wait path */
+			if (TransactionIdIsValid(exclude_xid) &&
+				TransactionIdEquals(entry->ops[i].xid, exclude_xid))
+				continue;		/* our own update */
+			if (!TransactionIdIsValid(entry->ops[i].xid))
+				continue;
+			/*
+			 * Conflict only if the committer is in-progress/concurrent in our
+			 * core MVCC snapshot.  XidInMVCCSnapshot() returns true when the xid
+			 * is NOT visible to the snapshot, which is exactly the conflict case
+			 * (the committed update happened at or after our snapshot, so taking
+			 * the CAS fast path here would silently clobber it).  HLC values are
+			 * never used to add or subtract conflicts: the xid-in-snapshot test
+			 * is authoritative.
+			 */
+			if (!XidInMVCCSnapshot(entry->ops[i].xid, snapshot))
+				continue;
+			/*
+			 * EPQ dedup: a prior EvalPlanQual on this (relid, tid, curcid)
+			 * already reconciled commits up to epq_floor_hlc; do not re-fire
+			 * for those, only for a strictly newer committer.
+			 */
+			if (epq_floor_hlc != 0 &&
+				entry->ops[i].commit_hlc <= epq_floor_hlc)
+				continue;
+
+			found = true;
+			break;
+		}
+	}
+
+	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+
+	return found;
+}
+
+/*
  * SLogTupleCleanupRetained
  *		Free retained committed UPDATE entries that are no longer visible
  *		to any active snapshot.
  *
- * An entry can be freed when its commit_hlc < oldest_snapshot_hlc, meaning
- * all active transactions started after the update committed and will see
- * the on-page (new) data directly.
+ * A retained UPDATE marker carries two signals an active reader may still
+ * need: the DSA before-image (so an old snapshot can reconstruct the
+ * pre-update version via SLogTupleGetSharedBeforeImage) and the marker
+ * itself (so a concurrent updater can detect the committed update via
+ * SLogTupleHasCommittedUpdateAfter, i.e. lost-update/write-write
+ * detection).  BOTH of those decide by XidInMVCCSnapshot against the core
+ * MVCC snapshot -- xid authority, not HLC comparison.  Reclamation must
+ * therefore gate on the xid horizon (GetOldestNonRemovableTransactionId),
+ * exactly like the per-TID reclaim in flat_hash_apply_insert: a marker is
+ * reclaimable only once its committing xid precedes the oldest active
+ * snapshot's xmin, at which point it is visible to every live snapshot and
+ * no probe can still need it.  An HLC-horizon gate
+ * (commit_hlc < oldest_snapshot_hlc) races with the PRE_COMMIT-stamp /
+ * ProcArray-exit skew and frees a marker a concurrent updater still needs,
+ * reintroducing the lost update (verified: c=16 RR loses ~2/12 runs with
+ * the HLC gate, 0/12 with the xid gate).
+ *
+ * The oldest_snapshot_hlc argument now serves only as a cheap "retention
+ * subsystem is warm" guard; the actual reclamation decision is the xid
+ * horizon computed below.
  *
  * Scans the flat hash under read-side, then applies CLEANUP_RETAINED ops.
  * Called periodically by the UNDO background worker.
@@ -3232,8 +3394,20 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 	int			max_keys = 256;
 	int			part;
 	int			i;
+	TransactionId reclaim_xid_horizon;
 
 	if (SLogState == NULL || oldest_snapshot_hlc == 0)
+		return;
+
+	/*
+	 * Compute the xid horizon once for this pass.  Both the read-side
+	 * eligibility scan and the CLEANUP_RETAINED apply must gate on the same
+	 * horizon so the set of before-image pointers we dsa_free() here exactly
+	 * matches the set the apply nulls out (otherwise a dangling pointer or
+	 * double free results).
+	 */
+	reclaim_xid_horizon = GetOldestNonRemovableTransactionId(NULL);
+	if (!TransactionIdIsValid(reclaim_xid_horizon))
 		return;
 
 	SLogEnsureDsaAttached();
@@ -3288,8 +3462,17 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 				if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 					continue;
 				if (entry->ops[i].commit_hlc == 0)
-					continue;
-				if (entry->ops[i].commit_hlc >= oldest_snapshot_hlc)
+					continue;	/* uncommitted, can't reclaim */
+				/*
+				 * Reclaim only once the committing xid precedes the oldest
+				 * active snapshot's xmin (xid authority -- see the function
+				 * header).  An HLC-horizon gate here would race the
+				 * PRE_COMMIT-stamp / ProcArray-exit skew and reintroduce the
+				 * lost update.
+				 */
+				if (TransactionIdIsValid(entry->ops[i].xid) &&
+					!TransactionIdPrecedes(entry->ops[i].xid,
+										   reclaim_xid_horizon))
 					continue;
 
 				if (!has_expired)
@@ -3335,6 +3518,8 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 		/* Null the now-dangling pointers in both copies and drop the slots. */
 		if (nkeys > 0)
 		{
+			int			ops_since_publish = 0;
+
 			LRLockWriteBegin(fp->lrlock);
 			for (i = 0; i < nkeys; i++)
 			{
@@ -3343,8 +3528,27 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 				memset(&flat_op, 0, sizeof(flat_op));
 				flat_op.kind = SLOG_FLAT_OP_CLEANUP_RETAINED;
 				flat_op.key = collected_keys[i];
-				flat_op.commit_hlc = oldest_snapshot_hlc;
+				flat_op.reclaim_xid_horizon = reclaim_xid_horizon;
 				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+
+				/*
+				 * Publish-and-recycle periodically so the writer spinlock
+				 * hold time stays bounded.  On a hot row many retained
+				 * UPDATE markers expire at once, so nkeys can be large; a
+				 * single uninterrupted cycle would hold writer_mutex too
+				 * long (stuck-spinlock PANIC) and let the oplog grow.  Each
+				 * key's reclamation is independent and a publish leaves both
+				 * copies in sync, so dropping the spinlock at a batch
+				 * boundary is safe -- the partition LWLock still serializes
+				 * us against other before-image freers.
+				 */
+				if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
+				{
+					LRLockPublish(fp->lrlock);
+					LRLockWriteEnd(fp->lrlock);
+					LRLockWriteBegin(fp->lrlock);
+					ops_since_publish = 0;
+				}
 			}
 			LRLockPublish(fp->lrlock);
 			LRLockWriteEnd(fp->lrlock);

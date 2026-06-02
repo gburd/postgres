@@ -133,12 +133,13 @@ typedef struct RecnoMvccShmemData
 										 * (atomic) */
 	pg_atomic_uint32 active_iso_readers;	/* Number of active
 											 * snapshot-isolation (REPEATABLE
-											 * READ / SERIALIZABLE) transactions.
-											 * Gates shared before-image
-											 * allocation: when zero, no reader
-											 * can ever consume a committed
-											 * before-image, so the DSA copy is
-											 * skipped entirely. */
+											 * READ / SERIALIZABLE)
+											 * transactions. Gates shared
+											 * before-image allocation: when
+											 * zero, no reader can ever
+											 * consume a committed
+											 * before-image, so the DSA copy
+											 * is skipped entirely. */
 
 	/*
 	 * Per-backend active transaction start timestamps.  Each backend slot
@@ -179,6 +180,34 @@ struct RecnoTransactionState
 	bool		is_read_only;	/* Transaction has not performed writes */
 	bool		is_iso_reader;	/* Counted in active_iso_readers (RR/SER) */
 
+	/*
+	 * EPQ reconcile watermark for the in-place write-write conflict path.
+	 *
+	 * When recno_tuple_update detects a committed concurrent UPDATE newer
+	 * than our statement read anchor it returns TM_Updated, and the executor
+	 * runs EvalPlanQual: table_tuple_lock re-reads the LATEST on-page value
+	 * (which, because RECNO updates in place, already reflects every commit
+	 * so far) and the quals/SET expression recompute on top of it.  But EPQ
+	 * re-evaluates against the same statement snapshot (estate->es_snapshot,
+	 * same curcid), so RecnoGetSnapshotHLC returns the same frozen anchor on
+	 * the retry -- the probe re-detects the very same committed marker and
+	 * bounces forever (livelock).  Heap escapes this because EPQ advances
+	 * tupleid to a new tuple version with a clean xmax; RECNO has no new
+	 * version to advance to.
+	 *
+	 * The watermark records "EPQ has reconciled this tuple up to instant
+	 * epq_reconcile_hlc": the pending EPQ re-read will absorb every commit
+	 * with commit_hlc <= that instant, so the next probe must treat those as
+	 * already accounted for and only fire for a strictly newer committer.
+	 * Keyed by (relid, tid, curcid); a non-matching key yields watermark 0,
+	 * so the watermark can never suppress a conflict it did not actually
+	 * reconcile.
+	 */
+	Oid			epq_reconcile_relid;
+	ItemPointerData epq_reconcile_tid;
+	CommandId	epq_reconcile_cid;
+	uint64		epq_reconcile_hlc;
+
 	/* Uncertainty handling for distributed scenarios */
 	bool		needs_restart;	/* Transaction needs to restart */
 	int			restart_reason; /* Reason for restart (uncertainty, etc.) */
@@ -204,8 +233,10 @@ struct RecnoTransactionState
 static RecnoTransactionState MyRecnoXactStateData;
 static RecnoTransactionState *MyRecnoXactState = NULL;
 
-/* GUC variables (recno_enable_serializable and recno_max_transactions removed;
- * SSI is unconditionally provided via predicate.c) */
+/*
+ * GUC variables (recno_enable_serializable and recno_max_transactions removed;
+ * SSI is unconditionally provided via predicate.c)
+ */
 
 /*
  * Function prototypes
@@ -593,12 +624,13 @@ RecnoInitTransactionState(void)
 	 * never needs one.
 	 *
 	 * The increment uses a sequentially-consistent atomic, and HLCNow() below
-	 * is itself a seq-cst RMW on the global clock, so the increment is ordered
-	 * before our snapshot HLC.  A committer that stamps its commit HLC after
-	 * our snapshot HLC (the only case in which we could need its before-image)
-	 * is guaranteed to observe this increment when it reads the counter after
-	 * generating its commit HLC.  This is the publish-before-snapshot half of
-	 * the handshake that makes commit-time before-image allocation sound.
+	 * is itself a seq-cst RMW on the global clock, so the increment is
+	 * ordered before our snapshot HLC.  A committer that stamps its commit
+	 * HLC after our snapshot HLC (the only case in which we could need its
+	 * before-image) is guaranteed to observe this increment when it reads the
+	 * counter after generating its commit HLC.  This is the
+	 * publish-before-snapshot half of the handshake that makes commit-time
+	 * before-image allocation sound.
 	 */
 	MyRecnoXactState->is_iso_reader = IsolationUsesXactSnapshot();
 	if (MyRecnoXactState->is_iso_reader && RecnoMvccShmem != NULL)
@@ -982,9 +1014,9 @@ RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
 		SLOG_ENSURE_FETCHED();
 
 		/*
-		 * No shared sLog entry for this tuple.  Either:
-		 * (a) In-progress local-only INSERT in our backend → visible to us
-		 * (b) Committed INSERT whose flag was never cleared → stale flag
+		 * No shared sLog entry for this tuple.  Either: (a) In-progress
+		 * local-only INSERT in our backend → visible to us (b) Committed
+		 * INSERT whose flag was never cleared → stale flag
 		 *
 		 * Correctness: aborted transactions ALWAYS create a shared ABORTED
 		 * entry, so slog_nfound==0 + not-ours = committed = stale flag.
@@ -998,10 +1030,11 @@ RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
 			 * UNCOMMITTED + UPDATED + no sLog entry: the tuple was updated
 			 * in-place and either (a) the updater committed but its retained
 			 * sLog entry was reclaimed by the oldest-retained-entry eviction,
-			 * or (b) the updater is between buffer-release and SLogTupleInsert
-			 * (concurrent race window).  In both cases, treat as visible:
-			 * (a) committed update = tuple is live; (b) in-progress update
-			 * hasn't invalidated visibility for our snapshot yet.
+			 * or (b) the updater is between buffer-release and
+			 * SLogTupleInsert (concurrent race window).  In both cases, treat
+			 * as visible: (a) committed update = tuple is live; (b)
+			 * in-progress update hasn't invalidated visibility for our
+			 * snapshot yet.
 			 */
 			if (tuple->t_flags & RECNO_TUPLE_UPDATED)
 			{
@@ -1599,15 +1632,21 @@ RecnoGetSnapshotHLC(Snapshot snapshot)
 
 			/*
 			 * READ COMMITTED: return the current HLC so each visibility check
-			 * sees the latest committed state.  This means all tuples
-			 * committed before this instant are visible, and uncommitted
-			 * tuples are handled via sLog.
+			 * sees the latest committed state.  All tuples committed before
+			 * this instant are visible; uncommitted tuples are resolved via
+			 * the sLog.  PostgreSQL's READ COMMITTED already permits within-
+			 * statement visibility changes for concurrent commits, so a fresh
+			 * read point per check is faithful.
 			 *
-			 * Note: HLCNow() is called per visibility check (~20-50ns each).
-			 * This is acceptable because: (1) for clean tuples it's the only
-			 * shared memory access (no sLog probe); (2) under READ COMMITTED
-			 * PostgreSQL already allows within-statement visibility changes
-			 * for concurrent commits.
+			 * Lost-update detection does NOT depend on this value: the write-
+			 * write conflict probe (SLogTupleHasCommittedUpdateAfter) decides
+			 * by xid visibility (XidInMVCCSnapshot) against the core
+			 * snapshot, not by HLC comparison, and the in-progress-writer
+			 * block in recno_tuple_update keys off SLogTupleGetDirtyXid.  A
+			 * per-statement frozen anchor here would instead break READ
+			 * COMMITTED: two consecutive read-only statements share a curcid
+			 * (read-only ops do not advance the command counter), so a delete
+			 * committed between them would stay invisible to the second read.
 			 */
 			return HLCNow(InvalidHLCTimestamp);
 		}
@@ -1625,6 +1664,62 @@ RecnoGetSnapshotHLC(Snapshot snapshot)
 		/* SnapshotAny or other non-MVCC snapshots */
 		return InvalidHLCTimestamp;
 	}
+}
+
+/*
+ * RecnoGetEpqReconcileFloor -- EPQ dedup floor for the in-place write-write
+ * conflict probe.
+ *
+ * The probe decides conflict by xid visibility (XidInMVCCSnapshot) against the
+ * core snapshot, not by HLC comparison.  This function supplies only the EPQ
+ * dedup floor: the commit HLC up to which a pending/just-finished EvalPlanQual
+ * re-read on this exact (relid, tid, curcid) has already reconciled.  The probe
+ * suppresses re-firing on any committed marker with commit_hlc <= this floor,
+ * so a conflict we already bounced on for this statement is not re-reported.
+ * Without it, EPQ -- which re-evaluates against the same snapshot -- would
+ * re-detect the identical committed marker on every retry and livelock (see
+ * RecnoTransactionState.epq_reconcile_* and RecnoMarkEpqReconcile).
+ *
+ * Returns 0 when no EPQ reconcile watermark applies to this (relid, tid,
+ * curcid), meaning "no floor" -- every concurrent committer is a candidate.
+ */
+uint64
+RecnoGetEpqReconcileFloor(Snapshot snapshot, Oid relid, ItemPointer tid)
+{
+	if (MyRecnoXactState != NULL &&
+		MyRecnoXactState->epq_reconcile_hlc != 0 &&
+		MyRecnoXactState->epq_reconcile_relid == relid &&
+		MyRecnoXactState->epq_reconcile_cid == snapshot->curcid &&
+		ItemPointerEquals(&MyRecnoXactState->epq_reconcile_tid, tid))
+		return MyRecnoXactState->epq_reconcile_hlc;
+
+	return 0;
+}
+
+/*
+ * RecnoMarkEpqReconcile -- record that we are bouncing this tuple to
+ * EvalPlanQual, so the subsequent re-read's absorbed commits are not
+ * re-reported as conflicts on the retry.
+ *
+ * Stamp the watermark with the current HLC instant, keyed by (relid, tid,
+ * curcid).  EPQ re-reads the latest on-page value AFTER we return, so it
+ * absorbs every commit with commit_hlc <= now; the watermark is therefore a
+ * sound lower bound on "already reconciled".  HLC monotonicity guarantees the
+ * watermark is >= the commit_hlc of the marker we just observed, so the
+ * immediate retry (absent a strictly newer committer) sees no conflict and
+ * proceeds -- giving heap-equivalent forward progress (one TM_Updated per
+ * distinct committed update) instead of a livelock.
+ */
+void
+RecnoMarkEpqReconcile(Snapshot snapshot, Oid relid, ItemPointer tid)
+{
+	if (MyRecnoXactState == NULL)
+		RecnoInitTransactionState();
+
+	MyRecnoXactState->epq_reconcile_relid = relid;
+	ItemPointerCopy(tid, &MyRecnoXactState->epq_reconcile_tid);
+	MyRecnoXactState->epq_reconcile_cid = snapshot->curcid;
+	MyRecnoXactState->epq_reconcile_hlc = (uint64) HLCNow(InvalidHLCTimestamp);
 }
 
 /*
@@ -1697,39 +1792,39 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 			 * No shared sLog entry for this TID.  Two possibilities:
 			 *
 			 * (a) The inserter is in-progress in another backend using
-			 *     local-only tracking (no shared entry yet).  In this case,
-			 *     SLogTupleIsInsertedByMe() will return true if we're the
-			 *     inserter.  If not, we need to determine whether the
-			 *     inserter is truly in-progress or has already committed.
+			 * local-only tracking (no shared entry yet).  In this case,
+			 * SLogTupleIsInsertedByMe() will return true if we're the
+			 * inserter.  If not, we need to determine whether the inserter is
+			 * truly in-progress or has already committed.
 			 *
 			 * (b) The inserter already committed and its commit-time cleanup
-			 *     removed the sLog entry, but the UNCOMMITTED flag was never
-			 *     cleared on this page (e.g., backend disconnected before
-			 *     RecnoClearUncommittedFlags could visit this page).
+			 * removed the sLog entry, but the UNCOMMITTED flag was never
+			 * cleared on this page (e.g., backend disconnected before
+			 * RecnoClearUncommittedFlags could visit this page).
 			 *
 			 * Correctness argument for treating this as "committed" (case b):
 			 * Aborted transactions ALWAYS create a shared ABORTED entry via
-			 * SLogTupleMarkAborted().  So slog_nfound==0 means no abort
-			 * entry exists → the transaction committed → stale flag.
+			 * SLogTupleMarkAborted().  So slog_nfound==0 means no abort entry
+			 * exists → the transaction committed → stale flag.
 			 *
 			 * The only exception is case (a): a truly in-progress local-only
 			 * INSERT.  We detect this via SLogTupleIsInsertedByMe() which
-			 * checks our backend-local tracking list.  If it's not ours,
-			 * the inserter committed — fall through to clear the flag.
+			 * checks our backend-local tracking list.  If it's not ours, the
+			 * inserter committed — fall through to clear the flag.
 			 */
 			if (SLogTupleIsInsertedByMe(relid, &tuple->t_ctid))
 				return true;
 
 			/*
 			 * UNCOMMITTED + UPDATED + no sLog: the tuple was updated in-place
-			 * and the retained sLog entry was reclaimed (oldest-entry eviction
-			 * on the per-TID ops array) or the updater is in the race window
-			 * between buffer release and SLogTupleInsert.  Either way, the
-			 * tuple is visible — see detailed comment in the snapshot_ts path.
-			 * Return true directly: we can't fall through to the HLC timestamp
-			 * check because t_commit_ts may hold the updater's start HLC
-			 * (not the original insert time), which would incorrectly make
-			 * the tuple invisible to our snapshot.
+			 * and the retained sLog entry was reclaimed (oldest-entry
+			 * eviction on the per-TID ops array) or the updater is in the
+			 * race window between buffer release and SLogTupleInsert.  Either
+			 * way, the tuple is visible — see detailed comment in the
+			 * snapshot_ts path. Return true directly: we can't fall through
+			 * to the HLC timestamp check because t_commit_ts may hold the
+			 * updater's start HLC (not the original insert time), which would
+			 * incorrectly make the tuple invisible to our snapshot.
 			 */
 			if (tuple->t_flags & RECNO_TUPLE_UPDATED)
 			{
@@ -1895,13 +1990,14 @@ hlc_clear_uncommitted:
 			{
 				/*
 				 * Our own in-progress in-place UPDATE: the physical tuple
-				 * already holds our new data and is self-visible.  Treat it as
-				 * live (not deleted), subject to the command-id guard so that a
-				 * snapshot taken before the update's command does not see it.
-				 * This mirrors the own-operation handling on the UNCOMMITTED
-				 * path above; without it, the own in-progress UPDATE entry would
-				 * fall into the in-progress branch below and the tuple would
-				 * become invisible to the very transaction that updated it.
+				 * already holds our new data and is self-visible.  Treat it
+				 * as live (not deleted), subject to the command-id guard so
+				 * that a snapshot taken before the update's command does not
+				 * see it. This mirrors the own-operation handling on the
+				 * UNCOMMITTED path above; without it, the own in-progress
+				 * UPDATE entry would fall into the in-progress branch below
+				 * and the tuple would become invisible to the very
+				 * transaction that updated it.
 				 */
 				if (TransactionIdIsCurrentTransactionId(slog_entries[vi].xid) &&
 					slog_entries[vi].op_type == SLOG_OP_UPDATE &&

@@ -106,7 +106,7 @@ static uint64 recno_pending_commit_hlc = 0;
  * teaching the visibility-time clear sites to also restore t_commit_ts from
  * the before-image; tracked as follow-up work.
  */
-bool recno_lazy_uncommitted_clear = false;
+bool		recno_lazy_uncommitted_clear = false;
 
 /*
  * RecnoGetUpdateStats - Return in-place update statistics
@@ -621,14 +621,14 @@ have_page:
 	/*
 	 * Ensure the current transaction has an XID assigned BEFORE entering the
 	 * critical section.  GetCurrentTransactionId() may call
-	 * XactLockTableInsert() which acquires a lock and allocates memory -- both
-	 * forbidden in a critical section.  Most inserts already have an XID by now
-	 * (assigned during the unique-index check), but inserting a NULL into a
-	 * UNIQUE column skips that check, so the first assignment can otherwise
-	 * land inside the crit section below.
+	 * XactLockTableInsert() which acquires a lock and allocates memory --
+	 * both forbidden in a critical section.  Most inserts already have an XID
+	 * by now (assigned during the unique-index check), but inserting a NULL
+	 * into a UNIQUE column skips that check, so the first assignment can
+	 * otherwise land inside the crit section below.
 	 *
-	 * An assigned XID is also required for correctness: WAL records without an
-	 * attached xid cannot be decoded into a logical replication stream
+	 * An assigned XID is also required for correctness: WAL records without
+	 * an attached xid cannot be decoded into a logical replication stream
 	 * (ReorderBuffer groups changes by xid and emits no commit record for
 	 * InvalidTransactionId), and RecordTransactionCommit() would treat the
 	 * transaction as read-only and skip the WAL flush.
@@ -639,8 +639,8 @@ have_page:
 	 * Final free-space check before entering the critical section.
 	 * PageGetFreeSpace may have been optimistic (alignment, line pointer
 	 * overhead).  If the page can't actually fit the tuple, release it,
-	 * update FSM, and extend the relation instead.  This prevents the
-	 * PANIC that would otherwise fire inside the critical section.
+	 * update FSM, and extend the relation instead.  This prevents the PANIC
+	 * that would otherwise fire inside the critical section.
 	 */
 	offnum = RecnoPageAddTuple(page, recno_tuple, tuple_size);
 	if (offnum == InvalidOffsetNumber)
@@ -907,12 +907,13 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 	tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
 
 	/*
-	 * Check if tuple is already deleted (tombstone exists).  A DELETED flag can
-	 * mean either a committed delete OR an in-progress delete by a concurrent
-	 * transaction (which now also leaves UNCOMMITTED set).  Distinguish the two:
-	 * if another in-progress transaction owns the delete, wait for it and retry,
-	 * matching heap's behavior where the second DELETE blocks behind the first.
-	 * Only report TM_Deleted once the delete is genuinely committed (or ours).
+	 * Check if tuple is already deleted (tombstone exists).  A DELETED flag
+	 * can mean either a committed delete OR an in-progress delete by a
+	 * concurrent transaction (which now also leaves UNCOMMITTED set).
+	 * Distinguish the two: if another in-progress transaction owns the
+	 * delete, wait for it and retry, matching heap's behavior where the
+	 * second DELETE blocks behind the first. Only report TM_Deleted once the
+	 * delete is genuinely committed (or ours).
 	 */
 	if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 	{
@@ -953,9 +954,9 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 			/*
 			 * If the delete committed, the tombstone remains: report it as
-			 * deleted so the executor can re-evaluate via EPQ.  If it aborted,
-			 * the before-image was restored (DELETED cleared) and we fall
-			 * through to perform our own delete.
+			 * deleted so the executor can re-evaluate via EPQ.  If it
+			 * aborted, the before-image was restored (DELETED cleared) and we
+			 * fall through to perform our own delete.
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 			{
@@ -1286,8 +1287,8 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 			MarkBufferDirty(buffer);
 		}
 		else if (TransactionIdIsValid(dirty_xid) &&
-			!TransactionIdIsCurrentTransactionId(dirty_xid) &&
-			!is_insert_entry)
+				 !TransactionIdIsCurrentTransactionId(dirty_xid) &&
+				 !is_insert_entry)
 		{
 			if (wait)
 			{
@@ -1420,12 +1421,12 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 
 	/*
 	 * Mark tuple as deleted with tombstone - this is the key RECNO feature.
-	 * Set UNCOMMITTED so concurrent writers/readers consult the sLog while the
-	 * delete is in flight: a second DELETE or UPDATE on this TID must detect
-	 * the in-progress delete (via SLogTupleGetDirtyXid) and block on it, rather
-	 * than racing ahead.  The flag is cleared at commit by
-	 * recno_stamp_tuple_committed (which also stamps commit_ts), so VACUUM still
-	 * sees a clean committed delete without consulting the sLog.
+	 * Set UNCOMMITTED so concurrent writers/readers consult the sLog while
+	 * the delete is in flight: a second DELETE or UPDATE on this TID must
+	 * detect the in-progress delete (via SLogTupleGetDirtyXid) and block on
+	 * it, rather than racing ahead.  The flag is cleared at commit by
+	 * recno_stamp_tuple_committed (which also stamps commit_ts), so VACUUM
+	 * still sees a clean committed delete without consulting the sLog.
 	 */
 	tuple_hdr->t_flags |= RECNO_TUPLE_DELETED;
 	tuple_hdr->t_flags |= RECNO_TUPLE_UNCOMMITTED;
@@ -1720,22 +1721,20 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		return TM_Invisible;
 
 	/*
-	 * ---------------------------------------------------------------
-	 * FAST PATH: Same-size CAS update under SHARE_EXCLUSIVE buffer lock.
+	 * --------------------------------------------------------------- FAST
+	 * PATH: Same-size CAS update under SHARE_EXCLUSIVE buffer lock.
 	 *
 	 * For simple same-size updates (e.g. balance += delta in TPC-B), we can
 	 * avoid the fully exclusive buffer lock by using a share-exclusive lock
 	 * combined with a per-tuple CAS spin lock (t_writer).  This still allows
 	 * concurrent readers while serializing writers on the same page.
 	 *
-	 * Eligibility requirements:
-	 *   - New tuple must be the same on-disk size as the old tuple
-	 *   - Old tuple must not have overflow data
-	 *   - Old tuple must not be deleted, locked, or uncommitted
-	 *   - No speculative insertion
-	 *   - Must be a simple UPDATE (not HOT-chain following)
-	 *   - Snapshot visibility must be trivially true (committed tuple)
-	 *   - Relation must need WAL (for crash safety)
+	 * Eligibility requirements: - New tuple must be the same on-disk size as
+	 * the old tuple - Old tuple must not have overflow data - Old tuple must
+	 * not be deleted, locked, or uncommitted - No speculative insertion -
+	 * Must be a simple UPDATE (not HOT-chain following) - Snapshot visibility
+	 * must be trivially true (committed tuple) - Relation must need WAL (for
+	 * crash safety)
 	 *
 	 * If any condition fails, we fall through to the exclusive-lock path.
 	 * ---------------------------------------------------------------
@@ -1747,10 +1746,10 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		/* Form the new tuple speculatively (no overflow handling) */
 		slot_getallattrs(slot);
 		cas_new_tuple = RecnoFormTuple(RelationGetDescr(relation),
-									  slot->tts_values,
-									  slot->tts_isnull,
-									  NULL,		/* no overflow */
-									  NULL);
+									   slot->tts_values,
+									   slot->tts_isnull,
+									   NULL,	/* no overflow */
+									   NULL);
 
 		cas_new_size = cas_new_tuple->t_len;
 
@@ -1767,13 +1766,76 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			if (ItemIdIsNormal(itemid) &&
 				cas_new_size <= ItemIdGetLength(itemid))
 			{
+				bool		cas_no_ww_conflict;
+
 				old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
 
 				/*
-				 * Check eligibility: tuple must be committed, not deleted,
-				 * not locked, no overflow, and same size for direct memcpy.
+				 * The flag gate alone is not sufficient to take the fast
+				 * path: a concurrent transaction may have updated this tuple
+				 * in place and already committed (clearing
+				 * RECNO_TUPLE_UNCOMMITTED) after our statement snapshot was
+				 * taken.  The on-page t_commit_ts is rewound to the original
+				 * insert HLC at commit (so mid-life snapshots still see the
+				 * row), so a plain visibility check cannot detect that a
+				 * committed update happened since we read: the flags look
+				 * clean and the tuple appears visible, yet writing here would
+				 * silently clobber that committed update (lost update / no
+				 * write-write blocking).  Instead, probe the sLog for a
+				 * retained committed-UPDATE marker with commit_hlc strictly
+				 * newer than our read anchor (excluding our own xid). If one
+				 * exists, bail to the exclusive path, which returns
+				 * TM_Updated so the executor re-evaluates via EvalPlanQual. A
+				 * NULL or non-MVCC snapshot is treated as conflict-free,
+				 * matching the regular path's "if (snapshot)" guard.
 				 */
-				if (!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
+				if (snapshot != NULL && IsMVCCSnapshot(snapshot))
+					cas_no_ww_conflict =
+						!SLogTupleHasCommittedUpdateAfter(RelationGetRelid(relation),
+														  otid,
+														  snapshot,
+														  RecnoGetEpqReconcileFloor(snapshot,
+																					RelationGetRelid(relation),
+																					otid),
+														  GetCurrentTransactionIdIfAny());
+				else
+					cas_no_ww_conflict = true;
+
+				/*
+				 * Authoritative in-progress-writer check, independent of the
+				 * on-page UNCOMMITTED flag.  The flag is not a reliable
+				 * conflict signal: it lives in the buffer domain while the
+				 * sLog marker lives in the LRLock domain, and a reader or a
+				 * third writer may clear a still-live flag as "stale" (the
+				 * regular path's stale-flag clear), leaving a concurrent
+				 * in-progress UPDATE/DELETE whose marker is still hlc==0
+				 * (uncommitted).  The committed-update probe above skips
+				 * hlc==0 markers, so without this check the CAS overwrite
+				 * silently clobbers that in-progress writer's value (lost
+				 * update).  Consult the sLog directly; if a concurrent
+				 * in-progress UPDATE/DELETE exists, bail to the exclusive
+				 * path, which serializes on it via XactLockTableWait.
+				 */
+				if (cas_no_ww_conflict)
+				{
+					bool		cas_dirty_is_insert = false;
+					TransactionId cas_dirty_xid =
+						SLogTupleGetDirtyXid(RelationGetRelid(relation),
+											 otid, &cas_dirty_is_insert);
+
+					if (TransactionIdIsValid(cas_dirty_xid) &&
+						!cas_dirty_is_insert)
+						cas_no_ww_conflict = false;
+				}
+
+				/*
+				 * Check eligibility: tuple must be committed, not deleted,
+				 * not locked, no overflow, same size for direct memcpy, and
+				 * free of a concurrent committed update since our read
+				 * anchor.
+				 */
+				if (cas_no_ww_conflict &&
+					!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
 												RECNO_TUPLE_LOCKED |
 												RECNO_TUPLE_UNCOMMITTED |
 												RECNO_TUPLE_HAS_OVERFLOW |
@@ -1785,369 +1847,479 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					if (RecnoTupleWriterTryLock(old_tuple_hdr, &expected))
 					{
 						/*
-						 * We own this tuple exclusively under share-exclusive
-						 * page lock.  No other writer can modify it until we
-						 * release t_writer.
-						 *
-						 * Compute timestamps outside critical section to
-						 * avoid memory allocation issues.
+						 * We now own this tuple exclusively via t_writer,
+						 * which -- not the pre-lock probe -- is the real
+						 * serialization point.  Between our pre-lock
+						 * eligibility check and acquiring t_writer, a
+						 * competing CAS writer may have completed its own
+						 * in-place overwrite (it stamps
+						 * RECNO_TUPLE_UNCOMMITTED into the new page image and
+						 * resets on-page t_writer to 0, which lets our CAS
+						 * succeed), or committed and left a conflict marker.
+						 * Acting on the stale pre-lock decision would
+						 * silently clobber that update (lost update).
+						 * Re-validate the flags and the write-write probe
+						 * under the lock; if the tuple is disqualified now,
+						 * release t_writer and fall through to the exclusive
+						 * path, which blocks on the in-progress writer or
+						 * returns TM_Updated for EPQ.
 						 */
-						uint64		cas_xact_ts;
-						uint64		cas_current_ts;
-						uint16		cas_data_offset;
-						uint16		cas_data_len;
-						char	   *cas_old_bytes;
-						char	   *cas_new_bytes;
-						Size		cas_tuple_len;
+						bool		cas_revalidated;
 
-						cas_xact_ts = RecnoGetTransactionTimestamp();
-						if (recno_use_hlc)
-							cas_current_ts = (uint64) RecnoGetDmlTimestamp();
-						else
-							cas_current_ts = cas_xact_ts;
-
-						/* Ensure we have an XID for WAL flush */
-						(void) GetCurrentTransactionId();
-
-						/* Set MVCC fields on new tuple */
-						cas_new_tuple->t_data->t_commit_ts = cas_current_ts;
-						cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
+						cas_revalidated =
+							!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
+														RECNO_TUPLE_LOCKED |
+														RECNO_TUPLE_UNCOMMITTED |
+														RECNO_TUPLE_HAS_OVERFLOW |
+														RECNO_TUPLE_SPECULATIVE));
+						if (cas_revalidated &&
+							snapshot != NULL && IsMVCCSnapshot(snapshot))
+							cas_revalidated =
+								!SLogTupleHasCommittedUpdateAfter(RelationGetRelid(relation),
+																  otid, snapshot,
+																  RecnoGetEpqReconcileFloor(snapshot,
+																							RelationGetRelid(relation),
+																							otid),
+																  GetCurrentTransactionIdIfAny());
 
 						/*
-						 * Mark the in-place image UNCOMMITTED, mirroring the
-						 * regular update path.  A second writer that hits this
-						 * row sees UNCOMMITTED in the CAS eligibility gate,
-						 * bails to the regular path, and blocks on the
-						 * in-progress writer via XactLockTableWait -- without
-						 * this flag the second CAS would silently overwrite
-						 * an uncommitted update (lost update / no write-write
-						 * blocking).  PRE_COMMIT clears the flag and stamps the
-						 * real commit timestamp; readers self-heal a stale flag
-						 * via the visibility path after a crash.
+						 * Re-check for a concurrent in-progress writer (see
+						 * above)
 						 */
-						cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
-						cas_new_tuple->t_data->t_writer = 0;	/* clear in new image */
-						ItemPointerSet(&cas_new_tuple->t_data->t_ctid, blkno, offnum);
-
-						/*
-						 * Compute the diff region for WAL logging. We only
-						 * need to log the bytes that actually changed.
-						 */
-						cas_tuple_len = cas_new_size;
-						cas_old_bytes = (char *) old_tuple_hdr;
-						cas_new_bytes = (char *) cas_new_tuple->t_data;
-
-						/* Find first differing byte */
-						cas_data_offset = 0;
-						while (cas_data_offset < cas_tuple_len &&
-							   cas_old_bytes[cas_data_offset] == cas_new_bytes[cas_data_offset])
-							cas_data_offset++;
-
-						if (cas_data_offset < cas_tuple_len)
+						if (cas_revalidated)
 						{
-							uint16		cas_end = (uint16) cas_tuple_len;
+							bool		reval_is_insert = false;
+							TransactionId reval_dirty_xid =
+								SLogTupleGetDirtyXid(RelationGetRelid(relation),
+													 otid, &reval_is_insert);
 
-							/* Find last differing byte */
-							while (cas_end > cas_data_offset &&
-								   cas_old_bytes[cas_end - 1] == cas_new_bytes[cas_end - 1])
-								cas_end--;
-
-							cas_data_len = cas_end - cas_data_offset;
+							if (TransactionIdIsValid(reval_dirty_xid) &&
+								!reval_is_insert)
+								cas_revalidated = false;
 						}
-						else
+
+						if (!cas_revalidated)
 						{
-							/* No actual data change -- release and return OK */
+							/*
+							 * Lost the race: release and fall to exclusive
+							 * path
+							 */
 							RecnoTupleWriterUnlock(old_tuple_hdr);
-							LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-							ReleaseBuffer(buffer);
-							pfree(cas_new_tuple->t_data);
-							pfree(cas_new_tuple);
-
-							/* Set output TID */
-							ItemPointerSet(&slot->tts_tid, blkno, offnum);
-							slot->tts_tableOid = RelationGetRelid(relation);
-							if (update_indexes)
-								*update_indexes = TU_None;
-							return TM_Ok;
 						}
-
-						/* SSI conflict check */
-						CheckForSerializableConflictIn(relation, otid,
-													  BufferGetBlockNumber(buffer));
-
-						/*
-						 * Save old tuple for sLog before-image (palloc is OK
-						 * here -- we are NOT in a critical section).
-						 */
+						else
 						{
-							uint32		cas_old_len = ItemIdGetLength(itemid);
-							char	   *cas_old_copy = palloc(cas_old_len);
-							Buffer		cas_undo_buffer = InvalidBuffer;
-							RelUndoRecPtr cas_undo_ptr = InvalidRelUndoRecPtr;
-							RecnoDiffRecord *cas_diff;
-							Size		cas_undo_reserve;
+							/*
+							 * We own this tuple exclusively under
+							 * share-exclusive page lock.  No other writer can
+							 * modify it until we release t_writer.
+							 *
+							 * Compute timestamps outside critical section to
+							 * avoid memory allocation issues.
+							 */
+							uint64		cas_xact_ts;
+							uint64		cas_current_ts;
+							uint16		cas_data_offset;
+							uint16		cas_data_len;
+							char	   *cas_old_bytes;
+							char	   *cas_new_bytes;
+							Size		cas_tuple_len;
 
-							memcpy(cas_old_copy, old_tuple_hdr, cas_old_len);
+							cas_xact_ts = RecnoGetTransactionTimestamp();
+							if (recno_use_hlc)
+								cas_current_ts = (uint64) RecnoGetDmlTimestamp();
+							else
+								cas_current_ts = cas_xact_ts;
+
+							/* Ensure we have an XID for WAL flush */
+							(void) GetCurrentTransactionId();
 
 							/*
-							 * Compute a compact byte-diff of the change so the
-							 * UNDO record stores only the changed bytes instead of
-							 * the full old tuple.  A same-size CAS update (the only
-							 * kind reaching this path) always permits the
-							 * offset-based diff; if the change is too large cas_diff
-							 * is NULL and we fall back to the full-tuple record.
-							 * This roughly halves per-UPDATE UNDO WAL volume.
+							 * Preserve the existing committed t_commit_ts in
+							 * the in-place image rather than stamping the
+							 * updater's (future) start HLC.  The CAS path
+							 * holds only BUFFER_LOCK_SHARE_EXCLUSIVE, so
+							 * concurrent BUFFER_LOCK_SHARED readers can
+							 * observe this tuple mid-overwrite.  A non-atomic
+							 * memcpy lets a reader pick up the new
+							 * t_commit_ts together with the old (cleared)
+							 * UNCOMMITTED flag -- a committed-looking tuple
+							 * stamped in the future, which
+							 * RecnoTupleVisibleHLC then hides
+							 * (HLCAfterOrEqual(snap, future) == false).  The
+							 * row blinks invisible and a concurrent UPDATE
+							 * ... WHERE matches zero rows: a silent lost
+							 * update.  Keeping the original commit ts means a
+							 * torn read always sees a ts no newer than
+							 * before, so the row stays visible; the
+							 * UNCOMMITTED flag plus the sLog marker continue
+							 * to gate write-write conflicts, and PRE_COMMIT's
+							 * recno_stamp_tuple_committed restores this same
+							 * ts, so the value is identical before and after
+							 * commit.
 							 */
-							cas_diff = RecnoComputeTupleDiff(cas_old_copy, cas_old_len,
-							                                 (char *) cas_new_tuple->t_data,
-							                                 cas_new_size);
-							if (cas_diff != NULL &&
-								RecnoDiffIsCompact(cas_diff, cas_old_len))
-								cas_undo_reserve = SizeOfRelUndoRecordHeader +
-									SizeOfRelUndoDeltaUpdatePayload +
-									cas_diff->total_size;
+							cas_new_tuple->t_data->t_commit_ts =
+								old_tuple_hdr->t_commit_ts;
+							cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
+
+							/*
+							 * Mark the in-place image UNCOMMITTED, mirroring
+							 * the regular update path.  A second writer that
+							 * hits this row sees UNCOMMITTED in the CAS
+							 * eligibility gate, bails to the regular path,
+							 * and blocks on the in-progress writer via
+							 * XactLockTableWait -- without this flag the
+							 * second CAS would silently overwrite an
+							 * uncommitted update (lost update / no
+							 * write-write blocking).  PRE_COMMIT clears the
+							 * flag and stamps the real commit timestamp;
+							 * readers self-heal a stale flag via the
+							 * visibility path after a crash.
+							 */
+							cas_new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+							cas_new_tuple->t_data->t_writer = 0;	/* clear in new image */
+							ItemPointerSet(&cas_new_tuple->t_data->t_ctid, blkno, offnum);
+
+							/*
+							 * Compute the diff region for WAL logging. We
+							 * only need to log the bytes that actually
+							 * changed.
+							 */
+							cas_tuple_len = cas_new_size;
+							cas_old_bytes = (char *) old_tuple_hdr;
+							cas_new_bytes = (char *) cas_new_tuple->t_data;
+
+							/* Find first differing byte */
+							cas_data_offset = 0;
+							while (cas_data_offset < cas_tuple_len &&
+								   cas_old_bytes[cas_data_offset] == cas_new_bytes[cas_data_offset])
+								cas_data_offset++;
+
+							if (cas_data_offset < cas_tuple_len)
+							{
+								uint16		cas_end = (uint16) cas_tuple_len;
+
+								/* Find last differing byte */
+								while (cas_end > cas_data_offset &&
+									   cas_old_bytes[cas_end - 1] == cas_new_bytes[cas_end - 1])
+									cas_end--;
+
+								cas_data_len = cas_end - cas_data_offset;
+							}
 							else
 							{
-								if (cas_diff != NULL)
+								/*
+								 * No actual data change -- release and return
+								 * OK
+								 */
+								RecnoTupleWriterUnlock(old_tuple_hdr);
+								LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+								ReleaseBuffer(buffer);
+								pfree(cas_new_tuple->t_data);
+								pfree(cas_new_tuple);
+
+								/* Set output TID */
+								ItemPointerSet(&slot->tts_tid, blkno, offnum);
+								slot->tts_tableOid = RelationGetRelid(relation);
+								if (update_indexes)
+									*update_indexes = TU_None;
+								return TM_Ok;
+							}
+
+							/* SSI conflict check */
+							CheckForSerializableConflictIn(relation, otid,
+														   BufferGetBlockNumber(buffer));
+
+							/*
+							 * Save old tuple for sLog before-image (palloc is
+							 * OK here -- we are NOT in a critical section).
+							 */
+							{
+								uint32		cas_old_len = ItemIdGetLength(itemid);
+								char	   *cas_old_copy = palloc(cas_old_len);
+								Buffer		cas_undo_buffer = InvalidBuffer;
+								RelUndoRecPtr cas_undo_ptr = InvalidRelUndoRecPtr;
+								RecnoDiffRecord *cas_diff;
+								Size		cas_undo_reserve;
+
+								memcpy(cas_old_copy, old_tuple_hdr, cas_old_len);
+
+								/*
+								 * Compute a compact byte-diff of the change
+								 * so the UNDO record stores only the changed
+								 * bytes instead of the full old tuple.  A
+								 * same-size CAS update (the only kind
+								 * reaching this path) always permits the
+								 * offset-based diff; if the change is too
+								 * large cas_diff is NULL and we fall back to
+								 * the full-tuple record. This roughly halves
+								 * per-UPDATE UNDO WAL volume.
+								 */
+								cas_diff = RecnoComputeTupleDiff(cas_old_copy, cas_old_len,
+																 (char *) cas_new_tuple->t_data,
+																 cas_new_size);
+								if (cas_diff != NULL &&
+									RecnoDiffIsCompact(cas_diff, cas_old_len))
+									cas_undo_reserve = SizeOfRelUndoRecordHeader +
+										SizeOfRelUndoDeltaUpdatePayload +
+										cas_diff->total_size;
+								else
 								{
+									if (cas_diff != NULL)
+									{
+										pfree(cas_diff);
+										cas_diff = NULL;
+									}
+									cas_undo_reserve = SizeOfRelUndoRecordHeader +
+										sizeof(RelUndoUpdatePayload) + cas_old_len;
+								}
+
+								/*
+								 * Reserve per-relation UNDO space BEFORE the
+								 * critical section: RelUndoReserve may extend
+								 * the fork and ereport, neither of which is
+								 * safe inside a crit section.  Lock order:
+								 * data buffer then UNDO buffer.
+								 */
+								if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
+									cas_undo_ptr = RelUndoReserve(relation,
+																  cas_undo_reserve,
+																  &cas_undo_buffer);
+
+								/* Critical section: modify page + WAL */
+								START_CRIT_SECTION();
+
+								memcpy(old_tuple_hdr, cas_new_tuple->t_data, cas_new_size);
+
+								/*
+								 * Update page-level commit timestamp
+								 * atomically
+								 */
+								{
+									RecnoPageOpaque cas_opaque = RecnoPageGetOpaque(page);
+									uint64		cas_old_ts_flags;
+									uint64		cas_new_ts_flags;
+									uint64		cur_ts;
+
+									do
+									{
+										cas_old_ts_flags = cas_opaque->pd_commit_ts_and_flags;
+										cur_ts = cas_old_ts_flags & RECNO_PAGE_TS_MASK;
+
+										if (cas_current_ts <= cur_ts)
+											break;
+										cas_new_ts_flags = (cas_old_ts_flags & RECNO_PAGE_FLAG_MASK) |
+											(cas_current_ts & RECNO_PAGE_TS_MASK);
+									} while (!pg_atomic_compare_exchange_u64(
+																			 (pg_atomic_uint64 *) &cas_opaque->pd_commit_ts_and_flags,
+																			 &cas_old_ts_flags, cas_new_ts_flags));
+								}
+
+								MarkBufferDirtyShared(buffer);
+
+								/* WAL log the changed bytes */
+								if (RelationNeedsWAL(relation))
+								{
+									RecnoXLogCasUpdate(relation, buffer, offnum,
+													   cas_data_offset, cas_data_len,
+													   cas_new_bytes + cas_data_offset,
+													   cas_current_ts);
+								}
+
+								END_CRIT_SECTION();
+
+								/* Release tuple-level CAS lock */
+								RecnoTupleWriterUnlock(old_tuple_hdr);
+
+								/* Set output TID (needed by SLogTupleInsert) */
+								ItemPointerSet(&slot->tts_tid, blkno, offnum);
+								slot->tts_tableOid = RelationGetRelid(relation);
+
+								/*
+								 * sLog registration BEFORE buffer release.
+								 * Eliminates the race window where another
+								 * backend reads the modified tuple but finds
+								 * no sLog entry (causing visibility failures
+								 * at high concurrency).  Safe: LRLock reads
+								 * are wait-free, no deadlock with buffer
+								 * lock.
+								 */
+								RecnoEnsureSLogCallbacks();
+								SLogTupleInsert(RelationGetRelid(relation),
+												&slot->tts_tid,
+												GetTopTransactionId(),
+												SLOG_OP_UPDATE,
+												GetCurrentSubTransactionId(),
+												cid, cas_current_ts, 0);
+
+								/* Store before-image for rollback */
+								SLogTupleStoreBeforeImage(
+														  RelationGetRelid(relation),
+														  &slot->tts_tid,
+														  GetTopTransactionId(),
+														  cas_old_copy, cas_old_len,
+														  ((RecnoTupleHeader *) cas_old_copy)->t_flags,
+														  ((RecnoTupleHeader *) cas_old_copy)->t_commit_ts,
+														  relation->rd_locator,
+														  relation->rd_rel->relpersistence);
+
+								LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+								/*
+								 * Emit an XactUndo record carrying the full
+								 * old tuple image so a top-level ROLLBACK
+								 * physically restores the page.  The sLog
+								 * before-image above only serves snapshot
+								 * reads of COMMITTED updates; it is freed
+								 * (not replayed) at XACT_EVENT_ABORT, so
+								 * without this record an aborted in-place CAS
+								 * update would leave the post-image on the
+								 * page. Mirrors the full-tuple branch of the
+								 * regular update path.  Done after buffer
+								 * release: UNDO insertion works from
+								 * cas_old_copy and needs no page lock.
+								 */
+								if (RelUndoRecPtrIsValid(cas_undo_ptr) && cas_diff != NULL)
+								{
+									/*
+									 * Compact path: store only the byte-diff.
+									 * The apply side (RELUNDO_DELTA_UPDATE)
+									 * reads the new tuple from the page and
+									 * reverse-applies the diff to reconstruct
+									 * the old image, then clears transient
+									 * flags -- the same end-state as the
+									 * full-tuple restore, at roughly half the
+									 * UNDO volume.  Layout:
+									 * [header][payload][diff].
+									 */
+									RelUndoRecordHeader cas_undo_hdr;
+									RelUndoDeltaUpdatePayload cas_undo_payload;
+									char	   *cas_combined;
+									Size		cas_payload_total;
+
+									cas_undo_hdr.urec_type = RELUNDO_DELTA_UPDATE;
+									cas_undo_hdr.urec_len = (uint16)
+										(SizeOfRelUndoRecordHeader +
+										 SizeOfRelUndoDeltaUpdatePayload +
+										 cas_diff->total_size);
+									cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+									cas_undo_hdr.urec_prevundorec =
+										GetPerRelUndoPtr(RelationGetRelid(relation));
+									cas_undo_hdr.info_flags = RELUNDO_INFO_PARTIAL_TUPLE;
+									cas_undo_hdr.tuple_len = 0;
+
+									cas_undo_payload.oldtid = slot->tts_tid;
+									cas_undo_payload.newtid = slot->tts_tid;
+									cas_undo_payload.diff_len = (uint16) cas_diff->total_size;
+
+									cas_payload_total = SizeOfRelUndoDeltaUpdatePayload +
+										cas_diff->total_size;
+									cas_combined = palloc(cas_payload_total);
+									memcpy(cas_combined, &cas_undo_payload,
+										   SizeOfRelUndoDeltaUpdatePayload);
+									memcpy(cas_combined + SizeOfRelUndoDeltaUpdatePayload,
+										   cas_diff, cas_diff->total_size);
+
+									RelUndoFinish(relation, cas_undo_buffer, cas_undo_ptr,
+												  &cas_undo_hdr, cas_combined,
+												  cas_payload_total);
+									RegisterPerRelUndo(RelationGetRelid(relation),
+													   cas_undo_ptr);
+									pfree(cas_combined);
+								}
+								else if (RelUndoRecPtrIsValid(cas_undo_ptr))
+								{
+									/*
+									 * Fall-back path: the change was too
+									 * large to diff compactly, so store the
+									 * full old tuple as before.
+									 */
+									RelUndoRecordHeader cas_undo_hdr;
+									RelUndoUpdatePayload cas_undo_payload;
+									char	   *cas_combined;
+									Size		cas_payload_total;
+
+									cas_undo_hdr.urec_type = RELUNDO_UPDATE;
+									cas_undo_hdr.urec_len = (uint16)
+										(SizeOfRelUndoRecordHeader +
+										 sizeof(RelUndoUpdatePayload) + cas_old_len);
+									cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+									cas_undo_hdr.urec_prevundorec =
+										GetPerRelUndoPtr(RelationGetRelid(relation));
+									cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
+									cas_undo_hdr.tuple_len = (uint16) cas_old_len;
+
+									cas_undo_payload.oldtid = slot->tts_tid;
+									cas_undo_payload.newtid = slot->tts_tid;
+
+									cas_payload_total = sizeof(RelUndoUpdatePayload) +
+										cas_old_len;
+									cas_combined = palloc(cas_payload_total);
+									memcpy(cas_combined, &cas_undo_payload,
+										   sizeof(RelUndoUpdatePayload));
+									memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
+										   cas_old_copy, cas_old_len);
+
+									RelUndoFinish(relation, cas_undo_buffer, cas_undo_ptr,
+												  &cas_undo_hdr, cas_combined,
+												  cas_payload_total);
+									RegisterPerRelUndo(RelationGetRelid(relation),
+													   cas_undo_ptr);
+									pfree(cas_combined);
+								}
+								else if (cas_diff != NULL)
+								{
+									/*
+									 * No UNDO fork (e.g. unlogged/temp): drop
+									 * the diff.
+									 */
 									pfree(cas_diff);
 									cas_diff = NULL;
 								}
-								cas_undo_reserve = SizeOfRelUndoRecordHeader +
-									sizeof(RelUndoUpdatePayload) + cas_old_len;
-							}
 
-							/*
-							 * Reserve per-relation UNDO space BEFORE the critical
-							 * section: RelUndoReserve may extend the fork and
-							 * ereport, neither of which is safe inside a crit
-							 * section.  Lock order: data buffer then UNDO buffer.
-							 */
-							if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
-								cas_undo_ptr = RelUndoReserve(relation,
-															  cas_undo_reserve,
-															  &cas_undo_buffer);
-
-							/* Critical section: modify page + WAL */
-							START_CRIT_SECTION();
-
-							memcpy(old_tuple_hdr, cas_new_tuple->t_data, cas_new_size);
-
-							/* Update page-level commit timestamp atomically */
-							{
-								RecnoPageOpaque cas_opaque = RecnoPageGetOpaque(page);
-								uint64		cas_old_ts_flags;
-								uint64		cas_new_ts_flags;
-								uint64		cur_ts;
-
-								do
-								{
-									cas_old_ts_flags = cas_opaque->pd_commit_ts_and_flags;
-									cur_ts = cas_old_ts_flags & RECNO_PAGE_TS_MASK;
-
-									if (cas_current_ts <= cur_ts)
-										break;
-									cas_new_ts_flags = (cas_old_ts_flags & RECNO_PAGE_FLAG_MASK) |
-										(cas_current_ts & RECNO_PAGE_TS_MASK);
-								} while (!pg_atomic_compare_exchange_u64(
-									(pg_atomic_uint64 *) &cas_opaque->pd_commit_ts_and_flags,
-									&cas_old_ts_flags, cas_new_ts_flags));
-							}
-
-							MarkBufferDirtyShared(buffer);
-
-							/* WAL log the changed bytes */
-							if (RelationNeedsWAL(relation))
-							{
-								RecnoXLogCasUpdate(relation, buffer, offnum,
-												   cas_data_offset, cas_data_len,
-												   cas_new_bytes + cas_data_offset,
-												   cas_current_ts);
-							}
-
-							END_CRIT_SECTION();
-
-							/* Release tuple-level CAS lock */
-							RecnoTupleWriterUnlock(old_tuple_hdr);
-
-							/* Set output TID (needed by SLogTupleInsert) */
-							ItemPointerSet(&slot->tts_tid, blkno, offnum);
-							slot->tts_tableOid = RelationGetRelid(relation);
-
-							/*
-							 * sLog registration BEFORE buffer release.
-							 * Eliminates the race window where another
-							 * backend reads the modified tuple but finds no
-							 * sLog entry (causing visibility failures at
-							 * high concurrency).  Safe: LRLock reads are
-							 * wait-free, no deadlock with buffer lock.
-							 */
-							RecnoEnsureSLogCallbacks();
-							SLogTupleInsert(RelationGetRelid(relation),
-											&slot->tts_tid,
-											GetTopTransactionId(),
-											SLOG_OP_UPDATE,
-											GetCurrentSubTransactionId(),
-											cid, cas_current_ts, 0);
-
-							/* Store before-image for rollback */
-							SLogTupleStoreBeforeImage(
-								RelationGetRelid(relation),
-								&slot->tts_tid,
-								GetTopTransactionId(),
-								cas_old_copy, cas_old_len,
-								((RecnoTupleHeader *) cas_old_copy)->t_flags,
-								((RecnoTupleHeader *) cas_old_copy)->t_commit_ts,
-								relation->rd_locator,
-								relation->rd_rel->relpersistence);
-
-							LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-
-							/*
-							 * Emit an XactUndo record carrying the full old
-							 * tuple image so a top-level ROLLBACK physically
-							 * restores the page.  The sLog before-image above
-							 * only serves snapshot reads of COMMITTED updates;
-							 * it is freed (not replayed) at XACT_EVENT_ABORT,
-							 * so without this record an aborted in-place CAS
-							 * update would leave the post-image on the page.
-							 * Mirrors the full-tuple branch of the regular
-							 * update path.  Done after buffer release: UNDO
-							 * insertion works from cas_old_copy and needs no
-							 * page lock.
-							 */
-							if (RelUndoRecPtrIsValid(cas_undo_ptr) && cas_diff != NULL)
-							{
 								/*
-								 * Compact path: store only the byte-diff.  The apply
-								 * side (RELUNDO_DELTA_UPDATE) reads the new tuple from
-								 * the page and reverse-applies the diff to reconstruct
-								 * the old image, then clears transient flags -- the
-								 * same end-state as the full-tuple restore, at roughly
-								 * half the UNDO volume.  Layout: [header][payload][diff].
+								 * Compute index update strategy before
+								 * freeing the old image.  A same-size CAS
+								 * update can still change an indexed column
+								 * (e.g. UPDATE SET val=99 WHERE val=10), in
+								 * which case the executor must insert a new
+								 * index entry for the new key.  EPQ does not
+								 * recover this -- it handles concurrency, not
+								 * index maintenance -- so we must classify
+								 * the change accurately here, exactly as the
+								 * regular path does.
 								 */
-								RelUndoRecordHeader cas_undo_hdr;
-								RelUndoDeltaUpdatePayload cas_undo_payload;
-								char	   *cas_combined;
-								Size		cas_payload_total;
-
-								cas_undo_hdr.urec_type = RELUNDO_DELTA_UPDATE;
-								cas_undo_hdr.urec_len = (uint16)
-									(SizeOfRelUndoRecordHeader +
-									 SizeOfRelUndoDeltaUpdatePayload +
-									 cas_diff->total_size);
-								cas_undo_hdr.urec_xid = GetCurrentTransactionId();
-								cas_undo_hdr.urec_prevundorec =
-									GetPerRelUndoPtr(RelationGetRelid(relation));
-								cas_undo_hdr.info_flags = RELUNDO_INFO_PARTIAL_TUPLE;
-								cas_undo_hdr.tuple_len = 0;
-
-								cas_undo_payload.oldtid = slot->tts_tid;
-								cas_undo_payload.newtid = slot->tts_tid;
-								cas_undo_payload.diff_len = (uint16) cas_diff->total_size;
-
-								cas_payload_total = SizeOfRelUndoDeltaUpdatePayload +
-									cas_diff->total_size;
-								cas_combined = palloc(cas_payload_total);
-								memcpy(cas_combined, &cas_undo_payload,
-									   SizeOfRelUndoDeltaUpdatePayload);
-								memcpy(cas_combined + SizeOfRelUndoDeltaUpdatePayload,
-									   cas_diff, cas_diff->total_size);
-
-								RelUndoFinish(relation, cas_undo_buffer, cas_undo_ptr,
-											  &cas_undo_hdr, cas_combined,
-											  cas_payload_total);
-								RegisterPerRelUndo(RelationGetRelid(relation),
-												   cas_undo_ptr);
-								pfree(cas_combined);
-							}
-							else if (RelUndoRecPtrIsValid(cas_undo_ptr))
-							{
-								/*
-								 * Fall-back path: the change was too large to diff
-								 * compactly, so store the full old tuple as before.
-								 */
-								RelUndoRecordHeader cas_undo_hdr;
-								RelUndoUpdatePayload cas_undo_payload;
-								char	   *cas_combined;
-								Size		cas_payload_total;
-
-								cas_undo_hdr.urec_type = RELUNDO_UPDATE;
-								cas_undo_hdr.urec_len = (uint16)
-									(SizeOfRelUndoRecordHeader +
-									 sizeof(RelUndoUpdatePayload) + cas_old_len);
-								cas_undo_hdr.urec_xid = GetCurrentTransactionId();
-								cas_undo_hdr.urec_prevundorec =
-									GetPerRelUndoPtr(RelationGetRelid(relation));
-								cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
-								cas_undo_hdr.tuple_len = (uint16) cas_old_len;
-
-								cas_undo_payload.oldtid = slot->tts_tid;
-								cas_undo_payload.newtid = slot->tts_tid;
-
-								cas_payload_total = sizeof(RelUndoUpdatePayload) +
-									cas_old_len;
-								cas_combined = palloc(cas_payload_total);
-								memcpy(cas_combined, &cas_undo_payload,
-									   sizeof(RelUndoUpdatePayload));
-								memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
-									   cas_old_copy, cas_old_len);
-
-								RelUndoFinish(relation, cas_undo_buffer, cas_undo_ptr,
-											  &cas_undo_hdr, cas_combined,
-											  cas_payload_total);
-								RegisterPerRelUndo(RelationGetRelid(relation),
-												   cas_undo_ptr);
-								pfree(cas_combined);
-							}
-							else if (cas_diff != NULL)
+								if (update_indexes)
 								{
-								/* No UNDO fork (e.g. unlogged/temp): drop the diff. */
-								pfree(cas_diff);
-								cas_diff = NULL;
-							}
+									RecnoTupleData cas_old_tup;
 
-							/*
-							 * Compute index update strategy before freeing the
-							 * old image.  A same-size CAS update can still
-							 * change an indexed column (e.g. UPDATE SET val=99
-							 * WHERE val=10), in which case the executor must
-							 * insert a new index entry for the new key.  EPQ does
-							 * not recover this -- it handles concurrency, not
-							 * index maintenance -- so we must classify the change
-							 * accurately here, exactly as the regular path does.
-							 */
-							if (update_indexes)
-							{
-								RecnoTupleData cas_old_tup;
+									cas_old_tup.t_len = cas_old_len;
+									cas_old_tup.t_data = (RecnoTupleHeader *) cas_old_copy;
+									*update_indexes =
+										recno_compute_index_update(relation,
+																   &cas_old_tup,
+																   slot);
+								}
 
-								cas_old_tup.t_len = cas_old_len;
-								cas_old_tup.t_data = (RecnoTupleHeader *) cas_old_copy;
-								*update_indexes =
-									recno_compute_index_update(relation,
-															   &cas_old_tup,
-															   slot);
-							}
+								pfree(cas_old_copy);
 
-							pfree(cas_old_copy);
+								/*
+								 * Clear VM all-visible/all-frozen bits.
+								 */
+								RecnoVMClear(relation, blkno, buffer, RECNO_VM_VALID_BITS);
 
-							/*
-							 * Clear VM all-visible/all-frozen bits.
-							 */
-							RecnoVMClear(relation, blkno, buffer, RECNO_VM_VALID_BITS);
+								ReleaseBuffer(buffer);
 
-							ReleaseBuffer(buffer);
+								/* Track in-place update */
+								recno_stat_in_place_updates++;
 
-							/* Track in-place update */
-							recno_stat_in_place_updates++;
+								/* DirtyMap tracking */
+								RecnoDirtyMapIncrement(RelationGetRelid(relation), blkno);
+								RecnoDirtyMapTrackIncrement(RelationGetRelid(relation), blkno);
 
-							/* DirtyMap tracking */
-							RecnoDirtyMapIncrement(RelationGetRelid(relation), blkno);
-							RecnoDirtyMapTrackIncrement(RelationGetRelid(relation), blkno);
-
-							pfree(cas_new_tuple->t_data);
-							pfree(cas_new_tuple);
-							return TM_Ok;
+								pfree(cas_new_tuple->t_data);
+								pfree(cas_new_tuple);
+								return TM_Ok;
+							}	/* end else (revalidated) */
 						}
 					}
 					/* CAS failed -- another writer has this tuple */
@@ -2175,8 +2347,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * below).  To stop two backends that each see the other's in-progress
 	 * write from mutually waiting and deadlocking, an updater first takes a
 	 * heavyweight tuple lock (have_tuple_lock) that serializes them into a
-	 * FIFO queue, held continuously through the recheck/update and released on
-	 * every exit via RECNO_RELEASE_TUPLOCK().  This matches heap_update.
+	 * FIFO queue, held continuously through the recheck/update and released
+	 * on every exit via RECNO_RELEASE_TUPLOCK().  This matches heap_update.
 	 */
 	have_tuple_lock = false;
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -2203,11 +2375,11 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	old_has_overflow = (old_tuple_hdr->t_flags & RECNO_TUPLE_HAS_OVERFLOW) != 0;
 
 	/*
-	 * Check if tuple is already deleted.  As in the delete path, a DELETED flag
-	 * may reflect an in-progress delete by a concurrent transaction (which also
-	 * sets UNCOMMITTED).  If so, wait for that transaction and retry rather than
-	 * reporting TM_Deleted immediately -- this matches heap, where an UPDATE
-	 * blocks behind a concurrent in-progress DELETE.
+	 * Check if tuple is already deleted.  As in the delete path, a DELETED
+	 * flag may reflect an in-progress delete by a concurrent transaction
+	 * (which also sets UNCOMMITTED).  If so, wait for that transaction and
+	 * retry rather than reporting TM_Deleted immediately -- this matches
+	 * heap, where an UPDATE blocks behind a concurrent in-progress DELETE.
 	 */
 	if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 	{
@@ -2258,9 +2430,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
 
 			/*
-			 * Delete committed -> tombstone persists, report TM_Deleted for EPQ.
-			 * Delete aborted -> before-image restored (DELETED cleared), fall
-			 * through to perform the update.
+			 * Delete committed -> tombstone persists, report TM_Deleted for
+			 * EPQ. Delete aborted -> before-image restored (DELETED cleared),
+			 * fall through to perform the update.
 			 */
 			if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
 			{
@@ -2429,10 +2601,10 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 						TransactionId wait_xid = dirty_xid;
 
 						/*
-						 * Serialize competing updaters via a heavyweight tuple
-						 * lock before sleeping on the conflicting xid, so two
-						 * backends racing on the same tuple queue instead of
-						 * deadlocking.  Matches heap_update.
+						 * Serialize competing updaters via a heavyweight
+						 * tuple lock before sleeping on the conflicting xid,
+						 * so two backends racing on the same tuple queue
+						 * instead of deadlocking.  Matches heap_update.
 						 */
 						UnlockReleaseBuffer(buffer);
 						if (!have_tuple_lock)
@@ -2657,6 +2829,57 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			}
 			/* If now visible, fall through to perform the update */
 		}
+
+		/*
+		 * Write-write conflict against an ALREADY-COMMITTED concurrent
+		 * update.
+		 *
+		 * The visibility check above always returns "visible" for a committed
+		 * in-place update, because at commit time t_commit_ts is rewound to
+		 * the original insert timestamp (so mid-life readers still see the
+		 * row). That rewind erases the "updated since you read it" signal
+		 * heap keeps in xmax, so visibility alone can never detect a lost
+		 * update.  The sLog retains a committed-UPDATE marker (commit_hlc)
+		 * for exactly this purpose: if another transaction
+		 * updated-and-committed this tuple after our statement read anchor,
+		 * overwriting it in place would silently lose that update.  Return
+		 * TM_Updated so the executor re-evaluates via EvalPlanQual against
+		 * the now-current row, matching heap.
+		 *
+		 * Converge like heap: bounce to EPQ once per DISTINCT committed
+		 * update, not once per probe.  RecnoGetWriteConflictAnchor raises our
+		 * read anchor by the EPQ reconcile watermark so a marker we already
+		 * bounced on this statement is not re-reported; RecnoMarkEpqReconcile
+		 * stamps the watermark before we return so the pending EPQ re-read's
+		 * absorbed commits are excluded.  Without this the probe re-detects
+		 * the same marker on every EPQ retry (EPQ reuses the same
+		 * snapshot/curcid, hence the same frozen anchor) and livelocks.
+		 */
+		if (IsMVCCSnapshot(snapshot))
+		{
+			uint64		epq_floor =
+				RecnoGetEpqReconcileFloor(snapshot,
+										  RelationGetRelid(relation), otid);
+			TransactionId myxid_ww = GetCurrentTransactionIdIfAny();
+
+			if (SLogTupleHasCommittedUpdateAfter(RelationGetRelid(relation),
+												 otid, snapshot, epq_floor,
+												 myxid_ww))
+			{
+				RecnoMarkEpqReconcile(snapshot,
+									  RelationGetRelid(relation), otid);
+				if (tmfd)
+				{
+					tmfd->ctid = *otid;
+					tmfd->xmax = InvalidTransactionId;
+					tmfd->cmax = InvalidCommandId;
+					tmfd->traversed = false;
+				}
+				UnlockReleaseBuffer(buffer);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Updated;
+			}
+		}
 	}
 
 	/*
@@ -2666,10 +2889,16 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * (to preserve tuple existence in scans).  We must still detect the
 	 * write-write conflict and block.
 	 *
-	 * Check the UNCOMMITTED flag + sLog to see if another txn has a
-	 * concurrent modification.  If so, wait for it, then re-check.
+	 * The in-progress writer is detected authoritatively via the sLog
+	 * (SLogTupleGetDirtyXid filters by TransactionIdIsInProgress), NOT via
+	 * the on-page RECNO_TUPLE_UNCOMMITTED flag.  The page flag and the sLog
+	 * marker live in two domains (buffer locks vs. LRLock) that are not
+	 * updated atomically, so a live writer's marker can exist while the page
+	 * flag is transiently clear.  Gating this wait on the flag (as we once
+	 * did) let such a writer slip past, silently clobbering its in-progress
+	 * update. Consult the sLog unconditionally; only use the flag to
+	 * opportunistically clear stale state when no writer is present.
 	 */
-	if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
 	{
 		TransactionId dirty_xid;
 		bool		is_insert_entry;
@@ -2681,14 +2910,18 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		if (!TransactionIdIsValid(dirty_xid))
 		{
 			/*
-			 * Stale UNCOMMITTED flag — no active writer.  Clear it.
+			 * No active writer.  If the page still carries a stale
+			 * UNCOMMITTED flag, clear it opportunistically.
 			 */
-			old_tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
-			MarkBufferDirty(buffer);
+			if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+			{
+				old_tuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+				MarkBufferDirty(buffer);
+			}
 		}
 		else if (TransactionIdIsValid(dirty_xid) &&
-			!TransactionIdIsCurrentTransactionId(dirty_xid) &&
-			!is_insert_entry)
+				 !TransactionIdIsCurrentTransactionId(dirty_xid) &&
+				 !is_insert_entry)
 		{
 			/*
 			 * Another transaction has an in-progress UPDATE/DELETE. Block
@@ -2753,20 +2986,20 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				 * against the now-stable page.
 				 *
 				 * This is required even on ABORT, and is where RECNO differs
-				 * from heap.  RECNO updates in place, so a READ COMMITTED scan
-				 * that ran while the other writer was in progress dirty-read
-				 * that writer's uncommitted value as the base for the new
-				 * tuple's expression (e.g. counter = counter + 10 computed off
-				 * the in-flight value).  Heap never sees this because its scan
-				 * reads the prior committed version.  By the time we get here:
-				 *   - COMMIT: the page holds the other writer's committed value;
-				 *     EPQ recomputes on top of it.
-				 *   - ABORT: ApplyPerRelUndo() has already restored the
-				 *     pre-update image inline (before the conflicting XID left
-				 *     the proc array), so the page holds the original committed
-				 *     value; EPQ recomputes on top of that.
-				 * Either way EPQ re-reads the correct base and recomputes,
-				 * matching heap's final result.
+				 * from heap.  RECNO updates in place, so a READ COMMITTED
+				 * scan that ran while the other writer was in progress
+				 * dirty-read that writer's uncommitted value as the base for
+				 * the new tuple's expression (e.g. counter = counter + 10
+				 * computed off the in-flight value).  Heap never sees this
+				 * because its scan reads the prior committed version.  By the
+				 * time we get here: - COMMIT: the page holds the other
+				 * writer's committed value; EPQ recomputes on top of it. -
+				 * ABORT: ApplyPerRelUndo() has already restored the
+				 * pre-update image inline (before the conflicting XID left
+				 * the proc array), so the page holds the original committed
+				 * value; EPQ recomputes on top of that. Either way EPQ
+				 * re-reads the correct base and recomputes, matching heap's
+				 * final result.
 				 */
 				if (tmfd)
 				{
@@ -3157,15 +3390,16 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		 * only the changed bytes instead of the full old tuple, mirroring the
 		 * CAS fast path.  The diff is only valid for a same-size in-place
 		 * overwrite (RecnoComputeTupleDiff requires equal lengths), which is
-		 * exactly the new_tuple_size == old_len case below; grow/shrink updates
-		 * leave upd_diff NULL and fall back to the full-tuple record.
+		 * exactly the new_tuple_size == old_len case below; grow/shrink
+		 * updates leave upd_diff NULL and fall back to the full-tuple record.
 		 *
 		 * The new tuple's transient MVCC flags (RECNO_TUPLE_UPDATED set,
-		 * RECNO_TUPLE_UNCOMMITTED cleared) and t_ctid are finalized inside the
-		 * critical section below, AFTER this reservation runs.  To diff against
-		 * the exact bytes that will land on the page, replicate those mutations
-		 * on a throwaway copy here without disturbing new_tuple (whose current
-		 * state still feeds the pre-ctid logical-decoding image).
+		 * RECNO_TUPLE_UNCOMMITTED cleared) and t_ctid are finalized inside
+		 * the critical section below, AFTER this reservation runs.  To diff
+		 * against the exact bytes that will land on the page, replicate those
+		 * mutations on a throwaway copy here without disturbing new_tuple
+		 * (whose current state still feeds the pre-ctid logical-decoding
+		 * image).
 		 */
 		if (new_tuple_size == old_tuple_for_inplace_wal->t_len)
 		{
@@ -3228,7 +3462,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	/*
 	 * Build the heap-format logical-decoding images (old and new) BEFORE the
 	 * critical section, since heap_form_tuple()/palloc() are forbidden inside
-	 * it.  When the relation is not logically logged these leave data == NULL.
+	 * it.  When the relation is not logically logged these leave data ==
+	 * NULL.
 	 */
 	RecnoXLogPrepareLogicalImage(relation, old_tuple_for_inplace_wal,
 								 &update_old_img);
@@ -3375,8 +3610,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 		/*
 		 * sLog registration BEFORE buffer release — eliminates the race
-		 * window where another backend reads the modified tuple but finds
-		 * no sLog entry.  Safe: LRLock reads are wait-free, no deadlock.
+		 * window where another backend reads the modified tuple but finds no
+		 * sLog entry.  Safe: LRLock reads are wait-free, no deadlock.
 		 */
 		RecnoEnsureSLogCallbacks();
 		SLogTupleInsert(RelationGetRelid(relation), &slot->tts_tid,
@@ -3414,8 +3649,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		 * Compact path: store only the byte-diff.  The apply side
 		 * (RELUNDO_DELTA_UPDATE) reads the new tuple from the page and
 		 * reverse-applies the diff to reconstruct the old image, at roughly
-		 * half the UNDO volume.  Layout: [header][payload][diff].  Only reached
-		 * for a same-size in-place overwrite (see reservation above).
+		 * half the UNDO volume.  Layout: [header][payload][diff].  Only
+		 * reached for a same-size in-place overwrite (see reservation above).
 		 */
 		RelUndoRecordHeader upd_undo_hdr;
 		RelUndoDeltaUpdatePayload upd_undo_payload;
@@ -3459,8 +3694,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 		/*
 		 * Full-tuple UPDATE UNDO record: store the old tuple so rollback can
-		 * restore it (RelUndoApplyUpdate handles same-size, grow, and shrink).
-		 * Layout written by RelUndoFinish: [header][payload][old tuple].
+		 * restore it (RelUndoApplyUpdate handles same-size, grow, and
+		 * shrink). Layout written by RelUndoFinish: [header][payload][old
+		 * tuple].
 		 */
 		upd_undo_hdr.urec_type = RELUNDO_UPDATE;
 		upd_undo_hdr.urec_len = (uint16)
@@ -3514,8 +3750,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 */
 	{
 		/*
-		 * sLog registration was done above (before buffer release).
-		 * The RecnoEnsureSLogCallbacks + SLogTupleInsert +
+		 * sLog registration was done above (before buffer release). The
+		 * RecnoEnsureSLogCallbacks + SLogTupleInsert +
 		 * SLogTupleStoreBeforeImage calls were moved to eliminate the
 		 * visibility race window at high concurrency.
 		 */
@@ -5049,8 +5285,8 @@ recno_stamp_tuple_committed(Buffer buf, OffsetNumber offnum,
 	 *
 	 * A tracked key whose op_type was flipped to SLOG_OP_ABORTED by
 	 * SLogTupleRemoveBySubXid (savepoint rollback) must be skipped: its tuple
-	 * is logically discarded and a shared ABORTED sLog entry already exists to
-	 * enforce invisibility.  Clearing UNCOMMITTED here would resurrect it.
+	 * is logically discarded and a shared ABORTED sLog entry already exists
+	 * to enforce invisibility.  Clearing UNCOMMITTED here would resurrect it.
 	 * This check must precede the local_only fast path because savepoint-
 	 * aborted INSERTs keep local_only == true.
 	 *
@@ -5306,11 +5542,9 @@ recno_batch_clear_uncommitted(SLogTrackedKeyInfo * keys, int nkeys,
  * strictly after the transaction's start HLC.
  */
 static void
-RecnoClearUncommittedFlags(TransactionId xid)
+RecnoGenerateCommitHLC(void)
 {
 	uint64		commit_hlc;
-	SLogTrackedKeyInfo *keys;
-	int			nkeys;
 
 	/*
 	 * Generate the commit timestamp once for the entire transaction. In HLC
@@ -5318,16 +5552,26 @@ RecnoClearUncommittedFlags(TransactionId xid)
 	 * any prior HLC (including this transaction's start HLC). In non-HLC
 	 * mode, use RecnoGetCommitTimestamp() for monotonic ordering.
 	 *
-	 * This MUST happen unconditionally -- SLogTupleCommitByXid at COMMIT time
-	 * needs recno_pending_commit_hlc for before-image commit retention.
+	 * This MUST happen unconditionally -- SLogTupleCommitByXid needs
+	 * recno_pending_commit_hlc for before-image commit retention, and the
+	 * seq-cst RMW here establishes the happens-before edge against an
+	 * iso-reader's snapshot HLC (see SLogTupleCommitByXid).
 	 */
 	if (recno_use_hlc)
 		commit_hlc = (uint64) HLCNow(0);
 	else
 		commit_hlc = RecnoGetCommitTimestamp();
 
-	/* Save for COMMIT phase (SLogTupleCommitByXid needs this) */
+	/* Save for the COMMIT phase and the page-flag clear below */
 	recno_pending_commit_hlc = commit_hlc;
+}
+
+static void
+RecnoClearUncommittedFlags(TransactionId xid)
+{
+	uint64		commit_hlc = recno_pending_commit_hlc;
+	SLogTrackedKeyInfo *keys;
+	int			nkeys;
 
 	/*
 	 * When lazy clear is enabled, skip the expensive batch page-visit loop.
@@ -5454,22 +5698,45 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 
 				if (TransactionIdIsValid(xid))
 				{
-					RecnoClearUncommittedFlags(xid);
-					RecnoProcessAbortedEntries(xid);
-
 					/*
-					 * Stamp commit_hlc on retained UPDATE entries and publish
-					 * before-images HERE, before the point of no return.  This
-					 * must precede ProcArrayEndTransaction: if it ran at
-					 * XACT_EVENT_COMMIT (post-proc-array, inside the no-abort
-					 * region), a concurrent reader could observe a
-					 * committed-but-unstamped (commit_hlc==0) op after the
-					 * writer left the proc array and wrongly treat the live
-					 * tuple as deleted (c=8 "expected one row, got 0").  It
-					 * also keeps DSA allocation in an abort-legal phase,
-					 * avoiding the post-commit OOM->PANIC.
+					 * Ordering here is load-bearing for write-write
+					 * correctness.  Three steps, in this exact order:
+					 *
+					 * 1. RecnoProcessAbortedEntries -- mark pages DELETED for
+					 * subxact-aborted ops and remove their ABORTED sLog
+					 * entries.  MUST run before SLogTupleCommitByXid, whose
+					 * COMMIT_XID apply removes every non-UPDATE op for the
+					 * xid; running it first would erase the ABORTED marker
+					 * this step needs and resurrect an aborted tuple.
+					 *
+					 * 2. SLogTupleCommitByXid -- stamp commit_hlc on the
+					 * retained UPDATE markers, making them conflict-visible.
+					 *
+					 * 3. RecnoClearUncommittedFlags -- clear the on-page
+					 * UNCOMMITTED flag and rewind t_commit_ts.
+					 *
+					 * Step 2 MUST precede step 3.  In-place UPDATE rewinds
+					 * the on-page t_commit_ts at commit so mid-life snapshots
+					 * still see the row, which erases the heap-style "updated
+					 * since you read it" signal.  A concurrent updater
+					 * therefore relies solely on the sLog commit_hlc marker
+					 * to detect the conflict.  If the page flag were cleared
+					 * first, a concurrent updater in the gap would see a
+					 * clean committed tuple but a commit_hlc==0 (unstamped)
+					 * marker -- which the conflict probe skips -- and
+					 * silently clobber our committed update (lost update).
+					 *
+					 * All three run at PRE_COMMIT, before the point of no
+					 * return: stamping a committed-but-unstamped op after
+					 * ProcArrayEndTransaction would let a reader treat the
+					 * live tuple as deleted (c=8 "expected one row, got 0"),
+					 * and DSA allocation must stay in an abort-legal phase to
+					 * avoid a post-commit OOM->PANIC.
 					 */
+					RecnoGenerateCommitHLC();
+					RecnoProcessAbortedEntries(xid);
 					SLogTupleCommitByXid(xid, recno_pending_commit_hlc);
+					RecnoClearUncommittedFlags(xid);
 				}
 			}
 			break;
@@ -5503,9 +5770,9 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 			{
 				/*
 				 * commit_hlc stamping and before-image publication already
-				 * happened at XACT_EVENT_PRE_COMMIT (see above).  Here we only
-				 * release backend-local tracking state, which is safe in the
-				 * post-commit no-abort region.
+				 * happened at XACT_EVENT_PRE_COMMIT (see above).  Here we
+				 * only release backend-local tracking state, which is safe in
+				 * the post-commit no-abort region.
 				 */
 				recno_pending_commit_hlc = 0;
 
@@ -5542,11 +5809,12 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 				if (TransactionIdIsValid(xid))
 				{
 					/*
-					 * Mark this transaction's shared sLog ops ABORTED.  The DSA
-					 * before-images are freed inside SLogTupleMarkAborted under
-					 * the partition writer lock (single-owner), so we must not
-					 * free them here: an unlocked free races the UNDO worker's
-					 * SLogTupleRemoveByXidGlobal and corrupts the DSA heap.
+					 * Mark this transaction's shared sLog ops ABORTED.  The
+					 * DSA before-images are freed inside SLogTupleMarkAborted
+					 * under the partition writer lock (single-owner), so we
+					 * must not free them here: an unlocked free races the
+					 * UNDO worker's SLogTupleRemoveByXidGlobal and corrupts
+					 * the DSA heap.
 					 */
 					SLogTupleMarkAborted(xid);
 				}
@@ -5608,8 +5876,8 @@ recno_restore_before_image_cb(const SLogTupleKey *key,
 	 * relcache access -- relation_open and friends -- unsafe: it would trip
 	 * the IsTransactionState() assertion in AssertCouldGetRelation.  We
 	 * therefore go straight to the buffer manager using the RelFileLocator
-	 * captured at store time, which needs no relcache and works regardless
-	 * of transaction state (including proc_exit teardown).
+	 * captured at store time, which needs no relcache and works regardless of
+	 * transaction state (including proc_exit teardown).
 	 */
 	{
 		Buffer		buf = InvalidBuffer;

@@ -24,8 +24,9 @@ id|val
  1|original
 (1 row)
 
-step s2_update: UPDATE recno_lock SET val = 's2_updated' WHERE id = 1;
+step s2_update: UPDATE recno_lock SET val = 's2_updated' WHERE id = 1; <waiting ...>
 step s1_commit: COMMIT;
+step s2_update: <... completed>
 step s2_read: SELECT id, val FROM recno_lock ORDER BY id;
 id|val       
 --+----------
