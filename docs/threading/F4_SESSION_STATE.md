@@ -97,6 +97,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 12 | `utils/adt/formatting.c` | `FormatState` / `format_state` | 6 | All file-local statics, zero externs: the two formatting-picture caches — the date/time cache (`DCHCache[DCH_CACHE_ENTRIES]`, `n_DCHCache`, `DCHCounter`) and the number cache (`NUMCache[NUM_CACHE_ENTRIES]`, `n_NUMCache`, `NUMCounter`). The `DCHCacheEntry` / `NUMCacheEntry` element typedefs above the decls are types not vars and are left in place; the `\bDCHCache\b` / `\bNUMCache\b` word boundaries skip the `*CacheEntry` type names. |
 
+| 13 | `utils/cache/syscache.c` | `SysCacheState` / `sys_cache_state` | 6 | All file-local statics, zero externs: the system-cache pointer array (`SysCache[SysCacheSize]`), the `CacheInitialized` flag, and the two sorted relation-OID arrays with their sizes (`SysCacheRelationOid`/`SysCacheRelationOidSize`, `SysCacheSupportingRelOid`/`SysCacheSupportingRelOidSize`). `SysCacheSize` is the enum array-dimension constant (not a var) and is left untouched; the many `\bSysCache\b`-prefixed function/enum names (`SearchSysCache`, `ReleaseSysCache`, `SysCacheGetAttr`, `SysCacheIdentifier`, `SysCacheSize`, …) are skipped by the word boundary. |
+
 ## Verification gates (every step)
 
 | Gate | Command |

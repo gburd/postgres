@@ -84,17 +84,25 @@ struct cachedesc
 StaticAssertDecl(lengthof(cacheinfo) == SysCacheSize,
 				 "SysCacheSize does not match syscache.c's array");
 
-static session_local CatCache *SysCache[SysCacheSize];
+/* per-session system-cache state */
+typedef struct SysCacheState
+{
+	CatCache   *SysCache[SysCacheSize];
 
-static session_local bool CacheInitialized = false;
+	bool		CacheInitialized;
 
-/* Sorted array of OIDs of tables that have caches on them */
-static session_local Oid	SysCacheRelationOid[SysCacheSize];
-static session_local int	SysCacheRelationOidSize;
+	/* Sorted array of OIDs of tables that have caches on them */
+	Oid			SysCacheRelationOid[SysCacheSize];
+	int			SysCacheRelationOidSize;
 
-/* Sorted array of OIDs of tables and indexes used by caches */
-static session_local Oid	SysCacheSupportingRelOid[SysCacheSize * 2];
-static session_local int	SysCacheSupportingRelOidSize;
+	/* Sorted array of OIDs of tables and indexes used by caches */
+	Oid			SysCacheSupportingRelOid[SysCacheSize * 2];
+	int			SysCacheSupportingRelOidSize;
+} SysCacheState;
+
+static session_local SysCacheState sys_cache_state = {
+	.CacheInitialized = false,
+};
 
 static int	oid_compare(const void *a, const void *b);
 
@@ -112,9 +120,9 @@ InitCatalogCache(void)
 {
 	SysCacheIdentifier cacheId;
 
-	Assert(!CacheInitialized);
+	Assert(!sys_cache_state.CacheInitialized);
 
-	SysCacheRelationOidSize = SysCacheSupportingRelOidSize = 0;
+	sys_cache_state.SysCacheRelationOidSize = sys_cache_state.SysCacheSupportingRelOidSize = 0;
 
 	for (cacheId = 0; cacheId < SysCacheSize; cacheId++)
 	{
@@ -126,43 +134,43 @@ InitCatalogCache(void)
 		Assert(OidIsValid(cacheinfo[cacheId].indoid));
 		/* .nbuckets and .key[] are checked by InitCatCache() */
 
-		SysCache[cacheId] = InitCatCache(cacheId,
+		sys_cache_state.SysCache[cacheId] = InitCatCache(cacheId,
 										 cacheinfo[cacheId].reloid,
 										 cacheinfo[cacheId].indoid,
 										 cacheinfo[cacheId].nkeys,
 										 cacheinfo[cacheId].key,
 										 cacheinfo[cacheId].nbuckets);
-		if (!SysCache[cacheId])
+		if (!sys_cache_state.SysCache[cacheId])
 			elog(ERROR, "could not initialize cache %u (%d)",
 				 cacheinfo[cacheId].reloid, cacheId);
 		/* Accumulate data for OID lists, too */
-		SysCacheRelationOid[SysCacheRelationOidSize++] =
+		sys_cache_state.SysCacheRelationOid[sys_cache_state.SysCacheRelationOidSize++] =
 			cacheinfo[cacheId].reloid;
-		SysCacheSupportingRelOid[SysCacheSupportingRelOidSize++] =
+		sys_cache_state.SysCacheSupportingRelOid[sys_cache_state.SysCacheSupportingRelOidSize++] =
 			cacheinfo[cacheId].reloid;
-		SysCacheSupportingRelOid[SysCacheSupportingRelOidSize++] =
+		sys_cache_state.SysCacheSupportingRelOid[sys_cache_state.SysCacheSupportingRelOidSize++] =
 			cacheinfo[cacheId].indoid;
 		/* see comments for RelationInvalidatesSnapshotsOnly */
 		Assert(!RelationInvalidatesSnapshotsOnly(cacheinfo[cacheId].reloid));
 	}
 
-	Assert(SysCacheRelationOidSize <= lengthof(SysCacheRelationOid));
-	Assert(SysCacheSupportingRelOidSize <= lengthof(SysCacheSupportingRelOid));
+	Assert(sys_cache_state.SysCacheRelationOidSize <= lengthof(sys_cache_state.SysCacheRelationOid));
+	Assert(sys_cache_state.SysCacheSupportingRelOidSize <= lengthof(sys_cache_state.SysCacheSupportingRelOid));
 
 	/* Sort and de-dup OID arrays, so we can use binary search. */
-	qsort(SysCacheRelationOid, SysCacheRelationOidSize,
+	qsort(sys_cache_state.SysCacheRelationOid, sys_cache_state.SysCacheRelationOidSize,
 		  sizeof(Oid), oid_compare);
-	SysCacheRelationOidSize =
-		qunique(SysCacheRelationOid, SysCacheRelationOidSize, sizeof(Oid),
+	sys_cache_state.SysCacheRelationOidSize =
+		qunique(sys_cache_state.SysCacheRelationOid, sys_cache_state.SysCacheRelationOidSize, sizeof(Oid),
 				oid_compare);
 
-	qsort(SysCacheSupportingRelOid, SysCacheSupportingRelOidSize,
+	qsort(sys_cache_state.SysCacheSupportingRelOid, sys_cache_state.SysCacheSupportingRelOidSize,
 		  sizeof(Oid), oid_compare);
-	SysCacheSupportingRelOidSize =
-		qunique(SysCacheSupportingRelOid, SysCacheSupportingRelOidSize,
+	sys_cache_state.SysCacheSupportingRelOidSize =
+		qunique(sys_cache_state.SysCacheSupportingRelOid, sys_cache_state.SysCacheSupportingRelOidSize,
 				sizeof(Oid), oid_compare);
 
-	CacheInitialized = true;
+	sys_cache_state.CacheInitialized = true;
 }
 
 /*
@@ -182,10 +190,10 @@ InitCatalogCachePhase2(void)
 {
 	SysCacheIdentifier cacheId;
 
-	Assert(CacheInitialized);
+	Assert(sys_cache_state.CacheInitialized);
 
 	for (cacheId = 0; cacheId < SysCacheSize; cacheId++)
-		InitCatCachePhase2(SysCache[cacheId], true);
+		InitCatCachePhase2(sys_cache_state.SysCache[cacheId], true);
 }
 
 
@@ -212,49 +220,49 @@ SearchSysCache(SysCacheIdentifier cacheId,
 			   Datum key3,
 			   Datum key4)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize && SysCache[cacheId]);
+	Assert(cacheId >= 0 && cacheId < SysCacheSize && sys_cache_state.SysCache[cacheId]);
 
-	return SearchCatCache(SysCache[cacheId], key1, key2, key3, key4);
+	return SearchCatCache(sys_cache_state.SysCache[cacheId], key1, key2, key3, key4);
 }
 
 HeapTuple
 SearchSysCache1(SysCacheIdentifier cacheId,
 				Datum key1)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize && SysCache[cacheId]);
-	Assert(SysCache[cacheId]->cc_nkeys == 1);
+	Assert(cacheId >= 0 && cacheId < SysCacheSize && sys_cache_state.SysCache[cacheId]);
+	Assert(sys_cache_state.SysCache[cacheId]->cc_nkeys == 1);
 
-	return SearchCatCache1(SysCache[cacheId], key1);
+	return SearchCatCache1(sys_cache_state.SysCache[cacheId], key1);
 }
 
 HeapTuple
 SearchSysCache2(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize && SysCache[cacheId]);
-	Assert(SysCache[cacheId]->cc_nkeys == 2);
+	Assert(cacheId >= 0 && cacheId < SysCacheSize && sys_cache_state.SysCache[cacheId]);
+	Assert(sys_cache_state.SysCache[cacheId]->cc_nkeys == 2);
 
-	return SearchCatCache2(SysCache[cacheId], key1, key2);
+	return SearchCatCache2(sys_cache_state.SysCache[cacheId], key1, key2);
 }
 
 HeapTuple
 SearchSysCache3(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2, Datum key3)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize && SysCache[cacheId]);
-	Assert(SysCache[cacheId]->cc_nkeys == 3);
+	Assert(cacheId >= 0 && cacheId < SysCacheSize && sys_cache_state.SysCache[cacheId]);
+	Assert(sys_cache_state.SysCache[cacheId]->cc_nkeys == 3);
 
-	return SearchCatCache3(SysCache[cacheId], key1, key2, key3);
+	return SearchCatCache3(sys_cache_state.SysCache[cacheId], key1, key2, key3);
 }
 
 HeapTuple
 SearchSysCache4(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2, Datum key3, Datum key4)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize && SysCache[cacheId]);
-	Assert(SysCache[cacheId]->cc_nkeys == 4);
+	Assert(cacheId >= 0 && cacheId < SysCacheSize && sys_cache_state.SysCache[cacheId]);
+	Assert(sys_cache_state.SysCache[cacheId]->cc_nkeys == 4);
 
-	return SearchCatCache4(SysCache[cacheId], key1, key2, key3, key4);
+	return SearchCatCache4(sys_cache_state.SysCache[cacheId], key1, key2, key3, key4);
 }
 
 /*
@@ -283,7 +291,7 @@ HeapTuple
 SearchSysCacheLocked1(SysCacheIdentifier cacheId,
 					  Datum key1)
 {
-	CatCache   *cache = SysCache[cacheId];
+	CatCache   *cache = sys_cache_state.SysCache[cacheId];
 	ItemPointerData tid;
 	LOCKTAG		tag;
 
@@ -456,7 +464,7 @@ GetSysCacheOid(SysCacheIdentifier cacheId,
 	if (!HeapTupleIsValid(tuple))
 		return InvalidOid;
 	result = DatumGetObjectId(heap_getattr(tuple, oidcol,
-										   SysCache[cacheId]->cc_tupdesc,
+										   sys_cache_state.SysCache[cacheId]->cc_tupdesc,
 										   &isNull));
 	Assert(!isNull);			/* columns used as oids should never be NULL */
 	ReleaseSysCache(tuple);
@@ -603,16 +611,16 @@ SysCacheGetAttr(SysCacheIdentifier cacheId, HeapTuple tup,
 	 * valid (because the caller recently fetched the tuple via this same
 	 * cache), but there are cases where we have to initialize the cache here.
 	 */
-	if (cacheId < 0 || cacheId >= SysCacheSize || !SysCache[cacheId])
+	if (cacheId < 0 || cacheId >= SysCacheSize || !sys_cache_state.SysCache[cacheId])
 		elog(ERROR, "invalid cache ID: %d", cacheId);
-	if (!SysCache[cacheId]->cc_tupdesc)
+	if (!sys_cache_state.SysCache[cacheId]->cc_tupdesc)
 	{
-		InitCatCachePhase2(SysCache[cacheId], false);
-		Assert(SysCache[cacheId]->cc_tupdesc);
+		InitCatCachePhase2(sys_cache_state.SysCache[cacheId], false);
+		Assert(sys_cache_state.SysCache[cacheId]->cc_tupdesc);
 	}
 
 	return heap_getattr(tup, attributeNumber,
-						SysCache[cacheId]->cc_tupdesc,
+						sys_cache_state.SysCache[cacheId]->cc_tupdesc,
 						isNull);
 }
 
@@ -636,7 +644,7 @@ SysCacheGetAttrNotNull(SysCacheIdentifier cacheId, HeapTuple tup,
 		elog(ERROR,
 			 "unexpected null value in cached tuple for catalog %s column %s",
 			 get_rel_name(cacheinfo[cacheId].reloid),
-			 NameStr(TupleDescAttr(SysCache[cacheId]->cc_tupdesc, attributeNumber - 1)->attname));
+			 NameStr(TupleDescAttr(sys_cache_state.SysCache[cacheId]->cc_tupdesc, attributeNumber - 1)->attname));
 	}
 
 	return attr;
@@ -659,10 +667,10 @@ GetSysCacheHashValue(SysCacheIdentifier cacheId,
 					 Datum key3,
 					 Datum key4)
 {
-	if (cacheId < 0 || cacheId >= SysCacheSize || !SysCache[cacheId])
+	if (cacheId < 0 || cacheId >= SysCacheSize || !sys_cache_state.SysCache[cacheId])
 		elog(ERROR, "invalid cache ID: %d", cacheId);
 
-	return GetCatCacheHashValue(SysCache[cacheId], key1, key2, key3, key4);
+	return GetCatCacheHashValue(sys_cache_state.SysCache[cacheId], key1, key2, key3, key4);
 }
 
 /*
@@ -672,10 +680,10 @@ struct catclist *
 SearchSysCacheList(SysCacheIdentifier cacheId, int nkeys,
 				   Datum key1, Datum key2, Datum key3)
 {
-	if (cacheId < 0 || cacheId >= SysCacheSize || !SysCache[cacheId])
+	if (cacheId < 0 || cacheId >= SysCacheSize || !sys_cache_state.SysCache[cacheId])
 		elog(ERROR, "invalid cache ID: %d", cacheId);
 
-	return SearchCatCacheList(SysCache[cacheId], nkeys,
+	return SearchCatCacheList(sys_cache_state.SysCache[cacheId], nkeys,
 							  key1, key2, key3);
 }
 
@@ -694,10 +702,10 @@ SysCacheInvalidate(SysCacheIdentifier cacheId, uint32 hashValue)
 		elog(ERROR, "invalid cache ID: %d", cacheId);
 
 	/* if this cache isn't initialized yet, no need to do anything */
-	if (!SysCache[cacheId])
+	if (!sys_cache_state.SysCache[cacheId])
 		return;
 
-	CatCacheInvalidate(SysCache[cacheId], hashValue);
+	CatCacheInvalidate(sys_cache_state.SysCache[cacheId], hashValue);
 }
 
 /*
@@ -738,15 +746,15 @@ bool
 RelationHasSysCache(Oid relid)
 {
 	int			low = 0,
-				high = SysCacheRelationOidSize - 1;
+				high = sys_cache_state.SysCacheRelationOidSize - 1;
 
 	while (low <= high)
 	{
 		int			middle = low + (high - low) / 2;
 
-		if (SysCacheRelationOid[middle] == relid)
+		if (sys_cache_state.SysCacheRelationOid[middle] == relid)
 			return true;
-		if (SysCacheRelationOid[middle] < relid)
+		if (sys_cache_state.SysCacheRelationOid[middle] < relid)
 			low = middle + 1;
 		else
 			high = middle - 1;
@@ -763,15 +771,15 @@ bool
 RelationSupportsSysCache(Oid relid)
 {
 	int			low = 0,
-				high = SysCacheSupportingRelOidSize - 1;
+				high = sys_cache_state.SysCacheSupportingRelOidSize - 1;
 
 	while (low <= high)
 	{
 		int			middle = low + (high - low) / 2;
 
-		if (SysCacheSupportingRelOid[middle] == relid)
+		if (sys_cache_state.SysCacheSupportingRelOid[middle] == relid)
 			return true;
-		if (SysCacheSupportingRelOid[middle] < relid)
+		if (sys_cache_state.SysCacheSupportingRelOid[middle] < relid)
 			low = middle + 1;
 		else
 			high = middle - 1;
