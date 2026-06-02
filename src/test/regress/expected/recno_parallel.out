@@ -175,7 +175,7 @@ SELECT COUNT(*) = 900 AS count_after_delete FROM recno_parallel_test;
 
 -- Update some rows and verify
 UPDATE recno_parallel_test SET val = 'updated_' || id::text WHERE id <= 200;
-ERROR:  RECNO: updated tuple does not fit on page
+ERROR:  updated recno tuple does not fit on page
 HINT:  Variable-length overflow during update is not yet implemented.
 SELECT COUNT(*) FROM recno_parallel_test WHERE val LIKE 'updated_%';
  count 

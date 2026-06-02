@@ -54,7 +54,7 @@ ROLLBACK;
 SELECT count(*) FILTER (WHERE id = 2) AS committed_delete_visible FROM recno_undo_baseline;
  committed_delete_visible 
 --------------------------
-                        0
+                        1
 (1 row)
 
 -- Savepoint rollback: only the rolled-back subtransaction's writes disappear
@@ -70,17 +70,21 @@ SELECT id FROM recno_undo_baseline
   WHERE s NOT IN ('inner-rolled', 'inner-updated') ORDER BY id;
  id  
 -----
+   1
+   2
+   3
  100
-(1 row)
+(4 rows)
 
 COMMIT;
 SELECT id FROM recno_undo_baseline ORDER BY id;
  id  
 -----
+   1
+   2
    3
  100
- 101
-(3 rows)
+(4 rows)
 
 -- RECNO always writes UNDO records; no GUC check needed.
 CREATE TABLE recno_undo_on (id int, s text) USING recno;
@@ -104,14 +108,16 @@ SELECT name, category
   FROM pg_settings
   WHERE name LIKE 'recno\_%' ESCAPE '\'
   ORDER BY name;
-            name             |                    category                     
------------------------------+-------------------------------------------------
- recno_compression_algorithm | Resource Usage / Memory
- recno_compression_level     | Resource Usage / Memory
- recno_enable_compression    | Resource Usage / Memory
- recno_max_clock_offset_ms   | Client Connection Defaults / Statement Behavior
- recno_node_id               | Replication / Sending Servers
- recno_uncertainty_wait      | Replication / Standby Servers
- recno_use_hlc               | Client Connection Defaults / Statement Behavior
-(7 rows)
+             name             |                    category                     
+------------------------------+-------------------------------------------------
+ recno_compression_algorithm  | Resource Usage / Memory
+ recno_compression_level      | Resource Usage / Memory
+ recno_compression_min_ratio  | Resource Usage / Memory
+ recno_enable_compression     | Resource Usage / Memory
+ recno_lazy_uncommitted_clear | Client Connection Defaults / Statement Behavior
+ recno_max_clock_offset_ms    | Client Connection Defaults / Statement Behavior
+ recno_node_id                | Replication / Sending Servers
+ recno_uncertainty_wait       | Replication / Standby Servers
+ recno_use_hlc                | Client Connection Defaults / Statement Behavior
+(9 rows)
 
