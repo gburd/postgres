@@ -459,7 +459,7 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
 extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, TM_IndexUpdateInfo *upd_info);
+							   HeapTuple tup, bool *update_all_indexes);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -476,9 +476,7 @@ extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 									 ItemPointer tid, Snapshot snapshot,
 									 TupleTableSlot *slot, bool *heap_continue,
-									 bool *all_dead,
-									 const Bitmapset *index_attrs,
-									 bool *hot_indexed_stale);
+									 bool *all_dead);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,

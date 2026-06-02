@@ -136,7 +136,8 @@ typedef struct UpdateContext
 	 * indexes need new entries.  Populated by ExecUpdateAct and consumed by
 	 * ExecUpdateEpilogue.
 	 */
-	TM_IndexUpdateInfo upd_info;
+	const Bitmapset *modified_attrs;	/* indexed attrs the UPDATE changed */
+	bool		update_all_indexes; /* true iff every index needs an entry */
 
 	/*
 	 * Lock mode to acquire on the latest tuple version before performing
@@ -2534,8 +2535,8 @@ ExecUpdateAct(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 	TM_Result	result;
 
 	/* Reset any state left over from a previous call */
-	updateCxt->upd_info.modified_attrs = NULL;
-	updateCxt->upd_info.update_all_indexes = false;
+	updateCxt->modified_attrs = NULL;
+	updateCxt->update_all_indexes = false;
 
 	updateCxt->crossPartUpdate = false;
 
@@ -2659,7 +2660,7 @@ lreplace:
 	 * we will overlook attributes directly modified by heap_modify_tuple()
 	 * which are not known to ExecGetUpdatedCols().
 	 */
-	updateCxt->upd_info.modified_attrs =
+	updateCxt->modified_attrs =
 		ExecUpdateModifiedIdxAttrs(resultRelInfo, oldSlot, slot);
 
 	/*
@@ -2678,7 +2679,8 @@ lreplace:
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
 								&context->tmfd, &updateCxt->lockmode,
-								&updateCxt->upd_info);
+								updateCxt->modified_attrs,
+								&updateCxt->update_all_indexes);
 
 	return result;
 }
@@ -2700,8 +2702,8 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 
 	/* insert index entries for tuple if necessary */
 	if (resultRelInfo->ri_NumIndices > 0 &&
-		(updateCxt->upd_info.update_all_indexes ||
-		 !bms_is_empty(updateCxt->upd_info.modified_attrs)))
+		(updateCxt->update_all_indexes ||
+		 !bms_is_empty(updateCxt->modified_attrs)))
 	{
 		/*
 		 * Populate per-index ii_IndexUnchanged before inserting.  For a
@@ -2710,12 +2712,12 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 		 * modified set do.
 		 */
 		ExecSetIndexUnchanged(resultRelInfo,
-							  updateCxt->upd_info.update_all_indexes,
-							  updateCxt->upd_info.modified_attrs);
+							  updateCxt->update_all_indexes,
+							  updateCxt->modified_attrs);
 
 		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, context->estate,
 											   EIIT_IS_UPDATE |
-											   (updateCxt->upd_info.update_all_indexes ?
+											   (updateCxt->update_all_indexes ?
 												0 : EIIT_IS_HOT_INDEXED),
 											   slot, NIL,
 											   NULL);

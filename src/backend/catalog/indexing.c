@@ -73,14 +73,15 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  * This should be called for each inserted or updated catalog tuple.
  *
  * This is effectively a cut-down version of ExecInsertIndexTuples.  For
- * UPDATE paths the caller supplies upd_info so we can tell which indexes
- * actually need a new entry.  Classic HOT and HOT-indexed updates share
- * the same skip rule: if none of the index's attributes changed then the
- * existing heap chain's index entries still resolve the visible tuple.
+ * UPDATE paths the caller supplies update_all_indexes (from
+ * table_tuple_update / simple_heap_update) so we can tell which indexes actually need a new entry:
+ * update_all_indexes is true for a fresh insert or a non-HOT update (every
+ * index gets an entry), false for a classic-HOT catalog update (non-summarizing
+ * indexes are skipped, since their existing entries still resolve the chain).
  */
 static void
 CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
-				   const TM_IndexUpdateInfo *upd_info)
+				   bool update_all_indexes)
 {
 	int			i;
 	int			numIndexes;
@@ -90,20 +91,6 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	bool		is_update;
-	bool		update_all_indexes;
-
-	/*
-	 * Unpack caller's intent.  A NULL upd_info means a fresh insert (or an
-	 * update path that wants every index touched): every index gets an entry.
-	 * A catalog UPDATE is only ever classic HOT (update_all_indexes false: no
-	 * indexed attribute changed, so non-summarizing indexes are skipped) or
-	 * fully non-HOT (update_all_indexes true: every index).  Catalogs never
-	 * take the HOT-indexed path (HeapUpdateHotAllowable disqualifies them),
-	 * so upd_info->modified_attrs is never consulted here.
-	 */
-	is_update = (upd_info != NULL);
-	update_all_indexes = !is_update || upd_info->update_all_indexes;
 
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
@@ -147,17 +134,16 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
 		Assert(indexInfo->ii_NumIndexKeyAttrs != 0);
 
 		/*
-		 * Decide whether this index needs a new entry.  On INSERT every index
-		 * gets one.  On a catalog UPDATE the choice is binary: a fully
-		 * non-HOT update (update_all_indexes) touches every index, while a
-		 * classic-HOT update changed no indexed attribute and so skips the
-		 * non-summarizing indexes (summarizing indexes always get a chance to
-		 * update their block-level summaries below).
+		 * Decide whether this index needs a new entry.  On INSERT or a
+		 * non-HOT update (update_all_indexes) every index gets one.  On a
+		 * classic-HOT catalog update no indexed attribute changed, so the
+		 * non-summarizing indexes are skipped (summarizing indexes always get
+		 * a chance to update their block-level summaries below).
 		 */
-		index_unchanged = (is_update && !update_all_indexes);
+		index_unchanged = !update_all_indexes;
 		indexInfo->ii_IndexUnchanged = index_unchanged;
 
-		if (is_update && index_unchanged && !indexInfo->ii_Summarizing)
+		if (index_unchanged && !indexInfo->ii_Summarizing)
 			continue;
 
 
@@ -247,7 +233,7 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, NULL);
+	CatalogIndexInsert(indstate, tup, true);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -267,7 +253,7 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 
 	simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup, NULL);
+	CatalogIndexInsert(indstate, tup, true);
 }
 
 /*
@@ -298,7 +284,7 @@ CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 
 		tuple = ExecFetchSlotHeapTuple(slot[i], true, &should_free);
 		tuple->t_tableOid = slot[i]->tts_tableOid;
-		CatalogIndexInsert(indstate, tuple, NULL);
+		CatalogIndexInsert(indstate, tuple, true);
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -320,16 +306,15 @@ void
 CatalogTupleUpdate(Relation heapRel, const ItemPointerData *otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
-	TM_IndexUpdateInfo upd_info;
+	bool update_all_indexes;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup, &upd_info);
+	simple_heap_update(heapRel, otid, tup, &update_all_indexes);
 
-	CatalogIndexInsert(indstate, tup, &upd_info);
-	bms_free((Bitmapset *) upd_info.modified_attrs);
+	CatalogIndexInsert(indstate, tup, update_all_indexes);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -345,14 +330,13 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, const ItemPointerData *otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	TM_IndexUpdateInfo upd_info;
+	bool update_all_indexes;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
-	simple_heap_update(heapRel, otid, tup, &upd_info);
+	simple_heap_update(heapRel, otid, tup, &update_all_indexes);
 
-	CatalogIndexInsert(indstate, tup, &upd_info);
-	bms_free((Bitmapset *) upd_info.modified_attrs);
+	CatalogIndexInsert(indstate, tup, update_all_indexes);
 }
 
 /*

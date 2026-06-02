@@ -2679,7 +2679,7 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 	LockTupleMode lockmode;
 	TM_FailureData tmfd;
 	Bitmapset  *modified_idx_attrs;
-	TM_IndexUpdateInfo upd_info = {NULL, false};
+	bool update_all_indexes = false;
 	TM_Result	res;
 
 	/*
@@ -2691,7 +2691,6 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 	modified_idx_attrs = ExecUpdateModifiedIdxAttrs(chgcxt->cc_rri,
 													ondisk_tuple,
 													spilled_tuple);
-	upd_info.modified_attrs = modified_idx_attrs;
 
 	/*
 	 * Carry out the update, skipping logical decoding for it.
@@ -2702,7 +2701,8 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							 InvalidSnapshot,
 							 InvalidSnapshot,
 							 false,
-							 &tmfd, &lockmode, &upd_info);
+							 &tmfd, &lockmode,
+							 modified_idx_attrs, &update_all_indexes);
 	if (res != TM_Ok)
 		ereport(ERROR,
 				errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -2710,16 +2710,15 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 					   "UPDATE", RelationGetRelationName(rel)));
 
 	if (chgcxt->cc_rri->ri_NumIndices > 0 &&
-		(upd_info.update_all_indexes ||
-		 !bms_is_empty(upd_info.modified_attrs)))
+		(update_all_indexes || !bms_is_empty(modified_idx_attrs)))
 	{
 		ExecSetIndexUnchanged(chgcxt->cc_rri,
-							  upd_info.update_all_indexes,
-							  upd_info.modified_attrs);
+							  update_all_indexes,
+							  modified_idx_attrs);
 		ExecInsertIndexTuples(chgcxt->cc_rri,
 							  chgcxt->cc_estate,
 							  EIIT_IS_UPDATE |
-							  (upd_info.update_all_indexes ?
+							  (update_all_indexes ?
 							   0 : EIIT_IS_HOT_INDEXED),
 							  spilled_tuple,
 							  NIL, NULL);

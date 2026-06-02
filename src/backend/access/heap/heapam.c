@@ -4852,7 +4852,7 @@ HeapUpdateModifiedIdxAttrs(Relation relation, HeapTuple oldtup, HeapTuple newtup
  */
 void
 simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup,
-				   TM_IndexUpdateInfo *upd_info)
+				   bool *update_all_indexes)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -4867,10 +4867,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	Buffer		buffer;
 
 	Assert(ItemPointerIsValid(otid));
-	Assert(upd_info != NULL);
 
-	upd_info->modified_attrs = NULL;
-	upd_info->update_all_indexes = false;
+	*update_all_indexes = false;
 
 	/*
 	 * Fetch this bitmap of interesting attributes from relcache before
@@ -4961,12 +4959,12 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 		case TM_Ok:
 
 			/*
-			 * If the tuple returned from heap_update() is marked heap-only,
-			 * this was a HOT update and (subject to per-index checks) only
-			 * summarizing indexes need a new entry.  Otherwise every index
-			 * must get an entry pointing to the new tuple's TID.
+			 * If the tuple stored by heap_update is heap-only this was a HOT
+			 * update and (subject to per-index checks) not every index needs
+			 * a new entry; otherwise every index must get one pointing at the
+			 * new tuple's TID.
 			 */
-			upd_info->update_all_indexes = !HeapTupleIsHeapOnly(tup);
+			*update_all_indexes = !HeapTupleIsHeapOnly(tup);
 			break;
 
 		case TM_Updated:
@@ -4982,7 +4980,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 			break;
 	}
 
-	upd_info->modified_attrs = local_modified_idx_attrs;
+	bms_free(local_modified_idx_attrs);
 }
 
 
