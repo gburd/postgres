@@ -76,6 +76,15 @@ The variables (`registered_buffers`, `max_registered_buffers`,
 This drops 14 thread-local objects to 1 and gives the WAL-insert machinery an
 explicit reset point (it already centralizes reset in `XLogResetInsertion()`).
 
+## Modules consolidated
+
+Each row is one commit. All preserve behavior and pass every gate below.
+
+| # | Module | Struct / instance | Vars | Notes |
+|---|---|---|---|---|
+| 1 (pilot) | `access/transam/xloginsert.c` | `XLogInsertState` / `xlog_insert_state` | 14 | All file-local statics; in-progress WAL record. |
+| 2 | `storage/file/fd.c` | `FdState` / `fd_state` | 14 | All file-local statics: VFD cache, temp-file bookkeeping, allocated/external descriptor tracking, temp-tablespace array. `temporary_files_allowed` member stays `#ifdef USE_ASSERT_CHECKING` to keep non-assert layout identical. The `FileIsValid` / `FileIsNotOpen` macros (defined before the struct) are rewritten to `fd_state.<field>` along with all other use sites. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
