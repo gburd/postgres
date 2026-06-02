@@ -95,6 +95,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 11 | `utils/cache/relmapper.c` | `RelMapState` / `relmap_state` | 6 | All file-local statics, zero externs: the shared and local active/pending relation-map files (`shared_map`, `local_map`, `active_shared_updates`, `active_local_updates`, `pending_shared_updates`, `pending_local_updates`). The `SerializedActiveRelMaps` typedef (used for parallel-worker serialization) has members named identically to two of the folded statics; its field accesses (`relmaps->active_shared_updates`, `relmaps->active_local_updates`) are NOT folded — a post-substitution revert of `->relmap_state.` / `.relmap_state.` restores struct-field accesses while leaving the `relmap_state.` global accesses intact. |
 
+| 12 | `utils/adt/formatting.c` | `FormatState` / `format_state` | 6 | All file-local statics, zero externs: the two formatting-picture caches — the date/time cache (`DCHCache[DCH_CACHE_ENTRIES]`, `n_DCHCache`, `DCHCounter`) and the number cache (`NUMCache[NUM_CACHE_ENTRIES]`, `n_NUMCache`, `NUMCounter`). The `DCHCacheEntry` / `NUMCacheEntry` element typedefs above the decls are types not vars and are left in place; the `\bDCHCache\b` / `\bNUMCache\b` word boundaries skip the `*CacheEntry` type names. |
+
 ## Verification gates (every step)
 
 | Gate | Command |

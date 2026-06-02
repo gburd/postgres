@@ -397,15 +397,26 @@ typedef struct
 	NUMDesc		Num;
 } NUMCacheEntry;
 
-/* global cache for date/time format pictures */
-static session_local DCHCacheEntry *DCHCache[DCH_CACHE_ENTRIES];
-static session_local int	n_DCHCache = 0;		/* current number of entries */
-static session_local int	DCHCounter = 0;		/* aging-event counter */
+/* per-session cache state for date/time and number format pictures */
+typedef struct FormatState
+{
+	/* date/time format picture cache */
+	DCHCacheEntry *DCHCache[DCH_CACHE_ENTRIES];
+	int			n_DCHCache;		/* current number of entries */
+	int			DCHCounter;		/* aging-event counter */
 
-/* global cache for number format pictures */
-static session_local NUMCacheEntry *NUMCache[NUM_CACHE_ENTRIES];
-static session_local int	n_NUMCache = 0;		/* current number of entries */
-static session_local int	NUMCounter = 0;		/* aging-event counter */
+	/* number format picture cache */
+	NUMCacheEntry *NUMCache[NUM_CACHE_ENTRIES];
+	int			n_NUMCache;		/* current number of entries */
+	int			NUMCounter;		/* aging-event counter */
+} FormatState;
+
+static session_local FormatState format_state = {
+	.n_DCHCache = 0,
+	.DCHCounter = 0,
+	.n_NUMCache = 0,
+	.NUMCounter = 0,
+};
 
 /*
  * For char->date/time conversion
@@ -3669,11 +3680,11 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 static inline void
 DCH_prevent_counter_overflow(void)
 {
-	if (DCHCounter >= (INT_MAX - 1))
+	if (format_state.DCHCounter >= (INT_MAX - 1))
 	{
-		for (int i = 0; i < n_DCHCache; i++)
-			DCHCache[i]->age >>= 1;
-		DCHCounter >>= 1;
+		for (int i = 0; i < format_state.n_DCHCache; i++)
+			format_state.DCHCache[i]->age >>= 1;
+		format_state.DCHCounter >>= 1;
 	}
 }
 
@@ -3787,18 +3798,18 @@ DCH_cache_getnew(const char *str, bool std)
 	/*
 	 * If cache is full, remove oldest entry (or recycle first not-valid one)
 	 */
-	if (n_DCHCache >= DCH_CACHE_ENTRIES)
+	if (format_state.n_DCHCache >= DCH_CACHE_ENTRIES)
 	{
-		DCHCacheEntry *old = DCHCache[0];
+		DCHCacheEntry *old = format_state.DCHCache[0];
 
 #ifdef DEBUG_TO_FROM_CHAR
-		elog(DEBUG_elog_output, "cache is full (%d)", n_DCHCache);
+		elog(DEBUG_elog_output, "cache is full (%d)", format_state.n_DCHCache);
 #endif
 		if (old->valid)
 		{
 			for (int i = 1; i < DCH_CACHE_ENTRIES; i++)
 			{
-				ent = DCHCache[i];
+				ent = format_state.DCHCache[i];
 				if (!ent->valid)
 				{
 					old = ent;
@@ -3813,24 +3824,24 @@ DCH_cache_getnew(const char *str, bool std)
 #endif
 		old->valid = false;
 		strlcpy(old->str, str, DCH_CACHE_SIZE + 1);
-		old->age = (++DCHCounter);
+		old->age = (++format_state.DCHCounter);
 		/* caller is expected to fill format, then set valid */
 		return old;
 	}
 	else
 	{
 #ifdef DEBUG_TO_FROM_CHAR
-		elog(DEBUG_elog_output, "NEW (%d)", n_DCHCache);
+		elog(DEBUG_elog_output, "NEW (%d)", format_state.n_DCHCache);
 #endif
-		Assert(DCHCache[n_DCHCache] == NULL);
-		DCHCache[n_DCHCache] = ent = (DCHCacheEntry *)
+		Assert(format_state.DCHCache[format_state.n_DCHCache] == NULL);
+		format_state.DCHCache[format_state.n_DCHCache] = ent = (DCHCacheEntry *)
 			MemoryContextAllocZero(TopMemoryContext, sizeof(DCHCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, DCH_CACHE_SIZE + 1);
 		ent->std = std;
-		ent->age = (++DCHCounter);
+		ent->age = (++format_state.DCHCounter);
 		/* caller is expected to fill format, then set valid */
-		++n_DCHCache;
+		++format_state.n_DCHCache;
 		return ent;
 	}
 }
@@ -3842,13 +3853,13 @@ DCH_cache_search(const char *str, bool std)
 	/* Ensure we can advance DCHCounter below */
 	DCH_prevent_counter_overflow();
 
-	for (int i = 0; i < n_DCHCache; i++)
+	for (int i = 0; i < format_state.n_DCHCache; i++)
 	{
-		DCHCacheEntry *ent = DCHCache[i];
+		DCHCacheEntry *ent = format_state.DCHCache[i];
 
 		if (ent->valid && strcmp(ent->str, str) == 0 && ent->std == std)
 		{
-			ent->age = (++DCHCounter);
+			ent->age = (++format_state.DCHCounter);
 			return ent;
 		}
 	}
@@ -4822,11 +4833,11 @@ fill_str(char *str, int c, int max)
 static inline void
 NUM_prevent_counter_overflow(void)
 {
-	if (NUMCounter >= (INT_MAX - 1))
+	if (format_state.NUMCounter >= (INT_MAX - 1))
 	{
-		for (int i = 0; i < n_NUMCache; i++)
-			NUMCache[i]->age >>= 1;
-		NUMCounter >>= 1;
+		for (int i = 0; i < format_state.n_NUMCache; i++)
+			format_state.NUMCache[i]->age >>= 1;
+		format_state.NUMCounter >>= 1;
 	}
 }
 
@@ -4842,18 +4853,18 @@ NUM_cache_getnew(const char *str)
 	/*
 	 * If cache is full, remove oldest entry (or recycle first not-valid one)
 	 */
-	if (n_NUMCache >= NUM_CACHE_ENTRIES)
+	if (format_state.n_NUMCache >= NUM_CACHE_ENTRIES)
 	{
-		NUMCacheEntry *old = NUMCache[0];
+		NUMCacheEntry *old = format_state.NUMCache[0];
 
 #ifdef DEBUG_TO_FROM_CHAR
-		elog(DEBUG_elog_output, "Cache is full (%d)", n_NUMCache);
+		elog(DEBUG_elog_output, "Cache is full (%d)", format_state.n_NUMCache);
 #endif
 		if (old->valid)
 		{
 			for (int i = 1; i < NUM_CACHE_ENTRIES; i++)
 			{
-				ent = NUMCache[i];
+				ent = format_state.NUMCache[i];
 				if (!ent->valid)
 				{
 					old = ent;
@@ -4868,23 +4879,23 @@ NUM_cache_getnew(const char *str)
 #endif
 		old->valid = false;
 		strlcpy(old->str, str, NUM_CACHE_SIZE + 1);
-		old->age = (++NUMCounter);
+		old->age = (++format_state.NUMCounter);
 		/* caller is expected to fill format and Num, then set valid */
 		return old;
 	}
 	else
 	{
 #ifdef DEBUG_TO_FROM_CHAR
-		elog(DEBUG_elog_output, "NEW (%d)", n_NUMCache);
+		elog(DEBUG_elog_output, "NEW (%d)", format_state.n_NUMCache);
 #endif
-		Assert(NUMCache[n_NUMCache] == NULL);
-		NUMCache[n_NUMCache] = ent = (NUMCacheEntry *)
+		Assert(format_state.NUMCache[format_state.n_NUMCache] == NULL);
+		format_state.NUMCache[format_state.n_NUMCache] = ent = (NUMCacheEntry *)
 			MemoryContextAllocZero(TopMemoryContext, sizeof(NUMCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, NUM_CACHE_SIZE + 1);
-		ent->age = (++NUMCounter);
+		ent->age = (++format_state.NUMCounter);
 		/* caller is expected to fill format and Num, then set valid */
-		++n_NUMCache;
+		++format_state.n_NUMCache;
 		return ent;
 	}
 }
@@ -4896,13 +4907,13 @@ NUM_cache_search(const char *str)
 	/* Ensure we can advance NUMCounter below */
 	NUM_prevent_counter_overflow();
 
-	for (int i = 0; i < n_NUMCache; i++)
+	for (int i = 0; i < format_state.n_NUMCache; i++)
 	{
-		NUMCacheEntry *ent = NUMCache[i];
+		NUMCacheEntry *ent = format_state.NUMCache[i];
 
 		if (ent->valid && strcmp(ent->str, str) == 0)
 		{
-			ent->age = (++NUMCounter);
+			ent->age = (++format_state.NUMCounter);
 			return ent;
 		}
 	}
