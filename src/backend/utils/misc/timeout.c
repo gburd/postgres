@@ -40,43 +40,59 @@ typedef struct timeout_params
 } timeout_params;
 
 /*
- * List of possible timeout reasons in the order of enum TimeoutId.
+ * TimeoutState consolidates this module's per-session (thread-local)
+ * timeout state into a single struct.  See the F4 session-state
+ * consolidation work.  The volatile members are touched by the timer
+ * signal handler, so their volatile qualifiers are preserved.
  */
-static session_local timeout_params all_timeouts[MAX_TIMEOUTS];
-static session_local bool all_timeouts_initialized = false;
+typedef struct TimeoutState
+{
+	/* List of possible timeout reasons in the order of enum TimeoutId. */
+	timeout_params all_timeouts[MAX_TIMEOUTS];
+	bool		all_timeouts_initialized;
 
-/*
- * List of active timeouts ordered by their fin_time and priority.
- * This list is subject to change by the interrupt handler, so it's volatile.
- */
-static session_local volatile int num_active_timeouts = 0;
-static session_local timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
+	/*
+	 * List of active timeouts ordered by their fin_time and priority. This
+	 * list is subject to change by the interrupt handler, so it's volatile.
+	 */
+	volatile int num_active_timeouts;
+	timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
 
-/*
- * Flag controlling whether the signal handler is allowed to do anything.
- * This is useful to avoid race conditions with the handler.  Note in
- * particular that this lets us make changes in the data structures without
- * tediously disabling and re-enabling the timer signal.  Most of the time,
- * no interrupt would happen anyway during such critical sections, but if
- * one does, this rule ensures it's safe.  Leaving the signal enabled across
- * multiple operations can greatly reduce the number of kernel calls we make,
- * too.  See comments in schedule_alarm() about that.
- *
- * We leave this "false" when we're not expecting interrupts, just in case.
- */
-static session_local volatile sig_atomic_t alarm_enabled = false;
+	/*
+	 * Flag controlling whether the signal handler is allowed to do anything.
+	 * This is useful to avoid race conditions with the handler.  Note in
+	 * particular that this lets us make changes in the data structures
+	 * without tediously disabling and re-enabling the timer signal.  Most of
+	 * the time, no interrupt would happen anyway during such critical
+	 * sections, but if one does, this rule ensures it's safe.  Leaving the
+	 * signal enabled across multiple operations can greatly reduce the number
+	 * of kernel calls we make, too.  See comments in schedule_alarm() about
+	 * that.
+	 *
+	 * We leave this "false" when we're not expecting interrupts, just in case.
+	 */
+	volatile sig_atomic_t alarm_enabled;
 
-#define disable_alarm() (alarm_enabled = false)
-#define enable_alarm()	(alarm_enabled = true)
+	/*
+	 * State recording if and when we next expect the interrupt to fire.
+	 * (signal_due_at is valid only when signal_pending is true.)  Note that
+	 * the signal handler will unconditionally reset signal_pending to false,
+	 * so that can change asynchronously even when alarm_enabled is false.
+	 */
+	volatile sig_atomic_t signal_pending;
+	volatile TimestampTz signal_due_at;
+} TimeoutState;
 
-/*
- * State recording if and when we next expect the interrupt to fire.
- * (signal_due_at is valid only when signal_pending is true.)
- * Note that the signal handler will unconditionally reset signal_pending to
- * false, so that can change asynchronously even when alarm_enabled is false.
- */
-static session_local volatile sig_atomic_t signal_pending = false;
-static session_local volatile TimestampTz signal_due_at = 0;
+static session_local TimeoutState timeout_state = {
+	.all_timeouts_initialized = false,
+	.num_active_timeouts = 0,
+	.alarm_enabled = false,
+	.signal_pending = false,
+	.signal_due_at = 0,
+};
+
+#define disable_alarm() (timeout_state.alarm_enabled = false)
+#define enable_alarm()	(timeout_state.alarm_enabled = true)
 
 
 /*****************************************************************************
@@ -97,9 +113,9 @@ find_active_timeout(TimeoutId id)
 {
 	int			i;
 
-	for (i = 0; i < num_active_timeouts; i++)
+	for (i = 0; i < timeout_state.num_active_timeouts; i++)
 	{
-		if (active_timeouts[i]->index == id)
+		if (timeout_state.active_timeouts[i]->index == id)
 			return i;
 	}
 
@@ -115,19 +131,19 @@ insert_timeout(TimeoutId id, int index)
 {
 	int			i;
 
-	if (index < 0 || index > num_active_timeouts)
+	if (index < 0 || index > timeout_state.num_active_timeouts)
 		elog(FATAL, "timeout index %d out of range 0..%d", index,
-			 num_active_timeouts);
+			 timeout_state.num_active_timeouts);
 
-	Assert(!all_timeouts[id].active);
-	all_timeouts[id].active = true;
+	Assert(!timeout_state.all_timeouts[id].active);
+	timeout_state.all_timeouts[id].active = true;
 
-	for (i = num_active_timeouts - 1; i >= index; i--)
-		active_timeouts[i + 1] = active_timeouts[i];
+	for (i = timeout_state.num_active_timeouts - 1; i >= index; i--)
+		timeout_state.active_timeouts[i + 1] = timeout_state.active_timeouts[i];
 
-	active_timeouts[index] = &all_timeouts[id];
+	timeout_state.active_timeouts[index] = &timeout_state.all_timeouts[id];
 
-	num_active_timeouts++;
+	timeout_state.num_active_timeouts++;
 }
 
 /*
@@ -138,17 +154,17 @@ remove_timeout_index(int index)
 {
 	int			i;
 
-	if (index < 0 || index >= num_active_timeouts)
+	if (index < 0 || index >= timeout_state.num_active_timeouts)
 		elog(FATAL, "timeout index %d out of range 0..%d", index,
-			 num_active_timeouts - 1);
+			 timeout_state.num_active_timeouts - 1);
 
-	Assert(active_timeouts[index]->active);
-	active_timeouts[index]->active = false;
+	Assert(timeout_state.active_timeouts[index]->active);
+	timeout_state.active_timeouts[index]->active = false;
 
-	for (i = index + 1; i < num_active_timeouts; i++)
-		active_timeouts[i - 1] = active_timeouts[i];
+	for (i = index + 1; i < timeout_state.num_active_timeouts; i++)
+		timeout_state.active_timeouts[i - 1] = timeout_state.active_timeouts[i];
 
-	num_active_timeouts--;
+	timeout_state.num_active_timeouts--;
 }
 
 /*
@@ -161,23 +177,23 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	int			i;
 
 	/* Assert request is sane */
-	Assert(all_timeouts_initialized);
-	Assert(all_timeouts[id].timeout_handler != NULL);
+	Assert(timeout_state.all_timeouts_initialized);
+	Assert(timeout_state.all_timeouts[id].timeout_handler != NULL);
 
 	/*
 	 * If this timeout was already active, momentarily disable it.  We
 	 * interpret the call as a directive to reschedule the timeout.
 	 */
-	if (all_timeouts[id].active)
+	if (timeout_state.all_timeouts[id].active)
 		remove_timeout_index(find_active_timeout(id));
 
 	/*
 	 * Find out the index where to insert the new timeout.  We sort by
 	 * fin_time, and for equal fin_time by priority.
 	 */
-	for (i = 0; i < num_active_timeouts; i++)
+	for (i = 0; i < timeout_state.num_active_timeouts; i++)
 	{
-		timeout_params *old_timeout = active_timeouts[i];
+		timeout_params *old_timeout = timeout_state.active_timeouts[i];
 
 		if (fin_time < old_timeout->fin_time)
 			break;
@@ -188,10 +204,10 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	/*
 	 * Mark the timeout active, and insert it into the active list.
 	 */
-	all_timeouts[id].indicator = false;
-	all_timeouts[id].start_time = now;
-	all_timeouts[id].fin_time = fin_time;
-	all_timeouts[id].interval_in_ms = interval_in_ms;
+	timeout_state.all_timeouts[id].indicator = false;
+	timeout_state.all_timeouts[id].start_time = now;
+	timeout_state.all_timeouts[id].fin_time = fin_time;
+	timeout_state.all_timeouts[id].interval_in_ms = interval_in_ms;
 
 	insert_timeout(id, i);
 }
@@ -209,7 +225,7 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 static void
 schedule_alarm(TimestampTz now)
 {
-	if (num_active_timeouts > 0)
+	if (timeout_state.num_active_timeouts > 0)
 	{
 		struct itimerval timeval;
 		TimestampTz nearest_timeout;
@@ -227,8 +243,8 @@ schedule_alarm(TimestampTz now)
 		 * interrupt does manage to fire between now and when we reach the
 		 * setitimer() call.
 		 */
-		if (signal_pending && now > signal_due_at + 10 * 1000)
-			signal_pending = false;
+		if (timeout_state.signal_pending && now > timeout_state.signal_due_at + 10 * 1000)
+			timeout_state.signal_pending = false;
 
 		/*
 		 * Get the time remaining till the nearest pending timeout.  If it is
@@ -236,10 +252,10 @@ schedule_alarm(TimestampTz now)
 		 * signal_pending.  This gives us another chance to recover if the
 		 * kernel drops a timeout request for some reason.
 		 */
-		nearest_timeout = active_timeouts[0]->fin_time;
+		nearest_timeout = timeout_state.active_timeouts[0]->fin_time;
 		if (now > nearest_timeout)
 		{
-			signal_pending = false;
+			timeout_state.signal_pending = false;
 			/* force an interrupt as soon as possible */
 			secs = 0;
 			usecs = 1;
@@ -313,7 +329,7 @@ schedule_alarm(TimestampTz now)
 		 * to trigger the interrupt is likely to be a bit later than
 		 * signal_due_at.  That's fine, for the same reasons described above.
 		 */
-		if (signal_pending && nearest_timeout >= signal_due_at)
+		if (timeout_state.signal_pending && nearest_timeout >= timeout_state.signal_due_at)
 			return;
 
 		/*
@@ -332,8 +348,8 @@ schedule_alarm(TimestampTz now)
 		 * gives a time later than when the interrupt will really happen;
 		 * which is a safe situation.
 		 */
-		signal_due_at = nearest_timeout;
-		signal_pending = true;
+		timeout_state.signal_due_at = nearest_timeout;
+		timeout_state.signal_pending = true;
 
 		/* Set the alarm timer */
 		if (setitimer(ITIMER_REAL, &timeval, NULL) != 0)
@@ -343,7 +359,7 @@ schedule_alarm(TimestampTz now)
 			 * entirely so, since something in the FATAL exit path could try
 			 * to use timeout facilities.
 			 */
-			signal_pending = false;
+			timeout_state.signal_pending = false;
 			elog(FATAL, "could not enable SIGALRM timer: %m");
 		}
 	}
@@ -381,12 +397,12 @@ handle_sig_alarm(SIGNAL_ARGS)
 	 * Always reset signal_pending, even if !alarm_enabled, since indeed no
 	 * signal is now pending.
 	 */
-	signal_pending = false;
+	timeout_state.signal_pending = false;
 
 	/*
 	 * Fire any pending timeouts, but only if we're enabled to do so.
 	 */
-	if (alarm_enabled)
+	if (timeout_state.alarm_enabled)
 	{
 		/*
 		 * Disable alarms, just in case this platform allows signal handlers
@@ -395,15 +411,15 @@ handle_sig_alarm(SIGNAL_ARGS)
 		 */
 		disable_alarm();
 
-		if (num_active_timeouts > 0)
+		if (timeout_state.num_active_timeouts > 0)
 		{
 			TimestampTz now = GetCurrentTimestamp();
 
 			/* While the first pending timeout has been reached ... */
-			while (num_active_timeouts > 0 &&
-				   now >= active_timeouts[0]->fin_time)
+			while (timeout_state.num_active_timeouts > 0 &&
+				   now >= timeout_state.active_timeouts[0]->fin_time)
 			{
-				timeout_params *this_timeout = active_timeouts[0];
+				timeout_params *this_timeout = timeout_state.active_timeouts[0];
 
 				/* Remove it from the active list */
 				remove_timeout_index(0);
@@ -475,20 +491,20 @@ InitializeTimeouts(void)
 	/* Initialize, or re-initialize, all local state */
 	disable_alarm();
 
-	num_active_timeouts = 0;
+	timeout_state.num_active_timeouts = 0;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
-		all_timeouts[i].index = i;
-		all_timeouts[i].active = false;
-		all_timeouts[i].indicator = false;
-		all_timeouts[i].timeout_handler = NULL;
-		all_timeouts[i].start_time = 0;
-		all_timeouts[i].fin_time = 0;
-		all_timeouts[i].interval_in_ms = 0;
+		timeout_state.all_timeouts[i].index = i;
+		timeout_state.all_timeouts[i].active = false;
+		timeout_state.all_timeouts[i].indicator = false;
+		timeout_state.all_timeouts[i].timeout_handler = NULL;
+		timeout_state.all_timeouts[i].start_time = 0;
+		timeout_state.all_timeouts[i].fin_time = 0;
+		timeout_state.all_timeouts[i].interval_in_ms = 0;
 	}
 
-	all_timeouts_initialized = true;
+	timeout_state.all_timeouts_initialized = true;
 
 	/* Now establish the signal handler */
 	pqsignal(SIGALRM, handle_sig_alarm);
@@ -505,7 +521,7 @@ InitializeTimeouts(void)
 TimeoutId
 RegisterTimeout(TimeoutId id, timeout_handler_proc handler)
 {
-	Assert(all_timeouts_initialized);
+	Assert(timeout_state.all_timeouts_initialized);
 
 	/* There's no need to disable the signal handler here. */
 
@@ -513,7 +529,7 @@ RegisterTimeout(TimeoutId id, timeout_handler_proc handler)
 	{
 		/* Allocate a user-defined timeout reason */
 		for (id = USER_TIMEOUT; id < MAX_TIMEOUTS; id++)
-			if (all_timeouts[id].timeout_handler == NULL)
+			if (timeout_state.all_timeouts[id].timeout_handler == NULL)
 				break;
 		if (id >= MAX_TIMEOUTS)
 			ereport(FATAL,
@@ -521,9 +537,9 @@ RegisterTimeout(TimeoutId id, timeout_handler_proc handler)
 					 errmsg("cannot add more timeout reasons")));
 	}
 
-	Assert(all_timeouts[id].timeout_handler == NULL);
+	Assert(timeout_state.all_timeouts[id].timeout_handler == NULL);
 
-	all_timeouts[id].timeout_handler = handler;
+	timeout_state.all_timeouts[id].timeout_handler = handler;
 
 	return id;
 }
@@ -541,14 +557,14 @@ void
 reschedule_timeouts(void)
 {
 	/* For flexibility, allow this to be called before we're initialized. */
-	if (!all_timeouts_initialized)
+	if (!timeout_state.all_timeouts_initialized)
 		return;
 
 	/* Disable timeout interrupts for safety. */
 	disable_alarm();
 
 	/* Reschedule the interrupt, if any timeouts remain active. */
-	if (num_active_timeouts > 0)
+	if (timeout_state.num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
 }
 
@@ -686,22 +702,22 @@ void
 disable_timeout(TimeoutId id, bool keep_indicator)
 {
 	/* Assert request is sane */
-	Assert(all_timeouts_initialized);
-	Assert(all_timeouts[id].timeout_handler != NULL);
+	Assert(timeout_state.all_timeouts_initialized);
+	Assert(timeout_state.all_timeouts[id].timeout_handler != NULL);
 
 	/* Disable timeout interrupts for safety. */
 	disable_alarm();
 
 	/* Find the timeout and remove it from the active list. */
-	if (all_timeouts[id].active)
+	if (timeout_state.all_timeouts[id].active)
 		remove_timeout_index(find_active_timeout(id));
 
 	/* Mark it inactive, whether it was active or not. */
 	if (!keep_indicator)
-		all_timeouts[id].indicator = false;
+		timeout_state.all_timeouts[id].indicator = false;
 
 	/* Reschedule the interrupt, if any timeouts remain active. */
-	if (num_active_timeouts > 0)
+	if (timeout_state.num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
 }
 
@@ -720,7 +736,7 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 {
 	int			i;
 
-	Assert(all_timeouts_initialized);
+	Assert(timeout_state.all_timeouts_initialized);
 
 	/* Disable timeout interrupts for safety. */
 	disable_alarm();
@@ -730,17 +746,17 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 	{
 		TimeoutId	id = timeouts[i].id;
 
-		Assert(all_timeouts[id].timeout_handler != NULL);
+		Assert(timeout_state.all_timeouts[id].timeout_handler != NULL);
 
-		if (all_timeouts[id].active)
+		if (timeout_state.all_timeouts[id].active)
 			remove_timeout_index(find_active_timeout(id));
 
 		if (!timeouts[i].keep_indicator)
-			all_timeouts[id].indicator = false;
+			timeout_state.all_timeouts[id].indicator = false;
 	}
 
 	/* Reschedule the interrupt, if any timeouts remain active. */
-	if (num_active_timeouts > 0)
+	if (timeout_state.num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
 }
 
@@ -761,13 +777,13 @@ disable_all_timeouts(bool keep_indicators)
 	 * to enable it again shortly.  See comments in schedule_alarm().
 	 */
 
-	num_active_timeouts = 0;
+	timeout_state.num_active_timeouts = 0;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
-		all_timeouts[i].active = false;
+		timeout_state.all_timeouts[i].active = false;
 		if (!keep_indicators)
-			all_timeouts[i].indicator = false;
+			timeout_state.all_timeouts[i].indicator = false;
 	}
 }
 
@@ -780,7 +796,7 @@ disable_all_timeouts(bool keep_indicators)
 bool
 get_timeout_active(TimeoutId id)
 {
-	return all_timeouts[id].active;
+	return timeout_state.all_timeouts[id].active;
 }
 
 /*
@@ -793,10 +809,10 @@ get_timeout_active(TimeoutId id)
 bool
 get_timeout_indicator(TimeoutId id, bool reset_indicator)
 {
-	if (all_timeouts[id].indicator)
+	if (timeout_state.all_timeouts[id].indicator)
 	{
 		if (reset_indicator)
-			all_timeouts[id].indicator = false;
+			timeout_state.all_timeouts[id].indicator = false;
 		return true;
 	}
 	return false;
@@ -813,7 +829,7 @@ get_timeout_indicator(TimeoutId id, bool reset_indicator)
 TimestampTz
 get_timeout_start_time(TimeoutId id)
 {
-	return all_timeouts[id].start_time;
+	return timeout_state.all_timeouts[id].start_time;
 }
 
 /*
@@ -827,5 +843,5 @@ get_timeout_start_time(TimeoutId id)
 TimestampTz
 get_timeout_finish_time(TimeoutId id)
 {
-	return all_timeouts[id].fin_time;
+	return timeout_state.all_timeouts[id].fin_time;
 }
