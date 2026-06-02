@@ -4055,7 +4055,7 @@ static int
 RecnoVacuumCrossPageDefrag(Relation rel, BlockNumber nblocks,
 						   BlockNumber *empty_end_pages_p,
 						   int nindexes, Relation *indrels,
-						   BufferAccessStrategy bstrategy, bool verbose)
+						   BufferAccessStrategy bstrategy)
 {
 	BlockNumber src_blkno;
 	BlockNumber nonempty_limit;
@@ -4080,11 +4080,17 @@ RecnoVacuumCrossPageDefrag(Relation rel, BlockNumber nblocks,
 	if (nonempty_limit <= 1)
 		return 0;
 
-	if (verbose)
-		ereport(INFO,
-				(errmsg("table \"%s\": starting cross-page defragmentation from block %u",
-						RelationGetRelationName(rel),
-						nonempty_limit - 1)));
+	/*
+	 * Cross-page defragmentation is an internal heuristic whose page-by-page
+	 * progress depends on FSM search order and tuple packing, both of which
+	 * vary across platforms and BLCKSZ.  Report it at DEBUG2 rather than INFO
+	 * so that VACUUM VERBOSE output stays stable; the per-relation summary
+	 * below (emitted at INFO) carries the user-meaningful result.
+	 */
+	ereport(DEBUG2,
+			(errmsg_internal("table \"%s\": starting cross-page defragmentation from block %u",
+							  RelationGetRelationName(rel),
+							  nonempty_limit - 1)));
 
 	/*
 	 * Create a single executor state and tuple slot, reused across all index
@@ -4425,11 +4431,11 @@ RecnoVacuumCrossPageDefrag(Relation rel, BlockNumber nblocks,
 	if (estate != NULL)
 		FreeExecutorState(estate);
 
-	if (tuples_moved > 0 && verbose)
-		ereport(INFO,
-				(errmsg("table \"%s\": cross-page defrag moved %d tuples, emptied %d pages",
-						RelationGetRelationName(rel),
-						tuples_moved, pages_emptied)));
+	if (tuples_moved > 0)
+		ereport(DEBUG2,
+				(errmsg_internal("table \"%s\": cross-page defrag moved %d tuples, emptied %d pages",
+								  RelationGetRelationName(rel),
+								  tuples_moved, pages_emptied)));
 
 	return tuples_moved;
 }
@@ -4989,7 +4995,7 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 	RecnoVacuumCrossPageDefrag(onerel, nblocks,
 							   &empty_end_pages,
 							   nindexes, indrels,
-							   bstrategy, verbose);
+							   bstrategy);
 
 	/*
 	 * -----------------------------------------------------------------------
