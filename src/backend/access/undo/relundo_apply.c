@@ -454,10 +454,7 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 
 	lp = PageGetItemId(page, offset);
 
-	/* Check if there's enough space (may need to reclaim) */
 	aligned_len = MAXALIGN(tuple_len);
-	if (PageGetFreeSpace(page) < aligned_len)
-		elog(ERROR, "RelUndoApplyDelete: insufficient space on page to restore tuple");
 
 	/*
 	 * Restore the tuple data. We use memcpy to copy the complete tuple
@@ -465,7 +462,14 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 	 */
 	if (ItemIdIsUsed(lp))
 	{
-		/* Tuple slot is occupied - replace it */
+		/*
+		 * Tuple slot is still occupied -- the common RECNO case, since DELETE
+		 * is in place (it only flags the tuple RECNO_TUPLE_DELETED and leaves
+		 * the full-length body on the page).  Restoring is an in-place
+		 * overwrite of the same-length slot, so it needs no free space; do
+		 * not consult PageGetFreeSpace here or a full page would spuriously
+		 * fail the rollback.
+		 */
 		if (ItemIdGetLength(lp) != tuple_len)
 			elog(ERROR, "RelUndoApplyDelete: tuple length mismatch");
 
@@ -473,8 +477,11 @@ RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 	}
 	else
 	{
-		/* Need to allocate new slot */
+		/* Need to allocate a new slot -- this path consumes free space. */
 		OffsetNumber new_offset;
+
+		if (PageGetFreeSpace(page) < aligned_len)
+			elog(ERROR, "RelUndoApplyDelete: insufficient space on page to restore tuple");
 
 		new_offset = PageAddItem(page, tuple_data, tuple_len,
 								 offset, false, false);

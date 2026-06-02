@@ -88,7 +88,7 @@ ROLLBACK;
 SELECT count(*) AS after_rollback FROM recno_bench;
  after_rollback 
 ----------------
-            952
+           1000
 (1 row)
 
 -- ================================================================
