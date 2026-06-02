@@ -60,37 +60,57 @@ typedef struct ConvProcInfo
 	FmgrInfo	to_client_info;
 } ConvProcInfo;
 
-static session_local List *ConvProcList = NIL;	/* List of ConvProcInfo */
-
 /*
- * These variables point to the currently active conversion functions,
- * or are NULL when no conversion is needed.
+ * MbState consolidates this module's per-session (thread-local)
+ * encoding-conversion state into a single struct.  See the F4
+ * session-state consolidation work.
  */
-static session_local FmgrInfo *ToServerConvProc = NULL;
-static session_local FmgrInfo *ToClientConvProc = NULL;
+typedef struct MbState
+{
+	List	   *ConvProcList;	/* List of ConvProcInfo */
 
-/*
- * This variable stores the conversion function to convert from UTF-8
- * to the server encoding.  It's NULL if the server encoding *is* UTF-8,
- * or if we lack a conversion function for this.
- */
-static session_local FmgrInfo *Utf8ToServerConvProc = NULL;
+	/*
+	 * These variables point to the currently active conversion functions, or
+	 * are NULL when no conversion is needed.
+	 */
+	FmgrInfo   *ToServerConvProc;
+	FmgrInfo   *ToClientConvProc;
 
-/*
- * These variables track the currently-selected encodings.
- */
-static session_local const pg_enc2name *ClientEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static session_local const pg_enc2name *DatabaseEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static session_local const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+	/*
+	 * This variable stores the conversion function to convert from UTF-8 to
+	 * the server encoding.  It's NULL if the server encoding *is* UTF-8, or if
+	 * we lack a conversion function for this.
+	 */
+	FmgrInfo   *Utf8ToServerConvProc;
 
-/*
- * During backend startup we can't set client encoding because we (a)
- * can't look up the conversion functions, and (b) may not know the database
- * encoding yet either.  So SetClientEncoding() just accepts anything and
- * remembers it for InitializeClientEncoding() to apply later.
- */
-static session_local bool backend_startup_complete = false;
-static session_local int	pending_client_encoding = PG_SQL_ASCII;
+	/*
+	 * These variables track the currently-selected encodings.
+	 */
+	const pg_enc2name *ClientEncoding;
+	const pg_enc2name *DatabaseEncoding;
+	const pg_enc2name *MessageEncoding;
+
+	/*
+	 * During backend startup we can't set client encoding because we (a) can't
+	 * look up the conversion functions, and (b) may not know the database
+	 * encoding yet either.  So SetClientEncoding() just accepts anything and
+	 * remembers it for InitializeClientEncoding() to apply later.
+	 */
+	bool		backend_startup_complete;
+	int			pending_client_encoding;
+} MbState;
+
+static session_local MbState mb_state = {
+	.ConvProcList = NIL,
+	.ToServerConvProc = NULL,
+	.ToClientConvProc = NULL,
+	.Utf8ToServerConvProc = NULL,
+	.ClientEncoding = &pg_enc2name_tbl[PG_SQL_ASCII],
+	.DatabaseEncoding = &pg_enc2name_tbl[PG_SQL_ASCII],
+	.MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII],
+	.backend_startup_complete = false,
+	.pending_client_encoding = PG_SQL_ASCII,
+};
 
 
 /* Internal functions */
@@ -125,7 +145,7 @@ PrepareClientEncoding(int encoding)
 		return -1;
 
 	/* Can't do anything during startup, per notes above */
-	if (!backend_startup_complete)
+	if (!mb_state.backend_startup_complete)
 		return 0;
 
 	current_server_encoding = GetDatabaseEncoding();
@@ -174,7 +194,7 @@ PrepareClientEncoding(int encoding)
 
 		/* Attach new info to head of list */
 		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		ConvProcList = lcons(convinfo, ConvProcList);
+		mb_state.ConvProcList = lcons(convinfo, mb_state.ConvProcList);
 		MemoryContextSwitchTo(oldcontext);
 
 		/*
@@ -194,7 +214,7 @@ PrepareClientEncoding(int encoding)
 		 * postgresql.conf and SIGHUP'ing.  Which would probably be a stupid
 		 * thing to do anyway.
 		 */
-		foreach(lc, ConvProcList)
+		foreach(lc, mb_state.ConvProcList)
 		{
 			ConvProcInfo *oldinfo = (ConvProcInfo *) lfirst(lc);
 
@@ -224,9 +244,9 @@ SetClientEncoding(int encoding)
 		return -1;
 
 	/* Can't do anything during startup, per notes above */
-	if (!backend_startup_complete)
+	if (!mb_state.backend_startup_complete)
 	{
-		pending_client_encoding = encoding;
+		mb_state.pending_client_encoding = encoding;
 		return 0;
 	}
 
@@ -239,9 +259,9 @@ SetClientEncoding(int encoding)
 		current_server_encoding == PG_SQL_ASCII ||
 		encoding == PG_SQL_ASCII)
 	{
-		ClientEncoding = &pg_enc2name_tbl[encoding];
-		ToServerConvProc = NULL;
-		ToClientConvProc = NULL;
+		mb_state.ClientEncoding = &pg_enc2name_tbl[encoding];
+		mb_state.ToServerConvProc = NULL;
+		mb_state.ToClientConvProc = NULL;
 		return 0;
 	}
 
@@ -252,7 +272,7 @@ SetClientEncoding(int encoding)
 	 * leak memory.
 	 */
 	found = false;
-	foreach(lc, ConvProcList)
+	foreach(lc, mb_state.ConvProcList)
 	{
 		ConvProcInfo *convinfo = (ConvProcInfo *) lfirst(lc);
 
@@ -262,15 +282,15 @@ SetClientEncoding(int encoding)
 			if (!found)
 			{
 				/* Found newest entry, so set up */
-				ClientEncoding = &pg_enc2name_tbl[encoding];
-				ToServerConvProc = &convinfo->to_server_info;
-				ToClientConvProc = &convinfo->to_client_info;
+				mb_state.ClientEncoding = &pg_enc2name_tbl[encoding];
+				mb_state.ToServerConvProc = &convinfo->to_server_info;
+				mb_state.ToClientConvProc = &convinfo->to_client_info;
 				found = true;
 			}
 			else
 			{
 				/* Duplicate entry, release it */
-				ConvProcList = foreach_delete_current(ConvProcList, lc);
+				mb_state.ConvProcList = foreach_delete_current(mb_state.ConvProcList, lc);
 				pfree(convinfo);
 			}
 		}
@@ -291,11 +311,11 @@ InitializeClientEncoding(void)
 {
 	int			current_server_encoding;
 
-	Assert(!backend_startup_complete);
-	backend_startup_complete = true;
+	Assert(!mb_state.backend_startup_complete);
+	mb_state.backend_startup_complete = true;
 
-	if (PrepareClientEncoding(pending_client_encoding) < 0 ||
-		SetClientEncoding(pending_client_encoding) < 0)
+	if (PrepareClientEncoding(mb_state.pending_client_encoding) < 0 ||
+		SetClientEncoding(mb_state.pending_client_encoding) < 0)
 	{
 		/*
 		 * Oops, the requested conversion is not available. We couldn't fail
@@ -304,7 +324,7 @@ InitializeClientEncoding(void)
 		ereport(FATAL,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("conversion between %s and %s is not supported",
-						pg_enc2name_tbl[pending_client_encoding].name,
+						pg_enc2name_tbl[mb_state.pending_client_encoding].name,
 						GetDatabaseEncodingName())));
 	}
 
@@ -333,7 +353,7 @@ InitializeClientEncoding(void)
 			fmgr_info_cxt(utf8_to_server_proc, finfo,
 						  TopMemoryContext);
 			/* Set Utf8ToServerConvProc only after data is fully valid */
-			Utf8ToServerConvProc = finfo;
+			mb_state.Utf8ToServerConvProc = finfo;
 		}
 	}
 }
@@ -344,7 +364,7 @@ InitializeClientEncoding(void)
 int
 pg_get_client_encoding(void)
 {
-	return ClientEncoding->encoding;
+	return mb_state.ClientEncoding->encoding;
 }
 
 /*
@@ -353,7 +373,7 @@ pg_get_client_encoding(void)
 const char *
 pg_get_client_encoding_name(void)
 {
-	return ClientEncoding->name;
+	return mb_state.ClientEncoding->name;
 }
 
 /*
@@ -513,7 +533,7 @@ pg_convert_to(PG_FUNCTION_ARGS)
 	Datum		string = PG_GETARG_DATUM(0);
 	Datum		dest_encoding_name = PG_GETARG_DATUM(1);
 	Datum		src_encoding_name = DirectFunctionCall1(namein,
-														CStringGetDatum(DatabaseEncoding->name));
+														CStringGetDatum(mb_state.DatabaseEncoding->name));
 	Datum		result;
 
 	/*
@@ -539,7 +559,7 @@ pg_convert_from(PG_FUNCTION_ARGS)
 	Datum		string = PG_GETARG_DATUM(0);
 	Datum		src_encoding_name = PG_GETARG_DATUM(1);
 	Datum		dest_encoding_name = DirectFunctionCall1(namein,
-														 CStringGetDatum(DatabaseEncoding->name));
+														 CStringGetDatum(mb_state.DatabaseEncoding->name));
 	Datum		result;
 
 	result = DirectFunctionCall3(pg_convert, string,
@@ -670,7 +690,7 @@ pg_encoding_max_length_sql(PG_FUNCTION_ARGS)
 char *
 pg_client_to_server(const char *s, int len)
 {
-	return pg_any_to_server(s, len, ClientEncoding->encoding);
+	return pg_any_to_server(s, len, mb_state.ClientEncoding->encoding);
 }
 
 /*
@@ -689,17 +709,17 @@ pg_any_to_server(const char *s, int len, int encoding)
 	if (len <= 0)
 		return unconstify(char *, s);	/* empty string is always valid */
 
-	if (encoding == DatabaseEncoding->encoding ||
+	if (encoding == mb_state.DatabaseEncoding->encoding ||
 		encoding == PG_SQL_ASCII)
 	{
 		/*
 		 * No conversion is needed, but we must still validate the data.
 		 */
-		(void) pg_verify_mbstr(DatabaseEncoding->encoding, s, len, false);
+		(void) pg_verify_mbstr(mb_state.DatabaseEncoding->encoding, s, len, false);
 		return unconstify(char *, s);
 	}
 
-	if (DatabaseEncoding->encoding == PG_SQL_ASCII)
+	if (mb_state.DatabaseEncoding->encoding == PG_SQL_ASCII)
 	{
 		/*
 		 * No conversion is possible, but we must still validate the data,
@@ -730,14 +750,14 @@ pg_any_to_server(const char *s, int len, int encoding)
 	}
 
 	/* Fast path if we can use cached conversion function */
-	if (encoding == ClientEncoding->encoding)
+	if (encoding == mb_state.ClientEncoding->encoding)
 		return perform_default_encoding_conversion(s, len, true);
 
 	/* General case ... will not work outside transactions */
 	return (char *) pg_do_encoding_conversion((unsigned char *) unconstify(char *, s),
 											  len,
 											  encoding,
-											  DatabaseEncoding->encoding);
+											  mb_state.DatabaseEncoding->encoding);
 }
 
 /*
@@ -748,7 +768,7 @@ pg_any_to_server(const char *s, int len, int encoding)
 char *
 pg_server_to_client(const char *s, int len)
 {
-	return pg_server_to_any(s, len, ClientEncoding->encoding);
+	return pg_server_to_any(s, len, mb_state.ClientEncoding->encoding);
 }
 
 /*
@@ -762,11 +782,11 @@ pg_server_to_any(const char *s, int len, int encoding)
 	if (len <= 0)
 		return unconstify(char *, s);	/* empty string is always valid */
 
-	if (encoding == DatabaseEncoding->encoding ||
+	if (encoding == mb_state.DatabaseEncoding->encoding ||
 		encoding == PG_SQL_ASCII)
 		return unconstify(char *, s);	/* assume data is valid */
 
-	if (DatabaseEncoding->encoding == PG_SQL_ASCII)
+	if (mb_state.DatabaseEncoding->encoding == PG_SQL_ASCII)
 	{
 		/* No conversion is possible, but we must validate the result */
 		(void) pg_verify_mbstr(encoding, s, len, false);
@@ -774,13 +794,13 @@ pg_server_to_any(const char *s, int len, int encoding)
 	}
 
 	/* Fast path if we can use cached conversion function */
-	if (encoding == ClientEncoding->encoding)
+	if (encoding == mb_state.ClientEncoding->encoding)
 		return perform_default_encoding_conversion(s, len, false);
 
 	/* General case ... will not work outside transactions */
 	return (char *) pg_do_encoding_conversion((unsigned char *) unconstify(char *, s),
 											  len,
-											  DatabaseEncoding->encoding,
+											  mb_state.DatabaseEncoding->encoding,
 											  encoding);
 }
 
@@ -801,15 +821,15 @@ perform_default_encoding_conversion(const char *src, int len,
 
 	if (is_client_to_server)
 	{
-		src_encoding = ClientEncoding->encoding;
-		dest_encoding = DatabaseEncoding->encoding;
-		flinfo = ToServerConvProc;
+		src_encoding = mb_state.ClientEncoding->encoding;
+		dest_encoding = mb_state.DatabaseEncoding->encoding;
+		flinfo = mb_state.ToServerConvProc;
 	}
 	else
 	{
-		src_encoding = DatabaseEncoding->encoding;
-		dest_encoding = ClientEncoding->encoding;
-		flinfo = ToClientConvProc;
+		src_encoding = mb_state.DatabaseEncoding->encoding;
+		dest_encoding = mb_state.ClientEncoding->encoding;
+		flinfo = mb_state.ToClientConvProc;
 	}
 
 	if (flinfo == NULL)
@@ -905,7 +925,7 @@ pg_unicode_to_server(char32_t c, unsigned char *s)
 	}
 
 	/* For all other cases, we must have a conversion function available */
-	if (Utf8ToServerConvProc == NULL)
+	if (mb_state.Utf8ToServerConvProc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("conversion between %s and %s is not supported",
@@ -918,7 +938,7 @@ pg_unicode_to_server(char32_t c, unsigned char *s)
 	c_as_utf8[c_as_utf8_len] = '\0';
 
 	/* Convert, or throw error if we can't */
-	FunctionCall6(Utf8ToServerConvProc,
+	FunctionCall6(mb_state.Utf8ToServerConvProc,
 				  Int32GetDatum(PG_UTF8),
 				  Int32GetDatum(server_encoding),
 				  CStringGetDatum((char *) c_as_utf8),
@@ -963,7 +983,7 @@ pg_unicode_to_server_noerror(char32_t c, unsigned char *s)
 	}
 
 	/* For all other cases, we must have a conversion function available */
-	if (Utf8ToServerConvProc == NULL)
+	if (mb_state.Utf8ToServerConvProc == NULL)
 		return false;
 
 	/* Construct UTF-8 source string */
@@ -972,7 +992,7 @@ pg_unicode_to_server_noerror(char32_t c, unsigned char *s)
 	c_as_utf8[c_as_utf8_len] = '\0';
 
 	/* Convert, but without throwing error if we can't */
-	converted_len = DatumGetInt32(FunctionCall6(Utf8ToServerConvProc,
+	converted_len = DatumGetInt32(FunctionCall6(mb_state.Utf8ToServerConvProc,
 												Int32GetDatum(PG_UTF8),
 												Int32GetDatum(server_encoding),
 												CStringGetDatum((char *) c_as_utf8),
@@ -989,14 +1009,14 @@ pg_unicode_to_server_noerror(char32_t c, unsigned char *s)
 int
 pg_mb2wchar(const char *from, pg_wchar *to)
 {
-	return pg_wchar_table[DatabaseEncoding->encoding].mb2wchar_with_len((const unsigned char *) from, to, strlen(from));
+	return pg_wchar_table[mb_state.DatabaseEncoding->encoding].mb2wchar_with_len((const unsigned char *) from, to, strlen(from));
 }
 
 /* convert a multibyte string to a wchar with a limited length */
 int
 pg_mb2wchar_with_len(const char *from, pg_wchar *to, int len)
 {
-	return pg_wchar_table[DatabaseEncoding->encoding].mb2wchar_with_len((const unsigned char *) from, to, len);
+	return pg_wchar_table[mb_state.DatabaseEncoding->encoding].mb2wchar_with_len((const unsigned char *) from, to, len);
 }
 
 /* same, with any encoding */
@@ -1011,14 +1031,14 @@ pg_encoding_mb2wchar_with_len(int encoding,
 int
 pg_wchar2mb(const pg_wchar *from, char *to)
 {
-	return pg_wchar_table[DatabaseEncoding->encoding].wchar2mb_with_len(from, (unsigned char *) to, pg_wchar_strlen(from));
+	return pg_wchar_table[mb_state.DatabaseEncoding->encoding].wchar2mb_with_len(from, (unsigned char *) to, pg_wchar_strlen(from));
 }
 
 /* convert a wchar string to a multibyte with a limited length */
 int
 pg_wchar2mb_with_len(const pg_wchar *from, char *to, int len)
 {
-	return pg_wchar_table[DatabaseEncoding->encoding].wchar2mb_with_len(from, (unsigned char *) to, len);
+	return pg_wchar_table[mb_state.DatabaseEncoding->encoding].wchar2mb_with_len(from, (unsigned char *) to, len);
 }
 
 /* same, with any encoding */
@@ -1044,7 +1064,7 @@ pg_encoding_wchar2mb_with_len(int encoding,
 int
 pg_mblen_cstr(const char *mbstr)
 {
-	int			length = pg_wchar_table[DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
+	int			length = pg_wchar_table[mb_state.DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
 
 	/*
 	 * The .mblen functions return 1 when given a pointer to a terminator.
@@ -1083,7 +1103,7 @@ pg_mblen_cstr(const char *mbstr)
 int
 pg_mblen_range(const char *mbstr, const char *end)
 {
-	int			length = pg_wchar_table[DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
+	int			length = pg_wchar_table[mb_state.DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
 
 	Assert(end > mbstr);
 
@@ -1107,7 +1127,7 @@ pg_mblen_range(const char *mbstr, const char *end)
 int
 pg_mblen_with_len(const char *mbstr, int limit)
 {
-	int			length = pg_wchar_table[DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
+	int			length = pg_wchar_table[mb_state.DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
 
 	Assert(limit >= 1);
 
@@ -1136,7 +1156,7 @@ pg_mblen_with_len(const char *mbstr, int limit)
 int
 pg_mblen_unbounded(const char *mbstr)
 {
-	int			length = pg_wchar_table[DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
+	int			length = pg_wchar_table[mb_state.DatabaseEncoding->encoding].mblen((const unsigned char *) mbstr);
 
 	VALGRIND_CHECK_MEM_IS_DEFINED(mbstr, length);
 
@@ -1157,7 +1177,7 @@ pg_mblen(const char *mbstr)
 int
 pg_dsplen(const char *mbstr)
 {
-	return pg_wchar_table[DatabaseEncoding->encoding].dsplen((const unsigned char *) mbstr);
+	return pg_wchar_table[mb_state.DatabaseEncoding->encoding].dsplen((const unsigned char *) mbstr);
 }
 
 /* returns the length (counted in wchars) of a multibyte string */
@@ -1210,7 +1230,7 @@ pg_mbstrlen_with_len(const char *mbstr, int limit)
 int
 pg_mbcliplen(const char *mbstr, int len, int limit)
 {
-	return pg_encoding_mbcliplen(DatabaseEncoding->encoding, mbstr,
+	return pg_encoding_mbcliplen(mb_state.DatabaseEncoding->encoding, mbstr,
 								 len, limit);
 }
 
@@ -1291,8 +1311,8 @@ SetDatabaseEncoding(int encoding)
 	if (!PG_VALID_BE_ENCODING(encoding))
 		elog(ERROR, "invalid database encoding: %d", encoding);
 
-	DatabaseEncoding = &pg_enc2name_tbl[encoding];
-	Assert(DatabaseEncoding->encoding == encoding);
+	mb_state.DatabaseEncoding = &pg_enc2name_tbl[encoding];
+	Assert(mb_state.DatabaseEncoding->encoding == encoding);
 }
 
 void
@@ -1301,8 +1321,8 @@ SetMessageEncoding(int encoding)
 	/* Some calls happen before we can elog()! */
 	Assert(PG_VALID_ENCODING(encoding));
 
-	MessageEncoding = &pg_enc2name_tbl[encoding];
-	Assert(MessageEncoding->encoding == encoding);
+	mb_state.MessageEncoding = &pg_enc2name_tbl[encoding];
+	Assert(mb_state.MessageEncoding->encoding == encoding);
 }
 
 #ifdef ENABLE_NLS
@@ -1387,25 +1407,25 @@ pg_bind_textdomain_codeset(const char *domainname)
 int
 GetDatabaseEncoding(void)
 {
-	return DatabaseEncoding->encoding;
+	return mb_state.DatabaseEncoding->encoding;
 }
 
 const char *
 GetDatabaseEncodingName(void)
 {
-	return DatabaseEncoding->name;
+	return mb_state.DatabaseEncoding->name;
 }
 
 Datum
 getdatabaseencoding(PG_FUNCTION_ARGS)
 {
-	return DirectFunctionCall1(namein, CStringGetDatum(DatabaseEncoding->name));
+	return DirectFunctionCall1(namein, CStringGetDatum(mb_state.DatabaseEncoding->name));
 }
 
 Datum
 pg_client_encoding(PG_FUNCTION_ARGS)
 {
-	return DirectFunctionCall1(namein, CStringGetDatum(ClientEncoding->name));
+	return DirectFunctionCall1(namein, CStringGetDatum(mb_state.ClientEncoding->name));
 }
 
 Datum
@@ -1433,7 +1453,7 @@ PG_encoding_to_char(PG_FUNCTION_ARGS)
 int
 GetMessageEncoding(void)
 {
-	return MessageEncoding->encoding;
+	return mb_state.MessageEncoding->encoding;
 }
 
 
