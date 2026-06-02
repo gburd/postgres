@@ -73,6 +73,30 @@ SELECT COUNT(*) FROM recno_fillfactor;
 
 DROP TABLE recno_fillfactor;
 
+-- fillfactor must be honored on insert, not merely stored: a sparse
+-- fillfactor reserves free space per page, so the same rows span more
+-- pages than a dense fillfactor.  Compare relative page counts to stay
+-- independent of BLCKSZ.
+CREATE TABLE recno_ff_dense (id int, pad char(80)) USING recno
+    WITH (fillfactor = 100);
+CREATE TABLE recno_ff_sparse (id int, pad char(80)) USING recno
+    WITH (fillfactor = 20);
+INSERT INTO recno_ff_dense SELECT g, 'x' FROM generate_series(1, 2000) g;
+INSERT INTO recno_ff_sparse SELECT g, 'x' FROM generate_series(1, 2000) g;
+SELECT pg_relation_size('recno_ff_sparse') > pg_relation_size('recno_ff_dense')
+    AS sparse_uses_more_pages;
+DROP TABLE recno_ff_dense;
+DROP TABLE recno_ff_sparse;
+
+-- ALTER TABLE SET (fillfactor) updates the stored reloption.
+CREATE TABLE recno_ff_alter (id int) USING recno WITH (fillfactor = 90);
+ALTER TABLE recno_ff_alter SET (fillfactor = 60);
+SELECT reloptions FROM pg_class WHERE relname = 'recno_ff_alter';
+DROP TABLE recno_ff_alter;
+
+-- Out-of-range fillfactor is rejected by reloption validation.
+CREATE TABLE recno_ff_bad (id int) USING recno WITH (fillfactor = 5);
+
 -- Create with autovacuum settings
 CREATE TABLE recno_autovac (
     id serial PRIMARY KEY,
