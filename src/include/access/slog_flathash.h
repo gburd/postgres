@@ -99,6 +99,11 @@ typedef struct SLogFlatOp
 	TransactionId xid;			/* target xid */
 	TransactionId subxid;		/* for subxid operations */
 	uint64		commit_hlc;		/* for commit retention */
+	TransactionId reclaim_xid_horizon;	/* INSERT: oldest active snapshot
+										 * xmin; a committed UPDATE marker may
+										 * be reclaimed only if its xid
+										 * precedes this (visible to all
+										 * snapshots) */
 	SLogTupleOp tuple_op;		/* the op to insert/update (for INSERT) */
 	dsa_pointer before_image_dp;	/* DSA pointer for before-image attachment */
 }			SLogFlatOp;

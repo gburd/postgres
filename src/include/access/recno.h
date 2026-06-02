@@ -649,6 +649,10 @@ extern HLCTimestamp RecnoGetOldestActiveHLC(void);
 extern uint64 RecnoGetOldestActiveSnapshotHLC(void);
 extern bool RecnoHasActiveIsoReaders(void);
 extern HLCTimestamp RecnoGetSnapshotHLC(Snapshot snapshot);
+extern uint64 RecnoGetEpqReconcileFloor(Snapshot snapshot, Oid relid,
+										ItemPointer tid);
+extern void RecnoMarkEpqReconcile(Snapshot snapshot, Oid relid,
+								  ItemPointer tid);
 extern bool RecnoTupleVisibleHLC(RecnoTupleHeader *tuple,
 								 HLCTimestamp snapshot_hlc,
 								 Oid relid, CommandId curcid,

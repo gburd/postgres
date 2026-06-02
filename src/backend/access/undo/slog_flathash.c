@@ -272,7 +272,11 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 	bucket = SLogFlatHashProbeForInsert(ht, &op->key, h);
 
 	if (bucket == NULL)
+	{
+		elog(WARNING, "SLOG_LOST_OP table_full relid=%u xid=%u op=%d",
+			 op->key.relid, op->tuple_op.xid, (int) op->tuple_op.op_type);
 		return;					/* table full, operation lost */
+	}
 
 	/* Determine if this is an existing entry */
 	existing = (bucket->hash_val != SLOG_FLAT_EMPTY &&
@@ -324,17 +328,32 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 	 * Hot rows (e.g., TPC-C district) accumulate one retained UPDATE entry
 	 * per committed transaction.  With SLOG_MAX_TUPLE_OPS=32, the ops array
 	 * fills after 32 committed updates to the same TID.  Rather than losing
-	 * the new operation, we evict the oldest retained entry — it's the least
-	 * likely to be needed by any active reader (readers with older snapshots
-	 * will use the on-page t_commit_ts which was restored at commit time).
+	 * the new operation, we evict the oldest retained entry — it's the
+	 * least likely to be needed by any active reader (readers with older
+	 * snapshots will use the on-page t_commit_ts which was restored at commit
+	 * time).
 	 *
 	 * We identify "oldest retained" as: in_use=true, op_type=SLOG_OP_UPDATE,
 	 * commit_hlc != 0 (committed), with the smallest commit_hlc value.
 	 */
 	{
-		int		oldest_idx = -1;
-		uint64	oldest_hlc = PG_UINT64_MAX;
+		int			oldest_idx = -1;
+		uint64		oldest_hlc = PG_UINT64_MAX;
+		TransactionId reclaim_xid_horizon = op->reclaim_xid_horizon;
 
+		/*
+		 * Select the oldest reclaimable committed UPDATE marker.  A marker is
+		 * reclaimable only once its committing xid precedes the oldest active
+		 * snapshot's xmin (reclaim_xid_horizon): at that point the xid is
+		 * visible to every live snapshot, so no write-write conflict probe
+		 * (SLogTupleHasCommittedUpdateAfter) and no before-image read
+		 * (SLogTupleGetSharedBeforeImage) can still need it -- both decide by
+		 * XidInMVCCSnapshot, not by HLC.  Using the xid horizon keeps
+		 * reclamation consistent with the xid-authority probe; an HLC horizon
+		 * races with the PRE_COMMIT-stamp / ProcArray-exit skew and would
+		 * free a marker a concurrent updater still needs, reintroducing the
+		 * lost update.
+		 */
 		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
 		{
 			if (!entry->ops[i].in_use)
@@ -342,7 +361,12 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 				continue;
 			if (entry->ops[i].commit_hlc == 0)
-				continue;	/* uncommitted, can't reclaim */
+				continue;		/* uncommitted, can't reclaim */
+			if (TransactionIdIsValid(reclaim_xid_horizon) &&
+				TransactionIdIsValid(entry->ops[i].xid) &&
+				!TransactionIdPrecedes(entry->ops[i].xid, reclaim_xid_horizon))
+				continue;		/* still visible-relevant to an active
+								 * snapshot */
 			if (entry->ops[i].commit_hlc < oldest_hlc)
 			{
 				oldest_hlc = entry->ops[i].commit_hlc;
@@ -352,25 +376,7 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 
 		if (oldest_idx >= 0)
 		{
-			/*
-			 * Snapshot-horizon guard: don't reclaim if an active reader
-			 * still needs this before-image.  op->commit_hlc carries the
-			 * cached oldest_snapshot_hlc from SLogTupleInsert.
-			 */
-			uint64	reclaim_horizon = op->commit_hlc;
-
-			if (reclaim_horizon > 0 && oldest_hlc >= reclaim_horizon)
-			{
-				/*
-				 * An active reader's snapshot predates this entry's
-				 * commit — cannot reclaim safely.  The new operation
-				 * is lost (acceptable: hot-row overflow with active
-				 * long-running reader is an extreme edge case).
-				 */
-				return;
-			}
-
-			/* Safe to reclaim — no active reader needs this entry */
+			/* Safe to reclaim — no active snapshot needs this entry */
 			entry->ops[oldest_idx].in_use = false;
 			entry->ops[oldest_idx].before_image_dp = InvalidDsaPointer;
 			entry->ops[oldest_idx].commit_hlc = 0;
@@ -384,6 +390,9 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 	}
 
 	/* Truly no room (all slots are in-progress, non-UPDATE ops) — lost */
+	elog(WARNING, "SLOG_LOST_OP ops_full relid=%u xid=%u op=%d nops=%d horizon=%u",
+		 op->key.relid, op->tuple_op.xid, (int) op->tuple_op.op_type,
+		 entry->nops, op->reclaim_xid_horizon);
 }
 
 /*
@@ -537,10 +546,19 @@ flat_hash_apply_commit_xid(SLogFlatHash * ht, const SLogFlatOp * op)
 		if (entry->ops[i].xid != op->xid)
 			continue;
 
-		if (entry->ops[i].op_type == SLOG_OP_UPDATE &&
-			DsaPointerIsValid(entry->ops[i].before_image_dp))
+		if (entry->ops[i].op_type == SLOG_OP_UPDATE)
 		{
-			/* Retain: stamp commit_hlc */
+			/*
+			 * Retain every committed UPDATE marker, stamping commit_hlc. The
+			 * before-image (when present) lets an old snapshot reader
+			 * reconstruct the pre-update version; but even without one the
+			 * marker must survive so a concurrent updater can detect that
+			 * this tuple was updated-and-committed after its read snapshot
+			 * (write-write conflict / lost-update detection).  Both with and
+			 * without a before-image, the marker is reclaimed by
+			 * SLogTupleCleanupRetained() once commit_hlc falls below the
+			 * oldest active snapshot horizon.
+			 */
 			entry->ops[i].commit_hlc = op->commit_hlc;
 		}
 		else
@@ -561,8 +579,14 @@ flat_hash_apply_commit_xid(SLogFlatHash * ht, const SLogFlatOp * op)
 
 /*
  * flat_hash_apply_cleanup_retained
- *		Remove retained entries whose commit_hlc < the threshold.
- *		The threshold is passed via op->commit_hlc.
+ *		Remove retained committed UPDATE markers whose committing xid
+ *		precedes the reclaim xid horizon (op->reclaim_xid_horizon).
+ *
+ * Gates on the xid horizon -- NOT an HLC threshold -- because every probe
+ * that may still need the marker (SLogTupleHasCommittedUpdateAfter,
+ * SLogTupleGetSharedBeforeImage) decides by XidInMVCCSnapshot.  This must
+ * match the read-side eligibility scan in SLogTupleCleanupRetained so the
+ * freed before-image set matches the nulled-pointer set exactly.
  */
 static void
 flat_hash_apply_cleanup_retained(SLogFlatHash * ht, const SLogFlatOp * op)
@@ -585,7 +609,10 @@ flat_hash_apply_cleanup_retained(SLogFlatHash * ht, const SLogFlatOp * op)
 			continue;
 		if (entry->ops[i].commit_hlc == 0)
 			continue;
-		if (entry->ops[i].commit_hlc >= op->commit_hlc)
+		if (TransactionIdIsValid(entry->ops[i].xid) &&
+			TransactionIdIsValid(op->reclaim_xid_horizon) &&
+			!TransactionIdPrecedes(entry->ops[i].xid,
+								   op->reclaim_xid_horizon))
 			continue;
 
 		/* Expired retained entry */
