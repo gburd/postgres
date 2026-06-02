@@ -63,26 +63,33 @@
 
 /*
  * Since we manage at most one GSS-encrypted connection per backend,
- * we can just keep all this state in static variables.  The char *
- * variables point to buffers that are allocated once and re-used.
+ * we can just keep all this state in one struct of static variables.
+ * The char * variables point to buffers that are allocated once and
+ * re-used.
  */
-static session_local char *PqGSSSendBuffer;	/* Encrypted data waiting to be sent */
-static session_local int	PqGSSSendLength;	/* End of data available in PqGSSSendBuffer */
-static session_local int	PqGSSSendNext;		/* Next index to send a byte from
+typedef struct GssState
+{
+	char	   *PqGSSSendBuffer;	/* Encrypted data waiting to be sent */
+	int			PqGSSSendLength;	/* End of data available in PqGSSSendBuffer */
+	int			PqGSSSendNext;	/* Next index to send a byte from
 								 * PqGSSSendBuffer */
-static session_local int	PqGSSSendConsumed;	/* Number of source bytes encrypted but not
-								 * yet reported as sent */
+	int			PqGSSSendConsumed;	/* Number of source bytes encrypted but
+									 * not yet reported as sent */
 
-static session_local char *PqGSSRecvBuffer;	/* Received, encrypted data */
-static session_local int	PqGSSRecvLength;	/* End of data available in PqGSSRecvBuffer */
+	char	   *PqGSSRecvBuffer;	/* Received, encrypted data */
+	int			PqGSSRecvLength;	/* End of data available in PqGSSRecvBuffer */
 
-static session_local char *PqGSSResultBuffer; /* Decryption of data in gss_RecvBuffer */
-static session_local int	PqGSSResultLength;	/* End of data available in PqGSSResultBuffer */
-static session_local int	PqGSSResultNext;	/* Next index to read a byte from
-								 * PqGSSResultBuffer */
+	char	   *PqGSSResultBuffer;	/* Decryption of data in gss_RecvBuffer */
+	int			PqGSSResultLength;	/* End of data available in
+									 * PqGSSResultBuffer */
+	int			PqGSSResultNext;	/* Next index to read a byte from
+									 * PqGSSResultBuffer */
 
-static session_local uint32 PqGSSMaxPktSize;	/* Maximum size we can encrypt and fit the
+	uint32		PqGSSMaxPktSize;	/* Maximum size we can encrypt and fit the
 								 * results into our output buffer */
+} GssState;
+
+static session_local GssState gss_state;
 
 
 /*
@@ -128,7 +135,7 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 	 * bugs in the past (cf. commit d053a879b).  We won't save much,
 	 * typically, by letting callers discard data early, so don't risk it.
 	 */
-	if (len < PqGSSSendConsumed)
+	if (len < gss_state.PqGSSSendConsumed)
 	{
 		elog(COMMERROR, "GSSAPI caller failed to retransmit all data needing to be retried");
 		errno = ECONNRESET;
@@ -136,8 +143,8 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 	}
 
 	/* Discount whatever source data we already encrypted. */
-	bytes_to_encrypt = len - PqGSSSendConsumed;
-	bytes_encrypted = PqGSSSendConsumed;
+	bytes_to_encrypt = len - gss_state.PqGSSSendConsumed;
+	bytes_encrypted = gss_state.PqGSSSendConsumed;
 
 	/*
 	 * Loop through encrypting data and sending it out until it's all done or
@@ -145,7 +152,7 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 	 * is non-blocking and the requested send() would block, or there was some
 	 * kind of actual error).
 	 */
-	while (bytes_to_encrypt || PqGSSSendLength)
+	while (bytes_to_encrypt || gss_state.PqGSSSendLength)
 	{
 		int			conf_state = 0;
 		uint32		netlen;
@@ -156,12 +163,12 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 		 * to send it.  If we aren't able to, return that fact back up to the
 		 * caller.
 		 */
-		if (PqGSSSendLength)
+		if (gss_state.PqGSSSendLength)
 		{
 			ssize_t		ret;
-			ssize_t		amount = PqGSSSendLength - PqGSSSendNext;
+			ssize_t		amount = gss_state.PqGSSSendLength - gss_state.PqGSSSendNext;
 
-			ret = secure_raw_write(port, PqGSSSendBuffer + PqGSSSendNext, amount);
+			ret = secure_raw_write(port, gss_state.PqGSSSendBuffer + gss_state.PqGSSSendNext, amount);
 			if (ret <= 0)
 				return ret;
 
@@ -171,12 +178,12 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 			 */
 			if (ret < amount)
 			{
-				PqGSSSendNext += ret;
+				gss_state.PqGSSSendNext += ret;
 				continue;
 			}
 
 			/* We've successfully sent whatever data was in the buffer. */
-			PqGSSSendLength = PqGSSSendNext = 0;
+			gss_state.PqGSSSendLength = gss_state.PqGSSSendNext = 0;
 		}
 
 		/*
@@ -190,8 +197,8 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 		 * we will have to loop and possibly be called multiple times to get
 		 * through all the data.
 		 */
-		if (bytes_to_encrypt > PqGSSMaxPktSize)
-			input.length = PqGSSMaxPktSize;
+		if (bytes_to_encrypt > gss_state.PqGSSMaxPktSize)
+			input.length = gss_state.PqGSSMaxPktSize;
 		else
 			input.length = bytes_to_encrypt;
 
@@ -231,26 +238,26 @@ be_gssapi_write(Port *port, const void *ptr, size_t len)
 
 		bytes_encrypted += input.length;
 		bytes_to_encrypt -= input.length;
-		PqGSSSendConsumed += input.length;
+		gss_state.PqGSSSendConsumed += input.length;
 
 		/* 4 network-order bytes of length, then payload */
 		netlen = pg_hton32(output.length);
-		memcpy(PqGSSSendBuffer + PqGSSSendLength, &netlen, sizeof(uint32));
-		PqGSSSendLength += sizeof(uint32);
+		memcpy(gss_state.PqGSSSendBuffer + gss_state.PqGSSSendLength, &netlen, sizeof(uint32));
+		gss_state.PqGSSSendLength += sizeof(uint32);
 
-		memcpy(PqGSSSendBuffer + PqGSSSendLength, output.value, output.length);
-		PqGSSSendLength += output.length;
+		memcpy(gss_state.PqGSSSendBuffer + gss_state.PqGSSSendLength, output.value, output.length);
+		gss_state.PqGSSSendLength += output.length;
 
 		/* Release buffer storage allocated by GSSAPI */
 		gss_release_buffer(&minor, &output);
 	}
 
 	/* If we get here, our counters should all match up. */
-	Assert(len == PqGSSSendConsumed);
+	Assert(len == gss_state.PqGSSSendConsumed);
 	Assert(len == bytes_encrypted);
 
-	/* We're reporting all the data as sent, so reset PqGSSSendConsumed. */
-	PqGSSSendConsumed = 0;
+	/* We're reporting all the data as sent, so reset gss_state.PqGSSSendConsumed. */
+	gss_state.PqGSSSendConsumed = 0;
 
 	return bytes_encrypted;
 }
@@ -290,17 +297,17 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		int			conf_state = 0;
 
 		/* Check if we have data in our buffer that we can return immediately */
-		if (PqGSSResultNext < PqGSSResultLength)
+		if (gss_state.PqGSSResultNext < gss_state.PqGSSResultLength)
 		{
-			size_t		bytes_in_buffer = PqGSSResultLength - PqGSSResultNext;
+			size_t		bytes_in_buffer = gss_state.PqGSSResultLength - gss_state.PqGSSResultNext;
 			size_t		bytes_to_copy = Min(bytes_in_buffer, len - bytes_returned);
 
 			/*
 			 * Copy the data from our result buffer into the caller's buffer,
 			 * at the point where we last left off filling their buffer.
 			 */
-			memcpy((char *) ptr + bytes_returned, PqGSSResultBuffer + PqGSSResultNext, bytes_to_copy);
-			PqGSSResultNext += bytes_to_copy;
+			memcpy((char *) ptr + bytes_returned, gss_state.PqGSSResultBuffer + gss_state.PqGSSResultNext, bytes_to_copy);
+			gss_state.PqGSSResultNext += bytes_to_copy;
 			bytes_returned += bytes_to_copy;
 
 			/*
@@ -316,7 +323,7 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		}
 
 		/* Result buffer is empty, so reset buffer pointers */
-		PqGSSResultLength = PqGSSResultNext = 0;
+		gss_state.PqGSSResultLength = gss_state.PqGSSResultNext = 0;
 
 		/*
 		 * Because we chose above to return immediately as soon as we emit
@@ -333,19 +340,19 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		 */
 
 		/* Collect the length if we haven't already */
-		if (PqGSSRecvLength < sizeof(uint32))
+		if (gss_state.PqGSSRecvLength < sizeof(uint32))
 		{
-			ret = secure_raw_read(port, PqGSSRecvBuffer + PqGSSRecvLength,
-								  sizeof(uint32) - PqGSSRecvLength);
+			ret = secure_raw_read(port, gss_state.PqGSSRecvBuffer + gss_state.PqGSSRecvLength,
+								  sizeof(uint32) - gss_state.PqGSSRecvLength);
 
 			/* If ret <= 0, secure_raw_read already set the correct errno */
 			if (ret <= 0)
 				return ret;
 
-			PqGSSRecvLength += ret;
+			gss_state.PqGSSRecvLength += ret;
 
 			/* If we still haven't got the length, return to the caller */
-			if (PqGSSRecvLength < sizeof(uint32))
+			if (gss_state.PqGSSRecvLength < sizeof(uint32))
 			{
 				errno = EWOULDBLOCK;
 				return -1;
@@ -353,7 +360,7 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		}
 
 		/* Decode the packet length and check for overlength packet */
-		input.length = pg_ntoh32(*(uint32 *) PqGSSRecvBuffer);
+		input.length = pg_ntoh32(*(uint32 *) gss_state.PqGSSRecvBuffer);
 
 		if (input.length > PQ_GSS_MAX_PACKET_SIZE - sizeof(uint32))
 		{
@@ -369,16 +376,16 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		 * Read as much of the packet as we are able to on this call into
 		 * wherever we left off from the last time we were called.
 		 */
-		ret = secure_raw_read(port, PqGSSRecvBuffer + PqGSSRecvLength,
-							  input.length - (PqGSSRecvLength - sizeof(uint32)));
+		ret = secure_raw_read(port, gss_state.PqGSSRecvBuffer + gss_state.PqGSSRecvLength,
+							  input.length - (gss_state.PqGSSRecvLength - sizeof(uint32)));
 		/* If ret <= 0, secure_raw_read already set the correct errno */
 		if (ret <= 0)
 			return ret;
 
-		PqGSSRecvLength += ret;
+		gss_state.PqGSSRecvLength += ret;
 
 		/* If we don't yet have the whole packet, return to the caller */
-		if (PqGSSRecvLength - sizeof(uint32) < input.length)
+		if (gss_state.PqGSSRecvLength - sizeof(uint32) < input.length)
 		{
 			errno = EWOULDBLOCK;
 			return -1;
@@ -391,7 +398,7 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 		 */
 		output.value = NULL;
 		output.length = 0;
-		input.value = PqGSSRecvBuffer + sizeof(uint32);
+		input.value = gss_state.PqGSSRecvBuffer + sizeof(uint32);
 
 		major = gss_unwrap(&minor, gctx, &input, &output, &conf_state, NULL);
 		if (major != GSS_S_COMPLETE)
@@ -408,11 +415,11 @@ be_gssapi_read(Port *port, void *ptr, size_t len)
 			return -1;
 		}
 
-		memcpy(PqGSSResultBuffer, output.value, output.length);
-		PqGSSResultLength = output.length;
+		memcpy(gss_state.PqGSSResultBuffer, output.value, output.length);
+		gss_state.PqGSSResultLength = output.length;
 
 		/* Our receive buffer is now empty, reset it */
-		PqGSSRecvLength = 0;
+		gss_state.PqGSSRecvLength = 0;
 
 		/* Release buffer storage allocated by GSSAPI */
 		gss_release_buffer(&minor, &output);
@@ -438,9 +445,9 @@ read_or_wait(Port *port, ssize_t len)
 	 * Keep going until we either read in everything we were asked to, or we
 	 * error out.
 	 */
-	while (PqGSSRecvLength < len)
+	while (gss_state.PqGSSRecvLength < len)
 	{
-		ret = secure_raw_read(port, PqGSSRecvBuffer + PqGSSRecvLength, len - PqGSSRecvLength);
+		ret = secure_raw_read(port, gss_state.PqGSSRecvBuffer + gss_state.PqGSSRecvLength, len - gss_state.PqGSSRecvLength);
 
 		/*
 		 * If we got back an error and it wasn't just
@@ -475,7 +482,7 @@ read_or_wait(Port *port, ssize_t len)
 			 */
 			if (ret == 0)
 			{
-				ret = secure_raw_read(port, PqGSSRecvBuffer + PqGSSRecvLength, len - PqGSSRecvLength);
+				ret = secure_raw_read(port, gss_state.PqGSSRecvBuffer + gss_state.PqGSSRecvLength, len - gss_state.PqGSSRecvLength);
 				if (ret == 0)
 					return -1;
 			}
@@ -483,7 +490,7 @@ read_or_wait(Port *port, ssize_t len)
 				continue;
 		}
 
-		PqGSSRecvLength += ret;
+		gss_state.PqGSSRecvLength += ret;
 	}
 
 	return len;
@@ -530,15 +537,15 @@ secure_open_gssapi(Port *port)
 	 * We'll use PQ_GSS_AUTH_BUFFER_SIZE-sized buffers until transport
 	 * negotiation is complete, then switch to PQ_GSS_MAX_PACKET_SIZE.
 	 */
-	PqGSSSendBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
-	PqGSSRecvBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
-	PqGSSResultBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
-	if (!PqGSSSendBuffer || !PqGSSRecvBuffer || !PqGSSResultBuffer)
+	gss_state.PqGSSSendBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
+	gss_state.PqGSSRecvBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
+	gss_state.PqGSSResultBuffer = malloc(PQ_GSS_AUTH_BUFFER_SIZE);
+	if (!gss_state.PqGSSSendBuffer || !gss_state.PqGSSRecvBuffer || !gss_state.PqGSSResultBuffer)
 		ereport(FATAL,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
-	PqGSSSendLength = PqGSSSendNext = PqGSSSendConsumed = 0;
-	PqGSSRecvLength = PqGSSResultLength = PqGSSResultNext = 0;
+	gss_state.PqGSSSendLength = gss_state.PqGSSSendNext = gss_state.PqGSSSendConsumed = 0;
+	gss_state.PqGSSRecvLength = gss_state.PqGSSResultLength = gss_state.PqGSSResultNext = 0;
 
 	/*
 	 * Use the configured keytab, if there is one.  As we now require MIT
@@ -573,10 +580,10 @@ secure_open_gssapi(Port *port)
 		/*
 		 * Get the length for this packet from the length header.
 		 */
-		input.length = pg_ntoh32(*(uint32 *) PqGSSRecvBuffer);
+		input.length = pg_ntoh32(*(uint32 *) gss_state.PqGSSRecvBuffer);
 
 		/* Done with the length, reset our buffer */
-		PqGSSRecvLength = 0;
+		gss_state.PqGSSRecvLength = 0;
 
 		/*
 		 * During initialization, packets are always fully consumed and
@@ -601,7 +608,7 @@ secure_open_gssapi(Port *port)
 		if (ret < 0)
 			return ret;
 
-		input.value = PqGSSRecvBuffer;
+		input.value = gss_state.PqGSSRecvBuffer;
 
 		/* Process incoming data.  (The client sends first.) */
 		major = gss_accept_sec_context(&minor, &port->gss->ctx,
@@ -634,7 +641,7 @@ secure_open_gssapi(Port *port)
 		}
 
 		/* Done handling the incoming packet, reset our buffer */
-		PqGSSRecvLength = 0;
+		gss_state.PqGSSRecvLength = 0;
 
 		/*
 		 * Check if we have data to send and, if we do, make sure to send it
@@ -654,18 +661,18 @@ secure_open_gssapi(Port *port)
 				return -1;
 			}
 
-			memcpy(PqGSSSendBuffer, &netlen, sizeof(uint32));
-			PqGSSSendLength += sizeof(uint32);
+			memcpy(gss_state.PqGSSSendBuffer, &netlen, sizeof(uint32));
+			gss_state.PqGSSSendLength += sizeof(uint32);
 
-			memcpy(PqGSSSendBuffer + PqGSSSendLength, output.value, output.length);
-			PqGSSSendLength += output.length;
+			memcpy(gss_state.PqGSSSendBuffer + gss_state.PqGSSSendLength, output.value, output.length);
+			gss_state.PqGSSSendLength += output.length;
 
-			/* we don't bother with PqGSSSendConsumed here */
+			/* we don't bother with gss_state.PqGSSSendConsumed here */
 
-			while (PqGSSSendNext < PqGSSSendLength)
+			while (gss_state.PqGSSSendNext < gss_state.PqGSSSendLength)
 			{
-				ret = secure_raw_write(port, PqGSSSendBuffer + PqGSSSendNext,
-									   PqGSSSendLength - PqGSSSendNext);
+				ret = secure_raw_write(port, gss_state.PqGSSSendBuffer + gss_state.PqGSSSendNext,
+									   gss_state.PqGSSSendLength - gss_state.PqGSSSendNext);
 
 				/*
 				 * If we got back an error and it wasn't just
@@ -687,11 +694,11 @@ secure_open_gssapi(Port *port)
 					continue;
 				}
 
-				PqGSSSendNext += ret;
+				gss_state.PqGSSSendNext += ret;
 			}
 
 			/* Done sending the packet, reset our buffer */
-			PqGSSSendLength = PqGSSSendNext = 0;
+			gss_state.PqGSSSendLength = gss_state.PqGSSSendNext = 0;
 
 			gss_release_buffer(&minor, &output);
 		}
@@ -708,18 +715,18 @@ secure_open_gssapi(Port *port)
 	 * Release the large authentication buffers and allocate the ones we want
 	 * for normal operation.
 	 */
-	free(PqGSSSendBuffer);
-	free(PqGSSRecvBuffer);
-	free(PqGSSResultBuffer);
-	PqGSSSendBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
-	PqGSSRecvBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
-	PqGSSResultBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
-	if (!PqGSSSendBuffer || !PqGSSRecvBuffer || !PqGSSResultBuffer)
+	free(gss_state.PqGSSSendBuffer);
+	free(gss_state.PqGSSRecvBuffer);
+	free(gss_state.PqGSSResultBuffer);
+	gss_state.PqGSSSendBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
+	gss_state.PqGSSRecvBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
+	gss_state.PqGSSResultBuffer = malloc(PQ_GSS_MAX_PACKET_SIZE);
+	if (!gss_state.PqGSSSendBuffer || !gss_state.PqGSSRecvBuffer || !gss_state.PqGSSResultBuffer)
 		ereport(FATAL,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
-	PqGSSSendLength = PqGSSSendNext = PqGSSSendConsumed = 0;
-	PqGSSRecvLength = PqGSSResultLength = PqGSSResultNext = 0;
+	gss_state.PqGSSSendLength = gss_state.PqGSSSendNext = gss_state.PqGSSSendConsumed = 0;
+	gss_state.PqGSSRecvLength = gss_state.PqGSSResultLength = gss_state.PqGSSResultNext = 0;
 
 	/*
 	 * Determine the max packet size which will fit in our buffer, after
@@ -727,7 +734,7 @@ secure_open_gssapi(Port *port)
 	 */
 	major = gss_wrap_size_limit(&minor, port->gss->ctx, 1, GSS_C_QOP_DEFAULT,
 								PQ_GSS_MAX_PACKET_SIZE - sizeof(uint32),
-								&PqGSSMaxPktSize);
+								&gss_state.PqGSSMaxPktSize);
 
 	if (GSS_ERROR(major))
 	{
