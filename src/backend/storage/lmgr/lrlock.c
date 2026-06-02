@@ -770,9 +770,37 @@ LRLockApplyOp(LRLock * lock, const void *operation, Size op_size)
 
 	entry_size = sizeof(LRLockOpHeader) + MAXALIGN(op_size);
 
-	/* Ensure oplog has space */
+	/*
+	 * Ensure the oplog has space for this entry.
+	 *
+	 * A single fixed-size op always fits in the initial oplog capacity, so an
+	 * overflow only happens when a caller applies many ops in one write cycle
+	 * (e.g. a large rollback or retained-entry cleanup).  In that case we
+	 * drain the oplog by publishing in place rather than growing it: growth
+	 * would call ShmemAlloc() while we hold the writer spinlock, and a failed
+	 * allocation there raises ERROR with the spinlock still held, leaking it
+	 * and tripping the stuck-spinlock PANIC in every other writer on this
+	 * partition.  LRLockPublish() resets oplog_used to 0 with no allocation
+	 * and leaves both copies in sync, so the partial batch becomes durable
+	 * and the new op fits.
+	 *
+	 * If a single op cannot fit even an empty oplog, the oplog was sized too
+	 * small for this lock's op type -- that is a configuration error, so fall
+	 * back to growing (which is safe here only because the empty oplog means
+	 * no prior ops are at risk if the grow fails before any
+	 * spinlock-sensitive state changed).
+	 */
 	if (lock->oplog_used + entry_size > lock->oplog_capacity)
-		lrlock_oplog_grow(lock, entry_size);
+	{
+		if (lock->oplog_used > 0)
+		{
+			LRLockPublish(lock);
+			Assert(lock->oplog_used == 0);
+		}
+
+		if (entry_size > lock->oplog_capacity)
+			lrlock_oplog_grow(lock, entry_size);
+	}
 
 	/* Write the entry */
 	hdr = (LRLockOpHeader *) (lock->oplog + lock->oplog_used);
