@@ -408,7 +408,7 @@ SELECT COUNT(*) AS cat_0_after_delete FROM recno_mp_index WHERE category = 0;
 SELECT COUNT(*) AS cat_1_after_delete FROM recno_mp_index WHERE category = 1;
  cat_1_after_delete 
 --------------------
-                103
+                100
 (1 row)
 
 RESET enable_seqscan;

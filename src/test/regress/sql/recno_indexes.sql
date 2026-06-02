@@ -135,8 +135,9 @@ RESET enable_bitmapscan;
 CREATE INDEX idx_recno_point_gist ON recno_idx_test USING gist (point_val);
 CREATE INDEX idx_recno_range_gist ON recno_idx_test USING gist (range_val);
 
+-- GiST is a lossy AM (amconsistentequality = false); on an in-place table AM
+-- the planner restricts it to bitmap heap scans, so leave bitmapscan enabled.
 SET enable_seqscan = off;
-SET enable_bitmapscan = off;
 
 -- Nearest-neighbor query
 EXPLAIN (COSTS OFF)
@@ -150,7 +151,6 @@ SELECT COUNT(*) FROM recno_idx_test WHERE range_val @> 500;
 
 SELECT COUNT(*) FROM recno_idx_test WHERE range_val @> 500;
 
-RESET enable_bitmapscan;
 RESET enable_seqscan;
 
 -- =============================================
@@ -333,6 +333,181 @@ SELECT COUNT(*) FROM recno_idx_churn WHERE val BETWEEN 2001 AND 2500;
 RESET enable_seqscan;
 
 DROP TABLE recno_idx_churn;
+
+-- =============================================
+-- Stale-entry recheck: name_ops btree (storage type cstring != input type
+-- name).  An in-place UPDATE of the indexed name column leaves a stale
+-- (oldname -> tid) entry beside the new one; the index-scan recheck must
+-- compare in the index storage representation and drop the stale entry.
+-- =============================================
+
+CREATE TABLE recno_idx_name (
+    id serial PRIMARY KEY,
+    nm name
+) USING recno;
+
+CREATE INDEX idx_name_nm ON recno_idx_name (nm);
+
+INSERT INTO recno_idx_name (nm) VALUES ('alpha'), ('bravo'), ('charlie');
+
+-- In-place UPDATE the indexed name column.
+UPDATE recno_idx_name SET nm = 'zulu' WHERE nm = 'alpha';
+
+SET enable_seqscan = off;
+-- Index-only scan over the name key: stale 'alpha' entry must not appear.
+SELECT nm FROM recno_idx_name ORDER BY nm;
+-- Plain index scan probing the old key must return nothing.
+SELECT count(*) FROM recno_idx_name WHERE nm = 'alpha';
+-- Probing the new key must return exactly the updated row.
+SELECT id, nm FROM recno_idx_name WHERE nm = 'zulu';
+RESET enable_seqscan;
+
+DROP TABLE recno_idx_name;
+
+-- =============================================
+-- Stale-entry recheck: INCLUDE index.  An in-place UPDATE of a non-key
+-- INCLUDE column leaves the key equal but the stored payload stale; an
+-- index-only scan must emit the live payload from the table, not the stored
+-- index entry.
+-- =============================================
+
+CREATE TABLE recno_idx_incl (
+    id integer PRIMARY KEY,
+    k integer,
+    payload integer
+) USING recno;
+
+CREATE INDEX idx_incl ON recno_idx_incl (k) INCLUDE (payload);
+
+INSERT INTO recno_idx_incl VALUES (1, 100, 10), (2, 200, 20), (3, 300, 30);
+
+-- In-place UPDATE of the INCLUDE (non-key) column only; key k is unchanged.
+UPDATE recno_idx_incl SET payload = 999 WHERE k = 100;
+
+SET enable_seqscan = off;
+-- Index-only scan must reflect the live payload (999), not the stale 10.
+SELECT k, payload FROM recno_idx_incl ORDER BY k;
+RESET enable_seqscan;
+
+DROP TABLE recno_idx_incl;
+
+-- =============================================
+-- Stale-entry recheck: bitmap heap scan.  A bitmap scan keeps only TIDs and
+-- discards the index tuple, so the index-scan key recheck cannot run.  The AM
+-- must force a bitmap recheck for in-place UPDATEs so an exact (non-lossy)
+-- bitmap probing the OLD key does not trust the stale (oldkey -> tid) entry
+-- and return a row whose live key no longer matches.
+-- =============================================
+
+CREATE TABLE recno_idx_bm (
+    id integer PRIMARY KEY,
+    k integer
+) USING recno;
+
+CREATE INDEX idx_bm_k ON recno_idx_bm (k);
+
+INSERT INTO recno_idx_bm SELECT i, i FROM generate_series(1, 500) i;
+
+-- In-place UPDATE of the indexed key: row id=100 moves from k=100 to k=999.
+UPDATE recno_idx_bm SET k = 999 WHERE id = 100;
+
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+-- Force a bitmap scan probing the OLD key: the stale entry must be rechecked
+-- away, so this returns zero rows.
+EXPLAIN (COSTS OFF) SELECT id, k FROM recno_idx_bm WHERE k = 100;
+SELECT id, k FROM recno_idx_bm WHERE k = 100;
+-- Probing the NEW key returns exactly the updated row.
+SELECT id, k FROM recno_idx_bm WHERE k = 999;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+
+DROP TABLE recno_idx_bm;
+
+-- =============================================
+-- Stale-entry recheck: lossy GiST/SP-GiST.  These AMs store approximate
+-- (lossy) keys and are not equality-comparable (amconsistentequality is
+-- false), so the stored-key recheck used for btree/hash cannot run, and a
+-- qual recheck cannot dedup two entries that chain-walk to the same live
+-- tuple.  For an in-place table AM the planner therefore forbids plain index,
+-- index-only, and index-orderby (KNN) paths on such indexes and allows only a
+-- bitmap heap scan, which collapses the stale (oldkey -> tid) and live
+-- (newkey -> tid) entries to one TID and rechecks against the live tuple.
+-- =============================================
+
+CREATE TABLE recno_idx_lossy (
+    id integer PRIMARY KEY,
+    p point,
+    r int4range
+) USING recno;
+
+CREATE INDEX idx_lossy_p_gist ON recno_idx_lossy USING gist (p);
+CREATE INDEX idx_lossy_r_gist ON recno_idx_lossy USING gist (r);
+CREATE INDEX idx_lossy_p_spgist ON recno_idx_lossy USING spgist (p);
+
+INSERT INTO recno_idx_lossy
+    SELECT i, point(i, i * 2), int4range(i, i + 10)
+    FROM generate_series(1, 200) i;
+
+-- In-place UPDATE of GiST/SP-GiST indexed columns: row id=50 moves its point
+-- and range, leaving stale (oldkey -> tid) entries in all three indexes.
+UPDATE recno_idx_lossy
+    SET p = point(9999, 9999), r = int4range(5000, 5010)
+    WHERE id = 50;
+
+SET enable_seqscan = off;
+
+-- A GiST containment qual must plan as a bitmap heap scan, not a plain index
+-- scan, on this in-place table AM.
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM recno_idx_lossy WHERE r @> 55;
+-- The moved row's old range (50,60) contained 55; it must not leak.  Exactly
+-- nine live rows (ids 46-55, minus the moved id=50) contain 55.
+SELECT count(*) FROM recno_idx_lossy WHERE r @> 55;
+-- The new range (5000,5010) must be found.
+SELECT id FROM recno_idx_lossy WHERE r @> 5005;
+
+-- A KNN ORDER BY on the in-place GiST index cannot use an ordered index scan;
+-- it falls back to a sort.  The moved row must not appear near its old point.
+EXPLAIN (COSTS OFF)
+SELECT id FROM recno_idx_lossy ORDER BY p <-> point(50, 100) LIMIT 3;
+SELECT id FROM recno_idx_lossy ORDER BY p <-> point(50, 100) LIMIT 3;
+
+-- An SP-GiST containment qual must likewise plan as a bitmap heap scan.
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM recno_idx_lossy
+    WHERE p <@ box(point(0, 0), point(60, 120));
+SELECT count(*) FROM recno_idx_lossy
+    WHERE p <@ box(point(0, 0), point(60, 120));
+
+RESET enable_seqscan;
+
+DROP TABLE recno_idx_lossy;
+
+-- Lossy overlapping-key duplicate: the moved row's OLD and NEW key both
+-- satisfy the qual.  A qual recheck would return the row twice (both entries
+-- chain-walk to the one live tuple and pass recheck); the bitmap scan dedups
+-- the TID so the row appears exactly once.
+CREATE TABLE recno_idx_lossy_ov (
+    id integer PRIMARY KEY,
+    r int4range
+) USING recno;
+
+CREATE INDEX idx_lossy_ov_gist ON recno_idx_lossy_ov USING gist (r);
+
+INSERT INTO recno_idx_lossy_ov VALUES (1, int4range(50, 60)), (2, int4range(100, 110));
+
+-- Move id=1 from (50,60) to (55,5000); both ranges contain 57.
+UPDATE recno_idx_lossy_ov SET r = int4range(55, 5000) WHERE id = 1;
+
+SET enable_seqscan = off;
+-- Must return exactly one row, not two.
+SELECT count(*) FROM recno_idx_lossy_ov WHERE r @> 57;
+RESET enable_seqscan;
+
+DROP TABLE recno_idx_lossy_ov;
 
 -- =============================================
 -- Cleanup

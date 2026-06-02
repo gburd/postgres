@@ -134,6 +134,21 @@ typedef struct IndexFetchTableData
 	 * permitted.
 	 */
 	uint32		flags;
+
+	/*
+	 * Set by an in-place table AM's index_fetch_tuple callback (i.e. an AM
+	 * with am_inplace_update_keeps_tid) when the tuple it just stored into the
+	 * caller's slot is a committed in-place UPDATE (RECNO_TUPLE_UPDATED).
+	 *
+	 * For such AMs an UPDATE keeps the same TID, so a changed indexed column
+	 * leaves the secondary index with both the old (oldkey -> tid) and new
+	 * (newkey -> tid) entries pointing at the one live tuple.  When this flag
+	 * is true the index entry that led us here may carry a stale key, and the
+	 * executor must recheck the stored index key against the live tuple's
+	 * reformed key before returning the row.  Heap-style AMs never set this,
+	 * so the recheck path is skipped entirely for them.
+	 */
+	bool		xs_inplace_maybe_stale;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;
@@ -188,6 +203,16 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
+
+	/*
+	 * T means the table AM did an in-place UPDATE keeping the same TID, so the
+	 * index entry that led here may carry a stale key.  Surfaced from
+	 * xs_heapfetch->xs_inplace_maybe_stale by index_fetch_heap.  The executor
+	 * must recheck the stored index key (xs_itup) against the live tuple's
+	 * reformed key and skip the row if they differ.  Only ever set true for
+	 * AMs with am_inplace_update_keeps_tid; false for heap and all others.
+	 */
+	bool		xs_inplace_recheck;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

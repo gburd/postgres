@@ -25,21 +25,18 @@ VACUUM recno_vm_test;
 -- Test index-only scan (should not fetch heap)
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT val FROM recno_vm_test WHERE val BETWEEN 100 AND 200;
-                                                QUERY PLAN                                                 
------------------------------------------------------------------------------------------------------------
- Bitmap Heap Scan on recno_vm_test  (cost=4.33..11.92 rows=5 width=4) (actual rows=11.00 loops=1)
-   Recheck Cond: ((val >= 100) AND (val <= 200))
-   Heap Blocks: exact=1
-   Buffers: shared hit=3 dirtied=1
-   ->  Bitmap Index Scan on recno_vm_val_idx  (cost=0.00..4.33 rows=5 width=0) (actual rows=11.00 loops=1)
-         Index Cond: ((val >= 100) AND (val <= 200))
-         Index Searches: 1
-         Buffers: shared hit=2
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_val_idx on recno_vm_test  (cost=0.28..4.38 rows=5 width=4) (actual rows=11.00 loops=1)
+   Index Cond: ((val >= 100) AND (val <= 200))
+   Heap Fetches: 11
+   Index Searches: 1
+   Buffers: shared hit=13
  Planning:
-   Buffers: shared hit=16
+   Buffers: shared hit=14
  Planning Time: #.# ms
  Execution Time: #.# ms
-(12 rows)
+(9 rows)
 
 -- Verify index-only scan was used
 SELECT COUNT(*) AS index_only_scan_count
@@ -73,9 +70,9 @@ SELECT val FROM recno_vm_clear WHERE val = 50;
  Seq Scan on recno_vm_clear  (cost=0.00..2.25 rows=1 width=4) (actual rows=1.00 loops=1)
    Filter: (val = 50)
    Rows Removed by Filter: 99
-   Buffers: shared hit=1
+   Buffers: shared hit=2
  Planning:
-   Buffers: shared hit=3
+   Buffers: shared hit=4
  Planning Time: #.# ms
  Execution Time: #.# ms
 (8 rows)
@@ -103,9 +100,9 @@ SELECT val FROM recno_vm_delete WHERE val BETWEEN 40 AND 60;
  Seq Scan on recno_vm_delete  (cost=0.00..2.50 rows=1 width=4) (actual rows=0.00 loops=1)
    Filter: ((val >= 40) AND (val <= 60))
    Rows Removed by Filter: 79
-   Buffers: shared hit=1
+   Buffers: shared hit=2
  Planning:
-   Buffers: shared hit=3
+   Buffers: shared hit=4
  Planning Time: #.# ms
  Execution Time: #.# ms
 (8 rows)
@@ -217,57 +214,48 @@ ANALYZE recno_vm_perf;
 -- Test index-only scans on different indexes
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col1 FROM recno_vm_perf WHERE col1 = 50;
-                                                   QUERY PLAN                                                   
-----------------------------------------------------------------------------------------------------------------
- Bitmap Heap Scan on recno_vm_perf  (cost=5.06..121.75 rows=100 width=4) (actual rows=100.00 loops=1)
-   Recheck Cond: (col1 = 50)
-   Heap Blocks: exact=100
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx1 on recno_vm_perf  (cost=0.29..6.04 rows=100 width=4) (actual rows=100.00 loops=1)
+   Index Cond: (col1 = 50)
+   Heap Fetches: 100
+   Index Searches: 1
    Buffers: shared hit=102
-   ->  Bitmap Index Scan on recno_vm_perf_idx1  (cost=0.00..5.04 rows=100 width=0) (actual rows=100.00 loops=1)
-         Index Cond: (col1 = 50)
-         Index Searches: 1
-         Buffers: shared hit=2
  Planning:
-   Buffers: shared hit=35
+   Buffers: shared hit=36
  Planning Time: #.# ms
  Execution Time: #.# ms
-(12 rows)
+(9 rows)
 
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col2 FROM recno_vm_perf WHERE col2 = 150;
-                                                  QUERY PLAN                                                  
---------------------------------------------------------------------------------------------------------------
- Bitmap Heap Scan on recno_vm_perf  (cost=4.67..96.82 rows=50 width=4) (actual rows=50.00 loops=1)
-   Recheck Cond: (col2 = 150)
-   Heap Blocks: exact=50
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx2 on recno_vm_perf  (cost=0.29..5.16 rows=50 width=4) (actual rows=50.00 loops=1)
+   Index Cond: (col2 = 150)
+   Heap Fetches: 50
+   Index Searches: 1
    Buffers: shared hit=52
-   ->  Bitmap Index Scan on recno_vm_perf_idx2  (cost=0.00..4.66 rows=50 width=0) (actual rows=50.00 loops=1)
-         Index Cond: (col2 = 150)
-         Index Searches: 1
-         Buffers: shared hit=2
  Planning:
-   Buffers: shared hit=3
+   Buffers: shared hit=4
  Planning Time: #.# ms
  Execution Time: #.# ms
-(12 rows)
+(9 rows)
 
 EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
 SELECT col3 FROM recno_vm_perf WHERE col3 = 250;
-                                                  QUERY PLAN                                                  
---------------------------------------------------------------------------------------------------------------
- Bitmap Heap Scan on recno_vm_perf  (cost=4.54..77.07 rows=33 width=4) (actual rows=33.00 loops=1)
-   Recheck Cond: (col3 = 250)
-   Heap Blocks: exact=33
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx3 on recno_vm_perf  (cost=0.29..4.86 rows=33 width=4) (actual rows=33.00 loops=1)
+   Index Cond: (col3 = 250)
+   Heap Fetches: 33
+   Index Searches: 1
    Buffers: shared hit=35
-   ->  Bitmap Index Scan on recno_vm_perf_idx3  (cost=0.00..4.53 rows=33 width=0) (actual rows=33.00 loops=1)
-         Index Cond: (col3 = 250)
-         Index Searches: 1
-         Buffers: shared hit=2
  Planning:
-   Buffers: shared hit=3
+   Buffers: shared hit=4
  Planning Time: #.# ms
  Execution Time: #.# ms
-(12 rows)
+(9 rows)
 
 -- Count index-only scans
 SELECT idx_scan, idx_tup_read, idx_tup_fetch
@@ -300,13 +288,13 @@ SELECT val FROM recno_vm_partial
 WHERE status = 'active' AND val BETWEEN 100 AND 500;
                                                           QUERY PLAN                                                          
 ------------------------------------------------------------------------------------------------------------------------------
- Index Only Scan using recno_vm_partial_idx on recno_vm_partial  (cost=0.14..8.16 rows=1 width=4) (actual rows=13.00 loops=1)
+ Index Only Scan using recno_vm_partial_idx on recno_vm_partial  (cost=0.14..4.16 rows=1 width=4) (actual rows=13.00 loops=1)
    Index Cond: ((val >= 100) AND (val <= 500))
    Heap Fetches: 13
    Index Searches: 1
    Buffers: shared hit=14
  Planning:
-   Buffers: shared hit=17
+   Buffers: shared hit=18
  Planning Time: #.# ms
  Execution Time: #.# ms
 (9 rows)
@@ -331,7 +319,7 @@ UPDATE recno_vm_skip SET data = 'updated' WHERE id IN (100, 500, 900);
 VACUUM VERBOSE recno_vm_skip;
 INFO:  vacuuming "recno_vm_skip": scanning 11 pages
 INFO:  table "recno_vm_skip": starting cross-page defragmentation from block 10
-INFO:  RECNO vacuum "recno_vm_skip": found 1000 tuples (1000 live, 0 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+INFO:  RECNO vacuum "recno_vm_skip": found 288 tuples (288 live, 0 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
 -- =============================================
 -- VM Recovery After Crash
 -- =============================================
