@@ -430,13 +430,12 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 						 ItemPointer tid,
 						 Snapshot snapshot,
 						 TupleTableSlot *slot,
-						 bool *heap_continue, bool *all_dead,
-						 const Bitmapset *index_attrs,
-						 bool *hot_indexed_stale)
+						 bool *heap_continue, bool *all_dead)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	bool		got_heap_tuple;
+	bool		keys_recheck = false;
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
@@ -473,8 +472,9 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											&bslot->base.tupdata,
 											all_dead,
 											!*heap_continue,
-											index_attrs,
-											hot_indexed_stale);
+											scan->xs_index_attrs,
+											&keys_recheck);
+	scan->xs_index_keys_recheck = got_heap_tuple && keys_recheck;
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 

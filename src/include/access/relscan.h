@@ -134,6 +134,20 @@ typedef struct IndexFetchTableData
 	 * permitted.
 	 */
 	uint32		flags;
+
+	/*
+	 * Side channel for table AMs that can reach more than one set of
+	 * index-key values from a single update chain (heap's HOT-indexed
+	 * update).  The index-scan layer sets xs_index_attrs to the heap
+	 * attributes the originating index covers (NULL if the index is not
+	 * identifiable, e.g. a bitmap heap scan); the table AM sets
+	 * xs_index_keys_recheck true when the tuple it returned was reached by
+	 * crossing an in-chain update that changed one of those attributes, so
+	 * the index entry that led here may not match and the caller must recheck
+	 * or skip it.  AMs without such chains ignore both fields.
+	 */
+	const struct Bitmapset *xs_index_attrs;
+	bool		xs_index_keys_recheck;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;

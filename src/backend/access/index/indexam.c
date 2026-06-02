@@ -673,7 +673,6 @@ bool
 index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 {
 	bool		all_dead = false;
-	bool		hot_indexed_stale = false;
 	bool		found;
 
 	/*
@@ -685,11 +684,12 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	if (scan->xs_hot_indexed_attrs == NULL)
 		scan->xs_hot_indexed_attrs = RelationGetIndexedAttrs(scan->indexRelation);
 
+	/* Hand the covered-attrs set to the table AM via the fetch descriptor. */
+	scan->xs_heapfetch->xs_index_attrs = scan->xs_hot_indexed_attrs;
+
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
-									&scan->xs_heap_continue, &all_dead,
-									scan->xs_hot_indexed_attrs,
-									&hot_indexed_stale);
+									&scan->xs_heap_continue, &all_dead);
 
 	if (found)
 		pgstat_count_heap_fetch(scan->indexRelation);
@@ -697,12 +697,13 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	/*
 	 * If the index entry that reached this tuple is stale for this index (a
 	 * HOT-indexed hop changed one of the index's attributes between the entry
-	 * and the live tuple), surface that on xs_hot_indexed_stale. Keeping it
-	 * distinct from xs_recheck lets the executor drop a stale HOT-indexed
-	 * leaf (the fresh entry returns the row via its own path) rather than
-	 * re-evaluating quals as for a lossy-index recheck.
+	 * and the live tuple), the table AM reported it via the fetch descriptor.
+	 * Surface it on xs_hot_indexed_stale.  Keeping it distinct from xs_recheck
+	 * lets the executor drop a stale HOT-indexed leaf (the fresh entry returns
+	 * the row via its own path) rather than re-evaluating quals as for a
+	 * lossy-index recheck.
 	 */
-	scan->xs_hot_indexed_stale = (found && hot_indexed_stale);
+	scan->xs_hot_indexed_stale = scan->xs_heapfetch->xs_index_keys_recheck;
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index

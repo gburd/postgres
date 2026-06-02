@@ -224,7 +224,8 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, uint32 options,
 					Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-					TM_IndexUpdateInfo *upd_info)
+					const Bitmapset *modified_attrs,
+					bool *update_all_indexes)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
@@ -232,10 +233,9 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	TM_Result	result;
 
 	Assert(ItemPointerIsValid(otid));
-	Assert(upd_info != NULL);
 
-	hot_mode = HeapUpdateHotAllowable(relation, upd_info->modified_attrs);
-	*lockmode = HeapUpdateDetermineLockmode(relation, upd_info->modified_attrs);
+	hot_mode = HeapUpdateHotAllowable(relation, modified_attrs);
+	*lockmode = HeapUpdateDetermineLockmode(relation, modified_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
@@ -243,17 +243,16 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 	result = heap_update(relation, otid, tuple, cid, options,
 						 crosscheck, wait,
-						 tmfd, *lockmode, upd_info->modified_attrs, hot_mode);
+						 tmfd, *lockmode, modified_attrs, hot_mode);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple.  If the
-	 * tuple stored by heap_update is heap-only, this was a HOT update and
-	 * (subject to per-index checks in the executor) only summarizing indexes
-	 * need a new entry.  Otherwise every index must get an entry pointing to
-	 * the new tuple's TID.
+	 * Tell the caller whether every index needs a new entry.  If the new
+	 * tuple is not heap-only the update was not HOT, so all indexes need an
+	 * entry pointing at the new TID.  Otherwise (classic HOT or HOT-indexed)
+	 * the caller consults modified_attrs to decide per index.
 	 */
-	upd_info->update_all_indexes = (result == TM_Ok) && !HeapTupleIsHeapOnly(tuple);
+	*update_all_indexes = (result == TM_Ok) && !HeapTupleIsHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);

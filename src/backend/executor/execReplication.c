@@ -927,7 +927,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	bool		skip_tuple = false;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
-	TM_IndexUpdateInfo upd_info = {NULL, false};
+	bool update_all_indexes = false;
 	Bitmapset  *modified_idx_attrs = NULL;
 
 	/*
@@ -968,27 +968,25 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 
 		modified_idx_attrs = ExecUpdateModifiedIdxAttrs(resultRelInfo,
 														searchslot, slot);
-		upd_info.modified_attrs = modified_idx_attrs;
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
-								  &upd_info);
+								  modified_idx_attrs, &update_all_indexes);
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 
 		if (resultRelInfo->ri_NumIndices > 0 &&
-			(upd_info.update_all_indexes ||
-			 !bms_is_empty(upd_info.modified_attrs)))
+			(update_all_indexes || !bms_is_empty(modified_idx_attrs)))
 		{
 			uint32		flags = EIIT_IS_UPDATE;
 
 			if (conflictindexes != NIL)
 				flags |= EIIT_NO_DUPE_ERROR;
-			if (!upd_info.update_all_indexes)
+			if (!update_all_indexes)
 				flags |= EIIT_IS_HOT_INDEXED;
 
 			ExecSetIndexUnchanged(resultRelInfo,
-								  upd_info.update_all_indexes,
-								  upd_info.modified_attrs);
+								  update_all_indexes,
+								  modified_idx_attrs);
 
 			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 												   estate, flags,

@@ -165,13 +165,14 @@ indexes need new entries using per-index tracking rather than a single
 global enum.
 
 The table AM communicates whether a HOT update occurred via the
-TM_IndexUpdateInfo output struct passed to table_tuple_update().  When
-`update_all_indexes` is true, the update was non-HOT and all indexes
-require new entries (because the tuple has a new TID).  When false, the
-update was HOT and only summarizing indexes whose columns changed need
-new entries.  The set of modified indexed attributes is carried in the
-struct's `modified_attrs` field as a Bitmapset of attribute numbers
-(encoded with FirstLowInvalidHeapAttributeNumber).
+update_all_indexes boolean output of table_tuple_update(), together with the
+modified-attrs Bitmapset the caller passed in (attribute numbers encoded with
+FirstLowInvalidHeapAttributeNumber).  When update_all_indexes is true the
+update was non-HOT and every index requires a new entry (the tuple has a new
+TID).  When false the update was HOT: the caller consults modified_attrs with
+each index's own attributes to insert entries only into the indexes whose key
+attributes changed (a HOT-indexed update) or only the summarizing indexes (a
+classic HOT update that changed a summarized column), and skips the rest.
 
 The executor then calls ExecSetIndexUnchanged() to populate the per-index
 ii_IndexUnchanged flag on each IndexInfo.  This flag indicates whether each
