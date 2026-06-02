@@ -171,7 +171,7 @@ COMMIT;
 -- =============================================
 -- Create fragmentation with cross-page UPDATE (regression test for CID fix)
 UPDATE recno_integration_test SET data = REPEAT('x', 100) WHERE id % 2 = 0;
-ERROR:  RECNO: updated tuple does not fit on page
+ERROR:  updated recno tuple does not fit on page
 HINT:  Variable-length overflow during update is not yet implemented.
 DELETE FROM recno_integration_test WHERE id % 3 = 0;
 -- Count rows before VACUUM FULL
