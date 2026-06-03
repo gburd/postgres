@@ -79,9 +79,19 @@ enum RoleRecurseType
 	ROLERECURSE_PRIVS = 1,		/* recurse through inheritable grants */
 	ROLERECURSE_SETROLE = 2		/* recurse through grants with set_option */
 };
-static session_local Oid	cached_role[] = {InvalidOid, InvalidOid, InvalidOid};
-static session_local List *cached_roles[] = {NIL, NIL, NIL};
-static session_local uint32 cached_db_hash;
+
+/* one cache slot per RoleRecurseType */
+typedef struct AclState
+{
+	Oid			cached_role[3];
+	List	   *cached_roles[3];
+	uint32		cached_db_hash;
+} AclState;
+
+static session_local AclState acl_state = {
+	.cached_role = {InvalidOid, InvalidOid, InvalidOid},
+	.cached_roles = {NIL, NIL, NIL},
+};
 
 /*
  * If the list of roles gathered by roles_is_member_of() grows larger than the
@@ -5070,7 +5080,7 @@ initialize_acl(void)
 {
 	if (!IsBootstrapProcessingMode())
 	{
-		cached_db_hash =
+		acl_state.cached_db_hash =
 			GetSysCacheHashValue1(DATABASEOID,
 								  ObjectIdGetDatum(MyDatabaseId));
 
@@ -5100,16 +5110,16 @@ RoleMembershipCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 							uint32 hashvalue)
 {
 	if (cacheid == DATABASEOID &&
-		hashvalue != cached_db_hash &&
+		hashvalue != acl_state.cached_db_hash &&
 		hashvalue != 0)
 	{
 		return;					/* ignore pg_database changes for other DBs */
 	}
 
 	/* Force membership caches to be recomputed on next use */
-	cached_role[ROLERECURSE_MEMBERS] = InvalidOid;
-	cached_role[ROLERECURSE_PRIVS] = InvalidOid;
-	cached_role[ROLERECURSE_SETROLE] = InvalidOid;
+	acl_state.cached_role[ROLERECURSE_MEMBERS] = InvalidOid;
+	acl_state.cached_role[ROLERECURSE_PRIVS] = InvalidOid;
+	acl_state.cached_role[ROLERECURSE_SETROLE] = InvalidOid;
 }
 
 /*
@@ -5195,9 +5205,9 @@ roles_is_member_of(Oid roleid, enum RoleRecurseType type,
 		*admin_role = InvalidOid;
 
 	/* If cache is valid and ADMIN OPTION not sought, just return the list */
-	if (cached_role[type] == roleid && !OidIsValid(admin_of) &&
-		OidIsValid(cached_role[type]))
-		return cached_roles[type];
+	if (acl_state.cached_role[type] == roleid && !OidIsValid(admin_of) &&
+		OidIsValid(acl_state.cached_role[type]))
+		return acl_state.cached_roles[type];
 
 	/*
 	 * Role expansion happens in a non-database backend when guc.c checks
@@ -5293,13 +5303,13 @@ roles_is_member_of(Oid roleid, enum RoleRecurseType type,
 	/*
 	 * Now safe to assign to state variable
 	 */
-	cached_role[type] = InvalidOid; /* just paranoia */
-	list_free(cached_roles[type]);
-	cached_roles[type] = new_cached_roles;
-	cached_role[type] = roleid;
+	acl_state.cached_role[type] = InvalidOid; /* just paranoia */
+	list_free(acl_state.cached_roles[type]);
+	acl_state.cached_roles[type] = new_cached_roles;
+	acl_state.cached_role[type] = roleid;
 
 	/* And now we can return the answer */
-	return cached_roles[type];
+	return acl_state.cached_roles[type];
 }
 
 
