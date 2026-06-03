@@ -176,7 +176,6 @@ typedef struct TwoPhaseLockRecord
  * would have to initialize that, while for the static array that happens
  * automatically. Doesn't seem worth the extra complexity.
  */
-static session_local int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
 
 /*
  * Flag to indicate if the relation extension lock is held by this backend.
@@ -191,7 +190,6 @@ static session_local int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
  * taken for a short duration to extend a particular relation and then
  * released.
  */
-static session_local bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
 
 /*
  * Number of fast-path locks per backend - size of the arrays in PGPROC.
@@ -331,14 +329,30 @@ const ShmemCallbacks LockManagerShmemCallbacks = {
  */
 static pg_global HTAB *LockMethodLockHash;
 static pg_global HTAB *LockMethodProcLockHash;
-static session_local HTAB *LockMethodLocalHash;
 
+/*
+ * Per-backend local lock-manager state.
+ */
+typedef struct LockState
+{
+	/* fast-path lock counts, indexed by fast-path group */
+	int			FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
 
-/* private state for error cleanup */
-static session_local LOCALLOCK *StrongLockInProgress;
-static session_local LOCALLOCK *awaitedLock;
-static session_local ResourceOwner awaitedOwner;
+	/* flag: is the relation extension lock held by this backend? */
+	bool		IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY;
 
+	/* backend-local hash of held locks */
+	HTAB	   *LockMethodLocalHash;
+
+	/* private state for error cleanup */
+	LOCALLOCK  *StrongLockInProgress;
+	LOCALLOCK  *awaitedLock;
+	ResourceOwner awaitedOwner;
+} LockState;
+
+static session_local LockState lock_state = {
+	.IsRelationExtensionLockHeld = false,
+};
 
 #ifdef LOCK_DEBUG
 
@@ -511,7 +525,7 @@ InitLockManagerAccess(void)
 	info.keysize = sizeof(LOCALLOCKTAG);
 	info.entrysize = sizeof(LOCALLOCK);
 
-	LockMethodLocalHash = hash_create("LOCALLOCK hash",
+	lock_state.LockMethodLocalHash = hash_create("LOCALLOCK hash",
 									  16,
 									  &info,
 									  HASH_ELEM | HASH_BLOBS);
@@ -651,7 +665,7 @@ LockHeldByMe(const LOCKTAG *locktag,
 	localtag.lock = *locktag;
 	localtag.mode = lockmode;
 
-	locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+	locallock = (LOCALLOCK *) hash_search(lock_state.LockMethodLocalHash,
 										  &localtag,
 										  HASH_FIND, NULL);
 
@@ -682,7 +696,7 @@ LockHeldByMe(const LOCKTAG *locktag,
 HTAB *
 GetLockMethodLocalHash(void)
 {
-	return LockMethodLocalHash;
+	return lock_state.LockMethodLocalHash;
 }
 #endif
 
@@ -722,7 +736,7 @@ LockHasWaiters(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 	localtag.lock = *locktag;
 	localtag.mode = lockmode;
 
-	locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+	locallock = (LOCALLOCK *) hash_search(lock_state.LockMethodLocalHash,
 										  &localtag,
 										  HASH_FIND, NULL);
 
@@ -889,7 +903,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	localtag.lock = *locktag;
 	localtag.mode = lockmode;
 
-	locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+	locallock = (LOCALLOCK *) hash_search(lock_state.LockMethodLocalHash,
 										  &localtag,
 										  HASH_ENTER, &found);
 
@@ -949,7 +963,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	 * extension lock.  We do allow to acquire the same relation extension
 	 * lock more than once but that case won't reach here.
 	 */
-	Assert(!IsRelationExtensionLockHeld);
+	Assert(!lock_state.IsRelationExtensionLockHeld);
 
 	/*
 	 * Prepare to emit a WAL record if acquisition of this lock needs to be
@@ -984,7 +998,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	 */
 	if (EligibleForRelationFastPath(locktag, lockmode))
 	{
-		if (FastPathLocalUseCounts[FAST_PATH_REL_GROUP(locktag->locktag_field2)] <
+		if (lock_state.FastPathLocalUseCounts[FAST_PATH_REL_GROUP(locktag->locktag_field2)] <
 			FP_LOCK_SLOTS_PER_GROUP)
 		{
 			uint32		fasthashcode = FastPathStrongLockHashPartition(hashcode);
@@ -1474,7 +1488,7 @@ CheckAndSetLockHeld(LOCALLOCK *locallock, bool acquired)
 {
 #ifdef USE_ASSERT_CHECKING
 	if (LOCALLOCK_LOCKTAG(*locallock) == LOCKTAG_RELATION_EXTEND)
-		IsRelationExtensionLockHeld = acquired;
+		lock_state.IsRelationExtensionLockHeld = acquired;
 #endif
 }
 
@@ -1509,7 +1523,7 @@ RemoveLocalLock(LOCALLOCK *locallock)
 		SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 	}
 
-	if (!hash_search(LockMethodLocalHash,
+	if (!hash_search(lock_state.LockMethodLocalHash,
 					 &(locallock->tag),
 					 HASH_REMOVE, NULL))
 		elog(WARNING, "locallock table corrupted");
@@ -1832,7 +1846,7 @@ GrantLockLocal(LOCALLOCK *locallock, ResourceOwner owner)
 static void
 BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode)
 {
-	Assert(StrongLockInProgress == NULL);
+	Assert(lock_state.StrongLockInProgress == NULL);
 	Assert(locallock->holdsStrongLockCount == false);
 
 	/*
@@ -1847,7 +1861,7 @@ BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode)
 	SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
 	FastPathStrongRelationLocks->count[fasthashcode]++;
 	locallock->holdsStrongLockCount = true;
-	StrongLockInProgress = locallock;
+	lock_state.StrongLockInProgress = locallock;
 	SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 }
 
@@ -1858,7 +1872,7 @@ BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode)
 static void
 FinishStrongLockAcquire(void)
 {
-	StrongLockInProgress = NULL;
+	lock_state.StrongLockInProgress = NULL;
 }
 
 /*
@@ -1869,7 +1883,7 @@ void
 AbortStrongLockAcquire(void)
 {
 	uint32		fasthashcode;
-	LOCALLOCK  *locallock = StrongLockInProgress;
+	LOCALLOCK  *locallock = lock_state.StrongLockInProgress;
 
 	if (locallock == NULL)
 		return;
@@ -1880,7 +1894,7 @@ AbortStrongLockAcquire(void)
 	Assert(FastPathStrongRelationLocks->count[fasthashcode] > 0);
 	FastPathStrongRelationLocks->count[fasthashcode]--;
 	locallock->holdsStrongLockCount = false;
-	StrongLockInProgress = NULL;
+	lock_state.StrongLockInProgress = NULL;
 	SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 }
 
@@ -1897,7 +1911,7 @@ AbortStrongLockAcquire(void)
 void
 GrantAwaitedLock(void)
 {
-	GrantLockLocal(awaitedLock, awaitedOwner);
+	GrantLockLocal(lock_state.awaitedLock, lock_state.awaitedOwner);
 }
 
 /*
@@ -1906,7 +1920,7 @@ GrantAwaitedLock(void)
 LOCALLOCK *
 GetAwaitedLock(void)
 {
-	return awaitedLock;
+	return lock_state.awaitedLock;
 }
 
 /*
@@ -1915,7 +1929,7 @@ GetAwaitedLock(void)
 void
 ResetAwaitedLock(void)
 {
-	awaitedLock = NULL;
+	lock_state.awaitedLock = NULL;
 }
 
 /*
@@ -1963,8 +1977,8 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 	 * Record the fact that we are waiting for a lock, so that
 	 * LockErrorCleanup will clean up if cancel/die happens.
 	 */
-	awaitedLock = locallock;
-	awaitedOwner = owner;
+	lock_state.awaitedLock = locallock;
+	lock_state.awaitedOwner = owner;
 
 	/*
 	 * NOTE: Think not to put any shared-state cleanup after the call to
@@ -2002,7 +2016,7 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 	/*
 	 * We no longer want LockErrorCleanup to do anything.
 	 */
-	awaitedLock = NULL;
+	lock_state.awaitedLock = NULL;
 
 	/* reset ps display to remove the suffix */
 	set_ps_display_remove_suffix();
@@ -2139,7 +2153,7 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 	localtag.lock = *locktag;
 	localtag.mode = lockmode;
 
-	locallock = (LOCALLOCK *) hash_search(LockMethodLocalHash,
+	locallock = (LOCALLOCK *) hash_search(lock_state.LockMethodLocalHash,
 										  &localtag,
 										  HASH_FIND, NULL);
 
@@ -2213,7 +2227,7 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 
 	/* Attempt fast release of any lock eligible for the fast path. */
 	if (EligibleForRelationFastPath(locktag, lockmode) &&
-		FastPathLocalUseCounts[FAST_PATH_REL_GROUP(locktag->locktag_field2)] > 0)
+		lock_state.FastPathLocalUseCounts[FAST_PATH_REL_GROUP(locktag->locktag_field2)] > 0)
 	{
 		bool		released;
 
@@ -2352,7 +2366,7 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 	 * pointers.  Fast-path locks are cleaned up during the locallock table
 	 * scan, though.
 	 */
-	hash_seq_init(&status, LockMethodLocalHash);
+	hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 	{
@@ -2595,7 +2609,7 @@ LockReleaseSession(LOCKMETHODID lockmethodid)
 	if (lockmethodid <= 0 || lockmethodid >= lengthof(LockMethods))
 		elog(ERROR, "unrecognized lock method: %d", lockmethodid);
 
-	hash_seq_init(&status, LockMethodLocalHash);
+	hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 	{
@@ -2624,7 +2638,7 @@ LockReleaseCurrentOwner(LOCALLOCK **locallocks, int nlocks)
 		HASH_SEQ_STATUS status;
 		LOCALLOCK  *locallock;
 
-		hash_seq_init(&status, LockMethodLocalHash);
+		hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 		while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 			ReleaseLockIfHeld(locallock, false);
@@ -2723,7 +2737,7 @@ LockReassignCurrentOwner(LOCALLOCK **locallocks, int nlocks)
 		HASH_SEQ_STATUS status;
 		LOCALLOCK  *locallock;
 
-		hash_seq_init(&status, LockMethodLocalHash);
+		hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 		while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 			LockReassignOwner(locallock, parent);
@@ -2817,7 +2831,7 @@ FastPathGrantRelationLock(Oid relid, LOCKMODE lockmode)
 	{
 		MyProc->fpRelId[unused_slot] = relid;
 		FAST_PATH_SET_LOCKMODE(MyProc, unused_slot, lockmode);
-		++FastPathLocalUseCounts[group];
+		++lock_state.FastPathLocalUseCounts[group];
 		return true;
 	}
 
@@ -2839,7 +2853,7 @@ FastPathUnGrantRelationLock(Oid relid, LOCKMODE lockmode)
 	/* fast-path group the lock belongs to */
 	uint32		group = FAST_PATH_REL_GROUP(relid);
 
-	FastPathLocalUseCounts[group] = 0;
+	lock_state.FastPathLocalUseCounts[group] = 0;
 	for (i = 0; i < FP_LOCK_SLOTS_PER_GROUP; i++)
 	{
 		/* index into the whole per-backend array */
@@ -2854,7 +2868,7 @@ FastPathUnGrantRelationLock(Oid relid, LOCKMODE lockmode)
 			/* we continue iterating so as to update FastPathLocalUseCount */
 		}
 		if (FAST_PATH_GET_BITS(MyProc, f) != 0)
-			++FastPathLocalUseCounts[group];
+			++lock_state.FastPathLocalUseCounts[group];
 	}
 	return result;
 }
@@ -3420,7 +3434,7 @@ CheckForSessionAndXactLocks(void)
 						   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* Scan local lock table to find entries for each LOCKTAG */
-	hash_seq_init(&status, LockMethodLocalHash);
+	hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 	{
@@ -3492,7 +3506,7 @@ AtPrepare_Locks(void)
 	CheckForSessionAndXactLocks();
 
 	/* Now do the per-locallock cleanup work */
-	hash_seq_init(&status, LockMethodLocalHash);
+	hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 	{
@@ -3605,7 +3619,7 @@ PostPrepare_Locks(FullTransactionId fxid)
 	 * pointing to the same proclock, and we daren't end up with any dangling
 	 * pointers.
 	 */
-	hash_seq_init(&status, LockMethodLocalHash);
+	hash_seq_init(&status, lock_state.LockMethodLocalHash);
 
 	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
 	{
