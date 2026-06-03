@@ -93,10 +93,18 @@ sighup_guc char	   *SyncRepStandbyNames;
 #define SyncStandbysDefined() \
 	(GetGUCString(GUC_SyncRepStandbyNames) != NULL && GetGUCString(GUC_SyncRepStandbyNames)[0] != '\0')
 
-static session_local bool announce_next_takeover = true;
+typedef struct SyncRepState
+{
+	bool		announce_next_takeover;
+	int			SyncRepWaitMode;
+} SyncRepState;
+
+static session_local SyncRepState syncrep_state = {
+	.announce_next_takeover = true,
+	.SyncRepWaitMode = SYNC_REP_NO_WAIT,
+};
 
 session_local SyncRepConfigData *SyncRepConfig = NULL;
-static session_local int	SyncRepWaitMode = SYNC_REP_NO_WAIT;
 
 static void SyncRepQueueInsert(int mode);
 static void SyncRepCancelWait(void);
@@ -183,9 +191,9 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 
 	/* Cap the level for anything other than commit to remote flush only. */
 	if (commit)
-		mode = SyncRepWaitMode;
+		mode = syncrep_state.SyncRepWaitMode;
 	else
-		mode = Min(SyncRepWaitMode, SYNC_REP_WAIT_FLUSH);
+		mode = Min(syncrep_state.SyncRepWaitMode, SYNC_REP_WAIT_FLUSH);
 
 	Assert(dlist_node_is_detached(&MyProc->syncRepLinks));
 	Assert(WalSndCtl != NULL);
@@ -497,7 +505,7 @@ SyncRepReleaseWaiters(void)
 		 MyWalSnd->state != WALSNDSTATE_STOPPING) ||
 		!XLogRecPtrIsValid(MyWalSnd->flush))
 	{
-		announce_next_takeover = true;
+		syncrep_state.announce_next_takeover = true;
 		return;
 	}
 
@@ -521,9 +529,9 @@ SyncRepReleaseWaiters(void)
 	 * If we are managing a sync standby, though we weren't prior to this,
 	 * then announce we are now a sync standby.
 	 */
-	if (announce_next_takeover && am_sync)
+	if (syncrep_state.announce_next_takeover && am_sync)
 	{
-		announce_next_takeover = false;
+		syncrep_state.announce_next_takeover = false;
 
 		if (SyncRepConfig->syncrep_method == SYNC_REP_PRIORITY)
 			ereport(LOG,
@@ -542,7 +550,7 @@ SyncRepReleaseWaiters(void)
 	if (!got_recptr || !am_sync)
 	{
 		LWLockRelease(SyncRepLock);
-		announce_next_takeover = !am_sync;
+		syncrep_state.announce_next_takeover = !am_sync;
 		return;
 	}
 
@@ -1128,16 +1136,16 @@ assign_synchronous_commit(int newval, void *extra)
 	switch (newval)
 	{
 		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
-			SyncRepWaitMode = SYNC_REP_WAIT_WRITE;
+			syncrep_state.SyncRepWaitMode = SYNC_REP_WAIT_WRITE;
 			break;
 		case SYNCHRONOUS_COMMIT_REMOTE_FLUSH:
-			SyncRepWaitMode = SYNC_REP_WAIT_FLUSH;
+			syncrep_state.SyncRepWaitMode = SYNC_REP_WAIT_FLUSH;
 			break;
 		case SYNCHRONOUS_COMMIT_REMOTE_APPLY:
-			SyncRepWaitMode = SYNC_REP_WAIT_APPLY;
+			syncrep_state.SyncRepWaitMode = SYNC_REP_WAIT_APPLY;
 			break;
 		default:
-			SyncRepWaitMode = SYNC_REP_NO_WAIT;
+			syncrep_state.SyncRepWaitMode = SYNC_REP_NO_WAIT;
 			break;
 	}
 }
