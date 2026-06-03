@@ -460,45 +460,17 @@ typedef struct RetainDeadTuplesData
 #define MIN_XID_ADVANCE_INTERVAL 100
 #define MAX_XID_ADVANCE_INTERVAL 180000
 
-/* errcontext tracker */
-static session_local ApplyErrorCallbackArg apply_error_callback_arg =
-{
-	.command = 0,
-	.rel = NULL,
-	.remote_attnum = -1,
-	.remote_xid = InvalidTransactionId,
-	.finish_lsn = InvalidXLogRecPtr,
-	.origin_name = NULL,
-};
-
 session_local ErrorContextCallback *apply_error_context_stack = NULL;
 
 session_local MemoryContext ApplyMessageContext = NULL;
 session_local MemoryContext ApplyContext = NULL;
 
-/* per stream context for streaming transactions */
-static session_local MemoryContext LogicalStreamingContext = NULL;
-
 session_local WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
 
 session_local Subscription *MySubscription = NULL;
-static session_local bool MySubscriptionValid = false;
-
-static session_local List *on_commit_wakeup_workers_subids = NIL;
 
 session_local bool		in_remote_transaction = false;
-static session_local XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 
-/* fields valid only when processing streamed transaction */
-static session_local bool in_streamed_transaction = false;
-
-static session_local TransactionId stream_xid = InvalidTransactionId;
-
-/*
- * The number of changes applied by parallel apply worker during one streaming
- * block.
- */
-static session_local uint32 parallel_stream_nchanges = 0;
 
 /* Are we initializing an apply worker? */
 session_local bool		InitializingApplyWorker = false;
@@ -518,11 +490,7 @@ session_local bool		InitializingApplyWorker = false;
  * the changes. So, we don't start parallel apply worker when finish LSN is set
  * by the user.
  */
-static session_local XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
-#define is_skipping_changes() (unlikely(XLogRecPtrIsValid(skip_xact_finish_lsn)))
-
-/* BufFile handle of the current streaming file */
-static session_local BufFile *stream_fd = NULL;
+#define is_skipping_changes() (unlikely(XLogRecPtrIsValid(apply_worker_state.skip_xact_finish_lsn)))
 
 /*
  * The remote WAL position that has been applied and flushed locally. We record
@@ -547,7 +515,73 @@ typedef struct ApplySubXactData
 	SubXactInfo *subxacts;		/* sub-xact offset in changes file */
 } ApplySubXactData;
 
-static session_local ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
+/*
+ * Consolidated per-session logical apply-worker state (private file-local part).
+ *
+ * The exported globals apply_error_context_stack, ApplyMessageContext,
+ * ApplyContext, LogRepWorkerWalRcvConn, MySubscription, in_remote_transaction
+ * and InitializingApplyWorker remain standalone session-local globals because
+ * they are declared in replication/worker_internal.h and referenced from the
+ * other logical-replication .c files.
+ */
+typedef struct ApplyWorkerState
+{
+	/* errcontext tracker */
+	ApplyErrorCallbackArg apply_error_callback_arg;
+
+	/* per stream context for streaming transactions */
+	MemoryContext LogicalStreamingContext;
+
+	bool		MySubscriptionValid;
+
+	List	   *on_commit_wakeup_workers_subids;
+
+	XLogRecPtr	remote_final_lsn;
+
+	/* fields valid only when processing streamed transaction */
+	bool		in_streamed_transaction;
+	TransactionId stream_xid;
+
+	/*
+	 * The number of changes applied by parallel apply worker during one
+	 * streaming block.
+	 */
+	uint32		parallel_stream_nchanges;
+
+	/*
+	 * LSN at which we enable skipping all data modification changes; see the
+	 * comment on is_skipping_changes() above.
+	 */
+	XLogRecPtr	skip_xact_finish_lsn;
+
+	/* BufFile handle of the current streaming file */
+	BufFile    *stream_fd;
+
+	/* Sub-transaction data for the current streaming transaction */
+	ApplySubXactData subxact_data;
+} ApplyWorkerState;
+
+static session_local ApplyWorkerState apply_worker_state = {
+	.apply_error_callback_arg = {
+		.command = 0,
+		.rel = NULL,
+		.remote_attnum = -1,
+		.remote_xid = InvalidTransactionId,
+		.finish_lsn = InvalidXLogRecPtr,
+		.origin_name = NULL,
+	},
+	.LogicalStreamingContext = NULL,
+	.MySubscriptionValid = false,
+	.on_commit_wakeup_workers_subids = NIL,
+	.remote_final_lsn = InvalidXLogRecPtr,
+	.in_streamed_transaction = false,
+	.stream_xid = InvalidTransactionId,
+	.parallel_stream_nchanges = 0,
+	.skip_xact_finish_lsn = InvalidXLogRecPtr,
+	.stream_fd = NULL,
+	.subxact_data = {0, 0, InvalidTransactionId, NULL},
+};
+
 
 static inline void subxact_filename(char *path, Oid subid, TransactionId xid);
 static inline void changes_filename(char *path, Oid subid, TransactionId xid);
@@ -707,7 +741,7 @@ should_apply_changes_for_rel(LogicalRepRelMapEntry *rel)
 		case WORKERTYPE_APPLY:
 			return (rel->state == SUBREL_STATE_READY ||
 					(rel->state == SUBREL_STATE_SYNCDONE &&
-					 rel->statelsn <= remote_final_lsn));
+					 rel->statelsn <= apply_worker_state.remote_final_lsn));
 
 		case WORKERTYPE_SEQUENCESYNC:
 			/* Should never happen. */
@@ -788,13 +822,13 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 	TransApplyAction apply_action;
 	StringInfoData original_msg;
 
-	apply_action = get_transaction_apply_action(stream_xid, &winfo);
+	apply_action = get_transaction_apply_action(apply_worker_state.stream_xid, &winfo);
 
 	/* not in streaming mode */
 	if (apply_action == TRANS_LEADER_APPLY)
 		return false;
 
-	Assert(TransactionIdIsValid(stream_xid));
+	Assert(TransactionIdIsValid(apply_worker_state.stream_xid));
 
 	/*
 	 * The parallel apply worker needs the xid in this message to decide
@@ -818,7 +852,7 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 	switch (apply_action)
 	{
 		case TRANS_LEADER_SERIALIZE:
-			Assert(stream_fd);
+			Assert(apply_worker_state.stream_fd);
 
 			/* Add the new subxact to the array (unless already there). */
 			subxact_info_add(current_xid);
@@ -855,10 +889,10 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 					action != LOGICAL_REP_MSG_TYPE);
 
 		case TRANS_PARALLEL_APPLY:
-			parallel_stream_nchanges += 1;
+			apply_worker_state.parallel_stream_nchanges += 1;
 
 			/* Define a savepoint for a subxact if needed. */
-			pa_start_subtrans(current_xid, stream_xid);
+			pa_start_subtrans(current_xid, apply_worker_state.stream_xid);
 			return false;
 
 		default:
@@ -1043,7 +1077,7 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 			Assert(remoteattnum < tupleData->ncols);
 
 			/* Set attnum for error callback */
-			apply_error_callback_arg.remote_attnum = remoteattnum;
+			apply_worker_state.apply_error_callback_arg.remote_attnum = remoteattnum;
 
 			if (tupleData->colstatus[remoteattnum] == LOGICALREP_COLUMN_TEXT)
 			{
@@ -1092,7 +1126,7 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 			}
 
 			/* Reset attnum for error callback */
-			apply_error_callback_arg.remote_attnum = -1;
+			apply_worker_state.apply_error_callback_arg.remote_attnum = -1;
 		}
 		else
 		{
@@ -1158,7 +1192,7 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 			StringInfo	colvalue = &tupleData->colvalues[remoteattnum];
 
 			/* Set attnum for error callback */
-			apply_error_callback_arg.remote_attnum = remoteattnum;
+			apply_worker_state.apply_error_callback_arg.remote_attnum = remoteattnum;
 
 			if (tupleData->colstatus[remoteattnum] == LOGICALREP_COLUMN_TEXT)
 			{
@@ -1203,7 +1237,7 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 			}
 
 			/* Reset attnum for error callback */
-			apply_error_callback_arg.remote_attnum = -1;
+			apply_worker_state.apply_error_callback_arg.remote_attnum = -1;
 		}
 	}
 
@@ -1220,12 +1254,12 @@ apply_handle_begin(StringInfo s)
 	LogicalRepBeginData begin_data;
 
 	/* There must not be an active streaming transaction. */
-	Assert(!TransactionIdIsValid(stream_xid));
+	Assert(!TransactionIdIsValid(apply_worker_state.stream_xid));
 
 	logicalrep_read_begin(s, &begin_data);
 	set_apply_error_context_xact(begin_data.xid, begin_data.final_lsn);
 
-	remote_final_lsn = begin_data.final_lsn;
+	apply_worker_state.remote_final_lsn = begin_data.final_lsn;
 
 	maybe_start_skipping_changes(begin_data.final_lsn);
 
@@ -1246,12 +1280,12 @@ apply_handle_commit(StringInfo s)
 
 	logicalrep_read_commit(s, &commit_data);
 
-	if (commit_data.commit_lsn != remote_final_lsn)
+	if (commit_data.commit_lsn != apply_worker_state.remote_final_lsn)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("incorrect commit LSN %X/%08X in commit message (expected %X/%08X)",
 								 LSN_FORMAT_ARGS(commit_data.commit_lsn),
-								 LSN_FORMAT_ARGS(remote_final_lsn))));
+								 LSN_FORMAT_ARGS(apply_worker_state.remote_final_lsn))));
 
 	apply_handle_commit_internal(&commit_data);
 
@@ -1280,12 +1314,12 @@ apply_handle_begin_prepare(StringInfo s)
 				 errmsg_internal("tablesync worker received a BEGIN PREPARE message")));
 
 	/* There must not be an active streaming transaction. */
-	Assert(!TransactionIdIsValid(stream_xid));
+	Assert(!TransactionIdIsValid(apply_worker_state.stream_xid));
 
 	logicalrep_read_begin_prepare(s, &begin_data);
 	set_apply_error_context_xact(begin_data.xid, begin_data.prepare_lsn);
 
-	remote_final_lsn = begin_data.prepare_lsn;
+	apply_worker_state.remote_final_lsn = begin_data.prepare_lsn;
 
 	maybe_start_skipping_changes(begin_data.prepare_lsn);
 
@@ -1341,12 +1375,12 @@ apply_handle_prepare(StringInfo s)
 
 	logicalrep_read_prepare(s, &prepare_data);
 
-	if (prepare_data.prepare_lsn != remote_final_lsn)
+	if (prepare_data.prepare_lsn != apply_worker_state.remote_final_lsn)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("incorrect prepare LSN %X/%08X in prepare message (expected %X/%08X)",
 								 LSN_FORMAT_ARGS(prepare_data.prepare_lsn),
-								 LSN_FORMAT_ARGS(remote_final_lsn))));
+								 LSN_FORMAT_ARGS(apply_worker_state.remote_final_lsn))));
 
 	/*
 	 * Unlike commit, here, we always prepare the transaction even though no
@@ -1531,7 +1565,7 @@ apply_handle_stream_prepare(StringInfo s)
 	/* Save the message before it is consumed. */
 	StringInfoData original_msg = *s;
 
-	if (in_streamed_transaction)
+	if (apply_worker_state.in_streamed_transaction)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM PREPARE message without STREAM STOP")));
@@ -1613,7 +1647,7 @@ apply_handle_stream_prepare(StringInfo s)
 			 * If the parallel apply worker is applying spooled messages then
 			 * close the file before preparing.
 			 */
-			if (stream_fd)
+			if (apply_worker_state.stream_fd)
 				stream_close_file();
 
 			begin_replication_step();
@@ -1676,7 +1710,7 @@ apply_handle_origin(StringInfo s)
 	 * ORIGIN message can only come inside streaming transaction or inside
 	 * remote transaction and before any actual writes.
 	 */
-	if (!in_streamed_transaction &&
+	if (!apply_worker_state.in_streamed_transaction &&
 		(!in_remote_transaction ||
 		 (IsTransactionState() && !am_tablesync_worker())))
 		ereport(ERROR,
@@ -1738,32 +1772,32 @@ apply_handle_stream_start(StringInfo s)
 	/* Save the message before it is consumed. */
 	StringInfoData original_msg = *s;
 
-	if (in_streamed_transaction)
+	if (apply_worker_state.in_streamed_transaction)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("duplicate STREAM START message")));
 
 	/* There must not be an active streaming transaction. */
-	Assert(!TransactionIdIsValid(stream_xid));
+	Assert(!TransactionIdIsValid(apply_worker_state.stream_xid));
 
 	/* notify handle methods we're processing a remote transaction */
-	in_streamed_transaction = true;
+	apply_worker_state.in_streamed_transaction = true;
 
 	/* extract XID of the top-level transaction */
-	stream_xid = logicalrep_read_stream_start(s, &first_segment);
+	apply_worker_state.stream_xid = logicalrep_read_stream_start(s, &first_segment);
 
-	if (!TransactionIdIsValid(stream_xid))
+	if (!TransactionIdIsValid(apply_worker_state.stream_xid))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("invalid transaction ID in streamed replication transaction")));
 
-	set_apply_error_context_xact(stream_xid, InvalidXLogRecPtr);
+	set_apply_error_context_xact(apply_worker_state.stream_xid, InvalidXLogRecPtr);
 
 	/* Try to allocate a worker for the streaming transaction. */
 	if (first_segment)
-		pa_allocate_worker(stream_xid);
+		pa_allocate_worker(apply_worker_state.stream_xid);
 
-	apply_action = get_transaction_apply_action(stream_xid, &winfo);
+	apply_action = get_transaction_apply_action(apply_worker_state.stream_xid, &winfo);
 
 	switch (apply_action)
 	{
@@ -1777,7 +1811,7 @@ apply_handle_stream_start(StringInfo s)
 			 * handling the BufFile, used for serializing the streaming data
 			 * and subxact info.
 			 */
-			stream_start_internal(stream_xid, first_segment);
+			stream_start_internal(apply_worker_state.stream_xid, first_segment);
 			break;
 
 		case TRANS_LEADER_SEND_TO_PARALLEL:
@@ -1825,7 +1859,7 @@ apply_handle_stream_start(StringInfo s)
 			 * stream_start_internal will be committed on the stream stop.
 			 */
 			if (apply_action != TRANS_LEADER_SEND_TO_PARALLEL)
-				stream_start_internal(stream_xid, first_segment);
+				stream_start_internal(apply_worker_state.stream_xid, first_segment);
 
 			stream_write_change(LOGICAL_REP_MSG_STREAM_START, &original_msg);
 
@@ -1848,7 +1882,7 @@ apply_handle_stream_start(StringInfo s)
 										 MyLogicalRepWorker->subid, InvalidOid);
 			}
 
-			parallel_stream_nchanges = 0;
+			apply_worker_state.parallel_stream_nchanges = 0;
 			break;
 
 		default:
@@ -1882,7 +1916,7 @@ stream_stop_internal(TransactionId xid)
 	CommitTransactionCommand();
 
 	/* Reset per-stream context */
-	MemoryContextReset(LogicalStreamingContext);
+	MemoryContextReset(apply_worker_state.LogicalStreamingContext);
 }
 
 /*
@@ -1894,17 +1928,17 @@ apply_handle_stream_stop(StringInfo s)
 	ParallelApplyWorkerInfo *winfo;
 	TransApplyAction apply_action;
 
-	if (!in_streamed_transaction)
+	if (!apply_worker_state.in_streamed_transaction)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM STOP message without STREAM START")));
 
-	apply_action = get_transaction_apply_action(stream_xid, &winfo);
+	apply_action = get_transaction_apply_action(apply_worker_state.stream_xid, &winfo);
 
 	switch (apply_action)
 	{
 		case TRANS_LEADER_SERIALIZE:
-			stream_stop_internal(stream_xid);
+			stream_stop_internal(apply_worker_state.stream_xid);
 			break;
 
 		case TRANS_LEADER_SEND_TO_PARALLEL:
@@ -1933,13 +1967,13 @@ apply_handle_stream_stop(StringInfo s)
 			pg_fallthrough;
 		case TRANS_LEADER_PARTIAL_SERIALIZE:
 			stream_write_change(LOGICAL_REP_MSG_STREAM_STOP, s);
-			stream_stop_internal(stream_xid);
+			stream_stop_internal(apply_worker_state.stream_xid);
 			pa_set_stream_apply_worker(NULL);
 			break;
 
 		case TRANS_PARALLEL_APPLY:
 			elog(DEBUG1, "applied %u changes in the streaming chunk",
-				 parallel_stream_nchanges);
+				 apply_worker_state.parallel_stream_nchanges);
 
 			/*
 			 * By the time parallel apply worker is processing the changes in
@@ -1972,8 +2006,8 @@ apply_handle_stream_stop(StringInfo s)
 			break;
 	}
 
-	in_streamed_transaction = false;
-	stream_xid = InvalidTransactionId;
+	apply_worker_state.in_streamed_transaction = false;
+	apply_worker_state.stream_xid = InvalidTransactionId;
 
 	/*
 	 * The parallel apply worker could be in a transaction in which case we
@@ -2027,9 +2061,9 @@ stream_abort_internal(TransactionId xid, TransactionId subxid)
 		begin_replication_step();
 		subxact_info_read(MyLogicalRepWorker->subid, xid);
 
-		for (i = subxact_data.nsubxacts; i > 0; i--)
+		for (i = apply_worker_state.subxact_data.nsubxacts; i > 0; i--)
 		{
-			if (subxact_data.subxacts[i - 1].xid == subxid)
+			if (apply_worker_state.subxact_data.subxacts[i - 1].xid == subxid)
 			{
 				subidx = (i - 1);
 				found = true;
@@ -2056,12 +2090,12 @@ stream_abort_internal(TransactionId xid, TransactionId subxid)
 								O_RDWR, false);
 
 		/* OK, truncate the file at the right offset */
-		BufFileTruncateFileSet(fd, subxact_data.subxacts[subidx].fileno,
-							   subxact_data.subxacts[subidx].offset);
+		BufFileTruncateFileSet(fd, apply_worker_state.subxact_data.subxacts[subidx].fileno,
+							   apply_worker_state.subxact_data.subxacts[subidx].offset);
 		BufFileClose(fd);
 
 		/* discard the subxacts added later */
-		subxact_data.nsubxacts = subidx;
+		apply_worker_state.subxact_data.nsubxacts = subidx;
 
 		/* write the updated subxact list */
 		subxact_info_write(MyLogicalRepWorker->subid, xid);
@@ -2087,7 +2121,7 @@ apply_handle_stream_abort(StringInfo s)
 	StringInfoData original_msg = *s;
 	bool		toplevel_xact;
 
-	if (in_streamed_transaction)
+	if (apply_worker_state.in_streamed_transaction)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM ABORT message without STREAM STOP")));
@@ -2201,7 +2235,7 @@ apply_handle_stream_abort(StringInfo s)
 			 * If the parallel apply worker is applying spooled messages then
 			 * close the file before aborting.
 			 */
-			if (toplevel_xact && stream_fd)
+			if (toplevel_xact && apply_worker_state.stream_fd)
 				stream_close_file();
 
 			pa_stream_abort(&abort_data);
@@ -2299,7 +2333,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 	oldowner = CurrentResourceOwner;
 	CurrentResourceOwner = TopTransactionResourceOwner;
 
-	stream_fd = BufFileOpenFileSet(stream_fileset, path, O_RDONLY, false);
+	apply_worker_state.stream_fd = BufFileOpenFileSet(stream_fileset, path, O_RDONLY, false);
 
 	CurrentResourceOwner = oldowner;
 
@@ -2307,7 +2341,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 
 	MemoryContextSwitchTo(oldcxt);
 
-	remote_final_lsn = lsn;
+	apply_worker_state.remote_final_lsn = lsn;
 
 	/*
 	 * Make sure the handle apply_dispatch methods are aware we're in a remote
@@ -2332,7 +2366,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 		CHECK_FOR_INTERRUPTS();
 
 		/* read length of the on-disk record */
-		nbytes = BufFileReadMaybeEOF(stream_fd, &len, sizeof(len), true);
+		nbytes = BufFileReadMaybeEOF(apply_worker_state.stream_fd, &len, sizeof(len), true);
 
 		/* have we reached end of the file? */
 		if (nbytes == 0)
@@ -2347,9 +2381,9 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 		buffer = repalloc(buffer, len);
 
 		/* and finally read the data into the buffer */
-		BufFileReadExact(stream_fd, buffer, len);
+		BufFileReadExact(apply_worker_state.stream_fd, buffer, len);
 
-		BufFileTell(stream_fd, &fileno, &offset);
+		BufFileTell(apply_worker_state.stream_fd, &fileno, &offset);
 
 		/* init a stringinfo using the buffer and call apply_dispatch */
 		initReadOnlyStringInfo(&s2, buffer, len);
@@ -2370,7 +2404,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 		 * the transaction end message like stream_commit in which case that
 		 * must be the last message.
 		 */
-		if (!stream_fd)
+		if (!apply_worker_state.stream_fd)
 		{
 			ensure_last_message(stream_fileset, xid, fileno, offset);
 			break;
@@ -2381,7 +2415,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 				 nchanges, path);
 	}
 
-	if (stream_fd)
+	if (apply_worker_state.stream_fd)
 		stream_close_file();
 
 	elog(DEBUG1, "replayed %d (all) changes from file \"%s\"",
@@ -2404,7 +2438,7 @@ apply_handle_stream_commit(StringInfo s)
 	/* Save the message before it is consumed. */
 	StringInfoData original_msg = *s;
 
-	if (in_streamed_transaction)
+	if (apply_worker_state.in_streamed_transaction)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM COMMIT message without STREAM STOP")));
@@ -2468,7 +2502,7 @@ apply_handle_stream_commit(StringInfo s)
 			 * If the parallel apply worker is applying spooled messages then
 			 * close the file before committing.
 			 */
-			if (stream_fd)
+			if (apply_worker_state.stream_fd)
 				stream_close_file();
 
 			apply_handle_commit_internal(&commit_data);
@@ -2681,7 +2715,7 @@ apply_handle_insert(StringInfo s)
 		SwitchToUntrustedUser(rel->localrel->rd_rel->relowner, &ucxt);
 
 	/* Set relation for error callback */
-	apply_error_callback_arg.rel = rel;
+	apply_worker_state.apply_error_callback_arg.rel = rel;
 
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
@@ -2712,7 +2746,7 @@ apply_handle_insert(StringInfo s)
 	finish_edata(edata);
 
 	/* Reset relation for error callback */
-	apply_error_callback_arg.rel = NULL;
+	apply_worker_state.apply_error_callback_arg.rel = NULL;
 
 	if (!run_as_owner)
 		RestoreUserContext(&ucxt);
@@ -2834,7 +2868,7 @@ apply_handle_update(StringInfo s)
 	}
 
 	/* Set relation for error callback */
-	apply_error_callback_arg.rel = rel;
+	apply_worker_state.apply_error_callback_arg.rel = rel;
 
 	/* Check if we can do the update. */
 	check_relation_updatable(rel);
@@ -2895,7 +2929,7 @@ apply_handle_update(StringInfo s)
 	finish_edata(edata);
 
 	/* Reset relation for error callback */
-	apply_error_callback_arg.rel = NULL;
+	apply_worker_state.apply_error_callback_arg.rel = NULL;
 
 	if (!run_as_owner)
 		RestoreUserContext(&ucxt);
@@ -3052,7 +3086,7 @@ apply_handle_delete(StringInfo s)
 	}
 
 	/* Set relation for error callback */
-	apply_error_callback_arg.rel = rel;
+	apply_worker_state.apply_error_callback_arg.rel = rel;
 
 	/* Check if we can do the delete. */
 	check_relation_updatable(rel);
@@ -3094,7 +3128,7 @@ apply_handle_delete(StringInfo s)
 	finish_edata(edata);
 
 	/* Reset relation for error callback */
-	apply_error_callback_arg.rel = NULL;
+	apply_worker_state.apply_error_callback_arg.rel = NULL;
 
 	if (!run_as_owner)
 		RestoreUserContext(&ucxt);
@@ -3789,8 +3823,8 @@ apply_dispatch(StringInfo s)
 	 * called recursively when applying spooled changes, save the current
 	 * command.
 	 */
-	saved_command = apply_error_callback_arg.command;
-	apply_error_callback_arg.command = action;
+	saved_command = apply_worker_state.apply_error_callback_arg.command;
+	apply_worker_state.apply_error_callback_arg.command = action;
 
 	switch (action)
 	{
@@ -3882,7 +3916,7 @@ apply_dispatch(StringInfo s)
 	}
 
 	/* Reset the current command */
-	apply_error_callback_arg.command = saved_command;
+	apply_worker_state.apply_error_callback_arg.command = saved_command;
 }
 
 /*
@@ -4005,8 +4039,8 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 	 * This memory context is used for per-stream data when the streaming mode
 	 * is enabled. This context is reset on each stream stop.
 	 */
-	LogicalStreamingContext = AllocSetContextCreate(ApplyContext,
-													"LogicalStreamingContext",
+	apply_worker_state.LogicalStreamingContext = AllocSetContextCreate(ApplyContext,
+													"apply_worker_state.LogicalStreamingContext",
 													ALLOCSET_DEFAULT_SIZES);
 
 	/* mark as idle, before starting to loop */
@@ -4157,7 +4191,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 
 		maybe_advance_nonremovable_xid(&rdt_data, false);
 
-		if (!in_remote_transaction && !in_streamed_transaction)
+		if (!in_remote_transaction && !apply_worker_state.in_streamed_transaction)
 		{
 			/*
 			 * If we didn't get any transactions for a while there might be
@@ -5048,7 +5082,7 @@ maybe_reread_subscription(void)
 	bool		started_tx = false;
 
 	/* When cache state is valid there is nothing to do here. */
-	if (MySubscriptionValid)
+	if (apply_worker_state.MySubscriptionValid)
 		return;
 
 	/* This function might be called inside or outside of transaction. */
@@ -5165,7 +5199,7 @@ maybe_reread_subscription(void)
 	if (started_tx)
 		CommitTransactionCommand();
 
-	MySubscriptionValid = true;
+	apply_worker_state.MySubscriptionValid = true;
 }
 
 /*
@@ -5210,7 +5244,7 @@ set_wal_receiver_timeout(void)
 static void
 subscription_change_cb(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 {
-	MySubscriptionValid = false;
+	apply_worker_state.MySubscriptionValid = false;
 }
 
 /*
@@ -5235,7 +5269,7 @@ subxact_info_write(Oid subid, TransactionId xid)
 	subxact_filename(path, subid, xid);
 
 	/* Delete the subxacts file, if exists. */
-	if (subxact_data.nsubxacts == 0)
+	if (apply_worker_state.subxact_data.nsubxacts == 0)
 	{
 		cleanup_subxact_info();
 		BufFileDeleteFileSet(MyLogicalRepWorker->stream_fileset, path, true);
@@ -5252,11 +5286,11 @@ subxact_info_write(Oid subid, TransactionId xid)
 	if (fd == NULL)
 		fd = BufFileCreateFileSet(MyLogicalRepWorker->stream_fileset, path);
 
-	len = sizeof(SubXactInfo) * subxact_data.nsubxacts;
+	len = sizeof(SubXactInfo) * apply_worker_state.subxact_data.nsubxacts;
 
 	/* Write the subxact count and subxact info */
-	BufFileWrite(fd, &subxact_data.nsubxacts, sizeof(subxact_data.nsubxacts));
-	BufFileWrite(fd, subxact_data.subxacts, len);
+	BufFileWrite(fd, &apply_worker_state.subxact_data.nsubxacts, sizeof(apply_worker_state.subxact_data.nsubxacts));
+	BufFileWrite(fd, apply_worker_state.subxact_data.subxacts, len);
 
 	BufFileClose(fd);
 
@@ -5279,9 +5313,9 @@ subxact_info_read(Oid subid, TransactionId xid)
 	BufFile    *fd;
 	MemoryContext oldctx;
 
-	Assert(!subxact_data.subxacts);
-	Assert(subxact_data.nsubxacts == 0);
-	Assert(subxact_data.nsubxacts_max == 0);
+	Assert(!apply_worker_state.subxact_data.subxacts);
+	Assert(apply_worker_state.subxact_data.nsubxacts == 0);
+	Assert(apply_worker_state.subxact_data.nsubxacts_max == 0);
 
 	/*
 	 * If the subxact file doesn't exist that means we don't have any subxact
@@ -5294,12 +5328,12 @@ subxact_info_read(Oid subid, TransactionId xid)
 		return;
 
 	/* read number of subxact items */
-	BufFileReadExact(fd, &subxact_data.nsubxacts, sizeof(subxact_data.nsubxacts));
+	BufFileReadExact(fd, &apply_worker_state.subxact_data.nsubxacts, sizeof(apply_worker_state.subxact_data.nsubxacts));
 
-	len = sizeof(SubXactInfo) * subxact_data.nsubxacts;
+	len = sizeof(SubXactInfo) * apply_worker_state.subxact_data.nsubxacts;
 
 	/* we keep the maximum as a power of 2 */
-	subxact_data.nsubxacts_max = 1 << pg_ceil_log2_32(subxact_data.nsubxacts);
+	apply_worker_state.subxact_data.nsubxacts_max = 1 << pg_ceil_log2_32(apply_worker_state.subxact_data.nsubxacts);
 
 	/*
 	 * Allocate subxact information in the logical streaming context. We need
@@ -5307,13 +5341,13 @@ subxact_info_read(Oid subid, TransactionId xid)
 	 * transaction info to this. On stream stop we will flush this information
 	 * to the subxact file and reset the logical streaming context.
 	 */
-	oldctx = MemoryContextSwitchTo(LogicalStreamingContext);
-	subxact_data.subxacts = palloc_array(SubXactInfo,
-										 subxact_data.nsubxacts_max);
+	oldctx = MemoryContextSwitchTo(apply_worker_state.LogicalStreamingContext);
+	apply_worker_state.subxact_data.subxacts = palloc_array(SubXactInfo,
+										 apply_worker_state.subxact_data.nsubxacts_max);
 	MemoryContextSwitchTo(oldctx);
 
 	if (len > 0)
-		BufFileReadExact(fd, subxact_data.subxacts, len);
+		BufFileReadExact(fd, apply_worker_state.subxact_data.subxacts, len);
 
 	BufFileClose(fd);
 }
@@ -5325,28 +5359,28 @@ subxact_info_read(Oid subid, TransactionId xid)
 static void
 subxact_info_add(TransactionId xid)
 {
-	SubXactInfo *subxacts = subxact_data.subxacts;
+	SubXactInfo *subxacts = apply_worker_state.subxact_data.subxacts;
 	int64		i;
 
 	/* We must have a valid top level stream xid and a stream fd. */
-	Assert(TransactionIdIsValid(stream_xid));
-	Assert(stream_fd != NULL);
+	Assert(TransactionIdIsValid(apply_worker_state.stream_xid));
+	Assert(apply_worker_state.stream_fd != NULL);
 
 	/*
 	 * If the XID matches the toplevel transaction, we don't want to add it.
 	 */
-	if (stream_xid == xid)
+	if (apply_worker_state.stream_xid == xid)
 		return;
 
 	/*
 	 * In most cases we're checking the same subxact as we've already seen in
 	 * the last call, so make sure to ignore it (this change comes later).
 	 */
-	if (subxact_data.subxact_last == xid)
+	if (apply_worker_state.subxact_data.subxact_last == xid)
 		return;
 
 	/* OK, remember we're processing this XID. */
-	subxact_data.subxact_last = xid;
+	apply_worker_state.subxact_data.subxact_last = xid;
 
 	/*
 	 * Check if the transaction is already present in the array of subxact. We
@@ -5356,7 +5390,7 @@ subxact_info_add(TransactionId xid)
 	 * XXX Can we rely on the subxact XIDs arriving in sorted order? That
 	 * would allow us to use binary search here.
 	 */
-	for (i = subxact_data.nsubxacts; i > 0; i--)
+	for (i = apply_worker_state.subxact_data.nsubxacts; i > 0; i--)
 	{
 		/* found, so we're done */
 		if (subxacts[i - 1].xid == xid)
@@ -5364,39 +5398,39 @@ subxact_info_add(TransactionId xid)
 	}
 
 	/* This is a new subxact, so we need to add it to the array. */
-	if (subxact_data.nsubxacts == 0)
+	if (apply_worker_state.subxact_data.nsubxacts == 0)
 	{
 		MemoryContext oldctx;
 
-		subxact_data.nsubxacts_max = 128;
+		apply_worker_state.subxact_data.nsubxacts_max = 128;
 
 		/*
 		 * Allocate this memory for subxacts in per-stream context, see
 		 * subxact_info_read.
 		 */
-		oldctx = MemoryContextSwitchTo(LogicalStreamingContext);
-		subxacts = palloc_array(SubXactInfo, subxact_data.nsubxacts_max);
+		oldctx = MemoryContextSwitchTo(apply_worker_state.LogicalStreamingContext);
+		subxacts = palloc_array(SubXactInfo, apply_worker_state.subxact_data.nsubxacts_max);
 		MemoryContextSwitchTo(oldctx);
 	}
-	else if (subxact_data.nsubxacts == subxact_data.nsubxacts_max)
+	else if (apply_worker_state.subxact_data.nsubxacts == apply_worker_state.subxact_data.nsubxacts_max)
 	{
-		subxact_data.nsubxacts_max *= 2;
+		apply_worker_state.subxact_data.nsubxacts_max *= 2;
 		subxacts = repalloc_array(subxacts, SubXactInfo,
-								  subxact_data.nsubxacts_max);
+								  apply_worker_state.subxact_data.nsubxacts_max);
 	}
 
-	subxacts[subxact_data.nsubxacts].xid = xid;
+	subxacts[apply_worker_state.subxact_data.nsubxacts].xid = xid;
 
 	/*
 	 * Get the current offset of the stream file and store it as offset of
 	 * this subxact.
 	 */
-	BufFileTell(stream_fd,
-				&subxacts[subxact_data.nsubxacts].fileno,
-				&subxacts[subxact_data.nsubxacts].offset);
+	BufFileTell(apply_worker_state.stream_fd,
+				&subxacts[apply_worker_state.subxact_data.nsubxacts].fileno,
+				&subxacts[apply_worker_state.subxact_data.nsubxacts].offset);
 
-	subxact_data.nsubxacts++;
-	subxact_data.subxacts = subxacts;
+	apply_worker_state.subxact_data.nsubxacts++;
+	apply_worker_state.subxact_data.subxacts = subxacts;
 }
 
 /* format filename for file containing the info about subxacts */
@@ -5453,7 +5487,7 @@ stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 
 	Assert(OidIsValid(subid));
 	Assert(TransactionIdIsValid(xid));
-	Assert(stream_fd == NULL);
+	Assert(apply_worker_state.stream_fd == NULL);
 
 
 	changes_filename(path, subid, xid);
@@ -5463,14 +5497,14 @@ stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 	 * Create/open the buffiles under the logical streaming context so that we
 	 * have those files until stream stop.
 	 */
-	oldcxt = MemoryContextSwitchTo(LogicalStreamingContext);
+	oldcxt = MemoryContextSwitchTo(apply_worker_state.LogicalStreamingContext);
 
 	/*
 	 * If this is the first streamed segment, create the changes file.
 	 * Otherwise, just open the file for writing, in append mode.
 	 */
 	if (first_segment)
-		stream_fd = BufFileCreateFileSet(MyLogicalRepWorker->stream_fileset,
+		apply_worker_state.stream_fd = BufFileCreateFileSet(MyLogicalRepWorker->stream_fileset,
 										 path);
 	else
 	{
@@ -5478,9 +5512,9 @@ stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 		 * Open the file and seek to the end of the file because we always
 		 * append the changes file.
 		 */
-		stream_fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset,
+		apply_worker_state.stream_fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset,
 									   path, O_RDWR, false);
-		BufFileSeek(stream_fd, 0, 0, SEEK_END);
+		BufFileSeek(apply_worker_state.stream_fd, 0, 0, SEEK_END);
 	}
 
 	MemoryContextSwitchTo(oldcxt);
@@ -5493,11 +5527,11 @@ stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 static void
 stream_close_file(void)
 {
-	Assert(stream_fd != NULL);
+	Assert(apply_worker_state.stream_fd != NULL);
 
-	BufFileClose(stream_fd);
+	BufFileClose(apply_worker_state.stream_fd);
 
-	stream_fd = NULL;
+	apply_worker_state.stream_fd = NULL;
 }
 
 /*
@@ -5513,21 +5547,21 @@ stream_write_change(char action, StringInfo s)
 {
 	int			len;
 
-	Assert(stream_fd != NULL);
+	Assert(apply_worker_state.stream_fd != NULL);
 
 	/* total on-disk size, including the action type character */
 	len = (s->len - s->cursor) + sizeof(char);
 
 	/* first write the size */
-	BufFileWrite(stream_fd, &len, sizeof(len));
+	BufFileWrite(apply_worker_state.stream_fd, &len, sizeof(len));
 
 	/* then the action */
-	BufFileWrite(stream_fd, &action, sizeof(action));
+	BufFileWrite(apply_worker_state.stream_fd, &action, sizeof(action));
 
 	/* and finally the remaining part of the buffer (after the XID) */
 	len = (s->len - s->cursor);
 
-	BufFileWrite(stream_fd, &s->data[s->cursor], len);
+	BufFileWrite(apply_worker_state.stream_fd, &s->data[s->cursor], len);
 }
 
 /*
@@ -5541,9 +5575,9 @@ stream_write_change(char action, StringInfo s)
 static void
 stream_open_and_write_change(TransactionId xid, char action, StringInfo s)
 {
-	Assert(!in_streamed_transaction);
+	Assert(!apply_worker_state.in_streamed_transaction);
 
-	if (!stream_fd)
+	if (!apply_worker_state.stream_fd)
 		stream_start_internal(xid, false);
 
 	stream_write_change(action, s);
@@ -5607,13 +5641,13 @@ set_stream_options(WalRcvStreamOptions *options,
 static inline void
 cleanup_subxact_info(void)
 {
-	if (subxact_data.subxacts)
-		pfree(subxact_data.subxacts);
+	if (apply_worker_state.subxact_data.subxacts)
+		pfree(apply_worker_state.subxact_data.subxacts);
 
-	subxact_data.subxacts = NULL;
-	subxact_data.subxact_last = InvalidTransactionId;
-	subxact_data.nsubxacts = 0;
-	subxact_data.nsubxacts_max = 0;
+	apply_worker_state.subxact_data.subxacts = NULL;
+	apply_worker_state.subxact_data.subxact_last = InvalidTransactionId;
+	apply_worker_state.subxact_data.nsubxacts = 0;
+	apply_worker_state.subxact_data.nsubxacts_max = 0;
 }
 
 /*
@@ -5827,7 +5861,7 @@ InitializeLogRepWorker(void)
 		proc_exit(0);
 	}
 
-	MySubscriptionValid = true;
+	apply_worker_state.MySubscriptionValid = true;
 
 	if (!MySubscription->enabled)
 	{
@@ -6086,7 +6120,7 @@ maybe_start_skipping_changes(XLogRecPtr finish_lsn)
 {
 	Assert(!is_skipping_changes());
 	Assert(!in_remote_transaction);
-	Assert(!in_streamed_transaction);
+	Assert(!apply_worker_state.in_streamed_transaction);
 
 	/*
 	 * Quick return if it's not requested to skip this transaction. This
@@ -6098,11 +6132,11 @@ maybe_start_skipping_changes(XLogRecPtr finish_lsn)
 		return;
 
 	/* Start skipping all changes of this transaction */
-	skip_xact_finish_lsn = finish_lsn;
+	apply_worker_state.skip_xact_finish_lsn = finish_lsn;
 
 	ereport(LOG,
 			errmsg("logical replication starts skipping transaction at LSN %X/%08X",
-				   LSN_FORMAT_ARGS(skip_xact_finish_lsn)));
+				   LSN_FORMAT_ARGS(apply_worker_state.skip_xact_finish_lsn)));
 }
 
 /*
@@ -6116,10 +6150,10 @@ stop_skipping_changes(void)
 
 	ereport(LOG,
 			errmsg("logical replication completed skipping transaction at LSN %X/%08X",
-				   LSN_FORMAT_ARGS(skip_xact_finish_lsn)));
+				   LSN_FORMAT_ARGS(apply_worker_state.skip_xact_finish_lsn)));
 
 	/* Stop skipping changes */
-	skip_xact_finish_lsn = InvalidXLogRecPtr;
+	apply_worker_state.skip_xact_finish_lsn = InvalidXLogRecPtr;
 }
 
 /*
@@ -6222,9 +6256,9 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 void
 apply_error_callback(void *arg)
 {
-	ApplyErrorCallbackArg *errarg = &apply_error_callback_arg;
+	ApplyErrorCallbackArg *errarg = &apply_worker_state.apply_error_callback_arg;
 
-	if (apply_error_callback_arg.command == 0)
+	if (apply_worker_state.apply_error_callback_arg.command == 0)
 		return;
 
 	Assert(errarg->origin_name);
@@ -6294,17 +6328,17 @@ apply_error_callback(void *arg)
 static inline void
 set_apply_error_context_xact(TransactionId xid, XLogRecPtr lsn)
 {
-	apply_error_callback_arg.remote_xid = xid;
-	apply_error_callback_arg.finish_lsn = lsn;
+	apply_worker_state.apply_error_callback_arg.remote_xid = xid;
+	apply_worker_state.apply_error_callback_arg.finish_lsn = lsn;
 }
 
 /* Reset all information of apply error callback */
 static inline void
 reset_apply_error_context_info(void)
 {
-	apply_error_callback_arg.command = 0;
-	apply_error_callback_arg.rel = NULL;
-	apply_error_callback_arg.remote_attnum = -1;
+	apply_worker_state.apply_error_callback_arg.command = 0;
+	apply_worker_state.apply_error_callback_arg.rel = NULL;
+	apply_worker_state.apply_error_callback_arg.remote_attnum = -1;
 	set_apply_error_context_xact(InvalidTransactionId, InvalidXLogRecPtr);
 }
 
@@ -6321,8 +6355,8 @@ LogicalRepWorkersWakeupAtCommit(Oid subid)
 	MemoryContext oldcxt;
 
 	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
-	on_commit_wakeup_workers_subids =
-		list_append_unique_oid(on_commit_wakeup_workers_subids, subid);
+	apply_worker_state.on_commit_wakeup_workers_subids =
+		list_append_unique_oid(apply_worker_state.on_commit_wakeup_workers_subids, subid);
 	MemoryContextSwitchTo(oldcxt);
 }
 
@@ -6332,12 +6366,12 @@ LogicalRepWorkersWakeupAtCommit(Oid subid)
 void
 AtEOXact_LogicalRepWorkers(bool isCommit)
 {
-	if (isCommit && on_commit_wakeup_workers_subids != NIL)
+	if (isCommit && apply_worker_state.on_commit_wakeup_workers_subids != NIL)
 	{
 		ListCell   *lc;
 
 		LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
-		foreach(lc, on_commit_wakeup_workers_subids)
+		foreach(lc, apply_worker_state.on_commit_wakeup_workers_subids)
 		{
 			Oid			subid = lfirst_oid(lc);
 			List	   *workers;
@@ -6355,7 +6389,7 @@ AtEOXact_LogicalRepWorkers(bool isCommit)
 	}
 
 	/* The List storage will be reclaimed automatically in xact cleanup. */
-	on_commit_wakeup_workers_subids = NIL;
+	apply_worker_state.on_commit_wakeup_workers_subids = NIL;
 }
 
 /*
@@ -6364,7 +6398,7 @@ AtEOXact_LogicalRepWorkers(bool isCommit)
 void
 set_apply_error_context_origin(char *originname)
 {
-	apply_error_callback_arg.origin_name = MemoryContextStrdup(ApplyContext,
+	apply_worker_state.apply_error_callback_arg.origin_name = MemoryContextStrdup(ApplyContext,
 															   originname);
 }
 
@@ -6409,7 +6443,7 @@ get_transaction_apply_action(TransactionId xid, ParallelApplyWorkerInfo **winfo)
 	 * which will later be applied when the transaction finish message is
 	 * processed.
 	 */
-	else if (in_streamed_transaction)
+	else if (apply_worker_state.in_streamed_transaction)
 	{
 		return TRANS_LEADER_SERIALIZE;
 	}
