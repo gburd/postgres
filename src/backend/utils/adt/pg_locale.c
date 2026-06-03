@@ -103,11 +103,8 @@ session_local char	   *localized_full_days[7 + 1];
 session_local char	   *localized_abbrev_months[12 + 1];
 session_local char	   *localized_full_months[12 + 1];
 
-static session_local pg_locale_t default_locale = NULL;
 
 /* indicates whether locale information cache is valid */
-static session_local bool CurrentLocaleConvValid = false;
-static session_local bool CurrentLCTimeValid = false;
 
 static struct pg_locale_struct c_locale = {
 	.deterministic = true,
@@ -140,15 +137,39 @@ typedef struct
 #define SH_DEFINE
 #include "lib/simplehash.h"
 
-static session_local MemoryContext CollationCacheContext = NULL;
-static session_local collation_cache_hash *CollationCache = NULL;
 
 /*
+ * Per-session locale and collation-cache state.
+ *
  * The collation cache is often accessed repeatedly for the same collation, so
  * remember the last one used.
  */
-static session_local Oid	last_collation_cache_oid = InvalidOid;
-static session_local pg_locale_t last_collation_cache_locale = NULL;
+typedef struct LocaleState
+{
+	pg_locale_t default_locale;
+
+	/* indicates whether locale information cache is valid */
+	bool		CurrentLocaleConvValid;
+	bool		CurrentLCTimeValid;
+
+	/* Cache for collation-related knowledge */
+	MemoryContext CollationCacheContext;
+	collation_cache_hash *CollationCache;
+
+	/* remember the last collation used */
+	Oid			last_collation_cache_oid;
+	pg_locale_t last_collation_cache_locale;
+} LocaleState;
+
+static session_local LocaleState locale_state = {
+	.default_locale = NULL,
+	.CurrentLocaleConvValid = false,
+	.CurrentLCTimeValid = false,
+	.CollationCacheContext = NULL,
+	.CollationCache = NULL,
+	.last_collation_cache_oid = InvalidOid,
+	.last_collation_cache_locale = NULL,
+};
 
 #if defined(WIN32) && defined(LC_MESSAGES)
 static char *IsoLocaleName(const char *);
@@ -345,7 +366,7 @@ check_locale_monetary(char **newval, void **extra, GucSource source)
 void
 assign_locale_monetary(const char *newval, void *extra)
 {
-	CurrentLocaleConvValid = false;
+	locale_state.CurrentLocaleConvValid = false;
 }
 
 bool
@@ -357,7 +378,7 @@ check_locale_numeric(char **newval, void **extra, GucSource source)
 void
 assign_locale_numeric(const char *newval, void *extra)
 {
-	CurrentLocaleConvValid = false;
+	locale_state.CurrentLocaleConvValid = false;
 }
 
 bool
@@ -369,7 +390,7 @@ check_locale_time(char **newval, void **extra, GucSource source)
 void
 assign_locale_time(const char *newval, void *extra)
 {
-	CurrentLCTimeValid = false;
+	locale_state.CurrentLCTimeValid = false;
 }
 
 /*
@@ -512,7 +533,7 @@ PGLC_localeconv(void)
 	struct lconv worklconv = {0};
 
 	/* Did we do it already? */
-	if (CurrentLocaleConvValid)
+	if (locale_state.CurrentLocaleConvValid)
 		return &CurrentLocaleConv;
 
 	/* Free any already-allocated storage */
@@ -610,7 +631,7 @@ PGLC_localeconv(void)
 	 */
 	CurrentLocaleConv = worklconv;
 	CurrentLocaleConvAllocated = true;
-	CurrentLocaleConvValid = true;
+	locale_state.CurrentLocaleConvValid = true;
 	return &CurrentLocaleConv;
 }
 
@@ -715,7 +736,7 @@ cache_locale_time(void)
 	locale_t	locale;
 
 	/* did we do this already? */
-	if (CurrentLCTimeValid)
+	if (locale_state.CurrentLCTimeValid)
 		return;
 
 	elog(DEBUG3, "cache_locale_time() executed; locale: \"%s\"",
@@ -834,7 +855,7 @@ cache_locale_time(void)
 	localized_abbrev_months[12] = NULL;
 	localized_full_months[12] = NULL;
 
-	CurrentLCTimeValid = true;
+	locale_state.CurrentLCTimeValid = true;
 }
 
 
@@ -1140,7 +1161,7 @@ init_database_collation(void)
 	Form_pg_database dbform;
 	pg_locale_t result;
 
-	Assert(default_locale == NULL);
+	Assert(locale_state.default_locale == NULL);
 
 	/* Fetch our pg_database row normally, via syscache */
 	tup = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(MyDatabaseId));
@@ -1171,7 +1192,7 @@ init_database_collation(void)
 
 	ReleaseSysCache(tup);
 
-	default_locale = result;
+	locale_state.default_locale = result;
 }
 
 /*
@@ -1198,7 +1219,7 @@ pg_newlocale_from_collation(Oid collid)
 	bool		found;
 
 	if (collid == DEFAULT_COLLATION_OID)
-		return default_locale;
+		return locale_state.default_locale;
 
 	/*
 	 * Some callers expect C_COLLATION_OID to succeed even without catalog
@@ -1212,19 +1233,19 @@ pg_newlocale_from_collation(Oid collid)
 
 	AssertCouldGetRelation();
 
-	if (last_collation_cache_oid == collid)
-		return last_collation_cache_locale;
+	if (locale_state.last_collation_cache_oid == collid)
+		return locale_state.last_collation_cache_locale;
 
-	if (CollationCache == NULL)
+	if (locale_state.CollationCache == NULL)
 	{
-		CollationCacheContext = AllocSetContextCreate(TopMemoryContext,
+		locale_state.CollationCacheContext = AllocSetContextCreate(TopMemoryContext,
 													  "collation cache",
 													  ALLOCSET_DEFAULT_SIZES);
-		CollationCache = collation_cache_create(CollationCacheContext,
+		locale_state.CollationCache = collation_cache_create(locale_state.CollationCacheContext,
 												16, NULL);
 	}
 
-	cache_entry = collation_cache_insert(CollationCache, collid, &found);
+	cache_entry = collation_cache_insert(locale_state.CollationCache, collid, &found);
 	if (!found)
 	{
 		/*
@@ -1236,11 +1257,11 @@ pg_newlocale_from_collation(Oid collid)
 
 	if (cache_entry->locale == NULL)
 	{
-		cache_entry->locale = create_pg_locale(collid, CollationCacheContext);
+		cache_entry->locale = create_pg_locale(collid, locale_state.CollationCacheContext);
 	}
 
-	last_collation_cache_oid = collid;
-	last_collation_cache_locale = cache_entry->locale;
+	locale_state.last_collation_cache_oid = collid;
+	locale_state.last_collation_cache_locale = cache_entry->locale;
 
 	return cache_entry->locale;
 }
@@ -1371,7 +1392,7 @@ pg_strfold(char *dst, size_t dstsize, const char *src, ssize_t srclen,
 size_t
 pg_downcase_ident(char *dst, size_t dstsize, const char *src, ssize_t srclen)
 {
-	pg_locale_t locale = default_locale;
+	pg_locale_t locale = locale_state.default_locale;
 
 	if (locale == NULL || locale->ctype == NULL ||
 		locale->ctype->downcase_ident == NULL)
