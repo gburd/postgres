@@ -158,24 +158,14 @@ int			Log_autoanalyze_min_duration = 600000;
  * parameters were specified and will be set in do_autovacuum() after checking
  * the storage parameters in table_recheck_autovac().
  */
-static session_local double av_storage_param_cost_delay = -1;
-static session_local int	av_storage_param_cost_limit = -1;
 
 /* Flags set by signal handlers */
-static session_local volatile sig_atomic_t got_SIGUSR2 = false;
 
 /* Comparison points for determining whether freeze_max_age is exceeded */
-static session_local TransactionId recentXid;
-static session_local MultiXactId recentMulti;
 
 /* Default freeze ages to use for autovacuum (varies by database) */
-static session_local int	default_freeze_min_age;
-static session_local int	default_freeze_table_age;
-static session_local int	default_multixact_freeze_min_age;
-static session_local int	default_multixact_freeze_table_age;
 
 /* Memory context for long-lived data */
-static session_local MemoryContext AutovacMemCxt;
 
 /* struct to keep track of databases in launcher */
 typedef struct avl_dbase
@@ -325,7 +315,6 @@ const ShmemCallbacks AutoVacuumShmemCallbacks = {
  * that contains it
  */
 static dlist_head DatabaseList = DLIST_STATIC_INIT(DatabaseList);
-static session_local MemoryContext DatabaseListCxt = NULL;
 
 /*
  * This struct is used by relation_needs_vacanalyze() to return the table's
@@ -361,8 +350,45 @@ extern avl_dbase *avl_dbase_array;
 avl_dbase  *avl_dbase_array;
 #endif
 
-/* Pointer to my own WorkerInfo, valid on each worker */
-static session_local WorkerInfo MyWorkerInfo = NULL;
+/*
+ * Per-process autovacuum worker/launcher state.
+ */
+typedef struct AutoVacState
+{
+	/* cost-related storage params (-1 = unset; see comment above) */
+	double		av_storage_param_cost_delay;
+	int			av_storage_param_cost_limit;
+
+	/* Flags set by signal handlers */
+	volatile sig_atomic_t got_SIGUSR2;
+
+	/* Comparison points for determining whether freeze_max_age is exceeded */
+	TransactionId recentXid;
+	MultiXactId recentMulti;
+
+	/* Default freeze ages to use for autovacuum (varies by database) */
+	int			default_freeze_min_age;
+	int			default_freeze_table_age;
+	int			default_multixact_freeze_min_age;
+	int			default_multixact_freeze_table_age;
+
+	/* Memory context for long-lived data */
+	MemoryContext AutovacMemCxt;
+
+	/* Memory context for the launcher database list */
+	MemoryContext DatabaseListCxt;
+
+	/* Pointer to my own WorkerInfo, valid on each worker */
+	WorkerInfo	MyWorkerInfo;
+} AutoVacState;
+
+static session_local AutoVacState autovac_state = {
+	.av_storage_param_cost_delay = -1,
+	.av_storage_param_cost_limit = -1,
+	.got_SIGUSR2 = false,
+	.DatabaseListCxt = NULL,
+	.MyWorkerInfo = NULL,
+};
 
 static Oid	do_start_worker(void);
 static void ProcessAutoVacLauncherInterrupts(void);
@@ -469,10 +495,10 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	 * that we can reset the context during error recovery and thereby avoid
 	 * possible memory leaks.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
+	autovac_state.AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
 										  "Autovacuum Launcher",
 										  ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(AutovacMemCxt);
+	MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -524,14 +550,14 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 		 * Now return to normal top-level context and clear ErrorContext for
 		 * next time.
 		 */
-		MemoryContextSwitchTo(AutovacMemCxt);
+		MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 		FlushErrorState();
 
 		/* Flush any leaked data in the top-level context */
-		MemoryContextReset(AutovacMemCxt);
+		MemoryContextReset(autovac_state.AutovacMemCxt);
 
 		/* don't leave dangling pointers to freed memory */
-		DatabaseListCxt = NULL;
+		autovac_state.DatabaseListCxt = NULL;
 		dlist_init(&DatabaseList);
 
 		/* Now we can allow interrupts again */
@@ -649,9 +675,9 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 		/*
 		 * a worker finished, or postmaster signaled failure to start a worker
 		 */
-		if (got_SIGUSR2)
+		if (autovac_state.got_SIGUSR2)
 		{
-			got_SIGUSR2 = false;
+			autovac_state.got_SIGUSR2 = false;
 
 			/* rebalance cost limits, if needed */
 			if (AutoVacuumShmem->av_signal[AutoVacRebalance])
@@ -951,7 +977,7 @@ rebuild_database_list(Oid newdb)
 	HTAB	   *dbhash;
 	dlist_iter	iter;
 
-	newcxt = AllocSetContextCreate(AutovacMemCxt,
+	newcxt = AllocSetContextCreate(autovac_state.AutovacMemCxt,
 								   "Autovacuum database list",
 								   ALLOCSET_DEFAULT_SIZES);
 	tmpcxt = AllocSetContextCreate(newcxt,
@@ -1112,10 +1138,10 @@ rebuild_database_list(Oid newdb)
 	}
 
 	/* all done, clean up memory */
-	if (DatabaseListCxt != NULL)
-		MemoryContextDelete(DatabaseListCxt);
+	if (autovac_state.DatabaseListCxt != NULL)
+		MemoryContextDelete(autovac_state.DatabaseListCxt);
 	MemoryContextDelete(tmpcxt);
-	DatabaseListCxt = newcxt;
+	autovac_state.DatabaseListCxt = newcxt;
 	MemoryContextSwitchTo(oldcxt);
 }
 
@@ -1180,16 +1206,16 @@ do_start_worker(void)
 	 * pass without forcing a vacuum.  (This limit can be tightened for
 	 * particular tables, but not loosened.)
 	 */
-	recentXid = ReadNextTransactionId();
-	xidForceLimit = recentXid - GetGUCInt(GUC_autovacuum_freeze_max_age);
+	autovac_state.recentXid = ReadNextTransactionId();
+	xidForceLimit = autovac_state.recentXid - GetGUCInt(GUC_autovacuum_freeze_max_age);
 	/* ensure it's a "normal" XID, else TransactionIdPrecedes misbehaves */
 	/* this can cause the limit to go backwards by 3, but that's OK */
 	if (xidForceLimit < FirstNormalTransactionId)
 		xidForceLimit -= FirstNormalTransactionId;
 
 	/* Also determine the oldest datminmxid we will consider. */
-	recentMulti = ReadNextMultiXactId();
-	multiForceLimit = recentMulti - MultiXactMemberFreezeThreshold();
+	autovac_state.recentMulti = ReadNextMultiXactId();
+	multiForceLimit = autovac_state.recentMulti - MultiXactMemberFreezeThreshold();
 	if (multiForceLimit < FirstMultiXactId)
 		multiForceLimit -= FirstMultiXactId;
 
@@ -1413,7 +1439,7 @@ AutoVacWorkerFailed(void)
 static void
 avl_sigusr2_handler(SIGNAL_ARGS)
 {
-	got_SIGUSR2 = true;
+	autovac_state.got_SIGUSR2 = true;
 	RaiseInterrupt(INTERRUPT_GENERAL);
 }
 
@@ -1574,13 +1600,13 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	if (AutoVacuumShmem->av_startingWorker != NULL)
 	{
-		MyWorkerInfo = AutoVacuumShmem->av_startingWorker;
-		dbid = MyWorkerInfo->wi_dboid;
-		MyWorkerInfo->wi_proc = MyProc;
+		autovac_state.MyWorkerInfo = AutoVacuumShmem->av_startingWorker;
+		dbid = autovac_state.MyWorkerInfo->wi_dboid;
+		autovac_state.MyWorkerInfo->wi_proc = MyProc;
 
 		/* insert into the running list */
 		dlist_push_head(&AutoVacuumShmem->av_runningWorkers,
-						&MyWorkerInfo->wi_links);
+						&autovac_state.MyWorkerInfo->wi_links);
 
 		/*
 		 * remove from the "starting" pointer, so that the launcher can start
@@ -1637,8 +1663,8 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 			pg_usleep(GetGUCInt(GUC_PostAuthDelay) * 1000000L);
 
 		/* And do an appropriate amount of work */
-		recentXid = ReadNextTransactionId();
-		recentMulti = ReadNextMultiXactId();
+		autovac_state.recentXid = ReadNextTransactionId();
+		autovac_state.recentMulti = ReadNextMultiXactId();
 		do_autovacuum();
 	}
 
@@ -1652,21 +1678,21 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 static void
 FreeWorkerInfo(int code, Datum arg)
 {
-	if (MyWorkerInfo != NULL)
+	if (autovac_state.MyWorkerInfo != NULL)
 	{
 		LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
 
-		dlist_delete(&MyWorkerInfo->wi_links);
-		MyWorkerInfo->wi_dboid = InvalidOid;
-		MyWorkerInfo->wi_tableoid = InvalidOid;
-		MyWorkerInfo->wi_sharedrel = false;
-		MyWorkerInfo->wi_proc = NULL;
-		MyWorkerInfo->wi_launchtime = 0;
-		pg_atomic_clear_flag(&MyWorkerInfo->wi_dobalance);
+		dlist_delete(&autovac_state.MyWorkerInfo->wi_links);
+		autovac_state.MyWorkerInfo->wi_dboid = InvalidOid;
+		autovac_state.MyWorkerInfo->wi_tableoid = InvalidOid;
+		autovac_state.MyWorkerInfo->wi_sharedrel = false;
+		autovac_state.MyWorkerInfo->wi_proc = NULL;
+		autovac_state.MyWorkerInfo->wi_launchtime = 0;
+		pg_atomic_clear_flag(&autovac_state.MyWorkerInfo->wi_dobalance);
 		dclist_push_head(&AutoVacuumShmem->av_freeWorkers,
-						 &MyWorkerInfo->wi_links);
+						 &autovac_state.MyWorkerInfo->wi_links);
 		/* not mine anymore */
-		MyWorkerInfo = NULL;
+		autovac_state.MyWorkerInfo = NULL;
 
 		/*
 		 * now that we're inactive, cause a rebalancing of the surviving
@@ -1686,10 +1712,10 @@ FreeWorkerInfo(int code, Datum arg)
 void
 VacuumUpdateCosts(void)
 {
-	if (MyWorkerInfo)
+	if (autovac_state.MyWorkerInfo)
 	{
-		if (av_storage_param_cost_delay >= 0)
-			vacuum_cost_delay = av_storage_param_cost_delay;
+		if (autovac_state.av_storage_param_cost_delay >= 0)
+			vacuum_cost_delay = autovac_state.av_storage_param_cost_delay;
 		else if (GetGUCReal(GUC_autovacuum_vac_cost_delay) >= 0)
 			vacuum_cost_delay = GetGUCReal(GUC_autovacuum_vac_cost_delay);
 		else
@@ -1723,7 +1749,7 @@ VacuumUpdateCosts(void)
 	 * Since the cost logging requires a lock, avoid rendering the log message
 	 * in case we are using a message level where the log wouldn't be emitted.
 	 */
-	if (MyWorkerInfo && message_level_is_interesting(DEBUG2))
+	if (autovac_state.MyWorkerInfo && message_level_is_interesting(DEBUG2))
 	{
 		Oid			dboid,
 					tableoid;
@@ -1731,13 +1757,13 @@ VacuumUpdateCosts(void)
 		Assert(!LWLockHeldByMe(AutovacuumLock));
 
 		LWLockAcquire(AutovacuumLock, LW_SHARED);
-		dboid = MyWorkerInfo->wi_dboid;
-		tableoid = MyWorkerInfo->wi_tableoid;
+		dboid = autovac_state.MyWorkerInfo->wi_dboid;
+		tableoid = autovac_state.MyWorkerInfo->wi_tableoid;
 		LWLockRelease(AutovacuumLock);
 
 		elog(DEBUG2,
 			 "Autovacuum VacuumUpdateCosts(db=%u, rel=%u, dobalance=%s, cost_limit=%d, cost_delay=%g active=%s failsafe=%s)",
-			 dboid, tableoid, pg_atomic_unlocked_test_flag(&MyWorkerInfo->wi_dobalance) ? "no" : "yes",
+			 dboid, tableoid, pg_atomic_unlocked_test_flag(&autovac_state.MyWorkerInfo->wi_dobalance) ? "no" : "yes",
 			 vacuum_cost_limit, vacuum_cost_delay,
 			 vacuum_cost_delay > 0 ? "yes" : "no",
 			 VacuumFailsafeActive ? "yes" : "no");
@@ -1755,7 +1781,7 @@ VacuumUpdateCosts(void)
 void
 AutoVacuumUpdateCostLimit(void)
 {
-	if (!MyWorkerInfo)
+	if (!autovac_state.MyWorkerInfo)
 		return;
 
 	/*
@@ -1763,8 +1789,8 @@ AutoVacuumUpdateCostLimit(void)
 	 * zero is not a valid value.
 	 */
 
-	if (av_storage_param_cost_limit > 0)
-		vacuum_cost_limit = av_storage_param_cost_limit;
+	if (autovac_state.av_storage_param_cost_limit > 0)
+		vacuum_cost_limit = autovac_state.av_storage_param_cost_limit;
 	else
 	{
 		int			nworkers_for_balance;
@@ -1775,7 +1801,7 @@ AutoVacuumUpdateCostLimit(void)
 			vacuum_cost_limit = GetGUCInt(GUC_VacuumCostLimit);
 
 		/* Only balance limit if no cost-related storage parameters specified */
-		if (pg_atomic_unlocked_test_flag(&MyWorkerInfo->wi_dobalance))
+		if (pg_atomic_unlocked_test_flag(&autovac_state.MyWorkerInfo->wi_dobalance))
 			return;
 
 		Assert(vacuum_cost_limit > 0);
@@ -1952,10 +1978,10 @@ do_autovacuum(void)
 	 * switch to other contexts.  We need this one to keep the list of
 	 * relations to vacuum/analyze across transactions.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
+	autovac_state.AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
 										  "Autovacuum worker",
 										  ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(AutovacMemCxt);
+	MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 
 	/* Start a transaction so our commands have one to play into. */
 	StartTransactionCommand();
@@ -1985,23 +2011,23 @@ do_autovacuum(void)
 
 	if (dbForm->datistemplate || !dbForm->datallowconn)
 	{
-		default_freeze_min_age = 0;
-		default_freeze_table_age = 0;
-		default_multixact_freeze_min_age = 0;
-		default_multixact_freeze_table_age = 0;
+		autovac_state.default_freeze_min_age = 0;
+		autovac_state.default_freeze_table_age = 0;
+		autovac_state.default_multixact_freeze_min_age = 0;
+		autovac_state.default_multixact_freeze_table_age = 0;
 	}
 	else
 	{
-		default_freeze_min_age = GetGUCInt(GUC_vacuum_freeze_min_age);
-		default_freeze_table_age = GetGUCInt(GUC_vacuum_freeze_table_age);
-		default_multixact_freeze_min_age = GetGUCInt(GUC_vacuum_multixact_freeze_min_age);
-		default_multixact_freeze_table_age = GetGUCInt(GUC_vacuum_multixact_freeze_table_age);
+		autovac_state.default_freeze_min_age = GetGUCInt(GUC_vacuum_freeze_min_age);
+		autovac_state.default_freeze_table_age = GetGUCInt(GUC_vacuum_freeze_table_age);
+		autovac_state.default_multixact_freeze_min_age = GetGUCInt(GUC_vacuum_multixact_freeze_min_age);
+		autovac_state.default_multixact_freeze_table_age = GetGUCInt(GUC_vacuum_multixact_freeze_table_age);
 	}
 
 	ReleaseSysCache(tuple);
 
 	/* StartTransactionCommand changed elsewhere */
-	MemoryContextSwitchTo(AutovacMemCxt);
+	MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 
 	classRel = table_open(RelationRelationId, AccessShareLock);
 
@@ -2309,7 +2335,7 @@ do_autovacuum(void)
 		StartTransactionCommand();
 
 		/* StartTransactionCommand changed current memory context */
-		MemoryContextSwitchTo(AutovacMemCxt);
+		MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 	}
 
 	/*
@@ -2347,7 +2373,7 @@ do_autovacuum(void)
 	 * create a memory context to act as fake PortalContext, so that the
 	 * contexts created in the vacuum code are cleaned up for each table.
 	 */
-	PortalContext = AllocSetContextCreate(AutovacMemCxt,
+	PortalContext = AllocSetContextCreate(autovac_state.AutovacMemCxt,
 										  "Autovacuum Portal",
 										  ALLOCSET_DEFAULT_SIZES);
 
@@ -2413,7 +2439,7 @@ do_autovacuum(void)
 			WorkerInfo	worker = dlist_container(WorkerInfoData, wi_links, iter.cur);
 
 			/* ignore myself */
-			if (worker == MyWorkerInfo)
+			if (worker == autovac_state.MyWorkerInfo)
 				continue;
 
 			/* ignore workers in other databases (unless table is shared) */
@@ -2440,8 +2466,8 @@ do_autovacuum(void)
 		 * concurrently.  (We claim it here so as not to hold
 		 * AutovacuumScheduleLock while rechecking the stats.)
 		 */
-		MyWorkerInfo->wi_tableoid = relid;
-		MyWorkerInfo->wi_sharedrel = isshared;
+		autovac_state.MyWorkerInfo->wi_tableoid = relid;
+		autovac_state.MyWorkerInfo->wi_sharedrel = isshared;
 		LWLockRelease(AutovacuumScheduleLock);
 
 		/*
@@ -2450,15 +2476,15 @@ do_autovacuum(void)
 		 * we weren't looking. This doesn't entirely close the race condition,
 		 * but it is very small.
 		 */
-		MemoryContextSwitchTo(AutovacMemCxt);
+		MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 		tab = table_recheck_autovac(relid, table_toast_map, pg_class_desc,
 									effective_multixact_freeze_max_age);
 		if (tab == NULL)
 		{
 			/* someone else vacuumed the table, or it went away */
 			LWLockAcquire(AutovacuumScheduleLock, LW_EXCLUSIVE);
-			MyWorkerInfo->wi_tableoid = InvalidOid;
-			MyWorkerInfo->wi_sharedrel = false;
+			autovac_state.MyWorkerInfo->wi_tableoid = InvalidOid;
+			autovac_state.MyWorkerInfo->wi_sharedrel = false;
 			LWLockRelease(AutovacuumScheduleLock);
 			continue;
 		}
@@ -2468,17 +2494,17 @@ do_autovacuum(void)
 		 * for reference when updating vacuum_cost_delay and vacuum_cost_limit
 		 * during vacuuming this table.
 		 */
-		av_storage_param_cost_delay = tab->at_storage_param_vac_cost_delay;
-		av_storage_param_cost_limit = tab->at_storage_param_vac_cost_limit;
+		autovac_state.av_storage_param_cost_delay = tab->at_storage_param_vac_cost_delay;
+		autovac_state.av_storage_param_cost_limit = tab->at_storage_param_vac_cost_limit;
 
 		/*
 		 * We only expect this worker to ever set the flag, so don't bother
 		 * checking the return value. We shouldn't have to retry.
 		 */
 		if (tab->at_dobalance)
-			pg_atomic_test_set_flag(&MyWorkerInfo->wi_dobalance);
+			pg_atomic_test_set_flag(&autovac_state.MyWorkerInfo->wi_dobalance);
 		else
-			pg_atomic_clear_flag(&MyWorkerInfo->wi_dobalance);
+			pg_atomic_clear_flag(&autovac_state.MyWorkerInfo->wi_dobalance);
 
 		LWLockAcquire(AutovacuumLock, LW_SHARED);
 		autovac_recalculate_workers_for_balance();
@@ -2557,7 +2583,7 @@ do_autovacuum(void)
 		PG_END_TRY();
 
 		/* Make sure we're back in AutovacMemCxt */
-		MemoryContextSwitchTo(AutovacMemCxt);
+		MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 
 		did_vacuum = true;
 
@@ -2581,10 +2607,10 @@ deleted:
 		 * balance.
 		 */
 		LWLockAcquire(AutovacuumScheduleLock, LW_EXCLUSIVE);
-		MyWorkerInfo->wi_tableoid = InvalidOid;
-		MyWorkerInfo->wi_sharedrel = false;
+		autovac_state.MyWorkerInfo->wi_tableoid = InvalidOid;
+		autovac_state.MyWorkerInfo->wi_sharedrel = false;
 		LWLockRelease(AutovacuumScheduleLock);
-		pg_atomic_test_set_flag(&MyWorkerInfo->wi_dobalance);
+		pg_atomic_test_set_flag(&autovac_state.MyWorkerInfo->wi_dobalance);
 	}
 
 	list_free_deep(tables_to_process);
@@ -2694,7 +2720,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 	 * lookup in case of an error.  If any of these return NULL, then the
 	 * relation has been dropped since last we checked; skip it.
 	 */
-	Assert(CurrentMemoryContext == AutovacMemCxt);
+	Assert(CurrentMemoryContext == autovac_state.AutovacMemCxt);
 
 	cur_relname = get_rel_name(workitem->avw_relation);
 	cur_nspname = get_namespace_name(get_rel_namespace(workitem->avw_relation));
@@ -2766,7 +2792,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 	PG_END_TRY();
 
 	/* Make sure we're back in AutovacMemCxt */
-	MemoryContextSwitchTo(AutovacMemCxt);
+	MemoryContextSwitchTo(autovac_state.AutovacMemCxt);
 
 	/* We intentionally do not set did_vacuum here */
 
@@ -2896,21 +2922,21 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		/* these do not have autovacuum-specific settings */
 		freeze_min_age = (avopts && avopts->freeze_min_age >= 0)
 			? avopts->freeze_min_age
-			: default_freeze_min_age;
+			: autovac_state.default_freeze_min_age;
 
 		freeze_table_age = (avopts && avopts->freeze_table_age >= 0)
 			? avopts->freeze_table_age
-			: default_freeze_table_age;
+			: autovac_state.default_freeze_table_age;
 
 		multixact_freeze_min_age = (avopts &&
 									avopts->multixact_freeze_min_age >= 0)
 			? avopts->multixact_freeze_min_age
-			: default_multixact_freeze_min_age;
+			: autovac_state.default_multixact_freeze_min_age;
 
 		multixact_freeze_table_age = (avopts &&
 									  avopts->multixact_freeze_table_age >= 0)
 			? avopts->multixact_freeze_table_age
-			: default_multixact_freeze_table_age;
+			: autovac_state.default_multixact_freeze_table_age;
 
 		tab = palloc_object(autovac_table);
 		tab->at_relid = relid;
@@ -3184,14 +3210,14 @@ relation_needs_vacanalyze(Oid relid,
 	relminmxid = classForm->relminmxid;
 
 	/* Force vacuum if table is at risk of wraparound */
-	xidForceLimit = recentXid - freeze_max_age;
+	xidForceLimit = autovac_state.recentXid - freeze_max_age;
 	if (xidForceLimit < FirstNormalTransactionId)
 		xidForceLimit -= FirstNormalTransactionId;
 	force_vacuum = (TransactionIdIsNormal(relfrozenxid) &&
 					TransactionIdPrecedes(relfrozenxid, xidForceLimit));
 	if (!force_vacuum)
 	{
-		multiForceLimit = recentMulti - multixact_freeze_max_age;
+		multiForceLimit = autovac_state.recentMulti - multixact_freeze_max_age;
 		if (multiForceLimit < FirstMultiXactId)
 			multiForceLimit -= FirstMultiXactId;
 		force_vacuum = MultiXactIdIsValid(relminmxid) &&
@@ -3203,8 +3229,8 @@ relation_needs_vacanalyze(Oid relid,
 	 * To calculate the (M)XID age portion of the score, divide the age by its
 	 * respective *_freeze_max_age parameter.
 	 */
-	xid_age = TransactionIdIsNormal(relfrozenxid) ? recentXid - relfrozenxid : 0;
-	mxid_age = MultiXactIdIsValid(relminmxid) ? recentMulti - relminmxid : 0;
+	xid_age = TransactionIdIsNormal(relfrozenxid) ? autovac_state.recentXid - relfrozenxid : 0;
+	mxid_age = MultiXactIdIsValid(relminmxid) ? autovac_state.recentMulti - relminmxid : 0;
 
 	scores->xid = (double) xid_age / freeze_max_age;
 	scores->mxid = (double) mxid_age / multixact_freeze_max_age;
@@ -3659,8 +3685,8 @@ pg_stat_get_autovacuum_scores(PG_FUNCTION_ARGS)
 
 	/* some prerequisite initialization */
 	effective_multixact_freeze_max_age = MultiXactMemberFreezeThreshold();
-	recentXid = ReadNextTransactionId();
-	recentMulti = ReadNextMultiXactId();
+	autovac_state.recentXid = ReadNextTransactionId();
+	autovac_state.recentMulti = ReadNextMultiXactId();
 
 	/* scan pg_class */
 	rel = table_open(RelationRelationId, AccessShareLock);
