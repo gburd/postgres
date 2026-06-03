@@ -153,30 +153,50 @@ static HANDLE backtrace_process = NULL;
 /* We provide a small stack of ErrorData records for re-entrant cases */
 #define ERRORDATA_STACK_SIZE  5
 
-static session_local ErrorData errordata[ERRORDATA_STACK_SIZE];
 
-static session_local int	errordata_stack_depth = -1; /* index of topmost active frame */
 
-static session_local int	recursion_depth = 0;	/* to detect actual recursion */
 
 /*
  * Saved timeval and buffers for formatted timestamps that might be used by
  * log_line_prefix, csv logs and JSON logs.
  */
-static session_local struct timeval saved_timeval;
-static session_local bool saved_timeval_set = false;
 
 #define FORMATTED_TS_LEN 128
-static session_local char formatted_start_time[FORMATTED_TS_LEN];
-static session_local char formatted_log_time[FORMATTED_TS_LEN];
+
+/*
+ * Per-session elog/ereport bookkeeping (the file-local error-reporting state).
+ * The exported error_context_stack / PG_exception_stack / emit_log_hook stay
+ * standalone above; openlog_done stays under #ifdef HAVE_SYSLOG.
+ */
+typedef struct ElogState
+{
+	/* small stack of ErrorData records for re-entrant cases */
+	ErrorData	errordata[ERRORDATA_STACK_SIZE];
+	int			errordata_stack_depth;	/* index of topmost active frame */
+	int			recursion_depth;		/* to detect actual recursion */
+	/* Saved timeval and buffers for formatted timestamps */
+	struct timeval saved_timeval;
+	bool		saved_timeval_set;
+	char		formatted_start_time[FORMATTED_TS_LEN];
+	char		formatted_log_time[FORMATTED_TS_LEN];
+	/* Saved errno/domain for pre_format_elog_string / format_elog_string */
+	int			save_format_errnumber;
+	const char *save_format_domain;
+} ElogState;
+
+static session_local ElogState elog_state = {
+	.errordata_stack_depth = -1,
+	.recursion_depth = 0,
+	.saved_timeval_set = false,
+};
 
 
-/* Macro for checking errordata_stack_depth is reasonable */
+/* Macro for checking elog_state.errordata_stack_depth is reasonable */
 #define CHECK_STACK_DEPTH() \
 	do { \
-		if (errordata_stack_depth < 0) \
+		if (elog_state.errordata_stack_depth < 0) \
 		{ \
-			errordata_stack_depth = -1; \
+			elog_state.errordata_stack_depth = -1; \
 			ereport(ERROR, (errmsg_internal("errstart was not called"))); \
 		} \
 	} while (0)
@@ -306,7 +326,7 @@ bool
 in_error_recursion_trouble(void)
 {
 	/* Pull the plug if recurse more than once */
-	return (recursion_depth > 2);
+	return (elog_state.recursion_depth > 2);
 }
 
 /*
@@ -400,8 +420,8 @@ errstart(int elevel, const char *domain)
 		 * reporting process was interrupted by a lower-grade error.  So check
 		 * the stack and make sure we panic if panic is warranted.
 		 */
-		for (i = 0; i <= errordata_stack_depth; i++)
-			elevel = Max(elevel, errordata[i].elevel);
+		for (i = 0; i <= elog_state.errordata_stack_depth; i++)
+			elevel = Max(elevel, elog_state.errordata[i].elevel);
 	}
 
 	/*
@@ -429,7 +449,7 @@ errstart(int elevel, const char *domain)
 	 * Okay, crank up a stack entry to store the info in.
 	 */
 
-	if (recursion_depth++ > 0 && elevel >= ERROR)
+	if (elog_state.recursion_depth++ > 0 && elevel >= ERROR)
 	{
 		/*
 		 * Oops, error during error processing.  Clear ErrorContext as
@@ -470,7 +490,7 @@ errstart(int elevel, const char *domain)
 	 */
 	edata->assoc_context = ErrorContext;
 
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return true;
 }
 
@@ -485,12 +505,12 @@ errstart(int elevel, const char *domain)
 void
 errfinish(const char *filename, int lineno, const char *funcname)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	int			elevel;
 	MemoryContext oldcontext;
 	ErrorContextCallback *econtext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 
 	/* Save the last few bits of error state into the stack entry */
@@ -547,7 +567,7 @@ errfinish(const char *filename, int lineno, const char *funcname)
 		 * handler should reset it to something else soon.
 		 */
 
-		recursion_depth--;
+		elog_state.recursion_depth--;
 		PG_RE_THROW();
 	}
 
@@ -561,15 +581,15 @@ errfinish(const char *filename, int lineno, const char *funcname)
 	 * places such as context callback functions.  If we're nested, we can
 	 * only safely remove the subsidiary data of the current stack entry.
 	 */
-	if (errordata_stack_depth == 0 && recursion_depth == 1)
+	if (elog_state.errordata_stack_depth == 0 && elog_state.recursion_depth == 1)
 		MemoryContextReset(ErrorContext);
 	else
 		FreeErrorDataContents(edata);
 
 	/* Release stack entry and exit error-handling context */
-	errordata_stack_depth--;
+	elog_state.errordata_stack_depth--;
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 
 	/*
 	 * Perform error recovery action as specified by elevel.
@@ -672,7 +692,7 @@ errsave_start(struct Node *context, const char *domain)
 	 * Okay, crank up a stack entry to store the info in.
 	 */
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 
 	/* Initialize data for this error frame */
 	edata = get_error_stack_entry();
@@ -688,7 +708,7 @@ errsave_start(struct Node *context, const char *domain)
 	 */
 	edata->assoc_context = CurrentMemoryContext;
 
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return true;
 }
 
@@ -704,7 +724,7 @@ errsave_finish(struct Node *context, const char *filename, int lineno,
 			   const char *funcname)
 {
 	ErrorSaveContext *escontext = (ErrorSaveContext *) context;
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
 	/* verify stack depth before accessing *edata */
 	CHECK_STACK_DEPTH();
@@ -723,7 +743,7 @@ errsave_finish(struct Node *context, const char *filename, int lineno,
 	 * Else, we should package up the stack entry contents and deliver them to
 	 * the caller.
 	 */
-	recursion_depth++;
+	elog_state.recursion_depth++;
 
 	/* Save the last few bits of error state into the stack entry */
 	set_stack_entry_location(edata, filename, lineno, funcname);
@@ -746,8 +766,8 @@ errsave_finish(struct Node *context, const char *filename, int lineno,
 	memcpy(escontext->error_data, edata, sizeof(ErrorData));
 
 	/* Exit error-handling context */
-	errordata_stack_depth--;
-	recursion_depth--;
+	elog_state.errordata_stack_depth--;
+	elog_state.recursion_depth--;
 }
 
 
@@ -755,10 +775,10 @@ errsave_finish(struct Node *context, const char *filename, int lineno,
  * get_error_stack_entry --- allocate and initialize a new stack entry
  *
  * The entry should be freed, when we're done with it, by calling
- * FreeErrorDataContents() and then decrementing errordata_stack_depth.
+ * FreeErrorDataContents() and then decrementing elog_state.errordata_stack_depth.
  *
  * Returning the entry's address is just a notational convenience,
- * since it had better be errordata[errordata_stack_depth].
+ * since it had better be elog_state.errordata[elog_state.errordata_stack_depth].
  *
  * Although the error stack is not large, we don't expect to run out of space.
  * Using more than one entry implies a new error report during error recovery,
@@ -766,7 +786,7 @@ errsave_finish(struct Node *context, const char *filename, int lineno,
  * stack, almost certainly we are in an infinite loop of errors during error
  * recovery, so we give up and PANIC.
  *
- * (Note that this is distinct from the recursion_depth checks, which
+ * (Note that this is distinct from the elog_state.recursion_depth checks, which
  * guard against recursion while handling a single stack entry.)
  */
 static ErrorData *
@@ -775,16 +795,16 @@ get_error_stack_entry(void)
 	ErrorData  *edata;
 
 	/* Allocate error frame */
-	errordata_stack_depth++;
-	if (unlikely(errordata_stack_depth >= ERRORDATA_STACK_SIZE))
+	elog_state.errordata_stack_depth++;
+	if (unlikely(elog_state.errordata_stack_depth >= ERRORDATA_STACK_SIZE))
 	{
 		/* Wups, stack not big enough */
-		errordata_stack_depth = -1; /* make room on stack */
+		elog_state.errordata_stack_depth = -1; /* make room on stack */
 		ereport(PANIC, (errmsg_internal("ERRORDATA_STACK_SIZE exceeded")));
 	}
 
 	/* Initialize error frame to all zeroes/NULLs */
-	edata = &errordata[errordata_stack_depth];
+	edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	memset(edata, 0, sizeof(ErrorData));
 
 	/* Save errno immediately to ensure error parameter eval can't change it */
@@ -874,9 +894,9 @@ matches_backtrace_functions(const char *funcname)
 int
 errcode(int sqlerrcode)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	edata->sqlerrcode = sqlerrcode;
@@ -897,9 +917,9 @@ errcode(int sqlerrcode)
 int
 errcode_for_file_access(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	switch (edata->saved_errno)
@@ -976,9 +996,9 @@ errcode_for_file_access(void)
 int
 errcode_for_socket_access(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	switch (edata->saved_errno)
@@ -1093,10 +1113,10 @@ errcode_for_socket_access(void)
 int
 errmsg(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
@@ -1104,7 +1124,7 @@ errmsg(const char *fmt,...)
 	EVALUATE_MESSAGE(edata->domain, message, false, true);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1115,17 +1135,17 @@ errmsg(const char *fmt,...)
 int
 errbacktrace(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	set_backtrace(edata, 1);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 
 	return 0;
 }
@@ -1348,10 +1368,10 @@ backtrace_cleanup(int code, Datum arg)
 int
 errmsg_internal(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
@@ -1359,7 +1379,7 @@ errmsg_internal(const char *fmt,...)
 	EVALUATE_MESSAGE(edata->domain, message, false, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1372,10 +1392,10 @@ int
 errmsg_plural(const char *fmt_singular, const char *fmt_plural,
 			  unsigned long n,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
@@ -1383,7 +1403,7 @@ errmsg_plural(const char *fmt_singular, const char *fmt_plural,
 	EVALUATE_MESSAGE_PLURAL(edata->domain, message, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1394,17 +1414,17 @@ errmsg_plural(const char *fmt_singular, const char *fmt_plural,
 int
 errdetail(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, detail, false, true);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1421,17 +1441,17 @@ errdetail(const char *fmt,...)
 int
 errdetail_internal(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, detail, false, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1442,17 +1462,17 @@ errdetail_internal(const char *fmt,...)
 int
 errdetail_log(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, detail_log, false, true);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1464,17 +1484,17 @@ int
 errdetail_log_plural(const char *fmt_singular, const char *fmt_plural,
 					 unsigned long n,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE_PLURAL(edata->domain, detail_log, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1487,17 +1507,17 @@ int
 errdetail_plural(const char *fmt_singular, const char *fmt_plural,
 				 unsigned long n,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE_PLURAL(edata->domain, detail, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1508,17 +1528,17 @@ errdetail_plural(const char *fmt_singular, const char *fmt_plural,
 int
 errhint(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, hint, false, true);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1530,17 +1550,17 @@ errhint(const char *fmt,...)
 int
 errhint_internal(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, hint, false, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1552,17 +1572,17 @@ int
 errhint_plural(const char *fmt_singular, const char *fmt_plural,
 			   unsigned long n,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE_PLURAL(edata->domain, hint, false);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1577,17 +1597,17 @@ errhint_plural(const char *fmt_singular, const char *fmt_plural,
 int
 errcontext_msg(const char *fmt,...)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->context_domain, context, true, true);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	return 0;					/* return value does not matter */
 }
 
@@ -1603,9 +1623,9 @@ errcontext_msg(const char *fmt,...)
 int
 set_errcontext_domain(const char *domain)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	/* the default text domain is the backend's */
@@ -1623,9 +1643,9 @@ set_errcontext_domain(const char *domain)
 int
 errhidestmt(bool hide_stmt)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	edata->hide_stmt = hide_stmt;
@@ -1642,9 +1662,9 @@ errhidestmt(bool hide_stmt)
 int
 errhidecontext(bool hide_ctx)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	edata->hide_ctx = hide_ctx;
@@ -1658,9 +1678,9 @@ errhidecontext(bool hide_ctx)
 int
 errposition(int cursorpos)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	edata->cursorpos = cursorpos;
@@ -1674,9 +1694,9 @@ errposition(int cursorpos)
 int
 internalerrposition(int cursorpos)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	edata->internalpos = cursorpos;
@@ -1694,9 +1714,9 @@ internalerrposition(int cursorpos)
 int
 internalerrquery(const char *query)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	if (edata->internalquery)
@@ -1724,9 +1744,9 @@ internalerrquery(const char *query)
 int
 err_generic_string(int field, const char *str)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	switch (field)
@@ -1773,9 +1793,9 @@ set_errdata_field(MemoryContextData *cxt, char **ptr, const char *str)
 int
 geterrcode(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	return edata->sqlerrcode;
@@ -1790,9 +1810,9 @@ geterrcode(void)
 int
 geterrposition(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	return edata->cursorpos;
@@ -1807,9 +1827,9 @@ geterrposition(void)
 int
 getinternalerrposition(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-	/* we don't bother incrementing recursion_depth */
+	/* we don't bother incrementing elog_state.recursion_depth */
 	CHECK_STACK_DEPTH();
 
 	return edata->internalpos;
@@ -1834,16 +1854,14 @@ getinternalerrposition(void)
  * The result of format_elog_string() is stored in ErrorContext, and will
  * therefore survive until FlushErrorState() is called.
  */
-static session_local int	save_format_errnumber;
-static session_local const char *save_format_domain;
 
 void
 pre_format_elog_string(int errnumber, const char *domain)
 {
 	/* Save errno before evaluation of argument functions can change it */
-	save_format_errnumber = errnumber;
+	elog_state.save_format_errnumber = errnumber;
 	/* Save caller's text domain */
-	save_format_domain = domain;
+	elog_state.save_format_domain = domain;
 }
 
 char *
@@ -1857,9 +1875,9 @@ format_elog_string(const char *fmt,...)
 	edata = &errdata;
 	MemSet(edata, 0, sizeof(ErrorData));
 	/* the default text domain is the backend's */
-	edata->domain = save_format_domain ? save_format_domain : PG_TEXTDOMAIN("postgres");
+	edata->domain = elog_state.save_format_domain ? elog_state.save_format_domain : PG_TEXTDOMAIN("postgres");
 	/* set the errno to be used to interpret %m */
-	edata->saved_errno = save_format_errnumber;
+	edata->saved_errno = elog_state.save_format_errnumber;
 
 	oldcontext = MemoryContextSwitchTo(ErrorContext);
 
@@ -1882,10 +1900,10 @@ format_elog_string(const char *fmt,...)
 void
 EmitErrorReport(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	MemoryContext oldcontext;
 
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	CHECK_STACK_DEPTH();
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
@@ -1894,8 +1912,8 @@ EmitErrorReport(void)
 	 * includes all the log destinations and emit_log_hook, as the latter
 	 * could use log_line_prefix or the formatted timestamps.
 	 */
-	saved_timeval_set = false;
-	formatted_log_time[0] = '\0';
+	elog_state.saved_timeval_set = false;
+	elog_state.formatted_log_time[0] = '\0';
 
 	/*
 	 * Call hook before sending message to log.  The hook function is allowed
@@ -1928,7 +1946,7 @@ EmitErrorReport(void)
 		send_message_to_frontend(edata);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 }
 
 /*
@@ -1941,11 +1959,11 @@ EmitErrorReport(void)
 ErrorData *
 CopyErrorData(void)
 {
-	ErrorData  *edata = &errordata[errordata_stack_depth];
+	ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 	ErrorData  *newedata;
 
 	/*
-	 * we don't increment recursion_depth because out-of-memory here does not
+	 * we don't increment elog_state.recursion_depth because out-of-memory here does not
 	 * indicate a problem within the error subsystem.
 	 */
 	CHECK_STACK_DEPTH();
@@ -2068,8 +2086,8 @@ FlushErrorState(void)
 	 * another message.  We assume control escaped out of that message
 	 * construction and won't ever go back.
 	 */
-	errordata_stack_depth = -1;
-	recursion_depth = 0;
+	elog_state.errordata_stack_depth = -1;
+	elog_state.recursion_depth = 0;
 	/* Delete all data in ErrorContext */
 	MemoryContextReset(ErrorContext);
 }
@@ -2078,7 +2096,7 @@ FlushErrorState(void)
  * ThrowErrorData --- report an error described by an ErrorData structure
  *
  * This function should be called on an ErrorData structure that isn't stored
- * on the errordata stack and hasn't been processed yet. It will call
+ * on the elog_state.errordata stack and hasn't been processed yet. It will call
  * errstart() and errfinish() as needed, so those should not have already been
  * called.
  *
@@ -2096,8 +2114,8 @@ ThrowErrorData(ErrorData *edata)
 	if (!errstart(edata->elevel, edata->domain))
 		return;					/* error is not to be reported at all */
 
-	newedata = &errordata[errordata_stack_depth];
-	recursion_depth++;
+	newedata = &elog_state.errordata[elog_state.errordata_stack_depth];
+	elog_state.recursion_depth++;
 	oldcontext = MemoryContextSwitchTo(newedata->assoc_context);
 
 	/* Copy the supplied fields to the error stack entry. */
@@ -2132,7 +2150,7 @@ ThrowErrorData(ErrorData *edata)
 		newedata->internalquery = pstrdup(edata->internalquery);
 
 	MemoryContextSwitchTo(oldcontext);
-	recursion_depth--;
+	elog_state.recursion_depth--;
 
 	/* Process the error. */
 	errfinish(edata->filename, edata->lineno, edata->funcname);
@@ -2154,7 +2172,7 @@ ReThrowError(ErrorData *edata)
 	Assert(edata->elevel == ERROR);
 
 	/* Push the data back into the error context */
-	recursion_depth++;
+	elog_state.recursion_depth++;
 	MemoryContextSwitchTo(ErrorContext);
 
 	newedata = get_error_stack_entry();
@@ -2189,7 +2207,7 @@ ReThrowError(ErrorData *edata)
 	/* Reset the assoc_context to be ErrorContext */
 	newedata->assoc_context = ErrorContext;
 
-	recursion_depth--;
+	elog_state.recursion_depth--;
 	PG_RE_THROW();
 }
 
@@ -2212,9 +2230,9 @@ pg_re_throw(void)
 		 * the correct behavior is to make it FATAL now; that is, emit it and
 		 * then call proc_exit.
 		 */
-		ErrorData  *edata = &errordata[errordata_stack_depth];
+		ErrorData  *edata = &elog_state.errordata[elog_state.errordata_stack_depth];
 
-		Assert(errordata_stack_depth >= 0);
+		Assert(elog_state.errordata_stack_depth >= 0);
 		Assert(edata->elevel == ERROR);
 		edata->elevel = FATAL;
 
@@ -2260,7 +2278,7 @@ GetErrorContextStack(void)
 	/*
 	 * Crank up a stack entry to store the info in.
 	 */
-	recursion_depth++;
+	elog_state.recursion_depth++;
 
 	edata = get_error_stack_entry();
 
@@ -2289,8 +2307,8 @@ GetErrorContextStack(void)
 	 * context, so we're free to just remove our entry off the stack and
 	 * decrement recursion depth and exit.
 	 */
-	errordata_stack_depth--;
-	recursion_depth--;
+	elog_state.errordata_stack_depth--;
+	elog_state.recursion_depth--;
 
 	/*
 	 * Return a pointer to the string the caller asked for, which should have
@@ -3109,32 +3127,32 @@ get_formatted_log_time(void)
 	char		msbuf[13];
 
 	/* leave if already computed */
-	if (formatted_log_time[0] != '\0')
-		return formatted_log_time;
+	if (elog_state.formatted_log_time[0] != '\0')
+		return elog_state.formatted_log_time;
 
-	if (!saved_timeval_set)
+	if (!elog_state.saved_timeval_set)
 	{
-		gettimeofday(&saved_timeval, NULL);
-		saved_timeval_set = true;
+		gettimeofday(&elog_state.saved_timeval, NULL);
+		elog_state.saved_timeval_set = true;
 	}
 
-	stamp_time = (pg_time_t) saved_timeval.tv_sec;
+	stamp_time = (pg_time_t) elog_state.saved_timeval.tv_sec;
 
 	/*
 	 * Note: we expect that guc.c will ensure that log_timezone is set up (at
 	 * least with a minimal GMT value) before Log_line_prefix can become
 	 * nonempty or CSV/JSON mode can be selected.
 	 */
-	pg_strftime(formatted_log_time, FORMATTED_TS_LEN,
+	pg_strftime(elog_state.formatted_log_time, FORMATTED_TS_LEN,
 	/* leave room for milliseconds... */
 				"%Y-%m-%d %H:%M:%S     %Z",
 				pg_localtime(&stamp_time, log_timezone));
 
 	/* 'paste' milliseconds into place... */
-	sprintf(msbuf, ".%03d", (int) (saved_timeval.tv_usec / 1000));
-	memcpy(formatted_log_time + 19, msbuf, 4);
+	sprintf(msbuf, ".%03d", (int) (elog_state.saved_timeval.tv_usec / 1000));
+	memcpy(elog_state.formatted_log_time + 19, msbuf, 4);
 
-	return formatted_log_time;
+	return elog_state.formatted_log_time;
 }
 
 /*
@@ -3143,7 +3161,7 @@ get_formatted_log_time(void)
 void
 reset_formatted_start_time(void)
 {
-	formatted_start_time[0] = '\0';
+	elog_state.formatted_start_time[0] = '\0';
 }
 
 /*
@@ -3158,19 +3176,19 @@ get_formatted_start_time(void)
 	pg_time_t	stamp_time = (pg_time_t) MyStartTime;
 
 	/* leave if already computed */
-	if (formatted_start_time[0] != '\0')
-		return formatted_start_time;
+	if (elog_state.formatted_start_time[0] != '\0')
+		return elog_state.formatted_start_time;
 
 	/*
 	 * Note: we expect that guc.c will ensure that log_timezone is set up (at
 	 * least with a minimal GMT value) before Log_line_prefix can become
 	 * nonempty or CSV/JSON mode can be selected.
 	 */
-	pg_strftime(formatted_start_time, FORMATTED_TS_LEN,
+	pg_strftime(elog_state.formatted_start_time, FORMATTED_TS_LEN,
 				"%Y-%m-%d %H:%M:%S %Z",
 				pg_localtime(&stamp_time, log_timezone));
 
-	return formatted_start_time;
+	return elog_state.formatted_start_time;
 }
 
 /*
@@ -3445,13 +3463,13 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 				break;
 			case 'm':
 				/* force a log timestamp reset */
-				formatted_log_time[0] = '\0';
+				elog_state.formatted_log_time[0] = '\0';
 				(void) get_formatted_log_time();
 
 				if (padding != 0)
-					appendStringInfo(buf, "%*s", padding, formatted_log_time);
+					appendStringInfo(buf, "%*s", padding, elog_state.formatted_log_time);
 				else
-					appendStringInfoString(buf, formatted_log_time);
+					appendStringInfoString(buf, elog_state.formatted_log_time);
 				break;
 			case 't':
 				{
@@ -3471,15 +3489,15 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 				{
 					char		strfbuf[128];
 
-					if (!saved_timeval_set)
+					if (!elog_state.saved_timeval_set)
 					{
-						gettimeofday(&saved_timeval, NULL);
-						saved_timeval_set = true;
+						gettimeofday(&elog_state.saved_timeval, NULL);
+						elog_state.saved_timeval_set = true;
 					}
 
 					snprintf(strfbuf, sizeof(strfbuf), "%ld.%03d",
-							 (long) saved_timeval.tv_sec,
-							 (int) (saved_timeval.tv_usec / 1000));
+							 (long) elog_state.saved_timeval.tv_sec,
+							 (int) (elog_state.saved_timeval.tv_usec / 1000));
 
 					if (padding != 0)
 						appendStringInfo(buf, "%*s", padding, strfbuf);
