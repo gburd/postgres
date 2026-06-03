@@ -20,8 +20,15 @@
 #include "storage/bufmgr.h"
 #include "utils/pgstat_internal.h"
 
-static session_local PgStat_PendingIO PendingIOStats;
-static session_local bool have_iostats = false;
+typedef struct PgStatIoState
+{
+	PgStat_PendingIO PendingIOStats;
+	bool		have_iostats;
+} PgStatIoState;
+
+static session_local PgStatIoState pgstat_io_state = {
+	.have_iostats = false,
+};
 
 /*
  * Check that stats have not been counted for any combination of IOObject,
@@ -73,13 +80,13 @@ pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op,
 	Assert(pgstat_is_ioop_tracked_in_bytes(io_op) || bytes == 0);
 	Assert(pgstat_tracks_io_op(MyBackendType, io_object, io_context, io_op));
 
-	PendingIOStats.counts[io_object][io_context][io_op] += cnt;
-	PendingIOStats.bytes[io_object][io_context][io_op] += bytes;
+	pgstat_io_state.PendingIOStats.counts[io_object][io_context][io_op] += cnt;
+	pgstat_io_state.PendingIOStats.bytes[io_object][io_context][io_op] += bytes;
 
 	/* Add the per-backend counts */
 	pgstat_count_backend_io_op(io_object, io_context, io_op, cnt, bytes);
 
-	have_iostats = true;
+	pgstat_io_state.have_iostats = true;
 	pgstat_report_fixed = true;
 }
 
@@ -149,7 +156,7 @@ pgstat_count_io_op_time(IOObject io_object, IOContext io_context, IOOp io_op,
 			}
 		}
 
-		INSTR_TIME_ADD(PendingIOStats.pending_times[io_object][io_context][io_op],
+		INSTR_TIME_ADD(pgstat_io_state.PendingIOStats.pending_times[io_object][io_context][io_op],
 					   io_time);
 
 		/* Add the per-backend count */
@@ -191,7 +198,7 @@ pgstat_io_flush_cb(bool nowait)
 	LWLock	   *bktype_lock;
 	PgStat_BktypeIO *bktype_shstats;
 
-	if (!have_iostats)
+	if (!pgstat_io_state.have_iostats)
 		return false;
 
 	bktype_lock = &pgStatLocal.shmem->io.locks[MyBackendType];
@@ -212,12 +219,12 @@ pgstat_io_flush_cb(bool nowait)
 				instr_time	time;
 
 				bktype_shstats->counts[io_object][io_context][io_op] +=
-					PendingIOStats.counts[io_object][io_context][io_op];
+					pgstat_io_state.PendingIOStats.counts[io_object][io_context][io_op];
 
 				bktype_shstats->bytes[io_object][io_context][io_op] +=
-					PendingIOStats.bytes[io_object][io_context][io_op];
+					pgstat_io_state.PendingIOStats.bytes[io_object][io_context][io_op];
 
-				time = PendingIOStats.pending_times[io_object][io_context][io_op];
+				time = pgstat_io_state.PendingIOStats.pending_times[io_object][io_context][io_op];
 
 				bktype_shstats->times[io_object][io_context][io_op] +=
 					INSTR_TIME_GET_MICROSEC(time);
@@ -229,9 +236,9 @@ pgstat_io_flush_cb(bool nowait)
 
 	LWLockRelease(bktype_lock);
 
-	memset(&PendingIOStats, 0, sizeof(PendingIOStats));
+	memset(&pgstat_io_state.PendingIOStats, 0, sizeof(pgstat_io_state.PendingIOStats));
 
-	have_iostats = false;
+	pgstat_io_state.have_iostats = false;
 
 	return false;
 }
