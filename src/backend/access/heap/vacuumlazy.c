@@ -2982,7 +2982,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  NULL, 0,	/* dead */
 								  unused, nunused,
 								  NULL, 0,	/* bridges */
-								  NULL, 0); /* data_redirects */
+								  NULL, 0); /* tombstone_unions */
 	}
 
 	END_CRIT_SECTION();
@@ -3777,25 +3777,10 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		if (!ItemIdIsUsed(itemid))
 			continue;
 
-		/*
-		 * Plain redirects are of no interest (the chain member they point at
-		 * is inspected separately), but a HOT-indexed data redirect (an
-		 * LP_REDIRECT carrying a modified-attrs bitmap, hence lp_len > 0)
-		 * marks a chain whose pre-update leaf entries are still stale.  Such
-		 * a page must not be set all-visible: an index-only scan would then
-		 * skip the heap fetch that detects and drops those stale leaves and
-		 * return pre-update key values as live rows.  Treat it as a blocker,
-		 * like a tombstone.
-		 */
+		/* Plain redirects are of no interest (the chain member they point at
+		 * is inspected separately). */
 		if (ItemIdIsRedirected(itemid))
-		{
-			if (HotIndexedRedirectIsData(itemid))
-			{
-				*all_frozen = all_visible = false;
-				break;
-			}
 			continue;
-		}
 
 		ItemPointerSet(&(tuple.t_self), blockno, offnum);
 

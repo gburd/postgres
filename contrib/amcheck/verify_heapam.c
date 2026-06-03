@@ -529,47 +529,8 @@ verify_heapam(PG_FUNCTION_ARGS)
 				OffsetNumber rdoffnum;
 				ItemId		rditem;
 
-				/*
-				 * Resolve the redirect's target offset.  A HOT-indexed data
-				 * redirect carries a bitmap blob in the dead root's freed
-				 * bytes (lp_len > 0) with the target offset inside that blob;
-				 * a plain redirect stores the target offset directly in
-				 * lp_off.
-				 *
-				 * For a data redirect, bounds-check the blob before
-				 * dereferencing it so a corrupt line pointer cannot drive
-				 * amcheck itself out of bounds.  If the blob storage is out
-				 * of range the item is indistinguishable from a corrupt plain
-				 * redirect, so fall back to treating lp_off as the (raw)
-				 * target offset; the offset-range checks below then reject it
-				 * exactly as for any out-of-range redirect.
-				 */
-				if (HotIndexedRedirectIsData(ctx.itemid))
-				{
-					uint32		roff = ItemIdGetOffset(ctx.itemid);
-					uint32		rlen = ItemIdGetLength(ctx.itemid);
-
-					if (roff == MAXALIGN(roff) &&
-						rlen >= SizeOfHotIndexedRedirectData &&
-						(uint32) roff + rlen <= BLCKSZ)
-					{
-						HotIndexedRedirectData *rd =
-							(HotIndexedRedirectData *) (ctx.page + roff);
-
-						if (rlen != SizeOfHotIndexedRedirectData + rd->rd_nbytes)
-						{
-							report_corruption(&ctx,
-											  psprintf("HOT-indexed data redirect length %u does not match its bitmap size %u",
-													   rlen, rd->rd_nbytes));
-							continue;
-						}
-						rdoffnum = rd->rd_target;
-					}
-					else
-						rdoffnum = (OffsetNumber) ItemIdGetOffset(ctx.itemid);
-				}
-				else
-					rdoffnum = ItemIdGetRedirect(ctx.itemid);
+				/* Resolve the redirect's target offset. */
+				rdoffnum = ItemIdGetRedirect(ctx.itemid);
 
 				if (rdoffnum < FirstOffsetNumber)
 				{
@@ -755,9 +716,7 @@ verify_heapam(PG_FUNCTION_ARGS)
 
 				/* Can only redirect to a HOT tuple. */
 				next_htup = (HeapTupleHeader) PageGetItem(ctx.page, next_lp);
-				if (!HeapTupleHeaderIsHeapOnly(next_htup) &&
-					!(HotIndexedRedirectIsData(curr_lp) &&
-					  HeapTupleHeaderIsHotIndexedTombstone(next_htup)))
+				if (!HeapTupleHeaderIsHeapOnly(next_htup))
 				{
 					report_corruption(&ctx,
 									  psprintf("redirected line pointer points to a non-heap-only tuple at offset %d",
