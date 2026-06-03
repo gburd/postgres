@@ -53,13 +53,22 @@ typedef struct portalhashent
 	Portal		portal;
 } PortalHashEnt;
 
-static session_local HTAB *PortalHashTable = NULL;
+typedef struct PortalMemState
+{
+	HTAB	   *PortalHashTable;
+	MemoryContext TopPortalContext;
+} PortalMemState;
+
+static session_local PortalMemState portalmem_state = {
+	.PortalHashTable = NULL,
+	.TopPortalContext = NULL,
+};
 
 #define PortalHashTableLookup(NAME, PORTAL) \
 do { \
 	PortalHashEnt *hentry; \
 	\
-	hentry = (PortalHashEnt *) hash_search(PortalHashTable, \
+	hentry = (PortalHashEnt *) hash_search(portalmem_state.PortalHashTable, \
 										   (NAME), HASH_FIND, NULL); \
 	if (hentry) \
 		PORTAL = hentry->portal; \
@@ -71,7 +80,7 @@ do { \
 do { \
 	PortalHashEnt *hentry; bool found; \
 	\
-	hentry = (PortalHashEnt *) hash_search(PortalHashTable, \
+	hentry = (PortalHashEnt *) hash_search(portalmem_state.PortalHashTable, \
 										   (NAME), HASH_ENTER, &found); \
 	if (found) \
 		elog(ERROR, "duplicate portal name"); \
@@ -84,13 +93,12 @@ do { \
 do { \
 	PortalHashEnt *hentry; \
 	\
-	hentry = (PortalHashEnt *) hash_search(PortalHashTable, \
+	hentry = (PortalHashEnt *) hash_search(portalmem_state.PortalHashTable, \
 										   PORTAL->name, HASH_REMOVE, NULL); \
 	if (hentry == NULL) \
 		elog(WARNING, "trying to delete portal name that does not exist"); \
 } while(0)
 
-static session_local MemoryContext TopPortalContext = NULL;
 
 
 /* ----------------------------------------------------------------
@@ -107,9 +115,9 @@ EnablePortalManager(void)
 {
 	HASHCTL		ctl;
 
-	Assert(TopPortalContext == NULL);
+	Assert(portalmem_state.TopPortalContext == NULL);
 
-	TopPortalContext = AllocSetContextCreate(TopMemoryContext,
+	portalmem_state.TopPortalContext = AllocSetContextCreate(TopMemoryContext,
 											 "TopPortalContext",
 											 ALLOCSET_DEFAULT_SIZES);
 
@@ -120,7 +128,7 @@ EnablePortalManager(void)
 	 * use PORTALS_PER_USER as a guess of how many hash table entries to
 	 * create, initially
 	 */
-	PortalHashTable = hash_create("Portal hash", PORTALS_PER_USER,
+	portalmem_state.PortalHashTable = hash_create("Portal hash", PORTALS_PER_USER,
 								  &ctl, HASH_ELEM | HASH_STRINGS);
 }
 
@@ -196,10 +204,10 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 	}
 
 	/* make new portal structure */
-	portal = (Portal) MemoryContextAllocZero(TopPortalContext, sizeof *portal);
+	portal = (Portal) MemoryContextAllocZero(portalmem_state.TopPortalContext, sizeof *portal);
 
 	/* initialize portal context; typically it won't store much */
-	portal->portalContext = AllocSetContextCreate(TopPortalContext,
+	portal->portalContext = AllocSetContextCreate(portalmem_state.TopPortalContext,
 												  "PortalContext",
 												  ALLOCSET_SMALL_SIZES);
 
@@ -342,7 +350,7 @@ PortalCreateHoldStore(Portal portal)
 	 * Note this is NOT a child of the portal's portalContext.
 	 */
 	portal->holdContext =
-		AllocSetContextCreate(TopPortalContext,
+		AllocSetContextCreate(portalmem_state.TopPortalContext,
 							  "PortalHoldContext",
 							  ALLOCSET_DEFAULT_SIZES);
 
@@ -596,7 +604,7 @@ PortalDrop(Portal portal, bool isTopCommit)
 	/* release subsidiary storage */
 	MemoryContextDelete(portal->portalContext);
 
-	/* release portal struct (it's in TopPortalContext) */
+	/* release portal struct (it's in portalmem_state.TopPortalContext) */
 	pfree(portal);
 }
 
@@ -611,10 +619,10 @@ PortalHashTableDeleteAll(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	if (PortalHashTable == NULL)
+	if (portalmem_state.PortalHashTable == NULL)
 		return;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 	while ((hentry = hash_seq_search(&status)) != NULL)
 	{
 		Portal		portal = hentry->portal;
@@ -627,7 +635,7 @@ PortalHashTableDeleteAll(void)
 
 		/* Restart the iteration in case that led to other drops */
 		hash_seq_term(&status);
-		hash_seq_init(&status, PortalHashTable);
+		hash_seq_init(&status, portalmem_state.PortalHashTable);
 	}
 }
 
@@ -682,7 +690,7 @@ PreCommit_Portals(bool isPrepare)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -767,7 +775,7 @@ PreCommit_Portals(bool isPrepare)
 		 * caused a drop of the next portal in the hash chain.
 		 */
 		hash_seq_term(&status);
-		hash_seq_init(&status, PortalHashTable);
+		hash_seq_init(&status, portalmem_state.PortalHashTable);
 	}
 
 	return result;
@@ -785,7 +793,7 @@ AtAbort_Portals(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -863,7 +871,7 @@ AtCleanup_Portals(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -922,7 +930,7 @@ PortalErrorCleanup(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -951,7 +959,7 @@ AtSubCommit_Portals(SubTransactionId mySubid,
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -987,7 +995,7 @@ AtSubAbort_Portals(SubTransactionId mySubid,
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -1097,7 +1105,7 @@ AtSubCleanup_Portals(SubTransactionId mySubid)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -1143,7 +1151,7 @@ pg_cursor(PG_FUNCTION_ARGS)
 	 */
 	InitMaterializedSRF(fcinfo, 0);
 
-	hash_seq_init(&hash_seq, PortalHashTable);
+	hash_seq_init(&hash_seq, portalmem_state.PortalHashTable);
 	while ((hentry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		Portal		portal = hentry->portal;
@@ -1176,7 +1184,7 @@ ThereAreNoReadyPortals(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -1212,7 +1220,7 @@ HoldPinnedPortals(void)
 	HASH_SEQ_STATUS status;
 	PortalHashEnt *hentry;
 
-	hash_seq_init(&status, PortalHashTable);
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -1263,8 +1271,8 @@ ForgetPortalSnapshots(void)
 	int			numPortalSnaps = 0;
 	int			numActiveSnaps = 0;
 
-	/* First, scan PortalHashTable and clear portalSnapshot fields */
-	hash_seq_init(&status, PortalHashTable);
+	/* First, scan portalmem_state.PortalHashTable and clear portalSnapshot fields */
+	hash_seq_init(&status, portalmem_state.PortalHashTable);
 
 	while ((hentry = (PortalHashEnt *) hash_seq_search(&status)) != NULL)
 	{
