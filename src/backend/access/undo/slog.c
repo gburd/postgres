@@ -1601,6 +1601,7 @@ SLogTupleInsertRecovery(Oid relid, ItemPointer tid, TransactionId xid,
 						SLogOpType op_type)
 {
 	SLogTupleKey key;
+	SLogFlatOp	clear_op;
 	SLogFlatOp	flat_op;
 
 	if (SLogState == NULL)
@@ -1609,6 +1610,26 @@ SLogTupleInsertRecovery(Oid relid, ItemPointer tid, TransactionId xid,
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
+
+	/*
+	 * Clear any pre-existing entry at this exact TID before registering the
+	 * new op.  A physical INSERT always targets a free line pointer, so any
+	 * sLog entry already present at this TID belongs to a dead prior occupant
+	 * (deleted and VACUUM-recycled).  On the primary the prior occupant's sLog
+	 * entry is removed by its commit/abort xact callback, but the standby redo
+	 * path only ever inserts -- it never removes -- so without this the stale
+	 * entry survives.  flat_hash_apply_insert() only overwrites a same-xid op,
+	 * so a stale op from the prior occupant's (different) xid would persist and
+	 * make RecnoTupleVisibleHLC() trip on TransactionIdDidAbort()/IsInProgress()
+	 * for that dead xid, wrongly hiding the freshly inserted live tuple.
+	 *
+	 * Tombstoning the entry is safe and self-healing: flat_hash_apply_insert()
+	 * reuses tombstoned buckets, so the immediately following INSERT recreates
+	 * a clean entry holding only this insert's op.
+	 */
+	memset(&clear_op, 0, sizeof(clear_op));
+	clear_op.kind = SLOG_FLAT_OP_REMOVE_ENTRY;
+	clear_op.key = key;
 
 	/* Apply to flat hash */
 	memset(&flat_op, 0, sizeof(flat_op));
@@ -1627,6 +1648,7 @@ SLogTupleInsertRecovery(Oid relid, ItemPointer tid, TransactionId xid,
 
 	LWLockAcquire(SLOG_PART_WRITER_LOCK(&key), LW_EXCLUSIVE);
 	LRLockWriteBegin(SLOG_PART_LRLOCK(&key));
+	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &clear_op, sizeof(clear_op));
 	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &flat_op, sizeof(flat_op));
 	LRLockPublish(SLOG_PART_LRLOCK(&key));
 	LRLockWriteEnd(SLOG_PART_LRLOCK(&key));
