@@ -2588,7 +2588,6 @@ RecnoFreeSpaceMap
 RecnoOffsetMapping
 RecnoOverflowPtr
 RecnoOverflowRecordHeader
-RecnoOverflowRef
 RecnoPageOpaque
 RecnoPageOpaqueData
 RecnoScanDesc

@@ -303,16 +303,6 @@ typedef struct RecnoOverflowBuffers
 } RecnoOverflowBuffers;
 
 /*
- * Legacy overflow structures (kept for compatibility during transition)
- */
-typedef struct RecnoOverflowRef
-{
-	uint32		overflow_page;	/* First overflow page */
-	uint32		total_length;	/* Total attribute length */
-	uint32		compression_info;	/* Compression metadata */
-} RecnoOverflowRef;
-
-/*
  * Compression types
  */
 typedef enum RecnoCompressionType
@@ -581,11 +571,6 @@ extern void RecnoGetOverflowStats(Relation rel, int64 *total_overflow_records,
 extern void RecnoVacuumOverflowRecords(Relation rel);
 extern BlockNumber RecnoFindOverflowPageForReuse(Relation rel, Page head_page,
 												 Size needed);
-
-/* Legacy overflow interface (deprecated, for transition) */
-extern RecnoOverflowRef *RecnoStoreOverflow(Relation rel, Datum value, int attnum);
-extern Datum RecnoFetchOverflow(Relation rel, RecnoOverflowRef *ref);
-extern void RecnoDeleteOverflow(Relation rel, RecnoOverflowRef *ref);
 
 /* Compression */
 extern Datum RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type);

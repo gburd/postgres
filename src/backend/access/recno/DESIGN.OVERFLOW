@@ -213,7 +213,7 @@ Two flag values:
 
 The MAX_OVERFLOW_BUFFERS (32) cap bounds how many overflow buffers one
 WAL record can carry.  A value large enough to need more chunks than
-that, or callers that pass no collector (the legacy entry point), fall
+that, or callers that pass no collector (NULL overflow_buffers), fall
 back to immediate per-record WAL logging (RecnoXLogOverflowWrite) inside
 the loop -- correct, but not atomic with the parent and therefore
 reliant on VACUUM orphan cleanup if a crash intervenes.
