@@ -40,15 +40,21 @@
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
+#include "storage/aio_subsys.h"
+#include "storage/bufmgr.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
+#include "storage/smgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
+#include "utils/resowner.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
@@ -416,6 +422,9 @@ perform_undo_discard(void)
 void
 UndoWorkerMain(Datum main_arg)
 {
+	sigjmp_buf	local_sigjmp_buf;
+	MemoryContext undo_worker_context;
+
 	(void) main_arg;			/* unused */
 
 	/* Establish signal handlers */
@@ -442,13 +451,81 @@ UndoWorkerMain(Datum main_arg)
 
 	/*
 	 * Create a memory context for the worker. This will be reset after each
-	 * iteration.
+	 * iteration and during error recovery.
 	 */
-	CurrentMemoryContext = AllocSetContextCreate(TopMemoryContext,
-												 "UNDO Worker",
-												 ALLOCSET_DEFAULT_SIZES);
+	undo_worker_context = AllocSetContextCreate(TopMemoryContext,
+												"UNDO Worker",
+												ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(undo_worker_context);
 
-	/* Simple error handling without sigsetjmp for now */
+	/*
+	 * If an exception is encountered, processing resumes here.
+	 *
+	 * Unlike the autovacuum worker, this is a long-lived background process
+	 * that must survive transient errors (e.g. an ERROR raised while
+	 * discarding UNDO or cleaning up retained sLog before-images).  Letting
+	 * the error propagate would terminate the worker; the postmaster would
+	 * restart it, but any in-flight discard progress would be abandoned and
+	 * discard could stall.  Instead we recover in place, mirroring the
+	 * autovacuum launcher.
+	 *
+	 * We use sigsetjmp(..., 1) so the prevailing signal mask is restored on
+	 * longjmp; signals other than SIGQUIT stay blocked until we exit.  The
+	 * HOLD_INTERRUPTS() call is still required because InterruptPending might
+	 * already be set.
+	 */
+	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	{
+		/* since not using PG_TRY, must reset error stack by hand */
+		error_context_stack = NULL;
+
+		/* Prevents interrupts while cleaning up */
+		HOLD_INTERRUPTS();
+
+		/* Report the error to the server log */
+		EmitErrorReport();
+
+		/*
+		 * Abort the current transaction in order to recover, but only if one
+		 * is actually in progress.  perform_undo_discard() and the sLog
+		 * cleanup operate on shared memory and do not normally open a
+		 * transaction; guarding avoids a spurious "AbortCurrentTransaction
+		 * when not in transaction" path.
+		 */
+		if (IsTransactionState())
+			AbortCurrentTransaction();
+
+		/* Release any other resources we might still be holding. */
+		LWLockReleaseAll();
+		pgstat_report_wait_end();
+		pgaio_error_cleanup();
+		UnlockBuffers();
+		if (AuxProcessResourceOwner)
+			ReleaseAuxProcessResources(false);
+		AtEOXact_Buffers(false);
+		AtEOXact_SMgr();
+		AtEOXact_Files(false);
+		AtEOXact_HashTables(false);
+
+		/* Return to the worker context and clear ErrorContext. */
+		MemoryContextSwitchTo(undo_worker_context);
+		FlushErrorState();
+
+		/* Flush any leaked data in the worker context. */
+		MemoryContextReset(undo_worker_context);
+
+		/* Now we can allow interrupts again */
+		RESUME_INTERRUPTS();
+
+		/*
+		 * Sleep at least 1 second after any error.  We don't want to be
+		 * filling the error logs as fast as we can.
+		 */
+		pg_usleep(1000000L);
+	}
+
+	/* We can now handle ereport(ERROR) */
+	PG_exception_stack = &local_sigjmp_buf;
 
 	/*
 	 * Main loop: wake up periodically and discard old UNDO
