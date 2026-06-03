@@ -1807,21 +1807,29 @@ next_pow2_int(int64 num)
 
 #define MAX_SEQ_SCANS 100
 
-static session_local HTAB *seq_scan_tables[MAX_SEQ_SCANS];	/* tables being scanned */
-static session_local int	seq_scan_level[MAX_SEQ_SCANS];	/* subtransaction nest level */
-static session_local int	num_seq_scans = 0;
+typedef struct DynaHashState
+{
+	HTAB	   *seq_scan_tables[MAX_SEQ_SCANS];	/* tables being scanned */
+	int			seq_scan_level[MAX_SEQ_SCANS];	/* subtransaction nest level */
+	int			num_seq_scans;
+} DynaHashState;
+
+static session_local DynaHashState dynahash_state = {
+	.num_seq_scans = 0,
+};
+
 
 
 /* Register a table as having an active hash_seq_search scan */
 static void
 register_seq_scan(HTAB *hashp)
 {
-	if (num_seq_scans >= MAX_SEQ_SCANS)
+	if (dynahash_state.num_seq_scans >= MAX_SEQ_SCANS)
 		elog(ERROR, "too many active hash_seq_search scans, cannot start one on \"%s\"",
 			 hashp->tabname);
-	seq_scan_tables[num_seq_scans] = hashp;
-	seq_scan_level[num_seq_scans] = GetCurrentTransactionNestLevel();
-	num_seq_scans++;
+	dynahash_state.seq_scan_tables[dynahash_state.num_seq_scans] = hashp;
+	dynahash_state.seq_scan_level[dynahash_state.num_seq_scans] = GetCurrentTransactionNestLevel();
+	dynahash_state.num_seq_scans++;
 }
 
 /* Deregister an active scan */
@@ -1831,13 +1839,13 @@ deregister_seq_scan(HTAB *hashp)
 	int			i;
 
 	/* Search backward since it's most likely at the stack top */
-	for (i = num_seq_scans - 1; i >= 0; i--)
+	for (i = dynahash_state.num_seq_scans - 1; i >= 0; i--)
 	{
-		if (seq_scan_tables[i] == hashp)
+		if (dynahash_state.seq_scan_tables[i] == hashp)
 		{
-			seq_scan_tables[i] = seq_scan_tables[num_seq_scans - 1];
-			seq_scan_level[i] = seq_scan_level[num_seq_scans - 1];
-			num_seq_scans--;
+			dynahash_state.seq_scan_tables[i] = dynahash_state.seq_scan_tables[dynahash_state.num_seq_scans - 1];
+			dynahash_state.seq_scan_level[i] = dynahash_state.seq_scan_level[dynahash_state.num_seq_scans - 1];
+			dynahash_state.num_seq_scans--;
 			return;
 		}
 	}
@@ -1851,9 +1859,9 @@ has_seq_scans(HTAB *hashp)
 {
 	int			i;
 
-	for (i = 0; i < num_seq_scans; i++)
+	for (i = 0; i < dynahash_state.num_seq_scans; i++)
 	{
-		if (seq_scan_tables[i] == hashp)
+		if (dynahash_state.seq_scan_tables[i] == hashp)
 			return true;
 	}
 	return false;
@@ -1876,13 +1884,13 @@ AtEOXact_HashTables(bool isCommit)
 	{
 		int			i;
 
-		for (i = 0; i < num_seq_scans; i++)
+		for (i = 0; i < dynahash_state.num_seq_scans; i++)
 		{
 			elog(WARNING, "leaked hash_seq_search scan for hash table %p",
-				 seq_scan_tables[i]);
+				 dynahash_state.seq_scan_tables[i]);
 		}
 	}
-	num_seq_scans = 0;
+	dynahash_state.num_seq_scans = 0;
 }
 
 /* Clean up any open scans at end of subtransaction */
@@ -1896,16 +1904,16 @@ AtEOSubXact_HashTables(bool isCommit, int nestDepth)
 	 * not only those at the end of the array, because deletion technique
 	 * doesn't keep them in order.
 	 */
-	for (i = num_seq_scans - 1; i >= 0; i--)
+	for (i = dynahash_state.num_seq_scans - 1; i >= 0; i--)
 	{
-		if (seq_scan_level[i] >= nestDepth)
+		if (dynahash_state.seq_scan_level[i] >= nestDepth)
 		{
 			if (isCommit)
 				elog(WARNING, "leaked hash_seq_search scan for hash table %p",
-					 seq_scan_tables[i]);
-			seq_scan_tables[i] = seq_scan_tables[num_seq_scans - 1];
-			seq_scan_level[i] = seq_scan_level[num_seq_scans - 1];
-			num_seq_scans--;
+					 dynahash_state.seq_scan_tables[i]);
+			dynahash_state.seq_scan_tables[i] = dynahash_state.seq_scan_tables[dynahash_state.num_seq_scans - 1];
+			dynahash_state.seq_scan_level[i] = dynahash_state.seq_scan_level[dynahash_state.num_seq_scans - 1];
+			dynahash_state.num_seq_scans--;
 		}
 	}
 }
