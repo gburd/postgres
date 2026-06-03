@@ -314,6 +314,19 @@ typedef enum RecnoCompressionType
 	RECNO_COMP_DICTIONARY		/* For text columns */
 } RecnoCompressionType;
 
+/*
+ * Values for the recno_compression_algorithm GUC.  AUTO lets
+ * RecnoChooseCompressionType() pick per attribute type; LZ4/ZSTD force that
+ * codec for compressible varlena attributes; NONE disables compression.
+ */
+typedef enum RecnoCompressionAlgoGuc
+{
+	RECNO_COMP_ALGO_AUTO,
+	RECNO_COMP_ALGO_LZ4,
+	RECNO_COMP_ALGO_ZSTD,
+	RECNO_COMP_ALGO_OFF
+} RecnoCompressionAlgoGuc;
+
 typedef struct RecnoCompressionHeader
 {
 	uint8		comp_type;
@@ -787,7 +800,7 @@ extern void RecnoLogRelationStats(Relation rel, const RecnoRelationStats *stats,
 
 /* GUC variables */
 extern int	recno_compression_level;
-extern char *recno_compression_algorithm;
+extern int	recno_compression_algorithm;
 extern bool recno_enable_compression;
 extern double recno_compression_min_ratio;
 extern int	recno_overflow_inline_prefix;

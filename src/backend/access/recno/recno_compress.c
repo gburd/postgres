@@ -49,7 +49,7 @@
  * GUC variables for compression
  */
 int			recno_compression_level = 3;	/* Default compression level */
-char	   *recno_compression_algorithm = NULL;
+int			recno_compression_algorithm = RECNO_COMP_ALGO_AUTO;
 bool		recno_enable_compression = true;
 double		recno_compression_min_ratio = 0.8;	/* Minimum compression ratio */
 
@@ -177,6 +177,14 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
 	bool		is_success = false;
 
 	if (!recno_enable_compression)
+		return value;
+
+	/*
+	 * recno_compression_algorithm = 'none' disables compression regardless of
+	 * the requested codec.  Checked here (not only in the chooser) so an
+	 * explicit comp_type from a future caller is also honored.
+	 */
+	if (recno_compression_algorithm == RECNO_COMP_ALGO_OFF)
 		return value;
 
 	/* Get original size */
@@ -327,6 +335,12 @@ RecnoDecompressAttribute(Datum value, Oid typid, RecnoCompressionHeader *header)
  *   - BYTEA: ZSTD (higher compression ratio for binary data)
  *   - All other types: LZ4 (safe general-purpose default)
  *
+ * The recno_compression_algorithm GUC overrides this: 'lz4' or 'zstd' force
+ * that codec for every attribute, while 'auto' uses the per-type heuristic
+ * below.  ('none' is handled earlier in RecnoCompressAttribute.)  Selecting a
+ * codec whose library is not compiled in is impossible because the GUC enum
+ * table omits unavailable codecs.
+ *
  * When built without USE_LZ4 or USE_ZSTD, the stub fallbacks copy data
  * unchanged so the compression ratio check in RecnoCompressAttribute
  * will reject the result, preventing data corruption.
@@ -341,6 +355,12 @@ RecnoDecompressAttribute(Datum value, Oid typid, RecnoCompressionHeader *header)
 static RecnoCompressionType
 RecnoChooseCompressionType(Oid typid, Datum value, Size value_size)
 {
+	/* An explicit codec from the GUC wins over the per-type heuristic. */
+	if (recno_compression_algorithm == RECNO_COMP_ALGO_LZ4)
+		return RECNO_COMP_LZ4;
+	if (recno_compression_algorithm == RECNO_COMP_ALGO_ZSTD)
+		return RECNO_COMP_ZSTD;
+
 	/*
 	 * Choose compression algorithm based on data type.
 	 *
