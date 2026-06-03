@@ -30,9 +30,16 @@
  * same XID, for example when scanning a table just after a bulk insert,
  * update, or delete.
  */
-static session_local TransactionId cachedFetchXid = InvalidTransactionId;
-static session_local XidStatus cachedFetchXidStatus;
-static session_local XLogRecPtr cachedCommitLSN;
+typedef struct TransamState
+{
+	TransactionId cachedFetchXid;
+	XidStatus	cachedFetchXidStatus;
+	XLogRecPtr	cachedCommitLSN;
+} TransamState;
+
+static session_local TransamState transam_state = {
+	.cachedFetchXid = InvalidTransactionId,
+};
 
 /* Local functions */
 static XidStatus TransactionLogFetch(TransactionId transactionId);
@@ -58,8 +65,8 @@ TransactionLogFetch(TransactionId transactionId)
 	 * Before going to the commit log manager, check our single item cache to
 	 * see if we didn't just check the transaction status a moment ago.
 	 */
-	if (TransactionIdEquals(transactionId, cachedFetchXid))
-		return cachedFetchXidStatus;
+	if (TransactionIdEquals(transactionId, transam_state.cachedFetchXid))
+		return transam_state.cachedFetchXidStatus;
 
 	/*
 	 * Also, check to see if the transaction ID is a permanent one.
@@ -85,9 +92,9 @@ TransactionLogFetch(TransactionId transactionId)
 	if (xidstatus != TRANSACTION_STATUS_IN_PROGRESS &&
 		xidstatus != TRANSACTION_STATUS_SUB_COMMITTED)
 	{
-		cachedFetchXid = transactionId;
-		cachedFetchXidStatus = xidstatus;
-		cachedCommitLSN = xidlsn;
+		transam_state.cachedFetchXid = transactionId;
+		transam_state.cachedFetchXidStatus = xidstatus;
+		transam_state.cachedCommitLSN = xidlsn;
 	}
 
 	return xidstatus;
@@ -325,8 +332,8 @@ TransactionIdGetCommitLSN(TransactionId xid)
 	 * checking TransactionLogFetch's cache will usually succeed and avoid an
 	 * extra trip to shared memory.
 	 */
-	if (TransactionIdEquals(xid, cachedFetchXid))
-		return cachedCommitLSN;
+	if (TransactionIdEquals(xid, transam_state.cachedFetchXid))
+		return transam_state.cachedCommitLSN;
 
 	/* Special XIDs are always known committed */
 	if (!TransactionIdIsNormal(xid))
