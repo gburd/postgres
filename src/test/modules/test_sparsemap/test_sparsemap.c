@@ -85,14 +85,15 @@ test_lifecycle(void)
 	map = sparsemap_create(1024);
 	EXPECT_TRUE(map != NULL);
 	EXPECT_EQ_SZ(sparsemap_get_capacity(map), 1024);
-	EXPECT_EQ_SZ(sparsemap_get_size(map), sizeof(uint32));
+	/* empty-map size equals the per-chunk offset width (__sm_idx_t == uint64) */
+	EXPECT_EQ_SZ(sparsemap_get_size(map), sizeof(uint64));
 	sparsemap_free(map);
 
 	/* init with caller-provided buffer */
 	buf = palloc0(1024);
 	sparsemap_init(&local, buf, 1024);
 	EXPECT_EQ_SZ(sparsemap_get_capacity(&local), 1024);
-	EXPECT_EQ_SZ(sparsemap_get_size(&local), sizeof(uint32));
+	EXPECT_EQ_SZ(sparsemap_get_size(&local), sizeof(uint64));
 
 	/* add some data, then clear */
 	sparsemap_add(&local, 42);
@@ -379,7 +380,7 @@ static size_t scan_count;
 static uint64 scan_last_idx;
 
 static void
-scan_counter(uint32 v[], size_t n, void *aux)
+scan_counter(uint64 v[], size_t n, void *aux)
 {
 	(void) aux;
 	for (size_t i = 0; i < n; i++)

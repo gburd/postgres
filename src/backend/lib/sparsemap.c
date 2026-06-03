@@ -3,7 +3,7 @@
  * sparsemap.c
  *    A sparse, compressed bitmap with run-length encoding (RLE).
  *
- * This file is derived from the sparsemap library v2.3.0 by Gregory Burd,
+ * This file is derived from the sparsemap library v4.0.0 by Gregory Burd,
  * adapted for use within PostgreSQL.  The original code is MIT-licensed.
  *
  * Adaptations for PostgreSQL:
@@ -76,7 +76,7 @@
 #endif
 
 typedef uint64_t __sm_bitvec_t;
-typedef uint32_t __sm_idx_t;
+typedef uint64_t __sm_idx_t;
 
 /*
  * __sm_bitvec_unaligned_t: a 64-bit unsigned alias that the compiler
@@ -247,7 +247,7 @@ typedef struct {
   } pivot;
 
   struct {
-    uint64_t start;
+    __sm_idx_t start;
     uint64_t end;
     uint8_t *p;
     size_t size;
@@ -304,10 +304,10 @@ typedef struct {
  * RLE chunks are immutable by design - any modification that would create gaps or
  * partial runs causes the chunk to be converted to sparse encoding.
  */
-#define SM_RLE_FLAGS 0x4000000000000000          /* Bits 63:62 = 01 */
-#define SM_RLE_FLAGS_MASK 0xC000000000000000     /* Mask for bits 63:62 */
-#define SM_RLE_CAPACITY_MASK 0x3FFFFFFF80000000  /* Mask for bits 61:31 (capacity) */
-#define SM_RLE_LENGTH_MASK 0x7FFFFFFF            /* Mask for bits 30:0 (length) */
+#define SM_RLE_FLAGS 0x4000000000000000ULL          /* Bits 63:62 = 01 */
+#define SM_RLE_FLAGS_MASK 0xC000000000000000ULL     /* Mask for bits 63:62 */
+#define SM_RLE_CAPACITY_MASK 0x3FFFFFFF80000000ULL  /* Mask for bits 61:31 (capacity) */
+#define SM_RLE_LENGTH_MASK 0x7FFFFFFFULL            /* Mask for bits 30:0 (length) */
 
 /**
  * @brief Checks if the given chunk is flagged as RLE encoded.
@@ -812,8 +812,8 @@ __sm_chunk_increase_capacity(const __sm_chunk_t *chunk, const size_t capacity)
     for (int j = 0; j < SM_FLAGS_PER_INDEX_BYTE; j++) {
       const size_t flags = SM_CHUNK_GET_FLAGS(*p, j);
       if (flags == SM_PAYLOAD_NONE) {
-        *p &= ~((__sm_bitvec_t)SM_PAYLOAD_ONES << j * 2);
-        *p |= (__sm_bitvec_t)SM_PAYLOAD_ZEROS << j * 2;
+        *p &= (uint8_t)~((__sm_bitvec_t)SM_PAYLOAD_ONES << j * 2);
+        *p |= (uint8_t)((__sm_bitvec_t)SM_PAYLOAD_ZEROS << j * 2);
         increased += SM_BITS_PER_VECTOR;
         if (increased + initial_capacity == capacity) {
           __sm_assert(__sm_chunk_get_capacity(chunk) == capacity);
@@ -1369,7 +1369,7 @@ done:;
  * @return The total number of processed vectors.
  */
 static size_t
-__sm_chunk_scan(const __sm_chunk_t *chunk, const __sm_idx_t start, void (*scanner)(uint32_t[], size_t, void *aux), size_t skip, void *aux)
+__sm_chunk_scan(const __sm_chunk_t *chunk, const __sm_idx_t start, void (*scanner)(uint64_t[], size_t, void *aux), size_t skip, void *aux)
 {
   /* RLE fast path */
   if (SM_UNLIKELY(__sm_chunk_is_rle(chunk))) {
@@ -1384,7 +1384,7 @@ __sm_chunk_scan(const __sm_chunk_t *chunk, const __sm_idx_t start, void (*scanne
     const size_t scan_start = skip;
 
     /* Process in batches using same buffer size as sparse code */
-    uint32_t buffer[SM_BITS_PER_VECTOR];
+    uint64_t buffer[SM_BITS_PER_VECTOR];
 
     for (size_t i = scan_start; i < length; ) {
       size_t batch_size = SM_BITS_PER_VECTOR;
@@ -1411,7 +1411,7 @@ __sm_chunk_scan(const __sm_chunk_t *chunk, const __sm_idx_t start, void (*scanne
   size_t pos = 0;
   size_t skipped = 0;
   register uint8_t *p = (uint8_t *)chunk->m_data;
-  uint32_t buffer[SM_BITS_PER_VECTOR];
+  uint64_t buffer[SM_BITS_PER_VECTOR];
   for (size_t i = 0; i < sizeof(__sm_bitvec_t); i++, p++) {
     if (*p == 0) {
       /* All 4 flag slots in this byte are ZEROS -- no set bits, advance position. */
@@ -2952,7 +2952,7 @@ sm_capacity_remaining(const sparsemap_t *map)
   if (map->m_capacity == 0) {
     return 100.0;
   }
-  return (1.0 - (map->m_data_used / (double)map->m_capacity)) * 100.0;
+  return (1.0 - ((double)map->m_data_used / (double)map->m_capacity)) * 100.0;
 }
 
 /**
@@ -3033,7 +3033,7 @@ sm_contains(sparsemap_t *map, uint64_t idx)
  * @param[in] coalesce A flag indicating whether to perform chunk coalescing.
  * @return The index of the bit that was unset.
  */
-uint64_t
+__sm_idx_t
 __sm_map_unset(sparsemap_t *map, uint64_t idx, const bool coalesce)
 {
   const uint64_t ret_idx = idx;
@@ -3195,7 +3195,7 @@ sm_remove(sparsemap_t *map, const uint64_t idx)
  *
  * @return The index at which the bit was set.
  */
-static uint64_t
+static __sm_idx_t
 __sparsemap_add(sparsemap_t *map, const uint64_t idx, uint8_t *p, size_t offset, const __sm_bitvec_t *v)
 {
   /*
@@ -3204,7 +3204,7 @@ __sparsemap_add(sparsemap_t *map, const uint64_t idx, uint8_t *p, size_t offset,
    * store the bit pattern, so given that we allocated the space ahead of time we
    * don't need to allocate it now.
    */
-  size_t pos = v ? -1 : 0;
+  size_t pos = v ? (size_t)-1 : 0;
   __sm_chunk_t chunk;
   const __sm_idx_t start = __sm_load_idx((const uint8_t *)p);
 
@@ -3220,7 +3220,7 @@ __sparsemap_add(sparsemap_t *map, const uint64_t idx, uint8_t *p, size_t offset,
       SM_ENOUGH_SPACE(sizeof(__sm_bitvec_t));
       offset += SM_SIZEOF_OVERHEAD + pos * sizeof(__sm_bitvec_t);
       __sm_insert_data(map, offset, (uint8_t *)&vec, sizeof(__sm_bitvec_t));
-      pos = -1;
+      pos = (size_t)-1;
     }
     __sm_chunk_set_bit(&chunk, idx - start, &pos);
     break;
@@ -3257,7 +3257,7 @@ __sparsemap_add(sparsemap_t *map, const uint64_t idx, uint8_t *p, size_t offset,
  * @param[in] coalesce A flag indicating whether to attempt chunk coalescing.
  * @return Returns the adjusted index within the sparse bit map or the given index.
  */
-uint64_t
+__sm_idx_t
 __sm_map_set(sparsemap_t *map, uint64_t idx, const bool coalesce)
 {
   __sm_chunk_t chunk;
@@ -3717,7 +3717,7 @@ sm_cardinality(sparsemap_t *map)
  * @param[in] aux Auxiliary data to pass to the scanning function.
  */
 void
-sm_scan(const sparsemap_t *map, void (*scanner)(__sm_idx_t[], size_t, void *aux), size_t skip, void *aux)
+sm_scan(const sparsemap_t *map, void (*scanner)(uint64_t[], size_t, void *aux), size_t skip, void *aux)
 {
   uint8_t *p = __sm_get_chunk_data(map, 0);
   const size_t count = __sm_get_chunk_count(map);
@@ -4596,7 +4596,7 @@ sm_is_empty(const sparsemap_t *map)
  * found, or SM_IDX_MAX if none.  Pass UINT64_MAX as lower_excl to
  * mean "start before bit 0" (return the first bit at or after start).
  */
-static uint64_t
+static __sm_idx_t
 __sm_chunk_next_set(const __sm_chunk_t *chunk, uint64_t start, uint64_t lower_excl)
 {
   if (__sm_chunk_is_rle(chunk)) {
@@ -4651,7 +4651,7 @@ __sm_chunk_next_set(const __sm_chunk_t *chunk, uint64_t start, uint64_t lower_ex
  * Iterate set bits in `chunk` (anchored at absolute `start`),
  * looking for the highest set bit strictly less than `upper_excl`.
  */
-static uint64_t
+static __sm_idx_t
 __sm_chunk_prev_set(const __sm_chunk_t *chunk, uint64_t start, uint64_t upper_excl)
 {
   if (__sm_chunk_is_rle(chunk)) {
@@ -5511,7 +5511,7 @@ sm_shrink_to_fit(sparsemap_t *map)
  * ------------------------------------------------------------------- */
 
 #define SM_WIRE_MAGIC      0x30316d73u  /* "sm10" little-endian */
-#define SM_WIRE_VERSION    1u
+#define SM_WIRE_VERSION    2u
 #define SM_WIRE_HEADER_LEN 16u
 #define SM_WIRE_FLAG_LE    0x01u
 
@@ -6821,7 +6821,7 @@ sm_span(sparsemap_t *map, uint64_t idx, size_t len, bool value)
     if (vec > 0) {
       /* The returned vec had some set bits, let's move forward in the map as
        * much as possible (max: 64 bit positions). */
-      const int max = len > SM_BITS_PER_VECTOR ? SM_BITS_PER_VECTOR : len;
+      const int max = (int)(len > SM_BITS_PER_VECTOR ? SM_BITS_PER_VECTOR : len);
       while (amt < max && (vec & 1 << amt)) {
         amt++;
       }
