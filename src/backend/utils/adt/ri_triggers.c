@@ -254,10 +254,20 @@ typedef struct RI_FastPathEntry
 /*
  * Local data
  */
-static session_local HTAB *ri_constraint_cache = NULL;
-static session_local HTAB *ri_query_cache = NULL;
-static session_local HTAB *ri_compare_cache = NULL;
-static session_local dclist_head ri_constraint_cache_valid_list;
+typedef struct RICacheState
+{
+	HTAB	   *ri_constraint_cache;
+	HTAB	   *ri_query_cache;
+	HTAB	   *ri_compare_cache;
+	dclist_head ri_constraint_cache_valid_list;
+} RICacheState;
+
+static session_local RICacheState ri_cache_state = {
+	.ri_constraint_cache = NULL,
+	.ri_query_cache = NULL,
+	.ri_compare_cache = NULL,
+};
+
 
 static HTAB *ri_fastpath_cache = NULL;
 static bool ri_fastpath_callback_registered = false;
@@ -2270,7 +2280,7 @@ ri_BuildQueryKey(RI_QueryKey *key, const RI_ConstraintInfo *riinfo,
 				 int32 constr_queryno)
 {
 	/*
-	 * Inherited constraints with a common ancestor can share ri_query_cache
+	 * Inherited constraints with a common ancestor can share ri_cache_state.ri_query_cache
 	 * entries for all query types except RI_PLAN_CHECK_LOOKUPPK_FROM_PK.
 	 * Except in that case, the query processes the other table involved in
 	 * the FK constraint (i.e., not the table on which the trigger has been
@@ -2408,13 +2418,13 @@ ri_LoadConstraintInfo(Oid constraintOid)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!ri_constraint_cache)
+	if (!ri_cache_state.ri_constraint_cache)
 		ri_InitHashTables();
 
 	/*
 	 * Find or create a hash entry.  If we find a valid one, just return it.
 	 */
-	riinfo = (RI_ConstraintInfo *) hash_search(ri_constraint_cache,
+	riinfo = (RI_ConstraintInfo *) hash_search(ri_cache_state.ri_constraint_cache,
 											   &constraintOid,
 											   HASH_ENTER, &found);
 	if (!found)
@@ -2489,7 +2499,7 @@ ri_LoadConstraintInfo(Oid constraintOid)
 	 * For efficient processing of invalidation messages below, we keep a
 	 * doubly-linked count list of all currently valid entries.
 	 */
-	dclist_push_tail(&ri_constraint_cache_valid_list, &riinfo->valid_link);
+	dclist_push_tail(&ri_cache_state.ri_constraint_cache_valid_list, &riinfo->valid_link);
 
 	riinfo->valid = true;
 
@@ -2527,7 +2537,7 @@ get_ri_constraint_root(Oid constrOid)
  *
  * While most syscache callbacks just flush all their entries, pg_constraint
  * gets enough update traffic that it's probably worth being smarter.
- * Invalidate any ri_constraint_cache entry associated with the syscache
+ * Invalidate any ri_cache_state.ri_constraint_cache entry associated with the syscache
  * entry with the specified hash value, or all entries if hashvalue == 0.
  *
  * Note: at the time a cache invalidation message is processed there may be
@@ -2542,7 +2552,7 @@ InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 {
 	dlist_mutable_iter iter;
 
-	Assert(ri_constraint_cache != NULL);
+	Assert(ri_cache_state.ri_constraint_cache != NULL);
 
 	/*
 	 * If the list of currently valid entries gets excessively large, we mark
@@ -2550,10 +2560,10 @@ InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 	 * O(N^2) behavior in situations where a session touches many foreign keys
 	 * and also does many ALTER TABLEs, such as a restore from pg_dump.
 	 */
-	if (dclist_count(&ri_constraint_cache_valid_list) > 1000)
+	if (dclist_count(&ri_cache_state.ri_constraint_cache_valid_list) > 1000)
 		hashvalue = 0;			/* pretend it's a cache reset */
 
-	dclist_foreach_modify(iter, &ri_constraint_cache_valid_list)
+	dclist_foreach_modify(iter, &ri_cache_state.ri_constraint_cache_valid_list)
 	{
 		RI_ConstraintInfo *riinfo = dclist_container(RI_ConstraintInfo,
 													 valid_link, iter.cur);
@@ -2574,7 +2584,7 @@ InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 				riinfo->fpmeta = NULL;
 			}
 			/* Remove invalidated entries from the list, too */
-			dclist_delete_from(&ri_constraint_cache_valid_list, iter.cur);
+			dclist_delete_from(&ri_cache_state.ri_constraint_cache_valid_list, iter.cur);
 		}
 	}
 }
@@ -3746,7 +3756,7 @@ ri_InitHashTables(void)
 
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RI_ConstraintInfo);
-	ri_constraint_cache = hash_create("RI constraint cache",
+	ri_cache_state.ri_constraint_cache = hash_create("RI constraint cache",
 									  RI_INIT_CONSTRAINTHASHSIZE,
 									  &ctl, HASH_ELEM | HASH_BLOBS);
 
@@ -3757,13 +3767,13 @@ ri_InitHashTables(void)
 
 	ctl.keysize = sizeof(RI_QueryKey);
 	ctl.entrysize = sizeof(RI_QueryHashEntry);
-	ri_query_cache = hash_create("RI query cache",
+	ri_cache_state.ri_query_cache = hash_create("RI query cache",
 								 RI_INIT_QUERYHASHSIZE,
 								 &ctl, HASH_ELEM | HASH_BLOBS);
 
 	ctl.keysize = sizeof(RI_CompareKey);
 	ctl.entrysize = sizeof(RI_CompareHashEntry);
-	ri_compare_cache = hash_create("RI compare cache",
+	ri_cache_state.ri_compare_cache = hash_create("RI compare cache",
 								   RI_INIT_QUERYHASHSIZE,
 								   &ctl, HASH_ELEM | HASH_BLOBS);
 }
@@ -3784,13 +3794,13 @@ ri_FetchPreparedPlan(RI_QueryKey *key)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!ri_query_cache)
+	if (!ri_cache_state.ri_query_cache)
 		ri_InitHashTables();
 
 	/*
 	 * Lookup for the key
 	 */
-	entry = (RI_QueryHashEntry *) hash_search(ri_query_cache,
+	entry = (RI_QueryHashEntry *) hash_search(ri_cache_state.ri_query_cache,
 											  key,
 											  HASH_FIND, NULL);
 	if (entry == NULL)
@@ -3836,14 +3846,14 @@ ri_HashPreparedPlan(RI_QueryKey *key, SPIPlanPtr plan)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!ri_query_cache)
+	if (!ri_cache_state.ri_query_cache)
 		ri_InitHashTables();
 
 	/*
 	 * Add the new plan.  We might be overwriting an entry previously found
 	 * invalid by ri_FetchPreparedPlan.
 	 */
-	entry = (RI_QueryHashEntry *) hash_search(ri_query_cache,
+	entry = (RI_QueryHashEntry *) hash_search(ri_cache_state.ri_query_cache,
 											  key,
 											  HASH_ENTER, &found);
 	Assert(!found || entry->plan == NULL);
@@ -4009,7 +4019,7 @@ ri_HashCompareOp(Oid eq_opr, Oid typeid)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!ri_compare_cache)
+	if (!ri_cache_state.ri_compare_cache)
 		ri_InitHashTables();
 
 	/*
@@ -4018,7 +4028,7 @@ ri_HashCompareOp(Oid eq_opr, Oid typeid)
 	 */
 	key.eq_opr = eq_opr;
 	key.typeid = typeid;
-	entry = (RI_CompareHashEntry *) hash_search(ri_compare_cache,
+	entry = (RI_CompareHashEntry *) hash_search(ri_cache_state.ri_compare_cache,
 												&key,
 												HASH_ENTER, &found);
 	if (!found)
