@@ -136,6 +136,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 39 | `utils/time/combocid.c` | `ComboCidState` / `combocid_state` | 4 | **Pure fold** — folded the four *private* file-local session_local statics (`comboHash`, `comboCids`, `usedComboCids`, `sizeComboCids`) into one file-local `static session_local ComboCidState combocid_state`. Struct anchored after the `ComboCidKey` typedef so the `comboCids` member type is in scope. No name collisions; no prose FPs. Single-file, no header change. |
 
+| 40 | `utils/adt/ri_triggers.c` | `RICacheState` / `ri_cache_state` | 4 | **Pure fold** — folded the four *private* file-local session_local statics (`ri_constraint_cache`, `ri_query_cache`, `ri_compare_cache`, `ri_constraint_cache_valid_list`) into one file-local `static session_local RICacheState ri_cache_state`. The plain `static` `ri_fastpath_cache` / `ri_fastpath_callback_registered` (not `session_local`) are left standalone. No name collisions; no prose FPs. Single-file, no header change. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
