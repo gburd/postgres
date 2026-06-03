@@ -56,8 +56,16 @@ struct DynamicFileList
 	char		filename[FLEXIBLE_ARRAY_MEMBER];	/* Full pathname of file */
 };
 
-static session_local DynamicFileList *file_list = NULL;
-static session_local DynamicFileList *file_tail = NULL;
+typedef struct DfmgrState
+{
+	DynamicFileList *file_list;
+	DynamicFileList *file_tail;
+} DfmgrState;
+
+static session_local DfmgrState dfmgr_state = {
+	.file_list = NULL,
+	.file_tail = NULL,
+};
 
 /* stat() call under Win32 returns an st_ino field, but it has no meaning */
 #ifndef WIN32
@@ -197,7 +205,7 @@ internal_load_library(const char *libname)
 	/*
 	 * Scan the list of loaded FILES to see if the file has been loaded.
 	 */
-	for (file_scanner = file_list;
+	for (file_scanner = dfmgr_state.file_list;
 		 file_scanner != NULL &&
 		 strcmp(libname, file_scanner->filename) != 0;
 		 file_scanner = file_scanner->next)
@@ -214,7 +222,7 @@ internal_load_library(const char *libname)
 					 errmsg("could not access file \"%s\": %m",
 							libname)));
 
-		for (file_scanner = file_list;
+		for (file_scanner = dfmgr_state.file_list;
 			 file_scanner != NULL &&
 			 !SAME_INODE(stat_buf, *file_scanner);
 			 file_scanner = file_scanner->next)
@@ -299,11 +307,11 @@ internal_load_library(const char *libname)
 			(*PG_init) ();
 
 		/* OK to link it into list */
-		if (file_list == NULL)
-			file_list = file_scanner;
+		if (dfmgr_state.file_list == NULL)
+			dfmgr_state.file_list = file_scanner;
 		else
-			file_tail->next = file_scanner;
-		file_tail = file_scanner;
+			dfmgr_state.file_tail->next = file_scanner;
+		dfmgr_state.file_tail = file_scanner;
 	}
 
 	return file_scanner->handle;
@@ -424,7 +432,7 @@ incompatible_module_error(const char *libname,
 DynamicFileList *
 get_first_loaded_module(void)
 {
-	return file_list;
+	return dfmgr_state.file_list;
 }
 
 DynamicFileList *
@@ -710,7 +718,7 @@ EstimateLibraryStateSpace(void)
 	DynamicFileList *file_scanner;
 	Size		size = 1;
 
-	for (file_scanner = file_list;
+	for (file_scanner = dfmgr_state.file_list;
 		 file_scanner != NULL;
 		 file_scanner = file_scanner->next)
 		size = add_size(size, strlen(file_scanner->filename) + 1);
@@ -726,7 +734,7 @@ SerializeLibraryState(Size maxsize, char *start_address)
 {
 	DynamicFileList *file_scanner;
 
-	for (file_scanner = file_list;
+	for (file_scanner = dfmgr_state.file_list;
 		 file_scanner != NULL;
 		 file_scanner = file_scanner->next)
 	{
