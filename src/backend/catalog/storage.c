@@ -74,8 +74,16 @@ typedef struct PendingRelSync
 	bool		is_truncated;	/* Has the file experienced truncation? */
 } PendingRelSync;
 
-static session_local PendingRelDelete *pendingDeletes = NULL; /* head of linked list */
-static session_local HTAB *pendingSyncHash = NULL;
+typedef struct StorageState
+{
+	PendingRelDelete *pendingDeletes;	/* head of linked list */
+	HTAB	   *pendingSyncHash;
+} StorageState;
+
+static session_local StorageState storage_state = {
+	.pendingDeletes = NULL,
+	.pendingSyncHash = NULL,
+};
 
 
 /*
@@ -89,18 +97,18 @@ AddPendingSync(const RelFileLocator *rlocator)
 	bool		found;
 
 	/* create the hash if not yet */
-	if (!pendingSyncHash)
+	if (!storage_state.pendingSyncHash)
 	{
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(RelFileLocator);
 		ctl.entrysize = sizeof(PendingRelSync);
 		ctl.hcxt = TopTransactionContext;
-		pendingSyncHash = hash_create("pending sync hash", 16, &ctl,
+		storage_state.pendingSyncHash = hash_create("pending sync hash", 16, &ctl,
 									  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
-	pending = hash_search(pendingSyncHash, rlocator, HASH_ENTER, &found);
+	pending = hash_search(storage_state.pendingSyncHash, rlocator, HASH_ENTER, &found);
 	Assert(!found);
 	pending->is_truncated = false;
 }
@@ -167,8 +175,8 @@ RelationCreateStorage(RelFileLocator rlocator, char relpersistence,
 		pending->procNumber = procNumber;
 		pending->atCommit = false;	/* delete if abort */
 		pending->nestLevel = GetCurrentTransactionNestLevel();
-		pending->next = pendingDeletes;
-		pendingDeletes = pending;
+		pending->next = storage_state.pendingDeletes;
+		storage_state.pendingDeletes = pending;
 	}
 
 	if (relpersistence == RELPERSISTENCE_PERMANENT && !XLogIsNeeded())
@@ -215,8 +223,8 @@ RelationDropStorage(Relation rel)
 	pending->procNumber = rel->rd_backend;
 	pending->atCommit = true;	/* delete if commit */
 	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->next = pendingDeletes;
-	pendingDeletes = pending;
+	pending->next = storage_state.pendingDeletes;
+	storage_state.pendingDeletes = pending;
 
 	/*
 	 * NOTE: if the relation was created in this transaction, it will now be
@@ -256,7 +264,7 @@ RelationPreserveStorage(RelFileLocator rlocator, bool atCommit)
 	PendingRelDelete *next;
 
 	prev = NULL;
-	for (pending = pendingDeletes; pending != NULL; pending = next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = next)
 	{
 		next = pending->next;
 		if (RelFileLocatorEquals(rlocator, pending->rlocator)
@@ -266,7 +274,7 @@ RelationPreserveStorage(RelFileLocator rlocator, bool atCommit)
 			if (prev)
 				prev->next = next;
 			else
-				pendingDeletes = next;
+				storage_state.pendingDeletes = next;
 			pfree(pending);
 			/* prev does not change */
 		}
@@ -451,10 +459,10 @@ RelationPreTruncate(Relation rel)
 {
 	PendingRelSync *pending;
 
-	if (!pendingSyncHash)
+	if (!storage_state.pendingSyncHash)
 		return;
 
-	pending = hash_search(pendingSyncHash,
+	pending = hash_search(storage_state.pendingSyncHash,
 						  &(RelationGetSmgr(rel)->smgr_rlocator.locator),
 						  HASH_FIND, NULL);
 	if (pending)
@@ -572,8 +580,8 @@ RelationCopyStorage(SMgrRelation src, SMgrRelation dst,
 bool
 RelFileLocatorSkippingWAL(RelFileLocator rlocator)
 {
-	if (!pendingSyncHash ||
-		hash_search(pendingSyncHash, &rlocator, HASH_FIND, NULL) == NULL)
+	if (!storage_state.pendingSyncHash ||
+		hash_search(storage_state.pendingSyncHash, &rlocator, HASH_FIND, NULL) == NULL)
 		return false;
 
 	return true;
@@ -588,7 +596,7 @@ EstimatePendingSyncsSpace(void)
 {
 	int64		entries;
 
-	entries = pendingSyncHash ? hash_get_num_entries(pendingSyncHash) : 0;
+	entries = storage_state.pendingSyncHash ? hash_get_num_entries(storage_state.pendingSyncHash) : 0;
 	return mul_size(1 + entries, sizeof(RelFileLocator));
 }
 
@@ -607,7 +615,7 @@ SerializePendingSyncs(Size maxSize, char *startAddress)
 	RelFileLocator *src;
 	RelFileLocator *dest = (RelFileLocator *) startAddress;
 
-	if (!pendingSyncHash)
+	if (!storage_state.pendingSyncHash)
 		goto terminate;
 
 	/* Create temporary hash to collect active relfilelocators */
@@ -615,16 +623,16 @@ SerializePendingSyncs(Size maxSize, char *startAddress)
 	ctl.entrysize = sizeof(RelFileLocator);
 	ctl.hcxt = CurrentMemoryContext;
 	tmphash = hash_create("tmp relfilelocators",
-						  hash_get_num_entries(pendingSyncHash), &ctl,
+						  hash_get_num_entries(storage_state.pendingSyncHash), &ctl,
 						  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* collect all rlocator from pending syncs */
-	hash_seq_init(&scan, pendingSyncHash);
+	hash_seq_init(&scan, storage_state.pendingSyncHash);
 	while ((sync = (PendingRelSync *) hash_seq_search(&scan)))
 		(void) hash_search(tmphash, &sync->rlocator, HASH_ENTER, NULL);
 
 	/* remove deleted rnodes */
-	for (delete = pendingDeletes; delete != NULL; delete = delete->next)
+	for (delete = storage_state.pendingDeletes; delete != NULL; delete = delete->next)
 		if (delete->atCommit)
 			(void) hash_search(tmphash, &delete->rlocator,
 							   HASH_REMOVE, NULL);
@@ -652,7 +660,7 @@ RestorePendingSyncs(char *startAddress)
 {
 	RelFileLocator *rlocator;
 
-	Assert(pendingSyncHash == NULL);
+	Assert(storage_state.pendingSyncHash == NULL);
 	for (rlocator = (RelFileLocator *) startAddress; rlocator->relNumber != 0;
 		 rlocator++)
 		AddPendingSync(rlocator);
@@ -681,7 +689,7 @@ smgrDoPendingDeletes(bool isCommit)
 	SMgrRelation *srels = NULL;
 
 	prev = NULL;
-	for (pending = pendingDeletes; pending != NULL; pending = next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = next)
 	{
 		next = pending->next;
 		if (pending->nestLevel < nestLevel)
@@ -695,7 +703,7 @@ smgrDoPendingDeletes(bool isCommit)
 			if (prev)
 				prev->next = next;
 			else
-				pendingDeletes = next;
+				storage_state.pendingDeletes = next;
 			/* do deletion if called for */
 			if (pending->atCommit == isCommit)
 			{
@@ -749,13 +757,13 @@ smgrDoPendingSyncs(bool isCommit, bool isParallelWorker)
 
 	Assert(GetCurrentTransactionNestLevel() == 1);
 
-	if (!pendingSyncHash)
+	if (!storage_state.pendingSyncHash)
 		return;					/* no relation needs sync */
 
 	/* Abort -- just throw away all pending syncs */
 	if (!isCommit)
 	{
-		pendingSyncHash = NULL;
+		storage_state.pendingSyncHash = NULL;
 		return;
 	}
 
@@ -764,17 +772,17 @@ smgrDoPendingSyncs(bool isCommit, bool isParallelWorker)
 	/* Parallel worker -- just throw away all pending syncs */
 	if (isParallelWorker)
 	{
-		pendingSyncHash = NULL;
+		storage_state.pendingSyncHash = NULL;
 		return;
 	}
 
 	/* Skip syncing nodes that smgrDoPendingDeletes() will delete. */
-	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = pending->next)
 		if (pending->atCommit)
-			(void) hash_search(pendingSyncHash, &pending->rlocator,
+			(void) hash_search(storage_state.pendingSyncHash, &pending->rlocator,
 							   HASH_REMOVE, NULL);
 
-	hash_seq_init(&scan, pendingSyncHash);
+	hash_seq_init(&scan, storage_state.pendingSyncHash);
 	while ((pendingsync = (PendingRelSync *) hash_seq_search(&scan)))
 	{
 		ForkNumber	fork;
@@ -863,7 +871,7 @@ smgrDoPendingSyncs(bool isCommit, bool isParallelWorker)
 		}
 	}
 
-	pendingSyncHash = NULL;
+	storage_state.pendingSyncHash = NULL;
 
 	if (nrels > 0)
 	{
@@ -898,7 +906,7 @@ smgrGetPendingDeletes(bool forCommit, RelFileLocator **ptr)
 	PendingRelDelete *pending;
 
 	nrels = 0;
-	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = pending->next)
 	{
 		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit
 			&& pending->procNumber == INVALID_PROC_NUMBER)
@@ -911,7 +919,7 @@ smgrGetPendingDeletes(bool forCommit, RelFileLocator **ptr)
 	}
 	rptr = palloc_array(RelFileLocator, nrels);
 	*ptr = rptr;
-	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = pending->next)
 	{
 		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit
 			&& pending->procNumber == INVALID_PROC_NUMBER)
@@ -936,10 +944,10 @@ PostPrepare_smgr(void)
 	PendingRelDelete *pending;
 	PendingRelDelete *next;
 
-	for (pending = pendingDeletes; pending != NULL; pending = next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = next)
 	{
 		next = pending->next;
-		pendingDeletes = next;
+		storage_state.pendingDeletes = next;
 		/* must explicitly free the list entry */
 		pfree(pending);
 	}
@@ -957,7 +965,7 @@ AtSubCommit_smgr(void)
 	int			nestLevel = GetCurrentTransactionNestLevel();
 	PendingRelDelete *pending;
 
-	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
+	for (pending = storage_state.pendingDeletes; pending != NULL; pending = pending->next)
 	{
 		if (pending->nestLevel >= nestLevel)
 			pending->nestLevel = nestLevel - 1;
