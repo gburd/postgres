@@ -134,6 +134,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 38 | `tcop/postgres.c` | `PostgresState` / `postgres_state` | 13 | **Split** — folded the thirteen *private* file-local session_local statics (`xact_started`, `DoingCommandRead`, `doing_extended_query_message`, `ignore_till_sync`, `unnamed_stmt_psrc`, `userDoption`, `EchoQuery`, `UseSemiNewlineNewline`, `row_description_context`, `row_description_buf`, `Save_r`, `Save_t`) into one file-local `static session_local PostgresState postgres_state`. The two **exported** session_local globals (`debug_query_string`, `whereToSendOutput`) are left standalone — declared `extern` and read across the whole tree. `struct rusage` / `struct timeval` members are in scope (`sys/resource.h`, `sys/time.h` included at top); `Save_r`/`Save_t` live in a separate cluster near `ShowUsage()` but fold cleanly into the same struct. No name collisions; no real-code FPs. Single-file, no header change. |
 
+| 39 | `utils/time/combocid.c` | `ComboCidState` / `combocid_state` | 4 | **Pure fold** — folded the four *private* file-local session_local statics (`comboHash`, `comboCids`, `usedComboCids`, `sizeComboCids`) into one file-local `static session_local ComboCidState combocid_state`. Struct anchored after the `ComboCidKey` typedef so the `comboCids` member type is in scope. No name collisions; no prose FPs. Single-file, no header change. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
