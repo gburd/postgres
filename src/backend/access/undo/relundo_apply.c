@@ -49,9 +49,36 @@
  */
 #define RELUNDO_APPLY_MAX_DATA_BUFS		8
 
+/*
+ * Maximum number of consecutive UNDO records folded into one compensation log
+ * record (CLR).  A bulk DELETE/UPDATE rollback emits one UNDO record per tuple,
+ * and long runs of those records target the same data page and live on the same
+ * UNDO-fork page (the chain is walked in reverse-insertion order).  Folding such
+ * a run into a single CLR replaces N forced full-page images plus N XLogFlush
+ * calls with one of each.  The cap bounds how long the batch holds the data
+ * page's exclusive buffer lock; each per-record apply is an in-memory
+ * memcpy/flag-set, so 128 is a small, bounded hold.
+ */
+#define RELUNDO_APPLY_MAX_BATCH			128
+
+/*
+ * Maximum number of distinct UNDO-fork pages whose records a single CLR may
+ * cover.  Each contributes one forced full-page image and one exclusive buffer
+ * lock held across the XLogInsert.  Together with the single batched data page,
+ * the total registered blocks (1 + this) stays well under XLR_MAX_BLOCK_ID (32).
+ */
+#define RELUNDO_APPLY_MAX_FORK_BUFS		8
+
 /* Forward declarations for internal functions */
 static Page RelUndoTrackPage(Relation rel, Buffer *touched, int *ntouched,
 							  BlockNumber blkno);
+static bool RelUndoRecordSingleDataPage(const RelUndoRecordHeader *header,
+										const void *payload, BlockNumber *blk);
+static bool RelUndoForkTrack(BlockNumber *fork_blks, int *nfork,
+							 BlockNumber blkno);
+static void RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
+								  void *payload, RelUndoRecPtr current_ptr,
+								  Buffer *touched, int *ntouched);
 static void RelUndoApplyInsert(Relation rel, Page page, OffsetNumber offset);
 static void RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 							   char *tuple_data, uint32 tuple_len);
@@ -60,8 +87,8 @@ static void RelUndoApplyDelete(Relation rel, Page page, OffsetNumber offset,
 static void RelUndoApplyTupleLock(Relation rel, Page page, OffsetNumber offset);
 static void RelUndoApplyDeltaInsert(Relation rel, Page page, OffsetNumber offset,
 									char *delta_data, uint32 delta_len);
-static void RelUndoLogApplyCLR(Relation rel, RelUndoRecPtr urec_ptr,
-							   Buffer *touched, int ntouched);
+static void RelUndoLogApplyCLR(Relation rel, const RelUndoRecPtr *urec_ptrs,
+							   int nptrs, Buffer *touched, int ntouched);
 
 /*
  * RelUndoApplyChain - Walk and apply per-relation UNDO chain for rollback
@@ -93,21 +120,34 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 	/*
 	 * Walk backwards through the chain, applying each record.
 	 *
-	 * Each record's physical restoration is applied to the data page(s)
-	 * first, while holding their buffers exclusively locked, then a single
-	 * redoable compensation log record (XLOG_RELUNDO_APPLY) logs full-page
-	 * images of every restored page plus the UNDO-fork page (carrying the
-	 * CLR_APPLIED flag).  The apply helpers may ereport(ERROR) on corruption,
-	 * so they run BEFORE the critical section in RelUndoLogApplyCLR; an error
-	 * there aborts the worker transaction and releases the buffer locks.
+	 * Each record's physical restoration is applied to its data page(s) while
+	 * holding their buffers exclusively locked, then a single redoable
+	 * compensation log record (XLOG_RELUNDO_APPLY) logs full-page images of
+	 * every restored page plus the UNDO-fork page(s) (carrying the CLR_APPLIED
+	 * flag).  The apply helpers may ereport(ERROR) on corruption, so they run
+	 * BEFORE the critical section in RelUndoLogApplyCLR; an error there aborts
+	 * the worker transaction and releases the buffer locks.
+	 *
+	 * Bulk DELETE/UPDATE rollback emits one UNDO record per tuple, and long
+	 * runs of those records target the same data page (reverse-insertion
+	 * order).  We fold such a run into one CLR: we keep that one data page's
+	 * buffer exclusively locked and apply each record's in-memory restoration
+	 * onto it, accumulating the records' urec_ptrs, then emit a single CLR
+	 * (one forced data-page image, one flush) covering the whole batch.  A
+	 * record that does not target exactly that single data page (out-of-place
+	 * update, multi-TID delete, a different page) terminates the batch and is
+	 * handled on its own with the unchanged singleton path.  Folding never
+	 * widens the simultaneous buffer-lock footprint beyond one data page.
 	 */
 	while (RelUndoRecPtrIsValid(current_ptr))
 	{
 		Buffer		touched[RELUNDO_APPLY_MAX_DATA_BUFS];
 		int			ntouched = 0;
-		Page		page;
-		BlockNumber target_blkno;
-		OffsetNumber target_offset;
+		RelUndoRecPtr batch_ptrs[RELUNDO_APPLY_MAX_BATCH];
+		int			nbatch = 0;
+		BlockNumber batch_blkno = InvalidBlockNumber;
+		BlockNumber fork_blks[RELUNDO_APPLY_MAX_FORK_BUFS];
+		int			nfork = 0;
 		int			i;
 
 		if (!RelUndoReadRecord(rel, current_ptr, &header, &payload, &payload_size))
@@ -124,220 +164,113 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 				 (unsigned long) current_ptr);
 			current_ptr = header.urec_prevundorec;
 			if (payload)
+			{
 				pfree(payload);
+				payload = NULL;
+			}
 			continue;
 		}
 
 		elog(DEBUG1, "RelUndoApplyChain: processing record type %d at %lu",
 			 header.urec_type, (unsigned long) current_ptr);
 
-		switch (header.urec_type)
+		/* Apply this record; it pins+locks its data page(s) into touched[]. */
+		RelUndoApplyOneRecord(rel, &header, payload, current_ptr,
+							  touched, &ntouched);
+		batch_ptrs[nbatch++] = current_ptr;
+		(void) RelUndoRecordSingleDataPage(&header, payload, &batch_blkno);
+		(void) RelUndoForkTrack(fork_blks, &nfork, RelUndoGetBlockNum(current_ptr));
+
+		current_ptr = header.urec_prevundorec;
+		if (payload)
 		{
-			case RELUNDO_INSERT:
-				{
-					RelUndoInsertPayload *ins_payload = (RelUndoInsertPayload *) payload;
-
-					target_blkno = ItemPointerGetBlockNumber(&ins_payload->firsttid);
-					target_offset = ItemPointerGetOffsetNumber(&ins_payload->firsttid);
-
-					page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-					RelUndoApplyInsert(rel, page, target_offset);
-					break;
-				}
-
-			case RELUNDO_DELETE:
-				{
-					RelUndoDeletePayload *del_payload = (RelUndoDeletePayload *) payload;
-					char	   *tuple_data_buf = NULL;
-					uint32		tlen = 0;
-
-					RelUndoReadRecordWithTuple(rel, current_ptr,
-											   &tuple_data_buf, &tlen);
-
-					for (i = 0; i < del_payload->ntids; i++)
-					{
-						target_blkno = ItemPointerGetBlockNumber(&del_payload->tids[i]);
-						target_offset = ItemPointerGetOffsetNumber(&del_payload->tids[i]);
-
-						page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-
-						if (tuple_data_buf && tlen > 0)
-							RelUndoApplyDelete(rel, page, target_offset,
-											   tuple_data_buf, tlen);
-					}
-
-					if (tuple_data_buf)
-						pfree(tuple_data_buf);
-					break;
-				}
-
-			case RELUNDO_UPDATE:
-				{
-					RelUndoUpdatePayload *upd_payload = (RelUndoUpdatePayload *) payload;
-					char	   *tuple_data_buf = NULL;
-					uint32		tlen = 0;
-
-					RelUndoReadRecordWithTuple(rel, current_ptr,
-											   &tuple_data_buf, &tlen);
-
-					/* Restore old tuple at the old location */
-					target_blkno = ItemPointerGetBlockNumber(&upd_payload->oldtid);
-					target_offset = ItemPointerGetOffsetNumber(&upd_payload->oldtid);
-
-					page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-
-					if (tuple_data_buf && tlen > 0)
-						RelUndoApplyUpdate(rel, page, target_offset,
-										   tuple_data_buf, tlen);
-
-					if (tuple_data_buf)
-						pfree(tuple_data_buf);
-
-					/*
-					 * Mark the new tuple version as unused, but only for
-					 * out-of-place updates where oldtid != newtid.  For
-					 * in-place updates the old and new tuple share the same
-					 * slot, so marking it unused would destroy the
-					 * just-restored old tuple.
-					 */
-					if (!ItemPointerEquals(&upd_payload->oldtid,
-										   &upd_payload->newtid))
-					{
-						BlockNumber new_blkno;
-						OffsetNumber new_offset;
-						Page		new_page;
-
-						new_blkno = ItemPointerGetBlockNumber(&upd_payload->newtid);
-						new_offset = ItemPointerGetOffsetNumber(&upd_payload->newtid);
-
-						new_page = RelUndoTrackPage(rel, touched, &ntouched, new_blkno);
-						RelUndoApplyInsert(rel, new_page, new_offset);
-					}
-					break;
-				}
-
-			case RELUNDO_TUPLE_LOCK:
-				{
-					RelUndoTupleLockPayload *lock_payload = (RelUndoTupleLockPayload *) payload;
-
-					target_blkno = ItemPointerGetBlockNumber(&lock_payload->tid);
-					target_offset = ItemPointerGetOffsetNumber(&lock_payload->tid);
-
-					page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-					RelUndoApplyTupleLock(rel, page, target_offset);
-					break;
-				}
-
-			case RELUNDO_DELTA_INSERT:
-				{
-					RelUndoDeltaInsertPayload *delta_payload = (RelUndoDeltaInsertPayload *) payload;
-					char	   *delta_data;
-
-					delta_data = (char *) payload +
-						offsetof(RelUndoDeltaInsertPayload, delta_len) + sizeof(uint16);
-
-					target_blkno = ItemPointerGetBlockNumber(&delta_payload->tid);
-					target_offset = ItemPointerGetOffsetNumber(&delta_payload->tid);
-
-					page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-					RelUndoApplyDeltaInsert(rel, page, target_offset,
-											delta_data, delta_payload->delta_len);
-					break;
-				}
-
-			case RELUNDO_DELTA_UPDATE:
-				{
-					/*
-					 * Byte-diff update: reconstruct the old tuple from the
-					 * current (new) tuple + the stored diff, then restore it.
-					 */
-					RelUndoDeltaUpdatePayload *du_payload =
-						(RelUndoDeltaUpdatePayload *) payload;
-					char	   *diff_data;
-					RecnoDiffRecord *diff;
-					char	   *old_tuple_data;
-					Size		old_tuple_len;
-
-					diff_data = (char *) payload +
-						SizeOfRelUndoDeltaUpdatePayload;
-					diff = (RecnoDiffRecord *) diff_data;
-
-					/* Read the current (new) tuple from the page */
-					target_blkno = ItemPointerGetBlockNumber(&du_payload->oldtid);
-					target_offset = ItemPointerGetOffsetNumber(&du_payload->oldtid);
-
-					page = RelUndoTrackPage(rel, touched, &ntouched, target_blkno);
-
-					if (target_offset <= PageGetMaxOffsetNumber(page))
-					{
-						ItemId		lp = PageGetItemId(page, target_offset);
-
-						if (ItemIdIsNormal(lp))
-						{
-							char	   *cur_data = (char *) PageGetItem(page, lp);
-							Size		cur_len = ItemIdGetLength(lp);
-
-							old_tuple_data = (char *) palloc(cur_len);
-
-							if (RecnoApplyDiffReverse(cur_data, cur_len,
-													  diff, old_tuple_data,
-													  &old_tuple_len))
-							{
-								RecnoTupleHeader *restored_hdr;
-
-								/* Restore old tuple in place */
-								memcpy(cur_data, old_tuple_data, old_tuple_len);
-
-								/* Clear transient flags on restored tuple */
-								restored_hdr = (RecnoTupleHeader *) cur_data;
-								restored_hdr->t_flags &= ~(RECNO_TUPLE_UNCOMMITTED |
-														   RECNO_TUPLE_DELETED |
-														   RECNO_TUPLE_UPDATED);
-							}
-							else
-							{
-								elog(WARNING,
-									 "RelUndoApplyChain: failed to apply diff reverse at offset %u",
-									 target_offset);
-							}
-
-							pfree(old_tuple_data);
-						}
-					}
-
-					/* Also mark the new tuple version as unused */
-					if (!ItemPointerEquals(&du_payload->oldtid,
-										   &du_payload->newtid))
-					{
-						BlockNumber new_blkno;
-						OffsetNumber new_offset;
-						Page		new_page;
-
-						new_blkno = ItemPointerGetBlockNumber(&du_payload->newtid);
-						new_offset = ItemPointerGetOffsetNumber(&du_payload->newtid);
-
-						new_page = RelUndoTrackPage(rel, touched, &ntouched, new_blkno);
-						RelUndoApplyInsert(rel, new_page, new_offset);
-					}
-					break;
-				}
-
-			default:
-				/* Release any tracked buffers before erroring out. */
-				for (i = 0; i < ntouched; i++)
-					UnlockReleaseBuffer(touched[i]);
-				elog(ERROR, "RelUndoApplyChain: unknown UNDO record type %d",
-					 header.urec_type);
+			pfree(payload);
+			payload = NULL;
 		}
 
 		/*
-		 * Log a redoable CLR carrying full-page images of every restored data
-		 * page plus the fork page, then release the data buffers.  For
-		 * non-WAL relations there is nothing to log; just mark dirty and
-		 * release.
+		 * Extend the batch with following records that restore the very same
+		 * single data page.  We only peek ahead while the current record was
+		 * itself a single-page record (batch_blkno valid); a multi-page record
+		 * leaves ntouched > 1 and ends the batch immediately.
+		 */
+		while (ntouched == 1 &&
+			   BlockNumberIsValid(batch_blkno) &&
+			   nbatch < RELUNDO_APPLY_MAX_BATCH &&
+			   RelUndoRecPtrIsValid(current_ptr))
+		{
+			RelUndoRecordHeader peek_hdr;
+			void	   *peek_payload = NULL;
+			Size		peek_size;
+			BlockNumber peek_blkno = InvalidBlockNumber;
+
+			if (!RelUndoReadRecord(rel, current_ptr, &peek_hdr,
+								   &peek_payload, &peek_size))
+				break;
+
+			if (peek_hdr.info_flags & RELUNDO_INFO_CLR_APPLIED)
+			{
+				/* Stop the batch; the skip is handled by the outer loop. */
+				if (peek_payload)
+					pfree(peek_payload);
+				break;
+			}
+
+			if (!RelUndoRecordSingleDataPage(&peek_hdr, peek_payload, &peek_blkno) ||
+				peek_blkno != batch_blkno)
+			{
+				/* Not foldable: leave current_ptr for the outer loop. */
+				if (peek_payload)
+					pfree(peek_payload);
+				break;
+			}
+
+			/*
+			 * The CLR will register one forced image per distinct fork page in
+			 * the batch.  If folding this record would exceed the fork-page cap
+			 * (and its fork page is not already in the batch), stop here.
+			 */
+			if (nfork >= RELUNDO_APPLY_MAX_FORK_BUFS)
+			{
+				BlockNumber peek_fork = RelUndoGetBlockNum(current_ptr);
+				bool		seen = false;
+
+				for (i = 0; i < nfork; i++)
+				{
+					if (fork_blks[i] == peek_fork)
+					{
+						seen = true;
+						break;
+					}
+				}
+				if (!seen)
+				{
+					if (peek_payload)
+						pfree(peek_payload);
+					break;
+				}
+			}
+
+			/* Foldable: apply onto the already-locked data page. */
+			RelUndoApplyOneRecord(rel, &peek_hdr, peek_payload, current_ptr,
+								  touched, &ntouched);
+			batch_ptrs[nbatch++] = current_ptr;
+			(void) RelUndoForkTrack(fork_blks, &nfork,
+									RelUndoGetBlockNum(current_ptr));
+
+			current_ptr = peek_hdr.urec_prevundorec;
+			if (peek_payload)
+				pfree(peek_payload);
+		}
+
+		/*
+		 * Log one redoable CLR carrying full-page images of every restored
+		 * data page plus the fork page(s) for the batched records, then
+		 * release the data buffers.  For non-WAL relations there is nothing to
+		 * log; just mark dirty and release.
 		 */
 		if (RelationNeedsWAL(rel))
-			RelUndoLogApplyCLR(rel, current_ptr, touched, ntouched);
+			RelUndoLogApplyCLR(rel, batch_ptrs, nbatch, touched, ntouched);
 		else
 		{
 			for (i = 0; i < ntouched; i++)
@@ -346,18 +279,328 @@ RelUndoApplyChain(Relation rel, RelUndoRecPtr start_ptr)
 				UnlockReleaseBuffer(touched[i]);
 			}
 		}
-
-		/* Advance to the previous record in the chain */
-		current_ptr = header.urec_prevundorec;
-
-		if (payload)
-		{
-			pfree(payload);
-			payload = NULL;
-		}
 	}
 
 	elog(DEBUG1, "RelUndoApplyChain: rollback complete");
+}
+
+/*
+ * RelUndoRecordSingleDataPage - Classify whether an UNDO record restores
+ *		exactly one data page, and if so report that block number.
+ *
+ * Returns true and sets *blk when the record's restoration touches a single
+ * data page (in-place UPDATE/DELTA, single-TID DELETE, INSERT, TUPLE_LOCK,
+ * DELTA_INSERT).  Returns false for records that may touch two pages
+ * (out-of-place UPDATE/DELTA where oldtid != newtid) or more than one TID
+ * (multi-TID DELETE); those are not eligible to be folded into a same-page
+ * batch.  No buffers are touched.
+ */
+static bool
+RelUndoRecordSingleDataPage(const RelUndoRecordHeader *header,
+							const void *payload, BlockNumber *blk)
+{
+	*blk = InvalidBlockNumber;
+
+	switch (header->urec_type)
+	{
+		case RELUNDO_INSERT:
+			{
+				const RelUndoInsertPayload *p = payload;
+
+				*blk = ItemPointerGetBlockNumber(&p->firsttid);
+				return true;
+			}
+
+		case RELUNDO_DELETE:
+			{
+				const RelUndoDeletePayload *p = payload;
+
+				if (p->ntids != 1)
+					return false;
+				*blk = ItemPointerGetBlockNumber(&p->tids[0]);
+				return true;
+			}
+
+		case RELUNDO_UPDATE:
+			{
+				const RelUndoUpdatePayload *p = payload;
+
+				if (!ItemPointerEquals(&p->oldtid, &p->newtid))
+					return false;
+				*blk = ItemPointerGetBlockNumber(&p->oldtid);
+				return true;
+			}
+
+		case RELUNDO_TUPLE_LOCK:
+			{
+				const RelUndoTupleLockPayload *p = payload;
+
+				*blk = ItemPointerGetBlockNumber(&p->tid);
+				return true;
+			}
+
+		case RELUNDO_DELTA_INSERT:
+			{
+				const RelUndoDeltaInsertPayload *p = payload;
+
+				*blk = ItemPointerGetBlockNumber(&p->tid);
+				return true;
+			}
+
+		case RELUNDO_DELTA_UPDATE:
+			{
+				const RelUndoDeltaUpdatePayload *p = payload;
+
+				if (!ItemPointerEquals(&p->oldtid, &p->newtid))
+					return false;
+				*blk = ItemPointerGetBlockNumber(&p->oldtid);
+				return true;
+			}
+
+		default:
+			return false;
+	}
+}
+
+/*
+ * RelUndoForkTrack - Add an UNDO-fork block to the batch's distinct-fork set.
+ *
+ * Returns true if blkno was newly added, false if it was already present or the
+ * set is full (caller has already guaranteed room via the cap check).
+ */
+static bool
+RelUndoForkTrack(BlockNumber *fork_blks, int *nfork, BlockNumber blkno)
+{
+	int			i;
+
+	for (i = 0; i < *nfork; i++)
+	{
+		if (fork_blks[i] == blkno)
+			return false;
+	}
+
+	Assert(*nfork < RELUNDO_APPLY_MAX_FORK_BUFS);
+	fork_blks[(*nfork)++] = blkno;
+	return true;
+}
+
+/*
+ * RelUndoApplyOneRecord - Apply one UNDO record's physical restoration.
+ *
+ * Pins+locks the record's data page(s) into touched[] (via RelUndoTrackPage,
+ * which deduplicates against pages already locked for this batch) and mutates
+ * them in memory.  Does NOT log or release buffers; the caller batches one or
+ * more applied records and emits a single CLR.  May ereport(ERROR) on
+ * corruption, before any WAL is written.
+ */
+static void
+RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
+					  void *payload, RelUndoRecPtr current_ptr,
+					  Buffer *touched, int *ntouched)
+{
+	Page		page;
+	BlockNumber target_blkno;
+	OffsetNumber target_offset;
+	int			i;
+
+	switch (header->urec_type)
+	{
+		case RELUNDO_INSERT:
+			{
+				RelUndoInsertPayload *ins_payload = (RelUndoInsertPayload *) payload;
+
+				target_blkno = ItemPointerGetBlockNumber(&ins_payload->firsttid);
+				target_offset = ItemPointerGetOffsetNumber(&ins_payload->firsttid);
+
+				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+				RelUndoApplyInsert(rel, page, target_offset);
+				break;
+			}
+
+		case RELUNDO_DELETE:
+			{
+				RelUndoDeletePayload *del_payload = (RelUndoDeletePayload *) payload;
+				char	   *tuple_data_buf = NULL;
+				uint32		tlen = 0;
+
+				RelUndoReadRecordWithTuple(rel, current_ptr,
+										   &tuple_data_buf, &tlen);
+
+				for (i = 0; i < del_payload->ntids; i++)
+				{
+					target_blkno = ItemPointerGetBlockNumber(&del_payload->tids[i]);
+					target_offset = ItemPointerGetOffsetNumber(&del_payload->tids[i]);
+
+					page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+
+					if (tuple_data_buf && tlen > 0)
+						RelUndoApplyDelete(rel, page, target_offset,
+										   tuple_data_buf, tlen);
+				}
+
+				if (tuple_data_buf)
+					pfree(tuple_data_buf);
+				break;
+			}
+
+		case RELUNDO_UPDATE:
+			{
+				RelUndoUpdatePayload *upd_payload = (RelUndoUpdatePayload *) payload;
+				char	   *tuple_data_buf = NULL;
+				uint32		tlen = 0;
+
+				RelUndoReadRecordWithTuple(rel, current_ptr,
+										   &tuple_data_buf, &tlen);
+
+				/* Restore old tuple at the old location */
+				target_blkno = ItemPointerGetBlockNumber(&upd_payload->oldtid);
+				target_offset = ItemPointerGetOffsetNumber(&upd_payload->oldtid);
+
+				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+
+				if (tuple_data_buf && tlen > 0)
+					RelUndoApplyUpdate(rel, page, target_offset,
+									   tuple_data_buf, tlen);
+
+				if (tuple_data_buf)
+					pfree(tuple_data_buf);
+
+				/*
+				 * Mark the new tuple version as unused, but only for
+				 * out-of-place updates where oldtid != newtid.  For in-place
+				 * updates the old and new tuple share the same slot, so marking
+				 * it unused would destroy the just-restored old tuple.
+				 */
+				if (!ItemPointerEquals(&upd_payload->oldtid,
+									   &upd_payload->newtid))
+				{
+					BlockNumber new_blkno;
+					OffsetNumber new_offset;
+					Page		new_page;
+
+					new_blkno = ItemPointerGetBlockNumber(&upd_payload->newtid);
+					new_offset = ItemPointerGetOffsetNumber(&upd_payload->newtid);
+
+					new_page = RelUndoTrackPage(rel, touched, ntouched, new_blkno);
+					RelUndoApplyInsert(rel, new_page, new_offset);
+				}
+				break;
+			}
+
+		case RELUNDO_TUPLE_LOCK:
+			{
+				RelUndoTupleLockPayload *lock_payload = (RelUndoTupleLockPayload *) payload;
+
+				target_blkno = ItemPointerGetBlockNumber(&lock_payload->tid);
+				target_offset = ItemPointerGetOffsetNumber(&lock_payload->tid);
+
+				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+				RelUndoApplyTupleLock(rel, page, target_offset);
+				break;
+			}
+
+		case RELUNDO_DELTA_INSERT:
+			{
+				RelUndoDeltaInsertPayload *delta_payload = (RelUndoDeltaInsertPayload *) payload;
+				char	   *delta_data;
+
+				delta_data = (char *) payload +
+					offsetof(RelUndoDeltaInsertPayload, delta_len) + sizeof(uint16);
+
+				target_blkno = ItemPointerGetBlockNumber(&delta_payload->tid);
+				target_offset = ItemPointerGetOffsetNumber(&delta_payload->tid);
+
+				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+				RelUndoApplyDeltaInsert(rel, page, target_offset,
+										delta_data, delta_payload->delta_len);
+				break;
+			}
+
+		case RELUNDO_DELTA_UPDATE:
+			{
+				/*
+				 * Byte-diff update: reconstruct the old tuple from the current
+				 * (new) tuple + the stored diff, then restore it.
+				 */
+				RelUndoDeltaUpdatePayload *du_payload =
+					(RelUndoDeltaUpdatePayload *) payload;
+				char	   *diff_data;
+				RecnoDiffRecord *diff;
+				char	   *old_tuple_data;
+				Size		old_tuple_len;
+
+				diff_data = (char *) payload +
+					SizeOfRelUndoDeltaUpdatePayload;
+				diff = (RecnoDiffRecord *) diff_data;
+
+				/* Read the current (new) tuple from the page */
+				target_blkno = ItemPointerGetBlockNumber(&du_payload->oldtid);
+				target_offset = ItemPointerGetOffsetNumber(&du_payload->oldtid);
+
+				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+
+				if (target_offset <= PageGetMaxOffsetNumber(page))
+				{
+					ItemId		lp = PageGetItemId(page, target_offset);
+
+					if (ItemIdIsNormal(lp))
+					{
+						char	   *cur_data = (char *) PageGetItem(page, lp);
+						Size		cur_len = ItemIdGetLength(lp);
+
+						old_tuple_data = (char *) palloc(cur_len);
+
+						if (RecnoApplyDiffReverse(cur_data, cur_len,
+												  diff, old_tuple_data,
+												  &old_tuple_len))
+						{
+							RecnoTupleHeader *restored_hdr;
+
+							/* Restore old tuple in place */
+							memcpy(cur_data, old_tuple_data, old_tuple_len);
+
+							/* Clear transient flags on restored tuple */
+							restored_hdr = (RecnoTupleHeader *) cur_data;
+							restored_hdr->t_flags &= ~(RECNO_TUPLE_UNCOMMITTED |
+													   RECNO_TUPLE_DELETED |
+													   RECNO_TUPLE_UPDATED);
+						}
+						else
+						{
+							elog(WARNING,
+								 "RelUndoApplyChain: failed to apply diff reverse at offset %u",
+								 target_offset);
+						}
+
+						pfree(old_tuple_data);
+					}
+				}
+
+				/* Also mark the new tuple version as unused */
+				if (!ItemPointerEquals(&du_payload->oldtid,
+									   &du_payload->newtid))
+				{
+					BlockNumber new_blkno;
+					OffsetNumber new_offset;
+					Page		new_page;
+
+					new_blkno = ItemPointerGetBlockNumber(&du_payload->newtid);
+					new_offset = ItemPointerGetOffsetNumber(&du_payload->newtid);
+
+					new_page = RelUndoTrackPage(rel, touched, ntouched, new_blkno);
+					RelUndoApplyInsert(rel, new_page, new_offset);
+				}
+				break;
+			}
+
+		default:
+			/* Release any tracked buffers before erroring out. */
+			for (i = 0; i < *ntouched; i++)
+				UnlockReleaseBuffer(touched[i]);
+			*ntouched = 0;
+			elog(ERROR, "RelUndoApplyChain: unknown UNDO record type %d",
+				 header->urec_type);
+	}
 }
 
 /*
@@ -667,85 +910,137 @@ RelUndoApplyDeltaInsert(Relation rel, Page page, OffsetNumber offset,
 }
 
 /*
- * RelUndoLogApplyCLR - Write a redoable Compensation Log Record
+ * RelUndoLogApplyCLR - Write a redoable Compensation Log Record for a batch
  *
- * Logs a single XLOG_RELUNDO_APPLY record that carries full-page images of
- * every data page restored for the current UNDO record (passed in touched[],
- * already mutated and held exclusively locked) plus the UNDO-fork page, which
- * is updated in-place to set RELUNDO_INFO_CLR_APPLIED.
+ * Logs a single XLOG_RELUNDO_APPLY record covering one or more consecutive
+ * UNDO records (urec_ptrs[0..nptrs-1]) that were all applied to the same set of
+ * data pages (passed in touched[], already mutated and held exclusively
+ * locked).  Each record's RELUNDO_INFO_CLR_APPLIED flag is set in place on its
+ * UNDO-fork page; the distinct fork pages are logged alongside the data pages.
  *
  * Because RECNO performs in-place MVCC with no durable xmin, the rollback's
  * physical page changes are NOT reconstructable from any forward WAL record;
  * the forward record holds the *new* (aborted) value.  We therefore force a
  * full-page image of each restored page so crash redo reinstates the
- * before-image.  The CLR_APPLIED flag on the fork page makes a re-driven
+ * before-image.  The CLR_APPLIED flag on each fork page makes a re-driven
  * RelUndoApplyChain idempotent (it skips already-applied records), preventing
  * double-application after a crash during rollback.
+ *
+ * relundo_redo_apply restores every registered block image and ignores the
+ * record body, so a batched CLR replays identically to a sequence of
+ * single-record CLRs -- only the WAL volume (one forced fork-page and data-page
+ * image instead of N) and the flush count (one instead of N) shrink.
  *
  * All data buffers in touched[] are released here after logging.
  */
 static void
-RelUndoLogApplyCLR(Relation rel, RelUndoRecPtr urec_ptr,
+RelUndoLogApplyCLR(Relation rel, const RelUndoRecPtr *urec_ptrs, int nptrs,
 				   Buffer *touched, int ntouched)
 {
 	xl_relundo_apply xlrec;
-	Buffer		undo_buf;
-	Page		undo_page;
-	char	   *contents;
-	BlockNumber fork_blkno;
-	uint16		fork_offset;
-	RelUndoRecordHeader *rec_hdr;
+	BlockNumber fork_blks[RELUNDO_APPLY_MAX_FORK_BUFS];
+	Buffer		fork_bufs[RELUNDO_APPLY_MAX_FORK_BUFS];
+	int			nfork = 0;
 	XLogRecPtr	recptr;
+	uint8		block_id;
 	int			i;
+	int			j;
 
-	xlrec.urec_ptr = urec_ptr;
+	Assert(nptrs >= 1);
+	Assert(ntouched >= 1);
+
+	/*
+	 * Collect the distinct fork pages this batch touches, in ascending block
+	 * order so concurrent rollback appliers acquire fork-page locks in a
+	 * consistent order (deadlock-free).  Data pages were already locked by the
+	 * apply path before any fork page, so the global order is data-then-fork.
+	 */
+	for (i = 0; i < nptrs; i++)
+	{
+		BlockNumber blk = RelUndoGetBlockNum(urec_ptrs[i]);
+		int			pos;
+
+		for (pos = 0; pos < nfork; pos++)
+		{
+			if (fork_blks[pos] == blk)
+				break;
+		}
+		if (pos < nfork)
+			continue;			/* already collected */
+
+		Assert(nfork < RELUNDO_APPLY_MAX_FORK_BUFS);
+		/* insertion sort into ascending order */
+		for (pos = nfork; pos > 0 && fork_blks[pos - 1] > blk; pos--)
+			fork_blks[pos] = fork_blks[pos - 1];
+		fork_blks[pos] = blk;
+		nfork++;
+	}
+
+	xlrec.urec_ptr = urec_ptrs[0];
 	xlrec.target_reloc = rel->rd_locator;
 
 	/*
-	 * Read and lock the UNDO-fork page that holds this record's header so we
-	 * can set the CLR_APPLIED flag and log it alongside the data pages.  Done
-	 * before the critical section (ReadBuffer may perform I/O).
+	 * Read and exclusive-lock each distinct fork page (ascending), before the
+	 * critical section since ReadBuffer may perform I/O.
 	 */
-	fork_blkno = RelUndoGetBlockNum(urec_ptr);
-	fork_offset = RelUndoGetOffset(urec_ptr);
-
-	undo_buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, fork_blkno,
-								  RBM_NORMAL, NULL);
-	LockBuffer(undo_buf, BUFFER_LOCK_EXCLUSIVE);
-	undo_page = BufferGetPage(undo_buf);
-	contents = PageGetContents(undo_page);
-	rec_hdr = (RelUndoRecordHeader *) (contents + fork_offset);
+	for (i = 0; i < nfork; i++)
+	{
+		fork_bufs[i] = ReadBufferExtended(rel, RELUNDO_FORKNUM, fork_blks[i],
+										  RBM_NORMAL, NULL);
+		LockBuffer(fork_bufs[i], BUFFER_LOCK_EXCLUSIVE);
+	}
 
 	START_CRIT_SECTION();
 
-	/* Apply the CLR flag in-place on the fork page. */
-	rec_hdr->info_flags |= (RELUNDO_INFO_HAS_CLR | RELUNDO_INFO_CLR_APPLIED);
+	/*
+	 * Set the CLR flags in place on every batched record's fork-page header.
+	 */
+	for (i = 0; i < nptrs; i++)
+	{
+		BlockNumber blk = RelUndoGetBlockNum(urec_ptrs[i]);
+		uint16		off = RelUndoGetOffset(urec_ptrs[i]);
+		char	   *contents;
+		RelUndoRecordHeader *rec_hdr;
+
+		for (j = 0; j < nfork; j++)
+		{
+			if (fork_blks[j] == blk)
+				break;
+		}
+		Assert(j < nfork);
+
+		contents = PageGetContents(BufferGetPage(fork_bufs[j]));
+		rec_hdr = (RelUndoRecordHeader *) (contents + off);
+		rec_hdr->info_flags |= (RELUNDO_INFO_HAS_CLR | RELUNDO_INFO_CLR_APPLIED);
+	}
 
 	for (i = 0; i < ntouched; i++)
 		MarkBufferDirty(touched[i]);
-	MarkBufferDirty(undo_buf);
+	for (i = 0; i < nfork; i++)
+		MarkBufferDirty(fork_bufs[i]);
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, sizeof(xl_relundo_apply));
 
 	/*
-	 * Force a full-page image of every restored data page (block ids
-	 * 0..ntouched-1).  The restoration is an arbitrary in-place rewrite, so
-	 * only an FPI can reproduce it during redo.
+	 * Force a full-page image of every restored data page then every fork
+	 * page.  The restoration is an arbitrary in-place rewrite, so only an FPI
+	 * can reproduce it during redo.
 	 */
+	block_id = 0;
 	for (i = 0; i < ntouched; i++)
-		XLogRegisterBuffer((uint8) i, touched[i],
+		XLogRegisterBuffer(block_id++, touched[i],
 						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
-
-	/* Fork page carries the CLR_APPLIED flag; force its image too. */
-	XLogRegisterBuffer((uint8) ntouched, undo_buf,
-					   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
+	for (i = 0; i < nfork; i++)
+		XLogRegisterBuffer(block_id++, fork_bufs[i],
+						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
 
 	recptr = XLogInsert(RM_RELUNDO_ID, XLOG_RELUNDO_APPLY);
 
 	for (i = 0; i < ntouched; i++)
 		PageSetLSN(BufferGetPage(touched[i]), recptr);
-	PageSetLSN(undo_page, recptr);
+	for (i = 0; i < nfork; i++)
+		PageSetLSN(BufferGetPage(fork_bufs[i]), recptr);
 
 	END_CRIT_SECTION();
 
@@ -757,14 +1052,16 @@ RelUndoLogApplyCLR(Relation rel, RelUndoRecPtr urec_ptr,
 	 * we crash before the CLR is flushed, redo replays only the forward
 	 * (aborted) page change and the rollback is silently lost.  Flushing here
 	 * makes the compensation durable so crash redo reinstates the before-image
-	 * from the forced full-page images.
+	 * from the forced full-page images.  Batching amortizes this flush across
+	 * every record folded into the CLR.
 	 */
 	XLogFlush(recptr);
 
-	elog(DEBUG3, "RelUndoLogApplyCLR: CLR for UNDO record %lu, %d data page(s), flags=%04x",
-		 (unsigned long) urec_ptr, ntouched, rec_hdr->info_flags);
+	elog(DEBUG3, "RelUndoLogApplyCLR: CLR for %d UNDO record(s), %d data page(s), %d fork page(s)",
+		 nptrs, ntouched, nfork);
 
-	UnlockReleaseBuffer(undo_buf);
+	for (i = 0; i < nfork; i++)
+		UnlockReleaseBuffer(fork_bufs[i]);
 	for (i = 0; i < ntouched; i++)
 		UnlockReleaseBuffer(touched[i]);
 }
