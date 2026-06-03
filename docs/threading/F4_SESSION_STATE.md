@@ -120,6 +120,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 31 | `postmaster/autovacuum.c` | `AutoVacState` / `autovac_state` | 12 | **Pure fold** — folded the twelve *private* file-local session_local statics into one file-local `static session_local AutoVacState autovac_state`. The struct is placed after the `WorkerInfo`/`WorkerInfoData` typedef so the `MyWorkerInfo` member type is in scope. `got_SIGUSR2` keeps its `volatile sig_atomic_t` qualifier (signal-handler touched). The plain `static` dlist `DatabaseList` is left standalone (`\bDatabaseListCxt\b` word boundary correctly skips it). No name collisions; no prose FPs. Single-file, no header change. 82 use sites rewritten. |
 
+| 32 | `commands/async.c` | `AsyncState` / `async_state` | 5 | **Pure fold** — folded the five *private* file-local session_local statics (`pendingActions`, `pendingNotifies`, `unlistenExitRegistered`, `amRegisteredListener`, `tryAdvanceTail`) into one file-local `static session_local AsyncState async_state`. All five are fully private (no externs, only `async.c` references them). The plain `static` vars (`pendingListenActions`, `queueHeadBeforeWrite`, `queueHeadAfterWrite`, `signalPids`, `signalProcnos`), the `volatile sig_atomic_t notifyInterruptPending`, and the GUC vars interspersed among them are all left standalone. Struct anchored after the `NotificationList` typedef so member types are in scope. No name collisions; only 2 prose-comment FPs (correctly skipped). Single-file, no header change. 92 use sites rewritten. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
