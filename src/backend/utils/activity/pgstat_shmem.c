@@ -87,16 +87,27 @@ static const dshash_parameters dsh_params = {
  * pgStatLocal.shmem->gc_request_count is incremented - which each backend
  * compares to their copy of pgStatSharedRefAge on a regular basis.
  */
-static session_local pgstat_entry_ref_hash_hash *pgStatEntryRefHash = NULL;
-static session_local int	pgStatSharedRefAge = 0; /* cache age of pgStatLocal.shmem */
 
 /*
  * Memory contexts containing the pgStatEntryRefHash table and the
  * pgStatSharedRef entries respectively. Kept separate to make it easier to
  * track / attribute memory usage.
  */
-static session_local MemoryContext pgStatSharedRefContext = NULL;
-static session_local MemoryContext pgStatEntryRefHashContext = NULL;
+
+typedef struct PgStatShmemState
+{
+	pgstat_entry_ref_hash_hash *pgStatEntryRefHash;
+	int			pgStatSharedRefAge; /* cache age of pgStatLocal.shmem */
+	MemoryContext pgStatSharedRefContext;
+	MemoryContext pgStatEntryRefHashContext;
+} PgStatShmemState;
+
+static session_local PgStatShmemState pgstat_shmem_state = {
+	.pgStatEntryRefHash = NULL,
+	.pgStatSharedRefAge = 0,
+	.pgStatSharedRefContext = NULL,
+	.pgStatEntryRefHashContext = NULL,
+};
 
 
 /* ------------------------------------------------------------
@@ -381,14 +392,14 @@ pgstat_reinit_entry(PgStat_Kind kind, PgStatShared_HashEntry *shhashent)
 static void
 pgstat_setup_shared_refs(void)
 {
-	if (likely(pgStatEntryRefHash != NULL))
+	if (likely(pgstat_shmem_state.pgStatEntryRefHash != NULL))
 		return;
 
-	pgStatEntryRefHash =
-		pgstat_entry_ref_hash_create(pgStatEntryRefHashContext,
+	pgstat_shmem_state.pgStatEntryRefHash =
+		pgstat_entry_ref_hash_create(pgstat_shmem_state.pgStatEntryRefHashContext,
 									 PGSTAT_ENTRY_REF_HASH_SIZE, NULL);
-	pgStatSharedRefAge = pg_atomic_read_u64(&pgStatLocal.shmem->gc_request_count);
-	Assert(pgStatSharedRefAge != 0);
+	pgstat_shmem_state.pgStatSharedRefAge = pg_atomic_read_u64(&pgStatLocal.shmem->gc_request_count);
+	Assert(pgstat_shmem_state.pgStatSharedRefAge != 0);
 }
 
 /*
@@ -426,14 +437,14 @@ pgstat_get_entry_ref_cached(PgStat_HashKey key, PgStat_EntryRef **entry_ref_p)
 	 * out-of-memory errors after incrementing PgStatShared_Common->refcount.
 	 */
 
-	cache_entry = pgstat_entry_ref_hash_insert(pgStatEntryRefHash, key, &found);
+	cache_entry = pgstat_entry_ref_hash_insert(pgstat_shmem_state.pgStatEntryRefHash, key, &found);
 
 	if (!found || !cache_entry->entry_ref)
 	{
 		PgStat_EntryRef *entry_ref;
 
 		cache_entry->entry_ref = entry_ref =
-			MemoryContextAlloc(pgStatSharedRefContext,
+			MemoryContextAlloc(pgstat_shmem_state.pgStatSharedRefContext,
 							   sizeof(PgStat_EntryRef));
 		entry_ref->shared_stats = NULL;
 		entry_ref->shared_entry = NULL;
@@ -677,7 +688,7 @@ pgstat_release_entry_ref(PgStat_HashKey key, PgStat_EntryRef *entry_ref,
 		}
 	}
 
-	if (!pgstat_entry_ref_hash_delete(pgStatEntryRefHash, key))
+	if (!pgstat_entry_ref_hash_delete(pgstat_shmem_state.pgStatEntryRefHash, key))
 		elog(ERROR, "entry ref vanished before deletion");
 
 	if (entry_ref)
@@ -757,15 +768,15 @@ pgstat_need_entry_refs_gc(void)
 {
 	uint64		curage;
 
-	if (!pgStatEntryRefHash)
+	if (!pgstat_shmem_state.pgStatEntryRefHash)
 		return false;
 
-	/* should have been initialized when creating pgStatEntryRefHash */
-	Assert(pgStatSharedRefAge != 0);
+	/* should have been initialized when creating pgstat_shmem_state.pgStatEntryRefHash */
+	Assert(pgstat_shmem_state.pgStatSharedRefAge != 0);
 
 	curage = pg_atomic_read_u64(&pgStatLocal.shmem->gc_request_count);
 
-	return pgStatSharedRefAge != curage;
+	return pgstat_shmem_state.pgStatSharedRefAge != curage;
 }
 
 static void
@@ -782,8 +793,8 @@ pgstat_gc_entry_refs(void)
 	 * Some entries have been dropped or reinitialized.  Invalidate cache
 	 * pointer to them.
 	 */
-	pgstat_entry_ref_hash_start_iterate(pgStatEntryRefHash, &i);
-	while ((ent = pgstat_entry_ref_hash_iterate(pgStatEntryRefHash, &i)) != NULL)
+	pgstat_entry_ref_hash_start_iterate(pgstat_shmem_state.pgStatEntryRefHash, &i);
+	while ((ent = pgstat_entry_ref_hash_iterate(pgstat_shmem_state.pgStatEntryRefHash, &i)) != NULL)
 	{
 		PgStat_EntryRef *entry_ref = ent->entry_ref;
 
@@ -806,7 +817,7 @@ pgstat_gc_entry_refs(void)
 		pgstat_release_entry_ref(ent->key, entry_ref, false);
 	}
 
-	pgStatSharedRefAge = curage;
+	pgstat_shmem_state.pgStatSharedRefAge = curage;
 }
 
 static void
@@ -816,12 +827,12 @@ pgstat_release_matching_entry_refs(bool discard_pending, ReleaseMatchCB match,
 	pgstat_entry_ref_hash_iterator i;
 	PgStat_EntryRefHashEntry *ent;
 
-	if (pgStatEntryRefHash == NULL)
+	if (pgstat_shmem_state.pgStatEntryRefHash == NULL)
 		return;
 
-	pgstat_entry_ref_hash_start_iterate(pgStatEntryRefHash, &i);
+	pgstat_entry_ref_hash_start_iterate(pgstat_shmem_state.pgStatEntryRefHash, &i);
 
-	while ((ent = pgstat_entry_ref_hash_iterate(pgStatEntryRefHash, &i))
+	while ((ent = pgstat_entry_ref_hash_iterate(pgstat_shmem_state.pgStatEntryRefHash, &i))
 		   != NULL)
 	{
 		Assert(ent->entry_ref != NULL);
@@ -842,13 +853,13 @@ pgstat_release_matching_entry_refs(bool discard_pending, ReleaseMatchCB match,
 static void
 pgstat_release_all_entry_refs(bool discard_pending)
 {
-	if (pgStatEntryRefHash == NULL)
+	if (pgstat_shmem_state.pgStatEntryRefHash == NULL)
 		return;
 
 	pgstat_release_matching_entry_refs(discard_pending, NULL, 0);
-	Assert(pgStatEntryRefHash->members == 0);
-	pgstat_entry_ref_hash_destroy(pgStatEntryRefHash);
-	pgStatEntryRefHash = NULL;
+	Assert(pgstat_shmem_state.pgStatEntryRefHash->members == 0);
+	pgstat_entry_ref_hash_destroy(pgstat_shmem_state.pgStatEntryRefHash);
+	pgstat_shmem_state.pgStatEntryRefHash = NULL;
 }
 
 static bool
@@ -910,8 +921,8 @@ pgstat_drop_entry_internal(PgStatShared_HashEntry *shent,
 	Assert(shent->body != InvalidDsaPointer);
 
 	/* should already have released local reference */
-	if (pgStatEntryRefHash)
-		Assert(!pgstat_entry_ref_hash_lookup(pgStatEntryRefHash, shent->key));
+	if (pgstat_shmem_state.pgStatEntryRefHash)
+		Assert(!pgstat_entry_ref_hash_lookup(pgstat_shmem_state.pgStatEntryRefHash, shent->key));
 
 	/*
 	 * Signal that the entry is dropped - this will eventually cause other
@@ -1017,10 +1028,10 @@ pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
 	key.objid = objid;
 
 	/* delete local reference */
-	if (pgStatEntryRefHash)
+	if (pgstat_shmem_state.pgStatEntryRefHash)
 	{
 		PgStat_EntryRefHashEntry *lohashent =
-			pgstat_entry_ref_hash_lookup(pgStatEntryRefHash, key);
+			pgstat_entry_ref_hash_lookup(pgstat_shmem_state.pgStatEntryRefHash, key);
 
 		if (lohashent)
 			pgstat_release_entry_ref(lohashent->key, lohashent->entry_ref,
@@ -1069,10 +1080,10 @@ pgstat_drop_matching_entries(bool (*do_drop) (PgStatShared_HashEntry *, Datum),
 			continue;
 
 		/* delete local reference */
-		if (pgStatEntryRefHash)
+		if (pgstat_shmem_state.pgStatEntryRefHash)
 		{
 			PgStat_EntryRefHashEntry *lohashent =
-				pgstat_entry_ref_hash_lookup(pgStatEntryRefHash, ps->key);
+				pgstat_entry_ref_hash_lookup(pgstat_shmem_state.pgStatEntryRefHash, ps->key);
 
 			if (lohashent)
 				pgstat_release_entry_ref(lohashent->key, lohashent->entry_ref,
@@ -1178,13 +1189,13 @@ pgstat_reset_entries_of_kind(PgStat_Kind kind, TimestampTz ts)
 static void
 pgstat_setup_memcxt(void)
 {
-	if (unlikely(!pgStatSharedRefContext))
-		pgStatSharedRefContext =
+	if (unlikely(!pgstat_shmem_state.pgStatSharedRefContext))
+		pgstat_shmem_state.pgStatSharedRefContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "PgStat Shared Ref",
 								  ALLOCSET_SMALL_SIZES);
-	if (unlikely(!pgStatEntryRefHashContext))
-		pgStatEntryRefHashContext =
+	if (unlikely(!pgstat_shmem_state.pgStatEntryRefHashContext))
+		pgstat_shmem_state.pgStatEntryRefHashContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "PgStat Shared Ref Hash",
 								  ALLOCSET_SMALL_SIZES);
