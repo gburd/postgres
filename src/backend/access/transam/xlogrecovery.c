@@ -124,8 +124,13 @@ sighup_guc bool		wal_receiver_create_temp_slot = false;
 session_local RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal = RECOVERY_TARGET_TIMELINE_LATEST;
 session_local TimeLineID	recoveryTargetTLIRequested = 0;
 session_local TimeLineID	recoveryTargetTLI = 0;
-static session_local List *expectedTLEs;
-static session_local TimeLineID curFileTLI;
+typedef struct XLogRecoveryState
+{
+	List	   *expectedTLEs;
+	TimeLineID	curFileTLI;
+} XLogRecoveryState;
+
+static session_local XLogRecoveryState xlogrecovery_state;
 
 /*
  * When ArchiveRecoveryRequested is set, archive recovery was requested,
@@ -789,9 +794,9 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 	 * timeline in the history of the requested timeline, we cannot proceed:
 	 * the backup is not part of the history of the requested timeline.
 	 */
-	Assert(expectedTLEs);		/* was initialized by reading checkpoint
+	Assert(xlogrecovery_state.expectedTLEs);		/* was initialized by reading checkpoint
 								 * record */
-	if (tliOfPointInHistory(CheckPointLoc, expectedTLEs) !=
+	if (tliOfPointInHistory(CheckPointLoc, xlogrecovery_state.expectedTLEs) !=
 		CheckPointTLI)
 	{
 		XLogRecPtr	switchpoint;
@@ -800,7 +805,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 		 * tliSwitchPoint will throw an error if the checkpoint's timeline is
 		 * not in expectedTLEs at all.
 		 */
-		switchpoint = tliSwitchPoint(CheckPointTLI, expectedTLEs, NULL);
+		switchpoint = tliSwitchPoint(CheckPointTLI, xlogrecovery_state.expectedTLEs, NULL);
 		ereport(FATAL,
 				(errmsg("requested timeline %u is not a child of this server's history",
 						recoveryTargetTLI),
@@ -817,7 +822,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 	 * history, too.
 	 */
 	if (XLogRecPtrIsValid(ControlFile->minRecoveryPoint) &&
-		tliOfPointInHistory(ControlFile->minRecoveryPoint - 1, expectedTLEs) !=
+		tliOfPointInHistory(ControlFile->minRecoveryPoint - 1, xlogrecovery_state.expectedTLEs) !=
 		ControlFile->minRecoveryPointTLI)
 		ereport(FATAL,
 				errmsg("requested timeline %u does not contain minimum recovery point %X/%08X on timeline %u",
@@ -2362,7 +2367,7 @@ checkTimeLineSwitch(XLogRecPtr lsn, TimeLineID newTLI, TimeLineID prevTLI,
 	 * The new timeline better be in the list of timelines we expect to see,
 	 * according to the timeline history. It should also not decrease.
 	 */
-	if (newTLI < replayTLI || !tliInHistory(newTLI, expectedTLEs))
+	if (newTLI < replayTLI || !tliInHistory(newTLI, xlogrecovery_state.expectedTLEs))
 		ereport(PANIC,
 				(errmsg("unexpected timeline ID %u (after %u) in checkpoint record",
 						newTLI, replayTLI)));
@@ -3169,7 +3174,7 @@ ReadRecord(XLogPrefetcher *xlogprefetcher, int emode,
 		/*
 		 * Check page TLI is one of the expected values.
 		 */
-		else if (!tliInHistory(xlogreader->latestPageTLI, expectedTLEs))
+		else if (!tliInHistory(xlogreader->latestPageTLI, xlogrecovery_state.expectedTLEs))
 		{
 			char		fname[MAXFNAMELEN];
 			XLogSegNo	segno;
@@ -3397,7 +3402,7 @@ retry:
 		pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL, IOOP_READ,
 								io_start, 1, r);
 
-		XLogFileName(fname, curFileTLI, readSegNo,
+		XLogFileName(fname, xlogrecovery_state.curFileTLI, readSegNo,
 		             GetGUCInt(GUC_wal_segment_size));
 		if (r < 0)
 		{
@@ -3425,7 +3430,7 @@ retry:
 	Assert(targetPageOff == readOff);
 	Assert(reqLen <= readLen);
 
-	xlogreader->seg.ws_tli = curFileTLI;
+	xlogreader->seg.ws_tli = xlogrecovery_state.curFileTLI;
 
 	/*
 	 * Check the page header immediately, so that we can retry immediately if
@@ -3778,7 +3783,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 				}
 				/* Reset curFileTLI if random fetch. */
 				if (randAccess)
-					curFileTLI = 0;
+					xlogrecovery_state.curFileTLI = 0;
 
 				/*
 				 * Try to restore the file from archive, or read an existing
@@ -3855,14 +3860,14 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 							 * Use the record begin position to determine the
 							 * TLI, rather than the position we're reading.
 							 */
-							tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
+							tli = tliOfPointInHistory(tliRecPtr, xlogrecovery_state.expectedTLEs);
 
-							if (curFileTLI > 0 && tli < curFileTLI)
+							if (xlogrecovery_state.curFileTLI > 0 && tli < xlogrecovery_state.curFileTLI)
 								elog(ERROR, "according to history file, WAL location %X/%08X belongs to timeline %u, but previous recovered WAL file came from timeline %u",
 									 LSN_FORMAT_ARGS(tliRecPtr),
-									 tli, curFileTLI);
+									 tli, xlogrecovery_state.curFileTLI);
 						}
-						curFileTLI = tli;
+						xlogrecovery_state.curFileTLI = tli;
 						SetInstallXLogFileSegmentActive();
 						RequestXLogStreaming(tli, ptr,
 											 GetGUCString(GUC_PrimaryConnInfo),
@@ -3899,7 +3904,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						XLogRecPtr	latestChunkStart;
 
 						flushedUpto = GetWalRcvFlushRecPtr(&latestChunkStart, &receiveTLI);
-						if (RecPtr < flushedUpto && receiveTLI == curFileTLI)
+						if (RecPtr < flushedUpto && receiveTLI == xlogrecovery_state.curFileTLI)
 						{
 							havedata = true;
 							if (latestChunkStart <= RecPtr)
@@ -3932,8 +3937,8 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						 */
 						if (readFile < 0)
 						{
-							if (!expectedTLEs)
-								expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
+							if (!xlogrecovery_state.expectedTLEs)
+								xlogrecovery_state.expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
 							readFile = XLogFileRead(readSegNo, receiveTLI,
 													XLOG_FROM_STREAM, false);
 							Assert(readFile >= 0);
@@ -4181,8 +4186,8 @@ rescanLatestTimeLine(TimeLineID replayTLI, XLogRecPtr replayLSN)
 
 	/* The new timeline history seems valid. Switch target */
 	recoveryTargetTLI = newtarget;
-	list_free_deep(expectedTLEs);
-	expectedTLEs = newExpectedTLEs;
+	list_free_deep(xlogrecovery_state.expectedTLEs);
+	xlogrecovery_state.expectedTLEs = newExpectedTLEs;
 
 	/*
 	 * As in StartupXLOG(), try to ensure we have all the history files
@@ -4259,7 +4264,7 @@ XLogFileRead(XLogSegNo segno, TimeLineID tli,
 	if (fd >= 0)
 	{
 		/* Success! */
-		curFileTLI = tli;
+		xlogrecovery_state.curFileTLI = tli;
 
 		/* Report recovery progress in PS display */
 		snprintf(activitymsg, sizeof(activitymsg), "recovering %s",
@@ -4313,8 +4318,8 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 	 * streamed from the primary when we start streaming, instead of
 	 * recovering with a dummy history generated here.
 	 */
-	if (expectedTLEs)
-		tles = expectedTLEs;
+	if (xlogrecovery_state.expectedTLEs)
+		tles = xlogrecovery_state.expectedTLEs;
 	else
 		tles = readTimeLineHistory(recoveryTargetTLI);
 
@@ -4323,7 +4328,7 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 		TimeLineHistoryEntry *hent = (TimeLineHistoryEntry *) lfirst(cell);
 		TimeLineID	tli = hent->tli;
 
-		if (tli < curFileTLI)
+		if (tli < xlogrecovery_state.curFileTLI)
 			break;				/* don't bother looking at too-old TLIs */
 
 		/*
@@ -4357,8 +4362,8 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 			if (fd != -1)
 			{
 				elog(DEBUG1, "got WAL segment from archive");
-				if (!expectedTLEs)
-					expectedTLEs = tles;
+				if (!xlogrecovery_state.expectedTLEs)
+					xlogrecovery_state.expectedTLEs = tles;
 				return fd;
 			}
 		}
@@ -4368,8 +4373,8 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 			fd = XLogFileRead(segno, tli, XLOG_FROM_PG_WAL, true);
 			if (fd != -1)
 			{
-				if (!expectedTLEs)
-					expectedTLEs = tles;
+				if (!xlogrecovery_state.expectedTLEs)
+					xlogrecovery_state.expectedTLEs = tles;
 				return fd;
 			}
 		}
