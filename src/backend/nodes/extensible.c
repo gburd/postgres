@@ -23,8 +23,16 @@
 #include "nodes/extensible.h"
 #include "utils/hsearch.h"
 
-static session_local HTAB *extensible_node_methods = NULL;
-static session_local HTAB *custom_scan_methods = NULL;
+typedef struct ExtensibleState
+{
+	HTAB	   *extensible_node_methods;
+	HTAB	   *custom_scan_methods;
+} ExtensibleState;
+
+static session_local ExtensibleState extensible_state = {
+	.extensible_node_methods = NULL,
+	.custom_scan_methods = NULL,
+};
 
 typedef struct
 {
@@ -75,7 +83,7 @@ RegisterExtensibleNodeEntry(HTAB **p_htable, const char *htable_label,
 void
 RegisterExtensibleNodeMethods(const ExtensibleNodeMethods *methods)
 {
-	RegisterExtensibleNodeEntry(&extensible_node_methods,
+	RegisterExtensibleNodeEntry(&extensible_state.extensible_node_methods,
 								"Extensible Node Methods",
 								methods->extnodename,
 								methods);
@@ -87,7 +95,7 @@ RegisterExtensibleNodeMethods(const ExtensibleNodeMethods *methods)
 void
 RegisterCustomScanMethods(const CustomScanMethods *methods)
 {
-	RegisterExtensibleNodeEntry(&custom_scan_methods,
+	RegisterExtensibleNodeEntry(&extensible_state.custom_scan_methods,
 								"Custom Scan Methods",
 								methods->CustomName,
 								methods);
@@ -125,7 +133,7 @@ const ExtensibleNodeMethods *
 GetExtensibleNodeMethods(const char *extnodename, bool missing_ok)
 {
 	return (const ExtensibleNodeMethods *)
-		GetExtensibleNodeEntry(extensible_node_methods,
+		GetExtensibleNodeEntry(extensible_state.extensible_node_methods,
 							   extnodename,
 							   missing_ok);
 }
@@ -137,7 +145,7 @@ const CustomScanMethods *
 GetCustomScanMethods(const char *CustomName, bool missing_ok)
 {
 	return (const CustomScanMethods *)
-		GetExtensibleNodeEntry(custom_scan_methods,
+		GetExtensibleNodeEntry(extensible_state.custom_scan_methods,
 							   CustomName,
 							   missing_ok);
 }
