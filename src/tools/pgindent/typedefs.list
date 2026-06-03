@@ -2584,6 +2584,9 @@ RecursiveUnionPath
 RecursiveUnionState
 RecnoCompressionHeader
 RecnoCompressionType
+RecnoDictDirEntry
+RecnoDictMeta
+RecnoDictPageHeader
 RecnoFreeSpaceMap
 RecnoOffsetMapping
 RecnoOverflowPtr
