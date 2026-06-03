@@ -233,7 +233,6 @@ bool		pgstat_report_fixed = false;
  * easier to track / attribute memory usage.
  */
 
-static session_local MemoryContext pgStatPendingContext = NULL;
 
 /*
  * Backend local list of PgStat_EntryRef with unflushed pending stats.
@@ -248,23 +247,43 @@ static dlist_head pgStatPending = DLIST_STATIC_INIT(pgStatPending);
  * Force the next stats flush to happen regardless of
  * PGSTAT_MIN_INTERVAL. Useful in test scripts.
  */
-static session_local bool pgStatForceNextFlush = false;
 
 /*
  * Force-clear existing snapshot before next use when stats_fetch_consistency
  * is changed.
  */
-static session_local bool force_stats_snapshot_clear = false;
 
 
 /*
- * For assertions that check pgstat is not used before initialization / after
- * shutdown.
+ * Backend-private pgstat bookkeeping state.
  */
+typedef struct PgStatState
+{
+	/* memory context for pending stats data */
+	MemoryContext pgStatPendingContext;
+
+	/* force the next stats flush regardless of PGSTAT_MIN_INTERVAL */
+	bool		pgStatForceNextFlush;
+
+	/* force-clear the snapshot before next use */
+	bool		force_stats_snapshot_clear;
+
 #ifdef USE_ASSERT_CHECKING
-static session_local bool pgstat_is_initialized = false;
-static session_local bool pgstat_is_shutdown = false;
+	/* assertions that pgstat is not used before init / after shutdown */
+	bool		pgstat_is_initialized;
+	bool		pgstat_is_shutdown;
 #endif
+} PgStatState;
+
+static session_local PgStatState pgstat_state = {
+	.pgStatPendingContext = NULL,
+	.pgStatForceNextFlush = false,
+	.force_stats_snapshot_clear = false,
+#ifdef USE_ASSERT_CHECKING
+	.pgstat_is_initialized = false,
+	.pgstat_is_shutdown = false,
+#endif
+};
 
 
 /*
@@ -598,7 +617,7 @@ pgstat_before_server_shutdown(int code, Datum arg)
 	 * pgstat_shutdown(). This is a convenient point to catch most violations
 	 * of this rule.
 	 */
-	Assert(pgstat_is_initialized && !pgstat_is_shutdown);
+	Assert(pgstat_state.pgstat_is_initialized && !pgstat_state.pgstat_is_shutdown);
 
 	/* flush out our own pending changes before writing out */
 	pgstat_report_stat(true);
@@ -631,7 +650,7 @@ pgstat_before_server_shutdown(int code, Datum arg)
 static void
 pgstat_shutdown_hook(int code, Datum arg)
 {
-	Assert(!pgstat_is_shutdown);
+	Assert(!pgstat_state.pgstat_is_shutdown);
 	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
 
 	/*
@@ -656,7 +675,7 @@ pgstat_shutdown_hook(int code, Datum arg)
 	pgstat_detach_shmem();
 
 #ifdef USE_ASSERT_CHECKING
-	pgstat_is_shutdown = true;
+	pgstat_state.pgstat_is_shutdown = true;
 #endif
 }
 
@@ -669,7 +688,7 @@ pgstat_shutdown_hook(int code, Datum arg)
 void
 pgstat_initialize(void)
 {
-	Assert(!pgstat_is_initialized);
+	Assert(!pgstat_state.pgstat_is_initialized);
 
 	pgstat_attach_shmem();
 
@@ -690,7 +709,7 @@ pgstat_initialize(void)
 	before_shmem_exit(pgstat_shutdown_hook, 0);
 
 #ifdef USE_ASSERT_CHECKING
-	pgstat_is_initialized = true;
+	pgstat_state.pgstat_is_initialized = true;
 #endif
 }
 
@@ -732,10 +751,10 @@ pgstat_report_stat(bool force)
 	Assert(!IsTransactionOrTransactionBlock());
 
 	/* "absorb" the forced flush even if there's nothing to flush */
-	if (pgStatForceNextFlush)
+	if (pgstat_state.pgStatForceNextFlush)
 	{
 		force = true;
-		pgStatForceNextFlush = false;
+		pgstat_state.pgStatForceNextFlush = false;
 	}
 
 	/* Don't expend a clock check if nothing to do */
@@ -842,7 +861,7 @@ pgstat_report_stat(bool force)
 void
 pgstat_force_next_flush(void)
 {
-	pgStatForceNextFlush = true;
+	pgstat_state.pgStatForceNextFlush = true;
 }
 
 /*
@@ -956,7 +975,7 @@ pgstat_clear_snapshot(void)
 	pgstat_clear_backend_activity_snapshot();
 
 	/* Reset this flag, as it may be possible that a cleanup was forced. */
-	force_stats_snapshot_clear = false;
+	pgstat_state.force_stats_snapshot_clear = false;
 }
 
 void *
@@ -1071,7 +1090,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 TimestampTz
 pgstat_get_stat_snapshot_timestamp(bool *have_snapshot)
 {
-	if (force_stats_snapshot_clear)
+	if (pgstat_state.force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
 	if (pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
@@ -1107,7 +1126,7 @@ pgstat_snapshot_fixed(PgStat_Kind kind)
 	Assert(pgstat_is_kind_valid(kind));
 	Assert(pgstat_get_kind_info(kind)->fixed_amount);
 
-	if (force_stats_snapshot_clear)
+	if (pgstat_state.force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
 	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
@@ -1143,7 +1162,7 @@ pgstat_init_snapshot_fixed(void)
 static void
 pgstat_prep_snapshot(void)
 {
-	if (force_stats_snapshot_clear)
+	if (pgstat_state.force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
 	if (GetGUCEnum(GUC_pgstat_fetch_consistency) == PGSTAT_FETCH_CONSISTENCY_NONE ||
@@ -1314,9 +1333,9 @@ pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *creat
 	/* need to be able to flush out */
 	Assert(pgstat_get_kind_info(kind)->flush_pending_cb != NULL);
 
-	if (unlikely(!pgStatPendingContext))
+	if (unlikely(!pgstat_state.pgStatPendingContext))
 	{
-		pgStatPendingContext =
+		pgstat_state.pgStatPendingContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "PgStat Pending",
 								  ALLOCSET_SMALL_SIZES);
@@ -1331,7 +1350,7 @@ pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *creat
 
 		Assert(entrysize != (size_t) -1);
 
-		entry_ref->pending = MemoryContextAllocZero(pgStatPendingContext, entrysize);
+		entry_ref->pending = MemoryContextAllocZero(pgstat_state.pgStatPendingContext, entrysize);
 		dlist_push_tail(&pgStatPending, &entry_ref->pending_node);
 	}
 
@@ -1585,7 +1604,7 @@ pgstat_register_kind(PgStat_Kind kind, const PgStat_KindInfo *kind_info)
 void
 pgstat_assert_is_up(void)
 {
-	Assert(pgstat_is_initialized && !pgstat_is_shutdown);
+	Assert(pgstat_state.pgstat_is_initialized && !pgstat_state.pgstat_is_shutdown);
 }
 #endif
 
@@ -2151,5 +2170,5 @@ assign_stats_fetch_consistency(int newval, void *extra)
 	 * snapshot build attempt.
 	 */
 	if (GetGUCEnum(GUC_pgstat_fetch_consistency) != newval)
-		force_stats_snapshot_clear = true;
+		pgstat_state.force_stats_snapshot_clear = true;
 }
