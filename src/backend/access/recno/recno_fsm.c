@@ -19,7 +19,6 @@
 #include "postgres.h"
 
 #include "access/recno.h"
-#include "access/recno_dirtymap.h"
 #include "access/recno_xlog.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
@@ -194,14 +193,6 @@ RecnoGetPageWithFreeSpace(Relation rel, Size needed)
 	free_space = PageGetFreeSpace(page);
 
 	UnlockReleaseBuffer(buffer);
-
-	/*
-	 * Extend the dirty map to cover the new block.  This is a no-op if the
-	 * map already covers this block (e.g., concurrent extension by another
-	 * backend).  We do this before recording in the FSM so that by the time
-	 * other backends can find and use this block, the dirty map covers it.
-	 */
-	RecnoDirtyMapExtend(RelationGetRelid(rel), target_block + 1);
 
 	/* Record the new page in FSM */
 	RecnoRecordFreeSpace(rel, target_block, free_space);

@@ -203,9 +203,6 @@ recno_scan_begin(Relation relation, Snapshot snapshot,
 	scan->rs_vm_buffer = InvalidBuffer;
 	scan->rs_vm_blockno = InvalidBlockNumber;
 
-	/* Ensure dirty block map is open for this relation */
-	RecnoDirtyMapOpen(RelationGetRelid(relation), scan->rs_nblocks);
-
 	/* Allocate parallel scan worker data if doing a parallel scan */
 	if (pscan != NULL)
 		scan->rs_parallelworkerdata = palloc_object(ParallelBlockTableScanWorkerData);
@@ -307,9 +304,6 @@ recno_scan_end(TableScanDesc sscan)
 	 */
 	if (scan->rs_base.rs_flags & SO_TEMP_SNAPSHOT)
 		UnregisterSnapshot(scan->rs_base.rs_snapshot);
-
-	/* Release dirty block map reference for this relation */
-	RecnoDirtyMapClose(RelationGetRelid(scan->rs_base.rs_rd));
 
 	pfree(scan);
 }
@@ -613,7 +607,9 @@ recno_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableS
 			if ((tuple_header->t_flags & RECNO_TUPLE_UPDATED) &&
 				!(tuple_header->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
 				scan->rs_base.rs_snapshot != NULL &&
-				IsMVCCSnapshot(scan->rs_base.rs_snapshot))
+				IsMVCCSnapshot(scan->rs_base.rs_snapshot) &&
+				RecnoDirtyMapCheck(RelationGetRelid(scan->rs_base.rs_rd),
+								   scan->rs_cblock))
 			{
 				char	   *bi_data;
 				int			bi_len;
@@ -1886,7 +1882,9 @@ recno_tuple_fetch_row_version(Relation relation,
 	 */
 	if ((tuple_hdr->t_flags & RECNO_TUPLE_UPDATED) &&
 		!(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
-		snapshot != NULL && IsMVCCSnapshot(snapshot))
+		snapshot != NULL && IsMVCCSnapshot(snapshot) &&
+		RecnoDirtyMapCheck(RelationGetRelid(relation),
+						   ItemPointerGetBlockNumber(tid)))
 	{
 		char	   *bi_data;
 		int			bi_len;
@@ -2837,11 +2835,9 @@ reacquire:
 							current_xid, lock_op,
 							GetCurrentSubTransactionId(), cid, 0, 0);
 
-			/* Track this block as dirty for lock-free sLog bypass */
-			RecnoDirtyMapIncrement(RelationGetRelid(relation),
-								   ItemPointerGetBlockNumber(tid));
-			RecnoDirtyMapTrackIncrement(RelationGetRelid(relation),
-										ItemPointerGetBlockNumber(tid));
+			/* Mark this block dirty for the scan-path sLog bypass */
+			RecnoDirtyMapMark(RelationGetRelid(relation),
+							  ItemPointerGetBlockNumber(tid));
 		}
 
 		if (!RecnoTupleToSlotWithOverflow(tuple_hdr, slot, relation))
