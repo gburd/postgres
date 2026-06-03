@@ -4656,6 +4656,7 @@ HLCUncertaintyInterval
 RecnoClockStats
 RecnoDiffRecord
 RecnoDiffSegment
+RecnoDirtyMapShared
 RecnoInlineDiff
 RecnoOverflowBuffer
 RecnoOverflowBuffers

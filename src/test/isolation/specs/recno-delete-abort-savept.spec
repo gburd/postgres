@@ -8,7 +8,6 @@
 # This exercises the sLog subtransaction handling:
 # - RecnoRestoreBeforeImages physically restores tuples from before-images
 # - SLogTupleRemoveBySubXid marks entries as SLOG_OP_ABORTED (not removed)
-# - RecnoDirtyMapDiscardTrackedSubXact removes dirty map tracking entries
 
 setup
 {

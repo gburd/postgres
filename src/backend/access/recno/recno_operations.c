@@ -1552,9 +1552,8 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 		pfree(old_tuple_for_delete_wal->t_data);
 		pfree(old_tuple_for_delete_wal);
 
-		/* Track this block as dirty for lock-free sLog bypass */
-		RecnoDirtyMapIncrement(RelationGetRelid(relation), blkno);
-		RecnoDirtyMapTrackIncrement(RelationGetRelid(relation), blkno);
+		/* Mark this block dirty for the scan-path sLog bypass */
+		RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
 
 		/*
 		 * NOTE: We do NOT immediately clean up overflow chains here.
@@ -2318,9 +2317,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								/* Track in-place update */
 								recno_stat_in_place_updates++;
 
-								/* DirtyMap tracking */
-								RecnoDirtyMapIncrement(RelationGetRelid(relation), blkno);
-								RecnoDirtyMapTrackIncrement(RelationGetRelid(relation), blkno);
+								/* Mark this block dirty for the scan-path sLog bypass */
+								RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
 
 								pfree(cas_new_tuple->t_data);
 								pfree(cas_new_tuple);
@@ -3772,9 +3770,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		pfree(old_tuple_for_inplace_wal->t_data);
 		pfree(old_tuple_for_inplace_wal);
 
-		/* Track this block as dirty for lock-free sLog bypass */
-		RecnoDirtyMapIncrement(RelationGetRelid(relation), blkno);
-		RecnoDirtyMapTrackIncrement(RelationGetRelid(relation), blkno);
+		/* Mark this block dirty for the scan-path sLog bypass */
+		RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
 
 		/*
 		 * NOTE: We do NOT immediately clean up overflow chains here.
@@ -5838,9 +5835,6 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 				 */
 				recno_pending_commit_hlc = 0;
 
-				/* Decrement dirty map counters for all tracked blocks */
-				RecnoDirtyMapDecrementTracked();
-
 				SLogTupleResetTracking();
 			}
 			break;
@@ -5882,18 +5876,12 @@ RecnoSLogXactCallback(XactEvent event, void *arg)
 				}
 
 				/*
-				 * Do NOT decrement dirty map counters at ABORT.  The sLog
-				 * entries are marked ABORTED (not removed), and visibility
-				 * checks need to consult the sLog to detect the aborted state
-				 * and treat the tuples as still-live.  The counters will be
-				 * naturally cleaned up when the relation's dirty map entry is
-				 * closed and reopened with fresh zeros.
-				 *
-				 * We still need to discard the local tracking list to avoid a
-				 * stale decrement on the next commit.
+				 * The dirty map is grow-only and carries no per-transaction
+				 * tracking, so there is nothing to undo at ABORT.  Leaving the
+				 * page bit set is correct: the sLog entries are marked ABORTED
+				 * (not removed), so a scanner must still probe the sLog to
+				 * detect the aborted state and treat the tuples as still-live.
 				 */
-				RecnoDirtyMapDiscardTracked();
-
 				SLogTupleResetTracking();
 			}
 			break;
@@ -6072,27 +6060,18 @@ RecnoSLogSubXactCallback(SubXactEvent event,
 			}
 
 			/*
-			 * Do NOT decrement dirty map counters at subtransaction abort.
-			 * SLogTupleRemoveBySubXid marks entries as SLOG_OP_ABORTED (does
-			 * not remove them).  Visibility checks must still consult the
-			 * sLog to detect the aborted state.  Discard the tracking entries
-			 * so they won't be double-processed at top-level commit/abort.
+			 * The dirty map is grow-only with no per-subtransaction tracking,
+			 * so there is nothing to undo at subtransaction abort.  Leaving
+			 * the page bit set is correct: SLogTupleRemoveBySubXid marks
+			 * entries SLOG_OP_ABORTED (does not remove them), so a scanner
+			 * must still probe the sLog to detect the aborted state.
 			 */
-			RecnoDirtyMapDiscardTrackedSubXact(mySubid);
 			break;
 
 		case SUBXACT_EVENT_COMMIT_SUB:
 			xid = GetTopTransactionIdIfAny();
 			if (TransactionIdIsValid(xid))
 				SLogTupleUpdateSubXid(xid, mySubid, parentSubid);
-
-			/*
-			 * Reparent dirty map tracking entries to the parent subtxn. This
-			 * mirrors SLogTupleUpdateSubXid: if the parent later aborts,
-			 * RecnoDirtyMapDiscardTrackedSubXact(parentSubid) will correctly
-			 * match these reparented entries.
-			 */
-			RecnoDirtyMapReparentTrackedSubXact(mySubid, parentSubid);
 			break;
 
 		default:
