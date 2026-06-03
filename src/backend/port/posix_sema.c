@@ -58,14 +58,21 @@ typedef struct PGSemaphoreData
 
 #define IPCProtection	(0600)	/* access/modify by user only */
 
-#ifdef USE_NAMED_POSIX_SEMAPHORES
-static session_local sem_t **mySemPointers;	/* keep track of created semaphores */
-#else
+#ifndef USE_NAMED_POSIX_SEMAPHORES
 static pg_global PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
 #endif
-static session_local int	numSems;			/* number of semas acquired so far */
-static session_local int	maxSems;			/* allocated size of above arrays */
-static session_local int	nextSemKey;			/* next name to try */
+
+typedef struct PosixSemaState
+{
+#ifdef USE_NAMED_POSIX_SEMAPHORES
+	sem_t	  **mySemPointers;	/* keep track of created semaphores */
+#endif
+	int			numSems;		/* number of semas acquired so far */
+	int			maxSems;		/* allocated size of above arrays */
+	int			nextSemKey;		/* next name to try */
+} PosixSemaState;
+
+static session_local PosixSemaState posix_sema_state;
 
 
 static void ReleaseSemaphores(int status, Datum arg);
@@ -91,7 +98,7 @@ PosixSemaphoreCreate(void)
 
 	for (;;)
 	{
-		semKey = nextSemKey++;
+		semKey = posix_sema_state.nextSemKey++;
 
 		snprintf(semname, sizeof(semname), "/pgsql-%d", semKey);
 
@@ -212,14 +219,14 @@ PGSemaphoreInit(int maxSemas)
 						DataDir)));
 
 #ifdef USE_NAMED_POSIX_SEMAPHORES
-	mySemPointers = (sem_t **) malloc(maxSemas * sizeof(sem_t *));
-	if (mySemPointers == NULL)
+	posix_sema_state.mySemPointers = (sem_t **) malloc(maxSemas * sizeof(sem_t *));
+	if (posix_sema_state.mySemPointers == NULL)
 		elog(PANIC, "out of memory");
 #endif
 
-	numSems = 0;
-	maxSems = maxSemas;
-	nextSemKey = statbuf.st_ino;
+	posix_sema_state.numSems = 0;
+	posix_sema_state.maxSems = maxSemas;
+	posix_sema_state.nextSemKey = statbuf.st_ino;
 
 	on_shmem_exit(ReleaseSemaphores, 0);
 }
@@ -235,13 +242,13 @@ ReleaseSemaphores(int status, Datum arg)
 	int			i;
 
 #ifdef USE_NAMED_POSIX_SEMAPHORES
-	for (i = 0; i < numSems; i++)
-		PosixSemaphoreKill(mySemPointers[i]);
-	free(mySemPointers);
+	for (i = 0; i < posix_sema_state.numSems; i++)
+		PosixSemaphoreKill(posix_sema_state.mySemPointers[i]);
+	free(posix_sema_state.mySemPointers);
 #endif
 
 #ifdef USE_UNNAMED_POSIX_SEMAPHORES
-	for (i = 0; i < numSems; i++)
+	for (i = 0; i < posix_sema_state.numSems; i++)
 		PosixSemaphoreKill(PG_SEM_REF(sharedSemas + i));
 #endif
 }
@@ -260,21 +267,21 @@ PGSemaphoreCreate(void)
 	/* Can't do this in a backend, because static state is postmaster's */
 	Assert(!IsUnderPostmaster);
 
-	if (numSems >= maxSems)
+	if (posix_sema_state.numSems >= posix_sema_state.maxSems)
 		elog(PANIC, "too many semaphores created");
 
 #ifdef USE_NAMED_POSIX_SEMAPHORES
 	newsem = PosixSemaphoreCreate();
 	/* Remember new sema for ReleaseSemaphores */
-	mySemPointers[numSems] = newsem;
+	posix_sema_state.mySemPointers[posix_sema_state.numSems] = newsem;
 	sema = (PGSemaphore) newsem;
 #else
-	sema = &sharedSemas[numSems];
+	sema = &sharedSemas[posix_sema_state.numSems];
 	newsem = PG_SEM_REF(sema);
 	PosixSemaphoreCreate(newsem);
 #endif
 
-	numSems++;
+	posix_sema_state.numSems++;
 
 	return sema;
 }
