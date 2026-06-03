@@ -108,7 +108,6 @@ static int	sni_clienthello_cb(SSL *ssl, int *al, void *arg);
 
 static char *X509_NAME_to_cstring(X509_NAME *name);
 
-static session_local SSL_CTX *SSL_context = NULL;
 static MemoryContext SSL_hosts_memcxt = NULL;
 static struct hosts
 {
@@ -128,8 +127,21 @@ static struct hosts
 	HostsLine  *default_host;
 }		   *SSL_hosts;
 
-static session_local bool dummy_ssl_passwd_cb_called = false;
-static session_local bool ssl_is_server_start;
+
+typedef struct OpenSslState
+{
+	SSL_CTX    *SSL_context;
+	bool		dummy_ssl_passwd_cb_called;
+	bool		ssl_is_server_start;
+	BIO_METHOD *port_bio_method_ptr;
+} OpenSslState;
+
+static session_local OpenSslState openssl_state = {
+	.SSL_context = NULL,
+	.dummy_ssl_passwd_cb_called = false,
+	.ssl_is_server_start = false,
+	.port_bio_method_ptr = NULL,
+};
 
 static int	ssl_protocol_version_to_openssl(int v);
 static const char *ssl_protocol_version_to_string(int v);
@@ -551,12 +563,12 @@ be_tls_init(bool isServerStart)
 		SSL_CTX_set_options(context, SSL_OP_CIPHER_SERVER_PREFERENCE);
 
 	/*
-	 * Success!  Replace any existing SSL_context and host configurations.
+	 * Success!  Replace any existing openssl_state.SSL_context and host configurations.
 	 */
-	if (SSL_context)
+	if (openssl_state.SSL_context)
 	{
-		SSL_CTX_free(SSL_context);
-		SSL_context = NULL;
+		SSL_CTX_free(openssl_state.SSL_context);
+		openssl_state.SSL_context = NULL;
 	}
 
 	MemoryContextSwitchTo(oldcxt);
@@ -566,7 +578,7 @@ be_tls_init(bool isServerStart)
 
 	SSL_hosts_memcxt = host_memcxt;
 	SSL_hosts = new_hosts;
-	SSL_context = context;
+	openssl_state.SSL_context = context;
 
 	return 0;
 
@@ -704,18 +716,18 @@ init_host_context(HostsLine *host, bool isServerStart)
 
 
 	/* used by the callback */
-	ssl_is_server_start = isServerStart;
+	openssl_state.ssl_is_server_start = isServerStart;
 
 	/*
 	 * OK, try to load the private key file.
 	 */
-	dummy_ssl_passwd_cb_called = false;
+	openssl_state.dummy_ssl_passwd_cb_called = false;
 
 	if (SSL_CTX_use_PrivateKey_file(ctx,
 									host->ssl_key,
 									SSL_FILETYPE_PEM) != 1)
 	{
-		if (dummy_ssl_passwd_cb_called)
+		if (openssl_state.dummy_ssl_passwd_cb_called)
 			ereport(isServerStart ? FATAL : LOG,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
 					 errmsg("private key file \"%s\" cannot be reloaded because it requires a passphrase",
@@ -824,9 +836,9 @@ error:
 void
 be_tls_destroy(void)
 {
-	if (SSL_context)
-		SSL_CTX_free(SSL_context);
-	SSL_context = NULL;
+	if (openssl_state.SSL_context)
+		SSL_CTX_free(openssl_state.SSL_context);
+	openssl_state.SSL_context = NULL;
 	ssl_loaded_verify_locations = false;
 }
 
@@ -843,7 +855,7 @@ be_tls_open_server(Port *port)
 	Assert(!port->ssl);
 	Assert(!port->peer);
 
-	if (!SSL_context)
+	if (!openssl_state.SSL_context)
 	{
 		ereport(COMMERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -852,12 +864,12 @@ be_tls_open_server(Port *port)
 	}
 
 	/* set up debugging/info callback */
-	SSL_CTX_set_info_callback(SSL_context, info_cb);
+	SSL_CTX_set_info_callback(openssl_state.SSL_context, info_cb);
 
 	/* enable ALPN */
-	SSL_CTX_set_alpn_select_cb(SSL_context, alpn_cb, port);
+	SSL_CTX_set_alpn_select_cb(openssl_state.SSL_context, alpn_cb, port);
 
-	if (!(port->ssl = SSL_new(SSL_context)))
+	if (!(port->ssl = SSL_new(openssl_state.SSL_context)))
 	{
 		ereport(COMMERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -889,7 +901,7 @@ be_tls_open_server(Port *port)
 	 * cannot use the OpenSSL context update functionality.
 	 */
 #ifdef HAVE_SSL_CTX_SET_CLIENT_HELLO_CB
-	SSL_CTX_set_client_hello_cb(SSL_context, sni_clienthello_cb, NULL);
+	SSL_CTX_set_client_hello_cb(openssl_state.SSL_context, sni_clienthello_cb, NULL);
 #else
 	if (SSL_hosts->default_host->ssl_ca && SSL_hosts->default_host->ssl_ca[0])
 	{
@@ -1339,7 +1351,6 @@ be_tls_write(Port *port, const void *ptr, size_t len, int *waitfor)
  * see sock_read() and sock_write() in OpenSSL's crypto/bio/bss_sock.c.
  */
 
-static session_local BIO_METHOD *port_bio_method_ptr = NULL;
 
 static int
 port_bio_read(BIO *h, char *buf, int size)
@@ -1417,7 +1428,7 @@ port_bio_ctrl(BIO *h, int cmd, long num, void *ptr)
 static BIO_METHOD *
 port_bio_method(void)
 {
-	if (!port_bio_method_ptr)
+	if (!openssl_state.port_bio_method_ptr)
 	{
 		int			my_bio_index;
 
@@ -1425,19 +1436,19 @@ port_bio_method(void)
 		if (my_bio_index == -1)
 			return NULL;
 		my_bio_index |= BIO_TYPE_SOURCE_SINK;
-		port_bio_method_ptr = BIO_meth_new(my_bio_index, "PostgreSQL backend socket");
-		if (!port_bio_method_ptr)
+		openssl_state.port_bio_method_ptr = BIO_meth_new(my_bio_index, "PostgreSQL backend socket");
+		if (!openssl_state.port_bio_method_ptr)
 			return NULL;
-		if (!BIO_meth_set_write(port_bio_method_ptr, port_bio_write) ||
-			!BIO_meth_set_read(port_bio_method_ptr, port_bio_read) ||
-			!BIO_meth_set_ctrl(port_bio_method_ptr, port_bio_ctrl))
+		if (!BIO_meth_set_write(openssl_state.port_bio_method_ptr, port_bio_write) ||
+			!BIO_meth_set_read(openssl_state.port_bio_method_ptr, port_bio_read) ||
+			!BIO_meth_set_ctrl(openssl_state.port_bio_method_ptr, port_bio_ctrl))
 		{
-			BIO_meth_free(port_bio_method_ptr);
-			port_bio_method_ptr = NULL;
+			BIO_meth_free(openssl_state.port_bio_method_ptr);
+			openssl_state.port_bio_method_ptr = NULL;
 			return NULL;
 		}
 	}
-	return port_bio_method_ptr;
+	return openssl_state.port_bio_method_ptr;
 }
 
 static int
@@ -1566,7 +1577,7 @@ ssl_external_passwd_cb(char *buf, int size, int rwflag, void *userdata)
 
 	Assert(rwflag == 0);
 
-	return run_ssl_passphrase_command(cmd, prompt, ssl_is_server_start, buf, size);
+	return run_ssl_passphrase_command(cmd, prompt, openssl_state.ssl_is_server_start, buf, size);
 }
 
 /*
@@ -1582,7 +1593,7 @@ static int
 dummy_ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
 {
 	/* Set flag to change the error message we'll report */
-	dummy_ssl_passwd_cb_called = true;
+	openssl_state.dummy_ssl_passwd_cb_called = true;
 	/* And return empty string */
 	Assert(size > 0);
 	buf[0] = '\0';
@@ -1871,10 +1882,10 @@ ssl_update_ssl(SSL *ssl, HostsLine *host_config)
 		/*
 		 * The trust store appears to be the only setting that this function
 		 * can't override via the (SSL *) pointer directly. Instead, share it
-		 * with the active SSL_CTX (this should always be SSL_context).
+		 * with the active SSL_CTX (this should always be openssl_state.SSL_context).
 		 */
-		Assert(SSL_context == SSL_get_SSL_CTX(ssl));
-		SSL_CTX_set1_cert_store(SSL_context, ca_store);
+		Assert(openssl_state.SSL_context == SSL_get_SSL_CTX(ssl));
+		SSL_CTX_set1_cert_store(openssl_state.SSL_context, ca_store);
 
 		/*
 		 * SSL_set_client_CA_list() will take ownership of its argument, so we
