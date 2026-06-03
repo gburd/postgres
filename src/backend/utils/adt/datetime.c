@@ -256,9 +256,7 @@ static userset_guc TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
 
 /* Caches of recent lookup results in the above tables */
 
-static session_local const datetkn *datecache[MAXDATEFIELDS] = {NULL};
 
-static session_local const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
 
 /* Cache for results of timezone abbreviation lookups */
 
@@ -270,7 +268,18 @@ typedef struct TzAbbrevCache
 	pg_tz	   *tz;				/* relevant zone, if variable-offset */
 } TzAbbrevCache;
 
-static session_local TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+typedef struct DatetimeState
+{
+	const datetkn *datecache[MAXDATEFIELDS];
+	const datetkn *deltacache[MAXDATEFIELDS];
+	TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+} DatetimeState;
+
+static session_local DatetimeState datetime_state = {
+	.datecache = {NULL},
+	.deltacache = {NULL},
+};
+
 
 
 /*
@@ -3143,7 +3152,7 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 					 int *ftype, int *offset, pg_tz **tz,
 					 DateTimeErrorExtra *extra)
 {
-	TzAbbrevCache *tzc = &tzabbrevcache[field];
+	TzAbbrevCache *tzc = &datetime_state.tzabbrevcache[field];
 	bool		isfixed;
 	int			isdst;
 	const datetkn *tp;
@@ -3222,12 +3231,12 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 }
 
 /*
- * Reset tzabbrevcache after a change in session_timezone.
+ * Reset datetime_state.tzabbrevcache after a change in session_timezone.
  */
 void
 ClearTimeZoneAbbrevCache(void)
 {
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	memset(datetime_state.tzabbrevcache, 0, sizeof(datetime_state.tzabbrevcache));
 }
 
 
@@ -3249,7 +3258,7 @@ DecodeSpecial(int field, const char *lowtoken, int *val)
 	int			type;
 	const datetkn *tp;
 
-	tp = datecache[field];
+	tp = datetime_state.datecache[field];
 	/* use strncmp so that we match truncated tokens */
 	if (tp == NULL || strncmp(lowtoken, tp->token, TOKMAXLEN) != 0)
 	{
@@ -3262,7 +3271,7 @@ DecodeSpecial(int field, const char *lowtoken, int *val)
 	}
 	else
 	{
-		datecache[field] = tp;
+		datetime_state.datecache[field] = tp;
 		type = tp->type;
 		*val = tp->value;
 	}
@@ -4172,7 +4181,7 @@ DecodeUnits(int field, const char *lowtoken, int *val)
 	int			type;
 	const datetkn *tp;
 
-	tp = deltacache[field];
+	tp = datetime_state.deltacache[field];
 	/* use strncmp so that we match truncated tokens */
 	if (tp == NULL || strncmp(lowtoken, tp->token, TOKMAXLEN) != 0)
 	{
@@ -4185,7 +4194,7 @@ DecodeUnits(int field, const char *lowtoken, int *val)
 	}
 	else
 	{
-		deltacache[field] = tp;
+		datetime_state.deltacache[field] = tp;
 		type = tp->type;
 		*val = tp->value;
 	}
@@ -5080,8 +5089,8 @@ void
 InstallTimeZoneAbbrevs(TimeZoneAbbrevTable *tbl)
 {
 	zoneabbrevtbl = tbl;
-	/* reset tzabbrevcache, which may contain results from old table */
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	/* reset datetime_state.tzabbrevcache, which may contain results from old table */
+	memset(datetime_state.tzabbrevcache, 0, sizeof(datetime_state.tzabbrevcache));
 }
 
 /*
