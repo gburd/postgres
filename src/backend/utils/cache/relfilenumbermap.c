@@ -26,11 +26,17 @@
 #include "utils/relfilenumbermap.h"
 #include "utils/relmapper.h"
 
-/* Hash table for information about each relfilenumber <-> oid pair */
-static session_local HTAB *RelfilenumberMapHash = NULL;
+typedef struct RelfilenumberMapState
+{
+	/* Hash table for information about each relfilenumber <-> oid pair */
+	HTAB	   *RelfilenumberMapHash;
+	/* built first time through in InitializeRelfilenumberMap */
+	ScanKeyData relfilenumber_skey[2];
+} RelfilenumberMapState;
 
-/* built first time through in InitializeRelfilenumberMap */
-static session_local ScanKeyData relfilenumber_skey[2];
+static session_local RelfilenumberMapState relfilenumbermap_state = {
+	.RelfilenumberMapHash = NULL,
+};
 
 typedef struct
 {
@@ -55,9 +61,9 @@ RelfilenumberMapInvalidateCallback(Datum arg, Oid relid)
 	RelfilenumberMapEntry *entry;
 
 	/* callback only gets registered after creating the hash */
-	Assert(RelfilenumberMapHash != NULL);
+	Assert(relfilenumbermap_state.RelfilenumberMapHash != NULL);
 
-	hash_seq_init(&status, RelfilenumberMapHash);
+	hash_seq_init(&status, relfilenumbermap_state.RelfilenumberMapHash);
 	while ((entry = (RelfilenumberMapEntry *) hash_seq_search(&status)) != NULL)
 	{
 		/*
@@ -69,7 +75,7 @@ RelfilenumberMapInvalidateCallback(Datum arg, Oid relid)
 			entry->relid == InvalidOid ||	/* negative cache entry */
 			entry->relid == relid)	/* individual flushed relation */
 		{
-			if (hash_search(RelfilenumberMapHash,
+			if (hash_search(relfilenumbermap_state.RelfilenumberMapHash,
 							&entry->key,
 							HASH_REMOVE,
 							NULL) == NULL)
@@ -93,23 +99,23 @@ InitializeRelfilenumberMap(void)
 		CreateCacheMemoryContext();
 
 	/* build skey */
-	MemSet(&relfilenumber_skey, 0, sizeof(relfilenumber_skey));
+	MemSet(&relfilenumbermap_state.relfilenumber_skey, 0, sizeof(relfilenumbermap_state.relfilenumber_skey));
 
 	for (i = 0; i < 2; i++)
 	{
 		fmgr_info_cxt(F_OIDEQ,
-					  &relfilenumber_skey[i].sk_func,
+					  &relfilenumbermap_state.relfilenumber_skey[i].sk_func,
 					  CacheMemoryContext);
-		relfilenumber_skey[i].sk_strategy = BTEqualStrategyNumber;
-		relfilenumber_skey[i].sk_subtype = InvalidOid;
-		relfilenumber_skey[i].sk_collation = InvalidOid;
+		relfilenumbermap_state.relfilenumber_skey[i].sk_strategy = BTEqualStrategyNumber;
+		relfilenumbermap_state.relfilenumber_skey[i].sk_subtype = InvalidOid;
+		relfilenumbermap_state.relfilenumber_skey[i].sk_collation = InvalidOid;
 	}
 
-	relfilenumber_skey[0].sk_attno = Anum_pg_class_reltablespace;
-	relfilenumber_skey[1].sk_attno = Anum_pg_class_relfilenode;
+	relfilenumbermap_state.relfilenumber_skey[0].sk_attno = Anum_pg_class_reltablespace;
+	relfilenumbermap_state.relfilenumber_skey[1].sk_attno = Anum_pg_class_relfilenode;
 
 	/*
-	 * Only create the RelfilenumberMapHash now, so we don't end up partially
+	 * Only create the relfilenumbermap_state.RelfilenumberMapHash now, so we don't end up partially
 	 * initialized when fmgr_info_cxt() above ERRORs out with an out of memory
 	 * error.
 	 */
@@ -117,7 +123,7 @@ InitializeRelfilenumberMap(void)
 	ctl.entrysize = sizeof(RelfilenumberMapEntry);
 	ctl.hcxt = CacheMemoryContext;
 
-	RelfilenumberMapHash =
+	relfilenumbermap_state.RelfilenumberMapHash =
 		hash_create("RelfilenumberMap cache", 64, &ctl,
 					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
@@ -148,7 +154,7 @@ RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)
 	HeapTuple	ntp;
 	Oid			relid;
 
-	if (RelfilenumberMapHash == NULL)
+	if (relfilenumbermap_state.RelfilenumberMapHash == NULL)
 		InitializeRelfilenumberMap();
 
 	/* pg_class will show 0 when the value is actually MyDatabaseTableSpace */
@@ -166,7 +172,7 @@ RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)
 	 * since querying invalid values isn't supposed to be a frequent thing,
 	 * but it's basically free.
 	 */
-	entry = hash_search(RelfilenumberMapHash, &key, HASH_FIND, &found);
+	entry = hash_search(relfilenumbermap_state.RelfilenumberMapHash, &key, HASH_FIND, &found);
 
 	if (found)
 		return entry->relid;
@@ -196,7 +202,7 @@ RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)
 		relation = table_open(RelationRelationId, AccessShareLock);
 
 		/* copy scankey to local copy and set scan arguments */
-		memcpy(skey, relfilenumber_skey, sizeof(skey));
+		memcpy(skey, relfilenumbermap_state.relfilenumber_skey, sizeof(skey));
 		skey[0].sk_argument = ObjectIdGetDatum(reltablespace);
 		skey[1].sk_argument = ObjectIdGetDatum(relfilenumber);
 
@@ -240,7 +246,7 @@ RelidByRelfilenumber(Oid reltablespace, RelFileNumber relfilenumber)
 	 * caused cache invalidations to be executed which would have deleted a
 	 * new entry if we had entered it above.
 	 */
-	entry = hash_search(RelfilenumberMapHash, &key, HASH_ENTER, &found);
+	entry = hash_search(relfilenumbermap_state.RelfilenumberMapHash, &key, HASH_ENTER, &found);
 	if (found)
 		elog(ERROR, "corrupted hashtable");
 	entry->relid = relid;
