@@ -118,134 +118,21 @@ ApplyOneUndoRecord(UndoRecordHeader *header, char *payload,
 }
 
 /*
- * ApplyUndoChain - Walk and apply an UNDO chain during transaction abort
+ * ApplyUndoChain - Legacy segment-file rollback entry point (unsupported)
  *
- * This function reads the UNDO chain starting from 'start_ptr' and applies
- * each record in order. Records are processed from the most recent to the
- * oldest (reverse chronological order), which is the natural order for
- * rollback.
- *
- * Each record is dispatched to its owning resource manager's rm_undo
- * callback via the UNDO RM dispatch table.
- *
- * On error, we emit a WARNING and continue processing remaining records.
- * This is a best-effort approach -- we do not want UNDO failures to prevent
- * transaction abort from completing.
+ * In the original design this walked an UNDO chain stored in segment files
+ * and applied each record on abort.  Under UNDO-in-WAL there are no segment
+ * files: UNDO records live in the WAL stream and rollback goes through
+ * ApplyUndoChainFromWAL().  This entry point is retained only because its
+ * declaration is still part of the public undorecord.h API; it has no live
+ * callers and unconditionally errors out.
  */
 void
-ApplyUndoChain(UndoRecPtr start_ptr)
+ApplyUndoChain(UndoRecPtr start_ptr pg_attribute_unused())
 {
-	UndoRecPtr	current_ptr pg_attribute_unused();
-	char	   *read_buffer pg_attribute_unused() = NULL;
-	Size		buffer_size pg_attribute_unused() = 0;
-	int			records_applied pg_attribute_unused() = 0;
-	int			records_skipped pg_attribute_unused() = 0;
-
-	if (!UndoRecPtrIsValid(start_ptr))
-		return;
-
-	/*
-	 * With UNDO-in-WAL, UNDO records are no longer in segment files. Use
-	 * ApplyUndoChainFromWAL() instead, which reads UNDO batches from the WAL
-	 * stream.
-	 */
 	ereport(ERROR,
 			(errmsg("ApplyUndoChain is not supported with UNDO-in-WAL"),
 			 errhint("Use ApplyUndoChainFromWAL() instead.")));
-
-	ereport(DEBUG1,
-			(errmsg("applying UNDO chain starting at %llu",
-					(unsigned long long) start_ptr)));
-
-	current_ptr = start_ptr;
-
-	/* Process each UNDO record in the chain */
-	while (UndoRecPtrIsValid(current_ptr))
-	{
-		UndoRecordHeader header;
-		char	   *payload = NULL;
-		Size		record_size;
-
-		/*
-		 * Read the fixed header first to determine the full record size.
-		 */
-		if (buffer_size < SizeOfUndoRecordHeader)
-		{
-			buffer_size = Max(SizeOfUndoRecordHeader + 8192, buffer_size * 2);
-			if (read_buffer)
-				pfree(read_buffer);
-			read_buffer = (char *) palloc(buffer_size);
-		}
-
-		UndoLogRead(current_ptr, read_buffer, SizeOfUndoRecordHeader);
-		memcpy(&header, read_buffer, SizeOfUndoRecordHeader);
-
-		record_size = header.urec_len;
-
-		/*
-		 * Sanity check: record size should be at least the header size and
-		 * not absurdly large.
-		 */
-		if (record_size < SizeOfUndoRecordHeader ||
-			record_size > 1024 * 1024 * 1024)
-		{
-			ereport(WARNING,
-					(errmsg("UNDO rollback: invalid record size %zu at %llu, stopping chain walk",
-							record_size, (unsigned long long) current_ptr)));
-			break;
-		}
-
-		/* Read the full record if it contains payload data */
-		if (record_size > SizeOfUndoRecordHeader)
-		{
-			if (buffer_size < record_size)
-			{
-				buffer_size = record_size;
-				pfree(read_buffer);
-				read_buffer = (char *) palloc(buffer_size);
-			}
-
-			UndoLogRead(current_ptr, read_buffer, record_size);
-
-			/* Re-read header from full buffer */
-			memcpy(&header, read_buffer, SizeOfUndoRecordHeader);
-
-			/*
-			 * Payload data follows immediately after the fixed header in the
-			 * serialized record.
-			 */
-			if (header.urec_payload_len > 0)
-				payload = read_buffer + SizeOfUndoRecordHeader;
-		}
-
-		/* Apply this record via RM dispatch */
-		if (ApplyOneUndoRecord(&header, payload, current_ptr))
-			records_applied++;
-		else
-			records_skipped++;
-
-		/*
-		 * Follow the chain to the previous record.
-		 */
-		current_ptr = header.urec_prev;
-	}
-
-	if (read_buffer)
-		pfree(read_buffer);
-
-	/* Report results */
-	if (records_skipped > 0)
-	{
-		ereport(WARNING,
-				(errmsg("UNDO rollback: %d records applied, %d skipped",
-						records_applied, records_skipped)));
-	}
-	else
-	{
-		ereport(DEBUG1,
-				(errmsg("UNDO rollback complete: %d records applied",
-						records_applied)));
-	}
 }
 
 /*

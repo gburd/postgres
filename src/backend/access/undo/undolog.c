@@ -397,9 +397,17 @@ UndoGetOldestBatchLSN(void)
 /*
  * Legacy no-op stubs
  *
- * These functions are retained as no-ops to satisfy callers that have
- * not yet been fully updated.  They will be removed in a future commit
- * once all callers are cleaned up.
+ * UNDO-in-WAL has no per-log segment files, no fd cache, and no
+ * per-backend write-pointer tracking: UNDO data lives in the WAL stream
+ * and durability/recycling are handled by WAL flush and the discard
+ * worker.  The operations below are therefore inherently nothing-to-do in
+ * this mode, but they still have live callers in the shared transaction
+ * and discard paths (e.g. UndoLogCloseFiles / UndoFlushResetMaxWritePtr
+ * from xactundo.c, UndoLogDeleteSegmentFile from the discard worker,
+ * ExtendUndoLogFile from the undo_xlog.c redo path).  We keep them as
+ * no-ops so those callers stay uniform across both UNDO modes rather than
+ * sprinkling mode checks at every call site; the no-op is the correct
+ * behaviour here, not a placeholder awaiting future work.
  */
 
 void
