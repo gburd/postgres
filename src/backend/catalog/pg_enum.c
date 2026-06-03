@@ -59,8 +59,16 @@ session_local Oid			binary_upgrade_next_pg_enum_oid = InvalidOid;
  * pg_dump.  We could track subtransaction nesting of the commands to
  * analyze things more precisely, but for now we don't bother.
  */
-static session_local HTAB *uncommitted_enum_types = NULL;
-static session_local HTAB *uncommitted_enum_values = NULL;
+typedef struct PgEnumState
+{
+	HTAB	   *uncommitted_enum_types;
+	HTAB	   *uncommitted_enum_values;
+} PgEnumState;
+
+static session_local PgEnumState pg_enum_state = {
+	.uncommitted_enum_types = NULL,
+	.uncommitted_enum_values = NULL,
+};
 
 static void init_uncommitted_enum_types(void);
 static void init_uncommitted_enum_values(void);
@@ -102,9 +110,9 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 	 */
 	if (GetCurrentTransactionNestLevel() == 1)
 	{
-		if (uncommitted_enum_types == NULL)
+		if (pg_enum_state.uncommitted_enum_types == NULL)
 			init_uncommitted_enum_types();
-		(void) hash_search(uncommitted_enum_types, &enumTypeOid,
+		(void) hash_search(pg_enum_state.uncommitted_enum_types, &enumTypeOid,
 						   HASH_ENTER, NULL);
 	}
 
@@ -272,7 +280,7 @@ init_uncommitted_enum_types(void)
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = TopTransactionContext;
-	uncommitted_enum_types = hash_create("Uncommitted enum types",
+	pg_enum_state.uncommitted_enum_types = hash_create("Uncommitted enum types",
 										 32,
 										 &hash_ctl,
 										 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -289,7 +297,7 @@ init_uncommitted_enum_values(void)
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = TopTransactionContext;
-	uncommitted_enum_values = hash_create("Uncommitted enum values",
+	pg_enum_state.uncommitted_enum_values = hash_create("Uncommitted enum values",
 										  32,
 										  &hash_ctl,
 										  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -604,11 +612,11 @@ restart:
 		return;
 
 	/* Set up the uncommitted values table if not already done in this tx */
-	if (uncommitted_enum_values == NULL)
+	if (pg_enum_state.uncommitted_enum_values == NULL)
 		init_uncommitted_enum_values();
 
 	/* Add the new value to the table */
-	(void) hash_search(uncommitted_enum_values, &newOid, HASH_ENTER, NULL);
+	(void) hash_search(pg_enum_state.uncommitted_enum_values, &newOid, HASH_ENTER, NULL);
 }
 
 
@@ -705,11 +713,11 @@ EnumTypeUncommitted(Oid typ_id)
 	bool		found;
 
 	/* If we've made no uncommitted types table, it's not in the table */
-	if (uncommitted_enum_types == NULL)
+	if (pg_enum_state.uncommitted_enum_types == NULL)
 		return false;
 
 	/* Else, is it in the table? */
-	(void) hash_search(uncommitted_enum_types, &typ_id, HASH_FIND, &found);
+	(void) hash_search(pg_enum_state.uncommitted_enum_types, &typ_id, HASH_FIND, &found);
 	return found;
 }
 
@@ -723,11 +731,11 @@ EnumUncommitted(Oid enum_id)
 	bool		found;
 
 	/* If we've made no uncommitted values table, it's not in the table */
-	if (uncommitted_enum_values == NULL)
+	if (pg_enum_state.uncommitted_enum_values == NULL)
 		return false;
 
 	/* Else, is it in the table? */
-	(void) hash_search(uncommitted_enum_values, &enum_id, HASH_FIND, &found);
+	(void) hash_search(pg_enum_state.uncommitted_enum_values, &enum_id, HASH_FIND, &found);
 	return found;
 }
 
@@ -743,8 +751,8 @@ AtEOXact_Enum(void)
 	 * memory will go away automatically when TopTransactionContext is freed;
 	 * it's sufficient to clear our pointers.
 	 */
-	uncommitted_enum_types = NULL;
-	uncommitted_enum_values = NULL;
+	pg_enum_state.uncommitted_enum_types = NULL;
+	pg_enum_state.uncommitted_enum_values = NULL;
 }
 
 
@@ -827,10 +835,10 @@ EstimateUncommittedEnumsSpace(void)
 {
 	size_t		entries = 0;
 
-	if (uncommitted_enum_types)
-		entries += hash_get_num_entries(uncommitted_enum_types);
-	if (uncommitted_enum_values)
-		entries += hash_get_num_entries(uncommitted_enum_values);
+	if (pg_enum_state.uncommitted_enum_types)
+		entries += hash_get_num_entries(pg_enum_state.uncommitted_enum_types);
+	if (pg_enum_state.uncommitted_enum_values)
+		entries += hash_get_num_entries(pg_enum_state.uncommitted_enum_values);
 
 	/* Add two for the terminators. */
 	return sizeof(Oid) * (entries + 2);
@@ -848,12 +856,12 @@ SerializeUncommittedEnums(void *space, Size size)
 	Assert(size == EstimateUncommittedEnumsSpace());
 
 	/* Write out all the OIDs from the types hash table, if there is one. */
-	if (uncommitted_enum_types)
+	if (pg_enum_state.uncommitted_enum_types)
 	{
 		HASH_SEQ_STATUS status;
 		Oid		   *value;
 
-		hash_seq_init(&status, uncommitted_enum_types);
+		hash_seq_init(&status, pg_enum_state.uncommitted_enum_types);
 		while ((value = (Oid *) hash_seq_search(&status)))
 			*serialized++ = *value;
 	}
@@ -862,12 +870,12 @@ SerializeUncommittedEnums(void *space, Size size)
 	*serialized++ = InvalidOid;
 
 	/* Write out all the OIDs from the values hash table, if there is one. */
-	if (uncommitted_enum_values)
+	if (pg_enum_state.uncommitted_enum_values)
 	{
 		HASH_SEQ_STATUS status;
 		Oid		   *value;
 
-		hash_seq_init(&status, uncommitted_enum_values);
+		hash_seq_init(&status, pg_enum_state.uncommitted_enum_values);
 		while ((value = (Oid *) hash_seq_search(&status)))
 			*serialized++ = *value;
 	}
@@ -887,8 +895,8 @@ RestoreUncommittedEnums(void *space)
 {
 	Oid		   *serialized = (Oid *) space;
 
-	Assert(!uncommitted_enum_types);
-	Assert(!uncommitted_enum_values);
+	Assert(!pg_enum_state.uncommitted_enum_types);
+	Assert(!pg_enum_state.uncommitted_enum_values);
 
 	/*
 	 * If either list is empty then don't even bother to create that hash
@@ -901,7 +909,7 @@ RestoreUncommittedEnums(void *space)
 		init_uncommitted_enum_types();
 		do
 		{
-			(void) hash_search(uncommitted_enum_types, serialized++,
+			(void) hash_search(pg_enum_state.uncommitted_enum_types, serialized++,
 							   HASH_ENTER, NULL);
 		} while (OidIsValid(*serialized));
 	}
@@ -912,7 +920,7 @@ RestoreUncommittedEnums(void *space)
 		init_uncommitted_enum_values();
 		do
 		{
-			(void) hash_search(uncommitted_enum_values, serialized++,
+			(void) hash_search(pg_enum_state.uncommitted_enum_values, serialized++,
 							   HASH_ENTER, NULL);
 		} while (OidIsValid(*serialized));
 	}
