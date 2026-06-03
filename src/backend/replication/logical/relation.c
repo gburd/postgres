@@ -32,9 +32,7 @@
 #include "utils/typcache.h"
 
 
-static session_local MemoryContext LogicalRepRelMapContext = NULL;
 
-static session_local HTAB *LogicalRepRelMap = NULL;
 
 /*
  * Partition map (LogicalRepPartMap)
@@ -47,11 +45,24 @@ static session_local HTAB *LogicalRepRelMap = NULL;
  * attribute mappings to remote relation's attributes must be maintained
  * separately for each partition.
  */
-static session_local MemoryContext LogicalRepPartMapContext = NULL;
-static session_local HTAB *LogicalRepPartMap = NULL;
+typedef struct LogicalRepRelMapState
+{
+	MemoryContext LogicalRepRelMapContext;
+	HTAB	   *LogicalRepRelMap;
+	MemoryContext LogicalRepPartMapContext;
+	HTAB	   *LogicalRepPartMap;
+} LogicalRepRelMapState;
+
+static session_local LogicalRepRelMapState logicalrep_relmap_state = {
+	.LogicalRepRelMapContext = NULL,
+	.LogicalRepRelMap = NULL,
+	.LogicalRepPartMapContext = NULL,
+	.LogicalRepPartMap = NULL,
+};
+
 typedef struct LogicalRepPartMapEntry
 {
-	Oid			partoid;		/* LogicalRepPartMap's key */
+	Oid			partoid;		/* logicalrep_relmap_state.LogicalRepPartMap's key */
 	LogicalRepRelMapEntry relmapentry;
 } LogicalRepPartMapEntry;
 
@@ -67,14 +78,14 @@ logicalrep_relmap_invalidate_cb(Datum arg, Oid reloid)
 	LogicalRepRelMapEntry *entry;
 
 	/* Just to be sure. */
-	if (LogicalRepRelMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepRelMap == NULL)
 		return;
 
 	if (reloid != InvalidOid)
 	{
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, LogicalRepRelMap);
+		hash_seq_init(&status, logicalrep_relmap_state.LogicalRepRelMap);
 
 		/* TODO, use inverse lookup hashtable? */
 		while ((entry = (LogicalRepRelMapEntry *) hash_seq_search(&status)) != NULL)
@@ -92,7 +103,7 @@ logicalrep_relmap_invalidate_cb(Datum arg, Oid reloid)
 		/* invalidate all cache entries */
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, LogicalRepRelMap);
+		hash_seq_init(&status, logicalrep_relmap_state.LogicalRepRelMap);
 
 		while ((entry = (LogicalRepRelMapEntry *) hash_seq_search(&status)) != NULL)
 			entry->localrelvalid = false;
@@ -107,18 +118,18 @@ logicalrep_relmap_init(void)
 {
 	HASHCTL		ctl;
 
-	if (!LogicalRepRelMapContext)
-		LogicalRepRelMapContext =
+	if (!logicalrep_relmap_state.LogicalRepRelMapContext)
+		logicalrep_relmap_state.LogicalRepRelMapContext =
 			AllocSetContextCreate(CacheMemoryContext,
-								  "LogicalRepRelMapContext",
+								  "logicalrep_relmap_state.LogicalRepRelMapContext",
 								  ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize the relation hash table. */
 	ctl.keysize = sizeof(LogicalRepRelId);
 	ctl.entrysize = sizeof(LogicalRepRelMapEntry);
-	ctl.hcxt = LogicalRepRelMapContext;
+	ctl.hcxt = logicalrep_relmap_state.LogicalRepRelMapContext;
 
-	LogicalRepRelMap = hash_create("logicalrep relation map cache", 128, &ctl,
+	logicalrep_relmap_state.LogicalRepRelMap = hash_create("logicalrep relation map cache", 128, &ctl,
 								   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* Watch for invalidation events. */
@@ -169,13 +180,13 @@ logicalrep_relmap_update(LogicalRepRelation *remoterel)
 	bool		found;
 	int			i;
 
-	if (LogicalRepRelMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepRelMap == NULL)
 		logicalrep_relmap_init();
 
 	/*
 	 * HASH_ENTER returns the existing entry if present or creates a new one.
 	 */
-	entry = hash_search(LogicalRepRelMap, &remoterel->remoteid,
+	entry = hash_search(logicalrep_relmap_state.LogicalRepRelMap, &remoterel->remoteid,
 						HASH_ENTER, &found);
 
 	if (found)
@@ -184,7 +195,7 @@ logicalrep_relmap_update(LogicalRepRelation *remoterel)
 	memset(entry, 0, sizeof(LogicalRepRelMapEntry));
 
 	/* Make cached copy of the data */
-	oldctx = MemoryContextSwitchTo(LogicalRepRelMapContext);
+	oldctx = MemoryContextSwitchTo(logicalrep_relmap_state.LogicalRepRelMapContext);
 	entry->remoterel.remoteid = remoterel->remoteid;
 	entry->remoterel.nspname = pstrdup(remoterel->nspname);
 	entry->remoterel.relname = pstrdup(remoterel->relname);
@@ -365,11 +376,11 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 	bool		found;
 	LogicalRepRelation *remoterel;
 
-	if (LogicalRepRelMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepRelMap == NULL)
 		logicalrep_relmap_init();
 
 	/* Search for existing entry. */
-	entry = hash_search(LogicalRepRelMap, &remoteid,
+	entry = hash_search(logicalrep_relmap_state.LogicalRepRelMap, &remoteid,
 						HASH_FIND, &found);
 
 	if (!found)
@@ -447,7 +458,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		 * that would result in potentially unwanted data loss.
 		 */
 		desc = RelationGetDescr(entry->localrel);
-		oldctx = MemoryContextSwitchTo(LogicalRepRelMapContext);
+		oldctx = MemoryContextSwitchTo(logicalrep_relmap_state.LogicalRepRelMapContext);
 		entry->attrmap = make_attrmap(desc->natts);
 		MemoryContextSwitchTo(oldctx);
 
@@ -539,14 +550,14 @@ logicalrep_partmap_invalidate_cb(Datum arg, Oid reloid)
 	LogicalRepPartMapEntry *entry;
 
 	/* Just to be sure. */
-	if (LogicalRepPartMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepPartMap == NULL)
 		return;
 
 	if (reloid != InvalidOid)
 	{
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, LogicalRepPartMap);
+		hash_seq_init(&status, logicalrep_relmap_state.LogicalRepPartMap);
 
 		/* TODO, use inverse lookup hashtable? */
 		while ((entry = (LogicalRepPartMapEntry *) hash_seq_search(&status)) != NULL)
@@ -564,7 +575,7 @@ logicalrep_partmap_invalidate_cb(Datum arg, Oid reloid)
 		/* invalidate all cache entries */
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, LogicalRepPartMap);
+		hash_seq_init(&status, logicalrep_relmap_state.LogicalRepPartMap);
 
 		while ((entry = (LogicalRepPartMapEntry *) hash_seq_search(&status)) != NULL)
 			entry->relmapentry.localrelvalid = false;
@@ -588,10 +599,10 @@ logicalrep_partmap_reset_relmap(LogicalRepRelation *remoterel)
 	LogicalRepPartMapEntry *part_entry;
 	LogicalRepRelMapEntry *entry;
 
-	if (LogicalRepPartMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepPartMap == NULL)
 		return;
 
-	hash_seq_init(&status, LogicalRepPartMap);
+	hash_seq_init(&status, logicalrep_relmap_state.LogicalRepPartMap);
 	while ((part_entry = (LogicalRepPartMapEntry *) hash_seq_search(&status)) != NULL)
 	{
 		entry = &part_entry->relmapentry;
@@ -613,18 +624,18 @@ logicalrep_partmap_init(void)
 {
 	HASHCTL		ctl;
 
-	if (!LogicalRepPartMapContext)
-		LogicalRepPartMapContext =
+	if (!logicalrep_relmap_state.LogicalRepPartMapContext)
+		logicalrep_relmap_state.LogicalRepPartMapContext =
 			AllocSetContextCreate(CacheMemoryContext,
-								  "LogicalRepPartMapContext",
+								  "logicalrep_relmap_state.LogicalRepPartMapContext",
 								  ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize the relation hash table. */
 	ctl.keysize = sizeof(Oid);	/* partition OID */
 	ctl.entrysize = sizeof(LogicalRepPartMapEntry);
-	ctl.hcxt = LogicalRepPartMapContext;
+	ctl.hcxt = logicalrep_relmap_state.LogicalRepPartMapContext;
 
-	LogicalRepPartMap = hash_create("logicalrep partition map cache", 64, &ctl,
+	logicalrep_relmap_state.LogicalRepPartMap = hash_create("logicalrep partition map cache", 64, &ctl,
 									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* Watch for invalidation events. */
@@ -655,11 +666,11 @@ logicalrep_partition_open(LogicalRepRelMapEntry *root,
 	bool		found;
 	MemoryContext oldctx;
 
-	if (LogicalRepPartMap == NULL)
+	if (logicalrep_relmap_state.LogicalRepPartMap == NULL)
 		logicalrep_partmap_init();
 
 	/* Search for existing entry. */
-	part_entry = (LogicalRepPartMapEntry *) hash_search(LogicalRepPartMap,
+	part_entry = (LogicalRepPartMapEntry *) hash_search(logicalrep_relmap_state.LogicalRepPartMap,
 														&partOid,
 														HASH_ENTER, &found);
 
@@ -681,7 +692,7 @@ logicalrep_partition_open(LogicalRepRelMapEntry *root,
 	}
 
 	/* Switch to longer-lived context. */
-	oldctx = MemoryContextSwitchTo(LogicalRepPartMapContext);
+	oldctx = MemoryContextSwitchTo(logicalrep_relmap_state.LogicalRepPartMapContext);
 
 	if (!found)
 	{
@@ -767,7 +778,7 @@ logicalrep_partition_open(LogicalRepRelMapEntry *root,
 	 * relation).
 	 *
 	 * We also prefer to run this code on the oldctx so that we do not leak
-	 * anything in the LogicalRepPartMapContext (hence CacheMemoryContext).
+	 * anything in the logicalrep_relmap_state.LogicalRepPartMapContext (hence CacheMemoryContext).
 	 */
 	entry->localindexoid = FindLogicalRepLocalIndex(partrel, remoterel,
 													entry->attrmap);
