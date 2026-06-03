@@ -32,9 +32,19 @@
  * the status of the last requested roleid.  The cache can be flushed
  * at need by watching for cache update events on pg_authid.
  */
-static session_local Oid	last_roleid = InvalidOid;	/* InvalidOid == cache not valid */
-static session_local bool last_roleid_is_super = false;
-static session_local bool roleid_callback_registered = false;
+
+typedef struct SuperuserState
+{
+	Oid			last_roleid;	/* InvalidOid == cache not valid */
+	bool		last_roleid_is_super;
+	bool		roleid_callback_registered;
+} SuperuserState;
+
+static session_local SuperuserState superuser_state = {
+	.last_roleid = InvalidOid,
+	.last_roleid_is_super = false,
+	.roleid_callback_registered = false,
+};
 
 static void RoleidCallback(Datum arg, SysCacheIdentifier cacheid,
 						   uint32 hashvalue);
@@ -60,8 +70,8 @@ superuser_arg(Oid roleid)
 	HeapTuple	rtup;
 
 	/* Quick out for cache hit */
-	if (OidIsValid(last_roleid) && last_roleid == roleid)
-		return last_roleid_is_super;
+	if (OidIsValid(superuser_state.last_roleid) && superuser_state.last_roleid == roleid)
+		return superuser_state.last_roleid_is_super;
 
 	/* Special escape path in case you deleted all your users. */
 	if (!IsUnderPostmaster && roleid == BOOTSTRAP_SUPERUSERID)
@@ -81,17 +91,17 @@ superuser_arg(Oid roleid)
 	}
 
 	/* If first time through, set up callback for cache flushes */
-	if (!roleid_callback_registered)
+	if (!superuser_state.roleid_callback_registered)
 	{
 		CacheRegisterSyscacheCallback(AUTHOID,
 									  RoleidCallback,
 									  (Datum) 0);
-		roleid_callback_registered = true;
+		superuser_state.roleid_callback_registered = true;
 	}
 
 	/* Cache the result for next time */
-	last_roleid = roleid;
-	last_roleid_is_super = result;
+	superuser_state.last_roleid = roleid;
+	superuser_state.last_roleid_is_super = result;
 
 	return result;
 }
@@ -104,5 +114,5 @@ static void
 RoleidCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 {
 	/* Invalidate our local cache in case role's superuserness changed */
-	last_roleid = InvalidOid;
+	superuser_state.last_roleid = InvalidOid;
 }
