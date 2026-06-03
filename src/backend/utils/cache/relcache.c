@@ -133,7 +133,6 @@ typedef struct relidcacheent
 	Relation	reldesc;
 } RelIdCacheEnt;
 
-static session_local HTAB *RelationIdCache;
 
 /*
  * This flag is false until we have prepared the critical relcache entries
@@ -153,7 +152,6 @@ session_local bool		criticalSharedRelcachesBuilt = false;
  * to detect whether data about to be written by write_relcache_init_file()
  * might already be obsolete.
  */
-static session_local long relcacheInvalsReceived = 0L;
 
 /*
  * in_progress_list is a stack of ongoing RelationBuildDesc() calls.  CREATE
@@ -169,9 +167,6 @@ typedef struct inprogressent
 	bool		invalidated;	/* whether an invalidation arrived for it */
 } InProgressEnt;
 
-static session_local InProgressEnt *in_progress_list;
-static session_local int	in_progress_list_len;
-static session_local int	in_progress_list_maxlen;
 
 /*
  * eoxact_list[] stores the OIDs of relations that (might) need AtEOXact
@@ -184,16 +179,13 @@ static session_local int	in_progress_list_maxlen;
  * cleanup processing must be idempotent.
  */
 #define MAX_EOXACT_LIST 32
-static session_local Oid	eoxact_list[MAX_EOXACT_LIST];
-static session_local int	eoxact_list_len = 0;
-static session_local bool eoxact_list_overflowed = false;
 
 #define EOXactListAdd(rel) \
 	do { \
-		if (eoxact_list_len < MAX_EOXACT_LIST) \
-			eoxact_list[eoxact_list_len++] = (rel)->rd_id; \
+		if (relcache_state.eoxact_list_len < MAX_EOXACT_LIST) \
+			relcache_state.eoxact_list[relcache_state.eoxact_list_len++] = (rel)->rd_id; \
 		else \
-			eoxact_list_overflowed = true; \
+			relcache_state.eoxact_list_overflowed = true; \
 	} while (0)
 
 /*
@@ -201,9 +193,6 @@ static session_local bool eoxact_list_overflowed = false;
  * cleanup work.  The array expands as needed; there is no hashtable because
  * we don't need to access individual items except at EOXact.
  */
-static session_local TupleDesc *EOXactTupleDescArray;
-static session_local int	NextEOXactTupleDescNum = 0;
-static session_local int	EOXactTupleDescArrayLen = 0;
 
 /*
  *		macros to manipulate the lookup hashtable
@@ -211,7 +200,7 @@ static session_local int	EOXactTupleDescArrayLen = 0;
 #define RelationCacheInsert(RELATION, replace_allowed)	\
 do { \
 	RelIdCacheEnt *hentry; bool found; \
-	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
+	hentry = (RelIdCacheEnt *) hash_search(relcache_state.RelationIdCache, \
 										   &((RELATION)->rd_id), \
 										   HASH_ENTER, &found); \
 	if (found) \
@@ -233,7 +222,7 @@ do { \
 #define RelationIdCacheLookup(ID, RELATION) \
 do { \
 	RelIdCacheEnt *hentry; \
-	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
+	hentry = (RelIdCacheEnt *) hash_search(relcache_state.RelationIdCache, \
 										   &(ID), \
 										   HASH_FIND, NULL); \
 	if (hentry) \
@@ -245,7 +234,7 @@ do { \
 #define RelationCacheDelete(RELATION) \
 do { \
 	RelIdCacheEnt *hentry; \
-	hentry = (RelIdCacheEnt *) hash_search(RelationIdCache, \
+	hentry = (RelIdCacheEnt *) hash_search(relcache_state.RelationIdCache, \
 										   &((RELATION)->rd_id), \
 										   HASH_REMOVE, NULL); \
 	if (hentry == NULL) \
@@ -270,7 +259,42 @@ typedef struct opclasscacheent
 	RegProcedure *supportProcs; /* OIDs of support procedures */
 } OpClassCacheEnt;
 
-static session_local HTAB *OpClassCache = NULL;
+/*
+ * Per-session relation-cache bookkeeping (the file-local relcache state).
+ * The exported criticalRelcachesBuilt / criticalSharedRelcachesBuilt flags
+ * stay standalone above.
+ */
+typedef struct RelcacheState
+{
+	/* The relcache hash table proper, keyed by relation OID. */
+	HTAB	   *RelationIdCache;
+	/* Count of relcache inval events received since backend startup. */
+	long		relcacheInvalsReceived;
+	/* Stack of ongoing RelationBuildDesc() calls. */
+	InProgressEnt *in_progress_list;
+	int			in_progress_list_len;
+	int			in_progress_list_maxlen;
+	/* OIDs of relations that (might) need AtEOXact cleanup. */
+	Oid			eoxact_list[MAX_EOXACT_LIST];
+	int			eoxact_list_len;
+	bool		eoxact_list_overflowed;
+	/* TupleDescs that (might) need AtEOXact cleanup. */
+	TupleDesc  *EOXactTupleDescArray;
+	int			NextEOXactTupleDescNum;
+	int			EOXactTupleDescArrayLen;
+	/* Special cache for opclass-related information. */
+	HTAB	   *OpClassCache;
+} RelcacheState;
+
+static session_local RelcacheState relcache_state = {
+	.relcacheInvalsReceived = 0L,
+	.eoxact_list_len = 0,
+	.eoxact_list_overflowed = false,
+	.NextEOXactTupleDescNum = 0,
+	.EOXactTupleDescArrayLen = 0,
+	.OpClassCache = NULL,
+};
+
 
 
 /* non-export function prototypes */
@@ -1089,19 +1113,19 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 #endif
 
 	/* Register to catch invalidation messages */
-	if (in_progress_list_len >= in_progress_list_maxlen)
+	if (relcache_state.in_progress_list_len >= relcache_state.in_progress_list_maxlen)
 	{
 		int			allocsize;
 
-		allocsize = in_progress_list_maxlen * 2;
-		in_progress_list = repalloc(in_progress_list,
-									allocsize * sizeof(*in_progress_list));
-		in_progress_list_maxlen = allocsize;
+		allocsize = relcache_state.in_progress_list_maxlen * 2;
+		relcache_state.in_progress_list = repalloc(relcache_state.in_progress_list,
+									allocsize * sizeof(*relcache_state.in_progress_list));
+		relcache_state.in_progress_list_maxlen = allocsize;
 	}
-	in_progress_offset = in_progress_list_len++;
-	in_progress_list[in_progress_offset].reloid = targetRelId;
+	in_progress_offset = relcache_state.in_progress_list_len++;
+	relcache_state.in_progress_list[in_progress_offset].reloid = targetRelId;
 retry:
-	in_progress_list[in_progress_offset].invalidated = false;
+	relcache_state.in_progress_list[in_progress_offset].invalidated = false;
 
 	/*
 	 * find the tuple in pg_class corresponding to the given relation id
@@ -1121,8 +1145,8 @@ retry:
 			MemoryContextDelete(tmpcxt);
 		}
 #endif
-		Assert(in_progress_offset + 1 == in_progress_list_len);
-		in_progress_list_len--;
+		Assert(in_progress_offset + 1 == relcache_state.in_progress_list_len);
+		relcache_state.in_progress_list_len--;
 		return NULL;
 	}
 
@@ -1286,13 +1310,13 @@ retry:
 	 * for the !insertIt case.  For the insertIt case, RelationCacheInsert()
 	 * will enroll this relation in ordinary relcache invalidation processing,
 	 */
-	if (in_progress_list[in_progress_offset].invalidated)
+	if (relcache_state.in_progress_list[in_progress_offset].invalidated)
 	{
 		RelationDestroyRelation(relation, false);
 		goto retry;
 	}
-	Assert(in_progress_offset + 1 == in_progress_list_len);
-	in_progress_list_len--;
+	Assert(in_progress_offset + 1 == relcache_state.in_progress_list_len);
+	relcache_state.in_progress_list_len--;
 
 	/*
 	 * Insert newly created relation into relcache hash table, if requested.
@@ -1666,7 +1690,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 	HeapTuple	htup;
 	bool		indexOK;
 
-	if (OpClassCache == NULL)
+	if (relcache_state.OpClassCache == NULL)
 	{
 		/* First time through: initialize the opclass cache */
 		HASHCTL		ctl;
@@ -1677,11 +1701,11 @@ LookupOpclassInfo(Oid operatorClassOid,
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
-		OpClassCache = hash_create("Operator class cache", 64,
+		relcache_state.OpClassCache = hash_create("Operator class cache", 64,
 								   &ctl, HASH_ELEM | HASH_BLOBS);
 	}
 
-	opcentry = (OpClassCacheEnt *) hash_search(OpClassCache,
+	opcentry = (OpClassCacheEnt *) hash_search(relcache_state.OpClassCache,
 											   &operatorClassOid,
 											   HASH_ENTER, &found);
 
@@ -2652,7 +2676,7 @@ RelationRebuildRelation(Relation relation)
 		 * Between here and the end of the swap, don't add code that does or
 		 * reasonably could read system catalogs.  That range must be free
 		 * from invalidation processing.  See RelationBuildDesc() manipulation
-		 * of in_progress_list.
+		 * of relcache_state.in_progress_list.
 		 */
 
 		if (newrel == NULL)
@@ -2933,16 +2957,16 @@ RelationCacheInvalidateEntry(Oid relationId)
 
 	if (relation)
 	{
-		relcacheInvalsReceived++;
+		relcache_state.relcacheInvalsReceived++;
 		RelationFlushRelation(relation);
 	}
 	else
 	{
 		int			i;
 
-		for (i = 0; i < in_progress_list_len; i++)
-			if (in_progress_list[i].reloid == relationId)
-				in_progress_list[i].invalidated = true;
+		for (i = 0; i < relcache_state.in_progress_list_len; i++)
+			if (relcache_state.in_progress_list[i].reloid == relationId)
+				relcache_state.in_progress_list[i].invalidated = true;
 	}
 }
 
@@ -2997,7 +3021,7 @@ RelationCacheInvalidate(bool debug_discard)
 	RelationMapInvalidateAll();
 
 	/* Phase 1 */
-	hash_seq_init(&status, RelationIdCache);
+	hash_seq_init(&status, relcache_state.RelationIdCache);
 
 	while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -3013,7 +3037,7 @@ RelationCacheInvalidate(bool debug_discard)
 			relation->rd_firstRelfilelocatorSubid != InvalidSubTransactionId)
 			continue;
 
-		relcacheInvalsReceived++;
+		relcache_state.relcacheInvalsReceived++;
 
 		if (RelationHasReferenceCountZero(relation))
 		{
@@ -3086,36 +3110,36 @@ RelationCacheInvalidate(bool debug_discard)
 
 	if (!debug_discard)
 		/* Any RelationBuildDesc() on the stack must start over. */
-		for (i = 0; i < in_progress_list_len; i++)
-			in_progress_list[i].invalidated = true;
+		for (i = 0; i < relcache_state.in_progress_list_len; i++)
+			relcache_state.in_progress_list[i].invalidated = true;
 }
 
 static void
 RememberToFreeTupleDescAtEOX(TupleDesc td)
 {
-	if (EOXactTupleDescArray == NULL)
+	if (relcache_state.EOXactTupleDescArray == NULL)
 	{
 		MemoryContext oldcxt;
 
 		oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
 
-		EOXactTupleDescArray = (TupleDesc *) palloc(16 * sizeof(TupleDesc));
-		EOXactTupleDescArrayLen = 16;
-		NextEOXactTupleDescNum = 0;
+		relcache_state.EOXactTupleDescArray = (TupleDesc *) palloc(16 * sizeof(TupleDesc));
+		relcache_state.EOXactTupleDescArrayLen = 16;
+		relcache_state.NextEOXactTupleDescNum = 0;
 		MemoryContextSwitchTo(oldcxt);
 	}
-	else if (NextEOXactTupleDescNum >= EOXactTupleDescArrayLen)
+	else if (relcache_state.NextEOXactTupleDescNum >= relcache_state.EOXactTupleDescArrayLen)
 	{
-		int32		newlen = EOXactTupleDescArrayLen * 2;
+		int32		newlen = relcache_state.EOXactTupleDescArrayLen * 2;
 
-		Assert(EOXactTupleDescArrayLen > 0);
+		Assert(relcache_state.EOXactTupleDescArrayLen > 0);
 
-		EOXactTupleDescArray = (TupleDesc *) repalloc(EOXactTupleDescArray,
+		relcache_state.EOXactTupleDescArray = (TupleDesc *) repalloc(relcache_state.EOXactTupleDescArray,
 													  newlen * sizeof(TupleDesc));
-		EOXactTupleDescArrayLen = newlen;
+		relcache_state.EOXactTupleDescArrayLen = newlen;
 	}
 
-	EOXactTupleDescArray[NextEOXactTupleDescNum++] = td;
+	relcache_state.EOXactTupleDescArray[relcache_state.NextEOXactTupleDescNum++] = td;
 }
 
 #ifdef USE_ASSERT_CHECKING
@@ -3186,7 +3210,7 @@ AssertPendingSyncs_RelationCache(void)
 		rels[nrels++] = r;
 	}
 
-	hash_seq_init(&status, RelationIdCache);
+	hash_seq_init(&status, relcache_state.RelationIdCache);
 	while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 		AssertPendingSyncConsistency(idhentry->reldesc);
 
@@ -3220,26 +3244,26 @@ AtEOXact_RelationCache(bool isCommit)
 	int			i;
 
 	/*
-	 * Forget in_progress_list.  This is relevant when we're aborting due to
+	 * Forget relcache_state.in_progress_list.  This is relevant when we're aborting due to
 	 * an error during RelationBuildDesc().
 	 */
-	Assert(in_progress_list_len == 0 || !isCommit);
-	in_progress_list_len = 0;
+	Assert(relcache_state.in_progress_list_len == 0 || !isCommit);
+	relcache_state.in_progress_list_len = 0;
 
 	/*
-	 * Unless the eoxact_list[] overflowed, we only need to examine the rels
+	 * Unless the relcache_state.eoxact_list[] overflowed, we only need to examine the rels
 	 * listed in it.  Otherwise fall back on a hash_seq_search scan.
 	 *
-	 * For simplicity, eoxact_list[] entries are not deleted till end of
+	 * For simplicity, relcache_state.eoxact_list[] entries are not deleted till end of
 	 * top-level transaction, even though we could remove them at
 	 * subtransaction end in some cases, or remove relations from the list if
 	 * they are cleared for other reasons.  Therefore we should expect the
 	 * case that list entries are not found in the hashtable; if not, there's
 	 * nothing to do for them.
 	 */
-	if (eoxact_list_overflowed)
+	if (relcache_state.eoxact_list_overflowed)
 	{
-		hash_seq_init(&status, RelationIdCache);
+		hash_seq_init(&status, relcache_state.RelationIdCache);
 		while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 		{
 			AtEOXact_cleanup(idhentry->reldesc, isCommit);
@@ -3247,10 +3271,10 @@ AtEOXact_RelationCache(bool isCommit)
 	}
 	else
 	{
-		for (i = 0; i < eoxact_list_len; i++)
+		for (i = 0; i < relcache_state.eoxact_list_len; i++)
 		{
-			idhentry = (RelIdCacheEnt *) hash_search(RelationIdCache,
-													 &eoxact_list[i],
+			idhentry = (RelIdCacheEnt *) hash_search(relcache_state.RelationIdCache,
+													 &relcache_state.eoxact_list[i],
 													 HASH_FIND,
 													 NULL);
 			if (idhentry != NULL)
@@ -3258,20 +3282,20 @@ AtEOXact_RelationCache(bool isCommit)
 		}
 	}
 
-	if (EOXactTupleDescArrayLen > 0)
+	if (relcache_state.EOXactTupleDescArrayLen > 0)
 	{
-		Assert(EOXactTupleDescArray != NULL);
-		for (i = 0; i < NextEOXactTupleDescNum; i++)
-			FreeTupleDesc(EOXactTupleDescArray[i]);
-		pfree(EOXactTupleDescArray);
-		EOXactTupleDescArray = NULL;
+		Assert(relcache_state.EOXactTupleDescArray != NULL);
+		for (i = 0; i < relcache_state.NextEOXactTupleDescNum; i++)
+			FreeTupleDesc(relcache_state.EOXactTupleDescArray[i]);
+		pfree(relcache_state.EOXactTupleDescArray);
+		relcache_state.EOXactTupleDescArray = NULL;
 	}
 
 	/* Now we're out of the transaction and can clear the lists */
-	eoxact_list_len = 0;
-	eoxact_list_overflowed = false;
-	NextEOXactTupleDescNum = 0;
-	EOXactTupleDescArrayLen = 0;
+	relcache_state.eoxact_list_len = 0;
+	relcache_state.eoxact_list_overflowed = false;
+	relcache_state.NextEOXactTupleDescNum = 0;
+	relcache_state.EOXactTupleDescArrayLen = 0;
 }
 
 /*
@@ -3280,7 +3304,7 @@ AtEOXact_RelationCache(bool isCommit)
  *	Clean up a single rel at main-transaction commit or abort
  *
  * NB: this processing must be idempotent, because EOXactListAdd() doesn't
- * bother to prevent duplicate entries in eoxact_list[].
+ * bother to prevent duplicate entries in relcache_state.eoxact_list[].
  */
 static void
 AtEOXact_cleanup(Relation relation, bool isCommit)
@@ -3373,21 +3397,21 @@ AtEOSubXact_RelationCache(bool isCommit, SubTransactionId mySubid,
 	int			i;
 
 	/*
-	 * Forget in_progress_list.  This is relevant when we're aborting due to
+	 * Forget relcache_state.in_progress_list.  This is relevant when we're aborting due to
 	 * an error during RelationBuildDesc().  We don't commit subtransactions
 	 * during RelationBuildDesc().
 	 */
-	Assert(in_progress_list_len == 0 || !isCommit);
-	in_progress_list_len = 0;
+	Assert(relcache_state.in_progress_list_len == 0 || !isCommit);
+	relcache_state.in_progress_list_len = 0;
 
 	/*
-	 * Unless the eoxact_list[] overflowed, we only need to examine the rels
+	 * Unless the relcache_state.eoxact_list[] overflowed, we only need to examine the rels
 	 * listed in it.  Otherwise fall back on a hash_seq_search scan.  Same
 	 * logic as in AtEOXact_RelationCache.
 	 */
-	if (eoxact_list_overflowed)
+	if (relcache_state.eoxact_list_overflowed)
 	{
-		hash_seq_init(&status, RelationIdCache);
+		hash_seq_init(&status, relcache_state.RelationIdCache);
 		while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 		{
 			AtEOSubXact_cleanup(idhentry->reldesc, isCommit,
@@ -3396,10 +3420,10 @@ AtEOSubXact_RelationCache(bool isCommit, SubTransactionId mySubid,
 	}
 	else
 	{
-		for (i = 0; i < eoxact_list_len; i++)
+		for (i = 0; i < relcache_state.eoxact_list_len; i++)
 		{
-			idhentry = (RelIdCacheEnt *) hash_search(RelationIdCache,
-													 &eoxact_list[i],
+			idhentry = (RelIdCacheEnt *) hash_search(relcache_state.RelationIdCache,
+													 &relcache_state.eoxact_list[i],
 													 HASH_FIND,
 													 NULL);
 			if (idhentry != NULL)
@@ -3417,7 +3441,7 @@ AtEOSubXact_RelationCache(bool isCommit, SubTransactionId mySubid,
  *	Clean up a single rel at subtransaction commit or abort
  *
  * NB: this processing must be idempotent, because EOXactListAdd() doesn't
- * bother to prevent duplicate entries in eoxact_list[].
+ * bother to prevent duplicate entries in relcache_state.eoxact_list[].
  */
 static void
 AtEOSubXact_cleanup(Relation relation, bool isCommit,
@@ -4007,17 +4031,17 @@ RelationCacheInitialize(void)
 	 */
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RelIdCacheEnt);
-	RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
+	relcache_state.RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
 								  &ctl, HASH_ELEM | HASH_BLOBS);
 
 	/*
-	 * reserve enough in_progress_list slots for many cases
+	 * reserve enough relcache_state.in_progress_list slots for many cases
 	 */
 	allocsize = 4;
-	in_progress_list =
+	relcache_state.in_progress_list =
 		MemoryContextAlloc(CacheMemoryContext,
-						   allocsize * sizeof(*in_progress_list));
-	in_progress_list_maxlen = allocsize;
+						   allocsize * sizeof(*relcache_state.in_progress_list));
+	relcache_state.in_progress_list_maxlen = allocsize;
 
 	/*
 	 * relation mapper needs to be initialized too
@@ -4236,7 +4260,7 @@ RelationCacheInitializePhase3(void)
 	 * This is theoretically O(N^2), but the number of entries that actually
 	 * need to be fixed is small enough that it doesn't matter.
 	 */
-	hash_seq_init(&status, RelationIdCache);
+	hash_seq_init(&status, relcache_state.RelationIdCache);
 
 	while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -4350,7 +4374,7 @@ RelationCacheInitializePhase3(void)
 		if (restart)
 		{
 			hash_seq_term(&status);
-			hash_seq_init(&status, RelationIdCache);
+			hash_seq_init(&status, relcache_state.RelationIdCache);
 		}
 	}
 
@@ -6612,7 +6636,7 @@ write_relcache_init_file(bool shared)
 	 * If we have already received any relcache inval events, there's no
 	 * chance of succeeding so we may as well skip the whole thing.
 	 */
-	if (relcacheInvalsReceived != 0L)
+	if (relcache_state.relcacheInvalsReceived != 0L)
 		return;
 
 	/*
@@ -6665,7 +6689,7 @@ write_relcache_init_file(bool shared)
 	/*
 	 * Write all the appropriate reldescs (in no particular order).
 	 */
-	hash_seq_init(&status, RelationIdCache);
+	hash_seq_init(&status, relcache_state.RelationIdCache);
 
 	while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
 	{
@@ -6785,7 +6809,7 @@ write_relcache_init_file(bool shared)
 	 * If we have received any SI relcache invals since backend start, assume
 	 * we may have written out-of-date data.
 	 */
-	if (relcacheInvalsReceived == 0L)
+	if (relcache_state.relcacheInvalsReceived == 0L)
 	{
 		/*
 		 * OK, rename the temp file to its final name, deleting any
