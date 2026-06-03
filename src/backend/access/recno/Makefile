@@ -29,6 +29,7 @@ OBJS = \
 	recno_vm.o \
 	recno_clock.o \
 	recno_diff.o \
-	recno_undo.o
+	recno_undo.o \
+	recno_dict.o
 
 include $(top_srcdir)/src/backend/common.mk

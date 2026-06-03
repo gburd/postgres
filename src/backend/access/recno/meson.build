@@ -18,4 +18,5 @@ backend_sources += files(
   'recno_clock.c',
   'recno_diff.c',
   'recno_undo.c',
+  'recno_dict.c',
 )
