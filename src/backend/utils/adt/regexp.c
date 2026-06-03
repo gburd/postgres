@@ -96,7 +96,6 @@ typedef struct regexp_matches_ctx
 #endif
 
 /* A parent memory context for regular expressions. */
-static session_local MemoryContext RegexpCacheMemoryContext;
 
 /* this structure describes one cached regular expression */
 typedef struct cached_re_str
@@ -109,8 +108,18 @@ typedef struct cached_re_str
 	regex_t		cre_re;			/* the compiled regular expression */
 } cached_re_str;
 
-static session_local int	num_res = 0;		/* # of cached re's */
-static session_local cached_re_str re_array[MAX_CACHED_RES];	/* cached re's */
+
+
+typedef struct RegexpState
+{
+	MemoryContext RegexpCacheMemoryContext;
+	int			num_res;		/* # of cached re's */
+	cached_re_str re_array[MAX_CACHED_RES];	/* cached re's */
+} RegexpState;
+
+static session_local RegexpState regexp_state = {
+	.num_res = 0,
+};
 
 
 /* Local functions */
@@ -155,30 +164,30 @@ RE_compile_and_cache(text *text_re, int cflags, Oid collation)
 	 * structure is self-organizing with most-used entries at the front, our
 	 * search strategy can just be to scan from the front.
 	 */
-	for (i = 0; i < num_res; i++)
+	for (i = 0; i < regexp_state.num_res; i++)
 	{
-		if (re_array[i].cre_pat_len == text_re_len &&
-			re_array[i].cre_flags == cflags &&
-			re_array[i].cre_collation == collation &&
-			memcmp(re_array[i].cre_pat, text_re_val, text_re_len) == 0)
+		if (regexp_state.re_array[i].cre_pat_len == text_re_len &&
+			regexp_state.re_array[i].cre_flags == cflags &&
+			regexp_state.re_array[i].cre_collation == collation &&
+			memcmp(regexp_state.re_array[i].cre_pat, text_re_val, text_re_len) == 0)
 		{
 			/*
 			 * Found a match; move it to front if not there already.
 			 */
 			if (i > 0)
 			{
-				re_temp = re_array[i];
-				memmove(&re_array[1], &re_array[0], i * sizeof(cached_re_str));
-				re_array[0] = re_temp;
+				re_temp = regexp_state.re_array[i];
+				memmove(&regexp_state.re_array[1], &regexp_state.re_array[0], i * sizeof(cached_re_str));
+				regexp_state.re_array[0] = re_temp;
 			}
 
-			return &re_array[0].cre_re;
+			return &regexp_state.re_array[0].cre_re;
 		}
 	}
 
 	/* Set up the cache memory on first go through. */
-	if (unlikely(RegexpCacheMemoryContext == NULL))
-		RegexpCacheMemoryContext =
+	if (unlikely(regexp_state.RegexpCacheMemoryContext == NULL))
+		regexp_state.RegexpCacheMemoryContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "RegexpCacheMemoryContext",
 								  ALLOCSET_SMALL_SIZES);
@@ -242,26 +251,26 @@ RE_compile_and_cache(text *text_re, int cflags, Oid collation)
 	 * Okay, we have a valid new item in re_temp; insert it into the storage
 	 * array.  Discard last entry if needed.
 	 */
-	if (num_res >= MAX_CACHED_RES)
+	if (regexp_state.num_res >= MAX_CACHED_RES)
 	{
-		--num_res;
-		Assert(num_res < MAX_CACHED_RES);
+		--regexp_state.num_res;
+		Assert(regexp_state.num_res < MAX_CACHED_RES);
 		/* Delete the memory context holding the regexp and pattern. */
-		MemoryContextDelete(re_array[num_res].cre_context);
+		MemoryContextDelete(regexp_state.re_array[regexp_state.num_res].cre_context);
 	}
 
 	/* Re-parent the memory context to our long-lived cache context. */
-	MemoryContextSetParent(re_temp.cre_context, RegexpCacheMemoryContext);
+	MemoryContextSetParent(re_temp.cre_context, regexp_state.RegexpCacheMemoryContext);
 
-	if (num_res > 0)
-		memmove(&re_array[1], &re_array[0], num_res * sizeof(cached_re_str));
+	if (regexp_state.num_res > 0)
+		memmove(&regexp_state.re_array[1], &regexp_state.re_array[0], regexp_state.num_res * sizeof(cached_re_str));
 
-	re_array[0] = re_temp;
-	num_res++;
+	regexp_state.re_array[0] = re_temp;
+	regexp_state.num_res++;
 
 	MemoryContextSwitchTo(oldcontext);
 
-	return &re_array[0].cre_re;
+	return &regexp_state.re_array[0].cre_re;
 }
 
 /*
