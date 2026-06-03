@@ -49,7 +49,6 @@ session_local bool		shmem_exit_inprogress = false;
  * This flag tracks whether we've called atexit() in the current process
  * (or in the parent postmaster).
  */
-static session_local bool atexit_callback_setup = false;
 
 /* local functions */
 static void proc_exit_prepare(int code);
@@ -77,13 +76,23 @@ struct ONEXIT
 	Datum		arg;
 };
 
-static session_local struct ONEXIT on_proc_exit_list[MAX_ON_EXITS];
-static session_local struct ONEXIT on_shmem_exit_list[MAX_ON_EXITS];
-static session_local struct ONEXIT before_shmem_exit_list[MAX_ON_EXITS];
+typedef struct IpcState
+{
+	/* whether the process-exit atexit() callback has been installed */
+	bool		atexit_callback_setup;
 
-static session_local int	on_proc_exit_index,
-			on_shmem_exit_index,
-			before_shmem_exit_index;
+	struct ONEXIT on_proc_exit_list[MAX_ON_EXITS];
+	struct ONEXIT on_shmem_exit_list[MAX_ON_EXITS];
+	struct ONEXIT before_shmem_exit_list[MAX_ON_EXITS];
+
+	int			on_proc_exit_index;
+	int			on_shmem_exit_index;
+	int			before_shmem_exit_index;
+} IpcState;
+
+static session_local IpcState ipc_state = {
+	.atexit_callback_setup = false,
+};
 
 
 /* ----------------------------------------------------------------
@@ -197,7 +206,7 @@ proc_exit_prepare(int code)
 	shmem_exit(code);
 
 	elog(DEBUG3, "proc_exit(%d): %d callbacks to make",
-		 code, on_proc_exit_index);
+		 code, ipc_state.on_proc_exit_index);
 
 	/*
 	 * call all the registered callbacks.
@@ -208,11 +217,11 @@ proc_exit_prepare(int code)
 	 * previously-completed callbacks).  So, an infinite loop should not be
 	 * possible.
 	 */
-	while (--on_proc_exit_index >= 0)
-		on_proc_exit_list[on_proc_exit_index].function(code,
-													   on_proc_exit_list[on_proc_exit_index].arg);
+	while (--ipc_state.on_proc_exit_index >= 0)
+		ipc_state.on_proc_exit_list[ipc_state.on_proc_exit_index].function(code,
+													   ipc_state.on_proc_exit_list[ipc_state.on_proc_exit_index].arg);
 
-	on_proc_exit_index = 0;
+	ipc_state.on_proc_exit_index = 0;
 }
 
 /* ------------------
@@ -243,11 +252,11 @@ shmem_exit(int code)
 	 * access.
 	 */
 	elog(DEBUG3, "shmem_exit(%d): %d before_shmem_exit callbacks to make",
-		 code, before_shmem_exit_index);
-	while (--before_shmem_exit_index >= 0)
-		before_shmem_exit_list[before_shmem_exit_index].function(code,
-																 before_shmem_exit_list[before_shmem_exit_index].arg);
-	before_shmem_exit_index = 0;
+		 code, ipc_state.before_shmem_exit_index);
+	while (--ipc_state.before_shmem_exit_index >= 0)
+		ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index].function(code,
+																 ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index].arg);
+	ipc_state.before_shmem_exit_index = 0;
 
 	/*
 	 * Call dynamic shared memory callbacks.
@@ -276,11 +285,11 @@ shmem_exit(int code)
 	 * in other cases, it's cleanup that only happens at process exit.
 	 */
 	elog(DEBUG3, "shmem_exit(%d): %d on_shmem_exit callbacks to make",
-		 code, on_shmem_exit_index);
-	while (--on_shmem_exit_index >= 0)
-		on_shmem_exit_list[on_shmem_exit_index].function(code,
-														 on_shmem_exit_list[on_shmem_exit_index].arg);
-	on_shmem_exit_index = 0;
+		 code, ipc_state.on_shmem_exit_index);
+	while (--ipc_state.on_shmem_exit_index >= 0)
+		ipc_state.on_shmem_exit_list[ipc_state.on_shmem_exit_index].function(code,
+														 ipc_state.on_shmem_exit_list[ipc_state.on_shmem_exit_index].arg);
+	ipc_state.on_shmem_exit_index = 0;
 
 	shmem_exit_inprogress = false;
 }
@@ -313,20 +322,20 @@ atexit_callback(void)
 void
 on_proc_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (on_proc_exit_index >= MAX_ON_EXITS)
+	if (ipc_state.on_proc_exit_index >= MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of on_proc_exit slots")));
 
-	on_proc_exit_list[on_proc_exit_index].function = function;
-	on_proc_exit_list[on_proc_exit_index].arg = arg;
+	ipc_state.on_proc_exit_list[ipc_state.on_proc_exit_index].function = function;
+	ipc_state.on_proc_exit_list[ipc_state.on_proc_exit_index].arg = arg;
 
-	++on_proc_exit_index;
+	++ipc_state.on_proc_exit_index;
 
-	if (!atexit_callback_setup)
+	if (!ipc_state.atexit_callback_setup)
 	{
 		atexit(atexit_callback);
-		atexit_callback_setup = true;
+		ipc_state.atexit_callback_setup = true;
 	}
 }
 
@@ -341,20 +350,20 @@ on_proc_exit(pg_on_exit_callback function, Datum arg)
 void
 before_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (before_shmem_exit_index >= MAX_ON_EXITS)
+	if (ipc_state.before_shmem_exit_index >= MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of before_shmem_exit slots")));
 
-	before_shmem_exit_list[before_shmem_exit_index].function = function;
-	before_shmem_exit_list[before_shmem_exit_index].arg = arg;
+	ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index].function = function;
+	ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index].arg = arg;
 
-	++before_shmem_exit_index;
+	++ipc_state.before_shmem_exit_index;
 
-	if (!atexit_callback_setup)
+	if (!ipc_state.atexit_callback_setup)
 	{
 		atexit(atexit_callback);
-		atexit_callback_setup = true;
+		ipc_state.atexit_callback_setup = true;
 	}
 }
 
@@ -369,20 +378,20 @@ before_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 on_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (on_shmem_exit_index >= MAX_ON_EXITS)
+	if (ipc_state.on_shmem_exit_index >= MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of on_shmem_exit slots")));
 
-	on_shmem_exit_list[on_shmem_exit_index].function = function;
-	on_shmem_exit_list[on_shmem_exit_index].arg = arg;
+	ipc_state.on_shmem_exit_list[ipc_state.on_shmem_exit_index].function = function;
+	ipc_state.on_shmem_exit_list[ipc_state.on_shmem_exit_index].arg = arg;
 
-	++on_shmem_exit_index;
+	++ipc_state.on_shmem_exit_index;
 
-	if (!atexit_callback_setup)
+	if (!ipc_state.atexit_callback_setup)
 	{
 		atexit(atexit_callback);
-		atexit_callback_setup = true;
+		ipc_state.atexit_callback_setup = true;
 	}
 }
 
@@ -398,11 +407,11 @@ on_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (before_shmem_exit_index > 0 &&
-		before_shmem_exit_list[before_shmem_exit_index - 1].function
+	if (ipc_state.before_shmem_exit_index > 0 &&
+		ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index - 1].function
 		== function &&
-		before_shmem_exit_list[before_shmem_exit_index - 1].arg == arg)
-		--before_shmem_exit_index;
+		ipc_state.before_shmem_exit_list[ipc_state.before_shmem_exit_index - 1].arg == arg)
+		--ipc_state.before_shmem_exit_index;
 	else
 		elog(ERROR, "before_shmem_exit callback (%p,0x%" PRIx64 ") is not the latest entry",
 			 function, arg);
@@ -420,9 +429,9 @@ cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 on_exit_reset(void)
 {
-	before_shmem_exit_index = 0;
-	on_shmem_exit_index = 0;
-	on_proc_exit_index = 0;
+	ipc_state.before_shmem_exit_index = 0;
+	ipc_state.on_shmem_exit_index = 0;
+	ipc_state.on_proc_exit_index = 0;
 	reset_on_dsm_detach();
 }
 
@@ -436,9 +445,9 @@ on_exit_reset(void)
 void
 check_on_shmem_exit_lists_are_empty(void)
 {
-	if (before_shmem_exit_index)
+	if (ipc_state.before_shmem_exit_index)
 		elog(FATAL, "before_shmem_exit has been called prematurely");
-	if (on_shmem_exit_index)
+	if (ipc_state.on_shmem_exit_index)
 		elog(FATAL, "on_shmem_exit has been called prematurely");
 	/* Checking DSM detach state seems unnecessary given the above */
 }
