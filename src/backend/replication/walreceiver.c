@@ -91,28 +91,8 @@ sighup_guc int			wal_receiver_status_interval;
 sighup_guc int			wal_receiver_timeout;
 sighup_guc bool		hot_standby_feedback;
 
-/* libpqwalreceiver connection */
-static session_local WalReceiverConn *wrconn = NULL;
+/* WalReceiverFunctions is the exported plugin dispatch table (left standalone). */
 session_local WalReceiverFunctionsType *WalReceiverFunctions = NULL;
-
-/*
- * These variables are used similarly to openLogFile/SegNo,
- * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
- * corresponding the filename of recvFile.
- */
-static session_local int	recvFile = -1;
-static session_local TimeLineID recvFileTLI = 0;
-static session_local XLogSegNo recvSegNo = 0;
-
-/*
- * LogstreamResult indicates the byte positions that we have already
- * written/fsynced.
- */
-static session_local struct
-{
-	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
-	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
-}			LogstreamResult;
 
 /*
  * Reasons to wake up and perform periodic tasks.
@@ -127,11 +107,44 @@ typedef enum WalRcvWakeupReason
 } WalRcvWakeupReason;
 
 /*
- * Wake up times for periodic tasks.
+ * Consolidated per-session walreceiver state.
  */
-static session_local TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+typedef struct WalReceiverState
+{
+	/* libpqwalreceiver connection */
+	WalReceiverConn *wrconn;
 
-static session_local StringInfoData reply_message;
+	/*
+	 * These variables are used similarly to openLogFile/SegNo,
+	 * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
+	 * corresponding the filename of recvFile.
+	 */
+	int			recvFile;
+	TimeLineID	recvFileTLI;
+	XLogSegNo	recvSegNo;
+
+	/*
+	 * LogstreamResult indicates the byte positions that we have already
+	 * written/fsynced.
+	 */
+	struct
+	{
+		XLogRecPtr	Write;		/* last byte + 1 written out in the standby */
+		XLogRecPtr	Flush;		/* last byte + 1 flushed in the standby */
+	}			LogstreamResult;
+
+	/* Wake up times for periodic tasks. */
+	TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+
+	StringInfoData reply_message;
+} WalReceiverState;
+
+static session_local WalReceiverState wal_receiver_state = {
+	.wrconn = NULL,
+	.recvFile = -1,
+	.recvFileTLI = 0,
+	.recvSegNo = 0,
+};
 
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
@@ -269,8 +282,8 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 
 	/* Establish the connection to the primary for XLOG streaming */
 	appname = GetGUCString(GUC_cluster_name)[0] ? GetGUCString(GUC_cluster_name) : "walreceiver";
-	wrconn = walrcv_connect(conninfo, true, false, false, appname, &err);
-	if (!wrconn)
+	wal_receiver_state.wrconn = walrcv_connect(conninfo, true, false, false, appname, &err);
+	if (!wal_receiver_state.wrconn)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("streaming replication receiver \"%s\" could not connect to the primary server: %s",
@@ -281,8 +294,8 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	 * conninfo, for security. Also save host and port of the sender server
 	 * this walreceiver is connected to.
 	 */
-	tmp_conninfo = walrcv_get_conninfo(wrconn);
-	walrcv_get_senderinfo(wrconn, &sender_host, &sender_port);
+	tmp_conninfo = walrcv_get_conninfo(wal_receiver_state.wrconn);
+	walrcv_get_senderinfo(wal_receiver_state.wrconn, &sender_host, &sender_port);
 	SpinLockAcquire(&walrcv->mutex);
 	memset(walrcv->conninfo, 0, MAXCONNINFO);
 	if (tmp_conninfo)
@@ -313,7 +326,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 		 * Check that we're connected to a valid server using the
 		 * IDENTIFY_SYSTEM replication command.
 		 */
-		primary_sysid = walrcv_identify_system(wrconn, &primaryTLI);
+		primary_sysid = walrcv_identify_system(wal_receiver_state.wrconn, &primaryTLI);
 
 		snprintf(standby_sysid, sizeof(standby_sysid), UINT64_FORMAT,
 				 GetSystemIdentifier());
@@ -357,9 +370,9 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 		{
 			snprintf(slotname, sizeof(slotname),
 					 "pg_walreceiver_%lld",
-					 (long long int) walrcv_get_backend_pid(wrconn));
+					 (long long int) walrcv_get_backend_pid(wal_receiver_state.wrconn));
 
-			walrcv_create_slot(wrconn, slotname, true, false, false, 0, NULL);
+			walrcv_create_slot(wal_receiver_state.wrconn, slotname, true, false, false, 0, NULL);
 
 			SpinLockAcquire(&walrcv->mutex);
 			strlcpy(walrcv->slotname, slotname, NAMEDATALEN);
@@ -382,7 +395,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 		options.startpoint = startpoint;
 		options.slotname = slotname[0] != '\0' ? slotname : NULL;
 		options.proto.physical.startpointTLI = startpointTLI;
-		if (walrcv_startstreaming(wrconn, &options))
+		if (walrcv_startstreaming(wal_receiver_state.wrconn, &options))
 		{
 			if (first_stream)
 				ereport(LOG,
@@ -406,8 +419,8 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			SpinLockRelease(&walrcv->mutex);
 
 			/* Initialize LogstreamResult and buffers for processing messages */
-			LogstreamResult.Write = LogstreamResult.Flush = GetXLogReplayRecPtr(NULL);
-			initStringInfo(&reply_message);
+			wal_receiver_state.LogstreamResult.Write = wal_receiver_state.LogstreamResult.Flush = GetXLogReplayRecPtr(NULL);
+			initStringInfo(&wal_receiver_state.reply_message);
 
 			/* Initialize nap wakeup times. */
 			now = GetCurrentTimestamp();
@@ -453,7 +466,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 				}
 
 				/* See if we can read data immediately */
-				len = walrcv_receive(wrconn, &buf, &wait_fd);
+				len = walrcv_receive(wal_receiver_state.wrconn, &buf, &wait_fd);
 				if (len != 0)
 				{
 					/*
@@ -483,11 +496,11 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 									(errmsg("replication terminated by primary server"),
 									 errdetail("End of WAL reached on timeline %u at %X/%08X.",
 											   startpointTLI,
-											   LSN_FORMAT_ARGS(LogstreamResult.Write))));
+											   LSN_FORMAT_ARGS(wal_receiver_state.LogstreamResult.Write))));
 							endofwal = true;
 							break;
 						}
-						len = walrcv_receive(wrconn, &buf, &wait_fd);
+						len = walrcv_receive(wal_receiver_state.wrconn, &buf, &wait_fd);
 					}
 
 					/* Let the primary know that we received some data. */
@@ -508,7 +521,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 				/* Find the soonest wakeup time, to limit our nap. */
 				nextWakeup = TIMESTAMP_INFINITY;
 				for (int i = 0; i < NUM_WALRCV_WAKEUPS; ++i)
-					nextWakeup = Min(wakeup[i], nextWakeup);
+					nextWakeup = Min(wal_receiver_state.wakeup[i], nextWakeup);
 
 				/* Calculate the nap time, clamping as necessary. */
 				now = GetCurrentTimestamp();
@@ -578,7 +591,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 					 * reached the configured limit.
 					 */
 					now = GetCurrentTimestamp();
-					if (now >= wakeup[WALRCV_WAKEUP_TERMINATE])
+					if (now >= wal_receiver_state.wakeup[WALRCV_WAKEUP_TERMINATE])
 						ereport(ERROR,
 								(errcode(ERRCODE_CONNECTION_FAILURE),
 								 errmsg("terminating walreceiver due to timeout")));
@@ -587,10 +600,10 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 					 * If we didn't receive anything new for half of receiver
 					 * replication timeout, then ping the server.
 					 */
-					if (now >= wakeup[WALRCV_WAKEUP_PING])
+					if (now >= wal_receiver_state.wakeup[WALRCV_WAKEUP_PING])
 					{
 						requestReply = true;
-						wakeup[WALRCV_WAKEUP_PING] = TIMESTAMP_INFINITY;
+						wal_receiver_state.wakeup[WALRCV_WAKEUP_PING] = TIMESTAMP_INFINITY;
 					}
 
 					XLogWalRcvSendReply(requestReply, requestReply, false);
@@ -602,7 +615,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			 * The backend finished streaming. Exit streaming COPY-mode from
 			 * our side, too.
 			 */
-			walrcv_endstreaming(wrconn, &primaryTLI);
+			walrcv_endstreaming(wal_receiver_state.wrconn, &primaryTLI);
 
 			/*
 			 * If the server had switched to a new timeline that we didn't
@@ -620,14 +633,14 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 		 * End of WAL reached on the requested timeline. Close the last
 		 * segment, and await for new orders from the startup process.
 		 */
-		if (recvFile >= 0)
+		if (wal_receiver_state.recvFile >= 0)
 		{
 			char		xlogfname[MAXFNAMELEN];
 
 			XLogWalRcvFlush(false, startpointTLI);
-			XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+			XLogFileName(xlogfname, wal_receiver_state.recvFileTLI, wal_receiver_state.recvSegNo,
 				     GetGUCInt(GUC_wal_segment_size));
-			if (close(recvFile) != 0)
+			if (close(wal_receiver_state.recvFile) != 0)
 				ereport(PANIC,
 						(errcode_for_file_access(),
 						 errmsg("could not close WAL segment %s: %m",
@@ -642,7 +655,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			else
 				XLogArchiveNotify(xlogfname);
 		}
-		recvFile = -1;
+		wal_receiver_state.recvFile = -1;
 
 		elog(DEBUG1, "walreceiver ended streaming and awaits new instructions");
 		WalRcvWaitForStartPosition(&startpoint, &startpointTLI);
@@ -753,7 +766,7 @@ WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 					(errmsg("fetching timeline history file for timeline %u from primary server",
 							tli)));
 
-			walrcv_readtimelinehistoryfile(wrconn, tli, &fname, &content, &len);
+			walrcv_readtimelinehistoryfile(wal_receiver_state.wrconn, tli, &fname, &content, &len);
 
 			/*
 			 * Check that the filename on the primary matches what we
@@ -819,8 +832,8 @@ WalRcvDie(int code, Datum arg)
 	ConditionVariableBroadcast(&walrcv->walRcvStoppedCV);
 
 	/* Terminate the connection gracefully. */
-	if (wrconn != NULL)
-		walrcv_disconnect(wrconn);
+	if (wal_receiver_state.wrconn != NULL)
+		walrcv_disconnect(wal_receiver_state.wrconn);
 
 	/* Wake up the startup process to notice promptly that we're gone */
 	WakeupRecovery();
@@ -914,16 +927,16 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		int			segbytes;
 
 		/* Close the current segment if it's completed */
-		if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)))
+		if (wal_receiver_state.recvFile >= 0 && !XLByteInSeg(recptr, wal_receiver_state.recvSegNo, GetGUCInt(GUC_wal_segment_size)))
 			XLogWalRcvClose(recptr, tli);
 
-		if (recvFile < 0)
+		if (wal_receiver_state.recvFile < 0)
 		{
 			/* Create/use new log file */
-			XLByteToSeg(recptr, recvSegNo,
+			XLByteToSeg(recptr, wal_receiver_state.recvSegNo,
 				    GetGUCInt(GUC_wal_segment_size));
-			recvFile = XLogFileInit(recvSegNo, tli);
-			recvFileTLI = tli;
+			wal_receiver_state.recvFile = XLogFileInit(wal_receiver_state.recvSegNo, tli);
+			wal_receiver_state.recvFileTLI = tli;
 		}
 
 		/* Calculate the start offset of the received logs */
@@ -944,7 +957,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 		pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-		byteswritten = pg_pwrite(recvFile, buf, segbytes, (pgoff_t) startoff);
+		byteswritten = pg_pwrite(wal_receiver_state.recvFile, buf, segbytes, (pgoff_t) startoff);
 		pgstat_report_wait_end();
 
 		pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL,
@@ -960,7 +973,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 				errno = ENOSPC;
 
 			save_errno = errno;
-			XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+			XLogFileName(xlogfname, wal_receiver_state.recvFileTLI, wal_receiver_state.recvSegNo,
 				     GetGUCInt(GUC_wal_segment_size));
 			errno = save_errno;
 			ereport(PANIC,
@@ -976,19 +989,19 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		nbytes -= byteswritten;
 		buf += byteswritten;
 
-		LogstreamResult.Write = recptr;
+		wal_receiver_state.LogstreamResult.Write = recptr;
 	}
 
 	/* Update shared-memory status */
-	pg_atomic_write_u64(&WalRcv->writtenUpto, LogstreamResult.Write);
+	pg_atomic_write_u64(&WalRcv->writtenUpto, wal_receiver_state.LogstreamResult.Write);
 
 	/*
 	 * If we wrote an LSN that someone was waiting for, notify the waiters.
 	 */
 	if (waitLSNState &&
-		(LogstreamResult.Write >=
+		(wal_receiver_state.LogstreamResult.Write >=
 		 pg_atomic_read_u64(&waitLSNState->minWaitedLSN[WAIT_LSN_TYPE_STANDBY_WRITE])))
-		WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_WRITE, LogstreamResult.Write);
+		WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_WRITE, wal_receiver_state.LogstreamResult.Write);
 
 	/*
 	 * Close the current segment if it's fully written up in the last cycle of
@@ -996,7 +1009,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 	 * archiving of the segment will be delayed until any data in the next
 	 * segment is received and written.
 	 */
-	if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)))
+	if (wal_receiver_state.recvFile >= 0 && !XLByteInSeg(recptr, wal_receiver_state.recvSegNo, GetGUCInt(GUC_wal_segment_size)))
 		XLogWalRcvClose(recptr, tli);
 }
 
@@ -1011,20 +1024,20 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 {
 	Assert(tli != 0);
 
-	if (LogstreamResult.Flush < LogstreamResult.Write)
+	if (wal_receiver_state.LogstreamResult.Flush < wal_receiver_state.LogstreamResult.Write)
 	{
 		WalRcvData *walrcv = WalRcv;
 
-		issue_xlog_fsync(recvFile, recvSegNo, tli);
+		issue_xlog_fsync(wal_receiver_state.recvFile, wal_receiver_state.recvSegNo, tli);
 
-		LogstreamResult.Flush = LogstreamResult.Write;
+		wal_receiver_state.LogstreamResult.Flush = wal_receiver_state.LogstreamResult.Write;
 
 		/* Update shared-memory status */
 		SpinLockAcquire(&walrcv->mutex);
-		if (walrcv->flushedUpto < LogstreamResult.Flush)
+		if (walrcv->flushedUpto < wal_receiver_state.LogstreamResult.Flush)
 		{
 			walrcv->latestChunkStart = walrcv->flushedUpto;
-			walrcv->flushedUpto = LogstreamResult.Flush;
+			walrcv->flushedUpto = wal_receiver_state.LogstreamResult.Flush;
 			walrcv->receivedTLI = tli;
 		}
 		SpinLockRelease(&walrcv->mutex);
@@ -1034,9 +1047,9 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 		 * waiters.
 		 */
 		if (waitLSNState &&
-			(LogstreamResult.Flush >=
+			(wal_receiver_state.LogstreamResult.Flush >=
 			 pg_atomic_read_u64(&waitLSNState->minWaitedLSN[WAIT_LSN_TYPE_STANDBY_FLUSH])))
-			WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_FLUSH, LogstreamResult.Flush);
+			WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_FLUSH, wal_receiver_state.LogstreamResult.Flush);
 
 		/* Signal the startup process and walsender that new WAL has arrived */
 		WakeupRecovery();
@@ -1049,7 +1062,7 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 			char		activitymsg[50];
 
 			snprintf(activitymsg, sizeof(activitymsg), "streaming %X/%08X",
-					 LSN_FORMAT_ARGS(LogstreamResult.Write));
+					 LSN_FORMAT_ARGS(wal_receiver_state.LogstreamResult.Write));
 			set_ps_display(activitymsg);
 		}
 
@@ -1075,7 +1088,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 {
 	char		xlogfname[MAXFNAMELEN];
 
-	Assert(recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, GetGUCInt(GUC_wal_segment_size)));
+	Assert(wal_receiver_state.recvFile >= 0 && !XLByteInSeg(recptr, wal_receiver_state.recvSegNo, GetGUCInt(GUC_wal_segment_size)));
 	Assert(tli != 0);
 
 	/*
@@ -1084,7 +1097,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 	 */
 	XLogWalRcvFlush(false, tli);
 
-	XLogFileName(xlogfname, recvFileTLI, recvSegNo,
+	XLogFileName(xlogfname, wal_receiver_state.recvFileTLI, wal_receiver_state.recvSegNo,
 		     GetGUCInt(GUC_wal_segment_size));
 
 	/*
@@ -1092,7 +1105,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 	 * so we don't advise the OS to release cache pages associated with the
 	 * file like XLogFileClose() does.
 	 */
-	if (close(recvFile) != 0)
+	if (close(wal_receiver_state.recvFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close WAL segment %s: %m",
@@ -1107,7 +1120,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 	else
 		XLogArchiveNotify(xlogfname);
 
-	recvFile = -1;
+	wal_receiver_state.recvFile = -1;
 }
 
 /*
@@ -1158,13 +1171,13 @@ XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply)
 	 * lock, so we don't check that unless it is expected to advance since the
 	 * previous update, i.e., when 'checkApply' is true.
 	 */
-	if (!force && now < wakeup[WALRCV_WAKEUP_REPLY])
+	if (!force && now < wal_receiver_state.wakeup[WALRCV_WAKEUP_REPLY])
 	{
 		if (checkApply)
 			latestApplyPtr = GetXLogReplayRecPtr(NULL);
 
-		if (writePtr == LogstreamResult.Write
-			&& flushPtr == LogstreamResult.Flush
+		if (writePtr == wal_receiver_state.LogstreamResult.Write
+			&& flushPtr == wal_receiver_state.LogstreamResult.Flush
 			&& (!checkApply || applyPtr == latestApplyPtr))
 			return;
 	}
@@ -1173,18 +1186,18 @@ XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply)
 	WalRcvComputeNextWakeup(WALRCV_WAKEUP_REPLY, now);
 
 	/* Construct a new message */
-	writePtr = LogstreamResult.Write;
-	flushPtr = LogstreamResult.Flush;
+	writePtr = wal_receiver_state.LogstreamResult.Write;
+	flushPtr = wal_receiver_state.LogstreamResult.Flush;
 	applyPtr = XLogRecPtrIsValid(latestApplyPtr) ?
 		latestApplyPtr : GetXLogReplayRecPtr(NULL);
 
-	resetStringInfo(&reply_message);
-	pq_sendbyte(&reply_message, PqReplMsg_StandbyStatusUpdate);
-	pq_sendint64(&reply_message, writePtr);
-	pq_sendint64(&reply_message, flushPtr);
-	pq_sendint64(&reply_message, applyPtr);
-	pq_sendint64(&reply_message, GetCurrentTimestamp());
-	pq_sendbyte(&reply_message, requestReply ? 1 : 0);
+	resetStringInfo(&wal_receiver_state.reply_message);
+	pq_sendbyte(&wal_receiver_state.reply_message, PqReplMsg_StandbyStatusUpdate);
+	pq_sendint64(&wal_receiver_state.reply_message, writePtr);
+	pq_sendint64(&wal_receiver_state.reply_message, flushPtr);
+	pq_sendint64(&wal_receiver_state.reply_message, applyPtr);
+	pq_sendint64(&wal_receiver_state.reply_message, GetCurrentTimestamp());
+	pq_sendbyte(&wal_receiver_state.reply_message, requestReply ? 1 : 0);
 
 	/* Send it */
 	elog(DEBUG2, "sending write %X/%08X flush %X/%08X apply %X/%08X%s",
@@ -1193,7 +1206,7 @@ XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply)
 		 LSN_FORMAT_ARGS(applyPtr),
 		 requestReply ? " (reply requested)" : "");
 
-	walrcv_send(wrconn, reply_message.data, reply_message.len);
+	walrcv_send(wal_receiver_state.wrconn, wal_receiver_state.reply_message.data, wal_receiver_state.reply_message.len);
 }
 
 /*
@@ -1232,7 +1245,7 @@ XLogWalRcvSendHSFeedback(bool immed)
 	now = GetCurrentTimestamp();
 
 	/* Send feedback at most once per wal_receiver_status_interval. */
-	if (!immed && now < wakeup[WALRCV_WAKEUP_HSFEEDBACK])
+	if (!immed && now < wal_receiver_state.wakeup[WALRCV_WAKEUP_HSFEEDBACK])
 		return;
 
 	/* Make sure we wake up when it's time to send feedback again. */
@@ -1282,14 +1295,14 @@ XLogWalRcvSendHSFeedback(bool immed)
 		 xmin, xmin_epoch, catalog_xmin, catalog_xmin_epoch);
 
 	/* Construct the message and send it. */
-	resetStringInfo(&reply_message);
-	pq_sendbyte(&reply_message, PqReplMsg_HotStandbyFeedback);
-	pq_sendint64(&reply_message, GetCurrentTimestamp());
-	pq_sendint32(&reply_message, xmin);
-	pq_sendint32(&reply_message, xmin_epoch);
-	pq_sendint32(&reply_message, catalog_xmin);
-	pq_sendint32(&reply_message, catalog_xmin_epoch);
-	walrcv_send(wrconn, reply_message.data, reply_message.len);
+	resetStringInfo(&wal_receiver_state.reply_message);
+	pq_sendbyte(&wal_receiver_state.reply_message, PqReplMsg_HotStandbyFeedback);
+	pq_sendint64(&wal_receiver_state.reply_message, GetCurrentTimestamp());
+	pq_sendint32(&wal_receiver_state.reply_message, xmin);
+	pq_sendint32(&wal_receiver_state.reply_message, xmin_epoch);
+	pq_sendint32(&wal_receiver_state.reply_message, catalog_xmin);
+	pq_sendint32(&wal_receiver_state.reply_message, catalog_xmin_epoch);
+	walrcv_send(wal_receiver_state.wrconn, wal_receiver_state.reply_message.data, wal_receiver_state.reply_message.len);
 	if (TransactionIdIsValid(xmin) || TransactionIdIsValid(catalog_xmin))
 		primary_has_standby_xmin = true;
 	else
@@ -1361,30 +1374,30 @@ WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now)
 	{
 		case WALRCV_WAKEUP_TERMINATE:
 			if (GetGUCInt(GUC_wal_receiver_timeout) <= 0)
-				wakeup[reason] = TIMESTAMP_INFINITY;
+				wal_receiver_state.wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusMilliseconds(now,
+				wal_receiver_state.wakeup[reason] = TimestampTzPlusMilliseconds(now,
 									     GetGUCInt(GUC_wal_receiver_timeout));
 			break;
 		case WALRCV_WAKEUP_PING:
 			if (GetGUCInt(GUC_wal_receiver_timeout) <= 0)
-				wakeup[reason] = TIMESTAMP_INFINITY;
+				wal_receiver_state.wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusMilliseconds(now,
+				wal_receiver_state.wakeup[reason] = TimestampTzPlusMilliseconds(now,
 									     GetGUCInt(GUC_wal_receiver_timeout) / 2);
 			break;
 		case WALRCV_WAKEUP_HSFEEDBACK:
 			if (!GetGUCBool(GUC_hot_standby_feedback) || GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
-				wakeup[reason] = TIMESTAMP_INFINITY;
+				wal_receiver_state.wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusSeconds(now,
+				wal_receiver_state.wakeup[reason] = TimestampTzPlusSeconds(now,
 									GetGUCInt(GUC_wal_receiver_status_interval));
 			break;
 		case WALRCV_WAKEUP_REPLY:
 			if (GetGUCInt(GUC_wal_receiver_status_interval) <= 0)
-				wakeup[reason] = TIMESTAMP_INFINITY;
+				wal_receiver_state.wakeup[reason] = TIMESTAMP_INFINITY;
 			else
-				wakeup[reason] = TimestampTzPlusSeconds(now,
+				wal_receiver_state.wakeup[reason] = TimestampTzPlusSeconds(now,
 									GetGUCInt(GUC_wal_receiver_status_interval));
 			break;
 			/* there's intentionally no default: here */
