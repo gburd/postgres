@@ -31,8 +31,15 @@ static void pgstat_reset_slru_counter_internal(int index, TimestampTz ts);
  * SLRU counters are reported within critical sections so we use static memory
  * in order to avoid memory allocation.
  */
-static session_local PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
-static session_local bool have_slrustats = false;
+typedef struct PgStatSlruState
+{
+	PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
+	bool		have_slrustats;
+} PgStatSlruState;
+
+static session_local PgStatSlruState pgstat_slru_state = {
+	.have_slrustats = false,
+};
 
 
 /*
@@ -145,7 +152,7 @@ pgstat_slru_flush_cb(bool nowait)
 	PgStatShared_SLRU *stats_shmem = &pgStatLocal.shmem->slru;
 	int			i;
 
-	if (!have_slrustats)
+	if (!pgstat_slru_state.have_slrustats)
 		return false;
 
 	if (!nowait)
@@ -156,7 +163,7 @@ pgstat_slru_flush_cb(bool nowait)
 	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
 	{
 		PgStat_SLRUStats *sharedent = &stats_shmem->stats[i];
-		PgStat_SLRUStats *pendingent = &pending_SLRUStats[i];
+		PgStat_SLRUStats *pendingent = &pgstat_slru_state.pending_SLRUStats[i];
 
 #define SLRU_ACC(fld) sharedent->fld += pendingent->fld
 		SLRU_ACC(blocks_zeroed);
@@ -170,11 +177,11 @@ pgstat_slru_flush_cb(bool nowait)
 	}
 
 	/* done, clear the pending entry */
-	MemSet(pending_SLRUStats, 0, sizeof(pending_SLRUStats));
+	MemSet(pgstat_slru_state.pending_SLRUStats, 0, sizeof(pgstat_slru_state.pending_SLRUStats));
 
 	LWLockRelease(&stats_shmem->lock);
 
-	have_slrustats = false;
+	pgstat_slru_state.have_slrustats = false;
 
 	return false;
 }
@@ -224,10 +231,10 @@ get_slru_entry(int slru_idx)
 
 	Assert((slru_idx >= 0) && (slru_idx < SLRU_NUM_ELEMENTS));
 
-	have_slrustats = true;
+	pgstat_slru_state.have_slrustats = true;
 	pgstat_report_fixed = true;
 
-	return &pending_SLRUStats[slru_idx];
+	return &pgstat_slru_state.pending_SLRUStats[slru_idx];
 }
 
 static void
