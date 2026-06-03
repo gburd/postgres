@@ -191,8 +191,10 @@ during chain traversal.
 Built-in Compression.  Attribute-level compression with multiple algorithm
 support: LZ4, ZSTD, delta compression for numerics, and dictionary
 compression for text data.  Automatic algorithm selection based on data
-type and pattern.  Currently framework-only; algorithm implementations are
-stubs.
+type and pattern.  The codecs are fully implemented in recno_compress.c
+(LZ4 and ZSTD are wired to the system libraries when the server is built
+with USE_LZ4 / USE_ZSTD; if a library is unavailable the corresponding
+codec falls back to storing the attribute uncompressed).
 
 Advanced Space Management.  Five-category free space classification
 (FULL/TIGHT/MEDIUM/LOOSE/EMPTY).  Proactive page defragmentation during
@@ -599,9 +601,10 @@ recno_overflow.c    Derby-inspired column-level overflow storage.
                     Chain management for large attributes, integration
                     with main table operations.
 
-recno_compress.c    Attribute compression framework.  LZ4, ZSTD, delta,
-                    dictionary support (currently stub implementations).
-                    Automatic algorithm selection.
+recno_compress.c    Attribute compression framework.  Implemented LZ4,
+                    ZSTD, delta, and dictionary codecs (LZ4/ZSTD require
+                    USE_LZ4 / USE_ZSTD at build time, else fall back to
+                    uncompressed).  Automatic algorithm selection.
 
 recno_fsm.c         Free space management and defragmentation.  Five-
                     category classification, integration with PostgreSQL's
@@ -810,8 +813,8 @@ Production-Ready Features
 - In-Place Updates: working for same-size or smaller replacements; falls
   back to out-of-place for growing tuples.
 - Overflow Pages: functional for store/fetch/delete chains.
-- Compression Framework: multi-algorithm attribute-level compression
-  (algorithms are stubs; framework exists but no actual compression).
+- Compression Framework: multi-algorithm attribute-level compression with
+  working LZ4, ZSTD, delta, and dictionary codecs.
 - WAL Integration: complete crash recovery with REDO/UNDO.
 - Free Space Management: five-category FSM with defragmentation.
 - Locking: full tuple-level and page-level locking.
@@ -831,7 +834,6 @@ Current Limitations
 - Tuple Overhead: 36 bytes per tuple (vs heap's 24 bytes); impacts narrow
   tables.
 - Timestamp Lock: single global lock may bottleneck at >1000 TPS.
-- Compression: algorithms stubbed; framework exists but no space savings.
 - VACUUM: basic implementation; does not fully reclaim dead tuple space.
 - Parallel Operations: sequential scans only; no parallel vacuum or
   parallel index builds.
@@ -922,7 +924,7 @@ RECNO-Specific Features (Not in Heap)
 1. In-place updates (stable TIDs, reduced bloat).
 2. 64-bit timestamps (no XID wraparound).
 3. Integrated overflow pages (no separate TOAST table).
-4. Multiple compression algorithms (stub implementations).
+4. Multiple compression algorithms (LZ4, ZSTD, delta, dictionary).
 5. Proactive page defragmentation.
 6. Hybrid Logical Clocks (causal consistency for distributed deployments).
 7. Clock-bound uncertainty intervals (safe distributed reads).

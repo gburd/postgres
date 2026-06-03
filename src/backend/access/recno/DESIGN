@@ -106,7 +106,7 @@ support.
   XLOG_RECNO_CROSS_PAGE_DEFRAG (0x70)  Cross-page tuple move
   XLOG_RECNO_VM_SET            (0x80)  Set visibility map bits
   XLOG_RECNO_VM_CLEAR          (0x90)  Clear visibility map bits
-  XLOG_RECNO_LOCK              (0xA0)  Tuple lock (reserved, not yet used)
+  XLOG_RECNO_LOCK              (0xA0)  Tuple lock (in use)
 
 2.2 Key Differences from Heap WAL
 -----------------------------------
