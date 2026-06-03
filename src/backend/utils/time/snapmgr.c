@@ -138,18 +138,10 @@
  * These SnapshotData structs are static to simplify memory allocation
  * (see the hack in GetSnapshotData to avoid repeated malloc/free).
  */
-static session_local SnapshotData CurrentSnapshotData = {SNAPSHOT_MVCC};
-static session_local SnapshotData SecondarySnapshotData = {SNAPSHOT_MVCC};
-static session_local SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
 session_local SnapshotData SnapshotSelfData = {SNAPSHOT_SELF};
 session_local SnapshotData SnapshotAnyData = {SNAPSHOT_ANY};
 session_local SnapshotData SnapshotToastData = {SNAPSHOT_TOAST};
 
-/* Pointers to valid snapshots */
-static session_local Snapshot CurrentSnapshot = NULL;
-static session_local Snapshot SecondarySnapshot = NULL;
-static session_local Snapshot CatalogSnapshot = NULL;
-static session_local Snapshot HistoricSnapshot = NULL;
 
 /*
  * These are updated by GetSnapshotData.  We initialize them this way
@@ -159,8 +151,6 @@ static session_local Snapshot HistoricSnapshot = NULL;
 session_local TransactionId TransactionXmin = FirstNormalTransactionId;
 session_local TransactionId RecentXmin = FirstNormalTransactionId;
 
-/* (table, ctid) => (cmin, cmax) mapping during timetravel */
-static session_local HTAB *tuplecid_data = NULL;
 
 /*
  * Elements of the active snapshot stack.
@@ -177,8 +167,6 @@ typedef struct ActiveSnapshotElt
 	struct ActiveSnapshotElt *as_next;
 } ActiveSnapshotElt;
 
-/* Top of the stack of active snapshots */
-static session_local ActiveSnapshotElt *ActiveSnapshot = NULL;
 
 /*
  * Currently registered Snapshots.  Ordered in a heap by xmin, so that we can
@@ -187,17 +175,9 @@ static session_local ActiveSnapshotElt *ActiveSnapshot = NULL;
 static int	xmin_cmp(const pairingheap_node *a, const pairingheap_node *b,
 					 void *arg);
 
-static session_local pairingheap RegisteredSnapshots = {&xmin_cmp, NULL, NULL};
-
 /* first GetTransactionSnapshot call in a transaction? */
 session_local bool		FirstSnapshotSet = false;
 
-/*
- * Remember the serializable transaction snapshot, if any.  We cannot trust
- * FirstSnapshotSet in combination with IsolationUsesXactSnapshot(), because
- * GUC may be reset before us, changing the value of IsolationUsesXactSnapshot.
- */
-static session_local Snapshot FirstXactSnapshot = NULL;
 
 /* Define pathname of exported-snapshot files */
 #define SNAPSHOT_EXPORT_DIR "pg_snapshots"
@@ -209,8 +189,70 @@ typedef struct ExportedSnapshot
 	Snapshot	snapshot;
 } ExportedSnapshot;
 
-/* Current xact's exported snapshots (a list of ExportedSnapshot structs) */
-static session_local List *exportedSnapshots = NIL;
+
+/*
+ * Consolidated per-session snapshot-manager state (private file-local part).
+ *
+ * The exported snapshots SnapshotSelfData / SnapshotAnyData / SnapshotToastData,
+ * the xmin tracking globals TransactionXmin / RecentXmin, and FirstSnapshotSet
+ * remain standalone session-local globals because they are referenced through
+ * utils/snapmgr.h (and the SnapshotSelf / SnapshotAny macros) from other files.
+ */
+typedef struct SnapshotState
+{
+	/*
+	 * CurrentSnapshot points to the only snapshot taken in transaction-snapshot
+	 * mode, and to the latest one taken in a read-committed transaction.
+	 * SecondarySnapshot is a snapshot that's always up-to-date as of the current
+	 * instant, even in transaction-snapshot mode.  CatalogSnapshot points to an
+	 * MVCC snapshot intended to be used for catalog scans.
+	 *
+	 * These SnapshotData structs are kept here to simplify memory allocation
+	 * (see the hack in GetSnapshotData to avoid repeated malloc/free).
+	 */
+	SnapshotData CurrentSnapshotData;
+	SnapshotData SecondarySnapshotData;
+	SnapshotData CatalogSnapshotData;
+
+	/* Pointers to valid snapshots */
+	Snapshot	CurrentSnapshot;
+	Snapshot	SecondarySnapshot;
+	Snapshot	CatalogSnapshot;
+	Snapshot	HistoricSnapshot;
+
+	/* (table, ctid) => (cmin, cmax) mapping during timetravel */
+	HTAB	   *tuplecid_data;
+
+	/* Top of the stack of active snapshots */
+	ActiveSnapshotElt *ActiveSnapshot;
+
+	/*
+	 * Currently registered Snapshots.  Ordered in a heap by xmin, so that we
+	 * can quickly find the one with lowest xmin, to advance our MyProc->xmin.
+	 */
+	pairingheap RegisteredSnapshots;
+
+	/* Remember the serializable transaction snapshot, if any. */
+	Snapshot	FirstXactSnapshot;
+
+	/* Current xact's exported snapshots (a list of ExportedSnapshot structs) */
+	List	   *exportedSnapshots;
+} SnapshotState;
+
+static session_local SnapshotState snapshot_state = {
+	.CurrentSnapshotData = {SNAPSHOT_MVCC},
+	.SecondarySnapshotData = {SNAPSHOT_MVCC},
+	.CatalogSnapshotData = {SNAPSHOT_MVCC},
+	.CurrentSnapshot = NULL,
+	.SecondarySnapshot = NULL,
+	.CatalogSnapshot = NULL,
+	.HistoricSnapshot = NULL,
+	.tuplecid_data = NULL,
+	.ActiveSnapshot = NULL,
+	.RegisteredSnapshots = {&xmin_cmp, NULL, NULL},
+	.FirstXactSnapshot = NULL,
+	.exportedSnapshots = NIL,
+};
 
 /* Prototypes for local functions */
 static Snapshot CopySnapshot(Snapshot snapshot);
@@ -287,7 +329,7 @@ GetTransactionSnapshot(void)
 		 * for later calls to GetTransactionSnapshot().
 		 */
 		Assert(!FirstSnapshotSet);
-		return HistoricSnapshot;
+		return snapshot_state.HistoricSnapshot;
 	}
 
 	/* First call in transaction? */
@@ -299,8 +341,8 @@ GetTransactionSnapshot(void)
 		 */
 		InvalidateCatalogSnapshot();
 
-		Assert(pairingheap_is_empty(&RegisteredSnapshots));
-		Assert(FirstXactSnapshot == NULL);
+		Assert(pairingheap_is_empty(&snapshot_state.RegisteredSnapshots));
+		Assert(snapshot_state.FirstXactSnapshot == NULL);
 
 		if (IsInParallelMode())
 			elog(ERROR,
@@ -317,32 +359,32 @@ GetTransactionSnapshot(void)
 		{
 			/* First, create the snapshot in CurrentSnapshotData */
 			if (IsolationIsSerializable())
-				CurrentSnapshot = GetSerializableTransactionSnapshot(&CurrentSnapshotData);
+				snapshot_state.CurrentSnapshot = GetSerializableTransactionSnapshot(&snapshot_state.CurrentSnapshotData);
 			else
-				CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+				snapshot_state.CurrentSnapshot = GetSnapshotData(&snapshot_state.CurrentSnapshotData);
 			/* Make a saved copy */
-			CurrentSnapshot = CopySnapshot(CurrentSnapshot);
-			FirstXactSnapshot = CurrentSnapshot;
+			snapshot_state.CurrentSnapshot = CopySnapshot(snapshot_state.CurrentSnapshot);
+			snapshot_state.FirstXactSnapshot = snapshot_state.CurrentSnapshot;
 			/* Mark it as "registered" in FirstXactSnapshot */
-			FirstXactSnapshot->regd_count++;
-			pairingheap_add(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
+			snapshot_state.FirstXactSnapshot->regd_count++;
+			pairingheap_add(&snapshot_state.RegisteredSnapshots, &snapshot_state.FirstXactSnapshot->ph_node);
 		}
 		else
-			CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+			snapshot_state.CurrentSnapshot = GetSnapshotData(&snapshot_state.CurrentSnapshotData);
 
 		FirstSnapshotSet = true;
-		return CurrentSnapshot;
+		return snapshot_state.CurrentSnapshot;
 	}
 
 	if (IsolationUsesXactSnapshot())
-		return CurrentSnapshot;
+		return snapshot_state.CurrentSnapshot;
 
 	/* Don't allow catalog snapshot to be older than xact snapshot. */
 	InvalidateCatalogSnapshot();
 
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+	snapshot_state.CurrentSnapshot = GetSnapshotData(&snapshot_state.CurrentSnapshotData);
 
-	return CurrentSnapshot;
+	return snapshot_state.CurrentSnapshot;
 }
 
 /*
@@ -359,7 +401,7 @@ GetLatestSnapshot(void)
 	 */
 	if (IsInParallelMode())
 		elog(ERROR,
-			 "cannot update SecondarySnapshot during a parallel operation");
+			 "cannot update snapshot_state.SecondarySnapshot during a parallel operation");
 
 	/*
 	 * So far there are no cases requiring support for GetLatestSnapshot()
@@ -371,9 +413,9 @@ GetLatestSnapshot(void)
 	if (!FirstSnapshotSet)
 		return GetTransactionSnapshot();
 
-	SecondarySnapshot = GetSnapshotData(&SecondarySnapshotData);
+	snapshot_state.SecondarySnapshot = GetSnapshotData(&snapshot_state.SecondarySnapshotData);
 
-	return SecondarySnapshot;
+	return snapshot_state.SecondarySnapshot;
 }
 
 /*
@@ -392,7 +434,7 @@ GetCatalogSnapshot(Oid relid)
 	 * finishing decoding.
 	 */
 	if (HistoricSnapshotActive())
-		return HistoricSnapshot;
+		return snapshot_state.HistoricSnapshot;
 
 	return GetNonHistoricCatalogSnapshot(relid);
 }
@@ -413,15 +455,15 @@ GetNonHistoricCatalogSnapshot(Oid relid)
 	 * scan a relation for which neither catcache nor snapshot invalidations
 	 * are sent, we must refresh the snapshot every time.
 	 */
-	if (CatalogSnapshot &&
+	if (snapshot_state.CatalogSnapshot &&
 		!RelationInvalidatesSnapshotsOnly(relid) &&
 		!RelationHasSysCache(relid))
 		InvalidateCatalogSnapshot();
 
-	if (CatalogSnapshot == NULL)
+	if (snapshot_state.CatalogSnapshot == NULL)
 	{
 		/* Get new snapshot. */
-		CatalogSnapshot = GetSnapshotData(&CatalogSnapshotData);
+		snapshot_state.CatalogSnapshot = GetSnapshotData(&snapshot_state.CatalogSnapshotData);
 
 		/*
 		 * Make sure the catalog snapshot will be accounted for in decisions
@@ -435,10 +477,10 @@ GetNonHistoricCatalogSnapshot(Oid relid)
 		 * NB: it had better be impossible for this to throw error, since the
 		 * CatalogSnapshot pointer is already valid.
 		 */
-		pairingheap_add(&RegisteredSnapshots, &CatalogSnapshot->ph_node);
+		pairingheap_add(&snapshot_state.RegisteredSnapshots, &snapshot_state.CatalogSnapshot->ph_node);
 	}
 
-	return CatalogSnapshot;
+	return snapshot_state.CatalogSnapshot;
 }
 
 /*
@@ -454,10 +496,10 @@ GetNonHistoricCatalogSnapshot(Oid relid)
 void
 InvalidateCatalogSnapshot(void)
 {
-	if (CatalogSnapshot)
+	if (snapshot_state.CatalogSnapshot)
 	{
-		pairingheap_remove(&RegisteredSnapshots, &CatalogSnapshot->ph_node);
-		CatalogSnapshot = NULL;
+		pairingheap_remove(&snapshot_state.RegisteredSnapshots, &snapshot_state.CatalogSnapshot->ph_node);
+		snapshot_state.CatalogSnapshot = NULL;
 		SnapshotResetXmin();
 		INJECTION_POINT("invalidate-catalog-snapshot-end", NULL);
 	}
@@ -476,9 +518,9 @@ InvalidateCatalogSnapshot(void)
 void
 InvalidateCatalogSnapshotConditionally(void)
 {
-	if (CatalogSnapshot &&
-		ActiveSnapshot == NULL &&
-		pairingheap_is_singular(&RegisteredSnapshots))
+	if (snapshot_state.CatalogSnapshot &&
+		snapshot_state.ActiveSnapshot == NULL &&
+		pairingheap_is_singular(&snapshot_state.RegisteredSnapshots))
 		InvalidateCatalogSnapshot();
 }
 
@@ -492,10 +534,10 @@ SnapshotSetCommandId(CommandId curcid)
 	if (!FirstSnapshotSet)
 		return;
 
-	if (CurrentSnapshot)
-		CurrentSnapshot->curcid = curcid;
-	if (SecondarySnapshot)
-		SecondarySnapshot->curcid = curcid;
+	if (snapshot_state.CurrentSnapshot)
+		snapshot_state.CurrentSnapshot->curcid = curcid;
+	if (snapshot_state.SecondarySnapshot)
+		snapshot_state.SecondarySnapshot->curcid = curcid;
 	/* Should we do the same with CatalogSnapshot? */
 }
 
@@ -517,8 +559,8 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	/* Better do this to ensure following Assert succeeds. */
 	InvalidateCatalogSnapshot();
 
-	Assert(pairingheap_is_empty(&RegisteredSnapshots));
-	Assert(FirstXactSnapshot == NULL);
+	Assert(pairingheap_is_empty(&snapshot_state.RegisteredSnapshots));
+	Assert(snapshot_state.FirstXactSnapshot == NULL);
 	Assert(!HistoricSnapshotActive());
 
 	/*
@@ -527,28 +569,28 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	 * CurrentSnapshotData's XID arrays have been allocated, and (2) to update
 	 * the state for GlobalVis*.
 	 */
-	CurrentSnapshot = GetSnapshotData(&CurrentSnapshotData);
+	snapshot_state.CurrentSnapshot = GetSnapshotData(&snapshot_state.CurrentSnapshotData);
 
 	/*
 	 * Now copy appropriate fields from the source snapshot.
 	 */
-	CurrentSnapshot->xmin = sourcesnap->xmin;
-	CurrentSnapshot->xmax = sourcesnap->xmax;
-	CurrentSnapshot->xcnt = sourcesnap->xcnt;
+	snapshot_state.CurrentSnapshot->xmin = sourcesnap->xmin;
+	snapshot_state.CurrentSnapshot->xmax = sourcesnap->xmax;
+	snapshot_state.CurrentSnapshot->xcnt = sourcesnap->xcnt;
 	Assert(sourcesnap->xcnt <= GetMaxSnapshotXidCount());
 	if (sourcesnap->xcnt > 0)
-		memcpy(CurrentSnapshot->xip, sourcesnap->xip,
+		memcpy(snapshot_state.CurrentSnapshot->xip, sourcesnap->xip,
 			   sourcesnap->xcnt * sizeof(TransactionId));
-	CurrentSnapshot->subxcnt = sourcesnap->subxcnt;
+	snapshot_state.CurrentSnapshot->subxcnt = sourcesnap->subxcnt;
 	Assert(sourcesnap->subxcnt <= GetMaxSnapshotSubxidCount());
 	if (sourcesnap->subxcnt > 0)
-		memcpy(CurrentSnapshot->subxip, sourcesnap->subxip,
+		memcpy(snapshot_state.CurrentSnapshot->subxip, sourcesnap->subxip,
 			   sourcesnap->subxcnt * sizeof(TransactionId));
-	CurrentSnapshot->suboverflowed = sourcesnap->suboverflowed;
-	CurrentSnapshot->takenDuringRecovery = sourcesnap->takenDuringRecovery;
+	snapshot_state.CurrentSnapshot->suboverflowed = sourcesnap->suboverflowed;
+	snapshot_state.CurrentSnapshot->takenDuringRecovery = sourcesnap->takenDuringRecovery;
 	/* NB: curcid should NOT be copied, it's a local matter */
 
-	CurrentSnapshot->snapXactCompletionCount = 0;
+	snapshot_state.CurrentSnapshot->snapXactCompletionCount = 0;
 
 	/*
 	 * Now we have to fix what GetSnapshotData did with MyProc->xmin and
@@ -563,13 +605,13 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	 */
 	if (sourceproc != NULL)
 	{
-		if (!ProcArrayInstallRestoredXmin(CurrentSnapshot->xmin, sourceproc))
+		if (!ProcArrayInstallRestoredXmin(snapshot_state.CurrentSnapshot->xmin, sourceproc))
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("could not import the requested snapshot"),
 					 errdetail("The source transaction is not running anymore.")));
 	}
-	else if (!ProcArrayInstallImportedXmin(CurrentSnapshot->xmin, sourcevxid))
+	else if (!ProcArrayInstallImportedXmin(snapshot_state.CurrentSnapshot->xmin, sourcevxid))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("could not import the requested snapshot"),
@@ -584,14 +626,14 @@ SetTransactionSnapshot(Snapshot sourcesnap, VirtualTransactionId *sourcevxid,
 	if (IsolationUsesXactSnapshot())
 	{
 		if (IsolationIsSerializable())
-			SetSerializableTransactionSnapshot(CurrentSnapshot, sourcevxid,
+			SetSerializableTransactionSnapshot(snapshot_state.CurrentSnapshot, sourcevxid,
 											   sourcepid);
 		/* Make a saved copy */
-		CurrentSnapshot = CopySnapshot(CurrentSnapshot);
-		FirstXactSnapshot = CurrentSnapshot;
+		snapshot_state.CurrentSnapshot = CopySnapshot(snapshot_state.CurrentSnapshot);
+		snapshot_state.FirstXactSnapshot = snapshot_state.CurrentSnapshot;
 		/* Mark it as "registered" in FirstXactSnapshot */
-		FirstXactSnapshot->regd_count++;
-		pairingheap_add(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
+		snapshot_state.FirstXactSnapshot->regd_count++;
+		pairingheap_add(&snapshot_state.RegisteredSnapshots, &snapshot_state.FirstXactSnapshot->ph_node);
 	}
 
 	FirstSnapshotSet = true;
@@ -698,7 +740,7 @@ PushActiveSnapshotWithLevel(Snapshot snapshot, int snap_level)
 	ActiveSnapshotElt *newactive;
 
 	Assert(snapshot != InvalidSnapshot);
-	Assert(ActiveSnapshot == NULL || snap_level >= ActiveSnapshot->as_level);
+	Assert(snapshot_state.ActiveSnapshot == NULL || snap_level >= snapshot_state.ActiveSnapshot->as_level);
 
 	newactive = MemoryContextAlloc(TopTransactionContext, sizeof(ActiveSnapshotElt));
 
@@ -706,18 +748,18 @@ PushActiveSnapshotWithLevel(Snapshot snapshot, int snap_level)
 	 * Checking SecondarySnapshot is probably useless here, but it seems
 	 * better to be sure.
 	 */
-	if (snapshot == CurrentSnapshot || snapshot == SecondarySnapshot ||
+	if (snapshot == snapshot_state.CurrentSnapshot || snapshot == snapshot_state.SecondarySnapshot ||
 		!snapshot->copied)
 		newactive->as_snap = CopySnapshot(snapshot);
 	else
 		newactive->as_snap = snapshot;
 
-	newactive->as_next = ActiveSnapshot;
+	newactive->as_next = snapshot_state.ActiveSnapshot;
 	newactive->as_level = snap_level;
 
 	newactive->as_snap->active_count++;
 
-	ActiveSnapshot = newactive;
+	snapshot_state.ActiveSnapshot = newactive;
 }
 
 /*
@@ -746,9 +788,9 @@ UpdateActiveSnapshotCommandId(void)
 	CommandId	save_curcid,
 				curcid;
 
-	Assert(ActiveSnapshot != NULL);
-	Assert(ActiveSnapshot->as_snap->active_count == 1);
-	Assert(ActiveSnapshot->as_snap->regd_count == 0);
+	Assert(snapshot_state.ActiveSnapshot != NULL);
+	Assert(snapshot_state.ActiveSnapshot->as_snap->active_count == 1);
+	Assert(snapshot_state.ActiveSnapshot->as_snap->regd_count == 0);
 
 	/*
 	 * Don't allow modification of the active snapshot during parallel
@@ -758,11 +800,11 @@ UpdateActiveSnapshotCommandId(void)
 	 * CommandCounterIncrement, but there are a few places that call this
 	 * directly, so we put an additional guard here.
 	 */
-	save_curcid = ActiveSnapshot->as_snap->curcid;
+	save_curcid = snapshot_state.ActiveSnapshot->as_snap->curcid;
 	curcid = GetCurrentCommandId(false);
 	if (IsInParallelMode() && save_curcid != curcid)
 		elog(ERROR, "cannot modify commandid in active snapshot during a parallel operation");
-	ActiveSnapshot->as_snap->curcid = curcid;
+	snapshot_state.ActiveSnapshot->as_snap->curcid = curcid;
 }
 
 /*
@@ -776,18 +818,18 @@ PopActiveSnapshot(void)
 {
 	ActiveSnapshotElt *newstack;
 
-	newstack = ActiveSnapshot->as_next;
+	newstack = snapshot_state.ActiveSnapshot->as_next;
 
-	Assert(ActiveSnapshot->as_snap->active_count > 0);
+	Assert(snapshot_state.ActiveSnapshot->as_snap->active_count > 0);
 
-	ActiveSnapshot->as_snap->active_count--;
+	snapshot_state.ActiveSnapshot->as_snap->active_count--;
 
-	if (ActiveSnapshot->as_snap->active_count == 0 &&
-		ActiveSnapshot->as_snap->regd_count == 0)
-		FreeSnapshot(ActiveSnapshot->as_snap);
+	if (snapshot_state.ActiveSnapshot->as_snap->active_count == 0 &&
+		snapshot_state.ActiveSnapshot->as_snap->regd_count == 0)
+		FreeSnapshot(snapshot_state.ActiveSnapshot->as_snap);
 
-	pfree(ActiveSnapshot);
-	ActiveSnapshot = newstack;
+	pfree(snapshot_state.ActiveSnapshot);
+	snapshot_state.ActiveSnapshot = newstack;
 
 	SnapshotResetXmin();
 }
@@ -799,9 +841,9 @@ PopActiveSnapshot(void)
 Snapshot
 GetActiveSnapshot(void)
 {
-	Assert(ActiveSnapshot != NULL);
+	Assert(snapshot_state.ActiveSnapshot != NULL);
 
-	return ActiveSnapshot->as_snap;
+	return snapshot_state.ActiveSnapshot->as_snap;
 }
 
 /*
@@ -811,7 +853,7 @@ GetActiveSnapshot(void)
 bool
 ActiveSnapshotSet(void)
 {
-	return ActiveSnapshot != NULL;
+	return snapshot_state.ActiveSnapshot != NULL;
 }
 
 /*
@@ -850,7 +892,7 @@ RegisterSnapshotOnOwner(Snapshot snapshot, ResourceOwner owner)
 	ResourceOwnerRememberSnapshot(owner, snap);
 
 	if (snap->regd_count == 1)
-		pairingheap_add(&RegisteredSnapshots, &snap->ph_node);
+		pairingheap_add(&snapshot_state.RegisteredSnapshots, &snap->ph_node);
 
 	return snap;
 }
@@ -889,11 +931,11 @@ static void
 UnregisterSnapshotNoOwner(Snapshot snapshot)
 {
 	Assert(snapshot->regd_count > 0);
-	Assert(!pairingheap_is_empty(&RegisteredSnapshots));
+	Assert(!pairingheap_is_empty(&snapshot_state.RegisteredSnapshots));
 
 	snapshot->regd_count--;
 	if (snapshot->regd_count == 0)
-		pairingheap_remove(&RegisteredSnapshots, &snapshot->ph_node);
+		pairingheap_remove(&snapshot_state.RegisteredSnapshots, &snapshot->ph_node);
 
 	if (snapshot->regd_count == 0 && snapshot->active_count == 0)
 	{
@@ -938,17 +980,17 @@ SnapshotResetXmin(void)
 {
 	Snapshot	minSnapshot;
 
-	if (ActiveSnapshot != NULL)
+	if (snapshot_state.ActiveSnapshot != NULL)
 		return;
 
-	if (pairingheap_is_empty(&RegisteredSnapshots))
+	if (pairingheap_is_empty(&snapshot_state.RegisteredSnapshots))
 	{
 		MyProc->xmin = TransactionXmin = InvalidTransactionId;
 		return;
 	}
 
 	minSnapshot = pairingheap_container(SnapshotData, ph_node,
-										pairingheap_first(&RegisteredSnapshots));
+										pairingheap_first(&snapshot_state.RegisteredSnapshots));
 
 	if (TransactionIdPrecedes(MyProc->xmin, minSnapshot->xmin))
 		MyProc->xmin = TransactionXmin = minSnapshot->xmin;
@@ -966,7 +1008,7 @@ AtSubCommit_Snapshot(int level)
 	 * Relabel the active snapshots set in this subtransaction as though they
 	 * are owned by the parent subxact.
 	 */
-	for (active = ActiveSnapshot; active != NULL; active = active->as_next)
+	for (active = snapshot_state.ActiveSnapshot; active != NULL; active = active->as_next)
 	{
 		if (active->as_level < level)
 			break;
@@ -982,27 +1024,27 @@ void
 AtSubAbort_Snapshot(int level)
 {
 	/* Forget the active snapshots set by this subtransaction */
-	while (ActiveSnapshot && ActiveSnapshot->as_level >= level)
+	while (snapshot_state.ActiveSnapshot && snapshot_state.ActiveSnapshot->as_level >= level)
 	{
 		ActiveSnapshotElt *next;
 
-		next = ActiveSnapshot->as_next;
+		next = snapshot_state.ActiveSnapshot->as_next;
 
 		/*
 		 * Decrement the snapshot's active count.  If it's still registered or
 		 * marked as active by an outer subtransaction, we can't free it yet.
 		 */
-		Assert(ActiveSnapshot->as_snap->active_count >= 1);
-		ActiveSnapshot->as_snap->active_count -= 1;
+		Assert(snapshot_state.ActiveSnapshot->as_snap->active_count >= 1);
+		snapshot_state.ActiveSnapshot->as_snap->active_count -= 1;
 
-		if (ActiveSnapshot->as_snap->active_count == 0 &&
-			ActiveSnapshot->as_snap->regd_count == 0)
-			FreeSnapshot(ActiveSnapshot->as_snap);
+		if (snapshot_state.ActiveSnapshot->as_snap->active_count == 0 &&
+			snapshot_state.ActiveSnapshot->as_snap->regd_count == 0)
+			FreeSnapshot(snapshot_state.ActiveSnapshot->as_snap);
 
 		/* and free the stack element */
-		pfree(ActiveSnapshot);
+		pfree(snapshot_state.ActiveSnapshot);
 
-		ActiveSnapshot = next;
+		snapshot_state.ActiveSnapshot = next;
 	}
 
 	SnapshotResetXmin();
@@ -1024,18 +1066,18 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 	 * stacked as active, we don't want the code below to be chasing through a
 	 * dangling pointer.
 	 */
-	if (FirstXactSnapshot != NULL)
+	if (snapshot_state.FirstXactSnapshot != NULL)
 	{
-		Assert(FirstXactSnapshot->regd_count > 0);
-		Assert(!pairingheap_is_empty(&RegisteredSnapshots));
-		pairingheap_remove(&RegisteredSnapshots, &FirstXactSnapshot->ph_node);
+		Assert(snapshot_state.FirstXactSnapshot->regd_count > 0);
+		Assert(!pairingheap_is_empty(&snapshot_state.RegisteredSnapshots));
+		pairingheap_remove(&snapshot_state.RegisteredSnapshots, &snapshot_state.FirstXactSnapshot->ph_node);
 	}
-	FirstXactSnapshot = NULL;
+	snapshot_state.FirstXactSnapshot = NULL;
 
 	/*
 	 * If we exported any snapshots, clean them up.
 	 */
-	if (exportedSnapshots != NIL)
+	if (snapshot_state.exportedSnapshots != NIL)
 	{
 		ListCell   *lc;
 
@@ -1050,7 +1092,7 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 		 * As with the FirstXactSnapshot, we don't need to free resources of
 		 * the snapshot itself as it will go away with the memory context.
 		 */
-		foreach(lc, exportedSnapshots)
+		foreach(lc, snapshot_state.exportedSnapshots)
 		{
 			ExportedSnapshot *esnap = (ExportedSnapshot *) lfirst(lc);
 
@@ -1058,11 +1100,11 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 				elog(WARNING, "could not unlink file \"%s\": %m",
 					 esnap->snapfile);
 
-			pairingheap_remove(&RegisteredSnapshots,
+			pairingheap_remove(&snapshot_state.RegisteredSnapshots,
 							   &esnap->snapshot->ph_node);
 		}
 
-		exportedSnapshots = NIL;
+		snapshot_state.exportedSnapshots = NIL;
 	}
 
 	/* Drop catalog snapshot if any */
@@ -1073,11 +1115,11 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 	{
 		ActiveSnapshotElt *active;
 
-		if (!pairingheap_is_empty(&RegisteredSnapshots))
+		if (!pairingheap_is_empty(&snapshot_state.RegisteredSnapshots))
 			elog(WARNING, "registered snapshots seem to remain after cleanup");
 
 		/* complain about unpopped active snapshots */
-		for (active = ActiveSnapshot; active != NULL; active = active->as_next)
+		for (active = snapshot_state.ActiveSnapshot; active != NULL; active = active->as_next)
 			elog(WARNING, "snapshot %p still active", active);
 	}
 
@@ -1085,11 +1127,11 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 	 * And reset our state.  We don't need to free the memory explicitly --
 	 * it'll go away with TopTransactionContext.
 	 */
-	ActiveSnapshot = NULL;
-	pairingheap_reset(&RegisteredSnapshots);
+	snapshot_state.ActiveSnapshot = NULL;
+	pairingheap_reset(&snapshot_state.RegisteredSnapshots);
 
-	CurrentSnapshot = NULL;
-	SecondarySnapshot = NULL;
+	snapshot_state.CurrentSnapshot = NULL;
+	snapshot_state.SecondarySnapshot = NULL;
 
 	FirstSnapshotSet = false;
 
@@ -1168,7 +1210,7 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%08X-%d",
 			 MyProc->vxid.procNumber, MyProc->vxid.lxid,
-			 list_length(exportedSnapshots) + 1);
+			 list_length(snapshot_state.exportedSnapshots) + 1);
 
 	/*
 	 * Copy the snapshot into TopTransactionContext, add it to the
@@ -1182,11 +1224,11 @@ ExportSnapshot(Snapshot snapshot)
 	esnap = palloc_object(ExportedSnapshot);
 	esnap->snapfile = pstrdup(path);
 	esnap->snapshot = snapshot;
-	exportedSnapshots = lappend(exportedSnapshots, esnap);
+	snapshot_state.exportedSnapshots = lappend(snapshot_state.exportedSnapshots, esnap);
 	MemoryContextSwitchTo(oldcxt);
 
 	snapshot->regd_count++;
-	pairingheap_add(&RegisteredSnapshots, &snapshot->ph_node);
+	pairingheap_add(&snapshot_state.RegisteredSnapshots, &snapshot->ph_node);
 
 	/*
 	 * Fill buf with a text serialization of the snapshot, plus identification
@@ -1573,7 +1615,7 @@ ImportSnapshot(const char *idstr)
 bool
 XactHasExportedSnapshots(void)
 {
-	return (exportedSnapshots != NIL);
+	return (snapshot_state.exportedSnapshots != NIL);
 }
 
 /*
@@ -1625,8 +1667,8 @@ DeleteAllExportedSnapshotFiles(void)
 bool
 ThereAreNoPriorRegisteredSnapshots(void)
 {
-	if (pairingheap_is_empty(&RegisteredSnapshots) ||
-		pairingheap_is_singular(&RegisteredSnapshots))
+	if (pairingheap_is_empty(&snapshot_state.RegisteredSnapshots) ||
+		pairingheap_is_singular(&snapshot_state.RegisteredSnapshots))
 		return true;
 
 	return false;
@@ -1643,7 +1685,7 @@ ThereAreNoPriorRegisteredSnapshots(void)
 bool
 HaveRegisteredOrActiveSnapshot(void)
 {
-	if (ActiveSnapshot != NULL)
+	if (snapshot_state.ActiveSnapshot != NULL)
 		return true;
 
 	/*
@@ -1651,11 +1693,11 @@ HaveRegisteredOrActiveSnapshot(void)
 	 * removed at any time due to invalidation processing. If explicitly
 	 * registered more than one snapshot has to be in RegisteredSnapshots.
 	 */
-	if (CatalogSnapshot != NULL &&
-		pairingheap_is_singular(&RegisteredSnapshots))
+	if (snapshot_state.CatalogSnapshot != NULL &&
+		pairingheap_is_singular(&snapshot_state.RegisteredSnapshots))
 		return false;
 
-	return !pairingheap_is_empty(&RegisteredSnapshots);
+	return !pairingheap_is_empty(&snapshot_state.RegisteredSnapshots);
 }
 
 
@@ -1671,10 +1713,10 @@ SetupHistoricSnapshot(Snapshot historic_snapshot, HTAB *tuplecids)
 	Assert(historic_snapshot != NULL);
 
 	/* setup the timetravel snapshot */
-	HistoricSnapshot = historic_snapshot;
+	snapshot_state.HistoricSnapshot = historic_snapshot;
 
 	/* setup (cmin, cmax) lookup hash */
-	tuplecid_data = tuplecids;
+	snapshot_state.tuplecid_data = tuplecids;
 }
 
 
@@ -1684,21 +1726,21 @@ SetupHistoricSnapshot(Snapshot historic_snapshot, HTAB *tuplecids)
 void
 TeardownHistoricSnapshot(bool is_error)
 {
-	HistoricSnapshot = NULL;
-	tuplecid_data = NULL;
+	snapshot_state.HistoricSnapshot = NULL;
+	snapshot_state.tuplecid_data = NULL;
 }
 
 bool
 HistoricSnapshotActive(void)
 {
-	return HistoricSnapshot != NULL;
+	return snapshot_state.HistoricSnapshot != NULL;
 }
 
 HTAB *
 HistoricSnapshotGetTupleCids(void)
 {
 	Assert(HistoricSnapshotActive());
-	return tuplecid_data;
+	return snapshot_state.tuplecid_data;
 }
 
 /*
