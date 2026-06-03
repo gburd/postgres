@@ -268,13 +268,19 @@ RecnoPagePruneOpt(Relation relation, Buffer buffer)
 	}
 
 	/*
-	 * We have reclaimable dead tuples.  First mark them as unused in the line
-	 * pointer array, then defragment the page to compact free space.
+	 * We have reclaimable dead tuples.  Mark them LP_DEAD (reclaiming their
+	 * storage) and defragment the page to compact free space.
 	 *
-	 * IMPORTANT: We must mark dead items LP_UNUSED before calling
-	 * PageRepairFragmentation, because RECNO uses LP_NORMAL item pointers for
-	 * deleted tuples (the deletion is tracked via RECNO_TUPLE_DELETED flag in
-	 * the tuple header, not via LP_DEAD).
+	 * CRITICAL: opportunistic pruning must set LP_DEAD, never LP_UNUSED.  A
+	 * deleted RECNO tuple may still be referenced by index entries that only
+	 * VACUUM (after index bulk-delete) is allowed to remove.  LP_DEAD reclaims
+	 * the tuple's storage while reserving its line pointer so the TID cannot be
+	 * recycled by a later INSERT (PageAddItemExtended only reuses LP_UNUSED
+	 * slots).  Recycling a TID whose index entries still exist would let an
+	 * index scan return the unrelated tuple later placed in that slot.  Only
+	 * VACUUM Phase III converts LP_DEAD -> LP_UNUSED, after Phase II has removed
+	 * the corresponding index entries.  This mirrors heap pruning, which sets
+	 * LP_DEAD and defers LP_UNUSED to post-index-cleanup VACUUM.
 	 */
 	START_CRIT_SECTION();
 
@@ -298,7 +304,7 @@ RecnoPagePruneOpt(Relation relation, Buffer buffer)
 			!(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
 			tuple_hdr->t_commit_ts < oldest_ts)
 		{
-			ItemIdSetUnused(itemid);
+			ItemIdSetDead(itemid);
 		}
 	}
 
@@ -3236,7 +3242,13 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				/*
 				 * Defragmentation should free enough space.  Do it now. We
 				 * are already holding an exclusive lock on the buffer. First
-				 * mark dead tuples as unused, then defragment.
+				 * mark dead tuples LP_DEAD, then defragment.
+				 *
+				 * As in RecnoPagePruneOpt, opportunistic pruning sets LP_DEAD
+				 * (reclaiming storage) rather than LP_UNUSED.  The deleted
+				 * tuples may still have index entries; reserving the line
+				 * pointer until VACUUM removes those entries prevents the TID
+				 * from being recycled and returning wrong index-scan results.
 				 *
 				 * defrag_oldest_ts was pre-computed before acquiring the
 				 * buffer lock to avoid shared-memory scans while holding
@@ -3265,7 +3277,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							!(prune_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
 							prune_hdr->t_commit_ts < defrag_oldest_ts)
 						{
-							ItemIdSetUnused(prune_itemid);
+							ItemIdSetDead(prune_itemid);
 						}
 					}
 				}
@@ -4589,6 +4601,25 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 
 			itemid = PageGetItemId(page, offnum);
 
+			/*
+			 * LP_DEAD line pointers were produced by opportunistic pruning
+			 * (RecnoPagePruneOpt / UPDATE defrag-fit), which reclaims a
+			 * committed-deleted tuple's storage but reserves its TID so it is
+			 * not recycled while index entries still reference it.  VACUUM must
+			 * record these TIDs for index cleanup (Phase II) before Phase III
+			 * converts them to LP_UNUSED.  Their storage is already gone, so
+			 * there is no tuple header to inspect.
+			 */
+			if (ItemIdIsDead(itemid))
+			{
+				if (do_index_cleanup)
+				{
+					dead_offsets[ndead_on_page++] = offnum;
+					dead_tuples++;
+				}
+				continue;
+			}
+
 			/* Skip if not a normal tuple */
 			if (!ItemIdIsNormal(itemid))
 				continue;
@@ -4753,6 +4784,20 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 				RecnoTupleHeader *tuple_hdr;
 
 				itemid = PageGetItemId(page, offnum);
+
+				/*
+				 * LP_DEAD line pointers were already pruned (storage reclaimed)
+				 * by opportunistic pruning and their TIDs recorded in Phase I
+				 * for index cleanup, which has now run.  They carry no storage
+				 * and no overflow chain to clean; just flag the page so the
+				 * defragment pass below converts them to LP_UNUSED.
+				 */
+				if (ItemIdIsDead(itemid))
+				{
+					page_has_dead_tuples = true;
+					continue;
+				}
+
 				if (!ItemIdIsNormal(itemid))
 					continue;
 
@@ -4810,13 +4855,24 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 
 				/*
 				 * Mark dead tuples as unused before defragmenting. The scan
-				 * above already identified them; now set LP_UNUSED.
+				 * above already identified them; now set LP_UNUSED.  Index
+				 * cleanup (Phase II) has removed every index entry pointing at
+				 * these TIDs, so it is now safe to free the line pointers for
+				 * recycling -- both the still-materialized DELETED tuples and
+				 * the already-pruned LP_DEAD placeholders.
 				 */
 				for (offnum = FirstOffsetNumber; offnum <= maxoffnum; offnum++)
 				{
 					RecnoTupleHeader *vac_hdr;
 
 					itemid = PageGetItemId(page, offnum);
+
+					if (ItemIdIsDead(itemid))
+					{
+						ItemIdSetUnused(itemid);
+						continue;
+					}
+
 					if (!ItemIdIsNormal(itemid))
 						continue;
 

@@ -1035,8 +1035,16 @@ RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint64 xact_ts,
 			 * as visible: (a) committed update = tuple is live; (b)
 			 * in-progress update hasn't invalidated visibility for our
 			 * snapshot yet.
+			 *
+			 * DELETED must be excluded: a tuple INSERTed, UPDATEd, then
+			 * DELETEd carries UPDATED|DELETED|UNCOMMITTED.  After a crash
+			 * the sLog is empty, so an unguarded UPDATED check would
+			 * resurrect the committed-deleted tuple.  DELETED tuples fall
+			 * through to ts_committed_check where the deletion commit
+			 * timestamp is evaluated.
 			 */
-			if (tuple->t_flags & RECNO_TUPLE_UPDATED)
+			if ((tuple->t_flags & RECNO_TUPLE_UPDATED) &&
+				!(tuple->t_flags & RECNO_TUPLE_DELETED))
 			{
 				if (BufferIsValid(buffer))
 					BufferSetHintBits16(&tuple->t_flags,
@@ -1825,8 +1833,16 @@ RecnoTupleVisibleHLC(RecnoTupleHeader *tuple, HLCTimestamp snapshot_hlc,
 			 * to the HLC timestamp check because t_commit_ts may hold the
 			 * updater's start HLC (not the original insert time), which would
 			 * incorrectly make the tuple invisible to our snapshot.
+			 *
+			 * DELETED must be excluded: a tuple INSERTed, UPDATEd, then
+			 * DELETEd carries UPDATED|DELETED|UNCOMMITTED.  After a crash
+			 * the sLog is empty, so an unguarded UPDATED check would
+			 * resurrect the committed-deleted tuple.  DELETED tuples fall
+			 * through to clear the stale flag and evaluate the deletion
+			 * commit timestamp below.
 			 */
-			if (tuple->t_flags & RECNO_TUPLE_UPDATED)
+			if ((tuple->t_flags & RECNO_TUPLE_UPDATED) &&
+				!(tuple->t_flags & RECNO_TUPLE_DELETED))
 			{
 				if (BufferIsValid(buffer))
 					BufferSetHintBits16(&tuple->t_flags,

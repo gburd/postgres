@@ -588,8 +588,15 @@ RecnoVMUpdateForDelete(Relation rel, Buffer buffer)
 	/* Clear in-page flag first (zero cost, no I/O) */
 	PageClearAllVisible(BufferGetPage(buffer));
 
-	/* Clear the all-visible bit - deleted tuple may still be visible */
-	RecnoVMClear(rel, blkno, buffer, RECNO_VM_ALL_VISIBLE);
+	/*
+	 * Clear BOTH bits.  ALL_FROZEN implies ALL_VISIBLE, so the frozen bit must
+	 * never outlive the visible bit.  Leaving ALL_FROZEN set on a page with a
+	 * freshly deleted tuple would cause VACUUM Phase I to skip the page (the
+	 * all-frozen fast path), so the deleted tuple's storage and -- critically
+	 * -- its index entries would never be cleaned, eventually allowing TID
+	 * recycling with stale index entries still present.
+	 */
+	RecnoVMClear(rel, blkno, buffer, RECNO_VM_VALID_BITS);
 }
 
 /*
