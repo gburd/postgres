@@ -23,9 +23,15 @@
 #include "utils/guc_hooks.h"
 
 session_local BufferUsage pgBufferUsage;
-static session_local BufferUsage save_pgBufferUsage;
 session_local WalUsage	pgWalUsage;
-static session_local WalUsage save_pgWalUsage;
+
+typedef struct InstrumentState
+{
+	BufferUsage save_pgBufferUsage;
+	WalUsage	save_pgWalUsage;
+} InstrumentState;
+
+static session_local InstrumentState instrument_state;
 
 static void BufferUsageAdd(BufferUsage *dst, const BufferUsage *add);
 static void WalUsageAdd(WalUsage *dst, WalUsage *add);
@@ -278,8 +284,8 @@ InstrStopTrigger(TriggerInstrumentation *tginstr, int64 firings)
 void
 InstrStartParallelQuery(void)
 {
-	save_pgBufferUsage = pgBufferUsage;
-	save_pgWalUsage = pgWalUsage;
+	instrument_state.save_pgBufferUsage = pgBufferUsage;
+	instrument_state.save_pgWalUsage = pgWalUsage;
 }
 
 /* report usage after parallel executor shutdown */
@@ -287,9 +293,9 @@ void
 InstrEndParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 {
 	memset(bufusage, 0, sizeof(BufferUsage));
-	BufferUsageAccumDiff(bufusage, &pgBufferUsage, &save_pgBufferUsage);
+	BufferUsageAccumDiff(bufusage, &pgBufferUsage, &instrument_state.save_pgBufferUsage);
 	memset(walusage, 0, sizeof(WalUsage));
-	WalUsageAccumDiff(walusage, &pgWalUsage, &save_pgWalUsage);
+	WalUsageAccumDiff(walusage, &pgWalUsage, &instrument_state.save_pgWalUsage);
 }
 
 /* accumulate work done by workers in leader's stats */
