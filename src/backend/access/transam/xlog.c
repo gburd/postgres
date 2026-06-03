@@ -163,14 +163,11 @@ internal_guc int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 session_local int			CheckPointSegments;
 
 /* Estimated distance between checkpoints, in bytes */
-static session_local double CheckPointDistanceEstimate = 0;
-static session_local double PrevCheckPointDistance = 0;
 
 /*
  * Track whether there were any deferred checks for custom resource managers
  * specified in wal_consistency_checking.
  */
-static session_local bool check_wal_consistency_checking_deferred = false;
 
 /*
  * GUC support
@@ -221,14 +218,12 @@ session_local CheckpointStatsData CheckpointStats;
  * that the recovery starting checkpoint record indicates, and then updated
  * each time XLOG_FPW_CHANGE record is replayed.
  */
-static session_local bool lastFullPageWrites;
 
 /*
  * Local copy of the state tracked by SharedRecoveryState in shared memory,
  * It is false if SharedRecoveryState is RECOVERY_STATE_DONE.  True actually
  * means "not known, need to check the shared state".
  */
-static session_local bool LocalRecoveryInProgress = true;
 
 /*
  * Local state for XLogInsertAllowed():
@@ -240,7 +235,6 @@ static session_local bool LocalRecoveryInProgress = true;
  * The coding in XLogInsertAllowed() depends on the first two of these states
  * being numerically the same as bool true and false.
  */
-static session_local int	LocalXLogInsertAllowed = -1;
 
 /*
  * ProcLastRecPtr points to the start of the last XLOG record inserted by the
@@ -277,7 +271,6 @@ session_local XLogRecPtr	XactLastCommitEnd = InvalidXLogRecPtr;
  * which meant that most code that might use it could assume that it had a
  * real if perhaps stale value. That's no longer the case.
  */
-static session_local XLogRecPtr RedoRecPtr;
 
 /*
  * doPageWrites is this backend's local copy of (fullPageWrites ||
@@ -395,7 +388,6 @@ typedef union WALInsertLockPadded
  * Session status of running backup, used for sanity checks in SQL-callable
  * functions to start and stop backups.
  */
-static session_local SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
 
 /*
  * Shared state data for WAL insertion.
@@ -629,7 +621,6 @@ static pg_global int	UsableBytesInSegment;
  * Private, possibly out-of-date copy of shared LogwrtResult.
  * See discussion above.
  */
-static session_local XLogwrtResult LogwrtResult = {0, 0};
 
 /*
  * Update local copy of shared XLogCtl->log{Write,Flush}Result
@@ -652,9 +643,6 @@ static session_local XLogwrtResult LogwrtResult = {0, 0};
  *
  * Note: call Reserve/ReleaseExternalFD to track consumption of this FD.
  */
-static session_local int	openLogFile = -1;
-static session_local XLogSegNo openLogSegNo = 0;
-static session_local TimeLineID openLogTLI = 0;
 
 /*
  * Local copies of equivalent fields in the control file.  When running
@@ -663,9 +651,6 @@ static session_local TimeLineID openLogTLI = 0;
  * switched to false to prevent any updates while replaying records.
  * Those values are kept consistent as long as crash recovery runs.
  */
-static session_local XLogRecPtr LocalMinRecoveryPoint;
-static session_local TimeLineID LocalMinRecoveryPointTLI;
-static session_local bool updateMinRecoveryPoint = true;
 
 /*
  * Local state for Controlfile data_checksum_version.  After initialization
@@ -682,13 +667,54 @@ static ChecksumStateType LocalDataChecksumState = 0;
  */
 internal_guc int			data_checksums = 0;
 
-/* For WALInsertLockAcquire/Release functions */
-static session_local int	MyLockNo = 0;
-static session_local bool holdingAllLocks = false;
-
+/*
+ * XlogState consolidates this module's private session-local (backend-local)
+ * state into a single struct.  See the comments at each former declaration
+ * (above) for the meaning of each field.
+ */
+typedef struct XlogState
+{
+	double		CheckPointDistanceEstimate;
+	double		PrevCheckPointDistance;
+	bool		check_wal_consistency_checking_deferred;
+	bool		lastFullPageWrites;
+	bool		LocalRecoveryInProgress;
+	int			LocalXLogInsertAllowed;
+	XLogRecPtr	RedoRecPtr;
+	SessionBackupState sessionBackupState;
+	XLogwrtResult LogwrtResult;
+	int			openLogFile;
+	XLogSegNo	openLogSegNo;
+	TimeLineID	openLogTLI;
+	XLogRecPtr	LocalMinRecoveryPoint;
+	TimeLineID	LocalMinRecoveryPointTLI;
+	bool		updateMinRecoveryPoint;
+	/* For WALInsertLockAcquire/Release functions */
+	int			MyLockNo;
+	bool		holdingAllLocks;
 #ifdef WAL_DEBUG
-static session_local MemoryContext walDebugCxt = NULL;
+	MemoryContext walDebugCxt;
 #endif
+} XlogState;
+
+static session_local XlogState xlog_state = {
+	.CheckPointDistanceEstimate = 0,
+	.PrevCheckPointDistance = 0,
+	.check_wal_consistency_checking_deferred = false,
+	.LocalRecoveryInProgress = true,
+	.LocalXLogInsertAllowed = -1,
+	.sessionBackupState = SESSION_BACKUP_NONE,
+	.LogwrtResult = {0, 0},
+	.openLogFile = -1,
+	.openLogSegNo = 0,
+	.openLogTLI = 0,
+	.updateMinRecoveryPoint = true,
+	.MyLockNo = 0,
+	.holdingAllLocks = false,
+#ifdef WAL_DEBUG
+	.walDebugCxt = NULL,
+#endif
+};
 
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,
 										XLogRecPtr EndOfLog,
@@ -875,16 +901,16 @@ XLogInsertRecord(XLogRecData *rdata,
 		 * just turned off, we could recompute the record without full pages,
 		 * but we choose not to bother.)
 		 */
-		if (RedoRecPtr != Insert->RedoRecPtr)
+		if (xlog_state.RedoRecPtr != Insert->RedoRecPtr)
 		{
-			Assert(RedoRecPtr < Insert->RedoRecPtr);
-			RedoRecPtr = Insert->RedoRecPtr;
+			Assert(xlog_state.RedoRecPtr < Insert->RedoRecPtr);
+			xlog_state.RedoRecPtr = Insert->RedoRecPtr;
 		}
 		doPageWrites = (Insert->fullPageWrites || Insert->runningBackups > 0);
 
 		if (doPageWrites &&
 			(!prevDoPageWrites ||
-			 (XLogRecPtrIsValid(fpw_lsn) && fpw_lsn <= RedoRecPtr)))
+			 (XLogRecPtrIsValid(fpw_lsn) && fpw_lsn <= xlog_state.RedoRecPtr)))
 		{
 			/*
 			 * Oops, some buffer now needs to be backed up that the caller
@@ -937,7 +963,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		WALInsertLockAcquireExclusive();
 		ReserveXLogInsertLocation(rechdr->xl_tot_len, &StartPos, &EndPos,
 								  &rechdr->xl_prev);
-		RedoRecPtr = Insert->RedoRecPtr = StartPos;
+		xlog_state.RedoRecPtr = Insert->RedoRecPtr = StartPos;
 		inserted = true;
 	}
 
@@ -967,7 +993,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		 */
 		if ((flags & XLOG_MARK_UNIMPORTANT) == 0)
 		{
-			int			lockno = holdingAllLocks ? 0 : MyLockNo;
+			int			lockno = xlog_state.holdingAllLocks ? 0 : xlog_state.MyLockNo;
 
 			WALInsertLocks[lockno].l.lastImportantAt = StartPos;
 		}
@@ -1007,7 +1033,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		if (XLogCtl->LogwrtRqst.Write < EndPos)
 			XLogCtl->LogwrtRqst.Write = EndPos;
 		SpinLockRelease(&XLogCtl->info_lck);
-		RefreshXLogWriteResult(LogwrtResult);
+		RefreshXLogWriteResult(xlog_state.LogwrtResult);
 	}
 
 	/*
@@ -1052,7 +1078,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		char	   *errormsg = NULL;
 		MemoryContext oldCxt;
 
-		oldCxt = MemoryContextSwitchTo(walDebugCxt);
+		oldCxt = MemoryContextSwitchTo(xlog_state.walDebugCxt);
 
 		initStringInfo(&buf);
 		appendStringInfo(&buf, "INSERT @ %X/%08X: ", LSN_FORMAT_ARGS(EndPos));
@@ -1430,13 +1456,13 @@ WALInsertLockAcquire(void)
 
 	if (lockToTry == -1)
 		lockToTry = MyProcNumber % NUM_XLOGINSERT_LOCKS;
-	MyLockNo = lockToTry;
+	xlog_state.MyLockNo = lockToTry;
 
 	/*
 	 * The insertingAt value is initially set to 0, as we don't know our
 	 * insert location yet.
 	 */
-	immed = LWLockAcquire(&WALInsertLocks[MyLockNo].l.lock, LW_EXCLUSIVE);
+	immed = LWLockAcquire(&WALInsertLocks[xlog_state.MyLockNo].l.lock, LW_EXCLUSIVE);
 	if (!immed)
 	{
 		/*
@@ -1475,7 +1501,7 @@ WALInsertLockAcquireExclusive(void)
 	/* Variable value reset to 0 at release */
 	LWLockAcquire(&WALInsertLocks[i].l.lock, LW_EXCLUSIVE);
 
-	holdingAllLocks = true;
+	xlog_state.holdingAllLocks = true;
 }
 
 /*
@@ -1487,7 +1513,7 @@ WALInsertLockAcquireExclusive(void)
 static void
 WALInsertLockRelease(void)
 {
-	if (holdingAllLocks)
+	if (xlog_state.holdingAllLocks)
 	{
 		int			i;
 
@@ -1496,12 +1522,12 @@ WALInsertLockRelease(void)
 								  &WALInsertLocks[i].l.insertingAt,
 								  0);
 
-		holdingAllLocks = false;
+		xlog_state.holdingAllLocks = false;
 	}
 	else
 	{
-		LWLockReleaseClearVar(&WALInsertLocks[MyLockNo].l.lock,
-							  &WALInsertLocks[MyLockNo].l.insertingAt,
+		LWLockReleaseClearVar(&WALInsertLocks[xlog_state.MyLockNo].l.lock,
+							  &WALInsertLocks[xlog_state.MyLockNo].l.insertingAt,
 							  0);
 	}
 }
@@ -1513,7 +1539,7 @@ WALInsertLockRelease(void)
 static void
 WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt)
 {
-	if (holdingAllLocks)
+	if (xlog_state.holdingAllLocks)
 	{
 		/*
 		 * We use the last lock to mark our actual position, see comments in
@@ -1524,8 +1550,8 @@ WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt)
 						insertingAt);
 	}
 	else
-		LWLockUpdateVar(&WALInsertLocks[MyLockNo].l.lock,
-						&WALInsertLocks[MyLockNo].l.insertingAt,
+		LWLockUpdateVar(&WALInsertLocks[xlog_state.MyLockNo].l.lock,
+						&WALInsertLocks[xlog_state.MyLockNo].l.insertingAt,
 						insertingAt);
 }
 
@@ -2053,7 +2079,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 		 * already written out.
 		 */
 		OldPageRqstPtr = pg_atomic_read_u64(&XLogCtl->xlblocks[nextidx]);
-		if (LogwrtResult.Write < OldPageRqstPtr)
+		if (xlog_state.LogwrtResult.Write < OldPageRqstPtr)
 		{
 			/*
 			 * Nope, got work to do. If we just want to pre-initialize as much
@@ -2072,8 +2098,8 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 			 * Acquire an up-to-date LogwrtResult value and see if we still
 			 * need to write it or if someone else already did.
 			 */
-			RefreshXLogWriteResult(LogwrtResult);
-			if (LogwrtResult.Write < OldPageRqstPtr)
+			RefreshXLogWriteResult(xlog_state.LogwrtResult);
+			if (xlog_state.LogwrtResult.Write < OldPageRqstPtr)
 			{
 				/*
 				 * Must acquire write lock. Release WALBufMappingLock first,
@@ -2087,8 +2113,8 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 
 				LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
 
-				RefreshXLogWriteResult(LogwrtResult);
-				if (LogwrtResult.Write >= OldPageRqstPtr)
+				RefreshXLogWriteResult(xlog_state.LogwrtResult);
+				if (xlog_state.LogwrtResult.Write >= OldPageRqstPtr)
 				{
 					/* OK, someone wrote it already */
 					LWLockRelease(WALWriteLock);
@@ -2280,7 +2306,7 @@ XLOGfileslop(XLogRecPtr lastredoptr)
 	 * system runs steadily consuming CheckPointDistanceEstimate bytes between
 	 * every checkpoint.
 	 */
-	distance = (1.0 + GetGUCReal(GUC_CheckPointCompletionTarget)) * CheckPointDistanceEstimate;
+	distance = (1.0 + GetGUCReal(GUC_CheckPointCompletionTarget)) * xlog_state.CheckPointDistanceEstimate;
 	/* add 10% for good measure. */
 	distance *= 1.10;
 
@@ -2309,7 +2335,7 @@ XLogCheckpointNeeded(XLogSegNo new_segno)
 {
 	XLogSegNo	old_segno;
 
-	XLByteToSeg(RedoRecPtr, old_segno, GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(xlog_state.RedoRecPtr, old_segno, GetGUCInt(GUC_wal_segment_size));
 
 	if (new_segno >= old_segno + (uint64) (CheckPointSegments - 1))
 		return true;
@@ -2345,7 +2371,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	/*
 	 * Update local LogwrtResult (caller probably did this already, but...)
 	 */
-	RefreshXLogWriteResult(LogwrtResult);
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
 
 	/*
 	 * Since successive pages in the xlog cache are consecutively allocated,
@@ -2365,9 +2391,9 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 * consider writing.  Begin at the buffer containing the next unwritten
 	 * page, or last partially written page.
 	 */
-	curridx = XLogRecPtrToBufIdx(LogwrtResult.Write);
+	curridx = XLogRecPtrToBufIdx(xlog_state.LogwrtResult.Write);
 
-	while (LogwrtResult.Write < WriteRqst.Write)
+	while (xlog_state.LogwrtResult.Write < WriteRqst.Write)
 	{
 		/*
 		 * Make sure we're not ahead of the insert process.  This could happen
@@ -2376,16 +2402,16 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		 */
 		XLogRecPtr	EndPtr = pg_atomic_read_u64(&XLogCtl->xlblocks[curridx]);
 
-		if (LogwrtResult.Write >= EndPtr)
+		if (xlog_state.LogwrtResult.Write >= EndPtr)
 			elog(PANIC, "xlog write request %X/%08X is past end of log %X/%08X",
-				 LSN_FORMAT_ARGS(LogwrtResult.Write),
+				 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Write),
 				 LSN_FORMAT_ARGS(EndPtr));
 
 		/* Advance LogwrtResult.Write to end of current buffer page */
-		LogwrtResult.Write = EndPtr;
-		ispartialpage = WriteRqst.Write < LogwrtResult.Write;
+		xlog_state.LogwrtResult.Write = EndPtr;
+		ispartialpage = WriteRqst.Write < xlog_state.LogwrtResult.Write;
 
-		if (!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
+		if (!XLByteInPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 							 GetGUCInt(GUC_wal_segment_size)))
 		{
 			/*
@@ -2393,24 +2419,24 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			 * pages here (since we dump what we have at segment end).
 			 */
 			Assert(npages == 0);
-			if (openLogFile >= 0)
+			if (xlog_state.openLogFile >= 0)
 				XLogFileClose();
-			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
+			XLByteToPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 							GetGUCInt(GUC_wal_segment_size));
-			openLogTLI = tli;
+			xlog_state.openLogTLI = tli;
 
 			/* create/use new log file */
-			openLogFile = XLogFileInit(openLogSegNo, tli);
+			xlog_state.openLogFile = XLogFileInit(xlog_state.openLogSegNo, tli);
 			ReserveExternalFD();
 		}
 
 		/* Make sure we have the current logfile open */
-		if (openLogFile < 0)
+		if (xlog_state.openLogFile < 0)
 		{
-			XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
+			XLByteToPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 							GetGUCInt(GUC_wal_segment_size));
-			openLogTLI = tli;
-			openLogFile = XLogFileOpen(openLogSegNo, tli);
+			xlog_state.openLogTLI = tli;
+			xlog_state.openLogFile = XLogFileOpen(xlog_state.openLogSegNo, tli);
 			ReserveExternalFD();
 		}
 
@@ -2419,7 +2445,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		{
 			/* first of group */
 			startidx = curridx;
-			startoffset = XLogSegmentOffset(LogwrtResult.Write - XLOG_BLCKSZ,
+			startoffset = XLogSegmentOffset(xlog_state.LogwrtResult.Write - XLOG_BLCKSZ,
 											GetGUCInt(GUC_wal_segment_size));
 		}
 		npages++;
@@ -2430,7 +2456,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		 * contiguous in memory), or if we are at the end of the logfile
 		 * segment.
 		 */
-		last_iteration = WriteRqst.Write <= LogwrtResult.Write;
+		last_iteration = WriteRqst.Write <= xlog_state.LogwrtResult.Write;
 
 		finishing_seg = !ispartialpage &&
 			(startoffset + npages * XLOG_BLCKSZ) >= GetGUCInt(GUC_wal_segment_size);
@@ -2459,7 +2485,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				start = pgstat_prepare_io_time(GetGUCBool(GUC_track_wal_io_timing));
 
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-				written = pg_pwrite(openLogFile, from, nleft, startoffset);
+				written = pg_pwrite(xlog_state.openLogFile, from, nleft, startoffset);
 				pgstat_report_wait_end();
 
 				pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL,
@@ -2474,7 +2500,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 						continue;
 
 					save_errno = errno;
-					XLogFileName(xlogfname, tli, openLogSegNo,
+					XLogFileName(xlogfname, tli, xlog_state.openLogSegNo,
 								 GetGUCInt(GUC_wal_segment_size));
 					errno = save_errno;
 					ereport(PANIC,
@@ -2504,18 +2530,18 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 			 */
 			if (finishing_seg)
 			{
-				issue_xlog_fsync(openLogFile, openLogSegNo, tli);
+				issue_xlog_fsync(xlog_state.openLogFile, xlog_state.openLogSegNo, tli);
 
 				/* signal that we need to wakeup walsenders later */
 				WalSndWakeupRequest();
 
-				LogwrtResult.Flush = LogwrtResult.Write;	/* end of page */
+				xlog_state.LogwrtResult.Flush = xlog_state.LogwrtResult.Write;	/* end of page */
 
 				if (XLogArchivingActive())
-					XLogArchiveNotifySeg(openLogSegNo, tli);
+					XLogArchiveNotifySeg(xlog_state.openLogSegNo, tli);
 
 				XLogCtl->lastSegSwitchTime = (pg_time_t) time(NULL);
-				XLogCtl->lastSegSwitchLSN = LogwrtResult.Flush;
+				XLogCtl->lastSegSwitchLSN = xlog_state.LogwrtResult.Flush;
 
 				/*
 				 * Request a checkpoint if we've consumed too much xlog since
@@ -2524,10 +2550,10 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				 * like a checkpoint is needed, forcibly update RedoRecPtr and
 				 * recheck.
 				 */
-				if (IsUnderPostmaster && XLogCheckpointNeeded(openLogSegNo))
+				if (IsUnderPostmaster && XLogCheckpointNeeded(xlog_state.openLogSegNo))
 				{
 					(void) GetRedoRecPtr();
-					if (XLogCheckpointNeeded(openLogSegNo))
+					if (XLogCheckpointNeeded(xlog_state.openLogSegNo))
 						RequestCheckpoint(CHECKPOINT_CAUSE_XLOG);
 				}
 			}
@@ -2536,7 +2562,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		if (ispartialpage)
 		{
 			/* Only asked to write a partial page */
-			LogwrtResult.Write = WriteRqst.Write;
+			xlog_state.LogwrtResult.Write = WriteRqst.Write;
 			break;
 		}
 		curridx = NextBufIdx(curridx);
@@ -2551,8 +2577,8 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	/*
 	 * If asked to flush, do so
 	 */
-	if (LogwrtResult.Flush < WriteRqst.Flush &&
-		LogwrtResult.Flush < LogwrtResult.Write)
+	if (xlog_state.LogwrtResult.Flush < WriteRqst.Flush &&
+		xlog_state.LogwrtResult.Flush < xlog_state.LogwrtResult.Write)
 	{
 		/*
 		 * Could get here without iterating above loop, in which case we might
@@ -2562,26 +2588,26 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		if (GetGUCEnum(GUC_wal_sync_method) != WAL_SYNC_METHOD_OPEN &&
 			GetGUCEnum(GUC_wal_sync_method) != WAL_SYNC_METHOD_OPEN_DSYNC)
 		{
-			if (openLogFile >= 0 &&
-				!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
+			if (xlog_state.openLogFile >= 0 &&
+				!XLByteInPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 								 GetGUCInt(GUC_wal_segment_size)))
 				XLogFileClose();
-			if (openLogFile < 0)
+			if (xlog_state.openLogFile < 0)
 			{
-				XLByteToPrevSeg(LogwrtResult.Write, openLogSegNo,
+				XLByteToPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 								GetGUCInt(GUC_wal_segment_size));
-				openLogTLI = tli;
-				openLogFile = XLogFileOpen(openLogSegNo, tli);
+				xlog_state.openLogTLI = tli;
+				xlog_state.openLogFile = XLogFileOpen(xlog_state.openLogSegNo, tli);
 				ReserveExternalFD();
 			}
 
-			issue_xlog_fsync(openLogFile, openLogSegNo, tli);
+			issue_xlog_fsync(xlog_state.openLogFile, xlog_state.openLogSegNo, tli);
 		}
 
 		/* signal that we need to wakeup walsenders later */
 		WalSndWakeupRequest();
 
-		LogwrtResult.Flush = LogwrtResult.Write;
+		xlog_state.LogwrtResult.Flush = xlog_state.LogwrtResult.Write;
 	}
 
 	/*
@@ -2592,10 +2618,10 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 * code in a couple of places.
 	 */
 	SpinLockAcquire(&XLogCtl->info_lck);
-	if (XLogCtl->LogwrtRqst.Write < LogwrtResult.Write)
-		XLogCtl->LogwrtRqst.Write = LogwrtResult.Write;
-	if (XLogCtl->LogwrtRqst.Flush < LogwrtResult.Flush)
-		XLogCtl->LogwrtRqst.Flush = LogwrtResult.Flush;
+	if (XLogCtl->LogwrtRqst.Write < xlog_state.LogwrtResult.Write)
+		XLogCtl->LogwrtRqst.Write = xlog_state.LogwrtResult.Write;
+	if (XLogCtl->LogwrtRqst.Flush < xlog_state.LogwrtResult.Flush)
+		XLogCtl->LogwrtRqst.Flush = xlog_state.LogwrtResult.Flush;
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
@@ -2603,9 +2629,9 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 * be done (with a matching barrier in between), so that we always see a
 	 * Flush value that trails behind the Write value seen.
 	 */
-	pg_atomic_write_u64(&XLogCtl->logWriteResult, LogwrtResult.Write);
+	pg_atomic_write_u64(&XLogCtl->logWriteResult, xlog_state.LogwrtResult.Write);
 	pg_write_barrier();
-	pg_atomic_write_u64(&XLogCtl->logFlushResult, LogwrtResult.Flush);
+	pg_atomic_write_u64(&XLogCtl->logFlushResult, xlog_state.LogwrtResult.Flush);
 
 #ifdef USE_ASSERT_CHECKING
 	{
@@ -2667,10 +2693,10 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 	{
 		int			flushblocks;
 
-		RefreshXLogWriteResult(LogwrtResult);
+		RefreshXLogWriteResult(xlog_state.LogwrtResult);
 
 		flushblocks =
-			WriteRqstPtr / XLOG_BLCKSZ - LogwrtResult.Flush / XLOG_BLCKSZ;
+			WriteRqstPtr / XLOG_BLCKSZ - xlog_state.LogwrtResult.Flush / XLOG_BLCKSZ;
 
 		if (GetGUCInt(GUC_WalWriterFlushAfter) == 0 || flushblocks >= GetGUCInt(GUC_WalWriterFlushAfter))
 			wakeup = true;
@@ -2728,7 +2754,7 @@ static void
 UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 {
 	/* Quick check using our local copy of the variable */
-	if (!updateMinRecoveryPoint || (!force && lsn <= LocalMinRecoveryPoint))
+	if (!xlog_state.updateMinRecoveryPoint || (!force && lsn <= xlog_state.LocalMinRecoveryPoint))
 		return;
 
 	/*
@@ -2742,21 +2768,21 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 	 * available is replayed in this case.  This also saves from extra locks
 	 * taken on the control file from the startup process.
 	 */
-	if (!XLogRecPtrIsValid(LocalMinRecoveryPoint) && InRecovery)
+	if (!XLogRecPtrIsValid(xlog_state.LocalMinRecoveryPoint) && InRecovery)
 	{
-		updateMinRecoveryPoint = false;
+		xlog_state.updateMinRecoveryPoint = false;
 		return;
 	}
 
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 
 	/* update local copy */
-	LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-	LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+	xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+	xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 
-	if (!XLogRecPtrIsValid(LocalMinRecoveryPoint))
-		updateMinRecoveryPoint = false;
-	else if (force || LocalMinRecoveryPoint < lsn)
+	if (!XLogRecPtrIsValid(xlog_state.LocalMinRecoveryPoint))
+		xlog_state.updateMinRecoveryPoint = false;
+	else if (force || xlog_state.LocalMinRecoveryPoint < lsn)
 	{
 		XLogRecPtr	newMinRecoveryPoint;
 		TimeLineID	newMinRecoveryPointTLI;
@@ -2786,8 +2812,8 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 			ControlFile->minRecoveryPoint = newMinRecoveryPoint;
 			ControlFile->minRecoveryPointTLI = newMinRecoveryPointTLI;
 			UpdateControlFile();
-			LocalMinRecoveryPoint = newMinRecoveryPoint;
-			LocalMinRecoveryPointTLI = newMinRecoveryPointTLI;
+			xlog_state.LocalMinRecoveryPoint = newMinRecoveryPoint;
+			xlog_state.LocalMinRecoveryPointTLI = newMinRecoveryPointTLI;
 
 			ereport(DEBUG2,
 					errmsg_internal("updated min recovery point to %X/%08X on timeline %u",
@@ -2825,15 +2851,15 @@ XLogFlush(XLogRecPtr record)
 	}
 
 	/* Quick exit if already known flushed */
-	if (record <= LogwrtResult.Flush)
+	if (record <= xlog_state.LogwrtResult.Flush)
 		return;
 
 #ifdef WAL_DEBUG
 	if (GetGUCBool(GUC_XLOG_DEBUG))
 		elog(LOG, "xlog flush request %X/%08X; write %X/%08X; flush %X/%08X",
 			 LSN_FORMAT_ARGS(record),
-			 LSN_FORMAT_ARGS(LogwrtResult.Write),
-			 LSN_FORMAT_ARGS(LogwrtResult.Flush));
+			 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Write),
+			 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Flush));
 #endif
 
 	START_CRIT_SECTION();
@@ -2858,8 +2884,8 @@ XLogFlush(XLogRecPtr record)
 		XLogRecPtr	insertpos;
 
 		/* done already? */
-		RefreshXLogWriteResult(LogwrtResult);
-		if (record <= LogwrtResult.Flush)
+		RefreshXLogWriteResult(xlog_state.LogwrtResult);
+		if (record <= xlog_state.LogwrtResult.Flush)
 			break;
 
 		/*
@@ -2890,8 +2916,8 @@ XLogFlush(XLogRecPtr record)
 		}
 
 		/* Got the lock; recheck whether request is satisfied */
-		RefreshXLogWriteResult(LogwrtResult);
-		if (record <= LogwrtResult.Flush)
+		RefreshXLogWriteResult(xlog_state.LogwrtResult);
+		if (record <= xlog_state.LogwrtResult.Flush)
 		{
 			LWLockRelease(WALWriteLock);
 			break;
@@ -2946,9 +2972,9 @@ XLogFlush(XLogRecPtr record)
 	 * If we flushed an LSN that someone was waiting for, notify the waiters.
 	 */
 	if (waitLSNState &&
-		(LogwrtResult.Flush >=
+		(xlog_state.LogwrtResult.Flush >=
 		 pg_atomic_read_u64(&waitLSNState->minWaitedLSN[WAIT_LSN_TYPE_PRIMARY_FLUSH])))
-		WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, LogwrtResult.Flush);
+		WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, xlog_state.LogwrtResult.Flush);
 
 	/*
 	 * If we still haven't flushed to the request point then we have a
@@ -2971,11 +2997,11 @@ XLogFlush(XLogRecPtr record)
 	 * calls from bufmgr.c are not within critical sections and so we will not
 	 * force a restart for a bad LSN on a data page.
 	 */
-	if (LogwrtResult.Flush < record)
+	if (xlog_state.LogwrtResult.Flush < record)
 		elog(ERROR,
 			 "xlog flush request %X/%08X is not satisfied --- flushed only to %X/%08X",
 			 LSN_FORMAT_ARGS(record),
-			 LSN_FORMAT_ARGS(LogwrtResult.Flush));
+			 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Flush));
 
 	/*
 	 * Cross-check XLogNeedsFlush().  Some of the checks of XLogFlush() and
@@ -3038,8 +3064,8 @@ XLogBackgroundFlush(void)
 	WriteRqst.Write -= WriteRqst.Write % XLOG_BLCKSZ;
 
 	/* if we have already flushed that far, consider async commit records */
-	RefreshXLogWriteResult(LogwrtResult);
-	if (WriteRqst.Write <= LogwrtResult.Flush)
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
+	if (WriteRqst.Write <= xlog_state.LogwrtResult.Flush)
 	{
 		SpinLockAcquire(&XLogCtl->info_lck);
 		WriteRqst.Write = XLogCtl->asyncXactLSN;
@@ -3052,11 +3078,11 @@ XLogBackgroundFlush(void)
 	 * holding an open file handle to a logfile that's no longer in use,
 	 * preventing the file from being deleted.
 	 */
-	if (WriteRqst.Write <= LogwrtResult.Flush)
+	if (WriteRqst.Write <= xlog_state.LogwrtResult.Flush)
 	{
-		if (openLogFile >= 0)
+		if (xlog_state.openLogFile >= 0)
 		{
-			if (!XLByteInPrevSeg(LogwrtResult.Write, openLogSegNo,
+			if (!XLByteInPrevSeg(xlog_state.LogwrtResult.Write, xlog_state.openLogSegNo,
 								 GetGUCInt(GUC_wal_segment_size)))
 			{
 				XLogFileClose();
@@ -3075,7 +3101,7 @@ XLogBackgroundFlush(void)
 	 */
 	now = GetCurrentTimestamp();
 	flushblocks =
-		WriteRqst.Write / XLOG_BLCKSZ - LogwrtResult.Flush / XLOG_BLCKSZ;
+		WriteRqst.Write / XLOG_BLCKSZ - xlog_state.LogwrtResult.Flush / XLOG_BLCKSZ;
 
 	if (GetGUCInt(GUC_WalWriterFlushAfter) == 0 || lastflush == 0)
 	{
@@ -3110,8 +3136,8 @@ XLogBackgroundFlush(void)
 		elog(LOG, "xlog bg flush request write %X/%08X; flush: %X/%08X, current is write %X/%08X; flush %X/%08X",
 			 LSN_FORMAT_ARGS(WriteRqst.Write),
 			 LSN_FORMAT_ARGS(WriteRqst.Flush),
-			 LSN_FORMAT_ARGS(LogwrtResult.Write),
-			 LSN_FORMAT_ARGS(LogwrtResult.Flush));
+			 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Write),
+			 LSN_FORMAT_ARGS(xlog_state.LogwrtResult.Flush));
 #endif
 
 	START_CRIT_SECTION();
@@ -3119,9 +3145,9 @@ XLogBackgroundFlush(void)
 	/* now wait for any in-progress insertions to finish and get write lock */
 	WaitXLogInsertionsToFinish(WriteRqst.Write);
 	LWLockAcquire(WALWriteLock, LW_EXCLUSIVE);
-	RefreshXLogWriteResult(LogwrtResult);
-	if (WriteRqst.Write > LogwrtResult.Write ||
-		WriteRqst.Flush > LogwrtResult.Flush)
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
+	if (WriteRqst.Write > xlog_state.LogwrtResult.Write ||
+		WriteRqst.Flush > xlog_state.LogwrtResult.Flush)
 	{
 		XLogWrite(WriteRqst, insertTLI, flexible);
 	}
@@ -3136,9 +3162,9 @@ XLogBackgroundFlush(void)
 	 * If we flushed an LSN that someone was waiting for, notify the waiters.
 	 */
 	if (waitLSNState &&
-		(LogwrtResult.Flush >=
+		(xlog_state.LogwrtResult.Flush >=
 		 pg_atomic_read_u64(&waitLSNState->minWaitedLSN[WAIT_LSN_TYPE_PRIMARY_FLUSH])))
-		WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, LogwrtResult.Flush);
+		WaitLSNWakeup(WAIT_LSN_TYPE_PRIMARY_FLUSH, xlog_state.LogwrtResult.Flush);
 
 	/*
 	 * Great, done. To take some work off the critical path, try to initialize
@@ -3181,7 +3207,7 @@ XLogNeedsFlush(XLogRecPtr record)
 	if (!XLogInsertAllowed())
 	{
 		/* Quick exit if already known to be updated or cannot be updated */
-		if (!updateMinRecoveryPoint || record <= LocalMinRecoveryPoint)
+		if (!xlog_state.updateMinRecoveryPoint || record <= xlog_state.LocalMinRecoveryPoint)
 			return false;
 
 		/*
@@ -3192,9 +3218,9 @@ XLogNeedsFlush(XLogRecPtr record)
 		 * which cannot update its local copy of minRecoveryPoint as long as
 		 * it has not replayed all WAL available when doing crash recovery.
 		 */
-		if (!XLogRecPtrIsValid(LocalMinRecoveryPoint) && InRecovery)
+		if (!XLogRecPtrIsValid(xlog_state.LocalMinRecoveryPoint) && InRecovery)
 		{
-			updateMinRecoveryPoint = false;
+			xlog_state.updateMinRecoveryPoint = false;
 			return false;
 		}
 
@@ -3204,8 +3230,8 @@ XLogNeedsFlush(XLogRecPtr record)
 		 */
 		if (!LWLockConditionalAcquire(ControlFileLock, LW_SHARED))
 			return true;
-		LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-		LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+		xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+		xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		LWLockRelease(ControlFileLock);
 
 		/*
@@ -3213,25 +3239,25 @@ XLogNeedsFlush(XLogRecPtr record)
 		 * process doing crash recovery, which should not update the control
 		 * file value if crash recovery is still running.
 		 */
-		if (!XLogRecPtrIsValid(LocalMinRecoveryPoint))
-			updateMinRecoveryPoint = false;
+		if (!XLogRecPtrIsValid(xlog_state.LocalMinRecoveryPoint))
+			xlog_state.updateMinRecoveryPoint = false;
 
 		/* check again */
-		if (record <= LocalMinRecoveryPoint || !updateMinRecoveryPoint)
+		if (record <= xlog_state.LocalMinRecoveryPoint || !xlog_state.updateMinRecoveryPoint)
 			return false;
 		else
 			return true;
 	}
 
 	/* Quick exit if already known flushed */
-	if (record <= LogwrtResult.Flush)
+	if (record <= xlog_state.LogwrtResult.Flush)
 		return false;
 
 	/* read LogwrtResult and update local state */
-	RefreshXLogWriteResult(LogwrtResult);
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
 
 	/* check again */
-	if (record <= LogwrtResult.Flush)
+	if (record <= xlog_state.LogwrtResult.Flush)
 		return false;
 
 	return true;
@@ -3701,7 +3727,7 @@ XLogFileOpen(XLogSegNo segno, TimeLineID tli)
 static void
 XLogFileClose(void)
 {
-	Assert(openLogFile >= 0);
+	Assert(xlog_state.openLogFile >= 0);
 
 	/*
 	 * WAL segment files will not be re-read in normal operation, so we advise
@@ -3711,15 +3737,15 @@ XLogFileClose(void)
 	 */
 #if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_DONTNEED)
 	if (!XLogIsNeeded() && (io_direct_flags & IO_DIRECT_WAL) == 0)
-		(void) posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
+		(void) posix_fadvise(xlog_state.openLogFile, 0, 0, POSIX_FADV_DONTNEED);
 #endif
 
-	if (close(openLogFile) != 0)
+	if (close(xlog_state.openLogFile) != 0)
 	{
 		char		xlogfname[MAXFNAMELEN];
 		int			save_errno = errno;
 
-		XLogFileName(xlogfname, openLogTLI, openLogSegNo,
+		XLogFileName(xlogfname, xlog_state.openLogTLI, xlog_state.openLogSegNo,
 			     GetGUCInt(GUC_wal_segment_size));
 		errno = save_errno;
 		ereport(PANIC,
@@ -3727,7 +3753,7 @@ XLogFileClose(void)
 				 errmsg("could not close file \"%s\": %m", xlogfname)));
 	}
 
-	openLogFile = -1;
+	xlog_state.openLogFile = -1;
 	ReleaseExternalFD();
 }
 
@@ -5145,7 +5171,7 @@ check_wal_consistency_checking(char **newval, void **extra, GucSource source)
 				 */
 				if (!process_shared_preload_libraries_done)
 				{
-					check_wal_consistency_checking_deferred = true;
+					xlog_state.check_wal_consistency_checking_deferred = true;
 				}
 				else
 				{
@@ -5204,13 +5230,13 @@ InitializeWalConsistencyChecking(void)
 {
 	Assert(process_shared_preload_libraries_done);
 
-	if (check_wal_consistency_checking_deferred)
+	if (xlog_state.check_wal_consistency_checking_deferred)
 	{
 		struct config_generic *guc;
 
 		guc = find_option("wal_consistency_checking", false, false, ERROR);
 
-		check_wal_consistency_checking_deferred = false;
+		xlog_state.check_wal_consistency_checking_deferred = false;
 
 		set_config_option_ext("wal_consistency_checking",
 							  GetGUCString(GUC_wal_consistency_checking_string),
@@ -5218,7 +5244,7 @@ InitializeWalConsistencyChecking(void)
 							  GUC_ACTION_SET, true, ERROR, false);
 
 		/* checking should not be deferred again */
-		Assert(!check_wal_consistency_checking_deferred);
+		Assert(!xlog_state.check_wal_consistency_checking_deferred);
 	}
 }
 
@@ -5373,12 +5399,12 @@ XLOGShmemInit(void *arg)
 	 * "no pallocs in critical section" rule. Yes, that can lead to a PANIC if
 	 * an allocation fails, but wal_debug is not for production use anyway.
 	 */
-	if (walDebugCxt == NULL)
+	if (xlog_state.walDebugCxt == NULL)
 	{
-		walDebugCxt = AllocSetContextCreate(TopMemoryContext,
+		xlog_state.walDebugCxt = AllocSetContextCreate(TopMemoryContext,
 											"WAL Debug",
 											ALLOCSET_DEFAULT_SIZES);
-		MemoryContextAllowInCriticalSection(walDebugCxt, true);
+		MemoryContextAllowInCriticalSection(xlog_state.walDebugCxt, true);
 	}
 #endif
 
@@ -5574,8 +5600,8 @@ BootStrapXLOG(uint32 data_checksum_version)
 	record->xl_crc = crc;
 
 	/* Create first XLOG segment file */
-	openLogTLI = BootstrapTimeLineID;
-	openLogFile = XLogFileInit(1, BootstrapTimeLineID);
+	xlog_state.openLogTLI = BootstrapTimeLineID;
+	xlog_state.openLogFile = XLogFileInit(1, BootstrapTimeLineID);
 
 	/*
 	 * We needn't bother with Reserve/ReleaseExternalFD here, since we'll
@@ -5585,7 +5611,7 @@ BootStrapXLOG(uint32 data_checksum_version)
 	/* Write the first page with the initial record */
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_WRITE);
-	if (write(openLogFile, &buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+	if (write(xlog_state.openLogFile, &buffer, XLOG_BLCKSZ) != XLOG_BLCKSZ)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -5597,18 +5623,18 @@ BootStrapXLOG(uint32 data_checksum_version)
 	pgstat_report_wait_end();
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_BOOTSTRAP_SYNC);
-	if (pg_fsync(openLogFile) != 0)
+	if (pg_fsync(xlog_state.openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile) != 0)
+	if (close(xlog_state.openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
 
-	openLogFile = -1;
+	xlog_state.openLogFile = -1;
 
 	/* Now create pg_control */
 	InitControlFile(sysidentifier, data_checksum_version);
@@ -6137,10 +6163,10 @@ StartupXLOG(void)
 	else
 		pgstat_restore_stats();
 
-	lastFullPageWrites = checkPoint.fullPageWrites;
+	xlog_state.lastFullPageWrites = checkPoint.fullPageWrites;
 
-	RedoRecPtr = XLogCtl->RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
-	doPageWrites = lastFullPageWrites;
+	xlog_state.RedoRecPtr = XLogCtl->RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
+	doPageWrites = xlog_state.lastFullPageWrites;
 
 	/* REDO */
 	if (InRecovery)
@@ -6202,13 +6228,13 @@ StartupXLOG(void)
 		 */
 		if (InArchiveRecovery)
 		{
-			LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-			LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+			xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+			xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
 		else
 		{
-			LocalMinRecoveryPoint = InvalidXLogRecPtr;
-			LocalMinRecoveryPointTLI = 0;
+			xlog_state.LocalMinRecoveryPoint = InvalidXLogRecPtr;
+			xlog_state.LocalMinRecoveryPointTLI = 0;
 		}
 
 		/* Check that the GUCs used to generate the WAL allow recovery */
@@ -6338,7 +6364,7 @@ StartupXLOG(void)
 	 * been advanced beyond the WAL we processed.
 	 */
 	if (InRecovery &&
-		(EndOfLog < LocalMinRecoveryPoint ||
+		(EndOfLog < xlog_state.LocalMinRecoveryPoint ||
 		 XLogRecPtrIsValid(ControlFile->backupStartPoint)))
 	{
 		/*
@@ -6511,7 +6537,7 @@ StartupXLOG(void)
 	 * Update local and shared status.  This is OK to do without any locks
 	 * because no other process can be reading or writing WAL yet.
 	 */
-	LogwrtResult.Write = LogwrtResult.Flush = EndOfLog;
+	xlog_state.LogwrtResult.Write = xlog_state.LogwrtResult.Flush = EndOfLog;
 	pg_atomic_write_u64(&XLogCtl->logInsertResult, EndOfLog);
 	pg_atomic_write_u64(&XLogCtl->logWriteResult, EndOfLog);
 	pg_atomic_write_u64(&XLogCtl->logFlushResult, EndOfLog);
@@ -6576,7 +6602,7 @@ StartupXLOG(void)
 	 * record before resource manager writes cleanup WAL records or checkpoint
 	 * record is written.
 	 */
-	Insert->fullPageWrites = lastFullPageWrites;
+	Insert->fullPageWrites = xlog_state.lastFullPageWrites;
 	UpdateFullPageWrites();
 
 	/*
@@ -6737,14 +6763,14 @@ SwitchIntoArchiveRecovery(XLogRecPtr EndRecPtr, TimeLineID replayTLI)
 		ControlFile->minRecoveryPointTLI = replayTLI;
 	}
 	/* update local copy */
-	LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-	LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+	xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+	xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 
 	/*
 	 * The startup process can update its local copy of minRecoveryPoint from
 	 * this point.
 	 */
-	updateMinRecoveryPoint = true;
+	xlog_state.updateMinRecoveryPoint = true;
 
 	UpdateControlFile();
 
@@ -6858,7 +6884,7 @@ RecoveryInProgress(void)
 	 * can't re-enter recovery, so there's no need to keep checking after the
 	 * shared variable has once been seen false.
 	 */
-	if (!LocalRecoveryInProgress)
+	if (!xlog_state.LocalRecoveryInProgress)
 		return false;
 	else
 	{
@@ -6868,7 +6894,7 @@ RecoveryInProgress(void)
 		 */
 		volatile XLogCtlData *xlogctl = XLogCtl;
 
-		LocalRecoveryInProgress = (xlogctl->SharedRecoveryState != RECOVERY_STATE_DONE);
+		xlog_state.LocalRecoveryInProgress = (xlogctl->SharedRecoveryState != RECOVERY_STATE_DONE);
 
 		/*
 		 * Note: We don't need a memory barrier when we're still in recovery.
@@ -6876,7 +6902,7 @@ RecoveryInProgress(void)
 		 * can't rely on 'true' meaning that we're still in recovery anyway.
 		 */
 
-		return LocalRecoveryInProgress;
+		return xlog_state.LocalRecoveryInProgress;
 	}
 }
 
@@ -6913,8 +6939,8 @@ XLogInsertAllowed(void)
 	 * return it.  This provides the normal fast path once recovery is known
 	 * done.
 	 */
-	if (LocalXLogInsertAllowed >= 0)
-		return (bool) LocalXLogInsertAllowed;
+	if (xlog_state.LocalXLogInsertAllowed >= 0)
+		return (bool) xlog_state.LocalXLogInsertAllowed;
 
 	/*
 	 * Else, must check to see if we're still in recovery.
@@ -6926,7 +6952,7 @@ XLogInsertAllowed(void)
 	 * On exit from recovery, reset to "unconditionally true", since there is
 	 * no need to keep checking.
 	 */
-	LocalXLogInsertAllowed = 1;
+	xlog_state.LocalXLogInsertAllowed = 1;
 	return true;
 }
 
@@ -6941,9 +6967,9 @@ XLogInsertAllowed(void)
 static int
 LocalSetXLogInsertAllowed(void)
 {
-	int			oldXLogAllowed = LocalXLogInsertAllowed;
+	int			oldXLogAllowed = xlog_state.LocalXLogInsertAllowed;
 
-	LocalXLogInsertAllowed = 1;
+	xlog_state.LocalXLogInsertAllowed = 1;
 
 	return oldXLogAllowed;
 }
@@ -6968,10 +6994,10 @@ GetRedoRecPtr(void)
 	ptr = XLogCtl->RedoRecPtr;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	if (RedoRecPtr < ptr)
-		RedoRecPtr = ptr;
+	if (xlog_state.RedoRecPtr < ptr)
+		xlog_state.RedoRecPtr = ptr;
 
-	return RedoRecPtr;
+	return xlog_state.RedoRecPtr;
 }
 
 /*
@@ -6986,7 +7012,7 @@ GetRedoRecPtr(void)
 void
 GetFullPageWriteInfo(XLogRecPtr *RedoRecPtr_p, bool *doPageWrites_p)
 {
-	*RedoRecPtr_p = RedoRecPtr;
+	*RedoRecPtr_p = xlog_state.RedoRecPtr;
 	*doPageWrites_p = doPageWrites;
 }
 
@@ -7020,7 +7046,7 @@ GetFlushRecPtr(TimeLineID *insertTLI)
 {
 	Assert(XLogCtl->SharedRecoveryState == RECOVERY_STATE_DONE);
 
-	RefreshXLogWriteResult(LogwrtResult);
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
 
 	/*
 	 * If we're writing and flushing WAL, the time line can't be changing, so
@@ -7029,7 +7055,7 @@ GetFlushRecPtr(TimeLineID *insertTLI)
 	if (insertTLI)
 		*insertTLI = XLogCtl->InsertTimeLineID;
 
-	return LogwrtResult.Flush;
+	return xlog_state.LogwrtResult.Flush;
 }
 
 /*
@@ -7275,8 +7301,8 @@ LogCheckpointEnd(bool restartpoint, int flags)
 						CheckpointStats.ckpt_sync_rels,
 						longest_msecs / 1000, (int) (longest_msecs % 1000),
 						average_msecs / 1000, (int) (average_msecs % 1000),
-						(int) (PrevCheckPointDistance / 1024.0),
-						(int) (CheckPointDistanceEstimate / 1024.0),
+						(int) (xlog_state.PrevCheckPointDistance / 1024.0),
+						(int) (xlog_state.CheckPointDistanceEstimate / 1024.0),
 						LSN_FORMAT_ARGS(ControlFile->checkPoint),
 						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
 	else
@@ -7300,8 +7326,8 @@ LogCheckpointEnd(bool restartpoint, int flags)
 						CheckpointStats.ckpt_sync_rels,
 						longest_msecs / 1000, (int) (longest_msecs % 1000),
 						average_msecs / 1000, (int) (average_msecs % 1000),
-						(int) (PrevCheckPointDistance / 1024.0),
-						(int) (CheckPointDistanceEstimate / 1024.0),
+						(int) (xlog_state.PrevCheckPointDistance / 1024.0),
+						(int) (xlog_state.CheckPointDistanceEstimate / 1024.0),
 						LSN_FORMAT_ARGS(ControlFile->checkPoint),
 						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
 }
@@ -7337,12 +7363,12 @@ UpdateCheckPointDistanceEstimate(uint64 nbytes)
 	 * preallocation on that 5 minute interval rather than whatever
 	 * checkpoint_timeout is set to.
 	 */
-	PrevCheckPointDistance = nbytes;
-	if (CheckPointDistanceEstimate < nbytes)
-		CheckPointDistanceEstimate = nbytes;
+	xlog_state.PrevCheckPointDistance = nbytes;
+	if (xlog_state.CheckPointDistanceEstimate < nbytes)
+		xlog_state.CheckPointDistanceEstimate = nbytes;
 	else
-		CheckPointDistanceEstimate =
-			(0.90 * CheckPointDistanceEstimate + 0.10 * (double) nbytes);
+		xlog_state.CheckPointDistanceEstimate =
+			(0.90 * xlog_state.CheckPointDistanceEstimate + 0.10 * (double) nbytes);
 }
 
 /*
@@ -7575,7 +7601,7 @@ CreateCheckPoint(int flags)
 		 * buffers must assume that their buffer changes are not included in
 		 * the checkpoint.
 		 */
-		RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
+		xlog_state.RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
 	}
 
 	/*
@@ -7615,7 +7641,7 @@ CreateCheckPoint(int flags)
 		 * to copy that into the record that will be inserted when the
 		 * checkpoint is complete.
 		 */
-		checkPoint.redo = RedoRecPtr;
+		checkPoint.redo = xlog_state.RedoRecPtr;
 	}
 
 	/* Update the info_lck-protected copy of RedoRecPtr as well */
@@ -7784,9 +7810,9 @@ CreateCheckPoint(int flags)
 	if (shutdown)
 	{
 		if (flags & CHECKPOINT_END_OF_RECOVERY)
-			LocalXLogInsertAllowed = oldXLogAllowed;
+			xlog_state.LocalXLogInsertAllowed = oldXLogAllowed;
 		else
-			LocalXLogInsertAllowed = 0; /* never again write WAL */
+			xlog_state.LocalXLogInsertAllowed = 0; /* never again write WAL */
 	}
 
 	/*
@@ -7863,7 +7889,7 @@ CreateCheckPoint(int flags)
 	 * exists.
 	 */
 	if (XLogRecPtrIsValid(PriorRedoPtr))
-		UpdateCheckPointDistanceEstimate(RedoRecPtr - PriorRedoPtr);
+		UpdateCheckPointDistanceEstimate(xlog_state.RedoRecPtr - PriorRedoPtr);
 
 	INJECTION_POINT("checkpoint-before-old-wal-removal", NULL);
 
@@ -7871,7 +7897,7 @@ CreateCheckPoint(int flags)
 	 * Delete old log files, those no longer needed for last checkpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	XLByteToSeg(RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(xlog_state.RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
 	KeepLogSeg(recptr, &_logSegNo);
 	if (InvalidateObsoleteReplicationSlots(RS_INVAL_WAL_REMOVED | RS_INVAL_IDLE_TIMEOUT,
 										   _logSegNo, InvalidOid,
@@ -7881,12 +7907,12 @@ CreateCheckPoint(int flags)
 		 * Some slots have been invalidated; recalculate the old-segment
 		 * horizon, starting again from RedoRecPtr.
 		 */
-		XLByteToSeg(RedoRecPtr, _logSegNo,
+		XLByteToSeg(xlog_state.RedoRecPtr, _logSegNo,
 			    GetGUCInt(GUC_wal_segment_size));
 		KeepLogSeg(recptr, &_logSegNo);
 	}
 	_logSegNo--;
-	RemoveOldXlogFiles(_logSegNo, RedoRecPtr, recptr,
+	RemoveOldXlogFiles(_logSegNo, xlog_state.RedoRecPtr, recptr,
 					   checkPoint.ThisTimeLineID);
 
 	/*
@@ -8227,7 +8253,7 @@ CreateRestartPoint(int flags)
 	 * happening.
 	 */
 	WALInsertLockAcquireExclusive();
-	RedoRecPtr = XLogCtl->Insert.RedoRecPtr = lastCheckPoint.redo;
+	xlog_state.RedoRecPtr = XLogCtl->Insert.RedoRecPtr = lastCheckPoint.redo;
 	WALInsertLockRelease();
 
 	/* Also update the info_lck-protected copy */
@@ -8303,8 +8329,8 @@ CreateRestartPoint(int flags)
 				ControlFile->minRecoveryPointTLI = lastCheckPoint.ThisTimeLineID;
 
 				/* update local copy */
-				LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-				LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+				xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+				xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 			}
 			if (flags & CHECKPOINT_IS_SHUTDOWN)
 				ControlFile->state = DB_SHUTDOWNED_IN_RECOVERY;
@@ -8322,13 +8348,13 @@ CreateRestartPoint(int flags)
 	 * prior checkpoint exists.
 	 */
 	if (XLogRecPtrIsValid(PriorRedoPtr))
-		UpdateCheckPointDistanceEstimate(RedoRecPtr - PriorRedoPtr);
+		UpdateCheckPointDistanceEstimate(xlog_state.RedoRecPtr - PriorRedoPtr);
 
 	/*
 	 * Delete old log files, those no longer needed for last restartpoint to
 	 * prevent the disk holding the xlog from growing full.
 	 */
-	XLByteToSeg(RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
+	XLByteToSeg(xlog_state.RedoRecPtr, _logSegNo, GetGUCInt(GUC_wal_segment_size));
 
 	/*
 	 * Retreat _logSegNo using the current end of xlog replayed or received,
@@ -8349,7 +8375,7 @@ CreateRestartPoint(int flags)
 		 * Some slots have been invalidated; recalculate the old-segment
 		 * horizon, starting again from RedoRecPtr.
 		 */
-		XLByteToSeg(RedoRecPtr, _logSegNo,
+		XLByteToSeg(xlog_state.RedoRecPtr, _logSegNo,
 			    GetGUCInt(GUC_wal_segment_size));
 		KeepLogSeg(endptr, &_logSegNo);
 	}
@@ -8370,7 +8396,7 @@ CreateRestartPoint(int flags)
 	if (!RecoveryInProgress())
 		replayTLI = XLogCtl->InsertTimeLineID;
 
-	RemoveOldXlogFiles(_logSegNo, RedoRecPtr, endptr, replayTLI);
+	RemoveOldXlogFiles(_logSegNo, xlog_state.RedoRecPtr, endptr, replayTLI);
 
 	/*
 	 * Make more log segments if needed.  (Do this after recycling old log
@@ -9171,10 +9197,10 @@ xlog_redo(XLogReaderState *record)
 		 */
 		if (InArchiveRecovery)
 		{
-			LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
-			LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
+			xlog_state.LocalMinRecoveryPoint = ControlFile->minRecoveryPoint;
+			xlog_state.LocalMinRecoveryPointTLI = ControlFile->minRecoveryPointTLI;
 		}
-		if (XLogRecPtrIsValid(LocalMinRecoveryPoint) && LocalMinRecoveryPoint < lsn)
+		if (XLogRecPtrIsValid(xlog_state.LocalMinRecoveryPoint) && xlog_state.LocalMinRecoveryPoint < lsn)
 		{
 			TimeLineID	replayTLI;
 
@@ -9213,7 +9239,7 @@ xlog_redo(XLogReaderState *record)
 		}
 
 		/* Keep track of full_page_writes */
-		lastFullPageWrites = fpw;
+		xlog_state.lastFullPageWrites = fpw;
 	}
 	else if (info == XLOG_CHECKPOINT_REDO)
 	{
@@ -9369,16 +9395,16 @@ assign_wal_sync_method(int new_wal_sync_method, void *extra)
 		 * changing, close the log file so it will be reopened (with new flag
 		 * bit) at next use.
 		 */
-		if (openLogFile >= 0)
+		if (xlog_state.openLogFile >= 0)
 		{
 			pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC_METHOD_ASSIGN);
-			if (pg_fsync(openLogFile) != 0)
+			if (pg_fsync(xlog_state.openLogFile) != 0)
 			{
 				char		xlogfname[MAXFNAMELEN];
 				int			save_errno;
 
 				save_errno = errno;
-				XLogFileName(xlogfname, openLogTLI, openLogSegNo,
+				XLogFileName(xlogfname, xlog_state.openLogTLI, xlog_state.openLogSegNo,
 							 GetGUCInt(GUC_wal_segment_size));
 				errno = save_errno;
 				ereport(PANIC,
@@ -9795,7 +9821,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 	/*
 	 * Mark that the start phase has correctly finished for the backup.
 	 */
-	sessionBackupState = SESSION_BACKUP_RUNNING;
+	xlog_state.sessionBackupState = SESSION_BACKUP_RUNNING;
 }
 
 /*
@@ -9804,7 +9830,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 SessionBackupState
 get_backup_status(void)
 {
-	return sessionBackupState;
+	return xlog_state.sessionBackupState;
 }
 
 /*
@@ -9872,7 +9898,7 @@ do_pg_backup_stop(BackupState *state, bool waitforarchive)
 	 * CHECK_FOR_INTERRUPTS() can occur in it, session-level lock must be
 	 * cleaned up before it.
 	 */
-	sessionBackupState = SESSION_BACKUP_NONE;
+	xlog_state.sessionBackupState = SESSION_BACKUP_NONE;
 
 	WALInsertLockRelease();
 
@@ -10105,15 +10131,15 @@ do_pg_abort_backup(int code, Datum arg)
 	bool		during_backup_start = DatumGetBool(arg);
 
 	/* If called during backup start, there shouldn't be one already running */
-	Assert(!during_backup_start || sessionBackupState == SESSION_BACKUP_NONE);
+	Assert(!during_backup_start || xlog_state.sessionBackupState == SESSION_BACKUP_NONE);
 
-	if (during_backup_start || sessionBackupState != SESSION_BACKUP_NONE)
+	if (during_backup_start || xlog_state.sessionBackupState != SESSION_BACKUP_NONE)
 	{
 		WALInsertLockAcquireExclusive();
 		Assert(XLogCtl->Insert.runningBackups > 0);
 		XLogCtl->Insert.runningBackups--;
 
-		sessionBackupState = SESSION_BACKUP_NONE;
+		xlog_state.sessionBackupState = SESSION_BACKUP_NONE;
 		WALInsertLockRelease();
 
 		if (!during_backup_start)
@@ -10175,9 +10201,9 @@ GetXLogInsertEndRecPtr(void)
 XLogRecPtr
 GetXLogWriteRecPtr(void)
 {
-	RefreshXLogWriteResult(LogwrtResult);
+	RefreshXLogWriteResult(xlog_state.LogwrtResult);
 
-	return LogwrtResult.Write;
+	return xlog_state.LogwrtResult.Write;
 }
 
 /*
