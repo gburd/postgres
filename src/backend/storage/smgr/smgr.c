@@ -157,9 +157,15 @@ static const int NSmgr = lengthof(smgrsw);
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
  * In addition, "unpinned" SMgrRelation objects are chained together in a list.
  */
-static session_local HTAB *SMgrRelationHash = NULL;
+typedef struct SmgrState
+{
+	HTAB	   *SMgrRelationHash;
+	dlist_head	unpinned_relns;
+} SmgrState;
 
-static session_local dlist_head unpinned_relns;
+static session_local SmgrState smgr_state = {
+	.SMgrRelationHash = NULL,
+};
 
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);
@@ -247,22 +253,22 @@ smgropen(RelFileLocator rlocator, ProcNumber backend)
 
 	HOLD_INTERRUPTS();
 
-	if (SMgrRelationHash == NULL)
+	if (smgr_state.SMgrRelationHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(RelFileLocatorBackend);
 		ctl.entrysize = sizeof(SMgrRelationData);
-		SMgrRelationHash = hash_create("smgr relation table", 400,
+		smgr_state.SMgrRelationHash = hash_create("smgr relation table", 400,
 									   &ctl, HASH_ELEM | HASH_BLOBS);
-		dlist_init(&unpinned_relns);
+		dlist_init(&smgr_state.unpinned_relns);
 	}
 
 	/* Look up or create an entry */
 	brlocator.locator = rlocator;
 	brlocator.backend = backend;
-	reln = (SMgrRelation) hash_search(SMgrRelationHash,
+	reln = (SMgrRelation) hash_search(smgr_state.SMgrRelationHash,
 									  &brlocator,
 									  HASH_ENTER, &found);
 
@@ -277,7 +283,7 @@ smgropen(RelFileLocator rlocator, ProcNumber backend)
 
 		/* it is not pinned yet */
 		reln->pincount = 0;
-		dlist_push_tail(&unpinned_relns, &reln->node);
+		dlist_push_tail(&smgr_state.unpinned_relns, &reln->node);
 
 		/* implementation-specific initialization */
 		smgrsw[reln->smgr_which].smgr_open(reln);
@@ -313,7 +319,7 @@ smgrunpin(SMgrRelation reln)
 	Assert(reln->pincount > 0);
 	reln->pincount--;
 	if (reln->pincount == 0)
-		dlist_push_tail(&unpinned_relns, &reln->node);
+		dlist_push_tail(&smgr_state.unpinned_relns, &reln->node);
 }
 
 /*
@@ -333,7 +339,7 @@ smgrdestroy(SMgrRelation reln)
 
 	dlist_delete(&reln->node);
 
-	if (hash_search(SMgrRelationHash,
+	if (hash_search(smgr_state.SMgrRelationHash,
 					&(reln->smgr_rlocator),
 					HASH_REMOVE, NULL) == NULL)
 		elog(ERROR, "SMgrRelation hashtable corrupted");
@@ -394,7 +400,7 @@ smgrdestroyall(void)
 	 * Zap all unpinned SMgrRelations.  We rely on smgrdestroy() to remove
 	 * each one from the list.
 	 */
-	dlist_foreach_modify(iter, &unpinned_relns)
+	dlist_foreach_modify(iter, &smgr_state.unpinned_relns)
 	{
 		SMgrRelation rel = dlist_container(SMgrRelationData, node,
 										   iter.cur);
@@ -415,13 +421,13 @@ smgrreleaseall(void)
 	SMgrRelation reln;
 
 	/* Nothing to do if hashtable not set up */
-	if (SMgrRelationHash == NULL)
+	if (smgr_state.SMgrRelationHash == NULL)
 		return;
 
 	/* seems unsafe to accept interrupts while iterating */
 	HOLD_INTERRUPTS();
 
-	hash_seq_init(&status, SMgrRelationHash);
+	hash_seq_init(&status, smgr_state.SMgrRelationHash);
 
 	while ((reln = (SMgrRelation) hash_seq_search(&status)) != NULL)
 	{
@@ -445,10 +451,10 @@ smgrreleaserellocator(RelFileLocatorBackend rlocator)
 	SMgrRelation reln;
 
 	/* Nothing to do if hashtable not set up */
-	if (SMgrRelationHash == NULL)
+	if (smgr_state.SMgrRelationHash == NULL)
 		return;
 
-	reln = (SMgrRelation) hash_search(SMgrRelationHash,
+	reln = (SMgrRelation) hash_search(smgr_state.SMgrRelationHash,
 									  &rlocator,
 									  HASH_FIND, NULL);
 	if (reln != NULL)
