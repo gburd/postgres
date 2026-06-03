@@ -32,18 +32,24 @@
 #include "storage/waiteventset.h"
 #include "utils/resowner.h"
 
-static session_local pg_atomic_uint32 LocalPendingInterrupts;
+
+typedef struct InterruptState
+{
+	pg_atomic_uint32 LocalPendingInterrupts;
+	/*
+	 * A long-lived WaitEventSet used by WaitInterrupt() to avoid recreating
+	 * the set on every call.  WaitInterruptOrSocket() builds a throwaway set
+	 * instead, because it also needs a socket.
+	 */
+	WaitEventSet *InterruptWaitSet;
+} InterruptState;
+
+static session_local InterruptState interrupt_state;
 
 session_local pg_atomic_uint32 *MyPendingInterrupts;
 
-/*
- * A long-lived WaitEventSet used by WaitInterrupt() to avoid recreating the
- * set on every call.  WaitInterruptOrSocket() builds a throwaway set instead,
- * because it also needs a socket.
- */
-static session_local WaitEventSet *InterruptWaitSet;
 
-/* The positions of the events in InterruptWaitSet. */
+/* The positions of the events in interrupt_state.InterruptWaitSet. */
 #define InterruptWaitSetInterruptPos 0
 #define InterruptWaitSetPostmasterDeathPos 1
 
@@ -56,8 +62,8 @@ static session_local WaitEventSet *InterruptWaitSet;
 void
 InitializeInterruptSupport(void)
 {
-	pg_atomic_init_u32(&LocalPendingInterrupts, 0);
-	MyPendingInterrupts = &LocalPendingInterrupts;
+	pg_atomic_init_u32(&interrupt_state.LocalPendingInterrupts, 0);
+	MyPendingInterrupts = &interrupt_state.LocalPendingInterrupts;
 }
 
 /*
@@ -67,10 +73,10 @@ InitializeInterruptSupport(void)
 void
 SwitchToLocalInterrupts(void)
 {
-	if (MyPendingInterrupts == &LocalPendingInterrupts)
+	if (MyPendingInterrupts == &interrupt_state.LocalPendingInterrupts)
 		return;
 
-	MyPendingInterrupts = &LocalPendingInterrupts;
+	MyPendingInterrupts = &interrupt_state.LocalPendingInterrupts;
 
 #ifdef WIN32
 
@@ -125,9 +131,9 @@ SwitchToSharedInterrupts(void)
 	 */
 	pg_memory_barrier();
 
-	/* Mix in any unhandled bits from LocalPendingInterrupts. */
+	/* Mix in any unhandled bits from interrupt_state.LocalPendingInterrupts. */
 	pg_atomic_fetch_or_u32(MyPendingInterrupts,
-						   pg_atomic_exchange_u32(&LocalPendingInterrupts, 0));
+						   pg_atomic_exchange_u32(&interrupt_state.LocalPendingInterrupts, 0));
 }
 
 /*
@@ -197,14 +203,14 @@ InitializeInterruptWaitSet(void)
 {
 	int			interrupt_pos PG_USED_FOR_ASSERTS_ONLY;
 
-	Assert(InterruptWaitSet == NULL);
+	Assert(interrupt_state.InterruptWaitSet == NULL);
 
 	/* Set up the WaitEventSet used by WaitInterrupt(). */
-	InterruptWaitSet = CreateWaitEventSet(NULL, 2);
-	interrupt_pos = AddWaitEventToSet(InterruptWaitSet, WL_INTERRUPT,
+	interrupt_state.InterruptWaitSet = CreateWaitEventSet(NULL, 2);
+	interrupt_pos = AddWaitEventToSet(interrupt_state.InterruptWaitSet, WL_INTERRUPT,
 									  PGINVALID_SOCKET, 0, NULL);
 	if (IsUnderPostmaster)
-		AddWaitEventToSet(InterruptWaitSet, WL_EXIT_ON_PM_DEATH,
+		AddWaitEventToSet(interrupt_state.InterruptWaitSet, WL_EXIT_ON_PM_DEATH,
 						  PGINVALID_SOCKET, 0, NULL);
 
 	Assert(interrupt_pos == InterruptWaitSetInterruptPos);
@@ -244,14 +250,14 @@ WaitInterrupt(uint32 interruptMask, int wakeEvents, long timeout,
 	 */
 	if (!(wakeEvents & WL_INTERRUPT))
 		interruptMask = 0;
-	ModifyWaitEvent(InterruptWaitSet, InterruptWaitSetInterruptPos,
+	ModifyWaitEvent(interrupt_state.InterruptWaitSet, InterruptWaitSetInterruptPos,
 					WL_INTERRUPT, interruptMask);
 
-	ModifyWaitEvent(InterruptWaitSet, InterruptWaitSetPostmasterDeathPos,
+	ModifyWaitEvent(interrupt_state.InterruptWaitSet, InterruptWaitSetPostmasterDeathPos,
 					(wakeEvents & (WL_EXIT_ON_PM_DEATH | WL_POSTMASTER_DEATH)),
 					0);
 
-	if (WaitEventSetWait(InterruptWaitSet,
+	if (WaitEventSetWait(interrupt_state.InterruptWaitSet,
 						 (wakeEvents & WL_TIMEOUT) ? timeout : -1,
 						 &event, 1,
 						 wait_event_info) == 0)
