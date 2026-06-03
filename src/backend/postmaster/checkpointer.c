@@ -171,16 +171,24 @@ sighup_guc double		CheckPointCompletionTarget = 0.9;
 /*
  * Private state
  */
-static session_local bool ckpt_active = false;
 static volatile sig_atomic_t ShutdownXLOGPending = false;
 
-/* these values are valid when ckpt_active is true: */
-static session_local pg_time_t ckpt_start_time;
-static session_local XLogRecPtr ckpt_start_recptr;
-static session_local double ckpt_cached_elapsed;
+typedef struct CheckpointerState
+{
+	bool		ckpt_active;
 
-static session_local pg_time_t last_checkpoint_time;
-static session_local pg_time_t last_xlog_switch_time;
+	/* these values are valid when ckpt_active is true: */
+	pg_time_t	ckpt_start_time;
+	XLogRecPtr	ckpt_start_recptr;
+	double		ckpt_cached_elapsed;
+
+	pg_time_t	last_checkpoint_time;
+	pg_time_t	last_xlog_switch_time;
+} CheckpointerState;
+
+static session_local CheckpointerState checkpointer_state = {
+	.ckpt_active = false,
+};
 
 /* Prototypes for private functions */
 
@@ -238,7 +246,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Initialize so that first time-driven event happens at the correct time.
 	 */
-	last_checkpoint_time = last_xlog_switch_time = (pg_time_t) time(NULL);
+	checkpointer_state.last_checkpoint_time = checkpointer_state.last_xlog_switch_time = (pg_time_t) time(NULL);
 
 	/*
 	 * Write out stats after shutdown. This needs to be called by exactly one
@@ -311,7 +319,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		AtEOXact_HashTables(false);
 
 		/* Warn any waiting backends that the checkpoint failed. */
-		if (ckpt_active)
+		if (checkpointer_state.ckpt_active)
 		{
 			SpinLockAcquire(&CheckpointerShmem->ckpt_lck);
 			CheckpointerShmem->ckpt_failed++;
@@ -320,7 +328,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 
 			ConditionVariableBroadcast(&CheckpointerShmem->done_cv);
 
-			ckpt_active = false;
+			checkpointer_state.ckpt_active = false;
 		}
 
 		/*
@@ -408,7 +416,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		 * bit even if there is also an external request.
 		 */
 		now = (pg_time_t) time(NULL);
-		elapsed_secs = now - last_checkpoint_time;
+		elapsed_secs = now - checkpointer_state.last_checkpoint_time;
 		if (elapsed_secs >= GetGUCInt(GUC_CheckPointTimeout))
 		{
 			if (!do_checkpoint)
@@ -487,13 +495,13 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 			 * Initialize checkpointer-private variables used during
 			 * checkpoint.
 			 */
-			ckpt_active = true;
+			checkpointer_state.ckpt_active = true;
 			if (do_restartpoint)
-				ckpt_start_recptr = GetXLogReplayRecPtr(NULL);
+				checkpointer_state.ckpt_start_recptr = GetXLogReplayRecPtr(NULL);
 			else
-				ckpt_start_recptr = GetInsertRecPtr();
-			ckpt_start_time = now;
-			ckpt_cached_elapsed = 0;
+				checkpointer_state.ckpt_start_recptr = GetInsertRecPtr();
+			checkpointer_state.ckpt_start_time = now;
+			checkpointer_state.ckpt_cached_elapsed = 0;
 
 			/*
 			 * Do the checkpoint.
@@ -527,7 +535,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 				 * last_checkpoint_time.  This is so that time-driven
 				 * checkpoints happen at a predictable spacing.
 				 */
-				last_checkpoint_time = now;
+				checkpointer_state.last_checkpoint_time = now;
 
 				if (ckpt_performed)
 					PendingCheckpointerStats.num_performed++;
@@ -540,7 +548,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 					 * The same as for checkpoint. Please see the
 					 * corresponding comment.
 					 */
-					last_checkpoint_time = now;
+					checkpointer_state.last_checkpoint_time = now;
 
 					PendingCheckpointerStats.restartpoints_performed++;
 				}
@@ -553,11 +561,11 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 					 * WAL records since the last restartpoint. Try again in
 					 * 15 s.
 					 */
-					last_checkpoint_time = now - GetGUCInt(GUC_CheckPointTimeout) + 15;
+					checkpointer_state.last_checkpoint_time = now - GetGUCInt(GUC_CheckPointTimeout) + 15;
 				}
 			}
 
-			ckpt_active = false;
+			checkpointer_state.ckpt_active = false;
 
 			/*
 			 * We may have received an interrupt during the checkpoint and the
@@ -593,13 +601,13 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		 * xlog file switch.
 		 */
 		now = (pg_time_t) time(NULL);
-		elapsed_secs = now - last_checkpoint_time;
+		elapsed_secs = now - checkpointer_state.last_checkpoint_time;
 		if (elapsed_secs >= GetGUCInt(GUC_CheckPointTimeout))
 			continue;			/* no sleep for us ... */
 		cur_timeout = GetGUCInt(GUC_CheckPointTimeout) - elapsed_secs;
 		if (GetGUCInt(GUC_XLogArchiveTimeout) > 0 && !RecoveryInProgress())
 		{
-			elapsed_secs = now - last_xlog_switch_time;
+			elapsed_secs = now - checkpointer_state.last_xlog_switch_time;
 			if (elapsed_secs >= GetGUCInt(GUC_XLogArchiveTimeout))
 				continue;		/* no sleep for us ... */
 			cur_timeout = Min(cur_timeout,
@@ -729,7 +737,7 @@ CheckArchiveTimeout(void)
 	now = (pg_time_t) time(NULL);
 
 	/* First we do a quick check using possibly-stale local state. */
-	if ((int) (now - last_xlog_switch_time) < GetGUCInt(GUC_XLogArchiveTimeout))
+	if ((int) (now - checkpointer_state.last_xlog_switch_time) < GetGUCInt(GUC_XLogArchiveTimeout))
 		return;
 
 	/*
@@ -738,10 +746,10 @@ CheckArchiveTimeout(void)
 	 */
 	last_time = GetLastSegSwitchData(&last_switch_lsn);
 
-	last_xlog_switch_time = Max(last_xlog_switch_time, last_time);
+	checkpointer_state.last_xlog_switch_time = Max(checkpointer_state.last_xlog_switch_time, last_time);
 
 	/* Now we can do the real checks */
-	if ((int) (now - last_xlog_switch_time) >= GetGUCInt(GUC_XLogArchiveTimeout))
+	if ((int) (now - checkpointer_state.last_xlog_switch_time) >= GetGUCInt(GUC_XLogArchiveTimeout))
 	{
 		/*
 		 * Switch segment only when "important" WAL has been logged since the
@@ -768,7 +776,7 @@ CheckArchiveTimeout(void)
 		 * Update state in any case, so we don't retry constantly when the
 		 * system is idle.
 		 */
-		last_xlog_switch_time = now;
+		checkpointer_state.last_xlog_switch_time = now;
 	}
 }
 
@@ -882,7 +890,7 @@ IsCheckpointOnSchedule(double progress)
 	double		elapsed_xlogs,
 				elapsed_time;
 
-	Assert(ckpt_active);
+	Assert(checkpointer_state.ckpt_active);
 
 	/* Scale progress according to checkpoint_completion_target. */
 	progress *= GetGUCReal(GUC_CheckPointCompletionTarget);
@@ -893,7 +901,7 @@ IsCheckpointOnSchedule(double progress)
 	 * neither time or WAL insert pointer moves backwards, a freshly
 	 * calculated value can only be greater than or equal to the cached value.
 	 */
-	if (progress < ckpt_cached_elapsed)
+	if (progress < checkpointer_state.ckpt_cached_elapsed)
 		return false;
 
 	/*
@@ -920,12 +928,12 @@ IsCheckpointOnSchedule(double progress)
 		recptr = GetXLogReplayRecPtr(NULL);
 	else
 		recptr = GetInsertRecPtr();
-	elapsed_xlogs = (((double) (recptr - ckpt_start_recptr)) /
+	elapsed_xlogs = (((double) (recptr - checkpointer_state.ckpt_start_recptr)) /
 					 GetGUCInt(GUC_wal_segment_size)) / CheckPointSegments;
 
 	if (progress < elapsed_xlogs)
 	{
-		ckpt_cached_elapsed = elapsed_xlogs;
+		checkpointer_state.ckpt_cached_elapsed = elapsed_xlogs;
 		return false;
 	}
 
@@ -933,12 +941,12 @@ IsCheckpointOnSchedule(double progress)
 	 * Check progress against time elapsed and checkpoint_timeout.
 	 */
 	gettimeofday(&now, NULL);
-	elapsed_time = ((double) ((pg_time_t) now.tv_sec - ckpt_start_time) +
+	elapsed_time = ((double) ((pg_time_t) now.tv_sec - checkpointer_state.ckpt_start_time) +
 					now.tv_usec / 1000000.0) / GetGUCInt(GUC_CheckPointTimeout);
 
 	if (progress < elapsed_time)
 	{
-		ckpt_cached_elapsed = elapsed_time;
+		checkpointer_state.ckpt_cached_elapsed = elapsed_time;
 		return false;
 	}
 
