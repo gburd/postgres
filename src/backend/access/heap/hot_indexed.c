@@ -180,31 +180,6 @@ heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *p,
 }
 
 /*
- * heap_hot_indexed_redirect_overlaps
- *		True iff any heap attribute in index_attrs is marked modified by a
- *		HOT-indexed data redirect's bitmap.  Same bit layout and convention as
- *		heap_hot_indexed_payload_overlaps; used by the read path when a chain
- *		walk enters through a data redirect.
- */
-bool
-heap_hot_indexed_redirect_overlaps(const HotIndexedRedirectData *rd,
-								   const Bitmapset *index_attrs)
-{
-	int			m = -1;
-
-	while ((m = bms_next_member(index_attrs, m)) >= 0)
-	{
-		AttrNumber	attnum = m + FirstLowInvalidHeapAttributeNumber;
-		int			bit = attnum - 1;
-
-		if (attnum >= 1 && (bit >> 3) < rd->rd_nbytes &&
-			(rd->rd_bitmap[bit >> 3] & (1u << (bit & 7))) != 0)
-			return true;
-	}
-	return false;
-}
-
-/*
  * heap_build_hot_indexed_bridge
  *		Populate *buf with a bridge tombstone that carries no payload and
  *		just forwards a chain walker to forward_offnum on the same page.

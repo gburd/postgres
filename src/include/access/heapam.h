@@ -491,8 +491,7 @@ extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *nowdead, int ndead,
 									OffsetNumber *nowunused, int nunused,
 									OffsetNumber *bridges, int nbridges,
-									OffsetNumber *data_redirects, int ndata_redirects,
-									const char *redirect_unions);
+									OffsetNumber *tombstone_unions, int nunions);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
 extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  Buffer vmbuffer, uint8 vmflags,
@@ -504,8 +503,8 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused,
 									  OffsetNumber *bridges, int nbridges,
-									  OffsetNumber *data_redirects,
-									  int ndata_redirects);
+									  OffsetNumber *tombstone_unions,
+									  int nunions);
 
 /* in heap/heapam.c */
 

@@ -181,7 +181,6 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	OffsetNumber crossed[MaxHeapTuplesPerPage];
 	int			ncrossed = 0;
 	bool		crossed_hi = false;
-	bool		redir_stale = false;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
@@ -222,23 +221,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			if (ItemIdIsRedirected(lp) && at_chain_start)
 			{
 				/*
-				 * A HOT-indexed data redirect carries the (single) hop's
-				 * modified-attrs bitmap that the reclaimed successor
-				 * tombstone used to hold.  An entry arriving through it
-				 * crosses that hop, so fold the bitmap into the staleness
-				 * decision (and flag the chain hot-indexed for the
-				 * bitmap-heap NULL case).
+				 * Follow the redirect.  If it collapsed a HOT-indexed prefix,
+				 * the target (first_live) carries HEAP_INDEXED_UPDATED and is
+				 * reached not-at-chain-start, so it is recorded as a crossed
+				 * hop below and its adjacent tombstone (which holds the union
+				 * of the collapsed hops' modified-attrs bitmaps) drives the
+				 * overlap staleness test.
 				 */
-				if (HotIndexedRedirectIsData(lp))
-				{
-					crossed_hi = true;
-					if (index_attrs != NULL &&
-						heap_hot_indexed_redirect_overlaps(HotIndexedRedirectGetData(page, lp),
-														   index_attrs))
-						redir_stale = true;
-				}
-				/* Follow the redirect */
-				offnum = HotIndexedRedirectGetTarget(page, lp);
+				offnum = ItemIdGetRedirect(lp);
 				at_chain_start = false;
 				continue;
 			}
@@ -377,7 +367,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					if (index_attrs == NULL)
 						this_stale = crossed_hi;
 					else
-						this_stale = redir_stale ||
+						this_stale =
 							((ncrossed > 0) &&
 							 hot_indexed_path_overlaps(page, crossed, ncrossed,
 													   index_attrs));

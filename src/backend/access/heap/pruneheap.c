@@ -69,7 +69,7 @@ typedef struct
 	int			ndead;
 	int			nunused;
 	int			nbridges;		/* count of HOT-indexed bridge conversions */
-	int			ndata_redirects;	/* count of HOT-indexed data redirects */
+	int			ntombstone_unions;	/* count of tombstone bitmap unions */
 	int			nfrozen;
 	/* arrays that accumulate indexes of items to be changed */
 	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
@@ -84,13 +84,14 @@ typedef struct
 	OffsetNumber bridges[MaxHeapTuplesPerPage * 2];
 
 	/*
-	 * HOT-indexed data redirects: stored as (root, target) pairs.  At execute
-	 * time the root line pointer is rewritten as an LP_REDIRECT carrying the
-	 * target's producing-hop modified-attrs bitmap (read from the target's
-	 * adjacent tombstone, which is being reclaimed) in the dead root's freed
-	 * bytes -- see heap_prune_record_data_redirect().
+	 * Tombstone bitmap unions: stored as (target_offnum, source_offnum)
+	 * pairs.  At apply time the source tombstone's modified-attrs bitmap is
+	 * OR-merged into the target tombstone's bitmap byte-by-byte (adjacent
+	 * tombstones for the same relation always carry the same t_nbytes), and
+	 * the source LP is reclaimed via the existing nowunused flow.  See
+	 * heap_prune_record_tombstone_union().
 	 */
-	OffsetNumber data_redirects[MaxHeapTuplesPerPage * 2];
+	OffsetNumber tombstone_unions[MaxHeapTuplesPerPage * 2];
 
 	HeapTupleFreeze frozen[MaxHeapTuplesPerPage];
 
@@ -277,7 +278,7 @@ static void heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, b
 static void heap_prune_record_unchanged_lp_unused(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumber offnum);
-static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum, bool is_data_redirect);
+static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_tombstone(PruneState *prstate, OffsetNumber offnum);
 static void prune_handle_tombstones(PruneState *prstate);
 static bool heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum);
@@ -286,11 +287,11 @@ static OffsetNumber heap_prune_find_live_chain_root(PruneState *prstate,
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
-static void heap_prune_record_data_redirect(PruneState *prstate,
-											OffsetNumber root,
-											OffsetNumber target);
-static void heap_prune_reclaim_adjacent_tombstone(PruneState *prstate,
-												  OffsetNumber target);
+static OffsetNumber heap_prune_find_tombstone_for(PruneState *prstate,
+												  OffsetNumber target_off);
+static void heap_prune_record_tombstone_union(PruneState *prstate,
+											  OffsetNumber target,
+											  OffsetNumber source);
 
 static void page_verify_redirects(Page page);
 
@@ -501,7 +502,7 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->latest_xid_removed = InvalidTransactionId;
 	prstate->nredirected = prstate->ndead = prstate->nunused = 0;
 	prstate->nbridges = 0;
-	prstate->ndata_redirects = 0;
+	prstate->ntombstone_unions = 0;
 	prstate->nfrozen = 0;
 	prstate->nroot_items = 0;
 	prstate->nheaponly_items = 0;
@@ -1360,7 +1361,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 		prstate.ndead > 0 ||
 		prstate.nunused > 0 ||
 		prstate.nbridges > 0 ||
-		prstate.ndata_redirects > 0;
+		prstate.ntombstone_unions > 0;
 
 	/*
 	 * Even if we don't prune anything, if we found a new value for the
@@ -1463,8 +1464,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									prstate.nowdead, prstate.ndead,
 									prstate.nowunused, prstate.nunused,
 									prstate.bridges, prstate.nbridges,
-									prstate.data_redirects, prstate.ndata_redirects,
-									NULL);
+									prstate.tombstone_unions, prstate.ntombstone_unions);
 		}
 
 		if (do_freeze)
@@ -1509,7 +1509,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									  prstate.nowdead, prstate.ndead,
 									  prstate.nowunused, prstate.nunused,
 									  prstate.bridges, prstate.nbridges,
-									  prstate.data_redirects, prstate.ndata_redirects);
+									  prstate.tombstone_unions, prstate.ntombstone_unions);
 		}
 	}
 
@@ -1767,7 +1767,7 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 			if (nchain > 0)
 				break;			/* not at start of chain */
 			chainitems[nchain++] = offnum;
-			offnum = HotIndexedRedirectGetTarget(page, rootlp);
+			offnum = ItemIdGetRedirect(rootlp);
 			continue;
 		}
 
@@ -1872,8 +1872,7 @@ process_chain:
 
 		if (ItemIdIsRedirected(rootlp))
 		{
-			heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum,
-													HotIndexedRedirectIsData(rootlp));
+			heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
 			i++;
 		}
 		for (; i < nchain; i++)
@@ -1906,109 +1905,55 @@ process_chain:
 	else
 	{
 		/*
-		 * We found a DEAD tuple in the chain.  Reclaim the dead-prefix tuple
-		 * storage and, for each intermediate dead tuple, either mark
-		 * LP_UNUSED (classic HOT: no external references) or rewrite it as a
-		 * bridge tombstone (HOT-indexed: stale btree entries may still point
-		 * at this LP).  The classifier heap_prune_item_preserves_hot_indexed
-		 * decides per LP.
+		 * We found a DEAD tuple in the chain.  Redirect the root line pointer
+		 * to the first non-DEAD tuple (a plain LP_REDIRECT, as classic HOT
+		 * does), and for each intermediate dead tuple either mark LP_UNUSED
+		 * (classic HOT: no external references) or rewrite it as a bridge
+		 * tombstone forwarding to first_live (HOT-indexed: stale btree entries
+		 * may still point at this LP).  The classifier
+		 * heap_prune_item_preserves_hot_indexed decides per LP.
 		 *
-		 * Bridges are linked in chain order: each forwards to the next
-		 * surviving member, the last to first_live.  A reader arriving
-		 * through a stale entry that points mid-chain then walks every
-		 * surviving hop in turn and picks up each hop's modified-attrs bitmap
-		 * from that member's retained adjacent tombstone -- what the
-		 * bitmap-overlap staleness test needs.  In notation, LP[1] v1 root ->
-		 * LP[3] v2 INDEXED_UPDATED{a} -> LP[5] v3 INDEXED_UPDATED{b} -> LP[7]
-		 * v4 LIVE (v1..v3 dead) collapses to LP[1] data-redirect{a,b} ->
-		 * LP[7] v4, LP[3] bridge -> LP[5] bridge -> LP[7] v4 LIVE, with the
-		 * {a},{b} tombstones retained at their offsets for the mid-chain
-		 * entries.
-		 *
-		 * The root leads into the chain via the data redirect chosen below:
-		 * it points straight at first_live (always live, never a bridge)
-		 * carrying the union {a,b} of the skipped hops, so a root-pointing
-		 * entry is flagged stale without traversing.  A purely classic prefix
-		 * (no HOT-indexed hop) instead uses a plain redirect to first_live.
+		 * A root-pointing entry follows the plain redirect straight to
+		 * first_live, skipping the dead hops, so first_live's adjacent
+		 * tombstone must carry the union of every collapsed hop's
+		 * modified-attrs bitmap for the bitmap-overlap staleness test to flag
+		 * it.  For each bridged member we therefore OR-merge its adjacent
+		 * tombstone's bitmap into first_live's tombstone and reclaim the
+		 * source tombstone's LP.  In notation, LP[1] v1 root -> LP[3] v2
+		 * INDEXED_UPDATED{a} -> LP[5] v3 INDEXED_UPDATED{b} -> LP[7] v4 LIVE
+		 * (v1..v3 dead) collapses to LP[1] redirect -> LP[7] v4, LP[3]/LP[5]
+		 * bridges -> LP[7], with first_live's tombstone holding {a,b}.
 		 */
 		OffsetNumber first_live = chainitems[ndeadchain];
-		OffsetNumber prev_surv = InvalidOffsetNumber;
+		OffsetNumber target_tomb;
+
+		heap_prune_record_redirect(prstate, rootoffnum, first_live,
+								   ItemIdIsNormal(rootlp));
+
+		target_tomb = heap_prune_find_tombstone_for(prstate, first_live);
 
 		for (int i = 1; i < ndeadchain; i++)
 		{
 			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
 			{
-				if (prev_surv != InvalidOffsetNumber)
-					heap_prune_record_bridge(prstate, prev_surv,
-											 chainitems[i]);
-				prev_surv = chainitems[i];
+				heap_prune_record_bridge(prstate, chainitems[i], first_live);
+
+				if (OffsetNumberIsValid(target_tomb))
+				{
+					OffsetNumber source_tomb;
+
+					source_tomb = heap_prune_find_tombstone_for(prstate,
+																chainitems[i]);
+					if (OffsetNumberIsValid(source_tomb))
+						heap_prune_record_tombstone_union(prstate,
+														  target_tomb,
+														  source_tomb);
+				}
 			}
 			else
 			{
 				heap_prune_record_unused(prstate, chainitems[i], true);
 			}
-		}
-		if (prev_surv != InvalidOffsetNumber)
-			heap_prune_record_bridge(prstate, prev_surv, first_live);
-
-		/*
-		 * Choose how the root leads into the chain.  When some skipped hop
-		 * (root -> first_live) changed an indexed attribute, collapse the
-		 * root to a HOT-indexed data redirect at first_live carrying the
-		 * union of those hops' modified-attrs bitmaps, so a root-pointing
-		 * entry is flagged stale; otherwise (a purely classic prefix)
-		 * redirect straight to first_live as classic HOT does.  Mid-chain
-		 * entries still traverse the per-hop bridges built above.  A root
-		 * that is already a data redirect (a later collapse of the same
-		 * chain) is re-pointed at the new first_live with an extended union.
-		 */
-		{
-			bool		hot_indexed_chain = HotIndexedRedirectIsData(rootlp);
-
-			/*
-			 * A data redirect is needed when some skipped hop (root ->
-			 * first_live) changed an indexed attribute, leaving a
-			 * root-pointing entry potentially stale.  Each such hop's new
-			 * tuple carries HEAP_INDEXED_UPDATED; scan the surviving members
-			 * of the dead prefix (chainitems[1 .. ndeadchain], first_live
-			 * included) for one.  A re-collapse (root already a data
-			 * redirect) always qualifies.
-			 */
-			for (int i = 1; !hot_indexed_chain && i <= ndeadchain; i++)
-			{
-				ItemId		clp = PageGetItemId(page, chainitems[i]);
-				HeapTupleHeader chtup;
-
-				if (!ItemIdIsNormal(clp))
-					continue;
-				chtup = (HeapTupleHeader) PageGetItem(page, clp);
-				if ((chtup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
-					HeapTupleHeaderGetNatts(chtup) > 0)
-					hot_indexed_chain = true;
-			}
-
-			if (hot_indexed_chain)
-			{
-				/*
-				 * Collapse the root to a data redirect at first_live (always
-				 * live -- never a reclaimable bridge) carrying the union of
-				 * the skipped hops' modified-attrs bitmaps, which
-				 * heap_page_prune_execute computes by walking the on-page
-				 * chain.  A re-collapse re-points an existing data redirect
-				 * at the new first_live, extending its union; the redirect
-				 * thus never dangles when an intermediate hop is later
-				 * reclaimed.  A single-hop first collapse has no mid-chain
-				 * entries, so first_live's adjacent tombstone is needed only
-				 * by root-pointing entries (now the redirect union) and is
-				 * reclaimed.
-				 */
-				heap_prune_record_data_redirect(prstate, rootoffnum, first_live);
-				if (ndeadchain == 1 && !HotIndexedRedirectIsData(rootlp))
-					heap_prune_reclaim_adjacent_tombstone(prstate, first_live);
-			}
-			else
-				heap_prune_record_redirect(prstate, rootoffnum, first_live,
-										   ItemIdIsNormal(rootlp));
 		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
@@ -2233,7 +2178,7 @@ heap_prune_build_pred_map(PruneState *prstate)
 		 */
 		if (ItemIdIsRedirected(lp))
 		{
-			succ = HotIndexedRedirectGetTarget(page, lp);
+			succ = ItemIdGetRedirect(lp);
 			if (succ >= FirstOffsetNumber && succ <= maxoff &&
 				!OffsetNumberIsValid(prstate->pred[succ]))
 				prstate->pred[succ] = off;
@@ -2365,86 +2310,42 @@ heap_prune_record_bridge(PruneState *prstate,
 }
 
 /*
- * heap_prune_record_data_redirect
- *		Record that the chain root `root` should be rewritten as a
- *		HOT-indexed data redirect to `target` (first_live, always a live
- *		tuple), absorbing the union of the skipped hops' modified-attrs
- *		bitmaps.
- *
- * The in-place rewrite happens in heap_page_prune_execute: it walks the
- * on-page chain from the root's successor (or, for a re-collapse, the prior
- * redirect's target, seeding from its existing bitmap) through to first_live,
- * OR-ing each crossed member's adjacent-tombstone bitmap, and writes a
- * HotIndexedRedirectData blob into the dead root tuple's freed bytes with
- * lp_flags = LP_REDIRECT and lp_len > 0.  Targeting the live tuple (never a
- * bridge) keeps the redirect from dangling when an intermediate hop is later
- * reclaimed.  A page that holds one must not be marked all-visible, like a
- * bridge.
- */
-static void
-heap_prune_record_data_redirect(PruneState *prstate,
-								OffsetNumber root,
-								OffsetNumber target)
-{
-	Assert(!prstate->processed[root]);
-	Assert(OffsetNumberIsValid(root));
-	Assert(OffsetNumberIsValid(target));
-	Assert(prstate->ndata_redirects < MaxHeapTuplesPerPage);
-
-	prstate->processed[root] = true;
-	prstate->data_redirects[prstate->ndata_redirects * 2] = root;
-	prstate->data_redirects[prstate->ndata_redirects * 2 + 1] = target;
-	prstate->ndata_redirects++;
-
-	prstate->set_all_visible = false;
-	prstate->set_all_frozen = false;
-}
-
-/*
- * hot_indexed_find_adjacent_tombstone_off
- *		Offset of the adjacent (non-bridge) tombstone describing `target`, or
- *		InvalidOffsetNumber if none is present on the page.
+ * heap_prune_find_tombstone_for
+ *		Offset of the adjacent (non-bridge) tombstone describing `target_off`
+ *		among the tombstones recorded during this prune scan, or
+ *		InvalidOffsetNumber if none.
  */
 static OffsetNumber
-hot_indexed_find_adjacent_tombstone_off(Page page, OffsetNumber target)
+heap_prune_find_tombstone_for(PruneState *prstate, OffsetNumber target_off)
 {
-	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-
-	for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
-		 off = OffsetNumberNext(off))
+	for (int i = 0; i < prstate->ntombstones; i++)
 	{
-		ItemId		tlp = PageGetItemId(page, off);
-		HeapTupleHeader thtup;
-
-		if (!ItemIdIsNormal(tlp))
-			continue;
-		thtup = (HeapTupleHeader) PageGetItem(page, tlp);
-		if (HeapTupleHeaderIsHotIndexedTombstone(thtup) &&
-			!HeapTupleHeaderIsHotIndexedBridge(thtup) &&
-			HotIndexedTombstoneGetTarget(thtup) == target)
-			return off;
+		if (prstate->tombstones[i].target == target_off)
+			return prstate->tombstones[i].offnum;
 	}
 	return InvalidOffsetNumber;
 }
 
 /*
- * heap_prune_reclaim_adjacent_tombstone
- *		Mark the adjacent (non-bridge) tombstone describing `target` LP_UNUSED.
- *
- * Used by single-hop data-redirect collapse: the live successor's producing
- * hop now lives in the redirect's union, and a single-hop chain has no
- * mid-chain entries that would still need the standalone tombstone.  The
- * tombstone stays on the page until the now-unused pass reclaims it, so
- * heap_page_prune_execute can still read its bitmap when building the blob.
+ * heap_prune_record_tombstone_union
+ *		Record that `source` tombstone's modified-attrs bitmap should be
+ *		OR-merged into `target` tombstone's bitmap at execute time.  The
+ *		source LP is reclaimed separately via the nowunused flow (its target,
+ *		a bridged member, is itself converted to a bridge).
  */
 static void
-heap_prune_reclaim_adjacent_tombstone(PruneState *prstate, OffsetNumber target)
+heap_prune_record_tombstone_union(PruneState *prstate,
+								  OffsetNumber target,
+								  OffsetNumber source)
 {
-	OffsetNumber off = hot_indexed_find_adjacent_tombstone_off(prstate->page,
-															   target);
+	Assert(OffsetNumberIsValid(target));
+	Assert(OffsetNumberIsValid(source));
+	Assert(target != source);
+	Assert(prstate->ntombstone_unions < MaxHeapTuplesPerPage);
 
-	if (OffsetNumberIsValid(off))
-		heap_prune_record_unused(prstate, off, true);
+	prstate->tombstone_unions[prstate->ntombstone_unions * 2] = target;
+	prstate->tombstone_unions[prstate->ntombstone_unions * 2 + 1] = source;
+	prstate->ntombstone_unions++;
 }
 
 /*
@@ -2668,8 +2569,7 @@ heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumber offnum)
  * Record LP_REDIRECT that is left unchanged.
  */
 static void
-heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum,
-										bool is_data_redirect)
+heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum)
 {
 	/*
 	 * A redirect line pointer doesn't count as a live tuple.
@@ -2678,22 +2578,9 @@ heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum
 	 * tuple on the page that it points to.  We will do the bookkeeping for
 	 * that separately.  So we have nothing to do here, except remember that
 	 * we processed this item.
-	 *
-	 * Exception: a HOT-indexed data redirect (an LP_REDIRECT carrying a
-	 * modified-attrs bitmap) marks a chain whose pre-update leaf entries are
-	 * still stale.  The page must not become all-visible while it is present:
-	 * an index-only scan would skip the heap fetch that detects and drops
-	 * those stale leaves and return pre-update key values as live rows.  Same
-	 * rationale as heap_prune_record_unchanged_lp_tombstone().
 	 */
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
-
-	if (is_data_redirect)
-	{
-		prstate->set_all_visible = false;
-		prstate->set_all_frozen = false;
-	}
 }
 
 /*
@@ -2901,23 +2788,21 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 						OffsetNumber *nowdead, int ndead,
 						OffsetNumber *nowunused, int nunused,
 						OffsetNumber *bridges, int nbridges,
-						OffsetNumber *data_redirects, int ndata_redirects,
-						const char *redirect_unions)
+						OffsetNumber *tombstone_unions, int nunions)
 {
 	Page		page = BufferGetPage(buffer);
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
 	OffsetNumber *offnum;
-	const char *redirect_union_cursor;
 	HeapTupleHeader htup PG_USED_FOR_ASSERTS_ONLY;
 
 	/* Shouldn't be called unless there's something to do */
 	Assert(nredirected > 0 || ndead > 0 || nunused > 0 ||
-		   nbridges > 0 || ndata_redirects > 0);
+		   nbridges > 0 || nunions > 0);
 
 	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
 	Assert(!lp_truncate_only ||
 		   (nredirected == 0 && ndead == 0 && nbridges == 0 &&
-			ndata_redirects == 0));
+			nunions == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -3001,15 +2886,7 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		 * LP_DEAD until ambulkdelete sweeps it.  A subsequent vacuum reclaims
 		 * the LP to LP_UNUSED.
 		 */
-		if (HotIndexedRedirectIsData(lp))
-		{
-			/*
-			 * A HOT-indexed data redirect whose entire chain is now dead. Its
-			 * union blob is dropped with the line pointer; root-pointing
-			 * index entries that land on the resulting LP_DEAD terminate.
-			 */
-		}
-		else if (ItemIdHasStorage(lp))
+		if (ItemIdHasStorage(lp))
 		{
 			Assert(ItemIdIsNormal(lp));
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
@@ -3028,125 +2905,49 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	}
 
 	/*
-	 * Apply HOT-indexed data redirects before the now-unused loop reclaims
-	 * any tombstone they absorb.  Each (root, first_live) collapses the root
-	 * to an LP_REDIRECT carrying the union of the modified-attrs bitmaps of
-	 * every hop from the root to first_live, so a root-pointing index entry
-	 * sees every indexed-attribute change made while it was stale.  On the
-	 * primary (redirect_unions == NULL) the union is computed here by walking
-	 * the on-page chain -- all members are still present, the now-unused
-	 * reclaim runs afterwards -- starting at the root's successor (or, for a
-	 * re-collapse, the prior redirect's target seeded with its existing
-	 * bitmap) and OR-ing each crossed member's adjacent-tombstone bitmap
-	 * through to first_live.  During replay redirect_unions holds the logged
-	 * union per redirect, used verbatim so replay never walks the chain.
-	 * Either way the blob is written over the dead root tuple's freed bytes
-	 * (lp_off unchanged; PageRepairFragmentation relocates it like any stored
-	 * item).
+	 * Apply HOT-indexed tombstone bitmap unions before the now-unused loop
+	 * reclaims the source tombstones.  Each (target, source) pair OR-merges
+	 * the source tombstone's modified-attrs bitmap into the target
+	 * tombstone's bitmap, preserving the union of every collapsed hop's
+	 * changes in first_live's tombstone for the bitmap-overlap staleness
+	 * test.  The source tombstone LPs are reclaimed via the nowunused array.
+	 *
+	 * Adjacent tombstones for the same relation always carry an identical
+	 * t_nbytes (every per-update modified-attrs bitmap covers the whole
+	 * relation's attribute count), so the byte-by-byte OR is well-defined.
 	 */
-	offnum = data_redirects;
-	redirect_union_cursor = redirect_unions;
-	for (int i = 0; i < ndata_redirects; i++)
+	offnum = tombstone_unions;
+	for (int i = 0; i < nunions; i++)
 	{
-		OffsetNumber root_off = *offnum++;
-		OffsetNumber target_off = *offnum++;	/* first_live */
-		ItemId		rootlp = PageGetItemId(page, root_off);
-		uint32		rootoff = ItemIdGetOffset(rootlp);
-		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-		uint8		acc[(MaxHeapAttributeNumber + 8) / 8];
-		uint16		accbytes = 0;
-		OffsetNumber cur;
-		int			guard;
-		HotIndexedRedirectData *rd;
-		Size		blobsz;
+		OffsetNumber target_off = *offnum++;
+		OffsetNumber source_off = *offnum++;
+		ItemId		target_lp = PageGetItemId(page, target_off);
+		ItemId		source_lp = PageGetItemId(page, source_off);
+		HeapTupleHeader target_tup;
+		HeapTupleHeader source_tup;
+		HotIndexedTombstonePayload *target_payload;
+		const HotIndexedTombstonePayload *source_payload;
+		uint16		nbytes;
 
-		memset(acc, 0, sizeof(acc));
+		Assert(ItemIdIsNormal(target_lp));
+		Assert(ItemIdIsNormal(source_lp));
 
-		if (redirect_union_cursor != NULL)
-		{
-			/*
-			 * Replay: the union bitmap was logged (see
-			 * XLHP_HAS_REDIRECT_DATA), so use it verbatim rather than walking
-			 * the on-page chain.  Replay therefore does not depend on the
-			 * adjacent tombstones (which the now-unused pass may reclaim) or
-			 * on the chain layout.
-			 */
-			memcpy(&accbytes, redirect_union_cursor, sizeof(uint16));
-			redirect_union_cursor += sizeof(uint16);
-			Assert(accbytes <= sizeof(acc));
-			memcpy(acc, redirect_union_cursor, accbytes);
-			redirect_union_cursor += accbytes + (accbytes & 1);
-		}
-		else
-		{
-			/*
-			 * Primary: compute the union by walking the on-page chain.  A
-			 * re-collapse (root already a data redirect) already accounts for
-			 * the root -> old-target hops in its existing blob, so seed from
-			 * it and extend from the old target.
-			 */
-			if (HotIndexedRedirectIsData(rootlp))
-			{
-				HotIndexedRedirectData *old =
-					(HotIndexedRedirectData *) (((char *) page) + rootoff);
+		target_tup = (HeapTupleHeader) PageGetItem(page, target_lp);
+		source_tup = (HeapTupleHeader) PageGetItem(page, source_lp);
 
-				accbytes = old->rd_nbytes;
-				Assert(accbytes <= sizeof(acc));
-				memcpy(acc, old->rd_bitmap, accbytes);
-				cur = old->rd_target;
-			}
-			else
-			{
-				HeapTupleHeader rhtup = (HeapTupleHeader) PageGetItem(page, rootlp);
+		Assert(HeapTupleHeaderIsHotIndexedTombstone(target_tup));
+		Assert(HeapTupleHeaderIsHotIndexedTombstone(source_tup));
+		Assert(!HeapTupleHeaderIsHotIndexedBridge(target_tup));
+		Assert(!HeapTupleHeaderIsHotIndexedBridge(source_tup));
 
-				cur = ItemPointerGetOffsetNumberNoCheck(&rhtup->t_ctid);
-			}
+		target_payload = HotIndexedTombstoneGetPayload(target_tup);
+		source_payload = HotIndexedTombstoneGetPayloadConst(source_tup);
 
-			for (guard = 0; guard <= maxoff; guard++)
-			{
-				OffsetNumber toff = hot_indexed_find_adjacent_tombstone_off(page, cur);
-				ItemId		clp;
-				HeapTupleHeader chtup;
+		nbytes = target_payload->t_nbytes;
+		Assert(nbytes == source_payload->t_nbytes);
 
-				if (OffsetNumberIsValid(toff))
-				{
-					HeapTupleHeader th =
-						(HeapTupleHeader) PageGetItem(page, PageGetItemId(page, toff));
-					uint16		nb = HotIndexedTombstoneGetNbytes(th);
-					const uint8 *bm = HotIndexedTombstoneGetBitmap(th);
-
-					Assert(nb <= sizeof(acc));
-					if (nb > accbytes)
-						accbytes = nb;
-					for (uint16 b = 0; b < nb; b++)
-						acc[b] |= bm[b];
-				}
-
-				if (cur == target_off)
-					break;
-
-				clp = PageGetItemId(page, cur);
-				Assert(ItemIdIsNormal(clp));
-				chtup = (HeapTupleHeader) PageGetItem(page, clp);
-				if (HeapTupleHeaderIsHotIndexedBridge(chtup))
-					cur = HotIndexedBridgeGetForward(chtup);
-				else
-					cur = ItemPointerGetOffsetNumberNoCheck(&chtup->t_ctid);
-			}
-			Assert(cur == target_off);
-		}
-
-		blobsz = SizeOfHotIndexedRedirectData + accbytes;
-		Assert(blobsz <= ItemIdGetLength(rootlp));
-
-		rd = (HotIndexedRedirectData *) (((char *) page) + rootoff);
-		rd->rd_target = target_off;
-		rd->rd_nbytes = accbytes;
-		memcpy(rd->rd_bitmap, acc, accbytes);
-
-		/* LP_REDIRECT with data: lp_off unchanged, lp_len = blob size. */
-		rootlp->lp_flags = LP_REDIRECT;
-		rootlp->lp_len = (unsigned) blobsz;
+		for (uint16 b = 0; b < nbytes; b++)
+			target_payload->t_bitmap[b] |= source_payload->t_bitmap[b];
 	}
 
 	/* Update all now-unused line pointers */
@@ -3316,7 +3117,7 @@ page_verify_redirects(Page page)
 		if (!ItemIdIsRedirected(itemid))
 			continue;
 
-		targoff = HotIndexedRedirectGetTarget(page, itemid);
+		targoff = ItemIdGetRedirect(itemid);
 		targitem = PageGetItemId(page, targoff);
 
 		Assert(ItemIdIsUsed(targitem));
@@ -3324,16 +3125,8 @@ page_verify_redirects(Page page)
 		Assert(ItemIdHasStorage(targitem));
 		htup = (HeapTupleHeader) PageGetItem(page, targitem);
 
-		/*
-		 * A HOT-indexed data redirect may target a heap-only tuple
-		 * (single-hop collapse) or, after a later collapse, a bridge
-		 * tombstone; a plain redirect always targets a heap-only tuple.
-		 */
-		if (HotIndexedRedirectIsData(itemid))
-			Assert(HeapTupleHeaderIsHeapOnly(htup) ||
-				   HeapTupleHeaderIsHotIndexedTombstone(htup));
-		else
-			Assert(HeapTupleHeaderIsHeapOnly(htup));
+		/* A redirect always targets a heap-only tuple (first_live). */
+		Assert(HeapTupleHeaderIsHeapOnly(htup));
 	}
 #endif
 }
@@ -3415,7 +3208,7 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 			/* Must be a redirect item. We do not set its root_offsets entry */
 			Assert(ItemIdIsRedirected(lp));
 			/* Set up to scan the HOT-chain */
-			nextoffnum = HotIndexedRedirectGetTarget(page, lp);
+			nextoffnum = ItemIdGetRedirect(lp);
 			priorXmax = InvalidTransactionId;
 		}
 
@@ -3646,7 +3439,7 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 						  OffsetNumber *dead, int ndead,
 						  OffsetNumber *unused, int nunused,
 						  OffsetNumber *bridges, int nbridges,
-						  OffsetNumber *data_redirects, int ndata_redirects)
+						  OffsetNumber *tombstone_unions, int nunions)
 {
 	xl_heap_prune xlrec;
 	XLogRecPtr	recptr;
@@ -3662,12 +3455,10 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xlhp_prune_items dead_items;
 	xlhp_prune_items unused_items;
 	xlhp_prune_items bridge_items;
-	xlhp_prune_items data_redirect_items;
+	xlhp_prune_items tombstone_union_items;
 	OffsetNumber frz_offsets[MaxHeapTuplesPerPage];
-	char		redirect_unions[BLCKSZ];
-	Size		redirect_unions_len = 0;
 	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
-		nbridges > 0 || ndata_redirects > 0;
+		nbridges > 0 || nunions > 0;
 	bool		do_set_vm = vmflags & VISIBILITYMAP_VALID_BITS;
 	bool		heap_fpi_allowed = true;
 
@@ -3765,40 +3556,15 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 		XLogRegisterBufData(0, bridges,
 							sizeof(OffsetNumber[2]) * nbridges);
 	}
-	if (ndata_redirects > 0)
+	if (nunions > 0)
 	{
-		xlrec.flags |= XLHP_HAS_REDIRECT_DATA;
+		xlrec.flags |= XLHP_HAS_TOMBSTONE_UNIONS;
 
-		data_redirect_items.ntargets = ndata_redirects;
-		XLogRegisterBufData(0, &data_redirect_items,
+		tombstone_union_items.ntargets = nunions;
+		XLogRegisterBufData(0, &tombstone_union_items,
 							offsetof(xlhp_prune_items, data));
-		XLogRegisterBufData(0, data_redirects,
-							sizeof(OffsetNumber[2]) * ndata_redirects);
-
-		/*
-		 * Log each redirect's union bitmap, read from the on-page blob just
-		 * written by heap_page_prune_execute, so replay reconstructs the blob
-		 * directly instead of walking the chain.  Each entry is a uint16 byte
-		 * count plus that many bitmap bytes, padded to even length to keep
-		 * the cursor 2-byte aligned for the frz_offsets that may follow.
-		 */
-		for (int i = 0; i < ndata_redirects; i++)
-		{
-			OffsetNumber root = data_redirects[i * 2];
-			ItemId		rlp = PageGetItemId(heap_page, root);
-			HotIndexedRedirectData *rd =
-				(HotIndexedRedirectData *) (((char *) heap_page) + ItemIdGetOffset(rlp));
-			uint16		nb = rd->rd_nbytes;
-
-			Assert(redirect_unions_len + sizeof(uint16) + nb + (nb & 1) <= BLCKSZ);
-			memcpy(redirect_unions + redirect_unions_len, &nb, sizeof(uint16));
-			redirect_unions_len += sizeof(uint16);
-			memcpy(redirect_unions + redirect_unions_len, rd->rd_bitmap, nb);
-			redirect_unions_len += nb;
-			if (nb & 1)
-				redirect_unions[redirect_unions_len++] = 0;
-		}
-		XLogRegisterBufData(0, redirect_unions, redirect_unions_len);
+		XLogRegisterBufData(0, tombstone_unions,
+							sizeof(OffsetNumber[2]) * nunions);
 	}
 	if (nfrozen > 0)
 		XLogRegisterBufData(0, frz_offsets,

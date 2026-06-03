@@ -8569,12 +8569,9 @@ index_delete_check_htid(TM_IndexDeleteOp *delstate,
 	}
 
 	/*
-	 * A redirect target (plain LP_REDIRECT, or a HOT-indexed data redirect,
-	 * which is an LP_REDIRECT carrying a bitmap and so reports lp_len > 0) is
-	 * a valid chain root: an index entry pointing at it is legitimate and the
-	 * caller's chain walk decides deletability.  Only genuinely normal tuples
-	 * are inspected below -- testing ItemIdIsNormal (not ItemIdHasStorage)
-	 * keeps the data redirect's blob from being read as a HeapTupleHeader.
+	 * A redirect target (LP_REDIRECT) is a valid chain root: an index entry
+	 * pointing at it is legitimate and the caller's chain walk decides
+	 * deletability.  Only genuinely normal tuples are inspected below.
 	 */
 	if (ItemIdIsNormal(iid))
 	{
@@ -8850,7 +8847,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 			lp = PageGetItemId(page, offnum);
 			if (ItemIdIsRedirected(lp))
 			{
-				offnum = HotIndexedRedirectGetTarget(page, lp);
+				offnum = ItemIdGetRedirect(lp);
 				continue;
 			}
 

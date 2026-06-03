@@ -210,7 +210,7 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 				ereport(NOTICE,
 						errmsg("skipping tid (%u, %u) for relation \"%s\" because it redirects to item %u",
 							   blkno, offno, RelationGetRelationName(rel),
-							   HotIndexedRedirectGetTarget(page, itemid)));
+							   ItemIdGetRedirect(itemid)));
 				continue;
 			}
 			else if (ItemIdIsDead(itemid))

@@ -109,7 +109,7 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 			if (ItemIdIsRedirected(lp))
 			{
 				/* Walk the chain starting at the redirect target. */
-				OffsetNumber cur = HotIndexedRedirectGetTarget(page, lp);
+				OffsetNumber cur = ItemIdGetRedirect(lp);
 				int64		len = 0;
 
 				while (cur >= FirstOffsetNumber && cur <= maxoff)

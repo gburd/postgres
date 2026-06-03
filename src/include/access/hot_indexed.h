@@ -63,73 +63,6 @@
 #include "storage/itemptr.h"
 
 /*
- * HotIndexedRedirectData -- data carried by a HOT-indexed "data redirect".
- *
- * At a page prune that collapses a HOT-indexed chain, the dead chain root is
- * collapsed to an LP_REDIRECT that, instead of being a plain zero-length
- * redirect, reuses the dead root tuple's freed bytes to store this structure:
- * the redirect target plus the union of the modified-attrs bitmaps of every
- * hop from the root to the target.  The target is always first_live (a live
- * tuple, never a reclaimable bridge), so the redirect never dangles when an
- * intermediate hop is later reclaimed.  A leaf pointing at the root reads the
- * union directly to decide staleness, without traversing the chain; for a
- * single-hop chain the live successor's adjacent tombstone is then reclaimed,
- * its bitmap now living here.  The line pointer has lp_flags = LP_REDIRECT and
- * lp_len > 0 (a plain HOT redirect has lp_len == 0); lp_off addresses these
- * bytes, so PageRepairFragmentation relocates them like any stored item.
- * Because lp_off no longer holds the target offset, the target is read from
- * rd_target via HotIndexedRedirectGetTarget().
- */
-typedef struct HotIndexedRedirectData
-{
-	OffsetNumber rd_target;		/* redirect target (live successor offset) */
-	uint16		rd_nbytes;		/* modified-attrs bitmap byte count */
-	uint8		rd_bitmap[FLEXIBLE_ARRAY_MEMBER];
-} HotIndexedRedirectData;
-
-#define SizeOfHotIndexedRedirectData \
-	offsetof(HotIndexedRedirectData, rd_bitmap)
-
-static inline Size
-HotIndexedRedirectSize(int natts)
-{
-	return MAXALIGN(SizeOfHotIndexedRedirectData + ((natts + 7) / 8));
-}
-
-/*
- * HotIndexedRedirectIsData
- *		True iff a line pointer is a HOT-indexed data redirect (an
- *		LP_REDIRECT carrying a HotIndexedRedirectData blob).  A plain HOT
- *		redirect has lp_len == 0; a data redirect has lp_len > 0.
- */
-static inline bool
-HotIndexedRedirectIsData(ItemId lp)
-{
-	return ItemIdIsRedirected(lp) && ItemIdHasStorage(lp);
-}
-
-static inline HotIndexedRedirectData *
-HotIndexedRedirectGetData(Page page, ItemId lp)
-{
-	return (HotIndexedRedirectData *) PageGetItem(page, lp);
-}
-
-/*
- * HotIndexedRedirectGetTarget
- *		Offset the redirect resolves to, for either a plain HOT redirect
- *		(lp_off) or a HOT-indexed data redirect (rd_target in the blob).
- *		Use this in place of ItemIdGetRedirect() wherever a same-page chain
- *		walk may encounter a data redirect.
- */
-static inline OffsetNumber
-HotIndexedRedirectGetTarget(Page page, ItemId lp)
-{
-	if (HotIndexedRedirectIsData(lp))
-		return HotIndexedRedirectGetData(page, lp)->rd_target;
-	return ItemIdGetRedirect(lp);
-}
-
-/*
  * HotIndexedTombstonePayload -- the bytes that follow a tombstone's
  * HeapTupleHeader, starting at t_hoff.
  *
@@ -280,14 +213,6 @@ extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePa
  */
 extern bool heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *p,
 											  const Bitmapset *index_attrs);
-
-/*
- * heap_hot_indexed_redirect_overlaps
- *		Like heap_hot_indexed_payload_overlaps but for a HOT-indexed data
- *		redirect's bitmap (HotIndexedRedirectData.rd_bitmap).
- */
-extern bool heap_hot_indexed_redirect_overlaps(const HotIndexedRedirectData *rd,
-											   const Bitmapset *index_attrs);
 
 /*
  * heap_build_hot_indexed_bridge

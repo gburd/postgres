@@ -352,18 +352,14 @@ typedef struct xl_heap_prune
 #define		XLHP_HAS_HOT_INDEXED_BRIDGES   (1 << 10)
 
 /*
- * XLHP_HAS_REDIRECT_DATA indicates that an xlhp_prune_items sub-record with
- * (root, target) pairs follows, describing chain roots that pruneheap
- * collapsed to HOT-indexed data redirects (an LP_REDIRECT carrying the union
- * of the skipped hops' modified-attrs bitmaps in the dead root's freed bytes).
- * Immediately after the (root, target) pairs, one variable-length union entry
- * per redirect follows, in the same order: a uint16 byte count and that many
- * bitmap bytes, padded to an even length so the cursor stays 2-byte aligned.
- * Replay writes each blob directly from its logged union, so it never walks the
- * on-page chain or depends on the adjacent tombstones (which the accompanying
- * XLHP_HAS_NOW_UNUSED_ITEMS sub-record may reclaim).  See access/hot_indexed.h.
+ * XLHP_HAS_TOMBSTONE_UNIONS indicates that an xlhp_prune_items sub-record with
+ * (target, source) pairs follows, describing HOT-indexed tombstones whose
+ * modified-attrs bitmaps pruneheap OR-merged: at replay each source
+ * tombstone's bitmap is OR'd byte-by-byte into the target tombstone's bitmap.
+ * The source tombstone LPs are reclaimed via the accompanying
+ * XLHP_HAS_NOW_UNUSED_ITEMS sub-record.  See access/hot_indexed.h.
  */
-#define		XLHP_HAS_REDIRECT_DATA		   (1 << 12)
+#define		XLHP_HAS_TOMBSTONE_UNIONS	   (1 << 12)
 
 /*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
@@ -520,8 +516,7 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   int *ndead, OffsetNumber **nowdead,
 												   int *nunused, OffsetNumber **nowunused,
 												   int *nbridges, OffsetNumber **bridges,
-												   int *ndata_redirects,
-												   OffsetNumber **data_redirects,
-												   const char **redirect_unions);
+												   int *nunions,
+												   OffsetNumber **tombstone_unions);
 
 #endif							/* HEAPAM_XLOG_H */
