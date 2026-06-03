@@ -75,9 +75,7 @@
  */
 #define GUC_SAFE_SEARCH_PATH "pg_catalog, pg_temp"
 
-static session_local int	GUC_check_errcode_value;
 
-static session_local List *reserved_class_prefix = NIL;
 
 /* global variables for check hook support */
 session_local char	   *GUC_check_errmsg_string;
@@ -198,7 +196,6 @@ static const char *const map_old_guc_names[] = {
 
 
 /* Memory context holding all GUC-related data */
-static session_local MemoryContext GUCMemoryContext;
 
 /*
  * We use a dynahash table to look up GUCs by name, or to iterate through
@@ -211,7 +208,38 @@ typedef struct
 	struct config_generic *gucvar;	/* -> GUC's defining structure */
 } GUCHashEntry;
 
-static session_local HTAB *guc_hashtab;		/* entries are GUCHashEntrys */
+/*
+ * Per-session GUC machinery bookkeeping (the file-local GUC state).
+ * The exported GUC_check_errmsg_string / _errdetail_string / _errhint_string
+ * (used by check-hook callers) stay standalone above.
+ */
+typedef struct GucState
+{
+	/* errcode value set by a GUC check hook via GUC_check_errcode(). */
+	int			GUC_check_errcode_value;
+	/* List of reserved GUC class prefixes. */
+	List	   *reserved_class_prefix;
+	/* Memory context holding all GUC-related data. */
+	MemoryContext GUCMemoryContext;
+	/* dynahash table of all GUCs, keyed by name (entries are GUCHashEntrys). */
+	HTAB	   *guc_hashtab;
+	/* list of variables whose source differs from PGC_S_DEFAULT */
+	dlist_head	guc_nondef_list;
+	/* list of variables that have a non-NULL stack */
+	slist_head	guc_stack_list;
+	/* list of variables that have the GUC_NEEDS_REPORT bit set in status */
+	slist_head	guc_report_list;
+	/* true to enable GUC_REPORT */
+	bool		reporting_enabled;
+	/* GUC nesting level; 1 when in main transaction */
+	int			GUCNestLevel;
+} GucState;
+
+static session_local GucState guc_state = {
+	.reserved_class_prefix = NIL,
+	.GUCNestLevel = 0,
+};
+
 
 /*
  * In addition to the hash table, variables having certain properties are
@@ -221,16 +249,8 @@ static session_local HTAB *guc_hashtab;		/* entries are GUCHashEntrys */
  * and report lists is stylized enough that they can be slists, but the
  * nondef list has to be a dlist to avoid O(N) deletes in common cases.
  */
-static session_local dlist_head guc_nondef_list;	/* list of variables that have source
-									 * different from PGC_S_DEFAULT */
-static session_local slist_head guc_stack_list;	/* list of variables that have non-NULL
-									 * stack */
-static session_local slist_head guc_report_list;	/* list of variables that have the
-									 * GUC_NEEDS_REPORT bit set in status */
 
-static session_local bool reporting_enabled;	/* true to enable GUC_REPORT */
 
-static session_local int	GUCNestLevel = 0;	/* 1 when in main transaction */
 
 
 static int	guc_var_compare(const void *a, const void *b);
@@ -365,7 +385,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * need this so that we can tell below which ones have been removed from
 	 * the file since we last processed it.
 	 */
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 	{
 		struct config_generic *gconf = hentry->gucvar;
@@ -450,7 +470,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * boot-time defaults.  If such a variable can't be changed after startup,
 	 * report that and continue.
 	 */
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 	{
 		struct config_generic *gconf = hentry->gucvar;
@@ -638,7 +658,7 @@ guc_malloc(int elevel, size_t size)
 {
 	void	   *data;
 
-	data = MemoryContextAllocExtended(GUCMemoryContext, size,
+	data = MemoryContextAllocExtended(guc_state.GUCMemoryContext, size,
 									  MCXT_ALLOC_NO_OOM);
 	if (unlikely(data == NULL))
 		ereport(elevel,
@@ -655,14 +675,14 @@ guc_realloc(int elevel, void *old, size_t size)
 	if (old != NULL)
 	{
 		/* This is to help catch old code that malloc's GUC data. */
-		Assert(GetMemoryChunkContext(old) == GUCMemoryContext);
+		Assert(GetMemoryChunkContext(old) == guc_state.GUCMemoryContext);
 		data = repalloc_extended(old, size,
 								 MCXT_ALLOC_NO_OOM);
 	}
 	else
 	{
 		/* Like realloc(3), but not like repalloc(), we allow old == NULL. */
-		data = MemoryContextAllocExtended(GUCMemoryContext, size,
+		data = MemoryContextAllocExtended(guc_state.GUCMemoryContext, size,
 										  MCXT_ALLOC_NO_OOM);
 	}
 	if (unlikely(data == NULL))
@@ -694,7 +714,7 @@ guc_free(void *ptr)
 	if (ptr != NULL)
 	{
 		/* This is to help catch old code that malloc's GUC data. */
-		Assert(GetMemoryChunkContext(ptr) == GUCMemoryContext);
+		Assert(GetMemoryChunkContext(ptr) == guc_state.GUCMemoryContext);
 		pfree(ptr);
 	}
 }
@@ -844,12 +864,12 @@ get_guc_variables(int *num_vars)
 	GUCHashEntry *hentry;
 	int			i;
 
-	*num_vars = hash_get_num_entries(guc_hashtab);
+	*num_vars = hash_get_num_entries(guc_state.guc_hashtab);
 	result = palloc_array(struct config_generic *, *num_vars);
 
 	/* Extract pointers from the hash table */
 	i = 0;
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 		result[i++] = hentry->gucvar;
 	Assert(i == *num_vars);
@@ -879,9 +899,9 @@ build_guc_variables(void)
 	/*
 	 * Create the memory context that will hold all GUC-related data.
 	 */
-	Assert(GUCMemoryContext == NULL);
-	GUCMemoryContext = AllocSetContextCreate(TopMemoryContext,
-											 "GUCMemoryContext",
+	Assert(guc_state.GUCMemoryContext == NULL);
+	guc_state.GUCMemoryContext = AllocSetContextCreate(TopMemoryContext,
+											 "guc_state.GUCMemoryContext",
 											 ALLOCSET_DEFAULT_SIZES);
 
 	/*
@@ -899,8 +919,8 @@ build_guc_variables(void)
 	hash_ctl.entrysize = sizeof(GUCHashEntry);
 	hash_ctl.hash = guc_name_hash;
 	hash_ctl.match = guc_name_match;
-	hash_ctl.hcxt = GUCMemoryContext;
-	guc_hashtab = hash_create("GUC hash table",
+	hash_ctl.hcxt = guc_state.GUCMemoryContext;
+	guc_state.guc_hashtab = hash_create("GUC hash table",
 							  size_vars,
 							  &hash_ctl,
 							  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
@@ -909,7 +929,7 @@ build_guc_variables(void)
 	{
 		struct config_generic *gucvar = &ConfigureNames[i];
 
-		hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+		hentry = (GUCHashEntry *) hash_search(guc_state.guc_hashtab,
 											  &gucvar->name,
 											  HASH_ENTER,
 											  &found);
@@ -917,7 +937,7 @@ build_guc_variables(void)
 		hentry->gucvar = gucvar;
 	}
 
-	Assert(num_vars == hash_get_num_entries(guc_hashtab));
+	Assert(num_vars == hash_get_num_entries(guc_state.guc_hashtab));
 }
 
 /*
@@ -930,7 +950,7 @@ add_guc_variable(struct config_generic *var, int elevel)
 	GUCHashEntry *hentry;
 	bool		found;
 
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+	hentry = (GUCHashEntry *) hash_search(guc_state.guc_hashtab,
 										  &var->name,
 										  HASH_ENTER_NULL,
 										  &found);
@@ -1021,7 +1041,7 @@ assignable_custom_variable_name(const char *name, bool skip_errors, int elevel)
 			return false;
 		}
 		/* ... and it must not match any previously-reserved prefix */
-		foreach(lc, reserved_class_prefix)
+		foreach(lc, guc_state.reserved_class_prefix)
 		{
 			const char *rcprefix = lfirst(lc);
 
@@ -1119,7 +1139,7 @@ find_option(const char *name, bool create_placeholders, bool skip_errors,
 	Assert(name);
 
 	/* Look it up using the hash table. */
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+	hentry = (GUCHashEntry *) hash_search(guc_state.guc_hashtab,
 										  &name,
 										  HASH_FIND,
 										  NULL);
@@ -1226,7 +1246,7 @@ guc_name_hash(const void *key, Size keysize)
 }
 
 /*
- * Dynahash match function to use in guc_hashtab
+ * Dynahash match function to use in guc_state.guc_hashtab
  */
 static int
 guc_name_match(const void *key1, const void *key2, Size keysize)
@@ -1417,7 +1437,7 @@ InitializeGUCOptions(void)
 	pg_timezone_initialize();
 
 	/*
-	 * Create GUCMemoryContext and build hash table of all GUC variables.
+	 * Create guc_state.GUCMemoryContext and build hash table of all GUC variables.
 	 */
 	build_guc_variables();
 
@@ -1425,7 +1445,7 @@ InitializeGUCOptions(void)
 	 * Load all variables with their compiled-in defaults, and initialize
 	 * status fields as needed.
 	 */
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 	{
 		/* Check mapping between initial and default value */
@@ -1434,7 +1454,7 @@ InitializeGUCOptions(void)
 		InitializeOneGUCOption(hentry->gucvar);
 	}
 
-	reporting_enabled = false;
+	guc_state.reporting_enabled = false;
 
 	/*
 	 * Prevent any attempt to override the transaction modes from
@@ -1635,9 +1655,9 @@ RemoveGUCFromLists(struct config_generic *gconf)
 	if (gconf->source != PGC_S_DEFAULT)
 		dlist_delete(&gconf->nondef_link);
 	if (gconf->stack != NULL)
-		slist_delete(&guc_stack_list, &gconf->stack_link);
+		slist_delete(&guc_state.guc_stack_list, &gconf->stack_link);
 	if (gconf->status & GUC_NEEDS_REPORT)
-		slist_delete(&guc_report_list, &gconf->report_link);
+		slist_delete(&guc_state.guc_report_list, &gconf->report_link);
 }
 
 
@@ -1912,7 +1932,7 @@ ResetAllOptions(void)
 	dlist_mutable_iter iter;
 
 	/* We need only consider GUCs not already at PGC_S_DEFAULT */
-	dlist_foreach_modify(iter, &guc_nondef_list)
+	dlist_foreach_modify(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *gconf = dlist_container(struct config_generic,
 													   nondef_link, iter.cur);
@@ -2002,7 +2022,7 @@ ResetAllOptions(void)
 		if ((gconf->flags & GUC_REPORT) && !(gconf->status & GUC_NEEDS_REPORT))
 		{
 			gconf->status |= GUC_NEEDS_REPORT;
-			slist_push_head(&guc_report_list, &gconf->report_link);
+			slist_push_head(&guc_state.guc_report_list, &gconf->report_link);
 		}
 	}
 }
@@ -2012,7 +2032,7 @@ ResetAllOptions(void)
  * Apply a change to a GUC variable's "source" field.
  *
  * Use this rather than just assigning, to ensure that the variable's
- * membership in guc_nondef_list is updated correctly.
+ * membership in guc_state.guc_nondef_list is updated correctly.
  */
 static void
 set_guc_source(struct config_generic *gconf, GucSource newsource)
@@ -2021,7 +2041,7 @@ set_guc_source(struct config_generic *gconf, GucSource newsource)
 	if (gconf->source == PGC_S_DEFAULT)
 	{
 		if (newsource != PGC_S_DEFAULT)
-			dlist_push_tail(&guc_nondef_list, &gconf->nondef_link);
+			dlist_push_tail(&guc_state.guc_nondef_list, &gconf->nondef_link);
 	}
 	else
 	{
@@ -2043,15 +2063,15 @@ push_old_value(struct config_generic *gconf, GucAction action)
 	GucStack   *stack;
 
 	/* If we're not inside a nest level, do nothing */
-	if (GUCNestLevel == 0)
+	if (guc_state.GUCNestLevel == 0)
 		return;
 
 	/* Do we already have a stack entry of the current nest level? */
 	stack = gconf->stack;
-	if (stack && stack->nest_level >= GUCNestLevel)
+	if (stack && stack->nest_level >= guc_state.GUCNestLevel)
 	{
 		/* Yes, so adjust its state if necessary */
-		Assert(stack->nest_level == GUCNestLevel);
+		Assert(stack->nest_level == guc_state.GUCNestLevel);
 		switch (action)
 		{
 			case GUC_ACTION_SET:
@@ -2091,7 +2111,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 												sizeof(GucStack));
 
 	stack->prev = gconf->stack;
-	stack->nest_level = GUCNestLevel;
+	stack->nest_level = guc_state.GUCNestLevel;
 	switch (action)
 	{
 		case GUC_ACTION_SET:
@@ -2110,7 +2130,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 	set_stack_value(gconf, &stack->prior);
 
 	if (gconf->stack == NULL)
-		slist_push_head(&guc_stack_list, &gconf->stack_link);
+		slist_push_head(&guc_state.guc_stack_list, &gconf->stack_link);
 	gconf->stack = stack;
 }
 
@@ -2126,10 +2146,10 @@ AtStart_GUC(void)
 	 * didn't call AtEOXact_GUC, or called it with the wrong nestLevel.  We
 	 * throw a warning but make no other effort to clean up.
 	 */
-	if (GUCNestLevel != 0)
+	if (guc_state.GUCNestLevel != 0)
 		elog(WARNING, "GUC nest level = %d at transaction start",
-			 GUCNestLevel);
-	GUCNestLevel = 1;
+			 guc_state.GUCNestLevel);
+	guc_state.GUCNestLevel = 1;
 }
 
 /*
@@ -2141,7 +2161,7 @@ AtStart_GUC(void)
 int
 NewGUCNestLevel(void)
 {
-	return ++GUCNestLevel;
+	return ++guc_state.GUCNestLevel;
 }
 
 /*
@@ -2171,16 +2191,16 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 	slist_mutable_iter iter;
 
 	/*
-	 * Note: it's possible to get here with GUCNestLevel == nestLevel-1 during
+	 * Note: it's possible to get here with guc_state.GUCNestLevel == nestLevel-1 during
 	 * abort, if there is a failure during transaction start before
 	 * AtStart_GUC is called.
 	 */
 	Assert(nestLevel > 0 &&
-		   (nestLevel <= GUCNestLevel ||
-			(nestLevel == GUCNestLevel + 1 && !isCommit)));
+		   (nestLevel <= guc_state.GUCNestLevel ||
+			(nestLevel == guc_state.GUCNestLevel + 1 && !isCommit)));
 
 	/* We need only process GUCs having nonempty stacks */
-	slist_foreach_modify(iter, &guc_stack_list)
+	slist_foreach_modify(iter, &guc_state.guc_stack_list)
 	{
 		struct config_generic *gconf = slist_container(struct config_generic,
 													   stack_link, iter.cur);
@@ -2423,7 +2443,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 
 			/*
 			 * Pop the GUC's state stack; if it's now empty, remove the GUC
-			 * from guc_stack_list.
+			 * from guc_state.guc_stack_list.
 			 */
 			gconf->stack = prev;
 			if (prev == NULL)
@@ -2435,13 +2455,13 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 				!(gconf->status & GUC_NEEDS_REPORT))
 			{
 				gconf->status |= GUC_NEEDS_REPORT;
-				slist_push_head(&guc_report_list, &gconf->report_link);
+				slist_push_head(&guc_state.guc_report_list, &gconf->report_link);
 			}
 		}						/* end of stack-popping loop */
 	}
 
 	/* Update nesting level */
-	GUCNestLevel = nestLevel - 1;
+	guc_state.GUCNestLevel = nestLevel - 1;
 }
 
 
@@ -2461,7 +2481,7 @@ BeginReportingGUCOptions(void)
 	if (whereToSendOutput != DestRemote)
 		return;
 
-	reporting_enabled = true;
+	guc_state.reporting_enabled = true;
 
 	/*
 	 * Hack for in_hot_standby: set the GUC value true if appropriate.  This
@@ -2476,7 +2496,7 @@ BeginReportingGUCOptions(void)
 						PGC_INTERNAL, PGC_S_OVERRIDE);
 
 	/* Transmit initial values of interesting variables */
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 	{
 		struct config_generic *conf = hentry->gucvar;
@@ -2505,7 +2525,7 @@ ReportChangedGUCOptions(void)
 	slist_mutable_iter iter;
 
 	/* Quick exit if not (yet) enabled */
-	if (!reporting_enabled)
+	if (!guc_state.reporting_enabled)
 		return;
 
 	/*
@@ -2519,7 +2539,7 @@ ReportChangedGUCOptions(void)
 						PGC_INTERNAL, PGC_S_OVERRIDE);
 
 	/* Transmit new values of interesting variables */
-	slist_foreach_modify(iter, &guc_report_list)
+	slist_foreach_modify(iter, &guc_state.guc_report_list)
 	{
 		struct config_generic *conf = slist_container(struct config_generic,
 													  report_link, iter.cur);
@@ -4171,7 +4191,7 @@ set_config_with_handle(const char *name, config_handle *handle,
 		!(record->status & GUC_NEEDS_REPORT))
 	{
 		record->status |= GUC_NEEDS_REPORT;
-		slist_push_head(&guc_report_list, &record->report_link);
+		slist_push_head(&guc_state.guc_report_list, &record->report_link);
 	}
 
 	return changeVal ? 1 : -1;
@@ -4846,7 +4866,7 @@ define_custom_variable(struct config_generic *variable)
 	/*
 	 * See if there's a placeholder by the same name.
 	 */
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+	hentry = (GUCHashEntry *) hash_search(guc_state.guc_hashtab,
 										  &name,
 										  HASH_FIND,
 										  NULL);
@@ -5016,7 +5036,7 @@ reapply_stacked_values(struct config_generic *variable,
 										 GUC_ACTION_SET, true, WARNING, false);
 			if (variable->stack != NULL)
 			{
-				slist_delete(&guc_stack_list, &variable->stack_link);
+				slist_delete(&guc_state.guc_stack_list, &variable->stack_link);
 				variable->stack = NULL;
 			}
 		}
@@ -5194,7 +5214,7 @@ MarkGUCPrefixReserved(const char *className)
 	 * Check for existing placeholders.  We must actually remove invalid
 	 * placeholders, else future parallel worker startups will fail.
 	 */
-	hash_seq_init(&status, guc_hashtab);
+	hash_seq_init(&status, guc_state.guc_hashtab);
 	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 	{
 		struct config_generic *var = hentry->gucvar;
@@ -5210,7 +5230,7 @@ MarkGUCPrefixReserved(const char *className)
 					 errdetail("\"%s\" is now a reserved prefix.",
 							   className)));
 			/* Remove it from the hash table */
-			hash_search(guc_hashtab,
+			hash_search(guc_state.guc_hashtab,
 						&var->name,
 						HASH_REMOVE,
 						NULL);
@@ -5222,8 +5242,8 @@ MarkGUCPrefixReserved(const char *className)
 	}
 
 	/* And remember the name so we can prevent future mistakes. */
-	oldcontext = MemoryContextSwitchTo(GUCMemoryContext);
-	reserved_class_prefix = lappend(reserved_class_prefix, pstrdup(className));
+	oldcontext = MemoryContextSwitchTo(guc_state.GUCMemoryContext);
+	guc_state.reserved_class_prefix = lappend(guc_state.reserved_class_prefix, pstrdup(className));
 	MemoryContextSwitchTo(oldcontext);
 }
 
@@ -5246,10 +5266,10 @@ get_explain_guc_options(int *num)
 	 * While only a fraction of all the GUC variables are marked GUC_EXPLAIN,
 	 * it doesn't seem worth dynamically resizing this array.
 	 */
-	result = palloc_array(struct config_generic *, hash_get_num_entries(guc_hashtab));
+	result = palloc_array(struct config_generic *, hash_get_num_entries(guc_state.guc_hashtab));
 
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
-	dlist_foreach(iter, &guc_nondef_list)
+	dlist_foreach(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *conf = dlist_container(struct config_generic,
 													  nondef_link, iter.cur);
@@ -5582,7 +5602,7 @@ write_nondefault_variables(GucContext context)
 	}
 
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
-	dlist_foreach(iter, &guc_nondef_list)
+	dlist_foreach(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *gconf = dlist_container(struct config_generic,
 													   nondef_link, iter.cur);
@@ -5865,7 +5885,7 @@ EstimateGUCStateSpace(void)
 	 *
 	 * We need only process non-default GUCs.
 	 */
-	dlist_foreach(iter, &guc_nondef_list)
+	dlist_foreach(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *gconf = dlist_container(struct config_generic,
 													   nondef_link, iter.cur);
@@ -6018,7 +6038,7 @@ SerializeGUCState(Size maxsize, char *start_address)
 	bytes_left = maxsize - sizeof(actual_size);
 
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
-	dlist_foreach(iter, &guc_nondef_list)
+	dlist_foreach(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *gconf = dlist_container(struct config_generic,
 													   nondef_link, iter.cur);
@@ -6134,7 +6154,7 @@ RestoreGUCState(void *gucstate)
 	 * also ensures that set_config_option won't refuse to set them because of
 	 * source-priority comparisons.
 	 */
-	dlist_foreach_modify(iter, &guc_nondef_list)
+	dlist_foreach_modify(iter, &guc_state.guc_nondef_list)
 	{
 		struct config_generic *gconf = dlist_container(struct config_generic,
 													   nondef_link, iter.cur);
@@ -6665,7 +6685,7 @@ validate_option_array_item(const char *name, const char *value,
 void
 GUC_check_errcode(int sqlerrcode)
 {
-	GUC_check_errcode_value = sqlerrcode;
+	guc_state.GUC_check_errcode_value = sqlerrcode;
 }
 
 
@@ -6684,7 +6704,7 @@ call_bool_check_hook(const struct config_generic *conf, bool *newval, void **ext
 		return true;
 
 	/* Reset variables that might be set by hook */
-	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+	guc_state.GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
 	GUC_check_errmsg_string = NULL;
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
@@ -6692,7 +6712,7 @@ call_bool_check_hook(const struct config_generic *conf, bool *newval, void **ext
 	if (!conf->_bool.check_hook(newval, extra, source))
 	{
 		ereport(elevel,
-				(errcode(GUC_check_errcode_value),
+				(errcode(guc_state.GUC_check_errcode_value),
 				 GUC_check_errmsg_string ?
 				 errmsg_internal("%s", GUC_check_errmsg_string) :
 				 errmsg("invalid value for parameter \"%s\": %d",
@@ -6718,7 +6738,7 @@ call_int_check_hook(const struct config_generic *conf, int *newval, void **extra
 		return true;
 
 	/* Reset variables that might be set by hook */
-	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+	guc_state.GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
 	GUC_check_errmsg_string = NULL;
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
@@ -6726,7 +6746,7 @@ call_int_check_hook(const struct config_generic *conf, int *newval, void **extra
 	if (!conf->_int.check_hook(newval, extra, source))
 	{
 		ereport(elevel,
-				(errcode(GUC_check_errcode_value),
+				(errcode(guc_state.GUC_check_errcode_value),
 				 GUC_check_errmsg_string ?
 				 errmsg_internal("%s", GUC_check_errmsg_string) :
 				 errmsg("invalid value for parameter \"%s\": %d",
@@ -6752,7 +6772,7 @@ call_real_check_hook(const struct config_generic *conf, double *newval, void **e
 		return true;
 
 	/* Reset variables that might be set by hook */
-	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+	guc_state.GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
 	GUC_check_errmsg_string = NULL;
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
@@ -6760,7 +6780,7 @@ call_real_check_hook(const struct config_generic *conf, double *newval, void **e
 	if (!conf->_real.check_hook(newval, extra, source))
 	{
 		ereport(elevel,
-				(errcode(GUC_check_errcode_value),
+				(errcode(guc_state.GUC_check_errcode_value),
 				 GUC_check_errmsg_string ?
 				 errmsg_internal("%s", GUC_check_errmsg_string) :
 				 errmsg("invalid value for parameter \"%s\": %g",
@@ -6795,7 +6815,7 @@ call_string_check_hook(const struct config_generic *conf, char **newval, void **
 	PG_TRY();
 	{
 		/* Reset variables that might be set by hook */
-		GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+		guc_state.GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
 		GUC_check_errmsg_string = NULL;
 		GUC_check_errdetail_string = NULL;
 		GUC_check_errhint_string = NULL;
@@ -6803,7 +6823,7 @@ call_string_check_hook(const struct config_generic *conf, char **newval, void **
 		if (!conf->_string.check_hook(newval, extra, source))
 		{
 			ereport(elevel,
-					(errcode(GUC_check_errcode_value),
+					(errcode(guc_state.GUC_check_errcode_value),
 					 GUC_check_errmsg_string ?
 					 errmsg_internal("%s", GUC_check_errmsg_string) :
 					 errmsg("invalid value for parameter \"%s\": \"%s\"",
@@ -6836,7 +6856,7 @@ call_enum_check_hook(const struct config_generic *conf, int *newval, void **extr
 		return true;
 
 	/* Reset variables that might be set by hook */
-	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+	guc_state.GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
 	GUC_check_errmsg_string = NULL;
 	GUC_check_errdetail_string = NULL;
 	GUC_check_errhint_string = NULL;
@@ -6844,7 +6864,7 @@ call_enum_check_hook(const struct config_generic *conf, int *newval, void **extr
 	if (!conf->_enum.check_hook(newval, extra, source))
 	{
 		ereport(elevel,
-				(errcode(GUC_check_errcode_value),
+				(errcode(guc_state.GUC_check_errcode_value),
 				 GUC_check_errmsg_string ?
 				 errmsg_internal("%s", GUC_check_errmsg_string) :
 				 errmsg("invalid value for parameter \"%s\": \"%s\"",
