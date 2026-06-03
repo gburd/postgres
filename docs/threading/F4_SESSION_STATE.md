@@ -122,6 +122,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 32 | `commands/async.c` | `AsyncState` / `async_state` | 5 | **Pure fold** — folded the five *private* file-local session_local statics (`pendingActions`, `pendingNotifies`, `unlistenExitRegistered`, `amRegisteredListener`, `tryAdvanceTail`) into one file-local `static session_local AsyncState async_state`. All five are fully private (no externs, only `async.c` references them). The plain `static` vars (`pendingListenActions`, `queueHeadBeforeWrite`, `queueHeadAfterWrite`, `signalPids`, `signalProcnos`), the `volatile sig_atomic_t notifyInterruptPending`, and the GUC vars interspersed among them are all left standalone. Struct anchored after the `NotificationList` typedef so member types are in scope. No name collisions; only 2 prose-comment FPs (correctly skipped). Single-file, no header change. 92 use sites rewritten. |
 
+| 33 | `access/common/reloptions.c` | `ReloptionsState` / `relopts_state` | 5 | **Pure fold** — folded the five *private* file-local session_local statics (`relOpts`, `last_assigned_kind`, `num_custom_options`, `custom_options`, `need_initialization`) into one file-local `static session_local ReloptionsState relopts_state`. All five are fully private (no externs, only `reloptions.c` references them). No name collisions; no prose FPs. Single-file, no header change. 47 use sites rewritten. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
