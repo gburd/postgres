@@ -63,13 +63,22 @@ static pg_global PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
 
 
 /* Status for backends including auxiliary */
-static session_local LocalPgBackendStatus *localBackendStatusTable = NULL;
 
 /* Total number of backends including auxiliary */
-static session_local int	localNumBackends = 0;
 
-static session_local MemoryContext backendStatusSnapContext;
 
+
+typedef struct BackendStatusState
+{
+	LocalPgBackendStatus *localBackendStatusTable;
+	int			localNumBackends;
+	MemoryContext backendStatusSnapContext;
+} BackendStatusState;
+
+static session_local BackendStatusState backend_status_state = {
+	.localBackendStatusTable = NULL,
+	.localNumBackends = 0,
+};
 
 static void pgstat_beshutdown_hook(int code, Datum arg);
 static void pgstat_read_current_status(void);
@@ -501,22 +510,22 @@ void
 pgstat_clear_backend_activity_snapshot(void)
 {
 	/* Release memory, if any was allocated */
-	if (backendStatusSnapContext)
+	if (backend_status_state.backendStatusSnapContext)
 	{
-		MemoryContextDelete(backendStatusSnapContext);
-		backendStatusSnapContext = NULL;
+		MemoryContextDelete(backend_status_state.backendStatusSnapContext);
+		backend_status_state.backendStatusSnapContext = NULL;
 	}
 
 	/* Reset variables */
-	localBackendStatusTable = NULL;
-	localNumBackends = 0;
+	backend_status_state.localBackendStatusTable = NULL;
+	backend_status_state.localNumBackends = 0;
 }
 
 static void
 pgstat_setup_backend_status_context(void)
 {
-	if (!backendStatusSnapContext)
-		backendStatusSnapContext = AllocSetContextCreate(TopMemoryContext,
+	if (!backend_status_state.backendStatusSnapContext)
+		backend_status_state.backendStatusSnapContext = AllocSetContextCreate(TopMemoryContext,
 														 "Backend Status Snapshot",
 														 ALLOCSET_SMALL_SIZES);
 }
@@ -799,7 +808,7 @@ pgstat_read_current_status(void)
 #endif
 	ProcNumber	procNumber;
 
-	if (localBackendStatusTable)
+	if (backend_status_state.localBackendStatusTable)
 		return;					/* already done */
 
 	pgstat_setup_backend_status_context();
@@ -813,30 +822,30 @@ pgstat_read_current_status(void)
 	 * "huge" allocation for that one.
 	 */
 	localtable = (LocalPgBackendStatus *)
-		MemoryContextAlloc(backendStatusSnapContext,
+		MemoryContextAlloc(backend_status_state.backendStatusSnapContext,
 						   sizeof(LocalPgBackendStatus) * NumBackendStatSlots);
 	localappname = (char *)
-		MemoryContextAlloc(backendStatusSnapContext,
+		MemoryContextAlloc(backend_status_state.backendStatusSnapContext,
 						   NAMEDATALEN * NumBackendStatSlots);
 	localclienthostname = (char *)
-		MemoryContextAlloc(backendStatusSnapContext,
+		MemoryContextAlloc(backend_status_state.backendStatusSnapContext,
 						   NAMEDATALEN * NumBackendStatSlots);
 	localactivity = (char *)
-		MemoryContextAllocHuge(backendStatusSnapContext,
+		MemoryContextAllocHuge(backend_status_state.backendStatusSnapContext,
 							   (Size) GetGUCInt(GUC_pgstat_track_activity_query_size) *
 							   (Size) NumBackendStatSlots);
 #ifdef USE_SSL
 	localsslstatus = (PgBackendSSLStatus *)
-		MemoryContextAlloc(backendStatusSnapContext,
+		MemoryContextAlloc(backend_status_state.backendStatusSnapContext,
 						   sizeof(PgBackendSSLStatus) * NumBackendStatSlots);
 #endif
 #ifdef ENABLE_GSS
 	localgssstatus = (PgBackendGSSStatus *)
-		MemoryContextAlloc(backendStatusSnapContext,
+		MemoryContextAlloc(backend_status_state.backendStatusSnapContext,
 						   sizeof(PgBackendGSSStatus) * NumBackendStatSlots);
 #endif
 
-	localNumBackends = 0;
+	backend_status_state.localNumBackends = 0;
 
 	beentry = BackendStatusArray;
 	localentry = localtable;
@@ -907,7 +916,7 @@ pgstat_read_current_status(void)
 		{
 			/*
 			 * The BackendStatusArray index is exactly the ProcNumber of the
-			 * source backend.  Note that this means localBackendStatusTable
+			 * source backend.  Note that this means backend_status_state.localBackendStatusTable
 			 * is in order by proc_number. pgstat_get_beentry_by_proc_number()
 			 * depends on that.
 			 */
@@ -928,14 +937,14 @@ pgstat_read_current_status(void)
 #ifdef ENABLE_GSS
 			localgssstatus++;
 #endif
-			localNumBackends++;
+			backend_status_state.localNumBackends++;
 		}
 
 		beentry++;
 	}
 
 	/* Set the pointer only after completion of a valid table */
-	localBackendStatusTable = localtable;
+	backend_status_state.localBackendStatusTable = localtable;
 }
 
 
@@ -1193,11 +1202,11 @@ pgstat_get_local_beentry_by_proc_number(ProcNumber procNumber)
 	pgstat_read_current_status();
 
 	/*
-	 * Since the localBackendStatusTable is in order by proc_number, we can
+	 * Since the backend_status_state.localBackendStatusTable is in order by proc_number, we can
 	 * use bsearch() to search it efficiently.
 	 */
 	key.proc_number = procNumber;
-	return bsearch(&key, localBackendStatusTable, localNumBackends,
+	return bsearch(&key, backend_status_state.localBackendStatusTable, backend_status_state.localNumBackends,
 				   sizeof(LocalPgBackendStatus), cmp_lbestatus);
 }
 
@@ -1208,7 +1217,7 @@ pgstat_get_local_beentry_by_proc_number(ProcNumber procNumber)
  *	Like pgstat_get_beentry_by_proc_number() but with locally computed
  *	additions (like xid and xmin values of the backend)
  *
- *	The idx argument is a 1-based index in the localBackendStatusTable
+ *	The idx argument is a 1-based index in the backend_status_state.localBackendStatusTable
  *	(note that this is unlike pgstat_get_beentry_by_proc_number()).
  *	Returns NULL if the argument is out of range (no current caller does that).
  *
@@ -1221,10 +1230,10 @@ pgstat_get_local_beentry_by_index(int idx)
 {
 	pgstat_read_current_status();
 
-	if (idx < 1 || idx > localNumBackends)
+	if (idx < 1 || idx > backend_status_state.localNumBackends)
 		return NULL;
 
-	return &localBackendStatusTable[idx - 1];
+	return &backend_status_state.localBackendStatusTable[idx - 1];
 }
 
 
@@ -1232,7 +1241,7 @@ pgstat_get_local_beentry_by_index(int idx)
  * pgstat_fetch_stat_numbackends() -
  *
  *	Support function for the SQL-callable pgstat* functions. Returns
- *	the number of sessions known in the localBackendStatusTable, i.e.
+ *	the number of sessions known in the backend_status_state.localBackendStatusTable, i.e.
  *	the maximum 1-based index to pass to pgstat_get_local_beentry_by_index().
  * ----------
  */
@@ -1241,7 +1250,7 @@ pgstat_fetch_stat_numbackends(void)
 {
 	pgstat_read_current_status();
 
-	return localNumBackends;
+	return backend_status_state.localNumBackends;
 }
 
 /*
