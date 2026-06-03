@@ -32,6 +32,7 @@
 #include "access/recno_dirtymap.h"
 #include "access/xact.h"
 #include "miscadmin.h"
+#include "storage/bufmgr.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
@@ -68,13 +69,34 @@ typedef struct DirtyMapEntry
 #define NUM_DIRTYMAP_PARTITIONS		16
 
 /*
- * Initial capacity of the shared hash table.  This is the maximum number
- * of concurrently-dirty pages across all relations.  The hash table is
- * fixed-size (HASH_FIXED_SIZE) and does not grow at runtime, so we pick
- * a generous default.  For workloads with many concurrent writers touching
- * many distinct pages, this may need tuning via a GUC in the future.
+ * Floor capacity of the shared hash table when shared_buffers is tiny.
+ * The actual size is max(NBuffers, this); see RecnoDirtyMapTableSize.
  */
-#define DIRTYMAP_INIT_SIZE			4096
+#define DIRTYMAP_MIN_SIZE			4096
+
+/*
+ * Capacity of the shared dirty-page hash table.
+ *
+ * This bounds the number of distinct pages carrying uncommitted in-place
+ * modifications across all relations.  A page can only accumulate such
+ * modifications while it is resident in a shared buffer (writers pin the
+ * buffer to stamp the tuple), so NBuffers is the natural ceiling and makes
+ * the table scale with shared_buffers instead of a fixed constant.  The old
+ * fixed 4096 saturated under high write concurrency (the "RECNO dirty map
+ * hash table full" warning), which forced every page onto the slow per-tuple
+ * sLog lookup path.  We keep DIRTYMAP_MIN_SIZE as a floor for tiny configs.
+ *
+ * The table is HASH_FIXED_SIZE and does not grow at runtime.
+ */
+static long
+RecnoDirtyMapTableSize(void)
+{
+	long		nelems = NBuffers;
+
+	if (nelems < DIRTYMAP_MIN_SIZE)
+		nelems = DIRTYMAP_MIN_SIZE;
+	return nelems;
+}
 
 /* The shared hash table handle */
 static HTAB *DirtyMapHash = NULL;
@@ -122,7 +144,7 @@ static int	dirtymap_track_capacity = 0;
 Size
 RecnoDirtyMapShmemSize(void)
 {
-	return hash_estimate_size(DIRTYMAP_INIT_SIZE, sizeof(DirtyMapEntry));
+	return hash_estimate_size(RecnoDirtyMapTableSize(), sizeof(DirtyMapEntry));
 }
 
 /*
@@ -132,7 +154,7 @@ static void
 RecnoDirtyMapShmemRequest(void *arg)
 {
 	ShmemRequestHash(.name = "RECNO DirtyMap Hash",
-					 .nelems = DIRTYMAP_INIT_SIZE,
+					 .nelems = RecnoDirtyMapTableSize(),
 					 .ptr = &DirtyMapHash,
 					 .hash_info.keysize = sizeof(DirtyMapKey),
 					 .hash_info.entrysize = sizeof(DirtyMapEntry),
