@@ -457,6 +457,20 @@ InsertXactUndoData(XactUndoContext *ctx)
 		 */
 		SetCurrentTransactionUndoRecPtr(ptr);
 	}
+	else
+	{
+		XactUndoSubTransactionState *cur = CURRENT_SUBXACT();
+
+		/*
+		 * The batch was empty or elided, so no record pointer exists to fix up
+		 * the sentinel with.  Leaving the (UndoRecPtr) 1 sentinel in place
+		 * would make UndoRecPtrIsValid() treat it as a real start location and
+		 * leak it into subxact->parent merges and rollback chain walks; reset
+		 * it so this level records no start location.
+		 */
+		if (cur->start_location[ctx->plevel] == (UndoRecPtr) 1)
+			cur->start_location[ctx->plevel] = InvalidUndoRecPtr;
+	}
 }
 
 /*
