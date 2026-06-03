@@ -259,37 +259,44 @@ sampler_random_fract(pg_prng_state *randstate)
  * sampler_random_fract/reservoir_init_selection_state/reservoir_get_next_S,
  * except that a common random state is used across all callers.
  */
-static session_local ReservoirStateData oldrs;
-static session_local bool oldrs_initialized = false;
+typedef struct SamplingState
+{
+	ReservoirStateData oldrs;
+	bool		oldrs_initialized;
+} SamplingState;
+
+static session_local SamplingState sampling_state = {
+	.oldrs_initialized = false,
+};
 
 double
 anl_random_fract(void)
 {
 	/* initialize if first time through */
-	if (unlikely(!oldrs_initialized))
+	if (unlikely(!sampling_state.oldrs_initialized))
 	{
 		sampler_random_init_state(pg_prng_uint32(&pg_global_prng_state),
-								  &oldrs.randstate);
-		oldrs_initialized = true;
+								  &sampling_state.oldrs.randstate);
+		sampling_state.oldrs_initialized = true;
 	}
 
 	/* and compute a random fraction */
-	return sampler_random_fract(&oldrs.randstate);
+	return sampler_random_fract(&sampling_state.oldrs.randstate);
 }
 
 double
 anl_init_selection_state(int n)
 {
 	/* initialize if first time through */
-	if (unlikely(!oldrs_initialized))
+	if (unlikely(!sampling_state.oldrs_initialized))
 	{
 		sampler_random_init_state(pg_prng_uint32(&pg_global_prng_state),
-								  &oldrs.randstate);
-		oldrs_initialized = true;
+								  &sampling_state.oldrs.randstate);
+		sampling_state.oldrs_initialized = true;
 	}
 
 	/* Initial value of W (for use when Algorithm Z is first applied) */
-	return exp(-log(sampler_random_fract(&oldrs.randstate)) / n);
+	return exp(-log(sampler_random_fract(&sampling_state.oldrs.randstate)) / n);
 }
 
 double
@@ -297,8 +304,8 @@ anl_get_next_S(double t, int n, double *stateptr)
 {
 	double		result;
 
-	oldrs.W = *stateptr;
-	result = reservoir_get_next_S(&oldrs, t, n);
-	*stateptr = oldrs.W;
+	sampling_state.oldrs.W = *stateptr;
+	result = reservoir_get_next_S(&sampling_state.oldrs, t, n);
+	*stateptr = sampling_state.oldrs.W;
 	return result;
 }
