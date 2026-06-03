@@ -26,10 +26,20 @@
 #include "utils/builtins.h"
 #include "utils/wait_event.h"
 
-static session_local shm_mq_handle *pq_mq_handle = NULL;
-static session_local bool pq_mq_busy = false;
+typedef struct PqMqState
+{
+	shm_mq_handle *pq_mq_handle;
+	bool		pq_mq_busy;
+	ProcNumber	pq_mq_parallel_leader_proc_number;
+} PqMqState;
+
+static session_local PqMqState pqmq_state = {
+	.pq_mq_handle = NULL,
+	.pq_mq_busy = false,
+	.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER,
+};
+
 static pid_t pq_mq_parallel_leader_pid = 0;
-static session_local ProcNumber pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 
 static void pq_cleanup_redirect_to_shm_mq(dsm_segment *seg, Datum arg);
 static void mq_comm_reset(void);
@@ -56,7 +66,7 @@ void
 pq_redirect_to_shm_mq(dsm_segment *seg, shm_mq_handle *mqh)
 {
 	PqCommMethods = &PqCommMqMethods;
-	pq_mq_handle = mqh;
+	pqmq_state.pq_mq_handle = mqh;
 	whereToSendOutput = DestRemote;
 	FrontendProtocol = PG_PROTOCOL_LATEST;
 	on_dsm_detach(seg, pq_cleanup_redirect_to_shm_mq, (Datum) 0);
@@ -69,10 +79,10 @@ pq_redirect_to_shm_mq(dsm_segment *seg, shm_mq_handle *mqh)
 static void
 pq_cleanup_redirect_to_shm_mq(dsm_segment *seg, Datum arg)
 {
-	if (pq_mq_handle != NULL)
+	if (pqmq_state.pq_mq_handle != NULL)
 	{
-		pfree(pq_mq_handle);
-		pq_mq_handle = NULL;
+		pfree(pqmq_state.pq_mq_handle);
+		pqmq_state.pq_mq_handle = NULL;
 	}
 	whereToSendOutput = DestNone;
 }
@@ -86,7 +96,7 @@ pq_set_parallel_leader(pid_t pid, ProcNumber procNumber)
 {
 	Assert(PqCommMethods == &PqCommMqMethods);
 	pq_mq_parallel_leader_pid = pid;
-	pq_mq_parallel_leader_proc_number = procNumber;
+	pqmq_state.pq_mq_parallel_leader_proc_number = procNumber;
 }
 
 static void
@@ -118,7 +128,7 @@ mq_is_send_pending(void)
 
 /*
  * Transmit a libpq protocol message to the shared memory message queue
- * selected via pq_mq_handle.  We don't include a length word, because the
+ * selected via pqmq_state.pq_mq_handle.  We don't include a length word, because the
  * receiver will know the length of the message from shm_mq_receive().
  */
 static int
@@ -135,13 +145,13 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 	 * queueing the message would amount to indefinitely postponing the
 	 * response to the interrupt.  So we do this instead.
 	 */
-	if (pq_mq_busy)
+	if (pqmq_state.pq_mq_busy)
 	{
-		if (pq_mq_handle != NULL)
+		if (pqmq_state.pq_mq_handle != NULL)
 		{
-			shm_mq_detach(pq_mq_handle);
-			pfree(pq_mq_handle);
-			pq_mq_handle = NULL;
+			shm_mq_detach(pqmq_state.pq_mq_handle);
+			pfree(pqmq_state.pq_mq_handle);
+			pqmq_state.pq_mq_handle = NULL;
 		}
 		return EOF;
 	}
@@ -152,10 +162,10 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 	 * be generated late in the shutdown sequence, after all DSMs have already
 	 * been detached.
 	 */
-	if (pq_mq_handle == NULL)
+	if (pqmq_state.pq_mq_handle == NULL)
 		return 0;
 
-	pq_mq_busy = true;
+	pqmq_state.pq_mq_busy = true;
 
 	iov[0].data = &msgtype;
 	iov[0].len = 1;
@@ -169,22 +179,22 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 		 * that the shared memory value is updated before we send the parallel
 		 * message signal right after this.
 		 */
-		Assert(pq_mq_handle != NULL);
-		result = shm_mq_sendv(pq_mq_handle, iov, 2, true, true);
+		Assert(pqmq_state.pq_mq_handle != NULL);
+		result = shm_mq_sendv(pqmq_state.pq_mq_handle, iov, 2, true, true);
 
 		if (pq_mq_parallel_leader_pid != 0)
 		{
 			if (IsLogicalParallelApplyWorker())
 				SendInterrupt(INTERRUPT_PARALLEL_APPLY_MESSAGE,
-							  pq_mq_parallel_leader_proc_number);
+							  pqmq_state.pq_mq_parallel_leader_proc_number);
 			else if (AmRepackWorker())
 				SendInterrupt(INTERRUPT_REPACK,
-							  pq_mq_parallel_leader_proc_number);
+							  pqmq_state.pq_mq_parallel_leader_proc_number);
 			else
 			{
 				Assert(IsParallelWorker());
 				SendInterrupt(INTERRUPT_PARALLEL_MESSAGE,
-							  pq_mq_parallel_leader_proc_number);
+							  pqmq_state.pq_mq_parallel_leader_proc_number);
 			}
 		}
 
@@ -198,7 +208,7 @@ mq_putmessage(char msgtype, const char *s, size_t len)
 		CHECK_FOR_INTERRUPTS();
 	}
 
-	pq_mq_busy = false;
+	pqmq_state.pq_mq_busy = false;
 
 	Assert(result == SHM_MQ_SUCCESS || result == SHM_MQ_DETACHED);
 	if (result != SHM_MQ_SUCCESS)
