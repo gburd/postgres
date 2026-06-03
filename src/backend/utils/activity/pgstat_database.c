@@ -33,10 +33,20 @@ session_local PgStat_Counter pgStatTransactionIdleTime = 0;
 session_local SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
 
 
-static session_local int	pgStatXactCommit = 0;
-static session_local int	pgStatXactRollback = 0;
-static session_local PgStat_Counter pgLastSessionReportTime = 0;
 
+
+typedef struct PgStatDatabaseState
+{
+	int			pgStatXactCommit;
+	int			pgStatXactRollback;
+	PgStat_Counter pgLastSessionReportTime;
+} PgStatDatabaseState;
+
+static session_local PgStatDatabaseState pgstat_database_state = {
+	.pgStatXactCommit = 0,
+	.pgStatXactRollback = 0,
+	.pgLastSessionReportTime = 0,
+};
 
 /*
  * Remove entry for the database being dropped.
@@ -234,7 +244,7 @@ pgstat_report_connect(Oid dboid)
 	if (!pgstat_should_report_connstat())
 		return;
 
-	pgLastSessionReportTime = MyStartTimestamp;
+	pgstat_database_state.pgLastSessionReportTime = MyStartTimestamp;
 
 	dbentry = pgstat_prep_database_pending(dboid);
 	dbentry->sessions++;
@@ -295,9 +305,9 @@ AtEOXact_PgStat_Database(bool isCommit, bool parallel)
 		 * bools, in case the reporting message isn't sent right away.)
 		 */
 		if (isCommit)
-			pgStatXactCommit++;
+			pgstat_database_state.pgStatXactCommit++;
 		else
-			pgStatXactRollback++;
+			pgstat_database_state.pgStatXactRollback++;
 	}
 }
 
@@ -340,8 +350,8 @@ pgstat_update_dbstats(TimestampTz ts)
 	 * Accumulate xact commit/rollback and I/O timings to stats entry of the
 	 * current database.
 	 */
-	dbentry->xact_commit += pgStatXactCommit;
-	dbentry->xact_rollback += pgStatXactRollback;
+	dbentry->xact_commit += pgstat_database_state.pgStatXactCommit;
+	dbentry->xact_rollback += pgstat_database_state.pgStatXactRollback;
 	dbentry->blk_read_time += pgStatBlockReadTime;
 	dbentry->blk_write_time += pgStatBlockWriteTime;
 
@@ -351,18 +361,18 @@ pgstat_update_dbstats(TimestampTz ts)
 		int			usecs;
 
 		/*
-		 * pgLastSessionReportTime is initialized to MyStartTimestamp by
+		 * pgstat_database_state.pgLastSessionReportTime is initialized to MyStartTimestamp by
 		 * pgstat_report_connect().
 		 */
-		TimestampDifference(pgLastSessionReportTime, ts, &secs, &usecs);
-		pgLastSessionReportTime = ts;
+		TimestampDifference(pgstat_database_state.pgLastSessionReportTime, ts, &secs, &usecs);
+		pgstat_database_state.pgLastSessionReportTime = ts;
 		dbentry->session_time += (PgStat_Counter) secs * 1000000 + usecs;
 		dbentry->active_time += pgStatActiveTime;
 		dbentry->idle_in_transaction_time += pgStatTransactionIdleTime;
 	}
 
-	pgStatXactCommit = 0;
-	pgStatXactRollback = 0;
+	pgstat_database_state.pgStatXactCommit = 0;
+	pgstat_database_state.pgStatXactRollback = 0;
 	pgStatBlockReadTime = 0;
 	pgStatBlockWriteTime = 0;
 	pgStatActiveTime = 0;
