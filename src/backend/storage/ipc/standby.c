@@ -63,13 +63,27 @@ typedef struct RecoveryLockXidEntry
 	struct RecoveryLockEntry *head; /* chain head */
 } RecoveryLockXidEntry;
 
-static session_local HTAB *RecoveryLockHash = NULL;
-static session_local HTAB *RecoveryLockXidHash = NULL;
+typedef struct StandbyState
+{
+	HTAB	   *RecoveryLockHash;
+	HTAB	   *RecoveryLockXidHash;
+	/* Flags set by timeout handlers */
+	volatile sig_atomic_t got_standby_deadlock_timeout;
+	volatile sig_atomic_t got_standby_delay_timeout;
+	volatile sig_atomic_t got_standby_lock_timeout;
+	int			standbyWait_us;
+} StandbyState;
 
-/* Flags set by timeout handlers */
-static session_local volatile sig_atomic_t got_standby_deadlock_timeout = false;
-static session_local volatile sig_atomic_t got_standby_delay_timeout = false;
-static session_local volatile sig_atomic_t got_standby_lock_timeout = false;
+static session_local StandbyState standby_state = {
+	.RecoveryLockHash = NULL,
+	.RecoveryLockXidHash = NULL,
+	.got_standby_deadlock_timeout = false,
+	.got_standby_delay_timeout = false,
+	.got_standby_lock_timeout = false,
+	.standbyWait_us = 1000,		/* STANDBY_INITIAL_WAIT_US, defined below */
+};
+
+
 
 static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 												   InterruptType reason,
@@ -98,7 +112,7 @@ InitRecoveryTransactionEnvironment(void)
 	VirtualTransactionId vxid;
 	HASHCTL		hash_ctl;
 
-	Assert(RecoveryLockHash == NULL);	/* don't run this twice */
+	Assert(standby_state.RecoveryLockHash == NULL);	/* don't run this twice */
 
 	/*
 	 * Initialize the hash tables for tracking the locks held by each
@@ -106,13 +120,13 @@ InitRecoveryTransactionEnvironment(void)
 	 */
 	hash_ctl.keysize = sizeof(xl_standby_lock);
 	hash_ctl.entrysize = sizeof(RecoveryLockEntry);
-	RecoveryLockHash = hash_create("RecoveryLockHash",
+	standby_state.RecoveryLockHash = hash_create("standby_state.RecoveryLockHash",
 								   64,
 								   &hash_ctl,
 								   HASH_ELEM | HASH_BLOBS);
 	hash_ctl.keysize = sizeof(TransactionId);
 	hash_ctl.entrysize = sizeof(RecoveryLockXidEntry);
-	RecoveryLockXidHash = hash_create("RecoveryLockXidHash",
+	standby_state.RecoveryLockXidHash = hash_create("standby_state.RecoveryLockXidHash",
 									  64,
 									  &hash_ctl,
 									  HASH_ELEM | HASH_BLOBS);
@@ -162,12 +176,12 @@ void
 ShutdownRecoveryTransactionEnvironment(void)
 {
 	/*
-	 * Do nothing if RecoveryLockHash is NULL because that means that
+	 * Do nothing if standby_state.RecoveryLockHash is NULL because that means that
 	 * transaction tracking has not yet been initialized or has already been
 	 * shut down.  This makes it safe to have possibly-redundant calls of this
 	 * function during process exit.
 	 */
-	if (RecoveryLockHash == NULL)
+	if (standby_state.RecoveryLockHash == NULL)
 		return;
 
 	/* Mark all tracked in-progress transactions as finished. */
@@ -177,10 +191,10 @@ ShutdownRecoveryTransactionEnvironment(void)
 	StandbyReleaseAllLocks();
 
 	/* Destroy the lock hash tables. */
-	hash_destroy(RecoveryLockHash);
-	hash_destroy(RecoveryLockXidHash);
-	RecoveryLockHash = NULL;
-	RecoveryLockXidHash = NULL;
+	hash_destroy(standby_state.RecoveryLockHash);
+	hash_destroy(standby_state.RecoveryLockXidHash);
+	standby_state.RecoveryLockHash = NULL;
+	standby_state.RecoveryLockXidHash = NULL;
 
 	/* Cleanup our VirtualTransaction */
 	VirtualXactLockTableCleanup();
@@ -226,7 +240,8 @@ GetStandbyLimitTime(void)
 }
 
 #define STANDBY_INITIAL_WAIT_US  1000
-static session_local int	standbyWait_us = STANDBY_INITIAL_WAIT_US;
+StaticAssertDecl(STANDBY_INITIAL_WAIT_US == 1000,
+				 "standby_state.standbyWait_us initializer must match STANDBY_INITIAL_WAIT_US");
 
 /*
  * Standby wait logic for ResolveRecoveryConflictWithVirtualXIDs.
@@ -249,16 +264,16 @@ WaitExceedsMaxStandbyDelay(uint32 wait_event_info)
 	 * Sleep a bit (this is essential to avoid busy-waiting).
 	 */
 	pgstat_report_wait_start(wait_event_info);
-	pg_usleep(standbyWait_us);
+	pg_usleep(standby_state.standbyWait_us);
 	pgstat_report_wait_end();
 
 	/*
 	 * Progressively increase the sleep times, but not to more than 1s, since
 	 * pg_usleep isn't interruptible on some platforms.
 	 */
-	standbyWait_us *= 2;
-	if (standbyWait_us > 1000000)
-		standbyWait_us = 1000000;
+	standby_state.standbyWait_us *= 2;
+	if (standby_state.standbyWait_us > 1000000)
+		standby_state.standbyWait_us = 1000000;
 
 	return false;
 }
@@ -379,8 +394,8 @@ ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 
 	while (VirtualTransactionIdIsValid(*waitlist))
 	{
-		/* reset standbyWait_us for each xact we wait for */
-		standbyWait_us = STANDBY_INITIAL_WAIT_US;
+		/* reset standby_state.standbyWait_us for each xact we wait for */
+		standby_state.standbyWait_us = STANDBY_INITIAL_WAIT_US;
 
 		/* wait until the virtual xid is gone */
 		while (!VirtualXactLock(*waitlist, false))
@@ -685,14 +700,14 @@ ResolveRecoveryConflictWithLock(LOCKTAG locktag, bool logging_conflict)
 
 		if (ltime != 0)
 		{
-			got_standby_lock_timeout = false;
+			standby_state.got_standby_lock_timeout = false;
 			timeouts[cnt].id = STANDBY_LOCK_TIMEOUT;
 			timeouts[cnt].type = TMPARAM_AT;
 			timeouts[cnt].fin_time = ltime;
 			cnt++;
 		}
 
-		got_standby_deadlock_timeout = false;
+		standby_state.got_standby_deadlock_timeout = false;
 		timeouts[cnt].id = STANDBY_DEADLOCK_TIMEOUT;
 		timeouts[cnt].type = TMPARAM_AFTER;
 		timeouts[cnt].delay_ms = GetGUCInt(GUC_DeadlockTimeout);
@@ -709,10 +724,10 @@ ResolveRecoveryConflictWithLock(LOCKTAG locktag, bool logging_conflict)
 	 * locks will be canceled in the next ResolveRecoveryConflictWithLock()
 	 * call.
 	 */
-	if (got_standby_lock_timeout)
+	if (standby_state.got_standby_lock_timeout)
 		goto cleanup;
 
-	if (got_standby_deadlock_timeout)
+	if (standby_state.got_standby_deadlock_timeout)
 	{
 		VirtualTransactionId *backends;
 
@@ -749,7 +764,7 @@ ResolveRecoveryConflictWithLock(LOCKTAG locktag, bool logging_conflict)
 		 * Otherwise the request continues to be sent every deadlock_timeout
 		 * until the relation locks are released or ltime is reached.
 		 */
-		got_standby_deadlock_timeout = false;
+		standby_state.got_standby_deadlock_timeout = false;
 		ProcWaitForSignal(PG_WAIT_LOCK | locktag.locktag_type);
 	}
 
@@ -762,8 +777,8 @@ cleanup:
 	 * timeouts individually, but that'd be slower.
 	 */
 	disable_all_timeouts(false);
-	got_standby_lock_timeout = false;
-	got_standby_deadlock_timeout = false;
+	standby_state.got_standby_lock_timeout = false;
+	standby_state.got_standby_deadlock_timeout = false;
 }
 
 /*
@@ -826,7 +841,7 @@ ResolveRecoveryConflictWithBufferPin(void)
 			cnt++;
 		}
 
-		got_standby_deadlock_timeout = false;
+		standby_state.got_standby_deadlock_timeout = false;
 		timeouts[cnt].id = STANDBY_DEADLOCK_TIMEOUT;
 		timeouts[cnt].type = TMPARAM_AFTER;
 		timeouts[cnt].delay_ms = GetGUCInt(GUC_DeadlockTimeout);
@@ -846,9 +861,9 @@ ResolveRecoveryConflictWithBufferPin(void)
 	 */
 	ProcWaitForSignal(WAIT_EVENT_BUFFER_CLEANUP);
 
-	if (got_standby_delay_timeout)
+	if (standby_state.got_standby_delay_timeout)
 		SendRecoveryConflictWithBufferPin(INTERRUPT_RECOVERY_CONFLICT_BUFFERPIN);
-	else if (got_standby_deadlock_timeout)
+	else if (standby_state.got_standby_deadlock_timeout)
 	{
 		/*
 		 * Send out a request for hot-standby backends to check themselves for
@@ -873,8 +888,8 @@ ResolveRecoveryConflictWithBufferPin(void)
 	 * individually, but that'd be slower.
 	 */
 	disable_all_timeouts(false);
-	got_standby_delay_timeout = false;
-	got_standby_deadlock_timeout = false;
+	standby_state.got_standby_delay_timeout = false;
+	standby_state.got_standby_deadlock_timeout = false;
 }
 
 static void
@@ -939,7 +954,7 @@ CheckRecoveryConflictDeadlock(void)
 void
 StandbyDeadLockHandler(void)
 {
-	got_standby_deadlock_timeout = true;
+	standby_state.got_standby_deadlock_timeout = true;
 }
 
 /*
@@ -948,7 +963,7 @@ StandbyDeadLockHandler(void)
 void
 StandbyTimeoutHandler(void)
 {
-	got_standby_delay_timeout = true;
+	standby_state.got_standby_delay_timeout = true;
 }
 
 /*
@@ -957,7 +972,7 @@ StandbyTimeoutHandler(void)
 void
 StandbyLockTimeoutHandler(void)
 {
-	got_standby_lock_timeout = true;
+	standby_state.got_standby_lock_timeout = true;
 }
 
 /*
@@ -974,10 +989,10 @@ StandbyLockTimeoutHandler(void)
  * We only keep track of AccessExclusiveLocks, which are only ever held by
  * one transaction on one relation.
  *
- * We keep a table of known locks in the RecoveryLockHash hash table.
+ * We keep a table of known locks in the standby_state.RecoveryLockHash hash table.
  * The point of that table is to let us efficiently de-duplicate locks,
  * which is important because checkpoints will re-report the same locks
- * already held.  There is also a RecoveryLockXidHash table with one entry
+ * already held.  There is also a standby_state.RecoveryLockXidHash table with one entry
  * per xid, which allows us to efficiently find all the locks held by a
  * given original transaction.
  *
@@ -1007,7 +1022,7 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 	Assert(OidIsValid(relOid));
 
 	/* Create a hash entry for this xid, if we don't have one already. */
-	xidentry = hash_search(RecoveryLockXidHash, &xid, HASH_ENTER, &found);
+	xidentry = hash_search(standby_state.RecoveryLockXidHash, &xid, HASH_ENTER, &found);
 	if (!found)
 	{
 		Assert(xidentry->xid == xid);	/* dynahash should have set this */
@@ -1018,7 +1033,7 @@ StandbyAcquireAccessExclusiveLock(TransactionId xid, Oid dbOid, Oid relOid)
 	key.xid = xid;
 	key.dbOid = dbOid;
 	key.relOid = relOid;
-	lockentry = hash_search(RecoveryLockHash, &key, HASH_ENTER, &found);
+	lockentry = hash_search(standby_state.RecoveryLockHash, &key, HASH_ENTER, &found);
 	if (!found)
 	{
 		/* It's new, so link it into the XID's list ... */
@@ -1053,13 +1068,13 @@ StandbyReleaseXidEntryLocks(RecoveryLockXidEntry *xidentry)
 		if (!LockRelease(&locktag, AccessExclusiveLock, true))
 		{
 			elog(LOG,
-				 "RecoveryLockHash contains entry for lock no longer recorded by lock manager: xid %u database %u relation %u",
+				 "standby_state.RecoveryLockHash contains entry for lock no longer recorded by lock manager: xid %u database %u relation %u",
 				 entry->key.xid, entry->key.dbOid, entry->key.relOid);
 			Assert(false);
 		}
 		/* ... and remove the per-lock hash entry */
 		next = entry->next;
-		hash_search(RecoveryLockHash, entry, HASH_REMOVE, NULL);
+		hash_search(standby_state.RecoveryLockHash, entry, HASH_REMOVE, NULL);
 	}
 
 	xidentry->head = NULL;		/* just for paranoia */
@@ -1075,10 +1090,10 @@ StandbyReleaseLocks(TransactionId xid)
 
 	if (TransactionIdIsValid(xid))
 	{
-		if ((entry = hash_search(RecoveryLockXidHash, &xid, HASH_FIND, NULL)))
+		if ((entry = hash_search(standby_state.RecoveryLockXidHash, &xid, HASH_FIND, NULL)))
 		{
 			StandbyReleaseXidEntryLocks(entry);
-			hash_search(RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
+			hash_search(standby_state.RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
 		}
 	}
 	else
@@ -1087,7 +1102,7 @@ StandbyReleaseLocks(TransactionId xid)
 
 /*
  * Release locks for a transaction tree, starting at xid down, from
- * RecoveryLockXidHash.
+ * standby_state.RecoveryLockXidHash.
  *
  * Called during WAL replay of COMMIT/ROLLBACK when in hot standby mode,
  * to remove any AccessExclusiveLocks requested by a transaction.
@@ -1114,11 +1129,11 @@ StandbyReleaseAllLocks(void)
 
 	elog(DEBUG2, "release all standby locks");
 
-	hash_seq_init(&status, RecoveryLockXidHash);
+	hash_seq_init(&status, standby_state.RecoveryLockXidHash);
 	while ((entry = hash_seq_search(&status)))
 	{
 		StandbyReleaseXidEntryLocks(entry);
-		hash_search(RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
+		hash_search(standby_state.RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
 	}
 }
 
@@ -1136,7 +1151,7 @@ StandbyReleaseOldLocks(TransactionId oldxid)
 	HASH_SEQ_STATUS status;
 	RecoveryLockXidEntry *entry;
 
-	hash_seq_init(&status, RecoveryLockXidHash);
+	hash_seq_init(&status, standby_state.RecoveryLockXidHash);
 	while ((entry = hash_seq_search(&status)))
 	{
 		Assert(TransactionIdIsValid(entry->xid));
@@ -1151,7 +1166,7 @@ StandbyReleaseOldLocks(TransactionId oldxid)
 
 		/* Remove all locks and hash table entry. */
 		StandbyReleaseXidEntryLocks(entry);
-		hash_search(RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
+		hash_search(standby_state.RecoveryLockXidHash, entry, HASH_REMOVE, NULL);
 	}
 }
 
