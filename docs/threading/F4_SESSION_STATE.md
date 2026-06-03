@@ -183,6 +183,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 | 84 | `access/transam/slru.c` | `SlruState` / `slru_state` | 2 | **Pure fold** — folded the two *private* file-local session_local statics (`slru_errcause`, `slru_errno`) -- the SLRU I/O error-cause code and saved errno used by SlruReportIOError() -- into one file-local `static session_local SlruState slru_state`. Zero-init (no designators, matching the originals). No header change; no name collisions; no prose FPs. |
 | 85 | `access/transam/xlogrecovery.c` | `XLogRecoveryState` / `xlogrecovery_state` | 2 | **SPLIT** — folded the two *private* file-local session_local statics (`expectedTLEs`, `curFileTLI`) -- the cached timeline-history list for the recovery target and the TLI of the current input WAL file -- into one file-local `static session_local XLogRecoveryState xlogrecovery_state`. The eight exported `recoveryTarget*` globals (session_local, no `static`) are left standalone. Zero-init struct. Several prose comments that got the prefix were hand-reverted. No header change. |
 
+| 86 | `port/posix_sema.c` | `PosixSemaState` / `posix_sema_state` | 4 | **SPLIT** — folded the four *private* file-local session_local statics (`mySemPointers`, `numSems`, `maxSems`, `nextSemKey`) into one file-local `static session_local PosixSemaState posix_sema_state`. `mySemPointers` stays wrapped in `#ifdef USE_NAMED_POSIX_SEMAPHORES` inside the struct. The `pg_global` `sharedSemas` array (the `#else`/unnamed-semaphore shared-memory path) is shared state, left standalone. Zero-init struct. No header change. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
