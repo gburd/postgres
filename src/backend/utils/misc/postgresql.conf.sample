@@ -380,8 +380,10 @@
 # RECNO table access method - compression settings
 #recno_enable_compression = on  # enable attribute-level compression for RECNO tables
 #recno_compression_level = 3    # compression level (range: 1-22)
-#recno_compression_algorithm = 'auto'   # compression algorithm
-                                # (auto, lz4, zstd, none)
+#recno_compression_algorithm = 'auto'   # compression codec: auto picks per
+                                # column type; lz4/zstd force that codec;
+                                # none disables compression
+                                # (lz4 requires --with-lz4, zstd --with-zstd)
 #recno_compression_min_ratio = 0.8      # minimum compression ratio (0.0-1.0)
 
 # RECNO table access method - general settings

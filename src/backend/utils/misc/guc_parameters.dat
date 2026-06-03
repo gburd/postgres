@@ -2440,10 +2440,11 @@
   max => 'DBL_MAX',
 },
 
-{ name => 'recno_compression_algorithm', type => 'string', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
-  short_desc => 'Compression algorithm for RECNO attribute compression (auto, lz4, zstd, none).',
+{ name => 'recno_compression_algorithm', type => 'enum', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Compression algorithm for RECNO attribute compression.',
   variable => 'recno_compression_algorithm',
-  boot_val => '"auto"',
+  boot_val => 'RECNO_COMP_ALGO_AUTO',
+  options => 'recno_compression_algorithm_options',
 },
 
 { name => 'recno_compression_level', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_MEM',

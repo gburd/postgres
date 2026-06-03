@@ -483,6 +483,24 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 	{NULL, 0, false}
 };
 
+/*
+ * Allowed values for recno_compression_algorithm.  Following the
+ * default_toast_compression pattern, codecs whose backing library is not
+ * compiled in are omitted so selecting an unavailable codec fails cleanly at
+ * GUC-assignment time instead of silently degrading.
+ */
+static const struct config_enum_entry recno_compression_algorithm_options[] = {
+	{"auto", RECNO_COMP_ALGO_AUTO, false},
+#ifdef USE_LZ4
+	{"lz4", RECNO_COMP_ALGO_LZ4, false},
+#endif
+#ifdef USE_ZSTD
+	{"zstd", RECNO_COMP_ALGO_ZSTD, false},
+#endif
+	{"none", RECNO_COMP_ALGO_OFF, false},
+	{NULL, 0, false}
+};
+
 static const struct config_enum_entry wal_compression_options[] = {
 	{"pglz", WAL_COMPRESSION_PGLZ, false},
 #ifdef USE_LZ4
