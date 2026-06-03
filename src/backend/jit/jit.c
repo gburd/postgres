@@ -41,17 +41,26 @@ session_guc double		jit_above_cost = 100000;
 session_guc double		jit_inline_above_cost = 500000;
 session_guc double		jit_optimize_above_cost = 500000;
 
-static session_local JitProviderCallbacks provider;
-static session_local bool provider_successfully_loaded = false;
-static session_local bool provider_failed_loading = false;
 
+
+typedef struct JitState
+{
+	JitProviderCallbacks provider;
+	bool		provider_successfully_loaded;
+	bool		provider_failed_loading;
+} JitState;
+
+static session_local JitState jit_state = {
+	.provider_successfully_loaded = false,
+	.provider_failed_loading = false,
+};
 
 static bool provider_init(void);
 
 
 /*
  * SQL level function returning whether JIT is available in the current
- * backend. Will attempt to load JIT provider if necessary.
+ * backend. Will attempt to load JIT jit_state.provider if necessary.
  */
 Datum
 pg_jit_available(PG_FUNCTION_ARGS)
@@ -61,7 +70,7 @@ pg_jit_available(PG_FUNCTION_ARGS)
 
 
 /*
- * Return whether a JIT provider has successfully been loaded, caching the
+ * Return whether a JIT jit_state.provider has successfully been loaded, caching the
  * result.
  */
 static bool
@@ -75,12 +84,12 @@ provider_init(void)
 		return false;
 
 	/*
-	 * Don't retry loading after failing - attempting to load JIT provider
+	 * Don't retry loading after failing - attempting to load JIT jit_state.provider
 	 * isn't cheap.
 	 */
-	if (provider_failed_loading)
+	if (jit_state.provider_failed_loading)
 		return false;
-	if (provider_successfully_loaded)
+	if (jit_state.provider_successfully_loaded)
 		return true;
 
 	/*
@@ -95,7 +104,7 @@ provider_init(void)
 	{
 		elog(DEBUG1,
 			 "provider not available, disabling JIT for current session");
-		provider_failed_loading = true;
+		jit_state.provider_failed_loading = true;
 		return false;
 	}
 
@@ -106,15 +115,15 @@ provider_init(void)
 	 * ERROR in that case, so the user is notified, but we don't want to
 	 * continually retry.
 	 */
-	provider_failed_loading = true;
+	jit_state.provider_failed_loading = true;
 
 	/* and initialize */
 	init = (JitProviderInit)
 		load_external_function(path, "_PG_jit_provider_init", true, NULL);
-	init(&provider);
+	init(&jit_state.provider);
 
-	provider_successfully_loaded = true;
-	provider_failed_loading = false;
+	jit_state.provider_successfully_loaded = true;
+	jit_state.provider_failed_loading = false;
 
 	elog(DEBUG1, "successfully loaded JIT provider in current session");
 
@@ -122,14 +131,14 @@ provider_init(void)
 }
 
 /*
- * Reset JIT provider's error handling. This'll be called after an error has
+ * Reset JIT jit_state.provider's error handling. This'll be called after an error has
  * been thrown and the main-loop has re-established control.
  */
 void
 jit_reset_after_error(void)
 {
-	if (provider_successfully_loaded)
-		provider.reset_after_error();
+	if (jit_state.provider_successfully_loaded)
+		jit_state.provider.reset_after_error();
 }
 
 /*
@@ -138,14 +147,14 @@ jit_reset_after_error(void)
 void
 jit_release_context(JitContext *context)
 {
-	if (provider_successfully_loaded)
-		provider.release_context(context);
+	if (jit_state.provider_successfully_loaded)
+		jit_state.provider.release_context(context);
 
 	pfree(context);
 }
 
 /*
- * Ask provider to JIT compile an expression.
+ * Ask jit_state.provider to JIT compile an expression.
  *
  * Returns true if successful, false if not.
  */
@@ -174,7 +183,7 @@ jit_compile_expr(struct ExprState *state)
 
 	/* this also takes !jit_enabled into account */
 	if (provider_init())
-		return provider.compile_expr(state);
+		return jit_state.provider.compile_expr(state);
 
 	return false;
 }
