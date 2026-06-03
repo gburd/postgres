@@ -62,8 +62,16 @@ bool		lo_compat_privileges;
  * execute a slightly klugy maneuver to assign ownership of the
  * Relation reference to TopTransactionResourceOwner.
  */
-static session_local Relation lo_heap_r = NULL;
-static session_local Relation lo_index_r = NULL;
+typedef struct InvApiState
+{
+	Relation	lo_heap_r;
+	Relation	lo_index_r;
+} InvApiState;
+
+static session_local InvApiState inv_api_state = {
+	.lo_heap_r = NULL,
+	.lo_index_r = NULL,
+};
 
 
 /*
@@ -74,7 +82,7 @@ open_lo_relation(void)
 {
 	ResourceOwner currentOwner;
 
-	if (lo_heap_r && lo_index_r)
+	if (inv_api_state.lo_heap_r && inv_api_state.lo_index_r)
 		return;					/* already open in current xact */
 
 	/* Arrange for the top xact to own these relation references */
@@ -82,10 +90,10 @@ open_lo_relation(void)
 	CurrentResourceOwner = TopTransactionResourceOwner;
 
 	/* Use RowExclusiveLock since we might either read or write */
-	if (lo_heap_r == NULL)
-		lo_heap_r = table_open(LargeObjectRelationId, RowExclusiveLock);
-	if (lo_index_r == NULL)
-		lo_index_r = index_open(LargeObjectLOidPNIndexId, RowExclusiveLock);
+	if (inv_api_state.lo_heap_r == NULL)
+		inv_api_state.lo_heap_r = table_open(LargeObjectRelationId, RowExclusiveLock);
+	if (inv_api_state.lo_index_r == NULL)
+		inv_api_state.lo_index_r = index_open(LargeObjectLOidPNIndexId, RowExclusiveLock);
 
 	CurrentResourceOwner = currentOwner;
 }
@@ -96,7 +104,7 @@ open_lo_relation(void)
 void
 close_lo_relation(bool isCommit)
 {
-	if (lo_heap_r || lo_index_r)
+	if (inv_api_state.lo_heap_r || inv_api_state.lo_index_r)
 	{
 		/*
 		 * Only bother to close if committing; else abort cleanup will handle
@@ -109,15 +117,15 @@ close_lo_relation(bool isCommit)
 			currentOwner = CurrentResourceOwner;
 			CurrentResourceOwner = TopTransactionResourceOwner;
 
-			if (lo_index_r)
-				index_close(lo_index_r, NoLock);
-			if (lo_heap_r)
-				table_close(lo_heap_r, NoLock);
+			if (inv_api_state.lo_index_r)
+				index_close(inv_api_state.lo_index_r, NoLock);
+			if (inv_api_state.lo_heap_r)
+				table_close(inv_api_state.lo_heap_r, NoLock);
 
 			CurrentResourceOwner = currentOwner;
 		}
-		lo_heap_r = NULL;
-		lo_index_r = NULL;
+		inv_api_state.lo_heap_r = NULL;
+		inv_api_state.lo_index_r = NULL;
 	}
 }
 
@@ -353,7 +361,7 @@ inv_getsize(LargeObjectDesc *obj_desc)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(obj_desc->id));
 
-	sd = systable_beginscan_ordered(lo_heap_r, lo_index_r,
+	sd = systable_beginscan_ordered(inv_api_state.lo_heap_r, inv_api_state.lo_index_r,
 									obj_desc->snapshot, 1, skey);
 
 	/*
@@ -483,7 +491,7 @@ inv_read(LargeObjectDesc *obj_desc, char *buf, int nbytes)
 				BTGreaterEqualStrategyNumber, F_INT4GE,
 				Int32GetDatum(pageno));
 
-	sd = systable_beginscan_ordered(lo_heap_r, lo_index_r,
+	sd = systable_beginscan_ordered(inv_api_state.lo_heap_r, inv_api_state.lo_index_r,
 									obj_desc->snapshot, 2, skey);
 
 	while ((tuple = systable_getnext_ordered(sd, ForwardScanDirection)) != NULL)
@@ -589,7 +597,7 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 
 	open_lo_relation();
 
-	indstate = CatalogOpenIndexes(lo_heap_r);
+	indstate = CatalogOpenIndexes(inv_api_state.lo_heap_r);
 
 	ScanKeyInit(&skey[0],
 				Anum_pg_largeobject_loid,
@@ -601,7 +609,7 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 				BTGreaterEqualStrategyNumber, F_INT4GE,
 				Int32GetDatum(pageno));
 
-	sd = systable_beginscan_ordered(lo_heap_r, lo_index_r,
+	sd = systable_beginscan_ordered(inv_api_state.lo_heap_r, inv_api_state.lo_index_r,
 									obj_desc->snapshot, 2, skey);
 
 	oldtuple = NULL;
@@ -670,9 +678,9 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 			memset(replace, false, sizeof(replace));
 			values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
 			replace[Anum_pg_largeobject_data - 1] = true;
-			newtup = heap_modify_tuple(oldtuple, RelationGetDescr(lo_heap_r),
+			newtup = heap_modify_tuple(oldtuple, RelationGetDescr(inv_api_state.lo_heap_r),
 									   values, nulls, replace);
-			CatalogTupleUpdateWithInfo(lo_heap_r, &newtup->t_self, newtup,
+			CatalogTupleUpdateWithInfo(inv_api_state.lo_heap_r, &newtup->t_self, newtup,
 									   indstate);
 			heap_freetuple(newtup);
 
@@ -714,8 +722,8 @@ inv_write(LargeObjectDesc *obj_desc, const char *buf, int nbytes)
 			values[Anum_pg_largeobject_loid - 1] = ObjectIdGetDatum(obj_desc->id);
 			values[Anum_pg_largeobject_pageno - 1] = Int32GetDatum(pageno);
 			values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
-			newtup = heap_form_tuple(lo_heap_r->rd_att, values, nulls);
-			CatalogTupleInsertWithInfo(lo_heap_r, newtup, indstate);
+			newtup = heap_form_tuple(inv_api_state.lo_heap_r->rd_att, values, nulls);
+			CatalogTupleInsertWithInfo(inv_api_state.lo_heap_r, newtup, indstate);
 			heap_freetuple(newtup);
 		}
 		pageno++;
@@ -777,7 +785,7 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 
 	open_lo_relation();
 
-	indstate = CatalogOpenIndexes(lo_heap_r);
+	indstate = CatalogOpenIndexes(inv_api_state.lo_heap_r);
 
 	/*
 	 * Set up to find all pages with desired loid and pageno >= target
@@ -792,7 +800,7 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 				BTGreaterEqualStrategyNumber, F_INT4GE,
 				Int32GetDatum(pageno));
 
-	sd = systable_beginscan_ordered(lo_heap_r, lo_index_r,
+	sd = systable_beginscan_ordered(inv_api_state.lo_heap_r, inv_api_state.lo_index_r,
 									obj_desc->snapshot, 2, skey);
 
 	/*
@@ -843,9 +851,9 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 		memset(replace, false, sizeof(replace));
 		values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
 		replace[Anum_pg_largeobject_data - 1] = true;
-		newtup = heap_modify_tuple(oldtuple, RelationGetDescr(lo_heap_r),
+		newtup = heap_modify_tuple(oldtuple, RelationGetDescr(inv_api_state.lo_heap_r),
 								   values, nulls, replace);
-		CatalogTupleUpdateWithInfo(lo_heap_r, &newtup->t_self, newtup,
+		CatalogTupleUpdateWithInfo(inv_api_state.lo_heap_r, &newtup->t_self, newtup,
 								   indstate);
 		heap_freetuple(newtup);
 	}
@@ -859,7 +867,7 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 		if (olddata != NULL)
 		{
 			Assert(olddata->pageno > pageno);
-			CatalogTupleDelete(lo_heap_r, &oldtuple->t_self);
+			CatalogTupleDelete(inv_api_state.lo_heap_r, &oldtuple->t_self);
 		}
 
 		/*
@@ -882,8 +890,8 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 		values[Anum_pg_largeobject_loid - 1] = ObjectIdGetDatum(obj_desc->id);
 		values[Anum_pg_largeobject_pageno - 1] = Int32GetDatum(pageno);
 		values[Anum_pg_largeobject_data - 1] = PointerGetDatum(&workbuf);
-		newtup = heap_form_tuple(lo_heap_r->rd_att, values, nulls);
-		CatalogTupleInsertWithInfo(lo_heap_r, newtup, indstate);
+		newtup = heap_form_tuple(inv_api_state.lo_heap_r->rd_att, values, nulls);
+		CatalogTupleInsertWithInfo(inv_api_state.lo_heap_r, newtup, indstate);
 		heap_freetuple(newtup);
 	}
 
@@ -895,7 +903,7 @@ inv_truncate(LargeObjectDesc *obj_desc, int64 len)
 	{
 		while ((oldtuple = systable_getnext_ordered(sd, ForwardScanDirection)) != NULL)
 		{
-			CatalogTupleDelete(lo_heap_r, &oldtuple->t_self);
+			CatalogTupleDelete(inv_api_state.lo_heap_r, &oldtuple->t_self);
 		}
 	}
 
