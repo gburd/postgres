@@ -124,6 +124,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 33 | `access/common/reloptions.c` | `ReloptionsState` / `relopts_state` | 5 | **Pure fold** — folded the five *private* file-local session_local statics (`relOpts`, `last_assigned_kind`, `num_custom_options`, `custom_options`, `need_initialization`) into one file-local `static session_local ReloptionsState relopts_state`. All five are fully private (no externs, only `reloptions.c` references them). No name collisions; no prose FPs. Single-file, no header change. 47 use sites rewritten. |
 
+| 34 | `storage/ipc/standby.c` | `StandbyState` / `standby_state` | 6 | **Pure fold** — folded the six *private* file-local session_local statics (`RecoveryLockHash`, `RecoveryLockXidHash`, `got_standby_deadlock_timeout`, `got_standby_delay_timeout`, `got_standby_lock_timeout`, `standbyWait_us`) into one file-local `static session_local StandbyState standby_state`. All six are fully private (no externs, only `standby.c` references them). The three `got_standby_*_timeout` flags keep their `volatile sig_atomic_t` qualifiers (set by timeout handlers). `standbyWait_us` is initialized to the literal `1000` because the `STANDBY_INITIAL_WAIT_US` macro is `#define`d later in the file than the struct anchor; a `StaticAssertDecl` at the macro definition guards against drift. No name collisions; 2 prose FPs (correctly skipped). Single-file, no header change. 43 use sites rewritten. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
