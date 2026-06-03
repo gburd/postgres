@@ -97,10 +97,18 @@ static const dshash_parameters dsh_params = {
 	LWTRANCHE_LAUNCHER_HASH
 };
 
-static session_local dsa_area *last_start_times_dsa = NULL;
-static session_local dshash_table *last_start_times = NULL;
+typedef struct LauncherState
+{
+	dsa_area   *last_start_times_dsa;
+	dshash_table *last_start_times;
+	bool		on_commit_launcher_wakeup;
+} LauncherState;
 
-static session_local bool on_commit_launcher_wakeup = false;
+static session_local LauncherState launcher_state = {
+	.last_start_times_dsa = NULL,
+	.last_start_times = NULL,
+	.on_commit_launcher_wakeup = false,
+};
 
 
 static void logicalrep_launcher_onexit(int code, Datum arg);
@@ -1065,7 +1073,7 @@ logicalrep_launcher_attach_dshmem(void)
 
 	/* Quick exit if we already did this. */
 	if (LogicalRepCtx->last_start_dsh != DSHASH_HANDLE_INVALID &&
-		last_start_times != NULL)
+		launcher_state.last_start_times != NULL)
 		return;
 
 	/* Otherwise, use a lock to ensure only one process creates the table. */
@@ -1077,21 +1085,21 @@ logicalrep_launcher_attach_dshmem(void)
 	if (LogicalRepCtx->last_start_dsh == DSHASH_HANDLE_INVALID)
 	{
 		/* Initialize dynamic shared hash table for last-start times. */
-		last_start_times_dsa = dsa_create(LWTRANCHE_LAUNCHER_DSA);
-		dsa_pin(last_start_times_dsa);
-		dsa_pin_mapping(last_start_times_dsa);
-		last_start_times = dshash_create(last_start_times_dsa, &dsh_params, NULL);
+		launcher_state.last_start_times_dsa = dsa_create(LWTRANCHE_LAUNCHER_DSA);
+		dsa_pin(launcher_state.last_start_times_dsa);
+		dsa_pin_mapping(launcher_state.last_start_times_dsa);
+		launcher_state.last_start_times = dshash_create(launcher_state.last_start_times_dsa, &dsh_params, NULL);
 
 		/* Store handles in shared memory for other backends to use. */
-		LogicalRepCtx->last_start_dsa = dsa_get_handle(last_start_times_dsa);
-		LogicalRepCtx->last_start_dsh = dshash_get_hash_table_handle(last_start_times);
+		LogicalRepCtx->last_start_dsa = dsa_get_handle(launcher_state.last_start_times_dsa);
+		LogicalRepCtx->last_start_dsh = dshash_get_hash_table_handle(launcher_state.last_start_times);
 	}
-	else if (!last_start_times)
+	else if (!launcher_state.last_start_times)
 	{
 		/* Attach to existing dynamic shared hash table. */
-		last_start_times_dsa = dsa_attach(LogicalRepCtx->last_start_dsa);
-		dsa_pin_mapping(last_start_times_dsa);
-		last_start_times = dshash_attach(last_start_times_dsa, &dsh_params,
+		launcher_state.last_start_times_dsa = dsa_attach(LogicalRepCtx->last_start_dsa);
+		dsa_pin_mapping(launcher_state.last_start_times_dsa);
+		launcher_state.last_start_times = dshash_attach(launcher_state.last_start_times_dsa, &dsh_params,
 										 LogicalRepCtx->last_start_dsh, NULL);
 	}
 
@@ -1110,9 +1118,9 @@ ApplyLauncherSetWorkerStartTime(Oid subid, TimestampTz start_time)
 
 	logicalrep_launcher_attach_dshmem();
 
-	entry = dshash_find_or_insert(last_start_times, &subid, &found);
+	entry = dshash_find_or_insert(launcher_state.last_start_times, &subid, &found);
 	entry->last_start_time = start_time;
-	dshash_release_lock(last_start_times, entry);
+	dshash_release_lock(launcher_state.last_start_times, entry);
 }
 
 /*
@@ -1126,12 +1134,12 @@ ApplyLauncherGetWorkerStartTime(Oid subid)
 
 	logicalrep_launcher_attach_dshmem();
 
-	entry = dshash_find(last_start_times, &subid, false);
+	entry = dshash_find(launcher_state.last_start_times, &subid, false);
 	if (entry == NULL)
 		return 0;
 
 	ret = entry->last_start_time;
-	dshash_release_lock(last_start_times, entry);
+	dshash_release_lock(launcher_state.last_start_times, entry);
 
 	return ret;
 }
@@ -1149,7 +1157,7 @@ ApplyLauncherForgetWorkerStartTime(Oid subid)
 {
 	logicalrep_launcher_attach_dshmem();
 
-	(void) dshash_delete_key(last_start_times, &subid);
+	(void) dshash_delete_key(launcher_state.last_start_times, &subid);
 }
 
 /*
@@ -1160,11 +1168,11 @@ AtEOXact_ApplyLauncher(bool isCommit)
 {
 	if (isCommit)
 	{
-		if (on_commit_launcher_wakeup)
+		if (launcher_state.on_commit_launcher_wakeup)
 			ApplyLauncherWakeup();
 	}
 
-	on_commit_launcher_wakeup = false;
+	launcher_state.on_commit_launcher_wakeup = false;
 }
 
 /*
@@ -1177,8 +1185,8 @@ AtEOXact_ApplyLauncher(bool isCommit)
 void
 ApplyLauncherWakeupAtCommit(void)
 {
-	if (!on_commit_launcher_wakeup)
-		on_commit_launcher_wakeup = true;
+	if (!launcher_state.on_commit_launcher_wakeup)
+		launcher_state.on_commit_launcher_wakeup = true;
 }
 
 /*
