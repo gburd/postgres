@@ -151,8 +151,16 @@
  * Starting a transaction -- which we need to do while exporting a snapshot --
  * removes knowledge about the previously used resowner, so we save it here.
  */
-static session_local ResourceOwner SavedResourceOwnerDuringExport = NULL;
-static session_local bool ExportInProgress = false;
+typedef struct SnapBuildSessState
+{
+	ResourceOwner SavedResourceOwnerDuringExport;
+	bool		ExportInProgress;
+} SnapBuildSessState;
+
+static session_local SnapBuildSessState snapbuild_state = {
+	.SavedResourceOwnerDuringExport = NULL,
+	.ExportInProgress = false,
+};
 
 /*
  * If a backend is going to do logical decoding and the output plugin does
@@ -561,11 +569,11 @@ SnapBuildExportSnapshot(SnapBuild *builder)
 	if (IsTransactionOrTransactionBlock())
 		elog(ERROR, "cannot export a snapshot from within a transaction");
 
-	if (SavedResourceOwnerDuringExport)
+	if (snapbuild_state.SavedResourceOwnerDuringExport)
 		elog(ERROR, "can only export one snapshot at a time");
 
-	SavedResourceOwnerDuringExport = CurrentResourceOwner;
-	ExportInProgress = true;
+	snapbuild_state.SavedResourceOwnerDuringExport = CurrentResourceOwner;
+	snapbuild_state.ExportInProgress = true;
 
 	StartTransactionCommand();
 
@@ -619,7 +627,7 @@ SnapBuildClearExportedSnapshot(void)
 	ResourceOwner tmpResOwner;
 
 	/* nothing exported, that is the usual case */
-	if (!ExportInProgress)
+	if (!snapbuild_state.ExportInProgress)
 		return;
 
 	if (!IsTransactionState())
@@ -629,7 +637,7 @@ SnapBuildClearExportedSnapshot(void)
 	 * AbortCurrentTransaction() takes care of resetting the snapshot state,
 	 * so remember SavedResourceOwnerDuringExport.
 	 */
-	tmpResOwner = SavedResourceOwnerDuringExport;
+	tmpResOwner = snapbuild_state.SavedResourceOwnerDuringExport;
 
 	/* make sure nothing could have ever happened */
 	AbortCurrentTransaction();
@@ -643,8 +651,8 @@ SnapBuildClearExportedSnapshot(void)
 void
 SnapBuildResetExportedSnapshotState(void)
 {
-	SavedResourceOwnerDuringExport = NULL;
-	ExportInProgress = false;
+	snapbuild_state.SavedResourceOwnerDuringExport = NULL;
+	snapbuild_state.ExportInProgress = false;
 }
 
 /*
