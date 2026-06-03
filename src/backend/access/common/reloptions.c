@@ -593,12 +593,29 @@ static relopt_string stringRelOpts[] =
 	{{NULL}}
 };
 
-static session_local relopt_gen **relOpts = NULL;
-static session_local uint32 last_assigned_kind = RELOPT_KIND_LAST_DEFAULT;
 
-static session_local int	num_custom_options = 0;
-static session_local relopt_gen **custom_options = NULL;
-static session_local bool need_initialization = true;
+
+typedef struct ReloptionsState
+{
+	/* Array of all known reloption definitions. */
+	relopt_gen **relOpts;
+	/* Next relopt kind bit to hand out for custom reloptions. */
+	uint32		last_assigned_kind;
+	/* Number of custom reloptions registered. */
+	int			num_custom_options;
+	/* Array of custom reloption definitions. */
+	relopt_gen **custom_options;
+	/* True until initialize_reloptions() has run. */
+	bool		need_initialization;
+} ReloptionsState;
+
+static session_local ReloptionsState relopts_state = {
+	.relOpts = NULL,
+	.last_assigned_kind = RELOPT_KIND_LAST_DEFAULT,
+	.num_custom_options = 0,
+	.custom_options = NULL,
+	.need_initialization = true,
+};
 
 static void initialize_reloptions(void);
 static void parse_one_reloption(relopt_value *option, char *text_str,
@@ -617,7 +634,7 @@ static void parse_one_reloption(relopt_value *option, char *text_str,
  * initialize_reloptions
  *		initialization routine, must be called before parsing
  *
- * Initialize the relOpts array and fill each variable's type and name length.
+ * Initialize the relopts_state.relOpts array and fill each variable's type and name length.
  */
 static void
 initialize_reloptions(void)
@@ -663,73 +680,73 @@ initialize_reloptions(void)
 								   stringRelOpts[i].gen.lockmode));
 		j++;
 	}
-	j += num_custom_options;
+	j += relopts_state.num_custom_options;
 
-	if (relOpts)
-		pfree(relOpts);
-	relOpts = MemoryContextAlloc(TopMemoryContext,
+	if (relopts_state.relOpts)
+		pfree(relopts_state.relOpts);
+	relopts_state.relOpts = MemoryContextAlloc(TopMemoryContext,
 								 (j + 1) * sizeof(relopt_gen *));
 
 	j = 0;
 	for (i = 0; boolRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &boolRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_BOOL;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &boolRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_BOOL;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
 	for (i = 0; ternaryRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &ternaryRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_TERNARY;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &ternaryRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_TERNARY;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
 	for (i = 0; intRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &intRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_INT;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &intRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_INT;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
 	for (i = 0; realRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &realRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_REAL;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &realRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_REAL;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
 	for (i = 0; enumRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &enumRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_ENUM;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &enumRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_ENUM;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
 	for (i = 0; stringRelOpts[i].gen.name; i++)
 	{
-		relOpts[j] = &stringRelOpts[i].gen;
-		relOpts[j]->type = RELOPT_TYPE_STRING;
-		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		relopts_state.relOpts[j] = &stringRelOpts[i].gen;
+		relopts_state.relOpts[j]->type = RELOPT_TYPE_STRING;
+		relopts_state.relOpts[j]->namelen = strlen(relopts_state.relOpts[j]->name);
 		j++;
 	}
 
-	for (i = 0; i < num_custom_options; i++)
+	for (i = 0; i < relopts_state.num_custom_options; i++)
 	{
-		relOpts[j] = custom_options[i];
+		relopts_state.relOpts[j] = relopts_state.custom_options[i];
 		j++;
 	}
 
 	/* add a list terminator */
-	relOpts[j] = NULL;
+	relopts_state.relOpts[j] = NULL;
 
 	/* flag the work is complete */
-	need_initialization = false;
+	relopts_state.need_initialization = false;
 }
 
 /*
@@ -741,12 +758,12 @@ relopt_kind
 add_reloption_kind(void)
 {
 	/* don't hand out the last bit so that the enum's behavior is portable */
-	if (last_assigned_kind >= RELOPT_KIND_MAX)
+	if (relopts_state.last_assigned_kind >= RELOPT_KIND_MAX)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("user-defined relation parameter types limit exceeded")));
-	last_assigned_kind <<= 1;
-	return (relopt_kind) last_assigned_kind;
+	relopts_state.last_assigned_kind <<= 1;
+	return (relopt_kind) relopts_state.last_assigned_kind;
 }
 
 /*
@@ -759,7 +776,7 @@ add_reloption(relopt_gen *newoption)
 {
 	static int	max_custom_options = 0;
 
-	if (num_custom_options >= max_custom_options)
+	if (relopts_state.num_custom_options >= max_custom_options)
 	{
 		MemoryContext oldcxt;
 
@@ -768,19 +785,19 @@ add_reloption(relopt_gen *newoption)
 		if (max_custom_options == 0)
 		{
 			max_custom_options = 8;
-			custom_options = palloc(max_custom_options * sizeof(relopt_gen *));
+			relopts_state.custom_options = palloc(max_custom_options * sizeof(relopt_gen *));
 		}
 		else
 		{
 			max_custom_options *= 2;
-			custom_options = repalloc(custom_options,
+			relopts_state.custom_options = repalloc(relopts_state.custom_options,
 									  max_custom_options * sizeof(relopt_gen *));
 		}
 		MemoryContextSwitchTo(oldcxt);
 	}
-	custom_options[num_custom_options++] = newoption;
+	relopts_state.custom_options[relopts_state.num_custom_options++] = newoption;
 
-	need_initialization = true;
+	relopts_state.need_initialization = true;
 }
 
 /*
@@ -1623,24 +1640,24 @@ parseRelOptions(Datum options, bool validate, relopt_kind kind,
 	int			i;
 	int			j;
 
-	if (need_initialization)
+	if (relopts_state.need_initialization)
 		initialize_reloptions();
 
 	/* Build a list of expected options, based on kind */
 
-	for (i = 0; relOpts[i]; i++)
-		if (relOpts[i]->kinds & kind)
+	for (i = 0; relopts_state.relOpts[i]; i++)
+		if (relopts_state.relOpts[i]->kinds & kind)
 			numoptions++;
 
 	if (numoptions > 0)
 	{
 		reloptions = palloc(numoptions * sizeof(relopt_value));
 
-		for (i = 0, j = 0; relOpts[i]; i++)
+		for (i = 0, j = 0; relopts_state.relOpts[i]; i++)
 		{
-			if (relOpts[i]->kinds & kind)
+			if (relopts_state.relOpts[i]->kinds & kind)
 			{
-				reloptions[j].gen = relOpts[i];
+				reloptions[j].gen = relopts_state.relOpts[i];
 				reloptions[j].isset = false;
 				j++;
 			}
@@ -2258,7 +2275,7 @@ AlterTableGetRelOptionsLockLevel(List *defList)
 	if (defList == NIL)
 		return AccessExclusiveLock;
 
-	if (need_initialization)
+	if (relopts_state.need_initialization)
 		initialize_reloptions();
 
 	foreach(cell, defList)
@@ -2266,14 +2283,14 @@ AlterTableGetRelOptionsLockLevel(List *defList)
 		DefElem    *def = (DefElem *) lfirst(cell);
 		int			i;
 
-		for (i = 0; relOpts[i]; i++)
+		for (i = 0; relopts_state.relOpts[i]; i++)
 		{
-			if (strncmp(relOpts[i]->name,
+			if (strncmp(relopts_state.relOpts[i]->name,
 						def->defname,
-						relOpts[i]->namelen + 1) == 0)
+						relopts_state.relOpts[i]->namelen + 1) == 0)
 			{
-				if (lockmode < relOpts[i]->lockmode)
-					lockmode = relOpts[i]->lockmode;
+				if (lockmode < relopts_state.relOpts[i]->lockmode)
+					lockmode = relopts_state.relOpts[i]->lockmode;
 			}
 		}
 	}
