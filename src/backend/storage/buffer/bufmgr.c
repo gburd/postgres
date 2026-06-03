@@ -224,8 +224,6 @@ sighup_guc int			checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
 sighup_guc int			bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
 session_guc int			backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
 
-/* local state for LockBufferForCleanup */
-static session_local BufferDesc *PinCountWaitBuf = NULL;
 
 /*
  * Backend-Private refcount management:
@@ -261,10 +259,24 @@ static session_local BufferDesc *PinCountWaitBuf = NULL;
  * because in some scenarios it's called with a spinlock held...
  */
 static Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
-static session_local struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
-static session_local refcount_hash *PrivateRefCountHash = NULL;
-static session_local int32 PrivateRefCountOverflowed = 0;
-static session_local uint32 PrivateRefCountClock = 0;
+typedef struct BufMgrState
+{
+	/* local state for LockBufferForCleanup */
+	BufferDesc *PinCountWaitBuf;
+
+	/* backend-private buffer pin refcount tracking (see comment above) */
+	struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
+	refcount_hash *PrivateRefCountHash;
+	int32		PrivateRefCountOverflowed;
+	uint32		PrivateRefCountClock;
+} BufMgrState;
+
+static session_local BufMgrState bufmgr_state = {
+	.PinCountWaitBuf = NULL,
+	.PrivateRefCountHash = NULL,
+	.PrivateRefCountOverflowed = 0,
+	.PrivateRefCountClock = 0,
+};
 static int	ReservedRefCountSlot = -1;
 static int	PrivateRefCountEntryLast = -1;
 
@@ -351,17 +363,17 @@ ReservePrivateRefCountEntry(void)
 		bool		found;
 
 		/* select victim slot */
-		victim_slot = PrivateRefCountClock++ % REFCOUNT_ARRAY_ENTRIES;
-		victim_entry = &PrivateRefCountArray[victim_slot];
+		victim_slot = bufmgr_state.PrivateRefCountClock++ % REFCOUNT_ARRAY_ENTRIES;
+		victim_entry = &bufmgr_state.PrivateRefCountArray[victim_slot];
 		ReservedRefCountSlot = victim_slot;
 
 		/* Better be used, otherwise we shouldn't get here. */
 		Assert(PrivateRefCountArrayKeys[victim_slot] != InvalidBuffer);
-		Assert(PrivateRefCountArray[victim_slot].buffer != InvalidBuffer);
-		Assert(PrivateRefCountArrayKeys[victim_slot] == PrivateRefCountArray[victim_slot].buffer);
+		Assert(bufmgr_state.PrivateRefCountArray[victim_slot].buffer != InvalidBuffer);
+		Assert(PrivateRefCountArrayKeys[victim_slot] == bufmgr_state.PrivateRefCountArray[victim_slot].buffer);
 
 		/* enter victim array entry into hashtable */
-		hashent = refcount_insert(PrivateRefCountHash,
+		hashent = refcount_insert(bufmgr_state.PrivateRefCountHash,
 								  PrivateRefCountArrayKeys[victim_slot],
 								  &found);
 		Assert(!found);
@@ -377,7 +389,7 @@ ReservePrivateRefCountEntry(void)
 		victim_entry->data.refcount = 0;
 		victim_entry->data.lockmode = BUFFER_LOCK_UNLOCK;
 
-		PrivateRefCountOverflowed++;
+		bufmgr_state.PrivateRefCountOverflowed++;
 	}
 }
 
@@ -393,7 +405,7 @@ NewPrivateRefCountEntry(Buffer buffer)
 	Assert(ReservedRefCountSlot != -1);
 
 	/* use up the reserved entry */
-	res = &PrivateRefCountArray[ReservedRefCountSlot];
+	res = &bufmgr_state.PrivateRefCountArray[ReservedRefCountSlot];
 
 	/* and fill it */
 	PrivateRefCountArrayKeys[ReservedRefCountSlot] = buffer;
@@ -440,7 +452,7 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 		/* update cache for the next lookup */
 		PrivateRefCountEntryLast = match;
 
-		return &PrivateRefCountArray[match];
+		return &bufmgr_state.PrivateRefCountArray[match];
 	}
 
 	/*
@@ -450,10 +462,10 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 	 * Only look up the buffer in the hashtable if we've previously overflowed
 	 * into it.
 	 */
-	if (PrivateRefCountOverflowed == 0)
+	if (bufmgr_state.PrivateRefCountOverflowed == 0)
 		return NULL;
 
-	res = refcount_lookup(PrivateRefCountHash, buffer);
+	res = refcount_lookup(bufmgr_state.PrivateRefCountHash, buffer);
 
 	if (res == NULL)
 		return NULL;
@@ -470,16 +482,16 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 
 		/* Save data and delete from hashtable while res is still valid */
 		data = res->data;
-		refcount_delete_item(PrivateRefCountHash, res);
-		Assert(PrivateRefCountOverflowed > 0);
-		PrivateRefCountOverflowed--;
+		refcount_delete_item(bufmgr_state.PrivateRefCountHash, res);
+		Assert(bufmgr_state.PrivateRefCountOverflowed > 0);
+		bufmgr_state.PrivateRefCountOverflowed--;
 
 		/* Ensure there's a free array slot */
 		ReservePrivateRefCountEntry();
 
 		/* Use up the reserved slot */
 		Assert(ReservedRefCountSlot != -1);
-		free = &PrivateRefCountArray[ReservedRefCountSlot];
+		free = &bufmgr_state.PrivateRefCountArray[ReservedRefCountSlot];
 		Assert(PrivateRefCountArrayKeys[ReservedRefCountSlot] == free->buffer);
 		Assert(free->buffer == InvalidBuffer);
 
@@ -520,9 +532,9 @@ GetPrivateRefCountEntry(Buffer buffer, bool do_move)
 	 * PrivateRefCountArrayKeys saves a lot of memory accesses.
 	 */
 	if (likely(PrivateRefCountEntryLast != -1) &&
-		likely(PrivateRefCountArray[PrivateRefCountEntryLast].buffer == buffer))
+		likely(bufmgr_state.PrivateRefCountArray[PrivateRefCountEntryLast].buffer == buffer))
 	{
-		return &PrivateRefCountArray[PrivateRefCountEntryLast];
+		return &bufmgr_state.PrivateRefCountArray[PrivateRefCountEntryLast];
 	}
 
 	/*
@@ -567,11 +579,11 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 	Assert(ref->data.refcount == 0);
 	Assert(ref->data.lockmode == BUFFER_LOCK_UNLOCK);
 
-	if (ref >= &PrivateRefCountArray[0] &&
-		ref < &PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES])
+	if (ref >= &bufmgr_state.PrivateRefCountArray[0] &&
+		ref < &bufmgr_state.PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES])
 	{
 		ref->buffer = InvalidBuffer;
-		PrivateRefCountArrayKeys[ref - PrivateRefCountArray] = InvalidBuffer;
+		PrivateRefCountArrayKeys[ref - bufmgr_state.PrivateRefCountArray] = InvalidBuffer;
 
 
 		/*
@@ -579,13 +591,13 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 		 * allows us to avoid ever having to search the array/hash for free
 		 * entries.
 		 */
-		ReservedRefCountSlot = ref - PrivateRefCountArray;
+		ReservedRefCountSlot = ref - bufmgr_state.PrivateRefCountArray;
 	}
 	else
 	{
-		refcount_delete_item(PrivateRefCountHash, ref);
-		Assert(PrivateRefCountOverflowed > 0);
-		PrivateRefCountOverflowed--;
+		refcount_delete_item(bufmgr_state.PrivateRefCountHash, ref);
+		Assert(bufmgr_state.PrivateRefCountOverflowed > 0);
+		bufmgr_state.PrivateRefCountOverflowed--;
 	}
 }
 
@@ -2704,7 +2716,7 @@ GetAdditionalPinLimit(void)
 	 * number of pins in PrivateRefCountArray.  The cost of calculating that
 	 * exactly doesn't seem worth it, so just assume the max.
 	 */
-	estimated_pins_held = PrivateRefCountOverflowed + REFCOUNT_ARRAY_ENTRIES;
+	estimated_pins_held = bufmgr_state.PrivateRefCountOverflowed + REFCOUNT_ARRAY_ENTRIES;
 
 	/* Is this backend already holding more than its fair share? */
 	if (estimated_pins_held > MaxProportionalPins)
@@ -4204,7 +4216,7 @@ AtEOXact_Buffers(bool isCommit)
 
 	AtEOXact_LocalBuffers(isCommit);
 
-	Assert(PrivateRefCountOverflowed == 0);
+	Assert(bufmgr_state.PrivateRefCountOverflowed == 0);
 }
 
 /*
@@ -4226,10 +4238,10 @@ InitBufferManagerAccess(void)
 	 */
 	MaxProportionalPins = GetGUCInt(GUC_NBuffers) / (MaxBackends + NUM_AUXILIARY_PROCS);
 
-	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
+	memset(&bufmgr_state.PrivateRefCountArray, 0, sizeof(bufmgr_state.PrivateRefCountArray));
 	memset(&PrivateRefCountArrayKeys, 0, sizeof(PrivateRefCountArrayKeys));
 
-	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
+	bufmgr_state.PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
 
 	/*
 	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
@@ -4275,7 +4287,7 @@ CheckForBufferLeaks(void)
 	{
 		if (PrivateRefCountArrayKeys[i] != InvalidBuffer)
 		{
-			res = &PrivateRefCountArray[i];
+			res = &bufmgr_state.PrivateRefCountArray[i];
 
 			s = DebugPrintBufferRefcount(res->buffer);
 			elog(WARNING, "buffer refcount leak: %s", s);
@@ -4286,12 +4298,12 @@ CheckForBufferLeaks(void)
 	}
 
 	/* if necessary search the hash */
-	if (PrivateRefCountOverflowed)
+	if (bufmgr_state.PrivateRefCountOverflowed)
 	{
 		refcount_iterator iter;
 
-		refcount_start_iterate(PrivateRefCountHash, &iter);
-		while ((res = refcount_iterate(PrivateRefCountHash, &iter)) != NULL)
+		refcount_start_iterate(bufmgr_state.PrivateRefCountHash, &iter);
+		while ((res = refcount_iterate(bufmgr_state.PrivateRefCountHash, &iter)) != NULL)
 		{
 			s = DebugPrintBufferRefcount(res->buffer);
 			elog(WARNING, "buffer refcount leak: %s", s);
@@ -4332,7 +4344,7 @@ AssertBufferLocksPermitCatalogRead(void)
 	{
 		if (PrivateRefCountArrayKeys[i] != InvalidBuffer)
 		{
-			res = &PrivateRefCountArray[i];
+			res = &bufmgr_state.PrivateRefCountArray[i];
 
 			if (res->buffer == InvalidBuffer)
 				continue;
@@ -4342,12 +4354,12 @@ AssertBufferLocksPermitCatalogRead(void)
 	}
 
 	/* if necessary search the hash */
-	if (PrivateRefCountOverflowed)
+	if (bufmgr_state.PrivateRefCountOverflowed)
 	{
 		refcount_iterator iter;
 
-		refcount_start_iterate(PrivateRefCountHash, &iter);
-		while ((res = refcount_iterate(PrivateRefCountHash, &iter)) != NULL)
+		refcount_start_iterate(bufmgr_state.PrivateRefCountHash, &iter);
+		while ((res = refcount_iterate(bufmgr_state.PrivateRefCountHash, &iter)) != NULL)
 		{
 			AssertNotCatalogBufferLock(res->buffer, res->data.lockmode);
 		}
@@ -5853,7 +5865,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 void
 UnlockBuffers(void)
 {
-	BufferDesc *buf = PinCountWaitBuf;
+	BufferDesc *buf = bufmgr_state.PinCountWaitBuf;
 
 	if (buf)
 	{
@@ -5874,7 +5886,7 @@ UnlockBuffers(void)
 						0, unset_bits,
 						0);
 
-		PinCountWaitBuf = NULL;
+		bufmgr_state.PinCountWaitBuf = NULL;
 	}
 }
 
@@ -6677,7 +6689,7 @@ LockBufferForCleanup(Buffer buffer)
 	bool		logged_recovery_conflict = false;
 
 	Assert(BufferIsPinned(buffer));
-	Assert(PinCountWaitBuf == NULL);
+	Assert(bufmgr_state.PinCountWaitBuf == NULL);
 
 	CheckBufferIsPinnedOnce(buffer);
 
@@ -6735,7 +6747,7 @@ LockBufferForCleanup(Buffer buffer)
 			elog(ERROR, "multiple backends attempting to wait for pincount 1");
 		}
 		bufHdr->wait_backend_pgprocno = MyProcNumber;
-		PinCountWaitBuf = bufHdr;
+		bufmgr_state.PinCountWaitBuf = bufHdr;
 		UnlockBufHdrExt(bufHdr, buf_state,
 						BM_PIN_COUNT_WAITER, 0,
 						0);
@@ -6806,7 +6818,7 @@ LockBufferForCleanup(Buffer buffer)
 						0, unset_bits,
 						0);
 
-		PinCountWaitBuf = NULL;
+		bufmgr_state.PinCountWaitBuf = NULL;
 		/* Loop back and try again */
 	}
 }
