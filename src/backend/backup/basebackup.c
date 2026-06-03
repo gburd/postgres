@@ -125,14 +125,21 @@ static int	compareWalFileNames(const ListCell *a, const ListCell *b);
 static ssize_t basebackup_read_file(int fd, char *buf, size_t nbytes, off_t offset,
 									const char *filename, bool partial_read_ok);
 
-/* Was the backup currently in-progress initiated in recovery mode? */
-static session_local bool backup_started_in_recovery = false;
+/* Per-session base-backup state. */
+typedef struct BasebackupState
+{
+	/* Was the backup currently in-progress initiated in recovery mode? */
+	bool		backup_started_in_recovery;
+	/* Total number of checksum failures during base backup. */
+	long long int total_checksum_failures;
+	/* Do not verify checksums. */
+	bool		noverify_checksums;
+} BasebackupState;
 
-/* Total number of checksum failures during base backup. */
-static session_local long long int total_checksum_failures;
-
-/* Do not verify checksums. */
-static session_local bool noverify_checksums = false;
+static session_local BasebackupState basebackup_state = {
+	.backup_started_in_recovery = false,
+	.noverify_checksums = false,
+};
 
 /*
  * Definition of one element part of an exclusion list, used for paths part
@@ -260,12 +267,12 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 		   CurrentResourceOwner == NULL);
 	CurrentResourceOwner = AuxProcessResourceOwner;
 
-	backup_started_in_recovery = RecoveryInProgress();
+	basebackup_state.backup_started_in_recovery = RecoveryInProgress();
 
 	InitializeBackupManifest(&manifest, opt->manifest,
 							 opt->manifest_checksum_type);
 
-	total_checksum_failures = 0;
+	basebackup_state.total_checksum_failures = 0;
 
 	/* Allocate backup related variables. */
 	backup_state = palloc0_object(BackupState);
@@ -662,14 +669,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 
 	bbsink_end_backup(sink, endptr, endtli);
 
-	if (total_checksum_failures)
+	if (basebackup_state.total_checksum_failures)
 	{
-		if (total_checksum_failures > 1)
+		if (basebackup_state.total_checksum_failures > 1)
 			ereport(WARNING,
 					(errmsg_plural("%lld total checksum verification failure",
 								   "%lld total checksum verification failures",
-								   total_checksum_failures,
-								   total_checksum_failures)));
+								   basebackup_state.total_checksum_failures,
+								   basebackup_state.total_checksum_failures)));
 
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -840,7 +847,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("duplicate option \"%s\"", defel->defname)));
-			noverify_checksums = !defGetBoolean(defel);
+			basebackup_state.noverify_checksums = !defGetBoolean(defel);
 			o_noverify_checksums = true;
 		}
 		else if (strcmp(defel->defname, "manifest") == 0)
@@ -1288,7 +1295,7 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		 * the backup early than continue to the end and fail there.
 		 */
 		CHECK_FOR_INTERRUPTS();
-		if (RecoveryInProgress() != backup_started_in_recovery)
+		if (RecoveryInProgress() != basebackup_state.backup_started_in_recovery)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("the standby was promoted during online backup"),
@@ -1626,7 +1633,7 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	 * or disabled as that might change, thus we check at each point where we
 	 * could be validating a checksum.
 	 */
-	if (!noverify_checksums && RelFileNumberIsValid(relfilenumber))
+	if (!basebackup_state.noverify_checksums && RelFileNumberIsValid(relfilenumber))
 		verify_checksum = true;
 
 	/*
@@ -1833,7 +1840,7 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 		pgstat_report_checksum_failures_in_db(dboid, checksum_failures);
 	}
 
-	total_checksum_failures += checksum_failures;
+	basebackup_state.total_checksum_failures += checksum_failures;
 
 	AddFileToBackupManifest(manifest, spcoid, tarfilename, statbuf->st_size,
 							(pg_time_t) statbuf->st_mtime, &checksum_ctx);
