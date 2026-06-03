@@ -43,6 +43,7 @@
 #include "access/xlogdefs.h"
 #include "catalog/pg_database.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
@@ -51,6 +52,7 @@
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 
 /* GUC parameter: sleep time between ATM scans in milliseconds */
 int			logical_revert_naptime = 1000;
@@ -80,6 +82,7 @@ static volatile sig_atomic_t got_SIGTERM = false;
 static void logical_revert_sighup(SIGNAL_ARGS);
 static void logical_revert_sigterm(SIGNAL_ARGS);
 static void process_revert_entry(TransactionId xid, XLogRecPtr last_batch_lsn);
+static List *get_revertable_database_list(MemoryContext resultcxt);
 
 /*
  * LogicalRevertShmemSize
@@ -361,24 +364,78 @@ StartLogicalRevertWorker(Oid dboid)
 }
 
 /*
+ * get_revertable_database_list
+ *		Return a palloc'd List of OIDs of databases that should get a worker.
+ *
+ *	Scans pg_database and collects every connectable, non-template database.
+ *	The returned list is allocated in resultcxt (a long-lived context) so it
+ *	survives the transaction the scan runs in.  Mirrors autovacuum's
+ *	get_database_list(): the scan must run inside a transaction, but the
+ *	result outlives it.
+ */
+static List *
+get_revertable_database_list(MemoryContext resultcxt)
+{
+	List	   *dblist = NIL;
+	Relation	pg_database;
+	TableScanDesc scan;
+	HeapTuple	tup;
+
+	StartTransactionCommand();
+
+	pg_database = table_open(DatabaseRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(pg_database, 0, NULL);
+	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		Form_pg_database db = (Form_pg_database) GETSTRUCT(tup);
+		MemoryContext oldcxt;
+
+		if (!db->datallowconn)
+			continue;
+
+		/*
+		 * Skip template databases.  template1 / template0 are not expected to
+		 * accumulate ATM entries, and holding a revert-worker connection to
+		 * template1 would block subsequent CREATE DATABASE commands that use
+		 * it as the source template.
+		 */
+		if (strncmp(NameStr(db->datname), "template", 8) == 0)
+			continue;
+
+		/* Append the OID in the caller's long-lived context. */
+		oldcxt = MemoryContextSwitchTo(resultcxt);
+		dblist = lappend_oid(dblist, db->oid);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	table_endscan(scan);
+	table_close(pg_database, AccessShareLock);
+
+	CommitTransactionCommand();
+
+	return dblist;
+}
+
+/*
  * LogicalRevertLauncherMain
  *		Launcher background worker.
  *
- *	On startup: scan pg_database once and spawn a LogicalRevertWorker
- *	for every connectable database.  Then loop forever doing nothing
- *	meaningful — the per-db workers use `bgw_restart_time = 60` so the
- *	postmaster auto-restarts them if they exit, and the launcher does
- *	NOT re-spawn on every wake-up (the slot pool is small and eager
- *	re-spawning exhausts it).
+ *	The launcher re-scans pg_database on every wake-up and spawns a
+ *	LogicalRevertWorker for any connectable, non-template database that does
+ *	not already have one.  This way databases created after server start get
+ *	a worker without requiring a restart.  Databases that disappear are
+ *	dropped from the tracking set so their OIDs can be re-tracked if reused.
  *
- *	A future iteration should watch for CREATE DATABASE / DROP DATABASE
- *	events and adjust the worker set accordingly; for now new databases
- *	get a worker only on the next server restart.
+ *	We track the set of databases we have already spawned a worker for so we
+ *	do not re-register on every wake-up: the per-db workers use
+ *	`bgw_restart_time = 60` and the postmaster auto-restarts them if they
+ *	exit, and the bgworker slot pool is small enough that eager re-spawning
+ *	would exhaust it.
  */
 void
 LogicalRevertLauncherMain(Datum main_arg)
 {
-	bool		did_initial_scan = false;
+	MemoryContext launcher_cxt;
+	List	   *known_dbs = NIL;
 
 	pqsignal(SIGHUP, logical_revert_sighup);
 	pqsignal(SIGTERM, logical_revert_sigterm);
@@ -387,17 +444,30 @@ LogicalRevertLauncherMain(Datum main_arg)
 	/*
 	 * The launcher does not connect to any database itself.  It spawns per-db
 	 * workers which do their own connection (via
-	 * BackgroundWorkerInitializeConnectionByOid).  For the one-shot
-	 * pg_database scan we connect to postgres (not template1, because holding
-	 * a connection to template1 would block CREATE DATABASE).
+	 * BackgroundWorkerInitializeConnectionByOid).  For the pg_database scans we
+	 * connect to postgres (not template1, because holding a connection to
+	 * template1 would block CREATE DATABASE).
 	 */
 	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
+
+	/*
+	 * Long-lived context for the set of databases we have already started a
+	 * worker for.  It must outlive the per-scan transactions, so it cannot
+	 * live in a transaction-scoped context.
+	 */
+	launcher_cxt = AllocSetContextCreate(TopMemoryContext,
+										 "Logical Revert Launcher",
+										 ALLOCSET_SMALL_SIZES);
 
 	elog(LOG, "logical revert launcher started");
 
 	while (!got_SIGTERM)
 	{
 		int			rc;
+		List	   *current_dbs;
+		List	   *next_known = NIL;
+		MemoryContext oldcxt;
+		ListCell   *lc;
 
 		/* Service interrupts and ProcSignalBarriers at every iteration. */
 		CHECK_FOR_INTERRUPTS();
@@ -408,47 +478,36 @@ LogicalRevertLauncherMain(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
-		if (!did_initial_scan)
+		/* Re-scan pg_database to discover databases created or dropped. */
+		current_dbs = get_revertable_database_list(launcher_cxt);
+
+		oldcxt = MemoryContextSwitchTo(launcher_cxt);
+		foreach(lc, current_dbs)
 		{
-			StartTransactionCommand();
-			{
-				Relation	pg_database;
-				TableScanDesc scan;
-				HeapTuple	tup;
+			Oid			dboid = lfirst_oid(lc);
 
-				pg_database = table_open(DatabaseRelationId, AccessShareLock);
-				scan = table_beginscan_catalog(pg_database, 0, NULL);
-				while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
-				{
-					Form_pg_database db = (Form_pg_database) GETSTRUCT(tup);
+			/* Spawn a worker only for databases we are not already tracking. */
+			if (!list_member_oid(known_dbs, dboid))
+				StartLogicalRevertWorker(dboid);
 
-					if (!db->datallowconn)
-						continue;
-
-					/*
-					 * Skip template databases.  template1 / template0 are not
-					 * expected to accumulate ATM entries, and having a
-					 * revert-worker connection to template1 would block
-					 * subsequent CREATE DATABASE commands that use it as the
-					 * source template.
-					 */
-					if (strncmp(NameStr(db->datname), "template", 8) == 0)
-						continue;
-					StartLogicalRevertWorker(db->oid);
-				}
-				table_endscan(scan);
-				table_close(pg_database, AccessShareLock);
-			}
-			CommitTransactionCommand();
-			did_initial_scan = true;
-			elog(LOG, "logical revert launcher: initial pg_database scan complete");
+			next_known = lappend_oid(next_known, dboid);
 		}
+		MemoryContextSwitchTo(oldcxt);
 
 		/*
-		 * Sleep for a long interval.  The launcher's only remaining job is to
-		 * stay alive so SIGTERM handling and SIGHUP config reloads can reach
-		 * it; the per-db workers do the real work and auto-restart on their
-		 * own.
+		 * Replace the tracked set with the databases that still exist.  Any
+		 * dropped database falls out here; its worker (if any) exits on its
+		 * own when its database disappears, and forgetting the OID lets a
+		 * reused OID be re-tracked on a later scan.
+		 */
+		list_free(known_dbs);
+		known_dbs = next_known;
+		list_free(current_dbs);
+
+		/*
+		 * Sleep until the next scan.  A shorter interval than the original
+		 * one-shot design so newly created databases pick up a revert worker
+		 * promptly; the no-op fast path (every db already tracked) is cheap.
 		 */
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
