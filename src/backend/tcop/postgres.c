@@ -140,37 +140,61 @@ typedef struct BindParamCbData
  * Flag to keep track of whether we have started a transaction.
  * For extended query protocol this has to be remembered across messages.
  */
-static session_local bool xact_started = false;
 
 /*
  * Flag to indicate that we are doing the outer loop's read-from-client,
  * as opposed to any random read from client that might happen within
  * commands like COPY FROM STDIN.
  */
-static session_local bool DoingCommandRead = false;
 
 /*
  * Flags to implement skip-till-Sync-after-error behavior for messages of
  * the extended query protocol.
  */
-static session_local bool doing_extended_query_message = false;
-static session_local bool ignore_till_sync = false;
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
  * We keep it separate from the hashtable kept by commands/prepare.c
  * in order to reduce overhead for short-lived queries.
  */
-static session_local CachedPlanSource *unnamed_stmt_psrc = NULL;
 
 /* assorted command-line switches */
-static session_local const char *userDoption = NULL;	/* -D switch */
-static session_local bool EchoQuery = false;	/* -E switch */
-static session_local bool UseSemiNewlineNewline = false;	/* -j switch */
 
 /* reused buffer to pass to SendRowDescriptionMessage() */
-static session_local MemoryContext row_description_context = NULL;
-static session_local StringInfoData row_description_buf;
+typedef struct PostgresState
+{
+	/* Have we started a transaction? (remembered across extended-query msgs) */
+	bool		xact_started;
+	/* Are we in the outer loop's read-from-client? */
+	bool		DoingCommandRead;
+	/* Skip-till-Sync-after-error state for the extended query protocol. */
+	bool		doing_extended_query_message;
+	bool		ignore_till_sync;
+	/* The unnamed prepared statement, if any. */
+	CachedPlanSource *unnamed_stmt_psrc;
+	/* assorted command-line switches */
+	const char *userDoption;	/* -D switch */
+	bool		EchoQuery;		/* -E switch */
+	bool		UseSemiNewlineNewline;	/* -j switch */
+	/* reused buffer to pass to SendRowDescriptionMessage() */
+	MemoryContext row_description_context;
+	StringInfoData row_description_buf;
+	/* saved getrusage()/timeval snapshots for ShowUsage(). */
+	struct rusage Save_r;
+	struct timeval Save_t;
+} PostgresState;
+
+static session_local PostgresState postgres_state = {
+	.xact_started = false,
+	.DoingCommandRead = false,
+	.doing_extended_query_message = false,
+	.ignore_till_sync = false,
+	.unnamed_stmt_psrc = NULL,
+	.userDoption = NULL,
+	.EchoQuery = false,
+	.UseSemiNewlineNewline = false,
+	.row_description_context = NULL,
+};
 
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
@@ -261,7 +285,7 @@ InteractiveBackend(StringInfo inBuf)
 	{
 		if (c == '\n')
 		{
-			if (UseSemiNewlineNewline)
+			if (postgres_state.UseSemiNewlineNewline)
 			{
 				/*
 				 * In -j mode, semicolon followed by two newlines ends the
@@ -316,7 +340,7 @@ InteractiveBackend(StringInfo inBuf)
 	/*
 	 * if the query echo flag was given, print the query..
 	 */
-	if (EchoQuery)
+	if (postgres_state.EchoQuery)
 		printf("statement: %s\n", inBuf->data);
 	fflush(stdout);
 
@@ -398,31 +422,31 @@ SocketBackend(StringInfo inBuf)
 	 * limit on what a sane length word could be.  (The limit could be chosen
 	 * more granularly, but it's not clear it's worth fussing over.)
 	 *
-	 * This also gives us a place to set the doing_extended_query_message flag
+	 * This also gives us a place to set the postgres_state.doing_extended_query_message flag
 	 * as soon as possible.
 	 */
 	switch (qtype)
 	{
 		case PqMsg_Query:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			postgres_state.doing_extended_query_message = false;
 			break;
 
 		case PqMsg_FunctionCall:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			postgres_state.doing_extended_query_message = false;
 			break;
 
 		case PqMsg_Terminate:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
-			ignore_till_sync = false;
+			postgres_state.doing_extended_query_message = false;
+			postgres_state.ignore_till_sync = false;
 			break;
 
 		case PqMsg_Bind:
 		case PqMsg_Parse:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			postgres_state.doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Close:
@@ -430,26 +454,26 @@ SocketBackend(StringInfo inBuf)
 		case PqMsg_Execute:
 		case PqMsg_Flush:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			postgres_state.doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Sync:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
 			/* stop any active skip-till-Sync */
-			ignore_till_sync = false;
+			postgres_state.ignore_till_sync = false;
 			/* mark not-extended, so that a new error doesn't begin skip */
-			doing_extended_query_message = false;
+			postgres_state.doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyData:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			postgres_state.doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyDone:
 		case PqMsg_CopyFail:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			postgres_state.doing_extended_query_message = false;
 			break;
 
 		default:
@@ -511,7 +535,7 @@ ProcessClientReadInterrupt(bool blocked)
 {
 	int			save_errno = errno;
 
-	if (DoingCommandRead)
+	if (postgres_state.DoingCommandRead)
 	{
 		/* Check for general interrupts that arrived before/while reading */
 		CHECK_FOR_INTERRUPTS();
@@ -1579,10 +1603,10 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	else
 	{
 		/*
-		 * We just save the CachedPlanSource into unnamed_stmt_psrc.
+		 * We just save the CachedPlanSource into postgres_state.unnamed_stmt_psrc.
 		 */
 		SaveCachedPlan(psrc);
-		unnamed_stmt_psrc = psrc;
+		postgres_state.unnamed_stmt_psrc = psrc;
 	}
 
 	MemoryContextSwitchTo(oldcontext);
@@ -1675,7 +1699,7 @@ exec_bind_message(StringInfo input_message)
 	else
 	{
 		/* special-case the unnamed statement */
-		psrc = unnamed_stmt_psrc;
+		psrc = postgres_state.unnamed_stmt_psrc;
 		if (!psrc)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
@@ -2658,7 +2682,7 @@ exec_describe_statement_message(const char *stmt_name)
 	else
 	{
 		/* special-case the unnamed statement */
-		psrc = unnamed_stmt_psrc;
+		psrc = postgres_state.unnamed_stmt_psrc;
 		if (!psrc)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
@@ -2690,16 +2714,16 @@ exec_describe_statement_message(const char *stmt_name)
 	/*
 	 * First describe the parameters...
 	 */
-	pq_beginmessage_reuse(&row_description_buf, PqMsg_ParameterDescription);
-	pq_sendint16(&row_description_buf, psrc->num_params);
+	pq_beginmessage_reuse(&postgres_state.row_description_buf, PqMsg_ParameterDescription);
+	pq_sendint16(&postgres_state.row_description_buf, psrc->num_params);
 
 	for (int i = 0; i < psrc->num_params; i++)
 	{
 		Oid			ptype = psrc->param_types[i];
 
-		pq_sendint32(&row_description_buf, (int) ptype);
+		pq_sendint32(&postgres_state.row_description_buf, (int) ptype);
 	}
-	pq_endmessage_reuse(&row_description_buf);
+	pq_endmessage_reuse(&postgres_state.row_description_buf);
 
 	/*
 	 * Next send RowDescription or NoData to describe the result...
@@ -2711,7 +2735,7 @@ exec_describe_statement_message(const char *stmt_name)
 		/* Get the plan's primary targetlist */
 		tlist = CachedPlanGetTargetList(psrc, NULL);
 
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&postgres_state.row_description_buf,
 								  psrc->resultDesc,
 								  tlist,
 								  NULL);
@@ -2764,7 +2788,7 @@ exec_describe_portal_message(const char *portal_name)
 		return;					/* can't actually do anything... */
 
 	if (portal->tupDesc)
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&postgres_state.row_description_buf,
 								  portal->tupDesc,
 								  FetchPortalTargetList(portal),
 								  portal->formats);
@@ -2779,11 +2803,11 @@ exec_describe_portal_message(const char *portal_name)
 static void
 start_xact_command(void)
 {
-	if (!xact_started)
+	if (!postgres_state.xact_started)
 	{
 		StartTransactionCommand();
 
-		xact_started = true;
+		postgres_state.xact_started = true;
 	}
 	else if (MyXactFlags & XACT_FLAGS_PIPELINING)
 	{
@@ -2821,7 +2845,7 @@ finish_xact_command(void)
 	/* cancel active statement timeout after each command */
 	disable_statement_timeout();
 
-	if (xact_started)
+	if (postgres_state.xact_started)
 	{
 		CommitTransactionCommand();
 
@@ -2836,7 +2860,7 @@ finish_xact_command(void)
 		MemoryContextStats(TopMemoryContext);
 #endif
 
-		xact_started = false;
+		postgres_state.xact_started = false;
 	}
 }
 
@@ -2898,11 +2922,11 @@ static void
 drop_unnamed_stmt(void)
 {
 	/* paranoia to avoid a dangling pointer in case of error */
-	if (unnamed_stmt_psrc)
+	if (postgres_state.unnamed_stmt_psrc)
 	{
-		CachedPlanSource *psrc = unnamed_stmt_psrc;
+		CachedPlanSource *psrc = postgres_state.unnamed_stmt_psrc;
 
-		unnamed_stmt_psrc = NULL;
+		postgres_state.unnamed_stmt_psrc = NULL;
 		DropCachedPlan(psrc);
 	}
 }
@@ -3032,7 +3056,7 @@ die(SIGNAL_ARGS)
 	 * Rather ugly, but it's unlikely to be worthwhile to invest much more
 	 * effort just for the benefit of single user mode.
 	 */
-	if (DoingCommandRead && whereToSendOutput != DestRemote)
+	if (postgres_state.DoingCommandRead && whereToSendOutput != DestRemote)
 		ProcessInterrupts();
 }
 
@@ -3162,7 +3186,7 @@ ProcessRecoveryConflictInterrupt(InterruptType reason)
 				 * making progress.  We'll drop through to the FATAL case
 				 * below to dislodge it, in that case.
 				 */
-				if (!DoingCommandRead)
+				if (!postgres_state.DoingCommandRead)
 				{
 					/* Avoid losing sync in the FE/BE protocol. */
 					if (QueryCancelHoldoffCount != 0)
@@ -3309,11 +3333,11 @@ ProcessInterrupts(void)
 	{
 		/*
 		 * Check for lost connection and re-arm, if still configured, but not
-		 * if we've arrived back at DoingCommandRead state.  We don't want to
+		 * if we've arrived back at postgres_state.DoingCommandRead state.  We don't want to
 		 * wake up idle sessions, and they already know how to detect lost
 		 * connections.
 		 */
-		if (!DoingCommandRead && GetGUCInt(GUC_client_connection_check_interval) > 0)
+		if (!postgres_state.DoingCommandRead && GetGUCInt(GUC_client_connection_check_interval) > 0)
 		{
 			if (!pq_check_connection())
 				RaiseInterrupt(INTERRUPT_CLIENT_CONNECTION_LOST);
@@ -3398,7 +3422,7 @@ ProcessInterrupts(void)
 		 * request --- sending an extra error message won't accomplish
 		 * anything.  Otherwise, go ahead and throw the error.
 		 */
-		if (!DoingCommandRead)
+		if (!postgres_state.DoingCommandRead)
 		{
 			LockErrorCleanup();
 			ereport(ERROR,
@@ -3473,7 +3497,7 @@ ProcessInterrupts(void)
 	 * If there are pending stats updates and we currently are truly idle
 	 * (matching the conditions in PostgresMain(), report stats now.
 	 */
-	if (DoingCommandRead && !IsTransactionOrTransactionBlock() &&
+	if (postgres_state.DoingCommandRead && !IsTransactionOrTransactionBlock() &&
 		ConsumeInterrupt(INTERRUPT_IDLE_STATS_TIMEOUT))
 	{
 		pgstat_report_stat(true);
@@ -3863,7 +3887,7 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 
 			case 'D':
 				if (secure)
-					userDoption = strdup(optctx.optarg);
+					postgres_state.userDoption = strdup(optctx.optarg);
 				break;
 
 			case 'd':
@@ -3872,7 +3896,7 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 
 			case 'E':
 				if (secure)
-					EchoQuery = true;
+					postgres_state.EchoQuery = true;
 				break;
 
 			case 'e':
@@ -3898,7 +3922,7 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 
 			case 'j':
 				if (secure)
-					UseSemiNewlineNewline = true;
+					postgres_state.UseSemiNewlineNewline = true;
 				break;
 
 			case 'k':
@@ -4053,7 +4077,7 @@ PostgresSingleUserMain(int argc, char *argv[],
 	}
 
 	/* Acquire configuration parameters */
-	if (!SelectConfigFiles(userDoption, progname))
+	if (!SelectConfigFiles(postgres_state.userDoption, progname))
 		proc_exit(1);
 
 	/*
@@ -4341,11 +4365,11 @@ PostgresMain(const char *dbname, const char *username)
 	 * frequently executed for every single statement, we don't want to
 	 * allocate a separate buffer every time.
 	 */
-	row_description_context = AllocSetContextCreate(TopMemoryContext,
+	postgres_state.row_description_context = AllocSetContextCreate(TopMemoryContext,
 													"RowDescriptionContext",
 													ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(row_description_context);
-	initStringInfo(&row_description_buf);
+	MemoryContextSwitchTo(postgres_state.row_description_context);
+	initStringInfo(&postgres_state.row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
 
 	/* Fire any defined login event triggers, if appropriate */
@@ -4406,7 +4430,7 @@ PostgresMain(const char *dbname, const char *username)
 		idle_session_timeout_enabled = false;
 
 		/* Not reading from the client anymore. */
-		DoingCommandRead = false;
+		postgres_state.DoingCommandRead = false;
 
 		/* Make sure libpq is in a good state */
 		pq_comm_reset();
@@ -4463,11 +4487,11 @@ PostgresMain(const char *dbname, const char *username)
 		 * skip till next Sync.  This also causes us not to issue
 		 * ReadyForQuery (until we get Sync).
 		 */
-		if (doing_extended_query_message)
-			ignore_till_sync = true;
+		if (postgres_state.doing_extended_query_message)
+			postgres_state.ignore_till_sync = true;
 
 		/* We don't have a transaction command open anymore */
-		xact_started = false;
+		postgres_state.xact_started = false;
 
 		/*
 		 * If an error occurred while we were reading a message from the
@@ -4489,7 +4513,7 @@ PostgresMain(const char *dbname, const char *username)
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
 
-	if (!ignore_till_sync)
+	if (!postgres_state.ignore_till_sync)
 		send_ready_for_query = true;	/* initially, or after error */
 
 	/*
@@ -4505,7 +4529,7 @@ PostgresMain(const char *dbname, const char *username)
 		 * At top of loop, reset extended-query-message flag, so that any
 		 * errors encountered in "idle" state don't provoke skip.
 		 */
-		doing_extended_query_message = false;
+		postgres_state.doing_extended_query_message = false;
 
 		/*
 		 * For valgrind reporting purposes, the "current query" begins here.
@@ -4673,7 +4697,7 @@ PostgresMain(const char *dbname, const char *username)
 		 * conditional since we don't want, say, reads on behalf of COPY FROM
 		 * STDIN doing the same thing.)
 		 */
-		DoingCommandRead = true;
+		postgres_state.DoingCommandRead = true;
 
 		/*
 		 * (3) read a command (loop blocks here)
@@ -4705,11 +4729,11 @@ PostgresMain(const char *dbname, const char *username)
 		 * Query cancel is supposed to be a no-op when there is no query in
 		 * progress, so if a query cancel arrived while we were idle, just
 		 * reset QueryCancelPending. ProcessInterrupts() has that effect when
-		 * it's called when DoingCommandRead is set, so check for interrupts
-		 * before resetting DoingCommandRead.
+		 * it's called when postgres_state.DoingCommandRead is set, so check for interrupts
+		 * before resetting postgres_state.DoingCommandRead.
 		 */
 		CHECK_FOR_INTERRUPTS();
-		DoingCommandRead = false;
+		postgres_state.DoingCommandRead = false;
 
 		/*
 		 * (6) check for any other interesting events that happened while we
@@ -4725,7 +4749,7 @@ PostgresMain(const char *dbname, const char *username)
 		 * (7) process the command.  But ignore it if we're skipping till
 		 * Sync.
 		 */
-		if (ignore_till_sync && firstchar != EOF)
+		if (postgres_state.ignore_till_sync && firstchar != EOF)
 			continue;
 
 		switch (firstchar)
@@ -5028,14 +5052,12 @@ forbidden_in_wal_sender(char firstchar)
 }
 
 
-static session_local struct rusage Save_r;
-static session_local struct timeval Save_t;
 
 void
 ResetUsage(void)
 {
-	getrusage(RUSAGE_SELF, &Save_r);
-	gettimeofday(&Save_t, NULL);
+	getrusage(RUSAGE_SELF, &postgres_state.Save_r);
+	gettimeofday(&postgres_state.Save_t, NULL);
 }
 
 void
@@ -5051,17 +5073,17 @@ ShowUsage(const char *title)
 	gettimeofday(&elapse_t, NULL);
 	memcpy(&user, &r.ru_utime, sizeof(user));
 	memcpy(&sys, &r.ru_stime, sizeof(sys));
-	if (elapse_t.tv_usec < Save_t.tv_usec)
+	if (elapse_t.tv_usec < postgres_state.Save_t.tv_usec)
 	{
 		elapse_t.tv_sec--;
 		elapse_t.tv_usec += 1000000;
 	}
-	if (r.ru_utime.tv_usec < Save_r.ru_utime.tv_usec)
+	if (r.ru_utime.tv_usec < postgres_state.Save_r.ru_utime.tv_usec)
 	{
 		r.ru_utime.tv_sec--;
 		r.ru_utime.tv_usec += 1000000;
 	}
-	if (r.ru_stime.tv_usec < Save_r.ru_stime.tv_usec)
+	if (r.ru_stime.tv_usec < postgres_state.Save_r.ru_stime.tv_usec)
 	{
 		r.ru_stime.tv_sec--;
 		r.ru_stime.tv_usec += 1000000;
@@ -5076,12 +5098,12 @@ ShowUsage(const char *title)
 	appendStringInfoString(&str, "! system usage stats:\n");
 	appendStringInfo(&str,
 					 "!\t%ld.%06ld s user, %ld.%06ld s system, %ld.%06ld s elapsed\n",
-					 (long) (r.ru_utime.tv_sec - Save_r.ru_utime.tv_sec),
-					 (long) (r.ru_utime.tv_usec - Save_r.ru_utime.tv_usec),
-					 (long) (r.ru_stime.tv_sec - Save_r.ru_stime.tv_sec),
-					 (long) (r.ru_stime.tv_usec - Save_r.ru_stime.tv_usec),
-					 (long) (elapse_t.tv_sec - Save_t.tv_sec),
-					 (long) (elapse_t.tv_usec - Save_t.tv_usec));
+					 (long) (r.ru_utime.tv_sec - postgres_state.Save_r.ru_utime.tv_sec),
+					 (long) (r.ru_utime.tv_usec - postgres_state.Save_r.ru_utime.tv_usec),
+					 (long) (r.ru_stime.tv_sec - postgres_state.Save_r.ru_stime.tv_sec),
+					 (long) (r.ru_stime.tv_usec - postgres_state.Save_r.ru_stime.tv_usec),
+					 (long) (elapse_t.tv_sec - postgres_state.Save_t.tv_sec),
+					 (long) (elapse_t.tv_usec - postgres_state.Save_t.tv_usec));
 	appendStringInfo(&str,
 					 "!\t[%ld.%06ld s user, %ld.%06ld s system total]\n",
 					 (long) user.tv_sec,
@@ -5108,28 +5130,28 @@ ShowUsage(const char *title)
 		);
 	appendStringInfo(&str,
 					 "!\t%ld/%ld [%ld/%ld] filesystem blocks in/out\n",
-					 r.ru_inblock - Save_r.ru_inblock,
+					 r.ru_inblock - postgres_state.Save_r.ru_inblock,
 	/* they only drink coffee at dec */
-					 r.ru_oublock - Save_r.ru_oublock,
+					 r.ru_oublock - postgres_state.Save_r.ru_oublock,
 					 r.ru_inblock, r.ru_oublock);
 	appendStringInfo(&str,
 					 "!\t%ld/%ld [%ld/%ld] page faults/reclaims, %ld [%ld] swaps\n",
-					 r.ru_majflt - Save_r.ru_majflt,
-					 r.ru_minflt - Save_r.ru_minflt,
+					 r.ru_majflt - postgres_state.Save_r.ru_majflt,
+					 r.ru_minflt - postgres_state.Save_r.ru_minflt,
 					 r.ru_majflt, r.ru_minflt,
-					 r.ru_nswap - Save_r.ru_nswap,
+					 r.ru_nswap - postgres_state.Save_r.ru_nswap,
 					 r.ru_nswap);
 	appendStringInfo(&str,
 					 "!\t%ld [%ld] signals rcvd, %ld/%ld [%ld/%ld] messages rcvd/sent\n",
-					 r.ru_nsignals - Save_r.ru_nsignals,
+					 r.ru_nsignals - postgres_state.Save_r.ru_nsignals,
 					 r.ru_nsignals,
-					 r.ru_msgrcv - Save_r.ru_msgrcv,
-					 r.ru_msgsnd - Save_r.ru_msgsnd,
+					 r.ru_msgrcv - postgres_state.Save_r.ru_msgrcv,
+					 r.ru_msgsnd - postgres_state.Save_r.ru_msgsnd,
 					 r.ru_msgrcv, r.ru_msgsnd);
 	appendStringInfo(&str,
 					 "!\t%ld/%ld [%ld/%ld] voluntary/involuntary context switches\n",
-					 r.ru_nvcsw - Save_r.ru_nvcsw,
-					 r.ru_nivcsw - Save_r.ru_nivcsw,
+					 r.ru_nvcsw - postgres_state.Save_r.ru_nvcsw,
+					 r.ru_nivcsw - postgres_state.Save_r.ru_nivcsw,
 					 r.ru_nvcsw, r.ru_nivcsw);
 #endif							/* !WIN32 */
 
@@ -5187,7 +5209,7 @@ static void
 enable_statement_timeout(void)
 {
 	/* must be within an xact */
-	Assert(xact_started);
+	Assert(postgres_state.xact_started);
 
 	if (GetGUCInt(GUC_StatementTimeout) > 0
 		&& (GetGUCInt(GUC_StatementTimeout) < GetGUCInt(GUC_TransactionTimeout) || GetGUCInt(GUC_TransactionTimeout) == 0))
