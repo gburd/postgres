@@ -173,6 +173,13 @@ typedef struct MySession
 	 * running.
 	 */
 	int			matview_maintenance_depth;
+
+	/*
+	 * Hash table of this backend's prepared statements, keyed by statement
+	 * name (commands/prepare.c).  Plans are not shared between backends.
+	 * Lazily created; NULL until first use.
+	 */
+	HTAB	   *prepared_queries;
 } MySession;
 
 /*
