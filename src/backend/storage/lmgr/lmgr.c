@@ -25,6 +25,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/inval.h"
+#include "utils/mysession.h"
 
 
 /*
@@ -42,7 +43,6 @@
  * particularly bad happens: in the worst case they deadlock, causing one of
  * the transactions to abort.
  */
-static session_local uint32 speculativeInsertionToken = 0;
 
 
 /*
@@ -787,19 +787,19 @@ SpeculativeInsertionLockAcquire(TransactionId xid)
 {
 	LOCKTAG		tag;
 
-	speculativeInsertionToken++;
+	MySessionData.speculative_insertion_token++;
 
 	/*
 	 * Check for wrap-around. Zero means no token is held, so don't use that.
 	 */
-	if (speculativeInsertionToken == 0)
-		speculativeInsertionToken = 1;
+	if (MySessionData.speculative_insertion_token == 0)
+		MySessionData.speculative_insertion_token = 1;
 
-	SET_LOCKTAG_SPECULATIVE_INSERTION(tag, xid, speculativeInsertionToken);
+	SET_LOCKTAG_SPECULATIVE_INSERTION(tag, xid, MySessionData.speculative_insertion_token);
 
 	(void) LockAcquire(&tag, ExclusiveLock, false, false);
 
-	return speculativeInsertionToken;
+	return MySessionData.speculative_insertion_token;
 }
 
 /*
@@ -813,7 +813,7 @@ SpeculativeInsertionLockRelease(TransactionId xid)
 {
 	LOCKTAG		tag;
 
-	SET_LOCKTAG_SPECULATIVE_INSERTION(tag, xid, speculativeInsertionToken);
+	SET_LOCKTAG_SPECULATIVE_INSERTION(tag, xid, MySessionData.speculative_insertion_token);
 
 	LockRelease(&tag, ExclusiveLock, false);
 }

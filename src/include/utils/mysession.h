@@ -199,6 +199,19 @@ typedef struct MySession
 	 * after each WAL file is archived.  NULL until the archiver initializes.
 	 */
 	MemoryContext archive_context;
+
+	/*
+	 * Per-backend counter for generating speculative insertion tokens
+	 * (storage/lmgr/lmgr.c).  May wrap around; only used for the short window
+	 * between a speculative insert and its constraint check.
+	 */
+	uint32		speculative_insertion_token;
+
+	/*
+	 * Extra shared-memory bytes requested by loadable modules via
+	 * RequestAddinShmemSpace (storage/ipc/ipci.c), summed during shmem sizing.
+	 */
+	Size		total_addin_request;
 } MySession;
 
 /*

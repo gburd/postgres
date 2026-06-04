@@ -24,13 +24,12 @@
 #include "storage/shmem_internal.h"
 #include "storage/subsystems.h"
 #include "utils/guc.h"
+#include "utils/mysession.h"
 
 /* GUCs */
 postmaster_guc int			shared_memory_type = DEFAULT_SHARED_MEMORY_TYPE;
 
 session_local shmem_startup_hook_type shmem_startup_hook = NULL;
-
-static session_local Size total_addin_request = 0;
 
 /*
  * RequestAddinShmemSpace
@@ -46,7 +45,7 @@ RequestAddinShmemSpace(Size size)
 {
 	if (!process_shmem_requests_in_progress)
 		elog(FATAL, "cannot request additional shared memory outside shmem_request_hook");
-	total_addin_request = add_size(total_addin_request, size);
+	MySessionData.total_addin_request = add_size(MySessionData.total_addin_request, size);
 }
 
 /*
@@ -71,7 +70,7 @@ CalculateShmemSize(void)
 	size = add_size(size, ShmemGetRequestedSize());
 
 	/* include additional requested shmem from preload libraries */
-	size = add_size(size, total_addin_request);
+	size = add_size(size, MySessionData.total_addin_request);
 
 	/* might as well round it off to a multiple of a typical page size */
 	size = add_size(size, 8192 - (size % 8192));
