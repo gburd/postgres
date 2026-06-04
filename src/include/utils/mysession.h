@@ -117,6 +117,18 @@ typedef struct ExtensibleState
 } ExtensibleState;
 
 /*
+ * Logical-replication relation/partition map caches
+ * (replication/logical/relation.c).
+ */
+typedef struct LogicalRepRelMapState
+{
+	MemoryContext LogicalRepRelMapContext;
+	struct HTAB *LogicalRepRelMap;
+	MemoryContext LogicalRepPartMapContext;
+	struct HTAB *LogicalRepPartMap;
+} LogicalRepRelMapState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -399,6 +411,12 @@ typedef struct MySession
 	 * (nodes/extensible.c).
 	 */
 	ExtensibleState extensible_state;
+
+	/*
+	 * Logical-replication relation/partition map caches
+	 * (replication/logical/relation.c).
+	 */
+	LogicalRepRelMapState logicalrep_relmap_state;
 } MySession;
 
 /*
