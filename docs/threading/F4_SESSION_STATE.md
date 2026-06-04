@@ -209,6 +209,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 98 | `utils/adt/array_typanalyze.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ArrayAnalyzeExtraData *array_extra_data` (element-type comparison/hash lookup shared by the array ANALYZE callbacks) into `MySessionData.array_analyze_extra`; six use sites rewritten. The previously anonymous struct gains the tag `ArrayAnalyzeExtraData` so `mysession.h` can forward-declare it (definition stays in the `.c`). Eleventh subsystem migrated into the aggregate. |
 
+| 99 | `utils/resowner/resowner.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ResourceReleaseCallbackItem *ResourceRelease_callbacks` (head of the add-on resource-release callback list) into `MySessionData.resource_release_callbacks`; all use sites rewritten. `mysession.h` forward-declares `struct ResourceReleaseCallbackItem` (definition stays in the `.c`). Twelfth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
