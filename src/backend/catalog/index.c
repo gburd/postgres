@@ -76,6 +76,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/pg_rusage.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -4127,21 +4128,6 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
  * ----------------------------------------------------------------
  */
 
-typedef struct ReindexState
-{
-	Oid			currentlyReindexedHeap;
-	Oid			currentlyReindexedIndex;
-	List	   *pendingReindexedIndexes;
-	int			reindexingNestLevel;
-} ReindexState;
-
-static session_local ReindexState reindex_state = {
-	.currentlyReindexedHeap = InvalidOid,
-	.currentlyReindexedIndex = InvalidOid,
-	.pendingReindexedIndexes = NIL,
-	.reindexingNestLevel = 0,
-};
-
 
 /*
  * ReindexIsProcessingHeap
@@ -4150,7 +4136,7 @@ static session_local ReindexState reindex_state = {
 bool
 ReindexIsProcessingHeap(Oid heapOid)
 {
-	return heapOid == reindex_state.currentlyReindexedHeap;
+	return heapOid == MySessionData.reindex_state.currentlyReindexedHeap;
 }
 
 /*
@@ -4160,7 +4146,7 @@ ReindexIsProcessingHeap(Oid heapOid)
 static bool
 ReindexIsCurrentlyProcessingIndex(Oid indexOid)
 {
-	return indexOid == reindex_state.currentlyReindexedIndex;
+	return indexOid == MySessionData.reindex_state.currentlyReindexedIndex;
 }
 
 /*
@@ -4171,8 +4157,8 @@ ReindexIsCurrentlyProcessingIndex(Oid indexOid)
 bool
 ReindexIsProcessingIndex(Oid indexOid)
 {
-	return indexOid == reindex_state.currentlyReindexedIndex ||
-		list_member_oid(reindex_state.pendingReindexedIndexes, indexOid);
+	return indexOid == MySessionData.reindex_state.currentlyReindexedIndex ||
+		list_member_oid(MySessionData.reindex_state.pendingReindexedIndexes, indexOid);
 }
 
 /*
@@ -4184,14 +4170,14 @@ SetReindexProcessing(Oid heapOid, Oid indexOid)
 {
 	Assert(OidIsValid(heapOid) && OidIsValid(indexOid));
 	/* Reindexing is not re-entrant. */
-	if (OidIsValid(reindex_state.currentlyReindexedHeap))
+	if (OidIsValid(MySessionData.reindex_state.currentlyReindexedHeap))
 		elog(ERROR, "cannot reindex while reindexing");
-	reindex_state.currentlyReindexedHeap = heapOid;
-	reindex_state.currentlyReindexedIndex = indexOid;
+	MySessionData.reindex_state.currentlyReindexedHeap = heapOid;
+	MySessionData.reindex_state.currentlyReindexedIndex = indexOid;
 	/* Index is no longer "pending" reindex. */
 	RemoveReindexPending(indexOid);
 	/* This may have been set already, but in case it isn't, do so now. */
-	reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
+	MySessionData.reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
 }
 
 /*
@@ -4201,8 +4187,8 @@ SetReindexProcessing(Oid heapOid, Oid indexOid)
 static void
 ResetReindexProcessing(void)
 {
-	reindex_state.currentlyReindexedHeap = InvalidOid;
-	reindex_state.currentlyReindexedIndex = InvalidOid;
+	MySessionData.reindex_state.currentlyReindexedHeap = InvalidOid;
+	MySessionData.reindex_state.currentlyReindexedIndex = InvalidOid;
 	/* reindex_state.reindexingNestLevel remains set till end of (sub)transaction */
 }
 
@@ -4216,12 +4202,12 @@ static void
 SetReindexPending(List *indexes)
 {
 	/* Reindexing is not re-entrant. */
-	if (reindex_state.pendingReindexedIndexes)
+	if (MySessionData.reindex_state.pendingReindexedIndexes)
 		elog(ERROR, "cannot reindex while reindexing");
 	if (IsInParallelMode())
 		elog(ERROR, "cannot modify reindex state during a parallel operation");
-	reindex_state.pendingReindexedIndexes = list_copy(indexes);
-	reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
+	MySessionData.reindex_state.pendingReindexedIndexes = list_copy(indexes);
+	MySessionData.reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
 }
 
 /*
@@ -4233,7 +4219,7 @@ RemoveReindexPending(Oid indexOid)
 {
 	if (IsInParallelMode())
 		elog(ERROR, "cannot modify reindex state during a parallel operation");
-	reindex_state.pendingReindexedIndexes = list_delete_oid(reindex_state.pendingReindexedIndexes,
+	MySessionData.reindex_state.pendingReindexedIndexes = list_delete_oid(MySessionData.reindex_state.pendingReindexedIndexes,
 											  indexOid);
 }
 
@@ -4250,19 +4236,19 @@ ResetReindexState(int nestLevel)
 	 * state in case a subtransaction fails within a REINDEX.  So checking the
 	 * current nest level against that of the reindex operation is sufficient.
 	 */
-	if (reindex_state.reindexingNestLevel >= nestLevel)
+	if (MySessionData.reindex_state.reindexingNestLevel >= nestLevel)
 	{
-		reindex_state.currentlyReindexedHeap = InvalidOid;
-		reindex_state.currentlyReindexedIndex = InvalidOid;
+		MySessionData.reindex_state.currentlyReindexedHeap = InvalidOid;
+		MySessionData.reindex_state.currentlyReindexedIndex = InvalidOid;
 
 		/*
 		 * We needn't try to release the contents of reindex_state.pendingReindexedIndexes;
 		 * that list should be in a transaction-lifespan context, so it will
 		 * go away automatically.
 		 */
-		reindex_state.pendingReindexedIndexes = NIL;
+		MySessionData.reindex_state.pendingReindexedIndexes = NIL;
 
-		reindex_state.reindexingNestLevel = 0;
+		MySessionData.reindex_state.reindexingNestLevel = 0;
 	}
 }
 
@@ -4274,7 +4260,7 @@ Size
 EstimateReindexStateSpace(void)
 {
 	return offsetof(SerializedReindexState, pendingReindexedIndexes)
-		+ mul_size(sizeof(Oid), list_length(reindex_state.pendingReindexedIndexes));
+		+ mul_size(sizeof(Oid), list_length(MySessionData.reindex_state.pendingReindexedIndexes));
 }
 
 /*
@@ -4288,10 +4274,10 @@ SerializeReindexState(Size maxsize, char *start_address)
 	int			c = 0;
 	ListCell   *lc;
 
-	sistate->currentlyReindexedHeap = reindex_state.currentlyReindexedHeap;
-	sistate->currentlyReindexedIndex = reindex_state.currentlyReindexedIndex;
-	sistate->numPendingReindexedIndexes = list_length(reindex_state.pendingReindexedIndexes);
-	foreach(lc, reindex_state.pendingReindexedIndexes)
+	sistate->currentlyReindexedHeap = MySessionData.reindex_state.currentlyReindexedHeap;
+	sistate->currentlyReindexedIndex = MySessionData.reindex_state.currentlyReindexedIndex;
+	sistate->numPendingReindexedIndexes = list_length(MySessionData.reindex_state.pendingReindexedIndexes);
+	foreach(lc, MySessionData.reindex_state.pendingReindexedIndexes)
 		sistate->pendingReindexedIndexes[c++] = lfirst_oid(lc);
 }
 
@@ -4306,17 +4292,17 @@ RestoreReindexState(const void *reindexstate)
 	int			c = 0;
 	MemoryContext oldcontext;
 
-	reindex_state.currentlyReindexedHeap = sistate->currentlyReindexedHeap;
-	reindex_state.currentlyReindexedIndex = sistate->currentlyReindexedIndex;
+	MySessionData.reindex_state.currentlyReindexedHeap = sistate->currentlyReindexedHeap;
+	MySessionData.reindex_state.currentlyReindexedIndex = sistate->currentlyReindexedIndex;
 
-	Assert(reindex_state.pendingReindexedIndexes == NIL);
+	Assert(MySessionData.reindex_state.pendingReindexedIndexes == NIL);
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	for (c = 0; c < sistate->numPendingReindexedIndexes; ++c)
-		reindex_state.pendingReindexedIndexes =
-			lappend_oid(reindex_state.pendingReindexedIndexes,
+		MySessionData.reindex_state.pendingReindexedIndexes =
+			lappend_oid(MySessionData.reindex_state.pendingReindexedIndexes,
 						sistate->pendingReindexedIndexes[c]);
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Note the worker has its own transaction nesting level */
-	reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
+	MySessionData.reindex_state.reindexingNestLevel = GetCurrentTransactionNestLevel();
 }

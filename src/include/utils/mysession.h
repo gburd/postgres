@@ -161,6 +161,18 @@ typedef struct PgEnumState
 } PgEnumState;
 
 /*
+ * System-index reindexing state for the current session: which heap/index is
+ * being reindexed and the pending list (catalog/index.c).
+ */
+typedef struct ReindexState
+{
+	Oid			currentlyReindexedHeap;
+	Oid			currentlyReindexedIndex;
+	struct List *pendingReindexedIndexes;
+	int			reindexingNestLevel;
+} ReindexState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -467,6 +479,12 @@ typedef struct MySession
 	 * in the current (sub)transaction (catalog/pg_enum.c).
 	 */
 	PgEnumState pg_enum_state;
+
+	/*
+	 * System-index reindexing state for the current session: which heap/index
+	 * is being reindexed and the pending list (catalog/index.c).
+	 */
+	ReindexState reindex_state;
 } MySession;
 
 /*
