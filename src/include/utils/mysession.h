@@ -64,6 +64,7 @@ struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
 struct HTAB;					/* utils/hsearch.h */
 struct PendingRelDelete;		/* catalog/storage.c */
+struct RelationData;			/* utils/rel.h: Relation */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -127,6 +128,16 @@ typedef struct LogicalRepRelMapState
 	MemoryContext LogicalRepPartMapContext;
 	struct HTAB *LogicalRepPartMap;
 } LogicalRepRelMapState;
+
+/*
+ * Shared pg_largeobject heap and index Relation references
+ * (storage/large_object/inv_api.c).
+ */
+typedef struct InvApiState
+{
+	struct RelationData *lo_heap_r;
+	struct RelationData *lo_index_r;
+} InvApiState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -417,6 +428,12 @@ typedef struct MySession
 	 * (replication/logical/relation.c).
 	 */
 	LogicalRepRelMapState logicalrep_relmap_state;
+
+	/*
+	 * Shared pg_largeobject heap and index Relation references
+	 * (storage/large_object/inv_api.c).
+	 */
+	InvApiState inv_api_state;
 } MySession;
 
 /*
