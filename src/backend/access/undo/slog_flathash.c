@@ -256,6 +256,92 @@ SLogFlatHashProbeForInsert(SLogFlatHash * ht, const SLogTupleKey *key,
  */
 
 /*
+ * flat_hash_coalesce_retained
+ *		Collapse redundant committed UPDATE markers on one entry, keeping at
+ *		most one marker that carries no before-image.
+ *
+ * The per-TID ops array (SLOG_MAX_TUPLE_OPS slots) is inline and fixed-size.
+ * On a hot row (e.g. a TPC-C district), committed UPDATE markers are retained
+ * one-per-committed-transaction and freed only once their committing xid falls
+ * below the reclaim horizon (flat_hash_apply_cleanup_retained).  When commits
+ * outrun the horizon the array fills and the next op is dropped -- a lost
+ * PRE_COMMIT stamp / lost update.  Coalescing keeps the array bounded.
+ *
+ * Why this is visibility-preserving:
+ *
+ *   - Write-write conflict (SLogTupleHasCommittedUpdateAfter) reports a
+ *     conflict iff ANY committed marker is invisible to the prober's snapshot.
+ *     Commit visibility is monotonic: a snapshot that sees the newest commit
+ *     sees every older one, so a snapshot for which an OLDER marker is
+ *     invisible also finds the NEWEST marker invisible.  Retaining only the
+ *     marker with the greatest commit_hlc therefore yields the identical
+ *     conflict verdict.
+ *
+ *   - Before-image serving (SLogTupleGetSharedBeforeImage) only ever consults
+ *     a marker whose before_image_dp is valid.  A committed marker with NO
+ *     before-image can never satisfy that probe, so freeing it is invisible to
+ *     readers.  Markers that DO carry a before-image are left untouched here;
+ *     they are reclaimed only by the xid-horizon sweep.
+ *
+ * So we free committed UPDATE markers that (a) carry no before-image and
+ * (b) are not the single newest-by-commit_hlc such marker.  Markers that are
+ * uncommitted, non-UPDATE (locks), or carry a before-image are preserved.
+ * Returns the number of slots freed.
+ */
+static int
+flat_hash_coalesce_retained(SLogTupleEntry *entry)
+{
+	int			newest_idx = -1;
+	uint64		newest_hlc = 0;
+	int			freed = 0;
+	int			i;
+
+	/* First pass: find the newest committed, image-less UPDATE marker. */
+	for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+	{
+		if (!entry->ops[i].in_use)
+			continue;
+		if (entry->ops[i].op_type != SLOG_OP_UPDATE)
+			continue;
+		if (entry->ops[i].commit_hlc == 0)
+			continue;			/* uncommitted */
+		if (DsaPointerIsValid(entry->ops[i].before_image_dp))
+			continue;			/* serves snapshot readers; leave for horizon */
+		if (entry->ops[i].commit_hlc >= newest_hlc)
+		{
+			newest_hlc = entry->ops[i].commit_hlc;
+			newest_idx = i;
+		}
+	}
+
+	if (newest_idx < 0)
+		return 0;
+
+	/* Second pass: free every other committed, image-less UPDATE marker. */
+	for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+	{
+		if (i == newest_idx)
+			continue;
+		if (!entry->ops[i].in_use)
+			continue;
+		if (entry->ops[i].op_type != SLOG_OP_UPDATE)
+			continue;
+		if (entry->ops[i].commit_hlc == 0)
+			continue;
+		if (DsaPointerIsValid(entry->ops[i].before_image_dp))
+			continue;
+
+		entry->ops[i].in_use = false;
+		entry->ops[i].before_image_dp = InvalidDsaPointer;
+		entry->ops[i].commit_hlc = 0;
+		entry->nops--;
+		freed++;
+	}
+
+	return freed;
+}
+
+/*
  * flat_hash_apply_insert
  *		Apply an INSERT operation: find/create entry, add op to slot.
  */
@@ -323,12 +409,32 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 	}
 
 	/*
-	 * No free slot — reclaim the oldest retained committed UPDATE entry.
+	 * No free slot — first collapse redundant committed image-less UPDATE
+	 * markers on this TID.  This is always visibility-preserving (see
+	 * flat_hash_coalesce_retained) and is the primary defence against the
+	 * array filling on a hot row faster than the xid horizon advances.
+	 */
+	if (flat_hash_coalesce_retained(entry) > 0)
+	{
+		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		{
+			if (!entry->ops[i].in_use)
+			{
+				memcpy(&entry->ops[i], &op->tuple_op, sizeof(SLogTupleOp));
+				entry->nops++;
+				return;
+			}
+		}
+	}
+
+	/*
+	 * Still no free slot — reclaim the oldest retained committed UPDATE entry.
 	 *
 	 * Hot rows (e.g., TPC-C district) accumulate one retained UPDATE entry
-	 * per committed transaction.  With SLOG_MAX_TUPLE_OPS=32, the ops array
-	 * fills after 32 committed updates to the same TID.  Rather than losing
-	 * the new operation, we evict the oldest retained entry — it's the
+	 * per committed transaction.  Once the array fills with markers that
+	 * coalescing could not collapse (each carrying a before-image for an
+	 * active snapshot-isolation reader), we evict the oldest reclaimable
+	 * retained entry — it's the
 	 * least likely to be needed by any active reader (readers with older
 	 * snapshots will use the on-page t_commit_ts which was restored at commit
 	 * time).
