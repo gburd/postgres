@@ -269,6 +269,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 128 | `storage/sync/sync.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SyncState sync_state` (pending fsync/unlink request tracking for the checkpointer / standalone backend) by value as `MySessionData.sync_state`; the `SyncState` typedef is relocated into `mysession.h`. `HTAB`/`List`/`MemoryContext` member types are already visible in the header; the two `CycleCtr` counters are declared as `uint16` there (the file-local `CycleCtr` typedef stays in `sync.c`). Two `elog()` message strings mentioning `sync_state.pendingOps` are left untouched. The former initializer was all-NULL/NIL/0, so the zero-initialized aggregate preserves semantics exactly. Forty-first subsystem migrated into the aggregate. |
 
+| 129 | `nodes/extensible.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local ExtensibleState extensible_state` (registered extensible-node + custom-scan method tables) by value as `MySessionData.extensible_state`; the `ExtensibleState` typedef is relocated into `mysession.h`. Both members are `HTAB *`, kept as pointers to the forward-declared `struct HTAB` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. Forty-second subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
