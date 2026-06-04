@@ -151,6 +151,16 @@ typedef struct SequenceState
 } SequenceState;
 
 /*
+ * Per-transaction hash tables tracking enum types/values created or added
+ * in the current (sub)transaction (catalog/pg_enum.c).
+ */
+typedef struct PgEnumState
+{
+	struct HTAB *uncommitted_enum_types;
+	struct HTAB *uncommitted_enum_values;
+} PgEnumState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -451,6 +461,12 @@ typedef struct MySession
 	 * (commands/sequence.c).
 	 */
 	SequenceState sequence_state;
+
+	/*
+	 * Per-transaction hash tables tracking enum types/values created or added
+	 * in the current (sub)transaction (catalog/pg_enum.c).
+	 */
+	PgEnumState pg_enum_state;
 } MySession;
 
 /*
