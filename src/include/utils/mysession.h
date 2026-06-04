@@ -108,6 +108,21 @@ typedef struct StorageState
 } StorageState;
 
 /*
+ * Pending fsync/unlink request tracking for the checkpointer / standalone
+ * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
+ * uint16 here (the file-local CycleCtr typedef stays in sync.c).
+ */
+typedef struct SyncState
+{
+	struct HTAB *pendingOps;
+	struct List *pendingUnlinks;
+	MemoryContext pendingOpsCxt; /* context for the above */
+
+	uint16		sync_cycle_ctr;
+	uint16		checkpoint_cycle_ctr;
+} SyncState;
+
+/*
  * Per-session state aggregate.
  *
  * Members are added here as subsystems migrate in.  Plain-typed members
@@ -364,6 +379,11 @@ typedef struct MySession
 	 * Pending relation create/delete/sync state (catalog/storage.c).
 	 */
 	StorageState storage_state;
+
+	/*
+	 * Pending fsync/unlink request tracking (storage/sync/sync.c).
+	 */
+	SyncState	sync_state;
 } MySession;
 
 /*

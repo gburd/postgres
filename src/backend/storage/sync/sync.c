@@ -31,6 +31,7 @@
 #include "storage/md.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/wait_event.h"
 
 /*
@@ -68,22 +69,6 @@ typedef struct
 	bool		canceled;		/* true if request has been canceled */
 } PendingUnlinkEntry;
 
-typedef struct SyncState
-{
-	HTAB	   *pendingOps;
-	List	   *pendingUnlinks;
-	MemoryContext pendingOpsCxt; /* context for the above */
-
-	CycleCtr	sync_cycle_ctr;
-	CycleCtr	checkpoint_cycle_ctr;
-} SyncState;
-
-static session_local SyncState sync_state = {
-	.pendingOps = NULL,
-	.pendingUnlinks = NIL,
-	.sync_cycle_ctr = 0,
-	.checkpoint_cycle_ctr = 0,
-};
 
 /* Intervals for calling AbsorbSyncRequests */
 #define FSYNCS_PER_ABSORB		10
@@ -152,19 +137,19 @@ InitSync(void)
 		 * Fortunately the hash table is small so that's unlikely to happen in
 		 * practice.
 		 */
-		sync_state.pendingOpsCxt = AllocSetContextCreate(TopMemoryContext,
+		MySessionData.sync_state.pendingOpsCxt = AllocSetContextCreate(TopMemoryContext,
 											  "Pending ops context",
 											  ALLOCSET_DEFAULT_SIZES);
-		MemoryContextAllowInCriticalSection(sync_state.pendingOpsCxt, true);
+		MemoryContextAllowInCriticalSection(MySessionData.sync_state.pendingOpsCxt, true);
 
 		hash_ctl.keysize = sizeof(FileTag);
 		hash_ctl.entrysize = sizeof(PendingFsyncEntry);
-		hash_ctl.hcxt = sync_state.pendingOpsCxt;
-		sync_state.pendingOps = hash_create("Pending Ops Table",
+		hash_ctl.hcxt = MySessionData.sync_state.pendingOpsCxt;
+		MySessionData.sync_state.pendingOps = hash_create("Pending Ops Table",
 								 100L,
 								 &hash_ctl,
 								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		sync_state.pendingUnlinks = NIL;
+		MySessionData.sync_state.pendingUnlinks = NIL;
 	}
 }
 
@@ -201,7 +186,7 @@ SyncPreCheckpoint(void)
 	 * Any unlink requests arriving after this point will be assigned the next
 	 * cycle counter, and won't be unlinked until next checkpoint.
 	 */
-	sync_state.checkpoint_cycle_ctr++;
+	MySessionData.sync_state.checkpoint_cycle_ctr++;
 }
 
 /*
@@ -216,7 +201,7 @@ SyncPostCheckpoint(void)
 	ListCell   *lc;
 
 	absorb_counter = UNLINKS_PER_ABSORB;
-	foreach(lc, sync_state.pendingUnlinks)
+	foreach(lc, MySessionData.sync_state.pendingUnlinks)
 	{
 		PendingUnlinkEntry *entry = (PendingUnlinkEntry *) lfirst(lc);
 		char		path[MAXPGPATH];
@@ -234,7 +219,7 @@ SyncPostCheckpoint(void)
 		 * consequence is that we'd delay unlinking for one more checkpoint,
 		 * which is perfectly tolerable.
 		 */
-		if (entry->cycle_ctr == sync_state.checkpoint_cycle_ctr)
+		if (entry->cycle_ctr == MySessionData.sync_state.checkpoint_cycle_ctr)
 			break;
 
 		/* Unlink the file */
@@ -276,17 +261,17 @@ SyncPostCheckpoint(void)
 	 */
 	if (lc == NULL)
 	{
-		list_free_deep(sync_state.pendingUnlinks);
-		sync_state.pendingUnlinks = NIL;
+		list_free_deep(MySessionData.sync_state.pendingUnlinks);
+		MySessionData.sync_state.pendingUnlinks = NIL;
 	}
 	else
 	{
-		int			ntodelete = list_cell_number(sync_state.pendingUnlinks, lc);
+		int			ntodelete = list_cell_number(MySessionData.sync_state.pendingUnlinks, lc);
 
 		for (int i = 0; i < ntodelete; i++)
-			pfree(list_nth(sync_state.pendingUnlinks, i));
+			pfree(list_nth(MySessionData.sync_state.pendingUnlinks, i));
 
-		sync_state.pendingUnlinks = list_delete_first_n(sync_state.pendingUnlinks, ntodelete);
+		MySessionData.sync_state.pendingUnlinks = list_delete_first_n(MySessionData.sync_state.pendingUnlinks, ntodelete);
 	}
 }
 
@@ -315,7 +300,7 @@ ProcessSyncRequests(void)
 	 * This is only called during checkpoints, and checkpoints should only
 	 * occur in processes that have created a pendingOps.
 	 */
-	if (!sync_state.pendingOps)
+	if (!MySessionData.sync_state.pendingOps)
 		elog(ERROR, "cannot sync without a sync_state.pendingOps table");
 
 	/*
@@ -356,22 +341,22 @@ ProcessSyncRequests(void)
 	if (sync_in_progress)
 	{
 		/* prior try failed, so update any stale cycle_ctr values */
-		hash_seq_init(&hstat, sync_state.pendingOps);
+		hash_seq_init(&hstat, MySessionData.sync_state.pendingOps);
 		while ((entry = (PendingFsyncEntry *) hash_seq_search(&hstat)) != NULL)
 		{
-			entry->cycle_ctr = sync_state.sync_cycle_ctr;
+			entry->cycle_ctr = MySessionData.sync_state.sync_cycle_ctr;
 		}
 	}
 
 	/* Advance counter so that new hashtable entries are distinguishable */
-	sync_state.sync_cycle_ctr++;
+	MySessionData.sync_state.sync_cycle_ctr++;
 
 	/* Set flag to detect failure if we don't reach the end of the loop */
 	sync_in_progress = true;
 
 	/* Now scan the hashtable for fsync requests to process */
 	absorb_counter = FSYNCS_PER_ABSORB;
-	hash_seq_init(&hstat, sync_state.pendingOps);
+	hash_seq_init(&hstat, MySessionData.sync_state.pendingOps);
 	while ((entry = (PendingFsyncEntry *) hash_seq_search(&hstat)) != NULL)
 	{
 		int			failures;
@@ -381,11 +366,11 @@ ProcessSyncRequests(void)
 		 * Note "continue" bypasses the hash-remove call at the bottom of the
 		 * loop.
 		 */
-		if (entry->cycle_ctr == sync_state.sync_cycle_ctr)
+		if (entry->cycle_ctr == MySessionData.sync_state.sync_cycle_ctr)
 			continue;
 
 		/* Else assert we haven't missed it */
-		Assert((CycleCtr) (entry->cycle_ctr + 1) == sync_state.sync_cycle_ctr);
+		Assert((CycleCtr) (entry->cycle_ctr + 1) == MySessionData.sync_state.sync_cycle_ctr);
 
 		/*
 		 * If fsync is off then we don't have to bother opening the file at
@@ -472,7 +457,7 @@ ProcessSyncRequests(void)
 		}
 
 		/* We are done with this entry, remove it */
-		if (hash_search(sync_state.pendingOps, &entry->tag, HASH_REMOVE, NULL) == NULL)
+		if (hash_search(MySessionData.sync_state.pendingOps, &entry->tag, HASH_REMOVE, NULL) == NULL)
 			elog(ERROR, "sync_state.pendingOps corrupted");
 	}							/* end loop over hashtable entries */
 
@@ -497,14 +482,14 @@ ProcessSyncRequests(void)
 void
 RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 {
-	Assert(sync_state.pendingOps);
+	Assert(MySessionData.sync_state.pendingOps);
 
 	if (type == SYNC_FORGET_REQUEST)
 	{
 		PendingFsyncEntry *entry;
 
 		/* Cancel previously entered request */
-		entry = (PendingFsyncEntry *) hash_search(sync_state.pendingOps,
+		entry = (PendingFsyncEntry *) hash_search(MySessionData.sync_state.pendingOps,
 												  ftag,
 												  HASH_FIND,
 												  NULL);
@@ -518,7 +503,7 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 		ListCell   *cell;
 
 		/* Cancel matching fsync requests */
-		hash_seq_init(&hstat, sync_state.pendingOps);
+		hash_seq_init(&hstat, MySessionData.sync_state.pendingOps);
 		while ((pfe = (PendingFsyncEntry *) hash_seq_search(&hstat)) != NULL)
 		{
 			if (pfe->tag.handler == ftag->handler &&
@@ -527,7 +512,7 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 		}
 
 		/* Cancel matching unlink requests */
-		foreach(cell, sync_state.pendingUnlinks)
+		foreach(cell, MySessionData.sync_state.pendingUnlinks)
 		{
 			PendingUnlinkEntry *pue = (PendingUnlinkEntry *) lfirst(cell);
 
@@ -539,35 +524,35 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 	else if (type == SYNC_UNLINK_REQUEST)
 	{
 		/* Unlink request: put it in the linked list */
-		MemoryContext oldcxt = MemoryContextSwitchTo(sync_state.pendingOpsCxt);
+		MemoryContext oldcxt = MemoryContextSwitchTo(MySessionData.sync_state.pendingOpsCxt);
 		PendingUnlinkEntry *entry;
 
 		entry = palloc_object(PendingUnlinkEntry);
 		entry->tag = *ftag;
-		entry->cycle_ctr = sync_state.checkpoint_cycle_ctr;
+		entry->cycle_ctr = MySessionData.sync_state.checkpoint_cycle_ctr;
 		entry->canceled = false;
 
-		sync_state.pendingUnlinks = lappend(sync_state.pendingUnlinks, entry);
+		MySessionData.sync_state.pendingUnlinks = lappend(MySessionData.sync_state.pendingUnlinks, entry);
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 	else
 	{
 		/* Normal case: enter a request to fsync this segment */
-		MemoryContext oldcxt = MemoryContextSwitchTo(sync_state.pendingOpsCxt);
+		MemoryContext oldcxt = MemoryContextSwitchTo(MySessionData.sync_state.pendingOpsCxt);
 		PendingFsyncEntry *entry;
 		bool		found;
 
 		Assert(type == SYNC_REQUEST);
 
-		entry = (PendingFsyncEntry *) hash_search(sync_state.pendingOps,
+		entry = (PendingFsyncEntry *) hash_search(MySessionData.sync_state.pendingOps,
 												  ftag,
 												  HASH_ENTER,
 												  &found);
 		/* if new entry, or was previously canceled, initialize it */
 		if (!found || entry->canceled)
 		{
-			entry->cycle_ctr = sync_state.sync_cycle_ctr;
+			entry->cycle_ctr = MySessionData.sync_state.sync_cycle_ctr;
 			entry->canceled = false;
 		}
 
@@ -593,7 +578,7 @@ RegisterSyncRequest(const FileTag *ftag, SyncRequestType type,
 {
 	bool		ret;
 
-	if (sync_state.pendingOps != NULL)
+	if (MySessionData.sync_state.pendingOps != NULL)
 	{
 		/* standalone backend or startup process: fsync state is local */
 		RememberSyncRequest(ftag, type);
