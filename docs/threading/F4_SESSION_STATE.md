@@ -191,6 +191,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 89 | `utils/activity/pgstat_function.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local instr_time total_func_time` (backend-wide function self/other time accounting) into `MySessionData.total_func_time`; three use sites rewritten. A plain-typed (public `instr_time` value) member, so it lives directly in `MySession`; `mysession.h` gains `#include "portability/instr_time.h"`. Second subsystem migrated into the aggregate. |
 
+| 90 | `utils/activity/pgstat_wal.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local WalUsage prevWalUsage` (saved WAL counters used to diff WAL usage between `pgstat_report_wal()` calls) into `MySessionData.prev_wal_usage`; four use sites rewritten. `WalUsage` is a public value type (`executor/instrument.h`, itself only pulling `portability/instr_time.h`), so it lives directly in `MySession`. Third subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
