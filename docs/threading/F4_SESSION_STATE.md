@@ -265,6 +265,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 126 | `access/transam/slru.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SlruState slru_state` (saved error cause/errno for `SlruReportIOError`) by value as `MySessionData.slru_state`; the `SlruErrorCause` enum and `SlruState` struct are relocated into `mysession.h`. `SlruState` is self-contained (an enum plus an int), so it embeds with zero new includes. The instance has no initializer, so the zero-initialized aggregate preserves semantics exactly. Thirty-ninth subsystem migrated into the aggregate. |
 
+| 127 | `catalog/storage.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local StorageState storage_state` (pending relation create/delete list + pending-sync hash) by value as `MySessionData.storage_state`; the `StorageState` typedef is relocated into `mysession.h`. The element types stay file-local to `storage.c`, so the members are kept as pointers to forward-declared `struct HTAB` / `struct PendingRelDelete` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. Fortieth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
