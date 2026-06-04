@@ -221,6 +221,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 104 | `commands/matview.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local int matview_maintenance_depth` (nesting depth of concurrent materialized-view incremental maintenance) into `MySessionData.matview_maintenance_depth`; all use sites rewritten. `int` needs no new include. Seventeenth subsystem migrated into the aggregate. |
 
+| 105 | `commands/prepare.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *prepared_queries` (this backend's prepared statements, keyed by statement name) into `MySessionData.prepared_queries`; all use sites rewritten. `HTAB` already visible in `mysession.h`; the static prototypes that followed the old decl are retained. Eighteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
