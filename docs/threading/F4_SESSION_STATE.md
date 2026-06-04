@@ -263,6 +263,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 125 | `executor/instrument.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (first per-module `XxxState` fold).** Embeds the file-local `session_local InstrumentState instrument_state` (saved buffer/WAL usage counters captured across a nested executor run) by value as `MySessionData.instrument_state`; the `InstrumentState` typedef is relocated into `mysession.h` (its `BufferUsage`/`WalUsage` members are already visible via `executor/instrument.h`, so zero new includes). The instance has no initializer, so the zero-initialized aggregate preserves semantics exactly. Thirty-eighth subsystem migrated into the aggregate. |
 
+| 126 | `access/transam/slru.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SlruState slru_state` (saved error cause/errno for `SlruReportIOError`) by value as `MySessionData.slru_state`; the `SlruErrorCause` enum and `SlruState` struct are relocated into `mysession.h`. `SlruState` is self-contained (an enum plus an int), so it embeds with zero new includes. The instance has no initializer, so the zero-initialized aggregate preserves semantics exactly. Thirty-ninth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
