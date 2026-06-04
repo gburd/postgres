@@ -27,13 +27,13 @@
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
+#include "utils/mysession.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 #include "varatt.h"
 
 
 /* Hash table for information about each tablespace */
-static session_local HTAB *TableSpaceCacheHash = NULL;
 
 typedef struct
 {
@@ -58,12 +58,12 @@ InvalidateTableSpaceCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 	HASH_SEQ_STATUS status;
 	TableSpaceCacheEntry *spc;
 
-	hash_seq_init(&status, TableSpaceCacheHash);
+	hash_seq_init(&status, MySessionData.tablespace_cache_hash);
 	while ((spc = (TableSpaceCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (spc->opts)
 			pfree(spc->opts);
-		if (hash_search(TableSpaceCacheHash,
+		if (hash_search(MySessionData.tablespace_cache_hash,
 						&spc->oid,
 						HASH_REMOVE,
 						NULL) == NULL)
@@ -83,7 +83,7 @@ InitializeTableSpaceCache(void)
 	/* Initialize the hash table. */
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(TableSpaceCacheEntry);
-	TableSpaceCacheHash =
+	MySessionData.tablespace_cache_hash =
 		hash_create("TableSpace cache", 16, &ctl,
 					HASH_ELEM | HASH_BLOBS);
 
@@ -119,9 +119,9 @@ get_tablespace(Oid spcid)
 		spcid = MyDatabaseTableSpace;
 
 	/* Find existing cache entry, if any. */
-	if (!TableSpaceCacheHash)
+	if (!MySessionData.tablespace_cache_hash)
 		InitializeTableSpaceCache();
-	spc = (TableSpaceCacheEntry *) hash_search(TableSpaceCacheHash,
+	spc = (TableSpaceCacheEntry *) hash_search(MySessionData.tablespace_cache_hash,
 											   &spcid,
 											   HASH_FIND,
 											   NULL);
@@ -163,7 +163,7 @@ get_tablespace(Oid spcid)
 	 * reading the pg_tablespace entry, since doing so could cause a cache
 	 * flush.
 	 */
-	spc = (TableSpaceCacheEntry *) hash_search(TableSpaceCacheHash,
+	spc = (TableSpaceCacheEntry *) hash_search(MySessionData.tablespace_cache_hash,
 											   &spcid,
 											   HASH_ENTER,
 											   NULL);
