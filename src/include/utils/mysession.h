@@ -62,6 +62,8 @@ struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
 struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
 struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
+struct HTAB;					/* utils/hsearch.h */
+struct PendingRelDelete;		/* catalog/storage.c */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -93,6 +95,17 @@ typedef struct SlruState
 	SlruErrorCause slru_errcause;
 	int			slru_errno;
 } SlruState;
+
+/*
+ * Pending relation create/delete/sync state (catalog/storage.c).  The element
+ * types are file-local to storage.c, so the members are kept as pointers to
+ * forward-declared structs.
+ */
+typedef struct StorageState
+{
+	struct PendingRelDelete *pendingDeletes;	/* head of linked list */
+	struct HTAB *pendingSyncHash;
+} StorageState;
 
 /*
  * Per-session state aggregate.
@@ -346,6 +359,11 @@ typedef struct MySession
 	 * Saved error context for SlruReportIOError (access/transam/slru.c).
 	 */
 	SlruState	slru_state;
+
+	/*
+	 * Pending relation create/delete/sync state (catalog/storage.c).
+	 */
+	StorageState storage_state;
 } MySession;
 
 /*
