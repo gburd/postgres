@@ -20,6 +20,7 @@
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/typcache.h"
 
 
@@ -33,7 +34,7 @@
 #define ARRAY_WIDTH_THRESHOLD 0x10000
 
 /* Extra data for compute_array_stats function */
-typedef struct
+typedef struct ArrayAnalyzeExtraData
 {
 	/* Information about array element type */
 	Oid			type_id;		/* element type's OID */
@@ -58,11 +59,10 @@ typedef struct
 
 /*
  * While compute_array_stats is running, we keep a pointer to the extra data
- * here for use by assorted subroutines.  compute_array_stats doesn't
- * currently need to be re-entrant, so avoiding this is not worth the extra
- * notational cruft that would be needed.
+ * in MySessionData.array_analyze_extra for use by assorted subroutines.
+ * compute_array_stats doesn't currently need to be re-entrant, so avoiding
+ * this is not worth the extra notational cruft that would be needed.
  */
-static session_local ArrayAnalyzeExtraData *array_extra_data;
 
 /* A hash table entry for the Lossy Counting algorithm */
 typedef struct
@@ -255,7 +255,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 	 * case std_compute_stats somehow recursively invokes us (probably not
 	 * possible, but ...)
 	 */
-	array_extra_data = extra_data;
+	MySessionData.array_analyze_extra = extra_data;
 
 	/*
 	 * We want statistics_target * 10 elements in the MCELEM array. This
@@ -710,7 +710,7 @@ prune_element_hashtable(HTAB *elements_tab, int b_current)
 							HASH_REMOVE, NULL) == NULL)
 				elog(ERROR, "hash table corrupted");
 			/* We should free memory if element is not passed by value */
-			if (!array_extra_data->typbyval)
+			if (!MySessionData.array_analyze_extra->typbyval)
 				pfree(DatumGetPointer(value));
 		}
 	}
@@ -728,8 +728,8 @@ element_hash(const void *key, Size keysize)
 	Datum		d = *((const Datum *) key);
 	Datum		h;
 
-	h = FunctionCall1Coll(array_extra_data->hash,
-						  array_extra_data->coll_id,
+	h = FunctionCall1Coll(MySessionData.array_analyze_extra->hash,
+						  MySessionData.array_analyze_extra->coll_id,
 						  d);
 	return DatumGetUInt32(h);
 }
@@ -759,8 +759,8 @@ element_compare(const void *key1, const void *key2)
 	Datum		d2 = *((const Datum *) key2);
 	Datum		c;
 
-	c = FunctionCall2Coll(array_extra_data->cmp,
-						  array_extra_data->coll_id,
+	c = FunctionCall2Coll(MySessionData.array_analyze_extra->cmp,
+						  MySessionData.array_analyze_extra->coll_id,
 						  d1, d2);
 	return DatumGetInt32(c);
 }

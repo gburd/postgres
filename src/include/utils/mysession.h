@@ -52,6 +52,7 @@
  */
 struct catcacheheader;			/* utils/catcache.h: CatCacheHeader */
 struct PgStat_SubXactStatus;	/* utils/pgstat_internal.h */
+struct ArrayAnalyzeExtraData;	/* utils/adt/array_typanalyze.c */
 
 /*
  * Per-session state aggregate.
@@ -124,6 +125,13 @@ typedef struct MySession
 	 * (utils/activity/pgstat_xact.c).  NULL when no transaction is active.
 	 */
 	struct PgStat_SubXactStatus *pgstat_xact_stack;
+
+	/*
+	 * Element-type comparison/hash lookup data shared between the array
+	 * ANALYZE callbacks (utils/adt/array_typanalyze.c).  Valid only for the
+	 * duration of one compute_array_stats() run.
+	 */
+	struct ArrayAnalyzeExtraData *array_analyze_extra;
 } MySession;
 
 /*
