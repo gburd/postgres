@@ -33,6 +33,7 @@
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/syscache.h"
 
 /*
@@ -53,8 +54,6 @@ typedef struct
 	PGFunction	user_fn;		/* the function's address */
 	const Pg_finfo_record *inforec; /* address of its info record */
 } CFuncHashTabEntry;
-
-static session_local HTAB *CFuncHash = NULL;
 
 
 static void fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
@@ -519,10 +518,10 @@ lookup_C_func(HeapTuple procedureTuple)
 	Oid			fn_oid = ((Form_pg_proc) GETSTRUCT(procedureTuple))->oid;
 	CFuncHashTabEntry *entry;
 
-	if (CFuncHash == NULL)
+	if (MySessionData.cfunc_hash == NULL)
 		return NULL;			/* no table yet */
 	entry = (CFuncHashTabEntry *)
-		hash_search(CFuncHash,
+		hash_search(MySessionData.cfunc_hash,
 					&fn_oid,
 					HASH_FIND,
 					NULL);
@@ -546,20 +545,20 @@ record_C_func(HeapTuple procedureTuple,
 	bool		found;
 
 	/* Create the hash table if it doesn't exist yet */
-	if (CFuncHash == NULL)
+	if (MySessionData.cfunc_hash == NULL)
 	{
 		HASHCTL		hash_ctl;
 
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(CFuncHashTabEntry);
-		CFuncHash = hash_create("CFuncHash",
-								100,
-								&hash_ctl,
-								HASH_ELEM | HASH_BLOBS);
+		MySessionData.cfunc_hash = hash_create("CFuncHash",
+											   100,
+											   &hash_ctl,
+											   HASH_ELEM | HASH_BLOBS);
 	}
 
 	entry = (CFuncHashTabEntry *)
-		hash_search(CFuncHash,
+		hash_search(MySessionData.cfunc_hash,
 					&fn_oid,
 					HASH_ENTER,
 					&found);

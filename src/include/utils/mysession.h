@@ -42,6 +42,7 @@
 
 #include "executor/instrument.h"
 #include "portability/instr_time.h"
+#include "utils/hsearch.h"
 #include "utils/palloc.h"
 
 /*
@@ -85,6 +86,12 @@ typedef struct MySession
 	 * manager (storage/smgr/md.c).  Created in mdinit().
 	 */
 	MemoryContext md_cxt;
+
+	/*
+	 * Cache of resolved C-language function info, keyed by pg_proc OID
+	 * (utils/fmgr/fmgr.c).  Lazily created; NULL until first use.
+	 */
+	HTAB	   *cfunc_hash;
 } MySession;
 
 /*
