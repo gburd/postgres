@@ -211,6 +211,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 99 | `utils/resowner/resowner.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ResourceReleaseCallbackItem *ResourceRelease_callbacks` (head of the add-on resource-release callback list) into `MySessionData.resource_release_callbacks`; all use sites rewritten. `mysession.h` forward-declares `struct ResourceReleaseCallbackItem` (definition stays in the `.c`). Twelfth subsystem migrated into the aggregate. |
 
+| 100 | `access/common/heaptuple.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *missing_cache` (cache of "missing" attribute default values, keyed by `(len, value)`) into `MySessionData.missing_cache`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Thirteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
