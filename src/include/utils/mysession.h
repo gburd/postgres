@@ -193,6 +193,12 @@ typedef struct MySession
 	 * first use.
 	 */
 	HTAB	   *opr_cache_hash;
+
+	/*
+	 * Per-archive-cycle scratch memory context (postmaster/pgarch.c).  Reset
+	 * after each WAL file is archived.  NULL until the archiver initializes.
+	 */
+	MemoryContext archive_context;
 } MySession;
 
 /*

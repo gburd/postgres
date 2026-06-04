@@ -51,6 +51,7 @@
 #include "storage/subsystems.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/timeout.h"
@@ -106,7 +107,6 @@ static pg_global time_t last_sigterm_time = 0;
 static pg_global PgArchData *PgArch = NULL;
 static pg_global const ArchiveModuleCallbacks *ArchiveCallbacks;
 static pg_global ArchiveModuleState *archive_module_state;
-static session_local MemoryContext archive_context;
 
 
 /*
@@ -264,9 +264,9 @@ PgArchiverMain(const void *startup_data, size_t startup_data_len)
 												ready_file_comparator, NULL);
 
 	/* Initialize our memory context. */
-	archive_context = AllocSetContextCreate(TopMemoryContext,
-											"archiver",
-											ALLOCSET_DEFAULT_SIZES);
+	MySessionData.archive_context = AllocSetContextCreate(TopMemoryContext,
+														  "archiver",
+														  ALLOCSET_DEFAULT_SIZES);
 
 	/* Load the archive_library. */
 	LoadArchiveLibrary();
@@ -531,7 +531,7 @@ pgarch_archiveXlog(char *xlog)
 	snprintf(activitymsg, sizeof(activitymsg), "archiving %s", xlog);
 	set_ps_display(activitymsg);
 
-	oldcontext = MemoryContextSwitchTo(archive_context);
+	oldcontext = MemoryContextSwitchTo(MySessionData.archive_context);
 
 	/*
 	 * Since the archiver operates at the bottom of the exception stack,
@@ -585,7 +585,7 @@ pgarch_archiveXlog(char *xlog)
 		FlushErrorState();
 
 		/* Flush any leaked data */
-		MemoryContextReset(archive_context);
+		MemoryContextReset(MySessionData.archive_context);
 
 		/* Remove our exception handler */
 		PG_exception_stack = NULL;
@@ -610,7 +610,7 @@ pgarch_archiveXlog(char *xlog)
 
 		/* Reset our memory context and switch back to the original one */
 		MemoryContextSwitchTo(oldcontext);
-		MemoryContextReset(archive_context);
+		MemoryContextReset(MySessionData.archive_context);
 	}
 
 	if (ret)
