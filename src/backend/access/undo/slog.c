@@ -2773,6 +2773,80 @@ SLogTupleGetDirtyXid(Oid relid, ItemPointer tid, bool *is_insert)
 }
 
 /*
+ * SLogTupleGetDirtyWriterXid -- like SLogTupleGetDirtyXid, but returns only
+ * the xid of an in-progress *writer* (INSERT/UPDATE/DELETE), ignoring
+ * lock-only markers (LOCK_SHARE/LOCK_EXCL) and aborted markers.
+ *
+ * Used at the write-wait decision in the UPDATE/DELETE paths.  An updater
+ * already holds the heavyweight LOCKTAG_TUPLE lock (LockTupleNoKeyExclusive ->
+ * ExclusiveLock), which serializes against conflicting lockers via the
+ * standard lock matrix: a key-share locker (AccessShareLock) is compatible and
+ * does not block, while a share/exclusive locker conflicts and blocks the
+ * updater on the lock manager.  XactLockTableWait must therefore fire only for
+ * an actual in-progress writer -- never for a pure locker.  Waiting on a
+ * locker's xid here while that locker is queued behind us for the same tuple
+ * ExclusiveLock manufactures a deadlock cycle that heap avoids via
+ * HEAP_XMAX_IS_LOCKED_ONLY.
+ *
+ * WAIT-FREE: uses LRLock read-side, identical to SLogTupleGetDirtyXid.
+ */
+TransactionId
+SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid, bool *is_insert)
+{
+	SLogTupleKey key;
+	const SLogFlatHash *ht;
+	const SLogFlatBucket *bucket;
+	TransactionId result = InvalidTransactionId;
+	int			i;
+
+	memset(&key, 0, sizeof(key));
+	key.relid = relid;
+	ItemPointerCopy(tid, &key.tid);
+
+	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+
+	bucket = SLogFlatHashProbe(ht, &key);
+
+	if (bucket != NULL)
+	{
+		const SLogTupleEntry *entry = &bucket->entry;
+
+		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		{
+			TransactionId xid;
+			SLogOpType	op;
+
+			if (!entry->ops[i].in_use)
+				continue;
+
+			op = entry->ops[i].op_type;
+
+			/* Only real writers block another writer. */
+			if (op != SLOG_OP_INSERT &&
+				op != SLOG_OP_UPDATE &&
+				op != SLOG_OP_DELETE)
+				continue;
+
+			xid = entry->ops[i].xid;
+
+			if (TransactionIdIsCurrentTransactionId(xid))
+				continue;
+			if (!TransactionIdIsInProgress(xid))
+				continue;
+
+			if (is_insert)
+				*is_insert = (op == SLOG_OP_INSERT);
+			result = xid;
+			break;
+		}
+	}
+
+	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+
+	return result;
+}
+
+/*
  * SLogTupleHasLockConflict -- check if any active lock entries on this TID
  * conflict with the requested lock mode.
  */

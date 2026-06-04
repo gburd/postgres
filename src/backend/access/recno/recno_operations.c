@@ -2907,9 +2907,19 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		TransactionId dirty_xid;
 		bool		is_insert_entry;
 
-		/* Lock-free: no buffer unlock needed */
-		dirty_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
-										 otid, &is_insert_entry);
+		/*
+		 * Lock-free.  Use the writer-only probe: only an in-progress
+		 * INSERT/UPDATE/DELETE on this TID is a write-write conflict that
+		 * warrants XactLockTableWait.  Lock-only markers (LOCK_SHARE/
+		 * LOCK_EXCL) left by lockers must NOT make us wait-as-writer here:
+		 * the heavyweight LOCKTAG_TUPLE lock we acquire below already
+		 * serializes locker-vs-updater via the standard lock matrix.
+		 * Waiting on a pure locker's xid while it is queued behind us for
+		 * the same tuple ExclusiveLock manufactures a deadlock cycle that
+		 * heap avoids via HEAP_XMAX_IS_LOCKED_ONLY.
+		 */
+		dirty_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
+											   otid, &is_insert_entry);
 
 		if (!TransactionIdIsValid(dirty_xid))
 		{

@@ -289,6 +289,8 @@ extern bool SLogTupleIsInsertedByMe(Oid relid, ItemPointer tid);
 extern bool SLogTupleIsDeletedByMe(Oid relid, ItemPointer tid);
 extern TransactionId SLogTupleGetDirtyXid(Oid relid, ItemPointer tid,
 										  bool *is_insert);
+extern TransactionId SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid,
+												bool *is_insert);
 extern bool SLogTupleHasLockConflict(Oid relid, ItemPointer tid,
 									 TransactionId my_xid,
 									 SLogOpType requested_lock);
