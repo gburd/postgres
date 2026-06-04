@@ -205,6 +205,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 96 | `utils/cache/catcache.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local CatCacheHeader *CacheHdr` (catalog-cache management header listing all catalog caches) into `MySessionData.catcache_hdr`; all use sites rewritten. `mysession.h` forward-declares `struct catcacheheader` rather than including `utils/catcache.h`, since only the pointer is stored. Ninth subsystem migrated into the aggregate. |
 
+| 97 | `utils/activity/pgstat_xact.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local PgStat_SubXactStatus *pgStatXactStack` (head of the cumulative-stats per-(sub)transaction status stack) into `MySessionData.pgstat_xact_stack`; all use sites rewritten. `mysession.h` forward-declares `struct PgStat_SubXactStatus` rather than including the large `utils/pgstat_internal.h`. Tenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
