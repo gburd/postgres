@@ -1771,76 +1771,29 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			if (ItemIdIsNormal(itemid) &&
 				cas_new_size <= ItemIdGetLength(itemid))
 			{
-				bool		cas_no_ww_conflict;
-
 				old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
 
 				/*
-				 * The flag gate alone is not sufficient to take the fast
-				 * path: a concurrent transaction may have updated this tuple
-				 * in place and already committed (clearing
-				 * RECNO_TUPLE_UNCOMMITTED) after our statement snapshot was
-				 * taken.  The on-page t_commit_ts is rewound to the original
-				 * insert HLC at commit (so mid-life snapshots still see the
-				 * row), so a plain visibility check cannot detect that a
-				 * committed update happened since we read: the flags look
-				 * clean and the tuple appears visible, yet writing here would
-				 * silently clobber that committed update (lost update / no
-				 * write-write blocking).  Instead, probe the sLog for a
-				 * retained committed-UPDATE marker with commit_hlc strictly
-				 * newer than our read anchor (excluding our own xid). If one
-				 * exists, bail to the exclusive path, which returns
-				 * TM_Updated so the executor re-evaluates via EvalPlanQual. A
-				 * NULL or non-MVCC snapshot is treated as conflict-free,
-				 * matching the regular path's "if (snapshot)" guard.
+				 * Cheap in-page eligibility gate: committed, not deleted, not
+				 * locked, no overflow, same size for direct memcpy.  This is a
+				 * pure buffer-domain check (no sLog probe).
+				 *
+				 * We deliberately do NOT probe the sLog for write-write
+				 * conflicts here.  The flag gate is not a reliable conflict
+				 * signal -- a committed in-place UPDATE rewinds t_commit_ts and
+				 * clears RECNO_TUPLE_UNCOMMITTED, and a reader/third writer may
+				 * clear a still-live flag as "stale" -- so any pre-lock sLog
+				 * probe would have to be repeated authoritatively after we own
+				 * t_writer anyway (state can change between the probe and the
+				 * trylock).  The authoritative committed-update and
+				 * in-progress-writer probes therefore run once, under the
+				 * t_writer lock below; the pre-lock duplicates were redundant
+				 * LRLock reads on the common no-conflict path.  Taking the
+				 * trylock speculatively is harmless: no WAL or page change
+				 * happens until revalidation passes, and a lost race just
+				 * releases t_writer and falls to the exclusive path.
 				 */
-				if (snapshot != NULL && IsMVCCSnapshot(snapshot))
-					cas_no_ww_conflict =
-						!SLogTupleHasCommittedUpdateAfter(RelationGetRelid(relation),
-														  otid,
-														  snapshot,
-														  RecnoGetEpqReconcileFloor(snapshot,
-																					RelationGetRelid(relation),
-																					otid),
-														  GetCurrentTransactionIdIfAny());
-				else
-					cas_no_ww_conflict = true;
-
-				/*
-				 * Authoritative in-progress-writer check, independent of the
-				 * on-page UNCOMMITTED flag.  The flag is not a reliable
-				 * conflict signal: it lives in the buffer domain while the
-				 * sLog marker lives in the LRLock domain, and a reader or a
-				 * third writer may clear a still-live flag as "stale" (the
-				 * regular path's stale-flag clear), leaving a concurrent
-				 * in-progress UPDATE/DELETE whose marker is still hlc==0
-				 * (uncommitted).  The committed-update probe above skips
-				 * hlc==0 markers, so without this check the CAS overwrite
-				 * silently clobbers that in-progress writer's value (lost
-				 * update).  Consult the sLog directly; if a concurrent
-				 * in-progress UPDATE/DELETE exists, bail to the exclusive
-				 * path, which serializes on it via XactLockTableWait.
-				 */
-				if (cas_no_ww_conflict)
-				{
-					bool		cas_dirty_is_insert = false;
-					TransactionId cas_dirty_xid =
-						SLogTupleGetDirtyXid(RelationGetRelid(relation),
-											 otid, &cas_dirty_is_insert);
-
-					if (TransactionIdIsValid(cas_dirty_xid) &&
-						!cas_dirty_is_insert)
-						cas_no_ww_conflict = false;
-				}
-
-				/*
-				 * Check eligibility: tuple must be committed, not deleted,
-				 * not locked, no overflow, same size for direct memcpy, and
-				 * free of a concurrent committed update since our read
-				 * anchor.
-				 */
-				if (cas_no_ww_conflict &&
-					!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
+				if (!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
 												RECNO_TUPLE_LOCKED |
 												RECNO_TUPLE_UNCOMMITTED |
 												RECNO_TUPLE_HAS_OVERFLOW |
