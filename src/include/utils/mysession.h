@@ -64,6 +64,17 @@ struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
 
 /*
+ * Saved instrumentation counters captured across a nested executor run
+ * (executor/instrument.c).  Embedded by value in MySession; BufferUsage and
+ * WalUsage are already visible via executor/instrument.h above.
+ */
+typedef struct InstrumentState
+{
+	BufferUsage save_pgBufferUsage;
+	WalUsage	save_pgWalUsage;
+} InstrumentState;
+
+/*
  * Per-session state aggregate.
  *
  * Members are added here as subsystems migrate in.  Plain-typed members
@@ -304,6 +315,12 @@ typedef struct MySession
 	 * provider registers itself.
 	 */
 	struct List *label_provider_list;
+
+	/*
+	 * Saved buffer/WAL usage counters across a nested executor run
+	 * (executor/instrument.c).
+	 */
+	InstrumentState instrument_state;
 } MySession;
 
 /*
