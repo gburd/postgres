@@ -15,6 +15,7 @@
 #include "access/xact.h"
 #include "pgstat.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/pgstat_internal.h"
 
 
@@ -30,9 +31,6 @@ static void AtEOXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state, bool 
 static void AtEOSubXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state,
 											bool isCommit, int nestDepth);
 
-static session_local PgStat_SubXactStatus *pgStatXactStack = NULL;
-
-
 /*
  * Called from access/transam/xact.c at top-level transaction commit/abort.
  */
@@ -44,7 +42,7 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 	AtEOXact_PgStat_Database(isCommit, parallel);
 
 	/* handle transactional stats information */
-	xact_state = pgStatXactStack;
+	xact_state = MySessionData.pgstat_xact_stack;
 	if (xact_state != NULL)
 	{
 		Assert(xact_state->nest_level == 1);
@@ -53,7 +51,7 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 		AtEOXact_PgStat_Relations(xact_state, isCommit);
 		AtEOXact_PgStat_DroppedStats(xact_state, isCommit);
 	}
-	pgStatXactStack = NULL;
+	MySessionData.pgstat_xact_stack = NULL;
 
 	/* Make sure any stats snapshot is thrown away */
 	pgstat_clear_snapshot();
@@ -115,12 +113,12 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 	PgStat_SubXactStatus *xact_state;
 
 	/* merge the sub-transaction's transactional stats into the parent */
-	xact_state = pgStatXactStack;
+	xact_state = MySessionData.pgstat_xact_stack;
 	if (xact_state != NULL &&
 		xact_state->nest_level >= nestDepth)
 	{
 		/* delink xact_state from stack immediately to simplify reuse case */
-		pgStatXactStack = xact_state->prev;
+		MySessionData.pgstat_xact_stack = xact_state->prev;
 
 		AtEOSubXact_PgStat_Relations(xact_state, isCommit, nestDepth);
 		AtEOSubXact_PgStat_DroppedStats(xact_state, isCommit, nestDepth);
@@ -192,7 +190,7 @@ AtPrepare_PgStat(void)
 {
 	PgStat_SubXactStatus *xact_state;
 
-	xact_state = pgStatXactStack;
+	xact_state = MySessionData.pgstat_xact_stack;
 	if (xact_state != NULL)
 	{
 		Assert(xact_state->nest_level == 1);
@@ -216,7 +214,7 @@ PostPrepare_PgStat(void)
 	 * We don't bother to free any of the transactional state, since it's all
 	 * in TopTransactionContext and will go away anyway.
 	 */
-	xact_state = pgStatXactStack;
+	xact_state = MySessionData.pgstat_xact_stack;
 	if (xact_state != NULL)
 	{
 		Assert(xact_state->nest_level == 1);
@@ -224,7 +222,7 @@ PostPrepare_PgStat(void)
 
 		PostPrepare_PgStat_Relations(xact_state);
 	}
-	pgStatXactStack = NULL;
+	MySessionData.pgstat_xact_stack = NULL;
 
 	/* Make sure any stats snapshot is thrown away */
 	pgstat_clear_snapshot();
@@ -239,7 +237,7 @@ pgstat_get_xact_stack_level(int nest_level)
 {
 	PgStat_SubXactStatus *xact_state;
 
-	xact_state = pgStatXactStack;
+	xact_state = MySessionData.pgstat_xact_stack;
 	if (xact_state == NULL || xact_state->nest_level != nest_level)
 	{
 		xact_state = (PgStat_SubXactStatus *)
@@ -247,9 +245,9 @@ pgstat_get_xact_stack_level(int nest_level)
 							   sizeof(PgStat_SubXactStatus));
 		dclist_init(&xact_state->pending_drops);
 		xact_state->nest_level = nest_level;
-		xact_state->prev = pgStatXactStack;
+		xact_state->prev = MySessionData.pgstat_xact_stack;
 		xact_state->first = NULL;
-		pgStatXactStack = xact_state;
+		MySessionData.pgstat_xact_stack = xact_state;
 	}
 	return xact_state;
 }
@@ -271,7 +269,7 @@ pgstat_get_xact_stack_level(int nest_level)
 int
 pgstat_get_transactional_drops(bool isCommit, xl_xact_stats_item **items)
 {
-	PgStat_SubXactStatus *xact_state = pgStatXactStack;
+	PgStat_SubXactStatus *xact_state = MySessionData.pgstat_xact_stack;
 	int			nitems = 0;
 	dlist_iter	iter;
 

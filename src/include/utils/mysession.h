@@ -51,6 +51,7 @@
  * definition stays in the owning module's own header / .c file.
  */
 struct catcacheheader;			/* utils/catcache.h: CatCacheHeader */
+struct PgStat_SubXactStatus;	/* utils/pgstat_internal.h */
 
 /*
  * Per-session state aggregate.
@@ -117,6 +118,12 @@ typedef struct MySession
 	 * (utils/cache/catcache.c).  Lazily created; NULL until first use.
 	 */
 	struct catcacheheader *catcache_hdr;
+
+	/*
+	 * Head of the per-(sub)transaction cumulative-stats status stack
+	 * (utils/activity/pgstat_xact.c).  NULL when no transaction is active.
+	 */
+	struct PgStat_SubXactStatus *pgstat_xact_stack;
 } MySession;
 
 /*
