@@ -118,6 +118,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -126,7 +127,6 @@
 
 session_local List	   *table_states_not_ready = NIL;
 
-static session_local StringInfo copybuf = NULL;
 
 /*
  * Wait until the relation sync state is set in the catalog to the expected
@@ -649,13 +649,13 @@ copy_read_data(void *outbuf, int minread, int maxread)
 	int			avail;
 
 	/* If there are some leftover data from previous read, use it. */
-	avail = copybuf->len - copybuf->cursor;
+	avail = MySessionData.copybuf->len - MySessionData.copybuf->cursor;
 	if (avail)
 	{
 		if (avail > maxread)
 			avail = maxread;
-		memcpy(outbuf, &copybuf->data[copybuf->cursor], avail);
-		copybuf->cursor += avail;
+		memcpy(outbuf, &MySessionData.copybuf->data[MySessionData.copybuf->cursor], avail);
+		MySessionData.copybuf->cursor += avail;
 		maxread -= avail;
 		bytesread += avail;
 	}
@@ -680,16 +680,16 @@ copy_read_data(void *outbuf, int minread, int maxread)
 			else
 			{
 				/* Process the data */
-				copybuf->data = buf;
-				copybuf->len = len;
-				copybuf->cursor = 0;
+				MySessionData.copybuf->data = buf;
+				MySessionData.copybuf->len = len;
+				MySessionData.copybuf->cursor = 0;
 
-				avail = copybuf->len - copybuf->cursor;
+				avail = MySessionData.copybuf->len - MySessionData.copybuf->cursor;
 				if (avail > maxread)
 					avail = maxread;
-				memcpy(outbuf, &copybuf->data[copybuf->cursor], avail);
+				memcpy(outbuf, &MySessionData.copybuf->data[MySessionData.copybuf->cursor], avail);
 				outbuf = (char *) outbuf + avail;
-				copybuf->cursor += avail;
+				MySessionData.copybuf->cursor += avail;
 				maxread -= avail;
 				bytesread += avail;
 			}
@@ -1199,7 +1199,7 @@ copy_table(Relation rel)
 						lrel.nspname, lrel.relname, res->err)));
 	walrcv_clear_result(res);
 
-	copybuf = makeStringInfo();
+	MySessionData.copybuf = makeStringInfo();
 
 	pstate = make_parsestate(NULL);
 	(void) addRangeTableEntryForRelation(pstate, rel, AccessShareLock,

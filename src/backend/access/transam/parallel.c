@@ -43,6 +43,7 @@
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
@@ -120,7 +121,6 @@ session_local int			ParallelWorkerNumber = -1;
 session_local bool		InitializingParallelWorker = false;
 
 /* Pointer to our fixed parallel state. */
-static session_local FixedParallelState *MyFixedParallelState;
 
 /* List of active parallel contexts. */
 static dlist_head pcxt_list = DLIST_STATIC_INIT(pcxt_list);
@@ -1342,7 +1342,7 @@ ParallelWorkerMain(Datum main_arg)
 
 	/* Look up fixed parallel state. */
 	fps = shm_toc_lookup(toc, PARALLEL_KEY_FIXED, false);
-	MyFixedParallelState = fps;
+	MySessionData.MyFixedParallelState = fps;
 
 	/* Arrange to signal the leader if we exit. */
 	ParallelLeaderPid = fps->parallel_leader_pid;
@@ -1573,7 +1573,7 @@ ParallelWorkerMain(Datum main_arg)
 void
 ParallelWorkerReportLastRecEnd(XLogRecPtr last_xlog_end)
 {
-	FixedParallelState *fps = MyFixedParallelState;
+	FixedParallelState *fps = MySessionData.MyFixedParallelState;
 
 	Assert(fps != NULL);
 	SpinLockAcquire(&fps->mutex);

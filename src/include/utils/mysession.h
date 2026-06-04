@@ -58,6 +58,10 @@ struct List;					/* nodes/pg_list.h */
 struct pg_locale_struct;		/* utils/pg_locale.h: pg_locale_t */
 struct EventTriggerQueryState;	/* commands/event_trigger.c */
 struct ConditionVariable;		/* storage/condition_variable.h */
+struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
+struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
+struct FixedParallelState;		/* access/transam/parallel.c */
+struct ReplicationState;		/* replication/logical/origin.c */
 
 /*
  * Per-session state aggregate.
@@ -264,6 +268,30 @@ typedef struct MySession
 	 * (replication/pgoutput/pgoutput.c).  Lazily created; NULL until first use.
 	 */
 	HTAB	   *RelationSyncCache;
+
+	/*
+	 * Reassembly buffer for COPY data received during logical-replication
+	 * table sync (replication/logical/tablesync.c).  NULL until first use.
+	 */
+	struct StringInfoData *copybuf;
+
+	/*
+	 * This backend's slot in the shared ProcSignal array
+	 * (storage/ipc/procsignal.c).  NULL until ProcSignalInit runs.
+	 */
+	struct ProcSignalSlot *MyProcSignalSlot;
+
+	/*
+	 * Pointer to this parallel worker's fixed parallel state
+	 * (access/transam/parallel.c); NULL in the leader / non-parallel backends.
+	 */
+	struct FixedParallelState *MyFixedParallelState;
+
+	/*
+	 * Replication-origin state slot this session has acquired
+	 * (replication/logical/origin.c).  NULL when no origin is set up.
+	 */
+	struct ReplicationState *session_replication_state;
 } MySession;
 
 /*

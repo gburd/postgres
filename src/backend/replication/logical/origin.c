@@ -92,6 +92,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/mysession.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -198,7 +199,6 @@ static pg_global ReplicationStateCtl *replication_states_ctl;
  * remote commit.  (Ownership of a backend's own entry can only be changed by
  * that backend.)
  */
-static session_local ReplicationState *session_replication_state = NULL;
 
 /* Magic for on disk files. */
 #define REPLICATION_STATE_MAGIC ((uint32) 0x1257DADE)
@@ -1096,25 +1096,25 @@ replorigin_session_reset_internal(void)
 {
 	ConditionVariable *cv;
 
-	Assert(session_replication_state != NULL);
+	Assert(MySessionData.session_replication_state != NULL);
 
 	LWLockAcquire(ReplicationOriginLock, LW_EXCLUSIVE);
 
 	/* The origin must be held by at least one process at this point. */
-	Assert(session_replication_state->refcount > 0);
+	Assert(MySessionData.session_replication_state->refcount > 0);
 
 	/*
 	 * Reset the PID only if the current session is the first to set up this
 	 * origin. This avoids clearing the first process's PID when any other
 	 * session releases the origin.
 	 */
-	if (session_replication_state->acquired_by == MyProcPid)
-		session_replication_state->acquired_by = 0;
+	if (MySessionData.session_replication_state->acquired_by == MyProcPid)
+		MySessionData.session_replication_state->acquired_by = 0;
 
-	session_replication_state->refcount--;
+	MySessionData.session_replication_state->refcount--;
 
-	cv = &session_replication_state->origin_cv;
-	session_replication_state = NULL;
+	cv = &MySessionData.session_replication_state->origin_cv;
+	MySessionData.session_replication_state = NULL;
 
 	LWLockRelease(ReplicationOriginLock);
 
@@ -1128,7 +1128,7 @@ replorigin_session_reset_internal(void)
 static void
 ReplicationOriginExitCleanup(int code, Datum arg)
 {
-	if (session_replication_state == NULL)
+	if (MySessionData.session_replication_state == NULL)
 		return;
 
 	replorigin_session_reset_internal();
@@ -1167,7 +1167,7 @@ replorigin_session_setup(ReplOriginId node, int acquired_by)
 
 	Assert(GetGUCInt(GUC_max_active_replication_origins) > 0);
 
-	if (session_replication_state != NULL)
+	if (MySessionData.session_replication_state != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot setup replication origin when one is already setup")));
@@ -1239,11 +1239,11 @@ replorigin_session_setup(ReplOriginId node, int acquired_by)
 		}
 
 		/* ok, found slot */
-		session_replication_state = curstate;
+		MySessionData.session_replication_state = curstate;
 		break;
 	}
 
-	if (session_replication_state == NULL)
+	if (MySessionData.session_replication_state == NULL)
 	{
 		if (acquired_by != 0)
 			ereport(ERROR,
@@ -1259,19 +1259,19 @@ replorigin_session_setup(ReplOriginId node, int acquired_by)
 							node),
 					 errhint("Increase \"max_active_replication_origins\" and try again.")));
 
-		session_replication_state = &replication_states[free_slot];
-		Assert(!XLogRecPtrIsValid(session_replication_state->remote_lsn));
-		Assert(!XLogRecPtrIsValid(session_replication_state->local_lsn));
-		session_replication_state->roident = node;
+		MySessionData.session_replication_state = &replication_states[free_slot];
+		Assert(!XLogRecPtrIsValid(MySessionData.session_replication_state->remote_lsn));
+		Assert(!XLogRecPtrIsValid(MySessionData.session_replication_state->local_lsn));
+		MySessionData.session_replication_state->roident = node;
 	}
 
 
-	Assert(session_replication_state->roident != InvalidReplOriginId);
+	Assert(MySessionData.session_replication_state->roident != InvalidReplOriginId);
 
 	if (acquired_by == 0)
 	{
-		session_replication_state->acquired_by = MyProcPid;
-		Assert(session_replication_state->refcount == 0);
+		MySessionData.session_replication_state->acquired_by = MyProcPid;
+		Assert(MySessionData.session_replication_state->refcount == 0);
 	}
 	else
 	{
@@ -1279,16 +1279,16 @@ replorigin_session_setup(ReplOriginId node, int acquired_by)
 		 * Sanity check: the origin must already be acquired by the process
 		 * passed as input, and at least one process must be using it.
 		 */
-		Assert(session_replication_state->acquired_by == acquired_by);
-		Assert(session_replication_state->refcount > 0);
+		Assert(MySessionData.session_replication_state->acquired_by == acquired_by);
+		Assert(MySessionData.session_replication_state->refcount > 0);
 	}
 
-	session_replication_state->refcount++;
+	MySessionData.session_replication_state->refcount++;
 
 	LWLockRelease(ReplicationOriginLock);
 
 	/* probably this one is pointless */
-	ConditionVariableBroadcast(&session_replication_state->origin_cv);
+	ConditionVariableBroadcast(&MySessionData.session_replication_state->origin_cv);
 }
 
 /*
@@ -1302,7 +1302,7 @@ replorigin_session_reset(void)
 {
 	Assert(GetGUCInt(GUC_max_active_replication_origins) != 0);
 
-	if (session_replication_state == NULL)
+	if (MySessionData.session_replication_state == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("no replication origin is configured")));
@@ -1313,12 +1313,12 @@ replorigin_session_reset(void)
 	 * system handles this safely (as happens if the first session exits
 	 * without calling reset), it is best to avoid doing so.
 	 */
-	if (session_replication_state->acquired_by == MyProcPid &&
-		session_replication_state->refcount > 1)
+	if (MySessionData.session_replication_state->acquired_by == MyProcPid &&
+		MySessionData.session_replication_state->refcount > 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot reset replication origin with ID %d because it is still in use by other processes",
-						session_replication_state->roident),
+						MySessionData.session_replication_state->roident),
 				 errdetail("This session is the first process for this replication origin, and other processes are currently sharing it."),
 				 errhint("Reset the replication origin in all other processes before retrying.")));
 
@@ -1334,15 +1334,15 @@ replorigin_session_reset(void)
 void
 replorigin_session_advance(XLogRecPtr remote_commit, XLogRecPtr local_commit)
 {
-	Assert(session_replication_state != NULL);
-	Assert(session_replication_state->roident != InvalidReplOriginId);
+	Assert(MySessionData.session_replication_state != NULL);
+	Assert(MySessionData.session_replication_state->roident != InvalidReplOriginId);
 
-	LWLockAcquire(&session_replication_state->lock, LW_EXCLUSIVE);
-	if (session_replication_state->local_lsn < local_commit)
-		session_replication_state->local_lsn = local_commit;
-	if (session_replication_state->remote_lsn < remote_commit)
-		session_replication_state->remote_lsn = remote_commit;
-	LWLockRelease(&session_replication_state->lock);
+	LWLockAcquire(&MySessionData.session_replication_state->lock, LW_EXCLUSIVE);
+	if (MySessionData.session_replication_state->local_lsn < local_commit)
+		MySessionData.session_replication_state->local_lsn = local_commit;
+	if (MySessionData.session_replication_state->remote_lsn < remote_commit)
+		MySessionData.session_replication_state->remote_lsn = remote_commit;
+	LWLockRelease(&MySessionData.session_replication_state->lock);
 }
 
 /*
@@ -1355,12 +1355,12 @@ replorigin_session_get_progress(bool flush)
 	XLogRecPtr	remote_lsn;
 	XLogRecPtr	local_lsn;
 
-	Assert(session_replication_state != NULL);
+	Assert(MySessionData.session_replication_state != NULL);
 
-	LWLockAcquire(&session_replication_state->lock, LW_SHARED);
-	remote_lsn = session_replication_state->remote_lsn;
-	local_lsn = session_replication_state->local_lsn;
-	LWLockRelease(&session_replication_state->lock);
+	LWLockAcquire(&MySessionData.session_replication_state->lock, LW_SHARED);
+	remote_lsn = MySessionData.session_replication_state->remote_lsn;
+	local_lsn = MySessionData.session_replication_state->local_lsn;
+	LWLockRelease(&MySessionData.session_replication_state->lock);
 
 	if (flush && XLogRecPtrIsValid(local_lsn))
 		XLogFlush(local_lsn);
@@ -1538,7 +1538,7 @@ pg_replication_origin_session_progress(PG_FUNCTION_ARGS)
 
 	replorigin_check_prerequisites(true, false);
 
-	if (session_replication_state == NULL)
+	if (MySessionData.session_replication_state == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("no replication origin is configured")));
@@ -1558,7 +1558,7 @@ pg_replication_origin_xact_setup(PG_FUNCTION_ARGS)
 
 	replorigin_check_prerequisites(true, false);
 
-	if (session_replication_state == NULL)
+	if (MySessionData.session_replication_state == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("no replication origin is configured")));

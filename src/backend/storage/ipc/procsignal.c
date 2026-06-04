@@ -38,6 +38,7 @@
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/wait_event.h"
 
 /*
@@ -64,7 +65,7 @@
  * appears in the pss_barrierGeneration flag of every process, we know that
  * the message has been received everywhere.
  */
-typedef struct
+typedef struct ProcSignalSlot
 {
 	pg_atomic_uint32 pss_pid;
 	int			pss_cancel_key_len; /* 0 means no cancellation is possible */
@@ -114,8 +115,6 @@ const ShmemCallbacks ProcSignalShmemCallbacks = {
 };
 
 NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
-
-static session_local ProcSignalSlot *MyProcSignalSlot = NULL;
 
 static void CleanupProcSignalState(int status, Datum arg);
 static void ResetProcSignalBarrierBits(uint32 flags);
@@ -208,7 +207,7 @@ ProcSignalInit(const uint8 *cancel_key, int cancel_key_len)
 			 MyProcPid, MyProcNumber);
 
 	/* Remember slot location for the barrier mechanism */
-	MyProcSignalSlot = slot;
+	MySessionData.MyProcSignalSlot = slot;
 
 	/* Set up to release the slot on process exit */
 	on_shmem_exit(CleanupProcSignalState, (Datum) 0);
@@ -224,15 +223,15 @@ static void
 CleanupProcSignalState(int status, Datum arg)
 {
 	pid_t		old_pid;
-	ProcSignalSlot *slot = MyProcSignalSlot;
+	ProcSignalSlot *slot = MySessionData.MyProcSignalSlot;
 
 	/*
 	 * Clear MyProcSignalSlot, so that a barrier broadcast received after this
 	 * point won't try to access it after it's no longer ours (and perhaps even
 	 * after we've unmapped the shared memory segment).
 	 */
-	Assert(MyProcSignalSlot != NULL);
-	MyProcSignalSlot = NULL;
+	Assert(MySessionData.MyProcSignalSlot != NULL);
+	MySessionData.MyProcSignalSlot = NULL;
 
 	/* sanity check */
 	SpinLockAcquire(&slot->pss_mutex);
@@ -411,7 +410,7 @@ ProcessProcSignalBarrier(void)
 	uint64		shared_gen;
 	volatile uint32 flags;
 
-	Assert(MyProcSignalSlot);
+	Assert(MySessionData.MyProcSignalSlot);
 
 	/* Exit quickly if there's no work to do. */
 	if (!ConsumeInterrupt(INTERRUPT_BARRIER))
@@ -423,7 +422,7 @@ ProcessProcSignalBarrier(void)
 	 * response to subsequent signals, exit early if we already have processed
 	 * all of them.
 	 */
-	local_gen = pg_atomic_read_u64(&MyProcSignalSlot->pss_barrierGeneration);
+	local_gen = pg_atomic_read_u64(&MySessionData.MyProcSignalSlot->pss_barrierGeneration);
 	shared_gen = pg_atomic_read_u64(&ProcSignal->psh_barrierGeneration);
 
 	Assert(local_gen <= shared_gen);
@@ -448,7 +447,7 @@ ProcessProcSignalBarrier(void)
 	 * forgotten. So instead, we tentatively clear all the bits and then put
 	 * back any for which we don't manage to successfully absorb the barrier.
 	 */
-	flags = pg_atomic_exchange_u32(&MyProcSignalSlot->pss_barrierCheckMask, 0);
+	flags = pg_atomic_exchange_u32(&MySessionData.MyProcSignalSlot->pss_barrierCheckMask, 0);
 
 	/*
 	 * If there are no flags set, then we can skip doing any real work.
@@ -541,8 +540,8 @@ ProcessProcSignalBarrier(void)
 	 * things have changed further, it'll get fixed up when this function is
 	 * next called.
 	 */
-	pg_atomic_write_u64(&MyProcSignalSlot->pss_barrierGeneration, shared_gen);
-	ConditionVariableBroadcast(&MyProcSignalSlot->pss_barrierCV);
+	pg_atomic_write_u64(&MySessionData.MyProcSignalSlot->pss_barrierGeneration, shared_gen);
+	ConditionVariableBroadcast(&MySessionData.MyProcSignalSlot->pss_barrierCV);
 }
 
 /*
@@ -553,7 +552,7 @@ ProcessProcSignalBarrier(void)
 static void
 ResetProcSignalBarrierBits(uint32 flags)
 {
-	pg_atomic_fetch_or_u32(&MyProcSignalSlot->pss_barrierCheckMask, flags);
+	pg_atomic_fetch_or_u32(&MySessionData.MyProcSignalSlot->pss_barrierCheckMask, flags);
 	RaiseInterrupt(INTERRUPT_BARRIER);
 }
 
