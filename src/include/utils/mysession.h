@@ -152,6 +152,13 @@ typedef struct MySession
 	 * TopTransactionContext; NULL when the cache is empty.
 	 */
 	MemoryContext multixact_cache_cxt;
+
+	/*
+	 * Bumped whenever recovery-prefetch GUCs change so that each
+	 * XLogPrefetcher reconfigures itself on next use
+	 * (access/transam/xlogprefetcher.c).
+	 */
+	int			xlog_prefetch_reconfigure_count;
 } MySession;
 
 /*

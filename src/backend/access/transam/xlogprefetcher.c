@@ -43,6 +43,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/guc_hooks.h"
 #include "utils/hsearch.h"
+#include "utils/mysession.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
@@ -78,7 +79,6 @@ sighup_guc int			recovery_prefetch = RECOVERY_PREFETCH_TRY;
 #define RecoveryPrefetchEnabled() false
 #endif
 
-static session_local int	XLogPrefetchReconfigureCount = 0;
 
 /*
  * Enum used to report whether an IO should be started.
@@ -344,7 +344,7 @@ XLogPrefetchResetStats(void)
 void
 XLogPrefetchReconfigure(void)
 {
-	XLogPrefetchReconfigureCount++;
+	MySessionData.xlog_prefetch_reconfigure_count++;
 }
 
 /*
@@ -383,7 +383,7 @@ XLogPrefetcherAllocate(XLogReaderState *reader)
 	SharedStats->io_depth = 0;
 
 	/* First usage will cause streaming_read to be allocated. */
-	prefetcher->reconfigure_count = XLogPrefetchReconfigureCount - 1;
+	prefetcher->reconfigure_count = MySessionData.xlog_prefetch_reconfigure_count - 1;
 
 	return prefetcher;
 }
@@ -992,7 +992,7 @@ XLogPrefetcherReadRecord(XLogPrefetcher *prefetcher, char **errmsg)
 	 * See if it's time to reset the prefetching machinery, because a relevant
 	 * GUC was changed.
 	 */
-	if (unlikely(XLogPrefetchReconfigureCount != prefetcher->reconfigure_count))
+	if (unlikely(MySessionData.xlog_prefetch_reconfigure_count != prefetcher->reconfigure_count))
 	{
 		uint32		max_distance;
 		uint32		max_inflight;
@@ -1017,7 +1017,7 @@ XLogPrefetcherReadRecord(XLogPrefetcher *prefetcher, char **errmsg)
 											   (uintptr_t) prefetcher,
 											   XLogPrefetcherNextBlock);
 
-		prefetcher->reconfigure_count = XLogPrefetchReconfigureCount;
+		prefetcher->reconfigure_count = MySessionData.xlog_prefetch_reconfigure_count;
 	}
 
 	/*
