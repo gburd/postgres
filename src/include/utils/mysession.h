@@ -38,6 +38,8 @@
 #ifndef MYSESSION_H
 #define MYSESSION_H
 
+#include "portability/instr_time.h"
+
 /*
  * Per-session state aggregate.
  *
@@ -53,6 +55,13 @@ typedef struct MySession
 	 * trigger invocation; exposed to SQL via pg_trigger_depth().
 	 */
 	int			trigger_depth;
+
+	/*
+	 * Total time charged to functions so far in this backend
+	 * (utils/activity/pgstat_function.c).  Used to separate "self" and
+	 * "other" time charges.  Initializes to zero.
+	 */
+	instr_time	total_func_time;
 } MySession;
 
 /*

@@ -19,6 +19,7 @@
 
 #include "fmgr.h"
 #include "utils/inval.h"
+#include "utils/mysession.h"
 #include "utils/pgstat_internal.h"
 #include "utils/syscache.h"
 
@@ -28,14 +29,6 @@
  * ----------
  */
 session_guc int			pgstat_track_functions = TRACK_FUNC_OFF;
-
-
-/*
- * Total time charged to functions so far in the current backend.
- * We use this to help separate "self" and "other" time charges.
- * (We assume this initializes to zero.)
- */
-static session_local instr_time total_func_time;
 
 
 /*
@@ -127,7 +120,7 @@ pgstat_init_function_usage(FunctionCallInfo fcinfo,
 	fcu->save_f_total_time = pending->total_time;
 
 	/* save current backend-wide total time */
-	fcu->save_total = total_func_time;
+	fcu->save_total = MySessionData.total_func_time;
 
 	/* get clock time as of function start */
 	INSTR_TIME_SET_CURRENT(fcu->start);
@@ -159,13 +152,13 @@ pgstat_end_function_usage(PgStat_FunctionCallUsage *fcu, bool finalize)
 	INSTR_TIME_SUBTRACT(total, fcu->start);
 
 	/* self usage: elapsed minus anything already charged to other calls */
-	others = total_func_time;
+	others = MySessionData.total_func_time;
 	INSTR_TIME_SUBTRACT(others, fcu->save_total);
 	self = total;
 	INSTR_TIME_SUBTRACT(self, others);
 
 	/* update backend-wide total time */
-	INSTR_TIME_ADD(total_func_time, self);
+	INSTR_TIME_ADD(MySessionData.total_func_time, self);
 
 	/*
 	 * Compute the new total_time as the total elapsed time added to the
