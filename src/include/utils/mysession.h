@@ -38,6 +38,8 @@
 #ifndef MYSESSION_H
 #define MYSESSION_H
 
+#include <signal.h>				/* for sig_atomic_t */
+
 #include "executor/instrument.h"
 #include "portability/instr_time.h"
 
@@ -70,6 +72,12 @@ typedef struct MySession
 	 * current counters to compute WAL usage between reports.
 	 */
 	WalUsage	prev_wal_usage;
+
+	/*
+	 * Is a deadlock check pending? (storage/lmgr/proc.c)  Set by the deadlock
+	 * timeout signal handler, consumed by the lock-wait loop.
+	 */
+	volatile sig_atomic_t got_deadlock_timeout;
 } MySession;
 
 /*

@@ -55,6 +55,7 @@
 #include "storage/standby.h"
 #include "storage/subsystems.h"
 #include "utils/injection_point.h"
+#include "utils/mysession.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
@@ -89,9 +90,6 @@ const ShmemCallbacks ProcGlobalShmemCallbacks = {
 static uint32 TotalProcs;
 static size_t ProcGlobalAllProcsShmemSize;
 static size_t FastPathLockArrayShmemSize;
-
-/* Is a deadlock check pending? */
-static session_local volatile sig_atomic_t got_deadlock_timeout;
 
 static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);
@@ -1351,7 +1349,7 @@ ProcSleep(LOCALLOCK *locallock)
 
 	/* Reset deadlock_state before enabling the timeout handler */
 	deadlock_state = DS_NOT_YET_CHECKED;
-	got_deadlock_timeout = false;
+	MySessionData.got_deadlock_timeout = false;
 
 	/*
 	 * Set timer so we can wake up after awhile and check for a deadlock. If a
@@ -1475,10 +1473,10 @@ ProcSleep(LOCALLOCK *locallock)
 								 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ClearInterrupt(INTERRUPT_GENERAL);
 			/* check for deadlocks first, as that's probably log-worthy */
-			if (got_deadlock_timeout)
+			if (MySessionData.got_deadlock_timeout)
 			{
 				deadlock_state = CheckDeadLock();
-				got_deadlock_timeout = false;
+				MySessionData.got_deadlock_timeout = false;
 			}
 			CHECK_FOR_INTERRUPTS();
 		}
@@ -1928,7 +1926,7 @@ CheckDeadLockAlert(void)
 {
 	int			save_errno = errno;
 
-	got_deadlock_timeout = true;
+	MySessionData.got_deadlock_timeout = true;
 
 	/*
 	 * Have to raise the interrupt again, even if handle_sig_alarm already
