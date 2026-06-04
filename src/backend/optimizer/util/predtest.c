@@ -28,6 +28,7 @@
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/syscache.h"
 
 
@@ -2092,8 +2093,6 @@ typedef struct OprProofCacheEntry
 	Oid			refute_test_op; /* OID of the test operator, or 0 if none */
 } OprProofCacheEntry;
 
-static session_local HTAB *OprProofCacheHash = NULL;
-
 
 /*
  * lookup_proof_cache
@@ -2116,15 +2115,15 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 	/*
 	 * Find or make a cache entry for this pair of operators.
 	 */
-	if (OprProofCacheHash == NULL)
+	if (MySessionData.oprproof_cache_hash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(OprProofCacheKey);
 		ctl.entrysize = sizeof(OprProofCacheEntry);
-		OprProofCacheHash = hash_create("Btree proof lookup cache", 256,
-										&ctl, HASH_ELEM | HASH_BLOBS);
+		MySessionData.oprproof_cache_hash = hash_create("Btree proof lookup cache", 256,
+														&ctl, HASH_ELEM | HASH_BLOBS);
 
 		/* Arrange to flush cache on pg_amop changes */
 		CacheRegisterSyscacheCallback(AMOPOPID,
@@ -2134,7 +2133,7 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 
 	key.pred_op = pred_op;
 	key.clause_op = clause_op;
-	cache_entry = (OprProofCacheEntry *) hash_search(OprProofCacheHash,
+	cache_entry = (OprProofCacheEntry *) hash_search(MySessionData.oprproof_cache_hash,
 													 &key,
 													 HASH_ENTER, &cfound);
 	if (!cfound)
@@ -2351,10 +2350,10 @@ InvalidateOprProofCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 	HASH_SEQ_STATUS status;
 	OprProofCacheEntry *hentry;
 
-	Assert(OprProofCacheHash != NULL);
+	Assert(MySessionData.oprproof_cache_hash != NULL);
 
 	/* Currently we just reset all entries; hard to be smarter ... */
-	hash_seq_init(&status, OprProofCacheHash);
+	hash_seq_init(&status, MySessionData.oprproof_cache_hash);
 
 	while ((hentry = (OprProofCacheEntry *) hash_seq_search(&status)) != NULL)
 	{

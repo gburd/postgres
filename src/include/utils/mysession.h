@@ -180,6 +180,12 @@ typedef struct MySession
 	 * Lazily created; NULL until first use.
 	 */
 	HTAB	   *prepared_queries;
+
+	/*
+	 * Cache of btree operator proof lookups for predicate testing
+	 * (optimizer/util/predtest.c).  Lazily created; NULL until first use.
+	 */
+	HTAB	   *oprproof_cache_hash;
 } MySession;
 
 /*
