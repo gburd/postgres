@@ -2713,13 +2713,15 @@ reacquire:
 	 */
 	{
 		SLogOpType	requested_lock;
+		TransactionId xwait = InvalidTransactionId;
 
 		requested_lock = (mode == LockTupleKeyShare ||
 						  mode == LockTupleShare)
 			? SLOG_OP_LOCK_SHARE : SLOG_OP_LOCK_EXCL;
 
-		if (SLogTupleHasLockConflict(RelationGetRelid(relation), tid,
-									 current_xid, requested_lock))
+		if (SLogTupleGetLockConflictXid(RelationGetRelid(relation), tid,
+										current_xid, requested_lock,
+										&xwait))
 		{
 			/* There's a conflict - check wait policy */
 			if (wait_policy == LockWaitError)
@@ -2740,16 +2742,12 @@ reacquire:
 			}
 			else				/* LockWaitBlock */
 			{
-				bool		dummy_is_insert;
-				TransactionId xwait;
-
 				/*
-				 * Find the conflicting transaction from the sLog so we can
-				 * wait on it.  SLogTupleGetDirtyXid returns the first
-				 * in-progress xid operating on this tuple.
+				 * Wait on the specific conflicting transaction identified by
+				 * SLogTupleGetLockConflictXid -- never on an arbitrary
+				 * in-progress peer, which could be a compatible locker queued
+				 * behind us and would form a spurious mutual-wait cycle.
 				 */
-				xwait = SLogTupleGetDirtyXid(RelationGetRelid(relation),
-											 tid, &dummy_is_insert);
 
 				/* Release buffer and wait */
 				UnlockReleaseBuffer(buf);

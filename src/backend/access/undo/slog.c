@@ -2899,6 +2899,70 @@ SLogTupleHasLockConflict(Oid relid, ItemPointer tid,
 }
 
 /*
+ * SLogTupleGetLockConflictXid -- like SLogTupleHasLockConflict, but also
+ * returns the xid of the *conflicting* transaction (the one whose marker
+ * actually conflicts with requested_lock under the matrix above).
+ *
+ * The waiter must XactLockTableWait on the conflicting xid specifically.
+ * Waiting on the first in-progress xid found on the TID (as a broad
+ * SLogTupleGetDirtyXid probe would return) can pick a compatible peer -- e.g.
+ * another KeyShare locker -- which is not blocking us and may itself be queued
+ * behind us, manufacturing a spurious mutual-wait deadlock cycle.
+ *
+ * Returns true and sets *xid_out if a conflicting in-progress transaction
+ * exists; returns false otherwise (xid_out is set to InvalidTransactionId).
+ */
+bool
+SLogTupleGetLockConflictXid(Oid relid, ItemPointer tid,
+							TransactionId my_xid,
+							SLogOpType requested_lock,
+							TransactionId *xid_out)
+{
+	SLogTupleOp ops[SLOG_MAX_TUPLE_OPS];
+	int			nfound;
+	int			i;
+
+	*xid_out = InvalidTransactionId;
+
+	nfound = SLogTupleLookupFiltered(relid, tid, InvalidTransactionId,
+									 ops, SLOG_MAX_TUPLE_OPS);
+
+	for (i = 0; i < nfound; i++)
+	{
+		if (TransactionIdEquals(ops[i].xid, my_xid))
+			continue;
+		if (!TransactionIdIsInProgress(ops[i].xid))
+			continue;
+
+		/* Only lock/mutating entries can conflict */
+		if (ops[i].op_type != SLOG_OP_LOCK_SHARE &&
+			ops[i].op_type != SLOG_OP_LOCK_EXCL &&
+			ops[i].op_type != SLOG_OP_DELETE &&
+			ops[i].op_type != SLOG_OP_UPDATE)
+			continue;
+
+		/* Same matrix as SLogTupleHasLockConflict. */
+		if (requested_lock == SLOG_OP_LOCK_SHARE)
+		{
+			if (ops[i].op_type == SLOG_OP_LOCK_EXCL ||
+				ops[i].op_type == SLOG_OP_DELETE ||
+				ops[i].op_type == SLOG_OP_UPDATE)
+			{
+				*xid_out = ops[i].xid;
+				return true;
+			}
+		}
+		else if (requested_lock == SLOG_OP_LOCK_EXCL)
+		{
+			*xid_out = ops[i].xid;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
  * SLogTupleHasAbortedEntry -- check if any aborted sLog op exists for a TID.
  */
 bool
