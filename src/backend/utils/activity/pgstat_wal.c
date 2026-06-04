@@ -18,16 +18,8 @@
 #include "postgres.h"
 
 #include "executor/instrument.h"
+#include "utils/mysession.h"
 #include "utils/pgstat_internal.h"
-
-
-/*
- * WAL usage counters saved from pgWalUsage at the previous call to
- * pgstat_report_wal(). This is used to calculate how much WAL usage
- * happens between pgstat_report_wal() calls, by subtracting
- * the previous counters from the current ones.
- */
-static session_local WalUsage prevWalUsage;
 
 
 /*
@@ -77,7 +69,7 @@ pgstat_fetch_stat_wal(void)
 static inline bool
 pgstat_wal_have_pending(void)
 {
-	return pgWalUsage.wal_records != prevWalUsage.wal_records;
+	return pgWalUsage.wal_records != MySessionData.prev_wal_usage.wal_records;
 }
 
 /*
@@ -109,7 +101,7 @@ pgstat_wal_flush_cb(bool nowait)
 	 * Calculate how much WAL usage counters were increased by subtracting the
 	 * previous counters from the current ones.
 	 */
-	WalUsageAccumDiff(&wal_usage_diff, &pgWalUsage, &prevWalUsage);
+	WalUsageAccumDiff(&wal_usage_diff, &pgWalUsage, &MySessionData.prev_wal_usage);
 
 	if (!nowait)
 		LWLockAcquire(&stats_shmem->lock, LW_EXCLUSIVE);
@@ -130,7 +122,7 @@ pgstat_wal_flush_cb(bool nowait)
 	/*
 	 * Save the current counters for the subsequent calculation of WAL usage.
 	 */
-	prevWalUsage = pgWalUsage;
+	MySessionData.prev_wal_usage = pgWalUsage;
 
 	return false;
 }
@@ -143,7 +135,7 @@ pgstat_wal_init_backend_cb(void)
 	 * can calculate how much pgWalUsage counters are increased by subtracting
 	 * prevWalUsage from pgWalUsage.
 	 */
-	prevWalUsage = pgWalUsage;
+	MySessionData.prev_wal_usage = pgWalUsage;
 }
 
 void

@@ -38,6 +38,7 @@
 #ifndef MYSESSION_H
 #define MYSESSION_H
 
+#include "executor/instrument.h"
 #include "portability/instr_time.h"
 
 /*
@@ -62,6 +63,13 @@ typedef struct MySession
 	 * "other" time charges.  Initializes to zero.
 	 */
 	instr_time	total_func_time;
+
+	/*
+	 * WAL usage counters saved from pgWalUsage at the previous
+	 * pgstat_report_wal() (utils/activity/pgstat_wal.c).  Subtracted from the
+	 * current counters to compute WAL usage between reports.
+	 */
+	WalUsage	prev_wal_usage;
 } MySession;
 
 /*
