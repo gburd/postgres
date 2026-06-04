@@ -37,6 +37,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -52,8 +53,6 @@ typedef struct
 	uint32		ti_options;		/* table_tuple_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_transientrel;
-
-static session_local int	matview_maintenance_depth = 0;
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
@@ -333,7 +332,7 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 	/* Make the matview match the newly generated data. */
 	if (concurrent)
 	{
-		int			old_depth = matview_maintenance_depth;
+		int			old_depth = MySessionData.matview_maintenance_depth;
 
 		PG_TRY();
 		{
@@ -342,11 +341,11 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 		}
 		PG_CATCH();
 		{
-			matview_maintenance_depth = old_depth;
+			MySessionData.matview_maintenance_depth = old_depth;
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
-		Assert(matview_maintenance_depth == old_depth);
+		Assert(MySessionData.matview_maintenance_depth == old_depth);
 	}
 	else
 	{
@@ -952,18 +951,18 @@ is_usable_unique_index(Relation indexRel)
 bool
 MatViewIncrementalMaintenanceIsEnabled(void)
 {
-	return matview_maintenance_depth > 0;
+	return MySessionData.matview_maintenance_depth > 0;
 }
 
 static void
 OpenMatViewIncrementalMaintenance(void)
 {
-	matview_maintenance_depth++;
+	MySessionData.matview_maintenance_depth++;
 }
 
 static void
 CloseMatViewIncrementalMaintenance(void)
 {
-	matview_maintenance_depth--;
-	Assert(matview_maintenance_depth >= 0);
+	MySessionData.matview_maintenance_depth--;
+	Assert(MySessionData.matview_maintenance_depth >= 0);
 }

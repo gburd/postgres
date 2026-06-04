@@ -166,6 +166,13 @@ typedef struct MySession
 	 * first use.
 	 */
 	HTAB	   *invalid_page_tab;
+
+	/*
+	 * Nesting depth of concurrent materialized-view incremental maintenance
+	 * (commands/matview.c).  Nonzero while a REFRESH ... CONCURRENTLY is
+	 * running.
+	 */
+	int			matview_maintenance_depth;
 } MySession;
 
 /*
