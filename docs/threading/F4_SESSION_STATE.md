@@ -195,6 +195,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 91 | `storage/lmgr/proc.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local volatile sig_atomic_t got_deadlock_timeout` (deadlock-check-pending flag, set by the deadlock-timeout signal handler and consumed by the lock-wait loop) into `MySessionData.got_deadlock_timeout`, keeping the `volatile sig_atomic_t` qualifier; four use sites rewritten. `mysession.h` gains `#include <signal.h>` (same pattern as `miscadmin.h`). Fourth subsystem migrated into the aggregate. |
 
+| 92 | `storage/smgr/md.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local MemoryContext MdCxt` (the context holding all `MdfdVec` objects for the md.c storage manager) into `MySessionData.md_cxt`; two use sites rewritten (creation in `mdinit()`, per-segment `MemoryContextAlloc`). `MemoryContext` is a ubiquitous public pointer type; `mysession.h` gains `#include "utils/palloc.h"`. Fifth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
