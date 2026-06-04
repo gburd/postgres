@@ -53,6 +53,7 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/resowner.h"
 
 /*
@@ -191,8 +192,6 @@ typedef struct ResourceReleaseCallbackItem
 	ResourceReleaseCallback callback;
 	void	   *arg;
 } ResourceReleaseCallbackItem;
-
-static session_local ResourceReleaseCallbackItem *ResourceRelease_callbacks = NULL;
 
 
 /* Internal routines */
@@ -797,7 +796,7 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 	}
 
 	/* Let add-on modules get a chance too */
-	for (item = ResourceRelease_callbacks; item; item = next)
+	for (item = MySessionData.resource_release_callbacks; item; item = next)
 	{
 		/* allow callbacks to unregister themselves when called */
 		next = item->next;
@@ -964,8 +963,8 @@ RegisterResourceReleaseCallback(ResourceReleaseCallback callback, void *arg)
 						   sizeof(ResourceReleaseCallbackItem));
 	item->callback = callback;
 	item->arg = arg;
-	item->next = ResourceRelease_callbacks;
-	ResourceRelease_callbacks = item;
+	item->next = MySessionData.resource_release_callbacks;
+	MySessionData.resource_release_callbacks = item;
 }
 
 void
@@ -975,14 +974,14 @@ UnregisterResourceReleaseCallback(ResourceReleaseCallback callback, void *arg)
 	ResourceReleaseCallbackItem *prev;
 
 	prev = NULL;
-	for (item = ResourceRelease_callbacks; item; prev = item, item = item->next)
+	for (item = MySessionData.resource_release_callbacks; item; prev = item, item = item->next)
 	{
 		if (item->callback == callback && item->arg == arg)
 		{
 			if (prev)
 				prev->next = item->next;
 			else
-				ResourceRelease_callbacks = item->next;
+				MySessionData.resource_release_callbacks = item->next;
 			pfree(item);
 			break;
 		}

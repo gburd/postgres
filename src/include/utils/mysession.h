@@ -53,6 +53,7 @@
 struct catcacheheader;			/* utils/catcache.h: CatCacheHeader */
 struct PgStat_SubXactStatus;	/* utils/pgstat_internal.h */
 struct ArrayAnalyzeExtraData;	/* utils/adt/array_typanalyze.c */
+struct ResourceReleaseCallbackItem;	/* utils/resowner/resowner.c */
 
 /*
  * Per-session state aggregate.
@@ -132,6 +133,12 @@ typedef struct MySession
 	 * duration of one compute_array_stats() run.
 	 */
 	struct ArrayAnalyzeExtraData *array_analyze_extra;
+
+	/*
+	 * Head of the list of add-on resource-release callbacks
+	 * (utils/resowner/resowner.c).  NULL when none are registered.
+	 */
+	struct ResourceReleaseCallbackItem *resource_release_callbacks;
 } MySession;
 
 /*
