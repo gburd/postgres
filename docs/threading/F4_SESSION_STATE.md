@@ -199,6 +199,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 93 | `utils/fmgr/fmgr.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *CFuncHash` (cache of resolved C-language function info, keyed by `pg_proc` OID) into `MySessionData.cfunc_hash`; five use sites rewritten. `HTAB` is an opaque public type; `mysession.h` gains `#include "utils/hsearch.h"` (zero transitive includes). Sixth subsystem migrated into the aggregate. |
 
+| 94 | `utils/cache/spccache.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *TableSpaceCacheHash` (cache of per-tablespace options, keyed by tablespace OID) into `MySessionData.tablespace_cache_hash`; five use sites rewritten. `HTAB` already visible in `mysession.h` (module 93), so no new include. Seventh subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
