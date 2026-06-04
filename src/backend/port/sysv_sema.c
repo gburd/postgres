@@ -61,11 +61,17 @@ typedef int IpcSemaphoreId;		/* semaphore ID returned by semget(2) */
 static pg_global PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
 static int	numSharedSemas;		/* number of PGSemaphoreDatas used so far */
 static int	maxSharedSemas;		/* allocated size of PGSemaphoreData array */
-static session_local IpcSemaphoreId *mySemaSets;	/* IDs of sema sets acquired so far */
-static session_local int	numSemaSets;		/* number of sema sets acquired so far */
-static session_local int	maxSemaSets;		/* allocated size of mySemaSets array */
-static session_local IpcSemaphoreKey nextSemaKey; /* next key to try using */
-static session_local int	nextSemaNumber;		/* next free sem num in last sema set */
+
+typedef struct SysvSemaState
+{
+	IpcSemaphoreId *mySemaSets; /* IDs of sema sets acquired so far */
+	int			numSemaSets;	/* number of sema sets acquired so far */
+	int			maxSemaSets;	/* allocated size of mySemaSets array */
+	IpcSemaphoreKey nextSemaKey;	/* next key to try using */
+	int			nextSemaNumber; /* next free sem num in last sema set */
+} SysvSemaState;
+
+static session_local SysvSemaState sysv_sema_state;
 
 
 static IpcSemaphoreId InternalIpcSemaphoreCreate(IpcSemaphoreKey semKey,
@@ -228,7 +234,7 @@ IpcSemaphoreCreate(int numSems)
 	PGSemaphoreData mysema;
 
 	/* Loop till we find a free IPC key */
-	for (nextSemaKey++;; nextSemaKey++, num_tries++)
+	for (sysv_sema_state.nextSemaKey++;; sysv_sema_state.nextSemaKey++, num_tries++)
 	{
 		pid_t		creatorPID;
 
@@ -236,13 +242,13 @@ IpcSemaphoreCreate(int numSems)
 		 * Try to create new semaphore set.  Give up after trying 1000
 		 * distinct IPC keys.
 		 */
-		semId = InternalIpcSemaphoreCreate(nextSemaKey, numSems + 1,
-										   num_tries < 1000);
+		semId = InternalIpcSemaphoreCreate(sysv_sema_state.nextSemaKey, numSems + 1,
+									   num_tries < 1000);
 		if (semId >= 0)
 			break;				/* successful create */
 
 		/* See if it looks to be leftover from a dead Postgres process */
-		semId = semget(nextSemaKey, numSems + 1, 0);
+		semId = semget(sysv_sema_state.nextSemaKey, numSems + 1, 0);
 		if (semId < 0)
 			continue;			/* failed: must be some other app's */
 		if (IpcSemaphoreGetValue(semId, numSems) != PGSemaMagic)
@@ -274,7 +280,7 @@ IpcSemaphoreCreate(int numSems)
 		/*
 		 * Now try again to create the sema set.
 		 */
-		semId = InternalIpcSemaphoreCreate(nextSemaKey, numSems + 1, true);
+		semId = InternalIpcSemaphoreCreate(sysv_sema_state.nextSemaKey, numSems + 1, true);
 		if (semId >= 0)
 			break;				/* successful create */
 
@@ -350,14 +356,14 @@ PGSemaphoreInit(int maxSemas)
 	numSharedSemas = 0;
 	maxSharedSemas = maxSemas;
 
-	maxSemaSets = (maxSemas + SEMAS_PER_SET - 1) / SEMAS_PER_SET;
-	mySemaSets = (IpcSemaphoreId *)
-		malloc(maxSemaSets * sizeof(IpcSemaphoreId));
-	if (mySemaSets == NULL)
+	sysv_sema_state.maxSemaSets = (maxSemas + SEMAS_PER_SET - 1) / SEMAS_PER_SET;
+	sysv_sema_state.mySemaSets = (IpcSemaphoreId *)
+		malloc(sysv_sema_state.maxSemaSets * sizeof(IpcSemaphoreId));
+	if (sysv_sema_state.mySemaSets == NULL)
 		elog(PANIC, "out of memory");
-	numSemaSets = 0;
-	nextSemaKey = statbuf.st_ino;
-	nextSemaNumber = SEMAS_PER_SET; /* force sema set alloc on 1st call */
+	sysv_sema_state.numSemaSets = 0;
+	sysv_sema_state.nextSemaKey = statbuf.st_ino;
+	sysv_sema_state.nextSemaNumber = SEMAS_PER_SET; /* force sema set alloc on 1st call */
 
 	on_shmem_exit(ReleaseSemaphores, 0);
 }
@@ -372,9 +378,9 @@ ReleaseSemaphores(int status, Datum arg)
 {
 	int			i;
 
-	for (i = 0; i < numSemaSets; i++)
-		IpcSemaphoreKill(mySemaSets[i]);
-	free(mySemaSets);
+	for (i = 0; i < sysv_sema_state.numSemaSets; i++)
+		IpcSemaphoreKill(sysv_sema_state.mySemaSets[i]);
+	free(sysv_sema_state.mySemaSets);
 }
 
 /*
@@ -390,22 +396,22 @@ PGSemaphoreCreate(void)
 	/* Can't do this in a backend, because static state is postmaster's */
 	Assert(!IsUnderPostmaster);
 
-	if (nextSemaNumber >= SEMAS_PER_SET)
+	if (sysv_sema_state.nextSemaNumber >= SEMAS_PER_SET)
 	{
 		/* Time to allocate another semaphore set */
-		if (numSemaSets >= maxSemaSets)
+		if (sysv_sema_state.numSemaSets >= sysv_sema_state.maxSemaSets)
 			elog(PANIC, "too many semaphores created");
-		mySemaSets[numSemaSets] = IpcSemaphoreCreate(SEMAS_PER_SET);
-		numSemaSets++;
-		nextSemaNumber = 0;
+		sysv_sema_state.mySemaSets[sysv_sema_state.numSemaSets] = IpcSemaphoreCreate(SEMAS_PER_SET);
+		sysv_sema_state.numSemaSets++;
+		sysv_sema_state.nextSemaNumber = 0;
 	}
 	/* Use the next shared PGSemaphoreData */
 	if (numSharedSemas >= maxSharedSemas)
 		elog(PANIC, "too many semaphores created");
 	sema = &sharedSemas[numSharedSemas++];
 	/* Assign the next free semaphore in the current set */
-	sema->semId = mySemaSets[numSemaSets - 1];
-	sema->semNum = nextSemaNumber++;
+	sema->semId = sysv_sema_state.mySemaSets[sysv_sema_state.numSemaSets - 1];
+	sema->semNum = sysv_sema_state.nextSemaNumber++;
 	/* Initialize it to count 1 */
 	IpcSemaphoreInitialize(sema->semId, sema->semNum, 1);
 
