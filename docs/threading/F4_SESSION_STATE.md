@@ -279,6 +279,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 133 | `catalog/pg_enum.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local PgEnumState pg_enum_state` (the per-transaction hash tables tracking enum types/values created or added in the current (sub)transaction) by value as `MySessionData.pg_enum_state`; the `PgEnumState` typedef is relocated into `mysession.h`. Both members are `HTAB *`, kept as pointers to the forward-declared `struct HTAB` (zero new includes); the `"Uncommitted enum types"`/`"Uncommitted enum values"` hash-name strings are unaffected. The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the forty-sixth subsystem migrated into the aggregate. |
 
+| 134 | `catalog/index.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local ReindexState reindex_state` (system-index reindexing state: which heap/index is being reindexed and the pending list) by value as `MySessionData.reindex_state`; the `ReindexState` typedef is relocated into `mysession.h`. `pendingReindexedIndexes` is kept as a pointer to the forward-declared `struct List` (zero new includes); the `Oid`/`int` members are plain scalars. The two comments mentioning `reindex_state.*` are left untouched. The former initializer was all-InvalidOid/NIL/0, so the zero-initialized aggregate preserves semantics exactly. This is the forty-seventh subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
