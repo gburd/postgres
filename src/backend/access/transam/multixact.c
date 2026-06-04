@@ -88,6 +88,7 @@
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 
 
 /*
@@ -298,7 +299,6 @@ typedef struct mXactCacheEnt
 
 #define MAX_CACHE_ENTRIES	256
 static dclist_head MXactCache = DCLIST_STATIC_INIT(MXactCache);
-static session_local MemoryContext MXactContext = NULL;
 
 #ifdef MULTIXACT_DEBUG
 #define debug_elog2(a,b) elog(a,b)
@@ -1533,17 +1533,17 @@ mXactCachePut(MultiXactId multi, int nmembers, MultiXactMember *members)
 	debug_elog3(DEBUG2, "CachePut: storing %s",
 				mxid_to_string(multi, nmembers, members));
 
-	if (MXactContext == NULL)
+	if (MySessionData.multixact_cache_cxt == NULL)
 	{
 		/* The cache only lives as long as the current transaction */
 		debug_elog2(DEBUG2, "CachePut: initializing memory context");
-		MXactContext = AllocSetContextCreate(TopTransactionContext,
-											 "MultiXact cache context",
-											 ALLOCSET_SMALL_SIZES);
+		MySessionData.multixact_cache_cxt = AllocSetContextCreate(TopTransactionContext,
+															   "MultiXact cache context",
+															   ALLOCSET_SMALL_SIZES);
 	}
 
 	entry = (mXactCacheEnt *)
-		MemoryContextAlloc(MXactContext,
+		MemoryContextAlloc(MySessionData.multixact_cache_cxt,
 						   offsetof(mXactCacheEnt, members) +
 						   nmembers * sizeof(MultiXactMember));
 
@@ -1641,7 +1641,7 @@ AtEOXact_MultiXact(void)
 	 * Discard the local MultiXactId cache.  Since MXactContext was created as
 	 * a child of TopTransactionContext, we needn't delete it explicitly.
 	 */
-	MXactContext = NULL;
+	MySessionData.multixact_cache_cxt = NULL;
 	dclist_init(&MXactCache);
 }
 
@@ -1707,7 +1707,7 @@ PostPrepare_MultiXact(FullTransactionId fxid)
 	/*
 	 * Discard the local MultiXactId cache like in AtEOXact_MultiXact.
 	 */
-	MXactContext = NULL;
+	MySessionData.multixact_cache_cxt = NULL;
 	dclist_init(&MXactCache);
 }
 

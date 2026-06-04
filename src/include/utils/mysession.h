@@ -145,6 +145,13 @@ typedef struct MySession
 	 * (access/common/heaptuple.c).  Lazily created; NULL until first use.
 	 */
 	HTAB	   *missing_cache;
+
+	/*
+	 * Memory context holding the per-transaction local MultiXactId member
+	 * cache (access/transam/multixact.c).  Created lazily as a child of
+	 * TopTransactionContext; NULL when the cache is empty.
+	 */
+	MemoryContext multixact_cache_cxt;
 } MySession;
 
 /*
