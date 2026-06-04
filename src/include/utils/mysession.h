@@ -292,6 +292,18 @@ typedef struct MySession
 	 * (replication/logical/origin.c).  NULL when no origin is set up.
 	 */
 	struct ReplicationState *session_replication_state;
+
+	/*
+	 * Registered base-backup target types (backup/basebackup_target.c); NIL
+	 * until the predefined types are loaded on first use.
+	 */
+	struct List *BaseBackupTargetTypeList;
+
+	/*
+	 * Registered security-label providers (commands/seclabel.c); NIL until a
+	 * provider registers itself.
+	 */
+	struct List *label_provider_list;
 } MySession;
 
 /*

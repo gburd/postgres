@@ -23,6 +23,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 
 typedef struct
@@ -30,8 +31,6 @@ typedef struct
 	const char *provider_name;
 	check_object_relabel_type hook;
 } LabelProvider;
-
-static session_local List *label_provider_list = NIL;
 
 static bool
 SecLabelSupportsObjectType(ObjectType objtype)
@@ -127,19 +126,19 @@ ExecSecLabelStmt(SecLabelStmt *stmt)
 	 */
 	if (stmt->provider == NULL)
 	{
-		if (label_provider_list == NIL)
+		if (MySessionData.label_provider_list == NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("no security label providers have been loaded")));
-		if (list_length(label_provider_list) != 1)
+		if (list_length(MySessionData.label_provider_list) != 1)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("must specify provider when multiple security label providers have been loaded")));
-		provider = (LabelProvider *) linitial(label_provider_list);
+		provider = (LabelProvider *) linitial(MySessionData.label_provider_list);
 	}
 	else
 	{
-		foreach(lc, label_provider_list)
+		foreach(lc, MySessionData.label_provider_list)
 		{
 			LabelProvider *lp = lfirst(lc);
 
@@ -587,6 +586,6 @@ register_label_provider(const char *provider_name, check_object_relabel_type hoo
 	provider = palloc_object(LabelProvider);
 	provider->provider_name = pstrdup(provider_name);
 	provider->hook = hook;
-	label_provider_list = lappend(label_provider_list, provider);
+	MySessionData.label_provider_list = lappend(MySessionData.label_provider_list, provider);
 	MemoryContextSwitchTo(oldcxt);
 }

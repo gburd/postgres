@@ -17,6 +17,7 @@
 
 #include "backup/basebackup_target.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 
 typedef struct BaseBackupTargetType
 {
@@ -50,7 +51,6 @@ static static_singleton BaseBackupTargetType builtin_backup_targets[] =
 	}
 };
 
-static session_local List *BaseBackupTargetTypeList = NIL;
 
 /*
  * Add a new base backup target type.
@@ -67,11 +67,11 @@ BaseBackupAddTarget(char *name,
 	ListCell   *lc;
 
 	/* If the target list is not yet initialized, do that first. */
-	if (BaseBackupTargetTypeList == NIL)
+	if (MySessionData.BaseBackupTargetTypeList == NIL)
 		initialize_target_list();
 
 	/* Search the target type list for an existing entry with this name. */
-	foreach(lc, BaseBackupTargetTypeList)
+	foreach(lc, MySessionData.BaseBackupTargetTypeList)
 	{
 		BaseBackupTargetType *ttype = lfirst(lc);
 
@@ -100,7 +100,7 @@ BaseBackupAddTarget(char *name,
 	newtype->name = pstrdup(name);
 	newtype->check_detail = check_detail;
 	newtype->get_sink = get_sink;
-	BaseBackupTargetTypeList = lappend(BaseBackupTargetTypeList, newtype);
+	MySessionData.BaseBackupTargetTypeList = lappend(MySessionData.BaseBackupTargetTypeList, newtype);
 	MemoryContextSwitchTo(oldcontext);
 }
 
@@ -119,11 +119,11 @@ BaseBackupGetTargetHandle(char *target, char *target_detail)
 	ListCell   *lc;
 
 	/* If the target list is not yet initialized, do that first. */
-	if (BaseBackupTargetTypeList == NIL)
+	if (MySessionData.BaseBackupTargetTypeList == NIL)
 		initialize_target_list();
 
 	/* Search the target type list for a match. */
-	foreach(lc, BaseBackupTargetTypeList)
+	foreach(lc, MySessionData.BaseBackupTargetTypeList)
 	{
 		BaseBackupTargetType *ttype = lfirst(lc);
 
@@ -177,7 +177,7 @@ initialize_target_list(void)
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	while (ttype->name != NULL)
 	{
-		BaseBackupTargetTypeList = lappend(BaseBackupTargetTypeList, ttype);
+		MySessionData.BaseBackupTargetTypeList = lappend(MySessionData.BaseBackupTargetTypeList, ttype);
 		++ttype;
 	}
 	MemoryContextSwitchTo(oldcontext);
