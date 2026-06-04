@@ -21,12 +21,12 @@
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
+#include "utils/mysession.h"
 #include "utils/syscache.h"
 #include "varatt.h"
 
 
 /* Hash table for information about each attribute's options */
-static session_local HTAB *AttoptCacheHash = NULL;
 
 /* attrelid and attnum form the lookup key, and must appear first */
 typedef struct
@@ -62,15 +62,15 @@ InvalidateAttoptCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 	 * InvalidateSystemCachesExtended().
 	 */
 	if (hashvalue == 0)
-		hash_seq_init(&status, AttoptCacheHash);
+		hash_seq_init(&status, MySessionData.attopt_cache_hash);
 	else
-		hash_seq_init_with_hash_value(&status, AttoptCacheHash, hashvalue);
+		hash_seq_init_with_hash_value(&status, MySessionData.attopt_cache_hash, hashvalue);
 
 	while ((attopt = (AttoptCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (attopt->opts)
 			pfree(attopt->opts);
-		if (hash_search(AttoptCacheHash,
+		if (hash_search(MySessionData.attopt_cache_hash,
 						&attopt->key,
 						HASH_REMOVE,
 						NULL) == NULL)
@@ -110,7 +110,7 @@ InitializeAttoptCache(void)
 	 */
 	ctl.hash = relatt_cache_syshash;
 
-	AttoptCacheHash =
+	MySessionData.attopt_cache_hash =
 		hash_create("Attopt cache", 256, &ctl,
 					HASH_ELEM | HASH_FUNCTION);
 
@@ -137,13 +137,13 @@ get_attribute_options(Oid attrelid, int attnum)
 	HeapTuple	tp;
 
 	/* Find existing cache entry, if any. */
-	if (!AttoptCacheHash)
+	if (!MySessionData.attopt_cache_hash)
 		InitializeAttoptCache();
 	memset(&key, 0, sizeof(key));	/* make sure any padding bits are unset */
 	key.attrelid = attrelid;
 	key.attnum = attnum;
 	attopt =
-		(AttoptCacheEntry *) hash_search(AttoptCacheHash,
+		(AttoptCacheEntry *) hash_search(MySessionData.attopt_cache_hash,
 										 &key,
 										 HASH_FIND,
 										 NULL);
@@ -190,7 +190,7 @@ get_attribute_options(Oid attrelid, int attnum)
 		 * It's important to create the actual cache entry only after reading
 		 * pg_attribute, since the read could cause a cache flush.
 		 */
-		attopt = (AttoptCacheEntry *) hash_search(AttoptCacheHash,
+		attopt = (AttoptCacheEntry *) hash_search(MySessionData.attopt_cache_hash,
 												  &key,
 												  HASH_ENTER,
 												  NULL);

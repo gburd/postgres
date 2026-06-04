@@ -98,6 +98,12 @@ typedef struct MySession
 	 * (utils/cache/spccache.c).  Lazily created; NULL until first use.
 	 */
 	HTAB	   *tablespace_cache_hash;
+
+	/*
+	 * Cache of per-attribute options, keyed by (attrelid, attnum)
+	 * (utils/cache/attoptcache.c).  Lazily created; NULL until first use.
+	 */
+	HTAB	   *attopt_cache_hash;
 } MySession;
 
 /*
