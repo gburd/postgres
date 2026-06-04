@@ -108,6 +108,15 @@ typedef struct StorageState
 } StorageState;
 
 /*
+ * Registered extensible-node and custom-scan method tables (nodes/extensible.c).
+ */
+typedef struct ExtensibleState
+{
+	struct HTAB *extensible_node_methods;
+	struct HTAB *custom_scan_methods;
+} ExtensibleState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -384,6 +393,12 @@ typedef struct MySession
 	 * Pending fsync/unlink request tracking (storage/sync/sync.c).
 	 */
 	SyncState	sync_state;
+
+	/*
+	 * Registered extensible-node / custom-scan method tables
+	 * (nodes/extensible.c).
+	 */
+	ExtensibleState extensible_state;
 } MySession;
 
 /*
