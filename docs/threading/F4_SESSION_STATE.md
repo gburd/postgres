@@ -273,6 +273,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 130 | `replication/logical/relation.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local LogicalRepRelMapState logicalrep_relmap_state` (the logical-replication relation and partition map caches) by value as `MySessionData.logicalrep_relmap_state`; the `LogicalRepRelMapState` typedef is relocated into `mysession.h`. The two `HTAB` members are kept as pointers to the forward-declared `struct HTAB` (zero new includes); `MemoryContext` is already visible. The two `AllocSetContextCreate` name strings mentioning `logicalrep_relmap_state.*` are left untouched. The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the forty-third subsystem migrated into the aggregate. |
 
+| 131 | `storage/large_object/inv_api.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local InvApiState inv_api_state` (the shared pg_largeobject heap and index `Relation` references) by value as `MySessionData.inv_api_state`; the `InvApiState` typedef is relocated into `mysession.h`. Both members are `Relation`, kept as pointers to the forward-declared `struct RelationData` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the forty-fourth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
