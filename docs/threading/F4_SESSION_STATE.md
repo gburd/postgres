@@ -219,6 +219,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 103 | `access/transam/xlogutils.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *invalid_page_tab` (table of WAL-referenced pages found missing during recovery) into `MySessionData.invalid_page_tab`; all fifteen use sites rewritten. `HTAB` already visible in `mysession.h`. Sixteenth subsystem migrated into the aggregate. |
 
+| 104 | `commands/matview.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local int matview_maintenance_depth` (nesting depth of concurrent materialized-view incremental maintenance) into `MySessionData.matview_maintenance_depth`; all use sites rewritten. `int` needs no new include. Seventeenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
