@@ -28,6 +28,7 @@
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -964,10 +965,6 @@ make_scalar_array_op(ParseState *pstate, List *opname,
  * deal more common than pg_operator updates.
  */
 
-/* The operator cache hashtable */
-static session_local HTAB *OprCacheHash = NULL;
-
-
 /*
  * make_oper_cache_key
  *		Fill the lookup key struct given operator name and arg types.
@@ -1027,15 +1024,15 @@ find_oper_cache_entry(OprCacheKey *key)
 {
 	OprCacheEntry *oprentry;
 
-	if (OprCacheHash == NULL)
+	if (MySessionData.opr_cache_hash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(OprCacheKey);
 		ctl.entrysize = sizeof(OprCacheEntry);
-		OprCacheHash = hash_create("Operator lookup cache", 256,
-								   &ctl, HASH_ELEM | HASH_BLOBS);
+		MySessionData.opr_cache_hash = hash_create("Operator lookup cache", 256,
+												   &ctl, HASH_ELEM | HASH_BLOBS);
 
 		/* Arrange to flush cache on pg_operator and pg_cast changes */
 		CacheRegisterSyscacheCallback(OPERNAMENSP,
@@ -1047,7 +1044,7 @@ find_oper_cache_entry(OprCacheKey *key)
 	}
 
 	/* Look for an existing entry */
-	oprentry = (OprCacheEntry *) hash_search(OprCacheHash,
+	oprentry = (OprCacheEntry *) hash_search(MySessionData.opr_cache_hash,
 											 key,
 											 HASH_FIND, NULL);
 	if (oprentry == NULL)
@@ -1066,9 +1063,9 @@ make_oper_cache_entry(OprCacheKey *key, Oid opr_oid)
 {
 	OprCacheEntry *oprentry;
 
-	Assert(OprCacheHash != NULL);
+	Assert(MySessionData.opr_cache_hash != NULL);
 
-	oprentry = (OprCacheEntry *) hash_search(OprCacheHash,
+	oprentry = (OprCacheEntry *) hash_search(MySessionData.opr_cache_hash,
 											 key,
 											 HASH_ENTER, NULL);
 	oprentry->opr_oid = opr_oid;
@@ -1084,14 +1081,14 @@ InvalidateOprCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
 	HASH_SEQ_STATUS status;
 	OprCacheEntry *hentry;
 
-	Assert(OprCacheHash != NULL);
+	Assert(MySessionData.opr_cache_hash != NULL);
 
 	/* Currently we just flush all entries; hard to be smarter ... */
-	hash_seq_init(&status, OprCacheHash);
+	hash_seq_init(&status, MySessionData.opr_cache_hash);
 
 	while ((hentry = (OprCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
-		if (hash_search(OprCacheHash,
+		if (hash_search(MySessionData.opr_cache_hash,
 						&hentry->key,
 						HASH_REMOVE, NULL) == NULL)
 			elog(ERROR, "hash table corrupted");

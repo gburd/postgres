@@ -186,6 +186,13 @@ typedef struct MySession
 	 * (optimizer/util/predtest.c).  Lazily created; NULL until first use.
 	 */
 	HTAB	   *oprproof_cache_hash;
+
+	/*
+	 * Operator lookup cache hashtable (parser/parse_oper.c).  Maps operator
+	 * name + arg types to resolved operator OID.  Lazily created; NULL until
+	 * first use.
+	 */
+	HTAB	   *opr_cache_hash;
 } MySession;
 
 /*
