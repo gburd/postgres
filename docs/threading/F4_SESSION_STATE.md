@@ -233,6 +233,12 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 110 | `storage/ipc/ipci.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local Size total_addin_request` (extra shmem bytes requested by loadable modules, summed during shmem sizing) into `MySessionData.total_addin_request`; all use sites rewritten. `Size` needs no new include. Twenty-third subsystem migrated into the aggregate. |
 
+| 111 | `nodes/read.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local const char *pg_strtok_ptr` (current parse position for the pg_strtok node-string reader) into `MySessionData.pg_strtok_ptr`; all use sites rewritten. `const char *` needs no new include. Twenty-fourth subsystem migrated into the aggregate. |
+
+| 112 | `commands/tablecmds.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local List *on_commits` (pending ON COMMIT actions for temporary tables) into `MySessionData.on_commits`; all use sites rewritten. `List` is reached via a forward declaration (`struct List`), so `mysession.h` gains no new include. Twenty-fifth subsystem migrated into the aggregate. |
+
+| 113 | `regex/regc_pg_locale.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local pg_locale_t pg_regex_locale` (locale governing the regexp engine's ctype probes) into `MySessionData.pg_regex_locale`; all use sites rewritten. `pg_locale_t` is reached via a forward declaration (`struct pg_locale_struct`), so `mysession.h` gains no new include. Twenty-sixth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
