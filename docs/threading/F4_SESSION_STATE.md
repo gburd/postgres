@@ -215,6 +215,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 101 | `access/transam/multixact.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local MemoryContext MXactContext` (per-transaction local MultiXactId member cache context) into `MySessionData.multixact_cache_cxt`; all use sites rewritten. `MemoryContext` already visible in `mysession.h`; the non-TLS `dclist` `MXactCache` is left standalone. Fourteenth subsystem migrated into the aggregate. |
 
+| 102 | `access/transam/xlogprefetcher.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local int XLogPrefetchReconfigureCount` (bumped on recovery-prefetch GUC change so each prefetcher reconfigures on next use) into `MySessionData.xlog_prefetch_reconfigure_count`; all use sites rewritten. `int` needs no new include. Fifteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
