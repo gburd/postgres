@@ -65,6 +65,7 @@
 #include "utils/expandeddatum.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 
 
 /*
@@ -98,8 +99,6 @@ typedef struct
 	Datum		value;
 } missing_cache_key;
 
-static session_local HTAB *missing_cache = NULL;
-
 static uint32
 missing_hash(const void *key, Size keysize)
 {
@@ -132,7 +131,7 @@ init_missing_cache(void)
 	hash_ctl.hcxt = TopMemoryContext;
 	hash_ctl.hash = missing_hash;
 	hash_ctl.match = missing_match;
-	missing_cache =
+	MySessionData.missing_cache =
 		hash_create("Missing Values Cache",
 					32,
 					&hash_ctl,
@@ -181,7 +180,7 @@ getmissingattr(TupleDesc tupleDesc,
 				return attrmiss->am_value;
 
 			/* set up cache if required */
-			if (missing_cache == NULL)
+			if (MySessionData.missing_cache == NULL)
 				init_missing_cache();
 
 			/* check if there's a cache entry */
@@ -192,7 +191,7 @@ getmissingattr(TupleDesc tupleDesc,
 				key.len = VARSIZE_ANY(DatumGetPointer(attrmiss->am_value));
 			key.value = attrmiss->am_value;
 
-			entry = hash_search(missing_cache, &key, HASH_ENTER, &found);
+			entry = hash_search(MySessionData.missing_cache, &key, HASH_ENTER, &found);
 
 			if (!found)
 			{

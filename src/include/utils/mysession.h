@@ -139,6 +139,12 @@ typedef struct MySession
 	 * (utils/resowner/resowner.c).  NULL when none are registered.
 	 */
 	struct ResourceReleaseCallbackItem *resource_release_callbacks;
+
+	/*
+	 * Cache of "missing" attribute default values, keyed by (len, value)
+	 * (access/common/heaptuple.c).  Lazily created; NULL until first use.
+	 */
+	HTAB	   *missing_cache;
 } MySession;
 
 /*
