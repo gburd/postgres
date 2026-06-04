@@ -25,7 +25,7 @@
 #include "storage/proclist_types.h"
 #include "storage/spin.h"
 
-typedef struct
+typedef struct ConditionVariable
 {
 	slock_t		mutex;			/* spinlock protecting the wakeup list */
 	proclist_head wakeup;		/* list of wake-able processes */

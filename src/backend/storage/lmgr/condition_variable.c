@@ -26,9 +26,9 @@
 #include "storage/proc.h"
 #include "storage/proclist.h"
 #include "storage/spin.h"
+#include "utils/mysession.h"
 
 /* Initially, we are not prepared to sleep on any condition variable. */
-static session_local ConditionVariable *cv_sleep_target = NULL;
 
 /*
  * Initialize a condition variable.
@@ -67,11 +67,11 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 	 * its ConditionVariableSleep call will just re-establish that sleep as
 	 * the prepared one.
 	 */
-	if (cv_sleep_target != NULL)
+	if (MySessionData.cv_sleep_target != NULL)
 		ConditionVariableCancelSleep();
 
 	/* Record the condition variable on which we will sleep. */
-	cv_sleep_target = cv;
+	MySessionData.cv_sleep_target = cv;
 
 	/* Add myself to the wait queue. */
 	SpinLockAcquire(&cv->mutex);
@@ -134,7 +134,7 @@ ConditionVariableTimedSleep(ConditionVariable *cv, long timeout,
 	 * If we are currently prepared to sleep on some other CV, we just cancel
 	 * that and prepare this one; see ConditionVariablePrepareToSleep.
 	 */
-	if (cv_sleep_target != cv)
+	if (MySessionData.cv_sleep_target != cv)
 	{
 		ConditionVariablePrepareToSleep(cv);
 		return false;
@@ -198,7 +198,7 @@ ConditionVariableTimedSleep(ConditionVariable *cv, long timeout,
 		 * waited for a different condition variable).
 		 */
 		CHECK_FOR_INTERRUPTS();
-		if (cv != cv_sleep_target)
+		if (cv != MySessionData.cv_sleep_target)
 			done = true;
 
 		/* We were signaled, so return */
@@ -233,7 +233,7 @@ ConditionVariableTimedSleep(ConditionVariable *cv, long timeout,
 bool
 ConditionVariableCancelSleep(void)
 {
-	ConditionVariable *cv = cv_sleep_target;
+	ConditionVariable *cv = MySessionData.cv_sleep_target;
 	bool		signaled = false;
 
 	if (cv == NULL)
@@ -246,7 +246,7 @@ ConditionVariableCancelSleep(void)
 		signaled = true;
 	SpinLockRelease(&cv->mutex);
 
-	cv_sleep_target = NULL;
+	MySessionData.cv_sleep_target = NULL;
 
 	return signaled;
 }
@@ -310,7 +310,7 @@ ConditionVariableBroadcast(ConditionVariable *cv)
 	 * prepared CV sleep.  The next call to ConditionVariableSleep will take
 	 * care of re-establishing the lost state.
 	 */
-	if (cv_sleep_target != NULL)
+	if (MySessionData.cv_sleep_target != NULL)
 		ConditionVariableCancelSleep();
 
 	/*

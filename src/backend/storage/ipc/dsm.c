@@ -46,6 +46,7 @@
 #include "storage/subsystems.h"
 #include "utils/freepage.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/resowner.h"
 
 #define PG_DYNSHMEM_CONTROL_MAGIC		0x9a503d32
@@ -106,7 +107,6 @@ static inline dsm_handle make_main_region_dsm_handle(int slot);
 static inline bool is_main_region_dsm_handle(dsm_handle handle);
 
 /* Has this backend initialized the dynamic shared memory system yet? */
-static session_local bool dsm_init_done = false;
 
 /* Preallocated DSM space in the main shared memory region. */
 static pg_global void *dsm_main_space_begin = NULL;
@@ -456,7 +456,7 @@ dsm_backend_startup(void)
 	}
 #endif
 
-	dsm_init_done = true;
+	MySessionData.dsm_init_done = true;
 }
 
 #ifdef EXEC_BACKEND
@@ -538,7 +538,7 @@ dsm_create(Size size, int flags)
 	 */
 	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
 
-	if (!dsm_init_done)
+	if (!MySessionData.dsm_init_done)
 		dsm_backend_startup();
 
 	/* Create a new segment descriptor. */
@@ -680,7 +680,7 @@ dsm_attach(dsm_handle h)
 	/* Unsafe in postmaster (and pointless in a stand-alone backend). */
 	Assert(IsUnderPostmaster);
 
-	if (!dsm_init_done)
+	if (!MySessionData.dsm_init_done)
 		dsm_backend_startup();
 
 	/*

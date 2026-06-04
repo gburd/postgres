@@ -32,6 +32,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
@@ -217,7 +218,6 @@ typedef struct PGOutputTxnData
 } PGOutputTxnData;
 
 /* Map used to remember which relation schemas we sent. */
-static session_local HTAB *RelationSyncCache = NULL;
 
 static void init_rel_sync_cache(MemoryContext cachectx);
 static void cleanup_rel_sync_cache(TransactionId xid, bool is_commit);
@@ -437,10 +437,10 @@ parse_output_parameters(List *options, PGOutputData *data)
 static void
 pgoutput_memory_context_reset(void *arg)
 {
-	if (RelationSyncCache)
+	if (MySessionData.RelationSyncCache)
 	{
-		hash_destroy(RelationSyncCache);
-		RelationSyncCache = NULL;
+		hash_destroy(MySessionData.RelationSyncCache);
+		MySessionData.RelationSyncCache = NULL;
 	}
 }
 
@@ -469,7 +469,7 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 										 ALLOCSET_SMALL_SIZES);
 
 	/*
-	 * Ensure to cleanup RelationSyncCache even when logical decoding invoked
+	 * Ensure to cleanup MySessionData.RelationSyncCache even when logical decoding invoked
 	 * via SQL interface ends up with an error.
 	 */
 	mcallback = palloc0_object(MemoryContextCallback);
@@ -1978,7 +1978,7 @@ init_rel_sync_cache(MemoryContext cachectx)
 	static bool relation_callbacks_registered = false;
 
 	/* Nothing to do if hash table already exists */
-	if (RelationSyncCache != NULL)
+	if (MySessionData.RelationSyncCache != NULL)
 		return;
 
 	/* Make a new hash table for the cache */
@@ -1986,11 +1986,11 @@ init_rel_sync_cache(MemoryContext cachectx)
 	ctl.entrysize = sizeof(RelationSyncEntry);
 	ctl.hcxt = cachectx;
 
-	RelationSyncCache = hash_create("logical replication output relation cache",
-									128, &ctl,
-									HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
+	MySessionData.RelationSyncCache = hash_create("logical replication output relation cache",
+												  128, &ctl,
+												  HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
 
-	Assert(RelationSyncCache != NULL);
+	Assert(MySessionData.RelationSyncCache != NULL);
 
 	/* No more to do if we already registered callbacks */
 	if (relation_callbacks_registered)
@@ -2004,10 +2004,10 @@ init_rel_sync_cache(MemoryContext cachectx)
 	 * schema rename affecting a relation being replicated.
 	 *
 	 * XXX: It is not a good idea to invalidate all the relation entries in
-	 * RelationSyncCache on schema rename. We can optimize it to invalidate
+	 * MySessionData.RelationSyncCache on schema rename. We can optimize it to invalidate
 	 * only the required relations by either having a specific invalidation
 	 * message containing impacted relations or by having schema information
-	 * in each RelationSyncCache entry and using hashvalue of pg_namespace.oid
+	 * in each MySessionData.RelationSyncCache entry and using hashvalue of pg_namespace.oid
 	 * passed to the callback.
 	 */
 	CacheRegisterSyscacheCallback(NAMESPACEOID,
@@ -2059,10 +2059,10 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 	MemoryContext oldctx;
 	Oid			relid = RelationGetRelid(relation);
 
-	Assert(RelationSyncCache != NULL);
+	Assert(MySessionData.RelationSyncCache != NULL);
 
 	/* Find cached relation info, creating if not found */
-	entry = (RelationSyncEntry *) hash_search(RelationSyncCache,
+	entry = (RelationSyncEntry *) hash_search(MySessionData.RelationSyncCache,
 											  &relid,
 											  HASH_ENTER, &found);
 	Assert(entry != NULL);
@@ -2385,9 +2385,9 @@ cleanup_rel_sync_cache(TransactionId xid, bool is_commit)
 	HASH_SEQ_STATUS hash_seq;
 	RelationSyncEntry *entry;
 
-	Assert(RelationSyncCache != NULL);
+	Assert(MySessionData.RelationSyncCache != NULL);
 
-	hash_seq_init(&hash_seq, RelationSyncCache);
+	hash_seq_init(&hash_seq, MySessionData.RelationSyncCache);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		/*
@@ -2421,10 +2421,10 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
 
 	/*
 	 * We can get here if the plugin was used in SQL interface as the
-	 * RelationSyncCache is destroyed when the decoding finishes, but there is
+	 * MySessionData.RelationSyncCache is destroyed when the decoding finishes, but there is
 	 * no way to unregister the relcache invalidation callback.
 	 */
-	if (RelationSyncCache == NULL)
+	if (MySessionData.RelationSyncCache == NULL)
 		return;
 
 	/*
@@ -2441,7 +2441,7 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
 		 * Getting invalidations for relations that aren't in the table is
 		 * entirely normal.  So we don't care if it's found or not.
 		 */
-		entry = (RelationSyncEntry *) hash_search(RelationSyncCache, &relid,
+		entry = (RelationSyncEntry *) hash_search(MySessionData.RelationSyncCache, &relid,
 												  HASH_FIND, NULL);
 		if (entry != NULL)
 			entry->replicate_valid = false;
@@ -2451,7 +2451,7 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
 		/* Whole cache must be flushed. */
 		HASH_SEQ_STATUS status;
 
-		hash_seq_init(&status, RelationSyncCache);
+		hash_seq_init(&status, MySessionData.RelationSyncCache);
 		while ((entry = (RelationSyncEntry *) hash_seq_search(&status)) != NULL)
 		{
 			entry->replicate_valid = false;
@@ -2473,17 +2473,17 @@ rel_sync_cache_publication_cb(Datum arg, SysCacheIdentifier cacheid,
 
 	/*
 	 * We can get here if the plugin was used in SQL interface as the
-	 * RelationSyncCache is destroyed when the decoding finishes, but there is
+	 * MySessionData.RelationSyncCache is destroyed when the decoding finishes, but there is
 	 * no way to unregister the invalidation callbacks.
 	 */
-	if (RelationSyncCache == NULL)
+	if (MySessionData.RelationSyncCache == NULL)
 		return;
 
 	/*
 	 * We have no easy way to identify which cache entries this invalidation
 	 * event might have affected, so just mark them all invalid.
 	 */
-	hash_seq_init(&status, RelationSyncCache);
+	hash_seq_init(&status, MySessionData.RelationSyncCache);
 	while ((entry = (RelationSyncEntry *) hash_seq_search(&status)) != NULL)
 	{
 		entry->replicate_valid = false;

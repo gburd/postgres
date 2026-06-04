@@ -26,6 +26,7 @@
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
+#include "utils/mysession.h"
 
 /*
  * Conceptually, the shared cache invalidation messages are stored in an
@@ -215,8 +216,6 @@ const ShmemCallbacks SharedInvalShmemCallbacks = {
 };
 
 
-static session_local LocalTransactionId nextLocalTransactionId;
-
 static void CleanupInvalidationState(int status, Datum arg);
 
 
@@ -302,7 +301,7 @@ SharedInvalBackendInit(bool sendOnly)
 	shmInvalBuffer->pgprocnos[shmInvalBuffer->numProcs++] = MyProcNumber;
 
 	/* Fetch next local transaction ID into local memory */
-	nextLocalTransactionId = stateP->nextLXID;
+	MySessionData.nextLocalTransactionId = stateP->nextLXID;
 
 	/* mark myself active, with all extant messages already read */
 	stateP->procPid = MyProcPid;
@@ -340,7 +339,7 @@ CleanupInvalidationState(int status, Datum arg)
 	stateP = &segP->procState[MyProcNumber];
 
 	/* Update next local transaction ID for next holder of this proc number */
-	stateP->nextLXID = nextLocalTransactionId;
+	stateP->nextLXID = MySessionData.nextLocalTransactionId;
 
 	/* Mark myself inactive */
 	stateP->procPid = 0;
@@ -707,7 +706,7 @@ GetNextLocalTransactionId(void)
 	/* loop to avoid returning InvalidLocalTransactionId at wraparound */
 	do
 	{
-		result = nextLocalTransactionId++;
+		result = MySessionData.nextLocalTransactionId++;
 	} while (!LocalTransactionIdIsValid(result));
 
 	return result;

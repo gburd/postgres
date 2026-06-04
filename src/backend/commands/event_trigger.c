@@ -55,6 +55,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -82,7 +83,6 @@ typedef struct EventTriggerQueryState
 	struct EventTriggerQueryState *previous;
 } EventTriggerQueryState;
 
-static session_local EventTriggerQueryState *currentEventTriggerState = NULL;
 
 /* GUC parameter */
 bool		event_triggers = true;
@@ -797,7 +797,7 @@ EventTriggerDDLCommandEnd(Node *parsetree)
 	 * pg_event_trigger_ddl_commands which would fail.  Better to do nothing
 	 * until the next command.
 	 */
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		return;
 
 	runlist = EventTriggerCommonSetup(parsetree,
@@ -842,8 +842,8 @@ EventTriggerSQLDrop(Node *parsetree)
 	 * if this is the case, so even if we were to try to run, the list would
 	 * be empty.
 	 */
-	if (!currentEventTriggerState ||
-		slist_is_empty(&currentEventTriggerState->SQLDropList))
+	if (!MySessionData.currentEventTriggerState ||
+		slist_is_empty(&MySessionData.currentEventTriggerState->SQLDropList))
 		return;
 
 	runlist = EventTriggerCommonSetup(parsetree,
@@ -872,7 +872,7 @@ EventTriggerSQLDrop(Node *parsetree)
 	 * variable will be removed shortly by our caller, but it seems better to
 	 * play safe.)
 	 */
-	currentEventTriggerState->in_sql_drop = true;
+	MySessionData.currentEventTriggerState->in_sql_drop = true;
 
 	/* Run the triggers. */
 	PG_TRY();
@@ -881,7 +881,7 @@ EventTriggerSQLDrop(Node *parsetree)
 	}
 	PG_FINALLY();
 	{
-		currentEventTriggerState->in_sql_drop = false;
+		MySessionData.currentEventTriggerState->in_sql_drop = false;
 	}
 	PG_END_TRY();
 
@@ -1021,7 +1021,7 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	 * *necessary*, because EventTriggerCommonSetup might find triggers that
 	 * didn't exist at the time the command started.
 	 */
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		return;
 
 	runlist = EventTriggerCommonSetup(parsetree,
@@ -1038,8 +1038,8 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	 * currentState variable will be removed shortly by our caller, but it
 	 * seems better to play safe.)
 	 */
-	currentEventTriggerState->table_rewrite_oid = tableOid;
-	currentEventTriggerState->table_rewrite_reason = reason;
+	MySessionData.currentEventTriggerState->table_rewrite_oid = tableOid;
+	MySessionData.currentEventTriggerState->table_rewrite_reason = reason;
 
 	/* Run the triggers. */
 	PG_TRY();
@@ -1048,8 +1048,8 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	}
 	PG_FINALLY();
 	{
-		currentEventTriggerState->table_rewrite_oid = InvalidOid;
-		currentEventTriggerState->table_rewrite_reason = 0;
+		MySessionData.currentEventTriggerState->table_rewrite_oid = InvalidOid;
+		MySessionData.currentEventTriggerState->table_rewrite_reason = 0;
 	}
 	PG_END_TRY();
 
@@ -1204,12 +1204,12 @@ EventTriggerBeginCompleteQuery(void)
 	state->in_sql_drop = false;
 	state->table_rewrite_oid = InvalidOid;
 
-	state->commandCollectionInhibited = currentEventTriggerState ?
-		currentEventTriggerState->commandCollectionInhibited : false;
+	state->commandCollectionInhibited = MySessionData.currentEventTriggerState ?
+		MySessionData.currentEventTriggerState->commandCollectionInhibited : false;
 	state->currentCommand = NULL;
 	state->commandList = NIL;
-	state->previous = currentEventTriggerState;
-	currentEventTriggerState = state;
+	state->previous = MySessionData.currentEventTriggerState;
+	MySessionData.currentEventTriggerState = state;
 
 	return true;
 }
@@ -1230,12 +1230,12 @@ EventTriggerEndCompleteQuery(void)
 {
 	EventTriggerQueryState *prevstate;
 
-	prevstate = currentEventTriggerState->previous;
+	prevstate = MySessionData.currentEventTriggerState->previous;
 
 	/* this avoids the need for retail pfree of SQLDropList items: */
-	MemoryContextDelete(currentEventTriggerState->cxt);
+	MemoryContextDelete(MySessionData.currentEventTriggerState->cxt);
 
-	currentEventTriggerState = prevstate;
+	MySessionData.currentEventTriggerState = prevstate;
 }
 
 /*
@@ -1281,12 +1281,12 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 	SQLDropObject *obj;
 	MemoryContext oldcxt;
 
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		return;
 
 	Assert(EventTriggerSupportsObject(object));
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	obj = palloc0_object(SQLDropObject);
 	obj->address = *object;
@@ -1427,7 +1427,7 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 	/* object type */
 	obj->objecttype = getObjectTypeDescription(&obj->address, false);
 
-	slist_push_head(&(currentEventTriggerState->SQLDropList), &obj->next);
+	slist_push_head(&(MySessionData.currentEventTriggerState->SQLDropList), &obj->next);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1531,8 +1531,8 @@ pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 	/*
 	 * Protect this function from being called out of context
 	 */
-	if (!currentEventTriggerState ||
-		!currentEventTriggerState->in_sql_drop)
+	if (!MySessionData.currentEventTriggerState ||
+		!MySessionData.currentEventTriggerState->in_sql_drop)
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("%s can only be called in a sql_drop event trigger function",
@@ -1541,7 +1541,7 @@ pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 	/* Build tuplestore to hold the result rows */
 	InitMaterializedSRF(fcinfo, 0);
 
-	slist_foreach(iter, &(currentEventTriggerState->SQLDropList))
+	slist_foreach(iter, &(MySessionData.currentEventTriggerState->SQLDropList))
 	{
 		SQLDropObject *obj;
 		int			i = 0;
@@ -1624,14 +1624,14 @@ pg_event_trigger_table_rewrite_oid(PG_FUNCTION_ARGS)
 	/*
 	 * Protect this function from being called out of context
 	 */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->table_rewrite_oid == InvalidOid)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->table_rewrite_oid == InvalidOid)
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("%s can only be called in a table_rewrite event trigger function",
 						"pg_event_trigger_table_rewrite_oid()")));
 
-	PG_RETURN_OID(currentEventTriggerState->table_rewrite_oid);
+	PG_RETURN_OID(MySessionData.currentEventTriggerState->table_rewrite_oid);
 }
 
 /*
@@ -1645,14 +1645,14 @@ pg_event_trigger_table_rewrite_reason(PG_FUNCTION_ARGS)
 	/*
 	 * Protect this function from being called out of context
 	 */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->table_rewrite_reason == 0)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->table_rewrite_reason == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("%s can only be called in a table_rewrite event trigger function",
 						"pg_event_trigger_table_rewrite_reason()")));
 
-	PG_RETURN_INT32(currentEventTriggerState->table_rewrite_reason);
+	PG_RETURN_INT32(MySessionData.currentEventTriggerState->table_rewrite_reason);
 }
 
 /*-------------------------------------------------------------------------
@@ -1682,10 +1682,10 @@ pg_event_trigger_table_rewrite_reason(PG_FUNCTION_ARGS)
 void
 EventTriggerInhibitCommandCollection(void)
 {
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		return;
 
-	currentEventTriggerState->commandCollectionInhibited = true;
+	MySessionData.currentEventTriggerState->commandCollectionInhibited = true;
 }
 
 /*
@@ -1694,10 +1694,10 @@ EventTriggerInhibitCommandCollection(void)
 void
 EventTriggerUndoInhibitCommandCollection(void)
 {
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		return;
 
-	currentEventTriggerState->commandCollectionInhibited = false;
+	MySessionData.currentEventTriggerState->commandCollectionInhibited = false;
 }
 
 /*
@@ -1722,11 +1722,11 @@ EventTriggerCollectSimpleCommand(ObjectAddress address,
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc_object(CollectedCommand);
 
@@ -1737,7 +1737,7 @@ EventTriggerCollectSimpleCommand(ObjectAddress address,
 	command->d.simple.secondaryObject = secondaryObject;
 	command->parsetree = copyObject(parsetree);
 
-	currentEventTriggerState->commandList = lappend(currentEventTriggerState->commandList,
+	MySessionData.currentEventTriggerState->commandList = lappend(MySessionData.currentEventTriggerState->commandList,
 													command);
 
 	MemoryContextSwitchTo(oldcxt);
@@ -1758,11 +1758,11 @@ EventTriggerAlterTableStart(const Node *parsetree)
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc_object(CollectedCommand);
 
@@ -1774,8 +1774,8 @@ EventTriggerAlterTableStart(const Node *parsetree)
 	command->d.alterTable.subcmds = NIL;
 	command->parsetree = copyObject(parsetree);
 
-	command->parent = currentEventTriggerState->currentCommand;
-	currentEventTriggerState->currentCommand = command;
+	command->parent = MySessionData.currentEventTriggerState->currentCommand;
+	MySessionData.currentEventTriggerState->currentCommand = command;
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1788,11 +1788,11 @@ EventTriggerAlterTableStart(const Node *parsetree)
 void
 EventTriggerAlterTableRelid(Oid objectId)
 {
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	currentEventTriggerState->currentCommand->d.alterTable.objectId = objectId;
+	MySessionData.currentEventTriggerState->currentCommand->d.alterTable.objectId = objectId;
 }
 
 /*
@@ -1810,22 +1810,22 @@ EventTriggerCollectAlterTableSubcmd(const Node *subcmd, ObjectAddress address)
 	CollectedATSubcmd *newsub;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
 	Assert(IsA(subcmd, AlterTableCmd));
-	Assert(currentEventTriggerState->currentCommand != NULL);
-	Assert(OidIsValid(currentEventTriggerState->currentCommand->d.alterTable.objectId));
+	Assert(MySessionData.currentEventTriggerState->currentCommand != NULL);
+	Assert(OidIsValid(MySessionData.currentEventTriggerState->currentCommand->d.alterTable.objectId));
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	newsub = palloc_object(CollectedATSubcmd);
 	newsub->address = address;
 	newsub->parsetree = copyObject(subcmd);
 
-	currentEventTriggerState->currentCommand->d.alterTable.subcmds =
-		lappend(currentEventTriggerState->currentCommand->d.alterTable.subcmds, newsub);
+	MySessionData.currentEventTriggerState->currentCommand->d.alterTable.subcmds =
+		lappend(MySessionData.currentEventTriggerState->currentCommand->d.alterTable.subcmds, newsub);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1844,29 +1844,29 @@ EventTriggerAlterTableEnd(void)
 	CollectedCommand *parent;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	parent = currentEventTriggerState->currentCommand->parent;
+	parent = MySessionData.currentEventTriggerState->currentCommand->parent;
 
 	/* If no subcommands, don't collect */
-	if (currentEventTriggerState->currentCommand->d.alterTable.subcmds != NIL)
+	if (MySessionData.currentEventTriggerState->currentCommand->d.alterTable.subcmds != NIL)
 	{
 		MemoryContext oldcxt;
 
-		oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+		oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
-		currentEventTriggerState->commandList =
-			lappend(currentEventTriggerState->commandList,
-					currentEventTriggerState->currentCommand);
+		MySessionData.currentEventTriggerState->commandList =
+			lappend(MySessionData.currentEventTriggerState->commandList,
+					MySessionData.currentEventTriggerState->currentCommand);
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 	else
-		pfree(currentEventTriggerState->currentCommand);
+		pfree(MySessionData.currentEventTriggerState->currentCommand);
 
-	currentEventTriggerState->currentCommand = parent;
+	MySessionData.currentEventTriggerState->currentCommand = parent;
 }
 
 /*
@@ -1885,11 +1885,11 @@ EventTriggerCollectGrant(InternalGrant *istmt)
 	ListCell   *cell;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	/*
 	 * This is tedious, but necessary.
@@ -1909,8 +1909,8 @@ EventTriggerCollectGrant(InternalGrant *istmt)
 	command->d.grant.istmt = icopy;
 	command->parsetree = NULL;
 
-	currentEventTriggerState->commandList =
-		lappend(currentEventTriggerState->commandList, command);
+	MySessionData.currentEventTriggerState->commandList =
+		lappend(MySessionData.currentEventTriggerState->commandList, command);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1928,11 +1928,11 @@ EventTriggerCollectAlterOpFam(const AlterOpFamilyStmt *stmt, Oid opfamoid,
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc_object(CollectedCommand);
 	command->type = SCT_AlterOpFamily;
@@ -1943,8 +1943,8 @@ EventTriggerCollectAlterOpFam(const AlterOpFamilyStmt *stmt, Oid opfamoid,
 	command->d.opfam.procedures = procedures;
 	command->parsetree = (Node *) copyObject(stmt);
 
-	currentEventTriggerState->commandList =
-		lappend(currentEventTriggerState->commandList, command);
+	MySessionData.currentEventTriggerState->commandList =
+		lappend(MySessionData.currentEventTriggerState->commandList, command);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1961,11 +1961,11 @@ EventTriggerCollectCreateOpClass(const CreateOpClassStmt *stmt, Oid opcoid,
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc0_object(CollectedCommand);
 	command->type = SCT_CreateOpClass;
@@ -1976,8 +1976,8 @@ EventTriggerCollectCreateOpClass(const CreateOpClassStmt *stmt, Oid opcoid,
 	command->d.createopc.procedures = procedures;
 	command->parsetree = (Node *) copyObject(stmt);
 
-	currentEventTriggerState->commandList =
-		lappend(currentEventTriggerState->commandList, command);
+	MySessionData.currentEventTriggerState->commandList =
+		lappend(MySessionData.currentEventTriggerState->commandList, command);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -1995,11 +1995,11 @@ EventTriggerCollectAlterTSConfig(const AlterTSConfigurationStmt *stmt, Oid cfgId
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc0_object(CollectedCommand);
 	command->type = SCT_AlterTSConfig;
@@ -2014,8 +2014,8 @@ EventTriggerCollectAlterTSConfig(const AlterTSConfigurationStmt *stmt, Oid cfgId
 	command->d.atscfg.ndicts = ndicts;
 	command->parsetree = (Node *) copyObject(stmt);
 
-	currentEventTriggerState->commandList =
-		lappend(currentEventTriggerState->commandList, command);
+	MySessionData.currentEventTriggerState->commandList =
+		lappend(MySessionData.currentEventTriggerState->commandList, command);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -2032,11 +2032,11 @@ EventTriggerCollectAlterDefPrivs(const AlterDefaultPrivilegesStmt *stmt)
 	CollectedCommand *command;
 
 	/* ignore if event trigger context not set, or collection disabled */
-	if (!currentEventTriggerState ||
-		currentEventTriggerState->commandCollectionInhibited)
+	if (!MySessionData.currentEventTriggerState ||
+		MySessionData.currentEventTriggerState->commandCollectionInhibited)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
+	oldcxt = MemoryContextSwitchTo(MySessionData.currentEventTriggerState->cxt);
 
 	command = palloc0_object(CollectedCommand);
 	command->type = SCT_AlterDefaultPrivileges;
@@ -2044,8 +2044,8 @@ EventTriggerCollectAlterDefPrivs(const AlterDefaultPrivilegesStmt *stmt)
 	command->in_extension = creating_extension;
 	command->parsetree = (Node *) copyObject(stmt);
 
-	currentEventTriggerState->commandList =
-		lappend(currentEventTriggerState->commandList, command);
+	MySessionData.currentEventTriggerState->commandList =
+		lappend(MySessionData.currentEventTriggerState->commandList, command);
 	MemoryContextSwitchTo(oldcxt);
 }
 
@@ -2062,7 +2062,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 	/*
 	 * Protect this function from being called out of context
 	 */
-	if (!currentEventTriggerState)
+	if (!MySessionData.currentEventTriggerState)
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("%s can only be called in an event trigger function",
@@ -2071,7 +2071,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 	/* Build tuplestore to hold the result rows */
 	InitMaterializedSRF(fcinfo, 0);
 
-	foreach(lc, currentEventTriggerState->commandList)
+	foreach(lc, MySessionData.currentEventTriggerState->commandList)
 	{
 		CollectedCommand *cmd = lfirst(lc);
 		Datum		values[9];

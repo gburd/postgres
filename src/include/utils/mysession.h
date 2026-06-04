@@ -56,6 +56,8 @@ struct ArrayAnalyzeExtraData;	/* utils/adt/array_typanalyze.c */
 struct ResourceReleaseCallbackItem;	/* utils/resowner/resowner.c */
 struct List;					/* nodes/pg_list.h */
 struct pg_locale_struct;		/* utils/pg_locale.h: pg_locale_t */
+struct EventTriggerQueryState;	/* commands/event_trigger.c */
+struct ConditionVariable;		/* storage/condition_variable.h */
 
 /*
  * Per-session state aggregate.
@@ -232,6 +234,36 @@ typedef struct MySession
 	 * (regex/regc_pg_locale.c).  Set at the start of regexp compile/execute.
 	 */
 	struct pg_locale_struct *pg_regex_locale;
+
+	/*
+	 * Top of the stack of active event-trigger execution states
+	 * (commands/event_trigger.c).  NULL when no event trigger is running.
+	 */
+	struct EventTriggerQueryState *currentEventTriggerState;
+
+	/*
+	 * Condition variable this backend is currently prepared to sleep on
+	 * (storage/lmgr/condition_variable.c).  NULL when not in a CV sleep.
+	 */
+	struct ConditionVariable *cv_sleep_target;
+
+	/*
+	 * Next local (virtual) transaction id to hand out for this backend
+	 * (storage/ipc/sinvaladt.c).
+	 */
+	LocalTransactionId nextLocalTransactionId;
+
+	/*
+	 * Has this backend initialized the dynamic shared memory system yet?
+	 * (storage/ipc/dsm.c).
+	 */
+	bool		dsm_init_done;
+
+	/*
+	 * Map remembering which relation schemas pgoutput has already sent
+	 * (replication/pgoutput/pgoutput.c).  Lazily created; NULL until first use.
+	 */
+	HTAB	   *RelationSyncCache;
 } MySession;
 
 /*
