@@ -193,6 +193,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 90 | `utils/activity/pgstat_wal.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local WalUsage prevWalUsage` (saved WAL counters used to diff WAL usage between `pgstat_report_wal()` calls) into `MySessionData.prev_wal_usage`; four use sites rewritten. `WalUsage` is a public value type (`executor/instrument.h`, itself only pulling `portability/instr_time.h`), so it lives directly in `MySession`. Third subsystem migrated into the aggregate. |
 
+| 91 | `storage/lmgr/proc.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local volatile sig_atomic_t got_deadlock_timeout` (deadlock-check-pending flag, set by the deadlock-timeout signal handler and consumed by the lock-wait loop) into `MySessionData.got_deadlock_timeout`, keeping the `volatile sig_atomic_t` qualifier; four use sites rewritten. `mysession.h` gains `#include <signal.h>` (same pattern as `miscadmin.h`). Fourth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
