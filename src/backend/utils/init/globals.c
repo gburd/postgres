@@ -25,9 +25,17 @@
 #include "postmaster/postmaster.h"
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
+#include "utils/mysession.h"
 
 
 session_local ProtocolVersion FrontendProtocol;
+
+/*
+ * The top-level per-session state aggregate.  Subsystems roll their
+ * session_local state up into this struct incrementally; see
+ * src/include/utils/mysession.h and docs/threading/F4_SESSION_STATE.md.
+ */
+session_local MySession MySessionData;
 
 /*
  * Interrupt machinery (storage/interrupt.h).  The CFI-handled pending-flag

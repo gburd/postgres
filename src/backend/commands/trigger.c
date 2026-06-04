@@ -54,6 +54,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/plancache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -64,8 +65,7 @@
 /* GUC variables */
 int			SessionReplicationRole = SESSION_REPLICATION_ROLE_ORIGIN;
 
-/* How many levels deep into trigger execution are we? */
-static session_local int	MyTriggerDepth = 0;
+/* How many levels deep into trigger execution are we? (MySessionData.trigger_depth) */
 
 /* Local function prototypes */
 static void renametrig_internal(Relation tgrel, Relation targetrel,
@@ -2364,14 +2364,14 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 
 	pgstat_init_function_usage(fcinfo, &fcusage);
 
-	MyTriggerDepth++;
+	MySessionData.trigger_depth++;
 	PG_TRY();
 	{
 		result = FunctionCallInvoke(fcinfo);
 	}
 	PG_FINALLY();
 	{
-		MyTriggerDepth--;
+		MySessionData.trigger_depth--;
 	}
 	PG_END_TRY();
 
@@ -6786,7 +6786,7 @@ assign_session_replication_role(int newval, void *extra)
 Datum
 pg_trigger_depth(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(MyTriggerDepth);
+	PG_RETURN_INT32(MySessionData.trigger_depth);
 }
 
 /*
