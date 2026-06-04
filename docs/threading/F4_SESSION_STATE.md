@@ -249,6 +249,14 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 118 | `replication/pgoutput/pgoutput.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *RelationSyncCache` (map remembering which relation schemas pgoutput has already sent) into `MySessionData.RelationSyncCache`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Thirty-first subsystem migrated into the aggregate. |
 
+| 119 | `replication/logical/tablesync.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local StringInfo copybuf` (COPY-data reassembly buffer used during logical-replication table sync) into `MySessionData.copybuf`; all use sites rewritten. `StringInfoData` is forward-declared in `mysession.h` (zero new includes). Thirty-second subsystem migrated into the aggregate. |
+
+| 120 | `storage/ipc/procsignal.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ProcSignalSlot *MyProcSignalSlot` (this backend's slot in the shared ProcSignal array) into `MySessionData.MyProcSignalSlot`; all use sites rewritten. The anonymous `ProcSignalSlot` typedef is given a struct tag so it can be forward-declared in `mysession.h` (zero new includes). Thirty-third subsystem migrated into the aggregate. |
+
+| 121 | `access/transam/parallel.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local FixedParallelState *MyFixedParallelState` (this parallel worker's pointer to fixed parallel state) into `MySessionData.MyFixedParallelState`; all use sites rewritten. `FixedParallelState` is forward-declared in `mysession.h` (zero new includes). Thirty-fourth subsystem migrated into the aggregate. |
+
+| 122 | `replication/logical/origin.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ReplicationState *session_replication_state` (replication-origin state slot this session has acquired) into `MySessionData.session_replication_state`; all use sites rewritten. `ReplicationState` is forward-declared in `mysession.h` (zero new includes). Thirty-fifth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
