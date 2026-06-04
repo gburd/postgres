@@ -294,6 +294,10 @@ extern TransactionId SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid,
 extern bool SLogTupleHasLockConflict(Oid relid, ItemPointer tid,
 									 TransactionId my_xid,
 									 SLogOpType requested_lock);
+extern bool SLogTupleGetLockConflictXid(Oid relid, ItemPointer tid,
+										 TransactionId my_xid,
+										 SLogOpType requested_lock,
+										 TransactionId *xid_out);
 extern bool SLogTupleHasAbortedEntry(Oid relid, ItemPointer tid);
 
 

@@ -2391,8 +2391,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		bool		del_is_insert = false;
 
 		if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
-			del_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
-										   otid, &del_is_insert);
+			del_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
+												 otid, &del_is_insert);
 
 		if (wait && TransactionIdIsValid(del_xid) &&
 			!TransactionIdIsCurrentTransactionId(del_xid) &&
@@ -2547,12 +2547,19 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			bool		is_insert_entry;
 
 			/*
-			 * Lock-free: SLogTupleGetDirtyXid uses a lock-free skiplist with
-			 * EBR.  No need to release buffer lock.
+			 * Writer-only probe (wait-free LRLock read).  We must wait only
+			 * on an in-progress INSERT/UPDATE/DELETE writer, never on a pure
+			 * lock-only marker: a KeyShare locker (AccessShareLock tuplock) is
+			 * compatible with our NoKeyExclusive update (ExclusiveLock tuplock)
+			 * in the standard tuple-lock matrix, so blocking on its xid here --
+			 * while it is queued behind us reporting a lock conflict -- forms a
+			 * mutual XactLockTableWait cycle that heap avoids via
+			 * HEAP_XMAX_IS_LOCKED_ONLY.  Real lock conflicts (Share/Exclusive
+			 * lockers) are still serialized by the heavyweight tuplock below.
 			 */
-			dirty_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
-											 otid,
-											 &is_insert_entry);
+			dirty_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
+												   otid,
+												   &is_insert_entry);
 
 			/* Check if tuple was deleted by another transaction */
 			if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
