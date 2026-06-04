@@ -40,6 +40,7 @@
 #include "storage/smgr.h"
 #include "storage/sync.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/wait_event.h"
 
 /*
@@ -86,7 +87,7 @@ StaticAssertDecl(RELSEG_SIZE > 0 && RELSEG_SIZE <= INT_MAX,
  * entries for inactive segments, however; as soon as we find a partial
  * segment, we assume that any subsequent segments are inactive.
  *
- * The entire MdfdVec array is palloc'd in the MdCxt memory context.
+ * The entire MdfdVec array is palloc'd in the md_cxt memory context.
  */
 
 typedef struct _MdfdVec
@@ -94,8 +95,6 @@ typedef struct _MdfdVec
 	File		mdfd_vfd;		/* fd number in fd.c's pool */
 	BlockNumber mdfd_segno;		/* segment number, from 0 */
 } MdfdVec;
-
-static session_local MemoryContext MdCxt;		/* context for all MdfdVec objects */
 
 
 /* Populate a file tag describing an md.c segment file. */
@@ -190,9 +189,9 @@ _mdfd_open_flags(void)
 void
 mdinit(void)
 {
-	MdCxt = AllocSetContextCreate(TopMemoryContext,
-								  "MdSmgr",
-								  ALLOCSET_DEFAULT_SIZES);
+	MySessionData.md_cxt = AllocSetContextCreate(TopMemoryContext,
+												 "MdSmgr",
+												 ALLOCSET_DEFAULT_SIZES);
 }
 
 /*
@@ -1656,7 +1655,7 @@ _fdvec_resize(SMgrRelation reln,
 	else if (reln->md_num_open_segs[forknum] == 0)
 	{
 		reln->md_seg_fds[forknum] =
-			MemoryContextAlloc(MdCxt, sizeof(MdfdVec) * nseg);
+			MemoryContextAlloc(MySessionData.md_cxt, sizeof(MdfdVec) * nseg);
 	}
 	else if (nseg > reln->md_num_open_segs[forknum])
 	{

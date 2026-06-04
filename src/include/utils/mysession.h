@@ -42,6 +42,7 @@
 
 #include "executor/instrument.h"
 #include "portability/instr_time.h"
+#include "utils/palloc.h"
 
 /*
  * Per-session state aggregate.
@@ -78,6 +79,12 @@ typedef struct MySession
 	 * timeout signal handler, consumed by the lock-wait loop.
 	 */
 	volatile sig_atomic_t got_deadlock_timeout;
+
+	/*
+	 * Memory context holding all MdfdVec objects for the md.c storage
+	 * manager (storage/smgr/md.c).  Created in mdinit().
+	 */
+	MemoryContext md_cxt;
 } MySession;
 
 /*
