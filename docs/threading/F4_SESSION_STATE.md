@@ -49,9 +49,9 @@ instead proceed module by module:
 
 Each consolidated struct reduces the `session_local` object count by its
 member count minus one. A top-level `MySession` aggregate that *holds* the
-per-module sub-structs may be introduced later once enough modules are
-consolidated; it is not required for any individual step and is deliberately
-deferred.
+per-module sub-structs is introduced once enough modules are consolidated;
+see *"MySession aggregate"* below. It is not required for any individual
+per-module step.
 
 ### Naming
 
@@ -186,6 +186,29 @@ Each row is one commit. All preserve behavior and pass every gate below.
 | 86 | `port/posix_sema.c` | `PosixSemaState` / `posix_sema_state` | 4 | **SPLIT** — folded the four *private* file-local session_local statics (`mySemPointers`, `numSems`, `maxSems`, `nextSemKey`) into one file-local `static session_local PosixSemaState posix_sema_state`. `mySemPointers` stays wrapped in `#ifdef USE_NAMED_POSIX_SEMAPHORES` inside the struct. The `pg_global` `sharedSemas` array (the `#else`/unnamed-semaphore shared-memory path) is shared state, left standalone. Zero-init struct. No header change. |
 
 | 87 | `port/sysv_sema.c` | `SysvSemaState` / `sysv_sema_state` | 5 | **SPLIT** — folded the five *private* file-local session_local statics (`mySemaSets`, `numSemaSets`, `maxSemaSets`, `nextSemaKey`, `nextSemaNumber`) into one file-local `static session_local SysvSemaState sysv_sema_state`. Platform alternative to posix_sema.c (selected by meson `sema_kind`). The `pg_global` `sharedSemas` and its plain-static companions `numSharedSemas`/`maxSharedSemas` (shared-memory state) stay standalone. Not compiled on this host; validated via `clang -fsyntax-only -DUSE_SYSV_SEMAPHORES` (0 errors) + threadcheck/srclint scans. Zero-init. No header change. |
+
+| 88 | `commands/trigger.c` + `utils/init/globals.c` + **new** `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession scaffold + first member.** Introduces the top-level per-session aggregate `MySession` (header `utils/mysession.h`), defines the single `session_local MySession MySessionData` in `globals.c` next to the other `My*` session globals, and migrates the first member: the bare file-local `session_local int MyTriggerDepth` (which had no per-module struct of its own and could not be co-located with `afterTriggers`) becomes `MySessionData.trigger_depth`. Four use sites rewritten. This begins the deferred mega-struct work; subsequent subsystems migrate in incrementally, one commit each. |
+
+## MySession aggregate
+
+With the per-module `XxxState` sweep complete (modules 1–87 cover every
+multi-`session_local` file that admits a clean per-module struct), the
+top-level `MySession` aggregate is now being introduced (module 88).
+
+`MySession` is the single anchor a thread reaches a logical session's mutable
+state through. The threading end-goal is to shrink the per-session TLS
+footprint from hundreds of independent `__thread` objects toward one
+`MySession` instance (eventually a single swappable pointer), so a thread can
+serve more than one session over its lifetime.
+
+It is built the same way as everything else in F4: **incrementally, one
+subsystem per commit, every gate green each step.** A subsystem migrates by
+moving its state into a `MySession` member and rewriting its use sites; until
+then it keeps its own file-local `session_local` instance. Plain-typed state
+(e.g. `trigger_depth`) lives directly in `MySession`; subsystems with richer
+private state are added as sub-structs whose typedefs become visible in
+`mysession.h` at migration time (deliberately avoiding a flag-day move of all
+~86 file-local typedefs into one header).
 
 ## Verification gates (every step)
 
