@@ -227,6 +227,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 107 | `parser/parse_oper.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *OprCacheHash` (operator lookup cache keyed by name + arg types, resolving to operator OID) into `MySessionData.opr_cache_hash`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Twentieth subsystem migrated into the aggregate. |
 
+| 108 | `postmaster/pgarch.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local MemoryContext archive_context` (per-archive-cycle scratch context, reset after each WAL file is archived) into `MySessionData.archive_context`; all use sites rewritten. `MemoryContext` already visible in `mysession.h`; the unrelated frontend type `astreamer_archive_context` is untouched. Twenty-first subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
