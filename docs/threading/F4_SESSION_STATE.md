@@ -257,6 +257,10 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 122 | `replication/logical/origin.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ReplicationState *session_replication_state` (replication-origin state slot this session has acquired) into `MySessionData.session_replication_state`; all use sites rewritten. `ReplicationState` is forward-declared in `mysession.h` (zero new includes). Thirty-fifth subsystem migrated into the aggregate. |
 
+| 123 | `backup/basebackup_target.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local List *BaseBackupTargetTypeList` (registered base-backup target types) into `MySessionData.BaseBackupTargetTypeList`; all use sites rewritten. Declared via the already-present `struct List` forward declaration (zero new includes); `NIL` default carried by the zero-initialized aggregate. Thirty-sixth subsystem migrated into the aggregate. |
+
+| 124 | `commands/seclabel.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local List *label_provider_list` (registered security-label providers) into `MySessionData.label_provider_list`; all use sites rewritten. Declared via the already-present `struct List` forward declaration (zero new includes); `NIL` default carried by the zero-initialized aggregate. Thirty-seventh subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
