@@ -189,6 +189,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 88 | `commands/trigger.c` + `utils/init/globals.c` + **new** `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession scaffold + first member.** Introduces the top-level per-session aggregate `MySession` (header `utils/mysession.h`), defines the single `session_local MySession MySessionData` in `globals.c` next to the other `My*` session globals, and migrates the first member: the bare file-local `session_local int MyTriggerDepth` (which had no per-module struct of its own and could not be co-located with `afterTriggers`) becomes `MySessionData.trigger_depth`. Four use sites rewritten. This begins the deferred mega-struct work; subsequent subsystems migrate in incrementally, one commit each. |
 
+| 89 | `utils/activity/pgstat_function.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local instr_time total_func_time` (backend-wide function self/other time accounting) into `MySessionData.total_func_time`; three use sites rewritten. A plain-typed (public `instr_time` value) member, so it lives directly in `MySession`; `mysession.h` gains `#include "portability/instr_time.h"`. Second subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
