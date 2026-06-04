@@ -203,6 +203,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 95 | `utils/cache/attoptcache.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *AttoptCacheHash` (cache of per-attribute options, keyed by `(attrelid, attnum)`) into `MySessionData.attopt_cache_hash`; six use sites rewritten. `HTAB` already visible in `mysession.h` (module 93). Eighth subsystem migrated into the aggregate. |
 
+| 96 | `utils/cache/catcache.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local CatCacheHeader *CacheHdr` (catalog-cache management header listing all catalog caches) into `MySessionData.catcache_hdr`; all use sites rewritten. `mysession.h` forward-declares `struct catcacheheader` rather than including `utils/catcache.h`, since only the pointer is stored. Ninth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
