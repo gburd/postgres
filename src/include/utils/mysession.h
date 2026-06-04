@@ -65,6 +65,7 @@ struct ReplicationState;		/* replication/logical/origin.c */
 struct HTAB;					/* utils/hsearch.h */
 struct PendingRelDelete;		/* catalog/storage.c */
 struct RelationData;			/* utils/rel.h: Relation */
+struct SeqTableData;			/* commands/sequence.c */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -138,6 +139,16 @@ typedef struct InvApiState
 	struct RelationData *lo_heap_r;
 	struct RelationData *lo_index_r;
 } InvApiState;
+
+/*
+ * Per-backend sequence value cache and last-used sequence pointer
+ * (commands/sequence.c).
+ */
+typedef struct SequenceState
+{
+	struct HTAB *seqhashtab;	/* hash table for SeqTable items */
+	struct SeqTableData *last_used_seq;	/* last sequence used by nextval() */
+} SequenceState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -434,6 +445,12 @@ typedef struct MySession
 	 * (storage/large_object/inv_api.c).
 	 */
 	InvApiState inv_api_state;
+
+	/*
+	 * Per-backend sequence value cache and last-used sequence pointer
+	 * (commands/sequence.c).
+	 */
+	SequenceState sequence_state;
 } MySession;
 
 /*

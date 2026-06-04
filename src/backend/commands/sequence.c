@@ -44,6 +44,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/pg_lsn.h"
 #include "utils/resowner.h"
 #include "utils/syscache.h"
@@ -77,22 +78,6 @@ typedef struct SeqTableData
 } SeqTableData;
 
 typedef SeqTableData *SeqTable;
-
-typedef struct SequenceState
-{
-	HTAB	   *seqhashtab;		/* hash table for SeqTable items */
-
-	/*
-	 * last_used_seq is updated by nextval() to point to the last used
-	 * sequence.
-	 */
-	SeqTableData *last_used_seq;
-} SequenceState;
-
-static session_local SequenceState sequence_state = {
-	.seqhashtab = NULL,
-	.last_used_seq = NULL,
-};
 
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static void fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum);
@@ -680,7 +665,7 @@ nextval_internal(Oid relid, bool check_permissions)
 		Assert(elm->increment != 0);
 		elm->last += elm->increment;
 		sequence_close(seqrel, NoLock);
-		sequence_state.last_used_seq = elm;
+		MySessionData.sequence_state.last_used_seq = elm;
 		return elm->last;
 	}
 
@@ -801,7 +786,7 @@ nextval_internal(Oid relid, bool check_permissions)
 	elm->cached = last;			/* last fetched number */
 	elm->last_valid = true;
 
-	sequence_state.last_used_seq = elm;
+	MySessionData.sequence_state.last_used_seq = elm;
 
 	/*
 	 * If something needs to be WAL logged, acquire an xid, so this
@@ -908,30 +893,30 @@ lastval(PG_FUNCTION_ARGS)
 	Relation	seqrel;
 	int64		result;
 
-	if (sequence_state.last_used_seq == NULL)
+	if (MySessionData.sequence_state.last_used_seq == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("lastval is not yet defined in this session")));
 
 	/* Someone may have dropped the sequence since the last nextval() */
-	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(sequence_state.last_used_seq->relid)))
+	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(MySessionData.sequence_state.last_used_seq->relid)))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("lastval is not yet defined in this session")));
 
-	seqrel = lock_and_open_sequence(sequence_state.last_used_seq);
+	seqrel = lock_and_open_sequence(MySessionData.sequence_state.last_used_seq);
 
 	/* nextval() must have already been called for this sequence */
-	Assert(sequence_state.last_used_seq->last_valid);
+	Assert(MySessionData.sequence_state.last_used_seq->last_valid);
 
-	if (pg_class_aclcheck(sequence_state.last_used_seq->relid, GetUserId(),
+	if (pg_class_aclcheck(MySessionData.sequence_state.last_used_seq->relid, GetUserId(),
 						  ACL_SELECT | ACL_USAGE) != ACLCHECK_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied for sequence %s",
 						RelationGetRelationName(seqrel))));
 
-	result = sequence_state.last_used_seq->last;
+	result = MySessionData.sequence_state.last_used_seq->last;
 	sequence_close(seqrel, NoLock);
 
 	PG_RETURN_INT64(result);
@@ -1126,7 +1111,7 @@ create_seq_hashtable(void)
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(SeqTableData);
 
-	sequence_state.seqhashtab = hash_create("Sequence values", 16, &ctl,
+	MySessionData.sequence_state.seqhashtab = hash_create("Sequence values", 16, &ctl,
 							 HASH_ELEM | HASH_BLOBS);
 }
 
@@ -1142,10 +1127,10 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
 	bool		found;
 
 	/* Find or create a hash table entry for this sequence */
-	if (sequence_state.seqhashtab == NULL)
+	if (MySessionData.sequence_state.seqhashtab == NULL)
 		create_seq_hashtable();
 
-	elm = (SeqTable) hash_search(sequence_state.seqhashtab, &relid, HASH_ENTER, &found);
+	elm = (SeqTable) hash_search(MySessionData.sequence_state.seqhashtab, &relid, HASH_ENTER, &found);
 
 	/*
 	 * Initialize the new hash table entry if it did not exist already.
@@ -1913,11 +1898,11 @@ pg_sequence_last_value(PG_FUNCTION_ARGS)
 void
 ResetSequenceCaches(void)
 {
-	if (sequence_state.seqhashtab)
+	if (MySessionData.sequence_state.seqhashtab)
 	{
-		hash_destroy(sequence_state.seqhashtab);
-		sequence_state.seqhashtab = NULL;
+		hash_destroy(MySessionData.sequence_state.seqhashtab);
+		MySessionData.sequence_state.seqhashtab = NULL;
 	}
 
-	sequence_state.last_used_seq = NULL;
+	MySessionData.sequence_state.last_used_seq = NULL;
 }
