@@ -261,6 +261,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 124 | `commands/seclabel.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local List *label_provider_list` (registered security-label providers) into `MySessionData.label_provider_list`; all use sites rewritten. Declared via the already-present `struct List` forward declaration (zero new includes); `NIL` default carried by the zero-initialized aggregate. Thirty-seventh subsystem migrated into the aggregate. |
 
+| 125 | `executor/instrument.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (first per-module `XxxState` fold).** Embeds the file-local `session_local InstrumentState instrument_state` (saved buffer/WAL usage counters captured across a nested executor run) by value as `MySessionData.instrument_state`; the `InstrumentState` typedef is relocated into `mysession.h` (its `BufferUsage`/`WalUsage` members are already visible via `executor/instrument.h`, so zero new includes). The instance has no initializer, so the zero-initialized aggregate preserves semantics exactly. Thirty-eighth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
