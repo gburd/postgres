@@ -18,10 +18,10 @@
 #include "catalog/pg_collation.h"
 #include "common/unicode_case.h"
 #include "common/unicode_category.h"
+#include "utils/mysession.h"
 #include "utils/pg_locale.h"
 #include "utils/pg_locale_c.h"
 
-static session_local pg_locale_t pg_regex_locale;
 
 
 /*
@@ -55,7 +55,7 @@ pg_set_regex_collation(Oid collation)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("nondeterministic collations are not supported for regular expressions")));
 
-	pg_regex_locale = locale;
+	MySessionData.pg_regex_locale = locale;
 }
 
 /*
@@ -66,31 +66,31 @@ pg_set_regex_collation(Oid collation)
 static int
 regc_wc_isdigit(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISDIGIT));
 	else
-		return pg_regex_locale->ctype->wc_isdigit(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isdigit(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_isalpha(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISALPHA));
 	else
-		return pg_regex_locale->ctype->wc_isalpha(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isalpha(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_isalnum(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISALNUM));
 	else
-		return pg_regex_locale->ctype->wc_isalnum(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isalnum(c, MySessionData.pg_regex_locale);
 }
 
 static int
@@ -105,87 +105,87 @@ regc_wc_isword(pg_wchar c)
 static int
 regc_wc_isupper(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISUPPER));
 	else
-		return pg_regex_locale->ctype->wc_isupper(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isupper(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_islower(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISLOWER));
 	else
-		return pg_regex_locale->ctype->wc_islower(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_islower(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_isgraph(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISGRAPH));
 	else
-		return pg_regex_locale->ctype->wc_isgraph(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isgraph(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_isprint(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISPRINT));
 	else
-		return pg_regex_locale->ctype->wc_isprint(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isprint(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_ispunct(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISPUNCT));
 	else
-		return pg_regex_locale->ctype->wc_ispunct(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_ispunct(c, MySessionData.pg_regex_locale);
 }
 
 static int
 regc_wc_isspace(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 		return (c <= (pg_wchar) 127 &&
 				(pg_char_properties[c] & PG_ISSPACE));
 	else
-		return pg_regex_locale->ctype->wc_isspace(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_isspace(c, MySessionData.pg_regex_locale);
 }
 
 static pg_wchar
 regc_wc_toupper(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 	{
 		if (c <= (pg_wchar) 127)
 			return pg_ascii_toupper((unsigned char) c);
 		return c;
 	}
 	else
-		return pg_regex_locale->ctype->wc_toupper(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_toupper(c, MySessionData.pg_regex_locale);
 }
 
 static pg_wchar
 regc_wc_tolower(pg_wchar c)
 {
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 	{
 		if (c <= (pg_wchar) 127)
 			return pg_ascii_tolower((unsigned char) c);
 		return c;
 	}
 	else
-		return pg_regex_locale->ctype->wc_tolower(c, pg_regex_locale);
+		return MySessionData.pg_regex_locale->ctype->wc_tolower(c, MySessionData.pg_regex_locale);
 }
 
 
@@ -276,7 +276,7 @@ regc_ctype_get_cache(regc_wc_probefunc probefunc, int cclasscode)
 	for (pcc = pg_ctype_cache_list; pcc != NULL; pcc = pcc->next)
 	{
 		if (pcc->probefunc == probefunc &&
-			pcc->locale == pg_regex_locale)
+			pcc->locale == MySessionData.pg_regex_locale)
 			return &pcc->cv;
 	}
 
@@ -287,7 +287,7 @@ regc_ctype_get_cache(regc_wc_probefunc probefunc, int cclasscode)
 	if (pcc == NULL)
 		return NULL;
 	pcc->probefunc = probefunc;
-	pcc->locale = pg_regex_locale;
+	pcc->locale = MySessionData.pg_regex_locale;
 	pcc->cv.nchrs = 0;
 	pcc->cv.chrspace = 128;
 	pcc->cv.chrs = (chr *) malloc(pcc->cv.chrspace * sizeof(chr));
@@ -311,7 +311,7 @@ regc_ctype_get_cache(regc_wc_probefunc probefunc, int cclasscode)
 	 * would always be true for production values of MAX_SIMPLE_CHR, but it's
 	 * useful to allow it to be small for testing purposes.)
 	 */
-	if (pg_regex_locale->ctype_is_c)
+	if (MySessionData.pg_regex_locale->ctype_is_c)
 	{
 #if MAX_SIMPLE_CHR >= 127
 		max_chr = (pg_wchar) 127;

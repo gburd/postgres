@@ -54,6 +54,8 @@ struct catcacheheader;			/* utils/catcache.h: CatCacheHeader */
 struct PgStat_SubXactStatus;	/* utils/pgstat_internal.h */
 struct ArrayAnalyzeExtraData;	/* utils/adt/array_typanalyze.c */
 struct ResourceReleaseCallbackItem;	/* utils/resowner/resowner.c */
+struct List;					/* nodes/pg_list.h */
+struct pg_locale_struct;		/* utils/pg_locale.h: pg_locale_t */
 
 /*
  * Per-session state aggregate.
@@ -212,6 +214,24 @@ typedef struct MySession
 	 * RequestAddinShmemSpace (storage/ipc/ipci.c), summed during shmem sizing.
 	 */
 	Size		total_addin_request;
+
+	/*
+	 * Current parse position for the pg_strtok node-string reader
+	 * (nodes/read.c).  Points into the string being read; NULL when idle.
+	 */
+	const char *pg_strtok_ptr;
+
+	/*
+	 * List of pending ON COMMIT actions for temporary tables
+	 * (commands/tablecmds.c).  Each element is an OnCommitItem.
+	 */
+	struct List *on_commits;
+
+	/*
+	 * Locale in effect for the regexp engine's ctype probes
+	 * (regex/regc_pg_locale.c).  Set at the start of regexp compile/execute.
+	 */
+	struct pg_locale_struct *pg_regex_locale;
 } MySession;
 
 /*

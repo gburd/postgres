@@ -102,6 +102,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/partcache.h"
 #include "utils/relcache.h"
 #include "utils/ruleutils.h"
@@ -130,7 +131,6 @@ typedef struct OnCommitItem
 	SubTransactionId deleting_subid;
 } OnCommitItem;
 
-static session_local List *on_commits = NIL;
 
 
 /*
@@ -19523,7 +19523,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
 	 * order of registration.  That might not be essential but it seems
 	 * reasonable.
 	 */
-	on_commits = lcons(oc, on_commits);
+	MySessionData.on_commits = lcons(oc, MySessionData.on_commits);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -19538,7 +19538,7 @@ remove_on_commit_action(Oid relid)
 {
 	ListCell   *l;
 
-	foreach(l, on_commits)
+	foreach(l, MySessionData.on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -19563,7 +19563,7 @@ PreCommit_on_commit_actions(void)
 	List	   *oids_to_truncate = NIL;
 	List	   *oids_to_drop = NIL;
 
-	foreach(l, on_commits)
+	foreach(l, MySessionData.on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -19642,7 +19642,7 @@ PreCommit_on_commit_actions(void)
 		 * Note that table deletion will call remove_on_commit_action, so the
 		 * entry should get marked as deleted.
 		 */
-		foreach(l, on_commits)
+		foreach(l, MySessionData.on_commits)
 		{
 			OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -19668,7 +19668,7 @@ AtEOXact_on_commit_actions(bool isCommit)
 {
 	ListCell   *cur_item;
 
-	foreach(cur_item, on_commits)
+	foreach(cur_item, MySessionData.on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
@@ -19676,7 +19676,7 @@ AtEOXact_on_commit_actions(bool isCommit)
 			oc->creating_subid != InvalidSubTransactionId)
 		{
 			/* cur_item must be removed */
-			on_commits = foreach_delete_current(on_commits, cur_item);
+			MySessionData.on_commits = foreach_delete_current(MySessionData.on_commits, cur_item);
 			pfree(oc);
 		}
 		else
@@ -19701,14 +19701,14 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 {
 	ListCell   *cur_item;
 
-	foreach(cur_item, on_commits)
+	foreach(cur_item, MySessionData.on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
 		if (!isCommit && oc->creating_subid == mySubid)
 		{
 			/* cur_item must be removed */
-			on_commits = foreach_delete_current(on_commits, cur_item);
+			MySessionData.on_commits = foreach_delete_current(MySessionData.on_commits, cur_item);
 			pfree(oc);
 		}
 		else

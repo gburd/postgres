@@ -26,10 +26,10 @@
 #include "nodes/pg_list.h"
 #include "nodes/readfuncs.h"
 #include "nodes/value.h"
+#include "utils/mysession.h"
 
 
 /* Static state for pg_strtok */
-static session_local const char *pg_strtok_ptr = NULL;
 
 /* State flag that determines how readfuncs.c should treat location fields */
 #ifdef DEBUG_NODE_TESTS_ENABLED
@@ -60,9 +60,9 @@ stringToNodeInternal(const char *str, bool restore_loc_fields)
 	 * a lot of notational overhead by having to pass the next-character
 	 * pointer around through all the readfuncs.c code.
 	 */
-	save_strtok = pg_strtok_ptr;
+	save_strtok = MySessionData.pg_strtok_ptr;
 
-	pg_strtok_ptr = str;		/* point pg_strtok at the string to read */
+	MySessionData.pg_strtok_ptr = str;		/* point pg_strtok at the string to read */
 
 	/*
 	 * If enabled, likewise save/restore the location field handling flag.
@@ -74,7 +74,7 @@ stringToNodeInternal(const char *str, bool restore_loc_fields)
 
 	retval = nodeRead(NULL, 0); /* do the reading */
 
-	pg_strtok_ptr = save_strtok;
+	MySessionData.pg_strtok_ptr = save_strtok;
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
 	restore_location_fields = save_restore_location_fields;
@@ -155,7 +155,7 @@ pg_strtok(int *length)
 	const char *local_str;		/* working pointer to string */
 	const char *ret_str;		/* start of token to return */
 
-	local_str = pg_strtok_ptr;
+	local_str = MySessionData.pg_strtok_ptr;
 
 	while (*local_str == ' ' || *local_str == '\n' || *local_str == '\t')
 		local_str++;
@@ -163,7 +163,7 @@ pg_strtok(int *length)
 	if (*local_str == '\0')
 	{
 		*length = 0;
-		pg_strtok_ptr = local_str;
+		MySessionData.pg_strtok_ptr = local_str;
 		return NULL;			/* no more tokens */
 	}
 
@@ -200,7 +200,7 @@ pg_strtok(int *length)
 	if (*length == 2 && ret_str[0] == '<' && ret_str[1] == '>')
 		*length = 0;
 
-	pg_strtok_ptr = local_str;
+	MySessionData.pg_strtok_ptr = local_str;
 
 	return ret_str;
 }
