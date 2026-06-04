@@ -213,6 +213,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 100 | `access/common/heaptuple.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *missing_cache` (cache of "missing" attribute default values, keyed by `(len, value)`) into `MySessionData.missing_cache`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Thirteenth subsystem migrated into the aggregate. |
 
+| 101 | `access/transam/multixact.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local MemoryContext MXactContext` (per-transaction local MultiXactId member cache context) into `MySessionData.multixact_cache_cxt`; all use sites rewritten. `MemoryContext` already visible in `mysession.h`; the non-TLS `dclist` `MXactCache` is left standalone. Fourteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
