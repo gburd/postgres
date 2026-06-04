@@ -46,6 +46,13 @@
 #include "utils/palloc.h"
 
 /*
+ * Forward declarations for subsystems whose private types are not (and need
+ * not be) visible here: MySession only stores a pointer to them, so the full
+ * definition stays in the owning module's own header / .c file.
+ */
+struct catcacheheader;			/* utils/catcache.h: CatCacheHeader */
+
+/*
  * Per-session state aggregate.
  *
  * Members are added here as subsystems migrate in.  Plain-typed members
@@ -104,6 +111,12 @@ typedef struct MySession
 	 * (utils/cache/attoptcache.c).  Lazily created; NULL until first use.
 	 */
 	HTAB	   *attopt_cache_hash;
+
+	/*
+	 * Catalog cache management header listing all the catalog caches
+	 * (utils/cache/catcache.c).  Lazily created; NULL until first use.
+	 */
+	struct catcacheheader *catcache_hdr;
 } MySession;
 
 /*

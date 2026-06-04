@@ -37,6 +37,7 @@
 #include "utils/injection_point.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
 #include "utils/syscache.h"
@@ -79,9 +80,6 @@ static CatCInProgress *catcache_in_progress_stack = NULL;
 #else
 #define CACHE_elog(...)
 #endif
-
-/* Cache management header --- pointer is NULL until created */
-static session_local CatCacheHeader *CacheHdr = NULL;
 
 static inline HeapTuple SearchCatCacheInternal(CatCache *cache,
 											   int nkeys,
@@ -470,7 +468,7 @@ CatCachePrintStats(int code, Datum arg)
 	uint64		cc_lsearches = 0;
 	uint64		cc_lhits = 0;
 
-	slist_foreach(iter, &CacheHdr->ch_caches)
+	slist_foreach(iter, &MySessionData.catcache_hdr->ch_caches)
 	{
 		CatCache   *cache = slist_container(CatCache, cc_next, iter.cur);
 
@@ -507,7 +505,7 @@ CatCachePrintStats(int code, Datum arg)
 		 PRIu64 "=%" PRIu64 " hits, %" PRIu64 "+%" PRIu64 "=%" PRIu64
 		 " loads, %" PRIu64 " invals, %" PRIu64 " lists, %" PRIu64
 		 " lsrch, %" PRIu64 " lhits",
-		 CacheHdr->ch_ntup,
+		 MySessionData.catcache_hdr->ch_ntup,
 		 cc_searches,
 		 cc_hits,
 		 cc_neg_hits,
@@ -563,7 +561,7 @@ CatCacheRemoveCTup(CatCache *cache, CatCTup *ct)
 	pfree(ct);
 
 	--cache->cc_ntup;
-	--CacheHdr->ch_ntup;
+	--MySessionData.catcache_hdr->ch_ntup;
 }
 
 /*
@@ -814,7 +812,7 @@ ResetCatalogCachesExt(bool debug_discard)
 
 	CACHE_elog(DEBUG2, "ResetCatalogCaches called");
 
-	slist_foreach(iter, &CacheHdr->ch_caches)
+	slist_foreach(iter, &MySessionData.catcache_hdr->ch_caches)
 	{
 		CatCache   *cache = slist_container(CatCache, cc_next, iter.cur);
 
@@ -844,7 +842,7 @@ CatalogCacheFlushCatalog(Oid catId)
 
 	CACHE_elog(DEBUG2, "CatalogCacheFlushCatalog called for %u", catId);
 
-	slist_foreach(iter, &CacheHdr->ch_caches)
+	slist_foreach(iter, &MySessionData.catcache_hdr->ch_caches)
 	{
 		CatCache   *cache = slist_container(CatCache, cc_next, iter.cur);
 
@@ -918,11 +916,11 @@ InitCatCache(int id,
 	/*
 	 * if first time through, initialize the cache group header
 	 */
-	if (CacheHdr == NULL)
+	if (MySessionData.catcache_hdr == NULL)
 	{
-		CacheHdr = palloc_object(CatCacheHeader);
-		slist_init(&CacheHdr->ch_caches);
-		CacheHdr->ch_ntup = 0;
+		MySessionData.catcache_hdr = palloc_object(CatCacheHeader);
+		slist_init(&MySessionData.catcache_hdr->ch_caches);
+		MySessionData.catcache_hdr->ch_ntup = 0;
 #ifdef CATCACHE_STATS
 		/* set up to dump stats at backend exit */
 		on_proc_exit(CatCachePrintStats, 0);
@@ -975,7 +973,7 @@ InitCatCache(int id,
 	/*
 	 * add completed cache to top of group header's list
 	 */
-	slist_push_head(&CacheHdr->ch_caches, &cp->cc_next);
+	slist_push_head(&MySessionData.catcache_hdr->ch_caches, &cp->cc_next);
 
 	/*
 	 * back to the old context before we return...
@@ -1629,7 +1627,7 @@ SearchCatCacheMiss(CatCache *cache,
 		Assert(ct != NULL);
 
 		CACHE_elog(DEBUG2, "SearchCatCache(%s): Contains %d/%d tuples",
-				   cache->cc_relname, cache->cc_ntup, CacheHdr->ch_ntup);
+			   cache->cc_relname, cache->cc_ntup, MySessionData.catcache_hdr->ch_ntup);
 		CACHE_elog(DEBUG2, "SearchCatCache(%s): put neg entry in bucket %d",
 				   cache->cc_relname, hashIndex);
 
@@ -1642,7 +1640,7 @@ SearchCatCacheMiss(CatCache *cache,
 	}
 
 	CACHE_elog(DEBUG2, "SearchCatCache(%s): Contains %d/%d tuples",
-			   cache->cc_relname, cache->cc_ntup, CacheHdr->ch_ntup);
+			   cache->cc_relname, cache->cc_ntup, MySessionData.catcache_hdr->ch_ntup);
 	CACHE_elog(DEBUG2, "SearchCatCache(%s): put in bucket %d",
 			   cache->cc_relname, hashIndex);
 
@@ -2281,7 +2279,7 @@ CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp, Datum *arguments,
 	dlist_push_head(&cache->cc_bucket[hashIndex], &ct->cache_elem);
 
 	cache->cc_ntup++;
-	CacheHdr->ch_ntup++;
+	MySessionData.catcache_hdr->ch_ntup++;
 
 	/*
 	 * If the hash table has become too full, enlarge the buckets array. Quite
@@ -2406,7 +2404,7 @@ PrepareToInvalidateCacheTuple(Relation relation,
 	Assert(RelationIsValid(relation));
 	Assert(HeapTupleIsValid(tuple));
 	Assert(function);
-	Assert(CacheHdr != NULL);
+	Assert(MySessionData.catcache_hdr != NULL);
 
 	reloid = RelationGetRelid(relation);
 
@@ -2418,7 +2416,7 @@ PrepareToInvalidateCacheTuple(Relation relation,
 	 * ----------------
 	 */
 
-	slist_foreach(iter, &CacheHdr->ch_caches)
+	slist_foreach(iter, &MySessionData.catcache_hdr->ch_caches)
 	{
 		CatCache   *ccp = slist_container(CatCache, cc_next, iter.cur);
 		uint32		hashvalue;
