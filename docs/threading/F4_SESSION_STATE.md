@@ -239,6 +239,16 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 113 | `regex/regc_pg_locale.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local pg_locale_t pg_regex_locale` (locale governing the regexp engine's ctype probes) into `MySessionData.pg_regex_locale`; all use sites rewritten. `pg_locale_t` is reached via a forward declaration (`struct pg_locale_struct`), so `mysession.h` gains no new include. Twenty-sixth subsystem migrated into the aggregate. |
 
+| 114 | `commands/event_trigger.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local EventTriggerQueryState *currentEventTriggerState` (top of the active event-trigger execution-state stack) into `MySessionData.currentEventTriggerState`; all use sites rewritten. The type is reached via a forward declaration (`struct EventTriggerQueryState`), so `mysession.h` gains no new include. Twenty-seventh subsystem migrated into the aggregate. |
+
+| 115 | `storage/lmgr/condition_variable.c` + `include/storage/condition_variable.h` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local ConditionVariable *cv_sleep_target` (CV this backend is prepared to sleep on) into `MySessionData.cv_sleep_target`; all use sites rewritten. `ConditionVariable`'s anonymous typedef is given a `struct ConditionVariable` tag so the type can be reached from `mysession.h` via a forward declaration with no new include. Twenty-eighth subsystem migrated into the aggregate. |
+
+| 116 | `storage/ipc/sinvaladt.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local LocalTransactionId nextLocalTransactionId` (next virtual-transaction id this backend hands out) into `MySessionData.nextLocalTransactionId`; all use sites rewritten. `LocalTransactionId` (from `c.h`) needs no new include. Twenty-ninth subsystem migrated into the aggregate. |
+
+| 117 | `storage/ipc/dsm.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local bool dsm_init_done` (whether this backend has initialized the DSM subsystem) into `MySessionData.dsm_init_done`; all use sites rewritten. `bool` needs no new include. Thirtieth subsystem migrated into the aggregate. |
+
+| 118 | `replication/pgoutput/pgoutput.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *RelationSyncCache` (map remembering which relation schemas pgoutput has already sent) into `MySessionData.RelationSyncCache`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Thirty-first subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
