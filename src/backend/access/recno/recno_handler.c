@@ -2611,8 +2611,17 @@ reacquire:
 		TransactionId dirty_xid;
 		bool		is_insert_entry;
 
-		dirty_xid = SLogTupleGetDirtyXid(RelationGetRelid(relation),
-										 tid, &is_insert_entry);
+		/*
+		 * Writer-only probe: this branch waits on an in-progress
+		 * INSERT/UPDATE/DELETE writer.  Lock-only markers (LOCK_SHARE/
+		 * LOCK_EXCL) are handled by the dedicated lock-conflict check below
+		 * (SLogTupleHasLockConflict), which serializes lockers via the
+		 * heavyweight LOCKTAG_TUPLE lock.  Waiting-as-reader on a pure
+		 * locker's xid here lets two lockers each XactLockTableWait on the
+		 * other and deadlock.
+		 */
+		dirty_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
+											   tid, &is_insert_entry);
 
 		if (TransactionIdIsValid(dirty_xid) && is_insert_entry)
 		{
