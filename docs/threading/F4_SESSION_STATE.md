@@ -229,6 +229,10 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 108 | `postmaster/pgarch.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local MemoryContext archive_context` (per-archive-cycle scratch context, reset after each WAL file is archived) into `MySessionData.archive_context`; all use sites rewritten. `MemoryContext` already visible in `mysession.h`; the unrelated frontend type `astreamer_archive_context` is untouched. Twenty-first subsystem migrated into the aggregate. |
 
+| 109 | `storage/lmgr/lmgr.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local uint32 speculativeInsertionToken` (per-backend speculative-insertion token counter) into `MySessionData.speculative_insertion_token`; all use sites rewritten. `uint32` needs no new include. Twenty-second subsystem migrated into the aggregate. |
+
+| 110 | `storage/ipc/ipci.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local Size total_addin_request` (extra shmem bytes requested by loadable modules, summed during shmem sizing) into `MySessionData.total_addin_request`; all use sites rewritten. `Size` needs no new include. Twenty-third subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
