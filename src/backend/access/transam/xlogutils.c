@@ -27,6 +27,7 @@
 #include "storage/fd.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 
 
@@ -74,8 +75,6 @@ typedef struct xl_invalid_page
 	xl_invalid_page_key key;	/* hash key ... must be first */
 	bool		present;		/* page existed but contained zeroes */
 } xl_invalid_page;
-
-static session_local HTAB *invalid_page_tab = NULL;
 
 static int	read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
 									  int reqLen, XLogRecPtr targetRecPtr,
@@ -128,7 +127,7 @@ log_invalid_page(RelFileLocator locator, ForkNumber forkno, BlockNumber blkno,
 	if (message_level_is_interesting(DEBUG1))
 		report_invalid_page(DEBUG1, locator, forkno, blkno, present);
 
-	if (invalid_page_tab == NULL)
+	if (MySessionData.invalid_page_tab == NULL)
 	{
 		/* create hash table when first needed */
 		HASHCTL		ctl;
@@ -136,10 +135,10 @@ log_invalid_page(RelFileLocator locator, ForkNumber forkno, BlockNumber blkno,
 		ctl.keysize = sizeof(xl_invalid_page_key);
 		ctl.entrysize = sizeof(xl_invalid_page);
 
-		invalid_page_tab = hash_create("XLOG invalid-page table",
-									   100,
-									   &ctl,
-									   HASH_ELEM | HASH_BLOBS);
+		MySessionData.invalid_page_tab = hash_create("XLOG invalid-page table",
+													 100,
+													 &ctl,
+													 HASH_ELEM | HASH_BLOBS);
 	}
 
 	/* we currently assume xl_invalid_page_key contains no padding */
@@ -147,7 +146,7 @@ log_invalid_page(RelFileLocator locator, ForkNumber forkno, BlockNumber blkno,
 	key.forkno = forkno;
 	key.blkno = blkno;
 	hentry = (xl_invalid_page *)
-		hash_search(invalid_page_tab, &key, HASH_ENTER, &found);
+		hash_search(MySessionData.invalid_page_tab, &key, HASH_ENTER, &found);
 
 	if (!found)
 	{
@@ -168,10 +167,10 @@ forget_invalid_pages(RelFileLocator locator, ForkNumber forkno,
 	HASH_SEQ_STATUS status;
 	xl_invalid_page *hentry;
 
-	if (invalid_page_tab == NULL)
+	if (MySessionData.invalid_page_tab == NULL)
 		return;					/* nothing to do */
 
-	hash_seq_init(&status, invalid_page_tab);
+	hash_seq_init(&status, MySessionData.invalid_page_tab);
 
 	while ((hentry = (xl_invalid_page *) hash_seq_search(&status)) != NULL)
 	{
@@ -183,7 +182,7 @@ forget_invalid_pages(RelFileLocator locator, ForkNumber forkno,
 				 hentry->key.blkno,
 				 relpathperm(hentry->key.locator, forkno).str);
 
-			if (hash_search(invalid_page_tab,
+			if (hash_search(MySessionData.invalid_page_tab,
 							&hentry->key,
 							HASH_REMOVE, NULL) == NULL)
 				elog(ERROR, "hash table corrupted");
@@ -198,10 +197,10 @@ forget_invalid_pages_db(Oid dbid)
 	HASH_SEQ_STATUS status;
 	xl_invalid_page *hentry;
 
-	if (invalid_page_tab == NULL)
+	if (MySessionData.invalid_page_tab == NULL)
 		return;					/* nothing to do */
 
-	hash_seq_init(&status, invalid_page_tab);
+	hash_seq_init(&status, MySessionData.invalid_page_tab);
 
 	while ((hentry = (xl_invalid_page *) hash_seq_search(&status)) != NULL)
 	{
@@ -211,7 +210,7 @@ forget_invalid_pages_db(Oid dbid)
 				 hentry->key.blkno,
 				 relpathperm(hentry->key.locator, hentry->key.forkno).str);
 
-			if (hash_search(invalid_page_tab,
+			if (hash_search(MySessionData.invalid_page_tab,
 							&hentry->key,
 							HASH_REMOVE, NULL) == NULL)
 				elog(ERROR, "hash table corrupted");
@@ -223,8 +222,8 @@ forget_invalid_pages_db(Oid dbid)
 bool
 XLogHaveInvalidPages(void)
 {
-	if (invalid_page_tab != NULL &&
-		hash_get_num_entries(invalid_page_tab) > 0)
+	if (MySessionData.invalid_page_tab != NULL &&
+		hash_get_num_entries(MySessionData.invalid_page_tab) > 0)
 		return true;
 	return false;
 }
@@ -237,10 +236,10 @@ XLogCheckInvalidPages(void)
 	xl_invalid_page *hentry;
 	bool		foundone = false;
 
-	if (invalid_page_tab == NULL)
+	if (MySessionData.invalid_page_tab == NULL)
 		return;					/* nothing to do */
 
-	hash_seq_init(&status, invalid_page_tab);
+	hash_seq_init(&status, MySessionData.invalid_page_tab);
 
 	/*
 	 * Our strategy is to emit WARNING messages for all remaining entries and
@@ -257,8 +256,8 @@ XLogCheckInvalidPages(void)
 		elog(GetGUCBool(GUC_ignore_invalid_pages) ? WARNING : PANIC,
 			 "WAL contains references to invalid pages");
 
-	hash_destroy(invalid_page_tab);
-	invalid_page_tab = NULL;
+	hash_destroy(MySessionData.invalid_page_tab);
+	MySessionData.invalid_page_tab = NULL;
 }
 
 

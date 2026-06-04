@@ -159,6 +159,13 @@ typedef struct MySession
 	 * (access/transam/xlogprefetcher.c).
 	 */
 	int			xlog_prefetch_reconfigure_count;
+
+	/*
+	 * Hash table of WAL-referenced pages that were found missing during
+	 * recovery (access/transam/xlogutils.c).  Lazily created; NULL until
+	 * first use.
+	 */
+	HTAB	   *invalid_page_tab;
 } MySession;
 
 /*
