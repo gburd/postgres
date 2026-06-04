@@ -75,6 +75,26 @@ typedef struct InstrumentState
 } InstrumentState;
 
 /*
+ * Saved error context for SlruReportIOError (access/transam/slru.c).  Embedded
+ * by value in MySession; self-contained, no external type dependencies.
+ */
+typedef enum
+{
+	SLRU_OPEN_FAILED,
+	SLRU_SEEK_FAILED,
+	SLRU_READ_FAILED,
+	SLRU_WRITE_FAILED,
+	SLRU_FSYNC_FAILED,
+	SLRU_CLOSE_FAILED,
+} SlruErrorCause;
+
+typedef struct SlruState
+{
+	SlruErrorCause slru_errcause;
+	int			slru_errno;
+} SlruState;
+
+/*
  * Per-session state aggregate.
  *
  * Members are added here as subsystems migrate in.  Plain-typed members
@@ -321,6 +341,11 @@ typedef struct MySession
 	 * (executor/instrument.c).
 	 */
 	InstrumentState instrument_state;
+
+	/*
+	 * Saved error context for SlruReportIOError (access/transam/slru.c).
+	 */
+	SlruState	slru_state;
 } MySession;
 
 /*

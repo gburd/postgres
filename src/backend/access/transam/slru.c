@@ -73,6 +73,7 @@
 #include "storage/shmem_internal.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/wait_event.h"
 
 /*
@@ -163,24 +164,6 @@ typedef struct SlruWriteAllData *SlruWriteAll;
 	(a).segno = (xx_segno) \
 )
 
-/* Saved info for SlruReportIOError */
-typedef enum
-{
-	SLRU_OPEN_FAILED,
-	SLRU_SEEK_FAILED,
-	SLRU_READ_FAILED,
-	SLRU_WRITE_FAILED,
-	SLRU_FSYNC_FAILED,
-	SLRU_CLOSE_FAILED,
-} SlruErrorCause;
-
-typedef struct SlruState
-{
-	SlruErrorCause slru_errcause;
-	int			slru_errno;
-} SlruState;
-
-static session_local SlruState slru_state;
 
 
 static void SimpleLruZeroLSNs(SlruDesc *ctl, int slotno);
@@ -820,15 +803,15 @@ SimpleLruDoesPhysicalPageExist(SlruDesc *ctl, int64 pageno)
 			return false;
 
 		/* report error normally */
-		slru_state.slru_errcause = SLRU_OPEN_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_OPEN_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		SlruReportIOError(ctl, pageno, NULL);
 	}
 
 	if ((endpos = lseek(fd, 0, SEEK_END)) < 0)
 	{
-		slru_state.slru_errcause = SLRU_SEEK_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_SEEK_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		SlruReportIOError(ctl, pageno, NULL);
 	}
 
@@ -836,8 +819,8 @@ SimpleLruDoesPhysicalPageExist(SlruDesc *ctl, int64 pageno)
 
 	if (CloseTransientFile(fd) != 0)
 	{
-		slru_state.slru_errcause = SLRU_CLOSE_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_CLOSE_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		return false;
 	}
 
@@ -878,8 +861,8 @@ SlruPhysicalReadPage(SlruDesc *ctl, int64 pageno, int slotno)
 	{
 		if (errno != ENOENT || !InRecovery)
 		{
-			slru_state.slru_errcause = SLRU_OPEN_FAILED;
-			slru_state.slru_errno = errno;
+			MySessionData.slru_state.slru_errcause = SLRU_OPEN_FAILED;
+			MySessionData.slru_state.slru_errno = errno;
 			return false;
 		}
 
@@ -895,8 +878,8 @@ SlruPhysicalReadPage(SlruDesc *ctl, int64 pageno, int slotno)
 	if (pg_pread(fd, shared->page_buffer[slotno], BLCKSZ, offset) != BLCKSZ)
 	{
 		pgstat_report_wait_end();
-		slru_state.slru_errcause = SLRU_READ_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_READ_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		CloseTransientFile(fd);
 		return false;
 	}
@@ -904,8 +887,8 @@ SlruPhysicalReadPage(SlruDesc *ctl, int64 pageno, int slotno)
 
 	if (CloseTransientFile(fd) != 0)
 	{
-		slru_state.slru_errcause = SLRU_CLOSE_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_CLOSE_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		return false;
 	}
 
@@ -1018,8 +1001,8 @@ SlruPhysicalWritePage(SlruDesc *ctl, int64 pageno, int slotno, SlruWriteAll fdat
 		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
 		if (fd < 0)
 		{
-			slru_state.slru_errcause = SLRU_OPEN_FAILED;
-			slru_state.slru_errno = errno;
+			MySessionData.slru_state.slru_errcause = SLRU_OPEN_FAILED;
+			MySessionData.slru_state.slru_errno = errno;
 			return false;
 		}
 
@@ -1050,8 +1033,8 @@ SlruPhysicalWritePage(SlruDesc *ctl, int64 pageno, int slotno, SlruWriteAll fdat
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
 			errno = ENOSPC;
-		slru_state.slru_errcause = SLRU_WRITE_FAILED;
-		slru_state.slru_errno = errno;
+		MySessionData.slru_state.slru_errcause = SLRU_WRITE_FAILED;
+		MySessionData.slru_state.slru_errno = errno;
 		if (!fdata)
 			CloseTransientFile(fd);
 		return false;
@@ -1071,8 +1054,8 @@ SlruPhysicalWritePage(SlruDesc *ctl, int64 pageno, int slotno, SlruWriteAll fdat
 			if (pg_fsync(fd) != 0)
 			{
 				pgstat_report_wait_end();
-				slru_state.slru_errcause = SLRU_FSYNC_FAILED;
-				slru_state.slru_errno = errno;
+				MySessionData.slru_state.slru_errcause = SLRU_FSYNC_FAILED;
+				MySessionData.slru_state.slru_errno = errno;
 				CloseTransientFile(fd);
 				return false;
 			}
@@ -1085,8 +1068,8 @@ SlruPhysicalWritePage(SlruDesc *ctl, int64 pageno, int slotno, SlruWriteAll fdat
 	{
 		if (CloseTransientFile(fd) != 0)
 		{
-			slru_state.slru_errcause = SLRU_CLOSE_FAILED;
-			slru_state.slru_errno = errno;
+			MySessionData.slru_state.slru_errcause = SLRU_CLOSE_FAILED;
+			MySessionData.slru_state.slru_errno = errno;
 			return false;
 		}
 	}
@@ -1107,8 +1090,8 @@ SlruReportIOError(SlruDesc *ctl, int64 pageno, const void *opaque_data)
 	char		path[MAXPGPATH];
 
 	SlruFileName(ctl, path, segno);
-	errno = slru_state.slru_errno;
-	switch (slru_state.slru_errcause)
+	errno = MySessionData.slru_state.slru_errno;
+	switch (MySessionData.slru_state.slru_errcause)
 	{
 		case SLRU_OPEN_FAILED:
 			ereport(ERROR,
@@ -1166,7 +1149,7 @@ SlruReportIOError(SlruDesc *ctl, int64 pageno, const void *opaque_data)
 		default:
 			/* can't get here, we trust */
 			elog(ERROR, "unrecognized SimpleLru error cause: %d",
-				 (int) slru_state.slru_errcause);
+				 (int) MySessionData.slru_state.slru_errcause);
 			break;
 	}
 }
@@ -1434,8 +1417,8 @@ SimpleLruWriteAll(SlruDesc *ctl, bool allow_redirtied)
 	{
 		if (CloseTransientFile(fdata.fd[i]) != 0)
 		{
-			slru_state.slru_errcause = SLRU_CLOSE_FAILED;
-			slru_state.slru_errno = errno;
+			MySessionData.slru_state.slru_errcause = SLRU_CLOSE_FAILED;
+			MySessionData.slru_state.slru_errno = errno;
 			pageno = fdata.segno[i] * SLRU_PAGES_PER_SEGMENT;
 			ok = false;
 		}
