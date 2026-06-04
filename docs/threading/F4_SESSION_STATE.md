@@ -217,6 +217,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 102 | `access/transam/xlogprefetcher.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local int XLogPrefetchReconfigureCount` (bumped on recovery-prefetch GUC change so each prefetcher reconfigures on next use) into `MySessionData.xlog_prefetch_reconfigure_count`; all use sites rewritten. `int` needs no new include. Fifteenth subsystem migrated into the aggregate. |
 
+| 103 | `access/transam/xlogutils.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *invalid_page_tab` (table of WAL-referenced pages found missing during recovery) into `MySessionData.invalid_page_tab`; all fifteen use sites rewritten. `HTAB` already visible in `mysession.h`. Sixteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
