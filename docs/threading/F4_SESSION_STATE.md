@@ -223,6 +223,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 105 | `commands/prepare.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *prepared_queries` (this backend's prepared statements, keyed by statement name) into `MySessionData.prepared_queries`; all use sites rewritten. `HTAB` already visible in `mysession.h`; the static prototypes that followed the old decl are retained. Eighteenth subsystem migrated into the aggregate. |
 
+| 106 | `optimizer/util/predtest.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member.** Migrates the file-local `session_local HTAB *OprProofCacheHash` (btree operator-proof lookup cache for predicate testing) into `MySessionData.oprproof_cache_hash`; all use sites rewritten. `HTAB` already visible in `mysession.h`. Nineteenth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
