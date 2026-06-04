@@ -185,6 +185,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 86 | `port/posix_sema.c` | `PosixSemaState` / `posix_sema_state` | 4 | **SPLIT** — folded the four *private* file-local session_local statics (`mySemPointers`, `numSems`, `maxSems`, `nextSemKey`) into one file-local `static session_local PosixSemaState posix_sema_state`. `mySemPointers` stays wrapped in `#ifdef USE_NAMED_POSIX_SEMAPHORES` inside the struct. The `pg_global` `sharedSemas` array (the `#else`/unnamed-semaphore shared-memory path) is shared state, left standalone. Zero-init struct. No header change. |
 
+| 87 | `port/sysv_sema.c` | `SysvSemaState` / `sysv_sema_state` | 5 | **SPLIT** — folded the five *private* file-local session_local statics (`mySemaSets`, `numSemaSets`, `maxSemaSets`, `nextSemaKey`, `nextSemaNumber`) into one file-local `static session_local SysvSemaState sysv_sema_state`. Platform alternative to posix_sema.c (selected by meson `sema_kind`). The `pg_global` `sharedSemas` and its plain-static companions `numSharedSemas`/`maxSharedSemas` (shared-memory state) stay standalone. Not compiled on this host; validated via `clang -fsyntax-only -DUSE_SYSV_SEMAPHORES` (0 errors) + threadcheck/srclint scans. Zero-init. No header change. |
+
 ## Verification gates (every step)
 
 | Gate | Command |
