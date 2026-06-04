@@ -275,6 +275,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 131 | `storage/large_object/inv_api.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local InvApiState inv_api_state` (the shared pg_largeobject heap and index `Relation` references) by value as `MySessionData.inv_api_state`; the `InvApiState` typedef is relocated into `mysession.h`. Both members are `Relation`, kept as pointers to the forward-declared `struct RelationData` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the forty-fourth subsystem migrated into the aggregate. |
 
+| 132 | `commands/sequence.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SequenceState sequence_state` (the per-backend sequence value cache and last-used sequence pointer) by value as `MySessionData.sequence_state`; the `SequenceState` typedef is relocated into `mysession.h`. `seqhashtab` is kept as a pointer to the forward-declared `struct HTAB` and `last_used_seq` as a pointer to the forward-declared `struct SeqTableData` (which stays file-local to `sequence.c`); zero new includes. The `"Sequence values"` hash-name string is unaffected. The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the forty-fifth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
