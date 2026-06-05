@@ -203,6 +203,36 @@ SLogFlatHashProbe(const SLogFlatHash * ht, const SLogTupleKey *key)
 }
 
 /*
+ * SLogFlatHashHasOpForXid
+ *		Return true iff the entry for key holds an in-use op for xid.
+ *
+ * Used by SLogTupleInsert to confirm an op was actually stored, rather than
+ * silently dropped because the per-TID ops array was full.  Probing the
+ * bucket alone is insufficient on a hot row, where the bucket pre-exists with
+ * other markers.
+ */
+bool
+SLogFlatHashHasOpForXid(const SLogFlatHash * ht, const SLogTupleKey *key,
+						TransactionId xid)
+{
+	const SLogFlatBucket *bucket = SLogFlatHashProbe(ht, key);
+	const SLogTupleEntry *entry;
+	int			i;
+
+	if (bucket == NULL)
+		return false;
+
+	entry = &bucket->entry;
+	for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+	{
+		if (entry->ops[i].in_use &&
+			TransactionIdEquals(entry->ops[i].xid, xid))
+			return true;
+	}
+	return false;
+}
+
+/*
  * SLogFlatHashProbeForInsert
  *		Find a slot for inserting a key. Returns the bucket to use.
  *
@@ -448,17 +478,31 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 		TransactionId reclaim_xid_horizon = op->reclaim_xid_horizon;
 
 		/*
-		 * Select the oldest reclaimable committed UPDATE marker.  A marker is
-		 * reclaimable only once its committing xid precedes the oldest active
-		 * snapshot's xmin (reclaim_xid_horizon): at that point the xid is
-		 * visible to every live snapshot, so no write-write conflict probe
-		 * (SLogTupleHasCommittedUpdateAfter) and no before-image read
-		 * (SLogTupleGetSharedBeforeImage) can still need it -- both decide by
-		 * XidInMVCCSnapshot, not by HLC.  Using the xid horizon keeps
-		 * reclamation consistent with the xid-authority probe; an HLC horizon
-		 * races with the PRE_COMMIT-stamp / ProcArray-exit skew and would
-		 * free a marker a concurrent updater still needs, reintroducing the
-		 * lost update.
+		 * Select the oldest reclaimable UPDATE marker.  A marker is reclaimable
+		 * once its xid precedes the oldest active snapshot's xmin
+		 * (reclaim_xid_horizon): at that point the xid's outcome is settled and
+		 * visible to (or irrelevant to) every live snapshot, so no write-write
+		 * conflict probe (SLogTupleHasCommittedUpdateAfter) and no before-image
+		 * read (SLogTupleGetSharedBeforeImage) can still need it -- both decide
+		 * by XidInMVCCSnapshot, not by HLC.  An in-progress xid can never
+		 * precede this horizon, so this test alone never frees a marker a
+		 * concurrent reader or writer still needs.
+		 *
+		 * We deliberately do NOT gate on commit_hlc != 0 here.  commit_hlc is a
+		 * derived cache of CLOG commit state, stamped lazily at PRE_COMMIT from
+		 * a backend-local tracked-key list (SLogTupleCommitByXid); under
+		 * saturation that stamp can be missed, leaving a marker committed in
+		 * CLOG but commit_hlc == 0 forever.  Gating reclamation on commit_hlc
+		 * would pin such markers permanently and, once SLOG_MAX_TUPLE_OPS of
+		 * them accumulate on a hot row, jam the array and silently drop every
+		 * subsequent op.  The xid horizon is the authoritative, self-healing
+		 * gate: a below-horizon marker is reclaimable whether or not it was
+		 * ever stamped.  (An unstamped marker never had its before-image
+		 * published, so before_image_dp is invalid and nothing is leaked.)
+		 *
+		 * Prefer the marker with the smallest commit_hlc as "oldest"; unstamped
+		 * reclaimable markers (commit_hlc == 0) sort first, which is correct --
+		 * they are the stuck entries we most want to drain.
 		 */
 		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
 		{
@@ -466,13 +510,12 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 				continue;
 			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 				continue;
-			if (entry->ops[i].commit_hlc == 0)
-				continue;		/* uncommitted, can't reclaim */
+			if (!TransactionIdIsValid(entry->ops[i].xid))
+				continue;
 			if (TransactionIdIsValid(reclaim_xid_horizon) &&
-				TransactionIdIsValid(entry->ops[i].xid) &&
 				!TransactionIdPrecedes(entry->ops[i].xid, reclaim_xid_horizon))
 				continue;		/* still visible-relevant to an active
-								 * snapshot */
+								 * snapshot, or in-progress */
 			if (entry->ops[i].commit_hlc < oldest_hlc)
 			{
 				oldest_hlc = entry->ops[i].commit_hlc;
@@ -495,7 +538,16 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 		}
 	}
 
-	/* Truly no room (all slots are in-progress, non-UPDATE ops) — lost */
+	/*
+	 * No reclaimable slot: every one of the SLOG_MAX_TUPLE_OPS slots holds an
+	 * UPDATE whose xid is still at/above the reclaim horizon (in-progress or
+	 * very recently committed) or a non-UPDATE marker.  With the xid-horizon
+	 * reclaim above this requires SLOG_MAX_TUPLE_OPS concurrent unsettled
+	 * writers on a single TID, which is not reachable under normal load.  The
+	 * caller (SLogTupleInsert) detects the drop via SLogFlatHashHasOpForXid and
+	 * falls back to local-only tracking + UNDO replay, so this is safe but
+	 * worth surfacing.
+	 */
 	elog(WARNING, "SLOG_LOST_OP ops_full relid=%u xid=%u op=%d nops=%d horizon=%u",
 		 op->key.relid, op->tuple_op.xid, (int) op->tuple_op.op_type,
 		 entry->nops, op->reclaim_xid_horizon);
@@ -713,15 +765,21 @@ flat_hash_apply_cleanup_retained(SLogFlatHash * ht, const SLogFlatOp * op)
 			continue;
 		if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 			continue;
-		if (entry->ops[i].commit_hlc == 0)
+		if (!TransactionIdIsValid(entry->ops[i].xid))
 			continue;
-		if (TransactionIdIsValid(entry->ops[i].xid) &&
-			TransactionIdIsValid(op->reclaim_xid_horizon) &&
+		if (TransactionIdIsValid(op->reclaim_xid_horizon) &&
 			!TransactionIdPrecedes(entry->ops[i].xid,
 								   op->reclaim_xid_horizon))
 			continue;
 
-		/* Expired retained entry */
+		/*
+		 * Expired retained entry.  Gated on the xid horizon alone -- NOT on
+		 * commit_hlc != 0 -- so a marker committed in CLOG but never stamped
+		 * (missed PRE_COMMIT stamp under saturation) is still drained instead
+		 * of pinning a slot forever.  Must match the read-side eligibility
+		 * scan in SLogTupleCleanupRetained so the freed before-image set
+		 * matches the nulled-pointer set exactly.
+		 */
 		entry->ops[i].in_use = false;
 		entry->ops[i].before_image_dp = InvalidDsaPointer;
 		entry->ops[i].commit_hlc = 0;

@@ -1519,21 +1519,27 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 	LWLockRelease(&fp->writer_lock.lock);
 
 	/*
-	 * If num_entries didn't increase and it wasn't an overwrite of existing
-	 * key, the table might be full.  Try eviction and retry.
+	 * Verify the op was actually stored.  We must probe for THIS xid's op, not
+	 * merely the bucket: on a hot row the bucket pre-exists (it holds other
+	 * TIDs' / xids' markers), so num_entries is unchanged and the bucket is
+	 * present even when flat_hash_apply_insert silently dropped our op because
+	 * the per-TID ops array was full with nothing reclaimable.  Testing only
+	 * bucket presence (the old SLogFlatHashProbe != NULL) reports success for a
+	 * dropped op, so no marker exists to stamp at PRE_COMMIT and the next
+	 * concurrent writer clobbers this update -- a lost update.  Probe the ops
+	 * array for our xid instead.
 	 */
 	if (entries_after == entries_before)
 	{
-		/* Check if this was an overwrite (key already existed) */
-		bool		key_exists;
+		bool		op_stored;
 
 		ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
-		key_exists = (SLogFlatHashProbe(ht, &key) != NULL);
+		op_stored = SLogFlatHashHasOpForXid(ht, &key, xid);
 		LRLockReadEnd(fp->lrlock);
 
-		if (!key_exists)
+		if (!op_stored)
 		{
-			/* Table was full — try eviction */
+			/* Table or per-TID array was full — try eviction */
 			int		evicted = SLogTupleEvictCommitted();
 
 			if (evicted > 0)
@@ -1548,11 +1554,11 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 
 				/* Check again */
 				ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
-				key_exists = (SLogFlatHashProbe(ht, &key) != NULL);
+				op_stored = SLogFlatHashHasOpForXid(ht, &key, xid);
 				LRLockReadEnd(fp->lrlock);
 			}
 
-			if (!key_exists)
+			if (!op_stored)
 			{
 				slog_overflow_warning_count++;
 				{
@@ -3458,6 +3464,8 @@ SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
 	const SLogFlatHash *ht;
 	const SLogFlatBucket *bucket;
 	bool		found = false;
+	TransactionId unstamped_cands[SLOG_MAX_TUPLE_OPS];
+	int			n_unstamped = 0;
 
 	if (SLogState == NULL || snapshot == NULL)
 		return false;
@@ -3480,8 +3488,6 @@ SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
 				continue;
 			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 				continue;
-			if (entry->ops[i].commit_hlc == 0)
-				continue;		/* uncommitted: handled by dirty-xid wait path */
 			if (TransactionIdIsValid(exclude_xid) &&
 				TransactionIdEquals(entry->ops[i].xid, exclude_xid))
 				continue;		/* our own update */
@@ -3498,6 +3504,27 @@ SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
 			 */
 			if (!XidInMVCCSnapshot(entry->ops[i].xid, snapshot))
 				continue;
+
+			if (entry->ops[i].commit_hlc == 0)
+			{
+				/*
+				 * commit_hlc == 0 normally means "uncommitted, handled by the
+				 * dirty-xid wait path".  But commit_hlc is a derived cache of
+				 * CLOG state stamped lazily at PRE_COMMIT, and under saturation
+				 * that stamp can be missed -- leaving a marker committed in
+				 * CLOG but unstamped.  Such a marker is a genuine write-write
+				 * conflict (XidInMVCCSnapshot already proved it invisible to
+				 * our snapshot) that we must not silently drop.  We cannot call
+				 * TransactionIdDidCommit() here: it may take an SLRU LWLock,
+				 * and we are inside the wait-free LRLock read section (an odd
+				 * epoch blocks the writer's publish).  Defer the CLOG check to
+				 * after LRLockReadEnd().  EPQ dedup cannot apply (no HLC to
+				 * compare), so an unstamped committed marker conservatively
+				 * conflicts -- correct, and vanishingly rare.
+				 */
+				unstamped_cands[n_unstamped++] = entry->ops[i].xid;
+				continue;
+			}
 			/*
 			 * EPQ dedup: a prior EvalPlanQual on this (relid, tid, curcid)
 			 * already reconciled commits up to epq_floor_hlc; do not re-fire
@@ -3513,6 +3540,25 @@ SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
 	}
 
 	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+
+	/*
+	 * Resolve any unstamped candidates against CLOG outside the read section.
+	 * A committed xid is a real conflict; an in-progress one is left to the
+	 * dirty-xid wait path (we already verified XidInMVCCSnapshot above).
+	 */
+	if (!found && n_unstamped > 0)
+	{
+		int		i;
+
+		for (i = 0; i < n_unstamped; i++)
+		{
+			if (TransactionIdDidCommit(unstamped_cands[i]))
+			{
+				found = true;
+				break;
+			}
+		}
+	}
 
 	return found;
 }
@@ -3621,17 +3667,19 @@ SLogTupleCleanupRetained(uint64 oldest_snapshot_hlc)
 					continue;
 				if (entry->ops[i].op_type != SLOG_OP_UPDATE)
 					continue;
-				if (entry->ops[i].commit_hlc == 0)
-					continue;	/* uncommitted, can't reclaim */
+				if (!TransactionIdIsValid(entry->ops[i].xid))
+					continue;
 				/*
-				 * Reclaim only once the committing xid precedes the oldest
-				 * active snapshot's xmin (xid authority -- see the function
-				 * header).  An HLC-horizon gate here would race the
-				 * PRE_COMMIT-stamp / ProcArray-exit skew and reintroduce the
-				 * lost update.
+				 * Reclaim once the xid precedes the oldest active snapshot's
+				 * xmin (xid authority -- see the function header).  We do NOT
+				 * gate on commit_hlc != 0: commit_hlc is a derived cache of
+				 * CLOG state stamped lazily at PRE_COMMIT, and a missed stamp
+				 * (under saturation) would otherwise pin a committed,
+				 * below-horizon marker forever.  An HLC-horizon gate would
+				 * race the PRE_COMMIT-stamp / ProcArray-exit skew and
+				 * reintroduce the lost update; the xid horizon does not.
 				 */
-				if (TransactionIdIsValid(entry->ops[i].xid) &&
-					!TransactionIdPrecedes(entry->ops[i].xid,
+				if (!TransactionIdPrecedes(entry->ops[i].xid,
 										   reclaim_xid_horizon))
 					continue;
 

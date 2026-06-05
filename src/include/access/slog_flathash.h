@@ -199,6 +199,15 @@ extern SLogFlatBucket * SLogFlatHashProbe(const SLogFlatHash * ht,
 										  const SLogTupleKey *key);
 
 /*
+ * Return true iff the entry for key holds an in-use op for xid.  Detects a
+ * silently-dropped op (per-TID array full) where the bucket itself exists.
+ * Only valid during a read-side or write-side critical section.
+ */
+extern bool SLogFlatHashHasOpForXid(const SLogFlatHash * ht,
+									const SLogTupleKey *key,
+									TransactionId xid);
+
+/*
  * Find a bucket for insertion (first empty or tombstone slot on probe chain).
  * Returns NULL if the table is full (all slots on probe chain occupied).
  * Only valid during write-side critical section.
