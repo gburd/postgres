@@ -65,7 +65,12 @@ preproc.h: preproc.c
 
 preproc.c: BISONFLAGS += -d
 
-preproc.y: ../../../backend/parser/gram.y parse.pl ecpg.addons ecpg.header ecpg.tokens ecpg.trailer ecpg.type
+# Phase 2k.3: derive a bison-format scaffold from gram.lime so
+# parse.pl can run unchanged.
+derived_gram.y: ../../../backend/parser/gram.lime
+	$(PYTHON) $(top_srcdir)/src/tools/lime_to_bison_gram.py $< $@
+
+preproc.y: derived_gram.y parse.pl ecpg.addons ecpg.header ecpg.tokens ecpg.trailer ecpg.type
 	$(PERL) $(srcdir)/parse.pl --srcdir $(srcdir) --parser $< --output $@
 
 # generate keyword headers
@@ -96,5 +101,5 @@ uninstall:
 clean distclean:
 	rm -f *.o ecpg$(X)
 	rm -f typename.c
-	rm -f preproc.y preproc.c preproc.h pgc.c c_kwlist_d.h ecpg_kwlist_d.h
+	rm -f preproc.y preproc.c preproc.h c_kwlist_d.h ecpg_kwlist_d.h
 	rm -rf tmp_check

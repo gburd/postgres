@@ -22,7 +22,20 @@
 #include "postgres_fe.h"
 
 #include "preproc_extern.h"
+#include "preproc_yytype.h"		/* must come BEFORE preproc.h: provides
+								 * YYSTYPE */
 #include "preproc.h"
+
+/*
+ * base_yylval / base_yylloc were emitted by bison as globals shared
+ * with yylex.  Lime doesn't emit them; declare here as scratchpad
+ * shared between filtered_base_yylex (this file) and pgc.c.  ecpg's
+ * parser is single-threaded so a single shared instance is fine.
+ */
+extern YYSTYPE base_yylval;
+extern YYLTYPE base_yylloc;
+YYSTYPE		base_yylval;
+YYLTYPE		base_yylloc;
 
 
 static bool have_lookahead;		/* is lookahead info valid? */
@@ -243,20 +256,21 @@ base_yylex_location(void)
 	switch (token)
 	{
 			/* List a token here if pgc.l assigns to base_yylval.str for it */
-		case Op:
-		case CSTRING:
-		case CPP_LINE:
-		case CVARIABLE:
-		case BCONST:
-		case SCONST:
-		case USCONST:
-		case XCONST:
-		case FCONST:
-		case IDENT:
-		case UIDENT:
-		case IP:
+			case OP:			/* renamed from Op in Phase 3 final */
+			case		CSTRING:
+			case		CPP_LINE:
+			case		CVARIABLE:
+			case		BCONST:
+			case		SCONST:
+			case		USCONST:
+			case		XCONST:
+			case		FCONST:
+			case		IDENT:
+			case		UIDENT:
+			case		IP:
 			/* Duplicate the <str> value */
-			base_yylloc = loc_strdup(base_yylval.str);
+						base_yylloc = loc_strdup(base_yylval.str);
+
 			break;
 		default:
 			/* Else just use the input, i.e., yytext */
@@ -309,4 +323,100 @@ ecpg_isspace(char ch)
 		ch == '\f')
 		return true;
 	return false;
+}
+
+
+/*
+ * base_yyparse
+ *	  Lime-driven parser entry point for ecpg (Phase 3 final).
+ *
+ * Lime's push-mode means parser actions normally run during the
+ * NEXT Parse() call (when lookahead arrives).  ecpg's preproc
+ * relies on Bison's pull-mode timing: action-body fprintfs to
+ * base_yyout must run BEFORE the lexer's next echo of whitespace.
+ *
+ * Lime v0.2.0's Parse_drain() is the opt-in eager default-reduce
+ * primitive (P0-NEW-8).  We call it after every push so any
+ * pending unconditional reduces fire before the next lex-time echo,
+ * matching Bison's semantic timing.
+ *
+ * filtered_base_yylex() does ecpg's multi-token-lookahead
+ * replacement.  ascii_to_lime_token() maps raw ASCII char tokens
+ * (returned by pgc.c for self-chars like '(' and ';') to the Lime
+ * symbolic IDs declared in preproc.h.
+ */
+extern void *base_yyAlloc(void *(*mallocProc) (size_t));
+extern void base_yyLoc(void *yyp, int yymajor, YYSTYPE yyminor, YYLTYPE yyloc);
+extern void base_yy_drain(void *yyp);
+extern void base_yyFree(void *p, void (*freeProc) (void *));
+
+static inline int
+ascii_to_lime_token(int t)
+{
+	switch (t)
+	{
+		case '(':
+			return LPAREN;
+		case ')':
+			return RPAREN;
+		case '[':
+			return LBRACKET;
+		case ']':
+			return RBRACKET;
+		case ',':
+			return COMMA;
+		case ';':
+			return SEMI;
+		case ':':
+			return COLON;
+		case '.':
+			return DOT;
+		case '+':
+			return PLUS;
+		case '-':
+			return MINUS;
+		case '*':
+			return STAR;
+		case '/':
+			return SLASH;
+		case '%':
+			return PERCENT;
+		case '^':
+			return CARET;
+		case '|':
+			return PIPE;
+		case '<':
+			return LT;
+		case '>':
+			return GT;
+		case '=':
+			return EQ;
+		case '{':
+			return LBRACE;
+		case '}':
+			return RBRACE;
+		default:
+			return t;
+	}
+}
+
+int
+base_yyparse(void)
+{
+	void	   *parser;
+	int			tok;
+
+	parser = base_yyAlloc(malloc);
+	if (parser == NULL)
+		return 1;
+
+	while ((tok = filtered_base_yylex()) != 0)
+	{
+		base_yyLoc(parser, ascii_to_lime_token(tok), base_yylval, base_yylloc);
+		base_yy_drain(parser);
+	}
+	base_yyLoc(parser, 0, base_yylval, base_yylloc);
+	base_yy_drain(parser);
+	base_yyFree(parser, free);
+	return 0;
 }

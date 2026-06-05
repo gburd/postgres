@@ -40,6 +40,7 @@ extern char *connection;
 extern char *input_filename;
 extern char *base_yytext,
 		   *token_start;
+extern int	base_yyleng;
 
 #ifdef YYDEBUG
 extern int	base_yydebug;

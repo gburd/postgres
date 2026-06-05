@@ -198,9 +198,8 @@ utils/probes.o: utils/probes.d $(SUBDIROBJS)
 generated-parser-sources:
 	$(MAKE) -C parser	gram.c gram.h scan.c
 	$(MAKE) -C bootstrap	bootparse.c bootparse.h bootscanner.c
-	$(MAKE) -C replication	repl_gram.c repl_gram.h repl_scanner.c syncrep_gram.c syncrep_gram.h syncrep_scanner.c
+	$(MAKE) -C replication	repl_gram.c repl_gram.h repl_scanner.c syncrep_gram.c syncrep_gram.h
 	$(MAKE) -C utils/adt	jsonpath_gram.c jsonpath_gram.h jsonpath_scan.c
-	$(MAKE) -C utils/misc	guc-file.c
 
 
 ##########################################################################
@@ -223,6 +222,10 @@ endif
 	$(INSTALL_DATA) $(srcdir)/libpq/pg_ident.conf.sample '$(DESTDIR)$(datadir)/pg_ident.conf.sample'
 	$(INSTALL_DATA) $(srcdir)/libpq/pg_hosts.conf.sample '$(DESTDIR)$(datadir)/pg_hosts.conf.sample'
 	$(INSTALL_DATA) $(srcdir)/utils/misc/postgresql.conf.sample '$(DESTDIR)$(datadir)/postgresql.conf.sample'
+	$(MKDIR_P) '$(DESTDIR)$(datadir)/parser'
+	$(INSTALL_DATA) $(srcdir)/parser/gram.lime '$(DESTDIR)$(datadir)/parser/gram.lime'
+	$(MKDIR_P) '$(DESTDIR)$(includedir_server)/parser'
+	$(INSTALL_DATA) $(srcdir)/parser/gramparse.h '$(DESTDIR)$(includedir_server)/parser/gramparse.h'
 
 ifeq ($(with_llvm), yes)
 install-bin: install-postgres-bitcode
@@ -282,7 +285,9 @@ endif
 	rm -f '$(DESTDIR)$(datadir)/pg_hba.conf.sample' \
 	      '$(DESTDIR)$(datadir)/pg_ident.conf.sample' \
 	      '$(DESTDIR)$(datadir)/pg_hosts.conf.sample' \
-	      '$(DESTDIR)$(datadir)/postgresql.conf.sample'
+	      '$(DESTDIR)$(datadir)/postgresql.conf.sample' \
+	      '$(DESTDIR)$(datadir)/parser/gram.lime' \
+	      '$(DESTDIR)$(includedir_server)/parser/gramparse.h'
 ifeq ($(with_llvm), yes)
 	$(call uninstall_llvm_module,postgres)
 endif
