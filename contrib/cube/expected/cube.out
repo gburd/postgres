@@ -194,7 +194,7 @@ SELECT 'ABC'::cube AS cube;
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT 'ABC'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "A"
+DETAIL:  syntax error at end of input
 SELECT '[]'::cube AS cube;
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '[]'::cube AS cube;
@@ -229,12 +229,12 @@ SELECT '1,'::cube AS cube;
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1,'::cube AS cube;
                ^
-DETAIL:  syntax error at end of input
+DETAIL:  syntax error at or near ","
 SELECT '1,2,'::cube AS cube;
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1,2,'::cube AS cube;
                ^
-DETAIL:  syntax error at end of input
+DETAIL:  syntax error at or near ","
 SELECT '1,,2'::cube AS cube;
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1,,2'::cube AS cube;
@@ -290,12 +290,12 @@ SELECT '(1,2,3)ab'::cube AS cube; -- 4
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '(1,2,3)ab'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "a"
+DETAIL:  syntax error at or near ")"
 SELECT '(1,2,3)a'::cube AS cube; -- 5
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '(1,2,3)a'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "a"
+DETAIL:  syntax error at or near ")"
 SELECT '(1,2)('::cube AS cube; -- 5
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '(1,2)('::cube AS cube;
@@ -305,17 +305,17 @@ SELECT '1,2ab'::cube AS cube; -- 6
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1,2ab'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "a"
+DETAIL:  syntax error at or near "2"
 SELECT '1 e7'::cube AS cube; -- 6
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1 e7'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "e"
+DETAIL:  syntax error at or near "1"
 SELECT '1,2a'::cube AS cube; -- 7
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1,2a'::cube AS cube;
                ^
-DETAIL:  syntax error at or near "a"
+DETAIL:  syntax error at or near "2"
 SELECT '1..2'::cube AS cube; -- 7
 ERROR:  invalid input syntax for cube
 LINE 1: SELECT '1..2'::cube AS cube;

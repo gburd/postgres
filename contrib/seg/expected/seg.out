@@ -453,17 +453,17 @@ SELECT 'ABC'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT 'ABC'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "A"
+DETAIL:  syntax error at end of input
 SELECT '1ABC'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '1ABC'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "A"
+DETAIL:  syntax error at or near "1"
 SELECT '1.'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '1.'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "."
+DETAIL:  syntax error at or near "1"
 SELECT '1.....'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '1.....'::seg AS seg;
@@ -473,17 +473,17 @@ SELECT '.1'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '.1'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "."
+DETAIL:  syntax error at end of input
 SELECT '1..2.'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '1..2.'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "."
+DETAIL:  syntax error at or near "2"
 SELECT '1 e7'::seg AS seg;
 ERROR:  bad seg representation
 LINE 1: SELECT '1 e7'::seg AS seg;
                ^
-DETAIL:  syntax error at or near "e"
+DETAIL:  syntax error at or near "1"
 SELECT '1e700'::seg AS seg;
 ERROR:  "1e700" is out of range for type real
 LINE 1: SELECT '1e700'::seg AS seg;
@@ -1335,8 +1335,8 @@ FROM unnest(ARRAY['-1 .. 1'::text,
  -1 .. 1  | t  |                |                                       |                              | 
  100(+-)1 | t  |                |                                       |                              | 
           | f  | 42601          | bad seg representation                | syntax error at end of input | 
- ABC      | f  | 42601          | bad seg representation                | syntax error at or near "A"  | 
- 1 e7     | f  | 42601          | bad seg representation                | syntax error at or near "e"  | 
+ ABC      | f  | 42601          | bad seg representation                | syntax error at end of input | 
+ 1 e7     | f  | 42601          | bad seg representation                | syntax error at or near "1"  | 
  1e700    | f  | 22003          | "1e700" is out of range for type real |                              | 
 (6 rows)
 
