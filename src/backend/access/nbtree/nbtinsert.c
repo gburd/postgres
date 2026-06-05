@@ -15,6 +15,7 @@
 
 #include "postgres.h"
 
+#include "access/hot_indexed.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
@@ -432,6 +433,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	int			curposti = 0;
 	TupleTableSlot *chain_walk_slot = NULL;
 	Bitmapset  *chain_walk_attrs = NULL;
+	uint8		hi_modattrs[(MaxHeapAttributeNumber + 7) / 8];
+	uint16		hi_modattrs_nbytes = 0;
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -586,11 +589,22 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 						 table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
 													   &all_dead,
-													   chain_walk_attrs,
-													   &hot_indexed_stale,
+													   hi_modattrs,
+													   &hi_modattrs_nbytes,
 													   chain_walk_slot))
 				{
 					TransactionId xwait;
+
+					/*
+					 * Intersect the table AM's reported modified-attrs with
+					 * this index's covered attributes (chain_walk_attrs) to
+					 * decide whether the arriving leaf is stale for this index.
+					 */
+					hot_indexed_stale =
+						(hi_modattrs_nbytes > 0 &&
+						 heap_hot_indexed_bitmap_overlaps(hi_modattrs,
+														  hi_modattrs_nbytes,
+														  chain_walk_attrs));
 
 					/*
 					 * With HOT-indexed update the classic "live tuple in the
