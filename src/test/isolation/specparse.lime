@@ -1,0 +1,269 @@
+/*
+ * specparse.lime
+ *	  Lime grammar for the isolation test spec file format.
+ *
+ * Ported byte-for-byte from the retired Bison grammar
+ * (src/test/isolation/specparse.y prior to Phase 2f).  No tokens added
+ * or removed; every production has a one-to-one counterpart in the
+ * original grammar; every action populates the same TestSpec fields
+ * (via the `parseresult` file-scope global declared in isolationtester.h)
+ * with identical values.
+ *
+ * The hand-rolled scanner and the driver spec_yyparse() live in
+ * specscanner.c.  The public entry points match the declarations in
+ * isolationtester.h, so isolationtester.c does not change.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/test/isolation/specparse.lime
+ */
+
+%name spec_yy
+%token_type {SpecYYSTYPE}
+%start_symbol testspec
+%expect 0
+
+%include {
+#include "postgres_fe.h"
+
+#include "isolationtester.h"
+#include "spec_gram_yytype.h"
+
+/*
+ * Lime emits a handful of internal helper functions (spec_yyTrace,
+ * spec_yyInit, spec_yyFinalize, etc.) without prior prototypes, and
+ * freely mixes declarations and code.  None of that is wrong, just
+ * incompatible with PostgreSQL's warning set.  Until Lime upstream
+ * tightens the generator, silence these two warnings for the generated
+ * translation unit only; the pragma is emitted near the top of
+ * specparse.c via this %include block, so it covers every function the
+ * generator writes after this point.  Clang understands the GCC pragma
+ * spelling.
+ */
+#ifdef __GNUC__
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+#endif
+}
+
+/*
+ * Error hooks.  spec_yyerror is defined in specscanner.c; it prints the
+ * message with the current line number and calls exit(1), matching the
+ * retired scanner's behaviour byte-for-byte.
+ */
+%syntax_error {
+	spec_yyerror("syntax error");
+}
+
+%parse_failure {
+	spec_yyerror("parse failure");
+}
+
+/*
+ * Token declarations.  Order preserves the set from specparse.y's
+ * %token lines; Lime assigns codes 1..N in declaration order, and the
+ * hand-rolled scanner consumes the codes from the generated specparse.h
+ * so the numbering never needs to be hard-coded.
+ *
+ * Lime (like Lemon) requires token identifiers to begin with an upper-
+ * case letter, so the Bison grammar's lower-case "sqlblock" and
+ * "identifier" tokens are renamed to SQLBLOCK and IDENTIFIER here.
+ * That rename is internal to the grammar file; no external name
+ * changes.
+ *
+ * COMMA, LPAREN, RPAREN and STAR replace the Bison character literals
+ * ',', '(', ')' and '*'.  Lime's directive tokenizer does not accept
+ * quoted character literals in rules, so they become named terminals
+ * emitted by the scanner.
+ */
+%token SQLBLOCK.
+%token IDENTIFIER.
+%token INTEGER.
+%token NOTICES.
+%token PERMUTATION.
+%token SESSION.
+%token SETUP.
+%token STEP.
+%token TEARDOWN.
+%token TEST.
+%token COMMA.
+%token LPAREN.
+%token RPAREN.
+%token STAR.
+
+/*
+ * Non-terminal types.  Lime's %type gives each non-terminal a concrete
+ * C type; terminals keep the union %token_type, so actions access union
+ * members via `.str`, `.integer`, etc. on terminal parameters.
+ */
+%type testspec {int}
+%type setup_list {SpecPtrList}
+%type opt_setup {char *}
+%type setup {char *}
+%type opt_teardown {char *}
+%type session_list {SpecPtrList}
+%type session {Session *}
+%type step_list {SpecPtrList}
+%type step {Step *}
+%type opt_permutation_list {SpecPtrList}
+%type permutation_list {SpecPtrList}
+%type permutation {Permutation *}
+%type permutation_step_list {SpecPtrList}
+%type permutation_step {PermutationStep *}
+%type blocker_list {SpecPtrList}
+%type blocker {PermutationStepBlocker *}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+testspec(A) ::= setup_list(B) opt_teardown(C) session_list(D) opt_permutation_list(E). {
+	parseresult.setupsqls = (char **) B.elements;
+	parseresult.nsetupsqls = B.nelements;
+	parseresult.teardownsql = C;
+	parseresult.sessions = (Session **) D.elements;
+	parseresult.nsessions = D.nelements;
+	parseresult.permutations = (Permutation **) E.elements;
+	parseresult.npermutations = E.nelements;
+	A = 0;
+}
+setup_list(A) ::=. {
+	A.elements = NULL;
+	A.nelements = 0;
+}
+setup_list(A) ::= setup_list(B) setup(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+opt_setup(A) ::=. {
+ A = NULL;
+}
+opt_setup(A) ::= setup(B). {
+ A = B;
+}
+setup(A) ::= SETUP SQLBLOCK(B). {
+ A = B.str;
+}
+opt_teardown(A) ::=. {
+ A = NULL;
+}
+opt_teardown(A) ::= TEARDOWN SQLBLOCK(B). {
+ A = B.str;
+}
+session_list(A) ::= session_list(B) session(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+session_list(A) ::= session(B). {
+	A.nelements = 1;
+	A.elements = pg_malloc_object(void *);
+	A.elements[0] = B;
+}
+session(A) ::= SESSION IDENTIFIER(B) opt_setup(C) step_list(D) opt_teardown(E). {
+	A = pg_malloc_object(Session);
+	A->name = B.str;
+	A->setupsql = C;
+	A->steps = (Step **) D.elements;
+	A->nsteps = D.nelements;
+	A->teardownsql = E;
+}
+step_list(A) ::= step_list(B) step(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+step_list(A) ::= step(B). {
+	A.nelements = 1;
+	A.elements = pg_malloc_object(void *);
+	A.elements[0] = B;
+}
+step(A) ::= STEP IDENTIFIER(B) SQLBLOCK(C). {
+	A = pg_malloc_object(Step);
+	A->name = B.str;
+	A->sql = C.str;
+	A->session = -1;	/* until filled */
+	A->used = false;
+}
+opt_permutation_list(A) ::= permutation_list(B). {
+	A = B;
+}
+opt_permutation_list(A) ::=. {
+	A.elements = NULL;
+	A.nelements = 0;
+}
+permutation_list(A) ::= permutation_list(B) permutation(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+permutation_list(A) ::= permutation(B). {
+	A.nelements = 1;
+	A.elements = pg_malloc_object(void *);
+	A.elements[0] = B;
+}
+permutation(A) ::= PERMUTATION permutation_step_list(B). {
+	A = pg_malloc_object(Permutation);
+	A->nsteps = B.nelements;
+	A->steps = (PermutationStep **) B.elements;
+}
+permutation_step_list(A) ::= permutation_step_list(B) permutation_step(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+permutation_step_list(A) ::= permutation_step(B). {
+	A.nelements = 1;
+	A.elements = pg_malloc_object(void *);
+	A.elements[0] = B;
+}
+permutation_step(A) ::= IDENTIFIER(B). {
+	A = pg_malloc_object(PermutationStep);
+	A->name = B.str;
+	A->blockers = NULL;
+	A->nblockers = 0;
+	A->step = NULL;
+}
+permutation_step(A) ::= IDENTIFIER(B) LPAREN blocker_list(C) RPAREN. {
+	A = pg_malloc_object(PermutationStep);
+	A->name = B.str;
+	A->blockers = (PermutationStepBlocker **) C.elements;
+	A->nblockers = C.nelements;
+	A->step = NULL;
+}
+blocker_list(A) ::= blocker_list(B) COMMA blocker(C). {
+	A.elements = pg_realloc_array(B.elements, void *, B.nelements + 1);
+	A.elements[B.nelements] = C;
+	A.nelements = B.nelements + 1;
+}
+blocker_list(A) ::= blocker(B). {
+	A.nelements = 1;
+	A.elements = pg_malloc_object(void *);
+	A.elements[0] = B;
+}
+blocker(A) ::= IDENTIFIER(B). {
+	A = pg_malloc_object(PermutationStepBlocker);
+	A->stepname = B.str;
+	A->blocktype = PSB_OTHER_STEP;
+	A->num_notices = -1;
+	A->step = NULL;
+	A->target_notices = -1;
+}
+blocker(A) ::= IDENTIFIER(B) NOTICES INTEGER(C). {
+	A = pg_malloc_object(PermutationStepBlocker);
+	A->stepname = B.str;
+	A->blocktype = PSB_NUM_NOTICES;
+	A->num_notices = C.integer;
+	A->step = NULL;
+	A->target_notices = -1;
+}
+blocker(A) ::= STAR. {
+	A = pg_malloc_object(PermutationStepBlocker);
+	A->stepname = NULL;
+	A->blocktype = PSB_ONCE;
+	A->num_notices = -1;
+	A->step = NULL;
+	A->target_notices = -1;
+}
