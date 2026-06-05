@@ -714,9 +714,14 @@ verify_heapam(PG_FUNCTION_ARGS)
 				 */
 				Assert(ItemIdIsNormal(next_lp));
 
-				/* Can only redirect to a HOT tuple. */
+				/*
+				 * A redirect targets the first surviving chain member: a
+				 * heap-only tuple, or (HOT-indexed inline model) a bridge
+				 * meta-item that forwards to first_live.
+				 */
 				next_htup = (HeapTupleHeader) PageGetItem(ctx.page, next_lp);
-				if (!HeapTupleHeaderIsHeapOnly(next_htup))
+				if (!HeapTupleHeaderIsHeapOnly(next_htup) &&
+					!HeapTupleHeaderIsHotIndexedBridge(next_htup))
 				{
 					report_corruption(&ctx,
 									  psprintf("redirected line pointer points to a non-heap-only tuple at offset %d",
@@ -737,6 +742,26 @@ verify_heapam(PG_FUNCTION_ARGS)
 				 * part of an update chain.
 				 */
 				predecessor[nextoffnum] = ctx.offnum;
+				continue;
+			}
+
+			/*
+			 * A bridge meta-item forwards chain walkers to the next surviving
+			 * member (its t_ctid forward link, recorded as successor[] above).
+			 * Treat that link as a chain edge so the forwarded-to member is
+			 * not mistaken for an orphan heap-only tuple or a spurious chain
+			 * root.  Bridges carry no xmin/xmax, so the xmax/xmin match below
+			 * would otherwise drop the edge.
+			 */
+			if (ItemIdIsNormal(curr_lp) &&
+				HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(ctx.page, curr_lp)))
+			{
+				if (predecessor[nextoffnum] != InvalidOffsetNumber)
+					report_corruption(&ctx,
+									  psprintf("bridge line pointer points to offset %d, but offset %d also points there",
+											   nextoffnum, predecessor[nextoffnum]));
+				else
+					predecessor[nextoffnum] = ctx.offnum;
 				continue;
 			}
 
