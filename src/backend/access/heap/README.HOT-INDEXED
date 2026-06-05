@@ -50,6 +50,77 @@ the live tuple.  Two mechanisms restore correctness:
     is a bitmap overlap (no key comparison and no index tuple required).
 
 
+The HOT-indexed invariant (the new contract)
+--------------------------------------------
+
+Classic HOT: "every index entry resolves to the chain root, and every live
+chain member has the same indexed values as the root."  HOT-indexed replaces
+it with this contract, which every consumer below must respect:
+
+  I1. An index entry points at the heap-only version whose indexed values it
+      matched when it was inserted (mid-chain pointing), or at the chain root
+      for entries made before any HOT-indexed update.
+  I2. Following an entry's same-page t_ctid walk still reaches the live tuple.
+  I3. If that walk crosses a hop marked HEAP_INDEXED_UPDATED (or a bridge),
+      the entry MAY be stale: the reader must recheck it against the live
+      tuple before using it.  The recheck is the bitmap overlap of the
+      crossed hops' modified-attrs union with the index's covered attributes.
+      A walk that crosses no such hop is definitely current (classic HOT).
+  I4. For every live tuple and every index, exactly one non-stale entry
+      resolves to it: the entry inserted for the value that index currently
+      holds.  A value that cycled away and back (a->b->a) leaves an extra
+      entry for the original value, but its walk crosses the changing hops, so
+      the recheck drops it -- the fresh entry is the canonical one (no need to
+      dedup by TID).
+  I5. The producing-hop modified-attrs bitmap is co-located with the version
+      it describes: inline-trailing on a live HOT-indexed version, or in the
+      payload of the bridge meta-item that replaces it once it dies.  Pruning
+      preserves it; chain collapse keeps each hop's bitmap on its own
+      bridge (no merge) so per-entry accumulation stays exact.
+
+Consumer audit table -- each row is a place that relied on the classic-HOT
+invariant; the third column is the obligation it now discharges:
+
+  Consumer                         Obligation under the new contract
+  -------------------------------- ------------------------------------------
+  heap_hot_search_buffer (read)    Accumulate the crossed hops' modified-attrs
+                                   union O(1) from each version/bridge; report
+                                   it (xs_hot_indexed_stale) so the caller can
+                                   recheck (I3).
+  nodeIndexscan / IndexOnlyScan    Drop a leaf reported stale; the fresh entry
+                                   re-supplies the row (I3, I4).
+  _bt_check_unique                 Filter a stale leaf rather than treat it as
+                                   a conflict; still conflict on the live key
+                                   (I4).  Clear prevalldead so the stale leaf
+                                   is not killed.
+  execReplication (RI / apply)     Same recheck as an index scan before using
+                                   a located tuple.
+  bitmap heap scan                 Cannot attribute a TID to one index, so it
+                                   always rechecks via its recheck qual.
+  kill_prior_tuple / index_delete  A leaf still resolving to a live tuple is
+                                   not killable even if stale for this index.
+  get_actual_variable_range        Walks chains; a crossed hop does not make
+                                   the endpoint tuple invalid, only its leaf
+                                   key stale.
+  pruneheap (collapse)             Root collapses to a plain LP_REDIRECT to the
+                                   first surviving member; dead HOT-indexed
+                                   members become bridges that preserve their
+                                   bitmap and forward to the next survivor
+                                   (I5).  An already-collapsed chain is not
+                                   re-collapsed.
+  vacuum (bridge reclaim)          Reclaims a bridge only after ambulkdelete
+                                   sweeps its stale leaves, re-pointing the
+                                   root redirect at first_live so the chain
+                                   collapses fully back to classic HOT.
+  amcheck verify_heapam            Accepts redirect->bridge and treats a
+                                   bridge's forward link as a chain edge.
+
+The adversarial isolation specs in src/test/isolation/specs/
+hot_indexed_adversarial.spec pin I3/I4 directly: the a->b->a cycle
+(exactly-once), range-scan-exactly-once, abort of a HOT-indexed update, and a
+concurrent unique insert of a freed vs. a taken key.
+
+
 The tombstone line pointer
 --------------------------
 
