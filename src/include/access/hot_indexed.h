@@ -92,42 +92,112 @@ HotIndexedTombstoneSize(int natts)
 }
 
 /*
- * HeapTupleHeaderIsHotIndexedTombstone
- *		True iff a HeapTupleHeader describes a tombstone item (of either
- *		variant: adjacent or bridge).
+ * HeapPageItemKind -- classification of an LP_NORMAL heap page item.
  *
- * Callers must first establish that the item is LP_NORMAL (so the bytes
- * at PageGetItem() can be interpreted as a HeapTupleHeader).
+ * Every place that interprets the bytes behind an LP_NORMAL line pointer
+ * MUST decide what kind of item it is through heap_page_item_kind() (or the
+ * thin Is*() wrappers below), so the discriminator lives in exactly one
+ * place.  The kinds are:
+ *
+ *   HPIK_TUPLE             ordinary heap tuple (including a plain HOT tuple);
+ *                          HEAP_INDEXED_UPDATED is clear.
+ *   HPIK_HOT_INDEXED_TUPLE live heap tuple produced by a HOT-indexed update
+ *                          (HEAP_INDEXED_UPDATED set, natts > 0).
+ *   HPIK_TOMBSTONE         meta-item carrying a modified-attrs bitmap for a
+ *                          live hot-indexed tuple (natts == 0, t_ctid.blockno
+ *                          = InvalidBlockNumber).
+ *   HPIK_BRIDGE            meta-item left by pruneheap in a dead mid-chain
+ *                          slot (natts == 0, t_ctid = valid same-page forward
+ *                          link).
+ *
+ * The (HEAP_INDEXED_UPDATED set AND natts == 0) pair is a signature no real
+ * tuple can produce (no genuine tuple sets HEAP_INDEXED_UPDATED with natts ==
+ * 0).  Meta-items are additionally always written HEAP_XMIN_INVALID |
+ * HEAP_XMAX_INVALID; the classifier asserts that invariant so a corrupt or
+ * mis-cast header is caught rather than silently treated as a tombstone
+ * (amcheck enforces it in production builds).
+ */
+typedef enum HeapPageItemKind
+{
+	HPIK_TUPLE,
+	HPIK_HOT_INDEXED_TUPLE,
+	HPIK_TOMBSTONE,
+	HPIK_BRIDGE,
+} HeapPageItemKind;
+
+/*
+ * heap_page_item_kind
+ *		The single discriminator for LP_NORMAL heap page items.
+ *
+ * Caller must first establish that the item is LP_NORMAL (so the bytes at
+ * PageGetItem() can be interpreted as a HeapTupleHeader).
+ */
+static inline HeapPageItemKind
+heap_page_item_kind(const HeapTupleHeaderData *tup)
+{
+	if ((tup->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+		return HPIK_TUPLE;
+
+	if (HeapTupleHeaderGetNatts(tup) != 0)
+		return HPIK_HOT_INDEXED_TUPLE;
+
+	/*
+	 * natts == 0 with HEAP_INDEXED_UPDATED is the meta-item signature.
+	 * Genuine meta-items are always written XMIN/XMAX-invalid; assert that
+	 * here so the discriminator is robust against a corrupt header.
+	 */
+	Assert((tup->t_infomask & (HEAP_XMIN_INVALID | HEAP_XMAX_INVALID)) ==
+		   (HEAP_XMIN_INVALID | HEAP_XMAX_INVALID));
+
+	if (BlockNumberIsValid(ItemPointerGetBlockNumberNoCheck(&tup->t_ctid)))
+		return HPIK_BRIDGE;
+
+	return HPIK_TOMBSTONE;
+}
+
+/*
+ * HeapTupleHeaderIsHotIndexedTombstone
+ *		True iff a HeapTupleHeader describes a meta-item (tombstone or bridge).
+ *
+ * Thin wrapper over heap_page_item_kind().  Callers must first establish that
+ * the item is LP_NORMAL.
  */
 static inline bool
 HeapTupleHeaderIsHotIndexedTombstone(const HeapTupleHeaderData *tup)
 {
-	return (tup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
-		HeapTupleHeaderGetNatts(tup) == 0;
+	HeapPageItemKind kind = heap_page_item_kind(tup);
+
+	return kind == HPIK_TOMBSTONE || kind == HPIK_BRIDGE;
 }
 
 /*
  * HeapTupleHeaderIsHotIndexedBridge
- *		True iff a HeapTupleHeader describes a bridge tombstone.
+ *		True iff a HeapTupleHeader describes a bridge meta-item.
  *
- * Bridges are written by pruneheap in place of a dead mid-chain
- * HOT-indexed heap-only tuple: the LP stays LP_NORMAL with
- * HeapTupleHeaderIsHotIndexedTombstone, but t_ctid carries a valid
- * forward link (same-page blockno, real offset) so chain walkers can
- * continue through the hop.  Adjacent-to-live tombstones, by contrast,
- * set t_ctid.blockno = InvalidBlockNumber; that is the discriminator.
- *
- * Callers that need to tell the two variants apart (the chain walker,
- * vacuum's bridge reclaim, pageinspect) use this predicate.  The plain
- * "is tombstone" predicate above still matches both variants, which is
- * what prune_handle_tombstones() and the adjacent-tombstone post-
- * processing want.
+ * Bridges are written by pruneheap in place of a dead mid-chain HOT-indexed
+ * heap-only tuple: the LP stays LP_NORMAL but t_ctid carries a valid forward
+ * link (same-page blockno, real offset) so chain walkers can continue through
+ * the hop.  Adjacent-to-live tombstones, by contrast, set t_ctid.blockno =
+ * InvalidBlockNumber; that is the discriminator between the two meta-item
+ * variants.  Thin wrapper over heap_page_item_kind().
  */
 static inline bool
 HeapTupleHeaderIsHotIndexedBridge(const HeapTupleHeaderData *tup)
 {
-	return HeapTupleHeaderIsHotIndexedTombstone(tup) &&
-		BlockNumberIsValid(ItemPointerGetBlockNumberNoCheck(&tup->t_ctid));
+	return heap_page_item_kind(tup) == HPIK_BRIDGE;
+}
+
+/*
+ * AssertIsGenuineHeapTuple
+ *		Assert-the-negative guard for paths that are about to interpret an
+ *		LP_NORMAL item as a real tuple (deform, visibility, key extraction):
+ *		the item must be a genuine tuple, never a tombstone/bridge meta-item.
+ *		Compiles away entirely in non-assert builds.
+ */
+static inline void
+AssertIsGenuineHeapTuple(const HeapTupleHeaderData *tup)
+{
+	Assert(!HeapTupleHeaderIsHotIndexedTombstone(tup));
 }
 
 /*

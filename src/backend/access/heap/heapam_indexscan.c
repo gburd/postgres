@@ -293,6 +293,12 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		}
 
 		/*
+		 * Past the meta-item filter above, the item is a genuine tuple that
+		 * we are about to subject to chain-match and visibility checks.
+		 */
+		AssertIsGenuineHeapTuple(heapTuple->t_data);
+
+		/*
 		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
 		 * is the target of a freshly-inserted hot-indexed index entry: then
 		 * arriving directly at a heap-only HOT-indexed tuple is legal and the
