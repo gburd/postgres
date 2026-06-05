@@ -715,9 +715,18 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	 * amgettuple call, in index_getnext_tid).  We do not do this when in
 	 * recovery because it may violate MVCC to do so.  See comments in
 	 * RelationGetIndexScan().
+	 *
+	 * Additionally kill a stale HOT-indexed leaf (one whose key the live
+	 * tuple no longer holds) when every chain member skipped before the
+	 * returned tuple is dead to all transactions (xs_prefix_all_dead): no
+	 * snapshot can reach a matching version through this leaf, so it is
+	 * redundant and reclaiming it bounds the index bloat HOT-indexed updates
+	 * create.  The surely-dead gate is what makes this MVCC-safe.
 	 */
 	if (!scan->xactStartedInRecovery)
-		scan->kill_prior_tuple = all_dead;
+		scan->kill_prior_tuple =
+			all_dead ||
+			(scan->xs_hot_indexed_stale && scan->xs_heapfetch->xs_prefix_all_dead);
 
 	return found;
 }

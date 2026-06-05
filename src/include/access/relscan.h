@@ -150,6 +150,17 @@ typedef struct IndexFetchTableData
 	 */
 	uint8		xs_modattrs[(MaxHeapAttributeNumber + 7) / 8];
 	uint16		xs_modattrs_nbytes;
+
+	/*
+	 * Set by the table AM when it returns a tuple: true iff every chain member
+	 * the walk skipped before reaching the returned (visible) tuple is dead to
+	 * all transactions (below the global xmin horizon).  Combined with a stale
+	 * verdict (xs_modattrs overlaps the index's attributes), this lets the
+	 * index-access layer kill the arriving leaf: no snapshot can reach a
+	 * matching version through it, so it is redundant.  AMs without such
+	 * chains leave it false.
+	 */
+	bool		xs_prefix_all_dead;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;

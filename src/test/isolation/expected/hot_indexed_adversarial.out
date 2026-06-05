@@ -1,4 +1,4 @@
-Parsed test spec with 2 sessions
+Parsed test spec with 3 sessions
 
 starting permutation: s2_noseq s1_cycle s2_eq10 s2_eq20
 step s2_noseq: SET enable_seqscan = off;
@@ -61,3 +61,26 @@ step s1_uupd20: UPDATE hiu SET k = 20 WHERE id = 1;
 step s1_commit: COMMIT;
 step s2_ins20: INSERT INTO hiu VALUES (3, 20, repeat('z', 40));
 ERROR:  duplicate key value violates unique constraint "hiu_k"
+
+starting permutation: s3_begin s3_eq10 s2_to30 s2_scan30 s3_eq10 s3_commit
+step s3_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SET enable_seqscan = off;
+step s3_eq10: SELECT id, k FROM hia WHERE k = 10;
+id| k
+--+--
+ 1|10
+(1 row)
+
+step s2_to30: UPDATE hia SET k = 20 WHERE id = 1; UPDATE hia SET k = 30 WHERE id = 1;
+step s2_scan30: SET enable_seqscan = off; SELECT id, k FROM hia WHERE k = 30;
+id| k
+--+--
+ 1|30
+(1 row)
+
+step s3_eq10: SELECT id, k FROM hia WHERE k = 10;
+id| k
+--+--
+ 1|10
+(1 row)
+
+step s3_commit: COMMIT;

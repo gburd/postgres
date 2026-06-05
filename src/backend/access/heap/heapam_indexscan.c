@@ -134,7 +134,8 @@ bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
 					   bool *all_dead, bool first_call,
-					   uint8 *modattrs, uint16 *modattrs_nbytes)
+					   uint8 *modattrs, uint16 *modattrs_nbytes,
+					   bool *prefix_all_dead)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -143,6 +144,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	bool		prefix_dead = true;
 	GlobalVisState *vistest = NULL;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
@@ -328,6 +330,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				if (all_dead)
 					*all_dead = false;
 
+				/*
+				 * Report whether every chain member skipped before this
+				 * visible tuple is dead to all transactions.  With a stale
+				 * verdict this lets the caller kill the arriving leaf safely.
+				 */
+				if (prefix_all_dead)
+					*prefix_all_dead = prefix_dead;
+
 				return true;
 			}
 		}
@@ -336,18 +346,25 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/*
 		 * If we can't see it, maybe no one else can either.  At caller
 		 * request, check whether all chain members are dead to all
-		 * transactions.
+		 * transactions.  The same surely-dead test feeds prefix_dead, which
+		 * (unlike all_dead) is not reset when a visible tuple is found, so it
+		 * records whether the members skipped ahead of the returned tuple are
+		 * all dead to all -- the safe-to-kill-this-leaf condition.
 		 *
 		 * Note: if you change the criterion here for what is "dead", fix the
 		 * planner's get_actual_variable_range() function to match.
 		 */
-		if (all_dead && *all_dead)
+		if ((all_dead && *all_dead) || prefix_dead)
 		{
 			if (!vistest)
 				vistest = GlobalVisTestFor(relation);
 
 			if (!HeapTupleIsSurelyDead(heapTuple, vistest))
-				*all_dead = false;
+			{
+				if (all_dead)
+					*all_dead = false;
+				prefix_dead = false;
+			}
 		}
 
 		/*
@@ -417,9 +434,13 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											all_dead,
 											!*heap_continue,
 											scan->xs_modattrs,
-											&scan->xs_modattrs_nbytes);
+											&scan->xs_modattrs_nbytes,
+											&scan->xs_prefix_all_dead);
 	if (!got_heap_tuple)
+	{
 		scan->xs_modattrs_nbytes = 0;
+		scan->xs_prefix_all_dead = false;
+	}
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 
