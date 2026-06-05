@@ -131,6 +131,35 @@ heap_build_hot_indexed_tombstone(char *buf,
 }
 
 /*
+ * heap_fill_hot_indexed_inline_bitmap
+ *		See header comment.  Writes a natts-wide modified-attrs bitmap into
+ *		dest using the same attnum-1 bit layout as the tombstone payload.
+ */
+void
+heap_fill_hot_indexed_inline_bitmap(uint8 *dest, int natts,
+									const Bitmapset *modified_attrs)
+{
+	int			nbytes = (natts + 7) / 8;
+
+	memset(dest, 0, nbytes);
+
+	if (modified_attrs == NULL)
+		return;
+
+	for (int attnum = 1; attnum <= natts; attnum++)
+	{
+		int			attidx = attnum - FirstLowInvalidHeapAttributeNumber;
+
+		if (bms_is_member(attidx, modified_attrs))
+		{
+			int			bit = attnum - 1;
+
+			dest[bit >> 3] |= (uint8) (1u << (bit & 7));
+		}
+	}
+}
+
+/*
  * heap_hot_indexed_tombstone_attr_modified
  *		Return true iff user attribute `attnum` (1-based) is marked modified
  *		by the given tombstone payload.
@@ -156,6 +185,33 @@ heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
 }
 
 /*
+ * heap_hot_indexed_bitmap_overlaps
+ *		See header comment.  Shared by the tombstone-payload and inline-trailing
+ *		bitmap overlap tests.
+ */
+bool
+heap_hot_indexed_bitmap_overlaps(const uint8 *bitmap, uint16 nbytes,
+								 const Bitmapset *index_attrs)
+{
+	int			m = -1;
+
+	while ((m = bms_next_member(index_attrs, m)) >= 0)
+	{
+		AttrNumber	attnum = m + FirstLowInvalidHeapAttributeNumber;
+		int			bit;
+
+		if (attnum < 1)
+			continue;
+
+		bit = attnum - 1;
+		if ((bit >> 3) < nbytes &&
+			(bitmap[bit >> 3] & (1u << (bit & 7))) != 0)
+			return true;
+	}
+	return false;
+}
+
+/*
  * heap_hot_indexed_payload_overlaps
  *		See header comment.  index_attrs members are attribute numbers offset
  *		by FirstLowInvalidHeapAttributeNumber; only user attributes (attnum >=
@@ -166,17 +222,8 @@ bool
 heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *p,
 								  const Bitmapset *index_attrs)
 {
-	int			m = -1;
-
-	while ((m = bms_next_member(index_attrs, m)) >= 0)
-	{
-		AttrNumber	attnum = m + FirstLowInvalidHeapAttributeNumber;
-
-		if (attnum >= 1 &&
-			heap_hot_indexed_tombstone_attr_modified(p, attnum))
-			return true;
-	}
-	return false;
+	return heap_hot_indexed_bitmap_overlaps(p->t_bitmap, p->t_nbytes,
+											index_attrs);
 }
 
 /*
