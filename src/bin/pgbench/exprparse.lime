@@ -1,0 +1,287 @@
+/*-------------------------------------------------------------------------
+ *
+ * exprparse.lime
+ *	  Lime grammar for pgbench's simple expression syntax.
+ *
+ * Ported byte-for-byte from the retired Bison grammar
+ * (src/bin/pgbench/exprparse.y prior to Phase 2h).  Every token and every
+ * production has a one-to-one counterpart.  Actions build the same
+ * PgBenchExpr trees with the same field values.
+ *
+ * The hand-rolled scanner lives in exprscan.c.  The driver wraps Lime's
+ * push parser around expr_scanner_init() / expr_yylex() and exposes the
+ * same expr_yyparse() entry point that pgbench.c calls today.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/bin/pgbench/exprparse.lime
+ *
+ *-------------------------------------------------------------------------
+ */
+
+%name expr_yy
+%token_type {YYSTYPE}
+%extra_argument {expr_yy_extra *extra}
+%start_symbol result
+%expect 0
+
+%include {
+#include "postgres_fe.h"
+
+#include "fe_utils/psqlscan_int.h"
+#include "pgbench.h"
+#include "exprscan_internal.h"
+
+/*
+ * Forward declarations of constructors implemented in exprscan.c.
+ */
+extern PgBenchExpr *pgb_make_null_constant(void);
+extern PgBenchExpr *pgb_make_boolean_constant(bool bval);
+extern PgBenchExpr *pgb_make_integer_constant(int64 ival);
+extern PgBenchExpr *pgb_make_double_constant(double dval);
+extern PgBenchExpr *pgb_make_variable(char *varname);
+extern PgBenchExpr *pgb_make_op(yyscan_t yyscanner, const char *op,
+								PgBenchExpr *l, PgBenchExpr *r);
+extern PgBenchExpr *pgb_make_uop(yyscan_t yyscanner, const char *op,
+								 PgBenchExpr *e);
+extern int	pgb_find_func(yyscan_t yyscanner, const char *fname);
+extern PgBenchExpr *pgb_make_func(yyscan_t yyscanner, int fnumber,
+								  PgBenchExprList *args);
+extern PgBenchExpr *pgb_make_case(yyscan_t yyscanner,
+								  PgBenchExprList *when_then,
+								  PgBenchExpr *else_part);
+extern PgBenchExprList *pgb_make_elist(PgBenchExpr *expr,
+									   PgBenchExprList *list);
+
+extern void expr_yyerror_token(expr_yy_extra *extra, int yymajor,
+							   const char *message);
+}
+
+%syntax_error {
+	expr_yyerror_token(extra, yymajor, "syntax error");
+}
+
+%parse_failure {
+	expr_yyerror_token(extra, 0, "syntax error");
+}
+
+/* ======================================================================
+ * TOKEN DECLARATIONS
+ * ====================================================================== */
+%token NULL_CONST.
+%token INTEGER_CONST.
+%token MAXINT_PLUS_ONE_CONST.
+%token DOUBLE_CONST.
+%token BOOLEAN_CONST.
+%token VARIABLE.
+%token FUNCTION.
+%token AND_OP.
+%token OR_OP.
+%token NOT_OP.
+%token NE_OP.
+%token LE_OP.
+%token GE_OP.
+%token LS_OP.
+%token RS_OP.
+%token IS_OP.
+%token ISNULL_OP.
+%token NOTNULL_OP.
+%token CASE_KW.
+%token WHEN_KW.
+%token THEN_KW.
+%token ELSE_KW.
+%token END_KW.
+%token PLUS.
+%token MINUS.
+%token STAR.
+%token SLASH.
+%token PERCENT.
+%token EQ.
+%token LT.
+%token GT.
+%token BITAND.
+%token BITOR.
+%token BITXOR.
+%token TILDE.
+%token LPAREN.
+%token RPAREN.
+%token COMMA.
+%token UNARY.
+
+/* ======================================================================
+ * NON-TERMINAL TYPES (mirror of Bison %type <member>)
+ * ====================================================================== */
+%type result {PgBenchExpr *}
+%type elist {PgBenchExprList *}
+%type when_then_list {PgBenchExprList *}
+%type expr {PgBenchExpr *}
+%type case_control {PgBenchExpr *}
+%type function {int}
+
+/* ======================================================================
+ * PRECEDENCE TABLE  (mirror of Bison's, lowest to highest)
+ * ====================================================================== */
+%left OR_OP.
+%left AND_OP.
+%right NOT_OP.
+%nonassoc IS_OP ISNULL_OP NOTNULL_OP.
+%nonassoc NE_OP LE_OP GE_OP EQ LT GT.
+%left LS_OP RS_OP BITAND BITOR BITXOR TILDE.
+%left PLUS MINUS.
+%left STAR SLASH PERCENT.
+%right UNARY.
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+result(R) ::= expr(E). {
+	*extra->result = E;
+	R = E;
+}
+elist(R) ::=. {
+ R = NULL;
+}
+elist(R) ::= expr(E). {
+ R = pgb_make_elist(E, NULL);
+}
+elist(R) ::= elist(L) COMMA expr(E). {
+ R = pgb_make_elist(E, L);
+}
+expr(R) ::= LPAREN expr(E) RPAREN. {
+ R = E;
+}
+expr(R) ::= PLUS expr(E). [UNARY] {
+ R = E;
+}
+expr(R) ::= MINUS expr(E). [UNARY] {
+	R = pgb_make_op(extra->yyscanner, "-",
+					pgb_make_integer_constant(0), E);
+}
+expr(R) ::= MINUS MAXINT_PLUS_ONE_CONST. [UNARY] {
+	R = pgb_make_integer_constant(PG_INT64_MIN);
+}
+expr(R) ::= TILDE expr(E). {
+	R = pgb_make_op(extra->yyscanner, "#",
+					pgb_make_integer_constant(~INT64CONST(0)), E);
+}
+expr(R) ::= NOT_OP expr(E). {
+	R = pgb_make_uop(extra->yyscanner, "!not", E);
+}
+expr(R) ::= expr(L) PLUS expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "+",  L, RR);
+}
+expr(R) ::= expr(L) MINUS expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "-",  L, RR);
+}
+expr(R) ::= expr(L) STAR expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "*",  L, RR);
+}
+expr(R) ::= expr(L) SLASH expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "/",  L, RR);
+}
+expr(R) ::= expr(L) PERCENT expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "mod", L, RR);
+}
+expr(R) ::= expr(L) LT expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<",  L, RR);
+}
+expr(R) ::= expr(L) LE_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<=", L, RR);
+}
+expr(R) ::= expr(L) GT expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<",  RR, L);
+}
+expr(R) ::= expr(L) GE_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<=", RR, L);
+}
+expr(R) ::= expr(L) EQ expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "=",  L, RR);
+}
+expr(R) ::= expr(L) NE_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<>", L, RR);
+}
+expr(R) ::= expr(L) BITAND expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "&",  L, RR);
+}
+expr(R) ::= expr(L) BITOR expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "|",  L, RR);
+}
+expr(R) ::= expr(L) BITXOR expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "#",  L, RR);
+}
+expr(R) ::= expr(L) LS_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "<<", L, RR);
+}
+expr(R) ::= expr(L) RS_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, ">>", L, RR);
+}
+expr(R) ::= expr(L) AND_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "!and", L, RR);
+}
+expr(R) ::= expr(L) OR_OP expr(RR). {
+ R = pgb_make_op(extra->yyscanner, "!or",  L, RR);
+}
+expr(R) ::= expr(L) ISNULL_OP. {
+	R = pgb_make_op(extra->yyscanner, "!is", L, pgb_make_null_constant());
+}
+expr(R) ::= expr(L) NOTNULL_OP. {
+	R = pgb_make_uop(extra->yyscanner, "!not",
+					 pgb_make_op(extra->yyscanner, "!is",
+								 L, pgb_make_null_constant()));
+}
+expr(R) ::= expr(L) IS_OP NULL_CONST. {
+	R = pgb_make_op(extra->yyscanner, "!is", L, pgb_make_null_constant());
+}
+expr(R) ::= expr(L) IS_OP NOT_OP NULL_CONST. {
+	R = pgb_make_uop(extra->yyscanner, "!not",
+					 pgb_make_op(extra->yyscanner, "!is",
+								 L, pgb_make_null_constant()));
+}
+expr(R) ::= expr(L) IS_OP BOOLEAN_CONST(B). {
+	R = pgb_make_op(extra->yyscanner, "!is", L,
+					pgb_make_boolean_constant(B.bval));
+}
+expr(R) ::= expr(L) IS_OP NOT_OP BOOLEAN_CONST(B). {
+	R = pgb_make_uop(extra->yyscanner, "!not",
+					 pgb_make_op(extra->yyscanner, "!is", L,
+								 pgb_make_boolean_constant(B.bval)));
+}
+expr(R) ::= NULL_CONST. {
+ R = pgb_make_null_constant();
+}
+expr(R) ::= BOOLEAN_CONST(B). {
+ R = pgb_make_boolean_constant(B.bval);
+}
+expr(R) ::= INTEGER_CONST(I). {
+ R = pgb_make_integer_constant(I.ival);
+}
+expr(R) ::= DOUBLE_CONST(D). {
+ R = pgb_make_double_constant(D.dval);
+}
+expr(R) ::= VARIABLE(V). {
+ R = pgb_make_variable(V.str);
+}
+expr(R) ::= function(F) LPAREN elist(L) RPAREN. {
+	R = pgb_make_func(extra->yyscanner, F, L);
+}
+expr(R) ::= case_control(C). {
+ R = C;
+}
+when_then_list(R) ::= when_then_list(L) WHEN_KW expr(C) THEN_KW expr(T). {
+	R = pgb_make_elist(T, pgb_make_elist(C, L));
+}
+when_then_list(R) ::= WHEN_KW expr(C) THEN_KW expr(T). {
+	R = pgb_make_elist(T, pgb_make_elist(C, NULL));
+}
+case_control(R) ::= CASE_KW when_then_list(WT) END_KW. {
+	R = pgb_make_case(extra->yyscanner, WT, pgb_make_null_constant());
+}
+case_control(R) ::= CASE_KW when_then_list(WT) ELSE_KW expr(E) END_KW. {
+	R = pgb_make_case(extra->yyscanner, WT, E);
+}
+function(R) ::= FUNCTION(F). {
+	R = pgb_find_func(extra->yyscanner, F.str);
+	pg_free(F.str);
+}

@@ -16,12 +16,24 @@ psql_sources = files(
   'variables.c',
 )
 
-psqlscanslash = custom_target('psqlscanslash',
-  input: 'psqlscanslash.l',
-  output: 'psqlscanslash.c',
-  command: [flex_cmd, '--no-backup', '--', '-Cfe', '-p', '-p'])
-generated_sources += psqlscanslash
-psql_sources += psqlscanslash
+# Lime-generated slash-command lexer (replaces the hand-rolled state
+# machine in psqlscanslash.c).  psqlscanslash.c remains as the public
+# API + popen-based backtick evaluator.
+psqlscanslash_lex = custom_target('psqlscanslash_lex',
+  input: 'psqlscanslash.lex',
+  output: ['psqlscanslash_lex.c', 'psqlscanslash_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += psqlscanslash_lex.to_list()
+
+psqlscanslash_lib = static_library('psqlscanslash',
+  ['psqlscanslash.c'],
+  psqlscanslash_lex,
+  c_pch: pch_postgres_fe_h,
+  include_directories: include_directories('.'),
+  dependencies: [frontend_code, libpq],
+  kwargs: internal_lib_args,
+)
 
 tabcomplete = custom_target('tabcomplete',
   input: 'tab-complete.in.c',
@@ -59,6 +71,7 @@ psql = executable('psql',
   c_pch: pch_postgres_fe_h,
   include_directories: include_directories('.'),
   dependencies: [frontend_code, libpq, readline],
+  link_with: [psqlscanslash_lib],
   kwargs: default_bin_args,
 )
 bin_targets += psql
