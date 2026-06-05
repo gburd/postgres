@@ -58,8 +58,7 @@ sql_help.c: sql_help.h
 sql_help.h: create_help.pl $(wildcard $(REFDOCDIR)/*.sgml)
 	$(PERL) $< --docdir $(REFDOCDIR) --basename $*
 
-psqlscanslash.c: FLEXFLAGS = -Cfe -p -p
-psqlscanslash.c: FLEX_NO_BACKUP=yes
+# psqlscanslash.c is hand-rolled (Phase 2h); no codegen rule.
 
 tab-complete.c: gen_tabcomplete.pl tab-complete.in.c
 	$(PERL) $^ --outfile $@
@@ -77,7 +76,7 @@ uninstall:
 clean distclean:
 	rm -f psql$(X) $(OBJS) lex.backup
 	rm -rf tmp_check
-	rm -f sql_help.h sql_help.c psqlscanslash.c tab-complete.c
+	rm -f sql_help.h sql_help.c tab-complete.c
 
 check:
 	$(prove_check)

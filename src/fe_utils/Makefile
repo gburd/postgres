@@ -50,8 +50,7 @@ libpgfeutils.a: $(OBJS)
 	rm -f $@
 	$(AR) $(AROPT) $@ $^
 
-psqlscan.c: FLEXFLAGS = -Cfe -p -p
-psqlscan.c: FLEX_NO_BACKUP=yes
+# psqlscan.c is hand-rolled (Phase 2h); no codegen rule needed.
 
 # libpgfeutils could be useful to contrib, so install it
 install: all installdirs
@@ -65,4 +64,3 @@ uninstall:
 
 clean distclean:
 	rm -f libpgfeutils.a $(OBJS) lex.backup
-	rm -f psqlscan.c
