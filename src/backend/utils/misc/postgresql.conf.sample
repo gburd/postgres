@@ -374,8 +374,6 @@
 #recno_max_clock_offset_ms = 250        # max expected clock offset in ms for
                                 # RECNO uncertainty intervals (range: 0-60000)
 #recno_uncertainty_wait = on    # whether replicas wait on RECNO uncertainty windows
-#undo_instant_abort_threshold = 65536  # UNDO bytes threshold above which RECNO
-                                # uses instant abort via ATM
 
 # RECNO table access method - compression settings
 #recno_enable_compression = on  # enable attribute-level compression for RECNO tables
