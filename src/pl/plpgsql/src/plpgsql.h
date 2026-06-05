@@ -1311,6 +1311,9 @@ typedef void *yyscan_t;
 extern int	plpgsql_yylex(union YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
 extern int	plpgsql_token_length(yyscan_t yyscanner);
 extern void plpgsql_push_back_token(int token, union YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+extern int	plpgsql_yy_drain_lookahead(void *yypParser, yyscan_t yyscanner);
+extern int	plpgsql_yy_get_lookahead(void *yyp, union YYSTYPE *yyminor_out, YYLTYPE *yyloc_out);
+extern void plpgsql_yy_clear_lookahead(void *yyp);
 extern bool plpgsql_token_is_unreserved_keyword(int token);
 extern void plpgsql_append_source_text(StringInfo buf,
 									   int startlocation, int endlocation,
