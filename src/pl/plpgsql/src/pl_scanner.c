@@ -19,7 +19,18 @@
 #include "parser/scanner.h"
 
 #include "plpgsql.h"
+#include "pl_gram_types.h"		/* YYSTYPE union body */
 #include "pl_gram.h"			/* must be after parser/scanner.h */
+
+/*
+ * The OP token id (used below to disambiguate << >> # operators) comes
+ * from pl_gram.h: the core scanner's leading token codes (IDENT, Op,
+ * ...) are numbered identically in every grammar built atop
+ * parser/scanner.h, so pl_gram.h's OP matches what core_yylex returns.
+ * We deliberately do NOT include the backend's parser/gram.h here --
+ * doing so would redefine pl_gram.h's punctuation token macros
+ * (LBRACE, RPAREN, ...) to the backend grammar's differing values.
+ */
 
 
 /* Klugy flag to tell scanner how to look up identifiers */
@@ -358,7 +369,7 @@ internal_yylex(TokenAuxData *auxdata, yyscan_t yyscanner)
 		auxdata->leng = strlen(yytext);
 
 		/* Check for << >> and #, which the core considers operators */
-		if (token == Op)
+		if (token == OP)
 		{
 			if (strcmp(auxdata->lval.str, "<<") == 0)
 				token = LESS_LESS;
@@ -406,6 +417,52 @@ plpgsql_push_back_token(int token, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t 
 	auxdata.lloc = *yyllocp;
 	auxdata.leng = yyextra->plpgsql_yyleng;
 	push_back_token(token, &auxdata, yyscanner);
+}
+
+/*
+ * plpgsql_yy_drain_lookahead
+ *	  If the Lime parser is holding a lookahead token in flight,
+ *	  push it onto the lexer's pushback stack and tell the parser to
+ *	  treat it as consumed (so it won't be shifted when the action
+ *	  returns).  This is the bridge between Lime's push-parser model
+ *	  and the bison-style pull pattern that pl_gram.y's actions
+ *	  assume: actions that call read_sql_construct / read_sql_stmt /
+ *	  read_sql_expression / read_datatype / plpgsql_yylex want their
+ *	  first lex'd token to be the parser's pending lookahead, just as
+ *	  bison's yylval (with the lookahead's value) was directly
+ *	  available before the action ran.
+ *
+ *	  Defined here (not in pl_gram.y's epilogue) because the converter
+ *	  generates calls to it in many action bodies and pl_gram.y
+ *	  doesn't have visibility into Lime's parser handle except
+ *	  through the %extra_argument struct.  Take yypParser as void *
+ *	  to avoid a pl_gram.h include cycle.
+ *
+ *	  Idempotent: returns 0 if no lookahead was pending.  Safe to call
+ *	  unconditionally at the start of any action.
+ */
+int
+plpgsql_yy_drain_lookahead(void *yypParser, yyscan_t yyscanner)
+{
+	YYSTYPE		lval;
+	YYLTYPE		lloc;
+	int			tok;
+	extern int	plpgsql_lime_to_ascii_token(int t);
+
+	tok = plpgsql_yy_get_lookahead(yypParser, &lval, &lloc);
+	if (tok > 0)
+	{
+		/*
+		 * Reverse the driver's ASCII->Lime translation so the lexer-side
+		 * pushback stores the original numeric token code that pl_gram.y
+		 * action bodies compare against (e.g. `tok == '['` expects raw 91,
+		 * not LBRACKET).
+		 */
+		tok = plpgsql_lime_to_ascii_token(tok);
+		plpgsql_push_back_token(tok, &lval, &lloc, yyscanner);
+		plpgsql_yy_clear_lookahead(yypParser);
+	}
+	return tok;
 }
 
 /*
