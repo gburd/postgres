@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+#
+# Run `lime -L` over every .lime file in the source tree.
+# Exits 0 if all files lint clean, non-zero on the first lint failure.
+#
+# Wired into meson as the `lime_lint` test (see top-level meson.build).
+# Runs as part of `meson test -C build --suite lime_lint`.
+#
+# `lime -L` is non-destructive: it parses the grammar, validates module
+# directives, and reports errors / warnings without producing any output
+# files.  Cheap (microseconds per file).
+#
+# .lex files are not exercised here -- the lexer subsystem doesn't have
+# a parallel `-L` flag; lex grammars are validated implicitly during
+# code generation (lime -X), so a malformed .lex fails the parser
+# `custom_target` step in meson at build time.
+#
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--lime', required=True,
+                    help='path to the lime binary')
+parser.add_argument('--srcdir', required=True,
+                    help='top-level source directory to scan')
+parser.add_argument('--quiet', action='store_true',
+                    help='suppress per-file OK output (only show failures)')
+args = parser.parse_args()
+
+srcdir = Path(args.srcdir)
+if not srcdir.is_dir():
+    sys.exit(f'lime_lint: srcdir not found: {srcdir}')
+
+# Skip build / install directory output that may shadow source files.
+SKIP_PATTERNS = ('build', 'install', '.git', 'tmp_install')
+
+failures = 0
+checked = 0
+
+for lime_path in sorted(srcdir.rglob('*.lime')):
+    rel = lime_path.relative_to(srcdir)
+    if any(part.startswith(p) for part in rel.parts for p in SKIP_PATTERNS):
+        continue
+    checked += 1
+    cp = subprocess.run(
+        [args.lime, '-L', str(lime_path)],
+        capture_output=True,
+        text=True,
+    )
+    out = cp.stdout + cp.stderr
+    # `lime -L` reports errors and warnings.  Two output shapes
+    # exist depending on Lime version / grammar content:
+    #   v0.5.0+ with diagnostics: '... N error(s), M warning(s), ...'
+    #   v0.5.0+ no diagnostics: 'OK: no diagnostics'
+    #   pre-v0.5.0: '✓ No errors or warnings'
+    # Treat any non-zero return code OR an error count > 0 as
+    # failure.  Warnings are allowed: PG grammars use intentional
+    # patterns (e.g. JUNK sentinel tokens) that surface
+    # warnings W001 et al.  Use --lint-strict in CI when we
+    # want to gate on warnings too.
+    error_count_zero = ('0 error(s)' in out
+                        or 'OK: no diagnostics' in out
+                        or '✓ No errors or warnings' in out)
+    has_failure = cp.returncode != 0 or not error_count_zero
+    if has_failure:
+        failures += 1
+        print(f'FAIL {rel}', file=sys.stderr)
+        for line in out.splitlines():
+            print(f'  {line}', file=sys.stderr)
+    elif not args.quiet:
+        print(f'OK   {rel}')
+
+if failures:
+    print(f'\nlime_lint: {failures} of {checked} files FAILED', file=sys.stderr)
+    sys.exit(1)
+
+print(f'\nlime_lint: {checked} files OK')
