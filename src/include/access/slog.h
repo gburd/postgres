@@ -32,6 +32,7 @@
 #include "access/transam.h"
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
+#include "nodes/lockoptions.h"
 #include "storage/itemptr.h"
 #include "storage/lwlock.h"
 #include "storage/relfilelocator.h"
@@ -168,6 +169,16 @@ typedef struct SLogTupleOp
 	uint32		spec_token;		/* speculative insertion token, or 0 */
 	bool		in_use;			/* slot occupied? */
 
+	/*
+	 * Precise tuple-lock strength for LOCK_SHARE/LOCK_EXCL markers.  The
+	 * SLOG_OP_LOCK_* op_type only distinguishes shared vs. exclusive intent;
+	 * this field preserves the full four-way LockTupleMode so a concurrent
+	 * updater can apply the real heavyweight conflict matrix (a KeyShare FK
+	 * locker is compatible with a NoKeyExclusive UPDATE, but a Share/Exclusive
+	 * locker conflicts and must block it).  Ignored for non-lock ops.
+	 */
+	LockTupleMode lock_mode;
+
 	/* Shared before-image support (commit retention for MVCC reads) */
 	uint64		commit_hlc;		/* 0 = uncommitted; else HLC when committed */
 	dsa_pointer before_image_dp;	/* DSA pointer to SLogBeforeImage, or
@@ -252,7 +263,7 @@ extern int	SLogTupleNumEntries(void);
 extern bool SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 							SLogOpType op_type, TransactionId subxid,
 							CommandId cid, TimestampTz commit_ts,
-							uint32 spec_token);
+							uint32 spec_token, LockTupleMode lock_mode);
 extern bool SLogTupleInsertRecovery(Oid relid, ItemPointer tid,
 									TransactionId xid, SLogOpType op_type);
 extern bool SLogTupleLookup(Oid relid, ItemPointer tid,
@@ -291,6 +302,9 @@ extern TransactionId SLogTupleGetDirtyXid(Oid relid, ItemPointer tid,
 										  bool *is_insert);
 extern TransactionId SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid,
 												bool *is_insert);
+extern TransactionId SLogTupleGetWriteConflictXid(Oid relid, ItemPointer tid,
+												  LockTupleMode my_mode,
+												  bool *is_insert);
 extern bool SLogTupleHasLockConflict(Oid relid, ItemPointer tid,
 									 TransactionId my_xid,
 									 SLogOpType requested_lock);

@@ -74,6 +74,7 @@ slog_num_cpus(void)
 #include "access/xact.h"
 #include "common/hashfn.h"
 #include "miscadmin.h"
+#include "storage/lock.h"
 #include "storage/lrlock.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
@@ -1385,7 +1386,7 @@ bool
 SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 				SLogOpType op_type, TransactionId subxid,
 				CommandId cid, TimestampTz commit_ts,
-				uint32 spec_token)
+				uint32 spec_token, LockTupleMode lock_mode)
 {
 	SLogTupleKey key;
 	SLogFlatOp	flat_op;
@@ -1495,6 +1496,7 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 		flat_op.tuple_op.cid = cid;
 		flat_op.tuple_op.commit_ts = commit_ts;
 		flat_op.tuple_op.spec_token = spec_token;
+		flat_op.tuple_op.lock_mode = lock_mode;
 		flat_op.tuple_op.commit_hlc = 0;
 		flat_op.tuple_op.before_image_dp = InvalidDsaPointer;
 		flat_op.tuple_op.in_use = true;
@@ -2850,6 +2852,131 @@ SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid, bool *is_insert)
 	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
 
 	return result;
+}
+
+/*
+ * recno_tuplock_to_lockmode -- map a LockTupleMode to its heavyweight LOCKMODE.
+ *
+ * Identical to the mapping in recno_lock.c / heap's tupleLockExtraInfo[]: the
+ * four tuple-lock strengths MUST map to four distinct LOCKMODEs so the real
+ * conflict matrix (DoLockModesConflict) distinguishes a compatible KeyShare FK
+ * locker from a conflicting Share/Exclusive locker.
+ */
+static LOCKMODE
+recno_tuplock_to_lockmode(LockTupleMode mode)
+{
+	switch (mode)
+	{
+		case LockTupleKeyShare:
+			return AccessShareLock;
+		case LockTupleShare:
+			return RowShareLock;
+		case LockTupleNoKeyExclusive:
+			return ExclusiveLock;
+		case LockTupleExclusive:
+			return AccessExclusiveLock;
+	}
+	elog(ERROR, "invalid tuple lock mode: %d", (int) mode);
+	return NoLock;				/* keep compiler quiet */
+}
+
+/*
+ * SLogTupleGetWriteConflictXid -- find an in-progress transaction whose marker
+ * conflicts with a writer (UPDATE/DELETE) acquiring tuple lock my_mode.
+ *
+ * Unlike SLogTupleGetDirtyWriterXid (which only ever reports writers and
+ * silently ignores lock-only markers), this also reports a *locker* whose
+ * recorded LockTupleMode conflicts with my_mode under the standard heavyweight
+ * matrix.  That is required for correctness: a SELECT ... FOR UPDATE locker
+ * leaves only a LOCK_EXCL marker (no on-page writer state), and an updater that
+ * consults a writer-only probe sails past it and clobbers the row the locker is
+ * protecting.  The four-way mapping keeps a KeyShare FK locker (AccessShareLock)
+ * compatible with a NoKeyExclusive UPDATE (ExclusiveLock) while making FOR SHARE
+ * (RowShareLock) and FOR UPDATE (AccessExclusiveLock) correctly block it.
+ *
+ * Writers take priority over lockers in the returned xid so the caller's
+ * is_insert handling (TM_Invisible for an in-progress INSERT) is preserved; a
+ * conflicting locker is returned only when no in-progress writer exists.
+ *
+ * Returns the conflicting xid, or InvalidTransactionId if none.  *is_insert is
+ * set true only when the returned xid is an in-progress INSERT writer.
+ *
+ * WAIT-FREE: uses LRLock read-side, identical to SLogTupleGetDirtyWriterXid.
+ */
+TransactionId
+SLogTupleGetWriteConflictXid(Oid relid, ItemPointer tid,
+							 LockTupleMode my_mode, bool *is_insert)
+{
+	SLogTupleKey key;
+	const SLogFlatHash *ht;
+	const SLogFlatBucket *bucket;
+	TransactionId writer_xid = InvalidTransactionId;
+	bool		writer_is_insert = false;
+	TransactionId locker_xid = InvalidTransactionId;
+	LOCKMODE	my_lockmode = recno_tuplock_to_lockmode(my_mode);
+	int			i;
+
+	memset(&key, 0, sizeof(key));
+	key.relid = relid;
+	ItemPointerCopy(tid, &key.tid);
+
+	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+
+	bucket = SLogFlatHashProbe(ht, &key);
+
+	if (bucket != NULL)
+	{
+		const SLogTupleEntry *entry = &bucket->entry;
+
+		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		{
+			TransactionId xid;
+			SLogOpType	op;
+
+			if (!entry->ops[i].in_use)
+				continue;
+
+			op = entry->ops[i].op_type;
+			xid = entry->ops[i].xid;
+
+			if (TransactionIdIsCurrentTransactionId(xid))
+				continue;
+			if (!TransactionIdIsInProgress(xid))
+				continue;
+
+			if (op == SLOG_OP_INSERT ||
+				op == SLOG_OP_UPDATE ||
+				op == SLOG_OP_DELETE)
+			{
+				/* A real writer: highest priority, stop scanning. */
+				writer_xid = xid;
+				writer_is_insert = (op == SLOG_OP_INSERT);
+				break;
+			}
+
+			if (op == SLOG_OP_LOCK_SHARE || op == SLOG_OP_LOCK_EXCL)
+			{
+				LOCKMODE	locker_lockmode =
+					recno_tuplock_to_lockmode(entry->ops[i].lock_mode);
+
+				if (DoLockModesConflict(my_lockmode, locker_lockmode))
+					locker_xid = xid;	/* candidate; keep seeking a writer */
+			}
+		}
+	}
+
+	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+
+	if (TransactionIdIsValid(writer_xid))
+	{
+		if (is_insert)
+			*is_insert = writer_is_insert;
+		return writer_xid;
+	}
+
+	if (is_insert)
+		*is_insert = false;
+	return locker_xid;
 }
 
 /*
