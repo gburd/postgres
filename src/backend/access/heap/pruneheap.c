@@ -855,9 +855,39 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
 					HeapTupleHeaderGetNatts(htup) > 0)
 				{
-					OffsetNumber forward;
+					OffsetNumber forward = InvalidOffsetNumber;
 
-					forward = heap_prune_find_live_chain_root(prstate, offnum);
+					/*
+					 * This is a HOT-updated mid-chain member, so its t_ctid
+					 * points forward to the next chain member on the same
+					 * page.  Bridge forward to that successor: a reader
+					 * walking a stale leaf steps through this bridge to the
+					 * successor (itself a live tuple or its own bridge),
+					 * accumulating this hop's modified-attrs bitmap.  This is
+					 * the re-prune case -- the chain was already collapsed to
+					 * a redirect -> bridges -> first_live, first_live was then
+					 * HOT-indexed-updated again, and this member is one of the
+					 * newly-dead versions past first_live that heap_prune_chain
+					 * left for us (it does not re-collapse an already-collapsed
+					 * chain).  Linking forward preserves per-hop accumulation
+					 * and never touches the root redirect.
+					 */
+					if (ItemPointerGetBlockNumber(&htup->t_ctid) == blockno)
+					{
+						OffsetNumber succ = ItemPointerGetOffsetNumber(&htup->t_ctid);
+
+						if (succ >= FirstOffsetNumber && succ <= maxoff &&
+							succ != offnum)
+							forward = succ;
+					}
+
+					/*
+					 * Fallback for an aborted orphan with no usable forward
+					 * link: forward to the live chain root if reachable.
+					 */
+					if (!OffsetNumberIsValid(forward))
+						forward = heap_prune_find_live_chain_root(prstate, offnum);
+
 					if (OffsetNumberIsValid(forward))
 					{
 						HeapTupleHeaderAdvanceConflictHorizon(htup,
