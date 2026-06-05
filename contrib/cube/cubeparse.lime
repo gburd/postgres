@@ -1,0 +1,355 @@
+/*-------------------------------------------------------------------------
+ *
+ * gram.lime
+ *	  Lime grammar for the PostgreSQL backend SQL parser.
+ *
+ * Mechanically converted from contrib/cube/cubeparse.y by
+ * src/tools/lime_convert_gram.py.  Hand edits are expected to follow
+ * for precedence/conflict tuning and scanner glue.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
+/* lime_to_bison_gram nt_rename map -- DO NOT EDIT BY HAND.
+ * Each line: <bison-name> -> <lime-name>.
+ */
+%name cube_yy
+%token_type {YYSTYPE}
+%extra_argument {struct GramParseExtra *extra}
+%start_symbol box
+%expect 0
+%first_token 257
+
+/* Epilogue from gram.y. */
+%include {
+/* ---- BEGIN gram.y prologue ---- */
+
+/* contrib/cube/cubeparse.y */
+
+/* NdBox = [(lowerleft),(upperright)] */
+/* [(xLL(1)...xLL(N)),(xUR(1)...xUR(n))] */
+
+#include "postgres.h"
+
+#include "cubedata.h"
+#include "cubeparse.h"	/* must be after cubedata.h for YYSTYPE and NDBOX */
+#include "nodes/miscnodes.h"
+#include "utils/float.h"
+#include "varatt.h"
+
+/*
+ * Bison doesn't allocate anything that needs to live across parser calls,
+ * so we can easily have it use palloc instead of malloc.  This prevents
+ * memory leaks if we error out during parsing.
+ */
+#define YYMALLOC palloc
+#define YYFREE   pfree
+
+static int item_count(const char *s, char delim);
+static bool write_box(int dim, char *str1, char *str2,
+					  NDBOX **result, struct Node *escontext);
+static bool write_point_as_box(int dim, char *str,
+							   NDBOX **result, struct Node *escontext);
+/* ---- END gram.y prologue ---- */
+
+/* Synthesized to fold the original %parse-param entries
+ * into a single Lime %extra_argument.  Action bodies that
+ * referenced the original idents by name keep compiling
+ * unchanged via the macro shadows below. */
+struct GramParseExtra
+{
+	NDBOX **result;
+	Size scanbuflen;
+	struct Node *escontext;
+	yyscan_t yyscanner;
+	bool	aborted;		/* set by YYABORT shim below */
+};
+
+/* Bison's YYABORT terminates the parse with failure.  Lime has no
+** equivalent; we set a flag the driver checks after each push and
+** stops feeding tokens.  Used after errsave() in the cube grammar's
+** soft-error paths; in hard-error mode (escontext NULL) errsave
+** longjmps via ereport(ERROR) so YYABORT is unreached. */
+#define YYABORT     do { extra->aborted = true; } while (0)
+#line 234 "./contrib/cube/cubeparse.lime"
+
+
+
+/* This assumes the string has been normalized by productions above */
+static int
+item_count(const char *s, char delim)
+{
+	int			nitems = 0;
+
+	if (s[0] != '\0')
+	{
+		nitems++;
+		while ((s = strchr(s, delim)) != NULL)
+		{
+			nitems++;
+			s++;
+		}
+	}
+	return nitems;
+}
+
+static bool
+write_box(int dim, char *str1, char *str2,
+		  NDBOX **result, struct Node *escontext)
+{
+	NDBOX	   *bp;
+	char	   *s;
+	char	   *endptr;
+	int			i;
+	int			size = CUBE_SIZE(dim);
+	bool		point = true;
+
+	bp = palloc0(size);
+	SET_VARSIZE(bp, size);
+	SET_DIM(bp, dim);
+
+	s = str1;
+	i = 0;
+	if (dim > 0)
+	{
+		bp->x[i++] = float8in_internal(s, &endptr, "cube", str1, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+	while ((s = strchr(s, ',')) != NULL)
+	{
+		s++;
+		bp->x[i++] = float8in_internal(s, &endptr, "cube", str1, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+	Assert(i == dim);
+
+	s = str2;
+	if (dim > 0)
+	{
+		bp->x[i] = float8in_internal(s, &endptr, "cube", str2, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+		/* code this way to do right thing with NaN */
+		point &= (bp->x[i] == bp->x[0]);
+		i++;
+	}
+	while ((s = strchr(s, ',')) != NULL)
+	{
+		s++;
+		bp->x[i] = float8in_internal(s, &endptr, "cube", str2, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+		point &= (bp->x[i] == bp->x[i - dim]);
+		i++;
+	}
+	Assert(i == dim * 2);
+
+	if (point)
+	{
+		/*
+		 * The value turned out to be a point, ie. all the upper-right
+		 * coordinates were equal to the lower-left coordinates. Resize the
+		 * cube we constructed.  Note: we don't bother to repalloc() it
+		 * smaller, as it's unlikely that the tiny amount of memory freed that
+		 * way would be useful, and the output is always short-lived.
+		 */
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(bp, size);
+		SET_POINT_BIT(bp);
+	}
+
+	*result = bp;
+	return true;
+}
+
+static bool
+write_point_as_box(int dim, char *str,
+				   NDBOX **result, struct Node *escontext)
+{
+	NDBOX	   *bp;
+	int			i,
+				size;
+	char	   *s;
+	char	   *endptr;
+
+	size = POINT_SIZE(dim);
+	bp = palloc0(size);
+	SET_VARSIZE(bp, size);
+	SET_DIM(bp, dim);
+	SET_POINT_BIT(bp);
+
+	s = str;
+	i = 0;
+	if (dim > 0)
+	{
+		bp->x[i++] = float8in_internal(s, &endptr, "cube", str, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+	while ((s = strchr(s, ',')) != NULL)
+	{
+		s++;
+		bp->x[i++] = float8in_internal(s, &endptr, "cube", str, escontext);
+		if (SOFT_ERROR_OCCURRED(escontext))
+			return false;
+	}
+	Assert(i == dim);
+
+	*result = bp;
+	return true;
+}
+}
+
+%syntax_error {
+	cube_yyerror(extra->result, extra->scanbuflen, extra->escontext,
+				 extra->yyscanner, "syntax error");
+}
+
+%parse_failure {
+	cube_yyerror(extra->result, extra->scanbuflen, extra->escontext,
+				 extra->yyscanner, "parse failure");
+}
+
+/* ======================================================================
+ * TOKENS
+ * ====================================================================== */
+%token CUBEFLOAT.
+%token O_PAREN.
+%token C_PAREN.
+%token O_BRACKET.
+%token C_BRACKET.
+%token COMMA.
+
+
+/* ======================================================================
+ * PRECEDENCE
+ * ====================================================================== */
+
+/* ======================================================================
+ * NON-TERMINAL TYPES
+ * ====================================================================== */
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+
+/* ----- box ----- */
+box ::= O_BRACKET paren_list(C) COMMA paren_list(E) C_BRACKET. {
+	{ NDBOX **result = extra->result; struct Node *escontext = extra->escontext; int			dim;;
+		(void)result; (void)escontext;
+	
+			dim = item_count(C, ',');
+			if (item_count(E, ',') != dim)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("Different point dimensions in (%s) and (%s).",
+								   C, E)));
+				YYABORT;
+			}
+			if (dim > CUBE_MAX_DIM)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("A cube cannot have more than %d dimensions.",
+								   CUBE_MAX_DIM)));
+				YYABORT;
+			}
+	
+			if (!write_box(dim, C, E, result, escontext))
+				YYABORT;
+	}
+}
+box ::= paren_list(B) COMMA paren_list(D). {
+	{ NDBOX **result = extra->result; struct Node *escontext = extra->escontext; int			dim;;
+		(void)result; (void)escontext;
+	
+			dim = item_count(B, ',');
+			if (item_count(D, ',') != dim)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("Different point dimensions in (%s) and (%s).",
+								   B, D)));
+				YYABORT;
+			}
+			if (dim > CUBE_MAX_DIM)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("A cube cannot have more than %d dimensions.",
+								   CUBE_MAX_DIM)));
+				YYABORT;
+			}
+	
+			if (!write_box(dim, B, D, result, escontext))
+				YYABORT;
+	}
+}
+box ::= paren_list(B). {
+	{ NDBOX **result = extra->result; struct Node *escontext = extra->escontext; int			dim;;
+		(void)result; (void)escontext;
+	
+			dim = item_count(B, ',');
+			if (dim > CUBE_MAX_DIM)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("A cube cannot have more than %d dimensions.",
+								   CUBE_MAX_DIM)));
+				YYABORT;
+			}
+	
+			if (!write_point_as_box(dim, B, result, escontext))
+				YYABORT;
+	}
+}
+box ::= list(B). {
+	{ NDBOX **result = extra->result; struct Node *escontext = extra->escontext; int			dim;;
+		(void)result; (void)escontext;
+	
+			dim = item_count(B, ',');
+			if (dim > CUBE_MAX_DIM)
+			{
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+						 errmsg("invalid input syntax for cube"),
+						 errdetail("A cube cannot have more than %d dimensions.",
+								   CUBE_MAX_DIM)));
+				YYABORT;
+			}
+	
+			if (!write_point_as_box(dim, B, result, escontext))
+				YYABORT;
+	}
+}
+/* ----- paren_list ----- */
+paren_list(A) ::= O_PAREN list(C) C_PAREN. {
+	A = C;
+}
+paren_list(A) ::= O_PAREN C_PAREN. {
+	A = pstrdup("");
+}
+/* ----- list ----- */
+list(A) ::= CUBEFLOAT(B). {
+	{ Size scanbuflen = extra->scanbuflen;;
+		(void)scanbuflen;
+	A = palloc(scanbuflen + 1);
+			strcpy(A, B);
+	}
+}
+list(A) ::= list(B) COMMA CUBEFLOAT(D). {
+	A = B;
+			strcat(A, ",");
+			strcat(A, D);
+}

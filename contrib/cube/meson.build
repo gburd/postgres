@@ -2,22 +2,29 @@
 
 cube_sources = files(
   'cube.c',
+  'cubeparse_driver.c',
 )
 
-cube_scan = custom_target('cubescan',
-  input: 'cubescan.l',
-  output: 'cubescan.c',
-  command: flex_cmd,
+# Lime-generated lexer (replaces cubescan.l) and parser (replaces
+# cubeparse.y).  Both are warning-clean as of Lime v1.5.x, so -- like
+# upstream's flex/bison output -- they are compiled directly into the
+# module rather than isolated.
+cube_scan = custom_target('cubescan_lex',
+  input: 'cubescan.lex',
+  output: ['cubescan_lex.c', 'cubescan_lex.h'],
+  command: lime_lex_cmd,
 )
 generated_sources += cube_scan
-cube_sources += cube_scan
 
 cube_parse = custom_target('cubeparse',
-  input: 'cubeparse.y',
-  kwargs: bison_kw,
+  input: 'cubeparse.lime',
+  kwargs: lime_kw,
 )
 generated_sources += cube_parse.to_list()
-cube_sources += cube_parse
+
+# The generated lexer and parser are warning-clean as of Lime v1.5.x, so
+# both are compiled directly into the module.
+cube_sources += [cube_scan, cube_parse]
 
 if host_system == 'windows'
   cube_sources += rc_lib_gen.process(win32ver_rc, extra_args: [

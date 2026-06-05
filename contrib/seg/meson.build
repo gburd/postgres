@@ -2,22 +2,27 @@
 
 seg_sources = files(
   'seg.c',
+  'segparse_driver.c',
 )
 
-seg_scan = custom_target('segscan',
-  input: 'segscan.l',
-  output: 'segscan.c',
-  command: flex_cmd,
+# Lime-generated lexer (replaces segscan.l) and parser (replaces
+# segparse.y).  Both are warning-clean as of Lime v1.5.x, so -- like
+# upstream's flex/bison output -- they are compiled directly into the
+# module rather than isolated.
+seg_scan = custom_target('segscan_lex',
+  input: 'segscan.lex',
+  output: ['segscan_lex.c', 'segscan_lex.h'],
+  command: lime_lex_cmd,
 )
 generated_sources += seg_scan
-seg_sources += seg_scan
 
 seg_parse = custom_target('segparse',
-  input: 'segparse.y',
-  kwargs: bison_kw,
+  input: 'segparse.lime',
+  kwargs: lime_kw,
 )
 generated_sources += seg_parse.to_list()
-seg_sources += seg_parse
+
+seg_sources += [seg_scan, seg_parse]
 
 if host_system == 'windows'
   seg_sources += rc_lib_gen.process(win32ver_rc, extra_args: [

@@ -1,0 +1,235 @@
+/*-------------------------------------------------------------------------
+ *
+ * gram.lime
+ *	  Lime grammar for the PostgreSQL backend SQL parser.
+ *
+ * Mechanically converted from contrib/seg/segparse.y by
+ * src/tools/lime_convert_gram.py.  Hand edits are expected to follow
+ * for precedence/conflict tuning and scanner glue.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
+/* lime_to_bison_gram nt_rename map -- DO NOT EDIT BY HAND.
+ * Each line: <bison-name> -> <lime-name>.
+ */
+%name seg_yy
+%token_type {YYSTYPE}
+%extra_argument {struct GramParseExtra *extra}
+%start_symbol range
+%expect 0
+%first_token 257
+
+/* Epilogue from gram.y. */
+%include {
+/* ---- BEGIN gram.y prologue ---- */
+
+/* contrib/seg/segparse.y */
+
+#include "postgres.h"
+
+#include <float.h>
+#include <math.h>
+
+#include "fmgr.h"
+#include "nodes/miscnodes.h"
+#include "utils/builtins.h"
+#include "utils/float.h"
+
+#include "seg_gram_yytype.h"
+#include "segdata.h"
+#include "segparse.h"
+
+/*
+ * Bison doesn't allocate anything that needs to live across parser calls,
+ * so we can easily have it use palloc instead of malloc.  This prevents
+ * memory leaks if we error out during parsing.
+ */
+#define YYMALLOC palloc
+#define YYFREE   pfree
+
+static bool seg_atof(char *value, float *result, struct Node *escontext);
+
+static int sig_digits(const char *value);
+/* ---- END gram.y prologue ---- */
+
+/* Synthesized to fold the original %parse-param entries
+ * into a single Lime %extra_argument.  Action bodies that
+ * referenced the original idents by name keep compiling
+ * unchanged via the macro shadows below. */
+struct GramParseExtra
+{
+	SEG *result;
+	struct Node *escontext;
+	yyscan_t yyscanner;
+	bool	aborted;
+};
+
+/* Bison's YYABORT and YYERROR terminate the parse with failure.
+** Lime has no equivalent; we set a flag the driver checks after
+** each push and stops feeding tokens.  In hard-error mode
+** (escontext NULL) errsave longjmps via ereport(ERROR) so the
+** abort macros are unreached. */
+#define YYABORT     do { extra->aborted = true; } while (0)
+#define YYERROR     do { extra->aborted = true; } while (0)
+#line 222 "./contrib/seg/segparse.lime"
+
+
+
+
+static bool
+seg_atof(char *value, float *result, struct Node *escontext)
+{
+	*result = float4in_internal(value, NULL, "seg", value, escontext);
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return false;
+	return true;
+}
+
+static int
+sig_digits(const char *value)
+{
+	int			n = significant_digits(value);
+
+	/* Clamp, to ensure value will fit in sigd fields */
+	return Min(n, FLT_DIG);
+}
+}
+
+%syntax_error {
+	seg_yyerror(extra->result, extra->escontext, extra->yyscanner,
+				"syntax error");
+}
+
+%parse_failure {
+	seg_yyerror(extra->result, extra->escontext, extra->yyscanner,
+				"parse failure");
+}
+
+/* ======================================================================
+ * TOKENS
+ * ====================================================================== */
+%token SEGFLOAT.
+%token RANGE.
+%token PLUMIN.
+%token EXTENSION.
+
+/* ======================================================================
+ * PRECEDENCE
+ * ====================================================================== */
+
+/* ======================================================================
+ * NON-TERMINAL TYPES
+ * ====================================================================== */
+%type boundary {struct BND}
+%type deviation {struct BND}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+
+/* ----- range ----- */
+range ::= boundary(B) PLUMIN deviation(D). {
+	{ SEG *result = extra->result; char		strbuf[25];;
+		(void)result;
+	
+			result->lower = B.val - D.val;
+			result->upper = B.val + D.val;
+			snprintf(strbuf, sizeof(strbuf), "%g", result->lower);
+			result->l_sigd = Max(sig_digits(strbuf), Max(B.sigd, D.sigd));
+			snprintf(strbuf, sizeof(strbuf), "%g", result->upper);
+			result->u_sigd = Max(sig_digits(strbuf), Max(B.sigd, D.sigd));
+			result->l_ext = '\0';
+			result->u_ext = '\0';
+	}
+}
+range ::= boundary(B) RANGE boundary(D). {
+	{ SEG *result = extra->result; struct Node *escontext = extra->escontext;;
+		(void)result; (void)escontext;
+	result->lower = B.val;
+			result->upper = D.val;
+			if ( result->lower > result->upper ) {
+				errsave(escontext,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("swapped boundaries: %g is greater than %g",
+								result->lower, result->upper)));
+	
+				YYERROR;
+			}
+			result->l_sigd = B.sigd;
+			result->u_sigd = D.sigd;
+			result->l_ext = ( B.ext ? B.ext : '\0' );
+			result->u_ext = ( D.ext ? D.ext : '\0' );
+	}
+}
+range ::= boundary(B) RANGE. {
+	{ SEG *result = extra->result;;
+		(void)result;
+	result->lower = B.val;
+			result->upper = HUGE_VAL;
+			result->l_sigd = B.sigd;
+			result->u_sigd = 0;
+			result->l_ext = ( B.ext ? B.ext : '\0' );
+			result->u_ext = '-';
+	}
+}
+range ::= RANGE boundary(C). {
+	{ SEG *result = extra->result;;
+		(void)result;
+	result->lower = -HUGE_VAL;
+			result->upper = C.val;
+			result->l_sigd = 0;
+			result->u_sigd = C.sigd;
+			result->l_ext = '-';
+			result->u_ext = ( C.ext ? C.ext : '\0' );
+	}
+}
+range ::= boundary(B). {
+	{ SEG *result = extra->result;;
+		(void)result;
+	result->lower = result->upper = B.val;
+			result->l_sigd = result->u_sigd = B.sigd;
+			result->l_ext = result->u_ext = ( B.ext ? B.ext : '\0' );
+	}
+}
+/* ----- boundary ----- */
+boundary(A) ::= SEGFLOAT(B). {
+	{ struct Node *escontext = extra->escontext; float		val;;
+		(void)escontext;
+	
+			if (!seg_atof(B.text, &val, escontext))
+				YYABORT;
+	
+			A.ext = '\0';
+			A.sigd = sig_digits(B.text);
+			A.val = val;
+	}
+}
+boundary(A) ::= EXTENSION(B) SEGFLOAT(C). {
+	{ struct Node *escontext = extra->escontext; float		val;;
+		(void)escontext;
+	
+			if (!seg_atof(C.text, &val, escontext))
+				YYABORT;
+	
+			A.ext = B.text[0];
+			A.sigd = sig_digits(C.text);
+			A.val = val;
+	}
+}
+/* ----- deviation ----- */
+deviation(A) ::= SEGFLOAT(B). {
+	{ struct Node *escontext = extra->escontext; float		val;;
+		(void)escontext;
+	
+			if (!seg_atof(B.text, &val, escontext))
+				YYABORT;
+	
+			A.ext = '\0';
+			A.sigd = sig_digits(B.text);
+			A.val = val;
+	}
+}

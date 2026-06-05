@@ -1,0 +1,362 @@
+/*-------------------------------------------------------------------------
+ *
+ * gram.lime
+ *	  Lime grammar for the PostgreSQL backend SQL parser.
+ *
+ * Mechanically converted from contrib/pg_plan_advice/pgpa_parser.y by
+ * src/tools/lime_convert_gram.py.  Hand edits are expected to follow
+ * for precedence/conflict tuning and scanner glue.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
+/* lime_to_bison_gram nt_rename map -- DO NOT EDIT BY HAND.
+ * Each line: <bison-name> -> <lime-name>.
+ */
+%name pgpa_yy
+%token_type {YYSTYPE}
+%extra_argument {struct GramParseExtra *extra}
+%start_symbol parse_toplevel
+%expect 0
+%first_token 257
+
+/* Epilogue from gram.y. */
+%include {
+/* ---- BEGIN gram.y prologue ---- */
+
+/*
+ * Parser for plan advice
+ *
+ * Copyright (c) 2000-2026, PostgreSQL Global Development Group
+ *
+ * contrib/pg_plan_advice/pgpa_parser.y
+ */
+
+#include "postgres.h"
+
+#include <float.h>
+#include <math.h>
+
+#include "fmgr.h"
+#include "nodes/miscnodes.h"
+#include "utils/builtins.h"
+#include "utils/float.h"
+
+#include "pgpa_ast.h"
+#include "pgpa_parser_yytype.h"
+#include "pgpa_parser.h"
+
+/*
+ * Bison doesn't allocate anything that needs to live across parser calls,
+ * so we can easily have it use palloc instead of malloc.  This prevents
+ * memory leaks if we error out during parsing.
+ */
+#define YYMALLOC palloc
+#define YYFREE   pfree
+/* ---- END gram.y prologue ---- */
+
+/* Synthesized to fold the original %parse-param entries
+ * into a single Lime %extra_argument.  Action bodies that
+ * referenced the original idents by name keep compiling
+ * unchanged via the macro shadows below. */
+struct GramParseExtra
+{
+	List **result;
+	char **parse_error_msg_p;
+	yyscan_t yyscanner;
+	bool	aborted;
+};
+
+#define YYABORT     do { extra->aborted = true; } while (0)
+#define YYERROR     do { extra->aborted = true; } while (0)
+#line 347 "./contrib/pg_plan_advice/pgpa_parser.lime"
+
+
+
+/*
+ * Parse an advice_string and return the resulting list of pgpa_advice_item
+ * objects. If a parse error occurs, instead return NULL.
+ *
+ * If the return value is NULL, *error_p will be set to the error message;
+ * otherwise, *error_p will be set to NULL.
+ */
+List *
+pgpa_parse(const char *advice_string, char **error_p)
+{
+	yyscan_t	scanner;
+	List	   *result;
+	char	   *error = NULL;
+
+	pgpa_scanner_init(advice_string, &scanner);
+	pgpa_yyparse(&result, &error, scanner);
+	pgpa_scanner_finish(scanner);
+
+	if (error != NULL)
+	{
+		*error_p = error;
+		return NULL;
+	}
+
+	*error_p = NULL;
+	return result;
+}
+}
+
+%syntax_error {
+	pgpa_yyerror(extra->result, extra->parse_error_msg_p,
+				 extra->yyscanner, "syntax error");
+}
+
+%parse_failure {
+	pgpa_yyerror(extra->result, extra->parse_error_msg_p,
+				 extra->yyscanner, "parse failure");
+}
+
+/* ======================================================================
+ * TOKENS
+ * ====================================================================== */
+%token TOK_IDENT.
+%token TOK_TAG_JOIN_ORDER.
+%token TOK_TAG_INDEX.
+%token TOK_TAG_SIMPLE.
+%token TOK_TAG_GENERIC.
+%token TOK_INTEGER.
+%token LPAREN.
+%token RPAREN.
+%token DOT.
+%token HASH.
+%token SLASH.
+%token AT_SIGN.
+%token LBRACE.
+%token RBRACE.
+
+/* ======================================================================
+ * PRECEDENCE
+ * ====================================================================== */
+
+/* ======================================================================
+ * NON-TERMINAL TYPES
+ * ====================================================================== */
+%type opt_ri_occurrence {int}
+%type advice_item {pgpa_advice_item *}
+%type advice_item_list {List *}
+%type generic_target_list {List *}
+%type index_target_list {List *}
+%type join_order_target_list {List *}
+%type opt_partition {List *}
+%type simple_target_list {List *}
+%type identifier {char *}
+%type opt_plan_name {char *}
+%type generic_sublist {pgpa_advice_target *}
+%type join_order_sublist {pgpa_advice_target *}
+%type relation_identifier {pgpa_advice_target *}
+%type index_name {pgpa_index_target *}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+
+/* ----- parse_toplevel ----- */
+parse_toplevel ::= advice_item_list(B). {
+	{ List **result = extra->result;;
+		(void)result;
+	*result = B;
+	}
+}
+/* ----- advice_item_list ----- */
+advice_item_list(A) ::= advice_item_list(B) advice_item(C). {
+	A = lappend(B, C);
+}
+advice_item_list(A) ::=. {
+	A = NIL;
+}
+/* ----- advice_item ----- */
+advice_item(A) ::= TOK_TAG_JOIN_ORDER LPAREN join_order_target_list(D) RPAREN. {
+	{ List **result = extra->result; char **parse_error_msg_p = extra->parse_error_msg_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)result; (void)parse_error_msg_p; (void)yyscanner;
+	A = palloc0_object(pgpa_advice_item);
+				A->tag = PGPA_TAG_JOIN_ORDER;
+				A->targets = D;
+				if (D == NIL)
+					pgpa_yyerror(result, parse_error_msg_p, yyscanner,
+								 "JOIN_ORDER must have at least one target");
+	}
+}
+advice_item(A) ::= TOK_TAG_INDEX(B) LPAREN index_target_list(D) RPAREN. {
+	A = palloc0_object(pgpa_advice_item);
+				if (strcmp(B.str, "index_only_scan") == 0)
+					A->tag = PGPA_TAG_INDEX_ONLY_SCAN;
+				else if (strcmp(B.str, "index_scan") == 0)
+					A->tag = PGPA_TAG_INDEX_SCAN;
+				else
+					elog(ERROR, "tag parsing failed: %s", B.str);
+				A->targets = D;
+}
+advice_item(A) ::= TOK_TAG_SIMPLE(B) LPAREN simple_target_list(D) RPAREN. {
+	A = palloc0_object(pgpa_advice_item);
+				if (strcmp(B.str, "bitmap_heap_scan") == 0)
+					A->tag = PGPA_TAG_BITMAP_HEAP_SCAN;
+				else if (strcmp(B.str, "do_not_scan") == 0)
+					A->tag = PGPA_TAG_DO_NOT_SCAN;
+				else if (strcmp(B.str, "no_gather") == 0)
+					A->tag = PGPA_TAG_NO_GATHER;
+				else if (strcmp(B.str, "seq_scan") == 0)
+					A->tag = PGPA_TAG_SEQ_SCAN;
+				else if (strcmp(B.str, "tid_scan") == 0)
+					A->tag = PGPA_TAG_TID_SCAN;
+				else
+					elog(ERROR, "tag parsing failed: %s", B.str);
+				A->targets = D;
+}
+advice_item(A) ::= TOK_TAG_GENERIC(B) LPAREN generic_target_list(D) RPAREN. {
+	{ List **result = extra->result; char **parse_error_msg_p = extra->parse_error_msg_p; yyscan_t yyscanner = extra->yyscanner; bool	fail;;
+		(void)result; (void)parse_error_msg_p; (void)yyscanner;
+	
+				A = palloc0_object(pgpa_advice_item);
+				A->tag = pgpa_parse_advice_tag(B.str, &fail);
+				if (fail)
+				{
+					pgpa_yyerror(result, parse_error_msg_p, yyscanner,
+								 "unrecognized advice tag");
+				}
+	
+				if (A->tag == PGPA_TAG_FOREIGN_JOIN)
+				{
+					foreach_ptr(pgpa_advice_target, target, D)
+					{
+						if (target->ttype == PGPA_TARGET_IDENTIFIER ||
+							list_length(target->children) == 1)
+								pgpa_yyerror(result, parse_error_msg_p, yyscanner,
+											 "FOREIGN_JOIN targets must contain more than one relation identifier");
+					}
+				}
+	
+				A->targets = D;
+	}
+}
+/* ----- relation_identifier ----- */
+relation_identifier(A) ::= identifier(B) opt_ri_occurrence(C) opt_partition(D) opt_plan_name(E). {
+	A = palloc0_object(pgpa_advice_target);
+				A->ttype = PGPA_TARGET_IDENTIFIER;
+				A->rid.alias_name = B;
+				A->rid.occurrence = C;
+				if (list_length(D) == 2)
+				{
+					A->rid.partnsp = linitial(D);
+					A->rid.partrel = lsecond(D);
+				}
+				else if (D != NIL)
+					A->rid.partrel = linitial(D);
+				A->rid.plan_name = E;
+}
+/* ----- index_name ----- */
+index_name(A) ::= identifier(B). {
+	A = palloc0_object(pgpa_index_target);
+				A->indname = B;
+}
+index_name(A) ::= identifier(B) DOT identifier(D). {
+	A = palloc0_object(pgpa_index_target);
+				A->indnamespace = B;
+				A->indname = D;
+}
+/* ----- opt_ri_occurrence ----- */
+opt_ri_occurrence(A) ::= HASH TOK_INTEGER(C). {
+	{ List **result = extra->result; char **parse_error_msg_p = extra->parse_error_msg_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)result; (void)parse_error_msg_p; (void)yyscanner;
+	if (C.integer <= 0)
+					pgpa_yyerror(result, parse_error_msg_p, yyscanner,
+								 "only positive occurrence numbers are permitted");
+				A = C.integer;
+	}
+}
+opt_ri_occurrence(A) ::=. {
+	A = 1;
+}
+/* ----- identifier ----- */
+identifier(A) ::= TOK_IDENT(B). {
+	A = B.str;
+}
+identifier(A) ::= TOK_TAG_JOIN_ORDER(B). {
+	A = B.str;
+}
+identifier(A) ::= TOK_TAG_INDEX(B). {
+	A = B.str;
+}
+identifier(A) ::= TOK_TAG_SIMPLE(B). {
+	A = B.str;
+}
+identifier(A) ::= TOK_TAG_GENERIC(B). {
+	A = B.str;
+}
+/* ----- opt_partition ----- */
+opt_partition(A) ::= SLASH identifier(C) DOT identifier(E). {
+	A = list_make2(C, E);
+}
+opt_partition(A) ::= SLASH identifier(C). {
+	A = list_make1(C);
+}
+opt_partition(A) ::=. {
+	A = NIL;
+}
+/* ----- opt_plan_name ----- */
+opt_plan_name(A) ::= AT_SIGN identifier(C). {
+	A = C;
+}
+opt_plan_name(A) ::=. {
+	A = NULL;
+}
+/* ----- generic_target_list ----- */
+generic_target_list(A) ::= generic_target_list(B) relation_identifier(C). {
+	A = lappend(B, C);
+}
+generic_target_list(A) ::= generic_target_list(B) generic_sublist(C). {
+	A = lappend(B, C);
+}
+generic_target_list(A) ::=. {
+	A = NIL;
+}
+/* ----- generic_sublist ----- */
+generic_sublist(A) ::= LPAREN simple_target_list(C) RPAREN. {
+	A = palloc0_object(pgpa_advice_target);
+				A->ttype = PGPA_TARGET_ORDERED_LIST;
+				A->children = C;
+}
+/* ----- index_target_list ----- */
+index_target_list(A) ::= index_target_list(B) relation_identifier(C) index_name(D). {
+	C->itarget = D;
+				A = lappend(B, C);
+}
+index_target_list(A) ::=. {
+	A = NIL;
+}
+/* ----- join_order_target_list ----- */
+join_order_target_list(A) ::= join_order_target_list(B) relation_identifier(C). {
+	A = lappend(B, C);
+}
+join_order_target_list(A) ::= join_order_target_list(B) join_order_sublist(C). {
+	A = lappend(B, C);
+}
+join_order_target_list(A) ::=. {
+	A = NIL;
+}
+/* ----- join_order_sublist ----- */
+join_order_sublist(A) ::= LPAREN join_order_target_list(C) RPAREN. {
+	A = palloc0_object(pgpa_advice_target);
+				A->ttype = PGPA_TARGET_ORDERED_LIST;
+				A->children = C;
+}
+join_order_sublist(A) ::= LBRACE simple_target_list(C) RBRACE. {
+	A = palloc0_object(pgpa_advice_target);
+				A->ttype = PGPA_TARGET_UNORDERED_LIST;
+				A->children = C;
+}
+/* ----- simple_target_list ----- */
+simple_target_list(A) ::= simple_target_list(B) relation_identifier(C). {
+	A = lappend(B, C);
+}
+simple_target_list(A) ::=. {
+	A = NIL;
+}
