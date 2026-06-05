@@ -130,22 +130,31 @@ backend_sources += files(
 )
 
 
-jsonpath_scan = custom_target('jsonpath_scan',
-  input: 'jsonpath_scan.l',
-  output: 'jsonpath_scan.c',
-  command: [flex_cmd, '--no-backup', '--', '-CF', '-p', '-p'],
-)
-generated_sources += jsonpath_scan
+jsonpath_scan_sources = files('jsonpath_scan.c')
 
 jsonpath_gram = custom_target('jsonpath_parse',
-  input: 'jsonpath_gram.y',
-  kwargs: bison_kw,
+  input: 'jsonpath_gram.lime',
+  kwargs: lime_kw,
 )
 generated_sources += jsonpath_gram.to_list()
 
+# Lime-generated scanner (replaces jsonpath_scan.c's hand-rolled state
+# machine).  jsonpath_scan.c is now a parser-driver shim around
+# JsonPathLexFeedBytes plus the JsonPathParseItem constructors.  The
+# generated scanner and grammar are warning-clean as of Lime v1.5.x, so
+# both are compiled directly into the jsonpath lib below.
+jsonpath_scan_lex_gen = custom_target('jsonpath_scan_lex',
+  input: 'jsonpath_scan.lex',
+  output: ['jsonpath_scan_lex.c', 'jsonpath_scan_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += jsonpath_scan_lex_gen
+
 # so we don't need to add . as an include dir for the whole backend
 backend_link_with += static_library('jsonpath',
-  jsonpath_scan, jsonpath_gram,
+  jsonpath_scan_sources,
+  jsonpath_scan_lex_gen,
+  jsonpath_gram,
   dependencies: [backend_code],
   include_directories: include_directories('.'),
   kwargs: internal_lib_args,
