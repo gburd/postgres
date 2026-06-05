@@ -36,7 +36,8 @@
  * pg_relation_hot_indexed_stats(regclass) -> record
  *
  * Walks every block of the relation's main fork and counts:
- *   n_tombstones    -- LP_NORMAL items with HEAP_INDEXED_UPDATED+natts=0
+ *   n_hot_indexed   -- live HOT-indexed versions (HEAP_INDEXED_UPDATED, natts>0,
+ *                      carrying an inline-trailing modified-attrs bitmap)
  *   n_chains        -- LP_REDIRECT items, i.e. HOT chain roots.  Matches
  *                      the number of distinct HOT chains that have survived
  *                      the most recent prune.  Root-not-redirect chains
@@ -59,7 +60,7 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 	Relation	rel;
 	BlockNumber nblocks;
 	BlockNumber blk;
-	int64		n_tombstones = 0;
+	int64		n_hot_indexed = 0;
 	int64		n_chains = 0;
 	int64		sum_chain_len = 0;
 	int64		max_chain_len = 0;
@@ -139,8 +140,8 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 			{
 				HeapTupleHeader thdr = (HeapTupleHeader) PageGetItem(page, lp);
 
-				if (HeapTupleHeaderIsHotIndexedTombstone(thdr))
-					n_tombstones++;
+				if (heap_page_item_kind(thdr) == HPIK_HOT_INDEXED_TUPLE)
+					n_hot_indexed++;
 			}
 		}
 
@@ -150,14 +151,14 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 	relation_close(rel, AccessShareLock);
 
 	tupdesc = CreateTemplateTupleDesc(4);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "n_tombstones", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "n_hot_indexed", INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "n_chains", INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "avg_chain_len", FLOAT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "max_chain_len", INT8OID, -1, 0);
 	TupleDescFinalize(tupdesc);
 	tupdesc = BlessTupleDesc(tupdesc);
 
-	values[0] = Int64GetDatum(n_tombstones);
+	values[0] = Int64GetDatum(n_hot_indexed);
 	values[1] = Int64GetDatum(n_chains);
 	if (n_chains > 0)
 		values[2] = Float8GetDatum(((double) sum_chain_len) / (double) n_chains);
