@@ -58,7 +58,9 @@ main(void)
   
 	   
   
-	  	   
+	  
+	 
+  
 
 	   
 
@@ -72,13 +74,11 @@ main(void)
  
 #line 36 "define.pgc"
  char letter [ 6 ] [ 1 ] ;
- 
-#if 0
+ #if 0
  
 #line 38 "define.pgc"
  int not_used ;
- 
-#endif
+ #endif
 /* exec sql end declare section */
 #line 45 "define.pgc"
 

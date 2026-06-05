@@ -24,11 +24,25 @@
 #include "gramparse.h"
 #include "mb/pg_wchar.h"
 #include "parser/parser.h"
+#include "parser/parser_extension.h"
 #include "parser/scansup.h"
 
 static bool check_uescapechar(unsigned char escape);
 static char *str_udeescape(const char *str, char escape,
 						   int position, core_yyscan_t yyscanner);
+
+/*
+ * Indirection used by raw_parser() to dispatch to either the
+ * statically-linked base_yyparse() (the default) or a base_yyparse
+ * symbol resolved via dlsym() out of a dynamically-rebuilt parser .so
+ * produced by the Phase 4 subprocess pipeline.
+ *
+ * parser_extension.c owns the swap: when a grammar extension registers
+ * and the parser lock is taken, the rebuild path stores its dlopen'd
+ * base_yyparse in this slot.  Until that happens we run the in-binary
+ * parser with zero overhead beyond an indirect call.
+ */
+int			(*base_yyparse_fn) (core_yyscan_t yyscanner) = base_yyparse;
 
 
 /*
@@ -44,6 +58,12 @@ raw_parser(const char *str, RawParseMode mode)
 	core_yyscan_t yyscanner;
 	base_yy_extra_type yyextra;
 	int			yyresult;
+
+	/*
+	 * Lock the grammar-extension registry so subsequent
+	 * pg_grammar_ext_register() calls fail.  Idempotent and cheap.
+	 */
+	pg_grammar_ext_lock_parser();
 
 	/* initialize the flex scanner */
 	yyscanner = scanner_init(str, &yyextra.core_yy_extra,
@@ -74,7 +94,7 @@ raw_parser(const char *str, RawParseMode mode)
 	parser_init(&yyextra);
 
 	/* Parse! */
-	yyresult = base_yyparse(yyscanner);
+	yyresult = (*base_yyparse_fn) (yyscanner);
 
 	/* Clean up (release memory) */
 	scanner_finish(yyscanner);

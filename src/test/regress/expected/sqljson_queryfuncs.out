@@ -1422,7 +1422,7 @@ LINE 1: SELECT JSON_QUERY(jsonb '{"a": 123}', ('$' || '.' || 'a' || ...
                                                ^
 -- Should fail (invalid path)
 SELECT JSON_QUERY(jsonb '{"a": 123}', 'error' || ' ' || 'error');
-ERROR:  syntax error at or near " " of jsonpath input
+ERROR:  syntax error at or near "error" of jsonpath input
 -- Non-jsonb inputs automatically coerced to jsonb
 SELECT JSON_EXISTS(json '{"a": 123}', '$' || '.' || 'a');
  json_exists 
