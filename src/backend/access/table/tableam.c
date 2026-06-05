@@ -243,8 +243,8 @@ table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
 							  bool *all_dead,
-							  const Bitmapset *index_attrs,
-							  bool *keys_recheck,
+							  uint8 *modattrs_out,
+							  uint16 *modattrs_nbytes_out,
 							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
@@ -254,12 +254,23 @@ table_index_fetch_tuple_check(Relation rel,
 
 	slot = keep_slot ? keep_slot : table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
-	scan->xs_index_attrs = index_attrs;
-	scan->xs_index_keys_recheck = false;
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
-	if (keys_recheck != NULL)
-		*keys_recheck = found && scan->xs_index_keys_recheck;
+
+	/*
+	 * Surface the table AM's reported modified-attrs union to the caller (the
+	 * index AM, which intersects it with the index's covered attributes); the
+	 * scan's buffer is freed below, so copy it out.
+	 */
+	if (modattrs_nbytes_out != NULL)
+	{
+		uint16		nbytes = found ? scan->xs_modattrs_nbytes : 0;
+
+		if (nbytes > 0 && modattrs_out != NULL)
+			memcpy(modattrs_out, scan->xs_modattrs, nbytes);
+		*modattrs_nbytes_out = nbytes;
+	}
+
 	table_index_fetch_end(scan);
 	if (keep_slot == NULL)
 		ExecDropSingleTupleTableSlot(slot);

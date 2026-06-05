@@ -473,12 +473,13 @@ typedef struct TableAmRoutine
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
 	 *
-	 * If a tuple is returned and the table AM reached it by crossing an
-	 * in-chain update that changed one of scan->xs_index_attrs (set by the
-	 * caller to the heap attributes the originating index covers), it sets
-	 * scan->xs_index_keys_recheck so the caller can recheck or skip the
-	 * possibly-stale index entry.  AMs without such update chains ignore both
-	 * fields.  See struct IndexFetchTableData.
+	 * If a tuple is returned and the table AM reached it by crossing one or
+	 * more in-chain updates that modified table attributes, it reports the
+	 * union of those modified attributes in scan->xs_modattrs /
+	 * xs_modattrs_nbytes (a raw bitmap, see struct IndexFetchTableData).  The
+	 * index-access layer intersects that with the attributes the originating
+	 * index covers to decide whether the entry is stale.  AMs without such
+	 * update chains leave xs_modattrs_nbytes 0.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
@@ -1322,8 +1323,8 @@ extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
 										  bool *all_dead,
-										  const Bitmapset *index_attrs,
-										  bool *keys_recheck,
+										  uint8 *modattrs_out,
+										  uint16 *modattrs_nbytes_out,
 										  TupleTableSlot *keep_slot);
 
 

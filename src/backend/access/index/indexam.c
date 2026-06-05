@@ -44,6 +44,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/hot_indexed.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
@@ -676,16 +677,15 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	bool		found;
 
 	/*
-	 * Cache the set of heap attributes this index covers, for the heap AM's
-	 * per-hop HOT-indexed staleness test.  Computed once per scan; freed at
-	 * index_endscan.  Every index references at least one heap attribute, so
-	 * a NULL cache unambiguously means "not yet computed".
+	 * Cache the set of heap attributes this index covers, used below to
+	 * intersect with the table AM's reported modified-attrs.  Computed once
+	 * per scan; freed at index_endscan.  Every index references at least one
+	 * heap attribute, so a NULL cache unambiguously means "not yet computed".
+	 * This stays in the index-access layer; it is never handed to the table
+	 * AM.
 	 */
 	if (scan->xs_hot_indexed_attrs == NULL)
 		scan->xs_hot_indexed_attrs = RelationGetIndexedAttrs(scan->indexRelation);
-
-	/* Hand the covered-attrs set to the table AM via the fetch descriptor. */
-	scan->xs_heapfetch->xs_index_attrs = scan->xs_hot_indexed_attrs;
 
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
@@ -695,15 +695,19 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 		pgstat_count_heap_fetch(scan->indexRelation);
 
 	/*
-	 * If the index entry that reached this tuple is stale for this index (a
-	 * HOT-indexed hop changed one of the index's attributes between the entry
-	 * and the live tuple), the table AM reported it via the fetch descriptor.
-	 * Surface it on xs_hot_indexed_stale.  Keeping it distinct from xs_recheck
-	 * lets the executor drop a stale HOT-indexed leaf (the fresh entry returns
-	 * the row via its own path) rather than re-evaluating quals as for a
-	 * lossy-index recheck.
+	 * The table AM reported, via the fetch descriptor, the set of heap
+	 * attributes that in-chain updates modified between the arriving index
+	 * entry's target and the live tuple.  Intersect it with the attributes
+	 * this index covers: if they overlap, the arriving leaf's key no longer
+	 * matches the live tuple and the entry is stale.  The executor drops such
+	 * a leaf (the fresh entry inserted for the new value re-supplies the row),
+	 * rather than re-evaluating quals as for a lossy-index recheck.
 	 */
-	scan->xs_hot_indexed_stale = scan->xs_heapfetch->xs_index_keys_recheck;
+	scan->xs_hot_indexed_stale =
+		found && scan->xs_heapfetch->xs_modattrs_nbytes > 0 &&
+		heap_hot_indexed_bitmap_overlaps(scan->xs_heapfetch->xs_modattrs,
+										 scan->xs_heapfetch->xs_modattrs_nbytes,
+										 scan->xs_hot_indexed_attrs);
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index

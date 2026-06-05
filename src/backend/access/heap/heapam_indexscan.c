@@ -134,8 +134,7 @@ bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
 					   bool *all_dead, bool first_call,
-					   const Bitmapset *index_attrs,
-					   bool *hot_indexed_stale)
+					   uint8 *modattrs, uint16 *modattrs_nbytes)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -145,21 +144,18 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		valid;
 	bool		skip;
 	GlobalVisState *vistest = NULL;
-	uint8		acc[(MaxHeapAttributeNumber + 7) / 8];
-	uint16		accbytes = 0;
-	bool		crossed_hi = false;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
 		*all_dead = first_call;
 
 	/*
-	 * On the first call, clear any stale value left by a previous call. On
-	 * subsequent calls (same chain continuing), preserve whatever the earlier
-	 * hop observed.
+	 * On the first call, reset the accumulated modified-attrs union.  On
+	 * subsequent calls (same chain continuing) keep accumulating into it so
+	 * the caller sees the union across every hop the walk crosses.
 	 */
-	if (hot_indexed_stale && first_call)
-		*hot_indexed_stale = false;
+	if (modattrs_nbytes && first_call)
+		*modattrs_nbytes = 0;
 
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
@@ -236,8 +232,6 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		{
 			if (HeapTupleHeaderIsHotIndexedBridge(heapTuple->t_data))
 			{
-				crossed_hi = true;
-
 				/*
 				 * A bridge advanced to (not the entry item) is a crossed hop;
 				 * accumulate the producing-hop modified-attrs bitmap that
@@ -245,8 +239,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				 * bridge IS the entry item (at_chain_start), its own hop is
 				 * excluded -- the arriving entry already reflects that value.
 				 */
-				if (!at_chain_start)
-					accumulate_modified(acc, &accbytes,
+				if (!at_chain_start && modattrs != NULL)
+					accumulate_modified(modattrs, modattrs_nbytes,
 										HotIndexedTombstoneGetBitmap(heapTuple->t_data),
 										HotIndexedTombstoneGetNbytes(heapTuple->t_data));
 				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
@@ -284,14 +278,12 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			 * We were pointed directly at this hot-indexed tuple.  The index
 			 * entry we arrived through was inserted *for* this update, so it
 			 * reflects this tuple's current attribute values: its own
-			 * producing hop is excluded from the staleness test.  We still
-			 * note that the chain is hot-indexed (crossed_hi) so a bitmap
-			 * heap scan, which cannot identify the originating index, falls
-			 * back to its recheck qual.
+			 * producing hop is excluded from the modified-attrs union (a fresh
+			 * entry is never stale for its own index).
 			 */
-			crossed_hi = true;
 		}
-		else if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		else if (modattrs != NULL &&
+				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 		{
 			/*
 			 * A hot-indexed hop reached by following the chain from an
@@ -299,8 +291,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			 * inline-trailing modified-attrs bitmap into the running union
 			 * (O(1), read straight from the version we are already on).
 			 */
-			crossed_hi = true;
-			accumulate_modified(acc, &accbytes,
+			accumulate_modified(modattrs, modattrs_nbytes,
 								HotIndexedInlineGetBitmap(heapTuple->t_data,
 														  heapTuple->t_len),
 								HotIndexedInlineBitmapNbytes(heapTuple->t_data));
@@ -337,19 +328,6 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				if (all_dead)
 					*all_dead = false;
 
-				if (hot_indexed_stale != NULL)
-				{
-					bool		this_stale;
-
-					if (index_attrs == NULL)
-						this_stale = crossed_hi;
-					else
-						this_stale =
-							(accbytes > 0 &&
-							 heap_hot_indexed_bitmap_overlaps(acc, accbytes,
-															  index_attrs));
-					*hot_indexed_stale |= this_stale;
-				}
 				return true;
 			}
 		}
@@ -402,7 +380,6 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	bool		got_heap_tuple;
-	bool		keys_recheck = false;
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
@@ -439,9 +416,10 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											&bslot->base.tupdata,
 											all_dead,
 											!*heap_continue,
-											scan->xs_index_attrs,
-											&keys_recheck);
-	scan->xs_index_keys_recheck = got_heap_tuple && keys_recheck;
+											scan->xs_modattrs,
+											&scan->xs_modattrs_nbytes);
+	if (!got_heap_tuple)
+		scan->xs_modattrs_nbytes = 0;
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 

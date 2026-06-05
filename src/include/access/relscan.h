@@ -138,16 +138,18 @@ typedef struct IndexFetchTableData
 	/*
 	 * Side channel for table AMs that can reach more than one set of
 	 * index-key values from a single update chain (heap's HOT-indexed
-	 * update).  The index-scan layer sets xs_index_attrs to the heap
-	 * attributes the originating index covers (NULL if the index is not
-	 * identifiable, e.g. a bitmap heap scan); the table AM sets
-	 * xs_index_keys_recheck true when the tuple it returned was reached by
-	 * crossing an in-chain update that changed one of those attributes, so
-	 * the index entry that led here may not match and the caller must recheck
-	 * or skip it.  AMs without such chains ignore both fields.
+	 * update).  The table AM reports here the set of table attributes that
+	 * in-chain updates modified between the arriving index entry's target and
+	 * the live tuple, as a raw bitmap (one bit per attribute, attnum-1
+	 * indexed, xs_modattrs_nbytes wide).  xs_modattrs_nbytes is 0 when no
+	 * in-chain modifying hop was crossed (the entry is definitely current).
+	 * The index-access / executor layer intersects this with the attributes
+	 * its own index covers to decide whether the arriving entry is stale --
+	 * keeping index-specific knowledge out of the table AM.  AMs without such
+	 * chains leave xs_modattrs_nbytes 0.
 	 */
-	const struct Bitmapset *xs_index_attrs;
-	bool		xs_index_keys_recheck;
+	uint8		xs_modattrs[(MaxHeapAttributeNumber + 7) / 8];
+	uint16		xs_modattrs_nbytes;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;
@@ -216,16 +218,19 @@ typedef struct IndexScanDescData
 	 * hop that changed an attribute this index covers, so the arriving leaf's
 	 * key no longer matches the live tuple.  The executor drops such a tuple;
 	 * the row is re-supplied by the fresh entry inserted for the new value.
-	 * Unlike xs_recheck (set by lossy AMs such as GiST and GIN), this is set
-	 * by the heap AM during chain-walking, using xs_hot_indexed_attrs to test
-	 * the per-hop modified-attrs bitmaps left on the page.
+	 * Unlike xs_recheck (set by lossy AMs such as GiST and GIN), this is
+	 * computed by the index-access layer by intersecting the table AM's
+	 * reported modified-attrs (xs_heapfetch->xs_modattrs) with the attributes
+	 * this index covers (xs_hot_indexed_attrs).
 	 */
 	bool		xs_hot_indexed_stale;
 
 	/*
 	 * Heap attributes this index covers (RelationGetIndexedAttrs convention),
-	 * cached for the scan's lifetime and passed to the heap AM so it can test
-	 * per-hop overlap.  NULL until first computed; freed at index_endscan.
+	 * cached for the scan's lifetime by the index-access layer to intersect
+	 * with the table AM's reported modified-attrs.  NULL until first computed;
+	 * freed at index_endscan.  Stays in this layer -- it is never handed to
+	 * the table AM.
 	 */
 	struct Bitmapset *xs_hot_indexed_attrs;
 
