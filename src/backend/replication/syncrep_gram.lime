@@ -1,0 +1,151 @@
+/*
+ * syncrep_gram.lime -- Parser for the synchronous_standby_names GUC.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/replication/syncrep_gram.lime
+ *
+ * Ported from syncrep_gram.y.  Grammar is unchanged: the same 4 alternatives
+ * of standby_config, 2 of standby_list, and 2 of standby_name as the Bison
+ * original.  Semantic actions are byte-identical aside from the rename of
+ * $$/$N to Lime's letter-label convention.
+ */
+
+%name syncrep_yy
+%token_type {SyncRepToken}
+%extra_argument {SyncRepParseCtx *ctx}
+%start_symbol result
+%expect 0
+
+%include {
+#include "postgres.h"
+
+#include "syncrep_parse.h"
+
+/*
+ * Lime emits a handful of internal helper functions (syncrep_yyTrace,
+ * syncrep_yyInit, syncrep_yyFinalize, etc.) without prior prototypes, and
+ * freely mixes declarations and code.  None of that is wrong, just
+ * incompatible with PostgreSQL's warning set.  Until Lime upstream tightens
+ * the generator, silence these two warnings for the generated translation
+ * unit only; the pragma is emitted near the top of syncrep_gram.c via this
+ * %include block, so it covers every function the generator writes after
+ * this point.  Clang understands the GCC pragma spelling.
+ */
+#ifdef __GNUC__
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+#endif
+
+/*
+ * Build the flat SyncRepConfigData representation that the GUC machinery
+ * stashes as the "extra" for synchronous_standby_names.  Logic is copied
+ * unchanged from the Bison version; see syncrep_gram.y history for details.
+ */
+static SyncRepConfigData *
+create_syncrep_config(const char *num_sync, List *members, uint8 syncrep_method)
+{
+	SyncRepConfigData *config;
+	int			size;
+	ListCell   *lc;
+	char	   *ptr;
+
+	/* Compute space needed for flat representation */
+	size = offsetof(SyncRepConfigData, member_names);
+	foreach(lc, members)
+	{
+		char	   *standby_name = (char *) lfirst(lc);
+
+		size += strlen(standby_name) + 1;
+	}
+
+	/* And transform the data into flat representation */
+	config = (SyncRepConfigData *) palloc(size);
+
+	config->config_size = size;
+	config->num_sync = atoi(num_sync);
+	config->syncrep_method = syncrep_method;
+	config->nmembers = list_length(members);
+	ptr = config->member_names;
+	foreach(lc, members)
+	{
+		char	   *standby_name = (char *) lfirst(lc);
+
+		strcpy(ptr, standby_name);
+		ptr += strlen(standby_name) + 1;
+	}
+
+	return config;
+}
+}
+
+/*
+ * Error hooks.  We do not ereport() here: syncrep_yyerror collects the
+ * message into *ctx->error_msg_p and returns, exactly as the Bison version
+ * did, so the eventual GUC check hook can report through the GUC-specific
+ * error machinery.  The first-error-wins guard inside syncrep_yyerror makes
+ * a follow-up %parse_failure call harmless.
+ */
+%syntax_error {
+	syncrep_yyerror(NULL, ctx->error_msg_p, ctx->scanner, "syntax error");
+}
+
+%parse_failure {
+	syncrep_yyerror(NULL, ctx->error_msg_p, ctx->scanner, "parse failure");
+}
+
+/*
+ * Token declarations.  Order matches syncrep_gram.y's %token line; Lime
+ * assigns codes 1..N in declaration order, and the hand-rolled scanner
+ * consumes the codes from the generated syncrep_gram.h so the numbering
+ * never needs to be hard-coded.
+ *
+ * COMMA, LPAREN, and RPAREN replace the Bison character literals ',', '(',
+ * ')'.  Lime's directive tokenizer does not accept quoted character
+ * literals in rules, so they become named terminals emitted by the scanner.
+ */
+%token NAME.
+%token NUM.
+%token JUNK.
+%token ANY.
+%token FIRST.
+%token COMMA.
+%token LPAREN.
+%token RPAREN.
+
+%type result {SyncRepConfigData *}
+%type standby_config {SyncRepConfigData *}
+%type standby_list {List *}
+%type standby_name {char *}
+
+/* ------------------------------------------------------------------------- */
+result(A) ::= standby_config(B). {
+	*ctx->result_p = B;
+	A = B;
+}
+standby_config(A) ::= standby_list(B). {
+	A = create_syncrep_config("1", B, SYNC_REP_PRIORITY);
+}
+standby_config(A) ::= NUM(B) LPAREN standby_list(C) RPAREN. {
+	A = create_syncrep_config(B.str, C, SYNC_REP_PRIORITY);
+}
+standby_config(A) ::= ANY NUM(B) LPAREN standby_list(C) RPAREN. {
+	A = create_syncrep_config(B.str, C, SYNC_REP_QUORUM);
+}
+standby_config(A) ::= FIRST NUM(B) LPAREN standby_list(C) RPAREN. {
+	A = create_syncrep_config(B.str, C, SYNC_REP_PRIORITY);
+}
+standby_list(A) ::= standby_name(B). {
+	A = list_make1(B);
+}
+standby_list(A) ::= standby_list(B) COMMA standby_name(C). {
+	A = lappend(B, C);
+}
+standby_name(A) ::= NAME(B). {
+	A = B.str;
+}
+standby_name(A) ::= NUM(B). {
+	A = B.str;
+}
