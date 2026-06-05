@@ -1,0 +1,468 @@
+/*-------------------------------------------------------------------------
+ *
+ * repl_gram.lime
+ *	  Lime grammar for the walsender replication command protocol.
+ *
+ * Ported byte-for-byte from the retired Bison grammar
+ * (src/backend/replication/repl_gram prior to Phase 2b).
+ * No tokens added or removed; every production has a one-to-one counterpart
+ * in the original grammar; every action produces the same Node* tree with
+ * the same field values.
+ *
+ * The hand-rolled scanner lives in repl_scanner.c; the driver
+ * replication_yyparse() is also defined there.  See walsender_private.h for
+ * the external interface.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/replication/repl_gram.lime
+ *
+ *-------------------------------------------------------------------------
+ */
+
+%name replication_yy
+%token_type {YYSTYPE}
+%extra_argument {replication_yy_extra *extra}
+%start_symbol firstcmd
+%expect 0
+
+%include {
+#include "postgres.h"
+
+#include "access/xlogdefs.h"
+#include "nodes/makefuncs.h"
+#include "nodes/parsenodes.h"
+#include "nodes/replnodes.h"
+#include "nodes/value.h"
+#include "replication/walsender.h"
+#include "replication/walsender_private.h"
+
+#include "repl_gram_yytype.h"
+
+/*
+ * Forward declaration of the scanner-side error helper.  It is
+ * pg_noreturn: calls ereport(ERROR), which longjmps out of the parser.
+ */
+pg_noreturn extern void replication_yyerror(Node **replication_parse_result_p,
+											void *yyscanner,
+											const char *message);
+}
+
+%syntax_error {
+	replication_yyerror(extra->replication_parse_result_p,
+						extra->yyscanner,
+						"syntax error");
+}
+
+%parse_failure {
+	replication_yyerror(extra->replication_parse_result_p,
+						extra->yyscanner,
+						"syntax error");
+}
+
+/* ======================================================================
+ * TOKENS
+ * ====================================================================== */
+
+/* Non-keyword tokens */
+%token SCONST.
+%token IDENT.
+%token UCONST.
+%token RECPTR.
+/* Keyword tokens */
+%token K_BASE_BACKUP.
+%token K_IDENTIFY_SYSTEM.
+%token K_READ_REPLICATION_SLOT.
+%token K_SHOW.
+%token K_START_REPLICATION.
+%token K_CREATE_REPLICATION_SLOT.
+%token K_DROP_REPLICATION_SLOT.
+%token K_ALTER_REPLICATION_SLOT.
+%token K_TIMELINE_HISTORY.
+%token K_WAIT.
+%token K_TIMELINE.
+%token K_PHYSICAL.
+%token K_LOGICAL.
+%token K_SLOT.
+%token K_RESERVE_WAL.
+%token K_TEMPORARY.
+%token K_TWO_PHASE.
+%token K_EXPORT_SNAPSHOT.
+%token K_NOEXPORT_SNAPSHOT.
+%token K_USE_SNAPSHOT.
+%token K_UPLOAD_MANIFEST.
+/* Punctuation tokens (scanner returns these in place of raw chars) */
+%token LPAREN.
+%token RPAREN.
+%token COMMA.
+%token SEMI.
+%token DOT.
+
+/* ======================================================================
+ * NON-TERMINAL TYPES (mirror of Bison %type <member>)
+ * ====================================================================== */
+%type firstcmd {Node *}
+%type command {Node *}
+%type identify_system {Node *}
+%type base_backup {Node *}
+%type start_replication {Node *}
+%type start_logical_replication {Node *}
+%type create_replication_slot {Node *}
+%type drop_replication_slot {Node *}
+%type alter_replication_slot {Node *}
+%type read_replication_slot {Node *}
+%type timeline_history {Node *}
+%type show {Node *}
+%type upload_manifest {Node *}
+%type generic_option_list {List *}
+%type generic_option {DefElem *}
+%type plugin_options {List *}
+%type plugin_opt_list {List *}
+%type plugin_opt_elem {DefElem *}
+%type plugin_opt_arg {Node *}
+%type create_slot_options {List *}
+%type create_slot_legacy_opt_list {List *}
+%type create_slot_legacy_opt {DefElem *}
+%type opt_slot {char *}
+%type var_name {char *}
+%type ident_or_keyword {char *}
+%type opt_timeline {uint32}
+%type opt_temporary {bool}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+firstcmd(R) ::= command(A) opt_semicolon. {
+	R = A;
+	*extra->replication_parse_result_p = A;
+}
+opt_semicolon ::= SEMI.
+opt_semicolon ::=.
+command(R) ::= identify_system(A). {
+ R = A;
+}
+command(R) ::= base_backup(A). {
+ R = A;
+}
+command(R) ::= start_replication(A). {
+ R = A;
+}
+command(R) ::= start_logical_replication(A). {
+ R = A;
+}
+command(R) ::= create_replication_slot(A). {
+ R = A;
+}
+command(R) ::= drop_replication_slot(A). {
+ R = A;
+}
+command(R) ::= alter_replication_slot(A). {
+ R = A;
+}
+command(R) ::= read_replication_slot(A). {
+ R = A;
+}
+command(R) ::= timeline_history(A). {
+ R = A;
+}
+command(R) ::= show(A). {
+ R = A;
+}
+command(R) ::= upload_manifest(A). {
+ R = A;
+}
+/*
+ * IDENTIFY_SYSTEM
+ */
+identify_system(R) ::= K_IDENTIFY_SYSTEM. {
+	R = (Node *) makeNode(IdentifySystemCmd);
+}
+/*
+ * READ_REPLICATION_SLOT %s
+ */
+read_replication_slot(R) ::= K_READ_REPLICATION_SLOT var_name(A). {
+	ReadReplicationSlotCmd *n = makeNode(ReadReplicationSlotCmd);
+	n->slotname = A;
+	R = (Node *) n;
+}
+/*
+ * SHOW setting
+ */
+show(R) ::= K_SHOW var_name(A). {
+	VariableShowStmt *n = makeNode(VariableShowStmt);
+	n->name = A;
+	R = (Node *) n;
+}
+var_name(R) ::= IDENT(A). {
+ R = A.str;
+}
+var_name(R) ::= var_name(A) DOT IDENT(B). {
+	R = psprintf("%s.%s", A, B.str);
+}
+/*
+ * BASE_BACKUP [ ( option [ 'value' ] [, ...] ) ]
+ */
+base_backup(R) ::= K_BASE_BACKUP LPAREN generic_option_list(A) RPAREN. {
+	BaseBackupCmd *cmd = makeNode(BaseBackupCmd);
+	cmd->options = A;
+	R = (Node *) cmd;
+}
+base_backup(R) ::= K_BASE_BACKUP. {
+	BaseBackupCmd *cmd = makeNode(BaseBackupCmd);
+	R = (Node *) cmd;
+}
+/*
+ * CREATE_REPLICATION_SLOT
+ */
+create_replication_slot(R) ::= K_CREATE_REPLICATION_SLOT IDENT(A) opt_temporary(B) K_PHYSICAL create_slot_options(C). {
+	CreateReplicationSlotCmd *cmd;
+	cmd = makeNode(CreateReplicationSlotCmd);
+	cmd->kind = REPLICATION_KIND_PHYSICAL;
+	cmd->slotname = A.str;
+	cmd->temporary = B;
+	cmd->options = C;
+	R = (Node *) cmd;
+}
+create_replication_slot(R) ::= K_CREATE_REPLICATION_SLOT IDENT(A) opt_temporary(B) K_LOGICAL IDENT(C) create_slot_options(D). {
+	CreateReplicationSlotCmd *cmd;
+	cmd = makeNode(CreateReplicationSlotCmd);
+	cmd->kind = REPLICATION_KIND_LOGICAL;
+	cmd->slotname = A.str;
+	cmd->temporary = B;
+	cmd->plugin = C.str;
+	cmd->options = D;
+	R = (Node *) cmd;
+}
+create_slot_options(R) ::= LPAREN generic_option_list(A) RPAREN. {
+ R = A;
+}
+create_slot_options(R) ::= create_slot_legacy_opt_list(A). {
+ R = A;
+}
+create_slot_legacy_opt_list(R) ::= create_slot_legacy_opt_list(A) create_slot_legacy_opt(B). {
+	R = lappend(A, B);
+}
+create_slot_legacy_opt_list(R) ::=. {
+ R = NIL;
+}
+create_slot_legacy_opt(R) ::= K_EXPORT_SNAPSHOT. {
+	R = makeDefElem("snapshot", (Node *) makeString("export"), -1);
+}
+create_slot_legacy_opt(R) ::= K_NOEXPORT_SNAPSHOT. {
+	R = makeDefElem("snapshot", (Node *) makeString("nothing"), -1);
+}
+create_slot_legacy_opt(R) ::= K_USE_SNAPSHOT. {
+	R = makeDefElem("snapshot", (Node *) makeString("use"), -1);
+}
+create_slot_legacy_opt(R) ::= K_RESERVE_WAL. {
+	R = makeDefElem("reserve_wal", (Node *) makeBoolean(true), -1);
+}
+create_slot_legacy_opt(R) ::= K_TWO_PHASE. {
+	R = makeDefElem("two_phase", (Node *) makeBoolean(true), -1);
+}
+/*
+ * DROP_REPLICATION_SLOT slot [WAIT]
+ */
+drop_replication_slot(R) ::= K_DROP_REPLICATION_SLOT IDENT(A). {
+	DropReplicationSlotCmd *cmd;
+	cmd = makeNode(DropReplicationSlotCmd);
+	cmd->slotname = A.str;
+	cmd->wait = false;
+	R = (Node *) cmd;
+}
+drop_replication_slot(R) ::= K_DROP_REPLICATION_SLOT IDENT(A) K_WAIT. {
+	DropReplicationSlotCmd *cmd;
+	cmd = makeNode(DropReplicationSlotCmd);
+	cmd->slotname = A.str;
+	cmd->wait = true;
+	R = (Node *) cmd;
+}
+/*
+ * ALTER_REPLICATION_SLOT slot (options)
+ */
+alter_replication_slot(R) ::= K_ALTER_REPLICATION_SLOT IDENT(A) LPAREN generic_option_list(B) RPAREN. {
+	AlterReplicationSlotCmd *cmd;
+	cmd = makeNode(AlterReplicationSlotCmd);
+	cmd->slotname = A.str;
+	cmd->options = B;
+	R = (Node *) cmd;
+}
+/*
+ * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%08X [TIMELINE %u]
+ */
+start_replication(R) ::= K_START_REPLICATION opt_slot(A) opt_physical RECPTR(B) opt_timeline(C). {
+	StartReplicationCmd *cmd;
+
+	cmd = makeNode(StartReplicationCmd);
+	cmd->kind = REPLICATION_KIND_PHYSICAL;
+	cmd->slotname = A;
+	cmd->startpoint = B.recptr;
+	cmd->timeline = C;
+	R = (Node *) cmd;
+}
+/* START_REPLICATION SLOT slot LOGICAL %X/%08X options */
+start_logical_replication(R) ::= K_START_REPLICATION K_SLOT IDENT(A) K_LOGICAL RECPTR(B) plugin_options(C). {
+	StartReplicationCmd *cmd;
+	cmd = makeNode(StartReplicationCmd);
+	cmd->kind = REPLICATION_KIND_LOGICAL;
+	cmd->slotname = A.str;
+	cmd->startpoint = B.recptr;
+	cmd->options = C;
+	R = (Node *) cmd;
+}
+/*
+ * TIMELINE_HISTORY %u
+ */
+timeline_history(R) ::= K_TIMELINE_HISTORY UCONST(A). {
+	TimeLineHistoryCmd *cmd;
+
+	if (A.uintval <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid timeline %u", A.uintval)));
+
+	cmd = makeNode(TimeLineHistoryCmd);
+	cmd->timeline = A.uintval;
+
+	R = (Node *) cmd;
+}
+/* UPLOAD_MANIFEST doesn't currently accept any arguments */
+upload_manifest(R) ::= K_UPLOAD_MANIFEST. {
+	UploadManifestCmd *cmd = makeNode(UploadManifestCmd);
+
+	R = (Node *) cmd;
+}
+opt_physical ::= K_PHYSICAL.
+opt_physical ::=.
+opt_temporary(R) ::= K_TEMPORARY. {
+ R = true;
+}
+opt_temporary(R) ::=. {
+ R = false;
+}
+opt_slot(R) ::= K_SLOT IDENT(A). {
+ R = A.str;
+}
+opt_slot(R) ::=. {
+ R = NULL;
+}
+opt_timeline(R) ::= K_TIMELINE UCONST(A). {
+	if (A.uintval <= 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid timeline %u", A.uintval)));
+	R = A.uintval;
+}
+opt_timeline(R) ::=. {
+ R = 0;
+}
+plugin_options(R) ::= LPAREN plugin_opt_list(A) RPAREN. {
+ R = A;
+}
+plugin_options(R) ::=. {
+ R = NIL;
+}
+plugin_opt_list(R) ::= plugin_opt_elem(A). {
+	R = list_make1(A);
+}
+plugin_opt_list(R) ::= plugin_opt_list(A) COMMA plugin_opt_elem(B). {
+	R = lappend(A, B);
+}
+plugin_opt_elem(R) ::= IDENT(A) plugin_opt_arg(B). {
+	R = makeDefElem(A.str, B, -1);
+}
+plugin_opt_arg(R) ::= SCONST(A). {
+ R = (Node *) makeString(A.str);
+}
+plugin_opt_arg(R) ::=. {
+ R = NULL;
+}
+generic_option_list(R) ::= generic_option_list(A) COMMA generic_option(B). {
+	R = lappend(A, B);
+}
+generic_option_list(R) ::= generic_option(A). {
+	R = list_make1(A);
+}
+generic_option(R) ::= ident_or_keyword(A). {
+	R = makeDefElem(A, NULL, -1);
+}
+generic_option(R) ::= ident_or_keyword(A) IDENT(B). {
+	R = makeDefElem(A, (Node *) makeString(B.str), -1);
+}
+generic_option(R) ::= ident_or_keyword(A) SCONST(B). {
+	R = makeDefElem(A, (Node *) makeString(B.str), -1);
+}
+generic_option(R) ::= ident_or_keyword(A) UCONST(B). {
+	R = makeDefElem(A, (Node *) makeInteger(B.uintval), -1);
+}
+/*
+ * ident_or_keyword: any IDENT, or any of the known keywords used as an
+ * option name.  The keyword branches return C string literals exactly as
+ * the Bison original did; these are static-storage pointers handed off to
+ * makeDefElem, which does not copy the name field.
+ */
+ident_or_keyword(R) ::= IDENT(A). {
+ R = A.str;
+}
+ident_or_keyword(R) ::= K_BASE_BACKUP. {
+ R = "base_backup";
+}
+ident_or_keyword(R) ::= K_IDENTIFY_SYSTEM. {
+ R = "identify_system";
+}
+ident_or_keyword(R) ::= K_SHOW. {
+ R = "show";
+}
+ident_or_keyword(R) ::= K_START_REPLICATION. {
+ R = "start_replication";
+}
+ident_or_keyword(R) ::= K_CREATE_REPLICATION_SLOT. {
+ R = "create_replication_slot";
+}
+ident_or_keyword(R) ::= K_DROP_REPLICATION_SLOT. {
+ R = "drop_replication_slot";
+}
+ident_or_keyword(R) ::= K_ALTER_REPLICATION_SLOT. {
+ R = "alter_replication_slot";
+}
+ident_or_keyword(R) ::= K_TIMELINE_HISTORY. {
+ R = "timeline_history";
+}
+ident_or_keyword(R) ::= K_WAIT. {
+ R = "wait";
+}
+ident_or_keyword(R) ::= K_TIMELINE. {
+ R = "timeline";
+}
+ident_or_keyword(R) ::= K_PHYSICAL. {
+ R = "physical";
+}
+ident_or_keyword(R) ::= K_LOGICAL. {
+ R = "logical";
+}
+ident_or_keyword(R) ::= K_SLOT. {
+ R = "slot";
+}
+ident_or_keyword(R) ::= K_RESERVE_WAL. {
+ R = "reserve_wal";
+}
+ident_or_keyword(R) ::= K_TEMPORARY. {
+ R = "temporary";
+}
+ident_or_keyword(R) ::= K_TWO_PHASE. {
+ R = "two_phase";
+}
+ident_or_keyword(R) ::= K_EXPORT_SNAPSHOT. {
+ R = "export_snapshot";
+}
+ident_or_keyword(R) ::= K_NOEXPORT_SNAPSHOT. {
+ R = "noexport_snapshot";
+}
+ident_or_keyword(R) ::= K_USE_SNAPSHOT. {
+ R = "use_snapshot";
+}
+ident_or_keyword(R) ::= K_UPLOAD_MANIFEST. {
+ R = "upload_manifest";
+}
