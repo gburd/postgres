@@ -2638,7 +2638,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
 									   &heapTuple, NULL, true,
-									   modattrs, &modattrs_nbytes))
+									   modattrs, &modattrs_nbytes, NULL))
 			{
 				OffsetNumber resolved = ItemPointerGetOffsetNumber(&tid);
 				bool		already_have = false;

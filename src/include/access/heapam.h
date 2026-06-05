@@ -471,7 +471,8 @@ extern void heapam_index_fetch_end(IndexFetchTableData *scan);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
 								   bool *all_dead, bool first_call,
-								   uint8 *modattrs, uint16 *modattrs_nbytes);
+								   uint8 *modattrs, uint16 *modattrs_nbytes,
+								   bool *prefix_all_dead);
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 									 ItemPointer tid, Snapshot snapshot,
 									 TupleTableSlot *slot, bool *heap_continue,

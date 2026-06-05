@@ -47,6 +47,17 @@ step s2_range   { SELECT id, k FROM hia WHERE k >= 5 ORDER BY k; }
 # conflict on the live key.
 step s2_ins10   { INSERT INTO hiu VALUES (2, 10, repeat('y', 40)); }
 step s2_ins20   { INSERT INTO hiu VALUES (3, 20, repeat('z', 40)); }
+# Move the indexed key well away from 10 (two HOT-indexed hops) and force an
+# index scan on the new key.  That scan reaches the live tuple through the
+# stale 10 leaf and may try to kill it for bloat reclaim.
+step s2_to30    { UPDATE hia SET k = 20 WHERE id = 1; UPDATE hia SET k = 30 WHERE id = 1; }
+step s2_scan30  { SET enable_seqscan = off; SELECT id, k FROM hia WHERE k = 30; }
+
+# Reader holding an older REPEATABLE READ snapshot that still sees k=10.
+session s3
+step s3_begin   { BEGIN ISOLATION LEVEL REPEATABLE READ; SET enable_seqscan = off; }
+step s3_eq10    { SELECT id, k FROM hia WHERE k = 10; }
+step s3_commit  { COMMIT; }
 
 # 1. a->b->a cycle: exactly one row for the cycled-back key, none for the
 #    transient key.
@@ -69,3 +80,11 @@ permutation s1_begin s1_uupd20 s2_ins10 s1_commit
 #    taken key (20) conflicts -- the live leaf is honoured, the stale one is not.
 permutation s1_begin s1_uupd20 s1_commit s2_ins10
 permutation s1_begin s1_uupd20 s1_commit s2_ins20
+
+# 6. Snapshot safety of stale-leaf reclaim.  An older REPEATABLE READ reader
+#    still sees k=10; a concurrent session then moves the key to 30 and runs an
+#    index scan that reaches the live tuple through the stale 10 leaf and may
+#    try to reclaim it.  The reclaim is gated on the skipped versions being
+#    dead to all transactions, which s3's held snapshot prevents, so s3 must
+#    still find the row by k=10 after the scan.
+permutation s3_begin s3_eq10 s2_to30 s2_scan30 s3_eq10 s3_commit
