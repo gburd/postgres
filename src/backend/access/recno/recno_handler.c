@@ -57,6 +57,9 @@ static void recno_prepare_pagescan(RecnoScanDesc scan, Buffer buffer);
 static BlockNumber recno_scan_stream_read_next(ReadStream *stream,
 											   void *callback_private_data,
 											   void *per_buffer_data);
+static BlockNumber recno_bitmap_stream_read_next(ReadStream *stream,
+												 void *callback_private_data,
+												 void *per_buffer_data);
 static bool recno_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
 static bool recno_scan_analyze_next_tuple(TableScanDesc scan,
 										  double *liverows, double *deadrows,
@@ -114,6 +117,49 @@ recno_scan_stream_read_next(ReadStream *stream,
 
 	scan->rs_prefetch_block = block + 1;
 	return block;
+}
+
+/*
+ * Read stream callback for bitmap heap scans.
+ *
+ * Pulls the next block from the TBM iterator and hands it to the read
+ * stream so upcoming bitmap pages are prefetched asynchronously, matching
+ * the HEAP bitmapheap_stream_read_next() behaviour.  The TBMIterateResult
+ * for each block is stashed in per_buffer_data so the consumer can read
+ * lossy/recheck flags and the exact tuple offsets without re-iterating.
+ */
+static BlockNumber
+recno_bitmap_stream_read_next(ReadStream *stream,
+							  void *callback_private_data,
+							  void *per_buffer_data)
+{
+	RecnoScanDesc scan = (RecnoScanDesc) callback_private_data;
+	TableScanDesc sscan = &scan->rs_base;
+	TBMIterateResult *tbmres = per_buffer_data;
+
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		/* no more entries in the bitmap */
+		if (!tbm_iterate(&sscan->st.rs_tbmiterator, tbmres))
+			return InvalidBlockNumber;
+
+		/*
+		 * Ignore any claimed entries past what we think is the end of the
+		 * relation.  It may have been extended after the start of our scan.
+		 * Skip this optimization under SERIALIZABLE, where all index-reachable
+		 * tuples must be examined for conflict detection.
+		 */
+		if (!IsolationIsSerializable() &&
+			tbmres->blockno >= scan->rs_nblocks)
+			continue;
+
+		return tbmres->blockno;
+	}
+
+	Assert(false);
+	return InvalidBlockNumber;
 }
 
 /*
@@ -243,7 +289,23 @@ recno_scan_begin(Relation relation, Snapshot snapshot,
 	 * Parallel scans use their own block coordination, so skip the stream.
 	 */
 	scan->rs_prefetch_block = 0;
-	if (pscan == NULL && scan->rs_nblocks > 0)
+	if (flags & SO_TYPE_BITMAPSCAN)
+	{
+		/*
+		 * Bitmap scans drive the stream from the TBM iterator.  The iterator
+		 * is attached by the executor after beginscan, so the callback only
+		 * runs once read_stream_next_buffer() is first called.  Per-buffer
+		 * data carries the TBMIterateResult for each prefetched block.
+		 */
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT,
+														  NULL, /* bstrategy */
+														  relation,
+														  MAIN_FORKNUM,
+														  recno_bitmap_stream_read_next,
+														  scan,
+														  sizeof(TBMIterateResult));
+	}
+	else if (pscan == NULL && scan->rs_nblocks > 0)
 	{
 		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL |
 														  READ_STREAM_USE_BATCHING,
@@ -935,10 +997,14 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 							 uint64 *exact_pages)
 {
 	RecnoScanDesc rscan = (RecnoScanDesc) scan;
-	TBMIterateResult tbmres;
+
+	Assert(rscan->rs_read_stream);
 
 	for (;;)
 	{
+		void	   *per_buffer_data;
+		TBMIterateResult *tbmres;
+
 		/*
 		 * If we have tuples remaining from a previously fetched page, try to
 		 * return one.
@@ -1013,25 +1079,26 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 		}
 
 		/*
-		 * Advance to the next block in the bitmap.
+		 * Advance to the next block in the bitmap.  The read stream pulls
+		 * blocks from the TBM iterator (via recno_bitmap_stream_read_next),
+		 * prefetching upcoming bitmap pages, and hands back the matching
+		 * TBMIterateResult in per_buffer_data.  Out-of-range blocks were
+		 * already filtered by the callback.
 		 */
-		if (!tbm_iterate(&scan->st.rs_tbmiterator, &tbmres))
+		rscan->rs_cbuf = read_stream_next_buffer(rscan->rs_read_stream,
+												 &per_buffer_data);
+
+		if (!BufferIsValid(rscan->rs_cbuf))
 			return false;		/* bitmap exhausted */
 
-		Assert(BlockNumberIsValid(tbmres.blockno));
+		tbmres = per_buffer_data;
 
-		/*
-		 * Ignore block numbers beyond the end of the relation.  This can
-		 * happen if the relation has been truncated since the bitmap was
-		 * created.
-		 */
-		if (tbmres.blockno >= RelationGetNumberOfBlocks(scan->rs_rd))
-			continue;
+		Assert(BlockNumberIsValid(tbmres->blockno));
+		Assert(BufferGetBlockNumber(rscan->rs_cbuf) == tbmres->blockno);
 
-		*recheck = tbmres.recheck;
+		*recheck = tbmres->recheck;
 
-		rscan->rs_cblock = tbmres.blockno;
-		rscan->rs_cbuf = ReadBuffer(scan->rs_rd, tbmres.blockno);
+		rscan->rs_cblock = tbmres->blockno;
 
 		LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_SHARE);
 		{
@@ -1047,7 +1114,7 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 									   MaxOffsetNumber * sizeof(OffsetNumber));
 			}
 
-			if (!tbmres.lossy)
+			if (!tbmres->lossy)
 			{
 				/*
 				 * Exact page: only examine offsets listed in the bitmap.
@@ -1055,7 +1122,7 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 				OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
 				int			noffsets;
 
-				noffsets = tbm_extract_page_tuple(&tbmres, offsets,
+				noffsets = tbm_extract_page_tuple(tbmres, offsets,
 												  TBM_MAX_TUPLES_PER_PAGE);
 
 				for (int j = 0; j < noffsets; j++)
@@ -1096,7 +1163,8 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 			else
 			{
 				/*
-				 * Lossy page: examine every tuple on the page.
+				 * Lossy page: examine every tuple on the page.  tbmres->lossy
+				 * is true here.
 				 */
 				OffsetNumber offnum;
 
