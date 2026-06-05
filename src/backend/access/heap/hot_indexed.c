@@ -228,27 +228,34 @@ heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *p,
 
 /*
  * heap_build_hot_indexed_bridge
- *		Populate *buf with a bridge tombstone that carries no payload and
- *		just forwards a chain walker to forward_offnum on the same page.
+ *		Populate *buf with a bridge meta-item that forwards a chain walker to
+ *		forward_offnum on the same page, carrying the producing-hop
+ *		modified-attrs bitmap preserved from the dying version it replaces.
  *
  * See access/hot_indexed.h for the design rationale.  In brief, a bridge
- * replaces a dead mid-chain HOT-indexed heap-only tuple whose LP is not
- * yet safe to reclaim (stale btree entries may still point at it).  The
- * resulting item is LP_NORMAL, natts==0, HEAP_INDEXED_UPDATED, with t_ctid
- * = (blkno, forward_offnum).  HeapTupleHeaderIsHotIndexedBridge matches
- * it.  Size is fixed at MAXALIGN(SizeofHeapTupleHeader).
+ * replaces a dead mid-chain HOT-indexed heap-only tuple whose LP is not yet
+ * safe to reclaim (stale btree entries may still point at it).  The resulting
+ * item is LP_NORMAL, natts==0, HEAP_INDEXED_UPDATED, with t_ctid = (blkno,
+ * forward_offnum) and a tombstone-shaped payload carrying src_bitmap (the
+ * dying version's own producing-hop bitmap, src_nbytes wide).  A chain walker
+ * arriving via a stale entry follows the forward link to the next survivor
+ * while accumulating this preserved per-hop bitmap, exactly as it would have
+ * from the live version.  Size is HotIndexedTombstoneSize(natts).
  *
- * This routine does not palloc and is safe to call inside a critical
- * section provided the caller has preallocated the buffer.
+ * This routine does not palloc and is safe to call inside a critical section
+ * provided the caller has preallocated the buffer.
  */
 Size
 heap_build_hot_indexed_bridge(char *buf,
 							  BlockNumber blkno,
-							  OffsetNumber forward_offnum)
+							  OffsetNumber forward_offnum,
+							  const uint8 *src_bitmap,
+							  uint16 src_nbytes)
 {
 	HeapTupleHeader tup = (HeapTupleHeader) buf;
 	Size		hoff = MAXALIGN(SizeofHeapTupleHeader);
-	Size		total = HOT_INDEXED_BRIDGE_SIZE;
+	Size		total = MAXALIGN(hoff + SizeOfHotIndexedTombstonePayload + src_nbytes);
+	HotIndexedTombstonePayload *payload;
 
 	Assert(buf != NULL);
 	Assert(BlockNumberIsValid(blkno));
@@ -282,6 +289,16 @@ heap_build_hot_indexed_bridge(char *buf,
 	HeapTupleHeaderSetXmin(tup, InvalidTransactionId);
 	HeapTupleHeaderSetXmax(tup, InvalidTransactionId);
 	HeapTupleHeaderSetCmin(tup, InvalidCommandId);
+
+	/*
+	 * Payload: the producing-hop modified-attrs bitmap, preserved from the
+	 * dying version's inline-trailing bytes so a stale entry crossing this
+	 * bridge accumulates the same hop it would have from the live version.
+	 */
+	payload = (HotIndexedTombstonePayload *) (buf + hoff);
+	payload->t_nbytes = src_nbytes;
+	if (src_bitmap != NULL && src_nbytes > 0)
+		memcpy(payload->t_bitmap, src_bitmap, src_nbytes);
 
 	return total;
 }

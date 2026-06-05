@@ -1213,7 +1213,7 @@ check_hot_indexed_tombstone(HeapCheckContext *ctx, OffsetNumber maxoff)
 							  psprintf("HOT-indexed bridge has out-of-range forward offset %u (page maxoff %u)",
 									   toff, maxoff));
 
-		expected_lp_len = HOT_INDEXED_BRIDGE_SIZE;
+		expected_lp_len = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(ctx->rel));
 		if (ctx->lp_len != expected_lp_len)
 			report_corruption(ctx,
 							  psprintf("HOT-indexed bridge length %u differs from expected %zu",
