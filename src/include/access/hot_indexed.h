@@ -263,6 +263,43 @@ HotIndexedTombstoneGetNbytes(const HeapTupleHeaderData *tup)
 }
 
 /*
+ * Inline-trailing modified-attrs bitmap on a live HOT-indexed version.
+ *
+ * A live heap tuple produced by a HOT-indexed update (HPIK_HOT_INDEXED_TUPLE:
+ * HEAP_INDEXED_UPDATED set, natts > 0) carries its producing hop's
+ * modified-attrs bitmap appended after the user data:
+ *
+ *   [HeapTupleHeader][null bitmap][user data][modified-attrs bitmap]
+ *
+ * The bitmap width is derived from the tuple's natts (one bit per attribute,
+ * attnum-1 indexing -- identical layout to the tombstone payload bitmap), so
+ * no length field is stored; the bitmap occupies the final
+ * HotIndexedInlineBitmapNbytes() bytes of the on-page item.  Reading it needs
+ * only the item length (lp_len, == the chain walker's heapTuple->t_len), so
+ * lookup is O(1) and needs no tuple descriptor.  heap_deform_tuple ignores the
+ * trailing bytes (it bounds attribute extraction by the descriptor and null
+ * bitmap, never by lp_len).
+ */
+static inline uint16
+HotIndexedInlineBitmapNbytes(const HeapTupleHeaderData *tup)
+{
+	return (HeapTupleHeaderGetNatts(tup) + 7) / 8;
+}
+
+/*
+ * HotIndexedInlineGetBitmap
+ *		Pointer to the trailing modified-attrs bitmap of a live HOT-indexed
+ *		version.  item_len is the on-page item length (lp_len / t_len).
+ *
+ * Caller must have verified heap_page_item_kind(tup) == HPIK_HOT_INDEXED_TUPLE.
+ */
+static inline const uint8 *
+HotIndexedInlineGetBitmap(const HeapTupleHeaderData *tup, uint32 item_len)
+{
+	return (const uint8 *) tup + item_len - HotIndexedInlineBitmapNbytes(tup);
+}
+
+/*
  * Write-side API (implemented in src/backend/access/heap/hot_indexed.c).
  */
 extern Size heap_build_hot_indexed_tombstone(char *buf,
@@ -270,8 +307,28 @@ extern Size heap_build_hot_indexed_tombstone(char *buf,
 											 int natts,
 											 const Bitmapset *modified_attrs);
 
+/*
+ * heap_fill_hot_indexed_inline_bitmap
+ *		Write a natts-wide modified-attrs bitmap into dest (which must have
+ *		HotIndexedInlineBitmapNbytes() bytes for an natts-attribute relation),
+ *		using the same attnum-1 bit layout as the tombstone payload.
+ */
+extern void heap_fill_hot_indexed_inline_bitmap(uint8 *dest, int natts,
+												const Bitmapset *modified_attrs);
+
 extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
 													 AttrNumber attnum);
+
+/*
+ * heap_hot_indexed_bitmap_overlaps
+ *		True iff any heap attribute in index_attrs is marked modified by the
+ *		raw modified-attrs bitmap (nbytes wide), using the same attnum-1 layout
+ *		and FirstLowInvalidHeapAttributeNumber-offset index_attrs convention as
+ *		heap_hot_indexed_payload_overlaps.  Serves both the tombstone payload
+ *		and a live version's inline-trailing bitmap.
+ */
+extern bool heap_hot_indexed_bitmap_overlaps(const uint8 *bitmap, uint16 nbytes,
+											 const Bitmapset *index_attrs);
 
 /*
  * heap_hot_indexed_payload_overlaps
