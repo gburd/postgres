@@ -130,22 +130,54 @@ backend_sources += files(
 )
 
 
-jsonpath_scan = custom_target('jsonpath_scan',
-  input: 'jsonpath_scan.l',
-  output: 'jsonpath_scan.c',
-  command: [flex_cmd, '--no-backup', '--', '-CF', '-p', '-p'],
-)
-generated_sources += jsonpath_scan
+jsonpath_scan_sources = files('jsonpath_scan.c')
 
 jsonpath_gram = custom_target('jsonpath_parse',
-  input: 'jsonpath_gram.y',
-  kwargs: bison_kw,
+  input: 'jsonpath_gram.lime',
+  kwargs: lime_kw,
 )
 generated_sources += jsonpath_gram.to_list()
 
+# Lime-generated parser code is emitted with the template's missing-
+# prototypes / unused-variable / mixed decl pattern (the %extra_argument
+# yyscanner is shadowed in many reducers).  Compile it in its own library
+# so we can relax just those warnings; the hand-rolled scanner and all
+# other backend code keep the project defaults.
+jsonpath_gram_lib = static_library('jsonpath_gram',
+  jsonpath_gram,
+  dependencies: [backend_code],
+  include_directories: include_directories('.'),
+  c_args: ['-Wno-missing-prototypes', '-Wno-unused-variable']
+          + cflags_no_decl_after_statement,
+  kwargs: internal_lib_args,
+)
+backend_link_with += jsonpath_gram_lib
+
+# Lime-generated lexer (replaces jsonpath_scan.c's hand-rolled state
+# machine).  jsonpath_scan.c is now a parser-driver shim around
+# JsonPathLexFeedBytes plus the JsonPathParseItem constructors.
+jsonpath_scan_lex_gen = custom_target('jsonpath_scan_lex',
+  input: 'jsonpath_scan.lex',
+  output: ['jsonpath_scan_lex.c', 'jsonpath_scan_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += jsonpath_scan_lex_gen
+
+jsonpath_scan_lex_lib = static_library('jsonpath_scan_lex',
+  jsonpath_scan_lex_gen,
+  dependencies: [backend_code],
+  include_directories: include_directories('.'),
+  c_args: ['-Wno-missing-prototypes', '-Wno-unused-variable',
+           '-Wno-unused-but-set-variable']
+          + cflags_no_decl_after_statement,
+  kwargs: internal_lib_args,
+)
+backend_link_with += jsonpath_scan_lex_lib
+
 # so we don't need to add . as an include dir for the whole backend
 backend_link_with += static_library('jsonpath',
-  jsonpath_scan, jsonpath_gram,
+  jsonpath_scan_sources,
+  jsonpath_scan_lex_gen,
   dependencies: [backend_code],
   include_directories: include_directories('.'),
   kwargs: internal_lib_args,
