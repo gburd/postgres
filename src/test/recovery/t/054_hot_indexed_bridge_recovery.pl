@@ -63,9 +63,9 @@ for my $i (1 .. 5)
 }
 
 my $pre_tomb = $node->safe_psql('postgres',
-	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+	q{SELECT n_hot_indexed FROM pg_relation_hot_indexed_stats('bridge_recov')});
 cmp_ok($pre_tomb, '>', 0,
-	'HOT-indexed chain leaves at least one tombstone before prune');
+	'HOT-indexed chain has at least one live HOT-indexed version before prune');
 
 # Force a prune.  The chain has dead heap-only members from the early
 # UPDATEs (their xmins are now committed and below the snapshot horizon).
@@ -84,7 +84,7 @@ $node->safe_psql('postgres', q{
 
 # Read tombstone state after the prune.  Bridges are tombstones too.
 my $post_tomb = $node->safe_psql('postgres',
-	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+	q{SELECT n_hot_indexed FROM pg_relation_hot_indexed_stats('bridge_recov')});
 cmp_ok($post_tomb, '>', 0,
 	'tombstones survive opportunistic prune (bridge or adjacent)');
 
@@ -143,7 +143,7 @@ $node->safe_psql('postgres',
 $node->safe_psql('postgres',
 	q{VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) bridge_recov});
 my $final_tomb = $node->safe_psql('postgres',
-	q{SELECT n_tombstones FROM pg_relation_hot_indexed_stats('bridge_recov')});
+	q{SELECT n_hot_indexed FROM pg_relation_hot_indexed_stats('bridge_recov')});
 is($final_tomb, '0',
 	'two VACUUM (FREEZE) passes after DELETE reclaim every tombstone post-recovery');
 

@@ -2811,6 +2811,8 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxHeapTuplesPerPage];
 	int			nunused = 0;
+	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
+	int			nredirected = 0;
 	int			bridges_remaining = 0;
 	TransactionId newest_live_xid;
 	TransactionId conflict_xid = InvalidTransactionId;
@@ -2888,6 +2890,59 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		}
 	}
 
+	/*
+	 * Compute redirect re-points for collapsed HOT-indexed chains.  When a
+	 * chain collapsed, its root was redirected to the first surviving member
+	 * (the head bridge), so reclaiming the bridges below would dangle the
+	 * redirect.  For each redirect that targets a bridge, follow the bridge
+	 * forward links to first_live (the first non-bridge member) and re-point
+	 * the redirect straight at it.  Once the bridges are reclaimed this leaves
+	 * a plain redirect -> heap-only tuple, i.e. the chain has collapsed back
+	 * to classic HOT.  Computed before the critical section while the bridge
+	 * forward links are still intact; applied below.
+	 */
+	if (PageHasHotIndexedBridges(page))
+	{
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+		for (OffsetNumber off = FirstOffsetNumber;
+			 off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			OffsetNumber cur;
+			int			guard;
+
+			if (!ItemIdIsRedirected(lp))
+				continue;
+
+			/* Follow bridge forward links to the first non-bridge member. */
+			cur = ItemIdGetRedirect(lp);
+			for (guard = 0; guard <= maxoff; guard++)
+			{
+				ItemId		clp;
+				HeapTupleHeader chtup;
+
+				if (cur < FirstOffsetNumber || cur > maxoff)
+					break;
+				clp = PageGetItemId(page, cur);
+				if (!ItemIdIsNormal(clp))
+					break;
+				chtup = (HeapTupleHeader) PageGetItem(page, clp);
+				if (!HeapTupleHeaderIsHotIndexedBridge(chtup))
+					break;	/* reached first_live */
+				cur = HotIndexedBridgeGetForward(chtup);
+			}
+
+			if (OffsetNumberIsValid(cur) && cur != ItemIdGetRedirect(lp))
+			{
+				redirected[nredirected * 2] = off;
+				redirected[nredirected * 2 + 1] = cur;
+				nredirected++;
+			}
+		}
+	}
+
 	START_CRIT_SECTION();
 
 	for (int i = 0; i < num_offsets; i++)
@@ -2946,6 +3001,19 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		PageClearHasHotIndexedBridges(page);
 	}
 
+	/*
+	 * Re-point any redirects whose head bridge we just reclaimed straight at
+	 * first_live, completing the collapse back to classic HOT.  Computed
+	 * above while the forward links were intact.
+	 */
+	for (int i = 0; i < nredirected; i++)
+	{
+		ItemId		rlp = PageGetItemId(page, redirected[i * 2]);
+
+		Assert(ItemIdIsRedirected(rlp));
+		ItemIdSetRedirect(rlp, redirected[i * 2 + 1]);
+	}
+
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
 
@@ -2978,7 +3046,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  false,	/* no cleanup lock required */
 								  PRUNE_VACUUM_CLEANUP,
 								  NULL, 0,	/* frozen */
-								  NULL, 0,	/* redirected */
+								  redirected, nredirected,
 								  NULL, 0,	/* dead */
 								  unused, nunused,
 								  NULL, 0,	/* bridges */

@@ -5615,7 +5615,7 @@
   proparallel => 'r', prorettype => 'record', proargtypes => 'regclass',
   proallargtypes => '{regclass,int8,int8,float8,int8}',
   proargmodes => '{i,o,o,o,o}',
-  proargnames => '{relation,n_tombstones,n_chains,avg_chain_len,max_chain_len}',
+  proargnames => '{relation,n_hot_indexed,n_chains,avg_chain_len,max_chain_len}',
   prosrc => 'pg_relation_hot_indexed_stats' },
 { oid => '6217',
   descr => 'statistics: number of tuples updated onto a new page',

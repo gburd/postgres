@@ -1763,6 +1763,30 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 				break;			/* not at start of chain */
 			chainitems[nchain++] = offnum;
 			offnum = ItemIdGetRedirect(rootlp);
+
+			/*
+			 * If the redirect points at a bridge meta-item, this HOT-indexed
+			 * chain was already collapsed by an earlier prune (root redirect
+			 * -> head bridge -> ... -> first_live).  heap_prune_chain does not
+			 * traverse bridges, and re-collapsing would re-record the same
+			 * redirect; leave the collapsed structure intact (vacuum reclaims
+			 * the bridges once their stale entries are swept, after which a
+			 * later prune sees a plain chain again).  The bridges and the live
+			 * tuple are handled by the per-offnum loop in
+			 * heap_page_prune_and_freeze.
+			 */
+			if (offnum >= FirstOffsetNumber &&
+				offnum <= PageGetMaxOffsetNumber(page))
+			{
+				ItemId		tlp = PageGetItemId(page, offnum);
+
+				if (ItemIdIsNormal(tlp) &&
+					HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(page, tlp)))
+				{
+					heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+					return;
+				}
+			}
 			continue;
 		}
 
@@ -1942,9 +1966,22 @@ process_chain:
 		if (prev_surv != InvalidOffsetNumber)
 			heap_prune_record_bridge(prstate, prev_surv, first_live);
 
-		heap_prune_record_redirect(prstate, rootoffnum,
-								   OffsetNumberIsValid(head) ? head : first_live,
-								   ItemIdIsNormal(rootlp));
+		{
+			OffsetNumber redirect_target =
+				OffsetNumberIsValid(head) ? head : first_live;
+
+			/*
+			 * On re-prune of an already-collapsed chain the root may already
+			 * be a redirect to this same target; recording it again would be
+			 * a redundant no-op redirect.  Leave it unchanged in that case.
+			 */
+			if (ItemIdIsRedirected(rootlp) &&
+				ItemIdGetRedirect(rootlp) == redirect_target)
+				heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+			else
+				heap_prune_record_redirect(prstate, rootoffnum, redirect_target,
+										   ItemIdIsNormal(rootlp));
+		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
 		for (int i = ndeadchain; i < nchain; i++)
@@ -2750,10 +2787,13 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 	Assert(nredirected > 0 || ndead > 0 || nunused > 0 ||
 		   nbridges > 0 || nunions > 0);
 
-	/* If 'lp_truncate_only', we can only remove already-dead line pointers */
+	/*
+	 * If 'lp_truncate_only', we can only remove already-dead line pointers
+	 * and re-point redirects (the latter when vacuum reclaims a collapsed
+	 * chain's bridges and re-points the root redirect at first_live).
+	 */
 	Assert(!lp_truncate_only ||
-		   (nredirected == 0 && ndead == 0 && nbridges == 0 &&
-			nunions == 0));
+		   (ndead == 0 && nbridges == 0 && nunions == 0));
 
 	/* Update all redirected line pointers */
 	offnum = redirected;
@@ -2763,6 +2803,16 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		OffsetNumber tooff = *offnum++;
 		ItemId		fromlp = PageGetItemId(page, fromoff);
 		ItemId		tolp PG_USED_FOR_ASSERTS_ONLY;
+
+		/*
+		 * A redundant redirect (the LP already redirects to tooff) is a
+		 * harmless no-op.  This arises when a HOT-indexed chain that was
+		 * already collapsed is re-pruned and the root still resolves to the
+		 * same target; skip it so the apply stays idempotent on both primary
+		 * and replay.
+		 */
+		if (ItemIdIsRedirected(fromlp) && ItemIdGetRedirect(fromlp) == tooff)
+			continue;
 
 #ifdef USE_ASSERT_CHECKING
 
@@ -3576,8 +3626,17 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 		xlrec.flags |= XLHP_CLEANUP_LOCK;
 	else
 	{
-		Assert(nredirected == 0 && ndead == 0);
-		/* also, any items in 'unused' must've been LP_DEAD previously */
+		/*
+		 * Without a cleanup lock we can only remove already-dead line
+		 * pointers and re-point redirects.  The latter happens when vacuum's
+		 * second pass reclaims a collapsed HOT-indexed chain's bridges and
+		 * re-points the root redirect at first_live: that change is made under
+		 * an exclusive lock and preserves the chain's reachability (every
+		 * walker still reaches first_live), so no cleanup lock is needed --
+		 * the same basis on which this pass already reclaims LP_NORMAL bridge
+		 * meta-items to LP_UNUSED.
+		 */
+		Assert(ndead == 0);
 	}
 	XLogRegisterData(&xlrec, SizeOfHeapPrune);
 	if (TransactionIdIsValid(conflict_xid))

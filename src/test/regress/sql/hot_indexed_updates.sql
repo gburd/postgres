@@ -12,7 +12,7 @@
 --   (B) index lookups return the new value and not the stale value
 --       for EQUALITY queries (the read-side bitmap-overlap test drops a
 --       leaf whose covered attribute changed on the way to the live tuple)
---   (C) pg_relation_hot_indexed_stats reports the tombstones we expect to see
+--   (C) pg_relation_hot_indexed_stats reports the HOT-indexed versions we expect
 --   (D) **RANGE/INEQUALITY** queries return the correct number of
 --       tuples -- this is the class of bugs where a stale btree
 --       entry's key is still reachable via a looser scan key; the
@@ -83,9 +83,9 @@ EXPLAIN (COSTS OFF) SELECT id FROM hi_basic WHERE indexed_col = 100;
 SELECT id FROM hi_basic WHERE indexed_col = 100;
 RESET enable_seqscan;
 
--- pg_relation_hot_indexed_stats sees one tombstone, zero HOT redirects (the
+-- pg_relation_hot_indexed_stats sees one HOT-indexed version, zero HOT redirects (the
 -- chain has not yet been pruned so no LP_REDIRECT exists).
-SELECT n_tombstones, n_chains, avg_chain_len, max_chain_len
+SELECT n_hot_indexed, n_chains, avg_chain_len, max_chain_len
 FROM pg_relation_hot_indexed_stats('hi_basic');
 
 DROP TABLE hi_basic;
@@ -521,7 +521,7 @@ CREATE INDEX hi_reclaim_a_idx ON hi_reclaim(a);
 INSERT INTO hi_reclaim VALUES (1, 100);
 -- Generate a tombstone via a HOT-indexed update.
 UPDATE hi_reclaim SET a = 200 WHERE id = 1;
-SELECT n_tombstones >= 1 AS tombstone_present_before_reclaim
+SELECT n_hot_indexed >= 1 AS hot_indexed_present_before_reclaim
   FROM pg_relation_hot_indexed_stats('hi_reclaim');
 
 -- Delete the live tuple.  The first VACUUM bridges the dead chain and sweeps
@@ -530,7 +530,7 @@ DELETE FROM hi_reclaim WHERE id = 1;
 VACUUM hi_reclaim;
 VACUUM hi_reclaim;
 
-SELECT n_tombstones AS tombstones_after_reclaim,
+SELECT n_hot_indexed AS hot_indexed_after_reclaim,
        n_chains AS chains_after_reclaim
   FROM pg_relation_hot_indexed_stats('hi_reclaim');
 
@@ -547,7 +547,7 @@ DROP TABLE hi_reclaim;
 -- We force the freeze path with VACUUM (FREEZE, DISABLE_PAGE_SKIPPING)
 -- and then read pd_flags via pageinspect.page_header.  The page must
 -- have PD_HAS_HOT_INDEXED_BRIDGES (0x0008) -or- still carry tombstones
--- (n_tombstones > 0) AND must not have PD_ALL_VISIBLE (0x0004).
+-- (n_hot_indexed > 0) AND must not have PD_ALL_VISIBLE (0x0004).
 -- ---------------------------------------------------------------------------
 CREATE TABLE hi_vm (
     id int PRIMARY KEY,
@@ -568,7 +568,7 @@ UPDATE hi_vm SET a = 3 WHERE id = 1;
 -- page bearing a tombstone or bridge must still report all_visible = 0.
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) hi_vm;
 
-SELECT n_tombstones >= 1 AS tombstones_present
+SELECT n_hot_indexed >= 1 AS hot_indexed_present
   FROM pg_relation_hot_indexed_stats('hi_vm');
 
 -- PD_ALL_VISIBLE = 0x0004.  Must be 0 on a tombstone-bearing page.
@@ -664,7 +664,7 @@ CREATE TABLE hi_unum (k numeric UNIQUE, j int) WITH (fillfactor = 50);
 CREATE INDEX hi_unum_j ON hi_unum(j);             -- 2nd indexed attr, kept fixed
 INSERT INTO hi_unum VALUES (1.0, 100);
 UPDATE hi_unum SET k = 1.00 WHERE j = 100;        -- HOT-indexed: 1.0 -> 1.00
-SELECT n_tombstones > 0 AS made_tombstone
+SELECT n_hot_indexed > 0 AS made_hot_indexed
   FROM pg_relation_hot_indexed_stats('hi_unum');
 -- A numerically-equal insert must conflict (the fresh leaf catches it):
 INSERT INTO hi_unum VALUES (1.0, 1);              -- expect duplicate key error
@@ -687,7 +687,7 @@ CREATE INDEX hi_reindex_a ON hi_reindex(a);
 INSERT INTO hi_reindex SELECT g, g, g FROM generate_series(1, 6) g;
 UPDATE hi_reindex SET a = a + 100;                -- HOT-indexed on a
 UPDATE hi_reindex SET a = a + 100;                -- again -> chains/tombstones
-SELECT n_tombstones > 0 AS made_tombstones
+SELECT n_hot_indexed > 0 AS made_hot_indexed
   FROM pg_relation_hot_indexed_stats('hi_reindex');
 -- Build a NEW index and REINDEX the existing one over the live chains.
 CREATE INDEX hi_reindex_b ON hi_reindex(b);
@@ -713,7 +713,7 @@ CREATE INDEX hi_dropidx_a ON hi_dropidx(a);
 INSERT INTO hi_dropidx SELECT g, g FROM generate_series(1, 6) g;
 UPDATE hi_dropidx SET a = a + 100;                -- HOT-indexed on a
 UPDATE hi_dropidx SET a = a + 100;                -- again -> chains/tombstones
-SELECT n_tombstones > 0 AS made_tombstones
+SELECT n_hot_indexed > 0 AS made_hot_indexed
   FROM pg_relation_hot_indexed_stats('hi_dropidx');
 -- Drop every index, leaving bridge tombstones with no index to sweep.
 DROP INDEX hi_dropidx_a;
