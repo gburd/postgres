@@ -3255,6 +3255,8 @@ recno_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 	for (;;)
 	{
 		bool		isdead = false;
+		bool		is_tombstone = false;
+		uint64		delete_ts = 0;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -3329,9 +3331,17 @@ recno_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 				}
 				else
 				{
-					/* Recently dead -- still needed by some snapshots */
+					/*
+					 * Recently dead -- still needed by some snapshots.  Copy
+					 * it to the new relation as a tombstone, preserving its
+					 * original delete timestamp so old-snapshot readers still
+					 * see the pre-delete version (matching heap's RECENTLY_DEAD
+					 * retention during cluster rewrite).
+					 */
 					recent_dead++;
 					isdead = false;
+					is_tombstone = true;
+					delete_ts = tuple_hdr->t_commit_ts;
 				}
 			}
 
@@ -3346,6 +3356,70 @@ recno_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 
 		/* Live or recently-dead tuple -- copy to new table */
 		table_tuple_insert(NewTable, slot, mycid, 0, NULL);
+
+		if (is_tombstone)
+		{
+			/*
+			 * The row was copied as a fresh, live INSERT.  Rewrite it in the
+			 * new relation as a deleted tombstone carrying its original delete
+			 * timestamp, and drop the INSERT's local sLog tracking so that
+			 * commit-time stamping does not clobber t_commit_ts with this
+			 * rewrite transaction's commit HLC (which would resurrect the row
+			 * for readers whose snapshots predate the rewrite commit).
+			 */
+			Buffer		nbuf;
+			Page		npage;
+			ItemId		nitemid;
+			RecnoTupleHeader *ntuple_hdr;
+			RecnoPageOpaque nphdr;
+			BlockNumber nblkno = ItemPointerGetBlockNumber(&slot->tts_tid);
+			OffsetNumber noffnum = ItemPointerGetOffsetNumber(&slot->tts_tid);
+
+			SLogTupleUntrackLocalOnly(RelationGetRelid(NewTable),
+									  &slot->tts_tid);
+
+			nbuf = ReadBuffer(NewTable, nblkno);
+			LockBuffer(nbuf, BUFFER_LOCK_EXCLUSIVE);
+			npage = BufferGetPage(nbuf);
+			nitemid = PageGetItemId(npage, noffnum);
+
+			START_CRIT_SECTION();
+
+			ntuple_hdr = (RecnoTupleHeader *) PageGetItem(npage, nitemid);
+			ntuple_hdr->t_flags |= RECNO_TUPLE_DELETED;
+			ntuple_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+			ntuple_hdr->t_commit_ts = delete_ts;
+
+			nphdr = RecnoPageGetOpaque(npage);
+			RecnoPageSetCommitTs(nphdr,
+								 Max(RecnoPageGetCommitTs(nphdr), delete_ts));
+			RecnoPageSetFlag(nphdr, RECNO_PAGE_DEFRAG_NEEDED);
+
+			MarkBufferDirty(nbuf);
+
+			if (RelationNeedsWAL(NewTable))
+			{
+				XLogRecPtr	recptr;
+				xl_recno_delete xlrec;
+
+				xlrec.offnum = noffnum;
+				xlrec.flags = 0;
+				xlrec.tuple_len = ItemIdGetLength(nitemid);
+				xlrec.commit_ts = delete_ts;
+
+				XLogBeginInsert();
+				XLogRegisterData((char *) &xlrec, sizeof(xl_recno_delete));
+				XLogRegisterBuffer(0, nbuf, REGBUF_STANDARD);
+
+				recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_DELETE);
+				PageSetLSN(npage, recptr);
+			}
+
+			END_CRIT_SECTION();
+
+			UnlockReleaseBuffer(nbuf);
+		}
+
 		live_tuples++;
 
 		pgstat_progress_update_param(PROGRESS_REPACK_HEAP_TUPLES_SCANNED,

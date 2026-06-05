@@ -3270,6 +3270,60 @@ fallback_linked_list:
 }
 
 /*
+ * SLogTupleUntrackLocalOnly
+ *		Remove local-only INSERT tracking for (relid, tid).
+ *
+ * Counterpart to SLogTupleTrackLocalOnly.  Used when a freshly inserted tuple
+ * must NOT be stamped with the inserting transaction's commit HLC at commit
+ * time -- e.g. VACUUM FULL / CLUSTER copies a recently-dead tombstone into the
+ * new relation and rewrites it with its ORIGINAL delete timestamp.  Leaving the
+ * INSERT tracked would let recno_stamp_tuple_committed clobber t_commit_ts with
+ * the rewrite transaction's commit HLC, resurrecting the deleted row for any
+ * reader whose snapshot predates that commit.
+ *
+ * Clears the sparsemap bit on the top-level fast path and also drops any
+ * matching linked-list node (the savepoint/fallback path).
+ */
+void
+SLogTupleUntrackLocalOnly(Oid relid, ItemPointer tid)
+{
+	SLogInsertMap *im;
+	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
+	uint64		encoded = SLOG_ENCODE_TID(blkno, offnum);
+	SLogTrackedKey **link;
+
+	/* Fast path: clear the sparsemap bit if present. */
+	for (im = slog_insert_maps; im != NULL; im = im->next)
+	{
+		if (im->relid == relid)
+		{
+			if (sm_contains(im->map, encoded))
+				sm_remove(im->map, encoded);
+			break;
+		}
+	}
+
+	/* Fallback/subtxn path: unlink any matching local-only INSERT node. */
+	link = &slog_tracked_keys;
+	while (*link != NULL)
+	{
+		SLogTrackedKey *tk = *link;
+
+		if (tk->local_only &&
+			tk->key.relid == relid &&
+			ItemPointerGetBlockNumber(&tk->key.tid) == blkno &&
+			ItemPointerGetOffsetNumber(&tk->key.tid) == offnum)
+		{
+			*link = tk->next;
+			pfree(tk);
+			continue;
+		}
+		link = &tk->next;
+	}
+}
+
+/*
  * SLogTupleStoreBeforeImage
  *		Attach a before-image to the most recent tracked key for the given
  *		(relid, tid, xid) combination.
