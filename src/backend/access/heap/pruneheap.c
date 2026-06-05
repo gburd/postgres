@@ -287,11 +287,6 @@ static OffsetNumber heap_prune_find_live_chain_root(PruneState *prstate,
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
-static OffsetNumber heap_prune_find_tombstone_for(PruneState *prstate,
-												  OffsetNumber target_off);
-static void heap_prune_record_tombstone_union(PruneState *prstate,
-											  OffsetNumber target,
-											  OffsetNumber source);
 
 static void page_verify_redirects(Page page);
 
@@ -1906,55 +1901,50 @@ process_chain:
 	{
 		/*
 		 * We found a DEAD tuple in the chain.  Redirect the root line pointer
-		 * to the first non-DEAD tuple (a plain LP_REDIRECT, as classic HOT
-		 * does), and for each intermediate dead tuple either mark LP_UNUSED
-		 * (classic HOT: no external references) or rewrite it as a bridge
-		 * tombstone forwarding to first_live (HOT-indexed: stale btree entries
+		 * to the first surviving chain member, and for each intermediate dead
+		 * tuple either mark LP_UNUSED (classic HOT: no external references) or
+		 * rewrite it as a bridge meta-item (HOT-indexed: stale btree entries
 		 * may still point at this LP).  The classifier
 		 * heap_prune_item_preserves_hot_indexed decides per LP.
 		 *
-		 * A root-pointing entry follows the plain redirect straight to
-		 * first_live, skipping the dead hops, so first_live's adjacent
-		 * tombstone must carry the union of every collapsed hop's
-		 * modified-attrs bitmap for the bitmap-overlap staleness test to flag
-		 * it.  For each bridged member we therefore OR-merge its adjacent
-		 * tombstone's bitmap into first_live's tombstone and reclaim the
-		 * source tombstone's LP.  In notation, LP[1] v1 root -> LP[3] v2
-		 * INDEXED_UPDATED{a} -> LP[5] v3 INDEXED_UPDATED{b} -> LP[7] v4 LIVE
-		 * (v1..v3 dead) collapses to LP[1] redirect -> LP[7] v4, LP[3]/LP[5]
-		 * bridges -> LP[7], with first_live's tombstone holding {a,b}.
+		 * Bridges are linked in chain order: each preserved dead member
+		 * forwards to the next surviving member, the last to first_live; each
+		 * carries its own producing-hop modified-attrs bitmap (preserved by
+		 * heap_page_prune_execute from the dying version).  The root redirect
+		 * points at the *first* surviving member, not first_live, so a
+		 * root-pointing entry walks the whole bridge chain and accumulates
+		 * exactly its forward hops -- the same per-hop bitmaps a mid-chain
+		 * entry sees.  No merging into first_live (which would over-accumulate
+		 * for a mid-chain entry and could wrongly drop a still-valid leaf).
+		 * In notation, LP[1] v1 root -> LP[3] v2 {a} -> LP[5] v3 {b} -> LP[7]
+		 * v4 LIVE (v1..v3 dead) collapses to LP[1] redirect -> LP[3], LP[3]
+		 * bridge{a} -> LP[5], LP[5] bridge{b} -> LP[7] v4.
 		 */
 		OffsetNumber first_live = chainitems[ndeadchain];
-		OffsetNumber target_tomb;
-
-		heap_prune_record_redirect(prstate, rootoffnum, first_live,
-								   ItemIdIsNormal(rootlp));
-
-		target_tomb = heap_prune_find_tombstone_for(prstate, first_live);
+		OffsetNumber head = InvalidOffsetNumber;
+		OffsetNumber prev_surv = InvalidOffsetNumber;
 
 		for (int i = 1; i < ndeadchain; i++)
 		{
 			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
 			{
-				heap_prune_record_bridge(prstate, chainitems[i], first_live);
-
-				if (OffsetNumberIsValid(target_tomb))
-				{
-					OffsetNumber source_tomb;
-
-					source_tomb = heap_prune_find_tombstone_for(prstate,
-																chainitems[i]);
-					if (OffsetNumberIsValid(source_tomb))
-						heap_prune_record_tombstone_union(prstate,
-														  target_tomb,
-														  source_tomb);
-				}
+				if (prev_surv != InvalidOffsetNumber)
+					heap_prune_record_bridge(prstate, prev_surv, chainitems[i]);
+				else
+					head = chainitems[i];
+				prev_surv = chainitems[i];
 			}
 			else
 			{
 				heap_prune_record_unused(prstate, chainitems[i], true);
 			}
 		}
+		if (prev_surv != InvalidOffsetNumber)
+			heap_prune_record_bridge(prstate, prev_surv, first_live);
+
+		heap_prune_record_redirect(prstate, rootoffnum,
+								   OffsetNumberIsValid(head) ? head : first_live,
+								   ItemIdIsNormal(rootlp));
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
 		for (int i = ndeadchain; i < nchain; i++)
@@ -2307,45 +2297,6 @@ heap_prune_record_bridge(PruneState *prstate,
 	 */
 	prstate->set_all_visible = false;
 	prstate->set_all_frozen = false;
-}
-
-/*
- * heap_prune_find_tombstone_for
- *		Offset of the adjacent (non-bridge) tombstone describing `target_off`
- *		among the tombstones recorded during this prune scan, or
- *		InvalidOffsetNumber if none.
- */
-static OffsetNumber
-heap_prune_find_tombstone_for(PruneState *prstate, OffsetNumber target_off)
-{
-	for (int i = 0; i < prstate->ntombstones; i++)
-	{
-		if (prstate->tombstones[i].target == target_off)
-			return prstate->tombstones[i].offnum;
-	}
-	return InvalidOffsetNumber;
-}
-
-/*
- * heap_prune_record_tombstone_union
- *		Record that `source` tombstone's modified-attrs bitmap should be
- *		OR-merged into `target` tombstone's bitmap at execute time.  The
- *		source LP is reclaimed separately via the nowunused flow (its target,
- *		a bridged member, is itself converted to a bridge).
- */
-static void
-heap_prune_record_tombstone_union(PruneState *prstate,
-								  OffsetNumber target,
-								  OffsetNumber source)
-{
-	Assert(OffsetNumberIsValid(target));
-	Assert(OffsetNumberIsValid(source));
-	Assert(target != source);
-	Assert(prstate->ntombstone_unions < MaxHeapTuplesPerPage);
-
-	prstate->tombstone_unions[prstate->ntombstone_unions * 2] = target;
-	prstate->tombstone_unions[prstate->ntombstone_unions * 2 + 1] = source;
-	prstate->ntombstone_unions++;
 }
 
 /*
@@ -2855,7 +2806,10 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		tolp = PageGetItemId(page, tooff);
 		Assert(ItemIdHasStorage(tolp) && ItemIdIsNormal(tolp));
 		htup = (HeapTupleHeader) PageGetItem(page, tolp);
-		Assert(HeapTupleHeaderIsHeapOnly(htup));
+		/* Target is the first surviving member: a heap-only tuple, or (inline
+		 * model) the head bridge of a collapsed HOT-indexed chain. */
+		Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+			   HeapTupleHeaderIsHotIndexedBridge(htup));
 #endif
 
 		ItemIdSetRedirect(fromlp, tooff);
@@ -3019,15 +2973,45 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		OffsetNumber fromoff = *offnum++;
 		OffsetNumber forward = *offnum++;
 		ItemId		lp = PageGetItemId(page, fromoff);
-		Size		bridge_size = HOT_INDEXED_BRIDGE_SIZE;
+		HeapTupleHeader dyingtup;
+		const uint8 *bm;
+		uint16		bmnbytes;
+		uint8		bmcopy[(MaxHeapAttributeNumber + 7) / 8];
+		Size		bridge_size;
 		OffsetNumber lp_off;
 
 		Assert(ItemIdIsNormal(lp));
+		dyingtup = (HeapTupleHeader) PageGetItem(page, lp);
+
+		/*
+		 * Preserve the producing-hop modified-attrs bitmap from the item the
+		 * bridge replaces, so a stale entry crossing the bridge accumulates
+		 * the same hop it would have from the live version.  The source is a
+		 * live HOT-indexed version (inline-trailing bitmap) or, on re-prune,
+		 * an existing bridge (payload bitmap).  Copy it out before the slot is
+		 * overwritten.  Reading from the page (not WAL) is deterministic on
+		 * primary and replay, so no bitmap bytes are logged.
+		 */
+		if (heap_page_item_kind(dyingtup) == HPIK_HOT_INDEXED_TUPLE)
+		{
+			bmnbytes = HotIndexedInlineBitmapNbytes(dyingtup);
+			bm = HotIndexedInlineGetBitmap(dyingtup, ItemIdGetLength(lp));
+		}
+		else
+		{
+			bmnbytes = HotIndexedTombstoneGetNbytes(dyingtup);
+			bm = HotIndexedTombstoneGetBitmap(dyingtup);
+		}
+		Assert(bmnbytes <= sizeof(bmcopy));
+		memcpy(bmcopy, bm, bmnbytes);
+
+		bridge_size = MAXALIGN(MAXALIGN(SizeofHeapTupleHeader) +
+							   SizeOfHotIndexedTombstonePayload + bmnbytes);
 		Assert(ItemIdGetLength(lp) >= bridge_size);
 
 		lp_off = ItemIdGetOffset(lp);
 		(void) heap_build_hot_indexed_bridge(((char *) page) + lp_off,
-											 blkno, forward);
+											 blkno, forward, bmcopy, bmnbytes);
 		ItemIdSetNormal(lp, lp_off, bridge_size);
 	}
 
@@ -3125,8 +3109,12 @@ page_verify_redirects(Page page)
 		Assert(ItemIdHasStorage(targitem));
 		htup = (HeapTupleHeader) PageGetItem(page, targitem);
 
-		/* A redirect always targets a heap-only tuple (first_live). */
-		Assert(HeapTupleHeaderIsHeapOnly(htup));
+		/*
+		 * A redirect targets the first surviving chain member: a heap-only
+		 * tuple, or (inline model) the head bridge of a collapsed chain.
+		 */
+		Assert(HeapTupleHeaderIsHeapOnly(htup) ||
+			   HeapTupleHeaderIsHotIndexedBridge(htup));
 	}
 #endif
 }

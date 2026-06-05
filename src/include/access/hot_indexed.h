@@ -343,39 +343,29 @@ extern bool heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *
 
 /*
  * heap_build_hot_indexed_bridge
- *		Populate *buf with a bridge tombstone that forwards chain walkers
- *		from a dead mid-chain HOT-indexed LP to the next on-page chain
- *		member.
+ *		Populate *buf with a bridge meta-item that forwards chain walkers from
+ *		a dead mid-chain HOT-indexed LP to the next on-page chain member,
+ *		carrying the producing-hop modified-attrs bitmap preserved from the
+ *		dying version it replaces.
  *
  * Arguments:
  *	 buf			- output buffer; caller must guarantee at least
- *					  HOT_INDEXED_BRIDGE_SIZE bytes of addressable,
+ *					  HotIndexedTombstoneSize(natts) bytes of addressable,
  *					  writable memory.
  *	 blkno			- block number of the page the bridge will occupy.
  *					  Used to build a same-page forward ItemPointer that
  *					  chain walkers can consume without an extra lookup.
  *	 forward_offnum - offset of the next chain member on the same page.
+ *	 src_bitmap		- the dying version's modified-attrs bitmap, src_nbytes
+ *					  wide; copied verbatim into the bridge payload.
  *
- * Returns the total number of bytes written (HOT_INDEXED_BRIDGE_SIZE).
- *
- * Bridges carry no modified-attrs bitmap; readers arriving via a stale
- * btree entry at the bridge's LP follow the forward link to the live
- * tuple and recheck the key against the live tuple's current index
- * form.  The per-hop bitmap that adjacent tombstones carry is not needed
- * here because the bridge did not emit that update; it is merely a
- * forwarding vestige of one.
+ * Returns the total number of bytes written.
  */
 extern Size heap_build_hot_indexed_bridge(char *buf,
 										  BlockNumber blkno,
-										  OffsetNumber forward_offnum);
-
-/*
- * HOT_INDEXED_BRIDGE_SIZE
- *		On-page size of a bridge tombstone.  No payload beyond the
- *		header, so a bridge is exactly MAXALIGN(SizeofHeapTupleHeader)
- *		bytes regardless of the owning relation's attribute count.
- */
-#define HOT_INDEXED_BRIDGE_SIZE		(MAXALIGN(SizeofHeapTupleHeader))
+										  OffsetNumber forward_offnum,
+										  const uint8 *src_bitmap,
+										  uint16 src_nbytes);
 
 /*
  * Compile-time layout sanity:
