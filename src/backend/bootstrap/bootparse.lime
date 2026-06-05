@@ -1,0 +1,514 @@
+/*
+ * bootparse.lime -- Parser for PostgreSQL bootstrap (BKI) files.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/bootstrap/bootparse.lime
+ *
+ * Ported from bootparse.y.  The grammar is unchanged modulo two mechanical
+ * rewrites Lime requires:
+ *
+ *   1. Bison's mid-rule actions (do_start / do_end / numattr=0 / the
+ *      per-statement elog(DEBUG4)) become helper non-terminals
+ *      (boot_create_begin, boot_create_end, boot_insert_begin) whose
+ *      single-action bodies carry the former mid-rule statements.
+ *   2. Bison's inline `| epsilon` alternative for optional clauses keeps
+ *      the empty production and the value assignment on its own rule
+ *      line.
+ *
+ * Token codes, production structure, and semantic side effects match the
+ * retired Bison grammar byte for byte.  Error messages go through
+ * boot_yyerror() which is pg_noreturn and calls ereport(ERROR); the
+ * %syntax_error / %parse_failure hooks therefore never return.
+ */
+
+%name boot_yy
+%token_type {YYSTYPE}
+%extra_argument {yyscan_t yyscanner}
+%start_symbol top_level
+%expect 0
+
+%include {
+#include "postgres.h"
+
+#include <unistd.h>
+
+#include "bootstrap/bootstrap.h"
+#include "catalog/heap.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_authid.h"
+#include "catalog/pg_class.h"
+#include "catalog/pg_namespace.h"
+#include "catalog/pg_tablespace.h"
+#include "catalog/toasting.h"
+#include "commands/defrem.h"
+#include "miscadmin.h"
+#include "nodes/makefuncs.h"
+#include "utils/memutils.h"
+
+#include "boot_gram_yytype.h"
+
+/*
+ * Lime emits a handful of internal helper functions without prior prototypes
+ * and freely mixes declarations and code.  None of that is wrong, just
+ * incompatible with PostgreSQL's warning set.  Silence the two warnings for
+ * the generated translation unit only; the pragma covers every function the
+ * generator writes after this point.  Clang understands the GCC spelling.
+ */
+#ifdef __GNUC__
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+#endif
+
+/*
+ * Per-line working context and column counter.  Definitions live in
+ * bootscanner.c; the grammar actions reference them through these externs.
+ * (They were file-static in the retired bootparse.y; they become TU-wide
+ * externs now that the grammar and driver compile to separate translation
+ * units.  The symbols are not declared in any installed header.)
+ */
+extern MemoryContext boot_per_line_ctx;
+extern int	boot_num_columns_read;
+
+extern void boot_do_start(void);
+extern void boot_do_end(void);
+}
+
+/*
+ * Error hooks.  boot_yyerror is pg_noreturn and calls ereport(ERROR),
+ * longjmp'ing out of the parser, so control never returns to Lime's state
+ * machine from these blocks.
+ */
+%syntax_error {
+	boot_yyerror(yyscanner, "syntax error");
+}
+
+%parse_failure {
+	boot_yyerror(yyscanner, "parse failure");
+}
+
+/* ======================================================================
+ * TOKEN DECLARATIONS
+ * ====================================================================== */
+%token ID.
+%token COMMA.
+%token EQUALS.
+%token LPAREN.
+%token RPAREN.
+/* NULLVAL is the one reserved keyword. */
+%token NULLVAL.
+/* Unreserved keywords -- all usable as identifiers via boot_ident. */
+%token OPEN.
+%token XCLOSE.
+%token XCREATE.
+%token INSERT_TUPLE.
+%token XDECLARE.
+%token INDEX.
+%token ON.
+%token USING.
+%token XBUILD.
+%token INDICES.
+%token UNIQUE.
+%token XTOAST.
+%token OBJ_ID.
+%token XBOOTSTRAP.
+%token XSHARED_RELATION.
+%token XROWTYPE_OID.
+%token XFORCE.
+%token XNOT.
+%token XNULL.
+
+/* ======================================================================
+ * NON-TERMINAL TYPE DECLARATIONS
+ * ====================================================================== */
+%type boot_index_params {List *}
+%type boot_index_param {IndexElem *}
+%type boot_ident {char *}
+%type optbootstrap {int}
+%type optsharedrelation {int}
+%type boot_column_nullness {int}
+%type oidspec {Oid}
+%type optrowtypeoid {Oid}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+top_level ::= boot_queries.
+top_level ::=.
+boot_queries ::= boot_query.
+boot_queries ::= boot_queries boot_query.
+boot_query ::= boot_open_stmt.
+boot_query ::= boot_close_stmt.
+boot_query ::= boot_create_stmt.
+boot_query ::= boot_insert_stmt.
+boot_query ::= boot_declare_index_stmt.
+boot_query ::= boot_declare_unique_index_stmt.
+boot_query ::= boot_declare_toast_stmt.
+boot_query ::= boot_build_inds_stmt.
+boot_open_stmt ::= OPEN boot_ident(B). {
+	boot_do_start();
+	boot_openrel(B);
+	boot_do_end();
+}
+boot_close_stmt ::= XCLOSE boot_ident(B). {
+	boot_do_start();
+	closerel(B);
+	boot_do_end();
+}
+/*
+ * Helper non-terminals expressing the two mid-rule actions of the original
+ * Boot_CreateStmt rule.  Lime does not support mid-rule actions; the
+ * pattern below mirrors Lime's MIGRATION_FROM_BISON.md recipe.
+ */
+boot_create_begin ::=. {
+	boot_do_start();
+	numattr = 0;
+}
+boot_create_end ::=. {
+	boot_do_end();
+}
+boot_create_stmt ::= XCREATE boot_ident(B) oidspec(C) optbootstrap(D) optsharedrelation(E) optrowtypeoid(F) LPAREN boot_create_begin boot_column_list boot_create_end RPAREN. {
+	TupleDesc	tupdesc;
+	bool		shared_relation;
+	bool		mapped_relation;
+
+	boot_do_start();
+
+	/*
+	 * Original Bison grammar emitted this DEBUG4 line inside the mid-rule
+	 * action before column-list processing.  Lime lacks mid-rule actions,
+	 * and the helper non-terminal there has no RHS access to B/D/E/C, so
+	 * the elog is issued from the final action instead.  Only ordering
+	 * relative to later DEBUG4 messages ("column ... ...") changes, and
+	 * DEBUG4 output is not consumed by any test.
+	 */
+	elog(DEBUG4, "creating%s%s relation %s %u",
+		 D ? " bootstrap" : "",
+		 E ? " shared" : "",
+		 B,
+		 C);
+
+	tupdesc = CreateTupleDesc(numattr, attrtypes);
+
+	shared_relation = E;
+
+	/*
+	 * The catalogs that use the relation mapper are the bootstrap catalogs
+	 * plus the shared catalogs.  If this ever gets more complicated, we
+	 * should invent a BKI keyword to mark the mapped catalogs, but for now
+	 * a quick hack seems the most appropriate thing.  Note in particular
+	 * that all "nailed" heap rels (see formrdesc in relcache.c) must be
+	 * mapped.
+	 */
+	mapped_relation = (D || shared_relation);
+
+	if (D)
+	{
+		TransactionId relfrozenxid;
+		MultiXactId relminmxid;
+
+		if (boot_reldesc)
+		{
+			elog(DEBUG4, "create bootstrap: warning, open relation exists, closing first");
+			closerel(NULL);
+		}
+
+		boot_reldesc = heap_create(B,
+								   PG_CATALOG_NAMESPACE,
+								   shared_relation ? GLOBALTABLESPACE_OID : 0,
+								   C,
+								   InvalidOid,
+								   HEAP_TABLE_AM_OID,
+								   tupdesc,
+								   RELKIND_RELATION,
+								   RELPERSISTENCE_PERMANENT,
+								   shared_relation,
+								   mapped_relation,
+								   true,
+								   &relfrozenxid,
+								   &relminmxid,
+								   true);
+		elog(DEBUG4, "bootstrap relation created");
+	}
+	else
+	{
+		Oid			id;
+
+		id = heap_create_with_catalog(B,
+									  PG_CATALOG_NAMESPACE,
+									  shared_relation ? GLOBALTABLESPACE_OID : 0,
+									  C,
+									  F,
+									  InvalidOid,
+									  BOOTSTRAP_SUPERUSERID,
+									  HEAP_TABLE_AM_OID,
+									  tupdesc,
+									  NIL,
+									  RELKIND_RELATION,
+									  RELPERSISTENCE_PERMANENT,
+									  shared_relation,
+									  mapped_relation,
+									  ONCOMMIT_NOOP,
+									  (Datum) 0,
+									  false,
+									  true,
+									  false,
+									  InvalidOid,
+									  NULL);
+		elog(DEBUG4, "relation created with OID %u", id);
+	}
+	boot_do_end();
+}
+boot_insert_begin ::=. {
+	boot_do_start();
+	elog(DEBUG4, "inserting row");
+	boot_num_columns_read = 0;
+}
+boot_insert_stmt ::= INSERT_TUPLE boot_insert_begin LPAREN boot_column_val_list RPAREN. {
+	if (boot_num_columns_read != numattr)
+		elog(ERROR, "incorrect number of columns in row (expected %d, got %d)",
+			 numattr, boot_num_columns_read);
+	if (boot_reldesc == NULL)
+		elog(FATAL, "relation not open");
+	InsertOneTuple();
+	boot_do_end();
+}
+boot_declare_index_stmt ::= XDECLARE INDEX boot_ident(B) oidspec(C) ON boot_ident(D) USING boot_ident(E) LPAREN boot_index_params(F) RPAREN. {
+	IndexStmt  *stmt = makeNode(IndexStmt);
+	Oid			relationId;
+
+	elog(DEBUG4, "creating index \"%s\"", B);
+
+	boot_do_start();
+
+	stmt->idxname = B;
+	stmt->relation = makeRangeVar(NULL, D, -1);
+	stmt->accessMethod = E;
+	stmt->tableSpace = NULL;
+	stmt->indexParams = F;
+	stmt->indexIncludingParams = NIL;
+	stmt->options = NIL;
+	stmt->whereClause = NULL;
+	stmt->excludeOpNames = NIL;
+	stmt->idxcomment = NULL;
+	stmt->indexOid = InvalidOid;
+	stmt->oldNumber = InvalidRelFileNumber;
+	stmt->oldCreateSubid = InvalidSubTransactionId;
+	stmt->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+	stmt->unique = false;
+	stmt->primary = false;
+	stmt->isconstraint = false;
+	stmt->deferrable = false;
+	stmt->initdeferred = false;
+	stmt->transformed = false;
+	stmt->concurrent = false;
+	stmt->if_not_exists = false;
+	stmt->reset_default_tblspc = false;
+
+	/* locks and races need not concern us in bootstrap mode */
+	relationId = RangeVarGetRelid(stmt->relation, NoLock, false);
+
+	DefineIndex(NULL,
+				relationId,
+				stmt,
+				C,
+				InvalidOid,
+				InvalidOid,
+				-1,
+				false,
+				false,
+				false,
+				true,			/* skip_build */
+				false);
+	boot_do_end();
+}
+boot_declare_unique_index_stmt ::= XDECLARE UNIQUE INDEX boot_ident(B) oidspec(C) ON boot_ident(D) USING boot_ident(E) LPAREN boot_index_params(F) RPAREN. {
+	IndexStmt  *stmt = makeNode(IndexStmt);
+	Oid			relationId;
+
+	elog(DEBUG4, "creating unique index \"%s\"", B);
+
+	boot_do_start();
+
+	stmt->idxname = B;
+	stmt->relation = makeRangeVar(NULL, D, -1);
+	stmt->accessMethod = E;
+	stmt->tableSpace = NULL;
+	stmt->indexParams = F;
+	stmt->indexIncludingParams = NIL;
+	stmt->options = NIL;
+	stmt->whereClause = NULL;
+	stmt->excludeOpNames = NIL;
+	stmt->idxcomment = NULL;
+	stmt->indexOid = InvalidOid;
+	stmt->oldNumber = InvalidRelFileNumber;
+	stmt->oldCreateSubid = InvalidSubTransactionId;
+	stmt->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+	stmt->unique = true;
+	stmt->primary = false;
+	stmt->isconstraint = false;
+	stmt->deferrable = false;
+	stmt->initdeferred = false;
+	stmt->transformed = false;
+	stmt->concurrent = false;
+	stmt->if_not_exists = false;
+	stmt->reset_default_tblspc = false;
+
+	/* locks and races need not concern us in bootstrap mode */
+	relationId = RangeVarGetRelid(stmt->relation, NoLock, false);
+
+	DefineIndex(NULL,
+				relationId,
+				stmt,
+				C,
+				InvalidOid,
+				InvalidOid,
+				-1,
+				false,
+				false,
+				false,
+				true,			/* skip_build */
+				false);
+	boot_do_end();
+}
+boot_declare_toast_stmt ::= XDECLARE XTOAST oidspec(B) oidspec(C) ON boot_ident(D). {
+	elog(DEBUG4, "creating toast table for table \"%s\"", D);
+
+	boot_do_start();
+
+	BootstrapToastTable(D, B, C);
+	boot_do_end();
+}
+boot_build_inds_stmt ::= XBUILD INDICES. {
+	boot_do_start();
+	build_indices();
+	boot_do_end();
+}
+boot_index_params(A) ::= boot_index_params(B) COMMA boot_index_param(C). {
+	A = lappend(B, C);
+}
+boot_index_params(A) ::= boot_index_param(B). {
+	A = list_make1(B);
+}
+boot_index_param(A) ::= boot_ident(B) boot_ident(C). {
+	IndexElem  *n = makeNode(IndexElem);
+
+	n->name = B;
+	n->expr = NULL;
+	n->indexcolname = NULL;
+	n->collation = NIL;
+	n->opclass = list_make1(makeString(C));
+	n->ordering = SORTBY_DEFAULT;
+	n->nulls_ordering = SORTBY_NULLS_DEFAULT;
+	n->location = -1;
+	A = n;
+}
+optbootstrap(A) ::= XBOOTSTRAP. {
+ A = 1;
+}
+optbootstrap(A) ::=. {
+ A = 0;
+}
+optsharedrelation(A) ::= XSHARED_RELATION. {
+ A = 1;
+}
+optsharedrelation(A) ::=. {
+ A = 0;
+}
+optrowtypeoid(A) ::= XROWTYPE_OID oidspec(B). {
+ A = B;
+}
+optrowtypeoid(A) ::=. {
+ A = InvalidOid;
+}
+boot_column_list ::= boot_column_def.
+boot_column_list ::= boot_column_list COMMA boot_column_def.
+boot_column_def ::= boot_ident(B) EQUALS boot_ident(C) boot_column_nullness(D). {
+	if (++numattr > MAXATTR)
+		elog(FATAL, "too many columns");
+	DefineAttr(B, C, numattr - 1, D);
+}
+boot_column_nullness(A) ::= XFORCE XNOT XNULL. {
+ A = BOOTCOL_NULL_FORCE_NOT_NULL;
+}
+boot_column_nullness(A) ::= XFORCE XNULL. {
+ A = BOOTCOL_NULL_FORCE_NULL;
+}
+boot_column_nullness(A) ::=. {
+ A = BOOTCOL_NULL_AUTO;
+}
+oidspec(A) ::= boot_ident(B). {
+ A = atooid(B);
+}
+boot_column_val_list ::= boot_column_val.
+boot_column_val_list ::= boot_column_val_list boot_column_val.
+boot_column_val_list ::= boot_column_val_list COMMA boot_column_val.
+boot_column_val ::= boot_ident(B). {
+	InsertOneValue(B, boot_num_columns_read++);
+}
+boot_column_val ::= NULLVAL. {
+	InsertOneNull(boot_num_columns_read++);
+}
+boot_ident(A) ::= ID(B). {
+ A = B.str;
+}
+boot_ident(A) ::= OPEN(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XCLOSE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XCREATE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= INSERT_TUPLE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XDECLARE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= INDEX(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= ON(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= USING(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XBUILD(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= INDICES(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= UNIQUE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XTOAST(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= OBJ_ID(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XBOOTSTRAP(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XSHARED_RELATION(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XROWTYPE_OID(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XFORCE(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XNOT(B). {
+ A = pstrdup(B.kw);
+}
+boot_ident(A) ::= XNULL(B). {
+ A = pstrdup(B.kw);
+}
