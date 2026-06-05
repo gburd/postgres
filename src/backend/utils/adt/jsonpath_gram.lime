@@ -1,0 +1,692 @@
+/*-------------------------------------------------------------------------
+ *
+ * jsonpath_gram.lime
+ *	  Lime grammar for the jsonpath datatype.
+ *
+ * Ported byte-for-byte from the retired Bison grammar
+ * (src/backend/utils/adt/jsonpath_gram.y prior to Phase 2e).
+ * Every token and every production has a one-to-one counterpart in
+ * the original; every action builds the same JsonPathParseItem tree
+ * with the same field values.
+ *
+ * The hand-rolled scanner lives in jsonpath_scan.c.  The
+ * jpMakeItem*() constructors live there too, exported through
+ * jsonpath_gram_yytype.h so the action blocks can call them.
+ *
+ * Error handling uses the new (Lime 1070d3f) %syntax_error bindings:
+ *   yymajor   - offending token code; 0 means EOF
+ *   yyminor   - the offending token's semantic value
+ *   yyloc     - YYLOCATIONTYPE of the offending lookahead
+ * Switching on yymajor==0 lets jsonpath_yyerror produce
+ * "at end of jsonpath input" vs "at or near \"X\" of jsonpath input"
+ * byte-for-byte against the pre-port Bison output.
+ *
+ * Two YYABORT sites in the Bison original (LIKE_REGEX with bad
+ * pattern or bad flags) translate to setting extra->aborted; the
+ * driver in jsonpath_scan.c checks the flag and stops feeding
+ * tokens.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/utils/adt/jsonpath_gram.lime
+ *
+ *-------------------------------------------------------------------------
+ */
+
+%name jsonpath_yy
+%token_type {YYSTYPE}
+%extra_argument {jsonpath_yy_extra *extra}
+%start_symbol result
+%expect 0
+
+%include {
+#include "postgres.h"
+
+#include "jsonpath_internal.h"
+#include "nodes/miscnodes.h"
+#include "nodes/pg_list.h"
+#include "utils/builtins.h"
+}
+
+%syntax_error {
+	jsonpath_yyerror_token(extra, yymajor, "syntax error");
+}
+
+%parse_failure {
+	/* %parse_failure does not expose yymajor; the SOFT_ERROR_OCCURRED guard
+	 * inside jsonpath_yyerror_token suppresses duplicate errors when we
+	 * already raised one in %syntax_error. */
+	jsonpath_yyerror_token(extra, 0, "syntax error");
+}
+
+/* ======================================================================
+ * TOKEN DECLARATIONS
+ *
+ * Lime requires every terminal that appears in a rule to be declared.
+ * Bison gets away with single-character literals like '$' and '+' in
+ * rule bodies; for Lime we give them named codes (DOLLAR, PLUS, ...)
+ * and the scanner returns those codes.
+ * ====================================================================== */
+%token TO_P.
+%token NULL_P.
+%token TRUE_P.
+%token FALSE_P.
+%token IS_P.
+%token UNKNOWN_P.
+%token EXISTS_P.
+%token IDENT_P.
+%token STRING_P.
+%token NUMERIC_P.
+%token INT_P.
+%token VARIABLE_P.
+%token OR_P.
+%token AND_P.
+%token NOT_P.
+%token LESS_P.
+%token LESSEQUAL_P.
+%token EQUAL_P.
+%token NOTEQUAL_P.
+%token GREATEREQUAL_P.
+%token GREATER_P.
+%token ANY_P.
+%token STRICT_P.
+%token LAX_P.
+%token LAST_P.
+%token STARTS_P.
+%token WITH_P.
+%token LIKE_REGEX_P.
+%token FLAG_P.
+%token ABS_P.
+%token SIZE_P.
+%token TYPE_P.
+%token FLOOR_P.
+%token DOUBLE_P.
+%token CEILING_P.
+%token KEYVALUE_P.
+%token DATETIME_P.
+%token BIGINT_P.
+%token BOOLEAN_P.
+%token DATE_P.
+%token DECIMAL_P.
+%token INTEGER_P.
+%token NUMBER_P.
+%token STRINGFUNC_P.
+%token TIME_P.
+%token TIME_TZ_P.
+%token TIMESTAMP_P.
+%token TIMESTAMP_TZ_P.
+%token STR_REPLACE_P.
+%token STR_LOWER_P.
+%token STR_UPPER_P.
+%token STR_LTRIM_P.
+%token STR_RTRIM_P.
+%token STR_BTRIM_P.
+%token STR_SPLIT_PART_P.
+%token STR_INITCAP_P.
+/* Single-character tokens that the scanner returns. */
+%token DOLLAR.
+%token AT.
+/* $ @ */
+%token DOT.
+%token COMMA.
+%token QUESTION.
+%token COLON.
+/* . , ? : */
+%token LBRACKET.
+%token RBRACKET.
+/* [ ] */
+%token LBRACE.
+%token RBRACE.
+/* { } */
+%token LPAREN.
+%token RPAREN.
+/* ( ) */
+%token PLUS.
+%token MINUS.
+%token STAR.
+%token SLASH.
+%token PERCENT.
+/* + - * / % */
+%token UMINUS.
+
+/* ======================================================================
+ * NON-TERMINAL TYPES (mirror of Bison %type <member>)
+ * ====================================================================== */
+%type result {JsonPathParseResult *}
+%type expr_or_predicate {JsonPathParseItem *}
+%type mode {bool}
+%type scalar_value {JsonPathParseItem *}
+%type comp_op {JsonPathItemType}
+%type delimited_predicate {JsonPathParseItem *}
+%type predicate {JsonPathParseItem *}
+%type starts_with_initial {JsonPathParseItem *}
+%type path_primary {JsonPathParseItem *}
+%type accessor_expr {List *}
+%type expr {JsonPathParseItem *}
+%type index_elem {JsonPathParseItem *}
+%type index_list {List *}
+%type array_accessor {JsonPathParseItem *}
+%type any_level {int}
+%type any_path {JsonPathParseItem *}
+%type accessor_op {JsonPathParseItem *}
+%type int_elem {JsonPathParseItem *}
+%type int_list {List *}
+%type opt_int_list {List *}
+%type uint_elem {JsonPathParseItem *}
+%type opt_uint_arg {JsonPathParseItem *}
+%type str_elem {JsonPathParseItem *}
+%type opt_str_arg {JsonPathParseItem *}
+%type str_int_args {List *}
+%type str_str_args {List *}
+%type key {JsonPathParseItem *}
+%type key_name {JsonPathString}
+%type method {JsonPathItemType}
+
+/* ======================================================================
+ * PRECEDENCE TABLE (mirror of Bison's)
+ * ====================================================================== */
+%left OR_P.
+%left AND_P.
+%right NOT_P.
+%left PLUS MINUS.
+%left STAR SLASH PERCENT.
+%left UMINUS.
+%nonassoc LPAREN RPAREN.
+
+/* used only for precedence */
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+result(R) ::= mode(M) expr_or_predicate(E). {
+	*extra->result = palloc_object(JsonPathParseResult);
+	(*extra->result)->expr = E;
+	(*extra->result)->lax = M;
+	R = *extra->result;
+}
+result(R) ::=. {
+ *extra->result = NULL; R = NULL;
+}
+expr_or_predicate(R) ::= expr(E). {
+ R = E;
+}
+expr_or_predicate(R) ::= predicate(P). {
+ R = P;
+}
+mode(R) ::= STRICT_P. {
+ R = false;
+}
+mode(R) ::= LAX_P. {
+ R = true;
+}
+mode(R) ::=. {
+ R = true;
+}
+scalar_value(R) ::= STRING_P(S). {
+ R = jpMakeItemString(&S.str);
+}
+scalar_value(R) ::= NULL_P. {
+ R = jpMakeItemString(NULL);
+}
+scalar_value(R) ::= TRUE_P. {
+ R = jpMakeItemBool(true);
+}
+scalar_value(R) ::= FALSE_P. {
+ R = jpMakeItemBool(false);
+}
+scalar_value(R) ::= NUMERIC_P(S). {
+ R = jpMakeItemNumeric(&S.str);
+}
+scalar_value(R) ::= INT_P(S). {
+ R = jpMakeItemNumeric(&S.str);
+}
+scalar_value(R) ::= VARIABLE_P(S). {
+ R = jpMakeItemVariable(&S.str);
+}
+comp_op(R) ::= EQUAL_P. {
+ R = jpiEqual;
+}
+comp_op(R) ::= NOTEQUAL_P. {
+ R = jpiNotEqual;
+}
+comp_op(R) ::= LESS_P. {
+ R = jpiLess;
+}
+comp_op(R) ::= GREATER_P. {
+ R = jpiGreater;
+}
+comp_op(R) ::= LESSEQUAL_P. {
+ R = jpiLessOrEqual;
+}
+comp_op(R) ::= GREATEREQUAL_P. {
+ R = jpiGreaterOrEqual;
+}
+delimited_predicate(R) ::= LPAREN predicate(P) RPAREN. {
+ R = P;
+}
+delimited_predicate(R) ::= EXISTS_P LPAREN expr(E) RPAREN. {
+	R = jpMakeItemUnary(jpiExists, E);
+}
+predicate(R) ::= delimited_predicate(P). {
+ R = P;
+}
+predicate(R) ::= expr(L) comp_op(O) expr(RHS). {
+ R = jpMakeItemBinary(O, L, RHS);
+}
+predicate(R) ::= predicate(L) AND_P predicate(RHS). {
+ R = jpMakeItemBinary(jpiAnd, L, RHS);
+}
+predicate(R) ::= predicate(L) OR_P predicate(RHS). {
+ R = jpMakeItemBinary(jpiOr, L, RHS);
+}
+predicate(R) ::= NOT_P delimited_predicate(P). {
+ R = jpMakeItemUnary(jpiNot, P);
+}
+predicate(R) ::= LPAREN predicate(P) RPAREN IS_P UNKNOWN_P. {
+	R = jpMakeItemUnary(jpiIsUnknown, P);
+}
+predicate(R) ::= expr(E) STARTS_P WITH_P starts_with_initial(I). {
+	R = jpMakeItemBinary(jpiStartsWith, E, I);
+}
+predicate(R) ::= expr(E) LIKE_REGEX_P STRING_P(P). {
+	JsonPathParseItem *jppitem;
+	if (!jpMakeItemLikeRegex(E, &P.str, NULL, &jppitem, extra->escontext))
+	{
+		extra->aborted = true;
+		R = NULL;
+	}
+	else
+		R = jppitem;
+}
+predicate(R) ::= expr(E) LIKE_REGEX_P STRING_P(P) FLAG_P STRING_P(F). {
+	JsonPathParseItem *jppitem;
+	if (!jpMakeItemLikeRegex(E, &P.str, &F.str, &jppitem, extra->escontext))
+	{
+		extra->aborted = true;
+		R = NULL;
+	}
+	else
+		R = jppitem;
+}
+starts_with_initial(R) ::= STRING_P(S). {
+ R = jpMakeItemString(&S.str);
+}
+starts_with_initial(R) ::= VARIABLE_P(S). {
+ R = jpMakeItemVariable(&S.str);
+}
+path_primary(R) ::= scalar_value(V). {
+ R = V;
+}
+path_primary(R) ::= DOLLAR. {
+ R = jpMakeItemType(jpiRoot);
+}
+path_primary(R) ::= AT. {
+ R = jpMakeItemType(jpiCurrent);
+}
+path_primary(R) ::= LAST_P. {
+ R = jpMakeItemType(jpiLast);
+}
+accessor_expr(R) ::= path_primary(P). {
+ R = list_make1(P);
+}
+accessor_expr(R) ::= LPAREN expr(E) RPAREN accessor_op(A). {
+ R = list_make2(E, A);
+}
+accessor_expr(R) ::= LPAREN predicate(P) RPAREN accessor_op(A). {
+ R = list_make2(P, A);
+}
+accessor_expr(R) ::= accessor_expr(L) accessor_op(A). {
+ R = lappend(L, A);
+}
+expr(R) ::= accessor_expr(L). {
+ R = jpMakeItemList(L);
+}
+expr(R) ::= LPAREN expr(E) RPAREN. {
+ R = E;
+}
+expr(R) ::= PLUS expr(E). [UMINUS] {
+ R = jpMakeItemUnary(jpiPlus, E);
+}
+expr(R) ::= MINUS expr(E). [UMINUS] {
+ R = jpMakeItemUnary(jpiMinus, E);
+}
+expr(R) ::= expr(L) PLUS expr(RHS). {
+ R = jpMakeItemBinary(jpiAdd, L, RHS);
+}
+expr(R) ::= expr(L) MINUS expr(RHS). {
+ R = jpMakeItemBinary(jpiSub, L, RHS);
+}
+expr(R) ::= expr(L) STAR expr(RHS). {
+ R = jpMakeItemBinary(jpiMul, L, RHS);
+}
+expr(R) ::= expr(L) SLASH expr(RHS). {
+ R = jpMakeItemBinary(jpiDiv, L, RHS);
+}
+expr(R) ::= expr(L) PERCENT expr(RHS). {
+ R = jpMakeItemBinary(jpiMod, L, RHS);
+}
+index_elem(R) ::= expr(E). {
+ R = jpMakeItemBinary(jpiSubscript, E, NULL);
+}
+index_elem(R) ::= expr(L) TO_P expr(RHS). {
+ R = jpMakeItemBinary(jpiSubscript, L, RHS);
+}
+index_list(R) ::= index_elem(E). {
+ R = list_make1(E);
+}
+index_list(R) ::= index_list(L) COMMA index_elem(E). {
+ R = lappend(L, E);
+}
+array_accessor(R) ::= LBRACKET STAR RBRACKET. {
+ R = jpMakeItemType(jpiAnyArray);
+}
+array_accessor(R) ::= LBRACKET index_list(L) RBRACKET. {
+ R = jpMakeIndexArray(L);
+}
+any_level(R) ::= INT_P(I). {
+ R = pg_strtoint32(I.str.val);
+}
+any_level(R) ::= LAST_P. {
+ R = -1;
+}
+any_path(R) ::= ANY_P. {
+ R = jpMakeAny(0, -1);
+}
+any_path(R) ::= ANY_P LBRACE any_level(L) RBRACE. {
+ R = jpMakeAny(L, L);
+}
+any_path(R) ::= ANY_P LBRACE any_level(L) TO_P any_level(H) RBRACE. {
+ R = jpMakeAny(L, H);
+}
+accessor_op(R) ::= DOT key(K). {
+ R = K;
+}
+accessor_op(R) ::= DOT STAR. {
+ R = jpMakeItemType(jpiAnyKey);
+}
+accessor_op(R) ::= array_accessor(A). {
+ R = A;
+}
+accessor_op(R) ::= DOT any_path(A). {
+ R = A;
+}
+accessor_op(R) ::= DOT method(M) LPAREN RPAREN. {
+ R = jpMakeItemType(M);
+}
+accessor_op(R) ::= QUESTION LPAREN predicate(P) RPAREN. {
+ R = jpMakeItemUnary(jpiFilter, P);
+}
+accessor_op(R) ::= DOT DECIMAL_P LPAREN opt_int_list(L) RPAREN. {
+	R = NULL;
+	if (list_length(L) == 0)
+		R = jpMakeItemBinary(jpiDecimal, NULL, NULL);
+	else if (list_length(L) == 1)
+		R = jpMakeItemBinary(jpiDecimal, linitial(L), NULL);
+	else if (list_length(L) == 2)
+		R = jpMakeItemBinary(jpiDecimal, linitial(L), lsecond(L));
+	else
+	{
+		errsave(extra->escontext,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("invalid input syntax for type %s", "jsonpath"),
+				 errdetail(".decimal() can only have an optional precision[,scale].")));
+		extra->aborted = true;
+	}
+}
+accessor_op(R) ::= DOT DATETIME_P LPAREN opt_str_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiDatetime, A);
+}
+accessor_op(R) ::= DOT TIME_P LPAREN opt_uint_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiTime, A);
+}
+accessor_op(R) ::= DOT TIME_TZ_P LPAREN opt_uint_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiTimeTz, A);
+}
+accessor_op(R) ::= DOT TIMESTAMP_P LPAREN opt_uint_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiTimestamp, A);
+}
+accessor_op(R) ::= DOT TIMESTAMP_TZ_P LPAREN opt_uint_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiTimestampTz, A);
+}
+accessor_op(R) ::= DOT STR_REPLACE_P LPAREN str_str_args(A) RPAREN. {
+	R = jpMakeItemBinary(jpiStrReplace, linitial(A), lsecond(A));
+}
+accessor_op(R) ::= DOT STR_SPLIT_PART_P LPAREN str_int_args(A) RPAREN. {
+	R = jpMakeItemBinary(jpiStrSplitPart, linitial(A), lsecond(A));
+}
+accessor_op(R) ::= DOT STR_LTRIM_P LPAREN opt_str_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiStrLtrim, A);
+}
+accessor_op(R) ::= DOT STR_RTRIM_P LPAREN opt_str_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiStrRtrim, A);
+}
+accessor_op(R) ::= DOT STR_BTRIM_P LPAREN opt_str_arg(A) RPAREN. {
+	R = jpMakeItemUnary(jpiStrBtrim, A);
+}
+int_elem(R) ::= INT_P(S). {
+ R = jpMakeItemNumeric(&S.str);
+}
+int_elem(R) ::= PLUS INT_P(S). [UMINUS] {
+ R = jpMakeItemUnary(jpiPlus,  jpMakeItemNumeric(&S.str));
+}
+int_elem(R) ::= MINUS INT_P(S). [UMINUS] {
+ R = jpMakeItemUnary(jpiMinus, jpMakeItemNumeric(&S.str));
+}
+int_list(R) ::= int_elem(E). {
+ R = list_make1(E);
+}
+int_list(R) ::= int_list(L) COMMA int_elem(E). {
+ R = lappend(L, E);
+}
+opt_int_list(R) ::= int_list(L). {
+ R = L;
+}
+opt_int_list(R) ::=. {
+ R = NULL;
+}
+uint_elem(R) ::= INT_P(S). {
+ R = jpMakeItemNumeric(&S.str);
+}
+opt_uint_arg(R) ::= uint_elem(E). {
+ R = E;
+}
+opt_uint_arg(R) ::=. {
+ R = NULL;
+}
+str_elem(R) ::= STRING_P(S). {
+ R = jpMakeItemString(&S.str);
+}
+opt_str_arg(R) ::= str_elem(E). {
+ R = E;
+}
+opt_str_arg(R) ::=. {
+ R = NULL;
+}
+str_int_args(R) ::= str_elem(S) COMMA int_elem(I). {
+ R = list_make2(S, I);
+}
+str_str_args(R) ::= str_elem(S1) COMMA str_elem(S2). {
+ R = list_make2(S1, S2);
+}
+key(R) ::= key_name(K). {
+ R = jpMakeItemKey(&K);
+}
+key_name(R) ::= IDENT_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STRING_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TO_P(S). {
+ R = S.str;
+}
+key_name(R) ::= NULL_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TRUE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= FALSE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= IS_P(S). {
+ R = S.str;
+}
+key_name(R) ::= UNKNOWN_P(S). {
+ R = S.str;
+}
+key_name(R) ::= EXISTS_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STRICT_P(S). {
+ R = S.str;
+}
+key_name(R) ::= LAX_P(S). {
+ R = S.str;
+}
+key_name(R) ::= ABS_P(S). {
+ R = S.str;
+}
+key_name(R) ::= SIZE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TYPE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= FLOOR_P(S). {
+ R = S.str;
+}
+key_name(R) ::= DOUBLE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= CEILING_P(S). {
+ R = S.str;
+}
+key_name(R) ::= DATETIME_P(S). {
+ R = S.str;
+}
+key_name(R) ::= KEYVALUE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= LAST_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STARTS_P(S). {
+ R = S.str;
+}
+key_name(R) ::= WITH_P(S). {
+ R = S.str;
+}
+key_name(R) ::= LIKE_REGEX_P(S). {
+ R = S.str;
+}
+key_name(R) ::= FLAG_P(S). {
+ R = S.str;
+}
+key_name(R) ::= BIGINT_P(S). {
+ R = S.str;
+}
+key_name(R) ::= BOOLEAN_P(S). {
+ R = S.str;
+}
+key_name(R) ::= DATE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= DECIMAL_P(S). {
+ R = S.str;
+}
+key_name(R) ::= INTEGER_P(S). {
+ R = S.str;
+}
+key_name(R) ::= NUMBER_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STRINGFUNC_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TIME_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TIME_TZ_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TIMESTAMP_P(S). {
+ R = S.str;
+}
+key_name(R) ::= TIMESTAMP_TZ_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_LOWER_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_UPPER_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_INITCAP_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_REPLACE_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_SPLIT_PART_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_LTRIM_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_RTRIM_P(S). {
+ R = S.str;
+}
+key_name(R) ::= STR_BTRIM_P(S). {
+ R = S.str;
+}
+method(R) ::= ABS_P. {
+ R = jpiAbs;
+}
+method(R) ::= SIZE_P. {
+ R = jpiSize;
+}
+method(R) ::= TYPE_P. {
+ R = jpiType;
+}
+method(R) ::= FLOOR_P. {
+ R = jpiFloor;
+}
+method(R) ::= DOUBLE_P. {
+ R = jpiDouble;
+}
+method(R) ::= CEILING_P. {
+ R = jpiCeiling;
+}
+method(R) ::= KEYVALUE_P. {
+ R = jpiKeyValue;
+}
+method(R) ::= BIGINT_P. {
+ R = jpiBigint;
+}
+method(R) ::= BOOLEAN_P. {
+ R = jpiBoolean;
+}
+method(R) ::= DATE_P. {
+ R = jpiDate;
+}
+method(R) ::= INTEGER_P. {
+ R = jpiInteger;
+}
+method(R) ::= NUMBER_P. {
+ R = jpiNumber;
+}
+method(R) ::= STRINGFUNC_P. {
+ R = jpiStringFunc;
+}
+method(R) ::= STR_LOWER_P. {
+ R = jpiStrLower;
+}
+method(R) ::= STR_UPPER_P. {
+ R = jpiStrUpper;
+}
+method(R) ::= STR_INITCAP_P. {
+ R = jpiStrInitcap;
+}
