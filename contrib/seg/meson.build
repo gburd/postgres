@@ -2,19 +2,22 @@
 
 seg_sources = files(
   'seg.c',
+  'segparse_driver.c',
 )
 
-seg_scan = custom_target('segscan',
-  input: 'segscan.l',
-  output: 'segscan.c',
-  command: flex_cmd,
+# Lime-generated lexer (replaces segscan.l).
+seg_scan = custom_target('segscan_lex',
+  input: 'segscan.lex',
+  output: ['segscan_lex.c', 'segscan_lex.h'],
+  command: lime_lex_cmd,
 )
 generated_sources += seg_scan
 seg_sources += seg_scan
 
+# Lime-generated parser (replaces segparse.y).
 seg_parse = custom_target('segparse',
-  input: 'segparse.y',
-  kwargs: bison_kw,
+  input: 'segparse.lime',
+  kwargs: lime_kw,
 )
 generated_sources += seg_parse.to_list()
 seg_sources += seg_parse
