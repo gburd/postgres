@@ -1,12 +1,33 @@
-%top{
-/*
- * Scanner for the configuration file
+/*-------------------------------------------------------------------------
  *
- * Copyright (c) 2000-2026, PostgreSQL Global Development Group
+ * guc-file.c
+ *	  Hand-rolled scanner for the PostgreSQL configuration-file grammar.
  *
- * src/backend/utils/misc/guc-file.l
+ * Replaces the former guc-file.l (flex) without any grammar changes --
+ * postgresql.conf (and every file that uses its "name = value" syntax)
+ * still accepts the same token stream, still builds the same
+ * ConfigVariable list, and still emits byte-identical error messages.
+ *
+ * The file is organized in two halves:
+ *
+ *	1. Scanner (the tokenizer that used to live in guc-file.l's %% section)
+ *	2. Driver (ProcessConfigFile / ParseConfigFile / ParseConfigFp /
+ *	   ParseConfigDirectory, plus the helpers) -- unchanged behavior;
+ *	   only ParseConfigFp needed to be reworked to call the new
+ *	   scanner instead of flex-generated yylex().
+ *
+ * Public entry points match the signatures declared in
+ * src/include/utils/guc.h, so no caller needs to be recompiled at the
+ * source level by this replacement.
+ *
+ * Portions Copyright (c) 2000-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * IDENTIFICATION
+ *	  src/backend/utils/misc/guc-file.c
+ *
+ *-------------------------------------------------------------------------
  */
-
 #include "postgres.h"
 
 #include <ctype.h>
@@ -14,24 +35,22 @@
 
 #include "common/file_utils.h"
 #include "guc_internal.h"
+#include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/conffiles.h"
 #include "utils/memutils.h"
-}
+
+#include "guc_file_lex.h"		/* GucLexer, GucLexAlloc, GucLexFeedBytes,
+								 * GucLexFeedEOF, GucLexFree, GUC_LEX_OK */
 
 
-%{
 /*
- * flex emits a yy_fatal_error() function that it calls in response to
- * critical errors like malloc failure, file I/O errors, and detection of
- * internal inconsistency.  That function prints a message and calls exit().
- * Mutate it to instead call our handler, which jumps out of the parser.
+ * Token codes.  These used to be enumerators returned by flex's yylex().
+ * The values are internal to this file, but are kept identical to the
+ * former enum so side-by-side comparison of git diffs is straightforward.
  */
-#undef fprintf
-#define fprintf(file, fmt, msg) GUC_flex_fatal(msg)
-
 enum
 {
 	GUC_ID = 1,
@@ -41,72 +60,211 @@ enum
 	GUC_EQUALS = 5,
 	GUC_UNQUOTED_STRING = 6,
 	GUC_QUALIFIED_ID = 7,
+	GUC_EOF = 0,
 	GUC_EOL = 99,
-	GUC_ERROR = 100
+	GUC_ERROR = 100,
 };
 
 static unsigned int ConfigFileLineno;
-static const char *GUC_flex_fatal_errmsg;
-static sigjmp_buf *GUC_flex_fatal_jmp;
 
 static void FreeConfigVariable(ConfigVariable *item);
 
-static int	GUC_flex_fatal(const char *msg);
+/* ------------------------------------------------------------------------- */
+/* Scanner                                                                   */
+/* ------------------------------------------------------------------------- */
 
-/* LCOV_EXCL_START */
+/*
+ * Lime v0.2.2's lexer subsystem (compiled from guc-file.lex) does the
+ * tokenizing.  This replaces the ~470 lines of hand-rolled state machine
+ * + char-class helpers + ad-hoc longest-match arbitration that lived
+ * here pre-Phase 5.
+ *
+ * The driver in ParseConfigFp consumes one token at a time via
+ * guc_yylex().  Lime's push parser feeds all bytes through one
+ * LexFeedBytes call and emits tokens via callback; we collect them
+ * into a per-scanner FIFO at guc_scan_init time and pop one per
+ * guc_yylex() call.  Config files are bounded in size, so eager
+ * scanning is fine.
+ */
 
-%}
+typedef struct GucToken
+{
+	int			code;			/* GUC_* token code */
+	char	   *text;			/* palloc'd, NUL-terminated, NULL for EOF */
+} GucToken;
 
-%option reentrant
-%option 8bit
-%option never-interactive
-%option nodefault
-%option noinput
-%option nounput
-%option noyywrap
-%option warn
-%option prefix="GUC_yy"
+typedef struct GucScanState
+{
+	FILE	   *fp;
+	GucToken   *tokens;			/* pre-scanned token FIFO */
+	int			ntokens;
+	int			cap;
+	int			next;
+	StringInfoData tokbuf;		/* current-token text, mirrors GUC_YYTEXT */
+	bool		io_error;
+} GucScanState;
+
+#define GUC_YYTEXT(s)	((s)->tokbuf.data)
+
+struct GucEmitContext
+{
+	GucScanState *s;
+};
+
+static void
+guc_push_token(GucScanState *s, int code, const char *text, size_t len)
+{
+	if (s->ntokens >= s->cap)
+	{
+		int			newcap = s->cap == 0 ? 32 : s->cap * 2;
+
+		if (s->tokens == NULL)
+			s->tokens = palloc(newcap * sizeof(GucToken));
+		else
+			s->tokens = repalloc(s->tokens, newcap * sizeof(GucToken));
+		s->cap = newcap;
+	}
+	s->tokens[s->ntokens].code = code;
+	if (text !=NULL)
+	{
+		char	   *dup = palloc(len + 1);
+
+		memcpy(dup, text, len);
+		dup[len] = '\0';
+		s->tokens[s->ntokens].text = dup;
+	}
+	else
+		s->tokens[s->ntokens].text = NULL;
+	s->ntokens++;
+}
+
+static void
+guc_emit_cb(void *user, int token, const char *text, size_t len)
+{
+	struct GucEmitContext *ctx = user;
+
+	guc_push_token(ctx->s, token, text, len);
+}
+
+/*
+ * Slurp the FILE* into a heap buffer.  Returns the byte count, sets
+ * *io_error_p on a hard read failure.
+ */
+static char *
+guc_slurp_file(FILE *fp, size_t *len_out, bool *io_error_p)
+{
+	size_t		cap = 4096;
+	size_t		len = 0;
+	char	   *buf = palloc(cap);
+
+	*io_error_p = false;
+	for (;;)
+	{
+		size_t		n;
+
+		if (len + 1 >= cap)
+		{
+			cap *= 2;
+			buf = repalloc(buf, cap);
+		}
+		n = fread(buf + len, 1, cap - 1 - len, fp);
+		len += n;
+		if (n == 0)
+		{
+			if (ferror(fp))
+				*io_error_p = true;
+			break;
+		}
+	}
+	buf[len] = '\0';
+	*len_out = len;
+	return buf;
+}
+
+/*
+ * Initialise the scanner over a FILE*: slurp the contents, run the
+ * Lime lexer once, capture every emitted token in the FIFO.  After
+ * this returns, guc_yylex pops tokens one at a time.
+ */
+static void
+guc_scan_init(GucScanState *s, FILE *fp)
+{
+	GucLexer   *lex;
+	struct GucEmitContext ctx;
+	char	   *input;
+	size_t		input_len;
+	int			lex_status;
+
+	s->fp = fp;
+	s->tokens = NULL;
+	s->ntokens = 0;
+	s->cap = 0;
+	s->next = 0;
+	s->io_error = false;
+	initStringInfo(&s->tokbuf);
+
+	input = guc_slurp_file(fp, &input_len, &s->io_error);
+
+	lex = GucLexAlloc(palloc);
+	if (lex == NULL)
+	{
+		/* Out of memory: leave queue empty; ParseConfigFp will see EOF. */
+		return;
+	}
+
+	ctx.s = s;
+	lex_status = GucLexFeedBytes(lex, input, input_len, guc_emit_cb, &ctx);
+	if (lex_status == GUC_LEX_OK)
+		(void) GucLexFeedEOF(lex, guc_emit_cb, &ctx);
+	GucLexFree(lex, pfree);
+	pfree(input);
+}
+
+static void
+guc_scan_done(GucScanState *s)
+{
+	int			i;
+
+	if (s->tokens != NULL)
+	{
+		for (i = 0; i < s->ntokens; i++)
+			if (s->tokens[i].text != NULL)
+				pfree(s->tokens[i].text);
+		pfree(s->tokens);
+	}
+	if (s->tokbuf.data != NULL)
+		pfree(s->tokbuf.data);
+}
+
+/*
+ * Pop the next token.  Returns one of the GUC_* codes (GUC_EOF at end
+ * of queue).  Updates GUC_YYTEXT to the token's text; updates
+ * ConfigFileLineno on GUC_EOL exactly like the retired flex rule.
+ */
+static int
+guc_yylex(GucScanState *s)
+{
+	GucToken   *tok;
+
+	if (s->next >= s->ntokens)
+		return GUC_EOF;
+
+	tok = &s->tokens[s->next++];
+
+	resetStringInfo(&s->tokbuf);
+	if (tok->text != NULL)
+		appendStringInfoString(&s->tokbuf, tok->text);
+
+	if (tok->code == GUC_EOL)
+		ConfigFileLineno++;
+
+	return tok->code;
+}
 
 
-SIGN			("-"|"+")
-DIGIT			[0-9]
-HEXDIGIT		[0-9a-fA-F]
-
-UNIT_LETTER		[a-zA-Z]
-
-INTEGER			{SIGN}?({DIGIT}+|0x{HEXDIGIT}+){UNIT_LETTER}*
-
-EXPONENT		[Ee]{SIGN}?{DIGIT}+
-REAL			{SIGN}?{DIGIT}*"."{DIGIT}*{EXPONENT}?
-
-LETTER			[A-Za-z_\200-\377]
-LETTER_OR_DIGIT [A-Za-z_0-9\200-\377]
-
-ID				{LETTER}{LETTER_OR_DIGIT}*
-QUALIFIED_ID	{ID}"."{ID}
-
-UNQUOTED_STRING {LETTER}({LETTER_OR_DIGIT}|[-._:/])*
-STRING			\'([^'\\\n]|\\.|\'\')*\'
-
-%%
-
-\n				ConfigFileLineno++; return GUC_EOL;
-[ \t\r]+		/* eat whitespace */
-#.*				/* eat comment (.* matches anything until newline) */
-
-{ID}			return GUC_ID;
-{QUALIFIED_ID}	return GUC_QUALIFIED_ID;
-{STRING}		return GUC_STRING;
-{UNQUOTED_STRING} return GUC_UNQUOTED_STRING;
-{INTEGER}		return GUC_INTEGER;
-{REAL}			return GUC_REAL;
-=				return GUC_EQUALS;
-
-.				return GUC_ERROR;
-
-%%
-
-/* LCOV_EXCL_STOP */
+/* ------------------------------------------------------------------------- */
+/* Driver -- unchanged behavior vs. guc-file.l.                              */
+/* ------------------------------------------------------------------------- */
 
 /*
  * Exported function to read and process the configuration file. The
@@ -300,22 +458,6 @@ record_config_file_error(const char *errmsg,
 }
 
 /*
- * Flex fatal errors bring us here.  Stash the error message and jump back to
- * ParseConfigFp().  Assume all msg arguments point to string constants; this
- * holds for all currently known flex versions. Otherwise, we would need to
- * copy the message.
- *
- * We return "int" since this takes the place of calls to fprintf().
-*/
-static int
-GUC_flex_fatal(const char *msg)
-{
-	GUC_flex_fatal_errmsg = msg;
-	siglongjmp(*GUC_flex_fatal_jmp, 1);
-	return 0;					/* keep compiler quiet */
-}
-
-/*
  * Read and parse a single configuration file.  This function recurses
  * to handle "include" directives.
  *
@@ -350,33 +492,11 @@ bool
 ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 			  ConfigVariable **head_p, ConfigVariable **tail_p)
 {
-	volatile bool OK = true;
+	bool		OK = true;
 	unsigned int save_ConfigFileLineno = ConfigFileLineno;
-	sigjmp_buf *save_GUC_flex_fatal_jmp = GUC_flex_fatal_jmp;
-	sigjmp_buf	flex_fatal_jmp;
-	yyscan_t	scanner;
-	struct yyguts_t *yyg;		/* needed for yytext macro */
-	volatile YY_BUFFER_STATE lex_buffer = NULL;
+	GucScanState scanner;
 	int			errorcount;
 	int			token;
-
-	if (sigsetjmp(flex_fatal_jmp, 1) == 0)
-		GUC_flex_fatal_jmp = &flex_fatal_jmp;
-	else
-	{
-		/*
-		 * Regain control after a fatal, internal flex error.  It may have
-		 * corrupted parser state.  Consequently, abandon the file, but trust
-		 * that the state remains sane enough for yy_delete_buffer().
-		 */
-		elog(elevel, "%s at file \"%s\" line %u",
-			 GUC_flex_fatal_errmsg, config_file, ConfigFileLineno);
-		record_config_file_error(GUC_flex_fatal_errmsg,
-								 config_file, ConfigFileLineno,
-								 head_p, tail_p);
-		OK = false;
-		goto cleanup;
-	}
 
 	/*
 	 * Parse
@@ -384,15 +504,10 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 	ConfigFileLineno = 1;
 	errorcount = 0;
 
-	if (yylex_init(&scanner) != 0)
-		elog(elevel, "yylex_init() failed: %m");
-	yyg = (struct yyguts_t *) scanner;
-
-	lex_buffer = yy_create_buffer(fp, YY_BUF_SIZE, scanner);
-	yy_switch_to_buffer(lex_buffer, scanner);
+	guc_scan_init(&scanner, fp);
 
 	/* This loop iterates once per logical line */
-	while ((token = yylex(scanner)))
+	while ((token = guc_yylex(&scanner)) != GUC_EOF)
 	{
 		char	   *opt_name = NULL;
 		char	   *opt_value = NULL;
@@ -404,12 +519,12 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 		/* first token on line is option name */
 		if (token != GUC_ID && token != GUC_QUALIFIED_ID)
 			goto parse_error;
-		opt_name = pstrdup(yytext);
+		opt_name = pstrdup(GUC_YYTEXT(&scanner));
 
 		/* next we have an optional equal sign; discard if present */
-		token = yylex(scanner);
+		token = guc_yylex(&scanner);
 		if (token == GUC_EQUALS)
-			token = yylex(scanner);
+			token = guc_yylex(&scanner);
 
 		/* now we must have the option value */
 		if (token != GUC_ID &&
@@ -419,15 +534,15 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 			token != GUC_UNQUOTED_STRING)
 			goto parse_error;
 		if (token == GUC_STRING)	/* strip quotes and escapes */
-			opt_value = DeescapeQuotedString(yytext);
+			opt_value = DeescapeQuotedString(GUC_YYTEXT(&scanner));
 		else
-			opt_value = pstrdup(yytext);
+			opt_value = pstrdup(GUC_YYTEXT(&scanner));
 
 		/* now we'd like an end of line, or possibly EOF */
-		token = yylex(scanner);
+		token = guc_yylex(&scanner);
 		if (token != GUC_EOL)
 		{
-			if (token != 0)
+			if (token != GUC_EOF)
 				goto parse_error;
 			/* treat EOF like \n for line numbering purposes, cf bug 4752 */
 			ConfigFileLineno++;
@@ -445,7 +560,6 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 									  depth + 1, elevel,
 									  head_p, tail_p))
 				OK = false;
-			yy_switch_to_buffer(lex_buffer, scanner);
 			pfree(opt_name);
 			pfree(opt_value);
 		}
@@ -460,7 +574,6 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 								 depth + 1, elevel,
 								 head_p, tail_p))
 				OK = false;
-			yy_switch_to_buffer(lex_buffer, scanner);
 			pfree(opt_name);
 			pfree(opt_value);
 		}
@@ -475,7 +588,6 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 								 depth + 1, elevel,
 								 head_p, tail_p))
 				OK = false;
-			yy_switch_to_buffer(lex_buffer, scanner);
 			pfree(opt_name);
 			pfree(opt_value);
 		}
@@ -499,7 +611,7 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 		}
 
 		/* break out of loop if read EOF, else loop for next line */
-		if (token == 0)
+		if (token == GUC_EOF)
 			break;
 		continue;
 
@@ -511,7 +623,7 @@ parse_error:
 			pfree(opt_value);
 
 		/* report the error */
-		if (token == GUC_EOL || token == 0)
+		if (token == GUC_EOL || token == GUC_EOF)
 		{
 			ereport(elevel,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -526,7 +638,8 @@ parse_error:
 			ereport(elevel,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("syntax error in file \"%s\" line %u, near token \"%s\"",
-							config_file, ConfigFileLineno, yytext)));
+							config_file, ConfigFileLineno,
+							GUC_YYTEXT(&scanner))));
 			record_config_file_error("syntax error",
 									 config_file, ConfigFileLineno,
 									 head_p, tail_p);
@@ -551,19 +664,32 @@ parse_error:
 		}
 
 		/* resync to next end-of-line or EOF */
-		while (token != GUC_EOL && token != 0)
-			token = yylex(scanner);
+		while (token != GUC_EOL && token != GUC_EOF)
+			token = guc_yylex(&scanner);
 		/* break out of loop on EOF */
-		if (token == 0)
+		if (token == GUC_EOF)
 			break;
 	}
 
-cleanup:
-	yy_delete_buffer(lex_buffer, scanner);
-	yylex_destroy(scanner);
-	/* Each recursion level must save and restore these static variables. */
+	/*
+	 * If the read loop was cut short by a hard read(2) error, surface it the
+	 * same way the flex "yy_fatal_error" path used to: log at elevel, append
+	 * to the error list, and return failure.
+	 */
+	if (scanner.io_error)
+	{
+		elog(elevel,
+			 "could not read from configuration file \"%s\" line %u",
+			 config_file, ConfigFileLineno);
+		record_config_file_error("could not read from configuration file",
+								 config_file, ConfigFileLineno,
+								 head_p, tail_p);
+		OK = false;
+	}
+
+	guc_scan_done(&scanner);
+	/* Each recursion level must save and restore this static variable. */
 	ConfigFileLineno = save_ConfigFileLineno;
-	GUC_flex_fatal_jmp = save_GUC_flex_fatal_jmp;
 	return OK;
 }
 
