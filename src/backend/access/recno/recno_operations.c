@@ -1528,7 +1528,8 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 		 */
 		SLogTupleInsert(RelationGetRelid(relation), tid,
 						GetTopTransactionId(), SLOG_OP_DELETE,
-						GetCurrentSubTransactionId(), cid, current_ts, 0);
+						GetCurrentSubTransactionId(), cid, current_ts, 0,
+						LockTupleNoKeyExclusive);
 
 		/*
 		 * Store before-image for savepoint rollback.  The tracked key was
@@ -2107,7 +2108,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 												GetTopTransactionId(),
 												SLOG_OP_UPDATE,
 												GetCurrentSubTransactionId(),
-												cid, cas_current_ts, 0);
+												cid, cas_current_ts, 0,
+												LockTupleNoKeyExclusive);
 
 								/* Store before-image for rollback */
 								SLogTupleStoreBeforeImage(
@@ -2344,8 +2346,10 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		bool		del_is_insert = false;
 
 		if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
-			del_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
-												 otid, &del_is_insert);
+			del_xid = SLogTupleGetWriteConflictXid(RelationGetRelid(relation),
+												   otid,
+												   LockTupleNoKeyExclusive,
+												   &del_is_insert);
 
 		if (wait && TransactionIdIsValid(del_xid) &&
 			!TransactionIdIsCurrentTransactionId(del_xid) &&
@@ -2510,9 +2514,10 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			 * HEAP_XMAX_IS_LOCKED_ONLY.  Real lock conflicts (Share/Exclusive
 			 * lockers) are still serialized by the heavyweight tuplock below.
 			 */
-			dirty_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
-												   otid,
-												   &is_insert_entry);
+			dirty_xid = SLogTupleGetWriteConflictXid(RelationGetRelid(relation),
+													 otid,
+													 LockTupleNoKeyExclusive,
+													 &is_insert_entry);
 
 			/* Check if tuple was deleted by another transaction */
 			if (old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
@@ -2868,18 +2873,21 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		bool		is_insert_entry;
 
 		/*
-		 * Lock-free.  Use the writer-only probe: only an in-progress
-		 * INSERT/UPDATE/DELETE on this TID is a write-write conflict that
-		 * warrants XactLockTableWait.  Lock-only markers (LOCK_SHARE/
-		 * LOCK_EXCL) left by lockers must NOT make us wait-as-writer here:
-		 * the heavyweight LOCKTAG_TUPLE lock we acquire below already
-		 * serializes locker-vs-updater via the standard lock matrix.
-		 * Waiting on a pure locker's xid while it is queued behind us for
-		 * the same tuple ExclusiveLock manufactures a deadlock cycle that
-		 * heap avoids via HEAP_XMAX_IS_LOCKED_ONLY.
+		 * Lock-free.  Probe for a transaction that conflicts with our
+		 * NoKeyExclusive update under the real heavyweight tuple-lock matrix:
+		 * an in-progress INSERT/UPDATE/DELETE writer always conflicts, and a
+		 * lock-only marker conflicts iff its recorded LockTupleMode does (FOR
+		 * UPDATE/FOR SHARE block; a KeyShare FK locker is compatible and does
+		 * not).  A pure writer-only probe would sail past a FOR UPDATE locker
+		 * that left only a LOCK_EXCL marker and clobber the row it protects --
+		 * a correctness failure.  We then acquire the same heavyweight
+		 * LOCKTAG_TUPLE lock and XactLockTableWait on the conflicting xid,
+		 * which serializes us into a FIFO queue rather than deadlocking.
 		 */
-		dirty_xid = SLogTupleGetDirtyWriterXid(RelationGetRelid(relation),
-											   otid, &is_insert_entry);
+		dirty_xid = SLogTupleGetWriteConflictXid(RelationGetRelid(relation),
+												 otid,
+												 LockTupleNoKeyExclusive,
+												 &is_insert_entry);
 
 		if (!TransactionIdIsValid(dirty_xid))
 		{
@@ -3596,7 +3604,8 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		RecnoEnsureSLogCallbacks();
 		SLogTupleInsert(RelationGetRelid(relation), &slot->tts_tid,
 						GetTopTransactionId(), SLOG_OP_UPDATE,
-						GetCurrentSubTransactionId(), cid, current_ts, 0);
+						GetCurrentSubTransactionId(), cid, current_ts, 0,
+						LockTupleNoKeyExclusive);
 		SLogTupleStoreBeforeImage(RelationGetRelid(relation), &slot->tts_tid,
 								  GetTopTransactionId(),
 								  (const char *) old_tuple_for_inplace_wal->t_data,

@@ -2403,7 +2403,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 	SLogTupleInsert(RelationGetRelid(relation), &slot->tts_tid,
 					GetTopTransactionId(), SLOG_OP_INSERT,
 					GetCurrentSubTransactionId(), cid, commit_ts,
-					specToken);
+					specToken, LockTupleNoKeyExclusive);
 
 	/* Update FSM with remaining free space */
 	RecnoRecordFreeSpace(relation, BufferGetBlockNumber(buf),
@@ -2837,10 +2837,17 @@ reacquire:
 			lock_op = (mode == LockTupleKeyShare || mode == LockTupleShare)
 				? SLOG_OP_LOCK_SHARE : SLOG_OP_LOCK_EXCL;
 
+			/*
+			 * Record the precise LockTupleMode alongside the coarse lock_op so
+			 * a concurrent updater can apply the real heavyweight conflict
+			 * matrix: FOR KEY SHARE (AccessShareLock) stays compatible with a
+			 * NoKeyExclusive UPDATE, while FOR SHARE/FOR UPDATE correctly block
+			 * it.  See SLogTupleGetWriteConflictXid.
+			 */
 			RecnoEnsureSLogCallbacks();
 			SLogTupleInsert(RelationGetRelid(relation), tid,
 							current_xid, lock_op,
-							GetCurrentSubTransactionId(), cid, 0, 0);
+							GetCurrentSubTransactionId(), cid, 0, 0, mode);
 
 			/* Mark this block dirty for the scan-path sLog bypass */
 			RecnoDirtyMapMark(RelationGetRelid(relation),
