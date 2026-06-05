@@ -1,0 +1,63 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2_noseq s1_cycle s2_eq10 s2_eq20
+step s2_noseq: SET enable_seqscan = off;
+step s1_cycle: UPDATE hia SET k = 20 WHERE id = 1; UPDATE hia SET k = 10 WHERE id = 1;
+step s2_eq10: SELECT id, k FROM hia WHERE k = 10;
+id| k
+--+--
+ 1|10
+(1 row)
+
+step s2_eq20: SELECT id, k FROM hia WHERE k = 20;
+id|k
+--+-
+(0 rows)
+
+
+starting permutation: s2_noseq s1_cycle s2_range
+step s2_noseq: SET enable_seqscan = off;
+step s1_cycle: UPDATE hia SET k = 20 WHERE id = 1; UPDATE hia SET k = 10 WHERE id = 1;
+step s2_range: SELECT id, k FROM hia WHERE k >= 5 ORDER BY k;
+id| k
+--+--
+ 1|10
+(1 row)
+
+
+starting permutation: s2_noseq s1_begin s1_upd20 s1_abort s2_eq20 s2_eq10
+step s2_noseq: SET enable_seqscan = off;
+step s1_begin: BEGIN;
+step s1_upd20: UPDATE hia SET k = 20 WHERE id = 1;
+step s1_abort: ROLLBACK;
+step s2_eq20: SELECT id, k FROM hia WHERE k = 20;
+id|k
+--+-
+(0 rows)
+
+step s2_eq10: SELECT id, k FROM hia WHERE k = 10;
+id| k
+--+--
+ 1|10
+(1 row)
+
+
+starting permutation: s1_begin s1_uupd20 s2_ins10 s1_commit
+step s1_begin: BEGIN;
+step s1_uupd20: UPDATE hiu SET k = 20 WHERE id = 1;
+step s2_ins10: INSERT INTO hiu VALUES (2, 10, repeat('y', 40)); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins10: <... completed>
+
+starting permutation: s1_begin s1_uupd20 s1_commit s2_ins10
+step s1_begin: BEGIN;
+step s1_uupd20: UPDATE hiu SET k = 20 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_ins10: INSERT INTO hiu VALUES (2, 10, repeat('y', 40));
+
+starting permutation: s1_begin s1_uupd20 s1_commit s2_ins20
+step s1_begin: BEGIN;
+step s1_uupd20: UPDATE hiu SET k = 20 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_ins20: INSERT INTO hiu VALUES (3, 20, repeat('z', 40));
+ERROR:  duplicate key value violates unique constraint "hiu_k"
