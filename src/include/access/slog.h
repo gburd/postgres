@@ -293,6 +293,7 @@ extern void SLogTupleRemoveByXidGlobal(TransactionId xid);
 /* Lightweight local-only tracking (INSERTs only) */
 extern void SLogTupleTrackLocalOnly(Oid relid, ItemPointer tid,
 									TransactionId xid, TransactionId subxid);
+extern void SLogTupleUntrackLocalOnly(Oid relid, ItemPointer tid);
 
 /* Convenience wrappers */
 extern bool SLogTupleHasEntry(Oid relid, ItemPointer tid);
