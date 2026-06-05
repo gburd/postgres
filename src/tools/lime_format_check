@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+#
+# Run `lime -F` over every .lime file in the source tree, compare
+# against the source.  Exits 0 if every file is canonically
+# formatted (zero diff), non-zero otherwise.
+#
+# Wired as the `lime_format_check` meson test target.  Companion
+# script `lime_format` applies formatting in place; users run it
+# via `meson compile lime-format`.
+#
+# Lime v0.6.0+ formatter is single-pass idempotent (regression-
+# tested upstream in v0.6.1).  Pre-v0.6.0 needed two passes for
+# %left/%right/%nonassoc symbol order to stabilize; we drop that
+# workaround now since flake.lock pins v0.6.0.
+#
+
+import argparse
+import difflib
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--lime', required=True, help='path to the lime binary')
+ap.add_argument('--srcdir', required=True, help='source directory to scan')
+ap.add_argument('--quiet', action='store_true',
+                help='suppress per-file OK output')
+ap.add_argument('--show-diff', action='store_true',
+                help='print unified diffs for any drift')
+args = ap.parse_args()
+
+srcdir = Path(args.srcdir).resolve()
+if not srcdir.is_dir():
+    sys.exit(f'lime_format_check: srcdir not found: {srcdir}')
+
+SKIP_PATTERNS = ('build', 'install', '.git', 'tmp_install')
+
+failures = 0
+checked = 0
+
+with tempfile.TemporaryDirectory(prefix='lime-fmt-check.') as td:
+    work = Path(td)
+    for lime_path in sorted(srcdir.rglob('*.lime')):
+        rel = lime_path.relative_to(srcdir)
+        if any(part.startswith(p) for part in rel.parts for p in SKIP_PATTERNS):
+            continue
+        checked += 1
+        # Copy source into work dir under a flat name so lime emits
+        # <name>.formatted next to it.
+        flat = work / rel.as_posix().replace('/', '_')
+        shutil.copy(lime_path, flat)
+
+        # Lime v0.6.0+ is single-pass idempotent.
+        cp = subprocess.run(
+            [args.lime, '-F', str(flat)],
+            capture_output=True, text=True,
+        )
+        if cp.returncode != 0:
+            print(f'FAIL {rel}: lime -F exited {cp.returncode}',
+                  file=sys.stderr)
+            print(cp.stderr, file=sys.stderr)
+            failures += 1
+        else:
+            formatted = flat.with_suffix(flat.suffix + '.formatted')
+            if not formatted.exists():
+                print(f'FAIL {rel}: lime -F did not produce .formatted',
+                      file=sys.stderr)
+                failures += 1
+            else:
+                src_text = lime_path.read_text()
+                fmt_text = formatted.read_text()
+                if src_text != fmt_text:
+                    failures += 1
+                    print(f'FAIL {rel}: not canonically formatted',
+                          file=sys.stderr)
+                    if args.show_diff:
+                        diff = difflib.unified_diff(
+                            src_text.splitlines(keepends=True),
+                            fmt_text.splitlines(keepends=True),
+                            fromfile=str(rel),
+                            tofile=str(rel) + ' (canonical)',
+                        )
+                        sys.stderr.writelines(diff)
+                elif not args.quiet:
+                    print(f'OK   {rel}')
+                formatted.unlink()
+
+if failures:
+    print(f'\nlime_format_check: {failures} of {checked} files NOT canonical',
+          file=sys.stderr)
+    print(
+        '\nRun `meson compile lime-format` (or '
+        '`src/tools/lime_format --srcdir <root>`) to canonicalize, then '
+        'review and commit.',
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f'\nlime_format_check: {checked} files canonically formatted')

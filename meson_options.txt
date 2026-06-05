@@ -177,6 +177,19 @@ option('DTRACE', type: 'string', value: 'dtrace',
 option('FLEX', type: 'array', value: ['flex', 'win_flex'],
   description: 'Path to flex binary')
 
+option('LIME', type: 'array', value: ['lime'],
+  description: 'Path to lime parser generator binary (replaces bison+flex)')
+
+option('lime_aot', type: 'feature', value: 'auto',
+  description: 'Use Lime\'s AOT (-j) action-table dispatch for the backend\n' +
+               'SQL parser.  Generates a switch-based yy_find_shift_action\n' +
+               'that the C compiler optimises into jump tables, matching\n' +
+               'JIT performance with zero runtime cost and no LLVM\n' +
+               'dependency.  Requires Lime v0.2.7 or later for correct\n' +
+               'state-default emission (Letter 15) and explicit-ERROR\n' +
+               'action-table entries (Letter 16).  When auto, enabled\n' +
+               'if Lime is found.')
+
 option('FOP', type: 'string', value: 'fop',
   description: 'Path to fop binary')
 

@@ -332,6 +332,7 @@ BoolExprType
 BoolTestType
 Boolean
 BooleanTest
+BootYyScanner
 BpChar
 BrinBuildState
 BrinDesc
@@ -501,6 +502,10 @@ CompactAttribute
 CompareScalarsContext
 CompareType
 CompiledExprState
+ComposePrec
+ComposeRule
+ComposeSpec
+ComposeToken
 CompositeIOData
 CompositeTypeStmt
 CompoundAffixFlag
@@ -561,6 +566,7 @@ CopyStmt
 CopyToRoutine
 CopyToState
 CopyToStateData
+CoreScanner
 Cost
 CostSelector
 Counters
@@ -608,6 +614,7 @@ CteScanState
 CteState
 CtlCommand
 CtxtHandle
+CubeYyScanner
 CurrentOfExpr
 CustomExecMethods
 CustomOutPtrType
@@ -651,6 +658,7 @@ DatumTupleFields
 DbInfo
 DbInfoArr
 DbLocaleInfo
+DbOidName
 DdlOptType
 DdlOption
 DeClonePtrType
@@ -726,6 +734,7 @@ ENGINE
 EOM_flatten_into_method
 EOM_get_flat_size_method
 EPQState
+EPlan
 EState
 EStatus
 EVP_CIPHER
@@ -826,6 +835,12 @@ ExprEvalStep
 ExprSetupInfo
 ExprState
 ExprStateEvalFunc
+ExprToken
+ExtKeywordEntry
+ExtPrec
+ExtRule
+ExtToken
+ExtType
 ExtensibleNode
 ExtensibleNodeEntry
 ExtensibleNodeMethods
@@ -1198,12 +1213,14 @@ GucIntAssignHook
 GucIntCheckHook
 GucRealAssignHook
 GucRealCheckHook
+GucScanState
 GucShowHook
 GucSource
 GucStack
 GucStackState
 GucStringAssignHook
 GucStringCheckHook
+GucToken
 GzipCompressorState
 HANDLE
 HASHACTION
@@ -1373,6 +1390,7 @@ InjectionPointEntry
 InjectionPointSharedState
 InjectionPointsCtl
 InlineCodeBlock
+InputBuffer
 InsertStmt
 Instrumentation
 Int128AggState
@@ -1429,6 +1447,7 @@ JoinPathExtraData
 JoinState
 JoinTreeItem
 JoinType
+JpEmitContext
 JsObject
 JsValue
 JsonAggConstructor
@@ -1489,8 +1508,10 @@ JsonPathKeyword
 JsonPathParseItem
 JsonPathParseResult
 JsonPathPredicateCallback
+JsonPathScanCtx
 JsonPathString
 JsonPathVariable
+JsonPathYyScanner
 JsonQuotes
 JsonReturning
 JsonScalarExpr
@@ -1926,6 +1947,9 @@ OutputPluginCallbacks
 OutputPluginOptions
 OutputPluginOutputType
 OverridingKind
+OvlRule
+OvlSpec
+OvlToken
 PACE_HEADER
 PACL
 PATH
@@ -2248,6 +2272,7 @@ PatternInfo
 PatternInfoArray
 Pattern_Prefix_Status
 Pattern_Type
+PendingExt
 PendingFsyncEntry
 PendingListenAction
 PendingListenEntry
@@ -2310,6 +2335,8 @@ PgFdwPathExtraData
 PgFdwRelationInfo
 PgFdwSamplingMethod
 PgFdwScanState
+PgGrammarExtAssoc
+PgGrammarExtension
 PgIfAddrCallback
 PgStatShared_Archiver
 PgStatShared_Backend
@@ -2376,6 +2403,9 @@ PgXmlStrictness
 Pg_abi_values
 Pg_finfo_record
 Pg_magic_struct
+PgcQueuedToken
+PgpaToken
+PgpaYyScanner
 PipeProtoChunk
 PipeProtoHeader
 PlaceHolderInfo
@@ -2460,6 +2490,8 @@ PruneFreezeResult
 PruneReason
 PruneState
 PruneStepResult
+PsqlEmitCtx
+PsqlEmitStop
 PsqlScanCallbacks
 PsqlScanQuoteType
 PsqlScanResult
@@ -2500,6 +2532,12 @@ QTNode
 QUERYTYPE
 QualCost
 QualItem
+QuelPrec
+QuelRangeEntry
+QuelRangeSlot
+QuelRule
+QuelToken
+QuelType
 Query
 QueryCompletion
 QueryDesc
@@ -2671,6 +2709,7 @@ RepackStmt
 ReparameterizeForeignPathByChild_function
 ReplOriginId
 ReplOriginXactState
+ReplToken
 ReplaceVarsFromTargetList_context
 ReplaceVarsNoMatchOption
 ReplaceWrapOption
@@ -2808,7 +2847,9 @@ ScanKey
 ScanKeyData
 ScanKeywordHashFunc
 ScanKeywordList
+ScanLexCtx
 ScanState
+ScanToken
 ScanTypeControl
 ScannerCallbackState
 SchemaQuery
@@ -2820,6 +2861,7 @@ SecBufferDesc
 SecLabelItem
 SecLabelStmt
 SeenRelsEntry
+SegYyScanner
 SelectLimit
 SelectStmt
 SelectStmtPassthrough
@@ -2996,6 +3038,8 @@ SpGistScanOpaqueData
 SpGistSearchItem
 SpGistState
 SpGistTypeDesc
+SpecPtrList
+SpecYYSTYPE
 SpecialJoinInfo
 SpinDelayStatus
 SplitInterval
@@ -3073,7 +3117,10 @@ SupportRequestWFuncMonotonic
 Syn
 SyncOps
 SyncRepConfigData
+SyncRepParseCtx
 SyncRepStandbyData
+SyncRepToken
+SyncRepYyScanner
 SyncRequestHandler
 SyncRequestType
 SyncStandbySlotsConfigData
@@ -3785,6 +3832,7 @@ explain_get_index_name_hook_type
 explain_per_node_hook_type
 explain_per_plan_hook_type
 explain_validate_options_hook_type
+expr_yy_extra
 f_smgr
 fasthash_state
 fd_set
@@ -3932,6 +3980,7 @@ json_manifest_version_callback
 json_ofield_action
 json_scalar_action
 json_struct_action
+jsonpath_yy_extra
 keepwal_entry
 keepwal_hash
 key_t
@@ -4263,8 +4312,10 @@ remoteDep
 remove_nulling_relids_context
 rendezvousHashEntry
 rep
+repl_yyscan_state
 replace_rte_variables_callback
 replace_rte_variables_context
+replication_yy_extra
 report_error_fn
 ret_type
 rewind_source

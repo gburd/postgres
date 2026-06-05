@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+
+#
+# Wrapper around the Lime parser generator that:
+# - redirects Lime's output files (.c, .h, .out) into a private build
+#   directory, analogous to pgflex/pgbison so concurrent invocations
+#   don't race on generator-side scratch files
+# - shapes the command line into the (input, output-dir) form Lime
+#   expects (`lime -d <outdir> input.lime`)
+# - moves the generated files from <outdir>/<basename>.{c,h} to the
+#   meson-declared OUTPUT paths
+# - treats Lime's `.out` report as a build artefact worth keeping
+#   (mirrored from <outdir>/<basename>.out into <privatedir>)
+#
+# Lime itself is a single-binary, zero-dep tool.  The wrapper exists
+# so meson's `custom_target` contract (named outputs, @INPUT@ /
+# @OUTPUT0@ / @OUTPUT1@ placeholders, concurrency-safe private
+# directories) maps cleanly onto Lime's `-d <dir> <input>` CLI.
+#
+# See src/tools/pgflex for the sibling wrapper around flex.
+#
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from os.path import abspath, basename, dirname, join, splitext
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument('--lime', type=abspath, required=True,
+                    help='path to the lime binary')
+parser.add_argument('--builddir', type=abspath, required=True,
+                    help='meson top-level build directory')
+parser.add_argument('--srcdir', type=abspath, required=True,
+                    help='meson top-level source directory')
+parser.add_argument('--privatedir', type=abspath, required=True,
+                    help='private directory for this target')
+
+parser.add_argument('-i', dest='input_file', type=abspath, required=True,
+                    help='grammar file (.lime)')
+parser.add_argument('-c', dest='output_c', type=abspath, required=True,
+                    help='generated .c output path')
+parser.add_argument('-H', dest='output_h', type=abspath, required=True,
+                    help='generated .h output path')
+
+parser.add_argument('--aot', action='store_true',
+                    help='also produce <basename>_aot.c via lime -j')
+parser.add_argument('--aot-output', dest='output_aot', type=abspath,
+                    default=None,
+                    help='destination for the generated _aot.c (required '
+                    'when --aot is set)')
+
+parser.add_argument('lime_flags', nargs='*',
+                    help='flags passed on to lime (e.g. -s, -T template)')
+
+args = parser.parse_args()
+
+# Private directory acts as Lime's -d output directory.  Lime writes
+# <basename>.c, <basename>.h, and <basename>.out there.  We create
+# the directory up front; ninja sets CWD to the build root, so any
+# relative paths lime might emit are rooted in the build tree.
+os.makedirs(args.privatedir, exist_ok=True)
+
+command = [args.lime, '-d' + args.privatedir]
+if args.aot:
+    command += ['-j']
+command += args.lime_flags
+command += [args.input_file]
+
+sp = subprocess.run(command)
+if sp.returncode != 0:
+    sys.exit(sp.returncode)
+
+# Lime names its outputs after the input file's basename.  Move them
+# into the meson-declared OUTPUT0/OUTPUT1 paths.
+stem = splitext(basename(args.input_file))[0]
+gen_c = join(args.privatedir, stem + '.c')
+gen_h = join(args.privatedir, stem + '.h')
+
+if not os.path.isfile(gen_c):
+    sys.exit(f'lime did not produce expected output: {gen_c}')
+if not os.path.isfile(gen_h):
+    sys.exit(f'lime did not produce expected output: {gen_h}')
+
+os.makedirs(dirname(args.output_c), exist_ok=True)
+os.makedirs(dirname(args.output_h), exist_ok=True)
+shutil.move(gen_c, args.output_c)
+shutil.move(gen_h, args.output_h)
+
+if args.aot:
+    if not args.output_aot:
+        sys.exit('--aot requires --aot-output')
+    gen_aot = join(args.privatedir, stem + '_aot.c')
+    if not os.path.isfile(gen_aot):
+        sys.exit(f'lime -j did not produce expected output: {gen_aot}')
+    os.makedirs(dirname(args.output_aot), exist_ok=True)
+    shutil.move(gen_aot, args.output_aot)
+
+sys.exit(0)
