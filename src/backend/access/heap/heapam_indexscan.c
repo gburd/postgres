@@ -68,57 +68,24 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 }
 
 /*
- * hot_indexed_path_overlaps
- *		True iff any chain hop crossed during a walk (whose member offsets are
- *		listed in crossed[0 .. ncrossed-1]) changed an attribute that
- *		index_attrs covers.  Each crossed member's per-hop modified-attrs
- *		bitmap lives in the adjacent tombstone whose target is that member's
- *		offset; we scan the page once for those tombstones.  Bridges carry no
- *		payload of their own -- the bridged tuple's adjacent tombstone is
- *		retained across collapse and still targets the bridge's offset, so the
- *		same lookup serves live tuples and bridges alike.
- *
- * This is a single O(maxoff) pass, not a per-crossed-member lookup.  A
- * tombstone is added at the first free line pointer (PageAddItemExtended with
- * InvalidOffsetNumber), so there is no positional relation between a tombstone
- * and its target: finding one member's tombstone is itself O(maxoff).  Walking
- * the crossed members and looking each up would therefore be O(ncrossed *
- * maxoff) -- strictly worse than this one sweep -- so the single scan is kept
- * deliberately.  Measured cost is a negligible fraction of a hop-crossing
- * fetch at realistic page densities.
+ * accumulate_modified
+ *		OR a crossed hop's modified-attrs bitmap (src, nbytes wide) into the
+ *		walk's running union (acc / *accbytes), zero-extending acc as its
+ *		covered width grows.  All hops in one chain share the relation's
+ *		bitmap width, so *accbytes settles on the first OR.
  */
-static bool
-hot_indexed_path_overlaps(Page page, const OffsetNumber *crossed, int ncrossed,
-						  const Bitmapset *index_attrs)
+static inline void
+accumulate_modified(uint8 *acc, uint16 *accbytes,
+					const uint8 *src, uint16 nbytes)
 {
-	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-
-	for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
-		 off = OffsetNumberNext(off))
+	for (uint16 b = 0; b < nbytes; b++)
 	{
-		ItemId		lp = PageGetItemId(page, off);
-		HeapTupleHeader htup;
-		OffsetNumber target;
-
-		if (!ItemIdIsNormal(lp))
-			continue;
-		htup = (HeapTupleHeader) PageGetItem(page, lp);
-		if (!HeapTupleHeaderIsHotIndexedTombstone(htup) ||
-			HeapTupleHeaderIsHotIndexedBridge(htup))
-			continue;
-		target = HotIndexedTombstoneGetTarget(htup);
-
-		for (int i = 0; i < ncrossed; i++)
-		{
-			if (crossed[i] != target)
-				continue;
-			if (heap_hot_indexed_payload_overlaps(HotIndexedTombstoneGetPayloadConst(htup),
-												  index_attrs))
-				return true;
-			break;
-		}
+		if (b >= *accbytes)
+			acc[b] = 0;			/* first time this byte is covered */
+		acc[b] |= src[b];
 	}
-	return false;
+	if (nbytes > *accbytes)
+		*accbytes = nbytes;
 }
 
 /*
@@ -178,8 +145,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		valid;
 	bool		skip;
 	GlobalVisState *vistest = NULL;
-	OffsetNumber crossed[MaxHeapTuplesPerPage];
-	int			ncrossed = 0;
+	uint8		acc[(MaxHeapAttributeNumber + 7) / 8];
+	uint16		accbytes = 0;
 	bool		crossed_hi = false;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
@@ -273,13 +240,15 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 				/*
 				 * A bridge advanced to (not the entry item) is a crossed hop;
-				 * its modified-attrs bitmap lives in the retained adjacent
-				 * tombstone targeting this offset.  When the bridge IS the
-				 * entry item (at_chain_start), its own hop is excluded -- the
-				 * arriving entry already reflects that value.
+				 * accumulate the producing-hop modified-attrs bitmap that
+				 * prune preserved in the bridge meta-item's payload.  When the
+				 * bridge IS the entry item (at_chain_start), its own hop is
+				 * excluded -- the arriving entry already reflects that value.
 				 */
-				if (!at_chain_start && ncrossed < (int) lengthof(crossed))
-					crossed[ncrossed++] = offnum;
+				if (!at_chain_start)
+					accumulate_modified(acc, &accbytes,
+										HotIndexedTombstoneGetBitmap(heapTuple->t_data),
+										HotIndexedTombstoneGetNbytes(heapTuple->t_data));
 				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
 				at_chain_start = false;
 
@@ -326,13 +295,15 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		{
 			/*
 			 * A hot-indexed hop reached by following the chain from an
-			 * earlier entry: this hop is crossed.  Record its offset so the
-			 * post-walk overlap test can consult its adjacent tombstone's
-			 * modified-attrs bitmap.
+			 * earlier entry: this hop is crossed.  Accumulate its
+			 * inline-trailing modified-attrs bitmap into the running union
+			 * (O(1), read straight from the version we are already on).
 			 */
 			crossed_hi = true;
-			if (ncrossed < (int) lengthof(crossed))
-				crossed[ncrossed++] = offnum;
+			accumulate_modified(acc, &accbytes,
+								HotIndexedInlineGetBitmap(heapTuple->t_data,
+														  heapTuple->t_len),
+								HotIndexedInlineBitmapNbytes(heapTuple->t_data));
 		}
 
 		/*
@@ -374,9 +345,9 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 						this_stale = crossed_hi;
 					else
 						this_stale =
-							((ncrossed > 0) &&
-							 hot_indexed_path_overlaps(page, crossed, ncrossed,
-													   index_attrs));
+							(accbytes > 0 &&
+							 heap_hot_indexed_bitmap_overlaps(acc, accbytes,
+															  index_attrs));
 					*hot_indexed_stale |= this_stale;
 				}
 				return true;

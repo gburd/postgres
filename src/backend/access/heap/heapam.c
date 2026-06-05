@@ -3251,17 +3251,22 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
-	bool		emit_tombstone = false;
-	OffsetNumber tombstone_offnum = InvalidOffsetNumber;
-	Size		tombstone_item_size = 0;
+	bool		hot_indexed = false;	/* HOT-indexed update (modified an
+										 * indexed attr but stayed HOT) */
 
 	/*
-	 * Scratch buffer used to build the HOT-indexed tombstone item before
-	 * entering the critical section.  palloc'd once per call and sized
-	 * precisely for this relation; freed on return via the caller's memory
-	 * context cleanup.  NULL if we don't end up emitting a tombstone.
+	 * Scratch buffer holding the new version's on-page image with the
+	 * producing-hop modified-attrs bitmap appended inline-trailing.  palloc'd
+	 * once per call before the critical section (sized for this tuple) so the
+	 * critical section does no allocation; freed via memory-context cleanup.
+	 * NULL unless this is a HOT-indexed update.  hi_tuptmp/placedtup wrap it
+	 * as a HeapTuple for placement and WAL without mutating the caller's
+	 * heaptup (which may alias the caller's slot tuple).
 	 */
-	char	   *tombstone_buf = NULL;
+	char	   *hi_inline_buf = NULL;
+	Size		hi_bmwidth = 0;
+	HeapTupleData hi_tuptmp;
+	HeapTuple	placedtup;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
 	bool		all_visible_cleared_new = false;
@@ -4160,17 +4165,16 @@ l2:
 	}
 
 	/*
-	 * If we are going HOT-indexed, allocate the tombstone scratch buffer and
-	 * build its contents *now*, before the critical section. Doing the palloc
-	 * inside the critical section could PANIC on OOM; building the payload
-	 * here also keeps the critical section small.
+	 * If we are going HOT-indexed, allocate the scratch buffer for the new
+	 * version's inline-trailing image *now*, before the critical section.
+	 * Doing the palloc inside the critical section could PANIC on OOM.
 	 */
 	if (use_hot_update && hot_mode == HEAP_HOT_MODE_INDEXED)
 	{
 		int			natts = RelationGetNumberOfAttributes(relation);
 
-		tombstone_item_size = HotIndexedTombstoneSize(natts);
-		tombstone_buf = (char *) palloc(tombstone_item_size);
+		hi_bmwidth = (natts + 7) / 8;
+		hi_inline_buf = (char *) palloc(heaptup->t_len + hi_bmwidth);
 	}
 
 	/*
@@ -4212,15 +4216,14 @@ l2:
 
 		/*
 		 * For a HOT-indexed update, the new live tuple also carries
-		 * HEAP_INDEXED_UPDATED so index scans walking the chain know a
-		 * tombstone with the per-update modified-attrs bitmap is present on
-		 * the same page.
+		 * HEAP_INDEXED_UPDATED so index scans walking the chain know it is a
+		 * HOT-indexed hop carrying an inline-trailing modified-attrs bitmap.
 		 */
 		if (hot_mode == HEAP_HOT_MODE_INDEXED)
 		{
 			heaptup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
 			newtup->t_data->t_infomask2 |= HEAP_INDEXED_UPDATED;
-			emit_tombstone = true;
+			hot_indexed = true;
 		}
 	}
 	else
@@ -4231,35 +4234,33 @@ l2:
 		HeapTupleClearHeapOnly(newtup);
 	}
 
-	RelationPutHeapTuple(relation, newbuf, heaptup, false); /* insert new tuple */
-
 	/*
-	 * For HOT-indexed updates, emit the tombstone adjacent to the live
-	 * hot-indexed tuple.  heaptup->t_self was populated by
-	 * RelationPutHeapTuple.  The scratch buffer was palloc'd and sized above,
-	 * before entering the critical section, so this block does no allocation
-	 * and cannot ERROR except by the defensive PANIC which the fit check
-	 * should prevent.
+	 * Place the new version.  For a HOT-indexed update, append the
+	 * producing-hop modified-attrs bitmap inline-trailing on the version so
+	 * chain walkers read it O(1) from the version itself; build the combined
+	 * image in the pre-allocated scratch buffer (no allocation in the
+	 * critical section) and place that.  heaptup -- which may alias the
+	 * caller's slot tuple -- is left unmodified; only its t_self is set, to
+	 * the offset the combined image landed at.
 	 */
-	if (emit_tombstone)
+	placedtup = heaptup;
+	if (hot_indexed)
 	{
 		int			natts = RelationGetNumberOfAttributes(relation);
-		OffsetNumber target = ItemPointerGetOffsetNumber(&heaptup->t_self);
 
-		Assert(tombstone_buf != NULL);
-		Assert(tombstone_item_size == HotIndexedTombstoneSize(natts));
-		(void) heap_build_hot_indexed_tombstone(tombstone_buf, target, natts,
-												modified_idx_attrs);
-		tombstone_offnum = PageAddItemExtended(page,
-											   tombstone_buf,
-											   tombstone_item_size,
-											   InvalidOffsetNumber,
-											   PAI_IS_HEAP);
-		if (tombstone_offnum == InvalidOffsetNumber)
-			ereport(PANIC,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg_internal("could not add HOT-indexed tombstone item to page")));
+		Assert(hi_inline_buf != NULL);
+		Assert(hi_bmwidth == (Size) ((natts + 7) / 8));
+		memcpy(hi_inline_buf, heaptup->t_data, heaptup->t_len);
+		heap_fill_hot_indexed_inline_bitmap((uint8 *) hi_inline_buf + heaptup->t_len,
+											natts, modified_idx_attrs);
+		hi_tuptmp = *heaptup;
+		hi_tuptmp.t_data = (HeapTupleHeader) hi_inline_buf;
+		hi_tuptmp.t_len = heaptup->t_len + hi_bmwidth;
+		placedtup = &hi_tuptmp;
 	}
+
+	RelationPutHeapTuple(relation, newbuf, placedtup, false); /* insert new tuple */
+	heaptup->t_self = placedtup->t_self;
 
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
@@ -4311,14 +4312,14 @@ l2:
 		}
 
 		recptr = log_heap_update(relation, buffer,
-								 newbuf, &oldtup, heaptup,
+								 newbuf, &oldtup, placedtup,
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new,
 								 walLogical,
-								 tombstone_offnum,
-								 emit_tombstone ? tombstone_buf : NULL,
-								 tombstone_item_size);
+								 InvalidOffsetNumber,
+								 NULL,
+								 0);
 		if (newbuf != buffer)
 		{
 			PageSetLSN(newpage, recptr);
@@ -4357,7 +4358,7 @@ l2:
 	if (have_tuple_lock)
 		UnlockTupleTuplock(relation, &(oldtup.t_self), lockmode);
 
-	pgstat_count_heap_update(relation, use_hot_update, emit_tombstone,
+	pgstat_count_heap_update(relation, use_hot_update, hot_indexed,
 							 newbuf != buffer);
 
 	/*
