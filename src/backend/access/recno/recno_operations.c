@@ -4429,6 +4429,51 @@ RecnoVacuumCrossPageDefrag(Relation rel, BlockNumber nblocks,
 }
 
 /*
+ * Per-stream state for the Phase I VACUUM scan callback.
+ */
+typedef struct RecnoVacScanState
+{
+	Relation	rel;
+	BlockNumber current_block;	/* last block handed out (InvalidBlockNumber
+								 * before the first call) */
+	BlockNumber nblocks;
+	bool		skip_all_frozen;	/* honor the VM ALL_FROZEN skip? */
+}			RecnoVacScanState;
+
+/*
+ * Read stream callback for VACUUM Phase I.
+ *
+ * Hands the read stream the next block that actually needs scanning so the
+ * upcoming pages are prefetched under AIO, matching heapam's
+ * heap_vac_scan_next_block().  Pages marked ALL_FROZEN in the visibility map
+ * are skipped here (unless DISABLE_PAGE_SKIPPING was requested), so the
+ * stream never issues I/O for pages VACUUM would immediately discard.
+ */
+static BlockNumber
+recno_vac_scan_next_block(ReadStream *stream,
+						  void *callback_private_data,
+						  void *per_buffer_data)
+{
+	RecnoVacScanState *state = callback_private_data;
+	BlockNumber next_block = state->current_block + 1;
+
+	for (; next_block < state->nblocks; next_block++)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		if (state->skip_all_frozen &&
+			RecnoVMCheck(state->rel, next_block, RECNO_VM_ALL_FROZEN))
+			continue;
+
+		state->current_block = next_block;
+		return next_block;
+	}
+
+	state->current_block = state->nblocks;
+	return InvalidBlockNumber;
+}
+
+/*
  * Vacuum a RECNO relation
  *
  * This performs garbage collection on a RECNO table in multiple phases:
@@ -4530,7 +4575,26 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 	 * have been removed (Phase II), to avoid dangling index pointers.
 	 * -----------------------------------------------------------------------
 	 */
-	for (blkno = 0; blkno < nblocks; blkno++)
+	{
+	ReadStream *scan_stream;
+	RecnoVacScanState scan_state;
+
+	scan_state.rel = onerel;
+	scan_state.current_block = InvalidBlockNumber;
+	scan_state.nblocks = nblocks;
+	scan_state.skip_all_frozen =
+		!(params->options & VACOPT_DISABLE_PAGE_SKIPPING);
+
+	scan_stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
+											 READ_STREAM_USE_BATCHING,
+											 bstrategy,
+											 onerel,
+											 MAIN_FORKNUM,
+											 recno_vac_scan_next_block,
+											 &scan_state,
+											 0);
+
+	while ((buf = read_stream_next_buffer(scan_stream, NULL)) != InvalidBuffer)
 	{
 		OffsetNumber offnum,
 					maxoffnum;
@@ -4540,24 +4604,7 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 
 		CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * Check the Visibility Map before reading the page.  If the page is
-		 * already marked ALL_FROZEN, all tuples are visible and frozen -- no
-		 * VACUUM work is needed.  This avoids the I/O cost of reading the
-		 * page entirely.
-		 *
-		 * For aggressive vacuums we still need to scan all pages to verify VM
-		 * correctness, so we skip this optimization.
-		 */
-		if (!(params->options & VACOPT_DISABLE_PAGE_SKIPPING) &&
-			RecnoVMCheck(onerel, blkno, RECNO_VM_ALL_FROZEN))
-		{
-			continue;
-		}
-
-		/* Read and lock the page */
-		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno, RBM_NORMAL,
-								 bstrategy);
+		blkno = BufferGetBlockNumber(buf);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
 
@@ -4658,6 +4705,9 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 		}
 
 		UnlockReleaseBuffer(buf);
+	}
+
+	read_stream_end(scan_stream);
 	}
 
 	/*
