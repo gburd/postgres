@@ -1,20 +1,27 @@
 /* src/interfaces/ecpg/preproc/ecpg.addons */
 ECPG: block stmt ClosePortalStmt
 	{
-		if (INFORMIX_MODE)
+		/*
+		 * Pre-v0.6.0 Lime wrapped action bodies in switch-case blocks,
+		 * so `break;` here exited the per-rule case.  v0.6.0+ generates
+		 * one static function per rule, so a bare `break;` in the body
+		 * is a C-level error.  Restructured as if/else to preserve the
+		 * INFORMIX-mode-CLOSE-DATABASE special case without relying on
+		 * the old codegen shape.
+		 */
+		if (INFORMIX_MODE
+			&& pg_strcasecmp(@1 + strlen("close "), "database") == 0)
 		{
-			if (pg_strcasecmp(@1 + strlen("close "), "database") == 0)
-			{
-				if (connection)
-					mmerror(PARSE_ERROR, ET_ERROR, "AT option not allowed in CLOSE DATABASE statement");
+			if (connection)
+				mmerror(PARSE_ERROR, ET_ERROR, "AT option not allowed in CLOSE DATABASE statement");
 
-				fprintf(base_yyout, "{ ECPGdisconnect(__LINE__, \"CURRENT\");");
-				whenever_action(2);
-				break;
-			}
+			fprintf(base_yyout, "{ ECPGdisconnect(__LINE__, \"CURRENT\");");
+			whenever_action(2);
 		}
-
-		output_statement(@1, 0, ECPGst_normal);
+		else
+		{
+			output_statement(@1, 0, ECPGst_normal);
+		}
 	}
 ECPG: block stmt DeallocateStmt
 	{

@@ -1028,7 +1028,7 @@ sub print_bki_insert
 		$bki_value =~ s/'/''/g;
 
 		# Quote value if needed.  We need not quote values that satisfy
-		# the "id" pattern in bootscanner.l, currently "[-A-Za-z0-9_]+".
+		# the "id" pattern in bootscanner.c, currently "[-A-Za-z0-9_]+".
 		$bki_value = sprintf("'%s'", $bki_value)
 		  if length($bki_value) == 0
 		  or $bki_value =~ /[^-A-Za-z0-9_]/;

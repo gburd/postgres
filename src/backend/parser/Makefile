@@ -34,6 +34,7 @@ OBJS = \
 	parse_type.o \
 	parse_utilcmd.o \
 	parser.o \
+	parser_extension.o \
 	scan.o \
 	scansup.o
 
@@ -54,12 +55,8 @@ include $(top_srcdir)/src/backend/common.mk
 gram.h: gram.c
 	touch $@
 
-gram.c: BISONFLAGS += -d
-gram.c: BISON_CHECK_CMD = $(PERL) $(srcdir)/check_keywords.pl $< $(top_srcdir)/src/include/parser/kwlist.h
-
-
-scan.c: FLEXFLAGS = -CF -p -p
-scan.c: FLEX_NO_BACKUP=yes
+gram.c: gram.lime
+	lime -d. $<
 
 
 # Force these dependencies to be known even without dependency info built:
@@ -68,5 +65,4 @@ gram.o scan.o parser.o: gram.h
 clean:
 	rm -f gram.c \
 	      gram.h \
-	      scan.c
-	rm -f lex.backup
+	      gram.out

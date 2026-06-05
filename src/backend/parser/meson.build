@@ -26,27 +26,75 @@ backend_sources += files(
 # Build a small utility static lib for the parser. The generation of the
 # parser is slow, and building this separately avoids other parts of the
 # backend having to wait till gram.h is generated.
-parser_sources = files('parser.c')
+parser_sources = files('parser.c', 'parser_extension.c', 'scan.c')
 
-backend_scanner = custom_target('scan',
-  input: 'scan.l',
-  output: 'scan.c',
-  command: [flex_cmd, '--no-backup', '--', '-CF', '-p', '-p'],
-)
-generated_sources += backend_scanner
-parser_sources += backend_scanner
-
-backend_parser = custom_target('gram',
-  input: 'gram.y',
-  kwargs: bison_kw,
-)
+# When AOT is enabled, lime -j produces gram_aot.c alongside gram.c.
+# gram.c gets compiled with -DYYAOT so its yy_find_shift_action()
+# forwards to yy_find_shift_action_aot() (defined in gram_aot.c).
+# gram_aot.c is a switch-of-switches that the C compiler optimises
+# into jump tables -- the static-codegen equivalent of Lime's
+# runtime LLVM JIT, with zero runtime cost.
+if lime_aot_enabled
+  backend_parser = custom_target('gram_aot',
+    input: 'gram.lime',
+    kwargs: lime_aot_kw,
+  )
+else
+  backend_parser = custom_target('gram',
+    input: 'gram.lime',
+    kwargs: lime_kw,
+  )
+endif
 generated_sources += backend_parser.to_list()
 parser_sources += backend_parser
 
-parser = static_library('parser',
-  parser_sources,
+# Lime-generated lexer (replaces scan.c's hand-rolled state machine).
+# scan.c becomes a parser-driver shim around CoreLexFeedBytes.
+scan_lex_gen = custom_target('scan_lex',
+  input: 'scan.lex',
+  output: ['scan_lex.c', 'scan_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += scan_lex_gen
+
+scan_lex_lib = static_library('scan_lex',
+  scan_lex_gen,
   dependencies: [backend_code],
   include_directories: include_directories('.'),
+  c_args: ['-Wno-missing-prototypes', '-Wno-unused-variable',
+           '-Wno-unused-but-set-variable']
+          + cflags_no_decl_after_statement,
+  kwargs: internal_lib_args,
+)
+backend_link_with += scan_lex_lib
+
+parser = static_library('parser',
+  parser_sources,
+  scan_lex_gen,
+  dependencies: [backend_code],
+  include_directories: include_directories('.'),
+  c_args: ['-Wno-missing-prototypes', '-Wno-unused-variable']
+          + (lime_aot_enabled ? ['-DYYAOT'] : [])
+          + cflags_no_decl_after_statement,
   kwargs: internal_lib_args,
 )
 backend_link_with += parser
+
+# Install gram.lime to $PGSHAREDIR/parser/gram.lime so the Phase 4
+# subprocess pipeline (parser_extension.c) can locate it at runtime
+# to rebuild the parser when grammar extensions register.
+install_data('gram.lime',
+  install_dir: dir_data / 'parser',
+)
+
+# Install gramparse.h (a header private to the in-tree build) to
+# $PGSHAREDIR/include/server/parser so the runtime-rebuilt parser .so
+# (parser_extension.c) can compile.  Lime's emitted gram.c does
+# #include "gramparse.h" verbatim from the prologue; we install the
+# header alongside the other server-internal headers and the runtime
+# adds -I<server_includes>/parser to its cc invocation.  The local
+# `#include "gram.h"` inside gramparse.h resolves to the cache-dir
+# shim the runtime writes alongside the regenerated <hex>.{c,h}.
+install_headers('gramparse.h',
+  install_dir: dir_include_server / 'parser',
+)
