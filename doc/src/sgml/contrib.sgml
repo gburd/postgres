@@ -167,6 +167,7 @@ CREATE EXTENSION <replaceable>extension_name</replaceable>;
  &pgvisibility;
  &pgwalinspect;
  &postgres-fdw;
+ &quel;
  &seg;
  &sepgsql;
  &contrib-spi;

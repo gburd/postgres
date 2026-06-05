@@ -1,0 +1,10 @@
+# quel extension
+comment = 'QUEL query language as a parser extension (Postquel revival)'
+default_version = '1.0'
+module_pathname = '$libdir/quel'
+relocatable = false
+trusted = false
+superuser = true
+# Must load at postmaster startup so _PG_init can register grammar
+# extensions before any backend has called raw_parser().
+schema = 'public'

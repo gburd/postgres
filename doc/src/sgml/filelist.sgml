@@ -160,6 +160,7 @@
 <!ENTITY pgvisibility    SYSTEM "pgvisibility.sgml">
 <!ENTITY pgwalinspect    SYSTEM "pgwalinspect.sgml">
 <!ENTITY postgres-fdw    SYSTEM "postgres-fdw.sgml">
+<!ENTITY quel            SYSTEM "quel.sgml">
 <!ENTITY seg             SYSTEM "seg.sgml">
 <!ENTITY contrib-spi     SYSTEM "contrib-spi.sgml">
 <!ENTITY sepgsql         SYSTEM "sepgsql.sgml">
