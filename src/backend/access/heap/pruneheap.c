@@ -287,6 +287,10 @@ static OffsetNumber heap_prune_find_live_chain_root(PruneState *prstate,
 static void heap_prune_record_bridge(PruneState *prstate,
 									 OffsetNumber offnum,
 									 OffsetNumber forward);
+static void heap_prune_recollapse_bridged_chain(OffsetNumber maxoff,
+												OffsetNumber rootoffnum,
+												OffsetNumber head_bridge,
+												PruneState *prstate);
 
 static void page_verify_redirects(Page page);
 
@@ -1797,13 +1801,14 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 			/*
 			 * If the redirect points at a bridge meta-item, this HOT-indexed
 			 * chain was already collapsed by an earlier prune (root redirect
-			 * -> head bridge -> ... -> first_live).  heap_prune_chain does not
-			 * traverse bridges, and re-collapsing would re-record the same
-			 * redirect; leave the collapsed structure intact (vacuum reclaims
-			 * the bridges once their stale entries are swept, after which a
-			 * later prune sees a plain chain again).  The bridges and the live
-			 * tuple are handled by the per-offnum loop in
-			 * heap_page_prune_and_freeze.
+			 * -> head bridge -> ... -> first_live).  Re-collapse it coherently
+			 * with full topology: heap_prune_recollapse_bridged_chain
+			 * preserves the redirect and the existing bridges (whose stale
+			 * leaves only vacuum may sweep) and bridges any members that have
+			 * since died past first_live, extending the linked list.  Doing it
+			 * here -- rather than leaving the post-first_live members to the
+			 * topology-blind per-offnum orphan handler -- keeps the bridge
+			 * graph a strict forest.
 			 */
 			if (offnum >= FirstOffsetNumber &&
 				offnum <= PageGetMaxOffsetNumber(page))
@@ -1813,7 +1818,8 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 				if (ItemIdIsNormal(tlp) &&
 					HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(page, tlp)))
 				{
-					heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+					heap_prune_recollapse_bridged_chain(maxoff, rootoffnum,
+														offnum, prstate);
 					return;
 				}
 			}
@@ -2016,6 +2022,126 @@ process_chain:
 		/* the rest of tuples in the chain are normal, unchanged tuples */
 		for (int i = ndeadchain; i < nchain; i++)
 			heap_prune_record_unchanged_lp_normal(prstate, chainitems[i]);
+	}
+}
+
+/*
+ * heap_prune_recollapse_bridged_chain
+ *		Re-prune an already-collapsed HOT-indexed chain coherently.
+ *
+ * The chain looks like redirect(rootoffnum) -> head_bridge -> ... -> first_live.
+ * The redirect and the existing bridges are preserved: their stale btree
+ * leaves are swept by vacuum (ambulkdelete), not by prune, and the existing
+ * bridges were already recorded unchanged by the per-offnum tombstone handler.
+ * Only the members from first_live onward can have changed since the collapse
+ * (first_live may have been HOT-indexed-updated again, dying and spawning new
+ * versions that heap_prune_chain's normal walk never reached because it
+ * stopped at the redirect->bridge boundary).
+ *
+ * Walk first_live's live chain and convert each newly-dead member to a bridge
+ * forwarding to its own t_ctid successor -- an in-place splice that extends
+ * the existing linked list by one hop per dead member.  Because every bridge
+ * inherits exactly one predecessor (its in-chain predecessor) and points at
+ * exactly one successor, the bridge graph stays a strict forest, which is what
+ * lets vacuum reclaim a chain's bridges all-or-nothing without dangling any
+ * surviving pointer.  The root redirect is never re-pointed, so the existing
+ * bridges are never orphaned.
+ */
+static void
+heap_prune_recollapse_bridged_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
+									OffsetNumber head_bridge, PruneState *prstate)
+{
+	Page		page = prstate->page;
+	OffsetNumber chainitems[MaxHeapTuplesPerPage];
+	int			nchain = 0;
+	OffsetNumber offnum;
+	TransactionId priorXmax = InvalidTransactionId;
+
+	/* The root redirect keeps pointing at the existing head bridge. */
+	heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+
+	/* Follow the existing bridges to first_live (the first non-bridge member). */
+	offnum = head_bridge;
+	for (int guard = 0; guard <= maxoff; guard++)
+	{
+		ItemId		lp;
+		HeapTupleHeader htup;
+
+		if (offnum < FirstOffsetNumber || offnum > maxoff)
+			return;				/* malformed link; nothing safe to do */
+		lp = PageGetItemId(page, offnum);
+		if (!ItemIdIsNormal(lp))
+			return;
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+		if (!HeapTupleHeaderIsHotIndexedBridge(htup))
+			break;				/* reached first_live */
+		offnum = HotIndexedBridgeGetForward(htup);
+	}
+
+	/* Walk first_live's chain, recording its members. */
+	for (;;)
+	{
+		ItemId		lp;
+		HeapTupleHeader htup;
+
+		if (offnum < FirstOffsetNumber || offnum > maxoff)
+			break;
+		lp = PageGetItemId(page, offnum);
+		if (!ItemIdIsNormal(lp) || prstate->processed[offnum])
+			break;
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+		if (TransactionIdIsValid(priorXmax) &&
+			!TransactionIdEquals(HeapTupleHeaderGetXmin(htup), priorXmax))
+			break;
+
+		chainitems[nchain++] = offnum;
+
+		if (!HeapTupleHeaderIsHotUpdated(htup) ||
+			ItemPointerGetBlockNumber(&htup->t_ctid) != prstate->block)
+			break;
+		priorXmax = HeapTupleHeaderGetUpdateXid(htup);
+		offnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
+	}
+
+	/*
+	 * Convert each dead-to-all member to a bridge forwarding to its own t_ctid
+	 * successor -- an in-place splice that extends the existing linked list by
+	 * one hop, preserving its single-predecessor (forest) shape.  Members that
+	 * are merely recently-dead or live are kept as ordinary tuples so the
+	 * snapshots that still see them can walk to them.  A dead member that
+	 * cannot be bridged here (a deleted tail with no live successor, which the
+	 * update-only re-prune path never produces) is left for the per-offnum
+	 * handler to resolve, exactly as before.
+	 */
+	for (int i = 0; i < nchain; i++)
+	{
+		OffsetNumber off = chainitems[i];
+		HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(page, PageGetItemId(page, off));
+
+		if (prstate->htsv[off] == HEAPTUPLE_DEAD)
+		{
+			OffsetNumber succ = InvalidOffsetNumber;
+
+			if (HeapTupleHeaderIsHotUpdated(htup) &&
+				ItemPointerGetBlockNumber(&htup->t_ctid) == prstate->block)
+			{
+				OffsetNumber s = ItemPointerGetOffsetNumber(&htup->t_ctid);
+
+				if (s >= FirstOffsetNumber && s <= maxoff && s != off)
+					succ = s;
+			}
+
+			if (OffsetNumberIsValid(succ) &&
+				heap_prune_item_preserves_hot_indexed(page, off))
+			{
+				HeapTupleHeaderAdvanceConflictHorizon(htup,
+													  &prstate->latest_xid_removed);
+				heap_prune_record_bridge(prstate, off, succ);
+			}
+			/* else leave unprocessed for the per-offnum orphan handler */
+		}
+		else
+			heap_prune_record_unchanged_lp_normal(prstate, off);
 	}
 }
 

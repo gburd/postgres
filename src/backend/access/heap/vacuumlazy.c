@@ -2924,6 +2924,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	int			nredirected = 0;
 	bool		reclaim_ok[MaxOffsetNumber + 1];
 	bool		indeadset[MaxOffsetNumber + 1];
+	bool		referenced[MaxOffsetNumber + 1];
 	int			total_bridges = 0;
 	int			reclaimed_bridges = 0;
 	int			deferred_bridges = 0;
@@ -2971,6 +2972,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	 * page advisory bit precisely once all bridges are gone.
 	 */
 	memset(indeadset, 0, sizeof(indeadset));
+	memset(referenced, 0, sizeof(referenced));
 	for (int i = 0; i < num_offsets; i++)
 		indeadset[deadoffsets[i]] = true;
 
@@ -2992,11 +2994,39 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		nredirected = lazy_vacuum_plan_bridge_repoints(page, indeadset,
 													   redirected, reclaim_ok);
 
+		/*
+		 * A bridge that will survive this round (it is not being reclaimed)
+		 * still forwards to its successor.  Protect that successor from
+		 * reclaim: reclaiming it (for instance a dead tail marked LP_DEAD) and
+		 * truncating the line-pointer array would leave the surviving bridge
+		 * pointing past the end of the page.  A later vacuum reclaims it once
+		 * the referencing bridge is gone too.
+		 */
+		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			HeapTupleHeader htup;
+			OffsetNumber fwd;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+			htup = (HeapTupleHeader) PageGetItem(page, lp);
+			if (!HeapTupleHeaderIsHotIndexedBridge(htup))
+				continue;
+			if (indeadset[off] && reclaim_ok[off])
+				continue;		/* this bridge is itself being reclaimed */
+			fwd = HotIndexedBridgeGetForward(htup);
+			if (fwd >= FirstOffsetNumber && fwd <= maxoff)
+				referenced[fwd] = true;
+		}
+
 		for (int i = 0; i < num_offsets; i++)
 		{
-			ItemId		itemid = PageGetItemId(page, deadoffsets[i]);
+			OffsetNumber off = deadoffsets[i];
+			ItemId		itemid = PageGetItemId(page, off);
 
-			if (ItemIdIsNormal(itemid) && !reclaim_ok[deadoffsets[i]])
+			if ((ItemIdIsNormal(itemid) && !reclaim_ok[off]) || referenced[off])
 				deferred_bridges++;
 		}
 	}
@@ -3055,6 +3085,13 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		OffsetNumber toff = deadoffsets[i];
 
 		itemid = PageGetItemId(page, toff);
+
+		/*
+		 * A surviving bridge still forwards to this item; defer its reclaim so
+		 * truncation cannot strand that forward link past the page end.
+		 */
+		if (referenced[toff])
+			continue;
 
 		/*
 		 * Two cases: a classic LP_DEAD line pointer (no tuple body) or a
