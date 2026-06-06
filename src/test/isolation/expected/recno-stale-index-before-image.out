@@ -1,0 +1,106 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_snap s2_update s2_commit s1_idxscan s1_commit
+step s1_snap: SELECT count(*) FROM recno_sidx;
+count
+-----
+ 2000
+(1 row)
+
+step s2_update: UPDATE recno_sidx SET v = 100000 WHERE id = 100;
+step s2_commit: COMMIT;
+step s1_idxscan: 
+  SET enable_seqscan = off; SET enable_bitmapscan = off;
+  SET enable_indexscan = on; SET enable_indexonlyscan = off;
+  SELECT id, v FROM recno_sidx WHERE v = 100;
+
+ id|  v
+---+---
+100|100
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_snap s2_update s2_commit s1_ios s1_commit
+step s1_snap: SELECT count(*) FROM recno_sidx;
+count
+-----
+ 2000
+(1 row)
+
+step s2_update: UPDATE recno_sidx SET v = 100000 WHERE id = 100;
+step s2_commit: COMMIT;
+step s1_ios: 
+  SET enable_seqscan = off; SET enable_bitmapscan = off;
+  SET enable_indexscan = off; SET enable_indexonlyscan = on;
+  SELECT v FROM recno_sidx WHERE v = 100;
+
+  v
+---
+100
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_snap s2_update s2_commit s1_bitmap s1_commit
+step s1_snap: SELECT count(*) FROM recno_sidx;
+count
+-----
+ 2000
+(1 row)
+
+step s2_update: UPDATE recno_sidx SET v = 100000 WHERE id = 100;
+step s2_commit: COMMIT;
+step s1_bitmap: 
+  SET enable_seqscan = off; SET enable_indexscan = off;
+  SET enable_indexonlyscan = off; SET enable_bitmapscan = on;
+  SELECT id, v FROM recno_sidx WHERE v = 100;
+
+ id|  v
+---+---
+100|100
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_snap s2_update s2_commit s3_begin s3_oldkey s3_newkey s1_bitmap s3_commit s1_commit
+step s1_snap: SELECT count(*) FROM recno_sidx;
+count
+-----
+ 2000
+(1 row)
+
+step s2_update: UPDATE recno_sidx SET v = 100000 WHERE id = 100;
+step s2_commit: COMMIT;
+step s3_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s3_oldkey: 
+  SET enable_seqscan = off; SET enable_indexscan = off;
+  SET enable_indexonlyscan = off; SET enable_bitmapscan = on;
+  SELECT id, v FROM recno_sidx WHERE v = 100;
+
+id|v
+--+-
+(0 rows)
+
+step s3_newkey: 
+  SET enable_seqscan = off; SET enable_indexscan = off;
+  SET enable_indexonlyscan = off; SET enable_bitmapscan = on;
+  SELECT id, v FROM recno_sidx WHERE v = 100000;
+
+ id|     v
+---+------
+100|100000
+(1 row)
+
+step s1_bitmap: 
+  SET enable_seqscan = off; SET enable_indexscan = off;
+  SET enable_indexonlyscan = off; SET enable_bitmapscan = on;
+  SELECT id, v FROM recno_sidx WHERE v = 100;
+
+ id|  v
+---+---
+100|100
+(1 row)
+
+step s3_commit: COMMIT;
+step s1_commit: COMMIT;
