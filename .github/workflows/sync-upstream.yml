@@ -18,7 +18,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with the 'workflow' scope. The default GITHUB_TOKEN cannot push
+          # changes under .github/workflows/ (upstream now ships pg-ci.yml), so
+          # the rebase+push would be rejected with a 'workflows permission' error.
+          token: ${{ secrets.SYNC_PAT }}
 
       - name: Configure Git
         run: |
@@ -175,9 +178,7 @@ jobs:
                - **Preserved:** Create feature branch and reset master
                - **Discarded:** Hard reset master to upstream
 
-            3. See [sync documentation](.github/docs/sync-setup.md) for detailed recovery procedures
-
-            4. Run manual sync workflow after resolution to verify
+            3. Run the manual sync workflow after resolution to verify
 
             **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             `;
