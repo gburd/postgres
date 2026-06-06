@@ -1043,15 +1043,6 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 			 */
 
 			/*
-			 * Store the tuple with a buffer pin.  The slot gets its own pin
-			 * via RecnoSlotStoreTuple so the data stays valid.
-			 */
-			RecnoSlotStoreTuple(slot, tuple_hdr,
-								ItemIdGetLength(itemid), rscan->rs_cbuf);
-			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
-			ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, offnum);
-
-			/*
 			 * RECNO updates in place (am_inplace_update_keeps_tid), so a
 			 * changed indexed column leaves a stale (oldkey -> tid) secondary
 			 * entry beside the new one.  Plain and index-only scans run
@@ -1065,6 +1056,56 @@ recno_scan_bitmap_next_tuple(TableScanDesc scan,
 			 */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_UPDATED)
 				*recheck = true;
+
+			/*
+			 * Before-image substitution for committed in-place UPDATEs,
+			 * mirroring the sequential-scan and index-fetch paths.  A snapshot
+			 * that predates the update must observe the before-image, not the
+			 * on-page (new) data.  Visibility is decided by the xid snapshot,
+			 * not an HLC comparison, because a committer stamps its commit HLC
+			 * at PRE_COMMIT but exits the ProcArray strictly later.
+			 */
+			if ((tuple_hdr->t_flags & RECNO_TUPLE_UPDATED) &&
+				!(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
+				scan->rs_snapshot != NULL &&
+				IsMVCCSnapshot(scan->rs_snapshot) &&
+				RecnoDirtyMapCheck(RelationGetRelid(scan->rs_rd),
+								   rscan->rs_cblock))
+			{
+				char	   *bi_data;
+				int			bi_len;
+				uint16		bi_flags;
+				uint64		bi_commit_ts;
+				ItemPointerData item_tid;
+
+				ItemPointerSet(&item_tid, rscan->rs_cblock, offnum);
+
+				if (SLogTupleGetSharedBeforeImage(
+												  RelationGetRelid(scan->rs_rd),
+												  &item_tid,
+												  scan->rs_snapshot,
+												  &bi_data, &bi_len, &bi_flags, &bi_commit_ts))
+				{
+					RecnoTupleHeader *bi_tuple = (RecnoTupleHeader *) bi_data;
+
+					RecnoSlotStoreMaterializedTuple(slot, bi_tuple, bi_len);
+					slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
+					ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, offnum);
+
+					LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+					return true;
+				}
+			}
+
+			/*
+			 * Store the tuple with a buffer pin.  The slot gets its own pin
+			 * via RecnoSlotStoreTuple so the data stays valid.
+			 */
+			RecnoSlotStoreTuple(slot, tuple_hdr,
+								ItemIdGetLength(itemid), rscan->rs_cbuf);
+			slot->tts_tableOid = RelationGetRelid(scan->rs_rd);
+			ItemPointerSet(&slot->tts_tid, rscan->rs_cblock, offnum);
 
 			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
@@ -1797,6 +1838,58 @@ visibility_done:
 	 * already-locked buffer causing an assertion failure.
 	 */
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	/*
+	 * Before-image substitution for committed in-place UPDATEs, mirroring the
+	 * sequential-scan path (recno_getnextslot) and the fetch-by-TID path
+	 * (recno_tuple_fetch_row_version).  An index fetch that lands on a tuple
+	 * updated in place by a transaction not visible to our MVCC snapshot must
+	 * serve the before-image, not the on-page (new) value -- otherwise a
+	 * REPEATABLE READ / SERIALIZABLE reader whose snapshot predates the update
+	 * would observe the post-update row through any index, including one whose
+	 * key the UPDATE never touched (e.g. a primary-key lookup).  Visibility is
+	 * decided by the xid snapshot (XidInMVCCSnapshot inside the callee), not an
+	 * HLC comparison, because a committer stamps its commit HLC at PRE_COMMIT
+	 * but exits the ProcArray strictly later.
+	 *
+	 * We still set xs_inplace_maybe_stale below so the executor rechecks the
+	 * stored index key against the served (before-image) value: a reader that
+	 * reaches this row through the post-update (newkey -> tid) entry reforms the
+	 * before-image key, sees it mismatch the stored newkey, and drops the row,
+	 * while the matching (oldkey -> tid) entry is kept.
+	 */
+	if ((tuple_hdr->t_flags & RECNO_TUPLE_UPDATED) &&
+		!(tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED) &&
+		snapshot != NULL && IsMVCCSnapshot(snapshot) &&
+		RecnoDirtyMapCheck(RelationGetRelid(rel),
+						   ItemPointerGetBlockNumber(tid)))
+	{
+		char	   *bi_data;
+		int			bi_len;
+		uint16		bi_flags;
+		uint64		bi_commit_ts;
+
+		if (SLogTupleGetSharedBeforeImage(RelationGetRelid(rel),
+										  tid, snapshot,
+										  &bi_data, &bi_len,
+										  &bi_flags, &bi_commit_ts))
+		{
+			RecnoTupleHeader *bi_tuple = (RecnoTupleHeader *) bi_data;
+
+			RecnoSlotStoreMaterializedTuple(tts, bi_tuple, bi_len);
+			tts->tts_tableOid = RelationGetRelid(rel);
+			tts->tts_tid = *tid;
+
+			/*
+			 * The served value is the before-image, so the entry that led here
+			 * may carry the post-update key; force the executor key recheck.
+			 */
+			scan->base.xs_inplace_maybe_stale = true;
+
+			scan->buffer = buffer;
+			return true;
+		}
+	}
 
 	/* Tuple is visible - convert to slot (with overflow fetch) */
 	if (RecnoTupleToSlotWithOverflow(tuple_hdr, tts, rel))

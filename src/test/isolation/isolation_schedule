@@ -143,4 +143,5 @@ test: recno-write-skew
 test: recno-phantom
 test: recno-g1c-circular
 test: recno-before-image
+test: recno-stale-index-before-image
 test: recno-retained-reclamation
