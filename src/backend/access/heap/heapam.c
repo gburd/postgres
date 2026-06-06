@@ -3832,6 +3832,26 @@ l2:
 	newtupsize = MAXALIGN(newtup->t_len);
 
 	/*
+	 * Keep HOT-indexed (SIU) chains uniform.  HeapUpdateHotAllowable returns
+	 * HEAP_HOT_MODE_CLASSIC whenever this update modifies no indexed
+	 * attribute.  But if the tuple being updated is already a HOT-indexed
+	 * chain member (it carries HEAP_INDEXED_UPDATED), emitting a classic-HOT
+	 * version would splice a non-HEAP_INDEXED_UPDATED tuple into the chain.
+	 * The prune/collapse machinery forwards only HEAP_INDEXED_UPDATED members
+	 * through bridges, so such a classic-HOT version, once it dies mid
+	 * collapsed-chain, has no handler and trips the "not linked to from any
+	 * HOT chain" error.  Promote to HEAP_HOT_MODE_INDEXED instead: with an
+	 * empty modified-attrs set the new version carries HEAP_INDEXED_UPDATED
+	 * and an empty inline-trailing bitmap, inserts into no index (nothing
+	 * changed), and keeps every chain member uniform.  Catalog relations are
+	 * classic-HOT only and never carry HEAP_INDEXED_UPDATED, so this never
+	 * fires for them.
+	 */
+	if (hot_mode == HEAP_HOT_MODE_CLASSIC &&
+		(oldtup.t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		hot_mode = HEAP_HOT_MODE_INDEXED;
+
+	/*
 	 * If a HOT-indexed update is permitted, a tombstone line pointer must
 	 * also fit on the same page as the new tuple.  Account for its size
 	 * (including one additional ItemIdData slot) when deciding whether to
