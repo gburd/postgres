@@ -274,7 +274,6 @@ static void heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum,
 static void heap_prune_record_dead_or_unused(PruneState *prstate, OffsetNumber offnum,
 											 bool was_normal);
 static void heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_normal);
-static void heap_prune_record_unchanged_dead_member(PruneState *prstate, OffsetNumber offnum);
 
 static void heap_prune_record_unchanged_lp_unused(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNumber offnum);
@@ -793,7 +792,7 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 												  &prstate->latest_xid_removed);
 			if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
 				HeapTupleHeaderGetNatts(htup) > 0)
-				heap_prune_record_dead(prstate, offnum, true);
+				heap_prune_record_dead_or_unused(prstate, offnum, true);
 			else
 				heap_prune_record_unused(prstate, offnum, true);
 		}
@@ -1564,6 +1563,84 @@ htsv_get_valid_status(int status)
 }
 
 /*
+ * heap_prune_chain_find_live
+ *		Follow a HOT chain from 'start' to its first surviving member.
+ *
+ * Used when re-pruning a HOT/SIU chain that was collapsed by an earlier prune:
+ * the root and any entry-bearing dead members were turned into LP_REDIRECTs to
+ * what was then the first live tuple.  If that tuple has since been HOT-updated
+ * again and died, the redirects must be re-pointed to the current first live
+ * tuple, or several redirects forwarding to one live tuple must agree on it.
+ * Both cases need the chain's current first surviving member.
+ *
+ * Walks t_ctid on this page starting at 'start', skipping DEAD members, and
+ * returns the offset of the first non-DEAD (surviving) member.  Returns
+ * InvalidOffsetNumber if the chain dead-ends with no survivor or runs off the
+ * page.  Reads only the page's pre-execute state, so it is correct regardless
+ * of the order in which sibling redirects are processed.
+ */
+static OffsetNumber
+heap_prune_chain_find_live(PruneState *prstate, OffsetNumber start)
+{
+	Page		page = prstate->page;
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	OffsetNumber offnum = start;
+	OffsetNumber survivor = start;	/* successor of the last DEAD member */
+	int			loops = 0;
+
+	while (offnum >= FirstOffsetNumber && offnum <= maxoff)
+	{
+		ItemId		lp = PageGetItemId(page, offnum);
+		HTSV_Result status;
+		HeapTupleHeader htup;
+
+		/* A redirect/dead/unused item cannot be a surviving chain member. */
+		if (!ItemIdIsNormal(lp))
+			return InvalidOffsetNumber;
+
+		status = htsv_get_valid_status(prstate->htsv[offnum]);
+		htup = (HeapTupleHeader) PageGetItem(page, lp);
+
+		if (status == HEAPTUPLE_DEAD)
+		{
+			/*
+			 * A DEAD member is reclaimed/redirected, so the surviving tail
+			 * starts at its successor.  A DEAD member with no live successor
+			 * means the whole chain is dead.
+			 */
+			if (!HeapTupleHeaderIsHotUpdated(htup) ||
+				ItemPointerGetBlockNumber(&htup->t_ctid) != prstate->block)
+				return InvalidOffsetNumber;
+			offnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
+			survivor = offnum;
+		}
+		else if (status == HEAPTUPLE_RECENTLY_DEAD)
+		{
+			/*
+			 * RECENTLY_DEAD members belong to the surviving tail unless a DEAD
+			 * member follows them (which would make them part of the dead
+			 * prefix).  Keep walking to find out, but do not advance the
+			 * survivor; it stays at the successor of the last DEAD member.
+			 */
+			if (!HeapTupleHeaderIsHotUpdated(htup) ||
+				ItemPointerGetBlockNumber(&htup->t_ctid) != prstate->block)
+				return survivor;
+			offnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
+		}
+		else
+		{
+			/* LIVE (or in-progress): the surviving tail is settled. */
+			return survivor;
+		}
+
+		if (++loops > maxoff)
+			return InvalidOffsetNumber; /* defend against a corrupt cycle */
+	}
+
+	return InvalidOffsetNumber;
+}
+
+/*
  * Prune specified line pointer or a HOT chain originating at line pointer.
  *
  * Tuple visibility information is provided in prstate->htsv.
@@ -1762,13 +1839,27 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 	if (ItemIdIsRedirected(rootlp) && nchain < 2)
 	{
 		/*
-		 * We found a redirect item that doesn't point to a valid follow-on
-		 * item.  This can happen if the loop in heap_page_prune_and_freeze()
-		 * caused us to visit the dead successor of a redirect item before
-		 * visiting the redirect item.  We can clean up by setting the
-		 * redirect item to LP_DEAD state or LP_UNUSED if the caller
-		 * indicated.
+		 * The walk could not get past the redirect: its target was either
+		 * already processed by a sibling redirect's walk (several redirects of
+		 * a collapsed HOT/SIU chain forward to the same live tuple) or has
+		 * since died and been collapsed further.  Re-point this redirect at
+		 * the chain's current first surviving member so every entry that
+		 * resolves through it still reaches the live tuple.  If no survivor
+		 * remains, the redirect is dangling and is reclaimed (LP_DEAD, or
+		 * LP_UNUSED if the caller allows it).
 		 */
+		OffsetNumber target = ItemIdGetRedirect(rootlp);
+		OffsetNumber live = heap_prune_chain_find_live(prstate, target);
+
+		if (OffsetNumberIsValid(live))
+		{
+			if (live == target)
+				heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+			else
+				heap_prune_record_redirect(prstate, rootoffnum, live, false);
+			return;
+		}
+
 		heap_prune_record_dead_or_unused(prstate, rootoffnum, false);
 		return;
 	}
@@ -1794,80 +1885,67 @@ process_chain:
 	else if (ndeadchain == nchain)
 	{
 		/*
-		 * The entire chain is dead.  Mark the root line pointer LP_DEAD and
-		 * handle each member: a dead HOT-selectively-updated member may still
-		 * have a stale btree leaf pointing at it, so keep it in place as an
-		 * ordinary dead heap-only tuple (its t_ctid and inline bitmap intact)
-		 * until vacuum reclaims it once ambulkdelete has swept those leaves.
-		 * Reclaim only classic-HOT members, which carry no index entry of
-		 * their own, to LP_UNUSED.
+		 * The entire chain is dead.  No live tuple remains to forward to, so
+		 * mark the root LP_DEAD (or LP_UNUSED if the caller allows it) and
+		 * reclaim each member.  A dead HOT-selectively-updated member may
+		 * still have a stale btree leaf pointing at it: mark it LP_DEAD so the
+		 * slot is pinned against reuse and added to the dead-items array,
+		 * letting ambulkdelete sweep the leaf and a later vacuum reclaim the
+		 * line pointer.  Classic-HOT members carry no leaf of their own and go
+		 * straight to LP_UNUSED.
 		 */
+		heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
+		for (int i = 1; i < nchain; i++)
 		{
-			bool		keeping = false;
-
-			heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
-			for (int i = 1; i < nchain; i++)
-			{
-				if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
-					keeping = true;
-				if (keeping)
-					heap_prune_record_unchanged_dead_member(prstate, chainitems[i]);
-				else
-					heap_prune_record_unused(prstate, chainitems[i], true);
-			}
+			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
+				heap_prune_record_dead_or_unused(prstate, chainitems[i], true);
+			else
+				heap_prune_record_unused(prstate, chainitems[i], true);
 		}
 	}
 	else
 	{
 		/*
-		 * We found a DEAD prefix followed by a live remainder in the chain.
+		 * The chain has a dead prefix followed by a live remainder.  Collapse
+		 * it so that every line pointer which may still be referenced by a
+		 * btree entry forwards to the first live tuple:
 		 *
-		 * Dead HOT-selectively-updated members are kept in place as ordinary
-		 * dead heap-only tuples.  Each keeps its t_ctid forward link and its
-		 * inline producing-hop bitmap, so the natural HOT chain forwards a
-		 * stale mid-chain entry to first_live and a root-pointing entry
-		 * accumulates every hop's bitmap as it walks.  The root redirect
-		 * therefore points at the *first* dead member (chainitems[1]) -- not
-		 * first_live -- so a root-pointing entry still traverses the whole
-		 * prefix and accumulates the full union.  Leading classic-HOT members
-		 * that carry no index entry, and that no kept member forwards through,
-		 * are reclaimed.  In notation: LP[1] v1 root -> LP[3] v2 {a} -> LP[5]
-		 * v3 {b} -> LP[7] v4 LIVE (v1..v3 dead) becomes LP[1] redirect ->
-		 * LP[3], with LP[3], LP[5] kept as dead tuples carrying {a},{b}; LP[7]
-		 * v4 live.
+		 *  - The root line pointer is redirected to first_live (classic HOT).
+		 *  - Each dead HOT-selectively-updated member (one that may carry a
+		 *    stale btree leaf of its own, from a hop that changed an indexed
+		 *    attribute) is ALSO redirected to first_live.  An index entry that
+		 *    points at such a member then resolves to the live tuple; the read
+		 *    path rechecks the entry's stored key against that tuple and drops
+		 *    the entry if its key no longer matches.  These mid-chain
+		 *    redirects are reclaimed once ambulkdelete has swept their stale
+		 *    leaves.  Redirects carry no XIDs, so they are freeze-safe.
+		 *  - Dead classic-HOT members carry no btree entry of their own and
+		 *    are reclaimed to LP_UNUSED immediately.
+		 *
+		 * first_live is a heap-only tuple (produced by an earlier HOT update),
+		 * so it is a valid redirect target for every one of these redirects.
+		 * If first_live is later HOT-updated and dies, a subsequent prune
+		 * re-points all of these redirects to the new first live tuple (see
+		 * heap_prune_chain_find_live), so they never chain redirect->redirect.
 		 */
 		OffsetNumber first_live = chainitems[ndeadchain];
-		OffsetNumber head = InvalidOffsetNumber;
-		bool		keeping = false;
 
+		/* root -> first_live (skip a redundant no-op redirect on re-prune) */
+		if (ItemIdIsRedirected(rootlp) &&
+			ItemIdGetRedirect(rootlp) == first_live)
+			heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
+		else
+			heap_prune_record_redirect(prstate, rootoffnum, first_live,
+									   ItemIdIsNormal(rootlp));
+
+		/* dead prefix: redirect entry-bearing members, reclaim the rest */
 		for (int i = 1; i < ndeadchain; i++)
 		{
 			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
-				keeping = true;
-			if (keeping)
-			{
-				if (!OffsetNumberIsValid(head))
-					head = chainitems[i];
-				heap_prune_record_unchanged_dead_member(prstate, chainitems[i]);
-			}
+				heap_prune_record_redirect(prstate, chainitems[i], first_live,
+										   true);
 			else
 				heap_prune_record_unused(prstate, chainitems[i], true);
-		}
-
-		{
-			OffsetNumber redirect_target =
-				OffsetNumberIsValid(head) ? head : first_live;
-
-			/*
-			 * On re-prune the root may already redirect to this same target;
-			 * recording it again would be a redundant no-op redirect.
-			 */
-			if (ItemIdIsRedirected(rootlp) &&
-				ItemIdGetRedirect(rootlp) == redirect_target)
-				heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
-			else
-				heap_prune_record_redirect(prstate, rootoffnum, redirect_target,
-										   ItemIdIsNormal(rootlp));
 		}
 
 		/* the rest of tuples in the chain are normal, unchanged tuples */
@@ -1911,6 +1989,33 @@ heap_prune_record_redirect(PruneState *prstate,
 	 * Do not mark the redirect target here.  It needs to be counted
 	 * separately as an unchanged tuple.
 	 */
+
+	/*
+	 * If the redirect points at a HOT-selectively-updated live tuple, the
+	 * page may still carry stale btree entries that resolve through this
+	 * redirect to a tuple with a different key.  Such entries are filtered by
+	 * the read path's leaf-key recheck, which fetches the heap tuple -- but an
+	 * index-only scan trusts the visibility map and skips that fetch.  So the
+	 * page must not be reported all-visible/all-frozen while such a redirect
+	 * exists; it becomes eligible again only once vacuum has swept the stale
+	 * leaves and reclaimed the redirect.
+	 */
+	if (rdoffnum >= FirstOffsetNumber &&
+		rdoffnum <= PageGetMaxOffsetNumber(prstate->page))
+	{
+		ItemId		tlp = PageGetItemId(prstate->page, rdoffnum);
+
+		if (ItemIdIsNormal(tlp))
+		{
+			HeapTupleHeader thtup = (HeapTupleHeader) PageGetItem(prstate->page, tlp);
+
+			if ((thtup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+			{
+				prstate->set_all_visible = false;
+				prstate->set_all_frozen = false;
+			}
+		}
+	}
 
 	Assert(prstate->nredirected < MaxHeapTuplesPerPage);
 	prstate->redirected[prstate->nredirected * 2] = offnum;
@@ -2010,28 +2115,6 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
 		prstate->ndeleted++;
 }
 
-/*
- * heap_prune_record_unchanged_dead_member
- *		Keep a dead HOT-selectively-updated heap-only chain member in place.
- *
- * The member is left as an ordinary dead heap-only tuple: its t_ctid still
- * forwards to its successor and its inline modified-attrs bitmap is intact, so
- * a stale index entry that points at it walks forward to the live tuple.  We
- * must not reclaim it here because outstanding mid-chain index entries still
- * reference its slot; vacuum reclaims it once ambulkdelete has swept those
- * leaves.  Just mark it processed and keep the page from being reported
- * all-visible/all-frozen.
- */
-static void
-heap_prune_record_unchanged_dead_member(PruneState *prstate, OffsetNumber offnum)
-{
-	Assert(!prstate->processed[offnum]);
-	prstate->processed[offnum] = true;
-
-	prstate->hastup = true;
-	prstate->set_all_visible = false;
-	prstate->set_all_frozen = false;
-}
 
 /*
  * heap_prune_item_preserves_hot_indexed
@@ -2697,7 +2780,16 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			Assert(ItemIdHasStorage(fromlp) && ItemIdIsNormal(fromlp));
 
 			htup = (HeapTupleHeader) PageGetItem(page, fromlp);
-			Assert(!HeapTupleHeaderIsHeapOnly(htup));
+
+			/*
+			 * The redirect source is normally the non-heap-only chain root.
+			 * A HOT/SIU chain collapse additionally redirects dead heap-only
+			 * members that carried their own btree entry to the live tuple,
+			 * so a heap-only redirect source is allowed when it is
+			 * HOT-selectively-updated (HEAP_INDEXED_UPDATED).
+			 */
+			Assert(!HeapTupleHeaderIsHeapOnly(htup) ||
+				   (htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0);
 		}
 		else
 		{
