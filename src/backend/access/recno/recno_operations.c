@@ -5093,14 +5093,17 @@ recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 
 	/*
 	 * -----------------------------------------------------------------------
-	 * Phase IV-D: UNDO log maintenance
+	 * Phase IV-D: per-relation UNDO fork discard
 	 *
-	 * Under UNDO-in-WAL, per-relation UNDO records live in the shared UNDO
-	 * log and are discarded asynchronously by the undo discard worker once no
-	 * active transaction needs them for visibility.  VACUUM has nothing
-	 * RECNO-specific to do here beyond the phases above.
+	 * Reclaim space in the relation's UNDO fork by discarding pages whose
+	 * records are all older than the oldest transaction that could still need
+	 * them for rollback.  A fork page is discardable iff its max_xid (the
+	 * largest urec_xid on the page) precedes the cluster-wide removable
+	 * horizon, so no in-progress transaction can roll back into it.  Run this
+	 * before truncation so freed pages are returned to the fork's free list.
 	 * -----------------------------------------------------------------------
 	 */
+	RelUndoVacuum(onerel, GetOldestNonRemovableTransactionId(onerel));
 
 	/*
 	 * -----------------------------------------------------------------------

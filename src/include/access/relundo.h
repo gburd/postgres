@@ -265,28 +265,14 @@ typedef struct RelUndoMetaPageData
 								 * is empty. */
 	BlockNumber tail_blkno;		/* Oldest UNDO page (first to be discarded).
 								 * InvalidBlockNumber if the chain is empty. */
-	BlockNumber free_blkno;		/* Head of the free page list. Discarded pages
-								 * are added here for reuse, avoiding fork
-								 * extension. InvalidBlockNumber if no free
-								 * pages. */
+	BlockNumber free_blkno;		/* Head of the free page list. Pages discarded
+								 * by VACUUM are spliced here for reuse,
+								 * avoiding fork extension. InvalidBlockNumber
+								 * if no free pages. */
 	uint64		total_records;	/* Cumulative count of all UNDO records ever
 								 * created (monotonically increasing) */
 	uint64		discarded_records;	/* Cumulative count of discarded records.
 									 * (total - discarded) = live records. */
-
-	/*
-	 * System transaction decoupling fields (version 2).
-	 *
-	 * Page allocations are performed as "system transactions" that commit
-	 * immediately, independent of the user transaction.  If the user
-	 * transaction aborts, the allocated-but-unused pages are reclaimed via
-	 * deferred deallocation.  The background relundo_worker processes pages
-	 * on the pending-deallocation list.
-	 */
-	BlockNumber pending_dealloc_head;	/* First block pending deallocation.
-										 * InvalidBlockNumber if none. */
-	uint32		pending_dealloc_count;	/* Number of blocks pending
-										 * deallocation. */
 	BlockNumber system_alloc_watermark;	/* High-water mark of system-allocated
 										 * pages. Tracks the highest block
 										 * number allocated via system
@@ -312,17 +298,25 @@ typedef RelUndoMetaPageData *RelUndoMetaPage;
  * Free space is [pd_lower, pd_upper). When pd_lower >= pd_upper, the page
  * is full and a new page must be allocated.
  *
+ * The max_xid field tracks the largest urec_xid of any record on the page.
+ * This drives page-granularity discard: a page is reclaimable once max_xid
+ * precedes the relation's oldest non-removable xid (oldest_xmin), since no
+ * active transaction can then need any record on the page for rollback.
+ *
  * The counter field stamps the page with its generation at creation time.
- * This enables page-granularity discard: if a page's counter precedes the
- * oldest visible counter, all records on that page are safe to discard.
+ * It is retained for record-pointer addressing (RelUndoRecPtr) but is no
+ * longer used for discard eligibility.
  */
 typedef struct RelUndoPageHeaderData
 {
 	BlockNumber prev_blkno;		/* Previous page in chain (toward tail).
 								 * InvalidBlockNumber for the oldest page in
 								 * the chain (the tail). */
-	uint16		counter;		/* Generation counter at page creation. Used
+	TransactionId max_xid;		/* Largest urec_xid of any record on this page.
+								 * InvalidTransactionId on an empty page. Used
 								 * for discard eligibility checks. */
+	uint16		counter;		/* Generation counter at page creation. Used
+								 * for record-pointer addressing. */
 	uint16		pd_lower;		/* Byte offset of next record insertion point
 								 * (grows upward from header). */
 	uint16		pd_upper;		/* Byte offset of end of usable space
@@ -356,9 +350,6 @@ extern void relundo_init_page(Page page, BlockNumber prev_blkno,
 
 /* Get free space on an UNDO data page */
 extern Size relundo_get_free_space(Page page);
-
-/* Compare two counter values handling wraparound */
-extern bool relundo_counter_precedes(uint16 counter1, uint16 counter2);
 
 /*
  * Public API for table access methods
@@ -487,16 +478,18 @@ extern uint16 RelUndoGetCurrentCounter(Relation rel);
 /*
  * RelUndoDiscard - Discard old UNDO records
  *
- * Frees space occupied by UNDO records older than the specified counter.
- * Called during VACUUM to reclaim space.
+ * Frees space occupied by UNDO records that no active transaction can still
+ * need for rollback.  Called during VACUUM to reclaim space.
  *
  * Parameters:
- *   rel                     - Relation to discard UNDO from
- *   oldest_visible_counter  - Counter value of oldest visible transaction
+ *   rel          - Relation to discard UNDO from
+ *   oldest_xmin  - Oldest non-removable XID for this relation
  *
- * All records with counter < oldest_visible_counter are eligible for discard.
+ * A page is discardable iff its max_xid precedes oldest_xmin, meaning every
+ * record on the page belongs to a transaction that has already committed or
+ * aborted and is older than any active snapshot.
  */
-extern void RelUndoDiscard(Relation rel, uint16 oldest_visible_counter);
+extern void RelUndoDiscard(Relation rel, TransactionId oldest_xmin);
 
 /*
  * RelUndoInitRelation - Initialize per-relation UNDO for a new relation
@@ -531,42 +524,6 @@ extern void RelUndoDropRelation(Relation rel);
  *   oldest_xmin   - Oldest XID still visible to any transaction
  */
 extern void RelUndoVacuum(Relation rel, TransactionId oldest_xmin);
-
-/*
- * =============================================================================
- * DEFERRED DEALLOCATION API - System transaction decoupling support
- * =============================================================================
- */
-
-/*
- * RelUndoDeferDealloc - Mark a page for deferred deallocation
- *
- * Instead of immediately freeing a page, adds it to the pending deallocation
- * list tracked in the metapage.  The background relundo_worker processes
- * these pages in system transactions.
- *
- * Parameters:
- *   rel     - Relation containing the UNDO log
- *   metabuf - Metapage buffer (must be pinned and exclusively locked)
- *   pagebuf - Page buffer to mark for deferred deallocation (released on return)
- */
-extern void RelUndoDeferDealloc(Relation rel, Buffer metabuf, Buffer pagebuf);
-
-/*
- * RelUndoProcessDeferredDeallocs - Process pending deferred deallocations
- *
- * Called by the background relundo_worker to move pages from the
- * pending-deallocation list to the free list.  Processes up to max_pages
- * at a time to bound the work per invocation.
- *
- * Parameters:
- *   rel       - Relation containing the UNDO log
- *   max_pages - Maximum number of pages to process (0 = all)
- *
- * Returns:
- *   Number of pages actually moved to the free list.
- */
-extern uint32 RelUndoProcessDeferredDeallocs(Relation rel, uint32 max_pages);
 
 /*
  * =============================================================================

@@ -23,9 +23,9 @@
  */
 #include "postgres.h"
 
-#include "access/index_prune.h"
 #include "access/relundo.h"
 #include "access/relundo_xlog.h"
+#include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "common/relpath.h"
@@ -35,264 +35,65 @@
 #include "storage/smgr.h"
 
 /*
- * relundo_counter_precedes
- *		Compare two counter values handling 16-bit wraparound.
- *
- * Uses modular arithmetic: counter1 "precedes" counter2 if the signed
- * difference (counter1 - counter2) is negative but not more negative
- * than half the counter space (32768).
- *
- * This correctly handles wraparound and mirrors the logic used by
- * TransactionIdPrecedes() for 32-bit XIDs.
- */
-bool
-relundo_counter_precedes(uint16 counter1, uint16 counter2)
-{
-	int32		diff = (int32) counter1 - (int32) counter2;
-
-	return (diff < 0) && (diff > -32768);
-}
-
-/*
  * relundo_page_is_discardable
- *		Check if all records on a page are older than the cutoff counter.
+ *		Check if every record on a page is older than the discard horizon.
  *
- * Returns true if the page's generation counter precedes
- * oldest_visible_counter, meaning all records on this page are
- * invisible to all active transactions and can be discarded.
+ * A page is discardable iff its max_xid (the largest urec_xid of any record
+ * on the page) precedes oldest_xmin.  In that case no active transaction can
+ * still need any record on the page for rollback, so the page can be freed.
+ *
+ * An empty page (max_xid == InvalidTransactionId) carries no live records and
+ * is trivially discardable.
  */
 static bool
-relundo_page_is_discardable(Page page, uint16 oldest_visible_counter)
+relundo_page_is_discardable(Page page, TransactionId oldest_xmin)
 {
 	RelUndoPageHeader hdr;
 
 	hdr = (RelUndoPageHeader) PageGetContents(page);
 
-	return relundo_counter_precedes(hdr->counter, oldest_visible_counter);
-}
+	if (!TransactionIdIsValid(hdr->max_xid))
+		return true;
 
-/*
- * relundo_free_page
- *		Free an UNDO page and add it to the free list.
- *
- * The page's prev_blkno is overwritten with the current free list head,
- * and the metapage's free_blkno is updated to point to this page.
- * Both the page buffer and metapage buffer are marked dirty.
- *
- * The page buffer is released after updating.
- */
-static void
-relundo_free_page(Relation rel, Buffer pagebuf, Buffer metabuf)
-{
-	Page		metapage;
-	RelUndoMetaPage meta;
-	Page		page;
-	RelUndoPageHeader hdr;
-
-	metapage = BufferGetPage(metabuf);
-	meta = (RelUndoMetaPage) PageGetContents(metapage);
-
-	page = BufferGetPage(pagebuf);
-	hdr = (RelUndoPageHeader) PageGetContents(page);
-
-	/* Thread onto free list: this page's prev points to old free head */
-	hdr->prev_blkno = meta->free_blkno;
-
-	/* Update metapage free list head */
-	meta->free_blkno = BufferGetBlockNumber(pagebuf);
-
-	MarkBufferDirty(pagebuf);
-	MarkBufferDirty(metabuf);
-
-	UnlockReleaseBuffer(pagebuf);
-}
-
-/*
- * RelUndoDeferDealloc
- *		Mark a page for deferred deallocation instead of immediately freeing.
- *
- * Adds the page to the pending-deallocation list tracked in the metapage.
- * The page's prev_blkno is repurposed to thread the pending-dealloc list.
- * The background relundo_worker will later move these to the free list.
- *
- * This enables system transaction decoupling: page allocations commit
- * immediately (via system transaction), and deallocation is deferred to
- * avoid holding locks during user transaction VACUUM operations.
- *
- * The metapage buffer must be pinned and exclusively locked.
- * The page buffer is released after updating.
- */
-void
-RelUndoDeferDealloc(Relation rel, Buffer metabuf, Buffer pagebuf)
-{
-	Page		metapage;
-	RelUndoMetaPage meta;
-	Page		page;
-	RelUndoPageHeader hdr;
-
-	metapage = BufferGetPage(metabuf);
-	meta = (RelUndoMetaPage) PageGetContents(metapage);
-
-	page = BufferGetPage(pagebuf);
-	hdr = (RelUndoPageHeader) PageGetContents(page);
-
-	/*
-	 * Thread onto pending-deallocation list: this page's prev_blkno points
-	 * to the current head of the pending-dealloc list.
-	 *
-	 * Verified: The caller (RelUndoDiscard) WAL-logs the metapage via
-	 * XLOG_RELUNDO_DISCARD with REGBUF_STANDARD, capturing the updated
-	 * pending_dealloc_head and pending_dealloc_count in an FPI.  On
-	 * crash recovery the metapage is restored from the FPI.
-	 */
-	hdr->prev_blkno = meta->pending_dealloc_head;
-
-	/* Update metapage pending-dealloc list head and count */
-	meta->pending_dealloc_head = BufferGetBlockNumber(pagebuf);
-	meta->pending_dealloc_count++;
-
-	MarkBufferDirty(pagebuf);
-	MarkBufferDirty(metabuf);
-
-	UnlockReleaseBuffer(pagebuf);
-}
-
-/*
- * RelUndoProcessDeferredDeallocs
- *		Move pages from pending-deallocation list to the free list.
- *
- * Called by the background relundo_worker to perform actual deallocation
- * in a system transaction context. Processes up to max_pages pages at a
- * time (0 means process all pending pages).
- *
- * Returns the number of pages moved to the free list.
- */
-uint32
-RelUndoProcessDeferredDeallocs(Relation rel, uint32 max_pages)
-{
-	Buffer		metabuf;
-	Page		metapage;
-	RelUndoMetaPage meta;
-	BlockNumber current_blkno;
-	uint32		processed = 0;
-
-	/* If no UNDO fork exists, nothing to do */
-	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
-		return 0;
-
-	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_EXCLUSIVE);
-	metapage = BufferGetPage(metabuf);
-	meta = (RelUndoMetaPage) PageGetContents(metapage);
-
-	current_blkno = meta->pending_dealloc_head;
-
-	/* Process pages from the pending-deallocation list */
-	while (BlockNumberIsValid(current_blkno) &&
-		   (max_pages == 0 || processed < max_pages))
-	{
-		Buffer		pagebuf;
-		Page		page;
-		RelUndoPageHeader hdr;
-		BlockNumber next_pending;
-
-		pagebuf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
-									 RBM_NORMAL, NULL);
-		LockBuffer(pagebuf, BUFFER_LOCK_EXCLUSIVE);
-
-		page = BufferGetPage(pagebuf);
-		hdr = (RelUndoPageHeader) PageGetContents(page);
-
-		/* Save pointer to next pending page before relundo_free_page overwrites it */
-		next_pending = hdr->prev_blkno;
-
-		/* Move this page to the free list (releases pagebuf) */
-		relundo_free_page(rel, pagebuf, metabuf);
-
-		processed++;
-		current_blkno = next_pending;
-	}
-
-	/*
-	 * Update metapage: advance pending-dealloc head and decrement count.
-	 *
-	 * Verified: This path is intentionally not WAL-logged.  The deferred
-	 * deallocation is idempotent: if we crash before the next checkpoint
-	 * flushes the dirty metapage, recovery will restore the pre-processing
-	 * metapage state from the last checkpoint and the background worker
-	 * will simply re-process the same pages.  Pages on the
-	 * pending-dealloc list are not in active use, so double-processing
-	 * is harmless (they just get moved to the free list again).
-	 */
-	meta->pending_dealloc_head = current_blkno;
-	meta->pending_dealloc_count -= processed;
-
-	if (processed > 0)
-		MarkBufferDirty(metabuf);
-
-	UnlockReleaseBuffer(metabuf);
-
-	if (processed > 0)
-		elog(DEBUG1, "RelUndoProcessDeferredDeallocs: moved %u pages to free list",
-			 processed);
-
-	return processed;
+	return TransactionIdPrecedes(hdr->max_xid, oldest_xmin);
 }
 
 /*
  * RelUndoDiscard
  *		Discard old UNDO records and reclaim space.
  *
- * Walks the page chain from the tail toward the head.  For each page
- * whose counter precedes oldest_visible_counter, the page is unlinked
- * from the data chain and added to the free list.
+ * Walks the page chain from the head toward the tail.  Any page whose
+ * max_xid precedes oldest_xmin holds only records that no active
+ * transaction can still need for rollback; such pages are unlinked from
+ * the data chain and deferred for deallocation to the free list.
  *
- * The walk stops as soon as we find a page that is NOT discardable,
- * since all newer pages (toward head) will have equal or later counters.
- *
- * WAL logging is deferred to Phase 3.
+ * The chain is chronologically ordered (head newest, tail oldest), so the
+ * discardable pages form a contiguous run at the tail end.
  */
 void
-RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
+RelUndoDiscard(Relation rel, TransactionId oldest_xmin)
 {
 	Buffer		metabuf;
 	Page		metapage;
 	RelUndoMetaPage meta;
-	BlockNumber tail_blkno;
+	BlockNumber old_tail_blkno;
+	BlockNumber new_tail_blkno = InvalidBlockNumber;
+	BlockNumber run_head_blkno = InvalidBlockNumber;
+	BlockNumber current_blkno;
+	BlockNumber old_free_head;
 	uint32		npages_freed = 0;
+	Buffer		runtail_buf;
+	Buffer		newtail_buf = InvalidBuffer;
 
 	/* Lock the metapage exclusively for the duration of discard */
 	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_EXCLUSIVE);
 	metapage = BufferGetPage(metabuf);
 	meta = (RelUndoMetaPage) PageGetContents(metapage);
 
-	tail_blkno = meta->tail_blkno;
+	old_tail_blkno = meta->tail_blkno;
+	old_free_head = meta->free_blkno;
 
-	/*
-	 * Walk from tail toward head, freeing discardable pages.
-	 *
-	 * The chain is: head -> ... -> prev -> ... -> tail But we can't walk
-	 * forward from the tail since pages only have prev_blkno pointers (toward
-	 * tail).  Instead we need to find the page that *points to* the tail (the
-	 * "next" page toward head).
-	 *
-	 * However, for discard we can use a simpler approach: since we're
-	 * removing from the tail, we need to find the new tail.  We walk from the
-	 * head toward the tail, collecting pages.  But that's expensive.
-	 *
-	 * Actually, we can use an iterative approach: read the tail, check if
-	 * discardable.  If so, we need the page whose prev_blkno == tail_blkno.
-	 * But we don't have a next pointer.
-	 *
-	 * The simplest approach: walk from the head and build a stack of pages to
-	 * discard.  Since pages are chronologically ordered (head is newest, tail
-	 * is oldest), we walk from head following prev_blkno links until we find
-	 * non-discardable pages, then free everything beyond.
-	 *
-	 * For large chains this could be expensive, but VACUUM runs periodically
-	 * so the number of pages to walk is bounded in practice.
-	 */
-
-	if (!BlockNumberIsValid(tail_blkno))
+	if (!BlockNumberIsValid(old_tail_blkno))
 	{
 		/* Empty chain, nothing to discard */
 		UnlockReleaseBuffer(metabuf);
@@ -300,174 +101,176 @@ RelUndoDiscard(Relation rel, uint16 oldest_visible_counter)
 	}
 
 	/*
-	 * Walk from head toward tail to find the new tail boundary. We want to
-	 * keep pages whose counter >= oldest_visible_counter.
+	 * Pass 1 (read-only): walk from head toward tail following prev_blkno.
+	 * A page is discardable iff its max_xid precedes oldest_xmin.  The last
+	 * (closest-to-tail) page that is NOT discardable becomes the new tail;
+	 * every page below it forms a contiguous discardable run.  run_head is
+	 * the newest page in that run (the page just below the new tail, or the
+	 * chain head if the whole chain is discardable).
+	 *
+	 * This relies on a precondition of the append-only fork: discardability is
+	 * monotonic from tail (oldest) to head (newest).  Records are appended in
+	 * commit order, so a page's max_xid never decreases as the chain advances
+	 * head-ward; once a page is non-discardable (its max_xid reaches
+	 * oldest_xmin) every newer page above it is non-discardable too.  Thus the
+	 * discardable pages always form a single contiguous run at the tail, and
+	 * keeping the closest-to-tail non-discardable page as the new tail never
+	 * splices a still-live page onto the free list.
 	 */
+	current_blkno = meta->head_blkno;
+	while (BlockNumberIsValid(current_blkno))
 	{
-		BlockNumber current_blkno;
-		BlockNumber new_tail_blkno = InvalidBlockNumber;
-		BlockNumber prev_of_new_tail = InvalidBlockNumber;
+		Buffer		buf;
+		Page		page;
+		RelUndoPageHeader hdr;
+		BlockNumber prev;
 
-		/*
-		 * Walk from head following prev_blkno links.  The last page we see
-		 * that is NOT discardable becomes the new tail.
-		 */
-		current_blkno = meta->head_blkno;
+		buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
+								 RBM_NORMAL, NULL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
-		while (BlockNumberIsValid(current_blkno))
+		page = BufferGetPage(buf);
+		hdr = (RelUndoPageHeader) PageGetContents(page);
+		prev = hdr->prev_blkno;
+
+		if (!relundo_page_is_discardable(page, oldest_xmin))
 		{
-			Buffer		buf;
-			Page		page;
-			RelUndoPageHeader hdr;
-			BlockNumber prev;
+			new_tail_blkno = current_blkno;
+			run_head_blkno = prev;
+		}
 
-			buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
+		UnlockReleaseBuffer(buf);
+		current_blkno = prev;
+	}
+
+	if (!BlockNumberIsValid(new_tail_blkno))
+	{
+		/* Whole chain is discardable: the run starts at the chain head. */
+		run_head_blkno = meta->head_blkno;
+	}
+
+	if (!BlockNumberIsValid(run_head_blkno))
+	{
+		/* Nothing below the new tail is discardable. */
+		UnlockReleaseBuffer(metabuf);
+		return;
+	}
+
+	/*
+	 * Pass 2 (read-only): count the pages in the discardable run, walking
+	 * from run_head down to (and including) the old tail.
+	 */
+	current_blkno = run_head_blkno;
+	while (BlockNumberIsValid(current_blkno))
+	{
+		Buffer		buf;
+		Page		page;
+		RelUndoPageHeader hdr;
+
+		buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
+								 RBM_NORMAL, NULL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		hdr = (RelUndoPageHeader) PageGetContents(page);
+		current_blkno = hdr->prev_blkno;
+		UnlockReleaseBuffer(buf);
+		npages_freed++;
+	}
+
+	Assert(npages_freed > 0);
+
+	/*
+	 * Splice the whole run directly onto the free list with a bounded, fully
+	 * WAL-logged set of mutations.  Both the free list and the discardable run
+	 * are threaded through the same durable prev_blkno fields (logged at insert
+	 * time), so the run's internal links are left untouched and only its
+	 * boundaries change:
+	 *
+	 *   - the run's tail (old chain tail) gets prev_blkno = old_free_head,
+	 *     appending the prior free list after the run;
+	 *   - the new live tail (if any) gets prev_blkno = InvalidBlockNumber,
+	 *     detaching the live chain from the run;
+	 *   - the metapage's tail and free-list head are updated.
+	 *
+	 * Folding reclamation into this single WAL-logged operation makes discard
+	 * crash-safe end to end: there is no separate, unlogged deallocation step
+	 * whose replay could leave the free list inconsistent with the metapage.
+	 *
+	 * Pin and exclusively lock the boundary data pages BEFORE the critical
+	 * section so XLogRegisterBuffer sees them dirty and locked.
+	 */
+	runtail_buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, old_tail_blkno,
 									 RBM_NORMAL, NULL);
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
+	LockBuffer(runtail_buf, BUFFER_LOCK_EXCLUSIVE);
 
-			page = BufferGetPage(buf);
-			hdr = (RelUndoPageHeader) PageGetContents(page);
-			prev = hdr->prev_blkno;
-
-			if (!relundo_page_is_discardable(page, oldest_visible_counter))
-			{
-				/* This page is still live; it might be the new tail */
-				new_tail_blkno = current_blkno;
-				prev_of_new_tail = prev;
-			}
-
-			UnlockReleaseBuffer(buf);
-			current_blkno = prev;
-		}
-
-		/*
-		 * If all pages are discardable (new_tail_blkno is invalid), free
-		 * everything and leave the chain empty.
-		 */
-		if (!BlockNumberIsValid(new_tail_blkno))
-		{
-			/*
-			 * All pages are discardable.  Use deferred deallocation: move
-			 * pages to the pending-dealloc list rather than immediately
-			 * freeing.  The background relundo_worker will move them to the
-			 * free list in a system transaction.
-			 */
-			current_blkno = meta->head_blkno;
-			while (BlockNumberIsValid(current_blkno))
-			{
-				Buffer		buf;
-				Page		page;
-				RelUndoPageHeader hdr;
-				BlockNumber prev;
-
-				buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
+	if (BlockNumberIsValid(new_tail_blkno))
+	{
+		newtail_buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, new_tail_blkno,
 										 RBM_NORMAL, NULL);
-				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		LockBuffer(newtail_buf, BUFFER_LOCK_EXCLUSIVE);
+	}
 
-				page = BufferGetPage(buf);
-				hdr = (RelUndoPageHeader) PageGetContents(page);
-				prev = hdr->prev_blkno;
+	/* Apply the in-memory mutations. */
+	{
+		RelUndoPageHeader runtail_hdr;
 
-				RelUndoDeferDealloc(rel, metabuf, buf);
-				npages_freed++;
+		runtail_hdr = (RelUndoPageHeader) PageGetContents(BufferGetPage(runtail_buf));
+		runtail_hdr->prev_blkno = old_free_head;
+		MarkBufferDirty(runtail_buf);
 
-				current_blkno = prev;
-			}
-
-			meta->head_blkno = InvalidBlockNumber;
-			meta->tail_blkno = InvalidBlockNumber;
-		}
-		else if (BlockNumberIsValid(prev_of_new_tail))
+		if (BufferIsValid(newtail_buf))
 		{
-			/*
-			 * Defer deallocation of pages from prev_of_new_tail backward to
-			 * the old tail, then update the new tail's prev_blkno.
-			 */
-			current_blkno = prev_of_new_tail;
-			while (BlockNumberIsValid(current_blkno))
-			{
-				Buffer		buf;
-				Page		page;
-				RelUndoPageHeader hdr;
-				BlockNumber prev;
+			RelUndoPageHeader newtail_hdr;
 
-				buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, current_blkno,
-										 RBM_NORMAL, NULL);
-				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-
-				page = BufferGetPage(buf);
-				hdr = (RelUndoPageHeader) PageGetContents(page);
-				prev = hdr->prev_blkno;
-
-				RelUndoDeferDealloc(rel, metabuf, buf);
-				npages_freed++;
-
-				current_blkno = prev;
-			}
-
-			/* Update the new tail: clear its prev link */
-			{
-				Buffer		tailbuf;
-				Page		tailpage;
-				RelUndoPageHeader tailhdr;
-
-				tailbuf = ReadBufferExtended(rel, RELUNDO_FORKNUM,
-											 new_tail_blkno,
-											 RBM_NORMAL, NULL);
-				LockBuffer(tailbuf, BUFFER_LOCK_EXCLUSIVE);
-
-				tailpage = BufferGetPage(tailbuf);
-				tailhdr = (RelUndoPageHeader) PageGetContents(tailpage);
-				tailhdr->prev_blkno = InvalidBlockNumber;
-
-				MarkBufferDirty(tailbuf);
-				UnlockReleaseBuffer(tailbuf);
-			}
+			newtail_hdr = (RelUndoPageHeader) PageGetContents(BufferGetPage(newtail_buf));
+			newtail_hdr->prev_blkno = InvalidBlockNumber;
+			MarkBufferDirty(newtail_buf);
 
 			meta->tail_blkno = new_tail_blkno;
 		}
-		/* else: tail hasn't changed, nothing to discard */
-	}
-
-	if (npages_freed > 0)
-	{
-		meta->discarded_records += npages_freed;	/* approximate */
-
-		/*
-		 * Notify all indexes on this relation that UNDO records have been
-		 * discarded. This allows indexes to proactively mark dead entries,
-		 * reducing VACUUM work.
-		 */
-		IndexPruneNotifyDiscard(rel, oldest_visible_counter);
-
-		/* Mark buffer dirty before WAL-logging (assertion requires it) */
-		MarkBufferDirty(metabuf);
-
-		/* WAL-log the discard operation */
-		START_CRIT_SECTION();
-
+		else
 		{
-			xl_relundo_discard xlrec;
-
-			xlrec.old_tail_blkno = tail_blkno;
-			xlrec.new_tail_blkno = meta->tail_blkno;
-			xlrec.oldest_counter = oldest_visible_counter;
-			xlrec.npages_freed = npages_freed;
-
-			XLogBeginInsert();
-			XLogRegisterData((char *) &xlrec, SizeOfRelundoDiscard);
-
-			/*
-			 * Register the metapage buffer. Use REGBUF_STANDARD to allow
-			 * incremental updates if the page was recently modified.
-			 */
-			XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
-
-			XLogInsert(RM_RELUNDO_ID, XLOG_RELUNDO_DISCARD);
+			/* Whole chain discarded: the data chain is now empty. */
+			meta->head_blkno = InvalidBlockNumber;
+			meta->tail_blkno = InvalidBlockNumber;
 		}
 
-		END_CRIT_SECTION();
+		meta->free_blkno = run_head_blkno;
+		meta->discarded_records += npages_freed;	/* approximate */
+		MarkBufferDirty(metabuf);
 	}
 
+	/* WAL-log the discard operation. */
+	START_CRIT_SECTION();
+	{
+		xl_relundo_discard xlrec;
+
+		xlrec.old_tail_blkno = old_tail_blkno;
+		xlrec.new_tail_blkno = meta->tail_blkno;
+		xlrec.free_head_blkno = run_head_blkno;
+		xlrec.old_free_head = old_free_head;
+		xlrec.discard_xid = oldest_xmin;
+		xlrec.npages_freed = npages_freed;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfRelundoDiscard);
+
+		/* Block 0: metapage (tail + free-list head). */
+		XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
+
+		/* Block 1: run tail, whose prev_blkno now links to old_free_head. */
+		XLogRegisterBuffer(1, runtail_buf, REGBUF_STANDARD);
+
+		/* Block 2: new live tail, whose prev_blkno is cleared (if present). */
+		if (BufferIsValid(newtail_buf))
+			XLogRegisterBuffer(2, newtail_buf, REGBUF_STANDARD);
+
+		XLogInsert(RM_RELUNDO_ID, XLOG_RELUNDO_DISCARD);
+	}
+	END_CRIT_SECTION();
+
+	if (BufferIsValid(newtail_buf))
+		UnlockReleaseBuffer(newtail_buf);
+	UnlockReleaseBuffer(runtail_buf);
 	UnlockReleaseBuffer(metabuf);
 }

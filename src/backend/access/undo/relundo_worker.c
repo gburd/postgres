@@ -65,14 +65,10 @@ static RelUndoWorkQueue *WorkQueue = NULL;
 static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t got_SIGTERM = false;
 
-/* Maximum deferred-dealloc pages to process per worker cycle */
-#define RELUNDO_DEFERRED_DEALLOC_BATCH	64
-
 /* Forward declarations */
 static void relundo_worker_sighup(SIGNAL_ARGS);
 static void relundo_worker_sigterm(SIGNAL_ARGS);
 static void process_relundo_work_item(RelUndoWorkItem *item);
-static void process_deferred_deallocations(void);
 
 /*
  * RelUndoWorkerShmemSize
@@ -330,98 +326,6 @@ process_relundo_work_item(RelUndoWorkItem *item)
 }
 
 /*
- * process_deferred_deallocations
- *		Scan pg_class for relations with pending deferred deallocations and
- *		process them in batches.
- *
- * This implements the background half of system transaction decoupling:
- * RelUndoDiscard() marks pages as "pending deallocation" instead of
- * immediately freeing them, and this function moves them to the free list.
- *
- * We scan all relations with UNDO forks in the current database. For each
- * relation that has pending deallocations, we process a batch of pages.
- * This bounds the work per cycle and avoids holding locks for too long.
- */
-static void
-process_deferred_deallocations(void)
-{
-	Relation	pg_class;
-	TableScanDesc scan;
-	HeapTuple	tuple;
-	uint32		total_processed = 0;
-
-	pg_class = table_open(RelationRelationId, AccessShareLock);
-	scan = table_beginscan_catalog(pg_class, 0, NULL);
-
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
-	{
-		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tuple);
-		Oid			reloid;
-		Relation	rel;
-
-		/* Skip non-table relations */
-		if (classForm->relkind != RELKIND_RELATION)
-			continue;
-
-		reloid = classForm->oid;
-
-		PG_TRY();
-		{
-			rel = table_open(reloid, AccessShareLock);
-
-			/* Check if this relation has an UNDO fork with pending deallocs */
-			if (smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
-			{
-				Buffer		metabuf;
-				Page		metapage;
-				RelUndoMetaPage meta;
-				bool		has_pending;
-
-				metabuf = relundo_get_metapage(rel, BUFFER_LOCK_SHARE);
-				metapage = BufferGetPage(metabuf);
-				meta = (RelUndoMetaPage) PageGetContents(metapage);
-
-				has_pending = (meta->pending_dealloc_count > 0);
-
-				UnlockReleaseBuffer(metabuf);
-
-				if (has_pending)
-				{
-					uint32 n;
-
-					n = RelUndoProcessDeferredDeallocs(rel,
-													   RELUNDO_DEFERRED_DEALLOC_BATCH);
-					total_processed += n;
-
-					if (n > 0)
-						elog(DEBUG1, "Processed %u deferred deallocations for relation %u",
-							 n, reloid);
-				}
-			}
-
-			table_close(rel, AccessShareLock);
-		}
-		PG_CATCH();
-		{
-			/* Relation may have been dropped concurrently; skip it */
-			EmitErrorReport();
-			FlushErrorState();
-		}
-		PG_END_TRY();
-
-		/* Check for interrupts between relations */
-		CHECK_FOR_INTERRUPTS();
-	}
-
-	table_endscan(scan);
-	table_close(pg_class, AccessShareLock);
-
-	if (total_processed > 0)
-		elog(DEBUG1, "Deferred deallocation pass: processed %u pages total",
-			 total_processed);
-}
-
-/*
  * RelUndoWorkerMain
  *		Main entry point for per-relation UNDO worker process
  */
@@ -478,16 +382,11 @@ RelUndoWorkerMain(Datum main_arg)
 		else
 		{
 			/*
-			 * No UNDO chain work available.  Process any pending deferred
-			 * deallocations, then exit.  The worker is registered with
-			 * BGW_NEVER_RESTART so once the queue is drained it should
-			 * not linger -- the aborting backend may be waiting for us
-			 * via WaitForBackgroundWorkerShutdown().
+			 * No UNDO chain work available, so exit.  The worker is registered
+			 * with BGW_NEVER_RESTART so once the queue is drained it should
+			 * not linger -- the aborting backend may be waiting for us via
+			 * WaitForBackgroundWorkerShutdown().
 			 */
-			StartTransactionCommand();
-			process_deferred_deallocations();
-			CommitTransactionCommand();
-
 			break;		/* exit the main loop */
 		}
 	}

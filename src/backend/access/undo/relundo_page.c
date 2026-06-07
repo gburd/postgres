@@ -72,8 +72,6 @@ relundo_get_metapage(Relation rel, int mode)
 			meta->free_blkno = InvalidBlockNumber;
 			meta->total_records = 0;
 			meta->discarded_records = 0;
-			meta->pending_dealloc_head = InvalidBlockNumber;
-			meta->pending_dealloc_count = 0;
 			meta->system_alloc_watermark = InvalidBlockNumber;
 
 			MarkBufferDirty(buf);
@@ -149,8 +147,6 @@ relundo_get_metapage(Relation rel, int mode)
 		meta->free_blkno = InvalidBlockNumber;
 		meta->total_records = 0;
 		meta->discarded_records = 0;
-		meta->pending_dealloc_head = InvalidBlockNumber;
-		meta->pending_dealloc_count = 0;
 		meta->system_alloc_watermark = InvalidBlockNumber;
 
 		MarkBufferDirty(buf);
@@ -252,8 +248,7 @@ relundo_allocate_page(Relation rel, Buffer metabuf, Buffer *newbuf)
 	 * Verified: The metapage is WAL-logged via REGBUF_STANDARD as block 1
 	 * in the caller's XLOG_RELUNDO_INSERT record (see RelUndoFinish).
 	 * On crash recovery the FPI restores all metapage fields including
-	 * system_alloc_watermark, pending_dealloc_head, and
-	 * pending_dealloc_count.
+	 * system_alloc_watermark.
 	 */
 	if (!BlockNumberIsValid(meta->system_alloc_watermark) ||
 		newblkno > meta->system_alloc_watermark)
@@ -287,6 +282,7 @@ relundo_init_page(Page page, BlockNumber prev_blkno, uint16 counter)
 	/* Set up our UNDO-specific header in the page contents area */
 	hdr = (RelUndoPageHeader) PageGetContents(page);
 	hdr->prev_blkno = prev_blkno;
+	hdr->max_xid = InvalidTransactionId;
 	hdr->counter = counter;
 	hdr->pd_lower = SizeOfRelUndoPageHeaderData;
 	hdr->pd_upper = BLCKSZ - MAXALIGN(SizeOfPageHeaderData);

@@ -88,24 +88,31 @@ typedef struct xl_relundo_insert
 	uint16		urec_len;		/* Total length of UNDO record */
 	uint16		page_offset;	/* Byte offset within page where record starts */
 	uint16		new_pd_lower;	/* Updated pd_lower after insertion */
+	TransactionId max_xid;		/* Updated page max_xid watermark after insert */
 }			xl_relundo_insert;
 
-#define SizeOfRelundoInsert	(offsetof(xl_relundo_insert, new_pd_lower) + sizeof(uint16))
+#define SizeOfRelundoInsert	(offsetof(xl_relundo_insert, max_xid) + sizeof(TransactionId))
 
 /*
  * xl_relundo_discard - WAL record for UNDO page discard
  *
- * Logged when RelUndoDiscard() reclaims space by removing old pages
- * from the tail of the page chain.
+ * Logged when RelUndoDiscard() reclaims a contiguous run of discardable
+ * pages from the tail of the data chain by splicing the whole run directly
+ * onto the metapage's free list.  Only the run boundaries change, so the
+ * record covers a fixed set of buffers regardless of run length:
  *
- * Backup block 0: the metapage (updated tail/free pointers)
+ * Backup block 0: the metapage (tail + free-list head)
+ * Backup block 1: the run's old-tail page (prev_blkno -> old free head)
+ * Backup block 2: the new live tail page (prev_blkno -> Invalid)
  */
 typedef struct xl_relundo_discard
 {
-	BlockNumber old_tail_blkno; /* Previous tail block number */
-	BlockNumber new_tail_blkno; /* New tail after discard */
-	uint16		oldest_counter; /* Counter cutoff used for discard */
-	uint32		npages_freed;	/* Number of pages freed */
+	BlockNumber old_tail_blkno;		/* Old chain tail (run's tail), block 1 */
+	BlockNumber new_tail_blkno;		/* New chain tail after discard */
+	BlockNumber free_head_blkno;	/* New free-list head (run's head) */
+	BlockNumber old_free_head;		/* Prior free-list head, written to block 1 */
+	TransactionId discard_xid;		/* oldest_xmin cutoff used for discard */
+	uint32		npages_freed;		/* Number of pages spliced onto free list */
 }			xl_relundo_discard;
 
 #define SizeOfRelundoDiscard	(offsetof(xl_relundo_discard, npages_freed) + sizeof(uint32))

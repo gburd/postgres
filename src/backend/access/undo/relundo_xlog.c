@@ -337,6 +337,9 @@ relundo_redo_insert(XLogReaderState *record)
 			/* Update the page's free space pointer */
 			undohdr->pd_lower = xlrec->new_pd_lower;
 
+			/* Restore the page's max_xid discard watermark. */
+			undohdr->max_xid = xlrec->max_xid;
+
 			/*
 			 * Post-condition check: verify pd_lower is reasonable after
 			 * update.  pd_lower is contents-relative while page_offset is
@@ -376,40 +379,58 @@ relundo_redo_insert(XLogReaderState *record)
 /*
  * relundo_redo_discard - Replay UNDO page discard
  *
- * The metapage is logged with a full page image, so we just restore it.
- * The actual page unlinking was already reflected in the metapage state.
+ * Discard splices a contiguous run of discardable pages off the tail of the
+ * data chain directly onto the metapage's free list.  The run is already
+ * internally linked by durable prev_blkno fields, so only the run boundaries
+ * change.  The record carries a bounded set of buffers:
+ *
+ *   Block 0: the metapage (tail + free-list head)
+ *   Block 1: the run's old-tail page (prev_blkno -> old free head)
+ *   Block 2: the new live tail page (prev_blkno -> Invalid), if any
+ *
+ * The metapage is registered REGBUF_STANDARD (not a forced FPI), so on a
+ * BLK_NEEDS_REDO replay we re-apply the metapage mutations explicitly rather
+ * than relying on a restored image.
  */
 static void
 relundo_redo_discard(XLogReaderState *record)
 {
+	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		buf;
 	XLogRedoAction action;
 	xl_relundo_discard *xlrec = (xl_relundo_discard *) XLogRecGetData(record);
+	bool		whole_chain = !BlockNumberIsValid(xlrec->new_tail_blkno);
 
-	/* Consistency checks on WAL record data */
+	/*
+	 * Consistency check on WAL record data.  A run is always at least one
+	 * page; there is no upper bound, since a whole-chain discard of a large
+	 * fork legitimately frees arbitrarily many pages.  Do not impose an
+	 * arbitrary ceiling here: do-time has no matching guard, so any cap we
+	 * reject below an achievable run length would turn a logged record into
+	 * one its own crash recovery refuses to replay (a PANIC loop).
+	 */
 	if (xlrec->npages_freed == 0)
 		elog(PANIC, "relundo_redo_discard: npages_freed is zero");
 
-	if (xlrec->npages_freed > 10000)  /* Sanity check: max 10000 pages per discard */
-		elog(PANIC, "relundo_redo_discard: unreasonable npages_freed %u",
-			 xlrec->npages_freed);
-
 	/*
-	 * Block 0 is the metapage, so tail block numbers must be >= 1 (data
-	 * pages) or InvalidBlockNumber if the chain becomes empty.
+	 * Block 0 is the metapage; the run's old tail is a real data page, so its
+	 * block number must never be the metapage (block 0).
 	 */
 	if (xlrec->old_tail_blkno == 0)
 		elog(PANIC, "relundo_redo_discard: old_tail_blkno is metapage block 0");
 
+	/*
+	 * new_tail_blkno is either a real data page (>= 1) or InvalidBlockNumber
+	 * when the whole chain was discarded; it must never be the metapage.
+	 */
 	if (xlrec->new_tail_blkno == 0)
 		elog(PANIC, "relundo_redo_discard: new_tail_blkno is metapage block 0");
 
-	/* Block 0 is the metapage with updated tail/free pointers */
+	/* Block 0: metapage (tail + free-list head). */
 	action = XLogReadBufferForRedo(record, 0, &buf);
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		XLogRecPtr	lsn = record->EndRecPtr;
 		Page		page = BufferGetPage(buf);
 		RelUndoMetaPageData *meta;
 
@@ -424,15 +445,14 @@ relundo_redo_discard(XLogReaderState *record)
 			elog(PANIC, "relundo_redo_discard: counter %u exceeds maximum",
 				 meta->counter);
 
-		/* Update the metapage to reflect the discard */
+		/* Advance the live data chain tail (and head if it is now empty). */
 		meta->tail_blkno = xlrec->new_tail_blkno;
-		meta->discarded_records += xlrec->npages_freed;
+		if (whole_chain)
+			meta->head_blkno = InvalidBlockNumber;
 
-		/* Post-condition: discarded records must not exceed total records */
-		if (meta->discarded_records > meta->total_records)
-			elog(PANIC, "relundo_redo_discard: discarded_records %lu exceeds total_records %lu",
-				 (unsigned long) meta->discarded_records,
-				 (unsigned long) meta->total_records);
+		/* Splice the run directly onto the free list. */
+		meta->free_blkno = xlrec->free_head_blkno;
+		meta->discarded_records += xlrec->npages_freed;
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buf);
@@ -440,6 +460,43 @@ relundo_redo_discard(XLogReaderState *record)
 
 	if (BufferIsValid(buf))
 		UnlockReleaseBuffer(buf);
+
+	/*
+	 * Block 1: the run's old-tail page, whose prev_blkno now links to the old
+	 * free-list head (appending the prior free list after the run).
+	 */
+	action = XLogReadBufferForRedo(record, 1, &buf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buf);
+		RelUndoPageHeader hdr = (RelUndoPageHeader) PageGetContents(page);
+
+		hdr->prev_blkno = xlrec->old_free_head;
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buf);
+	}
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+
+	/*
+	 * Block 2: the new live tail page (present only when the chain is not
+	 * fully discarded), whose prev_blkno is cleared to detach it from the run.
+	 */
+	if (!whole_chain && XLogRecHasBlockRef(record, 2))
+	{
+		action = XLogReadBufferForRedo(record, 2, &buf);
+		if (action == BLK_NEEDS_REDO)
+		{
+			Page		page = BufferGetPage(buf);
+			RelUndoPageHeader hdr = (RelUndoPageHeader) PageGetContents(page);
+
+			hdr->prev_blkno = InvalidBlockNumber;
+			PageSetLSN(page, lsn);
+			MarkBufferDirty(buf);
+		}
+		if (BufferIsValid(buf))
+			UnlockReleaseBuffer(buf);
+	}
 }
 
 /*
