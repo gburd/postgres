@@ -38,6 +38,10 @@
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
+/* Forward declaration; defined in nbtinsert.c, used here for amrecheck_leaf_key. */
+extern bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+									 struct TupleTableSlot *heapSlot);
+
 
 /*
  * BTPARALLEL_NOT_INITIALIZED indicates that the scan has not started.
@@ -166,6 +170,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amendscan = btendscan,
 		.ammarkpos = btmarkpos,
 		.amrestrpos = btrestrpos,
+		.amrecheck_leaf_key = _bt_heap_keys_equal_leaf,
 		.amestimateparallelscan = btestimateparallelscan,
 		.aminitparallelscan = btinitparallelscan,
 		.amparallelrescan = btparallelrescan,
