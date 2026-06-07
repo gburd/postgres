@@ -64,10 +64,11 @@ relundo_desc(StringInfo buf, XLogReaderState *record)
 				}
 
 				appendStringInfo(buf,
-								 "type %s, len %u, offset %u, new_pd_lower %u",
+								 "type %s, len %u, offset %u, new_pd_lower %u, max_xid %u",
 								 type_name, xlrec->urec_len,
 								 xlrec->page_offset,
-								 xlrec->new_pd_lower);
+								 xlrec->new_pd_lower,
+								 xlrec->max_xid);
 
 				if (info & XLOG_RELUNDO_INIT_PAGE)
 					appendStringInfoString(buf, " (init page)");
@@ -79,11 +80,11 @@ relundo_desc(StringInfo buf, XLogReaderState *record)
 				xl_relundo_discard *xlrec = (xl_relundo_discard *) data;
 
 				appendStringInfo(buf,
-								 "old_tail %u, new_tail %u, oldest_counter %u, "
+								 "old_tail %u, new_tail %u, discard_xid %u, "
 								 "npages_freed %u",
 								 xlrec->old_tail_blkno,
 								 xlrec->new_tail_blkno,
-								 xlrec->oldest_counter,
+								 xlrec->discard_xid,
 								 xlrec->npages_freed);
 			}
 			break;

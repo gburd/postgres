@@ -333,18 +333,19 @@ relundo_head_cache_invalidate(Oid relid)
  * for the common case where the current head page has sufficient free space.
  *
  * The RelUndoPageHeaderData layout within the page contents area is:
- *   offset 0: prev_blkno  (BlockNumber, 4 bytes)
- *   offset 4: counter     (uint16, 2 bytes)  -- never changes after page init
- *   offset 6: pd_lower    (uint16, 2 bytes)  -- our target
- *   offset 8: pd_upper    (uint16, 2 bytes)  -- never changes after page init
+ *   offset 0:  prev_blkno (BlockNumber, 4 bytes)
+ *   offset 4:  max_xid    (TransactionId, 4 bytes)
+ *   offset 8:  counter    (uint16, 2 bytes)  -- never changes after page init
+ *   offset 10: pd_lower   (uint16, 2 bytes)  -- our target
+ *   offset 12: pd_upper   (uint16, 2 bytes)  -- never changes after page init
  *
  * Because no pg_atomic_uint16 exists in this PostgreSQL version, we perform
- * the CAS on the 32-bit word at offset 4, which contains {counter, pd_lower}
- * packed as (pd_lower << 16) | counter on little-endian systems.  Since
- * both counter and pd_upper are stable after initialization, only pd_lower
- * (the high 16 bits of the u32 at offset 4) ever changes, making the CAS
- * safe: if pd_lower changed between our load and our CAS, the CAS fails and
- * we retry.
+ * the CAS on the 32-bit word covering {counter, pd_lower} (at offsetof
+ * counter, which is 4-byte aligned), packed as (pd_lower << 16) | counter on
+ * little-endian systems.  Since both counter and pd_upper are stable after
+ * initialization, only pd_lower (the high 16 bits of that u32) ever changes,
+ * making the CAS safe: if pd_lower changed between our load and our CAS, the
+ * CAS fails and we retry.
  *
  * On success: returns a valid RelUndoRecPtr encoding the reserved slot,
  *   and *undo_buf_out is set to the buffer, pinned AND exclusively locked
@@ -408,14 +409,15 @@ relundo_try_atomic_reserve(Relation rel, Size record_size,
 	 * CAS loop: atomically advance pd_lower from old_lower to new_lower.
 	 *
 	 * RelUndoPageHeaderData layout at the start of the contents area:
-	 *   [0..3]  prev_blkno (uint32)
-	 *   [4..5]  counter    (uint16)  -- stable after page init
-	 *   [6..7]  pd_lower   (uint16)  -- the field we increment
+	 *   [0..3]   prev_blkno (uint32)
+	 *   [4..7]   max_xid    (TransactionId)
+	 *   [8..9]   counter    (uint16)  -- stable after page init
+	 *   [10..11] pd_lower   (uint16)  -- the field we increment
 	 *
 	 * Since PostgreSQL provides no pg_atomic_uint16, we CAS the 32-bit word
-	 * at offset 4 (bytes 4-7) that contains both counter and pd_lower.
-	 * counter is stable, so any CAS failure is due to a concurrent pd_lower
-	 * update, which is exactly what we want to detect.
+	 * covering {counter, pd_lower} (at offsetof counter) that contains both
+	 * counter and pd_lower.  counter is stable, so any CAS failure is due to a
+	 * concurrent pd_lower update, which is exactly what we want to detect.
 	 *
 	 * Byte order matters for how we extract/pack the two uint16 halves of
 	 * the 32-bit word.  We use #ifdef WORDS_BIGENDIAN to be portable.
@@ -434,8 +436,20 @@ relundo_try_atomic_reserve(Relation rel, Size record_size,
 		uint32		new_word;
 		uint32		loaded;
 
-		/* The word starts at offset 4 = sizeof(BlockNumber) */
-		word_ptr = (volatile uint32 *) (contents + sizeof(BlockNumber));
+		/*
+		 * The CAS word covers {counter, pd_lower}.  counter must be 4-byte
+		 * aligned and pd_lower must immediately follow it so the two uint16s
+		 * occupy a single 32-bit word; assert both at compile time so this
+		 * cannot silently break again if the header layout changes.
+		 */
+		StaticAssertStmt(offsetof(RelUndoPageHeaderData, counter) % sizeof(uint32) == 0,
+						 "RelUndoPageHeaderData.counter must be 4-byte aligned for the lock-free CAS");
+		StaticAssertStmt(offsetof(RelUndoPageHeaderData, pd_lower) ==
+						 offsetof(RelUndoPageHeaderData, counter) + sizeof(uint16),
+						 "RelUndoPageHeaderData.pd_lower must immediately follow counter");
+
+		word_ptr = (volatile uint32 *)
+			(contents + offsetof(RelUndoPageHeaderData, counter));
 
 		do
 		{
@@ -785,6 +799,15 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		memcpy(contents + offset + SizeOfRelUndoRecordHeader,
 			   payload, payload_size);
 
+	/*
+	 * Advance the page's max_xid watermark to cover this record. Done before
+	 * WAL-logging so the new-page header copy and the xlrec both observe the
+	 * updated value; redo restores max_xid from the xlrec.
+	 */
+	if (!TransactionIdIsValid(datahdr->max_xid) ||
+		TransactionIdFollows(header->urec_xid, datahdr->max_xid))
+		datahdr->max_xid = header->urec_xid;
+
 	elog(DEBUG1, "RelUndoFinish: marking buffer dirty");
 
 	/*
@@ -864,6 +887,7 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	xlrec.urec_len = header->urec_len;
 	xlrec.page_offset = MAXALIGN(SizeOfPageHeaderData) + offset;
 	xlrec.new_pd_lower = datahdr->pd_lower;
+	xlrec.max_xid = datahdr->max_xid;
 
 	info = XLOG_RELUNDO_INSERT;
 	if (is_new_page)
@@ -971,6 +995,11 @@ RelUndoFinishWithTuple(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		memcpy(contents + offset + SizeOfRelUndoRecordHeader + payload_size,
 			   tuple_data, tuple_len);
 
+	/* Advance the page's max_xid watermark to cover this record. */
+	if (!TransactionIdIsValid(datahdr->max_xid) ||
+		TransactionIdFollows(header->urec_xid, datahdr->max_xid))
+		datahdr->max_xid = header->urec_xid;
+
 	MarkBufferDirty(undo_buffer);
 
 	if (is_new_page)
@@ -1019,6 +1048,7 @@ RelUndoFinishWithTuple(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	xlrec.urec_len = header->urec_len;
 	xlrec.page_offset = MAXALIGN(SizeOfPageHeaderData) + offset;
 	xlrec.new_pd_lower = datahdr->pd_lower;
+	xlrec.max_xid = datahdr->max_xid;
 
 	info = XLOG_RELUNDO_INSERT;
 	if (is_new_page)
@@ -1253,10 +1283,6 @@ RelUndoInitRelation(Relation rel)
 	meta->free_blkno = InvalidBlockNumber;
 	meta->total_records = 0;
 	meta->discarded_records = 0;
-
-	/* Initialize system transaction decoupling fields */
-	meta->pending_dealloc_head = InvalidBlockNumber;
-	meta->pending_dealloc_count = 0;
 	meta->system_alloc_watermark = InvalidBlockNumber;
 
 	MarkBufferDirty(metabuf);
@@ -1322,43 +1348,25 @@ RelUndoDropRelation(Relation rel)
  * RelUndoVacuum
  *		Vacuum per-relation UNDO log
  *
- * Discards old UNDO records that are no longer needed for visibility
- * checks.  Currently we use a simple heuristic: the counter from the
- * metapage minus a safety margin gives the discard cutoff.
+ * Discards UNDO records whose owning transaction precedes oldest_xmin, the
+ * oldest XID for which any active transaction could still require a rollback
+ * before-image.  Pages whose max_xid precedes oldest_xmin are reclaimed.
  *
- * A more sophisticated implementation would track the oldest active
- * snapshot's counter value.
+ * RelUndoDiscard splices the reclaimed run directly onto the metapage's free
+ * list as a single bounded, fully WAL-logged operation, so the pages are
+ * immediately available for reuse by relundo_allocate_page and the fork stops
+ * growing across repeated VACUUM cycles.
  */
 void
 RelUndoVacuum(Relation rel, TransactionId oldest_xmin)
 {
-	Buffer		metabuf;
-	Page		metapage;
-	RelUndoMetaPage meta;
-	uint16		current_counter;
-	uint16		oldest_visible_counter;
-
 	/* If no UNDO fork exists, nothing to vacuum */
 	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
 		return;
 
-	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_SHARE);
-	metapage = BufferGetPage(metabuf);
-	meta = (RelUndoMetaPage) PageGetContents(metapage);
+	/* A meaningless horizon would discard nothing; bail early. */
+	if (!TransactionIdIsValid(oldest_xmin))
+		return;
 
-	current_counter = meta->counter;
-
-	UnlockReleaseBuffer(metabuf);
-
-	/*
-	 * Simple heuristic: discard records more than 100 generations old. This
-	 * is a conservative default; a real implementation would derive the
-	 * cutoff from oldest_xmin and transaction-to-counter mappings.
-	 */
-	if (current_counter > 100)
-		oldest_visible_counter = current_counter - 100;
-	else
-		oldest_visible_counter = 1;
-
-	RelUndoDiscard(rel, oldest_visible_counter);
+	RelUndoDiscard(rel, oldest_xmin);
 }

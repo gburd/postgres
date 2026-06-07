@@ -66,6 +66,7 @@ tests += {
       't/061_recno_enable_undo.pl',
       't/063_fileops_undo.pl',
       't/065_undo_adversarial_crash.pl',
+      't/067_relundo_discard_crash.pl',
     ],
   },
 }
