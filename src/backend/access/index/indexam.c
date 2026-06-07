@@ -419,13 +419,6 @@ index_endscan(IndexScanDesc scan)
 	/* End the AM's scan */
 	scan->indexRelation->rd_indam->amendscan(scan);
 
-	/* Free the cached HOT-indexed attribute set, if any */
-	if (scan->xs_hot_indexed_attrs != NULL)
-	{
-		bms_free(scan->xs_hot_indexed_attrs);
-		scan->xs_hot_indexed_attrs = NULL;
-	}
-
 	/* Release index refcount acquired by index_beginscan */
 	RelationDecrementReferenceCount(scan->indexRelation);
 
@@ -687,17 +680,6 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 {
 	bool		all_dead = false;
 	bool		found;
-
-	/*
-	 * Cache the set of heap attributes this index covers, used below to
-	 * intersect with the table AM's reported modified-attrs.  Computed once
-	 * per scan; freed at index_endscan.  Every index references at least one
-	 * heap attribute, so a NULL cache unambiguously means "not yet computed".
-	 * This stays in the index-access layer; it is never handed to the table
-	 * AM.
-	 */
-	if (scan->xs_hot_indexed_attrs == NULL)
-		scan->xs_hot_indexed_attrs = RelationGetIndexedAttrs(scan->indexRelation);
 
 	found = table_index_fetch_tuple(scan->xs_heapfetch, &scan->xs_heaptid,
 									scan->xs_snapshot, slot,
