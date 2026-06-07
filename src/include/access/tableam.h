@@ -1323,8 +1323,7 @@ extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
 										  bool *all_dead,
-										  uint8 *modattrs_out,
-										  uint16 *modattrs_nbytes_out,
+										  bool *hot_indexed_recheck_out,
 										  TupleTableSlot *keep_slot);
 
 

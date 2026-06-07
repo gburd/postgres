@@ -68,27 +68,6 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
 }
 
 /*
- * accumulate_modified
- *		OR a crossed hop's modified-attrs bitmap (src, nbytes wide) into the
- *		walk's running union (acc / *accbytes), zero-extending acc as its
- *		covered width grows.  All hops in one chain share the relation's
- *		bitmap width, so *accbytes settles on the first OR.
- */
-static inline void
-accumulate_modified(uint8 *acc, uint16 *accbytes,
-					const uint8 *src, uint16 nbytes)
-{
-	for (uint16 b = 0; b < nbytes; b++)
-	{
-		if (b >= *accbytes)
-			acc[b] = 0;			/* first time this byte is covered */
-		acc[b] |= src[b];
-	}
-	if (nbytes > *accbytes)
-		*accbytes = nbytes;
-}
-
-/*
  *	heap_hot_search_buffer	- search HOT chain for tuple satisfying snapshot
  *
  * On entry, *tid is the TID of a tuple (either a simple tuple, or the root
@@ -105,27 +84,13 @@ accumulate_modified(uint8 *acc, uint16 *accbytes,
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
- * If hot_indexed_stale is not NULL, it reports whether the index entry that
- * the caller arrived through is stale for the tuple returned, using the
- * per-hop modified-attrs bitmaps left by HOT-indexed (Selective Index Update)
- * updates:
- *
- *   - When index_attrs is not NULL (a single-index scan or unique check), it
- *     is the set of heap attributes that index covers (RelationGetIndexedAttrs
- *     convention).  *hot_indexed_stale is set true iff some hop strictly after
- *     the entry tuple, up to the returned tuple, changed one of those
- *     attributes -- i.e. the arriving leaf's key no longer agrees with the
- *     live tuple and the row is re-supplied by a fresh entry.  The entry
- *     tuple's own producing hop is excluded, so a fresh entry pointing into
- *     the chain is kept.
- *
- *   - When index_attrs is NULL (e.g. a bitmap heap scan, where the originating
- *     index is no longer identifiable), *hot_indexed_stale is set true iff the
- *     walk crossed any HOT-indexed hop at all; the caller then forces its
- *     recheck qual.
- *
- * When the chain contains no HOT-indexed hop, *hot_indexed_stale is left
- * false.
+ * If hot_indexed_recheck is not NULL, *hot_indexed_recheck is set true iff the
+ * walk crossed a HOT-selectively-updated (HOT/SIU) hop after the entry tuple
+ * on the way to the returned tuple -- i.e. the arriving index entry's stored
+ * key may no longer match the live tuple, so the caller must recheck it (via
+ * a leaf-key comparison or a qual recheck).  The entry tuple's own producing
+ * hop is excluded, so a fresh entry pointing directly at its tuple is not
+ * flagged.  When no such hop was crossed, *hot_indexed_recheck is left false.
  *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
@@ -134,7 +99,7 @@ bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
 					   bool *all_dead, bool first_call,
-					   uint8 *modattrs, uint16 *modattrs_nbytes,
+					   bool *hot_indexed_recheck,
 					   bool *prefix_all_dead)
 {
 	Page		page = BufferGetPage(buffer);
@@ -152,12 +117,11 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		*all_dead = first_call;
 
 	/*
-	 * On the first call, reset the accumulated modified-attrs union.  On
-	 * subsequent calls (same chain continuing) keep accumulating into it so
-	 * the caller sees the union across every hop the walk crosses.
+	 * On the first call, clear the recheck flag.  On subsequent calls (same
+	 * chain continuing) keep whatever an earlier hop already set.
 	 */
-	if (modattrs_nbytes && first_call)
-		*modattrs_nbytes = 0;
+	if (hot_indexed_recheck && first_call)
+		*hot_indexed_recheck = false;
 
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
@@ -213,52 +177,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
 
 		/*
-		 * HOT-indexed tombstones (two variants) are never visible tuples.
-		 *
-		 * - Adjacent-to-live tombstones have t_ctid.blockno =
-		 * InvalidBlockNumber; they sit next to a newly-written HOT-indexed
-		 * tuple and carry its modified-attrs bitmap.  A stale btree entry
-		 * that lands on one has no forward link to follow -- treat as end of
-		 * chain.
-		 *
-		 * - Bridge tombstones have a valid same-page forward t_ctid, placed
-		 * by pruneheap in the slot a dead mid-chain HOT-indexed heap-only
-		 * tuple used to occupy.  Stale btree entries pointing at the bridge's
-		 * LP still resolve to the live tuple by following the forward link.
-		 * Skip the bridge transparently: don't apply the xmin/xmax chain
-		 * match (bridges carry neither), count it as a crossed hop so the
-		 * bitmap-overlap test sees its retained tombstone's modified attrs,
-		 * and continue the walk.
-		 */
-		if (HeapTupleHeaderIsHotIndexedTombstone(heapTuple->t_data))
-		{
-			if (HeapTupleHeaderIsHotIndexedBridge(heapTuple->t_data))
-			{
-				/*
-				 * A bridge advanced to (not the entry item) is a crossed hop;
-				 * accumulate the producing-hop modified-attrs bitmap that
-				 * prune preserved in the bridge meta-item's payload.  When the
-				 * bridge IS the entry item (at_chain_start), its own hop is
-				 * excluded -- the arriving entry already reflects that value.
-				 */
-				if (!at_chain_start && modattrs != NULL)
-					accumulate_modified(modattrs, modattrs_nbytes,
-										HotIndexedTombstoneGetBitmap(heapTuple->t_data),
-										HotIndexedTombstoneGetNbytes(heapTuple->t_data));
-				offnum = HotIndexedBridgeGetForward(heapTuple->t_data);
-				at_chain_start = false;
-
-				/*
-				 * prev_xmax intentionally not updated: bridges don't advance
-				 * it
-				 */
-				continue;
-			}
-			break;
-		}
-
-		/*
-		 * Past the meta-item filter above, the item is a genuine tuple that
+		 * Past the redirect handling above, the item is a genuine tuple that
 		 * we are about to subject to chain-match and visibility checks.
 		 */
 		AssertIsGenuineHeapTuple(heapTuple->t_data);
@@ -279,30 +198,22 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			/*
 			 * We were pointed directly at this hot-indexed tuple.  The index
 			 * entry we arrived through was inserted *for* this update, so it
-			 * reflects this tuple's current attribute values: its own
-			 * producing hop is excluded from the modified-attrs union (a fresh
-			 * entry is never stale for its own index).
+			 * reflects this tuple's current attribute values; its own
+			 * producing hop is not a crossed hop, so it is not flagged for
+			 * recheck (a fresh entry is never stale for its own index).
 			 */
 		}
-		else if (modattrs != NULL &&
+		else if (hot_indexed_recheck != NULL &&
 				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 		{
 			/*
-			 * A hot-indexed hop reached by following the chain (or a redirect)
+			 * A HOT/SIU hop reached by following the chain (or a redirect)
 			 * from an earlier entry: this hop is crossed, so the arriving
-			 * entry's key may no longer match the live tuple and must be
-			 * rechecked.  modattrs_nbytes is the recheck trigger; the recheck
-			 * itself (not the bitmap content) decides staleness, so ensure the
-			 * trigger fires even when this hop's inline bitmap is empty (a
-			 * no-op-key version carries an empty bitmap but still means the
-			 * arriving entry has to be rechecked against the live tuple).
+			 * entry's stored key may no longer match the live tuple and must
+			 * be rechecked.  The recheck (a leaf-key comparison) decides
+			 * staleness; here we only raise the trigger.
 			 */
-			accumulate_modified(modattrs, modattrs_nbytes,
-								HotIndexedInlineGetBitmap(heapTuple->t_data,
-														  heapTuple->t_len),
-								HotIndexedInlineBitmapNbytes(heapTuple->t_data));
-			if (modattrs_nbytes != NULL && *modattrs_nbytes == 0)
-				*modattrs_nbytes = 1;
+			*hot_indexed_recheck = true;
 		}
 
 		/*
@@ -439,12 +350,11 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											&bslot->base.tupdata,
 											all_dead,
 											!*heap_continue,
-											scan->xs_modattrs,
-											&scan->xs_modattrs_nbytes,
+											&scan->xs_hot_indexed_recheck,
 											&scan->xs_prefix_all_dead);
 	if (!got_heap_tuple)
 	{
-		scan->xs_modattrs_nbytes = 0;
+		scan->xs_hot_indexed_recheck = false;
 		scan->xs_prefix_all_dead = false;
 	}
 	bslot->base.tupdata.t_self = *tid;

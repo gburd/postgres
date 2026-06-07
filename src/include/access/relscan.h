@@ -136,20 +136,16 @@ typedef struct IndexFetchTableData
 	uint32		flags;
 
 	/*
-	 * Side channel for table AMs that can reach more than one set of
-	 * index-key values from a single update chain (heap's HOT-indexed
-	 * update).  The table AM reports here the set of table attributes that
-	 * in-chain updates modified between the arriving index entry's target and
-	 * the live tuple, as a raw bitmap (one bit per attribute, attnum-1
-	 * indexed, xs_modattrs_nbytes wide).  xs_modattrs_nbytes is 0 when no
-	 * in-chain modifying hop was crossed (the entry is definitely current).
-	 * The index-access / executor layer intersects this with the attributes
-	 * its own index covers to decide whether the arriving entry is stale --
-	 * keeping index-specific knowledge out of the table AM.  AMs without such
-	 * chains leave xs_modattrs_nbytes 0.
+	 * Side channel for table AMs whose update chains can reach a different
+	 * set of index-key values than the arriving index entry recorded (heap's
+	 * HOT-selectively-updated chains).  Set true by the table AM when the
+	 * walk to the live tuple crossed a HOT/SIU hop after the entry's own
+	 * tuple, meaning the arriving entry's stored key may no longer match the
+	 * live tuple and the index-access layer must recheck it.  Left false when
+	 * no such hop was crossed (the entry is definitely current), and always
+	 * false for AMs without such chains.
 	 */
-	uint8		xs_modattrs[(MaxHeapAttributeNumber + 7) / 8];
-	uint16		xs_modattrs_nbytes;
+	bool		xs_hot_indexed_recheck;
 
 	/*
 	 * Set by the table AM when it returns a tuple: true iff every chain member

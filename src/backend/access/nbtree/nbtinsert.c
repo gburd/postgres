@@ -436,9 +436,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	bool		prevalldead = true;
 	int			curposti = 0;
 	TupleTableSlot *chain_walk_slot = NULL;
-	Bitmapset  *chain_walk_attrs = NULL;
-	uint8		hi_modattrs[(MaxHeapAttributeNumber + 7) / 8];
-	uint16		hi_modattrs_nbytes = 0;
+	bool		hi_recheck = false;
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -574,47 +572,43 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 * with optimizations like heap's HOT, we have just a single
 				 * index entry for the entire chain.
 				 *
-				 * The hot_indexed_stale out-param reports whether the chain
-				 * walk to the live tuple crossed a HOT-indexed (HOT-indexed
-				 * update) hop that changed one of this index's attributes
-				 * (chain_walk_attrs).  In classic HOT the chain preserves the
-				 * index key, so a live tuple anywhere in the chain is a
-				 * definite conflict; with HOT-indexed update that invariant
-				 * no longer holds -- an old index entry for key K may
-				 * chain-lead to a heap tuple whose actual index key is K'.
-				 * Such an entry is stale, not a conflict, and is filtered out
-				 * below. chain_walk_attrs is computed lazily (once) and freed
-				 * with chain_walk_slot at every exit.
+				 * The fetch reports (hi_recheck) whether the chain walk to the
+				 * live tuple crossed a HOT-selectively-updated (HOT/SIU) hop.
+				 * In classic HOT the chain preserves the index key, so a live
+				 * tuple anywhere in the chain is a definite conflict; with
+				 * HOT/SIU that invariant no longer holds -- an old index entry
+				 * for key K may chain-lead to a heap tuple whose actual index
+				 * key is K'.  When a hop was crossed we recheck the leaf key
+				 * against the live tuple below; a stale entry is filtered out,
+				 * not treated as a conflict.  chain_walk_slot holds the live
+				 * tuple for that recheck and is freed at every exit.
 				 */
 				else if ((chain_walk_slot != NULL ||
 						  (chain_walk_slot = table_slot_create(heapRel, NULL))) &&
-						 (chain_walk_attrs != NULL ||
-						  (chain_walk_attrs = RelationGetIndexedAttrs(rel)) != NULL) &&
 						 table_index_fetch_tuple_check(heapRel, &htid,
 													   &SnapshotDirty,
 													   &all_dead,
-													   hi_modattrs,
-													   &hi_modattrs_nbytes,
+													   &hi_recheck,
 													   chain_walk_slot))
 				{
 					TransactionId xwait;
 
 					/*
-					 * The chain walk reported (hi_modattrs_nbytes > 0) that
-					 * it crossed at least one HOT-indexed hop on the way to
-					 * the live tuple, so the classic "live tuple in the chain
-					 * implies the same index key" invariant may not hold: an
-					 * old index entry for key K may chain-lead to a tuple
-					 * whose current key is K'.  Recheck the leaf's stored key
-					 * against the live tuple's current index form.  A mismatch
-					 * means the leaf is stale (not a conflict): skip it; the
-					 * fresh entry inserted for the current value is the
-					 * canonical one.  Because the leaf still resolves to a
-					 * live tuple, clear prevalldead so the caller never marks
-					 * it LP_DEAD (killable).
+					 * The chain walk reported (hi_recheck) that it crossed at
+					 * least one HOT/SIU hop on the way to the live tuple, so
+					 * the classic "live tuple in the chain implies the same
+					 * index key" invariant may not hold: an old index entry
+					 * for key K may chain-lead to a tuple whose current key is
+					 * K'.  Recheck the leaf's stored key against the live
+					 * tuple's current index form.  A mismatch means the leaf
+					 * is stale (not a conflict): skip it; the fresh entry
+					 * inserted for the current value is the canonical one.
+					 * Because the leaf still resolves to a live tuple, clear
+					 * prevalldead so the caller never marks it LP_DEAD
+					 * (killable).
 					 */
 					hot_indexed_stale =
-						(hi_modattrs_nbytes > 0 &&
+						(hi_recheck &&
 						 !_bt_heap_keys_equal_leaf(rel, curitup, chain_walk_slot));
 
 					if (hot_indexed_stale)
@@ -636,7 +630,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 * index's key unchanged, or a key cycled away and back).
 					 * Skip it rather than raising a spurious unique violation.
 					 */
-					if (hi_modattrs_nbytes > 0 &&
+					if (hi_recheck &&
 						ItemPointerCompare(&htid, &itup->t_tid) == 0)
 					{
 						if (nbuf != InvalidBuffer)
@@ -662,7 +656,6 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 							_bt_relbuf(rel, nbuf);
 						if (chain_walk_slot)
 							ExecDropSingleTupleTableSlot(chain_walk_slot);
-						bms_free(chain_walk_attrs);
 						*is_unique = false;
 						return InvalidTransactionId;
 					}
@@ -680,7 +673,6 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 							_bt_relbuf(rel, nbuf);
 						if (chain_walk_slot)
 							ExecDropSingleTupleTableSlot(chain_walk_slot);
-						bms_free(chain_walk_attrs);
 						/* Tell _bt_doinsert to wait... */
 						*speculativeToken = SnapshotDirty.speculativeToken;
 						/* Caller releases lock on buf immediately */
@@ -707,7 +699,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 */
 					htid = itup->t_tid;
 					if (table_index_fetch_tuple_check(heapRel, &htid,
-													  SnapshotSelf, NULL, NULL,
+													  SnapshotSelf, NULL,
 													  NULL, NULL))
 					{
 						/* Normal case --- it's still live */
@@ -876,7 +868,6 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 
 	if (chain_walk_slot)
 		ExecDropSingleTupleTableSlot(chain_walk_slot);
-	bms_free(chain_walk_attrs);
 
 	return InvalidTransactionId;
 }
