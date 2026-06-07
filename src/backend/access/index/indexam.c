@@ -289,6 +289,18 @@ index_beginscan(Relation heapRelation,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, flags);
 
+	/*
+	 * When the index AM can recheck a stored leaf key against a live heap
+	 * tuple (nbtree, for HOT-indexed staleness), ask it to expose the leaf
+	 * IndexTuple via xs_itup so index_fetch_heap can compare it against the
+	 * live tuple after a chain walk crossed a HOT-indexed hop.  XXX: this is
+	 * broader than necessary -- it forces xs_itup for every such scan, not
+	 * only scans of relations that actually carry HOT-indexed chains; a
+	 * tighter per-relation gate is a follow-up.
+	 */
+	if (indexRelation->rd_indam->amrecheck_leaf_key != NULL)
+		scan->xs_want_itup = true;
+
 	return scan;
 }
 
@@ -703,11 +715,23 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 	 * a leaf (the fresh entry inserted for the new value re-supplies the row),
 	 * rather than re-evaluating quals as for a lossy-index recheck.
 	 */
+	/*
+	 * The chain walk reported, via xs_modattrs_nbytes > 0, that it crossed
+	 * at least one HOT-indexed hop between the arriving index entry's target
+	 * and the live tuple.  When it did, the arriving leaf's key may no longer
+	 * agree with the live tuple, so recheck the leaf's stored key against the
+	 * live tuple's current index form: a mismatch means the leaf is stale and
+	 * the executor drops it (the fresh entry inserted for the new value
+	 * re-supplies the row).  We need the leaf IndexTuple (xs_itup) to recheck;
+	 * index_beginscan forces xs_want_itup for AMs that provide the callback.
+	 */
 	scan->xs_hot_indexed_stale =
-		found && scan->xs_heapfetch->xs_modattrs_nbytes > 0 &&
-		heap_hot_indexed_bitmap_overlaps(scan->xs_heapfetch->xs_modattrs,
-										 scan->xs_heapfetch->xs_modattrs_nbytes,
-										 scan->xs_hot_indexed_attrs);
+		found &&
+		scan->xs_heapfetch->xs_modattrs_nbytes > 0 &&
+		scan->indexRelation->rd_indam->amrecheck_leaf_key != NULL &&
+		scan->xs_itup != NULL &&
+		!scan->indexRelation->rd_indam->amrecheck_leaf_key(scan->indexRelation,
+														   scan->xs_itup, slot);
 
 	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
