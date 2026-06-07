@@ -288,15 +288,21 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 		{
 			/*
-			 * A hot-indexed hop reached by following the chain from an
-			 * earlier entry: this hop is crossed.  Accumulate its
-			 * inline-trailing modified-attrs bitmap into the running union
-			 * (O(1), read straight from the version we are already on).
+			 * A hot-indexed hop reached by following the chain (or a redirect)
+			 * from an earlier entry: this hop is crossed, so the arriving
+			 * entry's key may no longer match the live tuple and must be
+			 * rechecked.  modattrs_nbytes is the recheck trigger; the recheck
+			 * itself (not the bitmap content) decides staleness, so ensure the
+			 * trigger fires even when this hop's inline bitmap is empty (a
+			 * no-op-key version carries an empty bitmap but still means the
+			 * arriving entry has to be rechecked against the live tuple).
 			 */
 			accumulate_modified(modattrs, modattrs_nbytes,
 								HotIndexedInlineGetBitmap(heapTuple->t_data,
 														  heapTuple->t_len),
 								HotIndexedInlineBitmapNbytes(heapTuple->t_data));
+			if (modattrs_nbytes != NULL && *modattrs_nbytes == 0)
+				*modattrs_nbytes = 1;
 		}
 
 		/*
