@@ -175,16 +175,16 @@ DETAIL:  This operation is not supported for views.
 select heap_force_freeze('vw'::regclass, ARRAY['(0, 1)']::tid[]);
 ERROR:  cannot operate on relation "vw"
 DETAIL:  This operation is not supported for views.
--- HOT-indexed bridge meta-items are LP_NORMAL items that are not real tuples;
--- forcing them would corrupt the heap (freeze would surface a phantom
--- natts==0 row, kill would drop a chain hop), so both functions must skip them.
+-- A HOT/SIU chain collapse turns the chain root and each dead entry-bearing
+-- member into an LP_REDIRECT to the live tuple.  pg_surgery operates on real
+-- tuples and must leave the live row reachable after such a collapse.
 create extension pageinspect;
 create table htomb (id int primary key, a int, b int) with (fillfactor = 50);
 create index htomb_a on htomb(a);
 insert into htomb values (1, 10, 20);
 -- Two HOT-indexed updates on an indexed attr, then prune: the dead mid-chain
--- version is rewritten as a bridge meta-item (LP_NORMAL, HEAP_INDEXED_UPDATED,
--- natts=0).  INDEX_CLEANUP off keeps the bridge in place.
+-- versions collapse to LP_REDIRECTs to the live tuple.  INDEX_CLEANUP off keeps
+-- the stale btree leaves (and hence the redirects) in place.
 update htomb set a = 11 where id = 1;
 update htomb set a = 12 where id = 1;
 vacuum (index_cleanup off) htomb;
@@ -195,27 +195,7 @@ select n_hot_indexed > 0 as made_hot_indexed
  t
 (1 row)
 
--- locate the bridge on block 0: LP_NORMAL item with HEAP_INDEXED_UPDATED
--- (infomask2 & 0x0800) set and natts (infomask2 & 0x07FF) zero.
-select lp as tomb_off
-  from heap_page_items(get_raw_page('htomb', 0))
- where lp_flags = 1 and (t_infomask2 & 2048) <> 0 and (t_infomask2 & 2047) = 0 \gset
--- both surgery ops must skip it (NOTICE), leaving the heap unchanged
-select heap_force_freeze('htomb'::regclass, ARRAY[('(0,' || :tomb_off || ')')::tid]);
-NOTICE:  skipping tid (0, 2) for relation "htomb" because it is a HOT-indexed tombstone
- heap_force_freeze 
--------------------
- 
-(1 row)
-
-select heap_force_kill('htomb'::regclass, ARRAY[('(0,' || :tomb_off || ')')::tid]);
-NOTICE:  skipping tid (0, 2) for relation "htomb" because it is a HOT-indexed tombstone
- heap_force_kill 
------------------
- 
-(1 row)
-
--- live row intact, no phantom
+-- the live row is intact and reachable after the collapse
 select id, a, b from htomb;
  id | a  | b  
 ----+----+----
