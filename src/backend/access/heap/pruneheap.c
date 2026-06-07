@@ -274,6 +274,7 @@ static void heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum,
 static void heap_prune_record_dead_or_unused(PruneState *prstate, OffsetNumber offnum,
 											 bool was_normal);
 static void heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_normal);
+static void heap_prune_record_unchanged_dead_member(PruneState *prstate, OffsetNumber offnum);
 
 static void heap_prune_record_unchanged_lp_unused(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unchanged_lp_normal(PruneState *prstate, OffsetNumber offnum);
@@ -284,13 +285,6 @@ static void prune_handle_tombstones(PruneState *prstate);
 static bool heap_prune_item_preserves_hot_indexed(Page page, OffsetNumber offnum);
 static OffsetNumber heap_prune_find_live_chain_root(PruneState *prstate,
 													OffsetNumber dead_off);
-static void heap_prune_record_bridge(PruneState *prstate,
-									 OffsetNumber offnum,
-									 OffsetNumber forward);
-static void heap_prune_recollapse_bridged_chain(OffsetNumber maxoff,
-												OffsetNumber rootoffnum,
-												OffsetNumber head_bridge,
-												PruneState *prstate);
 
 static void page_verify_redirects(Page page);
 
@@ -785,133 +779,23 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 			ItemId		itemid = PageGetItemId(page, offnum);
 			HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(page, itemid);
 
-			if (likely(!HeapTupleHeaderIsHotUpdated(htup)))
-			{
-				/*
-				 * Aborted HOT-indexed update.  An aborted HOT-indexed update
-				 * inserts a btree leaf entry pointing at the new heap-only
-				 * tuple before the txn commits or aborts.  After abort the
-				 * heap-only tuple is dead but the leaf entry remains until
-				 * ambulkdelete (vacuum) sweeps it; reclaiming the LP to
-				 * LP_UNUSED would let an unrelated INSERT reuse the slot,
-				 * leaving the leaf entry pointing at an unrelated live tuple
-				 * and producing spurious unique-violation errors.
-				 *
-				 * If we can find a live chain root on the same page, write a
-				 * bridge tombstone forwarding to it; readers walking the leaf
-				 * entry see the bridge, count it as a crossed hop, and land
-				 * on the live root, then the bitmap-overlap test in
-				 * _bt_check_unique filters the stale entry.  Vacuum reclaims
-				 * the bridge once ambulkdelete has cleaned the stale leaves.
-				 *
-				 * If no chain root is reachable on this page (R has been
-				 * HOT-updated again to a different successor, displacing this
-				 * orphan), mark the LP LP_DEAD instead of LP_UNUSED.  LP_DEAD
-				 * pins the slot against reuse and adds the offnum to the
-				 * dead-items array so ambulkdelete sweeps the stale leaf; a
-				 * subsequent vacuum reclaims the LP after the leaf is gone.
-				 */
-				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
-					HeapTupleHeaderGetNatts(htup) > 0)
-				{
-					OffsetNumber forward;
-
-					forward = heap_prune_find_live_chain_root(prstate, offnum);
-					if (OffsetNumberIsValid(forward))
-					{
-						HeapTupleHeaderAdvanceConflictHorizon(htup,
-															  &prstate->latest_xid_removed);
-						heap_prune_record_bridge(prstate, offnum, forward);
-						continue;
-					}
-
-					HeapTupleHeaderAdvanceConflictHorizon(htup,
-														  &prstate->latest_xid_removed);
-					heap_prune_record_dead(prstate, offnum, true);
-					continue;
-				}
-
-				HeapTupleHeaderAdvanceConflictHorizon(htup,
-													  &prstate->latest_xid_removed);
-				heap_prune_record_unused(prstate, offnum, true);
-			}
+			/*
+			 * PHOT-faithful model: this dead heap-only tuple was not reached by
+			 * any HOT chain walk (an aborted HOT-indexed sub-chain, or a member
+			 * whose live root stopped the walk).  We do not forward it with a
+			 * bridge.  If it carries a stale btree leaf (HEAP_INDEXED_UPDATED),
+			 * mark it LP_DEAD: that pins the slot against reuse and adds it to
+			 * the dead-items array so ambulkdelete sweeps the stale leaf and a
+			 * later vacuum reclaims the LP.  Otherwise (classic HOT, no leaf)
+			 * reclaim it to LP_UNUSED.
+			 */
+			HeapTupleHeaderAdvanceConflictHorizon(htup,
+												  &prstate->latest_xid_removed);
+			if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
+				HeapTupleHeaderGetNatts(htup) > 0)
+				heap_prune_record_dead(prstate, offnum, true);
 			else
-			{
-				/*
-				 * Multi-update aborted HOT-indexed chain: the tuple is
-				 * heap-only, dead, AND HEAP_HOT_UPDATED.  This means an
-				 * aborted transaction performed two or more HOT-indexed
-				 * updates on the same chain in sequence; we are looking at a
-				 * non-leaf member of the aborted sub-chain (the leaf has
-				 * IsHotUpdated false and is handled above).  heap_prune_chain
-				 * visited the live chain root and stopped there because the
-				 * root is LIVE; it never walked into this aborted-tail
-				 * mid-chain entry.
-				 *
-				 * The same stale-leaf hazard as the HEAP_INDEXED_UPDATED-only
-				 * branch above applies: the inner UPDATE inserted a btree
-				 * leaf pointing at this LP, the leaf survives ROLLBACK, and
-				 * unrelated INSERTs would happily reuse the LP.  Convert to a
-				 * bridge forwarding to the live chain root if reachable;
-				 * otherwise fall back to the existing "not linked" error
-				 * since we have no safe place to forward to.
-				 */
-				if ((htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0 &&
-					HeapTupleHeaderGetNatts(htup) > 0)
-				{
-					OffsetNumber forward = InvalidOffsetNumber;
-
-					/*
-					 * This is a HOT-updated mid-chain member, so its t_ctid
-					 * points forward to the next chain member on the same
-					 * page.  Bridge forward to that successor: a reader
-					 * walking a stale leaf steps through this bridge to the
-					 * successor (itself a live tuple or its own bridge),
-					 * accumulating this hop's modified-attrs bitmap.  This is
-					 * the re-prune case -- the chain was already collapsed to
-					 * a redirect -> bridges -> first_live, first_live was then
-					 * HOT-indexed-updated again, and this member is one of the
-					 * newly-dead versions past first_live that heap_prune_chain
-					 * left for us (it does not re-collapse an already-collapsed
-					 * chain).  Linking forward preserves per-hop accumulation
-					 * and never touches the root redirect.
-					 */
-					if (ItemPointerGetBlockNumber(&htup->t_ctid) == blockno)
-					{
-						OffsetNumber succ = ItemPointerGetOffsetNumber(&htup->t_ctid);
-
-						if (succ >= FirstOffsetNumber && succ <= maxoff &&
-							succ != offnum)
-							forward = succ;
-					}
-
-					/*
-					 * Fallback for an aborted orphan with no usable forward
-					 * link: forward to the live chain root if reachable.
-					 */
-					if (!OffsetNumberIsValid(forward))
-						forward = heap_prune_find_live_chain_root(prstate, offnum);
-
-					if (OffsetNumberIsValid(forward))
-					{
-						HeapTupleHeaderAdvanceConflictHorizon(htup,
-															  &prstate->latest_xid_removed);
-						heap_prune_record_bridge(prstate, offnum, forward);
-						continue;
-					}
-				}
-
-				/*
-				 * This tuple should've been processed and removed as part of
-				 * a HOT chain, so something's wrong.  To preserve evidence,
-				 * we don't dare to remove it.  We cannot leave behind a DEAD
-				 * tuple either, because that will cause VACUUM to error out.
-				 * Throwing an error with a distinct error message seems like
-				 * the least bad option.
-				 */
-				elog(ERROR, "dead heap-only tuple (%u, %d) is not linked to from any HOT chain",
-					 blockno, offnum);
-			}
+				heap_prune_record_unused(prstate, offnum, true);
 		}
 		else
 			heap_prune_record_unchanged_lp_normal(prstate, offnum);
@@ -1797,32 +1681,6 @@ heap_prune_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
 				break;			/* not at start of chain */
 			chainitems[nchain++] = offnum;
 			offnum = ItemIdGetRedirect(rootlp);
-
-			/*
-			 * If the redirect points at a bridge meta-item, this HOT-indexed
-			 * chain was already collapsed by an earlier prune (root redirect
-			 * -> head bridge -> ... -> first_live).  Re-collapse it coherently
-			 * with full topology: heap_prune_recollapse_bridged_chain
-			 * preserves the redirect and the existing bridges (whose stale
-			 * leaves only vacuum may sweep) and bridges any members that have
-			 * since died past first_live, extending the linked list.  Doing it
-			 * here -- rather than leaving the post-first_live members to the
-			 * topology-blind per-offnum orphan handler -- keeps the bridge
-			 * graph a strict forest.
-			 */
-			if (offnum >= FirstOffsetNumber &&
-				offnum <= PageGetMaxOffsetNumber(page))
-			{
-				ItemId		tlp = PageGetItemId(page, offnum);
-
-				if (ItemIdIsNormal(tlp) &&
-					HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(page, tlp)))
-				{
-					heap_prune_recollapse_bridged_chain(maxoff, rootoffnum,
-														offnum, prstate);
-					return;
-				}
-			}
 			continue;
 		}
 
@@ -1947,69 +1805,74 @@ process_chain:
 		 * beyond it.  Practically, readers following the bridge's forward
 		 * land on an LP_DEAD root and terminate the walk, which is the
 		 * correct outcome for a fully-dead chain.
+		 *
+		 * PHOT-faithful model: dead HOT-indexed members are not rewritten as
+		 * forwarding bridges.  Keep each one as an ordinary dead heap-only
+		 * tuple (its t_ctid and inline bitmap intact) so a stale mid-chain
+		 * entry still resolves through it; vacuum reclaims it once its leaves
+		 * are swept.  Reclaim only classic-HOT members that carry no index
+		 * entry and that no kept member forwards through.
 		 */
-		heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
-		for (int i = 1; i < nchain; i++)
 		{
-			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
-				heap_prune_record_bridge(prstate, chainitems[i], rootoffnum);
-			else
-				heap_prune_record_unused(prstate, chainitems[i], true);
+			bool		keeping = false;
+
+			heap_prune_record_dead_or_unused(prstate, rootoffnum, ItemIdIsNormal(rootlp));
+			for (int i = 1; i < nchain; i++)
+			{
+				if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
+					keeping = true;
+				if (keeping)
+					heap_prune_record_unchanged_dead_member(prstate, chainitems[i]);
+				else
+					heap_prune_record_unused(prstate, chainitems[i], true);
+			}
 		}
 	}
 	else
 	{
 		/*
 		 * We found a DEAD tuple in the chain.  Redirect the root line pointer
-		 * to the first surviving chain member, and for each intermediate dead
-		 * tuple either mark LP_UNUSED (classic HOT: no external references) or
-		 * rewrite it as a bridge meta-item (HOT-indexed: stale btree entries
-		 * may still point at this LP).  The classifier
-		 * heap_prune_item_preserves_hot_indexed decides per LP.
+		 * to the first surviving chain member.
 		 *
-		 * Bridges are linked in chain order: each preserved dead member
-		 * forwards to the next surviving member, the last to first_live; each
-		 * carries its own producing-hop modified-attrs bitmap (preserved by
-		 * heap_page_prune_execute from the dying version).  The root redirect
-		 * points at the *first* surviving member, not first_live, so a
-		 * root-pointing entry walks the whole bridge chain and accumulates
-		 * exactly its forward hops -- the same per-hop bitmaps a mid-chain
-		 * entry sees.  No merging into first_live (which would over-accumulate
-		 * for a mid-chain entry and could wrongly drop a still-valid leaf).
-		 * In notation, LP[1] v1 root -> LP[3] v2 {a} -> LP[5] v3 {b} -> LP[7]
-		 * v4 LIVE (v1..v3 dead) collapses to LP[1] redirect -> LP[3], LP[3]
-		 * bridge{a} -> LP[5], LP[5] bridge{b} -> LP[7] v4.
+		 * PHOT-faithful model: dead HOT-indexed members are kept as ordinary
+		 * dead heap-only tuples, not rewritten as forwarding bridges.  Each
+		 * keeps its t_ctid forward link and its inline producing-hop bitmap,
+		 * so the natural HOT chain already forwards a stale mid-chain entry to
+		 * first_live and a root-pointing entry accumulates every hop's bitmap
+		 * as it walks.  The root redirect therefore points at the *first* dead
+		 * member (chainitems[1]) -- not first_live -- so a root-pointing entry
+		 * still traverses the whole prefix and accumulates the full union (as
+		 * the old bridge head did).  Leading classic-HOT members that carry no
+		 * index entry, and that no kept member forwards through, are reclaimed.
+		 * In notation: LP[1] v1 root -> LP[3] v2 {a} -> LP[5] v3 {b} -> LP[7]
+		 * v4 LIVE (v1..v3 dead) becomes LP[1] redirect -> LP[3], with LP[3],
+		 * LP[5] kept as dead tuples carrying {a},{b}; LP[7] v4 live.
 		 */
 		OffsetNumber first_live = chainitems[ndeadchain];
 		OffsetNumber head = InvalidOffsetNumber;
-		OffsetNumber prev_surv = InvalidOffsetNumber;
+		bool		keeping = false;
 
 		for (int i = 1; i < ndeadchain; i++)
 		{
 			if (heap_prune_item_preserves_hot_indexed(page, chainitems[i]))
+				keeping = true;
+			if (keeping)
 			{
-				if (prev_surv != InvalidOffsetNumber)
-					heap_prune_record_bridge(prstate, prev_surv, chainitems[i]);
-				else
+				if (!OffsetNumberIsValid(head))
 					head = chainitems[i];
-				prev_surv = chainitems[i];
+				heap_prune_record_unchanged_dead_member(prstate, chainitems[i]);
 			}
 			else
-			{
 				heap_prune_record_unused(prstate, chainitems[i], true);
-			}
 		}
-		if (prev_surv != InvalidOffsetNumber)
-			heap_prune_record_bridge(prstate, prev_surv, first_live);
 
 		{
 			OffsetNumber redirect_target =
 				OffsetNumberIsValid(head) ? head : first_live;
 
 			/*
-			 * On re-prune of an already-collapsed chain the root may already
-			 * be a redirect to this same target; recording it again would be
-			 * a redundant no-op redirect.  Leave it unchanged in that case.
+			 * On re-prune the root may already redirect to this same target;
+			 * recording it again would be a redundant no-op redirect.
 			 */
 			if (ItemIdIsRedirected(rootlp) &&
 				ItemIdGetRedirect(rootlp) == redirect_target)
@@ -2024,127 +1887,6 @@ process_chain:
 			heap_prune_record_unchanged_lp_normal(prstate, chainitems[i]);
 	}
 }
-
-/*
- * heap_prune_recollapse_bridged_chain
- *		Re-prune an already-collapsed HOT-indexed chain coherently.
- *
- * The chain looks like redirect(rootoffnum) -> head_bridge -> ... -> first_live.
- * The redirect and the existing bridges are preserved: their stale btree
- * leaves are swept by vacuum (ambulkdelete), not by prune, and the existing
- * bridges were already recorded unchanged by the per-offnum tombstone handler.
- * Only the members from first_live onward can have changed since the collapse
- * (first_live may have been HOT-indexed-updated again, dying and spawning new
- * versions that heap_prune_chain's normal walk never reached because it
- * stopped at the redirect->bridge boundary).
- *
- * Walk first_live's live chain and convert each newly-dead member to a bridge
- * forwarding to its own t_ctid successor -- an in-place splice that extends
- * the existing linked list by one hop per dead member.  Because every bridge
- * inherits exactly one predecessor (its in-chain predecessor) and points at
- * exactly one successor, the bridge graph stays a strict forest, which is what
- * lets vacuum reclaim a chain's bridges all-or-nothing without dangling any
- * surviving pointer.  The root redirect is never re-pointed, so the existing
- * bridges are never orphaned.
- */
-static void
-heap_prune_recollapse_bridged_chain(OffsetNumber maxoff, OffsetNumber rootoffnum,
-									OffsetNumber head_bridge, PruneState *prstate)
-{
-	Page		page = prstate->page;
-	OffsetNumber chainitems[MaxHeapTuplesPerPage];
-	int			nchain = 0;
-	OffsetNumber offnum;
-	TransactionId priorXmax = InvalidTransactionId;
-
-	/* The root redirect keeps pointing at the existing head bridge. */
-	heap_prune_record_unchanged_lp_redirect(prstate, rootoffnum);
-
-	/* Follow the existing bridges to first_live (the first non-bridge member). */
-	offnum = head_bridge;
-	for (int guard = 0; guard <= maxoff; guard++)
-	{
-		ItemId		lp;
-		HeapTupleHeader htup;
-
-		if (offnum < FirstOffsetNumber || offnum > maxoff)
-			return;				/* malformed link; nothing safe to do */
-		lp = PageGetItemId(page, offnum);
-		if (!ItemIdIsNormal(lp))
-			return;
-		htup = (HeapTupleHeader) PageGetItem(page, lp);
-		if (!HeapTupleHeaderIsHotIndexedBridge(htup))
-			break;				/* reached first_live */
-		offnum = HotIndexedBridgeGetForward(htup);
-	}
-
-	/* Walk first_live's chain, recording its members. */
-	for (;;)
-	{
-		ItemId		lp;
-		HeapTupleHeader htup;
-
-		if (offnum < FirstOffsetNumber || offnum > maxoff)
-			break;
-		lp = PageGetItemId(page, offnum);
-		if (!ItemIdIsNormal(lp) || prstate->processed[offnum])
-			break;
-		htup = (HeapTupleHeader) PageGetItem(page, lp);
-		if (TransactionIdIsValid(priorXmax) &&
-			!TransactionIdEquals(HeapTupleHeaderGetXmin(htup), priorXmax))
-			break;
-
-		chainitems[nchain++] = offnum;
-
-		if (!HeapTupleHeaderIsHotUpdated(htup) ||
-			ItemPointerGetBlockNumber(&htup->t_ctid) != prstate->block)
-			break;
-		priorXmax = HeapTupleHeaderGetUpdateXid(htup);
-		offnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
-	}
-
-	/*
-	 * Convert each dead-to-all member to a bridge forwarding to its own t_ctid
-	 * successor -- an in-place splice that extends the existing linked list by
-	 * one hop, preserving its single-predecessor (forest) shape.  Members that
-	 * are merely recently-dead or live are kept as ordinary tuples so the
-	 * snapshots that still see them can walk to them.  A dead member that
-	 * cannot be bridged here (a deleted tail with no live successor, which the
-	 * update-only re-prune path never produces) is left for the per-offnum
-	 * handler to resolve, exactly as before.
-	 */
-	for (int i = 0; i < nchain; i++)
-	{
-		OffsetNumber off = chainitems[i];
-		HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(page, PageGetItemId(page, off));
-
-		if (prstate->htsv[off] == HEAPTUPLE_DEAD)
-		{
-			OffsetNumber succ = InvalidOffsetNumber;
-
-			if (HeapTupleHeaderIsHotUpdated(htup) &&
-				ItemPointerGetBlockNumber(&htup->t_ctid) == prstate->block)
-			{
-				OffsetNumber s = ItemPointerGetOffsetNumber(&htup->t_ctid);
-
-				if (s >= FirstOffsetNumber && s <= maxoff && s != off)
-					succ = s;
-			}
-
-			if (OffsetNumberIsValid(succ) &&
-				heap_prune_item_preserves_hot_indexed(page, off))
-			{
-				HeapTupleHeaderAdvanceConflictHorizon(htup,
-													  &prstate->latest_xid_removed);
-				heap_prune_record_bridge(prstate, off, succ);
-			}
-			/* else leave unprocessed for the per-offnum orphan handler */
-		}
-		else
-			heap_prune_record_unchanged_lp_normal(prstate, off);
-	}
-}
-
 /* Record lowest soon-prunable XID */
 static void
 heap_prune_record_prunable(PruneState *prstate, TransactionId xid,
@@ -2278,6 +2020,30 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
 	 */
 	if (was_normal)
 		prstate->ndeleted++;
+}
+
+/*
+ * heap_prune_record_unchanged_dead_member
+ *		Keep a dead HOT-indexed heap-only chain member in place.
+ *
+ * In the PHOT-faithful model SIU does not rewrite a dead mid-chain member as
+ * a forwarding bridge.  Instead the member is left as an ordinary dead
+ * heap-only tuple: its t_ctid still forwards to its successor and its inline
+ * modified-attrs bitmap is intact, so a stale index entry that points at it
+ * walks forward to the live tuple exactly as before.  We must not reclaim it
+ * here because outstanding mid-chain index entries still reference its slot;
+ * vacuum reclaims it once ambulkdelete has swept those leaves.  Just mark it
+ * processed and keep the page from being reported all-visible/all-frozen.
+ */
+static void
+heap_prune_record_unchanged_dead_member(PruneState *prstate, OffsetNumber offnum)
+{
+	Assert(!prstate->processed[offnum]);
+	prstate->processed[offnum] = true;
+
+	prstate->hastup = true;
+	prstate->set_all_visible = false;
+	prstate->set_all_frozen = false;
 }
 
 /*
@@ -2451,46 +2217,6 @@ heap_prune_find_live_chain_root(PruneState *prstate, OffsetNumber dead_off)
 	return InvalidOffsetNumber;
 }
 
-/*
- * heap_prune_record_bridge
- *		Record that an LP should be converted to a HOT-indexed bridge
- *		tombstone forwarding to `forward`.
- *
- * The actual in-place rewrite happens in heap_page_prune_execute when the
- * critical section opens; we only stash the pair here.  Each bridge
- * conversion is two OffsetNumbers in prstate->bridges[] to keep the WAL
- * layout parallel with `redirected` (which is also pair-per-entry).
- */
-static void
-heap_prune_record_bridge(PruneState *prstate,
-						 OffsetNumber offnum,
-						 OffsetNumber forward)
-{
-	Assert(!prstate->processed[offnum]);
-	Assert(OffsetNumberIsValid(offnum));
-	Assert(OffsetNumberIsValid(forward));
-	Assert(prstate->nbridges < MaxHeapTuplesPerPage);
-
-	prstate->processed[offnum] = true;
-	prstate->bridges[prstate->nbridges * 2] = offnum;
-	prstate->bridges[prstate->nbridges * 2 + 1] = forward;
-	prstate->nbridges++;
-
-	/*
-	 * The tuple body is being rewritten to a smaller bridge format, so the
-	 * bytes behind the old LP are being freed.  Count it like a reclaim for
-	 * ndeleted reporting.
-	 */
-	prstate->ndeleted++;
-
-	/*
-	 * A bridge is an invisible LP_NORMAL carrier.  Same reasoning as in
-	 * heap_prune_record_unchanged_lp_tombstone applies: the page must not be
-	 * declared all-visible while it holds one.
-	 */
-	prstate->set_all_visible = false;
-	prstate->set_all_frozen = false;
-}
 
 /*
  * Record an unused line pointer that is left unchanged.
