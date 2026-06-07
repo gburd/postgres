@@ -780,14 +780,14 @@ prune_freeze_plan(PruneState *prstate, OffsetNumber *off_loc)
 			HeapTupleHeader htup = (HeapTupleHeader) PageGetItem(page, itemid);
 
 			/*
-			 * PHOT-faithful model: this dead heap-only tuple was not reached by
-			 * any HOT chain walk (an aborted HOT-indexed sub-chain, or a member
-			 * whose live root stopped the walk).  We do not forward it with a
-			 * bridge.  If it carries a stale btree leaf (HEAP_INDEXED_UPDATED),
-			 * mark it LP_DEAD: that pins the slot against reuse and adds it to
-			 * the dead-items array so ambulkdelete sweeps the stale leaf and a
-			 * later vacuum reclaims the LP.  Otherwise (classic HOT, no leaf)
-			 * reclaim it to LP_UNUSED.
+			 * This dead heap-only tuple was not reached by any HOT chain walk
+			 * (an aborted HOT-selectively-updated sub-chain, or a member whose
+			 * live root stopped the walk).  If it carries a stale btree leaf
+			 * (HEAP_INDEXED_UPDATED), mark it LP_DEAD: that pins the slot
+			 * against reuse and adds it to the dead-items array so ambulkdelete
+			 * sweeps the stale leaf and a later vacuum reclaims the LP.
+			 * Otherwise (classic HOT, no leaf of its own) reclaim it to
+			 * LP_UNUSED.
 			 */
 			HeapTupleHeaderAdvanceConflictHorizon(htup,
 												  &prstate->latest_xid_removed);
@@ -1794,24 +1794,13 @@ process_chain:
 	else if (ndeadchain == nchain)
 	{
 		/*
-		 * The entire chain is dead.  Mark the root line pointer LP_DEAD, and
-		 * for each intermediate heap-only tuple either reclaim to LP_UNUSED
-		 * (classic HOT) or record a bridge conversion (HOT-indexed tuple with
-		 * outstanding stale btree entries).  The last chain member has no
-		 * successor to forward to; convert it anyway when
-		 * HOT-indexed-preserved so stale entries pointing at it don't land on
-		 * a reused LP.  Its forward link is the chain root (via the existing
-		 * LP_DEAD at the root's position) because there is nothing live
-		 * beyond it.  Practically, readers following the bridge's forward
-		 * land on an LP_DEAD root and terminate the walk, which is the
-		 * correct outcome for a fully-dead chain.
-		 *
-		 * PHOT-faithful model: dead HOT-indexed members are not rewritten as
-		 * forwarding bridges.  Keep each one as an ordinary dead heap-only
-		 * tuple (its t_ctid and inline bitmap intact) so a stale mid-chain
-		 * entry still resolves through it; vacuum reclaims it once its leaves
-		 * are swept.  Reclaim only classic-HOT members that carry no index
-		 * entry and that no kept member forwards through.
+		 * The entire chain is dead.  Mark the root line pointer LP_DEAD and
+		 * handle each member: a dead HOT-selectively-updated member may still
+		 * have a stale btree leaf pointing at it, so keep it in place as an
+		 * ordinary dead heap-only tuple (its t_ctid and inline bitmap intact)
+		 * until vacuum reclaims it once ambulkdelete has swept those leaves.
+		 * Reclaim only classic-HOT members, which carry no index entry of
+		 * their own, to LP_UNUSED.
 		 */
 		{
 			bool		keeping = false;
@@ -1831,22 +1820,21 @@ process_chain:
 	else
 	{
 		/*
-		 * We found a DEAD tuple in the chain.  Redirect the root line pointer
-		 * to the first surviving chain member.
+		 * We found a DEAD prefix followed by a live remainder in the chain.
 		 *
-		 * PHOT-faithful model: dead HOT-indexed members are kept as ordinary
-		 * dead heap-only tuples, not rewritten as forwarding bridges.  Each
-		 * keeps its t_ctid forward link and its inline producing-hop bitmap,
-		 * so the natural HOT chain already forwards a stale mid-chain entry to
-		 * first_live and a root-pointing entry accumulates every hop's bitmap
-		 * as it walks.  The root redirect therefore points at the *first* dead
-		 * member (chainitems[1]) -- not first_live -- so a root-pointing entry
-		 * still traverses the whole prefix and accumulates the full union (as
-		 * the old bridge head did).  Leading classic-HOT members that carry no
-		 * index entry, and that no kept member forwards through, are reclaimed.
-		 * In notation: LP[1] v1 root -> LP[3] v2 {a} -> LP[5] v3 {b} -> LP[7]
-		 * v4 LIVE (v1..v3 dead) becomes LP[1] redirect -> LP[3], with LP[3],
-		 * LP[5] kept as dead tuples carrying {a},{b}; LP[7] v4 live.
+		 * Dead HOT-selectively-updated members are kept in place as ordinary
+		 * dead heap-only tuples.  Each keeps its t_ctid forward link and its
+		 * inline producing-hop bitmap, so the natural HOT chain forwards a
+		 * stale mid-chain entry to first_live and a root-pointing entry
+		 * accumulates every hop's bitmap as it walks.  The root redirect
+		 * therefore points at the *first* dead member (chainitems[1]) -- not
+		 * first_live -- so a root-pointing entry still traverses the whole
+		 * prefix and accumulates the full union.  Leading classic-HOT members
+		 * that carry no index entry, and that no kept member forwards through,
+		 * are reclaimed.  In notation: LP[1] v1 root -> LP[3] v2 {a} -> LP[5]
+		 * v3 {b} -> LP[7] v4 LIVE (v1..v3 dead) becomes LP[1] redirect ->
+		 * LP[3], with LP[3], LP[5] kept as dead tuples carrying {a},{b}; LP[7]
+		 * v4 live.
 		 */
 		OffsetNumber first_live = chainitems[ndeadchain];
 		OffsetNumber head = InvalidOffsetNumber;
@@ -2024,16 +2012,15 @@ heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum, bool was_norm
 
 /*
  * heap_prune_record_unchanged_dead_member
- *		Keep a dead HOT-indexed heap-only chain member in place.
+ *		Keep a dead HOT-selectively-updated heap-only chain member in place.
  *
- * In the PHOT-faithful model SIU does not rewrite a dead mid-chain member as
- * a forwarding bridge.  Instead the member is left as an ordinary dead
- * heap-only tuple: its t_ctid still forwards to its successor and its inline
- * modified-attrs bitmap is intact, so a stale index entry that points at it
- * walks forward to the live tuple exactly as before.  We must not reclaim it
- * here because outstanding mid-chain index entries still reference its slot;
- * vacuum reclaims it once ambulkdelete has swept those leaves.  Just mark it
- * processed and keep the page from being reported all-visible/all-frozen.
+ * The member is left as an ordinary dead heap-only tuple: its t_ctid still
+ * forwards to its successor and its inline modified-attrs bitmap is intact, so
+ * a stale index entry that points at it walks forward to the live tuple.  We
+ * must not reclaim it here because outstanding mid-chain index entries still
+ * reference its slot; vacuum reclaims it once ambulkdelete has swept those
+ * leaves.  Just mark it processed and keep the page from being reported
+ * all-visible/all-frozen.
  */
 static void
 heap_prune_record_unchanged_dead_member(PruneState *prstate, OffsetNumber offnum)
