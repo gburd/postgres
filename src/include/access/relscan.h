@@ -225,25 +225,16 @@ typedef struct IndexScanDescData
 
 	/*
 	 * T means the index entry that reached xs_heaptid is stale: the HOT chain
-	 * walked to reach the tuple crossed a HOT-indexed (HOT-indexed update)
-	 * hop that changed an attribute this index covers, so the arriving leaf's
-	 * key no longer matches the live tuple.  The executor drops such a tuple;
-	 * the row is re-supplied by the fresh entry inserted for the new value.
-	 * Unlike xs_recheck (set by lossy AMs such as GiST and GIN), this is
-	 * computed by the index-access layer by intersecting the table AM's
-	 * reported modified-attrs (xs_heapfetch->xs_modattrs) with the attributes
-	 * this index covers (xs_hot_indexed_attrs).
+	 * walked to reach the tuple crossed a HOT-selectively-updated (HOT/SIU)
+	 * hop, and a leaf-key recheck found the arriving entry's stored key no
+	 * longer matches the live tuple's current index form.  The executor drops
+	 * such a tuple; the row is re-supplied by the fresh entry inserted for the
+	 * new value.  Unlike xs_recheck (set by lossy AMs such as GiST and GIN),
+	 * this is computed by the index-access layer, which rechecks the leaf key
+	 * against the live tuple (via the AM's amrecheck_leaf_key callback) when
+	 * the chain walk reports it crossed a HOT/SIU hop.
 	 */
 	bool		xs_hot_indexed_stale;
-
-	/*
-	 * Heap attributes this index covers (RelationGetIndexedAttrs convention),
-	 * cached for the scan's lifetime by the index-access layer to intersect
-	 * with the table AM's reported modified-attrs.  NULL until first computed;
-	 * freed at index_endscan.  Stays in this layer -- it is never handed to
-	 * the table AM.
-	 */
-	struct Bitmapset *xs_hot_indexed_attrs;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

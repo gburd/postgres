@@ -316,30 +316,6 @@ extern Size heap_build_hot_indexed_tombstone(char *buf,
 extern void heap_fill_hot_indexed_inline_bitmap(uint8 *dest, int natts,
 												const Bitmapset *modified_attrs);
 
-extern bool heap_hot_indexed_tombstone_attr_modified(const HotIndexedTombstonePayload *p,
-													 AttrNumber attnum);
-
-/*
- * heap_hot_indexed_bitmap_overlaps
- *		True iff any heap attribute in index_attrs is marked modified by the
- *		raw modified-attrs bitmap (nbytes wide), using the same attnum-1 layout
- *		and FirstLowInvalidHeapAttributeNumber-offset index_attrs convention as
- *		heap_hot_indexed_payload_overlaps.  Serves both the tombstone payload
- *		and a live version's inline-trailing bitmap.
- */
-extern bool heap_hot_indexed_bitmap_overlaps(const uint8 *bitmap, uint16 nbytes,
-											 const Bitmapset *index_attrs);
-
-/*
- * heap_hot_indexed_payload_overlaps
- *		True iff any heap attribute in index_attrs is marked modified by the
- *		tombstone payload.  index_attrs uses the FirstLowInvalidHeapAttribute-
- *		Number offset convention (as returned by RelationGetIndexedAttrs); the
- *		read-side recheck uses this to decide whether a chain hop changed an
- *		attribute the arriving index covers.
- */
-extern bool heap_hot_indexed_payload_overlaps(const HotIndexedTombstonePayload *p,
-											  const Bitmapset *index_attrs);
 
 /*
  * heap_build_hot_indexed_bridge
