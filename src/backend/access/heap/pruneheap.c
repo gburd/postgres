@@ -2521,6 +2521,41 @@ heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum
 	 */
 	Assert(!prstate->processed[offnum]);
 	prstate->processed[offnum] = true;
+
+	/*
+	 * As in heap_prune_record_redirect: if this redirect forwards to a
+	 * HOT-selectively-updated live tuple, the page may carry stale btree
+	 * entries that resolve through it, so it must not be reported
+	 * all-visible/all-frozen (an index-only scan would otherwise skip the
+	 * leaf-key recheck).  This must happen here too, not only when the
+	 * redirect is first created, because a re-prune records an existing SIU
+	 * redirect as unchanged.
+	 */
+	{
+		ItemId		lp = PageGetItemId(prstate->page, offnum);
+
+		if (ItemIdIsRedirected(lp))
+		{
+			OffsetNumber rdoffnum = ItemIdGetRedirect(lp);
+
+			if (rdoffnum >= FirstOffsetNumber &&
+				rdoffnum <= PageGetMaxOffsetNumber(prstate->page))
+			{
+				ItemId		tlp = PageGetItemId(prstate->page, rdoffnum);
+
+				if (ItemIdIsNormal(tlp))
+				{
+					HeapTupleHeader thtup = (HeapTupleHeader) PageGetItem(prstate->page, tlp);
+
+					if ((thtup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+					{
+						prstate->set_all_visible = false;
+						prstate->set_all_frozen = false;
+					}
+				}
+			}
+		}
+	}
 }
 
 /*
