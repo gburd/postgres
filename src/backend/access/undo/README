@@ -821,6 +821,30 @@ rollbacks are handled correctly via automatic TOAST table enrollment.
 - Impact: Higher UNDO write amplification on partial updates
 - Mitigation: Use HOT updates when possible
 
+### Standby-Side Before-Image Regeneration (designed, rejected)
+A proposed optimization would have standbys regenerate each RECNO
+before-image locally rather than receiving it in the per-relation UNDO
+fork's WAL payload, trimming WAL volume on write-heavy workloads.  It is
+not implemented, and was rejected for two reasons:
+
+- It is not viable on the current write path.  A RECNO in-place
+  UPDATE/DELETE overwrites the tuple and emits its heap-change WAL record
+  (RecnoXLogUpdate) BEFORE the relundo before-image record (RelUndoFinish).
+  Standby redo is strictly LSN-ordered, so by the time it replays the
+  before-image record the old tuple is already gone from the page -- there
+  is nothing to regenerate from.  Enabling regeneration would require
+  reordering the two records across the write path, reintroducing the
+  cross-record ordering coupling the per-relation fork was built to avoid.
+- The risk/reward is upside-down.  The saving is one old-tuple image per
+  in-place UPDATE/DELETE (already delta-compressed on the CAS path), while
+  a regeneration defect would serve incorrect reads on a standby or break
+  rollback after promotion.  Correctness on standbys is not worth trading
+  for a bounded WAL-volume saving.
+
+Revisit only if WAL volume from before-images becomes a measured
+bottleneck AND the write path is reordered to log the before-image first,
+behind a default-off switch that retains the payload path as fallback.
+
 ### ProcArray Integration
 - GetOldestActiveTransactionId() simplified for initial implementation
 - Proper ProcArray scan for oldest XID needed for production
