@@ -731,6 +731,19 @@ verify_heapam(PG_FUNCTION_ARGS)
 				/* HOT chains should not intersect. */
 				if (predecessor[nextoffnum] != InvalidOffsetNumber)
 				{
+					/*
+					 * In the HOT/SIU model several redirects legitimately
+					 * forward to the same live tuple: when a chain collapses,
+					 * the root and each entry-bearing dead member become a
+					 * redirect to first_live so every stale btree entry still
+					 * resolves there (the read path then rechecks the leaf
+					 * key).  Multiple predecessors are therefore expected when
+					 * the target is HOT-selectively-updated; keep the first
+					 * predecessor and do not report it as corruption.
+					 */
+					if ((next_htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+						continue;
+
 					report_corruption(&ctx,
 									  psprintf("redirect line pointer points to offset %d, but offset %d also points there",
 											   nextoffnum, predecessor[nextoffnum]));
