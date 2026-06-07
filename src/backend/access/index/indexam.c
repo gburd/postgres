@@ -689,27 +689,19 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 		pgstat_count_heap_fetch(scan->indexRelation);
 
 	/*
-	 * The table AM reported, via the fetch descriptor, the set of heap
-	 * attributes that in-chain updates modified between the arriving index
-	 * entry's target and the live tuple.  Intersect it with the attributes
-	 * this index covers: if they overlap, the arriving leaf's key no longer
-	 * matches the live tuple and the entry is stale.  The executor drops such
-	 * a leaf (the fresh entry inserted for the new value re-supplies the row),
-	 * rather than re-evaluating quals as for a lossy-index recheck.
-	 */
-	/*
-	 * The chain walk reported, via xs_modattrs_nbytes > 0, that it crossed
-	 * at least one HOT-indexed hop between the arriving index entry's target
-	 * and the live tuple.  When it did, the arriving leaf's key may no longer
-	 * agree with the live tuple, so recheck the leaf's stored key against the
-	 * live tuple's current index form: a mismatch means the leaf is stale and
-	 * the executor drops it (the fresh entry inserted for the new value
-	 * re-supplies the row).  We need the leaf IndexTuple (xs_itup) to recheck;
-	 * index_beginscan forces xs_want_itup for AMs that provide the callback.
+	 * The table AM reported, via xs_hot_indexed_recheck, whether the walk to
+	 * the live tuple crossed a HOT/SIU hop after the arriving index entry's
+	 * own tuple.  When it did, the arriving leaf's key may no longer agree
+	 * with the live tuple, so recheck the leaf's stored key against the live
+	 * tuple's current index form (via the AM's amrecheck_leaf_key callback):
+	 * a mismatch means the leaf is stale and the executor drops it (the fresh
+	 * entry inserted for the new value re-supplies the row).  We need the leaf
+	 * IndexTuple (xs_itup) to recheck; index_beginscan forces xs_want_itup for
+	 * AMs that provide the callback.
 	 */
 	scan->xs_hot_indexed_stale =
 		found &&
-		scan->xs_heapfetch->xs_modattrs_nbytes > 0 &&
+		scan->xs_heapfetch->xs_hot_indexed_recheck &&
 		scan->indexRelation->rd_indam->amrecheck_leaf_key != NULL &&
 		scan->xs_itup != NULL &&
 		!scan->indexRelation->rd_indam->amrecheck_leaf_key(scan->indexRelation,

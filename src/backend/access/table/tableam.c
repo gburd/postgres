@@ -243,8 +243,7 @@ table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
 							  bool *all_dead,
-							  uint8 *modattrs_out,
-							  uint16 *modattrs_nbytes_out,
+							  bool *hot_indexed_recheck_out,
 							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
@@ -258,18 +257,12 @@ table_index_fetch_tuple_check(Relation rel,
 									all_dead);
 
 	/*
-	 * Surface the table AM's reported modified-attrs union to the caller (the
-	 * index AM, which intersects it with the index's covered attributes); the
-	 * scan's buffer is freed below, so copy it out.
+	 * Surface the table AM's HOT/SIU recheck signal to the caller (the index
+	 * AM, which rechecks the arriving leaf key against the live tuple); the
+	 * scan is freed below, so copy it out.
 	 */
-	if (modattrs_nbytes_out != NULL)
-	{
-		uint16		nbytes = found ? scan->xs_modattrs_nbytes : 0;
-
-		if (nbytes > 0 && modattrs_out != NULL)
-			memcpy(modattrs_out, scan->xs_modattrs, nbytes);
-		*modattrs_nbytes_out = nbytes;
-	}
+	if (hot_indexed_recheck_out != NULL)
+		*hot_indexed_recheck_out = found && scan->xs_hot_indexed_recheck;
 
 	table_index_fetch_end(scan);
 	if (keep_slot == NULL)

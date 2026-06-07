@@ -2631,26 +2631,21 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 			OffsetNumber offnum = offsets[curslot];
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
-			uint8		modattrs[(MaxHeapAttributeNumber + 7) / 8];
-			uint16		modattrs_nbytes = 0;
-			bool		hot_indexed_stale;
+			bool		hot_indexed_stale = false;
 
 			ItemPointerSet(&tid, block, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
 									   &heapTuple, NULL, true,
-									   modattrs, &modattrs_nbytes, NULL))
+									   &hot_indexed_stale, NULL))
 			{
 				OffsetNumber resolved = ItemPointerGetOffsetNumber(&tid);
 				bool		already_have = false;
 
 				/*
 				 * A bitmap heap scan cannot attribute a TID to one index, so
-				 * it cannot intersect the reported modified-attrs with a
-				 * specific index's columns; any crossed in-chain hop means the
-				 * arriving entry may be stale, so recheck/dedup conservatively.
+				 * any crossed in-chain HOT/SIU hop means the arriving entry
+				 * may be stale; recheck/dedup conservatively.
 				 */
-				hot_indexed_stale = (modattrs_nbytes > 0);
-
 				if (hot_indexed_stale)
 					page_had_hot_indexed = true;
 
