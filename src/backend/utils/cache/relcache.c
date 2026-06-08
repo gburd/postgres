@@ -5381,7 +5381,7 @@ RelationGetIndexedAttrs(Relation indexRel)
  * GUC would fit as well.
  *
  * Heuristic: page_budget = BLCKSZ * fillfactor / 100
- *            cap = (page_budget - overhead) / (avg_tuple + tombstone)
+ *            cap = (page_budget - overhead) / avg_tuple
  *
  * The answer is cached in rel->rd_hotidx_chainmax.  Zero (the initial
  * memset value) means "not yet computed".  A relcache invalidation
@@ -5400,7 +5400,6 @@ RelationGetHotIndexedChainMax(Relation relation)
 	Size		page_budget;
 	Size		overhead;
 	Size		avg_tuple;
-	Size		tombstone;
 	int			cap;
 
 	if (relation->rd_hotidx_chainmax > 0)
@@ -5431,21 +5430,10 @@ RelationGetHotIndexedChainMax(Relation relation)
 	avg_tuple = MAXALIGN(sizeof(HeapTupleHeaderData)) +
 		RelationGetDescr(relation)->natts * 8;
 
-	/*
-	 * Tombstone size upper bound.  HotIndexedTombstoneSize() is the
-	 * authoritative on-page size for the worst-case attribute count, so by
-	 * passing MaxHeapAttributeNumber here we get an upper bound that scales
-	 * automatically if the tombstone format ever grows.  A StaticAssertDecl
-	 * in hot_indexed.c bounds this at 256 bytes (the present worst case is
-	 * ~232 bytes for a 1600-attribute relation), small enough that an
-	 * off-by-a-few estimate cannot push the cap into a degenerate range.
-	 */
-	tombstone = HotIndexedTombstoneSize(MaxHeapAttributeNumber);
-
 	if (page_budget <= overhead)
 		cap = 1;
 	else
-		cap = (int) ((page_budget - overhead) / (avg_tuple + tombstone));
+		cap = (int) ((page_budget - overhead) / avg_tuple);
 
 	if (cap < 1)
 		cap = 1;

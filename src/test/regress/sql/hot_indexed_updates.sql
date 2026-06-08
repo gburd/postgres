@@ -452,19 +452,13 @@ SELECT bool_and((n_tup_hot_indexed_upd_matched + n_tup_hot_indexed_upd_skipped) 
 DROP TABLE hotidx_perindex;
 
 -- ---------------------------------------------------------------------------
--- 11. Chain-cap demotion under hot-loop UPDATE
+-- 11. Long hot-loop UPDATE stays compact and HOT-indexed
 --
--- RelationGetHotIndexedChainMax derives a per-relation cap from
--- fillfactor and tuple width.  Once an on-page HOT-indexed chain reaches
--- the cap, heap_update demotes the next eligible UPDATE to non-HOT
--- (HEAP_HOT_MODE_NO).  The visible signal is that n_tup_hot_indexed_upd
--- stops advancing while n_tup_upd keeps going: subsequent UPDATEs are
--- plain non-HOT updates that move to a fresh page.
---
--- We use a low fillfactor and a narrow row to make the cap small
--- (single-digit), so the test runs quickly without depending on the
--- exact cap value -- the assertion is that hot_indexed_upd plateaus while
--- total updates does not.
+-- A long run of HOT-indexed UPDATEs to a single row stays compact: prune
+-- collapses each dead version to a redirect to the live tuple and reuses its
+-- slot, so the row never leaves its original page and the chain does not grow
+-- unbounded.  Every UPDATE that changes the indexed column (and leaves another
+-- index, here the PK, unchanged) takes the HOT-indexed path.
 -- ---------------------------------------------------------------------------
 CREATE TABLE hi_chaincap (
     id int PRIMARY KEY,
@@ -483,21 +477,19 @@ BEGIN
     END LOOP;
 END $$;
 
--- After 200 UPDATEs the row's value is 200, regardless of how many
--- chains the cap forced.
+-- After 200 UPDATEs the row's value is 200.
 SELECT a FROM hi_chaincap WHERE id = 1;
 
--- The HOT-indexed counter must be strictly less than the total UPDATE
--- counter: the cap forced at least one demotion to non-HOT.
+-- Every UPDATE took the HOT-indexed path (the PK index is unchanged, so it is
+-- skipped), so n_tup_hot_indexed_upd advanced.
 SELECT pg_stat_force_next_flush();
-SELECT hot_idx < updates AS cap_forced_demotion
+SELECT hot_idx > 0 AS hot_indexed_fired
   FROM get_hi_count('hi_chaincap');
 
--- And the HOT-indexed counter must be strictly positive: the cap fired
--- only after a few HOT-indexed updates landed on the same page.
-SELECT pg_stat_force_next_flush();
-SELECT hot_idx > 0 AS hot_indexed_fired_at_least_once
-  FROM get_hi_count('hi_chaincap');
+-- The heap stayed compact: prune+collapse reclaimed the dead versions, so the
+-- single live row still occupies just one page.
+SELECT relpages <= 1 AS heap_stayed_compact
+  FROM pg_class WHERE relname = 'hi_chaincap';
 
 DROP TABLE hi_chaincap;
 
