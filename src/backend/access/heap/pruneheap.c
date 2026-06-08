@@ -16,7 +16,6 @@
 
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
-#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/transam.h"

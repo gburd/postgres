@@ -12,7 +12,6 @@
  */
 #include "postgres.h"
 
-#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/visibilitymap.h"

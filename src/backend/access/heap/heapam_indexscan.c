@@ -15,7 +15,6 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
-#include "access/hot_indexed.h"
 #include "access/relscan.h"
 #include "storage/predicate.h"
 
@@ -175,12 +174,6 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		heapTuple->t_len = ItemIdGetLength(lp);
 		heapTuple->t_tableOid = RelationGetRelid(relation);
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
-
-		/*
-		 * Past the redirect handling above, the item is a genuine tuple that
-		 * we are about to subject to chain-match and visibility checks.
-		 */
-		AssertIsGenuineHeapTuple(heapTuple->t_data);
 
 		/*
 		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple

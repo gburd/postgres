@@ -131,7 +131,6 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
-#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"

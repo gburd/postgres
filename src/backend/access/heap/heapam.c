@@ -34,7 +34,6 @@
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/hio.h"
-#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
 #include "access/syncscan.h"

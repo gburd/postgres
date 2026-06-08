@@ -13,7 +13,6 @@
 #include "access/detoast.h"
 #include "access/genam.h"
 #include "access/heaptoast.h"
-#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/relation.h"
 

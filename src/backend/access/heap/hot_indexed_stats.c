@@ -19,7 +19,6 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
-#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "fmgr.h"
