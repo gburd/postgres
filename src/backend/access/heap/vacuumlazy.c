@@ -445,7 +445,8 @@ static bool lazy_vacuum_all_indexes(LVRelState *vacrel);
 static void lazy_vacuum_heap_rel(LVRelState *vacrel);
 static void lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno,
 								  Buffer buffer, OffsetNumber *deadoffsets,
-								  int num_offsets, Buffer vmbuffer);
+								  int num_offsets, Buffer vmbuffer,
+								  bool got_cleanup_lock);
 static bool lazy_check_wraparound_failsafe(LVRelState *vacrel);
 static void lazy_cleanup_all_indexes(LVRelState *vacrel);
 static IndexBulkDeleteResult *lazy_vacuum_one_index(Relation indrel,
@@ -2214,6 +2215,7 @@ lazy_scan_noprune(LVRelState *vacrel,
 
 		hastup = true;			/* page prevents rel truncation */
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
+
 		if (heap_tuple_should_freeze(tupleheader, &vacrel->cutoffs,
 									 &NoFreezePageRelfrozenXid,
 									 &NoFreezePageRelminMxid))
@@ -2686,6 +2688,7 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 		Size		freespace;
 		OffsetNumber offsets[MaxOffsetNumber];
 		int			num_offsets;
+		bool		got_cleanup_lock;
 
 		vacuum_delay_point(false);
 
@@ -2708,10 +2711,20 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 		 */
 		visibilitymap_pin(vacrel->rel, blkno, &vmbuffer);
 
-		/* We need a non-cleanup exclusive lock to mark dead_items unused */
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		/*
+		 * Setting dead items unused needs only an exclusive lock, but
+		 * reclaiming a collapsed HOT-indexed chain additionally re-points the
+		 * redirects that forward into it -- moving chain structure concurrent
+		 * scans follow, which requires a cleanup lock.  Prefer a cleanup lock
+		 * (as the first pass does); if unavailable, fall back to an exclusive
+		 * lock and lazy_vacuum_heap_page defers any such reclaim on this page
+		 * to a later vacuum that can obtain one.
+		 */
+		got_cleanup_lock = ConditionalLockBufferForCleanup(buf);
+		if (!got_cleanup_lock)
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		lazy_vacuum_heap_page(vacrel, blkno, buf, offsets,
-							  num_offsets, vmbuffer);
+							  num_offsets, vmbuffer, got_cleanup_lock);
 
 		/* Now that we've vacuumed the page, record its available space */
 		page = BufferGetPage(buf);
@@ -2746,6 +2759,7 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 	restore_vacuum_error_info(vacrel, &saved_err_info);
 }
 
+
 /*
  *	lazy_vacuum_heap_page() -- free page's LP_DEAD items listed in the
  *						  vacrel->dead_items store.
@@ -2757,11 +2771,13 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 static void
 lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 					  OffsetNumber *deadoffsets, int num_offsets,
-					  Buffer vmbuffer)
+					  Buffer vmbuffer, bool got_cleanup_lock)
 {
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxHeapTuplesPerPage];
 	int			nunused = 0;
+	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
+	int			nredirected = 0;
 	TransactionId newest_live_xid;
 	TransactionId conflict_xid = InvalidTransactionId;
 	bool		all_frozen;
@@ -2783,7 +2799,9 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	 * and mark the page all-visible within the same critical section,
 	 * enabling both changes to be emitted in a single WAL record. Since the
 	 * visibility checks may perform I/O and allocate memory, they must be
-	 * done outside the critical section.
+	 * done outside the critical section.  A deferred reclaim leaves a
+	 * not-yet-removed member on the page, so skip the check when anything was
+	 * deferred.
 	 */
 	if (heap_page_would_be_all_visible(vacrel->rel, buffer,
 									   vacrel->vistest, true,
@@ -2815,12 +2833,28 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		itemid = PageGetItemId(page, toff);
 
+		/* A reclaimable item is a classic LP_DEAD line pointer. */
 		Assert(ItemIdIsDead(itemid) && !ItemIdHasStorage(itemid));
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
 	}
 
-	Assert(nunused > 0);
+	Assert(nunused > 0 || nredirected == 0);
+
+
+	/*
+	 * Re-point each fully-reclaimed chain's redirect straight at first_live,
+	 * completing the collapse back to classic HOT.  Planned above while the
+	 * forward links were intact; only chains we actually reclaimed appear
+	 * here, so no surviving redirect is left pointing at a reclaimed slot.
+	 */
+	for (int i = 0; i < nredirected; i++)
+	{
+		ItemId		rlp = PageGetItemId(page, redirected[i * 2]);
+
+		Assert(ItemIdIsRedirected(rlp));
+		ItemIdSetRedirect(rlp, redirected[i * 2 + 1]);
+	}
 
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
@@ -2851,10 +2885,10 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  vmflags != 0 ? vmbuffer : InvalidBuffer,
 								  vmflags,
 								  conflict_xid,
-								  false,	/* no cleanup lock required */
+								  got_cleanup_lock,
 								  PRUNE_VACUUM_CLEANUP,
 								  NULL, 0,	/* frozen */
-								  NULL, 0,	/* redirected */
+								  redirected, nredirected,
 								  NULL, 0,	/* dead */
 								  unused, nunused);
 	}
@@ -3647,8 +3681,15 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		*logging_offnum = offnum;
 		itemid = PageGetItemId(page, offnum);
 
-		/* Unused or redirect line pointers are of no interest */
-		if (!ItemIdIsUsed(itemid) || ItemIdIsRedirected(itemid))
+		/* Unused line pointers are of no interest. */
+		if (!ItemIdIsUsed(itemid))
+			continue;
+
+		/*
+		 * Plain redirects are of no interest (the chain member they point at
+		 * is inspected separately).
+		 */
+		if (ItemIdIsRedirected(itemid))
 			continue;
 
 		ItemPointerSet(&(tuple.t_self), blockno, offnum);
