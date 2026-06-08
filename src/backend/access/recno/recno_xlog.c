@@ -40,6 +40,7 @@
 #include "access/recno_xlog.h"
 #include "access/bufmask.h"
 #include "access/slog.h"
+#include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogrecord.h"
 #include "access/xlogutils.h"
@@ -177,9 +178,31 @@ RecnoReplicaHandleUncertainty(HLCTimestamp commit_hlc, int32 uncertainty_ms)
 		return;
 
 	commit_phys = HLCGetPhysical(commit_hlc);
+
+	/*
+	 * Clamp the uncertainty delta to the configured maximum clock offset.  A
+	 * negative or absurdly large uncertainty_ms (from a corrupt or
+	 * wrapped-around uncertainty interval in a WAL record) must never be able
+	 * to produce an unreachable upper_phys: that would hang the spin loop
+	 * below forever waiting for a physical clock that never arrives.
+	 */
+	if (uncertainty_ms < 0)
+		uncertainty_ms = 0;
+	if (uncertainty_ms > recno_max_clock_offset_ms)
+		uncertainty_ms = recno_max_clock_offset_ms;
+
 	upper_phys = commit_phys + (uint64) uncertainty_ms;
 
-	if (recno_uncertainty_wait)
+	/*
+	 * Never spin-wait on the uncertainty window during WAL replay.  Uncertainty
+	 * waiting is a read-serving concern: it exists so that a transaction
+	 * reading at the replica does not observe a commit whose real-time order is
+	 * ambiguous.  The recovery/redo path applies records, it does not serve
+	 * reads, and stalling redo freezes replay for the whole standby.  The read
+	 * path (RecnoTupleSatisfiesSnapshot) enforces uncertainty independently via
+	 * transaction restart, so replay only needs to advance the local HLC.
+	 */
+	if (recno_uncertainty_wait && !RecoveryInProgress())
 	{
 		/*
 		 * Wait mode: spin until physical clock advances past the uncertainty
@@ -217,7 +240,34 @@ RecnoReplicaHandleUncertainty(HLCTimestamp commit_hlc, int32 uncertainty_ms)
 	 *
 	 * HLCNow with msg_hlc = commit_hlc ensures the local HLC advances past
 	 * the commit timestamp (the "receive" variant of the HLC algorithm).
+	 *
+	 * Defense-in-depth: HLCNow takes the Max of the local clock and the
+	 * supplied timestamp with no upper bound, and global_hlc lives in shared
+	 * memory, so a single far-future commit_hlc poisons the shared clock for
+	 * every backend on this standby until restart.  The WAL-layout walk in
+	 * RecnoXLogLocateHLCInfo guarantees we read the real HLC field rather than
+	 * image bytes, but it cannot detect a bit-flip within that field.  Cap the
+	 * physical component at "now + recno_max_clock_offset_ms": a legitimate
+	 * commit_hlc from a peer whose clock leads ours can never exceed our clock
+	 * by more than the configured maximum offset, so anything beyond that is
+	 * corruption and must not advance the shared clock.
 	 */
+	{
+		TimestampTz now = GetCurrentTimestamp();
+		uint64		now_ms = (uint64) now / 1000;
+		uint64		max_phys = now_ms + (uint64) recno_max_clock_offset_ms;
+
+		if (HLCGetPhysical(commit_hlc) > max_phys)
+		{
+			elog(DEBUG1,
+				 "recno replica: clamping implausible commit HLC (phys %llu ms"
+				 " > now %llu + max offset %d ms); possible WAL corruption",
+				 (unsigned long long) HLCGetPhysical(commit_hlc),
+				 (unsigned long long) now_ms, recno_max_clock_offset_ms);
+			return;
+		}
+	}
+
 	(void) HLCNow(commit_hlc);
 }
 
@@ -238,35 +288,83 @@ RecnoReplicaAdvanceHLC(HLCTimestamp target_hlc)
 }
 
 /*
+ * RecnoXLogLocateHLCInfo -- find the xl_recno_hlc_info inside a WAL record.
+ *
+ * The auto-HLC DML loggers register the HLC region and THEN append the
+ * self-delimiting logical-decoding image(s) after it (see the layout
+ * convention in recno_xlog.h).  So when RECNO_WAL_LOGICAL_TUPLE is set the
+ * HLC struct is NOT at the absolute record tail: n_images trailing
+ * "[image bytes][uint32 len]" regions follow it.  Reading the absolute tail
+ * yields image bytes interpreted as a garbage commit HLC -- which both hangs
+ * the replica spin loop and poisons the shared HLC.
+ *
+ * Walk backward past each trailing image (read its trailing uint32 length,
+ * back up that many bytes plus the length word) exactly as the image
+ * decoders do, then return the HLC struct immediately before the image
+ * region.  Returns NULL if HAS_HLC is unset or the record is too short.
+ *
+ * n_images is the number of logical images this record type appends when
+ * RECNO_WAL_LOGICAL_TUPLE is set: 1 for INSERT/DELETE, 2 for UPDATE.
+ */
+const xl_recno_hlc_info *
+RecnoXLogLocateHLCInfo(const char *data, Size total_len, uint16 flags,
+					   int n_images)
+{
+	const char *end = data + total_len;
+
+	if (!(flags & RECNO_WAL_HAS_HLC))
+		return NULL;
+
+	if (flags & RECNO_WAL_LOGICAL_TUPLE)
+	{
+		for (int i = 0; i < n_images; i++)
+		{
+			uint32		img_len;
+
+			if (end - data < (ptrdiff_t) sizeof(uint32))
+				return NULL;
+			memcpy(&img_len, end - sizeof(uint32), sizeof(uint32));
+			end -= sizeof(uint32);
+			if (end - data < (ptrdiff_t) img_len)
+				return NULL;
+			end -= img_len;
+		}
+	}
+
+	if (end - data < (ptrdiff_t) SizeOfXlRecnoHlcInfo)
+		return NULL;
+
+	return (const xl_recno_hlc_info *) (end - SizeOfXlRecnoHlcInfo);
+}
+
+/*
  * recno_redo_handle_hlc -- extract and process HLC info during WAL redo.
  *
  * Called from the INSERT/UPDATE/DELETE redo handlers when the WAL record
- * has RECNO_WAL_HAS_HLC set.  Extracts the xl_recno_hlc_info from the
- * end of the record data, advances the local HLC, and handles
- * uncertainty for standby/replica.
+ * has RECNO_WAL_HAS_HLC set.  Locates the xl_recno_hlc_info (skipping any
+ * trailing logical-decoding image region), advances the local HLC, and
+ * handles uncertainty for standby/replica.
+ *
+ * n_images is the number of logical images appended for this record type
+ * (1 for INSERT/DELETE, 2 for UPDATE).
  *
  * Returns a pointer to a static copy of the HLC info, or NULL if the
  * flag is not set or the record doesn't have enough data.
  */
 static const xl_recno_hlc_info *
-recno_redo_handle_hlc(XLogReaderState *record, uint16 flags)
+recno_redo_handle_hlc(XLogReaderState *record, uint16 flags, int n_images)
 {
 	static xl_recno_hlc_info hlc_buf;
 	Size		total_len;
 	char	   *data;
 	const xl_recno_hlc_info *hlc_info;
 
-	if (!(flags & RECNO_WAL_HAS_HLC))
-		return NULL;
-
 	data = XLogRecGetData(record);
 	total_len = XLogRecGetDataLen(record);
 
-	if (total_len < SizeOfXlRecnoHlcInfo)
+	hlc_info = RecnoXLogLocateHLCInfo(data, total_len, flags, n_images);
+	if (hlc_info == NULL)
 		return NULL;
-
-	hlc_info = (const xl_recno_hlc_info *)
-		(data + total_len - SizeOfXlRecnoHlcInfo);
 
 	memcpy(&hlc_buf, hlc_info, SizeOfXlRecnoHlcInfo);
 
@@ -1267,7 +1365,7 @@ recno_xlog_insert_redo(XLogReaderState *record)
 		bool		tuple_uncommitted = false;
 
 		/* Process HLC uncertainty data on standby */
-		recno_redo_handle_hlc(record, xlrec->flags);
+		recno_redo_handle_hlc(record, xlrec->flags, 1);
 
 		action = XLogReadBufferForRedo(record, 0, &buffer);
 
@@ -1650,7 +1748,7 @@ recno_xlog_update_inplace_redo(XLogReaderState *record)
 		}
 
 		/* Process HLC uncertainty data on standby */
-		recno_redo_handle_hlc(record, xlrec->flags);
+		recno_redo_handle_hlc(record, xlrec->flags, 2);
 
 		action = XLogReadBufferForRedo(record, 0, &buffer);
 
@@ -1906,7 +2004,7 @@ recno_xlog_delete_redo(XLogReaderState *record)
 		 */
 
 		/* Process HLC uncertainty data on standby */
-		recno_redo_handle_hlc(record, xlrec->flags);
+		recno_redo_handle_hlc(record, xlrec->flags, 1);
 
 		action = XLogReadBufferForRedo(record, 0, &buffer);
 		if (action == BLK_NEEDS_REDO)
