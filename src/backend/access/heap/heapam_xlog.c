@@ -936,29 +936,6 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			elog(PANIC, "unexpected trailing data in xl_heap_update block data: %ld bytes",
 				 (long) (recdata_end - recdata));
 
-		/*
-		 * Reinstall the HOT-indexed tombstone that accompanied the new tuple,
-		 * if any.  It is carried in the main record data, immediately after
-		 * xl_heap_update, as {OffsetNumber offnum, uint16 size, raw bytes}.
-		 */
-		if (xlrec->flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
-		{
-			char	   *tdata = (char *) xlrec + SizeOfHeapUpdate;
-			OffsetNumber tomb_offnum;
-			uint16		tomb_size;
-			OffsetNumber placed;
-
-			memcpy(&tomb_offnum, tdata, sizeof(OffsetNumber));
-			tdata += sizeof(OffsetNumber);
-			memcpy(&tomb_size, tdata, sizeof(uint16));
-			tdata += sizeof(uint16);
-			placed = PageAddItem(npage, tdata, tomb_size, tomb_offnum,
-								 true /* overwrite */ , true /* is_heap */ );
-			if (placed != tomb_offnum)
-				elog(PANIC, "failed to replay HOT-indexed tombstone at offnum %u",
-					 tomb_offnum);
-		}
-
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(npage);
 

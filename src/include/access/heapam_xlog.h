@@ -90,8 +90,6 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
-/* HOT-indexed tombstone item logged alongside the new tuple */
-#define XLH_UPDATE_CONTAINS_TOMBSTONE			(1<<7)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\

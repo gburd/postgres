@@ -71,10 +71,7 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
 								  bool all_visible_cleared, bool new_all_visible_cleared,
-								  bool walLogical,
-								  OffsetNumber tombstone_offnum,
-								  const char *tombstone_item,
-								  Size tombstone_item_size);
+								  bool walLogical);
 #ifdef USE_ASSERT_CHECKING
 static void check_lock_if_inplace_updateable_rel(Relation relation,
 												 const ItemPointerData *otid,
@@ -3837,34 +3834,6 @@ l2:
 		(oldtup.t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 		hot_mode = HEAP_HOT_MODE_INDEXED;
 
-	/*
-	 * If a HOT-indexed update is permitted, a tombstone line pointer must
-	 * also fit on the same page as the new tuple.  Account for its size
-	 * (including one additional ItemIdData slot) when deciding whether to
-	 * stay on the old page.  If the tombstone would not fit, we fall through
-	 * to the non-HOT path.
-	 *
-	 * Use PageGetFreeSpaceForMultipleTuples(2) for the second check so we
-	 * reserve room for two new line pointers (one for the tuple, one for the
-	 * tombstone).  PageGetHeapFreeSpace only accounts for one LP, and the
-	 * MaxHeapTuplesPerPage check it performs also applies to our two-item
-	 * insert -- if the page is already full of LPs we can't add two more.
-	 */
-	if (hot_mode == HEAP_HOT_MODE_INDEXED)
-	{
-		Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
-		Size		multi_pagefree;
-		OffsetNumber nlp = PageGetMaxOffsetNumber(page);
-
-		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
-
-		if (newtupsize + tombsize > multi_pagefree ||
-			nlp + 2 > MaxHeapTuplesPerPage)
-			pagefree = 0;
-		else
-			pagefree = multi_pagefree - tombsize;
-	}
-
 	if (need_toast || newtupsize > pagefree)
 	{
 		TransactionId xmax_lock_old_tuple;
@@ -3994,33 +3963,8 @@ l2:
 		{
 			if (newtupsize > pagefree)
 			{
-				Size		tuple_need = heaptup->t_len;
-
-				/*
-				 * For HOT-indexed, ask RelationGetBufferForTuple for room
-				 * that fits both the new tuple and its tombstone.  Pass
-				 * MAXALIGN(tuple_len) + tombstone_size + sizeof(ItemIdData):
-				 *
-				 * - MAXALIGN so the request matches the byte footprint
-				 * PageAddItem will actually consume (it MAXALIGN's each
-				 * item's size); - plus tombstone_size (already MAXALIGN'd by
-				 * HotIndexedTombstoneSize()); - plus one extra
-				 * sizeof(ItemIdData) because PageGetHeapFreeSpace (used
-				 * internally by RelationGetBufferForTuple) reserves one LP
-				 * slot but we need two.
-				 *
-				 * Without this the helper can return our current buffer after
-				 * an opportunistic prune with just enough room for the tuple,
-				 * and the tombstone PageAddItem would then PANIC inside the
-				 * critical section.
-				 */
-				if (hot_mode == HEAP_HOT_MODE_INDEXED)
-					tuple_need = MAXALIGN(heaptup->t_len) +
-						HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation)) +
-						sizeof(ItemIdData);
-
 				/* It doesn't fit, must use RelationGetBufferForTuple. */
-				newbuf = RelationGetBufferForTuple(relation, tuple_need,
+				newbuf = RelationGetBufferForTuple(relation, heaptup->t_len,
 												   buffer, 0, NULL,
 												   &vmbuffer_new, &vmbuffer,
 												   0);
@@ -4034,18 +3978,6 @@ l2:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 			/* Re-check using the up-to-date free space */
 			pagefree = PageGetHeapFreeSpace(page);
-			if (hot_mode == HEAP_HOT_MODE_INDEXED)
-			{
-				Size		tombsize = HotIndexedTombstoneSize(RelationGetNumberOfAttributes(relation));
-				Size		multi_pagefree = PageGetFreeSpaceForMultipleTuples(page, 2);
-				OffsetNumber nlp = PageGetMaxOffsetNumber(page);
-
-				if (newtupsize + tombsize > multi_pagefree ||
-					nlp + 2 > MaxHeapTuplesPerPage)
-					pagefree = 0;
-				else
-					pagefree = multi_pagefree - tombsize;
-			}
 			if (newtupsize > pagefree ||
 				(vmbuffer == InvalidBuffer && PageIsAllVisible(page)))
 			{
@@ -4284,10 +4216,7 @@ l2:
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new,
-								 walLogical,
-								 InvalidOffsetNumber,
-								 NULL,
-								 0);
+								 walLogical);
 		if (newbuf != buffer)
 		{
 			PageSetLSN(newpage, recptr);
@@ -9275,10 +9204,7 @@ log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup, HeapTuple newtup,
 				HeapTuple old_key_tuple,
 				bool all_visible_cleared, bool new_all_visible_cleared,
-				bool walLogical,
-				OffsetNumber tombstone_offnum,
-				const char *tombstone_item,
-				Size tombstone_item_size)
+				bool walLogical)
 {
 	xl_heap_update xlrec;
 	xl_heap_header xlhdr;
@@ -9287,7 +9213,6 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	uint16		prefix_suffix[2];
 	uint16		prefixlen = 0,
 				suffixlen = 0;
-	uint16		tombstone_size16 = 0;
 	XLogRecPtr	recptr;
 	Page		page = BufferGetPage(newbuf);
 	bool		need_tuple_data = walLogical && RelationIsLogicallyLogged(reln);
@@ -9379,18 +9304,6 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	}
 
 	/*
-	 * If a HOT-indexed tombstone was placed adjacent to the new tuple on
-	 * `newbuf`, log it so replay can recreate it.  The data is attached to
-	 * block 0 (the new buffer) after the main rdata chain.
-	 */
-	if (tombstone_item_size > 0)
-	{
-		Assert(tombstone_item != NULL);
-		Assert(OffsetNumberIsValid(tombstone_offnum));
-		xlrec.flags |= XLH_UPDATE_CONTAINS_TOMBSTONE;
-	}
-
-	/*
 	 * If new tuple is the single and first tuple on page, replay can reinit
 	 * the page from scratch.  Tepid: also require that the page's tuple area
 	 * contains nothing other than this tuple.  See heap_insert for why this
@@ -9429,25 +9342,6 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		XLogRegisterBuffer(1, oldbuf, REGBUF_STANDARD);
 
 	XLogRegisterData(&xlrec, SizeOfHeapUpdate);
-
-	/*
-	 * HOT-indexed tombstone: log the recorded offset, byte count, and raw
-	 * item bytes in the main record data, immediately after xl_heap_update
-	 * and before any old-tuple identity.  The chunk is self-describing
-	 * ([OffsetNumber][uint16 size][bytes]) so replay can place it on block 0
-	 * and logical decoding can skip past it to reach the old tuple.  Keeping
-	 * it out of the block-0 buffer data lets the new tuple use the standard
-	 * [xlhdr][tuple body] layout, so decoding needs no special unpacking.
-	 */
-	if (xlrec.flags & XLH_UPDATE_CONTAINS_TOMBSTONE)
-	{
-		tombstone_size16 = (uint16) tombstone_item_size;
-
-		Assert(tombstone_item_size > 0 && tombstone_item_size <= UINT16_MAX);
-		XLogRegisterData(&tombstone_offnum, sizeof(OffsetNumber));
-		XLogRegisterData(&tombstone_size16, sizeof(uint16));
-		XLogRegisterData(unconstify(char *, tombstone_item), tombstone_item_size);
-	}
 
 	/*
 	 * Prepare WAL data for the new tuple.
