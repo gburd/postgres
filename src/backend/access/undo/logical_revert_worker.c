@@ -340,7 +340,8 @@ StartLogicalRevertWorker(Oid dboid)
 
 	memset(&worker, 0, sizeof(BackgroundWorker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
-		BGWORKER_BACKEND_DATABASE_CONNECTION;
+		BGWORKER_BACKEND_DATABASE_CONNECTION |
+		BGWORKER_INTERRUPTIBLE;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = 60;
 	sprintf(worker.bgw_library_name, "postgres");
