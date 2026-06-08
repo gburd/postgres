@@ -1274,6 +1274,7 @@ HeapTupleFreeze
 HeapTupleHeader
 HeapTupleHeaderData
 HeapTupleTableSlot
+HeapUpdateHotMode
 HistControl
 HostCacheEntry
 HostsFileLoadResult

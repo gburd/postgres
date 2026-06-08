@@ -63,6 +63,29 @@ extern List *RelationGetIndexPredicate(Relation relation);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 
 /*
+ * RelationGetIndexedAttrs -- return a freshly-palloc'd Bitmapset of every
+ * heap attribute this index references, via keys, INCLUDE columns,
+ * expressions, or partial-index predicates.
+ *
+ * The argument must be an index Relation (not its owning heap).  Attribute
+ * numbers are offset by FirstLowInvalidHeapAttributeNumber.  The result is
+ * palloc'd in the caller's context; bms_free when done.  The relcache
+ * caches its own copy in rd_indexcxt so subsequent calls only pay for the
+ * final bms_copy.
+ */
+extern Bitmapset *RelationGetIndexedAttrs(Relation indexRel);
+extern int	RelationGetHotIndexedChainMax(Relation relation);
+
+/*
+ * RelationHasExclusionConstraint -- true iff any index on this relation
+ * enforces an exclusion constraint (including WITHOUT OVERLAPS primary keys).
+ *
+ * The result is cached on the Relation so subsequent calls are O(1).  The
+ * cache is refreshed alongside the index list on relcache rebuild.
+ */
+extern bool RelationHasExclusionConstraint(Relation relation);
+
+/*
  * Which set of columns to return by RelationGetIndexAttrBitmap.
  */
 typedef enum IndexAttrBitmapKind
@@ -70,12 +93,16 @@ typedef enum IndexAttrBitmapKind
 	INDEX_ATTR_BITMAP_KEY,
 	INDEX_ATTR_BITMAP_PRIMARY_KEY,
 	INDEX_ATTR_BITMAP_IDENTITY_KEY,
-	INDEX_ATTR_BITMAP_HOT_BLOCKING,
+	INDEX_ATTR_BITMAP_INDEXED,
 	INDEX_ATTR_BITMAP_SUMMARIZED,
+	INDEX_ATTR_BITMAP_EXPRESSION,
 } IndexAttrBitmapKind;
 
 extern Bitmapset *RelationGetIndexAttrBitmap(Relation relation,
 											 IndexAttrBitmapKind attrKind);
+
+extern const Bitmapset *RelationGetIndexAttrBitmapNoCopy(Relation relation,
+														 IndexAttrBitmapKind attrKind);
 
 extern Bitmapset *RelationGetIdentityKeyBitmap(Relation relation);
 

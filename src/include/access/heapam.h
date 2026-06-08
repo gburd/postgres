@@ -384,6 +384,39 @@ extern TM_Result heap_delete(Relation relation, const ItemPointerData *tid,
 							 bool wait, TM_FailureData *tmfd);
 extern void heap_finish_speculative(Relation relation, const ItemPointerData *tid);
 extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid);
+
+/*
+ * HeapUpdateHotMode --
+ *	Three-valued classification returned by HeapUpdateHotAllowable() that
+ *	tells heap_update() whether a HOT update is permitted for this tuple and,
+ *	if so, whether the indexes may be maintained selectively.
+ *
+ *	HEAP_HOT_MODE_NO
+ *		HOT is not allowed; the new tuple must go on its own TID and every
+ *		index receives a fresh entry.  This is the classic pre-HOT-indexed
+ *		behavior for updates that modify a non-summarizing indexed attribute.
+ *
+ *	HEAP_HOT_MODE_CLASSIC
+ *		Classic HOT update: no non-summarizing indexed attribute changed (only
+ *		summarizing ones, if any), so no index needs a new entry.
+ *
+ *	HEAP_HOT_MODE_INDEXED
+ *		HOT with selective index update: at least one non-summarizing index's
+ *		attribute changed, but the new tuple can still join the HOT chain on
+ *		the same page; only the indexes whose attributes changed receive a new
+ *		entry.  As for classic HOT, heap_update() still falls back to a
+ *		non-HOT update if the new tuple does not fit on the page.
+ *
+ *	The enum is ordered so that "more permissive" modes compare greater; tests
+ *	should spell the exact mode they care about rather than relying on that.
+ */
+typedef enum HeapUpdateHotMode
+{
+	HEAP_HOT_MODE_NO = 0,
+	HEAP_HOT_MODE_CLASSIC = 1,
+	HEAP_HOT_MODE_INDEXED = 2,
+} HeapUpdateHotMode;
+
 extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
 							 HeapTuple newtup,
 							 CommandId cid, uint32 options,
@@ -463,6 +496,13 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  OffsetNumber *redirected, int nredirected,
 									  OffsetNumber *dead, int ndead,
 									  OffsetNumber *unused, int nunused);
+
+/* in heap/heapam.c */
+
+extern HeapUpdateHotMode HeapUpdateHotAllowable(Relation relation,
+												const Bitmapset *modified_idx_attrs);
+extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
+												 const Bitmapset *modified_idx_attrs);
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,

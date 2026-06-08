@@ -3284,7 +3284,7 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	 * relcache flush happening midway through.
 	 */
 	hot_attrs = RelationGetIndexAttrBitmap(relation,
-										   INDEX_ATTR_BITMAP_HOT_BLOCKING);
+										   INDEX_ATTR_BITMAP_INDEXED);
 	sum_attrs = RelationGetIndexAttrBitmap(relation,
 										   INDEX_ATTR_BITMAP_SUMMARIZED);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
@@ -4436,6 +4436,192 @@ HeapDetermineColumnsInfo(Relation relation,
 	}
 
 	return modified;
+}
+
+/*
+ * HeapUpdateHotAllowable --
+ *
+ * Classify an UPDATE for HOT eligibility from the set of indexed attributes
+ * it changed (modified_idx_attrs, computed by the executor):
+ *
+ *   HEAP_HOT_MODE_NO       -- HOT is not permitted; the new tuple goes on a
+ *                             fresh TID and every index gets a new entry.
+ *   HEAP_HOT_MODE_CLASSIC  -- classic HOT: no non-summarizing indexed
+ *                             attribute changed, so no index needs a new
+ *                             entry and the new tuple joins the chain via a
+ *                             t_ctid forward link.
+ *   HEAP_HOT_MODE_INDEXED  -- HOT with selective index update: at least one
+ *                             non-summarizing index's attribute changed, but
+ *                             the new tuple can still join the HOT chain on
+ *                             the same page; only the indexes whose
+ *                             attributes changed receive a new entry.
+ *
+ * This routine only classifies the update; heap_update() performs it and may
+ * still fall back to a non-HOT update when the new tuple does not fit on the
+ * page, exactly as for classic HOT.
+ */
+HeapUpdateHotMode
+HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
+{
+	Bitmapset  *all_idx_attrs = NULL;
+	HeapUpdateHotMode result;
+
+	/*
+	 * Case (a): no indexed attribute was modified -> classic HOT.
+	 */
+	if (bms_is_empty(modified_idx_attrs))
+		return HEAP_HOT_MODE_CLASSIC;
+
+	/*
+	 * Case (b): at least one indexed attribute changed.  If all of them are
+	 * used only by summarizing indexes, we can still take the classic HOT
+	 * path -- the summarizing index AM gets a new entry via aminsert and no
+	 * non-summarizing index needs to change.
+	 */
+	{
+		Bitmapset  *sum_attrs = RelationGetIndexAttrBitmap(relation,
+														   INDEX_ATTR_BITMAP_SUMMARIZED);
+		bool		all_summarizing = bms_is_subset(modified_idx_attrs, sum_attrs);
+
+		bms_free(sum_attrs);
+
+		if (all_summarizing)
+			return HEAP_HOT_MODE_CLASSIC;
+	}
+
+	/*
+	 * A non-summarizing indexed attribute changed.  HOT-indexed is supported
+	 * whenever the relation can tolerate extra index entries in a chain whose
+	 * per-chain-member keys may differ.  System catalogs participate too (see
+	 * README.HOT-INDEXED "Catalog Enablement").  The HEAP_HOT_MODE_NO
+	 * fallbacks below are:
+	 *
+	 * 1) Relations with any exclusion constraint, because
+	 * check_exclusion_or_unique_constraint relies on "one live tuple per
+	 * (key, TID)".  Temporal PRIMARY KEY ... WITHOUT OVERLAPS falls into this
+	 * category via its internal exclusion constraint.
+	 *
+	 * 2) Per-relation chain-length cap (see RelationGetHotIndexedChainMax),
+	 * enforced in heap_update.
+	 *
+	 * 3) An UPDATE that modifies an attribute referenced by an expression
+	 * index.  Selective maintenance of an expression index requires
+	 * evaluating the indexed expression to decide whether its value (hence
+	 * its entry) changed; that expression-aware path is not implemented yet,
+	 * so such an update falls back to non-HOT.  Updates that do not touch any
+	 * expression-index attribute stay eligible.
+	 *
+	 * 4) Partitions.  Partitioned-table support is not implemented yet and is
+	 * deferred deliberately; a partition falls back to a non-HOT update until
+	 * it lands.
+	 *
+	 * 5) An UPDATE that modifies every indexed attribute of the relation.
+	 * HOT-indexed only pays off when it can skip maintaining at least one
+	 * index whose key did not change; if all indexed attributes changed there
+	 * is nothing to skip, so a plain non-HOT update is cheaper (it avoids the
+	 * chain-walk and leaf-key recheck overhead).
+	 *
+	 * Non-btree indexes need no carve-out: the read-side recheck compares the
+	 * arriving leaf key against the live tuple, which is defined for every
+	 * access method and needs no separate key evaluation, so a stale leaf is
+	 * recognised for any index kind.
+	 *
+	 * Fetch the indexed-attribute bitmap once up front; it is freed on the
+	 * way out.
+	 */
+	all_idx_attrs = RelationGetIndexAttrBitmap(relation,
+											   INDEX_ATTR_BITMAP_INDEXED);
+
+	/*
+	 * System catalogs keep classic HOT (an UPDATE touching no non-summarizing
+	 * indexed attribute already returned HEAP_HOT_MODE_CLASSIC above), but do
+	 * NOT take the HOT-indexed path: catalog reads go through many code paths
+	 * (systable index scans, SnapshotDirty unique checks, seqscans in
+	 * orderings the chain-walk dedup does not cover) that are not all proven
+	 * safe against stale chain entries.  Falling back to a non-HOT update
+	 * here is exactly the pre-HOT-indexed behaviour for such catalog updates.
+	 */
+	if (IsCatalogRelation(relation))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	if (RelationHasExclusionConstraint(relation))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	/*
+	 * Disqualify when the update touches an attribute referenced by an
+	 * expression index (see case 3 above).  Updates that leave every
+	 * expression-index attribute unchanged remain eligible.
+	 */
+	if (bms_overlap(modified_idx_attrs,
+					RelationGetIndexAttrBitmapNoCopy(relation,
+													 INDEX_ATTR_BITMAP_EXPRESSION)))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	/*
+	 * If every indexed attribute changed, a HOT-selective update could not
+	 * skip any index -- each index needs a fresh entry anyway -- so it would
+	 * pay the HOT/SIU chain-walk and leaf-key-recheck overhead for no saved
+	 * index maintenance.  Fall back to a plain non-HOT update in that case.
+	 */
+	if (bms_is_subset(all_idx_attrs, modified_idx_attrs))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	result = HEAP_HOT_MODE_INDEXED;
+
+out:
+	bms_free(all_idx_attrs);
+	return result;
+}
+
+/*
+ * If we're not updating any attributes used when forming the index keys we can
+ * grab a weaker lock type. This allows for more concurrency when we are
+ * running simultaneously with foreign key checks.
+ */
+LockTupleMode
+HeapUpdateDetermineLockmode(Relation relation, const Bitmapset *modified_idx_attrs)
+{
+	LockTupleMode lockmode = LockTupleExclusive;
+	const Bitmapset *key_attrs;
+
+	/*
+	 * Common fast path: when no indexed attribute changed (e.g. pgbench-style
+	 * "UPDATE t SET non_idx_col = ..." or the wide_0 "UPDATE t SET id = id"
+	 * workload after the executor's fast path in ExecUpdateModifiedIdxAttrs),
+	 * modified_idx_attrs is empty and a key column cannot have changed.  Skip
+	 * the relcache lookup and return the weaker lock immediately.  At high
+	 * TPS this avoids a per-UPDATE RelationGetIndexAttrBitmap call (and its
+	 * bms_copy) on the KEY bitmap.
+	 */
+	if (bms_is_empty(modified_idx_attrs))
+		return LockTupleNoKeyExclusive;
+
+	/*
+	 * Borrow the cached bitmap rather than copying it; we only test overlap
+	 * and never mutate or free key_attrs.  HeapUpdateDetermineLockmode runs
+	 * without buffer locks but the relcache entry is pinned by the caller's
+	 * lock on the relation, and we touch nothing between fetch and the
+	 * bms_overlap that could trigger a relcache invalidation.
+	 */
+	key_attrs = RelationGetIndexAttrBitmapNoCopy(relation,
+												 INDEX_ATTR_BITMAP_KEY);
+
+	if (!bms_overlap(modified_idx_attrs, key_attrs))
+		lockmode = LockTupleNoKeyExclusive;
+
+	return lockmode;
 }
 
 /*
