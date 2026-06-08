@@ -223,12 +223,19 @@ static TM_Result
 heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, uint32 options,
 					Snapshot snapshot, Snapshot crosscheck,
-					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
+					bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
+					const Bitmapset *modified_attrs,
+					bool *update_all_indexes)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
+	HeapUpdateHotMode hot_mode;
 	TM_Result	result;
+
+	Assert(ItemPointerIsValid(otid));
+
+	hot_mode = HeapUpdateHotAllowable(relation, modified_attrs);
+	*lockmode = HeapUpdateDetermineLockmode(relation, modified_attrs);
 
 	/* Update the tuple with table oid */
 	slot->tts_tableOid = RelationGetRelid(relation);
@@ -236,29 +243,16 @@ heapam_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 	result = heap_update(relation, otid, tuple, cid, options,
 						 crosscheck, wait,
-						 tmfd, lockmode, update_indexes);
+						 tmfd, *lockmode, modified_attrs, hot_mode);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 
 	/*
-	 * Decide whether new index entries are needed for the tuple
-	 *
-	 * Note: heap_update returns the tid (location) of the new tuple in the
-	 * t_self field.
-	 *
-	 * If the update is not HOT, we must update all indexes. If the update is
-	 * HOT, it could be that we updated summarized columns, so we either
-	 * update only summarized indexes, or none at all.
+	 * Tell the caller whether every index needs a new entry.  If the new
+	 * tuple is not heap-only the update was not HOT, so all indexes need an
+	 * entry pointing at the new TID.  Otherwise (classic HOT or HOT-indexed)
+	 * the caller consults modified_attrs to decide per index.
 	 */
-	if (result != TM_Ok)
-	{
-		Assert(*update_indexes == TU_None);
-		*update_indexes = TU_None;
-	}
-	else if (!HeapTupleIsHeapOnly(tuple))
-		Assert(*update_indexes == TU_All);
-	else
-		Assert((*update_indexes == TU_Summarizing) ||
-			   (*update_indexes == TU_None));
+	*update_all_indexes = (result == TM_Ok) && !HeapTupleIsHeapOnly(tuple);
 
 	if (shouldFree)
 		pfree(tuple);
@@ -1669,12 +1663,12 @@ heapam_index_build_range_scan(Relation heapRelation,
 				/*
 				 * HOT-indexed (Selective Index Update) live tuple: index it
 				 * under its OWN TID, not the chain root.  Its indexed values
-				 * differ from earlier chain members', and the leaf-key
-				 * recheck read path keeps an entry only when no hop after the
-				 * entry's target changed the index's attributes.  That holds
-				 * for an entry pointing directly at the live tuple (no later
-				 * hop); an entry pointed at the root would be dropped as
-				 * stale, losing the row.
+				 * differ from earlier chain members', and the bitmap-overlap
+				 * read path keeps an entry only when no hop after the entry's
+				 * target changed the index's attributes.  That holds for an
+				 * entry pointing directly at the live tuple (no later hop);
+				 * an entry pointed at the root would be dropped as stale,
+				 * losing the row.
 				 */
 				ItemPointerSet(&tid, ItemPointerGetBlockNumber(&heapTuple->t_self),
 							   offnum);

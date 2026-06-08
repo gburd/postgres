@@ -5765,6 +5765,26 @@ restart:
 		goto restart;
 	}
 
+	/*
+	 * Record which attributes are referenced only by summarizing indexes, so
+	 * INDEX_ATTR_BITMAP_SUMMARIZED reports columns whose sole indexes are
+	 * summarizing ones, then fold those columns into indexedattrs as well.
+	 *
+	 * INDEX_ATTR_BITMAP_INDEXED must include summarizing-index columns for
+	 * the HOT-indexed write path: it compares the old and new tuples over
+	 * this bitmap to build the set of modified indexed attributes, and only
+	 * maintains indexes when that set is non-empty (or the update is
+	 * non-HOT).  A change to a column indexed only by a summarizing index
+	 * must therefore appear in the bitmap so the summarizing index gets its
+	 * block summary refreshed.  HeapUpdateHotAllowable's all_summarizing
+	 * check still keeps such an update on the classic-HOT path (it stays
+	 * classic HOT, since INDEX_ATTR_BITMAP_SUMMARIZED -- summarizing-only --
+	 * is a superset of the modified attributes), and the summarizing index
+	 * inserts unconditionally via its ii_Summarizing flag.
+	 */
+	summarizedattrs = bms_del_members(summarizedattrs, indexedattrs);
+	indexedattrs = bms_add_members(indexedattrs, summarizedattrs);
+
 	/* Don't leak the old values of these bitmaps, if any */
 	relation->rd_attrsvalid = false;
 	bms_free(relation->rd_keyattr);
