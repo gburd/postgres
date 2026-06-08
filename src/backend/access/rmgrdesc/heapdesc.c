@@ -108,9 +108,7 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   OffsetNumber **frz_offsets,
 									   int *nredirected, OffsetNumber **redirected,
 									   int *ndead, OffsetNumber **nowdead,
-									   int *nunused, OffsetNumber **nowunused,
-									   int *nbridges, OffsetNumber **bridges,
-									   int *nunions, OffsetNumber **tombstone_unions)
+									   int *nunused, OffsetNumber **nowunused)
 {
 	if (flags & XLHP_HAS_FREEZE_PLANS)
 	{
@@ -178,40 +176,6 @@ heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 	{
 		*nunused = 0;
 		*nowunused = NULL;
-	}
-
-	if (flags & XLHP_HAS_HOT_INDEXED_BRIDGES)
-	{
-		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
-
-		*nbridges = subrecord->ntargets;
-		Assert(*nbridges > 0);
-		*bridges = &subrecord->data[0];
-
-		cursor += offsetof(xlhp_prune_items, data);
-		cursor += sizeof(OffsetNumber[2]) * *nbridges;
-	}
-	else
-	{
-		*nbridges = 0;
-		*bridges = NULL;
-	}
-
-	if (flags & XLHP_HAS_TOMBSTONE_UNIONS)
-	{
-		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
-
-		*nunions = subrecord->ntargets;
-		Assert(*nunions > 0);
-		*tombstone_unions = &subrecord->data[0];
-
-		cursor += offsetof(xlhp_prune_items, data);
-		cursor += sizeof(OffsetNumber[2]) * *nunions;
-	}
-	else
-	{
-		*nunions = 0;
-		*tombstone_unions = NULL;
 	}
 
 	*frz_offsets = (OffsetNumber *) cursor;
@@ -360,13 +324,9 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			OffsetNumber *redirected;
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
-			OffsetNumber *bridges;
-			OffsetNumber *tombstone_unions;
 			int			nredirected;
 			int			nunused;
 			int			ndead;
-			int			nbridges;
-			int			nunions;
 			int			nplans;
 			xlhp_freeze_plan *plans;
 			OffsetNumber *frz_offsets;
@@ -377,12 +337,10 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 												   &nplans, &plans, &frz_offsets,
 												   &nredirected, &redirected,
 												   &ndead, &nowdead,
-												   &nunused, &nowunused,
-												   &nbridges, &bridges,
-												   &nunions, &tombstone_unions);
+												   &nunused, &nowunused);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u, nbridges: %u, nunions: %u",
-							 nplans, nredirected, ndead, nunused, nbridges, nunions);
+			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u",
+							 nplans, nredirected, ndead, nunused);
 
 			if (nplans > 0)
 			{
@@ -410,20 +368,6 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfoString(buf, ", unused:");
 				array_desc(buf, nowunused, sizeof(OffsetNumber), nunused,
 						   &offset_elem_desc, NULL);
-			}
-
-			if (nbridges > 0)
-			{
-				appendStringInfoString(buf, ", bridges:");
-				array_desc(buf, bridges, sizeof(OffsetNumber) * 2,
-						   nbridges, &redirect_elem_desc, NULL);
-			}
-
-			if (nunions > 0)
-			{
-				appendStringInfoString(buf, ", tombstone_unions:");
-				array_desc(buf, tombstone_unions, sizeof(OffsetNumber) * 2,
-						   nunions, &redirect_elem_desc, NULL);
 			}
 		}
 	}

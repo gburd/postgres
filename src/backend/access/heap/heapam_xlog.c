@@ -99,14 +99,10 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		int			nredirected;
 		int			ndead;
 		int			nunused;
-		int			nbridges;
-		int			nunions;
 		int			nplans;
 		Size		datalen;
 		xlhp_freeze_plan *plans;
 		OffsetNumber *frz_offsets;
-		OffsetNumber *bridges;
-		OffsetNumber *tombstone_unions;
 		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 		bool		do_prune;
 
@@ -114,12 +110,9 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
 											   &ndead, &nowdead,
-											   &nunused, &nowunused,
-											   &nbridges, &bridges,
-											   &nunions, &tombstone_unions);
+											   &nunused, &nowunused);
 
-		do_prune = nredirected > 0 || ndead > 0 || nunused > 0 ||
-			nbridges > 0 || nunions > 0;
+		do_prune = nredirected > 0 || ndead > 0 || nunused > 0;
 		/* Ensure the record does something */
 		Assert(do_prune || nplans > 0 || vmflags & VISIBILITYMAP_VALID_BITS);
 
@@ -132,9 +125,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 									(xlrec.flags & XLHP_CLEANUP_LOCK) == 0,
 									redirected, nredirected,
 									nowdead, ndead,
-									nowunused, nunused,
-									bridges, nbridges,
-									tombstone_unions, nunions);
+									nowunused, nunused);
 
 		/* Freeze tuples */
 		for (int p = 0; p < nplans; p++)

@@ -344,24 +344,6 @@ typedef struct xl_heap_prune
 #define		XLHP_VM_ALL_FROZEN			(1 << 9)
 
 /*
- * XLHP_HAS_HOT_INDEXED_BRIDGES indicates that an xlhp_prune_items sub-record
- * with (offnum, forward) pairs follows, describing LPs that pruneheap
- * rewrote in place as HOT-indexed bridge tombstones.  Replay applies the
- * same in-place rewrite.  See access/hot_indexed.h for the bridge layout.
- */
-#define		XLHP_HAS_HOT_INDEXED_BRIDGES   (1 << 10)
-
-/*
- * XLHP_HAS_TOMBSTONE_UNIONS indicates that an xlhp_prune_items sub-record with
- * (target, source) pairs follows, describing HOT-indexed tombstones whose
- * modified-attrs bitmaps pruneheap OR-merged: at replay each source
- * tombstone's bitmap is OR'd byte-by-byte into the target tombstone's bitmap.
- * The source tombstone LPs are reclaimed via the accompanying
- * XLHP_HAS_NOW_UNUSED_ITEMS sub-record.  See access/hot_indexed.h.
- */
-#define		XLHP_HAS_TOMBSTONE_UNIONS	   (1 << 12)
-
-/*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
  * (appears in xl_heap_prune's xlhp_freeze_plans sub-record)
  */
@@ -514,9 +496,6 @@ extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   OffsetNumber **frz_offsets,
 												   int *nredirected, OffsetNumber **redirected,
 												   int *ndead, OffsetNumber **nowdead,
-												   int *nunused, OffsetNumber **nowunused,
-												   int *nbridges, OffsetNumber **bridges,
-												   int *nunions,
-												   OffsetNumber **tombstone_unions);
+												   int *nunused, OffsetNumber **nowunused);
 
 #endif							/* HEAPAM_XLOG_H */

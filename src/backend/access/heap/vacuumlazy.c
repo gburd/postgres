@@ -1974,8 +1974,6 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 										  NULL, 0,
 										  NULL, 0,
 										  NULL, 0,
-										  NULL, 0,
-										  NULL, 0,
 										  NULL, 0);
 
 			END_CRIT_SECTION();
@@ -2093,44 +2091,7 @@ lazy_scan_prune(LVRelState *vacrel,
 
 	/*
 	 * Now save details of the LP_DEAD items from the page in vacrel
-	 *
-	 * For pages that carry HOT-indexed bridge tombstones (either just created
-	 * by the prune above or left over from earlier opportunistic prunes), add
-	 * each bridge's offset to the dead-item list alongside genuine LP_DEAD
-	 * items.  ambulkdelete sees them as ordinary dead-TID entries and removes
-	 * the corresponding stale btree entries.  lazy_vacuum_heap_page (the
-	 * second pass) then converts the bridge's LP_NORMAL to LP_UNUSED and
-	 * reclaims the tuple body. This is what lets a HOT-indexed chain rejoin
-	 * classic-HOT semantics once its stale index entries have been swept.
-	 *
-	 * Only relevant when the relation has indexes: with no indexes there are
-	 * no stale btree entries to sweep, the prune above already reclaims dead
-	 * line pointers in place (HEAP_PAGE_PRUNE_MARK_UNUSED_NOW), and enrolling
-	 * offsets in dead_items here would wrongly drive the indexed lazy_vacuum
-	 * path (which asserts nindexes > 0).
 	 */
-	if (vacrel->nindexes > 0 && PageHasHotIndexedBridges(page))
-	{
-		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-
-		for (OffsetNumber off = FirstOffsetNumber;
-			 off <= maxoff;
-			 off = OffsetNumberNext(off))
-		{
-			ItemId		lp = PageGetItemId(page, off);
-			HeapTupleHeader htup;
-
-			if (!ItemIdIsNormal(lp))
-				continue;
-			htup = (HeapTupleHeader) PageGetItem(page, lp);
-			if (!HeapTupleHeaderIsHotIndexedBridge(htup))
-				continue;
-
-			Assert(presult.lpdead_items < MaxHeapTuplesPerPage);
-			presult.deadoffsets[presult.lpdead_items++] = off;
-		}
-	}
-
 	if (presult.lpdead_items > 0)
 	{
 		vacrel->lpdead_item_pages++;
@@ -2807,102 +2768,6 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 	restore_vacuum_error_info(vacrel, &saved_err_info);
 }
 
-/*
- * lazy_vacuum_plan_bridge_repoints() -- plan the collapse-back-to-classic-HOT
- *		of HOT-indexed chains whose bridges are all being reclaimed this round.
- *
- * A collapsed chain looks like redirect -> bridge -> ... -> first_live (the
- * first non-bridge member).  Reclaiming a bridge requires re-pointing whatever
- * forwards into it, so we only ever reclaim a chain's bridges all at once: a
- * chain is approved only when every one of its bridges is scheduled for
- * reclaim this round (indeadset[]), the forward links stay in bounds, and they
- * terminate at a valid in-bounds non-bridge member that is not itself being
- * reclaimed.  For an approved chain we record a single redirect re-point to
- * first_live and mark each of its bridges in reclaim_ok[]; partially-swept or
- * malformed chains are left entirely intact (deferred to a later vacuum).
- * Reclaiming all-or-nothing means no surviving bridge or redirect is ever left
- * pointing at a reclaimed slot, so the later line-pointer truncation is safe.
- *
- * Fills redirected[] with (redirect_off, first_live) pairs and sets
- * reclaim_ok[off] for every approved bridge offset.  Returns the repoint count.
- */
-static int
-lazy_vacuum_plan_bridge_repoints(Page page, const bool *indeadset,
-								 OffsetNumber *redirected, bool *reclaim_ok)
-{
-	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-	int			nredirected = 0;
-
-	for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
-		 off = OffsetNumberNext(off))
-	{
-		ItemId		lp = PageGetItemId(page, off);
-		OffsetNumber chainbridges[MaxHeapTuplesPerPage];
-		OffsetNumber cur;
-		OffsetNumber first_live = InvalidOffsetNumber;
-		int			nb = 0;
-		bool		ok = true;
-
-		if (!ItemIdIsRedirected(lp))
-			continue;
-
-		/* Follow the forward links, collecting the bridges we pass through. */
-		cur = ItemIdGetRedirect(lp);
-		for (int guard = 0; guard <= maxoff; guard++)
-		{
-			ItemId		clp;
-			HeapTupleHeader chtup;
-
-			if (cur < FirstOffsetNumber || cur > maxoff)
-			{
-				ok = false;
-				break;
-			}
-			clp = PageGetItemId(page, cur);
-			if (!ItemIdIsNormal(clp))
-			{
-				ok = false;
-				break;
-			}
-			chtup = (HeapTupleHeader) PageGetItem(page, clp);
-			if (!HeapTupleHeaderIsHotIndexedBridge(chtup))
-			{
-				first_live = cur;	/* reached the first non-bridge member */
-				break;
-			}
-			Assert(nb < MaxHeapTuplesPerPage);
-			chainbridges[nb++] = cur;
-			cur = HotIndexedBridgeGetForward(chtup);
-		}
-
-		/* Nothing to do unless the chain has bridges and a valid terminus. */
-		if (!ok || nb == 0 || !OffsetNumberIsValid(first_live))
-			continue;
-
-		/* Approve only if every bridge is being reclaimed and the terminus
-		 * survives (is not itself scheduled for reclaim). */
-		if (indeadset[first_live])
-			continue;
-		for (int i = 0; i < nb; i++)
-		{
-			if (!indeadset[chainbridges[i]])
-			{
-				ok = false;
-				break;
-			}
-		}
-		if (!ok)
-			continue;
-
-		redirected[nredirected * 2] = off;
-		redirected[nredirected * 2 + 1] = first_live;
-		nredirected++;
-		for (int i = 0; i < nb; i++)
-			reclaim_ok[chainbridges[i]] = true;
-	}
-
-	return nredirected;
-}
 
 /*
  *	lazy_vacuum_heap_page() -- free page's LP_DEAD items listed in the
@@ -2922,13 +2787,6 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	int			nunused = 0;
 	OffsetNumber redirected[MaxHeapTuplesPerPage * 2];
 	int			nredirected = 0;
-	bool		reclaim_ok[MaxOffsetNumber + 1];
-	bool		indeadset[MaxOffsetNumber + 1];
-	bool		referenced[MaxOffsetNumber + 1];
-	int			total_bridges = 0;
-	int			reclaimed_bridges = 0;
-	int			deferred_bridges = 0;
-	int			bridges_remaining = 0;
 	TransactionId newest_live_xid;
 	TransactionId conflict_xid = InvalidTransactionId;
 	bool		all_frozen;
@@ -2945,107 +2803,6 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 							 InvalidOffsetNumber);
 
 	/*
-	 * Reclaiming HOT-indexed bridges re-points the redirects that forward
-	 * into them, moving chain structure concurrent scans follow, which
-	 * requires a cleanup lock.  With only an exclusive lock, leave any page
-	 * that still carries bridges untouched and let a later vacuum that can
-	 * obtain a cleanup lock reclaim them; the dead items stay recorded and
-	 * are rediscovered then.  Pages without bridges never re-point anything,
-	 * so the exclusive lock suffices and they are never deferred.
-	 */
-	if (!got_cleanup_lock && PageHasHotIndexedBridges(page))
-	{
-		restore_vacuum_error_info(vacrel, &saved_err_info);
-		return;
-	}
-
-	/*
-	 * Plan which dead items we will actually reclaim.  Classic LP_DEAD items
-	 * are always reclaimable.  A HOT-indexed bridge can only be reclaimed
-	 * together with re-pointing whatever forwards into it, so a collapsed
-	 * chain's bridges are reclaimed all-or-nothing:
-	 * lazy_vacuum_plan_bridge_repoints approves a chain (recording its
-	 * redirect re-point and marking its bridges in reclaim_ok[]) only when
-	 * every one of its bridges is scheduled this round.  Bridges of a
-	 * partially-swept chain are deferred, and any deferral means the page
-	 * cannot become all-visible this round.  total_bridges lets us clear the
-	 * page advisory bit precisely once all bridges are gone.
-	 */
-	memset(indeadset, 0, sizeof(indeadset));
-	memset(referenced, 0, sizeof(referenced));
-	for (int i = 0; i < num_offsets; i++)
-		indeadset[deadoffsets[i]] = true;
-
-	if (PageHasHotIndexedBridges(page))
-	{
-		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-
-		memset(reclaim_ok, 0, sizeof(reclaim_ok));
-		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
-			 off = OffsetNumberNext(off))
-		{
-			ItemId		lp = PageGetItemId(page, off);
-
-			if (ItemIdIsNormal(lp) &&
-				HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(page, lp)))
-				total_bridges++;
-		}
-
-		nredirected = lazy_vacuum_plan_bridge_repoints(page, indeadset,
-													   redirected, reclaim_ok);
-
-		/*
-		 * A bridge that will survive this round (it is not being reclaimed)
-		 * still forwards to its successor.  Protect that successor from
-		 * reclaim: reclaiming it (for instance a dead tail marked LP_DEAD) and
-		 * truncating the line-pointer array would leave the surviving bridge
-		 * pointing past the end of the page.  A later vacuum reclaims it once
-		 * the referencing bridge is gone too.
-		 */
-		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
-			 off = OffsetNumberNext(off))
-		{
-			ItemId		lp = PageGetItemId(page, off);
-			HeapTupleHeader htup;
-			OffsetNumber fwd;
-
-			if (!ItemIdIsNormal(lp))
-				continue;
-			htup = (HeapTupleHeader) PageGetItem(page, lp);
-			if (!HeapTupleHeaderIsHotIndexedBridge(htup))
-				continue;
-			if (indeadset[off] && reclaim_ok[off])
-				continue;		/* this bridge is itself being reclaimed */
-			fwd = HotIndexedBridgeGetForward(htup);
-			if (fwd >= FirstOffsetNumber && fwd <= maxoff)
-				referenced[fwd] = true;
-		}
-
-		for (int i = 0; i < num_offsets; i++)
-		{
-			OffsetNumber off = deadoffsets[i];
-			ItemId		itemid = PageGetItemId(page, off);
-
-			if ((ItemIdIsNormal(itemid) && !reclaim_ok[off]) || referenced[off])
-				deferred_bridges++;
-		}
-	}
-
-	bridges_remaining = total_bridges;
-
-	/*
-	 * If every scheduled item on this page is a deferred bridge, there is
-	 * nothing to reclaim now (the chains are only partially swept).  Leave the
-	 * page untouched; a later vacuum reclaims the bridges once their chains
-	 * are fully swept.  Returning here avoids an empty WAL record.
-	 */
-	if (num_offsets - deferred_bridges == 0)
-	{
-		restore_vacuum_error_info(vacrel, &saved_err_info);
-		return;
-	}
-
-	/*
 	 * Before marking dead items unused, check whether the page will become
 	 * all-visible once that change is applied. This lets us reap the tuples
 	 * and mark the page all-visible within the same critical section,
@@ -3055,8 +2812,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	 * invisible carrier on the page, so skip the check when anything was
 	 * deferred.
 	 */
-	if (deferred_bridges == 0 &&
-		heap_page_would_be_all_visible(vacrel->rel, buffer,
+	if (heap_page_would_be_all_visible(vacrel->rel, buffer,
 									   vacrel->vistest, true,
 									   deadoffsets, num_offsets,
 									   &all_frozen, &newest_live_xid,
@@ -3086,57 +2842,14 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		itemid = PageGetItemId(page, toff);
 
-		/*
-		 * A surviving bridge still forwards to this item; defer its reclaim so
-		 * truncation cannot strand that forward link past the page end.
-		 */
-		if (referenced[toff])
-			continue;
-
-		/*
-		 * Two cases: a classic LP_DEAD line pointer (no tuple body) or a
-		 * HOT-indexed bridge tombstone (LP_NORMAL with a 32-byte natts=0 body
-		 * forwarding to a live chain member).  Both are reclaimed to
-		 * LP_UNUSED here now that ambulkdelete has swept any btree entries
-		 * pointing at them.
-		 */
-		if (ItemIdIsDead(itemid))
-		{
-			Assert(!ItemIdHasStorage(itemid));
-		}
-		else
-		{
-			Assert(ItemIdIsNormal(itemid));
-			Assert(HeapTupleHeaderIsHotIndexedBridge((HeapTupleHeader) PageGetItem(page, itemid)));
-
-			/*
-			 * A bridge is reclaimed only when its whole collapsed chain was
-			 * approved above (every bridge swept, redirect re-point recorded).
-			 * Otherwise leave it in place -- a later vacuum reclaims it once
-			 * the rest of its chain is swept.
-			 */
-			if (!reclaim_ok[toff])
-				continue;
-			reclaimed_bridges++;
-		}
+		/* A reclaimable item is a classic LP_DEAD line pointer. */
+		Assert(ItemIdIsDead(itemid) && !ItemIdHasStorage(itemid));
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
 	}
 
 	Assert(nunused > 0 || nredirected == 0);
 
-	/*
-	 * Clear the page-level advisory bit once every bridge the page carried
-	 * has been reclaimed (precomputed total minus the count we just reclaimed).
-	 * The bit is only a hint, so it is harmless if a concurrent opportunistic
-	 * prune adds a new bridge afterwards -- that prune re-sets the flag itself.
-	 */
-	bridges_remaining = total_bridges - reclaimed_bridges;
-	if (bridges_remaining == 0 && PageHasHotIndexedBridges(page))
-	{
-		/* All bridges on this page have been reclaimed; clear the hint. */
-		PageClearHasHotIndexedBridges(page);
-	}
 
 	/*
 	 * Re-point each fully-reclaimed chain's redirect straight at first_live,
@@ -3187,9 +2900,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  NULL, 0,	/* frozen */
 								  redirected, nredirected,
 								  NULL, 0,	/* dead */
-								  unused, nunused,
-								  NULL, 0,	/* bridges */
-								  NULL, 0); /* tombstone_unions */
+								  unused, nunused);
 	}
 
 	END_CRIT_SECTION();
