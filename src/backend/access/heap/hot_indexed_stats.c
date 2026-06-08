@@ -121,8 +121,6 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 					if (!ItemIdIsNormal(chain_lp))
 						break;
 					thdr = (HeapTupleHeader) PageGetItem(page, chain_lp);
-					if (HeapTupleHeaderIsHotIndexedTombstone(thdr))
-						break;
 					len++;
 					if (!(thdr->t_infomask2 & HEAP_HOT_UPDATED))
 						break;
@@ -140,7 +138,7 @@ pg_relation_hot_indexed_stats(PG_FUNCTION_ARGS)
 			{
 				HeapTupleHeader thdr = (HeapTupleHeader) PageGetItem(page, lp);
 
-				if (heap_page_item_kind(thdr) == HPIK_HOT_INDEXED_TUPLE)
+				if ((thdr->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
 					n_hot_indexed++;
 			}
 		}

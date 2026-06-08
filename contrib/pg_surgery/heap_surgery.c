@@ -227,23 +227,6 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 								blkno, offno, RelationGetRelationName(rel))));
 				continue;
 			}
-			else if (HeapTupleHeaderIsHotIndexedTombstone(
-														  (HeapTupleHeader) PageGetItem(page, itemid)))
-			{
-				/*
-				 * A HOT-indexed tombstone is an LP_NORMAL item that is not a
-				 * real tuple (natts == 0, HEAP_INDEXED_UPDATED, permanently
-				 * invisible via HEAP_XMIN_INVALID).  Forcing it would corrupt
-				 * the heap: HEAP_FORCE_FREEZE would clear HEAP_XMIN_INVALID
-				 * and surface a natts==0 phantom row, while HEAP_FORCE_KILL
-				 * would drop a chain hop that stale index entries still
-				 * depend on.
-				 */
-				ereport(NOTICE,
-						(errmsg("skipping tid (%u, %u) for relation \"%s\" because it is a HOT-indexed tombstone",
-								blkno, offno, RelationGetRelationName(rel))));
-				continue;
-			}
 
 			/* Mark it for processing. */
 			Assert(offno <= MaxHeapTuplesPerPage);

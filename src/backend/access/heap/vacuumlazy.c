@@ -2217,14 +2217,6 @@ lazy_scan_noprune(LVRelState *vacrel,
 		hastup = true;			/* page prevents rel truncation */
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
 
-		/*
-		 * HOT-indexed tombstones carry only a modified-attrs bitmap;
-		 * xmin/xmax are invalid and natts == 0.  VACUUM must leave them alone
-		 * (they are reclaimed by pruneheap in a later phase).
-		 */
-		if (HeapTupleHeaderIsHotIndexedTombstone(tupleheader))
-			continue;
-
 		if (heap_tuple_should_freeze(tupleheader, &vacrel->cutoffs,
 									 &NoFreezePageRelfrozenXid,
 									 &NoFreezePageRelminMxid))
@@ -3724,23 +3716,6 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
-
-		/*
-		 * HOT-indexed tombstones (adjacent and bridge variants) are LP_NORMAL
-		 * items that must never be returned as live tuples. Their
-		 * HEAP_XMIN_INVALID in the header filters them out under per-tuple
-		 * visibility checks, but if we declare the page all-visible then the
-		 * heap_getnext fast path skips those checks and a SeqScan would
-		 * surface the tombstone bytes as a live tuple -- reading the
-		 * modified-attrs bitmap or forward pointer as user-column data and
-		 * producing phantom rows.  Treat any tombstone on the page as a
-		 * blocker, same as a dead item.
-		 */
-		if (HeapTupleHeaderIsHotIndexedTombstone(tuple.t_data))
-		{
-			*all_frozen = all_visible = false;
-			break;
-		}
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);

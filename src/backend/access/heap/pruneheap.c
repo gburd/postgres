@@ -2401,10 +2401,8 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		tolp = PageGetItemId(page, tooff);
 		Assert(ItemIdHasStorage(tolp) && ItemIdIsNormal(tolp));
 		htup = (HeapTupleHeader) PageGetItem(page, tolp);
-		/* Target is the first surviving member: a heap-only tuple, or (inline
-		 * model) the head bridge of a collapsed HOT-indexed chain. */
-		Assert(HeapTupleHeaderIsHeapOnly(htup) ||
-			   HeapTupleHeaderIsHotIndexedBridge(htup));
+		/* A redirect targets the first surviving member: a heap-only tuple. */
+		Assert(HeapTupleHeaderIsHeapOnly(htup));
 #endif
 
 		ItemIdSetRedirect(fromlp, tooff);
@@ -2553,12 +2551,8 @@ page_verify_redirects(Page page)
 		Assert(ItemIdHasStorage(targitem));
 		htup = (HeapTupleHeader) PageGetItem(page, targitem);
 
-		/*
-		 * A redirect targets the first surviving chain member: a heap-only
-		 * tuple, or (inline model) the head bridge of a collapsed chain.
-		 */
-		Assert(HeapTupleHeaderIsHeapOnly(htup) ||
-			   HeapTupleHeaderIsHotIndexedBridge(htup));
+		/* A redirect targets the first surviving chain member: heap-only. */
+		Assert(HeapTupleHeaderIsHeapOnly(htup));
 	}
 #endif
 }
@@ -2603,15 +2597,6 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 		if (ItemIdIsNormal(lp))
 		{
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
-
-			/*
-			 * HOT-indexed tombstone items are never chain roots and have no
-			 * backing tuple data that index scans should resolve to. Leave
-			 * root_offsets[offnum - 1] = InvalidOffsetNumber so callers that
-			 * consult the map for this offset see it as not-a-root.
-			 */
-			if (HeapTupleHeaderIsHotIndexedTombstone(htup))
-				continue;
 
 			/*
 			 * Check if this tuple is part of a HOT-chain rooted at some other
