@@ -288,6 +288,18 @@ index_beginscan(Relation heapRelation,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heapRelation, flags);
 
+	/*
+	 * When the index AM can recheck a stored leaf key against a live heap
+	 * tuple (nbtree, for HOT-indexed staleness), ask it to expose the leaf
+	 * IndexTuple via xs_itup so index_fetch_heap can compare it against the
+	 * live tuple after a chain walk crossed a HOT-indexed hop.  XXX: this is
+	 * broader than necessary -- it forces xs_itup for every such scan, not
+	 * only scans of relations that actually carry HOT-indexed chains; a
+	 * tighter per-relation gate is a follow-up.
+	 */
+	if (indexRelation->rd_indam->amrecheck_leaf_key != NULL)
+		scan->xs_want_itup = true;
+
 	return scan;
 }
 
@@ -607,6 +619,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * Reset the HOT-indexed recheck flag: it is set by the heap AM during
+	 * index_fetch_heap and is per-fetched-tuple, not per-index-entry. For
+	 * IndexOnlyScan, which may skip index_fetch_heap when the VM says the
+	 * entry is visible-to-all, this ensures we don't carry a stale value from
+	 * a previous entry.
+	 */
+	scan->xs_hot_indexed_stale = false;
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -667,14 +688,42 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 		pgstat_count_heap_fetch(scan->indexRelation);
 
 	/*
+	 * The table AM reported, via xs_hot_indexed_recheck, whether the walk to
+	 * the live tuple crossed a HOT/SIU hop after the arriving index entry's
+	 * own tuple.  When it did, the arriving leaf's key may no longer agree
+	 * with the live tuple, so recheck the leaf's stored key against the live
+	 * tuple's current index form (via the AM's amrecheck_leaf_key callback):
+	 * a mismatch means the leaf is stale and the executor drops it (the fresh
+	 * entry inserted for the new value re-supplies the row).  We need the
+	 * leaf IndexTuple (xs_itup) to recheck; index_beginscan forces
+	 * xs_want_itup for AMs that provide the callback.
+	 */
+	scan->xs_hot_indexed_stale =
+		found &&
+		scan->xs_heapfetch->xs_hot_indexed_recheck &&
+		scan->indexRelation->rd_indam->amrecheck_leaf_key != NULL &&
+		scan->xs_itup != NULL &&
+		!scan->indexRelation->rd_indam->amrecheck_leaf_key(scan->indexRelation,
+														   scan->xs_itup, slot);
+
+	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
 	 * AM to kill its entry for that TID (this will take effect in the next
 	 * amgettuple call, in index_getnext_tid).  We do not do this when in
 	 * recovery because it may violate MVCC to do so.  See comments in
 	 * RelationGetIndexScan().
+	 *
+	 * Additionally kill a stale HOT-indexed leaf (one whose key the live
+	 * tuple no longer holds) when every chain member skipped before the
+	 * returned tuple is dead to all transactions (xs_prefix_all_dead): no
+	 * snapshot can reach a matching version through this leaf, so it is
+	 * redundant and reclaiming it bounds the index bloat HOT-indexed updates
+	 * create.  The surely-dead gate is what makes this MVCC-safe.
 	 */
 	if (!scan->xactStartedInRecovery)
-		scan->kill_prior_tuple = all_dead;
+		scan->kill_prior_tuple =
+			all_dead ||
+			(scan->xs_hot_indexed_stale && scan->xs_heapfetch->xs_prefix_all_dead);
 
 	return found;
 }

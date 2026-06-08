@@ -8479,7 +8479,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 
 			/* Are any tuples from this HOT chain non-vacuumable? */
 			if (heap_hot_search_buffer(&tmp, rel, buf, &SnapshotNonVacuumable,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, NULL, NULL))
 				continue;		/* can't delete entry */
 
 			/* Caller will delete, since whole HOT chain is vacuumable */

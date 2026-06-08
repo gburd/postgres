@@ -134,6 +134,30 @@ typedef struct IndexFetchTableData
 	 * permitted.
 	 */
 	uint32		flags;
+
+	/*
+	 * Side channel for table AMs whose update chains can reach a different
+	 * set of index-key values than the arriving index entry recorded (heap's
+	 * HOT-selectively-updated chains).  Set true by the table AM when the
+	 * walk to the live tuple crossed a HOT/SIU hop after the entry's own
+	 * tuple, meaning the arriving entry's stored key may no longer match the
+	 * live tuple and the index-access layer must recheck it.  Left false when
+	 * no such hop was crossed (the entry is definitely current), and always
+	 * false for AMs without such chains.
+	 */
+	bool		xs_hot_indexed_recheck;
+
+	/*
+	 * Set by the table AM when it returns a tuple: true iff every chain
+	 * member the walk skipped before reaching the returned (visible) tuple is
+	 * dead to all transactions (below the global xmin horizon).  Combined
+	 * with a stale verdict (the leaf-key recheck found the arriving entry's
+	 * key no longer matches the live tuple), this lets the index-access layer
+	 * kill the arriving leaf: no snapshot can reach a matching version
+	 * through it, so it is redundant.  AMs without such chains leave it
+	 * false.
+	 */
+	bool		xs_prefix_all_dead;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;
@@ -154,6 +178,13 @@ typedef struct IndexScanDescData
 	struct ScanKeyData *keyData;	/* array of index qualifier descriptors */
 	struct ScanKeyData *orderByData;	/* array of ordering op descriptors */
 	bool		xs_want_itup;	/* caller requests index tuples */
+	bool		xs_index_only;	/* caller is an index-only scan that may
+								 * return tuples without fetching the heap;
+								 * AMs must retain leaf-page pins for such
+								 * scans (VM all-visible / TID-recycle race),
+								 * whereas a plain scan that sets xs_want_itup
+								 * only to inspect the index tuple still
+								 * fetches the heap and may drop pins */
 	bool		xs_temp_snap;	/* unregister snapshot at scan end? */
 
 	/* signaling to index AM about killing index tuples */
@@ -188,6 +219,19 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
+
+	/*
+	 * T means the index entry that reached xs_heaptid is stale: the HOT chain
+	 * walked to reach the tuple crossed a HOT-selectively-updated (HOT/SIU)
+	 * hop, and a leaf-key recheck found the arriving entry's stored key no
+	 * longer matches the live tuple's current index form.  The executor drops
+	 * such a tuple; the row is re-supplied by the fresh entry inserted for
+	 * the new value.  Unlike xs_recheck (set by lossy AMs such as GiST and
+	 * GIN), this is computed by the index-access layer, which rechecks the
+	 * leaf key against the live tuple (via the AM's amrecheck_leaf_key
+	 * callback) when the chain walk reports it crossed a HOT/SIU hop.
+	 */
+	bool		xs_hot_indexed_stale;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

@@ -488,6 +488,13 @@ typedef struct TableAmRoutine
 	 * index_fetch_tuple iff it is guaranteed that no backend needs to see
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
+	 *
+	 * If a tuple is returned and the table AM reached it by walking a HOT
+	 * chain that crossed a HOT-selectively-updated (HOT/SIU) hop after the
+	 * arriving entry's own tuple, it sets scan->xs_hot_indexed_recheck (see
+	 * struct IndexFetchTableData) to tell the index-access layer to recheck
+	 * the arriving leaf key against the live tuple.  AMs without such update
+	 * chains leave it false.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
@@ -1318,11 +1325,20 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
  * returns whether there are table tuple items corresponding to an index
  * entry.  This likely is only useful to verify if there's a conflict in a
  * unique index.
+ *
+ * If keep_slot is non-NULL, on a positive result the function stores the
+ * fetched tuple into *keep_slot (which must be a valid slot of the
+ * relation's type) and returns with the slot populated; the caller is
+ * responsible for clearing the slot.  When keep_slot is NULL a temporary
+ * slot is created internally and dropped before return, matching the
+ * pre-existing behaviour.
  */
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  bool *hot_indexed_recheck_out,
+										  TupleTableSlot *keep_slot);
 
 
 /* ------------------------------------------------------------------------

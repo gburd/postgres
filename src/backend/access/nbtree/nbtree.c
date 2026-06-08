@@ -38,6 +38,10 @@
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
+/* Forward declaration; defined in nbtinsert.c, used here for amrecheck_leaf_key. */
+extern bool _bt_heap_keys_equal_leaf(Relation rel, IndexTuple leaftup,
+									 struct TupleTableSlot *heapSlot);
+
 
 /*
  * BTPARALLEL_NOT_INITIALIZED indicates that the scan has not started.
@@ -166,6 +170,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amendscan = btendscan,
 		.ammarkpos = btmarkpos,
 		.amrestrpos = btrestrpos,
+		.amrecheck_leaf_key = _bt_heap_keys_equal_leaf,
 		.amestimateparallelscan = btestimateparallelscan,
 		.aminitparallelscan = btinitparallelscan,
 		.amparallelrescan = btparallelrescan,
@@ -408,6 +413,16 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 * race condition involving VACUUM setting pages all-visible in the VM.
 	 * It's also unsafe for plain index scans that use a non-MVCC snapshot.
 	 *
+	 * Note that wanting the index tuple (xs_want_itup) is not by itself a
+	 * reason to retain the pin: btree copies each returned IndexTuple into
+	 * so->currTuples (scan-local memory) and points xs_itup there, so the
+	 * tuple stays valid after the pin is dropped.  Only genuine index-only
+	 * scans (xs_index_only), which may return a tuple without fetching the
+	 * heap and therefore rely on the VM, must keep the pin.  A plain index
+	 * scan that sets xs_want_itup merely to inspect or recheck the index
+	 * tuple still fetches and visibility-checks the heap, so it has no VM
+	 * race and may drop pins like any other plain scan.
+	 *
 	 * Also opt out of dropping leaf page pins eagerly during bitmap scans.
 	 * Pins cannot be held for more than an instant during bitmap scans either
 	 * way, so we might as well avoid wasting cycles on acquiring page LSNs.
@@ -416,7 +431,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 *
 	 * Note: so->dropPin should never change across rescans.
 	 */
-	so->dropPin = (!scan->xs_want_itup &&
+	so->dropPin = (!scan->xs_index_only &&
 				   IsMVCCLikeSnapshot(scan->xs_snapshot) &&
 				   scan->heapRelation != NULL);
 

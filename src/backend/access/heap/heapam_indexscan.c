@@ -83,13 +83,23 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
  * globally dead; *all_dead is set true if all members of the HOT chain
  * are vacuumable, false if not.
  *
+ * If hot_indexed_recheck is not NULL, *hot_indexed_recheck is set true iff the
+ * walk crossed a HOT-selectively-updated (HOT/SIU) hop after the entry tuple
+ * on the way to the returned tuple -- i.e. the arriving index entry's stored
+ * key may no longer match the live tuple, so the caller must recheck it (via
+ * a leaf-key comparison or a qual recheck).  The entry tuple's own producing
+ * hop is excluded, so a fresh entry pointing directly at its tuple is not
+ * flagged.  When no such hop was crossed, *hot_indexed_recheck is left false.
+ *
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.
  */
 bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call)
+					   bool *all_dead, bool first_call,
+					   bool *hot_indexed_recheck,
+					   bool *prefix_all_dead)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -98,11 +108,19 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	bool		at_chain_start;
 	bool		valid;
 	bool		skip;
+	bool		prefix_dead = true;
 	GlobalVisState *vistest = NULL;
 
 	/* If this is not the first call, previous call returned a (live!) tuple */
 	if (all_dead)
 		*all_dead = first_call;
+
+	/*
+	 * On the first call, clear the recheck flag.  On subsequent calls (same
+	 * chain continuing) keep whatever an earlier hop already set.
+	 */
+	if (hot_indexed_recheck && first_call)
+		*hot_indexed_recheck = false;
 
 	blkno = ItemPointerGetBlockNumber(tid);
 	offnum = ItemPointerGetOffsetNumber(tid);
@@ -130,7 +148,14 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			/* We should only see a redirect at start of chain */
 			if (ItemIdIsRedirected(lp) && at_chain_start)
 			{
-				/* Follow the redirect */
+				/*
+				 * Follow the redirect.  If it collapsed a HOT-indexed prefix,
+				 * the target (first_live) carries HEAP_INDEXED_UPDATED and is
+				 * reached not-at-chain-start, so it is recorded as a crossed
+				 * hop below and its adjacent tombstone (which holds the union
+				 * of the collapsed hops' modified-attrs bitmaps) drives the
+				 * overlap staleness test.
+				 */
 				offnum = ItemIdGetRedirect(lp);
 				at_chain_start = false;
 				continue;
@@ -151,10 +176,38 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
 
 		/*
-		 * Shouldn't see a HEAP_ONLY tuple at chain start.
+		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless that tuple
+		 * is the target of a freshly-inserted hot-indexed index entry: then
+		 * arriving directly at a heap-only HOT-indexed tuple is legal and the
+		 * tuple is the canonical visible version, so we fall through and
+		 * apply normal visibility checks to it.  Otherwise, treat it as a
+		 * broken chain.
 		 */
 		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple))
-			break;
+		{
+			if ((heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) == 0)
+				break;
+
+			/*
+			 * We were pointed directly at this hot-indexed tuple.  The index
+			 * entry we arrived through was inserted *for* this update, so it
+			 * reflects this tuple's current attribute values; its own
+			 * producing hop is not a crossed hop, so it is not flagged for
+			 * recheck (a fresh entry is never stale for its own index).
+			 */
+		}
+		else if (hot_indexed_recheck != NULL &&
+				 (heapTuple->t_data->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+		{
+			/*
+			 * A HOT/SIU hop reached by following the chain (or a redirect)
+			 * from an earlier entry: this hop is crossed, so the arriving
+			 * entry's stored key may no longer match the live tuple and must
+			 * be rechecked.  The recheck (a leaf-key comparison) decides
+			 * staleness; here we only raise the trigger.
+			 */
+			*hot_indexed_recheck = true;
+		}
 
 		/*
 		 * The xmin should match the previous xmax value, else chain is
@@ -186,6 +239,15 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 								 HeapTupleHeaderGetXmin(heapTuple->t_data));
 				if (all_dead)
 					*all_dead = false;
+
+				/*
+				 * Report whether every chain member skipped before this
+				 * visible tuple is dead to all transactions.  With a stale
+				 * verdict this lets the caller kill the arriving leaf safely.
+				 */
+				if (prefix_all_dead)
+					*prefix_all_dead = prefix_dead;
+
 				return true;
 			}
 		}
@@ -194,18 +256,25 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/*
 		 * If we can't see it, maybe no one else can either.  At caller
 		 * request, check whether all chain members are dead to all
-		 * transactions.
+		 * transactions.  The same surely-dead test feeds prefix_dead, which
+		 * (unlike all_dead) is not reset when a visible tuple is found, so it
+		 * records whether the members skipped ahead of the returned tuple are
+		 * all dead to all -- the safe-to-kill-this-leaf condition.
 		 *
 		 * Note: if you change the criterion here for what is "dead", fix the
 		 * planner's get_actual_variable_range() function to match.
 		 */
-		if (all_dead && *all_dead)
+		if ((all_dead && *all_dead) || prefix_dead)
 		{
 			if (!vistest)
 				vistest = GlobalVisTestFor(relation);
 
 			if (!HeapTupleIsSurelyDead(heapTuple, vistest))
-				*all_dead = false;
+			{
+				if (all_dead)
+					*all_dead = false;
+				prefix_dead = false;
+			}
 		}
 
 		/*
@@ -273,7 +342,14 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 											snapshot,
 											&bslot->base.tupdata,
 											all_dead,
-											!*heap_continue);
+											!*heap_continue,
+											&scan->xs_hot_indexed_recheck,
+											&scan->xs_prefix_all_dead);
+	if (!got_heap_tuple)
+	{
+		scan->xs_hot_indexed_recheck = false;
+		scan->xs_prefix_all_dead = false;
+	}
 	bslot->base.tupdata.t_self = *tid;
 	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 

@@ -31,6 +31,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/tupdesc.h"
@@ -104,6 +105,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 		/* Set it up for index-only scan */
 		node->ioss_ScanDesc->xs_want_itup = true;
+		node->ioss_ScanDesc->xs_index_only = true;
 		node->ioss_VMBuffer = InvalidBuffer;
 
 		/*
@@ -172,6 +174,23 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
 				continue;		/* no visible tuple, try next index entry */
 
+			/*
+			 * HOT-indexed stale entry: if the chain walk to reach this tuple
+			 * crossed a hot-indexed hop that changed an attribute this index
+			 * covers, the leaf we arrived through is stale.  For IOS we serve
+			 * values out of xs_itup, so a stale leaf would surface the wrong
+			 * values; drop it.  The fresh entry for the new value returns the
+			 * row with correct values via its own path.  (A page bearing
+			 * tombstones is never all-visible, so IOS always reaches this
+			 * heap fetch when staleness could apply.)
+			 */
+			if (scandesc->xs_hot_indexed_stale)
+			{
+				InstrCountFiltered2(node, 1);
+				ExecClearTuple(node->ioss_TableSlot);
+				continue;
+			}
+
 			ExecClearTuple(node->ioss_TableSlot);
 
 			/*
@@ -227,6 +246,19 @@ IndexOnlyNext(IndexOnlyScanState *node)
 				InstrCountFiltered2(node, 1);
 				continue;
 			}
+		}
+
+		/*
+		 * HOT-indexed recheck for the VM-all-visible path: if we skipped the
+		 * heap fetch (no TableSlot available) but the scan still flags a
+		 * HOT-indexed hop, drop conservatively -- we have no way to compare
+		 * the leaf key against the live tuple's current form without a fetch,
+		 * and the canonical fresh leaf will re-produce the tuple.
+		 */
+		if (scandesc->xs_hot_indexed_stale && !tuple_from_heap)
+		{
+			InstrCountFiltered2(node, 1);
+			continue;
 		}
 
 		/*
@@ -775,6 +807,7 @@ ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 	node->ioss_ScanDesc->xs_want_itup = true;
+	node->ioss_ScanDesc->xs_index_only = true;
 	node->ioss_VMBuffer = InvalidBuffer;
 
 	/*
@@ -825,6 +858,7 @@ ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
 								 ScanRelIsReadOnly(&node->ss) ?
 								 SO_HINT_REL_READ_ONLY : SO_NONE);
 	node->ioss_ScanDesc->xs_want_itup = true;
+	node->ioss_ScanDesc->xs_index_only = true;
 
 	/*
 	 * If no run-time keys to calculate or they are ready, go ahead and pass

@@ -217,6 +217,18 @@ retry:
 	while (index_getnext_slot(scan, ForwardScanDirection, outslot))
 	{
 		/*
+		 * A HOT-indexed update can leave a stale index leaf: an entry whose
+		 * key is a pre-update value but whose TID chain-resolves to a live
+		 * tuple now carrying a different key.  Such a tuple is not the
+		 * replica-identity match we are looking for (and the PK/RI fast path
+		 * below skips the equality recheck that would otherwise catch it), so
+		 * drop it -- exactly as IndexScan/IndexOnlyScan do.  The fresh leaf
+		 * for the current key, if any, is returned by a later iteration.
+		 */
+		if (scan->xs_hot_indexed_stale)
+			continue;
+
+		/*
 		 * Avoid expensive equality check if the index is primary key or
 		 * replica identity index.
 		 */
@@ -677,6 +689,10 @@ RelationFindDeletedTupleInfoByIndex(Relation rel, Oid idxoid,
 	/* Try to find the tuple */
 	while (index_getnext_slot(scan, ForwardScanDirection, scanslot))
 	{
+		/* Skip stale HOT-indexed leaves (see RelationFindReplTupleByIndex). */
+		if (scan->xs_hot_indexed_stale)
+			continue;
+
 		/*
 		 * Avoid expensive equality check if the index is primary key or
 		 * replica identity index.

@@ -14,6 +14,7 @@
 
 #include "access/cmptype.h"
 #include "access/genam.h"
+#include "access/itup.h"
 #include "access/stratnum.h"
 #include "nodes/nodes.h"
 #include "nodes/pg_list.h"
@@ -28,7 +29,6 @@ typedef struct IndexPath IndexPath;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
-
 
 /*
  * Properties for amproperty API.  This list covers properties known to the
@@ -213,6 +213,21 @@ typedef void (*ammarkpos_function) (IndexScanDesc scan);
 typedef void (*amrestrpos_function) (IndexScanDesc scan);
 
 /*
+ * Recheck whether a stored leaf index tuple's key still matches the current
+ * values of a live heap tuple, reached by walking a HOT-indexed chain.
+ *
+ * Given a leaf IndexTuple and a slot already populated with the live heap
+ * tuple, return true if the leaf's key equals the heap tuple's current index
+ * form, false otherwise (a false result means the leaf is stale: the chain
+ * crossed a HOT-indexed hop that changed one of this index's key attributes).
+ * Only AMs that maintain ordered keys (nbtree) implement this; NULL for AMs
+ * that have no key to recheck.
+ */
+typedef bool (*amrecheck_leaf_key_function) (Relation rel,
+											 IndexTuple leaftup,
+											 struct TupleTableSlot *heapSlot);
+
+/*
  * Callback function signatures - for parallel index scans.
  */
 
@@ -314,6 +329,7 @@ typedef struct IndexAmRoutine
 	amendscan_function amendscan;
 	ammarkpos_function ammarkpos;	/* can be NULL */
 	amrestrpos_function amrestrpos; /* can be NULL */
+	amrecheck_leaf_key_function amrecheck_leaf_key; /* can be NULL */
 
 	/* interface functions to support parallel index scans */
 	amestimateparallelscan_function amestimateparallelscan; /* can be NULL */
