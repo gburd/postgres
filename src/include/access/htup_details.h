@@ -289,12 +289,11 @@ HEAP_XMAX_IS_KEYSHR_LOCKED(uint16 infomask)
  * information stored in t_infomask2:
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-#define HEAP_INDEXED_UPDATED	0x0800	/* HOT tuple that also modified
-										 * indexed attributes; accompanied by
-										 * a tombstone line pointer on the
-										 * same page.  When set on a tuple
-										 * with natts==0 marks the tombstone
-										 * itself.  See hot_indexed.h. */
+#define HEAP_INDEXED_UPDATED	0x0800	/* HOT tuple produced by an UPDATE that
+										 * also changed an indexed attribute
+										 * (HOT/SIU); index scans that reach it
+										 * via a chain recheck the arriving
+										 * leaf key against the live tuple. */
 /* bit 0x1000 is available */
 #define HEAP_KEYS_UPDATED		0x2000	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
