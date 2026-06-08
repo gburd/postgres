@@ -4666,6 +4666,12 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * the indexed attributes to be a subset of the PK; always is
 	 * unconditional.
 	 *
+	 * 7) An UPDATE that modifies every indexed attribute of the relation.
+	 * HOT-indexed only pays off when it can skip maintaining at least one
+	 * index whose key did not change; if all indexed attributes changed there
+	 * is nothing to skip, so a plain non-HOT update is cheaper (it avoids the
+	 * chain-walk and leaf-key recheck overhead).
+	 *
 	 * Fetch the indexed-attribute bitmap once up front; the apply-path branch
 	 * may also need PRIMARY_KEY.  Both bitmaps are freed once on the way out.
 	 */
@@ -4730,6 +4736,18 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	if (bms_overlap(modified_idx_attrs,
 					RelationGetIndexAttrBitmapNoCopy(relation,
 													 INDEX_ATTR_BITMAP_EXPRESSION)))
+	{
+		result = HEAP_HOT_MODE_NO;
+		goto out;
+	}
+
+	/*
+	 * If every indexed attribute changed, a HOT-selective update could not
+	 * skip any index -- each index needs a fresh entry anyway -- so it would
+	 * pay the HOT/SIU chain-walk and leaf-key-recheck overhead for no saved
+	 * index maintenance.  Fall back to a plain non-HOT update in that case.
+	 */
+	if (bms_is_subset(all_idx_attrs, modified_idx_attrs))
 	{
 		result = HEAP_HOT_MODE_NO;
 		goto out;
