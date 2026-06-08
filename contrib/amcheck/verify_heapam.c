@@ -15,6 +15,7 @@
 #include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/relation.h"
+
 #include "access/table.h"
 #include "access/toast_internals.h"
 #include "access/visibilitymap.h"
@@ -522,8 +523,11 @@ verify_heapam(PG_FUNCTION_ARGS)
 			 */
 			if (ItemIdIsRedirected(ctx.itemid))
 			{
-				OffsetNumber rdoffnum = ItemIdGetRedirect(ctx.itemid);
+				OffsetNumber rdoffnum;
 				ItemId		rditem;
+
+				/* Resolve the redirect's target offset. */
+				rdoffnum = ItemIdGetRedirect(ctx.itemid);
 
 				if (rdoffnum < FirstOffsetNumber)
 				{
@@ -675,7 +679,7 @@ verify_heapam(PG_FUNCTION_ARGS)
 				 */
 				Assert(ItemIdIsNormal(next_lp));
 
-				/* Can only redirect to a HOT tuple. */
+				/* A redirect targets the first surviving chain member. */
 				next_htup = (HeapTupleHeader) PageGetItem(ctx.page, next_lp);
 				if (!HeapTupleHeaderIsHeapOnly(next_htup))
 				{
@@ -687,6 +691,19 @@ verify_heapam(PG_FUNCTION_ARGS)
 				/* HOT chains should not intersect. */
 				if (predecessor[nextoffnum] != InvalidOffsetNumber)
 				{
+					/*
+					 * In the HOT/SIU model several redirects legitimately
+					 * forward to the same live tuple: when a chain collapses,
+					 * the root and each entry-bearing dead member become a
+					 * redirect to first_live so every stale btree entry still
+					 * resolves there (the read path then rechecks the leaf
+					 * key).  Multiple predecessors are therefore expected
+					 * when the target is HOT-selectively-updated; keep the
+					 * first predecessor and do not report it as corruption.
+					 */
+					if ((next_htup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+						continue;
+
 					report_corruption(&ctx,
 									  psprintf("redirect line pointer points to offset %d, but offset %d also points there",
 											   nextoffnum, predecessor[nextoffnum]));
