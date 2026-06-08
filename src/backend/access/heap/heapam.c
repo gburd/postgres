@@ -4451,6 +4451,7 @@ HeapUpdateHotMode
 HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 {
 	Bitmapset  *all_idx_attrs = NULL;
+	Bitmapset  *pk_attrs = NULL;
 	HeapUpdateHotMode result;
 
 	/*
@@ -4481,8 +4482,8 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * whenever the relation can tolerate extra index entries in a chain whose
 	 * per-chain-member keys may differ.  System catalogs participate too (see
 	 * README.HOT-INDEXED "Catalog Enablement").  The logical-replication
-	 * apply path is excluded above.  The remaining HEAP_HOT_MODE_NO fallbacks
-	 * are:
+	 * apply path is gated above by hot_indexed_on_apply.  The remaining
+	 * HEAP_HOT_MODE_NO fallbacks are:
 	 *
 	 * 1) Relations with any exclusion constraint, because
 	 * check_exclusion_or_unique_constraint relies on "one live tuple per
@@ -4514,22 +4515,50 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 	 * access method and needs no separate key evaluation, so a stale leaf is
 	 * recognised for any index kind.
 	 *
-	 * Fetch the indexed-attribute bitmap once up front; it is freed on the
-	 * way out.
+	 * Fetch the indexed-attribute bitmap once up front; the apply-path branch
+	 * may also need PRIMARY_KEY.  Both bitmaps are freed on the way out.
 	 */
 	all_idx_attrs = RelationGetIndexAttrBitmap(relation,
 											   INDEX_ATTR_BITMAP_INDEXED);
 
 	/*
-	 * The logical-replication apply path does not do HOT-indexed updates: a
-	 * HOT-indexed update of a replica-identity attribute would leave a stale
-	 * index leaf, and the apply worker's replica-identity lookups must remain
-	 * exact.  A later commit makes this configurable per subscription.
+	 * The logical-replication apply path gates HOT-indexed updates on the
+	 * per-subscription hot_indexed_on_apply option.  A HOT-indexed update of
+	 * a replica-identity attribute leaves a stale index leaf; the apply
+	 * worker's replica-identity lookups cope with that (see
+	 * RelationFindReplTupleByIndex), but only when the indexed attributes are
+	 * a subset of the replica identity.  "off" disqualifies whenever the
+	 * subscriber has any indexed attribute beyond its PK; "subset_only" (the
+	 * default) requires the indexed attributes to be a subset of the PK;
+	 * "always" applies no apply-path gating.
 	 */
 	if (IsLogicalWorker())
 	{
-		result = HEAP_HOT_MODE_NO;
-		goto out;
+		char		mode = GetHotIndexedApplyMode();
+
+		if (mode == LOGICALREP_HOT_INDEXED_OFF)
+		{
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+
+			if (!bms_equal(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
+		}
+		else if (mode == LOGICALREP_HOT_INDEXED_SUBSET_ONLY)
+		{
+			pk_attrs = RelationGetIndexAttrBitmap(relation,
+												  INDEX_ATTR_BITMAP_PRIMARY_KEY);
+
+			if (!bms_is_subset(all_idx_attrs, pk_attrs))
+			{
+				result = HEAP_HOT_MODE_NO;
+				goto out;
+			}
+		}
+		/* LOGICALREP_HOT_INDEXED_ALWAYS: no apply-path gating. */
 	}
 
 	/*
@@ -4582,6 +4611,7 @@ HeapUpdateHotAllowable(Relation relation, const Bitmapset *modified_idx_attrs)
 
 out:
 	bms_free(all_idx_attrs);
+	bms_free(pk_attrs);
 	return result;
 }
 
