@@ -585,23 +585,17 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
  * causal consistency on the receiving side.
  */
 static bool
-DecodeRecnoExtractHLCInfo(XLogReaderState *r, uint16 flags,
+DecodeRecnoExtractHLCInfo(XLogReaderState *r, uint16 flags, int n_images,
 						  xl_recno_hlc_info *out_info)
 {
-	Size		total_len;
-	char	   *data;
+	const xl_recno_hlc_info *located;
 
-	if (!(flags & RECNO_WAL_HAS_HLC))
+	located = RecnoXLogLocateHLCInfo(XLogRecGetData(r), XLogRecGetDataLen(r),
+									 flags, n_images);
+	if (located == NULL)
 		return false;
 
-	data = XLogRecGetData(r);
-	total_len = XLogRecGetDataLen(r);
-
-	if (total_len < SizeOfXlRecnoHlcInfo)
-		return false;
-
-	memcpy(out_info, data + total_len - SizeOfXlRecnoHlcInfo,
-		   SizeOfXlRecnoHlcInfo);
+	memcpy(out_info, located, SizeOfXlRecnoHlcInfo);
 
 	return true;
 }
@@ -661,7 +655,7 @@ DecodeRecnoInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	xlrec = (xl_recno_insert *) XLogRecGetData(r);
 
 	/* Extract and apply HLC uncertainty if present */
-	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, 1, &hlc_info))
 		DecodeRecnoApplyHLCUncertainty(&hlc_info);
 
 	/* only interested in our database */
@@ -757,7 +751,7 @@ DecodeRecnoUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	xlrec = (xl_recno_update *) XLogRecGetData(r);
 
 	/* Extract and apply HLC uncertainty if present */
-	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, 2, &hlc_info))
 		DecodeRecnoApplyHLCUncertainty(&hlc_info);
 
 	/* only interested in our database */
@@ -869,7 +863,7 @@ DecodeRecnoDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	xlrec = (xl_recno_delete *) XLogRecGetData(r);
 
 	/* Extract and apply HLC uncertainty if present */
-	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, &hlc_info))
+	if (DecodeRecnoExtractHLCInfo(r, xlrec->flags, 1, &hlc_info))
 		DecodeRecnoApplyHLCUncertainty(&hlc_info);
 
 	/* only interested in our database */

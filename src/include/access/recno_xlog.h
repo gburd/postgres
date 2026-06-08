@@ -428,6 +428,19 @@ extern XLogRecPtr RecnoXLogCasUpdate(Relation rel, Buffer buffer,
 extern bool RecnoFillHLCInfo(xl_recno_hlc_info *info);
 
 /*
+ * Locate the xl_recno_hlc_info within a RECNO WAL record's main data.
+ *
+ * When RECNO_WAL_LOGICAL_TUPLE is set, n_images self-delimiting tuple images
+ * (each suffixed with a trailing uint32 length) are appended after the HLC
+ * region; this walks backward past them to return the HLC struct.  Returns
+ * NULL if the record carries no HLC info or the layout is malformed.
+ */
+extern const xl_recno_hlc_info *RecnoXLogLocateHLCInfo(const char *data,
+													   Size total_len,
+													   uint16 flags,
+													   int n_images);
+
+/*
  * Logical replication decode entry point for RECNO WAL records.
  */
 struct LogicalDecodingContext;
