@@ -3542,94 +3542,115 @@ force_shrink_retry:
 	 * grow, and shrink).  RelUndoReserve may extend the fork and ereport, so
 	 * it must run outside the crit section.  Lock order: data buffer then
 	 * UNDO buffer.
+	 *
+	 * If a force-shrink retry pushed columns off-page, update_overflow_buffers
+	 * holds buffers that are pinned, content-locked, and marked dirty but not
+	 * yet WAL-logged (overflow WAL is deferred to the atomic record below).
+	 * RelUndoReserve and CheckForSerializableConflictIn can both ereport here,
+	 * before the critical section makes the change durable.  Resource-owner
+	 * cleanup would still release the pins and locks on abort, leaving only
+	 * VACUUM-reclaimable dead overflow space, but release them explicitly so
+	 * the abort path leaves no dirtied-yet-orphaned overflow pages behind.
 	 */
-	if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
+	PG_TRY();
 	{
-		Size		upd_undo_reserve;
-
-		/*
-		 * Compute a compact byte-diff of the change so the UNDO record stores
-		 * only the changed bytes instead of the full old tuple, mirroring the
-		 * CAS fast path.  The diff is only valid for a same-size in-place
-		 * overwrite (RecnoComputeTupleDiff requires equal lengths), which is
-		 * exactly the new_tuple_size == old_len case below; grow/shrink
-		 * updates leave upd_diff NULL and fall back to the full-tuple record.
-		 *
-		 * The new tuple's transient MVCC flags (RECNO_TUPLE_UPDATED set,
-		 * RECNO_TUPLE_UNCOMMITTED cleared) and t_ctid are finalized inside
-		 * the critical section below, AFTER this reservation runs.  To diff
-		 * against the exact bytes that will land on the page, replicate those
-		 * mutations on a throwaway copy here without disturbing new_tuple
-		 * (whose current state still feeds the pre-ctid logical-decoding
-		 * image).
-		 */
-		if (new_tuple_size == old_tuple_for_inplace_wal->t_len)
+		if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
 		{
-			char	   *upd_new_preview = palloc(new_tuple_size);
-			RecnoTupleHeader *preview_hdr;
+			Size		upd_undo_reserve;
 
-			memcpy(upd_new_preview, new_tuple->t_data, new_tuple_size);
-			preview_hdr = (RecnoTupleHeader *) upd_new_preview;
-			preview_hdr->t_flags |= RECNO_TUPLE_UPDATED;
-			preview_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
-			ItemPointerSet(&preview_hdr->t_ctid, blkno, offnum);
-
-			upd_diff = RecnoComputeTupleDiff((char *) old_tuple_for_inplace_wal->t_data,
-											 old_tuple_for_inplace_wal->t_len,
-											 upd_new_preview, new_tuple_size);
-			if (upd_diff != NULL &&
-				!RecnoDiffIsCompact(upd_diff, old_tuple_for_inplace_wal->t_len))
+			/*
+			 * Compute a compact byte-diff of the change so the UNDO record
+			 * stores only the changed bytes instead of the full old tuple,
+			 * mirroring the CAS fast path.  The diff is only valid for a
+			 * same-size in-place overwrite (RecnoComputeTupleDiff requires
+			 * equal lengths), which is exactly the new_tuple_size == old_len
+			 * case below; grow/shrink updates leave upd_diff NULL and fall
+			 * back to the full-tuple record.
+			 *
+			 * The new tuple's transient MVCC flags (RECNO_TUPLE_UPDATED set,
+			 * RECNO_TUPLE_UNCOMMITTED cleared) and t_ctid are finalized inside
+			 * the critical section below, AFTER this reservation runs.  To
+			 * diff against the exact bytes that will land on the page,
+			 * replicate those mutations on a throwaway copy here without
+			 * disturbing new_tuple (whose current state still feeds the
+			 * pre-ctid logical-decoding image).
+			 */
+			if (new_tuple_size == old_tuple_for_inplace_wal->t_len)
 			{
-				pfree(upd_diff);
-				upd_diff = NULL;
+				char	   *upd_new_preview = palloc(new_tuple_size);
+				RecnoTupleHeader *preview_hdr;
+
+				memcpy(upd_new_preview, new_tuple->t_data, new_tuple_size);
+				preview_hdr = (RecnoTupleHeader *) upd_new_preview;
+				preview_hdr->t_flags |= RECNO_TUPLE_UPDATED;
+				preview_hdr->t_flags &= ~RECNO_TUPLE_UNCOMMITTED;
+				ItemPointerSet(&preview_hdr->t_ctid, blkno, offnum);
+
+				upd_diff = RecnoComputeTupleDiff((char *) old_tuple_for_inplace_wal->t_data,
+												 old_tuple_for_inplace_wal->t_len,
+												 upd_new_preview, new_tuple_size);
+				if (upd_diff != NULL &&
+					!RecnoDiffIsCompact(upd_diff, old_tuple_for_inplace_wal->t_len))
+				{
+					pfree(upd_diff);
+					upd_diff = NULL;
+				}
+				pfree(upd_new_preview);
 			}
-			pfree(upd_new_preview);
+
+			if (upd_diff != NULL)
+				upd_undo_reserve = SizeOfRelUndoRecordHeader +
+					SizeOfRelUndoDeltaUpdatePayload + upd_diff->total_size;
+			else
+				upd_undo_reserve = SizeOfRelUndoRecordHeader +
+					sizeof(RelUndoUpdatePayload) +
+					old_tuple_for_inplace_wal->t_len;
+
+			upd_undo_ptr = RelUndoReserve(relation, upd_undo_reserve,
+										  &upd_undo_buffer);
 		}
 
-		if (upd_diff != NULL)
-			upd_undo_reserve = SizeOfRelUndoRecordHeader +
-				SizeOfRelUndoDeltaUpdatePayload + upd_diff->total_size;
-		else
-			upd_undo_reserve = SizeOfRelUndoRecordHeader +
-				sizeof(RelUndoUpdatePayload) +
-				old_tuple_for_inplace_wal->t_len;
+		/*
+		 * SSI: check for rw-conflict in.  If a concurrent serializable
+		 * transaction read this tuple (holds a SIREAD lock on it), our update
+		 * creates an rw-antidependency that may form a dangerous structure.
+		 */
+		CheckForSerializableConflictIn(relation, otid, BufferGetBlockNumber(buffer));
 
-		upd_undo_ptr = RelUndoReserve(relation, upd_undo_reserve,
-									  &upd_undo_buffer);
+		/*
+		 * Always set UNCOMMITTED so that visibility checks consult the sLog.
+		 * Even though the tuple position hasn't moved (in-place update), the
+		 * DATA has changed and other transactions must see the old data until
+		 * this update commits.  The flag will be lazily cleared on the first
+		 * visibility check after the updating transaction commits (since the
+		 * sLog entry will have been removed at commit time).
+		 *
+		 * Also set RECNO_TUPLE_UPDATED to mark that this tuple has been
+		 * updated in-place.  After commit, this flag persists and indicates
+		 * that the tuple's t_commit_ts reflects the original INSERT commit
+		 * time (not the UPDATE commit time).  This preserves visibility for
+		 * readers whose snapshots predate the update.
+		 */
+		new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
+
+		/*
+		 * Build the heap-format logical-decoding images (old and new) BEFORE
+		 * the critical section, since heap_form_tuple()/palloc() are forbidden
+		 * inside it.  When the relation is not logically logged these leave
+		 * data == NULL.  These calls palloc and can ereport on OOM, so they
+		 * stay inside the PG_TRY: a throw here must also release the
+		 * force-shrink overflow buffers, exactly like the reservation above.
+		 */
+		RecnoXLogPrepareLogicalImage(relation, old_tuple_for_inplace_wal,
+									 &update_old_img);
+		RecnoXLogPrepareLogicalImage(relation, new_tuple, &update_new_img);
 	}
-
-	/*
-	 * SSI: check for rw-conflict in.  If a concurrent serializable
-	 * transaction read this tuple (holds a SIREAD lock on it), our update
-	 * creates an rw-antidependency that may form a dangerous structure.
-	 */
-	CheckForSerializableConflictIn(relation, otid, BufferGetBlockNumber(buffer));
-
-	/*
-	 * Always set UNCOMMITTED so that visibility checks consult the sLog. Even
-	 * though the tuple position hasn't moved (in-place update), the DATA has
-	 * changed and other transactions must see the old data until this update
-	 * commits.  The flag will be lazily cleared on the first visibility check
-	 * after the updating transaction commits (since the sLog entry will have
-	 * been removed at commit time).
-	 *
-	 * Also set RECNO_TUPLE_UPDATED to mark that this tuple has been updated
-	 * in-place.  After commit, this flag persists and indicates that the
-	 * tuple's t_commit_ts reflects the original INSERT commit time (not the
-	 * UPDATE commit time).  This preserves visibility for readers whose
-	 * snapshots predate the update.
-	 */
-	new_tuple->t_data->t_flags |= RECNO_TUPLE_UPDATED;
-
-	/*
-	 * Build the heap-format logical-decoding images (old and new) BEFORE the
-	 * critical section, since heap_form_tuple()/palloc() are forbidden inside
-	 * it.  When the relation is not logically logged these leave data ==
-	 * NULL.
-	 */
-	RecnoXLogPrepareLogicalImage(relation, old_tuple_for_inplace_wal,
-								 &update_old_img);
-	RecnoXLogPrepareLogicalImage(relation, new_tuple, &update_new_img);
+	PG_CATCH();
+	{
+		recno_release_update_overflow_buffers(&update_overflow_buffers, buffer);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	/* Start critical section for WAL logging */
 	START_CRIT_SECTION();
