@@ -1671,6 +1671,40 @@ recno_compute_index_update(Relation relation, RecnoTuple old_tuple,
 }
 
 /*
+ * Release a set of overflow buffers collected during a force-shrink update.
+ *
+ * RecnoStoreOverflowColumn leaves each overflow page locked, dirty, and
+ * unlogged, handing the buffers back to the caller for atomic WAL logging on
+ * the success path.  On any error path before that logging happens, the caller
+ * must release them here so no dirty unlogged page is pinned into transaction
+ * abort.  Skips main_buffer (released separately by the caller) and any buffer
+ * that appears more than once (two overflow columns can land on one page).
+ */
+static void
+recno_release_update_overflow_buffers(RecnoOverflowBuffers *bufs,
+									  Buffer main_buffer)
+{
+	int			i;
+
+	for (i = 0; i < bufs->count; i++)
+	{
+		Buffer		ovf_buf = bufs->buffers[i].buffer;
+		bool		already_released = (ovf_buf == main_buffer);
+		int			j;
+
+		for (j = 0; j < i && !already_released; j++)
+		{
+			if (bufs->buffers[j].buffer == ovf_buf)
+				already_released = true;
+		}
+		if (!already_released)
+			UnlockReleaseBuffer(ovf_buf);
+		pfree(bufs->buffers[i].record_data);
+	}
+	bufs->count = 0;
+}
+
+/*
  * Update a tuple in a RECNO table with versioning support
  *
  * RECNO_RELEASE_TUPLOCK releases the heavyweight tuple lock that competing
@@ -1714,6 +1748,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	RecnoOverflowBuffers update_overflow_buffers;
 	int			upd_i;
 	uint64		defrag_oldest_ts = 0;
+	bool		force_shrink_attempted = false;
 	Buffer		upd_undo_buffer = InvalidBuffer;
 	RelUndoRecPtr upd_undo_ptr = InvalidRelUndoRecPtr;
 	RecnoDiffRecord *upd_diff = NULL;
@@ -3055,12 +3090,48 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	update_overflow_buffers.count = 0;
 	{
 		bool		buffer_unlocked = false;
+		bool		new_needs_overflow;
 
-		if (ItemIdGetLength(itemid) <= RECNO_OVERFLOW_THRESHOLD &&
-			!(old_tuple_hdr->t_flags & RECNO_TUPLE_HAS_OVERFLOW))
+		/*
+		 * Decide whether the *new* tuple needs overflow handling.
+		 *
+		 * The old tuple's size is not a reliable predictor: a small row can be
+		 * updated to a large one (e.g. a short text column replaced by a
+		 * multi-kilobyte value).  Overflow eligibility depends on the new
+		 * column values, so scan them up front.  If the old tuple already has
+		 * overflow records we must also take the slow path so they are
+		 * rewritten/released correctly.
+		 */
+		slot_getallattrs(slot);
+		new_needs_overflow =
+			(old_tuple_hdr->t_flags & RECNO_TUPLE_HAS_OVERFLOW) != 0;
+		if (!new_needs_overflow)
+		{
+			TupleDesc	new_tupdesc = RelationGetDescr(relation);
+			int			natt;
+
+			for (natt = 0; natt < new_tupdesc->natts; natt++)
+			{
+				Form_pg_attribute att = TupleDescAttr(new_tupdesc, natt);
+
+				if (att->attisdropped || slot->tts_isnull[natt])
+					continue;
+				if (att->attlen != -1)
+					continue;		/* only varlena can overflow */
+				if (VARATT_IS_EXTERNAL(DatumGetPointer(slot->tts_values[natt])))
+					continue;
+				if (VARSIZE_ANY(DatumGetPointer(slot->tts_values[natt])) >
+					RECNO_OVERFLOW_THRESHOLD)
+				{
+					new_needs_overflow = true;
+					break;
+				}
+			}
+		}
+
+		if (!new_needs_overflow)
 		{
 			/* Fast path: keep buffer locked, form tuple without overflow */
-			slot_getallattrs(slot);
 			new_tuple = RecnoFormTuple(RelationGetDescr(relation),
 									   slot->tts_values,
 									   slot->tts_isnull,
@@ -3073,7 +3144,6 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			buffer_unlocked = true;
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
-			slot_getallattrs(slot);
 			new_tuple = RecnoFormTuple(RelationGetDescr(relation),
 									   slot->tts_values,
 									   slot->tts_isnull,
@@ -3151,6 +3221,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	 * space for the new tuple to fit in-place.
 	 *
 	 */
+retry_fit:
 	if (new_tuple_size <= ItemIdGetLength(itemid))
 	{
 		/* Strategy 1: new tuple fits within old tuple's slot */
@@ -3286,6 +3357,11 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				}
 				else
 				{
+					if (!force_shrink_attempted &&
+						update_overflow_buffers.count == 0)
+						goto force_shrink_retry;
+					recno_release_update_overflow_buffers(&update_overflow_buffers,
+														  buffer);
 					UnlockReleaseBuffer(buffer);
 					pfree(new_tuple);
 					ereport(ERROR,
@@ -3297,6 +3373,11 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			else
 			{
 				/* Defrag wouldn't free enough space */
+				if (!force_shrink_attempted &&
+					update_overflow_buffers.count == 0)
+					goto force_shrink_retry;
+				recno_release_update_overflow_buffers(&update_overflow_buffers,
+													  buffer);
 				UnlockReleaseBuffer(buffer);
 				pfree(new_tuple);
 				ereport(ERROR,
@@ -3308,12 +3389,105 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		else
 		{
 			/* No defrag-needed flag but tuple doesn't fit */
+			if (!force_shrink_attempted &&
+				update_overflow_buffers.count == 0)
+				goto force_shrink_retry;
+			recno_release_update_overflow_buffers(&update_overflow_buffers,
+												  buffer);
 			UnlockReleaseBuffer(buffer);
 			pfree(new_tuple);
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("updated recno tuple does not fit on page"),
 					 errhint("Variable-length overflow during update is not yet implemented.")));
+		}
+	}
+
+	if (false)
+	{
+		/*
+		 * Recovery path for an in-place-grown tuple that no longer fits in its
+		 * slot, even after page defragmentation.  RECNO TIDs are stable, so the
+		 * tuple cannot move to another page; the only way to shrink it is to
+		 * push variable-length columns off-page.  Re-form the new tuple forcing
+		 * every eligible varlena column into overflow with a zero inline
+		 * prefix, which collapses the main tuple to its minimum footprint, then
+		 * retry the in-place fit (it should now satisfy Strategy 1).
+		 *
+		 * This branch is only entered from the ERROR sites above, and only when
+		 * the first form attempt took the no-overflow fast path (the main
+		 * buffer is still locked and no overflow buffers were collected).
+		 */
+force_shrink_retry:
+		{
+			bool		relock_already_locked = false;
+
+			pfree(new_tuple);
+
+			/* Release the main buffer lock before re-forming with overflow. */
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+			new_tuple = RecnoFormTupleForceShrink(RelationGetDescr(relation),
+												  slot->tts_values,
+												  slot->tts_isnull,
+												  relation,
+												  &update_overflow_buffers);
+
+			new_tuple->t_data->t_commit_ts = current_ts;
+			new_tuple->t_data->t_flags |= RECNO_TUPLE_UNCOMMITTED;
+			new_tuple_size = new_tuple->t_len;
+
+			/*
+			 * Re-acquire the main buffer lock.  An overflow column may have
+			 * landed on the page we are updating, in which case it is already
+			 * locked as part of update_overflow_buffers.
+			 */
+			for (upd_i = 0; upd_i < update_overflow_buffers.count; upd_i++)
+			{
+				if (update_overflow_buffers.buffers[upd_i].buffer == buffer)
+				{
+					relock_already_locked = true;
+					break;
+				}
+			}
+			if (!relock_already_locked)
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			page = BufferGetPage(buffer);
+
+			/* Re-validate the line pointer after re-locking. */
+			itemid = PageGetItemId(page, offnum);
+			if (!ItemIdIsNormal(itemid))
+			{
+				recno_release_update_overflow_buffers(&update_overflow_buffers,
+													  buffer);
+				UnlockReleaseBuffer(buffer);
+				pfree(new_tuple);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Invisible;
+			}
+			old_tuple_hdr = (RecnoTupleHeader *) PageGetItem(page, itemid);
+
+			/*
+			 * Re-validate visibility after the unlock/relock window.  The fit
+			 * cascade ran conflict detection before forming the tuple, but
+			 * re-forming with overflow drops the buffer lock again.  A
+			 * concurrent committed delete that landed in that window must be
+			 * reported as TM_Deleted rather than silently overwritten.
+			 */
+			if ((old_tuple_hdr->t_flags & RECNO_TUPLE_DELETED) &&
+				!(old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED))
+			{
+				recno_release_update_overflow_buffers(&update_overflow_buffers,
+													  buffer);
+				UnlockReleaseBuffer(buffer);
+				pfree(new_tuple);
+				RECNO_RELEASE_TUPLOCK();
+				return TM_Deleted;
+			}
+
+			force_shrink_attempted = true;
+			goto retry_fit;
 		}
 	}
 

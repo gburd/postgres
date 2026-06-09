@@ -208,7 +208,7 @@ SELECT
     pg_relation_size('recno_cfull_comp_on') <= pg_relation_size('recno_cfull_comp_off') AS comp_not_larger;
  compressed_bytes | uncompressed_bytes | comp_not_larger 
 ------------------+--------------------+-----------------
-           122880 |            2760704 | t
+           114688 |            2760704 | t
 (1 row)
 
 DROP TABLE recno_cfull_comp_on;
