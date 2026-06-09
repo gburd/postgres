@@ -147,6 +147,7 @@ test: fast_default
 # HOT updates tests
 # ----------
 test: hot_updates
+test: hot_indexed_updates
 
 # run tablespace test at the end because it drops the tablespace created during
 # setup that other tests may use.
