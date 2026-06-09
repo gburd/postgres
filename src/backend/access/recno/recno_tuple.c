@@ -124,9 +124,47 @@ RecnoComputeDataSize(TupleDesc tupdesc, Datum *values, bool *isnull)
  * Returns a palloc'd RecnoTuple.  The caller is responsible for freeing it
  * with RecnoFreeTuple() when done.
  */
+static RecnoTuple recno_form_tuple_internal(TupleDesc tupdesc, Datum *values,
+											bool *isnull, Relation rel,
+											RecnoOverflowBuffers *overflow_buffers,
+											bool force_shrink);
+
 RecnoTuple
 RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 			   Relation rel, RecnoOverflowBuffers *overflow_buffers)
+{
+	return recno_form_tuple_internal(tupdesc, values, isnull, rel,
+									 overflow_buffers, false);
+}
+
+/*
+ * RecnoFormTupleForceShrink
+ *
+ * Like RecnoFormTuple, but forces every inline varlena attribute larger than
+ * an overflow pointer off-page with a zero inline prefix, regardless of the
+ * normal RECNO_OVERFLOW_THRESHOLD.  This shrinks the main tuple to its minimum
+ * footprint (header + fixed columns + one overflow pointer per large varlena).
+ *
+ * Used as a last resort by the in-place UPDATE path: when an updated tuple has
+ * grown beyond the space available on its page and TID stability forbids
+ * relocating it, pushing its variable-length data off-page lets the main tuple
+ * fit back into (or near) its original slot.  A relation and overflow_buffers
+ * are mandatory because every forced column is written to overflow pages.
+ */
+RecnoTuple
+RecnoFormTupleForceShrink(TupleDesc tupdesc, Datum *values, bool *isnull,
+						  Relation rel, RecnoOverflowBuffers *overflow_buffers)
+{
+	Assert(rel != NULL);
+	Assert(overflow_buffers != NULL);
+	return recno_form_tuple_internal(tupdesc, values, isnull, rel,
+									 overflow_buffers, true);
+}
+
+static RecnoTuple
+recno_form_tuple_internal(TupleDesc tupdesc, Datum *values, bool *isnull,
+						  Relation rel, RecnoOverflowBuffers *overflow_buffers,
+						  bool force_shrink)
 {
 	RecnoTuple	tuple;
 	RecnoTupleHeader *header;
@@ -239,8 +277,25 @@ RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 				continue;		/* Already external */
 
 			attr_size = VARSIZE_ANY(DatumGetPointer(work_values[i]));
-			if (attr_size <= RECNO_OVERFLOW_THRESHOLD)
+
+			/*
+			 * In normal mode, only attributes exceeding the overflow
+			 * threshold are pushed off-page.  In force_shrink mode (used to
+			 * recover from a page-full in-place UPDATE), every eligible
+			 * varlena is pushed off-page with a zero inline prefix, so the
+			 * main tuple shrinks to its minimum footprint and can fit back
+			 * into the old slot.
+			 */
+			if (!force_shrink && attr_size <= RECNO_OVERFLOW_THRESHOLD)
 				continue;		/* Fits inline */
+
+			/*
+			 * Pushing an attribute that is no larger than its own overflow
+			 * pointer would not save space, so skip it even under
+			 * force_shrink.
+			 */
+			if (force_shrink && attr_size <= RECNO_OVERFLOW_PTR_SIZE)
+				continue;
 
 			/*
 			 * Attribute exceeds threshold: store in overflow records.
@@ -249,7 +304,7 @@ RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 			 * overflow_buffers for atomic WAL logging by caller.
 			 */
 			work_values[i] = RecnoStoreOverflowColumn(rel, work_values[i], i,
-													  recno_overflow_inline_prefix,
+													  force_shrink ? 0 : recno_overflow_inline_prefix,
 													  overflow_buffers);
 			is_overflowed[i] = true;
 			has_overflow = true;

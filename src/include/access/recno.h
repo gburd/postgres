@@ -532,6 +532,9 @@ extern bool RecnoTupleVisible(RecnoTupleHeader *tuple, uint64 snapshot_ts, uint6
 extern Size RecnoComputeDataSize(TupleDesc tupdesc, Datum *values, bool *isnull);
 extern RecnoTuple RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 								 Relation rel, RecnoOverflowBuffers *overflow_buffers);
+extern RecnoTuple RecnoFormTupleForceShrink(TupleDesc tupdesc, Datum *values,
+											bool *isnull, Relation rel,
+											RecnoOverflowBuffers *overflow_buffers);
 extern RecnoTuple RecnoFormTupleFromSlot(TupleTableSlot *slot);
 extern Size RecnoComputeSlotSize(TupleTableSlot *slot);
 extern void RecnoDeformTuple(RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull);
