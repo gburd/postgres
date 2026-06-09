@@ -88,7 +88,7 @@ SELECT
      storage_type      | total_size | table_size 
 -----------------------+------------+------------
  HEAP (after updates)  | 7192 kB    | 4952 kB
- RECNO (after updates) | 8704 kB    | 4552 kB
+ RECNO (after updates) | 8032 kB    | 4552 kB
 (2 rows)
 
 -- Sequential Scan Performance
@@ -148,7 +148,7 @@ SELECT
      storage_type      | total_size | table_size 
 -----------------------+------------+------------
  HEAP (after deletes)  | 8296 kB    | 4952 kB
- RECNO (after deletes) | 15 MB      | 4552 kB
+ RECNO (after deletes) | 14 MB      | 4552 kB
 (2 rows)
 
 -- Vacuum Performance
@@ -171,7 +171,7 @@ SELECT
  storage_type  | total_size | table_size 
 ---------------+------------+------------
  HEAP (final)  | 8296 kB    | 4952 kB
- RECNO (final) | 15 MB      | 4480 kB
+ RECNO (final) | 14 MB      | 4480 kB
 (2 rows)
 
 -- Large Object Performance (Overflow vs TOAST)
@@ -267,18 +267,7 @@ BEGIN;
 INSERT INTO recno_perf_test (name, value, data)
 SELECT 'TX Test ' || i, i, ('tx data ' || i)::bytea
 FROM generate_series(1, 1000) i;
--- This UPDATE triggers a known RECNO bug (cannot extend file during large
--- batch update).  Wrap in a savepoint so the error message (which contains
--- a non-deterministic file OID) does not appear in regression output.
-SAVEPOINT sp1;
-DO $$
-BEGIN
-    UPDATE recno_perf_test SET value = value * 2 WHERE name LIKE 'TX Test%';
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'RECNO batch update failed (expected): %', regexp_replace(SQLERRM, 'file ".*"', 'file "<relpath>"');
-END;
-$$;
-ROLLBACK TO sp1;
+UPDATE recno_perf_test SET value = value * 2 WHERE name LIKE 'TX Test%';
 DELETE FROM recno_perf_test WHERE name LIKE 'TX Test%' AND value > 1000;
 COMMIT;
 -- Memory Usage Comparison
@@ -296,7 +285,7 @@ SELECT COUNT(*) FROM heap_perf_test WHERE value > 0;
 SELECT COUNT(*) FROM recno_perf_test WHERE value > 0;
  count 
 -------
- 37500
+ 38000
 (1 row)
 
 -- Scattered access pattern (deterministic)
