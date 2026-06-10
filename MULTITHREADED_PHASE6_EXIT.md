@@ -103,6 +103,9 @@ which runtime object owns that worker's cleanup and scheduler continuation.
   actual backend disconnect and verifies `before_shmem_exit` callbacks run in
   LIFO order, followed by DSM detach callbacks, `on_shmem_exit` callbacks in
   LIFO order, and then `on_proc_exit` callbacks in LIFO order.
+- The same fixture creates an inter-transaction temporary file, leaves it open
+  across the backend disconnect, reconnects, and verifies backend-exit cleanup
+  closed and unlinked the temporary file.
 - `gmake -C src/test/modules/test_backend_runtime check` passed after adding a
   fixture that installs a runtime `exit_backend` continuation, calls
   `PgBackendExitComplete(17)`, and verifies control transfers to the

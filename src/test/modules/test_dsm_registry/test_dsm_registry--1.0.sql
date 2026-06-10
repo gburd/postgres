@@ -32,3 +32,12 @@ CREATE FUNCTION register_exit_callback_order() RETURNS VOID
 
 CREATE FUNCTION get_exit_callback_order() RETURNS TEXT
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION reset_backend_exit_temp_file_path() RETURNS VOID
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION create_temp_file_for_backend_exit() RETURNS VOID
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION backend_exit_temp_file_removed() RETURNS BOOL
+	AS 'MODULE_PATHNAME' LANGUAGE C;

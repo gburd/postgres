@@ -17,6 +17,11 @@ SELECT reset_exit_callback_order();
 SELECT register_exit_callback_order();
 \c
 SELECT get_exit_callback_order();
+\c
+SELECT reset_backend_exit_temp_file_path();
+SELECT create_temp_file_for_backend_exit();
+\c
+SELECT backend_exit_temp_file_removed();
 SELECT name, type, size > 0 AS size_ok
 FROM pg_dsm_registry_allocations
 WHERE name like 'test_dsm_registry%' ORDER BY name;

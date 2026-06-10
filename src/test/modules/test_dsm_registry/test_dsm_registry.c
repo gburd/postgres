@@ -12,6 +12,7 @@
  */
 #include "postgres.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "fmgr.h"
@@ -21,11 +22,13 @@
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/wait_event.h"
 
 PG_MODULE_MAGIC;
 
 #define TDR_EXIT_ORDER_FILE "global/test_dsm_registry_exit_order"
 #define TDR_EXIT_ORDER_MAXLEN 256
+#define TDR_TEMP_FILE_PATH_FILE "global/test_dsm_registry_temp_path"
 
 typedef struct TestDSMRegistryStruct
 {
@@ -56,6 +59,8 @@ static void tdr_count_dsm_detach(dsm_segment *seg, Datum arg);
 static void tdr_record_exit_callback(int code, Datum arg);
 static void tdr_record_dsm_detach_callback(dsm_segment *seg, Datum arg);
 static void tdr_append_exit_order(const char *event);
+static void tdr_write_text_file(const char *path, const char *contents);
+static void tdr_read_text_file(const char *path, char *buf, Size buflen);
 
 static void
 init_tdr_dsm(void *ptr, void *arg)
@@ -222,8 +227,8 @@ get_dsm_detach_count(PG_FUNCTION_ARGS)
 static void
 tdr_append_exit_order(const char *event)
 {
-	int			fd;
 	int			save_errno = errno;
+	int			fd;
 
 	fd = BasicOpenFile(TDR_EXIT_ORDER_FILE,
 					   O_WRONLY | O_CREAT | O_APPEND | PG_BINARY);
@@ -238,6 +243,72 @@ tdr_append_exit_order(const char *event)
 	(void) write(fd, "\n", 1);
 	close(fd);
 	errno = save_errno;
+}
+
+static void
+tdr_write_text_file(const char *path, const char *contents)
+{
+	int			fd;
+	size_t		len;
+
+	fd = BasicOpenFile(path, O_WRONLY | O_CREAT | O_TRUNC | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", path)));
+
+	len = strlen(contents);
+	if (write(fd, contents, len) != len)
+	{
+		int			save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write file \"%s\": %m", path)));
+	}
+
+	if (close(fd) != 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", path)));
+}
+
+static void
+tdr_read_text_file(const char *path, char *buf, Size buflen)
+{
+	int			fd;
+	ssize_t		nread;
+
+	Assert(buflen > 0);
+
+	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m", path)));
+
+	nread = read(fd, buf, buflen - 1);
+	if (nread < 0)
+	{
+		int			save_errno = errno;
+
+		close(fd);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read file \"%s\": %m", path)));
+	}
+
+	if (close(fd) != 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not close file \"%s\": %m", path)));
+
+	while (nread > 0 && buf[nread - 1] == '\n')
+		nread--;
+	buf[nread] = '\0';
 }
 
 static void
@@ -307,33 +378,67 @@ Datum
 get_exit_callback_order(PG_FUNCTION_ARGS)
 {
 	char		buf[TDR_EXIT_ORDER_MAXLEN];
-	int			fd;
-	ssize_t		nread;
 
-	fd = BasicOpenFile(TDR_EXIT_ORDER_FILE, O_RDONLY | PG_BINARY);
-	if (fd < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m",
-						TDR_EXIT_ORDER_FILE)));
-
-	nread = read(fd, buf, sizeof(buf) - 1);
-	if (nread < 0)
-	{
-		int			save_errno = errno;
-
-		close(fd);
-		errno = save_errno;
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read file \"%s\": %m",
-						TDR_EXIT_ORDER_FILE)));
-	}
-
-	close(fd);
-	while (nread > 0 && buf[nread - 1] == '\n')
-		nread--;
-	buf[nread] = '\0';
+	tdr_read_text_file(TDR_EXIT_ORDER_FILE, buf, sizeof(buf));
 
 	PG_RETURN_TEXT_P(cstring_to_text(buf));
+}
+
+PG_FUNCTION_INFO_V1(reset_backend_exit_temp_file_path);
+Datum
+reset_backend_exit_temp_file_path(PG_FUNCTION_ARGS)
+{
+	if (unlink(TDR_TEMP_FILE_PATH_FILE) != 0 && errno != ENOENT)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not remove file \"%s\": %m",
+						TDR_TEMP_FILE_PATH_FILE)));
+
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(create_temp_file_for_backend_exit);
+Datum
+create_temp_file_for_backend_exit(PG_FUNCTION_ARGS)
+{
+	File		file;
+	const char *path;
+	const char *payload = "backend exit temp file cleanup\n";
+
+	/*
+	 * Inter-transaction temp files are not cleaned at statement or
+	 * transaction end.  Leaving this one open proves backend-exit cleanup
+	 * closes the VFD and unlinks the underlying file.
+	 */
+	file = OpenTemporaryFile(true);
+	if (FileWrite(file, payload, strlen(payload), 0,
+				  WAIT_EVENT_BUFFILE_WRITE) != strlen(payload))
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write temporary file \"%s\": %m",
+						FilePathName(file))));
+
+	path = FilePathName(file);
+	tdr_write_text_file(TDR_TEMP_FILE_PATH_FILE, path);
+
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(backend_exit_temp_file_removed);
+Datum
+backend_exit_temp_file_removed(PG_FUNCTION_ARGS)
+{
+	char		path[MAXPGPATH];
+	struct stat statbuf;
+
+	tdr_read_text_file(TDR_TEMP_FILE_PATH_FILE, path, sizeof(path));
+
+	if (stat(path, &statbuf) == 0)
+		PG_RETURN_BOOL(false);
+	if (errno != ENOENT)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not stat file \"%s\": %m", path)));
+
+	PG_RETURN_BOOL(true);
 }
