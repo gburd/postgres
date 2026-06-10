@@ -128,10 +128,10 @@ const IoMethodOps pgaio_worker_ops = {
 
 
 /* GUCs */
-int			io_min_workers = 2;
-int			io_max_workers = 8;
-int			io_worker_idle_timeout = 60000;
-int			io_worker_launch_interval = 100;
+PG_GLOBAL_RUNTIME int io_min_workers = 2;
+PG_GLOBAL_RUNTIME int io_max_workers = 8;
+PG_GLOBAL_RUNTIME int io_worker_idle_timeout = 60000;
+PG_GLOBAL_RUNTIME int io_worker_launch_interval = 100;
 
 
 static int	io_worker_queue_size = 64;

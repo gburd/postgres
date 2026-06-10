@@ -32,7 +32,7 @@
 #include "utils/wait_event.h"
 
 /* GUCs */
-int			file_copy_method = FILE_COPY_METHOD_COPY;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int file_copy_method = FILE_COPY_METHOD_COPY;
 
 static void clone_file(const char *fromfile, const char *tofile);
 

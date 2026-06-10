@@ -13,6 +13,8 @@
 #ifndef COPYDIR_H
 #define COPYDIR_H
 
+#include "utils/global_lifetime.h"
+
 typedef enum FileCopyMethod
 {
 	FILE_COPY_METHOD_COPY,
@@ -20,7 +22,7 @@ typedef enum FileCopyMethod
 }			FileCopyMethod;
 
 /* GUC parameters */
-extern PGDLLIMPORT int file_copy_method;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int file_copy_method;
 
 extern void copydir(const char *fromdir, const char *todir, bool recurse);
 extern void copy_file(const char *fromfile, const char *tofile);

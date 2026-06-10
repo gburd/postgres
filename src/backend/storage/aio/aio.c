@@ -71,8 +71,8 @@ const struct config_enum_entry io_method_options[] = {
 };
 
 /* GUCs */
-int			io_method = DEFAULT_IO_METHOD;
-int			io_max_concurrency = -1;
+PG_GLOBAL_RUNTIME int io_method = DEFAULT_IO_METHOD;
+PG_GLOBAL_RUNTIME int io_max_concurrency = -1;
 
 /* global control for AIO */
 PgAioCtl   *pgaio_ctl;

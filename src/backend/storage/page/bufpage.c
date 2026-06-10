@@ -24,7 +24,7 @@
 
 
 /* GUC variable */
-bool		ignore_checksum_failure = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool ignore_checksum_failure = false;
 
 
 /* ----------------------------------------------------------------

@@ -147,6 +147,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - guarded developer node-test GUC backing variables:
   `Debug_copy_parse_plan_trees`, `Debug_raw_expression_coverage_test`, and
   `Debug_write_read_parse_plan_trees`.
+- storage and I/O session GUC backing variables:
+  `backend_flush_after`, `effective_io_concurrency`, `file_copy_method`,
+  `ignore_checksum_failure`, `io_combine_limit`,
+  `io_combine_limit_guc`, `maintenance_io_concurrency`,
+  `track_io_timing`, and `zero_damaged_pages`.
 
 The following GUC backing variables are now explicitly classified as
 runtime-global, not thread-local, because they describe server build,
@@ -187,6 +192,15 @@ postmaster, shared-memory, or startup-computed runtime state:
   `autovacuum_vacuum_insert_score_weight`,
   `autovacuum_vacuum_score_weight`, `autovacuum_work_mem`, and
   `autovacuum_worker_slots`.
+- shared storage, file, and AIO runtime GUC backing variables:
+  `NBuffers`, `bgwriter_flush_after`, `bgwriter_lru_maxpages`,
+  `bgwriter_lru_multiplier`, `checkpoint_flush_after`,
+  `data_sync_retry`, `dynamic_shared_memory_type`, `file_extend_method`,
+  `io_max_combine_limit`, `io_max_concurrency`, `io_max_workers`,
+  `io_method`, `io_min_workers`, `io_worker_idle_timeout`,
+  `io_worker_launch_interval`, `max_files_per_process`,
+  `min_dynamic_shared_memory`, `recovery_init_sync_method`, and
+  `shared_memory_type`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -228,7 +242,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the autovacuum GUC classification slice, the filtered static report contains 148
+After the storage/I/O GUC classification slice, the filtered static report contains 121
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -518,6 +532,14 @@ Validation for this slice:
 - focused `autovacuum.o` compile coverage plus incremental `gmake -j8` after
   classifying autovacuum launcher/worker GUC backing variables as
   `PG_GLOBAL_RUNTIME`;
+- focused `bufmgr.o`, `bufpage.o`, `fd.o`, `copydir.o`, `dsm_impl.o`,
+  `ipci.o`, `aio.o`, and `method_worker.o` compile coverage plus incremental
+  `gmake -j8` after classifying storage and AIO GUC backing variables as
+  either `PG_THREAD_LOCAL` session state or `PG_GLOBAL_RUNTIME` runtime state;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header storage and AIO declarations to
+  `PG_THREAD_LOCAL` or `PG_GLOBAL_RUNTIME`;
+- focused core GUC regression test after the storage/AIO slice: `guc`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

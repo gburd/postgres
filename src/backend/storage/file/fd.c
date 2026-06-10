@@ -144,7 +144,7 @@
  * This GUC parameter lets the DBA limit max_safe_fds to something less than
  * what the postmaster's initial probe suggests will work.
  */
-int			max_files_per_process = 1000;
+PG_GLOBAL_RUNTIME int max_files_per_process = 1000;
 
 /*
  * Maximum number of file descriptors to open for operations that fd.c knows
@@ -160,13 +160,13 @@ int			max_files_per_process = 1000;
 int			max_safe_fds = FD_MINFREE;	/* default if not changed */
 
 /* Whether it is safe to continue running after fsync() fails. */
-bool		data_sync_retry = false;
+PG_GLOBAL_RUNTIME bool data_sync_retry = false;
 
 /* How SyncDataDirectory() should do its job. */
-int			recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
+PG_GLOBAL_RUNTIME int recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 /* How data files should be bulk-extended with zeros. */
-int			file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
+PG_GLOBAL_RUNTIME int file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
 
 /* Which kinds of files should be opened with PG_O_DIRECT. */
 int			io_direct_flags;

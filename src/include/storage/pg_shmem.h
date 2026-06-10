@@ -43,7 +43,7 @@ typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 } PGShmemHeader;
 
 /* GUC variables */
-extern PGDLLIMPORT int shared_memory_type;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int shared_memory_type;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_page_size;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages_status;

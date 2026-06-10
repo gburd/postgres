@@ -1505,8 +1505,6 @@ src/backend/statistics/attribute_stats.c	8b97cc8864f617d09fb8b64e24aa9b26949cad7
 src/backend/statistics/extended_stats_funcs.c	5e7f4524ac951dfb12abfa4cad870f4dceb278ab	extarginfo	static struct StatsArgInfo extarginfo[] = { [RELSCHEMA_ARG] = {"schemaname", TEXTOID}, [RELNAME_ARG] = {"relname", TEXTOID}, [STATSCHEMA_ARG] = {"statistics_schemaname", TEXTOID}, [STATNAME_ARG] = {"statistics_name", TEXTOID}, [INHERITED...
 src/backend/statistics/extended_stats_funcs.c	9886a74545b6577ddfecb5bc0ff3d506ec9b3b2f	extexprargname	static const char *extexprargname[NUM_ATTRIBUTE_STATS_ELEMS] = { "null_frac", "avg_width", "n_distinct", "most_common_vals", "most_common_freqs", "histogram_bounds", "correlation", "most_common_elems", "most_common_elem_freqs", "elem_cou...
 src/backend/statistics/relation_stats.c	84775a8cfcf3466c4461809959292a74b5b00903	relarginfo	static struct StatsArgInfo relarginfo[] = { [RELSCHEMA_ARG] = {"schemaname", TEXTOID}, [RELNAME_ARG] = {"relname", TEXTOID}, [RELPAGES_ARG] = {"relpages", INT4OID}, [RELTUPLES_ARG] = {"reltuples", FLOAT4OID}, [RELALLVISIBLE_ARG] = {"rela...
-src/backend/storage/aio/aio.c	902166b73a161305de42fbcd453992669ef21efe	io_method	int io_method = DEFAULT_IO_METHOD;
-src/backend/storage/aio/aio.c	a75fcfb0cb18906dfa57bc1c034f6e8e79db81da	io_max_concurrency	int io_max_concurrency = -1;
 src/backend/storage/aio/aio.c	69854781bd000e90dd3f6ae30bfe9aebcf372653	pgaio_ctl	PgAioCtl *pgaio_ctl;
 src/backend/storage/aio/aio.c	7b92932da0da83ad0d4f280d13b76548dd284195	pgaio_my_backend	PgAioBackend *pgaio_my_backend;
 src/backend/storage/aio/aio.c	797ae7554a60e680d29a11fc253c144549e17da8	pgaio_method_ops_table	static const IoMethodOps *const pgaio_method_ops_table[] = { [IOMETHOD_SYNC] = &pgaio_sync_ops, [IOMETHOD_WORKER] = &pgaio_worker_ops, [IOMETHOD_IO_URING] = &pgaio_uring_ops, };
@@ -1519,10 +1517,6 @@ src/backend/storage/aio/aio_target.c	e2ba05d139f0aa3449cba3b03b64b201275a479f	pg
 src/backend/storage/aio/method_io_uring.c	ae3edfa77447cd8e2f3a5b95feb704789a262b6c	pgaio_uring_contexts	static PgAioUringContext *pgaio_uring_contexts;
 src/backend/storage/aio/method_io_uring.c	f30ab475d31df177b9480ce0727de96a9474e989	pgaio_my_uring_context	static PgAioUringContext *pgaio_my_uring_context;
 src/backend/storage/aio/method_io_uring.c	64942f55b8d007237bfe7b40c5c07f03e5320316	pgaio_uring_caps	static PgAioUringCaps pgaio_uring_caps = { .checked = false, .mem_init_size = -1, };
-src/backend/storage/aio/method_worker.c	a5fd44eb021e8e7c4b56e33ca9d68b5c5a74a293	io_min_workers	int io_min_workers = 2;
-src/backend/storage/aio/method_worker.c	cc44fcd12e6e5fdf7252376cd30f51d8ea90d8f5	io_max_workers	int io_max_workers = 8;
-src/backend/storage/aio/method_worker.c	ceb123bd00911be15884c43662ca38072a038ea2	io_worker_idle_timeout	int io_worker_idle_timeout = 60000;
-src/backend/storage/aio/method_worker.c	74dacb465c59203cd29cbdc4b5df6b4c81082938	io_worker_launch_interval	int io_worker_launch_interval = 100;
 src/backend/storage/aio/method_worker.c	4adabd106106599a05445e486aa49d48a40c9cc5	io_worker_queue_size	static int io_worker_queue_size = 64;
 src/backend/storage/aio/method_worker.c	c4d4c17c422f22f7fe622c62b4ea1ffa475ea251	MyIoWorkerId	static int MyIoWorkerId = -1;
 src/backend/storage/aio/method_worker.c	dae4e835c89a4b60bab66b5d96281122061be883	io_worker_submission_queue	static PgAioWorkerSubmissionQueue *io_worker_submission_queue;
@@ -1533,18 +1527,6 @@ src/backend/storage/buffer/buf_init.c	ddd236fb8c9d34fee7f7b29e4edbf025f9f05e00	B
 src/backend/storage/buffer/buf_init.c	126cee5266c733e070554ef517b8895bf0ce95b3	BackendWritebackContext	WritebackContext BackendWritebackContext;
 src/backend/storage/buffer/buf_init.c	0af83cb6f1198f8621d3a3cf4bc8a3198fdf436f	CkptBufferIds	CkptSortItem *CkptBufferIds;
 src/backend/storage/buffer/buf_table.c	e6e1cb274bd470be911cfaadac34d57b6f957a93	SharedBufHash	static HTAB *SharedBufHash;
-src/backend/storage/buffer/bufmgr.c	087b382b91dcda31101e48d2af8631080c600542	zero_damaged_pages	bool zero_damaged_pages = false;
-src/backend/storage/buffer/bufmgr.c	4d0d6a59829948d01132182565aa038156c9c9c2	bgwriter_lru_maxpages	int bgwriter_lru_maxpages = 100;
-src/backend/storage/buffer/bufmgr.c	8673d6ef355c34afd8ae34d494e7170ef8bafa9d	bgwriter_lru_multiplier	double bgwriter_lru_multiplier = 2.0;
-src/backend/storage/buffer/bufmgr.c	911291c4d5ba8dc593ff307380c3fcdb8904eb22	track_io_timing	bool track_io_timing = false;
-src/backend/storage/buffer/bufmgr.c	ff99681640ce1b479fc81aa0e9384adbdff7e432	effective_io_concurrency	int effective_io_concurrency = DEFAULT_EFFECTIVE_IO_CONCURRENCY;
-src/backend/storage/buffer/bufmgr.c	d2ac8b29183cec673432bad7eadb36a8d95f9de8	maintenance_io_concurrency	int maintenance_io_concurrency = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
-src/backend/storage/buffer/bufmgr.c	4cd08247970d647efd820822787b847aa50a19e0	io_combine_limit	int io_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
-src/backend/storage/buffer/bufmgr.c	309b6b2e34a1c55ceb77334bf09dded867108a32	io_combine_limit_guc	int io_combine_limit_guc = DEFAULT_IO_COMBINE_LIMIT;
-src/backend/storage/buffer/bufmgr.c	08348a63fc8595c80786b7a1a3bc2400a7a39378	io_max_combine_limit	int io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
-src/backend/storage/buffer/bufmgr.c	f4bfef21c6131f2372e4e9814ce4e0074d620861	checkpoint_flush_after	int checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
-src/backend/storage/buffer/bufmgr.c	3570ec189b9e57540697a39038972c89f4177b2e	bgwriter_flush_after	int bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
-src/backend/storage/buffer/bufmgr.c	97681cfd981f18a10af69bc4ddc8ef247a0daaf7	backend_flush_after	int backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
 src/backend/storage/buffer/bufmgr.c	da0de37ada8dd2001426490674375969d246c5df	PinCountWaitBuf	static BufferDesc *PinCountWaitBuf = NULL;
 src/backend/storage/buffer/bufmgr.c	9504f4a3c9ac825db04e2aae0ca797dd16f10f9e	PrivateRefCountArrayKeys	static Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
 src/backend/storage/buffer/bufmgr.c	169599ae56afc12f711b0ca36976aba85fcf5478	PrivateRefCountArray	static struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
@@ -1562,12 +1544,7 @@ src/backend/storage/buffer/localbuf.c	6532f6728202f8eb29fb10f982805ccc8d2ce4cb	L
 src/backend/storage/buffer/localbuf.c	719913b044f58e9d3d305d7c0eb2320f4611a039	nextFreeLocalBufId	static int nextFreeLocalBufId = 0;
 src/backend/storage/buffer/localbuf.c	7b464637d8f05c68e0a7d5940e26cd9a08e73a71	LocalBufHash	static HTAB *LocalBufHash = NULL;
 src/backend/storage/buffer/localbuf.c	d060bfc433b179fdd907989a9367419355c9c9e0	NLocalPinnedBuffers	static int NLocalPinnedBuffers = 0;
-src/backend/storage/file/copydir.c	2e2ae6e3fe474c470c00f18120c6e47a18d168ee	file_copy_method	int file_copy_method = FILE_COPY_METHOD_COPY;
-src/backend/storage/file/fd.c	cc5d269e9861841e903f37ec0e511646f67b3275	max_files_per_process	int max_files_per_process = 1000;
 src/backend/storage/file/fd.c	76cd7992220a5e0d0c5497b8d9b344301be54655	max_safe_fds	int max_safe_fds = FD_MINFREE;
-src/backend/storage/file/fd.c	ddbc45d9548c2386d98d987b943982fd56f4aed1	data_sync_retry	bool data_sync_retry = false;
-src/backend/storage/file/fd.c	0108f7d06333c1b4118f1d41c0df7b795b39dbff	recovery_init_sync_method	int recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
-src/backend/storage/file/fd.c	3758aac860ddcef9085edc8bc4c561486cb076bb	file_extend_method	int file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
 src/backend/storage/file/fd.c	e1333ceda8b2f2b3401495cb759bac5bfeef0f84	io_direct_flags	int io_direct_flags;
 src/backend/storage/file/fd.c	115601c185ce4744e66a9b790e8c0b026e6754b0	tempTableSpaces	static Oid *tempTableSpaces = NULL;
 src/backend/storage/file/fd.c	d9f298423cb4af7208686f80646b68402aae3f0d	numTempTableSpaces	static int numTempTableSpaces = -1;
@@ -1580,8 +1557,6 @@ src/backend/storage/ipc/dsm.c	5c8b75f4e29af95445cb56f9815d5679b2af443c	dsm_contr
 src/backend/storage/ipc/dsm.c	572cc8e79773720ce9b187a5fe8b6718dab82cf7	dsm_control	static dsm_control_header *dsm_control;
 src/backend/storage/ipc/dsm.c	8f9a6e3aee1d85e6b51d0eaeb3447cd902998a31	dsm_control_mapped_size	static Size dsm_control_mapped_size = 0;
 src/backend/storage/ipc/dsm.c	6c52ed2577a2eaa18ec9eb53bc85a5d8396aea4b	dsm_control_impl_private	static void *dsm_control_impl_private = NULL;
-src/backend/storage/ipc/dsm_impl.c	b41a551fa6fc76a3353c26d8b0955bb4f849cac6	dynamic_shared_memory_type	int dynamic_shared_memory_type = DEFAULT_DYNAMIC_SHARED_MEMORY_TYPE;
-src/backend/storage/ipc/dsm_impl.c	929b19e9334293d875d32a8cc6afd06902136704	min_dynamic_shared_memory	int min_dynamic_shared_memory;
 src/backend/storage/ipc/dsm_registry.c	410b47f0b35e31e682fe8c862a24df3a263a180e	DSMRegistryCtx	static DSMRegistryCtxStruct *DSMRegistryCtx;
 src/backend/storage/ipc/dsm_registry.c	00c7d28b68f01392fd0bbc18f2466543bbcd1117	DSMREntryTypeNames	static const char *const DSMREntryTypeNames[] = { [DSMR_ENTRY_TYPE_DSM] = "segment", [DSMR_ENTRY_TYPE_DSA] = "area", [DSMR_ENTRY_TYPE_DSH] = "hash", };
 src/backend/storage/ipc/dsm_registry.c	670546f18ffda0283e6066b8210f81b1f5a3b79b	dsm_registry_dsa	static dsa_area *dsm_registry_dsa;
@@ -1589,7 +1564,6 @@ src/backend/storage/ipc/dsm_registry.c	b21ed97853fa44e2558be75a7018b2ae0e312aed	
 src/backend/storage/ipc/ipc.c	e535a76462542ede88617d3781acf6b4f369d3a3	proc_exit_inprogress	bool proc_exit_inprogress = false;
 src/backend/storage/ipc/ipc.c	8ae7bc6a024550851f01ea1e7c03d9c40eda1e48	shmem_exit_inprogress	bool shmem_exit_inprogress = false;
 src/backend/storage/ipc/ipc.c	7a0305b7a18b64e2fd560d60ff6c866637d5295b	atexit_callback_setup	static bool atexit_callback_setup = false;
-src/backend/storage/ipc/ipci.c	c9ad5d1b2bdcdd0bbbf3d52ffd932a1965a5a8b8	shared_memory_type	int shared_memory_type = DEFAULT_SHARED_MEMORY_TYPE;
 src/backend/storage/ipc/ipci.c	a890e0c51bdbca7e4842cc7fbd78e84e4596f617	shmem_startup_hook	shmem_startup_hook_type shmem_startup_hook = NULL;
 src/backend/storage/ipc/ipci.c	bd81533303792bbba101235aaf21fe63d1e92c70	total_addin_request	static Size total_addin_request = 0;
 src/backend/storage/ipc/latch.c	17c25a63b9cf509e145381ee6b100959f31d6e61	LatchWaitSet	static WaitEventSet *LatchWaitSet;
@@ -1725,7 +1699,6 @@ src/backend/storage/lmgr/s_lock.c	3ef3453e48de59a2fe7c0d19005d31e6d366828c	local
 src/backend/storage/lmgr/s_lock.c	e2ec0b808716dba5e437f8e3af01b7b7f90eb381	my_wait_event_info	uint32 *my_wait_event_info = &local_my_wait_event_info;
 src/backend/storage/lmgr/s_lock.c	8477e97ed623c2e7fe2254fe1e76a7bc05830824	spins_per_delay	static int spins_per_delay = DEFAULT_SPINS_PER_DELAY;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
-src/backend/storage/page/bufpage.c	19bda3209e32e9b3994f4f3dece2deaa2f028bd9	ignore_checksum_failure	bool ignore_checksum_failure = false;
 src/backend/storage/smgr/md.c	896f321ba5703e55a36e78e7a8abac883453a331	MdCxt	static MemoryContext MdCxt;
 src/backend/storage/smgr/smgr.c	5dabcba8126945b09bed644a332b70a6fece60d1	SMgrRelationHash	static HTAB *SMgrRelationHash = NULL;
 src/backend/storage/smgr/smgr.c	8e5e89ab7925d7a529883e11f922f329b3f556b8	unpinned_relns	static dlist_head unpinned_relns;
@@ -2400,8 +2373,6 @@ src/include/rewrite/rowsecurity.h	0f0a501145999607e072af8109740c1d75fdad6c	row_s
 src/include/storage/aio.h	2b2b1d77d05c745e44ee288c1da5bec39a633544	ResourceOwnerData	struct ResourceOwnerData;
 src/include/storage/aio.h	d07c558a00647f5c993d8849221eafcad844f431	dlist_node	struct dlist_node;
 src/include/storage/aio.h	e72397f4b5581a2e3d063de50b6e3db88cf3d826	iovec	struct iovec;
-src/include/storage/aio.h	7516f9ed70fd9c73ba34bf64e2c767f15c086dc1	io_method	extern PGDLLIMPORT int io_method;
-src/include/storage/aio.h	b27558be18da8ee4130f2432724b9ceaa7836248	io_max_concurrency	extern PGDLLIMPORT int io_max_concurrency;
 src/include/storage/aio_internal.h	2b2b1d77d05c745e44ee288c1da5bec39a633544	ResourceOwnerData	struct ResourceOwnerData;
 src/include/storage/aio_internal.h	d11d5a4ee3568196269c8c2c864ec846fce6f968	pgaio_method_ops	extern PGDLLIMPORT const IoMethodOps *pgaio_method_ops;
 src/include/storage/aio_internal.h	b65177d4c7b6a9399c02c1d263603f28360260f2	pgaio_ctl	extern PGDLLIMPORT PgAioCtl *pgaio_ctl;
@@ -2411,41 +2382,16 @@ src/include/storage/buf_internals.h	b0b1fcae879c45a111fdc547dfe1c379fc9f3afe	Buf
 src/include/storage/buf_internals.h	5fd14484a8b4d522aa4681862b3ed7181e3e0bab	BackendWritebackContext	extern PGDLLIMPORT WritebackContext BackendWritebackContext;
 src/include/storage/buf_internals.h	d8c5a630c6dc161258bdd864fd88eb6f26df24a9	LocalBufferDescriptors	extern PGDLLIMPORT BufferDesc *LocalBufferDescriptors;
 src/include/storage/buf_internals.h	2f9a80624fdaf495c06ad1cf9527bcf73f3cd276	CkptBufferIds	extern PGDLLIMPORT CkptSortItem *CkptBufferIds;
-src/include/storage/bufmgr.h	48512ac96265797c21c1be328b1e5054c6a0644b	NBuffers	extern PGDLLIMPORT int NBuffers;
-src/include/storage/bufmgr.h	2b173d26b5d2d7fb95b2116107fc538b10d571f4	zero_damaged_pages	extern PGDLLIMPORT bool zero_damaged_pages;
-src/include/storage/bufmgr.h	3f8d45f56723ee33c1e4de240d134c223793579b	bgwriter_lru_maxpages	extern PGDLLIMPORT int bgwriter_lru_maxpages;
-src/include/storage/bufmgr.h	f55e41d080787b40632374a19e85efa09fec5218	bgwriter_lru_multiplier	extern PGDLLIMPORT double bgwriter_lru_multiplier;
-src/include/storage/bufmgr.h	3984da0427c38350c9d3f1a9e1b2f2c7b27b56b3	track_io_timing	extern PGDLLIMPORT bool track_io_timing;
-src/include/storage/bufmgr.h	6f1fbdca8a9288e85e65d6fb0e5f1bcae4c3cba7	effective_io_concurrency	extern PGDLLIMPORT int effective_io_concurrency;
-src/include/storage/bufmgr.h	c5a2333c5e540ba4d32841929fc8c76507019e70	maintenance_io_concurrency	extern PGDLLIMPORT int maintenance_io_concurrency;
-src/include/storage/bufmgr.h	1e84521d5a73cc079f5861aa14fc027a0bc9dfce	io_combine_limit	extern PGDLLIMPORT int io_combine_limit;
-src/include/storage/bufmgr.h	5f7aa510bdb1ef90991f41b2b46807ac3ade4ce2	io_combine_limit_guc	extern PGDLLIMPORT int io_combine_limit_guc;
-src/include/storage/bufmgr.h	a73a84074464555752025aef4ee6881006a7f0f8	io_max_combine_limit	extern PGDLLIMPORT int io_max_combine_limit;
-src/include/storage/bufmgr.h	80ce8cd8a3d531c7c9452662839e5c235fb2f428	checkpoint_flush_after	extern PGDLLIMPORT int checkpoint_flush_after;
-src/include/storage/bufmgr.h	3531c33a7e2336243f750be5a14b8e2a7ab86dca	backend_flush_after	extern PGDLLIMPORT int backend_flush_after;
-src/include/storage/bufmgr.h	08ccd3ccf7a31a699926bc495d160aeb1d1c8fbd	bgwriter_flush_after	extern PGDLLIMPORT int bgwriter_flush_after;
 src/include/storage/bufmgr.h	49a612fce90de9e59ad7bb651c821715cb89134b	BufferBlocks	extern PGDLLIMPORT char *BufferBlocks;
 src/include/storage/bufmgr.h	3275b2b836d72fd4ddbbde506e16bec1c789e49e	NLocBuffer	extern PGDLLIMPORT int NLocBuffer;
 src/include/storage/bufmgr.h	2d6d72f94183e910b9c9d14667a0894cea549a30	LocalBufferBlockPointers	extern PGDLLIMPORT Block *LocalBufferBlockPointers;
 src/include/storage/bufmgr.h	2c1036ef6112bc3ae449727f4d07021233e02aa3	LocalRefCount	extern PGDLLIMPORT int32 *LocalRefCount;
-src/include/storage/bufpage.h	9779da2a0a5a400da15a8628acea0c4e98b52939	ignore_checksum_failure	extern PGDLLIMPORT bool ignore_checksum_failure;
 src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];
 src/include/storage/checksum_block_internal.h	cf55db26d1acf241408b9e0f8bea583775483a25	result	uint32 result = 0;
 src/include/storage/checksum_block_internal.h	5e578b43f97f7ced36a56bba648295fd6d7df315	i,j	uint32 i, j;
-src/include/storage/copydir.h	dd54ff4df539d5b248259ceeed43844cd948b42f	file_copy_method	extern PGDLLIMPORT int file_copy_method;
-src/include/storage/dsm_impl.h	68622520b052187e02241a9ef5511744221089b6	dynamic_shared_memory_type	extern PGDLLIMPORT int dynamic_shared_memory_type;
-src/include/storage/dsm_impl.h	65de3fe4f6fe1ea66c5adf5d2d3b03ae3c829c3f	min_dynamic_shared_memory	extern PGDLLIMPORT int min_dynamic_shared_memory;
-src/include/storage/fd.h	482467cfa2d83fae6f7c1922e56c6316f23af1f7	max_files_per_process	extern PGDLLIMPORT int max_files_per_process;
-src/include/storage/fd.h	ffbae2785911bb9df973c06dc1c71420d139b122	data_sync_retry	extern PGDLLIMPORT bool data_sync_retry;
-src/include/storage/fd.h	38b1f1c4947cbc5256416990f8b6d9c196576136	recovery_init_sync_method	extern PGDLLIMPORT int recovery_init_sync_method;
 src/include/storage/fd.h	4d26b6b06d3f11279ba11e69564ae39ad8d0551e	io_direct_flags	extern PGDLLIMPORT int io_direct_flags;
-src/include/storage/fd.h	7cab97234deb29519712615f664991affb2d380c	file_extend_method	extern PGDLLIMPORT int file_extend_method;
 src/include/storage/fd.h	6ab63ec3e0de2b2f74436866331de1c1a841d2ca	max_safe_fds	extern PGDLLIMPORT int max_safe_fds;
 src/include/storage/fd.h	d414231e411f7084bed1e8fa040ecf0b2ce714ed	PgAioHandle	struct PgAioHandle;
-src/include/storage/io_worker.h	ed02b924e49ce046ad98f0d232d946567decec10	io_min_workers	extern PGDLLIMPORT int io_min_workers;
-src/include/storage/io_worker.h	69f0af8b98433f6c7135833546ef484fecb6d160	io_max_workers	extern PGDLLIMPORT int io_max_workers;
-src/include/storage/io_worker.h	621d418ce04af42e26339da401384d5db3054e13	io_worker_idle_timeout	extern PGDLLIMPORT int io_worker_idle_timeout;
-src/include/storage/io_worker.h	33dfbda5e0229b00e0abbc8c89ef583271613d0d	io_worker_launch_interval	extern PGDLLIMPORT int io_worker_launch_interval;
 src/include/storage/ipc.h	f1e3592b5dadf1ce8b26f4ee6139dd9fe8d76fa2	proc_exit_inprogress	extern PGDLLIMPORT bool proc_exit_inprogress;
 src/include/storage/ipc.h	14e8a2d6de5712d472488b63670cd6d9167d8bad	shmem_exit_inprogress	extern PGDLLIMPORT bool shmem_exit_inprogress;
 src/include/storage/ipc.h	e7fcd3c2408d6aed22487fa131aa22dd3a0295d7	shmem_startup_hook	extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
@@ -2461,7 +2407,6 @@ src/include/storage/locktag.h	5d1fb685aeb5d3e1aa3bfcab2264770b19a6e69b	LockTagTy
 src/include/storage/lwlock.h	2a95faf948e2f6b97c0afed5dd9db32fa87b3c4c	PGPROC	struct PGPROC;
 src/include/storage/lwlock.h	1299be646c950141eb81cf4e79ed31b877465d5c	MainLWLockArray	extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 src/include/storage/lwlock.h	2b74a3fcfddccf43e932d141886e025369f1c4b9	Trace_lwlocks	extern PGDLLIMPORT bool Trace_lwlocks;
-src/include/storage/pg_shmem.h	e6d903856f0cc0ff63eb245d15184cea36bfd9f1	shared_memory_type	extern PGDLLIMPORT int shared_memory_type;
 src/include/storage/pg_shmem.h	be6d50a64f79d68e0aeb05f1fee4d8debae8a727	UsedShmemSegID	extern PGDLLIMPORT unsigned long UsedShmemSegID;
 src/include/storage/pg_shmem.h	0cb6461bcb2b8f601ef3dc0f89c7862655e44a30	UsedShmemSegID	extern PGDLLIMPORT HANDLE UsedShmemSegID;
 src/include/storage/pg_shmem.h	54554dbcc05b344213d420cf77db4f4c9000a0d2	ShmemProtectiveRegion	extern PGDLLIMPORT void *ShmemProtectiveRegion;
