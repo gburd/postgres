@@ -100,33 +100,39 @@ static void PrintLockQueue(LOCK *lock, const char *info);
  */
 
 /* Workspace for FindLockCycle */
-static PGPROC **visitedProcs;	/* Array of visited procs */
-static int	nVisitedProcs;
+/* Array of visited procs */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **visitedProcs;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nVisitedProcs;
 
 /* Workspace for TopoSort */
-static PGPROC **topoProcs;		/* Array of not-yet-output procs */
-static int *beforeConstraints;	/* Counts of remaining before-constraints */
-static int *afterConstraints;	/* List head for after-constraints */
+/* Array of not-yet-output procs */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **topoProcs;
+/* Counts of remaining before-constraints */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int *beforeConstraints;
+/* List head for after-constraints */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int *afterConstraints;
 
 /* Output area for ExpandConstraints */
-static WAIT_ORDER *waitOrders;	/* Array of proposed queue rearrangements */
-static int	nWaitOrders;
-static PGPROC **waitOrderProcs; /* Space for waitOrders queue contents */
+/* Array of proposed queue rearrangements */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WAIT_ORDER *waitOrders;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nWaitOrders;
+/* Space for waitOrders queue contents */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **waitOrderProcs;
 
 /* Current list of constraints being considered */
-static EDGE *curConstraints;
-static int	nCurConstraints;
-static int	maxCurConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND EDGE *curConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nCurConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int maxCurConstraints;
 
 /* Storage space for results from FindLockCycle */
-static EDGE *possibleConstraints;
-static int	nPossibleConstraints;
-static int	maxPossibleConstraints;
-static DEADLOCK_INFO *deadlockDetails;
-static int	nDeadlockDetails;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND EDGE *possibleConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nPossibleConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int maxPossibleConstraints;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DEADLOCK_INFO *deadlockDetails;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nDeadlockDetails;
 
 /* PGPROC pointer of any blocking autovacuum worker found */
-static PGPROC *blocking_autovacuum_proc = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *blocking_autovacuum_proc = NULL;
 
 
 /*
