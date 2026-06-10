@@ -152,6 +152,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ignore_checksum_failure`, `io_combine_limit`,
   `io_combine_limit_guc`, `maintenance_io_concurrency`,
   `track_io_timing`, and `zero_damaged_pages`.
+- temporary-file tablespace selection state in `fd.c`:
+  `tempTableSpaces`, `numTempTableSpaces`, and `nextTempTableSpace`.
 - lock-manager session GUC backing variables:
   `Debug_deadlocks`, `Trace_lock_oidmin`, `Trace_lock_table`,
   `Trace_locks`, `Trace_lwlocks`, `Trace_userlocks`, and
@@ -653,9 +655,10 @@ Validation for this slice:
 - incremental `gmake -j8` and focused core GUC regression test after the
   replication/WAL-capacity slice: `guc`;
 - focused `inval.o`, `reorderbuffer.o`, `walsender.o`, `walreceiver.o`,
-  `stack_depth.o`, `ps_status.o`, `storage.o`, `instr_time.o`, and
-  `string_utils.o` compile coverage after classifying the final USERSET/SUSET
-  GUC backing variables and frontend `quote_all_identifiers` singleton;
+  `stack_depth.o`, `ps_status.o`, `storage.o`, `instr_time.o`, `string_utils.o`,
+  and `fd.o` compile coverage after classifying the final USERSET/SUSET GUC
+  backing variables, frontend `quote_all_identifiers` singleton, and
+  temporary-file tablespace selection state;
 - backend clean plus generated-header recovery, followed by clean `gmake -j8`
   after converting final installed-header declarations to `PG_THREAD_LOCAL`
   or explicit runtime/dynamic classifications;

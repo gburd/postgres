@@ -1450,11 +1450,6 @@ src/backend/storage/buffer/localbuf.c	6532f6728202f8eb29fb10f982805ccc8d2ce4cb	L
 src/backend/storage/buffer/localbuf.c	719913b044f58e9d3d305d7c0eb2320f4611a039	nextFreeLocalBufId	static int nextFreeLocalBufId = 0;
 src/backend/storage/buffer/localbuf.c	7b464637d8f05c68e0a7d5940e26cd9a08e73a71	LocalBufHash	static HTAB *LocalBufHash = NULL;
 src/backend/storage/buffer/localbuf.c	d060bfc433b179fdd907989a9367419355c9c9e0	NLocalPinnedBuffers	static int NLocalPinnedBuffers = 0;
-src/backend/storage/file/fd.c	76cd7992220a5e0d0c5497b8d9b344301be54655	max_safe_fds	int max_safe_fds = FD_MINFREE;
-src/backend/storage/file/fd.c	e1333ceda8b2f2b3401495cb759bac5bfeef0f84	io_direct_flags	int io_direct_flags;
-src/backend/storage/file/fd.c	115601c185ce4744e66a9b790e8c0b026e6754b0	tempTableSpaces	static Oid *tempTableSpaces = NULL;
-src/backend/storage/file/fd.c	d9f298423cb4af7208686f80646b68402aae3f0d	numTempTableSpaces	static int numTempTableSpaces = -1;
-src/backend/storage/file/fd.c	645b296b73dba734109f1bf418e300fa770f8b2f	nextTempTableSpace	static int nextTempTableSpace = 0;
 src/backend/storage/file/fd.c	d8142c9425458e15f3ec02a3e0137a624bbdd5dc	path,fname,isdir,process_symlinks	static void walkdir(const char *path, void (*action) (const char *fname, bool isdir, int elevel), bool process_symlinks, int elevel);
 src/backend/storage/ipc/dsm.c	999d898553d823e58004ae614f4e971937d26b4c	dsm_init_done	static bool dsm_init_done = false;
 src/backend/storage/ipc/dsm.c	c3a2d9d414db103ad645aa1e19a59869131d105f	dsm_main_space_begin	static void *dsm_main_space_begin = NULL;
@@ -2153,8 +2148,6 @@ src/include/storage/bufmgr.h	2c1036ef6112bc3ae449727f4d07021233e02aa3	LocalRefCo
 src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];
 src/include/storage/checksum_block_internal.h	cf55db26d1acf241408b9e0f8bea583775483a25	result	uint32 result = 0;
 src/include/storage/checksum_block_internal.h	5e578b43f97f7ced36a56bba648295fd6d7df315	i,j	uint32 i, j;
-src/include/storage/fd.h	4d26b6b06d3f11279ba11e69564ae39ad8d0551e	io_direct_flags	extern PGDLLIMPORT int io_direct_flags;
-src/include/storage/fd.h	6ab63ec3e0de2b2f74436866331de1c1a841d2ca	max_safe_fds	extern PGDLLIMPORT int max_safe_fds;
 src/include/storage/fd.h	d414231e411f7084bed1e8fa040ecf0b2ce714ed	PgAioHandle	struct PgAioHandle;
 src/include/storage/ipc.h	f1e3592b5dadf1ce8b26f4ee6139dd9fe8d76fa2	proc_exit_inprogress	extern PGDLLIMPORT bool proc_exit_inprogress;
 src/include/storage/ipc.h	14e8a2d6de5712d472488b63670cd6d9167d8bad	shmem_exit_inprogress	extern PGDLLIMPORT bool shmem_exit_inprogress;

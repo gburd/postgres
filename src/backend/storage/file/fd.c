@@ -157,7 +157,7 @@ PG_GLOBAL_RUNTIME int max_files_per_process = 1000;
  * Note: the value of max_files_per_process is taken into account while
  * setting this variable, and so need not be tested separately.
  */
-int			max_safe_fds = FD_MINFREE;	/* default if not changed */
+PG_GLOBAL_RUNTIME int max_safe_fds = FD_MINFREE;	/* default if not changed */
 
 /* Whether it is safe to continue running after fsync() fails. */
 PG_GLOBAL_RUNTIME bool data_sync_retry = false;
@@ -169,7 +169,7 @@ PG_GLOBAL_RUNTIME int recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 PG_GLOBAL_RUNTIME int file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
 
 /* Which kinds of files should be opened with PG_O_DIRECT. */
-int			io_direct_flags;
+PG_GLOBAL_RUNTIME int io_direct_flags;
 
 /* Debugging.... */
 
@@ -289,9 +289,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION long tempFileCounter = 0;
  * When numTempTableSpaces is -1, this has not been set in the current
  * transaction.
  */
-static Oid *tempTableSpaces = NULL;
-static int	numTempTableSpaces = -1;
-static int	nextTempTableSpace = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid *tempTableSpaces = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int numTempTableSpaces = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int nextTempTableSpace = 0;
 
 
 /*--------------------
