@@ -33,7 +33,12 @@ Already landed:
   - `PgBackend`;
   - `PgSession`;
   - `PgConnection`;
-  - `PgExecution`.
+  - `PgExecution`;
+- explicit session step/resume boundary:
+  - `PgSessionBootstrap()`;
+  - `PgSessionStep(PgSession *, PgStepBudget)`;
+  - `PgSessionRun(PgSession *)`;
+  - session-owned extended-protocol skip state.
 
 The loop extraction and runtime scaffolding keep process behavior unchanged and
 do not expose threaded mode.
@@ -141,8 +146,7 @@ Validation:
 
 ## Phase 3: Complete Main Loop Unwinding
 
-Status: partially complete through Phase 1; needs completion against real
-`PgSession` objects.
+Status: complete for the current stage.
 
 Goal: finish splitting `PostgresMain()` into stateful pieces while preserving
 process-mode behavior and making the protected step contract explicit.

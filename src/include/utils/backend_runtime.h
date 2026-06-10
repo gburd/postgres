@@ -33,6 +33,22 @@ typedef enum PgCarrierKind
 } PgCarrierKind;
 
 /*
+ * Budget for one invocation of PgSessionStep().  The process-mode runner uses
+ * a single-message budget today; later schedulers can extend this contract
+ * without changing the caller shape.
+ */
+typedef struct PgStepBudget
+{
+	int			max_messages;
+} PgStepBudget;
+
+typedef enum PgStepResult
+{
+	PG_STEP_CONTINUE,
+	PG_STEP_ERROR_RECOVERED
+} PgStepResult;
+
+/*
  * Main-loop state owned by PgSession. These fields used to be volatile locals
  * in PostgresMain(); keep them volatile because they must survive the
  * top-level longjmp used for backend error recovery.
@@ -42,6 +58,9 @@ typedef struct PgSessionLoopState
 	volatile bool send_ready_for_query;
 	volatile bool idle_in_transaction_timeout_enabled;
 	volatile bool idle_session_timeout_enabled;
+	volatile bool doing_extended_query_message;
+	volatile bool ignore_till_sync;
+	volatile bool step_error_boundary_active;
 } PgSessionLoopState;
 
 struct PgRuntime
@@ -101,5 +120,7 @@ extern PGDLLIMPORT PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
+extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
+pg_noreturn extern void PgSessionRun(PgSession *session);
 
 #endif							/* BACKEND_RUNTIME_H */

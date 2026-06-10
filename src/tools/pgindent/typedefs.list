@@ -2317,6 +2317,7 @@ PgIfAddrCallback
 PgRuntime
 PgSession
 PgSessionLoopState
+PgStepBudget
 PgStepResult
 PgStatShared_Archiver
 PgStatShared_Backend

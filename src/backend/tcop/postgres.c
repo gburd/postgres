@@ -133,11 +133,6 @@ typedef struct BindParamCbData
 	const char *paramval;		/* textual input string, if available */
 } BindParamCbData;
 
-typedef enum PgStepResult
-{
-	PG_STEP_CONTINUE
-} PgStepResult;
-
 /* ----------------
  *		private variables
  * ----------------
@@ -155,13 +150,6 @@ static bool xact_started = false;
  * commands like COPY FROM STDIN.
  */
 static bool DoingCommandRead = false;
-
-/*
- * Flags to implement skip-till-Sync-after-error behavior for messages of
- * the extended query protocol.
- */
-static bool doing_extended_query_message = false;
-static bool ignore_till_sync = false;
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
@@ -185,8 +173,8 @@ static StringInfoData row_description_buf;
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static int	SocketBackend(StringInfo inBuf);
-static int	ReadCommand(StringInfo inBuf);
+static int	SocketBackend(PgSession *session, StringInfo inBuf);
+static int	ReadCommand(PgSession *session, StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
@@ -201,10 +189,11 @@ static void drop_unnamed_stmt(void);
 static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
+static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
-static PgStepResult PgSessionStep(PgSession *session);
-pg_noreturn static void PgSessionRun(PgSession *session);
+static PgStepResult PgSessionStepUnprotected(PgSession *session,
+											 PgStepBudget budget);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
@@ -372,10 +361,14 @@ interactive_getc(void)
  * ----------------
  */
 static int
-SocketBackend(StringInfo inBuf)
+SocketBackend(PgSession *session, StringInfo inBuf)
 {
+	PgSessionLoopState *state;
 	int			qtype;
 	int			maxmsglen;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
 
 	/*
 	 * Get message type code from the frontend.
@@ -419,24 +412,24 @@ SocketBackend(StringInfo inBuf)
 	{
 		case PqMsg_Query:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_FunctionCall:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_Terminate:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
-			ignore_till_sync = false;
+			state->doing_extended_query_message = false;
+			state->ignore_till_sync = false;
 			break;
 
 		case PqMsg_Bind:
 		case PqMsg_Parse:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			state->doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Close:
@@ -444,26 +437,26 @@ SocketBackend(StringInfo inBuf)
 		case PqMsg_Execute:
 		case PqMsg_Flush:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			state->doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Sync:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
 			/* stop any active skip-till-Sync */
-			ignore_till_sync = false;
+			state->ignore_till_sync = false;
 			/* mark not-extended, so that a new error doesn't begin skip */
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyData:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyDone:
 		case PqMsg_CopyFail:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		default:
@@ -500,12 +493,14 @@ SocketBackend(StringInfo inBuf)
  * ----------------
  */
 static int
-ReadCommand(StringInfo inBuf)
+ReadCommand(PgSession *session, StringInfo inBuf)
 {
 	int			result;
 
+	Assert(session != NULL);
+
 	if (whereToSendOutput == DestRemote)
-		result = SocketBackend(inBuf);
+		result = SocketBackend(session, inBuf);
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -4275,6 +4270,9 @@ PgSessionLoopStateInit(PgSessionLoopState *state)
 	state->send_ready_for_query = true;
 	state->idle_in_transaction_timeout_enabled = false;
 	state->idle_session_timeout_enabled = false;
+	state->doing_extended_query_message = false;
+	state->ignore_till_sync = false;
+	state->step_error_boundary_active = false;
 }
 
 static void
@@ -4372,8 +4370,8 @@ PgSessionRecoverError(PgSession *session)
 	 * till next Sync.  This also causes us not to issue ReadyForQuery (until
 	 * we get Sync).
 	 */
-	if (doing_extended_query_message)
-		ignore_till_sync = true;
+	if (state->doing_extended_query_message)
+		state->ignore_till_sync = true;
 
 	/* We don't have a transaction command open anymore */
 	xact_started = false;
@@ -4395,20 +4393,22 @@ PgSessionRecoverError(PgSession *session)
 }
 
 static PgStepResult
-PgSessionStep(PgSession *session)
+PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
 	int			firstchar;
 	StringInfoData input_message;
 
 	Assert(session != NULL);
+	Assert(budget.max_messages == 1);
 	state = &session->loop_state;
+	Assert(state->step_error_boundary_active);
 
 	/*
 	 * At top of loop, reset extended-query-message flag, so that any errors
 	 * encountered in "idle" state don't provoke skip.
 	 */
-	doing_extended_query_message = false;
+	state->doing_extended_query_message = false;
 
 	/*
 	 * For valgrind reporting purposes, the "current query" begins here.
@@ -4579,7 +4579,7 @@ PgSessionStep(PgSession *session)
 	/*
 	 * (3) read a command (loop blocks here)
 	 */
-	firstchar = ReadCommand(&input_message);
+	firstchar = ReadCommand(session, &input_message);
 
 	/*
 	 * (4) turn off the idle-in-transaction and idle-session timeouts if
@@ -4624,7 +4624,7 @@ PgSessionStep(PgSession *session)
 	/*
 	 * (7) process the command.  But ignore it if we're skipping till Sync.
 	 */
-	if (ignore_till_sync && firstchar != EOF)
+	if (state->ignore_till_sync && firstchar != EOF)
 		return PG_STEP_CONTINUE;
 
 	switch (firstchar)
@@ -4901,17 +4901,22 @@ PgSessionStep(PgSession *session)
 	return PG_STEP_CONTINUE;
 }
 
-pg_noreturn static void
-PgSessionRun(PgSession *session)
+PgStepResult
+PgSessionStep(PgSession *session, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
+	sigjmp_buf *save_exception_stack;
+	ErrorContextCallback *save_context_stack;
 	sigjmp_buf	local_sigjmp_buf;
+	PgStepResult result;
 
 	Assert(session != NULL);
+	Assert(budget.max_messages == 1);
 	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
 
 	/*
-	 * POSTGRES main processing loop begins here
+	 * Protected POSTGRES main-loop step begins here.
 	 *
 	 * If an exception is encountered, processing resumes here so we abort the
 	 * current transaction and start a new one.
@@ -4931,36 +4936,55 @@ PgSessionRun(PgSession *session)
 	 * unblock in AbortTransaction() because the latter is only called if we
 	 * were inside a transaction.
 	 */
+	save_exception_stack = PG_exception_stack;
+	save_context_stack = error_context_stack;
+	state->step_error_boundary_active = true;
+
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	{
 		PgSessionRecoverError(session);
 
-	/* We can now handle ereport(ERROR) */
-	PG_exception_stack = &local_sigjmp_buf;
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* after error */
 
-	if (!ignore_till_sync)
-		state->send_ready_for_query = true;	/* initially, or after error */
+		result = PG_STEP_ERROR_RECOVERED;
+	}
+	else
+	{
+		/* We can now handle ereport(ERROR) */
+		PG_exception_stack = &local_sigjmp_buf;
+		result = PgSessionStepUnprotected(session, budget);
+	}
 
-	/*
-	 * Non-error queries loop here.
-	 */
+	PG_exception_stack = save_exception_stack;
+	error_context_stack = save_context_stack;
+	state->step_error_boundary_active = false;
+
+	return result;
+}
+
+pg_noreturn void
+PgSessionRun(PgSession *session)
+{
+	PgStepBudget budget;
+
+	Assert(session != NULL);
+
+	budget.max_messages = 1;
+
 	for (;;)
-		(void) PgSessionStep(session);
+		(void) PgSessionStep(session, budget);
 }
 
 
-/* ----------------------------------------------------------------
- * PostgresMain
- *	   postgres main loop -- all backends, interactive or otherwise loop here
- *
- * dbname is the name of the database to connect to, username is the
- * PostgreSQL user name to be used for the session.
+/*
+ * Bootstrap a backend PgSession before the command loop starts.
  *
  * NB: Single user mode specific setup should go to PostgresSingleUserMain()
  * if reasonably possible.
- * ----------------------------------------------------------------
  */
-void
-PostgresMain(const char *dbname, const char *username)
+static PgSession *
+PgSessionBootstrap(const char *dbname, const char *username)
 {
 	Assert(dbname != NULL);
 	Assert(username != NULL);
@@ -5140,8 +5164,26 @@ PostgresMain(const char *dbname, const char *username)
 	/* Fire any defined login event triggers, if appropriate */
 	EventTriggerOnLogin();
 
+	Assert(CurrentPgSession != NULL);
 	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
-	PgSessionRun(CurrentPgSession);
+	return CurrentPgSession;
+}
+
+/* ----------------------------------------------------------------
+ * PostgresMain
+ *	   postgres main loop -- all backends, interactive or otherwise loop here
+ *
+ * dbname is the name of the database to connect to, username is the
+ * PostgreSQL user name to be used for the session.
+ * ----------------------------------------------------------------
+ */
+void
+PostgresMain(const char *dbname, const char *username)
+{
+	PgSession  *session;
+
+	session = PgSessionBootstrap(dbname, username);
+	PgSessionRun(session);
 }
 
 /*
