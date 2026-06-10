@@ -186,6 +186,12 @@ Validation:
 - cancellation during command read still works;
 - no unhandled `ERROR` escapes past the protected step entrypoint.
 
+Exit gate:
+
+- Gate A is part of Phase 3 completion. Before leaving Phase 3, run the Gate A
+  checks from the Test Strategy section: core regression, relevant isolation
+  tests, and targeted protocol/error-recovery tests.
+
 ## Phase 4: Global Lifetime Annotation
 
 Goal: create visibility into mutable global state before moving it, now that
@@ -326,6 +332,13 @@ Phase 6 completion note:
   compatibility, and post-cleanup runtime handoff contract are implemented and
   validated.
 
+Exit gate:
+
+- Gate B is part of Phase 6 completion. Before leaving Phase 6, run the Gate B
+  checks from the Test Strategy section: `check-world` or a documented
+  near-equivalent, plus focused cancellation, timeout, config reload,
+  LISTEN/NOTIFY, and disconnect/FATAL tests.
+
 ## Phase 7: Extension Backend Model Gate
 
 Goal: prevent unsafe extension loading in threaded mode and establish the route
@@ -405,6 +418,14 @@ Validation:
 - targeted tests for memory context, resource owner, GUC, interrupt, timeout,
   protocol, and fd cleanup behavior.
 
+Exit gate:
+
+- Gate C is part of Phase 8 completion. Before leaving Phase 8, run the Gate C
+  checks from the Test Strategy section: `check-world`, static global report
+  checks, extension load tests under the test-only threaded backend model, and
+  PL/pgSQL process-mode regression tests. The gate fails if any Phase 8
+  required-floor global remains unsafe and unclassified.
+
 ## Phase 9: Thread-Compatible Wait/Wakeup Boundary
 
 Goal: make long waits visible, targetable, and wakeable before threaded backend
@@ -480,6 +501,16 @@ Validation:
 - incompatible extensions rejected in threaded mode;
 - process-mode full test suite.
 
+Exit gate:
+
+- Gate D is part of Phase 10 completion. Before leaving Phase 10, run the Gate
+  D checks from the Test Strategy section: full process-mode tests plus the
+  threaded smoke/regression subset for concurrent clients, cancellation,
+  termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL,
+  incompatible extension rejection, and repeated connect/disconnect stress.
+  Document that in-tree auxiliary workers remain process carriers until Phase
+  11.
+
 ## Phase 11: Auxiliary Worker Thread Runtime
 
 Goal: make normal threaded server mode fully threaded for in-tree
@@ -539,6 +570,14 @@ Validation:
 - process-mode worker behavior remains unchanged;
 - third-party background workers are rejected or kept process-only unless
   explicitly marked thread-worker safe.
+
+Exit gate:
+
+- Gate E is part of Phase 11 completion. Before leaving Phase 11, run the Gate
+  E checks from the Test Strategy section: threaded worker smoke tests for all
+  in-tree server-owned worker families, worker cancellation/shutdown/restart
+  and failure escalation tests, documented process-lifetime exception checks,
+  full process-mode tests, and the threaded-mode worker subset.
 
 ## Phase 12: State Migration From TLS To Objects
 
@@ -614,6 +653,13 @@ Validation:
 - cancellation of waiting and running tasks;
 - process-mode and thread-per-session modes still work.
 
+Exit gate:
+
+- Gate F is part of Phase 14 completion. Before leaving Phase 14, run the Gate
+  F checks from the Test Strategy section: full process-mode and threaded-mode
+  suites plus stress tests for lock waits, cancellation of waiting and running
+  tasks, output backpressure, timeout delivery while waiting, and lost wakeups.
+
 ## Phase 15: Executor And Utility Yield Points
 
 Goal: improve fairness and latency for long-running commands under pooled
@@ -655,6 +701,14 @@ Likely work:
 - debug views for runtime/backend/session/carrier state;
 - crash and FATAL behavior tests;
 - performance baselines.
+
+Exit gate:
+
+- Gate G is part of Phase 16 completion and may need to run repeatedly during
+  hardening. Before considering Phase 16 complete, run the Gate G checks from
+  the Test Strategy section: feasible sanitizers, repeated full suites,
+  threaded contrib regression for every contrib extension, stress tests,
+  crash/FATAL behavior tests, and performance baselines.
 
 ## PL/pgSQL And In-Tree Modules Plan
 
@@ -757,7 +811,7 @@ Gate F, after Phase 14:
   waits, cancellation of waiting and running tasks, output backpressure,
   timeout delivery while waiting, and lost wakeups.
 
-Gate G, during Phase 16:
+Gate G, during and before completing Phase 16:
 
 - hardening and release-readiness gate;
 - run sanitizers where feasible, repeated full suites, threaded contrib
