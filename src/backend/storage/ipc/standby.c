@@ -38,9 +38,9 @@
 #include "utils/wait_event.h"
 
 /* User-settable GUC parameters */
-int			max_standby_archive_delay = 30 * 1000;
-int			max_standby_streaming_delay = 30 * 1000;
-bool		log_recovery_conflict_waits = false;
+PG_GLOBAL_RUNTIME int max_standby_archive_delay = 30 * 1000;
+PG_GLOBAL_RUNTIME int max_standby_streaming_delay = 30 * 1000;
+PG_GLOBAL_RUNTIME bool log_recovery_conflict_waits = false;
 
 /*
  * Keep track of all the exclusive locks owned by original transactions.

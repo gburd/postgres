@@ -31,7 +31,7 @@
 
 
 /* GUC variable */
-bool		ignore_invalid_pages = false;
+PG_GLOBAL_RUNTIME bool ignore_invalid_pages = false;
 
 /*
  * Are we doing recovery from XLOG?

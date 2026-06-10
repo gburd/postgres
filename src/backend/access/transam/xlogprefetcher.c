@@ -68,7 +68,7 @@
 /* #define XLOGPREFETCHER_DEBUG_LEVEL LOG */
 
 /* GUCs */
-int			recovery_prefetch = RECOVERY_PREFETCH_TRY;
+PG_GLOBAL_RUNTIME int recovery_prefetch = RECOVERY_PREFETCH_TRY;
 
 #ifdef USE_PREFETCH
 #define RecoveryPrefetchEnabled() \

@@ -324,7 +324,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
-extern PGDLLIMPORT bool in_hot_standby_guc;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_sort;
 
 #ifdef DEBUG_BOUNDED_SORT

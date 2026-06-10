@@ -16,6 +16,7 @@
 #include "lib/stringinfo.h"
 #include "storage/condition_variable.h"
 #include "storage/latch.h"
+#include "utils/global_lifetime.h"
 #include "utils/timestamp.h"
 
 /*
@@ -126,26 +127,26 @@ typedef struct XLogRecoveryCtlData
 extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
 
 /* User-settable GUC parameters */
-extern PGDLLIMPORT bool recoveryTargetInclusive;
-extern PGDLLIMPORT int recoveryTargetAction;
-extern PGDLLIMPORT int recovery_min_apply_delay;
-extern PGDLLIMPORT char *PrimaryConnInfo;
-extern PGDLLIMPORT char *PrimarySlotName;
-extern PGDLLIMPORT char *recoveryRestoreCommand;
-extern PGDLLIMPORT char *recoveryEndCommand;
-extern PGDLLIMPORT char *archiveCleanupCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool recoveryTargetInclusive;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int recoveryTargetAction;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int recovery_min_apply_delay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimaryConnInfo;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimarySlotName;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *recoveryRestoreCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *recoveryEndCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *archiveCleanupCommand;
 
 /* indirectly set via GUC system */
-extern PGDLLIMPORT TransactionId recoveryTargetXid;
-extern PGDLLIMPORT char *recovery_target_time_string;
-extern PGDLLIMPORT TimestampTz recoveryTargetTime;
-extern PGDLLIMPORT const char *recoveryTargetName;
-extern PGDLLIMPORT XLogRecPtr recoveryTargetLSN;
-extern PGDLLIMPORT RecoveryTargetType recoveryTarget;
-extern PGDLLIMPORT bool wal_receiver_create_temp_slot;
-extern PGDLLIMPORT RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal;
-extern PGDLLIMPORT TimeLineID recoveryTargetTLIRequested;
-extern PGDLLIMPORT TimeLineID recoveryTargetTLI;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TransactionId recoveryTargetXid;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *recovery_target_time_string;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimestampTz recoveryTargetTime;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME const char *recoveryTargetName;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME XLogRecPtr recoveryTargetLSN;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME RecoveryTargetType recoveryTarget;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool wal_receiver_create_temp_slot;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLIRequested;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLI;
 
 /* Have we already reached a consistent database state? */
 extern PGDLLIMPORT bool reachedConsistency;

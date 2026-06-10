@@ -95,29 +95,8 @@ src/backend/access/transam/xloginsert.c	b5e89e6c602b87d2f9770f368b4cb9f19cef5b31
 src/backend/access/transam/xloginsert.c	957e3e010463efd6dc80fe60a1af50c36af62ffa	max_rdatas	static int max_rdatas;
 src/backend/access/transam/xloginsert.c	3f22538b4a3b39ebb2d708477fcc06fdc653363f	begininsert_called	static bool begininsert_called = false;
 src/backend/access/transam/xloginsert.c	8b3285e66256f27e785087ecec96822876891a43	xloginsert_cxt	static MemoryContext xloginsert_cxt;
-src/backend/access/transam/xlogprefetcher.c	4afcbda99be95c6c0333429dd58cccc8aacf73a8	recovery_prefetch	int recovery_prefetch = RECOVERY_PREFETCH_TRY;
 src/backend/access/transam/xlogprefetcher.c	49ee8f8208dc7d089121e4cc0a7759628d17f204	XLogPrefetchReconfigureCount	static int XLogPrefetchReconfigureCount = 0;
 src/backend/access/transam/xlogprefetcher.c	f69228617b8f5a4b861605cdab67cfa980090081	SharedStats	static XLogPrefetchStats *SharedStats;
-src/backend/access/transam/xlogrecovery.c	387520d6a590a09d86370730a898b5317250cea1	recoveryRestoreCommand	char *recoveryRestoreCommand = NULL;
-src/backend/access/transam/xlogrecovery.c	c3cc4182af8f95b883a6ba39b7930805c852f2d2	recoveryEndCommand	char *recoveryEndCommand = NULL;
-src/backend/access/transam/xlogrecovery.c	ee6b1e8dd41bac3eb5c55323a1a229386c1ecdc8	archiveCleanupCommand	char *archiveCleanupCommand = NULL;
-src/backend/access/transam/xlogrecovery.c	13546f709caddd906a8d3425d10c4628994daade	recoveryTarget	RecoveryTargetType recoveryTarget = RECOVERY_TARGET_UNSET;
-src/backend/access/transam/xlogrecovery.c	497bdfd838770310948bf1e8d51137dcda0f4eb0	recoveryTargetInclusive	bool recoveryTargetInclusive = true;
-src/backend/access/transam/xlogrecovery.c	8b41f6164000a17256c8e282b7289c609a6eccfe	recoveryTargetAction	int recoveryTargetAction = RECOVERY_TARGET_ACTION_PAUSE;
-src/backend/access/transam/xlogrecovery.c	6fe23922d78620e082f5d0e941214de38b75750e	recoveryTargetXid	TransactionId recoveryTargetXid;
-src/backend/access/transam/xlogrecovery.c	85c4cd782c97a365a1ed6a5e194e6d39db3db633	recovery_target_time_string	char *recovery_target_time_string;
-src/backend/access/transam/xlogrecovery.c	779bfb89b73be75fbed9e826ff8f23b517e51260	recoveryTargetTime	TimestampTz recoveryTargetTime;
-src/backend/access/transam/xlogrecovery.c	6b0ef11bb73e35b45dcfa3e405b7f290a5783895	recoveryTargetName	const char *recoveryTargetName;
-src/backend/access/transam/xlogrecovery.c	ce7afbb4f567df4b4033ea98eb8ff83a0b180def	recoveryTargetLSN	XLogRecPtr recoveryTargetLSN;
-src/backend/access/transam/xlogrecovery.c	8cda149b2dccc188ec05ff4b96e0b0b40f7cdbc8	recovery_min_apply_delay	int recovery_min_apply_delay = 0;
-src/backend/access/transam/xlogrecovery.c	b3ccbccb1baeb45eee822e6f29ce7421e95b40d5	PrimaryConnInfo	char *PrimaryConnInfo = NULL;
-src/backend/access/transam/xlogrecovery.c	9259021283b9da45acf118347a8737a5b853ea62	PrimarySlotName	char *PrimarySlotName = NULL;
-src/backend/access/transam/xlogrecovery.c	063ac574c760cfaed96326d7a1e1a1fa6a1fde62	wal_receiver_create_temp_slot	bool wal_receiver_create_temp_slot = false;
-src/backend/access/transam/xlogrecovery.c	72b084902c2631796346801a107785cbc4a2309c	recoveryTargetTimeLineGoal	RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal = RECOVERY_TARGET_TIMELINE_LATEST;
-src/backend/access/transam/xlogrecovery.c	a3f1a7c4586925ef17e4f416dc64bbdb02d1c019	recoveryTargetTLIRequested	TimeLineID recoveryTargetTLIRequested = 0;
-src/backend/access/transam/xlogrecovery.c	af6912b23ed478e40bcc136b219f88928d07100d	recoveryTargetTLI	TimeLineID recoveryTargetTLI = 0;
-src/backend/access/transam/xlogrecovery.c	22acab2f16208115f3c8f29500fbe05a090235e1	expectedTLEs	static List *expectedTLEs;
-src/backend/access/transam/xlogrecovery.c	86977d2a7548fc996406ff6bf89efbf07964d748	curFileTLI	static TimeLineID curFileTLI;
 src/backend/access/transam/xlogrecovery.c	1b8aa8ab7068020b8fae66749c348ca0ac197892	ArchiveRecoveryRequested	bool ArchiveRecoveryRequested = false;
 src/backend/access/transam/xlogrecovery.c	6ff1b2ebde3e439cea653584b530c3a125d5a419	InArchiveRecovery	bool InArchiveRecovery = false;
 src/backend/access/transam/xlogrecovery.c	5fd45c7e929734694d16e3c54128f358589e13d5	StandbyModeRequested	static bool StandbyModeRequested = false;
@@ -163,7 +142,6 @@ src/backend/access/transam/xlogrecovery.c	647d31f5fd01175f2c8f06561a9c9a60e3c032
 src/backend/access/transam/xlogrecovery.c	6acaad46d9813c9182872d193010db98e3bf53dc	recoveryStopLSN	static XLogRecPtr recoveryStopLSN;
 src/backend/access/transam/xlogrecovery.c	8740e9415881a390b38871512b37bcd6286acdb7	recoveryStopName	static char recoveryStopName[MAXFNAMELEN];
 src/backend/access/transam/xlogrecovery.c	097408bdd5c83742a9284d28e5db995f9c45d80e	recoveryStopAfter	static bool recoveryStopAfter;
-src/backend/access/transam/xlogutils.c	e95f38511b38e40e9a0a661a1bbf348e14199c82	ignore_invalid_pages	bool ignore_invalid_pages = false;
 src/backend/access/transam/xlogutils.c	54bd227f46106dca4e7246f8f118ebf875446cb3	InRecovery	bool InRecovery = false;
 src/backend/access/transam/xlogutils.c	b279a568654cb9f4ef6d416d5031a5a5b5522213	standbyState	HotStandbyState standbyState = STANDBY_DISABLED;
 src/backend/access/transam/xlogutils.c	58bb9e74ab271ea8e3f0a104acf1edb29aa5be15	invalid_page_tab	static HTAB *invalid_page_tab = NULL;
@@ -1579,9 +1557,6 @@ src/backend/storage/ipc/shmem.c	92a55d667f57244025bcb7d956f412777fd5b00c	firstNu
 src/backend/storage/ipc/sinval.c	9abeccd7212184a3303c13b519cf4751c3b065ac	SharedInvalidMessageCounter	uint64 SharedInvalidMessageCounter;
 src/backend/storage/ipc/sinvaladt.c	c4917ccb4e4f4f364a7220ff04fe8f354e76f6ef	shmInvalBuffer	static SISeg *shmInvalBuffer;
 src/backend/storage/ipc/sinvaladt.c	8a76a5bb31babf0af47986125f809f1fd9bfd694	nextLocalTransactionId	static LocalTransactionId nextLocalTransactionId;
-src/backend/storage/ipc/standby.c	c220e5216c50f213562aa2d58b7f48643a2d5ce4	max_standby_archive_delay	int max_standby_archive_delay = 30 * 1000;
-src/backend/storage/ipc/standby.c	9363878d6540c5ffa48922fa1f7553fbfd0b5d6e	max_standby_streaming_delay	int max_standby_streaming_delay = 30 * 1000;
-src/backend/storage/ipc/standby.c	be22d741a8ace29d362a855f06298fc27100849f	log_recovery_conflict_waits	bool log_recovery_conflict_waits = false;
 src/backend/storage/ipc/standby.c	8137f1effabb17aa726a2a6cfcb760d5325f294c	RecoveryLockHash	static HTAB *RecoveryLockHash = NULL;
 src/backend/storage/ipc/standby.c	348a3b0466c7a5c39cd2e391cc1dc93718da82ee	RecoveryLockXidHash	static HTAB *RecoveryLockXidHash = NULL;
 src/backend/storage/ipc/standby.c	ce1b16eaf8c4ed13a3f4eba120784acacaba4da2	got_standby_deadlock_timeout	static volatile sig_atomic_t got_standby_deadlock_timeout = false;
@@ -1961,12 +1936,6 @@ src/backend/utils/misc/guc.c	676c54bc481382cb598d996eae27f439a38a51e4	memory_uni
 src/backend/utils/misc/guc.c	96092488f012969a5752b17fed485575f4f14ec1	time_units_hint	static const char *const time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
 src/backend/utils/misc/guc.c	df6a9a6a86dc83a23132d0670c2e64e468b1959c	time_unit_conversion_table	static const unit_conversion time_unit_conversion_table[] = { {"d", GUC_UNIT_MS, 1000 * 60 * 60 * 24}, {"h", GUC_UNIT_MS, 1000 * 60 * 60}, {"min", GUC_UNIT_MS, 1000 * 60}, {"s", GUC_UNIT_MS, 1000}, {"ms", GUC_UNIT_MS, 1}, {"us", GUC_UNIT...
 src/backend/utils/misc/guc.c	31593cfc5887e26c3f8da36fb633ce637a06cf03	map_old_guc_names	static const char *const map_old_guc_names[] = { "sort_mem", "work_mem", "vacuum_mem", "maintenance_work_mem", "ssl_ecdh_curve", "ssl_groups", NULL };
-src/backend/utils/misc/guc_tables.c	39a98e45679d0e2070f1b48c2656c701d16fad48	recovery_target_timeline_string	static char *recovery_target_timeline_string;
-src/backend/utils/misc/guc_tables.c	5a02a7e0bb0f200f0a43389e4b17d1c6b78a7dcb	recovery_target_string	static char *recovery_target_string;
-src/backend/utils/misc/guc_tables.c	b6b04e57d9f492ecace3e7e9c116e6e5b534bb10	recovery_target_xid_string	static char *recovery_target_xid_string;
-src/backend/utils/misc/guc_tables.c	01d999bd36568b68a3ca5114e691b40956df6ec1	recovery_target_name_string	static char *recovery_target_name_string;
-src/backend/utils/misc/guc_tables.c	98ddd8d6bb18517ea7d84bb49ca384376e305cab	recovery_target_lsn_string	static char *recovery_target_lsn_string;
-src/backend/utils/misc/guc_tables.c	a21a231b20b50d116a39197c87587904868f93ed	in_hot_standby_guc	bool in_hot_standby_guc;
 src/backend/utils/misc/guc_tables.c	7fe9b3cf97306788a0f1a19c1a68052936d64984	GucContext_Names	const char *const GucContext_Names[] = { [PGC_INTERNAL] = "internal", [PGC_POSTMASTER] = "postmaster", [PGC_SIGHUP] = "sighup", [PGC_SU_BACKEND] = "superuser-backend", [PGC_BACKEND] = "backend", [PGC_SUSET] = "superuser", [PGC_USERSET] =...
 src/backend/utils/misc/guc_tables.c	a434e0d5f1a1f493d4a354688da396d912ac9042	GucSource_Names	const char *const GucSource_Names[] = { [PGC_S_DEFAULT] = "default", [PGC_S_DYNAMIC_DEFAULT] = "default", [PGC_S_ENV_VAR] = "environment variable", [PGC_S_FILE] = "configuration file", [PGC_S_ARGV] = "command line", [PGC_S_GLOBAL] = "glo...
 src/backend/utils/misc/guc_tables.c	2a30d83d293e180c7d37fcd069c05495743d51a1	config_group_names	const char *const config_group_names[] = { [UNGROUPED] = gettext_noop("Ungrouped"), [FILE_LOCATIONS] = gettext_noop("File Locations"), [CONN_AUTH_SETTINGS] = gettext_noop("Connections and Authentication / Connection Settings"), [CONN_AUT...
@@ -2030,31 +1999,10 @@ src/include/access/xlog_internal.h	0b64686c0c4fb04f9d710c8236cfadf5b9a809d8	Rmgr
 src/include/access/xlog_internal.h	246b7e6fafa239c06a6fd8ba26258d77b5b69b75	ArchiveRecoveryRequested	extern PGDLLIMPORT bool ArchiveRecoveryRequested;
 src/include/access/xlog_internal.h	7b3d6e631fdcc7762060040f144910c8be61f84f	InArchiveRecovery	extern PGDLLIMPORT bool InArchiveRecovery;
 src/include/access/xlog_internal.h	cf4599e5ab0bd887bb4e27bb22111fc75ff9baa6	StandbyMode	extern PGDLLIMPORT bool StandbyMode;
-src/include/access/xlog_internal.h	ed2a25c6acf7aae878bedcf14945450ecdcf5fd1	recoveryRestoreCommand	extern PGDLLIMPORT char *recoveryRestoreCommand;
-src/include/access/xlogprefetcher.h	f6619a696bb0a422f965b7000eeba6c3cb6d56b3	recovery_prefetch	extern PGDLLIMPORT int recovery_prefetch;
 src/include/access/xlogprefetcher.h	1027a7a5e1e6e41139c9d1b1a28a5b65304e287c	XLogPrefetcher	struct XLogPrefetcher;
 src/include/access/xlogrecovery.h	bde58cbf2e2cb953055b9970c347ff1eaab0d7d1	XLogRecoveryCtl	extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
-src/include/access/xlogrecovery.h	51ede4a326596a6fcd209f458629296ff8bd8ad1	recoveryTargetInclusive	extern PGDLLIMPORT bool recoveryTargetInclusive;
-src/include/access/xlogrecovery.h	5f2004ccb6589abc26c0d07fe7f657903f30ea42	recoveryTargetAction	extern PGDLLIMPORT int recoveryTargetAction;
-src/include/access/xlogrecovery.h	6d64246b47948060b896c3195420a7f88da34f8c	recovery_min_apply_delay	extern PGDLLIMPORT int recovery_min_apply_delay;
-src/include/access/xlogrecovery.h	a965ddef88edbe6cc742267a85cb9ebe6313ab83	PrimaryConnInfo	extern PGDLLIMPORT char *PrimaryConnInfo;
-src/include/access/xlogrecovery.h	df9f3137bb198d9092de85b6fdbf97098fc509e4	PrimarySlotName	extern PGDLLIMPORT char *PrimarySlotName;
-src/include/access/xlogrecovery.h	ed2a25c6acf7aae878bedcf14945450ecdcf5fd1	recoveryRestoreCommand	extern PGDLLIMPORT char *recoveryRestoreCommand;
-src/include/access/xlogrecovery.h	b3b1cb8421460104fa29fb665c1f540acd7a16d5	recoveryEndCommand	extern PGDLLIMPORT char *recoveryEndCommand;
-src/include/access/xlogrecovery.h	607f1286b30f4611bd4a4be63790b017a591aa5f	archiveCleanupCommand	extern PGDLLIMPORT char *archiveCleanupCommand;
-src/include/access/xlogrecovery.h	1cbc5d0dc8f37c08c9f21b0d95b3b718863c5b05	recoveryTargetXid	extern PGDLLIMPORT TransactionId recoveryTargetXid;
-src/include/access/xlogrecovery.h	533b1077cac6859275ae8102f00cfe0f886d5ef3	recovery_target_time_string	extern PGDLLIMPORT char *recovery_target_time_string;
-src/include/access/xlogrecovery.h	94ed4711f8aeef1d662b1def4c29e93e56dc62b2	recoveryTargetTime	extern PGDLLIMPORT TimestampTz recoveryTargetTime;
-src/include/access/xlogrecovery.h	dc9355d4ac662b4c661eeff8ffc4116e64466d4b	recoveryTargetName	extern PGDLLIMPORT const char *recoveryTargetName;
-src/include/access/xlogrecovery.h	850d27de0fce5fb898f4a6504976d2413d6da565	recoveryTargetLSN	extern PGDLLIMPORT XLogRecPtr recoveryTargetLSN;
-src/include/access/xlogrecovery.h	c7933a3de7debcad7b6066aee50018276dba964d	recoveryTarget	extern PGDLLIMPORT RecoveryTargetType recoveryTarget;
-src/include/access/xlogrecovery.h	8a27f03821fe099fb88b9b525ababf7e8b48dc54	wal_receiver_create_temp_slot	extern PGDLLIMPORT bool wal_receiver_create_temp_slot;
-src/include/access/xlogrecovery.h	5d3d5fcf79639d26ea29dc6248be3097789e9464	recoveryTargetTimeLineGoal	extern PGDLLIMPORT RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal;
-src/include/access/xlogrecovery.h	d2e7747a441db4466d894747e161dce651f0e15e	recoveryTargetTLIRequested	extern PGDLLIMPORT TimeLineID recoveryTargetTLIRequested;
-src/include/access/xlogrecovery.h	62891ad093117b91eab9939ad80781ed5f480c97	recoveryTargetTLI	extern PGDLLIMPORT TimeLineID recoveryTargetTLI;
 src/include/access/xlogrecovery.h	bd96b2d1224d95e6764739cacdc7d66353fc2376	reachedConsistency	extern PGDLLIMPORT bool reachedConsistency;
 src/include/access/xlogrecovery.h	cf4599e5ab0bd887bb4e27bb22111fc75ff9baa6	StandbyMode	extern PGDLLIMPORT bool StandbyMode;
-src/include/access/xlogutils.h	c990c80caf2d49b864b76e03921a4df46f648c23	ignore_invalid_pages	extern PGDLLIMPORT bool ignore_invalid_pages;
 src/include/access/xlogutils.h	91f7f60fd9600afa3660e34fa4008fbdeb781b39	InRecovery	extern PGDLLIMPORT bool InRecovery;
 src/include/access/xlogutils.h	a73dafe8429285fcee81b4dbd0053fe40e8f87ff	standbyState	extern PGDLLIMPORT HotStandbyState standbyState;
 src/include/access/xlogwait.h	a3b0270b961814ddadebb925c7728f5f8e9c6ba1	waitLSNState	extern PGDLLIMPORT WaitLSNState *waitLSNState;
@@ -2268,8 +2216,6 @@ src/include/replication/slot.h	e586a4394d0e6dca47f728d148d656c2402e7087	max_repa
 src/include/replication/slot.h	1d8d02f49f1400980f33a3aec40e1756441ba17f	synchronized_standby_slots	extern PGDLLIMPORT char *synchronized_standby_slots;
 src/include/replication/slot.h	e26a5369f156fa2504859e63be606163be865aa1	idle_replication_slot_timeout_secs	extern PGDLLIMPORT int idle_replication_slot_timeout_secs;
 src/include/replication/slotsync.h	9a7142b97ebc6c07b768ed395a2769e94f0ef486	sync_replication_slots	extern PGDLLIMPORT bool sync_replication_slots;
-src/include/replication/slotsync.h	a965ddef88edbe6cc742267a85cb9ebe6313ab83	PrimaryConnInfo	extern PGDLLIMPORT char *PrimaryConnInfo;
-src/include/replication/slotsync.h	df9f3137bb198d9092de85b6fdbf97098fc509e4	PrimarySlotName	extern PGDLLIMPORT char *PrimarySlotName;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/replication/syncrep.h	2d3a8216bfcbaae646a75016b4bf3c0775e24f57	SyncRepStandbyNames	extern PGDLLIMPORT char *SyncRepStandbyNames;
 src/include/replication/syncrep.h	05b3f1491d08875f7caa57fa7f4b9a6ad4ebcd25	YYSTYPE	union YYSTYPE;
@@ -2344,9 +2290,6 @@ src/include/storage/read_stream.h	61fd5bfc7338f828cee4345bb043ec4371f7fb71	IOSta
 src/include/storage/shm_mq.h	f01569004c4c1646b9cfb6900d957b636f7b6842	shm_mq	struct shm_mq;
 src/include/storage/shm_mq.h	5c41a39be52e6b23b8674650c1075b2c4548f1ab	shm_mq_handle	struct shm_mq_handle;
 src/include/storage/sinval.h	66dae870614d2cdcfdb27a6e84a53295b0feacd2	SharedInvalidMessageCounter	extern PGDLLIMPORT uint64 SharedInvalidMessageCounter;
-src/include/storage/standby.h	19f02588f4aeeb42f45352d8564cb25e320ebc8e	max_standby_archive_delay	extern PGDLLIMPORT int max_standby_archive_delay;
-src/include/storage/standby.h	a09e0b29cafc12f40f955e99bbf61abd366f6c14	max_standby_streaming_delay	extern PGDLLIMPORT int max_standby_streaming_delay;
-src/include/storage/standby.h	b3553bb97639a73eff965022ac3ebdedd1b46a9b	log_recovery_conflict_waits	extern PGDLLIMPORT bool log_recovery_conflict_waits;
 src/include/storage/waiteventset.h	b705db5de229941af089f69b49f9fbf9e3f93876	Latch	struct Latch;
 src/include/tcop/backend_startup.h	8470081ba67fe2d86484628f0251cf6b27d9b599	Trace_connection_negotiation	extern PGDLLIMPORT bool Trace_connection_negotiation;
 src/include/tcop/backend_startup.h	7ad76e01ee2c3376299adb6fdaeb2d2e508de3bf	log_connections	extern PGDLLIMPORT uint32 log_connections;
@@ -2367,7 +2310,6 @@ src/include/utils/elog.h	c8a4816f887bb57d1faa5b42a49ab4a22d264cf9	Node	struct No
 src/include/utils/elog.h	b935f5c0b0bdf0bffd2f73cd84b3a6d0d81bce55	emit_log_hook	extern PGDLLIMPORT emit_log_hook_type emit_log_hook;
 src/include/utils/funccache.h	f2ed3dbf69f353d45c3e2e685cfe1d2a85402a8d	CachedFunctionHashKey	struct CachedFunctionHashKey;
 src/include/utils/funccache.h	a86fc3803ee03c196bbcc6a1240e69ee6311bc0e	CachedFunction	struct CachedFunction;
-src/include/utils/guc.h	6cb87eba082e39f078c76cf3c8658b6b50df1f63	in_hot_standby_guc	extern PGDLLIMPORT bool in_hot_standby_guc;
 src/include/utils/guc_tables.h	d340e57d0ae8eef772795b8aba79c4d095f8f8eb	config_group_names	extern PGDLLIMPORT const char *const config_group_names[];
 src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_type_names	extern PGDLLIMPORT const char *const config_type_names[];
 src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucContext_Names	extern PGDLLIMPORT const char *const GucContext_Names[];

@@ -26,8 +26,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t SlotS
  * GUCs needed by slot sync worker to connect to the primary
  * server and carry on with slots synchronization.
  */
-extern PGDLLIMPORT char *PrimaryConnInfo;
-extern PGDLLIMPORT char *PrimarySlotName;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimaryConnInfo;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimarySlotName;
 
 extern char *CheckAndGetDbnameFromConninfo(void);
 extern bool ValidateSlotSyncParams(int elevel);

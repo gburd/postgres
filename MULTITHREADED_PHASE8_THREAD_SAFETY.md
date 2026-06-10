@@ -225,6 +225,20 @@ postmaster, shared-memory, or startup-computed runtime state:
   `wal_decode_buffer_size`, `wal_keep_size_mb`, `wal_level`,
   `wal_log_hints`, `wal_retrieve_retry_interval`, `wal_segment_size`, and
   `wal_sync_method`.
+- recovery and standby runtime GUC backing variables and derived recovery
+  target state: `PrimaryConnInfo`, `PrimarySlotName`,
+  `archiveCleanupCommand`, `ignore_invalid_pages`, `in_hot_standby_guc`,
+  `log_recovery_conflict_waits`, `max_standby_archive_delay`,
+  `max_standby_streaming_delay`, `recoveryEndCommand`,
+  `recoveryRestoreCommand`, `recoveryTarget`, `recoveryTargetAction`,
+  `recoveryTargetInclusive`, `recoveryTargetLSN`, `recoveryTargetName`,
+  `recoveryTargetTLI`, `recoveryTargetTLIRequested`,
+  `recoveryTargetTime`, `recoveryTargetTimeLineGoal`,
+  `recoveryTargetXid`, `recovery_min_apply_delay`, `recovery_prefetch`,
+  `recovery_target_lsn_string`, `recovery_target_name_string`,
+  `recovery_target_string`, `recovery_target_time_string`,
+  `recovery_target_timeline_string`, `recovery_target_xid_string`,
+  `curFileTLI`, `expectedTLEs`, and `wal_receiver_create_temp_slot`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -266,8 +280,8 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the core WAL GUC classification slice, the filtered static report contains 80
-remaining unclassified generated GUC backing variables.
+After the recovery and standby GUC classification slice, the filtered static
+report contains 59 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -577,6 +591,12 @@ Validation for this slice:
   after converting installed-header core WAL declarations to
   `PG_THREAD_LOCAL` or `PG_GLOBAL_RUNTIME`;
 - focused core GUC regression test after the core WAL slice: `guc`;
+- focused `xlogrecovery.o`, `xlogutils.o`, `xlogprefetcher.o`, `standby.o`,
+  and `guc_tables.o` compile coverage plus incremental `gmake -j8` after
+  classifying recovery and standby GUC backing variables and derived recovery
+  target state as `PG_GLOBAL_RUNTIME`;
+- focused core GUC regression test after the recovery and standby slice:
+  `guc`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

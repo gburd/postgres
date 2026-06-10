@@ -13,9 +13,10 @@
 
 #include "access/xlogreader.h"
 #include "storage/bufmgr.h"
+#include "utils/global_lifetime.h"
 
 /* GUC variable */
-extern PGDLLIMPORT bool ignore_invalid_pages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ignore_invalid_pages;
 
 /*
  * Prior to 8.4, all activity during recovery was carried out by the startup

@@ -661,17 +661,17 @@ static PG_GLOBAL_RUNTIME bool assert_enabled = DEFAULT_ASSERT_ENABLED;
 #endif
 static PG_GLOBAL_RUNTIME bool exec_backend_enabled = EXEC_BACKEND_ENABLED;
 
-static char *recovery_target_timeline_string;
-static char *recovery_target_string;
-static char *recovery_target_xid_string;
-static char *recovery_target_name_string;
-static char *recovery_target_lsn_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_timeline_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_xid_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_name_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_lsn_string;
 
 /* should be static, but commands/variable.c needs to get at this */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
 
 /* should be static, but guc.c needs to get at this */
-bool		in_hot_standby_guc;
+PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
 
 /*
  * set default log_min_messages to WARNING for all process types

@@ -27,6 +27,7 @@
 #include "storage/block.h"
 #include "storage/checksum.h"
 #include "storage/relfilelocator.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -402,6 +403,6 @@ extern void XLogRecGetBlockRefInfo(XLogReaderState *record, bool pretty,
 extern PGDLLIMPORT bool ArchiveRecoveryRequested;
 extern PGDLLIMPORT bool InArchiveRecovery;
 extern PGDLLIMPORT bool StandbyMode;
-extern PGDLLIMPORT char *recoveryRestoreCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *recoveryRestoreCommand;
 
 #endif							/* XLOG_INTERNAL_H */

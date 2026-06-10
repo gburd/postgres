@@ -83,23 +83,23 @@ const struct config_enum_entry recovery_target_action_options[] = {
 };
 
 /* options formerly taken from recovery.conf for archive recovery */
-char	   *recoveryRestoreCommand = NULL;
-char	   *recoveryEndCommand = NULL;
-char	   *archiveCleanupCommand = NULL;
-RecoveryTargetType recoveryTarget = RECOVERY_TARGET_UNSET;
-bool		recoveryTargetInclusive = true;
-int			recoveryTargetAction = RECOVERY_TARGET_ACTION_PAUSE;
-TransactionId recoveryTargetXid;
-char	   *recovery_target_time_string;
-TimestampTz recoveryTargetTime;
-const char *recoveryTargetName;
-XLogRecPtr	recoveryTargetLSN;
-int			recovery_min_apply_delay = 0;
+PG_GLOBAL_RUNTIME char *recoveryRestoreCommand = NULL;
+PG_GLOBAL_RUNTIME char *recoveryEndCommand = NULL;
+PG_GLOBAL_RUNTIME char *archiveCleanupCommand = NULL;
+PG_GLOBAL_RUNTIME RecoveryTargetType recoveryTarget = RECOVERY_TARGET_UNSET;
+PG_GLOBAL_RUNTIME bool recoveryTargetInclusive = true;
+PG_GLOBAL_RUNTIME int recoveryTargetAction = RECOVERY_TARGET_ACTION_PAUSE;
+PG_GLOBAL_RUNTIME TransactionId recoveryTargetXid;
+PG_GLOBAL_RUNTIME char *recovery_target_time_string;
+PG_GLOBAL_RUNTIME TimestampTz recoveryTargetTime;
+PG_GLOBAL_RUNTIME const char *recoveryTargetName;
+PG_GLOBAL_RUNTIME XLogRecPtr recoveryTargetLSN;
+PG_GLOBAL_RUNTIME int recovery_min_apply_delay = 0;
 
 /* options formerly taken from recovery.conf for XLOG streaming */
-char	   *PrimaryConnInfo = NULL;
-char	   *PrimarySlotName = NULL;
-bool		wal_receiver_create_temp_slot = false;
+PG_GLOBAL_RUNTIME char *PrimaryConnInfo = NULL;
+PG_GLOBAL_RUNTIME char *PrimarySlotName = NULL;
+PG_GLOBAL_RUNTIME bool wal_receiver_create_temp_slot = false;
 
 /*
  * recoveryTargetTimeLineGoal: what the user requested, if any
@@ -121,11 +121,11 @@ bool		wal_receiver_create_temp_slot = false;
  * file was created.)  During a sequential scan we do not allow this value
  * to decrease.
  */
-RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal = RECOVERY_TARGET_TIMELINE_LATEST;
-TimeLineID	recoveryTargetTLIRequested = 0;
-TimeLineID	recoveryTargetTLI = 0;
-static List *expectedTLEs;
-static TimeLineID curFileTLI;
+PG_GLOBAL_RUNTIME RecoveryTargetTimeLineGoal recoveryTargetTimeLineGoal = RECOVERY_TARGET_TIMELINE_LATEST;
+PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLIRequested = 0;
+PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLI = 0;
+static PG_GLOBAL_RUNTIME List *expectedTLEs;
+static PG_GLOBAL_RUNTIME TimeLineID curFileTLI;
 
 /*
  * When ArchiveRecoveryRequested is set, archive recovery was requested,
