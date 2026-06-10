@@ -15,9 +15,11 @@
 
 #include <signal.h>
 
+#include "utils/global_lifetime.h"
+
 extern PGDLLIMPORT bool Trace_notify;
 extern PGDLLIMPORT int max_notify_queue_pages;
-extern PGDLLIMPORT volatile sig_atomic_t notifyInterruptPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending;
 
 extern void NotifyMyFrontEnd(const char *channel,
 							 const char *payload,

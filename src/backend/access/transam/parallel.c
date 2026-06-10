@@ -118,7 +118,7 @@ typedef struct FixedParallelState
 int			ParallelWorkerNumber = -1;
 
 /* Is there a parallel message pending which we need to receive? */
-volatile sig_atomic_t ParallelMessagePending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelMessagePending = false;
 
 /* Are we initializing a parallel worker? */
 bool		InitializingParallelWorker = false;

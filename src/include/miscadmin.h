@@ -88,25 +88,25 @@
 
 /* in globals.c */
 /* these are marked volatile because they are set by signal handlers: */
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile int ProcDieSenderPid;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile int ProcDieSenderUid;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderPid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderUid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
 
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending;
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost;
 
 /* these are marked volatile because they are examined by signal handlers: */
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND volatile uint32 CritSectionCount;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 CritSectionCount;
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
@@ -191,16 +191,16 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int serializable_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int subtransaction_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int transaction_buffers;
 
-extern PGDLLIMPORT PG_GLOBAL_BACKEND int MyProcPid;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND pg_time_t MyStartTime;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION struct Port *MyProcPort;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND struct Latch *MyLatch;
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION uint8 MyCancelKey[];
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION int MyCancelKeyLength;
-extern PGDLLIMPORT PG_GLOBAL_BACKEND int MyPMChildSlot;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct Port *MyProcPort;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct Latch *MyLatch;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION uint8 MyCancelKey[];
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int MyCancelKeyLength;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyPMChildSlot;
 
-extern PGDLLIMPORT PG_GLOBAL_BACKEND char OutputFileName[];
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND char OutputFileName[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char my_exec_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 
@@ -208,11 +208,11 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char postgres_exec_path[];
 #endif
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION Oid MyDatabaseId;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseId;
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION Oid MyDatabaseTableSpace;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseTableSpace;
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers;
 
 /*
  * Date/Time Configuration
@@ -289,8 +289,8 @@ extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostPageDirty;
 extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostLimit;
 extern PGDLLIMPORT PG_GLOBAL_SESSION double VacuumCostDelay;
 
-extern PGDLLIMPORT PG_GLOBAL_EXECUTION int VacuumCostBalance;
-extern PGDLLIMPORT PG_GLOBAL_EXECUTION bool VacuumCostActive;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;
 
 
 /* in utils/misc/stack_depth.c */
@@ -323,7 +323,7 @@ extern void PreventCommandDuringRecovery(const char *cmdname);
 #define SECURITY_RESTRICTED_OPERATION	0x0002
 #define SECURITY_NOFORCE_RLS			0x0004
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION char *DatabasePath;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *DatabasePath;
 
 /* now in utils/init/miscinit.c */
 extern void InitPostmasterChild(void);
@@ -383,7 +383,7 @@ typedef enum BackendType
 
 #define BACKEND_NUM_TYPES (B_LOGGER + 1)
 
-extern PGDLLIMPORT PG_GLOBAL_BACKEND BackendType MyBackendType;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType MyBackendType;
 
 #define AmRegularBackendProcess()	(MyBackendType == B_BACKEND)
 #define AmAutoVacuumLauncherProcess() (MyBackendType == B_AUTOVAC_LAUNCHER)
@@ -482,7 +482,7 @@ typedef enum ProcessingMode
 	NormalProcessing,			/* normal processing */
 } ProcessingMode;
 
-extern PGDLLIMPORT PG_GLOBAL_BACKEND ProcessingMode Mode;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcessingMode Mode;
 
 #define IsBootstrapProcessingMode() (Mode == BootstrapProcessing)
 #define IsInitProcessingMode()		(Mode == InitProcessing)

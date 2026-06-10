@@ -30,11 +30,27 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - virtual fd and temporary-file owner state in `fd.c`;
 - portal manager session state;
 - logical apply-worker memory/error context state;
-- regexp cache memory context.
+- regexp cache memory context;
+- frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
+  `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
+  `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
+  send/receive buffers in `pqcomm.c`;
+- interrupt pending flags and holdoff counters, including async notify, sinval
+  catchup, config reload/shutdown, parallel query, parallel logical apply,
+  slot sync, and repack interrupt flags;
+- backend/session identity globals: `MyProcPid`, `MyStartTime`,
+  `MyStartTimestamp`, `MyLatch`, `MyPMChildSlot`, `MyProcNumber`,
+  `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
+  `MyDatabaseHasLoginEventTriggers`, `DatabasePath`, `MyBackendType`, `Mode`,
+  and `OutputFileName`;
+- vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`.
 
 `PostmasterContext` remains runtime-global. The timeout and lock-wait GUC
 backing variables in `proc.c` remain classified as session-owned but are not
-TLS yet because of the GUC static-initializer constraint.
+TLS yet because of the GUC static-initializer constraint. The same constraint
+keeps `ExitOnAnyError`, `IgnoreSystemIndexes`, and the core GUC backing
+variables in `globals.c` as non-TLS annotated globals for now. These need a GUC
+indirection layer before they can become per-session state.
 
 Any dynamically loaded module that references an exported global after it gains
 `PG_THREAD_LOCAL` must be rebuilt against the updated headers. Stale modules can
@@ -46,12 +62,10 @@ During validation this affected `test_ext_backend_model.dylib` and
 
 Phase 8 still needs to cover at least:
 
-- `MyProcPort` and frontend protocol buffers;
-- interrupt pending flags and interrupt holdoff counters;
-- timeout pending flags outside the registration machinery;
 - GUC backing variables and GUC nesting state, likely by introducing GUC
   indirection rather than direct TLS globals;
-- current transaction and session identity globals;
+- transaction identity and snapshot globals outside the session identity covered
+  above;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -63,8 +77,18 @@ Phase 8 required-floor global remains unsafe and unclassified.
 
 Validation for this slice:
 
-- focused object builds for the touched files;
+- `gmake clean` followed by `gmake -j8`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
 - filtered static scan for the touched required-floor names;
-- `gmake -C src/backend all` after a clean backend rebuild.
+- `git diff --check`;
+- extension backend-model regression tests:
+  `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and
+  `test_ext_backend_model_pooled`;
+- PL/pgSQL process-mode regression tests.
+
+On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
+in frontend binaries. The extension and PL/pgSQL checks above were run after
+patching the temp-installed `initdb` or `psql` with `install_name_tool` to point
+at `tmp_install/usr/local/pgsql/lib/libpq.5.dylib`; the unpatched failures were
+dynamic loader failures before SQL tests ran.

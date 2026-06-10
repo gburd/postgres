@@ -37,7 +37,7 @@ uint64		SharedInvalidMessageCounter;
  * interrupted while doing so, ProcessClientReadInterrupt() will call
  * ProcessCatchupEvent().
  */
-volatile sig_atomic_t catchupInterruptPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t catchupInterruptPending = false;
 
 
 /*

@@ -157,7 +157,7 @@ static bool syncing_slots = false;
  * slotsync worker or pg_sync_replication_slots() to stop because
  * standby promotion has been triggered.
  */
-volatile sig_atomic_t SlotSyncShutdownPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t SlotSyncShutdownPending = false;
 
 /*
  * Structure to hold information fetched from the primary server about a logical

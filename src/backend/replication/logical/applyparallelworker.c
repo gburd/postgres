@@ -246,7 +246,7 @@ ParallelApplyWorkerShared *MyParallelShared = NULL;
  * Is there a message sent by a parallel apply worker that the leader apply
  * worker needs to receive?
  */
-volatile sig_atomic_t ParallelApplyMessagePending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelApplyMessagePending = false;
 
 /*
  * Cache the parallel apply worker information required for applying the

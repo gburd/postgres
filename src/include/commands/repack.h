@@ -19,6 +19,7 @@
 #include "parser/parse_node.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
+#include "utils/global_lifetime.h"
 
 
 /* flag bits for ClusterParams->options */
@@ -35,7 +36,7 @@ typedef struct ClusterParams
 	uint32		options;		/* bitmask of CLUOPT_* */
 } ClusterParams;
 
-extern PGDLLIMPORT volatile sig_atomic_t RepackMessagePending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t RepackMessagePending;
 
 
 extern void ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel);

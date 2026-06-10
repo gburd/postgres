@@ -29,6 +29,7 @@
 
 #include "libpq/pg-gssapi.h"
 #include "utils/global_lifetime.h"
+#include "utils/global_lifetime.h"
 
 #ifdef ENABLE_SSPI
 #define SECURITY_WIN32
@@ -353,8 +354,8 @@ extern ssize_t be_gssapi_read(Port *port, void *ptr, size_t len);
 extern ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);
 #endif							/* ENABLE_GSS */
 
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
 
 /* TCP keepalives configuration. These are no-ops on an AF_UNIX socket. */
 

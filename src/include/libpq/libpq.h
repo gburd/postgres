@@ -18,6 +18,7 @@
 
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
+#include "utils/global_lifetime.h"
 
 
 /* avoid including waiteventset.h */
@@ -43,7 +44,7 @@ typedef struct
 	void		(*putmessage_noblock) (char msgtype, const char *s, size_t len);
 } PQcommMethods;
 
-extern const PGDLLIMPORT PQcommMethods *PqCommMethods;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqCommMethods;
 
 #define pq_comm_reset() (PqCommMethods->comm_reset())
 #define pq_flush() (PqCommMethods->flush())
@@ -61,7 +62,7 @@ extern const PGDLLIMPORT PQcommMethods *PqCommMethods;
 /*
  * prototypes for functions in pqcomm.c
  */
-extern PGDLLIMPORT WaitEventSet *FeBeWaitSet;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION WaitEventSet *FeBeWaitSet;
 
 #define FeBeWaitSetSocketPos 0
 #define FeBeWaitSetLatchPos 1

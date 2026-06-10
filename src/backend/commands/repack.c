@@ -150,7 +150,7 @@ static DecodingWorker *decoding_worker = NULL;
  * Is there a message sent by a repack worker that the backend needs to
  * receive?
  */
-volatile sig_atomic_t RepackMessagePending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t RepackMessagePending = false;
 
 static LOCKMODE RepackLockLevel(bool concurrent);
 static bool cluster_rel_recheck(RepackCommand cmd, Relation OldHeap,

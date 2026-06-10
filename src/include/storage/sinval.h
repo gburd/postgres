@@ -17,6 +17,7 @@
 #include <signal.h>
 
 #include "storage/relfilelocator.h"
+#include "utils/global_lifetime.h"
 
 /*
  * We support several types of shared-invalidation messages:
@@ -137,7 +138,7 @@ typedef union
 /* Counter of messages processed; don't worry about overflow. */
 extern PGDLLIMPORT uint64 SharedInvalidMessageCounter;
 
-extern PGDLLIMPORT volatile sig_atomic_t catchupInterruptPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t catchupInterruptPending;
 
 extern void SendSharedInvalidMessages(const SharedInvalidationMessage *msgs,
 									  int n);

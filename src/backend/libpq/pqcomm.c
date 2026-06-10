@@ -120,20 +120,20 @@ static List *sock_paths = NIL;
 #define PQ_SEND_BUFFER_SIZE 8192
 #define PQ_RECV_BUFFER_SIZE 8192
 
-static char *PqSendBuffer;
-static int	PqSendBufferSize;	/* Size send buffer */
-static size_t PqSendPointer;	/* Next index to store a byte in PqSendBuffer */
-static size_t PqSendStart;		/* Next index to send a byte in PqSendBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqSendBuffer;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqSendBufferSize;	/* Size send buffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION size_t PqSendPointer;	/* Next index to store a byte in PqSendBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION size_t PqSendStart;	/* Next index to send a byte in PqSendBuffer */
 
-static char PqRecvBuffer[PQ_RECV_BUFFER_SIZE];
-static int	PqRecvPointer;		/* Next index to read a byte from PqRecvBuffer */
-static int	PqRecvLength;		/* End of data available in PqRecvBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char PqRecvBuffer[PQ_RECV_BUFFER_SIZE];
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqRecvPointer;	/* Next index to read a byte from PqRecvBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqRecvLength;	/* End of data available in PqRecvBuffer */
 
 /*
  * Message status
  */
-static bool PqCommBusy;			/* busy sending data to the client */
-static bool PqCommReadingMsg;	/* in the middle of reading a message */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool PqCommBusy;	/* busy sending data to the client */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool PqCommReadingMsg;	/* in the middle of reading a message */
 
 
 /* Internal functions */
@@ -162,9 +162,9 @@ static const PQcommMethods PqCommSocketMethods = {
 	.putmessage_noblock = socket_putmessage_noblock
 };
 
-const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
 
-WaitEventSet *FeBeWaitSet;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION WaitEventSet *FeBeWaitSet;
 
 
 /* --------------------------------

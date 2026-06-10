@@ -103,7 +103,7 @@ extern void pgwin32_register_deadchild_callback(HANDLE procHandle, DWORD procId)
 #endif
 
 /* defined in globals.c */
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION struct ClientSocket *MyClientSocket;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct ClientSocket *MyClientSocket;
 
 /* prototypes for functions in launch_backend.c */
 extern pid_t postmaster_child_launch(BackendType child_type,

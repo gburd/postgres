@@ -60,9 +60,9 @@
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
-PG_GLOBAL_BACKEND ProcessingMode Mode = InitProcessing;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcessingMode Mode = InitProcessing;
 
-PG_GLOBAL_BACKEND BackendType MyBackendType;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType MyBackendType;
 
 /* List of lock files to be removed at proc exit */
 static List *lock_files = NIL;
@@ -1017,7 +1017,7 @@ GetUserNameFromId(Oid roleid, bool noerr)
  *-------------------------------------------------------------------------
  */
 
-PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
 
 /*
  * Intermediate representation of ClientConnectionInfo for easier

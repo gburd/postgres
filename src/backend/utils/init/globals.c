@@ -27,33 +27,33 @@
 #include "storage/procsignal.h"
 
 
-PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
 
-PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending = false;
-PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending = false;
-PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending = false;
-PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending = false;
-PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount = 0;
-PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount = 0;
-PG_GLOBAL_BACKEND volatile uint32 CritSectionCount = 0;
-PG_GLOBAL_BACKEND volatile int ProcDieSenderPid = 0;
-PG_GLOBAL_BACKEND volatile int ProcDieSenderUid = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending = false;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 CritSectionCount = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderPid = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderUid = 0;
 
-PG_GLOBAL_BACKEND int MyProcPid;
-PG_GLOBAL_BACKEND pg_time_t MyStartTime;
-PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
-PG_GLOBAL_CONNECTION struct ClientSocket *MyClientSocket;
-PG_GLOBAL_CONNECTION struct Port *MyProcPort;
-PG_GLOBAL_CONNECTION uint8 MyCancelKey[MAX_CANCEL_KEY_LENGTH];
-PG_GLOBAL_CONNECTION int MyCancelKeyLength = 0;
-PG_GLOBAL_BACKEND int MyPMChildSlot;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct ClientSocket *MyClientSocket;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct Port *MyProcPort;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION uint8 MyCancelKey[MAX_CANCEL_KEY_LENGTH];
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int MyCancelKeyLength = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyPMChildSlot;
 
 /*
  * MyLatch points to the latch that should be used for signal handling by the
@@ -62,7 +62,7 @@ PG_GLOBAL_BACKEND int MyPMChildSlot;
  * PGPROC->procLatch if it has. Thus it can always be used in signal handlers,
  * without checking for its existence.
  */
-PG_GLOBAL_BACKEND struct Latch *MyLatch;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct Latch *MyLatch;
 
 /*
  * DataDir is the absolute path to the top level of the PGDATA directory tree.
@@ -78,7 +78,7 @@ PG_GLOBAL_RUNTIME char *DataDir = NULL;
  */
 PG_GLOBAL_RUNTIME int data_directory_mode = PG_DIR_MODE_OWNER;
 
-PG_GLOBAL_BACKEND char OutputFileName[MAXPGPATH];	/* debugging output file */
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND char OutputFileName[MAXPGPATH];	/* debugging output file */
 
 PG_GLOBAL_RUNTIME char my_exec_path[MAXPGPATH];	/* full path to my executable */
 PG_GLOBAL_RUNTIME char pkglib_path[MAXPGPATH]; /* full path to lib directory */
@@ -89,21 +89,21 @@ PG_GLOBAL_RUNTIME char postgres_exec_path[MAXPGPATH];	/* full path to backend */
 /* note: currently this is not valid in backend processes */
 #endif
 
-PG_GLOBAL_BACKEND ProcNumber MyProcNumber = INVALID_PROC_NUMBER;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber MyProcNumber = INVALID_PROC_NUMBER;
 
-PG_GLOBAL_BACKEND ProcNumber ParallelLeaderProcNumber = INVALID_PROC_NUMBER;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber ParallelLeaderProcNumber = INVALID_PROC_NUMBER;
 
-PG_GLOBAL_SESSION Oid MyDatabaseId = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseId = InvalidOid;
 
-PG_GLOBAL_SESSION Oid MyDatabaseTableSpace = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseTableSpace = InvalidOid;
 
-PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers = false;
 
 /*
  * DatabasePath is the path (relative to DataDir) of my database's
  * primary directory, ie, its directory in the default tablespace.
  */
-PG_GLOBAL_SESSION char *DatabasePath = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *DatabasePath = NULL;
 
 PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
 
@@ -157,8 +157,8 @@ PG_GLOBAL_SESSION int VacuumCostPageDirty = 20;
 PG_GLOBAL_SESSION int VacuumCostLimit = 200;
 PG_GLOBAL_SESSION double VacuumCostDelay = 0;
 
-PG_GLOBAL_EXECUTION int VacuumCostBalance = 0;	/* working state for vacuum */
-PG_GLOBAL_EXECUTION bool VacuumCostActive = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance = 0;	/* working state for vacuum */
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive = false;
 
 /* configurable SLRU buffer sizes */
 PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
