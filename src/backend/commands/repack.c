@@ -3656,9 +3656,7 @@ void
 HandleRepackMessageInterrupt(void)
 {
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
-	InterruptPending = true;
 	RepackMessagePending = true;
-	SetLatch(MyLatch);
 }
 
 /*

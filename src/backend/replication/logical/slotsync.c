@@ -1339,7 +1339,6 @@ void
 HandleSlotSyncMessageInterrupt(void)
 {
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
-	InterruptPending = true;
 	SlotSyncShutdownPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

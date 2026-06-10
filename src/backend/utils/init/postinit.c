@@ -1467,9 +1467,6 @@ TransactionTimeoutHandler(void)
 {
 	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
 							PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
-	TransactionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
 }
 
 static void
@@ -1477,9 +1474,6 @@ IdleInTransactionSessionTimeoutHandler(void)
 {
 	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
 							PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
-	IdleInTransactionSessionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
 }
 
 static void
@@ -1487,9 +1481,6 @@ IdleSessionTimeoutHandler(void)
 {
 	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
 							PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
-	IdleSessionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
 }
 
 static void
@@ -1497,9 +1488,6 @@ IdleStatsUpdateTimeoutHandler(void)
 {
 	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
 							PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
-	IdleStatsUpdateTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
 }
 
 static void
@@ -1507,9 +1495,6 @@ ClientCheckTimeoutHandler(void)
 {
 	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
 							PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
-	CheckClientConnectionPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
 }
 
 /*

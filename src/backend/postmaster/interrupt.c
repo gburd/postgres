@@ -34,6 +34,8 @@ volatile sig_atomic_t ShutdownRequestPending = false;
 void
 ProcessMainLoopInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 

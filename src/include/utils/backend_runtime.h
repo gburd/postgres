@@ -174,6 +174,7 @@ extern void PgCurrentBackendRaiseProcDieInterrupt(int sender_pid,
 extern PgBackendInterruptMask PgBackendConsumeInterrupts(PgBackend *backend);
 extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
+extern void PgCurrentBackendApplyInterrupts(void);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 pg_noreturn extern void PgSessionRun(PgSession *session);
 

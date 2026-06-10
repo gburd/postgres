@@ -1327,7 +1327,6 @@ void
 HandleLogMemoryContextInterrupt(void)
 {
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
-	InterruptPending = true;
 	LogMemoryContextPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

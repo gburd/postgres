@@ -1047,7 +1047,6 @@ void
 HandleParallelMessageInterrupt(void)
 {
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
-	InterruptPending = true;
 	ParallelMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

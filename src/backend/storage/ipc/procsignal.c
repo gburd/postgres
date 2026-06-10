@@ -496,7 +496,6 @@ static void
 HandleProcSignalBarrierInterrupt(void)
 {
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
-	InterruptPending = true;
 	ProcSignalBarrierPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -662,7 +661,6 @@ ResetProcSignalBarrierBits(uint32 flags)
 	pg_atomic_fetch_or_u32(&MyProcSignalSlot->pss_barrierCheckMask, flags);
 	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 	ProcSignalBarrierPending = true;
-	InterruptPending = true;
 }
 
 /*
