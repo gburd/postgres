@@ -558,6 +558,12 @@ regression-test helper modules needed by the selected test suite, and any
 module loaded automatically by core tests. The threaded test matrix should not
 silently skip required in-tree modules just because extension gating exists.
 
+The first threaded milestone may use a conservative allowlist, but the end-state
+target for this plan is broader: all contrib extensions shipped in-tree should
+support thread-per-session mode, carry explicit backend model metadata, and pass
+their contrib regression tests in threaded mode. Any temporary exception should
+be tracked as a release-blocking gap, not hidden behind the process-only default.
+
 Third-party extension authors need replacement APIs for common unsafe patterns:
 
 - per-session extension state;

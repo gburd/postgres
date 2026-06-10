@@ -9,8 +9,9 @@ The ordering is deliberately practical:
 1. establish a real backend loop boundary in process mode;
 2. attach that boundary to explicit runtime/session/backend objects;
 3. classify and isolate enough mutable state for thread-per-session;
-4. launch threaded backends;
-5. only then make sessions movable across pooled carriers.
+4. make blocking waits targetable and wakeable for threaded backends;
+5. launch threaded backends;
+6. only then make sessions movable across pooled carriers.
 
 ## Current Branch Baseline
 
@@ -232,7 +233,8 @@ Expected commit shape:
 Validation:
 
 - cancellation tests;
-- termination tests;
+- termination interrupt delivery tests that preserve current process-mode exit
+  behavior;
 - config reload tests;
 - LISTEN/NOTIFY behavior;
 - statement, lock, transaction, idle-in-transaction, and idle-session timeouts;
@@ -277,6 +279,8 @@ Likely changes:
 - Make default `PG_MODULE_MAGIC` process-only.
 - Add explicit opt-in macros for threaded compatibility.
 - Teach `dfmgr.c` to reject incompatible modules when threaded mode is active.
+- Add a test-only runtime/backend-model override so loader policy can be tested
+  before threaded backend launch exists.
 - Audit PL/pgSQL first.
 - Define the minimum in-tree module allowlist for threaded regression tests,
   including PL/pgSQL, required encoding conversion modules, regression-test
@@ -292,11 +296,13 @@ Suggested backend model levels:
 
 Validation:
 
-- incompatible test extension is rejected in threaded mode;
+- incompatible test extension is rejected under the test-only threaded backend
+  model;
 - existing process mode loads extensions as before;
-- PL/pgSQL loads and passes its tests when marked safe;
-- the minimum in-tree module allowlist loads in threaded mode;
-- contrib modules are migrated only after audit.
+- metadata parsing and version compatibility are covered;
+- PL/pgSQL audit has a concrete migration path;
+- real threaded-mode PL/pgSQL and allowlist validation are deferred to the
+  thread-per-session runtime gate.
 
 ## Phase 8: Thread-Safety Floor
 
@@ -333,7 +339,46 @@ Validation:
 - targeted tests for memory context, resource owner, GUC, interrupt, timeout,
   protocol, and fd cleanup behavior.
 
-## Phase 9: Thread-Per-Session Runtime
+## Phase 9: Thread-Compatible Wait/Wakeup Boundary
+
+Goal: make long waits visible, targetable, and wakeable before threaded backend
+launch. This is not the pooled scheduler yet; waits may still block the current
+OS thread in process mode and thread-per-session mode.
+
+Likely changes:
+
+- Inventory unbounded waits that can hide a backend from cancellation or
+  termination:
+  - frontend command reads;
+  - frontend output flushes;
+  - latch and wait-event-set waits;
+  - lock waits;
+  - condition variable waits;
+  - timeout waits.
+- Introduce `PgWaitSpec` and `PgSuspend()` or equivalent as the common visible
+  wait boundary.
+- Record the current waiting backend/session/execution before entering a long
+  wait.
+- Connect logical interrupts to a wake mechanism for the target backend, such as
+  latch wakeups or a platform-specific thread wake primitive.
+- Preserve blocking behavior for process mode and thread-per-session mode.
+- Do not introduce runnable queues or pooled carrier scheduling in this phase.
+
+Important rule:
+
+Before regular backends can run as threads, an idle or blocked backend must be
+wakeable for cancellation, termination, and timeout delivery without depending
+on process-directed Unix signals.
+
+Validation:
+
+- process-mode tests pass;
+- cancellation while blocked still works;
+- idle and active termination paths wake blocked backends;
+- idle timeout and transaction timeout behavior remains correct;
+- no lost wakeups in common wait paths.
+
+## Phase 10: Thread-Per-Session Runtime
 
 Goal: run regular client backends as OS threads inside one server runtime.
 
@@ -345,6 +390,8 @@ Likely changes:
 - Initialize carrier-local state for each thread.
 - Initialize current runtime/backend/session/execution pointers.
 - Ensure signal masks and handlers are not incorrectly installed per thread.
+- Use the Phase 9 wait/wakeup boundary for blocked backend cancellation,
+  termination, and timeout delivery.
 - Preserve process-mode launch path.
 
 Conservative scope:
@@ -352,19 +399,20 @@ Conservative scope:
 - regular client backends first;
 - auxiliary processes can remain processes initially;
 - background workers can be gated off or process-only until audited;
-- unsafe extensions rejected.
+- unsafe extensions rejected through backend model metadata.
 
 Validation:
 
 - multiple concurrent SQL sessions in threaded mode;
-- cancellation and termination of one threaded backend;
+- cancellation and termination of one threaded backend, including while blocked;
 - connection startup and teardown;
 - transaction abort and error recovery;
 - basic isolation tests;
-- PL/pgSQL smoke and regression tests;
+- PL/pgSQL smoke and regression tests in threaded mode;
+- incompatible extensions rejected in threaded mode;
 - process-mode full test suite.
 
-## Phase 10: State Migration From TLS To Objects
+## Phase 11: State Migration From TLS To Objects
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -386,25 +434,20 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
-## Phase 11: Scheduler-Aware Wait Boundary
+## Phase 12: Scheduler-Aware Wait Boundary
 
-Goal: centralize blocking waits behind a runtime-visible boundary so sessions
-can eventually suspend and resume without pinning an OS thread.
+Goal: extend the visible wait boundary so sessions can suspend and resume
+without pinning an OS thread.
 
 Likely changes:
 
-- Introduce `PgWaitSpec` and `PgSuspend()` or equivalent.
-- Adapt frontend command read waits.
-- Adapt frontend output flush waits.
-- Adapt latch and wait-event-set paths.
-- Adapt condition variable and lock waits where feasible.
-- Keep thread-per-session mode available with waits that block the current
-  carrier while the scheduler work is still incomplete.
-
-Important rule:
-
-All waits that can last an unbounded amount of time should become visible to
-the runtime. Short bounded waits can remain local until later.
+- Convert `PgSuspend()` waits from "block current carrier" to "register wait and
+  yield carrier" where safe.
+- Add wait completion records that can requeue the owning session/execution.
+- Make frontend input, frontend output, latch, lock, condition variable, and
+  timeout waits scheduler-visible.
+- Keep thread-per-session mode available with blocking waits for debugging and
+  fallback.
 
 Validation:
 
@@ -414,7 +457,7 @@ Validation:
 - idle timeout and transaction timeout behavior remains correct;
 - no lost wakeups in common wait paths.
 
-## Phase 12: Pooled Carrier Scheduler
+## Phase 13: Pooled Carrier Scheduler
 
 Goal: schedule logical session/execution tasks onto a smaller number of worker
 threads.
@@ -442,7 +485,7 @@ Validation:
 - cancellation of waiting and running tasks;
 - process-mode and thread-per-session modes still work.
 
-## Phase 13: Executor And Utility Yield Points
+## Phase 14: Executor And Utility Yield Points
 
 Goal: improve fairness and latency for long-running commands under pooled
 scheduling.
@@ -462,12 +505,20 @@ Validation:
 - no executor state corruption across yields;
 - performance comparison against thread-per-session mode.
 
-## Phase 14: Hardening
+## Phase 15: Contrib Extension Completion And Hardening
 
-Goal: make threaded mode debuggable and credible.
+Goal: make threaded mode debuggable, credible, and complete for in-tree
+extensions, including contrib.
 
 Likely work:
 
+- migrate every contrib extension to explicit backend model metadata;
+- make every contrib extension support thread-per-session mode by default;
+- add session/runtime APIs needed by contrib modules that currently rely on
+  process-global mutable state;
+- run contrib regression tests in process mode and threaded mode;
+- document any temporary exception as a release-blocking gap rather than an
+  unknown default;
 - thread sanitizer runs where feasible;
 - address sanitizer runs;
 - stress tests for interrupts, waits, cancellation, and teardown;
@@ -489,12 +540,16 @@ Approach:
 - keep process mode behavior unchanged;
 - mark PL/pgSQL thread-per-session safe only after tests pass.
 
-Contrib modules should be handled after the mechanism is proven:
+Contrib modules should be handled after the mechanism is proven, but they are a
+required end-state deliverable:
 
 - start with simple stateless modules;
 - reject or defer modules with background workers, process-global caches, or
-  unsafe external library assumptions;
-- document each opt-in.
+  unsafe external library assumptions until the required APIs exist;
+- document each opt-in;
+- by the final hardening phase, every contrib extension should support
+  thread-per-session mode and have explicit backend model metadata;
+- final gates should not pass with unknown/default process-only contrib modules.
 
 ## Test Strategy
 
@@ -524,7 +579,7 @@ platform/tooling issues make literal `check-world` noisy.
 Gate A, after Phase 3:
 
 - main-loop boundary and session scaffolding are complete;
-- run core regression, isolation tests, PL/pgSQL tests, and targeted
+- run core regression, isolation tests where relevant, and targeted
   protocol/error-recovery tests.
 
 Gate B, after Phase 6:
@@ -536,28 +591,31 @@ Gate B, after Phase 6:
 Gate C, after Phase 8:
 
 - extension gating and the thread-safety floor are complete;
-- run `check-world`, static global report checks, extension load tests, and
-  PL/pgSQL regression tests.
+- run `check-world`, static global report checks, extension load tests using
+  the test-only threaded backend model, and PL/pgSQL process-mode regression
+  tests.
 
-Gate D, after Phase 9:
+Gate D, after Phase 10:
 
 - first thread-per-session runtime exists;
 - run full process-mode tests and the threaded smoke/regression subset:
   multiple concurrent clients, running-query cancellation, idle and active
   backend termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL
-  smoke tests, and repeated connect/disconnect stress.
+  smoke tests, incompatible extension rejection, and repeated
+  connect/disconnect stress.
 
-Gate E, after Phase 12:
+Gate E, after Phase 13:
 
 - scheduler-aware waits and pooled carriers exist;
 - run full process-mode and threaded-mode suites, plus stress tests for lock
   waits, cancellation of waiting and running tasks, output backpressure,
   timeout delivery while waiting, and lost wakeups.
 
-Gate F, during Phase 14:
+Gate F, during Phase 15:
 
 - hardening and release-readiness gate;
-- run sanitizers where feasible, repeated full suites, stress tests for
+- run sanitizers where feasible, repeated full suites, threaded contrib
+  regression tests for every contrib extension, stress tests for
   interrupts/waits/cancellation/teardown, crash and `FATAL` behavior tests, and
   performance baselines.
 
@@ -679,15 +737,19 @@ Mitigation:
 10. Convert timeout delivery to target logical backends.
 11. Split backend exit cleanup from process exit.
 12. Add extension backend model metadata and process-only default.
-13. Establish the minimum in-tree module allowlist.
-14. Make the thread-safety floor private through TLS or object ownership.
-15. Add thread portability layer and backend launch switch.
-16. Run first thread-per-session backend smoke tests.
-17. Migrate TLS-backed state toward object-owned state.
-18. Introduce scheduler-aware waits.
-19. Add pooled carrier scheduling.
-20. Add executor and utility yield points.
-21. Harden with sanitizers, stress tests, and performance baselines.
+13. Add test-only threaded backend model checks for extension loader policy.
+14. Establish the minimum in-tree module allowlist.
+15. Make the thread-safety floor private through TLS or object ownership.
+16. Add the thread-compatible wait/wakeup boundary.
+17. Add thread portability layer and backend launch switch.
+18. Run first thread-per-session backend smoke tests.
+19. Migrate TLS-backed state toward object-owned state.
+20. Convert scheduler-aware waits from blocking to suspend/resume.
+21. Add pooled carrier scheduling.
+22. Add executor and utility yield points.
+23. Migrate all contrib extensions to threaded-mode metadata and tests.
+24. Harden with sanitizers, stress tests, repeated full suites, and performance
+    baselines.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility
 wrappers to broad all-at-once rewrites.
