@@ -612,7 +612,7 @@ PG_GLOBAL_RUNTIME int huge_pages_status = HUGE_PAGES_UNKNOWN;
  * cases provide the value for SHOW to display.  The real state is elsewhere
  * and is kept in sync by assign_hooks.
  */
-static char *syslog_ident_str;
+static PG_GLOBAL_RUNTIME char *syslog_ident_str;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION double phony_random_seed;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *client_encoding_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *datestyle_string;
@@ -628,7 +628,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_min_messages_string;
 #else
 #define	DEFAULT_SYSLOG_FACILITY 0
 #endif
-static int	syslog_facility = DEFAULT_SYSLOG_FACILITY;
+static PG_GLOBAL_RUNTIME int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_timezone_string;

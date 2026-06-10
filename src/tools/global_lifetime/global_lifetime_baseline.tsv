@@ -1947,14 +1947,8 @@ src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	Reco
 src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
 src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
 src/backend/utils/error/elog.c	2eaf120ef9b9336b092d207ca1135a2c0dfa871c	emit_log_hook	emit_log_hook_type emit_log_hook = NULL;
-src/backend/utils/error/elog.c	f85a32bbaa8b596a08a0283923adea770daa47b1	Log_line_prefix	char *Log_line_prefix = NULL;
-src/backend/utils/error/elog.c	bcf40f011560798682faf94599fc0a4f471137aa	Log_destination	int Log_destination = LOG_DESTINATION_STDERR;
-src/backend/utils/error/elog.c	b4cb739c9d62d32de7ae2bbe4b22dcee96e8c8a4	Log_destination_string	char *Log_destination_string = NULL;
-src/backend/utils/error/elog.c	d628639e4fa14d6fe41e1a7167727fd29ae96c44	syslog_sequence_numbers	bool syslog_sequence_numbers = true;
-src/backend/utils/error/elog.c	0ed49f371de24a3583eccf8caeb9dc2aaa2f047c	syslog_split_messages	bool syslog_split_messages = true;
 src/backend/utils/error/elog.c	cdbe0e33ec614235b6b6a339c23a9ce1e8c61a1b	openlog_done	static bool openlog_done = false;
 src/backend/utils/error/elog.c	45ee84e0b19b6b60b24de88e4897adbb907a2257	syslog_ident	static char *syslog_ident = NULL;
-src/backend/utils/error/elog.c	abcc6f6a80d46cec8504e02943d3f8c4b4e612fe	syslog_facility	static int syslog_facility = LOG_LOCAL0;
 src/backend/utils/error/elog.c	6ca651bed3455de415153728d6ffc5eae01600a0	backtrace_symbols_initialized	static bool backtrace_symbols_initialized = false;
 src/backend/utils/error/elog.c	d9308936e9e8379dcb29ef3e0a53f5833770070c	backtrace_process	static HANDLE backtrace_process = NULL;
 src/backend/utils/error/elog.c	e6252db4522612c0db3a21fa29b964f0c036b56f	saved_timeval	static struct timeval saved_timeval;
@@ -1993,8 +1987,6 @@ src/backend/utils/misc/guc.c	676c54bc481382cb598d996eae27f439a38a51e4	memory_uni
 src/backend/utils/misc/guc.c	96092488f012969a5752b17fed485575f4f14ec1	time_units_hint	static const char *const time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
 src/backend/utils/misc/guc.c	df6a9a6a86dc83a23132d0670c2e64e468b1959c	time_unit_conversion_table	static const unit_conversion time_unit_conversion_table[] = { {"d", GUC_UNIT_MS, 1000 * 60 * 60 * 24}, {"h", GUC_UNIT_MS, 1000 * 60 * 60}, {"min", GUC_UNIT_MS, 1000 * 60}, {"s", GUC_UNIT_MS, 1000}, {"ms", GUC_UNIT_MS, 1}, {"us", GUC_UNIT...
 src/backend/utils/misc/guc.c	31593cfc5887e26c3f8da36fb633ce637a06cf03	map_old_guc_names	static const char *const map_old_guc_names[] = { "sort_mem", "work_mem", "vacuum_mem", "maintenance_work_mem", "ssl_ecdh_curve", "ssl_groups", NULL };
-src/backend/utils/misc/guc_tables.c	4c9a595d0418938786ad6ae51f97147aa80cc4a7	syslog_ident_str	static char *syslog_ident_str;
-src/backend/utils/misc/guc_tables.c	49fca587090acb981429cb876dcbd6d12c268c16	syslog_facility	static int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 src/backend/utils/misc/guc_tables.c	39a98e45679d0e2070f1b48c2656c701d16fad48	recovery_target_timeline_string	static char *recovery_target_timeline_string;
 src/backend/utils/misc/guc_tables.c	5a02a7e0bb0f200f0a43389e4b17d1c6b78a7dcb	recovery_target_string	static char *recovery_target_string;
 src/backend/utils/misc/guc_tables.c	b6b04e57d9f492ecace3e7e9c116e6e5b534bb10	recovery_target_xid_string	static char *recovery_target_xid_string;
@@ -2425,11 +2417,6 @@ src/include/utils/datetime.h	e2b95b77008d26098670c036a3a4efb7147887f2	days	exter
 src/include/utils/dsa.h	c0f6aafe834a68190a3ae77a9f3222a885527f28	dsa_area	struct dsa_area;
 src/include/utils/elog.h	c8a4816f887bb57d1faa5b42a49ab4a22d264cf9	Node	struct Node;
 src/include/utils/elog.h	b935f5c0b0bdf0bffd2f73cd84b3a6d0d81bce55	emit_log_hook	extern PGDLLIMPORT emit_log_hook_type emit_log_hook;
-src/include/utils/elog.h	6e38d0ff99168b316fb7fa124b6784f3eeb43247	Log_line_prefix	extern PGDLLIMPORT char *Log_line_prefix;
-src/include/utils/elog.h	0cd87dd65beb3f543fc017d46a7284e1c3e6c06a	Log_destination	extern PGDLLIMPORT int Log_destination;
-src/include/utils/elog.h	2da60b2875dfa72cf9d136e4cb5e31ea74111532	Log_destination_string	extern PGDLLIMPORT char *Log_destination_string;
-src/include/utils/elog.h	c5248a6abf61d0c1f6f3fb47e160dc966fee7e45	syslog_sequence_numbers	extern PGDLLIMPORT bool syslog_sequence_numbers;
-src/include/utils/elog.h	ec6b652cd0741d096e5c5cb47d616dec1aa5604b	syslog_split_messages	extern PGDLLIMPORT bool syslog_split_messages;
 src/include/utils/funccache.h	f2ed3dbf69f353d45c3e2e685cfe1d2a85402a8d	CachedFunctionHashKey	struct CachedFunctionHashKey;
 src/include/utils/funccache.h	a86fc3803ee03c196bbcc6a1240e69ee6311bc0e	CachedFunction	struct CachedFunction;
 src/include/utils/guc.h	6cb87eba082e39f078c76cf3c8658b6b50df1f63	in_hot_standby_guc	extern PGDLLIMPORT bool in_hot_standby_guc;

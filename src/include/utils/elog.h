@@ -492,11 +492,11 @@ typedef enum
 }			PGErrorVerbosity;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity;
-extern PGDLLIMPORT char *Log_line_prefix;
-extern PGDLLIMPORT int Log_destination;
-extern PGDLLIMPORT char *Log_destination_string;
-extern PGDLLIMPORT bool syslog_sequence_numbers;
-extern PGDLLIMPORT bool syslog_split_messages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_line_prefix;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_destination;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_destination_string;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool syslog_sequence_numbers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool syslog_split_messages;
 
 /* Log destination bitmap */
 #define LOG_DESTINATION_STDERR	 1

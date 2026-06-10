@@ -112,11 +112,11 @@ emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity = PGERROR_DEFAULT;
-char	   *Log_line_prefix = NULL; /* format for extra log line info */
-int			Log_destination = LOG_DESTINATION_STDERR;
-char	   *Log_destination_string = NULL;
-bool		syslog_sequence_numbers = true;
-bool		syslog_split_messages = true;
+PG_GLOBAL_RUNTIME char *Log_line_prefix = NULL;	/* format for extra log line info */
+PG_GLOBAL_RUNTIME int Log_destination = LOG_DESTINATION_STDERR;
+PG_GLOBAL_RUNTIME char *Log_destination_string = NULL;
+PG_GLOBAL_RUNTIME bool syslog_sequence_numbers = true;
+PG_GLOBAL_RUNTIME bool syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_function_list;
@@ -136,7 +136,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_function_list;
 
 static bool openlog_done = false;
 static char *syslog_ident = NULL;
-static int	syslog_facility = LOG_LOCAL0;
+static PG_GLOBAL_RUNTIME int syslog_facility = LOG_LOCAL0;
 
 static void write_syslog(int level, const char *line);
 #endif

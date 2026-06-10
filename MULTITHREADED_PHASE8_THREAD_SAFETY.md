@@ -209,6 +209,10 @@ postmaster, shared-memory, or startup-computed runtime state:
   `max_locks_per_xact`, `max_predicate_locks_per_page`,
   `max_predicate_locks_per_relation`, and
   `max_predicate_locks_per_xact`.
+- server-wide error-log destination and syslog GUC backing variables:
+  `Log_destination`, `Log_destination_string`, `Log_line_prefix`,
+  `syslog_facility`, `syslog_ident_str`, `syslog_sequence_numbers`, and
+  `syslog_split_messages`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -250,7 +254,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the lock-manager GUC classification slice, the filtered static report contains 110
+After the logging-destination GUC classification slice, the filtered static report contains 104
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -553,6 +557,9 @@ Validation for this slice:
   after converting installed-header lock-manager declarations to
   `PG_THREAD_LOCAL` or `PG_GLOBAL_RUNTIME`;
 - focused core GUC regression test after the lock-manager slice: `guc`;
+- focused `elog.o` and `guc_tables.o` compile coverage plus incremental
+  `gmake -j8` after classifying logging-destination GUC backing variables as
+  `PG_GLOBAL_RUNTIME`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
