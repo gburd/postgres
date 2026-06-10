@@ -161,6 +161,18 @@ postmaster, shared-memory, or startup-computed runtime state:
   `server_version_num`, `server_version_string`,
   `shared_memory_size_in_huge_pages`, `shared_memory_size_mb`, and
   `wal_block_size`.
+- postmaster/control-plane and auxiliary-writer GUC backing variables:
+  `AuthenticationTimeout`, `BgWriterDelay`,
+  `CheckPointCompletionTarget`, `CheckPointTimeout`, `CheckPointWarning`,
+  `EnableSSL`, `ListenAddresses`, `Log_RotationAge`, `Log_RotationSize`,
+  `Log_directory`, `Log_file_mode`, `Log_filename`,
+  `Log_truncate_on_rotation`, `Logging_collector`, `PostPortNumber`,
+  `PreAuthDelay`, `ReservedConnections`, `SuperuserReservedConnections`,
+  `Unix_socket_directories`, `WalWriterDelay`, `WalWriterFlushAfter`,
+  `bonjour_name`, `enable_bonjour`, `log_hostname`,
+  `log_startup_progress_interval`, `remove_temp_files_after_crash`,
+  `restart_after_crash`, `send_abort_for_crash`, and
+  `send_abort_for_kill`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -202,7 +214,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the preset/runtime GUC classification slice, the filtered static report contains 200
+After the postmaster/control-plane GUC classification slice, the filtered static report contains 171
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -485,6 +497,10 @@ Validation for this slice:
   rather than runtime SQL coverage;
 - focused `guc_tables.o` compile coverage plus incremental `gmake -j8` after
   classifying preset/runtime GUC backing variables as `PG_GLOBAL_RUNTIME`;
+- focused `postmaster.o`, `syslogger.o`, `bgwriter.o`, `checkpointer.o`,
+  `walwriter.o`, and `startup.o` compile coverage plus incremental
+  `gmake -j8` after classifying postmaster/control-plane GUC backing variables
+  as `PG_GLOBAL_RUNTIME`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

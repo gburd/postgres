@@ -15,6 +15,7 @@
 
 #include "lib/ilist.h"
 #include "miscadmin.h"
+#include "utils/global_lifetime.h"
 
 /*
  * A struct representing an active postmaster child process.  This is used
@@ -52,24 +53,24 @@ extern PGDLLIMPORT int num_pmchild_slots;
 #endif
 
 /* GUC options */
-extern PGDLLIMPORT bool EnableSSL;
-extern PGDLLIMPORT int SuperuserReservedConnections;
-extern PGDLLIMPORT int ReservedConnections;
-extern PGDLLIMPORT int PostPortNumber;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool EnableSSL;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int SuperuserReservedConnections;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int ReservedConnections;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int PostPortNumber;
 extern PGDLLIMPORT int Unix_socket_permissions;
 extern PGDLLIMPORT char *Unix_socket_group;
-extern PGDLLIMPORT char *Unix_socket_directories;
-extern PGDLLIMPORT char *ListenAddresses;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Unix_socket_directories;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ListenAddresses;
 extern PGDLLIMPORT bool ClientAuthInProgress;
-extern PGDLLIMPORT int PreAuthDelay;
-extern PGDLLIMPORT int AuthenticationTimeout;
-extern PGDLLIMPORT bool log_hostname;
-extern PGDLLIMPORT bool enable_bonjour;
-extern PGDLLIMPORT char *bonjour_name;
-extern PGDLLIMPORT bool restart_after_crash;
-extern PGDLLIMPORT bool remove_temp_files_after_crash;
-extern PGDLLIMPORT bool send_abort_for_crash;
-extern PGDLLIMPORT bool send_abort_for_kill;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int PreAuthDelay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int AuthenticationTimeout;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_hostname;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool enable_bonjour;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *bonjour_name;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool restart_after_crash;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool remove_temp_files_after_crash;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool send_abort_for_crash;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool send_abort_for_kill;
 
 #ifdef WIN32
 extern PGDLLIMPORT HANDLE PostmasterHandle;

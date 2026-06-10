@@ -12,11 +12,13 @@
 #ifndef _WALWRITER_H
 #define _WALWRITER_H
 
+#include "utils/global_lifetime.h"
+
 #define DEFAULT_WAL_WRITER_FLUSH_AFTER ((1024 * 1024) / XLOG_BLCKSZ)
 
 /* GUC options */
-extern PGDLLIMPORT int WalWriterDelay;
-extern PGDLLIMPORT int WalWriterFlushAfter;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int WalWriterDelay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int WalWriterFlushAfter;
 
 pg_noreturn extern void WalWriterMain(const void *startup_data, size_t startup_data_len);
 

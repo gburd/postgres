@@ -14,6 +14,8 @@
 
 #include <limits.h>				/* for PIPE_BUF */
 
+#include "utils/global_lifetime.h"
+
 
 /*
  * Primitive protocol structure for writing to syslogger pipe(s).  The idea
@@ -67,13 +69,13 @@ typedef union
 #define PIPE_PROTO_DEST_JSONLOG	0x40
 
 /* GUC options */
-extern PGDLLIMPORT bool Logging_collector;
-extern PGDLLIMPORT int Log_RotationAge;
-extern PGDLLIMPORT int Log_RotationSize;
-extern PGDLLIMPORT char *Log_directory;
-extern PGDLLIMPORT char *Log_filename;
-extern PGDLLIMPORT bool Log_truncate_on_rotation;
-extern PGDLLIMPORT int Log_file_mode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool Logging_collector;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_RotationAge;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_RotationSize;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_directory;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_filename;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool Log_truncate_on_rotation;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_file_mode;
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT pg_time_t first_syslogger_file_time;

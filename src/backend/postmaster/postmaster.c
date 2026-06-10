@@ -201,13 +201,13 @@ btmask_contains(BackendTypeMask mask, BackendType t)
 BackgroundWorker *MyBgworkerEntry = NULL;
 
 /* The socket number we are listening for connections on */
-int			PostPortNumber = DEF_PGPORT;
+PG_GLOBAL_RUNTIME int PostPortNumber = DEF_PGPORT;
 
 /* The directory names for Unix socket(s) */
-char	   *Unix_socket_directories;
+PG_GLOBAL_RUNTIME char *Unix_socket_directories;
 
 /* The TCP listen address(es) */
-char	   *ListenAddresses;
+PG_GLOBAL_RUNTIME char *ListenAddresses;
 
 /*
  * SuperuserReservedConnections is the number of backends reserved for
@@ -227,8 +227,8 @@ char	   *ListenAddresses;
  * connections.  Note that pre-existing superuser and
  * pg_use_reserved_connections connections don't count against the limits.
  */
-int			SuperuserReservedConnections;
-int			ReservedConnections;
+PG_GLOBAL_RUNTIME int SuperuserReservedConnections;
+PG_GLOBAL_RUNTIME int ReservedConnections;
 
 /* The socket(s) we're listening to. */
 #define MAXLISTEN	64
@@ -236,17 +236,17 @@ static int	NumListenSockets = 0;
 static pgsocket *ListenSockets = NULL;
 
 /* still more option variables */
-bool		EnableSSL = false;
+PG_GLOBAL_RUNTIME bool EnableSSL = false;
 
-int			PreAuthDelay = 0;
-int			AuthenticationTimeout = 60;
+PG_GLOBAL_RUNTIME int PreAuthDelay = 0;
+PG_GLOBAL_RUNTIME int AuthenticationTimeout = 60;
 
-bool		log_hostname;		/* for ps display and logging */
+PG_GLOBAL_RUNTIME bool log_hostname;	/* for ps display and logging */
 
-bool		enable_bonjour = false;
-char	   *bonjour_name;
-bool		restart_after_crash = true;
-bool		remove_temp_files_after_crash = true;
+PG_GLOBAL_RUNTIME bool enable_bonjour = false;
+PG_GLOBAL_RUNTIME char *bonjour_name;
+PG_GLOBAL_RUNTIME bool restart_after_crash = true;
+PG_GLOBAL_RUNTIME bool remove_temp_files_after_crash = true;
 
 /*
  * When terminating child processes after fatal errors, like a crash of a
@@ -254,8 +254,8 @@ bool		remove_temp_files_after_crash = true;
  * file are written on the assumption that we do -- but developers might
  * prefer to use SIGABRT to collect per-child core dumps.
  */
-bool		send_abort_for_crash = false;
-bool		send_abort_for_kill = false;
+PG_GLOBAL_RUNTIME bool send_abort_for_crash = false;
+PG_GLOBAL_RUNTIME bool send_abort_for_kill = false;
 
 /* special child processes; NULL when not running */
 static PMChild *StartupPMChild = NULL,

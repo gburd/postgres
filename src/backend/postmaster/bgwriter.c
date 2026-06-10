@@ -56,7 +56,7 @@
 /*
  * GUC parameters
  */
-int			BgWriterDelay = 200;
+PG_GLOBAL_RUNTIME int BgWriterDelay = 200;
 
 /*
  * Multiplier to apply to BgWriterDelay when we decide to hibernate.

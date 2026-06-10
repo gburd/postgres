@@ -164,9 +164,9 @@ const ShmemCallbacks CheckpointerShmemCallbacks = {
 /*
  * GUC parameters
  */
-int			CheckPointTimeout = 300;
-int			CheckPointWarning = 30;
-double		CheckPointCompletionTarget = 0.9;
+PG_GLOBAL_RUNTIME int CheckPointTimeout = 300;
+PG_GLOBAL_RUNTIME int CheckPointWarning = 30;
+PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
 
 /*
  * Private state

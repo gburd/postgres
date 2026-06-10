@@ -68,13 +68,13 @@
  * GUC parameters.  Logging_collector cannot be changed after postmaster
  * start, but the rest can change at SIGHUP.
  */
-bool		Logging_collector = false;
-int			Log_RotationAge = HOURS_PER_DAY * MINS_PER_HOUR;
-int			Log_RotationSize = 10 * 1024;
-char	   *Log_directory = NULL;
-char	   *Log_filename = NULL;
-bool		Log_truncate_on_rotation = false;
-int			Log_file_mode = S_IRUSR | S_IWUSR;
+PG_GLOBAL_RUNTIME bool Logging_collector = false;
+PG_GLOBAL_RUNTIME int Log_RotationAge = HOURS_PER_DAY * MINS_PER_HOUR;
+PG_GLOBAL_RUNTIME int Log_RotationSize = 10 * 1024;
+PG_GLOBAL_RUNTIME char *Log_directory = NULL;
+PG_GLOBAL_RUNTIME char *Log_filename = NULL;
+PG_GLOBAL_RUNTIME bool Log_truncate_on_rotation = false;
+PG_GLOBAL_RUNTIME int Log_file_mode = S_IRUSR | S_IWUSR;
 
 /*
  * Private state
