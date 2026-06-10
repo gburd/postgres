@@ -501,9 +501,9 @@ typedef struct PROC_HDR
 	int			startupBufferPinWaitBufId;
 } PROC_HDR;
 
-extern PGDLLIMPORT PROC_HDR *ProcGlobal;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PROC_HDR *ProcGlobal;
 
-extern PGDLLIMPORT PGPROC *PreparedXactProcs;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs;
 
 /*
  * Accessors for getting PGPROC given a ProcNumber and vice versa.
@@ -545,7 +545,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleSessionTimeout;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *AuxiliaryProcs;
 #endif
 
 

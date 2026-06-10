@@ -1574,14 +1574,6 @@ src/backend/storage/lmgr/predicate.c	b9a8f09146471d5bbc7798e7fa41b2d1feb5487d	My
 src/backend/storage/lmgr/predicate.c	1a350bb1b9324d2803c87f96bea348a5f8831186	MyXactDidWrite	static bool MyXactDidWrite = false;
 src/backend/storage/lmgr/predicate.c	a902ac6e7d1841e0c1fbcdb9155b1db00b946082	SavedSerializableXact	static SERIALIZABLEXACT *SavedSerializableXact = InvalidSerializableXact;
 src/backend/storage/lmgr/predicate.c	3eb06432affa9b0e78c0527082a707f484927365	max_serializable_xacts	static int64 max_serializable_xacts;
-src/backend/storage/lmgr/proc.c	eb6d0d6534252e57a6d2cfdeba2565002b4aab15	ProcGlobal	PROC_HDR *ProcGlobal = NULL;
-src/backend/storage/lmgr/proc.c	d4e6316cfde85a61fa0a27c88589b0d7fd087a8b	AllProcsShmemPtr	static void *AllProcsShmemPtr;
-src/backend/storage/lmgr/proc.c	474d7b960dbc3ed39a4b106eed45df07e0e8abe3	FastPathLockArrayShmemPtr	static void *FastPathLockArrayShmemPtr;
-src/backend/storage/lmgr/proc.c	82a3f42afb56eedecb29d77606f477692f266038	AuxiliaryProcs	NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
-src/backend/storage/lmgr/proc.c	4eb7808affc2068254bb1bffafbb1dbde498ecf7	PreparedXactProcs	PGPROC *PreparedXactProcs = NULL;
-src/backend/storage/lmgr/proc.c	9b8df403200c917c0f82259a716773a6a27ceb74	TotalProcs	static uint32 TotalProcs;
-src/backend/storage/lmgr/proc.c	ccea5c12d2d6b1aedb504f2d0bcd77792fa3407e	ProcGlobalAllProcsShmemSize	static size_t ProcGlobalAllProcsShmemSize;
-src/backend/storage/lmgr/proc.c	23ea1698b2eefe5e1820f45a1ea47db4178d0326	FastPathLockArrayShmemSize	static size_t FastPathLockArrayShmemSize;
 src/backend/storage/lmgr/s_lock.c	3ef3453e48de59a2fe7c0d19005d31e6d366828c	local_my_wait_event_info	static uint32 local_my_wait_event_info;
 src/backend/storage/lmgr/s_lock.c	e2ec0b808716dba5e437f8e3af01b7b7f90eb381	my_wait_event_info	uint32 *my_wait_event_info = &local_my_wait_event_info;
 src/backend/storage/lmgr/s_lock.c	8477e97ed623c2e7fe2254fe1e76a7bc05830824	spins_per_delay	static int spins_per_delay = DEFAULT_SPINS_PER_DELAY;
@@ -2163,9 +2155,6 @@ src/include/storage/pg_shmem.h	311fedb87d7787bdbae0b3124b472657ca794dd1	UsedShme
 src/include/storage/pmsignal.h	49f17d9b6ba06e15429797319661c6385e45c65b	PMSignalState	extern PGDLLIMPORT volatile PMSignalData *PMSignalState;
 src/include/storage/pmsignal.h	abe21178acac26df42de1659455382c50f34ff86	postmaster_possibly_dead	extern PGDLLIMPORT volatile sig_atomic_t postmaster_possibly_dead;
 src/include/storage/proc.h	cc7b2ea2be080df8efc0304b9443bdcb491c56fd	FastPathLockGroupsPerBackend	extern PGDLLIMPORT int FastPathLockGroupsPerBackend;
-src/include/storage/proc.h	54a9945671e0cf504c4bec4abdb86dd810eb7434	ProcGlobal	extern PGDLLIMPORT PROC_HDR *ProcGlobal;
-src/include/storage/proc.h	d83c8f8fa8866e2ea2bb3dd1c5768096616a21ed	PreparedXactProcs	extern PGDLLIMPORT PGPROC *PreparedXactProcs;
-src/include/storage/proc.h	9fe059784e4da9352ca72d22881da3bb082bafbe	AuxiliaryProcs	extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
 src/include/storage/procsignal.h	3559b9e32f91ad976f901013b08e190af44c2834	ProcSignal	extern PGDLLIMPORT ProcSignalHeader *ProcSignal;
 src/include/storage/read_stream.h	5eefb9137c0f027b290768e7ab1aed02c0341199	ReadStream	struct ReadStream;
 src/include/storage/read_stream.h	61fd5bfc7338f828cee4345bb043ec4371f7fb71	IOStats	struct IOStats;

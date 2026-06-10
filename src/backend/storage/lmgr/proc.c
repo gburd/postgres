@@ -71,11 +71,11 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_waits = true;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc = NULL;
 
 /* Pointers to shared-memory structures */
-PROC_HDR   *ProcGlobal = NULL;
-static void *AllProcsShmemPtr;
-static void *FastPathLockArrayShmemPtr;
-NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
-PGPROC	   *PreparedXactProcs = NULL;
+PG_GLOBAL_SHMEM PROC_HDR *ProcGlobal = NULL;
+static PG_GLOBAL_SHMEM void *AllProcsShmemPtr;
+static PG_GLOBAL_SHMEM void *FastPathLockArrayShmemPtr;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
+PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs = NULL;
 
 static void ProcGlobalShmemRequest(void *arg);
 static void ProcGlobalShmemInit(void *arg);
@@ -85,9 +85,9 @@ const ShmemCallbacks ProcGlobalShmemCallbacks = {
 	.init_fn = ProcGlobalShmemInit,
 };
 
-static uint32 TotalProcs;
-static size_t ProcGlobalAllProcsShmemSize;
-static size_t FastPathLockArrayShmemSize;
+static PG_GLOBAL_RUNTIME uint32 TotalProcs;
+static PG_GLOBAL_RUNTIME size_t ProcGlobalAllProcsShmemSize;
+static PG_GLOBAL_RUNTIME size_t FastPathLockArrayShmemSize;
 
 /* Is a deadlock check pending? */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t got_deadlock_timeout;

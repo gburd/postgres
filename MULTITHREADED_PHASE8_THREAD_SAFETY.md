@@ -24,6 +24,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `CurTransactionResourceOwner`, `TopTransactionResourceOwner`, and
   `AuxProcessResourceOwner`;
 - `MyProc` and `got_deadlock_timeout`;
+- PGPROC ownership structures: `ProcGlobal`, `AllProcsShmemPtr`,
+  `FastPathLockArrayShmemPtr`, `AuxiliaryProcs`, and `PreparedXactProcs` as
+  shared-memory state, plus the proc sizing/request globals as runtime state;
 - error stack state: `error_context_stack`, `PG_exception_stack`, `errordata`,
   `errordata_stack_depth`, and `recursion_depth`;
 - timeout registration and pending-delivery state in `timeout.c`;
@@ -656,9 +659,10 @@ Validation for this slice:
   replication/WAL-capacity slice: `guc`;
 - focused `inval.o`, `reorderbuffer.o`, `walsender.o`, `walreceiver.o`,
   `stack_depth.o`, `ps_status.o`, `storage.o`, `instr_time.o`, `string_utils.o`,
-  and `fd.o` compile coverage after classifying the final USERSET/SUSET GUC
-  backing variables, frontend `quote_all_identifiers` singleton, and
-  temporary-file tablespace selection state;
+  `fd.o`, and `proc.o` compile coverage after classifying the final
+  USERSET/SUSET GUC backing variables, frontend `quote_all_identifiers`
+  singleton, temporary-file tablespace selection state, and shared PGPROC
+  ownership annotations;
 - backend clean plus generated-header recovery, followed by clean `gmake -j8`
   after converting final installed-header declarations to `PG_THREAD_LOCAL`
   or explicit runtime/dynamic classifications;
