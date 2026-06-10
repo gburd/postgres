@@ -197,6 +197,11 @@ Important current files:
   `date time timetz timestamp timestamptz interval` before `horology` in direct
   focused runs, matching `parallel_schedule`.
 
+  The `privileges` test has an opening large-object cleanup query whose
+  expected output assumes no matching leftover objects. In direct focused runs
+  that include both files, run `privileges` before `largeobject`, or run them
+  in separate temp instances.
+
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
 - The extension backend-model tests need the test extension module installed

@@ -1702,9 +1702,6 @@ src/backend/storage/ipc/waiteventset.c	f5d3262b71ee6686e65556b6a8c29804a0be2136	
 src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	selfpipe_readfd	static int selfpipe_readfd = -1;
 src/backend/storage/ipc/waiteventset.c	3c8aa452cd57001102cc8e86633c7f9ea3d6aa0d	selfpipe_writefd	static int selfpipe_writefd = -1;
 src/backend/storage/ipc/waiteventset.c	d9d1f03cc68947f07dfc18bedeadff5566b4d578	selfpipe_owner_pid	static int selfpipe_owner_pid = 0;
-src/backend/storage/large_object/inv_api.c	7ecf11904d67d0c3090a0c00037bdcaca8040cab	lo_compat_privileges	bool lo_compat_privileges;
-src/backend/storage/large_object/inv_api.c	49cd2d981f36f6b572b12cbe0f1a48e01f525a7b	lo_heap_r	static Relation lo_heap_r = NULL;
-src/backend/storage/large_object/inv_api.c	1542d1dfbe02f713903740c9897b02366397b662	lo_index_r	static Relation lo_index_r = NULL;
 src/backend/storage/lmgr/condition_variable.c	71999aeb705e8bfff204388deded4801a044732b	cv_sleep_target	static ConditionVariable *cv_sleep_target = NULL;
 src/backend/storage/lmgr/deadlock.c	2bd7113d860878fab01f6162f28d8feb87df2d74	visitedProcs	static PGPROC **visitedProcs;
 src/backend/storage/lmgr/deadlock.c	79dcb1e22daf9049d2bd0e86dbabec03f9e01971	nVisitedProcs	static int nVisitedProcs;
@@ -2603,7 +2600,6 @@ src/include/storage/ipc.h	f1e3592b5dadf1ce8b26f4ee6139dd9fe8d76fa2	proc_exit_inp
 src/include/storage/ipc.h	14e8a2d6de5712d472488b63670cd6d9167d8bad	shmem_exit_inprogress	extern PGDLLIMPORT bool shmem_exit_inprogress;
 src/include/storage/ipc.h	e7fcd3c2408d6aed22487fa131aa22dd3a0295d7	shmem_startup_hook	extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
 src/include/storage/itemptr.h	b46efb77bc4bd50602ed09b88593b06fb3f274c3	ItemPointerData	pg_attribute_packed() pg_attribute_aligned(2) ItemPointerData;
-src/include/storage/large_object.h	73134238a3fdfb6c4992b1b138d10b8f27e36e47	lo_compat_privileges	extern PGDLLIMPORT bool lo_compat_privileges;
 src/include/storage/lock.h	e221efa8ad46d40d217900d657b44b7f87dafbf2	max_locks_per_xact	extern PGDLLIMPORT int max_locks_per_xact;
 src/include/storage/lock.h	61f77369ccda26381a90c2749e214726cab3f013	log_lock_failures	extern PGDLLIMPORT bool log_lock_failures;
 src/include/storage/lock.h	110f5e29c57a06e3bfb29b014e6e7a9e569178c0	Trace_lock_oidmin	extern PGDLLIMPORT int Trace_lock_oidmin;
