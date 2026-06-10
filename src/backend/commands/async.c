@@ -579,7 +579,7 @@ static ProcNumber *signalProcnos = NULL;
 static bool tryAdvanceTail = false;
 
 /* GUC parameters */
-bool		Trace_notify = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_notify = false;
 
 /* For 8 KB pages this gives 8 GB of disk space */
 int			max_notify_queue_pages = 1048576;

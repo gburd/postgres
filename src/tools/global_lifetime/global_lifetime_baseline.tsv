@@ -298,7 +298,6 @@ src/backend/commands/async.c	d0602f918a933479dc4fa104aaadf45c6e4fb146	queueHeadA
 src/backend/commands/async.c	1a4dfb5c2fc907f974ae9dd920221f148194f713	signalPids	static int32 *signalPids = NULL;
 src/backend/commands/async.c	c11aff5e4419fdf7439cdef5fe78d1bac8067895	signalProcnos	static ProcNumber *signalProcnos = NULL;
 src/backend/commands/async.c	a5723b0e7c65e2062e0f5523042ef7220901f5f5	tryAdvanceTail	static bool tryAdvanceTail = false;
-src/backend/commands/async.c	c9a62d325684fcd1c93775432788f3243a8e1d84	Trace_notify	bool Trace_notify = false;
 src/backend/commands/async.c	029a558d4922d63ebdddb184ed116f5c2b1bccb5	max_notify_queue_pages	int max_notify_queue_pages = 1048576;
 src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;
 src/backend/commands/explain.c	26ef79048cb49f56f1223d0c84968838b5f7066d	ExplainOneQuery_hook	ExplainOneQuery_hook_type ExplainOneQuery_hook = NULL;
@@ -2307,7 +2306,6 @@ src/include/catalog/namespace.h	0d629e08bb64acabc25d6d7b27ca413025cc4bdb	namespa
 src/include/catalog/objectaccess.h	f346b363efa6414b427b92580eca4864692ce78e	object_access_hook	extern PGDLLIMPORT object_access_hook_type object_access_hook;
 src/include/catalog/objectaccess.h	3da946876eacde33ee1e493ae92c600a84efff4f	object_access_hook_str	extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
 src/include/catalog/storage.h	cf0ca2a6bb14a02764748a9a8f8e9eb6c6f28a05	wal_skip_threshold	extern PGDLLIMPORT int wal_skip_threshold;
-src/include/commands/async.h	4a45e07b2ce7b8cb7e941db73dbe55399d273653	Trace_notify	extern PGDLLIMPORT bool Trace_notify;
 src/include/commands/async.h	1342f3c4d76f6e59e45040ec37124538f63ded55	max_notify_queue_pages	extern PGDLLIMPORT int max_notify_queue_pages;
 src/include/commands/explain.h	85976e338d99d112da6a93514c69eb926adeaf7a	ExplainOneQuery_hook	extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
 src/include/commands/explain.h	8a86bac1a88aae65b68e4a6dab7dfab508a7db10	explain_per_plan_hook	extern PGDLLIMPORT explain_per_plan_hook_type explain_per_plan_hook;

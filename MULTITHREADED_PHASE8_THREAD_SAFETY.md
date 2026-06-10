@@ -121,6 +121,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `CurrentExtensionObject`.
 - GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
   `gin_pending_list_limit`.
+- async notify tracing USERSET GUC backing variable: `Trace_notify`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -158,7 +159,7 @@ Phase 8 still needs to cover at least:
   exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the GIN GUC slice, the filtered static report contains 244
+After the async notify tracing GUC slice, the filtered static report contains 243
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -297,6 +298,14 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `gin_fuzzy_search_limit` and
   `gin_pending_list_limit`, including a GIN index reloption override for
   `gin_pending_list_limit`;
+- fixture-backed async notify regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc async`;
+- live temp-cluster smoke coverage for `trace_notify`, including `SET`,
+  `SHOW`, `LISTEN`, and `NOTIFY`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
