@@ -23,6 +23,7 @@
 #include "catalog/pg_type.h"
 #include "parser/parse_node.h"
 #include "storage/buf.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 /*
@@ -322,7 +323,8 @@ typedef struct PVWorkerUsage
 } PVWorkerUsage;
 
 /* GUC parameters */
-extern PGDLLIMPORT int default_statistics_target;	/* PGDLLIMPORT for PostGIS */
+/* Exported for PostGIS. */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int default_statistics_target;
 extern PGDLLIMPORT int vacuum_freeze_min_age;
 extern PGDLLIMPORT int vacuum_freeze_table_age;
 extern PGDLLIMPORT int vacuum_multixact_freeze_min_age;

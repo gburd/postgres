@@ -144,6 +144,12 @@ Important current files:
   gmake -C src/pl/plpgsql/src DESTDIR="$PWD/tmp_install" install
   ```
 
+- If an installed header changes a global from plain storage to
+  `PG_THREAD_LOCAL`, do not trust a purely incremental backend build. Stale
+  backend objects can still compile and link but then crash during `initdb`
+  post-bootstrap single-user startup. Use the backend clean plus generated-file
+  recovery above, then rebuild with `gmake -j8`.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

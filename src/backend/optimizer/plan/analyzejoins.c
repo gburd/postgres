@@ -51,7 +51,7 @@ typedef struct
 	Oid			reloid;
 } SelfJoinCandidate;
 
-bool		enable_self_join_elimination;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_self_join_elimination;
 
 /* local functions */
 static bool join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo);

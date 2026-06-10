@@ -16,11 +16,12 @@
 
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
+#include "utils/global_lifetime.h"
 
 /* GUC parameters */
 #define DEFAULT_CURSOR_TUPLE_FRACTION 0.1
-extern PGDLLIMPORT double cursor_tuple_fraction;
-extern PGDLLIMPORT bool enable_self_join_elimination;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cursor_tuple_fraction;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_self_join_elimination;
 
 /* query_planner callback to compute query_pathkeys */
 typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
@@ -65,8 +66,8 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 /*
  * prototypes for plan/initsplan.c
  */
-extern PGDLLIMPORT int from_collapse_limit;
-extern PGDLLIMPORT int join_collapse_limit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int from_collapse_limit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int join_collapse_limit;
 
 extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
 extern void add_other_rels_to_query(PlannerInfo *root);

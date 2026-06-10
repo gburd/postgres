@@ -12,6 +12,7 @@
 #define JIT_H
 
 #include "executor/instrument.h"
+#include "utils/global_lifetime.h"
 #include "utils/resowner.h"
 
 
@@ -80,16 +81,16 @@ struct JitProviderCallbacks
 
 
 /* GUCs */
-extern PGDLLIMPORT bool jit_enabled;
-extern PGDLLIMPORT char *jit_provider;
-extern PGDLLIMPORT bool jit_debugging_support;
-extern PGDLLIMPORT bool jit_dump_bitcode;
-extern PGDLLIMPORT bool jit_expressions;
-extern PGDLLIMPORT bool jit_profiling_support;
-extern PGDLLIMPORT bool jit_tuple_deforming;
-extern PGDLLIMPORT double jit_above_cost;
-extern PGDLLIMPORT double jit_inline_above_cost;
-extern PGDLLIMPORT double jit_optimize_above_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_enabled;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *jit_provider;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_debugging_support;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_dump_bitcode;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_expressions;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_profiling_support;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_tuple_deforming;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_above_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_inline_above_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_optimize_above_cost;
 
 
 extern void jit_reset_after_error(void);

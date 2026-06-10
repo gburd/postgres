@@ -30,16 +30,16 @@
 #include "utils/fmgrprotos.h"
 
 /* GUCs */
-bool		jit_enabled = false;
-char	   *jit_provider = NULL;
-bool		jit_debugging_support = false;
-bool		jit_dump_bitcode = false;
-bool		jit_expressions = true;
-bool		jit_profiling_support = false;
-bool		jit_tuple_deforming = true;
-double		jit_above_cost = 100000;
-double		jit_inline_above_cost = 500000;
-double		jit_optimize_above_cost = 500000;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_enabled = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *jit_provider = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_debugging_support = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_dump_bitcode = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_expressions = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_profiling_support = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_tuple_deforming = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_above_cost = 100000;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_inline_above_cost = 500000;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_optimize_above_cost = 500000;
 
 static JitProviderCallbacks provider;
 static bool provider_successfully_loaded = false;

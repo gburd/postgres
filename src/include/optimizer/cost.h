@@ -15,6 +15,7 @@
 #define COST_H
 
 #include "nodes/pathnodes.h"
+#include "utils/global_lifetime.h"
 #include "nodes/plannodes.h"
 
 
@@ -48,29 +49,29 @@ typedef enum
 
 /* parameter variables and flags (see also optimizer.h) */
 extern PGDLLIMPORT Cost disable_cost;
-extern PGDLLIMPORT int max_parallel_workers_per_gather;
-extern PGDLLIMPORT bool enable_seqscan;
-extern PGDLLIMPORT bool enable_indexscan;
-extern PGDLLIMPORT bool enable_indexonlyscan;
-extern PGDLLIMPORT bool enable_bitmapscan;
-extern PGDLLIMPORT bool enable_tidscan;
-extern PGDLLIMPORT bool enable_sort;
-extern PGDLLIMPORT bool enable_incremental_sort;
-extern PGDLLIMPORT bool enable_hashagg;
-extern PGDLLIMPORT bool enable_nestloop;
-extern PGDLLIMPORT bool enable_material;
-extern PGDLLIMPORT bool enable_memoize;
-extern PGDLLIMPORT bool enable_mergejoin;
-extern PGDLLIMPORT bool enable_hashjoin;
-extern PGDLLIMPORT bool enable_gathermerge;
-extern PGDLLIMPORT bool enable_partitionwise_join;
-extern PGDLLIMPORT bool enable_partitionwise_aggregate;
-extern PGDLLIMPORT bool enable_parallel_append;
-extern PGDLLIMPORT bool enable_parallel_hash;
-extern PGDLLIMPORT bool enable_partition_pruning;
-extern PGDLLIMPORT bool enable_presorted_aggregate;
-extern PGDLLIMPORT bool enable_async_append;
-extern PGDLLIMPORT int constraint_exclusion;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_workers_per_gather;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_seqscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexonlyscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_bitmapscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_tidscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_sort;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_incremental_sort;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashagg;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_nestloop;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_material;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_memoize;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_mergejoin;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashjoin;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_gathermerge;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_join;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_aggregate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_append;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_hash;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partition_pruning;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_presorted_aggregate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_async_append;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int constraint_exclusion;
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

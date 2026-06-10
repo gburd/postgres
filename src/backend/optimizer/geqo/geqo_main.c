@@ -42,11 +42,11 @@
 /*
  * Configuration options
  */
-int			Geqo_effort;
-int			Geqo_pool_size;
-int			Geqo_generations;
-double		Geqo_selection_bias;
-double		Geqo_seed;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_effort;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_pool_size;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_generations;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_selection_bias;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_seed;
 
 /* GEQO is treated as an in-core planner extension */
 int			Geqo_planner_extension_id = -1;

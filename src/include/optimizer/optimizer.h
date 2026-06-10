@@ -23,6 +23,7 @@
 #define OPTIMIZER_H
 
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
@@ -70,15 +71,15 @@ extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
 /* in path/costsize.c: */
 
 /* widely used cost parameters */
-extern PGDLLIMPORT double seq_page_cost;
-extern PGDLLIMPORT double random_page_cost;
-extern PGDLLIMPORT double cpu_tuple_cost;
-extern PGDLLIMPORT double cpu_index_tuple_cost;
-extern PGDLLIMPORT double cpu_operator_cost;
-extern PGDLLIMPORT double parallel_tuple_cost;
-extern PGDLLIMPORT double parallel_setup_cost;
-extern PGDLLIMPORT double recursive_worktable_factor;
-extern PGDLLIMPORT int effective_cache_size;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double seq_page_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double random_page_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_tuple_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_index_tuple_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_operator_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double parallel_tuple_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double parallel_setup_cost;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double recursive_worktable_factor;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int effective_cache_size;
 
 extern double clamp_row_est(double nrows);
 extern int32 clamp_width_est(int64 tuple_width);
@@ -99,9 +100,9 @@ typedef enum
 }			DebugParallelMode;
 
 /* GUC parameters */
-extern PGDLLIMPORT int debug_parallel_query;
-extern PGDLLIMPORT bool parallel_leader_participation;
-extern PGDLLIMPORT bool enable_distinct_reordering;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_parallel_query;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool parallel_leader_participation;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_distinct_reordering;
 
 extern PlannedStmt *planner(Query *parse, const char *query_string,
 							int cursorOptions,

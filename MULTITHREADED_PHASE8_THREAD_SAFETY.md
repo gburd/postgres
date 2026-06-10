@@ -64,7 +64,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   including the timeout and lock-wait GUCs in `proc.c`, startup and resource
   GUCs in `globals.c` and `miscinit.c`, tcop logging/connection GUCs, RLS
   state, and the exported logging/debug GUCs in `guc_tables.c` including
-  `check_function_bodies`.
+  `check_function_bodies`;
+- planner, analyze, GEQO, and JIT GUC backing variables, including
+  `default_statistics_target`, the `jit_*` cost and feature toggles,
+  `enable_geqo`, the GEQO tuning variables, planner cost constants, path
+  enablement toggles, parallel planner toggles, partition-pruning toggles,
+  collapse limits, `constraint_exclusion`, and the eager/distinct/self-join
+  planner toggles.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -117,7 +123,22 @@ Validation for this slice:
   `main()`;
 - clean `gmake -j8` after making `ConfigureNames[]` an immutable template and
   rebinding GUC backing-variable pointers at runtime;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header planner/JIT declarations to
+  `PG_THREAD_LOCAL`;
 - focused core GUC regression test: `guc`;
+- fixture-backed planner/JIT regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc join
+  aggregates incremental_sort plancache limit plpgsql copy2 temp domain
+  rangefuncs prepare conversion truncate alter_table sequence polymorphism
+  rowtypes returning largeobject with xml partition_merge partition_split
+  partition_join partition_prune reloptions hash_part indexing
+  partition_aggregate partition_info tuplesort explain memoize predicate numa
+  eager_aggregate planner_est`;
 - unsafe test module GUC privilege regression test: `guc_privs`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
@@ -127,6 +148,8 @@ Validation for this slice:
   previously classified Phase 8 globals are no longer carried as stale
   unclassified debt;
 - filtered static scan for the touched required-floor names;
+- filtered non-TLS extern mismatch search for the planner/JIT/analyze GUC
+  backing variables;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and

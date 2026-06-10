@@ -27,6 +27,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/extendplan.h"
 #include "optimizer/geqo_gene.h"
+#include "utils/global_lifetime.h"
 
 
 /* GEQO debug flag */
@@ -51,18 +52,20 @@
  *
  * If you change these, update backend/utils/misc/postgresql.conf.sample
  */
-extern PGDLLIMPORT int Geqo_effort; /* 1 .. 10, knob for adjustment of
-									 * defaults */
+/* 1 .. 10, knob for adjustment of defaults */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_effort;
 
 #define DEFAULT_GEQO_EFFORT 5
 #define MIN_GEQO_EFFORT 1
 #define MAX_GEQO_EFFORT 10
 
-extern PGDLLIMPORT int Geqo_pool_size;	/* 2 .. inf, or 0 to use default */
+/* 2 .. inf, or 0 to use default */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_pool_size;
 
-extern PGDLLIMPORT int Geqo_generations;	/* 1 .. inf, or 0 to use default */
+/* 1 .. inf, or 0 to use default */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_generations;
 
-extern PGDLLIMPORT double Geqo_selection_bias;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_selection_bias;
 
 extern PGDLLIMPORT int Geqo_planner_extension_id;
 
@@ -70,7 +73,8 @@ extern PGDLLIMPORT int Geqo_planner_extension_id;
 #define MIN_GEQO_SELECTION_BIAS 1.5
 #define MAX_GEQO_SELECTION_BIAS 2.0
 
-extern PGDLLIMPORT double Geqo_seed;	/* 0 .. 1 */
+/* 0 .. 1 */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_seed;
 
 
 /*

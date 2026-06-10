@@ -15,18 +15,19 @@
 #define PATHS_H
 
 #include "nodes/pathnodes.h"
+#include "utils/global_lifetime.h"
 
 
 /*
  * allpaths.c
  */
-extern PGDLLIMPORT bool enable_geqo;
-extern PGDLLIMPORT bool enable_eager_aggregate;
-extern PGDLLIMPORT int geqo_threshold;
-extern PGDLLIMPORT double min_eager_agg_group_size;
-extern PGDLLIMPORT int min_parallel_table_scan_size;
-extern PGDLLIMPORT int min_parallel_index_scan_size;
-extern PGDLLIMPORT bool enable_group_by_reordering;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_geqo;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_eager_aggregate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int geqo_threshold;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double min_eager_agg_group_size;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_table_scan_size;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_index_scan_size;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_group_by_reordering;
 
 /* Hooks for plugins to get control in set_rel_pathlist() */
 typedef void (*join_path_setup_hook_type) (PlannerInfo *root,

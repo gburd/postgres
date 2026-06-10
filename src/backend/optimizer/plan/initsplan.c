@@ -38,8 +38,8 @@
 #include "utils/typcache.h"
 
 /* These parameters are set by GUC */
-int			from_collapse_limit;
-int			join_collapse_limit;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int from_collapse_limit;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int join_collapse_limit;
 
 
 /*
