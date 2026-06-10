@@ -1,0 +1,70 @@
+Global lifetime annotations
+===========================
+
+This directory contains tooling for the `PG_GLOBAL_*` annotations defined in
+`src/include/utils/global_lifetime.h`.
+
+The annotations are intentionally no-ops for C compilation.  Their purpose is
+to make mutable process globals visible while the multithreaded runtime work
+migrates state onto explicit runtime, carrier, backend, session, connection and
+execution objects.
+
+Usage
+-----
+
+Run the scanner from the repository root:
+
+    perl src/tools/global_lifetime/scan_global_lifetimes.pl
+
+Check that no new unclassified mutable globals have appeared:
+
+    perl src/tools/global_lifetime/scan_global_lifetimes.pl \
+      --baseline src/tools/global_lifetime/global_lifetime_baseline.tsv
+
+Refresh the baseline after deliberately accepting the current unclassified set:
+
+    perl src/tools/global_lifetime/scan_global_lifetimes.pl \
+      --write-baseline src/tools/global_lifetime/global_lifetime_baseline.tsv
+
+Write a full report with classified and unclassified declarations:
+
+    perl src/tools/global_lifetime/scan_global_lifetimes.pl \
+      --baseline src/tools/global_lifetime/global_lifetime_baseline.tsv \
+      --show-classified \
+      --report /tmp/global-lifetime-report.tsv
+
+The scanner is a heuristic top-level declaration scanner, not a full C parser.
+False positives are acceptable in the baseline while Phase 4 is about
+visibility, but new mutable globals should normally be annotated instead of
+added to the baseline.
+
+Ownership classes
+-----------------
+
+`PG_GLOBAL_RUNTIME`
+    Server/runtime-wide singleton state shared across logical backends.
+
+`PG_GLOBAL_IMMUTABLE`
+    Immutable singleton state, used when an explicit marker is helpful.
+
+`PG_GLOBAL_DYNAMIC`
+    Mutable singleton state whose ownership is intentionally singular but not
+    naturally part of the runtime object yet.
+
+`PG_GLOBAL_BACKEND`
+    State that belongs to one logical backend.
+
+`PG_GLOBAL_SESSION`
+    State that belongs to one user session.
+
+`PG_GLOBAL_EXECUTION`
+    State that belongs to one command or protected execution step.
+
+`PG_GLOBAL_CARRIER`
+    State that belongs to the carrier currently running backend work.
+
+`PG_GLOBAL_CONNECTION`
+    State that belongs to one client connection.
+
+`PG_GLOBAL_SHMEM`
+    State stored in, or directly representing, shared memory.
