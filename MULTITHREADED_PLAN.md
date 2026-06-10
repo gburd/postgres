@@ -259,6 +259,14 @@ Validation:
 - hot standby recovery conflict behavior where practical;
 - process-mode regressions.
 
+Phase 5 completion note:
+
+- The implementation routes recovery-conflict interrupts through the logical
+  backend mailbox and preserves the existing process-mode behavior.
+- A dedicated hot-standby recovery-conflict fixture was not built during Phase
+  5. Treat that as a validation gap to cover in Gate B or a focused follow-up,
+  not as an incomplete Phase 5 implementation item.
+
 ## Phase 6: Backend Lifecycle And Exit
 
 Goal: make backend termination logical so a threaded backend can exit without
