@@ -96,7 +96,7 @@ typedef struct regexp_matches_ctx
 #endif
 
 /* A parent memory context for regular expressions. */
-static MemoryContext RegexpCacheMemoryContext;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext RegexpCacheMemoryContext;
 
 /* this structure describes one cached regular expression */
 typedef struct cached_re_str

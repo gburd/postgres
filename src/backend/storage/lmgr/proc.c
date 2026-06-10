@@ -59,16 +59,16 @@
 #include "utils/wait_event.h"
 
 /* GUC variables */
-int			DeadlockTimeout = 1000;
-int			StatementTimeout = 0;
-int			LockTimeout = 0;
-int			IdleInTransactionSessionTimeout = 0;
-int			TransactionTimeout = 0;
-int			IdleSessionTimeout = 0;
-bool		log_lock_waits = true;
+PG_GLOBAL_SESSION int DeadlockTimeout = 1000;
+PG_GLOBAL_SESSION int StatementTimeout = 0;
+PG_GLOBAL_SESSION int LockTimeout = 0;
+PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout = 0;
+PG_GLOBAL_SESSION int TransactionTimeout = 0;
+PG_GLOBAL_SESSION int IdleSessionTimeout = 0;
+PG_GLOBAL_SESSION bool log_lock_waits = true;
 
 /* Pointer to this process's PGPROC struct, if any */
-PGPROC	   *MyProc = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc = NULL;
 
 /* Pointers to shared-memory structures */
 PROC_HDR   *ProcGlobal = NULL;
@@ -90,7 +90,7 @@ static size_t ProcGlobalAllProcsShmemSize;
 static size_t FastPathLockArrayShmemSize;
 
 /* Is a deadlock check pending? */
-static volatile sig_atomic_t got_deadlock_timeout;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t got_deadlock_timeout;
 
 static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);

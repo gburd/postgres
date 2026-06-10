@@ -175,11 +175,11 @@ struct PgExecution
 };
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime;
-extern PGDLLIMPORT PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
-extern PGDLLIMPORT PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
-extern PGDLLIMPORT PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
-extern PGDLLIMPORT PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
-extern PGDLLIMPORT PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);

@@ -23,6 +23,7 @@
 #include "access/htup.h"
 #include "access/skey.h"
 #include "lib/ilist.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 /*
@@ -191,7 +192,7 @@ typedef struct catcacheheader
 
 
 /* this extern duplicates utils/memutils.h... */
-extern PGDLLIMPORT MemoryContext CacheMemoryContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext;
 
 extern void CreateCacheMemoryContext(void);
 

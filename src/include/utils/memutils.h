@@ -18,6 +18,7 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -55,16 +56,16 @@
  * Only TopMemoryContext and ErrorContext are initialized by
  * MemoryContextInit() itself.
  */
-extern PGDLLIMPORT MemoryContext TopMemoryContext;
-extern PGDLLIMPORT MemoryContext ErrorContext;
-extern PGDLLIMPORT MemoryContext PostmasterContext;
-extern PGDLLIMPORT MemoryContext CacheMemoryContext;
-extern PGDLLIMPORT MemoryContext MessageContext;
-extern PGDLLIMPORT MemoryContext TopTransactionContext;
-extern PGDLLIMPORT MemoryContext CurTransactionContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ErrorContext;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME MemoryContext PostmasterContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext MessageContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext TopTransactionContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurTransactionContext;
 
 /* This is a transient link to the active portal's memory context: */
-extern PGDLLIMPORT MemoryContext PortalContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext PortalContext;
 
 
 /*

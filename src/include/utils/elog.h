@@ -17,6 +17,7 @@
 #include <setjmp.h>
 
 #include "lib/stringinfo.h"
+#include "utils/global_lifetime.h"
 
 /* We cannot include nodes.h yet, so forward-declare struct Node */
 struct Node;
@@ -315,7 +316,7 @@ typedef struct ErrorContextCallback
 	void	   *arg;
 } ErrorContextCallback;
 
-extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *error_context_stack;
 
 
 /*----------
@@ -421,7 +422,7 @@ extern PGDLLIMPORT ErrorContextCallback *error_context_stack;
 #define PG_RE_THROW()  \
 	pg_re_throw()
 
-extern PGDLLIMPORT sigjmp_buf *PG_exception_stack;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION sigjmp_buf *PG_exception_stack;
 
 
 /* Stuff that error handlers might want to use */

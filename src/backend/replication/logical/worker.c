@@ -471,13 +471,13 @@ static ApplyErrorCallbackArg apply_error_callback_arg =
 	.origin_name = NULL,
 };
 
-ErrorContextCallback *apply_error_context_stack = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack = NULL;
 
-MemoryContext ApplyMessageContext = NULL;
-MemoryContext ApplyContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessageContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext ApplyContext = NULL;
 
 /* per stream context for streaming transactions */
-static MemoryContext LogicalStreamingContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext LogicalStreamingContext = NULL;
 
 WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
 

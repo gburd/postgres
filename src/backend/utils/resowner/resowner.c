@@ -170,10 +170,10 @@ struct ResourceOwnerData
  *	  GLOBAL MEMORY															 *
  *****************************************************************************/
 
-ResourceOwner CurrentResourceOwner = NULL;
-ResourceOwner CurTransactionResourceOwner = NULL;
-ResourceOwner TopTransactionResourceOwner = NULL;
-ResourceOwner AuxProcessResourceOwner = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurrentResourceOwner = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurTransactionResourceOwner = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner TopTransactionResourceOwner = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner = NULL;
 
 /* #define RESOWNER_STATS */
 

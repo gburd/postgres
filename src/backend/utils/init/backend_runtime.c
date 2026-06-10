@@ -27,11 +27,11 @@
 #include "utils/backend_runtime.h"
 
 PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
-PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
-PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;
-PG_GLOBAL_CARRIER PgSession *CurrentPgSession = NULL;
-PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection = NULL;
-PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
 
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;

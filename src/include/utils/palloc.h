@@ -28,6 +28,8 @@
 #ifndef PALLOC_H
 #define PALLOC_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * Type MemoryContextData is declared in nodes/memnodes.h.  Most users
  * of memory allocation should just treat it as an abstract type, so we
@@ -56,7 +58,7 @@ typedef struct MemoryContextCallback
  * Avoid accessing it directly!  Instead, use MemoryContextSwitchTo()
  * to change the setting.
  */
-extern PGDLLIMPORT MemoryContext CurrentMemoryContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurrentMemoryContext;
 
 /*
  * Flags for MemoryContextAllocExtended.

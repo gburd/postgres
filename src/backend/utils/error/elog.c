@@ -97,9 +97,9 @@
 
 
 /* Global variables */
-ErrorContextCallback *error_context_stack = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *error_context_stack = NULL;
 
-sigjmp_buf *PG_exception_stack = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION sigjmp_buf *PG_exception_stack = NULL;
 
 /*
  * Hook for intercepting messages before they are sent to the server log.
@@ -153,11 +153,11 @@ static HANDLE backtrace_process = NULL;
 /* We provide a small stack of ErrorData records for re-entrant cases */
 #define ERRORDATA_STACK_SIZE  5
 
-static ErrorData errordata[ERRORDATA_STACK_SIZE];
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorData errordata[ERRORDATA_STACK_SIZE];
 
-static int	errordata_stack_depth = -1; /* index of topmost active frame */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int errordata_stack_depth = -1; /* index of topmost active frame */
 
-static int	recursion_depth = 0;	/* to detect actual recursion */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int recursion_depth = 0;	/* to detect actual recursion */
 
 /*
  * Saved timeval and buffers for formatted timestamps that might be used by

@@ -45,15 +45,15 @@ typedef struct timeout_params
 /*
  * List of possible timeout reasons in the order of enum TimeoutId.
  */
-static timeout_params all_timeouts[MAX_TIMEOUTS];
-static bool all_timeouts_initialized = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND timeout_params all_timeouts[MAX_TIMEOUTS];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool all_timeouts_initialized = false;
 
 /*
  * List of active timeouts ordered by their fin_time and priority.
  * This list is subject to change by the interrupt handler, so it's volatile.
  */
-static volatile int num_active_timeouts = 0;
-static timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int num_active_timeouts = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
 
 /*
  * Flag controlling whether the signal handler is allowed to do anything.
@@ -67,7 +67,7 @@ static timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
  *
  * We leave this "false" when we're not expecting interrupts, just in case.
  */
-static volatile sig_atomic_t alarm_enabled = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t alarm_enabled = false;
 
 #define disable_alarm() (alarm_enabled = false)
 #define enable_alarm()	(alarm_enabled = true)
@@ -78,10 +78,10 @@ static volatile sig_atomic_t alarm_enabled = false;
  * Note that the signal handler will unconditionally reset signal_pending to
  * false, so that can change asynchronously even when alarm_enabled is false.
  */
-static volatile sig_atomic_t signal_pending = false;
-static volatile TimestampTz signal_due_at = 0;
-static PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
-static PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t signal_pending = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile TimestampTz signal_due_at = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
 
 
 /*****************************************************************************

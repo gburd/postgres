@@ -23,6 +23,7 @@
 #include "storage/proclist_types.h"
 #include "storage/procnumber.h"
 #include "storage/spin.h"
+#include "utils/global_lifetime.h"
 
 /* Avoid including clog.h here */
 typedef int XidStatus;
@@ -385,7 +386,7 @@ typedef struct PGPROC
 }
 PGPROC;
 
-extern PGDLLIMPORT PGPROC *MyProc;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc;
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.
@@ -535,13 +536,13 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 
 /* configurable options */
-extern PGDLLIMPORT int DeadlockTimeout;
-extern PGDLLIMPORT int StatementTimeout;
-extern PGDLLIMPORT int LockTimeout;
-extern PGDLLIMPORT int IdleInTransactionSessionTimeout;
-extern PGDLLIMPORT int TransactionTimeout;
-extern PGDLLIMPORT int IdleSessionTimeout;
-extern PGDLLIMPORT bool log_lock_waits;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int DeadlockTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int StatementTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int LockTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int TransactionTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION int IdleSessionTimeout;
+extern PGDLLIMPORT PG_GLOBAL_SESSION bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT PGPROC *AuxiliaryProcs;

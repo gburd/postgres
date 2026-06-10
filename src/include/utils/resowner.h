@@ -19,6 +19,7 @@
 #ifndef RESOWNER_H
 #define RESOWNER_H
 
+#include "utils/global_lifetime.h"
 
 /*
  * ResourceOwner objects are an opaque data structure known only within
@@ -30,10 +31,10 @@ typedef struct ResourceOwnerData *ResourceOwner;
 /*
  * Globally known ResourceOwners
  */
-extern PGDLLIMPORT ResourceOwner CurrentResourceOwner;
-extern PGDLLIMPORT ResourceOwner CurTransactionResourceOwner;
-extern PGDLLIMPORT ResourceOwner TopTransactionResourceOwner;
-extern PGDLLIMPORT ResourceOwner AuxProcessResourceOwner;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurrentResourceOwner;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurTransactionResourceOwner;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner TopTransactionResourceOwner;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner;
 
 /*
  * Resource releasing is done in three phases: pre-locks, locks, and

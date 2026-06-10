@@ -159,22 +159,22 @@ static const MemoryContextMethods mcxt_methods[] = {
  * CurrentMemoryContext
  *		Default memory context for allocations.
  */
-MemoryContext CurrentMemoryContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurrentMemoryContext = NULL;
 
 /*
  * Standard top-level contexts. For a description of the purpose of each
  * of these contexts, refer to src/backend/utils/mmgr/README
  */
-MemoryContext TopMemoryContext = NULL;
-MemoryContext ErrorContext = NULL;
-MemoryContext PostmasterContext = NULL;
-MemoryContext CacheMemoryContext = NULL;
-MemoryContext MessageContext = NULL;
-MemoryContext TopTransactionContext = NULL;
-MemoryContext CurTransactionContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ErrorContext = NULL;
+PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext MessageContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext TopTransactionContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurTransactionContext = NULL;
 
 /* This is a transient link to the active portal's memory context: */
-MemoryContext PortalContext = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext PortalContext = NULL;
 
 /* Is memory context logging currently in progress? */
 static bool LogMemoryContextInProgress = false;

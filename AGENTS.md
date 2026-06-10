@@ -20,6 +20,9 @@ the code evolves.
   current backend lifecycle/exit boundary and deferred thread-runtime proof.
 - [MULTITHREADED_PHASE7_EXTENSIONS.md](MULTITHREADED_PHASE7_EXTENSIONS.md)
   records the extension backend-model gate and PL/pgSQL audit result.
+- [MULTITHREADED_PHASE8_THREAD_SAFETY.md](MULTITHREADED_PHASE8_THREAD_SAFETY.md)
+  records the first thread-local bridge for backend-local state and the
+  remaining Phase 8 thread-safety floor.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.

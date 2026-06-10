@@ -23,6 +23,7 @@
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
+#include "utils/global_lifetime.h"
 
 /* Different types of worker */
 typedef enum LogicalRepWorkerType
@@ -234,11 +235,11 @@ typedef struct ParallelApplyWorkerInfo
 } ParallelApplyWorkerInfo;
 
 /* Main memory context for apply worker. Permanent during worker lifetime. */
-extern PGDLLIMPORT MemoryContext ApplyContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext ApplyContext;
 
-extern PGDLLIMPORT MemoryContext ApplyMessageContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessageContext;
 
-extern PGDLLIMPORT ErrorContextCallback *apply_error_context_stack;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack;
 
 extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
 
