@@ -25,21 +25,22 @@
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "storage/shmem.h"
+#include "utils/global_lifetime.h"
 #include "utils/timestamp.h"
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
 typedef struct PGPROC PGPROC;
 
 /* GUC variables */
-extern PGDLLIMPORT int max_locks_per_xact;
-extern PGDLLIMPORT bool log_lock_failures;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_locks_per_xact;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_failures;
 
 #ifdef LOCK_DEBUG
-extern PGDLLIMPORT int Trace_lock_oidmin;
-extern PGDLLIMPORT bool Trace_locks;
-extern PGDLLIMPORT bool Trace_userlocks;
-extern PGDLLIMPORT int Trace_lock_table;
-extern PGDLLIMPORT bool Debug_deadlocks;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_oidmin;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_locks;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_userlocks;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_table;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_deadlocks;
 #endif							/* LOCK_DEBUG */
 
 

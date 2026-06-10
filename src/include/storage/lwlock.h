@@ -21,6 +21,7 @@
 #include "port/atomics.h"
 #include "storage/lwlocknames.h"
 #include "storage/proclist_types.h"
+#include "utils/global_lifetime.h"
 
 struct PGPROC;
 
@@ -110,7 +111,7 @@ typedef enum LWLockMode
 
 
 #ifdef LOCK_DEBUG
-extern PGDLLIMPORT bool Trace_lwlocks;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_lwlocks;
 #endif
 
 extern bool LWLockAcquire(LWLock *lock, LWLockMode mode);

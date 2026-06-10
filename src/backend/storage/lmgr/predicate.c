@@ -370,9 +370,9 @@ static SERIALIZABLEXACT *OldCommittedSxact;
  * attempt to degrade performance (mostly as false positive serialization
  * failure) gracefully in the face of memory pressure.
  */
-int			max_predicate_locks_per_xact;	/* in guc_tables.c */
-int			max_predicate_locks_per_relation;	/* in guc_tables.c */
-int			max_predicate_locks_per_page;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_xact;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_relation;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_page; /* in guc_tables.c */
 
 /*
  * This provides a list of objects in order to track transactions

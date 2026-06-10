@@ -251,7 +251,7 @@ static lwlock_stats lwlock_stats_dummy;
 #endif
 
 #ifdef LOCK_DEBUG
-bool		Trace_lwlocks = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_lwlocks = false;
 
 inline static void
 PRINT_LWDEBUG(const char *where, LWLock *lock, LWLockMode mode)
