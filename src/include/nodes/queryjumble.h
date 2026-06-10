@@ -15,6 +15,7 @@
 #define QUERYJUMBLE_H
 
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Struct for tracking locations/lengths of constants during normalization
@@ -87,7 +88,7 @@ enum ComputeQueryIdType
 };
 
 /* GUC parameters */
-extern PGDLLIMPORT int compute_query_id;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int compute_query_id;
 
 
 extern const char *CleanQuerytext(const char *query, int *location, int *len);
@@ -97,7 +98,7 @@ extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,
 extern JumbleState *JumbleQuery(Query *query);
 extern void EnableQueryId(void);
 
-extern PGDLLIMPORT bool query_id_enabled;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool query_id_enabled;
 
 /*
  * Returns whether query identifier computation has been enabled, either

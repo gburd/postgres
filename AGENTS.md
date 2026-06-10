@@ -105,7 +105,9 @@ Important current files:
 ## Local Build And Test Notes
 
 - This checkout is commonly built with GNU make on macOS. Use `gmake`, not the
-  BSD `make`.
+  BSD `make`. In the Codex desktop shell, Homebrew's bin directory may be
+  absent from `PATH`; if `gmake` is not found, use `/opt/homebrew/bin/gmake` or
+  export `PATH="/opt/homebrew/bin:$PATH"` before building.
 - After cleaning under `src/backend`, generated backend-side files can be
   missing while include-side `header-stamp` files and symlinks still exist. If
   the build fails with a missing header such as `utils/errcodes.h`, regenerate
@@ -201,6 +203,9 @@ Important current files:
   expected output assumes no matching leftover objects. In direct focused runs
   that include both files, run `privileges` before `largeobject`, or run them
   in separate temp instances.
+
+  The `stats` test expects helper objects from `stats_ext`; include
+  `stats_ext` before `stats` in direct focused runs.
 
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.

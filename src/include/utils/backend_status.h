@@ -11,6 +11,7 @@
 #define BACKEND_STATUS_H
 
 #include "datatype/timestamp.h"
+#include "utils/global_lifetime.h"
 #include "libpq/pqcomm.h"
 #include "miscadmin.h"			/* for BackendType */
 #include "storage/procnumber.h"
@@ -287,7 +288,7 @@ typedef struct LocalPgBackendStatus
  * GUC parameters
  * ----------
  */
-extern PGDLLIMPORT bool pgstat_track_activities;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities;
 extern PGDLLIMPORT int pgstat_track_activity_query_size;
 
 

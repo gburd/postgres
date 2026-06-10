@@ -41,7 +41,7 @@
  * GUC parameters
  * ----------
  */
-bool		pgstat_track_activities = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities = false;
 int			pgstat_track_activity_query_size = 1024;
 
 

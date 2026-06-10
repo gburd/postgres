@@ -202,8 +202,8 @@ static inline bool pgstat_is_kind_valid(PgStat_Kind kind);
  * ----------
  */
 
-bool		pgstat_track_counts = false;
-int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_counts = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
 
 
 /* ----------

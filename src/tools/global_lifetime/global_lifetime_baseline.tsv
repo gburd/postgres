@@ -1115,8 +1115,6 @@ src/backend/nodes/equalfuncs.switch.c	d922ab0d4e4245cc664b9e9a809b83798e989687	r
 src/backend/nodes/extensible.c	70dd56ab0cf88c0f8006b8c51750d07ceb6f86bb	extensible_node_methods	static HTAB *extensible_node_methods = NULL;
 src/backend/nodes/extensible.c	c5f14499e1efc7aad131caafcabc2cae22efd35d	custom_scan_methods	static HTAB *custom_scan_methods = NULL;
 src/backend/nodes/outfuncs.c	e40f297abcb5f78fac5fc133ebff6a1c300e2e56	write_location_fields	static bool write_location_fields = false;
-src/backend/nodes/queryjumblefuncs.c	f2a7597121c86d06783b759fabf0fc1127d392ec	compute_query_id	int compute_query_id = COMPUTE_QUERY_ID_AUTO;
-src/backend/nodes/queryjumblefuncs.c	18650322b2f89f1c3605af6b0a63458ea63714d9	query_id_enabled	bool query_id_enabled = false;
 src/backend/nodes/read.c	e97fccfe46a6f872767649d4a3ca4928c95517a7	pg_strtok_ptr	static const char *pg_strtok_ptr = NULL;
 src/backend/nodes/read.c	1bd73413e97a0e870d8ee963647d5ca09cb39d77	restore_location_fields	bool restore_location_fields = false;
 src/backend/optimizer/geqo/geqo_main.c	a4921145ff7752a0a55ac1c6cea295f9daaa2cf5	Geqo_planner_extension_id	int Geqo_planner_extension_id = -1;
@@ -1801,7 +1799,6 @@ src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	
 src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_alias	static const char *const tok_alias[] = { "", "asciiword", "word", "numword", "email", "url", "host", "sfloat", "version", "hword_numpart", "hword_part", "hword_asciipart", "blank", "tag", "protocol", "numhword", "asciihword", "hword", "u...
 src/backend/tsearch/wparser_def.c	71ab769f9f2c47cc39274c3a80feeec02544457a	lex_descr	static const char *const lex_descr[] = { "", "Word, all ASCII", "Word, all letters", "Word, letters and digits", "Email address", "URL", "Host", "Scientific notation", "Version number", "Hyphenated word part, letters and digits", "Hyphen...
 src/backend/tsearch/wparser_def.c	1c79a207573f27dcd41f5eac10fb248ccb97887b	TParser	struct TParser;
-src/backend/utils/activity/backend_status.c	dd3dd4e7fe0ef24fd2d74892538a155381a4e180	pgstat_track_activities	bool pgstat_track_activities = false;
 src/backend/utils/activity/backend_status.c	6251330fe86745ba14f1ec19f789b8a2c72d5a1b	pgstat_track_activity_query_size	int pgstat_track_activity_query_size = 1024;
 src/backend/utils/activity/backend_status.c	34ba356808adfe8882be4dd8e15d93e36ba9621f	MyBEEntry	PgBackendStatus *MyBEEntry = NULL;
 src/backend/utils/activity/backend_status.c	5663cb461faea4d5c37dff2a4a120bb520d70ba2	BackendStatusArray	static PgBackendStatus *BackendStatusArray = NULL;
@@ -1814,8 +1811,6 @@ src/backend/utils/activity/backend_status.c	1d7e941bda27537e0033df5f77c62348d82f
 src/backend/utils/activity/backend_status.c	e8899507037751b855c0eedf3fb24ea6cf783e11	localBackendStatusTable	static LocalPgBackendStatus *localBackendStatusTable = NULL;
 src/backend/utils/activity/backend_status.c	7b945dc0998a97db8ade006f55b5ebaba833a5a9	localNumBackends	static int localNumBackends = 0;
 src/backend/utils/activity/backend_status.c	36f20bf50ebc66be54b4056c859a52a9b4454100	backendStatusSnapContext	static MemoryContext backendStatusSnapContext;
-src/backend/utils/activity/pgstat.c	040e7c85311580e93924f67b8c4dbf109c4b86ee	pgstat_track_counts	bool pgstat_track_counts = false;
-src/backend/utils/activity/pgstat.c	7594593353fbbf1659b525f7c3cbce5d74564c5a	pgstat_fetch_consistency	int pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
 src/backend/utils/activity/pgstat.c	72a39b3f56068a278c9ef853ec230ed53d31c9ee	pgStatLocal	PgStat_LocalState pgStatLocal;
 src/backend/utils/activity/pgstat.c	48e314cecc6b0dc54c9d14b75ea8b65b0b55c6fb	pgstat_report_fixed	bool pgstat_report_fixed = false;
 src/backend/utils/activity/pgstat.c	6eca8b61c9af5a5cfe43bd61f86e42dddd9bddba	pgStatPendingContext	static MemoryContext pgStatPendingContext = NULL;
@@ -1839,7 +1834,6 @@ src/backend/utils/activity/pgstat_database.c	fcb3cb1b017b77a126153052b19ee67d3e5
 src/backend/utils/activity/pgstat_database.c	0e5afaea1adcc18ea10d7a885933c84fd538817b	pgStatXactCommit	static int pgStatXactCommit = 0;
 src/backend/utils/activity/pgstat_database.c	745154ebba30a3c9d51b0be64eb76c159aa21ccf	pgStatXactRollback	static int pgStatXactRollback = 0;
 src/backend/utils/activity/pgstat_database.c	6941b308c3fd238cefc826fd4b9e930ee32f0da4	pgLastSessionReportTime	static PgStat_Counter pgLastSessionReportTime = 0;
-src/backend/utils/activity/pgstat_function.c	98fd8eaa655a87ca74939bdec9d02703b03453f1	pgstat_track_functions	int pgstat_track_functions = TRACK_FUNC_OFF;
 src/backend/utils/activity/pgstat_function.c	c062e9d8f96afd9da7f4f694e1c6b377a40b6c0d	total_func_time	static instr_time total_func_time;
 src/backend/utils/activity/pgstat_io.c	c8cc0b19220c161b6a3fdeddc1c6b0c02e40eb7a	PendingIOStats	static PgStat_PendingIO PendingIOStats;
 src/backend/utils/activity/pgstat_io.c	e7747dea79fffd7964bd3a9ac4a21596da0081f9	have_iostats	static bool have_iostats = false;
@@ -2370,8 +2364,6 @@ src/include/nodes/pathnodes.h	56e6710a406a6d99d79fb72dd09c381cda594243	IndexPath
 src/include/nodes/pathnodes.h	87d1f3db53a3426e3fbe08abe67d7634a17810e1	CustomPathMethods	struct CustomPathMethods;
 src/include/nodes/plannodes.h	3d2f0ece3085a6c873319b19451ebad62d928e96	PartitionPruneInfo	struct PartitionPruneInfo;
 src/include/nodes/plannodes.h	496ffa8ee03ebfe355a6abdf034ed8c7a1e7999e	CustomScanMethods	struct CustomScanMethods;
-src/include/nodes/queryjumble.h	b9802688405d3df6c4d0cb09da900d2481b02796	compute_query_id	extern PGDLLIMPORT int compute_query_id;
-src/include/nodes/queryjumble.h	b5d4dd729a3e520ebe69e8fe34158366395d066b	query_id_enabled	extern PGDLLIMPORT bool query_id_enabled;
 src/include/nodes/readfuncs.h	5ffe8e83460e971f40cead0df321be115a4d6a4c	restore_location_fields	extern PGDLLIMPORT bool restore_location_fields;
 src/include/optimizer/cost.h	d6fc94daad0131390bca7683b236c7ab33acf4f6	disable_cost	extern PGDLLIMPORT Cost disable_cost;
 src/include/optimizer/geqo.h	45ac2f41a8a187e48e4f24fa54b91d7ca1c479ef	Geqo_planner_extension_id	extern PGDLLIMPORT int Geqo_planner_extension_id;
@@ -2394,9 +2386,6 @@ src/include/pg_getopt.h	34ac764e2a967ee408658295faaacb16445ab359	optreset	extern
 src/include/pgstat.h	0f7ce563121bd7a93e1ea9814150380f46f3b021	FunctionCallInfoBaseData	struct FunctionCallInfoBaseData;
 src/include/pgstat.h	25462517d36a32a10a1af5bb4071b856c7b1daf6	ReplicationSlot	struct ReplicationSlot;
 src/include/pgstat.h	80f9658ab4874b51dd60a34322a78e498467eaf8	xl_xact_stats_item	struct xl_xact_stats_item;
-src/include/pgstat.h	acb295258b0f42e277dd51e25bfa5b0abf0cfa9c	pgstat_track_counts	extern PGDLLIMPORT bool pgstat_track_counts;
-src/include/pgstat.h	54330471253548fc5040b3c2ff0b6a0ebe7116cb	pgstat_track_functions	extern PGDLLIMPORT int pgstat_track_functions;
-src/include/pgstat.h	ed19d6418b2a4553bb243feab76e4b97eff1087c	pgstat_fetch_consistency	extern PGDLLIMPORT int pgstat_fetch_consistency;
 src/include/pgstat.h	18e12d475b17a6e0d5a28d6cb60d356d8d927128	PendingBgWriterStats	extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
 src/include/pgstat.h	d4e6fcbc2078c738bbfb3b99efddcaf326214ac7	PendingCheckpointerStats	extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
 src/include/pgstat.h	622e1c10f9e702d66360bb49278d6831e67ad086	pgStatBlockReadTime	extern PGDLLIMPORT PgStat_Counter pgStatBlockReadTime;
@@ -2640,7 +2629,6 @@ src/include/tsearch/dicts/spell.h	9e6979fdbdff9c45d252d91dd0471d61c1715509	SPNod
 src/include/tsearch/dicts/spell.h	ccc678d388326b21bdb3534133fba457ce6fcd26	AffixNode	struct AffixNode;
 src/include/tsearch/ts_utils.h	dc2fdac146a049075e25162061f824973d1870c3	TSVectorParseStateData	struct TSVectorParseStateData;
 src/include/tsearch/ts_utils.h	ff4db33229f721a60c807b9f3be89205b697d581	TSQueryParserStateData	struct TSQueryParserStateData;
-src/include/utils/backend_status.h	73c30d4b248b09a847166798a6e97d7802c7fb33	pgstat_track_activities	extern PGDLLIMPORT bool pgstat_track_activities;
 src/include/utils/backend_status.h	567a3e9b4f59c28e731c94a43aaa6df151c5e633	pgstat_track_activity_query_size	extern PGDLLIMPORT int pgstat_track_activity_query_size;
 src/include/utils/backend_status.h	93a00df91ab4b493ac8a5ab98c5e9dfc3015b592	MyBEEntry	extern PGDLLIMPORT PgBackendStatus *MyBEEntry;
 src/include/utils/datetime.h	2ab3f02d3e115b0ce5172ec2f1a532cb277cc29e	tzEntry	struct tzEntry;

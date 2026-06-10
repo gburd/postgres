@@ -18,6 +18,7 @@
 #include "storage/locktag.h"
 #include "utils/backend_progress.h" /* for backward compatibility */	/* IWYU pragma: export */
 #include "utils/backend_status.h"	/* for backward compatibility */	/* IWYU pragma: export */
+#include "utils/global_lifetime.h"
 #include "utils/pgstat_kind.h"
 
 
@@ -836,9 +837,9 @@ extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
  */
 
 /* GUC parameters */
-extern PGDLLIMPORT bool pgstat_track_counts;
-extern PGDLLIMPORT int pgstat_track_functions;
-extern PGDLLIMPORT int pgstat_fetch_consistency;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_counts;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_track_functions;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_fetch_consistency;
 
 
 /*
