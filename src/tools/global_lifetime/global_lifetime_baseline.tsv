@@ -1793,7 +1793,6 @@ src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash
 src/backend/utils/hash/dynahash.c	ea1cbb7323c6dee8f6aa03cb8ce8a2bafa1e06d3	seq_scan_tables	static HTAB *seq_scan_tables[MAX_SEQ_SCANS];
 src/backend/utils/hash/dynahash.c	7bc6136857839b99e153ca2f91cba4d7d66e1406	seq_scan_level	static int seq_scan_level[MAX_SEQ_SCANS];
 src/backend/utils/hash/dynahash.c	71c727fbf6eef6f7f9635050ae786a89d7afcf88	num_seq_scans	static int num_seq_scans = 0;
-src/backend/utils/init/miscinit.c	0d933745c5d963c823e62ef8cdec5ff5cb4b8c7e	lock_files	static List *lock_files = NIL;
 src/backend/utils/init/postinit.c	f0296086935aba762238fa3f885c6e5b1a4831c1	ConnectionWarningsEmitted	static bool ConnectionWarningsEmitted;
 src/backend/utils/init/postinit.c	3d26fac6d529f384419a9a467caca3947de15d26	ConnectionWarningMessages	static List *ConnectionWarningMessages;
 src/backend/utils/init/postinit.c	ab26607849dbb77e10052033420505e796d23922	ConnectionWarningDetails	static List *ConnectionWarningDetails;

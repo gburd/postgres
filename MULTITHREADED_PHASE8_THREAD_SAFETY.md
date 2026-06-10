@@ -29,6 +29,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - deadlock detector workspace allocated by `InitDeadLockChecking()` for the
   current backend;
 - tcop usage-stat snapshots used by `ResetUsage()` and `ShowUsage()`;
+- lockfile cleanup list owned by the postmaster or standalone runtime;
 - PGPROC ownership structures: `ProcGlobal`, `AllProcsShmemPtr`,
   `FastPathLockArrayShmemPtr`, `AuxiliaryProcs`, and `PreparedXactProcs` as
   shared-memory state, plus the proc sizing/request globals as runtime state;
@@ -381,6 +382,9 @@ This includes the waits-for traversal arrays, proposed wait-order workspace,
 deadlock report details, and the cached blocking-autovacuum pointer.
 The usage-stat snapshots in `postgres.c` are now backend-local TLS. They hold
 the current backend's `ResetUsage()` baseline for later `ShowUsage()` calls.
+The lockfile cleanup list in `miscinit.c` is now explicit runtime-global
+state. It is owned by postmaster or standalone process lifetime and must not
+be replicated into regular client backend threads.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -773,6 +777,8 @@ Validation for this slice:
   coverage after classifying the deadlock detector workspace.
 - focused `postgres.o` compile coverage plus process-mode stats GUC
   regression coverage after classifying usage-stat snapshots.
+- focused `miscinit.o` compile coverage plus process-mode startup/regression
+  smoke coverage after classifying the lockfile cleanup list.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
