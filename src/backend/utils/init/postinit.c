@@ -86,6 +86,7 @@ static void CheckMyDatabase(const char *name, bool am_superuser, bool override_a
 static void ShutdownPostgres(int code, Datum arg);
 static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
+static PgBackend *TimeoutTargetBackend(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static void TransactionTimeoutHandler(void);
 static void IdleSessionTimeoutHandler(void);
@@ -1421,9 +1422,10 @@ StatementTimeoutHandler(void)
 		sig = SIGTERM;
 
 	if (sig == SIGTERM)
-		PgCurrentBackendRaiseProcDieInterrupt(0, 0);
+		PgBackendRaiseProcDieInterrupt(TimeoutTargetBackend(), 0, 0);
 	else
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
@@ -1438,7 +1440,8 @@ StatementTimeoutHandler(void)
 static void
 LockTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
@@ -1447,10 +1450,23 @@ LockTimeoutHandler(void)
 	kill(MyProcPid, SIGINT);
 }
 
+static PgBackend *
+TimeoutTargetBackend(void)
+{
+	PgBackend  *target;
+
+	target = get_firing_timeout_target_backend();
+	if (target != NULL)
+		return target;
+
+	return CurrentPgBackend;
+}
+
 static void
 TransactionTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
 	TransactionTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
@@ -1459,7 +1475,8 @@ TransactionTimeoutHandler(void)
 static void
 IdleInTransactionSessionTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
 	IdleInTransactionSessionTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
@@ -1468,7 +1485,8 @@ IdleInTransactionSessionTimeoutHandler(void)
 static void
 IdleSessionTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
 	IdleSessionTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
@@ -1477,7 +1495,8 @@ IdleSessionTimeoutHandler(void)
 static void
 IdleStatsUpdateTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
 	IdleStatsUpdateTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
@@ -1486,7 +1505,8 @@ IdleStatsUpdateTimeoutHandler(void)
 static void
 ClientCheckTimeoutHandler(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
+	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
+							PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
 	CheckClientConnectionPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);

@@ -16,6 +16,8 @@
 
 #include "datatype/timestamp.h"
 
+typedef struct PgBackend PgBackend;
+
 /*
  * Identifiers for timeout reasons.  Note that in case multiple timeouts
  * trigger at the same time, they are serviced in the order of this enum.
@@ -76,6 +78,7 @@ typedef struct
 extern void InitializeTimeouts(void);
 extern TimeoutId RegisterTimeout(TimeoutId id, timeout_handler_proc handler);
 extern void reschedule_timeouts(void);
+extern PgBackend *get_firing_timeout_target_backend(void);
 
 /* timeout operation */
 extern void enable_timeout_after(TimeoutId id, int delay_ms);

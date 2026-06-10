@@ -166,6 +166,8 @@ extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);
+extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
+										   int sender_uid);
 extern void PgCurrentBackendRaiseInterrupt(PgBackendInterruptType interrupt_type);
 extern void PgCurrentBackendRaiseProcDieInterrupt(int sender_pid,
 												 int sender_uid);

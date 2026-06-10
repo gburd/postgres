@@ -107,10 +107,9 @@ PgCurrentBackendRaiseInterrupt(PgBackendInterruptType interrupt_type)
 }
 
 void
-PgCurrentBackendRaiseProcDieInterrupt(int sender_pid, int sender_uid)
+PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
+							   int sender_uid)
 {
-	PgBackend *backend = CurrentPgBackend;
-
 	if (backend == NULL)
 		return;
 
@@ -121,6 +120,12 @@ PgCurrentBackendRaiseProcDieInterrupt(int sender_pid, int sender_uid)
 	}
 
 	PgBackendRaiseInterrupt(backend, PG_BACKEND_INTERRUPT_PROC_DIE);
+}
+
+void
+PgCurrentBackendRaiseProcDieInterrupt(int sender_pid, int sender_uid)
+{
+	PgBackendRaiseProcDieInterrupt(CurrentPgBackend, sender_pid, sender_uid);
 }
 
 PgBackendInterruptMask
