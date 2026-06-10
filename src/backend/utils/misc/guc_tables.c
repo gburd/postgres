@@ -603,9 +603,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION int ssl_renegotiation_limit;
  * This really belongs in pg_shmem.c, but is defined here so that it doesn't
  * need to be duplicated in all the different implementations of pg_shmem.c.
  */
-int			huge_pages = HUGE_PAGES_TRY;
-int			huge_page_size;
-int			huge_pages_status = HUGE_PAGES_UNKNOWN;
+PG_GLOBAL_RUNTIME int huge_pages = HUGE_PAGES_TRY;
+PG_GLOBAL_RUNTIME int huge_page_size;
+PG_GLOBAL_RUNTIME int huge_pages_status = HUGE_PAGES_UNKNOWN;
 
 /*
  * These variables are all dummies that don't do anything, except in some
@@ -616,10 +616,10 @@ static char *syslog_ident_str;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION double phony_random_seed;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *client_encoding_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *datestyle_string;
-static char *server_encoding_string;
-static char *server_version_string;
-static int	server_version_num;
-static char *debug_io_direct_string;
+static PG_GLOBAL_RUNTIME char *server_encoding_string;
+static PG_GLOBAL_RUNTIME char *server_version_string;
+static PG_GLOBAL_RUNTIME int server_version_num;
+static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *restrict_nonsystem_relation_kind_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_min_messages_string;
 
@@ -633,33 +633,33 @@ static int	syslog_facility = DEFAULT_SYSLOG_FACILITY;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_timezone_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_abbreviations_string;
-static char *data_directory;
+static PG_GLOBAL_RUNTIME char *data_directory;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_authorization_string;
-static int	max_function_args;
-static int	max_index_keys;
-static int	max_identifier_length;
-static int	block_size;
-static int	segment_size;
-static int	shared_memory_size_mb;
-static int	shared_memory_size_in_huge_pages;
-static int	wal_block_size;
-static int	num_os_semaphores;
-static int	effective_wal_level = WAL_LEVEL_REPLICA;
-static bool integer_datetimes;
+static PG_GLOBAL_RUNTIME int max_function_args;
+static PG_GLOBAL_RUNTIME int max_index_keys;
+static PG_GLOBAL_RUNTIME int max_identifier_length;
+static PG_GLOBAL_RUNTIME int block_size;
+static PG_GLOBAL_RUNTIME int segment_size;
+static PG_GLOBAL_RUNTIME int shared_memory_size_mb;
+static PG_GLOBAL_RUNTIME int shared_memory_size_in_huge_pages;
+static PG_GLOBAL_RUNTIME int wal_block_size;
+static PG_GLOBAL_RUNTIME int num_os_semaphores;
+static PG_GLOBAL_RUNTIME int effective_wal_level = WAL_LEVEL_REPLICA;
+static PG_GLOBAL_RUNTIME bool integer_datetimes;
 
 #ifdef USE_ASSERT_CHECKING
 #define DEFAULT_ASSERT_ENABLED true
 #else
 #define DEFAULT_ASSERT_ENABLED false
 #endif
-static bool assert_enabled = DEFAULT_ASSERT_ENABLED;
+static PG_GLOBAL_RUNTIME bool assert_enabled = DEFAULT_ASSERT_ENABLED;
 
 #ifdef EXEC_BACKEND
 #define EXEC_BACKEND_ENABLED true
 #else
 #define EXEC_BACKEND_ENABLED false
 #endif
-static bool exec_backend_enabled = EXEC_BACKEND_ENABLED;
+static PG_GLOBAL_RUNTIME bool exec_backend_enabled = EXEC_BACKEND_ENABLED;
 
 static char *recovery_target_timeline_string;
 static char *recovery_target_string;

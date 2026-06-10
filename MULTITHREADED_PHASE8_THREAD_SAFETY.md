@@ -148,6 +148,20 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `Debug_copy_parse_plan_trees`, `Debug_raw_expression_coverage_test`, and
   `Debug_write_read_parse_plan_trees`.
 
+The following GUC backing variables are now explicitly classified as
+runtime-global, not thread-local, because they describe server build,
+postmaster, shared-memory, or startup-computed runtime state:
+
+- preset/runtime GUC backing variables in `guc_tables.c`: `assert_enabled`,
+  `block_size`, `data_directory`, `debug_io_direct_string`,
+  `effective_wal_level`, `exec_backend_enabled`, `huge_pages`,
+  `huge_page_size`, `huge_pages_status`, `integer_datetimes`,
+  `max_function_args`, `max_identifier_length`, `max_index_keys`,
+  `num_os_semaphores`, `segment_size`, `server_encoding_string`,
+  `server_version_num`, `server_version_string`,
+  `shared_memory_size_in_huge_pages`, `shared_memory_size_mb`, and
+  `wal_block_size`.
+
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
 `InitializeGUCVariablePointers()` beside it. Each backend session copies the
@@ -188,7 +202,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the guarded developer node-test GUC slice, the filtered static report contains 221
+After the preset/runtime GUC classification slice, the filtered static report contains 200
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -469,6 +483,8 @@ Validation for this slice:
   declarations to `PG_THREAD_LOCAL`. These GUCs are not present in the default
   build, so validation for this slice is compile and static-scan coverage
   rather than runtime SQL coverage;
+- focused `guc_tables.o` compile coverage plus incremental `gmake -j8` after
+  classifying preset/runtime GUC backing variables as `PG_GLOBAL_RUNTIME`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

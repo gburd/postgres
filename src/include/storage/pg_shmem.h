@@ -25,6 +25,7 @@
 #define PG_SHMEM_H
 
 #include "storage/dsm_impl.h"
+#include "utils/global_lifetime.h"
 
 typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 {
@@ -43,9 +44,9 @@ typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 
 /* GUC variables */
 extern PGDLLIMPORT int shared_memory_type;
-extern PGDLLIMPORT int huge_pages;
-extern PGDLLIMPORT int huge_page_size;
-extern PGDLLIMPORT int huge_pages_status;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_page_size;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages_status;
 
 /* Possible values for huge_pages and huge_pages_status */
 typedef enum
