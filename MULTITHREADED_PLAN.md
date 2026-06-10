@@ -264,8 +264,11 @@ Phase 5 completion note:
 - The implementation routes recovery-conflict interrupts through the logical
   backend mailbox and preserves the existing process-mode behavior.
 - A dedicated hot-standby recovery-conflict fixture was not built during Phase
-  5. Treat that as a validation gap to cover in Gate B or a focused follow-up,
-  not as an incomplete Phase 5 implementation item.
+  5. Phase 5 was considered complete after tracing the existing
+  recovery-conflict delivery path and confirming it now passes through the
+  logical interrupt machinery. Treat the missing fixture as a validation gap to
+  cover in Gate B or a focused follow-up, not as an incomplete Phase 5
+  implementation item.
 
 ## Phase 6: Backend Lifecycle And Exit
 
