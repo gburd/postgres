@@ -557,7 +557,8 @@ extern int no_such_variable
  * The additional values should be written as field initializers, for example
  *	PG_MODULE_MAGIC_EXT(
  *		.name = "some string",
- *		.version = "some string"
+ *		.version = "some string",
+ *		PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
  *	);
  */
 #define PG_MODULE_MAGIC_EXT(...) \

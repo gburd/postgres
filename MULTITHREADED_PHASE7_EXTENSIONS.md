@@ -80,6 +80,9 @@ setter rejects incompatible modules that are already present in the backend.
 - `test_ext_bad_backend_model`: intentionally invalid metadata, used to prove
   the loader rejects malformed backend-model declarations independently of the
   active model.
+- `test_ext_short_magic`: intentionally old-layout magic metadata, used to
+  prove the loader rejects stale magic blocks without reading the new
+  `backend_model` field past the module's static object.
 
 The regression test verifies:
 
@@ -89,6 +92,9 @@ The regression test verifies:
 - pooled-scheduler mode rejects thread-per-session-only and process-only
   modules in a separate regression backend;
 - invalid backend-model metadata is rejected in stricter models;
+- invalid backend-model metadata is rejected even in process mode;
+- old-layout magic metadata is rejected as a magic-block mismatch before the
+  backend-model gate reads the new metadata field;
 - active model changes are rejected when already-loaded modules are incompatible
   with the requested model;
 - already-loaded modules are still rechecked on later load paths and
@@ -163,7 +169,8 @@ The Phase 7 implementation has been validated with:
 - clean-worktree Meson configure with optional features disabled:
   `/tmp/pg-phase7-meson-venv/bin/meson setup /tmp/pg-phase7-build-current /tmp/pg-phase7-meson-src-current --auto-features=disabled -Dssl=none -Dtap_tests=disabled`
 - targeted Meson build of `test_ext.dylib`, `test_ext_backend_model.dylib`,
-  `test_ext_threaded.dylib`, and `test_ext_bad_backend_model.dylib`
+  `test_ext_threaded.dylib`, `test_ext_bad_backend_model.dylib`, and
+  `test_ext_short_magic.dylib`
 
 The forced clean rebuilds are important after changing `Pg_magic_struct`; stale
 loadable modules built against the old magic-block size fail the normal ABI

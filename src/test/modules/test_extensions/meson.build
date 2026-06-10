@@ -74,11 +74,17 @@ test_ext_bad_backend_model = shared_module('test_ext_bad_backend_model',
   kwargs: pg_test_mod_args,
 )
 
+test_ext_short_magic = shared_module('test_ext_short_magic',
+  files('test_ext_short_magic.c'),
+  kwargs: pg_test_mod_args,
+)
+
 test_install_libs += [
   test_ext,
   test_ext_backend_model,
   test_ext_threaded,
   test_ext_bad_backend_model,
+  test_ext_short_magic,
 ]
 
 tests += {

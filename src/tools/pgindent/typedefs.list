@@ -2870,6 +2870,7 @@ SetQuantifier
 SetToDefault
 SetVarReturningType_context
 SetupWorkerPtrType
+ShortPgMagicStruct
 ShDependObjectInfo
 SharedAggInfo
 SharedBitmapHeapInstrumentation
