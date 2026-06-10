@@ -56,7 +56,7 @@
 
 /* GUC variables */
 #ifdef TRACE_SYNCSCAN
-bool		trace_syncscan = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_syncscan = false;
 #endif
 
 

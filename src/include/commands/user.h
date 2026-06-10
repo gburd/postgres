@@ -16,10 +16,13 @@
 #include "nodes/parsenodes.h"
 #include "parser/parse_node.h"
 #include "utils/guc.h"
+#include "utils/global_lifetime.h"
 
 /* GUCs */
-extern PGDLLIMPORT int Password_encryption; /* values from enum PasswordType */
-extern PGDLLIMPORT char *createrole_self_grant;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int
+			Password_encryption; /* values from enum PasswordType */
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
+		   *createrole_self_grant;
 
 /* Hook to check passwords in CreateRole() and AlterRole() */
 typedef void (*check_password_hook_type) (const char *username, const char *shadow_pass, PasswordType password_type, Datum validuntil_time, bool validuntil_null);

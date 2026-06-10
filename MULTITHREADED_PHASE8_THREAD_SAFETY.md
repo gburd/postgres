@@ -101,6 +101,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   cache state for `ClientEncoding`, `DatabaseEncoding`, `MessageEncoding`,
   active conversion functions, pending startup client encoding, and cached
   conversion function lookup records.
+- additional session USERSET GUC backing variables outside `guc_tables.c`:
+  `default_toast_compression`, `trace_syncscan`, `Password_encryption`, and
+  `createrole_self_grant`. The derived assign-hook state for
+  `createrole_self_grant`, including the parsed role-grant options, is also
+  session-local TLS state.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -224,6 +229,17 @@ Validation for this slice:
   `restrict_nonsystem_relation_kind`, `seed`, `default_with_oids`,
   `standard_conforming_strings`, `ssl_renegotiation_limit`, and
   `session_authorization`;
+- fixture-backed role/compression GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc compression
+  create_role strings portals`;
+- live temp-cluster smoke coverage for `default_toast_compression`,
+  `password_encryption`, and `createrole_self_grant`, including a non-superuser
+  CREATEROLE self-grant check. The same smoke confirmed `trace_syncscan` is not
+  registered in this default build because `TRACE_SYNCSCAN` is not enabled;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
@@ -238,7 +254,8 @@ Validation for this slice:
 - filtered static scan for the touched required-floor names;
 - filtered non-TLS extern mismatch search for the planner/JIT/analyze,
   exported session, session SQL-behavior, and vacuum tuning GUC backing
-  variables, plus the session locale/authorization/encoding GUC slice;
+  variables, plus the session locale/authorization/encoding and
+  role/compression/syncscan GUC slices;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and

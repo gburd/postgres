@@ -83,10 +83,10 @@ typedef struct
 #define GRANT_ROLE_SPECIFIED_SET			0x0004
 
 /* GUC parameters */
-int			Password_encryption = PASSWORD_TYPE_SCRAM_SHA_256;
-char	   *createrole_self_grant = "";
-static bool createrole_self_grant_enabled = false;
-static GrantRoleOptions createrole_self_grant_options;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int Password_encryption = PASSWORD_TYPE_SCRAM_SHA_256;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *createrole_self_grant = "";
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool createrole_self_grant_enabled = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION GrantRoleOptions createrole_self_grant_options;
 
 /* Hook to check passwords in CreateRole() and AlterRole() */
 check_password_hook_type check_password_hook = NULL;

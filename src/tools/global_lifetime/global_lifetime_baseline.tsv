@@ -15,9 +15,7 @@ src/backend/access/common/reloptions.c	43d02783d1381349c3973f1f1d0f0c89627968a5	
 src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	custom_options	static relopt_gen **custom_options = NULL;
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
 src/backend/access/common/session.c	57085ea2fce70a602421abdb03538fd4877e5f1a	CurrentSession	Session *CurrentSession = NULL;
-src/backend/access/common/syncscan.c	5f72960a7ecd5effe7894c68a0beab6245f3c002	trace_syncscan	bool trace_syncscan = false;
 src/backend/access/common/syncscan.c	498a5a2a8607ae38fd6a30e5df9242e9680ee7e3	scan_locations	static ss_scan_locations_t *scan_locations;
-src/backend/access/common/toast_compression.c	c15ba3eaa3892f686acf083536c0bd3baca7c4a0	default_toast_compression	int default_toast_compression = DEFAULT_TOAST_COMPRESSION;
 src/backend/access/gin/ginfast.c	d476ec117cad446b0f647cec9399a791d0ec7459	gin_pending_list_limit	int gin_pending_list_limit = 0;
 src/backend/access/gin/ginget.c	6fcbae62b003744bdf3e5d463a6cc63644e2315d	GinFuzzySearchLimit	int GinFuzzySearchLimit = 0;
 src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
@@ -344,10 +342,6 @@ src/backend/commands/typecmds.c	3a65e75e4ecfe19c091896b3e8031101ca908a60	binary_
 src/backend/commands/typecmds.c	74078a03185e680bd8981e9ddc28284a3c4befca	binary_upgrade_next_mrng_pg_type_oid	Oid binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
 src/backend/commands/typecmds.c	dcb381315e5ed241efdb2a8083b41abcfcef5fee	binary_upgrade_next_mrng_array_pg_type_oid	Oid binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
 src/backend/commands/user.c	882af0ff02bcef453f88973157dc81d4cd687e50	binary_upgrade_next_pg_authid_oid	Oid binary_upgrade_next_pg_authid_oid = InvalidOid;
-src/backend/commands/user.c	58e66a9d4d5f85c594889fc8197c6b5e2f4e9ad9	Password_encryption	int Password_encryption = PASSWORD_TYPE_SCRAM_SHA_256;
-src/backend/commands/user.c	c53b1b81f798d72d2fbd3d653e7541edaf4c32d1	createrole_self_grant	char *createrole_self_grant = "";
-src/backend/commands/user.c	a40e1f4eac116bf4c633e0a7db06e31024a15163	createrole_self_grant_enabled	static bool createrole_self_grant_enabled = false;
-src/backend/commands/user.c	8e5d0c93e604df0698d48c4723f43343e746f3ff	createrole_self_grant_options	static GrantRoleOptions createrole_self_grant_options;
 src/backend/commands/user.c	0e02ef1be471f87db98a4c9e07d5b1efe7118a08	check_password_hook	check_password_hook_type check_password_hook = NULL;
 src/backend/commands/vacuum.c	911057b62e12c91813575d37c02b0a0e585b3f55	vacuum_cost_delay	double vacuum_cost_delay = 0;
 src/backend/commands/vacuum.c	15c0737b0df76c857233607464077e6a97c8efa7	vacuum_cost_limit	int vacuum_cost_limit = 200;
@@ -2238,10 +2232,8 @@ src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanI
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
 src/include/access/session.h	14eb961766d59416104d830333bc27eb441aba36	CurrentSession	extern PGDLLIMPORT Session *CurrentSession;
-src/include/access/syncscan.h	63b28b7e3327ec19cfe0b93af5fe78463d4352c3	trace_syncscan	extern PGDLLIMPORT bool trace_syncscan;
 src/include/access/tableam.h	4052c9204a3d0a64bd4822e7335a0fba8843a968	default_table_access_method	extern PGDLLIMPORT char *default_table_access_method;
 src/include/access/tableam.h	155dfcf7af1273a5cc52c8ed0c2af5949621eb9e	synchronize_seqscans	extern PGDLLIMPORT bool synchronize_seqscans;
-src/include/access/toast_compression.h	878c04b4b26ab59be2f329e0fd46602e1af33456	default_toast_compression	extern PGDLLIMPORT int default_toast_compression;
 src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/twophase.h	cd91e17402e3d18ed176ab8d63b6cc2716bec742	max_prepared_xacts	extern PGDLLIMPORT int max_prepared_xacts;
 src/include/access/xact.h	a74650fa4c849603e187839bc9e9f68a20b34b16	synchronous_commit	extern PGDLLIMPORT int synchronous_commit;
@@ -2359,8 +2351,6 @@ src/include/commands/tablespace.h	2173fdd8c4ae2ca0e843b83b4ed4ed020e5c0c78	temp_
 src/include/commands/tablespace.h	4f0e0bed6f3960cb742beaf39eb9c34dbdd61f83	allow_in_place_tablespaces	extern PGDLLIMPORT bool allow_in_place_tablespaces;
 src/include/commands/trigger.h	843dd79ded6c7501c71ae01c92ba76bad468708d	AfterTriggersTableData	struct AfterTriggersTableData;
 src/include/commands/trigger.h	3f355023fabc9382255cb132168aa6833e5be286	SessionReplicationRole	extern PGDLLIMPORT int SessionReplicationRole;
-src/include/commands/user.h	a93adaba2e93753475c22a1c8b10c72175b7bdc5	Password_encryption	extern PGDLLIMPORT int Password_encryption;
-src/include/commands/user.h	98801dd6e237d7d3c595eac89dc670757e071a03	createrole_self_grant	extern PGDLLIMPORT char *createrole_self_grant;
 src/include/commands/user.h	13ab8fb48c50fce11ace2b42a22afc9dc7710ec9	check_password_hook	extern PGDLLIMPORT check_password_hook_type check_password_hook;
 src/include/commands/vacuum.h	bf82a71ad4ddc9b051ffbb9ab58b7b4d1cd458ed	VacuumSharedCostBalance	extern PGDLLIMPORT pg_atomic_uint32 *VacuumSharedCostBalance;
 src/include/commands/vacuum.h	f581e31286f98d66b65712978c4fb221def4493d	VacuumActiveNWorkers	extern PGDLLIMPORT pg_atomic_uint32 *VacuumActiveNWorkers;

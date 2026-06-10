@@ -15,11 +15,12 @@
 #define SYNCSCAN_H
 
 #include "storage/block.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 /* GUC variables */
 #ifdef TRACE_SYNCSCAN
-extern PGDLLIMPORT bool trace_syncscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_syncscan;
 #endif
 
 extern void ss_report_location(Relation rel, BlockNumber location);

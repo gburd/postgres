@@ -23,7 +23,7 @@
 #include "varatt.h"
 
 /* GUC */
-int			default_toast_compression = DEFAULT_TOAST_COMPRESSION;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int default_toast_compression = DEFAULT_TOAST_COMPRESSION;
 
 #define NO_COMPRESSION_SUPPORT(method) \
 	ereport(ERROR, \
