@@ -188,6 +188,11 @@ Goal: create visibility into mutable global state before moving it, now that
 there are concrete runtime/session/backend/execution owners to classify
 against.
 
+Scope boundary: Phase 4 establishes the vocabulary, scanner, baseline, and
+new-code enforcement. It is not expected to classify every existing mutable
+global in the tree. Existing unclassified globals remain in the baseline as
+explicit migration debt for later phases.
+
 Likely changes:
 
 - Add lifetime annotation macros inspired by Heikki's branch.
@@ -214,7 +219,9 @@ Validation:
 
 - process-mode tests pass;
 - static tool can run and produce a useful report;
-- new mutable globals require explicit classification.
+- existing unclassified mutable globals are captured in a checked-in baseline;
+- new mutable globals require explicit classification or an explicit baseline
+  update.
 
 ## Phase 5: Logical Interrupts And Timeouts
 
@@ -320,6 +327,12 @@ Validation:
 Goal: make enough backend-local state private to each logical backend that
 thread-per-session launch is not sharing unsafe plain globals.
 
+Acceptance boundary: Phase 8 is the first hard global-state checkpoint. The
+Phase 4 baseline may still contain unrelated unclassified globals after this
+phase, but every global in the required floor below must either be classified
+with the correct lifetime, moved behind an owned object, made thread-local as a
+temporary bridge, or proven to be immutable/shared-memory-safe.
+
 Required floor:
 
 - current memory context state;
@@ -345,8 +358,10 @@ Likely changes:
 Validation:
 
 - process-mode full regression tests;
-- static global report shows the required floor is no longer shared as plain
-  mutable process globals;
+- static global report shows that no item in the required floor remains as an
+  unsafe unclassified plain mutable process global;
+- any remaining unclassified globals are outside the required floor and remain
+  tracked as explicit migration debt;
 - targeted tests for memory context, resource owner, GUC, interrupt, timeout,
   protocol, and fd cleanup behavior.
 
@@ -604,7 +619,9 @@ Gate C, after Phase 8:
 - extension gating and the thread-safety floor are complete;
 - run `check-world`, static global report checks, extension load tests using
   the test-only threaded backend model, and PL/pgSQL process-mode regression
-  tests.
+  tests;
+- reject the gate if the static global report still contains unsafe
+  unclassified globals from the Phase 8 required floor.
 
 Gate D, after Phase 10:
 
@@ -652,10 +669,14 @@ Mitigation:
 
 - introduce the runtime/session/backend object vocabulary before broad
   classification;
-- annotate globals before thread launch;
+- use Phase 4 to establish a baseline rather than requiring full-tree
+  classification immediately;
+- annotate or isolate the Phase 8 required floor before thread launch;
 - use static reports;
 - reject unclassified mutable globals in new code;
-- prefer thread-local transition wrappers before object migration.
+- prefer thread-local transition wrappers before object migration;
+- keep shrinking the remaining baseline through later migration and contrib
+  phases until all relevant mutable globals are classified or isolated.
 
 ### Lost Wakeups
 
