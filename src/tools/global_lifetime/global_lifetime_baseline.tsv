@@ -1796,8 +1796,6 @@ src/backend/utils/cache/inval.c	ba428dc58c7af2e0086f4aeb986203f3ff56fe72	relcach
 src/backend/utils/cache/inval.c	29c826afac91703250f967bcc672285b612bd113	function,arg,relsync_callback_list	static struct RELSYNCCALLBACK { RelSyncCallbackFunction function; Datum arg; } relsync_callback_list[MAX_RELSYNC_CALLBACKS];
 src/backend/utils/cache/inval.c	72bc8d56e8d66bfa243799e09a28c7fc61229cdf	relsync_callback_count	static int relsync_callback_count = 0;
 src/backend/utils/cache/lsyscache.c	dc28b300a6a9ac2b5eb2fd93e4ced2505870d2a2	get_attavgwidth_hook	get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
-src/backend/utils/cache/plancache.c	c5302e68a5765bb8a27a9c3795e292a3c9e8335a	saved_plan_list	static dlist_head saved_plan_list = DLIST_STATIC_INIT(saved_plan_list);
-src/backend/utils/cache/plancache.c	23450823aa257bf87a436b5f5631a06cd979b8bb	cached_expression_list	static dlist_head cached_expression_list = DLIST_STATIC_INIT(cached_expression_list);
 src/backend/utils/cache/relcache.c	59fd0f0af374cc9a514b64f2f9404ec3be06b98e	RelationIdCache	static HTAB *RelationIdCache;
 src/backend/utils/cache/relcache.c	664da8b0c43c419068493456e0ac5714e28b850e	criticalRelcachesBuilt	bool criticalRelcachesBuilt = false;
 src/backend/utils/cache/relcache.c	ac92e2afdac6e30116beaf51cf05f15d94c58f5d	criticalSharedRelcachesBuilt	bool criticalSharedRelcachesBuilt = false;

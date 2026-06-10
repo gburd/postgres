@@ -314,16 +314,13 @@ During validation this affected `test_ext_backend_model.dylib` and
 
 Phase 8 still needs to cover at least:
 
-- remaining GUC backing variables now that the generated runtime rebind layer
-  exists;
-- plan-cache saved plan and cached expression lists in `plancache.c`; these
-  are session/backend-local, but they use self-referential `DLIST_STATIC_INIT`
-  today and need an explicit initialization design before they can move to
-  TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
 After the final USERSET/SUSET GUC classification slice, the filtered static
 report contains zero remaining unclassified generated GUC backing variables.
+The plan-cache saved plan and cached expression list heads are now explicit
+session-local TLS state initialized by `InitPlanCache()`, so they no longer
+depend on self-referential `DLIST_STATIC_INIT` globals.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -498,6 +495,8 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `plan_cache_mode`, including
   `PREPARE`, `EXECUTE`, `SET force_generic_plan`, `SET force_custom_plan`,
   `RESET`, and `DEALLOCATE`;
+- plan-cache saved plan and cached expression list heads are explicitly
+  initialized `PG_THREAD_LOCAL PG_GLOBAL_SESSION` state;
 - focused `tableam.o` compile coverage;
 - backend clean plus generated-header recovery, followed by clean `gmake -j8`
   after converting installed-header table access declarations to
