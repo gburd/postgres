@@ -135,9 +135,14 @@ which runtime object owns that worker's cleanup and scheduler continuation.
   connect/query/disconnect cycles, terminated a backend while it was inside an
   active transaction, and verified the server remained responsive afterward.
 
-## Remaining Phase 6 Gaps
+## Deferred Thread Runtime Proof
 
-- There is not yet a real thread-per-session runtime running full backend exit
-  cleanup while another in-process backend continues. The runtime handoff after
-  cleanup is covered by `test_backend_runtime`; the full end-to-end threaded
-  proof belongs with the first thread-launch/runtime phases.
+There is not yet a real thread-per-session runtime running full backend exit
+cleanup while another in-process backend continues. That is not a Phase 6
+blocker; it is the end-to-end proof for Phase 10, where threaded backend launch
+first exists.
+
+Phase 6's boundary is the lifecycle split and ownership model needed before
+thread launch: logical backend exit no longer has to mean direct process exit,
+cleanup state and DSM mappings are owned by `PgBackend`, process-mode behavior
+is preserved, and the post-cleanup runtime handoff contract is tested.

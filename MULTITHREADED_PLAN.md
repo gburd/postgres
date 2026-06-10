@@ -311,8 +311,16 @@ Implementation notes:
 
 - [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
   current logical backend exit boundary, migrated call-site families, remaining
-  process/runtime exit ownership decisions, validation already run, and any
-  evidence gaps that still block calling Phase 6 complete.
+  process/runtime exit ownership decisions, validation already run, and the
+  deferred thread-runtime proof that belongs to Phase 10.
+
+Phase 6 completion note:
+
+- The first real thread-per-session runtime proof is intentionally deferred to
+  Phase 10, where threaded backend launch exists. Phase 6 is complete when the
+  backend-exit lifecycle split, backend-local cleanup ownership, process-mode
+  compatibility, and post-cleanup runtime handoff contract are implemented and
+  validated.
 
 ## Phase 7: Extension Backend Model Gate
 
