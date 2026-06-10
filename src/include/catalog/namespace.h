@@ -17,6 +17,7 @@
 #include "nodes/primnodes.h"
 #include "storage/lockdefs.h"
 #include "storage/procnumber.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -201,7 +202,7 @@ extern void AtEOSubXact_Namespace(bool isCommit, SubTransactionId mySubid,
 								  SubTransactionId parentSubid);
 
 /* stuff for search_path GUC variable */
-extern PGDLLIMPORT char *namespace_search_path;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *namespace_search_path;
 
 extern List *fetch_search_path(bool includeImplicit);
 extern int	fetch_search_path_array(Oid *sarray, int sarray_len);

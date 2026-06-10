@@ -128,6 +128,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - plan-cache mode session GUC backing variable: `plan_cache_mode`.
 - table access method and synchronized-scan session GUC backing variables:
   `default_table_access_method` and `synchronize_seqscans`.
+- namespace/search-path session state in `namespace.c`: the
+  `namespace_search_path` GUC backing variable, active/base search path
+  derived state, temp namespace ownership state, and the search-path cache.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -169,7 +172,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the table access GUC slice, the filtered static report contains 238
+After the namespace/search-path slice, the filtered static report contains 237
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -358,6 +361,20 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `default_table_access_method` and
   `synchronize_seqscans`, including table creation through the default table
   access method and `SET`/`SHOW` coverage for synchronized scans;
+- focused `namespace.o` compile coverage;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header namespace/search-path declarations to
+  `PG_THREAD_LOCAL`;
+- fixture-backed namespace/search-path regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc namespace
+  temp plancache create_role privileges`;
+- live temp-cluster smoke coverage for `search_path`, schema-qualified and
+  unqualified lookup, temp namespace creation, and a second connection that
+  did not inherit the first session's search path or temp namespace state;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

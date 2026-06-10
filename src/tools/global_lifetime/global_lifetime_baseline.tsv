@@ -252,23 +252,6 @@ src/backend/catalog/index.c	c8b300cac781c2e44662bcd4ad11c5f02d6fb993	currentlyRe
 src/backend/catalog/index.c	a7a86591c189ecb82e3efb672ba6276788112625	currentlyReindexedIndex	static Oid currentlyReindexedIndex = InvalidOid;
 src/backend/catalog/index.c	300d29e63742bb16a326c2c0cbec382482709d2a	pendingReindexedIndexes	static List *pendingReindexedIndexes = NIL;
 src/backend/catalog/index.c	787fa2d74eac213a682919f2c4d657b8d5f39ee5	reindexingNestLevel	static int reindexingNestLevel = 0;
-src/backend/catalog/namespace.c	f614b0ff7064ba9ea86545548beaf5349f990890	activeSearchPath	static List *activeSearchPath = NIL;
-src/backend/catalog/namespace.c	0f4bad8a66c7ea37b4c73bdbc84fa3e18e2c9178	activeCreationNamespace	static Oid activeCreationNamespace = InvalidOid;
-src/backend/catalog/namespace.c	a75f738c2e16e6fed5497a8c0392b1ff61ca1ed2	activeTempCreationPending	static bool activeTempCreationPending = false;
-src/backend/catalog/namespace.c	849a38c628dc38afcb2bcdcc6066d36167adc409	activePathGeneration	static uint64 activePathGeneration = 1;
-src/backend/catalog/namespace.c	16040d8315527e856ba7095347c3f4f2f343f572	baseSearchPath	static List *baseSearchPath = NIL;
-src/backend/catalog/namespace.c	48a3bf917615bdd431c3e4c8d4d2bf065cb9ae66	baseCreationNamespace	static Oid baseCreationNamespace = InvalidOid;
-src/backend/catalog/namespace.c	93d9e25c999d401595b8a5b0d368ebc90b3bbd25	baseTempCreationPending	static bool baseTempCreationPending = false;
-src/backend/catalog/namespace.c	1a77c03d7106237cff7bcfaed8df99f70d902044	namespaceUser	static Oid namespaceUser = InvalidOid;
-src/backend/catalog/namespace.c	913f714a406e47130ab868598c642a6b8f2cdce2	baseSearchPathValid	static bool baseSearchPathValid = true;
-src/backend/catalog/namespace.c	a1d94105ab0d429c0c916ea84a2fe4ba20dd1eba	searchPathCacheValid	static bool searchPathCacheValid = false;
-src/backend/catalog/namespace.c	563a1977305483be0f68a6efcd6d8fda5b955f49	SearchPathCacheContext	static MemoryContext SearchPathCacheContext = NULL;
-src/backend/catalog/namespace.c	95b98cdc13df720e3a41ba7990a80631809225cb	myTempNamespace	static Oid myTempNamespace = InvalidOid;
-src/backend/catalog/namespace.c	40f4130dcff3488933c8557f37397c9c976e4551	myTempToastNamespace	static Oid myTempToastNamespace = InvalidOid;
-src/backend/catalog/namespace.c	d7ef68a2b2a57adf99b4fe1cfb75da0588b01b50	myTempNamespaceSubID	static SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
-src/backend/catalog/namespace.c	d23832d0c579bd3e1d29325d01d877075eed3d6f	namespace_search_path	char *namespace_search_path = NULL;
-src/backend/catalog/namespace.c	7eae15122db21438e7b26d338f93d2f3f35d4a1f	SearchPathCache	static nsphash_hash *SearchPathCache = NULL;
-src/backend/catalog/namespace.c	30a7df09e5ee32fd0032261a0f3d75e20bc80b3d	LastSearchPathCacheEntry	static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
 src/backend/catalog/objectaccess.c	bd34f76e318396d1986651d0645909cf00233250	object_access_hook	object_access_hook_type object_access_hook = NULL;
 src/backend/catalog/objectaccess.c	209bcc930ed02592cb794127b72298d043b2b99d	object_access_hook_str	object_access_hook_type_str object_access_hook_str = NULL;
 src/backend/catalog/objectaddress.c	36b86b5070bba6c0a78119cf04ec08c090fc003a	ObjectTypeMap	ObjectTypeMap[] = { { "table", OBJECT_TABLE }, { "index", OBJECT_INDEX }, { "sequence", OBJECT_SEQUENCE }, { "toast table", -1 }, { "view", OBJECT_VIEW }, { "materialized view", OBJECT_MATVIEW }, { "composite type", -1 }, { "foreign tabl...
@@ -2294,7 +2277,6 @@ src/include/catalog/binary_upgrade.h	17130c1c583d872b29055bfe6cf8a29d05384ecc	bi
 src/include/catalog/binary_upgrade.h	2e00bcd53281a42f1c16a653ce1a45133349f87a	binary_upgrade_next_pg_enum_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_enum_oid;
 src/include/catalog/binary_upgrade.h	0958ad6b0f17c01bb1ada1af95b7dfd6621a5d9e	binary_upgrade_next_pg_authid_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_authid_oid;
 src/include/catalog/binary_upgrade.h	8d0653ddb3845ae25c0c56c3136402649e2a5478	binary_upgrade_record_init_privs	extern PGDLLIMPORT bool binary_upgrade_record_init_privs;
-src/include/catalog/namespace.h	0d629e08bb64acabc25d6d7b27ca413025cc4bdb	namespace_search_path	extern PGDLLIMPORT char *namespace_search_path;
 src/include/catalog/objectaccess.h	f346b363efa6414b427b92580eca4864692ce78e	object_access_hook	extern PGDLLIMPORT object_access_hook_type object_access_hook;
 src/include/catalog/objectaccess.h	3da946876eacde33ee1e493ae92c600a84efff4f	object_access_hook_str	extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
 src/include/catalog/storage.h	cf0ca2a6bb14a02764748a9a8f8e9eb6c6f28a05	wal_skip_threshold	extern PGDLLIMPORT int wal_skip_threshold;

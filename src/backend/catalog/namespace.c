@@ -133,36 +133,36 @@
 
 /* These variables define the actually active state: */
 
-static List *activeSearchPath = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *activeSearchPath = NIL;
 
 /* default place to create stuff; if InvalidOid, no default */
-static Oid	activeCreationNamespace = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid activeCreationNamespace = InvalidOid;
 
 /* if true, activeCreationNamespace is wrong, it should be temp namespace */
-static bool activeTempCreationPending = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool activeTempCreationPending = false;
 
 /* current generation counter; make sure this is never zero */
-static uint64 activePathGeneration = 1;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION uint64 activePathGeneration = 1;
 
 /* These variables are the values last derived from namespace_search_path: */
 
-static List *baseSearchPath = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *baseSearchPath = NIL;
 
-static Oid	baseCreationNamespace = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid baseCreationNamespace = InvalidOid;
 
-static bool baseTempCreationPending = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool baseTempCreationPending = false;
 
-static Oid	namespaceUser = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid namespaceUser = InvalidOid;
 
 /* The above four values are valid only if baseSearchPathValid */
-static bool baseSearchPathValid = true;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool baseSearchPathValid = true;
 
 /*
  * Storage for search path cache.  Clear searchPathCacheValid as a simple
  * way to invalidate *all* the cache entries, not just the active one.
  */
-static bool searchPathCacheValid = false;
-static MemoryContext SearchPathCacheContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool searchPathCacheValid = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext SearchPathCacheContext = NULL;
 
 typedef struct SearchPathCacheKey
 {
@@ -198,17 +198,17 @@ typedef struct SearchPathCacheEntry
  * we either haven't made the TEMP namespace yet, or have successfully
  * committed its creation, depending on whether myTempNamespace is valid.
  */
-static Oid	myTempNamespace = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid myTempNamespace = InvalidOid;
 
-static Oid	myTempToastNamespace = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid myTempToastNamespace = InvalidOid;
 
-static SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
 
 /*
  * This is the user's textual search path specification --- it's the value
  * of the GUC variable 'search_path'.
  */
-char	   *namespace_search_path = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *namespace_search_path = NULL;
 
 
 /* Local functions */
@@ -297,8 +297,8 @@ spcachekey_equal(SearchPathCacheKey a, SearchPathCacheKey b)
  */
 #define SPCACHE_RESET_THRESHOLD		256
 
-static nsphash_hash *SearchPathCache = NULL;
-static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION nsphash_hash *SearchPathCache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
 
 /*
  * Create or reset search_path cache as necessary.
