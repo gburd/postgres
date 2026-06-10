@@ -325,10 +325,10 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
 extern PGDLLIMPORT bool in_hot_standby_guc;
-extern PGDLLIMPORT bool trace_sort;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_sort;
 
 #ifdef DEBUG_BOUNDED_SORT
-extern PGDLLIMPORT bool optimize_bounded_sort;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool optimize_bounded_sort;
 #endif
 
 /*

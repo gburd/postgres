@@ -2159,8 +2159,6 @@ src/backend/utils/mmgr/mcxt.c	fa651802ad7c8e575ffd03e87b4a3ae252d8d13d	LogMemory
 src/backend/utils/resowner/resowner.c	805e848588fb8a1e72096864fb8101461769c149	narray_lookups	static int narray_lookups = 0;
 src/backend/utils/resowner/resowner.c	ccbd504418d09a461efaed264a8383b1cc246011	nhash_lookups	static int nhash_lookups = 0;
 src/backend/utils/resowner/resowner.c	609f8b6f40d3076d022b682e80836f4249f3c794	ResourceRelease_callbacks	static ResourceReleaseCallbackItem *ResourceRelease_callbacks = NULL;
-src/backend/utils/sort/tuplesort.c	37eee722204e1c2aa7aae909b99a1a649ae80bd3	trace_sort	bool trace_sort = false;
-src/backend/utils/sort/tuplesort.c	be16179c93d509d7625d0fe511269a2eed52c498	optimize_bounded_sort	bool optimize_bounded_sort = true;
 src/backend/utils/time/combocid.c	53eb46885b8cdb8c728c40b05a24080f31b3cd3f	comboHash	static HTAB *comboHash = NULL;
 src/backend/utils/time/combocid.c	72738162d8d01df2e7a5c88122940b19c9e74403	comboCids	static ComboCidKey comboCids = NULL;
 src/backend/utils/time/combocid.c	0a3ea554907322e6873c22b7d2d512bdf5d649f9	usedComboCids	static int usedComboCids = 0;
@@ -2668,8 +2666,6 @@ src/include/utils/guc.h	6da87dc379ba55d218bd1d4e46b20835deeddb33	Debug_copy_pars
 src/include/utils/guc.h	b734c86716aa76bd779abc6b0c95d7345e44e38a	Debug_write_read_parse_plan_trees	extern PGDLLIMPORT bool Debug_write_read_parse_plan_trees;
 src/include/utils/guc.h	6d9d372167ffd0e3fb7682a0397d20324ead4413	Debug_raw_expression_coverage_test	extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
 src/include/utils/guc.h	6cb87eba082e39f078c76cf3c8658b6b50df1f63	in_hot_standby_guc	extern PGDLLIMPORT bool in_hot_standby_guc;
-src/include/utils/guc.h	f6cdc2af8f781a1d53d2711846074db2e6f0f601	trace_sort	extern PGDLLIMPORT bool trace_sort;
-src/include/utils/guc.h	7f8005ac92b8609ca90ddfd34516ea87dae06322	optimize_bounded_sort	extern PGDLLIMPORT bool optimize_bounded_sort;
 src/include/utils/guc_tables.h	d340e57d0ae8eef772795b8aba79c4d095f8f8eb	config_group_names	extern PGDLLIMPORT const char *const config_group_names[];
 src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_type_names	extern PGDLLIMPORT const char *const config_type_names[];
 src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucContext_Names	extern PGDLLIMPORT const char *const GucContext_Names[];

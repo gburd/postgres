@@ -120,10 +120,10 @@
 	ALLOCSET_SEPARATE_THRESHOLD / sizeof(SortTuple) + 1)
 
 /* GUC variables */
-bool		trace_sort = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_sort = false;
 
 #ifdef DEBUG_BOUNDED_SORT
-bool		optimize_bounded_sort = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool optimize_bounded_sort = true;
 #endif
 
 
