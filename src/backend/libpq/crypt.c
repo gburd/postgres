@@ -27,10 +27,10 @@
 #include "utils/timestamp.h"
 
 /* Threshold for password expiration warnings. */
-int			password_expiration_warning_threshold = 604800;
+PG_GLOBAL_RUNTIME int password_expiration_warning_threshold = 604800;
 
 /* Enables deprecation warnings for MD5 passwords. */
-bool		md5_password_warnings = true;
+PG_GLOBAL_RUNTIME bool md5_password_warnings = true;
 
 /*
  * Fetch stored password for a user, for authentication.

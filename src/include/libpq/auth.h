@@ -15,6 +15,7 @@
 #define AUTH_H
 
 #include "libpq/libpq-be.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Maximum accepted size of GSS and SSPI authentication tokens.
@@ -32,9 +33,9 @@
  */
 #define PG_MAX_AUTH_TOKEN_LENGTH	65535
 
-extern PGDLLIMPORT char *pg_krb_server_keyfile;
-extern PGDLLIMPORT bool pg_krb_caseins_users;
-extern PGDLLIMPORT bool pg_gss_accept_delegation;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *pg_krb_server_keyfile;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_krb_caseins_users;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_gss_accept_delegation;
 
 extern void ClientAuthentication(Port *port);
 extern void sendAuthRequest(Port *port, AuthRequest areq, const void *extradata,

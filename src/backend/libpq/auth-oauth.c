@@ -32,7 +32,7 @@
 #include "utils/varlena.h"
 
 /* GUC */
-char	   *oauth_validator_libraries_string = NULL;
+PG_GLOBAL_RUNTIME char *oauth_validator_libraries_string = NULL;
 
 static void oauth_get_mechanisms(Port *port, StringInfo buf);
 static void *oauth_init(Port *port, const char *selected_mech, const char *shadow_pass);

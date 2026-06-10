@@ -103,22 +103,22 @@ extern ssize_t secure_raw_write(Port *port, const void *ptr, size_t len);
 /*
  * declarations for variables defined in be-secure.c
  */
-extern PGDLLIMPORT char *ssl_library;
-extern PGDLLIMPORT char *ssl_ca_file;
-extern PGDLLIMPORT char *ssl_cert_file;
-extern PGDLLIMPORT char *ssl_crl_file;
-extern PGDLLIMPORT char *ssl_crl_dir;
-extern PGDLLIMPORT char *ssl_key_file;
-extern PGDLLIMPORT int ssl_min_protocol_version;
-extern PGDLLIMPORT int ssl_max_protocol_version;
-extern PGDLLIMPORT char *ssl_passphrase_command;
-extern PGDLLIMPORT bool ssl_passphrase_command_supports_reload;
-extern PGDLLIMPORT char *ssl_dh_params_file;
-extern PGDLLIMPORT bool ssl_sni;
-extern PGDLLIMPORT char *SSLCipherSuites;
-extern PGDLLIMPORT char *SSLCipherList;
-extern PGDLLIMPORT char *SSLECDHCurve;
-extern PGDLLIMPORT bool SSLPreferServerCiphers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_library;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_ca_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_cert_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_crl_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_crl_dir;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_key_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int ssl_min_protocol_version;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int ssl_max_protocol_version;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_passphrase_command;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_passphrase_command_supports_reload;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_dh_params_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_sni;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherSuites;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherList;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLECDHCurve;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool SSLPreferServerCiphers;
 #ifdef USE_SSL
 extern PGDLLIMPORT bool ssl_loaded_verify_locations;
 #endif

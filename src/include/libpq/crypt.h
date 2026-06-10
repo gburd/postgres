@@ -14,6 +14,7 @@
 #define PG_CRYPT_H
 
 #include "datatype/timestamp.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Valid password hashes may be very long, but we don't want to store anything
@@ -26,10 +27,10 @@
 #define MAX_ENCRYPTED_PASSWORD_LEN (512)
 
 /* Threshold for password expiration warnings. */
-extern PGDLLIMPORT int password_expiration_warning_threshold;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int password_expiration_warning_threshold;
 
 /* Enables deprecation warnings for MD5 passwords. */
-extern PGDLLIMPORT bool md5_password_warnings;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool md5_password_warnings;
 
 /*
  * Types of password hashes or secrets.

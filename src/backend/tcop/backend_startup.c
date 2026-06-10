@@ -43,9 +43,9 @@
 #include "utils/varlena.h"
 
 /* GUCs */
-bool		Trace_connection_negotiation = false;
-uint32		log_connections = 0;
-char	   *log_connections_string = NULL;
+PG_GLOBAL_RUNTIME bool Trace_connection_negotiation = false;
+PG_GLOBAL_RUNTIME uint32 log_connections = 0;
+PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
 
 /* Other globals */
 

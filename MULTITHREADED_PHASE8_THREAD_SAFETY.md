@@ -239,6 +239,19 @@ postmaster, shared-memory, or startup-computed runtime state:
   `recovery_target_string`, `recovery_target_time_string`,
   `recovery_target_timeline_string`, `recovery_target_xid_string`,
   `curFileTLI`, `expectedTLEs`, and `wal_receiver_create_temp_slot`.
+- libpq, authentication, SSL, socket, and connection-startup runtime GUC
+  backing variables: `SSLCipherList`, `SSLCipherSuites`, `SSLECDHCurve`,
+  `SSLPreferServerCiphers`, `Trace_connection_negotiation`,
+  `Unix_socket_group`, `Unix_socket_permissions`, `log_connections`,
+  `log_connections_string`, `md5_password_warnings`,
+  `oauth_validator_libraries_string`,
+  `password_expiration_warning_threshold`, `pg_gss_accept_delegation`,
+  `pg_krb_caseins_users`, `pg_krb_server_keyfile`,
+  `scram_sha_256_iterations`, `ssl_ca_file`, `ssl_cert_file`,
+  `ssl_crl_dir`, `ssl_crl_file`, `ssl_dh_params_file`, `ssl_key_file`,
+  `ssl_library`, `ssl_max_protocol_version`, `ssl_min_protocol_version`,
+  `ssl_passphrase_command`, `ssl_passphrase_command_supports_reload`, and
+  `ssl_sni`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -280,8 +293,9 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the recovery and standby GUC classification slice, the filtered static
-report contains 59 remaining unclassified generated GUC backing variables.
+After the libpq/authentication/SSL GUC classification slice, the filtered
+static report contains 32 remaining unclassified generated GUC backing
+variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -597,6 +611,12 @@ Validation for this slice:
   target state as `PG_GLOBAL_RUNTIME`;
 - focused core GUC regression test after the recovery and standby slice:
   `guc`;
+- focused `be-secure.o`, `auth.o`, `crypt.o`, `auth-scram.o`,
+  `auth-oauth.o`, `pqcomm.o`, and `backend_startup.o` compile coverage after
+  classifying libpq, authentication, SSL, socket, and connection-startup GUC
+  backing variables as `PG_GLOBAL_RUNTIME`;
+- incremental `gmake -j8` and focused core GUC regression test after the
+  libpq/authentication/SSL slice: `guc`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
