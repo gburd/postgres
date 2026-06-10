@@ -86,7 +86,7 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactDeferrable = false;
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
 
-int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 
 /*
  * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)

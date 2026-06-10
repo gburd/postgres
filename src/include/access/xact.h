@@ -82,7 +82,7 @@ typedef enum
 #define SYNCHRONOUS_COMMIT_ON	SYNCHRONOUS_COMMIT_REMOTE_FLUSH
 
 /* Synchronous commit level */
-extern PGDLLIMPORT int synchronous_commit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int synchronous_commit;
 
 /* used during logical streaming of a transaction */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive;

@@ -136,6 +136,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pg_largeobject` heap/index relation handles `lo_heap_r` and `lo_index_r`.
 - sort session GUC backing variables in `tuplesort.c`: `trace_sort` and the
   debug-build `optimize_bounded_sort`.
+- commit behavior session GUC backing variables: `synchronous_commit` in
+  `xact.c`, plus `CommitDelay` and `CommitSiblings` in `xlog.c`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -177,7 +179,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the sort GUC slice, the filtered static report contains 234
+After the commit GUC slice, the filtered static report contains 231
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -408,6 +410,20 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `trace_sort`, including a sorted query
   and a second connection that did not inherit the first session's setting.
   The guarded `optimize_bounded_sort` GUC is not exposed in this default build;
+- focused `xact.o` and `xlog.o` compile coverage;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header commit GUC declarations to
+  `PG_THREAD_LOCAL`;
+- fixture-backed commit GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc
+  transactions`;
+- live temp-cluster smoke coverage for `synchronous_commit`, `commit_delay`,
+  and `commit_siblings`, including a commit path and a second connection that
+  did not inherit the first session's settings;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

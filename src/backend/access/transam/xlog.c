@@ -136,8 +136,11 @@ bool		wal_recycle = true;
 bool		log_checkpoints = true;
 int			wal_sync_method = DEFAULT_WAL_SYNC_METHOD;
 int			wal_level = WAL_LEVEL_REPLICA;
-int			CommitDelay = 0;	/* precommit delay in microseconds */
-int			CommitSiblings = 5; /* # concurrent xacts needed to sleep */
+/* Precommit delay in microseconds. */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay = 0;
+
+/* Concurrent xacts needed to sleep before commit delay. */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings = 5;
 int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;

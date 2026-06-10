@@ -50,7 +50,6 @@ src/backend/access/transam/twophase.c	4b4c77d64fd957bf44dc088ff7e63056a28da443	M
 src/backend/access/transam/twophase.c	40d594145f62cfe837d88130c71549e4764709d1	twophaseExitRegistered	static bool twophaseExitRegistered = false;
 src/backend/access/transam/twophase.c	52a0a82b90aa6e0a4bae037be2349585bfef48d2	head,tail,num_chunks,bytes_free,total_len,records	static struct xllist { StateFileChunk *head; StateFileChunk *tail; uint32 num_chunks; uint32 bytes_free; uint32 total_len; } records;
 src/backend/access/transam/varsup.c	1bec3debb09d11fa81fd1136c329827744bd6f97	TransamVariables	TransamVariablesData *TransamVariables = NULL;
-src/backend/access/transam/xact.c	a3040b055e7c2521a4b1e7fb9ff8b727b48f45a9	synchronous_commit	int synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 src/backend/access/transam/xlog.c	822291f251e5bb8aa51ac8bf7bceb0a0d5ecbbc5	max_wal_size_mb	int max_wal_size_mb = 1024;
 src/backend/access/transam/xlog.c	88b8ad2066d85ebec72fc89e52e0e43e3fd8af18	min_wal_size_mb	int min_wal_size_mb = 80;
 src/backend/access/transam/xlog.c	6f87bf812ad596758dadf3e59ec99b5561fa05d6	wal_keep_size_mb	int wal_keep_size_mb = 0;
@@ -69,8 +68,6 @@ src/backend/access/transam/xlog.c	1cca342da63433cae54a1825038a070bef1e78a9	wal_r
 src/backend/access/transam/xlog.c	9cdc32774de7f2498b99098e36b7a01f2c0e9d6f	log_checkpoints	bool log_checkpoints = true;
 src/backend/access/transam/xlog.c	e16eb1e41e0fb12ddb658d709c7b83ef90f7a6af	wal_sync_method	int wal_sync_method = DEFAULT_WAL_SYNC_METHOD;
 src/backend/access/transam/xlog.c	0a2d167ae8f6b2654f802695661f3168fa57fb79	wal_level	int wal_level = WAL_LEVEL_REPLICA;
-src/backend/access/transam/xlog.c	8d3ea8b987d2fd4e1bfe2f145886c33ba59162d3	CommitDelay	int CommitDelay = 0;
-src/backend/access/transam/xlog.c	2651ed99c36da270e39bd8a1eb57a752e320a4e9	CommitSiblings	int CommitSiblings = 5;
 src/backend/access/transam/xlog.c	24a9dff04ecb092eaa2f425e6006dc8c6cf64674	wal_retrieve_retry_interval	int wal_retrieve_retry_interval = 5000;
 src/backend/access/transam/xlog.c	cf661c8abaf77f546d2fd53dcb9ca7392025858c	max_slot_wal_keep_size_mb	int max_slot_wal_keep_size_mb = -1;
 src/backend/access/transam/xlog.c	104cf71b496df338991a644e2e764cc486ab1d03	wal_decode_buffer_size	int wal_decode_buffer_size = 512 * 1024;
@@ -2177,7 +2174,6 @@ src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedReco
 src/include/access/session.h	14eb961766d59416104d830333bc27eb441aba36	CurrentSession	extern PGDLLIMPORT Session *CurrentSession;
 src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/twophase.h	cd91e17402e3d18ed176ab8d63b6cc2716bec742	max_prepared_xacts	extern PGDLLIMPORT int max_prepared_xacts;
-src/include/access/xact.h	a74650fa4c849603e187839bc9e9f68a20b34b16	synchronous_commit	extern PGDLLIMPORT int synchronous_commit;
 src/include/access/xlog.h	7cc1cafef145a19422c8c4fcd98f5513918526d8	wal_sync_method	extern PGDLLIMPORT int wal_sync_method;
 src/include/access/xlog.h	4358811cb3dc0bce96d1e15480ee4eb25eace904	ProcLastRecPtr	extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;
 src/include/access/xlog.h	fe64f9f7182d4c89a39e84bff8fa03b7043a5e3d	XactLastRecEnd	extern PGDLLIMPORT XLogRecPtr XactLastRecEnd;
@@ -2200,8 +2196,6 @@ src/include/access/xlog.h	b6d39c53e59b6525f89a3f5b1b51b8bb9e8956c5	wal_recycle	e
 src/include/access/xlog.h	c7fdb6862009e4ab40c11b97c83f0fcec403404d	wal_consistency_checking	extern PGDLLIMPORT bool *wal_consistency_checking;
 src/include/access/xlog.h	b7fc00b952a172eaa263d152241d802035d50a44	wal_consistency_checking_string	extern PGDLLIMPORT char *wal_consistency_checking_string;
 src/include/access/xlog.h	fd95d271bd00c5a601c79b98887a8df2438b1e6a	log_checkpoints	extern PGDLLIMPORT bool log_checkpoints;
-src/include/access/xlog.h	7867c86c0261cc8a467a112e6b4c410e3a759868	CommitDelay	extern PGDLLIMPORT int CommitDelay;
-src/include/access/xlog.h	64c8ec6b7c8669f7d4c8635f864496d6897d5198	CommitSiblings	extern PGDLLIMPORT int CommitSiblings;
 src/include/access/xlog.h	78bfafe4ac4d3b9236198a5eff290a1b2935397c	track_wal_io_timing	extern PGDLLIMPORT bool track_wal_io_timing;
 src/include/access/xlog.h	a1f7f02fbe94b48e350b2a456e3c570a756aeb20	wal_decode_buffer_size	extern PGDLLIMPORT int wal_decode_buffer_size;
 src/include/access/xlog.h	87a2136a2d3aee1fdaf03ce58014f9e5238bd32b	data_checksums	extern PGDLLIMPORT int data_checksums;

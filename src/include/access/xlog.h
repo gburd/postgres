@@ -17,6 +17,7 @@
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
+#include "utils/global_lifetime.h"
 
 
 /* Sync methods */
@@ -53,8 +54,8 @@ extern PGDLLIMPORT bool wal_recycle;
 extern PGDLLIMPORT bool *wal_consistency_checking;
 extern PGDLLIMPORT char *wal_consistency_checking_string;
 extern PGDLLIMPORT bool log_checkpoints;
-extern PGDLLIMPORT int CommitDelay;
-extern PGDLLIMPORT int CommitSiblings;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings;
 extern PGDLLIMPORT bool track_wal_io_timing;
 extern PGDLLIMPORT int wal_decode_buffer_size;
 extern PGDLLIMPORT int data_checksums;
