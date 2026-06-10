@@ -498,35 +498,68 @@ Contrib modules should be handled after the mechanism is proven:
 
 ## Test Strategy
 
-Process mode remains the control group.
+Process mode remains the control group. Testing should be tiered so routine
+development stays fast, while broader suites run before each increase in risk.
 
-Minimum validation after major phases:
+Every commit should run:
 
-- build;
+- build for touched targets, at minimum the backend when backend code changes;
+- focused tests for the files or subsystems touched;
+- `git diff --check`.
+
+Every phase end should run:
+
+- backend build;
 - core regression tests;
 - targeted TAP tests for touched areas;
-- isolation tests for lock/wait changes;
-- extension load tests;
-- PL/pgSQL tests once extension gating exists.
+- isolation tests when lock, wait, transaction, or cancellation behavior is
+  touched;
+- extension load tests once extension gating exists;
+- PL/pgSQL tests once PL/pgSQL is in scope.
 
-Threaded mode validation begins when thread launch exists:
+Full-suite gates should run after groups of phases, not after every phase.
+These gates should use `check-world` or a documented near-equivalent when local
+platform/tooling issues make literal `check-world` noisy.
 
-- smoke test multiple concurrent clients;
-- cancellation of running query;
-- termination of idle and active backend;
-- error recovery after `ERROR`;
-- transaction abort cleanup;
-- LISTEN/NOTIFY if logical interrupts have reached that path;
-- PL/pgSQL smoke tests;
-- repeated connect/disconnect stress.
+Gate A, after Phase 3:
 
-Later scheduler validation:
+- main-loop boundary and session scaffolding are complete;
+- run core regression, isolation tests, PL/pgSQL tests, and targeted
+  protocol/error-recovery tests.
 
-- many idle sessions on limited carriers;
-- lock wait queues with cancellation;
-- output backpressure;
-- timeouts while waiting;
-- no lost wakeups across repeated suspend/resume cycles.
+Gate B, after Phase 6:
+
+- logical interrupts, timeout routing, and backend lifecycle/exit are complete;
+- run `check-world` or close to it, plus focused cancellation, timeout,
+  config reload, LISTEN/NOTIFY, and disconnect/FATAL tests.
+
+Gate C, after Phase 8:
+
+- extension gating and the thread-safety floor are complete;
+- run `check-world`, static global report checks, extension load tests, and
+  PL/pgSQL regression tests.
+
+Gate D, after Phase 9:
+
+- first thread-per-session runtime exists;
+- run full process-mode tests and the threaded smoke/regression subset:
+  multiple concurrent clients, running-query cancellation, idle and active
+  backend termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL
+  smoke tests, and repeated connect/disconnect stress.
+
+Gate E, after Phase 12:
+
+- scheduler-aware waits and pooled carriers exist;
+- run full process-mode and threaded-mode suites, plus stress tests for lock
+  waits, cancellation of waiting and running tasks, output backpressure,
+  timeout delivery while waiting, and lost wakeups.
+
+Gate F, during Phase 14:
+
+- hardening and release-readiness gate;
+- run sanitizers where feasible, repeated full suites, stress tests for
+  interrupts/waits/cancellation/teardown, crash and `FATAL` behavior tests, and
+  performance baselines.
 
 ## Risk Register
 
