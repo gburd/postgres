@@ -73,15 +73,15 @@
 /*
  * GUC parameters
  */
-int			vacuum_freeze_min_age;
-int			vacuum_freeze_table_age;
-int			vacuum_multixact_freeze_min_age;
-int			vacuum_multixact_freeze_table_age;
-int			vacuum_failsafe_age;
-int			vacuum_multixact_failsafe_age;
-double		vacuum_max_eager_freeze_failure_rate;
-bool		track_cost_delay_timing;
-bool		vacuum_truncate;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_min_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_table_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_min_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_table_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_failsafe_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_failsafe_age;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_max_eager_freeze_failure_rate;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_cost_delay_timing;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
 
 /*
  * Variables for cost-based vacuum delay. The defaults differ between

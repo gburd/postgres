@@ -325,14 +325,14 @@ typedef struct PVWorkerUsage
 /* GUC parameters */
 /* Exported for PostGIS. */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int default_statistics_target;
-extern PGDLLIMPORT int vacuum_freeze_min_age;
-extern PGDLLIMPORT int vacuum_freeze_table_age;
-extern PGDLLIMPORT int vacuum_multixact_freeze_min_age;
-extern PGDLLIMPORT int vacuum_multixact_freeze_table_age;
-extern PGDLLIMPORT int vacuum_failsafe_age;
-extern PGDLLIMPORT int vacuum_multixact_failsafe_age;
-extern PGDLLIMPORT bool track_cost_delay_timing;
-extern PGDLLIMPORT bool vacuum_truncate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_min_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_table_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_min_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_table_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_failsafe_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_failsafe_age;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_cost_delay_timing;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
 
 /*
  * Relevant for vacuums implementing eager scanning. Normal vacuums may
@@ -342,7 +342,7 @@ extern PGDLLIMPORT bool vacuum_truncate;
  * fraction of pages in the relation vacuum may scan and fail to freeze
  * before disabling eager scanning.
  */
-extern PGDLLIMPORT double vacuum_max_eager_freeze_failure_rate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_max_eager_freeze_failure_rate;
 
 /*
  * Maximum value for default_statistics_target and per-column statistics

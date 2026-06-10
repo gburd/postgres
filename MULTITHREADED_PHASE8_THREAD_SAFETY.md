@@ -44,6 +44,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `MyDatabaseHasLoginEventTriggers`, `DatabasePath`, `MyBackendType`, `Mode`,
   and `OutputFileName`;
 - vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`;
+- vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
+  `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
+  `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
+  `vacuum_multixact_failsafe_age`, `vacuum_max_eager_freeze_failure_rate`,
+  `track_cost_delay_timing`, and `vacuum_truncate`;
 - transaction execution state in `xact.c`, including current transaction
   state, subtransaction/command counters, transaction timestamps, parallel
   current-XID state, unreported subtransaction XIDs, transaction abort context,
@@ -179,6 +184,19 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `array_nulls`, `backslash_quote`,
   `bytea_output`, `extra_float_digits`, `quote_all_identifiers`,
   `transform_null_equals`, `xmlbinary`, and `xmloption`;
+- fixture-backed vacuum GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc`;
+- live temp-cluster smoke coverage for `vacuum_truncate`,
+  `vacuum_freeze_min_age`, `vacuum_freeze_table_age`, `vacuum_failsafe_age`,
+  `vacuum_multixact_freeze_min_age`,
+  `vacuum_multixact_freeze_table_age`,
+  `vacuum_multixact_failsafe_age`,
+  `vacuum_max_eager_freeze_failure_rate`, and
+  `track_cost_delay_timing`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
@@ -192,7 +210,8 @@ Validation for this slice:
   unclassified debt;
 - filtered static scan for the touched required-floor names;
 - filtered non-TLS extern mismatch search for the planner/JIT/analyze,
-  exported session, and session SQL-behavior GUC backing variables;
+  exported session, session SQL-behavior, and vacuum tuning GUC backing
+  variables;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and

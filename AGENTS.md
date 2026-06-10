@@ -164,6 +164,11 @@ Important current files:
   `src/test/isolation/pg_isolation_regress` to the same temp-install
   `libpq.5.dylib` before rerunning them.
 
+  `gmake -C src/test/regress check-tests` recreates `tmp_install`, so a
+  previously patched `psql` can become unpatched again. If that target fails
+  before SQL starts with a `dyld` `libpq.5.dylib` loader error, patch the new
+  temp-install binaries and rerun the equivalent `pg_regress` command directly.
+
 - For focused process-mode regression checks, run the test driver directly with
   the temp install first on `PATH`, for example:
 
