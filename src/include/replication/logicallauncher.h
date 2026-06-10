@@ -12,9 +12,11 @@
 #ifndef LOGICALLAUNCHER_H
 #define LOGICALLAUNCHER_H
 
-extern PGDLLIMPORT int max_logical_replication_workers;
-extern PGDLLIMPORT int max_sync_workers_per_subscription;
-extern PGDLLIMPORT int max_parallel_apply_workers_per_subscription;
+#include "utils/global_lifetime.h"
+
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_logical_replication_workers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_sync_workers_per_subscription;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_parallel_apply_workers_per_subscription;
 
 extern void ApplyLauncherRegister(void);
 extern void ApplyLauncherMain(Datum main_arg);

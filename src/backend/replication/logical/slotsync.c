@@ -130,7 +130,7 @@ const ShmemCallbacks SlotSyncShmemCallbacks = {
 };
 
 /* GUC variable */
-bool		sync_replication_slots = false;
+PG_GLOBAL_RUNTIME bool sync_replication_slots = false;
 
 /*
  * The sleep time (ms) between slot-sync cycles varies dynamically

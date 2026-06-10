@@ -17,7 +17,7 @@
 #include "replication/walreceiver.h"
 #include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT bool sync_replication_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool sync_replication_slots;
 
 /* Interrupt flag set by HandleSlotSyncMessageInterrupt() */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t SlotSyncShutdownPending;

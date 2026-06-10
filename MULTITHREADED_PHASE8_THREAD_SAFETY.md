@@ -252,6 +252,18 @@ postmaster, shared-memory, or startup-computed runtime state:
   `ssl_library`, `ssl_max_protocol_version`, `ssl_min_protocol_version`,
   `ssl_passphrase_command`, `ssl_passphrase_command_supports_reload`, and
   `ssl_sni`.
+- replication, WAL summarization, archive-library, notification queue, commit
+  timestamp, prepared-transaction, and backend-status runtime GUC backing
+  variables: `SyncRepStandbyNames`, `XLogArchiveLibrary`,
+  `hot_standby_feedback`, `idle_replication_slot_timeout_secs`,
+  `max_active_replication_origins`, `max_logical_replication_workers`,
+  `max_notify_queue_pages`, `max_parallel_apply_workers_per_subscription`,
+  `max_prepared_xacts`, `max_repack_replication_slots`,
+  `max_replication_slots`, `max_sync_workers_per_subscription`,
+  `max_wal_senders`, `pgstat_track_activity_query_size`, `summarize_wal`,
+  `sync_replication_slots`, `synchronized_standby_slots`,
+  `track_commit_timestamp`, `wal_receiver_status_interval`, and
+  `wal_summary_keep_time`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -293,8 +305,8 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the libpq/authentication/SSL GUC classification slice, the filtered
-static report contains 32 remaining unclassified generated GUC backing
+After the replication/WAL-capacity GUC classification slice, the filtered
+static report contains 12 remaining unclassified generated GUC backing
 variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -617,6 +629,14 @@ Validation for this slice:
   backing variables as `PG_GLOBAL_RUNTIME`;
 - incremental `gmake -j8` and focused core GUC regression test after the
   libpq/authentication/SSL slice: `guc`;
+- focused `pgarch.o`, `walsummarizer.o`, `launcher.o`, `slotsync.o`,
+  `origin.o`, `slot.o`, `walsender.o`, `walreceiver.o`, `syncrep.o`,
+  `async.o`, `twophase.o`, `commit_ts.o`, and `backend_status.o` compile
+  coverage after classifying replication, WAL-capacity, notification queue,
+  commit timestamp, prepared-transaction, and backend-status GUC backing
+  variables as `PG_GLOBAL_RUNTIME`;
+- incremental `gmake -j8` and focused core GUC regression test after the
+  replication/WAL-capacity slice: `guc`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

@@ -158,22 +158,22 @@ const ShmemCallbacks ReplicationSlotsShmemCallbacks = {
 ReplicationSlot *MyReplicationSlot = NULL;
 
 /* GUC variables */
-int			max_replication_slots = 10; /* the maximum number of replication
+PG_GLOBAL_RUNTIME int max_replication_slots = 10; /* the maximum number of replication
 										 * slots */
-int			max_repack_replication_slots = 5;	/* the maximum number of slots
+PG_GLOBAL_RUNTIME int max_repack_replication_slots = 5;	/* the maximum number of slots
 												 * for REPACK */
 
 /*
  * Invalidate replication slots that have remained idle longer than this
  * duration; '0' disables it.
  */
-int			idle_replication_slot_timeout_secs = 0;
+PG_GLOBAL_RUNTIME int idle_replication_slot_timeout_secs = 0;
 
 /*
  * This GUC lists streaming replication standby server slot names that
  * logical WAL sender processes will wait for.
  */
-char	   *synchronized_standby_slots;
+PG_GLOBAL_RUNTIME char *synchronized_standby_slots;
 
 /* This is the parsed and cached configuration for synchronized_standby_slots */
 static SyncStandbySlotsConfigData *synchronized_standby_slots_config;

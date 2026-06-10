@@ -138,8 +138,8 @@ bool		am_cascading_walsender = false; /* Am I cascading WAL to another
 bool		am_db_walsender = false;	/* Connected to a database? */
 
 /* GUC variables */
-int			max_wal_senders = 10;	/* the maximum number of concurrent
-									 * walsenders */
+PG_GLOBAL_RUNTIME int max_wal_senders = 10;	/* the maximum number of concurrent
+											 * walsenders */
 int			wal_sender_timeout = 60 * 1000; /* maximum time to send one WAL
 											 * data message */
 

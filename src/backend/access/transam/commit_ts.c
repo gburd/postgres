@@ -118,7 +118,7 @@ static CommitTimestampShared *commitTsShared;
 static void CommitTsShmemInit(void *arg);
 
 /* GUC variable */
-bool		track_commit_timestamp;
+PG_GLOBAL_RUNTIME bool track_commit_timestamp;
 
 static void SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 								 TransactionId *subxids, TimestampTz ts,

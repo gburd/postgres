@@ -18,7 +18,7 @@
 #include "utils/global_lifetime.h"
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_notify;
-extern PGDLLIMPORT int max_notify_queue_pages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_notify_queue_pages;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending;
 
 extern void NotifyMyFrontEnd(const char *channel,

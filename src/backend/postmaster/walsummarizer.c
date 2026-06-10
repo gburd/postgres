@@ -151,8 +151,8 @@ static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
 /*
  * GUC parameters
  */
-bool		summarize_wal = false;
-int			wal_summary_keep_time = 10 * HOURS_PER_DAY * MINS_PER_HOUR;
+PG_GLOBAL_RUNTIME bool summarize_wal = false;
+PG_GLOBAL_RUNTIME int wal_summary_keep_time = 10 * HOURS_PER_DAY * MINS_PER_HOUR;
 
 static void WalSummarizerShutdown(int code, Datum arg);
 static XLogRecPtr GetLatestLSN(TimeLineID *tli);

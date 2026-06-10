@@ -94,7 +94,7 @@ typedef struct PgArchData
 	pg_atomic_uint32 force_dir_scan;
 } PgArchData;
 
-char	   *XLogArchiveLibrary = "";
+PG_GLOBAL_RUNTIME char *XLogArchiveLibrary = "";
 char	   *arch_module_check_errdetail_string;
 
 

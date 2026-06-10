@@ -42,7 +42,7 @@
  * ----------
  */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities = false;
-int			pgstat_track_activity_query_size = 1024;
+PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size = 1024;
 
 
 /* exposed so that backend_progress.c can access it */

@@ -289,7 +289,7 @@ typedef struct LocalPgBackendStatus
  * ----------
  */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities;
-extern PGDLLIMPORT int pgstat_track_activity_query_size;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
 
 
 /* ----------

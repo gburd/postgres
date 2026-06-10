@@ -22,12 +22,13 @@
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
 #include "storage/spin.h"
+#include "utils/global_lifetime.h"
 #include "utils/tuplestore.h"
 
 /* user-settable parameters */
-extern PGDLLIMPORT int wal_receiver_status_interval;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
 extern PGDLLIMPORT int wal_receiver_timeout;
-extern PGDLLIMPORT bool hot_standby_feedback;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /*
  * MAXCONNINFO: maximum size of a connection string.

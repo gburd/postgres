@@ -89,7 +89,7 @@
 #include "utils/wait_event.h"
 
 /* User-settable parameters for sync rep */
-char	   *SyncRepStandbyNames;
+PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 
 #define SyncStandbysDefined() \
 	(SyncRepStandbyNames != NULL && SyncRepStandbyNames[0] != '\0')

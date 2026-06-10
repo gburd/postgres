@@ -103,7 +103,7 @@
 #define PG_REPLORIGIN_CHECKPOINT_TMPFILE PG_REPLORIGIN_CHECKPOINT_FILENAME ".tmp"
 
 /* GUC variables */
-int			max_active_replication_origins = 10;
+PG_GLOBAL_RUNTIME int max_active_replication_origins = 10;
 
 /*
  * Replay progress of a single remote node.

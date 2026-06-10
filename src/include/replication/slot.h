@@ -16,6 +16,7 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "replication/walreceiver.h"
+#include "utils/global_lifetime.h"
 
 /* directory to store replication slot data in */
 #define PG_REPLSLOT_DIR     "pg_replslot"
@@ -323,10 +324,10 @@ extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
 extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
 
 /* GUCs */
-extern PGDLLIMPORT int max_replication_slots;
-extern PGDLLIMPORT int max_repack_replication_slots;
-extern PGDLLIMPORT char *synchronized_standby_slots;
-extern PGDLLIMPORT int idle_replication_slot_timeout_secs;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_replication_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_repack_replication_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *synchronized_standby_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int idle_replication_slot_timeout_secs;
 
 /* management of individual slots */
 extern void ReplicationSlotCreate(const char *name, bool db_specific,

@@ -14,6 +14,7 @@
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_replication_origin.h"
+#include "utils/global_lifetime.h"
 
 typedef struct xl_replorigin_set
 {
@@ -50,7 +51,7 @@ typedef struct ReplOriginXactState
 extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
 
 /* GUCs */
-extern PGDLLIMPORT int max_active_replication_origins;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_active_replication_origins;
 
 /* API for querying & manipulating replication origins */
 extern ReplOriginId replorigin_by_name(const char *roname, bool missing_ok);

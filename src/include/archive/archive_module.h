@@ -12,10 +12,12 @@
 #ifndef _ARCHIVE_MODULE_H
 #define _ARCHIVE_MODULE_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * The value of the archive_library GUC.
  */
-extern PGDLLIMPORT char *XLogArchiveLibrary;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *XLogArchiveLibrary;
 
 typedef struct ArchiveModuleState
 {
