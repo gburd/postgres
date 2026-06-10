@@ -23,3 +23,12 @@ CREATE FUNCTION register_dsm_detach_for_backend_exit() RETURNS VOID
 
 CREATE FUNCTION get_dsm_detach_count() RETURNS INT
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION reset_exit_callback_order() RETURNS VOID
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION register_exit_callback_order() RETURNS VOID
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION get_exit_callback_order() RETURNS TEXT
+	AS 'MODULE_PATHNAME' LANGUAGE C;

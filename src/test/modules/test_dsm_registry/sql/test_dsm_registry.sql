@@ -12,6 +12,11 @@ SELECT reset_dsm_detach_count();
 SELECT register_dsm_detach_for_backend_exit();
 \c
 SELECT get_dsm_detach_count();
+\c
+SELECT reset_exit_callback_order();
+SELECT register_exit_callback_order();
+\c
+SELECT get_exit_callback_order();
 SELECT name, type, size > 0 AS size_ok
 FROM pg_dsm_registry_allocations
 WHERE name like 'test_dsm_registry%' ORDER BY name;

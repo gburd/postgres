@@ -99,6 +99,10 @@ which runtime object owns that worker's cleanup and scheduler continuation.
 - `gmake -C src/test/modules/test_dsm_registry check` passed after adding a
   fixture that registers an `on_dsm_detach` callback, leaves its DSM mapping
   pinned for backend-exit cleanup, reconnects, and verifies the callback ran.
+- The same `test_dsm_registry` fixture now records callback ordering across an
+  actual backend disconnect and verifies `before_shmem_exit` callbacks run in
+  LIFO order, followed by DSM detach callbacks, `on_shmem_exit` callbacks in
+  LIFO order, and then `on_proc_exit` callbacks in LIFO order.
 - `gmake -C src/test/modules/test_backend_runtime check` passed after adding a
   fixture that installs a runtime `exit_backend` continuation, calls
   `PgBackendExitComplete(17)`, and verifies control transfers to the
