@@ -21,6 +21,7 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/procsignal.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
@@ -60,6 +61,7 @@ ProcessMainLoopInterrupts(void)
 void
 SignalHandlerForConfigReload(SIGNAL_ARGS)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CONFIG_RELOAD);
 	ConfigReloadPending = true;
 	SetLatch(MyLatch);
 }
@@ -103,6 +105,7 @@ SignalHandlerForCrashExit(SIGNAL_ARGS)
 void
 SignalHandlerForShutdownRequest(SIGNAL_ARGS)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST);
 	ShutdownRequestPending = true;
 	SetLatch(MyLatch);
 }

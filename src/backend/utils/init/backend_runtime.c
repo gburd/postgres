@@ -85,3 +85,83 @@ PgProcessRuntimeAttachSession(Session *session)
 
 	CurrentPgSession->legacy_session = session;
 }
+
+void
+PgBackendRaiseInterrupt(PgBackend *backend,
+						PgBackendInterruptType interrupt_type)
+{
+	if (backend == NULL)
+		return;
+	if (interrupt_type < 0 || interrupt_type >= PG_BACKEND_INTERRUPT_COUNT)
+		return;
+
+	backend->interrupts.flags[interrupt_type] = true;
+	backend->interrupts.pending = true;
+	InterruptPending = true;
+}
+
+void
+PgCurrentBackendRaiseInterrupt(PgBackendInterruptType interrupt_type)
+{
+	PgBackendRaiseInterrupt(CurrentPgBackend, interrupt_type);
+}
+
+void
+PgCurrentBackendRaiseProcDieInterrupt(int sender_pid, int sender_uid)
+{
+	PgBackend *backend = CurrentPgBackend;
+
+	if (backend == NULL)
+		return;
+
+	if (backend->interrupts.proc_die_sender_pid == 0)
+	{
+		backend->interrupts.proc_die_sender_pid = sender_pid;
+		backend->interrupts.proc_die_sender_uid = sender_uid;
+	}
+
+	PgBackendRaiseInterrupt(backend, PG_BACKEND_INTERRUPT_PROC_DIE);
+}
+
+PgBackendInterruptMask
+PgBackendConsumeInterrupts(PgBackend *backend)
+{
+	PgBackendInterruptMask pending = 0;
+
+	if (backend == NULL || !backend->interrupts.pending)
+		return 0;
+
+	backend->interrupts.pending = false;
+
+	for (int i = 0; i < PG_BACKEND_INTERRUPT_COUNT; i++)
+	{
+		if (backend->interrupts.flags[i])
+		{
+			backend->interrupts.flags[i] = false;
+			pending |= PG_BACKEND_INTERRUPT_MASK(i);
+		}
+	}
+
+	return pending;
+}
+
+void
+PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
+							  int *sender_uid)
+{
+	if (sender_pid != NULL)
+		*sender_pid = 0;
+	if (sender_uid != NULL)
+		*sender_uid = 0;
+
+	if (backend == NULL)
+		return;
+
+	if (sender_pid != NULL)
+		*sender_pid = backend->interrupts.proc_die_sender_pid;
+	if (sender_uid != NULL)
+		*sender_uid = backend->interrupts.proc_die_sender_uid;
+
+	backend->interrupts.proc_die_sender_pid = 0;
+	backend->interrupts.proc_die_sender_uid = 0;
+}

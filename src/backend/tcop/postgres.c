@@ -186,6 +186,7 @@ static bool IsTransactionExitStmt(Node *parsetree);
 static bool IsTransactionExitStmtList(List *pstmts);
 static bool IsTransactionStmtList(List *pstmts);
 static void drop_unnamed_stmt(void);
+static void ApplyCurrentBackendInterrupts(void);
 static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
@@ -3031,6 +3032,8 @@ die(SIGNAL_ARGS)
 	/* Don't joggle the elbow of proc_exit */
 	if (!proc_exit_inprogress)
 	{
+		PgCurrentBackendRaiseProcDieInterrupt(pg_siginfo->pid,
+											 pg_siginfo->uid);
 		InterruptPending = true;
 		ProcDiePending = true;
 
@@ -3074,6 +3077,7 @@ StatementCancelHandler(SIGNAL_ARGS)
 	 */
 	if (!proc_exit_inprogress)
 	{
+		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		InterruptPending = true;
 		QueryCancelPending = true;
 	}
@@ -3103,7 +3107,10 @@ void
 HandleRecoveryConflictInterrupt(void)
 {
 	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
+	{
+		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
 		InterruptPending = true;
+	}
 	/* latch will be set by procsignal_sigusr1_handler */
 }
 
@@ -3350,6 +3357,79 @@ ProcessRecoveryConflictInterrupts(void)
 	}
 }
 
+static void
+ApplyCurrentBackendInterrupts(void)
+{
+	PgBackendInterruptMask pending;
+
+	pending = PgBackendConsumeInterrupts(CurrentPgBackend);
+	if (pending == 0)
+		return;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL))
+		QueryCancelPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_DIE))
+	{
+		int			sender_pid;
+		int			sender_uid;
+
+		ProcDiePending = true;
+		PgBackendConsumeProcDieSender(CurrentPgBackend, &sender_pid,
+									  &sender_uid);
+		if (ProcDieSenderPid == 0)
+		{
+			ProcDieSenderPid = sender_pid;
+			ProcDieSenderUid = sender_uid;
+		}
+	}
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK))
+		CheckClientConnectionPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT))
+		IdleInTransactionSessionTimeoutPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT))
+		TransactionTimeoutPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT))
+		IdleSessionTimeoutPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT))
+		IdleStatsUpdateTimeoutPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER))
+		ProcSignalBarrierPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT))
+		LogMemoryContextPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CONFIG_RELOAD))
+		ConfigReloadPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST))
+		ShutdownRequestPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CATCHUP))
+		catchupInterruptPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY))
+		notifyInterruptPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE))
+		ParallelMessagePending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE))
+		ParallelApplyMessagePending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE))
+		SlotSyncShutdownPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_REPACK_MESSAGE))
+		RepackMessagePending = true;
+}
+
 /*
  * ProcessInterrupts: out-of-line portion of CHECK_FOR_INTERRUPTS() macro
  *
@@ -3369,6 +3449,7 @@ ProcessInterrupts(void)
 	/* OK to accept any interrupts now? */
 	if (InterruptHoldoffCount != 0 || CritSectionCount != 0)
 		return;
+	ApplyCurrentBackendInterrupts();
 	InterruptPending = false;
 
 	if (ProcDiePending)
