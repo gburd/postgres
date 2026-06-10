@@ -73,7 +73,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `enable_geqo`, the GEQO tuning variables, planner cost constants, path
   enablement toggles, parallel planner toggles, partition-pruning toggles,
   collapse limits, `constraint_exclusion`, and the eager/distinct/self-join
-  planner toggles.
+  planner toggles;
+- exported session-facing GUC backing variables in `guc_tables.c`, including
+  `application_name`, `role_string`, `tcp_keepalives_idle`,
+  `tcp_keepalives_interval`, `tcp_keepalives_count`, and `tcp_user_timeout`.
+  `in_hot_standby_guc` remains deliberately separate because it reflects
+  recovery/runtime state rather than per-session user state.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -149,6 +154,16 @@ Validation for this slice:
   index_including index_including_gist create_aggregate create_function_sql
   create_cast constraints triggers select vacuum sanity_check guc
   transactions`;
+- fixture-backed exported session GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc create_role
+  roleattributes`;
+- live temp-cluster smoke coverage for `application_name`, `role`,
+  `tcp_keepalives_idle`, `tcp_keepalives_interval`, `tcp_keepalives_count`, and
+  `tcp_user_timeout`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
@@ -161,8 +176,8 @@ Validation for this slice:
   previously classified Phase 8 globals are no longer carried as stale
   unclassified debt;
 - filtered static scan for the touched required-floor names;
-- filtered non-TLS extern mismatch search for the planner/JIT/analyze GUC
-  backing variables;
+- filtered non-TLS extern mismatch search for the planner/JIT/analyze and
+  exported session GUC backing variables;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and

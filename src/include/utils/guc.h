@@ -316,14 +316,14 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
-extern PGDLLIMPORT char *application_name;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *application_name;
 
-extern PGDLLIMPORT int tcp_keepalives_idle;
-extern PGDLLIMPORT int tcp_keepalives_interval;
-extern PGDLLIMPORT int tcp_keepalives_count;
-extern PGDLLIMPORT int tcp_user_timeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_idle;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_interval;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 
-extern PGDLLIMPORT char *role_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
 extern PGDLLIMPORT bool in_hot_standby_guc;
 extern PGDLLIMPORT bool trace_sort;
 

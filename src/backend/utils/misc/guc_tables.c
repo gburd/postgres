@@ -584,12 +584,12 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
-char	   *application_name;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *application_name;
 
-int			tcp_keepalives_idle;
-int			tcp_keepalives_interval;
-int			tcp_keepalives_count;
-int			tcp_user_timeout;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_idle;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_interval;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -668,7 +668,7 @@ static char *recovery_target_name_string;
 static char *recovery_target_lsn_string;
 
 /* should be static, but commands/variable.c needs to get at this */
-char	   *role_string;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
 
 /* should be static, but guc.c needs to get at this */
 bool		in_hot_standby_guc;

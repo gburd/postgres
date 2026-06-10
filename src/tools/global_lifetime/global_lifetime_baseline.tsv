@@ -2184,11 +2184,6 @@ src/backend/utils/misc/guc_tables.c	a4dee184d02c30e3b6322c224479101183a1a78b	Deb
 src/backend/utils/misc/guc_tables.c	ac6439a650b145354baf26e91b76f304421aacff	Debug_raw_expression_coverage_test	bool Debug_raw_expression_coverage_test;
 src/backend/utils/misc/guc_tables.c	fcee86deca4ab1201f9497c58cbe9b54fd083a72	default_with_oids	static bool default_with_oids = false;
 src/backend/utils/misc/guc_tables.c	0354bc1e46ad3ac56a236a2bba297aee52ff7639	standard_conforming_strings	static bool standard_conforming_strings = true;
-src/backend/utils/misc/guc_tables.c	c0f91bbca0e2634a145701bb101829add8dfb73a	application_name	char *application_name;
-src/backend/utils/misc/guc_tables.c	36ffbcef70f976878f81b36ca6cdbd4929dab404	tcp_keepalives_idle	int tcp_keepalives_idle;
-src/backend/utils/misc/guc_tables.c	94373d9b792b2e9c3687af1fd776ff37db5a0b57	tcp_keepalives_interval	int tcp_keepalives_interval;
-src/backend/utils/misc/guc_tables.c	b75e2e8342dc90fb0b6a83c2e9e55ecd0b3c76d6	tcp_keepalives_count	int tcp_keepalives_count;
-src/backend/utils/misc/guc_tables.c	6c821a4f1c1404067dce0d7cbb25ec33d7f1307a	tcp_user_timeout	int tcp_user_timeout;
 src/backend/utils/misc/guc_tables.c	0c757a8a6a97f362e2dcd7c14ca7cd4b8b9586a9	ssl_renegotiation_limit	static int ssl_renegotiation_limit;
 src/backend/utils/misc/guc_tables.c	d420d29966b9f928afdda23f38fdaf4d279bc436	huge_pages	int huge_pages = HUGE_PAGES_TRY;
 src/backend/utils/misc/guc_tables.c	38edf161744e52dc1f2fd0006e38d73b064db751	huge_page_size	int huge_page_size;
@@ -2227,7 +2222,6 @@ src/backend/utils/misc/guc_tables.c	5a02a7e0bb0f200f0a43389e4b17d1c6b78a7dcb	rec
 src/backend/utils/misc/guc_tables.c	b6b04e57d9f492ecace3e7e9c116e6e5b534bb10	recovery_target_xid_string	static char *recovery_target_xid_string;
 src/backend/utils/misc/guc_tables.c	01d999bd36568b68a3ca5114e691b40956df6ec1	recovery_target_name_string	static char *recovery_target_name_string;
 src/backend/utils/misc/guc_tables.c	98ddd8d6bb18517ea7d84bb49ca384376e305cab	recovery_target_lsn_string	static char *recovery_target_lsn_string;
-src/backend/utils/misc/guc_tables.c	a054c54054b19835f4477afbea22649226d491db	role_string	char *role_string;
 src/backend/utils/misc/guc_tables.c	a21a231b20b50d116a39197c87587904868f93ed	in_hot_standby_guc	bool in_hot_standby_guc;
 src/backend/utils/misc/guc_tables.c	7fe9b3cf97306788a0f1a19c1a68052936d64984	GucContext_Names	const char *const GucContext_Names[] = { [PGC_INTERNAL] = "internal", [PGC_POSTMASTER] = "postmaster", [PGC_SIGHUP] = "sighup", [PGC_SU_BACKEND] = "superuser-backend", [PGC_BACKEND] = "backend", [PGC_SUSET] = "superuser", [PGC_USERSET] =...
 src/backend/utils/misc/guc_tables.c	a434e0d5f1a1f493d4a354688da396d912ac9042	GucSource_Names	const char *const GucSource_Names[] = { [PGC_S_DEFAULT] = "default", [PGC_S_DYNAMIC_DEFAULT] = "default", [PGC_S_ENV_VAR] = "environment variable", [PGC_S_FILE] = "configuration file", [PGC_S_ARGV] = "command line", [PGC_S_GLOBAL] = "glo...
@@ -2806,12 +2800,6 @@ src/include/utils/funccache.h	a86fc3803ee03c196bbcc6a1240e69ee6311bc0e	CachedFun
 src/include/utils/guc.h	6da87dc379ba55d218bd1d4e46b20835deeddb33	Debug_copy_parse_plan_trees	extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
 src/include/utils/guc.h	b734c86716aa76bd779abc6b0c95d7345e44e38a	Debug_write_read_parse_plan_trees	extern PGDLLIMPORT bool Debug_write_read_parse_plan_trees;
 src/include/utils/guc.h	6d9d372167ffd0e3fb7682a0397d20324ead4413	Debug_raw_expression_coverage_test	extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
-src/include/utils/guc.h	67f0b9f122af940ac8dbf5faf504576c45a57c92	application_name	extern PGDLLIMPORT char *application_name;
-src/include/utils/guc.h	4127718ed976776d77d9ac88a2cd118bc8341327	tcp_keepalives_idle	extern PGDLLIMPORT int tcp_keepalives_idle;
-src/include/utils/guc.h	4c0c09bae6af71ceeb765e92090f1951edb9f4e7	tcp_keepalives_interval	extern PGDLLIMPORT int tcp_keepalives_interval;
-src/include/utils/guc.h	00130e0d7945a8501c43e9c6ab2063df32276e6e	tcp_keepalives_count	extern PGDLLIMPORT int tcp_keepalives_count;
-src/include/utils/guc.h	92a115809413b424810d6ed90c81d967765632c6	tcp_user_timeout	extern PGDLLIMPORT int tcp_user_timeout;
-src/include/utils/guc.h	8ac30c8a4c23a1ea9b70b3d33d50d9fee91d6f18	role_string	extern PGDLLIMPORT char *role_string;
 src/include/utils/guc.h	6cb87eba082e39f078c76cf3c8658b6b50df1f63	in_hot_standby_guc	extern PGDLLIMPORT bool in_hot_standby_guc;
 src/include/utils/guc.h	f6cdc2af8f781a1d53d2711846074db2e6f0f601	trace_sort	extern PGDLLIMPORT bool trace_sort;
 src/include/utils/guc.h	7f8005ac92b8609ca90ddfd34516ea87dae06322	optimize_bounded_sort	extern PGDLLIMPORT bool optimize_bounded_sort;

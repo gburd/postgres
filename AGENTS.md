@@ -175,6 +175,19 @@ Important current files:
   ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --dbname=regression guc
   ```
 
+  Many individual regression tests assume fixture objects created by earlier
+  `parallel_schedule` groups. If a direct focused run fails with missing tables
+  such as `onek` or `tenk1`, rerun with the schedule prefix that builds the
+  fixture state, for example:
+
+  ```sh
+  ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --dbname=regression \
+    test_setup copy copyselect copydml copyencoding insert insert_conflict \
+    create_function_c create_misc create_operator create_procedure create_table create_type create_schema \
+    create_index create_index_spgist create_view index_including index_including_gist \
+    create_aggregate create_function_sql create_cast constraints triggers select vacuum sanity_check guc
+  ```
+
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
 - The extension backend-model tests need the test extension module installed
