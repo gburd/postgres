@@ -22,7 +22,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `TopTransactionContext`, `CurTransactionContext`, and `PortalContext`;
 - resource owner globals: `CurrentResourceOwner`,
   `CurTransactionResourceOwner`, `TopTransactionResourceOwner`, and
-  `AuxProcessResourceOwner`;
+  `AuxProcessResourceOwner`, plus the resource-release callback registry and
+  optional resource-owner stats counters;
 - `MyProc` and `got_deadlock_timeout`;
 - PGPROC ownership structures: `ProcGlobal`, `AllProcsShmemPtr`,
   `FastPathLockArrayShmemPtr`, `AuxiliaryProcs`, and `PreparedXactProcs` as
@@ -363,6 +364,11 @@ Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
 by standby timeout callbacks.
+The resource-release callback registry in `resowner.c` is now backend-local
+TLS. That preserves the current process-per-backend semantics for callbacks
+registered by dynamically loaded code, while the broader extension threading
+policy remains governed by the Phase 7 backend-model gate. Optional
+`RESOWNER_STATS` counters use the same backend-local lifetime.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -746,6 +752,8 @@ Validation for this slice:
   regression coverage after classifying procarray shared/runtime/backend state.
 - focused `standby.o` compile coverage plus process-mode recovery-conflict
   static scan coverage after classifying hot-standby recovery-conflict state.
+- focused `resowner.o` compile coverage plus resource-owner static scan
+  coverage after classifying the resource-release callback registry.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

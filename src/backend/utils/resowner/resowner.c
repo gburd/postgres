@@ -178,8 +178,8 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner = NULL;
 /* #define RESOWNER_STATS */
 
 #ifdef RESOWNER_STATS
-static int	narray_lookups = 0;
-static int	nhash_lookups = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int narray_lookups = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nhash_lookups = 0;
 #endif
 
 /*
@@ -192,7 +192,8 @@ typedef struct ResourceReleaseCallbackItem
 	void	   *arg;
 } ResourceReleaseCallbackItem;
 
-static ResourceReleaseCallbackItem *ResourceRelease_callbacks = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceReleaseCallbackItem
+		   *ResourceRelease_callbacks = NULL;
 
 
 /* Internal routines */
