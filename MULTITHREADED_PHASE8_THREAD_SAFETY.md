@@ -27,6 +27,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - PGPROC ownership structures: `ProcGlobal`, `AllProcsShmemPtr`,
   `FastPathLockArrayShmemPtr`, `AuxiliaryProcs`, and `PreparedXactProcs` as
   shared-memory state, plus the proc sizing/request globals as runtime state;
+- procarray ownership structures: `procArray`, `allProcs`,
+  `KnownAssignedXids`, and `KnownAssignedXidsValid` as shared-memory state,
+  recovery-stream XID bookkeeping as runtime state, and backend-local
+  transaction visibility caches as TLS state;
 - error stack state: `error_context_stack`, `PG_exception_stack`, `errordata`,
   `errordata_stack_depth`, and `recursion_depth`;
 - timeout registration and pending-delivery state in `timeout.c`;
@@ -348,6 +352,11 @@ switches to its shared `PGPROC` latch.
 The process-signal header in shared memory is now explicitly classified as
 shared-memory state, while each backend's cached `MyProcSignalSlot` pointer is
 backend-local TLS state.
+The procarray shared-memory pointers and KnownAssignedXids arrays are now
+explicit shared-memory state. Backend-local transaction visibility caches,
+including the `GlobalVis*` states and `cachedXidIsNotInProgress`, use TLS,
+while recovery-stream bookkeeping such as `latestObservedXid` remains
+runtime-owned state.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -727,6 +736,8 @@ Validation for this slice:
 - focused `procsignal.o` compile coverage plus process-mode connection
   smoke/regression coverage after classifying process-signal shared/backend
   state.
+- focused `procarray.o` compile coverage plus transaction and snapshot
+  regression coverage after classifying procarray shared/runtime/backend state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
