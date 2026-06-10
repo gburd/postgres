@@ -59,6 +59,7 @@
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc_hooks.h"
@@ -616,6 +617,8 @@ void
 BaseInit(void)
 {
 	Assert(MyProc != NULL);
+
+	InitializePgProcessRuntime();
 
 	/*
 	 * Initialize our input/output/debugging file descriptors.
@@ -1261,6 +1264,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	/* Initialize this backend's session state. */
 	InitializeSession();
+	PgProcessRuntimeAttachSession(CurrentSession);
 
 	/*
 	 * If this is an interactive session, load any libraries that should be

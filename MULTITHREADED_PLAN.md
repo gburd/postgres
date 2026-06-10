@@ -26,11 +26,17 @@ Already landed:
   - `PgSessionLoopState`;
   - `PgSessionRecoverError()`;
   - `PgSessionStep()`;
-  - `PgSessionRun()`.
+  - `PgSessionRun()`;
+- runtime/session/backend scaffolding:
+  - `PgRuntime`;
+  - `PgCarrier`;
+  - `PgBackend`;
+  - `PgSession`;
+  - `PgConnection`;
+  - `PgExecution`.
 
-The first loop extraction keeps process behavior unchanged and has passed the
-core regression suite. It is not yet the full runtime/session scaffolding and
-does not expose threaded mode.
+The loop extraction and runtime scaffolding keep process behavior unchanged and
+do not expose threaded mode.
 
 ## Phase 0: Reference Audit And Invariants
 
@@ -99,7 +105,7 @@ Validation:
 
 ## Phase 2: Runtime And State Scaffolding
 
-Status: next phase.
+Status: complete for the current stage.
 
 Goal: introduce the runtime/session/backend vocabulary and object skeletons,
 then connect the existing process-mode startup path to those objects without

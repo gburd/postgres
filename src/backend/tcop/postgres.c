@@ -77,6 +77,7 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -131,18 +132,6 @@ typedef struct BindParamCbData
 	int			paramno;		/* zero-based param number, or -1 initially */
 	const char *paramval;		/* textual input string, if available */
 } BindParamCbData;
-
-/*
- * State owned by the backend main loop. These fields used to be volatile
- * locals in PostgresMain(); keep them volatile because they must survive the
- * top-level longjmp used for backend error recovery.
- */
-typedef struct PgSessionLoopState
-{
-	volatile bool send_ready_for_query;
-	volatile bool idle_in_transaction_timeout_enabled;
-	volatile bool idle_session_timeout_enabled;
-} PgSessionLoopState;
 
 typedef enum PgStepResult
 {
@@ -213,9 +202,9 @@ static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
-static void PgSessionRecoverError(PgSessionLoopState *state);
-static PgStepResult PgSessionStep(PgSessionLoopState *state);
-pg_noreturn static void PgSessionRun(PgSessionLoopState *state);
+static void PgSessionRecoverError(PgSession *session);
+static PgStepResult PgSessionStep(PgSession *session);
+pg_noreturn static void PgSessionRun(PgSession *session);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
@@ -4289,8 +4278,13 @@ PgSessionLoopStateInit(PgSessionLoopState *state)
 }
 
 static void
-PgSessionRecoverError(PgSessionLoopState *state)
+PgSessionRecoverError(PgSession *session)
 {
+	PgSessionLoopState *state;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
+
 	/*
 	 * NOTE: if you are tempted to add more code here, consider the high
 	 * probability that it should be in AbortTransaction() instead.  The only
@@ -4401,10 +4395,14 @@ PgSessionRecoverError(PgSessionLoopState *state)
 }
 
 static PgStepResult
-PgSessionStep(PgSessionLoopState *state)
+PgSessionStep(PgSession *session)
 {
+	PgSessionLoopState *state;
 	int			firstchar;
 	StringInfoData input_message;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
 
 	/*
 	 * At top of loop, reset extended-query-message flag, so that any errors
@@ -4904,9 +4902,13 @@ PgSessionStep(PgSessionLoopState *state)
 }
 
 pg_noreturn static void
-PgSessionRun(PgSessionLoopState *state)
+PgSessionRun(PgSession *session)
 {
+	PgSessionLoopState *state;
 	sigjmp_buf	local_sigjmp_buf;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
 
 	/*
 	 * POSTGRES main processing loop begins here
@@ -4930,7 +4932,7 @@ PgSessionRun(PgSessionLoopState *state)
 	 * were inside a transaction.
 	 */
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
-		PgSessionRecoverError(state);
+		PgSessionRecoverError(session);
 
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
@@ -4942,7 +4944,7 @@ PgSessionRun(PgSessionLoopState *state)
 	 * Non-error queries loop here.
 	 */
 	for (;;)
-		(void) PgSessionStep(state);
+		(void) PgSessionStep(session);
 }
 
 
@@ -4960,8 +4962,6 @@ PgSessionRun(PgSessionLoopState *state)
 void
 PostgresMain(const char *dbname, const char *username)
 {
-	PgSessionLoopState session_loop;
-
 	Assert(dbname != NULL);
 	Assert(username != NULL);
 
@@ -5140,8 +5140,8 @@ PostgresMain(const char *dbname, const char *username)
 	/* Fire any defined login event triggers, if appropriate */
 	EventTriggerOnLogin();
 
-	PgSessionLoopStateInit(&session_loop);
-	PgSessionRun(&session_loop);
+	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
+	PgSessionRun(CurrentPgSession);
 }
 
 /*

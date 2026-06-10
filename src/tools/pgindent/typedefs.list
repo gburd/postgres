@@ -2289,6 +2289,7 @@ PgAioWorkerSet
 PgAioWorkerSlot
 PgAioWorkerSubmissionQueue
 PgArchData
+PgBackend
 PgBackendGSSStatus
 PgBackendSSLStatus
 PgBackendStatus
@@ -2299,7 +2300,10 @@ PgBenchExprType
 PgBenchFunction
 PgBenchValue
 PgBenchValueType
+PgCarrier
 PgChecksumMode
+PgConnection
+PgExecution
 PgFdwAnalyzeState
 PgFdwConnState
 PgFdwDirectModifyState
@@ -2310,6 +2314,10 @@ PgFdwRelationInfo
 PgFdwSamplingMethod
 PgFdwScanState
 PgIfAddrCallback
+PgRuntime
+PgSession
+PgSessionLoopState
+PgStepResult
 PgStatShared_Archiver
 PgStatShared_Backend
 PgStatShared_BgWriter

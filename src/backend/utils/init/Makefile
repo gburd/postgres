@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	backend_runtime.o \
 	globals.o \
 	miscinit.o \
 	postinit.o \
