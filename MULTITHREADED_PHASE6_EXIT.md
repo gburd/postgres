@@ -105,7 +105,8 @@ worker's cleanup and scheduler continuation.
   exit-state change, after the replication worker migration, and after adding
   the runtime exit continuation.
 - `gmake -C src/test/isolation check` passed 129/129 during Gate B validation.
-- `gmake -C src/test/subscription check` did not run TAP tests because this
+- `gmake check-world` passed for the configured test coverage during Gate B
+  validation. TAP-only subtrees were skipped by the build system because this
   checkout is not configured with `--enable-tap-tests`.
 - `gmake -C src/test/modules/test_dsm_registry check` passed after adding a
   fixture that registers an `on_dsm_detach` callback, leaves its DSM mapping
@@ -117,6 +118,10 @@ worker's cleanup and scheduler continuation.
 - The same fixture creates an inter-transaction temporary file, leaves it open
   across the backend disconnect, reconnects, and verifies backend-exit cleanup
   closed and unlinked the temporary file.
+- Gate B initially exposed a race in this fixture: `pg_regress` can reconnect
+  before the previous backend has finished `proc_exit()` callbacks. The fixture
+  now waits briefly for the final `on_proc_exit` marker before comparing the
+  callback trace.
 - `gmake -C src/test/modules/test_backend_runtime check` passed after adding a
   fixture that installs a runtime `exit_backend` continuation, calls
   `PgBackendExitComplete(17)`, and verifies control transfers to the
@@ -125,15 +130,9 @@ worker's cleanup and scheduler continuation.
   one address space, creates a pinned DSM mapping under one backend, runs
   `dsm_backend_shutdown()` under the other backend, and verifies the first
   backend's mapping remains attached.
-- `gmake check-world` was attempted for Gate B. It progressed through core
-  isolation and multiple `src/test/modules` checks, including
-  `test_dsm_registry`, but stopped in `src/test/modules/test_extensions` before
-  running test SQL because that module's standalone `initdb` failed to load
-  `/usr/local/pgsql/lib/libpq.5.dylib` on this macOS build. TAP-only subtrees
-  were also skipped because this checkout lacks `--enable-tap-tests`.
-- A focused process-mode smoke test passed 50 repeated client
-  connect/query/disconnect cycles, terminated a backend while it was inside an
-  active transaction, and verified the server remained responsive afterward.
+- A focused Gate B smoke test passed timeout routing, active-query
+  cancellation, config reload, LISTEN/NOTIFY, client disconnect during an open
+  transaction, and backend termination/FATAL-path responsiveness checks.
 
 ## Deferred Thread Runtime Proof
 

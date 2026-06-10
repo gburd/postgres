@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "storage/dsm.h"
 #include "storage/dsm_registry.h"
 #include "storage/fd.h"
@@ -60,6 +61,8 @@ static void tdr_record_exit_callback(int code, Datum arg);
 static void tdr_record_dsm_detach_callback(dsm_segment *seg, Datum arg);
 static void tdr_append_exit_order(const char *event);
 static void tdr_write_text_file(const char *path, const char *contents);
+static bool tdr_try_read_text_file(const char *path, char *buf, Size buflen,
+								   bool missing_ok);
 static void tdr_read_text_file(const char *path, char *buf, Size buflen);
 
 static void
@@ -229,6 +232,8 @@ tdr_append_exit_order(const char *event)
 {
 	int			save_errno = errno;
 	int			fd;
+	const char *ptr;
+	size_t		remaining;
 
 	fd = BasicOpenFile(TDR_EXIT_ORDER_FILE,
 					   O_WRONLY | O_CREAT | O_APPEND | PG_BINARY);
@@ -239,9 +244,21 @@ tdr_append_exit_order(const char *event)
 	}
 
 	/* Keep tracing from leaking errno changes into exit cleanup. */
-	(void) write(fd, event, strlen(event));
+	ptr = event;
+	remaining = strlen(event);
+	while (remaining > 0)
+	{
+		ssize_t		written = write(fd, ptr, remaining);
+
+		if (written <= 0)
+			goto done;
+		ptr += written;
+		remaining -= written;
+	}
 	(void) write(fd, "\n", 1);
-	close(fd);
+
+done:
+	(void) close(fd);
 	errno = save_errno;
 }
 
@@ -275,19 +292,26 @@ tdr_write_text_file(const char *path, const char *contents)
 				 errmsg("could not close file \"%s\": %m", path)));
 }
 
-static void
-tdr_read_text_file(const char *path, char *buf, Size buflen)
+static bool
+tdr_try_read_text_file(const char *path, char *buf, Size buflen,
+					   bool missing_ok)
 {
 	int			fd;
 	ssize_t		nread;
 
 	Assert(buflen > 0);
+	buf[0] = '\0';
 
 	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
 	if (fd < 0)
+	{
+		if (missing_ok && errno == ENOENT)
+			return false;
+
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
+	}
 
 	nread = read(fd, buf, buflen - 1);
 	if (nread < 0)
@@ -309,6 +333,14 @@ tdr_read_text_file(const char *path, char *buf, Size buflen)
 	while (nread > 0 && buf[nread - 1] == '\n')
 		nread--;
 	buf[nread] = '\0';
+
+	return true;
+}
+
+static void
+tdr_read_text_file(const char *path, char *buf, Size buflen)
+{
+	(void) tdr_try_read_text_file(path, buf, buflen, false);
 }
 
 static void
@@ -378,6 +410,23 @@ Datum
 get_exit_callback_order(PG_FUNCTION_ARGS)
 {
 	char		buf[TDR_EXIT_ORDER_MAXLEN];
+	int			i;
+
+	/*
+	 * pg_regress reconnects immediately after closing the previous backend.
+	 * The old backend can still be finishing proc_exit callbacks, so wait
+	 * briefly for the final marker before treating the trace as complete.
+	 */
+	for (i = 0; i < 500; i++)
+	{
+		if (tdr_try_read_text_file(TDR_EXIT_ORDER_FILE, buf, sizeof(buf),
+								   true) &&
+			strstr(buf, "on_proc_1") != NULL)
+			PG_RETURN_TEXT_P(cstring_to_text(buf));
+
+		CHECK_FOR_INTERRUPTS();
+		pg_usleep(10000L);
+	}
 
 	tdr_read_text_file(TDR_EXIT_ORDER_FILE, buf, sizeof(buf));
 
