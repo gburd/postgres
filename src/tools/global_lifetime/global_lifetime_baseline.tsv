@@ -2089,7 +2089,6 @@ src/backend/utils/error/elog.c	62722eeb34679fe2d991be22e96b743e2c65b255	save_for
 src/backend/utils/error/elog.c	2818fc0d5ac3611010878e35237792638c8c411e	save_format_domain	static const char *save_format_domain;
 src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
 src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
-src/backend/utils/fmgr/dfmgr.c	be613e3842b91cdbff84f00b7d47bf53dc60757e	Dynamic_library_path	char *Dynamic_library_path;
 src/backend/utils/fmgr/fmgr.c	86465a4aa497c00a1ae44241682f309ee8728302	needs_fmgr_hook	PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook = NULL;
 src/backend/utils/fmgr/fmgr.c	6f90ab2a6db397c7d161e764335fc343a636a05b	fmgr_hook	PGDLLIMPORT fmgr_hook_type fmgr_hook = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
@@ -2351,7 +2350,6 @@ src/include/fe_utils/astreamer.h	63b45a01a26b391ce71d708f87946e32ffd26982	astrea
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/fe_utils/string_utils.h	11c9b19393dcf1bb8a76d759479d6cb92fda6d75	quote_all_identifiers	extern PGDLLIMPORT int quote_all_identifiers;
-src/include/fmgr.h	52b27d13a324b8ead6bff128400f673bf43fbfa5	Dynamic_library_path	extern PGDLLIMPORT char *Dynamic_library_path;
 src/include/fmgr.h	b5882efa869175edddd16e450d6d1fbac502834c	needs_fmgr_hook	extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
 src/include/fmgr.h	b54c22c393d1f38fb705cd2fe748b511bbd50fc8	fmgr_hook	extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
 src/include/jit/jit.h	639b18ac351780d7adf2fc0054d2411268238df5	ExprState	struct ExprState;

@@ -124,6 +124,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - async notify tracing USERSET GUC backing variable: `Trace_notify`.
 - text-search session GUC/cache state: `TSCurrentConfig` and
   `TSCurrentConfigCache`.
+- dynamic loader session GUC backing variable: `Dynamic_library_path`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -161,7 +162,7 @@ Phase 8 still needs to cover at least:
   exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the text-search GUC/cache slice, the filtered static report contains 242
+After the dynamic loader GUC slice, the filtered static report contains 241
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -317,6 +318,15 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc tsearch`;
 - live temp-cluster smoke coverage for `default_text_search_config`, including
   repeated `SET`, `SHOW`, `get_current_ts_config()`, and `to_tsvector()` calls;
+- focused `dfmgr.o` compile coverage;
+- fixture-backed dynamic loader regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc`;
+- live temp-cluster smoke coverage for `dynamic_library_path`, including an
+  empty-path `LOAD 'plpgsql'` failure and a `$libdir` success;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

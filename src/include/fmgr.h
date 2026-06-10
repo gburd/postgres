@@ -18,6 +18,8 @@
 #ifndef FMGR_H
 #define FMGR_H
 
+#include "utils/global_lifetime.h"
+
 /* We don't want to include primnodes.h here, so make some stub references */
 typedef struct Node Node;
 typedef struct Aggref Aggref;
@@ -27,7 +29,6 @@ typedef void (*ExprContextCallbackFunction) (Datum arg);
 
 /* Likewise, avoid including stringinfo.h here */
 typedef struct StringInfoData *StringInfo;
-
 
 /*
  * All functions that can be called directly by fmgr must have this signature.
@@ -811,7 +812,7 @@ extern bool CheckFunctionValidatorAccess(Oid validatorOid, Oid functionOid);
  */
 typedef struct DynamicFileList DynamicFileList; /* opaque outside dfmgr.c */
 
-extern PGDLLIMPORT char *Dynamic_library_path;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *Dynamic_library_path;
 
 extern char *substitute_path_macro(const char *str, const char *macro, const char *value);
 extern char *find_in_path(const char *basename, const char *path, const char *path_param,
