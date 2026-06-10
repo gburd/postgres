@@ -67,7 +67,7 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType MyBackendType;
 /* List of lock files to be removed at proc exit */
 static List *lock_files = NIL;
 
-static Latch LocalLatchData;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Latch LocalLatchData;
 
 /* ----------------------------------------------------------------
  *		ignoring system indexes support stuff

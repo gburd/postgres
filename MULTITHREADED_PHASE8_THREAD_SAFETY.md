@@ -47,6 +47,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
   `MyDatabaseHasLoginEventTriggers`, `DatabasePath`, `MyBackendType`, `Mode`,
   and `OutputFileName`;
+- backend-local latch state: `LocalLatchData` backing the early `MyLatch`
+  pointer and `LatchWaitSet` backing `WaitLatch()`;
 - authenticated, session, and effective-user identity state in `miscinit.c`:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
@@ -337,6 +339,10 @@ threaded backends from sharing one effective user/security context.
 The GSSAPI transport buffers in `be-secure-gssapi.c` are now connection-local
 TLS state, matching the existing libpq send/receive buffer bridge in
 `pqcomm.c`.
+The local latch backing object in `miscinit.c` and the cached `WaitLatch()`
+wait set in `latch.c` are now backend-local TLS state, so the thread-local
+`MyLatch` pointer no longer targets shared static storage before a backend
+switches to its shared `PGPROC` latch.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -710,6 +716,9 @@ Validation for this slice:
   GSSAPI transport buffers. Direct `be-secure-gssapi.o` compile coverage was
   not available in this checkout because it is configured with
   `with_gssapi = no`.
+- focused `miscinit.o` and `latch.o` compile coverage plus process-mode
+  connection smoke/regression coverage after classifying backend-local latch
+  backing state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

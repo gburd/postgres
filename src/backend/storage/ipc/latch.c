@@ -24,8 +24,8 @@
 #include "storage/waiteventset.h"
 #include "utils/resowner.h"
 
-/* A common WaitEventSet used to implement WaitLatch() */
-static WaitEventSet *LatchWaitSet;
+/* A backend-local WaitEventSet used to implement WaitLatch() */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WaitEventSet *LatchWaitSet;
 
 /* The positions of the latch and PM death events in LatchWaitSet */
 #define LatchWaitSetLatchPos 0

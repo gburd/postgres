@@ -1461,7 +1461,6 @@ src/backend/storage/ipc/ipc.c	8ae7bc6a024550851f01ea1e7c03d9c40eda1e48	shmem_exi
 src/backend/storage/ipc/ipc.c	7a0305b7a18b64e2fd560d60ff6c866637d5295b	atexit_callback_setup	static bool atexit_callback_setup = false;
 src/backend/storage/ipc/ipci.c	a890e0c51bdbca7e4842cc7fbd78e84e4596f617	shmem_startup_hook	shmem_startup_hook_type shmem_startup_hook = NULL;
 src/backend/storage/ipc/ipci.c	bd81533303792bbba101235aaf21fe63d1e92c70	total_addin_request	static Size total_addin_request = 0;
-src/backend/storage/ipc/latch.c	17c25a63b9cf509e145381ee6b100959f31d6e61	LatchWaitSet	static WaitEventSet *LatchWaitSet;
 src/backend/storage/ipc/pmsignal.c	4ac8a042ea57cc3bb49816c078845baadfed18ae	PMSignalState	NON_EXEC_STATIC volatile PMSignalData *PMSignalState = NULL;
 src/backend/storage/ipc/pmsignal.c	3367356bee2dd8bc3dc0d6240ae1c99ef920a78c	num_child_flags	static int num_child_flags;
 src/backend/storage/ipc/pmsignal.c	a136bf15e53ee032a2d8d3cb11df3d28e9dca0b2	postmaster_possibly_dead	volatile sig_atomic_t postmaster_possibly_dead = false;
@@ -1843,7 +1842,6 @@ src/backend/utils/hash/dynahash.c	ea1cbb7323c6dee8f6aa03cb8ce8a2bafa1e06d3	seq_s
 src/backend/utils/hash/dynahash.c	7bc6136857839b99e153ca2f91cba4d7d66e1406	seq_scan_level	static int seq_scan_level[MAX_SEQ_SCANS];
 src/backend/utils/hash/dynahash.c	71c727fbf6eef6f7f9635050ae786a89d7afcf88	num_seq_scans	static int num_seq_scans = 0;
 src/backend/utils/init/miscinit.c	0d933745c5d963c823e62ef8cdec5ff5cb4b8c7e	lock_files	static List *lock_files = NIL;
-src/backend/utils/init/miscinit.c	82de4aa9c1e8c34d6341d3b8ccca16966e9399d1	LocalLatchData	static Latch LocalLatchData;
 src/backend/utils/init/postinit.c	f0296086935aba762238fa3f885c6e5b1a4831c1	ConnectionWarningsEmitted	static bool ConnectionWarningsEmitted;
 src/backend/utils/init/postinit.c	3d26fac6d529f384419a9a467caca3947de15d26	ConnectionWarningMessages	static List *ConnectionWarningMessages;
 src/backend/utils/init/postinit.c	ab26607849dbb77e10052033420505e796d23922	ConnectionWarningDetails	static List *ConnectionWarningDetails;
