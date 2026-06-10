@@ -16,8 +16,6 @@ src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
 src/backend/access/common/session.c	57085ea2fce70a602421abdb03538fd4877e5f1a	CurrentSession	Session *CurrentSession = NULL;
 src/backend/access/common/syncscan.c	498a5a2a8607ae38fd6a30e5df9242e9680ee7e3	scan_locations	static ss_scan_locations_t *scan_locations;
-src/backend/access/gin/ginfast.c	d476ec117cad446b0f647cec9399a791d0ec7459	gin_pending_list_limit	int gin_pending_list_limit = 0;
-src/backend/access/gin/ginget.c	6fcbae62b003744bdf3e5d463a6cc63644e2315d	GinFuzzySearchLimit	int GinFuzzySearchLimit = 0;
 src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/nbtree/nbtutils.c	94a728d6cdd5abe3e25f5452c8bf1318143f7b8e	btvacinfo	static BTVacInfo *btvacinfo;
@@ -2196,8 +2194,6 @@ src/backend/utils/time/combocid.c	0a3ea554907322e6873c22b7d2d512bdf5d649f9	usedC
 src/backend/utils/time/combocid.c	6ab2d996b03fb07f9eb64ac6889a5b4ad7f485a5	sizeComboCids	static int sizeComboCids = 0;
 src/include/access/commit_ts.h	24a504ec3cc62fcee2748b54ce7662576fd26207	track_commit_timestamp	extern PGDLLIMPORT bool track_commit_timestamp;
 src/include/access/generic_xlog.h	353d13c385d6768ba05021565a8eb1f2117bf45c	GenericXLogState	struct GenericXLogState;
-src/include/access/gin.h	fc71c9ca9861a1b5d9a3e873e742d8299bc7866c	GinFuzzySearchLimit	extern PGDLLIMPORT int GinFuzzySearchLimit;
-src/include/access/gin.h	3a4553fa7aa2263e10f5b2c8be1b03bc24afa48f	gin_pending_list_limit	extern PGDLLIMPORT int gin_pending_list_limit;
 src/include/access/heapam.h	601fc5823ed9d1e35f306686b86f713732c7eb34	HTAB	struct HTAB;
 src/include/access/nbtree.h	12765ccfe624c21adf8d210fcb305ae9f3ba4fe5	TM_IndexDeleteOp	struct TM_IndexDeleteOp;
 src/include/access/parallel.h	e26dc8493333c5cd7f9bb7bdf1dd2c363ab51b41	ParallelWorkerNumber	extern PGDLLIMPORT int ParallelWorkerNumber;

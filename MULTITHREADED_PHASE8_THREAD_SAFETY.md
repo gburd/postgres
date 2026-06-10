@@ -119,6 +119,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `event_triggers`, and `Extension_control_path`;
 - extension command execution state in `extension.c`: `creating_extension` and
   `CurrentExtensionObject`.
+- GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
+  `gin_pending_list_limit`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -156,7 +158,7 @@ Phase 8 still needs to cover at least:
   exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the command/session GUC slice, the filtered static report contains 246
+After the GIN GUC slice, the filtered static report contains 244
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -286,6 +288,15 @@ Validation for this slice:
   the path. The local TAP harness could not run
   `t/001_extension_control_path.pl` because this macOS Perl does not have the
   required `IPC::Run` module installed;
+- fixture-backed GIN regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc gin`;
+- live temp-cluster smoke coverage for `gin_fuzzy_search_limit` and
+  `gin_pending_list_limit`, including a GIN index reloption override for
+  `gin_pending_list_limit`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
