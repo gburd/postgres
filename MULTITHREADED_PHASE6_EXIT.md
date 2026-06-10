@@ -92,11 +92,18 @@ which runtime object owns that worker's cleanup and scheduler continuation.
 - `gmake -C src/test/regress check` passed 245/245 after the backend-local
   exit-state change, after the replication worker migration, and after adding
   the runtime exit continuation.
+- `gmake -C src/test/isolation check` passed 129/129 during Gate B validation.
 - `gmake -C src/test/subscription check` did not run TAP tests because this
   checkout is not configured with `--enable-tap-tests`.
 - `gmake -C src/test/modules/test_dsm_registry check` passed after adding a
   fixture that registers an `on_dsm_detach` callback, leaves its DSM mapping
   pinned for backend-exit cleanup, reconnects, and verifies the callback ran.
+- `gmake check-world` was attempted for Gate B. It progressed through core
+  isolation and multiple `src/test/modules` checks, including
+  `test_dsm_registry`, but stopped in `src/test/modules/test_extensions` before
+  running test SQL because that module's standalone `initdb` failed to load
+  `/usr/local/pgsql/lib/libpq.5.dylib` on this macOS build. TAP-only subtrees
+  were also skipped because this checkout lacks `--enable-tap-tests`.
 - A focused process-mode smoke test passed 50 repeated client
   connect/query/disconnect cycles, terminated a backend while it was inside an
   active transaction, and verified the server remained responsive afterward.
