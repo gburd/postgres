@@ -25,6 +25,7 @@
 #include "postgres.h"
 
 #include "access/recno_dict.h"
+#include "access/recno_xlog.h"
 #include "common/relpath.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -81,6 +82,8 @@ recno_dict_get_metapage(Relation rel, int mode)
 		page = BufferGetPage(buf);
 		recno_dict_init_metapage(page);
 		MarkBufferDirty(buf);
+		if (RelationNeedsWAL(rel))
+			RecnoXLogWriteDict(rel, buf);
 		END_CRIT_SECTION();
 
 		return buf;
@@ -110,6 +113,8 @@ recno_dict_get_metapage(Relation rel, int mode)
 		START_CRIT_SECTION();
 		recno_dict_init_metapage(page);
 		MarkBufferDirty(buf);
+		if (RelationNeedsWAL(rel))
+			RecnoXLogWriteDict(rel, buf);
 		END_CRIT_SECTION();
 
 		if (mode != BUFFER_LOCK_EXCLUSIVE)
@@ -211,6 +216,8 @@ recno_dict_append(Relation rel, uint8 codec, const char *blob, uint32 length,
 		((PageHeader) page)->pd_lower =
 			((char *) payload + chunk) - (char *) page;
 		MarkBufferDirty(buf);
+		if (RelationNeedsWAL(rel))
+			RecnoXLogWriteDict(rel, buf);
 		END_CRIT_SECTION();
 
 		if (start_blkno == InvalidBlockNumber)
@@ -225,6 +232,8 @@ recno_dict_append(Relation rel, uint8 codec, const char *blob, uint32 length,
 			START_CRIT_SECTION();
 			prevph->next_blkno = BufferGetBlockNumber(buf);
 			MarkBufferDirty(prevbuf);
+			if (RelationNeedsWAL(rel))
+				RecnoXLogWriteDict(rel, prevbuf);
 			END_CRIT_SECTION();
 			UnlockReleaseBuffer(prevbuf);
 		}
@@ -250,6 +259,8 @@ recno_dict_append(Relation rel, uint8 codec, const char *blob, uint32 length,
 	meta->count++;
 	meta->next_dictid++;
 	MarkBufferDirty(metabuf);
+	if (RelationNeedsWAL(rel))
+		RecnoXLogWriteDict(rel, metabuf);
 	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(metabuf);

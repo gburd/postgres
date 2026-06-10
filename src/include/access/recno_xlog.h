@@ -71,6 +71,7 @@ typedef struct RecnoLogicalImage
 #define XLOG_RECNO_VM_CLEAR			0x90	/* Clear visibility map bits */
 #define XLOG_RECNO_LOCK				0xA0	/* Tuple lock */
 #define XLOG_RECNO_CAS_UPDATE		0xB0	/* Same-size CAS in-place update */
+#define XLOG_RECNO_WRITE_DICT		0xC0	/* Compression-dictionary fork write */
 #define XLOG_RECNO_OPMASK			0xF0
 
 /* Aliases for backward compatibility / clarity */
@@ -271,6 +272,22 @@ typedef struct xl_recno_init_page
 } xl_recno_init_page;
 
 /*
+ * Compression-dictionary fork write (XLOG_RECNO_WRITE_DICT).
+ *
+ * The dictionary fork (RECNO_DICT_FORKNUM) stores trained ZSTD/LZ4 dictionary
+ * blobs append-only.  Its pages use a non-standard layout (the directory
+ * metapage keeps RecnoDictMeta above pd_lower; data pages keep payload above
+ * pd_lower), so the redo path cannot reconstruct them from logical deltas.
+ * Instead each dirtied dict-fork page is logged as a full-page image with
+ * REGBUF_FORCE_IMAGE and the redo handler simply restores the registered
+ * block.  No record-specific payload is required beyond the block image.
+ */
+typedef struct xl_recno_write_dict
+{
+	BlockNumber blkno;			/* Dictionary-fork block being written */
+} xl_recno_write_dict;
+
+/*
  * Visibility Map WAL records
  */
 typedef struct xl_recno_vm_set
@@ -419,6 +436,15 @@ extern XLogRecPtr RecnoXLogCasUpdate(Relation rel, Buffer buffer,
 									 uint16 data_offset, uint16 data_len,
 									 const char *new_data,
 									 uint64 new_commit_ts);
+
+/*
+ * Log a compression-dictionary fork page as a full-page image so crash
+ * recovery and physical replicas reproduce the append-only dict fork.  The
+ * caller must hold the buffer locked and have already modified it inside a
+ * critical section; this registers the page with REGBUF_FORCE_IMAGE and sets
+ * the page LSN.
+ */
+extern XLogRecPtr RecnoXLogWriteDict(Relation rel, Buffer buffer);
 
 /*
  * Helper to fill in an xl_recno_hlc_info from current HLC state.

@@ -1134,6 +1134,34 @@ RecnoXLogCasUpdate(Relation rel, Buffer buffer, OffsetNumber offnum,
 	return recptr;
 }
 
+/*
+ * RecnoXLogWriteDict -- WAL-log a compression-dictionary fork page.
+ *
+ * The dictionary fork uses a non-standard page layout that the redo path
+ * cannot rebuild from a logical delta, so we register the page as a forced
+ * full-page image and the redo handler restores it verbatim.  The caller
+ * must already hold the buffer locked and have dirtied it inside the same
+ * critical section.
+ */
+XLogRecPtr
+RecnoXLogWriteDict(Relation rel, Buffer buffer)
+{
+	xl_recno_write_dict xlrec;
+	XLogRecPtr	recptr;
+	Page		page = BufferGetPage(buffer);
+
+	xlrec.blkno = BufferGetBlockNumber(buffer);
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(xl_recno_write_dict));
+	XLogRegisterBuffer(0, buffer, REGBUF_FORCE_IMAGE);
+
+	recptr = XLogInsert(RM_RECNO_ID, XLOG_RECNO_WRITE_DICT);
+	PageSetLSN(page, recptr);
+
+	return recptr;
+}
+
 /* ----------------------------------------------------------------
  *				HLC-Aware WAL Logging Functions
  *
@@ -2509,6 +2537,30 @@ recno_xlog_cas_update_redo(XLogReaderState *record)
 }
 
 /*
+ * recno_xlog_write_dict_redo
+ *		REDO handler for XLOG_RECNO_WRITE_DICT.
+ *
+ * The record always carries a forced full-page image of the dictionary-fork
+ * block, so XLogReadBufferForRedo restores the page directly and there is no
+ * delta to replay.  We never reach BLK_NEEDS_REDO without the FPI present;
+ * the handler simply restores and releases the buffer.
+ */
+static void
+recno_xlog_write_dict_redo(XLogReaderState *record)
+{
+	Buffer		buffer;
+
+	/*
+	 * With REGBUF_FORCE_IMAGE the page is reconstructed from the FPI by
+	 * XLogReadBufferForRedo, which returns BLK_RESTORED.  BLK_NEEDS_REDO is
+	 * not expected, but if it ever occurs there is nothing to apply.
+	 */
+	(void) XLogReadBufferForRedo(record, 0, &buffer);
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
  * recno_redo
  *		Thin dispatcher for all XLOG_RECNO_* opcodes.  Each case is
  *	delegated to a dedicated per-opcode static helper above.
@@ -2569,6 +2621,10 @@ recno_redo(XLogReaderState *record)
 			recno_xlog_cas_update_redo(record);
 			break;
 
+		case XLOG_RECNO_WRITE_DICT:
+			recno_xlog_write_dict_redo(record);
+			break;
+
 		default:
 			elog(PANIC, "recno_redo: unknown op code %u", info);
 	}
@@ -2591,6 +2647,18 @@ recno_mask(char *page, BlockNumber blkno)
 
 	mask_page_hint_bits(recno_page);
 	mask_unused_space(recno_page);
+
+	/*
+	 * Dictionary-fork pages (XLOG_RECNO_WRITE_DICT full-page images) have no
+	 * opaque special area and no line-pointer array; they are initialized with
+	 * PageInit(page, BLCKSZ, 0).  RecnoPageGetOpaque would read 8 bytes past
+	 * the page end and the line-pointer loop below would mis-mask dict payload,
+	 * producing spurious "inconsistent pages" failures under
+	 * wal_consistency_checking.  Detect them by their zero special size and
+	 * leave the (already LSN/checksum/hint-masked) page untouched.
+	 */
+	if (PageGetSpecialSize(recno_page) != MAXALIGN(sizeof(RecnoPageOpaqueData)))
+		return;
 
 	phdr = RecnoPageGetOpaque(recno_page);
 

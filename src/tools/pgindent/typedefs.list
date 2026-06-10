@@ -4532,6 +4532,7 @@ xl_recno_insert
 xl_recno_overflow_write
 xl_recno_update
 xl_recno_vacuum
+xl_recno_write_dict
 xl_invalid_page
 xl_invalid_page_key
 xl_invalidations

@@ -37,6 +37,7 @@ extern const char *recno_identify(uint8 info);
 #define XLOG_RECNO_VM_CLEAR			0x90
 #define XLOG_RECNO_LOCK				0xA0
 #define XLOG_RECNO_CAS_UPDATE		0xB0
+#define XLOG_RECNO_WRITE_DICT		0xC0
 #define XLOG_RECNO_OPMASK			0xF0
 
 /* WAL record flags - keep in sync with recno_xlog.h */
@@ -418,6 +419,19 @@ recno_desc(StringInfo buf, XLogReaderState *record)
 					appendStringInfoString(buf, "cas_update (truncated)");
 			}
 			break;
+		case XLOG_RECNO_WRITE_DICT:
+			{
+				if (datalen >= sizeof(uint32))
+				{
+					uint32		blkno;
+
+					memcpy(&blkno, data, sizeof(uint32));
+					appendStringInfo(buf, "blkno: %u (full-page image)", blkno);
+				}
+				else
+					appendStringInfoString(buf, "write_dict (truncated)");
+			}
+			break;
 		default:
 			appendStringInfoString(buf, "UNKNOWN");
 			break;
@@ -466,6 +480,9 @@ recno_identify(uint8 info)
 			break;
 		case XLOG_RECNO_CAS_UPDATE:
 			id = "CAS_UPDATE";
+			break;
+		case XLOG_RECNO_WRITE_DICT:
+			id = "WRITE_DICT";
 			break;
 		default:
 			id = NULL;
