@@ -84,12 +84,12 @@ extern pg_locale_t create_pg_locale_libc(Oid collid, MemoryContext context);
 extern char *get_collation_actual_version_libc(const char *collcollate);
 
 /* GUC settings */
-char	   *locale_messages;
-char	   *locale_monetary;
-char	   *locale_numeric;
-char	   *locale_time;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_messages;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_monetary;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_numeric;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_time;
 
-int			icu_validation_level = WARNING;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int icu_validation_level = WARNING;
 
 /*
  * lc_time localization cache.
@@ -98,16 +98,16 @@ int			icu_validation_level = WARNING;
  * element is left as NULL for the convenience of outside code that wants
  * to sequentially scan these arrays.
  */
-char	   *localized_abbrev_days[7 + 1];
-char	   *localized_full_days[7 + 1];
-char	   *localized_abbrev_months[12 + 1];
-char	   *localized_full_months[12 + 1];
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_abbrev_days[7 + 1];
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_full_days[7 + 1];
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_abbrev_months[12 + 1];
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_full_months[12 + 1];
 
-static pg_locale_t default_locale = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_locale_t default_locale = NULL;
 
 /* indicates whether locale information cache is valid */
-static bool CurrentLocaleConvValid = false;
-static bool CurrentLCTimeValid = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLocaleConvValid = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLCTimeValid = false;
 
 static struct pg_locale_struct c_locale = {
 	.deterministic = true,
@@ -140,15 +140,19 @@ typedef struct
 #define SH_DEFINE
 #include "lib/simplehash.h"
 
-static MemoryContext CollationCacheContext = NULL;
-static collation_cache_hash *CollationCache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext
+			CollationCacheContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION collation_cache_hash
+		   *CollationCache = NULL;
 
 /*
  * The collation cache is often accessed repeatedly for the same collation, so
  * remember the last one used.
  */
-static Oid	last_collation_cache_oid = InvalidOid;
-static pg_locale_t last_collation_cache_locale = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid
+			last_collation_cache_oid = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_locale_t
+			last_collation_cache_locale = NULL;
 
 #if defined(WIN32) && defined(LC_MESSAGES)
 static char *IsoLocaleName(const char *);
@@ -505,8 +509,9 @@ db_encoding_convert(int encoding, char **str)
 struct lconv *
 PGLC_localeconv(void)
 {
-	static struct lconv CurrentLocaleConv;
-	static bool CurrentLocaleConvAllocated = false;
+	static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct lconv CurrentLocaleConv;
+	static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool
+				CurrentLocaleConvAllocated = false;
 	struct lconv *extlconv;
 	struct lconv tmp;
 	struct lconv worklconv = {0};

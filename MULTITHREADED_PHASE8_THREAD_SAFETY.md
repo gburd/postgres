@@ -101,6 +101,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   cache state for `ClientEncoding`, `DatabaseEncoding`, `MessageEncoding`,
   active conversion functions, pending startup client encoding, and cached
   conversion function lookup records.
+- locale GUC backing variables and derived locale cache state in
+  `pg_locale.c`, including `locale_messages`, `locale_monetary`,
+  `locale_numeric`, `locale_time`, `icu_validation_level`,
+  `localized_abbrev_days`, `localized_full_days`,
+  `localized_abbrev_months`, `localized_full_months`, the `lconv` cache,
+  `default_locale`, `CollationCacheContext`, `CollationCache`, and the
+  last-used collation cache entry;
 - additional session USERSET GUC backing variables outside `guc_tables.c`:
   `default_toast_compression`, `trace_syncscan`, `Password_encryption`, and
   `createrole_self_grant`. The derived assign-hook state for
@@ -229,6 +236,18 @@ Validation for this slice:
   `restrict_nonsystem_relation_kind`, `seed`, `default_with_oids`,
   `standard_conforming_strings`, `ssl_renegotiation_limit`, and
   `session_authorization`;
+- fixture-backed locale cache regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc numeric money
+  date time timetz timestamp timestamptz interval horology collate`;
+- live temp-cluster smoke coverage for `lc_messages`, `lc_monetary`,
+  `lc_numeric`, `lc_time`, `icu_validation_level`, localized date formatting,
+  numeric formatting, and money formatting. This build is configured
+  `--without-icu`, so the ICU-specific collation regression file was not
+  applicable;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
@@ -255,7 +274,7 @@ Validation for this slice:
 - filtered non-TLS extern mismatch search for the planner/JIT/analyze,
   exported session, session SQL-behavior, and vacuum tuning GUC backing
   variables, plus the session locale/authorization/encoding and
-  role/compression/syncscan GUC slices;
+  locale-cache, role/compression/syncscan GUC slices;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and
