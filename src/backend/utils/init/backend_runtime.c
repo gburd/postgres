@@ -18,19 +18,19 @@
 #include "miscadmin.h"
 #include "utils/backend_runtime.h"
 
-PgRuntime *CurrentPgRuntime = NULL;
-PgCarrier *CurrentPgCarrier = NULL;
-PgBackend *CurrentPgBackend = NULL;
-PgSession *CurrentPgSession = NULL;
-PgConnection *CurrentPgConnection = NULL;
-PgExecution *CurrentPgExecution = NULL;
+PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
+PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
+PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;
+PG_GLOBAL_CARRIER PgSession *CurrentPgSession = NULL;
+PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection = NULL;
+PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
 
-static PgRuntime process_runtime;
-static PgCarrier process_carrier;
-static PgBackend process_backend;
-static PgSession process_session;
-static PgConnection process_connection;
-static PgExecution process_execution;
+static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
+static PG_GLOBAL_CARRIER PgCarrier process_carrier;
+static PG_GLOBAL_BACKEND PgBackend process_backend;
+static PG_GLOBAL_SESSION PgSession process_session;
+static PG_GLOBAL_CONNECTION PgConnection process_connection;
+static PG_GLOBAL_EXECUTION PgExecution process_execution;
 
 void
 InitializePgProcessRuntime(void)

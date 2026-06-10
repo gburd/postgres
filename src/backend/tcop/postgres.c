@@ -92,24 +92,24 @@
  *		global variables
  * ----------------
  */
-const char *debug_query_string; /* client-supplied query string */
+PG_GLOBAL_EXECUTION const char *debug_query_string; /* client-supplied query string */
 
 /* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
-CommandDest whereToSendOutput = DestDebug;
+PG_GLOBAL_CONNECTION CommandDest whereToSendOutput = DestDebug;
 
 /* flag for logging end of session */
-bool		Log_disconnections = false;
+PG_GLOBAL_SESSION bool Log_disconnections = false;
 
-int			log_statement = LOGSTMT_NONE;
+PG_GLOBAL_SESSION int log_statement = LOGSTMT_NONE;
 
 /* wait N seconds to allow attach from a debugger */
-int			PostAuthDelay = 0;
+PG_GLOBAL_SESSION int PostAuthDelay = 0;
 
 /* Time between checks that the client is still connected. */
-int			client_connection_check_interval = 0;
+PG_GLOBAL_CONNECTION int client_connection_check_interval = 0;
 
 /* flags for non-system relation kinds to restrict use */
-int			restrict_nonsystem_relation_kind;
+PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
 
 /*
  * Include signal sender PID/UID in the server log when available
@@ -142,30 +142,30 @@ typedef struct BindParamCbData
  * Flag to keep track of whether we have started a transaction.
  * For extended query protocol this has to be remembered across messages.
  */
-static bool xact_started = false;
+static PG_GLOBAL_SESSION bool xact_started = false;
 
 /*
  * Flag to indicate that we are doing the outer loop's read-from-client,
  * as opposed to any random read from client that might happen within
  * commands like COPY FROM STDIN.
  */
-static bool DoingCommandRead = false;
+static PG_GLOBAL_BACKEND bool DoingCommandRead = false;
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
  * We keep it separate from the hashtable kept by commands/prepare.c
  * in order to reduce overhead for short-lived queries.
  */
-static CachedPlanSource *unnamed_stmt_psrc = NULL;
+static PG_GLOBAL_SESSION CachedPlanSource *unnamed_stmt_psrc = NULL;
 
 /* assorted command-line switches */
-static const char *userDoption = NULL;	/* -D switch */
-static bool EchoQuery = false;	/* -E switch */
-static bool UseSemiNewlineNewline = false;	/* -j switch */
+static PG_GLOBAL_BACKEND const char *userDoption = NULL;	/* -D switch */
+static PG_GLOBAL_SESSION bool EchoQuery = false;	/* -E switch */
+static PG_GLOBAL_SESSION bool UseSemiNewlineNewline = false;	/* -j switch */
 
 /* reused buffer to pass to SendRowDescriptionMessage() */
-static MemoryContext row_description_context = NULL;
-static StringInfoData row_description_buf;
+static PG_GLOBAL_SESSION MemoryContext row_description_context = NULL;
+static PG_GLOBAL_SESSION StringInfoData row_description_buf;
 
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
@@ -205,7 +205,7 @@ static void disable_statement_timeout(void);
  */
 #ifdef USE_VALGRIND
 /* This variable should be set at the top of the main loop. */
-static unsigned int old_valgrind_error_count;
+static PG_GLOBAL_EXECUTION unsigned int old_valgrind_error_count;
 
 /*
  * If Valgrind detected any errors since old_valgrind_error_count was updated,

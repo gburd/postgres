@@ -14,6 +14,8 @@
 #ifndef PROCNUMBER_H
 #define PROCNUMBER_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * ProcNumber uniquely identifies an active backend or auxiliary process.
  * It's assigned at backend startup after authentication, when the process
@@ -41,10 +43,10 @@ typedef int ProcNumber;
 /*
  * Proc number of this backend (same as GetNumberFromPGProc(MyProc))
  */
-extern PGDLLIMPORT ProcNumber MyProcNumber;
+extern PGDLLIMPORT PG_GLOBAL_BACKEND ProcNumber MyProcNumber;
 
 /* proc number of our parallel session leader, or INVALID_PROC_NUMBER if none */
-extern PGDLLIMPORT ProcNumber ParallelLeaderProcNumber;
+extern PGDLLIMPORT PG_GLOBAL_BACKEND ProcNumber ParallelLeaderProcNumber;
 
 /*
  * The ProcNumber to use for our session's temp relations is normally our own,

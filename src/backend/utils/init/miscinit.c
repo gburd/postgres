@@ -60,9 +60,9 @@
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
-ProcessingMode Mode = InitProcessing;
+PG_GLOBAL_BACKEND ProcessingMode Mode = InitProcessing;
 
-BackendType MyBackendType;
+PG_GLOBAL_BACKEND BackendType MyBackendType;
 
 /* List of lock files to be removed at proc exit */
 static List *lock_files = NIL;
@@ -79,7 +79,7 @@ static Latch LocalLatchData;
  * ----------------------------------------------------------------
  */
 
-bool		IgnoreSystemIndexes = false;
+PG_GLOBAL_BACKEND bool IgnoreSystemIndexes = false;
 
 
 /* ----------------------------------------------------------------
@@ -1017,7 +1017,7 @@ GetUserNameFromId(Oid roleid, bool noerr)
  *-------------------------------------------------------------------------
  */
 
-ClientConnectionInfo MyClientConnectionInfo;
+PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
 
 /*
  * Intermediate representation of ClientConnectionInfo for easier
@@ -1780,16 +1780,16 @@ ValidatePgVersion(const char *path)
  * GUC variables: lists of library names to be preloaded at postmaster
  * start and at backend start
  */
-char	   *session_preload_libraries_string = NULL;
-char	   *shared_preload_libraries_string = NULL;
-char	   *local_preload_libraries_string = NULL;
+PG_GLOBAL_SESSION char *session_preload_libraries_string = NULL;
+PG_GLOBAL_RUNTIME char *shared_preload_libraries_string = NULL;
+PG_GLOBAL_SESSION char *local_preload_libraries_string = NULL;
 
 /* Flag telling that we are loading shared_preload_libraries */
-bool		process_shared_preload_libraries_in_progress = false;
-bool		process_shared_preload_libraries_done = false;
+PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress = false;
+PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done = false;
 
-shmem_request_hook_type shmem_request_hook = NULL;
-bool		process_shmem_requests_in_progress = false;
+PG_GLOBAL_RUNTIME shmem_request_hook_type shmem_request_hook = NULL;
+PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress = false;
 
 /*
  * load the shared libraries listed in 'libraries'

@@ -14,6 +14,7 @@
 
 #include "access/session.h"
 #include "miscadmin.h"
+#include "utils/global_lifetime.h"
 
 typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
@@ -111,12 +112,12 @@ struct PgExecution
 	PgCarrier  *carrier;
 };
 
-extern PGDLLIMPORT PgRuntime *CurrentPgRuntime;
-extern PGDLLIMPORT PgCarrier *CurrentPgCarrier;
-extern PGDLLIMPORT PgBackend *CurrentPgBackend;
-extern PGDLLIMPORT PgSession *CurrentPgSession;
-extern PGDLLIMPORT PgConnection *CurrentPgConnection;
-extern PGDLLIMPORT PgExecution *CurrentPgExecution;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
