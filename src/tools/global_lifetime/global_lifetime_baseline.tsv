@@ -363,12 +363,6 @@ src/backend/libpq/be-fsstubs.c	b83be41998e8f691f86520b9e068d1f98bc46d04	cookies	
 src/backend/libpq/be-fsstubs.c	40cb850b8f864f3ab6bb667ddf005ea650da2f87	cookies_size	static int cookies_size = 0;
 src/backend/libpq/be-fsstubs.c	df11ece38437d8f4a93d66a69e68d266fcf68737	lo_cleanup_needed	static bool lo_cleanup_needed = false;
 src/backend/libpq/be-fsstubs.c	e52051c43bf96b98955f4ec149df09bc3dbfa3d8	fscxt	static MemoryContext fscxt = NULL;
-src/backend/libpq/be-secure-gssapi.c	9cb5c023f3f79451a05dd189861df4941bc84e90	PqGSSSendBuffer	static char *PqGSSSendBuffer;
-src/backend/libpq/be-secure-gssapi.c	9f264b037229cbcd14e4959ceb2559f888a4dcc2	PqGSSSendLength	static int PqGSSSendLength;
-src/backend/libpq/be-secure-gssapi.c	5c183347e312aa2a38ae00d9399cee91ddd6f4c5	PqGSSRecvBuffer	static char *PqGSSRecvBuffer;
-src/backend/libpq/be-secure-gssapi.c	91e86f67e95751399e71bb4f000b7751d39011ad	PqGSSRecvLength	static int PqGSSRecvLength;
-src/backend/libpq/be-secure-gssapi.c	acd329867c34ebcf28cb8d5e71e9a3ed2ba6a318	PqGSSResultBuffer	static char *PqGSSResultBuffer;
-src/backend/libpq/be-secure-gssapi.c	ce1a409d2352a81f5e070dda43d26d501d973811	PqGSSResultLength	static int PqGSSResultLength;
 src/backend/libpq/be-secure-openssl.c	9b0aefedd5f5377a777c4ed56d2307185690e59a	openssl_tls_init_hook	openssl_tls_init_hook_typ openssl_tls_init_hook = default_openssl_tls_init;
 src/backend/libpq/be-secure-openssl.c	d851edbd7b9ce720d2519cd14e3c1e6c7abdbc2e	SSL_context	static SSL_CTX *SSL_context = NULL;
 src/backend/libpq/be-secure-openssl.c	374ce4abd1fcc8194a30f6af4d7d971d097de8a0	SSL_hosts_memcxt	static MemoryContext SSL_hosts_memcxt = NULL;

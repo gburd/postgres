@@ -63,26 +63,32 @@
 
 /*
  * Since we manage at most one GSS-encrypted connection per backend,
- * we can just keep all this state in static variables.  The char *
- * variables point to buffers that are allocated once and re-used.
+ * this state belongs to the current connection.  The char * variables
+ * point to buffers that are allocated once and re-used.
  */
-static char *PqGSSSendBuffer;	/* Encrypted data waiting to be sent */
-static int	PqGSSSendLength;	/* End of data available in PqGSSSendBuffer */
-static int	PqGSSSendNext;		/* Next index to send a byte from
-								 * PqGSSSendBuffer */
-static int	PqGSSSendConsumed;	/* Number of source bytes encrypted but not
-								 * yet reported as sent */
+/* Encrypted data waiting to be sent */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSSendBuffer;
+/* End of data available in PqGSSSendBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendLength;
+/* Next index to send a byte from PqGSSSendBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendNext;
+/* Number of source bytes encrypted but not yet reported as sent */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendConsumed;
 
-static char *PqGSSRecvBuffer;	/* Received, encrypted data */
-static int	PqGSSRecvLength;	/* End of data available in PqGSSRecvBuffer */
+/* Received, encrypted data */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSRecvBuffer;
+/* End of data available in PqGSSRecvBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSRecvLength;
 
-static char *PqGSSResultBuffer; /* Decryption of data in gss_RecvBuffer */
-static int	PqGSSResultLength;	/* End of data available in PqGSSResultBuffer */
-static int	PqGSSResultNext;	/* Next index to read a byte from
-								 * PqGSSResultBuffer */
+/* Decryption of data in gss_RecvBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSResultBuffer;
+/* End of data available in PqGSSResultBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSResultLength;
+/* Next index to read a byte from PqGSSResultBuffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSResultNext;
 
-static uint32 PqGSSMaxPktSize;	/* Maximum size we can encrypt and fit the
-								 * results into our output buffer */
+/* Maximum size we can encrypt and fit the results into our output buffer */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION uint32 PqGSSMaxPktSize;
 
 
 /*

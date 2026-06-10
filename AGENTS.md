@@ -152,6 +152,13 @@ Important current files:
   post-bootstrap single-user startup. Use the backend clean plus generated-file
   recovery above, then rebuild with `gmake -j8`.
 
+- This checkout is currently configured with `with_gssapi = no`. A direct
+  `gmake -C src/backend/libpq be-secure-gssapi.o` can fail before reaching
+  project changes because the GSSAPI types and functions are unavailable in
+  this configuration. For GSSAPI-only source annotations, use static lifetime
+  scan coverage plus a full non-GSS build here, and use a GSSAPI-enabled build
+  when compile coverage for that file is required.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

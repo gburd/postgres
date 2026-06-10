@@ -37,7 +37,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
-  send/receive buffers in `pqcomm.c`;
+  send/receive buffers in `pqcomm.c` and GSSAPI transport buffers in
+  `be-secure-gssapi.c`;
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
   slot sync, and repack interrupt flags;
@@ -333,6 +334,9 @@ depend on self-referential `DLIST_STATIC_INIT` globals.
 The authenticated/session/effective role identity variables in `miscinit.c` are
 now session-local TLS state, preserving process-mode behavior while preventing
 threaded backends from sharing one effective user/security context.
+The GSSAPI transport buffers in `be-secure-gssapi.c` are now connection-local
+TLS state, matching the existing libpq send/receive buffer bridge in
+`pqcomm.c`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -701,6 +705,11 @@ Validation for this slice:
 - focused `miscinit.o` compile coverage plus fixture-backed role/privilege
   regression coverage after classifying authenticated/session/effective role
   identity state.
+- full non-GSS build coverage, static lifetime scan coverage, and
+  process-mode connection smoke/regression coverage after classifying the
+  GSSAPI transport buffers. Direct `be-secure-gssapi.o` compile coverage was
+  not available in this checkout because it is configured with
+  `with_gssapi = no`.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
