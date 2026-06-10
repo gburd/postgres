@@ -72,6 +72,9 @@ object owns them in the threaded model.
   exit-state change and again after the replication worker migration.
 - `gmake -C src/test/subscription check` did not run TAP tests because this
   checkout is not configured with `--enable-tap-tests`.
+- A focused process-mode smoke test passed 50 repeated client
+  connect/query/disconnect cycles, terminated a backend while it was inside an
+  active transaction, and verified the server remained responsive afterward.
 
 ## Remaining Phase 6 Gaps
 
@@ -83,8 +86,5 @@ object owns them in the threaded model.
 - DSM/DSA cleanup is still invoked through the existing backend shutdown hooks.
   Core regression covers common paths, but a targeted DSM/DSA exit fixture is
   still needed.
-- FATAL during an active transaction is indirectly exercised by regression
-  coverage, but a focused lifecycle fixture would make the Phase 6 gate more
-  explicit.
 - Remaining background-worker and auxiliary-process exits need an ownership
   decision before they are migrated or documented as permanently process-only.
