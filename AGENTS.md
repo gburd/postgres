@@ -17,7 +17,7 @@ the code evolves.
   records the logical interrupt boundary and recovery-conflict fixture
   decision.
 - [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
-  current backend lifecycle/exit boundary and remaining Phase 6 gaps.
+  current backend lifecycle/exit boundary and deferred thread-runtime proof.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.
