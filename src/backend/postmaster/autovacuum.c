@@ -120,30 +120,30 @@
 /*
  * GUC parameters
  */
-bool		autovacuum_start_daemon = false;
-int			autovacuum_worker_slots;
-int			autovacuum_max_workers;
-int			autovacuum_work_mem = -1;
-int			autovacuum_naptime;
-int			autovacuum_vac_thresh;
-int			autovacuum_vac_max_thresh;
-double		autovacuum_vac_scale;
-int			autovacuum_vac_ins_thresh;
-double		autovacuum_vac_ins_scale;
-int			autovacuum_anl_thresh;
-double		autovacuum_anl_scale;
-int			autovacuum_freeze_max_age;
-int			autovacuum_multixact_freeze_max_age;
-double		autovacuum_freeze_score_weight = 1.0;
-double		autovacuum_multixact_freeze_score_weight = 1.0;
-double		autovacuum_vacuum_score_weight = 1.0;
-double		autovacuum_vacuum_insert_score_weight = 1.0;
-double		autovacuum_analyze_score_weight = 1.0;
-double		autovacuum_vac_cost_delay;
-int			autovacuum_vac_cost_limit;
+PG_GLOBAL_RUNTIME bool autovacuum_start_daemon = false;
+PG_GLOBAL_RUNTIME int autovacuum_worker_slots;
+PG_GLOBAL_RUNTIME int autovacuum_max_workers;
+PG_GLOBAL_RUNTIME int autovacuum_work_mem = -1;
+PG_GLOBAL_RUNTIME int autovacuum_naptime;
+PG_GLOBAL_RUNTIME int autovacuum_vac_thresh;
+PG_GLOBAL_RUNTIME int autovacuum_vac_max_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_vac_scale;
+PG_GLOBAL_RUNTIME int autovacuum_vac_ins_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_vac_ins_scale;
+PG_GLOBAL_RUNTIME int autovacuum_anl_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_anl_scale;
+PG_GLOBAL_RUNTIME int autovacuum_freeze_max_age;
+PG_GLOBAL_RUNTIME int autovacuum_multixact_freeze_max_age;
+PG_GLOBAL_RUNTIME double autovacuum_freeze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_multixact_freeze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vacuum_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vacuum_insert_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_analyze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vac_cost_delay;
+PG_GLOBAL_RUNTIME int autovacuum_vac_cost_limit;
 
-int			Log_autovacuum_min_duration = 600000;
-int			Log_autoanalyze_min_duration = 600000;
+PG_GLOBAL_RUNTIME int Log_autovacuum_min_duration = 600000;
+PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration = 600000;
 
 /* the minimum allowed time between two awakenings of the launcher */
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */

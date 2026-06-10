@@ -173,6 +173,20 @@ postmaster, shared-memory, or startup-computed runtime state:
   `log_startup_progress_interval`, `remove_temp_files_after_crash`,
   `restart_after_crash`, `send_abort_for_crash`, and
   `send_abort_for_kill`.
+- autovacuum launcher/worker GUC backing variables:
+  `Log_autoanalyze_min_duration`, `Log_autovacuum_min_duration`,
+  `autovacuum_analyze_score_weight`, `autovacuum_anl_scale`,
+  `autovacuum_anl_thresh`, `autovacuum_freeze_max_age`,
+  `autovacuum_freeze_score_weight`, `autovacuum_max_workers`,
+  `autovacuum_multixact_freeze_max_age`,
+  `autovacuum_multixact_freeze_score_weight`, `autovacuum_naptime`,
+  `autovacuum_start_daemon`, `autovacuum_vac_cost_delay`,
+  `autovacuum_vac_cost_limit`, `autovacuum_vac_ins_scale`,
+  `autovacuum_vac_ins_thresh`, `autovacuum_vac_max_thresh`,
+  `autovacuum_vac_scale`, `autovacuum_vac_thresh`,
+  `autovacuum_vacuum_insert_score_weight`,
+  `autovacuum_vacuum_score_weight`, `autovacuum_work_mem`, and
+  `autovacuum_worker_slots`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -214,7 +228,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the postmaster/control-plane GUC classification slice, the filtered static report contains 171
+After the autovacuum GUC classification slice, the filtered static report contains 148
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -501,6 +515,9 @@ Validation for this slice:
   `walwriter.o`, and `startup.o` compile coverage plus incremental
   `gmake -j8` after classifying postmaster/control-plane GUC backing variables
   as `PG_GLOBAL_RUNTIME`;
+- focused `autovacuum.o` compile coverage plus incremental `gmake -j8` after
+  classifying autovacuum launcher/worker GUC backing variables as
+  `PG_GLOBAL_RUNTIME`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
