@@ -4948,6 +4948,7 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 			state->send_ready_for_query = true;	/* after error */
 
 		PG_exception_stack = save_exception_stack;
+		error_context_stack = save_context_stack;
 		state->step_error_boundary_active = false;
 
 		return PG_STEP_ERROR_RECOVERED;
