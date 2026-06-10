@@ -1849,7 +1849,6 @@ src/backend/utils/misc/superuser.c	bcf4d47b80446b5291ffcb40517bc33469bf57bd	last
 src/backend/utils/misc/superuser.c	bd2d10852433581754490c3fc1536c63975caaed	last_roleid_is_super	static bool last_roleid_is_super = false;
 src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	roleid_callback_registered	static bool roleid_callback_registered = false;
 src/backend/utils/mmgr/aset.c	2cd93d9bd6dcddeb04b90fd73e49fe756830e48e	context_freelists	static AllocSetFreeList context_freelists[2] = { { 0, NULL }, { 0, NULL } };
-src/backend/utils/mmgr/mcxt.c	fa651802ad7c8e575ffd03e87b4a3ae252d8d13d	LogMemoryContextInProgress	static bool LogMemoryContextInProgress = false;
 src/backend/utils/time/combocid.c	53eb46885b8cdb8c728c40b05a24080f31b3cd3f	comboHash	static HTAB *comboHash = NULL;
 src/backend/utils/time/combocid.c	72738162d8d01df2e7a5c88122940b19c9e74403	comboCids	static ComboCidKey comboCids = NULL;
 src/backend/utils/time/combocid.c	0a3ea554907322e6873c22b7d2d512bdf5d649f9	usedComboCids	static int usedComboCids = 0;

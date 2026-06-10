@@ -177,7 +177,7 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurTransactionContext = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext PortalContext = NULL;
 
 /* Is memory context logging currently in progress? */
-static bool LogMemoryContextInProgress = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LogMemoryContextInProgress = false;
 
 static void MemoryContextDeleteOnly(MemoryContext context);
 static void MemoryContextCallResetCallbacks(MemoryContext context);

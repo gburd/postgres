@@ -19,7 +19,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `CurrentPgSession`, `CurrentPgConnection`, and `CurrentPgExecution`;
 - memory context globals: `CurrentMemoryContext`, `TopMemoryContext`,
   `ErrorContext`, `CacheMemoryContext`, `MessageContext`,
-  `TopTransactionContext`, `CurTransactionContext`, and `PortalContext`;
+  `TopTransactionContext`, `CurTransactionContext`, `PortalContext`, and
+  the memory-context logging recursion guard;
 - resource owner globals: `CurrentResourceOwner`,
   `CurTransactionResourceOwner`, `TopTransactionResourceOwner`, and
   `AuxProcessResourceOwner`, plus the resource-release callback registry and
@@ -369,6 +370,8 @@ TLS. That preserves the current process-per-backend semantics for callbacks
 registered by dynamically loaded code, while the broader extension threading
 policy remains governed by the Phase 7 backend-model gate. Optional
 `RESOWNER_STATS` counters use the same backend-local lifetime.
+The memory-context logging recursion guard in `mcxt.c` is now backend-local
+TLS, matching `LogMemoryContextPending` delivery to a specific backend.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -754,6 +757,9 @@ Validation for this slice:
   static scan coverage after classifying hot-standby recovery-conflict state.
 - focused `resowner.o` compile coverage plus resource-owner static scan
   coverage after classifying the resource-release callback registry.
+- focused `mcxt.o` compile coverage, memory-context static scan coverage, and
+  process-mode query/PLpgSQL regression coverage after classifying the
+  memory-context logging recursion guard.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
