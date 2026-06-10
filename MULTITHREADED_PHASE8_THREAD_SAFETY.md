@@ -78,7 +78,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `application_name`, `role_string`, `tcp_keepalives_idle`,
   `tcp_keepalives_interval`, `tcp_keepalives_count`, and `tcp_user_timeout`.
   `in_hot_standby_guc` remains deliberately separate because it reflects
-  recovery/runtime state rather than per-session user state.
+  recovery/runtime state rather than per-session user state;
+- session SQL-behavior GUC backing variables outside `guc_tables.c`, including
+  `Array_nulls`, `backslash_quote`, `bytea_output`, `extra_float_digits`,
+  `quote_all_identifiers`, `Transform_null_equals`, `xmlbinary`, and
+  `xmloption`. The frontend `fe_utils` `quote_all_identifiers` variable is a
+  separate client-side option and remains plain frontend state.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -164,6 +169,16 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `application_name`, `role`,
   `tcp_keepalives_idle`, `tcp_keepalives_interval`, `tcp_keepalives_count`, and
   `tcp_user_timeout`;
+- fixture-backed SQL-behavior GUC regression coverage:
+  `test_setup boolean char name varchar text float4 float8 strings arrays copy
+  copyselect copydml copyencoding insert insert_conflict create_function_c
+  create_misc create_operator create_procedure create_table create_type
+  create_schema create_index create_index_spgist create_view index_including
+  index_including_gist create_aggregate create_function_sql create_cast
+  constraints triggers select vacuum sanity_check xml`;
+- live temp-cluster smoke coverage for `array_nulls`, `backslash_quote`,
+  `bytea_output`, `extra_float_digits`, `quote_all_identifiers`,
+  `transform_null_equals`, `xmlbinary`, and `xmloption`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
@@ -176,8 +191,8 @@ Validation for this slice:
   previously classified Phase 8 globals are no longer carried as stale
   unclassified debt;
 - filtered static scan for the touched required-floor names;
-- filtered non-TLS extern mismatch search for the planner/JIT/analyze and
-  exported session GUC backing variables;
+- filtered non-TLS extern mismatch search for the planner/JIT/analyze,
+  exported session, and session SQL-behavior GUC backing variables;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and

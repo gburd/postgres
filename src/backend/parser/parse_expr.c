@@ -43,7 +43,7 @@
 #include "utils/xml.h"
 
 /* GUC parameters */
-bool		Transform_null_equals = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Transform_null_equals = false;
 
 
 static Node *transformExprRecurse(ParseState *pstate, Node *expr);

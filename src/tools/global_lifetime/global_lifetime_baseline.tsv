@@ -1214,10 +1214,8 @@ src/backend/parser/gram.c	bfa94763761be209dac45a20bcbaf722460c4f6e	yyscanner	cor
 src/backend/parser/gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
 src/backend/parser/gram.c	1cf73cc4f8a365e807fe6cf7a341d7f7ba4c2c59	yyscanner	int yyparse (core_yyscan_t yyscanner) int yyparse (yyscanner) core_yyscan_t yyscanner;
 src/backend/parser/parse_cte.c	6490840c4c420b1512145b61f6cc024d83594604	recursion_errormsgs	static const char *const recursion_errormsgs[] = { NULL, gettext_noop("recursive reference to query \"%s\" must not appear within its non-recursive term"), gettext_noop("recursive reference to query \"%s\" must not appear within a subque...
-src/backend/parser/parse_expr.c	76b4a724d223aecc1c26835b7f9317b45601ec47	Transform_null_equals	bool Transform_null_equals = false;
 src/backend/parser/parse_oper.c	01ff60bfe99dc4b5220301fb4df18c8dc6ad1fc2	OprCacheHash	static HTAB *OprCacheHash = NULL;
 src/backend/parser/scan.c	82dba9be24c93134ab960cb0ceed1f6b20a0adb2	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[25] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
-src/backend/parser/scan.c	107b4a4ec1d88060a4a39296b5d23a43b460f9dc	backslash_quote	int backslash_quote = BACKSLASH_QUOTE_SAFE_ENCODING;
 src/backend/port/pg_sema.c	4c776e57e0754b897e7468cac2e380e36471b433	sharedSemas	static PGSemaphore sharedSemas;
 src/backend/port/pg_sema.c	1da4004d11478306cd8312ca393679d8185b8526	numSharedSemas	static int numSharedSemas;
 src/backend/port/pg_sema.c	2e04b9664b06a9d1b1470e58b1423e2830db73ab	maxSharedSemas	static int maxSharedSemas;
@@ -1916,8 +1914,6 @@ src/backend/utils/adt/acl.c	95f2326393ffd269ab7ef5687ed5fc6121a9c976	cached_role
 src/backend/utils/adt/acl.c	af791291b9055d7cdc6ef594a8612d85752c455d	cached_roles	static List *cached_roles[] = {NIL, NIL, NIL};
 src/backend/utils/adt/acl.c	5543b57292e6138d0fc0dc75b75e2aaaf5db81b4	cached_db_hash	static uint32 cached_db_hash;
 src/backend/utils/adt/array_typanalyze.c	b83e2a3dc4d2603f16154308ce45a07261e511ae	array_extra_data	static ArrayAnalyzeExtraData *array_extra_data;
-src/backend/utils/adt/arrayfuncs.c	f614203371cc48a4b30c00160c1ee0a89f80e980	Array_nulls	bool Array_nulls = true;
-src/backend/utils/adt/bytea.c	8c94275e9fdd7053f5c4df68fcdbd880c89b8623	bytea_output	int bytea_output = BYTEA_OUTPUT_HEX;
 src/backend/utils/adt/datetime.c	6d1626ba7c5b7f3fd8e5be15280b2fa41eb493f2	months	const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL};
 src/backend/utils/adt/datetime.c	dfaae14cf8c87a851aded339bdba68fd0879624a	days	const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", NULL};
 src/backend/utils/adt/datetime.c	128a5e753125d6183d29783d7e8749e1ea6ac163	zoneabbrevtbl	static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
@@ -1925,7 +1921,6 @@ src/backend/utils/adt/datetime.c	36aac662d753bcb29ea96e197728cb767abd45da	dateca
 src/backend/utils/adt/datetime.c	11630c17370c5cf0bec55942ceb107413e087a7c	deltacache	static const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
 src/backend/utils/adt/datetime.c	7ce535870768576269aa395fada4106b6b3604a6	tzabbrevcache	static TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
 src/backend/utils/adt/dbsize.c	43a8e1f741eb248bad3a53715d727bcd3b1f2a14	size_pretty_units	static const struct size_pretty_unit size_pretty_units[] = { {"bytes", 10 * 1024, false, 0}, {"kB", 20 * 1024 - 1, true, 10}, {"MB", 20 * 1024 - 1, true, 20}, {"GB", 20 * 1024 - 1, true, 30}, {"TB", 20 * 1024 - 1, true, 40}, {"PB", 20 * ...
-src/backend/utils/adt/float.c	b38951cf0ca11cec5b0bb1226c35888d2d42084b	extra_float_digits	int extra_float_digits = 1;
 src/backend/utils/adt/float.c	e63b40517caa21a8045b9a6d3e9f87b6c7e42196	degree_consts_set	static bool degree_consts_set = false;
 src/backend/utils/adt/float.c	078155e801732d6bff06cfc6b8476d6b115ef8ce	sin_30	static float8 sin_30 = 0;
 src/backend/utils/adt/float.c	5a35f265e5e39fdf4468a9b529c0033928f27c54	one_minus_cos_60	static float8 one_minus_cos_60 = 0;
@@ -2040,15 +2035,12 @@ src/backend/utils/adt/ruleutils.c	936f4e36a909755f9e47c2e60e1d772c75516559	plan_
 src/backend/utils/adt/ruleutils.c	435bbbcbe01e197226f6bd3ca99c349104af5a2a	query_getrulebyoid	static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 src/backend/utils/adt/ruleutils.c	041ac0a55f01d92c73469d2b1b4034586c3e2c65	plan_getviewrule	static SPIPlanPtr plan_getviewrule = NULL;
 src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query_getviewrule	static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
-src/backend/utils/adt/ruleutils.c	57fc8dd7b82531f87fe19c2507db2624bdc1e1b0	quote_all_identifiers	bool quote_all_identifiers = false;
 src/backend/utils/adt/selfuncs.c	6f4d877861e2519cf39e33ef61712bb7b010619c	get_relation_stats_hook	get_relation_stats_hook_type get_relation_stats_hook = NULL;
 src/backend/utils/adt/selfuncs.c	bb3d798c13c168b2d9440225913f198bbae048dc	get_index_stats_hook	get_index_stats_hook_type get_index_stats_hook = NULL;
 src/backend/utils/adt/timestamp.c	75888b22a145be00e79d1118b61dface46343159	PgStartTime	TimestampTz PgStartTime;
 src/backend/utils/adt/timestamp.c	ffd19bd67ca6786e6d69316b26fcc748f25df36c	PgReloadTime	TimestampTz PgReloadTime;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
-src/backend/utils/adt/xml.c	614d49474949e5190ca351c117b15752492c0ae3	xmlbinary	int xmlbinary = XMLBINARY_BASE64;
-src/backend/utils/adt/xml.c	80282a108b27f4f5cc2cbf05d0c0798aab01deb7	xmloption	int xmloption = XMLOPTION_CONTENT;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
 src/backend/utils/cache/attoptcache.c	4d9da770d3b8a9b0993f93d00a3b9753590c4c7e	AttoptCacheHash	static HTAB *AttoptCacheHash = NULL;
 src/backend/utils/cache/catcache.c	0863bb1d553bfd48b87efdd5eda01bf09cc2d9c2	catcache_in_progress_stack	static CatCInProgress *catcache_in_progress_stack = NULL;
@@ -2518,8 +2510,6 @@ src/include/optimizer/planner.h	1af26c45a15810928bd4f984c05d2af97714c636	planner
 src/include/optimizer/planner.h	1c9ad30f986576f9a29d77a4569150d58210c4b2	planner_shutdown_hook	extern PGDLLIMPORT planner_shutdown_hook_type planner_shutdown_hook;
 src/include/optimizer/planner.h	cd2be5690fe190705788853ac02e399905de4861	create_upper_paths_hook	extern PGDLLIMPORT create_upper_paths_hook_type create_upper_paths_hook;
 src/include/parser/analyze.h	bd556e2dc0ed637ebbb4668cf622398985050030	post_parse_analyze_hook	extern PGDLLIMPORT post_parse_analyze_hook_type post_parse_analyze_hook;
-src/include/parser/parse_expr.h	1c624f603a510a44d343b9f610f832fc7c38a832	Transform_null_equals	extern PGDLLIMPORT bool Transform_null_equals;
-src/include/parser/parser.h	0068a1d0994cf1424fbc9be71da5d208c283614b	backslash_quote	extern PGDLLIMPORT int backslash_quote;
 src/include/pg_getopt.h	e2df147a7c555931a366949d236cf23b20b857ae	optarg	extern PGDLLIMPORT char *optarg;
 src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern PGDLLIMPORT int optind;
 src/include/pg_getopt.h	a3eb7ff42123ef7f51d3c03d50eb16ed56c5333b	opterr	extern PGDLLIMPORT int opterr;
@@ -2778,11 +2768,9 @@ src/include/tsearch/dicts/spell.h	ccc678d388326b21bdb3534133fba457ce6fcd26	Affix
 src/include/tsearch/ts_cache.h	a4fc55beaf0299374a6db78cb02fb04e6f20cb5b	TSCurrentConfig	extern PGDLLIMPORT char *TSCurrentConfig;
 src/include/tsearch/ts_utils.h	dc2fdac146a049075e25162061f824973d1870c3	TSVectorParseStateData	struct TSVectorParseStateData;
 src/include/tsearch/ts_utils.h	ff4db33229f721a60c807b9f3be89205b697d581	TSQueryParserStateData	struct TSQueryParserStateData;
-src/include/utils/array.h	025885aead53cc181dd06310019056e1c95474f5	Array_nulls	extern PGDLLIMPORT bool Array_nulls;
 src/include/utils/backend_status.h	73c30d4b248b09a847166798a6e97d7802c7fb33	pgstat_track_activities	extern PGDLLIMPORT bool pgstat_track_activities;
 src/include/utils/backend_status.h	567a3e9b4f59c28e731c94a43aaa6df151c5e633	pgstat_track_activity_query_size	extern PGDLLIMPORT int pgstat_track_activity_query_size;
 src/include/utils/backend_status.h	93a00df91ab4b493ac8a5ab98c5e9dfc3015b592	MyBEEntry	extern PGDLLIMPORT PgBackendStatus *MyBEEntry;
-src/include/utils/builtins.h	eafde00ce0d2a353c434c192248fc2d49642f573	quote_all_identifiers	extern PGDLLIMPORT bool quote_all_identifiers;
 src/include/utils/datetime.h	2ab3f02d3e115b0ce5172ec2f1a532cb277cc29e	tzEntry	struct tzEntry;
 src/include/utils/datetime.h	e2b95b77008d26098670c036a3a4efb7147887f2	days	extern PGDLLIMPORT const char *const days[];
 src/include/utils/dsa.h	c0f6aafe834a68190a3ae77a9f3222a885527f28	dsa_area	struct dsa_area;
@@ -2794,7 +2782,6 @@ src/include/utils/elog.h	0cd87dd65beb3f543fc017d46a7284e1c3e6c06a	Log_destinatio
 src/include/utils/elog.h	2da60b2875dfa72cf9d136e4cb5e31ea74111532	Log_destination_string	extern PGDLLIMPORT char *Log_destination_string;
 src/include/utils/elog.h	c5248a6abf61d0c1f6f3fb47e160dc966fee7e45	syslog_sequence_numbers	extern PGDLLIMPORT bool syslog_sequence_numbers;
 src/include/utils/elog.h	ec6b652cd0741d096e5c5cb47d616dec1aa5604b	syslog_split_messages	extern PGDLLIMPORT bool syslog_split_messages;
-src/include/utils/float.h	50fc07d2427bb6ddecc297e223710266de5fe5f7	extra_float_digits	extern PGDLLIMPORT int extra_float_digits;
 src/include/utils/funccache.h	f2ed3dbf69f353d45c3e2e685cfe1d2a85402a8d	CachedFunctionHashKey	struct CachedFunctionHashKey;
 src/include/utils/funccache.h	a86fc3803ee03c196bbcc6a1240e69ee6311bc0e	CachedFunction	struct CachedFunction;
 src/include/utils/guc.h	6da87dc379ba55d218bd1d4e46b20835deeddb33	Debug_copy_parse_plan_trees	extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
@@ -2842,5 +2829,3 @@ src/include/utils/timestamp.h	701dee700c9e2a197b12b06c65a54eb36a3f3167	PgStartTi
 src/include/utils/timestamp.h	af405e935dac19662a584eed20feacaf91d2f80b	PgReloadTime	extern PGDLLIMPORT TimestampTz PgReloadTime;
 src/include/utils/typcache.h	d480ee3276c6d0ceb5829132414d2aefd5e81dd8	TypeCacheEnumData	struct TypeCacheEnumData;
 src/include/utils/wait_event.h	c5cade6c72c4b984466519555f890c671c76e617	my_wait_event_info	extern PGDLLIMPORT uint32 *my_wait_event_info;
-src/include/utils/xml.h	4f7a960f1af8fd70f718f0c8719cc20f211c006d	xmlbinary	extern PGDLLIMPORT int xmlbinary;
-src/include/utils/xml.h	39dd924d3a5711e8a9f3caa6616a5b6d66febdfd	xmloption	extern PGDLLIMPORT int xmloption;

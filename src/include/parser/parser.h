@@ -16,6 +16,7 @@
 #define PARSER_H
 
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -53,7 +54,7 @@ typedef enum
 }			BackslashQuoteType;
 
 /* GUC variable in scan.l */
-extern PGDLLIMPORT int backslash_quote;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int backslash_quote;
 
 
 /* Primary entry point for the raw parsing functions */

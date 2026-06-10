@@ -105,8 +105,8 @@
 
 
 /* GUC variables */
-int			xmlbinary = XMLBINARY_BASE64;
-int			xmloption = XMLOPTION_CONTENT;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmlbinary = XMLBINARY_BASE64;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmloption = XMLOPTION_CONTENT;
 
 #ifdef USE_LIBXML
 

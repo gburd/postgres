@@ -14,9 +14,10 @@
 #define PARSE_EXPR_H
 
 #include "parser/parse_node.h"
+#include "utils/global_lifetime.h"
 
 /* GUC parameters */
-extern PGDLLIMPORT bool Transform_null_equals;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Transform_null_equals;
 
 extern Node *transformExpr(ParseState *pstate, Node *expr, ParseExprKind exprKind);
 

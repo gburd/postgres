@@ -341,7 +341,7 @@ static SPIPlanPtr plan_getviewrule = NULL;
 static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
 /* GUC parameters */
-bool		quote_all_identifiers = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool quote_all_identifiers = false;
 
 
 /* ----------

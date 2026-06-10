@@ -63,6 +63,7 @@
 
 #include "fmgr.h"
 #include "utils/expandeddatum.h"
+#include "utils/global_lifetime.h"
 
 /* avoid including execnodes.h here */
 typedef struct ExprState ExprState;
@@ -346,7 +347,7 @@ typedef struct ArrayIteratorData *ArrayIterator;
 /*
  * GUC parameter
  */
-extern PGDLLIMPORT bool Array_nulls;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Array_nulls;
 
 /*
  * prototypes for functions defined in arrayfuncs.c
