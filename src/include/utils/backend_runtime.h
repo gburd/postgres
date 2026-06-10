@@ -13,6 +13,7 @@
 #define BACKEND_RUNTIME_H
 
 #include "access/session.h"
+#include "lib/ilist.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
@@ -140,6 +141,11 @@ struct PgBackend
 	PgExecution *execution;
 	PgBackendInterruptMailbox interrupts;
 	PgBackendExitState exit_state;
+
+	/* Backend-local dynamic shared memory mappings and detach callbacks. */
+	dlist_head	dsm_segment_list;
+	bool		dsm_segment_list_initialized;
+
 	BackendType backend_type;
 };
 

@@ -5,3 +5,9 @@ SELECT test_backend_exit_runtime_continuation();
                                      17
 (1 row)
 
+SELECT test_backend_dsm_shutdown_is_backend_local();
+ test_backend_dsm_shutdown_is_backend_local 
+--------------------------------------------
+ t
+(1 row)
+

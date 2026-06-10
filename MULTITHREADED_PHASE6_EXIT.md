@@ -21,6 +21,11 @@ result.
   code and unmigrated callers.
 - `PgBackendExitState` is stored on `PgBackend` and owns the exit callback
   stacks plus backend-local exit-in-progress flags.
+- Dynamic shared memory mapping descriptors are stored on `PgBackend`.
+  `dsm_backend_shutdown()`, `dsm_detach_all()`, `dsm_find_mapping()`, and
+  `reset_on_dsm_detach()` operate on the current logical backend's mapping
+  list rather than a process-global list. This keeps DSM detach callbacks and
+  mapping reference cleanup local to the backend that is exiting.
 - A threaded runtime must install a non-returning `exit_backend` continuation
   that removes the logical backend from its scheduler without returning to the
   cleaned-up backend stack.
@@ -28,6 +33,10 @@ result.
   fallback state. `InitializePgProcessRuntime()` adopts that fallback state into
   the process backend so postmaster-child cleanup callbacks, including
   `MarkPostmasterChildInactive`, still run at normal backend exit.
+- DSM calls made before `CurrentPgBackend` exists use a small runtime fallback
+  list. Normal backend DSM mappings are expected to exist under an initialized
+  `PgBackend`; the fallback exists for reset/detach paths that run before
+  process runtime installation.
 
 Core code that needs to test exit progress should call
 `PgBackendExitInProgress()` or `PgBackendShmemExitInProgress()` rather than
@@ -87,6 +96,8 @@ which runtime object owns that worker's cleanup and scheduler continuation.
   libpq, portal, WAL sender, and logical replication worker files.
 - `gmake -C src/backend -j8` passed after the backend-local exit-state changes
   and after the replication worker migration.
+- `gmake -C src/backend postgres` passed after moving DSM mapping ownership
+  onto `PgBackend`.
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv` reported no new
   unclassified mutable globals.
@@ -110,6 +121,10 @@ which runtime object owns that worker's cleanup and scheduler continuation.
   fixture that installs a runtime `exit_backend` continuation, calls
   `PgBackendExitComplete(17)`, and verifies control transfers to the
   scheduler-like continuation instead of falling through to process exit.
+- The same `test_backend_runtime` module now simulates two logical backends in
+  one address space, creates a pinned DSM mapping under one backend, runs
+  `dsm_backend_shutdown()` under the other backend, and verifies the first
+  backend's mapping remains attached.
 - `gmake check-world` was attempted for Gate B. It progressed through core
   isolation and multiple `src/test/modules` checks, including
   `test_dsm_registry`, but stopped in `src/test/modules/test_extensions` before

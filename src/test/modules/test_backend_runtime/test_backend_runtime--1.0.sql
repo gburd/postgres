@@ -6,3 +6,7 @@
 CREATE FUNCTION test_backend_exit_runtime_continuation()
 	RETURNS pg_catalog.int4
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_backend_dsm_shutdown_is_backend_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
