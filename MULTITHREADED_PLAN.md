@@ -2,7 +2,9 @@
 
 This plan is intentionally ambitious, but it is staged so that each phase
 leaves the tree in a coherent state. The first implementation target is native
-thread-per-session PostgreSQL. Pooled scheduling comes later.
+thread-per-session PostgreSQL for regular client backends. A follow-on
+auxiliary-worker phase makes normal threaded server mode stop forking in-tree
+server-owned workers. Pooled scheduling comes later.
 
 The ordering is deliberately practical:
 
@@ -10,8 +12,10 @@ The ordering is deliberately practical:
 2. attach that boundary to explicit runtime/session/backend objects;
 3. classify and isolate enough mutable state for thread-per-session;
 4. make blocking waits targetable and wakeable for threaded backends;
-5. launch threaded backends;
-6. only then make sessions movable across pooled carriers.
+5. launch threaded client backends;
+6. make in-tree auxiliary worker families threaded so normal threaded server
+   mode no longer forks for server-owned workers;
+7. only then make sessions movable across pooled carriers.
 
 ## Current Branch Baseline
 
@@ -459,8 +463,10 @@ Likely changes:
 Conservative scope:
 
 - regular client backends first;
-- auxiliary processes can remain processes initially;
-- background workers can be gated off or process-only until audited;
+- auxiliary worker families can remain processes until Phase 11, but this is
+  not the final threaded-mode target;
+- background workers can be gated off or process-only until the worker runtime
+  and extension metadata are audited;
 - unsafe extensions rejected through backend model metadata.
 
 Validation:
@@ -474,7 +480,67 @@ Validation:
 - incompatible extensions rejected in threaded mode;
 - process-mode full test suite.
 
-## Phase 11: State Migration From TLS To Objects
+## Phase 11: Auxiliary Worker Thread Runtime
+
+Goal: make normal threaded server mode fully threaded for in-tree
+server-owned worker families, so the runtime does not fork subprocesses for
+ordinary server operation.
+
+This phase is distinct from Phase 10. Phase 10 proves the user-session backend
+runtime. Phase 11 proves the worker runtime needed for a server that is
+threaded in normal operation.
+
+Explicit non-goals:
+
+- single-user mode;
+- bootstrap mode;
+- frontend command-line utilities;
+- postmaster/control-plane process lifetime;
+- crash-escalation paths where terminating the process or whole runtime is the
+  correct behavior.
+
+Likely changes:
+
+- Add an explicit worker runtime owner, such as `PgWorker` or
+  `PgAuxiliaryWorker`, rather than folding every worker into `PgSession`.
+- Reuse `PgRuntime`, `PgCarrier`, logical interrupt, wait/wakeup, and backend
+  exit machinery where the worker participates in normal server scheduling.
+- Extend postmaster/launch-backend supervision so in-tree worker families can
+  choose process carriers or thread carriers.
+- Convert in-tree auxiliary worker families to thread carriers in threaded
+  mode:
+  - autovacuum launcher and autovacuum workers;
+  - checkpointer, background writer, WAL writer, archiver, and syslogger;
+  - startup/recovery worker paths that are part of normal server operation;
+  - WAL receiver and WAL summarizer;
+  - AIO method workers;
+  - logical replication launcher, apply, table sync, slot sync, sync utility,
+    and parallel apply workers.
+- Provide a narrow allowlist path for in-tree generic background worker tests
+  and examples.
+- Keep third-party background workers process-only or rejected in threaded mode
+  unless extension metadata explicitly opts them into the worker runtime.
+- Define worker exit semantics separately from user-session exit semantics:
+  normal worker exit must clean up one worker, while `PANIC`, postmaster death,
+  and unrecoverable runtime corruption still terminate the process or runtime.
+
+Validation:
+
+- threaded normal-mode server start/stop without forked in-tree
+  server-owned worker subprocesses after runtime startup;
+- autovacuum launcher and worker smoke tests in threaded mode;
+- checkpointer, background writer, WAL writer, archiver, and syslogger smoke
+  tests in threaded mode;
+- WAL receiver, WAL summarizer, and logical replication worker smoke tests
+  where local test infrastructure supports them;
+- AIO worker smoke tests;
+- cancellation, shutdown, restart, and failure escalation for threaded
+  workers;
+- process-mode worker behavior remains unchanged;
+- third-party background workers are rejected or kept process-only unless
+  explicitly marked thread-worker safe.
+
+## Phase 12: State Migration From TLS To Objects
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -496,7 +562,7 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
-## Phase 12: Scheduler-Aware Wait Boundary
+## Phase 13: Scheduler-Aware Wait Boundary
 
 Goal: extend the visible wait boundary so sessions can suspend and resume
 without pinning an OS thread.
@@ -519,7 +585,7 @@ Validation:
 - idle timeout and transaction timeout behavior remains correct;
 - no lost wakeups in common wait paths.
 
-## Phase 13: Pooled Carrier Scheduler
+## Phase 14: Pooled Carrier Scheduler
 
 Goal: schedule logical session/execution tasks onto a smaller number of worker
 threads.
@@ -537,7 +603,8 @@ Initial limitations are acceptable:
 
 - long executor calls may pin a carrier until they reach safe yield points;
 - some subsystems may temporarily opt out and require a dedicated carrier;
-- background workers can be migrated gradually.
+- threaded worker families may temporarily require dedicated carriers before
+  they become safe to schedule on the pooled carrier set.
 
 Validation:
 
@@ -547,7 +614,7 @@ Validation:
 - cancellation of waiting and running tasks;
 - process-mode and thread-per-session modes still work.
 
-## Phase 14: Executor And Utility Yield Points
+## Phase 15: Executor And Utility Yield Points
 
 Goal: improve fairness and latency for long-running commands under pooled
 scheduling.
@@ -567,7 +634,7 @@ Validation:
 - no executor state corruption across yields;
 - performance comparison against thread-per-session mode.
 
-## Phase 15: Contrib Extension Completion And Hardening
+## Phase 16: Contrib Extension Completion And Hardening
 
 Goal: make threaded mode debuggable, credible, and complete for in-tree
 extensions, including contrib.
@@ -661,21 +728,36 @@ Gate C, after Phase 8:
 
 Gate D, after Phase 10:
 
-- first thread-per-session runtime exists;
+- first thread-per-session runtime exists for regular client backends;
 - run full process-mode tests and the threaded smoke/regression subset:
   multiple concurrent clients, running-query cancellation, idle and active
   backend termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL
   smoke tests, incompatible extension rejection, and repeated
-  connect/disconnect stress.
+  connect/disconnect stress;
+- explicitly document that in-tree auxiliary workers are still process carriers
+  until Phase 11.
 
-Gate E, after Phase 13:
+Gate E, after Phase 11:
+
+- normal threaded server mode no longer forks in-tree server-owned workers
+  after runtime startup;
+- run threaded worker smoke tests for autovacuum, checkpointer, background
+  writer, WAL writer, archiver, syslogger, WAL receiver, WAL summarizer,
+  logical replication workers, AIO workers, and the in-tree generic background
+  worker allowlist;
+- verify worker cancellation, shutdown, restart, and failure escalation;
+- verify single-user, bootstrap, frontend utility, postmaster/control-plane,
+  and crash-escalation paths remain documented process-lifetime exceptions;
+- run full process-mode tests and the threaded-mode worker subset.
+
+Gate F, after Phase 14:
 
 - scheduler-aware waits and pooled carriers exist;
 - run full process-mode and threaded-mode suites, plus stress tests for lock
   waits, cancellation of waiting and running tasks, output backpressure,
   timeout delivery while waiting, and lost wakeups.
 
-Gate F, during Phase 15:
+Gate G, during Phase 16:
 
 - hardening and release-readiness gate;
 - run sanitizers where feasible, repeated full suites, threaded contrib
@@ -787,6 +869,24 @@ Mitigation:
 - reserve process termination for process mode, postmaster death, or `PANIC`;
 - stress repeated connect/disconnect and `FATAL` paths.
 
+### Auxiliary Worker Process Dependence
+
+Risk: threaded mode proves client sessions but still depends on forked
+auxiliary workers, leaving the server only partially threaded in normal
+operation.
+
+Mitigation:
+
+- keep Phase 10 scoped to regular client backends and make that limitation
+  explicit;
+- add Phase 11 as the no-fork normal-mode worker milestone;
+- give worker families their own runtime owner instead of pretending every
+  worker is a user session;
+- keep single-user, bootstrap, frontend utility, postmaster/control-plane, and
+  crash-escalation paths as documented process-lifetime exceptions;
+- require extension metadata before third-party background workers can opt into
+  threaded worker execution.
+
 ## Suggested Commit Sequence After Documentation
 
 1. Land a minimal process-mode `PgSessionStep()` boundary.
@@ -809,12 +909,14 @@ Mitigation:
 16. Add the thread-compatible wait/wakeup boundary.
 17. Add thread portability layer and backend launch switch.
 18. Run first thread-per-session backend smoke tests.
-19. Migrate TLS-backed state toward object-owned state.
-20. Convert scheduler-aware waits from blocking to suspend/resume.
-21. Add pooled carrier scheduling.
-22. Add executor and utility yield points.
-23. Migrate all contrib extensions to threaded-mode metadata and tests.
-24. Harden with sanitizers, stress tests, repeated full suites, and performance
+19. Add the auxiliary worker runtime owner and threaded worker launch path.
+20. Migrate in-tree auxiliary worker families to threaded carriers.
+21. Migrate TLS-backed state toward object-owned state.
+22. Convert scheduler-aware waits from blocking to suspend/resume.
+23. Add pooled carrier scheduling.
+24. Add executor and utility yield points.
+25. Migrate all contrib extensions to threaded-mode metadata and tests.
+26. Harden with sanitizers, stress tests, repeated full suites, and performance
     baselines.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility

@@ -591,9 +591,15 @@ The launch implementation can choose:
 This should be a runtime decision, not scattered through postmaster code.
 
 Early threaded mode can keep auxiliary processes in their current process model
-while regular client backends move to threads. The target design should allow
-auxiliary roles to become runtime tasks later, but that is not required for the
-first user-backend milestone.
+while regular client backends move to threads. That is only the first
+user-backend milestone. The final normal threaded server mode should run
+in-tree server-owned workers, including autovacuum and other auxiliary worker
+families, as runtime-owned threaded workers rather than forked subprocesses.
+
+Single-user mode, bootstrap mode, frontend command-line utilities,
+postmaster/control-plane process lifetime, and crash-escalation paths remain
+process-lifetime exceptions. Worker roles should use an explicit worker runtime
+owner rather than being silently treated as SQL sessions.
 
 ## Crash And Error Semantics
 

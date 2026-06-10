@@ -70,15 +70,15 @@ Phase 6 ownership decisions:
   paths, not logical backend exits.
 - Startup, checkpointer, bgwriter, walwriter, archiver, syslogger, WAL
   receiver, WAL summarizer, and AIO method workers remain auxiliary
-  process-owned workers for Phase 6. If a later phase threads these, it should
-  add an explicit worker/auxiliary runtime owner rather than mechanically
-  converting them to `PgBackendExit()`.
+  process-owned workers for Phase 6. Phase 11, Auxiliary Worker Thread
+  Runtime, must add an explicit worker/auxiliary runtime owner before any of
+  these are converted to threaded carriers.
 - Generic background workers remain process-owned for Phase 6 so third-party
   extension workers preserve current behavior. Extension/background-worker
-  thread compatibility is gated by the later extension and worker-runtime
-  phases.
+  thread compatibility is gated by Phase 11 worker runtime work and Phase 16
+  extension metadata hardening.
 - Autovacuum launcher and workers remain process-owned workers for Phase 6.
-  They can be revisited with the background-worker model, but they are not user
+  Phase 11 must migrate them through the worker runtime, but they are not user
   sessions and should not be silently folded into the session backend lifecycle.
 - Low-level postmaster-death wait paths, recovery-target shutdown, archive
   restore signal handling, scanner fatal exits, spinlock hard failures,
@@ -87,8 +87,8 @@ Phase 6 ownership decisions:
   scheduler.
 
 These decisions make the remaining `proc_exit()` search results intentional.
-A future phase that makes any listed worker family threaded must first define
-which runtime object owns that worker's cleanup and scheduler continuation.
+Phase 11 is responsible for defining which runtime object owns each threaded
+worker's cleanup and scheduler continuation.
 
 ## Validation So Far
 

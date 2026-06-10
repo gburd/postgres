@@ -30,10 +30,20 @@ the code evolves.
 - The first native threading target should be thread-per-session. The longer
   term target is an explicit scheduler that can map sessions/executions to a
   pool of carriers.
+- Thread-per-session for regular client backends is not the final normal-mode
+  target. Normal threaded server mode should eventually run in-tree
+  server-owned workers, including autovacuum and auxiliary worker families, as
+  threaded runtime-owned workers rather than forked subprocesses.
+- Single-user mode, bootstrap mode, frontend command-line utilities,
+  postmaster/control-plane process lifetime, and crash-escalation paths are
+  deliberate process-lifetime exceptions.
 - Do not overfit the design to WASM. Keep the main-loop and wait-boundary
   abstractions clean enough that a future host-driven runtime can use them.
 - Existing third-party C extensions may be process-backend-only. That is an
   acceptable compatibility break for threaded mode.
+- Existing third-party background workers may remain process-only or be
+  rejected in threaded mode unless explicit worker-runtime metadata opts them
+  in.
 - In-tree modules and important bundled languages, especially PL/pgSQL, should
   have a plausible path to work in threaded mode.
 
@@ -55,6 +65,16 @@ Important current files:
   wait/wakeup infrastructure.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
+- `src/backend/postmaster/autovacuum.c`,
+  `src/backend/postmaster/auxprocess.c`,
+  `src/backend/postmaster/bgworker.c`, and the individual auxiliary worker
+  files under `src/backend/postmaster/`: worker launch, supervision, and
+  server-owned worker lifecycles.
+- `src/backend/replication/walreceiver.c`,
+  `src/backend/replication/logical/launcher.c`,
+  `src/backend/replication/logical/worker.c`, and
+  `src/backend/storage/aio/method_worker.c`: replication and AIO worker
+  lifecycles that must eventually use the threaded worker runtime.
 - `src/include/fmgr.h` and `src/backend/utils/fmgr/dfmgr.c`: extension module
   ABI checks.
 - `src/pl/plpgsql`: PL/pgSQL implementation.
