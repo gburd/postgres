@@ -4,8 +4,8 @@ This repository is an experimental branch for making PostgreSQL capable of
 running backend sessions in a multithreaded runtime. The branch is allowed to
 be ambitious and is not currently optimized for upstream patch shape.
 
-The immediate work is documentation and planning. Do not start implementation
-until the user explicitly asks for it.
+Implementation is now underway. Keep the plan and architecture notes current as
+the code evolves.
 
 ## Project Docs
 
@@ -13,6 +13,8 @@ until the user explicitly asks for it.
   desired end-state architecture.
 - [MULTITHREADED_PLAN.md](MULTITHREADED_PLAN.md) describes the staged
   implementation plan, validation strategy, and risk register.
+- [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
+  current backend lifecycle/exit boundary and remaining Phase 6 gaps.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.

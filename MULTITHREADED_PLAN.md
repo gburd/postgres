@@ -297,6 +297,13 @@ Validation:
 - DSM/DSA detach cleanup;
 - callback ordering remains compatible in process mode.
 
+Implementation notes:
+
+- [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
+  current logical backend exit boundary, migrated call-site families, remaining
+  process/runtime exits, validation already run, and the gaps that still block
+  calling Phase 6 complete.
+
 ## Phase 7: Extension Backend Model Gate
 
 Goal: prevent unsafe extension loading in threaded mode and establish the route
