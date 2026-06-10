@@ -54,6 +54,7 @@ bool		shmem_exit_inprogress = false;
 static bool atexit_callback_setup = false;
 
 /* local functions */
+pg_noreturn static void PgBackendExitViaRuntime(int code);
 pg_noreturn static void PgBackendExitProcess(int code);
 static PgBackendExitState *CurrentBackendExitState(void);
 
@@ -118,9 +119,9 @@ PgBackendShmemExitInProgress(void)
 /* ----------------------------------------------------------------
  *		PgBackendExit
  *
- *		this function exits the current logical backend.  In process mode,
- *		the current runtime has one logical backend per address space, so
- *		the final step is still exit().
+ *		this function exits the current logical backend.  After cleanup, the
+ *		current runtime decides how control leaves the backend.  In process
+ *		mode, the final step is still exit().
  *
  *		PgBackendExitCleanup() is the part threaded runtimes need to reuse
  *		when one logical backend exits but the containing runtime continues.
@@ -140,6 +141,23 @@ PgBackendExit(int code)
 
 	/* Clean up everything that must be cleaned up */
 	PgBackendExitCleanup(code);
+
+	PgBackendExitViaRuntime(code);
+}
+
+pg_noreturn static void
+PgBackendExitViaRuntime(int code)
+{
+	if (CurrentPgRuntime != NULL && CurrentPgRuntime->exit_backend != NULL)
+	{
+		CurrentPgRuntime->exit_backend(code);
+
+		/*
+		 * A runtime may unwind to a scheduler or exit the process, but it
+		 * must not return control to the backend that just cleaned itself up.
+		 */
+		elog(PANIC, "backend exit continuation returned");
+	}
 
 	PgBackendExitProcess(code);
 }

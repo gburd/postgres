@@ -12,12 +12,17 @@ result.
 - `PgBackendExitCleanup(int code)` runs the backend-local cleanup sequence:
   `before_shmem_exit`, DSM detach callbacks, `on_shmem_exit`, then
   `on_proc_exit`.
-- `PgBackendExitProcess(int code)` is the private process-mode tail that still
-  calls `exit(code)`.
+- After cleanup, `PgBackendExit()` dispatches through the current runtime's
+  optional `exit_backend` continuation. Process mode leaves this unset and
+  falls through to `PgBackendExitProcess(int code)`, the private tail that
+  still calls `exit(code)`.
 - `proc_exit(int code)` remains as a compatibility wrapper for process-mode
   code and unmigrated callers.
 - `PgBackendExitState` is stored on `PgBackend` and owns the exit callback
   stacks plus backend-local exit-in-progress flags.
+- A threaded runtime must install a non-returning `exit_backend` continuation
+  that removes the logical backend from its scheduler without returning to the
+  cleaned-up backend stack.
 - Early exit registrations made before a `PgBackend` exists use a small
   fallback state. `InitializePgProcessRuntime()` adopts that fallback state into
   the process backend so postmaster-child cleanup callbacks, including
@@ -78,11 +83,9 @@ object owns them in the threaded model.
 
 ## Remaining Phase 6 Gaps
 
-- `PgBackendExit()` still reaches `exit()` in process mode. A threaded runtime
-  needs a carrier-aware completion path that returns control to the scheduler
-  after `PgBackendExitCleanup()`.
-- There is not yet a thread-per-session runtime, so the branch cannot directly
-  prove that one logical backend exits while other in-process backends continue.
+- There is not yet a thread-per-session runtime implementing `exit_backend`,
+  so the branch cannot directly prove that one logical backend exits while
+  other in-process backends continue.
 - DSM/DSA cleanup is still invoked through the existing backend shutdown hooks.
   Core regression covers common paths, but a targeted DSM/DSA exit fixture is
   still needed.

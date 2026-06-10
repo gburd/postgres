@@ -24,6 +24,7 @@ typedef struct PgBackend PgBackend;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
+typedef void (*PgBackendExitContinuation) (int code);
 
 typedef enum PgRuntimeKind
 {
@@ -111,6 +112,14 @@ struct PgRuntime
 {
 	PgRuntimeKind kind;
 	PgCarrier  *current_carrier;
+
+	/*
+	 * Optional continuation used after PgBackendExitCleanup().  Process mode
+	 * leaves this NULL and falls through to exit().  A threaded runtime must
+	 * install a handler that removes the logical backend from its scheduler
+	 * without returning to the cleaned-up backend stack.
+	 */
+	PgBackendExitContinuation exit_backend;
 };
 
 struct PgCarrier
