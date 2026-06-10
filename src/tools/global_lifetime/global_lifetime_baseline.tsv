@@ -1850,14 +1850,6 @@ src/backend/utils/hash/dynahash.c	7bc6136857839b99e153ca2f91cba4d7d66e1406	seq_s
 src/backend/utils/hash/dynahash.c	71c727fbf6eef6f7f9635050ae786a89d7afcf88	num_seq_scans	static int num_seq_scans = 0;
 src/backend/utils/init/miscinit.c	0d933745c5d963c823e62ef8cdec5ff5cb4b8c7e	lock_files	static List *lock_files = NIL;
 src/backend/utils/init/miscinit.c	82de4aa9c1e8c34d6341d3b8ccca16966e9399d1	LocalLatchData	static Latch LocalLatchData;
-src/backend/utils/init/miscinit.c	02e80105cf1960fd39b4cd856ea69e40ff6373e6	AuthenticatedUserId	static Oid AuthenticatedUserId = InvalidOid;
-src/backend/utils/init/miscinit.c	d85ec8a718f3d9c23abb3f087a6c221bb6691790	SessionUserId	static Oid SessionUserId = InvalidOid;
-src/backend/utils/init/miscinit.c	d6c6f2f6e6b77f493117c37502fcf629f872d12f	OuterUserId	static Oid OuterUserId = InvalidOid;
-src/backend/utils/init/miscinit.c	8e75cb1cff9409103c49e5a949bee8090addfd50	CurrentUserId	static Oid CurrentUserId = InvalidOid;
-src/backend/utils/init/miscinit.c	ed9794569a23593b98ccc39cb4521e937e45b113	SystemUser	static const char *SystemUser = NULL;
-src/backend/utils/init/miscinit.c	f9b5f55defe1ed8e02dace91706fb9d44faefd82	SessionUserIsSuperuser	static bool SessionUserIsSuperuser = false;
-src/backend/utils/init/miscinit.c	2341496deb2528f2f723e832f526ea007f4a60f1	SecurityRestrictionContext	static int SecurityRestrictionContext = 0;
-src/backend/utils/init/miscinit.c	34f3eb12049817c949c2000a144da1c1e59e9fc1	SetRoleIsActive	static bool SetRoleIsActive = false;
 src/backend/utils/init/postinit.c	f0296086935aba762238fa3f885c6e5b1a4831c1	ConnectionWarningsEmitted	static bool ConnectionWarningsEmitted;
 src/backend/utils/init/postinit.c	3d26fac6d529f384419a9a467caca3947de15d26	ConnectionWarningMessages	static List *ConnectionWarningMessages;
 src/backend/utils/init/postinit.c	ab26607849dbb77e10052033420505e796d23922	ConnectionWarningDetails	static List *ConnectionWarningDetails;

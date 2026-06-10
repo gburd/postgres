@@ -46,6 +46,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
   `MyDatabaseHasLoginEventTriggers`, `DatabasePath`, `MyBackendType`, `Mode`,
   and `OutputFileName`;
+- authenticated, session, and effective-user identity state in `miscinit.c`:
+  `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
+  `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
+  `SetRoleIsActive`;
 - vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`;
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
@@ -326,6 +330,9 @@ report contains zero remaining unclassified generated GUC backing variables.
 The plan-cache saved plan and cached expression list heads are now explicit
 session-local TLS state initialized by `InitPlanCache()`, so they no longer
 depend on self-referential `DLIST_STATIC_INIT` globals.
+The authenticated/session/effective role identity variables in `miscinit.c` are
+now session-local TLS state, preserving process-mode behavior while preventing
+threaded backends from sharing one effective user/security context.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -691,6 +698,9 @@ Validation for this slice:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and
   `test_ext_backend_model_pooled`;
 - PL/pgSQL process-mode regression tests.
+- focused `miscinit.o` compile coverage plus fixture-backed role/privilege
+  regression coverage after classifying authenticated/session/effective role
+  identity state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

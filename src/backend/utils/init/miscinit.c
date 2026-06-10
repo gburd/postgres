@@ -447,19 +447,19 @@ ChangeToDataDir(void)
  * convenient way to do it.
  * ----------------------------------------------------------------
  */
-static Oid	AuthenticatedUserId = InvalidOid;
-static Oid	SessionUserId = InvalidOid;
-static Oid	OuterUserId = InvalidOid;
-static Oid	CurrentUserId = InvalidOid;
-static const char *SystemUser = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid AuthenticatedUserId = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SessionUserId = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid OuterUserId = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid CurrentUserId = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const char *SystemUser = NULL;
 
 /* We also have to remember the superuser state of the session user */
-static bool SessionUserIsSuperuser = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool SessionUserIsSuperuser = false;
 
-static int	SecurityRestrictionContext = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SecurityRestrictionContext = 0;
 
 /* We also remember if a SET ROLE is currently active */
-static bool SetRoleIsActive = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool SetRoleIsActive = false;
 
 /*
  * GetUserId - get the current effective user ID.
