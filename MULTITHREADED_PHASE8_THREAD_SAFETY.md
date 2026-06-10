@@ -52,7 +52,17 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - snapshot manager execution state in `snapmgr.c`, including current,
   secondary, catalog, historic, registered, active, exported, and first-xact
   snapshots, plus `TransactionXmin`, `RecentXmin`, tuple CID mapping, and
-  `FirstSnapshotSet`.
+  `FirstSnapshotSet`;
+- GUC manager state in `guc.c`: `GUCMemoryContext`, the session-local mutable
+  `guc_variables` copy, `guc_hashtab`, `guc_nondef_list`, `guc_stack_list`,
+  `guc_report_list`, `reporting_enabled`, and `GUCNestLevel`;
+- GUC check-hook error state: `GUC_check_errcode_value`,
+  `GUC_check_errmsg_string`, `GUC_check_errdetail_string`, and
+  `GUC_check_errhint_string`.
+
+`ConfigureNames[]` is now classified as an immutable generated template. Each
+backend session copies the template into `guc_variables` during GUC
+initialization before `guc.c` mutates stack, reset, report, and source state.
 
 `CurrentTransactionState` cannot use a static initializer that points at
 `TopTransactionStateData`, because both are thread-local objects. It is
@@ -79,8 +89,8 @@ During validation this affected `test_ext_backend_model.dylib` and
 
 Phase 8 still needs to cover at least:
 
-- GUC backing variables and GUC nesting state, likely by introducing GUC
-  indirection rather than direct TLS globals;
+- GUC backing variables, likely by introducing GUC indirection rather than
+  direct TLS globals;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -93,8 +103,12 @@ Phase 8 required-floor global remains unsafe and unclassified.
 Validation for this slice:
 
 - `gmake clean` followed by `gmake -j8`;
+- explicit generated-header recovery for `src/backend/utils` and
+  `src/backend/nodes`, followed by `gmake -j8`;
 - incremental `gmake -j8` after moving transaction-state initialization into
   `main()`;
+- focused core GUC regression test: `guc`;
+- unsafe test module GUC privilege regression test: `guc_privs`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
 - regenerated `src/tools/global_lifetime/global_lifetime_baseline.tsv` so

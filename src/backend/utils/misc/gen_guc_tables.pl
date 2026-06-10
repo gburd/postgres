@@ -110,7 +110,7 @@ sub print_table
 	my $prev_name = undef;
 
 	print $ofh "\n\n";
-	print $ofh "struct config_generic ConfigureNames[] =\n";
+	print $ofh "PG_GLOBAL_IMMUTABLE struct config_generic ConfigureNames[] =\n";
 	print $ofh "{\n";
 
 	foreach my $entry (@{$parse})

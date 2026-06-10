@@ -102,6 +102,66 @@ Important current files:
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 
+## Local Build And Test Notes
+
+- This checkout is commonly built with GNU make on macOS. Use `gmake`, not the
+  BSD `make`.
+- After cleaning under `src/backend`, generated backend-side files can be
+  missing while include-side `header-stamp` files and symlinks still exist. If
+  the build fails with a missing header such as `utils/errcodes.h`, regenerate
+  the backend-side utility outputs explicitly:
+
+  ```sh
+  gmake -C src/backend/utils fmgr-stamp errcodes.h probes.h guc_tables.inc.c pgstat_wait_event.c wait_event_funcs_data.c wait_event_types.h
+  ```
+
+  If include-side symlinks are also missing or stale, remove the stamp and
+  rebuild the symlinks:
+
+  ```sh
+  rm -f src/include/utils/header-stamp
+  gmake -C src/backend/utils generated-header-symlinks
+  ```
+
+  If the missing generated header is `nodes/nodetags.h`, use the equivalent
+  node-header recovery:
+
+  ```sh
+  rm -f src/backend/nodes/node-support-stamp
+  gmake -C src/backend/nodes node-support-stamp
+  rm -f src/include/nodes/header-stamp
+  gmake -C src/backend/nodes generated-header-symlinks
+  ```
+
+- Some `gmake ... check` runs fail on macOS because temporary-install binaries
+  still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
+  before running direct `pg_regress` commands:
+
+  ```sh
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/initdb" || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/psql"
+  ```
+
+- For focused process-mode regression checks, run the test driver directly with
+  the temp install first on `PATH`, for example:
+
+  ```sh
+  cd src/test/regress
+  PATH="$PWD/../../../tmp_install/usr/local/pgsql/bin:$PWD:$PATH" \
+  DYLD_LIBRARY_PATH="$PWD/../../../tmp_install/usr/local/pgsql/lib" \
+  INITDB_TEMPLATE="$PWD/../../../tmp_install/initdb-template" \
+  ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --dbname=regression guc
+  ```
+
+- `guc_privs` is not a core `src/test/regress` test. It lives under
+  `src/test/modules/unsafe_tests`.
+- The extension backend-model tests need the test extension module installed
+  into the current temp install before direct `pg_regress` runs:
+
+  ```sh
+  gmake -C src/test/modules/test_extensions DESTDIR="$PWD/tmp_install" install
+  ```
+
 ## Terminology
 
 - Runtime: one server runtime inside an address space. In process mode, each

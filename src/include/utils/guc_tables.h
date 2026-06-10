@@ -308,7 +308,7 @@ extern PGDLLIMPORT const char *const GucContext_Names[];
 extern PGDLLIMPORT const char *const GucSource_Names[];
 
 /* data array defining all the built-in GUC variables */
-extern PGDLLIMPORT struct config_generic ConfigureNames[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE struct config_generic ConfigureNames[];
 
 /* lookup GUC variables, returning config_generic pointers */
 extern struct config_generic *find_option(const char *name,

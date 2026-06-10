@@ -15,6 +15,7 @@
 #include "nodes/parsenodes.h"
 #include "tcop/dest.h"
 #include "utils/array.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -494,9 +495,9 @@ extern TupleDesc GetPGVariableResultDesc(const char *name);
 
 /* Support for messages reported from GUC check hooks */
 
-extern PGDLLIMPORT char *GUC_check_errmsg_string;
-extern PGDLLIMPORT char *GUC_check_errdetail_string;
-extern PGDLLIMPORT char *GUC_check_errhint_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errmsg_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errdetail_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errhint_string;
 
 extern void GUC_check_errcode(int sqlerrcode);
 
