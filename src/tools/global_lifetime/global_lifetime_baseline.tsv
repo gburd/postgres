@@ -1535,8 +1535,6 @@ src/backend/storage/sync/sync.c	7875ccf9eb9453083e70ad04db8db12cae98d8f2	sync_cy
 src/backend/storage/sync/sync.c	c8246b995cfeedc58ecdbd88fdeb23fd23edcdcf	checkpoint_cycle_ctr	static CycleCtr checkpoint_cycle_ctr = 0;
 src/backend/tcop/backend_startup.c	a9bee81008ff94934b5fdb47c1252ed8c147bf83	conn_timing	ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 src/backend/tcop/dest.c	a4c6f2106e571b07b62e77284ee6182e1c34964f	None_Receiver	DestReceiver *None_Receiver = (DestReceiver *) &donothingDR;
-src/backend/tcop/postgres.c	8bf3cbe06f39dc4b51ddb01ceeadc67708b1c54b	Save_r	static struct rusage Save_r;
-src/backend/tcop/postgres.c	7d0094ca60f95a3205895004fa9ffa372171f8b3	Save_t	static struct timeval Save_t;
 src/backend/tcop/pquery.c	7542d2c738fc3e67f57d720d6b7c6e923589ed8c	ActivePortal	Portal ActivePortal = NULL;
 src/backend/tcop/utility.c	9b924493e021179136a60f54ff6ed0104a7efc34	ProcessUtility_hook	ProcessUtility_hook_type ProcessUtility_hook = NULL;
 src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	static const char *VoidString = "";

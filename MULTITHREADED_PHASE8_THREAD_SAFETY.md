@@ -28,6 +28,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - `MyProc` and `got_deadlock_timeout`;
 - deadlock detector workspace allocated by `InitDeadLockChecking()` for the
   current backend;
+- tcop usage-stat snapshots used by `ResetUsage()` and `ShowUsage()`;
 - PGPROC ownership structures: `ProcGlobal`, `AllProcsShmemPtr`,
   `FastPathLockArrayShmemPtr`, `AuxiliaryProcs`, and `PreparedXactProcs` as
   shared-memory state, plus the proc sizing/request globals as runtime state;
@@ -378,6 +379,8 @@ The deadlock detector workspace in `deadlock.c` is now backend-local TLS,
 matching the existing `InitDeadLockChecking()` per-backend allocation model.
 This includes the waits-for traversal arrays, proposed wait-order workspace,
 deadlock report details, and the cached blocking-autovacuum pointer.
+The usage-stat snapshots in `postgres.c` are now backend-local TLS. They hold
+the current backend's `ResetUsage()` baseline for later `ShowUsage()` calls.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -768,6 +771,8 @@ Validation for this slice:
   memory-context logging recursion guard.
 - focused `deadlock.o` compile coverage plus lock/deadlock static scan
   coverage after classifying the deadlock detector workspace.
+- focused `postgres.o` compile coverage plus process-mode stats GUC
+  regression coverage after classifying usage-stat snapshots.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

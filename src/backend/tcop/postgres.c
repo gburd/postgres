@@ -5217,8 +5217,8 @@ forbidden_in_wal_sender(char firstchar)
 }
 
 
-static struct rusage Save_r;
-static struct timeval Save_t;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct rusage Save_r;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct timeval Save_t;
 
 void
 ResetUsage(void)
