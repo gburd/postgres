@@ -63,13 +63,16 @@ typedef struct RecoveryLockXidEntry
 	struct RecoveryLockEntry *head; /* chain head */
 } RecoveryLockXidEntry;
 
-static HTAB *RecoveryLockHash = NULL;
-static HTAB *RecoveryLockXidHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *RecoveryLockHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *RecoveryLockXidHash = NULL;
 
 /* Flags set by timeout handlers */
-static volatile sig_atomic_t got_standby_deadlock_timeout = false;
-static volatile sig_atomic_t got_standby_delay_timeout = false;
-static volatile sig_atomic_t got_standby_lock_timeout = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
+			got_standby_deadlock_timeout = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
+			got_standby_delay_timeout = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
+			got_standby_lock_timeout = false;
 
 static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 												   RecoveryConflictReason reason,
@@ -224,7 +227,7 @@ GetStandbyLimitTime(void)
 }
 
 #define STANDBY_INITIAL_WAIT_US  1000
-static int	standbyWait_us = STANDBY_INITIAL_WAIT_US;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int standbyWait_us = STANDBY_INITIAL_WAIT_US;
 
 /*
  * Standby wait logic for ResolveRecoveryConflictWithVirtualXIDs.

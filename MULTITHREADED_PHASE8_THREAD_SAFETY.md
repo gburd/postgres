@@ -31,6 +31,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `KnownAssignedXids`, and `KnownAssignedXidsValid` as shared-memory state,
   recovery-stream XID bookkeeping as runtime state, and backend-local
   transaction visibility caches as TLS state;
+- hot-standby recovery-conflict state: recovery lock hash tables, wait backoff,
+  and timeout-handler pending flags as backend-local TLS state;
 - error stack state: `error_context_stack`, `PG_exception_stack`, `errordata`,
   `errordata_stack_depth`, and `recursion_depth`;
 - timeout registration and pending-delivery state in `timeout.c`;
@@ -357,6 +359,10 @@ explicit shared-memory state. Backend-local transaction visibility caches,
 including the `GlobalVis*` states and `cachedXidIsNotInProgress`, use TLS,
 while recovery-stream bookkeeping such as `latestObservedXid` remains
 runtime-owned state.
+Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
+This includes the recovery lock hash tables owned by the startup backend, the
+per-wait exponential backoff counter, and the timeout-handler pending flags set
+by standby timeout callbacks.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -738,6 +744,8 @@ Validation for this slice:
   state.
 - focused `procarray.o` compile coverage plus transaction and snapshot
   regression coverage after classifying procarray shared/runtime/backend state.
+- focused `standby.o` compile coverage plus process-mode recovery-conflict
+  static scan coverage after classifying hot-standby recovery-conflict state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

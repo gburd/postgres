@@ -1476,12 +1476,6 @@ src/backend/storage/ipc/shmem.c	92a55d667f57244025bcb7d956f412777fd5b00c	firstNu
 src/backend/storage/ipc/sinval.c	9abeccd7212184a3303c13b519cf4751c3b065ac	SharedInvalidMessageCounter	uint64 SharedInvalidMessageCounter;
 src/backend/storage/ipc/sinvaladt.c	c4917ccb4e4f4f364a7220ff04fe8f354e76f6ef	shmInvalBuffer	static SISeg *shmInvalBuffer;
 src/backend/storage/ipc/sinvaladt.c	8a76a5bb31babf0af47986125f809f1fd9bfd694	nextLocalTransactionId	static LocalTransactionId nextLocalTransactionId;
-src/backend/storage/ipc/standby.c	8137f1effabb17aa726a2a6cfcb760d5325f294c	RecoveryLockHash	static HTAB *RecoveryLockHash = NULL;
-src/backend/storage/ipc/standby.c	348a3b0466c7a5c39cd2e391cc1dc93718da82ee	RecoveryLockXidHash	static HTAB *RecoveryLockXidHash = NULL;
-src/backend/storage/ipc/standby.c	ce1b16eaf8c4ed13a3f4eba120784acacaba4da2	got_standby_deadlock_timeout	static volatile sig_atomic_t got_standby_deadlock_timeout = false;
-src/backend/storage/ipc/standby.c	78accd83d8fcf9516d4b1ac4d227280a42b8c983	got_standby_delay_timeout	static volatile sig_atomic_t got_standby_delay_timeout = false;
-src/backend/storage/ipc/standby.c	a3bc4398af0d70495fce925041912c90a56702bd	got_standby_lock_timeout	static volatile sig_atomic_t got_standby_lock_timeout = false;
-src/backend/storage/ipc/standby.c	2c93de0fc3ae7ed19f3dfc9d6f700ca6ae398270	standbyWait_us	static int standbyWait_us = STANDBY_INITIAL_WAIT_US;
 src/backend/storage/ipc/waiteventset.c	45f2e39ebc0ac9c508a7bc17cd426e6355523ea4	waiting	static volatile sig_atomic_t waiting = false;
 src/backend/storage/ipc/waiteventset.c	f5d3262b71ee6686e65556b6a8c29804a0be2136	signal_fd	static int signal_fd = -1;
 src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	selfpipe_readfd	static int selfpipe_readfd = -1;
