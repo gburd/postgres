@@ -35,6 +35,7 @@ typedef struct timeout_params
 	/* callback function for timeout, or NULL if timeout not registered */
 	timeout_handler_proc timeout_handler;
 	PgBackend  *target_backend; /* logical backend that armed this timeout */
+	PgExecution *target_execution;	/* execution that armed this timeout */
 
 	TimestampTz start_time;		/* time that timeout was last activated */
 	TimestampTz fin_time;		/* time it is, or was last, due to fire */
@@ -80,6 +81,7 @@ static volatile sig_atomic_t alarm_enabled = false;
 static volatile sig_atomic_t signal_pending = false;
 static volatile TimestampTz signal_due_at = 0;
 static PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
+static PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
 
 
 /*****************************************************************************
@@ -159,7 +161,8 @@ remove_timeout_index(int index)
  */
 static void
 enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
-			   int interval_in_ms, PgBackend *target_backend)
+			   int interval_in_ms, PgBackend *target_backend,
+			   PgExecution *target_execution)
 {
 	int			i;
 
@@ -193,6 +196,7 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	 */
 	all_timeouts[id].indicator = false;
 	all_timeouts[id].target_backend = target_backend;
+	all_timeouts[id].target_execution = target_execution;
 	all_timeouts[id].start_time = now;
 	all_timeouts[id].fin_time = fin_time;
 	all_timeouts[id].interval_in_ms = interval_in_ms;
@@ -408,6 +412,7 @@ handle_sig_alarm(SIGNAL_ARGS)
 				{
 					timeout_params *this_timeout = active_timeouts[0];
 					PgBackend  *save_firing_timeout_target;
+					PgExecution *save_firing_timeout_execution;
 
 					/* Remove it from the active list */
 					remove_timeout_index(0);
@@ -417,9 +422,12 @@ handle_sig_alarm(SIGNAL_ARGS)
 
 					/* And call its handler function */
 					save_firing_timeout_target = firing_timeout_target;
+					save_firing_timeout_execution = firing_timeout_execution;
 					firing_timeout_target = this_timeout->target_backend;
+					firing_timeout_execution = this_timeout->target_execution;
 					this_timeout->timeout_handler();
 					firing_timeout_target = save_firing_timeout_target;
+					firing_timeout_execution = save_firing_timeout_execution;
 
 					/* If it should fire repeatedly, re-enable it. */
 					if (this_timeout->interval_in_ms > 0)
@@ -442,7 +450,8 @@ handle_sig_alarm(SIGNAL_ARGS)
 															this_timeout->interval_in_ms);
 						enable_timeout(this_timeout->index, now, new_fin_time,
 									   this_timeout->interval_in_ms,
-									   this_timeout->target_backend);
+									   this_timeout->target_backend,
+									   this_timeout->target_execution);
 					}
 
 					/*
@@ -485,6 +494,7 @@ InitializeTimeouts(void)
 
 	num_active_timeouts = 0;
 	firing_timeout_target = NULL;
+	firing_timeout_execution = NULL;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
@@ -493,6 +503,7 @@ InitializeTimeouts(void)
 		all_timeouts[i].indicator = false;
 		all_timeouts[i].timeout_handler = NULL;
 		all_timeouts[i].target_backend = NULL;
+		all_timeouts[i].target_execution = NULL;
 		all_timeouts[i].start_time = 0;
 		all_timeouts[i].fin_time = 0;
 		all_timeouts[i].interval_in_ms = 0;
@@ -568,6 +579,12 @@ get_firing_timeout_target_backend(void)
 	return firing_timeout_target;
 }
 
+PgExecution *
+get_firing_timeout_target_execution(void)
+{
+	return firing_timeout_execution;
+}
+
 /*
  * Enable the specified timeout to fire after the specified delay.
  *
@@ -585,7 +602,7 @@ enable_timeout_after(TimeoutId id, int delay_ms)
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
 	fin_time = TimestampTzPlusMilliseconds(now, delay_ms);
-	enable_timeout(id, now, fin_time, 0, CurrentPgBackend);
+	enable_timeout(id, now, fin_time, 0, CurrentPgBackend, CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -607,7 +624,8 @@ enable_timeout_every(TimeoutId id, TimestampTz fin_time, int delay_ms)
 
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
-	enable_timeout(id, now, fin_time, delay_ms, CurrentPgBackend);
+	enable_timeout(id, now, fin_time, delay_ms, CurrentPgBackend,
+				   CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -630,7 +648,7 @@ enable_timeout_at(TimeoutId id, TimestampTz fin_time)
 
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
-	enable_timeout(id, now, fin_time, 0, CurrentPgBackend);
+	enable_timeout(id, now, fin_time, 0, CurrentPgBackend, CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -665,19 +683,20 @@ enable_timeouts(const EnableTimeoutParams *timeouts, int count)
 			case TMPARAM_AFTER:
 				fin_time = TimestampTzPlusMilliseconds(now,
 													   timeouts[i].delay_ms);
-				enable_timeout(id, now, fin_time, 0, CurrentPgBackend);
+				enable_timeout(id, now, fin_time, 0, CurrentPgBackend,
+							   CurrentPgExecution);
 				break;
 
 			case TMPARAM_AT:
 				enable_timeout(id, now, timeouts[i].fin_time, 0,
-							   CurrentPgBackend);
+							   CurrentPgBackend, CurrentPgExecution);
 				break;
 
 			case TMPARAM_EVERY:
 				fin_time = TimestampTzPlusMilliseconds(now,
 													   timeouts[i].delay_ms);
 				enable_timeout(id, now, fin_time, timeouts[i].delay_ms,
-							   CurrentPgBackend);
+							   CurrentPgBackend, CurrentPgExecution);
 				break;
 
 			default:
