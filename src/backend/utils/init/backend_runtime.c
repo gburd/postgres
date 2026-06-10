@@ -122,6 +122,7 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 	if (CurrentPgRuntime == NULL)
 		return;
 
+	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;
 }
 

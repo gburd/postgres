@@ -22,6 +22,7 @@ PG_MODULE_MAGIC_EXT(
 PG_FUNCTION_INFO_V1(test_ext_backend_model_get);
 PG_FUNCTION_INFO_V1(test_ext_backend_model_set);
 PG_FUNCTION_INFO_V1(test_ext_backend_model_expect_load_error);
+PG_FUNCTION_INFO_V1(test_ext_backend_model_expect_set_error);
 
 static const char *test_ext_backend_model_name(PgBackendModel backend_model);
 static PgBackendModel test_ext_backend_model_parse(const char *name);
@@ -89,6 +90,53 @@ test_ext_backend_model_expect_load_error(PG_FUNCTION_ARGS)
 
 	ereport(ERROR,
 			(errmsg("unexpected LOAD error for \"%s\"", libname),
+			 errdetail("Expected error to contain \"%s\", got \"%s\".",
+					   expected_detail, message)));
+}
+
+Datum
+test_ext_backend_model_expect_set_error(PG_FUNCTION_ARGS)
+{
+	char	   *name;
+	char	   *expected_detail;
+	char	   *message;
+	bool		matched;
+	MemoryContext oldcontext;
+
+	name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	expected_detail = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	message = NULL;
+	matched = false;
+	oldcontext = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		PgRuntimeSetExtensionBackendModel(test_ext_backend_model_parse(name));
+		ereport(ERROR,
+				(errmsg("setting backend model to \"%s\" unexpectedly succeeded",
+						name)));
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		if (strstr(edata->message, expected_detail) != NULL)
+			matched = true;
+
+		message = pstrdup(edata->message);
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+
+	if (matched)
+		PG_RETURN_TEXT_P(cstring_to_text("ok"));
+
+	ereport(ERROR,
+			(errmsg("unexpected backend model set error for \"%s\"", name),
 			 errdetail("Expected error to contain \"%s\", got \"%s\".",
 					   expected_detail, message)));
 }

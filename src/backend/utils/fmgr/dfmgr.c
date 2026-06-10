@@ -274,15 +274,33 @@ internal_load_library(const char *libname)
 				memcmp(&magic_data_ptr->abi_fields, &magic_data,
 					   sizeof(Pg_abi_values)) != 0)
 			{
-				/* copy data block before unlinking library */
-				Pg_magic_struct module_magic_data = *magic_data_ptr;
+				Pg_abi_values module_abi_data;
+				Size		abi_offset = offsetof(Pg_magic_struct, abi_fields);
+
+				/*
+				 * Copy only the ABI fields before unlinking the library.  A
+				 * stale module may have a shorter magic block than this build's
+				 * Pg_magic_struct, so copying the whole current struct can read
+				 * past the module's static object.
+				 */
+				MemSet(&module_abi_data, 0, sizeof(module_abi_data));
+				if (magic_data_ptr->len > 0 &&
+					(Size) magic_data_ptr->len > abi_offset)
+				{
+					Size		copylen;
+
+					copylen = Min(sizeof(Pg_abi_values),
+								  (Size) magic_data_ptr->len - abi_offset);
+					memcpy(&module_abi_data, &magic_data_ptr->abi_fields,
+						   copylen);
+				}
 
 				/* try to close library */
 				dlclose(file_scanner->handle);
 				free(file_scanner);
 
 				/* issue suitable complaint */
-				incompatible_module_error(libname, &module_magic_data.abi_fields);
+				incompatible_module_error(libname, &module_abi_data);
 			}
 
 			required_backend_model = PgRuntimeGetExtensionBackendModel();
@@ -344,6 +362,28 @@ internal_load_library(const char *libname)
 	}
 
 	return file_scanner->handle;
+}
+
+/*
+ * Verify all libraries already loaded in this backend can run under the
+ * required backend model.
+ */
+void
+check_loaded_modules_backend_model(PgBackendModel required_backend_model)
+{
+	DynamicFileList *file_scanner;
+
+	for (file_scanner = file_list;
+		 file_scanner != NULL;
+		 file_scanner = file_scanner->next)
+	{
+		if (!module_backend_model_is_valid(file_scanner->magic->backend_model) ||
+			!module_backend_model_is_compatible(file_scanner->magic->backend_model,
+												required_backend_model))
+			incompatible_module_backend_model_error(file_scanner->filename,
+													file_scanner->magic->backend_model,
+													required_backend_model);
+	}
 }
 
 /*

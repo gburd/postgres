@@ -69,6 +69,12 @@ test_ext_threaded = shared_module('test_ext_threaded',
   kwargs: pg_test_mod_args,
 )
 
+test_install_libs += [
+  test_ext,
+  test_ext_backend_model,
+  test_ext_threaded,
+]
+
 tests += {
   'name': 'test_extensions',
   'sd': meson.current_source_dir(),
@@ -78,6 +84,7 @@ tests += {
       'test_extensions',
       'test_extdepend',
       'test_ext_backend_model',
+      'test_ext_backend_model_pooled',
     ],
     'regress_args': ['--no-locale'],
   },

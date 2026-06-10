@@ -1,0 +1,38 @@
+CREATE OR REPLACE FUNCTION test_ext_backend_model_set(text)
+RETURNS text
+AS 'test_ext_backend_model', 'test_ext_backend_model_set'
+LANGUAGE C STRICT;
+CREATE OR REPLACE FUNCTION test_ext_backend_model_expect_load_error(text, text)
+RETURNS text
+AS 'test_ext_backend_model', 'test_ext_backend_model_expect_load_error'
+LANGUAGE C STRICT;
+SELECT test_ext_backend_model_set('pooled-scheduler');
+ test_ext_backend_model_set 
+----------------------------
+ pooled-scheduler
+(1 row)
+
+LOAD 'test_ext_backend_model';
+SELECT test_ext_backend_model_expect_load_error('test_ext_threaded',
+											   'backend model mismatch');
+ test_ext_backend_model_expect_load_error 
+------------------------------------------
+ ok
+(1 row)
+
+SELECT test_ext_backend_model_expect_load_error('test_ext',
+											   'backend model mismatch');
+ test_ext_backend_model_expect_load_error 
+------------------------------------------
+ ok
+(1 row)
+
+SELECT test_ext_backend_model_expect_load_error('plpgsql',
+											   'backend model mismatch');
+ test_ext_backend_model_expect_load_error 
+------------------------------------------
+ ok
+(1 row)
+
+SELECT test_ext_backend_model_set('not-a-model');
+ERROR:  unrecognized backend model "not-a-model"

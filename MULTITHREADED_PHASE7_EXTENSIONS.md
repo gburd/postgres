@@ -42,9 +42,11 @@ check and before `_PG_init()` is called.  Rejection happens before any module
 initialization hooks can mutate backend state.
 
 Already-loaded libraries are rechecked against the active backend model on each
-later `LOAD` or function lookup.  This matters for Phase 7 tests and for future
-runtimes that may switch from process mode to a stricter model before loading
-more code.
+later `LOAD` or function lookup.  Runtime model changes also validate every
+already-loaded library before updating the active model, so a process-only
+module loaded earlier prevents a later switch to `thread-per-session` or
+`pooled-scheduler`.  This matters for Phase 7 tests and for future runtimes
+that may switch from process mode to a stricter model before loading more code.
 
 If the runtime has not been initialized, the loader treats the active model as
 `PG_BACKEND_MODEL_PROCESS`.  This preserves early process-mode behavior.
@@ -61,7 +63,9 @@ policy before a threaded backend launcher exists:
 - `PgRuntimeSetExtensionBackendModel()`
 
 These are not a user-facing compatibility switch.  Later threaded runtime code
-should set the model according to the active carrier/session scheduler.
+should set the model according to the active carrier/session scheduler.  Callers
+must set the stricter model before loading process-only modules, because the
+setter rejects incompatible modules that are already present in the backend.
 
 ## Test Modules
 
@@ -78,8 +82,11 @@ The regression test verifies:
 - process mode still loads process-only modules;
 - thread-per-session mode loads thread-per-session and pooled-safe modules;
 - thread-per-session mode rejects default process-only modules;
-- pooled-scheduler mode rejects thread-per-session-only modules;
-- already-loaded modules are still rechecked when the active model changes;
+- pooled-scheduler mode rejects thread-per-session-only and process-only
+  modules in a separate regression backend;
+- active model changes are rejected when already-loaded modules are incompatible
+  with the requested model;
+- already-loaded modules are still rechecked on later load paths;
 - PL/pgSQL remains rejected in thread-per-session mode until its mutable
   session state has been moved.
 
@@ -144,6 +151,10 @@ The Phase 7 implementation has been validated with:
 - `gmake -C src/pl/plpgsql/src all`
 - `gmake -C src/test/modules/test_extensions clean all`
 - `gmake -C src/test/modules/test_extensions check`
+- clean-worktree Meson configure with optional features disabled:
+  `/tmp/pg-phase7-meson-venv/bin/meson setup /tmp/pg-phase7-build /tmp/pg-phase7-meson-src --auto-features=disabled -Dssl=none -Dtap_tests=disabled`
+- targeted Meson build of `test_ext.dylib`, `test_ext_backend_model.dylib`,
+  and `test_ext_threaded.dylib`
 
 The forced clean rebuilds are important after changing `Pg_magic_struct`; stale
 loadable modules built against the old magic-block size fail the normal ABI
