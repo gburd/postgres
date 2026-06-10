@@ -39,8 +39,8 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
-extern PGDLLIMPORT int DefaultXactIsoLevel;
-extern PGDLLIMPORT int XactIsoLevel;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DefaultXactIsoLevel;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel;
 
 /*
  * We implement three isolation levels internally.
@@ -54,8 +54,8 @@ extern PGDLLIMPORT int XactIsoLevel;
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
-extern PGDLLIMPORT bool DefaultXactReadOnly;
-extern PGDLLIMPORT bool XactReadOnly;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactReadOnly;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
 
 /* flag for logging statements in this transaction */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
@@ -64,8 +64,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
  */
-extern PGDLLIMPORT bool DefaultXactDeferrable;
-extern PGDLLIMPORT bool XactDeferrable;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactDeferrable;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
 
 typedef enum
 {

@@ -159,6 +159,11 @@ Important current files:
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/psql"
   ```
 
+  Direct isolation runs can fail the same way from build-tree binaries. Patch
+  `src/test/isolation/isolationtester` and
+  `src/test/isolation/pg_isolation_regress` to the same temp-install
+  `libpq.5.dylib` before rerunning them.
+
 - For focused process-mode regression checks, run the test driver directly with
   the temp install first on `PATH`, for example:
 

@@ -56,12 +56,6 @@ src/backend/access/transam/twophase.c	4b4c77d64fd957bf44dc088ff7e63056a28da443	M
 src/backend/access/transam/twophase.c	40d594145f62cfe837d88130c71549e4764709d1	twophaseExitRegistered	static bool twophaseExitRegistered = false;
 src/backend/access/transam/twophase.c	52a0a82b90aa6e0a4bae037be2349585bfef48d2	head,tail,num_chunks,bytes_free,total_len,records	static struct xllist { StateFileChunk *head; StateFileChunk *tail; uint32 num_chunks; uint32 bytes_free; uint32 total_len; } records;
 src/backend/access/transam/varsup.c	1bec3debb09d11fa81fd1136c329827744bd6f97	TransamVariables	TransamVariablesData *TransamVariables = NULL;
-src/backend/access/transam/xact.c	64a1eb8ea30b578ba804f13d89ec9ec565742a8b	DefaultXactIsoLevel	int DefaultXactIsoLevel = XACT_READ_COMMITTED;
-src/backend/access/transam/xact.c	b7ab5c6563090dbc07d01d085aae2e40743e2536	XactIsoLevel	int XactIsoLevel = XACT_READ_COMMITTED;
-src/backend/access/transam/xact.c	7dfc1c6f784745cb1c33b395e5acf1f90843116c	DefaultXactReadOnly	bool DefaultXactReadOnly = false;
-src/backend/access/transam/xact.c	04daf0bb0d272932124000f540043c2f8f7a44eb	XactReadOnly	bool XactReadOnly;
-src/backend/access/transam/xact.c	5d2718625a91a1d7262c00dbdc610d9073aa953c	DefaultXactDeferrable	bool DefaultXactDeferrable = false;
-src/backend/access/transam/xact.c	ba987dc5a08f4e8c98f65383f149c1cf1b4a5a03	XactDeferrable	bool XactDeferrable;
 src/backend/access/transam/xact.c	a3040b055e7c2521a4b1e7fb9ff8b727b48f45a9	synchronous_commit	int synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 src/backend/access/transam/xlog.c	822291f251e5bb8aa51ac8bf7bceb0a0d5ecbbc5	max_wal_size_mb	int max_wal_size_mb = 1024;
 src/backend/access/transam/xlog.c	88b8ad2066d85ebec72fc89e52e0e43e3fd8af18	min_wal_size_mb	int min_wal_size_mb = 80;
@@ -2293,12 +2287,6 @@ src/include/access/tableam.h	155dfcf7af1273a5cc52c8ed0c2af5949621eb9e	synchroniz
 src/include/access/toast_compression.h	878c04b4b26ab59be2f329e0fd46602e1af33456	default_toast_compression	extern PGDLLIMPORT int default_toast_compression;
 src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/twophase.h	cd91e17402e3d18ed176ab8d63b6cc2716bec742	max_prepared_xacts	extern PGDLLIMPORT int max_prepared_xacts;
-src/include/access/xact.h	0e139f8af1d82294cba7832590f9a18d4c4b8b25	DefaultXactIsoLevel	extern PGDLLIMPORT int DefaultXactIsoLevel;
-src/include/access/xact.h	031ab686c7ecec01cbed429fbb217fb50739e4aa	XactIsoLevel	extern PGDLLIMPORT int XactIsoLevel;
-src/include/access/xact.h	c4c66758dfbd579c1e497b0c3de3865b3b29d2cc	DefaultXactReadOnly	extern PGDLLIMPORT bool DefaultXactReadOnly;
-src/include/access/xact.h	17e2a63111d2d56c32d32264ce7d59f96c1cd491	XactReadOnly	extern PGDLLIMPORT bool XactReadOnly;
-src/include/access/xact.h	e9ac601f613c32b908b10b166650ad2022ea8221	DefaultXactDeferrable	extern PGDLLIMPORT bool DefaultXactDeferrable;
-src/include/access/xact.h	79b949bea0f1ce5bfc4c15f56900a308d4dc9588	XactDeferrable	extern PGDLLIMPORT bool XactDeferrable;
 src/include/access/xact.h	a74650fa4c849603e187839bc9e9f68a20b34b16	synchronous_commit	extern PGDLLIMPORT int synchronous_commit;
 src/include/access/xlog.h	7cc1cafef145a19422c8c4fcd98f5513918526d8	wal_sync_method	extern PGDLLIMPORT int wal_sync_method;
 src/include/access/xlog.h	4358811cb3dc0bce96d1e15480ee4eb25eace904	ProcLastRecPtr	extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;

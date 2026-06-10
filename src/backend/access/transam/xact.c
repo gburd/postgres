@@ -77,14 +77,14 @@
 /*
  *	User-tweakable parameters
  */
-int			DefaultXactIsoLevel = XACT_READ_COMMITTED;
-int			XactIsoLevel = XACT_READ_COMMITTED;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int DefaultXactIsoLevel = XACT_READ_COMMITTED;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel = XACT_READ_COMMITTED;
 
-bool		DefaultXactReadOnly = false;
-bool		XactReadOnly;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactReadOnly = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
 
-bool		DefaultXactDeferrable = false;
-bool		XactDeferrable;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactDeferrable = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
 
 int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 

@@ -49,6 +49,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   current-XID state, unreported subtransaction XIDs, transaction abort context,
   transaction flags, logical-streaming system-scan state, and transaction
   sampling state;
+- transaction characteristic GUC backing variables in `xact.c`: the
+  session-local `DefaultXact*` defaults and the execution-local current
+  `Xact*` isolation, read-only, and deferrable state;
 - transaction callback lists in `xact.c`, now session-local TLS state;
 - snapshot manager execution state in `snapmgr.c`, including current,
   secondary, catalog, historic, registered, active, exported, and first-xact
@@ -139,6 +142,16 @@ Validation for this slice:
   partition_join partition_prune reloptions hash_part indexing
   partition_aggregate partition_info tuplesort explain memoize predicate numa
   eager_aggregate planner_est`;
+- fixture-backed transaction regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc
+  transactions`;
+- targeted isolation regression coverage:
+  `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
+  serializable-parallel-2`;
 - unsafe test module GUC privilege regression test: `guc_privs`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
