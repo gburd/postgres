@@ -1,7 +1,7 @@
 # src/test/modules/test_extensions/Makefile
 
 MODULE = test_extensions
-MODULES = test_ext_backend_model test_ext_threaded
+MODULES = test_ext_backend_model test_ext_threaded test_ext_bad_backend_model
 MODULE_big = test_ext
 PGFILEDESC = "test_extensions - regression testing for EXTENSION support"
 

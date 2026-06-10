@@ -76,9 +76,13 @@ static bool module_backend_model_is_valid(PgBackendModel backend_model);
 static bool module_backend_model_is_compatible(PgBackendModel module_backend_model,
 											   PgBackendModel required_backend_model);
 static const char *module_backend_model_name(PgBackendModel backend_model);
+static void check_module_backend_model(const char *libname,
+									   const Pg_magic_struct *magic,
+									   PgBackendModel required_backend_model);
 pg_noreturn static void incompatible_module_backend_model_error(const char *libname,
 																PgBackendModel module_backend_model,
 																PgBackendModel required_backend_model);
+static DynamicFileList *find_loaded_module_by_handle(void *handle);
 static char *expand_dynamic_library_name(const char *name);
 static void check_restricted_library_name(const char *name);
 
@@ -178,6 +182,14 @@ load_file(const char *filename, bool restricted)
 void *
 lookup_external_function(void *filehandle, const char *funcname)
 {
+	DynamicFileList *file_scanner;
+
+	file_scanner = find_loaded_module_by_handle(filehandle);
+	if (file_scanner != NULL)
+		check_module_backend_model(file_scanner->filename,
+								   file_scanner->magic,
+								   PgRuntimeGetExtensionBackendModel());
+
 	return dlsym(filehandle, funcname);
 }
 
@@ -350,15 +362,9 @@ internal_load_library(const char *libname)
 	}
 	else
 	{
-		PgBackendModel required_backend_model;
-
-		required_backend_model = PgRuntimeGetExtensionBackendModel();
-		if (!module_backend_model_is_valid(file_scanner->magic->backend_model) ||
-			!module_backend_model_is_compatible(file_scanner->magic->backend_model,
-												required_backend_model))
-			incompatible_module_backend_model_error(libname,
-													file_scanner->magic->backend_model,
-													required_backend_model);
+		check_module_backend_model(libname,
+								   file_scanner->magic,
+								   PgRuntimeGetExtensionBackendModel());
 	}
 
 	return file_scanner->handle;
@@ -373,17 +379,16 @@ check_loaded_modules_backend_model(PgBackendModel required_backend_model)
 {
 	DynamicFileList *file_scanner;
 
+	if (!module_backend_model_is_valid(required_backend_model))
+		elog(ERROR, "invalid required backend model: %d",
+			 required_backend_model);
+
 	for (file_scanner = file_list;
 		 file_scanner != NULL;
 		 file_scanner = file_scanner->next)
-	{
-		if (!module_backend_model_is_valid(file_scanner->magic->backend_model) ||
-			!module_backend_model_is_compatible(file_scanner->magic->backend_model,
-												required_backend_model))
-			incompatible_module_backend_model_error(file_scanner->filename,
-													file_scanner->magic->backend_model,
-													required_backend_model);
-	}
+		check_module_backend_model(file_scanner->filename,
+								   file_scanner->magic,
+								   required_backend_model);
 }
 
 /*
@@ -525,6 +530,23 @@ module_backend_model_name(PgBackendModel backend_model)
 	return "unknown";
 }
 
+static void
+check_module_backend_model(const char *libname, const Pg_magic_struct *magic,
+						   PgBackendModel required_backend_model)
+{
+	PgBackendModel module_backend_model;
+
+	Assert(magic != NULL);
+
+	module_backend_model = magic->backend_model;
+	if (!module_backend_model_is_valid(module_backend_model) ||
+		!module_backend_model_is_compatible(module_backend_model,
+											required_backend_model))
+		incompatible_module_backend_model_error(libname,
+												module_backend_model,
+												required_backend_model);
+}
+
 /*
  * Report an error for a module that cannot run under the active backend model.
  */
@@ -547,6 +569,22 @@ incompatible_module_backend_model_error(const char *libname,
 					   module_backend_model_name(required_backend_model),
 					   module_backend_model_name(module_backend_model)),
 			 errhint("Audit the module before marking it with threaded backend model metadata.")));
+}
+
+static DynamicFileList *
+find_loaded_module_by_handle(void *handle)
+{
+	DynamicFileList *file_scanner;
+
+	for (file_scanner = file_list;
+		 file_scanner != NULL;
+		 file_scanner = file_scanner->next)
+	{
+		if (file_scanner->handle == handle)
+			return file_scanner;
+	}
+
+	return NULL;
 }
 
 

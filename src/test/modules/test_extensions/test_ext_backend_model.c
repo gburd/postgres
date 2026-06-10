@@ -22,6 +22,7 @@ PG_MODULE_MAGIC_EXT(
 PG_FUNCTION_INFO_V1(test_ext_backend_model_get);
 PG_FUNCTION_INFO_V1(test_ext_backend_model_set);
 PG_FUNCTION_INFO_V1(test_ext_backend_model_expect_load_error);
+PG_FUNCTION_INFO_V1(test_ext_backend_model_expect_lookup_error);
 PG_FUNCTION_INFO_V1(test_ext_backend_model_expect_set_error);
 
 static const char *test_ext_backend_model_name(PgBackendModel backend_model);
@@ -90,6 +91,83 @@ test_ext_backend_model_expect_load_error(PG_FUNCTION_ARGS)
 
 	ereport(ERROR,
 			(errmsg("unexpected LOAD error for \"%s\"", libname),
+			 errdetail("Expected error to contain \"%s\", got \"%s\".",
+					   expected_detail, message)));
+}
+
+Datum
+test_ext_backend_model_expect_lookup_error(PG_FUNCTION_ARGS)
+{
+	char	   *libname;
+	char	   *funcname;
+	char	   *name;
+	char	   *expected_detail;
+	char	   *message;
+	volatile PgBackendModel old_backend_model;
+	PgBackendModel forced_backend_model;
+	void	   *filehandle;
+	bool		matched;
+	MemoryContext oldcontext;
+
+	libname = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	funcname = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	name = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	expected_detail = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	old_backend_model = PgRuntimeGetExtensionBackendModel();
+	forced_backend_model = test_ext_backend_model_parse(name);
+	filehandle = NULL;
+	message = NULL;
+	matched = false;
+	oldcontext = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		(void) load_external_function(libname, funcname, true, &filehandle);
+
+		if (CurrentPgRuntime == NULL)
+			elog(ERROR, "runtime is not initialized");
+
+		/*
+		 * Bypass PgRuntimeSetExtensionBackendModel() only inside this test so
+		 * lookup_external_function() can be tested against an incompatible
+		 * already-loaded handle.  The public setter rejects this transition.
+		 */
+		CurrentPgRuntime->extension_backend_model = forced_backend_model;
+
+		(void) lookup_external_function(filehandle, funcname);
+
+		CurrentPgRuntime->extension_backend_model =
+			(PgBackendModel) old_backend_model;
+
+		ereport(ERROR,
+				(errmsg("lookup of \"%s\" in \"%s\" unexpectedly succeeded",
+						funcname, libname)));
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		MemoryContextSwitchTo(oldcontext);
+		if (CurrentPgRuntime != NULL)
+			CurrentPgRuntime->extension_backend_model =
+				(PgBackendModel) old_backend_model;
+		edata = CopyErrorData();
+		FlushErrorState();
+
+		if (strstr(edata->message, expected_detail) != NULL)
+			matched = true;
+
+		message = pstrdup(edata->message);
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+
+	if (matched)
+		PG_RETURN_TEXT_P(cstring_to_text("ok"));
+
+	ereport(ERROR,
+			(errmsg("unexpected lookup error for \"%s\" in \"%s\"",
+					funcname, libname),
 			 errdetail("Expected error to contain \"%s\", got \"%s\".",
 					   expected_detail, message)));
 }

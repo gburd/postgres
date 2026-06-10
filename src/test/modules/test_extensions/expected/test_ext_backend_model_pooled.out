@@ -27,6 +27,13 @@ SELECT test_ext_backend_model_expect_load_error('test_ext',
  ok
 (1 row)
 
+SELECT test_ext_backend_model_expect_load_error('test_ext_bad_backend_model',
+											   'invalid backend model');
+ test_ext_backend_model_expect_load_error 
+------------------------------------------
+ ok
+(1 row)
+
 SELECT test_ext_backend_model_expect_load_error('plpgsql',
 											   'backend model mismatch');
  test_ext_backend_model_expect_load_error 

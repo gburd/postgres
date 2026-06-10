@@ -69,10 +69,16 @@ test_ext_threaded = shared_module('test_ext_threaded',
   kwargs: pg_test_mod_args,
 )
 
+test_ext_bad_backend_model = shared_module('test_ext_bad_backend_model',
+  files('test_ext_bad_backend_model.c'),
+  kwargs: pg_test_mod_args,
+)
+
 test_install_libs += [
   test_ext,
   test_ext_backend_model,
   test_ext_threaded,
+  test_ext_bad_backend_model,
 ]
 
 tests += {
