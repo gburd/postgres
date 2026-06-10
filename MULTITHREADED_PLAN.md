@@ -304,8 +304,8 @@ Implementation notes:
 
 - [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
   current logical backend exit boundary, migrated call-site families, remaining
-  process/runtime exits, validation already run, and the gaps that still block
-  calling Phase 6 complete.
+  process/runtime exit ownership decisions, validation already run, and any
+  evidence gaps that still block calling Phase 6 complete.
 
 ## Phase 7: Extension Backend Model Gate
 

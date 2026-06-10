@@ -49,20 +49,36 @@ These paths now go through `PgBackendExit()`:
 
 ## Remaining Process Or Runtime Exits
 
-The remaining direct `proc_exit()` and `exit()` call sites are currently treated
-as process/runtime exits or as not-yet-migrated background-worker families:
+The remaining direct `proc_exit()` and `exit()` call sites have the following
+Phase 6 ownership decisions:
 
-- postmaster, launcher, frontend command-line, bootstrap, and single-user
-  startup/shutdown paths;
-- auxiliary process families such as startup, checkpointer, bgwriter,
-  walwriter, archiver, syslogger, WAL receiver, WAL summarizer, and AIO worker;
-- autovacuum launcher and worker paths, which need a separate decision on
-  whether they become logical backends or remain process-managed workers;
-- low-level crash, recovery-target, signal-handler, and wait-event error paths
-  that intentionally terminate the process or avoid normal cleanup.
+- `PgBackendExitProcess()` and the `proc_exit()` wrapper are the process-mode
+  compatibility tail. They are the only normal backend-exit path that should
+  call `exit()` after logical backend cleanup.
+- Postmaster, launch-backend, bootstrap, single-user, frontend command-line,
+  help/version, and configuration-file startup failures are process lifetime
+  paths, not logical backend exits.
+- Startup, checkpointer, bgwriter, walwriter, archiver, syslogger, WAL
+  receiver, WAL summarizer, and AIO method workers remain auxiliary
+  process-owned workers for Phase 6. If a later phase threads these, it should
+  add an explicit worker/auxiliary runtime owner rather than mechanically
+  converting them to `PgBackendExit()`.
+- Generic background workers remain process-owned for Phase 6 so third-party
+  extension workers preserve current behavior. Extension/background-worker
+  thread compatibility is gated by the later extension and worker-runtime
+  phases.
+- Autovacuum launcher and workers remain process-owned workers for Phase 6.
+  They can be revisited with the background-worker model, but they are not user
+  sessions and should not be silently folded into the session backend lifecycle.
+- Low-level postmaster-death wait paths, recovery-target shutdown, archive
+  restore signal handling, scanner fatal exits, spinlock hard failures,
+  pre-error-system crashes, and signal-handler paths are escalation paths. They
+  intentionally terminate the process or runtime rather than returning to a
+  scheduler.
 
-These paths should not be mechanically replaced without deciding which runtime
-object owns them in the threaded model.
+These decisions make the remaining `proc_exit()` search results intentional.
+A future phase that makes any listed worker family threaded must first define
+which runtime object owns that worker's cleanup and scheduler continuation.
 
 ## Validation So Far
 
@@ -74,9 +90,13 @@ object owns them in the threaded model.
   src/tools/global_lifetime/global_lifetime_baseline.tsv` reported no new
   unclassified mutable globals.
 - `gmake -C src/test/regress check` passed 245/245 after the backend-local
-  exit-state change and again after the replication worker migration.
+  exit-state change, after the replication worker migration, and after adding
+  the runtime exit continuation.
 - `gmake -C src/test/subscription check` did not run TAP tests because this
   checkout is not configured with `--enable-tap-tests`.
+- `gmake -C src/test/modules/test_dsm_registry check` passed after adding a
+  fixture that registers an `on_dsm_detach` callback, leaves its DSM mapping
+  pinned for backend-exit cleanup, reconnects, and verifies the callback ran.
 - A focused process-mode smoke test passed 50 repeated client
   connect/query/disconnect cycles, terminated a backend while it was inside an
   active transaction, and verified the server remained responsive afterward.
@@ -86,8 +106,3 @@ object owns them in the threaded model.
 - There is not yet a thread-per-session runtime implementing `exit_backend`,
   so the branch cannot directly prove that one logical backend exits while
   other in-process backends continue.
-- DSM/DSA cleanup is still invoked through the existing backend shutdown hooks.
-  Core regression covers common paths, but a targeted DSM/DSA exit fixture is
-  still needed.
-- Remaining background-worker and auxiliary-process exits need an ownership
-  decision before they are migrated or documented as permanently process-only.
