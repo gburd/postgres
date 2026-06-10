@@ -26,6 +26,7 @@ open my $ofh, '>', $output_fname or die;
 
 print_boilerplate($ofh, $output_fname, 'GUC tables');
 print_table($ofh);
+print_variable_pointer_rebind($ofh);
 
 close $ofh;
 
@@ -152,7 +153,7 @@ sub print_table
 		printf $ofh "\t\t.flags = %s,\n", $entry->{flags} if $entry->{flags};
 		printf $ofh "\t\t.vartype = %s,\n", ('PGC_' . uc($entry->{type}));
 		printf $ofh "\t\t._%s = {\n", $entry->{type};
-		printf $ofh "\t\t\t.variable = &%s,\n", $entry->{variable};
+		print $ofh "\t\t\t.variable = NULL,\n";
 		printf $ofh "\t\t\t.boot_val = %s,\n", $entry->{boot_val};
 		printf $ofh "\t\t\t.min = %s,\n", $entry->{min}
 		  if $entry->{type} eq 'int' || $entry->{type} eq 'real';
@@ -177,6 +178,34 @@ sub print_table
 	print $ofh "\t/* End-of-list marker */\n";
 	print $ofh "\t{0}\n";
 	print $ofh "};\n";
+
+	return;
+}
+
+sub print_variable_pointer_rebind
+{
+	my ($ofh) = @_;
+
+	print $ofh "\n\n";
+	print $ofh "void\n";
+	print $ofh "InitializeGUCVariablePointers(struct config_generic *variables)\n";
+	print $ofh "{\n";
+	print $ofh "\tint\t\t\ti = 0;\n\n";
+
+	foreach my $entry (@{$parse})
+	{
+		print $ofh "#ifdef $entry->{ifdef}\n" if $entry->{ifdef};
+		printf $ofh "\tAssert(strcmp(variables[i].name, %s) == 0);\n",
+		  dquote($entry->{name});
+		printf $ofh "\tvariables[i]._%s.variable = &%s;\n",
+		  $entry->{type}, $entry->{variable};
+		print $ofh "\ti++;\n";
+		print $ofh "#endif\n" if $entry->{ifdef};
+		print $ofh "\n";
+	}
+
+	print $ofh "\tAssert(variables[i].name == NULL);\n";
+	print $ofh "}\n";
 
 	return;
 }

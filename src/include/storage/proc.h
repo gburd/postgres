@@ -536,13 +536,13 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 
 /* configurable options */
-extern PGDLLIMPORT PG_GLOBAL_SESSION int DeadlockTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int StatementTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int LockTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int TransactionTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int IdleSessionTimeout;
-extern PGDLLIMPORT PG_GLOBAL_SESSION bool log_lock_waits;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DeadlockTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int StatementTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int LockTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int TransactionTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleSessionTimeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_waits;
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT PGPROC *AuxiliaryProcs;

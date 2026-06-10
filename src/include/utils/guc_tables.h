@@ -326,6 +326,7 @@ extern bool ConfigOptionIsVisible(const struct config_generic *conf);
 /* get the current set of variables */
 extern struct config_generic **get_guc_variables(int *num_vars);
 
+extern void InitializeGUCVariablePointers(struct config_generic *variables);
 extern void build_guc_variables(void);
 
 /* search in enum options */

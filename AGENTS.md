@@ -133,6 +133,17 @@ Important current files:
   gmake -C src/backend/nodes generated-header-symlinks
   ```
 
+- After changing exported backend globals or their `PG_THREAD_LOCAL`
+  declarations in installed headers, clean and rebuild any in-tree extension
+  under test before trusting its regression result. At minimum, do this for
+  PL/pgSQL when touching GUC backing variables used by PL/pgSQL:
+
+  ```sh
+  gmake -C src/pl/plpgsql/src clean
+  gmake -C src/pl/plpgsql/src all
+  gmake -C src/pl/plpgsql/src DESTDIR="$PWD/tmp_install" install
+  ```
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

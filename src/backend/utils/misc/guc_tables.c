@@ -4,10 +4,8 @@
  *
  * Static tables for the Grand Unified Configuration scheme.
  *
- * Many of these tables are const.  However, ConfigureNames[] is not, because
- * the structs in it are actually the live per-variable state data that guc.c
- * manipulates.  While many of their fields are intended to be constant, some
- * fields change at runtime.
+ * Many of these tables are const.  ConfigureNames[] is an immutable template
+ * for the live per-session GUC records that guc.c builds at runtime.
  *
  *
  * Copyright (c) 2000-2026, PostgreSQL Global Development Group
@@ -531,13 +529,13 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 /*
  * GUC option variables that are exported from this module
  */
-bool		AllowAlterSystem = true;
-bool		log_duration = false;
-bool		Debug_print_plan = false;
-bool		Debug_print_parse = false;
-bool		Debug_print_raw_parse = false;
-bool		Debug_print_rewritten = false;
-bool		Debug_pretty_print = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_duration = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_plan = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_parse = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_raw_parse = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print = true;
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
 bool		Debug_copy_parse_plan_trees;
@@ -545,16 +543,16 @@ bool		Debug_write_read_parse_plan_trees;
 bool		Debug_raw_expression_coverage_test;
 #endif
 
-bool		log_parser_stats = false;
-bool		log_planner_stats = false;
-bool		log_executor_stats = false;
-bool		log_statement_stats = false;	/* this is sort of all three above
-											 * together */
-bool		log_btree_build_stats = false;
-char	   *event_source;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_parser_stats = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_planner_stats = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_executor_stats = false;
+/* This is sort of all three above together. */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_statement_stats = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_btree_build_stats = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *event_source;
 
-bool		row_security;
-bool		check_function_bodies = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool row_security;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies = true;
 
 /*
  * These GUCs exist solely for backward compatibility.
@@ -562,29 +560,29 @@ bool		check_function_bodies = true;
 static bool default_with_oids = false;
 static bool standard_conforming_strings = true;
 
-bool		current_role_is_superuser;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
 
-int			log_min_error_statement = ERROR;
-int			client_min_messages = NOTICE;
-int			log_min_duration_sample = -1;
-int			log_min_duration_statement = -1;
-int			log_parameter_max_length = -1;
-int			log_parameter_max_length_on_error = 0;
-int			log_temp_files = -1;
-double		log_statement_sample_rate = 1.0;
-double		log_xact_sample_rate = 0;
-char	   *backtrace_functions;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_error_statement = ERROR;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int client_min_messages = NOTICE;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_sample = -1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_statement = -1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length = -1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length_on_error = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_temp_files = -1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_statement_sample_rate = 1.0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_xact_sample_rate = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_functions;
 
-int			temp_file_limit = -1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit = -1;
 
-int			num_temp_buffers = 1024;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int num_temp_buffers = 1024;
 
-char	   *cluster_name = "";
-char	   *ConfigFileName;
-char	   *HbaFileName;
-char	   *IdentFileName;
-char	   *HostsFileName;
-char	   *external_pid_file;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name = "";
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HbaFileName;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
 char	   *application_name;
 
@@ -678,7 +676,7 @@ bool		in_hot_standby_guc;
 /*
  * set default log_min_messages to WARNING for all process types
  */
-int			log_min_messages[] = {
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_messages[] = {
 #define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
 	[bktype] = WARNING,
 #include "postmaster/proctypelist.h"

@@ -246,11 +246,11 @@ typedef enum
 
 
 /* GUC vars that are actually defined in guc_tables.c, rather than elsewhere */
-extern PGDLLIMPORT bool Debug_print_plan;
-extern PGDLLIMPORT bool Debug_print_parse;
-extern PGDLLIMPORT bool Debug_print_raw_parse;
-extern PGDLLIMPORT bool Debug_print_rewritten;
-extern PGDLLIMPORT bool Debug_pretty_print;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_plan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_parse;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_raw_parse;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print;
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
 extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
@@ -281,40 +281,40 @@ extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
 
 #endif							/* DEBUG_NODE_TESTS_ENABLED */
 
-extern PGDLLIMPORT bool log_parser_stats;
-extern PGDLLIMPORT bool log_planner_stats;
-extern PGDLLIMPORT bool log_executor_stats;
-extern PGDLLIMPORT bool log_statement_stats;
-extern PGDLLIMPORT bool log_btree_build_stats;
-extern PGDLLIMPORT char *event_source;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_parser_stats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_planner_stats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_executor_stats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_statement_stats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_btree_build_stats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *event_source;
 
-extern PGDLLIMPORT bool check_function_bodies;
-extern PGDLLIMPORT bool current_role_is_superuser;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
 
-extern PGDLLIMPORT bool AllowAlterSystem;
-extern PGDLLIMPORT bool log_duration;
-extern PGDLLIMPORT int log_parameter_max_length;
-extern PGDLLIMPORT int log_parameter_max_length_on_error;
-extern PGDLLIMPORT int log_min_error_statement;
-extern PGDLLIMPORT int log_min_messages[];
-extern PGDLLIMPORT int client_min_messages;
-extern PGDLLIMPORT int log_min_duration_sample;
-extern PGDLLIMPORT int log_min_duration_statement;
-extern PGDLLIMPORT int log_temp_files;
-extern PGDLLIMPORT double log_statement_sample_rate;
-extern PGDLLIMPORT double log_xact_sample_rate;
-extern PGDLLIMPORT char *backtrace_functions;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_duration;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length_on_error;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_error_statement;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_messages[];
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int client_min_messages;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_sample;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_statement;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_temp_files;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_statement_sample_rate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_xact_sample_rate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_functions;
 
-extern PGDLLIMPORT int temp_file_limit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit;
 
-extern PGDLLIMPORT int num_temp_buffers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int num_temp_buffers;
 
-extern PGDLLIMPORT char *cluster_name;
-extern PGDLLIMPORT char *ConfigFileName;
-extern PGDLLIMPORT char *HbaFileName;
-extern PGDLLIMPORT char *IdentFileName;
-extern PGDLLIMPORT char *HostsFileName;
-extern PGDLLIMPORT char *external_pid_file;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HbaFileName;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
 extern PGDLLIMPORT char *application_name;
 

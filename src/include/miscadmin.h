@@ -171,7 +171,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsUnderPostmaster;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsBinaryUpgrade;
 
-extern PGDLLIMPORT PG_GLOBAL_BACKEND bool ExitOnAnyError;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ExitOnAnyError;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *DataDir;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int data_directory_mode;
@@ -248,8 +248,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool MyDatabaseHasLoginEven
 #define DATEORDER_DMY			1
 #define DATEORDER_MDY			2
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION int DateStyle;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int DateOrder;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateStyle;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateOrder;
 
 /*
  * IntervalStyles
@@ -263,16 +263,16 @@ extern PGDLLIMPORT PG_GLOBAL_SESSION int DateOrder;
 #define INTSTYLE_SQL_STANDARD		2
 #define INTSTYLE_ISO_8601			3
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION int IntervalStyle;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IntervalStyle;
 
 #define MAXTZLEN		10		/* max TZ name len, not counting tr. null */
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool enableFsync;
-extern PGDLLIMPORT PG_GLOBAL_SESSION bool allowSystemTableMods;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int work_mem;
-extern PGDLLIMPORT PG_GLOBAL_SESSION double hash_mem_multiplier;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int maintenance_work_mem;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int max_parallel_maintenance_workers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int work_mem;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double hash_mem_multiplier;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_work_mem;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_maintenance_workers;
 
 /*
  * Upper and lower hard limits for the buffer access strategy ring size
@@ -282,12 +282,12 @@ extern PGDLLIMPORT PG_GLOBAL_SESSION int max_parallel_maintenance_workers;
 #define MIN_BAS_VAC_RING_SIZE_KB 128
 #define MAX_BAS_VAC_RING_SIZE_KB (16 * 1024 * 1024)
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumBufferUsageLimit;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostPageHit;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostPageMiss;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostPageDirty;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int VacuumCostLimit;
-extern PGDLLIMPORT PG_GLOBAL_SESSION double VacuumCostDelay;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumBufferUsageLimit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageHit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageMiss;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageDirty;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostLimit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double VacuumCostDelay;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;
@@ -520,13 +520,13 @@ extern void BaseInit(void);
 extern void StoreConnectionWarning(char *msg, char *detail);
 
 /* in utils/init/miscinit.c */
-extern PGDLLIMPORT PG_GLOBAL_BACKEND bool IgnoreSystemIndexes;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool IgnoreSystemIndexes;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress;
-extern PGDLLIMPORT PG_GLOBAL_SESSION char *session_preload_libraries_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_preload_libraries_string;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *shared_preload_libraries_string;
-extern PGDLLIMPORT PG_GLOBAL_SESSION char *local_preload_libraries_string;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *local_preload_libraries_string;
 
 extern void CreateDataDirLockFile(bool amPostmaster);
 extern void CreateSocketLockFile(const char *socketfile, bool amPostmaster,

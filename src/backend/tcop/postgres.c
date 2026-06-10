@@ -98,18 +98,18 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *debug_query_string; /* client-su
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput = DestDebug;
 
 /* flag for logging end of session */
-PG_GLOBAL_SESSION bool Log_disconnections = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Log_disconnections = false;
 
-PG_GLOBAL_SESSION int log_statement = LOGSTMT_NONE;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_statement = LOGSTMT_NONE;
 
 /* wait N seconds to allow attach from a debugger */
-PG_GLOBAL_SESSION int PostAuthDelay = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int PostAuthDelay = 0;
 
 /* Time between checks that the client is still connected. */
-PG_GLOBAL_CONNECTION int client_connection_check_interval = 0;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval = 0;
 
 /* flags for non-system relation kinds to restrict use */
-PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
 
 /*
  * Include signal sender PID/UID in the server log when available

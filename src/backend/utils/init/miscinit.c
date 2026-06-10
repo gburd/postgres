@@ -79,7 +79,7 @@ static Latch LocalLatchData;
  * ----------------------------------------------------------------
  */
 
-PG_GLOBAL_BACKEND bool IgnoreSystemIndexes = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool IgnoreSystemIndexes = false;
 
 
 /* ----------------------------------------------------------------
@@ -1780,9 +1780,9 @@ ValidatePgVersion(const char *path)
  * GUC variables: lists of library names to be preloaded at postmaster
  * start and at backend start
  */
-PG_GLOBAL_SESSION char *session_preload_libraries_string = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_preload_libraries_string = NULL;
 PG_GLOBAL_RUNTIME char *shared_preload_libraries_string = NULL;
-PG_GLOBAL_SESSION char *local_preload_libraries_string = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *local_preload_libraries_string = NULL;
 
 /* Flag telling that we are loading shared_preload_libraries */
 PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress = false;

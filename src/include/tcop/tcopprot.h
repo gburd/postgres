@@ -25,8 +25,8 @@ typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *debug_query_string;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int PostAuthDelay;
-extern PGDLLIMPORT PG_GLOBAL_CONNECTION int client_connection_check_interval;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int PostAuthDelay;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval;
 
 /* GUC-configurable parameters */
 
@@ -38,14 +38,14 @@ typedef enum
 	LOGSTMT_ALL,				/* log all statements */
 } LogStmtLevel;
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION bool Log_disconnections;
-extern PGDLLIMPORT PG_GLOBAL_SESSION int log_statement;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Log_disconnections;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_statement;
 
 /* Flags for restrict_nonsystem_relation_kind value */
 #define RESTRICT_RELKIND_VIEW			0x01
 #define RESTRICT_RELKIND_FOREIGN_TABLE	0x02
 
-extern PGDLLIMPORT PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
 
 extern List *pg_parse_query(const char *query_string);
 extern List *pg_rewrite_query(Query *query);

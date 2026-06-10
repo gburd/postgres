@@ -59,13 +59,13 @@
 #include "utils/wait_event.h"
 
 /* GUC variables */
-PG_GLOBAL_SESSION int DeadlockTimeout = 1000;
-PG_GLOBAL_SESSION int StatementTimeout = 0;
-PG_GLOBAL_SESSION int LockTimeout = 0;
-PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout = 0;
-PG_GLOBAL_SESSION int TransactionTimeout = 0;
-PG_GLOBAL_SESSION int IdleSessionTimeout = 0;
-PG_GLOBAL_SESSION bool log_lock_waits = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int DeadlockTimeout = 1000;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int StatementTimeout = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int LockTimeout = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int TransactionTimeout = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleSessionTimeout = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_waits = true;
 
 /* Pointer to this process's PGPROC struct, if any */
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc = NULL;

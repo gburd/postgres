@@ -8,9 +8,10 @@ thread-per-session launch.
 ## Completed Slice
 
 The `PG_GLOBAL_*` annotations remain classification-only. Do not make those
-macros expand to TLS. Several annotated variables are GUC backing variables
-whose addresses are embedded in static GUC tables, and C does not permit a TLS
-variable address in a static initializer.
+macros expand to TLS. Backend-local state that needs process-per-session
+semantics in the initial threaded runtime uses explicit `PG_THREAD_LOCAL`
+storage until it can move behind an owned runtime, backend, session, or
+execution object.
 
 The following state now uses explicit `PG_THREAD_LOCAL` storage:
 
@@ -58,11 +59,21 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `guc_report_list`, `reporting_enabled`, and `GUCNestLevel`;
 - GUC check-hook error state: `GUC_check_errcode_value`,
   `GUC_check_errmsg_string`, `GUC_check_errdetail_string`, and
-  `GUC_check_errhint_string`.
+  `GUC_check_errhint_string`;
+- exported GUC backing variables that are heavily used by session-local code,
+  including the timeout and lock-wait GUCs in `proc.c`, startup and resource
+  GUCs in `globals.c` and `miscinit.c`, tcop logging/connection GUCs, RLS
+  state, and the exported logging/debug GUCs in `guc_tables.c` including
+  `check_function_bodies`.
 
-`ConfigureNames[]` is now classified as an immutable generated template. Each
-backend session copies the template into `guc_variables` during GUC
-initialization before `guc.c` mutates stack, reset, report, and source state.
+`ConfigureNames[]` is now classified as an immutable generated template. The
+generator emits `NULL` backing-variable pointers into that template, and emits
+`InitializeGUCVariablePointers()` beside it. Each backend session copies the
+template into `guc_variables` during GUC initialization, then calls
+`InitializeGUCVariablePointers()` to bind the copied records to the current
+thread's backing variables before `guc.c` mutates stack, reset, report, and
+source state. This removes the static-initializer blocker for TLS GUC backing
+variables.
 
 `CurrentTransactionState` cannot use a static initializer that points at
 `TopTransactionStateData`, because both are thread-local objects. It is
@@ -72,12 +83,10 @@ postmaster, and regular backend paths can safely inspect transaction nesting
 before `BaseInit()`. `BaseInit()` also calls the same function idempotently for
 normal backend startup.
 
-`PostmasterContext` remains runtime-global. The timeout and lock-wait GUC
-backing variables in `proc.c` remain classified as session-owned but are not
-TLS yet because of the GUC static-initializer constraint. The same constraint
-keeps `ExitOnAnyError`, `IgnoreSystemIndexes`, and the core GUC backing
-variables in `globals.c` as non-TLS annotated globals for now. These need a GUC
-indirection layer before they can become per-session state.
+`PostmasterContext` remains runtime-global. The GUC static-initializer
+constraint is now removed for generated built-in GUC records, but many GUC
+backing variables outside the exported first slice still need to be converted
+or explicitly classified according to their real owner.
 
 Any dynamically loaded module that references an exported global after it gains
 `PG_THREAD_LOCAL` must be rebuilt against the updated headers. Stale modules can
@@ -89,8 +98,8 @@ During validation this affected `test_ext_backend_model.dylib` and
 
 Phase 8 still needs to cover at least:
 
-- GUC backing variables, likely by introducing GUC indirection rather than
-  direct TLS globals;
+- remaining GUC backing variables now that the generated runtime rebind layer
+  exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -102,14 +111,17 @@ Phase 8 required-floor global remains unsafe and unclassified.
 
 Validation for this slice:
 
-- `gmake clean` followed by `gmake -j8`;
 - explicit generated-header recovery for `src/backend/utils` and
   `src/backend/nodes`, followed by `gmake -j8`;
 - incremental `gmake -j8` after moving transaction-state initialization into
   `main()`;
+- clean `gmake -j8` after making `ConfigureNames[]` an immutable template and
+  rebinding GUC backing-variable pointers at runtime;
 - focused core GUC regression test: `guc`;
 - unsafe test module GUC privilege regression test: `guc_privs`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
+  src/tools/global_lifetime/global_lifetime_baseline.tsv`;
+- `perl src/tools/global_lifetime/scan_global_lifetimes.pl --write-baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
 - regenerated `src/tools/global_lifetime/global_lifetime_baseline.tsv` so
   previously classified Phase 8 globals are no longer carried as stale

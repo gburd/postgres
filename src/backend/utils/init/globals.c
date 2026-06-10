@@ -122,18 +122,18 @@ PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment = false;
 PG_GLOBAL_RUNTIME bool IsUnderPostmaster = false;
 PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
-PG_GLOBAL_BACKEND bool ExitOnAnyError = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ExitOnAnyError = false;
 
-PG_GLOBAL_SESSION int DateStyle = USE_ISO_DATES;
-PG_GLOBAL_SESSION int DateOrder = DATEORDER_MDY;
-PG_GLOBAL_SESSION int IntervalStyle = INTSTYLE_POSTGRES;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateStyle = USE_ISO_DATES;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateOrder = DATEORDER_MDY;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int IntervalStyle = INTSTYLE_POSTGRES;
 
 PG_GLOBAL_RUNTIME bool enableFsync = true;
-PG_GLOBAL_SESSION bool allowSystemTableMods = false;
-PG_GLOBAL_SESSION int work_mem = 4096;
-PG_GLOBAL_SESSION double hash_mem_multiplier = 2.0;
-PG_GLOBAL_SESSION int maintenance_work_mem = 65536;
-PG_GLOBAL_SESSION int max_parallel_maintenance_workers = 2;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int work_mem = 4096;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double hash_mem_multiplier = 2.0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_work_mem = 65536;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_maintenance_workers = 2;
 
 /*
  * Primary determinants of sizes of shared-memory structures.
@@ -149,13 +149,13 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 
 /* GUC parameters for vacuum */
-PG_GLOBAL_SESSION int VacuumBufferUsageLimit = 2048;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumBufferUsageLimit = 2048;
 
-PG_GLOBAL_SESSION int VacuumCostPageHit = 1;
-PG_GLOBAL_SESSION int VacuumCostPageMiss = 2;
-PG_GLOBAL_SESSION int VacuumCostPageDirty = 20;
-PG_GLOBAL_SESSION int VacuumCostLimit = 200;
-PG_GLOBAL_SESSION double VacuumCostDelay = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageHit = 1;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageMiss = 2;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageDirty = 20;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostLimit = 200;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double VacuumCostDelay = 0;
 
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance = 0;	/* working state for vacuum */
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive = false;

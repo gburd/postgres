@@ -903,6 +903,7 @@ build_guc_variables(void)
 									   (num_vars + 1));
 	memcpy(guc_variables, ConfigureNames,
 		   sizeof(struct config_generic) * (num_vars + 1));
+	InitializeGUCVariablePointers(guc_variables);
 
 	dlist_init(&guc_nondef_list);
 	slist_init(&guc_stack_list);
