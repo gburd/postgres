@@ -42,6 +42,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
   slot sync, and repack interrupt flags;
+- process-signal shared/backend state: `ProcSignal` as shared-memory state and
+  `MyProcSignalSlot` as the current backend's slot pointer;
 - backend/session identity globals: `MyProcPid`, `MyStartTime`,
   `MyStartTimestamp`, `MyLatch`, `MyPMChildSlot`, `MyProcNumber`,
   `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
@@ -343,6 +345,9 @@ The local latch backing object in `miscinit.c` and the cached `WaitLatch()`
 wait set in `latch.c` are now backend-local TLS state, so the thread-local
 `MyLatch` pointer no longer targets shared static storage before a backend
 switches to its shared `PGPROC` latch.
+The process-signal header in shared memory is now explicitly classified as
+shared-memory state, while each backend's cached `MyProcSignalSlot` pointer is
+backend-local TLS state.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -719,6 +724,9 @@ Validation for this slice:
 - focused `miscinit.o` and `latch.o` compile coverage plus process-mode
   connection smoke/regression coverage after classifying backend-local latch
   backing state.
+- focused `procsignal.o` compile coverage plus process-mode connection
+  smoke/regression coverage after classifying process-signal shared/backend
+  state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

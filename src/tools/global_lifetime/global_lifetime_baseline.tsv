@@ -1485,8 +1485,6 @@ src/backend/storage/ipc/procarray.c	448419a136fce0c602c89666fdd989e53e9a0c8e	xc_
 src/backend/storage/ipc/procarray.c	f3e2e93624c4671911650291ad1adbf34f2f92a8	xc_by_known_assigned	static long xc_by_known_assigned = 0;
 src/backend/storage/ipc/procarray.c	65f23ad0026ee8983170cdef12d621d90c413df9	xc_no_overflow	static long xc_no_overflow = 0;
 src/backend/storage/ipc/procarray.c	1ca4f03619c0a8277a203aebfc74d4d31aecbcaf	xc_slow_answer	static long xc_slow_answer = 0;
-src/backend/storage/ipc/procsignal.c	bc152176343e5335240e372ea742f16c51e5b4d0	ProcSignal	NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
-src/backend/storage/ipc/procsignal.c	4f867806179ce90a3364d320a76dcb466cd765b8	MyProcSignalSlot	static ProcSignalSlot *MyProcSignalSlot = NULL;
 src/backend/storage/ipc/shmem.c	d69c02c765b82984091113bf8428ab1e6a62ba0b	registered_shmem_callbacks	static List *registered_shmem_callbacks;
 src/backend/storage/ipc/shmem.c	ef4fecf0f5196657326a1e561138805c5f56bd49	pending_shmem_requests	static List *pending_shmem_requests;
 src/backend/storage/ipc/shmem.c	6a320291266feb34f69eb5b6a120387051d4b616	shmem_request_state	static enum shmem_request_state shmem_request_state = SRS_INITIAL;
@@ -2139,7 +2137,6 @@ src/include/storage/pg_shmem.h	311fedb87d7787bdbae0b3124b472657ca794dd1	UsedShme
 src/include/storage/pmsignal.h	49f17d9b6ba06e15429797319661c6385e45c65b	PMSignalState	extern PGDLLIMPORT volatile PMSignalData *PMSignalState;
 src/include/storage/pmsignal.h	abe21178acac26df42de1659455382c50f34ff86	postmaster_possibly_dead	extern PGDLLIMPORT volatile sig_atomic_t postmaster_possibly_dead;
 src/include/storage/proc.h	cc7b2ea2be080df8efc0304b9443bdcb491c56fd	FastPathLockGroupsPerBackend	extern PGDLLIMPORT int FastPathLockGroupsPerBackend;
-src/include/storage/procsignal.h	3559b9e32f91ad976f901013b08e190af44c2834	ProcSignal	extern PGDLLIMPORT ProcSignalHeader *ProcSignal;
 src/include/storage/read_stream.h	5eefb9137c0f027b290768e7ab1aed02c0341199	ReadStream	struct ReadStream;
 src/include/storage/read_stream.h	61fd5bfc7338f828cee4345bb043ec4371f7fb71	IOStats	struct IOStats;
 src/include/storage/shm_mq.h	f01569004c4c1646b9cfb6900d957b636f7b6842	shm_mq	struct shm_mq;

@@ -118,9 +118,9 @@ const ShmemCallbacks ProcSignalShmemCallbacks = {
 	.init_fn = ProcSignalShmemInit,
 };
 
-NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
-static ProcSignalSlot *MyProcSignalSlot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcSignalSlot *MyProcSignalSlot = NULL;
 
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
