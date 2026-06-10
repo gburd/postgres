@@ -2037,13 +2037,11 @@ src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	Reco
 src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
 src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
 src/backend/utils/error/elog.c	2eaf120ef9b9336b092d207ca1135a2c0dfa871c	emit_log_hook	emit_log_hook_type emit_log_hook = NULL;
-src/backend/utils/error/elog.c	2de5e6e33837fef6cb00baccc7b22ae2bec7c8d9	Log_error_verbosity	int Log_error_verbosity = PGERROR_DEFAULT;
 src/backend/utils/error/elog.c	f85a32bbaa8b596a08a0283923adea770daa47b1	Log_line_prefix	char *Log_line_prefix = NULL;
 src/backend/utils/error/elog.c	bcf40f011560798682faf94599fc0a4f471137aa	Log_destination	int Log_destination = LOG_DESTINATION_STDERR;
 src/backend/utils/error/elog.c	b4cb739c9d62d32de7ae2bbe4b22dcee96e8c8a4	Log_destination_string	char *Log_destination_string = NULL;
 src/backend/utils/error/elog.c	d628639e4fa14d6fe41e1a7167727fd29ae96c44	syslog_sequence_numbers	bool syslog_sequence_numbers = true;
 src/backend/utils/error/elog.c	0ed49f371de24a3583eccf8caeb9dc2aaa2f047c	syslog_split_messages	bool syslog_split_messages = true;
-src/backend/utils/error/elog.c	c4f4a23dd7dcb5864f52cfe263513f4b271f7469	backtrace_function_list	static char *backtrace_function_list;
 src/backend/utils/error/elog.c	cdbe0e33ec614235b6b6a339c23a9ce1e8c61a1b	openlog_done	static bool openlog_done = false;
 src/backend/utils/error/elog.c	45ee84e0b19b6b60b24de88e4897adbb907a2257	syslog_ident	static char *syslog_ident = NULL;
 src/backend/utils/error/elog.c	abcc6f6a80d46cec8504e02943d3f8c4b4e612fe	syslog_facility	static int syslog_facility = LOG_LOCAL0;
@@ -2096,7 +2094,6 @@ src/backend/utils/misc/guc_tables.c	107da656778eafc0d79daef703881a8bdb9a1b7f	ser
 src/backend/utils/misc/guc_tables.c	2a51af356ce03c9c08533098360103a0f033a44c	server_version_string	static char *server_version_string;
 src/backend/utils/misc/guc_tables.c	29abc05ded928dd21904def42c92aa47855bdf6b	server_version_num	static int server_version_num;
 src/backend/utils/misc/guc_tables.c	5e58285cba727a8b98f02aff7e02ed99a9e67a00	debug_io_direct_string	static char *debug_io_direct_string;
-src/backend/utils/misc/guc_tables.c	80b2246b4d430786267b557afde42f659fd6d2fb	log_min_messages_string	static char *log_min_messages_string;
 src/backend/utils/misc/guc_tables.c	49fca587090acb981429cb876dcbd6d12c268c16	syslog_facility	static int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 src/backend/utils/misc/guc_tables.c	8bee5f35a3e6badc9d312a7eb1fa52000f6efc32	data_directory	static char *data_directory;
 src/backend/utils/misc/guc_tables.c	9f57e9cdfcc60ae4248a79261edf9ae441463550	max_function_args	static int max_function_args;
@@ -2636,7 +2633,6 @@ src/include/utils/datetime.h	e2b95b77008d26098670c036a3a4efb7147887f2	days	exter
 src/include/utils/dsa.h	c0f6aafe834a68190a3ae77a9f3222a885527f28	dsa_area	struct dsa_area;
 src/include/utils/elog.h	c8a4816f887bb57d1faa5b42a49ab4a22d264cf9	Node	struct Node;
 src/include/utils/elog.h	b935f5c0b0bdf0bffd2f73cd84b3a6d0d81bce55	emit_log_hook	extern PGDLLIMPORT emit_log_hook_type emit_log_hook;
-src/include/utils/elog.h	f135ca887c15ede3991ac92a6256e9b57e91959e	Log_error_verbosity	extern PGDLLIMPORT int Log_error_verbosity;
 src/include/utils/elog.h	6e38d0ff99168b316fb7fa124b6784f3eeb43247	Log_line_prefix	extern PGDLLIMPORT char *Log_line_prefix;
 src/include/utils/elog.h	0cd87dd65beb3f543fc017d46a7284e1c3e6c06a	Log_destination	extern PGDLLIMPORT int Log_destination;
 src/include/utils/elog.h	2da60b2875dfa72cf9d136e4cb5e31ea74111532	Log_destination_string	extern PGDLLIMPORT char *Log_destination_string;

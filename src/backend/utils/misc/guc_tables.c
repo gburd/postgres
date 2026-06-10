@@ -621,7 +621,7 @@ static char *server_version_string;
 static int	server_version_num;
 static char *debug_io_direct_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *restrict_nonsystem_relation_kind_string;
-static char *log_min_messages_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_min_messages_string;
 
 #ifdef HAVE_SYSLOG
 #define	DEFAULT_SYSLOG_FACILITY LOG_LOCAL0

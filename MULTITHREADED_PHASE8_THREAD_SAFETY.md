@@ -141,6 +141,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - query/statistics session state: `compute_query_id`, `query_id_enabled`,
   `pgstat_fetch_consistency`, `pgstat_track_activities`,
   `pgstat_track_counts`, and `pgstat_track_functions`.
+- logging/error-reporting session state: `Log_error_verbosity`,
+  `log_min_messages_string`, and the processed `backtrace_function_list`
+  derived from `backtrace_functions`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -182,7 +185,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the query/statistics state slice, the filtered static report contains 226
+After the logging/error-reporting state slice, the filtered static report contains 224
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -444,6 +447,20 @@ Validation for this slice:
   `stats_fetch_consistency`, `track_activities`, `track_counts`, and
   `track_functions`, including `EXPLAIN (verbose)` query identifier output and
   a second connection that did not inherit the first session's settings;
+- focused `elog.o` and `guc_tables.o` compile coverage;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header logging/error-reporting declarations to
+  `PG_THREAD_LOCAL`;
+- fixture-backed GUC regression coverage after the logging/error-reporting
+  slice:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc`;
+- live temp-cluster smoke coverage for `log_error_verbosity`,
+  `log_min_messages`, and `backtrace_functions`, including a second
+  connection that did not inherit the first session's settings;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

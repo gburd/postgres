@@ -111,7 +111,7 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION sigjmp_buf *PG_exception_stack = NULL;
 emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
-int			Log_error_verbosity = PGERROR_DEFAULT;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity = PGERROR_DEFAULT;
 char	   *Log_line_prefix = NULL; /* format for extra log line info */
 int			Log_destination = LOG_DESTINATION_STDERR;
 char	   *Log_destination_string = NULL;
@@ -119,7 +119,7 @@ bool		syslog_sequence_numbers = true;
 bool		syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
-static char *backtrace_function_list;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_function_list;
 
 #ifdef HAVE_SYSLOG
 
