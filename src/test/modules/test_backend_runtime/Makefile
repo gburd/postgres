@@ -1,0 +1,23 @@
+# src/test/modules/test_backend_runtime/Makefile
+
+MODULE_big = test_backend_runtime
+OBJS = \
+	$(WIN32RES) \
+	test_backend_runtime.o
+PGFILEDESC = "test_backend_runtime - test code for backend runtime scaffolding"
+
+EXTENSION = test_backend_runtime
+DATA = test_backend_runtime--1.0.sql
+
+REGRESS = test_backend_runtime
+
+ifdef USE_PGXS
+PG_CONFIG = pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+include $(PGXS)
+else
+subdir = src/test/modules/test_backend_runtime
+top_builddir = ../../../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif

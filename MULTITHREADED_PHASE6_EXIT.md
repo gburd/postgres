@@ -12,10 +12,11 @@ result.
 - `PgBackendExitCleanup(int code)` runs the backend-local cleanup sequence:
   `before_shmem_exit`, DSM detach callbacks, `on_shmem_exit`, then
   `on_proc_exit`.
-- After cleanup, `PgBackendExit()` dispatches through the current runtime's
-  optional `exit_backend` continuation. Process mode leaves this unset and
-  falls through to `PgBackendExitProcess(int code)`, the private tail that
-  still calls `exit(code)`.
+- After cleanup, `PgBackendExit()` calls `PgBackendExitComplete(int code)`.
+  That function dispatches through the current runtime's optional
+  `exit_backend` continuation. Process mode leaves this unset and falls through
+  to `PgBackendExitProcess(int code)`, the private tail that still calls
+  `exit(code)`.
 - `proc_exit(int code)` remains as a compatibility wrapper for process-mode
   code and unmigrated callers.
 - `PgBackendExitState` is stored on `PgBackend` and owns the exit callback
@@ -98,6 +99,10 @@ which runtime object owns that worker's cleanup and scheduler continuation.
 - `gmake -C src/test/modules/test_dsm_registry check` passed after adding a
   fixture that registers an `on_dsm_detach` callback, leaves its DSM mapping
   pinned for backend-exit cleanup, reconnects, and verifies the callback ran.
+- `gmake -C src/test/modules/test_backend_runtime check` passed after adding a
+  fixture that installs a runtime `exit_backend` continuation, calls
+  `PgBackendExitComplete(17)`, and verifies control transfers to the
+  scheduler-like continuation instead of falling through to process exit.
 - `gmake check-world` was attempted for Gate B. It progressed through core
   isolation and multiple `src/test/modules` checks, including
   `test_dsm_registry`, but stopped in `src/test/modules/test_extensions` before
@@ -110,6 +115,7 @@ which runtime object owns that worker's cleanup and scheduler continuation.
 
 ## Remaining Phase 6 Gaps
 
-- There is not yet a thread-per-session runtime implementing `exit_backend`,
-  so the branch cannot directly prove that one logical backend exits while
-  other in-process backends continue.
+- There is not yet a real thread-per-session runtime running full backend exit
+  cleanup while another in-process backend continues. The runtime handoff after
+  cleanup is covered by `test_backend_runtime`; the full end-to-end threaded
+  proof belongs with the first thread-launch/runtime phases.

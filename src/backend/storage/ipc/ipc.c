@@ -54,7 +54,6 @@ bool		shmem_exit_inprogress = false;
 static bool atexit_callback_setup = false;
 
 /* local functions */
-pg_noreturn static void PgBackendExitViaRuntime(int code);
 pg_noreturn static void PgBackendExitProcess(int code);
 static PgBackendExitState *CurrentBackendExitState(void);
 
@@ -125,6 +124,8 @@ PgBackendShmemExitInProgress(void)
  *
  *		PgBackendExitCleanup() is the part threaded runtimes need to reuse
  *		when one logical backend exits but the containing runtime continues.
+ *		PgBackendExitComplete() is the non-returning control transfer after
+ *		that cleanup has run.
  *
  *		Unfortunately, we can't really guarantee that add-on code
  *		obeys the rule of not calling exit() directly.  So, while
@@ -142,11 +143,19 @@ PgBackendExit(int code)
 	/* Clean up everything that must be cleaned up */
 	PgBackendExitCleanup(code);
 
-	PgBackendExitViaRuntime(code);
+	PgBackendExitComplete(code);
 }
 
-pg_noreturn static void
-PgBackendExitViaRuntime(int code)
+/*
+ * Complete backend exit after PgBackendExitCleanup() has already run.
+ *
+ * Process mode leaves exit_backend NULL and falls through to exit().  A
+ * threaded or scheduler-owned runtime must install a non-returning
+ * continuation that retires the logical backend without returning to the
+ * cleaned-up backend stack.
+ */
+void
+PgBackendExitComplete(int code)
 {
 	if (CurrentPgRuntime != NULL && CurrentPgRuntime->exit_backend != NULL)
 	{

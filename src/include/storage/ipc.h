@@ -90,6 +90,7 @@ extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);
 extern bool PgBackendExitInProgress(void);
 extern bool PgBackendShmemExitInProgress(void);
 extern void PgBackendExitCleanup(int code);
+pg_noreturn extern void PgBackendExitComplete(int code);
 pg_noreturn extern void PgBackendExit(int code);
 pg_noreturn extern void proc_exit(int code);
 extern void shmem_exit(int code);

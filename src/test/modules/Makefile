@@ -17,6 +17,7 @@ SUBDIRS = \
 		  spgist_name_ops \
 		  test_aio \
 		  test_autovacuum \
+		  test_backend_runtime \
 		  test_binaryheap \
 		  test_bitmapset \
 		  test_bloomfilter \
