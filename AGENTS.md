@@ -13,6 +13,9 @@ the code evolves.
   desired end-state architecture.
 - [MULTITHREADED_PLAN.md](MULTITHREADED_PLAN.md) describes the staged
   implementation plan, validation strategy, and risk register.
+- [MULTITHREADED_PHASE5_INTERRUPTS.md](MULTITHREADED_PHASE5_INTERRUPTS.md)
+  records the logical interrupt boundary and recovery-conflict fixture
+  decision.
 - [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
   current backend lifecycle/exit boundary and remaining Phase 6 gaps.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.

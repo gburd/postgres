@@ -272,6 +272,7 @@ Phase 5 completion note:
 - In other words, this was a deliberate validation deferral after inspection,
   not an indication that Phase 5 still needs implementation work before Phase
   6 can proceed.
+- See `MULTITHREADED_PHASE5_INTERRUPTS.md` for the phase-specific note.
 
 ## Phase 6: Backend Lifecycle And Exit
 
