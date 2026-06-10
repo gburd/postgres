@@ -49,9 +49,9 @@ typedef enum PgStepResult
 } PgStepResult;
 
 /*
- * Main-loop state owned by PgSession. These fields used to be volatile locals
- * in PostgresMain(); keep them volatile because they must survive the
- * top-level longjmp used for backend error recovery.
+ * Main-loop state owned by PgSession. Some of this state used to be volatile
+ * locals in PostgresMain(); keep the loop flags volatile because they must
+ * survive the top-level longjmp used for backend error recovery.
  */
 typedef struct PgSessionLoopState
 {

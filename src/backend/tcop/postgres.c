@@ -4947,7 +4947,10 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
 
-		result = PG_STEP_ERROR_RECOVERED;
+		PG_exception_stack = save_exception_stack;
+		state->step_error_boundary_active = false;
+
+		return PG_STEP_ERROR_RECOVERED;
 	}
 	else
 	{

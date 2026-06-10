@@ -96,11 +96,12 @@ Completed shape:
 - process-mode runner added as `PgSessionRun()`;
 - `PostgresMain()` delegates to the process-mode runner after initialization.
 
-Important constraint:
+Current shape after Phase 3:
 
-`PgSessionRun()` currently owns the always-active bottom `sigsetjmp` boundary,
-and `PgSessionStep()` assumes it is called under that boundary. This preserves
-the old recovery semantics while creating the first practical step function.
+`PgSessionStep(PgSession *, PgStepBudget)` owns the protected bottom
+`sigsetjmp` boundary, while `PgSessionStepUnprotected()` remains private.
+`PgSessionRun()` is the process-mode loop that repeatedly invokes that protected
+step with a single-message budget.
 
 Validation:
 
@@ -638,9 +639,7 @@ Risk: moving `PostgresMain()` state breaks `ERROR` recovery or protocol sync.
 Mitigation:
 
 - preserve the always-active top-level `sigsetjmp` boundary initially;
-- make `PgSessionStep()` the protected public entrypoint, or assert it is under
-  the matching protected session boundary until that entrypoint is fully
-  public;
+- make `PgSessionStep()` the protected public entrypoint;
 - keep unprotected helpers private;
 - extract recovery code with minimal semantic changes;
 - add targeted protocol error tests.
