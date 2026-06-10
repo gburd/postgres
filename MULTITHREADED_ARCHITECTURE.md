@@ -45,6 +45,12 @@ say it could include state that is currently global. This branch should treat
 that as the seed of the broader session model unless implementation pressure
 shows that a new type is cleaner.
 
+The initial mechanical rule is: introduce the broader object as `PgSession` and
+embed the existing `Session` inside it. Do not immediately rename the existing
+type or overload `CurrentSession` with a different meaning. Once enough state
+has moved, the older `Session` type can either be folded into `PgSession` or
+renamed in a dedicated cleanup.
+
 `PostgresMain()` in `src/backend/tcop/postgres.c` is currently doing too many
 jobs:
 
@@ -241,7 +247,8 @@ objects. That reduces churn while making ownership visible.
 
 ## Main Loop Unwinding
 
-The desired replacement for `PostgresMain()` is a stateful session runner:
+The desired replacement for `PostgresMain()` is a protected, stateful session
+runner:
 
 ```c
 PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
@@ -250,6 +257,10 @@ PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 The exact names may change, but the shape should remain:
 
 - the caller owns the outer loop;
+- the public step entrypoint installs or verifies the active top-level backend
+  error boundary;
+- unprotected implementation helpers are private and must not be scheduler
+  entrypoints;
 - the session owns state that currently lives in volatile locals;
 - blocking reads and waits become explicit step results or scheduler waits;
 - top-level error recovery remains active and reliable;
@@ -279,8 +290,12 @@ active. The first refactor should preserve that property.
 
 Target shape:
 
-- `PgSessionRun()` or `PgTaskRunWithErrorBoundary()` installs the top-level
-  boundary.
+- `PgSessionStep()` is the protected public entrypoint used by process mode,
+  thread-per-session mode, and future schedulers.
+- `PgSessionStep()` installs the top-level boundary for the duration of the
+  step, or asserts that the matching session boundary is already active.
+- Internal helpers such as `PgSessionStepInternal()` may assume a boundary, but
+  must not be exposed to runtime or scheduler callers.
 - On `ERROR`, control transfers to `PgSessionRecoverError()`.
 - Recovery state that is now stored in volatile locals moves into `PgSession`
   or `PgExecution`.
@@ -288,7 +303,16 @@ Target shape:
 - `PANIC` tears down the runtime, as today.
 
 Do not attempt to replace PostgreSQL error handling with return codes as part
-of the first main-loop split.
+of the first main-loop split. A backend step may return a status after recovery,
+but ordinary PostgreSQL backend code may continue to use `ereport(ERROR)`.
+
+The public step contract is:
+
+- no unhandled `ERROR` escapes past `PgSessionStep()`;
+- `FATAL` becomes logical backend termination in threaded mode;
+- the session state records whether recovery has completed, whether protocol
+  sync has been lost, and whether the backend must terminate;
+- process mode preserves current user-visible behavior.
 
 ## Scheduler Model
 
@@ -377,6 +401,22 @@ backend without sending a Unix signal to the process.
 examines should move from process-global variables toward the current backend
 or execution.
 
+### Timeout Delivery
+
+Timeout handling needs explicit treatment before thread launch. PostgreSQL
+currently relies heavily on process-level signal machinery for timeout
+delivery. In threaded mode, timeout expiry must target a logical backend or
+execution, not the whole process.
+
+Target model:
+
+- timeout registration records the target backend/execution;
+- expiry sets logical interrupt bits for that target;
+- process mode may continue using existing signal transport internally;
+- thread mode must not depend on per-backend `SIGALRM` handling;
+- cancellation while blocked must be delivered through the same wait/wakeup
+  path as other backend interrupts.
+
 ## Global State Migration
 
 Every mutable global must eventually be classified.
@@ -399,6 +439,30 @@ should not stop at thread-local globals. Thread-local storage is a transition
 tool. The goal is explicit ownership.
 
 New mutable globals should not be added without a lifetime classification.
+
+## Thread-Safety Floor
+
+Thread-per-session mode must not launch until a minimum set of backend-local
+state has been separated from shared process globals or made thread-local as a
+temporary bridge.
+
+The required floor includes:
+
+- current memory context state;
+- current resource owner state;
+- `MyProc` and `PGPROC` ownership state;
+- `MyProcPort` and frontend protocol buffers;
+- interrupt pending flags and interrupt holdoff counters;
+- timeout pending flags and timeout registration state;
+- GUC backing variables and GUC nesting state;
+- error context and exception stack state;
+- current transaction/session identity globals;
+- temporary file and virtual fd owner state.
+
+Thread-local storage is acceptable for the first thread-per-session milestone
+where it preserves current process-per-session behavior. Pooled scheduling
+requires moving this state into `PgSession`, `PgExecution`, `PgConnection`, or
+`PgCarrier`.
 
 ## GUCs
 
@@ -488,6 +552,12 @@ first-class target, not as an arbitrary third-party extension. It should gain
 session-owned cache/state APIs where needed and opt into threaded mode only
 after audit.
 
+The first threaded regression target also needs a minimum in-tree module set.
+That set should include PL/pgSQL, required encoding conversion modules,
+regression-test helper modules needed by the selected test suite, and any
+module loaded automatically by core tests. The threaded test matrix should not
+silently skip required in-tree modules just because extension gating exists.
+
 Third-party extension authors need replacement APIs for common unsafe patterns:
 
 - per-session extension state;
@@ -535,6 +605,30 @@ Initial semantics:
 The branch should invest in assertions, sanitizers, and targeted stress tests,
 but it should not pretend to preserve process-level crash isolation inside one
 address space.
+
+## Backend Exit And Cleanup
+
+Backend exit paths are a precondition for thread launch. PostgreSQL has many
+paths that assume terminating the current backend means terminating the current
+process.
+
+Threaded mode needs a logical backend exit path for:
+
+- `proc_exit`;
+- `exit`;
+- `on_proc_exit` callbacks;
+- `before_shmem_exit` callbacks;
+- `shmem_exit` cleanup;
+- resource owner cleanup;
+- DSM/DSA detach;
+- temporary file cleanup;
+- connection teardown;
+- thread/carrier return to the runtime.
+
+The target rule is that `FATAL` and normal backend termination clean up one
+logical backend/session and return control to the runtime. They must not tear
+down the entire process unless the runtime is process-mode or the error level
+requires `PANIC`.
 
 ## Portability
 

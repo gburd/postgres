@@ -62,6 +62,9 @@ Likely changes:
   migration path.
 - Extend or embed the existing `Session` object rather than creating a
   competing concept too early.
+- Introduce the broader object as `PgSession` and embed the existing `Session`
+  object initially; do not rename `Session` or repurpose `CurrentSession` in
+  the first scaffolding commit.
 - Add comments documenting ownership boundaries.
 
 Initial objects can be thin:
@@ -139,9 +142,14 @@ PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 void PgSessionRun(PgSession *session);
 ```
 
+`PgSessionStep()` is the protected public entrypoint. It must install the
+session's top-level error boundary, or verify that the matching boundary is
+already active. Any unprotected helper is private and must not be called by a
+runtime, thread launcher, or scheduler.
+
 Early `PgSessionStep()` may still block inside `ReadCommand()` and command
-execution. That is acceptable in this phase. The objective is to make the
-state explicit and isolate the loop.
+execution. That is acceptable in this phase. The objective is to make the state
+explicit, isolate the loop, and make the error-boundary contract unambiguous.
 
 Validation:
 
@@ -149,11 +157,13 @@ Validation:
 - error recovery tests still behave correctly;
 - extended query protocol still handles skip-until-sync correctly;
 - cancellation during command read still works.
+- no unhandled `ERROR` escapes past the protected step entrypoint.
 
-## Phase 4: Logical Interrupts
+## Phase 4: Logical Interrupts And Timeouts
 
 Goal: replace process-signal-shaped backend communication with logical
-interrupts that work for both processes and threads.
+interrupts that work for both processes and threads, and make timeout delivery
+target logical backends rather than the whole process.
 
 Likely changes:
 
@@ -161,6 +171,10 @@ Likely changes:
 - Convert signal handlers to set logical interrupt bits.
 - Route cancellation, termination, config reload, notify catchup, procsignal
   barriers, and timeout events through the interrupt system.
+- Split timeout registration from timeout delivery so timeout expiry records a
+  target backend/execution and sets logical interrupt bits for that target.
+- Preserve process-mode `SIGALRM` behavior as an implementation detail where
+  useful, but do not make thread mode depend on per-backend Unix alarm signals.
 - Keep `CHECK_FOR_INTERRUPTS()` as the common service point.
 - Preserve existing signal delivery in process mode as an external transport.
 
@@ -175,6 +189,7 @@ Validation:
 - termination tests;
 - config reload tests;
 - LISTEN/NOTIFY behavior;
+- statement, lock, transaction, idle-in-transaction, and idle-session timeouts;
 - hot standby recovery conflict behavior where practical;
 - process-mode regressions.
 
@@ -203,7 +218,34 @@ Validation:
 - idle timeout and transaction timeout behavior remains correct;
 - no lost wakeups in common wait paths.
 
-## Phase 6: Extension Backend Model Gate
+## Phase 6: Backend Lifecycle And Exit
+
+Goal: make backend termination logical so a threaded backend can exit without
+terminating or corrupting the whole runtime.
+
+Likely changes:
+
+- Identify direct and indirect callers of `proc_exit`, `exit`, and fatal exit
+  helpers in backend code.
+- Split logical backend exit from process exit.
+- Route `on_proc_exit`, `before_shmem_exit`, and `shmem_exit` callbacks through
+  backend/runtime-aware cleanup.
+- Ensure one logical backend can release resources and detach from shared state
+  while other threaded backends continue.
+- Preserve current process-mode behavior.
+- Define which paths still escalate to runtime/process termination, especially
+  `PANIC` and postmaster death.
+
+Validation:
+
+- normal client disconnect cleanup;
+- `FATAL` during active transaction;
+- repeated connect/disconnect stress in process mode;
+- temporary file cleanup;
+- DSM/DSA detach cleanup;
+- callback ordering remains compatible in process mode.
+
+## Phase 7: Extension Backend Model Gate
 
 Goal: prevent unsafe extension loading in threaded mode and establish the route
 for in-tree extensions.
@@ -215,6 +257,9 @@ Likely changes:
 - Add explicit opt-in macros for threaded compatibility.
 - Teach `dfmgr.c` to reject incompatible modules when threaded mode is active.
 - Audit PL/pgSQL first.
+- Define the minimum in-tree module allowlist for threaded regression tests,
+  including PL/pgSQL, required encoding conversion modules, regression-test
+  helper modules, and any module loaded automatically by the selected tests.
 - Add per-session extension state APIs if needed by PL/pgSQL or bundled
   modules.
 
@@ -229,9 +274,45 @@ Validation:
 - incompatible test extension is rejected in threaded mode;
 - existing process mode loads extensions as before;
 - PL/pgSQL loads and passes its tests when marked safe;
+- the minimum in-tree module allowlist loads in threaded mode;
 - contrib modules are migrated only after audit.
 
-## Phase 7: Thread-Per-Session Runtime
+## Phase 8: Thread-Safety Floor
+
+Goal: make enough backend-local state private to each logical backend that
+thread-per-session launch is not sharing unsafe plain globals.
+
+Required floor:
+
+- current memory context state;
+- current resource owner state;
+- `MyProc` and `PGPROC` ownership state;
+- `MyProcPort` and frontend protocol buffers;
+- interrupt pending flags and interrupt holdoff counters;
+- timeout pending flags and timeout registration state;
+- GUC backing variables and GUC nesting state;
+- error context and exception stack state;
+- current transaction/session identity globals;
+- temporary file and virtual fd owner state.
+
+Likely changes:
+
+- Use thread-local compatibility state where that preserves current
+  process-per-session semantics.
+- Prefer object-owned state where the ownership boundary is already clear.
+- Add assertions that the current runtime/backend/session/execution pointers
+  are initialized before backend-local state is accessed.
+- Keep process-mode behavior unchanged.
+
+Validation:
+
+- process-mode full regression tests;
+- static global report shows the required floor is no longer shared as plain
+  mutable process globals;
+- targeted tests for memory context, resource owner, GUC, interrupt, timeout,
+  protocol, and fd cleanup behavior.
+
+## Phase 9: Thread-Per-Session Runtime
 
 Goal: run regular client backends as OS threads inside one server runtime.
 
@@ -262,7 +343,7 @@ Validation:
 - PL/pgSQL smoke and regression tests;
 - process-mode full test suite.
 
-## Phase 8: State Migration From TLS To Objects
+## Phase 10: State Migration From TLS To Objects
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -284,7 +365,7 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
-## Phase 9: Pooled Carrier Scheduler
+## Phase 11: Pooled Carrier Scheduler
 
 Goal: schedule logical session/execution tasks onto a smaller number of worker
 threads.
@@ -312,7 +393,7 @@ Validation:
 - cancellation of waiting and running tasks;
 - process-mode and thread-per-session modes still work.
 
-## Phase 10: Executor And Utility Yield Points
+## Phase 12: Executor And Utility Yield Points
 
 Goal: improve fairness and latency for long-running commands under pooled
 scheduling.
@@ -332,7 +413,7 @@ Validation:
 - no executor state corruption across yields;
 - performance comparison against thread-per-session mode.
 
-## Phase 11: Hardening
+## Phase 13: Hardening
 
 Goal: make threaded mode debuggable and credible.
 
@@ -407,6 +488,8 @@ Risk: moving `PostgresMain()` state breaks `ERROR` recovery or protocol sync.
 Mitigation:
 
 - preserve the always-active top-level `sigsetjmp` boundary initially;
+- make `PgSessionStep()` the protected public entrypoint and keep unprotected
+  helpers private;
 - extract recovery code with minimal semantic changes;
 - add targeted protocol error tests.
 
@@ -482,6 +565,18 @@ Mitigation:
 - backend-to-backend communication uses logical interrupts;
 - thread mode avoids per-backend Unix signal handling.
 
+### Backend Exit
+
+Risk: a threaded backend follows a process-exit path and terminates the whole
+runtime or leaves backend-local resources attached.
+
+Mitigation:
+
+- split backend exit from process exit before thread launch;
+- route exit callbacks through backend-aware cleanup;
+- reserve process termination for process mode, postmaster death, or `PANIC`;
+- stress repeated connect/disconnect and `FATAL` paths.
+
 ## Suggested Commit Sequence After Documentation
 
 1. Add state object declarations and process-mode no-op initialization.
@@ -491,9 +586,13 @@ Mitigation:
 5. Extract one-command loop state into a session main-loop struct.
 6. Add `PgSessionStep()` while process mode still loops synchronously.
 7. Introduce logical interrupt structs and bridge signal handlers to them.
-8. Add extension backend model metadata and process-only default.
-9. Add thread portability layer and backend launch switch.
-10. Run first thread-per-session backend smoke tests.
+8. Convert timeout delivery to target logical backends.
+9. Split backend exit cleanup from process exit.
+10. Add extension backend model metadata and process-only default.
+11. Establish the minimum in-tree module allowlist.
+12. Make the thread-safety floor private through TLS or object ownership.
+13. Add thread portability layer and backend launch switch.
+14. Run first thread-per-session backend smoke tests.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility
 wrappers to broad all-at-once rewrites.

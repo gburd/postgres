@@ -63,6 +63,10 @@ Important current files:
 - Keep process-mode behavior working after each implementation phase.
 - Use static annotations and tools to classify globals before moving large
   amounts of state.
+- Do not attempt thread launch until the thread-safety floor is in place:
+  backend-local globals must not be shared plain process globals, backend exit
+  must not terminate the whole runtime, and timeout/interrupt delivery must be
+  per logical backend.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
