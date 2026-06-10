@@ -620,6 +620,7 @@ BaseInit(void)
 	Assert(MyProc != NULL);
 
 	InitializePgProcessRuntime();
+	InitializeTransactionState();
 
 	/*
 	 * Initialize our input/output/debugging file descriptors.

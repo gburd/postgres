@@ -21,6 +21,7 @@
 #include "nodes/pg_list.h"
 #include "storage/relfilelocator.h"
 #include "storage/sinval.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Maximum size of Global Transaction ID (including '\0').
@@ -57,7 +58,7 @@ extern PGDLLIMPORT bool DefaultXactReadOnly;
 extern PGDLLIMPORT bool XactReadOnly;
 
 /* flag for logging statements in this transaction */
-extern PGDLLIMPORT bool xact_is_sampled;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
@@ -84,8 +85,8 @@ typedef enum
 extern PGDLLIMPORT int synchronous_commit;
 
 /* used during logical streaming of a transaction */
-extern PGDLLIMPORT TransactionId CheckXidAlive;
-extern PGDLLIMPORT bool bsysscan;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool bsysscan;
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -94,7 +95,7 @@ extern PGDLLIMPORT bool bsysscan;
  * globally accessible, so can be set from anywhere in the code which requires
  * recording flags.
  */
-extern PGDLLIMPORT int MyXactFlags;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyXactFlags;
 
 /*
  * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
@@ -496,6 +497,8 @@ extern void RegisterXactCallback(XactCallback callback, void *arg);
 extern void UnregisterXactCallback(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
+
+extern void InitializeTransactionState(void);
 
 extern bool IsSubxactTopXidLogPending(void);
 extern void MarkSubxactTopXidLogged(void);

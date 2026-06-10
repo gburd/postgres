@@ -1,9 +1,8 @@
 # Phase 8 Thread-Safety Floor Notes
 
-Phase 8 is not complete yet. This note records the first implementation slice:
-the branch now has an explicit `PG_THREAD_LOCAL` storage qualifier in
-`src/include/utils/global_lifetime.h`, and a set of high-risk backend-local
-globals have been moved to thread-local storage as a compatibility bridge for
+Phase 8 is not complete yet. This note records the implementation slices that
+now use the explicit `PG_THREAD_LOCAL` storage qualifier from
+`src/include/utils/global_lifetime.h` as a compatibility bridge for
 thread-per-session launch.
 
 ## Completed Slice
@@ -43,7 +42,25 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
   `MyDatabaseHasLoginEventTriggers`, `DatabasePath`, `MyBackendType`, `Mode`,
   and `OutputFileName`;
-- vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`.
+- vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`;
+- transaction execution state in `xact.c`, including current transaction
+  state, subtransaction/command counters, transaction timestamps, parallel
+  current-XID state, unreported subtransaction XIDs, transaction abort context,
+  transaction flags, logical-streaming system-scan state, and transaction
+  sampling state;
+- transaction callback lists in `xact.c`, now session-local TLS state;
+- snapshot manager execution state in `snapmgr.c`, including current,
+  secondary, catalog, historic, registered, active, exported, and first-xact
+  snapshots, plus `TransactionXmin`, `RecentXmin`, tuple CID mapping, and
+  `FirstSnapshotSet`.
+
+`CurrentTransactionState` cannot use a static initializer that points at
+`TopTransactionStateData`, because both are thread-local objects. It is
+initialized by `InitializeTransactionState()`, called from `main()` immediately
+after memory-context initialization so bootstrap, check-only, single-user,
+postmaster, and regular backend paths can safely inspect transaction nesting
+before `BaseInit()`. `BaseInit()` also calls the same function idempotently for
+normal backend startup.
 
 `PostmasterContext` remains runtime-global. The timeout and lock-wait GUC
 backing variables in `proc.c` remain classified as session-owned but are not
@@ -64,8 +81,6 @@ Phase 8 still needs to cover at least:
 
 - GUC backing variables and GUC nesting state, likely by introducing GUC
   indirection rather than direct TLS globals;
-- transaction identity and snapshot globals outside the session identity covered
-  above;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -78,8 +93,13 @@ Phase 8 required-floor global remains unsafe and unclassified.
 Validation for this slice:
 
 - `gmake clean` followed by `gmake -j8`;
+- incremental `gmake -j8` after moving transaction-state initialization into
+  `main()`;
 - `perl src/tools/global_lifetime/scan_global_lifetimes.pl --baseline
   src/tools/global_lifetime/global_lifetime_baseline.tsv`;
+- regenerated `src/tools/global_lifetime/global_lifetime_baseline.tsv` so
+  previously classified Phase 8 globals are no longer carried as stale
+  unclassified debt;
 - filtered static scan for the touched required-floor names;
 - `git diff --check`;
 - extension backend-model regression tests:

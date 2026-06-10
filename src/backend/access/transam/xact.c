@@ -98,8 +98,8 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * directly access the tableam or heap APIs because we are checking for the
  * concurrent aborts only in systable_* APIs.
  */
-TransactionId CheckXidAlive = InvalidTransactionId;
-bool		bsysscan = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive = InvalidTransactionId;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool bsysscan = false;
 
 /*
  * When running as a parallel worker, we place only a single
@@ -124,9 +124,9 @@ bool		bsysscan = false;
  * The XIDs are stored sorted in numerical order (not logical order) to make
  * lookups as fast as possible.
  */
-static FullTransactionId XactTopFullTransactionId = {InvalidTransactionId};
-static int	nParallelCurrentXids = 0;
-static TransactionId *ParallelCurrentXids;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION FullTransactionId XactTopFullTransactionId = {InvalidTransactionId};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int nParallelCurrentXids = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId *ParallelCurrentXids;
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -135,7 +135,7 @@ static TransactionId *ParallelCurrentXids;
  * globally accessible, so can be set from anywhere in the code that requires
  * recording flags.
  */
-int			MyXactFlags;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyXactFlags;
 
 /*
  *	transaction states - transaction state from server perspective
@@ -246,7 +246,7 @@ typedef struct SerializedTransactionState
  * block.  It will point to TopTransactionStateData when not in a
  * transaction at all, or when in a top-level transaction.
  */
-static TransactionStateData TopTransactionStateData = {
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionStateData TopTransactionStateData = {
 	.state = TRANS_DEFAULT,
 	.blockState = TBLOCK_DEFAULT,
 	.topXidLogged = false,
@@ -256,18 +256,18 @@ static TransactionStateData TopTransactionStateData = {
  * unreportedXids holds XIDs of all subtransactions that have not yet been
  * reported in an XLOG_XACT_ASSIGNMENT record.
  */
-static int	nUnreportedXids;
-static TransactionId unreportedXids[PGPROC_MAX_CACHED_SUBXIDS];
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int nUnreportedXids;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId unreportedXids[PGPROC_MAX_CACHED_SUBXIDS];
 
-static TransactionState CurrentTransactionState = &TopTransactionStateData;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionState CurrentTransactionState;
 
 /*
  * The subtransaction ID and command ID assignment counters are global
  * to a whole transaction, so we do not keep them in the state stack.
  */
-static SubTransactionId currentSubTransactionId;
-static CommandId currentCommandId;
-static bool currentCommandIdUsed;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SubTransactionId currentSubTransactionId;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION CommandId currentCommandId;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool currentCommandIdUsed;
 
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
@@ -279,30 +279,30 @@ static bool currentCommandIdUsed;
  * These do not change as we enter and exit subtransactions, so we don't
  * keep them inside the TransactionState stack.
  */
-static TimestampTz xactStartTimestamp;
-static TimestampTz stmtStartTimestamp;
-static TimestampTz xactStopTimestamp;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TimestampTz xactStartTimestamp;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TimestampTz stmtStartTimestamp;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TimestampTz xactStopTimestamp;
 
 /*
  * GID to be used for preparing the current transaction.  This is also
  * global to a whole transaction, so we don't keep it in the state stack.
  */
-static char *prepareGID;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *prepareGID;
 
 /*
  * Some commands want to force synchronous commit.
  */
-static bool forceSyncCommit = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool forceSyncCommit = false;
 
 /* Flag for logging statements in a transaction. */
-bool		xact_is_sampled = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled = false;
 
 /*
  * Private context for transaction-abort work --- we reserve space for this
  * at startup to ensure that AbortTransaction and AbortSubTransaction can work
  * when we've run out of memory.
  */
-static MemoryContext TransactionAbortContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext TransactionAbortContext = NULL;
 
 /*
  * List of add-on start- and end-of-xact callbacks
@@ -314,7 +314,7 @@ typedef struct XactCallbackItem
 	void	   *arg;
 } XactCallbackItem;
 
-static XactCallbackItem *Xact_callbacks = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION XactCallbackItem *Xact_callbacks = NULL;
 
 /*
  * List of add-on start- and end-of-subxact callbacks
@@ -326,7 +326,7 @@ typedef struct SubXactCallbackItem
 	void	   *arg;
 } SubXactCallbackItem;
 
-static SubXactCallbackItem *SubXact_callbacks = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SubXactCallbackItem *SubXact_callbacks = NULL;
 
 
 /* local function prototypes */
@@ -378,6 +378,19 @@ static const char *TransStateAsString(TransState state);
  *	transaction state accessors
  * ----------------------------------------------------------------
  */
+
+/*
+ * Initialize per-thread transaction state.  The historical static initializer
+ * made CurrentTransactionState point at TopTransactionStateData, but C does
+ * not allow a thread-local pointer to be initialized with the address of
+ * another thread-local object.
+ */
+void
+InitializeTransactionState(void)
+{
+	if (CurrentTransactionState == NULL)
+		CurrentTransactionState = &TopTransactionStateData;
+}
 
 /*
  *	IsTransactionState

@@ -138,29 +138,29 @@
  * These SnapshotData structs are static to simplify memory allocation
  * (see the hack in GetSnapshotData to avoid repeated malloc/free).
  */
-static SnapshotData CurrentSnapshotData = {SNAPSHOT_MVCC};
-static SnapshotData SecondarySnapshotData = {SNAPSHOT_MVCC};
-static SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
-SnapshotData SnapshotSelfData = {SNAPSHOT_SELF};
-SnapshotData SnapshotAnyData = {SNAPSHOT_ANY};
-SnapshotData SnapshotToastData = {SNAPSHOT_TOAST};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData CurrentSnapshotData = {SNAPSHOT_MVCC};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData SecondarySnapshotData = {SNAPSHOT_MVCC};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
+PG_GLOBAL_IMMUTABLE SnapshotData SnapshotSelfData = {SNAPSHOT_SELF};
+PG_GLOBAL_IMMUTABLE SnapshotData SnapshotAnyData = {SNAPSHOT_ANY};
+PG_GLOBAL_IMMUTABLE SnapshotData SnapshotToastData = {SNAPSHOT_TOAST};
 
 /* Pointers to valid snapshots */
-static Snapshot CurrentSnapshot = NULL;
-static Snapshot SecondarySnapshot = NULL;
-static Snapshot CatalogSnapshot = NULL;
-static Snapshot HistoricSnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot CurrentSnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot SecondarySnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot CatalogSnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot HistoricSnapshot = NULL;
 
 /*
  * These are updated by GetSnapshotData.  We initialize them this way
  * for the convenience of TransactionIdIsInProgress: even in bootstrap
  * mode, we don't want it to say that BootstrapTransactionId is in progress.
  */
-TransactionId TransactionXmin = FirstNormalTransactionId;
-TransactionId RecentXmin = FirstNormalTransactionId;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId TransactionXmin = FirstNormalTransactionId;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId RecentXmin = FirstNormalTransactionId;
 
 /* (table, ctid) => (cmin, cmax) mapping during timetravel */
-static HTAB *tuplecid_data = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *tuplecid_data = NULL;
 
 /*
  * Elements of the active snapshot stack.
@@ -178,7 +178,7 @@ typedef struct ActiveSnapshotElt
 } ActiveSnapshotElt;
 
 /* Top of the stack of active snapshots */
-static ActiveSnapshotElt *ActiveSnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ActiveSnapshotElt *ActiveSnapshot = NULL;
 
 /*
  * Currently registered Snapshots.  Ordered in a heap by xmin, so that we can
@@ -187,17 +187,17 @@ static ActiveSnapshotElt *ActiveSnapshot = NULL;
 static int	xmin_cmp(const pairingheap_node *a, const pairingheap_node *b,
 					 void *arg);
 
-static pairingheap RegisteredSnapshots = {&xmin_cmp, NULL, NULL};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pairingheap RegisteredSnapshots = {&xmin_cmp, NULL, NULL};
 
 /* first GetTransactionSnapshot call in a transaction? */
-bool		FirstSnapshotSet = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool FirstSnapshotSet = false;
 
 /*
  * Remember the serializable transaction snapshot, if any.  We cannot trust
  * FirstSnapshotSet in combination with IsolationUsesXactSnapshot(), because
  * GUC may be reset before us, changing the value of IsolationUsesXactSnapshot.
  */
-static Snapshot FirstXactSnapshot = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot FirstXactSnapshot = NULL;
 
 /* Define pathname of exported-snapshot files */
 #define SNAPSHOT_EXPORT_DIR "pg_snapshots"
@@ -210,7 +210,7 @@ typedef struct ExportedSnapshot
 } ExportedSnapshot;
 
 /* Current xact's exported snapshots (a list of ExportedSnapshot structs) */
-static List *exportedSnapshots = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION List *exportedSnapshots = NIL;
 
 /* Prototypes for local functions */
 static Snapshot CopySnapshot(Snapshot snapshot);
