@@ -371,7 +371,8 @@ Validation:
   model;
 - existing process mode loads extensions as before;
 - metadata parsing and version compatibility are covered;
-- PL/pgSQL audit has a concrete migration path;
+- PL/pgSQL audit has a concrete migration path, recorded in
+  `MULTITHREADED_PHASE7_EXTENSIONS.md`;
 - real threaded-mode PL/pgSQL and allowlist validation are deferred to the
   thread-per-session runtime gate.
 

@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 
 
@@ -71,6 +72,13 @@ char	   *Dynamic_library_path;
 static void *internal_load_library(const char *libname);
 pg_noreturn static void incompatible_module_error(const char *libname,
 												  const Pg_abi_values *module_magic_data);
+static bool module_backend_model_is_valid(PgBackendModel backend_model);
+static bool module_backend_model_is_compatible(PgBackendModel module_backend_model,
+											   PgBackendModel required_backend_model);
+static const char *module_backend_model_name(PgBackendModel backend_model);
+pg_noreturn static void incompatible_module_backend_model_error(const char *libname,
+																PgBackendModel module_backend_model,
+																PgBackendModel required_backend_model);
 static char *expand_dynamic_library_name(const char *name);
 static void check_restricted_library_name(const char *name);
 
@@ -259,6 +267,7 @@ internal_load_library(const char *libname)
 		if (magic_func)
 		{
 			const Pg_magic_struct *magic_data_ptr = (*magic_func) ();
+			PgBackendModel required_backend_model;
 
 			/* Check ABI compatibility fields */
 			if (magic_data_ptr->len != sizeof(Pg_magic_struct) ||
@@ -274,6 +283,22 @@ internal_load_library(const char *libname)
 
 				/* issue suitable complaint */
 				incompatible_module_error(libname, &module_magic_data.abi_fields);
+			}
+
+			required_backend_model = PgRuntimeGetExtensionBackendModel();
+			if (!module_backend_model_is_valid(magic_data_ptr->backend_model) ||
+				!module_backend_model_is_compatible(magic_data_ptr->backend_model,
+													required_backend_model))
+			{
+				PgBackendModel module_backend_model = magic_data_ptr->backend_model;
+
+				/* try to close library */
+				dlclose(file_scanner->handle);
+				free(file_scanner);
+
+				incompatible_module_backend_model_error(libname,
+														module_backend_model,
+														required_backend_model);
 			}
 
 			/* Remember the magic block's location for future use */
@@ -304,6 +329,18 @@ internal_load_library(const char *libname)
 		else
 			file_tail->next = file_scanner;
 		file_tail = file_scanner;
+	}
+	else
+	{
+		PgBackendModel required_backend_model;
+
+		required_backend_model = PgRuntimeGetExtensionBackendModel();
+		if (!module_backend_model_is_valid(file_scanner->magic->backend_model) ||
+			!module_backend_model_is_compatible(file_scanner->magic->backend_model,
+												required_backend_model))
+			incompatible_module_backend_model_error(libname,
+													file_scanner->magic->backend_model,
+													required_backend_model);
 	}
 
 	return file_scanner->handle;
@@ -412,6 +449,64 @@ incompatible_module_error(const char *libname,
 			(errmsg("incompatible library \"%s\": magic block mismatch",
 					libname),
 			 errdetail_internal("%s", details.data)));
+}
+
+static bool
+module_backend_model_is_valid(PgBackendModel backend_model)
+{
+	return backend_model >= PG_BACKEND_MODEL_PROCESS &&
+		backend_model <= PG_BACKEND_MODEL_POOLED_SCHEDULER;
+}
+
+static bool
+module_backend_model_is_compatible(PgBackendModel module_backend_model,
+								   PgBackendModel required_backend_model)
+{
+	if (!module_backend_model_is_valid(module_backend_model) ||
+		!module_backend_model_is_valid(required_backend_model))
+		return false;
+
+	return module_backend_model >= required_backend_model;
+}
+
+static const char *
+module_backend_model_name(PgBackendModel backend_model)
+{
+	switch (backend_model)
+	{
+		case PG_BACKEND_MODEL_PROCESS:
+			return "process";
+		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
+			return "thread-per-session";
+		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
+			return "pooled-scheduler";
+	}
+
+	return "unknown";
+}
+
+/*
+ * Report an error for a module that cannot run under the active backend model.
+ */
+static void
+incompatible_module_backend_model_error(const char *libname,
+										PgBackendModel module_backend_model,
+										PgBackendModel required_backend_model)
+{
+	if (!module_backend_model_is_valid(module_backend_model))
+		ereport(ERROR,
+				(errmsg("incompatible library \"%s\": invalid backend model",
+						libname),
+				 errdetail("Library declares backend model %d.",
+						   module_backend_model)));
+
+	ereport(ERROR,
+			(errmsg("incompatible library \"%s\": backend model mismatch",
+					libname),
+			 errdetail("Active backend model is \"%s\", but library supports \"%s\".",
+					   module_backend_model_name(required_backend_model),
+					   module_backend_model_name(module_backend_model)),
+			 errhint("Audit the module before marking it with threaded backend model metadata.")));
 }
 
 

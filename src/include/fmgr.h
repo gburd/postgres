@@ -475,6 +475,26 @@ typedef struct
 	char		abi_extra[32];	/* see pg_config_manual.h */
 } Pg_abi_values;
 
+/*
+ * Backend execution models that an extension library declares it supports.
+ *
+ * The values are ordered from least to most reentrant.  A module marked for a
+ * stronger model can be loaded by a weaker runtime model, but not vice versa.
+ */
+typedef enum PgBackendModel
+{
+	PG_BACKEND_MODEL_PROCESS = 0,
+	PG_BACKEND_MODEL_THREAD_PER_SESSION,
+	PG_BACKEND_MODEL_POOLED_SCHEDULER
+} PgBackendModel;
+
+#define PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS \
+	.backend_model = PG_BACKEND_MODEL_PROCESS
+#define PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION \
+	.backend_model = PG_BACKEND_MODEL_THREAD_PER_SESSION
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_SCHEDULER \
+	.backend_model = PG_BACKEND_MODEL_POOLED_SCHEDULER
+
 /* Definition of the magic block structure */
 typedef struct
 {
@@ -483,6 +503,7 @@ typedef struct
 	/* Remaining fields are zero unless filled via PG_MODULE_MAGIC_EXT */
 	const char *name;			/* optional module name */
 	const char *version;		/* optional module version */
+	PgBackendModel backend_model;	/* supported backend execution model */
 } Pg_magic_struct;
 
 /* Macro to fill the ABI fields */
@@ -498,7 +519,9 @@ typedef struct
 
 /*
  * Macro to fill a magic block.  If any arguments are given, they should
- * be field initializers.
+ * be field initializers.  The default backend model is deliberately
+ * process-only so that existing third-party modules do not opt into threaded
+ * runtimes without an audit.
  */
 #define PG_MODULE_MAGIC_DATA(...) \
 { \

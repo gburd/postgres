@@ -1,6 +1,7 @@
 # src/test/modules/test_extensions/Makefile
 
 MODULE = test_extensions
+MODULES = test_ext_backend_model test_ext_threaded
 MODULE_big = test_ext
 PGFILEDESC = "test_extensions - regression testing for EXTENSION support"
 
@@ -30,7 +31,7 @@ DATA = test_ext1--1.0.sql test_ext2--1.0.sql test_ext3--1.0.sql \
        test_ext_req_schema2--1.0.sql \
        test_ext_req_schema3--1.0.sql
 
-REGRESS = test_extensions test_extdepend
+REGRESS = test_extensions test_extdepend test_ext_backend_model
 TAP_TESTS = 1
 
 # force C locale for output stability

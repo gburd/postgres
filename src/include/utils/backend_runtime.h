@@ -13,6 +13,7 @@
 #define BACKEND_RUNTIME_H
 
 #include "access/session.h"
+#include "fmgr.h"
 #include "lib/ilist.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
@@ -113,6 +114,7 @@ struct PgRuntime
 {
 	PgRuntimeKind kind;
 	PgCarrier  *current_carrier;
+	PgBackendModel extension_backend_model;
 
 	/*
 	 * Optional continuation used after PgBackendExitCleanup().  Process mode
@@ -181,6 +183,8 @@ extern PGDLLIMPORT PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
+extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
+extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);

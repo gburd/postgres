@@ -18,6 +18,8 @@ the code evolves.
   decision.
 - [MULTITHREADED_PHASE6_EXIT.md](MULTITHREADED_PHASE6_EXIT.md) records the
   current backend lifecycle/exit boundary and deferred thread-runtime proof.
+- [MULTITHREADED_PHASE7_EXTENSIONS.md](MULTITHREADED_PHASE7_EXTENSIONS.md)
+  records the extension backend-model gate and PL/pgSQL audit result.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.

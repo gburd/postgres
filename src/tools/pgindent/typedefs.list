@@ -2291,6 +2291,7 @@ PgAioWorkerSubmissionQueue
 PgArchData
 PgBackend
 PgBackendGSSStatus
+PgBackendModel
 PgBackendSSLStatus
 PgBackendStatus
 PgBenchExpr

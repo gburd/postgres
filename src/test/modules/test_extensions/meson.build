@@ -59,6 +59,16 @@ test_ext = shared_module('test_ext',
   kwargs: pg_test_mod_args,
 )
 
+test_ext_backend_model = shared_module('test_ext_backend_model',
+  files('test_ext_backend_model.c'),
+  kwargs: pg_test_mod_args,
+)
+
+test_ext_threaded = shared_module('test_ext_threaded',
+  files('test_ext_threaded.c'),
+  kwargs: pg_test_mod_args,
+)
+
 tests += {
   'name': 'test_extensions',
   'sd': meson.current_source_dir(),
@@ -67,6 +77,7 @@ tests += {
     'sql': [
       'test_extensions',
       'test_extdepend',
+      'test_ext_backend_model',
     ],
     'regress_args': ['--no-locale'],
   },

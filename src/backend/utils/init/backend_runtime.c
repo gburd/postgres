@@ -57,6 +57,7 @@ InitializePgProcessRuntime(void)
 
 	process_runtime.kind = PG_RUNTIME_PROCESS;
 	process_runtime.current_carrier = &process_carrier;
+	process_runtime.extension_backend_model = PG_BACKEND_MODEL_PROCESS;
 
 	process_carrier.kind = PG_CARRIER_PROCESS;
 	process_carrier.runtime = &process_runtime;
@@ -100,6 +101,28 @@ PgProcessRuntimeAttachSession(Session *session)
 	Assert(CurrentPgSession != NULL);
 
 	CurrentPgSession->legacy_session = session;
+}
+
+PgBackendModel
+PgRuntimeGetExtensionBackendModel(void)
+{
+	if (CurrentPgRuntime == NULL)
+		return PG_BACKEND_MODEL_PROCESS;
+
+	return CurrentPgRuntime->extension_backend_model;
+}
+
+void
+PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
+{
+	if (backend_model < PG_BACKEND_MODEL_PROCESS ||
+		backend_model > PG_BACKEND_MODEL_POOLED_SCHEDULER)
+		elog(ERROR, "invalid backend model: %d", backend_model);
+
+	if (CurrentPgRuntime == NULL)
+		return;
+
+	CurrentPgRuntime->extension_backend_model = backend_model;
 }
 
 void
