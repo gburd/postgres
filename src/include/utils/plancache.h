@@ -19,6 +19,7 @@
 #include "lib/ilist.h"
 #include "nodes/params.h"
 #include "tcop/cmdtag.h"
+#include "utils/global_lifetime.h"
 #include "utils/queryenvironment.h"
 #include "utils/resowner.h"
 
@@ -36,7 +37,7 @@ typedef enum
 }			PlanCacheMode;
 
 /* GUC parameter */
-extern PGDLLIMPORT int plan_cache_mode;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int plan_cache_mode;
 
 /* Optional callback to editorialize on rewritten parse trees */
 typedef void (*PostRewriteHook) (List *querytree_list, void *arg);

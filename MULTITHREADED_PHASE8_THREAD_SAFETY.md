@@ -125,6 +125,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - text-search session GUC/cache state: `TSCurrentConfig` and
   `TSCurrentConfigCache`.
 - dynamic loader session GUC backing variable: `Dynamic_library_path`.
+- plan-cache mode session GUC backing variable: `plan_cache_mode`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -160,9 +161,13 @@ Phase 8 still needs to cover at least:
 
 - remaining GUC backing variables now that the generated runtime rebind layer
   exists;
+- plan-cache saved plan and cached expression lists in `plancache.c`; these
+  are session/backend-local, but they use self-referential `DLIST_STATIC_INIT`
+  today and need an explicit initialization design before they can move to
+  TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the dynamic loader GUC slice, the filtered static report contains 241
+After the plan-cache mode GUC slice, the filtered static report contains 240
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -327,6 +332,17 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc`;
 - live temp-cluster smoke coverage for `dynamic_library_path`, including an
   empty-path `LOAD 'plpgsql'` failure and a `$libdir` success;
+- focused `plancache.o` compile coverage;
+- fixture-backed plan-cache mode regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc plancache
+  explain partition_prune subselect`;
+- live temp-cluster smoke coverage for `plan_cache_mode`, including
+  `PREPARE`, `EXECUTE`, `SET force_generic_plan`, `SET force_custom_plan`,
+  `RESET`, and `DEALLOCATE`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

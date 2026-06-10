@@ -67,6 +67,7 @@
 #include "storage/lmgr.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
+#include "utils/global_lifetime.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -137,7 +138,7 @@ ResourceOwnerForgetPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 
 
 /* GUC parameter */
-int			plan_cache_mode = PLAN_CACHE_MODE_AUTO;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int plan_cache_mode = PLAN_CACHE_MODE_AUTO;
 
 /*
  * InitPlanCache: initialize module during InitPostgres.
