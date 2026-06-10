@@ -253,9 +253,9 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print;
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
-extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
-extern PGDLLIMPORT bool Debug_write_read_parse_plan_trees;
-extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_copy_parse_plan_trees;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_write_read_parse_plan_trees;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_raw_expression_coverage_test;
 
 /*
  * support for legacy compile-time settings

@@ -2083,9 +2083,6 @@ src/backend/utils/misc/guc.c	676c54bc481382cb598d996eae27f439a38a51e4	memory_uni
 src/backend/utils/misc/guc.c	96092488f012969a5752b17fed485575f4f14ec1	time_units_hint	static const char *const time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
 src/backend/utils/misc/guc.c	df6a9a6a86dc83a23132d0670c2e64e468b1959c	time_unit_conversion_table	static const unit_conversion time_unit_conversion_table[] = { {"d", GUC_UNIT_MS, 1000 * 60 * 60 * 24}, {"h", GUC_UNIT_MS, 1000 * 60 * 60}, {"min", GUC_UNIT_MS, 1000 * 60}, {"s", GUC_UNIT_MS, 1000}, {"ms", GUC_UNIT_MS, 1}, {"us", GUC_UNIT...
 src/backend/utils/misc/guc.c	31593cfc5887e26c3f8da36fb633ce637a06cf03	map_old_guc_names	static const char *const map_old_guc_names[] = { "sort_mem", "work_mem", "vacuum_mem", "maintenance_work_mem", "ssl_ecdh_curve", "ssl_groups", NULL };
-src/backend/utils/misc/guc_tables.c	ca727d547f6587811049d735386d0d88506d8a38	Debug_copy_parse_plan_trees	bool Debug_copy_parse_plan_trees;
-src/backend/utils/misc/guc_tables.c	a4dee184d02c30e3b6322c224479101183a1a78b	Debug_write_read_parse_plan_trees	bool Debug_write_read_parse_plan_trees;
-src/backend/utils/misc/guc_tables.c	ac6439a650b145354baf26e91b76f304421aacff	Debug_raw_expression_coverage_test	bool Debug_raw_expression_coverage_test;
 src/backend/utils/misc/guc_tables.c	d420d29966b9f928afdda23f38fdaf4d279bc436	huge_pages	int huge_pages = HUGE_PAGES_TRY;
 src/backend/utils/misc/guc_tables.c	38edf161744e52dc1f2fd0006e38d73b064db751	huge_page_size	int huge_page_size;
 src/backend/utils/misc/guc_tables.c	cde5e9947f4ea49e167b9e00e1eec8da8c8fbe9b	huge_pages_status	int huge_pages_status = HUGE_PAGES_UNKNOWN;
@@ -2640,9 +2637,6 @@ src/include/utils/elog.h	c5248a6abf61d0c1f6f3fb47e160dc966fee7e45	syslog_sequenc
 src/include/utils/elog.h	ec6b652cd0741d096e5c5cb47d616dec1aa5604b	syslog_split_messages	extern PGDLLIMPORT bool syslog_split_messages;
 src/include/utils/funccache.h	f2ed3dbf69f353d45c3e2e685cfe1d2a85402a8d	CachedFunctionHashKey	struct CachedFunctionHashKey;
 src/include/utils/funccache.h	a86fc3803ee03c196bbcc6a1240e69ee6311bc0e	CachedFunction	struct CachedFunction;
-src/include/utils/guc.h	6da87dc379ba55d218bd1d4e46b20835deeddb33	Debug_copy_parse_plan_trees	extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
-src/include/utils/guc.h	b734c86716aa76bd779abc6b0c95d7345e44e38a	Debug_write_read_parse_plan_trees	extern PGDLLIMPORT bool Debug_write_read_parse_plan_trees;
-src/include/utils/guc.h	6d9d372167ffd0e3fb7682a0397d20324ead4413	Debug_raw_expression_coverage_test	extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
 src/include/utils/guc.h	6cb87eba082e39f078c76cf3c8658b6b50df1f63	in_hot_standby_guc	extern PGDLLIMPORT bool in_hot_standby_guc;
 src/include/utils/guc_tables.h	d340e57d0ae8eef772795b8aba79c4d095f8f8eb	config_group_names	extern PGDLLIMPORT const char *const config_group_names[];
 src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_type_names	extern PGDLLIMPORT const char *const config_type_names[];

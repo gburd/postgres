@@ -144,6 +144,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - logging/error-reporting session state: `Log_error_verbosity`,
   `log_min_messages_string`, and the processed `backtrace_function_list`
   derived from `backtrace_functions`.
+- guarded developer node-test GUC backing variables:
+  `Debug_copy_parse_plan_trees`, `Debug_raw_expression_coverage_test`, and
+  `Debug_write_read_parse_plan_trees`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -185,7 +188,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the logging/error-reporting state slice, the filtered static report contains 224
+After the guarded developer node-test GUC slice, the filtered static report contains 221
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -461,6 +464,11 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `log_error_verbosity`,
   `log_min_messages`, and `backtrace_functions`, including a second
   connection that did not inherit the first session's settings;
+- focused `guc_tables.o` compile coverage plus incremental `gmake -j8` after
+  converting the `DEBUG_NODE_TESTS_ENABLED` developer node-test GUC
+  declarations to `PG_THREAD_LOCAL`. These GUCs are not present in the default
+  build, so validation for this slice is compile and static-scan coverage
+  rather than runtime SQL coverage;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

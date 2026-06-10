@@ -538,9 +538,9 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten = false;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print = true;
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
-bool		Debug_copy_parse_plan_trees;
-bool		Debug_write_read_parse_plan_trees;
-bool		Debug_raw_expression_coverage_test;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_copy_parse_plan_trees;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_write_read_parse_plan_trees;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_raw_expression_coverage_test;
 #endif
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_parser_stats = false;
