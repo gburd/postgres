@@ -495,6 +495,7 @@ WaitForProcSignalBarrier(uint64 generation)
 static void
 HandleProcSignalBarrierInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 	InterruptPending = true;
 	ProcSignalBarrierPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
@@ -659,6 +660,7 @@ static void
 ResetProcSignalBarrierBits(uint32 flags)
 {
 	pg_atomic_fetch_or_u32(&MyProcSignalSlot->pss_barrierCheckMask, flags);
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 	ProcSignalBarrierPending = true;
 	InterruptPending = true;
 }
@@ -697,61 +699,34 @@ void
 procsignal_sigusr1_handler(SIGNAL_ARGS)
 {
 	if (CheckProcSignal(PROCSIG_CATCHUP_INTERRUPT))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
 		HandleCatchupInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_NOTIFY_INTERRUPT))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 		HandleNotifyInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_PARALLEL_MESSAGE))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
 		HandleParallelMessageInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_WALSND_INIT_STOPPING))
 		HandleWalSndInitStopping();
 
 	if (CheckProcSignal(PROCSIG_BARRIER))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 		HandleProcSignalBarrierInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_LOG_MEMORY_CONTEXT))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
 		HandleLogMemoryContextInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_PARALLEL_APPLY_MESSAGE))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE);
 		HandleParallelApplyMessageInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_REPACK_MESSAGE))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
 		HandleRepackMessageInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_SLOTSYNC_MESSAGE))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
 		HandleSlotSyncMessageInterrupt();
-	}
 
 	if (CheckProcSignal(PROCSIG_RECOVERY_CONFLICT))
-	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
 		HandleRecoveryConflictInterrupt();
-	}
 
 	SetLatch(MyLatch);
 }

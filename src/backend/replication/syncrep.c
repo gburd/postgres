@@ -83,6 +83,7 @@
 #include "replication/walsender_private.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/ps_status.h"
 #include "utils/wait_event.h"
@@ -347,6 +348,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		 */
 		if (rc & WL_POSTMASTER_DEATH)
 		{
+			PgCurrentBackendRaiseProcDieInterrupt(0, 0);
 			ProcDiePending = true;
 			whereToSendOutput = DestNone;
 			SyncRepCancelWait();

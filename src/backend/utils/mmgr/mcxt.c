@@ -41,6 +41,7 @@
 #include "common/int.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
@@ -1325,6 +1326,7 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 void
 HandleLogMemoryContextInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
 	InterruptPending = true;
 	LogMemoryContextPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */

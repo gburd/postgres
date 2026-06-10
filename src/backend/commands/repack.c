@@ -70,6 +70,7 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
@@ -3654,6 +3655,7 @@ DecodingWorkerFileName(char *fname, Oid relid, uint32 seq)
 void
 HandleRepackMessageInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
 	InterruptPending = true;
 	RepackMessagePending = true;
 	SetLatch(MyLatch);

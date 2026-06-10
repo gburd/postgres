@@ -170,6 +170,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -1007,6 +1008,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 void
 HandleParallelApplyMessageInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE);
 	InterruptPending = true;
 	ParallelApplyMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */

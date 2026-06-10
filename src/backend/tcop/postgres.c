@@ -3280,14 +3280,15 @@ report_recovery_conflict(RecoveryConflictReason reason)
 			/* Avoid losing sync in the FE/BE protocol. */
 			if (QueryCancelHoldoffCount != 0)
 			{
-				/*
-				 * Re-arm and defer this interrupt until later.  See similar
-				 * code in ProcessInterrupts().
-				 */
-				(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
-				InterruptPending = true;
-				return;
-			}
+					/*
+					 * Re-arm and defer this interrupt until later.  See similar
+					 * code in ProcessInterrupts().
+					 */
+					(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
+					PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
+					InterruptPending = true;
+					return;
+				}
 
 			/*
 			 * We are cleared to throw an ERROR.  Either it's the logical slot

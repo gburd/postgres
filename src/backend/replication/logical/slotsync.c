@@ -75,6 +75,7 @@
 #include "storage/procarray.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -1337,6 +1338,7 @@ slotsync_reread_config(void)
 void
 HandleSlotSyncMessageInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
 	InterruptPending = true;
 	SlotSyncShutdownPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */

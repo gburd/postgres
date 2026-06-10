@@ -181,6 +181,7 @@
 #include "storage/procsignal.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/dsa.h"
 #include "utils/guc_hooks.h"
@@ -2392,6 +2393,7 @@ SignalBackends(void)
 		 */
 		if (pid == MyProcPid)
 		{
+			PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 			notifyInterruptPending = true;
 			continue;
 		}
@@ -2557,6 +2559,7 @@ HandleNotifyInterrupt(void)
 	 */
 
 	/* signal that work needs to be done */
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 	notifyInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */

@@ -39,6 +39,7 @@
 #include "storage/proc.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
@@ -1045,6 +1046,7 @@ ParallelContextActive(void)
 void
 HandleParallelMessageInterrupt(void)
 {
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
 	InterruptPending = true;
 	ParallelMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
