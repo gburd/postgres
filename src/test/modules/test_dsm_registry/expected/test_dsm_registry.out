@@ -32,6 +32,25 @@ SELECT get_val_in_hash('test');
 (1 row)
 
 \c
+SELECT reset_dsm_detach_count();
+ reset_dsm_detach_count 
+------------------------
+ 
+(1 row)
+
+SELECT register_dsm_detach_for_backend_exit();
+ register_dsm_detach_for_backend_exit 
+--------------------------------------
+ 
+(1 row)
+
+\c
+SELECT get_dsm_detach_count();
+ get_dsm_detach_count 
+----------------------
+                    1
+(1 row)
+
 SELECT name, type, size > 0 AS size_ok
 FROM pg_dsm_registry_allocations
 WHERE name like 'test_dsm_registry%' ORDER BY name;
