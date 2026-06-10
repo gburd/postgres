@@ -269,6 +269,9 @@ Phase 5 completion note:
   logical interrupt machinery. Treat the missing fixture as a validation gap to
   cover in Gate B or a focused follow-up, not as an incomplete Phase 5
   implementation item.
+- In other words, this was a deliberate validation deferral after inspection,
+  not an indication that Phase 5 still needs implementation work before Phase
+  6 can proceed.
 
 ## Phase 6: Backend Lifecycle And Exit
 
