@@ -37,7 +37,7 @@
 #include "utils/rel.h"
 
 /* GUC variables */
-int			wal_skip_threshold = 2048;	/* in kilobytes */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_skip_threshold = 2048;	/* in kilobytes */
 
 /*
  * We keep a list of all relations (represented as RelFileLocator values)

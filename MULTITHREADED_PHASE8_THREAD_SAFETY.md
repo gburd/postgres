@@ -160,6 +160,19 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `XLOG_DEBUG`, `track_wal_io_timing`, `wal_compression`,
   `wal_consistency_checking`, `wal_consistency_checking_string`,
   `wal_init_zero`, and `wal_recycle`.
+- final backend-facing USERSET/SUSET GUC backing variables and required
+  derived state: `debug_discard_caches`,
+  `debug_logical_replication_streaming`, `log_replication_commands`,
+  `logical_decoding_work_mem`, `max_stack_depth`,
+  `max_stack_depth_bytes`, `stack_base_ptr`, `update_process_title`,
+  `wal_receiver_timeout`, `wal_sender_shutdown_timeout`,
+  `wal_sender_timeout`, and `wal_skip_threshold`.
+
+The frontend utility `quote_all_identifiers` global is explicitly classified
+as `PG_GLOBAL_DYNAMIC`, not as backend session state. The backend GUC backing
+variable with the same name was already classified as `PG_THREAD_LOCAL`
+`PG_GLOBAL_SESSION` in `ruleutils.c` and `builtins.h`; the frontend variable
+is not part of backend threaded-session state.
 
 The following GUC backing variables are now explicitly classified as
 runtime-global, not thread-local, because they describe server build,
@@ -264,6 +277,10 @@ postmaster, shared-memory, or startup-computed runtime state:
   `sync_replication_slots`, `synchronized_standby_slots`,
   `track_commit_timestamp`, `wal_receiver_status_interval`, and
   `wal_summary_keep_time`.
+- timing runtime GUC backing variable: `timing_clock_source`. Although its
+  GUC context is `PGC_SUSET`, the common timing conversion state is currently
+  process-wide, so this variable remains runtime-global until the timing
+  subsystem is given an explicit per-session or per-carrier abstraction.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -305,9 +322,8 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the replication/WAL-capacity GUC classification slice, the filtered
-static report contains 12 remaining unclassified generated GUC backing
-variables.
+After the final USERSET/SUSET GUC classification slice, the filtered static
+report contains zero remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -637,6 +653,17 @@ Validation for this slice:
   variables as `PG_GLOBAL_RUNTIME`;
 - incremental `gmake -j8` and focused core GUC regression test after the
   replication/WAL-capacity slice: `guc`;
+- focused `inval.o`, `reorderbuffer.o`, `walsender.o`, `walreceiver.o`,
+  `stack_depth.o`, `ps_status.o`, `storage.o`, `instr_time.o`, and
+  `string_utils.o` compile coverage after classifying the final USERSET/SUSET
+  GUC backing variables and frontend `quote_all_identifiers` singleton;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting final installed-header declarations to `PG_THREAD_LOCAL`
+  or explicit runtime/dynamic classifications;
+- focused core GUC regression test after the final USERSET/SUSET slice:
+  `guc`;
+- PL/pgSQL clean rebuild and temp-install reinstall after the final
+  installed-header `PG_THREAD_LOCAL` changes;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

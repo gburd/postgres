@@ -23,16 +23,16 @@
 
 
 /* GUC variable for maximum stack depth (measured in kilobytes) */
-int			max_stack_depth = 100;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_stack_depth = 100;
 
 /* max_stack_depth converted to bytes for speed of checking */
-static ssize_t max_stack_depth_bytes = 100 * (ssize_t) 1024;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION ssize_t max_stack_depth_bytes = 100 * (ssize_t) 1024;
 
 /*
  * Stack base pointer -- initialized by set_stack_base(), which
  * should be called from main().
  */
-static char *stack_base_ptr = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER char *stack_base_ptr = NULL;
 
 
 /*

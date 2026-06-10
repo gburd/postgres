@@ -61,7 +61,7 @@
 uint64		ticks_per_ns_scaled = 0;
 uint64		max_ticks_no_overflow = 0;
 bool		timing_initialized = false;
-int			timing_clock_source = TIMING_CLOCK_SOURCE_AUTO;
+PG_GLOBAL_RUNTIME int timing_clock_source = TIMING_CLOCK_SOURCE_AUTO;
 
 bool		timing_tsc_enabled = false;
 int32		timing_tsc_frequency_khz = -1;

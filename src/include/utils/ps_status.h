@@ -12,6 +12,8 @@
 #ifndef PS_STATUS_H
 #define PS_STATUS_H
 
+#include "utils/global_lifetime.h"
+
 /* disabled on Windows as the performance overhead can be significant */
 #ifdef WIN32
 #define DEFAULT_UPDATE_PROCESS_TITLE false
@@ -19,7 +21,7 @@
 #define DEFAULT_UPDATE_PROCESS_TITLE true
 #endif
 
-extern PGDLLIMPORT bool update_process_title;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool update_process_title;
 
 extern char **save_ps_display_args(int argc, char **argv);
 

@@ -140,14 +140,14 @@ bool		am_db_walsender = false;	/* Connected to a database? */
 /* GUC variables */
 PG_GLOBAL_RUNTIME int max_wal_senders = 10;	/* the maximum number of concurrent
 											 * walsenders */
-int			wal_sender_timeout = 60 * 1000; /* maximum time to send one WAL
-											 * data message */
 
-int			wal_sender_shutdown_timeout = -1;	/* maximum time to wait during
-												 * shutdown for WAL
-												 * replication */
+/* Maximum time to send one WAL data message. */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_timeout = 60 * 1000;
 
-bool		log_replication_commands = false;
+/* Maximum time to wait during shutdown for WAL replication. */
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_shutdown_timeout = -1;
+
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_replication_commands = false;
 
 /*
  * State for WalSndWakeupRequest

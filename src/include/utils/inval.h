@@ -17,9 +17,10 @@
 #include "access/htup.h"
 #include "catalog/syscache_ids.h"
 #include "storage/relfilelocator.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
-extern PGDLLIMPORT int debug_discard_caches;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches;
 
 #define MIN_DEBUG_DISCARD_CACHES 0
 

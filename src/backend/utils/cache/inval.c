@@ -257,7 +257,7 @@ static TransInvalidationInfo *transInvalInfo = NULL;
 static InvalidationInfo *inplaceInvalInfo = NULL;
 
 /* GUC storage */
-int			debug_discard_caches = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;
 
 /*
  * Dynamically-registered callback functions.  Current implementation

@@ -27,7 +27,7 @@
 
 /* user-settable parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
-extern PGDLLIMPORT int wal_receiver_timeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_receiver_timeout;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /*

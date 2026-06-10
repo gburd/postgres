@@ -88,7 +88,7 @@
  * synchronization.)
  */
 PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
-int			wal_receiver_timeout;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_receiver_timeout;
 PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /* libpqwalreceiver connection */

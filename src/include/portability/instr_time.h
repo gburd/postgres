@@ -63,6 +63,7 @@
 #ifndef INSTR_TIME_H
 #define INSTR_TIME_H
 
+#include "utils/global_lifetime.h"
 
 /*
  * We store interval times as an int64 integer on all platforms, as int64 is
@@ -129,7 +130,7 @@ typedef enum
 #endif
 } TimingClockSourceType;
 
-extern PGDLLIMPORT int timing_clock_source;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int timing_clock_source;
 
 /*
  * Initialize timing infrastructure

@@ -295,7 +295,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;
 
 /* in utils/misc/stack_depth.c */
 
-extern PGDLLIMPORT int max_stack_depth;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_stack_depth;
 
 /* Required daylight between max_stack_depth and the kernel limit, in bytes */
 #define STACK_DEPTH_SLOP (512 * 1024)

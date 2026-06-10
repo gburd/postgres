@@ -17,10 +17,11 @@
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 /* GUC variables */
-extern PGDLLIMPORT int wal_skip_threshold;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_skip_threshold;
 
 extern SMgrRelation RelationCreateStorage(RelFileLocator rlocator,
 										  char relpersistence,

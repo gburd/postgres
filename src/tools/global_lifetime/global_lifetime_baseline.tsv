@@ -206,7 +206,6 @@ src/backend/catalog/pg_enum.c	ce20ae156d72273afdf8c42741fd237f981b9b90	binary_up
 src/backend/catalog/pg_enum.c	dd7b0b644141a9024765641e31876cf06024c126	uncommitted_enum_types	static HTAB *uncommitted_enum_types = NULL;
 src/backend/catalog/pg_enum.c	43471eb9377097baa1fcfb10616e64c8050770f6	uncommitted_enum_values	static HTAB *uncommitted_enum_values = NULL;
 src/backend/catalog/pg_type.c	38f7e05a5d74e7c925c5640bdae52f8386313cff	binary_upgrade_next_pg_type_oid	Oid binary_upgrade_next_pg_type_oid = InvalidOid;
-src/backend/catalog/storage.c	fc4321c77b9f01a5554ba9c715b7d1f5682dd4ad	wal_skip_threshold	int wal_skip_threshold = 2048;
 src/backend/catalog/storage.c	ecd230e66ca967d51b79fa74e7ea2af6f14e4507	pendingDeletes	static PendingRelDelete *pendingDeletes = NULL;
 src/backend/catalog/storage.c	678946ac460ddeb1bd84a8fb5d46a7d023e8da65	pendingSyncHash	static HTAB *pendingSyncHash = NULL;
 src/backend/commands/analyze.c	1a4531a7c1f3ffaa75bc0e32543ea2e6b10fd3e6	anl_context	static MemoryContext anl_context = NULL;
@@ -1267,8 +1266,6 @@ src/backend/replication/logical/relation.c	3a9435115bfd9c97e906fda5d159a660dd17c
 src/backend/replication/logical/relation.c	289fa9ba7658bc71c577441a41f0fabd8697e4ed	LogicalRepRelMap	static HTAB *LogicalRepRelMap = NULL;
 src/backend/replication/logical/relation.c	2d22fe0a4c7930e190e9e0476118cc82ffcdbb6a	LogicalRepPartMapContext	static MemoryContext LogicalRepPartMapContext = NULL;
 src/backend/replication/logical/relation.c	4ebb7b7ab39bf8c50f7a6ab598101ff6ee591b3f	LogicalRepPartMap	static HTAB *LogicalRepPartMap = NULL;
-src/backend/replication/logical/reorderbuffer.c	424c465b1387c39f050ff3676bd76a2833590a57	logical_decoding_work_mem	int logical_decoding_work_mem;
-src/backend/replication/logical/reorderbuffer.c	c62a4de59c15e8d0a812a8945f1c8e6a342207f9	debug_logical_replication_streaming	int debug_logical_replication_streaming = DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
 src/backend/replication/logical/sequencesync.c	b97f7e31468d331dc50a5aba7532d6576a2ef1a2	seqinfos	static List *seqinfos = NIL;
 src/backend/replication/logical/slotsync.c	a354b7fc8658ab4251ea71df85e0cdf46e2336e7	SlotSyncCtx	static SlotSyncCtxStruct *SlotSyncCtx = NULL;
 src/backend/replication/logical/slotsync.c	6ab28537285f9e34fd0b26594d39d55f02f31182	sleep_ms	static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
@@ -1369,7 +1366,6 @@ src/backend/replication/syncrep_gram.c	4081e776f4148f971034d30ccfb949f843c59270	
 src/backend/replication/syncrep_gram.c	7745a26f4271fd75144024a31c2a5da2c24be890	syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p	int yyparse (SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) int yyparse (syncrep_parse_result_p, syncrep_parse_error_msg_p, yyscanner) SyncRepConfigData **syncrep_parse_result_p;
 src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
 src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/walreceiver.c	d6a3eb5ef1e2ced7290e8d9be811b796e3a2033d	wal_receiver_timeout	int wal_receiver_timeout;
 src/backend/replication/walreceiver.c	ac45cef7f0da628d240604c068d55780596e80e2	wrconn	static WalReceiverConn *wrconn = NULL;
 src/backend/replication/walreceiver.c	ddcc49c8ab97bab303d0ff6b8b649abcaf2f8373	WalReceiverFunctions	WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 src/backend/replication/walreceiver.c	fc73ab860995ce9946d9745f233a13e029213424	recvFile	static int recvFile = -1;
@@ -1383,7 +1379,6 @@ src/backend/replication/walsender.c	332525fa0e448f2350fed4a23c6e65b50482619e	Wal
 src/backend/replication/walsender.c	f569fcd71dad17e58e4d7db768845e2650f932fe	MyWalSnd	WalSnd *MyWalSnd = NULL;
 src/backend/replication/walsender.c	15ca5b4a1429099905430f3a463f853018230e3b	am_walsender	bool am_walsender = false;
 src/backend/replication/walsender.c	5f7caa8ece69df6394e94374889553257b22f519	am_db_walsender	bool am_db_walsender = false;
-src/backend/replication/walsender.c	22cd7142e0bc8440ceec04a79c7e1dabce9044b5	log_replication_commands	bool log_replication_commands = false;
 src/backend/replication/walsender.c	9c9f6e6390b8abe3063286c35b1e2dd1ac9f832e	wake_wal_senders	bool wake_wal_senders = false;
 src/backend/replication/walsender.c	ba595f948ed89f53fe84c1d919b74b2eadb26728	xlogreader	static XLogReaderState *xlogreader = NULL;
 src/backend/replication/walsender.c	4ac2b5955d7c58b43e10938928d3bf88dcbc9259	uploaded_manifest	static IncrementalBackupInfo *uploaded_manifest = NULL;
@@ -1793,7 +1788,6 @@ src/backend/utils/cache/funccache.c	0db3a88f03663ba6966e7548c90db9b6ca9b2ff2	cfu
 src/backend/utils/cache/inval.c	253fd92b5bb859d473f305b9186700bd058c6948	InvalMessageArrays	static InvalMessageArray InvalMessageArrays[2];
 src/backend/utils/cache/inval.c	346a098fa6d8be6c12ffaa02f00f8828bf5ad783	transInvalInfo	static TransInvalidationInfo *transInvalInfo = NULL;
 src/backend/utils/cache/inval.c	c50cc0cd3472a84ca1ca75a14ccd807a4c7cd5df	inplaceInvalInfo	static InvalidationInfo *inplaceInvalInfo = NULL;
-src/backend/utils/cache/inval.c	776022f0957e8aa857321acd3a07383741059d81	debug_discard_caches	int debug_discard_caches = 0;
 src/backend/utils/cache/inval.c	0c741d65b3f4b5be110e827ebf3b380ae6a9cdf6	id,link,function,arg,syscache_callback_list	static struct SYSCACHECALLBACK { int16 id; int16 link; SyscacheCallbackFunction function; Datum arg; } syscache_callback_list[MAX_SYSCACHE_CALLBACKS];
 src/backend/utils/cache/inval.c	675506b18b6799535001ab7463be2448adf4e6e0	syscache_callback_links	static int16 syscache_callback_links[SysCacheSize];
 src/backend/utils/cache/inval.c	90de4c4ac918a3bf37611979140ac6d4539fca6b	syscache_callback_count	static int syscache_callback_count = 0;
@@ -1898,7 +1892,6 @@ src/backend/utils/misc/guc_tables.c	8f88f5a47a499e456433e4035163adbe679f786c	con
 src/backend/utils/misc/injection_point.c	a7d8d01dbbdfe68c9aca7ba65487e9f7b679b125	ActiveInjectionPoints	NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 src/backend/utils/misc/injection_point.c	1fcb03ecf827fdfc13a61aa4b0056343873d4edf	InjectionPointCache	static HTAB *InjectionPointCache = NULL;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
-src/backend/utils/misc/ps_status.c	726aae3d5ea0056dab6dda9c5bcaa9f91e365fd1	update_process_title	bool update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;
 src/backend/utils/misc/ps_status.c	0a91d45fe17f18ff97493d42f556a525e949a9aa	ps_buffer_size	static size_t ps_buffer_size;
@@ -1912,9 +1905,6 @@ src/backend/utils/misc/ps_status.c	ff782bcd8485159437decb2314a0f60ba57fa5aa	ps_s
 src/backend/utils/misc/ps_status.c	12bca012f59a538205036eaf1759fcadc88fe16d	ps_status_new_environ	char **ps_status_new_environ;
 src/backend/utils/misc/sampling.c	ea83cba40ace56ad43df0f80151789abe0b40856	oldrs	static ReservoirStateData oldrs;
 src/backend/utils/misc/sampling.c	5e859629e57a1f14a5a437d6cdab4a7dcf7355ee	oldrs_initialized	static bool oldrs_initialized = false;
-src/backend/utils/misc/stack_depth.c	1e909418a5524cad44530ebcdd2f49b1992e596b	max_stack_depth	int max_stack_depth = 100;
-src/backend/utils/misc/stack_depth.c	b478c4323e692bf1f45836a970e8fc67e4daa10a	max_stack_depth_bytes	static ssize_t max_stack_depth_bytes = 100 * (ssize_t) 1024;
-src/backend/utils/misc/stack_depth.c	a09dd831c871e883d7bcd5075ec22b044b6a82a9	stack_base_ptr	static char *stack_base_ptr = NULL;
 src/backend/utils/misc/superuser.c	bcf4d47b80446b5291ffcb40517bc33469bf57bd	last_roleid	static Oid last_roleid = InvalidOid;
 src/backend/utils/misc/superuser.c	bd2d10852433581754490c3fc1536c63975caaed	last_roleid_is_super	static bool last_roleid_is_super = false;
 src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	roleid_callback_registered	static bool roleid_callback_registered = false;
@@ -1985,7 +1975,6 @@ src/include/catalog/binary_upgrade.h	0958ad6b0f17c01bb1ada1af95b7dfd6621a5d9e	bi
 src/include/catalog/binary_upgrade.h	8d0653ddb3845ae25c0c56c3136402649e2a5478	binary_upgrade_record_init_privs	extern PGDLLIMPORT bool binary_upgrade_record_init_privs;
 src/include/catalog/objectaccess.h	f346b363efa6414b427b92580eca4864692ce78e	object_access_hook	extern PGDLLIMPORT object_access_hook_type object_access_hook;
 src/include/catalog/objectaccess.h	3da946876eacde33ee1e493ae92c600a84efff4f	object_access_hook_str	extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
-src/include/catalog/storage.h	cf0ca2a6bb14a02764748a9a8f8e9eb6c6f28a05	wal_skip_threshold	extern PGDLLIMPORT int wal_skip_threshold;
 src/include/commands/explain.h	85976e338d99d112da6a93514c69eb926adeaf7a	ExplainOneQuery_hook	extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
 src/include/commands/explain.h	8a86bac1a88aae65b68e4a6dab7dfab508a7db10	explain_per_plan_hook	extern PGDLLIMPORT explain_per_plan_hook_type explain_per_plan_hook;
 src/include/commands/explain.h	567ed8a02ceac4ff4d2ed4d55fbe7ed6cf101f80	explain_per_node_hook	extern PGDLLIMPORT explain_per_node_hook_type explain_per_node_hook;
@@ -2031,7 +2020,6 @@ src/include/fe_utils/astreamer.h	1d4d73811f632a1d98271689b4c3af834f60fa0c	astrea
 src/include/fe_utils/astreamer.h	63b45a01a26b391ce71d708f87946e32ffd26982	astreamer_ops	struct astreamer_ops;
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
-src/include/fe_utils/string_utils.h	11c9b19393dcf1bb8a76d759479d6cb92fda6d75	quote_all_identifiers	extern PGDLLIMPORT int quote_all_identifiers;
 src/include/fmgr.h	b5882efa869175edddd16e450d6d1fbac502834c	needs_fmgr_hook	extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
 src/include/fmgr.h	b54c22c393d1f38fb705cd2fe748b511bbd50fc8	fmgr_hook	extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
 src/include/jit/jit.h	639b18ac351780d7adf2fc0054d2411268238df5	ExprState	struct ExprState;
@@ -2046,7 +2034,6 @@ src/include/libpq/pqsignal.h	ec0012d05edf5d54bc2c8acafb82a6a877a5984d	UnBlockSig
 src/include/libpq/pqsignal.h	2a39c9b124e16246ea04c2f2b8a363a37dd823ce	BlockSig	extern PGDLLIMPORT sigset_t BlockSig;
 src/include/libpq/pqsignal.h	8392e64199d43bbbffacddccc9c2ce4fc15ce0fe	StartupBlockSig	extern PGDLLIMPORT sigset_t StartupBlockSig;
 src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettext_tbl	extern PGDLLIMPORT const char *pg_enc2gettext_tbl[];
-src/include/miscadmin.h	7badb3ad4d5f9aac76413a23794c8394f902e604	max_stack_depth	extern PGDLLIMPORT int max_stack_depth;
 src/include/nodes/bitmapset.h	eb74b694c512f40863842c3e2fd0739af0adee48	List	struct List;
 src/include/nodes/execnodes.h	b33bd85d9b13368938ca7e13678afd5fb67218d5	AppendState	struct AppendState;
 src/include/nodes/execnodes.h	06db6c3670d975e57588b155d7f16d233aca8f2a	ParallelAppendState	struct ParallelAppendState;
@@ -2104,7 +2091,6 @@ src/include/port/win32ntdll.h	ed82ed1cfcaf561594d225ab10c29267ca9aeec3	pg_NtFlus
 src/include/portability/instr_time.h	e67f1a2a54c52898dcaf9884f89bf34c8409f551	ticks_per_ns_scaled	extern PGDLLIMPORT uint64 ticks_per_ns_scaled;
 src/include/portability/instr_time.h	53c04206ed9e366974869136069521b2d45103ac	max_ticks_no_overflow	extern PGDLLIMPORT uint64 max_ticks_no_overflow;
 src/include/portability/instr_time.h	89a06fbd8be0502608e46047ce6327144ae60f3c	timing_initialized	extern PGDLLIMPORT bool timing_initialized;
-src/include/portability/instr_time.h	75c085bb2de77eed27a1966a6046de6e1a03875a	timing_clock_source	extern PGDLLIMPORT int timing_clock_source;
 src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	timing_tsc_enabled	extern PGDLLIMPORT bool timing_tsc_enabled;
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
 src/include/postmaster/bgworker.h	981eef825b8d2800a2f745ffb709e6f94a186aca	BackgroundWorkerHandle	struct BackgroundWorkerHandle;
@@ -2126,14 +2112,11 @@ src/include/replication/logical.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	Logic
 src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replorigin_xact_state	extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
 src/include/replication/output_plugin.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	LogicalDecodingContext	struct LogicalDecodingContext;
 src/include/replication/output_plugin.h	b3dd598714cb7749066002e55a2357a6b97c91c7	OutputPluginCallbacks	struct OutputPluginCallbacks;
-src/include/replication/reorderbuffer.h	ffa0f53ad001718d564b23e7277d9f075d0a8fd6	logical_decoding_work_mem	extern PGDLLIMPORT int logical_decoding_work_mem;
-src/include/replication/reorderbuffer.h	160aa646e6fb1f6d83b612d552504300d80e7d9d	debug_logical_replication_streaming	extern PGDLLIMPORT int debug_logical_replication_streaming;
 src/include/replication/reorderbuffer.h	0210a452af1add96f46ff160f687efafb099f453	ReorderBufferTXN	struct ReorderBufferTXN;
 src/include/replication/slot.h	8f057a66263d4ebfb51a0733f13c965cd96e6722	ReplicationSlotCtl	extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
 src/include/replication/slot.h	4865172f5673d1687472f60a530cd7604deedf6c	MyReplicationSlot	extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/replication/syncrep.h	05b3f1491d08875f7caa57fa7f4b9a6ad4ebcd25	YYSTYPE	union YYSTYPE;
-src/include/replication/walreceiver.h	8e512f2b663637db16c6a1e93e7c60737e7e0414	wal_receiver_timeout	extern PGDLLIMPORT int wal_receiver_timeout;
 src/include/replication/walreceiver.h	c450d13a1e73b1ec316f75e5e8d1d5f8b73586a0	WalRcv	extern PGDLLIMPORT WalRcvData *WalRcv;
 src/include/replication/walreceiver.h	84eaec3a788e5949584a2340e8f292fd4bffdbda	WalReceiverConn	struct WalReceiverConn;
 src/include/replication/walreceiver.h	522bff560b6f386c7bc33b6872cf5e8357395636	WalReceiverFunctions	extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
@@ -2141,9 +2124,6 @@ src/include/replication/walsender.h	3d8016db56d460c5753a0e70e909a3fd45645e68	am_
 src/include/replication/walsender.h	3e795efaa72959a9c0a617ce7d88325c03192110	am_cascading_walsender	extern PGDLLIMPORT bool am_cascading_walsender;
 src/include/replication/walsender.h	dd9cdfd54df637d92c2678df7a3d98fbef594826	am_db_walsender	extern PGDLLIMPORT bool am_db_walsender;
 src/include/replication/walsender.h	fda760d23a893883a6c1f885de3c85bee309bdeb	wake_wal_senders	extern PGDLLIMPORT bool wake_wal_senders;
-src/include/replication/walsender.h	6d0019f00077ab7de2b8fc932b0fadb902ddccef	wal_sender_timeout	extern PGDLLIMPORT int wal_sender_timeout;
-src/include/replication/walsender.h	4ce8df08642d22c548f88e64200421b631c04c9b	wal_sender_shutdown_timeout	extern PGDLLIMPORT int wal_sender_shutdown_timeout;
-src/include/replication/walsender.h	6c4aedf997c9bbf90786dd11fdd4176ab030473a	log_replication_commands	extern PGDLLIMPORT bool log_replication_commands;
 src/include/replication/walsender_private.h	26006f55117befe27263f3de19921ecac90baf19	MyWalSnd	extern PGDLLIMPORT WalSnd *MyWalSnd;
 src/include/replication/walsender_private.h	29c3f3d80af95bc366ca900140c1949629a14cdb	WalSndCtl	extern PGDLLIMPORT WalSndCtlData *WalSndCtl;
 src/include/replication/walsender_private.h	05b3f1491d08875f7caa57fa7f4b9a6ad4ebcd25	YYSTYPE	union YYSTYPE;
@@ -2222,14 +2202,12 @@ src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_t
 src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucContext_Names	extern PGDLLIMPORT const char *const GucContext_Names[];
 src/include/utils/guc_tables.h	9b3ed666e0a866eef0d50b3c2a55cd935dd0666f	GucSource_Names	extern PGDLLIMPORT const char *const GucSource_Names[];
 src/include/utils/injection_point.h	bc630458f6031322cb5d3394ad8b52b2976713dc	ActiveInjectionPoints	extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
-src/include/utils/inval.h	87e32376a5760bbc8536e1188b23ea18a6f436c2	debug_discard_caches	extern PGDLLIMPORT int debug_discard_caches;
 src/include/utils/lsyscache.h	93b108ef80f4100f01c734031c5f1856d1a412f8	get_attavgwidth_hook	extern PGDLLIMPORT get_attavgwidth_hook_type get_attavgwidth_hook;
 src/include/utils/numeric.h	b2dcfcb75ea96694340305b3e9b208a24540088f	NumericData	struct NumericData;
 src/include/utils/pg_locale.h	d4e46e00c287264672d93d0fa864e235d38d5740	pg_locale_struct	struct pg_locale_struct;
 src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };
 src/include/utils/pgstat_internal.h	ebb343c792120f08c6acf60ed20b881383218efe	pgstat_report_fixed	extern PGDLLIMPORT bool pgstat_report_fixed;
 src/include/utils/pgstat_internal.h	c822e1a305b80c3fd1de4f4c8e2cfcf3b1cb2b99	pgStatLocal	extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
-src/include/utils/ps_status.h	c3b8cc72bcdc8bff54f5303d7ffc8ab58a0a74b8	update_process_title	extern PGDLLIMPORT bool update_process_title;
 src/include/utils/relcache.h	ab14c5654c65aa533b368ea4f4594627da28dfdd	PublicationDesc	struct PublicationDesc;
 src/include/utils/relcache.h	9c4e92029161fdcd558ceeb298b62074c124706b	criticalRelcachesBuilt	extern PGDLLIMPORT bool criticalRelcachesBuilt;
 src/include/utils/relcache.h	9c0bbb28f632f7f5c85b96d2e82c69033839bf64	criticalSharedRelcachesBuilt	extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;

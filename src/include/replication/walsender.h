@@ -33,9 +33,9 @@ extern PGDLLIMPORT bool wake_wal_senders;
 
 /* user-settable parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_wal_senders;
-extern PGDLLIMPORT int wal_sender_timeout;
-extern PGDLLIMPORT int wal_sender_shutdown_timeout;
-extern PGDLLIMPORT bool log_replication_commands;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_timeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_shutdown_timeout;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_replication_commands;
 
 extern void InitWalSender(void);
 extern bool exec_replication_command(const char *cmd_string);
