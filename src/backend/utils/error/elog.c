@@ -388,7 +388,7 @@ errstart(int elevel, const char *domain)
 		{
 			if (PG_exception_stack == NULL ||
 				ExitOnAnyError ||
-				proc_exit_inprogress)
+				PgBackendExitInProgress())
 				elevel = FATAL;
 		}
 
@@ -577,7 +577,8 @@ errfinish(const char *filename, int lineno, const char *funcname)
 	if (elevel == FATAL || elevel == FATAL_CLIENT_ONLY)
 	{
 		/*
-		 * For a FATAL error, we let proc_exit clean up and exit.
+		 * For a FATAL error, we let PgBackendExit clean up and exit the
+		 * current logical backend.
 		 *
 		 * If we just reported a startup failure, the client will disconnect
 		 * on receiving it, so don't send any more to the client.
@@ -587,7 +588,8 @@ errfinish(const char *filename, int lineno, const char *funcname)
 
 		/*
 		 * fflush here is just to improve the odds that we get to see the
-		 * error message, in case things are so hosed that proc_exit crashes.
+		 * error message, in case things are so hosed that backend exit
+		 * cleanup crashes.
 		 * Any other code you might be tempted to add here should probably be
 		 * in an on_proc_exit or on_shmem_exit callback instead.
 		 */
@@ -601,11 +603,12 @@ errfinish(const char *filename, int lineno, const char *funcname)
 			pgStatSessionEndCause = DISCONNECT_FATAL;
 
 		/*
-		 * Do normal process-exit cleanup, then return exit code 1 to indicate
-		 * FATAL termination.  The postmaster may or may not consider this
-		 * worthy of panic, depending on which subprocess returns it.
+		 * Do normal backend-exit cleanup, then return exit code 1 in process
+		 * mode to indicate FATAL termination.  The postmaster may or may not
+		 * consider this worthy of panic, depending on which subprocess
+		 * returns it.
 		 */
-		proc_exit(1);
+		PgBackendExit(1);
 	}
 
 	if (elevel >= PANIC)

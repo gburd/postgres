@@ -71,6 +71,8 @@ InitializePgProcessRuntime(void)
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
+	PgBackendInitializeExitState(&process_backend.exit_state);
+	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
 	process_session.backend = &process_backend;
 	process_session.connection = &process_connection;

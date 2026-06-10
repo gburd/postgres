@@ -3028,8 +3028,8 @@ quickdie(SIGNAL_ARGS)
 void
 die(SIGNAL_ARGS)
 {
-	/* Don't joggle the elbow of proc_exit */
-	if (!proc_exit_inprogress)
+	/* Don't joggle the elbow of backend exit. */
+	if (!PgBackendExitInProgress())
 	{
 		PgCurrentBackendRaiseProcDieInterrupt(pg_siginfo->pid,
 											 pg_siginfo->uid);
@@ -3071,9 +3071,9 @@ void
 StatementCancelHandler(SIGNAL_ARGS)
 {
 	/*
-	 * Don't joggle the elbow of proc_exit
+	 * Don't joggle the elbow of backend exit.
 	 */
-	if (!proc_exit_inprogress)
+	if (!PgBackendExitInProgress())
 	{
 		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		QueryCancelPending = true;
@@ -3320,11 +3320,11 @@ ProcessRecoveryConflictInterrupts(void)
 	uint32		pending;
 
 	/*
-	 * We don't need to worry about joggling the elbow of proc_exit, because
-	 * proc_exit_prepare() holds interrupts, so ProcessInterrupts() won't call
-	 * us.
+	 * We don't need to worry about joggling the elbow of backend exit,
+	 * because PgBackendExitCleanup() holds interrupts, so ProcessInterrupts()
+	 * won't call us.
 	 */
-	Assert(!proc_exit_inprogress);
+	Assert(!PgBackendExitInProgress());
 	Assert(InterruptHoldoffCount == 0);
 
 	/* Are any recovery conflict pending? */
@@ -3411,7 +3411,7 @@ ProcessInterrupts(void)
 			 * The logical replication launcher can be stopped at any time.
 			 * Use exit status 1 so the background worker is restarted.
 			 */
-			proc_exit(1);
+			PgBackendExit(1);
 		}
 		else if (AmWalReceiverProcess())
 			ereport(FATAL,
@@ -3430,7 +3430,7 @@ ProcessInterrupts(void)
 					(errmsg_internal("io worker shutting down due to administrator command"),
 					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 		else
 			ereport(FATAL,
@@ -4881,7 +4881,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 			 * on_shmem_exit callback, instead. Otherwise it will fail to be
 			 * called during other backend-shutdown scenarios.
 			 */
-			proc_exit(0);
+			PgBackendExit(0);
 
 		case PqMsg_CopyData:
 		case PqMsg_CopyDone:

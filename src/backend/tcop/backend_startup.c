@@ -369,7 +369,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * already did any appropriate error reporting.
 	 */
 	if (status != STATUS_OK)
-		proc_exit(0);
+		PgBackendExit(0);
 
 	/*
 	 * Now that we have the user and database name, we can set the process

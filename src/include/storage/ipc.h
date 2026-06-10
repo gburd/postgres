@@ -21,6 +21,26 @@
 typedef void (*pg_on_exit_callback) (int code, Datum arg);
 typedef void (*shmem_startup_hook_type) (void);
 
+#define PG_BACKEND_MAX_ON_EXITS 20
+
+typedef struct PgBackendExitCallback
+{
+	pg_on_exit_callback function;
+	Datum		arg;
+} PgBackendExitCallback;
+
+typedef struct PgBackendExitState
+{
+	PgBackendExitCallback on_proc_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	PgBackendExitCallback on_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	PgBackendExitCallback before_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	int			on_proc_exit_index;
+	int			on_shmem_exit_index;
+	int			before_shmem_exit_index;
+	bool		proc_exit_inprogress;
+	bool		shmem_exit_inprogress;
+} PgBackendExitState;
+
 /*----------
  * API for handling cleanup that must occur during either ereport(ERROR)
  * or ereport(FATAL) exits from a block of code.  (Typical examples are
@@ -65,6 +85,12 @@ typedef void (*shmem_startup_hook_type) (void);
 extern PGDLLIMPORT bool proc_exit_inprogress;
 extern PGDLLIMPORT bool shmem_exit_inprogress;
 
+extern void PgBackendInitializeExitState(PgBackendExitState *exit_state);
+extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);
+extern bool PgBackendExitInProgress(void);
+extern bool PgBackendShmemExitInProgress(void);
+extern void PgBackendExitCleanup(int code);
+pg_noreturn extern void PgBackendExit(int code);
 pg_noreturn extern void proc_exit(int code);
 extern void shmem_exit(int code);
 extern void on_proc_exit(pg_on_exit_callback function, Datum arg);

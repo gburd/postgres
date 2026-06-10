@@ -15,6 +15,7 @@
 #include "access/session.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
+#include "storage/ipc.h"
 #include "utils/global_lifetime.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -129,6 +130,7 @@ struct PgBackend
 	PgConnection *connection;
 	PgExecution *execution;
 	PgBackendInterruptMailbox interrupts;
+	PgBackendExitState exit_state;
 	BackendType backend_type;
 };
 

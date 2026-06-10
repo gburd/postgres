@@ -264,9 +264,9 @@ llvm_release_context(JitContext *context)
 	/*
 	 * When this backend is exiting, don't clean up LLVM. As an error might
 	 * have occurred from within LLVM, we do not want to risk reentering. All
-	 * resource cleanup is going to happen through process exit.
+	 * resource cleanup is going to happen through backend exit.
 	 */
-	if (proc_exit_inprogress)
+	if (PgBackendExitInProgress())
 		return;
 
 	llvm_enter_fatal_on_oom();
@@ -925,7 +925,7 @@ llvm_shutdown(int code, Datum arg)
 	 */
 	if (llvm_in_fatal_on_oom())
 	{
-		Assert(proc_exit_inprogress);
+		Assert(PgBackendExitInProgress());
 		return;
 	}
 

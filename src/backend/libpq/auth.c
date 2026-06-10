@@ -250,7 +250,7 @@ auth_failed(Port *port, int elevel, int status, const char *logdetail)
 	 * events.)
 	 */
 	if (status == STATUS_EOF)
-		proc_exit(0);
+		PgBackendExit(0);
 
 	switch (port->hba->auth_method)
 	{

@@ -794,7 +794,7 @@ AtAbort_Portals(void)
 		 * When elog(FATAL) is progress, we need to set the active portal to
 		 * failed, so that PortalCleanup() doesn't run the executor shutdown.
 		 */
-		if (portal->status == PORTAL_ACTIVE && shmem_exit_inprogress)
+		if (portal->status == PORTAL_ACTIVE && PgBackendShmemExitInProgress())
 			MarkPortalFailed(portal);
 
 		/*
