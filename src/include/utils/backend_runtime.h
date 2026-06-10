@@ -14,6 +14,7 @@
 
 #include "access/session.h"
 #include "miscadmin.h"
+#include "port/atomics.h"
 #include "utils/global_lifetime.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -85,8 +86,7 @@ typedef uint32 PgBackendInterruptMask;
 
 typedef struct PgBackendInterruptMailbox
 {
-	volatile sig_atomic_t pending;
-	volatile sig_atomic_t flags[PG_BACKEND_INTERRUPT_COUNT];
+	pg_atomic_uint32 pending_mask;
 	volatile int proc_die_sender_pid;
 	volatile int proc_die_sender_uid;
 } PgBackendInterruptMailbox;
@@ -164,6 +164,7 @@ extern PGDLLIMPORT PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
+extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,

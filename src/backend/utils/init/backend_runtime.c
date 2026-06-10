@@ -40,6 +40,9 @@ static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
 
+StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
+				 "PgBackendInterruptMask must fit all backend interrupts");
+
 static void PgBackendWakeForInterrupt(PgBackend *backend);
 
 void
@@ -67,6 +70,7 @@ InitializePgProcessRuntime(void)
 	process_backend.connection = &process_connection;
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
+	PgBackendInitializeInterrupts(&process_backend);
 
 	process_session.backend = &process_backend;
 	process_session.connection = &process_connection;
@@ -97,16 +101,29 @@ PgProcessRuntimeAttachSession(Session *session)
 }
 
 void
+PgBackendInitializeInterrupts(PgBackend *backend)
+{
+	if (backend == NULL)
+		return;
+
+	pg_atomic_init_u32(&backend->interrupts.pending_mask, 0);
+	backend->interrupts.proc_die_sender_pid = 0;
+	backend->interrupts.proc_die_sender_uid = 0;
+}
+
+void
 PgBackendRaiseInterrupt(PgBackend *backend,
 						PgBackendInterruptType interrupt_type)
 {
+	PgBackendInterruptMask interrupt_mask;
+
 	if (backend == NULL)
 		return;
 	if (interrupt_type < 0 || interrupt_type >= PG_BACKEND_INTERRUPT_COUNT)
 		return;
 
-	backend->interrupts.flags[interrupt_type] = true;
-	backend->interrupts.pending = true;
+	interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
+	pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask, interrupt_mask);
 	PgBackendWakeForInterrupt(backend);
 }
 
@@ -157,23 +174,10 @@ PgCurrentBackendRaiseProcDieInterrupt(int sender_pid, int sender_uid)
 PgBackendInterruptMask
 PgBackendConsumeInterrupts(PgBackend *backend)
 {
-	PgBackendInterruptMask pending = 0;
-
-	if (backend == NULL || !backend->interrupts.pending)
+	if (backend == NULL)
 		return 0;
 
-	backend->interrupts.pending = false;
-
-	for (int i = 0; i < PG_BACKEND_INTERRUPT_COUNT; i++)
-	{
-		if (backend->interrupts.flags[i])
-		{
-			backend->interrupts.flags[i] = false;
-			pending |= PG_BACKEND_INTERRUPT_MASK(i);
-		}
-	}
-
-	return pending;
+	return pg_atomic_exchange_u32(&backend->interrupts.pending_mask, 0);
 }
 
 void
