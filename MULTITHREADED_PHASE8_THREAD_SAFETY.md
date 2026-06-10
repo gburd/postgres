@@ -156,6 +156,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `Debug_deadlocks`, `Trace_lock_oidmin`, `Trace_lock_table`,
   `Trace_locks`, `Trace_lwlocks`, `Trace_userlocks`, and
   `log_lock_failures`.
+- WAL session GUC backing variables and derived session state:
+  `XLOG_DEBUG`, `track_wal_io_timing`, `wal_compression`,
+  `wal_consistency_checking`, `wal_consistency_checking_string`,
+  `wal_init_zero`, and `wal_recycle`.
 
 The following GUC backing variables are now explicitly classified as
 runtime-global, not thread-local, because they describe server build,
@@ -213,6 +217,14 @@ postmaster, shared-memory, or startup-computed runtime state:
   `Log_destination`, `Log_destination_string`, `Log_line_prefix`,
   `syslog_facility`, `syslog_ident_str`, `syslog_sequence_numbers`, and
   `syslog_split_messages`.
+- core WAL runtime GUC backing variables and derived runtime state:
+  `CheckPointSegments`, `EnableHotStandby`, `XLOGbuffers`,
+  `XLogArchiveCommand`, `XLogArchiveMode`, `XLogArchiveTimeout`,
+  `data_checksums`, `fullPageWrites`, `log_checkpoints`,
+  `max_slot_wal_keep_size_mb`, `max_wal_size_mb`, `min_wal_size_mb`,
+  `wal_decode_buffer_size`, `wal_keep_size_mb`, `wal_level`,
+  `wal_log_hints`, `wal_retrieve_retry_interval`, `wal_segment_size`, and
+  `wal_sync_method`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -254,7 +266,7 @@ Phase 8 still needs to cover at least:
   TLS or an owned session object;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the logging-destination GUC classification slice, the filtered static report contains 104
+After the core WAL GUC classification slice, the filtered static report contains 80
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -560,6 +572,11 @@ Validation for this slice:
 - focused `elog.o` and `guc_tables.o` compile coverage plus incremental
   `gmake -j8` after classifying logging-destination GUC backing variables as
   `PG_GLOBAL_RUNTIME`;
+- focused `xlog.o` compile coverage;
+- backend clean plus generated-header recovery, followed by clean `gmake -j8`
+  after converting installed-header core WAL declarations to
+  `PG_THREAD_LOCAL` or `PG_GLOBAL_RUNTIME`;
+- focused core GUC regression test after the core WAL slice: `guc`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

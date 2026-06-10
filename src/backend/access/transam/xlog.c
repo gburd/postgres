@@ -118,39 +118,39 @@
 #define BootstrapTimeLineID		1
 
 /* User-settable parameters */
-int			max_wal_size_mb = 1024; /* 1 GB */
-int			min_wal_size_mb = 80;	/* 80 MB */
-int			wal_keep_size_mb = 0;
-int			XLOGbuffers = -1;
-int			XLogArchiveTimeout = 0;
-int			XLogArchiveMode = ARCHIVE_MODE_OFF;
-char	   *XLogArchiveCommand = NULL;
-bool		EnableHotStandby = false;
-bool		fullPageWrites = true;
-bool		wal_log_hints = false;
-int			wal_compression = WAL_COMPRESSION_NONE;
-char	   *wal_consistency_checking_string = NULL;
-bool	   *wal_consistency_checking = NULL;
-bool		wal_init_zero = true;
-bool		wal_recycle = true;
-bool		log_checkpoints = true;
-int			wal_sync_method = DEFAULT_WAL_SYNC_METHOD;
-int			wal_level = WAL_LEVEL_REPLICA;
+PG_GLOBAL_RUNTIME int max_wal_size_mb = 1024;	/* 1 GB */
+PG_GLOBAL_RUNTIME int min_wal_size_mb = 80; /* 80 MB */
+PG_GLOBAL_RUNTIME int wal_keep_size_mb = 0;
+PG_GLOBAL_RUNTIME int XLOGbuffers = -1;
+PG_GLOBAL_RUNTIME int XLogArchiveTimeout = 0;
+PG_GLOBAL_RUNTIME int XLogArchiveMode = ARCHIVE_MODE_OFF;
+PG_GLOBAL_RUNTIME char *XLogArchiveCommand = NULL;
+PG_GLOBAL_RUNTIME bool EnableHotStandby = false;
+PG_GLOBAL_RUNTIME bool fullPageWrites = true;
+PG_GLOBAL_RUNTIME bool wal_log_hints = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_compression = WAL_COMPRESSION_NONE;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *wal_consistency_checking_string = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool *wal_consistency_checking = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_init_zero = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_recycle = true;
+PG_GLOBAL_RUNTIME bool log_checkpoints = true;
+PG_GLOBAL_RUNTIME int wal_sync_method = DEFAULT_WAL_SYNC_METHOD;
+PG_GLOBAL_RUNTIME int wal_level = WAL_LEVEL_REPLICA;
 /* Precommit delay in microseconds. */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay = 0;
 
 /* Concurrent xacts needed to sleep before commit delay. */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings = 5;
-int			wal_retrieve_retry_interval = 5000;
-int			max_slot_wal_keep_size_mb = -1;
-int			wal_decode_buffer_size = 512 * 1024;
-bool		track_wal_io_timing = false;
+PG_GLOBAL_RUNTIME int wal_retrieve_retry_interval = 5000;
+PG_GLOBAL_RUNTIME int max_slot_wal_keep_size_mb = -1;
+PG_GLOBAL_RUNTIME int wal_decode_buffer_size = 512 * 1024;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_wal_io_timing = false;
 
 #ifdef WAL_DEBUG
-bool		XLOG_DEBUG = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool XLOG_DEBUG = false;
 #endif
 
-int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
+PG_GLOBAL_RUNTIME int wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 
 /*
  * Number of WAL insertion locks to use. A higher value allows more insertions
@@ -163,7 +163,7 @@ int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
  * Max distance from last checkpoint, before triggering a new xlog-based
  * checkpoint.
  */
-int			CheckPointSegments;
+PG_GLOBAL_RUNTIME int CheckPointSegments;
 
 /* Estimated distance between checkpoints, in bytes */
 static double CheckPointDistanceEstimate = 0;
@@ -683,7 +683,7 @@ static ChecksumStateType LocalDataChecksumState = 0;
  * Variable backing the GUC, keep it in sync with LocalDataChecksumState.
  * See SetLocalDataChecksumState().
  */
-int			data_checksums = 0;
+PG_GLOBAL_RUNTIME int data_checksums = 0;
 
 /* For WALInsertLockAcquire/Release functions */
 static int	MyLockNo = 0;

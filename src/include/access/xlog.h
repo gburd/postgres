@@ -29,38 +29,38 @@ enum WalSyncMethod
 	WAL_SYNC_METHOD_FSYNC_WRITETHROUGH,
 	WAL_SYNC_METHOD_OPEN_DSYNC	/* for O_DSYNC */
 };
-extern PGDLLIMPORT int wal_sync_method;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_sync_method;
 
 extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;
 extern PGDLLIMPORT XLogRecPtr XactLastRecEnd;
 extern PGDLLIMPORT XLogRecPtr XactLastCommitEnd;
 
 /* these variables are GUC parameters related to XLOG */
-extern PGDLLIMPORT int wal_segment_size;
-extern PGDLLIMPORT int min_wal_size_mb;
-extern PGDLLIMPORT int max_wal_size_mb;
-extern PGDLLIMPORT int wal_keep_size_mb;
-extern PGDLLIMPORT int max_slot_wal_keep_size_mb;
-extern PGDLLIMPORT int XLOGbuffers;
-extern PGDLLIMPORT int XLogArchiveTimeout;
-extern PGDLLIMPORT int wal_retrieve_retry_interval;
-extern PGDLLIMPORT char *XLogArchiveCommand;
-extern PGDLLIMPORT bool EnableHotStandby;
-extern PGDLLIMPORT bool fullPageWrites;
-extern PGDLLIMPORT bool wal_log_hints;
-extern PGDLLIMPORT int wal_compression;
-extern PGDLLIMPORT bool wal_init_zero;
-extern PGDLLIMPORT bool wal_recycle;
-extern PGDLLIMPORT bool *wal_consistency_checking;
-extern PGDLLIMPORT char *wal_consistency_checking_string;
-extern PGDLLIMPORT bool log_checkpoints;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_segment_size;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int min_wal_size_mb;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_wal_size_mb;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_keep_size_mb;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_slot_wal_keep_size_mb;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int XLOGbuffers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int XLogArchiveTimeout;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_retrieve_retry_interval;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *XLogArchiveCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool EnableHotStandby;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool fullPageWrites;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool wal_log_hints;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_compression;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_init_zero;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_recycle;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool *wal_consistency_checking;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *wal_consistency_checking_string;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_checkpoints;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings;
-extern PGDLLIMPORT bool track_wal_io_timing;
-extern PGDLLIMPORT int wal_decode_buffer_size;
-extern PGDLLIMPORT int data_checksums;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_wal_io_timing;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_decode_buffer_size;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int data_checksums;
 
-extern PGDLLIMPORT int CheckPointSegments;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int CheckPointSegments;
 
 /* Archive modes */
 typedef enum ArchiveMode
@@ -69,7 +69,7 @@ typedef enum ArchiveMode
 	ARCHIVE_MODE_ON,			/* enabled while server is running normally */
 	ARCHIVE_MODE_ALWAYS,		/* enabled always (even during recovery) */
 } ArchiveMode;
-extern PGDLLIMPORT int XLogArchiveMode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int XLogArchiveMode;
 
 /* WAL levels */
 typedef enum WalLevel
@@ -96,7 +96,7 @@ typedef enum RecoveryState
 	RECOVERY_STATE_DONE,		/* currently in production */
 } RecoveryState;
 
-extern PGDLLIMPORT int wal_level;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_level;
 extern PGDLLIMPORT bool XLogLogicalInfo;
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
@@ -139,7 +139,7 @@ extern PGDLLIMPORT bool XLogLogicalInfo;
 	 (wal_level >= WAL_LEVEL_LOGICAL || XLogLogicalInfo)
 
 #ifdef WAL_DEBUG
-extern PGDLLIMPORT bool XLOG_DEBUG;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool XLOG_DEBUG;
 #endif
 
 /*
