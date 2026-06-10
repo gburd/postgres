@@ -5048,7 +5048,7 @@ apply_worker_exit(void)
 	if (am_leader_apply_worker())
 		ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -5094,7 +5094,7 @@ maybe_reread_subscription(void)
 		if (am_leader_apply_worker())
 			ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	/* Exit if the subscription was disabled. */
@@ -5839,7 +5839,7 @@ InitializeLogRepWorker(void)
 		if (am_leader_apply_worker())
 			ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	MySubscriptionValid = true;
@@ -6012,7 +6012,7 @@ ApplyWorkerMain(Datum main_arg)
 
 	run_apply_worker();
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -6071,7 +6071,7 @@ DisableSubscriptionAndExit(void)
 							   MySubscription->retaindeadtuples,
 							   MySubscription->retentionactive, false);
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*

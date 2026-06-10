@@ -1283,7 +1283,7 @@ slotsync_reread_config(void)
 					errmsg("replication slot synchronization worker will stop because \"%s\" is disabled",
 						   "sync_replication_slots"));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 
 		parameter_changed = true;
@@ -1307,7 +1307,7 @@ slotsync_reread_config(void)
 				 */
 				SlotSyncCtx->last_start_time = 0;
 
-				proc_exit(0);
+				PgBackendExit(0);
 			}
 
 			parameter_changed = true;
@@ -1360,7 +1360,7 @@ ProcessSlotSyncMessage(void)
 	{
 		ereport(LOG,
 				errmsg("replication slot synchronization worker will stop because promotion is triggered"));
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 	else
 	{
@@ -1495,7 +1495,7 @@ check_and_set_sync_info(pid_t sync_process_pid)
 			ereport(DEBUG1,
 					errmsg("replication slot synchronization worker will not start because promotion was triggered"));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 		else
 		{
@@ -1616,7 +1616,7 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 		 * callback was registered to do ProcKill, which will clean up
 		 * necessary state.
 		 */
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	/* We can now handle ereport(ERROR) */

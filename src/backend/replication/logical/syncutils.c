@@ -91,7 +91,7 @@ FinishSyncWorker(void)
 	}
 
 	/* Stop gracefully */
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*

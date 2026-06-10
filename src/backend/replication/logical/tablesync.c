@@ -615,7 +615,7 @@ ProcessSyncingTablesForApply(XLogRecPtr current_lsn)
 		 */
 		ApplyLauncherForgetWorkerStartTime(MySubscription->oid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 }
 

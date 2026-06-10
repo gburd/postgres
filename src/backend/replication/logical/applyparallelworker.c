@@ -724,7 +724,7 @@ ProcessParallelApplyInterrupts(void)
 				(errmsg("logical replication parallel apply worker for subscription \"%s\" has finished",
 						MySubscription->name)));
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	if (ConfigReloadPending)

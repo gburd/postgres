@@ -400,7 +400,7 @@ WalSndErrorCleanup(void)
 		ReleaseAuxProcessResources(false);
 
 	if (got_STOPPING || got_SIGUSR2)
-		proc_exit(0);
+		PgBackendExit(0);
 
 	/* Revert back to startup state */
 	WalSndSetState(WALSNDSTATE_STARTUP);
@@ -419,7 +419,7 @@ WalSndShutdown(void)
 	if (whereToSendOutput == DestRemote)
 		whereToSendOutput = DestNone;
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -1010,7 +1010,7 @@ StartReplication(StartReplicationCmd *cmd)
 
 		replication_active = false;
 		if (got_STOPPING)
-			proc_exit(0);
+			PgBackendExit(0);
 		WalSndSetState(WALSNDSTATE_STARTUP);
 
 		Assert(streamingDoneSending && streamingDoneReceiving);
@@ -1565,7 +1565,7 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 
 	replication_active = false;
 	if (got_STOPPING)
-		proc_exit(0);
+		PgBackendExit(0);
 	WalSndSetState(WALSNDSTATE_STARTUP);
 
 	/* Get out of COPY mode (CommandComplete). */
@@ -2342,7 +2342,7 @@ ProcessRepliesIfAny(void)
 			ereport(COMMERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("unexpected EOF on standby connection")));
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 		if (r == 0)
 		{
@@ -2377,7 +2377,7 @@ ProcessRepliesIfAny(void)
 			ereport(COMMERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("unexpected EOF on standby connection")));
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 
 		/* ... and process it */
@@ -2413,7 +2413,7 @@ ProcessRepliesIfAny(void)
 				 * socket.
 				 */
 			case PqMsg_Terminate:
-				proc_exit(0);
+				PgBackendExit(0);
 
 			default:
 				Assert(false);	/* NOT REACHED */
@@ -2461,7 +2461,7 @@ ProcessStandbyMessage(void)
 			ereport(COMMERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("unexpected message type \"%c\"", msgtype)));
-			proc_exit(0);
+			PgBackendExit(0);
 	}
 }
 
@@ -3754,7 +3754,7 @@ WalSndDoneImmediate(void)
 			(errmsg("terminating walsender process due to replication shutdown timeout"),
 			 errdetail("Walsender process might have been terminated before all WAL data was replicated to the receiver.")));
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -3837,7 +3837,7 @@ WalSndDone(WalSndSendDataCallback send_data)
 				WalSndShutdown();
 		}
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 	if (!waiting_for_ping_response)
 		WalSndKeepalive(true, InvalidXLogRecPtr);
@@ -4075,7 +4075,7 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 		(event.events & WL_POSTMASTER_DEATH))
 	{
 		ConditionVariableCancelSleep();
-		proc_exit(1);
+		PgBackendExit(1);
 	}
 
 	ConditionVariableCancelSleep();
