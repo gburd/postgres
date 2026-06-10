@@ -269,6 +269,12 @@ Phase 5 completion note:
   logical interrupt machinery. Treat the missing fixture as a validation gap to
   cover in Gate B or a focused follow-up, not as an incomplete Phase 5
   implementation item.
+- This is a deliberate conclusion from working through the phase. The existing
+  recovery-conflict path already reaches `CHECK_FOR_INTERRUPTS()` via backend
+  interrupt state; Phase 5 changed that backend-visible state to use the
+  logical interrupt machinery. A new standby-cluster fixture would add direct
+  regression coverage, but it is not required to claim the implementation work
+  for Phase 5 complete.
 - In other words, this was a deliberate validation deferral after inspection,
   not an indication that Phase 5 still needs implementation work before Phase
   6 can proceed.
