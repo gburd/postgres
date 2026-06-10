@@ -4,21 +4,39 @@ This plan is intentionally ambitious, but it is staged so that each phase
 leaves the tree in a coherent state. The first implementation target is native
 thread-per-session PostgreSQL. Pooled scheduling comes later.
 
-## Current Documentation Baseline
+The ordering is deliberately practical:
 
-The branch starts with:
+1. establish a real backend loop boundary in process mode;
+2. attach that boundary to explicit runtime/session/backend objects;
+3. classify and isolate enough mutable state for thread-per-session;
+4. launch threaded backends;
+5. only then make sessions movable across pooled carriers.
 
+## Current Branch Baseline
+
+The branch starts from PostgreSQL `REL_19_BETA1`.
+
+Already landed:
+
+- local reference material in `refs/`;
 - root-level architecture documentation;
 - a root-level agent guide;
-- local reference material in `refs/`;
-- no code changes yet.
+- initial process-mode loop extraction:
+  - `PgSessionLoopState`;
+  - `PgSessionRecoverError()`;
+  - `PgSessionStep()`;
+  - `PgSessionRun()`.
 
-The first code changes should be scaffolding and behavior-preserving refactors,
-not a direct jump to thread launch.
+The first loop extraction keeps process behavior unchanged and has passed the
+core regression suite. It is not yet the full runtime/session scaffolding and
+does not expose threaded mode.
 
 ## Phase 0: Reference Audit And Invariants
 
-Status: documentation phase.
+Status: complete for the current stage.
+
+Goal: preserve the relevant prior art and identify the invariants that must not
+be broken while the backend process model is split apart.
 
 Tasks:
 
@@ -47,50 +65,116 @@ Deliverables:
 
 Validation:
 
-- Documentation review.
-- No code behavior changed.
+- documentation review;
+- no code behavior changed.
 
-## Phase 1: Runtime And State Scaffolding
+## Phase 1: Minimal Main Loop Boundary
 
-Goal: introduce vocabulary and object skeletons without changing behavior.
+Status: initial implementation complete.
+
+Goal: split the process-mode `PostgresMain()` loop just enough to create a real
+step boundary, while preserving synchronous process-mode behavior.
+
+Completed shape:
+
+- volatile loop locals moved into `PgSessionLoopState` where needed for
+  `siglongjmp` safety;
+- top-level error recovery extracted into `PgSessionRecoverError()`;
+- one command cycle extracted into `PgSessionStep()`;
+- process-mode runner added as `PgSessionRun()`;
+- `PostgresMain()` delegates to the process-mode runner after initialization.
+
+Important constraint:
+
+`PgSessionRun()` currently owns the always-active bottom `sigsetjmp` boundary,
+and `PgSessionStep()` assumes it is called under that boundary. This preserves
+the old recovery semantics while creating the first practical step function.
+
+Validation:
+
+- backend build succeeds;
+- core process-mode regression tests pass;
+- no threaded mode exposed.
+
+## Phase 2: Runtime And State Scaffolding
+
+Status: next phase.
+
+Goal: introduce the runtime/session/backend vocabulary and object skeletons,
+then connect the existing process-mode startup path to those objects without
+changing behavior.
 
 Likely changes:
 
 - Add headers for runtime/session/backend/carrier concepts.
 - Add current-context pointers with process-mode initialization.
-- Wrap existing process globals through accessors only where it clarifies the
-  migration path.
-- Extend or embed the existing `Session` object rather than creating a
-  competing concept too early.
-- Introduce the broader object as `PgSession` and embed the existing `Session`
-  object initially; do not rename `Session` or repurpose `CurrentSession` in
-  the first scaffolding commit.
+- Introduce the broader object as `PgSession` and embed or reference the
+  existing `Session` object initially.
+- Do not rename `Session` or repurpose `CurrentSession` in the first
+  scaffolding commit.
+- Add `PgRuntime`, `PgCarrier`, `PgBackend`, `PgSession`, `PgConnection`, and
+  `PgExecution` as thin objects.
+- Move or attach `PgSessionLoopState` to the new object model.
 - Add comments documenting ownership boundaries.
-
-Initial objects can be thin:
-
-- `PgRuntime`
-- `PgCarrier`
-- `PgBackend`
-- `PgSession`
-- `PgConnection`
-- `PgExecution`
+- Add assertions that current runtime/backend/session/execution pointers are
+  initialized before new object-owned state is accessed.
 
 Expected commit shape:
 
-- one commit for type declarations and no-op initialization;
-- one commit for connecting current process-mode startup to the skeleton;
+- one commit for type declarations and no-op process-mode initialization;
+- one commit connecting current process-mode startup to the skeleton;
+- one commit attaching main-loop state to `PgSession`;
 - no broad call-site churn yet.
 
 Validation:
 
 - build succeeds;
-- `make check` or equivalent smoke tests pass in process mode;
-- no threaded mode exposed yet.
+- core regression tests pass in process mode;
+- no threaded mode exposed.
 
-## Phase 2: Global Lifetime Annotation
+## Phase 3: Complete Main Loop Unwinding
 
-Goal: create visibility into mutable global state before moving it.
+Status: partially complete through Phase 1; needs completion against real
+`PgSession` objects.
+
+Goal: finish splitting `PostgresMain()` into stateful pieces while preserving
+process-mode behavior and making the protected step contract explicit.
+
+Likely changes:
+
+- Extract top-level session bootstrap from `PostgresMain()`.
+- Change the step shape toward:
+
+```c
+PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
+void PgSessionRun(PgSession *session);
+```
+
+- Make `PgSessionStep()` the protected public entrypoint, or make it verify
+  that the matching session error boundary is active before processing work.
+- Keep unprotected helpers private.
+- Move remaining loop/session flags into the session/execution state where
+  practical:
+  - `ignore_till_sync`;
+  - `doing_extended_query_message`;
+  - debug query string ownership if feasible;
+  - statement/protocol metadata that naturally belongs to a command execution.
+- Keep early `PgSessionStep()` blocking inside `ReadCommand()` and command
+  execution. That is acceptable until scheduler-aware waits exist.
+
+Validation:
+
+- process-mode regression tests pass;
+- targeted error recovery tests still behave correctly;
+- extended query protocol still handles skip-until-sync correctly;
+- cancellation during command read still works;
+- no unhandled `ERROR` escapes past the protected step entrypoint.
+
+## Phase 4: Global Lifetime Annotation
+
+Goal: create visibility into mutable global state before moving it, now that
+there are concrete runtime/session/backend/execution owners to classify
+against.
 
 Likely changes:
 
@@ -101,6 +185,7 @@ Likely changes:
   - runtime-global;
   - immutable singleton;
   - dynamic singleton;
+  - backend-local;
   - session-local;
   - execution-local;
   - carrier-local;
@@ -110,7 +195,8 @@ Likely changes:
 Expected commit shape:
 
 - one commit for annotation macros and tooling;
-- several focused commits annotating subsystems.
+- several focused commits annotating subsystems;
+- report output that is useful enough to guide Phase 8.
 
 Validation:
 
@@ -118,48 +204,7 @@ Validation:
 - static tool can run and produce a useful report;
 - new mutable globals require explicit classification.
 
-## Phase 3: Main Loop Unwinding
-
-Goal: split `PostgresMain()` into stateful pieces while preserving synchronous
-process-mode behavior.
-
-Likely changes:
-
-- Move volatile loop locals into a session/main-loop state struct:
-  - `send_ready_for_query`;
-  - idle timeout enabled flags;
-  - skip-until-sync state;
-  - extended-query-message state where appropriate.
-- Extract top-level initialization into a session bootstrap function.
-- Extract top-level error recovery into a named function.
-- Extract one command-cycle function.
-- Add a process-mode runner that simply loops over the new step function.
-
-Target shape:
-
-```c
-PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
-void PgSessionRun(PgSession *session);
-```
-
-`PgSessionStep()` is the protected public entrypoint. It must install the
-session's top-level error boundary, or verify that the matching boundary is
-already active. Any unprotected helper is private and must not be called by a
-runtime, thread launcher, or scheduler.
-
-Early `PgSessionStep()` may still block inside `ReadCommand()` and command
-execution. That is acceptable in this phase. The objective is to make the state
-explicit, isolate the loop, and make the error-boundary contract unambiguous.
-
-Validation:
-
-- process-mode regression tests pass;
-- error recovery tests still behave correctly;
-- extended query protocol still handles skip-until-sync correctly;
-- cancellation during command read still works.
-- no unhandled `ERROR` escapes past the protected step entrypoint.
-
-## Phase 4: Logical Interrupts And Timeouts
+## Phase 5: Logical Interrupts And Timeouts
 
 Goal: replace process-signal-shaped backend communication with logical
 interrupts that work for both processes and threads, and make timeout delivery
@@ -181,7 +226,8 @@ Likely changes:
 Expected commit shape:
 
 - one commit introducing interrupt types and mailboxes;
-- focused commits replacing families of signal/procsignal uses.
+- focused commits replacing families of signal/procsignal uses;
+- targeted compatibility wrappers where a full conversion would be too broad.
 
 Validation:
 
@@ -192,31 +238,6 @@ Validation:
 - statement, lock, transaction, idle-in-transaction, and idle-session timeouts;
 - hot standby recovery conflict behavior where practical;
 - process-mode regressions.
-
-## Phase 5: Wait Boundary
-
-Goal: centralize blocking waits behind a scheduler-aware boundary.
-
-Likely changes:
-
-- Introduce `PgWaitSpec` and `PgSuspend()` or equivalent.
-- Adapt frontend command read waits.
-- Adapt frontend output flush waits.
-- Adapt latch and wait-event-set paths.
-- Adapt condition variable and lock waits where feasible.
-- Keep early native implementation blocking the current carrier.
-
-Important rule:
-
-All waits that can last an unbounded amount of time should become visible to
-the runtime. Short bounded waits can remain local until later.
-
-Validation:
-
-- process-mode tests pass;
-- cancellation while blocked still works;
-- idle timeout and transaction timeout behavior remains correct;
-- no lost wakeups in common wait paths.
 
 ## Phase 6: Backend Lifecycle And Exit
 
@@ -365,7 +386,35 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
-## Phase 11: Pooled Carrier Scheduler
+## Phase 11: Scheduler-Aware Wait Boundary
+
+Goal: centralize blocking waits behind a runtime-visible boundary so sessions
+can eventually suspend and resume without pinning an OS thread.
+
+Likely changes:
+
+- Introduce `PgWaitSpec` and `PgSuspend()` or equivalent.
+- Adapt frontend command read waits.
+- Adapt frontend output flush waits.
+- Adapt latch and wait-event-set paths.
+- Adapt condition variable and lock waits where feasible.
+- Keep thread-per-session mode available with waits that block the current
+  carrier while the scheduler work is still incomplete.
+
+Important rule:
+
+All waits that can last an unbounded amount of time should become visible to
+the runtime. Short bounded waits can remain local until later.
+
+Validation:
+
+- process-mode tests pass;
+- thread-per-session tests pass;
+- cancellation while blocked still works;
+- idle timeout and transaction timeout behavior remains correct;
+- no lost wakeups in common wait paths.
+
+## Phase 12: Pooled Carrier Scheduler
 
 Goal: schedule logical session/execution tasks onto a smaller number of worker
 threads.
@@ -393,7 +442,7 @@ Validation:
 - cancellation of waiting and running tasks;
 - process-mode and thread-per-session modes still work.
 
-## Phase 12: Executor And Utility Yield Points
+## Phase 13: Executor And Utility Yield Points
 
 Goal: improve fairness and latency for long-running commands under pooled
 scheduling.
@@ -413,7 +462,7 @@ Validation:
 - no executor state corruption across yields;
 - performance comparison against thread-per-session mode.
 
-## Phase 13: Hardening
+## Phase 14: Hardening
 
 Goal: make threaded mode debuggable and credible.
 
@@ -435,8 +484,8 @@ Approach:
 
 - audit global and static state in `src/pl/plpgsql`;
 - classify caches as session-local, runtime-global immutable, or synchronized;
-- move mutable session caches into `PgSession` extension state or PL/pgSQL's own
-  session-owned object;
+- move mutable session caches into `PgSession` extension state or PL/pgSQL's
+  own session-owned object;
 - keep process mode behavior unchanged;
 - mark PL/pgSQL thread-per-session safe only after tests pass.
 
@@ -488,8 +537,10 @@ Risk: moving `PostgresMain()` state breaks `ERROR` recovery or protocol sync.
 Mitigation:
 
 - preserve the always-active top-level `sigsetjmp` boundary initially;
-- make `PgSessionStep()` the protected public entrypoint and keep unprotected
-  helpers private;
+- make `PgSessionStep()` the protected public entrypoint, or assert it is under
+  the matching protected session boundary until that entrypoint is fully
+  public;
+- keep unprotected helpers private;
 - extract recovery code with minimal semantic changes;
 - add targeted protocol error tests.
 
@@ -499,7 +550,9 @@ Risk: thread mode corrupts session state through unclassified globals.
 
 Mitigation:
 
-- annotate globals early;
+- introduce the runtime/session/backend object vocabulary before broad
+  classification;
+- annotate globals before thread launch;
 - use static reports;
 - reject unclassified mutable globals in new code;
 - prefer thread-local transition wrappers before object migration.
@@ -579,20 +632,29 @@ Mitigation:
 
 ## Suggested Commit Sequence After Documentation
 
-1. Add state object declarations and process-mode no-op initialization.
-2. Add global lifetime annotations and initial static report tooling.
-3. Extract `PostgresMain()` error recovery into a named helper.
-4. Extract session bootstrap from `PostgresMain()`.
-5. Extract one-command loop state into a session main-loop struct.
-6. Add `PgSessionStep()` while process mode still loops synchronously.
-7. Introduce logical interrupt structs and bridge signal handlers to them.
-8. Convert timeout delivery to target logical backends.
-9. Split backend exit cleanup from process exit.
-10. Add extension backend model metadata and process-only default.
-11. Establish the minimum in-tree module allowlist.
-12. Make the thread-safety floor private through TLS or object ownership.
-13. Add thread portability layer and backend launch switch.
-14. Run first thread-per-session backend smoke tests.
+1. Land a minimal process-mode `PgSessionStep()` boundary.
+2. Add runtime/session/backend object declarations and process-mode no-op
+   initialization.
+3. Connect current process-mode startup to the object skeleton.
+4. Attach main-loop state to `PgSession`.
+5. Extract session bootstrap from `PostgresMain()`.
+6. Make the protected `PgSessionStep(PgSession *, PgStepBudget)` contract
+   explicit.
+7. Add global lifetime annotation macros and initial static report tooling.
+8. Annotate globals needed for the thread-per-session safety floor.
+9. Introduce logical interrupt structs and bridge signal handlers to them.
+10. Convert timeout delivery to target logical backends.
+11. Split backend exit cleanup from process exit.
+12. Add extension backend model metadata and process-only default.
+13. Establish the minimum in-tree module allowlist.
+14. Make the thread-safety floor private through TLS or object ownership.
+15. Add thread portability layer and backend launch switch.
+16. Run first thread-per-session backend smoke tests.
+17. Migrate TLS-backed state toward object-owned state.
+18. Introduce scheduler-aware waits.
+19. Add pooled carrier scheduling.
+20. Add executor and utility yield points.
+21. Harden with sanitizers, stress tests, and performance baselines.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility
 wrappers to broad all-at-once rewrites.
