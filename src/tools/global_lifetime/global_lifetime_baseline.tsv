@@ -21,8 +21,6 @@ src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCt
 src/backend/access/nbtree/nbtutils.c	94a728d6cdd5abe3e25f5452c8bf1318143f7b8e	btvacinfo	static BTVacInfo *btvacinfo;
 src/backend/access/nbtree/nbtxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/spgist/spgxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/table/tableam.c	b13182c66a725dcb946a348ca8d0eabe795769f9	default_table_access_method	char *default_table_access_method = DEFAULT_TABLE_ACCESS_METHOD;
-src/backend/access/table/tableam.c	18bb23cc530a3308a5d25c389c6449bc2fbc62d6	synchronize_seqscans	bool synchronize_seqscans = true;
 src/backend/access/transam/clog.c	e00988e96524d575a34fda3384fbf6d2b338b993	XactSlruDesc	static SlruDesc XactSlruDesc;
 src/backend/access/transam/commit_ts.c	fadb65cd2656fd4a0ae67cb107a583fc338b7b2b	CommitTsSlruDesc	static SlruDesc CommitTsSlruDesc;
 src/backend/access/transam/commit_ts.c	2176eede14fc5aad7e3806091461f56d0e7e7a7a	commitTsShared	static CommitTimestampShared *commitTsShared;
@@ -2199,8 +2197,6 @@ src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanI
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
 src/include/access/session.h	14eb961766d59416104d830333bc27eb441aba36	CurrentSession	extern PGDLLIMPORT Session *CurrentSession;
-src/include/access/tableam.h	4052c9204a3d0a64bd4822e7335a0fba8843a968	default_table_access_method	extern PGDLLIMPORT char *default_table_access_method;
-src/include/access/tableam.h	155dfcf7af1273a5cc52c8ed0c2af5949621eb9e	synchronize_seqscans	extern PGDLLIMPORT bool synchronize_seqscans;
 src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/twophase.h	cd91e17402e3d18ed176ab8d63b6cc2716bec742	max_prepared_xacts	extern PGDLLIMPORT int max_prepared_xacts;
 src/include/access/xact.h	a74650fa4c849603e187839bc9e9f68a20b34b16	synchronous_commit	extern PGDLLIMPORT int synchronous_commit;
