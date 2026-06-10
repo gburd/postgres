@@ -14,6 +14,7 @@
 #define TS_CACHE_H
 
 #include "fmgr.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -84,7 +85,7 @@ typedef struct
 /*
  * GUC variable for current configuration
  */
-extern PGDLLIMPORT char *TSCurrentConfig;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *TSCurrentConfig;
 
 
 extern TSParserCacheEntry *lookup_ts_parser_cache(Oid prsId);

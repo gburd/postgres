@@ -74,9 +74,9 @@ static TSConfigCacheEntry *lastUsedConfig = NULL;
 /*
  * GUC default_text_search_config, and a cache of the current config's OID
  */
-char	   *TSCurrentConfig = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *TSCurrentConfig = NULL;
 
-static Oid	TSCurrentConfigCache = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid TSCurrentConfigCache = InvalidOid;
 
 
 /*

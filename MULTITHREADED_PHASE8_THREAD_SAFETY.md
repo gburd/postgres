@@ -122,6 +122,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
   `gin_pending_list_limit`.
 - async notify tracing USERSET GUC backing variable: `Trace_notify`.
+- text-search session GUC/cache state: `TSCurrentConfig` and
+  `TSCurrentConfigCache`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -159,7 +161,7 @@ Phase 8 still needs to cover at least:
   exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
 
-After the async notify tracing GUC slice, the filtered static report contains 243
+After the text-search GUC/cache slice, the filtered static report contains 242
 remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
@@ -306,6 +308,15 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc async`;
 - live temp-cluster smoke coverage for `trace_notify`, including `SET`,
   `SHOW`, `LISTEN`, and `NOTIFY`;
+- focused `ts_cache.o` compile coverage;
+- fixture-backed default-text-search regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc tsearch`;
+- live temp-cluster smoke coverage for `default_text_search_config`, including
+  repeated `SET`, `SHOW`, `get_current_ts_config()`, and `to_tsvector()` calls;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

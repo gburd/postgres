@@ -2057,8 +2057,6 @@ src/backend/utils/cache/ts_cache.c	e9ae555c258b1001d03c8387567cc9296d8af210	TSDi
 src/backend/utils/cache/ts_cache.c	47f37f8e0e7c885636adb2cd08e7d9b1c5e6a4c8	lastUsedDictionary	static TSDictionaryCacheEntry *lastUsedDictionary = NULL;
 src/backend/utils/cache/ts_cache.c	c6f678bac6a71d0f9af762f93a16ca3573038918	TSConfigCacheHash	static HTAB *TSConfigCacheHash = NULL;
 src/backend/utils/cache/ts_cache.c	a4e9156a3002c2d7c092bfcf47bab93050d1ea60	lastUsedConfig	static TSConfigCacheEntry *lastUsedConfig = NULL;
-src/backend/utils/cache/ts_cache.c	67f687ad8da7f37e36dfa6698839183171bc4690	TSCurrentConfig	char *TSCurrentConfig = NULL;
-src/backend/utils/cache/ts_cache.c	85d9bc6dd82303614d4f271ff4ea127b5b2e8cfb	TSCurrentConfigCache	static Oid TSCurrentConfigCache = InvalidOid;
 src/backend/utils/cache/typcache.c	dc6fe311c36fb9fd0f2fe5856f392bd9d0c8cfd4	TypeCacheHash	static HTAB *TypeCacheHash = NULL;
 src/backend/utils/cache/typcache.c	cd3e07cd11e9072af835b4fb2845de4fd912d1d0	RelIdToTypeIdCacheHash	static HTAB *RelIdToTypeIdCacheHash = NULL;
 src/backend/utils/cache/typcache.c	a20cbee4473a87aabeb06868b4bef4475b9b43ce	firstDomainTypeEntry	static TypeCacheEntry *firstDomainTypeEntry = NULL;
@@ -2677,7 +2675,6 @@ src/include/tcop/pquery.h	56e550e6744283dfed1e5a430ef8eaa2832433b4	ActivePortal	
 src/include/tcop/utility.h	ed1c863ca87e226a490fd3134668a87ff12230a3	ProcessUtility_hook	extern PGDLLIMPORT ProcessUtility_hook_type ProcessUtility_hook;
 src/include/tsearch/dicts/spell.h	9e6979fdbdff9c45d252d91dd0471d61c1715509	SPNode	struct SPNode;
 src/include/tsearch/dicts/spell.h	ccc678d388326b21bdb3534133fba457ce6fcd26	AffixNode	struct AffixNode;
-src/include/tsearch/ts_cache.h	a4fc55beaf0299374a6db78cb02fb04e6f20cb5b	TSCurrentConfig	extern PGDLLIMPORT char *TSCurrentConfig;
 src/include/tsearch/ts_utils.h	dc2fdac146a049075e25162061f824973d1870c3	TSVectorParseStateData	struct TSVectorParseStateData;
 src/include/tsearch/ts_utils.h	ff4db33229f721a60c807b9f3be89205b697d581	TSQueryParserStateData	struct TSQueryParserStateData;
 src/include/utils/backend_status.h	73c30d4b248b09a847166798a6e97d7802c7fb33	pgstat_track_activities	extern PGDLLIMPORT bool pgstat_track_activities;
