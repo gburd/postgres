@@ -193,6 +193,10 @@ Important current files:
     create_aggregate create_function_sql create_cast constraints triggers select vacuum sanity_check guc
   ```
 
+  The `horology` test has its own date/time fixture dependencies. Run
+  `date time timetz timestamp timestamptz interval` before `horology` in direct
+  focused runs, matching `parallel_schedule`.
+
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
 - The extension backend-model tests need the test extension module installed

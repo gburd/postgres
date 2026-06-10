@@ -557,8 +557,8 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies = true;
 /*
  * These GUCs exist solely for backward compatibility.
  */
-static bool default_with_oids = false;
-static bool standard_conforming_strings = true;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool default_with_oids = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
 
@@ -597,7 +597,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
  * This avoids breaking compatibility with clients that have never supported
  * renegotiation and therefore always try to zero it.
  */
-static int	ssl_renegotiation_limit;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int ssl_renegotiation_limit;
 
 /*
  * This really belongs in pg_shmem.c, but is defined here so that it doesn't
@@ -613,14 +613,14 @@ int			huge_pages_status = HUGE_PAGES_UNKNOWN;
  * and is kept in sync by assign_hooks.
  */
 static char *syslog_ident_str;
-static double phony_random_seed;
-static char *client_encoding_string;
-static char *datestyle_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION double phony_random_seed;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *client_encoding_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *datestyle_string;
 static char *server_encoding_string;
 static char *server_version_string;
 static int	server_version_num;
 static char *debug_io_direct_string;
-static char *restrict_nonsystem_relation_kind_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *restrict_nonsystem_relation_kind_string;
 static char *log_min_messages_string;
 
 #ifdef HAVE_SYSLOG
@@ -630,11 +630,11 @@ static char *log_min_messages_string;
 #endif
 static int	syslog_facility = DEFAULT_SYSLOG_FACILITY;
 
-static char *timezone_string;
-static char *log_timezone_string;
-static char *timezone_abbreviations_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_timezone_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_abbreviations_string;
 static char *data_directory;
-static char *session_authorization_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_authorization_string;
 static int	max_function_args;
 static int	max_index_keys;
 static int	max_identifier_length;

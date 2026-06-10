@@ -38,6 +38,7 @@
 #include "catalog/namespace.h"
 #include "mb/pg_wchar.h"
 #include "utils/fmgrprotos.h"
+#include "utils/global_lifetime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/relcache.h"
@@ -60,28 +61,31 @@ typedef struct ConvProcInfo
 	FmgrInfo	to_client_info;
 } ConvProcInfo;
 
-static List *ConvProcList = NIL;	/* List of ConvProcInfo */
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *ConvProcList = NIL;
 
 /*
  * These variables point to the currently active conversion functions,
  * or are NULL when no conversion is needed.
  */
-static FmgrInfo *ToServerConvProc = NULL;
-static FmgrInfo *ToClientConvProc = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION FmgrInfo *ToServerConvProc = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION FmgrInfo *ToClientConvProc = NULL;
 
 /*
  * This variable stores the conversion function to convert from UTF-8
  * to the server encoding.  It's NULL if the server encoding *is* UTF-8,
  * or if we lack a conversion function for this.
  */
-static FmgrInfo *Utf8ToServerConvProc = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION FmgrInfo *Utf8ToServerConvProc = NULL;
 
 /*
  * These variables track the currently-selected encodings.
  */
-static const pg_enc2name *ClientEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static const pg_enc2name *DatabaseEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const pg_enc2name *ClientEncoding =
+	&pg_enc2name_tbl[PG_SQL_ASCII];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const pg_enc2name *DatabaseEncoding =
+	&pg_enc2name_tbl[PG_SQL_ASCII];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const pg_enc2name *MessageEncoding =
+	&pg_enc2name_tbl[PG_SQL_ASCII];
 
 /*
  * During backend startup we can't set client encoding because we (a)
@@ -89,8 +93,8 @@ static const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
  * encoding yet either.  So SetClientEncoding() just accepts anything and
  * remembers it for InitializeClientEncoding() to apply later.
  */
-static bool backend_startup_complete = false;
-static int	pending_client_encoding = PG_SQL_ASCII;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool backend_startup_complete = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int pending_client_encoding = PG_SQL_ASCII;
 
 
 /* Internal functions */

@@ -89,6 +89,18 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `quote_all_identifiers`, `Transform_null_equals`, `xmlbinary`, and
   `xmloption`. The frontend `fe_utils` `quote_all_identifiers` variable is a
   separate client-side option and remains plain frontend state.
+- session locale, authorization, and compatibility GUC backing variables in
+  `guc_tables.c`: `client_encoding_string`, `datestyle_string`,
+  `timezone_string`, `log_timezone_string`,
+  `timezone_abbreviations_string`, `session_authorization_string`,
+  `restrict_nonsystem_relation_kind_string`, `phony_random_seed`,
+  `default_with_oids`, `standard_conforming_strings`, and
+  `ssl_renegotiation_limit`;
+- timezone and encoding state behind those GUCs, including
+  `session_timezone`, `log_timezone`, and the `mbutils.c` encoding/conversion
+  cache state for `ClientEncoding`, `DatabaseEncoding`, `MessageEncoding`,
+  active conversion functions, pending startup client encoding, and cached
+  conversion function lookup records.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -197,6 +209,21 @@ Validation for this slice:
   `vacuum_multixact_failsafe_age`,
   `vacuum_max_eager_freeze_failure_rate`, and
   `track_cost_delay_timing`;
+- fixture-backed locale/authorization/encoding GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc strings
+  date time timetz timestamp timestamptz interval horology sysviews
+  select_parallel`;
+- unsafe test module coverage for session authorization and GUC privileges:
+  `rolenames setconfig alter_system_table guc_privs`;
+- live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,
+  `TimeZone`, `log_timezone`, `timezone_abbreviations`,
+  `restrict_nonsystem_relation_kind`, `seed`, `default_with_oids`,
+  `standard_conforming_strings`, `ssl_renegotiation_limit`, and
+  `session_authorization`;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;
@@ -211,7 +238,7 @@ Validation for this slice:
 - filtered static scan for the touched required-floor names;
 - filtered non-TLS extern mismatch search for the planner/JIT/analyze,
   exported session, session SQL-behavior, and vacuum tuning GUC backing
-  variables;
+  variables, plus the session locale/authorization/encoding GUC slice;
 - `git diff --check`;
 - extension backend-model regression tests:
   `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and
