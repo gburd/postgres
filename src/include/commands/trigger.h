@@ -17,6 +17,7 @@
 #include "catalog/objectaddress.h"
 #include "nodes/execnodes.h"
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
 /*
  * TriggerData is the node type that is passed as fmgr "context" info
@@ -142,7 +143,7 @@ typedef struct TransitionCaptureState
 #define SESSION_REPLICATION_ROLE_ORIGIN		0
 #define SESSION_REPLICATION_ROLE_REPLICA	1
 #define SESSION_REPLICATION_ROLE_LOCAL		2
-extern PGDLLIMPORT int SessionReplicationRole;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int SessionReplicationRole;
 
 /*
  * States at which a trigger can be fired. These are the

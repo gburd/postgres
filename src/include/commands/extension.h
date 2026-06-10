@@ -16,9 +16,11 @@
 
 #include "catalog/objectaddress.h"
 #include "parser/parse_node.h"
+#include "utils/global_lifetime.h"
 
 /* GUC */
-extern PGDLLIMPORT char *Extension_control_path;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
+		   *Extension_control_path;
 
 /*
  * creating_extension is only true while running a CREATE EXTENSION or ALTER
@@ -29,8 +31,9 @@ extern PGDLLIMPORT char *Extension_control_path;
  * scripts can drop member objects without having to explicitly dissociate
  * them from the extension first.
  */
-extern PGDLLIMPORT bool creating_extension;
-extern PGDLLIMPORT Oid CurrentExtensionObject;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool creating_extension;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid
+			CurrentExtensionObject;
 
 
 extern ObjectAddress CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt);

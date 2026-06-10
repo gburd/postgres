@@ -62,7 +62,8 @@
 
 
 /* GUC variables */
-int			SessionReplicationRole = SESSION_REPLICATION_ROLE_ORIGIN;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int SessionReplicationRole =
+			SESSION_REPLICATION_ROLE_ORIGIN;
 
 /* How many levels deep into trigger execution are we? */
 static int	MyTriggerDepth = 0;

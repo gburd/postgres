@@ -74,11 +74,11 @@
 
 
 /* GUC */
-char	   *Extension_control_path;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *Extension_control_path;
 
 /* Globally visible state variables */
-bool		creating_extension = false;
-Oid			CurrentExtensionObject = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool creating_extension = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid CurrentExtensionObject = InvalidOid;
 
 /*
  * Internal data structure to hold the results of parsing a control file

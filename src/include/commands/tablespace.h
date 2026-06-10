@@ -18,10 +18,13 @@
 #include "catalog/objectaddress.h"
 #include "lib/stringinfo.h"
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT char *default_tablespace;
-extern PGDLLIMPORT char *temp_tablespaces;
-extern PGDLLIMPORT bool allow_in_place_tablespaces;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
+		   *default_tablespace;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *temp_tablespaces;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool
+			allow_in_place_tablespaces;
 
 /* XLOG stuff */
 #define XLOG_TBLSPC_CREATE		0x00

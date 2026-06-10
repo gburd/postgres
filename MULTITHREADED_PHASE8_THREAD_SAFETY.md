@@ -113,6 +113,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `createrole_self_grant`. The derived assign-hook state for
   `createrole_self_grant`, including the parsed role-grant options, is also
   session-local TLS state.
+- command/session GUC backing variables outside `guc_tables.c`:
+  `default_tablespace`, `temp_tablespaces`,
+  `allow_in_place_tablespaces`, `SessionReplicationRole`,
+  `event_triggers`, and `Extension_control_path`;
+- extension command execution state in `extension.c`: `creating_extension` and
+  `CurrentExtensionObject`.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -149,6 +155,9 @@ Phase 8 still needs to cover at least:
 - remaining GUC backing variables now that the generated runtime rebind layer
   exists;
 - the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
+
+After the command/session GUC slice, the filtered static report contains 246
+remaining unclassified generated GUC backing variables.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -259,6 +268,24 @@ Validation for this slice:
   `password_encryption`, and `createrole_self_grant`, including a non-superuser
   CREATEROLE self-grant check. The same smoke confirmed `trace_syncscan` is not
   registered in this default build because `TRACE_SYNCSCAN` is not enabled;
+- fixture-backed command/session GUC regression coverage:
+  `test_setup copy copyselect copydml copyencoding insert insert_conflict
+  create_function_c create_misc create_operator create_procedure create_table
+  create_type create_schema create_index create_index_spgist create_view
+  index_including index_including_gist create_aggregate create_function_sql
+  create_cast constraints triggers select vacuum sanity_check guc create_am
+  oidjoins event_trigger tablespace`;
+- test extension regression coverage for extension command state and backend
+  model checks: `test_extensions`, `test_extdepend`,
+  `test_ext_backend_model`, and `test_ext_backend_model_pooled`;
+- live temp-cluster smoke coverage for `default_tablespace`,
+  `temp_tablespaces`, `allow_in_place_tablespaces`,
+  `session_replication_role`, `event_triggers`, and
+  `extension_control_path`, including a custom extension loaded through a
+  session-set control path and `$system` discovery for PL/pgSQL after clearing
+  the path. The local TAP harness could not run
+  `t/001_extension_control_path.pl` because this macOS Perl does not have the
+  required `IPC::Run` module installed;
 - targeted isolation regression coverage:
   `read-only-anomaly read-only-anomaly-2 read-only-anomaly-3
   serializable-parallel-2`;

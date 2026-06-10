@@ -206,6 +206,17 @@ Important current files:
   gmake -C src/test/modules/test_extensions DESTDIR="$PWD/tmp_install" install
   ```
 
+- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
+  Perl on this macOS checkout may not have it, in which case direct `prove`
+  invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.
+  Install `IPC::Run` into the Perl used for the build before treating TAP
+  coverage as runnable.
+
+- This shell is zsh. Cleanup commands with unmatched globs, such as
+  `rm -rf tmp_check_*`, can fail with `no matches found` before the test command
+  runs. Use a matched path, `find`, or enable null-glob behavior when cleaning
+  optional TAP/regression scratch directories.
+
 ## Terminology
 
 - Runtime: one server runtime inside an address space. In process mode, each

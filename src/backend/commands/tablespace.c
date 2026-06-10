@@ -82,9 +82,9 @@
 #include "utils/varlena.h"
 
 /* GUC variables */
-char	   *default_tablespace = NULL;
-char	   *temp_tablespaces = NULL;
-bool		allow_in_place_tablespaces = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *default_tablespace = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *temp_tablespaces = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allow_in_place_tablespaces = false;
 
 Oid			binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 

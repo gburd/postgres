@@ -20,6 +20,7 @@
 #include "tcop/cmdtag.h"
 #include "tcop/deparse_utility.h"
 #include "utils/aclchk_internal.h"
+#include "utils/global_lifetime.h"
 
 typedef struct EventTriggerData
 {
@@ -29,7 +30,7 @@ typedef struct EventTriggerData
 	CommandTag	tag;
 } EventTriggerData;
 
-extern PGDLLIMPORT bool event_triggers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool event_triggers;
 
 /*
  * Reasons for relation rewrites.
