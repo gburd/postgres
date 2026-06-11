@@ -17,6 +17,7 @@
 #include "access/tupdesc.h"
 #include "common/relpath.h"
 #include "nodes/bitmapset.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -156,9 +157,9 @@ extern void RelationCacheInitFilePostInvalidate(void);
 extern void RelationCacheInitFileRemove(void);
 
 /* should be used only by relcache.c and catcache.c */
-extern PGDLLIMPORT bool criticalRelcachesBuilt;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalRelcachesBuilt;
 
 /* should be used only by relcache.c and postinit.c */
-extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalSharedRelcachesBuilt;
 
 #endif							/* RELCACHE_H */

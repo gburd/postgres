@@ -419,6 +419,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `catcache_in_progress_stack` is execution-local TLS state used to mark
   in-progress cache entries dead when invalidations arrive during entry or
   list construction.
+- relation cache state in `relcache.c`: `RelationIdCache`,
+  `criticalRelcachesBuilt`, `criticalSharedRelcachesBuilt`,
+  `relcacheInvalsReceived`, and `OpClassCache` are session-local TLS cache
+  state for the current backend, while relation-build in-progress tracking,
+  end-of-transaction relation cleanup lists, and deferred tuple-descriptor
+  cleanup arrays are execution-local TLS state owned by the current
+  transaction or relation-build path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1157,6 +1164,16 @@ Validation for this slice:
   resolved a table name through `to_regclass()`, renamed it, verified the old
   name no longer resolved, verified the new name resolved, dropped it, and
   verified the dropped name no longer resolved.
+- focused `relcache.o`, `catcache.o`, `seclabel.o`, and `postinit.o` compile
+  coverage, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, fixture-backed relation DDL
+  regression coverage, and a live temp-cluster restart/rename/drop smoke after
+  classifying relation cache state. An initial incremental rebuild/install
+  reproduced the documented stale-object failure mode during `initdb`
+  post-bootstrap startup; the backend clean/rebuild then passed. The regression
+  group covered create/index/alter/temp/cluster/tablespace/event-trigger paths,
+  and the smoke created a table and index, restarted the server, verified both
+  still resolved, then verified rename/drop invalidation.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
