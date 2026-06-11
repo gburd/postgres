@@ -24,7 +24,7 @@
 #include "storage/lmgr.h"
 #include "utils/lsyscache.h"
 
-static const char *const ConflictTypeNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *const ConflictTypeNames[] = {
 	[CT_INSERT_EXISTS] = "insert_exists",
 	[CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
 	[CT_UPDATE_EXISTS] = "update_exists",

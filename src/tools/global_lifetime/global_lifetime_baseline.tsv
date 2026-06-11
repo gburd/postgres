@@ -827,13 +827,11 @@ src/backend/postmaster/walsummarizer.c	bf3b67ad319a9f4db0e0672716f57dbdea8f705d	
 src/backend/postmaster/walsummarizer.c	6c3e96c14a7ad2581913f480f9312d394124a64e	sleep_quanta	static long sleep_quanta = 1;
 src/backend/postmaster/walsummarizer.c	dd153fe9ff997bbb86c55480ec3a05ce71fd0655	pages_read_since_last_sleep	static long pages_read_since_last_sleep = 0;
 src/backend/postmaster/walsummarizer.c	bc8ec2c1b56edc096f9f1bb4dfa7cc829c0203ba	redo_pointer_at_last_summary_removal	static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
-src/backend/replication/libpqwalreceiver/libpqwalreceiver.c	faa1acae9d56662a8d09df301319f9ec91f79c0c	PQWalReceiverFunctions	static WalReceiverFunctionsType PQWalReceiverFunctions = { .walrcv_connect = libpqrcv_connect, .walrcv_check_conninfo = libpqrcv_check_conninfo, .walrcv_get_conninfo = libpqrcv_get_conninfo, .walrcv_get_senderinfo = libpqrcv_get_senderin...
 src/backend/replication/logical/applyparallelworker.c	9890f7a94c21181d523d6e8462f697362ffbdd98	ParallelApplyTxnHash	static HTAB *ParallelApplyTxnHash = NULL;
 src/backend/replication/logical/applyparallelworker.c	53942e820ad5350d2d70f70411b9839db8406acd	ParallelApplyWorkerPool	static List *ParallelApplyWorkerPool = NIL;
 src/backend/replication/logical/applyparallelworker.c	f4648479bc22f19f82fa1923d492e3a4190b10ad	MyParallelShared	ParallelApplyWorkerShared *MyParallelShared = NULL;
 src/backend/replication/logical/applyparallelworker.c	ada06e6d33e637f7c6e988483d7e3d345d6393e4	stream_apply_worker	static ParallelApplyWorkerInfo *stream_apply_worker = NULL;
 src/backend/replication/logical/applyparallelworker.c	2c1a7e485328c28ca787feb8bc19eae0b0716ec3	subxactlist	static List *subxactlist = NIL;
-src/backend/replication/logical/conflict.c	e3e910cd7113fe6e63184bf4a22ea12afda1c982	ConflictTypeNames	static const char *const ConflictTypeNames[] = { [CT_INSERT_EXISTS] = "insert_exists", [CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs", [CT_UPDATE_EXISTS] = "update_exists", [CT_UPDATE_MISSING] = "update_missing", [CT_DELETE_ORIGIN_...
 src/backend/replication/logical/launcher.c	924fece11d7a5c4fc0a4f9dee2a7b7511293fdec	MyLogicalRepWorker	LogicalRepWorker *MyLogicalRepWorker = NULL;
 src/backend/replication/logical/launcher.c	c73433138e99bfc62b3575baf8db15044f93b331	LogicalRepCtx	static LogicalRepCtxStruct *LogicalRepCtx;
 src/backend/replication/logical/launcher.c	4be8639f8fa2acad97abe943d7ab18f90eccd801	last_start_times_dsa	static dsa_area *last_start_times_dsa = NULL;
