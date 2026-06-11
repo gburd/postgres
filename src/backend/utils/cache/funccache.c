@@ -36,7 +36,7 @@
 /*
  * Hash table for cached functions
  */
-static HTAB *cfunc_hashtable = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *cfunc_hashtable = NULL;
 
 typedef struct CachedFunctionHashEntry
 {

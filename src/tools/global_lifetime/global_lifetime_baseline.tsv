@@ -1007,7 +1007,6 @@ src/backend/utils/cache/catcache.c	b3162bf525812405ef6916bb185afd271b43d324	Cach
 src/backend/utils/cache/evtcache.c	2e0181e8ef05222d01833790805485a7e469d774	EventTriggerCache	static HTAB *EventTriggerCache;
 src/backend/utils/cache/evtcache.c	666a2acfd410ea52c3198492a1f26eb7ea45f32d	EventTriggerCacheContext	static MemoryContext EventTriggerCacheContext;
 src/backend/utils/cache/evtcache.c	98f9bba22366928d17e7ddddc116565aab3dc6a0	EventTriggerCacheState	static EventTriggerCacheStateType EventTriggerCacheState = ETCS_NEEDS_REBUILD;
-src/backend/utils/cache/funccache.c	0db3a88f03663ba6966e7548c90db9b6ca9b2ff2	cfunc_hashtable	static HTAB *cfunc_hashtable = NULL;
 src/backend/utils/cache/inval.c	253fd92b5bb859d473f305b9186700bd058c6948	InvalMessageArrays	static InvalMessageArray InvalMessageArrays[2];
 src/backend/utils/cache/inval.c	346a098fa6d8be6c12ffaa02f00f8828bf5ad783	transInvalInfo	static TransInvalidationInfo *transInvalInfo = NULL;
 src/backend/utils/cache/inval.c	c50cc0cd3472a84ca1ca75a14ccd807a4c7cd5df	inplaceInvalInfo	static InvalidationInfo *inplaceInvalInfo = NULL;

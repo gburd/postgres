@@ -379,6 +379,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   backend-local TLS state allocated under the current backend's
   `CacheMemoryContext` and invalidated by the current backend's syscache
   callback path.
+- cached function execution table in `funccache.c`: `cfunc_hashtable` is a
+  session-local TLS cache whose entries are allocated in `TopMemoryContext`
+  and keyed by function OID, call context, argument types, and result
+  descriptor.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1060,6 +1064,10 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc async`;
 - live temp-cluster smoke coverage for `trace_notify`, including `SET`,
   `SHOW`, `LISTEN`, and `NOTIFY`;
+- focused `funccache.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, fixture-backed SQL-function/plancache
+  regression coverage, and a direct temp-cluster SQL-function replacement
+  smoke after classifying the cached-function hash table as session-local TLS.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
