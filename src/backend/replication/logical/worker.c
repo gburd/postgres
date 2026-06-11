@@ -490,15 +490,15 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction = false;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 
 /* fields valid only when processing streamed transaction */
-static bool in_streamed_transaction = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_streamed_transaction = false;
 
-static TransactionId stream_xid = InvalidTransactionId;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId stream_xid = InvalidTransactionId;
 
 /*
  * The number of changes applied by parallel apply worker during one streaming
  * block.
  */
-static uint32 parallel_stream_nchanges = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 parallel_stream_nchanges = 0;
 
 /* Are we initializing an apply worker? */
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker = false;
@@ -522,7 +522,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr skip_xact_finish_lsn = Inval
 #define is_skipping_changes() (unlikely(XLogRecPtrIsValid(skip_xact_finish_lsn)))
 
 /* BufFile handle of the current streaming file */
-static BufFile *stream_fd = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufFile *stream_fd = NULL;
 
 /*
  * The remote WAL position that has been applied and flushed locally. We record
@@ -547,7 +547,8 @@ typedef struct ApplySubXactData
 	SubXactInfo *subxacts;		/* sub-xact offset in changes file */
 } ApplySubXactData;
 
-static ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ApplySubXactData subxact_data =
+{0, 0, InvalidTransactionId, NULL};
 
 static inline void subxact_filename(char *path, Oid subid, TransactionId xid);
 static inline void changes_filename(char *path, Oid subid, TransactionId xid);

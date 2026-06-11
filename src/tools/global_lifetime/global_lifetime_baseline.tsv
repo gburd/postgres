@@ -96,11 +96,6 @@ src/backend/replication/logical/snapbuild.c	e25ffd685292c246692bf3a272173566fcea
 src/backend/replication/logical/syncutils.c	d737ba611c657b8f387798002251a2a1b19b02d6	relation_states_validity	static SyncingRelationsState relation_states_validity = SYNC_RELATIONS_STATE_NEEDS_REBUILD;
 src/backend/replication/logical/tablesync.c	6c339e7bb198986e17ee12ee8898328887c85a5a	table_states_not_ready	List *table_states_not_ready = NIL;
 src/backend/replication/logical/tablesync.c	704f0d0315d1805f79d06604d7f5781177e251d2	copybuf	static StringInfo copybuf = NULL;
-src/backend/replication/logical/worker.c	17db5eb66a944c960eafe2e0c17083c2d77e6cec	in_streamed_transaction	static bool in_streamed_transaction = false;
-src/backend/replication/logical/worker.c	fdfaa55b1760f15acdd81dc786049b020c4955a9	stream_xid	static TransactionId stream_xid = InvalidTransactionId;
-src/backend/replication/logical/worker.c	6e172e7367be1f21ef9e1355539443287bc6e629	parallel_stream_nchanges	static uint32 parallel_stream_nchanges = 0;
-src/backend/replication/logical/worker.c	7ce3f90999108dbfc809f551f93620e53d99e1e1	stream_fd	static BufFile *stream_fd = NULL;
-src/backend/replication/logical/worker.c	9110a701334e4cb67b8313d74233b71d071594b4	subxact_data	static ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
 src/backend/replication/pgoutput/pgoutput.c	347c57dd8ec09300063817dee7f9f137dbaa2e6e	publications_valid	static bool publications_valid;
 src/backend/replication/pgoutput/pgoutput.c	3ad87ed19878a0e84a6301a1b9634c0cbcbac155	RelationSyncCache	static HTAB *RelationSyncCache = NULL;
 src/backend/replication/repl_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;

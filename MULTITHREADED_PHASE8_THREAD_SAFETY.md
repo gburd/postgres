@@ -141,6 +141,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   list is now explicitly initialized during logical worker startup because a
   TLS `dlist_head` cannot use the self-referential `DLIST_STATIC_INIT`
   initializer safely.
+- streamed logical replication apply-worker scratch in `worker.c`: the active
+  streamed-transaction flag, streamed XID, spool-file handle, parallel apply
+  change counter, and streamed subtransaction table are backend-local TLS state
+  for the apply worker currently receiving or replaying a streamed
+  transaction.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -1970,6 +1975,15 @@ Validation for this slice:
   `logical replication apply worker` backends on the subscriber, copied 1000
   rows, applied a follow-up publisher insert to 1500 rows, and stopped both
   servers with fast shutdown.
+- focused `worker.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct publisher/subscriber logical replication smoke with
+  `streaming = on` and publisher-side `debug_logical_replication_streaming =
+  immediate` after classifying streamed apply-worker scratch state. The live
+  smoke verified visible `logical replication launcher` and `logical
+  replication apply worker` backends on the subscriber, applied a streamed
+  transaction containing 1200 rows and a savepoint/subtransaction segment, and
+  stopped both servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after
