@@ -46,29 +46,29 @@ PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size = 1024;
 
 
 /* exposed so that backend_progress.c can access it */
-PgBackendStatus *MyBEEntry = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *MyBEEntry = NULL;
 
 
-static PgBackendStatus *BackendStatusArray = NULL;
-static char *BackendAppnameBuffer = NULL;
-static char *BackendClientHostnameBuffer = NULL;
-static char *BackendActivityBuffer = NULL;
-static Size BackendActivityBufferSize = 0;
+static PG_GLOBAL_SHMEM PgBackendStatus *BackendStatusArray = NULL;
+static PG_GLOBAL_SHMEM char *BackendAppnameBuffer = NULL;
+static PG_GLOBAL_SHMEM char *BackendClientHostnameBuffer = NULL;
+static PG_GLOBAL_SHMEM char *BackendActivityBuffer = NULL;
+static PG_GLOBAL_SHMEM Size BackendActivityBufferSize = 0;
 #ifdef USE_SSL
-static PgBackendSSLStatus *BackendSslStatusBuffer = NULL;
+static PG_GLOBAL_SHMEM PgBackendSSLStatus *BackendSslStatusBuffer = NULL;
 #endif
 #ifdef ENABLE_GSS
-static PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
+static PG_GLOBAL_SHMEM PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
 #endif
 
 
 /* Status for backends including auxiliary */
-static LocalPgBackendStatus *localBackendStatusTable = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LocalPgBackendStatus *localBackendStatusTable = NULL;
 
 /* Total number of backends including auxiliary */
-static int	localNumBackends = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int localNumBackends = 0;
 
-static MemoryContext backendStatusSnapContext;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext backendStatusSnapContext;
 
 
 static void pgstat_beshutdown_hook(int code, Datum arg);

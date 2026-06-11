@@ -73,6 +73,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   context list, and parallel leader PID copy;
 - process-signal shared/backend state: `ProcSignal` as shared-memory state and
   `MyProcSignalSlot` as the current backend's slot pointer;
+- backend-status shared and local state in `backend_status.c`: the shared
+  status arrays and backing string/security buffers are classified as shared
+  memory, while `MyBEEntry` and the reader-side local status snapshot table,
+  count, and memory context are backend-local TLS state.
 - backend/session identity globals: `MyProcPid`, `MyStartTime`,
   `MyStartTimestamp`, `MyLatch`, `MyPMChildSlot`, `MyProcNumber`,
   `ParallelLeaderProcNumber`, `MyDatabaseId`, `MyDatabaseTableSpace`,
@@ -1254,6 +1258,14 @@ Validation for this slice:
   self-referential `DLIST_STATIC_INIT` for `pgStatPending` was replaced with
   explicit `dlist_init()` in `pgstat_initialize()` before pending stats can be
   queued. The direct `pg_regress` invocation passed all 30 tests.
+- focused `backend_status.o` and `backend_progress.o` compile coverage,
+  global-lifetime scanner coverage, backend clean plus generated-header
+  recovery, full rebuild/install, and fixture-backed backend-status regression
+  coverage after classifying backend-status shared-memory handles and
+  backend-local status snapshot state. The direct `pg_regress` invocation
+  included `privileges`, `misc_functions`, `sysviews`, `rules`, `guc`,
+  `stats_ext`, and `stats` on top of the core fixture prefix and passed all
+  34 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
