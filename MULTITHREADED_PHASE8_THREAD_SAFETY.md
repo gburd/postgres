@@ -135,6 +135,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pgaio_my_uring_context` is backend-local TLS for the current submitter's
   ring, and `pgaio_uring_caps` is runtime-global capability probe state
   computed before shared-memory sizing/initialization.
+- standalone spinlock test state in `s_lock.c`: `test_lock` exists only under
+  `S_LOCK_TEST` and is runtime-global state for that standalone verification
+  binary, not live backend runtime state.
 - logical replication launcher and worker identity state in `launcher.c`:
   `LogicalRepCtx` is shared-memory state for the launcher and worker slots,
   while `MyLogicalRepWorker`, the local last-start-times DSA/dshash
@@ -2012,6 +2015,9 @@ Validation for this slice:
   coverage, and incremental full rebuild/install after classifying io_uring
   AIO method state. Runtime io_uring coverage was not available on this macOS
   checkout because `IOMETHOD_IO_URING_ENABLED` is not active.
+- focused `s_lock.o` compile coverage and global-lifetime scanner coverage
+  after classifying the `S_LOCK_TEST` standalone test lock as runtime test
+  binary state.
 - focused WAL sender compile coverage for `walsender.o`, `syncrep.o`,
   `slot.o`, `postinit.o`, `backend_startup.o`, and related direct users,
   global-lifetime scanner coverage, backend clean plus generated-header

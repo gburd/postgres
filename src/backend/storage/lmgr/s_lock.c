@@ -245,7 +245,7 @@ struct test_lock_struct
 	char		pad2;
 };
 
-volatile struct test_lock_struct test_lock;
+PG_GLOBAL_RUNTIME volatile struct test_lock_struct test_lock;
 
 int
 main()
