@@ -72,7 +72,7 @@ typedef struct SyncRepConfigData
 	char		member_names[FLEXIBLE_ARRAY_MEMBER];
 } SyncRepConfigData;
 
-extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig;
 
 /* user-settable parameters for synchronous replication */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;

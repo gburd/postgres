@@ -190,6 +190,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `publications_valid` and `RelationSyncCache` are session-local TLS state for
   one logical decoding/output plugin instance's publication and relation
   schema cache.
+- synchronous replication wait/config state in `syncrep.c`: the parsed
+  `SyncRepConfig` pointer and `announce_next_takeover` logging guard are
+  runtime-global synchronous-replication state, while `SyncRepWaitMode` is
+  backend-local TLS derived from the current backend's `synchronous_commit`
+  setting.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2107,6 +2112,15 @@ Validation for this slice:
   rows through table synchronization, applied follow-up inserts through
   pgoutput, verified subscriber partition counts, and stopped both servers
   with fast shutdown.
+- focused `syncrep.o`, `walsender.o`, `xact.o`, and `twophase.o` compile
+  coverage, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, focused core `guc`
+  regression coverage, and direct temp-cluster synchronous-replication GUC
+  smoke after classifying synchronous replication wait/config state. The
+  smoke parsed `synchronous_standby_names = 'ANY 1 (*)'`, changed
+  `synchronous_commit` through `remote_write`, `remote_apply`, and `off`,
+  performed a non-blocking write with `synchronous_commit = off`, and avoided
+  a standby-less synchronous commit that would intentionally wait forever.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

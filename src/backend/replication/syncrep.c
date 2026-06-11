@@ -94,10 +94,10 @@ PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 #define SyncStandbysDefined() \
 	(SyncRepStandbyNames != NULL && SyncRepStandbyNames[0] != '\0')
 
-static bool announce_next_takeover = true;
+static PG_GLOBAL_RUNTIME bool announce_next_takeover = true;
 
-SyncRepConfigData *SyncRepConfig = NULL;
-static int	SyncRepWaitMode = SYNC_REP_NO_WAIT;
+PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int SyncRepWaitMode = SYNC_REP_NO_WAIT;
 
 static void SyncRepQueueInsert(int mode);
 static void SyncRepCancelWait(void);
