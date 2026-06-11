@@ -414,18 +414,18 @@ typedef struct NumericSumAccum
  * ----------
  */
 static const NumericDigit const_zero_data[1] = {0};
-static const NumericVar const_zero =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_zero =
 {0, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_zero_data};
 
 static const NumericDigit const_one_data[1] = {1};
-static const NumericVar const_one =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_one =
 {1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_one_data};
 
-static const NumericVar const_minus_one =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_minus_one =
 {1, 0, NUMERIC_NEG, 0, NULL, (NumericDigit *) const_one_data};
 
 static const NumericDigit const_two_data[1] = {2};
-static const NumericVar const_two =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_two =
 {1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_two_data};
 
 #if DEC_DIGITS == 4
@@ -435,7 +435,7 @@ static const NumericDigit const_zero_point_nine_data[1] = {90};
 #elif DEC_DIGITS == 1
 static const NumericDigit const_zero_point_nine_data[1] = {9};
 #endif
-static const NumericVar const_zero_point_nine =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_zero_point_nine =
 {1, -1, NUMERIC_POS, 1, NULL, (NumericDigit *) const_zero_point_nine_data};
 
 #if DEC_DIGITS == 4
@@ -445,7 +445,7 @@ static const NumericDigit const_one_point_one_data[2] = {1, 10};
 #elif DEC_DIGITS == 1
 static const NumericDigit const_one_point_one_data[2] = {1, 1};
 #endif
-static const NumericVar const_one_point_one =
+static PG_GLOBAL_IMMUTABLE const NumericVar const_one_point_one =
 {2, 0, NUMERIC_POS, 1, NULL, (NumericDigit *) const_one_point_one_data};
 
 static const NumericVar const_nan =

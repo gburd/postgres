@@ -25,7 +25,7 @@
  * in the docs for the pg_locks view and update the WaitEventLOCK section in
  * src/backend/utils/activity/wait_event_names.txt.
  */
-const char *const LockTagTypeNames[] = {
+PG_GLOBAL_IMMUTABLE const char *const LockTagTypeNames[] = {
 	"relation",
 	"extend",
 	"frozenid",
@@ -44,7 +44,7 @@ StaticAssertDecl(lengthof(LockTagTypeNames) == (LOCKTAG_LAST_TYPE + 1),
 				 "array length mismatch");
 
 /* This must match enum PredicateLockTargetType (predicate_internals.h) */
-static const char *const PredicateLockTagTypeNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *const PredicateLockTagTypeNames[] = {
 	"relation",
 	"page",
 	"tuple"

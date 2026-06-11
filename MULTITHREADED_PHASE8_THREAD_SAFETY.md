@@ -52,7 +52,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - active portal execution state in `pquery.c`, plus immutable destination
   receiver templates and the permanent `None_Receiver` pointer in `dest.c`;
 - logical apply-worker memory/error context state;
-- regexp cache memory context;
+- regexp cache state in `regexp.c`: the regexp cache memory context, cached
+  compiled-pattern count, and compiled-pattern array are session-local TLS
+  state because compiled regexps are writable backend/session cache entries
+  allocated under the current backend's memory contexts.
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
@@ -325,6 +328,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   backend-local TLS cache state. This avoids runtime-global writes during
   threaded execution without changing the compiler-behavior guard described by
   `init_degree_constants()`.
+- numeric, lock-name, and text-search lookup metadata: numeric constant
+  templates in `numeric.c`, lock tag name tables in `lockfuncs.c`, and static
+  parser/spell lookup strings in `wparser_def.c` and `spell.c` are immutable
+  state. They are shared read-only metadata, not per-backend mutable cache
+  state.
 - locale GUC backing variables and derived locale cache state in
   `pg_locale.c`, including `locale_messages`, `locale_monetary`,
   `locale_numeric`, `locale_time`, `icu_validation_level`,
@@ -896,6 +904,13 @@ Validation for this slice:
   because `float8` expects the permanent `FLOAT8_TBL` fixture from
   `test_setup` after dropping its temporary table; rerunning with
   `test_setup float8` passed.
+- focused `numeric.o`, `regexp.o`, `lockfuncs.o`, `wparser_def.o`, and
+  `spell.o` compile coverage, global-lifetime scanner coverage, incremental
+  full rebuild/install, and fixture-backed `numeric`, `strings`, `tsearch`,
+  `tsdicts`, and `advisory_lock` regression coverage after classifying numeric
+  constants, regexp cache state, lock-name metadata, and text-search lookup
+  strings. The direct `pg_regress` invocation ran the core fixture prefix plus
+  those five tests and passed all 33 tests.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

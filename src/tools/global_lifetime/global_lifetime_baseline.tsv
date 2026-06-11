@@ -941,9 +941,6 @@ src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	
 src/backend/storage/ipc/waiteventset.c	3c8aa452cd57001102cc8e86633c7f9ea3d6aa0d	selfpipe_writefd	static int selfpipe_writefd = -1;
 src/backend/storage/ipc/waiteventset.c	d9d1f03cc68947f07dfc18bedeadff5566b4d578	selfpipe_owner_pid	static int selfpipe_owner_pid = 0;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
-src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	static const char *VoidString = "";
-src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_alias	static const char *const tok_alias[] = { "", "asciiword", "word", "numword", "email", "url", "host", "sfloat", "version", "hword_numpart", "hword_part", "hword_asciipart", "blank", "tag", "protocol", "numhword", "asciihword", "hword", "u...
-src/backend/tsearch/wparser_def.c	71ab769f9f2c47cc39274c3a80feeec02544457a	lex_descr	static const char *const lex_descr[] = { "", "Word, all ASCII", "Word, all letters", "Word, letters and digits", "Email address", "URL", "Host", "Scientific notation", "Version number", "Hyphenated word part, letters and digits", "Hyphen...
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
 src/backend/utils/activity/wait_event_funcs.c	3a3d0fbac14328d80f8ca3b05d66786ff3561098	waitEventData	waitEventData[] = { {NULL, NULL, NULL} };
@@ -988,20 +985,10 @@ src/backend/utils/adt/jsonpath_gram.c	00ed771f111d11c51778b59d9b5b935de8526940	r
 src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
 src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
 src/backend/utils/adt/jsonpath_scan.c	2eca0ca7cecf4e4c3168eb99e618ce7fd4ed2422	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[11] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
-src/backend/utils/adt/lockfuncs.c	7da157d56343bbd1f62a14a27580533974de7be8	LockTagTypeNames	const char *const LockTagTypeNames[] = { "relation", "extend", "frozenid", "page", "tuple", "transactionid", "virtualxid", "spectoken", "object", "userlock", "advisory", "applytransaction" };
-src/backend/utils/adt/lockfuncs.c	76a9e57402d2f2ecf874b8807f0372645cd452c7	PredicateLockTagTypeNames	static const char *const PredicateLockTagTypeNames[] = { "relation", "page", "tuple" };
-src/backend/utils/adt/numeric.c	35bb3c893737534ee756eb1fc9918d069becbc01	const_zero	static const NumericVar const_zero = {0, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_zero_data};
-src/backend/utils/adt/numeric.c	5a652076b2c36aed56e8c545c6ec4662e4ca1853	const_one	static const NumericVar const_one = {1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_one_data};
-src/backend/utils/adt/numeric.c	81f5b8bec3fd7cc28bd6d69158477a7019128420	const_minus_one	static const NumericVar const_minus_one = {1, 0, NUMERIC_NEG, 0, NULL, (NumericDigit *) const_one_data};
-src/backend/utils/adt/numeric.c	8a74a3ed3801b4253e8ffa6c1741a5e61e37f22f	const_two	static const NumericVar const_two = {1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_two_data};
-src/backend/utils/adt/numeric.c	8f42c00dd01235669b1ceaaed5fa4b5e6cf737e9	const_zero_point_nine	static const NumericVar const_zero_point_nine = {1, -1, NUMERIC_POS, 1, NULL, (NumericDigit *) const_zero_point_nine_data};
-src/backend/utils/adt/numeric.c	0f16e749471f787f9d3fde82abc8200ac541aef6	const_one_point_one	static const NumericVar const_one_point_one = {2, 0, NUMERIC_POS, 1, NULL, (NumericDigit *) const_one_point_one_data};
 src/backend/utils/adt/pg_locale.c	ec502045bbd3dc2fd242e54dde2e89fa2fe95b21	c_locale	static struct pg_locale_struct c_locale = { .deterministic = true, .collate_is_c = true, .ctype_is_c = true, };
 src/backend/utils/adt/pg_locale_icu.c	d0fac1d061a083e75fdd52a85dce82dd3be6d606	icu_converter	static UConverter *icu_converter = NULL;
 src/backend/utils/adt/pseudorandomfuncs.c	3e6dbc6d505fe58ef7cbc5db0789caf9a8a99591	prng_state	static pg_prng_state prng_state;
 src/backend/utils/adt/pseudorandomfuncs.c	01e15ad5b55f8f9fde05aa58c1f12392df431eef	prng_seed_set	static bool prng_seed_set = false;
-src/backend/utils/adt/regexp.c	97cd50e1d759fac8e35b618b1d1133369467b01e	num_res	static int num_res = 0;
-src/backend/utils/adt/regexp.c	2c9bee956ed283497e22844fd8ba28ae0c1bc595	re_array	static cached_re_str re_array[MAX_CACHED_RES];
 src/backend/utils/adt/ri_triggers.c	cc0ca8574e2edfcc22bc19e21bb034458972a71b	ri_constraint_cache	static HTAB *ri_constraint_cache = NULL;
 src/backend/utils/adt/ri_triggers.c	f59d0c184dc688adeb1344f6caa494984b2e95f0	ri_query_cache	static HTAB *ri_query_cache = NULL;
 src/backend/utils/adt/ri_triggers.c	e83aabc3433952412eefb14ac903807e7bda41e9	ri_compare_cache	static HTAB *ri_compare_cache = NULL;

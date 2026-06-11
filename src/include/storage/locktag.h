@@ -51,7 +51,7 @@ typedef enum LockTagType
 
 #define LOCKTAG_LAST_TYPE	LOCKTAG_APPLY_TRANSACTION
 
-extern PGDLLIMPORT const char *const LockTagTypeNames[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const LockTagTypeNames[];
 
 /*
  * The LOCKTAG struct is defined with malice aforethought to fit into 16
