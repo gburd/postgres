@@ -352,15 +352,15 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_max_eager_fre
 #define MAX_STATISTICS_TARGET 10000
 
 /* Variables for cost-based parallel vacuum */
-extern PGDLLIMPORT pg_atomic_uint32 *VacuumSharedCostBalance;
-extern PGDLLIMPORT pg_atomic_uint32 *VacuumActiveNWorkers;
-extern PGDLLIMPORT int VacuumCostBalanceLocal;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumSharedCostBalance;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumActiveNWorkers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalanceLocal;
 
-extern PGDLLIMPORT bool VacuumFailsafeActive;
-extern PGDLLIMPORT double vacuum_cost_delay;
-extern PGDLLIMPORT int vacuum_cost_limit;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumFailsafeActive;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_cost_delay;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_cost_limit;
 
-extern PGDLLIMPORT int64 parallel_vacuum_worker_delay_ns;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns;
 
 /* in commands/vacuum.c */
 extern void ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel);

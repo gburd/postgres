@@ -270,7 +270,7 @@ struct ParallelVacuumState
 	PVIndVacStatus status;
 };
 
-static PVSharedCostParams *pv_shared_cost_params = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PVSharedCostParams *pv_shared_cost_params = NULL;
 
 /*
  * Worker-local copy of the last cost-parameter generation this worker has
@@ -279,7 +279,7 @@ static PVSharedCostParams *pv_shared_cost_params = NULL;
  * parallel_vacuum_update_shared_delay_params() will always detect a
  * mismatch and read the initial parameters from shared memory.
  */
-static uint32 shared_params_generation_local = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION uint32 shared_params_generation_local = 0;
 
 static int	parallel_vacuum_compute_workers(Relation *indrels, int nindexes, int nrequested,
 											bool *will_parallel_vacuum);

@@ -89,11 +89,11 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
  * vacuum code. They are initialized here to the defaults for client backends
  * executing VACUUM or ANALYZE.
  */
-double		vacuum_cost_delay = 0;
-int			vacuum_cost_limit = 200;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_cost_delay = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_cost_limit = 200;
 
 /* Variable for reporting cost-based vacuum delay from parallel workers. */
-int64		parallel_vacuum_worker_delay_ns = 0;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns = 0;
 
 /*
  * VacuumFailsafeActive is a defined as a global so that we can determine
@@ -108,15 +108,15 @@ int64		parallel_vacuum_worker_delay_ns = 0;
  * are free to set it if they desire this behavior, but it is false by default
  * and reset to false in between vacuuming each relation.
  */
-bool		VacuumFailsafeActive = false;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumFailsafeActive = false;
 
 /*
  * Variables for cost-based parallel vacuum.  See comments atop
  * compute_parallel_delay to understand how it works.
  */
-pg_atomic_uint32 *VacuumSharedCostBalance = NULL;
-pg_atomic_uint32 *VacuumActiveNWorkers = NULL;
-int			VacuumCostBalanceLocal = 0;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumSharedCostBalance = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumActiveNWorkers = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalanceLocal = 0;
 
 /* non-export function prototypes */
 static List *expand_vacuum_rel(VacuumRelation *vrel,

@@ -81,7 +81,15 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
   `SetRoleIsActive`;
-- vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`;
+- vacuum execution state: `VacuumCostBalance`, `VacuumCostActive`,
+  `parallel_vacuum_worker_delay_ns`, `VacuumFailsafeActive`,
+  `VacuumSharedCostBalance`, `VacuumActiveNWorkers`, and
+  `VacuumCostBalanceLocal`.  The shared-cost pointer variables still point at
+  DSM/parallel-vacuum shared state, but the cached pointer ownership is local
+  to the current vacuum execution.
+- parallel-vacuum execution state in `vacuumparallel.c`:
+  `pv_shared_cost_params` and `shared_params_generation_local`, which cache
+  the current parallel-vacuum cost-parameter generation for the active worker.
 - ANALYZE execution state in `analyze.c`: `anl_context` and `vac_strategy`.
   These carry the current command's working memory context and buffer access
   strategy through sampling and index-statistics helpers.
@@ -89,7 +97,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
   `vacuum_multixact_failsafe_age`, `vacuum_max_eager_freeze_failure_rate`,
-  `track_cost_delay_timing`, and `vacuum_truncate`;
+  `track_cost_delay_timing`, `vacuum_truncate`, `vacuum_cost_delay`, and
+  `vacuum_cost_limit`;
 - transaction execution state in `xact.c`, including current transaction
   state, subtransaction/command counters, transaction timestamps, parallel
   current-XID state, unreported subtransaction XIDs, transaction abort context,
@@ -1184,6 +1193,19 @@ Validation for this slice:
   coverage after classifying after-trigger transaction-tree state. The direct
   `pg_regress` invocation included the schedule prefix through `constraints`
   and passed all 24 tests including `triggers`.
+- focused `vacuum.o` and `vacuumparallel.o` compile coverage,
+  global-lifetime scanner coverage, backend clean/rebuild/install coverage,
+  fixture-backed `vacuum`/`guc` regression coverage, and a live temp-cluster
+  `VACUUM (VERBOSE, PARALLEL 2)` smoke after classifying vacuum cost-delay,
+  failsafe, and parallel-vacuum cost pointer state. An incremental
+  rebuild/install after changing exported TLS declarations in `vacuum.h`
+  crashed during `initdb` post-bootstrap startup on macOS; following the
+  documented backend clean plus generated-file recovery fixed it. The final
+  direct `pg_regress` invocation included the schedule prefix through
+  `vacuum` and `guc` and passed all 28 tests. The smoke created a table and
+  index, set `vacuum_cost_delay = 1` and `vacuum_cost_limit = 10`, ran
+  `VACUUM (VERBOSE, PARALLEL 2)`, and verified those settings remained visible
+  as `1ms` and `10` in the session.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
