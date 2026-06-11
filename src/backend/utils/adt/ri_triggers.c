@@ -254,13 +254,13 @@ typedef struct RI_FastPathEntry
 /*
  * Local data
  */
-static HTAB *ri_constraint_cache = NULL;
-static HTAB *ri_query_cache = NULL;
-static HTAB *ri_compare_cache = NULL;
-static dclist_head ri_constraint_cache_valid_list;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_constraint_cache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_query_cache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_compare_cache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION dclist_head ri_constraint_cache_valid_list;
 
-static HTAB *ri_fastpath_cache = NULL;
-static bool ri_fastpath_callback_registered = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *ri_fastpath_cache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool ri_fastpath_callback_registered = false;
 
 /*
  * Local function prototypes
@@ -4190,7 +4190,7 @@ ri_FastPathTeardown(void)
 	ri_fastpath_callback_registered = false;
 }
 
-static bool ri_fastpath_xact_callback_registered = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool ri_fastpath_xact_callback_registered = false;
 
 static void
 ri_FastPathXactCallback(XactEvent event, void *arg)

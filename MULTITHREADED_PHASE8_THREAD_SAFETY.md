@@ -1001,6 +1001,14 @@ Trigger nesting depth in `trigger.c` is now execution-local TLS. The
 `MyTriggerDepth` counter is incremented only around trigger function calls,
 restored in a `PG_FINALLY()` block, and backs `pg_trigger_depth()` for the
 current execution.
+Referential-integrity trigger caches in `ri_triggers.c` now have explicit
+lifetimes. The constraint, query-plan, and comparison caches are
+session-local TLS, matching their backend-private `TopMemoryContext`
+allocation and syscache callback registration. The fast-path batch cache and
+after-trigger batch callback flag are execution-local TLS because they are
+allocated in `TopTransactionContext` and torn down at trigger-batch end or
+transaction abort, while the xact/subxact callback registration guard is
+session-local TLS alongside the session-local transaction callback registry.
 Missing-attribute value cache state in `heaptuple.c` is now backend-local
 TLS. The cache stores backend-private copies of pass-by-reference missing
 column defaults in `TopMemoryContext`; sharing the mutable dynahash between
@@ -1645,6 +1653,12 @@ Validation for this slice:
   depth.
 - focused `trigger.o` compile coverage plus trigger regression coverage after
   classifying execution-local trigger nesting depth.
+- focused `ri_triggers.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed `foreign_key` plus
+  `triggers` regression coverage after classifying referential-integrity
+  trigger cache state. A direct `foreign_key triggers` run first exposed the
+  expected missing `test_setup` public-schema grant dependency, then
+  `test_setup foreign_key triggers` passed all three tests.
 - focused `heaptuple.o` compile coverage plus fast-default regression
   coverage after classifying backend-local missing-attribute cache state.
 - focused `syncscan.o` compile coverage plus process-mode sequential-scan
