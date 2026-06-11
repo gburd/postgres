@@ -1619,7 +1619,7 @@ recno_compute_index_update(Relation relation, RecnoTuple old_tuple,
 		bool	   *old_nulls = (bool *) palloc(nattrs * sizeof(bool));
 		int			i;
 
-		RecnoDeformTuple(old_tuple, tupdesc, old_vals, old_nulls);
+		RecnoDeformTuple(relation, old_tuple, tupdesc, old_vals, old_nulls);
 
 		for (i = 1; i <= nattrs; i++)
 		{

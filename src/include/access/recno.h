@@ -331,7 +331,7 @@ typedef struct RecnoCompressionHeader
 {
 	uint8		comp_type;
 	uint8		comp_level;
-	uint16		_pad;
+	uint16		dict_id;		/* trained-dict id, 0 = RECNO_DICT_INVALID_ID */
 	uint32		orig_size;
 	uint32		comp_size;
 } RecnoCompressionHeader;
@@ -537,7 +537,7 @@ extern RecnoTuple RecnoFormTupleForceShrink(TupleDesc tupdesc, Datum *values,
 											RecnoOverflowBuffers *overflow_buffers);
 extern RecnoTuple RecnoFormTupleFromSlot(TupleTableSlot *slot);
 extern Size RecnoComputeSlotSize(TupleTableSlot *slot);
-extern void RecnoDeformTuple(RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull);
+extern void RecnoDeformTuple(Relation rel, RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull);
 extern void RecnoFreeTuple(RecnoTuple tuple);
 extern bool RecnoTupleToSlot(RecnoTupleHeader *tuple_header, TupleTableSlot *slot);
 extern bool RecnoTupleToSlotWithOverflow(RecnoTupleHeader *tuple_header,
@@ -589,8 +589,8 @@ extern BlockNumber RecnoFindOverflowPageForReuse(Relation rel, Page head_page,
 												 Size needed);
 
 /* Compression */
-extern Datum RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type);
-extern Datum RecnoDecompressAttribute(Datum value, Oid typid, RecnoCompressionHeader *header);
+extern Datum RecnoCompressAttribute(Relation rel, Datum value, Oid typid, RecnoCompressionType comp_type);
+extern Datum RecnoDecompressAttribute(Oid relid, Datum value, Oid typid, RecnoCompressionHeader *header);
 
 /* Free space management */
 extern void RecnoInitFSM(Relation rel);

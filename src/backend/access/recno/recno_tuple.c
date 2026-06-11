@@ -240,7 +240,7 @@ recno_form_tuple_internal(TupleDesc tupdesc, Datum *values, bool *isnull,
 			{
 				Datum		compressed;
 
-				compressed = RecnoCompressAttribute(values[i],
+				compressed = RecnoCompressAttribute(rel, values[i],
 													att->atttypid,
 													RECNO_COMP_NONE);
 
@@ -464,7 +464,7 @@ recno_form_tuple_internal(TupleDesc tupdesc, Datum *values, bool *isnull,
  *   isnull  - output array of boolean null indicators (must be pre-allocated)
  */
 void
-RecnoDeformTuple(RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull)
+RecnoDeformTuple(Relation rel, RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull)
 {
 	RecnoTupleHeader *header;
 	uint8	   *nulls_bitmap;
@@ -561,6 +561,7 @@ RecnoDeformTuple(RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnul
 						{
 							/* This attribute is compressed - decompress it */
 							values[i] = RecnoDecompressAttribute(
+																 rel ? RelationGetRelid(rel) : InvalidOid,
 																 PointerGetDatum(data_ptr),
 																 att->atttypid,
 																 comp_hdr);
@@ -1126,6 +1127,7 @@ RecnoTupleToSlotWithOverflow(RecnoTupleHeader *tuple_header,
 										comp_hdr->comp_size + sizeof(RecnoCompressionHeader) <= fdata_size)
 									{
 										slot->tts_values[i] = RecnoDecompressAttribute(
+																					   slot->tts_tableOid,
 																					   fetched,
 																					   att->atttypid,
 																					   comp_hdr);
@@ -1170,6 +1172,7 @@ RecnoTupleToSlotWithOverflow(RecnoTupleHeader *tuple_header,
 							{
 								/* Decompress the attribute */
 								slot->tts_values[i] = RecnoDecompressAttribute(
+																			   slot->tts_tableOid,
 																			   PointerGetDatum(data_ptr),
 																			   att->atttypid,
 																			   comp_hdr);

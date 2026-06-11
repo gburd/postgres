@@ -92,7 +92,7 @@ RecnoXLogPrepareLogicalImage(Relation rel, RecnoTuple rtup,
 	values = (Datum *) palloc(tupdesc->natts * sizeof(Datum));
 	isnull = (bool *) palloc(tupdesc->natts * sizeof(bool));
 
-	RecnoDeformTuple(rtup, tupdesc, values, isnull);
+	RecnoDeformTuple(rel, rtup, tupdesc, values, isnull);
 	heaptup = heap_form_tuple(tupdesc, values, isnull);
 
 	/*

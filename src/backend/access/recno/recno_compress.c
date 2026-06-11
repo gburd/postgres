@@ -24,16 +24,25 @@
 #endif
 #ifdef USE_ZSTD
 #include <zstd.h>
+#include <zdict.h>
 #endif
 
 #include "access/recno.h"
+#include "access/recno_dict.h"
+#include "access/relscan.h"
+#include "access/tableam.h"
 #include "catalog/pg_type.h"
+#include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 /*
@@ -115,6 +124,36 @@ static MemoryContext dict_cache_context = NULL;
 static RecnoCompressionDict * compression_dict = NULL;
 
 /*
+ * Per-backend cache of trained, persisted dictionary blobs.
+ *
+ * Unlike the process-local sampled dictionary above, these blobs are loaded
+ * from the relation's RECNO_DICT_FORKNUM fork and are identical across all
+ * backends, so dictionary-compressed data written by one backend is
+ * decompressable by any other.  Keyed by (relid, dictid).
+ */
+typedef struct RecnoTrainedDictKey
+{
+	Oid			relid;
+	uint32		dictid;
+} RecnoTrainedDictKey;
+
+typedef struct RecnoTrainedDict
+{
+	RecnoTrainedDictKey key;
+	uint8		codec;			/* RecnoCompressionType the blob was trained for */
+#ifdef USE_ZSTD
+	ZSTD_CDict *zstd_cdict;		/* built lazily for compress */
+	ZSTD_DDict *zstd_ddict;		/* built lazily for decompress */
+#endif
+	char	   *blob;			/* raw trained blob (LZ4 dict buffer / fallback) */
+	uint32		blob_len;
+} RecnoTrainedDict;
+
+static RecnoTrainedDict *trained_cache[RECNO_DICT_CACHE_SIZE];
+static int	trained_cache_count = 0;
+static MemoryContext trained_cache_context = NULL;
+
+/*
  * Forward declarations
  */
 static RecnoCompressionType RecnoChooseCompressionType(Oid typid, Datum value, Size value_size);
@@ -130,13 +169,14 @@ static RecnoCompressionDict * RecnoGetDictForRelation(Oid relid);
 static void RecnoInitCompressionDict(RecnoCompressionDict * dict);
 static int	RecnoFindDictEntry(const char *value, int length);
 static int	RecnoAddDictEntry(const char *value, int length);
+static RecnoTrainedDict *RecnoGetTrainedDict(Oid relid, uint32 dictid);
 #ifdef USE_ZSTD
-static Datum pg_attribute_unused() RecnoCompressZSTDDict(Datum value, Size *comp_size, int level, Oid relid);
-static Datum pg_attribute_unused() RecnoDecompressZSTDDict(Datum comp_value, Size comp_size, Size orig_size, Oid relid);
+static Datum RecnoCompressZSTDDict(Datum value, Size *comp_size, int level, RecnoTrainedDict *td);
+static Datum RecnoDecompressZSTDDict(Datum comp_value, Size comp_size, Size orig_size, RecnoTrainedDict *td);
 #endif
 #ifdef HAVE_LZ4_DICT
-static Datum pg_attribute_unused() RecnoCompressLZ4Dict(Datum value, Size *comp_size, Oid relid);
-static Datum pg_attribute_unused() RecnoDecompressLZ4Dict(Datum comp_value, Size comp_size, Size orig_size, Oid relid);
+static Datum RecnoCompressLZ4Dict(Datum value, Size *comp_size, RecnoTrainedDict *td);
+static Datum RecnoDecompressLZ4Dict(Datum comp_value, Size comp_size, Size orig_size, RecnoTrainedDict *td);
 #endif
 
 /*
@@ -166,7 +206,8 @@ static Datum pg_attribute_unused() RecnoDecompressLZ4Dict(Datum comp_value, Size
  * not beneficial.
  */
 Datum
-RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
+RecnoCompressAttribute(Relation rel, Datum value, Oid typid,
+					   RecnoCompressionType comp_type)
 {
 	char	   *result;
 	Size		orig_size;
@@ -175,6 +216,7 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
 	RecnoCompressionHeader *header;
 	Datum		comp_data = (Datum) 0;
 	bool		is_success = false;
+	uint32		dictid = RECNO_DICT_INVALID_ID;
 
 	if (!recno_enable_compression)
 		return value;
@@ -209,15 +251,49 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
 	if (comp_type == RECNO_COMP_NONE)
 		comp_type = RecnoChooseCompressionType(typid, value, orig_size);
 
+	/*
+	 * For ZSTD/LZ4 codecs, consult the relation's active trained dictionary.
+	 * dict_id stays RECNO_DICT_INVALID_ID (0) when there is no relation
+	 * context or no active dictionary, which routes to the plain codec.
+	 */
+	if (rel != NULL &&
+		(comp_type == RECNO_COMP_ZSTD || comp_type == RECNO_COMP_LZ4))
+		dictid = recno_dict_get_active(rel);
+
 	/* Compress based on type */
 	switch (comp_type)
 	{
 		case RECNO_COMP_LZ4:
+#ifdef HAVE_LZ4_DICT
+			if (dictid != RECNO_DICT_INVALID_ID)
+			{
+				RecnoTrainedDict *td =
+					RecnoGetTrainedDict(RelationGetRelid(rel), dictid);
+
+				comp_data = RecnoCompressLZ4Dict(value, &comp_size, td);
+				is_success = (comp_data != (Datum) 0);
+				break;
+			}
+#endif
+			dictid = RECNO_DICT_INVALID_ID;
 			comp_data = RecnoCompressLZ4(value, &comp_size);
 			is_success = (comp_data != (Datum) 0);
 			break;
 
 		case RECNO_COMP_ZSTD:
+#ifdef USE_ZSTD
+			if (dictid != RECNO_DICT_INVALID_ID)
+			{
+				RecnoTrainedDict *td =
+					RecnoGetTrainedDict(RelationGetRelid(rel), dictid);
+
+				comp_data = RecnoCompressZSTDDict(value, &comp_size,
+												  recno_compression_level, td);
+				is_success = (comp_data != (Datum) 0);
+				break;
+			}
+#endif
+			dictid = RECNO_DICT_INVALID_ID;
 			comp_data = RecnoCompressZSTD(value, &comp_size, recno_compression_level);
 			is_success = (comp_data != (Datum) 0);
 			break;
@@ -258,7 +334,7 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
 	header = (RecnoCompressionHeader *) VARDATA(result);
 	header->comp_type = comp_type;
 	header->comp_level = recno_compression_level;
-	header->_pad = 0;
+	header->dict_id = (uint16) dictid;
 	header->orig_size = orig_size;
 	header->comp_size = (uint32) comp_size;
 
@@ -287,7 +363,8 @@ RecnoCompressAttribute(Datum value, Oid typid, RecnoCompressionType comp_type)
  * Returns the decompressed Datum in its original format.
  */
 Datum
-RecnoDecompressAttribute(Datum value, Oid typid, RecnoCompressionHeader *header)
+RecnoDecompressAttribute(Oid relid, Datum value, Oid typid,
+						 RecnoCompressionHeader *header)
 {
 	char	   *comp_data;
 	Datum		result;
@@ -297,24 +374,76 @@ RecnoDecompressAttribute(Datum value, Oid typid, RecnoCompressionHeader *header)
 
 	comp_data = (char *) header + sizeof(RecnoCompressionHeader);
 
+	/*
+	 * Fast path: ordinary (non-dictionary) compressed data.  This is the
+	 * overwhelmingly common case and must touch neither the trained-dict
+	 * cache nor open a relation.
+	 */
+	if (header->dict_id == RECNO_DICT_INVALID_ID)
+	{
+		switch (header->comp_type)
+		{
+			case RECNO_COMP_LZ4:
+				return RecnoDecompressLZ4(PointerGetDatum(comp_data),
+										  header->comp_size, header->orig_size);
+
+			case RECNO_COMP_ZSTD:
+				return RecnoDecompressZSTD(PointerGetDatum(comp_data),
+										   header->comp_size, header->orig_size);
+
+			case RECNO_COMP_DELTA:
+				return RecnoDecompressDelta(PointerGetDatum(comp_data),
+											header->orig_size);
+
+			case RECNO_COMP_DICTIONARY:
+				return RecnoDecompressDictionary(PointerGetDatum(comp_data),
+												 header->orig_size);
+
+			default:
+				return value;
+		}
+	}
+
+	/*
+	 * Dictionary-compressed data: we need the relation's trained blob to
+	 * decompress.  A missing relation context here means the datum is
+	 * corrupt or came from a transient slot that cannot supply one.
+	 */
+	if (relid == InvalidOid)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("RECNO dict-compressed datum needs relation context")));
+
 	switch (header->comp_type)
 	{
-		case RECNO_COMP_LZ4:
-			result = RecnoDecompressLZ4(PointerGetDatum(comp_data),
-										header->comp_size, header->orig_size);
-			break;
-
 		case RECNO_COMP_ZSTD:
+#ifdef USE_ZSTD
+			{
+				RecnoTrainedDict *td = RecnoGetTrainedDict(relid, header->dict_id);
+
+				result = RecnoDecompressZSTDDict(PointerGetDatum(comp_data),
+												 header->comp_size,
+												 header->orig_size, td);
+			}
+#else
 			result = RecnoDecompressZSTD(PointerGetDatum(comp_data),
 										 header->comp_size, header->orig_size);
+#endif
 			break;
 
-		case RECNO_COMP_DELTA:
-			result = RecnoDecompressDelta(PointerGetDatum(comp_data), header->orig_size);
-			break;
+		case RECNO_COMP_LZ4:
+#ifdef HAVE_LZ4_DICT
+			{
+				RecnoTrainedDict *td = RecnoGetTrainedDict(relid, header->dict_id);
 
-		case RECNO_COMP_DICTIONARY:
-			result = RecnoDecompressDictionary(PointerGetDatum(comp_data), header->orig_size);
+				result = RecnoDecompressLZ4Dict(PointerGetDatum(comp_data),
+												header->comp_size,
+												header->orig_size, td);
+			}
+#else
+			result = RecnoDecompressLZ4(PointerGetDatum(comp_data),
+										header->comp_size, header->orig_size);
+#endif
 			break;
 
 		default:
@@ -1092,6 +1221,93 @@ RecnoAddDictEntry(const char *value, int length)
 }
 
 /* ----------------------------------------------------------------
+ * Persistent trained-dictionary cache
+ *
+ * Loads trained dictionary blobs from a relation's RECNO_DICT_FORKNUM fork
+ * and caches them per backend, keyed by (relid, dictid).  The blobs are
+ * identical across backends, so dictionary-compressed data is portable.
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * RecnoGetTrainedDict -- look up, loading on miss, the trained dictionary
+ * blob for (relid, dictid).  Never called for dictid 0.
+ */
+static RecnoTrainedDict *
+RecnoGetTrainedDict(Oid relid, uint32 dictid)
+{
+	int			i;
+	RecnoTrainedDict *td;
+	MemoryContext old_context;
+	Relation	rel;
+	char	   *blob;
+	uint8		codec;
+	uint32		length;
+
+	Assert(dictid != RECNO_DICT_INVALID_ID);
+
+	if (trained_cache_context == NULL)
+	{
+		trained_cache_context =
+			AllocSetContextCreate(CacheMemoryContext,
+								  "RECNO Trained Dictionary Cache",
+								  ALLOCSET_DEFAULT_SIZES);
+		trained_cache_count = 0;
+	}
+
+	for (i = 0; i < trained_cache_count; i++)
+	{
+		if (trained_cache[i]->key.relid == relid &&
+			trained_cache[i]->key.dictid == dictid)
+			return trained_cache[i];
+	}
+
+	/* Miss: load the blob from the relation's dict fork. */
+	rel = relation_open(relid, NoLock);
+
+	old_context = MemoryContextSwitchTo(trained_cache_context);
+	blob = recno_dict_read(rel, dictid, &codec, &length);
+
+	td = (RecnoTrainedDict *) palloc0(sizeof(RecnoTrainedDict));
+	td->key.relid = relid;
+	td->key.dictid = dictid;
+	td->codec = codec;
+	td->blob = blob;
+	td->blob_len = length;
+#ifdef USE_ZSTD
+	td->zstd_cdict = NULL;
+	td->zstd_ddict = NULL;
+#endif
+	MemoryContextSwitchTo(old_context);
+
+	relation_close(rel, NoLock);
+
+	/* Evict the oldest entry if the cache is full. */
+	if (trained_cache_count >= RECNO_DICT_CACHE_SIZE)
+	{
+		RecnoTrainedDict *evict = trained_cache[0];
+
+#ifdef USE_ZSTD
+		if (evict->zstd_cdict)
+			ZSTD_freeCDict(evict->zstd_cdict);
+		if (evict->zstd_ddict)
+			ZSTD_freeDDict(evict->zstd_ddict);
+#endif
+		if (evict->blob)
+			pfree(evict->blob);
+		pfree(evict);
+
+		memmove(&trained_cache[0], &trained_cache[1],
+				(RECNO_DICT_CACHE_SIZE - 1) * sizeof(RecnoTrainedDict *));
+		trained_cache_count--;
+	}
+
+	trained_cache[trained_cache_count++] = td;
+
+	return td;
+}
+
+/* ----------------------------------------------------------------
  * ZSTD dictionary-accelerated compression
  *
  * When USE_ZSTD is defined, we can optionally train a ZSTD dictionary
@@ -1107,22 +1323,29 @@ RecnoAddDictEntry(const char *value, int length)
  * Falls back to regular ZSTD compression if no dictionary is available.
  */
 static Datum
-RecnoCompressZSTDDict(Datum value, Size *comp_size, int level, Oid relid)
+RecnoCompressZSTDDict(Datum value, Size *comp_size, int level,
+					  RecnoTrainedDict *td)
 {
 	char	   *input = VARDATA_ANY(DatumGetPointer(value));
 	Size		input_size = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
 	char	   *output;
 	size_t		max_dest_size;
 	size_t		compressed_size;
-	RecnoCompressionDict *dict;
 	ZSTD_CCtx  *cctx;
 
-	dict = RecnoGetDictForRelation(relid);
+	/* Build the compiled compression dictionary lazily. */
+	if (td->zstd_cdict == NULL && td->blob != NULL && td->blob_len > 0)
+	{
+		MemoryContext old_context = MemoryContextSwitchTo(trained_cache_context);
+
+		td->zstd_cdict = ZSTD_createCDict(td->blob, td->blob_len, level);
+		MemoryContextSwitchTo(old_context);
+	}
 
 	max_dest_size = ZSTD_compressBound(input_size);
 	output = (char *) palloc(max_dest_size);
 
-	if (dict->zstd_cdict != NULL)
+	if (td->zstd_cdict != NULL)
 	{
 		/* Use compiled dictionary for better compression */
 		cctx = ZSTD_createCCtx();
@@ -1135,7 +1358,7 @@ RecnoCompressZSTDDict(Datum value, Size *comp_size, int level, Oid relid)
 
 		compressed_size = ZSTD_compress_usingCDict(cctx, output, max_dest_size,
 												   input, input_size,
-												   dict->zstd_cdict);
+												   td->zstd_cdict);
 		ZSTD_freeCCtx(cctx);
 	}
 	else
@@ -1162,21 +1385,27 @@ RecnoCompressZSTDDict(Datum value, Size *comp_size, int level, Oid relid)
  */
 static Datum
 RecnoDecompressZSTDDict(Datum comp_value, Size comp_size, Size orig_size,
-						Oid relid)
+						RecnoTrainedDict *td)
 {
 	char	   *input = DatumGetPointer(comp_value);
 	char	   *output;
 	Size		output_size = VARHDRSZ + orig_size;
 	size_t		rawsize;
-	RecnoCompressionDict *dict;
 	ZSTD_DCtx  *dctx;
 
-	dict = RecnoGetDictForRelation(relid);
+	/* Build the compiled decompression dictionary lazily. */
+	if (td->zstd_ddict == NULL && td->blob != NULL && td->blob_len > 0)
+	{
+		MemoryContext old_context = MemoryContextSwitchTo(trained_cache_context);
+
+		td->zstd_ddict = ZSTD_createDDict(td->blob, td->blob_len);
+		MemoryContextSwitchTo(old_context);
+	}
 
 	output = (char *) palloc(output_size);
 	SET_VARSIZE(output, output_size);
 
-	if (dict->zstd_ddict != NULL)
+	if (td->zstd_ddict != NULL)
 	{
 		dctx = ZSTD_createDCtx();
 		if (dctx == NULL)
@@ -1186,7 +1415,7 @@ RecnoDecompressZSTDDict(Datum comp_value, Size comp_size, Size orig_size,
 
 		rawsize = ZSTD_decompress_usingDDict(dctx, VARDATA(output), orig_size,
 											 input, comp_size,
-											 dict->zstd_ddict);
+											 td->zstd_ddict);
 		ZSTD_freeDCtx(dctx);
 	}
 	else
@@ -1222,44 +1451,27 @@ RecnoDecompressZSTDDict(Datum comp_value, Size comp_size, Size orig_size,
  * entries for the relation.  Falls back to regular LZ4 if no entries exist.
  */
 static Datum
-RecnoCompressLZ4Dict(Datum value, Size *comp_size, Oid relid)
+RecnoCompressLZ4Dict(Datum value, Size *comp_size, RecnoTrainedDict *td)
 {
 	char	   *input = VARDATA_ANY(DatumGetPointer(value));
 	Size		input_size = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
 	char	   *output;
 	int			max_dest_size;
 	int			compressed_size;
-	RecnoCompressionDict *dict;
-
-	dict = RecnoGetDictForRelation(relid);
 
 	max_dest_size = LZ4_compressBound(input_size);
 	output = (char *) palloc(max_dest_size);
 
-	if (dict->num_entries > 0)
+	if (td->blob != NULL && td->blob_len > 0)
 	{
 		/*
-		 * Build a dictionary buffer from existing entries and use the LZ4
-		 * streaming API for dictionary-based compression.  LZ4_loadDict() +
-		 * LZ4_compress_fast_continue() is the portable dictionary API
-		 * available in all LZ4 >= 1.7.0.
+		 * Use the trained blob as an LZ4 dictionary buffer via the streaming
+		 * API: LZ4_loadDict() + LZ4_compress_fast_continue().
 		 */
-		char		dict_buf[65536];	/* LZ4 uses last 64KB */
-		int			dict_len = 0;
-		int			i;
 		LZ4_stream_t *lz4_stream;
 
-		for (i = 0; i < dict->num_entries && dict_len < (int) sizeof(dict_buf); i++)
-		{
-			int			copy_len = Min(dict->entries[i].length,
-									   (int) sizeof(dict_buf) - dict_len);
-
-			memcpy(dict_buf + dict_len, dict->entries[i].value, copy_len);
-			dict_len += copy_len;
-		}
-
 		lz4_stream = LZ4_createStream();
-		LZ4_loadDict(lz4_stream, dict_buf, dict_len);
+		LZ4_loadDict(lz4_stream, td->blob, (int) td->blob_len);
 		compressed_size = LZ4_compress_fast_continue(lz4_stream,
 													 input, output,
 													 (int) input_size,
@@ -1290,42 +1502,22 @@ RecnoCompressLZ4Dict(Datum value, Size *comp_size, Oid relid)
  */
 static Datum
 RecnoDecompressLZ4Dict(Datum comp_value, Size comp_size, Size orig_size,
-					   Oid relid)
+					   RecnoTrainedDict *td)
 {
 	char	   *input = DatumGetPointer(comp_value);
 	char	   *output;
 	Size		output_size = VARHDRSZ + orig_size;
 	int			rawsize;
-	RecnoCompressionDict *dict;
-
-	dict = RecnoGetDictForRelation(relid);
 
 	output = (char *) palloc(output_size);
 	SET_VARSIZE(output, output_size);
 
-	if (dict->num_entries > 0)
+	if (td->blob != NULL && td->blob_len > 0)
 	{
-		/*
-		 * Use LZ4 streaming API for dictionary-based decompression.
-		 * LZ4_setStreamDecode() + LZ4_decompress_safe_continue() is the
-		 * portable dictionary decompression API in LZ4 >= 1.7.0.
-		 */
-		char		dict_buf[65536];
-		int			dict_len = 0;
-		int			i;
 		LZ4_streamDecode_t *lz4_stream;
 
-		for (i = 0; i < dict->num_entries && dict_len < (int) sizeof(dict_buf); i++)
-		{
-			int			copy_len = Min(dict->entries[i].length,
-									   (int) sizeof(dict_buf) - dict_len);
-
-			memcpy(dict_buf + dict_len, dict->entries[i].value, copy_len);
-			dict_len += copy_len;
-		}
-
 		lz4_stream = LZ4_createStreamDecode();
-		LZ4_setStreamDecode(lz4_stream, dict_buf, dict_len);
+		LZ4_setStreamDecode(lz4_stream, td->blob, (int) td->blob_len);
 		rawsize = LZ4_decompress_safe_continue(lz4_stream,
 											   input, VARDATA(output),
 											   (int) comp_size, (int) orig_size);
@@ -1383,4 +1575,170 @@ RecnoResetCompressionDict(void)
 	{
 		MemoryContextReset(dict_cache_context);
 	}
+
+	/* Tear down the persistent trained-dictionary cache as well. */
+	for (i = 0; i < trained_cache_count; i++)
+	{
+		RecnoTrainedDict *td = trained_cache[i];
+
+#ifdef USE_ZSTD
+		if (td->zstd_cdict)
+			ZSTD_freeCDict(td->zstd_cdict);
+		if (td->zstd_ddict)
+			ZSTD_freeDDict(td->zstd_ddict);
+#endif
+		if (td->blob)
+			pfree(td->blob);
+		pfree(td);
+	}
+
+	trained_cache_count = 0;
+
+	if (trained_cache_context != NULL)
+		MemoryContextReset(trained_cache_context);
+}
+
+/*
+ * build_zstd_dict_for_attribute(rel regclass, attnum int4) RETURNS int4
+ *
+ * Sample the existing (decompressed) values of a varlena attribute, train a
+ * ZSTD compression dictionary over them, store it append-only in the
+ * relation's dictionary fork, and publish it as the active dictionary for
+ * new writes.  Returns the new dictionary id, or 0 if training was declined
+ * (insufficient sample data) or ZSTD support is not compiled in.
+ */
+PG_FUNCTION_INFO_V1(build_zstd_dict_for_attribute);
+
+Datum
+build_zstd_dict_for_attribute(PG_FUNCTION_ARGS)
+{
+#ifdef USE_ZSTD
+	Oid			relid = PG_GETARG_OID(0);
+	int16		attnum = (int16) PG_GETARG_INT32(1);
+	Relation	rel;
+	TupleDesc	tupdesc;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
+	Form_pg_attribute att;
+
+	/* Sample accumulation, capped to bound memory and training time. */
+	const Size	max_total = 4 * 1024 * 1024;	/* ~4MB of sample bytes */
+	const int	max_samples = 100000;
+	char	   *sample_buf;
+	Size		sample_cap;
+	Size		total = 0;
+	size_t	   *sample_sizes;
+	int			nsamples = 0;
+
+	/* Training output. */
+	size_t		dict_cap;
+	char	   *dict_buf;
+	size_t		trained;
+	uint32		dictid = 0;
+
+	rel = relation_open(relid, AccessShareLock);
+	tupdesc = RelationGetDescr(rel);
+
+	if (attnum < 1 || attnum > tupdesc->natts)
+	{
+		relation_close(rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid attribute number %d for relation \"%s\"",
+						attnum, RelationGetRelationName(rel))));
+	}
+
+	att = TupleDescAttr(tupdesc, attnum - 1);
+	if (att->attlen != -1)
+	{
+		relation_close(rel, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("attribute %d of relation \"%s\" is not a varlena type",
+						attnum, RelationGetRelationName(rel))));
+	}
+
+	sample_cap = max_total;
+	sample_buf = (char *) palloc(sample_cap);
+	sample_sizes = (size_t *) palloc(sizeof(size_t) * max_samples);
+
+	slot = table_slot_create(rel, NULL);
+	scan = table_beginscan(rel, GetActiveSnapshot(), 0, NULL, 0);
+
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		Datum		value;
+		bool		isnull;
+		struct varlena *detoasted;
+		Size		len;
+
+		CHECK_FOR_INTERRUPTS();
+
+		value = slot_getattr(slot, attnum, &isnull);
+		if (isnull)
+			continue;
+
+		detoasted = (struct varlena *) PG_DETOAST_DATUM(value);
+		len = VARSIZE_ANY_EXHDR(detoasted);
+
+		if (len == 0)
+		{
+			if ((Pointer) detoasted != DatumGetPointer(value))
+				pfree(detoasted);
+			continue;
+		}
+
+		if (total + len > sample_cap || nsamples >= max_samples)
+		{
+			if ((Pointer) detoasted != DatumGetPointer(value))
+				pfree(detoasted);
+			break;
+		}
+
+		memcpy(sample_buf + total, VARDATA_ANY(detoasted), len);
+		sample_sizes[nsamples++] = len;
+		total += len;
+
+		if ((Pointer) detoasted != DatumGetPointer(value))
+			pfree(detoasted);
+	}
+
+	table_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+
+	/* Need a reasonable corpus to train a useful dictionary. */
+	if (nsamples < 10 || total == 0)
+	{
+		relation_close(rel, AccessShareLock);
+		PG_RETURN_INT32(0);
+	}
+
+	dict_cap = Min((size_t) 112640, total / 100);
+	if (dict_cap < 4096)
+		dict_cap = 4096;
+	dict_buf = (char *) palloc(dict_cap);
+
+	trained = ZDICT_trainFromBuffer(dict_buf, dict_cap,
+									sample_buf, sample_sizes,
+									(unsigned) nsamples);
+
+	if (ZDICT_isError(trained) || trained == 0)
+	{
+		relation_close(rel, AccessShareLock);
+		PG_RETURN_INT32(0);
+	}
+
+	dictid = recno_dict_append(rel, RECNO_COMP_ZSTD, dict_buf,
+							   (uint32) trained, (uint32) total, 0);
+	recno_dict_set_active(rel, dictid);
+
+	relation_close(rel, AccessShareLock);
+
+	PG_RETURN_INT32((int32) dictid);
+#else
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("ZSTD compression is not supported by this build")));
+	PG_RETURN_INT32(0);
+#endif
 }

@@ -297,6 +297,7 @@ tts_recno_deform(TupleTableSlot *slot, int natts)
 							comp_hdr->comp_size + sizeof(RecnoCompressionHeader) <= fdata_size)
 						{
 							slot->tts_values[attnum] = RecnoDecompressAttribute(
+																				slot->tts_tableOid,
 																				fetched,
 																				att->atttypid,
 																				comp_hdr);
@@ -336,6 +337,7 @@ tts_recno_deform(TupleTableSlot *slot, int natts)
 					{
 						/* Decompress the attribute */
 						slot->tts_values[attnum] = RecnoDecompressAttribute(
+																			slot->tts_tableOid,
 																			PointerGetDatum(data_ptr),
 																			att->atttypid,
 																			comp_hdr);

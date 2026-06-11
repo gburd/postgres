@@ -436,6 +436,66 @@ SELECT pg_size_pretty(pg_relation_size('recno_comp_zstd')) AS zstd_size;
 (1 row)
 
 DROP TABLE recno_comp_zstd;
+-- =============================================
+-- Trained dictionary compression (build_zstd_dict_for_attribute)
+--
+-- Once a dictionary is active, new tuples carry a non-zero dict_id in
+-- their compression header.  Deforming such a tuple requires the owning
+-- relation's OID so the trained blob can be located; the indexed-UPDATE
+-- path must supply it or the old-tuple deform throws DATA_CORRUPTED.
+-- =============================================
+SET recno_enable_compression = on;
+SET recno_compression_algorithm = 'zstd';
+CREATE TABLE recno_comp_dict (
+    id serial PRIMARY KEY,
+    name text,
+    payload text
+) USING recno;
+CREATE INDEX idx_comp_dict_name ON recno_comp_dict (name);
+-- Seed with compressible payloads (plain codec, dict_id 0)
+INSERT INTO recno_comp_dict (name, payload)
+SELECT 'row_' || i,
+       repeat('dictionary training corpus value ' || (i % 20)::text || ' ', 20)
+FROM generate_series(1, 500) i;
+-- Train and activate a dictionary over the payload column.
+-- First dictionary id is 1 (monotonic, starts at 1).
+SELECT build_zstd_dict_for_attribute('recno_comp_dict'::regclass, 3) AS dictid;
+ dictid 
+--------
+      1
+(1 row)
+
+-- New rows are now dict-compressed (dict_id = 1).
+INSERT INTO recno_comp_dict (name, payload)
+SELECT 'row_' || i,
+       repeat('dictionary training corpus value ' || (i % 20)::text || ' ', 20)
+FROM generate_series(501, 700) i;
+-- Index-driven UPDATE deforms the dict-compressed OLD tuple to compute the
+-- index-update set.  This is the path that needs relation context.
+SET enable_seqscan = off;
+UPDATE recno_comp_dict SET name = 'updated_600' WHERE name = 'row_600';
+SELECT id, payload = repeat('dictionary training corpus value ' || (600 % 20)::text || ' ', 20)
+           AS payload_intact
+FROM recno_comp_dict WHERE name = 'updated_600';
+ id  | payload_intact 
+-----+----------------
+ 600 | t
+(1 row)
+
+RESET enable_seqscan;
+-- Full round-trip integrity across both plain- and dict-compressed rows.
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (
+           WHERE payload = repeat('dictionary training corpus value '
+                                  || (id % 20)::text || ' ', 20)) AS intact
+FROM recno_comp_dict
+WHERE id <> 600;
+ total | intact 
+-------+--------
+   699 |    699
+(1 row)
+
+DROP TABLE recno_comp_dict;
 -- Reset to defaults
 RESET recno_compression_algorithm;
 RESET recno_enable_compression;
