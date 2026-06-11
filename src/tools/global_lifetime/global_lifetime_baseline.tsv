@@ -30,11 +30,6 @@ src/backend/access/transam/multixact.c	eaba3d5375a606654c2c8762152914774d7c686a	
 src/backend/access/transam/multixact.c	9acf07caecf1137e6eb6bc7002086b953b92900e	OldestVisibleMXactId	static MultiXactId *OldestVisibleMXactId;
 src/backend/access/transam/multixact.c	5622cd1122c119eb48708d25d46990714169a1ad	MXactCache	static dclist_head MXactCache = DCLIST_STATIC_INIT(MXactCache);
 src/backend/access/transam/multixact.c	3fc9e06a4bc49db3e03365da82727d0c95e8f348	MXactContext	static MemoryContext MXactContext = NULL;
-src/backend/access/transam/parallel.c	2142a16c76a463dafc70a74484c9a8853268ed09	ParallelWorkerNumber	int ParallelWorkerNumber = -1;
-src/backend/access/transam/parallel.c	af74698bbd73413b14cc0ba7f27aa9c4df2413d4	InitializingParallelWorker	bool InitializingParallelWorker = false;
-src/backend/access/transam/parallel.c	be19a4b43ceacda860a4b9781a31965e70244458	MyFixedParallelState	static FixedParallelState *MyFixedParallelState;
-src/backend/access/transam/parallel.c	d1523f87b8c7b43861337125c65a6d471ebb8faf	pcxt_list	static dlist_head pcxt_list = DLIST_STATIC_INIT(pcxt_list);
-src/backend/access/transam/parallel.c	7854abc6de6c9af2b926ecd1b8e162b829517a2a	ParallelLeaderPid	static pid_t ParallelLeaderPid;
 src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrTable	RmgrData RmgrTable[RM_MAX_ID + 1] = { };
 src/backend/access/transam/slru.c	25dbd225a5278eb583be9d7d52b6eef1bf338452	slru_errcause	static SlruErrorCause slru_errcause;
 src/backend/access/transam/slru.c	828a82da408c15dac3a011da9b3cc3b3a3b2a370	slru_errno	static int slru_errno;
@@ -1828,8 +1823,6 @@ src/backend/utils/mmgr/aset.c	2cd93d9bd6dcddeb04b90fd73e49fe756830e48e	context_f
 src/include/access/generic_xlog.h	353d13c385d6768ba05021565a8eb1f2117bf45c	GenericXLogState	struct GenericXLogState;
 src/include/access/heapam.h	601fc5823ed9d1e35f306686b86f713732c7eb34	HTAB	struct HTAB;
 src/include/access/nbtree.h	12765ccfe624c21adf8d210fcb305ae9f3ba4fe5	TM_IndexDeleteOp	struct TM_IndexDeleteOp;
-src/include/access/parallel.h	e26dc8493333c5cd7f9bb7bdf1dd2c363ab51b41	ParallelWorkerNumber	extern PGDLLIMPORT int ParallelWorkerNumber;
-src/include/access/parallel.h	9eedb4df1bc6c7b6378bee5401a1081ba94325bb	InitializingParallelWorker	extern PGDLLIMPORT bool InitializingParallelWorker;
 src/include/access/relscan.h	76fa116f6a6d4bbf9f7fd4a8387d7d7b825b8167	ParallelTableScanDescData	struct ParallelTableScanDescData;
 src/include/access/relscan.h	382236e6a16c79e121ca65e856af3d6c0ce93fb3	TableScanInstrumentation	struct TableScanInstrumentation;
 src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanInstrumentation	struct IndexScanInstrumentation;

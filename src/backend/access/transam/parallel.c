@@ -115,22 +115,23 @@ typedef struct FixedParallelState
  * and < the number of workers before any user code is invoked; each parallel
  * worker will get a different parallel worker number.
  */
-int			ParallelWorkerNumber = -1;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ParallelWorkerNumber = -1;
 
 /* Is there a parallel message pending which we need to receive? */
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelMessagePending = false;
 
 /* Are we initializing a parallel worker? */
-bool		InitializingParallelWorker = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingParallelWorker = false;
 
 /* Pointer to our fixed parallel state. */
-static FixedParallelState *MyFixedParallelState;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND FixedParallelState *MyFixedParallelState;
 
 /* List of active parallel contexts. */
-static dlist_head pcxt_list = DLIST_STATIC_INIT(pcxt_list);
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head pcxt_list;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pcxt_list_initialized = false;
 
 /* Backend-local copy of data from FixedParallelState. */
-static pid_t ParallelLeaderPid;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pid_t ParallelLeaderPid;
 
 /*
  * List of internal parallel worker entry points.  We need this for
@@ -165,6 +166,19 @@ static void ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 static void WaitForParallelWorkersToExit(ParallelContext *pcxt);
 static parallel_worker_main_type LookupParallelWorkerFunction(const char *libraryname, const char *funcname);
 static void ParallelWorkerShutdown(int code, Datum arg);
+static dlist_head *ParallelContextList(void);
+
+static dlist_head *
+ParallelContextList(void)
+{
+	if (!pcxt_list_initialized)
+	{
+		dlist_init(&pcxt_list);
+		pcxt_list_initialized = true;
+	}
+
+	return &pcxt_list;
+}
 
 
 /*
@@ -197,7 +211,7 @@ CreateParallelContext(const char *library_name, const char *function_name,
 	pcxt->function_name = pstrdup(function_name);
 	pcxt->error_context_stack = error_context_stack;
 	shm_toc_initialize_estimator(&pcxt->estimator);
-	dlist_push_head(&pcxt_list, &pcxt->node);
+	dlist_push_head(ParallelContextList(), &pcxt->node);
 
 	/* Restore previous memory context. */
 	MemoryContextSwitchTo(oldcontext);
@@ -1033,7 +1047,7 @@ DestroyParallelContext(ParallelContext *pcxt)
 bool
 ParallelContextActive(void)
 {
-	return !dlist_is_empty(&pcxt_list);
+	return !dlist_is_empty(ParallelContextList());
 }
 
 /*
@@ -1088,7 +1102,7 @@ ProcessParallelMessages(void)
 	/* OK to process messages.  Reset the flag saying there are more to do. */
 	ParallelMessagePending = false;
 
-	dlist_foreach(iter, &pcxt_list)
+	dlist_foreach(iter, ParallelContextList())
 	{
 		ParallelContext *pcxt;
 		int			i;
@@ -1263,11 +1277,12 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 void
 AtEOSubXact_Parallel(bool isCommit, SubTransactionId mySubId)
 {
-	while (!dlist_is_empty(&pcxt_list))
+	while (!dlist_is_empty(ParallelContextList()))
 	{
 		ParallelContext *pcxt;
 
-		pcxt = dlist_head_element(ParallelContext, node, &pcxt_list);
+		pcxt = dlist_head_element(ParallelContext, node,
+								  ParallelContextList());
 		if (pcxt->subid != mySubId)
 			break;
 		if (isCommit)
@@ -1284,11 +1299,12 @@ AtEOSubXact_Parallel(bool isCommit, SubTransactionId mySubId)
 void
 AtEOXact_Parallel(bool isCommit)
 {
-	while (!dlist_is_empty(&pcxt_list))
+	while (!dlist_is_empty(ParallelContextList()))
 	{
 		ParallelContext *pcxt;
 
-		pcxt = dlist_head_element(ParallelContext, node, &pcxt_list);
+		pcxt = dlist_head_element(ParallelContext, node,
+								  ParallelContextList());
 		if (isCommit)
 			elog(WARNING, "leaked parallel context");
 		DestroyParallelContext(pcxt);

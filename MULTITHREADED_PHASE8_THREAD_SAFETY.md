@@ -56,6 +56,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
   slot sync, and repack interrupt flags;
+- parallel-query backend state in `parallel.c`: worker number,
+  worker-initialization flag, fixed parallel state pointer, active parallel
+  context list, and parallel leader PID copy;
 - process-signal shared/backend state: `ProcSignal` as shared-memory state and
   `MyProcSignalSlot` as the current backend's slot pointer;
 - backend/session identity globals: `MyProcPid`, `MyStartTime`,
@@ -398,6 +401,10 @@ Combo CID maps in `combocid.c` and pending relation storage cleanup queues in
 `storage.c` are now execution-local TLS. They are allocated in transaction
 contexts or TopMemoryContext for current-transaction cleanup and must not be
 shared by concurrently executing threaded backends.
+Parallel-query state in `parallel.c` is now backend-local TLS. The active
+parallel-context list now uses lazy per-backend initialization instead of the
+old self-referential static initializer, so parallel contexts are not shared
+across threaded client backends.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -800,6 +807,9 @@ Validation for this slice:
 - focused `combocid.o` and `storage.o` compile coverage plus transaction and
   relation-storage regression coverage after classifying transaction-owned
   combo CID and pending storage cleanup state.
+- focused `parallel.o` compile coverage plus full rebuild/process-mode
+  parallel-query regression coverage after classifying per-backend parallel
+  query state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

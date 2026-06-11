@@ -57,8 +57,8 @@ typedef struct ParallelWorkerContext
 } ParallelWorkerContext;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelMessagePending;
-extern PGDLLIMPORT int ParallelWorkerNumber;
-extern PGDLLIMPORT bool InitializingParallelWorker;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ParallelWorkerNumber;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingParallelWorker;
 
 #define		IsParallelWorker()		(ParallelWorkerNumber >= 0)
 
