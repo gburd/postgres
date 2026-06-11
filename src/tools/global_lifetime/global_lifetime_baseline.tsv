@@ -292,11 +292,6 @@ src/backend/storage/ipc/dsm_registry.c	b21ed97853fa44e2558be75a7018b2ae0e312aed	
 src/backend/storage/ipc/pmsignal.c	4ac8a042ea57cc3bb49816c078845baadfed18ae	PMSignalState	NON_EXEC_STATIC volatile PMSignalData *PMSignalState = NULL;
 src/backend/storage/ipc/pmsignal.c	3367356bee2dd8bc3dc0d6240ae1c99ef920a78c	num_child_flags	static int num_child_flags;
 src/backend/storage/ipc/pmsignal.c	a136bf15e53ee032a2d8d3cb11df3d28e9dca0b2	postmaster_possibly_dead	volatile sig_atomic_t postmaster_possibly_dead = false;
-src/backend/storage/ipc/waiteventset.c	45f2e39ebc0ac9c508a7bc17cd426e6355523ea4	waiting	static volatile sig_atomic_t waiting = false;
-src/backend/storage/ipc/waiteventset.c	f5d3262b71ee6686e65556b6a8c29804a0be2136	signal_fd	static int signal_fd = -1;
-src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	selfpipe_readfd	static int selfpipe_readfd = -1;
-src/backend/storage/ipc/waiteventset.c	3c8aa452cd57001102cc8e86633c7f9ea3d6aa0d	selfpipe_writefd	static int selfpipe_writefd = -1;
-src/backend/storage/ipc/waiteventset.c	d9d1f03cc68947f07dfc18bedeadff5566b4d578	selfpipe_owner_pid	static int selfpipe_owner_pid = 0;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};

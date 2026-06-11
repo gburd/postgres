@@ -117,6 +117,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
   still make blocked threaded backends wakeable without relying on
   process-directed Unix signals.
+- wait-event wake channel state in `waiteventset.c`: the current
+  `WaitEventSetWait()` blocking flag and the signalfd/self-pipe descriptors
+  are carrier-local TLS state for the physical thread or process that can be
+  woken by the existing latch implementation. This is only a compatibility
+  bridge; Phase 9 must still replace process-directed signal wakeups with a
+  logical-backend-aware wait/wakeup boundary.
 - backend-status shared and local state in `backend_status.c`: the shared
   status arrays and backing string/security buffers are classified as shared
   memory, while `MyBEEntry` and the reader-side local status snapshot table,
@@ -1756,6 +1762,12 @@ Validation for this slice:
   `my_wait_event_info` was tested and rejected in this slice because it caused
   a bootstrap bus error on macOS; this variable remains classification-only
   until Phase 9 introduces the wait/wakeup boundary.
+- focused `waiteventset.o` and `latch.o` compile coverage, global-lifetime
+  scanner coverage, incremental full rebuild/install, isolation `timeouts`
+  coverage, and a live temp-cluster `pg_cancel_backend()` smoke after
+  classifying wait-event wake channel state as carrier-local TLS. The live
+  smoke started one backend blocked in `pg_sleep(30)`, canceled it from another
+  backend, and verified `ERROR: canceling statement due to user request`.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster
