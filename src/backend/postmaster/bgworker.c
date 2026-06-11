@@ -42,7 +42,7 @@
 /*
  * The postmaster's list of registered background workers, in private memory.
  */
-dlist_head	BackgroundWorkerList = DLIST_STATIC_INIT(BackgroundWorkerList);
+PG_GLOBAL_RUNTIME dlist_head BackgroundWorkerList = DLIST_STATIC_INIT(BackgroundWorkerList);
 
 /*
  * BackgroundWorkerSlots exist in shared memory and can be accessed (via
@@ -110,7 +110,7 @@ struct BackgroundWorkerHandle
 	uint64		generation;
 };
 
-static BackgroundWorkerArray *BackgroundWorkerData;
+static PG_GLOBAL_SHMEM BackgroundWorkerArray *BackgroundWorkerData;
 
 static void BackgroundWorkerShmemRequest(void *arg);
 static void BackgroundWorkerShmemInit(void *arg);

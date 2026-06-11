@@ -128,6 +128,14 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   runtime-global logging-service state. Threaded normal mode will still need a
   worker-runtime decision for whether syslogger remains a dedicated service
   thread or is folded into a runtime logging component.
+- background-worker registration state in `bgworker.c`: the postmaster-private
+  `BackgroundWorkerList` is runtime-global control-plane state, while
+  `BackgroundWorkerData` is shared-memory state visible to postmaster and
+  regular backends.  The current worker entry pointer, `MyBgworkerEntry`, is
+  backend-local TLS state because each running worker backend has its own
+  `BackgroundWorker` metadata and code paths such as error reporting,
+  parallel worker initialization, and logical apply must not read another
+  worker's entry in threaded mode.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1805,6 +1813,15 @@ Validation for this slice:
   emitted a `RAISE LOG` marker from SQL, verified `current_logfiles`, verified
   the collected log file was non-empty, found the marker in that file, and
   stopped the server with fast shutdown.
+- focused `bgworker.o`, `postmaster.o`, `elog.o`, `postgres.o`, `parallel.o`,
+  and `applyparallelworker.o` compile coverage, global-lifetime scanner
+  coverage, backend clean plus generated-header recovery, full rebuild/install,
+  `worker_spi` clean rebuild/install, focused core `guc` regression coverage,
+  and direct temp-cluster dynamic background-worker smoke after classifying
+  background-worker registration state and `MyBgworkerEntry`. The live smoke
+  created the `worker_spi` extension, launched a dynamic worker, waited for the
+  worker-created schema to appear, verified the worker's `backend_type` in
+  `pg_stat_activity`, and stopped the server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

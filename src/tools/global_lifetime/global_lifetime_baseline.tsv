@@ -60,8 +60,6 @@ src/backend/postmaster/autovacuum.c	5e95e816350614696132a4fef9ad522e5c6cd05e	Dat
 src/backend/postmaster/autovacuum.c	67a0febbd4ce8227f1649d5b5d73b424bf83e9e7	avl_dbase_array	extern avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	3f35446d5652b7fe805104c075af7e94c185523d	avl_dbase_array	avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	875e954adb4145edf5e9d5dcc52e816fa06ab806	MyWorkerInfo	static WorkerInfo MyWorkerInfo = NULL;
-src/backend/postmaster/bgworker.c	3851f59cc8b4509f62fc712dabfd0456e80a964e	BackgroundWorkerList	dlist_head BackgroundWorkerList = DLIST_STATIC_INIT(BackgroundWorkerList);
-src/backend/postmaster/bgworker.c	0d11f8839e991ef2c6c0d84b54ee8be5287b6393	BackgroundWorkerData	static BackgroundWorkerArray *BackgroundWorkerData;
 src/backend/postmaster/bgwriter.c	c027394986076438db68e45cfe7f2af0bd4f7c06	last_snapshot_ts	static TimestampTz last_snapshot_ts;
 src/backend/postmaster/bgwriter.c	15688853b6e2dbfba579114979315cebbfab6b3e	last_snapshot_lsn	static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
 src/backend/postmaster/checkpointer.c	e67a489bff45c0fcf5ea884e2dd5e6ea9373f33f	CheckpointerShmem	static CheckpointerShmemStruct *CheckpointerShmem;
@@ -85,7 +83,6 @@ src/backend/postmaster/pgarch.c	c9fc7b99552707ad58ebfa03bff88e4679faf686	archive
 src/backend/postmaster/pgarch.c	c7d796b96295998cf277e6d1f0940bec8a607d1a	archive_context	static MemoryContext archive_context;
 src/backend/postmaster/pgarch.c	8f42911e76981572c5f7ecb69d290b79849776d4	arch_files	static struct arch_files_state *arch_files = NULL;
 src/backend/postmaster/pgarch.c	b3ddd3c9710b54193130328c375b0d4d9c012774	ready_to_stop	static volatile sig_atomic_t ready_to_stop = false;
-src/backend/postmaster/postmaster.c	c0f78b015ef4845ee1150b82a78a0b248a9a8b88	MyBgworkerEntry	BackgroundWorker *MyBgworkerEntry = NULL;
 src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
 src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;
 src/backend/postmaster/postmaster.c	9ca9d978dfa5b3be65f4f8439967b2d7a7fc6826	StartupPMChild,BgWriterPMChild,CheckpointerPMChild,WalWriterPMChild,WalReceiverPMChild,WalSummarizerPMChild,AutoVacLauncherPMChild,PgArchPMChild,SysLoggerPMChild,SlotSyncWorkerPMChild	static PMChild *StartupPMChild = NULL, *BgWriterPMChild = NULL, *CheckpointerPMChild = NULL, *WalWriterPMChild = NULL, *WalReceiverPMChild = NULL, *WalSummarizerPMChild = NULL, *AutoVacLauncherPMChild = NULL, *PgArchPMChild = NULL, *SysL...
@@ -364,8 +361,6 @@ src/include/portability/instr_time.h	53c04206ed9e366974869136069521b2d45103ac	ma
 src/include/portability/instr_time.h	89a06fbd8be0502608e46047ce6327144ae60f3c	timing_initialized	extern PGDLLIMPORT bool timing_initialized;
 src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	timing_tsc_enabled	extern PGDLLIMPORT bool timing_tsc_enabled;
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
-src/include/postmaster/bgworker.h	1aca921402bae9f8631aed4629756f516f22f4ca	MyBgworkerEntry	extern PGDLLIMPORT BackgroundWorker *MyBgworkerEntry;
-src/include/postmaster/bgworker_internals.h	f4bb12748d54116f6fb5f386da9a517fcab1a1c3	BackgroundWorkerList	extern PGDLLIMPORT dlist_head BackgroundWorkerList;
 src/include/postmaster/postmaster.h	4148f1c87e56ca82106abc9df4036c66a75d8c50	ClientAuthInProgress	extern PGDLLIMPORT bool ClientAuthInProgress;
 src/include/postmaster/postmaster.h	ebd78096dd943d3329c02d669eb2b75ad8b6e6e2	PostmasterHandle	extern PGDLLIMPORT HANDLE PostmasterHandle;
 src/include/postmaster/postmaster.h	e6a591c19ccaed6c8922a984948609fcfcea224d	postmaster_alive_fds	extern PGDLLIMPORT int postmaster_alive_fds[2];
