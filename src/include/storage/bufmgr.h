@@ -187,12 +187,12 @@ extern PGDLLIMPORT const PgAioHandleCallbacks aio_shared_buffer_readv_cb;
 extern PGDLLIMPORT const PgAioHandleCallbacks aio_local_buffer_readv_cb;
 
 /* in buf_init.c */
-extern PGDLLIMPORT char *BufferBlocks;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM char *BufferBlocks;
 
 /* in localbuf.c */
-extern PGDLLIMPORT int NLocBuffer;
-extern PGDLLIMPORT Block *LocalBufferBlockPointers;
-extern PGDLLIMPORT int32 *LocalRefCount;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int NLocBuffer;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND Block *LocalBufferBlockPointers;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int32 *LocalRefCount;
 
 /* upper limit for effective_io_concurrency */
 #define MAX_IO_CONCURRENCY 1000

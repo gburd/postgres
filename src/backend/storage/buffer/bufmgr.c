@@ -225,7 +225,7 @@ PG_GLOBAL_RUNTIME int bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
 
 /* local state for LockBufferForCleanup */
-static BufferDesc *PinCountWaitBuf = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *PinCountWaitBuf = NULL;
 
 /*
  * Backend-Private refcount management:
@@ -260,15 +260,15 @@ static BufferDesc *PinCountWaitBuf = NULL;
  * memory allocations in NewPrivateRefCountEntry() which can be important
  * because in some scenarios it's called with a spinlock held...
  */
-static Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
-static struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
-static refcount_hash *PrivateRefCountHash = NULL;
-static int32 PrivateRefCountOverflowed = 0;
-static uint32 PrivateRefCountClock = 0;
-static int	ReservedRefCountSlot = -1;
-static int	PrivateRefCountEntryLast = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND refcount_hash *PrivateRefCountHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int32 PrivateRefCountOverflowed = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 PrivateRefCountClock = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ReservedRefCountSlot = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int PrivateRefCountEntryLast = -1;
 
-static uint32 MaxProportionalPins;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 MaxProportionalPins;
 
 static void ReservePrivateRefCountEntry(void);
 static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);

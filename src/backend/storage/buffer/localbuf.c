@@ -42,18 +42,18 @@ typedef struct
 #define LocalBufHdrGetBlock(bufHdr) \
 	LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
 
-int			NLocBuffer = 0;		/* until buffers are initialized */
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int NLocBuffer = 0;	/* until buffers are initialized */
 
-BufferDesc *LocalBufferDescriptors = NULL;
-Block	   *LocalBufferBlockPointers = NULL;
-int32	   *LocalRefCount = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *LocalBufferDescriptors = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND Block *LocalBufferBlockPointers = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int32 *LocalRefCount = NULL;
 
-static int	nextFreeLocalBufId = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nextFreeLocalBufId = 0;
 
-static HTAB *LocalBufHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *LocalBufHash = NULL;
 
 /* number of local buffers pinned at least once */
-static int	NLocalPinnedBuffers = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int NLocalPinnedBuffers = 0;
 
 
 static void InitLocalBuffers(void);

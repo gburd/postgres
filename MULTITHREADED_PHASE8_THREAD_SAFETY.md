@@ -1421,6 +1421,12 @@ Validation for this slice:
   incremental full rebuild/install, and a direct temp-cluster replication
   smoke after classifying the shared WAL receiver control pointer, runtime WAL
   receiver function dispatch pointer, and immutable slot-sync reason names.
+- focused buffer-manager compile coverage for `buf_init.o`, `buf_table.o`,
+  `bufmgr.o`, `freelist.o`, and `localbuf.o`, global-lifetime scanner
+  coverage, backend clean plus generated-header recovery, full rebuild/install,
+  and direct temp-cluster shared/local-buffer smoke after classifying shared
+  buffer control structures as shared-memory state and private refcount,
+  backend writeback, and local-buffer structures as backend-local TLS.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
