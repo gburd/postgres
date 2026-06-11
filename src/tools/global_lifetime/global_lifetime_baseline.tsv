@@ -70,16 +70,6 @@ src/backend/jit/llvm/llvmjit_types.c	1ff0888e67cd42c6f9e4a57c9945fca04ea17267	St
 src/backend/jit/llvm/llvmjit_types.c	c367b6a75fdb8fd484888d69d903a88f1bfa7f83	StructPlanState	PlanState StructPlanState;
 src/backend/jit/llvm/llvmjit_types.c	56057735de4ce15a3b83df52de0cf977ec4bee97	StructMinimalTupleData	MinimalTupleData StructMinimalTupleData;
 src/backend/jit/llvm/llvmjit_types.c	d886e2d6bbd76dce38bf6c6c0f9ece911eaf227f	referenced_functions	void *referenced_functions[] = { ExecAggInitGroup, ExecAggCopyTransValue, ExecEvalPreOrderedDistinctSingle, ExecEvalPreOrderedDistinctMulti, ExecEvalAggOrderedTransDatum, ExecEvalAggOrderedTransTuple, ExecEvalArrayCoerce, ExecEvalArrayEx...
-src/backend/lib/rbtree.c	0ed20e7ecdf54f57c670b32b200aecf1a0b4c952	sentinel	static RBTNode sentinel = { .color = RBTBLACK, .left = RBTNIL, .right = RBTNIL, .parent = NULL };
-src/backend/libpq/auth-oauth.c	2b87baed7239487b48e6a9e77c174e25c3743583	validator_module_state	static ValidatorModuleState *validator_module_state;
-src/backend/libpq/auth-oauth.c	be8e6990e38d8b53c88964f950410cdbf7fbe1e6	ValidatorCallbacks	static const OAuthValidatorCallbacks *ValidatorCallbacks;
-src/backend/libpq/auth-oauth.c	0f17a2d28f88ade04d75e0e2afae8d7c02a7e1ee	ValidatorMemoryContext	static MemoryContext ValidatorMemoryContext;
-src/backend/libpq/auth-oauth.c	95cb10ea95af07c21c0a680f011a97bfc6f40901	ValidatorOptions	static List *ValidatorOptions;
-src/backend/libpq/auth-oauth.c	571e75f4318f4a359feea9d4b4f8f37c423b4dd7	ValidatorOptionsChecked	static bool ValidatorOptionsChecked;
-src/backend/libpq/pqsignal.c	934b27e04436ad715bfca0acf3f124cd9f38a1cc	UnBlockSig,BlockSig,StartupBlockSig	sigset_t UnBlockSig, BlockSig, StartupBlockSig;
-src/backend/main/main.c	e94c4d4862344ce0eb69c38b9472400a98336ada	progname	const char *progname;
-src/backend/main/main.c	94bd3c34e38297fc7e2d73ff703d3f1fbec42ed1	reached_main	static bool reached_main = false;
-src/backend/main/main.c	7b917fab17390aabdf07491e2ff9c58d3dcdd69e	DispatchOptionNames	static const char *const DispatchOptionNames[] = { [DISPATCH_CHECK] = "check", [DISPATCH_BOOT] = "boot", [DISPATCH_FORKCHILD] = "forkchild", [DISPATCH_DESCRIBE_CONFIG] = "describe-config", [DISPATCH_SINGLE] = "single", };
 src/backend/nodes/copyfuncs.switch.c	1320862ffc4537240cebab8f49d7a5c6679eb5dc	retval	retval = _copyAlias(from);
 src/backend/nodes/copyfuncs.switch.c	3be61440690a2d0d2795d1bf91f6cd3103660024	retval	retval = _copyRangeVar(from);
 src/backend/nodes/copyfuncs.switch.c	89243fff5e4c2b8674db1c86aca598c1eb97523b	retval	retval = _copyTableFunc(from);
@@ -1462,9 +1452,6 @@ src/include/common/relpath.h	ff0a93604e591b4b8e7113a9d19c49606af0105d	forkNames	
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...
-src/include/libpq/pqsignal.h	ec0012d05edf5d54bc2c8acafb82a6a877a5984d	UnBlockSig	extern PGDLLIMPORT sigset_t UnBlockSig;
-src/include/libpq/pqsignal.h	2a39c9b124e16246ea04c2f2b8a363a37dd823ce	BlockSig	extern PGDLLIMPORT sigset_t BlockSig;
-src/include/libpq/pqsignal.h	8392e64199d43bbbffacddccc9c2ce4fc15ce0fe	StartupBlockSig	extern PGDLLIMPORT sigset_t StartupBlockSig;
 src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettext_tbl	extern PGDLLIMPORT const char *pg_enc2gettext_tbl[];
 src/include/nodes/readfuncs.h	5ffe8e83460e971f40cead0df321be115a4d6a4c	restore_location_fields	extern PGDLLIMPORT bool restore_location_fields;
 src/include/optimizer/cost.h	d6fc94daad0131390bca7683b236c7ab33acf4f6	disable_cost	extern PGDLLIMPORT Cost disable_cost;
@@ -1496,7 +1483,6 @@ src/include/postmaster/postmaster.h	f68c9af33470486bd4f8005942e6c6382988442f	num
 src/include/postmaster/postmaster.h	4148f1c87e56ca82106abc9df4036c66a75d8c50	ClientAuthInProgress	extern PGDLLIMPORT bool ClientAuthInProgress;
 src/include/postmaster/postmaster.h	ebd78096dd943d3329c02d669eb2b75ad8b6e6e2	PostmasterHandle	extern PGDLLIMPORT HANDLE PostmasterHandle;
 src/include/postmaster/postmaster.h	e6a591c19ccaed6c8922a984948609fcfcea224d	postmaster_alive_fds	extern PGDLLIMPORT int postmaster_alive_fds[2];
-src/include/postmaster/postmaster.h	496473421207425c541b601695125f81098aacb6	progname	extern PGDLLIMPORT const char *progname;
 src/include/postmaster/postmaster.h	6c7a0bcada614d2693eb9f9562f2a89f21b3e0e9	redirection_done	extern PGDLLIMPORT bool redirection_done;
 src/include/postmaster/postmaster.h	bd3eaae51b742918baecda001ef3eba7f6e004cb	LoadedSSL	extern PGDLLIMPORT bool LoadedSSL;
 src/include/postmaster/postmaster.h	ac9c4f1d20412c88d0e78d61c9aa04fdf850bdfa	ActiveChildList	extern PGDLLIMPORT dlist_head ActiveChildList;

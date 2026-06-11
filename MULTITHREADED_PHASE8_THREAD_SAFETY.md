@@ -62,6 +62,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   passphrase reload state are runtime-global SSL configuration state,
   `ssl_loaded_verify_locations` is connection-local TLS state, and PAM
   conversation scratch is connection-local TLS state.
+- OAuth validator registration state in `auth-oauth.c`: the loaded validator
+  module state, callback table, validator memory context, registered HBA
+  options, and option-check flag are classified as runtime-global singleton
+  state.  This preserves the current one-validator-per-process model and keeps
+  threaded OAuth validator policy tied to the Phase 7 extension backend-model
+  gate rather than copying validator state per backend.
 - shared-memory message-queue protocol state in `pqmq.c`: the active
   `shm_mq` handle, send-recursion guard, and parallel leader identity are
   backend-local TLS state for the current redirected backend.
@@ -79,6 +85,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   context list, and parallel leader PID copy;
 - process-signal shared/backend state: `ProcSignal` as shared-memory state and
   `MyProcSignalSlot` as the current backend's slot pointer;
+- process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
+  and `StartupBlockSig` are runtime-global templates initialized by
+  `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
+  still make blocked threaded backends wakeable without relying on
+  process-directed Unix signals.
 - backend-status shared and local state in `backend_status.c`: the shared
   status arrays and backing string/security buffers are classified as shared
   memory, while `MyBEEntry` and the reader-side local status snapshot table,
@@ -162,6 +173,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   recovery full-page-write replay state, and the startup-only local
   `pg_control` transfer buffer.  The durable `pg_control` image pointer is
   classified as shared-memory state;
+- server executable startup state in `main.c`: `progname` and the
+  `reached_main` crash-handler guard are runtime-global startup state, while
+  the dispatch option name table is immutable state;
 - SQL backup session state in `xlog.c`: `sessionBackupState`, which tracks
   the session that started a SQL-callable backup;
 - SQL backup function session state in `xlogfuncs.c`: `backup_state`,
@@ -282,6 +296,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - plan-cache mode session GUC backing variable: `plan_cache_mode`.
 - table access method and synchronized-scan session GUC backing variables:
   `default_table_access_method` and `synchronize_seqscans`.
+- generic rb-tree sentinel state in `rbtree.c`: the shared `RBTNIL` sentinel
+  node is immutable singleton state used by all rb-tree instances.
 - namespace/search-path session state in `namespace.c`: the
   `namespace_search_path` GUC backing variable, active/base search path
   derived state, temp namespace ownership state, and the search-path cache.
@@ -1298,6 +1314,11 @@ Validation for this slice:
   because this checkout is configured with `with_ssl = no`, so
   `be-secure-openssl.c` requires an SSL-enabled build for meaningful compile
   validation.
+- focused `auth-oauth.o`, `pqsignal.o`, `main.o`, and `rbtree.o` compile
+  coverage, global-lifetime scanner coverage, incremental full rebuild/install,
+  and a direct temp-instance startup/auth regression smoke after classifying
+  OAuth validator singleton state, signal-mask templates, server executable
+  startup state, and the rb-tree sentinel.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

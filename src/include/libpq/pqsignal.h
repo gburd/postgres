@@ -15,6 +15,8 @@
 
 #include <signal.h>
 
+#include "utils/global_lifetime.h"
+
 #ifdef WIN32
 /* Emulate POSIX sigset_t APIs on Windows */
 typedef int sigset_t;
@@ -45,9 +47,9 @@ extern int	pqsigaction(int signum, const struct sigaction *act,
 #define sigdelset(set, signum)	(*(set) &= ~(sigmask(signum)))
 #endif							/* WIN32 */
 
-extern PGDLLIMPORT sigset_t UnBlockSig;
-extern PGDLLIMPORT sigset_t BlockSig;
-extern PGDLLIMPORT sigset_t StartupBlockSig;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME sigset_t UnBlockSig;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME sigset_t BlockSig;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME sigset_t StartupBlockSig;
 
 extern void pqinitmask(void);
 

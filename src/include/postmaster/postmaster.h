@@ -86,7 +86,7 @@ extern PGDLLIMPORT int postmaster_alive_fds[2];
 #define POSTMASTER_FD_OWN		1	/* kept open by postmaster only */
 #endif
 
-extern PGDLLIMPORT const char *progname;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME const char *progname;
 
 extern PGDLLIMPORT bool redirection_done;
 extern PGDLLIMPORT bool LoadedSSL;
