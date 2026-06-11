@@ -175,6 +175,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   backend-local TLS state.  The built-in stats-kind descriptor table is
   immutable state, while the custom stats-kind descriptor registry remains
   runtime-global registration state constrained by the extension preload gate.
+- cumulative-statistics shared-entry reference cache state in
+  `pgstat_shmem.c`: each backend's shared-entry reference hash, reference-cache
+  age, and attribution memory contexts are backend-local TLS state. They cache
+  references to shared statistics entries owned by `pgStatLocal.shmem` and must
+  not be shared between logical backends in threaded mode.
 - cumulative database-statistics pending state in `pgstat_database.c`:
   backend-local pending I/O, active-time, idle-in-transaction-time, and
   commit/rollback counters use TLS until they are flushed to shared
@@ -1379,6 +1384,12 @@ Validation for this slice:
   self-referential `DLIST_STATIC_INIT` for `pgStatPending` was replaced with
   explicit `dlist_init()` in `pgstat_initialize()` before pending stats can be
   queued. The direct `pg_regress` invocation passed all 30 tests.
+- focused `pgstat_shmem.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and direct temp-cluster statistics smoke
+  after classifying shared-entry reference cache state. The smoke created and
+  analyzed a table, forced stats flushes, checked relation and database stats
+  visibility, reset the table counters through
+  `pg_stat_reset_single_table_counters()`, and shut down cleanly.
 - focused `backend_status.o` and `backend_progress.o` compile coverage,
   global-lifetime scanner coverage, backend clean plus generated-header
   recovery, full rebuild/install, and fixture-backed backend-status regression

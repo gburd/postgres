@@ -947,10 +947,6 @@ src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_a
 src/backend/tsearch/wparser_def.c	71ab769f9f2c47cc39274c3a80feeec02544457a	lex_descr	static const char *const lex_descr[] = { "", "Word, all ASCII", "Word, all letters", "Word, letters and digits", "Email address", "URL", "Host", "Scientific notation", "Version number", "Hyphenated word part, letters and digits", "Hyphen...
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
-src/backend/utils/activity/pgstat_shmem.c	09c790a07594ac0b72709ef1ab92f2b73c1ad61c	pgStatEntryRefHash	static pgstat_entry_ref_hash_hash *pgStatEntryRefHash = NULL;
-src/backend/utils/activity/pgstat_shmem.c	b3e45950f0a908cd99411bc3198ed2aa2c0f6559	pgStatSharedRefAge	static int pgStatSharedRefAge = 0;
-src/backend/utils/activity/pgstat_shmem.c	fb2dd787a67f4bbbb32458a0db1049dfe8c80726	pgStatSharedRefContext	static MemoryContext pgStatSharedRefContext = NULL;
-src/backend/utils/activity/pgstat_shmem.c	60ef3ecba9ebfb6060e3bb5f57943eaf230224e9	pgStatEntryRefHashContext	static MemoryContext pgStatEntryRefHashContext = NULL;
 src/backend/utils/activity/wait_event_funcs.c	3a3d0fbac14328d80f8ca3b05d66786ff3561098	waitEventData	waitEventData[] = { {NULL, NULL, NULL} };
 src/backend/utils/adt/acl.c	95f2326393ffd269ab7ef5687ed5fc6121a9c976	cached_role	static Oid cached_role[] = {InvalidOid, InvalidOid, InvalidOid};
 src/backend/utils/adt/acl.c	af791291b9055d7cdc6ef594a8612d85752c455d	cached_roles	static List *cached_roles[] = {NIL, NIL, NIL};
