@@ -183,6 +183,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - logical snapshot builder export state in `snapbuild.c`:
   `SavedResourceOwnerDuringExport` and `ExportInProgress` are execution-local
   TLS state used only while exporting a historic snapshot.
+- logical synchronization relation-state cache in `syncutils.c`:
+  `relation_states_validity` is session-local TLS state for one logical apply
+  worker's cached view of pending table and sequence synchronization work.
+- pgoutput publication/relation cache state in `pgoutput.c`:
+  `publications_valid` and `RelationSyncCache` are session-local TLS state for
+  one logical decoding/output plugin instance's publication and relation
+  schema cache.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2091,6 +2098,15 @@ Validation for this slice:
   'export')`, verified the exported snapshot name from the replication
   protocol response, dropped the slot, checked the server log for the exported
   logical decoding snapshot message, and stopped the server cleanly.
+- focused `syncutils.o`, `worker.o`, `tablesync.o`, `launcher.o`, and
+  `pgoutput.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct publisher/subscriber logical replication smoke after classifying
+  synchronization relation-state and pgoutput cache state. The smoke used a
+  plain publisher table and a partitioned subscriber target, copied existing
+  rows through table synchronization, applied follow-up inserts through
+  pgoutput, verified subscriber partition counts, and stopped both servers
+  with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

@@ -71,9 +71,6 @@ src/backend/postmaster/postmaster.c	0db5d473a4ac672fe3fc85691651604a6c082428	io_
 src/backend/postmaster/postmaster.c	813c212ba835b5363ad99ff7dde68d1f392e787b	win32ChildQueue	static HANDLE win32ChildQueue;
 src/backend/postmaster/postmaster.c	ca6fe6927dcc22f7b46e7c5d1bcfe2944393888e	postmaster_alive_fds	int postmaster_alive_fds[2] = {-1, -1};
 src/backend/postmaster/postmaster.c	1904705a926875699c0b08ea34337b012f99c087	PostmasterHandle	HANDLE PostmasterHandle;
-src/backend/replication/logical/syncutils.c	d737ba611c657b8f387798002251a2a1b19b02d6	relation_states_validity	static SyncingRelationsState relation_states_validity = SYNC_RELATIONS_STATE_NEEDS_REBUILD;
-src/backend/replication/pgoutput/pgoutput.c	347c57dd8ec09300063817dee7f9f137dbaa2e6e	publications_valid	static bool publications_valid;
-src/backend/replication/pgoutput/pgoutput.c	3ad87ed19878a0e84a6301a1b9634c0cbcbac155	RelationSyncCache	static HTAB *RelationSyncCache = NULL;
 src/backend/replication/repl_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/replication/repl_gram.c	ac0cad527ebf3a730c1b8f4af905da6e7a28b995	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "SCONST", "IDENT", "UCONST", "RECPTR", "K_BASE_BACKUP", "K_IDENTIFY_SYSTEM", "K_READ_REPLICATION_SLOT", "K_SHOW", "K_START_REPLICATION", "K_CREATE_REPLICATION_SLOT", "...
 src/backend/replication/repl_gram.c	ef6d022ebd6065d95f633719a07e0bf11e83d75e	yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, Node **replication_parse_result_p, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, replication_parse_result...
