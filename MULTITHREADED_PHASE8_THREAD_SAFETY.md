@@ -53,6 +53,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
   send/receive buffers in `pqcomm.c` and GSSAPI transport buffers in
   `be-secure-gssapi.c`;
+- shared-memory message-queue protocol state in `pqmq.c`: the active
+  `shm_mq` handle, send-recursion guard, and parallel leader identity are
+  backend-local TLS state for the current redirected backend.
 - connection-startup warning state in `postinit.c`;
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
@@ -999,6 +1002,13 @@ Validation for this slice:
 - focused `procsignal.o` compile coverage plus process-mode connection
   smoke/regression coverage after classifying process-signal shared/backend
   state.
+- focused `pqmq.o` compile coverage, full rebuild/install,
+  global-lifetime scanner coverage, and fixture-backed `select_parallel`
+  regression coverage after classifying shared-memory message-queue protocol
+  state. A direct run with only `create_misc` produced unrelated plan-shape
+  diffs because expected indexes were absent; the final direct `pg_regress`
+  invocation included the schedule prefix through `sysviews` and passed all
+  38 tests including `select_parallel`.
 - focused `procarray.o` compile coverage plus transaction and snapshot
   regression coverage after classifying procarray shared/runtime/backend state.
 - focused `standby.o` compile coverage plus process-mode recovery-conflict

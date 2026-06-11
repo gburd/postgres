@@ -26,10 +26,10 @@
 #include "utils/builtins.h"
 #include "utils/wait_event.h"
 
-static shm_mq_handle *pq_mq_handle = NULL;
-static bool pq_mq_busy = false;
-static pid_t pq_mq_parallel_leader_pid = 0;
-static ProcNumber pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND shm_mq_handle *pq_mq_handle = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pq_mq_busy = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pid_t pq_mq_parallel_leader_pid = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 
 static void pq_cleanup_redirect_to_shm_mq(dsm_segment *seg, Datum arg);
 static void mq_comm_reset(void);

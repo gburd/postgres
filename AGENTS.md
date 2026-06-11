@@ -213,6 +213,10 @@ Important current files:
   `date time timetz timestamp timestamptz interval` before `horology` in direct
   focused runs, matching `parallel_schedule`.
 
+  The `select_parallel` test can produce plan-shape diffs if the direct run
+  only includes `create_misc`; include the schedule prefix through
+  `create_index`, `vacuum`, `guc`, and `sysviews` before `select_parallel`.
+
   The `privileges` test has an opening large-object cleanup query whose
   expected output assumes no matching leftover objects. In direct focused runs
   that include both files, run `privileges` before `largeobject`, or run them

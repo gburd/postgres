@@ -100,10 +100,6 @@ src/backend/libpq/hba.c	5b7c468920391a5d469e9d0d025b698369bb1285	parsed_hba_cont
 src/backend/libpq/hba.c	366a2fa34c950da79eef42209d5ad37bf1480fc3	parsed_ident_lines	static List *parsed_ident_lines = NIL;
 src/backend/libpq/hba.c	3c501bd6f244bb5e9ebe06ca42023927c139a4e0	parsed_ident_context	static MemoryContext parsed_ident_context = NULL;
 src/backend/libpq/hba.c	040edb18d098a3fc0749c983a84fc874a0f5039a	UserAuthName	static const char *const UserAuthName[] = { "reject", "implicit reject", "trust", "ident", "password", "md5", "scram-sha-256", "gss", "sspi", "pam", "bsd", "ldap", "cert", "peer", "oauth", };
-src/backend/libpq/pqmq.c	7428d525d3314e02a3423ca43e04e1f50f91b9ec	pq_mq_handle	static shm_mq_handle *pq_mq_handle = NULL;
-src/backend/libpq/pqmq.c	71f44584d052bf2c7a97d64d27f8b9f0bf8922a1	pq_mq_busy	static bool pq_mq_busy = false;
-src/backend/libpq/pqmq.c	ad54592f56bdee1053be88c71a3f8e7f2cab60ff	pq_mq_parallel_leader_pid	static pid_t pq_mq_parallel_leader_pid = 0;
-src/backend/libpq/pqmq.c	2c7ab64cde590ebe66138b90216c4df59b39545a	pq_mq_parallel_leader_proc_number	static ProcNumber pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 src/backend/libpq/pqsignal.c	934b27e04436ad715bfca0acf3f124cd9f38a1cc	UnBlockSig,BlockSig,StartupBlockSig	sigset_t UnBlockSig, BlockSig, StartupBlockSig;
 src/backend/main/main.c	e94c4d4862344ce0eb69c38b9472400a98336ada	progname	const char *progname;
 src/backend/main/main.c	94bd3c34e38297fc7e2d73ff703d3f1fbec42ed1	reached_main	static bool reached_main = false;
