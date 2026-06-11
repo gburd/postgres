@@ -132,7 +132,7 @@ typedef struct OnCommitItem
 	SubTransactionId deleting_subid;
 } OnCommitItem;
 
-static List *on_commits = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *on_commits = NIL;
 
 
 /*

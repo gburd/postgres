@@ -455,6 +455,10 @@ Sequence cache state in `sequence.c` is now session-local TLS. The
 `nextval()`/`currval()` semantics, and `last_used_seq` backs `lastval()` for
 that same session. They must not be shared across concurrently executing
 threaded sessions.
+Temporary-table `ON COMMIT` bookkeeping in `tablecmds.c` is now session-local
+TLS. The list is explicitly described as backend-local because `ON COMMIT`
+actions only apply to temp tables, and entries can survive transaction cleanup
+for the lifetime of the current session.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -879,6 +883,9 @@ Validation for this slice:
   after classifying active hash sequential-scan tracking state.
 - focused `sequence.o` compile coverage plus sequence regression coverage
   after classifying session-local sequence cache and `lastval()` state.
+- focused `tablecmds.o` compile coverage plus temp-table/alter-table
+  regression coverage after classifying session-local `ON COMMIT`
+  bookkeeping.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
