@@ -57,14 +57,14 @@
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int extra_float_digits = 1;
 
 /* Cached constants for degree-based trig functions */
-static bool degree_consts_set = false;
-static float8 sin_30 = 0;
-static float8 one_minus_cos_60 = 0;
-static float8 asin_0_5 = 0;
-static float8 acos_0_5 = 0;
-static float8 atan_1_0 = 0;
-static float8 tan_45 = 0;
-static float8 cot_45 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool degree_consts_set = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 sin_30 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 one_minus_cos_60 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 asin_0_5 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 acos_0_5 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 atan_1_0 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 tan_45 = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 cot_45 = 0;
 
 /*
  * These are intentionally not static; don't "fix" them.  They will never
@@ -75,16 +75,16 @@ static float8 cot_45 = 0;
  * The additional extern declarations are to silence
  * -Wmissing-variable-declarations.
  */
-extern float8 degree_c_thirty;
-extern float8 degree_c_forty_five;
-extern float8 degree_c_sixty;
-extern float8 degree_c_one_half;
-extern float8 degree_c_one;
-float8		degree_c_thirty = 30.0;
-float8		degree_c_forty_five = 45.0;
-float8		degree_c_sixty = 60.0;
-float8		degree_c_one_half = 0.5;
-float8		degree_c_one = 1.0;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_thirty;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_forty_five;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_sixty;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_one_half;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_one;
+PG_GLOBAL_IMMUTABLE float8 degree_c_thirty = 30.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_forty_five = 45.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_sixty = 60.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_one_half = 0.5;
+PG_GLOBAL_IMMUTABLE float8 degree_c_one = 1.0;
 
 /* Local function prototypes */
 static double sind_q1(double x);

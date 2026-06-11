@@ -239,6 +239,15 @@ Important current files:
   The `stats` test expects helper objects from `stats_ext`; include
   `stats_ext` before `stats` in direct focused runs.
 
+  The `float8` test expects the permanent `FLOAT8_TBL` fixture from
+  `test_setup` after it drops its temporary table. Direct focused runs should
+  use at least:
+
+  ```sh
+  ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --dbname=regression \
+    test_setup float8
+  ```
+
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
 - The extension backend-model tests need the test extension module installed

@@ -319,6 +319,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   parsed date/time and numeric format-picture caches, entry counts, and aging
   counters are backend-local TLS state because they are writable cache
   metadata allocated under the current backend's `TopMemoryContext`.
+- degree-based floating-point trigonometry state in `float.c`: the
+  deliberately non-static degree input values are immutable state, while the
+  lazily computed trigonometric constants and initialization flag are
+  backend-local TLS cache state. This avoids runtime-global writes during
+  threaded execution without changing the compiler-behavior guard described by
+  `init_degree_constants()`.
 - locale GUC backing variables and derived locale cache state in
   `pg_locale.c`, including `locale_messages`, `locale_monetary`,
   `locale_numeric`, `locale_time`, `icu_validation_level`,
@@ -883,6 +889,13 @@ Validation for this slice:
   `pg_regress` invocation ran the core fixture prefix plus `guc`, `numeric`,
   `money`, `date`, `time`, `timetz`, `timestamp`, `timestamptz`, `interval`,
   and `horology`, and passed all 37 tests.
+- focused `float.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and direct temp-instance `test_setup` plus
+  `float8` regression coverage after classifying degree-based trigonometry
+  constants. Initial direct runs of `float8` alone and `float4 float8` failed
+  because `float8` expects the permanent `FLOAT8_TBL` fixture from
+  `test_setup` after dropping its temporary table; rerunning with
+  `test_setup float8` passed.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

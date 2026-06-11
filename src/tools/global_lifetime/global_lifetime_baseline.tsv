@@ -952,24 +952,6 @@ src/backend/utils/adt/acl.c	af791291b9055d7cdc6ef594a8612d85752c455d	cached_role
 src/backend/utils/adt/acl.c	5543b57292e6138d0fc0dc75b75e2aaaf5db81b4	cached_db_hash	static uint32 cached_db_hash;
 src/backend/utils/adt/array_typanalyze.c	b83e2a3dc4d2603f16154308ce45a07261e511ae	array_extra_data	static ArrayAnalyzeExtraData *array_extra_data;
 src/backend/utils/adt/dbsize.c	43a8e1f741eb248bad3a53715d727bcd3b1f2a14	size_pretty_units	static const struct size_pretty_unit size_pretty_units[] = { {"bytes", 10 * 1024, false, 0}, {"kB", 20 * 1024 - 1, true, 10}, {"MB", 20 * 1024 - 1, true, 20}, {"GB", 20 * 1024 - 1, true, 30}, {"TB", 20 * 1024 - 1, true, 40}, {"PB", 20 * ...
-src/backend/utils/adt/float.c	e63b40517caa21a8045b9a6d3e9f87b6c7e42196	degree_consts_set	static bool degree_consts_set = false;
-src/backend/utils/adt/float.c	078155e801732d6bff06cfc6b8476d6b115ef8ce	sin_30	static float8 sin_30 = 0;
-src/backend/utils/adt/float.c	5a35f265e5e39fdf4468a9b529c0033928f27c54	one_minus_cos_60	static float8 one_minus_cos_60 = 0;
-src/backend/utils/adt/float.c	cc7441a0ebb2fed479687ef20c010e8c20d444a7	asin_0_5	static float8 asin_0_5 = 0;
-src/backend/utils/adt/float.c	3d9e18e9e82067d2ceb87c83090f86601644e663	acos_0_5	static float8 acos_0_5 = 0;
-src/backend/utils/adt/float.c	05e55b3d10c265b4795d68f62ba783776ef081ff	atan_1_0	static float8 atan_1_0 = 0;
-src/backend/utils/adt/float.c	440483b3475de63c1c9e9823ae0b323576295830	tan_45	static float8 tan_45 = 0;
-src/backend/utils/adt/float.c	420a3db243fdbd4e0d5a298135dee92e476f77b2	cot_45	static float8 cot_45 = 0;
-src/backend/utils/adt/float.c	888b31e2d9be0115ea97e8374576d7a82327ab7e	degree_c_thirty	extern float8 degree_c_thirty;
-src/backend/utils/adt/float.c	fbe4bebf5de0b49e4ded8800944bfb87daab1c7c	degree_c_forty_five	extern float8 degree_c_forty_five;
-src/backend/utils/adt/float.c	89ff6e90f6054d5158801bdfe178a922fff12134	degree_c_sixty	extern float8 degree_c_sixty;
-src/backend/utils/adt/float.c	e213b64ee123caece573a956e55b0abdfe96c7a9	degree_c_one_half	extern float8 degree_c_one_half;
-src/backend/utils/adt/float.c	b9e3ec1d53d9f149bdea9fc02e550d3b297d4d09	degree_c_one	extern float8 degree_c_one;
-src/backend/utils/adt/float.c	398b9ed6e8754d38f24ad5f6714c8b3459bea3bc	degree_c_thirty	float8 degree_c_thirty = 30.0;
-src/backend/utils/adt/float.c	b8ed7e674f9dfc941f05dbd93358c9a972bdc715	degree_c_forty_five	float8 degree_c_forty_five = 45.0;
-src/backend/utils/adt/float.c	da6e433f620852e7f088154e9d54c9da6b4b335d	degree_c_sixty	float8 degree_c_sixty = 60.0;
-src/backend/utils/adt/float.c	3735d61315a06ed393d44a208885198c190492d1	degree_c_one_half	float8 degree_c_one_half = 0.5;
-src/backend/utils/adt/float.c	dd2913ff793cdb8db49f69631a44e46f02eb4272	degree_c_one	float8 degree_c_one = 1.0;
 src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...
 src/backend/utils/adt/jsonpath_gram.c	3fc59a2abc1e5a78e1462c8c65fac75abd39cd3c	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, resul...
