@@ -257,7 +257,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker;
 
-extern PGDLLIMPORT List *table_states_not_ready;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND List
+		   *table_states_not_ready;
 
 extern void logicalrep_worker_attach(int slot);
 extern LogicalRepWorker *logicalrep_worker_find(LogicalRepWorkerType wtype,

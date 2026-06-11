@@ -152,6 +152,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   pointer, and the parallel worker's current subtransaction list are
   backend-local TLS state. The DSM records they point at remain shared state
   protected by the existing parallel apply synchronization.
+- logical replication table synchronization state in `tablesync.c`:
+  `table_states_not_ready` is backend-local TLS state for the logical apply
+  worker's cached view of subscription relations that are not yet ready, and
+  `copybuf` is backend-local TLS scratch for the table synchronization
+  worker's COPY stream.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2002,6 +2007,15 @@ Validation for this slice:
   parallel worker` backends, applied a streamed transaction containing 1400
   rows and a savepoint/subtransaction segment, and stopped both servers with
   fast shutdown.
+- focused `tablesync.o`, `worker.o`, `launcher.o`, and
+  `applyparallelworker.o` compile coverage, global-lifetime scanner coverage,
+  backend clean plus generated-header recovery, full rebuild/install, focused
+  core `guc` regression coverage, and direct publisher/subscriber logical
+  replication smoke after classifying logical table synchronization state. The
+  live smoke created a subscription with `copy_data = true`, verified the
+  subscriber log recorded the table synchronization worker, copied 2500
+  preexisting publisher rows through the table sync path, applied a follow-up
+  publisher insert to 2750 rows, and stopped both servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after
