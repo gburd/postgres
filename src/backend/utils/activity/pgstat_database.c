@@ -25,16 +25,16 @@
 static bool pgstat_should_report_connstat(void);
 
 
-PgStat_Counter pgStatBlockReadTime = 0;
-PgStat_Counter pgStatBlockWriteTime = 0;
-PgStat_Counter pgStatActiveTime = 0;
-PgStat_Counter pgStatTransactionIdleTime = 0;
-SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockReadTime = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockWriteTime = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActiveTime = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
 
 
-static int	pgStatXactCommit = 0;
-static int	pgStatXactRollback = 0;
-static PgStat_Counter pgLastSessionReportTime = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactCommit = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactRollback = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgStat_Counter pgLastSessionReportTime = 0;
 
 
 /*

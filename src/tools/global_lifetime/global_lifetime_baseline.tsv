@@ -1256,14 +1256,6 @@ src/backend/utils/activity/pgstat_backend.c	b2cb05c392b5908b4c45f55a5c61d2a95204
 src/backend/utils/activity/pgstat_backend.c	c695220ace71e067999083ace9292678695c5def	prevBackendWalUsage	static WalUsage prevBackendWalUsage;
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
-src/backend/utils/activity/pgstat_database.c	c0214d29075191b803851e9b0be58e7d9d096e4d	pgStatBlockReadTime	PgStat_Counter pgStatBlockReadTime = 0;
-src/backend/utils/activity/pgstat_database.c	6bed45b1a49db035692cb95fb13479ce36f2e4f2	pgStatBlockWriteTime	PgStat_Counter pgStatBlockWriteTime = 0;
-src/backend/utils/activity/pgstat_database.c	0b49d5995550217e7d45e31267f548f293e24e87	pgStatActiveTime	PgStat_Counter pgStatActiveTime = 0;
-src/backend/utils/activity/pgstat_database.c	4eec24b91a98b4b4a8219a1c78c4f552b3aaed94	pgStatTransactionIdleTime	PgStat_Counter pgStatTransactionIdleTime = 0;
-src/backend/utils/activity/pgstat_database.c	fcb3cb1b017b77a126153052b19ee67d3e5ba462	pgStatSessionEndCause	SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
-src/backend/utils/activity/pgstat_database.c	0e5afaea1adcc18ea10d7a885933c84fd538817b	pgStatXactCommit	static int pgStatXactCommit = 0;
-src/backend/utils/activity/pgstat_database.c	745154ebba30a3c9d51b0be64eb76c159aa21ccf	pgStatXactRollback	static int pgStatXactRollback = 0;
-src/backend/utils/activity/pgstat_database.c	6941b308c3fd238cefc826fd4b9e930ee32f0da4	pgLastSessionReportTime	static PgStat_Counter pgLastSessionReportTime = 0;
 src/backend/utils/activity/pgstat_function.c	c062e9d8f96afd9da7f4f694e1c6b377a40b6c0d	total_func_time	static instr_time total_func_time;
 src/backend/utils/activity/pgstat_io.c	c8cc0b19220c161b6a3fdeddc1c6b0c02e40eb7a	PendingIOStats	static PgStat_PendingIO PendingIOStats;
 src/backend/utils/activity/pgstat_io.c	e7747dea79fffd7964bd3a9ac4a21596da0081f9	have_iostats	static bool have_iostats = false;
@@ -1532,11 +1524,6 @@ src/include/pg_getopt.h	04d5e2ab1a7c17bbe519bdbadf99647fa3a14fa3	optopt	extern P
 src/include/pg_getopt.h	34ac764e2a967ee408658295faaacb16445ab359	optreset	extern PGDLLIMPORT int optreset;
 src/include/pgstat.h	18e12d475b17a6e0d5a28d6cb60d356d8d927128	PendingBgWriterStats	extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
 src/include/pgstat.h	d4e6fcbc2078c738bbfb3b99efddcaf326214ac7	PendingCheckpointerStats	extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
-src/include/pgstat.h	622e1c10f9e702d66360bb49278d6831e67ad086	pgStatBlockReadTime	extern PGDLLIMPORT PgStat_Counter pgStatBlockReadTime;
-src/include/pgstat.h	13a3f2a50268fa90a9268455750e40bca8db12c5	pgStatBlockWriteTime	extern PGDLLIMPORT PgStat_Counter pgStatBlockWriteTime;
-src/include/pgstat.h	e7d1f763ee28303905d54964df55497c9e29cd3f	pgStatActiveTime	extern PGDLLIMPORT PgStat_Counter pgStatActiveTime;
-src/include/pgstat.h	15185666c5506fb9d6762fdd6cfe8c9b7c685039	pgStatTransactionIdleTime	extern PGDLLIMPORT PgStat_Counter pgStatTransactionIdleTime;
-src/include/pgstat.h	adfabf485789347a3988b264911ce2135dca9823	pgStatSessionEndCause	extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
 src/include/port/pg_cpu.h	9829464db0c529338096663c089b915ed384c6c3	X86Features	extern PGDLLIMPORT bool X86Features[];
 src/include/port/win32_port.h	f705331554feef6d5dd7b316fcb217362e4893c4	pg_signal_queue	extern PGDLLIMPORT volatile int pg_signal_queue;
 src/include/port/win32_port.h	19d5423c0ebee7985704de4d9d44189ac4e5d062	pg_signal_mask	extern PGDLLIMPORT int pg_signal_mask;

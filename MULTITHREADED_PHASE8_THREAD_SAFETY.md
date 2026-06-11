@@ -111,6 +111,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pgStatXactStack`, which is allocated in `TopTransactionContext`, tracks
   relation and dropped-object stats for the current transaction/subtransaction
   tree, and is cleared at transaction or prepared-transaction end;
+- cumulative database-statistics pending state in `pgstat_database.c`:
+  backend-local pending I/O, active-time, idle-in-transaction-time, and
+  commit/rollback counters use TLS until they are flushed to shared
+  statistics.  Session disconnect cause and the last session report timestamp
+  are session-local TLS state.
 - transaction-owned combo CID maps in `combocid.c` and relation storage
   pending-delete/sync cleanup queues in `storage.c`;
 - WAL record construction state in `xloginsert.c`, including registered buffer
@@ -1227,6 +1232,14 @@ Validation for this slice:
   expects `test_setup`, `create_misc`, `create_table`, `create_index`, and the
   `check_estimated_rows()` helper from `stats_ext`; the final direct
   `pg_regress` invocation included those fixtures and passed all 30 tests.
+- focused `pgstat_database.o` compile coverage, global-lifetime scanner
+  coverage, backend clean plus generated-header recovery, full rebuild/install,
+  and fixture-backed `stats_ext` plus `stats` regression coverage after
+  classifying cumulative database-statistics pending counters and session-end
+  state. The first direct `pg_regress` invocation failed before PostgreSQL
+  started because the stale `INITDB_TEMPLATE` path no longer existed after
+  recreating `tmp_install`; rerunning without the template shortcut performed
+  a normal `initdb` and passed all 30 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -866,17 +866,17 @@ extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
  */
 
 /* Updated by pgstat_count_buffer_*_time macros */
-extern PGDLLIMPORT PgStat_Counter pgStatBlockReadTime;
-extern PGDLLIMPORT PgStat_Counter pgStatBlockWriteTime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockReadTime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockWriteTime;
 
 /*
  * Updated by pgstat_count_conn_*_time macros, called by
  * pgstat_report_activity().
  */
-extern PGDLLIMPORT PgStat_Counter pgStatActiveTime;
-extern PGDLLIMPORT PgStat_Counter pgStatTransactionIdleTime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActiveTime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime;
 
 /* updated by the traffic cop and in errfinish() */
-extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionEndType pgStatSessionEndCause;
 
 #endif							/* PGSTAT_H */
