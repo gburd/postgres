@@ -16,6 +16,7 @@
 #include <signal.h>
 
 #include "libpq-fe.h"
+#include "utils/global_lifetime.h"
 
 
 /* This is not a particularly great place for this ... */
@@ -195,7 +196,7 @@ typedef struct printQueryOpt
 } printQueryOpt;
 
 
-extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME volatile sig_atomic_t cancel_pressed;
 
 extern PGDLLIMPORT const printTextFormat pg_asciiformat;
 extern PGDLLIMPORT const printTextFormat pg_asciiformat_old;
