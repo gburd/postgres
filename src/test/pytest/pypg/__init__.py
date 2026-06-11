@@ -6,6 +6,7 @@ from ._env import (
     test_timeout_default,
 )
 from .command import CommandResult, PgBin
+from .errors import PgError, PgServerError, PgSqlError, LibpqError
 from .fake import faker, meaningful_text, rand_str
 from .kerberos import KerberosServer
 from .server import PostgresServer
@@ -33,6 +34,10 @@ __all__ = [
     "PostgresServer",
     "PgBin",
     "CommandResult",
+    "PgError",
+    "PgServerError",
+    "PgSqlError",
+    "LibpqError",
     "append_to_file",
     "check_mode_recursive",
     "chmod_recursive",

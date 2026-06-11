@@ -18,6 +18,7 @@ from typing import Callable, Optional, Tuple
 from ._env import test_timeout_default
 from .command import CommandResult, PgBin
 from .bgpsql import BackgroundPsql
+from .errors import PgServerError, PgSqlError
 from .interactive import InteractivePsql
 from .util import append_to_file, eprint, run, slurp_file
 from libpq import PGconn, connect as libpq_connect
@@ -122,6 +123,41 @@ class Config(FileBackup):
 Backup = namedtuple("Backup", "conf, hba")
 
 WINDOWS_OS = platform.system() == "Windows"
+
+# psql, with the verbose-error settings the framework uses, prefixes the SQLSTATE
+# line as e.g. "psql:...: ERROR:  ..." plus optional DETAIL/HINT lines.
+_PSQL_PRIMARY_RE = re.compile(
+    r"^(?:psql:[^:]*:\d+: )?(?:ERROR|FATAL|PANIC):\s+(.*)$", re.M
+)
+_PSQL_FIELD_RES = {
+    "detail": re.compile(r"^DETAIL:\s+(.*)$", re.M),
+    "hint": re.compile(r"^HINT:\s+(.*)$", re.M),
+    "context": re.compile(r"^CONTEXT:\s+(.*)$", re.M),
+}
+
+
+def _parse_psql_diagnostics(stderr):
+    """Extract the diagnostic fields psql prints into PgSqlError kwargs.
+
+    psql's text protocol does not surface the SQLSTATE, so sqlstate stays None;
+    the primary message and any DETAIL/HINT/CONTEXT lines are recovered so the
+    error object is still introspectable.
+    """
+    fields = {}
+    match = _PSQL_PRIMARY_RE.search(stderr or "")
+    if match:
+        fields["primary"] = match.group(1).strip()
+    for name, regex in _PSQL_FIELD_RES.items():
+        found = regex.search(stderr or "")
+        if found:
+            fields[name] = found.group(1).strip()
+    return fields
+
+
+def _psql_error_message(query, stderr):
+    """Build a PgSqlError message from a failed psql invocation."""
+    text = (stderr or "").strip()
+    return "SQL failed: {}\nquery was: {}".format(text, query)
 
 
 class PostgresServer:
@@ -470,7 +506,7 @@ class PostgresServer:
             for tstar in tstars:
                 tsoid = re.sub(r"\.tar$", "", tstar)
                 if tsoid not in tablespace_map:
-                    raise RuntimeError("no tablespace mapping for {}".format(tstar))
+                    raise PgServerError("no tablespace mapping for {}".format(tstar))
                 newdir = tablespace_map[tsoid]
                 os.mkdir(newdir)
                 run(tar_program, "xf", backup_path / tstar, "-C", newdir)
@@ -506,7 +542,7 @@ class PostgresServer:
                 return False
             # pg_ctl's own output rarely says why startup failed; include the
             # server log, which holds the actual startup error.
-            raise RuntimeError(
+            raise PgServerError(
                 'pg_ctl start failed for node "{}":\n--- {} ---\n{}'.format(
                     self.name, self.log, self._log_text()
                 )
@@ -701,7 +737,7 @@ class PostgresServer:
             check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
+            raise PgServerError(
                 "pg_recvlogical exited with {}, stdout {!r} stderr {!r}".format(
                     proc.returncode, proc.stdout, proc.stderr
                 )
@@ -907,8 +943,9 @@ class PostgresServer:
             timeout=timeout,
         )
         if proc.returncode != 0:
-            raise subprocess.CalledProcessError(
-                proc.returncode, cmd, proc.stdout, proc.stderr
+            raise PgSqlError(
+                _psql_error_message(query, proc.stderr),
+                **_parse_psql_diagnostics(proc.stderr),
             )
         return proc.stdout.rstrip("\n")
 
@@ -1455,9 +1492,11 @@ class PostgresServer:
         offset = self.current_log_position()
         try:
             self.pg_ctl("restart", "--mode", mode)
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as exc:
             if not fail_ok:
-                raise
+                raise PgServerError(
+                    'restart failed for node "{}"'.format(self.name)
+                ) from exc
             self._check_log_patterns("restart", offset, log_like, log_unlike)
             return False
         with open(os.path.join(self.datadir, "postmaster.pid"), encoding="utf-8") as f:

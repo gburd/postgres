@@ -1,27 +1,26 @@
 # Copyright (c) 2025, PostgreSQL Global Development Group
 
+"""Exception classes for libpq errors.
+
+``LibpqError`` carries the PostgreSQL diagnostic fields (SQLSTATE, severity,
+detail, hint, ...) when libpq reports them. It is the lowest layer of the
+framework's SQL-error hierarchy; ``pypg.PgSqlError`` is an alias for it, so
+catching either name works and the layering (libpq below pypg) is preserved
+without a circular import.
 """
-Exception classes for libpq errors.
-"""
+
+from __future__ import annotations
 
 from typing import Optional
 
 
 class LibpqError(RuntimeError):
-    """Exception for libpq errors with PostgreSQL diagnostic fields."""
+    """A SQL/libpq operation failed, carrying PostgreSQL diagnostic fields.
 
-    sqlstate: Optional[str]
-    severity: Optional[str]
-    primary: Optional[str]
-    detail: Optional[str]
-    hint: Optional[str]
-    schema_name: Optional[str]
-    table_name: Optional[str]
-    column_name: Optional[str]
-    datatype_name: Optional[str]
-    constraint_name: Optional[str]
-    position: Optional[int]
-    context: Optional[str]
+    ``sqlstate`` and the convenience ``sqlstate_class`` (its first two
+    characters) are the stable, locale-independent way to assert on a specific
+    error condition.
+    """
 
     def __init__(
         self,
@@ -56,7 +55,7 @@ class LibpqError(RuntimeError):
 
     @property
     def sqlstate_class(self) -> Optional[str]:
-        """Returns the 2-character SQLSTATE class."""
+        """The two-character SQLSTATE class, or None if no SQLSTATE is set."""
         if self.sqlstate and len(self.sqlstate) >= 2:
             return self.sqlstate[:2]
         return None
