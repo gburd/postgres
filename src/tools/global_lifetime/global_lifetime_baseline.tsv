@@ -19,7 +19,6 @@ src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern P
 src/include/pg_getopt.h	a3eb7ff42123ef7f51d3c03d50eb16ed56c5333b	opterr	extern PGDLLIMPORT int opterr;
 src/include/pg_getopt.h	04d5e2ab1a7c17bbe519bdbadf99647fa3a14fa3	optopt	extern PGDLLIMPORT int optopt;
 src/include/pg_getopt.h	34ac764e2a967ee408658295faaacb16445ab359	optreset	extern PGDLLIMPORT int optreset;
-src/include/port/pg_cpu.h	9829464db0c529338096663c089b915ed384c6c3	X86Features	extern PGDLLIMPORT bool X86Features[];
 src/include/port/win32_port.h	f705331554feef6d5dd7b316fcb217362e4893c4	pg_signal_queue	extern PGDLLIMPORT volatile int pg_signal_queue;
 src/include/port/win32_port.h	19d5423c0ebee7985704de4d9d44189ac4e5d062	pg_signal_mask	extern PGDLLIMPORT int pg_signal_mask;
 src/include/port/win32_port.h	0e2f95653abcb48a739611d4061f32a62f34398c	pgwin32_signal_event	extern PGDLLIMPORT HANDLE pgwin32_signal_event;

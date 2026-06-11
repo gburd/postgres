@@ -153,6 +153,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pg_file_create_mode`, and `pg_mode_mask` are runtime-global configuration
   derived from the data directory mode and shared by backend file-creation
   paths.
+- runtime CPU feature state: `X86Features` is the process/runtime-wide CPU
+  capability cache initialized by `set_x86_features()` and read by optimized
+  common/backend code paths, including timing source selection.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2154,6 +2157,11 @@ Validation for this slice:
   runtime-global. The live smoke initialized a cluster, created a database,
   created and populated a heap table, forced a checkpoint, and stopped the
   server with fast shutdown.
+- focused `pg_cpu_x86.o` and `instr_time.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, and
+  direct temp-cluster timing smoke after classifying the runtime CPU feature
+  cache as runtime-global. The live smoke verified `EXPLAIN ANALYZE` emitted
+  timing data before fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
