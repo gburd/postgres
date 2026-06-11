@@ -136,6 +136,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `BackgroundWorker` metadata and code paths such as error reporting,
   parallel worker initialization, and logical apply must not read another
   worker's entry in threaded mode.
+- background-writer snapshot throttle state in `bgwriter.c`:
+  `last_snapshot_ts` and `last_snapshot_lsn` are backend-local TLS state for
+  the bgwriter logical worker. These values throttle standby snapshot logging
+  by the active bgwriter and must not become shared scratch state for unrelated
+  logical backends in threaded mode.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1822,6 +1827,12 @@ Validation for this slice:
   created the `worker_spi` extension, launched a dynamic worker, waited for the
   worker-created schema to appear, verified the worker's `backend_type` in
   `pg_stat_activity`, and stopped the server with fast shutdown.
+- focused `bgwriter.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct temp-cluster bgwriter smoke after classifying bgwriter snapshot
+  throttle state. The live smoke verified the background writer was visible in
+  `pg_stat_activity`, created a heap table, ran `CHECKPOINT`, checked the row
+  count, and stopped the server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

@@ -60,8 +60,6 @@ src/backend/postmaster/autovacuum.c	5e95e816350614696132a4fef9ad522e5c6cd05e	Dat
 src/backend/postmaster/autovacuum.c	67a0febbd4ce8227f1649d5b5d73b424bf83e9e7	avl_dbase_array	extern avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	3f35446d5652b7fe805104c075af7e94c185523d	avl_dbase_array	avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	875e954adb4145edf5e9d5dcc52e816fa06ab806	MyWorkerInfo	static WorkerInfo MyWorkerInfo = NULL;
-src/backend/postmaster/bgwriter.c	c027394986076438db68e45cfe7f2af0bd4f7c06	last_snapshot_ts	static TimestampTz last_snapshot_ts;
-src/backend/postmaster/bgwriter.c	15688853b6e2dbfba579114979315cebbfab6b3e	last_snapshot_lsn	static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
 src/backend/postmaster/checkpointer.c	e67a489bff45c0fcf5ea884e2dd5e6ea9373f33f	CheckpointerShmem	static CheckpointerShmemStruct *CheckpointerShmem;
 src/backend/postmaster/checkpointer.c	33a6b81c76a9b89df604c1b9beb8df86d0fb8ffa	ckpt_active	static bool ckpt_active = false;
 src/backend/postmaster/checkpointer.c	f274f6b2dd42c5a7d41bb139da78d65c909bbf95	ShutdownXLOGPending	static volatile sig_atomic_t ShutdownXLOGPending = false;
