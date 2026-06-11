@@ -1,6 +1,4 @@
 # file	sha1	names	declaration
-src/backend/commands/extension.c	2a5919cc273c3fa0775c10a2356d428f8346a670	ext_sibling_list	static ExtensionSiblingCache *ext_sibling_list = NULL;
-src/backend/commands/repack.c	2db48d3b6cedbafd6f97950b36eea75259fc3cc7	decoding_worker	static DecodingWorker *decoding_worker = NULL;
 src/backend/commands/repack_worker.c	8e46119afd8ca424e9892caadd747816d35a18c0	am_repack_worker	static bool am_repack_worker = false;
 src/backend/commands/repack_worker.c	5e911fb813910f039ca90baf2145036f055b17cc	repack_current_segment	static XLogSegNo repack_current_segment = 0;
 src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	worker_dsm_segment	static dsm_segment *worker_dsm_segment = NULL;

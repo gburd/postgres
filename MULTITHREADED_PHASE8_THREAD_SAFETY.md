@@ -276,6 +276,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `event_triggers`, and `Extension_control_path`;
 - extension command execution state in `extension.c`: `creating_extension` and
   `CurrentExtensionObject`.
+- extension sibling lookup cache state in `extension.c`: `ext_sibling_list` is
+  backend-local TLS state allocated under the current backend's
+  `CacheMemoryContext` and invalidated by the current backend's syscache
+  callback path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -369,6 +373,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `max_stack_depth_bytes`, `stack_base_ptr`, `update_process_title`,
   `wal_receiver_timeout`, `wal_sender_shutdown_timeout`,
   `wal_sender_timeout`, and `wal_skip_threshold`.
+- REPACK concurrent decoding leader state in `repack.c`: `decoding_worker` is
+  backend-local TLS state for the client backend that launched the decoding
+  worker and owns the DSM, background-worker handle, and error queue for the
+  current REPACK command.  The worker-side globals in `repack_worker.c` remain
+  explicit worker-runtime audit debt rather than regular client-backend state.
 
 The frontend utility `quote_all_identifiers` global is explicitly classified
 as `PG_GLOBAL_DYNAMIC`, not as backend session state. The backend GUC backing
@@ -1319,6 +1328,12 @@ Validation for this slice:
   and a direct temp-instance startup/auth regression smoke after classifying
   OAuth validator singleton state, signal-mask templates, server executable
   startup state, and the rb-tree sentinel.
+- focused `extension.o` and `repack.o` compile coverage and global-lifetime
+  scanner coverage, incremental full rebuild/install, and a direct
+  temp-cluster `pg_available_extensions` plus `CREATE EXTENSION plpgsql` smoke
+  after classifying the extension sibling lookup cache and client-backend
+  REPACK decoding-worker handle state. The worker-side `repack_worker.c`
+  globals are left in the baseline for the worker-runtime audit.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -144,7 +144,7 @@ typedef struct DecodingWorker
 } DecodingWorker;
 
 /* Pointer to currently running decoding worker. */
-static DecodingWorker *decoding_worker = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DecodingWorker *decoding_worker = NULL;
 
 /*
  * Is there a message sent by a repack worker that the backend needs to

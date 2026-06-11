@@ -160,7 +160,7 @@ typedef struct ExtensionSiblingCache
 } ExtensionSiblingCache;
 
 /* Head of linked list of ExtensionSiblingCache structs */
-static ExtensionSiblingCache *ext_sibling_list = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ExtensionSiblingCache *ext_sibling_list = NULL;
 
 /* Local functions */
 static void ext_sibling_callback(Datum arg, SysCacheIdentifier cacheid,
