@@ -108,7 +108,7 @@ typedef struct
 } SummarizerReadLocalXLogPrivate;
 
 /* Pointer to shared memory state. */
-static WalSummarizerData *WalSummarizerCtl;
+static PG_GLOBAL_SHMEM WalSummarizerData *WalSummarizerCtl;
 
 static void WalSummarizerShmemRequest(void *arg);
 static void WalSummarizerShmemInit(void *arg);
@@ -124,7 +124,7 @@ const ShmemCallbacks WalSummarizerShmemCallbacks = {
  * the multiplier. It should vary between 1 and MAX_SLEEP_QUANTA, depending
  * on system activity. See summarizer_wait_for_wal() for how we adjust this.
  */
-static long sleep_quanta = 1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_quanta = 1;
 
 /*
  * The sleep time will always be a multiple of 200ms and will not exceed
@@ -141,12 +141,13 @@ static long sleep_quanta = 1;
  * This is a count of the number of pages of WAL that we've read since the
  * last time we waited for more WAL to appear.
  */
-static long pages_read_since_last_sleep = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long pages_read_since_last_sleep = 0;
 
 /*
  * Most recent RedoRecPtr value observed by MaybeRemoveOldWalSummaries.
  */
-static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr redo_pointer_at_last_summary_removal =
+	InvalidXLogRecPtr;
 
 /*
  * GUC parameters

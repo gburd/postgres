@@ -155,6 +155,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   ready-file queue, SIGTERM throttle, stop flag, and archive-module
   error-detail string are backend-local TLS state for the archiver logical
   worker.
+- WAL summarizer coordination and worker-local state in `walsummarizer.c`:
+  `WalSummarizerCtl` is shared-memory state used to publish summarizer
+  progress, wake waiters, and expose the active summarizer proc number. The
+  sleep backoff, pages-read counter, and last redo pointer considered for
+  summary cleanup are backend-local TLS state for the WAL summarizer logical
+  worker.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1862,6 +1868,15 @@ Validation for this slice:
   `pg_stat_activity`, generated WAL, forced a WAL switch and checkpoint,
   verified at least one archived WAL file, and stopped the server with fast
   shutdown.
+- focused `walsummarizer.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, focused core `guc` regression
+  coverage, and direct temp-cluster `summarize_wal=on` smoke after classifying
+  WAL summarizer shared/progress state. The live smoke verified the
+  walsummarizer was visible in `pg_stat_activity`, verified
+  `pg_get_wal_summarizer_state()` exposed a live summarizer PID, generated WAL,
+  forced WAL switches and checkpoints, verified `pg_available_wal_summaries()`
+  produced summary rows, checked final summarizer state, and stopped the
+  server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

@@ -102,10 +102,6 @@ src/backend/postmaster/startup.c	158ffb2bb8c995927d5aa26123025ee1c453b4af	promot
 src/backend/postmaster/startup.c	2bc7e083ad7ca8613219ff3d2718169af0f9cbcc	in_restore_command	static volatile sig_atomic_t in_restore_command = false;
 src/backend/postmaster/startup.c	fb3dabcd1873a5392d9ac2e341804583b07f4b77	startup_progress_phase_start_time	static TimestampTz startup_progress_phase_start_time;
 src/backend/postmaster/startup.c	af09a2be1dcf4ab2044dec5579329b37f0c8fdaa	startup_progress_timer_expired	static volatile sig_atomic_t startup_progress_timer_expired = false;
-src/backend/postmaster/walsummarizer.c	bf3b67ad319a9f4db0e0672716f57dbdea8f705d	WalSummarizerCtl	static WalSummarizerData *WalSummarizerCtl;
-src/backend/postmaster/walsummarizer.c	6c3e96c14a7ad2581913f480f9312d394124a64e	sleep_quanta	static long sleep_quanta = 1;
-src/backend/postmaster/walsummarizer.c	dd153fe9ff997bbb86c55480ec3a05ce71fd0655	pages_read_since_last_sleep	static long pages_read_since_last_sleep = 0;
-src/backend/postmaster/walsummarizer.c	bc8ec2c1b56edc096f9f1bb4dfa7cc829c0203ba	redo_pointer_at_last_summary_removal	static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
 src/backend/replication/logical/applyparallelworker.c	9890f7a94c21181d523d6e8462f697362ffbdd98	ParallelApplyTxnHash	static HTAB *ParallelApplyTxnHash = NULL;
 src/backend/replication/logical/applyparallelworker.c	53942e820ad5350d2d70f70411b9839db8406acd	ParallelApplyWorkerPool	static List *ParallelApplyWorkerPool = NIL;
 src/backend/replication/logical/applyparallelworker.c	f4648479bc22f19f82fa1923d492e3a4190b10ad	MyParallelShared	ParallelApplyWorkerShared *MyParallelShared = NULL;
