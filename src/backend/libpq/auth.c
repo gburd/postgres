@@ -107,16 +107,19 @@ static int	pam_passwd_conv_proc(int num_msg,
 								 PG_PAM_CONST struct pam_message **msg,
 								 struct pam_response **resp, void *appdata_ptr);
 
-static struct pam_conv pam_passw_conv = {
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct pam_conv pam_passw_conv = {
 	&pam_passwd_conv_proc,
 	NULL
 };
 
-static const char *pam_passwd = NULL;	/* Workaround for Solaris 2.6
-										 * brokenness */
-static Port *pam_port_cludge;	/* Workaround for passing "Port *port" into
-								 * pam_passwd_conv_proc */
-static bool pam_no_password;	/* For detecting no-password-given */
+/* Workaround for Solaris 2.6 brokenness. */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const char *pam_passwd = NULL;
+
+/* Workaround for passing "Port *port" into pam_passwd_conv_proc. */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION Port *pam_port_cludge;
+
+/* For detecting no-password-given. */
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool pam_no_password;
 #endif							/* USE_PAM */
 
 

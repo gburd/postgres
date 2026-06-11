@@ -56,6 +56,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
   send/receive buffers in `pqcomm.c` and GSSAPI transport buffers in
   `be-secure-gssapi.c`;
+- authentication and TLS connection-startup state: HBA and ident parser
+  context/list handles are runtime-global configuration state, authentication
+  method names are immutable state, OpenSSL context/host/BIO-method and
+  passphrase reload state are runtime-global SSL configuration state,
+  `ssl_loaded_verify_locations` is connection-local TLS state, and PAM
+  conversation scratch is connection-local TLS state.
 - shared-memory message-queue protocol state in `pqmq.c`: the active
   `shm_mq` handle, send-recursion guard, and parallel leader identity are
   backend-local TLS state for the current redirected backend.
@@ -1281,6 +1287,17 @@ Validation for this slice:
   `pg_regress` invocation included `privileges`, `misc_functions`, `sysviews`,
   `rules`, `guc`, `stats_ext`, and `stats` on top of the core fixture prefix
   and passed all 34 tests.
+- focused configured libpq compile coverage for `auth.o`, `hba.o`, and
+  `be-secure.o`, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full configured non-SSL rebuild/install, and a
+  direct temp-instance `guc` regression smoke after classifying HBA/ident,
+  PAM, and SSL authentication state. The temp-instance smoke exercised
+  `initdb`, server startup, local authentication, `psql` connection, and SQL
+  execution and passed. Auth-specific TAP tests were not run because this
+  macOS Perl lacks `IPC::Run`; OpenSSL object compile coverage was not run
+  because this checkout is configured with `with_ssl = no`, so
+  `be-secure-openssl.c` requires an SSL-enabled build for meaningful compile
+  validation.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

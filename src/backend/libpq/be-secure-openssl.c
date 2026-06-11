@@ -106,9 +106,9 @@ static int	sni_clienthello_cb(SSL *ssl, int *al, void *arg);
 
 static char *X509_NAME_to_cstring(const X509_NAME *name);
 
-static SSL_CTX *SSL_context = NULL;
-static MemoryContext SSL_hosts_memcxt = NULL;
-static struct hosts
+static PG_GLOBAL_RUNTIME SSL_CTX *SSL_context = NULL;
+static PG_GLOBAL_RUNTIME MemoryContext SSL_hosts_memcxt = NULL;
+static PG_GLOBAL_RUNTIME struct hosts
 {
 	/*
 	 * List of HostsLine structures containing SSL configurations for
@@ -126,8 +126,8 @@ static struct hosts
 	HostsLine  *default_host;
 }		   *SSL_hosts;
 
-static bool dummy_ssl_passwd_cb_called = false;
-static bool ssl_is_server_start;
+static PG_GLOBAL_RUNTIME bool dummy_ssl_passwd_cb_called = false;
+static PG_GLOBAL_RUNTIME bool ssl_is_server_start;
 
 static int	ssl_protocol_version_to_openssl(int v);
 static const char *ssl_protocol_version_to_string(int v);
@@ -1337,7 +1337,7 @@ be_tls_write(Port *port, const void *ptr, size_t len, int *waitfor)
  * see sock_read() and sock_write() in OpenSSL's crypto/bio/bss_sock.c.
  */
 
-static BIO_METHOD *port_bio_method_ptr = NULL;
+static PG_GLOBAL_RUNTIME BIO_METHOD *port_bio_method_ptr = NULL;
 
 static int
 port_bio_read(BIO *h, char *buf, int size)

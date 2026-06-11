@@ -159,6 +159,13 @@ Important current files:
   scan coverage plus a full non-GSS build here, and use a GSSAPI-enabled build
   when compile coverage for that file is required.
 
+- This checkout is currently configured with `with_ssl = no`. A direct
+  `gmake -C src/backend/libpq be-secure-openssl.o` can fail before reaching
+  project changes because OpenSSL support macros are not enabled in
+  `pg_config.h`. For OpenSSL-only source annotations, use static lifetime scan
+  coverage plus a full non-SSL build here, and use an SSL-enabled build when
+  compile coverage for that file is required.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

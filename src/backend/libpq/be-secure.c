@@ -45,7 +45,7 @@ PG_GLOBAL_RUNTIME char *ssl_passphrase_command;
 PG_GLOBAL_RUNTIME bool ssl_passphrase_command_supports_reload;
 
 #ifdef USE_SSL
-bool		ssl_loaded_verify_locations = false;
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool ssl_loaded_verify_locations = false;
 #endif
 
 /* GUC variable controlling SSL cipher list */
