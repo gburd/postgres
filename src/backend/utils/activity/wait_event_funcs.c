@@ -23,14 +23,14 @@
  * Each wait event has one corresponding entry in this structure, fed to
  * the SQL function of this file.
  */
-static const struct
+struct wait_event_info
 {
 	const char *type;
 	const char *name;
 	const char *description;
-}
+};
 
-			waitEventData[] =
+static PG_GLOBAL_IMMUTABLE const struct wait_event_info waitEventData[] =
 {
 #include "utils/wait_event_funcs_data.c"
 	/* end of list */

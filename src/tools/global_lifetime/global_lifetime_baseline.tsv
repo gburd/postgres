@@ -153,7 +153,6 @@ src/backend/storage/ipc/dsm_registry.c	b21ed97853fa44e2558be75a7018b2ae0e312aed	
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
-src/backend/utils/activity/wait_event_funcs.c	3a3d0fbac14328d80f8ca3b05d66786ff3561098	waitEventData	waitEventData[] = { {NULL, NULL, NULL} };
 src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...
 src/backend/utils/adt/jsonpath_gram.c	3fc59a2abc1e5a78e1462c8c65fac75abd39cd3c	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, resul...
