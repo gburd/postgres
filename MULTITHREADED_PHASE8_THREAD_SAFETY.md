@@ -342,6 +342,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   hash callbacks are running.
 - size-formatting metadata in `dbsize.c`: `size_pretty_units` is an immutable
   lookup table used by `pg_size_pretty()` and `pg_size_bytes()`.
+- debug libxml allocation context state in `xml.c`: `LibxmlContext` is
+  backend-local TLS for the optional `USE_LIBXMLCONTEXT` allocator hook path,
+  where libxml callbacks allocate into the active backend's top memory
+  context.
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
@@ -1275,6 +1279,13 @@ Validation for this slice:
   incremental full rebuild/install, and direct `dbsize` regression coverage
   after classifying the `pg_size_pretty()`/`pg_size_bytes()` unit table as
   immutable singleton state;
+- focused `xml.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed `test_setup xml`
+  regression coverage after classifying the optional `USE_LIBXMLCONTEXT`
+  allocation context pointer as backend-local TLS. This local build is not a
+  libxml-enabled debug build, so the allocator-hook classification has
+  compile/static coverage here rather than direct `USE_LIBXMLCONTEXT` runtime
+  coverage;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
