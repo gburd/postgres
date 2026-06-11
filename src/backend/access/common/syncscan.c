@@ -121,7 +121,7 @@ const ShmemCallbacks SyncScanShmemCallbacks = {
 };
 
 /* Pointer to struct in shared memory */
-static ss_scan_locations_t *scan_locations;
+static PG_GLOBAL_SHMEM ss_scan_locations_t *scan_locations;
 
 /* prototypes for internal functions */
 static BlockNumber ss_search(RelFileLocator relfilelocator,

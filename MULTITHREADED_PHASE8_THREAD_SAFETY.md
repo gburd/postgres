@@ -475,6 +475,10 @@ Missing-attribute value cache state in `heaptuple.c` is now backend-local
 TLS. The cache stores backend-private copies of pass-by-reference missing
 column defaults in `TopMemoryContext`; sharing the mutable dynahash between
 threaded backends would be unsafe and is not required for correctness.
+Synchronized sequential scan state in `syncscan.c` is now explicitly
+classified as shared-memory state. The `scan_locations` pointer targets the
+shared LRU location table registered with `ShmemRequestStruct()` and protected
+by `SyncScanLock`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -911,6 +915,8 @@ Validation for this slice:
   classifying execution-local trigger nesting depth.
 - focused `heaptuple.o` compile coverage plus fast-default regression
   coverage after classifying backend-local missing-attribute cache state.
+- focused `syncscan.o` compile coverage plus process-mode sequential-scan
+  regression coverage after classifying synchronized-scan shared-memory state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

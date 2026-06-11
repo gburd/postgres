@@ -13,7 +13,6 @@ src/backend/access/common/reloptions.c	10612a17778efc9e61551bbe5f9337313e37986c	
 src/backend/access/common/reloptions.c	43d02783d1381349c3973f1f1d0f0c89627968a5	num_custom_options	static int num_custom_options = 0;
 src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	custom_options	static relopt_gen **custom_options = NULL;
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
-src/backend/access/common/syncscan.c	498a5a2a8607ae38fd6a30e5df9242e9680ee7e3	scan_locations	static ss_scan_locations_t *scan_locations;
 src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/nbtree/nbtutils.c	94a728d6cdd5abe3e25f5452c8bf1318143f7b8e	btvacinfo	static BTVacInfo *btvacinfo;
