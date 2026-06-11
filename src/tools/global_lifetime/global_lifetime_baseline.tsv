@@ -204,8 +204,6 @@ src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	wo
 src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	repacked_rel_locator	static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
 src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
 src/backend/commands/seclabel.c	30f2ea183b16f288e276de7a4e096f4201193aa6	label_provider_list	static List *label_provider_list = NIL;
-src/backend/commands/sequence.c	e1b4bb8e66715cb37c66d7c0cafbd794069d6d12	seqhashtab	static HTAB *seqhashtab = NULL;
-src/backend/commands/sequence.c	f4659ebb20ad3547b630204523f2a0e993ae99ce	last_used_seq	static SeqTableData *last_used_seq = NULL;
 src/backend/commands/tablecmds.c	743b27a13034d4cfd26c044d75d46ba511730856	on_commits	static List *on_commits = NIL;
 src/backend/commands/tablespace.c	231522ba992327c89516abc05d2efd087e69aff1	binary_upgrade_next_pg_tablespace_oid	Oid binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 src/backend/commands/trigger.c	37e124bfc979c8e322a44ee73d9e926cabc4908d	MyTriggerDepth	static int MyTriggerDepth = 0;

@@ -450,6 +450,11 @@ WAL record construction state in `xloginsert.c` is now execution-local TLS.
 The `mainrdata_last` pointer now gets its first per-backend value during
 `InitXLogInsert()` instead of using a process-global self-referential static
 initializer.
+Sequence cache state in `sequence.c` is now session-local TLS. The
+`seqhashtab` entries record sequences touched in the current session for
+`nextval()`/`currval()` semantics, and `last_used_seq` backs `lastval()` for
+that same session. They must not be shared across concurrently executing
+threaded sessions.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -872,6 +877,8 @@ Validation for this slice:
   shared/backend state.
 - focused `dynahash.o` compile coverage plus hash-scan regression coverage
   after classifying active hash sequential-scan tracking state.
+- focused `sequence.o` compile coverage plus sequence regression coverage
+  after classifying session-local sequence cache and `lastval()` state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

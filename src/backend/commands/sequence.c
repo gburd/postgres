@@ -78,13 +78,13 @@ typedef struct SeqTableData
 
 typedef SeqTableData *SeqTable;
 
-static HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
 
 /*
  * last_used_seq is updated by nextval() to point to the last used
  * sequence.
  */
-static SeqTableData *last_used_seq = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SeqTableData *last_used_seq = NULL;
 
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static void fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum);
