@@ -847,7 +847,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_fetch_consistenc
  */
 
 /* updated directly by bgwriter and bufmgr */
-extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_BgWriterStats PendingBgWriterStats;
 
 
 /*
@@ -858,7 +858,7 @@ extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
  * Checkpointer statistics counters are updated directly by checkpointer and
  * bufmgr.
  */
-extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_CheckpointerStats PendingCheckpointerStats;
 
 
 /*

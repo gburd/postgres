@@ -21,7 +21,7 @@
 #include "utils/pgstat_internal.h"
 
 
-PgStat_CheckpointerStats PendingCheckpointerStats = {0};
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_CheckpointerStats PendingCheckpointerStats = {0};
 
 
 /*

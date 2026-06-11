@@ -151,8 +151,6 @@ src/backend/storage/ipc/dsm_registry.c	00c7d28b68f01392fd0bbc18f2466543bbcd1117	
 src/backend/storage/ipc/dsm_registry.c	670546f18ffda0283e6066b8210f81b1f5a3b79b	dsm_registry_dsa	static dsa_area *dsm_registry_dsa;
 src/backend/storage/ipc/dsm_registry.c	b21ed97853fa44e2558be75a7018b2ae0e312aed	dsm_registry_table	static dshash_table *dsm_registry_table;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
-src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
-src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
 src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...
 src/backend/utils/adt/jsonpath_gram.c	3fc59a2abc1e5a78e1462c8c65fac75abd39cd3c	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, resul...
@@ -209,8 +207,6 @@ src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern P
 src/include/pg_getopt.h	a3eb7ff42123ef7f51d3c03d50eb16ed56c5333b	opterr	extern PGDLLIMPORT int opterr;
 src/include/pg_getopt.h	04d5e2ab1a7c17bbe519bdbadf99647fa3a14fa3	optopt	extern PGDLLIMPORT int optopt;
 src/include/pg_getopt.h	34ac764e2a967ee408658295faaacb16445ab359	optreset	extern PGDLLIMPORT int optreset;
-src/include/pgstat.h	18e12d475b17a6e0d5a28d6cb60d356d8d927128	PendingBgWriterStats	extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
-src/include/pgstat.h	d4e6fcbc2078c738bbfb3b99efddcaf326214ac7	PendingCheckpointerStats	extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
 src/include/port/pg_cpu.h	9829464db0c529338096663c089b915ed384c6c3	X86Features	extern PGDLLIMPORT bool X86Features[];
 src/include/port/win32_port.h	f705331554feef6d5dd7b316fcb217362e4893c4	pg_signal_queue	extern PGDLLIMPORT volatile int pg_signal_queue;
 src/include/port/win32_port.h	19d5423c0ebee7985704de4d9d44189ac4e5d062	pg_signal_mask	extern PGDLLIMPORT int pg_signal_mask;

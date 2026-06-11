@@ -348,6 +348,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   context.
 - generated wait-event view metadata in `wait_event_funcs.c`:
   `waitEventData` is an immutable lookup table for `pg_get_wait_events()`.
+- pending server-worker statistics in `pgstat_bgwriter.c` and
+  `pgstat_checkpointer.c`: `PendingBgWriterStats` and
+  `PendingCheckpointerStats` are backend-local TLS buffers for the logical
+  bgwriter/checkpointer worker that accumulates deltas before flushing them to
+  shared statistics.
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
@@ -1294,6 +1299,13 @@ Validation for this slice:
   table as immutable singleton state. The smoke verified non-empty results,
   core wait-event type groups, and descriptions for representative named
   events;
+- global-lifetime scanner coverage, backend clean plus generated-header
+  recovery, full rebuild/install, and a live temp-cluster worker-stats smoke
+  after classifying exported pending bgwriter/checkpointer stats as
+  backend-local TLS. The smoke created write activity, forced two fast
+  checkpoints, verified `pg_stat_checkpointer.num_requested` advanced, and
+  verified `pg_stat_reset_shared('bgwriter')` and
+  `pg_stat_reset_shared('checkpointer')` moved their reset timestamps;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
