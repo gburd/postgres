@@ -378,6 +378,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   worker and owns the DSM, background-worker handle, and error queue for the
   current REPACK command.  The worker-side globals in `repack_worker.c` remain
   explicit worker-runtime audit debt rather than regular client-backend state.
+- JIT provider loader state in `jit.c`: the provider callback table and
+  provider load success/failure cache are session-local TLS state. This
+  matches the `jit_provider` session GUC and prevents threaded sessions from
+  sharing one provider-load result or callback table.
 
 The frontend utility `quote_all_identifiers` global is explicitly classified
 as `PG_GLOBAL_DYNAMIC`, not as backend session state. The backend GUC backing
@@ -1334,6 +1338,12 @@ Validation for this slice:
   after classifying the extension sibling lookup cache and client-backend
   REPACK decoding-worker handle state. The worker-side `repack_worker.c`
   globals are left in the baseline for the worker-runtime audit.
+- focused `jit.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and a direct temp-cluster
+  `SELECT pg_jit_available()` smoke with JIT disabled after classifying the
+  generic JIT provider loader cache as session-local TLS. This checkout is
+  configured with `with_llvm = no`, so LLVM provider compile coverage remains
+  for an LLVM-enabled build.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

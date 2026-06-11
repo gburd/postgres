@@ -41,9 +41,9 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_above_cost = 100000;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_inline_above_cost = 500000;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_optimize_above_cost = 500000;
 
-static JitProviderCallbacks provider;
-static bool provider_successfully_loaded = false;
-static bool provider_failed_loading = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION JitProviderCallbacks provider;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool provider_successfully_loaded = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool provider_failed_loading = false;
 
 
 static bool provider_init(void);

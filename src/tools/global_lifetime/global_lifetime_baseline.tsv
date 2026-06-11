@@ -4,9 +4,6 @@ src/backend/commands/repack_worker.c	5e911fb813910f039ca90baf2145036f055b17cc	re
 src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	worker_dsm_segment	static dsm_segment *worker_dsm_segment = NULL;
 src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	repacked_rel_locator	static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
 src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
-src/backend/jit/jit.c	42f632aaf5cfb5e56ef41fba4fa31f5fb92fb0cd	provider	static JitProviderCallbacks provider;
-src/backend/jit/jit.c	a5d4013a10e01aa2686e9e1ab8f01f7073183e6e	provider_successfully_loaded	static bool provider_successfully_loaded = false;
-src/backend/jit/jit.c	69af60336ea01151cb7a9465cbe195ed107f4cd7	provider_failed_loading	static bool provider_failed_loading = false;
 src/backend/jit/llvm/llvmjit.c	ef493a8e92997c6b5f70c59c4e74c7d4eef6cc68	TypeSizeT	LLVMTypeRef TypeSizeT;
 src/backend/jit/llvm/llvmjit.c	425af5527b41017e534889654caac05985c5f2f8	TypeDatum	LLVMTypeRef TypeDatum;
 src/backend/jit/llvm/llvmjit.c	36eb15ab5cec3184b36ed3563b80f857be829687	TypeParamBool	LLVMTypeRef TypeParamBool;
