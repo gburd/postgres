@@ -2453,6 +2453,16 @@ Validation for this slice:
   coverage, incremental full rebuild/install, and direct temp-instance
   `insert_conflict` regression coverage after classifying speculative insertion
   token state.
+- Gate C refresh after the Windows/static scanner cleanup: incremental
+  non-Windows `gmake -j8`, global-lifetime scanner baseline coverage with the
+  one documented `tsrank.c` typedef artifact, direct extension backend-model
+  regression coverage for `test_extensions`, `test_extdepend`,
+  `test_ext_backend_model`, and `test_ext_backend_model_pooled`, and direct
+  PL/pgSQL process-mode regression coverage for all 13 PL/pgSQL tests.
+  `gmake check` for the extension and PL/pgSQL targets recreated
+  `tmp_install` and failed before SQL on the known macOS
+  `/usr/local/pgsql/lib/libpq.5.dylib` loader path; direct reruns after
+  `install_name_tool` patching passed.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
