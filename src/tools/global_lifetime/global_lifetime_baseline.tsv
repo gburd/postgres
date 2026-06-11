@@ -60,14 +60,6 @@ src/backend/postmaster/autovacuum.c	5e95e816350614696132a4fef9ad522e5c6cd05e	Dat
 src/backend/postmaster/autovacuum.c	67a0febbd4ce8227f1649d5b5d73b424bf83e9e7	avl_dbase_array	extern avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	3f35446d5652b7fe805104c075af7e94c185523d	avl_dbase_array	avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	875e954adb4145edf5e9d5dcc52e816fa06ab806	MyWorkerInfo	static WorkerInfo MyWorkerInfo = NULL;
-src/backend/postmaster/checkpointer.c	e67a489bff45c0fcf5ea884e2dd5e6ea9373f33f	CheckpointerShmem	static CheckpointerShmemStruct *CheckpointerShmem;
-src/backend/postmaster/checkpointer.c	33a6b81c76a9b89df604c1b9beb8df86d0fb8ffa	ckpt_active	static bool ckpt_active = false;
-src/backend/postmaster/checkpointer.c	f274f6b2dd42c5a7d41bb139da78d65c909bbf95	ShutdownXLOGPending	static volatile sig_atomic_t ShutdownXLOGPending = false;
-src/backend/postmaster/checkpointer.c	4cb5d1001e69cbb2564cc5ba8145ff5c33e0f03d	ckpt_start_time	static pg_time_t ckpt_start_time;
-src/backend/postmaster/checkpointer.c	2a05c46480854eca485526c7b8a641f89928a54c	ckpt_start_recptr	static XLogRecPtr ckpt_start_recptr;
-src/backend/postmaster/checkpointer.c	705162176d107560ebb3c64231ce4ad0bd327fdf	ckpt_cached_elapsed	static double ckpt_cached_elapsed;
-src/backend/postmaster/checkpointer.c	e74a7d36c2e02f620308f09ab0870a2b437227ce	last_checkpoint_time	static pg_time_t last_checkpoint_time;
-src/backend/postmaster/checkpointer.c	da0831e561e5f42ac3c7fe96d9d358781ff54b88	last_xlog_switch_time	static pg_time_t last_xlog_switch_time;
 src/backend/postmaster/datachecksum_state.c	dfc681246c01f9ddb7caa7d97b22b37ca6ca78a7	DataChecksumState	static DataChecksumsStateStruct *DataChecksumState;
 src/backend/postmaster/datachecksum_state.c	fee8d2764cf6a0d31e4a9e9225a279227f8f8b81	abort_requested	static volatile sig_atomic_t abort_requested = false;
 src/backend/postmaster/datachecksum_state.c	c329d69062bb21f470ea56e3b95d5b6c54e5b3ac	launcher_running	static volatile sig_atomic_t launcher_running = false;

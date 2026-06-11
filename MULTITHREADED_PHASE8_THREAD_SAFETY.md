@@ -141,6 +141,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   the bgwriter logical worker. These values throttle standby snapshot logging
   by the active bgwriter and must not become shared scratch state for unrelated
   logical backends in threaded mode.
+- checkpointer coordination and progress state in `checkpointer.c`:
+  `CheckpointerShmem` is shared-memory state used by backends and the
+  checkpointer to coordinate checkpoint requests, fsync requests, and
+  completion counters. `ckpt_active`, `ShutdownXLOGPending`,
+  `ckpt_start_time`, `ckpt_start_recptr`, `ckpt_cached_elapsed`,
+  `last_checkpoint_time`, and `last_xlog_switch_time` are backend-local TLS
+  state for the checkpointer logical worker.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1833,6 +1840,13 @@ Validation for this slice:
   throttle state. The live smoke verified the background writer was visible in
   `pg_stat_activity`, created a heap table, ran `CHECKPOINT`, checked the row
   count, and stopped the server with fast shutdown.
+- focused `checkpointer.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct temp-cluster checkpoint smoke after classifying checkpointer
+  shared/progress state. The live smoke verified the checkpointer was visible
+  in `pg_stat_activity`, created a heap table, observed a current WAL LSN, ran
+  `CHECKPOINT`, checked the row count, and stopped the server with fast
+  shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

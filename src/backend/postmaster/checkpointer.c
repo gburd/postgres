@@ -142,7 +142,7 @@ typedef struct
 	CheckpointerRequest requests[FLEXIBLE_ARRAY_MEMBER];
 } CheckpointerShmemStruct;
 
-static CheckpointerShmemStruct *CheckpointerShmem;
+static PG_GLOBAL_SHMEM CheckpointerShmemStruct *CheckpointerShmem;
 
 static void CheckpointerShmemRequest(void *arg);
 static void CheckpointerShmemInit(void *arg);
@@ -171,16 +171,16 @@ PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
 /*
  * Private state
  */
-static bool ckpt_active = false;
-static volatile sig_atomic_t ShutdownXLOGPending = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ckpt_active = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ShutdownXLOGPending = false;
 
 /* these values are valid when ckpt_active is true: */
-static pg_time_t ckpt_start_time;
-static XLogRecPtr ckpt_start_recptr;
-static double ckpt_cached_elapsed;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t ckpt_start_time;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr ckpt_start_recptr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND double ckpt_cached_elapsed;
 
-static pg_time_t last_checkpoint_time;
-static pg_time_t last_xlog_switch_time;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t last_checkpoint_time;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t last_xlog_switch_time;
 
 /* Prototypes for private functions */
 
