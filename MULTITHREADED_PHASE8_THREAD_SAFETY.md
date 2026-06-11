@@ -159,6 +159,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - immutable encoding metadata: `pg_enc2gettext_tbl` is now a const pointer
   array of gettext encoding names. It is exported metadata read by backend
   encoding/NLS paths and should not be mutable shared state in threaded mode.
+- common logging level state: `__pg_log_level` is runtime-global logging
+  configuration for frontend/common logging users and shared code that includes
+  `common/logging.h`; it is not backend/session-local state.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2170,6 +2173,11 @@ Validation for this slice:
   encoding smoke after making the gettext encoding-name pointer table
   immutable. The live smoke verified database encoding lookup and client
   encoding changes before fast shutdown.
+- focused `logging.o`, common logging users, `xlogreader.o`, and frontend
+  `print.o`/`cancel.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and installed-tool `--help` smoke for
+  `pg_isready` and `pg_waldump` after classifying common logging level state
+  as runtime-global.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
