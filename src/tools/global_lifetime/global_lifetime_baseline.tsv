@@ -827,10 +827,6 @@ src/backend/postmaster/walsummarizer.c	bf3b67ad319a9f4db0e0672716f57dbdea8f705d	
 src/backend/postmaster/walsummarizer.c	6c3e96c14a7ad2581913f480f9312d394124a64e	sleep_quanta	static long sleep_quanta = 1;
 src/backend/postmaster/walsummarizer.c	dd153fe9ff997bbb86c55480ec3a05ce71fd0655	pages_read_since_last_sleep	static long pages_read_since_last_sleep = 0;
 src/backend/postmaster/walsummarizer.c	bc8ec2c1b56edc096f9f1bb4dfa7cc829c0203ba	redo_pointer_at_last_summary_removal	static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
-src/backend/regex/regc_locale.c	9e9c9355de0bbeed52a99333bd82f918144b0d72	classNames	static const char *const classNames[NUM_CCLASSES + 1] = { "alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit", "word", NULL };
-src/backend/regex/regc_pg_locale.c	487030a66f1af75901ad91478a28ee202e9dfd14	pg_regex_locale	static pg_locale_t pg_regex_locale;
-src/backend/regex/regc_pg_locale.c	98aca0813f1acd74aff85d0824b34e7355c4443d	pg_ctype_cache_list	static pg_ctype_cache *pg_ctype_cache_list = NULL;
-src/backend/regex/regerror.c	b6fabd1a48e3684e1449cee4ff63c1580c56ac17	unk	static const char unk[] = "*** unknown regex error code 0x%x ***";
 src/backend/replication/libpqwalreceiver/libpqwalreceiver.c	faa1acae9d56662a8d09df301319f9ec91f79c0c	PQWalReceiverFunctions	static WalReceiverFunctionsType PQWalReceiverFunctions = { .walrcv_connect = libpqrcv_connect, .walrcv_check_conninfo = libpqrcv_check_conninfo, .walrcv_get_conninfo = libpqrcv_get_conninfo, .walrcv_get_senderinfo = libpqrcv_get_senderin...
 src/backend/replication/logical/applyparallelworker.c	9890f7a94c21181d523d6e8462f697362ffbdd98	ParallelApplyTxnHash	static HTAB *ParallelApplyTxnHash = NULL;
 src/backend/replication/logical/applyparallelworker.c	53942e820ad5350d2d70f70411b9839db8406acd	ParallelApplyWorkerPool	static List *ParallelApplyWorkerPool = NIL;

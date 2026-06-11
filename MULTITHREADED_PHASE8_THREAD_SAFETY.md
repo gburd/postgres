@@ -347,6 +347,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   session-local TLS cache populated by the current backend and flushed through
   the current backend's syscache callback path. The recursive-CTE diagnostic
   string table in `parse_cte.c` is immutable metadata.
+- regex locale state in `regc_pg_locale.c`: `pg_regex_locale` is active regex
+  operation state, while `pg_ctype_cache_list` is a session-local ctype probe
+  cache. Regex character-class and error strings are immutable metadata.
 - storage and I/O session GUC backing variables:
   `backend_flush_after`, `effective_io_concurrency`, `file_copy_method`,
   `ignore_checksum_failure`, `io_combine_limit`,
