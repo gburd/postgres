@@ -164,7 +164,7 @@ typedef struct
 	sig_atomic_t apply_reply_requested; /* used as a bool */
 } WalRcvData;
 
-extern PGDLLIMPORT WalRcvData *WalRcv;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM WalRcvData *WalRcv;
 
 typedef struct
 {
@@ -432,7 +432,7 @@ typedef struct WalReceiverFunctionsType
 	walrcv_disconnect_fn walrcv_disconnect;
 } WalReceiverFunctionsType;
 
-extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions;
 
 #define walrcv_connect(conninfo, replication, logical, must_use_password, appname, err) \
 	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, appname, err)

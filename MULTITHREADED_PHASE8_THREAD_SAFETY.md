@@ -1416,6 +1416,11 @@ Validation for this slice:
   smoke after classifying the shared WAL sender registry and backend-local WAL
   sender identity, wakeup, streaming, signal, logical decoding, and lag-tracker
   state.
+- focused WAL receiver metadata compile coverage for `walreceiver.o`,
+  `walreceiverfuncs.o`, and `slotfuncs.o`, global-lifetime scanner coverage,
+  incremental full rebuild/install, and a direct temp-cluster replication
+  smoke after classifying the shared WAL receiver control pointer, runtime WAL
+  receiver function dispatch pointer, and immutable slot-sync reason names.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

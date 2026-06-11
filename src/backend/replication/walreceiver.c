@@ -93,7 +93,7 @@ PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /* libpqwalreceiver connection */
 static WalReceiverConn *wrconn = NULL;
-WalReceiverFunctionsType *WalReceiverFunctions = NULL;
+PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 
 /*
  * These variables are used similarly to openLogFile/SegNo,

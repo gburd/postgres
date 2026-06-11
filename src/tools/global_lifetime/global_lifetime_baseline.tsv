@@ -869,7 +869,6 @@ src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yys
 src/backend/replication/repl_gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
 src/backend/replication/repl_gram.c	84da4e971c35224dcb0415e1a21053e455b42a42	replication_parse_result_p,replication_parse_result_p,replication_parse_result_p	int yyparse (Node **replication_parse_result_p, yyscan_t yyscanner) int yyparse (replication_parse_result_p, yyscanner) Node **replication_parse_result_p;
 src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/slotfuncs.c	feee769c50c53894295d1f11e510142c821b2e5d	SlotSyncSkipReasonNames	static const char *SlotSyncSkipReasonNames[] = { [SS_SKIP_NONE] = "none", [SS_SKIP_WAL_NOT_FLUSHED] = "wal_not_flushed", [SS_SKIP_WAL_OR_ROWS_REMOVED] = "wal_or_rows_removed", [SS_SKIP_NO_CONSISTENT_SNAPSHOT] = "no_consistent_snapshot", ...
 src/backend/replication/syncrep.c	11a323c50e36ec90618a4356818144f5cb0acbcb	announce_next_takeover	static bool announce_next_takeover = true;
 src/backend/replication/syncrep.c	1411097f920d1a24143dc37c5def0f0ad86cc7ae	SyncRepConfig	SyncRepConfigData *SyncRepConfig = NULL;
 src/backend/replication/syncrep.c	a2a236b6dfd9c932d3b47f3cc9f804ec607d5c8c	SyncRepWaitMode	static int SyncRepWaitMode = SYNC_REP_NO_WAIT;
@@ -909,14 +908,12 @@ src/backend/replication/syncrep_gram.c	7745a26f4271fd75144024a31c2a5da2c24be890	
 src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
 src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
 src/backend/replication/walreceiver.c	ac45cef7f0da628d240604c068d55780596e80e2	wrconn	static WalReceiverConn *wrconn = NULL;
-src/backend/replication/walreceiver.c	ddcc49c8ab97bab303d0ff6b8b649abcaf2f8373	WalReceiverFunctions	WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 src/backend/replication/walreceiver.c	fc73ab860995ce9946d9745f233a13e029213424	recvFile	static int recvFile = -1;
 src/backend/replication/walreceiver.c	16dea593b08fdd73ab7759ab8f9ae3d3bb34bad4	recvFileTLI	static TimeLineID recvFileTLI = 0;
 src/backend/replication/walreceiver.c	465d11fe14e3bf576046f909b49f2c3cff356201	recvSegNo	static XLogSegNo recvSegNo = 0;
 src/backend/replication/walreceiver.c	cc2aac8381f4bd97a827ece1a0e72a8a764d244e	Write,Flush,LogstreamResult	static struct { XLogRecPtr Write; XLogRecPtr Flush; } LogstreamResult;
 src/backend/replication/walreceiver.c	3d8f11a3300b47d5f4b1c2d665ad01991e865767	wakeup	static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
 src/backend/replication/walreceiver.c	381937c21cbddb93d3b0eefc9580987d45ab518c	reply_message	static StringInfoData reply_message;
-src/backend/replication/walreceiverfuncs.c	61241f5e0923a32baf74b9aa412a4b07b4bb71c3	WalRcv	WalRcvData *WalRcv = NULL;
 src/backend/storage/aio/method_io_uring.c	ae3edfa77447cd8e2f3a5b95feb704789a262b6c	pgaio_uring_contexts	static PgAioUringContext *pgaio_uring_contexts;
 src/backend/storage/aio/method_io_uring.c	f30ab475d31df177b9480ce0727de96a9474e989	pgaio_my_uring_context	static PgAioUringContext *pgaio_my_uring_context;
 src/backend/storage/aio/method_io_uring.c	64942f55b8d007237bfe7b40c5c07f03e5320316	pgaio_uring_caps	static PgAioUringCaps pgaio_uring_caps = { .checked = false, .mem_init_size = -1, };
@@ -1322,8 +1319,6 @@ src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replor
 src/include/replication/slot.h	8f057a66263d4ebfb51a0733f13c965cd96e6722	ReplicationSlotCtl	extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
 src/include/replication/slot.h	4865172f5673d1687472f60a530cd7604deedf6c	MyReplicationSlot	extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
-src/include/replication/walreceiver.h	c450d13a1e73b1ec316f75e5e8d1d5f8b73586a0	WalRcv	extern PGDLLIMPORT WalRcvData *WalRcv;
-src/include/replication/walreceiver.h	522bff560b6f386c7bc33b6872cf5e8357395636	WalReceiverFunctions	extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
 src/include/replication/worker_internal.h	7438fe75a165c7863ed1a97b552b14df85dcc313	MyParallelShared	extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
 src/include/replication/worker_internal.h	3421b112a2a9fa3d09745825a17fb80b19351732	LogRepWorkerWalRcvConn	extern PGDLLIMPORT struct WalReceiverConn *LogRepWorkerWalRcvConn;
 src/include/replication/worker_internal.h	a01b8c863c6a9f4940830acaa0cd05e4b83151ac	MySubscription	extern PGDLLIMPORT Subscription *MySubscription;
