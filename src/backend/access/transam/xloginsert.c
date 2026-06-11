@@ -89,21 +89,24 @@ typedef struct
 	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
-static registered_buffer *registered_buffers;
-static int	max_registered_buffers; /* allocated size */
-static int	max_registered_block_id = 0;	/* highest block_id + 1 currently
-											 * registered */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION registered_buffer *registered_buffers;
+/* Allocated size. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int max_registered_buffers;
+
+/* Highest block_id + 1 currently registered. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int max_registered_block_id = 0;
 
 /*
  * A chain of XLogRecDatas to hold the "main data" of a WAL record, registered
  * with XLogRegisterData(...).
  */
-static XLogRecData *mainrdata_head;
-static XLogRecData *mainrdata_last = (XLogRecData *) &mainrdata_head;
-static uint64 mainrdata_len;	/* total # of bytes in chain */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION XLogRecData *mainrdata_head;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION XLogRecData *mainrdata_last;
+/* Total number of bytes in the main-data chain. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION uint64 mainrdata_len;
 
 /* flags for the in-progress insertion */
-static uint8 curinsert_flags = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION uint8 curinsert_flags = 0;
 
 /*
  * These are used to hold the record header while constructing a record.
@@ -113,8 +116,8 @@ static uint8 curinsert_flags = 0;
  * For simplicity, it's allocated large enough to hold the headers for any
  * WAL record.
  */
-static XLogRecData hdr_rdt;
-static char *hdr_scratch = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION XLogRecData hdr_rdt;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *hdr_scratch = NULL;
 
 #define SizeOfXlogOrigin	(sizeof(ReplOriginId) + sizeof(char))
 #define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
@@ -128,14 +131,16 @@ static char *hdr_scratch = NULL;
 /*
  * An array of XLogRecData structs, to hold registered data.
  */
-static XLogRecData *rdatas;
-static int	num_rdatas;			/* entries currently used */
-static int	max_rdatas;			/* allocated size */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION XLogRecData *rdatas;
+/* Entries currently used. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int num_rdatas;
+/* Allocated size. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int max_rdatas;
 
-static bool begininsert_called = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool begininsert_called = false;
 
 /* Memory context to hold the registered buffer and data references. */
-static MemoryContext xloginsert_cxt;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext xloginsert_cxt;
 
 static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
@@ -1438,4 +1443,7 @@ InitXLogInsert(void)
 	if (hdr_scratch == NULL)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
+
+	if (mainrdata_last == NULL)
+		mainrdata_last = (XLogRecData *) &mainrdata_head;
 }

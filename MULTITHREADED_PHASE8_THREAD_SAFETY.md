@@ -86,6 +86,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   sampling state;
 - transaction-owned combo CID maps in `combocid.c` and relation storage
   pending-delete/sync cleanup queues in `storage.c`;
+- WAL record construction state in `xloginsert.c`, including registered buffer
+  and data arrays, main-data chain state, current insert flags, header scratch
+  storage, and the WAL insertion memory context;
 - transaction characteristic GUC backing variables in `xact.c`: the
   session-local `DefaultXact*` defaults and the execution-local current
   `Xact*` isolation, read-only, and deferrable state;
@@ -409,6 +412,10 @@ across threaded client backends.
 Connection-startup warning state in `postinit.c` is now connection-local TLS.
 It accumulates warnings for the current connection before emission and must not
 be shared by simultaneous threaded connection startups.
+WAL record construction state in `xloginsert.c` is now execution-local TLS.
+The `mainrdata_last` pointer now gets its first per-backend value during
+`InitXLogInsert()` instead of using a process-global self-referential static
+initializer.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -816,6 +823,9 @@ Validation for this slice:
   query state.
 - focused `postinit.o` compile coverage plus process-mode startup/regression
   smoke coverage after classifying connection-startup warning state.
+- focused `xloginsert.o` compile coverage plus WAL-writing transaction and
+  relation-storage regression coverage after classifying WAL record
+  construction state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
