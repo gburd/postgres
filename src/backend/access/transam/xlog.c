@@ -260,9 +260,9 @@ static int	LocalXLogInsertAllowed = -1;
  * stored here.  The parallel leader advances its own copy, when necessary,
  * in WaitForParallelWorkersToFinish.
  */
-XLogRecPtr	ProcLastRecPtr = InvalidXLogRecPtr;
-XLogRecPtr	XactLastRecEnd = InvalidXLogRecPtr;
-XLogRecPtr	XactLastCommitEnd = InvalidXLogRecPtr;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr ProcLastRecPtr = InvalidXLogRecPtr;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr XactLastRecEnd = InvalidXLogRecPtr;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr XactLastCommitEnd = InvalidXLogRecPtr;
 
 /*
  * RedoRecPtr is this backend's local copy of the REDO record pointer

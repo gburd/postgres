@@ -25,9 +25,6 @@ src/backend/access/transam/xlog.c	20c6a203481bc521db4ecf9809e11e2b8bc23569	Check
 src/backend/access/transam/xlog.c	8734bb7f9c0c9bd96f1f2b909af31e2bd72c3b8f	lastFullPageWrites	static bool lastFullPageWrites;
 src/backend/access/transam/xlog.c	27f0d6154ccced5c9688b796e275c5479aaf6b39	LocalRecoveryInProgress	static bool LocalRecoveryInProgress = true;
 src/backend/access/transam/xlog.c	ec0633896bda8cae7e1b5a0b1743307b5eca165a	LocalXLogInsertAllowed	static int LocalXLogInsertAllowed = -1;
-src/backend/access/transam/xlog.c	07dbe9ea13c2782430584849a9716740b20ed101	ProcLastRecPtr	XLogRecPtr ProcLastRecPtr = InvalidXLogRecPtr;
-src/backend/access/transam/xlog.c	c650d545d779b1f239d4f26761f9a7ea413aa36f	XactLastRecEnd	XLogRecPtr XactLastRecEnd = InvalidXLogRecPtr;
-src/backend/access/transam/xlog.c	28820b8c988bf172bcd71e699340c8a6a6bd9a92	XactLastCommitEnd	XLogRecPtr XactLastCommitEnd = InvalidXLogRecPtr;
 src/backend/access/transam/xlog.c	e8d21b58716448925d6d278c0b26f0fc5b188396	RedoRecPtr	static XLogRecPtr RedoRecPtr;
 src/backend/access/transam/xlog.c	e00e2ba26323a381722d2d5390f236e7d1cf0473	doPageWrites	static bool doPageWrites;
 src/backend/access/transam/xlog.c	198e47e2e46295d0e8f0b79e187801f28295152a	sessionBackupState	static SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
@@ -1761,9 +1758,6 @@ src/include/access/relscan.h	382236e6a16c79e121ca65e856af3d6c0ce93fb3	TableScanI
 src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanInstrumentation	struct IndexScanInstrumentation;
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
-src/include/access/xlog.h	4358811cb3dc0bce96d1e15480ee4eb25eace904	ProcLastRecPtr	extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;
-src/include/access/xlog.h	fe64f9f7182d4c89a39e84bff8fa03b7043a5e3d	XactLastRecEnd	extern PGDLLIMPORT XLogRecPtr XactLastRecEnd;
-src/include/access/xlog.h	434725f39b669704b07b813441416d6f18d51a1c	XactLastCommitEnd	extern PGDLLIMPORT XLogRecPtr XactLastCommitEnd;
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/access/xlog.h	d674475e99764b576a0f1961933e59ab91c469c9	CheckpointStats	extern PGDLLIMPORT CheckpointStatsData CheckpointStats;
 src/include/access/xlog.h	cec4541f6edb9832cef9dd7b5bb2103ebefd95bf	XLogRecData	struct XLogRecData;
