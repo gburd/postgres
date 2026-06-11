@@ -15,8 +15,6 @@ src/backend/commands/vacuum.c	c461dfc3d4ec199612c78840ec29506cf3622653	VacuumAct
 src/backend/commands/vacuum.c	d16c35d4d6bdd7eae1f9ed1007eec47ff8e5f639	VacuumCostBalanceLocal	int VacuumCostBalanceLocal = 0;
 src/backend/commands/vacuumparallel.c	7b88ac5a5abf2259c986934befbf07df90998f3b	pv_shared_cost_params	static PVSharedCostParams *pv_shared_cost_params = NULL;
 src/backend/commands/vacuumparallel.c	5019eec2a7bcbe78257f79034a54d3a949d21467	shared_params_generation_local	static uint32 shared_params_generation_local = 0;
-src/backend/executor/execExprInterp.c	b671e7ef0f7c662893b7d8903e463cc065815aa0	dispatch_table	static const void **dispatch_table = NULL;
-src/backend/executor/execExprInterp.c	f5dae087566d82e7434b56ee0ed00090438c3492	reverse_dispatch_table	static ExprEvalOpLookup reverse_dispatch_table[EEOP_LAST];
 src/backend/jit/jit.c	42f632aaf5cfb5e56ef41fba4fa31f5fb92fb0cd	provider	static JitProviderCallbacks provider;
 src/backend/jit/jit.c	a5d4013a10e01aa2686e9e1ab8f01f7073183e6e	provider_successfully_loaded	static bool provider_successfully_loaded = false;
 src/backend/jit/jit.c	69af60336ea01151cb7a9465cbe195ed107f4cd7	provider_failed_loading	static bool provider_failed_loading = false;

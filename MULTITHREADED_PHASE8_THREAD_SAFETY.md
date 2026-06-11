@@ -251,6 +251,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   private parallel-query baseline copies in `instrument.c`. These counters
   accumulate one backend's buffer and WAL usage so callers can compute deltas
   around a query, plan node, or parallel-query section.
+- expression interpreter dispatch lookup state in `execExprInterp.c`:
+  `dispatch_table` and `reverse_dispatch_table` are backend-local TLS state
+  under computed-goto dispatch. This avoids sharing the lazy
+  `ExecInitInterpreter()` setup path between concurrent threaded backends.
 - logging/error-reporting session state: `Log_error_verbosity`,
   `log_min_messages_string`, and the processed `backtrace_function_list`
   derived from `backtrace_functions`.
@@ -1134,6 +1138,13 @@ Validation for this slice:
   counters. The runtime smoke preloaded `pg_stat_statements`, created the
   extension, ran `EXPLAIN (ANALYZE, BUFFERS, WAL)` against an insert, verified
   the table contents, and confirmed `pg_stat_statements` recorded the query.
+- focused `execExprInterp.o` compile coverage, full rebuild/install,
+  global-lifetime scanner coverage, and process-mode expression interpreter
+  smoke coverage after moving computed-goto dispatch lookup state to
+  backend-local TLS. The runtime smoke exercised prepared expression
+  execution, CASE, scalar-array operations, array containment, JSONB
+  expressions, aggregate filters/transitions, and `EXPLAIN (VERBOSE)` over the
+  prepared plan.
 - focused `analyze.o` compile coverage, global-lifetime scanner coverage, and
   process-mode ANALYZE smoke coverage after classifying ANALYZE execution
   state. `gmake -C src/test/regress check-tests TESTS="analyze"` recreated
