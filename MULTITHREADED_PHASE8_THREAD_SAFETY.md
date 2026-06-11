@@ -286,6 +286,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   for GUC contexts, sources, groups, and types. The custom-GUC reserved-prefix
   list remains runtime-global registration state governed by the extension
   backend-model gate.
+- GUC config-file scanner state in `guc-file.l`: `ConfigFileLineno`,
+  `GUC_flex_fatal_errmsg`, and `GUC_flex_fatal_jmp` are execution-local TLS
+  state used while parsing one configuration file/include tree and handling
+  scanner fatal-error recovery.
 - GUC check-hook error state: `GUC_check_errcode_value`,
   `GUC_check_errmsg_string`, `GUC_check_errdetail_string`, and
   `GUC_check_errhint_string`;
@@ -960,6 +964,12 @@ Validation for this slice:
   registration state. The smoke preloaded `test_oat_hooks`, verified its
   custom GUC appeared in `pg_settings`, and verified an unregistered variable
   under the reserved prefix was rejected.
+- focused `guc-file.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and a direct temp-cluster configuration
+  reload smoke after classifying config-file scanner state as execution-local
+  TLS. The smoke loaded an included config file, reloaded a changed `work_mem`,
+  then reloaded a syntax error and verified the prior setting remained active
+  while the error was logged.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

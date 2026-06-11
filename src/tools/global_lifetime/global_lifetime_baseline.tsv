@@ -1077,9 +1077,6 @@ src/backend/utils/error/elog.c	2818fc0d5ac3611010878e35237792638c8c411e	save_for
 src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
 src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
-src/backend/utils/misc/guc-file.c	a3c0b6ddda450a8c693fbb3e548870fbaa47d6e7	ConfigFileLineno	static unsigned int ConfigFileLineno;
-src/backend/utils/misc/guc-file.c	289aabc0793767da1dec83a759f162061bb43f70	GUC_flex_fatal_errmsg	static const char *GUC_flex_fatal_errmsg;
-src/backend/utils/misc/guc-file.c	9262b874d1e6c4cbb91b8d48a29bc8200a15c5f6	GUC_flex_fatal_jmp	static sigjmp_buf *GUC_flex_fatal_jmp;
 src/backend/utils/misc/injection_point.c	a7d8d01dbbdfe68c9aca7ba65487e9f7b679b125	ActiveInjectionPoints	NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 src/backend/utils/misc/injection_point.c	1fcb03ecf827fdfc13a61aa4b0056343873d4edf	InjectionPointCache	static HTAB *InjectionPointCache = NULL;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
