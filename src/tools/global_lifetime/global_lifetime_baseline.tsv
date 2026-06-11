@@ -34,9 +34,6 @@ src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrT
 src/backend/access/transam/slru.c	25dbd225a5278eb583be9d7d52b6eef1bf338452	slru_errcause	static SlruErrorCause slru_errcause;
 src/backend/access/transam/slru.c	828a82da408c15dac3a011da9b3cc3b3a3b2a370	slru_errno	static int slru_errno;
 src/backend/access/transam/subtrans.c	d94a38b0d3fd1f01aa346e228832a3409e360936	SubTransSlruDesc	static SlruDesc SubTransSlruDesc;
-src/backend/access/transam/transam.c	b9f6516a1195e1ee7de73376d60e704f44803d00	cachedFetchXid	static TransactionId cachedFetchXid = InvalidTransactionId;
-src/backend/access/transam/transam.c	ae2bf72b56520cc4fca1c6d084f74a5b978a92c1	cachedFetchXidStatus	static XidStatus cachedFetchXidStatus;
-src/backend/access/transam/transam.c	5300fb4531b6671717d2750f4fd106c6a7ceec3f	cachedCommitLSN	static XLogRecPtr cachedCommitLSN;
 src/backend/access/transam/twophase.c	e5c5904707d1ee731828de057deb9a9f6fc40c5b	TwoPhaseState	static TwoPhaseStateData *TwoPhaseState;
 src/backend/access/transam/twophase.c	4b4c77d64fd957bf44dc088ff7e63056a28da443	MyLockedGxact	static GlobalTransaction MyLockedGxact = NULL;
 src/backend/access/transam/twophase.c	40d594145f62cfe837d88130c71549e4764709d1	twophaseExitRegistered	static bool twophaseExitRegistered = false;

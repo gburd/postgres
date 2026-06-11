@@ -376,6 +376,8 @@ explicit shared-memory state. Backend-local transaction visibility caches,
 including the `GlobalVis*` states and `cachedXidIsNotInProgress`, use TLS,
 while recovery-stream bookkeeping such as `latestObservedXid` remains
 runtime-owned state.
+The single-entry transaction-status cache in `transam.c` is now backend-local
+TLS, matching the backend-private visibility cache model.
 Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
@@ -826,6 +828,8 @@ Validation for this slice:
 - focused `xloginsert.o` compile coverage plus WAL-writing transaction and
   relation-storage regression coverage after classifying WAL record
   construction state.
+- focused `transam.o` compile coverage plus transaction visibility regression
+  coverage after classifying the single-entry transaction-status cache.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
