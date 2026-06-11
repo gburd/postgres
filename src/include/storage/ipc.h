@@ -84,8 +84,8 @@ typedef struct PgBackendExitState
 
 
 /* ipc.c */
-extern PGDLLIMPORT bool proc_exit_inprogress;
-extern PGDLLIMPORT bool shmem_exit_inprogress;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool proc_exit_inprogress;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool shmem_exit_inprogress;
 
 extern void PgBackendInitializeExitState(PgBackendExitState *exit_state);
 extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);

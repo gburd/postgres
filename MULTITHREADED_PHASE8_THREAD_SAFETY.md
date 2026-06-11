@@ -112,6 +112,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   bootstrap on macOS; Phase 9 should move wait-event storage behind the
   thread-compatible wait/wakeup boundary rather than retrying that direct TLS
   pointer shape.
+- IPC, backend-exit, and shared-memory setup state: `proc_exit_inprogress`
+  and `shmem_exit_inprogress` are backend-local TLS compatibility mirrors of
+  the active logical backend's exit state; the one-time `atexit()` registration,
+  add-in shared-memory request accumulator, shmem callback/request lists, and
+  shmem request state machine are runtime state; fixed shared-memory segment,
+  allocator, and shmem index pointers are classified as shared-memory state.
 - authenticated, session, and effective-user identity state in `miscinit.c`:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
@@ -1451,6 +1457,15 @@ Validation for this slice:
   `my_wait_event_info` was tested and rejected in this slice because it caused
   a bootstrap bus error on macOS; this variable remains classification-only
   until Phase 9 introduces the wait/wakeup boundary.
+- focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
+  `shmem.o`, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, and direct temp-cluster
+  lifecycle smoke after classifying backend-exit compatibility mirrors,
+  shared-memory request/setup state, and fixed shared-memory pointers. The
+  smoke initialized a cluster, started the server, executed SQL before and
+  after `pg_terminate_backend()` against a sleeping backend, observed the
+  expected FATAL disconnect for the terminated backend, verified the server
+  stayed usable from a new connection, and shut down cleanly.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

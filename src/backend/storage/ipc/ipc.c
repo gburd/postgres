@@ -39,19 +39,19 @@
  * Core code should use PgBackendExitInProgress() so threaded runtimes can
  * observe the active logical backend rather than a process-global flag.
  */
-bool		proc_exit_inprogress = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool proc_exit_inprogress = false;
 
 /*
  * Compatibility mirror of the current backend's shmem_exit_inprogress state.
  * Core code should use PgBackendShmemExitInProgress().
  */
-bool		shmem_exit_inprogress = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool shmem_exit_inprogress = false;
 
 /*
  * This flag tracks whether we've called atexit() in the current process
  * (or in the parent postmaster).
  */
-static bool atexit_callback_setup = false;
+static PG_GLOBAL_RUNTIME bool atexit_callback_setup = false;
 
 /* local functions */
 pg_noreturn static void PgBackendExitProcess(int code);
