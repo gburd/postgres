@@ -1505,7 +1505,6 @@ src/backend/utils/misc/sampling.c	5e859629e57a1f14a5a437d6cdab4a7dcf7355ee	oldrs
 src/backend/utils/misc/superuser.c	bcf4d47b80446b5291ffcb40517bc33469bf57bd	last_roleid	static Oid last_roleid = InvalidOid;
 src/backend/utils/misc/superuser.c	bd2d10852433581754490c3fc1536c63975caaed	last_roleid_is_super	static bool last_roleid_is_super = false;
 src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	roleid_callback_registered	static bool roleid_callback_registered = false;
-src/backend/utils/mmgr/aset.c	2cd93d9bd6dcddeb04b90fd73e49fe756830e48e	context_freelists	static AllocSetFreeList context_freelists[2] = { { 0, NULL }, { 0, NULL } };
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
 src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;

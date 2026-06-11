@@ -22,6 +22,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ErrorContext`, `CacheMemoryContext`, `MessageContext`,
   `TopTransactionContext`, `CurTransactionContext`, `PortalContext`, and
   the memory-context logging recursion guard;
+- allocation-set context freelists in `aset.c`: `context_freelists` caches
+  deleted default/small allocation contexts for reuse by the current backend
+  and must not be shared by concurrent threaded backends;
 - resource owner globals: `CurrentResourceOwner`,
   `CurTransactionResourceOwner`, `TopTransactionResourceOwner`, and
   `AuxProcessResourceOwner`, plus the resource-release callback registry and
@@ -1206,6 +1209,13 @@ Validation for this slice:
   index, set `vacuum_cost_delay = 1` and `vacuum_cost_limit = 10`, ran
   `VACUUM (VERBOSE, PARALLEL 2)`, and verified those settings remained visible
   as `1ms` and `10` in the session.
+- focused `aset.o` compile coverage, incremental full rebuild/install,
+  global-lifetime scanner coverage, and fixture-backed regression coverage
+  after classifying allocation-set context freelists as backend-local TLS. A
+  too-small direct `select` run first showed fixture/order drift because it
+  skipped the documented schedule prefix; the final direct `pg_regress`
+  invocation included the prefix through `create_index`, `triggers`, `select`,
+  and `guc` and passed all 26 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
