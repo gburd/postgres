@@ -6,7 +6,6 @@ src/backend/commands/repack_worker.c	5e911fb813910f039ca90baf2145036f055b17cc	re
 src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	worker_dsm_segment	static dsm_segment *worker_dsm_segment = NULL;
 src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	repacked_rel_locator	static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
 src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
-src/backend/commands/seclabel.c	30f2ea183b16f288e276de7a4e096f4201193aa6	label_provider_list	static List *label_provider_list = NIL;
 src/backend/commands/vacuum.c	911057b62e12c91813575d37c02b0a0e585b3f55	vacuum_cost_delay	double vacuum_cost_delay = 0;
 src/backend/commands/vacuum.c	15c0737b0df76c857233607464077e6a97c8efa7	vacuum_cost_limit	int vacuum_cost_limit = 200;
 src/backend/commands/vacuum.c	d5445216c6dda3240637bccd7c3d7ca2bad6b2c2	parallel_vacuum_worker_delay_ns	int64 parallel_vacuum_worker_delay_ns = 0;

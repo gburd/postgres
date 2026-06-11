@@ -282,6 +282,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   extension-option arrays plus assigned/allocated counters are runtime-global
   registration state. The per-command extension payload remains in
   `ExplainState`.
+- security-label provider registry state in `seclabel.c`: the provider list
+  registered by security-label modules is runtime-global registration state.
+  Threaded-mode mutation/loading is governed by the Phase 7 extension
+  backend-model gate.
 - SPI API and connection-stack state in `spi.c`: `SPI_processed`,
   `SPI_tuptable`, `SPI_result`, `_SPI_stack`, `_SPI_current`,
   `_SPI_stack_depth`, and `_SPI_connected`. SPI exposes its result variables
@@ -1108,6 +1112,13 @@ Validation for this slice:
   `EXPLAIN (DEBUG, RANGE_TABLE)`, loaded `pg_plan_advice`, ran
   `EXPLAIN (PLAN_ADVICE)`, loaded `auto_explain`, and validated
   `auto_explain.log_extension_options`.
+- focused `seclabel.o` compile coverage, full rebuild/install,
+  `dummy_seclabel` clean/rebuild/install, global-lifetime scanner coverage,
+  and `dummy_seclabel` regression coverage after classifying the
+  security-label provider registry. The first direct run failed when
+  `CREATE SUBSCRIPTION` loaded an unpatched temp-install
+  `libpqwalreceiver.dylib`; after patching its `libpq.5.dylib` install name,
+  the direct `dummy_seclabel` regression passed.
 - focused `spi.o` compile coverage, backend clean plus generated-header
   recovery, full rebuild/install, PL/pgSQL clean/rebuild/install,
   global-lifetime scanner coverage, and PL/pgSQL regression coverage after
