@@ -528,7 +528,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `localized_abbrev_days`, `localized_full_days`,
   `localized_abbrev_months`, `localized_full_months`, the `lconv` cache,
   `default_locale`, `CollationCacheContext`, `CollationCache`, and the
-  last-used collation cache entry;
+  last-used collation cache entry. The fixed `c_locale` descriptor is
+  immutable singleton state, while the ICU string converter in
+  `pg_locale_icu.c` is session-local TLS as documented by the existing
+  per-session converter comment;
 - additional session USERSET GUC backing variables outside `guc_tables.c`:
   `default_toast_compression`, `trace_syncscan`, `Password_encryption`, and
   `createrole_self_grant`. The derived assign-hook state for
@@ -1257,6 +1260,15 @@ Validation for this slice:
   numeric formatting, and money formatting. This build is configured
   `--without-icu`, so the ICU-specific collation regression file was not
   applicable;
+- focused `pg_locale.o` and `pg_locale_icu.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, and a
+  direct temp-cluster C/POSIX collation smoke after classifying the fixed
+  `c_locale` descriptor as immutable singleton state and the ICU converter as
+  session-local TLS. The smoke verified database collation metadata, `C` and
+  `POSIX` collation catalog entries, and `COLLATE "C"` ordering. This local
+  build is configured `--without-icu`; it still initializes the built-in
+  `unicode|i|und` collation catalog entry, so the ICU converter classification
+  has compile/static coverage here but not runtime conversion-path coverage;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table

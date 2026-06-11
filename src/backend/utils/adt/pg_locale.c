@@ -109,7 +109,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_locale_t default_locale = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLocaleConvValid = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLCTimeValid = false;
 
-static struct pg_locale_struct c_locale = {
+static PG_GLOBAL_IMMUTABLE struct pg_locale_struct c_locale = {
 	.deterministic = true,
 	.collate_is_c = true,
 	.ctype_is_c = true,

@@ -191,8 +191,6 @@ src/backend/utils/adt/jsonpath_gram.c	00ed771f111d11c51778b59d9b5b935de8526940	r
 src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
 src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
 src/backend/utils/adt/jsonpath_scan.c	2eca0ca7cecf4e4c3168eb99e618ce7fd4ed2422	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[11] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
-src/backend/utils/adt/pg_locale.c	ec502045bbd3dc2fd242e54dde2e89fa2fe95b21	c_locale	static struct pg_locale_struct c_locale = { .deterministic = true, .collate_is_c = true, .ctype_is_c = true, };
-src/backend/utils/adt/pg_locale_icu.c	d0fac1d061a083e75fdd52a85dce82dd3be6d606	icu_converter	static UConverter *icu_converter = NULL;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
