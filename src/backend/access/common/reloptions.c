@@ -32,6 +32,7 @@
 #include "utils/array.h"
 #include "utils/attoptcache.h"
 #include "utils/builtins.h"
+#include "utils/global_lifetime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -96,7 +97,7 @@
  * value has no effect until the next VACUUM, so no need for stronger lock.
  */
 
-static relopt_bool boolRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_bool boolRelOpts[] =
 {
 	{
 		{
@@ -166,7 +167,7 @@ static relopt_bool boolRelOpts[] =
 	{{NULL}}
 };
 
-static relopt_ternary ternaryRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_ternary ternaryRelOpts[] =
 {
 	{
 		{
@@ -184,7 +185,7 @@ static relopt_ternary ternaryRelOpts[] =
 	}
 };
 
-static relopt_int intRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_int intRelOpts[] =
 {
 	{
 		{
@@ -418,7 +419,7 @@ static relopt_int intRelOpts[] =
 	{{NULL}}
 };
 
-static relopt_real realRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_real realRelOpts[] =
 {
 	{
 		{
@@ -516,7 +517,7 @@ static relopt_real realRelOpts[] =
 };
 
 /* values from StdRdOptIndexCleanup */
-static relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
+static PG_GLOBAL_RUNTIME relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
 {
 	{"auto", STDRD_OPTION_VACUUM_INDEX_CLEANUP_AUTO},
 	{"on", STDRD_OPTION_VACUUM_INDEX_CLEANUP_ON},
@@ -531,7 +532,7 @@ static relopt_enum_elt_def StdRdOptIndexCleanupValues[] =
 };
 
 /* values from GistOptBufferingMode */
-static relopt_enum_elt_def gistBufferingOptValues[] =
+static PG_GLOBAL_RUNTIME relopt_enum_elt_def gistBufferingOptValues[] =
 {
 	{"auto", GIST_OPTION_BUFFERING_AUTO},
 	{"on", GIST_OPTION_BUFFERING_ON},
@@ -540,7 +541,7 @@ static relopt_enum_elt_def gistBufferingOptValues[] =
 };
 
 /* values from ViewOptCheckOption */
-static relopt_enum_elt_def viewCheckOptValues[] =
+static PG_GLOBAL_RUNTIME relopt_enum_elt_def viewCheckOptValues[] =
 {
 	/* no value for NOT_SET */
 	{"local", VIEW_OPTION_CHECK_OPTION_LOCAL},
@@ -548,7 +549,7 @@ static relopt_enum_elt_def viewCheckOptValues[] =
 	{(const char *) NULL}		/* list terminator */
 };
 
-static relopt_enum enumRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_enum enumRelOpts[] =
 {
 	{
 		{
@@ -587,18 +588,19 @@ static relopt_enum enumRelOpts[] =
 	{{NULL}}
 };
 
-static relopt_string stringRelOpts[] =
+static PG_GLOBAL_RUNTIME relopt_string stringRelOpts[] =
 {
 	/* list terminator */
 	{{NULL}}
 };
 
-static relopt_gen **relOpts = NULL;
-static uint32 last_assigned_kind = RELOPT_KIND_LAST_DEFAULT;
+static PG_GLOBAL_RUNTIME relopt_gen **relOpts = NULL;
+static PG_GLOBAL_RUNTIME uint32 last_assigned_kind = RELOPT_KIND_LAST_DEFAULT;
 
-static int	num_custom_options = 0;
-static relopt_gen **custom_options = NULL;
-static bool need_initialization = true;
+static PG_GLOBAL_RUNTIME int num_custom_options = 0;
+static PG_GLOBAL_RUNTIME int max_custom_options = 0;
+static PG_GLOBAL_RUNTIME relopt_gen **custom_options = NULL;
+static PG_GLOBAL_RUNTIME bool need_initialization = true;
 
 static void initialize_reloptions(void);
 static void parse_one_reloption(relopt_value *option, char *text_str,
@@ -757,8 +759,6 @@ add_reloption_kind(void)
 static void
 add_reloption(relopt_gen *newoption)
 {
-	static int	max_custom_options = 0;
-
 	if (num_custom_options >= max_custom_options)
 	{
 		MemoryContext oldcxt;

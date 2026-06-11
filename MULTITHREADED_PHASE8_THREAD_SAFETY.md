@@ -295,6 +295,11 @@ postmaster, shared-memory, or startup-computed runtime state:
 - WAL resource-manager registry state: `RmgrTable` is runtime-global.
   Custom resource-manager registration remains restricted to
   `shared_preload_libraries` initialization, before threaded sessions can run.
+- relation-options registry state in `reloptions.c` is runtime-global:
+  built-in option definition arrays, the derived parser table, custom option
+  storage, and custom kind allocation counters. Contrib modules such as
+  `bloom` use the global registration APIs, so threaded contrib support needs
+  a runtime registration policy or lock rather than per-session copies.
 - recovery and standby runtime GUC backing variables and derived recovery
   target state: `PrimaryConnInfo`, `PrimarySlotName`,
   `archiveCleanupCommand`, `ignore_invalid_pages`, `in_hot_standby_guc`,
