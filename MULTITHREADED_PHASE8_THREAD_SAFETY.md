@@ -165,6 +165,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   exported `XLogLogicalInfo` cache and pending barrier-update flag are
   backend-local TLS state so each backend keeps the intended
   transaction-stable view of logical-info WAL logging after a process barrier.
+- logical replication origin state in `origin.c`: `replication_states_ctl` and
+  `replication_states` are shared-memory state protected by
+  `ReplicationOriginLock` and per-origin LWLocks, while
+  `replorigin_xact_state` is execution-local TLS state and
+  `session_replication_state` is the session-local TLS handle for the current
+  backend's acquired origin.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2041,6 +2047,15 @@ Validation for this slice:
   created a `pgoutput` logical replication slot, verified the slot metadata in
   `pg_replication_slots`, dropped the slot, and stopped the server with fast
   shutdown.
+- focused `origin.o` compile coverage, caller coverage through clean
+  rebuild/install after the exported `origin.h` declaration changed,
+  global-lifetime scanner coverage, focused core `guc` regression coverage,
+  and direct temp-cluster replication-origin smoke after classifying
+  replication origin state. The smoke created an origin, verified session
+  setup state before and after `pg_replication_origin_session_setup`, assigned
+  transaction origin metadata, committed a write, verified session progress,
+  reset the session origin, dropped the origin, and stopped the server with
+  fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

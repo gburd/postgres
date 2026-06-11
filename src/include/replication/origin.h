@@ -48,7 +48,7 @@ typedef struct ReplOriginXactState
 	TimestampTz origin_timestamp;
 } ReplOriginXactState;
 
-extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ReplOriginXactState replorigin_xact_state;
 
 /* GUCs */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_active_replication_origins;
