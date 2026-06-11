@@ -620,6 +620,10 @@ postmaster, shared-memory, or startup-computed runtime state:
   GUC context is `PGC_SUSET`, the common timing conversion state is currently
   process-wide, so this variable remains runtime-global until the timing
   subsystem is given an explicit per-session or per-carrier abstraction.
+- server start and configuration reload timestamps: `PgStartTime` and
+  `PgReloadTime` are runtime-global state set by postmaster, standalone
+  startup, configuration reload, or EXEC_BACKEND parameter restore, and are
+  exposed to sessions as server/runtime metadata.
 
 `ConfigureNames[]` is now classified as an immutable generated template. The
 generator emits `NULL` backing-variable pointers into that template, and emits
@@ -919,6 +923,12 @@ Validation for this slice:
   coverage, incremental full rebuild/install, and direct temp-instance
   `random` regression coverage after classifying SQL pseudorandom generator
   state as session-local TLS. The direct `pg_regress` invocation passed.
+- focused `timestamp.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and direct temp-cluster smoke coverage for
+  `pg_postmaster_start_time()` and `pg_conf_load_time()` after classifying
+  server start/reload timestamps as runtime-global state. The smoke verified
+  non-null start and reload timestamps, reloaded configuration, then verified
+  the reload timestamp remained valid after reload.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

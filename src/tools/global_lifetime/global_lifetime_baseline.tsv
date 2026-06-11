@@ -998,8 +998,6 @@ src/backend/utils/adt/ruleutils.c	936f4e36a909755f9e47c2e60e1d772c75516559	plan_
 src/backend/utils/adt/ruleutils.c	435bbbcbe01e197226f6bd3ca99c349104af5a2a	query_getrulebyoid	static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 src/backend/utils/adt/ruleutils.c	041ac0a55f01d92c73469d2b1b4034586c3e2c65	plan_getviewrule	static SPIPlanPtr plan_getviewrule = NULL;
 src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query_getviewrule	static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
-src/backend/utils/adt/timestamp.c	75888b22a145be00e79d1118b61dface46343159	PgStartTime	TimestampTz PgStartTime;
-src/backend/utils/adt/timestamp.c	ffd19bd67ca6786e6d69316b26fcc748f25df36c	PgReloadTime	TimestampTz PgReloadTime;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
@@ -1189,5 +1187,3 @@ src/include/utils/injection_point.h	bc630458f6031322cb5d3394ad8b52b2976713dc	Act
 src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };
 src/include/utils/relcache.h	9c4e92029161fdcd558ceeb298b62074c124706b	criticalRelcachesBuilt	extern PGDLLIMPORT bool criticalRelcachesBuilt;
 src/include/utils/relcache.h	9c0bbb28f632f7f5c85b96d2e82c69033839bf64	criticalSharedRelcachesBuilt	extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;
-src/include/utils/timestamp.h	701dee700c9e2a197b12b06c65a54eb36a3f3167	PgStartTime	extern PGDLLIMPORT TimestampTz PgStartTime;
-src/include/utils/timestamp.h	af405e935dac19662a584eed20feacaf91d2f80b	PgReloadTime	extern PGDLLIMPORT TimestampTz PgReloadTime;
