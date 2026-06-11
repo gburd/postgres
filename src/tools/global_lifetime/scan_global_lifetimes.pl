@@ -162,6 +162,10 @@ sub wanted_file
 	# this heuristic scanner mistakes for top-level globals.  The grammar source
 	# remains annotated directly in bootparse.y.
 	return 0 if $file =~ m{^src/backend/bootstrap/bootparse\.c$};
+	# Generated node switch fragments are included inside functions.  They are
+	# not declaration units, and scanning them directly mistakes case-body
+	# assignments for globals.
+	return 0 if $file =~ m{^src/backend/nodes/.*funcs\.switch\.c$};
 	return $file =~ /\.(?:c|h)$/;
 }
 
