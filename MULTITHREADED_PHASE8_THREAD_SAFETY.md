@@ -53,6 +53,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
   send/receive buffers in `pqcomm.c` and GSSAPI transport buffers in
   `be-secure-gssapi.c`;
+- connection-startup warning state in `postinit.c`;
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
   slot sync, and repack interrupt flags;
@@ -405,6 +406,9 @@ Parallel-query state in `parallel.c` is now backend-local TLS. The active
 parallel-context list now uses lazy per-backend initialization instead of the
 old self-referential static initializer, so parallel contexts are not shared
 across threaded client backends.
+Connection-startup warning state in `postinit.c` is now connection-local TLS.
+It accumulates warnings for the current connection before emission and must not
+be shared by simultaneous threaded connection startups.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -810,6 +814,8 @@ Validation for this slice:
 - focused `parallel.o` compile coverage plus full rebuild/process-mode
   parallel-query regression coverage after classifying per-backend parallel
   query state.
+- focused `postinit.o` compile coverage plus process-mode startup/regression
+  smoke coverage after classifying connection-startup warning state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
