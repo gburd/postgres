@@ -68,12 +68,12 @@ typedef struct
 	bool		canceled;		/* true if request has been canceled */
 } PendingUnlinkEntry;
 
-static HTAB *pendingOps = NULL;
-static List *pendingUnlinks = NIL;
-static MemoryContext pendingOpsCxt; /* context for the above  */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *pendingOps = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *pendingUnlinks = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pendingOpsCxt; /* context for the above  */
 
-static CycleCtr sync_cycle_ctr = 0;
-static CycleCtr checkpoint_cycle_ctr = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND CycleCtr sync_cycle_ctr = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND CycleCtr checkpoint_cycle_ctr = 0;
 
 /* Intervals for calling AbsorbSyncRequests */
 #define FSYNCS_PER_ABSORB		10
@@ -93,7 +93,7 @@ typedef struct SyncOps
 /*
  * These indexes must correspond to the values of the SyncRequestHandler enum.
  */
-static const SyncOps syncsw[] = {
+static PG_GLOBAL_IMMUTABLE const SyncOps syncsw[] = {
 	/* magnetic disk */
 	[SYNC_HANDLER_MD] = {
 		.sync_syncfiletag = mdsyncfiletag,
@@ -286,7 +286,7 @@ SyncPostCheckpoint(void)
 void
 ProcessSyncRequests(void)
 {
-	static bool sync_in_progress = false;
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool sync_in_progress = false;
 
 	HASH_SEQ_STATUS hstat;
 	PendingFsyncEntry *entry;

@@ -958,11 +958,6 @@ src/backend/storage/lmgr/predicate.c	1a350bb1b9324d2803c87f96bea348a5f8831186	My
 src/backend/storage/lmgr/predicate.c	a902ac6e7d1841e0c1fbcdb9155b1db00b946082	SavedSerializableXact	static SERIALIZABLEXACT *SavedSerializableXact = InvalidSerializableXact;
 src/backend/storage/lmgr/predicate.c	3eb06432affa9b0e78c0527082a707f484927365	max_serializable_xacts	static int64 max_serializable_xacts;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
-src/backend/storage/sync/sync.c	916c4ff6c5455b6198ef3172a634cc00fc07067a	pendingOps	static HTAB *pendingOps = NULL;
-src/backend/storage/sync/sync.c	fad92f2023ec308961301675aae18a145d57edb2	pendingUnlinks	static List *pendingUnlinks = NIL;
-src/backend/storage/sync/sync.c	b1327e616c6570cb641e23208dad8388df45ca99	pendingOpsCxt	static MemoryContext pendingOpsCxt;
-src/backend/storage/sync/sync.c	7875ccf9eb9453083e70ad04db8db12cae98d8f2	sync_cycle_ctr	static CycleCtr sync_cycle_ctr = 0;
-src/backend/storage/sync/sync.c	c8246b995cfeedc58ecdbd88fdeb23fd23edcdcf	checkpoint_cycle_ctr	static CycleCtr checkpoint_cycle_ctr = 0;
 src/backend/tcop/backend_startup.c	a9bee81008ff94934b5fdb47c1252ed8c147bf83	conn_timing	ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 src/backend/tcop/dest.c	a4c6f2106e571b07b62e77284ee6182e1c34964f	None_Receiver	DestReceiver *None_Receiver = (DestReceiver *) &donothingDR;
 src/backend/tcop/pquery.c	7542d2c738fc3e67f57d720d6b7c6e923589ed8c	ActivePortal	Portal ActivePortal = NULL;

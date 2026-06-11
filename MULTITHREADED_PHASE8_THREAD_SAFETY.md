@@ -122,6 +122,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `unpinned_relns` are backend-local TLS state owned by the current backend's
   smgr cache, while the smgr dispatch table and method count are immutable
   state.
+- sync-manager pending fsync/unlink state in `sync.c`: `pendingOps`,
+  `pendingUnlinks`, `pendingOpsCxt`, the fsync/checkpoint cycle counters, and
+  the retry-in-progress flag are backend-local TLS state for the standalone or
+  checkpointer-like owner that maintains the pending sync table. The sync
+  handler table is immutable state.
 - authenticated, session, and effective-user identity state in `miscinit.c`:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
@@ -1476,6 +1481,11 @@ Validation for this slice:
   state. The smoke created and extended heap/index/temp relations, checked
   relation storage size, vacuumed, checkpointed, truncated, inserted after
   truncate, dropped the relations, and shut down cleanly.
+- focused sync-manager compile coverage for `sync.o`, global-lifetime scanner
+  coverage, incremental full rebuild/install, and direct temp-cluster sync
+  smoke with `fsync = on` after classifying pending sync state. The smoke
+  created and extended a heap relation, forced checkpoints around insert,
+  update, delete, and drop work, and shut down cleanly.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
