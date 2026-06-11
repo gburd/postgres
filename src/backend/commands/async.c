@@ -345,7 +345,7 @@ typedef struct AsyncQueueControl
 	QueueBackendStatus backend[FLEXIBLE_ARRAY_MEMBER];
 } AsyncQueueControl;
 
-static AsyncQueueControl *asyncQueueControl;
+static PG_GLOBAL_SHMEM AsyncQueueControl *asyncQueueControl;
 
 static void AsyncShmemRequest(void *arg);
 static void AsyncShmemInit(void *arg);
@@ -373,7 +373,7 @@ const ShmemCallbacks AsyncShmemCallbacks = {
 static inline bool asyncQueuePagePrecedes(int64 p, int64 q);
 static int	asyncQueueErrdetailForIoError(const void *opaque_data);
 
-static SlruDesc NotifySlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc NotifySlruDesc;
 
 
 #define NotifyCtl					(&NotifySlruDesc)
@@ -412,15 +412,15 @@ typedef struct GlobalChannelEntry
 	int			allocatedListeners; /* Allocated size of array */
 } GlobalChannelEntry;
 
-static dshash_table *globalChannelTable = NULL;
-static dsa_area *globalChannelDSA = NULL;
+static PG_GLOBAL_RUNTIME dshash_table *globalChannelTable = NULL;
+static PG_GLOBAL_RUNTIME dsa_area *globalChannelDSA = NULL;
 
 /*
  * localChannelTable caches the channel names this backend is listening on
  * (including those we have staged to be listened on, but not yet committed).
  * Used by IsListeningOn() for fast lookups when reading notifications.
  */
-static HTAB *localChannelTable = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *localChannelTable = NULL;
 
 /* We test this condition to detect that we're not listening at all */
 #define LocalChannelTableIsEmpty() \
@@ -456,7 +456,7 @@ typedef struct ActionList
 	struct ActionList *upper;	/* details for upper transaction levels */
 } ActionList;
 
-static ActionList *pendingActions = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ActionList *pendingActions = NULL;
 
 /*
  * Hash table recording the final listen/unlisten intent per channel for
@@ -478,7 +478,7 @@ typedef struct PendingListenEntry
 	PendingListenAction action; /* which action should we perform? */
 } PendingListenEntry;
 
-static HTAB *pendingListenActions = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *pendingListenActions = NULL;
 
 /*
  * State for outbound notifies consists of a list of all channels+payloads
@@ -532,7 +532,7 @@ struct NotificationHash
 	Notification *event;		/* => the actual Notification struct */
 };
 
-static NotificationList *pendingNotifies = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION NotificationList *pendingNotifies = NULL;
 
 /*
  * Hash entry in NotificationList.uniqueChannelHash or localChannelTable
@@ -553,10 +553,10 @@ typedef struct ChannelName
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending = false;
 
 /* True if we've registered an on_shmem_exit cleanup */
-static bool unlistenExitRegistered = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool unlistenExitRegistered = false;
 
 /* True if we're currently registered as a listener in asyncQueueControl */
-static bool amRegisteredListener = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool amRegisteredListener = false;
 
 /*
  * Queue head positions for direct advancement.
@@ -564,19 +564,19 @@ static bool amRegisteredListener = false;
  * lock on database 0, ensuring no other backend can insert notifications
  * between them.  SignalBackends uses these to advance idle backends.
  */
-static QueuePosition queueHeadBeforeWrite;
-static QueuePosition queueHeadAfterWrite;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION QueuePosition queueHeadBeforeWrite;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION QueuePosition queueHeadAfterWrite;
 
 /*
  * Workspace arrays for SignalBackends.  These are preallocated in
  * PreCommit_Notify to avoid needing memory allocation after committing to
  * clog.
  */
-static int32 *signalPids = NULL;
-static ProcNumber *signalProcnos = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int32 *signalPids = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ProcNumber *signalProcnos = NULL;
 
 /* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-static bool tryAdvanceTail = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool tryAdvanceTail = false;
 
 /* GUC parameters */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_notify = false;

@@ -161,6 +161,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
   `gin_pending_list_limit`.
 - async notify tracing USERSET GUC backing variable: `Trace_notify`.
+- async notification state in `async.c`: `asyncQueueControl` as shared-memory
+  state, notification SLRU and global channel hash handles as runtime state,
+  local LISTEN state as session-local state, and pending LISTEN/NOTIFY plus
+  signal workspace as execution-local state;
 - text-search session GUC/cache state: `TSCurrentConfig` and
   `TSCurrentConfigCache`.
 - dynamic loader session GUC backing variable: `Dynamic_library_path`.
@@ -387,6 +391,12 @@ Prepared-transaction state in `twophase.c` now has explicit lifetimes:
 currently locked prepared transaction pointer and `before_shmem_exit`
 registration flag are backend-local TLS. The state-file assembly chain used
 while preparing a transaction is execution-local TLS.
+Async notification state in `async.c` now has explicit lifetimes: the
+notification queue control block is shared memory, the notification SLRU
+descriptor and global channel DSA/dshash handles are runtime state, the local
+LISTEN table and registered-listener flag are session-local TLS, and pending
+LISTEN/NOTIFY action lists plus commit-time signaling workspace are
+execution-local TLS.
 Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
@@ -842,6 +852,8 @@ Validation for this slice:
 - focused `twophase.o` compile coverage plus prepared-transaction regression
   coverage after classifying prepared-transaction shared/backend/execution
   state.
+- focused `async.o` compile coverage plus async notify regression coverage
+  after classifying notification shared/runtime/session/execution state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
