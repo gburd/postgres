@@ -116,6 +116,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - SQL backup function session state in `xlogfuncs.c`: `backup_state`,
   `tablespace_map`, and `backupcontext`, which carry data from
   `pg_backup_start()` to `pg_backup_stop()` in the same session;
+- WAL recovery prefetch state in `xlogprefetcher.c`: the prefetch
+  reconfiguration generation counter as runtime state and the recovery
+  prefetch statistics block as shared-memory state;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as

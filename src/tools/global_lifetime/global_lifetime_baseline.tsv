@@ -1,6 +1,4 @@
 # file	sha1	names	declaration
-src/backend/access/transam/xlogprefetcher.c	49ee8f8208dc7d089121e4cc0a7759628d17f204	XLogPrefetchReconfigureCount	static int XLogPrefetchReconfigureCount = 0;
-src/backend/access/transam/xlogprefetcher.c	f69228617b8f5a4b861605cdab67cfa980090081	SharedStats	static XLogPrefetchStats *SharedStats;
 src/backend/access/transam/xlogrecovery.c	1b8aa8ab7068020b8fae66749c348ca0ac197892	ArchiveRecoveryRequested	bool ArchiveRecoveryRequested = false;
 src/backend/access/transam/xlogrecovery.c	6ff1b2ebde3e439cea653584b530c3a125d5a419	InArchiveRecovery	bool InArchiveRecovery = false;
 src/backend/access/transam/xlogrecovery.c	5fd45c7e929734694d16e3c54128f358589e13d5	StandbyModeRequested	static bool StandbyModeRequested = false;
