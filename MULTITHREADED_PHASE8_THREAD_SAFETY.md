@@ -634,8 +634,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - REPACK concurrent decoding leader state in `repack.c`: `decoding_worker` is
   backend-local TLS state for the client backend that launched the decoding
   worker and owns the DSM, background-worker handle, and error queue for the
-  current REPACK command.  The worker-side globals in `repack_worker.c` remain
-  explicit worker-runtime audit debt rather than regular client-backend state.
+  current REPACK command.
+- REPACK concurrent decoding worker state in `repack_worker.c`: the worker
+  identity flag, current decoded WAL segment, DSM segment handle, and relation
+  filter locators are backend-local TLS state for the REPACK decoding worker
+  logical backend.
 - JIT provider loader state in `jit.c`: the provider callback table and
   provider load success/failure cache are session-local TLS state. This
   matches the `jit_provider` session GUC and prevents threaded sessions from
@@ -1761,8 +1764,15 @@ Validation for this slice:
   scanner coverage, incremental full rebuild/install, and a direct
   temp-cluster `pg_available_extensions` plus `CREATE EXTENSION plpgsql` smoke
   after classifying the extension sibling lookup cache and client-backend
-  REPACK decoding-worker handle state. The worker-side `repack_worker.c`
-  globals are left in the baseline for the worker-runtime audit.
+  REPACK decoding-worker handle state.
+- focused `repack_worker.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, focused core `guc` regression
+  coverage, and direct temp-cluster `REPACK (CONCURRENTLY)` smoke after
+  classifying REPACK decoding-worker state. The live smoke started a
+  `wal_level=logical` cluster, repacked a primary-keyed permanent table,
+  verified the updated row count and absence of leaked `repack_%` replication
+  slots, and confirmed the server log registered, started, and exited a
+  `REPACK decoding worker`.
 - focused `jit.o` compile coverage, global-lifetime scanner coverage,
   incremental full rebuild/install, and a direct temp-cluster
   `SELECT pg_jit_available()` smoke with JIT disabled after classifying the

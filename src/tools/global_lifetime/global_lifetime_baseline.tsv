@@ -1,9 +1,4 @@
 # file	sha1	names	declaration
-src/backend/commands/repack_worker.c	8e46119afd8ca424e9892caadd747816d35a18c0	am_repack_worker	static bool am_repack_worker = false;
-src/backend/commands/repack_worker.c	5e911fb813910f039ca90baf2145036f055b17cc	repack_current_segment	static XLogSegNo repack_current_segment = 0;
-src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	worker_dsm_segment	static dsm_segment *worker_dsm_segment = NULL;
-src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	repacked_rel_locator	static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
-src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
 src/backend/parser/gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/parser/gram.c	91bd87f586916b067da0b6e66741b1b00a1dcebd	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "IDENT", "UIDENT", "FCONST", "SCONST", "USCONST", "BCONST", "XCONST", "Op", "ICONST", "PARAM", "TYPECAST", "DOT_DOT", "COLON_EQUALS", "EQUALS_GREATER", "LESS_EQUALS", ...
 src/backend/parser/gram.c	20b2b840ccd121348f9264cfef105f72ed17042c	yyoutput,yytype,yyvaluep,yylocationp,yyoutput,yytype,yyvaluep,yylocationp,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, YYLTYPE const * const yylocationp, core_yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, yylocationp, yyscan...

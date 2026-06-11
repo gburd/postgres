@@ -26,6 +26,7 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
 #define REPL_PLUGIN_NAME   "pgrepack"
@@ -39,20 +40,26 @@ static bool decode_concurrent_changes(LogicalDecodingContext *ctx,
 									  DecodingWorkerShared *shared);
 
 /* Is this process a REPACK worker? */
-static bool am_repack_worker = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_repack_worker = false;
 
 /* The WAL segment being decoded. */
-static XLogSegNo repack_current_segment = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogSegNo repack_current_segment = 0;
 
 /* Our DSM segment, for shutting down */
-static dsm_segment *worker_dsm_segment = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsm_segment *worker_dsm_segment = NULL;
 
 /*
  * Keep track of the table we're processing, to skip logical decoding of data
  * from other relations.
  */
-static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
-static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND RelFileLocator repacked_rel_locator =
+{
+	.relNumber = InvalidOid
+};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND RelFileLocator repacked_rel_toast_locator =
+{
+	.relNumber = InvalidOid
+};
 
 
 /* REPACK decoding worker entry point */
