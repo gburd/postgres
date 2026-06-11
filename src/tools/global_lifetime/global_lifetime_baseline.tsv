@@ -941,22 +941,6 @@ src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	
 src/backend/storage/ipc/waiteventset.c	3c8aa452cd57001102cc8e86633c7f9ea3d6aa0d	selfpipe_writefd	static int selfpipe_writefd = -1;
 src/backend/storage/ipc/waiteventset.c	d9d1f03cc68947f07dfc18bedeadff5566b4d578	selfpipe_owner_pid	static int selfpipe_owner_pid = 0;
 src/backend/storage/lmgr/lmgr.c	1118153b701abeabd52741388eee86ab489a660d	speculativeInsertionToken	static uint32 speculativeInsertionToken = 0;
-src/backend/storage/lmgr/predicate.c	608bebb0b22e179160ebfe2b4324b6e47cbc963d	SerialSlruDesc	static SlruDesc SerialSlruDesc;
-src/backend/storage/lmgr/predicate.c	bab91da982fa71b1bfab2f769aca24846bfb5e12	serialControl	static SerialControl serialControl;
-src/backend/storage/lmgr/predicate.c	5c83a573c3bef2c6679c5a3e05cf3cd7b6e790b3	OldCommittedSxact	static SERIALIZABLEXACT *OldCommittedSxact;
-src/backend/storage/lmgr/predicate.c	a2b7afcaab5dd64d00404a6c7d22d073b353788e	PredXact	static PredXactList PredXact;
-src/backend/storage/lmgr/predicate.c	20b8b805b40fd0841a17265a0f948e6c2bba52af	RWConflictPool	static RWConflictPoolHeader RWConflictPool;
-src/backend/storage/lmgr/predicate.c	c1be38bdf51bb9d718d62e9da4af3f63182f26ae	SerializableXidHash	static HTAB *SerializableXidHash;
-src/backend/storage/lmgr/predicate.c	a695ce5fe8d768df6b1ae5f8d96c93e4fc6f305e	PredicateLockTargetHash	static HTAB *PredicateLockTargetHash;
-src/backend/storage/lmgr/predicate.c	17feacbdd72fb26f4cb553d84549e8ffcca7d6d9	PredicateLockHash	static HTAB *PredicateLockHash;
-src/backend/storage/lmgr/predicate.c	eb51162d9dbc8c1ed2ffd75c32cbfcb909289960	FinishedSerializableTransactions	static dlist_head *FinishedSerializableTransactions;
-src/backend/storage/lmgr/predicate.c	4452b6650c3385c725908b150238880f87ab8b8c	ScratchTargetTagHash	static uint32 ScratchTargetTagHash;
-src/backend/storage/lmgr/predicate.c	812f1b3491e57832d7f6028b71113f5851e0ae97	ScratchPartitionLock	static LWLock *ScratchPartitionLock;
-src/backend/storage/lmgr/predicate.c	f96f98e56fe547d6583ed0c1b026260aff82c109	LocalPredicateLockHash	static HTAB *LocalPredicateLockHash = NULL;
-src/backend/storage/lmgr/predicate.c	b9a8f09146471d5bbc7798e7fa41b2d1feb5487d	MySerializableXact	static SERIALIZABLEXACT *MySerializableXact = InvalidSerializableXact;
-src/backend/storage/lmgr/predicate.c	1a350bb1b9324d2803c87f96bea348a5f8831186	MyXactDidWrite	static bool MyXactDidWrite = false;
-src/backend/storage/lmgr/predicate.c	a902ac6e7d1841e0c1fbcdb9155b1db00b946082	SavedSerializableXact	static SERIALIZABLEXACT *SavedSerializableXact = InvalidSerializableXact;
-src/backend/storage/lmgr/predicate.c	3eb06432affa9b0e78c0527082a707f484927365	max_serializable_xacts	static int64 max_serializable_xacts;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
 src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	static const char *VoidString = "";
 src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_alias	static const char *const tok_alias[] = { "", "asciiword", "word", "numword", "email", "url", "host", "sfloat", "version", "hword_numpart", "hword_part", "hword_asciipart", "blank", "tag", "protocol", "numhword", "asciihword", "hword", "u...

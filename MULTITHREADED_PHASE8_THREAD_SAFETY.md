@@ -115,6 +115,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   bootstrap on macOS; Phase 9 should move wait-event storage behind the
   thread-compatible wait/wakeup boundary rather than retrying that direct TLS
   pointer shape.
+- predicate-lock/SSI state: shared predicate lock target/lock hashes,
+  serializable-XID hash, `PredXact` list, conflict pool, finished-transaction
+  list, serial control pointer, old-committed transaction pointer, and scratch
+  partition lock are classified as shared-memory state; the serializable SLRU
+  descriptor, scratch target hash, and serializable sizing cache are runtime
+  state; `LocalPredicateLockHash`, `MySerializableXact`, `MyXactDidWrite`,
+  and `SavedSerializableXact` are backend-local TLS state.
 - IPC, backend-exit, and shared-memory setup state: `proc_exit_inprogress`
   and `shmem_exit_inprogress` are backend-local TLS compatibility mirrors of
   the active logical backend's exit state; the one-time `atexit()` registration,
@@ -1497,6 +1504,12 @@ Validation for this slice:
   `log_connections = 'setup_durations'`, verified the setup-duration log
   entry, exercised named cursor fetch/move paths, copied query output through
   the normal destination machinery, and shut down cleanly.
+- focused predicate-lock compile coverage for `predicate.o`, global-lifetime
+  scanner coverage, incremental full rebuild/install, and direct temp-cluster
+  serializable transaction smoke after classifying SSI shared/runtime/backend
+  state. The smoke created a table, ran a serializable transaction that read
+  and wrote data, verified live `SIReadLock` entries in `pg_locks`, committed,
+  queried afterward, dropped the table, and shut down cleanly.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
