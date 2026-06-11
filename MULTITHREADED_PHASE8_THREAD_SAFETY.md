@@ -100,6 +100,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `doPageWrites`, the private `LogwrtResult` copy, WAL insertion lock
   ownership (`MyLockNo` and `holdingAllLocks`), and the WAL debug memory
   context;
+- WAL shared-memory/runtime handles in `xlog.c`: `XLogCtl` and the cached
+  `WALInsertLocks` pointer as shared-memory state, plus
+  `UsableBytesInSegment` as derived runtime state;
 - SQL backup session state in `xlog.c`: `sessionBackupState`, which tracks
   the session that started a SQL-callable backup;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo

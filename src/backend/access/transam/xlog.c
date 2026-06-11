@@ -575,10 +575,10 @@ typedef enum
 	WALINSERT_SPECIAL_CHECKPOINT
 } WalInsertClass;
 
-static XLogCtlData *XLogCtl = NULL;
+static PG_GLOBAL_SHMEM XLogCtlData *XLogCtl = NULL;
 
 /* a private copy of XLogCtl->Insert.WALInsertLocks, for convenience */
-static WALInsertLockPadded *WALInsertLocks = NULL;
+static PG_GLOBAL_SHMEM WALInsertLockPadded *WALInsertLocks = NULL;
 
 /*
  * We maintain an image of pg_control in shared memory.
@@ -626,7 +626,7 @@ const ShmemCallbacks XLOGShmemCallbacks = {
 #define ConvertToXSegs(x, segsize)	XLogMBVarToSegs((x), (segsize))
 
 /* The number of bytes in a WAL segment usable for WAL data. */
-static int	UsableBytesInSegment;
+static PG_GLOBAL_RUNTIME int UsableBytesInSegment;
 
 /*
  * Private, possibly out-of-date copy of shared LogwrtResult.
