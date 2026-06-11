@@ -116,6 +116,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   state for postmaster/child flags, `num_child_flags` is runtime-global
   postmaster sizing state, and `postmaster_possibly_dead` is runtime-global
   parent-death notification state;
+- postmaster child-slot state in `pmchild.c`: child-slot pool sizing,
+  freelists, the active child list, and the Valgrind-only child-array witness
+  are runtime-global postmaster control-plane state. These remain
+  process-mode supervision structures in this phase; later worker-runtime
+  phases must decide which entries represent thread-owned in-tree workers
+  rather than forked child processes.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1779,6 +1785,13 @@ Validation for this slice:
   postmaster-signal state. The live smoke initialized a cluster, started the
   server, connected through `psql`, verified the current backend was visible
   in `pg_stat_activity`, and stopped the server with fast shutdown.
+- focused `pmchild.o`, `postmaster.o`, and `launch_backend.o` compile
+  coverage, global-lifetime scanner coverage, incremental full
+  rebuild/install, focused core `guc` regression coverage, and direct
+  temp-cluster startup/two-connection/shutdown smoke after classifying
+  postmaster child-slot state. The live smoke verified a client backend was
+  visible through `pg_stat_activity` and that a connected backend had a
+  positive backend PID before fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

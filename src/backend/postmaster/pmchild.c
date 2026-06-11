@@ -51,13 +51,13 @@ typedef struct PMChildPool
 	dlist_head	freelist;		/* currently unused PMChild entries */
 } PMChildPool;
 
-static PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
-NON_EXEC_STATIC int num_pmchild_slots = 0;
+static PG_GLOBAL_RUNTIME PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
+PG_GLOBAL_RUNTIME NON_EXEC_STATIC int num_pmchild_slots = 0;
 
 /*
  * List of active child processes.  This includes dead-end children.
  */
-dlist_head	ActiveChildList;
+PG_GLOBAL_RUNTIME dlist_head ActiveChildList;
 
 /*
  * Dummy pointer to persuade Valgrind that we've not leaked the array of
@@ -65,8 +65,8 @@ dlist_head	ActiveChildList;
  * optimize it away.
  */
 #ifdef USE_VALGRIND
-extern PMChild *pmchild_array;
-PMChild    *pmchild_array;
+extern PG_GLOBAL_RUNTIME PMChild *pmchild_array;
+PG_GLOBAL_RUNTIME PMChild *pmchild_array;
 #endif
 
 

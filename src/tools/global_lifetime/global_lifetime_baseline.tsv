@@ -85,11 +85,6 @@ src/backend/postmaster/pgarch.c	c9fc7b99552707ad58ebfa03bff88e4679faf686	archive
 src/backend/postmaster/pgarch.c	c7d796b96295998cf277e6d1f0940bec8a607d1a	archive_context	static MemoryContext archive_context;
 src/backend/postmaster/pgarch.c	8f42911e76981572c5f7ecb69d290b79849776d4	arch_files	static struct arch_files_state *arch_files = NULL;
 src/backend/postmaster/pgarch.c	b3ddd3c9710b54193130328c375b0d4d9c012774	ready_to_stop	static volatile sig_atomic_t ready_to_stop = false;
-src/backend/postmaster/pmchild.c	2763098141fc75adc7f9ebf185ca4fe2dd06d67f	pmchild_pools	static PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
-src/backend/postmaster/pmchild.c	ce121c03cf7b5e05aca15547d0b98745229611ed	num_pmchild_slots	NON_EXEC_STATIC int num_pmchild_slots = 0;
-src/backend/postmaster/pmchild.c	dec58a1bcea8ff7d4df3d1f235ea9f8e2ac89575	ActiveChildList	dlist_head ActiveChildList;
-src/backend/postmaster/pmchild.c	d797a3d24d5cb43ffeeec66d1ff03545c594a549	pmchild_array	extern PMChild *pmchild_array;
-src/backend/postmaster/pmchild.c	dd0463d263a7dd858ebbf8e799ab1225ffbf52b7	pmchild_array	PMChild *pmchild_array;
 src/backend/postmaster/postmaster.c	c0f78b015ef4845ee1150b82a78a0b248a9a8b88	MyBgworkerEntry	BackgroundWorker *MyBgworkerEntry = NULL;
 src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
 src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;
@@ -387,13 +382,11 @@ src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	ti
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
 src/include/postmaster/bgworker.h	1aca921402bae9f8631aed4629756f516f22f4ca	MyBgworkerEntry	extern PGDLLIMPORT BackgroundWorker *MyBgworkerEntry;
 src/include/postmaster/bgworker_internals.h	f4bb12748d54116f6fb5f386da9a517fcab1a1c3	BackgroundWorkerList	extern PGDLLIMPORT dlist_head BackgroundWorkerList;
-src/include/postmaster/postmaster.h	f68c9af33470486bd4f8005942e6c6382988442f	num_pmchild_slots	extern PGDLLIMPORT int num_pmchild_slots;
 src/include/postmaster/postmaster.h	4148f1c87e56ca82106abc9df4036c66a75d8c50	ClientAuthInProgress	extern PGDLLIMPORT bool ClientAuthInProgress;
 src/include/postmaster/postmaster.h	ebd78096dd943d3329c02d669eb2b75ad8b6e6e2	PostmasterHandle	extern PGDLLIMPORT HANDLE PostmasterHandle;
 src/include/postmaster/postmaster.h	e6a591c19ccaed6c8922a984948609fcfcea224d	postmaster_alive_fds	extern PGDLLIMPORT int postmaster_alive_fds[2];
 src/include/postmaster/postmaster.h	6c7a0bcada614d2693eb9f9562f2a89f21b3e0e9	redirection_done	extern PGDLLIMPORT bool redirection_done;
 src/include/postmaster/postmaster.h	bd3eaae51b742918baecda001ef3eba7f6e004cb	LoadedSSL	extern PGDLLIMPORT bool LoadedSSL;
-src/include/postmaster/postmaster.h	ac9c4f1d20412c88d0e78d61c9aa04fdf850bdfa	ActiveChildList	extern PGDLLIMPORT dlist_head ActiveChildList;
 src/include/postmaster/syslogger.h	e5d5a0ab4136633d7a3d1e9c2a6befeda9845e99	first_syslogger_file_time	extern PGDLLIMPORT pg_time_t first_syslogger_file_time;
 src/include/postmaster/syslogger.h	f5fb8507706c7ab48bcfc70d9694663f05608719	syslogPipe	extern PGDLLIMPORT int syslogPipe[2];
 src/include/postmaster/syslogger.h	b0233a17d87965d2cfafc37b90784ff07dac7368	syslogPipe	extern PGDLLIMPORT HANDLE syslogPipe[2];
