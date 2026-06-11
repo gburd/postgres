@@ -1429,9 +1429,6 @@ src/backend/storage/ipc/shmem.c	2040111d3f1b5d0abc5f96cd43a9910aaba8e226	ShmemEn
 src/backend/storage/ipc/shmem.c	96685e54633fe460ba184fd0cab7b49d2408d2d0	ShmemAllocator	static ShmemAllocatorData *ShmemAllocator;
 src/backend/storage/ipc/shmem.c	b07ac665b558abd41fe35c7f8a464fb6fd7c7b56	ShmemIndex	static HTAB *ShmemIndex;
 src/backend/storage/ipc/shmem.c	92a55d667f57244025bcb7d956f412777fd5b00c	firstNumaTouch	static bool firstNumaTouch = true;
-src/backend/storage/ipc/sinval.c	9abeccd7212184a3303c13b519cf4751c3b065ac	SharedInvalidMessageCounter	uint64 SharedInvalidMessageCounter;
-src/backend/storage/ipc/sinvaladt.c	c4917ccb4e4f4f364a7220ff04fe8f354e76f6ef	shmInvalBuffer	static SISeg *shmInvalBuffer;
-src/backend/storage/ipc/sinvaladt.c	8a76a5bb31babf0af47986125f809f1fd9bfd694	nextLocalTransactionId	static LocalTransactionId nextLocalTransactionId;
 src/backend/storage/ipc/waiteventset.c	45f2e39ebc0ac9c508a7bc17cd426e6355523ea4	waiting	static volatile sig_atomic_t waiting = false;
 src/backend/storage/ipc/waiteventset.c	f5d3262b71ee6686e65556b6a8c29804a0be2136	signal_fd	static int signal_fd = -1;
 src/backend/storage/ipc/waiteventset.c	2f257274c5ee43201ed2a01572a4291082f13e6f	selfpipe_readfd	static int selfpipe_readfd = -1;
@@ -2036,7 +2033,6 @@ src/include/storage/read_stream.h	5eefb9137c0f027b290768e7ab1aed02c0341199	ReadS
 src/include/storage/read_stream.h	61fd5bfc7338f828cee4345bb043ec4371f7fb71	IOStats	struct IOStats;
 src/include/storage/shm_mq.h	f01569004c4c1646b9cfb6900d957b636f7b6842	shm_mq	struct shm_mq;
 src/include/storage/shm_mq.h	5c41a39be52e6b23b8674650c1075b2c4548f1ab	shm_mq_handle	struct shm_mq_handle;
-src/include/storage/sinval.h	66dae870614d2cdcfdb27a6e84a53295b0feacd2	SharedInvalidMessageCounter	extern PGDLLIMPORT uint64 SharedInvalidMessageCounter;
 src/include/storage/waiteventset.h	b705db5de229941af089f69b49f9fbf9e3f93876	Latch	struct Latch;
 src/include/tcop/backend_startup.h	cc8a96c3931cf679208816d0f92dcea9a4d02ce6	conn_timing	extern PGDLLIMPORT struct ConnectionTiming conn_timing;
 src/include/tcop/pquery.h	56e550e6744283dfed1e5a430ef8eaa2832433b4	ActivePortal	extern PGDLLIMPORT Portal ActivePortal;

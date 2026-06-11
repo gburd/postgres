@@ -204,7 +204,8 @@ typedef struct SISeg
  */
 #define NumProcStateSlots	(MaxBackends + NUM_AUXILIARY_PROCS)
 
-static SISeg *shmInvalBuffer;	/* pointer to the shared inval buffer */
+/* Pointer to the shared inval buffer. */
+static PG_GLOBAL_SHMEM SISeg *shmInvalBuffer;
 
 static void SharedInvalShmemRequest(void *arg);
 static void SharedInvalShmemInit(void *arg);
@@ -215,7 +216,7 @@ const ShmemCallbacks SharedInvalShmemCallbacks = {
 };
 
 
-static LocalTransactionId nextLocalTransactionId;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LocalTransactionId nextLocalTransactionId;
 
 static void CleanupInvalidationState(int status, Datum arg);
 

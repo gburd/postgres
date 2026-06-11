@@ -22,7 +22,7 @@
 #include "utils/inval.h"
 
 
-uint64		SharedInvalidMessageCounter;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint64 SharedInvalidMessageCounter;
 
 
 /*
@@ -71,14 +71,15 @@ ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *m
 							 void (*resetFunction) (void))
 {
 #define MAXINVALMSGS 32
-	static SharedInvalidationMessage messages[MAXINVALMSGS];
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND SharedInvalidationMessage
+				messages[MAXINVALMSGS];
 
 	/*
 	 * We use volatile here to prevent bugs if a compiler doesn't realize that
 	 * recursion is a possibility ...
 	 */
-	static volatile int nextmsg = 0;
-	static volatile int nummsgs = 0;
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int nextmsg = 0;
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int nummsgs = 0;
 
 	/* Deal with any messages still pending from an outer recursion */
 	while (nextmsg < nummsgs)

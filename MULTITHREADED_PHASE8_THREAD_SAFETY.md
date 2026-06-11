@@ -57,6 +57,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - interrupt pending flags and holdoff counters, including async notify, sinval
   catchup, config reload/shutdown, parallel query, parallel logical apply,
   slot sync, and repack interrupt flags;
+- shared-invalidation state in `sinval.c` and `sinvaladt.c`: the shared SI
+  queue pointer as shared-memory state, and the processed-message counter,
+  recursive receive buffer/counters, and next local transaction ID as
+  backend-local state;
 - parallel-query backend state in `parallel.c`: worker number,
   worker-initialization flag, fixed parallel state pointer, active parallel
   context list, and parallel leader PID copy;
@@ -397,6 +401,11 @@ descriptor and global channel DSA/dshash handles are runtime state, the local
 LISTEN table and registered-listener flag are session-local TLS, and pending
 LISTEN/NOTIFY action lists plus commit-time signaling workspace are
 execution-local TLS.
+Shared-invalidation state now has explicit lifetimes. The `shmInvalBuffer`
+pointer in `sinvaladt.c` is shared-memory state. The processed-message counter
+exported as `SharedInvalidMessageCounter`, the recursive receive buffer and
+counters in `ReceiveSharedInvalidMessages()`, and `nextLocalTransactionId` are
+backend-local TLS.
 Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
@@ -854,6 +863,9 @@ Validation for this slice:
   state.
 - focused `async.o` compile coverage plus async notify regression coverage
   after classifying notification shared/runtime/session/execution state.
+- focused `sinval.o` and `sinvaladt.o` compile coverage plus cache
+  invalidation regression coverage after classifying shared-invalidation
+  shared/backend state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
