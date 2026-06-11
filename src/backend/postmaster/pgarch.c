@@ -95,18 +95,18 @@ typedef struct PgArchData
 } PgArchData;
 
 PG_GLOBAL_RUNTIME char *XLogArchiveLibrary = "";
-char	   *arch_module_check_errdetail_string;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *arch_module_check_errdetail_string;
 
 
 /* ----------
  * Local data
  * ----------
  */
-static time_t last_sigterm_time = 0;
-static PgArchData *PgArch = NULL;
-static const ArchiveModuleCallbacks *ArchiveCallbacks;
-static ArchiveModuleState *archive_module_state;
-static MemoryContext archive_context;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND time_t last_sigterm_time = 0;
+static PG_GLOBAL_SHMEM PgArchData *PgArch = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const ArchiveModuleCallbacks *ArchiveCallbacks;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ArchiveModuleState *archive_module_state;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext archive_context;
 
 
 /*
@@ -132,12 +132,12 @@ struct arch_files_state
 	char		arch_filenames[NUM_FILES_PER_DIRECTORY_SCAN][MAX_XFN_CHARS + 1];
 };
 
-static struct arch_files_state *arch_files = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct arch_files_state *arch_files = NULL;
 
 /*
  * Flags set by interrupt handlers for later service in the main loop.
  */
-static volatile sig_atomic_t ready_to_stop = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ready_to_stop = false;
 
 /* ----------
  * Local function forward declarations
@@ -197,7 +197,7 @@ PgArchShmemInit(void *arg)
 bool
 PgArchCanRestart(void)
 {
-	static time_t last_pgarch_start_time = 0;
+	static PG_GLOBAL_RUNTIME time_t last_pgarch_start_time = 0;
 	time_t		curtime = time(NULL);
 
 	/*

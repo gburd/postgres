@@ -65,14 +65,6 @@ src/backend/postmaster/datachecksum_state.c	fee8d2764cf6a0d31e4a9e9225a279227f8f
 src/backend/postmaster/datachecksum_state.c	c329d69062bb21f470ea56e3b95d5b6c54e5b3ac	launcher_running	static volatile sig_atomic_t launcher_running = false;
 src/backend/postmaster/datachecksum_state.c	1c64af0fb3cb8609dcf4538609716d65f8793ab5	operation	static DataChecksumsWorkerOperation operation;
 src/backend/postmaster/launch_backend.c	8f176bb508df16875ba1c08f4a77c18a4aea0df8	child_process_kinds	static child_process_kind child_process_kinds[] = { };
-src/backend/postmaster/pgarch.c	37083feda9df153b05c1e4244ff438018378fe09	arch_module_check_errdetail_string	char *arch_module_check_errdetail_string;
-src/backend/postmaster/pgarch.c	593ba7d5f17d91caf777abcb67ba4c80be3ce12c	last_sigterm_time	static time_t last_sigterm_time = 0;
-src/backend/postmaster/pgarch.c	6d7f00a10aab777ff028f21df853ccceeecf1d0a	PgArch	static PgArchData *PgArch = NULL;
-src/backend/postmaster/pgarch.c	dd42e8b11ccdd4a8a138e9b6dc457326ba8c65f1	ArchiveCallbacks	static const ArchiveModuleCallbacks *ArchiveCallbacks;
-src/backend/postmaster/pgarch.c	c9fc7b99552707ad58ebfa03bff88e4679faf686	archive_module_state	static ArchiveModuleState *archive_module_state;
-src/backend/postmaster/pgarch.c	c7d796b96295998cf277e6d1f0940bec8a607d1a	archive_context	static MemoryContext archive_context;
-src/backend/postmaster/pgarch.c	8f42911e76981572c5f7ecb69d290b79849776d4	arch_files	static struct arch_files_state *arch_files = NULL;
-src/backend/postmaster/pgarch.c	b3ddd3c9710b54193130328c375b0d4d9c012774	ready_to_stop	static volatile sig_atomic_t ready_to_stop = false;
 src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
 src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;
 src/backend/postmaster/postmaster.c	9ca9d978dfa5b3be65f4f8439967b2d7a7fc6826	StartupPMChild,BgWriterPMChild,CheckpointerPMChild,WalWriterPMChild,WalReceiverPMChild,WalSummarizerPMChild,AutoVacLauncherPMChild,PgArchPMChild,SysLoggerPMChild,SlotSyncWorkerPMChild	static PMChild *StartupPMChild = NULL, *BgWriterPMChild = NULL, *CheckpointerPMChild = NULL, *WalWriterPMChild = NULL, *WalReceiverPMChild = NULL, *WalSummarizerPMChild = NULL, *AutoVacLauncherPMChild = NULL, *PgArchPMChild = NULL, *SysL...
@@ -317,7 +309,6 @@ src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	Word
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
-src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
 src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;
 src/include/common/file_perm.h	e826e5ad606841ae27bf2bff671e0e9b0bc9147d	pg_file_create_mode	extern PGDLLIMPORT int pg_file_create_mode;
 src/include/common/file_perm.h	7697ec47808190cfe5797d4d44969d474b20eaa6	pg_mode_mask	extern PGDLLIMPORT int pg_mode_mask;

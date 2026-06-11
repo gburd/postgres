@@ -148,6 +148,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `ckpt_start_time`, `ckpt_start_recptr`, `ckpt_cached_elapsed`,
   `last_checkpoint_time`, and `last_xlog_switch_time` are backend-local TLS
   state for the checkpointer logical worker.
+- archiver coordination and archive-module state in `pgarch.c`: `PgArch` is
+  shared-memory state used to wake the archiver and force directory scans,
+  while `last_pgarch_start_time` is runtime-global postmaster restart-throttle
+  state. The active archive module callbacks/state, archive memory context,
+  ready-file queue, SIGTERM throttle, stop flag, and archive-module
+  error-detail string are backend-local TLS state for the archiver logical
+  worker.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1846,6 +1853,14 @@ Validation for this slice:
   shared/progress state. The live smoke verified the checkpointer was visible
   in `pg_stat_activity`, created a heap table, observed a current WAL LSN, ran
   `CHECKPOINT`, checked the row count, and stopped the server with fast
+  shutdown.
+- focused `pgarch.o` and `shell_archive.o` compile coverage, global-lifetime
+  scanner coverage, backend clean plus generated-header recovery, full
+  rebuild/install, focused core `guc` regression coverage, and direct
+  temp-cluster `archive_mode=on` smoke after classifying archiver
+  shared/module state. The live smoke verified the archiver was visible in
+  `pg_stat_activity`, generated WAL, forced a WAL switch and checkpoint,
+  verified at least one archived WAL file, and stopped the server with fast
   shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
