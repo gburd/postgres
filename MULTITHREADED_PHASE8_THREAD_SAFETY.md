@@ -993,6 +993,10 @@ Prepared statement storage in `prepare.c` is now session-local TLS. Named SQL
 and protocol prepared statements are visible across commands in one session,
 but their cached plans and hash table must not be shared by concurrent
 threaded sessions.
+Rule/view deparse SPI plan caches in `ruleutils.c` are now session-local TLS.
+They hold saved SPI plans prepared by the current backend for
+`pg_get_ruledef()` and `pg_get_viewdef()` lookups, while the query text
+literals are immutable singleton data.
 Materialized-view maintenance depth in `matview.c` is now execution-local TLS.
 It is a short-lived counter used to permit internal DML while one backend is
 refreshing a materialized view, and must not leak across concurrent threaded
@@ -1648,6 +1652,11 @@ Validation for this slice:
   bookkeeping.
 - focused `prepare.o` compile coverage plus prepared-statement regression
   coverage after classifying session-local prepared statement storage.
+- focused `ruleutils.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed `create_view`/`rules`
+  regression coverage after classifying rule/view deparse SPI plan caches. The
+  direct schedule-prefix run covered 99 tests through `rules`, including
+  `pg_get_ruledef()` and `pg_get_viewdef()` call sites.
 - focused `matview.o` compile coverage plus materialized-view regression
   coverage after classifying execution-local materialized-view maintenance
   depth.

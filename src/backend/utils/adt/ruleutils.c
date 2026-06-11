@@ -335,10 +335,10 @@ typedef void (*rsv_callback) (Node *node, deparse_context *context,
  * Global data
  * ----------
  */
-static SPIPlanPtr plan_getrulebyoid = NULL;
-static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
-static SPIPlanPtr plan_getviewrule = NULL;
-static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SPIPlanPtr plan_getrulebyoid = NULL;
+static PG_GLOBAL_IMMUTABLE const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SPIPlanPtr plan_getviewrule = NULL;
+static PG_GLOBAL_IMMUTABLE const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
 /* GUC parameters */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool quote_all_identifiers = false;

@@ -197,10 +197,6 @@ src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	y
 src/backend/utils/adt/jsonpath_scan.c	2eca0ca7cecf4e4c3168eb99e618ce7fd4ed2422	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[11] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
 src/backend/utils/adt/pg_locale.c	ec502045bbd3dc2fd242e54dde2e89fa2fe95b21	c_locale	static struct pg_locale_struct c_locale = { .deterministic = true, .collate_is_c = true, .ctype_is_c = true, };
 src/backend/utils/adt/pg_locale_icu.c	d0fac1d061a083e75fdd52a85dce82dd3be6d606	icu_converter	static UConverter *icu_converter = NULL;
-src/backend/utils/adt/ruleutils.c	936f4e36a909755f9e47c2e60e1d772c75516559	plan_getrulebyoid	static SPIPlanPtr plan_getrulebyoid = NULL;
-src/backend/utils/adt/ruleutils.c	435bbbcbe01e197226f6bd3ca99c349104af5a2a	query_getrulebyoid	static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
-src/backend/utils/adt/ruleutils.c	041ac0a55f01d92c73469d2b1b4034586c3e2c65	plan_getviewrule	static SPIPlanPtr plan_getviewrule = NULL;
-src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query_getviewrule	static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
