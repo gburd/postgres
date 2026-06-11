@@ -250,6 +250,10 @@ Important current files:
 
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
+- `analyze` is not a core `src/test/regress` test file in this checkout. For
+  focused sampling/ANALYZE validation, use a live temp-cluster smoke that
+  creates a table, inserts enough rows, runs `ANALYZE`, and verifies visible
+  `pg_stats` rows.
 - The extension backend-model tests need the test extension module installed
   into the current temp install before direct `pg_regress` runs:
 

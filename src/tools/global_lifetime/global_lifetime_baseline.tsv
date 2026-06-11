@@ -1104,8 +1104,6 @@ src/backend/utils/misc/ps_status.c	de831baf030f327ff81ce6f0b6094c4fd1268947	save
 src/backend/utils/misc/ps_status.c	f361b3f336c178c5839becd8d80a65c3bc1bb78e	save_argv	static char **save_argv;
 src/backend/utils/misc/ps_status.c	ff782bcd8485159437decb2314a0f60ba57fa5aa	ps_status_new_environ	extern char **ps_status_new_environ;
 src/backend/utils/misc/ps_status.c	12bca012f59a538205036eaf1759fcadc88fe16d	ps_status_new_environ	char **ps_status_new_environ;
-src/backend/utils/misc/sampling.c	ea83cba40ace56ad43df0f80151789abe0b40856	oldrs	static ReservoirStateData oldrs;
-src/backend/utils/misc/sampling.c	5e859629e57a1f14a5a437d6cdab4a7dcf7355ee	oldrs_initialized	static bool oldrs_initialized = false;
 src/backend/utils/misc/superuser.c	bcf4d47b80446b5291ffcb40517bc33469bf57bd	last_roleid	static Oid last_roleid = InvalidOid;
 src/backend/utils/misc/superuser.c	bd2d10852433581754490c3fc1536c63975caaed	last_roleid_is_super	static bool last_roleid_is_super = false;
 src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	roleid_callback_registered	static bool roleid_callback_registered = false;

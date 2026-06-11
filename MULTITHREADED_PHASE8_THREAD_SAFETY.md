@@ -60,6 +60,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   and `prng_seed_set` are session-local TLS state because `setseed()` and
   later `random*()` calls are user-visible session behavior that must not be
   shared by concurrent threaded sessions.
+- deprecated ANALYZE/FDW sampling API state in `sampling.c`: `oldrs` and
+  `oldrs_initialized` are backend-local TLS state because the legacy API
+  intentionally keeps one common random stream per backend process.
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
@@ -929,6 +932,11 @@ Validation for this slice:
   server start/reload timestamps as runtime-global state. The smoke verified
   non-null start and reload timestamps, reloaded configuration, then verified
   the reload timestamp remained valid after reload.
+- focused `sampling.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, fixture-prefix regression coverage through
+  `vacuum`, and a direct temp-cluster ANALYZE smoke after classifying the
+  deprecated sampling API state as backend-local TLS. The smoke created and
+  populated a table, ran `ANALYZE`, and verified `pg_stats` rows were visible.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,
