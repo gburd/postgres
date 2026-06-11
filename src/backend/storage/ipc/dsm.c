@@ -108,11 +108,11 @@ static inline dsm_handle make_main_region_dsm_handle(int slot);
 static inline bool is_main_region_dsm_handle(dsm_handle handle);
 
 /* Has this backend initialized the dynamic shared memory system yet? */
-static bool dsm_init_done = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool dsm_init_done = false;
 
 /* Preallocated DSM space in the main shared memory region. */
-static void *dsm_main_space_begin = NULL;
-static size_t dsm_main_space_size;
+static PG_GLOBAL_SHMEM void *dsm_main_space_begin = NULL;
+static PG_GLOBAL_RUNTIME size_t dsm_main_space_size;
 
 static void dsm_main_space_request(void *arg);
 static void dsm_main_space_init(void *arg);
@@ -171,10 +171,10 @@ CurrentDsmSegmentList(void)
  * reference counted; instead, it lasts for the postmaster's entire
  * life cycle.  For simplicity, it doesn't have a dsm_segment object either.
  */
-static dsm_handle dsm_control_handle;
-static dsm_control_header *dsm_control;
-static Size dsm_control_mapped_size = 0;
-static void *dsm_control_impl_private = NULL;
+static PG_GLOBAL_RUNTIME dsm_handle dsm_control_handle;
+static PG_GLOBAL_SHMEM dsm_control_header *dsm_control;
+static PG_GLOBAL_RUNTIME Size dsm_control_mapped_size = 0;
+static PG_GLOBAL_RUNTIME void *dsm_control_impl_private = NULL;
 
 
 /* ResourceOwner callbacks to hold DSM segments */

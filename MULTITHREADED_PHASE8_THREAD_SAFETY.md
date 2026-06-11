@@ -311,6 +311,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   add-in shared-memory request accumulator, shmem callback/request lists, and
   shmem request state machine are runtime state; fixed shared-memory segment,
   allocator, and shmem index pointers are classified as shared-memory state.
+- dynamic shared memory state in `dsm.c` and `dsm_registry.c`: `dsm_init_done`
+  is backend-local TLS because each logical backend may lazily initialize DSM
+  use, the preallocated DSM and control pointers are shared-memory state, DSM
+  control handle/mapping metadata is runtime state, `DSMRegistryCtx` points at
+  shared memory, registry entry type names are immutable, and the attached
+  registry DSA/dshash objects are backend-local TLS because they are
+  per-backend attachment descriptors over shared DSM contents.
 - storage-manager backend cache state: `MdCxt`, `SMgrRelationHash`, and
   `unpinned_relns` are backend-local TLS state owned by the current backend's
   smgr cache, while the smgr dispatch table and method count are immutable
@@ -1306,6 +1313,13 @@ Validation for this slice:
   checkpoints, verified `pg_stat_checkpointer.num_requested` advanced, and
   verified `pg_stat_reset_shared('bgwriter')` and
   `pg_stat_reset_shared('checkpointer')` moved their reset timestamps;
+- focused `dsm.o` and `dsm_registry.o` compile coverage, global-lifetime
+  scanner coverage, incremental full rebuild/install, and
+  `test_dsm_registry` regression coverage after classifying DSM control,
+  preallocated DSM, and DSM registry attachment state. The regression creates
+  named DSM, DSA, and dshash registry entries and verifies
+  `pg_dsm_registry_allocations` reports the expected segment/area/hash
+  entries;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
