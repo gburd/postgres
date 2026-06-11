@@ -60,10 +60,6 @@ src/backend/postmaster/autovacuum.c	5e95e816350614696132a4fef9ad522e5c6cd05e	Dat
 src/backend/postmaster/autovacuum.c	67a0febbd4ce8227f1649d5b5d73b424bf83e9e7	avl_dbase_array	extern avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	3f35446d5652b7fe805104c075af7e94c185523d	avl_dbase_array	avl_dbase *avl_dbase_array;
 src/backend/postmaster/autovacuum.c	875e954adb4145edf5e9d5dcc52e816fa06ab806	MyWorkerInfo	static WorkerInfo MyWorkerInfo = NULL;
-src/backend/postmaster/datachecksum_state.c	dfc681246c01f9ddb7caa7d97b22b37ca6ca78a7	DataChecksumState	static DataChecksumsStateStruct *DataChecksumState;
-src/backend/postmaster/datachecksum_state.c	fee8d2764cf6a0d31e4a9e9225a279227f8f8b81	abort_requested	static volatile sig_atomic_t abort_requested = false;
-src/backend/postmaster/datachecksum_state.c	c329d69062bb21f470ea56e3b95d5b6c54e5b3ac	launcher_running	static volatile sig_atomic_t launcher_running = false;
-src/backend/postmaster/datachecksum_state.c	1c64af0fb3cb8609dcf4538609716d65f8793ab5	operation	static DataChecksumsWorkerOperation operation;
 src/backend/postmaster/launch_backend.c	8f176bb508df16875ba1c08f4a77c18a4aea0df8	child_process_kinds	static child_process_kind child_process_kinds[] = { };
 src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
 src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;

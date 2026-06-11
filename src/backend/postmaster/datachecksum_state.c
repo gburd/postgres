@@ -215,6 +215,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/global_lifetime.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/ps_status.h"
@@ -336,7 +337,7 @@ typedef struct DataChecksumsStateStruct
 } DataChecksumsStateStruct;
 
 /* Shared memory segment for datachecksumsworker */
-static DataChecksumsStateStruct *DataChecksumState;
+static PG_GLOBAL_SHMEM DataChecksumsStateStruct *DataChecksumState;
 
 typedef struct DataChecksumsWorkerDatabase
 {
@@ -345,16 +346,18 @@ typedef struct DataChecksumsWorkerDatabase
 } DataChecksumsWorkerDatabase;
 
 /* Flag set by the interrupt handler */
-static volatile sig_atomic_t abort_requested = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
+abort_requested = false;
 
 /*
  * Have we set the DataChecksumsStateStruct->launcher_running flag?
  * If we have, we need to clear it before exiting!
  */
-static volatile sig_atomic_t launcher_running = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
+launcher_running = false;
 
 /* Are we enabling data checksums, or disabling them? */
-static DataChecksumsWorkerOperation operation;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DataChecksumsWorkerOperation operation;
 
 /* Prototypes */
 static void DataChecksumsShmemRequest(void *arg);

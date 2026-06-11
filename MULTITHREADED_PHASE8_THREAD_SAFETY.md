@@ -165,6 +165,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   shutdown, promotion, restore-command, and startup-progress timeout flags,
   plus the active startup-progress phase timestamp, are backend-local TLS
   state for the startup logical worker.
+- online data-checksum worker state in `datachecksum_state.c`:
+  `DataChecksumState` is shared-memory state used by SQL callers, the
+  data-checksum launcher, and data-checksum workers to coordinate requested
+  operations, launcher/worker status, and result handoff. The launcher abort
+  flag, launcher-running cleanup flag, and active operation copy are
+  backend-local TLS state for the data-checksum launcher or worker logical
+  backend.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1888,6 +1895,15 @@ Validation for this slice:
   cluster, started the server with startup progress logging enabled, connected
   through `psql`, verified postmaster start time, performed a heap
   create/insert/count round trip, and stopped the server with fast shutdown.
+- focused `datachecksum_state.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, focused core `guc` regression
+  coverage, and direct temp-cluster data-checksum worker smoke after
+  classifying online data-checksum worker state. The live smoke initialized a
+  cluster with `--no-data-checksums`, created heap data, verified
+  `data_checksums` started `off`, called `pg_enable_data_checksums(0, 100)`,
+  observed a `datachecksums%` backend in `pg_stat_activity`, verified
+  `data_checksums` reached `on`, checked the heap row count, and stopped the
+  server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster
