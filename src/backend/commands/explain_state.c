@@ -49,13 +49,13 @@ typedef struct
 	ExplainOptionGUCCheckHandler guc_check_handler;
 } ExplainExtensionOption;
 
-static const char **ExplainExtensionNameArray = NULL;
-static int	ExplainExtensionNamesAssigned = 0;
-static int	ExplainExtensionNamesAllocated = 0;
+static PG_GLOBAL_RUNTIME const char **ExplainExtensionNameArray = NULL;
+static PG_GLOBAL_RUNTIME int ExplainExtensionNamesAssigned = 0;
+static PG_GLOBAL_RUNTIME int ExplainExtensionNamesAllocated = 0;
 
-static ExplainExtensionOption *ExplainExtensionOptionArray = NULL;
-static int	ExplainExtensionOptionsAssigned = 0;
-static int	ExplainExtensionOptionsAllocated = 0;
+static PG_GLOBAL_RUNTIME ExplainExtensionOption *ExplainExtensionOptionArray = NULL;
+static PG_GLOBAL_RUNTIME int ExplainExtensionOptionsAssigned = 0;
+static PG_GLOBAL_RUNTIME int ExplainExtensionOptionsAllocated = 0;
 
 /*
  * Create a new ExplainState struct initialized with default options.

@@ -274,6 +274,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   registration state. These hooks are intentionally shared by one runtime;
   threaded-mode mutation is governed by the Phase 7 extension backend-model
   gate rather than copied per session.
+- EXPLAIN extension registries in `explain_state.c`: the extension-name and
+  extension-option arrays plus assigned/allocated counters are runtime-global
+  registration state. The per-command extension payload remains in
+  `ExplainState`.
 - SPI API and connection-stack state in `spi.c`: `SPI_processed`,
   `SPI_tuptable`, `SPI_result`, `_SPI_stack`, `_SPI_current`,
   `_SPI_stack_depth`, and `_SPI_connected`. SPI exposes its result variables
@@ -1092,6 +1096,14 @@ Validation for this slice:
   extension hook registries. Direct `be-secure-openssl.o` subdir compile was
   not runnable in this checkout because the direct target lacks the OpenSSL
   include path; the configured top-level build covered the file.
+- focused `explain_state.o` compile coverage, full rebuild/install,
+  `pg_overexplain`, `pg_plan_advice`, and `auto_explain`
+  clean/rebuild/install, global-lifetime scanner coverage, and process-mode
+  EXPLAIN extension-option smoke after classifying EXPLAIN extension
+  registries. The smoke loaded `pg_overexplain`, ran
+  `EXPLAIN (DEBUG, RANGE_TABLE)`, loaded `pg_plan_advice`, ran
+  `EXPLAIN (PLAN_ADVICE)`, loaded `auto_explain`, and validated
+  `auto_explain.log_extension_options`.
 - focused `spi.o` compile coverage, backend clean plus generated-header
   recovery, full rebuild/install, PL/pgSQL clean/rebuild/install,
   global-lifetime scanner coverage, and PL/pgSQL regression coverage after
