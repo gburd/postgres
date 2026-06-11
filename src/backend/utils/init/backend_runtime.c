@@ -72,6 +72,7 @@ InitializePgProcessRuntime(void)
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
+	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
@@ -298,4 +299,43 @@ PgCurrentBackendApplyInterrupts(void)
 
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_REPACK_MESSAGE))
 		RepackMessagePending = true;
+}
+
+int
+PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
+		  void *callback_arg)
+{
+	PgBackend  *backend = CurrentPgBackend;
+	int			result = 0;
+
+	Assert(callback != NULL);
+
+	if (backend != NULL && wait_spec != NULL)
+	{
+		backend->wait_state.spec = *wait_spec;
+		pg_atomic_write_membarrier_u32(&backend->wait_state.waiting, 1);
+	}
+
+	PG_TRY();
+	{
+		result = callback(callback_arg);
+	}
+	PG_CATCH();
+	{
+		if (backend != NULL)
+		{
+			pg_atomic_write_u32(&backend->wait_state.waiting, 0);
+			backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (backend != NULL)
+	{
+		pg_atomic_write_u32(&backend->wait_state.waiting, 0);
+		backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
+	}
+
+	return result;
 }

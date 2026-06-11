@@ -27,6 +27,7 @@ typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef void (*PgBackendExitContinuation) (int code);
+typedef int (*PgSuspendCallback) (void *callback_arg);
 
 typedef enum PgRuntimeKind
 {
@@ -95,6 +96,26 @@ typedef struct PgBackendInterruptMailbox
 	volatile int proc_die_sender_uid;
 } PgBackendInterruptMailbox;
 
+typedef enum PgWaitKind
+{
+	PG_WAIT_KIND_NONE,
+	PG_WAIT_KIND_EVENT_SET
+} PgWaitKind;
+
+typedef struct PgWaitSpec
+{
+	PgWaitKind	kind;
+	uint32		wait_event_info;
+	uint32		wake_events;
+	long		timeout;
+} PgWaitSpec;
+
+typedef struct PgBackendWaitState
+{
+	PgWaitSpec	spec;
+	pg_atomic_uint32 waiting;
+} PgBackendWaitState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -143,6 +164,7 @@ struct PgBackend
 	PgExecution *execution;
 	PgBackendInterruptMailbox interrupts;
 	PgBackendExitState exit_state;
+	PgBackendWaitState wait_state;
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */
 	dlist_head	dsm_segment_list;
@@ -197,6 +219,8 @@ extern PgBackendInterruptMask PgBackendConsumeInterrupts(PgBackend *backend);
 extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
 extern void PgCurrentBackendApplyInterrupts(void);
+extern int	PgSuspend(const PgWaitSpec *wait_spec,
+					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 pg_noreturn extern void PgSessionRun(PgSession *session);
 

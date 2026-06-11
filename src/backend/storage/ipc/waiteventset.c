@@ -75,6 +75,7 @@
 #include "storage/pmsignal.h"
 #include "storage/latch.h"
 #include "storage/waiteventset.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/wait_event.h"
@@ -167,6 +168,15 @@ struct WaitEventSet
 #endif
 };
 
+typedef struct WaitEventSetWaitArgs
+{
+	WaitEventSet *set;
+	long		timeout;
+	WaitEvent  *occurred_events;
+	int			nevents;
+	uint32		wait_event_info;
+} WaitEventSetWaitArgs;
+
 #ifndef WIN32
 /* Are we currently in WaitLatch? The signal handler would like to know. */
 static PG_THREAD_LOCAL PG_GLOBAL_CARRIER volatile sig_atomic_t waiting = false;
@@ -206,6 +216,7 @@ static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event);
 
 static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 										WaitEvent *occurred_events, int nevents);
+static int WaitEventSetWaitInternal(void *callback_arg);
 
 /* ResourceOwner support to hold WaitEventSets */
 static void ResOwnerReleaseWaitEventSet(Datum res);
@@ -1041,6 +1052,38 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 				 WaitEvent *occurred_events, int nevents,
 				 uint32 wait_event_info)
 {
+	WaitEventSetWaitArgs args;
+	PgWaitSpec	wait_spec;
+	uint32		wake_events = 0;
+
+	for (int i = 0; i < set->nevents; i++)
+		wake_events |= set->events[i].events;
+	if (timeout >= 0)
+		wake_events |= WL_TIMEOUT;
+
+	args.set = set;
+	args.timeout = timeout;
+	args.occurred_events = occurred_events;
+	args.nevents = nevents;
+	args.wait_event_info = wait_event_info;
+
+	wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+	wait_spec.wait_event_info = wait_event_info;
+	wait_spec.wake_events = wake_events;
+	wait_spec.timeout = timeout;
+
+	return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+}
+
+static int
+WaitEventSetWaitInternal(void *callback_arg)
+{
+	WaitEventSetWaitArgs *args = (WaitEventSetWaitArgs *) callback_arg;
+	WaitEventSet *set = args->set;
+	long		timeout = args->timeout;
+	WaitEvent  *occurred_events = args->occurred_events;
+	int			nevents = args->nevents;
+	uint32		wait_event_info = args->wait_event_info;
 	int			returned_events = 0;
 	instr_time	start_time;
 	instr_time	cur_time;

@@ -23,6 +23,8 @@ the code evolves.
 - [MULTITHREADED_PHASE8_THREAD_SAFETY.md](MULTITHREADED_PHASE8_THREAD_SAFETY.md)
   records the first thread-local bridge for backend-local state and the
   remaining Phase 8 thread-safety floor.
+- [MULTITHREADED_PHASE9_WAIT_BOUNDARY.md](MULTITHREADED_PHASE9_WAIT_BOUNDARY.md)
+  records the current logical wait/suspend boundary work.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.
