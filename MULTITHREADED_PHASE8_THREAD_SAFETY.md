@@ -500,6 +500,10 @@ subtransaction, and commit-timestamp SLRU descriptors are runtime-global
 configuration/handles registered during startup. The commit-timestamp
 last-value cache and activation flag point at shared memory registered with
 `ShmemRequestStruct()` and protected by `CommitTsLock`.
+Transaction ID and OID assignment state in `varsup.c` is now explicitly
+classified as shared-memory state. The exported `TransamVariables` pointer
+targets the `ShmemRequestStruct()` allocation that stores cluster-wide XID/OID
+counters and wraparound limits guarded by their existing LWLocks.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -948,6 +952,9 @@ Validation for this slice:
 - focused `clog.o`, `subtrans.o`, and `commit_ts.o` compile coverage plus
   transaction/subtransaction and commit-timestamp regression coverage after
   classifying core transaction SLRU runtime/shared state.
+- focused `varsup.o` compile coverage plus transaction, subtransaction, OID,
+  and commit-timestamp regression coverage after classifying
+  `TransamVariables` as shared-memory state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

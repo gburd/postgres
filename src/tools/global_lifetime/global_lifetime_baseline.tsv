@@ -18,7 +18,6 @@ src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCt
 src/backend/access/nbtree/nbtxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/spgist/spgxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrTable	RmgrData RmgrTable[RM_MAX_ID + 1] = { };
-src/backend/access/transam/varsup.c	1bec3debb09d11fa81fd1136c329827744bd6f97	TransamVariables	TransamVariablesData *TransamVariables = NULL;
 src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
 src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;
 src/backend/access/transam/xlog.c	1cd8d0e5e8f7be2aa213bd5ba47b837edde6f97d	check_wal_consistency_checking_deferred	static bool check_wal_consistency_checking_deferred = false;
@@ -1762,7 +1761,6 @@ src/include/access/relscan.h	382236e6a16c79e121ca65e856af3d6c0ce93fb3	TableScanI
 src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanInstrumentation	struct IndexScanInstrumentation;
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
-src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/xlog.h	4358811cb3dc0bce96d1e15480ee4eb25eace904	ProcLastRecPtr	extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;
 src/include/access/xlog.h	fe64f9f7182d4c89a39e84bff8fa03b7043a5e3d	XactLastRecEnd	extern PGDLLIMPORT XLogRecPtr XactLastRecEnd;
 src/include/access/xlog.h	434725f39b669704b07b813441416d6f18d51a1c	XactLastCommitEnd	extern PGDLLIMPORT XLogRecPtr XactLastCommitEnd;
