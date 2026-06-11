@@ -214,6 +214,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `event_triggers`, and `Extension_control_path`;
 - extension command execution state in `extension.c`: `creating_extension` and
   `CurrentExtensionObject`.
+- event-trigger query execution state in `event_trigger.c`:
+  `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
+  DDL command collection state owned by the currently running utility command.
 - GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
   `gin_pending_list_limit`.
 - async notify tracing USERSET GUC backing variable: `Trace_notify`.
@@ -1112,6 +1115,14 @@ Validation for this slice:
   recreated temp-install binaries, ran inheritance-tree `ANALYZE VERBOSE`,
   `VACUUM (ANALYZE, VERBOSE)`, verified table stats visibility, and confirmed
   inherited `pg_stats` rows were loaded.
+- focused `event_trigger.o` compile coverage, global-lifetime scanner
+  coverage, and fixture-backed `event_trigger` regression coverage after
+  classifying event-trigger query execution state. A direct `event_trigger`
+  run failed because the test expects `heap2` from `create_am`; a direct
+  `test_setup create_am event_trigger` run then had `event_trigger` pass but
+  exposed `create_am`'s own `create_index` fixture dependency. The final direct
+  `pg_regress` invocation included the schedule prefix through `create_index`
+  and passed all 17 tests including `create_am` and `event_trigger`.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

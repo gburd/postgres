@@ -1,5 +1,4 @@
 # file	sha1	names	declaration
-src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;
 src/backend/commands/explain_state.c	1ffb33b220544251d6c6473db764e9f7152da777	ExplainExtensionNameArray	static const char **ExplainExtensionNameArray = NULL;
 src/backend/commands/explain_state.c	1efcd360eeefb1a49fff621652605cc262e291ce	ExplainExtensionNamesAssigned	static int ExplainExtensionNamesAssigned = 0;
 src/backend/commands/explain_state.c	d648cf6b5611658c7f83a8a409f75b4d2b7f275d	ExplainExtensionNamesAllocated	static int ExplainExtensionNamesAllocated = 0;

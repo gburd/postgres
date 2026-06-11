@@ -82,7 +82,7 @@ typedef struct EventTriggerQueryState
 	struct EventTriggerQueryState *previous;
 } EventTriggerQueryState;
 
-static EventTriggerQueryState *currentEventTriggerState = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION EventTriggerQueryState *currentEventTriggerState = NULL;
 
 /* GUC parameter */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool event_triggers = true;
