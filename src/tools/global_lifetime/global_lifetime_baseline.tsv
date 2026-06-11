@@ -1,34 +1,4 @@
 # file	sha1	names	declaration
-src/backend/parser/gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
-src/backend/parser/gram.c	91bd87f586916b067da0b6e66741b1b00a1dcebd	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "IDENT", "UIDENT", "FCONST", "SCONST", "USCONST", "BCONST", "XCONST", "Op", "ICONST", "PARAM", "TYPECAST", "DOT_DOT", "COLON_EQUALS", "EQUALS_GREATER", "LESS_EQUALS", ...
-src/backend/parser/gram.c	20b2b840ccd121348f9264cfef105f72ed17042c	yyoutput,yytype,yyvaluep,yylocationp,yyoutput,yytype,yyvaluep,yylocationp,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, YYLTYPE const * const yylocationp, core_yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, yylocationp, yyscan...
-src/backend/parser/gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/parser/gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/parser/gram.c	75571acb9ca668c5977246272395e365603d4576	yylocationp	YYLTYPE const * const yylocationp;
-src/backend/parser/gram.c	bfa94763761be209dac45a20bcbaf722460c4f6e	yyscanner	core_yyscan_t yyscanner;
-src/backend/parser/gram.c	944b15480cd7ed822b31c56fb0553c62833fd354	yyoutput,yytype,yyvaluep,yylocationp,yyoutput,yytype,yyvaluep,yylocationp,yyoutput	static void yy_symbol_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, YYLTYPE const * const yylocationp, core_yyscan_t yyscanner) static void yy_symbol_print (yyoutput, yytype, yyvaluep, yylocationp, yyscanner) FILE *y...
-src/backend/parser/gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/parser/gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/parser/gram.c	75571acb9ca668c5977246272395e365603d4576	yylocationp	YYLTYPE const * const yylocationp;
-src/backend/parser/gram.c	bfa94763761be209dac45a20bcbaf722460c4f6e	yyscanner	core_yyscan_t yyscanner;
-src/backend/parser/gram.c	91cec1ad943667e6d2df33375def1fe66366b9cd	bottom,bottom,bottom	static void yy_stack_print (yytype_int16 *bottom, yytype_int16 *top) static void yy_stack_print (bottom, top) yytype_int16 *bottom;
-src/backend/parser/gram.c	773acd90c424575db95ed8ba4da888a691f08e80	top	yytype_int16 *top;
-src/backend/parser/gram.c	410fa40094dee7809102400d3bfe2f0d6402d7a8	yyvsp,yylsp,yyrule,yyvsp,yylsp,yyrule,yyvsp	static void yy_reduce_print (YYSTYPE *yyvsp, YYLTYPE *yylsp, int yyrule, core_yyscan_t yyscanner) static void yy_reduce_print (yyvsp, yylsp, yyrule, yyscanner) YYSTYPE *yyvsp;
-src/backend/parser/gram.c	b83c15462587108199d446bbc4e57f628b72359e	yylsp	YYLTYPE *yylsp;
-src/backend/parser/gram.c	aac5e5318d618e04e43e739891d50b5cb5e67751	yyrule	int yyrule;
-src/backend/parser/gram.c	bfa94763761be209dac45a20bcbaf722460c4f6e	yyscanner	core_yyscan_t yyscanner;
-src/backend/parser/gram.c	2faf12c58c8b6057d59d074277fc485bb43ed236	yydebug	int yydebug;
-src/backend/parser/gram.c	3c3e1d9aeb33556aef33dd2a8a69df60da6177c8	yystr	static YYSIZE_T yystrlen (const char *yystr) static YYSIZE_T yystrlen (yystr) const char *yystr;
-src/backend/parser/gram.c	5750b35f3f631613bd4984cdd69db349de19765e	yydest,yydest,yydest	static char * yystpcpy (char *yydest, const char *yysrc) static char * yystpcpy (yydest, yysrc) char *yydest;
-src/backend/parser/gram.c	c5b07e854485b5481786281024d8816ac0c5797d	yysrc	const char *yysrc;
-src/backend/parser/gram.c	c5eb9e114546c77477958f7e425660bca9b633e4	yymsg,yytype,yyvaluep,yylocationp,yymsg,yytype,yyvaluep,yylocationp,yymsg	static void yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep, YYLTYPE *yylocationp, core_yyscan_t yyscanner) static void yydestruct (yymsg, yytype, yyvaluep, yylocationp, yyscanner) const char *yymsg;
-src/backend/parser/gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/parser/gram.c	2de0546cbd3ebab369ea7803aa3c13e349ab3dea	yyvaluep	YYSTYPE *yyvaluep;
-src/backend/parser/gram.c	3ae81d8e40cfcafdc52f400ea58fe4d3bd2797a4	yylocationp	YYLTYPE *yylocationp;
-src/backend/parser/gram.c	bfa94763761be209dac45a20bcbaf722460c4f6e	yyscanner	core_yyscan_t yyscanner;
-src/backend/parser/gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
-src/backend/parser/gram.c	1cf73cc4f8a365e807fe6cf7a341d7f7ba4c2c59	yyscanner	int yyparse (core_yyscan_t yyscanner) int yyparse (yyscanner) core_yyscan_t yyscanner;
-src/backend/parser/scan.c	82dba9be24c93134ab960cb0ceed1f6b20a0adb2	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[25] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
 src/backend/port/win32/signal.c	6f97c9391f1aab49c073c4ccb75eb63d2951b5d2	pg_signal_queue	volatile int pg_signal_queue;
 src/backend/port/win32/signal.c	481de2b8b6d1f6bf400bc2d1e16757a1920edece	pg_signal_mask	int pg_signal_mask;
 src/backend/port/win32/signal.c	83c7557b5a395845bcb034f17c5b6901c723cb27	pgwin32_signal_event	HANDLE pgwin32_signal_event;
@@ -39,110 +9,8 @@ src/backend/port/win32/signal.c	928a8b295b87ab215ad9d9bf471ba15983b2accc	pg_sign
 src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32_noblock	int pgwin32_noblock = 0;
 src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
 src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
-src/backend/replication/repl_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
-src/backend/replication/repl_gram.c	ac0cad527ebf3a730c1b8f4af905da6e7a28b995	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "SCONST", "IDENT", "UCONST", "RECPTR", "K_BASE_BACKUP", "K_IDENTIFY_SYSTEM", "K_READ_REPLICATION_SLOT", "K_SHOW", "K_START_REPLICATION", "K_CREATE_REPLICATION_SLOT", "...
-src/backend/replication/repl_gram.c	ef6d022ebd6065d95f633719a07e0bf11e83d75e	yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, Node **replication_parse_result_p, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, replication_parse_result...
-src/backend/replication/repl_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/repl_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/replication/repl_gram.c	675f2506db49455d09245fc1b13085059b7a7b75	replication_parse_result_p	Node **replication_parse_result_p;
-src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/repl_gram.c	8986e1452cab237e9f273e3863f94f48aaa0f642	yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput	static void yy_symbol_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, Node **replication_parse_result_p, yyscan_t yyscanner) static void yy_symbol_print (yyoutput, yytype, yyvaluep, replication_parse_result_p, yyscanne...
-src/backend/replication/repl_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/repl_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/replication/repl_gram.c	675f2506db49455d09245fc1b13085059b7a7b75	replication_parse_result_p	Node **replication_parse_result_p;
-src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/repl_gram.c	91cec1ad943667e6d2df33375def1fe66366b9cd	bottom,bottom,bottom	static void yy_stack_print (yytype_int16 *bottom, yytype_int16 *top) static void yy_stack_print (bottom, top) yytype_int16 *bottom;
-src/backend/replication/repl_gram.c	773acd90c424575db95ed8ba4da888a691f08e80	top	yytype_int16 *top;
-src/backend/replication/repl_gram.c	49307a0753d2ad8ffc55db68b2551e584f27b6f4	yyvsp,yyrule,replication_parse_result_p,yyvsp,yyrule,replication_parse_result_p,yyvsp	static void yy_reduce_print (YYSTYPE *yyvsp, int yyrule, Node **replication_parse_result_p, yyscan_t yyscanner) static void yy_reduce_print (yyvsp, yyrule, replication_parse_result_p, yyscanner) YYSTYPE *yyvsp;
-src/backend/replication/repl_gram.c	aac5e5318d618e04e43e739891d50b5cb5e67751	yyrule	int yyrule;
-src/backend/replication/repl_gram.c	675f2506db49455d09245fc1b13085059b7a7b75	replication_parse_result_p	Node **replication_parse_result_p;
-src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/repl_gram.c	2faf12c58c8b6057d59d074277fc485bb43ed236	yydebug	int yydebug;
-src/backend/replication/repl_gram.c	3c3e1d9aeb33556aef33dd2a8a69df60da6177c8	yystr	static YYSIZE_T yystrlen (const char *yystr) static YYSIZE_T yystrlen (yystr) const char *yystr;
-src/backend/replication/repl_gram.c	5750b35f3f631613bd4984cdd69db349de19765e	yydest,yydest,yydest	static char * yystpcpy (char *yydest, const char *yysrc) static char * yystpcpy (yydest, yysrc) char *yydest;
-src/backend/replication/repl_gram.c	c5b07e854485b5481786281024d8816ac0c5797d	yysrc	const char *yysrc;
-src/backend/replication/repl_gram.c	f5285b5af0cffc34bbdbcd015e5ab9e494f9e949	yymsg,yytype,yyvaluep,replication_parse_result_p,yymsg,yytype,yyvaluep,replication_parse_result_p,yymsg	static void yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep, Node **replication_parse_result_p, yyscan_t yyscanner) static void yydestruct (yymsg, yytype, yyvaluep, replication_parse_result_p, yyscanner) const char *yymsg;
-src/backend/replication/repl_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/repl_gram.c	2de0546cbd3ebab369ea7803aa3c13e349ab3dea	yyvaluep	YYSTYPE *yyvaluep;
-src/backend/replication/repl_gram.c	675f2506db49455d09245fc1b13085059b7a7b75	replication_parse_result_p	Node **replication_parse_result_p;
-src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/repl_gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
-src/backend/replication/repl_gram.c	84da4e971c35224dcb0415e1a21053e455b42a42	replication_parse_result_p,replication_parse_result_p,replication_parse_result_p	int yyparse (Node **replication_parse_result_p, yyscan_t yyscanner) int yyparse (replication_parse_result_p, yyscanner) Node **replication_parse_result_p;
-src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/syncrep_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
-src/backend/replication/syncrep_gram.c	a1dd790ea07ddb096040a19597f468afe1274071	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "NAME", "NUM", "JUNK", "ANY", "FIRST", "'('", "')'", "','", "$accept", "result", "standby_config", "standby_list", "standby_name", 0 };
-src/backend/replication/syncrep_gram.c	76d1f895d660cf3acb563504b1f787ded2f0444a	yyoutput,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyoutput,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput,...
-src/backend/replication/syncrep_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/syncrep_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/replication/syncrep_gram.c	2d47089230351c3c6316e97511722a04669f7733	syncrep_parse_result_p	SyncRepConfigData **syncrep_parse_result_p;
-src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
-src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/syncrep_gram.c	a0f3eb8043fddb6a17e1e8a989232e9eb38e3981	yyoutput,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyoutput,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyoutput	static void yy_symbol_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) static void yy_symbol_print (yyoutput, yytype, yyv...
-src/backend/replication/syncrep_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/syncrep_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/replication/syncrep_gram.c	2d47089230351c3c6316e97511722a04669f7733	syncrep_parse_result_p	SyncRepConfigData **syncrep_parse_result_p;
-src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
-src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/syncrep_gram.c	91cec1ad943667e6d2df33375def1fe66366b9cd	bottom,bottom,bottom	static void yy_stack_print (yytype_int16 *bottom, yytype_int16 *top) static void yy_stack_print (bottom, top) yytype_int16 *bottom;
-src/backend/replication/syncrep_gram.c	773acd90c424575db95ed8ba4da888a691f08e80	top	yytype_int16 *top;
-src/backend/replication/syncrep_gram.c	c9d47c48a1fece38cb345b9d856c5198f66ac1c0	yyvsp,yyrule,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyvsp,yyrule,syncrep_parse_result_p,syncrep_parse_error_msg_p,yyvsp	static void yy_reduce_print (YYSTYPE *yyvsp, int yyrule, SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) static void yy_reduce_print (yyvsp, yyrule, syncrep_parse_result_p, syncrep_parse_...
-src/backend/replication/syncrep_gram.c	aac5e5318d618e04e43e739891d50b5cb5e67751	yyrule	int yyrule;
-src/backend/replication/syncrep_gram.c	2d47089230351c3c6316e97511722a04669f7733	syncrep_parse_result_p	SyncRepConfigData **syncrep_parse_result_p;
-src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
-src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/syncrep_gram.c	2faf12c58c8b6057d59d074277fc485bb43ed236	yydebug	int yydebug;
-src/backend/replication/syncrep_gram.c	3c3e1d9aeb33556aef33dd2a8a69df60da6177c8	yystr	static YYSIZE_T yystrlen (const char *yystr) static YYSIZE_T yystrlen (yystr) const char *yystr;
-src/backend/replication/syncrep_gram.c	5750b35f3f631613bd4984cdd69db349de19765e	yydest,yydest,yydest	static char * yystpcpy (char *yydest, const char *yysrc) static char * yystpcpy (yydest, yysrc) char *yydest;
-src/backend/replication/syncrep_gram.c	c5b07e854485b5481786281024d8816ac0c5797d	yysrc	const char *yysrc;
-src/backend/replication/syncrep_gram.c	3bf453be836adbc0a46423f130d71096a6a6c4c8	yymsg,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yymsg,yytype,yyvaluep,syncrep_parse_result_p,syncrep_parse_error_msg_p,yymsg	static void yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep, SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) static void yydestruct (yymsg, yytype, yyvaluep, syncrep_parse_re...
-src/backend/replication/syncrep_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/replication/syncrep_gram.c	2de0546cbd3ebab369ea7803aa3c13e349ab3dea	yyvaluep	YYSTYPE *yyvaluep;
-src/backend/replication/syncrep_gram.c	2d47089230351c3c6316e97511722a04669f7733	syncrep_parse_result_p	SyncRepConfigData **syncrep_parse_result_p;
-src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
-src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/syncrep_gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
-src/backend/replication/syncrep_gram.c	7745a26f4271fd75144024a31c2a5da2c24be890	syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p	int yyparse (SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) int yyparse (syncrep_parse_result_p, syncrep_parse_error_msg_p, yyscanner) SyncRepConfigData **syncrep_parse_result_p;
-src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
-src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
-src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...
-src/backend/utils/adt/jsonpath_gram.c	3fc59a2abc1e5a78e1462c8c65fac75abd39cd3c	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, resul...
-src/backend/utils/adt/jsonpath_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/utils/adt/jsonpath_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/utils/adt/jsonpath_gram.c	69629db4e81c17aa2b0e091e716da4280bc79310	result	JsonPathParseResult **result;
-src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
-src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_gram.c	307f9ec95ee22f1a9b7220d155070c2215f35aa1	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_print (yyoutput, yytype, yyvaluep, result, escontext...
-src/backend/utils/adt/jsonpath_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/utils/adt/jsonpath_gram.c	aeecc5462f50804071a85d2dfde36beab8ee5533	yyvaluep	YYSTYPE const * const yyvaluep;
-src/backend/utils/adt/jsonpath_gram.c	69629db4e81c17aa2b0e091e716da4280bc79310	result	JsonPathParseResult **result;
-src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
-src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_gram.c	91cec1ad943667e6d2df33375def1fe66366b9cd	bottom,bottom,bottom	static void yy_stack_print (yytype_int16 *bottom, yytype_int16 *top) static void yy_stack_print (bottom, top) yytype_int16 *bottom;
-src/backend/utils/adt/jsonpath_gram.c	773acd90c424575db95ed8ba4da888a691f08e80	top	yytype_int16 *top;
-src/backend/utils/adt/jsonpath_gram.c	76aaaf9cd43867e99481e54735fbae9b43b7d958	yyvsp,yyrule,result,escontext,yyvsp,yyrule,result,escontext,yyvsp	static void yy_reduce_print (YYSTYPE *yyvsp, int yyrule, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_reduce_print (yyvsp, yyrule, result, escontext, yyscanner) YYSTYPE *yyvsp;
-src/backend/utils/adt/jsonpath_gram.c	aac5e5318d618e04e43e739891d50b5cb5e67751	yyrule	int yyrule;
-src/backend/utils/adt/jsonpath_gram.c	69629db4e81c17aa2b0e091e716da4280bc79310	result	JsonPathParseResult **result;
-src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
-src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_gram.c	2faf12c58c8b6057d59d074277fc485bb43ed236	yydebug	int yydebug;
-src/backend/utils/adt/jsonpath_gram.c	3c3e1d9aeb33556aef33dd2a8a69df60da6177c8	yystr	static YYSIZE_T yystrlen (const char *yystr) static YYSIZE_T yystrlen (yystr) const char *yystr;
-src/backend/utils/adt/jsonpath_gram.c	5750b35f3f631613bd4984cdd69db349de19765e	yydest,yydest,yydest	static char * yystpcpy (char *yydest, const char *yysrc) static char * yystpcpy (yydest, yysrc) char *yydest;
-src/backend/utils/adt/jsonpath_gram.c	c5b07e854485b5481786281024d8816ac0c5797d	yysrc	const char *yysrc;
-src/backend/utils/adt/jsonpath_gram.c	b1f2d1abf0da081e190db5626179afd818f44dc1	yymsg,yytype,yyvaluep,result,escontext,yymsg,yytype,yyvaluep,result,escontext,yymsg	static void yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yydestruct (yymsg, yytype, yyvaluep, result, escontext, yyscanner) const char...
-src/backend/utils/adt/jsonpath_gram.c	732a980706ae6446f9022e47eaba318d2f51866b	yytype	int yytype;
-src/backend/utils/adt/jsonpath_gram.c	2de0546cbd3ebab369ea7803aa3c13e349ab3dea	yyvaluep	YYSTYPE *yyvaluep;
-src/backend/utils/adt/jsonpath_gram.c	69629db4e81c17aa2b0e091e716da4280bc79310	result	JsonPathParseResult **result;
-src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
-src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
-src/backend/utils/adt/jsonpath_gram.c	00ed771f111d11c51778b59d9b5b935de8526940	result,escontext,result,escontext,result	int yyparse (JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) int yyparse (result, escontext, yyscanner) JsonPathParseResult **result;
-src/backend/utils/adt/jsonpath_gram.c	256960c0fb5bfec101faf232fbaaa4a8960bff08	escontext	struct Node *escontext;
-src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/utils/adt/jsonpath_scan.c	2eca0ca7cecf4e4c3168eb99e618ce7fd4ed2422	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[11] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
-src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;
 src/include/common/file_perm.h	e826e5ad606841ae27bf2bff671e0e9b0bc9147d	pg_file_create_mode	extern PGDLLIMPORT int pg_file_create_mode;
 src/include/common/file_perm.h	7697ec47808190cfe5797d4d44969d474b20eaa6	pg_mode_mask	extern PGDLLIMPORT int pg_mode_mask;
@@ -174,8 +42,6 @@ src/include/portability/instr_time.h	53c04206ed9e366974869136069521b2d45103ac	ma
 src/include/portability/instr_time.h	89a06fbd8be0502608e46047ce6327144ae60f3c	timing_initialized	extern PGDLLIMPORT bool timing_initialized;
 src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	timing_tsc_enabled	extern PGDLLIMPORT bool timing_tsc_enabled;
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
-src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replorigin_xact_state	extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
-src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];
 src/include/storage/checksum_block_internal.h	cf55db26d1acf241408b9e0f8bea583775483a25	result	uint32 result = 0;
 src/include/storage/checksum_block_internal.h	5e578b43f97f7ced36a56bba648295fd6d7df315	i,j	uint32 i, j;

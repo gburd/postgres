@@ -937,6 +937,14 @@ constraint is now removed for generated built-in GUC records, but many GUC
 backing variables outside the exported first slice still need to be converted
 or explicitly classified according to their real owner.
 
+The global-lifetime scanner now skips generated Bison parser outputs and Flex
+scanner outputs for the main SQL parser, replication command parser, synchronous
+replication parser, and JSONPath parser. Those generated files contain
+K&R-style helper definitions, function parameters, and immutable transition
+tables that the heuristic scanner misidentified as top-level mutable globals.
+This mirrors the existing `bootparse.c` generated-file exception and removes
+noise without changing backend runtime state.
+
 Any dynamically loaded module that references an exported global after it gains
 `PG_THREAD_LOCAL` must be rebuilt against the updated headers. Stale modules can
 still link but may crash because they use the old non-TLS symbol access pattern.
@@ -2097,6 +2105,10 @@ Validation for this slice:
   temp-cluster connection-startup smoke after converting
   `ClientAuthInProgress` to connection-local TLS. The smoke verified
   `current_user` and current backend visibility in `pg_stat_activity`.
+- global-lifetime scanner coverage after skipping generated Bison/Flex parser
+  outputs that were producing false unclassified mutable-global records. The
+  regenerated baseline dropped from 179 to 48 unclassified entries with no new
+  unclassified mutable globals.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after

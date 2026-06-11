@@ -162,6 +162,13 @@ sub wanted_file
 	# this heuristic scanner mistakes for top-level globals.  The grammar source
 	# remains annotated directly in bootparse.y.
 	return 0 if $file =~ m{^src/backend/bootstrap/bootparse\.c$};
+	return 0 if $file =~ m{^src/backend/parser/gram\.c$};
+	return 0 if $file =~ m{^src/backend/replication/(?:repl|syncrep)_gram\.c$};
+	return 0 if $file =~ m{^src/backend/utils/adt/jsonpath_gram\.c$};
+	# Generated Flex scanner tables are immutable parser metadata.  Scanning the
+	# generated C directly is noisy and does not classify hand-written globals.
+	return 0 if $file =~ m{^src/backend/parser/scan\.c$};
+	return 0 if $file =~ m{^src/backend/utils/adt/jsonpath_scan\.c$};
 	# Generated node switch fragments are included inside functions.  They are
 	# not declaration units, and scanning them directly mistakes case-body
 	# assignments for globals.
