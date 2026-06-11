@@ -32,9 +32,10 @@
  * the status of the last requested roleid.  The cache can be flushed
  * at need by watching for cache update events on pg_authid.
  */
-static Oid	last_roleid = InvalidOid;	/* InvalidOid == cache not valid */
-static bool last_roleid_is_super = false;
-static bool roleid_callback_registered = false;
+/* InvalidOid == cache not valid */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Oid last_roleid = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool last_roleid_is_super = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool roleid_callback_registered = false;
 
 static void RoleidCallback(Datum arg, SysCacheIdentifier cacheid,
 						   uint32 hashvalue);

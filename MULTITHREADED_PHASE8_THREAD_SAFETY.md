@@ -63,6 +63,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - deprecated ANALYZE/FDW sampling API state in `sampling.c`: `oldrs` and
   `oldrs_initialized` are backend-local TLS state because the legacy API
   intentionally keeps one common random stream per backend process.
+- superuser role lookup cache state in `superuser.c`: `last_roleid`,
+  `last_roleid_is_super`, and `roleid_callback_registered` are backend-local
+  TLS state because they cache one backend's syscache-backed role lookup and
+  syscache invalidation callback registration.
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
@@ -937,6 +941,13 @@ Validation for this slice:
   `vacuum`, and a direct temp-cluster ANALYZE smoke after classifying the
   deprecated sampling API state as backend-local TLS. The smoke created and
   populated a table, ran `ANALYZE`, and verified `pg_stats` rows were visible.
+- focused `superuser.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, direct `roleattributes` regression
+  coverage, and a direct temp-cluster same-session role-cache invalidation
+  smoke after classifying the superuser role lookup cache as backend-local
+  TLS. The smoke created a role, observed `has_table_privilege()` change from
+  false to true after `ALTER ROLE ... SUPERUSER`, then back to false after
+  `ALTER ROLE ... NOSUPERUSER`.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

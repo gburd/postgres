@@ -254,6 +254,11 @@ Important current files:
   focused sampling/ANALYZE validation, use a live temp-cluster smoke that
   creates a table, inserts enough rows, runs `ANALYZE`, and verifies visible
   `pg_stats` rows.
+- `create_role` is not reliable as a standalone direct `pg_regress` test in
+  this checkout. It appears late in `parallel_schedule` and assumes earlier
+  fixture/public-schema state; for focused superuser/role-cache validation,
+  prefer `roleattributes` plus a live temp-cluster role privilege smoke unless
+  you are intentionally running the larger schedule prefix.
 - The extension backend-model tests need the test extension module installed
   into the current temp install before direct `pg_regress` runs:
 
