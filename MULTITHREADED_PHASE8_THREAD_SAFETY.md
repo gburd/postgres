@@ -340,6 +340,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `array_extra_data`, which points at the current ANALYZE command's
   array-element comparison/hash metadata while `compute_array_stats()` and its
   hash callbacks are running.
+- size-formatting metadata in `dbsize.c`: `size_pretty_units` is an immutable
+  lookup table used by `pg_size_pretty()` and `pg_size_bytes()`.
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
@@ -1269,6 +1271,10 @@ Validation for this slice:
   build is configured `--without-icu`; it still initializes the built-in
   `unicode|i|und` collation catalog entry, so the ICU converter classification
   has compile/static coverage here but not runtime conversion-path coverage;
+- focused `dbsize.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and direct `dbsize` regression coverage
+  after classifying the `pg_size_pretty()`/`pg_size_bytes()` unit table as
+  immutable singleton state;
 - fixture-backed role/compression GUC regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
