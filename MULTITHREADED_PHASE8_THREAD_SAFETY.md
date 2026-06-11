@@ -149,6 +149,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   runtime-global timing infrastructure state. They remain shared process
   configuration in Phase 8, matching the already-classified
   `timing_clock_source` GUC backing variable.
+- data-directory file-permission state: `pg_dir_create_mode`,
+  `pg_file_create_mode`, and `pg_mode_mask` are runtime-global configuration
+  derived from the data directory mode and shared by backend file-creation
+  paths.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2142,6 +2146,13 @@ Validation for this slice:
   direct temp-cluster timing smoke after classifying common timing conversion
   state as runtime-global. The live smoke initialized a cluster, exercised
   `pg_sleep`, verified `EXPLAIN ANALYZE` emitted timing data, and stopped the
+  server with fast shutdown.
+- focused `file_perm.o`, `fd.o`, `postmaster.o`, `syslogger.o`, and
+  `basebackup.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and direct temp-cluster file-creation
+  smoke after classifying data-directory file-permission state as
+  runtime-global. The live smoke initialized a cluster, created a database,
+  created and populated a heap table, forced a checkpoint, and stopped the
   server with fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full

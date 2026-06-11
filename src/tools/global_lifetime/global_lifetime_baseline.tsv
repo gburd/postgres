@@ -10,9 +10,6 @@ src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32
 src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
 src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
-src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;
-src/include/common/file_perm.h	e826e5ad606841ae27bf2bff671e0e9b0bc9147d	pg_file_create_mode	extern PGDLLIMPORT int pg_file_create_mode;
-src/include/common/file_perm.h	7697ec47808190cfe5797d4d44969d474b20eaa6	pg_mode_mask	extern PGDLLIMPORT int pg_mode_mask;
 src/include/common/logging.h	12a60688ec5164b15e1c28ff1a3643a116ebe905	__pg_log_level	extern enum pg_log_level __pg_log_level;
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
