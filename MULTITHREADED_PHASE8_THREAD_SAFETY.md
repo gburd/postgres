@@ -292,6 +292,9 @@ postmaster, shared-memory, or startup-computed runtime state:
   `wal_decode_buffer_size`, `wal_keep_size_mb`, `wal_level`,
   `wal_log_hints`, `wal_retrieve_retry_interval`, `wal_segment_size`, and
   `wal_sync_method`.
+- WAL resource-manager registry state: `RmgrTable` is runtime-global.
+  Custom resource-manager registration remains restricted to
+  `shared_preload_libraries` initialization, before threaded sessions can run.
 - recovery and standby runtime GUC backing variables and derived recovery
   target state: `PrimaryConnInfo`, `PrimarySlotName`,
   `archiveCleanupCommand`, `ignore_invalid_pages`, `in_hot_standby_guc`,

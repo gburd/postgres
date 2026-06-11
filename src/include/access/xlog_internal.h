@@ -362,7 +362,7 @@ typedef struct RmgrData
 							  struct XLogRecordBuffer *buf);
 } RmgrData;
 
-extern PGDLLIMPORT RmgrData RmgrTable[];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME RmgrData RmgrTable[];
 extern void RmgrStartup(void);
 extern void RmgrCleanup(void);
 extern void RmgrNotFound(RmgrId rmid);

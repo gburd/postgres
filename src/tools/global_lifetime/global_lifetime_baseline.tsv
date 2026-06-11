@@ -13,7 +13,6 @@ src/backend/access/common/reloptions.c	10612a17778efc9e61551bbe5f9337313e37986c	
 src/backend/access/common/reloptions.c	43d02783d1381349c3973f1f1d0f0c89627968a5	num_custom_options	static int num_custom_options = 0;
 src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	custom_options	static relopt_gen **custom_options = NULL;
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
-src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrTable	RmgrData RmgrTable[RM_MAX_ID + 1] = { };
 src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
 src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;
 src/backend/access/transam/xlog.c	1cd8d0e5e8f7be2aa213bd5ba47b837edde6f97d	check_wal_consistency_checking_deferred	static bool check_wal_consistency_checking_deferred = false;
@@ -1760,7 +1759,6 @@ src/include/access/xlog.h	cec4541f6edb9832cef9dd7b5bb2103ebefd95bf	XLogRecData	s
 src/include/access/xlog.h	fb27dcde135b6f4416acfd5e9f3c4bd6522b80ac	XLogReaderState	struct XLogReaderState;
 src/include/access/xlog_internal.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	LogicalDecodingContext	struct LogicalDecodingContext;
 src/include/access/xlog_internal.h	3a69c535ea71f8284dc457cc870ba494a00d2556	XLogRecordBuffer	struct XLogRecordBuffer;
-src/include/access/xlog_internal.h	0b64686c0c4fb04f9d710c8236cfadf5b9a809d8	RmgrTable	extern PGDLLIMPORT RmgrData RmgrTable[];
 src/include/access/xlog_internal.h	246b7e6fafa239c06a6fd8ba26258d77b5b69b75	ArchiveRecoveryRequested	extern PGDLLIMPORT bool ArchiveRecoveryRequested;
 src/include/access/xlog_internal.h	7b3d6e631fdcc7762060040f144910c8be61f84f	InArchiveRecovery	extern PGDLLIMPORT bool InArchiveRecovery;
 src/include/access/xlog_internal.h	cf4599e5ab0bd887bb4e27bb22111fc75ff9baa6	StandbyMode	extern PGDLLIMPORT bool StandbyMode;
