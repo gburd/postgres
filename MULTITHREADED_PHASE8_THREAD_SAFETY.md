@@ -217,6 +217,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
+- after-trigger transaction-tree state in `trigger.c`: the `afterTriggers`
+  struct owns deferred event lists, per-query trigger queues, subtransaction
+  restore points, SET CONSTRAINTS state, and deferred batch callbacks for the
+  current transaction tree.
 - GIN session USERSET GUC backing variables: `GinFuzzySearchLimit` and
   `gin_pending_list_limit`.
 - async notify tracing USERSET GUC backing variable: `Trace_notify`.
@@ -1135,6 +1139,11 @@ Validation for this slice:
   exposed `create_am`'s own `create_index` fixture dependency. The final direct
   `pg_regress` invocation included the schedule prefix through `create_index`
   and passed all 17 tests including `create_am` and `event_trigger`.
+- focused `trigger.o` compile coverage, full rebuild/install,
+  global-lifetime scanner coverage, and fixture-backed `triggers` regression
+  coverage after classifying after-trigger transaction-tree state. The direct
+  `pg_regress` invocation included the schedule prefix through `constraints`
+  and passed all 24 tests including `triggers`.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

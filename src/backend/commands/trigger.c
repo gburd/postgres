@@ -3950,7 +3950,7 @@ typedef struct AfterTriggerCallbackItem
 	void	   *arg;
 } AfterTriggerCallbackItem;
 
-static AfterTriggersData afterTriggers;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION AfterTriggersData afterTriggers;
 
 static void AfterTriggerExecute(EState *estate,
 								AfterTriggerEvent event,
