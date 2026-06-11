@@ -75,6 +75,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/global_lifetime.h"
 #include "utils/guc.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
@@ -92,7 +93,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_receiver_timeout;
 PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /* libpqwalreceiver connection */
-static WalReceiverConn *wrconn = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalReceiverConn *wrconn = NULL;
 PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 
 /*
@@ -100,15 +101,15 @@ PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
  * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
  * corresponding the filename of recvFile.
  */
-static int	recvFile = -1;
-static TimeLineID recvFileTLI = 0;
-static XLogSegNo recvSegNo = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int recvFile = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID recvFileTLI = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogSegNo recvSegNo = 0;
 
 /*
  * LogstreamResult indicates the byte positions that we have already
  * written/fsynced.
  */
-static struct
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct
 {
 	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
 	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
@@ -129,9 +130,9 @@ typedef enum WalRcvWakeupReason
 /*
  * Wake up times for periodic tasks.
  */
-static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
 
-static StringInfoData reply_message;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfoData reply_message;
 
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);

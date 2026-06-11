@@ -169,6 +169,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   shutdown, promotion, restore-command, and startup-progress timeout flags,
   plus the active startup-progress phase timestamp, are backend-local TLS
   state for the startup logical worker.
+- WAL receiver connection and stream state in `walreceiver.c`: the dynamically
+  loaded WAL receiver function table is runtime-global, while the active
+  receiver connection, receive segment file metadata, written/flushed stream
+  positions, periodic wakeup schedule, and reusable reply message buffer are
+  backend-local TLS state for the WAL receiver logical worker.
 - online data-checksum worker state in `datachecksum_state.c`:
   `DataChecksumState` is shared-memory state used by SQL callers, the
   data-checksum launcher, and data-checksum workers to coordinate requested
@@ -1923,6 +1928,14 @@ Validation for this slice:
   cluster, started the server with startup progress logging enabled, connected
   through `psql`, verified postmaster start time, performed a heap
   create/insert/count round trip, and stopped the server with fast shutdown.
+- focused `walreceiver.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct primary/standby streaming replication smoke after classifying WAL
+  receiver connection and stream state. The live smoke initialized a primary,
+  took a `pg_basebackup -R` standby, verified a visible `walreceiver` backend,
+  replayed the initial table contents, inserted more rows on the primary,
+  verified the standby caught up to the new row count, and stopped both
+  servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

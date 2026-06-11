@@ -187,13 +187,6 @@ src/backend/replication/syncrep_gram.c	4081e776f4148f971034d30ccfb949f843c59270	
 src/backend/replication/syncrep_gram.c	7745a26f4271fd75144024a31c2a5da2c24be890	syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p,syncrep_parse_error_msg_p,syncrep_parse_result_p	int yyparse (SyncRepConfigData **syncrep_parse_result_p, char **syncrep_parse_error_msg_p, yyscan_t yyscanner) int yyparse (syncrep_parse_result_p, syncrep_parse_error_msg_p, yyscanner) SyncRepConfigData **syncrep_parse_result_p;
 src/backend/replication/syncrep_gram.c	f81da0fcf9a24f37cec5e9733ba15880e205f073	syncrep_parse_error_msg_p	char **syncrep_parse_error_msg_p;
 src/backend/replication/syncrep_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/walreceiver.c	ac45cef7f0da628d240604c068d55780596e80e2	wrconn	static WalReceiverConn *wrconn = NULL;
-src/backend/replication/walreceiver.c	fc73ab860995ce9946d9745f233a13e029213424	recvFile	static int recvFile = -1;
-src/backend/replication/walreceiver.c	16dea593b08fdd73ab7759ab8f9ae3d3bb34bad4	recvFileTLI	static TimeLineID recvFileTLI = 0;
-src/backend/replication/walreceiver.c	465d11fe14e3bf576046f909b49f2c3cff356201	recvSegNo	static XLogSegNo recvSegNo = 0;
-src/backend/replication/walreceiver.c	cc2aac8381f4bd97a827ece1a0e72a8a764d244e	Write,Flush,LogstreamResult	static struct { XLogRecPtr Write; XLogRecPtr Flush; } LogstreamResult;
-src/backend/replication/walreceiver.c	3d8f11a3300b47d5f4b1c2d665ad01991e865767	wakeup	static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
-src/backend/replication/walreceiver.c	381937c21cbddb93d3b0eefc9580987d45ab518c	reply_message	static StringInfoData reply_message;
 src/backend/storage/aio/method_io_uring.c	ae3edfa77447cd8e2f3a5b95feb704789a262b6c	pgaio_uring_contexts	static PgAioUringContext *pgaio_uring_contexts;
 src/backend/storage/aio/method_io_uring.c	f30ab475d31df177b9480ce0727de96a9474e989	pgaio_my_uring_context	static PgAioUringContext *pgaio_my_uring_context;
 src/backend/storage/aio/method_io_uring.c	64942f55b8d007237bfe7b40c5c07f03e5320316	pgaio_uring_caps	static PgAioUringCaps pgaio_uring_caps = { .checked = false, .mem_init_size = -1, };
