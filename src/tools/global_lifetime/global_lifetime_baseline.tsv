@@ -195,7 +195,6 @@ src/backend/commands/explain_state.c	4f6337d9690ebfb58f36c3d2c0c2a24072e8760d	Ex
 src/backend/commands/explain_state.c	b9a5fac2d819d627458677f03c405b7ca972a549	ExplainExtensionOptionsAssigned	static int ExplainExtensionOptionsAssigned = 0;
 src/backend/commands/explain_state.c	a1bea4185d0d56ef7c87385d29e3b747e8306742	ExplainExtensionOptionsAllocated	static int ExplainExtensionOptionsAllocated = 0;
 src/backend/commands/extension.c	2a5919cc273c3fa0775c10a2356d428f8346a670	ext_sibling_list	static ExtensionSiblingCache *ext_sibling_list = NULL;
-src/backend/commands/matview.c	8bc16eca9724a08914a4c190766973cf5ea3c1e7	matview_maintenance_depth	static int matview_maintenance_depth = 0;
 src/backend/commands/repack.c	2db48d3b6cedbafd6f97950b36eea75259fc3cc7	decoding_worker	static DecodingWorker *decoding_worker = NULL;
 src/backend/commands/repack_worker.c	8e46119afd8ca424e9892caadd747816d35a18c0	am_repack_worker	static bool am_repack_worker = false;
 src/backend/commands/repack_worker.c	5e911fb813910f039ca90baf2145036f055b17cc	repack_current_segment	static XLogSegNo repack_current_segment = 0;

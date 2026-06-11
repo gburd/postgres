@@ -463,6 +463,10 @@ Prepared statement storage in `prepare.c` is now session-local TLS. Named SQL
 and protocol prepared statements are visible across commands in one session,
 but their cached plans and hash table must not be shared by concurrent
 threaded sessions.
+Materialized-view maintenance depth in `matview.c` is now execution-local TLS.
+It is a short-lived counter used to permit internal DML while one backend is
+refreshing a materialized view, and must not leak across concurrent threaded
+executions.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -892,6 +896,9 @@ Validation for this slice:
   bookkeeping.
 - focused `prepare.o` compile coverage plus prepared-statement regression
   coverage after classifying session-local prepared statement storage.
+- focused `matview.o` compile coverage plus materialized-view regression
+  coverage after classifying execution-local materialized-view maintenance
+  depth.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
