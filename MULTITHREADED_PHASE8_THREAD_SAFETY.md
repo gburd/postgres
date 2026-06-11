@@ -161,6 +161,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   sleep backoff, pages-read counter, and last redo pointer considered for
   summary cleanup are backend-local TLS state for the WAL summarizer logical
   worker.
+- startup-process signal and progress state in `startup.c`: SIGHUP,
+  shutdown, promotion, restore-command, and startup-progress timeout flags,
+  plus the active startup-progress phase timestamp, are backend-local TLS
+  state for the startup logical worker.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1877,6 +1881,13 @@ Validation for this slice:
   forced WAL switches and checkpoints, verified `pg_available_wal_summaries()`
   produced summary rows, checked final summarizer state, and stopped the
   server with fast shutdown.
+- focused `startup.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct temp-cluster startup/connection/shutdown smoke after classifying
+  startup-process signal and progress state. The live smoke initialized a
+  cluster, started the server with startup progress logging enabled, connected
+  through `psql`, verified postmaster start time, performed a heap
+  create/insert/count round trip, and stopped the server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

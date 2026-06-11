@@ -96,12 +96,6 @@ src/backend/postmaster/postmaster.c	0db5d473a4ac672fe3fc85691651604a6c082428	io_
 src/backend/postmaster/postmaster.c	813c212ba835b5363ad99ff7dde68d1f392e787b	win32ChildQueue	static HANDLE win32ChildQueue;
 src/backend/postmaster/postmaster.c	ca6fe6927dcc22f7b46e7c5d1bcfe2944393888e	postmaster_alive_fds	int postmaster_alive_fds[2] = {-1, -1};
 src/backend/postmaster/postmaster.c	1904705a926875699c0b08ea34337b012f99c087	PostmasterHandle	HANDLE PostmasterHandle;
-src/backend/postmaster/startup.c	d59a0e10fe087f52eb0301891ae3ea7a7eb5aacf	got_SIGHUP	static volatile sig_atomic_t got_SIGHUP = false;
-src/backend/postmaster/startup.c	7839c544f6b453325edab3d0dacc56426974f33e	shutdown_requested	static volatile sig_atomic_t shutdown_requested = false;
-src/backend/postmaster/startup.c	158ffb2bb8c995927d5aa26123025ee1c453b4af	promote_signaled	static volatile sig_atomic_t promote_signaled = false;
-src/backend/postmaster/startup.c	2bc7e083ad7ca8613219ff3d2718169af0f9cbcc	in_restore_command	static volatile sig_atomic_t in_restore_command = false;
-src/backend/postmaster/startup.c	fb3dabcd1873a5392d9ac2e341804583b07f4b77	startup_progress_phase_start_time	static TimestampTz startup_progress_phase_start_time;
-src/backend/postmaster/startup.c	af09a2be1dcf4ab2044dec5579329b37f0c8fdaa	startup_progress_timer_expired	static volatile sig_atomic_t startup_progress_timer_expired = false;
 src/backend/replication/logical/applyparallelworker.c	9890f7a94c21181d523d6e8462f697362ffbdd98	ParallelApplyTxnHash	static HTAB *ParallelApplyTxnHash = NULL;
 src/backend/replication/logical/applyparallelworker.c	53942e820ad5350d2d70f70411b9839db8406acd	ParallelApplyWorkerPool	static List *ParallelApplyWorkerPool = NIL;
 src/backend/replication/logical/applyparallelworker.c	f4648479bc22f19f82fa1923d492e3a4190b10ad	MyParallelShared	ParallelApplyWorkerShared *MyParallelShared = NULL;
