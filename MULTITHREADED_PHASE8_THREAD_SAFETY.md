@@ -67,6 +67,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `last_roleid_is_super`, and `roleid_callback_registered` are backend-local
   TLS state because they cache one backend's syscache-backed role lookup and
   syscache invalidation callback registration.
+- ACL role-membership cache state in `acl.c`: the cached role OIDs,
+  membership lists, and current-database hash filter are session-local TLS
+  state because they cache one backend/session's authorization lookups and
+  syscache invalidation callback state.
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
@@ -904,6 +908,11 @@ depend on self-referential `DLIST_STATIC_INIT` globals.
 The authenticated/session/effective role identity variables in `miscinit.c` are
 now session-local TLS state, preserving process-mode behavior while preventing
 threaded backends from sharing one effective user/security context.
+The ACL role-membership cache in `acl.c` is now session-local TLS. Its cached
+role OIDs, membership lists, and current-database hash filter are populated
+from syscache lookups and copied into `TopMemoryContext` for the current
+backend/session, so threaded sessions must not share one mutable authorization
+cache.
 The GSSAPI transport buffers in `be-secure-gssapi.c` are now connection-local
 TLS state, matching the existing libpq send/receive buffer bridge in
 `pqcomm.c`.
@@ -1190,6 +1199,12 @@ Validation for this slice:
   TLS. The smoke created a role, observed `has_table_privilege()` change from
   false to true after `ALTER ROLE ... SUPERUSER`, then back to false after
   `ALTER ROLE ... NOSUPERUSER`.
+- focused `acl.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed `roleattributes` plus
+  `privileges` regression coverage after classifying the ACL role-membership
+  cache as session-local TLS. The direct `pg_regress` invocation used the
+  setup/create/constraint/trigger prefix needed by `privileges` and passed all
+  32 tests.
 - focused `guc.o` and `guc_tables.o` compile coverage, global-lifetime
   scanner coverage, incremental full rebuild/install, direct `guc` regression
   coverage, and a direct temp-cluster custom-GUC reserved-prefix smoke after
