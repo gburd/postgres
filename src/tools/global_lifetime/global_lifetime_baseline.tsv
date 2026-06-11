@@ -1,11 +1,4 @@
 # file	sha1	names	declaration
-src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
-src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;
-src/backend/access/transam/xlog.c	1cd8d0e5e8f7be2aa213bd5ba47b837edde6f97d	check_wal_consistency_checking_deferred	static bool check_wal_consistency_checking_deferred = false;
-src/backend/access/transam/xlog.c	20c6a203481bc521db4ecf9809e11e2b8bc23569	CheckpointStats	CheckpointStatsData CheckpointStats;
-src/backend/access/transam/xlog.c	8734bb7f9c0c9bd96f1f2b909af31e2bd72c3b8f	lastFullPageWrites	static bool lastFullPageWrites;
-src/backend/access/transam/xlog.c	583753881b6b901ef32a0d6ef812c762589245b6	LocalControlFile	static ControlFileData *LocalControlFile = NULL;
-src/backend/access/transam/xlog.c	64ec6f1b3bf764a07c4273158833d013f089d0a0	ControlFile	static ControlFileData *ControlFile = NULL;
 src/backend/access/transam/xlogfuncs.c	5593f7ff0780abb09282b93ac4c48a7007b814f6	backup_state	static BackupState *backup_state = NULL;
 src/backend/access/transam/xlogfuncs.c	8f51ac66b542f431ec53923b02d17459a017aafb	tablespace_map	static StringInfo tablespace_map = NULL;
 src/backend/access/transam/xlogfuncs.c	16d09a686a480a894d3846ab182374ae7371a5b1	backupcontext	static MemoryContext backupcontext = NULL;
@@ -1721,7 +1714,6 @@ src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanI
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
-src/include/access/xlog.h	d674475e99764b576a0f1961933e59ab91c469c9	CheckpointStats	extern PGDLLIMPORT CheckpointStatsData CheckpointStats;
 src/include/access/xlog.h	cec4541f6edb9832cef9dd7b5bb2103ebefd95bf	XLogRecData	struct XLogRecData;
 src/include/access/xlog.h	fb27dcde135b6f4416acfd5e9f3c4bd6522b80ac	XLogReaderState	struct XLogReaderState;
 src/include/access/xlog_internal.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	LogicalDecodingContext	struct LogicalDecodingContext;

@@ -106,6 +106,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - WAL backend-local recovery/cache state in `xlog.c`: the cached recovery
   status and WAL insert permission state, the open WAL segment FD cache,
   min-recovery-point cache, and local data-checksum state;
+- WAL control/checkpoint runtime state in `xlog.c`: checkpoint distance
+  estimates, `CheckpointStats`, deferred WAL-consistency checking state,
+  recovery full-page-write replay state, and the startup-only local
+  `pg_control` transfer buffer.  The durable `pg_control` image pointer is
+  classified as shared-memory state;
 - SQL backup session state in `xlog.c`: `sessionBackupState`, which tracks
   the session that started a SQL-callable backup;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo

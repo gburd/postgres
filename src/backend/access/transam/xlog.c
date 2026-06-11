@@ -166,14 +166,14 @@ PG_GLOBAL_RUNTIME int wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 PG_GLOBAL_RUNTIME int CheckPointSegments;
 
 /* Estimated distance between checkpoints, in bytes */
-static double CheckPointDistanceEstimate = 0;
-static double PrevCheckPointDistance = 0;
+static PG_GLOBAL_RUNTIME double CheckPointDistanceEstimate = 0;
+static PG_GLOBAL_RUNTIME double PrevCheckPointDistance = 0;
 
 /*
  * Track whether there were any deferred checks for custom resource managers
  * specified in wal_consistency_checking.
  */
-static bool check_wal_consistency_checking_deferred = false;
+static PG_GLOBAL_RUNTIME bool check_wal_consistency_checking_deferred = false;
 
 /*
  * GUC support
@@ -216,7 +216,7 @@ const struct config_enum_entry archive_mode_options[] = {
  * Because only the checkpointer or a stand-alone backend can perform
  * checkpoints, this will be unused in normal backends.
  */
-CheckpointStatsData CheckpointStats;
+PG_GLOBAL_RUNTIME CheckpointStatsData CheckpointStats;
 
 /*
  * During recovery, lastFullPageWrites keeps track of full_page_writes that
@@ -224,7 +224,7 @@ CheckpointStatsData CheckpointStats;
  * that the recovery starting checkpoint record indicates, and then updated
  * each time XLOG_FPW_CHANGE record is replayed.
  */
-static bool lastFullPageWrites;
+static PG_GLOBAL_RUNTIME bool lastFullPageWrites;
 
 /*
  * Local copy of the state tracked by SharedRecoveryState in shared memory,
@@ -583,8 +583,8 @@ static PG_GLOBAL_SHMEM WALInsertLockPadded *WALInsertLocks = NULL;
 /*
  * We maintain an image of pg_control in shared memory.
  */
-static ControlFileData *LocalControlFile = NULL;
-static ControlFileData *ControlFile = NULL;
+static PG_GLOBAL_RUNTIME ControlFileData *LocalControlFile = NULL;
+static PG_GLOBAL_SHMEM ControlFileData *ControlFile = NULL;
 
 static void XLOGShmemRequest(void *arg);
 static void XLOGShmemInit(void *arg);

@@ -193,7 +193,7 @@ typedef struct CheckpointStatsData
 									 * entire sync phase. */
 } CheckpointStatsData;
 
-extern PGDLLIMPORT CheckpointStatsData CheckpointStats;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME CheckpointStatsData CheckpointStats;
 
 /*
  * GetWALAvailability return codes
