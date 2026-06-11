@@ -266,6 +266,13 @@ Important current files:
   gmake -C src/test/modules/test_extensions DESTDIR="$PWD/tmp_install" install
   ```
 
+- GUC custom-prefix smoke tests that preload `test_oat_hooks` need that module
+  installed into the current temp install first:
+
+  ```sh
+  gmake -C src/test/modules/test_oat_hooks DESTDIR="$PWD/tmp_install" install
+  ```
+
 - PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
   Perl on this macOS checkout may not have it, in which case direct `prove`
   invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.

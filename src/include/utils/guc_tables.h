@@ -302,10 +302,10 @@ struct config_generic
 
 
 /* constant tables corresponding to enums above and in guc.h */
-extern PGDLLIMPORT const char *const config_group_names[];
-extern PGDLLIMPORT const char *const config_type_names[];
-extern PGDLLIMPORT const char *const GucContext_Names[];
-extern PGDLLIMPORT const char *const GucSource_Names[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const config_group_names[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const config_type_names[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const GucContext_Names[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const GucSource_Names[];
 
 /* data array defining all the built-in GUC variables */
 extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE struct config_generic ConfigureNames[];

@@ -281,6 +281,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - GUC manager state in `guc.c`: `GUCMemoryContext`, the session-local mutable
   `guc_variables` copy, `guc_hashtab`, `guc_nondef_list`, `guc_stack_list`,
   `guc_report_list`, `reporting_enabled`, and `GUCNestLevel`;
+- GUC immutable lookup metadata in `guc.c` and `guc_tables.c`: unit hint
+  strings, unit conversion tables, old-name mappings, and display-name tables
+  for GUC contexts, sources, groups, and types. The custom-GUC reserved-prefix
+  list remains runtime-global registration state governed by the extension
+  backend-model gate.
 - GUC check-hook error state: `GUC_check_errcode_value`,
   `GUC_check_errmsg_string`, `GUC_check_errdetail_string`, and
   `GUC_check_errhint_string`;
@@ -948,6 +953,13 @@ Validation for this slice:
   TLS. The smoke created a role, observed `has_table_privilege()` change from
   false to true after `ALTER ROLE ... SUPERUSER`, then back to false after
   `ALTER ROLE ... NOSUPERUSER`.
+- focused `guc.o` and `guc_tables.o` compile coverage, global-lifetime
+  scanner coverage, incremental full rebuild/install, direct `guc` regression
+  coverage, and a direct temp-cluster custom-GUC reserved-prefix smoke after
+  classifying immutable GUC lookup metadata and runtime custom-prefix
+  registration state. The smoke preloaded `test_oat_hooks`, verified its
+  custom GUC appeared in `pg_settings`, and verified an unregistered variable
+  under the reserved prefix was rejected.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

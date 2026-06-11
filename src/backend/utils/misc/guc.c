@@ -77,7 +77,7 @@
 
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int GUC_check_errcode_value;
 
-static List *reserved_class_prefix = NIL;
+static PG_GLOBAL_RUNTIME List *reserved_class_prefix = NIL;
 
 /* global variables for check hook support */
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errmsg_string;
@@ -118,9 +118,9 @@ typedef struct
 #error XLOG_BLCKSZ must be between 1KB and 1MB
 #endif
 
-static const char *const memory_units_hint = gettext_noop("Valid units for this parameter are \"B\", \"kB\", \"MB\", \"GB\", and \"TB\".");
+static PG_GLOBAL_IMMUTABLE const char *const memory_units_hint = gettext_noop("Valid units for this parameter are \"B\", \"kB\", \"MB\", \"GB\", and \"TB\".");
 
-static const unit_conversion memory_unit_conversion_table[] =
+static PG_GLOBAL_IMMUTABLE const unit_conversion memory_unit_conversion_table[] =
 {
 	{"TB", GUC_UNIT_BYTE, 1024.0 * 1024.0 * 1024.0 * 1024.0},
 	{"GB", GUC_UNIT_BYTE, 1024.0 * 1024.0 * 1024.0},
@@ -155,9 +155,9 @@ static const unit_conversion memory_unit_conversion_table[] =
 	{""}						/* end of table marker */
 };
 
-static const char *const time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
+static PG_GLOBAL_IMMUTABLE const char *const time_units_hint = gettext_noop("Valid units for this parameter are \"us\", \"ms\", \"s\", \"min\", \"h\", and \"d\".");
 
-static const unit_conversion time_unit_conversion_table[] =
+static PG_GLOBAL_IMMUTABLE const unit_conversion time_unit_conversion_table[] =
 {
 	{"d", GUC_UNIT_MS, 1000 * 60 * 60 * 24},
 	{"h", GUC_UNIT_MS, 1000 * 60 * 60},
@@ -189,7 +189,7 @@ static const unit_conversion time_unit_conversion_table[] =
  * should be mapped to a new one only if the new variable has very similar
  * semantics to the old.
  */
-static const char *const map_old_guc_names[] = {
+static PG_GLOBAL_IMMUTABLE const char *const map_old_guc_names[] = {
 	"sort_mem", "work_mem",
 	"vacuum_mem", "maintenance_work_mem",
 	"ssl_ecdh_curve", "ssl_groups",

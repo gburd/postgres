@@ -688,7 +688,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_messages[] = {
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const GucContext_Names[] =
+PG_GLOBAL_IMMUTABLE const char *const GucContext_Names[] =
 {
 	[PGC_INTERNAL] = "internal",
 	[PGC_POSTMASTER] = "postmaster",
@@ -707,7 +707,7 @@ StaticAssertDecl(lengthof(GucContext_Names) == (PGC_USERSET + 1),
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const GucSource_Names[] =
+PG_GLOBAL_IMMUTABLE const char *const GucSource_Names[] =
 {
 	[PGC_S_DEFAULT] = "default",
 	[PGC_S_DYNAMIC_DEFAULT] = "default",
@@ -731,7 +731,7 @@ StaticAssertDecl(lengthof(GucSource_Names) == (PGC_S_SESSION + 1),
 /*
  * Displayable names for the groupings defined in enum config_group
  */
-const char *const config_group_names[] =
+PG_GLOBAL_IMMUTABLE const char *const config_group_names[] =
 {
 	[UNGROUPED] = gettext_noop("Ungrouped"),
 	[FILE_LOCATIONS] = gettext_noop("File Locations"),
@@ -792,7 +792,7 @@ StaticAssertDecl(lengthof(config_group_names) == (DEVELOPER_OPTIONS + 1),
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const config_type_names[] =
+PG_GLOBAL_IMMUTABLE const char *const config_type_names[] =
 {
 	[PGC_BOOL] = "bool",
 	[PGC_INT] = "integer",
