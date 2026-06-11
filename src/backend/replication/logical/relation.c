@@ -26,15 +26,16 @@
 #include "nodes/makefuncs.h"
 #include "replication/logicalrelation.h"
 #include "replication/worker_internal.h"
+#include "utils/global_lifetime.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
 
-static MemoryContext LogicalRepRelMapContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext LogicalRepRelMapContext = NULL;
 
-static HTAB *LogicalRepRelMap = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *LogicalRepRelMap = NULL;
 
 /*
  * Partition map (LogicalRepPartMap)
@@ -47,8 +48,8 @@ static HTAB *LogicalRepRelMap = NULL;
  * attribute mappings to remote relation's attributes must be maintained
  * separately for each partition.
  */
-static MemoryContext LogicalRepPartMapContext = NULL;
-static HTAB *LogicalRepPartMap = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext LogicalRepPartMapContext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *LogicalRepPartMap = NULL;
 typedef struct LogicalRepPartMapEntry
 {
 	Oid			partoid;		/* LogicalRepPartMap's key */

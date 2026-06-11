@@ -171,6 +171,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `replorigin_xact_state` is execution-local TLS state and
   `session_replication_state` is the session-local TLS handle for the current
   backend's acquired origin.
+- logical replication relation-map state in `relation.c`:
+  `LogicalRepRelMapContext`, `LogicalRepRelMap`, `LogicalRepPartMapContext`,
+  and `LogicalRepPartMap` are session-local TLS caches for one logical
+  replication backend's remote-to-local relation and partition mappings.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2056,6 +2060,14 @@ Validation for this slice:
   transaction origin metadata, committed a write, verified session progress,
   reset the session origin, dropped the origin, and stopped the server with
   fast shutdown.
+- focused `relation.o`, `worker.o`, and `tablesync.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, focused
+  core `guc` regression coverage, and direct publisher/subscriber logical
+  replication smoke after classifying logical relation-map caches. The smoke
+  used a plain publisher table and a partitioned subscriber target, copied
+  existing rows through table synchronization, applied follow-up inserts, and
+  verified the subscriber partition counts were split across the relation-map
+  and partition-map paths before stopping both servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after
