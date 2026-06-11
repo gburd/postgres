@@ -76,11 +76,6 @@ src/backend/replication/logical/applyparallelworker.c	53942e820ad5350d2d70f70411
 src/backend/replication/logical/applyparallelworker.c	f4648479bc22f19f82fa1923d492e3a4190b10ad	MyParallelShared	ParallelApplyWorkerShared *MyParallelShared = NULL;
 src/backend/replication/logical/applyparallelworker.c	ada06e6d33e637f7c6e988483d7e3d345d6393e4	stream_apply_worker	static ParallelApplyWorkerInfo *stream_apply_worker = NULL;
 src/backend/replication/logical/applyparallelworker.c	2c1a7e485328c28ca787feb8bc19eae0b0716ec3	subxactlist	static List *subxactlist = NIL;
-src/backend/replication/logical/launcher.c	924fece11d7a5c4fc0a4f9dee2a7b7511293fdec	MyLogicalRepWorker	LogicalRepWorker *MyLogicalRepWorker = NULL;
-src/backend/replication/logical/launcher.c	c73433138e99bfc62b3575baf8db15044f93b331	LogicalRepCtx	static LogicalRepCtxStruct *LogicalRepCtx;
-src/backend/replication/logical/launcher.c	4be8639f8fa2acad97abe943d7ab18f90eccd801	last_start_times_dsa	static dsa_area *last_start_times_dsa = NULL;
-src/backend/replication/logical/launcher.c	8d84d4cf720c7479a598e8d3b54f20f4db419832	last_start_times	static dshash_table *last_start_times = NULL;
-src/backend/replication/logical/launcher.c	73e0b122959a877f3be146f799830bbf69f40f18	on_commit_launcher_wakeup	static bool on_commit_launcher_wakeup = false;
 src/backend/replication/logical/logicalctl.c	863e018d610960229948d8b2dd5bf879b4599b7d	LogicalDecodingCtl	static LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
 src/backend/replication/logical/logicalctl.c	c60c10869712fb8146a911382c3eb6b743bd890e	XLogLogicalInfo	bool XLogLogicalInfo = false;
 src/backend/replication/logical/logicalctl.c	74b5a0f4f7d67eae603b2fa1de0edb6e71b4542f	XLogLogicalInfoUpdatePending	static bool XLogLogicalInfoUpdatePending = false;
@@ -306,7 +301,6 @@ src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncR
 src/include/replication/worker_internal.h	7438fe75a165c7863ed1a97b552b14df85dcc313	MyParallelShared	extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
 src/include/replication/worker_internal.h	3421b112a2a9fa3d09745825a17fb80b19351732	LogRepWorkerWalRcvConn	extern PGDLLIMPORT struct WalReceiverConn *LogRepWorkerWalRcvConn;
 src/include/replication/worker_internal.h	a01b8c863c6a9f4940830acaa0cd05e4b83151ac	MySubscription	extern PGDLLIMPORT Subscription *MySubscription;
-src/include/replication/worker_internal.h	57cf8dd56ec32a1bd49012b0d9bd4d2e7223ad04	MyLogicalRepWorker	extern PGDLLIMPORT LogicalRepWorker *MyLogicalRepWorker;
 src/include/replication/worker_internal.h	d6133db6dc40b459e313aee8975b29e46d677841	in_remote_transaction	extern PGDLLIMPORT bool in_remote_transaction;
 src/include/replication/worker_internal.h	feaf4214bf3e0756c773714d3720eae5d9ee01c5	InitializingApplyWorker	extern PGDLLIMPORT bool InitializingApplyWorker;
 src/include/replication/worker_internal.h	dcf26a7c0f05e98f4bb2f82e06a6958d3d71613b	table_states_not_ready	extern PGDLLIMPORT List *table_states_not_ready;

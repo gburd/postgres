@@ -55,7 +55,7 @@ PG_GLOBAL_RUNTIME int max_logical_replication_workers = 4;
 PG_GLOBAL_RUNTIME int max_sync_workers_per_subscription = 2;
 PG_GLOBAL_RUNTIME int max_parallel_apply_workers_per_subscription = 2;
 
-LogicalRepWorker *MyLogicalRepWorker = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalRepWorker *MyLogicalRepWorker = NULL;
 
 typedef struct LogicalRepCtxStruct
 {
@@ -70,7 +70,7 @@ typedef struct LogicalRepCtxStruct
 	LogicalRepWorker workers[FLEXIBLE_ARRAY_MEMBER];
 } LogicalRepCtxStruct;
 
-static LogicalRepCtxStruct *LogicalRepCtx;
+static PG_GLOBAL_SHMEM LogicalRepCtxStruct *LogicalRepCtx;
 
 static void ApplyLauncherShmemRequest(void *arg);
 static void ApplyLauncherShmemInit(void *arg);
@@ -97,10 +97,10 @@ static const dshash_parameters dsh_params = {
 	LWTRANCHE_LAUNCHER_HASH
 };
 
-static dsa_area *last_start_times_dsa = NULL;
-static dshash_table *last_start_times = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *last_start_times_dsa = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *last_start_times = NULL;
 
-static bool on_commit_launcher_wakeup = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool on_commit_launcher_wakeup = false;
 
 
 static void logicalrep_launcher_onexit(int code, Datum arg);

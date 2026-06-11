@@ -126,6 +126,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
   and `MyIoWorkerId` is backend-local TLS state for the running IO worker.
+- logical replication launcher and worker identity state in `launcher.c`:
+  `LogicalRepCtx` is shared-memory state for the launcher and worker slots,
+  while `MyLogicalRepWorker`, the local last-start-times DSA/dshash
+  attachments, and the commit-time launcher wakeup flag are backend-local TLS
+  state for the logical replication launcher, apply workers, and SQL backends
+  that need to wake the launcher after subscription catalog changes.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -1936,6 +1942,16 @@ Validation for this slice:
   replayed the initial table contents, inserted more rows on the primary,
   verified the standby caught up to the new row count, and stopped both
   servers with fast shutdown.
+- focused `launcher.o`, `worker.o`, `applyparallelworker.o`, and
+  `tablesync.o` compile coverage, global-lifetime scanner coverage, backend
+  clean plus generated-header recovery, full rebuild/install, focused core
+  `guc` regression coverage, and direct publisher/subscriber logical
+  replication smoke after classifying logical replication launcher and worker
+  identity state. The live smoke created a publication and subscription,
+  verified visible `logical replication launcher` and
+  `logical replication apply worker` backends on the subscriber, copied the
+  initial table contents, applied additional publisher inserts, and stopped
+  both servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after
