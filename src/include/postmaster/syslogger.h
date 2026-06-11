@@ -78,13 +78,13 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool Log_truncate_on_rotation;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_file_mode;
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT pg_time_t first_syslogger_file_time;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME pg_time_t first_syslogger_file_time;
 #endif
 
 #ifndef WIN32
-extern PGDLLIMPORT int syslogPipe[2];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int syslogPipe[2];
 #else
-extern PGDLLIMPORT HANDLE syslogPipe[2];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME HANDLE syslogPipe[2];
 #endif
 
 

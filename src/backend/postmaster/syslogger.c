@@ -79,16 +79,16 @@ PG_GLOBAL_RUNTIME int Log_file_mode = S_IRUSR | S_IWUSR;
 /*
  * Private state
  */
-static pg_time_t next_rotation_time;
-static bool pipe_eof_seen = false;
-static bool rotation_disabled = false;
-static FILE *syslogFile = NULL;
-static FILE *csvlogFile = NULL;
-static FILE *jsonlogFile = NULL;
-NON_EXEC_STATIC pg_time_t first_syslogger_file_time = 0;
-static char *last_sys_file_name = NULL;
-static char *last_csv_file_name = NULL;
-static char *last_json_file_name = NULL;
+static PG_GLOBAL_RUNTIME pg_time_t next_rotation_time;
+static PG_GLOBAL_RUNTIME bool pipe_eof_seen = false;
+static PG_GLOBAL_RUNTIME bool rotation_disabled = false;
+static PG_GLOBAL_RUNTIME FILE *syslogFile = NULL;
+static PG_GLOBAL_RUNTIME FILE *csvlogFile = NULL;
+static PG_GLOBAL_RUNTIME FILE *jsonlogFile = NULL;
+PG_GLOBAL_RUNTIME NON_EXEC_STATIC pg_time_t first_syslogger_file_time = 0;
+static PG_GLOBAL_RUNTIME char *last_sys_file_name = NULL;
+static PG_GLOBAL_RUNTIME char *last_csv_file_name = NULL;
+static PG_GLOBAL_RUNTIME char *last_json_file_name = NULL;
 
 /*
  * Buffers for saving partial messages from different backends.
@@ -108,24 +108,24 @@ typedef struct
 } save_buffer;
 
 #define NBUFFER_LISTS 256
-static List *buffer_lists[NBUFFER_LISTS];
+static PG_GLOBAL_RUNTIME List *buffer_lists[NBUFFER_LISTS];
 
 /* These must be exported for EXEC_BACKEND case ... annoying */
 #ifndef WIN32
-int			syslogPipe[2] = {-1, -1};
+PG_GLOBAL_RUNTIME int syslogPipe[2] = {-1, -1};
 #else
-HANDLE		syslogPipe[2] = {0, 0};
+PG_GLOBAL_RUNTIME HANDLE syslogPipe[2] = {0, 0};
 #endif
 
 #ifdef WIN32
-static HANDLE threadHandle = 0;
-static CRITICAL_SECTION sysloggerSection;
+static PG_GLOBAL_RUNTIME HANDLE threadHandle = 0;
+static PG_GLOBAL_RUNTIME CRITICAL_SECTION sysloggerSection;
 #endif
 
 /*
  * Flags set by interrupt handlers for later service in the main loop.
  */
-static volatile sig_atomic_t rotation_requested = false;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t rotation_requested = false;
 
 
 /* Local subroutines */

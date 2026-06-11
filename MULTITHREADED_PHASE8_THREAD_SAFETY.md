@@ -122,6 +122,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   process-mode supervision structures in this phase; later worker-runtime
   phases must decide which entries represent thread-owned in-tree workers
   rather than forked child processes.
+- syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
+  flags, active log-file handles, previous log file names, partial-message
+  buffers, exported pipe descriptors, and Windows helper-thread state are
+  runtime-global logging-service state. Threaded normal mode will still need a
+  worker-runtime decision for whether syslogger remains a dedicated service
+  thread or is folded into a runtime logging component.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1792,6 +1798,13 @@ Validation for this slice:
   postmaster child-slot state. The live smoke verified a client backend was
   visible through `pg_stat_activity` and that a connected backend had a
   positive backend PID before fast shutdown.
+- focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
+  coverage, global-lifetime scanner coverage, incremental full
+  rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
+  classifying syslogger service state. The live smoke started the collector,
+  emitted a `RAISE LOG` marker from SQL, verified `current_logfiles`, verified
+  the collected log file was non-empty, found the marker in that file, and
+  stopped the server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster
