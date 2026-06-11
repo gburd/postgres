@@ -1017,12 +1017,6 @@ src/backend/utils/cache/relcache.c	06b9e7c3eb63f9742e91369d00276a60aa46ce92	EOXa
 src/backend/utils/cache/relcache.c	dd8563bca0f3cbc29a46d17430ac94d27f53e014	NextEOXactTupleDescNum	static int NextEOXactTupleDescNum = 0;
 src/backend/utils/cache/relcache.c	41bfc2781e8adfcc6fc4609e9e616ef4723b58ba	EOXactTupleDescArrayLen	static int EOXactTupleDescArrayLen = 0;
 src/backend/utils/cache/relcache.c	10b13aa5ea4eedcaeec9dc592e5a7115e08a4aba	OpClassCache	static HTAB *OpClassCache = NULL;
-src/backend/utils/cache/relmapper.c	024b4d8962581eac1874dc157bc37b4e4dcc9432	shared_map	static RelMapFile shared_map;
-src/backend/utils/cache/relmapper.c	8935a3d3da82f9d13966276a4d1c2332b5a28722	local_map	static RelMapFile local_map;
-src/backend/utils/cache/relmapper.c	bca032e1ae3be31e6fa13f5523bfc61c408c5b14	active_shared_updates	static RelMapFile active_shared_updates;
-src/backend/utils/cache/relmapper.c	1ab821354071efcc40aca0538d4e261b0dc68469	active_local_updates	static RelMapFile active_local_updates;
-src/backend/utils/cache/relmapper.c	7ad08ae1bdc4086a94946274dcad0e2c50d143c4	pending_shared_updates	static RelMapFile pending_shared_updates;
-src/backend/utils/cache/relmapper.c	d5c482f8e8f94f7746d3d84c5a1ec8d84e33b74d	pending_local_updates	static RelMapFile pending_local_updates;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;

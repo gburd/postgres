@@ -409,6 +409,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   owned by the current transaction/critical-section path, while syscache,
   relcache, and relsync callback registries are session-local TLS state
   registered by caches loaded in the current backend.
+- relation mapper state in `relmapper.c`: loaded shared and local relation-map
+  snapshots are session-local TLS cache state reloaded on relmap
+  invalidation, while active and pending relation-map update buffers are
+  execution-local TLS state owned by the current transaction or parallel worker
+  restore path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1133,6 +1138,13 @@ Validation for this slice:
   changed the prepared query's result type and hit PostgreSQL's expected
   `cached plan must not change result type` error, confirming invalidation
   occurred but not suitable as a passing smoke.
+- focused `relmapper.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, fixture-backed cluster/alter/table-space
+  regression coverage, and a live temp-cluster mapped-catalog smoke after
+  classifying relation mapper state. The smoke resolved `pg_class` through the
+  relation map, rewrote it with `VACUUM FULL`, verified the old mapped
+  filenumber no longer resolved, and verified the new mapped filenumber
+  resolved back to `pg_class`.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;

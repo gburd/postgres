@@ -110,8 +110,8 @@ typedef struct SerializedActiveRelMaps
  * local map file are stored here.  These can be reloaded from disk
  * immediately whenever we receive an update sinval message.
  */
-static RelMapFile shared_map;
-static RelMapFile local_map;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION RelMapFile shared_map;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION RelMapFile local_map;
 
 /*
  * We use the same RelMapFile data structure to track uncommitted local
@@ -129,10 +129,10 @@ static RelMapFile local_map;
  * Active shared and active local updates are serialized by the parallel
  * infrastructure, and deserialized within parallel workers.
  */
-static RelMapFile active_shared_updates;
-static RelMapFile active_local_updates;
-static RelMapFile pending_shared_updates;
-static RelMapFile pending_local_updates;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile active_shared_updates;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile active_local_updates;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile pending_shared_updates;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile pending_local_updates;
 
 
 /* non-export function prototypes */
