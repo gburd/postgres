@@ -387,6 +387,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   options cache and tablespace options cache are session-local TLS hash tables
   allocated under `CacheMemoryContext` and invalidated by the current backend's
   syscache callback path.
+- event-trigger cache state in `evtcache.c`: `EventTriggerCache`,
+  `EventTriggerCacheContext`, and `EventTriggerCacheState` are session-local
+  TLS state allocated under `CacheMemoryContext` and invalidated by the
+  current backend's syscache callback path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1077,6 +1081,10 @@ Validation for this slice:
   regression coverage, and a direct temp-cluster tablespace option
   create/alter/drop smoke after classifying reloption caches as
   session-local TLS.
+- focused `evtcache.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed `event_trigger`
+  regression coverage through the `create_am` dependency prefix after
+  classifying event-trigger cache state as session-local TLS.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
