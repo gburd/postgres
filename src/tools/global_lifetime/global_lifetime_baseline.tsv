@@ -987,8 +987,6 @@ src/backend/utils/adt/jsonpath_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	y
 src/backend/utils/adt/jsonpath_scan.c	2eca0ca7cecf4e4c3168eb99e618ce7fd4ed2422	yy_start_state_list,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition,yy_transition	static const struct yy_trans_info *yy_start_state_list[11] = { &yy_transition[1], &yy_transition[3], &yy_transition[261], &yy_transition[519], &yy_transition[777], &yy_transition[1035], &yy_transition[1293], &yy_transition[1551], &yy_tra...
 src/backend/utils/adt/pg_locale.c	ec502045bbd3dc2fd242e54dde2e89fa2fe95b21	c_locale	static struct pg_locale_struct c_locale = { .deterministic = true, .collate_is_c = true, .ctype_is_c = true, };
 src/backend/utils/adt/pg_locale_icu.c	d0fac1d061a083e75fdd52a85dce82dd3be6d606	icu_converter	static UConverter *icu_converter = NULL;
-src/backend/utils/adt/pseudorandomfuncs.c	3e6dbc6d505fe58ef7cbc5db0789caf9a8a99591	prng_state	static pg_prng_state prng_state;
-src/backend/utils/adt/pseudorandomfuncs.c	01e15ad5b55f8f9fde05aa58c1f12392df431eef	prng_seed_set	static bool prng_seed_set = false;
 src/backend/utils/adt/ri_triggers.c	cc0ca8574e2edfcc22bc19e21bb034458972a71b	ri_constraint_cache	static HTAB *ri_constraint_cache = NULL;
 src/backend/utils/adt/ri_triggers.c	f59d0c184dc688adeb1344f6caa494984b2e95f0	ri_query_cache	static HTAB *ri_query_cache = NULL;
 src/backend/utils/adt/ri_triggers.c	e83aabc3433952412eefb14ac903807e7bda41e9	ri_compare_cache	static HTAB *ri_compare_cache = NULL;

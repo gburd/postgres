@@ -56,6 +56,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   compiled-pattern count, and compiled-pattern array are session-local TLS
   state because compiled regexps are writable backend/session cache entries
   allocated under the current backend's memory contexts.
+- SQL pseudorandom generator state in `pseudorandomfuncs.c`: `prng_state`
+  and `prng_seed_set` are session-local TLS state because `setseed()` and
+  later `random*()` calls are user-visible session behavior that must not be
+  shared by concurrent threaded sessions.
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
@@ -911,6 +915,10 @@ Validation for this slice:
   constants, regexp cache state, lock-name metadata, and text-search lookup
   strings. The direct `pg_regress` invocation ran the core fixture prefix plus
   those five tests and passed all 33 tests.
+- focused `pseudorandomfuncs.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, and direct temp-instance
+  `random` regression coverage after classifying SQL pseudorandom generator
+  state as session-local TLS. The direct `pg_regress` invocation passed.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

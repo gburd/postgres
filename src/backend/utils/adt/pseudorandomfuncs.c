@@ -22,9 +22,9 @@
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
-/* Shared PRNG state used by all the random functions */
-static pg_prng_state prng_state;
-static bool prng_seed_set = false;
+/* Session-local PRNG state used by all the random functions */
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_prng_state prng_state;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool prng_seed_set = false;
 
 /*
  * Macro for checking the range bounds of random(min, max) functions. Throws
