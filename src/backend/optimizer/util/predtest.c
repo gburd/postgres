@@ -2092,7 +2092,7 @@ typedef struct OprProofCacheEntry
 	Oid			refute_test_op; /* OID of the test operator, or 0 if none */
 } OprProofCacheEntry;
 
-static HTAB *OprProofCacheHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *OprProofCacheHash = NULL;
 
 
 /*

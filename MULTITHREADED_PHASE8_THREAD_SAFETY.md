@@ -236,6 +236,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   enablement toggles, parallel planner toggles, partition-pruning toggles,
   collapse limits, `constraint_exclusion`, and the eager/distinct/self-join
   planner toggles;
+- planner extension ID mapping state: the planner-extension name array and
+  assigned/allocated counters in `extendplan.c`, GEQO's cached planner
+  extension ID, `disable_cost`, and the predicate proof cache in `predtest.c`
+  are session-local TLS state. Planner-extension IDs are explicitly not stable
+  across backends today, and the proof cache is a per-session syscache-backed
+  lookup cache.
 - exported session-facing GUC backing variables in `guc_tables.c`, including
   `application_name`, `role_string`, `tcp_keepalives_idle`,
   `tcp_keepalives_interval`, `tcp_keepalives_count`, and `tcp_user_timeout`.
@@ -1370,6 +1376,12 @@ Validation for this slice:
   direct temp-cluster node I/O smoke coverage through `EXPLAIN (VERBOSE,
   FORMAT JSON) SELECT 1` after classifying node registry and node
   serialization/parser scratch state.
+- focused `geqo_main.o`, `costsize.o`, `extendplan.o`, and `predtest.o`
+  compile coverage, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, and direct temp-cluster
+  planner smoke coverage through `EXPLAIN (VERBOSE) SELECT * FROM generate_series(1, 3) g`
+  after classifying planner-extension ID mapping, `disable_cost`, and
+  predicate proof cache state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

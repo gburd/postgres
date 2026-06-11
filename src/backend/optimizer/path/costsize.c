@@ -139,7 +139,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION double recursive_worktable_factor = DEFAULT_RE
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int effective_cache_size = DEFAULT_EFFECTIVE_CACHE_SIZE;
 
-Cost		disable_cost = 1.0e10;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Cost disable_cost = 1.0e10;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_workers_per_gather = 2;
 

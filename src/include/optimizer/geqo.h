@@ -67,7 +67,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_generations;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_selection_bias;
 
-extern PGDLLIMPORT int Geqo_planner_extension_id;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_planner_extension_id;
 
 #define DEFAULT_GEQO_SELECTION_BIAS 2.0
 #define MIN_GEQO_SELECTION_BIAS 1.5

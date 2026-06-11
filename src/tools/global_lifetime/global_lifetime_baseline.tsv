@@ -647,12 +647,6 @@ src/backend/nodes/equalfuncs.switch.c	c4bf4b50a81cde0e1c52cef7445defa8de799e9a	r
 src/backend/nodes/equalfuncs.switch.c	04e10b7a6e6a55ee8494298146a8fc5bbbda3588	retval	retval = _equalBoolean(a, b);
 src/backend/nodes/equalfuncs.switch.c	5e6b561598db8600c699d9d707341e6d3dc45975	retval	retval = _equalString(a, b);
 src/backend/nodes/equalfuncs.switch.c	d922ab0d4e4245cc664b9e9a809b83798e989687	retval	retval = _equalBitString(a, b);
-src/backend/optimizer/geqo/geqo_main.c	a4921145ff7752a0a55ac1c6cea295f9daaa2cf5	Geqo_planner_extension_id	int Geqo_planner_extension_id = -1;
-src/backend/optimizer/path/costsize.c	cd488f762648cc3b16e33f41585f95273acee6a0	disable_cost	Cost disable_cost = 1.0e10;
-src/backend/optimizer/util/extendplan.c	b7606e664007fa63c1ff6ee69d6c8030a37ce1d8	PlannerExtensionNameArray	static const char **PlannerExtensionNameArray = NULL;
-src/backend/optimizer/util/extendplan.c	d6bd165175a4f9c3f6ded30eabaffdbbeaf99126	PlannerExtensionNamesAssigned	static int PlannerExtensionNamesAssigned = 0;
-src/backend/optimizer/util/extendplan.c	6e7a85fffb67a14b77c2178670438faa17644a56	PlannerExtensionNamesAllocated	static int PlannerExtensionNamesAllocated = 0;
-src/backend/optimizer/util/predtest.c	f708fe804b50edee54e4b29b5a78c6ca85e6cb3a	OprProofCacheHash	static HTAB *OprProofCacheHash = NULL;
 src/backend/parser/gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/parser/gram.c	91bd87f586916b067da0b6e66741b1b00a1dcebd	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "IDENT", "UIDENT", "FCONST", "SCONST", "USCONST", "BCONST", "XCONST", "Op", "ICONST", "PARAM", "TYPECAST", "DOT_DOT", "COLON_EQUALS", "EQUALS_GREATER", "LESS_EQUALS", ...
 src/backend/parser/gram.c	20b2b840ccd121348f9264cfef105f72ed17042c	yyoutput,yytype,yyvaluep,yylocationp,yyoutput,yytype,yyvaluep,yylocationp,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, YYLTYPE const * const yylocationp, core_yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, yylocationp, yyscan...
@@ -1382,8 +1376,6 @@ src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelReq
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...
 src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettext_tbl	extern PGDLLIMPORT const char *pg_enc2gettext_tbl[];
-src/include/optimizer/cost.h	d6fc94daad0131390bca7683b236c7ab33acf4f6	disable_cost	extern PGDLLIMPORT Cost disable_cost;
-src/include/optimizer/geqo.h	45ac2f41a8a187e48e4f24fa54b91d7ca1c479ef	Geqo_planner_extension_id	extern PGDLLIMPORT int Geqo_planner_extension_id;
 src/include/pg_getopt.h	e2df147a7c555931a366949d236cf23b20b857ae	optarg	extern PGDLLIMPORT char *optarg;
 src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern PGDLLIMPORT int optind;
 src/include/pg_getopt.h	a3eb7ff42123ef7f51d3c03d50eb16ed56c5333b	opterr	extern PGDLLIMPORT int opterr;
