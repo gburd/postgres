@@ -178,7 +178,7 @@ typedef struct InvalMessageArray
 	int			maxmsgs;		/* current allocated size of array */
 } InvalMessageArray;
 
-static InvalMessageArray InvalMessageArrays[2];
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION InvalMessageArray InvalMessageArrays[2];
 
 /* Control information for one logical group of messages */
 typedef struct InvalidationMsgsGroup
@@ -252,9 +252,9 @@ typedef struct TransInvalidationInfo
 	int			my_level;
 } TransInvalidationInfo;
 
-static TransInvalidationInfo *transInvalInfo = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransInvalidationInfo *transInvalInfo = NULL;
 
-static InvalidationInfo *inplaceInvalInfo = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION InvalidationInfo *inplaceInvalInfo = NULL;
 
 /* GUC storage */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;
@@ -273,7 +273,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;
 #define MAX_RELCACHE_CALLBACKS 10
 #define MAX_RELSYNC_CALLBACKS 10
 
-static struct SYSCACHECALLBACK
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct SYSCACHECALLBACK
 {
 	int16		id;				/* cache number */
 	int16		link;			/* next callback index+1 for same cache */
@@ -281,25 +281,25 @@ static struct SYSCACHECALLBACK
 	Datum		arg;
 }			syscache_callback_list[MAX_SYSCACHE_CALLBACKS];
 
-static int16 syscache_callback_links[SysCacheSize];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int16 syscache_callback_links[SysCacheSize];
 
-static int	syscache_callback_count = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int syscache_callback_count = 0;
 
-static struct RELCACHECALLBACK
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct RELCACHECALLBACK
 {
 	RelcacheCallbackFunction function;
 	Datum		arg;
 }			relcache_callback_list[MAX_RELCACHE_CALLBACKS];
 
-static int	relcache_callback_count = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int relcache_callback_count = 0;
 
-static struct RELSYNCCALLBACK
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct RELSYNCCALLBACK
 {
 	RelSyncCallbackFunction function;
 	Datum		arg;
 }			relsync_callback_list[MAX_RELSYNC_CALLBACKS];
 
-static int	relsync_callback_count = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int relsync_callback_count = 0;
 
 
 /* ----------------------------------------------------------------

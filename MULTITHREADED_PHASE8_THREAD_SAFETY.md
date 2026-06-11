@@ -404,6 +404,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - syscache wrapper state in `syscache.c`: `SysCache`, `CacheInitialized`, and
   the derived relation/supporting-relation OID lookup arrays are session-local
   TLS state initialized by the current backend's `InitCatalogCache()` path.
+- invalidation dispatcher state in `inval.c`: transaction and inplace
+  invalidation message arrays and stack pointers are execution-local TLS state
+  owned by the current transaction/critical-section path, while syscache,
+  relcache, and relsync callback registries are session-local TLS state
+  registered by caches loaded in the current backend.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1119,6 +1124,15 @@ Validation for this slice:
   fixtures, `type_sanity`, `opr_sanity`, `misc_sanity`, and `oidjoins`; the
   DDL group covered create/alter/drop, plan-cache, domain, rowtype, range,
   dependency, and GUC paths.
+- focused `inval.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, DDL/syscache invalidation regression
+  coverage, and a live temp-cluster prepared-plan invalidation smoke after
+  classifying invalidation dispatcher state. The smoke kept a prepared query
+  across table rewrite-relevant DDL, index create/drop, `ANALYZE`, and data
+  updates and verified correct results. An initial variant intentionally
+  changed the prepared query's result type and hit PostgreSQL's expected
+  `cached plan must not change result type` error, confirming invalidation
+  occurred but not suitable as a passing smoke.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
