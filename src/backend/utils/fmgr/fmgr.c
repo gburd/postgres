@@ -54,7 +54,7 @@ typedef struct
 	const Pg_finfo_record *inforec; /* address of its info record */
 } CFuncHashTabEntry;
 
-static HTAB *CFuncHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *CFuncHash = NULL;
 
 
 static void fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,

@@ -395,7 +395,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   signal workspace as execution-local state;
 - text-search session GUC/cache state: `TSCurrentConfig` and
   `TSCurrentConfigCache`.
-- dynamic loader session GUC backing variable: `Dynamic_library_path`.
+- dynamic loader state in `dfmgr.c` and `fmgr.c`: `Dynamic_library_path` is a
+  session GUC backing variable, `file_list`, `file_tail`, and the rendezvous
+  variable hash are runtime-global dynamic-library state governed by the Phase
+  7 extension backend-model gate, and `CFuncHash` is a session-local TLS cache
+  for `pg_proc`-derived C function addresses.
 - plan-cache mode session GUC backing variable: `plan_cache_mode`.
 - table access method and synchronized-scan session GUC backing variables:
   `default_table_access_method` and `synchronize_seqscans`.
@@ -1064,7 +1068,11 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc tsearch`;
 - live temp-cluster smoke coverage for `default_text_search_config`, including
   repeated `SET`, `SHOW`, `get_current_ts_config()`, and `to_tsvector()` calls;
-- focused `dfmgr.o` compile coverage;
+- focused `dfmgr.o` and `fmgr.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, and focused backend-model
+  extension regression coverage after classifying the dynamic-library list,
+  rendezvous hash, and C function cache. Regression coverage included
+  `test_ext_backend_model` and `test_ext_backend_model_pooled`;
 - fixture-backed dynamic loader regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table

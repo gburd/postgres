@@ -1064,9 +1064,6 @@ src/backend/utils/cache/typcache.c	a9432882be36f6f9ab56f1336ea2bdf3204d62b8	Reco
 src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	RecordCacheArrayLen	static int32 RecordCacheArrayLen = 0;
 src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
 src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
-src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
-src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
-src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;

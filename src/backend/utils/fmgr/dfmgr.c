@@ -57,8 +57,8 @@ struct DynamicFileList
 	char		filename[FLEXIBLE_ARRAY_MEMBER];	/* Full pathname of file */
 };
 
-static DynamicFileList *file_list = NULL;
-static DynamicFileList *file_tail = NULL;
+static PG_GLOBAL_RUNTIME DynamicFileList *file_list = NULL;
+static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 
 /* stat() call under Win32 returns an st_ino field, but it has no meaning */
 #ifndef WIN32
@@ -836,7 +836,7 @@ find_in_path(const char *basename, const char *path, const char *path_param,
 void	  **
 find_rendezvous_variable(const char *varName)
 {
-	static HTAB *rendezvousHash = NULL;
+	static PG_GLOBAL_RUNTIME HTAB *rendezvousHash = NULL;
 
 	rendezvousHashEntry *hentry;
 	bool		found;
