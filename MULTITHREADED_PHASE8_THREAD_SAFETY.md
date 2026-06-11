@@ -483,6 +483,11 @@ B-tree vacuum cycle state in `nbtutils.c` is now explicitly classified as
 shared-memory state. The `btvacinfo` pointer targets the shared active-vacuum
 table registered with `ShmemRequestStruct()` and protected by
 `BtreeVacuumLock`.
+SLRU saved I/O error details in `slru.c` are now backend-local TLS. Physical
+SLRU read/write helpers save an error cause and `errno` for a later
+`SlruReportIOError()` call in the same backend; sharing those mutable fields
+between concurrently executing threaded backends would corrupt the reported
+failure.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -923,6 +928,8 @@ Validation for this slice:
   regression coverage after classifying synchronized-scan shared-memory state.
 - focused `nbtutils.o` compile coverage plus process-mode btree/vacuum
   regression coverage after classifying btree vacuum shared-memory state.
+- focused `slru.o` compile coverage plus transaction and async-notify
+  regression coverage after classifying backend-local SLRU saved-error state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
