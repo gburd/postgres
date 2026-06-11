@@ -869,10 +869,6 @@ src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yys
 src/backend/replication/repl_gram.c	4081e776f4148f971034d30ccfb949f843c59270	YYPARSE_PARAM	int yyparse (void *YYPARSE_PARAM) int yyparse (YYPARSE_PARAM) void *YYPARSE_PARAM;
 src/backend/replication/repl_gram.c	84da4e971c35224dcb0415e1a21053e455b42a42	replication_parse_result_p,replication_parse_result_p,replication_parse_result_p	int yyparse (Node **replication_parse_result_p, yyscan_t yyscanner) int yyparse (replication_parse_result_p, yyscanner) Node **replication_parse_result_p;
 src/backend/replication/repl_gram.c	186617ad9d6f088bfef3fabd1d3457d0d5929b36	yyscanner	yyscan_t yyscanner;
-src/backend/replication/slot.c	4387c37d690b5227dd0e5366c2c4e2f85c55f770	ReplicationSlotCtl	ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
-src/backend/replication/slot.c	4e02785df0de6968199b56b2e51ceb053ba80b5f	MyReplicationSlot	ReplicationSlot *MyReplicationSlot = NULL;
-src/backend/replication/slot.c	3014e92d1f2d4887f0b831c7578e3c6a7cea2500	synchronized_standby_slots_config	static SyncStandbySlotsConfigData *synchronized_standby_slots_config;
-src/backend/replication/slot.c	dd512fcb02b0fa60644f6916961061b7ef484419	ss_oldest_flush_lsn	static XLogRecPtr ss_oldest_flush_lsn = InvalidXLogRecPtr;
 src/backend/replication/slotfuncs.c	feee769c50c53894295d1f11e510142c821b2e5d	SlotSyncSkipReasonNames	static const char *SlotSyncSkipReasonNames[] = { [SS_SKIP_NONE] = "none", [SS_SKIP_WAL_NOT_FLUSHED] = "wal_not_flushed", [SS_SKIP_WAL_OR_ROWS_REMOVED] = "wal_or_rows_removed", [SS_SKIP_NO_CONSISTENT_SNAPSHOT] = "no_consistent_snapshot", ...
 src/backend/replication/syncrep.c	11a323c50e36ec90618a4356818144f5cb0acbcb	announce_next_takeover	static bool announce_next_takeover = true;
 src/backend/replication/syncrep.c	1411097f920d1a24143dc37c5def0f0ad86cc7ae	SyncRepConfig	SyncRepConfigData *SyncRepConfig = NULL;

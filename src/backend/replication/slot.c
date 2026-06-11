@@ -144,7 +144,7 @@ StaticAssertDecl(lengthof(SlotInvalidationCauses) == (RS_INVAL_MAX_CAUSES + 1),
 #define SLOT_VERSION	5		/* version for new files */
 
 /* Control array for replication slot management */
-ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
+PG_GLOBAL_SHMEM ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
 
 static void ReplicationSlotsShmemRequest(void *arg);
 static void ReplicationSlotsShmemInit(void *arg);
@@ -155,7 +155,7 @@ const ShmemCallbacks ReplicationSlotsShmemCallbacks = {
 };
 
 /* My backend's replication slot in the shared memory array */
-ReplicationSlot *MyReplicationSlot = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ReplicationSlot *MyReplicationSlot = NULL;
 
 /* GUC variables */
 PG_GLOBAL_RUNTIME int max_replication_slots = 10; /* the maximum number of replication
@@ -176,13 +176,13 @@ PG_GLOBAL_RUNTIME int idle_replication_slot_timeout_secs = 0;
 PG_GLOBAL_RUNTIME char *synchronized_standby_slots;
 
 /* This is the parsed and cached configuration for synchronized_standby_slots */
-static SyncStandbySlotsConfigData *synchronized_standby_slots_config;
+static PG_GLOBAL_RUNTIME SyncStandbySlotsConfigData *synchronized_standby_slots_config;
 
 /*
  * Oldest LSN that has been confirmed to be flushed to the standbys
  * corresponding to the physical slots specified in the synchronized_standby_slots GUC.
  */
-static XLogRecPtr ss_oldest_flush_lsn = InvalidXLogRecPtr;
+static PG_GLOBAL_RUNTIME XLogRecPtr ss_oldest_flush_lsn = InvalidXLogRecPtr;
 
 static void ReplicationSlotShmemExit(int code, Datum arg);
 static bool IsSlotForConflictCheck(const char *name);

@@ -320,8 +320,8 @@ ReplicationSlotSetInactiveSince(ReplicationSlot *s, TimestampTz ts,
 /*
  * Pointers to shared memory
  */
-extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
-extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM ReplicationSlotCtlData *ReplicationSlotCtl;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ReplicationSlot *MyReplicationSlot;
 
 /* GUCs */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_replication_slots;
