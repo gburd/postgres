@@ -352,6 +352,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   cache. Regex character-class and error strings are immutable metadata.
 - fixed replication metadata: the libpq walreceiver callback table and logical
   replication conflict type-name table are immutable metadata.
+- port-level semaphore and shared-memory attachment state: semaphore arrays
+  stored in shared memory, OS shared-memory segment identifiers/addresses, and
+  anonymous shared-memory backing pointers are classified as shared-memory
+  state, while OS semaphore allocation counters and cleanup handle arrays are
+  runtime-global startup/shutdown state.
 - storage and I/O session GUC backing variables:
   `backend_flush_after`, `effective_io_concurrency`, `file_copy_method`,
   `ignore_checksum_failure`, `io_combine_limit`,
