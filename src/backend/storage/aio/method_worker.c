@@ -46,6 +46,7 @@
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
+#include "utils/global_lifetime.h"
 #include "utils/injection_point.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
@@ -134,10 +135,10 @@ PG_GLOBAL_RUNTIME int io_worker_idle_timeout = 60000;
 PG_GLOBAL_RUNTIME int io_worker_launch_interval = 100;
 
 
-static int	io_worker_queue_size = 64;
-static int	MyIoWorkerId = -1;
-static PgAioWorkerSubmissionQueue *io_worker_submission_queue;
-static PgAioWorkerControl *io_worker_control;
+static PG_GLOBAL_RUNTIME int io_worker_queue_size = 64;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyIoWorkerId = -1;
+static PG_GLOBAL_SHMEM PgAioWorkerSubmissionQueue *io_worker_submission_queue;
+static PG_GLOBAL_SHMEM PgAioWorkerControl *io_worker_control;
 
 
 static void

@@ -122,6 +122,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   process-mode supervision structures in this phase; later worker-runtime
   phases must decide which entries represent thread-owned in-tree workers
   rather than forked child processes.
+- AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
+  and `io_worker_control` are shared-memory state used by submitters, the
+  postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
+  and `MyIoWorkerId` is backend-local TLS state for the running IO worker.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -709,7 +713,7 @@ postmaster, shared-memory, or startup-computed runtime state:
   `data_sync_retry`, `dynamic_shared_memory_type`, `file_extend_method`,
   `io_max_combine_limit`, `io_max_concurrency`, `io_max_workers`,
   `io_method`, `io_min_workers`, `io_worker_idle_timeout`,
-  `io_worker_launch_interval`, `max_files_per_process`,
+  `io_worker_launch_interval`, `io_worker_queue_size`, `max_files_per_process`,
   `min_dynamic_shared_memory`, `recovery_init_sync_method`, and
   `shared_memory_type`.
 - lock-manager sizing GUC backing variables:
@@ -1808,6 +1812,13 @@ Validation for this slice:
   AIO smoke after classifying the shared AIO control pointers, backend-local
   AIO state pointer, runtime method dispatch pointer, and immutable AIO method
   and target tables.
+- focused `method_worker.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, focused core `guc` regression
+  coverage, and direct temp-cluster worker-AIO smoke after classifying AIO
+  worker method state. The live smoke used `io_method=worker`, verified two
+  `io worker` backends were visible, created heap data large enough to
+  exercise buffer IO, forced checkpoints and sequential scans, verified SQL
+  results, and stopped the server with fast shutdown.
 - focused WAL sender compile coverage for `walsender.o`, `syncrep.o`,
   `slot.o`, `postinit.o`, `backend_startup.o`, and related direct users,
   global-lifetime scanner coverage, backend clean plus generated-header

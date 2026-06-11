@@ -197,10 +197,6 @@ src/backend/replication/walreceiver.c	381937c21cbddb93d3b0eefc9580987d45ab518c	r
 src/backend/storage/aio/method_io_uring.c	ae3edfa77447cd8e2f3a5b95feb704789a262b6c	pgaio_uring_contexts	static PgAioUringContext *pgaio_uring_contexts;
 src/backend/storage/aio/method_io_uring.c	f30ab475d31df177b9480ce0727de96a9474e989	pgaio_my_uring_context	static PgAioUringContext *pgaio_my_uring_context;
 src/backend/storage/aio/method_io_uring.c	64942f55b8d007237bfe7b40c5c07f03e5320316	pgaio_uring_caps	static PgAioUringCaps pgaio_uring_caps = { .checked = false, .mem_init_size = -1, };
-src/backend/storage/aio/method_worker.c	4adabd106106599a05445e486aa49d48a40c9cc5	io_worker_queue_size	static int io_worker_queue_size = 64;
-src/backend/storage/aio/method_worker.c	c4d4c17c422f22f7fe622c62b4ea1ffa475ea251	MyIoWorkerId	static int MyIoWorkerId = -1;
-src/backend/storage/aio/method_worker.c	dae4e835c89a4b60bab66b5d96281122061be883	io_worker_submission_queue	static PgAioWorkerSubmissionQueue *io_worker_submission_queue;
-src/backend/storage/aio/method_worker.c	8b89802eb9aabf734a7de9912fda9d383a4ec45f	io_worker_control	static PgAioWorkerControl *io_worker_control;
 src/backend/storage/ipc/dsm.c	999d898553d823e58004ae614f4e971937d26b4c	dsm_init_done	static bool dsm_init_done = false;
 src/backend/storage/ipc/dsm.c	c3a2d9d414db103ad645aa1e19a59869131d105f	dsm_main_space_begin	static void *dsm_main_space_begin = NULL;
 src/backend/storage/ipc/dsm.c	815c6dbc715364e682c84b689b14709653f3b516	dsm_main_space_size	static size_t dsm_main_space_size;
