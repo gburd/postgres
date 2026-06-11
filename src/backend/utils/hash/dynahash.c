@@ -1807,9 +1807,11 @@ next_pow2_int(int64 num)
 
 #define MAX_SEQ_SCANS 100
 
-static HTAB *seq_scan_tables[MAX_SEQ_SCANS];	/* tables being scanned */
-static int	seq_scan_level[MAX_SEQ_SCANS];	/* subtransaction nest level */
-static int	num_seq_scans = 0;
+/* Tables being scanned. */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *seq_scan_tables[MAX_SEQ_SCANS];
+/* Subtransaction nest level. */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int seq_scan_level[MAX_SEQ_SCANS];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int num_seq_scans = 0;
 
 
 /* Register a table as having an active hash_seq_search scan */

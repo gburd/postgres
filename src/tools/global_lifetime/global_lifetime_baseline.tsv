@@ -1743,9 +1743,6 @@ src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tai
 src/backend/utils/fmgr/fmgr.c	86465a4aa497c00a1ae44241682f309ee8728302	needs_fmgr_hook	PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook = NULL;
 src/backend/utils/fmgr/fmgr.c	6f90ab2a6db397c7d161e764335fc343a636a05b	fmgr_hook	PGDLLIMPORT fmgr_hook_type fmgr_hook = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
-src/backend/utils/hash/dynahash.c	ea1cbb7323c6dee8f6aa03cb8ce8a2bafa1e06d3	seq_scan_tables	static HTAB *seq_scan_tables[MAX_SEQ_SCANS];
-src/backend/utils/hash/dynahash.c	7bc6136857839b99e153ca2f91cba4d7d66e1406	seq_scan_level	static int seq_scan_level[MAX_SEQ_SCANS];
-src/backend/utils/hash/dynahash.c	71c727fbf6eef6f7f9635050ae786a89d7afcf88	num_seq_scans	static int num_seq_scans = 0;
 src/backend/utils/misc/guc-file.c	a3c0b6ddda450a8c693fbb3e548870fbaa47d6e7	ConfigFileLineno	static unsigned int ConfigFileLineno;
 src/backend/utils/misc/guc-file.c	289aabc0793767da1dec83a759f162061bb43f70	GUC_flex_fatal_errmsg	static const char *GUC_flex_fatal_errmsg;
 src/backend/utils/misc/guc-file.c	9262b874d1e6c4cbb91b8d48a29bc8200a15c5f6	GUC_flex_fatal_jmp	static sigjmp_buf *GUC_flex_fatal_jmp;

@@ -61,6 +61,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   queue pointer as shared-memory state, and the processed-message counter,
   recursive receive buffer/counters, and next local transaction ID as
   backend-local state;
+- dynahash active sequential-scan tracking state in `dynahash.c`;
 - parallel-query backend state in `parallel.c`: worker number,
   worker-initialization flag, fixed parallel state pointer, active parallel
   context list, and parallel leader PID copy;
@@ -406,6 +407,9 @@ pointer in `sinvaladt.c` is shared-memory state. The processed-message counter
 exported as `SharedInvalidMessageCounter`, the recursive receive buffer and
 counters in `ReceiveSharedInvalidMessages()`, and `nextLocalTransactionId` are
 backend-local TLS.
+Dynahash active sequential-scan tracking in `dynahash.c` is now backend-local
+TLS. It records the hash scans currently open in one backend and cannot be
+shared by concurrently executing threaded backends.
 Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
@@ -866,6 +870,8 @@ Validation for this slice:
 - focused `sinval.o` and `sinvaladt.o` compile coverage plus cache
   invalidation regression coverage after classifying shared-invalidation
   shared/backend state.
+- focused `dynahash.o` compile coverage plus hash-scan regression coverage
+  after classifying active hash sequential-scan tracking state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
