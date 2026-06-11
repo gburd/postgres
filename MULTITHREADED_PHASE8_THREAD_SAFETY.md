@@ -124,6 +124,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   locations, `InRecovery`, `InRedo`, `standbyState`, and the consistency flag
   as runtime state.  The `XLogRecoveryCtl` pointer is classified as
   shared-memory state;
+- WAL recovery replay state in `xlogrecovery.c` and `xlogutils.c`: startup
+  process WAL reader/prefetcher pointers, WAL source/read bookkeeping,
+  recovery receipt and backup-end state, consistency-check buffers,
+  recovery-stop scratch state, and invalid-page replay bookkeeping as runtime
+  state.  The local hot-standby and promotion caches use backend-local TLS, and
+  `xlogSourceNames` is classified as immutable state;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
@@ -999,6 +1005,11 @@ Validation for this slice:
   rebuild/install, global-lifetime scanner coverage, and a process-mode
   immediate-stop/restart crash-recovery smoke after classifying WAL recovery
   mode state.
+- focused `xlogrecovery.o` and `xlogutils.o` compile coverage, full
+  rebuild/install, global-lifetime scanner coverage with no remaining
+  `xlogrecovery.c` or `xlogutils.c` baseline entries, and a process-mode
+  immediate-stop/restart crash-recovery smoke after classifying WAL recovery
+  replay state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
