@@ -79,11 +79,17 @@ const int	day_tab[2][13] =
 	{31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 0}
 };
 
-const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL};
+PG_GLOBAL_IMMUTABLE const char *const months[] =
+{
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL
+};
 
-const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday",
-"Thursday", "Friday", "Saturday", NULL};
+PG_GLOBAL_IMMUTABLE const char *const days[] =
+{
+	"Sunday", "Monday", "Tuesday", "Wednesday",
+	"Thursday", "Friday", "Saturday", NULL
+};
 
 
 /*****************************************************************************
@@ -252,13 +258,13 @@ static const datetkn deltatktbl[] = {
 
 static const int szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
 
-static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
 
 /* Caches of recent lookup results in the above tables */
 
-static const datetkn *datecache[MAXDATEFIELDS] = {NULL};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const datetkn *datecache[MAXDATEFIELDS] = {NULL};
 
-static const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
 
 /* Cache for results of timezone abbreviation lookups */
 
@@ -270,7 +276,7 @@ typedef struct TzAbbrevCache
 	pg_tz	   *tz;				/* relevant zone, if variable-offset */
 } TzAbbrevCache;
 
-static TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
 
 
 /*

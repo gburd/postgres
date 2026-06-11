@@ -309,6 +309,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   cache state for `ClientEncoding`, `DatabaseEncoding`, `MessageEncoding`,
   active conversion functions, pending startup client encoding, and cached
   conversion function lookup records.
+- date/time token lookup state in `datetime.c`: exported month/day name tables
+  are immutable state; the active timezone-abbreviation table and timezone
+  abbreviation decode cache are session-local TLS because they depend on
+  `timezone_abbreviations` and `TimeZone`; the static date and interval token
+  lookup caches are backend-local TLS memoization over immutable token tables.
 - locale GUC backing variables and derived locale cache state in
   `pg_locale.c`, including `locale_messages`, `locale_monetary`,
   `locale_numeric`, `locale_time`, `icu_validation_level`,
@@ -860,6 +865,12 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc strings
   date time timetz timestamp timestamptz interval horology sysviews
   select_parallel`;
+- focused `datetime.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed date/time plus `guc`
+  regression coverage after classifying date/time token tables and caches. The
+  direct `pg_regress` invocation ran the core fixture prefix plus `guc`, `date`,
+  `time`, `timetz`, `timestamp`, `timestamptz`, `interval`, and `horology`, and
+  passed all 35 tests.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

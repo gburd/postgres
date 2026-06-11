@@ -951,12 +951,6 @@ src/backend/utils/adt/acl.c	95f2326393ffd269ab7ef5687ed5fc6121a9c976	cached_role
 src/backend/utils/adt/acl.c	af791291b9055d7cdc6ef594a8612d85752c455d	cached_roles	static List *cached_roles[] = {NIL, NIL, NIL};
 src/backend/utils/adt/acl.c	5543b57292e6138d0fc0dc75b75e2aaaf5db81b4	cached_db_hash	static uint32 cached_db_hash;
 src/backend/utils/adt/array_typanalyze.c	b83e2a3dc4d2603f16154308ce45a07261e511ae	array_extra_data	static ArrayAnalyzeExtraData *array_extra_data;
-src/backend/utils/adt/datetime.c	6d1626ba7c5b7f3fd8e5be15280b2fa41eb493f2	months	const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL};
-src/backend/utils/adt/datetime.c	dfaae14cf8c87a851aded339bdba68fd0879624a	days	const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", NULL};
-src/backend/utils/adt/datetime.c	128a5e753125d6183d29783d7e8749e1ea6ac163	zoneabbrevtbl	static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
-src/backend/utils/adt/datetime.c	36aac662d753bcb29ea96e197728cb767abd45da	datecache	static const datetkn *datecache[MAXDATEFIELDS] = {NULL};
-src/backend/utils/adt/datetime.c	11630c17370c5cf0bec55942ceb107413e087a7c	deltacache	static const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
-src/backend/utils/adt/datetime.c	7ce535870768576269aa395fada4106b6b3604a6	tzabbrevcache	static TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
 src/backend/utils/adt/dbsize.c	43a8e1f741eb248bad3a53715d727bcd3b1f2a14	size_pretty_units	static const struct size_pretty_unit size_pretty_units[] = { {"bytes", 10 * 1024, false, 0}, {"kB", 20 * 1024 - 1, true, 10}, {"MB", 20 * 1024 - 1, true, 20}, {"GB", 20 * 1024 - 1, true, 30}, {"TB", 20 * 1024 - 1, true, 40}, {"PB", 20 * ...
 src/backend/utils/adt/float.c	e63b40517caa21a8045b9a6d3e9f87b6c7e42196	degree_consts_set	static bool degree_consts_set = false;
 src/backend/utils/adt/float.c	078155e801732d6bff06cfc6b8476d6b115ef8ce	sin_30	static float8 sin_30 = 0;
