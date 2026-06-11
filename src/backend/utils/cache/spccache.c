@@ -33,7 +33,7 @@
 
 
 /* Hash table for information about each tablespace */
-static HTAB *TableSpaceCacheHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *TableSpaceCacheHash = NULL;
 
 typedef struct
 {

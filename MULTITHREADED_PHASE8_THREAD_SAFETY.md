@@ -383,6 +383,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   session-local TLS cache whose entries are allocated in `TopMemoryContext`
   and keyed by function OID, call context, argument types, and result
   descriptor.
+- reloption cache state in `attoptcache.c` and `spccache.c`: the attribute
+  options cache and tablespace options cache are session-local TLS hash tables
+  allocated under `CacheMemoryContext` and invalidated by the current backend's
+  syscache callback path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1068,6 +1072,11 @@ Validation for this slice:
   incremental full rebuild/install, fixture-backed SQL-function/plancache
   regression coverage, and a direct temp-cluster SQL-function replacement
   smoke after classifying the cached-function hash table as session-local TLS.
+- focused `attoptcache.o` and `spccache.o` compile coverage, global-lifetime
+  scanner coverage, incremental full rebuild/install, standalone `reloptions`
+  regression coverage, and a direct temp-cluster tablespace option
+  create/alter/drop smoke after classifying reloption caches as
+  session-local TLS.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;

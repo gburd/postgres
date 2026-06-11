@@ -26,7 +26,7 @@
 
 
 /* Hash table for information about each attribute's options */
-static HTAB *AttoptCacheHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *AttoptCacheHash = NULL;
 
 /* attrelid and attnum form the lookup key, and must appear first */
 typedef struct

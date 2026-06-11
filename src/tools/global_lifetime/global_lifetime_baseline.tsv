@@ -1001,7 +1001,6 @@ src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
-src/backend/utils/cache/attoptcache.c	4d9da770d3b8a9b0993f93d00a3b9753590c4c7e	AttoptCacheHash	static HTAB *AttoptCacheHash = NULL;
 src/backend/utils/cache/catcache.c	0863bb1d553bfd48b87efdd5eda01bf09cc2d9c2	catcache_in_progress_stack	static CatCInProgress *catcache_in_progress_stack = NULL;
 src/backend/utils/cache/catcache.c	b3162bf525812405ef6916bb185afd271b43d324	CacheHdr	static CatCacheHeader *CacheHdr = NULL;
 src/backend/utils/cache/evtcache.c	2e0181e8ef05222d01833790805485a7e469d774	EventTriggerCache	static HTAB *EventTriggerCache;
@@ -1039,7 +1038,6 @@ src/backend/utils/cache/relmapper.c	bca032e1ae3be31e6fa13f5523bfc61c408c5b14	act
 src/backend/utils/cache/relmapper.c	1ab821354071efcc40aca0538d4e261b0dc68469	active_local_updates	static RelMapFile active_local_updates;
 src/backend/utils/cache/relmapper.c	7ad08ae1bdc4086a94946274dcad0e2c50d143c4	pending_shared_updates	static RelMapFile pending_shared_updates;
 src/backend/utils/cache/relmapper.c	d5c482f8e8f94f7746d3d84c5a1ec8d84e33b74d	pending_local_updates	static RelMapFile pending_local_updates;
-src/backend/utils/cache/spccache.c	a505252a4ac499c58c29fb7b7cc3ab1687f51163	TableSpaceCacheHash	static HTAB *TableSpaceCacheHash = NULL;
 src/backend/utils/cache/syscache.c	cba3e7a6ffdd293c69bd24f3c8596f593c998677	SysCache	static CatCache *SysCache[SysCacheSize];
 src/backend/utils/cache/syscache.c	50e1a741d43f84ebc4cf31481e93456d7b020093	CacheInitialized	static bool CacheInitialized = false;
 src/backend/utils/cache/syscache.c	f74991abe22cc52ec73af2e05f69f12f06613a72	SysCacheRelationOid	static Oid SysCacheRelationOid[SysCacheSize];
