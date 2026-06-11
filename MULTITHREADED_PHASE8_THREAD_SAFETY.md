@@ -112,6 +112,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   context list, and parallel leader PID copy;
 - process-signal shared/backend state: `ProcSignal` as shared-memory state and
   `MyProcSignalSlot` as the current backend's slot pointer;
+- postmaster-signal state in `pmsignal.c`: `PMSignalState` is shared-memory
+  state for postmaster/child flags, `num_child_flags` is runtime-global
+  postmaster sizing state, and `postmaster_possibly_dead` is runtime-global
+  parent-death notification state;
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1768,6 +1772,13 @@ Validation for this slice:
   classifying wait-event wake channel state as carrier-local TLS. The live
   smoke started one backend blocked in `pg_sleep(30)`, canceled it from another
   backend, and verified `ERROR: canceling statement due to user request`.
+- focused `pmsignal.o`, `postmaster.o`, `launch_backend.o`, and `pmchild.o`
+  compile coverage, global-lifetime scanner coverage, incremental full
+  rebuild/install, focused core `guc` regression coverage, and direct
+  temp-cluster startup/connection/shutdown smoke after classifying
+  postmaster-signal state. The live smoke initialized a cluster, started the
+  server, connected through `psql`, verified the current backend was visible
+  in `pg_stat_activity`, and stopped the server with fast shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster

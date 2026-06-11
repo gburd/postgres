@@ -24,6 +24,8 @@
 #include <sys/procctl.h>
 #endif
 
+#include "utils/global_lifetime.h"
+
 /*
  * Reasons for signaling the postmaster.  We can cope with simultaneous
  * signals for different reasons.  If the same reason is signaled multiple
@@ -61,7 +63,7 @@ typedef enum
 typedef struct PMSignalData PMSignalData;
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT volatile PMSignalData *PMSignalState;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM volatile PMSignalData *PMSignalState;
 #endif
 
 /*
@@ -93,7 +95,7 @@ extern void PostmasterDeathSignalInit(void);
 #endif
 
 #ifdef USE_POSTMASTER_DEATH_SIGNAL
-extern PGDLLIMPORT volatile sig_atomic_t postmaster_possibly_dead;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME volatile sig_atomic_t postmaster_possibly_dead;
 
 static inline bool
 PostmasterIsAlive(void)
