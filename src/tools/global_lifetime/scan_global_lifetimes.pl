@@ -158,6 +158,10 @@ sub wanted_file
 
 	return 0 if $file =~ m{/(tmp_check|tmp_check_iso|output_iso|results|expected)/};
 	return 0 if $file =~ m{/(po)/};
+	# Generated Bison compatibility code uses K&R-style helper definitions that
+	# this heuristic scanner mistakes for top-level globals.  The grammar source
+	# remains annotated directly in bootparse.y.
+	return 0 if $file =~ m{^src/backend/bootstrap/bootparse\.c$};
 	return $file =~ /\.(?:c|h)$/;
 }
 
@@ -374,6 +378,7 @@ sub should_skip_declaration
 	return 1 if $decl =~ /\)\s*;/ && $decl !~ /=/ && $decl !~ /\(\s*\*/;
 	return 1 if $decl =~ /^[A-Z_][A-Z0-9_]*\s*(?:\([^;]*\))?\s*;$/;
 	return 1 if $decl =~ /^\w+\s*\([^;]*\)\s*;/;
+	return 1 if $decl =~ /^(?:struct|union|enum)\s+\w+\s*;/;
 	return 1 if $decl =~ /^(?:struct|union|enum)\s+\w+\s*{/;
 	return 1 if $decl =~ /^{/;
 

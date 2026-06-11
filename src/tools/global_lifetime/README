@@ -38,6 +38,10 @@ False positives are acceptable in the baseline while Phase 4 is about
 visibility, but new mutable globals should normally be annotated instead of
 added to the baseline.
 
+Generated Bison output can contain K&R compatibility declarations that look
+like top-level mutable globals to this scanner.  When the grammar source is
+annotated directly, generated output may be excluded from the scan.
+
 Ownership classes
 -----------------
 

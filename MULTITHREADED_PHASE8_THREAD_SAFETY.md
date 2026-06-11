@@ -136,6 +136,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   recovery/checksum/noverify state as execution-local TLS, backup exclusion
   directory names as immutable state, and the base-backup target registry as
   runtime state;
+- bootstrap-mode state in `bootstrap.c` and `bootparse.y`: relation, tuple,
+  type-cache, parser line, memory context, and deferred-index build state as
+  runtime state.  Bootstrap mode remains a deliberate process-lifetime
+  exception rather than a threaded client-backend path;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
@@ -1023,6 +1027,10 @@ Validation for this slice:
   rebuild/install, global-lifetime scanner coverage, and a process-mode
   `pg_basebackup -X none` smoke after classifying base backup execution and
   target-registry state.
+- focused `bootstrap.o` and `bootparse.o` compile coverage, full
+  rebuild/install, global-lifetime scanner coverage with generated
+  `bootparse.c` skipped, and an `initdb --no-sync` smoke after classifying
+  bootstrap-mode runtime state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
