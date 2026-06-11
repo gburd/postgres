@@ -361,6 +361,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `MyReplicationSlot` is the current backend's slot pointer and uses TLS, and
   synchronized-standby-slot parsed configuration plus the oldest confirmed
   flush LSN cache are runtime-global state.
+- statistics function argument descriptor tables in `attribute_stats.c`,
+  `extended_stats_funcs.c`, and `relation_stats.c` are immutable metadata used
+  to validate SQL-callable statistics update functions.
 - storage and I/O session GUC backing variables:
   `backend_flush_after`, `effective_io_concurrency`, `file_copy_method`,
   `ignore_checksum_failure`, `io_combine_limit`,
