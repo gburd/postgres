@@ -488,6 +488,13 @@ SLRU read/write helpers save an error cause and `errno` for a later
 `SlruReportIOError()` call in the same backend; sharing those mutable fields
 between concurrently executing threaded backends would corrupt the reported
 failure.
+Multixact state in `multixact.c` now has explicit lifetimes. The multixact
+SLRU descriptors are runtime-global configuration/handles, while
+`MultiXactState`, `OldestMemberMXactId`, and `OldestVisibleMXactId` point at
+shared memory registered during startup. The transaction-lifetime multixact
+cache and its memory context are backend-local TLS with lazy list
+initialization, so concurrent threaded backends do not share one row-lock
+membership cache.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -930,6 +937,9 @@ Validation for this slice:
   regression coverage after classifying btree vacuum shared-memory state.
 - focused `slru.o` compile coverage plus transaction and async-notify
   regression coverage after classifying backend-local SLRU saved-error state.
+- focused `multixact.o` compile coverage plus process-mode multixact
+  isolation and prepared-transaction regression coverage after classifying
+  multixact shared/runtime/backend-local state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
