@@ -970,25 +970,6 @@ src/backend/utils/adt/float.c	b8ed7e674f9dfc941f05dbd93358c9a972bdc715	degree_c_
 src/backend/utils/adt/float.c	da6e433f620852e7f088154e9d54c9da6b4b335d	degree_c_sixty	float8 degree_c_sixty = 60.0;
 src/backend/utils/adt/float.c	3735d61315a06ed393d44a208885198c190492d1	degree_c_one_half	float8 degree_c_one_half = 0.5;
 src/backend/utils/adt/float.c	dd2913ff793cdb8db49f69631a44e46f02eb4272	degree_c_one	float8 degree_c_one = 1.0;
-src/backend/utils/adt/formatting.c	8dfbf04c4edbb61107ea5718373ba30a65617f5c	months_full	static const char *const months_full[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", NULL };
-src/backend/utils/adt/formatting.c	c23eceb4dda3e66a6b08506530189997c45bba02	days_short	static const char *const days_short[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", NULL };
-src/backend/utils/adt/formatting.c	3544f8b5b48cd5cf39d33b975eaf1f5c92dcef6f	adbc_strings	static const char *const adbc_strings[] = {ad_STR, bc_STR, AD_STR, BC_STR, NULL};
-src/backend/utils/adt/formatting.c	f636ebcca5091007cf0b42661306249dc143baf4	adbc_strings_long	static const char *const adbc_strings_long[] = {a_d_STR, b_c_STR, A_D_STR, B_C_STR, NULL};
-src/backend/utils/adt/formatting.c	d9bb33c3040b08e6bd5f7154967794d40f3f535e	ampm_strings	static const char *const ampm_strings[] = {am_STR, pm_STR, AM_STR, PM_STR, NULL};
-src/backend/utils/adt/formatting.c	2e73eac0e596a5ee43dfd2046c1ea6abe0cb4a40	ampm_strings_long	static const char *const ampm_strings_long[] = {a_m_STR, p_m_STR, A_M_STR, P_M_STR, NULL};
-src/backend/utils/adt/formatting.c	ef7777e7d1a6c7e45e3ea43d55c3ad5aa0e0dbe3	rm_months_upper	static const char *const rm_months_upper[] = {"XII", "XI", "X", "IX", "VIII", "VII", "VI", "V", "IV", "III", "II", "I", NULL};
-src/backend/utils/adt/formatting.c	c2c97ac8843294d9c49237f3db67ed9c7798d464	rm_months_lower	static const char *const rm_months_lower[] = {"xii", "xi", "x", "ix", "viii", "vii", "vi", "v", "iv", "iii", "ii", "i", NULL};
-src/backend/utils/adt/formatting.c	eb100bed25a7a88956174d72a10ae56d2c0c68c5	rm1	static const char *const rm1[] = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", NULL};
-src/backend/utils/adt/formatting.c	ef7a8643d6c7c2aedb4fc451e3d9fab828aaa319	rm10	static const char *const rm10[] = {"X", "XX", "XXX", "XL", "L", "LX", "LXX", "LXXX", "XC", NULL};
-src/backend/utils/adt/formatting.c	6e588903515ea5dc6fd60be6f14276774ddd6507	rm100	static const char *const rm100[] = {"C", "CC", "CCC", "CD", "D", "DC", "DCC", "DCCC", "CM", NULL};
-src/backend/utils/adt/formatting.c	883de59679166d15b3dbc18f411a8aed3e698de1	numTH	static const char *const numTH[] = {"ST", "ND", "RD", "TH", NULL};
-src/backend/utils/adt/formatting.c	b624d973a17618025d9dcec2f92c27973d8e3ef7	numth	static const char *const numth[] = {"st", "nd", "rd", "th", NULL};
-src/backend/utils/adt/formatting.c	2ef0724ab32dfcf81eadcc65782cbbcf567d66ce	DCHCache	static DCHCacheEntry *DCHCache[DCH_CACHE_ENTRIES];
-src/backend/utils/adt/formatting.c	959860838e82a9115557d253e0cc2ee9dd84c9d6	n_DCHCache	static int n_DCHCache = 0;
-src/backend/utils/adt/formatting.c	752a97001e2e2c393ddc55c68f87a806959ab220	DCHCounter	static int DCHCounter = 0;
-src/backend/utils/adt/formatting.c	022e68fc554c33bc7c7744b66be4d3900bc8c693	NUMCache	static NUMCacheEntry *NUMCache[NUM_CACHE_ENTRIES];
-src/backend/utils/adt/formatting.c	49f48469ac9f3f50b7aec787a99b4c563d7551de	n_NUMCache	static int n_NUMCache = 0;
-src/backend/utils/adt/formatting.c	7135f07ca14708383dfbc2b8e97577d295bf2f1a	NUMCounter	static int NUMCounter = 0;
 src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...
 src/backend/utils/adt/jsonpath_gram.c	3fc59a2abc1e5a78e1462c8c65fac75abd39cd3c	yyoutput,yytype,yyvaluep,result,escontext,yyoutput,yytype,yyvaluep,result,escontext,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, JsonPathParseResult **result, struct Node *escontext, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, resul...

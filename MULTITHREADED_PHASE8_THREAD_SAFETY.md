@@ -314,6 +314,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   abbreviation decode cache are session-local TLS because they depend on
   `timezone_abbreviations` and `TimeZone`; the static date and interval token
   lookup caches are backend-local TLS memoization over immutable token tables.
+- date/time and numeric formatting state in `formatting.c`: fixed English,
+  AD/BC, AM/PM, roman numeral, and ordinal lookup tables are immutable state;
+  parsed date/time and numeric format-picture caches, entry counts, and aging
+  counters are backend-local TLS state because they are writable cache
+  metadata allocated under the current backend's `TopMemoryContext`.
 - locale GUC backing variables and derived locale cache state in
   `pg_locale.c`, including `locale_messages`, `locale_monetary`,
   `locale_numeric`, `locale_time`, `icu_validation_level`,
@@ -871,6 +876,13 @@ Validation for this slice:
   direct `pg_regress` invocation ran the core fixture prefix plus `guc`, `date`,
   `time`, `timetz`, `timestamp`, `timestamptz`, `interval`, and `horology`, and
   passed all 35 tests.
+- focused `formatting.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and fixture-backed numeric, money,
+  date/time, and horology regression coverage after classifying immutable
+  formatting lookup tables and backend-local format-picture caches. The direct
+  `pg_regress` invocation ran the core fixture prefix plus `guc`, `numeric`,
+  `money`, `date`, `time`, `timetz`, `timestamp`, `timestamptz`, `interval`,
+  and `horology`, and passed all 37 tests.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,
