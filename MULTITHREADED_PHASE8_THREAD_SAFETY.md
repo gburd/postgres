@@ -130,6 +130,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
   and `MyIoWorkerId` is backend-local TLS state for the running IO worker.
+- io_uring AIO method state in `method_io_uring.c`: `pgaio_uring_contexts`
+  points at the shared-memory array of per-backend io_uring contexts,
+  `pgaio_my_uring_context` is backend-local TLS for the current submitter's
+  ring, and `pgaio_uring_caps` is runtime-global capability probe state
+  computed before shared-memory sizing/initialization.
 - logical replication launcher and worker identity state in `launcher.c`:
   `LogicalRepCtx` is shared-memory state for the launcher and worker slots,
   while `MyLogicalRepWorker`, the local last-start-times DSA/dshash
@@ -2003,6 +2008,10 @@ Validation for this slice:
   `io worker` backends were visible, created heap data large enough to
   exercise buffer IO, forced checkpoints and sequential scans, verified SQL
   results, and stopped the server with fast shutdown.
+- focused `method_io_uring.o` compile coverage, global-lifetime scanner
+  coverage, and incremental full rebuild/install after classifying io_uring
+  AIO method state. Runtime io_uring coverage was not available on this macOS
+  checkout because `IOMETHOD_IO_URING_ENABLED` is not active.
 - focused WAL sender compile coverage for `walsender.o`, `syncrep.o`,
   `slot.o`, `postinit.o`, `backend_startup.o`, and related direct users,
   global-lifetime scanner coverage, backend clean plus generated-header
