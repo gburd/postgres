@@ -87,10 +87,6 @@ src/backend/libpq/auth-oauth.c	95cb10ea95af07c21c0a680f011a97bfc6f40901	Validato
 src/backend/libpq/auth-oauth.c	571e75f4318f4a359feea9d4b4f8f37c423b4dd7	ValidatorOptionsChecked	static bool ValidatorOptionsChecked;
 src/backend/libpq/auth.c	e66f425397187b0d3273a90190a0a643749e4f81	pam_passw_conv	static struct pam_conv pam_passw_conv = { &pam_passwd_conv_proc, NULL };
 src/backend/libpq/auth.c	83a7c2b458376a5d5f24476e16c21252f83d60a9	pam_no_password	static bool pam_no_password;
-src/backend/libpq/be-fsstubs.c	b83be41998e8f691f86520b9e068d1f98bc46d04	cookies	static LargeObjectDesc **cookies = NULL;
-src/backend/libpq/be-fsstubs.c	40cb850b8f864f3ab6bb667ddf005ea650da2f87	cookies_size	static int cookies_size = 0;
-src/backend/libpq/be-fsstubs.c	df11ece38437d8f4a93d66a69e68d266fcf68737	lo_cleanup_needed	static bool lo_cleanup_needed = false;
-src/backend/libpq/be-fsstubs.c	e52051c43bf96b98955f4ec149df09bc3dbfa3d8	fscxt	static MemoryContext fscxt = NULL;
 src/backend/libpq/be-secure-openssl.c	d851edbd7b9ce720d2519cd14e3c1e6c7abdbc2e	SSL_context	static SSL_CTX *SSL_context = NULL;
 src/backend/libpq/be-secure-openssl.c	374ce4abd1fcc8194a30f6af4d7d971d097de8a0	SSL_hosts_memcxt	static MemoryContext SSL_hosts_memcxt = NULL;
 src/backend/libpq/be-secure-openssl.c	c68dc329e0cf710520198bf62db37e513b59c02d	sni,no_sni,default_host,SSL_hosts	static struct hosts { List *sni; HostsLine *no_sni; HostsLine *default_host; } *SSL_hosts;

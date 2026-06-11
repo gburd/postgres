@@ -240,6 +240,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - large-object session/transaction state in `inv_api.c`: the
   `lo_compat_privileges` GUC backing variable and the cached
   `pg_largeobject` heap/index relation handles `lo_heap_r` and `lo_index_r`.
+- large-object descriptor state in `be-fsstubs.c`: the open-descriptor cookie
+  table, cookie-table size, cleanup-needed flag, and private large-object
+  memory context are execution-local TLS state cleared at transaction end.
 - sort session GUC backing variables in `tuplesort.c`: `trace_sort` and the
   debug-build `optimize_bounded_sort`.
 - commit behavior session GUC backing variables: `synchronous_commit` in
@@ -829,6 +832,11 @@ Validation for this slice:
 - live temp-cluster smoke coverage for `lo_compat_privileges` and large-object
   create/write/read/unlink behavior, including a second connection that did
   not inherit the first session's `lo_compat_privileges` setting;
+- focused `be-fsstubs.o` compile coverage, full rebuild/install,
+  global-lifetime scanner coverage, and fixture-backed `largeobject`
+  regression coverage after classifying large-object descriptor state. The
+  direct `pg_regress` invocation included the schedule prefix through
+  `returning` and passed all 44 tests including `largeobject`;
 - focused `tuplesort.o` and `tuplesortvariants.o` compile coverage;
 - backend clean plus generated-header recovery, followed by clean `gmake -j8`
   after converting installed-header sort GUC declarations to
