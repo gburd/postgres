@@ -180,6 +180,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   while the dynamic nap interval `sleep_ms` and current-process
   `syncing_slots` flag are backend-local TLS state for the slot-sync worker or
   manual `pg_sync_replication_slots()` caller.
+- logical snapshot builder export state in `snapbuild.c`:
+  `SavedResourceOwnerDuringExport` and `ExportInProgress` are execution-local
+  TLS state used only while exporting a historic snapshot.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2080,6 +2083,14 @@ Validation for this slice:
   classifying slot synchronization state. The smoke verified that the manual
   sync SQL function reaches the expected primary-mode rejection and stops the
   server cleanly.
+- focused `snapbuild.o`, `logical.o`, and `slotfuncs.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, focused
+  core `guc` regression coverage, and direct temp-cluster replication-protocol
+  logical slot smoke after classifying logical snapshot builder export state.
+  The smoke issued `CREATE_REPLICATION_SLOT ... LOGICAL ... (SNAPSHOT
+  'export')`, verified the exported snapshot name from the replication
+  protocol response, dropped the slot, checked the server log for the exported
+  logical decoding snapshot message, and stopped the server cleanly.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

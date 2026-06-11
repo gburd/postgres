@@ -71,8 +71,6 @@ src/backend/postmaster/postmaster.c	0db5d473a4ac672fe3fc85691651604a6c082428	io_
 src/backend/postmaster/postmaster.c	813c212ba835b5363ad99ff7dde68d1f392e787b	win32ChildQueue	static HANDLE win32ChildQueue;
 src/backend/postmaster/postmaster.c	ca6fe6927dcc22f7b46e7c5d1bcfe2944393888e	postmaster_alive_fds	int postmaster_alive_fds[2] = {-1, -1};
 src/backend/postmaster/postmaster.c	1904705a926875699c0b08ea34337b012f99c087	PostmasterHandle	HANDLE PostmasterHandle;
-src/backend/replication/logical/snapbuild.c	35230ee4c1b13ef90e7eda79e3f81a270902cd77	SavedResourceOwnerDuringExport	static ResourceOwner SavedResourceOwnerDuringExport = NULL;
-src/backend/replication/logical/snapbuild.c	e25ffd685292c246692bf3a272173566fceaad24	ExportInProgress	static bool ExportInProgress = false;
 src/backend/replication/logical/syncutils.c	d737ba611c657b8f387798002251a2a1b19b02d6	relation_states_validity	static SyncingRelationsState relation_states_validity = SYNC_RELATIONS_STATE_NEEDS_REBUILD;
 src/backend/replication/pgoutput/pgoutput.c	347c57dd8ec09300063817dee7f9f137dbaa2e6e	publications_valid	static bool publications_valid;
 src/backend/replication/pgoutput/pgoutput.c	3ad87ed19878a0e84a6301a1b9634c0cbcbac155	RelationSyncCache	static HTAB *RelationSyncCache = NULL;
