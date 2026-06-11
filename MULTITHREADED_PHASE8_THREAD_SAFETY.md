@@ -2463,6 +2463,15 @@ Validation for this slice:
   `tmp_install` and failed before SQL on the known macOS
   `/usr/local/pgsql/lib/libpq.5.dylib` loader path; direct reruns after
   `install_name_tool` patching passed.
+- A literal top-level `gmake check-world` was attempted after the Gate C
+  refresh. It recreated `tmp_install`, reached `src/test/isolation`, and failed
+  before SQL because temp-installed `psql` still referenced
+  `/usr/local/pgsql/lib/libpq.5.dylib`. `gmake -C src/test check` recreated
+  `tmp_install` again and failed the same way. After patching the recreated
+  temp install, the direct full isolation schedule passed all 129 tests and the
+  direct core `parallel_schedule` regression run passed all 245 tests. This is
+  a documented near-equivalent for the core process-mode part of Gate C on this
+  macOS checkout, not a literal `check-world` pass.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

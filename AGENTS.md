@@ -211,6 +211,33 @@ Important current files:
   before SQL starts with a `dyld` `libpq.5.dylib` loader error, patch the new
   temp-install binaries and rerun the equivalent `pg_regress` command directly.
 
+  Top-level `gmake check-world` and recursive targets such as
+  `gmake -C src/test check` also recreate `tmp_install` on this checkout. They
+  can therefore fail before SQL starts even if a previous temp install was
+  patched. If the failure is a `dyld` lookup for
+  `/usr/local/pgsql/lib/libpq.5.dylib`, patch the recreated temp install and run
+  the reached test driver directly. For example, after a `check-world` failure
+  in `src/test/isolation`, patch `psql`, `pg_ctl`, `pg_isolation_regress`, and
+  `isolationtester`, then rerun:
+
+  ```sh
+  cd src/test/isolation
+  PATH="$PWD/../../../tmp_install/usr/local/pgsql/bin:$PWD:$PATH" \
+  DYLD_LIBRARY_PATH="$PWD/../../../tmp_install/usr/local/pgsql/lib" \
+  INITDB_TEMPLATE="$PWD/../../../tmp_install/initdb-template" \
+  ./pg_isolation_regress --temp-instance=./tmp_check_iso --inputdir=. --outputdir=output_iso --bindir= --schedule=./isolation_schedule
+  ```
+
+  The core regression equivalent after patching is:
+
+  ```sh
+  cd src/test/regress
+  PATH="$PWD/../../../tmp_install/usr/local/pgsql/bin:$PWD:$PATH" \
+  DYLD_LIBRARY_PATH="$PWD/../../../tmp_install/usr/local/pgsql/lib" \
+  INITDB_TEMPLATE="$PWD/../../../tmp_install/initdb-template" \
+  ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --schedule=./parallel_schedule
+  ```
+
 - For focused process-mode regression checks, run the test driver directly with
   the temp install first on `PATH`, for example:
 
