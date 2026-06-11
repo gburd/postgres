@@ -132,6 +132,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `xlogSourceNames` is classified as immutable state;
 - Wait-for-LSN state in `xlogwait.c`: `waitLSNState`, which points to the
   shared wait queues and per-backend wait records, as shared-memory state;
+- base backup state in `basebackup.c` and `basebackup_target.c`: per-backup
+  recovery/checksum/noverify state as execution-local TLS, backup exclusion
+  directory names as immutable state, and the base-backup target registry as
+  runtime state;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
@@ -1015,6 +1019,10 @@ Validation for this slice:
 - focused `xlogwait.o` compile coverage, full rebuild/install,
   global-lifetime scanner coverage, and a process-mode `WAIT FOR LSN` smoke
   using `MODE 'primary_flush'` after classifying Wait-for-LSN shared state.
+- focused `basebackup.o` and `basebackup_target.o` compile coverage, full
+  rebuild/install, global-lifetime scanner coverage, and a process-mode
+  `pg_basebackup -X none` smoke after classifying base backup execution and
+  target-registry state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

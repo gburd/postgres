@@ -1,10 +1,4 @@
 # file	sha1	names	declaration
-src/backend/backup/basebackup.c	adcabd049d22810f28d0f3e366cec92ba2805647	backup_started_in_recovery	static bool backup_started_in_recovery = false;
-src/backend/backup/basebackup.c	667000baa284fef8570100efe030ee0818371e31	total_checksum_failures	static long long int total_checksum_failures;
-src/backend/backup/basebackup.c	62714fde04dad3da873ec127b9fe5bddbdd25146	noverify_checksums	static bool noverify_checksums = false;
-src/backend/backup/basebackup.c	47290d247c26a71c04961a5f6670d3ae6a02b764	excludeDirContents	static const char *const excludeDirContents[] = { PG_STAT_TMP_DIR, PG_REPLSLOT_DIR, PG_DYNSHMEM_DIR, "pg_notify", "pg_serial", "pg_snapshots", "pg_subtrans", NULL };
-src/backend/backup/basebackup_target.c	f302c2c55047993b420956100603edd20bdf1fbe	builtin_backup_targets	static BaseBackupTargetType builtin_backup_targets[] = { { "blackhole", reject_target_detail, blackhole_get_sink }, { "server", server_check_detail, server_get_sink }, { NULL } };
-src/backend/backup/basebackup_target.c	a7cab79dc0c2567506c3bce7a754fe4382cfe7fa	BaseBackupTargetTypeList	static List *BaseBackupTargetTypeList = NIL;
 src/backend/bootstrap/bootparse.c	06fde149383d4d71d365a2d85afcfe59d378c9d9	per_line_ctx	static MemoryContext per_line_ctx = NULL;
 src/backend/bootstrap/bootparse.c	f43907da61eba032a5f337cc0cbf561ae4ce5106	num_columns_read	static int num_columns_read = 0;
 src/backend/bootstrap/bootparse.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
