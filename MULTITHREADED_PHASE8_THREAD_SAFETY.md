@@ -1409,6 +1409,13 @@ Validation for this slice:
   AIO smoke after classifying the shared AIO control pointers, backend-local
   AIO state pointer, runtime method dispatch pointer, and immutable AIO method
   and target tables.
+- focused WAL sender compile coverage for `walsender.o`, `syncrep.o`,
+  `slot.o`, `postinit.o`, `backend_startup.o`, and related direct users,
+  global-lifetime scanner coverage, backend clean plus generated-header
+  recovery, full rebuild/install, and a direct temp-cluster replication-protocol
+  smoke after classifying the shared WAL sender registry and backend-local WAL
+  sender identity, wakeup, streaming, signal, logical decoding, and lag-tracker
+  state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

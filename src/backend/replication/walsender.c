@@ -118,7 +118,7 @@
 #define MAX_SEND_SIZE (XLOG_BLCKSZ * 16)
 
 /* Array of WalSnds in shared memory */
-WalSndCtlData *WalSndCtl = NULL;
+PG_GLOBAL_SHMEM WalSndCtlData *WalSndCtl = NULL;
 
 static void WalSndShmemRequest(void *arg);
 static void WalSndShmemInit(void *arg);
@@ -129,13 +129,15 @@ const ShmemCallbacks WalSndShmemCallbacks = {
 };
 
 /* My slot in the shared memory array */
-WalSnd	   *MyWalSnd = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalSnd *MyWalSnd = NULL;
 
 /* Global state */
-bool		am_walsender = false;	/* Am I a walsender process? */
-bool		am_cascading_walsender = false; /* Am I cascading WAL to another
-											 * standby? */
-bool		am_db_walsender = false;	/* Connected to a database? */
+/* Am I a walsender process? */
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_walsender = false;
+/* Am I cascading WAL to another standby? */
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_cascading_walsender = false;
+/* Connected to a database? */
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_db_walsender = false;
 
 /* GUC variables */
 PG_GLOBAL_RUNTIME int max_wal_senders = 10;	/* the maximum number of concurrent
@@ -152,14 +154,14 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_replication_commands = false;
 /*
  * State for WalSndWakeupRequest
  */
-bool		wake_wal_senders = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool wake_wal_senders = false;
 
 /*
  * xlogreader used for replication.  Note that a WAL sender doing physical
  * replication does not need xlogreader to read WAL, but it needs one to
  * keep a state of its work.
  */
-static XLogReaderState *xlogreader = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogReaderState *xlogreader = NULL;
 
 /*
  * If the UPLOAD_MANIFEST command is used to provide a backup manifest in
@@ -169,8 +171,8 @@ static XLogReaderState *xlogreader = NULL;
  * that object and all of its subordinate data. Otherwise, both values will
  * be NULL.
  */
-static IncrementalBackupInfo *uploaded_manifest = NULL;
-static MemoryContext uploaded_manifest_mcxt = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND IncrementalBackupInfo *uploaded_manifest = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext uploaded_manifest_mcxt = NULL;
 
 /*
  * These variables keep track of the state of the timeline we're currently
@@ -178,43 +180,43 @@ static MemoryContext uploaded_manifest_mcxt = NULL;
  * the timeline is not the latest timeline on this server, and the server's
  * history forked off from that timeline at sendTimeLineValidUpto.
  */
-static TimeLineID sendTimeLine = 0;
-static TimeLineID sendTimeLineNextTLI = 0;
-static bool sendTimeLineIsHistoric = false;
-static XLogRecPtr sendTimeLineValidUpto = InvalidXLogRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID sendTimeLine = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID sendTimeLineNextTLI = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool sendTimeLineIsHistoric = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr sendTimeLineValidUpto = InvalidXLogRecPtr;
 
 /*
  * How far have we sent WAL already? This is also advertised in
  * MyWalSnd->sentPtr.  (Actually, this is the next WAL location to send.)
  */
-static XLogRecPtr sentPtr = InvalidXLogRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr sentPtr = InvalidXLogRecPtr;
 
 /* Buffers for constructing outgoing messages and processing reply messages. */
-static StringInfoData output_message;
-static StringInfoData reply_message;
-static StringInfoData tmpbuf;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfoData output_message;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfoData reply_message;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfoData tmpbuf;
 
 /* Timestamp of last ProcessRepliesIfAny(). */
-static TimestampTz last_processing = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz last_processing = 0;
 
 /*
  * Timestamp of last ProcessRepliesIfAny() that saw a reply from the
  * standby. Set to 0 if wal_sender_timeout doesn't need to be active.
  */
-static TimestampTz last_reply_timestamp = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz last_reply_timestamp = 0;
 
 /* Have we sent a heartbeat message asking for reply, since last reply? */
-static bool waiting_for_ping_response = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool waiting_for_ping_response = false;
 
 /* Timestamp when walsender received the shutdown request */
-static TimestampTz shutdown_request_timestamp = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz shutdown_request_timestamp = 0;
 
 /*
  * Set after queueing the CommandComplete message that ends WAL streaming
  * during shutdown. This prevents WalSndDone() and WalSndDoneImmediate()
  * from queueing the same message twice.
  */
-static bool shutdown_stream_done_queued = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool shutdown_stream_done_queued = false;
 
 /*
  * While streaming WAL in Copy mode, streamingDoneSending is set to true
@@ -222,15 +224,15 @@ static bool shutdown_stream_done_queued = false;
  * after that. streamingDoneReceiving is set to true when we receive CopyDone
  * from the other end. When both become true, it's time to exit Copy mode.
  */
-static bool streamingDoneSending;
-static bool streamingDoneReceiving;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool streamingDoneSending;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool streamingDoneReceiving;
 
 /* Are we there yet? */
-static bool WalSndCaughtUp = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool WalSndCaughtUp = false;
 
 /* Flags set by signal handlers for later service in main loop */
-static volatile sig_atomic_t got_SIGUSR2 = false;
-static volatile sig_atomic_t got_STOPPING = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t got_SIGUSR2 = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t got_STOPPING = false;
 
 /*
  * This is set while we are streaming. When not set
@@ -238,9 +240,9 @@ static volatile sig_atomic_t got_STOPPING = false;
  * the main loop is responsible for checking got_STOPPING and terminating when
  * it's set (after streaming any remaining WAL).
  */
-static volatile sig_atomic_t replication_active = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t replication_active = false;
 
-static LogicalDecodingContext *logical_decoding_ctx = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalDecodingContext *logical_decoding_ctx = NULL;
 
 /* A sample associating a WAL location with the time it was written. */
 typedef struct
@@ -276,7 +278,7 @@ typedef struct
 	WalTimeSample overflowed[NUM_SYNC_REP_WAIT_MODE];
 } LagTracker;
 
-static LagTracker *lag_tracker;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LagTracker *lag_tracker;
 
 /* Signal handlers */
 static void WalSndLastCycleHandler(SIGNAL_ARGS);

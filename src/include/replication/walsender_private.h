@@ -20,6 +20,7 @@
 #include "storage/condition_variable.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+#include "utils/global_lifetime.h"
 
 typedef enum WalSndState
 {
@@ -78,7 +79,7 @@ typedef struct WalSnd
 	ReplicationKind kind;
 } WalSnd;
 
-extern PGDLLIMPORT WalSnd *MyWalSnd;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalSnd *MyWalSnd;
 
 /* There is one WalSndCtl struct for the whole database cluster */
 typedef struct
@@ -131,7 +132,7 @@ typedef struct
  */
 #define SYNC_STANDBY_DEFINED		(1 << 1)
 
-extern PGDLLIMPORT WalSndCtlData *WalSndCtl;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM WalSndCtlData *WalSndCtl;
 
 
 extern void WalSndSetState(WalSndState state);
