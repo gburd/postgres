@@ -156,6 +156,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - runtime CPU feature state: `X86Features` is the process/runtime-wide CPU
   capability cache initialized by `set_x86_features()` and read by optimized
   common/backend code paths, including timing source selection.
+- immutable encoding metadata: `pg_enc2gettext_tbl` is now a const pointer
+  array of gettext encoding names. It is exported metadata read by backend
+  encoding/NLS paths and should not be mutable shared state in threaded mode.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2162,6 +2165,11 @@ Validation for this slice:
   direct temp-cluster timing smoke after classifying the runtime CPU feature
   cache as runtime-global. The live smoke verified `EXPLAIN ANALYZE` emitted
   timing data before fast shutdown.
+- focused `encnames.o` and `mbutils.o` compile coverage, global-lifetime
+  scanner coverage, incremental full rebuild/install, and direct temp-cluster
+  encoding smoke after making the gettext encoding-name pointer table
+  immutable. The live smoke verified database encoding lookup and client
+  encoding changes before fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
