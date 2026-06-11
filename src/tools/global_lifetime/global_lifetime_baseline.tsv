@@ -39,37 +39,6 @@ src/backend/port/win32/signal.c	928a8b295b87ab215ad9d9bf471ba15983b2accc	pg_sign
 src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32_noblock	int pgwin32_noblock = 0;
 src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
 src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
-src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
-src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;
-src/backend/postmaster/postmaster.c	9ca9d978dfa5b3be65f4f8439967b2d7a7fc6826	StartupPMChild,BgWriterPMChild,CheckpointerPMChild,WalWriterPMChild,WalReceiverPMChild,WalSummarizerPMChild,AutoVacLauncherPMChild,PgArchPMChild,SysLoggerPMChild,SlotSyncWorkerPMChild	static PMChild *StartupPMChild = NULL, *BgWriterPMChild = NULL, *CheckpointerPMChild = NULL, *WalWriterPMChild = NULL, *WalReceiverPMChild = NULL, *WalSummarizerPMChild = NULL, *AutoVacLauncherPMChild = NULL, *PgArchPMChild = NULL, *SysL...
-src/backend/postmaster/postmaster.c	bacedde0be8276569ea02056d58c136313d0dd14	StartupStatus	static StartupStatusEnum StartupStatus = STARTUP_NOT_RUNNING;
-src/backend/postmaster/postmaster.c	0190cc3c3b58ce6ef923762584115b3cb4b14039	Shutdown	static int Shutdown = NoShutdown;
-src/backend/postmaster/postmaster.c	8dec33af1c67a495af261918c4004abc63ebbae5	FatalError	static bool FatalError = false;
-src/backend/postmaster/postmaster.c	ce1f121b36f06e73398d0917bd3f7978635bd25a	pmState	static PMState pmState = PM_INIT;
-src/backend/postmaster/postmaster.c	a313c3456e80367eba4cb46e1022d04f28bb39ac	connsAllowed	static bool connsAllowed = true;
-src/backend/postmaster/postmaster.c	346ecd542717fe622afcb4f92aad9ee55062df9a	AbortStartTime	static time_t AbortStartTime = 0;
-src/backend/postmaster/postmaster.c	d8744e14b5e0e32989af68b4006e9b23f171672b	ReachedNormalRunning	static bool ReachedNormalRunning = false;
-src/backend/postmaster/postmaster.c	c8cc868e8f0ceee00cac331d8fa445f5662ac8de	redirection_done	bool redirection_done = false;
-src/backend/postmaster/postmaster.c	19d2655320687587e7c2c451852078f939a800f2	start_autovac_launcher	static bool start_autovac_launcher = false;
-src/backend/postmaster/postmaster.c	536eb0769d363e22ef258055a66318bda232c0f3	avlauncher_needs_signal	static bool avlauncher_needs_signal = false;
-src/backend/postmaster/postmaster.c	b87a9cafccace907599d5c1648a703fea0c17162	WalReceiverRequested	static bool WalReceiverRequested = false;
-src/backend/postmaster/postmaster.c	f7fb916f09e07c2e901fbe5d41bc624b2f6c0959	StartWorkerNeeded	static bool StartWorkerNeeded = true;
-src/backend/postmaster/postmaster.c	208a1c4acbfbbc2ff2828f90ab094e5ad6e2add7	HaveCrashedWorker	static bool HaveCrashedWorker = false;
-src/backend/postmaster/postmaster.c	2a28fc9b26c1e063a0ba21de012b73ae34891f28	pending_pm_pmsignal	static volatile sig_atomic_t pending_pm_pmsignal;
-src/backend/postmaster/postmaster.c	ef6065ce45cc77b59c707eda98807188a04d417b	pending_pm_child_exit	static volatile sig_atomic_t pending_pm_child_exit;
-src/backend/postmaster/postmaster.c	cc651319b0ba94dfc5299aee545e747e63211222	pending_pm_reload_request	static volatile sig_atomic_t pending_pm_reload_request;
-src/backend/postmaster/postmaster.c	6f6d1cb03f600e94758c86c0fd724e29a466fde2	pending_pm_shutdown_request	static volatile sig_atomic_t pending_pm_shutdown_request;
-src/backend/postmaster/postmaster.c	3c7380568a8ea2d5bb5d739af5dc6586d456850f	pending_pm_fast_shutdown_request	static volatile sig_atomic_t pending_pm_fast_shutdown_request;
-src/backend/postmaster/postmaster.c	cafad111277abaf1c7fab729050b41c8eab787fd	pending_pm_immediate_shutdown_request	static volatile sig_atomic_t pending_pm_immediate_shutdown_request;
-src/backend/postmaster/postmaster.c	a1f995a859f1a8d1f00eb35e89648142adab46c4	pm_wait_set	static WaitEventSet *pm_wait_set;
-src/backend/postmaster/postmaster.c	174c27bc7b7a6d8144b4d4761d46991f9ae518bf	LoadedSSL	bool LoadedSSL = false;
-src/backend/postmaster/postmaster.c	c003275bf53f107d9792b12f7720247251ef4b49	bonjour_sdref	static DNSServiceRef bonjour_sdref = NULL;
-src/backend/postmaster/postmaster.c	bdfab00dc6b456129cd9f13c649651cf8889ee6c	io_worker_launch_next_time	static TimestampTz io_worker_launch_next_time = 0;
-src/backend/postmaster/postmaster.c	a37555a8ccb8df3fdd7de9518cc6dad0da033e7e	io_worker_count	static int io_worker_count = 0;
-src/backend/postmaster/postmaster.c	0db5d473a4ac672fe3fc85691651604a6c082428	io_worker_children	static PMChild *io_worker_children[MAX_IO_WORKERS];
-src/backend/postmaster/postmaster.c	813c212ba835b5363ad99ff7dde68d1f392e787b	win32ChildQueue	static HANDLE win32ChildQueue;
-src/backend/postmaster/postmaster.c	ca6fe6927dcc22f7b46e7c5d1bcfe2944393888e	postmaster_alive_fds	int postmaster_alive_fds[2] = {-1, -1};
-src/backend/postmaster/postmaster.c	1904705a926875699c0b08ea34337b012f99c087	PostmasterHandle	HANDLE PostmasterHandle;
 src/backend/replication/repl_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/replication/repl_gram.c	ac0cad527ebf3a730c1b8f4af905da6e7a28b995	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "SCONST", "IDENT", "UCONST", "RECPTR", "K_BASE_BACKUP", "K_IDENTIFY_SYSTEM", "K_READ_REPLICATION_SLOT", "K_SHOW", "K_START_REPLICATION", "K_CREATE_REPLICATION_SLOT", "...
 src/backend/replication/repl_gram.c	ef6d022ebd6065d95f633719a07e0bf11e83d75e	yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput,yytype,yyvaluep,replication_parse_result_p,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, Node **replication_parse_result_p, yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, replication_parse_result...
@@ -206,10 +175,6 @@ src/include/portability/instr_time.h	89a06fbd8be0502608e46047ce6327144ae60f3c	ti
 src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	timing_tsc_enabled	extern PGDLLIMPORT bool timing_tsc_enabled;
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
 src/include/postmaster/postmaster.h	4148f1c87e56ca82106abc9df4036c66a75d8c50	ClientAuthInProgress	extern PGDLLIMPORT bool ClientAuthInProgress;
-src/include/postmaster/postmaster.h	ebd78096dd943d3329c02d669eb2b75ad8b6e6e2	PostmasterHandle	extern PGDLLIMPORT HANDLE PostmasterHandle;
-src/include/postmaster/postmaster.h	e6a591c19ccaed6c8922a984948609fcfcea224d	postmaster_alive_fds	extern PGDLLIMPORT int postmaster_alive_fds[2];
-src/include/postmaster/postmaster.h	6c7a0bcada614d2693eb9f9562f2a89f21b3e0e9	redirection_done	extern PGDLLIMPORT bool redirection_done;
-src/include/postmaster/postmaster.h	bd3eaae51b742918baecda001ef3eba7f6e004cb	LoadedSSL	extern PGDLLIMPORT bool LoadedSSL;
 src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replorigin_xact_state	extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];

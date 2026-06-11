@@ -73,9 +73,9 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool send_abort_for_crash;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool send_abort_for_kill;
 
 #ifdef WIN32
-extern PGDLLIMPORT HANDLE PostmasterHandle;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME HANDLE PostmasterHandle;
 #else
-extern PGDLLIMPORT int postmaster_alive_fds[2];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int postmaster_alive_fds[2];
 
 /*
  * Constants that represent which of postmaster_alive_fds is held by
@@ -88,8 +88,8 @@ extern PGDLLIMPORT int postmaster_alive_fds[2];
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME const char *progname;
 
-extern PGDLLIMPORT bool redirection_done;
-extern PGDLLIMPORT bool LoadedSSL;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool redirection_done;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool LoadedSSL;
 
 pg_noreturn extern void PostmasterMain(int argc, char *argv[]);
 extern void ClosePostmasterPorts(bool am_syslogger);

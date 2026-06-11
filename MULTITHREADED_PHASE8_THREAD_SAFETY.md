@@ -129,6 +129,14 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - postmaster child-launch metadata in `launch_backend.c`:
   `child_process_kinds` is an immutable generated dispatch table for child
   names, main functions, and shared-memory attachment policy.
+- postmaster supervisor state in `postmaster.c`: listen socket tables,
+  special-child pointers, startup/shutdown/crash state, connection-gating
+  state, signal-pending flags, the postmaster wait set, syslogger redirection
+  and SSL/Bonjour service flags, postmaster-death watch handles, and IO-worker
+  child tracking are runtime-global control-plane state. These remain
+  process-lifetime supervisor state in Phase 8; later worker-runtime phases
+  must replace forked in-tree worker launches with runtime-owned threaded
+  workers where normal threaded mode requires it.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2074,6 +2082,12 @@ Validation for this slice:
   positive backend PID before fast shutdown.
 - focused `launch_backend.o` compile coverage and global-lifetime scanner
   coverage after classifying the child-launch metadata table as immutable.
+- focused `postmaster.o`, `launch_backend.o`, and `syslogger.o` compile
+  coverage, global-lifetime scanner coverage, and incremental full
+  rebuild/install after classifying postmaster supervisor state as
+  runtime-global control-plane state. A direct temp-cluster startup/connection
+  smoke verified that a Unix-socket backend appears in `pg_stat_activity`
+  before fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
