@@ -17,9 +17,9 @@
 
 #include "port/win32ntdll.h"
 
-RtlGetLastNtStatus_t pg_RtlGetLastNtStatus;
-RtlNtStatusToDosError_t pg_RtlNtStatusToDosError;
-NtFlushBuffersFileEx_t pg_NtFlushBuffersFileEx;
+PG_GLOBAL_RUNTIME RtlGetLastNtStatus_t pg_RtlGetLastNtStatus;
+PG_GLOBAL_RUNTIME RtlNtStatusToDosError_t pg_RtlNtStatusToDosError;
+PG_GLOBAL_RUNTIME NtFlushBuffersFileEx_t pg_NtFlushBuffersFileEx;
 
 typedef struct NtDllRoutine
 {

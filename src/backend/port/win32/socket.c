@@ -13,6 +13,8 @@
 
 #include "postgres.h"
 
+#include "utils/global_lifetime.h"
+
 /*
  * Indicate if pgwin32_recv() and pgwin32_send() should operate
  * in non-blocking mode.
@@ -25,7 +27,7 @@
  * This flag changes the behaviour *globally* for all socket operations,
  * so it should only be set for very short periods of time.
  */
-int			pgwin32_noblock = 0;
+PG_GLOBAL_CONNECTION int pgwin32_noblock = 0;
 
 /* Undef the macros defined in win32.h, so we can access system functions */
 #undef socket

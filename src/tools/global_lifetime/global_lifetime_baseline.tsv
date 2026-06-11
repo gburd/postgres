@@ -1,20 +1,2 @@
 # file	sha1	names	declaration
-src/backend/port/win32/signal.c	6f97c9391f1aab49c073c4ccb75eb63d2951b5d2	pg_signal_queue	volatile int pg_signal_queue;
-src/backend/port/win32/signal.c	481de2b8b6d1f6bf400bc2d1e16757a1920edece	pg_signal_mask	int pg_signal_mask;
-src/backend/port/win32/signal.c	83c7557b5a395845bcb034f17c5b6901c723cb27	pgwin32_signal_event	HANDLE pgwin32_signal_event;
-src/backend/port/win32/signal.c	6a49c77190230f1e40fddec3a97a080441ed1bbd	pgwin32_initial_signal_pipe	HANDLE pgwin32_initial_signal_pipe = INVALID_HANDLE_VALUE;
-src/backend/port/win32/signal.c	25602d1f2bec5703d316918c40c14e149834937b	pg_signal_crit_sec	static CRITICAL_SECTION pg_signal_crit_sec;
-src/backend/port/win32/signal.c	4bebc3bb1bb7a436d677bbb8fd8574a58227fe5b	pg_signal_array	static struct sigaction pg_signal_array[PG_SIGNAL_COUNT];
-src/backend/port/win32/signal.c	928a8b295b87ab215ad9d9bf471ba15983b2accc	pg_signal_defaults	static pqsigfunc pg_signal_defaults[PG_SIGNAL_COUNT];
-src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32_noblock	int pgwin32_noblock = 0;
-src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
-src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
-src/include/port/win32_port.h	f705331554feef6d5dd7b316fcb217362e4893c4	pg_signal_queue	extern PGDLLIMPORT volatile int pg_signal_queue;
-src/include/port/win32_port.h	19d5423c0ebee7985704de4d9d44189ac4e5d062	pg_signal_mask	extern PGDLLIMPORT int pg_signal_mask;
-src/include/port/win32_port.h	0e2f95653abcb48a739611d4061f32a62f34398c	pgwin32_signal_event	extern PGDLLIMPORT HANDLE pgwin32_signal_event;
-src/include/port/win32_port.h	9a5e259be9fcf68bb3c83c0ae00c9eea6e13699d	pgwin32_initial_signal_pipe	extern PGDLLIMPORT HANDLE pgwin32_initial_signal_pipe;
-src/include/port/win32_port.h	0e899f24119f6e921ade2217bbd650f272e6c60a	pgwin32_noblock	extern PGDLLIMPORT int pgwin32_noblock;
-src/include/port/win32ntdll.h	22a717bd912b632fa5272cb113c14e642c8ee5b5	pg_RtlGetLastNtStatus	extern PGDLLIMPORT RtlGetLastNtStatus_t pg_RtlGetLastNtStatus;
-src/include/port/win32ntdll.h	2236a2dfd1336a997fa3d620ed0124b7f8e66e99	pg_RtlNtStatusToDosError	extern PGDLLIMPORT RtlNtStatusToDosError_t pg_RtlNtStatusToDosError;
-src/include/port/win32ntdll.h	ed82ed1cfcaf561594d225ab10c29267ca9aeec3	pg_NtFlushBuffersFileEx	extern PGDLLIMPORT NtFlushBuffersFileEx_t pg_NtFlushBuffersFileEx;

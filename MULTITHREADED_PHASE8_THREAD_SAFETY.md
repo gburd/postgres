@@ -990,9 +990,27 @@ During validation this affected `test_ext_backend_model.dylib` and
 
 ## Remaining Phase 8 Work
 
-Phase 8 still needs to cover at least:
+The required-floor audit for non-Windows backend state is complete. As of the
+Windows platform shim pass, the static scanner baseline contains one remaining
+non-Windows entry:
 
-- the rest of the required-floor audit from `MULTITHREADED_PLAN.md`.
+- `src/backend/utils/adt/tsrank.c`: `WordEntryPos pos;` inside the anonymous
+  `DocRepresentation` typedef. This is not a top-level mutable global; it is a
+  scanner artifact from a struct member declaration. A generic scanner fix was
+  attempted and backed out because it did not remove this artifact cleanly
+  without broadening the heuristic risk. The artifact is documented here rather
+  than treated as Phase 8 mutable backend state.
+
+The Windows platform shim annotations are best-effort ownership classifications
+from code review on this macOS checkout. They are not a validated Windows
+threaded-runtime design. In particular, the Windows signal queue, signal mask,
+signal event, signal critical section, and timer communication/thread handles
+are classified as carrier-local physical dispatch state; the signal handler
+tables, initial signal pipe handoff, and NTDLL function pointers are
+runtime-global; and the socket nonblocking compatibility flag is classified as
+connection-local. A future Windows pass must build and test these annotations
+on Windows and revisit the signal, timer, and socket shims before claiming
+threaded Windows support.
 
 After the final USERSET/SUSET GUC classification slice, the filtered static
 report contains zero remaining unclassified generated GUC backing variables.
@@ -2196,6 +2214,13 @@ Validation for this slice:
   rebuild/install, and installed getopt smoke for `pg_controldata --version`,
   `pg_waldump --help`, and `psql --help` after classifying command-line
   option parser compatibility globals as runtime-global.
+- global-lifetime scanner coverage after best-effort Windows platform shim
+  classification. This covered annotations for Windows signal emulation,
+  socket compatibility state, timer helper-thread state, and dynamically loaded
+  NTDLL function pointers. No Windows build or runtime test was run on this
+  macOS checkout, so this validation is static/code-review-only for Windows.
+  A focused macOS `gmake -C src/port win32ntdll.o` probe failed before compile
+  on missing Windows SDK header `ntstatus.h`, as expected for this host.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after

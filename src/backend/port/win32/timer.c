@@ -18,6 +18,7 @@
 
 #include "postgres.h"
 
+#include "utils/global_lifetime.h"
 
 /* Communication area for inter-thread communication */
 typedef struct timerCA
@@ -27,8 +28,8 @@ typedef struct timerCA
 	CRITICAL_SECTION crit_sec;
 } timerCA;
 
-static timerCA timerCommArea;
-static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
+static PG_GLOBAL_CARRIER timerCA timerCommArea;
+static PG_GLOBAL_CARRIER HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
 
 
 /* Timer management thread */
