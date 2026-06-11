@@ -414,6 +414,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   invalidation, while active and pending relation-map update buffers are
   execution-local TLS state owned by the current transaction or parallel worker
   restore path.
+- catalog cache state in `catcache.c`: `CacheHdr` is session-local TLS state
+  for the current backend's catalog-cache header and cache list, while
+  `catcache_in_progress_stack` is execution-local TLS state used to mark
+  in-progress cache entries dead when invalidations arrive during entry or
+  list construction.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1145,6 +1150,13 @@ Validation for this slice:
   relation map, rewrote it with `VACUUM FULL`, verified the old mapped
   filenumber no longer resolved, and verified the new mapped filenumber
   resolved back to `pg_class`.
+- focused `catcache.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, catalog sanity regression coverage,
+  DDL/syscache invalidation regression coverage, and a live temp-cluster
+  catcache rename/drop smoke after classifying catalog cache state. The smoke
+  resolved a table name through `to_regclass()`, renamed it, verified the old
+  name no longer resolved, verified the new name resolved, dropped it, and
+  verified the dropped name no longer resolved.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;

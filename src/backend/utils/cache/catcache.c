@@ -58,7 +58,7 @@ typedef struct CatCInProgress
 	struct CatCInProgress *next;
 } CatCInProgress;
 
-static CatCInProgress *catcache_in_progress_stack = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION CatCInProgress *catcache_in_progress_stack = NULL;
 
  /* #define CACHEDEBUG */	/* turns DEBUG elogs on */
 
@@ -81,7 +81,7 @@ static CatCInProgress *catcache_in_progress_stack = NULL;
 #endif
 
 /* Cache management header --- pointer is NULL until created */
-static CatCacheHeader *CacheHdr = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION CatCacheHeader *CacheHdr = NULL;
 
 static inline HeapTuple SearchCatCacheInternal(CatCache *cache,
 											   int nkeys,
