@@ -479,6 +479,10 @@ Synchronized sequential scan state in `syncscan.c` is now explicitly
 classified as shared-memory state. The `scan_locations` pointer targets the
 shared LRU location table registered with `ShmemRequestStruct()` and protected
 by `SyncScanLock`.
+B-tree vacuum cycle state in `nbtutils.c` is now explicitly classified as
+shared-memory state. The `btvacinfo` pointer targets the shared active-vacuum
+table registered with `ShmemRequestStruct()` and protected by
+`BtreeVacuumLock`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -917,6 +921,8 @@ Validation for this slice:
   coverage after classifying backend-local missing-attribute cache state.
 - focused `syncscan.o` compile coverage plus process-mode sequential-scan
   regression coverage after classifying synchronized-scan shared-memory state.
+- focused `nbtutils.o` compile coverage plus process-mode btree/vacuum
+  regression coverage after classifying btree vacuum shared-memory state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

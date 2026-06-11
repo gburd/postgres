@@ -15,7 +15,6 @@ src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
 src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/nbtree/nbtutils.c	94a728d6cdd5abe3e25f5452c8bf1318143f7b8e	btvacinfo	static BTVacInfo *btvacinfo;
 src/backend/access/nbtree/nbtxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/spgist/spgxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/transam/clog.c	e00988e96524d575a34fda3384fbf6d2b338b993	XactSlruDesc	static SlruDesc XactSlruDesc;
