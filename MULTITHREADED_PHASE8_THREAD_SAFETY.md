@@ -17,6 +17,7 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 
 - current runtime carrier pointers: `CurrentPgCarrier`, `CurrentPgBackend`,
   `CurrentPgSession`, `CurrentPgConnection`, and `CurrentPgExecution`;
+- legacy session pointer: `CurrentSession`;
 - memory context globals: `CurrentMemoryContext`, `TopMemoryContext`,
   `ErrorContext`, `CacheMemoryContext`, `MessageContext`,
   `TopTransactionContext`, `CurTransactionContext`, `PortalContext`, and
@@ -387,6 +388,10 @@ The lockfile cleanup list in `miscinit.c` and Unix socket cleanup list in
 `pqcomm.c` are now explicit runtime-global state. They are owned by postmaster
 or standalone process lifetime and must not be replicated into regular client
 backend threads.
+The legacy `CurrentSession` pointer in `session.c` is now session-local TLS.
+The `Session` object remains the existing per-session DSM/DSA owner; this slice
+only prevents the current-session compatibility pointer from being shared by
+multiple threaded backends.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -783,6 +788,9 @@ Validation for this slice:
   smoke coverage after classifying the lockfile cleanup list.
 - focused `pqcomm.o` compile coverage plus process-mode startup/regression
   smoke coverage after classifying the Unix socket cleanup list.
+- focused `session.o` compile coverage plus full rebuild/process-mode
+  startup/regression smoke coverage after classifying the legacy
+  current-session pointer.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -14,7 +14,6 @@ src/backend/access/common/reloptions.c	10612a17778efc9e61551bbe5f9337313e37986c	
 src/backend/access/common/reloptions.c	43d02783d1381349c3973f1f1d0f0c89627968a5	num_custom_options	static int num_custom_options = 0;
 src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	custom_options	static relopt_gen **custom_options = NULL;
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
-src/backend/access/common/session.c	57085ea2fce70a602421abdb03538fd4877e5f1a	CurrentSession	Session *CurrentSession = NULL;
 src/backend/access/common/syncscan.c	498a5a2a8607ae38fd6a30e5df9242e9680ee7e3	scan_locations	static ss_scan_locations_t *scan_locations;
 src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
@@ -1842,7 +1841,6 @@ src/include/access/relscan.h	382236e6a16c79e121ca65e856af3d6c0ce93fb3	TableScanI
 src/include/access/relscan.h	dc9503c3351672755d0e169fbddda939d07d20c3	IndexScanInstrumentation	struct IndexScanInstrumentation;
 src/include/access/relscan.h	0a8553ce68f95bb952cdf7cc91de3f030bd955de	TupleTableSlot	struct TupleTableSlot;
 src/include/access/session.h	5ffdd061b0d3d28acc78706715c9a6d24e2c7b80	SharedRecordTypmodRegistry	struct SharedRecordTypmodRegistry;
-src/include/access/session.h	14eb961766d59416104d830333bc27eb441aba36	CurrentSession	extern PGDLLIMPORT Session *CurrentSession;
 src/include/access/transam.h	792951b95050412677f4ac74ba35e158322c863a	TransamVariables	extern PGDLLIMPORT TransamVariablesData *TransamVariables;
 src/include/access/xlog.h	4358811cb3dc0bce96d1e15480ee4eb25eace904	ProcLastRecPtr	extern PGDLLIMPORT XLogRecPtr ProcLastRecPtr;
 src/include/access/xlog.h	fe64f9f7182d4c89a39e84bff8fa03b7043a5e3d	XactLastRecEnd	extern PGDLLIMPORT XLogRecPtr XactLastRecEnd;
