@@ -10,17 +10,12 @@ src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32
 src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
 src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
-src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;
 src/include/common/file_perm.h	e826e5ad606841ae27bf2bff671e0e9b0bc9147d	pg_file_create_mode	extern PGDLLIMPORT int pg_file_create_mode;
 src/include/common/file_perm.h	7697ec47808190cfe5797d4d44969d474b20eaa6	pg_mode_mask	extern PGDLLIMPORT int pg_mode_mask;
 src/include/common/logging.h	12a60688ec5164b15e1c28ff1a3643a116ebe905	__pg_log_level	extern enum pg_log_level __pg_log_level;
-src/include/common/pg_lzcompress.h	609e147c71c0c4c63e8885b46da27ab290ff0a2d	PGLZ_strategy_default	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_default;
-src/include/common/pg_lzcompress.h	5c801b104ec4f8feee3de64d148761ee552cdcb4	PGLZ_strategy_always	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_always;
-src/include/common/relpath.h	ff0a93604e591b4b8e7113a9d19c49606af0105d	forkNames	extern PGDLLIMPORT const char *const forkNames[];
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
-src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...
 src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettext_tbl	extern PGDLLIMPORT const char *pg_enc2gettext_tbl[];
 src/include/pg_getopt.h	e2df147a7c555931a366949d236cf23b20b857ae	optarg	extern PGDLLIMPORT char *optarg;
 src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern PGDLLIMPORT int optind;
@@ -36,8 +31,3 @@ src/include/port/win32_port.h	0e899f24119f6e921ade2217bbd650f272e6c60a	pgwin32_n
 src/include/port/win32ntdll.h	22a717bd912b632fa5272cb113c14e642c8ee5b5	pg_RtlGetLastNtStatus	extern PGDLLIMPORT RtlGetLastNtStatus_t pg_RtlGetLastNtStatus;
 src/include/port/win32ntdll.h	2236a2dfd1336a997fa3d620ed0124b7f8e66e99	pg_RtlNtStatusToDosError	extern PGDLLIMPORT RtlNtStatusToDosError_t pg_RtlNtStatusToDosError;
 src/include/port/win32ntdll.h	ed82ed1cfcaf561594d225ab10c29267ca9aeec3	pg_NtFlushBuffersFileEx	extern PGDLLIMPORT NtFlushBuffersFileEx_t pg_NtFlushBuffersFileEx;
-src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];
-src/include/storage/checksum_block_internal.h	cf55db26d1acf241408b9e0f8bea583775483a25	result	uint32 result = 0;
-src/include/storage/checksum_block_internal.h	5e578b43f97f7ced36a56bba648295fd6d7df315	i,j	uint32 i, j;
-src/include/storage/itemptr.h	b46efb77bc4bd50602ed09b88593b06fb3f274c3	ItemPointerData	pg_attribute_packed() pg_attribute_aligned(2) ItemPointerData;
-src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };

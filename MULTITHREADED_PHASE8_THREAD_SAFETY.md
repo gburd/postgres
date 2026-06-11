@@ -954,6 +954,13 @@ tables that the heuristic scanner misidentified as top-level mutable globals.
 This mirrors the existing `bootparse.c` generated-file exception and removes
 noise without changing backend runtime state.
 
+The scanner also skips the `checksum_block_internal.h` include-fragment, which
+is deliberately included inside checksum function bodies, and recognizes
+immutable const pointer objects without being confused by `*` tokens inside
+their initializers. This removes static-analysis noise for local checksum
+scratch variables, immutable compression/fork/statistics tables, and typedef
+attribute tails without changing backend runtime state.
+
 Any dynamically loaded module that references an exported global after it gains
 `PG_THREAD_LOCAL` must be rebuilt against the updated headers. Stale modules can
 still link but may crash because they use the old non-TLS symbol access pattern.
@@ -2118,6 +2125,11 @@ Validation for this slice:
   outputs that were producing false unclassified mutable-global records. The
   regenerated baseline dropped from 179 to 48 unclassified entries with no new
   unclassified mutable globals.
+- global-lifetime scanner syntax and baseline coverage after skipping the
+  checksum include-fragment, ignoring typedef attribute/closing tails, and
+  recognizing const pointer objects as immutable based on their declaration
+  prefix. The regenerated baseline dropped from 42 to 32 unclassified entries
+  with no new unclassified mutable globals.
 - focused `pg_prng.o`, `postmaster.o`, `dsm.o`, `s_lock.o`, `fd.o`,
   `xact.o`, and `postgres.o` compile coverage, global-lifetime scanner
   coverage, common/backend clean plus generated-header recovery, full

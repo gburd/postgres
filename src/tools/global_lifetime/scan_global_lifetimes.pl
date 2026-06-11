@@ -169,6 +169,10 @@ sub wanted_file
 	# generated C directly is noisy and does not classify hand-written globals.
 	return 0 if $file =~ m{^src/backend/parser/scan\.c$};
 	return 0 if $file =~ m{^src/backend/utils/adt/jsonpath_scan\.c$};
+	# This file is deliberately included inside checksum_impl.h function bodies.
+	# Scanning it as a standalone header mistakes local checksum scratch
+	# variables for top-level globals.
+	return 0 if $file =~ m{^src/include/storage/checksum_block_internal\.h$};
 	# Generated node switch fragments are included inside functions.  They are
 	# not declaration units, and scanning them directly mistakes case-body
 	# assignments for globals.
@@ -393,6 +397,8 @@ sub should_skip_declaration
 	return 1 if $decl =~ /^(?:struct|union|enum)\s+\w+\s*;/;
 	return 1 if $decl =~ /^(?:struct|union|enum)\s+\w+\s*{/;
 	return 1 if $decl =~ /^{/;
+	return 1 if $decl =~ /^}/;
+	return 1 if $decl =~ /^(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*)+[A-Za-z_][A-Za-z0-9_]*\s*;$/;
 
 	return 0;
 }
@@ -400,9 +406,12 @@ sub should_skip_declaration
 sub is_immutable_const_object
 {
 	my ($decl) = @_;
+	my $signature = $decl;
 
-	return 0 unless $decl =~ /\bconst\b/;
-	return 0 if $decl =~ /\*/;
+	$signature =~ s/=.*$//;
+
+	return 0 unless $signature =~ /\bconst\b/;
+	return 0 if $signature =~ /\*/ && $signature !~ /\*\s*const\b/;
 	return 1;
 }
 
