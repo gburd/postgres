@@ -103,6 +103,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - WAL shared-memory/runtime handles in `xlog.c`: `XLogCtl` and the cached
   `WALInsertLocks` pointer as shared-memory state, plus
   `UsableBytesInSegment` as derived runtime state;
+- WAL backend-local recovery/cache state in `xlog.c`: the cached recovery
+  status and WAL insert permission state, the open WAL segment FD cache,
+  min-recovery-point cache, and local data-checksum state;
 - SQL backup session state in `xlog.c`: `sessionBackupState`, which tracks
   the session that started a SQL-callable backup;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo

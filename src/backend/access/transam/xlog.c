@@ -231,7 +231,7 @@ static bool lastFullPageWrites;
  * It is false if SharedRecoveryState is RECOVERY_STATE_DONE.  True actually
  * means "not known, need to check the shared state".
  */
-static bool LocalRecoveryInProgress = true;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LocalRecoveryInProgress = true;
 
 /*
  * Local state for XLogInsertAllowed():
@@ -243,7 +243,7 @@ static bool LocalRecoveryInProgress = true;
  * The coding in XLogInsertAllowed() depends on the first two of these states
  * being numerically the same as bool true and false.
  */
-static int	LocalXLogInsertAllowed = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int LocalXLogInsertAllowed = -1;
 
 /*
  * ProcLastRecPtr points to the start of the last XLOG record inserted by the
@@ -655,9 +655,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogwrtResult LogwrtResult = {0, 0};
  *
  * Note: call Reserve/ReleaseExternalFD to track consumption of this FD.
  */
-static int	openLogFile = -1;
-static XLogSegNo openLogSegNo = 0;
-static TimeLineID openLogTLI = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int openLogFile = -1;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogSegNo openLogSegNo = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID openLogTLI = 0;
 
 /*
  * Local copies of equivalent fields in the control file.  When running
@@ -666,9 +666,9 @@ static TimeLineID openLogTLI = 0;
  * switched to false to prevent any updates while replaying records.
  * Those values are kept consistent as long as crash recovery runs.
  */
-static XLogRecPtr LocalMinRecoveryPoint;
-static TimeLineID LocalMinRecoveryPointTLI;
-static bool updateMinRecoveryPoint = true;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr LocalMinRecoveryPoint;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID LocalMinRecoveryPointTLI;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool updateMinRecoveryPoint = true;
 
 /*
  * Local state for ControlFile data_checksum_version.  After initialization
@@ -677,7 +677,7 @@ static bool updateMinRecoveryPoint = true;
  * avoid locking for interrogating the data checksum state.  Possible values
  * are the data checksum versions defined in storage/checksum.h.
  */
-static ChecksumStateType LocalDataChecksumState = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ChecksumStateType LocalDataChecksumState = 0;
 
 /*
  * Variable backing the GUC, keep it in sync with LocalDataChecksumState.
