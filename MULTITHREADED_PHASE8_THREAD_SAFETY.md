@@ -495,6 +495,11 @@ shared memory registered during startup. The transaction-lifetime multixact
 cache and its memory context are backend-local TLS with lazy list
 initialization, so concurrent threaded backends do not share one row-lock
 membership cache.
+Core transaction SLRU state now has explicit lifetimes. The transaction,
+subtransaction, and commit-timestamp SLRU descriptors are runtime-global
+configuration/handles registered during startup. The commit-timestamp
+last-value cache and activation flag point at shared memory registered with
+`ShmemRequestStruct()` and protected by `CommitTsLock`.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -940,6 +945,9 @@ Validation for this slice:
 - focused `multixact.o` compile coverage plus process-mode multixact
   isolation and prepared-transaction regression coverage after classifying
   multixact shared/runtime/backend-local state.
+- focused `clog.o`, `subtrans.o`, and `commit_ts.o` compile coverage plus
+  transaction/subtransaction and commit-timestamp regression coverage after
+  classifying core transaction SLRU runtime/shared state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

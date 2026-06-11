@@ -17,11 +17,7 @@ src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	
 src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/nbtree/nbtxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/spgist/spgxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/transam/clog.c	e00988e96524d575a34fda3384fbf6d2b338b993	XactSlruDesc	static SlruDesc XactSlruDesc;
-src/backend/access/transam/commit_ts.c	fadb65cd2656fd4a0ae67cb107a583fc338b7b2b	CommitTsSlruDesc	static SlruDesc CommitTsSlruDesc;
-src/backend/access/transam/commit_ts.c	2176eede14fc5aad7e3806091461f56d0e7e7a7a	commitTsShared	static CommitTimestampShared *commitTsShared;
 src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrTable	RmgrData RmgrTable[RM_MAX_ID + 1] = { };
-src/backend/access/transam/subtrans.c	d94a38b0d3fd1f01aa346e228832a3409e360936	SubTransSlruDesc	static SlruDesc SubTransSlruDesc;
 src/backend/access/transam/varsup.c	1bec3debb09d11fa81fd1136c329827744bd6f97	TransamVariables	TransamVariablesData *TransamVariables = NULL;
 src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
 src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;

@@ -117,7 +117,7 @@ const ShmemCallbacks CLOGShmemCallbacks = {
 	.init_fn = CLOGShmemInit,
 };
 
-static SlruDesc XactSlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc XactSlruDesc;
 
 #define XactCtl (&XactSlruDesc)
 
