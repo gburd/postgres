@@ -467,6 +467,10 @@ Materialized-view maintenance depth in `matview.c` is now execution-local TLS.
 It is a short-lived counter used to permit internal DML while one backend is
 refreshing a materialized view, and must not leak across concurrent threaded
 executions.
+Trigger nesting depth in `trigger.c` is now execution-local TLS. The
+`MyTriggerDepth` counter is incremented only around trigger function calls,
+restored in a `PG_FINALLY()` block, and backs `pg_trigger_depth()` for the
+current execution.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -899,6 +903,8 @@ Validation for this slice:
 - focused `matview.o` compile coverage plus materialized-view regression
   coverage after classifying execution-local materialized-view maintenance
   depth.
+- focused `trigger.o` compile coverage plus trigger regression coverage after
+  classifying execution-local trigger nesting depth.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

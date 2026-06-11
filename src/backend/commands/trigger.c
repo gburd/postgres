@@ -66,7 +66,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int SessionReplicationRole =
 			SESSION_REPLICATION_ROLE_ORIGIN;
 
 /* How many levels deep into trigger execution are we? */
-static int	MyTriggerDepth = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyTriggerDepth = 0;
 
 /* Local function prototypes */
 static void renametrig_internal(Relation tgrel, Relation targetrel,
