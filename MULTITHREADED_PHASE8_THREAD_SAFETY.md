@@ -79,6 +79,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
   `SetRoleIsActive`;
 - vacuum execution state: `VacuumCostBalance` and `VacuumCostActive`;
+- ANALYZE execution state in `analyze.c`: `anl_context` and `vac_strategy`.
+  These carry the current command's working memory context and buffer access
+  strategy through sampling and index-statistics helpers.
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
@@ -1101,6 +1104,14 @@ Validation for this slice:
   counters. The runtime smoke preloaded `pg_stat_statements`, created the
   extension, ran `EXPLAIN (ANALYZE, BUFFERS, WAL)` against an insert, verified
   the table contents, and confirmed `pg_stat_statements` recorded the query.
+- focused `analyze.o` compile coverage, global-lifetime scanner coverage, and
+  process-mode ANALYZE smoke coverage after classifying ANALYZE execution
+  state. `gmake -C src/test/regress check-tests TESTS="analyze"` recreated
+  `tmp_install` and failed before SQL started with the known macOS
+  `libpq.5.dylib` loader error; direct smoke coverage then patched the
+  recreated temp-install binaries, ran inheritance-tree `ANALYZE VERBOSE`,
+  `VACUUM (ANALYZE, VERBOSE)`, verified table stats visibility, and confirmed
+  inherited `pg_stats` rows were loaded.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

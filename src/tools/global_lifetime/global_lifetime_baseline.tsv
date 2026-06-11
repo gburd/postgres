@@ -1,6 +1,4 @@
 # file	sha1	names	declaration
-src/backend/commands/analyze.c	1a4531a7c1f3ffaa75bc0e32543ea2e6b10fd3e6	anl_context	static MemoryContext anl_context = NULL;
-src/backend/commands/analyze.c	0660dfda510efb539560d06b48b23b4d399fa7fb	vac_strategy	static BufferAccessStrategy vac_strategy;
 src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;
 src/backend/commands/explain_state.c	1ffb33b220544251d6c6473db764e9f7152da777	ExplainExtensionNameArray	static const char **ExplainExtensionNameArray = NULL;
 src/backend/commands/explain_state.c	1efcd360eeefb1a49fff621652605cc262e291ce	ExplainExtensionNamesAssigned	static int ExplainExtensionNamesAssigned = 0;

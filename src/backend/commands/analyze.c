@@ -71,8 +71,8 @@ typedef struct AnlIndexData
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int default_statistics_target = 100;
 
 /* A few variables that don't seem worth passing around as parameters */
-static MemoryContext anl_context = NULL;
-static BufferAccessStrategy vac_strategy;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext anl_context = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION BufferAccessStrategy vac_strategy;
 
 
 static void do_analyze_rel(Relation onerel,
