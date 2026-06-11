@@ -165,6 +165,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - frontend cancellation and print-loop state: `CancelRequested` and
   `cancel_pressed` are runtime-global frontend process flags used by client
   tools and psql-style output code, not backend/session-local state.
+- command-line option parser compatibility state: `optarg`, `optind`,
+  `opterr`, `optopt`, and `optreset` are runtime-global process state exposed
+  for getopt-compatible frontend and utility option parsing. PostgreSQL's
+  re-entrant `pg_getopt_ctx` remains available where concurrent parsing is
+  needed.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2186,6 +2191,11 @@ Validation for this slice:
   coverage, incremental full rebuild/install, and installed `psql --help`
   smoke after classifying frontend cancellation/print-loop flags as
   runtime-global.
+- focused `getopt.o`, frontend utility object, timezone, and isolationtester
+  compile coverage, global-lifetime scanner coverage, incremental full
+  rebuild/install, and installed getopt smoke for `pg_controldata --version`,
+  `pg_waldump --help`, and `psql --help` after classifying command-line
+  option parser compatibility globals as runtime-global.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
