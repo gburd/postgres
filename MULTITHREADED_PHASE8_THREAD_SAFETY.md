@@ -107,6 +107,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   current-XID state, unreported subtransaction XIDs, transaction abort context,
   transaction flags, logical-streaming system-scan state, and transaction
   sampling state;
+- cumulative-statistics transaction stack state in `pgstat_xact.c`:
+  `pgStatXactStack`, which is allocated in `TopTransactionContext`, tracks
+  relation and dropped-object stats for the current transaction/subtransaction
+  tree, and is cleared at transaction or prepared-transaction end;
 - transaction-owned combo CID maps in `combocid.c` and relation storage
   pending-delete/sync cleanup queues in `storage.c`;
 - WAL record construction state in `xloginsert.c`, including registered buffer
@@ -1216,6 +1220,13 @@ Validation for this slice:
   skipped the documented schedule prefix; the final direct `pg_regress`
   invocation included the prefix through `create_index`, `triggers`, `select`,
   and `guc` and passed all 26 tests.
+- focused `pgstat_xact.o` compile coverage, incremental full rebuild/install,
+  global-lifetime scanner coverage, and fixture-backed `stats_ext` plus
+  `stats` regression coverage after classifying cumulative-statistics
+  transaction stack state. A standalone `stats` run failed because the test
+  expects `test_setup`, `create_misc`, `create_table`, `create_index`, and the
+  `check_estimated_rows()` helper from `stats_ext`; the final direct
+  `pg_regress` invocation included those fixtures and passed all 30 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

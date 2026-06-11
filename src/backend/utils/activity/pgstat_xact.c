@@ -30,7 +30,7 @@ static void AtEOXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state, bool 
 static void AtEOSubXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state,
 											bool isCommit, int nestDepth);
 
-static PgStat_SubXactStatus *pgStatXactStack = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgStat_SubXactStatus *pgStatXactStack = NULL;
 
 
 /*

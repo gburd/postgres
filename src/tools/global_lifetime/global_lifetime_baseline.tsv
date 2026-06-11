@@ -1276,7 +1276,6 @@ src/backend/utils/activity/pgstat_shmem.c	60ef3ecba9ebfb6060e3bb5f57943eaf230224
 src/backend/utils/activity/pgstat_slru.c	c5e7516762eb588742966ceb479ed76199a73eb8	pending_SLRUStats	static PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
 src/backend/utils/activity/pgstat_slru.c	5bc95811a8de2ce027be935c152d4eb2e7364f33	have_slrustats	static bool have_slrustats = false;
 src/backend/utils/activity/pgstat_wal.c	56b54546e860b71a4dc6b43a33393a84b7d3fb8b	prevWalUsage	static WalUsage prevWalUsage;
-src/backend/utils/activity/pgstat_xact.c	8e4c776698ca59b9743c8e089762cc3d569349e3	pgStatXactStack	static PgStat_SubXactStatus *pgStatXactStack = NULL;
 src/backend/utils/activity/wait_event.c	3ef3453e48de59a2fe7c0d19005d31e6d366828c	local_my_wait_event_info	static uint32 local_my_wait_event_info;
 src/backend/utils/activity/wait_event.c	e2ec0b808716dba5e437f8e3af01b7b7f90eb381	my_wait_event_info	uint32 *my_wait_event_info = &local_my_wait_event_info;
 src/backend/utils/activity/wait_event.c	2315c9a0b8647b114620d939e8736c2a8e774015	WaitEventCustomHashByInfo	static HTAB *WaitEventCustomHashByInfo;
