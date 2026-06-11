@@ -28,7 +28,7 @@
 #include "storage/spin.h"
 
 /* Initially, we are not prepared to sleep on any condition variable. */
-static ConditionVariable *cv_sleep_target = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ConditionVariable *cv_sleep_target = NULL;
 
 /*
  * Initialize a condition variable.

@@ -11,6 +11,7 @@
 #define WAIT_EVENT_H
 
 /* enums for wait events */
+#include "utils/global_lifetime.h"
 #include "utils/wait_event_types.h"
 
 extern const char *pgstat_get_wait_event(uint32 wait_event_info);
@@ -20,7 +21,7 @@ static inline void pgstat_report_wait_end(void);
 extern void pgstat_set_wait_event_storage(uint32 *wait_event_info);
 extern void pgstat_reset_wait_event_storage(void);
 
-extern PGDLLIMPORT uint32 *my_wait_event_info;
+extern PGDLLIMPORT PG_GLOBAL_BACKEND uint32 *my_wait_event_info;
 
 
 /*

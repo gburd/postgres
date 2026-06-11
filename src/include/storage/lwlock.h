@@ -72,7 +72,7 @@ typedef union LWLockPadded
 	char		pad[LWLOCK_PADDED_SIZE];
 } LWLockPadded;
 
-extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray;
 
 /*
  * It's a bit odd to declare NUM_BUFFER_PARTITIONS and NUM_LOCK_PARTITIONS

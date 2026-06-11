@@ -101,6 +101,17 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   and `OutputFileName`;
 - backend-local latch state: `LocalLatchData` backing the early `MyLatch`
   pointer and `LatchWaitSet` backing `WaitLatch()`;
+- lock-manager and wait-reporting state: heavyweight-lock shared hash tables,
+  fast-path strong-lock counters, the main LWLock array, LWLock tranche
+  registry, and custom wait-event registry are classified as shared-memory or
+  runtime state; local lock hash state, fast-path local-use counts, awaited
+  lock cleanup state, condition-variable sleep target, held LWLock stack, and
+  local tranche cache are backend-local TLS. `my_wait_event_info` is
+  classified as backend-local but deliberately left as a plain compatibility
+  pointer in this slice after an exported TLS pointer variant crashed during
+  bootstrap on macOS; Phase 9 should move wait-event storage behind the
+  thread-compatible wait/wakeup boundary rather than retrying that direct TLS
+  pointer shape.
 - authenticated, session, and effective-user identity state in `miscinit.c`:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
@@ -1427,6 +1438,19 @@ Validation for this slice:
   and direct temp-cluster shared/local-buffer smoke after classifying shared
   buffer control structures as shared-memory state and private refcount,
   backend writeback, and local-buffer structures as backend-local TLS.
+- focused lock/wait compile coverage for `lock.o`, `lwlock.o`,
+  `condition_variable.o`, `s_lock.o`, `wait_event.o`, and
+  `wait_event_funcs.o`, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, and direct temp-cluster
+  concurrent lock smoke after classifying heavyweight-lock shared tables,
+  backend-local local lock state, held LWLocks, condition-variable sleep state,
+  spin-delay state, and wait-event registry state. The smoke used two
+  concurrent backends, observed one `pg_stat_activity` relation-lock waiter,
+  verified the waiter acquired the lock after release, and exercised advisory
+  lock acquisition/release. A direct `PG_THREAD_LOCAL` conversion of
+  `my_wait_event_info` was tested and rejected in this slice because it caused
+  a bootstrap bus error on macOS; this variable remains classification-only
+  until Phase 9 introduces the wait/wakeup boundary.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

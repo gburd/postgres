@@ -134,7 +134,7 @@ StaticAssertDecl((LW_VAL_EXCLUSIVE & LW_FLAG_MASK) == 0,
  * All these names are user-visible as wait event names, so choose with care
  * ... and do not forget to update the documentation's list of wait events.
  */
-static const char *const BuiltinTrancheNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *const BuiltinTrancheNames[] = {
 #define PG_LWLOCK(id, lockname) [id] = CppAsString(lockname),
 #define PG_LWLOCKTRANCHE(id, lockname) [LWTRANCHE_##id] = CppAsString(lockname),
 #include "storage/lwlocklist.h"
@@ -147,7 +147,7 @@ StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
 				 "missing entries in BuiltinTrancheNames[]");
 
 /* Main array of LWLocks in shared memory */
-LWLockPadded *MainLWLockArray = NULL;
+PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray = NULL;
 
 /*
  * We use this structure to keep track of locked LWLocks for release
@@ -163,8 +163,8 @@ typedef struct LWLockHandle
 	LWLockMode	mode;
 } LWLockHandle;
 
-static int	num_held_lwlocks = 0;
-static LWLockHandle held_lwlocks[MAX_SIMUL_LWLOCKS];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int num_held_lwlocks = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LWLockHandle held_lwlocks[MAX_SIMUL_LWLOCKS];
 
 /* Maximum number of LWLock tranches that can be assigned by extensions */
 #define MAX_USER_DEFINED_TRANCHES 256
@@ -192,10 +192,10 @@ typedef struct LWLockTrancheShmemData
 	slock_t		lock;			/* protects the above */
 } LWLockTrancheShmemData;
 
-static LWLockTrancheShmemData *LWLockTranches;
+static PG_GLOBAL_SHMEM LWLockTrancheShmemData *LWLockTranches;
 
 /* backend-local copy of LWLockTranches->num_user_defined */
-static int	LocalNumUserDefinedTranches;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int LocalNumUserDefinedTranches;
 
 /*
  * NamedLWLockTrancheRequests is a list of tranches requested with
@@ -208,10 +208,10 @@ typedef struct NamedLWLockTrancheRequest
 	int			num_lwlocks;
 } NamedLWLockTrancheRequest;
 
-static List *NamedLWLockTrancheRequests = NIL;
+static PG_GLOBAL_RUNTIME List *NamedLWLockTrancheRequests = NIL;
 
 /* Size of MainLWLockArray.  Only valid in postmaster. */
-static int	num_main_array_locks;
+static PG_GLOBAL_RUNTIME int num_main_array_locks;
 
 static void LWLockShmemRequest(void *arg);
 static void LWLockShmemInit(void *arg);
@@ -246,8 +246,8 @@ typedef struct lwlock_stats
 	int			spin_delay_count;
 }			lwlock_stats;
 
-static HTAB *lwlock_stats_htab;
-static lwlock_stats lwlock_stats_dummy;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *lwlock_stats_htab;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND lwlock_stats lwlock_stats_dummy;
 #endif
 
 #ifdef LOCK_DEBUG
