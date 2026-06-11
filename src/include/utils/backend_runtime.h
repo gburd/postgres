@@ -168,7 +168,6 @@ struct PgBackend
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */
 	dlist_head	dsm_segment_list;
-	bool		dsm_segment_list_initialized;
 
 	BackendType backend_type;
 };

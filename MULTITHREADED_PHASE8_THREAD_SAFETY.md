@@ -371,7 +371,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   control handle/mapping metadata is runtime state, `DSMRegistryCtx` points at
   shared memory, registry entry type names are immutable, and the attached
   registry DSA/dshash objects are backend-local TLS because they are
-  per-backend attachment descriptors over shared DSM contents.
+  per-backend attachment descriptors over shared DSM contents. The
+  per-backend DSM segment list is initialized with its owning `PgBackend`,
+  not lazily in `dsm.c`, so a backend object is always born with a valid list
+  head before DSM creation, attach, detach, or shutdown paths use it.
 - storage-manager backend cache state: `MdCxt`, `SMgrRelationHash`, and
   `unpinned_relns` are backend-local TLS state owned by the current backend's
   smgr cache, while the smgr dispatch table and method count are immutable
@@ -1185,13 +1188,12 @@ explicitly classified: `SysAtt[]` is the fixed system-attribute descriptor
 table, and `ObjectTypeMap[]` maps stable object-type strings to `ObjectType`
 values.
 
-Gate C has passed on this macOS checkout using the documented near-equivalent
-for the literal top-level `check-world` target: static global report checks,
-direct full core regression, direct full isolation regression, extension load
-tests using the test-only threaded backend model, and PL/pgSQL process-mode
-regression tests. The literal top-level `gmake check-world` target remains
-blocked here by recreated temp-install binaries that reference
-`/usr/local/pgsql/lib/libpq.5.dylib` before SQL tests run.
+Gate C has passed on this macOS checkout. The current validation includes a
+literal top-level `gmake check-world` pass for the runnable checks in this
+configuration, static global report checks, direct full core regression,
+direct full isolation regression, extension load tests using the test-only
+threaded backend model, and PL/pgSQL process-mode regression tests. TAP checks
+are skipped because this checkout is not configured with TAP support.
 
 ## Validation So Far
 
@@ -2477,6 +2479,23 @@ Validation for this slice:
   direct core `parallel_schedule` regression run passed all 245 tests. This is
   a documented near-equivalent for the core process-mode part of Gate C on this
   macOS checkout, not a literal `check-world` pass.
+- A later literal top-level `gmake check-world` attempt reached
+  `src/test/isolation` and exposed a real DSM ownership bug during
+  `multiple-row-versions`: parallel btree build creation of per-session DSM
+  crashed because the backend-owned DSM list could be uninitialized in a
+  constructed `PgBackend`. The fix initializes `dsm_segment_list` when
+  `InitializePgProcessRuntime()` constructs the process-mode backend, removes
+  the lazy initialization flag from `PgBackend`, and updates the
+  `test_backend_runtime` fake backends to initialize their DSM lists
+  explicitly. Focused `multiple-row-versions`, full isolation, and
+  `test_backend_runtime` checks passed after the fix.
+- After patching the macOS build-tree dynamic-library IDs for `libpq`,
+  `libecpg`, `libpgtypes`, and `libecpg_compat`, a literal top-level
+  `gmake check-world` completed successfully on this checkout. The run passed
+  core isolation, core regression, all runnable `src/test/modules` checks,
+  ECPG, contrib regression/isolation checks, and the other runnable make
+  targets. TAP-only directories were skipped because this checkout is not
+  configured with TAP support.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -83,6 +83,8 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 	saved_backend = CurrentPgBackend;
 	MemSet(&fake_backend_with_dsm, 0, sizeof(fake_backend_with_dsm));
 	MemSet(&fake_backend_to_exit, 0, sizeof(fake_backend_to_exit));
+	dlist_init(&fake_backend_with_dsm.dsm_segment_list);
+	dlist_init(&fake_backend_to_exit.dsm_segment_list);
 
 	PG_TRY();
 	{

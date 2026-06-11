@@ -240,6 +240,23 @@ Important current files:
   ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --schedule=./parallel_schedule
   ```
 
+  `gmake check-world` also builds ECPG test executables that can record
+  `/usr/local/pgsql/lib/libecpg.6.dylib`, `libpgtypes.3.dylib`, and
+  `libecpg_compat.3.dylib` from build-tree library IDs. If all ECPG tests abort
+  with signal 6 and stderr says `Library not loaded: /usr/local/pgsql/lib/...`,
+  patch the build-tree dynamic-library IDs before rerunning:
+
+  ```sh
+  install_name_tool -id "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/interfaces/libpq/libpq.5.dylib
+  install_name_tool -id "$PWD/tmp_install/usr/local/pgsql/lib/libecpg.6.dylib" src/interfaces/ecpg/ecpglib/libecpg.6.dylib
+  install_name_tool -id "$PWD/tmp_install/usr/local/pgsql/lib/libpgtypes.3.dylib" src/interfaces/ecpg/pgtypeslib/libpgtypes.3.dylib
+  install_name_tool -id "$PWD/tmp_install/usr/local/pgsql/lib/libecpg_compat.3.dylib" src/interfaces/ecpg/compatlib/libecpg_compat.3.dylib
+  ```
+
+  Also patch inter-library references in `src/interfaces/ecpg/ecpglib` and
+  `src/interfaces/ecpg/compatlib`, and patch any already-built ECPG test
+  executables if rerunning `src/interfaces/ecpg/test` without rebuilding them.
+
 - For focused process-mode regression checks, run the test driver directly with
   the temp install first on `PATH`, for example:
 

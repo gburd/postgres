@@ -151,15 +151,7 @@ static dlist_head *
 CurrentDsmSegmentList(void)
 {
 	if (CurrentPgBackend != NULL)
-	{
-		if (!CurrentPgBackend->dsm_segment_list_initialized)
-		{
-			dlist_init(&CurrentPgBackend->dsm_segment_list);
-			CurrentPgBackend->dsm_segment_list_initialized = true;
-		}
-
 		return &CurrentPgBackend->dsm_segment_list;
-	}
 
 	return &early_dsm_segment_list;
 }

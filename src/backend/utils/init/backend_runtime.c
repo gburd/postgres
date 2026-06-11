@@ -72,6 +72,7 @@ InitializePgProcessRuntime(void)
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
+	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
