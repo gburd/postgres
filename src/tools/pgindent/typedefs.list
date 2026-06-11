@@ -2595,6 +2595,8 @@ RecnoPageOpaque
 RecnoPageOpaqueData
 RecnoScanDesc
 RecnoScanDescData
+RecnoTrainedDict
+RecnoTrainedDictKey
 RecnoTuple
 RecnoTupleData
 RecnoTupleHeader

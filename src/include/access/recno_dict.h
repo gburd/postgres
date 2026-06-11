@@ -32,7 +32,7 @@
 
 /* Directory metapage identity */
 #define RECNO_DICT_METAPAGE_MAGIC	0x52444943	/* "RDIC" */
-#define RECNO_DICT_METAPAGE_VERSION 1
+#define RECNO_DICT_METAPAGE_VERSION 2
 
 /* Maximum number of coexisting dictionaries per relation */
 #define RECNO_DICT_MAX_DIRECTORY	256
@@ -65,6 +65,7 @@ typedef struct RecnoDictMeta
 	uint32		version;
 	uint32		count;			/* number of valid directory entries */
 	uint32		next_dictid;	/* next id to assign (monotonic, starts at 1) */
+	uint32		active_dictid;	/* dict id new writes should use, 0 = none */
 	RecnoDictDirEntry entries[RECNO_DICT_MAX_DIRECTORY];
 } RecnoDictMeta;
 
@@ -95,5 +96,7 @@ extern uint32 recno_dict_append(Relation rel, uint8 codec,
 extern char *recno_dict_read(Relation rel, uint32 dictid,
 							 uint8 *codec, uint32 *length);
 extern uint32 recno_dict_count(Relation rel);
+extern uint32 recno_dict_get_active(Relation rel);
+extern void recno_dict_set_active(Relation rel, uint32 dictid);
 
 #endif							/* RECNO_DICT_H */

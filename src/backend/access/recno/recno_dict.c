@@ -26,6 +26,7 @@
 
 #include "access/recno_dict.h"
 #include "access/recno_xlog.h"
+#include "catalog/storage_xlog.h"
 #include "common/relpath.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -50,6 +51,7 @@ recno_dict_init_metapage(Page page)
 	meta->version = RECNO_DICT_METAPAGE_VERSION;
 	meta->count = 0;
 	meta->next_dictid = 1;		/* id 0 is reserved for "no dictionary" */
+	meta->active_dictid = 0;	/* no active dict: plain codec */
 }
 
 /*
@@ -66,13 +68,28 @@ recno_dict_get_metapage(Relation rel, int mode)
 	Page		page;
 	RecnoDictMeta *meta;
 
-	if (smgrnblocks(RelationGetSmgr(rel), RECNO_DICT_FORKNUM) == 0)
+	if (smgrexists(RelationGetSmgr(rel), RECNO_DICT_FORKNUM) == false ||
+		smgrnblocks(RelationGetSmgr(rel), RECNO_DICT_FORKNUM) == 0)
 	{
 		if (mode != BUFFER_LOCK_EXCLUSIVE)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("RECNO dictionary fork for relation \"%s\" has no blocks",
 							RelationGetRelationName(rel))));
+
+		/*
+		 * ExtendBufferedRel() (the one-block path) does not honor
+		 * EB_CREATE_FORK_IF_NEEDED, so create the fork ourselves before the
+		 * first extension.  The metapage write below is WAL-logged with a
+		 * forced full-page image, but the fork-creation itself must be logged
+		 * separately so redo can open the file before restoring that image.
+		 */
+		if (!smgrexists(RelationGetSmgr(rel), RECNO_DICT_FORKNUM))
+		{
+			smgrcreate(RelationGetSmgr(rel), RECNO_DICT_FORKNUM, false);
+			if (RelationNeedsWAL(rel))
+				log_smgrcreate(&rel->rd_locator, RECNO_DICT_FORKNUM);
+		}
 
 		buf = ExtendBufferedRel(BMR_REL(rel), RECNO_DICT_FORKNUM, NULL,
 								EB_LOCK_FIRST);
@@ -147,6 +164,56 @@ recno_dict_count(Relation rel)
 	UnlockReleaseBuffer(buf);
 
 	return count;
+}
+
+/*
+ * recno_dict_get_active -- the dict id new writes should use.
+ *
+ * Returns RECNO_DICT_INVALID_ID (0) when the fork is absent or empty,
+ * meaning "no active dictionary, use the plain codec".
+ */
+uint32
+recno_dict_get_active(Relation rel)
+{
+	Buffer		buf;
+	RecnoDictMeta *meta;
+	uint32		active;
+
+	if (smgrexists(RelationGetSmgr(rel), RECNO_DICT_FORKNUM) == false ||
+		smgrnblocks(RelationGetSmgr(rel), RECNO_DICT_FORKNUM) == 0)
+		return RECNO_DICT_INVALID_ID;
+
+	buf = recno_dict_get_metapage(rel, BUFFER_LOCK_SHARE);
+	meta = (RecnoDictMeta *) PageGetContents(BufferGetPage(buf));
+	active = meta->active_dictid;
+	UnlockReleaseBuffer(buf);
+
+	return active;
+}
+
+/*
+ * recno_dict_set_active -- publish the active dictionary id for new writes.
+ *
+ * The metapage is created on first use if necessary.  The update is made
+ * crash-safe with the same XLOG_RECNO_WRITE_DICT record used by appends.
+ */
+void
+recno_dict_set_active(Relation rel, uint32 dictid)
+{
+	Buffer		metabuf;
+	RecnoDictMeta *meta;
+
+	metabuf = recno_dict_get_metapage(rel, BUFFER_LOCK_EXCLUSIVE);
+	meta = (RecnoDictMeta *) PageGetContents(BufferGetPage(metabuf));
+
+	START_CRIT_SECTION();
+	meta->active_dictid = dictid;
+	MarkBufferDirty(metabuf);
+	if (RelationNeedsWAL(rel))
+		RecnoXLogWriteDict(rel, metabuf);
+	END_CRIT_SECTION();
+
+	UnlockReleaseBuffer(metabuf);
 }
 
 /*
