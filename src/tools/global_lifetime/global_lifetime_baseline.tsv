@@ -1,14 +1,7 @@
 # file	sha1	names	declaration
-src/backend/catalog/objectaccess.c	bd34f76e318396d1986651d0645909cf00233250	object_access_hook	object_access_hook_type object_access_hook = NULL;
-src/backend/catalog/objectaccess.c	209bcc930ed02592cb794127b72298d043b2b99d	object_access_hook_str	object_access_hook_type_str object_access_hook_str = NULL;
 src/backend/commands/analyze.c	1a4531a7c1f3ffaa75bc0e32543ea2e6b10fd3e6	anl_context	static MemoryContext anl_context = NULL;
 src/backend/commands/analyze.c	0660dfda510efb539560d06b48b23b4d399fa7fb	vac_strategy	static BufferAccessStrategy vac_strategy;
 src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;
-src/backend/commands/explain.c	26ef79048cb49f56f1223d0c84968838b5f7066d	ExplainOneQuery_hook	ExplainOneQuery_hook_type ExplainOneQuery_hook = NULL;
-src/backend/commands/explain.c	de7b200d9dbc36aab4ae2084c0c299af1e633241	explain_get_index_name_hook	explain_get_index_name_hook_type explain_get_index_name_hook = NULL;
-src/backend/commands/explain.c	729893d8c1ed0b91f4a91a85463cd65eaa55dfbf	explain_per_plan_hook	explain_per_plan_hook_type explain_per_plan_hook = NULL;
-src/backend/commands/explain.c	61e29e08063f891e32661ba4aa4f174fc74549de	explain_per_node_hook	explain_per_node_hook_type explain_per_node_hook = NULL;
-src/backend/commands/explain_state.c	bef0a35fbfc8a2931d7b72370334d2e34f55f6ec	explain_validate_options_hook	explain_validate_options_hook_type explain_validate_options_hook = NULL;
 src/backend/commands/explain_state.c	1ffb33b220544251d6c6473db764e9f7152da777	ExplainExtensionNameArray	static const char **ExplainExtensionNameArray = NULL;
 src/backend/commands/explain_state.c	1efcd360eeefb1a49fff621652605cc262e291ce	ExplainExtensionNamesAssigned	static int ExplainExtensionNamesAssigned = 0;
 src/backend/commands/explain_state.c	d648cf6b5611658c7f83a8a409f75b4d2b7f275d	ExplainExtensionNamesAllocated	static int ExplainExtensionNamesAllocated = 0;
@@ -24,7 +17,6 @@ src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	re
 src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
 src/backend/commands/seclabel.c	30f2ea183b16f288e276de7a4e096f4201193aa6	label_provider_list	static List *label_provider_list = NIL;
 src/backend/commands/trigger.c	5bc2630e4f4b465d031ba743e75bff21f35892e5	afterTriggers	static AfterTriggersData afterTriggers;
-src/backend/commands/user.c	0e02ef1be471f87db98a4c9e07d5b1efe7118a08	check_password_hook	check_password_hook_type check_password_hook = NULL;
 src/backend/commands/vacuum.c	911057b62e12c91813575d37c02b0a0e585b3f55	vacuum_cost_delay	double vacuum_cost_delay = 0;
 src/backend/commands/vacuum.c	15c0737b0df76c857233607464077e6a97c8efa7	vacuum_cost_limit	int vacuum_cost_limit = 200;
 src/backend/commands/vacuum.c	d5445216c6dda3240637bccd7c3d7ca2bad6b2c2	parallel_vacuum_worker_delay_ns	int64 parallel_vacuum_worker_delay_ns = 0;
@@ -36,11 +28,6 @@ src/backend/commands/vacuumparallel.c	7b88ac5a5abf2259c986934befbf07df90998f3b	p
 src/backend/commands/vacuumparallel.c	5019eec2a7bcbe78257f79034a54d3a949d21467	shared_params_generation_local	static uint32 shared_params_generation_local = 0;
 src/backend/executor/execExprInterp.c	b671e7ef0f7c662893b7d8903e463cc065815aa0	dispatch_table	static const void **dispatch_table = NULL;
 src/backend/executor/execExprInterp.c	f5dae087566d82e7434b56ee0ed00090438c3492	reverse_dispatch_table	static ExprEvalOpLookup reverse_dispatch_table[EEOP_LAST];
-src/backend/executor/execMain.c	2153e3a5d03f6d7af4e4185de2dfce12f245cb26	ExecutorStart_hook	ExecutorStart_hook_type ExecutorStart_hook = NULL;
-src/backend/executor/execMain.c	37efca8b91965163a78375cd6355ebd121732f98	ExecutorRun_hook	ExecutorRun_hook_type ExecutorRun_hook = NULL;
-src/backend/executor/execMain.c	4f274b140069f5e3615e5ed54f881f356488725f	ExecutorFinish_hook	ExecutorFinish_hook_type ExecutorFinish_hook = NULL;
-src/backend/executor/execMain.c	ec87208f41986e9292b6f8f790fc0a278fec0185	ExecutorEnd_hook	ExecutorEnd_hook_type ExecutorEnd_hook = NULL;
-src/backend/executor/execMain.c	815094d3abe4daf661d34194a9151787472060eb	ExecutorCheckPerms_hook	ExecutorCheckPerms_hook_type ExecutorCheckPerms_hook = NULL;
 src/backend/executor/instrument.c	08550ccaabf4a567ee0655669864dd61bba10157	pgBufferUsage	BufferUsage pgBufferUsage;
 src/backend/executor/instrument.c	aab563c4d73dacbbaa3d934ea9af6153e0000e9f	save_pgBufferUsage	static BufferUsage save_pgBufferUsage;
 src/backend/executor/instrument.c	66f62f8700f43fc8ee0e2bd15fd4e82c39aa4e76	pgWalUsage	WalUsage pgWalUsage;
@@ -124,13 +111,10 @@ src/backend/libpq/auth-oauth.c	95cb10ea95af07c21c0a680f011a97bfc6f40901	Validato
 src/backend/libpq/auth-oauth.c	571e75f4318f4a359feea9d4b4f8f37c423b4dd7	ValidatorOptionsChecked	static bool ValidatorOptionsChecked;
 src/backend/libpq/auth.c	e66f425397187b0d3273a90190a0a643749e4f81	pam_passw_conv	static struct pam_conv pam_passw_conv = { &pam_passwd_conv_proc, NULL };
 src/backend/libpq/auth.c	83a7c2b458376a5d5f24476e16c21252f83d60a9	pam_no_password	static bool pam_no_password;
-src/backend/libpq/auth.c	976387c98320f55c61a1a4dc1dfd27a02dad748f	ldap_password_hook	auth_password_hook_typ ldap_password_hook = dummy_ldap_password_mutator;
-src/backend/libpq/auth.c	5912492ea45adaecd519307c9721b602660e5e50	ClientAuthentication_hook	ClientAuthentication_hook_type ClientAuthentication_hook = NULL;
 src/backend/libpq/be-fsstubs.c	b83be41998e8f691f86520b9e068d1f98bc46d04	cookies	static LargeObjectDesc **cookies = NULL;
 src/backend/libpq/be-fsstubs.c	40cb850b8f864f3ab6bb667ddf005ea650da2f87	cookies_size	static int cookies_size = 0;
 src/backend/libpq/be-fsstubs.c	df11ece38437d8f4a93d66a69e68d266fcf68737	lo_cleanup_needed	static bool lo_cleanup_needed = false;
 src/backend/libpq/be-fsstubs.c	e52051c43bf96b98955f4ec149df09bc3dbfa3d8	fscxt	static MemoryContext fscxt = NULL;
-src/backend/libpq/be-secure-openssl.c	9b0aefedd5f5377a777c4ed56d2307185690e59a	openssl_tls_init_hook	openssl_tls_init_hook_typ openssl_tls_init_hook = default_openssl_tls_init;
 src/backend/libpq/be-secure-openssl.c	d851edbd7b9ce720d2519cd14e3c1e6c7abdbc2e	SSL_context	static SSL_CTX *SSL_context = NULL;
 src/backend/libpq/be-secure-openssl.c	374ce4abd1fcc8194a30f6af4d7d971d097de8a0	SSL_hosts_memcxt	static MemoryContext SSL_hosts_memcxt = NULL;
 src/backend/libpq/be-secure-openssl.c	c68dc329e0cf710520198bf62db37e513b59c02d	sni,no_sni,default_host,SSL_hosts	static struct hosts { List *sni; HostsLine *no_sni; HostsLine *default_host; } *SSL_hosts;
@@ -801,22 +785,11 @@ src/backend/nodes/outfuncs.c	e40f297abcb5f78fac5fc133ebff6a1c300e2e56	write_loca
 src/backend/nodes/read.c	e97fccfe46a6f872767649d4a3ca4928c95517a7	pg_strtok_ptr	static const char *pg_strtok_ptr = NULL;
 src/backend/nodes/read.c	1bd73413e97a0e870d8ee963647d5ca09cb39d77	restore_location_fields	bool restore_location_fields = false;
 src/backend/optimizer/geqo/geqo_main.c	a4921145ff7752a0a55ac1c6cea295f9daaa2cf5	Geqo_planner_extension_id	int Geqo_planner_extension_id = -1;
-src/backend/optimizer/path/allpaths.c	6d9f4ad71e0f6bc1d274f2272bcbdd92b24555b5	set_rel_pathlist_hook	set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
-src/backend/optimizer/path/allpaths.c	d2bae29f2046cb682f4ec8300d22a77f9386f1f0	join_search_hook	join_search_hook_type join_search_hook = NULL;
 src/backend/optimizer/path/costsize.c	cd488f762648cc3b16e33f41585f95273acee6a0	disable_cost	Cost disable_cost = 1.0e10;
-src/backend/optimizer/path/joinpath.c	67b4933d0866fc3b6225b06c972aa3d49d964c82	set_join_pathlist_hook	set_join_pathlist_hook_type set_join_pathlist_hook = NULL;
-src/backend/optimizer/path/joinpath.c	8d885a219c95abd2563eee221452edd9dc72fd6e	join_path_setup_hook	join_path_setup_hook_type join_path_setup_hook = NULL;
-src/backend/optimizer/plan/planner.c	ffe0b4de809dbf855542e84558ec6d365fdb2117	planner_hook	planner_hook_type planner_hook = NULL;
-src/backend/optimizer/plan/planner.c	4d69d1d09427b2dbaaa233868ac7a51a4a0c6781	planner_setup_hook	planner_setup_hook_type planner_setup_hook = NULL;
-src/backend/optimizer/plan/planner.c	b2bf367043e03138bf16988bdf0ffb3cbed058e5	planner_shutdown_hook	planner_shutdown_hook_type planner_shutdown_hook = NULL;
-src/backend/optimizer/plan/planner.c	c182faebd77b13c60a6bcc52a3633bdccfcdb377	create_upper_paths_hook	create_upper_paths_hook_type create_upper_paths_hook = NULL;
 src/backend/optimizer/util/extendplan.c	b7606e664007fa63c1ff6ee69d6c8030a37ce1d8	PlannerExtensionNameArray	static const char **PlannerExtensionNameArray = NULL;
 src/backend/optimizer/util/extendplan.c	d6bd165175a4f9c3f6ded30eabaffdbbeaf99126	PlannerExtensionNamesAssigned	static int PlannerExtensionNamesAssigned = 0;
 src/backend/optimizer/util/extendplan.c	6e7a85fffb67a14b77c2178670438faa17644a56	PlannerExtensionNamesAllocated	static int PlannerExtensionNamesAllocated = 0;
 src/backend/optimizer/util/predtest.c	f708fe804b50edee54e4b29b5a78c6ca85e6cb3a	OprProofCacheHash	static HTAB *OprProofCacheHash = NULL;
-src/backend/optimizer/util/relnode.c	f7ea58bee41632b14a063da51d2adf5e0f68d4ad	build_simple_rel_hook	build_simple_rel_hook_type build_simple_rel_hook = NULL;
-src/backend/optimizer/util/relnode.c	d50604c90a80be556ffaec2a88eb617c8f2d668c	joinrel_setup_hook	joinrel_setup_hook_type joinrel_setup_hook = NULL;
-src/backend/parser/analyze.c	b739eed1c3fa2744d5679dd65c9f070092ccd41b	post_parse_analyze_hook	post_parse_analyze_hook_type post_parse_analyze_hook = NULL;
 src/backend/parser/gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/parser/gram.c	91bd87f586916b067da0b6e66741b1b00a1dcebd	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "IDENT", "UIDENT", "FCONST", "SCONST", "USCONST", "BCONST", "XCONST", "Op", "ICONST", "PARAM", "TYPECAST", "DOT_DOT", "COLON_EQUALS", "EQUALS_GREATER", "LESS_EQUALS", ...
 src/backend/parser/gram.c	20b2b840ccd121348f9264cfef105f72ed17042c	yyoutput,yytype,yyvaluep,yylocationp,yyoutput,yytype,yyvaluep,yylocationp,yyoutput	static void yy_symbol_value_print (FILE *yyoutput, int yytype, YYSTYPE const * const yyvaluep, YYLTYPE const * const yylocationp, core_yyscan_t yyscanner) static void yy_symbol_value_print (yyoutput, yytype, yyvaluep, yylocationp, yyscan...
@@ -1164,8 +1137,6 @@ src/backend/replication/walsender.c	a87fcb2ae2d571690a15246b4270574b0d46073e	got
 src/backend/replication/walsender.c	3b32f6aae68ddba85350476cc3a137ac29f3a98d	replication_active	static volatile sig_atomic_t replication_active = false;
 src/backend/replication/walsender.c	b1812bb8e564e7f5e7d628037387501691e66133	logical_decoding_ctx	static LogicalDecodingContext *logical_decoding_ctx = NULL;
 src/backend/replication/walsender.c	8fc51d078894c68f269d249514898afe7ca6acfe	lag_tracker	static LagTracker *lag_tracker;
-src/backend/rewrite/rowsecurity.c	b114a1aa82d9d37e479d7750800ea839192093bd	row_security_policy_hook_permissive	row_security_policy_hook_type row_security_policy_hook_permissive = NULL;
-src/backend/rewrite/rowsecurity.c	9ec7f2596ad539351f471765899dc657246affcb	row_security_policy_hook_restrictive	row_security_policy_hook_type row_security_policy_hook_restrictive = NULL;
 src/backend/statistics/attribute_stats.c	cf9c0e93dd299f978c16c87095a69c47d39a0242	attarginfo	static struct StatsArgInfo attarginfo[] = { [ATTRELSCHEMA_ARG] = {"schemaname", TEXTOID}, [ATTRELNAME_ARG] = {"relname", TEXTOID}, [ATTNAME_ARG] = {"attname", TEXTOID}, [ATTNUM_ARG] = {"attnum", INT2OID}, [INHERITED_ARG] = {"inherited", ...
 src/backend/statistics/attribute_stats.c	8b97cc8864f617d09fb8b64e24aa9b26949cad79	cleararginfo	static struct StatsArgInfo cleararginfo[] = { [C_ATTRELSCHEMA_ARG] = {"relation", TEXTOID}, [C_ATTRELNAME_ARG] = {"relation", TEXTOID}, [C_ATTNAME_ARG] = {"attname", TEXTOID}, [C_INHERITED_ARG] = {"inherited", BOOLOID}, [C_NUM_ATTRIBUTE_...
 src/backend/statistics/extended_stats_funcs.c	5e7f4524ac951dfb12abfa4cad870f4dceb278ab	extarginfo	static struct StatsArgInfo extarginfo[] = { [RELSCHEMA_ARG] = {"schemaname", TEXTOID}, [RELNAME_ARG] = {"relname", TEXTOID}, [STATSCHEMA_ARG] = {"statistics_schemaname", TEXTOID}, [STATNAME_ARG] = {"statistics_name", TEXTOID}, [INHERITED...
@@ -1224,7 +1195,6 @@ src/backend/storage/ipc/dsm_registry.c	b21ed97853fa44e2558be75a7018b2ae0e312aed	
 src/backend/storage/ipc/ipc.c	e535a76462542ede88617d3781acf6b4f369d3a3	proc_exit_inprogress	bool proc_exit_inprogress = false;
 src/backend/storage/ipc/ipc.c	8ae7bc6a024550851f01ea1e7c03d9c40eda1e48	shmem_exit_inprogress	bool shmem_exit_inprogress = false;
 src/backend/storage/ipc/ipc.c	7a0305b7a18b64e2fd560d60ff6c866637d5295b	atexit_callback_setup	static bool atexit_callback_setup = false;
-src/backend/storage/ipc/ipci.c	a890e0c51bdbca7e4842cc7fbd78e84e4596f617	shmem_startup_hook	shmem_startup_hook_type shmem_startup_hook = NULL;
 src/backend/storage/ipc/ipci.c	bd81533303792bbba101235aaf21fe63d1e92c70	total_addin_request	static Size total_addin_request = 0;
 src/backend/storage/ipc/pmsignal.c	4ac8a042ea57cc3bb49816c078845baadfed18ae	PMSignalState	NON_EXEC_STATIC volatile PMSignalData *PMSignalState = NULL;
 src/backend/storage/ipc/pmsignal.c	3367356bee2dd8bc3dc0d6240ae1c99ef920a78c	num_child_flags	static int num_child_flags;
@@ -1298,7 +1268,6 @@ src/backend/storage/sync/sync.c	c8246b995cfeedc58ecdbd88fdeb23fd23edcdcf	checkpo
 src/backend/tcop/backend_startup.c	a9bee81008ff94934b5fdb47c1252ed8c147bf83	conn_timing	ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 src/backend/tcop/dest.c	a4c6f2106e571b07b62e77284ee6182e1c34964f	None_Receiver	DestReceiver *None_Receiver = (DestReceiver *) &donothingDR;
 src/backend/tcop/pquery.c	7542d2c738fc3e67f57d720d6b7c6e923589ed8c	ActivePortal	Portal ActivePortal = NULL;
-src/backend/tcop/utility.c	9b924493e021179136a60f54ff6ed0104a7efc34	ProcessUtility_hook	ProcessUtility_hook_type ProcessUtility_hook = NULL;
 src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	static const char *VoidString = "";
 src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_alias	static const char *const tok_alias[] = { "", "asciiword", "word", "numword", "email", "url", "host", "sfloat", "version", "hword_numpart", "hword_part", "hword_asciipart", "blank", "tag", "protocol", "numhword", "asciihword", "hword", "u...
 src/backend/tsearch/wparser_def.c	71ab769f9f2c47cc39274c3a80feeec02544457a	lex_descr	static const char *const lex_descr[] = { "", "Word, all ASCII", "Word, all letters", "Word, letters and digits", "Email address", "URL", "Host", "Scientific notation", "Version number", "Hyphenated word part, letters and digits", "Hyphen...
@@ -1464,8 +1433,6 @@ src/backend/utils/adt/ruleutils.c	936f4e36a909755f9e47c2e60e1d772c75516559	plan_
 src/backend/utils/adt/ruleutils.c	435bbbcbe01e197226f6bd3ca99c349104af5a2a	query_getrulebyoid	static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 src/backend/utils/adt/ruleutils.c	041ac0a55f01d92c73469d2b1b4034586c3e2c65	plan_getviewrule	static SPIPlanPtr plan_getviewrule = NULL;
 src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query_getviewrule	static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
-src/backend/utils/adt/selfuncs.c	6f4d877861e2519cf39e33ef61712bb7b010619c	get_relation_stats_hook	get_relation_stats_hook_type get_relation_stats_hook = NULL;
-src/backend/utils/adt/selfuncs.c	bb3d798c13c168b2d9440225913f198bbae048dc	get_index_stats_hook	get_index_stats_hook_type get_index_stats_hook = NULL;
 src/backend/utils/adt/timestamp.c	75888b22a145be00e79d1118b61dface46343159	PgStartTime	TimestampTz PgStartTime;
 src/backend/utils/adt/timestamp.c	ffd19bd67ca6786e6d69316b26fcc748f25df36c	PgReloadTime	TimestampTz PgReloadTime;
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
@@ -1488,7 +1455,6 @@ src/backend/utils/cache/inval.c	700e2b015243acaa7219dd562a6693ef12d911d0	functio
 src/backend/utils/cache/inval.c	ba428dc58c7af2e0086f4aeb986203f3ff56fe72	relcache_callback_count	static int relcache_callback_count = 0;
 src/backend/utils/cache/inval.c	29c826afac91703250f967bcc672285b612bd113	function,arg,relsync_callback_list	static struct RELSYNCCALLBACK { RelSyncCallbackFunction function; Datum arg; } relsync_callback_list[MAX_RELSYNC_CALLBACKS];
 src/backend/utils/cache/inval.c	72bc8d56e8d66bfa243799e09a28c7fc61229cdf	relsync_callback_count	static int relsync_callback_count = 0;
-src/backend/utils/cache/lsyscache.c	dc28b300a6a9ac2b5eb2fd93e4ced2505870d2a2	get_attavgwidth_hook	get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
 src/backend/utils/cache/relcache.c	59fd0f0af374cc9a514b64f2f9404ec3be06b98e	RelationIdCache	static HTAB *RelationIdCache;
 src/backend/utils/cache/relcache.c	664da8b0c43c419068493456e0ac5714e28b850e	criticalRelcachesBuilt	bool criticalRelcachesBuilt = false;
 src/backend/utils/cache/relcache.c	ac92e2afdac6e30116beaf51cf05f15d94c58f5d	criticalSharedRelcachesBuilt	bool criticalSharedRelcachesBuilt = false;
@@ -1535,7 +1501,6 @@ src/backend/utils/cache/typcache.c	a9432882be36f6f9ab56f1336ea2bdf3204d62b8	Reco
 src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	RecordCacheArrayLen	static int32 RecordCacheArrayLen = 0;
 src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
 src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
-src/backend/utils/error/elog.c	2eaf120ef9b9336b092d207ca1135a2c0dfa871c	emit_log_hook	emit_log_hook_type emit_log_hook = NULL;
 src/backend/utils/error/elog.c	cdbe0e33ec614235b6b6a339c23a9ce1e8c61a1b	openlog_done	static bool openlog_done = false;
 src/backend/utils/error/elog.c	45ee84e0b19b6b60b24de88e4897adbb907a2257	syslog_ident	static char *syslog_ident = NULL;
 src/backend/utils/error/elog.c	6ca651bed3455de415153728d6ffc5eae01600a0	backtrace_symbols_initialized	static bool backtrace_symbols_initialized = false;
@@ -1548,8 +1513,6 @@ src/backend/utils/error/elog.c	62722eeb34679fe2d991be22e96b743e2c65b255	save_for
 src/backend/utils/error/elog.c	2818fc0d5ac3611010878e35237792638c8c411e	save_format_domain	static const char *save_format_domain;
 src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
 src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
-src/backend/utils/fmgr/fmgr.c	86465a4aa497c00a1ae44241682f309ee8728302	needs_fmgr_hook	PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook = NULL;
-src/backend/utils/fmgr/fmgr.c	6f90ab2a6db397c7d161e764335fc343a636a05b	fmgr_hook	PGDLLIMPORT fmgr_hook_type fmgr_hook = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
 src/backend/utils/misc/guc-file.c	a3c0b6ddda450a8c693fbb3e548870fbaa47d6e7	ConfigFileLineno	static unsigned int ConfigFileLineno;
 src/backend/utils/misc/guc-file.c	289aabc0793767da1dec83a759f162061bb43f70	GUC_flex_fatal_errmsg	static const char *GUC_flex_fatal_errmsg;
@@ -1586,14 +1549,6 @@ src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	role
 src/backend/utils/mmgr/aset.c	2cd93d9bd6dcddeb04b90fd73e49fe756830e48e	context_freelists	static AllocSetFreeList context_freelists[2] = { { 0, NULL }, { 0, NULL } };
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
-src/include/catalog/objectaccess.h	f346b363efa6414b427b92580eca4864692ce78e	object_access_hook	extern PGDLLIMPORT object_access_hook_type object_access_hook;
-src/include/catalog/objectaccess.h	3da946876eacde33ee1e493ae92c600a84efff4f	object_access_hook_str	extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
-src/include/commands/explain.h	85976e338d99d112da6a93514c69eb926adeaf7a	ExplainOneQuery_hook	extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
-src/include/commands/explain.h	8a86bac1a88aae65b68e4a6dab7dfab508a7db10	explain_per_plan_hook	extern PGDLLIMPORT explain_per_plan_hook_type explain_per_plan_hook;
-src/include/commands/explain.h	567ed8a02ceac4ff4d2ed4d55fbe7ed6cf101f80	explain_per_node_hook	extern PGDLLIMPORT explain_per_node_hook_type explain_per_node_hook;
-src/include/commands/explain.h	b610f8f1b3223c144aaec4b4385d772ad16f4db5	explain_get_index_name_hook	extern PGDLLIMPORT explain_get_index_name_hook_type explain_get_index_name_hook;
-src/include/commands/explain_state.h	c53601bd38a4559ed74a8fa2d02bb448e7bdc6bb	explain_validate_options_hook	extern PGDLLIMPORT explain_validate_options_hook_type explain_validate_options_hook;
-src/include/commands/user.h	13ab8fb48c50fce11ace2b42a22afc9dc7710ec9	check_password_hook	extern PGDLLIMPORT check_password_hook_type check_password_hook;
 src/include/commands/vacuum.h	bf82a71ad4ddc9b051ffbb9ab58b7b4d1cd458ed	VacuumSharedCostBalance	extern PGDLLIMPORT pg_atomic_uint32 *VacuumSharedCostBalance;
 src/include/commands/vacuum.h	f581e31286f98d66b65712978c4fb221def4493d	VacuumActiveNWorkers	extern PGDLLIMPORT pg_atomic_uint32 *VacuumActiveNWorkers;
 src/include/commands/vacuum.h	585714dac12472d45b6a112ea76af62b07d5a5b7	VacuumCostBalanceLocal	extern PGDLLIMPORT int VacuumCostBalanceLocal;
@@ -1609,11 +1564,6 @@ src/include/common/pg_lzcompress.h	609e147c71c0c4c63e8885b46da27ab290ff0a2d	PGLZ
 src/include/common/pg_lzcompress.h	5c801b104ec4f8feee3de64d148761ee552cdcb4	PGLZ_strategy_always	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_always;
 src/include/common/pg_prng.h	e9b95633962bf40ae0656ebcdc38387ec6435986	pg_global_prng_state	extern PGDLLIMPORT pg_prng_state pg_global_prng_state;
 src/include/common/relpath.h	ff0a93604e591b4b8e7113a9d19c49606af0105d	forkNames	extern PGDLLIMPORT const char *const forkNames[];
-src/include/executor/executor.h	9313d3cbcecf600b02f1f93d4709f71832346f39	ExecutorStart_hook	extern PGDLLIMPORT ExecutorStart_hook_type ExecutorStart_hook;
-src/include/executor/executor.h	6764a633c37785342ff1e6cc0f28aed963aa8610	ExecutorRun_hook	extern PGDLLIMPORT ExecutorRun_hook_type ExecutorRun_hook;
-src/include/executor/executor.h	8c0de98051449e98f4bdd2b007a861bf7fd284d9	ExecutorFinish_hook	extern PGDLLIMPORT ExecutorFinish_hook_type ExecutorFinish_hook;
-src/include/executor/executor.h	ee55ae32cc60e8060c0e5d34e9574d46c47e8952	ExecutorEnd_hook	extern PGDLLIMPORT ExecutorEnd_hook_type ExecutorEnd_hook;
-src/include/executor/executor.h	827ea585d52ff652dc0012eab63c228b2c2dd15b	ExecutorCheckPerms_hook	extern PGDLLIMPORT ExecutorCheckPerms_hook_type ExecutorCheckPerms_hook;
 src/include/executor/instrument.h	c385311f3682dfe3b116e7add0947abc3f2b3cd1	pgBufferUsage	extern PGDLLIMPORT BufferUsage pgBufferUsage;
 src/include/executor/instrument.h	a55e7bbae2d5fb41c9115a97a6f882b930374995	pgWalUsage	extern PGDLLIMPORT WalUsage pgWalUsage;
 src/include/executor/spi.h	b908bd4efe91a8f0353e33ed512520ce8012caee	SPI_processed	extern PGDLLIMPORT uint64 SPI_processed;
@@ -1621,12 +1571,7 @@ src/include/executor/spi.h	7e03977f793afb9c24d74fcfca2f7c77b3a28be2	SPI_tuptable
 src/include/executor/spi.h	01a51d0b279d3ec37d42da2e26004a782c74c649	SPI_result	extern PGDLLIMPORT int SPI_result;
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
-src/include/fmgr.h	b5882efa869175edddd16e450d6d1fbac502834c	needs_fmgr_hook	extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
-src/include/fmgr.h	b54c22c393d1f38fb705cd2fe748b511bbd50fc8	fmgr_hook	extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...
-src/include/libpq/auth.h	6662edd31ef0384968f95ee026f5c8d19157d439	ClientAuthentication_hook	extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
-src/include/libpq/auth.h	19ff791c1000f39af3050167b3c72f3a399e3af0	ldap_password_hook	extern PGDLLIMPORT auth_password_hook_typ ldap_password_hook;
-src/include/libpq/libpq-be.h	ce5172d169ab84329c585cf57641c9a3e80f6c2f	openssl_tls_init_hook	extern PGDLLIMPORT openssl_tls_init_hook_typ openssl_tls_init_hook;
 src/include/libpq/libpq.h	63fa93b1a41e1ab2899a3ab3d0fe49bca36eedbf	ssl_loaded_verify_locations	extern PGDLLIMPORT bool ssl_loaded_verify_locations;
 src/include/libpq/pqsignal.h	ec0012d05edf5d54bc2c8acafb82a6a877a5984d	UnBlockSig	extern PGDLLIMPORT sigset_t UnBlockSig;
 src/include/libpq/pqsignal.h	2a39c9b124e16246ea04c2f2b8a363a37dd823ce	BlockSig	extern PGDLLIMPORT sigset_t BlockSig;
@@ -1635,17 +1580,6 @@ src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettex
 src/include/nodes/readfuncs.h	5ffe8e83460e971f40cead0df321be115a4d6a4c	restore_location_fields	extern PGDLLIMPORT bool restore_location_fields;
 src/include/optimizer/cost.h	d6fc94daad0131390bca7683b236c7ab33acf4f6	disable_cost	extern PGDLLIMPORT Cost disable_cost;
 src/include/optimizer/geqo.h	45ac2f41a8a187e48e4f24fa54b91d7ca1c479ef	Geqo_planner_extension_id	extern PGDLLIMPORT int Geqo_planner_extension_id;
-src/include/optimizer/pathnode.h	7da5406436bc659c8384d6f223c2152eba630395	build_simple_rel_hook	extern PGDLLIMPORT build_simple_rel_hook_type build_simple_rel_hook;
-src/include/optimizer/pathnode.h	c0bfc0f3721a8250b4a41c4f55b03be3a2c820ce	joinrel_setup_hook	extern PGDLLIMPORT joinrel_setup_hook_type joinrel_setup_hook;
-src/include/optimizer/paths.h	3c65c242a2a2346389a2cb5a9317222db94b3b7d	join_path_setup_hook	extern PGDLLIMPORT join_path_setup_hook_type join_path_setup_hook;
-src/include/optimizer/paths.h	67001e98aad4b1695c42f70c561b7342f1c1daef	set_rel_pathlist_hook	extern PGDLLIMPORT set_rel_pathlist_hook_type set_rel_pathlist_hook;
-src/include/optimizer/paths.h	97ad52f026993a85889e57477342fbaa73c61158	set_join_pathlist_hook	extern PGDLLIMPORT set_join_pathlist_hook_type set_join_pathlist_hook;
-src/include/optimizer/paths.h	04503454dde8db9f1f3f90a0c685e1fe19170d76	join_search_hook	extern PGDLLIMPORT join_search_hook_type join_search_hook;
-src/include/optimizer/planner.h	ec93bc3c9ac5b0960a10311f40086983d55632ba	planner_hook	extern PGDLLIMPORT planner_hook_type planner_hook;
-src/include/optimizer/planner.h	1af26c45a15810928bd4f984c05d2af97714c636	planner_setup_hook	extern PGDLLIMPORT planner_setup_hook_type planner_setup_hook;
-src/include/optimizer/planner.h	1c9ad30f986576f9a29d77a4569150d58210c4b2	planner_shutdown_hook	extern PGDLLIMPORT planner_shutdown_hook_type planner_shutdown_hook;
-src/include/optimizer/planner.h	cd2be5690fe190705788853ac02e399905de4861	create_upper_paths_hook	extern PGDLLIMPORT create_upper_paths_hook_type create_upper_paths_hook;
-src/include/parser/analyze.h	bd556e2dc0ed637ebbb4668cf622398985050030	post_parse_analyze_hook	extern PGDLLIMPORT post_parse_analyze_hook_type post_parse_analyze_hook;
 src/include/pg_getopt.h	e2df147a7c555931a366949d236cf23b20b857ae	optarg	extern PGDLLIMPORT char *optarg;
 src/include/pg_getopt.h	9d720f1290a941d4e68c5e1745d7b495fa435569	optind	extern PGDLLIMPORT int optind;
 src/include/pg_getopt.h	a3eb7ff42123ef7f51d3c03d50eb16ed56c5333b	opterr	extern PGDLLIMPORT int opterr;
@@ -1704,8 +1638,6 @@ src/include/replication/worker_internal.h	57cf8dd56ec32a1bd49012b0d9bd4d2e7223ad
 src/include/replication/worker_internal.h	d6133db6dc40b459e313aee8975b29e46d677841	in_remote_transaction	extern PGDLLIMPORT bool in_remote_transaction;
 src/include/replication/worker_internal.h	feaf4214bf3e0756c773714d3720eae5d9ee01c5	InitializingApplyWorker	extern PGDLLIMPORT bool InitializingApplyWorker;
 src/include/replication/worker_internal.h	dcf26a7c0f05e98f4bb2f82e06a6958d3d71613b	table_states_not_ready	extern PGDLLIMPORT List *table_states_not_ready;
-src/include/rewrite/rowsecurity.h	fff89bbda6ac62c24aeb8dbb02a52d38c041e008	row_security_policy_hook_permissive	extern PGDLLIMPORT row_security_policy_hook_type row_security_policy_hook_permissive;
-src/include/rewrite/rowsecurity.h	0f0a501145999607e072af8109740c1d75fdad6c	row_security_policy_hook_restrictive	extern PGDLLIMPORT row_security_policy_hook_type row_security_policy_hook_restrictive;
 src/include/storage/aio_internal.h	d11d5a4ee3568196269c8c2c864ec846fce6f968	pgaio_method_ops	extern PGDLLIMPORT const IoMethodOps *pgaio_method_ops;
 src/include/storage/aio_internal.h	b65177d4c7b6a9399c02c1d263603f28360260f2	pgaio_ctl	extern PGDLLIMPORT PgAioCtl *pgaio_ctl;
 src/include/storage/aio_internal.h	a1241e1e6b66e4c90f7bccf74ce24725551cf816	pgaio_my_backend	extern PGDLLIMPORT PgAioBackend *pgaio_my_backend;
@@ -1723,7 +1655,6 @@ src/include/storage/checksum_block_internal.h	cf55db26d1acf241408b9e0f8bea583775
 src/include/storage/checksum_block_internal.h	5e578b43f97f7ced36a56bba648295fd6d7df315	i,j	uint32 i, j;
 src/include/storage/ipc.h	f1e3592b5dadf1ce8b26f4ee6139dd9fe8d76fa2	proc_exit_inprogress	extern PGDLLIMPORT bool proc_exit_inprogress;
 src/include/storage/ipc.h	14e8a2d6de5712d472488b63670cd6d9167d8bad	shmem_exit_inprogress	extern PGDLLIMPORT bool shmem_exit_inprogress;
-src/include/storage/ipc.h	e7fcd3c2408d6aed22487fa131aa22dd3a0295d7	shmem_startup_hook	extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
 src/include/storage/itemptr.h	b46efb77bc4bd50602ed09b88593b06fb3f274c3	ItemPointerData	pg_attribute_packed() pg_attribute_aligned(2) ItemPointerData;
 src/include/storage/locktag.h	5d1fb685aeb5d3e1aa3bfcab2264770b19a6e69b	LockTagTypeNames	extern PGDLLIMPORT const char *const LockTagTypeNames[];
 src/include/storage/lwlock.h	1299be646c950141eb81cf4e79ed31b877465d5c	MainLWLockArray	extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
@@ -1736,23 +1667,18 @@ src/include/storage/pmsignal.h	abe21178acac26df42de1659455382c50f34ff86	postmast
 src/include/storage/proc.h	cc7b2ea2be080df8efc0304b9443bdcb491c56fd	FastPathLockGroupsPerBackend	extern PGDLLIMPORT int FastPathLockGroupsPerBackend;
 src/include/tcop/backend_startup.h	cc8a96c3931cf679208816d0f92dcea9a4d02ce6	conn_timing	extern PGDLLIMPORT struct ConnectionTiming conn_timing;
 src/include/tcop/pquery.h	56e550e6744283dfed1e5a430ef8eaa2832433b4	ActivePortal	extern PGDLLIMPORT Portal ActivePortal;
-src/include/tcop/utility.h	ed1c863ca87e226a490fd3134668a87ff12230a3	ProcessUtility_hook	extern PGDLLIMPORT ProcessUtility_hook_type ProcessUtility_hook;
 src/include/utils/backend_status.h	93a00df91ab4b493ac8a5ab98c5e9dfc3015b592	MyBEEntry	extern PGDLLIMPORT PgBackendStatus *MyBEEntry;
 src/include/utils/datetime.h	e2b95b77008d26098670c036a3a4efb7147887f2	days	extern PGDLLIMPORT const char *const days[];
-src/include/utils/elog.h	b935f5c0b0bdf0bffd2f73cd84b3a6d0d81bce55	emit_log_hook	extern PGDLLIMPORT emit_log_hook_type emit_log_hook;
 src/include/utils/guc_tables.h	d340e57d0ae8eef772795b8aba79c4d095f8f8eb	config_group_names	extern PGDLLIMPORT const char *const config_group_names[];
 src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_type_names	extern PGDLLIMPORT const char *const config_type_names[];
 src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucContext_Names	extern PGDLLIMPORT const char *const GucContext_Names[];
 src/include/utils/guc_tables.h	9b3ed666e0a866eef0d50b3c2a55cd935dd0666f	GucSource_Names	extern PGDLLIMPORT const char *const GucSource_Names[];
 src/include/utils/injection_point.h	bc630458f6031322cb5d3394ad8b52b2976713dc	ActiveInjectionPoints	extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
-src/include/utils/lsyscache.h	93b108ef80f4100f01c734031c5f1856d1a412f8	get_attavgwidth_hook	extern PGDLLIMPORT get_attavgwidth_hook_type get_attavgwidth_hook;
 src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };
 src/include/utils/pgstat_internal.h	ebb343c792120f08c6acf60ed20b881383218efe	pgstat_report_fixed	extern PGDLLIMPORT bool pgstat_report_fixed;
 src/include/utils/pgstat_internal.h	c822e1a305b80c3fd1de4f4c8e2cfcf3b1cb2b99	pgStatLocal	extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
 src/include/utils/relcache.h	9c4e92029161fdcd558ceeb298b62074c124706b	criticalRelcachesBuilt	extern PGDLLIMPORT bool criticalRelcachesBuilt;
 src/include/utils/relcache.h	9c0bbb28f632f7f5c85b96d2e82c69033839bf64	criticalSharedRelcachesBuilt	extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;
-src/include/utils/selfuncs.h	c183a7b89da0384edde59d140e4d669e3e522d05	get_relation_stats_hook	extern PGDLLIMPORT get_relation_stats_hook_type get_relation_stats_hook;
-src/include/utils/selfuncs.h	6a975bd98b5f6f63de31bf82533eaf9b4445dfe7	get_index_stats_hook	extern PGDLLIMPORT get_index_stats_hook_type get_index_stats_hook;
 src/include/utils/timestamp.h	701dee700c9e2a197b12b06c65a54eb36a3f3167	PgStartTime	extern PGDLLIMPORT TimestampTz PgStartTime;
 src/include/utils/timestamp.h	af405e935dac19662a584eed20feacaf91d2f80b	PgReloadTime	extern PGDLLIMPORT TimestampTz PgReloadTime;
 src/include/utils/wait_event.h	c5cade6c72c4b984466519555f890c671c76e617	my_wait_event_info	extern PGDLLIMPORT uint32 *my_wait_event_info;

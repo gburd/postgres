@@ -10,6 +10,8 @@
 #ifndef OBJECTACCESS_H
 #define OBJECTACCESS_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * Object access hooks are intended to be called just before or just after
  * performing certain actions on a SQL object.  This is intended as
@@ -137,8 +139,8 @@ typedef void (*object_access_hook_type_str) (ObjectAccessType access,
 											 void *arg);
 
 /* Plugin sets this variable to a suitable hook function. */
-extern PGDLLIMPORT object_access_hook_type object_access_hook;
-extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME object_access_hook_type object_access_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME object_access_hook_type_str object_access_hook_str;
 
 
 /* Core code uses these functions to call the hook (see macros below). */

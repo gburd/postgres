@@ -108,7 +108,7 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION sigjmp_buf *PG_exception_stack = NULL;
  * libraries will miss any log messages that are generated before the
  * library is loaded.
  */
-emit_log_hook_type emit_log_hook = NULL;
+PG_GLOBAL_RUNTIME emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity = PGERROR_DEFAULT;

@@ -28,7 +28,7 @@
 /* GUCs */
 PG_GLOBAL_RUNTIME int shared_memory_type = DEFAULT_SHARED_MEMORY_TYPE;
 
-shmem_startup_hook_type shmem_startup_hook = NULL;
+PG_GLOBAL_RUNTIME shmem_startup_hook_type shmem_startup_hook = NULL;
 
 static Size total_addin_request = 0;
 

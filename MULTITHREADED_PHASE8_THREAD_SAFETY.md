@@ -258,6 +258,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `XLOG_DEBUG`, `track_wal_io_timing`, `wal_compression`,
   `wal_consistency_checking`, `wal_consistency_checking_string`,
   `wal_init_zero`, and `wal_recycle`.
+- extension hook registries exported through object access, EXPLAIN, executor,
+  planner/path, parser, utility, row-security, logging, selectivity/cache,
+  fmgr, authentication, SSL, and shared-memory startup APIs as runtime-global
+  registration state. These hooks are intentionally shared by one runtime;
+  threaded-mode mutation is governed by the Phase 7 extension backend-model
+  gate rather than copied per session.
 - final backend-facing USERSET/SUSET GUC backing variables and required
   derived state: `debug_discard_caches`,
   `debug_logical_replication_streaming`, `log_replication_commands`,
@@ -1065,6 +1071,12 @@ Validation for this slice:
 - focused `heap.o` and `objectaddress.o` compile coverage plus
   global-lifetime scanner coverage after classifying immutable catalog lookup
   tables.
+- focused compile coverage for hook-registry definition files, full
+  configured rebuild/install, global-lifetime scanner coverage, and
+  process-mode startup/query/EXPLAIN smoke after classifying exported
+  extension hook registries. Direct `be-secure-openssl.o` subdir compile was
+  not runnable in this checkout because the direct target lacks the OpenSSL
+  include path; the configured top-level build covered the file.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

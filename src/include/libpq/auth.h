@@ -44,12 +44,12 @@ extern void set_authn_id(Port *port, const char *id);
 
 /* Hook for plugins to get control in ClientAuthentication() */
 typedef void (*ClientAuthentication_hook_type) (Port *, int);
-extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME ClientAuthentication_hook_type ClientAuthentication_hook;
 
 /* hook type for password manglers */
 typedef char *(*auth_password_hook_typ) (char *input);
 
 /* Default LDAP password mutator hook, can be overridden by a shared library */
-extern PGDLLIMPORT auth_password_hook_typ ldap_password_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME auth_password_hook_typ ldap_password_hook;
 
 #endif							/* AUTH_H */

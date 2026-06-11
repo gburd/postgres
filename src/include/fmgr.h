@@ -875,8 +875,8 @@ typedef bool (*needs_fmgr_hook_type) (Oid fn_oid);
 typedef void (*fmgr_hook_type) (FmgrHookEventType event,
 								FmgrInfo *flinfo, Datum *arg);
 
-extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
-extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME needs_fmgr_hook_type needs_fmgr_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME fmgr_hook_type fmgr_hook;
 
 #define FmgrHookIsNeeded(fn_oid)							\
 	(!needs_fmgr_hook ? false : (*needs_fmgr_hook)(fn_oid))

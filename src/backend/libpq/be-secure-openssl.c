@@ -75,7 +75,7 @@ static uint32 host_cache_pointer(const char *key);
 
 /* default init hook can be overridden by a shared library */
 static void default_openssl_tls_init(SSL_CTX *context, bool isServerStart);
-openssl_tls_init_hook_typ openssl_tls_init_hook = default_openssl_tls_init;
+PG_GLOBAL_RUNTIME openssl_tls_init_hook_typ openssl_tls_init_hook = default_openssl_tls_init;
 
 static int	port_bio_read(BIO *h, char *buf, int size);
 static int	port_bio_write(BIO *h, const char *buf, int size);

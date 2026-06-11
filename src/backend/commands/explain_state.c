@@ -40,7 +40,7 @@
 #include "utils/guc.h"
 
 /* Hook to perform additional EXPLAIN options validation */
-explain_validate_options_hook_type explain_validate_options_hook = NULL;
+PG_GLOBAL_RUNTIME explain_validate_options_hook_type explain_validate_options_hook = NULL;
 
 typedef struct
 {

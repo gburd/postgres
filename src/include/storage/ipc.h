@@ -18,6 +18,8 @@
 #ifndef IPC_H
 #define IPC_H
 
+#include "utils/global_lifetime.h"
+
 typedef void (*pg_on_exit_callback) (int code, Datum arg);
 typedef void (*shmem_startup_hook_type) (void);
 
@@ -102,7 +104,7 @@ extern void on_exit_reset(void);
 extern void check_on_shmem_exit_lists_are_empty(void);
 
 /* ipci.c */
-extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME shmem_startup_hook_type shmem_startup_hook;
 
 extern void RegisterBuiltinShmemCallbacks(void);
 extern Size CalculateShmemSize(void);

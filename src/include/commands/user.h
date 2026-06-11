@@ -27,7 +27,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
 /* Hook to check passwords in CreateRole() and AlterRole() */
 typedef void (*check_password_hook_type) (const char *username, const char *shadow_pass, PasswordType password_type, Datum validuntil_time, bool validuntil_null);
 
-extern PGDLLIMPORT check_password_hook_type check_password_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME check_password_hook_type check_password_hook;
 
 extern Oid	CreateRole(ParseState *pstate, CreateRoleStmt *stmt);
 extern Oid	AlterRole(ParseState *pstate, AlterRoleStmt *stmt);

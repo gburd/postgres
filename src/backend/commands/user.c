@@ -89,7 +89,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool createrole_self_grant_enabled = fa
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION GrantRoleOptions createrole_self_grant_options;
 
 /* Hook to check passwords in CreateRole() and AlterRole() */
-check_password_hook_type check_password_hook = NULL;
+PG_GLOBAL_RUNTIME check_password_hook_type check_password_hook = NULL;
 
 static void AddRoleMems(Oid currentUserId, const char *rolename, Oid roleid,
 						List *memberSpecs, List *memberIds,
