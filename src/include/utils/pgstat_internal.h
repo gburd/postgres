@@ -879,10 +879,10 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
  * Statistics callbacks should never reset this flag; pgstat_report_stat()
  * is in charge of doing that.
  */
-extern PGDLLIMPORT bool pgstat_report_fixed;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgstat_report_fixed;
 
 /* Backend-local stats state */
-extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
 
 /* Helper functions for reading and writing of on-disk stats file */
 extern void pgstat_write_chunk(FILE *fpout, void *ptr, size_t len);

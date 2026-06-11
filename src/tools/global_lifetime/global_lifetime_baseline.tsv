@@ -1241,16 +1241,6 @@ src/backend/utils/activity/backend_status.c	1d7e941bda27537e0033df5f77c62348d82f
 src/backend/utils/activity/backend_status.c	e8899507037751b855c0eedf3fb24ea6cf783e11	localBackendStatusTable	static LocalPgBackendStatus *localBackendStatusTable = NULL;
 src/backend/utils/activity/backend_status.c	7b945dc0998a97db8ade006f55b5ebaba833a5a9	localNumBackends	static int localNumBackends = 0;
 src/backend/utils/activity/backend_status.c	36f20bf50ebc66be54b4056c859a52a9b4454100	backendStatusSnapContext	static MemoryContext backendStatusSnapContext;
-src/backend/utils/activity/pgstat.c	72a39b3f56068a278c9ef853ec230ed53d31c9ee	pgStatLocal	PgStat_LocalState pgStatLocal;
-src/backend/utils/activity/pgstat.c	48e314cecc6b0dc54c9d14b75ea8b65b0b55c6fb	pgstat_report_fixed	bool pgstat_report_fixed = false;
-src/backend/utils/activity/pgstat.c	6eca8b61c9af5a5cfe43bd61f86e42dddd9bddba	pgStatPendingContext	static MemoryContext pgStatPendingContext = NULL;
-src/backend/utils/activity/pgstat.c	0249a71e12cf01f26ac03b28b4986397296ca551	pgStatPending	static dlist_head pgStatPending = DLIST_STATIC_INIT(pgStatPending);
-src/backend/utils/activity/pgstat.c	6a1b417f6ac1ede5e1e352f185c8fb1b547dcb51	pgStatForceNextFlush	static bool pgStatForceNextFlush = false;
-src/backend/utils/activity/pgstat.c	75894e3f3be5a7327de9482a5c6ab6a93ff8782f	force_stats_snapshot_clear	static bool force_stats_snapshot_clear = false;
-src/backend/utils/activity/pgstat.c	3f17289c94065f21704fb5ff35d93584c253f3e9	pgstat_is_initialized	static bool pgstat_is_initialized = false;
-src/backend/utils/activity/pgstat.c	e62fd04c1f73621ffb15574818d18285ae032d79	pgstat_is_shutdown	static bool pgstat_is_shutdown = false;
-src/backend/utils/activity/pgstat.c	38ed7da57a36a2fba96bce4af4f56ef993ec89eb	pgstat_kind_builtin_infos	static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE] = { [PGSTAT_KIND_DATABASE] = { .name = "database", .fixed_amount = false, .write_to_file = true, .accessed_across_databases = true, .shared_size = sizeof(Pg...
-src/backend/utils/activity/pgstat.c	2b5e4b5bec453dac71fe99b7930ff4ae8b66e037	pgstat_kind_custom_infos	static const PgStat_KindInfo **pgstat_kind_custom_infos = NULL;
 src/backend/utils/activity/pgstat_backend.c	7ce01c2b2dea999e4bcf033af7198059e81dc540	PendingBackendStats	static PgStat_BackendPending PendingBackendStats;
 src/backend/utils/activity/pgstat_backend.c	b2cb05c392b5908b4c45f55a5c61d2a95204499b	backend_has_iostats	static bool backend_has_iostats = false;
 src/backend/utils/activity/pgstat_backend.c	c695220ace71e067999083ace9292678695c5def	prevBackendWalUsage	static WalUsage prevBackendWalUsage;
@@ -1607,8 +1597,6 @@ src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucConte
 src/include/utils/guc_tables.h	9b3ed666e0a866eef0d50b3c2a55cd935dd0666f	GucSource_Names	extern PGDLLIMPORT const char *const GucSource_Names[];
 src/include/utils/injection_point.h	bc630458f6031322cb5d3394ad8b52b2976713dc	ActiveInjectionPoints	extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
 src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };
-src/include/utils/pgstat_internal.h	ebb343c792120f08c6acf60ed20b881383218efe	pgstat_report_fixed	extern PGDLLIMPORT bool pgstat_report_fixed;
-src/include/utils/pgstat_internal.h	c822e1a305b80c3fd1de4f4c8e2cfcf3b1cb2b99	pgStatLocal	extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
 src/include/utils/relcache.h	9c4e92029161fdcd558ceeb298b62074c124706b	criticalRelcachesBuilt	extern PGDLLIMPORT bool criticalRelcachesBuilt;
 src/include/utils/relcache.h	9c0bbb28f632f7f5c85b96d2e82c69033839bf64	criticalSharedRelcachesBuilt	extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;
 src/include/utils/timestamp.h	701dee700c9e2a197b12b06c65a54eb36a3f3167	PgStartTime	extern PGDLLIMPORT TimestampTz PgStartTime;

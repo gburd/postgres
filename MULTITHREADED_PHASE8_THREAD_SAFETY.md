@@ -111,6 +111,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `pgStatXactStack`, which is allocated in `TopTransactionContext`, tracks
   relation and dropped-object stats for the current transaction/subtransaction
   tree, and is cleared at transaction or prepared-transaction end;
+- cumulative-statistics infrastructure state in `pgstat.c`: the current
+  backend's `pgStatLocal` shared-memory handles and snapshot cache, the fixed
+  stats flush flag, pending-stats memory context/list, forced-flush and
+  snapshot-clear flags, and assertion-only initialization/shutdown guards are
+  backend-local TLS state.  The built-in stats-kind descriptor table is
+  immutable state, while the custom stats-kind descriptor registry remains
+  runtime-global registration state constrained by the extension preload gate.
 - cumulative database-statistics pending state in `pgstat_database.c`:
   backend-local pending I/O, active-time, idle-in-transaction-time, and
   commit/rollback counters use TLS until they are flushed to shared
@@ -1240,6 +1247,13 @@ Validation for this slice:
   started because the stale `INITDB_TEMPLATE` path no longer existed after
   recreating `tmp_install`; rerunning without the template shortcut performed
   a normal `initdb` and passed all 30 tests.
+- focused `pgstat.o` compile coverage, global-lifetime scanner coverage,
+  backend clean plus generated-header recovery, full rebuild/install, and
+  fixture-backed `stats_ext` plus `stats` regression coverage after
+  classifying cumulative-statistics infrastructure state.  The static
+  self-referential `DLIST_STATIC_INIT` for `pgStatPending` was replaced with
+  explicit `dlist_init()` in `pgstat_initialize()` before pending stats can be
+  queued. The direct `pg_regress` invocation passed all 30 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
