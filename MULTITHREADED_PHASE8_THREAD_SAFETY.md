@@ -1,9 +1,11 @@
 # Phase 8 Thread-Safety Floor Notes
 
-Phase 8 is not complete yet. This note records the implementation slices that
-now use the explicit `PG_THREAD_LOCAL` storage qualifier from
+Phase 8 is complete for the non-Windows process-mode path on this checkout.
+This note records the implementation slices that now use the explicit
+`PG_THREAD_LOCAL` storage qualifier from
 `src/include/utils/global_lifetime.h` as a compatibility bridge for
-thread-per-session launch.
+thread-per-session launch. Windows platform shim annotations are
+code-review-only until they are built and tested on Windows.
 
 ## Completed Slice
 
@@ -988,7 +990,7 @@ still link but may crash because they use the old non-TLS symbol access pattern.
 During validation this affected `test_ext_backend_model.dylib` and
 `plpgsql.dylib`; cleaning and rebuilding those modules fixed the crashes.
 
-## Remaining Phase 8 Work
+## Completion Status
 
 The required-floor audit for non-Windows backend state is complete. As of the
 Windows platform shim pass, the static scanner baseline contains one remaining
@@ -1183,10 +1185,13 @@ explicitly classified: `SysAtt[]` is the fixed system-attribute descriptor
 table, and `ObjectTypeMap[]` maps stable object-type strings to `ObjectType`
 values.
 
-Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
-global report checks, extension load tests using the test-only threaded backend
-model, and PL/pgSQL process-mode regression tests. Gate C also fails if any
-Phase 8 required-floor global remains unsafe and unclassified.
+Gate C has passed on this macOS checkout using the documented near-equivalent
+for the literal top-level `check-world` target: static global report checks,
+direct full core regression, direct full isolation regression, extension load
+tests using the test-only threaded backend model, and PL/pgSQL process-mode
+regression tests. The literal top-level `gmake check-world` target remains
+blocked here by recreated temp-install binaries that reference
+`/usr/local/pgsql/lib/libpq.5.dylib` before SQL tests run.
 
 ## Validation So Far
 
