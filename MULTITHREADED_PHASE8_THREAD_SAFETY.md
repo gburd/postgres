@@ -119,6 +119,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - WAL recovery prefetch state in `xlogprefetcher.c`: the prefetch
   reconfiguration generation counter as runtime state and the recovery
   prefetch statistics block as shared-memory state;
+- WAL recovery mode state in `xlogrecovery.c` and `xlogutils.c`: archive and
+  standby mode flags, signal-file startup flags, checkpoint/redo start
+  locations, `InRecovery`, `InRedo`, `standbyState`, and the consistency flag
+  as runtime state.  The `XLogRecoveryCtl` pointer is classified as
+  shared-memory state;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
@@ -990,6 +995,10 @@ Validation for this slice:
 - focused `varsup.o` compile coverage plus transaction, subtransaction, OID,
   and commit-timestamp regression coverage after classifying
   `TransamVariables` as shared-memory state.
+- focused `xlogrecovery.o` and `xlogutils.o` compile coverage, full
+  rebuild/install, global-lifetime scanner coverage, and a process-mode
+  immediate-stop/restart crash-recovery smoke after classifying WAL recovery
+  mode state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

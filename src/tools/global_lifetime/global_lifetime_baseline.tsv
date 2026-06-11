@@ -1,20 +1,9 @@
 # file	sha1	names	declaration
-src/backend/access/transam/xlogrecovery.c	1b8aa8ab7068020b8fae66749c348ca0ac197892	ArchiveRecoveryRequested	bool ArchiveRecoveryRequested = false;
-src/backend/access/transam/xlogrecovery.c	6ff1b2ebde3e439cea653584b530c3a125d5a419	InArchiveRecovery	bool InArchiveRecovery = false;
-src/backend/access/transam/xlogrecovery.c	5fd45c7e929734694d16e3c54128f358589e13d5	StandbyModeRequested	static bool StandbyModeRequested = false;
-src/backend/access/transam/xlogrecovery.c	d173ceafed163d547e5d8b6d20316534dd7e9a4f	StandbyMode	bool StandbyMode = false;
-src/backend/access/transam/xlogrecovery.c	4eea84f12c5d98f1141e78d671d24293bfced257	standby_signal_file_found	static bool standby_signal_file_found = false;
-src/backend/access/transam/xlogrecovery.c	094e2eb984bfb0020c0367d3fa8bc67276802d2d	recovery_signal_file_found	static bool recovery_signal_file_found = false;
-src/backend/access/transam/xlogrecovery.c	af921d02139042dd758f750d4eaa0a30860c27f4	CheckPointLoc	static XLogRecPtr CheckPointLoc = InvalidXLogRecPtr;
-src/backend/access/transam/xlogrecovery.c	505acedb8f659af6c1d53f917f323b3c5a51a966	CheckPointTLI	static TimeLineID CheckPointTLI = 0;
-src/backend/access/transam/xlogrecovery.c	f1608a85065f275e5b5147e1e21fd696e97328a3	RedoStartLSN	static XLogRecPtr RedoStartLSN = InvalidXLogRecPtr;
-src/backend/access/transam/xlogrecovery.c	8684d56286cb11f59b5c26b463dd570badc24b1d	RedoStartTLI	static TimeLineID RedoStartTLI = 0;
 src/backend/access/transam/xlogrecovery.c	470e83be426b4298473972791805442a196afc91	LocalHotStandbyActive	static bool LocalHotStandbyActive = false;
 src/backend/access/transam/xlogrecovery.c	9c8039236387f7933f9b404a17838e37c03b08d8	LocalPromoteIsTriggered	static bool LocalPromoteIsTriggered = false;
 src/backend/access/transam/xlogrecovery.c	d6469edabad59fc2c5cddd067d6356e12078c47a	doRequestWalReceiverReply	static bool doRequestWalReceiverReply;
 src/backend/access/transam/xlogrecovery.c	ba595f948ed89f53fe84c1d919b74b2eadb26728	xlogreader	static XLogReaderState *xlogreader = NULL;
 src/backend/access/transam/xlogrecovery.c	5c73fdf064c770900908c8063b86c3ea34043b09	xlogprefetcher	static XLogPrefetcher *xlogprefetcher = NULL;
-src/backend/access/transam/xlogrecovery.c	3ff3df005ea0276fbafd4f13770dd8cc5d6620a0	InRedo	static bool InRedo = false;
 src/backend/access/transam/xlogrecovery.c	96907a4f13b3deeeaf380d3e2b60d4a04b65de5f	xlogSourceNames	static const char *const xlogSourceNames[] = {"any", "archive", "pg_wal", "stream"};
 src/backend/access/transam/xlogrecovery.c	05206be023bdb8f5f7a1da0a7817c3d0a67a580a	readFile	static int readFile = -1;
 src/backend/access/transam/xlogrecovery.c	d66ce38df701dc567ac3e31a7d3584d2f7295c3f	readSegNo	static XLogSegNo readSegNo = 0;
@@ -33,10 +22,8 @@ src/backend/access/transam/xlogrecovery.c	7250dfdbaeab72849418e635a2a98278b1099a
 src/backend/access/transam/xlogrecovery.c	fbb353d47a2193816457b84c0be958e301d86650	backupStartPoint	static XLogRecPtr backupStartPoint;
 src/backend/access/transam/xlogrecovery.c	f106cf32222c1d5edfa4eda48b092f6ceac468cc	backupEndPoint	static XLogRecPtr backupEndPoint;
 src/backend/access/transam/xlogrecovery.c	f58d0397227e3ee06f8795fda11de8ccdcf63acf	backupEndRequired	static bool backupEndRequired = false;
-src/backend/access/transam/xlogrecovery.c	04ac3ceba908609c711d16db76d892ee4e4004c8	reachedConsistency	bool reachedConsistency = false;
 src/backend/access/transam/xlogrecovery.c	d7ce8423cdc846067d8f43e3bfc95155b5f42dba	replay_image_masked	static char *replay_image_masked = NULL;
 src/backend/access/transam/xlogrecovery.c	fa313a860eabc348db9a3718107e3f1febe98297	primary_image_masked	static char *primary_image_masked = NULL;
-src/backend/access/transam/xlogrecovery.c	a61fea6ad59e656c60266aa137d717645b157f7e	XLogRecoveryCtl	XLogRecoveryCtlData *XLogRecoveryCtl = NULL;
 src/backend/access/transam/xlogrecovery.c	fc1451ff3ba6136e53fe380e16f7e27f20f112df	abortedRecPtr	static XLogRecPtr abortedRecPtr;
 src/backend/access/transam/xlogrecovery.c	3f2e1fac616ef6a99bce4865636f05b0f8aabd56	missingContrecPtr	static XLogRecPtr missingContrecPtr;
 src/backend/access/transam/xlogrecovery.c	725eba0d64dff11bc66b9aa6a0844927e92de3d0	recoveryStopXid	static TransactionId recoveryStopXid;
@@ -44,8 +31,6 @@ src/backend/access/transam/xlogrecovery.c	647d31f5fd01175f2c8f06561a9c9a60e3c032
 src/backend/access/transam/xlogrecovery.c	6acaad46d9813c9182872d193010db98e3bf53dc	recoveryStopLSN	static XLogRecPtr recoveryStopLSN;
 src/backend/access/transam/xlogrecovery.c	8740e9415881a390b38871512b37bcd6286acdb7	recoveryStopName	static char recoveryStopName[MAXFNAMELEN];
 src/backend/access/transam/xlogrecovery.c	097408bdd5c83742a9284d28e5db995f9c45d80e	recoveryStopAfter	static bool recoveryStopAfter;
-src/backend/access/transam/xlogutils.c	54bd227f46106dca4e7246f8f118ebf875446cb3	InRecovery	bool InRecovery = false;
-src/backend/access/transam/xlogutils.c	b279a568654cb9f4ef6d416d5031a5a5b5522213	standbyState	HotStandbyState standbyState = STANDBY_DISABLED;
 src/backend/access/transam/xlogutils.c	58bb9e74ab271ea8e3f0a104acf1edb29aa5be15	invalid_page_tab	static HTAB *invalid_page_tab = NULL;
 src/backend/access/transam/xlogwait.c	edb76f435196640e4698612b685c2a118cb99aa1	waitLSNState	struct WaitLSNState *waitLSNState = NULL;
 src/backend/backup/basebackup.c	adcabd049d22810f28d0f3e366cec92ba2805647	backup_started_in_recovery	static bool backup_started_in_recovery = false;
@@ -1713,15 +1698,7 @@ src/include/access/xlog.h	cec4541f6edb9832cef9dd7b5bb2103ebefd95bf	XLogRecData	s
 src/include/access/xlog.h	fb27dcde135b6f4416acfd5e9f3c4bd6522b80ac	XLogReaderState	struct XLogReaderState;
 src/include/access/xlog_internal.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	LogicalDecodingContext	struct LogicalDecodingContext;
 src/include/access/xlog_internal.h	3a69c535ea71f8284dc457cc870ba494a00d2556	XLogRecordBuffer	struct XLogRecordBuffer;
-src/include/access/xlog_internal.h	246b7e6fafa239c06a6fd8ba26258d77b5b69b75	ArchiveRecoveryRequested	extern PGDLLIMPORT bool ArchiveRecoveryRequested;
-src/include/access/xlog_internal.h	7b3d6e631fdcc7762060040f144910c8be61f84f	InArchiveRecovery	extern PGDLLIMPORT bool InArchiveRecovery;
-src/include/access/xlog_internal.h	cf4599e5ab0bd887bb4e27bb22111fc75ff9baa6	StandbyMode	extern PGDLLIMPORT bool StandbyMode;
 src/include/access/xlogprefetcher.h	1027a7a5e1e6e41139c9d1b1a28a5b65304e287c	XLogPrefetcher	struct XLogPrefetcher;
-src/include/access/xlogrecovery.h	bde58cbf2e2cb953055b9970c347ff1eaab0d7d1	XLogRecoveryCtl	extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
-src/include/access/xlogrecovery.h	bd96b2d1224d95e6764739cacdc7d66353fc2376	reachedConsistency	extern PGDLLIMPORT bool reachedConsistency;
-src/include/access/xlogrecovery.h	cf4599e5ab0bd887bb4e27bb22111fc75ff9baa6	StandbyMode	extern PGDLLIMPORT bool StandbyMode;
-src/include/access/xlogutils.h	91f7f60fd9600afa3660e34fa4008fbdeb781b39	InRecovery	extern PGDLLIMPORT bool InRecovery;
-src/include/access/xlogutils.h	a73dafe8429285fcee81b4dbd0053fe40e8f87ff	standbyState	extern PGDLLIMPORT HotStandbyState standbyState;
 src/include/access/xlogwait.h	a3b0270b961814ddadebb925c7728f5f8e9c6ba1	waitLSNState	extern PGDLLIMPORT WaitLSNState *waitLSNState;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
 src/include/backup/basebackup.h	ce2e707cf0b4aec898e4d2ff23d5814a885bcc83	IncrementalBackupInfo	struct IncrementalBackupInfo;

@@ -124,7 +124,7 @@ typedef struct XLogRecoveryCtlData
 	slock_t		info_lck;		/* locks shared variables shown above */
 } XLogRecoveryCtlData;
 
-extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM XLogRecoveryCtlData *XLogRecoveryCtl;
 
 /* User-settable GUC parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool recoveryTargetInclusive;
@@ -149,10 +149,10 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLIRequested;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimeLineID recoveryTargetTLI;
 
 /* Have we already reached a consistent database state? */
-extern PGDLLIMPORT bool reachedConsistency;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool reachedConsistency;
 
 /* Are we currently in standby mode? */
-extern PGDLLIMPORT bool StandbyMode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool StandbyMode;
 
 extern void InitWalRecovery(ControlFileData *ControlFile,
 							bool *wasShutdown_ptr, bool *haveBackupLabel_ptr,

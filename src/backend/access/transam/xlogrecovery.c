@@ -138,8 +138,8 @@ static PG_GLOBAL_RUNTIME TimeLineID curFileTLI;
  * will switch to using offline XLOG archives as soon as we reach the end of
  * WAL in pg_wal.
  */
-bool		ArchiveRecoveryRequested = false;
-bool		InArchiveRecovery = false;
+PG_GLOBAL_RUNTIME bool ArchiveRecoveryRequested = false;
+PG_GLOBAL_RUNTIME bool InArchiveRecovery = false;
 
 /*
  * When StandbyModeRequested is set, standby mode was requested, i.e.
@@ -147,12 +147,12 @@ bool		InArchiveRecovery = false;
  * in standby mode.  These variables are only valid in the startup process.
  * They work similarly to ArchiveRecoveryRequested and InArchiveRecovery.
  */
-static bool StandbyModeRequested = false;
-bool		StandbyMode = false;
+static PG_GLOBAL_RUNTIME bool StandbyModeRequested = false;
+PG_GLOBAL_RUNTIME bool StandbyMode = false;
 
 /* was a signal file present at startup? */
-static bool standby_signal_file_found = false;
-static bool recovery_signal_file_found = false;
+static PG_GLOBAL_RUNTIME bool standby_signal_file_found = false;
+static PG_GLOBAL_RUNTIME bool recovery_signal_file_found = false;
 
 /*
  * CheckPointLoc is the position of the checkpoint record that determines
@@ -168,10 +168,10 @@ static bool recovery_signal_file_found = false;
  * reading the checkpoint record, because the REDO record can precede the
  * checkpoint record.
  */
-static XLogRecPtr CheckPointLoc = InvalidXLogRecPtr;
-static TimeLineID CheckPointTLI = 0;
-static XLogRecPtr RedoStartLSN = InvalidXLogRecPtr;
-static TimeLineID RedoStartTLI = 0;
+static PG_GLOBAL_RUNTIME XLogRecPtr CheckPointLoc = InvalidXLogRecPtr;
+static PG_GLOBAL_RUNTIME TimeLineID CheckPointTLI = 0;
+static PG_GLOBAL_RUNTIME XLogRecPtr RedoStartLSN = InvalidXLogRecPtr;
+static PG_GLOBAL_RUNTIME TimeLineID RedoStartTLI = 0;
 
 /*
  * Local copy of SharedHotStandbyActive variable. False actually means "not
@@ -204,7 +204,7 @@ typedef struct XLogPageReadPrivate
 } XLogPageReadPrivate;
 
 /* flag to tell XLogPageRead that we have started replaying */
-static bool InRedo = false;
+static PG_GLOBAL_RUNTIME bool InRedo = false;
 
 /*
  * Codes indicating where we got a WAL file from during recovery, or where
@@ -300,13 +300,13 @@ static bool backupEndRequired = false;
  * sends a PMSIGNAL_RECOVERY_CONSISTENT signal to the postmaster,
  * which then sets it to true upon receiving the signal.
  */
-bool		reachedConsistency = false;
+PG_GLOBAL_RUNTIME bool reachedConsistency = false;
 
 /* Buffers dedicated to consistency checks of size BLCKSZ */
 static char *replay_image_masked = NULL;
 static char *primary_image_masked = NULL;
 
-XLogRecoveryCtlData *XLogRecoveryCtl = NULL;
+PG_GLOBAL_SHMEM XLogRecoveryCtlData *XLogRecoveryCtl = NULL;
 
 static void XLogRecoveryShmemRequest(void *arg);
 static void XLogRecoveryShmemInit(void *arg);
