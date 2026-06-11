@@ -98,7 +98,7 @@ typedef struct
 	Datum		value;
 } missing_cache_key;
 
-static HTAB *missing_cache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *missing_cache = NULL;
 
 static uint32
 missing_hash(const void *key, Size keysize)

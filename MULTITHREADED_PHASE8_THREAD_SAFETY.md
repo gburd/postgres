@@ -471,6 +471,10 @@ Trigger nesting depth in `trigger.c` is now execution-local TLS. The
 `MyTriggerDepth` counter is incremented only around trigger function calls,
 restored in a `PG_FINALLY()` block, and backs `pg_trigger_depth()` for the
 current execution.
+Missing-attribute value cache state in `heaptuple.c` is now backend-local
+TLS. The cache stores backend-private copies of pass-by-reference missing
+column defaults in `TopMemoryContext`; sharing the mutable dynahash between
+threaded backends would be unsafe and is not required for correctness.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -905,6 +909,8 @@ Validation for this slice:
   depth.
 - focused `trigger.o` compile coverage plus trigger regression coverage after
   classifying execution-local trigger nesting depth.
+- focused `heaptuple.o` compile coverage plus fast-default regression
+  coverage after classifying backend-local missing-attribute cache state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
