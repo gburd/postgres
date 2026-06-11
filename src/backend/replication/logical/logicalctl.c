@@ -97,7 +97,7 @@ typedef struct LogicalDecodingCtlData
 	bool		pending_disable;
 } LogicalDecodingCtlData;
 
-static LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
+static PG_GLOBAL_SHMEM LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
 
 static void LogicalDecodingCtlShmemRequest(void *arg);
 
@@ -112,7 +112,7 @@ const ShmemCallbacks LogicalDecodingCtlShmemCallbacks = {
  * is in an XID-assigned transaction, the cache update is delayed until the
  * transaction ends. See the comments for XLogLogicalInfoUpdatePending for details.
  */
-bool		XLogLogicalInfo = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo = false;
 
 /*
  * When receiving the PROCSIGNAL_BARRIER_UPDATE_XLOG_LOGICAL_INFO signal, if
@@ -121,7 +121,7 @@ bool		XLogLogicalInfo = false;
  * that the XLogLogicalInfo value (typically accessed via XLogLogicalInfoActive)
  * remains consistent throughout the transaction.
  */
-static bool XLogLogicalInfoUpdatePending = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfoUpdatePending = false;
 
 static void update_xlog_logical_info(void);
 static void abort_logical_decoding_activation(int code, Datum arg);

@@ -71,9 +71,6 @@ src/backend/postmaster/postmaster.c	0db5d473a4ac672fe3fc85691651604a6c082428	io_
 src/backend/postmaster/postmaster.c	813c212ba835b5363ad99ff7dde68d1f392e787b	win32ChildQueue	static HANDLE win32ChildQueue;
 src/backend/postmaster/postmaster.c	ca6fe6927dcc22f7b46e7c5d1bcfe2944393888e	postmaster_alive_fds	int postmaster_alive_fds[2] = {-1, -1};
 src/backend/postmaster/postmaster.c	1904705a926875699c0b08ea34337b012f99c087	PostmasterHandle	HANDLE PostmasterHandle;
-src/backend/replication/logical/logicalctl.c	863e018d610960229948d8b2dd5bf879b4599b7d	LogicalDecodingCtl	static LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
-src/backend/replication/logical/logicalctl.c	c60c10869712fb8146a911382c3eb6b743bd890e	XLogLogicalInfo	bool XLogLogicalInfo = false;
-src/backend/replication/logical/logicalctl.c	74b5a0f4f7d67eae603b2fa1de0edb6e71b4542f	XLogLogicalInfoUpdatePending	static bool XLogLogicalInfoUpdatePending = false;
 src/backend/replication/logical/origin.c	21c311b324d9f6d016d27dfd05ce00cebc9b909c	replorigin_xact_state	ReplOriginXactState replorigin_xact_state = { .origin = InvalidReplOriginId, .origin_lsn = InvalidXLogRecPtr, .origin_timestamp = 0 };
 src/backend/replication/logical/origin.c	f841bc5b577de7a9c104067aeaf759d860fbe5a1	replication_states	static ReplicationState *replication_states;
 src/backend/replication/logical/origin.c	df0a0489934ee463052c5a83eeecf8f762603d12	replication_states_ctl	static ReplicationStateCtl *replication_states_ctl;

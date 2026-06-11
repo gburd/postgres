@@ -160,6 +160,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - logical replication sequence synchronization state in `sequencesync.c`:
   `seqinfos` is backend-local TLS state for the sequence synchronization
   worker's current batch of remote/local sequence metadata.
+- logical decoding control state in `logicalctl.c`: `LogicalDecodingCtl` is
+  shared-memory state protected by `LogicalDecodingControlLock`, while the
+  exported `XLogLogicalInfo` cache and pending barrier-update flag are
+  backend-local TLS state so each backend keeps the intended
+  transaction-stable view of logical-info WAL logging after a process barrier.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2028,6 +2033,14 @@ Validation for this slice:
   sequence to `READY` at value 125, advanced the publisher sequence, refreshed
   sequences, verified the subscriber sequence reached value 150, and stopped
   both servers with fast shutdown.
+- focused `logicalctl.o`, `xlog.o`, and `xact.o` compile coverage,
+  global-lifetime scanner coverage, backend clean plus generated-header
+  recovery, full rebuild/install, focused core `guc` regression coverage, and
+  direct temp-cluster logical decoding smoke after classifying logical decoding
+  control state. The smoke initialized a cluster with `wal_level = replica`,
+  created a `pgoutput` logical replication slot, verified the slot metadata in
+  `pg_replication_slots`, dropped the slot, and stopped the server with fast
+  shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

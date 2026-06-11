@@ -97,7 +97,7 @@ typedef enum RecoveryState
 } RecoveryState;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_level;
-extern PGDLLIMPORT bool XLogLogicalInfo;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo;
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
 #define XLogArchivingActive() \
