@@ -146,6 +146,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   change counter, and streamed subtransaction table are backend-local TLS state
   for the apply worker currently receiving or replaying a streamed
   transaction.
+- logical replication parallel apply-worker state in `applyparallelworker.c`:
+  the leader apply worker's transaction-to-worker hash, active worker pool,
+  current streamed-transaction worker cache, the parallel worker's shared DSM
+  pointer, and the parallel worker's current subtransaction list are
+  backend-local TLS state. The DSM records they point at remain shared state
+  protected by the existing parallel apply synchronization.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -1984,6 +1990,18 @@ Validation for this slice:
   replication apply worker` backends on the subscriber, applied a streamed
   transaction containing 1200 rows and a savepoint/subtransaction segment, and
   stopped both servers with fast shutdown.
+- focused `applyparallelworker.o`, `worker.o`, and `launcher.o` compile
+  coverage, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, focused core `guc`
+  regression coverage, and direct publisher/subscriber logical replication
+  smoke with `streaming = parallel` and publisher-side
+  `debug_logical_replication_streaming = immediate` after classifying logical
+  parallel apply-worker state. The live smoke held the publisher transaction
+  open while polling the subscriber, verified visible `logical replication
+  launcher`, `logical replication apply worker`, and `logical replication
+  parallel worker` backends, applied a streamed transaction containing 1400
+  rows and a savepoint/subtransaction segment, and stopped both servers with
+  fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

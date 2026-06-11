@@ -285,6 +285,11 @@ Important current files:
   gmake -C src/test/modules/test_oat_hooks DESTDIR="$PWD/tmp_install" install
   ```
 
+- Direct logical replication parallel-apply smokes should poll while the
+  publisher transaction is still open. The parallel worker can be transient,
+  and `pg_stat_activity.backend_type` reports it as
+  `logical replication parallel worker`.
+
 - PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
   Perl on this macOS checkout may not have it, in which case direct `prove`
   invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.

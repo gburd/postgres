@@ -241,7 +241,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessag
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack;
 
-extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ParallelApplyWorkerShared
+		   *MyParallelShared;
 
 /* libpqreceiver connection */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct WalReceiverConn

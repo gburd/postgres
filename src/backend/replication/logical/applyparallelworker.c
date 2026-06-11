@@ -226,7 +226,7 @@ typedef struct ParallelApplyWorkerEntry
  * A hash table used to cache the state of streaming transactions being applied
  * by the parallel apply workers.
  */
-static HTAB *ParallelApplyTxnHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *ParallelApplyTxnHash = NULL;
 
 /*
  * A list (pool) of active parallel apply workers. The information for
@@ -235,12 +235,12 @@ static HTAB *ParallelApplyTxnHash = NULL;
  * pool at the end of the transaction. For more information about the worker
  * pool, see comments atop this file.
  */
-static List *ParallelApplyWorkerPool = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *ParallelApplyWorkerPool = NIL;
 
 /*
  * Information shared between leader apply worker and parallel apply worker.
  */
-ParallelApplyWorkerShared *MyParallelShared = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND ParallelApplyWorkerShared *MyParallelShared = NULL;
 
 /*
  * Is there a message sent by a parallel apply worker that the leader apply
@@ -253,10 +253,10 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelApplyMessagePend
  * current streaming transaction. It is used to save the cost of searching the
  * hash table when applying the changes between STREAM_START and STREAM_STOP.
  */
-static ParallelApplyWorkerInfo *stream_apply_worker = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ParallelApplyWorkerInfo *stream_apply_worker = NULL;
 
 /* A list to maintain subtransactions, if any. */
-static List *subxactlist = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *subxactlist = NIL;
 
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
