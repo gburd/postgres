@@ -27,7 +27,7 @@
  * happens between pgstat_report_wal() calls, by subtracting
  * the previous counters from the current ones.
  */
-static WalUsage prevWalUsage;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage prevWalUsage;
 
 
 /*

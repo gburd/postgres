@@ -37,8 +37,8 @@
  * reported within critical sections so we use static memory in order to avoid
  * memory allocation.
  */
-static PgStat_BackendPending PendingBackendStats;
-static bool backend_has_iostats = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_BackendPending PendingBackendStats;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool backend_has_iostats = false;
 
 /*
  * WAL usage counters saved from pgWalUsage at the previous call to
@@ -46,7 +46,7 @@ static bool backend_has_iostats = false;
  * happens between pgstat_flush_backend() calls, by subtracting the
  * previous counters from the current ones.
  */
-static WalUsage prevBackendWalUsage;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage prevBackendWalUsage;
 
 /*
  * Utility routines to report I/O stats for backends, kept here to avoid

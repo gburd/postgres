@@ -35,7 +35,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_track_functions = TRACK_FUNC_OFF;
  * We use this to help separate "self" and "other" time charges.
  * (We assume this initializes to zero.)
  */
-static instr_time total_func_time;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND instr_time total_func_time;
 
 
 /*

@@ -19,8 +19,8 @@
 
 #include "utils/pgstat_internal.h"
 
-static PgStat_PendingLock PendingLockStats;
-static bool have_lockstats = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_PendingLock PendingLockStats;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool have_lockstats = false;
 
 PgStat_Lock *
 pgstat_fetch_stat_lock(void)

@@ -127,6 +127,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   commit/rollback counters use TLS until they are flushed to shared
   statistics.  Session disconnect cause and the last session report timestamp
   are session-local TLS state.
+- cumulative per-kind pending-statistics state in `pgstat_backend.c`,
+  `pgstat_function.c`, `pgstat_io.c`, `pgstat_lock.c`, `pgstat_slru.c`, and
+  `pgstat_wal.c`: backend-local pending I/O, lock, SLRU, backend, function
+  timing, and WAL baseline counters use TLS until the current backend flushes
+  them to shared statistics.  Bgwriter and checkpointer pending counters are
+  intentionally left for the server-owned worker runtime audit rather than
+  treated as regular client-backend state.
 - transaction-owned combo CID maps in `combocid.c` and relation storage
   pending-delete/sync cleanup queues in `storage.c`;
 - WAL record construction state in `xloginsert.c`, including registered buffer
@@ -1266,6 +1273,14 @@ Validation for this slice:
   included `privileges`, `misc_functions`, `sysviews`, `rules`, `guc`,
   `stats_ext`, and `stats` on top of the core fixture prefix and passed all
   34 tests.
+- focused `pgstat_backend.o`, `pgstat_function.o`, `pgstat_io.o`,
+  `pgstat_lock.o`, `pgstat_slru.o`, and `pgstat_wal.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, and
+  fixture-backed backend-status/statistics regression coverage after
+  classifying cumulative per-kind pending-statistics state. The direct
+  `pg_regress` invocation included `privileges`, `misc_functions`, `sysviews`,
+  `rules`, `guc`, `stats_ext`, and `stats` on top of the core fixture prefix
+  and passed all 34 tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

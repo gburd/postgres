@@ -1230,23 +1230,12 @@ src/backend/tcop/pquery.c	7542d2c738fc3e67f57d720d6b7c6e923589ed8c	ActivePortal	
 src/backend/tsearch/spell.c	0145363deaf351654a0d153abfd5d5a6a96617e0	VoidString	static const char *VoidString = "";
 src/backend/tsearch/wparser_def.c	c3e2858d5c80ecfb086ced811a2fc3442405452e	tok_alias	static const char *const tok_alias[] = { "", "asciiword", "word", "numword", "email", "url", "host", "sfloat", "version", "hword_numpart", "hword_part", "hword_asciipart", "blank", "tag", "protocol", "numhword", "asciihword", "hword", "u...
 src/backend/tsearch/wparser_def.c	71ab769f9f2c47cc39274c3a80feeec02544457a	lex_descr	static const char *const lex_descr[] = { "", "Word, all ASCII", "Word, all letters", "Word, letters and digits", "Email address", "URL", "Host", "Scientific notation", "Version number", "Hyphenated word part, letters and digits", "Hyphen...
-src/backend/utils/activity/pgstat_backend.c	7ce01c2b2dea999e4bcf033af7198059e81dc540	PendingBackendStats	static PgStat_BackendPending PendingBackendStats;
-src/backend/utils/activity/pgstat_backend.c	b2cb05c392b5908b4c45f55a5c61d2a95204499b	backend_has_iostats	static bool backend_has_iostats = false;
-src/backend/utils/activity/pgstat_backend.c	c695220ace71e067999083ace9292678695c5def	prevBackendWalUsage	static WalUsage prevBackendWalUsage;
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
-src/backend/utils/activity/pgstat_function.c	c062e9d8f96afd9da7f4f694e1c6b377a40b6c0d	total_func_time	static instr_time total_func_time;
-src/backend/utils/activity/pgstat_io.c	c8cc0b19220c161b6a3fdeddc1c6b0c02e40eb7a	PendingIOStats	static PgStat_PendingIO PendingIOStats;
-src/backend/utils/activity/pgstat_io.c	e7747dea79fffd7964bd3a9ac4a21596da0081f9	have_iostats	static bool have_iostats = false;
-src/backend/utils/activity/pgstat_lock.c	b7e91ce9964e8a258cd411c1b6d9e4997e1a24d3	PendingLockStats	static PgStat_PendingLock PendingLockStats;
-src/backend/utils/activity/pgstat_lock.c	18a030e244872b7e61de67fb8525c900c6844693	have_lockstats	static bool have_lockstats = false;
 src/backend/utils/activity/pgstat_shmem.c	09c790a07594ac0b72709ef1ab92f2b73c1ad61c	pgStatEntryRefHash	static pgstat_entry_ref_hash_hash *pgStatEntryRefHash = NULL;
 src/backend/utils/activity/pgstat_shmem.c	b3e45950f0a908cd99411bc3198ed2aa2c0f6559	pgStatSharedRefAge	static int pgStatSharedRefAge = 0;
 src/backend/utils/activity/pgstat_shmem.c	fb2dd787a67f4bbbb32458a0db1049dfe8c80726	pgStatSharedRefContext	static MemoryContext pgStatSharedRefContext = NULL;
 src/backend/utils/activity/pgstat_shmem.c	60ef3ecba9ebfb6060e3bb5f57943eaf230224e9	pgStatEntryRefHashContext	static MemoryContext pgStatEntryRefHashContext = NULL;
-src/backend/utils/activity/pgstat_slru.c	c5e7516762eb588742966ceb479ed76199a73eb8	pending_SLRUStats	static PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
-src/backend/utils/activity/pgstat_slru.c	5bc95811a8de2ce027be935c152d4eb2e7364f33	have_slrustats	static bool have_slrustats = false;
-src/backend/utils/activity/pgstat_wal.c	56b54546e860b71a4dc6b43a33393a84b7d3fb8b	prevWalUsage	static WalUsage prevWalUsage;
 src/backend/utils/activity/wait_event.c	3ef3453e48de59a2fe7c0d19005d31e6d366828c	local_my_wait_event_info	static uint32 local_my_wait_event_info;
 src/backend/utils/activity/wait_event.c	e2ec0b808716dba5e437f8e3af01b7b7f90eb381	my_wait_event_info	uint32 *my_wait_event_info = &local_my_wait_event_info;
 src/backend/utils/activity/wait_event.c	2315c9a0b8647b114620d939e8736c2a8e774015	WaitEventCustomHashByInfo	static HTAB *WaitEventCustomHashByInfo;
