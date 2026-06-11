@@ -106,9 +106,9 @@ typedef struct
 } AlterTypeRecurseParams;
 
 /* Potentially set by pg_upgrade_support functions */
-Oid			binary_upgrade_next_array_pg_type_oid = InvalidOid;
-Oid			binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
-Oid			binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_array_pg_type_oid = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
 
 static void makeRangeConstructors(const char *name, Oid namespace,
 								  Oid rangeOid, Oid subtype,

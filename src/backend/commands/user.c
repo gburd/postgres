@@ -68,7 +68,7 @@ typedef enum
 } RevokeRoleGrantAction;
 
 /* Potentially set by pg_upgrade_support functions */
-Oid			binary_upgrade_next_pg_authid_oid = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_authid_oid = InvalidOid;
 
 typedef struct
 {

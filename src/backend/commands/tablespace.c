@@ -86,7 +86,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION char *default_tablespace = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *temp_tablespaces = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allow_in_place_tablespaces = false;
 
-Oid			binary_upgrade_next_pg_tablespace_oid = InvalidOid;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 
 static void create_tablespace_directories(const char *location,
 										  const Oid tablespaceoid);

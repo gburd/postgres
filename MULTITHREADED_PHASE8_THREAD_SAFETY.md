@@ -560,6 +560,12 @@ Transaction ID and OID assignment state in `varsup.c` is now explicitly
 classified as shared-memory state. The exported `TransamVariables` pointer
 targets the `ShmemRequestStruct()` allocation that stores cluster-wide XID/OID
 counters and wraparound limits guarded by their existing LWLocks.
+Binary-upgrade assignment state in `binary_upgrade.h`, `aclchk.c`, `heap.c`,
+`index.c`, `pg_enum.c`, `pg_type.c`, `tablespace.c`, `typecmds.c`, and
+`user.c` is now session-local TLS state. These pg_upgrade support variables
+are set by SQL-callable support functions and consumed by the next relevant
+DDL operation in the same backend session; threaded sessions must not share
+pending OID, relfilenumber, or initial-privilege assignment controls.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -1031,6 +1037,16 @@ Validation for this slice:
   rebuild/install, global-lifetime scanner coverage with generated
   `bootparse.c` skipped, and an `initdb --no-sync` smoke after classifying
   bootstrap-mode runtime state.
+- focused `aclchk.o`, `heap.o`, `index.o`, `pg_enum.o`, `pg_type.o`,
+  `tablespace.o`, `typecmds.o`, and `user.o` compile coverage, backend clean
+  plus generated-header recovery, full rebuild/install, and global-lifetime
+  scanner coverage after classifying binary-upgrade assignment state. Runtime
+  smoke coverage included `initdb --no-sync`, a `-b` binary-upgrade server
+  smoke that set heap OID, heap relfilenumber, row type OID, array type OID,
+  and role OID controls before consuming them with DDL, and a normal-mode
+  catalog DDL smoke for table, enum type, and role creation with the TLS
+  defaults unset. The scanner was also tightened so function prototypes with
+  callback parameters are not retained as false unclassified globals.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

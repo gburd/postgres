@@ -375,6 +375,7 @@ sub should_skip_declaration
 	return 1 if $decl =~ /\btypedef\b/;
 	return 1 if $decl =~ /^static\s+inline\b/;
 	return 1 if $decl =~ /^extern\s+(?:PGDLLIMPORT\s+|PGDLLEXPORT\s+)?(?:pg_noreturn\s+)?(?:void|bool|int|char|const|struct|enum|[A-Za-z_][A-Za-z0-9_]*)\b.*\)\s*;/ && $decl !~ /=/;
+	return 1 if $decl =~ /^(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/ && $decl =~ /\)\s*;/ && $decl !~ /=/;
 	return 1 if $decl =~ /\)\s*;/ && $decl !~ /=/ && $decl !~ /\(\s*\*/;
 	return 1 if $decl =~ /^[A-Z_][A-Z0-9_]*\s*(?:\([^;]*\))?\s*;$/;
 	return 1 if $decl =~ /^\w+\s*\([^;]*\)\s*;/;

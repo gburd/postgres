@@ -15,24 +15,25 @@
 #define BINARY_UPGRADE_H
 
 #include "common/relpath.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT Oid binary_upgrade_next_pg_tablespace_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_tablespace_oid;
 
-extern PGDLLIMPORT Oid binary_upgrade_next_pg_type_oid;
-extern PGDLLIMPORT Oid binary_upgrade_next_array_pg_type_oid;
-extern PGDLLIMPORT Oid binary_upgrade_next_mrng_pg_type_oid;
-extern PGDLLIMPORT Oid binary_upgrade_next_mrng_array_pg_type_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_type_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_array_pg_type_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_pg_type_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_array_pg_type_oid;
 
-extern PGDLLIMPORT Oid binary_upgrade_next_heap_pg_class_oid;
-extern PGDLLIMPORT RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber;
-extern PGDLLIMPORT Oid binary_upgrade_next_index_pg_class_oid;
-extern PGDLLIMPORT RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber;
-extern PGDLLIMPORT Oid binary_upgrade_next_toast_pg_class_oid;
-extern PGDLLIMPORT RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_heap_pg_class_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_index_pg_class_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_toast_pg_class_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber;
 
-extern PGDLLIMPORT Oid binary_upgrade_next_pg_enum_oid;
-extern PGDLLIMPORT Oid binary_upgrade_next_pg_authid_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_enum_oid;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_authid_oid;
 
-extern PGDLLIMPORT bool binary_upgrade_record_init_privs;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool binary_upgrade_record_init_privs;
 
 #endif							/* BINARY_UPGRADE_H */

@@ -1,13 +1,5 @@
 # file	sha1	names	declaration
-src/backend/catalog/aclchk.c	8b2faa68032bc77458e56628d2bb9413693607cd	binary_upgrade_record_init_privs	bool binary_upgrade_record_init_privs = false;
-src/backend/catalog/aclchk.c	b31707993b9e6b742ecbb75da15b213f7f298ffa	istmt,classid,default_privs,istmt	static void ExecGrant_common(InternalGrant *istmt, Oid classid, AclMode default_privs, void (*object_check) (InternalGrant *istmt, HeapTuple tuple));
-src/backend/catalog/heap.c	b538da897d2af702bd4e4465a718d82d5cfaf330	binary_upgrade_next_heap_pg_class_oid	Oid binary_upgrade_next_heap_pg_class_oid = InvalidOid;
-src/backend/catalog/heap.c	d844633c2858fad440a5ebeae2dfa3fcef0703a4	binary_upgrade_next_toast_pg_class_oid	Oid binary_upgrade_next_toast_pg_class_oid = InvalidOid;
-src/backend/catalog/heap.c	98c2d35e05de5eff76e2508930d645b19bfb1f6b	binary_upgrade_next_heap_pg_class_relfilenumber	RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber = InvalidRelFileNumber;
-src/backend/catalog/heap.c	d9922f28305846f9fde6eb00343deaad3b62f458	binary_upgrade_next_toast_pg_class_relfilenumber	RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber = InvalidRelFileNumber;
 src/backend/catalog/heap.c	7aeb188ab33845997b4a302ad720ac5a6dc62b32	SysAtt	static const FormData_pg_attribute *const SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6};
-src/backend/catalog/index.c	1f3c559ec866ab430c2795045ae5a26a6dc584f4	binary_upgrade_next_index_pg_class_oid	Oid binary_upgrade_next_index_pg_class_oid = InvalidOid;
-src/backend/catalog/index.c	0e98c199edc893e1703b3b2a0049ba4aa538eaa3	binary_upgrade_next_index_pg_class_relfilenumber	RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber = InvalidRelFileNumber;
 src/backend/catalog/index.c	c8b300cac781c2e44662bcd4ad11c5f02d6fb993	currentlyReindexedHeap	static Oid currentlyReindexedHeap = InvalidOid;
 src/backend/catalog/index.c	a7a86591c189ecb82e3efb672ba6276788112625	currentlyReindexedIndex	static Oid currentlyReindexedIndex = InvalidOid;
 src/backend/catalog/index.c	300d29e63742bb16a326c2c0cbec382482709d2a	pendingReindexedIndexes	static List *pendingReindexedIndexes = NIL;
@@ -15,10 +7,8 @@ src/backend/catalog/index.c	787fa2d74eac213a682919f2c4d657b8d5f39ee5	reindexingN
 src/backend/catalog/objectaccess.c	bd34f76e318396d1986651d0645909cf00233250	object_access_hook	object_access_hook_type object_access_hook = NULL;
 src/backend/catalog/objectaccess.c	209bcc930ed02592cb794127b72298d043b2b99d	object_access_hook_str	object_access_hook_type_str object_access_hook_str = NULL;
 src/backend/catalog/objectaddress.c	36b86b5070bba6c0a78119cf04ec08c090fc003a	ObjectTypeMap	ObjectTypeMap[] = { { "table", OBJECT_TABLE }, { "index", OBJECT_INDEX }, { "sequence", OBJECT_SEQUENCE }, { "toast table", -1 }, { "view", OBJECT_VIEW }, { "materialized view", OBJECT_MATVIEW }, { "composite type", -1 }, { "foreign tabl...
-src/backend/catalog/pg_enum.c	ce20ae156d72273afdf8c42741fd237f981b9b90	binary_upgrade_next_pg_enum_oid	Oid binary_upgrade_next_pg_enum_oid = InvalidOid;
 src/backend/catalog/pg_enum.c	dd7b0b644141a9024765641e31876cf06024c126	uncommitted_enum_types	static HTAB *uncommitted_enum_types = NULL;
 src/backend/catalog/pg_enum.c	43471eb9377097baa1fcfb10616e64c8050770f6	uncommitted_enum_values	static HTAB *uncommitted_enum_values = NULL;
-src/backend/catalog/pg_type.c	38f7e05a5d74e7c925c5640bdae52f8386313cff	binary_upgrade_next_pg_type_oid	Oid binary_upgrade_next_pg_type_oid = InvalidOid;
 src/backend/commands/analyze.c	1a4531a7c1f3ffaa75bc0e32543ea2e6b10fd3e6	anl_context	static MemoryContext anl_context = NULL;
 src/backend/commands/analyze.c	0660dfda510efb539560d06b48b23b4d399fa7fb	vac_strategy	static BufferAccessStrategy vac_strategy;
 src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;
@@ -41,12 +31,7 @@ src/backend/commands/repack_worker.c	d32b0345eaf6f9808d09d7b9713a31c92810829f	wo
 src/backend/commands/repack_worker.c	89ec70f5934b72cc630abbc1a4ee223986fb64cf	repacked_rel_locator	static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
 src/backend/commands/repack_worker.c	6983f8b9805f8d35050f17920bcfaada492ea01f	repacked_rel_toast_locator	static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
 src/backend/commands/seclabel.c	30f2ea183b16f288e276de7a4e096f4201193aa6	label_provider_list	static List *label_provider_list = NIL;
-src/backend/commands/tablespace.c	231522ba992327c89516abc05d2efd087e69aff1	binary_upgrade_next_pg_tablespace_oid	Oid binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 src/backend/commands/trigger.c	5bc2630e4f4b465d031ba743e75bff21f35892e5	afterTriggers	static AfterTriggersData afterTriggers;
-src/backend/commands/typecmds.c	3a65e75e4ecfe19c091896b3e8031101ca908a60	binary_upgrade_next_array_pg_type_oid	Oid binary_upgrade_next_array_pg_type_oid = InvalidOid;
-src/backend/commands/typecmds.c	74078a03185e680bd8981e9ddc28284a3c4befca	binary_upgrade_next_mrng_pg_type_oid	Oid binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
-src/backend/commands/typecmds.c	dcb381315e5ed241efdb2a8083b41abcfcef5fee	binary_upgrade_next_mrng_array_pg_type_oid	Oid binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
-src/backend/commands/user.c	882af0ff02bcef453f88973157dc81d4cd687e50	binary_upgrade_next_pg_authid_oid	Oid binary_upgrade_next_pg_authid_oid = InvalidOid;
 src/backend/commands/user.c	0e02ef1be471f87db98a4c9e07d5b1efe7118a08	check_password_hook	check_password_hook_type check_password_hook = NULL;
 src/backend/commands/vacuum.c	911057b62e12c91813575d37c02b0a0e585b3f55	vacuum_cost_delay	double vacuum_cost_delay = 0;
 src/backend/commands/vacuum.c	15c0737b0df76c857233607464077e6a97c8efa7	vacuum_cost_limit	int vacuum_cost_limit = 200;
@@ -1233,7 +1218,6 @@ src/backend/storage/buffer/localbuf.c	6532f6728202f8eb29fb10f982805ccc8d2ce4cb	L
 src/backend/storage/buffer/localbuf.c	719913b044f58e9d3d305d7c0eb2320f4611a039	nextFreeLocalBufId	static int nextFreeLocalBufId = 0;
 src/backend/storage/buffer/localbuf.c	7b464637d8f05c68e0a7d5940e26cd9a08e73a71	LocalBufHash	static HTAB *LocalBufHash = NULL;
 src/backend/storage/buffer/localbuf.c	d060bfc433b179fdd907989a9367419355c9c9e0	NLocalPinnedBuffers	static int NLocalPinnedBuffers = 0;
-src/backend/storage/file/fd.c	d8142c9425458e15f3ec02a3e0137a624bbdd5dc	path,fname,isdir,process_symlinks	static void walkdir(const char *path, void (*action) (const char *fname, bool isdir, int elevel), bool process_symlinks, int elevel);
 src/backend/storage/ipc/dsm.c	999d898553d823e58004ae614f4e971937d26b4c	dsm_init_done	static bool dsm_init_done = false;
 src/backend/storage/ipc/dsm.c	c3a2d9d414db103ad645aa1e19a59869131d105f	dsm_main_space_begin	static void *dsm_main_space_begin = NULL;
 src/backend/storage/ipc/dsm.c	815c6dbc715364e682c84b689b14709653f3b516	dsm_main_space_size	static size_t dsm_main_space_size;
@@ -1610,20 +1594,6 @@ src/backend/utils/misc/superuser.c	51e949c4984b8e34e20296cde41b990509866e94	role
 src/backend/utils/mmgr/aset.c	2cd93d9bd6dcddeb04b90fd73e49fe756830e48e	context_freelists	static AllocSetFreeList context_freelists[2] = { { 0, NULL }, { 0, NULL } };
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
-src/include/catalog/binary_upgrade.h	995ca08ab318b59892df3a2c0eb06201fbd261bb	binary_upgrade_next_pg_tablespace_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_tablespace_oid;
-src/include/catalog/binary_upgrade.h	04b0707bc35b658d33229c05d05b420285bd0849	binary_upgrade_next_pg_type_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_type_oid;
-src/include/catalog/binary_upgrade.h	1ed35dc082d0c335abbf0d4e90a0cc3a3a79ba95	binary_upgrade_next_array_pg_type_oid	extern PGDLLIMPORT Oid binary_upgrade_next_array_pg_type_oid;
-src/include/catalog/binary_upgrade.h	9dc058502e1f23a7d18523d24d65d75f6797e008	binary_upgrade_next_mrng_pg_type_oid	extern PGDLLIMPORT Oid binary_upgrade_next_mrng_pg_type_oid;
-src/include/catalog/binary_upgrade.h	97655aa34af8fde2bc4b59e400090653f1afcc9b	binary_upgrade_next_mrng_array_pg_type_oid	extern PGDLLIMPORT Oid binary_upgrade_next_mrng_array_pg_type_oid;
-src/include/catalog/binary_upgrade.h	fefe76c06890b7f0d7e8d1d4153c1a8d54173117	binary_upgrade_next_heap_pg_class_oid	extern PGDLLIMPORT Oid binary_upgrade_next_heap_pg_class_oid;
-src/include/catalog/binary_upgrade.h	841d9e46f5fa5b941747a44f6407e600db05995f	binary_upgrade_next_heap_pg_class_relfilenumber	extern PGDLLIMPORT RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber;
-src/include/catalog/binary_upgrade.h	231ee6f7d368fa0a7258db1d299c1b3c50904628	binary_upgrade_next_index_pg_class_oid	extern PGDLLIMPORT Oid binary_upgrade_next_index_pg_class_oid;
-src/include/catalog/binary_upgrade.h	8a7242fd83fde8a88ba467aa4da9e5f43b8b7e5e	binary_upgrade_next_index_pg_class_relfilenumber	extern PGDLLIMPORT RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber;
-src/include/catalog/binary_upgrade.h	0321e5d7a8bc8ab8aefb70109b2bc93fb2422205	binary_upgrade_next_toast_pg_class_oid	extern PGDLLIMPORT Oid binary_upgrade_next_toast_pg_class_oid;
-src/include/catalog/binary_upgrade.h	17130c1c583d872b29055bfe6cf8a29d05384ecc	binary_upgrade_next_toast_pg_class_relfilenumber	extern PGDLLIMPORT RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber;
-src/include/catalog/binary_upgrade.h	2e00bcd53281a42f1c16a653ce1a45133349f87a	binary_upgrade_next_pg_enum_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_enum_oid;
-src/include/catalog/binary_upgrade.h	0958ad6b0f17c01bb1ada1af95b7dfd6621a5d9e	binary_upgrade_next_pg_authid_oid	extern PGDLLIMPORT Oid binary_upgrade_next_pg_authid_oid;
-src/include/catalog/binary_upgrade.h	8d0653ddb3845ae25c0c56c3136402649e2a5478	binary_upgrade_record_init_privs	extern PGDLLIMPORT bool binary_upgrade_record_init_privs;
 src/include/catalog/objectaccess.h	f346b363efa6414b427b92580eca4864692ce78e	object_access_hook	extern PGDLLIMPORT object_access_hook_type object_access_hook;
 src/include/catalog/objectaccess.h	3da946876eacde33ee1e493ae92c600a84efff4f	object_access_hook_str	extern PGDLLIMPORT object_access_hook_type_str object_access_hook_str;
 src/include/commands/explain.h	85976e338d99d112da6a93514c69eb926adeaf7a	ExplainOneQuery_hook	extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
@@ -1643,7 +1613,6 @@ src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_c
 src/include/common/file_perm.h	e826e5ad606841ae27bf2bff671e0e9b0bc9147d	pg_file_create_mode	extern PGDLLIMPORT int pg_file_create_mode;
 src/include/common/file_perm.h	7697ec47808190cfe5797d4d44969d474b20eaa6	pg_mode_mask	extern PGDLLIMPORT int pg_mode_mask;
 src/include/common/logging.h	12a60688ec5164b15e1c28ff1a3643a116ebe905	__pg_log_level	extern enum pg_log_level __pg_log_level;
-src/include/common/logging.h	68f29d50b50103828d312bdbb67cd062e187db0f	filename	void pg_logging_set_locus_callback(void (*cb) (const char **filename, uint64 *lineno));
 src/include/common/pg_lzcompress.h	609e147c71c0c4c63e8885b46da27ab290ff0a2d	PGLZ_strategy_default	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_default;
 src/include/common/pg_lzcompress.h	5c801b104ec4f8feee3de64d148761ee552cdcb4	PGLZ_strategy_always	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_always;
 src/include/common/pg_prng.h	e9b95633962bf40ae0656ebcdc38387ec6435986	pg_global_prng_state	extern PGDLLIMPORT pg_prng_state pg_global_prng_state;
