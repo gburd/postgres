@@ -82,7 +82,7 @@ typedef enum CopySeqResult
 	COPYSEQ_SKIPPED
 } CopySeqResult;
 
-static List *seqinfos = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *seqinfos = NIL;
 
 /*
  * Apply worker determines if sequence synchronization is needed.

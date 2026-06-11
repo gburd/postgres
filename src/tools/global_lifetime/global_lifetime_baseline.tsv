@@ -82,7 +82,6 @@ src/backend/replication/logical/relation.c	3a9435115bfd9c97e906fda5d159a660dd17c
 src/backend/replication/logical/relation.c	289fa9ba7658bc71c577441a41f0fabd8697e4ed	LogicalRepRelMap	static HTAB *LogicalRepRelMap = NULL;
 src/backend/replication/logical/relation.c	2d22fe0a4c7930e190e9e0476118cc82ffcdbb6a	LogicalRepPartMapContext	static MemoryContext LogicalRepPartMapContext = NULL;
 src/backend/replication/logical/relation.c	4ebb7b7ab39bf8c50f7a6ab598101ff6ee591b3f	LogicalRepPartMap	static HTAB *LogicalRepPartMap = NULL;
-src/backend/replication/logical/sequencesync.c	b97f7e31468d331dc50a5aba7532d6576a2ef1a2	seqinfos	static List *seqinfos = NIL;
 src/backend/replication/logical/slotsync.c	a354b7fc8658ab4251ea71df85e0cdf46e2336e7	SlotSyncCtx	static SlotSyncCtxStruct *SlotSyncCtx = NULL;
 src/backend/replication/logical/slotsync.c	6ab28537285f9e34fd0b26594d39d55f02f31182	sleep_ms	static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
 src/backend/replication/logical/slotsync.c	52c352fc3bdc7fea77079c84a19f3df7944200a4	syncing_slots	static bool syncing_slots = false;

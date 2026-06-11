@@ -157,6 +157,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   worker's cached view of subscription relations that are not yet ready, and
   `copybuf` is backend-local TLS scratch for the table synchronization
   worker's COPY stream.
+- logical replication sequence synchronization state in `sequencesync.c`:
+  `seqinfos` is backend-local TLS state for the sequence synchronization
+  worker's current batch of remote/local sequence metadata.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2016,6 +2019,15 @@ Validation for this slice:
   subscriber log recorded the table synchronization worker, copied 2500
   preexisting publisher rows through the table sync path, applied a follow-up
   publisher insert to 2750 rows, and stopped both servers with fast shutdown.
+- focused `sequencesync.o`, `worker.o`, and `launcher.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, focused
+  core `guc` regression coverage, and direct publisher/subscriber logical
+  replication smoke after classifying logical sequence synchronization state.
+  The live smoke created a publication for all sequences, verified the
+  subscriber log recorded the sequence synchronization worker, synchronized a
+  sequence to `READY` at value 125, advanced the publisher sequence, refreshed
+  sequences, verified the subscriber sequence reached value 150, and stopped
+  both servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after
