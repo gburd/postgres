@@ -14,6 +14,7 @@
 #define INSTRUMENT_H
 
 #include "portability/instr_time.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -125,8 +126,8 @@ typedef struct TriggerInstrumentation
 								 * was fired */
 } TriggerInstrumentation;
 
-extern PGDLLIMPORT BufferUsage pgBufferUsage;
-extern PGDLLIMPORT WalUsage pgWalUsage;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferUsage pgBufferUsage;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage pgWalUsage;
 
 extern Instrumentation *InstrAlloc(int instrument_options);
 extern void InstrInitOptions(Instrumentation *instr, int instrument_options);

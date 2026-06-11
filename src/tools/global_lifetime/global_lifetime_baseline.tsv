@@ -28,10 +28,6 @@ src/backend/commands/vacuumparallel.c	7b88ac5a5abf2259c986934befbf07df90998f3b	p
 src/backend/commands/vacuumparallel.c	5019eec2a7bcbe78257f79034a54d3a949d21467	shared_params_generation_local	static uint32 shared_params_generation_local = 0;
 src/backend/executor/execExprInterp.c	b671e7ef0f7c662893b7d8903e463cc065815aa0	dispatch_table	static const void **dispatch_table = NULL;
 src/backend/executor/execExprInterp.c	f5dae087566d82e7434b56ee0ed00090438c3492	reverse_dispatch_table	static ExprEvalOpLookup reverse_dispatch_table[EEOP_LAST];
-src/backend/executor/instrument.c	08550ccaabf4a567ee0655669864dd61bba10157	pgBufferUsage	BufferUsage pgBufferUsage;
-src/backend/executor/instrument.c	aab563c4d73dacbbaa3d934ea9af6153e0000e9f	save_pgBufferUsage	static BufferUsage save_pgBufferUsage;
-src/backend/executor/instrument.c	66f62f8700f43fc8ee0e2bd15fd4e82c39aa4e76	pgWalUsage	WalUsage pgWalUsage;
-src/backend/executor/instrument.c	55af128245b92098f0964c4a630fcb0ab4c94a21	save_pgWalUsage	static WalUsage save_pgWalUsage;
 src/backend/jit/jit.c	42f632aaf5cfb5e56ef41fba4fa31f5fb92fb0cd	provider	static JitProviderCallbacks provider;
 src/backend/jit/jit.c	a5d4013a10e01aa2686e9e1ab8f01f7073183e6e	provider_successfully_loaded	static bool provider_successfully_loaded = false;
 src/backend/jit/jit.c	69af60336ea01151cb7a9465cbe195ed107f4cd7	provider_failed_loading	static bool provider_failed_loading = false;
@@ -1557,8 +1553,6 @@ src/include/common/pg_lzcompress.h	609e147c71c0c4c63e8885b46da27ab290ff0a2d	PGLZ
 src/include/common/pg_lzcompress.h	5c801b104ec4f8feee3de64d148761ee552cdcb4	PGLZ_strategy_always	extern PGDLLIMPORT const PGLZ_Strategy *const PGLZ_strategy_always;
 src/include/common/pg_prng.h	e9b95633962bf40ae0656ebcdc38387ec6435986	pg_global_prng_state	extern PGDLLIMPORT pg_prng_state pg_global_prng_state;
 src/include/common/relpath.h	ff0a93604e591b4b8e7113a9d19c49606af0105d	forkNames	extern PGDLLIMPORT const char *const forkNames[];
-src/include/executor/instrument.h	c385311f3682dfe3b116e7add0947abc3f2b3cd1	pgBufferUsage	extern PGDLLIMPORT BufferUsage pgBufferUsage;
-src/include/executor/instrument.h	a55e7bbae2d5fb41c9115a97a6f882b930374995	pgWalUsage	extern PGDLLIMPORT WalUsage pgWalUsage;
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...

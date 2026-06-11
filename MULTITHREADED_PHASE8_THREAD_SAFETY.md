@@ -237,6 +237,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - query/statistics session state: `compute_query_id`, `query_id_enabled`,
   `pgstat_fetch_consistency`, `pgstat_track_activities`,
   `pgstat_track_counts`, and `pgstat_track_functions`.
+- executor instrumentation counters: `pgBufferUsage`, `pgWalUsage`, and the
+  private parallel-query baseline copies in `instrument.c`. These counters
+  accumulate one backend's buffer and WAL usage so callers can compute deltas
+  around a query, plan node, or parallel-query section.
 - logging/error-reporting session state: `Log_error_verbosity`,
   `log_min_messages_string`, and the processed `backtrace_function_list`
   derived from `backtrace_functions`.
@@ -1090,6 +1094,13 @@ Validation for this slice:
   before SQL started with the known macOS `libpq.5.dylib` loader error; after
   patching the recreated temp-install binaries, the equivalent direct
   `pg_regress` invocation passed all 13 PL/pgSQL tests.
+- focused `instrument.o` compile coverage, backend clean plus
+  generated-header recovery, full rebuild/install, `pg_stat_statements`
+  clean/rebuild/install, global-lifetime scanner coverage, and process-mode
+  instrumentation smoke coverage after classifying executor instrumentation
+  counters. The runtime smoke preloaded `pg_stat_statements`, created the
+  extension, ran `EXPLAIN (ANALYZE, BUFFERS, WAL)` against an insert, verified
+  the table contents, and confirmed `pg_stat_statements` recorded the query.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

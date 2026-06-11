@@ -22,10 +22,10 @@
 #include "portability/instr_time.h"
 #include "utils/guc_hooks.h"
 
-BufferUsage pgBufferUsage;
-static BufferUsage save_pgBufferUsage;
-WalUsage	pgWalUsage;
-static WalUsage save_pgWalUsage;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferUsage pgBufferUsage;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferUsage save_pgBufferUsage;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage pgWalUsage;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage save_pgWalUsage;
 
 static void BufferUsageAdd(BufferUsage *dst, const BufferUsage *add);
 static void WalUsageAdd(WalUsage *dst, WalUsage *add);
