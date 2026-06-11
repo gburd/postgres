@@ -27,10 +27,10 @@
 #include "utils/relmapper.h"
 
 /* Hash table for information about each relfilenumber <-> oid pair */
-static HTAB *RelfilenumberMapHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *RelfilenumberMapHash = NULL;
 
 /* built first time through in InitializeRelfilenumberMap */
-static ScanKeyData relfilenumber_skey[2];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION ScanKeyData relfilenumber_skey[2];
 
 typedef struct
 {

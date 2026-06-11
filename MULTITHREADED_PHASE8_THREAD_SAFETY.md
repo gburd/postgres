@@ -391,6 +391,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `EventTriggerCacheContext`, and `EventTriggerCacheState` are session-local
   TLS state allocated under `CacheMemoryContext` and invalidated by the
   current backend's syscache callback path.
+- relfilenumber map cache state in `relfilenumbermap.c`:
+  `RelfilenumberMapHash` and the prebuilt `relfilenumber_skey` scan keys are
+  session-local TLS state initialized under the current backend's
+  `CacheMemoryContext`.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1085,6 +1089,12 @@ Validation for this slice:
   incremental full rebuild/install, and fixture-backed `event_trigger`
   regression coverage through the `create_am` dependency prefix after
   classifying event-trigger cache state as session-local TLS.
+- focused `relfilenumbermap.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, and a live temp-cluster
+  relfilenumber mapping smoke after classifying the relfilenumber map cache as
+  session-local TLS. The smoke populated `pg_filenode_relation()`'s cache,
+  rewrote the table with `VACUUM FULL`, verified the old filenumber no longer
+  resolved, and verified the new filenumber mapped back to the relation.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
