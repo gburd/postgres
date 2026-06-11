@@ -172,6 +172,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   flag, launcher-running cleanup flag, and active operation copy are
   backend-local TLS state for the data-checksum launcher or worker logical
   backend.
+- autovacuum launcher/worker state in `autovacuum.c`: `AutoVacuumShmem` is
+  shared-memory coordination state for the launcher, workers, and postmaster
+  worker slots. The launcher signal flag, launcher database list/context,
+  Valgrind database-list witness, local anti-wraparound scoring snapshots,
+  default freeze ages, autovacuum memory context, current worker `WorkerInfo`
+  pointer, and relation storage-parameter cost overrides are backend-local TLS
+  state for the autovacuum launcher or worker logical backend.
 - process signal-mask templates in `pqsignal.c`: `UnBlockSig`, `BlockSig`,
   and `StartupBlockSig` are runtime-global templates initialized by
   `pqinitmask()`.  They remain shared signal-mask templates; Phase 9/10 must
@@ -1914,6 +1921,14 @@ Validation for this slice:
   observed a `datachecksums%` backend in `pg_stat_activity`, verified
   `data_checksums` reached `on`, checked the heap row count, and stopped the
   server with fast shutdown.
+- focused `autovacuum.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, focused core `guc` regression coverage,
+  and direct temp-cluster autovacuum launcher/worker smoke after classifying
+  autovacuum launcher/worker state. The live smoke verified the autovacuum
+  launcher was visible, created a table with aggressive autovacuum reloptions,
+  generated update/delete churn, observed autovacuum/analyze stats for the
+  table, checked autovacuum log output, and stopped the server with fast
+  shutdown.
 - focused IPC/shared-memory compile coverage for `ipc.o`, `ipci.o`, and
   `shmem.o`, global-lifetime scanner coverage, backend clean plus
   generated-header recovery, full rebuild/install, and direct temp-cluster
