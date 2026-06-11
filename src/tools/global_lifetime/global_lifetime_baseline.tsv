@@ -958,9 +958,6 @@ src/backend/storage/lmgr/predicate.c	1a350bb1b9324d2803c87f96bea348a5f8831186	My
 src/backend/storage/lmgr/predicate.c	a902ac6e7d1841e0c1fbcdb9155b1db00b946082	SavedSerializableXact	static SERIALIZABLEXACT *SavedSerializableXact = InvalidSerializableXact;
 src/backend/storage/lmgr/predicate.c	3eb06432affa9b0e78c0527082a707f484927365	max_serializable_xacts	static int64 max_serializable_xacts;
 src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_lock	volatile struct test_lock_struct test_lock;
-src/backend/storage/smgr/md.c	896f321ba5703e55a36e78e7a8abac883453a331	MdCxt	static MemoryContext MdCxt;
-src/backend/storage/smgr/smgr.c	5dabcba8126945b09bed644a332b70a6fece60d1	SMgrRelationHash	static HTAB *SMgrRelationHash = NULL;
-src/backend/storage/smgr/smgr.c	8e5e89ab7925d7a529883e11f922f329b3f556b8	unpinned_relns	static dlist_head unpinned_relns;
 src/backend/storage/sync/sync.c	916c4ff6c5455b6198ef3172a634cc00fc07067a	pendingOps	static HTAB *pendingOps = NULL;
 src/backend/storage/sync/sync.c	fad92f2023ec308961301675aae18a145d57edb2	pendingUnlinks	static List *pendingUnlinks = NIL;
 src/backend/storage/sync/sync.c	b1327e616c6570cb641e23208dad8388df45ca99	pendingOpsCxt	static MemoryContext pendingOpsCxt;

@@ -118,6 +118,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   add-in shared-memory request accumulator, shmem callback/request lists, and
   shmem request state machine are runtime state; fixed shared-memory segment,
   allocator, and shmem index pointers are classified as shared-memory state.
+- storage-manager backend cache state: `MdCxt`, `SMgrRelationHash`, and
+  `unpinned_relns` are backend-local TLS state owned by the current backend's
+  smgr cache, while the smgr dispatch table and method count are immutable
+  state.
 - authenticated, session, and effective-user identity state in `miscinit.c`:
   `AuthenticatedUserId`, `SessionUserId`, `OuterUserId`, `CurrentUserId`,
   `SystemUser`, `SessionUserIsSuperuser`, `SecurityRestrictionContext`, and
@@ -1466,6 +1470,12 @@ Validation for this slice:
   after `pg_terminate_backend()` against a sleeping backend, observed the
   expected FATAL disconnect for the terminated backend, verified the server
   stayed usable from a new connection, and shut down cleanly.
+- focused storage-manager compile coverage for `md.o` and `smgr.o`,
+  global-lifetime scanner coverage, incremental full rebuild/install, and
+  direct temp-cluster smgr smoke after classifying the md/smgr backend cache
+  state. The smoke created and extended heap/index/temp relations, checked
+  relation storage size, vacuumed, checkpointed, truncated, inserted after
+  truncate, dropped the relations, and shut down cleanly.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -125,7 +125,7 @@ typedef struct f_smgr
 	int			(*smgr_fd) (SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, uint32 *off);
 } f_smgr;
 
-static const f_smgr smgrsw[] = {
+static PG_GLOBAL_IMMUTABLE const f_smgr smgrsw[] = {
 	/* magnetic disk */
 	{
 		.smgr_init = mdinit,
@@ -151,15 +151,15 @@ static const f_smgr smgrsw[] = {
 	}
 };
 
-static const int NSmgr = lengthof(smgrsw);
+static PG_GLOBAL_IMMUTABLE const int NSmgr = lengthof(smgrsw);
 
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
  * In addition, "unpinned" SMgrRelation objects are chained together in a list.
  */
-static HTAB *SMgrRelationHash = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *SMgrRelationHash = NULL;
 
-static dlist_head unpinned_relns;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head unpinned_relns;
 
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);

@@ -95,7 +95,7 @@ typedef struct _MdfdVec
 	BlockNumber mdfd_segno;		/* segment number, from 0 */
 } MdfdVec;
 
-static MemoryContext MdCxt;		/* context for all MdfdVec objects */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext MdCxt;	/* context for all MdfdVec objects */
 
 
 /* Populate a file tag describing an md.c segment file. */
