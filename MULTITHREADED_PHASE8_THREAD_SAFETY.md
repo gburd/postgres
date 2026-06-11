@@ -144,6 +144,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   sampling, DSM handle generation, spin-delay jitter, temporary tablespace
   selection, and other backend callers do not race on one shared state vector
   in threaded mode.
+- common timing conversion state: the tick-to-nanosecond scale factors,
+  timing-initialization flag, TSC enable flag, and TSC frequency cache are
+  runtime-global timing infrastructure state. They remain shared process
+  configuration in Phase 8, matching the already-classified
+  `timing_clock_source` GUC backing variable.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2120,6 +2125,12 @@ Validation for this slice:
   `pg_global_prng_state` to backend-local TLS. The live smoke initialized a
   cluster, exercised `random()`, created and analyzed a temporary table, and
   stopped the server with fast shutdown.
+- focused `instr_time.o` and `instrument.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, and
+  direct temp-cluster timing smoke after classifying common timing conversion
+  state as runtime-global. The live smoke initialized a cluster, exercised
+  `pg_sleep`, verified `EXPLAIN ANALYZE` emitted timing data, and stopped the
+  server with fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
