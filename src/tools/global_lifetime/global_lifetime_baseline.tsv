@@ -1067,8 +1067,6 @@ src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupl
 src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
 src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;
-src/backend/utils/misc/injection_point.c	a7d8d01dbbdfe68c9aca7ba65487e9f7b679b125	ActiveInjectionPoints	NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
-src/backend/utils/misc/injection_point.c	1fcb03ecf827fdfc13a61aa4b0056343873d4edf	InjectionPointCache	static HTAB *InjectionPointCache = NULL;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;
@@ -1155,7 +1153,6 @@ src/include/utils/guc_tables.h	d340e57d0ae8eef772795b8aba79c4d095f8f8eb	config_g
 src/include/utils/guc_tables.h	90ee827d9c472a921795ee63680d163f09cd5559	config_type_names	extern PGDLLIMPORT const char *const config_type_names[];
 src/include/utils/guc_tables.h	b0a2f05c5a1abbde9b2a115b24cf37a8fa4f79c5	GucContext_Names	extern PGDLLIMPORT const char *const GucContext_Names[];
 src/include/utils/guc_tables.h	9b3ed666e0a866eef0d50b3c2a55cd935dd0666f	GucSource_Names	extern PGDLLIMPORT const char *const GucSource_Names[];
-src/include/utils/injection_point.h	bc630458f6031322cb5d3394ad8b52b2976713dc	ActiveInjectionPoints	extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
 src/include/utils/pgstat_internal.h	b72e5dc8e3f6c96f159cffea1f96ca2e35a2198d	slru_names	static const char *const slru_names[] = { "commit_timestamp", "multixact_member", "multixact_offset", "notify", "serializable", "subtransaction", "transaction", "other" };
 src/include/utils/relcache.h	9c4e92029161fdcd558ceeb298b62074c124706b	criticalRelcachesBuilt	extern PGDLLIMPORT bool criticalRelcachesBuilt;
 src/include/utils/relcache.h	9c0bbb28f632f7f5c85b96d2e82c69033839bf64	criticalSharedRelcachesBuilt	extern PGDLLIMPORT bool criticalSharedRelcachesBuilt;

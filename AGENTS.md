@@ -173,6 +173,13 @@ Important current files:
   build here, and use an LLVM-enabled build when compile or runtime JIT
   coverage for those files is required.
 
+- This checkout is currently configured without `--enable-injection-points`.
+  `src/test/modules/injection_points` intentionally skips checks in that
+  configuration, and injection-point TAP/regression coverage requires a build
+  configured with injection points enabled. For injection-point-only source
+  annotations in this checkout, use object compile coverage where reachable,
+  static lifetime scan coverage, and a full non-injection build/install.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

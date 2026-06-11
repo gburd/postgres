@@ -87,7 +87,7 @@ typedef struct InjectionPointsCtl
 	InjectionPointEntry entries[MAX_INJECTION_POINTS];
 } InjectionPointsCtl;
 
-NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 
 /*
  * Backend local cache of injection callbacks already loaded, stored in
@@ -108,7 +108,7 @@ typedef struct InjectionPointCacheEntry
 	uint64		generation;
 } InjectionPointCacheEntry;
 
-static HTAB *InjectionPointCache = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *InjectionPointCache = NULL;
 
 static void InjectionPointShmemRequest(void *arg);
 static void InjectionPointShmemInit(void *arg);

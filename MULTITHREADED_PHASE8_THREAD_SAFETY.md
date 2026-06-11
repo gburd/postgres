@@ -96,6 +96,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   queue pointer as shared-memory state, and the processed-message counter,
   recursive receive buffer/counters, and next local transaction ID as
   backend-local state;
+- injection-point state in `injection_point.c`: the active injection-point
+  table pointer is shared-memory state, while the loaded callback cache is
+  backend-local TLS state because it stores per-backend `TopMemoryContext`
+  callback lookups derived from the shared table.
 - dynahash active sequential-scan tracking state in `dynahash.c`;
 - parallel-query backend state in `parallel.c`: worker number,
   worker-initialization flag, fixed parallel state pointer, active parallel
@@ -981,6 +985,11 @@ Validation for this slice:
   `%m`, `%s`, `%l`, and `%p` in `log_line_prefix`, emitted two SQL errors, and
   verified both log entries included formatted timestamps, backend start time,
   line counters, and backend PID.
+- focused `injection_point.o` compile coverage, global-lifetime scanner
+  coverage, and incremental full rebuild/install after classifying the
+  injection-point shared table and backend-local callback cache. This checkout
+  is not configured with `--enable-injection-points`, so injection-point
+  regression/TAP coverage requires a separate injection-enabled build.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,
