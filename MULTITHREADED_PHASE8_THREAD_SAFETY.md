@@ -459,6 +459,10 @@ Temporary-table `ON COMMIT` bookkeeping in `tablecmds.c` is now session-local
 TLS. The list is explicitly described as backend-local because `ON COMMIT`
 actions only apply to temp tables, and entries can survive transaction cleanup
 for the lifetime of the current session.
+Prepared statement storage in `prepare.c` is now session-local TLS. Named SQL
+and protocol prepared statements are visible across commands in one session,
+but their cached plans and hash table must not be shared by concurrent
+threaded sessions.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -886,6 +890,8 @@ Validation for this slice:
 - focused `tablecmds.o` compile coverage plus temp-table/alter-table
   regression coverage after classifying session-local `ON COMMIT`
   bookkeeping.
+- focused `prepare.o` compile coverage plus prepared-statement regression
+  coverage after classifying session-local prepared statement storage.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
