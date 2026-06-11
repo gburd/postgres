@@ -13,10 +13,6 @@ src/backend/access/common/reloptions.c	10612a17778efc9e61551bbe5f9337313e37986c	
 src/backend/access/common/reloptions.c	43d02783d1381349c3973f1f1d0f0c89627968a5	num_custom_options	static int num_custom_options = 0;
 src/backend/access/common/reloptions.c	4ee79c9f2ccf150a5f4c5838aa91f53d504afc96	custom_options	static relopt_gen **custom_options = NULL;
 src/backend/access/common/reloptions.c	ee8e68808f786b877139c6e399220c737efa4ad6	need_initialization	static bool need_initialization = true;
-src/backend/access/gin/ginxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/gist/gistxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/nbtree/nbtxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
-src/backend/access/spgist/spgxlog.c	8ef32ffd6c43024a69949092ceb0c6f99eaa4c83	opCtx	static MemoryContext opCtx;
 src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrTable	RmgrData RmgrTable[RM_MAX_ID + 1] = { };
 src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
 src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;

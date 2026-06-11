@@ -96,6 +96,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   storage, and the WAL insertion memory context;
 - WAL insertion position state in `xlog.c`: `ProcLastRecPtr`,
   `XactLastRecEnd`, and `XactLastCommitEnd`;
+- WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
+  modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
   shared-memory state, `MyLockedGxact` and the exit-registration flag as
   backend-local state, and 2PC state-file assembly records as execution-local

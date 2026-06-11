@@ -20,9 +20,10 @@
 #include "access/transam.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
-static MemoryContext opCtx;		/* working memory for operations */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext opCtx;	/* working memory for operations */
 
 /*
  * _bt_restore_page -- re-enter all the index tuples on a page
