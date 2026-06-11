@@ -175,6 +175,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `LogicalRepRelMapContext`, `LogicalRepRelMap`, `LogicalRepPartMapContext`,
   and `LogicalRepPartMap` are session-local TLS caches for one logical
   replication backend's remote-to-local relation and partition mappings.
+- logical replication slot synchronization state in `slotsync.c`:
+  `SlotSyncCtx` is shared-memory control state protected by its spinlock,
+  while the dynamic nap interval `sleep_ms` and current-process
+  `syncing_slots` flag are backend-local TLS state for the slot-sync worker or
+  manual `pg_sync_replication_slots()` caller.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -2068,6 +2073,13 @@ Validation for this slice:
   existing rows through table synchronization, applied follow-up inserts, and
   verified the subscriber partition counts were split across the relation-map
   and partition-map paths before stopping both servers with fast shutdown.
+- focused `slotsync.o`, `backend_runtime.o`, and `postgres.o` compile
+  coverage, global-lifetime scanner coverage, incremental full
+  rebuild/install, focused core `guc` regression coverage, and direct
+  temp-cluster `pg_sync_replication_slots()` entrypoint smoke after
+  classifying slot synchronization state. The smoke verified that the manual
+  sync SQL function reaches the expected primary-mode rejection and stops the
+  server cleanly.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

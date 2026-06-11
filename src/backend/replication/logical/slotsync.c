@@ -119,7 +119,7 @@ typedef struct SlotSyncCtxStruct
 	slock_t		mutex;
 } SlotSyncCtxStruct;
 
-static SlotSyncCtxStruct *SlotSyncCtx = NULL;
+static PG_GLOBAL_SHMEM SlotSyncCtxStruct *SlotSyncCtx = NULL;
 
 static void SlotSyncShmemRequest(void *arg);
 static void SlotSyncShmemInit(void *arg);
@@ -140,7 +140,7 @@ PG_GLOBAL_RUNTIME bool sync_replication_slots = false;
 #define MIN_SLOTSYNC_WORKER_NAPTIME_MS  200
 #define MAX_SLOTSYNC_WORKER_NAPTIME_MS  30000	/* 30s */
 
-static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
 
 /* The restart interval for slot sync work used by postmaster */
 #define SLOTSYNC_RESTART_INTERVAL_SEC 10
@@ -150,7 +150,7 @@ static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
  * in SlotSyncCtxStruct, this flag is true only if the current process is
  * performing slot synchronization.
  */
-static bool syncing_slots = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool syncing_slots = false;
 
 /*
  * Interrupt flag set when PROCSIG_SLOTSYNC_MESSAGE is received, asking the
