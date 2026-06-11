@@ -20,7 +20,7 @@
 typedef struct PlannedStmt PlannedStmt; /* avoid including plannodes.h here */
 
 
-extern PGDLLIMPORT Portal ActivePortal;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Portal ActivePortal;
 
 
 extern PortalStrategy ChoosePortalStrategy(List *stmts);

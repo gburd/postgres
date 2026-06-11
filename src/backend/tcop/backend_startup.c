@@ -55,7 +55,8 @@ PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
  * ready_for_use is initialized to a special value here so we can check if
  * we've already set it before doing so in PostgresMain().
  */
-ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
+PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ConnectionTiming
+conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 
 static void BackendInitialize(ClientSocket *client_sock, CAC_state cac);
 static int	ProcessSSLStartup(Port *port);

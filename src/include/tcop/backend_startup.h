@@ -23,7 +23,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME uint32 log_connections;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *log_connections_string;
 
 /* Other globals */
-extern PGDLLIMPORT struct ConnectionTiming conn_timing;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION
+struct ConnectionTiming conn_timing;
 
 /*
  * CAC_state is passed from postmaster to the backend process, to indicate

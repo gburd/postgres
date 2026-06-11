@@ -49,13 +49,16 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - timeout registration and pending-delivery state in `timeout.c`;
 - virtual fd and temporary-file owner state in `fd.c`;
 - portal manager session state;
+- active portal execution state in `pquery.c`, plus immutable destination
+  receiver templates and the permanent `None_Receiver` pointer in `dest.c`;
 - logical apply-worker memory/error context state;
 - regexp cache memory context;
 - frontend protocol and connection state: `FrontendProtocol`, `MyProcPort`,
   `MyClientSocket`, `MyCancelKey`, `MyCancelKeyLength`, `PqCommMethods`,
   `FeBeWaitSet`, `whereToSendOutput`, `debug_query_string`, and the libpq
-  send/receive buffers in `pqcomm.c` and GSSAPI transport buffers in
-  `be-secure-gssapi.c`;
+  send/receive buffers in `pqcomm.c`, GSSAPI transport buffers in
+  `be-secure-gssapi.c`, and the connection setup timing record in
+  `backend_startup.c`;
 - authentication and TLS connection-startup state: HBA and ident parser
   context/list handles are runtime-global configuration state, authentication
   method names are immutable state, OpenSSL context/host/BIO-method and
@@ -1486,6 +1489,14 @@ Validation for this slice:
   smoke with `fsync = on` after classifying pending sync state. The smoke
   created and extended a heap relation, forced checkpoints around insert,
   update, delete, and drop work, and shut down cleanly.
+- focused tcop compile coverage for `backend_startup.o`, `dest.o`, and
+  `pquery.o`, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, and direct temp-cluster
+  query/portal smoke after converting exported `conn_timing` and
+  `ActivePortal` declarations to TLS. The smoke enabled
+  `log_connections = 'setup_durations'`, verified the setup-duration log
+  entry, exercised named cursor fetch/move paths, copied query output through
+  the normal destination machinery, and shut down cleanly.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
