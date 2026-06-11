@@ -39,7 +39,6 @@ src/backend/port/win32/signal.c	928a8b295b87ab215ad9d9bf471ba15983b2accc	pg_sign
 src/backend/port/win32/socket.c	498f1d88283fd8146d8b47e02bae42f24ddce605	pgwin32_noblock	int pgwin32_noblock = 0;
 src/backend/port/win32/timer.c	db4bd6600e6f67c28a473743af1db04f4263134b	timerCommArea	static timerCA timerCommArea;
 src/backend/port/win32/timer.c	493849c32e3192a867647b85cc7c0edc00c6b9d0	timerThreadHandle	static HANDLE timerThreadHandle = INVALID_HANDLE_VALUE;
-src/backend/postmaster/launch_backend.c	8f176bb508df16875ba1c08f4a77c18a4aea0df8	child_process_kinds	static child_process_kind child_process_kinds[] = { };
 src/backend/postmaster/postmaster.c	927671e4f097f63116633f49af4d47d3bb52ce53	NumListenSockets	static int NumListenSockets = 0;
 src/backend/postmaster/postmaster.c	ae8398ace22c284aa07670f11be263ca1e201dd0	ListenSockets	static pgsocket *ListenSockets = NULL;
 src/backend/postmaster/postmaster.c	9ca9d978dfa5b3be65f4f8439967b2d7a7fc6826	StartupPMChild,BgWriterPMChild,CheckpointerPMChild,WalWriterPMChild,WalReceiverPMChild,WalSummarizerPMChild,AutoVacLauncherPMChild,PgArchPMChild,SysLoggerPMChild,SlotSyncWorkerPMChild	static PMChild *StartupPMChild = NULL, *BgWriterPMChild = NULL, *CheckpointerPMChild = NULL, *WalWriterPMChild = NULL, *WalReceiverPMChild = NULL, *WalSummarizerPMChild = NULL, *AutoVacLauncherPMChild = NULL, *PgArchPMChild = NULL, *SysL...

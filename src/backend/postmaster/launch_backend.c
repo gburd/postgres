@@ -53,6 +53,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
 #include "tcop/backend_startup.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
 #ifdef EXEC_BACKEND
@@ -176,7 +177,7 @@ typedef struct
 	bool		shmem_attach;
 } child_process_kind;
 
-static child_process_kind child_process_kinds[] = {
+static PG_GLOBAL_IMMUTABLE const child_process_kind child_process_kinds[] = {
 #define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
 	[bktype] = {description, main_func, shmem_attach},
 #include "postmaster/proctypelist.h"

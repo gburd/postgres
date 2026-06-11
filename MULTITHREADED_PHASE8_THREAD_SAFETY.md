@@ -126,6 +126,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   process-mode supervision structures in this phase; later worker-runtime
   phases must decide which entries represent thread-owned in-tree workers
   rather than forked child processes.
+- postmaster child-launch metadata in `launch_backend.c`:
+  `child_process_kinds` is an immutable generated dispatch table for child
+  names, main functions, and shared-memory attachment policy.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2069,6 +2072,8 @@ Validation for this slice:
   postmaster child-slot state. The live smoke verified a client backend was
   visible through `pg_stat_activity` and that a connected backend had a
   positive backend PID before fast shutdown.
+- focused `launch_backend.o` compile coverage and global-lifetime scanner
+  coverage after classifying the child-launch metadata table as immutable.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
