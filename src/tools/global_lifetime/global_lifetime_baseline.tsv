@@ -174,7 +174,6 @@ src/include/portability/instr_time.h	53c04206ed9e366974869136069521b2d45103ac	ma
 src/include/portability/instr_time.h	89a06fbd8be0502608e46047ce6327144ae60f3c	timing_initialized	extern PGDLLIMPORT bool timing_initialized;
 src/include/portability/instr_time.h	2bac8afb1b21f3f9c28fa8ffc570eb92102229ca	timing_tsc_enabled	extern PGDLLIMPORT bool timing_tsc_enabled;
 src/include/portability/instr_time.h	0242a65582a1e7adb84b6ab3eaf2ef74dae9f59d	timing_tsc_frequency_khz	extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
-src/include/postmaster/postmaster.h	4148f1c87e56ca82106abc9df4036c66a75d8c50	ClientAuthInProgress	extern PGDLLIMPORT bool ClientAuthInProgress;
 src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replorigin_xact_state	extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/storage/checksum_block_internal.h	d4e9e2fded2e6f9254fde33bbc398746c85cf095	sums	uint32 sums[N_SUMS];

@@ -137,6 +137,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   process-lifetime supervisor state in Phase 8; later worker-runtime phases
   must replace forked in-tree worker launches with runtime-owned threaded
   workers where normal threaded mode requires it.
+- connection authentication progress state: `ClientAuthInProgress` is
+  connection-local TLS, so error visibility during startup authentication is
+  isolated per frontend connection instead of shared across threaded backends.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2088,6 +2091,12 @@ Validation for this slice:
   runtime-global control-plane state. A direct temp-cluster startup/connection
   smoke verified that a Unix-socket backend appears in `pg_stat_activity`
   before fast shutdown.
+- focused `postmaster.o`, `backend_startup.o`, `postgres.o`, and
+  `postinit.o` compile coverage, global-lifetime scanner coverage, backend
+  clean plus generated-header recovery, full rebuild/install, and direct
+  temp-cluster connection-startup smoke after converting
+  `ClientAuthInProgress` to connection-local TLS. The smoke verified
+  `current_user` and current backend visibility in `pg_stat_activity`.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after

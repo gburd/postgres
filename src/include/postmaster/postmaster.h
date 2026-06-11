@@ -61,7 +61,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Unix_socket_permissions;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Unix_socket_group;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Unix_socket_directories;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ListenAddresses;
-extern PGDLLIMPORT bool ClientAuthInProgress;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool ClientAuthInProgress;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int PreAuthDelay;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int AuthenticationTimeout;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_hostname;
