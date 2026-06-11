@@ -41,11 +41,11 @@
 /*
  * Backup-related variables.
  */
-static BackupState *backup_state = NULL;
-static StringInfo tablespace_map = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION BackupState *backup_state = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION StringInfo tablespace_map = NULL;
 
 /* Session-level context for the SQL-callable backup functions */
-static MemoryContext backupcontext = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext backupcontext = NULL;
 
 
 /*

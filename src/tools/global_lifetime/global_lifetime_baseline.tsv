@@ -1,7 +1,4 @@
 # file	sha1	names	declaration
-src/backend/access/transam/xlogfuncs.c	5593f7ff0780abb09282b93ac4c48a7007b814f6	backup_state	static BackupState *backup_state = NULL;
-src/backend/access/transam/xlogfuncs.c	8f51ac66b542f431ec53923b02d17459a017aafb	tablespace_map	static StringInfo tablespace_map = NULL;
-src/backend/access/transam/xlogfuncs.c	16d09a686a480a894d3846ab182374ae7371a5b1	backupcontext	static MemoryContext backupcontext = NULL;
 src/backend/access/transam/xlogprefetcher.c	49ee8f8208dc7d089121e4cc0a7759628d17f204	XLogPrefetchReconfigureCount	static int XLogPrefetchReconfigureCount = 0;
 src/backend/access/transam/xlogprefetcher.c	f69228617b8f5a4b861605cdab67cfa980090081	SharedStats	static XLogPrefetchStats *SharedStats;
 src/backend/access/transam/xlogrecovery.c	1b8aa8ab7068020b8fae66749c348ca0ac197892	ArchiveRecoveryRequested	bool ArchiveRecoveryRequested = false;
