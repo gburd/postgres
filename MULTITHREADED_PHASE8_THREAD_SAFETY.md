@@ -332,6 +332,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - guarded developer node-test GUC backing variables:
   `Debug_copy_parse_plan_trees`, `Debug_raw_expression_coverage_test`, and
   `Debug_write_read_parse_plan_trees`.
+- node serialization/parser scratch state in `outfuncs.c` and `read.c`:
+  `write_location_fields`, `pg_strtok_ptr`, and the
+  `DEBUG_NODE_TESTS_ENABLED` `restore_location_fields` flag are execution-local
+  TLS state saved and restored around one `nodeToString()` or `stringToNode()`
+  operation.
 - storage and I/O session GUC backing variables:
   `backend_flush_after`, `effective_io_concurrency`, `file_copy_method`,
   `ignore_checksum_failure`, `io_combine_limit`,
@@ -361,6 +366,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   registered by security-label modules is runtime-global registration state.
   Threaded-mode mutation/loading is governed by the Phase 7 extension
   backend-model gate.
+- extensible-node and custom-scan method registries in `extensible.c`:
+  `extensible_node_methods` and `custom_scan_methods` are runtime-global
+  extension registration tables. Threaded-mode mutation/loading is governed by
+  the Phase 7 extension backend-model gate.
 - SPI API and connection-stack state in `spi.c`: `SPI_processed`,
   `SPI_tuptable`, `SPI_result`, `_SPI_stack`, `_SPI_current`,
   `_SPI_stack_depth`, and `_SPI_connected`. SPI exposes its result variables
@@ -1356,6 +1365,11 @@ Validation for this slice:
   classifying LLVM provider state. This checkout is configured with
   `with_llvm = no`; direct `src/backend/jit/llvm` compile coverage and runtime
   JIT execution remain for an LLVM-enabled build.
+- focused `extensible.o`, `outfuncs.o`, and `read.o` compile coverage,
+  global-lifetime scanner coverage, incremental full rebuild/install, and
+  direct temp-cluster node I/O smoke coverage through `EXPLAIN (VERBOSE,
+  FORMAT JSON) SELECT 1` after classifying node registry and node
+  serialization/parser scratch state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -26,7 +26,7 @@
 #include "utils/datum.h"
 
 /* State flag that determines how nodeToStringInternal() should treat location fields */
-static bool write_location_fields = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool write_location_fields = false;
 
 static void outChar(StringInfo str, char c);
 static void outDouble(StringInfo str, double d);

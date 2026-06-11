@@ -647,11 +647,6 @@ src/backend/nodes/equalfuncs.switch.c	c4bf4b50a81cde0e1c52cef7445defa8de799e9a	r
 src/backend/nodes/equalfuncs.switch.c	04e10b7a6e6a55ee8494298146a8fc5bbbda3588	retval	retval = _equalBoolean(a, b);
 src/backend/nodes/equalfuncs.switch.c	5e6b561598db8600c699d9d707341e6d3dc45975	retval	retval = _equalString(a, b);
 src/backend/nodes/equalfuncs.switch.c	d922ab0d4e4245cc664b9e9a809b83798e989687	retval	retval = _equalBitString(a, b);
-src/backend/nodes/extensible.c	70dd56ab0cf88c0f8006b8c51750d07ceb6f86bb	extensible_node_methods	static HTAB *extensible_node_methods = NULL;
-src/backend/nodes/extensible.c	c5f14499e1efc7aad131caafcabc2cae22efd35d	custom_scan_methods	static HTAB *custom_scan_methods = NULL;
-src/backend/nodes/outfuncs.c	e40f297abcb5f78fac5fc133ebff6a1c300e2e56	write_location_fields	static bool write_location_fields = false;
-src/backend/nodes/read.c	e97fccfe46a6f872767649d4a3ca4928c95517a7	pg_strtok_ptr	static const char *pg_strtok_ptr = NULL;
-src/backend/nodes/read.c	1bd73413e97a0e870d8ee963647d5ca09cb39d77	restore_location_fields	bool restore_location_fields = false;
 src/backend/optimizer/geqo/geqo_main.c	a4921145ff7752a0a55ac1c6cea295f9daaa2cf5	Geqo_planner_extension_id	int Geqo_planner_extension_id = -1;
 src/backend/optimizer/path/costsize.c	cd488f762648cc3b16e33f41585f95273acee6a0	disable_cost	Cost disable_cost = 1.0e10;
 src/backend/optimizer/util/extendplan.c	b7606e664007fa63c1ff6ee69d6c8030a37ce1d8	PlannerExtensionNameArray	static const char **PlannerExtensionNameArray = NULL;
@@ -1387,7 +1382,6 @@ src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelReq
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...
 src/include/mb/pg_wchar.h	c1a3712687d3a7a5aa66c1e511d2f3f92daddb79	pg_enc2gettext_tbl	extern PGDLLIMPORT const char *pg_enc2gettext_tbl[];
-src/include/nodes/readfuncs.h	5ffe8e83460e971f40cead0df321be115a4d6a4c	restore_location_fields	extern PGDLLIMPORT bool restore_location_fields;
 src/include/optimizer/cost.h	d6fc94daad0131390bca7683b236c7ab33acf4f6	disable_cost	extern PGDLLIMPORT Cost disable_cost;
 src/include/optimizer/geqo.h	45ac2f41a8a187e48e4f24fa54b91d7ca1c479ef	Geqo_planner_extension_id	extern PGDLLIMPORT int Geqo_planner_extension_id;
 src/include/pg_getopt.h	e2df147a7c555931a366949d236cf23b20b857ae	optarg	extern PGDLLIMPORT char *optarg;
