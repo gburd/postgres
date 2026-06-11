@@ -280,7 +280,7 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr XactLastCommitEnd = InvalidXLogRecP
  * which meant that most code that might use it could assume that it had a
  * real if perhaps stale value. That's no longer the case.
  */
-static XLogRecPtr RedoRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr RedoRecPtr;
 
 /*
  * doPageWrites is this backend's local copy of (fullPageWrites ||
@@ -293,7 +293,7 @@ static XLogRecPtr RedoRecPtr;
  * and respond appropriately if it turns out that the previous value wasn't
  * accurate.
  */
-static bool doPageWrites;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool doPageWrites;
 
 /*----------
  * Shared-memory data structures for XLOG control
@@ -398,7 +398,7 @@ typedef union WALInsertLockPadded
  * Session status of running backup, used for sanity checks in SQL-callable
  * functions to start and stop backups.
  */
-static SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
 
 /*
  * Shared state data for WAL insertion.
@@ -632,7 +632,7 @@ static int	UsableBytesInSegment;
  * Private, possibly out-of-date copy of shared LogwrtResult.
  * See discussion above.
  */
-static XLogwrtResult LogwrtResult = {0, 0};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogwrtResult LogwrtResult = {0, 0};
 
 /*
  * Update local copy of shared XLogCtl->log{Write,Flush}Result
@@ -686,11 +686,11 @@ static ChecksumStateType LocalDataChecksumState = 0;
 PG_GLOBAL_RUNTIME int data_checksums = 0;
 
 /* For WALInsertLockAcquire/Release functions */
-static int	MyLockNo = 0;
-static bool holdingAllLocks = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyLockNo = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool holdingAllLocks = false;
 
 #ifdef WAL_DEBUG
-static MemoryContext walDebugCxt = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext walDebugCxt = NULL;
 #endif
 
 static void CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI,

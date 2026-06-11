@@ -6,15 +6,11 @@ src/backend/access/transam/xlog.c	20c6a203481bc521db4ecf9809e11e2b8bc23569	Check
 src/backend/access/transam/xlog.c	8734bb7f9c0c9bd96f1f2b909af31e2bd72c3b8f	lastFullPageWrites	static bool lastFullPageWrites;
 src/backend/access/transam/xlog.c	27f0d6154ccced5c9688b796e275c5479aaf6b39	LocalRecoveryInProgress	static bool LocalRecoveryInProgress = true;
 src/backend/access/transam/xlog.c	ec0633896bda8cae7e1b5a0b1743307b5eca165a	LocalXLogInsertAllowed	static int LocalXLogInsertAllowed = -1;
-src/backend/access/transam/xlog.c	e8d21b58716448925d6d278c0b26f0fc5b188396	RedoRecPtr	static XLogRecPtr RedoRecPtr;
-src/backend/access/transam/xlog.c	e00e2ba26323a381722d2d5390f236e7d1cf0473	doPageWrites	static bool doPageWrites;
-src/backend/access/transam/xlog.c	198e47e2e46295d0e8f0b79e187801f28295152a	sessionBackupState	static SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
 src/backend/access/transam/xlog.c	a6b57c206e4739e7b30db3cb6a70db8ff2ed7b7c	XLogCtl	static XLogCtlData *XLogCtl = NULL;
 src/backend/access/transam/xlog.c	0f4fd33e52ea9f55e03b176c75f2e6f9882ecad3	WALInsertLocks	static WALInsertLockPadded *WALInsertLocks = NULL;
 src/backend/access/transam/xlog.c	583753881b6b901ef32a0d6ef812c762589245b6	LocalControlFile	static ControlFileData *LocalControlFile = NULL;
 src/backend/access/transam/xlog.c	64ec6f1b3bf764a07c4273158833d013f089d0a0	ControlFile	static ControlFileData *ControlFile = NULL;
 src/backend/access/transam/xlog.c	3b90e5a46cdd89b7ba3a260b57efa2b826cac854	UsableBytesInSegment	static int UsableBytesInSegment;
-src/backend/access/transam/xlog.c	e1cbfa5484aa4cb2e2a55c06eea5a8a218775b1d	LogwrtResult	static XLogwrtResult LogwrtResult = {0, 0};
 src/backend/access/transam/xlog.c	748b9884639701b6513ad89ac1c02f69537e3643	openLogFile	static int openLogFile = -1;
 src/backend/access/transam/xlog.c	eb4bd80ecc15188f10a0a633012d0c50923e9141	openLogSegNo	static XLogSegNo openLogSegNo = 0;
 src/backend/access/transam/xlog.c	e8ead9d08996874ead7ff63a04d978e75d3107d8	openLogTLI	static TimeLineID openLogTLI = 0;
@@ -22,9 +18,6 @@ src/backend/access/transam/xlog.c	82085979947bf4b0a86148c0a64deae34f440b27	Local
 src/backend/access/transam/xlog.c	ec025841c8d525e70c66a256bc688b62fafa2539	LocalMinRecoveryPointTLI	static TimeLineID LocalMinRecoveryPointTLI;
 src/backend/access/transam/xlog.c	2dbcef7ebe80bee70bb5df77fdd4ce3fd894d8e7	updateMinRecoveryPoint	static bool updateMinRecoveryPoint = true;
 src/backend/access/transam/xlog.c	9247299c1895b0f23f4586e7264ef1b655eee7d4	LocalDataChecksumState	static ChecksumStateType LocalDataChecksumState = 0;
-src/backend/access/transam/xlog.c	cde32cb6a90134ff514ca2021f6cc8f644913b21	MyLockNo	static int MyLockNo = 0;
-src/backend/access/transam/xlog.c	8bbf128217c01ddb784f07cdc8129613d2a69f37	holdingAllLocks	static bool holdingAllLocks = false;
-src/backend/access/transam/xlog.c	e2d10280cfb5c2fc3189805237d991156a67be5e	walDebugCxt	static MemoryContext walDebugCxt = NULL;
 src/backend/access/transam/xlogfuncs.c	5593f7ff0780abb09282b93ac4c48a7007b814f6	backup_state	static BackupState *backup_state = NULL;
 src/backend/access/transam/xlogfuncs.c	8f51ac66b542f431ec53923b02d17459a017aafb	tablespace_map	static StringInfo tablespace_map = NULL;
 src/backend/access/transam/xlogfuncs.c	16d09a686a480a894d3846ab182374ae7371a5b1	backupcontext	static MemoryContext backupcontext = NULL;

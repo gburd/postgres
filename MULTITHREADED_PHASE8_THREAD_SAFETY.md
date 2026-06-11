@@ -96,6 +96,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   storage, and the WAL insertion memory context;
 - WAL insertion position state in `xlog.c`: `ProcLastRecPtr`,
   `XactLastRecEnd`, and `XactLastCommitEnd`;
+- WAL backend-local insertion/cache state in `xlog.c`: `RedoRecPtr`,
+  `doPageWrites`, the private `LogwrtResult` copy, WAL insertion lock
+  ownership (`MyLockNo` and `holdingAllLocks`), and the WAL debug memory
+  context;
+- SQL backup session state in `xlog.c`: `sessionBackupState`, which tracks
+  the session that started a SQL-callable backup;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
