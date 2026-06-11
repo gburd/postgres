@@ -382,6 +382,13 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   provider load success/failure cache are session-local TLS state. This
   matches the `jit_provider` session GUC and prevents threaded sessions from
   sharing one provider-load result or callback table.
+- LLVM JIT provider state in `llvmjit.c`: type/function-reference caches,
+  loaded bitcode module handles, session initialization state, module
+  generation counters, context-use counters, target/triple/layout handles,
+  thread-safe LLVM context handles, and ORC JIT instances are session-local
+  TLS state. The separate `llvmjit_types.c` globals are bitcode-only template
+  symbols and are classified as immutable template metadata rather than
+  server runtime state.
 
 The frontend utility `quote_all_identifiers` global is explicitly classified
 as `PG_GLOBAL_DYNAMIC`, not as backend session state. The backend GUC backing
@@ -1344,6 +1351,11 @@ Validation for this slice:
   generic JIT provider loader cache as session-local TLS. This checkout is
   configured with `with_llvm = no`, so LLVM provider compile coverage remains
   for an LLVM-enabled build.
+- global-lifetime scanner coverage, incremental full non-LLVM rebuild/install,
+  and the same direct temp-cluster `SELECT pg_jit_available()` smoke after
+  classifying LLVM provider state. This checkout is configured with
+  `with_llvm = no`; direct `src/backend/jit/llvm` compile coverage and runtime
+  JIT execution remain for an LLVM-enabled build.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

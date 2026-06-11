@@ -71,33 +71,33 @@ typedef struct LLVMJitContext
 } LLVMJitContext;
 
 /* type and struct definitions */
-extern PGDLLIMPORT LLVMTypeRef TypeParamBool;
-extern PGDLLIMPORT LLVMTypeRef TypePGFunction;
-extern PGDLLIMPORT LLVMTypeRef TypeSizeT;
-extern PGDLLIMPORT LLVMTypeRef TypeDatum;
-extern PGDLLIMPORT LLVMTypeRef TypeStorageBool;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeParamBool;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypePGFunction;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeSizeT;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeDatum;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeStorageBool;
 
-extern PGDLLIMPORT LLVMTypeRef StructNullableDatum;
-extern PGDLLIMPORT LLVMTypeRef StructTupleDescData;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleData;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleHeaderData;
-extern PGDLLIMPORT LLVMTypeRef StructMinimalTupleData;
-extern PGDLLIMPORT LLVMTypeRef StructTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructMinimalTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructMemoryContextData;
-extern PGDLLIMPORT LLVMTypeRef StructFunctionCallInfoData;
-extern PGDLLIMPORT LLVMTypeRef StructExprContext;
-extern PGDLLIMPORT LLVMTypeRef StructExprEvalStep;
-extern PGDLLIMPORT LLVMTypeRef StructExprState;
-extern PGDLLIMPORT LLVMTypeRef StructAggState;
-extern PGDLLIMPORT LLVMTypeRef StructAggStatePerTransData;
-extern PGDLLIMPORT LLVMTypeRef StructAggStatePerGroupData;
-extern PGDLLIMPORT LLVMTypeRef StructPlanState;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructNullableDatum;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructTupleDescData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleHeaderData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMinimalTupleData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructTupleTableSlot;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleTableSlot;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMinimalTupleTableSlot;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMemoryContextData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructFunctionCallInfoData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprContext;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprEvalStep;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprState;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggState;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggStatePerTransData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggStatePerGroupData;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructPlanState;
 
-extern PGDLLIMPORT LLVMValueRef AttributeTemplate;
-extern PGDLLIMPORT LLVMValueRef ExecEvalBoolSubroutineTemplate;
-extern PGDLLIMPORT LLVMValueRef ExecEvalSubroutineTemplate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef AttributeTemplate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef ExecEvalBoolSubroutineTemplate;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef ExecEvalSubroutineTemplate;
 
 
 extern void llvm_enter_fatal_on_oom(void);

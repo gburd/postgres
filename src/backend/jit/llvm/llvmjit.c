@@ -53,52 +53,52 @@ typedef struct LLVMJitHandle
 
 
 /* types & functions commonly needed for JITing */
-LLVMTypeRef TypeSizeT;
-LLVMTypeRef TypeDatum;
-LLVMTypeRef TypeParamBool;
-LLVMTypeRef TypeStorageBool;
-LLVMTypeRef TypePGFunction;
-LLVMTypeRef StructNullableDatum;
-LLVMTypeRef StructHeapTupleData;
-LLVMTypeRef StructMinimalTupleData;
-LLVMTypeRef StructTupleDescData;
-LLVMTypeRef StructTupleTableSlot;
-LLVMTypeRef StructHeapTupleHeaderData;
-LLVMTypeRef StructHeapTupleTableSlot;
-LLVMTypeRef StructMinimalTupleTableSlot;
-LLVMTypeRef StructMemoryContextData;
-LLVMTypeRef StructFunctionCallInfoData;
-LLVMTypeRef StructExprContext;
-LLVMTypeRef StructExprEvalStep;
-LLVMTypeRef StructExprState;
-LLVMTypeRef StructAggState;
-LLVMTypeRef StructAggStatePerGroupData;
-LLVMTypeRef StructAggStatePerTransData;
-LLVMTypeRef StructPlanState;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeSizeT;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeDatum;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeParamBool;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypeStorageBool;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef TypePGFunction;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructNullableDatum;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMinimalTupleData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructTupleDescData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructTupleTableSlot;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleHeaderData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructHeapTupleTableSlot;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMinimalTupleTableSlot;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructMemoryContextData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructFunctionCallInfoData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprContext;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprEvalStep;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructExprState;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggState;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggStatePerGroupData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructAggStatePerTransData;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTypeRef StructPlanState;
 
-LLVMValueRef AttributeTemplate;
-LLVMValueRef ExecEvalSubroutineTemplate;
-LLVMValueRef ExecEvalBoolSubroutineTemplate;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef AttributeTemplate;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef ExecEvalSubroutineTemplate;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMValueRef ExecEvalBoolSubroutineTemplate;
 
-static LLVMModuleRef llvm_types_module = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMModuleRef llvm_types_module = NULL;
 
-static bool llvm_session_initialized = false;
-static size_t llvm_generation = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool llvm_session_initialized = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION size_t llvm_generation = 0;
 
 /* number of LLVMJitContexts that currently are in use */
-static size_t llvm_jit_context_in_use_count = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION size_t llvm_jit_context_in_use_count = 0;
 
 /* how many times has the current LLVMContextRef been used */
-static size_t llvm_llvm_context_reuse_count = 0;
-static const char *llvm_triple = NULL;
-static const char *llvm_layout = NULL;
-static LLVMContextRef llvm_context;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION size_t llvm_llvm_context_reuse_count = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const char *llvm_triple = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION const char *llvm_layout = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMContextRef llvm_context;
 
 
-static LLVMTargetRef llvm_targetref;
-static LLVMOrcThreadSafeContextRef llvm_ts_context;
-static LLVMOrcLLJITRef llvm_opt0_orc;
-static LLVMOrcLLJITRef llvm_opt3_orc;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMTargetRef llvm_targetref;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMOrcThreadSafeContextRef llvm_ts_context;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMOrcLLJITRef llvm_opt0_orc;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION LLVMOrcLLJITRef llvm_opt3_orc;
 
 
 static void llvm_release_context(JitContext *context);

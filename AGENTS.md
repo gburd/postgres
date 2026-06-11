@@ -166,6 +166,13 @@ Important current files:
   coverage plus a full non-SSL build here, and use an SSL-enabled build when
   compile coverage for that file is required.
 
+- This checkout is currently configured with `with_llvm = no`. Direct builds
+  under `src/backend/jit/llvm` fail before reaching project changes because
+  the LLVM Makefile requires an LLVM-enabled configuration. For LLVM-only
+  source annotations, use static lifetime scan coverage plus a full non-LLVM
+  build here, and use an LLVM-enabled build when compile or runtime JIT
+  coverage for those files is required.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:
