@@ -24,7 +24,7 @@
 #include "utils/ps_status.h"
 
 #if !defined(WIN32)
-extern char **environ;
+extern PG_GLOBAL_RUNTIME char **environ;
 #endif
 
 /* GUC variable */
@@ -74,31 +74,31 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool update_process_title = DEFAULT_UPDATE_PRO
 #ifndef PS_USE_CLOBBER_ARGV
 /* all but one option need a buffer to write their ps line in */
 #define PS_BUFFER_SIZE 256
-static char ps_buffer[PS_BUFFER_SIZE];
-static const size_t ps_buffer_size = PS_BUFFER_SIZE;
+static PG_GLOBAL_RUNTIME char ps_buffer[PS_BUFFER_SIZE];
+static PG_GLOBAL_IMMUTABLE const size_t ps_buffer_size = PS_BUFFER_SIZE;
 #else							/* PS_USE_CLOBBER_ARGV */
-static char *ps_buffer;			/* will point to argv area */
-static size_t ps_buffer_size;	/* space determined at run time */
-static size_t last_status_len;	/* use to minimize length of clobber */
+static PG_GLOBAL_RUNTIME char *ps_buffer;	/* will point to argv area */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_size; /* space determined at run time */
+static PG_GLOBAL_RUNTIME size_t last_status_len;	/* use to minimize length of clobber */
 #endif							/* PS_USE_CLOBBER_ARGV */
 
-static size_t ps_buffer_cur_len;	/* nominal strlen(ps_buffer) */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_cur_len;	/* nominal strlen(ps_buffer) */
 
-static size_t ps_buffer_fixed_size; /* size of the constant prefix */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_fixed_size;	/* size of the constant prefix */
 
 /*
  * Length of ps_buffer before the suffix was appended to the end, or 0 if we
  * didn't set a suffix.
  */
-static size_t ps_buffer_nosuffix_len;
+static PG_GLOBAL_RUNTIME size_t ps_buffer_nosuffix_len;
 
 static void flush_ps_display(void);
 
 #endif							/* not PS_USE_NONE */
 
 /* save the original argv[] location here */
-static int	save_argc;
-static char **save_argv;
+static PG_GLOBAL_RUNTIME int save_argc;
+static PG_GLOBAL_RUNTIME char **save_argv;
 
 /*
  * Valgrind seems not to consider the global "environ" variable as a valid
@@ -107,8 +107,8 @@ static char **save_argv;
  * pointer.  (Oddly, this doesn't seem to be a problem for "argv".)
  */
 #if defined(PS_USE_CLOBBER_ARGV) && defined(USE_VALGRIND)
-extern char **ps_status_new_environ;
-char	  **ps_status_new_environ;
+extern PG_GLOBAL_RUNTIME char **ps_status_new_environ;
+PG_GLOBAL_RUNTIME char **ps_status_new_environ;
 #endif
 
 

@@ -1001,18 +1001,6 @@ src/backend/utils/adt/ruleutils.c	794c612a2c8b81de8bfd0841f09aa2362e0a39a7	query
 src/backend/utils/adt/tsrank.c	cfc077ca945a4a6dd2c7d0b525bd379d6798f3b1	pos	WordEntryPos pos;
 src/backend/utils/adt/tsrank.c	fdb0a2e222e94314498905f5be77f6865cadade3	DocRepresentation	} DocRepresentation;
 src/backend/utils/adt/xml.c	97e4b5b6616ad862787c65363d0b49a323629646	LibxmlContext	static MemoryContext LibxmlContext = NULL;
-src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
-src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
-src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;
-src/backend/utils/misc/ps_status.c	0a91d45fe17f18ff97493d42f556a525e949a9aa	ps_buffer_size	static size_t ps_buffer_size;
-src/backend/utils/misc/ps_status.c	d4098017f0afe626b1f01de5405300cc1ee21ddc	last_status_len	static size_t last_status_len;
-src/backend/utils/misc/ps_status.c	dd28bfdcfd26dd048b1e15c845ea00b6f80919c5	ps_buffer_cur_len	static size_t ps_buffer_cur_len;
-src/backend/utils/misc/ps_status.c	9c2830d94e4f279244bb8cfcf177a59ea8aedb2e	ps_buffer_fixed_size	static size_t ps_buffer_fixed_size;
-src/backend/utils/misc/ps_status.c	d656baff0f45e469fca07db7efb34c4017d29019	ps_buffer_nosuffix_len	static size_t ps_buffer_nosuffix_len;
-src/backend/utils/misc/ps_status.c	de831baf030f327ff81ce6f0b6094c4fd1268947	save_argc	static int save_argc;
-src/backend/utils/misc/ps_status.c	f361b3f336c178c5839becd8d80a65c3bc1bb78e	save_argv	static char **save_argv;
-src/backend/utils/misc/ps_status.c	ff782bcd8485159437decb2314a0f60ba57fa5aa	ps_status_new_environ	extern char **ps_status_new_environ;
-src/backend/utils/misc/ps_status.c	12bca012f59a538205036eaf1759fcadc88fe16d	ps_status_new_environ	char **ps_status_new_environ;
 src/include/access/xlog.h	634e034ecfe3f7e591f333add1055904eafa2d23	XLogLogicalInfo	extern PGDLLIMPORT bool XLogLogicalInfo;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
 src/include/common/file_perm.h	cc7c9b72d8db30cdd72ab5300ff41eb69beee613	pg_dir_create_mode	extern PGDLLIMPORT int pg_dir_create_mode;

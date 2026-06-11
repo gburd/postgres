@@ -85,6 +85,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   state.  This preserves the current one-validator-per-process model and keeps
   threaded OAuth validator policy tied to the Phase 7 extension backend-model
   gate rather than copying validator state per backend.
+- process-title storage in `ps_status.c`: argv/environ relocation state and
+  the physical process-title buffer are runtime-global state. The
+  `update_process_title` GUC remains session-local, but threaded mode must not
+  let multiple logical backends race while clobbering one OS process title;
+  Phase 9/10 should expose backend activity through a thread-aware reporting
+  path and serialize or suppress physical process-title writes.
 - shared-memory message-queue protocol state in `pqmq.c`: the active
   `shm_mq` handle, send-recursion guard, and parallel leader identity are
   backend-local TLS state for the current redirected backend.
@@ -1381,6 +1387,9 @@ Validation for this slice:
 - backend clean plus generated-header recovery, followed by clean `gmake -j8`
   after converting final installed-header declarations to `PG_THREAD_LOCAL`
   or explicit runtime/dynamic classifications;
+- focused `ps_status.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and focused core GUC regression coverage
+  after classifying process-title storage as runtime-global state;
 - focused core GUC regression test after the final USERSET/SUSET slice:
   `guc`;
 - PL/pgSQL clean rebuild and temp-install reinstall after the final
