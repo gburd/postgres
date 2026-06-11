@@ -393,8 +393,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   state, notification SLRU and global channel hash handles as runtime state,
   local LISTEN state as session-local state, and pending LISTEN/NOTIFY plus
   signal workspace as execution-local state;
-- text-search session GUC/cache state: `TSCurrentConfig` and
-  `TSCurrentConfigCache`.
+- text-search session GUC/cache state in `ts_cache.c`: `TSCurrentConfig`,
+  `TSCurrentConfigCache`, the parser/dictionary/config cache hash tables, and
+  their last-used fast-path pointers.
 - dynamic loader state in `dfmgr.c` and `fmgr.c`: `Dynamic_library_path` is a
   session GUC backing variable, `file_list`, `file_tail`, and the rendezvous
   variable hash are runtime-global dynamic-library state governed by the Phase
@@ -1059,7 +1060,9 @@ Validation for this slice:
   create_cast constraints triggers select vacuum sanity_check guc async`;
 - live temp-cluster smoke coverage for `trace_notify`, including `SET`,
   `SHOW`, `LISTEN`, and `NOTIFY`;
-- focused `ts_cache.o` compile coverage;
+- focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
+  incremental full rebuild/install after classifying text-search parser,
+  dictionary, and configuration caches as session-local TLS state;
 - fixture-backed default-text-search regression coverage:
   `test_setup copy copyselect copydml copyencoding insert insert_conflict
   create_function_c create_misc create_operator create_procedure create_table
@@ -1067,7 +1070,8 @@ Validation for this slice:
   index_including index_including_gist create_aggregate create_function_sql
   create_cast constraints triggers select vacuum sanity_check guc tsearch`;
 - live temp-cluster smoke coverage for `default_text_search_config`, including
-  repeated `SET`, `SHOW`, `get_current_ts_config()`, and `to_tsvector()` calls;
+  repeated `SET`, `get_current_ts_config()`, and `to_tsvector()` calls that
+  verified both English stemming and simple dictionary output;
 - focused `dfmgr.o` and `fmgr.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, and focused backend-model
   extension regression coverage after classifying the dynamic-library list,

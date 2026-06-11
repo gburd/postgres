@@ -1047,12 +1047,6 @@ src/backend/utils/cache/syscache.c	f74991abe22cc52ec73af2e05f69f12f06613a72	SysC
 src/backend/utils/cache/syscache.c	e3fa4860b611e638c93dd8bb8293bf629712036a	SysCacheRelationOidSize	static int SysCacheRelationOidSize;
 src/backend/utils/cache/syscache.c	7cd30003b507ff87f0640b3f7b7f93f488854439	SysCacheSupportingRelOid	static Oid SysCacheSupportingRelOid[SysCacheSize * 2];
 src/backend/utils/cache/syscache.c	af2e34c6358caa856a16fce6df9fab76fb921691	SysCacheSupportingRelOidSize	static int SysCacheSupportingRelOidSize;
-src/backend/utils/cache/ts_cache.c	c4256c2f90a826e0b245fb5b75bb33286bec220c	TSParserCacheHash	static HTAB *TSParserCacheHash = NULL;
-src/backend/utils/cache/ts_cache.c	2efa8b10e2fc499804b5e0e79f9755742e3fe39a	lastUsedParser	static TSParserCacheEntry *lastUsedParser = NULL;
-src/backend/utils/cache/ts_cache.c	e9ae555c258b1001d03c8387567cc9296d8af210	TSDictionaryCacheHash	static HTAB *TSDictionaryCacheHash = NULL;
-src/backend/utils/cache/ts_cache.c	47f37f8e0e7c885636adb2cd08e7d9b1c5e6a4c8	lastUsedDictionary	static TSDictionaryCacheEntry *lastUsedDictionary = NULL;
-src/backend/utils/cache/ts_cache.c	c6f678bac6a71d0f9af762f93a16ca3573038918	TSConfigCacheHash	static HTAB *TSConfigCacheHash = NULL;
-src/backend/utils/cache/ts_cache.c	a4e9156a3002c2d7c092bfcf47bab93050d1ea60	lastUsedConfig	static TSConfigCacheEntry *lastUsedConfig = NULL;
 src/backend/utils/cache/typcache.c	dc6fe311c36fb9fd0f2fe5856f392bd9d0c8cfd4	TypeCacheHash	static HTAB *TypeCacheHash = NULL;
 src/backend/utils/cache/typcache.c	cd3e07cd11e9072af835b4fb2845de4fd912d1d0	RelIdToTypeIdCacheHash	static HTAB *RelIdToTypeIdCacheHash = NULL;
 src/backend/utils/cache/typcache.c	a20cbee4473a87aabeb06868b4bef4475b9b43ce	firstDomainTypeEntry	static TypeCacheEntry *firstDomainTypeEntry = NULL;
