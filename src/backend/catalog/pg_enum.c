@@ -59,8 +59,8 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_enum_oid = InvalidO
  * pg_dump.  We could track subtransaction nesting of the commands to
  * analyze things more precisely, but for now we don't bother.
  */
-static HTAB *uncommitted_enum_types = NULL;
-static HTAB *uncommitted_enum_values = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *uncommitted_enum_types = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *uncommitted_enum_values = NULL;
 
 static void init_uncommitted_enum_types(void);
 static void init_uncommitted_enum_values(void);

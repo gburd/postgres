@@ -1,14 +1,8 @@
 # file	sha1	names	declaration
 src/backend/catalog/heap.c	7aeb188ab33845997b4a302ad720ac5a6dc62b32	SysAtt	static const FormData_pg_attribute *const SysAtt[] = {&a1, &a2, &a3, &a4, &a5, &a6};
-src/backend/catalog/index.c	c8b300cac781c2e44662bcd4ad11c5f02d6fb993	currentlyReindexedHeap	static Oid currentlyReindexedHeap = InvalidOid;
-src/backend/catalog/index.c	a7a86591c189ecb82e3efb672ba6276788112625	currentlyReindexedIndex	static Oid currentlyReindexedIndex = InvalidOid;
-src/backend/catalog/index.c	300d29e63742bb16a326c2c0cbec382482709d2a	pendingReindexedIndexes	static List *pendingReindexedIndexes = NIL;
-src/backend/catalog/index.c	787fa2d74eac213a682919f2c4d657b8d5f39ee5	reindexingNestLevel	static int reindexingNestLevel = 0;
 src/backend/catalog/objectaccess.c	bd34f76e318396d1986651d0645909cf00233250	object_access_hook	object_access_hook_type object_access_hook = NULL;
 src/backend/catalog/objectaccess.c	209bcc930ed02592cb794127b72298d043b2b99d	object_access_hook_str	object_access_hook_type_str object_access_hook_str = NULL;
 src/backend/catalog/objectaddress.c	36b86b5070bba6c0a78119cf04ec08c090fc003a	ObjectTypeMap	ObjectTypeMap[] = { { "table", OBJECT_TABLE }, { "index", OBJECT_INDEX }, { "sequence", OBJECT_SEQUENCE }, { "toast table", -1 }, { "view", OBJECT_VIEW }, { "materialized view", OBJECT_MATVIEW }, { "composite type", -1 }, { "foreign tabl...
-src/backend/catalog/pg_enum.c	dd7b0b644141a9024765641e31876cf06024c126	uncommitted_enum_types	static HTAB *uncommitted_enum_types = NULL;
-src/backend/catalog/pg_enum.c	43471eb9377097baa1fcfb10616e64c8050770f6	uncommitted_enum_values	static HTAB *uncommitted_enum_values = NULL;
 src/backend/commands/analyze.c	1a4531a7c1f3ffaa75bc0e32543ea2e6b10fd3e6	anl_context	static MemoryContext anl_context = NULL;
 src/backend/commands/analyze.c	0660dfda510efb539560d06b48b23b4d399fa7fb	vac_strategy	static BufferAccessStrategy vac_strategy;
 src/backend/commands/event_trigger.c	ada4db25440da9d2f1ccfd94d4cf9e3e15cfe8b4	currentEventTriggerState	static EventTriggerQueryState *currentEventTriggerState = NULL;

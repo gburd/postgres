@@ -566,6 +566,11 @@ Binary-upgrade assignment state in `binary_upgrade.h`, `aclchk.c`, `heap.c`,
 are set by SQL-callable support functions and consumed by the next relevant
 DDL operation in the same backend session; threaded sessions must not share
 pending OID, relfilenumber, or initial-privilege assignment controls.
+Catalog transaction-local state in `index.c` and `pg_enum.c` now uses
+execution-local TLS. The system-index reindex state records the current
+backend's active or pending reindex operation and is explicitly serialized
+into parallel workers, while the enum uncommitted-type/value hash tables track
+transaction-local enum safety for the current backend only.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -1047,6 +1052,12 @@ Validation for this slice:
   catalog DDL smoke for table, enum type, and role creation with the TLS
   defaults unset. The scanner was also tightened so function prototypes with
   callback parameters are not retained as false unclassified globals.
+- focused `index.o` and `pg_enum.o` compile coverage, incremental full
+  rebuild/install, global-lifetime scanner coverage, and a process-mode
+  catalog DDL smoke after classifying catalog transaction-local state. The SQL
+  smoke created and altered an enum inside one transaction, inserted the new
+  value before commit, created a table with a primary key and secondary index,
+  ran `REINDEX TABLE`, and verified the table contents after reindexing.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

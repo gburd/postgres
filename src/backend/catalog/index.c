@@ -4127,10 +4127,10 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
  * ----------------------------------------------------------------
  */
 
-static Oid	currentlyReindexedHeap = InvalidOid;
-static Oid	currentlyReindexedIndex = InvalidOid;
-static List *pendingReindexedIndexes = NIL;
-static int	reindexingNestLevel = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid currentlyReindexedHeap = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid currentlyReindexedIndex = InvalidOid;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION List *pendingReindexedIndexes = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int reindexingNestLevel = 0;
 
 /*
  * ReindexIsProcessingHeap
