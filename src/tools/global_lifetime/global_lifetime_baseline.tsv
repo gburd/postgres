@@ -1316,8 +1316,6 @@ src/include/postmaster/syslogger.h	e5d5a0ab4136633d7a3d1e9c2a6befeda9845e99	firs
 src/include/postmaster/syslogger.h	f5fb8507706c7ab48bcfc70d9694663f05608719	syslogPipe	extern PGDLLIMPORT int syslogPipe[2];
 src/include/postmaster/syslogger.h	b0233a17d87965d2cfafc37b90784ff07dac7368	syslogPipe	extern PGDLLIMPORT HANDLE syslogPipe[2];
 src/include/replication/origin.h	435482776ee10ec794e35c7abeb672be1bae0b3b	replorigin_xact_state	extern PGDLLIMPORT ReplOriginXactState replorigin_xact_state;
-src/include/replication/slot.h	8f057a66263d4ebfb51a0733f13c965cd96e6722	ReplicationSlotCtl	extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
-src/include/replication/slot.h	4865172f5673d1687472f60a530cd7604deedf6c	MyReplicationSlot	extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
 src/include/replication/syncrep.h	754e65c33aecdec8bfe9ddbf677c3b4aca03020c	SyncRepConfig	extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
 src/include/replication/worker_internal.h	7438fe75a165c7863ed1a97b552b14df85dcc313	MyParallelShared	extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
 src/include/replication/worker_internal.h	3421b112a2a9fa3d09745825a17fb80b19351732	LogRepWorkerWalRcvConn	extern PGDLLIMPORT struct WalReceiverConn *LogRepWorkerWalRcvConn;
