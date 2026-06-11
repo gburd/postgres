@@ -1039,17 +1039,6 @@ src/backend/utils/cache/syscache.c	f74991abe22cc52ec73af2e05f69f12f06613a72	SysC
 src/backend/utils/cache/syscache.c	e3fa4860b611e638c93dd8bb8293bf629712036a	SysCacheRelationOidSize	static int SysCacheRelationOidSize;
 src/backend/utils/cache/syscache.c	7cd30003b507ff87f0640b3f7b7f93f488854439	SysCacheSupportingRelOid	static Oid SysCacheSupportingRelOid[SysCacheSize * 2];
 src/backend/utils/cache/syscache.c	af2e34c6358caa856a16fce6df9fab76fb921691	SysCacheSupportingRelOidSize	static int SysCacheSupportingRelOidSize;
-src/backend/utils/cache/typcache.c	dc6fe311c36fb9fd0f2fe5856f392bd9d0c8cfd4	TypeCacheHash	static HTAB *TypeCacheHash = NULL;
-src/backend/utils/cache/typcache.c	cd3e07cd11e9072af835b4fb2845de4fd912d1d0	RelIdToTypeIdCacheHash	static HTAB *RelIdToTypeIdCacheHash = NULL;
-src/backend/utils/cache/typcache.c	a20cbee4473a87aabeb06868b4bef4475b9b43ce	firstDomainTypeEntry	static TypeCacheEntry *firstDomainTypeEntry = NULL;
-src/backend/utils/cache/typcache.c	9c7fcf9b9e9c16e5eddc04388602d58fcdf06b50	in_progress_list	static Oid *in_progress_list;
-src/backend/utils/cache/typcache.c	4fd31b6cae39fbe07aa9152ef2767906bf2cb1ac	in_progress_list_len	static int in_progress_list_len;
-src/backend/utils/cache/typcache.c	d5ed22d124aa795b1f782670684f2db182978b49	in_progress_list_maxlen	static int in_progress_list_maxlen;
-src/backend/utils/cache/typcache.c	2faf64057a607600a2cb4f3268c0abefff48cf79	RecordCacheHash	static HTAB *RecordCacheHash = NULL;
-src/backend/utils/cache/typcache.c	a9432882be36f6f9ab56f1336ea2bdf3204d62b8	RecordCacheArray	static RecordCacheArrayEntry *RecordCacheArray = NULL;
-src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	RecordCacheArrayLen	static int32 RecordCacheArrayLen = 0;
-src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
-src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;

@@ -395,6 +395,12 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   `RelfilenumberMapHash` and the prebuilt `relfilenumber_skey` scan keys are
   session-local TLS state initialized under the current backend's
   `CacheMemoryContext`.
+- type cache and record typmod cache state in `typcache.c`: the main type
+  cache hash tables, domain-entry list, in-progress lookup stack,
+  registered-record hash/array, next local record typmod, and tuple
+  descriptor identifier counter are session-local TLS state. Shared
+  record-typmod registry handles remain owned by `CurrentSession` and point
+  to DSM/DSA-backed state used for parallel-query sharing.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1095,6 +1101,14 @@ Validation for this slice:
   session-local TLS. The smoke populated `pg_filenode_relation()`'s cache,
   rewrote the table with `VACUUM FULL`, verified the old filenumber no longer
   resolved, and verified the new filenumber mapped back to the relation.
+- focused `typcache.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, early datatype plus `type_sanity`
+  regression coverage, and fixture-backed type/row/domain/range regression
+  coverage after classifying typcache and local record-typmod cache state as
+  session-local TLS. An initial custom `type_sanity` schedule failed because
+  it ran after artifact-producing DDL tests, and a second attempt confirmed
+  `type_sanity` requires the standard early datatype fixtures; the final
+  fixture-backed runs passed.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
