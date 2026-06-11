@@ -122,6 +122,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   descriptor, scratch target hash, and serializable sizing cache are runtime
   state; `LocalPredicateLockHash`, `MySerializableXact`, `MyXactDidWrite`,
   and `SavedSerializableXact` are backend-local TLS state.
+- speculative insertion lock state in `lmgr.c`: `speculativeInsertionToken` is
+  a per-backend counter used while acquiring and releasing speculative
+  insertion locks for uniqueness checks. In threaded mode it must follow the
+  logical backend, not the carrier thread or whole runtime.
 - IPC, backend-exit, and shared-memory setup state: `proc_exit_inprogress`
   and `shmem_exit_inprogress` are backend-local TLS compatibility mirrors of
   the active logical backend's exit state; the one-time `atexit()` registration,
@@ -1521,6 +1525,10 @@ Validation for this slice:
   state. The smoke created a table, ran a serializable transaction that read
   and wrote data, verified live `SIReadLock` entries in `pg_locks`, committed,
   queried afterward, dropped the table, and shut down cleanly.
+- focused lock-manager compile coverage for `lmgr.o`, global-lifetime scanner
+  coverage, incremental full rebuild/install, and direct temp-instance
+  `insert_conflict` regression coverage after classifying speculative insertion
+  token state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

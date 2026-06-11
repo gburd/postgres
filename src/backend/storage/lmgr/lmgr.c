@@ -42,7 +42,7 @@
  * particularly bad happens: in the worst case they deadlock, causing one of
  * the transactions to abort.
  */
-static uint32 speculativeInsertionToken = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 speculativeInsertionToken = 0;
 
 
 /*
