@@ -130,6 +130,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   recovery-stop scratch state, and invalid-page replay bookkeeping as runtime
   state.  The local hot-standby and promotion caches use backend-local TLS, and
   `xlogSourceNames` is classified as immutable state;
+- Wait-for-LSN state in `xlogwait.c`: `waitLSNState`, which points to the
+  shared wait queues and per-backend wait records, as shared-memory state;
 - WAL redo temporary memory contexts in GIN, GiST, btree, and SP-GiST redo
   modules;
 - prepared-transaction state in `twophase.c`: `TwoPhaseState` as
@@ -1010,6 +1012,9 @@ Validation for this slice:
   `xlogrecovery.c` or `xlogutils.c` baseline entries, and a process-mode
   immediate-stop/restart crash-recovery smoke after classifying WAL recovery
   replay state.
+- focused `xlogwait.o` compile coverage, full rebuild/install,
+  global-lifetime scanner coverage, and a process-mode `WAIT FOR LSN` smoke
+  using `MODE 'primary_flush'` after classifying Wait-for-LSN shared state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

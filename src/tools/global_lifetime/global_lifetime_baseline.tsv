@@ -1,5 +1,4 @@
 # file	sha1	names	declaration
-src/backend/access/transam/xlogwait.c	edb76f435196640e4698612b685c2a118cb99aa1	waitLSNState	struct WaitLSNState *waitLSNState = NULL;
 src/backend/backup/basebackup.c	adcabd049d22810f28d0f3e366cec92ba2805647	backup_started_in_recovery	static bool backup_started_in_recovery = false;
 src/backend/backup/basebackup.c	667000baa284fef8570100efe030ee0818371e31	total_checksum_failures	static long long int total_checksum_failures;
 src/backend/backup/basebackup.c	62714fde04dad3da873ec127b9fe5bddbdd25146	noverify_checksums	static bool noverify_checksums = false;
@@ -1666,7 +1665,6 @@ src/include/access/xlog.h	fb27dcde135b6f4416acfd5e9f3c4bd6522b80ac	XLogReaderSta
 src/include/access/xlog_internal.h	2c581a602193f1eef3eb43b02d4b5ecd5e984ddf	LogicalDecodingContext	struct LogicalDecodingContext;
 src/include/access/xlog_internal.h	3a69c535ea71f8284dc457cc870ba494a00d2556	XLogRecordBuffer	struct XLogRecordBuffer;
 src/include/access/xlogprefetcher.h	1027a7a5e1e6e41139c9d1b1a28a5b65304e287c	XLogPrefetcher	struct XLogPrefetcher;
-src/include/access/xlogwait.h	a3b0270b961814ddadebb925c7728f5f8e9c6ba1	waitLSNState	extern PGDLLIMPORT WaitLSNState *waitLSNState;
 src/include/archive/archive_module.h	1e8e0d4659ccb702b5ba36219f4ccccb419a1d55	arch_module_check_errdetail_string	extern PGDLLIMPORT char *arch_module_check_errdetail_string;
 src/include/backup/basebackup.h	ce2e707cf0b4aec898e4d2ff23d5814a885bcc83	IncrementalBackupInfo	struct IncrementalBackupInfo;
 src/include/backup/basebackup_incremental.h	ce2e707cf0b4aec898e4d2ff23d5814a885bcc83	IncrementalBackupInfo	struct IncrementalBackupInfo;
