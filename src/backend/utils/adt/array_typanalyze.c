@@ -62,7 +62,7 @@ typedef struct
  * currently need to be re-entrant, so avoiding this is not worth the extra
  * notational cruft that would be needed.
  */
-static ArrayAnalyzeExtraData *array_extra_data;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ArrayAnalyzeExtraData *array_extra_data;
 
 /* A hash table entry for the Lossy Counting algorithm */
 typedef struct

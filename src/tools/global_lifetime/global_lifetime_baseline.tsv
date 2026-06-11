@@ -154,7 +154,6 @@ src/backend/storage/lmgr/s_lock.c	d306da7296a428faf4ac32ff158362fc095fcace	test_
 src/backend/utils/activity/pgstat_bgwriter.c	e041171182be647f03c7679151df56c64105fba2	PendingBgWriterStats	PgStat_BgWriterStats PendingBgWriterStats = {0};
 src/backend/utils/activity/pgstat_checkpointer.c	4cecfbf82676f5da64bfd85dd21230914b8836c2	PendingCheckpointerStats	PgStat_CheckpointerStats PendingCheckpointerStats = {0};
 src/backend/utils/activity/wait_event_funcs.c	3a3d0fbac14328d80f8ca3b05d66786ff3561098	waitEventData	waitEventData[] = { {NULL, NULL, NULL} };
-src/backend/utils/adt/array_typanalyze.c	b83e2a3dc4d2603f16154308ce45a07261e511ae	array_extra_data	static ArrayAnalyzeExtraData *array_extra_data;
 src/backend/utils/adt/dbsize.c	43a8e1f741eb248bad3a53715d727bcd3b1f2a14	size_pretty_units	static const struct size_pretty_unit size_pretty_units[] = { {"bytes", 10 * 1024, false, 0}, {"kB", 20 * 1024 - 1, true, 10}, {"MB", 20 * 1024 - 1, true, 20}, {"GB", 20 * 1024 - 1, true, 30}, {"TB", 20 * 1024 - 1, true, 40}, {"PB", 20 * ...
 src/backend/utils/adt/jsonpath_gram.c	7ec4158c3bfdd27fcf8e899078109e2751d1e214	i	static int YYID (int i) static int YYID (i) int i;
 src/backend/utils/adt/jsonpath_gram.c	96099c7300c3af3f9968c944c7fc0701e60c6261	yytname	static const char *const yytname[] = { "$end", "error", "$undefined", "TO_P", "NULL_P", "TRUE_P", "FALSE_P", "IS_P", "UNKNOWN_P", "EXISTS_P", "IDENT_P", "STRING_P", "NUMERIC_P", "INT_P", "VARIABLE_P", "OR_P", "AND_P", "NOT_P", "LESS_P", ...

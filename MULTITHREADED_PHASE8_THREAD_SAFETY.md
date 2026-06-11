@@ -336,6 +336,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - ANALYZE execution state in `analyze.c`: `anl_context` and `vac_strategy`.
   These carry the current command's working memory context and buffer access
   strategy through sampling and index-statistics helpers.
+- array typanalyze callback bridge state in `array_typanalyze.c`:
+  `array_extra_data`, which points at the current ANALYZE command's
+  array-element comparison/hash metadata while `compute_array_stats()` and its
+  hash callbacks are running.
 - vacuum tuning GUC backing variables in `vacuum.c`: `vacuum_freeze_min_age`,
   `vacuum_freeze_table_age`, `vacuum_multixact_freeze_min_age`,
   `vacuum_multixact_freeze_table_age`, `vacuum_failsafe_age`,
@@ -1192,6 +1196,11 @@ Validation for this slice:
   `vacuum`, and a direct temp-cluster ANALYZE smoke after classifying the
   deprecated sampling API state as backend-local TLS. The smoke created and
   populated a table, ran `ANALYZE`, and verified `pg_stats` rows were visible.
+- focused `array_typanalyze.o` compile coverage, global-lifetime scanner
+  coverage, incremental full rebuild/install, and direct temp-cluster array
+  ANALYZE smoke after classifying the array typanalyze callback bridge as
+  execution-local TLS. The smoke populated an `int[]` column, ran `ANALYZE`,
+  and verified `pg_stats.most_common_elems` was produced for the array column.
 - focused `superuser.o` compile coverage, global-lifetime scanner coverage,
   incremental full rebuild/install, direct `roleattributes` regression
   coverage, and a direct temp-cluster same-session role-cache invalidation
