@@ -132,6 +132,15 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   attachments, and the commit-time launcher wakeup flag are backend-local TLS
   state for the logical replication launcher, apply workers, and SQL backends
   that need to wake the launcher after subscription catalog changes.
+- common logical replication apply-worker state in `worker.c`: the active
+  walreceiver connection, subscription cache pointer and validity flag,
+  remote-transaction tracking, skip-LSN state, flush-position bookkeeping,
+  apply-error callback scratch, initialization flag, and commit-time worker
+  wakeup list are backend-local TLS state for the logical apply worker or
+  catalog-changing backend that owns them.  The apply worker's LSN mapping
+  list is now explicitly initialized during logical worker startup because a
+  TLS `dlist_head` cannot use the self-referential `DLIST_STATIC_INIT`
+  initializer safely.
 - syslogger service state in `syslogger.c`: log rotation timing, EOF/rotation
   flags, active log-file handles, previous log file names, partial-message
   buffers, exported pipe descriptors, and Windows helper-thread state are
@@ -1952,6 +1961,15 @@ Validation for this slice:
   `logical replication apply worker` backends on the subscriber, copied the
   initial table contents, applied additional publisher inserts, and stopped
   both servers with fast shutdown.
+- focused `worker.o`, `launcher.o`, `applyparallelworker.o`, and
+  `tablesync.o` compile coverage, global-lifetime scanner coverage, backend
+  clean plus generated-header recovery, full rebuild/install, focused core
+  `guc` regression coverage, and direct publisher/subscriber logical
+  replication smoke after classifying common logical replication apply-worker
+  state. The live smoke verified visible `logical replication launcher` and
+  `logical replication apply worker` backends on the subscriber, copied 1000
+  rows, applied a follow-up publisher insert to 1500 rows, and stopped both
+  servers with fast shutdown.
 - focused `datachecksum_state.o` compile coverage, global-lifetime scanner
   coverage, incremental full rebuild/install, focused core `guc` regression
   coverage, and direct temp-cluster data-checksum worker smoke after

@@ -310,7 +310,7 @@ typedef struct FlushPosition
 	XLogRecPtr	remote_end;
 } FlushPosition;
 
-static dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head lsn_mapping;
 
 typedef struct ApplyExecutionData
 {
@@ -461,7 +461,7 @@ typedef struct RetainDeadTuplesData
 #define MAX_XID_ADVANCE_INTERVAL 180000
 
 /* errcontext tracker */
-static ApplyErrorCallbackArg apply_error_callback_arg =
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ApplyErrorCallbackArg apply_error_callback_arg =
 {
 	.command = 0,
 	.rel = NULL,
@@ -479,15 +479,15 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext ApplyContext = NULL;
 /* per stream context for streaming transactions */
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext LogicalStreamingContext = NULL;
 
-WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
 
-Subscription *MySubscription = NULL;
-static bool MySubscriptionValid = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND Subscription *MySubscription = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool MySubscriptionValid = false;
 
-static List *on_commit_wakeup_workers_subids = NIL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *on_commit_wakeup_workers_subids = NIL;
 
-bool		in_remote_transaction = false;
-static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 
 /* fields valid only when processing streamed transaction */
 static bool in_streamed_transaction = false;
@@ -501,7 +501,7 @@ static TransactionId stream_xid = InvalidTransactionId;
 static uint32 parallel_stream_nchanges = 0;
 
 /* Are we initializing an apply worker? */
-bool		InitializingApplyWorker = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker = false;
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -518,7 +518,7 @@ bool		InitializingApplyWorker = false;
  * the changes. So, we don't start parallel apply worker when finish LSN is set
  * by the user.
  */
-static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
 #define is_skipping_changes() (unlikely(XLogRecPtrIsValid(skip_xact_finish_lsn)))
 
 /* BufFile handle of the current streaming file */
@@ -529,7 +529,7 @@ static BufFile *stream_fd = NULL;
  * and use this information both while sending feedback to the server and
  * advancing oldest_nonremovable_xid.
  */
-static XLogRecPtr last_flushpos = InvalidXLogRecPtr;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr last_flushpos = InvalidXLogRecPtr;
 
 typedef struct SubXactInfo
 {
@@ -5794,6 +5794,8 @@ run_apply_worker(void)
 void
 InitializeLogRepWorker(void)
 {
+	dlist_init(&lsn_mapping);
+
 	/* Run as replica session replication role. */
 	SetConfigOption("session_replication_role", "replica",
 					PGC_SUSET, PGC_S_OVERRIDE);

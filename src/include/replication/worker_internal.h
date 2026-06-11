@@ -244,16 +244,17 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *app
 extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
 
 /* libpqreceiver connection */
-extern PGDLLIMPORT struct WalReceiverConn *LogRepWorkerWalRcvConn;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct WalReceiverConn
+		   *LogRepWorkerWalRcvConn;
 
 /* Worker and subscription objects. */
-extern PGDLLIMPORT Subscription *MySubscription;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND Subscription *MySubscription;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalRepWorker
 		   *MyLogicalRepWorker;
 
-extern PGDLLIMPORT bool in_remote_transaction;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction;
 
-extern PGDLLIMPORT bool InitializingApplyWorker;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker;
 
 extern PGDLLIMPORT List *table_states_not_ready;
 
