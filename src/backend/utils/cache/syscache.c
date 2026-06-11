@@ -84,17 +84,17 @@ struct cachedesc
 StaticAssertDecl(lengthof(cacheinfo) == SysCacheSize,
 				 "SysCacheSize does not match syscache.c's array");
 
-static CatCache *SysCache[SysCacheSize];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION CatCache *SysCache[SysCacheSize];
 
-static bool CacheInitialized = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CacheInitialized = false;
 
 /* Sorted array of OIDs of tables that have caches on them */
-static Oid	SysCacheRelationOid[SysCacheSize];
-static int	SysCacheRelationOidSize;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SysCacheRelationOid[SysCacheSize];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SysCacheRelationOidSize;
 
 /* Sorted array of OIDs of tables and indexes used by caches */
-static Oid	SysCacheSupportingRelOid[SysCacheSize * 2];
-static int	SysCacheSupportingRelOidSize;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SysCacheSupportingRelOid[SysCacheSize * 2];
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SysCacheSupportingRelOidSize;
 
 static int	oid_compare(const void *a, const void *b);
 

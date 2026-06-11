@@ -1033,12 +1033,6 @@ src/backend/utils/cache/relmapper.c	bca032e1ae3be31e6fa13f5523bfc61c408c5b14	act
 src/backend/utils/cache/relmapper.c	1ab821354071efcc40aca0538d4e261b0dc68469	active_local_updates	static RelMapFile active_local_updates;
 src/backend/utils/cache/relmapper.c	7ad08ae1bdc4086a94946274dcad0e2c50d143c4	pending_shared_updates	static RelMapFile pending_shared_updates;
 src/backend/utils/cache/relmapper.c	d5c482f8e8f94f7746d3d84c5a1ec8d84e33b74d	pending_local_updates	static RelMapFile pending_local_updates;
-src/backend/utils/cache/syscache.c	cba3e7a6ffdd293c69bd24f3c8596f593c998677	SysCache	static CatCache *SysCache[SysCacheSize];
-src/backend/utils/cache/syscache.c	50e1a741d43f84ebc4cf31481e93456d7b020093	CacheInitialized	static bool CacheInitialized = false;
-src/backend/utils/cache/syscache.c	f74991abe22cc52ec73af2e05f69f12f06613a72	SysCacheRelationOid	static Oid SysCacheRelationOid[SysCacheSize];
-src/backend/utils/cache/syscache.c	e3fa4860b611e638c93dd8bb8293bf629712036a	SysCacheRelationOidSize	static int SysCacheRelationOidSize;
-src/backend/utils/cache/syscache.c	7cd30003b507ff87f0640b3f7b7f93f488854439	SysCacheSupportingRelOid	static Oid SysCacheSupportingRelOid[SysCacheSize * 2];
-src/backend/utils/cache/syscache.c	af2e34c6358caa856a16fce6df9fab76fb921691	SysCacheSupportingRelOidSize	static int SysCacheSupportingRelOidSize;
 src/backend/utils/misc/ps_status.c	424081bb151118c5bfc34c184e08abfd00ba6033	environ	extern char **environ;
 src/backend/utils/misc/ps_status.c	fdb6d8d97c260486cf7c13a980ee60499464bcbc	ps_buffer	static char ps_buffer[PS_BUFFER_SIZE];
 src/backend/utils/misc/ps_status.c	f87f9e7f6ffd91248d69a0acf8f65dd91a3b2740	ps_buffer	static char *ps_buffer;

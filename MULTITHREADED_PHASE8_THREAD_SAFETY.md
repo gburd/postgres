@@ -401,6 +401,9 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   descriptor identifier counter are session-local TLS state. Shared
   record-typmod registry handles remain owned by `CurrentSession` and point
   to DSM/DSA-backed state used for parallel-query sharing.
+- syscache wrapper state in `syscache.c`: `SysCache`, `CacheInitialized`, and
+  the derived relation/supporting-relation OID lookup arrays are session-local
+  TLS state initialized by the current backend's `InitCatalogCache()` path.
 - event-trigger query execution state in `event_trigger.c`:
   `currentEventTriggerState`, the stack head for SQL-drop, table-rewrite, and
   DDL command collection state owned by the currently running utility command.
@@ -1109,6 +1112,13 @@ Validation for this slice:
   it ran after artifact-producing DDL tests, and a second attempt confirmed
   `type_sanity` requires the standard early datatype fixtures; the final
   fixture-backed runs passed.
+- focused `syscache.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, catalog sanity regression coverage, and
+  DDL/invalidation-heavy regression coverage after classifying syscache wrapper
+  state as session-local TLS. The catalog sanity group covered early datatype
+  fixtures, `type_sanity`, `opr_sanity`, `misc_sanity`, and `oidjoins`; the
+  DDL group covered create/alter/drop, plan-cache, domain, rowtype, range,
+  dependency, and GUC paths.
 - focused `ts_cache.o` compile coverage, global-lifetime scanner coverage, and
   incremental full rebuild/install after classifying text-search parser,
   dictionary, and configuration caches as session-local TLS state;
