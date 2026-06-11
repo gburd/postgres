@@ -571,6 +571,10 @@ execution-local TLS. The system-index reindex state records the current
 backend's active or pending reindex operation and is explicitly serialized
 into parallel workers, while the enum uncommitted-type/value hash tables track
 transaction-local enum safety for the current backend only.
+Immutable catalog lookup tables in `heap.c` and `objectaddress.c` are now
+explicitly classified: `SysAtt[]` is the fixed system-attribute descriptor
+table, and `ObjectTypeMap[]` maps stable object-type strings to `ObjectType`
+values.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -1058,6 +1062,9 @@ Validation for this slice:
   smoke created and altered an enum inside one transaction, inserted the new
   value before commit, created a table with a primary key and secondary index,
   ran `REINDEX TABLE`, and verified the table contents after reindexing.
+- focused `heap.o` and `objectaddress.o` compile coverage plus
+  global-lifetime scanner coverage after classifying immutable catalog lookup
+  tables.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after
