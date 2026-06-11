@@ -89,6 +89,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - WAL record construction state in `xloginsert.c`, including registered buffer
   and data arrays, main-data chain state, current insert flags, header scratch
   storage, and the WAL insertion memory context;
+- prepared-transaction state in `twophase.c`: `TwoPhaseState` as
+  shared-memory state, `MyLockedGxact` and the exit-registration flag as
+  backend-local state, and 2PC state-file assembly records as execution-local
+  state;
 - transaction characteristic GUC backing variables in `xact.c`: the
   session-local `DefaultXact*` defaults and the execution-local current
   `Xact*` isolation, read-only, and deferrable state;
@@ -378,6 +382,11 @@ while recovery-stream bookkeeping such as `latestObservedXid` remains
 runtime-owned state.
 The single-entry transaction-status cache in `transam.c` is now backend-local
 TLS, matching the backend-private visibility cache model.
+Prepared-transaction state in `twophase.c` now has explicit lifetimes:
+`TwoPhaseState` is shared memory protected by `TwoPhaseStateLock`, while the
+currently locked prepared transaction pointer and `before_shmem_exit`
+registration flag are backend-local TLS. The state-file assembly chain used
+while preparing a transaction is execution-local TLS.
 Hot-standby recovery-conflict state in `standby.c` is now backend-local TLS.
 This includes the recovery lock hash tables owned by the startup backend, the
 per-wait exponential backoff counter, and the timeout-handler pending flags set
@@ -830,6 +839,9 @@ Validation for this slice:
   construction state.
 - focused `transam.o` compile coverage plus transaction visibility regression
   coverage after classifying the single-entry transaction-status cache.
+- focused `twophase.o` compile coverage plus prepared-transaction regression
+  coverage after classifying prepared-transaction shared/backend/execution
+  state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

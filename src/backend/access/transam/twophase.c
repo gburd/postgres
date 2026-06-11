@@ -188,7 +188,7 @@ typedef struct TwoPhaseStateData
 	GlobalTransaction prepXacts[FLEXIBLE_ARRAY_MEMBER];
 } TwoPhaseStateData;
 
-static TwoPhaseStateData *TwoPhaseState;
+static PG_GLOBAL_SHMEM TwoPhaseStateData *TwoPhaseState;
 
 static void TwoPhaseShmemRequest(void *arg);
 static void TwoPhaseShmemInit(void *arg);
@@ -204,9 +204,9 @@ const ShmemCallbacks TwoPhaseShmemCallbacks = {
  * TwoPhaseStateLock, though obviously the pointer itself doesn't need to be
  * (since it's just local memory).
  */
-static GlobalTransaction MyLockedGxact = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalTransaction MyLockedGxact = NULL;
 
-static bool twophaseExitRegistered = false;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool twophaseExitRegistered = false;
 
 static void PrepareRedoRemoveFull(FullTransactionId fxid, bool giveWarning);
 static void RecordTransactionCommitPrepared(TransactionId xid,
@@ -1008,7 +1008,7 @@ typedef struct StateFileChunk
 	struct StateFileChunk *next;
 } StateFileChunk;
 
-static struct xllist
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION struct xllist
 {
 	StateFileChunk *head;		/* first data block in the chain */
 	StateFileChunk *tail;		/* last block in chain */

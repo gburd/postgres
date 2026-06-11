@@ -34,10 +34,6 @@ src/backend/access/transam/rmgr.c	52f480a45080cc1072726aa8567ba1ea2d2067ab	RmgrT
 src/backend/access/transam/slru.c	25dbd225a5278eb583be9d7d52b6eef1bf338452	slru_errcause	static SlruErrorCause slru_errcause;
 src/backend/access/transam/slru.c	828a82da408c15dac3a011da9b3cc3b3a3b2a370	slru_errno	static int slru_errno;
 src/backend/access/transam/subtrans.c	d94a38b0d3fd1f01aa346e228832a3409e360936	SubTransSlruDesc	static SlruDesc SubTransSlruDesc;
-src/backend/access/transam/twophase.c	e5c5904707d1ee731828de057deb9a9f6fc40c5b	TwoPhaseState	static TwoPhaseStateData *TwoPhaseState;
-src/backend/access/transam/twophase.c	4b4c77d64fd957bf44dc088ff7e63056a28da443	MyLockedGxact	static GlobalTransaction MyLockedGxact = NULL;
-src/backend/access/transam/twophase.c	40d594145f62cfe837d88130c71549e4764709d1	twophaseExitRegistered	static bool twophaseExitRegistered = false;
-src/backend/access/transam/twophase.c	52a0a82b90aa6e0a4bae037be2349585bfef48d2	head,tail,num_chunks,bytes_free,total_len,records	static struct xllist { StateFileChunk *head; StateFileChunk *tail; uint32 num_chunks; uint32 bytes_free; uint32 total_len; } records;
 src/backend/access/transam/varsup.c	1bec3debb09d11fa81fd1136c329827744bd6f97	TransamVariables	TransamVariablesData *TransamVariables = NULL;
 src/backend/access/transam/xlog.c	341ee5c59a0da36ed31b75ce089e4554544d4349	CheckPointDistanceEstimate	static double CheckPointDistanceEstimate = 0;
 src/backend/access/transam/xlog.c	326af6730a0aae5e161d251258428ec665592e6b	PrevCheckPointDistance	static double PrevCheckPointDistance = 0;
