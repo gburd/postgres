@@ -11,6 +11,8 @@
 #ifndef PG_PRNG_H
 #define PG_PRNG_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * State vector for PRNG generation.  Callers should treat this as an
  * opaque typedef, but we expose its definition to allow it to be
@@ -26,7 +28,7 @@ typedef struct pg_prng_state
  * Callers not needing local PRNG series may use this global state vector,
  * after initializing it with one of the pg_prng_...seed functions.
  */
-extern PGDLLIMPORT pg_prng_state pg_global_prng_state;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_prng_state pg_global_prng_state;
 
 extern void pg_prng_seed(pg_prng_state *state, uint64 seed);
 extern void pg_prng_fseed(pg_prng_state *state, double fseed);

@@ -146,6 +146,11 @@ Important current files:
   gmake -C src/pl/plpgsql/src DESTDIR="$PWD/tmp_install" install
   ```
 
+  `pg_global_prng_state` is also exported through an installed common header
+  and is referenced by some contrib/test modules, including `amcheck`,
+  `auto_explain`, `tablefunc`, and several `src/test/modules` tests. Clean and
+  reinstall any of those modules before testing them after PRNG TLS changes.
+
 - If an installed header changes a global from plain storage to
   `PG_THREAD_LOCAL`, do not trust a purely incremental backend build. Stale
   backend objects can still compile and link but then crash during `initdb`

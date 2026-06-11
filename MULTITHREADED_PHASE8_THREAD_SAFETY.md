@@ -140,6 +140,10 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - connection authentication progress state: `ClientAuthInProgress` is
   connection-local TLS, so error visibility during startup authentication is
   isolated per frontend connection instead of shared across threaded backends.
+- common default PRNG state: `pg_global_prng_state` is backend-local TLS, so
+  sampling, DSM handle generation, spin-delay jitter, temporary tablespace
+  selection, and other backend callers do not race on one shared state vector
+  in threaded mode.
 - AIO worker method state in `method_worker.c`: `io_worker_submission_queue`
   and `io_worker_control` are shared-memory state used by submitters, the
   postmaster, and IO workers. `io_worker_queue_size` is runtime configuration,
@@ -2109,6 +2113,13 @@ Validation for this slice:
   outputs that were producing false unclassified mutable-global records. The
   regenerated baseline dropped from 179 to 48 unclassified entries with no new
   unclassified mutable globals.
+- focused `pg_prng.o`, `postmaster.o`, `dsm.o`, `s_lock.o`, `fd.o`,
+  `xact.o`, and `postgres.o` compile coverage, global-lifetime scanner
+  coverage, common/backend clean plus generated-header recovery, full
+  rebuild/install, and direct temp-cluster PRNG smoke after converting
+  `pg_global_prng_state` to backend-local TLS. The live smoke initialized a
+  cluster, exercised `random()`, created and analyzed a temporary table, and
+  stopped the server with fast shutdown.
 - focused `syslogger.o`, `postmaster.o`, and `launch_backend.o` compile
   coverage, global-lifetime scanner coverage, incremental full
   rebuild/install, and direct temp-cluster `logging_collector=on` smoke after
