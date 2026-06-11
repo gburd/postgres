@@ -80,6 +80,8 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   current-XID state, unreported subtransaction XIDs, transaction abort context,
   transaction flags, logical-streaming system-scan state, and transaction
   sampling state;
+- transaction-owned combo CID maps in `combocid.c` and relation storage
+  pending-delete/sync cleanup queues in `storage.c`;
 - transaction characteristic GUC backing variables in `xact.c`: the
   session-local `DefaultXact*` defaults and the execution-local current
   `Xact*` isolation, read-only, and deferrable state;
@@ -392,6 +394,10 @@ The legacy `CurrentSession` pointer in `session.c` is now session-local TLS.
 The `Session` object remains the existing per-session DSM/DSA owner; this slice
 only prevents the current-session compatibility pointer from being shared by
 multiple threaded backends.
+Combo CID maps in `combocid.c` and pending relation storage cleanup queues in
+`storage.c` are now execution-local TLS. They are allocated in transaction
+contexts or TopMemoryContext for current-transaction cleanup and must not be
+shared by concurrently executing threaded backends.
 
 Before Phase 8 can be marked complete, Gate C must pass: `check-world`, static
 global report checks, extension load tests using the test-only threaded backend
@@ -791,6 +797,9 @@ Validation for this slice:
 - focused `session.o` compile coverage plus full rebuild/process-mode
   startup/regression smoke coverage after classifying the legacy
   current-session pointer.
+- focused `combocid.o` and `storage.o` compile coverage plus transaction and
+  relation-storage regression coverage after classifying transaction-owned
+  combo CID and pending storage cleanup state.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -74,8 +74,9 @@ typedef struct PendingRelSync
 	bool		is_truncated;	/* Has the file experienced truncation? */
 } PendingRelSync;
 
-static PendingRelDelete *pendingDeletes = NULL; /* head of linked list */
-static HTAB *pendingSyncHash = NULL;
+/* Head of linked list. */
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PendingRelDelete *pendingDeletes = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *pendingSyncHash = NULL;
 
 
 /*
