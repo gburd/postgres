@@ -32,13 +32,6 @@ src/backend/executor/instrument.c	08550ccaabf4a567ee0655669864dd61bba10157	pgBuf
 src/backend/executor/instrument.c	aab563c4d73dacbbaa3d934ea9af6153e0000e9f	save_pgBufferUsage	static BufferUsage save_pgBufferUsage;
 src/backend/executor/instrument.c	66f62f8700f43fc8ee0e2bd15fd4e82c39aa4e76	pgWalUsage	WalUsage pgWalUsage;
 src/backend/executor/instrument.c	55af128245b92098f0964c4a630fcb0ab4c94a21	save_pgWalUsage	static WalUsage save_pgWalUsage;
-src/backend/executor/spi.c	45bfa2bd6ed950eac0787a0165ad08e2d00cf98d	SPI_processed	uint64 SPI_processed = 0;
-src/backend/executor/spi.c	4330367dc4700234caf247ee2e81f1e95af9cbaa	SPI_tuptable	SPITupleTable *SPI_tuptable = NULL;
-src/backend/executor/spi.c	369cb55187eeae2086962d2f7a4d92707ac01502	SPI_result	int SPI_result = 0;
-src/backend/executor/spi.c	c885fe6849de998f414e489d55160be72bd34de0	_SPI_stack	static _SPI_connection *_SPI_stack = NULL;
-src/backend/executor/spi.c	07522c9e36e5e7242f2d79102b3d28741edfd090	_SPI_current	static _SPI_connection *_SPI_current = NULL;
-src/backend/executor/spi.c	3c5d2a7f49da6bf674864ccde8ca1eee40f76115	_SPI_stack_depth	static int _SPI_stack_depth = 0;
-src/backend/executor/spi.c	b970e307737c00b73a18fc739b13fb4506d3d9bc	_SPI_connected	static int _SPI_connected = -1;
 src/backend/jit/jit.c	42f632aaf5cfb5e56ef41fba4fa31f5fb92fb0cd	provider	static JitProviderCallbacks provider;
 src/backend/jit/jit.c	a5d4013a10e01aa2686e9e1ab8f01f7073183e6e	provider_successfully_loaded	static bool provider_successfully_loaded = false;
 src/backend/jit/jit.c	69af60336ea01151cb7a9465cbe195ed107f4cd7	provider_failed_loading	static bool provider_failed_loading = false;
@@ -1566,9 +1559,6 @@ src/include/common/pg_prng.h	e9b95633962bf40ae0656ebcdc38387ec6435986	pg_global_
 src/include/common/relpath.h	ff0a93604e591b4b8e7113a9d19c49606af0105d	forkNames	extern PGDLLIMPORT const char *const forkNames[];
 src/include/executor/instrument.h	c385311f3682dfe3b116e7add0947abc3f2b3cd1	pgBufferUsage	extern PGDLLIMPORT BufferUsage pgBufferUsage;
 src/include/executor/instrument.h	a55e7bbae2d5fb41c9115a97a6f882b930374995	pgWalUsage	extern PGDLLIMPORT WalUsage pgWalUsage;
-src/include/executor/spi.h	b908bd4efe91a8f0353e33ed512520ce8012caee	SPI_processed	extern PGDLLIMPORT uint64 SPI_processed;
-src/include/executor/spi.h	7e03977f793afb9c24d74fcfca2f7c77b3a28be2	SPI_tuptable	extern PGDLLIMPORT SPITupleTable *SPI_tuptable;
-src/include/executor/spi.h	01a51d0b279d3ec37d42da2e26004a782c74c649	SPI_result	extern PGDLLIMPORT int SPI_result;
 src/include/fe_utils/cancel.h	2645e99b8dc4099244a11a057d2a62a8ec88c46b	CancelRequested	extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
 src/include/fe_utils/print.h	79e34ee8a12559f177db264516c5112723bd2063	cancel_pressed	extern PGDLLIMPORT volatile sig_atomic_t cancel_pressed;
 src/include/lib/radixtree.h	a55b2529d8f3961dd55745cbcf208b48ee52d24f	RT_SIZE_CLASS_INFO	static const RT_SIZE_CLASS_ELEM RT_SIZE_CLASS_INFO[] = { [RT_CLASS_4] = { .name = RT_STR(RT_PREFIX) "_radix_tree node4", .fanout = RT_FANOUT_4, .allocsize = sizeof(RT_NODE_4) + RT_FANOUT_4 * sizeof(RT_PTR_ALLOC), }, [RT_CLASS_16_LO] = { ...

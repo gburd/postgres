@@ -264,6 +264,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
   registration state. These hooks are intentionally shared by one runtime;
   threaded-mode mutation is governed by the Phase 7 extension backend-model
   gate rather than copied per session.
+- SPI API and connection-stack state in `spi.c`: `SPI_processed`,
+  `SPI_tuptable`, `SPI_result`, `_SPI_stack`, `_SPI_current`,
+  `_SPI_stack_depth`, and `_SPI_connected`. SPI exposes its result variables
+  through the extension ABI and saves/restores them across nesting levels, but
+  the state still belongs to one backend's current SPI call stack.
 - final backend-facing USERSET/SUSET GUC backing variables and required
   derived state: `debug_discard_caches`,
   `debug_logical_replication_streaming`, `log_replication_commands`,
@@ -1077,6 +1082,14 @@ Validation for this slice:
   extension hook registries. Direct `be-secure-openssl.o` subdir compile was
   not runnable in this checkout because the direct target lacks the OpenSSL
   include path; the configured top-level build covered the file.
+- focused `spi.o` compile coverage, backend clean plus generated-header
+  recovery, full rebuild/install, PL/pgSQL clean/rebuild/install,
+  global-lifetime scanner coverage, and PL/pgSQL regression coverage after
+  classifying SPI API and connection-stack state. The first
+  `gmake -C src/pl/plpgsql/src check` run recreated `tmp_install` and failed
+  before SQL started with the known macOS `libpq.5.dylib` loader error; after
+  patching the recreated temp-install binaries, the equivalent direct
+  `pg_regress` invocation passed all 13 PL/pgSQL tests.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

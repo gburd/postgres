@@ -42,14 +42,14 @@
  * interference between different SPI callers, we save and restore them
  * when entering/exiting a SPI nesting level.
  */
-uint64		SPI_processed = 0;
-SPITupleTable *SPI_tuptable = NULL;
-int			SPI_result = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint64 SPI_processed = 0;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND SPITupleTable *SPI_tuptable = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND int SPI_result = 0;
 
-static _SPI_connection *_SPI_stack = NULL;
-static _SPI_connection *_SPI_current = NULL;
-static int	_SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
-static int	_SPI_connected = -1;	/* current stack index */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND _SPI_connection *_SPI_stack = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND _SPI_connection *_SPI_current = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int _SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int _SPI_connected = -1;	/* current stack index */
 
 typedef struct SPICallbackArg
 {
