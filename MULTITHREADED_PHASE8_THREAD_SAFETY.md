@@ -424,6 +424,11 @@ The following state now uses explicit `PG_THREAD_LOCAL` storage:
 - logging/error-reporting session state: `Log_error_verbosity`,
   `log_min_messages_string`, and the processed `backtrace_function_list`
   derived from `backtrace_functions`.
+- logging/error-reporting backend and execution state in `elog.c`: formatted
+  start-time buffers and log-line prefix counters are backend-local TLS state,
+  formatted log-time buffers and saved timestamp/formatting state are
+  execution-local TLS state, and syslog plus Windows backtrace initialization
+  handles remain runtime-global logging state.
 - guarded developer node-test GUC backing variables:
   `Debug_copy_parse_plan_trees`, `Debug_raw_expression_coverage_test`, and
   `Debug_write_read_parse_plan_trees`.
@@ -970,6 +975,12 @@ Validation for this slice:
   TLS. The smoke loaded an included config file, reloaded a changed `work_mem`,
   then reloaded a syntax error and verified the prior setting remained active
   while the error was logged.
+- focused `elog.o` compile coverage, global-lifetime scanner coverage,
+  incremental full rebuild/install, and a direct temp-cluster log-prefix smoke
+  after classifying logging timestamp/formatting state. The smoke enabled
+  `%m`, `%s`, `%l`, and `%p` in `log_line_prefix`, emitted two SQL errors, and
+  verified both log entries included formatted timestamps, backend start time,
+  line counters, and backend PID.
 - unsafe test module coverage for session authorization and GUC privileges:
   `rolenames setconfig alter_system_table guc_privs`;
 - live temp-cluster smoke coverage for `client_encoding`, `DateStyle`,

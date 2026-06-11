@@ -1064,16 +1064,6 @@ src/backend/utils/cache/typcache.c	a9432882be36f6f9ab56f1336ea2bdf3204d62b8	Reco
 src/backend/utils/cache/typcache.c	a7cba79ab35edb5846f34120f7d1d4a528a744bb	RecordCacheArrayLen	static int32 RecordCacheArrayLen = 0;
 src/backend/utils/cache/typcache.c	fb31d35128c1cbd89d93347dc8c62fc506c7b3ac	NextRecordTypmod	static int32 NextRecordTypmod = 0;
 src/backend/utils/cache/typcache.c	6a5f2d81ec56ecdf2b2a82be53cb2f87d3885064	tupledesc_id_counter	static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
-src/backend/utils/error/elog.c	cdbe0e33ec614235b6b6a339c23a9ce1e8c61a1b	openlog_done	static bool openlog_done = false;
-src/backend/utils/error/elog.c	45ee84e0b19b6b60b24de88e4897adbb907a2257	syslog_ident	static char *syslog_ident = NULL;
-src/backend/utils/error/elog.c	6ca651bed3455de415153728d6ffc5eae01600a0	backtrace_symbols_initialized	static bool backtrace_symbols_initialized = false;
-src/backend/utils/error/elog.c	d9308936e9e8379dcb29ef3e0a53f5833770070c	backtrace_process	static HANDLE backtrace_process = NULL;
-src/backend/utils/error/elog.c	e6252db4522612c0db3a21fa29b964f0c036b56f	saved_timeval	static struct timeval saved_timeval;
-src/backend/utils/error/elog.c	9b8e4012912695c81ea3bd534c58a0a3075e533c	saved_timeval_set	static bool saved_timeval_set = false;
-src/backend/utils/error/elog.c	afadd6f08e5724bd4d23af435dbd7fbc618e3dda	formatted_start_time	static char formatted_start_time[FORMATTED_TS_LEN];
-src/backend/utils/error/elog.c	fde579d645a9f34ad632bc47239a8b235c1bad28	formatted_log_time	static char formatted_log_time[FORMATTED_TS_LEN];
-src/backend/utils/error/elog.c	62722eeb34679fe2d991be22e96b743e2c65b255	save_format_errnumber	static int save_format_errnumber;
-src/backend/utils/error/elog.c	2818fc0d5ac3611010878e35237792638c8c411e	save_format_domain	static const char *save_format_domain;
 src/backend/utils/fmgr/dfmgr.c	40fd3c0817835b3c858416ed523f3ab163b0697c	file_list	static DynamicFileList *file_list = NULL;
 src/backend/utils/fmgr/dfmgr.c	2a05fbd831ef4bf1ffc48737746d105e5ecb8152	file_tail	static DynamicFileList *file_tail = NULL;
 src/backend/utils/fmgr/fmgr.c	366c8dde394b96a6303f45ae13f14ad0a7e0cea6	CFuncHash	static HTAB *CFuncHash = NULL;

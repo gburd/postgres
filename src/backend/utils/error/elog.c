@@ -134,8 +134,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_function_list;
 #define PG_SYSLOG_LIMIT 900
 #endif
 
-static bool openlog_done = false;
-static char *syslog_ident = NULL;
+static PG_GLOBAL_RUNTIME bool openlog_done = false;
+static PG_GLOBAL_RUNTIME char *syslog_ident = NULL;
 static PG_GLOBAL_RUNTIME int syslog_facility = LOG_LOCAL0;
 
 static void write_syslog(int level, const char *line);
@@ -146,8 +146,8 @@ static void write_eventlog(int level, const char *line, int len);
 #endif
 
 #ifdef _MSC_VER
-static bool backtrace_symbols_initialized = false;
-static HANDLE backtrace_process = NULL;
+static PG_GLOBAL_RUNTIME bool backtrace_symbols_initialized = false;
+static PG_GLOBAL_RUNTIME HANDLE backtrace_process = NULL;
 #endif
 
 /* We provide a small stack of ErrorData records for re-entrant cases */
@@ -163,12 +163,12 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int recursion_depth = 0;	/* to detect
  * Saved timeval and buffers for formatted timestamps that might be used by
  * log_line_prefix, csv logs and JSON logs.
  */
-static struct timeval saved_timeval;
-static bool saved_timeval_set = false;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION struct timeval saved_timeval;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool saved_timeval_set = false;
 
 #define FORMATTED_TS_LEN 128
-static char formatted_start_time[FORMATTED_TS_LEN];
-static char formatted_log_time[FORMATTED_TS_LEN];
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char formatted_start_time[FORMATTED_TS_LEN];
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char formatted_log_time[FORMATTED_TS_LEN];
 
 
 /* Macro for checking errordata_stack_depth is reasonable */
@@ -1837,8 +1837,8 @@ getinternalerrposition(void)
  * The result of format_elog_string() is stored in ErrorContext, and will
  * therefore survive until FlushErrorState() is called.
  */
-static int	save_format_errnumber;
-static const char *save_format_domain;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int save_format_errnumber;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *save_format_domain;
 
 void
 pre_format_elog_string(int errnumber, const char *domain)
@@ -2810,7 +2810,7 @@ assign_syslog_facility(int newval, void *extra)
 static void
 write_syslog(int level, const char *line)
 {
-	static unsigned long seq = 0;
+	static PG_GLOBAL_RUNTIME unsigned long seq = 0;
 
 	int			len;
 	const char *nlpos;
@@ -3273,10 +3273,10 @@ void
 log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 {
 	/* static counter for line numbers */
-	static long log_line_number = 0;
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long log_line_number = 0;
 
 	/* has counter been reset in current process? */
-	static int	log_my_pid = 0;
+	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int log_my_pid = 0;
 	int			padding;
 	const char *p;
 
