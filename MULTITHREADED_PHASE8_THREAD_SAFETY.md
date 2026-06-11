@@ -1403,6 +1403,12 @@ Validation for this slice:
   planner smoke coverage through `EXPLAIN (VERBOSE) SELECT * FROM generate_series(1, 3) g`
   after classifying planner-extension ID mapping, `disable_cost`, and
   predicate proof cache state.
+- focused AIO compile coverage for `aio.o`, `aio_init.o`, and
+  `aio_target.o`, global-lifetime scanner coverage, backend clean plus
+  generated-header recovery, full rebuild/install, and a direct temp-cluster
+  AIO smoke after classifying the shared AIO control pointers, backend-local
+  AIO state pointer, runtime method dispatch pointer, and immutable AIO method
+  and target tables.
 
 On macOS, the temp install still records `/usr/local/pgsql/lib/libpq.5.dylib`
 in frontend binaries. The extension and PL/pgSQL checks above were run after

@@ -37,10 +37,10 @@ const ShmemCallbacks AioShmemCallbacks = {
 	.attach_fn = AioShmemAttach,
 };
 
-static PgAioBackend *AioBackendShmemPtr;
-static PgAioHandle *AioHandleShmemPtr;
-static struct iovec *AioHandleIOVShmemPtr;
-static uint64 *AioHandleDataShmemPtr;
+static PG_GLOBAL_SHMEM PgAioBackend *AioBackendShmemPtr;
+static PG_GLOBAL_SHMEM PgAioHandle *AioHandleShmemPtr;
+static PG_GLOBAL_SHMEM struct iovec *AioHandleIOVShmemPtr;
+static PG_GLOBAL_SHMEM uint64 *AioHandleDataShmemPtr;
 
 static uint32
 AioProcs(void)

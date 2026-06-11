@@ -412,9 +412,9 @@ extern PGDLLIMPORT const IoMethodOps pgaio_worker_ops;
 extern PGDLLIMPORT const IoMethodOps pgaio_uring_ops;
 #endif
 
-extern PGDLLIMPORT const IoMethodOps *pgaio_method_ops;
-extern PGDLLIMPORT PgAioCtl *pgaio_ctl;
-extern PGDLLIMPORT PgAioBackend *pgaio_my_backend;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME const IoMethodOps *pgaio_method_ops;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PgAioCtl *pgaio_ctl;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgAioBackend *pgaio_my_backend;
 
 
 

@@ -22,7 +22,7 @@
 /*
  * Registry for entities that can be the target of AIO.
  */
-static const PgAioTargetInfo *pgaio_target_info[] = {
+static PG_GLOBAL_IMMUTABLE const PgAioTargetInfo *pgaio_target_info[] = {
 	[PGAIO_TID_INVALID] = &(PgAioTargetInfo) {
 		.name = "invalid",
 	},

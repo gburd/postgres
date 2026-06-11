@@ -946,15 +946,6 @@ src/backend/replication/walsender.c	a87fcb2ae2d571690a15246b4270574b0d46073e	got
 src/backend/replication/walsender.c	3b32f6aae68ddba85350476cc3a137ac29f3a98d	replication_active	static volatile sig_atomic_t replication_active = false;
 src/backend/replication/walsender.c	b1812bb8e564e7f5e7d628037387501691e66133	logical_decoding_ctx	static LogicalDecodingContext *logical_decoding_ctx = NULL;
 src/backend/replication/walsender.c	8fc51d078894c68f269d249514898afe7ca6acfe	lag_tracker	static LagTracker *lag_tracker;
-src/backend/storage/aio/aio.c	69854781bd000e90dd3f6ae30bfe9aebcf372653	pgaio_ctl	PgAioCtl *pgaio_ctl;
-src/backend/storage/aio/aio.c	7b92932da0da83ad0d4f280d13b76548dd284195	pgaio_my_backend	PgAioBackend *pgaio_my_backend;
-src/backend/storage/aio/aio.c	797ae7554a60e680d29a11fc253c144549e17da8	pgaio_method_ops_table	static const IoMethodOps *const pgaio_method_ops_table[] = { [IOMETHOD_SYNC] = &pgaio_sync_ops, [IOMETHOD_WORKER] = &pgaio_worker_ops, [IOMETHOD_IO_URING] = &pgaio_uring_ops, };
-src/backend/storage/aio/aio.c	1e4da794057f81ef53f128256c817a8de94b47b1	pgaio_method_ops	const IoMethodOps *pgaio_method_ops;
-src/backend/storage/aio/aio_init.c	e7dc20c4fdf91e2dc35d871d9613189b0b02024d	AioBackendShmemPtr	static PgAioBackend *AioBackendShmemPtr;
-src/backend/storage/aio/aio_init.c	362bb9e54d8e88a2b1d1c4a328b0da3da0c2dc8b	AioHandleShmemPtr	static PgAioHandle *AioHandleShmemPtr;
-src/backend/storage/aio/aio_init.c	37a796f60a8246e7defc3f1a2c7aba93f8cbaef7	AioHandleIOVShmemPtr	static struct iovec *AioHandleIOVShmemPtr;
-src/backend/storage/aio/aio_init.c	2b47e9dc129b8cc3f693c8039bebfbe8fd66de1d	AioHandleDataShmemPtr	static uint64 *AioHandleDataShmemPtr;
-src/backend/storage/aio/aio_target.c	e2ba05d139f0aa3449cba3b03b64b201275a479f	pgaio_target_info	static const PgAioTargetInfo *pgaio_target_info[] = { [PGAIO_TID_INVALID] = &(PgAioTargetInfo) { .name = "invalid", }, [PGAIO_TID_SMGR] = &aio_smgr_target_info, };
 src/backend/storage/aio/method_io_uring.c	ae3edfa77447cd8e2f3a5b95feb704789a262b6c	pgaio_uring_contexts	static PgAioUringContext *pgaio_uring_contexts;
 src/backend/storage/aio/method_io_uring.c	f30ab475d31df177b9480ce0727de96a9474e989	pgaio_my_uring_context	static PgAioUringContext *pgaio_my_uring_context;
 src/backend/storage/aio/method_io_uring.c	64942f55b8d007237bfe7b40c5c07f03e5320316	pgaio_uring_caps	static PgAioUringCaps pgaio_uring_caps = { .checked = false, .mem_init_size = -1, };
@@ -1375,9 +1366,6 @@ src/include/replication/worker_internal.h	57cf8dd56ec32a1bd49012b0d9bd4d2e7223ad
 src/include/replication/worker_internal.h	d6133db6dc40b459e313aee8975b29e46d677841	in_remote_transaction	extern PGDLLIMPORT bool in_remote_transaction;
 src/include/replication/worker_internal.h	feaf4214bf3e0756c773714d3720eae5d9ee01c5	InitializingApplyWorker	extern PGDLLIMPORT bool InitializingApplyWorker;
 src/include/replication/worker_internal.h	dcf26a7c0f05e98f4bb2f82e06a6958d3d71613b	table_states_not_ready	extern PGDLLIMPORT List *table_states_not_ready;
-src/include/storage/aio_internal.h	d11d5a4ee3568196269c8c2c864ec846fce6f968	pgaio_method_ops	extern PGDLLIMPORT const IoMethodOps *pgaio_method_ops;
-src/include/storage/aio_internal.h	b65177d4c7b6a9399c02c1d263603f28360260f2	pgaio_ctl	extern PGDLLIMPORT PgAioCtl *pgaio_ctl;
-src/include/storage/aio_internal.h	a1241e1e6b66e4c90f7bccf74ce24725551cf816	pgaio_my_backend	extern PGDLLIMPORT PgAioBackend *pgaio_my_backend;
 src/include/storage/buf_internals.h	15184d3b09500f15f915f542e96c7afbb7d5a96e	BufferDescriptors	extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;
 src/include/storage/buf_internals.h	b0b1fcae879c45a111fdc547dfe1c379fc9f3afe	BufferIOCVArray	extern PGDLLIMPORT ConditionVariableMinimallyPadded *BufferIOCVArray;
 src/include/storage/buf_internals.h	5fd14484a8b4d522aa4681862b3ed7181e3e0bab	BackendWritebackContext	extern PGDLLIMPORT WritebackContext BackendWritebackContext;
