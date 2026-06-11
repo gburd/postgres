@@ -108,7 +108,7 @@ PG_GLOBAL_RUNTIME int Unix_socket_permissions;
 PG_GLOBAL_RUNTIME char *Unix_socket_group;
 
 /* Where the Unix socket files are (list of palloc'd strings) */
-static List *sock_paths = NIL;
+static PG_GLOBAL_RUNTIME List *sock_paths = NIL;
 
 /*
  * Buffers for low-level I/O.

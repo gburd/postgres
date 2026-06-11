@@ -377,7 +377,6 @@ src/backend/libpq/hba.c	5b7c468920391a5d469e9d0d025b698369bb1285	parsed_hba_cont
 src/backend/libpq/hba.c	366a2fa34c950da79eef42209d5ad37bf1480fc3	parsed_ident_lines	static List *parsed_ident_lines = NIL;
 src/backend/libpq/hba.c	3c501bd6f244bb5e9ebe06ca42023927c139a4e0	parsed_ident_context	static MemoryContext parsed_ident_context = NULL;
 src/backend/libpq/hba.c	040edb18d098a3fc0749c983a84fc874a0f5039a	UserAuthName	static const char *const UserAuthName[] = { "reject", "implicit reject", "trust", "ident", "password", "md5", "scram-sha-256", "gss", "sspi", "pam", "bsd", "ldap", "cert", "peer", "oauth", };
-src/backend/libpq/pqcomm.c	843089da4cdf9eb4a64b38bd297862af4ae8a91e	sock_paths	static List *sock_paths = NIL;
 src/backend/libpq/pqmq.c	7428d525d3314e02a3423ca43e04e1f50f91b9ec	pq_mq_handle	static shm_mq_handle *pq_mq_handle = NULL;
 src/backend/libpq/pqmq.c	71f44584d052bf2c7a97d64d27f8b9f0bf8922a1	pq_mq_busy	static bool pq_mq_busy = false;
 src/backend/libpq/pqmq.c	ad54592f56bdee1053be88c71a3f8e7f2cab60ff	pq_mq_parallel_leader_pid	static pid_t pq_mq_parallel_leader_pid = 0;
