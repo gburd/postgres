@@ -5,7 +5,7 @@ from ._env import (
     skip_unless_test_extras,
     test_timeout_default,
 )
-from .command import CommandResult, PgBin
+from .command import CommandResult, PgBin, ProgramResult
 from .errors import PgError, PgServerError, PgSqlError, LibpqError
 from .fake import faker, meaningful_text, rand_str
 from .kerberos import KerberosServer
@@ -34,6 +34,7 @@ __all__ = [
     "PostgresServer",
     "PgBin",
     "CommandResult",
+    "ProgramResult",
     "PgError",
     "PgServerError",
     "PgSqlError",

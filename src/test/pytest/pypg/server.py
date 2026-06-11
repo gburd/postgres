@@ -16,7 +16,7 @@ from collections import namedtuple
 from typing import Callable, Optional, Tuple
 
 from ._env import test_timeout_default
-from .command import CommandResult, PgBin
+from .command import PgBin, ProgramResult
 from .bgpsql import BackgroundPsql
 from .errors import PgServerError, PgSqlError
 from .interactive import InteractivePsql
@@ -861,7 +861,7 @@ class PostgresServer:
         timeout=None,
     ):
         """
-        Run psql with query piped on stdin and return CommandResult(rc, stdout,
+        Run psql with query piped on stdin and return ProgramResult(rc, stdout,
         stderr) without raising. Mirrors PostgreSQL::Test::Cluster->psql in list
         context: --no-psqlrc --no-align --tuples-only --quiet, ON_ERROR_STOP by
         default (a SQL error then yields exit code 3), with an optional
@@ -903,7 +903,7 @@ class PostgresServer:
         # Match Cluster->psql, which chomps a single trailing newline off each.
         stdout = proc.stdout[:-1] if proc.stdout.endswith("\n") else proc.stdout
         stderr = proc.stderr[:-1] if proc.stderr.endswith("\n") else proc.stderr
-        return CommandResult(proc.returncode, stdout, stderr)
+        return ProgramResult(proc.returncode, stdout, stderr)
 
     def safe_psql(
         self, query, dbname="postgres", timeout=None, extra_env=None, connstr=None

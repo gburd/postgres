@@ -12,12 +12,89 @@ install directory is already on PATH.
 import os
 import re
 import subprocess
-from collections import namedtuple
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 from .util import run_captured
 
-CommandResult = namedtuple("CommandResult", ["rc", "stdout", "stderr"])
+
+@dataclass(frozen=True)
+class ProgramResult:
+    """The outcome of running a PostgreSQL client program.
+
+    Carries the exit code and captured output, and the assertions tests make on
+    them, so a check reads as one expressive call (``result.assert_ok()``)
+    rather than a hand-written ``assert result.exit_code == 0`` plus a
+    diagnostic string. Iterable as ``(exit_code, stdout, stderr)`` for the
+    legacy tuple-unpacking call sites.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    @property
+    def rc(self) -> int:
+        """Deprecated alias for :attr:`exit_code`."""
+        return self.exit_code
+
+    @property
+    def ok(self) -> bool:
+        """Whether the program exited with code 0."""
+        return self.exit_code == 0
+
+    @property
+    def failed(self) -> bool:
+        """Whether the program exited with a nonzero code."""
+        return self.exit_code != 0
+
+    def __iter__(self):
+        return iter((self.exit_code, self.stdout, self.stderr))
+
+    def __str__(self) -> str:
+        return (
+            f"exit code: {self.exit_code}\n"
+            f"stdout:\n{self.stdout}\n"
+            f"stderr:\n{self.stderr}"
+        )
+
+    def assert_ok(self, msg: Optional[str] = None) -> "ProgramResult":
+        """Assert the program exited 0; return self for chaining."""
+        assert self.ok, _prefix(msg, "expected success\n" + str(self))
+        return self
+
+    def assert_failed(self, msg: Optional[str] = None) -> "ProgramResult":
+        """Assert the program exited nonzero; return self for chaining."""
+        assert self.failed, _prefix(msg, "expected failure\n" + str(self))
+        return self
+
+    def assert_exit(self, code: int, msg: Optional[str] = None) -> "ProgramResult":
+        """Assert the program exited with *code*; return self."""
+        assert self.exit_code == code, _prefix(msg, f"expected exit {code}\n{self}")
+        return self
+
+    def assert_stdout_like(self, pattern: str, msg=None) -> "ProgramResult":
+        """Assert stdout matches *pattern*; return self."""
+        assert re.search(pattern, self.stdout), _prefix(
+            msg, f"stdout did not match {pattern!r}\n{self}"
+        )
+        return self
+
+    def assert_stderr_like(self, pattern: str, msg=None) -> "ProgramResult":
+        """Assert stderr matches *pattern*; return self."""
+        assert re.search(pattern, self.stderr), _prefix(
+            msg, f"stderr did not match {pattern!r}\n{self}"
+        )
+        return self
+
+
+# Backward-compatible alias for the former namedtuple.
+CommandResult = ProgramResult
+
+
+def _prefix(msg: Optional[str], text: str) -> str:
+    return f"{msg}: {text}" if msg else text
+
 
 # Programs are expected to keep --help output lines within this width. Matches
 # PostgreSQL::Test::Utils::program_help_ok.
@@ -43,7 +120,7 @@ def _describe(cmd: Sequence, result: CommandResult) -> str:
     )
     return (
         f"command: {argv}\n"
-        f"exit code: {result.rc}\n"
+        f"exit code: {result.exit_code}\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
@@ -86,7 +163,7 @@ class PgBin:
         Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
         """
         returncode, stdout, stderr = run_captured(_argv(cmd), env=self._env(extra_env))
-        return CommandResult(returncode, stdout, stderr)
+        return ProgramResult(returncode, stdout, stderr)
 
     def popen(self, cmd: Sequence, *, extra_env=None) -> subprocess.Popen:
         """Start cmd as a long-lived background process (PATH set to bindir).
@@ -123,34 +200,36 @@ class PgBin:
         Perl helper, so equality checks against the captured strings match.
         """
         result = self.result(cmd, extra_env=extra_env)
-        return CommandResult(
-            result.rc,
+        return ProgramResult(
+            result.exit_code,
             result.stdout.removesuffix("\n"),
             result.stderr.removesuffix("\n"),
         )
 
-    def command_ok(self, cmd, msg=None, *, extra_env=None) -> CommandResult:
+    def command_ok(self, cmd, msg=None, *, extra_env=None) -> ProgramResult:
         """Assert the command exits with code 0."""
         result = self.result(cmd, extra_env=extra_env)
-        assert result.rc == 0, _assert_msg(msg, "expected success", cmd, result)
+        assert result.ok, _assert_msg(msg, "expected success", cmd, result)
         return result
 
-    def command_fails(self, cmd, msg=None, *, extra_env=None) -> CommandResult:
+    def command_fails(self, cmd, msg=None, *, extra_env=None) -> ProgramResult:
         """Assert the command exits with a nonzero code."""
         result = self.result(cmd, extra_env=extra_env)
-        assert result.rc != 0, _assert_msg(msg, "expected failure", cmd, result)
+        assert result.failed, _assert_msg(msg, "expected failure", cmd, result)
         return result
 
-    def command_exit_is(self, cmd, code, msg=None, *, extra_env=None) -> CommandResult:
+    def command_exit_is(self, cmd, code, msg=None, *, extra_env=None) -> ProgramResult:
         """Assert the command exits with the given code."""
         result = self.result(cmd, extra_env=extra_env)
-        assert result.rc == code, _assert_msg(msg, f"expected exit {code}", cmd, result)
+        assert result.exit_code == code, _assert_msg(
+            msg, f"expected exit {code}", cmd, result
+        )
         return result
 
-    def command_like(self, cmd, pattern, msg=None, *, extra_env=None) -> CommandResult:
+    def command_like(self, cmd, pattern, msg=None, *, extra_env=None) -> ProgramResult:
         """Assert success and that stdout matches pattern."""
         result = self.result(cmd, extra_env=extra_env)
-        assert result.rc == 0, _assert_msg(msg, "expected success", cmd, result)
+        assert result.ok, _assert_msg(msg, "expected success", cmd, result)
         assert re.search(pattern, result.stdout), _assert_msg(
             msg, f"stdout did not match {pattern!r}", cmd, result
         )
@@ -159,7 +238,7 @@ class PgBin:
     def command_fails_like(self, cmd, pattern, msg=None, *, extra_env=None):
         """Assert failure and that stderr matches pattern."""
         result = self.result(cmd, extra_env=extra_env)
-        assert result.rc != 0, _assert_msg(msg, "expected failure", cmd, result)
+        assert result.failed, _assert_msg(msg, "expected failure", cmd, result)
         assert re.search(pattern, result.stderr), _assert_msg(
             msg, f"stderr did not match {pattern!r}", cmd, result
         )
@@ -177,7 +256,7 @@ class PgBin:
         be unsupported on the platform (e.g. pg_upgrade --clone).
         """
         result = self.result(cmd, extra_env=extra_env)
-        if result.rc != 0:
+        if result.failed:
             assert re.search(expected_stdout, result.stdout), _assert_msg(
                 msg, f"stdout did not match {expected_stdout!r}", cmd, result
             )
@@ -190,7 +269,7 @@ class PgBin:
     def command_checks_all(self, cmd, exit_code, stdout_res, stderr_res, msg=None):
         """Assert the exit code and that every stdout/stderr regex matches."""
         result = self.result(cmd)
-        assert result.rc == exit_code, _assert_msg(
+        assert result.exit_code == exit_code, _assert_msg(
             msg, f"expected exit {exit_code}", cmd, result
         )
         for pattern in stdout_res:
@@ -207,7 +286,7 @@ class PgBin:
         """--help exits 0, writes stdout, nothing to stderr, lines <= 95 chars."""
         cmd = [name, "--help"]
         result = self.result(cmd)
-        assert result.rc == 0, _describe(cmd, result)
+        assert result.ok, _describe(cmd, result)
         assert result.stdout != "", f"{name} --help produced no stdout"
         assert result.stderr == "", f"{name} --help wrote to stderr:\n{result.stderr}"
         long_lines = [
@@ -222,7 +301,7 @@ class PgBin:
         """--version exits 0, writes stdout, nothing to stderr."""
         cmd = [name, "--version"]
         result = self.result(cmd)
-        assert result.rc == 0, _describe(cmd, result)
+        assert result.ok, _describe(cmd, result)
         assert result.stdout != "", f"{name} --version produced no stdout"
         assert result.stderr == "", f"{name} --version wrote stderr:\n{result.stderr}"
         return result
@@ -231,7 +310,7 @@ class PgBin:
         """An invalid option gives a nonzero exit and an error message."""
         cmd = [name, "--not-a-valid-option"]
         result = self.result(cmd)
-        assert result.rc != 0, f"{name} accepted an invalid option"
+        assert result.failed, f"{name} accepted an invalid option"
         assert result.stderr != "", f"{name} printed no error for an invalid option"
         return result
 
