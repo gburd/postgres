@@ -820,6 +820,31 @@ the temporary startup/session gate or make long-lived threaded sessions safe;
 the next blocker is unbounded idle/read lifetime plus safe backend-local
 cleanup after arbitrary command sequences.
 
+## Bounded Session Lifetime Slice
+
+The thirty-eighth slice replaces the two-step stop with a larger temporary
+session guard and an explicit idle-read deadline:
+
+- threaded `PgSessionRun()` now allows up to eight returned protocol steps
+  before the guarded FATAL fires;
+- before each threaded step, the runner arms the existing
+  `Port.client_read_deadline` for a short temporary deadline, so a carrier that
+  reaches idle client read cannot block forever during this guarded prototype;
+- after a threaded step returns, the runner clears that temporary deadline
+  before deciding whether the step-count guard should fire;
+- one-shot clients still execute, receive `ReadyForQuery`, send `Terminate`,
+  and exit cleanly;
+- clients that keep sending messages can execute several commands before the
+  bounded-session guard stops the carrier;
+- process-mode `PgSessionRun()` remains unchanged and unbounded.
+
+This moves the thread-per-session prototype from a two-message proof to a
+bounded session-lifetime proof. It is still deliberately temporary: the step
+count and idle deadline are guardrails around the current implementation, not
+the intended final session policy. Removing them requires safe long-idle wait
+ownership, cancellation/timeout routing, and cleanup after arbitrary command
+sequences.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1312,6 +1337,24 @@ cleanup after arbitrary command sequences.
   returned 20 result rows and reached the expected `threaded backend completed
   two protocol steps` guard with no byval/opclass/crash signatures.
 - after the two-step session boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.
+- a process-mode temp-instance smoke with `multithreaded=off` returned
+  `select 42` successfully with no client stderr.
+- after the bounded session lifetime slice, `git diff --check`,
+  `gmake -C src/backend/tcop postgres.o`, full `gmake -C src/backend -j8`,
+  and `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- a 20-client `multithreaded=on` smoke using one-shot `psql -c "select <n>"`
+  connections returned 20 result rows, exited with status 0, produced no
+  client stderr, produced no bounded-session guarded FATALs, and found no
+  byval/opclass/crash signatures.
+- a five-client `multithreaded=on` smoke using ten SQL messages per connection
+  returned 40 result rows before reaching the expected bounded-session guard
+  and found no byval/opclass/crash signatures.
+- a sequential idle-client `multithreaded=on` smoke connected three clients
+  that sent no SQL for longer than the temporary deadline; each reached the
+  `Operation timed out` read boundary, the server shut down cleanly, and no
+  byval/opclass/crash signatures were found.
+- after the bounded session lifetime slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
 - a process-mode temp-instance smoke with `multithreaded=off` returned
   `select 42` successfully with no client stderr.
