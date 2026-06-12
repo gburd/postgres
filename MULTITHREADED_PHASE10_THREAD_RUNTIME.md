@@ -285,6 +285,30 @@ connection metadata setup, but it still cannot read the startup packet until
 startup timeout and startup termination have logical-backend equivalents that
 do not use `_exit()` or process-wide SIGALRM delivery.
 
+## Startup Packet Read Deadline Slice
+
+The fifteenth slice lets the threaded carrier read and parse the startup
+packet before stopping at the next unsafe boundary:
+
+- process mode still uses the historical `STARTUP_PACKET_TIMEOUT` and
+  SIGALRM-backed timeout machinery;
+- thread mode records a per-`Port` client-read deadline for the startup packet
+  window instead of arming a process-global SIGALRM timeout;
+- `secure_read()` converts that per-connection deadline into a finite
+  `WaitEventSetWait()` timeout and reports `ETIMEDOUT` when it expires;
+- after startup-packet handling completes, thread mode clears the deadline and
+  stops at a guarded FATAL before authentication, `InitProcess()`, or
+  post-startup backend lifetime;
+- `socket_close()` now explicitly closes the accepted socket for threaded
+  backends during logical backend exit, while preserving the process-backend
+  behavior of leaving the socket open until process death.
+
+This moves the thread-per-session prototype through real startup packet
+processing without using the process-level startup timeout. Authentication
+remains deliberately guarded because its timeout path, `InitPostgres()`/
+`InitProcess()` side effects, and post-startup session termination paths still
+need their own thread-safe lifecycle work.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -385,3 +409,20 @@ do not use `_exit()` or process-wide SIGALRM delivery.
   boundary slice still rejected two client connections with the guarded FATAL,
   kept the postmaster running between connections, and completed normal fast
   shutdown.
+- after the startup packet read deadline slice,
+  `gmake -C src/backend/libpq be-secure.o`,
+  `gmake -C src/backend/libpq pqcomm.o`, and
+  `gmake -C src/backend/tcop backend_startup.o` passed;
+- after the startup packet read deadline slice, full `gmake -C src/backend -j8`
+  passed;
+- after the startup packet read deadline slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the startup packet read
+  deadline slice read real libpq startup packets for two client connections,
+  rejected both with the guarded "threaded backend authentication is not
+  implemented yet" FATAL, kept the postmaster running between connections, and
+  completed normal fast shutdown;
+- the same smoke held a silent Unix-socket client past
+  `authentication_timeout='1s'`; the server logged `could not receive data from
+  client: Operation timed out`, the client observed EOF after the logical
+  backend exited, and `pg_ctl status` confirmed the postmaster remained alive.

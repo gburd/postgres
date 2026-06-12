@@ -40,6 +40,7 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
+#include "utils/timestamp.h"
 #include "utils/varlena.h"
 
 /* GUCs */
@@ -295,12 +296,6 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 		port->remote_hostname = MemoryContextStrdup(TopMemoryContext, remote_host);
 	}
 
-	if (startup_mode == BACKEND_STARTUP_THREAD)
-		ereport(FATAL,
-				(errmsg("threaded backend startup is not implemented yet"),
-				 errdetail("The startup packet timeout and termination paths "
-						   "still use process-level signal handling.")));
-
 	/*
 	 * Ready to begin client interaction.  We will give up and _exit(1) after
 	 * a time delay, so that a broken client can't hog a connection
@@ -316,8 +311,18 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	 * registration of STARTUP_PACKET_TIMEOUT will be lost.  This is okay
 	 * since we never use it again after this function.
 	 */
-	RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
-	enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
+		enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
+	}
+	else
+	{
+		port->client_read_deadline_active = true;
+		port->client_read_deadline =
+			TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+										AuthenticationTimeout * 1000);
+	}
 
 	/* Handle direct SSL handshake */
 	status = ProcessSSLStartup(port);
@@ -390,6 +395,8 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 		disable_timeout(STARTUP_PACKET_TIMEOUT, false);
 		sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 	}
+	else
+		port->client_read_deadline_active = false;
 
 	/*
 	 * As a safety check that nothing in startup has yet performed
@@ -408,6 +415,13 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	 */
 	if (status != STATUS_OK)
 		PgBackendExit(0);
+
+	if (startup_mode == BACKEND_STARTUP_THREAD)
+		ereport(FATAL,
+				(errmsg("threaded backend authentication is not implemented yet"),
+				 errdetail("The authentication, InitProcess, and post-startup "
+						   "termination paths still need thread-safe "
+						   "lifecycle handling.")));
 
 	/*
 	 * Now that we have the user and database name, we can set the process

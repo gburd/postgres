@@ -32,6 +32,7 @@
 #include "storage/latch.h"
 #include "tcop/tcopprot.h"
 #include "utils/injection_point.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 PG_GLOBAL_RUNTIME char *ssl_library;
@@ -184,6 +185,7 @@ secure_read(Port *port, void *ptr, size_t len)
 {
 	ssize_t		n;
 	int			waitfor;
+	long		timeout = -1;
 
 	/* Deal with any already-pending interrupt condition. */
 	ProcessClientReadInterrupt(false);
@@ -219,8 +221,28 @@ retry:
 
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, waitfor, NULL);
 
-		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
-						 WAIT_EVENT_CLIENT_READ);
+		if (port->client_read_deadline_active)
+		{
+			TimestampTz now = GetCurrentTimestamp();
+
+			if (now >= port->client_read_deadline)
+			{
+				errno = ETIMEDOUT;
+				return -1;
+			}
+
+			timeout = TimestampDifferenceMilliseconds(now,
+													  port->client_read_deadline);
+			if (timeout < 0)
+				timeout = 0;
+		}
+
+		if (WaitEventSetWait(FeBeWaitSet, timeout, &event, 1,
+							 WAIT_EVENT_CLIENT_READ) == 0)
+		{
+			errno = ETIMEDOUT;
+			return -1;
+		}
 
 		/*
 		 * If the postmaster has died, it's not safe to continue running,

@@ -27,6 +27,7 @@
 #endif
 #include <netinet/tcp.h>
 
+#include "datatype/timestamp.h"
 #include "libpq/pg-gssapi.h"
 #include "utils/global_lifetime.h"
 #include "utils/global_lifetime.h"
@@ -213,6 +214,8 @@ typedef struct Port
 	bool		peer_cert_valid;
 	bool		alpn_used;
 	bool		last_read_was_eof;
+	bool		client_read_deadline_active;
+	TimestampTz client_read_deadline;
 
 	/*
 	 * OpenSSL structures.  As with GSSAPI above, to keep struct offsets

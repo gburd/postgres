@@ -79,6 +79,7 @@
 #include "postmaster/postmaster.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 
@@ -380,15 +381,16 @@ socket_close(int code, Datum arg)
 		secure_close(MyProcPort);
 
 		/*
-		 * Formerly we did an explicit close() here, but it seems better to
-		 * leave the socket open until the process dies.  This allows clients
-		 * to perform a "synchronous close" if they care --- wait till the
-		 * transport layer reports connection closure, and you can be sure the
-		 * backend has exited.
-		 *
-		 * We do set sock to PGINVALID_SOCKET to prevent any further I/O,
-		 * though.
+		 * Process backends leave the socket open until process death, which
+		 * allows clients to perform a synchronous close.  Threaded backends
+		 * cannot rely on process exit to release the accepted descriptor.
 		 */
+		if (CurrentPgRuntime != NULL &&
+			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+			MyProcPort->sock != PGINVALID_SOCKET)
+			closesocket(MyProcPort->sock);
+
+		/* Prevent any further I/O through this Port. */
 		MyProcPort->sock = PGINVALID_SOCKET;
 	}
 }
