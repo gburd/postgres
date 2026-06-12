@@ -114,6 +114,7 @@ extern void InitProcessGlobals(void);
 extern int	MaxLivePostmasterChildren(void);
 
 extern bool PostmasterMarkPIDForWorkerNotify(int);
+extern void PostmasterSignalPMSignal(void);
 
 #ifdef WIN32
 extern void pgwin32_register_deadchild_callback(HANDLE procHandle, DWORD procId);

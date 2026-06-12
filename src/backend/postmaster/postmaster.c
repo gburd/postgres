@@ -397,6 +397,7 @@ static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_reload_request;
 static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_shutdown_request;
 static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_fast_shutdown_request;
 static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_immediate_shutdown_request;
+static PG_GLOBAL_RUNTIME Latch *postmaster_pmsignal_latch;
 
 /* event multiplexing object */
 static PG_GLOBAL_RUNTIME WaitEventSet *pm_wait_set;
@@ -1660,6 +1661,7 @@ ConfigurePostmasterWaitSet(bool accept_connections)
 		FreeWaitEventSet(pm_wait_set);
 	pm_wait_set = NULL;
 
+	postmaster_pmsignal_latch = MyLatch;
 	pm_wait_set = CreateWaitEventSet(NULL,
 									 accept_connections ? (1 + NumListenSockets) : 1);
 	AddWaitEventToSet(pm_wait_set, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch,
@@ -2007,6 +2009,21 @@ handle_pm_pmsignal_signal(SIGNAL_ARGS)
 {
 	pending_pm_pmsignal = true;
 	SetLatch(MyLatch);
+}
+
+/*
+ * Same-process thread carriers cannot notify the postmaster by sending
+ * SIGUSR1 to PostmasterPid: in a threaded runtime that is the current process,
+ * and the signal can be delivered to any carrier.  Set the same pending flag
+ * as the signal handler and wake the postmaster's recorded latch directly.
+ */
+void
+PostmasterSignalPMSignal(void)
+{
+	pending_pm_pmsignal = true;
+
+	if (postmaster_pmsignal_latch != NULL)
+		SetLatch(postmaster_pmsignal_latch);
 }
 
 /*

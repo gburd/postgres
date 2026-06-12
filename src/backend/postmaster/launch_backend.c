@@ -204,6 +204,7 @@ typedef struct BackendThreadStart
 	Latch	   *postmaster_latch;
 	pg_tz	   *session_timezone;
 	pg_tz	   *log_timezone;
+	pg_atomic_uint32 launch_registered;
 	bool		startup_gate_held;
 } BackendThreadStart;
 
@@ -229,6 +230,7 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
+static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
 static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
@@ -355,6 +357,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->postmaster_latch = MyLatch;
 	thread_start->session_timezone = session_timezone;
 	thread_start->log_timezone = log_timezone;
+	pg_atomic_init_u32(&thread_start->launch_registered, 0);
 	thread_start->startup_gate_held = false;
 
 	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
@@ -373,7 +376,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 						  backend_thread_entry, thread_start);
 	if (rc != 0)
 	{
-		closesocket(thread_start->client_sock.sock);
+		if (child_type == B_BACKEND)
+			closesocket(thread_start->client_sock.sock);
 		free(thread_start);
 		errno = rc;
 		return false;
@@ -382,6 +386,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	postmaster_thread_carriers_started = true;
 	PostmasterChildSetThread(pmchild, &thread);
 	PostmasterChildSetThreadBackend(pmchild, &thread_start->runtime_state.backend);
+	pg_atomic_write_u32(&thread_start->launch_registered, 1);
 	return true;
 #endif
 }
@@ -392,6 +397,7 @@ backend_thread_entry(void *arg)
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
 	CurrentBackendThreadStart = thread_start;
+	backend_thread_wait_until_registered(thread_start);
 
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;
@@ -438,10 +444,21 @@ backend_thread_run_backend(BackendThreadStart *thread_start)
 static void
 backend_thread_run_worker(BackendThreadStart *thread_start)
 {
+	ereport(DEBUG1,
+			(errmsg_internal("starting %s thread carrier",
+							 PostmasterChildName(thread_start->child_type))));
+
 	backend_thread_enter_startup_gate(thread_start);
 
 	child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
 	pg_unreachable();
+}
+
+static void
+backend_thread_wait_until_registered(BackendThreadStart *thread_start)
+{
+	while (pg_atomic_read_u32(&thread_start->launch_registered) == 0)
+		pg_usleep(1000L);
 }
 
 static void

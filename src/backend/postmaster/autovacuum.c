@@ -1526,55 +1526,9 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
-	 * Set always-secure search path, so malicious users can't redirect user
-	 * code (e.g. pg_index.indexprs).  (That code runs in a
-	 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not
-	 * take control of the entire autovacuum worker in any case.)
-	 */
-	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Force zero_damaged_pages OFF in the autovac process, even if it is set
-	 * in postgresql.conf.  We don't really want such a dangerous option being
-	 * applied non-interactively.
-	 */
-	SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Force settable timeouts off to avoid letting these settings prevent
-	 * regular maintenance from being executed.
-	 */
-	SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("idle_in_transaction_session_timeout", "0",
-					PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Force default_transaction_isolation to READ COMMITTED.  We don't want
-	 * to pay the overhead of serializable mode, nor add any risk of causing
-	 * deadlocks or delaying other transactions.
-	 */
-	SetConfigOption("default_transaction_isolation", "read committed",
-					PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Force synchronous replication off to allow regular maintenance even if
-	 * we are waiting for standbys to connect. This is important to ensure we
-	 * aren't blocked from performing anti-wraparound tasks.
-	 */
-	if (synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
-		SetConfigOption("synchronous_commit", "local",
-						PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
-	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Get the info about the database we're going to work on.
+	 * Get the info about the database we're going to work on.  Do this before
+	 * worker-local GUC overrides so synthetic or stale worker launches can
+	 * leave cleanly without touching backend-local GUC state.
 	 */
 	LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
 
@@ -1613,6 +1567,58 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		elog(WARNING, "autovacuum worker started without a worker entry");
 		dbid = InvalidOid;
 		LWLockRelease(AutovacuumLock);
+	}
+
+	if (OidIsValid(dbid))
+	{
+		/*
+		 * Set always-secure search path, so malicious users can't redirect
+		 * user code (e.g. pg_index.indexprs).  (That code runs in a
+		 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not
+		 * take control of the entire autovacuum worker in any case.)
+		 */
+		SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
+
+		/*
+		 * Force zero_damaged_pages OFF in the autovac process, even if it is
+		 * set in postgresql.conf.  We don't really want such a dangerous
+		 * option being applied non-interactively.
+		 */
+		SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
+
+		/*
+		 * Force settable timeouts off to avoid letting these settings prevent
+		 * regular maintenance from being executed.
+		 */
+		SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("idle_in_transaction_session_timeout", "0",
+						PGC_SUSET, PGC_S_OVERRIDE);
+
+		/*
+		 * Force default_transaction_isolation to READ COMMITTED.  We don't
+		 * want to pay the overhead of serializable mode, nor add any risk of
+		 * causing deadlocks or delaying other transactions.
+		 */
+		SetConfigOption("default_transaction_isolation", "read committed",
+						PGC_SUSET, PGC_S_OVERRIDE);
+
+		/*
+		 * Force synchronous replication off to allow regular maintenance even
+		 * if we are waiting for standbys to connect. This is important to
+		 * ensure we aren't blocked from performing anti-wraparound tasks.
+		 */
+		if (synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
+			SetConfigOption("synchronous_commit", "local",
+							PGC_SUSET, PGC_S_OVERRIDE);
+
+		/*
+		 * Even when system is configured to use a different fetch consistency,
+		 * for autovac we always want fresh stats.
+		 */
+		SetConfigOption("stats_fetch_consistency", "none",
+						PGC_SUSET, PGC_S_OVERRIDE);
 	}
 
 	if (OidIsValid(dbid))

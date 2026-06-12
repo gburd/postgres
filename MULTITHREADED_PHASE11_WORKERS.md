@@ -22,16 +22,25 @@ deferral into thread carriers:
   logical backend interrupts instead of assuming every `PMChild` has a PID;
 - `AutoVacWorkerMain()` avoids process-global signal handler installation in
   threaded mode, initializes logical timeouts, keeps the postmaster memory
-  context owned by the runtime, and releases the temporary threaded startup
-  gate after `InitPostgres()` completes;
-- the Phase 10 threaded TAP smoke no longer expects the old autovacuum
-  deferral log. A deterministic live autovacuum-worker proof remains pending.
+  context owned by the runtime, checks for a valid autovacuum worker entry
+  before touching worker-local GUC state, and releases the temporary threaded
+  startup gate after `InitPostgres()` completes;
+- same-process `SendPostmasterSignal()` calls now mark the postmaster PMSignal
+  flag and wake the postmaster latch directly instead of sending `SIGUSR1` to
+  the containing threaded process;
+- the Phase 10 threaded TAP smoke now uses a thread-safe test helper module to
+  request an autovacuum worker deterministically, with ordinary autovacuum
+  scheduling disabled so the fixture proves the explicit carrier path rather
+  than launcher heuristics.
 
 This slice deliberately does not convert the autovacuum launcher. In threaded
 mode it remains a startup-time process carrier for now, while its late workers
 are thread-backed. The remaining Phase 11 work must convert the launcher and
 the other in-tree server-owned worker families before normal threaded server
-mode can claim to be no-fork for ordinary operation.
+mode can claim to be no-fork for ordinary operation. A real scheduled
+autovacuum worker with a valid worker entry is also still pending; the current
+deterministic proof covers carrier launch and worker-main entry, not useful
+vacuum/analyze work.
 
 ## Remaining Worker Families
 
@@ -59,7 +68,7 @@ Validation run for this slice:
   regression and skipped TAP in this checkout because it is not configured
   with `--enable-tap-tests`;
 - direct syntax check for `t/001_threaded_runtime.pl` passed;
-- direct threaded TAP smoke passed with 22 tests after patching the known
+- direct threaded TAP smoke passed with 23 tests after patching the known
   macOS temp-install `libpq` references.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not

@@ -41,22 +41,36 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-autovacuum = on
-autovacuum_naptime = '1s'
-autovacuum_vacuum_threshold = 0
-autovacuum_vacuum_scale_factor = 0
-autovacuum_vacuum_insert_threshold = 0
-autovacuum_vacuum_insert_scale_factor = 0
-autovacuum_analyze_threshold = 0
-autovacuum_analyze_scale_factor = 0
-log_autovacuum_min_duration = 0
-log_autoanalyze_min_duration = 0
+autovacuum = off
 log_min_messages = debug1
 });
 $node->start;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'threaded runtime enabled');
+
+$node->safe_psql(
+	'postgres',
+	q{
+CREATE FUNCTION test_backend_runtime_request_autovacuum_worker()
+RETURNS bool
+AS 'test_backend_runtime_threaded',
+   'test_backend_runtime_request_autovacuum_worker'
+LANGUAGE C;
+SELECT test_backend_runtime_request_autovacuum_worker();
+});
+
+for (1 .. 50)
+{
+	last
+	  if slurp_file($node->logfile) =~
+	  qr/autovacuum worker started without a worker entry/;
+	usleep(100_000);
+}
+
+like(slurp_file($node->logfile),
+	qr/autovacuum worker started without a worker entry/,
+	'deterministic autovacuum worker thread reached worker main');
 
 $node->safe_psql(
 	'postgres',

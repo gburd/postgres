@@ -16,6 +16,12 @@ test_backend_runtime = shared_module('test_backend_runtime',
 )
 test_install_libs += test_backend_runtime
 
+test_backend_runtime_threaded = shared_module('test_backend_runtime_threaded',
+  files('test_backend_runtime_threaded.c'),
+  kwargs: pg_test_mod_args,
+)
+test_install_libs += test_backend_runtime_threaded
+
 test_install_data += files(
   'test_backend_runtime.control',
   'test_backend_runtime--1.0.sql',

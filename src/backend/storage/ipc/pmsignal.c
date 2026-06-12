@@ -168,6 +168,17 @@ SendPostmasterSignal(PMSignalReason reason)
 		return;
 	/* Atomically set the proper flag */
 	PMSignalState->PMSignalFlags[reason] = true;
+	/*
+	 * Thread carriers run in the postmaster's process.  Waking the
+	 * postmaster with SIGUSR1 would signal the whole containing process, so
+	 * route notification through the postmaster latch instead.
+	 */
+	if (PostmasterPid == getpid())
+	{
+		PostmasterSignalPMSignal();
+		return;
+	}
+
 	/* Send signal to postmaster */
 	kill(PostmasterPid, SIGUSR1);
 }
