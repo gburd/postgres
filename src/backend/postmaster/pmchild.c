@@ -151,6 +151,7 @@ InitPostmasterChildSlots(void)
 
 		for (int j = 0; j < pmchild_pools[btype].size; j++)
 		{
+			slots[slotno].carrier_kind = PM_CHILD_CARRIER_PROCESS;
 			slots[slotno].pid = 0;
 			slots[slotno].child_slot = slotno + 1;
 			slots[slotno].bkend_type = B_INVALID;
@@ -188,6 +189,7 @@ AssignPostmasterChildSlot(BackendType btype)
 		return NULL;
 
 	pmchild = dlist_container(PMChild, elem, dlist_pop_head_node(freelist));
+	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = 0;
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
@@ -230,6 +232,7 @@ AllocDeadEndChild(void)
 	pmchild = (PMChild *) palloc_extended(sizeof(PMChild), MCXT_ALLOC_NO_OOM);
 	if (pmchild)
 	{
+		pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 		pmchild->pid = 0;
 		pmchild->child_slot = 0;
 		pmchild->bkend_type = B_DEAD_END_BACKEND;
@@ -240,6 +243,21 @@ AllocDeadEndChild(void)
 	}
 
 	return pmchild;
+}
+
+bool
+PostmasterChildIsProcess(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_PROCESS;
+}
+
+void
+PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
+{
+	Assert(pid > 0);
+
+	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
+	pmchild->pid = pid;
 }
 
 /*
@@ -295,7 +313,7 @@ FindPostmasterChildByPid(int pid)
 	{
 		PMChild    *bp = dlist_container(PMChild, elem, iter.cur);
 
-		if (bp->pid == pid)
+		if (PostmasterChildIsProcess(bp) && bp->pid == pid)
 			return bp;
 	}
 	return NULL;

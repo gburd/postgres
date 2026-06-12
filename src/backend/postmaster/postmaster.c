@@ -3490,6 +3490,8 @@ signal_child(PMChild *pmchild, int signal)
 {
 	pid_t		pid = pmchild->pid;
 
+	Assert(PostmasterChildIsProcess(pmchild));
+
 	ereport(DEBUG3,
 			(errmsg_internal("sending signal %d/%s to %s process with pid %d",
 							 signal, pm_signame(signal),
@@ -3650,7 +3652,7 @@ BackendStartup(ClientSocket *client_sock)
 	 * Everything's been successful, it's safe to add this backend to our list
 	 * of backends.
 	 */
-	bn->pid = pid;
+	PostmasterChildSetProcess(bn, pid);
 	return STATUS_OK;
 }
 
@@ -4045,7 +4047,7 @@ StartChildProcess(BackendType type)
 	}
 
 	/* in parent, successful fork */
-	pmchild->pid = pid;
+	PostmasterChildSetProcess(pmchild, pid);
 	return pmchild;
 }
 
@@ -4055,17 +4057,22 @@ StartChildProcess(BackendType type)
 void
 StartSysLogger(void)
 {
+	pid_t		syslogger_pid;
+
 	Assert(SysLoggerPMChild == NULL);
 
 	SysLoggerPMChild = AssignPostmasterChildSlot(B_LOGGER);
 	if (!SysLoggerPMChild)
 		elog(PANIC, "no postmaster child slot available for syslogger");
-	SysLoggerPMChild->pid = SysLogger_Start(SysLoggerPMChild->child_slot);
-	if (SysLoggerPMChild->pid == 0)
+	syslogger_pid = SysLogger_Start(SysLoggerPMChild->child_slot);
+
+	if (syslogger_pid == 0)
 	{
 		ReleasePostmasterChildSlot(SysLoggerPMChild);
 		SysLoggerPMChild = NULL;
 	}
+	else
+		PostmasterChildSetProcess(SysLoggerPMChild, syslogger_pid);
 }
 
 /*
@@ -4221,7 +4228,7 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 
 	/* in postmaster, fork successful ... */
 	rw->rw_pid = worker_pid;
-	bn->pid = rw->rw_pid;
+	PostmasterChildSetProcess(bn, rw->rw_pid);
 	ReportBackgroundWorkerPID(rw);
 	return true;
 }
@@ -4396,6 +4403,7 @@ maybe_reap_io_worker(int pid)
 	for (int i = 0; i < MAX_IO_WORKERS; ++i)
 	{
 		if (io_worker_children[i] &&
+			PostmasterChildIsProcess(io_worker_children[i]) &&
 			io_worker_children[i]->pid == pid)
 		{
 			ReleasePostmasterChildSlot(io_worker_children[i]);
@@ -4565,7 +4573,7 @@ PostmasterMarkPIDForWorkerNotify(int pid)
 	dlist_foreach(iter, &ActiveChildList)
 	{
 		bp = dlist_container(PMChild, elem, iter.cur);
-		if (bp->pid == pid)
+		if (PostmasterChildIsProcess(bp) && bp->pid == pid)
 		{
 			bp->bgworker_notify = true;
 			return true;

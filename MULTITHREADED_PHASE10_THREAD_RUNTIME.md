@@ -62,9 +62,27 @@ This is intentionally not the thread launcher yet. It creates the call shape
 the launcher needs and makes the remaining process-only startup semantics
 visible.
 
+## PMChild Carrier Identity Slice
+
+The fourth slice starts separating postmaster supervision identity from process
+identity:
+
+- `PMChild` now records an explicit `PMChildCarrierKind`;
+- process-backed children are initialized with `PM_CHILD_CARRIER_PROCESS`;
+- process launch success records the PID through `PostmasterChildSetProcess()`;
+- PID lookup and worker-notify helpers only match process-backed children;
+- process signaling asserts that the target is process-backed.
+
+This does not launch backend threads. It removes the assumption that every
+postmaster child entry can be supervised only by a PID, which is a prerequisite
+for recording a future thread handle and for keeping `waitpid()` cleanup from
+accidentally consuming thread-backed logical children.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
+- `gmake -C src/backend/postmaster pmchild.o postmaster.o` passed after the
+  PMChild carrier identity slice;
 - `gmake -C src/backend/utils/init backend_runtime.o globals.o` passed;
 - `gmake -C src/backend/utils/misc guc_tables.o` passed after regenerating
   `guc_tables.inc.c`;

@@ -18,15 +18,15 @@
 #include "utils/global_lifetime.h"
 
 /*
- * A struct representing an active postmaster child process.  This is used
- * mainly to keep track of how many children we have and send them appropriate
- * signals when necessary.  All postmaster child processes are assigned a
- * PMChild entry.  That includes "normal" client sessions, but also autovacuum
- * workers, walsenders, background workers, and aux processes.  (Note that at
- * the time of launch, walsenders are labeled B_BACKEND; we relabel them to
- * B_WAL_SENDER upon noticing they've changed their PMChildFlags entry.  Hence
- * that check must be done before any operation that needs to distinguish
- * walsenders from normal backends.)
+ * A struct representing an active postmaster child.  This is used mainly to
+ * keep track of how many children we have and signal process-backed children
+ * when necessary.  All postmaster children are assigned a PMChild entry.  That
+ * includes "normal" client sessions, but also autovacuum workers, walsenders,
+ * background workers, and aux processes.  (Note that at the time of launch,
+ * walsenders are labeled B_BACKEND; we relabel them to B_WAL_SENDER upon
+ * noticing they've changed their PMChildFlags entry.  Hence that check must be
+ * done before any operation that needs to distinguish walsenders from normal
+ * backends.)
  *
  * "dead-end" children are also allocated a PMChild entry: these are children
  * launched just for the purpose of sending a friendly rejection message to a
@@ -38,9 +38,16 @@
  * children are not assigned a child_slot and have child_slot == 0 (valid
  * child_slot ids start from 1).
  */
+typedef enum PMChildCarrierKind
+{
+	PM_CHILD_CARRIER_PROCESS,
+	PM_CHILD_CARRIER_THREAD
+} PMChildCarrierKind;
+
 typedef struct
 {
-	pid_t		pid;			/* process id of backend */
+	PMChildCarrierKind carrier_kind;	/* process, thread, or future carrier */
+	pid_t		pid;			/* process id, if process-backed */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
 	BackendType bkend_type;		/* child process flavor, see above */
 	struct RegisteredBgWorker *rw;	/* bgworker info, if this is a bgworker */
@@ -123,6 +130,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME dlist_head ActiveChildList;
 extern void InitPostmasterChildSlots(void);
 extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
+extern bool PostmasterChildIsProcess(const PMChild *pmchild);
+extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);
 
