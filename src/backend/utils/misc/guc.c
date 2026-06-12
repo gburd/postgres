@@ -1481,8 +1481,7 @@ InitializeGUCOptions(void)
  * Threaded backend carriers share the postmaster address space, so they must
  * not reset every GUC variable to its boot default while bootstrapping a
  * session.  For now, build this carrier's GUC table and initialize only the
- * role identity GUC records that InitializeSessionUserId() must update after
- * authentication.
+ * GUC records that early InitPostgres() must update after authentication.
  *
  * Later Phase 10 work must replace this narrow bridge with full per-session
  * GUC adoption before threaded backends can run arbitrary SQL.
@@ -1500,6 +1499,12 @@ InitializeThreadedSessionGUCOptions(void)
 	InitializeOneGUCOption(gconf);
 
 	gconf = find_option("role", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("server_encoding", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("client_encoding", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 }
 

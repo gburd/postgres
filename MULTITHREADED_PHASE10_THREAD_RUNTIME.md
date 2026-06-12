@@ -585,6 +585,33 @@ process-global locale state shared with the postmaster and sibling carriers.
 The next Phase 10 slice needs a thread-safe database GUC/locale policy before
 startup settings and arbitrary SQL can run.
 
+## Database GUC And Locale Boundary Slice
+
+The twenty-eighth slice lets threaded startup cross `CheckMyDatabase()`:
+
+- `server_encoding`'s GUC backing string is now session-local TLS, matching
+  the already session-local `DatabaseEncoding`, `ClientEncoding`, and
+  `MessageEncoding` state;
+- the early threaded GUC bridge now initializes the `server_encoding` and
+  `client_encoding` GUC records in addition to `session_authorization` and
+  `role`;
+- `CheckMyDatabase()` can set database encoding, record `server_encoding`,
+  seed `client_encoding`, check CONNECT/database limits, and run collation
+  version warnings in a backend carrier thread;
+- threaded carriers do not call `pg_perm_setlocale(LC_CTYPE, ...)`; for now,
+  they require the database LC_CTYPE to match the postmaster's current process
+  LC_CTYPE and then update only backend-local message encoding state;
+- the guarded FATAL now fires after database-specific GUC and locale
+  validation, before startup-packet GUC options, `pg_db_role_setting`
+  application, default session state initialization, session preload
+  libraries, final pgstat startup, and transaction commit.
+
+This is a conservative first locale policy. It supports the normal same-locale
+cluster case without mutating process-global locale state from a backend
+thread. A later threaded runtime needs a broader per-database locale strategy
+before it can support clusters where database LC_CTYPE differs from the
+postmaster process LC_CTYPE.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -871,3 +898,19 @@ startup settings and arbitrary SQL can run.
   before `CheckMyDatabase()` with the guarded "threaded backend database
   initialization is not implemented yet" FATAL, kept the postmaster running
   between connections, and completed normal fast shutdown.
+- after the database GUC and locale boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` and
+  `gmake -C src/backend/utils/misc guc.o guc_tables.o` passed;
+- after the database GUC and locale boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the database GUC and locale boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the database GUC and
+  locale boundary slice read real libpq startup packets for two client
+  connections, completed authentication, role identity, database identity,
+  database-specific GUC setup, and locale validation, rejected both before
+  startup options and `pg_db_role_setting` application with the guarded
+  "threaded backend database initialization is not implemented yet" FATAL,
+  kept the postmaster running between connections, and completed normal fast
+  shutdown.

@@ -616,7 +616,7 @@ static PG_GLOBAL_RUNTIME char *syslog_ident_str;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION double phony_random_seed;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *client_encoding_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *datestyle_string;
-static PG_GLOBAL_RUNTIME char *server_encoding_string;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *server_encoding_string;
 static PG_GLOBAL_RUNTIME char *server_version_string;
 static PG_GLOBAL_RUNTIME int server_version_num;
 static PG_GLOBAL_RUNTIME char *debug_io_direct_string;

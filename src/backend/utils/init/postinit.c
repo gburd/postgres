@@ -17,6 +17,7 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <unistd.h>
 
 #include "access/genam.h"
@@ -83,7 +84,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION List *ConnectionWarningDetails;
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
 static void PerformAuthentication(Port *port);
-static void CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connections);
+static void CheckMyDatabase(const char *name, bool am_superuser,
+							bool override_allow_connections,
+							bool threaded_backend);
 static void ShutdownPostgres(int code, Datum arg);
 static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
@@ -349,7 +352,9 @@ PerformAuthentication(Port *port)
  * CheckMyDatabase -- fetch information from the pg_database entry for our DB
  */
 static void
-CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connections)
+CheckMyDatabase(const char *name, bool am_superuser,
+				bool override_allow_connections,
+				bool threaded_backend)
 {
 	HeapTuple	tup;
 	Form_pg_database dbform;
@@ -452,7 +457,22 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	 * pg_locale_t.
 	 */
 
-	if (pg_perm_setlocale(LC_CTYPE, ctype) == NULL)
+	if (threaded_backend)
+	{
+		const char *current_ctype = setlocale(LC_CTYPE, NULL);
+
+		if (current_ctype == NULL || strcmp(current_ctype, ctype) != 0)
+			ereport(FATAL,
+					(errmsg("database locale is incompatible with threaded backend mode"),
+					 errdetail("The process LC_CTYPE is \"%s\", but database \"%s\" requires LC_CTYPE \"%s\".",
+							   current_ctype ? current_ctype : "(null)",
+							   name,
+							   ctype),
+					 errhint("Threaded backend mode currently requires databases to use the postmaster's process LC_CTYPE.")));
+
+		SetMessageEncoding(GetDatabaseEncoding());
+	}
+	else if (pg_perm_setlocale(LC_CTYPE, ctype) == NULL)
 		ereport(FATAL,
 				(errmsg("database locale is incompatible with operating system"),
 				 errdetail("The database was initialized with LC_CTYPE \"%s\", "
@@ -1253,15 +1273,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/* set up ACL framework (so CheckMyDatabase can check permissions) */
 	initialize_acl();
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Database identity, storage path, relcache, and "
-						   "ACL setup completed, but database-specific GUC "
-						   "state, locale validation, startup settings, and "
-						   "post-startup session lifetime still need "
-						   "thread-safe lifecycle handling.")));
-
 	/*
 	 * Re-read the pg_database row for our database, check permissions and set
 	 * up database-specific GUC settings.  We can't do this until all the
@@ -1270,7 +1281,16 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	if (!bootstrap)
 		CheckMyDatabase(dbname, am_superuser,
-						(flags & INIT_PG_OVERRIDE_ALLOW_CONNS) != 0);
+						(flags & INIT_PG_OVERRIDE_ALLOW_CONNS) != 0,
+						threaded_backend);
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Database-specific GUC state and locale validation "
+						   "completed, but startup options, pg_db_role_setting "
+						   "state, and post-startup session lifetime still "
+						   "need thread-safe lifecycle handling.")));
 
 	/*
 	 * Now process any command-line switches and any additional GUC variable
