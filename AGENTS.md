@@ -176,6 +176,15 @@ Important current files:
   gmake -C src/backend/replication/libpqwalreceiver clean all DESTDIR="$PWD/tmp_install" install
   ```
 
+  Core backend globals such as `MyProcPid` can also be referenced from
+  server-side port objects. If a clean backend link fails with a removed
+  backend-global symbol from `libpgport_srv.a`, clean and rebuild `src/port`
+  as well:
+
+  ```sh
+  gmake -C src/port clean all
+  ```
+
 - After changing a contrib/test module header to expose `PG_THREAD_LOCAL`
   declarations, clean and rebuild every object in that module before running a
   threaded smoke. Stale objects can still see the old plain-global symbol while

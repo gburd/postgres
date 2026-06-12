@@ -223,7 +223,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsBinaryUpgrade;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ExitOnAnyError;
+extern bool *PgCurrentExitOnAnyErrorRef(void);
+#define ExitOnAnyError (*PgCurrentExitOnAnyErrorRef())
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *DataDir;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int data_directory_mode;
@@ -244,20 +245,26 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int serializable_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int subtransaction_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int transaction_buffers;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
+extern int *PgCurrentMyProcPidRef(void);
+extern pg_time_t *PgCurrentMyStartTimeRef(void);
+extern TimestampTz *PgCurrentMyStartTimestampRef(void);
 extern struct Port **PgCurrentProcPortRef(void);
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct Latch *MyLatch;
+extern struct Latch **PgCurrentMyLatchRef(void);
 extern uint8 *PgCurrentCancelKey(void);
 extern int *PgCurrentCancelKeyLengthRef(void);
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyPMChildSlot;
+extern int *PgCurrentMyPMChildSlotRef(void);
 
+#define MyProcPid (*PgCurrentMyProcPidRef())
+#define MyStartTime (*PgCurrentMyStartTimeRef())
+#define MyStartTimestamp (*PgCurrentMyStartTimestampRef())
 #define MyProcPort (*PgCurrentProcPortRef())
+#define MyLatch (*PgCurrentMyLatchRef())
 #define MyCancelKey (PgCurrentCancelKey())
 #define MyCancelKeyLength (*PgCurrentCancelKeyLengthRef())
+#define MyPMChildSlot (*PgCurrentMyPMChildSlotRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND char OutputFileName[];
+extern char *PgCurrentOutputFileNameRef(void);
+#define OutputFileName (PgCurrentOutputFileNameRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char my_exec_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 
@@ -440,7 +447,8 @@ typedef enum BackendType
 
 #define BACKEND_NUM_TYPES (B_LOGGER + 1)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType MyBackendType;
+extern BackendType *PgCurrentMyBackendTypeRef(void);
+#define MyBackendType (*PgCurrentMyBackendTypeRef())
 
 #define AmRegularBackendProcess()	(MyBackendType == B_BACKEND)
 #define AmAutoVacuumLauncherProcess() (MyBackendType == B_AUTOVAC_LAUNCHER)
@@ -539,7 +547,8 @@ typedef enum ProcessingMode
 	NormalProcessing,			/* normal processing */
 } ProcessingMode;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcessingMode Mode;
+extern ProcessingMode *PgCurrentProcessingModeRef(void);
+#define Mode (*PgCurrentProcessingModeRef())
 
 #define IsBootstrapProcessingMode() (Mode == BootstrapProcessing)
 #define IsInitProcessingMode()		(Mode == InitProcessing)
@@ -577,7 +586,8 @@ extern void BaseInit(void);
 extern void StoreConnectionWarning(char *msg, char *detail);
 
 /* in utils/init/miscinit.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool IgnoreSystemIndexes;
+extern bool *PgCurrentIgnoreSystemIndexesRef(void);
+#define IgnoreSystemIndexes (*PgCurrentIgnoreSystemIndexesRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress;

@@ -45,6 +45,10 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core = {
+	.mode = InitProcessing
+};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -67,9 +71,13 @@ static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgBackendResetCoreState(PgBackendCoreState *core);
+static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
+static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
+static PgBackendCoreState *PgCurrentCoreState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -146,6 +154,36 @@ PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 }
 
 static void
+PgBackendResetCoreState(PgBackendCoreState *core)
+{
+	MemSet(core, 0, sizeof(*core));
+	core->mode = InitProcessing;
+}
+
+static void
+PgBackendAdoptEarlyCoreState(PgBackend *backend)
+{
+	struct Latch *existing_interrupt_latch;
+
+	Assert(backend != NULL);
+
+	existing_interrupt_latch = backend->interrupt_latch;
+	backend->core = early_backend_core;
+	PgBackendResetCoreState(&early_backend_core);
+
+	if (backend->core.latch == NULL)
+		backend->core.latch = existing_interrupt_latch;
+	else
+		PgBackendSetInterruptLatch(backend, backend->core.latch);
+
+	if (early_backend_type != B_INVALID)
+	{
+		backend->backend_type = early_backend_type;
+		early_backend_type = B_INVALID;
+	}
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -210,7 +248,8 @@ InitializePgProcessRuntime(void)
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
-	PgBackendSetInterruptLatch(&process_backend, MyLatch);
+	PgBackendAdoptEarlyCoreState(&process_backend);
+	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
@@ -315,6 +354,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_backend = &state->backend;
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
+	PgBackendAdoptEarlyCoreState(&state->backend);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -554,6 +594,84 @@ void *
 PgCurrentClientConnectionInfoRef(void)
 {
 	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
+}
+
+static PgBackendCoreState *
+PgCurrentCoreState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_core;
+
+	return &CurrentPgBackend->core;
+}
+
+bool *
+PgCurrentExitOnAnyErrorRef(void)
+{
+	return &PgCurrentCoreState()->exit_on_any_error;
+}
+
+int *
+PgCurrentMyProcPidRef(void)
+{
+	return &PgCurrentCoreState()->proc_pid;
+}
+
+pg_time_t *
+PgCurrentMyStartTimeRef(void)
+{
+	return &PgCurrentCoreState()->start_time;
+}
+
+TimestampTz *
+PgCurrentMyStartTimestampRef(void)
+{
+	return &PgCurrentCoreState()->start_timestamp;
+}
+
+struct Latch **
+PgCurrentMyLatchRef(void)
+{
+	return &PgCurrentCoreState()->latch;
+}
+
+int *
+PgCurrentMyPMChildSlotRef(void)
+{
+	return &PgCurrentCoreState()->pm_child_slot;
+}
+
+char *
+PgCurrentOutputFileNameRef(void)
+{
+	return PgCurrentCoreState()->output_file_name;
+}
+
+static BackendType *
+PgCurrentBackendTypeRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_type;
+
+	return &CurrentPgBackend->backend_type;
+}
+
+BackendType *
+PgCurrentMyBackendTypeRef(void)
+{
+	return PgCurrentBackendTypeRef();
+}
+
+ProcessingMode *
+PgCurrentProcessingModeRef(void)
+{
+	return &PgCurrentCoreState()->mode;
+}
+
+bool *
+PgCurrentIgnoreSystemIndexesRef(void)
+{
+	return &PgCurrentCoreState()->ignore_system_indexes;
 }
 
 static PgBackendPendingInterruptState *

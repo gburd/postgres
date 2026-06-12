@@ -662,7 +662,8 @@ socket I/O, protocol dispatch, connection identity, and connection interrupt
 flag bridges through `PgConnection`, including the frontend protocol version in
 the connection protocol-state bucket, backend startup/authentication state, and
 authenticated client connection information, plus the backend pending
-interrupt flag bridge through `PgBackend`.
+interrupt flag bridge and core backend identity/lifecycle state bridge through
+`PgBackend`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

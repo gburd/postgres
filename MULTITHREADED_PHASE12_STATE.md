@@ -480,3 +480,59 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after stale `regress.dylib` and `libpqwalreceiver.dylib` rebuilds;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Backend Core State Bridge
+
+The twelfth Phase 12 slice moves core backend identity and lifecycle state
+under `PgBackend`:
+
+- `PgBackend` now owns a `PgBackendCoreState`;
+- `ExitOnAnyError`, `MyProcPid`, `MyStartTime`, `MyStartTimestamp`,
+  `MyLatch`, `MyPMChildSlot`, `OutputFileName`, `Mode`, and
+  `IgnoreSystemIndexes` remain source-compatible lvalue macros in
+  `miscadmin.h`;
+- `MyBackendType` remains a source-compatible lvalue macro but now maps to the
+  existing `PgBackend.backend_type` field;
+- the macros route through `PgCurrent*Ref()` accessors that return the current
+  logical backend's core-state fields;
+- early startup paths before `CurrentPgBackend` is installed use fallback
+  backend-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt early fallback core state into the logical backend object before
+  clearing fallback storage;
+- latch adoption preserves both current startup shapes: an early `MyLatch`
+  value becomes the backend interrupt latch, while a backend initialized with
+  an explicit interrupt latch mirrors that value back into `MyLatch`.
+
+This removes another set of process-era backend globals from raw TLS and puts
+backend identity, start time, latch ownership, error-exit policy, processing
+mode, debug output file, and system-index override state on the logical
+backend object. That makes the thread-per-session runtime less dependent on
+carrier-local storage and gives later scheduler work one object to carry for
+backend identity/lifecycle state.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `miscinit.o`, `main.o`, `launch_backend.o`, `backend_startup.o`,
+  `postgres.o`, and `test_backend_runtime.o`;
+- because `miscadmin.h` changed widely exported backend globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- the first clean link exposed a stale server-side `src/port` object
+  (`pqsignal_srv.o`) that still referenced the removed `MyProcPid` symbol.
+  Cleaning and rebuilding `src/port` fixed the stale reference;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, and `libpqwalreceiver`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_backend_core_state_is_backend_local()`, which switches
+  `CurrentPgBackend` between fake backends and proves the moved core-state
+  compatibility lvalues are isolated per backend;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- clean `gmake -C contrib -j8` passed after the header migration.

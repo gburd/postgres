@@ -577,6 +577,139 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_core_state_is_backend_local);
+Datum
+test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	Latch	   *saved_latch;
+	Latch		fake_latch1;
+	Latch		fake_latch2;
+	bool		saved_exit_on_any_error;
+	int			saved_proc_pid;
+	pg_time_t	saved_start_time;
+	TimestampTz saved_start_timestamp;
+	int			saved_pm_child_slot;
+	char		saved_output_file_name[MAXPGPATH];
+	BackendType saved_backend_type;
+	ProcessingMode saved_mode;
+	bool		saved_ignore_system_indexes;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_exit_on_any_error = ExitOnAnyError;
+	saved_proc_pid = MyProcPid;
+	saved_start_time = MyStartTime;
+	saved_start_timestamp = MyStartTimestamp;
+	saved_latch = MyLatch;
+	saved_pm_child_slot = MyPMChildSlot;
+	strlcpy(saved_output_file_name, OutputFileName, sizeof(saved_output_file_name));
+	saved_backend_type = MyBackendType;
+	saved_mode = Mode;
+	saved_ignore_system_indexes = IgnoreSystemIndexes;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	MemSet(&fake_latch1, 0, sizeof(fake_latch1));
+	MemSet(&fake_latch2, 0, sizeof(fake_latch2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		ExitOnAnyError = true;
+		MyProcPid = 111;
+		MyStartTime = 222;
+		MyStartTimestamp = 333;
+		MyLatch = &fake_latch1;
+		MyPMChildSlot = 44;
+		strlcpy(OutputFileName, "backend-one.log", MAXPGPATH);
+		MyBackendType = B_BACKEND;
+		Mode = NormalProcessing;
+		IgnoreSystemIndexes = true;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !ExitOnAnyError;
+		ok = ok && MyProcPid == 0;
+		ok = ok && MyStartTime == 0;
+		ok = ok && MyStartTimestamp == 0;
+		ok = ok && MyLatch == NULL;
+		ok = ok && MyPMChildSlot == 0;
+		ok = ok && OutputFileName[0] == '\0';
+		ok = ok && MyBackendType == B_INVALID;
+		ok = ok && Mode == BootstrapProcessing;
+		ok = ok && !IgnoreSystemIndexes;
+
+		ExitOnAnyError = false;
+		MyProcPid = 555;
+		MyStartTime = 666;
+		MyStartTimestamp = 777;
+		MyLatch = &fake_latch2;
+		MyPMChildSlot = 88;
+		strlcpy(OutputFileName, "backend-two.log", MAXPGPATH);
+		MyBackendType = B_WAL_SENDER;
+		Mode = InitProcessing;
+		IgnoreSystemIndexes = false;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && ExitOnAnyError;
+		ok = ok && MyProcPid == 111;
+		ok = ok && MyStartTime == 222;
+		ok = ok && MyStartTimestamp == 333;
+		ok = ok && MyLatch == &fake_latch1;
+		ok = ok && MyPMChildSlot == 44;
+		ok = ok && strcmp(OutputFileName, "backend-one.log") == 0;
+		ok = ok && MyBackendType == B_BACKEND;
+		ok = ok && Mode == NormalProcessing;
+		ok = ok && IgnoreSystemIndexes;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !ExitOnAnyError;
+		ok = ok && MyProcPid == 555;
+		ok = ok && MyStartTime == 666;
+		ok = ok && MyStartTimestamp == 777;
+		ok = ok && MyLatch == &fake_latch2;
+		ok = ok && MyPMChildSlot == 88;
+		ok = ok && strcmp(OutputFileName, "backend-two.log") == 0;
+		ok = ok && MyBackendType == B_WAL_SENDER;
+		ok = ok && Mode == InitProcessing;
+		ok = ok && !IgnoreSystemIndexes;
+
+		CurrentPgBackend = saved_backend;
+		ExitOnAnyError = saved_exit_on_any_error;
+		MyProcPid = saved_proc_pid;
+		MyStartTime = saved_start_time;
+		MyStartTimestamp = saved_start_timestamp;
+		MyLatch = saved_latch;
+		MyPMChildSlot = saved_pm_child_slot;
+		strlcpy(OutputFileName, saved_output_file_name, MAXPGPATH);
+		MyBackendType = saved_backend_type;
+		Mode = saved_mode;
+		IgnoreSystemIndexes = saved_ignore_system_indexes;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		ExitOnAnyError = saved_exit_on_any_error;
+		MyProcPid = saved_proc_pid;
+		MyStartTime = saved_start_time;
+		MyStartTimestamp = saved_start_timestamp;
+		MyLatch = saved_latch;
+		MyPMChildSlot = saved_pm_child_slot;
+		strlcpy(OutputFileName, saved_output_file_name, MAXPGPATH);
+		MyBackendType = saved_backend_type;
+		Mode = saved_mode;
+		IgnoreSystemIndexes = saved_ignore_system_indexes;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend core state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_debug_query_string_is_execution_local);
 Datum
 test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)

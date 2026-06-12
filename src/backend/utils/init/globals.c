@@ -26,20 +26,6 @@
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyPMChildSlot;
-
-/*
- * MyLatch points to the latch that should be used for signal handling by the
- * current process. It will either point to a process local latch if the
- * current process does not have a PGPROC entry in that moment, or to
- * PGPROC->procLatch if it has. Thus it can always be used in signal handlers,
- * without checking for its existence.
- */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct Latch *MyLatch;
-
 /*
  * DataDir is the absolute path to the top level of the PGDATA directory tree.
  * Except during early startup, this is also the server's working directory;
@@ -53,8 +39,6 @@ PG_GLOBAL_RUNTIME char *DataDir = NULL;
  * checkDataDir() to 0750 if the data directory actually has that mode.
  */
 PG_GLOBAL_RUNTIME int data_directory_mode = PG_DIR_MODE_OWNER;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND char OutputFileName[MAXPGPATH];	/* debugging output file */
 
 PG_GLOBAL_RUNTIME char my_exec_path[MAXPGPATH];	/* full path to my executable */
 PG_GLOBAL_RUNTIME char pkglib_path[MAXPGPATH]; /* full path to lib directory */
@@ -97,8 +81,6 @@ PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
 PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment = false;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster = false;
 PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ExitOnAnyError = false;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateStyle = USE_ISO_DATES;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateOrder = DATEORDER_MDY;

@@ -61,10 +61,6 @@
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcessingMode Mode = InitProcessing;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType MyBackendType;
-
 /* List of lock files to be removed at proc exit */
 static PG_GLOBAL_RUNTIME List *lock_files = NIL;
 
@@ -79,9 +75,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Latch LocalLatchData;
  * modification is made.
  * ----------------------------------------------------------------
  */
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool IgnoreSystemIndexes = false;
-
 
 /* ----------------------------------------------------------------
  *	common process startup code

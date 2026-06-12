@@ -134,6 +134,19 @@ typedef struct PgBackendWaitState
 	pg_atomic_uint32 waiting;
 } PgBackendWaitState;
 
+typedef struct PgBackendCoreState
+{
+	bool		exit_on_any_error;
+	int			proc_pid;
+	pg_time_t	start_time;
+	TimestampTz start_timestamp;
+	struct Latch *latch;
+	int			pm_child_slot;
+	char		output_file_name[MAXPGPATH];
+	ProcessingMode mode;
+	bool		ignore_system_indexes;
+} PgBackendCoreState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -238,6 +251,7 @@ struct PgBackend
 	PgBackendInterruptMailbox interrupts;
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
+	PgBackendCoreState core;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
