@@ -1070,7 +1070,8 @@ escalation:
   worker exits with code 17, `psql` loses the connection, the postmaster
   process exits, the log contains `terminating threaded server runtime after
   child crash`, and the previous `issuing SIGKILL to recalcitrant children`
-  wedge marker is absent;
+  wedge marker is absent. This is now covered by
+  `t/002_threaded_bgworker_crash.pl`;
 - touched-object builds passed for `postmaster.o` and the
   `test_backend_runtime` module;
 - full `gmake -j8` passed;
@@ -1316,6 +1317,13 @@ Additional Gate E hardening validation:
   checks, and the broader invariant that the configured threaded runtime has
   no postmaster OS child processes after startup handoff or after dynamic
   worker activity.
+- direct `prove` over both `test_backend_runtime` threaded TAP files passed
+  all 44 tests. The second fixture,
+  `t/002_threaded_bgworker_crash.pl`, starts a separate threaded cluster,
+  launches a thread-model background worker that exits with code 17, verifies
+  the client connection is lost, verifies the postmaster/runtime exits with
+  `terminating threaded server runtime after child crash`, and verifies the
+  old process-mode crash-recovery wedge marker is absent.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
