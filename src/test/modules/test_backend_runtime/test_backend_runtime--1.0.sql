@@ -14,3 +14,7 @@ CREATE FUNCTION test_backend_dsm_shutdown_is_backend_local()
 CREATE FUNCTION test_backend_interrupt_wakes_target_latch()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_backend_thread_create_join()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;

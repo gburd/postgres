@@ -12,7 +12,11 @@
  */
 #include "postgres.h"
 
+#include <errno.h>
+
 #include "fmgr.h"
+#include "port/atomics.h"
+#include "port/pg_thread.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -23,6 +27,16 @@ PG_MODULE_MAGIC;
 static sigjmp_buf exit_continuation_jmp;
 static volatile bool exit_continuation_seen;
 static volatile int exit_continuation_code;
+
+static void test_pg_thread_routine(void *arg);
+
+static void
+test_pg_thread_routine(void *arg)
+{
+	pg_atomic_uint32 *ran = (pg_atomic_uint32 *) arg;
+
+	pg_atomic_write_u32(ran, 1);
+}
 
 static void
 test_exit_backend(int code)
@@ -123,6 +137,36 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!found)
 		elog(ERROR, "DSM shutdown for one backend detached another backend's mapping");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_thread_create_join);
+Datum
+test_backend_thread_create_join(PG_FUNCTION_ARGS)
+{
+	PgThread	thread;
+	pg_atomic_uint32 ran;
+	int			rc;
+
+	pg_atomic_init_u32(&ran, 0);
+	rc = pg_thread_create(&thread, "pg test thread",
+						  test_pg_thread_routine, &ran);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(ERROR, "pg_thread_create failed: %m");
+	}
+
+	rc = pg_thread_join(&thread);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(ERROR, "pg_thread_join failed: %m");
+	}
+
+	if (pg_atomic_read_u32(&ran) != 1)
+		elog(ERROR, "thread routine did not run");
 
 	PG_RETURN_BOOL(true);
 }

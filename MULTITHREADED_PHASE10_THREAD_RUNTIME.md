@@ -24,6 +24,26 @@ thread launcher exists.
 The next slice should add a backend thread portability layer and a real thread
 launcher that can run `BackendMain()` with carrier-local runtime pointers.
 
+## Thread Portability Slice
+
+The second slice adds the minimal backend port wrapper for native carrier
+threads:
+
+- `PgThread` stores the native thread handle;
+- `pg_thread_create()` creates a named carrier thread from a
+  `void (*)(void *)` routine;
+- `pg_thread_join()` and `pg_thread_detach()` cover the lifecycle operations
+  needed by thread-per-session launch and teardown;
+- `pg_thread_set_name()` sets a native thread name where this checkout can
+  compile the platform support.
+
+This wrapper deliberately does not expose mutexes, condition variables, or a
+thread pool. Those belong in later runtime/scheduler layers once backend
+threads can actually run.
+
+The Windows implementation is a best-effort `_beginthreadex()` wrapper and has
+not been validated in this macOS checkout.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -31,6 +51,8 @@ launcher that can run `BackendMain()` with carrier-local runtime pointers.
 - `gmake -C src/backend/utils/misc guc_tables.o` passed after regenerating
   `guc_tables.inc.c`;
 - full `gmake -C src/backend -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including the
+  `pg_thread_create()`/`pg_thread_join()` smoke;
 - temp install smoke with the default `multithreaded=off` showed `off` and ran
   `SELECT 1`;
 - temp install smoke with `multithreaded=on` rejected a client connection with

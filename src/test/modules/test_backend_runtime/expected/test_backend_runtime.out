@@ -17,3 +17,9 @@ SELECT test_backend_interrupt_wakes_target_latch();
  t
 (1 row)
 
+SELECT test_backend_thread_create_join();
+ test_backend_thread_create_join 
+---------------------------------
+ t
+(1 row)
+
