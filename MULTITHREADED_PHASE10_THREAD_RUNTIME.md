@@ -421,6 +421,29 @@ bootstrap function used by the stepped session runner, but still avoids
 installing process-global signal state or entering pgstat/shared-cache
 subsystems that have not been made backend-local.
 
+## PGStat Shared Anchor Slice
+
+The twenty-first slice adapts the first `BaseInit()` subsystem reached by
+threaded startup:
+
+- pgstat now keeps the shared stats control block in a process-wide
+  `PG_GLOBAL_SHMEM` anchor rather than only in backend-local `pgStatLocal`;
+- `StatsShmemRequest()` fills that process-wide anchor during shared-memory
+  setup;
+- `StatsShmemInit()` mirrors the process-wide anchor into the postmaster's
+  local pgstat state for initialization;
+- `pgstat_attach_shmem()` now initializes each backend-local
+  `pgStatLocal.shmem` from the process-wide anchor before attaching the DSA
+  and dshash state;
+- the temporary pre-pgstat guard in `BaseInit()` is removed, so threaded
+  startup now crosses pgstat initialization and the rest of `BaseInit()`.
+
+The current guarded stop is after `BaseInit()` and before cancel-key
+generation, `InitPostgres()`, authentication, procsignal participation, and
+normal SQL execution. The next boundary is database/session initialization,
+where the remaining process signal, cancel-key, procsignal, and authentication
+timeout assumptions become visible.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -605,3 +628,17 @@ subsystems that have not been made backend-local.
   initialization with the guarded "threaded backend base initialization is not
   implemented yet" FATAL, kept the postmaster running between connections, and
   completed normal fast shutdown.
+- after the PGStat shared anchor slice,
+  `gmake -C src/backend/utils/activity pgstat_shmem.o` and
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the PGStat shared anchor slice, full `gmake -C src/backend -j8`
+  passed and `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the PGStat shared anchor slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the PGStat shared anchor
+  slice read real libpq startup packets for two client connections, entered
+  `PostgresMain()`/`PgSessionBootstrap()`, completed `BaseInit()` including
+  pgstat attachment through the process-wide pgstat anchor, rejected both after
+  `BaseInit()` with the guarded "threaded backend database initialization is
+  not implemented yet" FATAL, kept the postmaster running between connections,
+  and completed normal fast shutdown.

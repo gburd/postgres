@@ -102,6 +102,13 @@ pgStatSharedRefContext = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext
 pgStatEntryRefHashContext = NULL;
 
+/*
+ * Process-wide anchor for the shared stats control block.  pgStatLocal is
+ * backend-local, so thread-backed backends cannot rely on the postmaster's
+ * pgStatLocal.shmem value being visible in their TLS state.
+ */
+static PG_GLOBAL_SHMEM PgStat_ShmemControl *pgStatSharedShmem = NULL;
+
 
 /* ------------------------------------------------------------
  * Public functions called from postmaster follow
@@ -168,7 +175,7 @@ StatsShmemRequest(void *arg)
 {
 	ShmemRequestStruct(.name = "Shared Memory Stats",
 					   .size = StatsShmemSize(),
-					   .ptr = (void **) &pgStatLocal.shmem,
+					   .ptr = (void **) &pgStatSharedShmem,
 		);
 }
 
@@ -180,8 +187,10 @@ StatsShmemInit(void *arg)
 {
 	dsa_area   *dsa;
 	dshash_table *dsh;
-	PgStat_ShmemControl *ctl = pgStatLocal.shmem;
+	PgStat_ShmemControl *ctl = pgStatSharedShmem;
 	char	   *p = (char *) ctl;
+
+	pgStatLocal.shmem = pgStatSharedShmem;
 
 	/* the allocation of pgStatLocal.shmem itself */
 	p += MAXALIGN(sizeof(PgStat_ShmemControl));
@@ -262,6 +271,10 @@ pgstat_attach_shmem(void)
 	MemoryContext oldcontext;
 
 	Assert(pgStatLocal.dsa == NULL);
+
+	if (pgStatLocal.shmem == NULL)
+		pgStatLocal.shmem = pgStatSharedShmem;
+	Assert(pgStatLocal.shmem != NULL);
 
 	/* stats shared memory persists for the backend lifetime */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
