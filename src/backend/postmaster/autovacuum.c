@@ -145,6 +145,7 @@ PG_GLOBAL_RUNTIME int autovacuum_vac_cost_limit;
 
 PG_GLOBAL_RUNTIME int Log_autovacuum_min_duration = 600000;
 PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration = 600000;
+static PG_GLOBAL_RUNTIME bool autovacuum_threaded_worker_notice_logged = false;
 
 /* the minimum allowed time between two awakenings of the launcher */
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */
@@ -1155,6 +1156,25 @@ do_start_worker(void)
 	Oid			retval = InvalidOid;
 	MemoryContext tmpcxt,
 				oldcxt;
+
+	/*
+	 * Autovacuum workers still launch as subprocesses.  In multithreaded mode
+	 * the postmaster can create regular backend threads, after which
+	 * fork-without-exec workers are unsafe.  Phase 11 owns the worker-thread
+	 * runtime; until then, do not reserve worker slots or ask the postmaster
+	 * to fork workers in threaded server mode.
+	 */
+	if (multithreaded)
+	{
+		if (!autovacuum_threaded_worker_notice_logged)
+		{
+			ereport(LOG,
+					(errmsg("autovacuum workers are disabled in multithreaded mode"),
+					 errdetail("Auxiliary worker thread carriers are planned for a later phase.")));
+			autovacuum_threaded_worker_notice_logged = true;
+		}
+		return InvalidOid;
+	}
 
 	/* return quickly when there are no free workers */
 	LWLockAcquire(AutovacuumLock, LW_SHARED);

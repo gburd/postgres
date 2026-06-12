@@ -1513,6 +1513,12 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("dynamic_library_path", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("default_tablespace", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("temp_tablespaces", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("wal_consistency_checking", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 }

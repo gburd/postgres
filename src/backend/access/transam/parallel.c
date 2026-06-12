@@ -263,6 +263,16 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		pcxt->nworkers = 0;
 
 	/*
+	 * Parallel workers are still dynamic background worker processes.  In
+	 * threaded server mode, regular backend thread carriers may already exist,
+	 * so fork-without-exec worker launches are unsafe until Phase 11 replaces
+	 * server-owned worker families with thread carriers.  Let callers fall
+	 * back to leader-only execution instead of reaching worker registration.
+	 */
+	if (multithreaded)
+		pcxt->nworkers = 0;
+
+	/*
 	 * Normally, the user will have requested at least one worker process, but
 	 * if by chance they have not, we can skip a bunch of things here.
 	 */

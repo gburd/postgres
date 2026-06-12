@@ -494,10 +494,17 @@ Likely changes:
 Conservative scope:
 
 - regular client backends first;
-- auxiliary worker families can remain processes until Phase 11, but this is
-  not the final threaded-mode target;
-- background workers can be gated off or process-only until the worker runtime
-  and extension metadata are audited;
+- startup-time process workers may still exist until Phase 11, but regular
+  threaded server mode must not launch new fork-without-exec server-owned
+  subprocesses after backend thread carriers have started;
+- auxiliary worker families that need late launch, including autovacuum
+  workers, must be disabled, gated off, or routed to a process-safe path until
+  Phase 11 gives them thread carriers;
+- process-backed parallel workers must be suppressed in threaded sessions until
+  the worker runtime exists, with callers falling back to leader-only
+  execution where PostgreSQL already supports that;
+- third-party background workers can be gated off or process-only until the
+  worker runtime and extension metadata are audited;
 - unsafe extensions rejected through backend model metadata.
 
 Validation:
@@ -518,8 +525,10 @@ Exit gate:
   threaded smoke/regression subset for concurrent clients, cancellation,
   termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL,
   incompatible extension rejection, and repeated connect/disconnect stress.
-  Document that in-tree auxiliary workers remain process carriers until Phase
-  11.
+  Verify that normal threaded server mode does not fork late server-owned
+  worker subprocesses after backend thread carriers exist. Until Phase 11,
+  document any worker family that is explicitly deferred or disabled in
+  threaded mode.
 
 ## Phase 11: Auxiliary Worker Thread Runtime
 
@@ -798,8 +807,10 @@ Gate D, after Phase 10:
   backend termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL
   smoke tests, incompatible extension rejection, and repeated
   connect/disconnect stress;
-- explicitly document that in-tree auxiliary workers are still process carriers
-  until Phase 11.
+- verify late server-owned worker subprocess launches are blocked or deferred
+  after backend thread carriers exist;
+- explicitly document which in-tree worker families remain startup-time process
+  carriers, disabled, or deferred until Phase 11.
 
 Gate E, after Phase 11:
 

@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <unistd.h>
 
+#include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "pgtime.h"
@@ -207,6 +208,7 @@ typedef struct BackendThreadStart
 } BackendThreadStart;
 
 static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThreadStart = NULL;
+static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
 
 #ifndef WIN32
 /*
@@ -227,6 +229,7 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 static void backend_thread_entry(void *arg);
 static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
+static void backend_thread_init_random_state(void);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 static int	backend_thread_exitstatus(int code);
@@ -255,6 +258,19 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
 												startup_data, startup_data_len,
 												client_sock);
+	}
+
+	/*
+	 * Once the postmaster has created any thread carrier, later fork-without-
+	 * exec process launches are unsafe.  Phase 10 only supports regular client
+	 * backend threads; Phase 11 must replace server-owned worker process
+	 * launches with worker thread carriers before they can run in normal
+	 * threaded mode.
+	 */
+	if (multithreaded && postmaster_thread_carriers_started)
+	{
+		errno = ENOSYS;
+		return false;
 	}
 
 	pid = postmaster_child_launch(child_type, child_slot,
@@ -341,6 +357,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		return false;
 	}
 
+	postmaster_thread_carriers_started = true;
 	PostmasterChildSetThread(pmchild, &thread);
 	return true;
 #endif
@@ -369,6 +386,7 @@ backend_thread_entry(void *arg)
 
 	MyStartTimestamp = GetCurrentTimestamp();
 	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
+	backend_thread_init_random_state();
 	/* Temporary until real backend startup owns the copied ClientSocket. */
 	MyClientSocket = &thread_start->client_sock;
 
@@ -382,6 +400,22 @@ backend_thread_entry(void *arg)
 							   &thread_start->client_sock,
 							   BACKEND_STARTUP_THREAD);
 	pg_unreachable();
+}
+
+static void
+backend_thread_init_random_state(void)
+{
+	if (unlikely(!pg_prng_strong_seed(&pg_global_prng_state)))
+	{
+		uint64		rseed;
+
+		rseed = ((uint64) MyProcPid) ^
+			((uint64) MyStartTimestamp << 12) ^
+			((uint64) MyStartTimestamp >> 20) ^
+			((uint64) PgCurrentBackendId() << 32);
+
+		pg_prng_seed(&pg_global_prng_state, rseed);
+	}
 }
 
 static void

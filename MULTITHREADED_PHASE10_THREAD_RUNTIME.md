@@ -1033,6 +1033,55 @@ This still does not complete Phase 10. PL/pgSQL and live extension-model
 behavior now work in regular threaded sessions, but broader session cleanup
 stress and Gate D remain to be proved before Phase 10 can close.
 
+## Threaded Cleanup Stress Slice
+
+The forty-fourth slice stabilizes broader threaded session cleanup stress and
+blocks unsafe late process-worker launches after thread carriers exist:
+
+- after the postmaster successfully creates any backend thread carrier,
+  `postmaster_child_launch_carrier()` rejects later fork-without-exec process
+  launches in threaded mode with `ENOSYS`;
+- autovacuum workers are temporarily disabled in threaded mode and log a single
+  notice when the launcher first tries to start one;
+- `InitializeParallelDSM()` suppresses process-backed parallel workers in
+  threaded mode, so parallel query, parallel index build, and parallel vacuum
+  callers fall back to leader-only execution instead of attempting dynamic
+  background worker registration;
+- backend carrier threads seed their thread-local `pg_global_prng_state`
+  before normal session work can create DSM handles;
+- the narrow threaded GUC bridge now initializes `default_tablespace` and
+  `temp_tablespaces`, because table creation can reach index-build temp file
+  setup before full per-session GUC adoption exists.
+
+This slice deliberately does not implement threaded autovacuum, parallel
+workers, or other server-owned worker families. Those belong to Phase 11.
+The Phase 10 policy is stricter than "workers remain processes": startup-time
+process workers that exist before regular backend threads are still tolerated,
+but normal threaded server mode must not fork new server-owned subprocesses
+after thread carriers have started.
+
+Validation for this slice:
+
+- `gmake -C src/backend/postmaster launch_backend.o autovacuum.o` passed;
+- `gmake -C src/backend/utils/misc guc.o` passed;
+- `gmake -C src/backend/access/transam parallel.o` passed;
+- full `gmake -j8` and `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- threaded `multithreaded=on` DDL smoke created a table with a primary key,
+  exercising the table/toast/index path that previously reached parallel DSM
+  and temp-tablespace setup;
+- threaded cleanup stress with 25 clean clients, 20 killed/abandoned clients,
+  20 error-recovery clients, and 80 reconnects finished with 25 committed
+  rows, zero leaked advisory locks, zero prepared statements in the checker
+  session, zero active or idle-in-transaction sibling client backends, and a
+  final successful `select 42`;
+- the threaded stress observed the expected
+  `autovacuum workers are disabled in multithreaded mode` log and no `PANIC`,
+  `FATAL`, crash, terminated-server-process, or tuple/cache corruption log
+  pattern;
+- process-mode `multithreaded=off` smoke created, populated, vacuum-analyzed,
+  and counted a table without logging the threaded autovacuum deferral;
+- `gmake -C src/test/modules/test_backend_runtime check` passed.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
