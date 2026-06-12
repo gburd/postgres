@@ -1330,6 +1330,19 @@ Additional Gate E hardening validation:
   the client connection is lost, verifies the postmaster/runtime exits with
   `terminating threaded server runtime after child crash`, and verifies the
   old process-mode crash-recovery wedge marker is absent.
+- an attempted broad process-mode `gmake check-world` passed
+  `src/test/isolation` with all 129 tests and progressed through early
+  `src/test/modules` targets before stopping in
+  `src/test/modules/test_extensions` before SQL started. The failure was the
+  known macOS temp-install loader issue: recreated `tmp_install` binaries still
+  referenced `/usr/local/pgsql/lib/libpq.5.dylib`;
+- after patching the recreated temp-install binaries, the reached
+  `test_extensions` regression driver passed all four tests:
+  `test_extensions`, `test_extdepend`, `test_ext_backend_model`, and
+  `test_ext_backend_model_pooled`;
+- after patching the build-tree frontend binaries copied into recreated temp
+  installs, `gmake -C src/test/modules/test_extensions check` passed normally,
+  including recreating `tmp_install` and rerunning the same four SQL tests.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

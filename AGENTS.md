@@ -303,6 +303,20 @@ Important current files:
   ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --schedule=./parallel_schedule
   ```
 
+  If the same recursive target needs to be rerun, patch the build-tree binaries
+  that are copied into each recreated temp install before rerunning. This has
+  allowed recursive checks such as
+  `gmake -C src/test/modules/test_extensions check` to run normally after an
+  initial temp-install `initdb` loader failure:
+
+  ```sh
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/bin/initdb/initdb || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/bin/psql/psql || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/bin/pg_ctl/pg_ctl || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/bin/pg_basebackup/pg_basebackup || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/backend/replication/libpqwalreceiver/libpqwalreceiver.dylib || true
+  ```
+
   `gmake check-world` also builds ECPG test executables that can record
   `/usr/local/pgsql/lib/libecpg.6.dylib`, `libpgtypes.3.dylib`, and
   `libecpg_compat.3.dylib` from build-tree library IDs. If all ECPG tests abort
