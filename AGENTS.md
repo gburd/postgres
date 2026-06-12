@@ -383,7 +383,29 @@ Important current files:
   Perl on this macOS checkout may not have it, in which case direct `prove`
   invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.
   Install `IPC::Run` into the Perl used for the build before treating TAP
-  coverage as runnable.
+  coverage as runnable. To install it locally without relying on system Perl
+  paths, use:
+
+  ```sh
+  PERL_MM_USE_DEFAULT=1 \
+  PERL_MM_OPT="INSTALL_BASE=$HOME/perl5" \
+  PERL_MB_OPT="--install_base $HOME/perl5" \
+  PERL5LIB="$HOME/perl5/lib/perl5" \
+  cpan -T -i IPC::Run
+  ```
+
+  Keep `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl"` in direct TAP
+  commands. Direct `prove` runs also need the same harness environment that
+  `gmake check` supplies, especially `PG_REGRESS`, for example:
+
+  ```sh
+  PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl" \
+  PATH="$PWD/tmp_install/usr/local/pgsql/bin:$PATH" \
+  DYLD_LIBRARY_PATH="$PWD/tmp_install/usr/local/pgsql/lib" \
+  PG_REGRESS="$PWD/src/test/regress/pg_regress" \
+  top_builddir="$PWD" \
+  prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
+  ```
 
 - In the managed Codex sandbox, PostgreSQL temp-instance tests can fail during
   `initdb` with `could not create shared memory segment: Operation not

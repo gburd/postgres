@@ -1082,6 +1082,39 @@ Validation for this slice:
   and counted a table without logging the threaded autovacuum deferral;
 - `gmake -C src/test/modules/test_backend_runtime check` passed.
 
+## Threaded Runtime TAP Smoke Slice
+
+The forty-fifth slice adds an in-tree TAP smoke for the live
+thread-per-session runtime under `src/test/modules/test_backend_runtime`:
+
+- the module's makefile and meson metadata now register
+  `t/001_threaded_runtime.pl`;
+- the TAP test starts a `multithreaded=on` temp instance;
+- it verifies the threaded GUC state, DDL with a primary key, concurrent
+  client sessions with distinct SQL-visible backend ids, PL/pgSQL execution,
+  final connection health, and the expected temporary autovacuum-worker
+  deferral log;
+- the test also rejects common crash/corruption log signatures after the
+  threaded smoke.
+
+This TAP test is intentionally narrower than the full Gate D manual stress.
+Attempts to drive cancel, terminate, abandoned-client cleanup, and
+process-only extension rejection through the generic `BackgroundPsql` TAP
+fixture exposed harness instability or disruptive error-path behavior in this
+checkout. Those behaviors remain covered by the manual Phase 10 validation
+recorded above until a more specialized threaded TAP fixture exists.
+
+Validation for this slice:
+
+- `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl" perl -c
+  src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed;
+- direct TAP run passed with the temp install on `PATH`, `PG_REGRESS` set to
+  `src/test/regress/pg_regress`, and local `IPC::Run` available through
+  `PERL5LIB`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP in this checkout because it is not configured
+  with `--enable-tap-tests`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;

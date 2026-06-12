@@ -30,4 +30,9 @@ tests += {
       'test_backend_runtime',
     ],
   },
+  'tap': {
+    'tests': [
+      't/001_threaded_runtime.pl',
+    ],
+  },
 }

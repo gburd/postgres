@@ -525,6 +525,10 @@ Exit gate:
   threaded smoke/regression subset for concurrent clients, cancellation,
   termination, `ERROR` recovery, transaction abort cleanup, PL/pgSQL,
   incompatible extension rejection, and repeated connect/disconnect stress.
+  The in-tree `test_backend_runtime` TAP smoke is part of the Phase 10
+  regression surface, but it is not a substitute for the broader manual Gate D
+  stress until cancel/terminate, abandoned-client cleanup, and live
+  extension-rejection fixtures are stable in TAP.
   Verify that normal threaded server mode does not fork late server-owned
   worker subprocesses after backend thread carriers exist. Until Phase 11,
   document any worker family that is explicitly deferred or disabled in
