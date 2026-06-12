@@ -1091,18 +1091,17 @@ thread-per-session runtime under `src/test/modules/test_backend_runtime`:
   `t/001_threaded_runtime.pl`;
 - the TAP test starts a `multithreaded=on` temp instance;
 - it verifies the threaded GUC state, DDL with a primary key, concurrent
-  client sessions with distinct SQL-visible backend ids, PL/pgSQL execution,
-  final connection health, and the expected temporary autovacuum-worker
-  deferral log;
+  client sessions with distinct SQL-visible backend ids, active query
+  cancellation, idle backend termination, SQL error recovery, PL/pgSQL
+  execution, abandoned idle-client advisory-lock cleanup, final connection
+  health, and the expected temporary autovacuum-worker deferral log;
 - the test also rejects common crash/corruption log signatures after the
   threaded smoke.
 
-This TAP test is intentionally narrower than the full Gate D manual stress.
-Attempts to drive cancel, terminate, abandoned-client cleanup, and
-process-only extension rejection through the generic `BackgroundPsql` TAP
-fixture exposed harness instability or disruptive error-path behavior in this
-checkout. Those behaviors remain covered by the manual Phase 10 validation
-recorded above until a more specialized threaded TAP fixture exists.
+This TAP test is still narrower than the full Gate D manual stress. It does
+not yet cover live process-only extension rejection, and it is a compact smoke
+rather than the larger repeated connect/disconnect and killed-client stress
+recorded above.
 
 Validation for this slice:
 
@@ -1114,6 +1113,26 @@ Validation for this slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP in this checkout because it is not configured
   with `--enable-tap-tests`.
+
+The next slice broadened the TAP smoke's Gate D coverage:
+
+- active `pg_sleep()` cancellation is driven by a direct background `psql`
+  process and verifies the cancellation error reaches the client;
+- idle backend termination verifies the logical backend id leaves
+  `pg_stat_activity`;
+- a SQL `ERROR` is followed by a fresh successful query;
+- abandoned idle-client cleanup now uses `BackgroundPsql` to hold an advisory
+  lock while idle in transaction, then kills the client and verifies that the
+  lock is released.
+
+Validation for this broader TAP slice:
+
+- `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl" perl -c
+  src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP in this checkout because it is not configured
+  with `--enable-tap-tests`;
+- direct TAP run passed with 16 tests.
 
 ## Validation
 
