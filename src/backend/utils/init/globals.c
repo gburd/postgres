@@ -40,9 +40,6 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPendin
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 CritSectionCount = 0;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderPid = 0;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderUid = 0;
 

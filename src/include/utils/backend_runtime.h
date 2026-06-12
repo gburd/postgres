@@ -180,6 +180,7 @@ struct PgBackend
 	PgBackendInterruptMailbox interrupts;
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
+	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */

@@ -47,3 +47,9 @@ SELECT test_backend_thread_ids_are_logical();
  t
 (1 row)
 
+SELECT test_backend_interrupt_holdoffs_are_backend_local();
+ test_backend_interrupt_holdoffs_are_backend_local 
+---------------------------------------------------
+ t
+(1 row)
+

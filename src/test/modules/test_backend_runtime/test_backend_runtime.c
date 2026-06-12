@@ -370,6 +370,65 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_interrupt_holdoffs_are_backend_local);
+Datum
+test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		HOLD_INTERRUPTS();
+		HOLD_CANCEL_INTERRUPTS();
+		START_CRIT_SECTION();
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && InterruptHoldoffCount == 0;
+		ok = ok && QueryCancelHoldoffCount == 0;
+		ok = ok && CritSectionCount == 0;
+		InterruptHoldoffCount = 3;
+		QueryCancelHoldoffCount = 4;
+		CritSectionCount = 5;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && InterruptHoldoffCount == 1;
+		ok = ok && QueryCancelHoldoffCount == 1;
+		ok = ok && CritSectionCount == 1;
+		END_CRIT_SECTION();
+		RESUME_CANCEL_INTERRUPTS();
+		RESUME_INTERRUPTS();
+		ok = ok && InterruptHoldoffCount == 0;
+		ok = ok && QueryCancelHoldoffCount == 0;
+		ok = ok && CritSectionCount == 0;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && InterruptHoldoffCount == 3;
+		ok = ok && QueryCancelHoldoffCount == 4;
+		ok = ok && CritSectionCount == 5;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "interrupt holdoff counters were not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

@@ -45,6 +45,7 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -52,6 +53,8 @@ StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
+static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
+static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
 static void
 PgBackendInitializeIdCounter(void)
@@ -69,6 +72,23 @@ PgBackendAssignId(void)
 	PgBackendInitializeIdCounter();
 
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
+
+static void
+PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->interrupt_holdoffs.interrupt_holdoff_count =
+		early_interrupt_holdoffs.interrupt_holdoff_count;
+	backend->interrupt_holdoffs.query_cancel_holdoff_count =
+		early_interrupt_holdoffs.query_cancel_holdoff_count;
+	backend->interrupt_holdoffs.crit_section_count =
+		early_interrupt_holdoffs.crit_section_count;
+
+	early_interrupt_holdoffs.interrupt_holdoff_count = 0;
+	early_interrupt_holdoffs.query_cancel_holdoff_count = 0;
+	early_interrupt_holdoffs.crit_section_count = 0;
 }
 
 void
@@ -103,6 +123,7 @@ InitializePgProcessRuntime(void)
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
+	PgBackendAdoptEarlyInterruptHoldoffs(&process_backend);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
 	process_session.backend = &process_backend;
@@ -240,6 +261,33 @@ Session *
 PgCurrentLegacySession(void)
 {
 	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+static PgBackendInterruptHoldoffState *
+PgCurrentInterruptHoldoffs(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_interrupt_holdoffs;
+
+	return &CurrentPgBackend->interrupt_holdoffs;
+}
+
+volatile uint32 *
+PgCurrentInterruptHoldoffCountRef(void)
+{
+	return &PgCurrentInterruptHoldoffs()->interrupt_holdoff_count;
+}
+
+volatile uint32 *
+PgCurrentQueryCancelHoldoffCountRef(void)
+{
+	return &PgCurrentInterruptHoldoffs()->query_cancel_holdoff_count;
+}
+
+volatile uint32 *
+PgCurrentCritSectionCountRef(void)
+{
+	return &PgCurrentInterruptHoldoffs()->crit_section_count;
 }
 
 PgBackendLaunchModel

@@ -104,9 +104,25 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t Ch
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost;
 
 /* these are marked volatile because they are examined by signal handlers: */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 InterruptHoldoffCount;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 QueryCancelHoldoffCount;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 CritSectionCount;
+typedef struct PgBackendInterruptHoldoffState
+{
+	volatile uint32 interrupt_holdoff_count;
+	volatile uint32 query_cancel_holdoff_count;
+	volatile uint32 crit_section_count;
+} PgBackendInterruptHoldoffState;
+
+extern volatile uint32 *PgCurrentInterruptHoldoffCountRef(void);
+extern volatile uint32 *PgCurrentQueryCancelHoldoffCountRef(void);
+extern volatile uint32 *PgCurrentCritSectionCountRef(void);
+
+/*
+ * Compatibility lvalues for the historic interrupt holdoff globals.  The
+ * storage now belongs to the current PgBackend object, while early startup
+ * paths before runtime installation use backend_runtime.c fallback storage.
+ */
+#define InterruptHoldoffCount (*PgCurrentInterruptHoldoffCountRef())
+#define QueryCancelHoldoffCount (*PgCurrentQueryCancelHoldoffCountRef())
+#define CritSectionCount (*PgCurrentCritSectionCountRef())
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
