@@ -307,15 +307,37 @@ for thread carriers in threaded mode:
 - apply-worker config reload handling consumes `ConfigReloadPending` in
   thread mode but leaves config-file parsing to the postmaster-owned reload
   path for the shared address space;
-- the sequence-sync config reload site has the same guard, but
-  `SequenceSyncWorkerMain` is deliberately not allowlisted until the
-  sequence-sync launch and smoke path are audited.
+- the sequence-sync config reload site has the same guard, and the follow-on
+  sequence-sync slice allowlists `SequenceSyncWorkerMain` after validating the
+  launch and copy path.
 
 Parallel apply remains disabled for thread carriers in this slice. It still
 uses `SendProcSignal()` through `pqmq.c` and stores leader communication in
 PID-shaped fields in places such as `applyparallelworker.c`; enabling it
 requires a separate logical-notification path for same-process parallel apply
 message delivery.
+
+## Logical Replication Sequence-Sync Thread Slice
+
+Logical replication sequence-sync workers are now allowlisted for thread
+carriers in threaded mode:
+
+- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
+  `postgres`/`SequenceSyncWorkerMain` entrypoint;
+- sequence-sync workers already use the shared `LogicalRepWorker` attach
+  path, so they publish the same logical signal PID, `ProcNumber`, and
+  carrier model as apply/table-sync workers;
+- `SetupApplyOrSyncWorker()` covers sequence-sync startup, avoiding
+  process-wide SIGHUP handler installation and signal-mask changes when the
+  worker runs inside a carrier thread;
+- `ProcessSequenceSyncConfigReload()` consumes `ConfigReloadPending` in
+  thread mode but leaves config-file parsing to the postmaster-owned reload
+  path for the shared address space.
+
+This slice deliberately keeps logical replication parallel apply disabled for
+thread carriers. Parallel apply still depends on `SendProcSignal()`/`pqmq.c`
+leader wakeups and needs a logical same-process notification path before it is
+safe to share the server address space.
 
 ## WAL Writer Thread Slice
 
@@ -372,7 +394,7 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
-- logical replication sequence-sync and parallel apply workers;
+- logical replication parallel apply workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -512,6 +534,25 @@ slice:
   `pg_stat_subscription` as `mt_sub|apply|5`, found no logical-replication OS
   child processes under the threaded subscriber postmaster, and stopped both
   servers cleanly.
+
+Additional validation for the logical replication sequence-sync thread slice:
+
+- touched-object build passed for `bgworker.o`;
+- full `gmake -j8` and `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct process-publisher/threaded-subscriber sequence smoke passed after
+  patching the known macOS temp-install `libpq` references. The publisher
+  used `CREATE PUBLICATION ... FOR ALL SEQUENCES`; the threaded subscriber
+  used `multithreaded=on`, `wal_level=logical`,
+  `max_logical_replication_workers=8`,
+  `max_sync_workers_per_subscription=4`, and
+  `max_parallel_apply_workers_per_subscription=0`. The smoke verified the
+  apply worker and sequence-sync worker start messages, the sequence-sync
+  worker finish message, 50 `pg_subscription_rel` rows in READY state, synced
+  sequence values `1001|true,1050|true`, no logical-replication OS child
+  processes under the threaded subscriber postmaster after sync, and clean
+  shutdown of both servers. A larger 500-sequence dry run also synced all
+  rows, but the initial assertion expected `t`/`f` booleans where SQL string
+  concatenation returned `true`/`false`.
 
 Additional validation for the archiver thread slice:
 

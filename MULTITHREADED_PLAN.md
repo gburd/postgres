@@ -543,8 +543,8 @@ Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, late AIO worker, generic
 background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
 archiver, slot sync worker, and logical replication launcher slices, plus
-the initial logical replication apply/table-sync slice, plus remaining worker
-families.
+initial logical replication apply/table-sync and sequence-sync slices, plus
+remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -581,9 +581,9 @@ Likely changes:
     thread-carrier slices;
   - startup-time AIO method workers; late AIO method workers have an initial
     thread-carrier slice;
-  - logical replication launcher, apply workers, and table-sync workers have
-    initial thread-carrier slices;
-  - logical replication sequence-sync and parallel apply workers.
+  - logical replication launcher, apply workers, table-sync workers, and
+    sequence-sync workers have initial thread-carrier slices;
+  - logical replication parallel apply workers.
 - Provide a narrow allowlist path for in-tree generic background worker tests
   and examples.
 - Keep third-party background workers process-only or rejected in threaded mode
