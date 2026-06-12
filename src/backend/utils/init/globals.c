@@ -26,9 +26,6 @@
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
 
-
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
-
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending = false;

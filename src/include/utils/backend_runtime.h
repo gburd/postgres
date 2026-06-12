@@ -165,6 +165,7 @@ typedef struct PgConnectionProtocolState
 {
 	const PQcommMethods *comm_methods;
 	WaitEventSet *fe_be_wait_set;
+	uint32		frontend_protocol;
 } PgConnectionProtocolState;
 
 typedef struct PgConnectionInterruptState
@@ -304,6 +305,8 @@ extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connecti
 extern const PQcommMethods **PgCurrentPqCommMethodsRef(void);
 extern WaitEventSet **PgConnectionFeBeWaitSetRef(PgConnection *connection);
 extern WaitEventSet **PgCurrentFeBeWaitSetRef(void);
+extern uint32 *PgConnectionFrontendProtocolRef(PgConnection *connection);
+extern uint32 *PgCurrentFrontendProtocolRef(void);
 extern volatile sig_atomic_t *PgConnectionCheckClientConnectionPendingRef(PgConnection *connection);
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
 extern volatile sig_atomic_t *PgConnectionClientConnectionLostRef(PgConnection *connection);

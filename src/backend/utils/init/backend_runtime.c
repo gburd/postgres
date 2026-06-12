@@ -429,6 +429,21 @@ PgCurrentFeBeWaitSetRef(void)
 	return PgConnectionFeBeWaitSetRef(CurrentPgConnection);
 }
 
+uint32 *
+PgConnectionFrontendProtocolRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_protocol.frontend_protocol;
+
+	return &connection->protocol.frontend_protocol;
+}
+
+uint32 *
+PgCurrentFrontendProtocolRef(void)
+{
+	return PgConnectionFrontendProtocolRef(CurrentPgConnection);
+}
+
 volatile sig_atomic_t *
 PgConnectionCheckClientConnectionPendingRef(PgConnection *connection)
 {

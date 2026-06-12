@@ -298,3 +298,44 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - `gmake -C contrib -j8` passed after the header migration.
+
+## Connection Frontend Protocol Bridge
+
+The eighth Phase 12 slice moves the negotiated frontend/backend protocol
+version under `PgConnection`:
+
+- `PgConnectionProtocolState` now owns `frontend_protocol`;
+- `FrontendProtocol` remains a source-compatible lvalue macro in
+  `libpq-be.h`;
+- the macro routes through `PgCurrentFrontendProtocolRef()`, which returns the
+  current connection's protocol-version field;
+- early startup paths before `CurrentPgConnection` is installed reuse the
+  existing protocol-state fallback storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts early fallback protocol state into the
+  process connection object before clearing fallback storage.
+
+This keeps startup packet negotiation, protocol-version checks, error
+formatting, and shared-memory message queue protocol redirection tied to the
+logical connection object. `PqCommMethods`, `FeBeWaitSet`, and
+`FrontendProtocol` now share the same object-backed protocol-state bucket.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `backend_startup.o`, `postgres.o`, `pqmq.o`, and `elog.o`;
+- because installed headers changed another exported connection global into a
+  compatibility macro, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_frontend_protocol_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves `FrontendProtocol`
+  is isolated per connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- `gmake -C contrib -j8` passed after the header migration.

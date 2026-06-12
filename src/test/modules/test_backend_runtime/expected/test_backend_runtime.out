@@ -83,3 +83,9 @@ SELECT test_connection_interrupt_state_is_connection_local();
  t
 (1 row)
 
+SELECT test_connection_frontend_protocol_is_connection_local();
+ test_connection_frontend_protocol_is_connection_local 
+-------------------------------------------------------
+ t
+(1 row)
+
