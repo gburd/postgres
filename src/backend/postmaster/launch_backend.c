@@ -318,7 +318,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	PgThread	thread;
 	int			rc;
 
-	if (child_type != B_BACKEND &&
+	if (child_type != B_ARCHIVER &&
+		child_type != B_BACKEND &&
 		child_type != B_AUTOVAC_WORKER &&
 		child_type != B_IO_WORKER &&
 		child_type != B_WAL_WRITER &&
@@ -335,7 +336,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		errno = EINVAL;
 		return false;
 	}
-	if ((child_type == B_AUTOVAC_WORKER ||
+	if ((child_type == B_ARCHIVER ||
+		 child_type == B_AUTOVAC_WORKER ||
 		 child_type == B_IO_WORKER ||
 		 child_type == B_WAL_WRITER ||
 		 child_type == B_WAL_SUMMARIZER) &&

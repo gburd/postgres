@@ -247,6 +247,7 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 	 * infrastructure as they get dedicated signal and lifecycle conversion.
 	 */
 	return backend_type == B_BACKEND ||
+		backend_type == B_ARCHIVER ||
 		backend_type == B_AUTOVAC_WORKER ||
 		backend_type == B_WAL_WRITER ||
 		backend_type == B_WAL_SUMMARIZER;
@@ -527,6 +528,9 @@ PgCurrentBackendApplyInterrupts(void)
 
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_REPACK_MESSAGE))
 		RepackMessagePending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_WAKEUP_STOP))
+		WakeupStopPending = true;
 }
 
 int

@@ -434,6 +434,7 @@ static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
+static bool cleanup_archiver_child(PMChild *child, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
 static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
 static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
@@ -2623,6 +2624,12 @@ process_pm_thread_exit(void)
 			continue;
 
 		(void) pg_thread_join(&pmchild->thread);
+		if (pmchild->bkend_type == B_ARCHIVER)
+		{
+			(void) cleanup_archiver_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
 		if (pmchild->bkend_type == B_IO_WORKER)
 		{
 			(void) cleanup_io_worker_child(pmchild);
@@ -3617,6 +3624,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 	switch (signal)
 	{
 		case SIGINT:
+			if (pmchild->bkend_type == B_ARCHIVER)
+				return false;
 			if (pmchild->bkend_type == B_IO_WORKER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
@@ -3629,6 +3638,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
 			return true;
 		case SIGTERM:
+			if (pmchild->bkend_type == B_ARCHIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
 			if (pmchild->bkend_type == B_IO_WORKER)
 				return false;
 			if (pmchild->bkend_type == B_WAL_WRITER)
@@ -3644,6 +3658,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 			return true;
 		case SIGUSR2:
+			if (pmchild->bkend_type == B_ARCHIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_WAKEUP_STOP;
+				return true;
+			}
 			if (pmchild->bkend_type == B_IO_WORKER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
@@ -4568,6 +4587,21 @@ maybe_reap_io_worker(int pid)
 			return cleanup_io_worker_child(io_worker_children[i]);
 	}
 	return false;
+}
+
+static bool
+cleanup_archiver_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == PgArchPMChild);
+	Assert(child->bkend_type == B_ARCHIVER);
+
+	ReleasePostmasterChildSlot(PgArchPMChild);
+	PgArchPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(0, exitstatus, _("archiver process"));
+
+	return true;
 }
 
 static bool

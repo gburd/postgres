@@ -49,6 +49,7 @@
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -107,6 +108,7 @@ static PG_GLOBAL_SHMEM PgArchData *PgArch = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const ArchiveModuleCallbacks *ArchiveCallbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ArchiveModuleState *archive_module_state;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext archive_context;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *loaded_archive_library;
 
 
 /*
@@ -220,28 +222,37 @@ PgArchCanRestart(void)
 void
 PgArchiverMain(const void *startup_data, size_t startup_data_len)
 {
+	bool		threaded_worker;
+
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = (CurrentPgRuntime != NULL &&
+					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/*
 	 * Ignore all signals usually bound to some action in the postmaster,
 	 * except for SIGHUP, SIGTERM, SIGUSR1, SIGUSR2, and SIGQUIT.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, PG_SIG_IGN);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, pgarch_waken_stop);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, PG_SIG_IGN);
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, pgarch_waken_stop);
+	}
 
 	/* Reset some signals that are accepted by postmaster but not here */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/* Unblock signals (they were blocked when the postmaster forked us) */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/* We shouldn't be launched unnecessarily. */
 	Assert(XLogArchivingActive());
@@ -300,7 +311,7 @@ static void
 pgarch_waken_stop(SIGNAL_ARGS)
 {
 	/* set flag to do a final cycle and shut down afterwards */
-	ready_to_stop = true;
+	WakeupStopPending = true;
 	SetLatch(MyLatch);
 }
 
@@ -328,6 +339,7 @@ pgarch_MainLoop(void)
 
 		/* Check for barrier events and config update */
 		ProcessPgArchInterrupts();
+		time_to_stop = time_to_stop || ready_to_stop;
 
 		/*
 		 * If we've gotten SIGTERM, we normally just sit and do nothing until
@@ -863,6 +875,14 @@ pgarch_die(int code, Datum arg)
 static void
 ProcessPgArchInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
+	if (WakeupStopPending)
+	{
+		WakeupStopPending = false;
+		ready_to_stop = true;
+	}
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
@@ -872,11 +892,22 @@ ProcessPgArchInterrupts(void)
 
 	if (ConfigReloadPending)
 	{
-		char	   *archiveLib = pstrdup(XLogArchiveLibrary);
+		char	   *archiveLib;
 		bool		archiveLibChanged;
 
+		archiveLib = pstrdup(loaded_archive_library != NULL ?
+							 loaded_archive_library : XLogArchiveLibrary);
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * Thread-backed workers share GUC storage with the postmaster.  The
+		 * postmaster performs the actual config reload, so the archiver only
+		 * needs to observe the updated shared values and restart if the loaded
+		 * archive module no longer matches.
+		 */
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 
 		if (XLogArchiveLibrary[0] != '\0' && XLogArchiveCommand[0] != '\0')
 			ereport(ERROR,
@@ -947,6 +978,9 @@ LoadArchiveLibrary(void)
 	archive_module_state = palloc0_object(ArchiveModuleState);
 	if (ArchiveCallbacks->startup_cb != NULL)
 		ArchiveCallbacks->startup_cb(archive_module_state);
+
+	loaded_archive_library = MemoryContextStrdup(TopMemoryContext,
+												 XLogArchiveLibrary);
 
 	before_shmem_exit(pgarch_call_module_shutdown_cb, 0);
 }

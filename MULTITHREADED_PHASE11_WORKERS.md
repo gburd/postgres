@@ -157,10 +157,34 @@ converting them directly to startup-time threads would make the later startup
 process fork unsafe. They need either startup/recovery worker conversion first
 or an explicit process-to-thread handoff after recovery reaches normal running.
 
+## Archiver Thread Slice
+
+The WAL archiver is now opted into the thread carrier path in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_ARCHIVER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts archiver launches without
+  client startup data;
+- `PgArchiverMain()` skips process-wide signal handler and signal-mask changes
+  when running as a thread carrier;
+- a logical `PG_BACKEND_INTERRUPT_WAKEUP_STOP` interrupt preserves the
+  archiver's `SIGUSR2` semantics: wake, do one final archive cycle, and exit;
+- thread-backed archiver `SIGTERM` remains a delayed shutdown request, matching
+  the process-backed behavior where random `SIGTERM` should not immediately
+  disable archiving;
+- `ProcessPgArchInterrupts()` drains logical backend interrupts and avoids
+  concurrent `ProcessConfigFile()` calls in thread-backed archivers, relying on
+  the postmaster's shared GUC reload;
+- the archiver records the loaded `archive_library` value so a thread-backed
+  config reload can still restart the archiver if the configured archive module
+  changes;
+- thread-backed archiver exit is reaped by the postmaster thread-exit path,
+  clearing `PgArchPMChild` and preserving existing normal/FATAL/crash handling.
+
 ## Remaining Worker Families
 
 - autovacuum launcher;
-- checkpointer, background writer, archiver, and syslogger;
+- checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - WAL receiver;
 - startup-time AIO method workers;
@@ -246,6 +270,23 @@ Additional validation for the WAL writer thread slice:
   `walwriters=1`, `walwriters_after_work=1`, `children_with_walwriter=4`,
   and `children_after_work=4` after `pg_reload_conf()`, a small WAL-writing
   workload, `CHECKPOINT`, and clean fast shutdown.
+
+Additional validation for the archiver thread slice:
+
+- touched-object builds passed for `backend_runtime.o`, `interrupt.o`,
+  `launch_backend.o`, `pgarch.o`, and `postmaster.o`;
+- full `gmake -j8` passed after adding the wake/stop interrupt;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`;
+- direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `archive_mode=on`, shell `archive_command`, `autovacuum=off`, and
+  `summarize_wal=off`. The smoke observed `archivers=1`,
+  `archivers_after_archive=1`, `archived_files=1`,
+  `children_with_archiver=4`, and `children_after_archive=4` after
+  `pg_reload_conf()`, a WAL-writing workload, `pg_switch_wal()`, and clean
+  fast shutdown.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
