@@ -1226,3 +1226,15 @@ not just a later guard in `InitPostgres()`.
   every client with no byval/opclass/crash signatures.
 - after the full `InitPostgres()` boundary slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
+- moving the guard back into `PgSessionBootstrap()` establishes the current
+  boundary at return from `InitPostgres()` into `PostgresMain` setup.
+  Threaded carriers now skip the process-backend-only
+  `PostmasterContext` deletion because that pointer is runtime-global in the
+  threaded server. `gmake -C src/backend/tcop postgres.o`,
+  `gmake -C src/backend/utils/init postinit.o`, full
+  `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed; a 20-client
+  `multithreaded=on` smoke reached the `threaded backend startup reached
+  PostgresMain` guard for every client with no byval/opclass/crash signatures.
+- after the `PostgresMain` entry boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.

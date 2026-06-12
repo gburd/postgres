@@ -5114,11 +5114,18 @@ PgSessionBootstrap(const char *dbname, const char *username)
 	 * If the PostmasterContext is still around, recycle the space; we don't
 	 * need it anymore after InitPostgres completes.
 	 */
-	if (PostmasterContext)
+	if (PostmasterContext && !threaded_backend)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
 	}
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend startup reached PostgresMain"),
+				 errdetail("InitPostgres returned and postmaster context "
+						   "cleanup was skipped, but main-loop session "
+						   "lifetime still needs thread-safe handling.")));
 
 	SetProcessingMode(NormalProcessing);
 

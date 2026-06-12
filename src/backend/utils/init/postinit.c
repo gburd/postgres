@@ -1345,13 +1345,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	/* send any WARNINGs we've accumulated during initialization */
 	EmitConnectionWarnings();
-
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("InitPostgres completed, but post-startup session "
-						   "lifetime still needs thread-safe lifecycle "
-						   "handling.")));
 }
 
 /*
