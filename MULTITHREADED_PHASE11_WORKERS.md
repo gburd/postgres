@@ -200,6 +200,30 @@ with workers, verifies the aggregate result, and checks the server log for
 A process-mode control smoke with the same query shape still starts process
 parallel workers and returns the expected result.
 
+## test_shm_mq Thread Slice
+
+The in-tree `test_shm_mq` dynamic background-worker module is now opted into
+the thread-carrier path in threaded mode:
+
+- the module uses `PG_MODULE_MAGIC_EXT()` with
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, so threaded backends can
+  load it through the Phase 7 extension backend-model gate;
+- `setup_background_workers()` sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession` for the workers it
+  dynamically registers;
+- the requester notification id now uses `PgCurrentBackendSignalPid()` rather
+  than `MyProcPid`, so a thread-backed SQL backend can wait on worker startup
+  through its logical backend identity;
+- worker startup uses `BackendSignalPidGetProc()` to wake the registrant,
+  preserving the process-mode PID path while resolving logical backend ids in
+  threaded mode.
+
+This slice also exposed a threaded extension-loading gap: the per-carrier GUC
+initialization bridge did not initialize `extension_control_path`, so
+`CREATE EXTENSION test_shm_mq` could dereference a NULL thread-local copy while
+searching extension control directories. `InitializeThreadedSessionGUCOptions()`
+now initializes `extension_control_path` alongside `dynamic_library_path`.
+
 ## WAL Summarizer Thread Slice
 
 The WAL summarizer is now opted into the thread carrier path in threaded mode:
@@ -537,10 +561,10 @@ remove the temporary process logger later.
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
-- additional in-tree generic background workers, tests, and examples that are
-  not part of the already audited logical replication and core parallel worker
-  sets. These can opt into the explicit background-worker backend model only
-  after a per-entrypoint audit.
+- remaining in-tree generic background workers, tests, and examples that are
+  not part of the already audited logical replication, core parallel worker,
+  `test_backend_runtime`, and `test_shm_mq` sets. These can opt into the
+  explicit background-worker backend model only after a per-entrypoint audit.
 
 ## Validation
 
@@ -699,6 +723,24 @@ Additional validation for the parallel worker thread slice:
 - direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
   remains blocked in this local Perl by the missing non-core `IPC::Run`
   module before syntax is checked.
+
+Additional validation for the `test_shm_mq` thread slice:
+
+- full `gmake -j8` passed;
+- full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  reinstalling the `test_shm_mq` module into the temp install;
+- `gmake -C src/test/modules/test_shm_mq check` passed its process-mode SQL
+  regression;
+- a direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `max_worker_processes=16`, `autovacuum=off`, `summarize_wal=off`, and
+  `io_method=sync`. The smoke verified `current_setting('multithreaded') =
+  'on'`, created the `test_shm_mq` extension, ran both `test_shm_mq(...)` and
+  `test_shm_mq_pipelined(...)` with thread-backed dynamic workers, and
+  verified the SQL backend stayed usable with `SELECT 42`;
+- the first threaded `CREATE EXTENSION test_shm_mq` attempt crashed in
+  `get_extension_control_directories()` because the threaded GUC bridge had
+  not initialized `extension_control_path`. Initializing that GUC in
+  `InitializeThreadedSessionGUCOptions()` fixed the smoke.
 
 Additional validation for the WAL summarizer thread slice:
 

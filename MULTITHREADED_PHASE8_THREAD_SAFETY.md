@@ -1438,7 +1438,10 @@ Validation for this slice:
   `session_replication_role`, `event_triggers`, and
   `extension_control_path`, including a custom extension loaded through a
   session-set control path and `$system` discovery for PL/pgSQL after clearing
-  the path. The local TAP harness could not run
+  the path. Phase 11 later proved that threaded backend carriers must also
+  initialize `extension_control_path` in `InitializeThreadedSessionGUCOptions()`
+  before `CREATE EXTENSION` can safely search control directories. The local
+  TAP harness could not run
   `t/001_extension_control_path.pl` because this macOS Perl does not have the
   required `IPC::Run` module installed;
 - fixture-backed GIN regression coverage:
