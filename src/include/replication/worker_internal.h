@@ -20,6 +20,7 @@
 #include "replication/walreceiver.h"
 #include "storage/buffile.h"
 #include "storage/fileset.h"
+#include "storage/procnumber.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
@@ -52,6 +53,15 @@ typedef struct LogicalRepWorker
 	/* Pointer to proc array. NULL if not running. */
 	PGPROC	   *proc;
 
+	/*
+	 * SQL-visible signal target and proc number of the running worker.  In
+	 * process mode signal_pid is the OS PID.  In threaded mode it is the
+	 * logical backend ID used by pg_stat_activity and backend interrupts.
+	 */
+	pid_t		signal_pid;
+	ProcNumber	procno;
+	bool		threaded;
+
 	/* Database id to connect to. */
 	Oid			dbid;
 
@@ -83,6 +93,8 @@ typedef struct LogicalRepWorker
 	 * worker, InvalidPid otherwise.
 	 */
 	pid_t		leader_pid;
+	pid_t		leader_signal_pid;
+	ProcNumber	leader_procno;
 
 	/* Indicates whether apply can be performed in parallel. */
 	bool		parallel_apply;

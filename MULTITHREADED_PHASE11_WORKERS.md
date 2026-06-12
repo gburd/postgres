@@ -281,6 +281,42 @@ the background-worker shared slot must use the thread backend's visible ID
 rather than the containing process PID, and consumed logical interrupts must
 arm legacy interrupt processing before `CHECK_FOR_INTERRUPTS()`.
 
+## Logical Replication Apply And Table-Sync Thread Slice
+
+Logical replication apply workers and table-sync workers are now allowlisted
+for thread carriers in threaded mode:
+
+- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
+  `postgres`/`ApplyWorkerMain` and `postgres`/`TableSyncWorkerMain`
+  entrypoints, in addition to the already audited logical replication
+  launcher;
+- `LogicalRepWorker` slots now record both the historical `PGPROC *`/OS PID
+  view and the SQL-visible logical signal PID used by thread-backed workers;
+- `logicalrep_worker_attach()` stores the worker's logical signal PID,
+  `ProcNumber`, and carrier model at attach time, so later stop and stats
+  paths do not need to infer them from the containing process PID;
+- `logicalrep_worker_stop_internal()` preserves the existing `kill()` path for
+  process-backed workers and routes stop requests for thread-backed workers
+  through `SendBackendInterrupt()`;
+- `pg_stat_get_subscription()` and the parallel-apply leader lookup use the
+  logical signal PID, keeping `pg_stat_subscription.pid` aligned with
+  `pg_stat_activity.pid` in thread mode;
+- common apply/table-sync worker startup avoids installing process-wide
+  SIGHUP handlers or changing the process signal mask when running as a
+  thread carrier;
+- apply-worker config reload handling consumes `ConfigReloadPending` in
+  thread mode but leaves config-file parsing to the postmaster-owned reload
+  path for the shared address space;
+- the sequence-sync config reload site has the same guard, but
+  `SequenceSyncWorkerMain` is deliberately not allowlisted until the
+  sequence-sync launch and smoke path are audited.
+
+Parallel apply remains disabled for thread carriers in this slice. It still
+uses `SendProcSignal()` through `pqmq.c` and stores leader communication in
+PID-shaped fields in places such as `applyparallelworker.c`; enabling it
+requires a separate logical-notification path for same-process parallel apply
+message delivery.
+
 ## WAL Writer Thread Slice
 
 The WAL writer is now opted into the thread carrier path in threaded mode:
@@ -336,8 +372,7 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
-- logical replication apply, table sync, sync utility, and parallel apply
-  workers;
+- logical replication sequence-sync and parallel apply workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -454,6 +489,29 @@ Additional validation for the logical replication launcher thread slice:
   `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`. The smoke
   verified `pg_stat_activity` contained `logical replication launcher` with a
   logical thread PID, and `pg_ctl -m fast stop` completed without hanging.
+
+Additional validation for the logical replication apply/table-sync thread
+slice:
+
+- touched-object builds passed for `bgworker.o`, `launcher.o`, `worker.o`,
+  `sequencesync.o`, and `tablesync.o`;
+- full `gmake -j8` and `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- after changing the `LogicalRepWorker` shared struct layout, stale logical
+  replication objects left from the previous build caused table-sync startup
+  failures with `role with OID 119 does not exist`; cleaning
+  `src/backend/replication/logical` and rebuilding fixed the stale-layout
+  failure and is now recorded in `AGENTS.md`;
+- a direct process-publisher/threaded-subscriber smoke passed after patching
+  the known macOS temp-install `libpq` references. The subscriber used
+  `multithreaded=on`, `wal_level=logical`, `max_logical_replication_workers=8`,
+  `max_sync_workers_per_subscription=4`, and
+  `max_parallel_apply_workers_per_subscription=0`. The smoke observed both
+  `logical replication tablesync worker` and `logical replication apply
+  worker`, copied 20,000 rows through initial table sync, replicated one
+  later insert for a final count of 20,001, reported
+  `pg_stat_subscription` as `mt_sub|apply|5`, found no logical-replication OS
+  child processes under the threaded subscriber postmaster, and stopped both
+  servers cleanly.
 
 Additional validation for the archiver thread slice:
 

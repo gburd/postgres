@@ -747,8 +747,12 @@ BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
 	 * worker entrypoint has been audited for thread-mode signal, GUC reload,
 	 * wait, and exit behavior.
 	 */
-	return strcmp(worker->bgw_library_name, "postgres") == 0 &&
-		strcmp(worker->bgw_function_name, "ApplyLauncherMain") == 0;
+	if (strcmp(worker->bgw_library_name, "postgres") != 0)
+		return false;
+
+	return strcmp(worker->bgw_function_name, "ApplyLauncherMain") == 0 ||
+		strcmp(worker->bgw_function_name, "ApplyWorkerMain") == 0 ||
+		strcmp(worker->bgw_function_name, "TableSyncWorkerMain") == 0;
 }
 
 static bool

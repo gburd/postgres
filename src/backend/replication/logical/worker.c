@@ -289,6 +289,7 @@
 #include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -591,6 +592,8 @@ static void adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data,
 										bool new_xid_found);
 
 static void apply_worker_exit(void);
+static bool LogicalRepWorkerThreadedRuntime(void);
+static void ProcessLogicalRepConfigReload(void);
 
 static void apply_handle_commit_internal(LogicalRepCommitData *commit_data);
 static void apply_handle_insert_internal(ApplyExecutionData *edata,
@@ -4077,10 +4080,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 					StringInfoData s;
 
 					if (ConfigReloadPending)
-					{
-						ConfigReloadPending = false;
-						ProcessConfigFile(PGC_SIGHUP);
-					}
+						ProcessLogicalRepConfigReload();
 
 					/* Reset timeout. */
 					last_recv_timestamp = GetCurrentTimestamp();
@@ -4237,10 +4237,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 		}
 
 		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+			ProcessLogicalRepConfigReload();
 
 		if (rc & WL_TIMEOUT)
 		{
@@ -5019,6 +5016,22 @@ adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data, bool new_xid_found)
 	if (MySubscription->retentionactive && MySubscription->maxretention > 0)
 		rdt_data->xid_advance_interval = Min(rdt_data->xid_advance_interval,
 											 MySubscription->maxretention);
+}
+
+static bool
+LogicalRepWorkerThreadedRuntime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
+
+static void
+ProcessLogicalRepConfigReload(void)
+{
+	ConfigReloadPending = false;
+
+	if (!LogicalRepWorkerThreadedRuntime())
+		ProcessConfigFile(PGC_SIGHUP);
 }
 
 /*
@@ -5971,8 +5984,11 @@ SetupApplyOrSyncWorker(int worker_slot)
 	Assert(am_tablesync_worker() || am_sequencesync_worker() || am_leader_apply_worker());
 
 	/* Setup signal handling */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	BackgroundWorkerUnblockSignals();
+	if (!LogicalRepWorkerThreadedRuntime())
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		BackgroundWorkerUnblockSignals();
+	}
 
 	/*
 	 * We don't currently need any ResourceOwner in a walreceiver process, but

@@ -172,6 +172,23 @@ Important current files:
   `PGPROC.procLatch` size. Use the backend clean plus generated-file recovery
   above, then rebuild with `gmake -j8`.
 
+- If `src/include/replication/worker_internal.h` changes the layout of
+  `LogicalRepWorker`, clean and rebuild the whole logical replication backend
+  directory before running logical replication smokes. Incremental builds in
+  this checkout have left objects such as `syncutils.o`, `tablesync.o`, and
+  `applyparallelworker.o` built against the previous struct layout:
+
+  ```sh
+  gmake -C src/backend/replication/logical clean
+  gmake -j8
+  gmake -j8 install DESTDIR="$PWD/tmp_install"
+  ```
+
+  A stale `syncutils.o` can read `LogicalRepWorker.userid` from the old offset
+  and make table-sync workers fail during startup with errors like
+  `role with OID 119 does not exist`, where `119` is the ASCII value of a
+  subscription relation-state byte.
+
 - If `PMChild` layout changes in `src/include/postmaster/postmaster.h`, do not
   trust an incremental build of postmaster objects. Stale postmaster objects can
   corrupt the PMChild freelists or crash auxiliary children during temp-instance

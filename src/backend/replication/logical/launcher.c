@@ -39,6 +39,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procnumber.h"
+#include "storage/procsignal.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
@@ -111,6 +112,7 @@ static void logicalrep_launcher_onexit(int code, Datum arg);
 static void logicalrep_worker_onexit(int code, Datum arg);
 static void logicalrep_worker_detach(void);
 static void logicalrep_worker_cleanup(LogicalRepWorker *worker);
+static PgBackendInterruptType logicalrep_worker_signal_to_interrupt(int signo);
 static int	logicalrep_pa_worker_count(Oid subid);
 static void logicalrep_launcher_attach_dshmem(void);
 static void ApplyLauncherSetWorkerStartTime(Oid subid, TimestampTz start_time);
@@ -480,6 +482,9 @@ retry:
 	worker->in_use = true;
 	worker->generation++;
 	worker->proc = NULL;
+	worker->signal_pid = InvalidPid;
+	worker->procno = INVALID_PROC_NUMBER;
+	worker->threaded = false;
 	worker->dbid = dbid;
 	worker->userid = userid;
 	worker->subid = subid;
@@ -488,6 +493,10 @@ retry:
 	worker->relstate_lsn = InvalidXLogRecPtr;
 	worker->stream_fileset = NULL;
 	worker->leader_pid = is_parallel_apply_worker ? MyProcPid : InvalidPid;
+	worker->leader_signal_pid = is_parallel_apply_worker ?
+		PgCurrentBackendSignalPid() : InvalidPid;
+	worker->leader_procno = is_parallel_apply_worker ?
+		MyProcNumber : INVALID_PROC_NUMBER;
 	worker->parallel_apply = is_parallel_apply_worker;
 	worker->oldest_nonremovable_xid = retain_dead_tuples
 		? MyReplicationSlot->data.xmin
@@ -631,7 +640,12 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 	}
 
 	/* Now terminate the worker ... */
-	kill(worker->proc->pid, signo);
+	if (worker->threaded)
+		(void) SendBackendInterrupt(worker->signal_pid,
+									logicalrep_worker_signal_to_interrupt(signo),
+									MyProcPid, getuid());
+	else
+		kill(worker->proc->pid, signo);
 
 	/* ... and wait for it to die. */
 	for (;;)
@@ -656,6 +670,21 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 		}
 
 		LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
+	}
+}
+
+static PgBackendInterruptType
+logicalrep_worker_signal_to_interrupt(int signo)
+{
+	switch (signo)
+	{
+		case SIGUSR2:
+			return PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+		case SIGINT:
+			return PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+		case SIGTERM:
+		default:
+			return PG_BACKEND_INTERRUPT_PROC_DIE;
 	}
 }
 
@@ -796,6 +825,9 @@ logicalrep_worker_attach(int slot)
 	}
 
 	MyLogicalRepWorker->proc = MyProc;
+	MyLogicalRepWorker->signal_pid = PgCurrentBackendSignalPid();
+	MyLogicalRepWorker->procno = MyProcNumber;
+	MyLogicalRepWorker->threaded = ApplyLauncherIsThreadedRuntime();
 	before_shmem_exit(logicalrep_worker_onexit, (Datum) 0);
 
 	LWLockRelease(LogicalRepWorkerLock);
@@ -857,11 +889,16 @@ logicalrep_worker_cleanup(LogicalRepWorker *worker)
 	worker->type = WORKERTYPE_UNKNOWN;
 	worker->in_use = false;
 	worker->proc = NULL;
+	worker->signal_pid = InvalidPid;
+	worker->procno = INVALID_PROC_NUMBER;
+	worker->threaded = false;
 	worker->dbid = InvalidOid;
 	worker->userid = InvalidOid;
 	worker->subid = InvalidOid;
 	worker->relid = InvalidOid;
 	worker->leader_pid = InvalidPid;
+	worker->leader_signal_pid = InvalidPid;
+	worker->leader_procno = INVALID_PROC_NUMBER;
 	worker->parallel_apply = false;
 }
 
@@ -1643,9 +1680,9 @@ GetLeaderApplyWorkerPid(pid_t pid)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
-		if (isParallelApplyWorker(w) && w->proc && pid == w->proc->pid)
+		if (isParallelApplyWorker(w) && w->proc && pid == w->signal_pid)
 		{
-			leader_pid = w->leader_pid;
+			leader_pid = w->leader_signal_pid;
 			break;
 		}
 	}
@@ -1681,13 +1718,13 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 
 		memcpy(&worker, &LogicalRepCtx->workers[i],
 			   sizeof(LogicalRepWorker));
-		if (!worker.proc || !IsBackendPid(worker.proc->pid))
+		if (!worker.proc || !BackendSignalPidIsActive(worker.signal_pid))
 			continue;
 
 		if (OidIsValid(subid) && worker.subid != subid)
 			continue;
 
-		worker_pid = worker.proc->pid;
+		worker_pid = worker.signal_pid;
 
 		values[0] = ObjectIdGetDatum(worker.subid);
 		if (isTableSyncWorker(&worker))
@@ -1697,7 +1734,7 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 		values[2] = Int32GetDatum(worker_pid);
 
 		if (isParallelApplyWorker(&worker))
-			values[3] = Int32GetDatum(worker.leader_pid);
+			values[3] = Int32GetDatum(worker.leader_signal_pid);
 		else
 			nulls[3] = true;
 
