@@ -542,9 +542,10 @@ Exit gate:
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, late AIO worker, generic
 background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
-archiver, slot sync worker, and logical replication launcher slices, plus
-initial logical replication apply/table-sync, sequence-sync, and parallel
-apply slices, plus remaining worker families.
+archiver, checkpointer/background writer handoff, slot sync worker, and
+logical replication launcher slices, plus initial logical replication
+apply/table-sync, sequence-sync, and parallel apply slices, plus remaining
+worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -574,8 +575,8 @@ Likely changes:
 - Convert in-tree auxiliary worker families to thread carriers in threaded
   mode:
   - autovacuum launcher and workers have initial thread-carrier slices;
-  - checkpointer, background writer, and syslogger; WAL writer and archiver
-    have initial thread-carrier slices;
+  - checkpointer/background writer handoff, WAL writer, and archiver have
+    initial thread-carrier slices; syslogger remains;
   - startup/recovery worker paths that are part of normal server operation;
   - WAL receiver, WAL summarizer, and slot sync worker have initial
     thread-carrier slices;

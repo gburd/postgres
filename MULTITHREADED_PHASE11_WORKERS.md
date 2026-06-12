@@ -378,11 +378,36 @@ The WAL writer is now opted into the thread carrier path in threaded mode:
   clearing `WalWriterPMChild` and preserving crash escalation for abnormal
   exits.
 
-This slice deliberately leaves checkpointer and background writer on their
-startup-time process paths. They are launched before the startup process, so
-converting them directly to startup-time threads would make the later startup
-process fork unsafe. They need either startup/recovery worker conversion first
-or an explicit process-to-thread handoff after recovery reaches normal running.
+## Checkpointer And Background Writer Thread Handoff Slice
+
+The checkpointer and background writer now move to thread carriers after
+normal threaded operation begins:
+
+- `PgRuntimeShouldThreadBackend()` selects thread carriers for
+  `B_CHECKPOINTER` and `B_BG_WRITER` once they are eligible to relaunch;
+- `postmaster_child_launch_carrier()` preserves the startup-time process
+  launch for these two workers while no thread carrier has been created, so
+  the startup process can still be forked safely for recovery;
+- after `PM_RUN` and after another thread carrier exists, the postmaster asks
+  the startup-era process checkpointer/background writer to exit normally and
+  then relaunches them as thread carriers;
+- the checkpointer has a dedicated logical
+  `PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG` interrupt so postmaster
+  `SIGINT` still means "write the shutdown checkpoint" for thread-backed
+  checkpointers;
+- thread-backed checkpointer `SIGUSR2` maps to the existing shutdown request,
+  and thread-backed background writer `SIGTERM` maps to the existing shutdown
+  request;
+- `CheckpointerMain()` and `BackgroundWriterMain()` avoid process-wide signal
+  handler installation and signal-mask changes when running as thread
+  carriers;
+- `ProcessCheckpointerInterrupts()` drains logical backend interrupts and
+  avoids a second shared-address-space `ProcessConfigFile()` in thread mode,
+  while still updating the checkpointer-owned shared-memory config copies.
+
+This slice is a handoff rather than a startup-time thread launch because the
+startup process still forks during recovery. Startup/recovery conversion can
+remove the temporary startup-era processes later.
 
 ## Archiver Thread Slice
 
@@ -410,7 +435,7 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 
 ## Remaining Worker Families
 
-- checkpointer, background writer, and syslogger;
+- syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
 - a narrow allowlist path for in-tree generic background worker tests and
@@ -473,6 +498,24 @@ Additional validation for the logical replication parallel-apply slice:
   the expected final row/default counts `3334|3334|3334`, no logical
   replication child process was observed, and the subscriber log had no
   `ERROR`/`FATAL`/`PANIC`.
+
+Additional validation for the checkpointer/background writer handoff slice:
+
+- touched-object builds passed for `bgwriter.o`, `checkpointer.o`,
+  `launch_backend.o`, `postmaster.o`, and `backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`. The smoke
+  observed one logical `background writer`, one logical `checkpointer`, and
+  one logical `walwriter` in `pg_stat_activity`, no OS child process for
+  checkpointer/background writer after handoff, successful DDL/insert plus
+  `CHECKPOINT`, final row count `2000`, no log `ERROR`/`FATAL`/`PANIC`, and
+  clean fast shutdown;
+- a direct process-mode temp-cluster smoke passed with the same
+  checkpointer/background writer visible as OS child processes, successful
+  DDL/insert plus `CHECKPOINT`, final row count `100`, no log
+  `ERROR`/`FATAL`/`PANIC`, and clean fast shutdown.
 - a follow-up direct threaded AIO smoke on the committed branch reproduced the
   same late-worker proof and fast shutdown: `io_after=2`,
   `children_before=6`, and `children_after=6`.

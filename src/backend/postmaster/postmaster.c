@@ -415,6 +415,8 @@ static PG_GLOBAL_RUNTIME DNSServiceRef bonjour_sdref = NULL;
 static PG_GLOBAL_RUNTIME TimestampTz io_worker_launch_next_time = 0;
 static PG_GLOBAL_RUNTIME int io_worker_count = 0;
 static PG_GLOBAL_RUNTIME PMChild *io_worker_children[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME bool bgwriter_thread_handoff_pending = false;
+static PG_GLOBAL_RUNTIME bool checkpointer_thread_handoff_pending = false;
 
 /*
  * postmaster.c - function prototypes
@@ -436,6 +438,10 @@ static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
 static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
+static bool cleanup_bgwriter_child(PMChild *child, int exitstatus,
+								   int crash_pid);
+static bool cleanup_checkpointer_child(PMChild *child, int exitstatus,
+									   int crash_pid);
 static bool cleanup_io_worker_child(PMChild *child);
 static bool cleanup_slot_sync_worker_child(PMChild *child, int exitstatus,
 										   int crash_pid);
@@ -2416,11 +2422,7 @@ process_pm_child_exit(void)
 		 */
 		if (BgWriterPMChild && pid == BgWriterPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(BgWriterPMChild);
-			BgWriterPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("background writer process"));
+			(void) cleanup_bgwriter_child(BgWriterPMChild, exitstatus, pid);
 			continue;
 		}
 
@@ -2429,33 +2431,8 @@ process_pm_child_exit(void)
 		 */
 		if (CheckpointerPMChild && pid == CheckpointerPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(CheckpointerPMChild);
-			CheckpointerPMChild = NULL;
-			if (EXIT_STATUS_0(exitstatus) && pmState == PM_WAIT_CHECKPOINTER)
-			{
-				/*
-				 * OK, we saw normal exit of the checkpointer after it's been
-				 * told to shut down.  We know checkpointer wrote a shutdown
-				 * checkpoint, otherwise we'd still be in
-				 * PM_WAIT_XLOG_SHUTDOWN state.
-				 *
-				 * At this point only dead-end children and logger should be
-				 * left.
-				 */
-				UpdatePMState(PM_WAIT_DEAD_END);
-				ConfigurePostmasterWaitSet(false);
-				SignalChildren(SIGTERM, btmask_all_except(B_LOGGER));
-			}
-			else
-			{
-				/*
-				 * Any unexpected exit of the checkpointer (including FATAL
-				 * exit) is treated as a crash.
-				 */
-				HandleChildCrash(pid, exitstatus,
-								 _("checkpointer process"));
-			}
-
+			(void) cleanup_checkpointer_child(CheckpointerPMChild, exitstatus,
+											  pid);
 			continue;
 		}
 
@@ -2642,6 +2619,18 @@ process_pm_thread_exit(void)
 		if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 		{
 			(void) cleanup_autovac_launcher_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_BG_WRITER)
+		{
+			(void) cleanup_bgwriter_child(pmchild, exitstatus, 0);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_CHECKPOINTER)
+		{
+			(void) cleanup_checkpointer_child(pmchild, exitstatus, 0);
 			reaped = true;
 			continue;
 		}
@@ -3455,6 +3444,26 @@ LaunchMissingBackgroundProcesses(void)
 	if (pmState == PM_RUN || pmState == PM_RECOVERY ||
 		pmState == PM_HOT_STANDBY || pmState == PM_STARTUP)
 	{
+		if (multithreaded && pmState == PM_RUN &&
+			PostmasterThreadCarriersStarted())
+		{
+			if (CheckpointerPMChild != NULL &&
+				PostmasterChildIsProcess(CheckpointerPMChild) &&
+				!checkpointer_thread_handoff_pending)
+			{
+				checkpointer_thread_handoff_pending = true;
+				signal_child(CheckpointerPMChild, SIGUSR2);
+			}
+
+			if (BgWriterPMChild != NULL &&
+				PostmasterChildIsProcess(BgWriterPMChild) &&
+				!bgwriter_thread_handoff_pending)
+			{
+				bgwriter_thread_handoff_pending = true;
+				signal_child(BgWriterPMChild, SIGTERM);
+			}
+		}
+
 		if (CheckpointerPMChild == NULL)
 			CheckpointerPMChild = StartChildProcess(B_CHECKPOINTER);
 		if (BgWriterPMChild == NULL)
@@ -3658,6 +3667,13 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
 				return true;
 			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+				return false;
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG;
+				return true;
+			}
 			if (pmchild->bkend_type == B_IO_WORKER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
@@ -3682,6 +3698,13 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
 			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+				return false;
 			if (pmchild->bkend_type == B_IO_WORKER)
 				return false;
 			if (pmchild->bkend_type == B_WAL_WRITER)
@@ -3710,6 +3733,13 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_AUTOVAC_LAUNCHER;
+				return true;
+			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+				return false;
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
 			}
 			if (pmchild->bkend_type == B_IO_WORKER)
@@ -4666,6 +4696,72 @@ cleanup_autovac_launcher_child(PMChild *child, int exitstatus)
 	AutoVacLauncherPMChild = NULL;
 	if (!EXIT_STATUS_0(exitstatus))
 		HandleChildCrash(0, exitstatus, _("autovacuum launcher process"));
+
+	return true;
+}
+
+static bool
+cleanup_bgwriter_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == BgWriterPMChild);
+	Assert(child->bkend_type == B_BG_WRITER);
+
+	bgwriter_thread_handoff_pending = false;
+
+	ReleasePostmasterChildSlot(BgWriterPMChild);
+	BgWriterPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("background writer process"));
+
+	return true;
+}
+
+static bool
+cleanup_checkpointer_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	bool		thread_handoff;
+
+	Assert(child != NULL);
+	Assert(child == CheckpointerPMChild);
+	Assert(child->bkend_type == B_CHECKPOINTER);
+
+	thread_handoff = checkpointer_thread_handoff_pending;
+	checkpointer_thread_handoff_pending = false;
+
+	ReleasePostmasterChildSlot(CheckpointerPMChild);
+	CheckpointerPMChild = NULL;
+	if (EXIT_STATUS_0(exitstatus) && pmState == PM_WAIT_CHECKPOINTER)
+	{
+		/*
+		 * OK, we saw normal exit of the checkpointer after it's been told to
+		 * shut down.  We know checkpointer wrote a shutdown checkpoint,
+		 * otherwise we'd still be in PM_WAIT_XLOG_SHUTDOWN state.
+		 *
+		 * At this point only dead-end children and logger should be left.
+		 */
+		UpdatePMState(PM_WAIT_DEAD_END);
+		ConfigurePostmasterWaitSet(false);
+		SignalChildren(SIGTERM, btmask_all_except(B_LOGGER));
+	}
+	else if (EXIT_STATUS_0(exitstatus) && thread_handoff && pmState == PM_RUN)
+	{
+		/*
+		 * The startup-era process checkpointer exited on request so it can be
+		 * relaunched as a thread carrier now that normal threaded operation
+		 * has begun.
+		 */
+	}
+	else
+	{
+		/*
+		 * Any unexpected exit of the checkpointer (including FATAL exit) is
+		 * treated as a crash.
+		 */
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("checkpointer process"));
+	}
 
 	return true;
 }

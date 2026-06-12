@@ -427,6 +427,16 @@ Important current files:
   replicated row/default counts, and a postmaster child-process check as the
   primary smoke evidence.
 
+- Threaded checkpointer/background-writer smokes should wait for the
+  post-startup handoff. In threaded mode those workers intentionally start as
+  processes before recovery forks the startup process, then exit and relaunch
+  as thread carriers after `PM_RUN` and after another thread carrier exists.
+  Good smoke evidence is one logical `checkpointer` and one logical
+  `background writer` in `pg_stat_activity`, no OS child command containing
+  `checkpointer` or `background writer` under the postmaster, a successful
+  `CHECKPOINT`, and clean fast shutdown. In process-mode compatibility smokes,
+  the same workers should still appear as OS child processes.
+
 - PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
   Perl on this macOS checkout may not have it, in which case direct `prove`
   invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.

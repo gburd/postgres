@@ -285,7 +285,20 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 												client_sock);
 	}
 
-	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+	/*
+	 * Checkpointer and background writer are needed before the startup
+	 * process is forked, so their initial startup carriers must remain
+	 * processes.  After normal running begins and another thread carrier has
+	 * made fork-without-exec unsafe, the postmaster hands them off and
+	 * relaunches them through the runtime-selected thread carrier path.
+	 */
+	if (multithreaded &&
+		!postmaster_thread_carriers_started &&
+		(child_type == B_CHECKPOINTER || child_type == B_BG_WRITER))
+		launch_model = PG_BACKEND_LAUNCH_PROCESS;
+	else
+		launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+
 	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
 	{
 		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
@@ -336,7 +349,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		child_type != B_BACKEND &&
 		child_type != B_AUTOVAC_LAUNCHER &&
 		child_type != B_AUTOVAC_WORKER &&
+		child_type != B_BG_WRITER &&
 		child_type != B_BG_WORKER &&
+		child_type != B_CHECKPOINTER &&
 		child_type != B_IO_WORKER &&
 		child_type != B_SLOTSYNC_WORKER &&
 		child_type != B_WAL_RECEIVER &&
@@ -357,7 +372,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	if ((child_type == B_ARCHIVER ||
 		 child_type == B_AUTOVAC_LAUNCHER ||
 		 child_type == B_AUTOVAC_WORKER ||
+		 child_type == B_BG_WRITER ||
 		 child_type == B_BG_WORKER ||
+		 child_type == B_CHECKPOINTER ||
 		 child_type == B_IO_WORKER ||
 		 child_type == B_SLOTSYNC_WORKER ||
 		 child_type == B_WAL_RECEIVER ||

@@ -65,6 +65,7 @@
 #include "storage/spin.h"
 #include "storage/subsystems.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -172,7 +173,7 @@ PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
  * Private state
  */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ckpt_active = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ShutdownXLOGPending = false;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t CheckpointerShutdownXLOGPending = false;
 
 /* these values are valid when ckpt_active is true: */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t ckpt_start_time;
@@ -206,10 +207,13 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	MemoryContext checkpointer_context;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
 
 	CheckpointerShmem->checkpointer_pid = MyProcPid;
 
@@ -221,19 +225,22 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	 * want to wait for the backends to exit, whereupon the postmaster will
 	 * tell us it's okay to shut down (via SIGUSR2).
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, ReqShutdownXLOG);
-	pqsignal(SIGTERM, PG_SIG_IGN);	/* ignore SIGTERM */
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, ReqShutdownXLOG);
+		pqsignal(SIGTERM, PG_SIG_IGN);	/* ignore SIGTERM */
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
 
-	/*
-	 * Reset some signals that are accepted by postmaster but not here
-	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		/*
+		 * Reset some signals that are accepted by postmaster but not here
+		 */
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * Initialize so that first time-driven event happens at the correct time.
@@ -350,7 +357,8 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Ensure all shared memory values are set correctly for the config. Doing
@@ -387,7 +395,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		AbsorbSyncRequests();
 
 		ProcessCheckpointerInterrupts();
-		if (ShutdownXLOGPending || ShutdownRequestPending)
+		if (CheckpointerShutdownXLOGPending || ShutdownRequestPending)
 			break;
 
 		/*
@@ -564,7 +572,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 			 * latch might have been reset (e.g. in CheckpointWriteDelay).
 			 */
 			ProcessCheckpointerInterrupts();
-			if (ShutdownXLOGPending || ShutdownRequestPending)
+			if (CheckpointerShutdownXLOGPending || ShutdownRequestPending)
 				break;
 		}
 
@@ -617,7 +625,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	ExitOnAnyError = true;
 
-	if (ShutdownXLOGPending)
+	if (CheckpointerShutdownXLOGPending)
 	{
 		/*
 		 * Close down the database.
@@ -635,7 +643,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		 * Tell postmaster that we're done.
 		 */
 		SendPostmasterSignal(PMSIGNAL_XLOG_IS_SHUTDOWN);
-		ShutdownXLOGPending = false;
+		CheckpointerShutdownXLOGPending = false;
 	}
 
 	/*
@@ -669,13 +677,17 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 static void
 ProcessCheckpointerInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 
 		/*
 		 * Checkpointer is the last process to shut down, so we ask it to hold
@@ -810,7 +822,7 @@ CheckpointWriteDelay(int flags, double progress)
 	 * in which case we just try to catch up as quickly as possible.
 	 */
 	if (!(flags & CHECKPOINT_FAST) &&
-		!ShutdownXLOGPending &&
+	!CheckpointerShutdownXLOGPending &&
 		!ShutdownRequestPending &&
 		!FastCheckpointRequested() &&
 		IsCheckpointOnSchedule(progress))
@@ -818,7 +830,9 @@ CheckpointWriteDelay(int flags, double progress)
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+			if (CurrentPgRuntime == NULL ||
+				CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+				ProcessConfigFile(PGC_SIGHUP);
 			/* update shmem copies of config variables */
 			UpdateSharedMemoryConfig();
 		}
@@ -948,7 +962,8 @@ IsCheckpointOnSchedule(double progress)
 static void
 ReqShutdownXLOG(SIGNAL_ARGS)
 {
-	ShutdownXLOGPending = true;
+	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG);
+	CheckpointerShutdownXLOGPending = true;
 	SetLatch(MyLatch);
 }
 
