@@ -147,6 +147,7 @@ PG_GLOBAL_RUNTIME int max_worker_processes = 8;
 PG_GLOBAL_RUNTIME int max_parallel_workers = 8;
 PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
+PG_GLOBAL_RUNTIME bool multithreaded = false;
 
 /* GUC parameters for vacuum */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumBufferUsageLimit = 2048;

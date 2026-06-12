@@ -106,6 +106,30 @@ PgProcessRuntimeAttachSession(Session *session)
 	CurrentPgSession->legacy_session = session;
 }
 
+PgBackendLaunchModel
+PgRuntimeGetBackendLaunchModel(BackendType backend_type)
+{
+	if (PgRuntimeShouldThreadBackend(backend_type))
+		return PG_BACKEND_LAUNCH_THREAD;
+
+	return PG_BACKEND_LAUNCH_PROCESS;
+}
+
+bool
+PgRuntimeShouldThreadBackend(BackendType backend_type)
+{
+	if (!multithreaded)
+		return false;
+
+	/*
+	 * Phase 10 is scoped to regular client backends. WAL senders still begin
+	 * life as B_BACKEND and can be split out once the regular backend thread
+	 * launcher exists. Dead-end backends and in-tree workers remain process
+	 * launches until their dedicated phases.
+	 */
+	return backend_type == B_BACKEND;
+}
+
 PgBackendModel
 PgRuntimeGetExtensionBackendModel(void)
 {

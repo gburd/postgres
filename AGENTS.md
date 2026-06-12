@@ -25,6 +25,8 @@ the code evolves.
   remaining Phase 8 thread-safety floor.
 - [MULTITHREADED_PHASE9_WAIT_BOUNDARY.md](MULTITHREADED_PHASE9_WAIT_BOUNDARY.md)
   records the current logical wait/suspend boundary work.
+- [MULTITHREADED_PHASE10_THREAD_RUNTIME.md](MULTITHREADED_PHASE10_THREAD_RUNTIME.md)
+  records the thread-per-session runtime work.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.

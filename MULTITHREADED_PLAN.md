@@ -474,6 +474,9 @@ Validation:
 
 ## Phase 10: Thread-Per-Session Runtime
 
+Status: in progress. See `MULTITHREADED_PHASE10_THREAD_RUNTIME.md` for the
+current launch-selection scaffold and remaining thread launcher work.
+
 Goal: run regular client backends as OS threads inside one server runtime.
 
 Likely changes:

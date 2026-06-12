@@ -31,6 +31,7 @@
 
 #include "postgres.h"
 
+#include <errno.h>
 #include <unistd.h>
 
 #include "libpq/libpq-be.h"
@@ -53,6 +54,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
 #include "tcop/backend_startup.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
@@ -208,8 +210,20 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 						const ClientSocket *client_sock)
 {
 	pid_t		pid;
+	PgBackendLaunchModel launch_model;
 
 	Assert(IsPostmasterEnvironment && !IsUnderPostmaster);
+
+	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
+	{
+		errno = ENOSYS;
+		ereport(LOG,
+				(errmsg("threaded backend launch is not implemented yet"),
+				 errdetail("The \"multithreaded\" setting currently only enables "
+						   "the Phase 10 launch decision path.")));
+		return -1;
+	}
 
 	/* Capture time Postmaster initiates process creation for logging */
 	if (IsExternalConnectionBackend(child_type))

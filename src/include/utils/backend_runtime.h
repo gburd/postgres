@@ -39,6 +39,12 @@ typedef enum PgCarrierKind
 	PG_CARRIER_PROCESS
 } PgCarrierKind;
 
+typedef enum PgBackendLaunchModel
+{
+	PG_BACKEND_LAUNCH_PROCESS,
+	PG_BACKEND_LAUNCH_THREAD
+} PgBackendLaunchModel;
+
 /*
  * Budget for one invocation of PgSessionStep().  The process-mode runner uses
  * a single-message budget today; later schedulers can extend this contract
@@ -205,6 +211,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecu
 
 extern void InitializePgProcessRuntime(void);
 extern void PgProcessRuntimeAttachSession(Session *session);
+extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
+extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
