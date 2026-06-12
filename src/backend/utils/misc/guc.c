@@ -1554,6 +1554,9 @@ InitializeThreadedSessionGUCOptions(void)
 						PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("track_counts", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 }

@@ -20,7 +20,9 @@ deferral into thread carriers:
 - thread carriers now initialize their own narrow TLS GUC table with
   `InitializeThreadedSessionGUCOptions()` before entering backend or worker
   main code. The initialized set includes the early `InitPostgres()` GUCs and
-  the worker-local autovacuum override GUCs exercised by this slice;
+  the worker-local autovacuum override GUCs exercised by this slice. It also
+  includes `track_counts`, which autovacuum launcher startup reads before
+  entering its steady-state scheduling loop;
 - `signal_child()` can route postmaster `SIGINT`, `SIGTERM`, `SIGQUIT`,
   `SIGKILL`, `SIGABRT`, and `SIGHUP` requests to thread-backed children as
   logical backend interrupts instead of assuming every `PMChild` has a PID;
@@ -56,8 +58,8 @@ mode:
 - thread-backed launcher startup releases the temporary threaded startup gate
   after local initialization and before entering the scheduling loop;
 - launcher-only defensive `SetConfigOption()` overrides remain process-mode
-  only for now, because the launcher does not call `InitPostgres()` and does
-  not yet have a private backend GUC option hash in threaded mode;
+  only for now. Threaded launcher startup has a narrow private GUC table, but
+  full worker-local GUC adoption and override policy are later work;
 - `ProcessAutoVacLauncherInterrupts()` drains logical backend interrupts and
   converts the launcher-specific wakeup interrupt into the existing
   `SIGUSR2`/`got_SIGUSR2` path;
@@ -892,8 +894,9 @@ Additional validation for the late AIO worker slice:
 - the threaded runtime TAP smoke now starts with two AIO workers to cover
   startup handoff, verifies no startup IO worker remains as a postmaster child
   process, then raises `io_min_workers` to 3 to keep the late-launch proof.
-  Direct TAP syntax/check execution remains blocked in this checkout by the
-  missing system Perl `IPC::Run` module;
+  Direct TAP execution now passes in this checkout when run with
+  `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl"` and the usual
+  `PG_REGRESS`/temp-install harness environment;
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`.
@@ -1018,8 +1021,8 @@ Additional validation for the generic background worker compatibility gate:
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`;
 - direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
-  is blocked in this local Perl by the missing non-core `IPC::Run` module
-  before syntax is checked.
+  passed when run with
+  `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl"`.
 
 Additional validation for the explicit background-worker backend-model
 metadata slice:
@@ -1099,8 +1102,8 @@ Additional validation for the parallel worker thread slice:
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`;
 - direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
-  remains blocked in this local Perl by the missing non-core `IPC::Run`
-  module before syntax is checked.
+  passed when run with
+  `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl"`.
 
 Additional validation for the `test_shm_mq` thread slice:
 
@@ -1282,6 +1285,31 @@ Additional validation for the online data-checksum worker thread slice:
   `data_checksums=on`, verified the table still had 3,000 rows, saw
   process-carrier start logs for the checksum launcher and workers, saw no log
   `ERROR`/`FATAL`/`PANIC`, and completed a clean fast shutdown.
+
+Additional Gate E hardening validation:
+
+- a direct threaded autovacuum-launcher smoke exposed that launcher threads
+  were seeing the default false TLS value for `track_counts`, so
+  `AutoVacuumingActive()` returned false inside the launcher even though the
+  postmaster had correctly decided to start it. The launcher then took the
+  emergency one-shot worker path and exited, leaving no stable
+  `autovacuum launcher` row in `pg_stat_activity`;
+- adding `track_counts` to `InitializeThreadedSessionGUCOptions()` fixed that
+  startup divergence. A clean threaded temp-cluster smoke with
+  `autovacuum=on`, `autovacuum_naptime='1h'`, `io_method=sync`, and
+  `summarize_wal=off` observed one logical `autovacuum launcher` backend and
+  no stray autovacuum worker row;
+- touched-object build passed for `guc.o`;
+- full `gmake -j8` passed;
+- full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  reinstalling `src/test/modules/test_backend_runtime` into the temp install;
+- direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  passed all 36 tests with the local `PERL5LIB` TAP environment. This covers
+  the threaded autovacuum launcher, deterministic autovacuum worker entry,
+  startup and late AIO workers, unsafe/process-model background-worker
+  rejection, explicit thread-model background-worker startup/shutdown,
+  cancellation/termination, PL/pgSQL, and representative threaded SQL
+  usability checks in one fixture.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
