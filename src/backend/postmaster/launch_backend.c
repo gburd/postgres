@@ -256,6 +256,15 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	pid_t		pid;
 	PgBackendLaunchModel launch_model;
 
+	if (multithreaded &&
+		postmaster_thread_carriers_started &&
+		child_type == B_IO_WORKER)
+	{
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
+	}
+
 	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
 	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
 	{
@@ -303,7 +312,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	PgThread	thread;
 	int			rc;
 
-	if (child_type != B_BACKEND && child_type != B_AUTOVAC_WORKER)
+	if (child_type != B_BACKEND &&
+		child_type != B_AUTOVAC_WORKER &&
+		child_type != B_IO_WORKER)
 	{
 		errno = ENOSYS;
 		return false;
@@ -316,7 +327,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		errno = EINVAL;
 		return false;
 	}
-	if (child_type == B_AUTOVAC_WORKER &&
+	if ((child_type == B_AUTOVAC_WORKER || child_type == B_IO_WORKER) &&
 		(client_sock != NULL || startup_data != NULL || startup_data_len != 0))
 	{
 		errno = EINVAL;

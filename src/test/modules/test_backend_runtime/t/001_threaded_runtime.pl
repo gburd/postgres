@@ -37,11 +37,36 @@ sub start_psql_script
 	};
 }
 
+sub postmaster_child_count
+{
+	my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
+	$postmaster_pid =~ s/\n.*//s;
+
+	my $stdout = '';
+	my $stderr = '';
+	my $result = IPC::Run::run [ 'ps', '-Ao', 'ppid=' ], '>', \$stdout, '2>',
+	  \$stderr;
+	die "could not count postmaster children: $stderr" unless $result;
+
+	my $count = 0;
+	foreach my $ppid (split /\n/, $stdout)
+	{
+		$ppid =~ s/^\s+|\s+$//g;
+		$count++ if $ppid eq $postmaster_pid;
+	}
+	return $count;
+}
+
 $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
 autovacuum = off
+io_method = worker
+io_min_workers = 1
+io_max_workers = 4
+io_worker_launch_interval = 0
+io_worker_idle_timeout = '60s'
 log_min_messages = debug1
 });
 $node->start;
@@ -71,6 +96,33 @@ for (1 .. 50)
 like(slurp_file($node->logfile),
 	qr/autovacuum worker started without a worker entry/,
 	'deterministic autovacuum worker thread reached worker main');
+
+SKIP:
+{
+	skip 'postmaster child counting smoke is Unix-specific', 3
+	  if $^O eq 'MSWin32';
+
+	my $io_workers_before = $node->safe_psql('postgres',
+		q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
+	my $children_before = postmaster_child_count();
+
+	$node->safe_psql('postgres', q{ALTER SYSTEM SET io_min_workers = 2});
+	$node->safe_psql('postgres', q{SELECT pg_reload_conf()});
+
+	my $io_workers_after = 0;
+	for (1 .. 50)
+	{
+		$io_workers_after = $node->safe_psql('postgres',
+			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
+		last if $io_workers_after >= $io_workers_before + 1;
+		usleep(100_000);
+	}
+
+	is($io_workers_before, '1', 'threaded runtime starts with one IO worker');
+	is($io_workers_after, '2', 'threaded runtime launched a second IO worker');
+	is(postmaster_child_count(), $children_before,
+		'late IO worker used a thread carrier, not a new process');
+}
 
 $node->safe_psql(
 	'postgres',

@@ -434,6 +434,7 @@ static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
+static bool cleanup_io_worker_child(PMChild *child);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
 						 int pid, int exitstatus);
@@ -2618,6 +2619,12 @@ process_pm_thread_exit(void)
 			continue;
 
 		(void) pg_thread_join(&pmchild->thread);
+		if (pmchild->bkend_type == B_IO_WORKER)
+		{
+			(void) cleanup_io_worker_child(pmchild);
+			reaped = true;
+			continue;
+		}
 		CleanupBackend(pmchild, exitstatus);
 		reaped = true;
 	}
@@ -3553,10 +3560,24 @@ signal_child(PMChild *pmchild, int signal)
 		switch (signal)
 		{
 			case SIGINT:
-				PgBackendRaiseInterrupt(backend,
-										PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+				if (pmchild->bkend_type == B_IO_WORKER)
+					PgBackendRaiseInterrupt(backend,
+											PG_BACKEND_INTERRUPT_PROC_DIE);
+				else
+					PgBackendRaiseInterrupt(backend,
+											PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 				break;
 			case SIGTERM:
+				if (pmchild->bkend_type == B_IO_WORKER)
+					break;
+				PgBackendRaiseInterrupt(backend,
+										PG_BACKEND_INTERRUPT_PROC_DIE);
+				break;
+			case SIGUSR2:
+				if (pmchild->bkend_type == B_IO_WORKER)
+					PgBackendRaiseInterrupt(backend,
+											PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST);
+				break;
 			case SIGQUIT:
 			case SIGKILL:
 			case SIGABRT:
@@ -4482,8 +4503,19 @@ maybe_reap_io_worker(int pid)
 		if (io_worker_children[i] &&
 			PostmasterChildIsProcess(io_worker_children[i]) &&
 			io_worker_children[i]->pid == pid)
+			return cleanup_io_worker_child(io_worker_children[i]);
+	}
+	return false;
+}
+
+static bool
+cleanup_io_worker_child(PMChild *child)
+{
+	for (int i = 0; i < MAX_IO_WORKERS; ++i)
+	{
+		if (io_worker_children[i] == child)
 		{
-			ReleasePostmasterChildSlot(io_worker_children[i]);
+			ReleasePostmasterChildSlot(child);
 
 			--io_worker_count;
 			io_worker_children[i] = NULL;
