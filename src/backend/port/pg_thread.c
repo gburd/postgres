@@ -136,6 +136,18 @@ pg_thread_set_name(const char *name)
 #endif
 }
 
+void
+pg_thread_exit(void)
+{
+#ifdef WIN32
+	_endthreadex(0);
+#else
+	pthread_exit(NULL);
+#endif
+
+	pg_unreachable();
+}
+
 #ifdef WIN32
 static unsigned __stdcall
 pg_thread_start(void *arg)

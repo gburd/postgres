@@ -29,6 +29,7 @@ static volatile bool exit_continuation_seen;
 static volatile int exit_continuation_code;
 
 static void test_pg_thread_routine(void *arg);
+static void test_pg_thread_exit_routine(void *arg);
 
 static void
 test_pg_thread_routine(void *arg)
@@ -36,6 +37,15 @@ test_pg_thread_routine(void *arg)
 	pg_atomic_uint32 *ran = (pg_atomic_uint32 *) arg;
 
 	pg_atomic_write_u32(ran, 1);
+}
+
+static void
+test_pg_thread_exit_routine(void *arg)
+{
+	pg_atomic_uint32 *ran = (pg_atomic_uint32 *) arg;
+
+	pg_atomic_write_u32(ran, 1);
+	pg_thread_exit();
 }
 
 static void
@@ -167,6 +177,36 @@ test_backend_thread_create_join(PG_FUNCTION_ARGS)
 
 	if (pg_atomic_read_u32(&ran) != 1)
 		elog(ERROR, "thread routine did not run");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_thread_exit_join);
+Datum
+test_backend_thread_exit_join(PG_FUNCTION_ARGS)
+{
+	PgThread	thread;
+	pg_atomic_uint32 ran;
+	int			rc;
+
+	pg_atomic_init_u32(&ran, 0);
+	rc = pg_thread_create(&thread, "pg test thread exit",
+						  test_pg_thread_exit_routine, &ran);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(ERROR, "pg_thread_create failed: %m");
+	}
+
+	rc = pg_thread_join(&thread);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(ERROR, "pg_thread_join failed: %m");
+	}
+
+	if (pg_atomic_read_u32(&ran) != 1)
+		elog(ERROR, "thread exit routine did not run");
 
 	PG_RETURN_BOOL(true);
 }

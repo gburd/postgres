@@ -39,5 +39,6 @@ extern int	pg_thread_create(PgThread *thread, const char *name,
 extern int	pg_thread_join(PgThread *thread);
 extern int	pg_thread_detach(PgThread *thread);
 extern void pg_thread_set_name(const char *name);
+pg_noreturn extern void pg_thread_exit(void);
 
 #endif							/* PG_THREAD_H */

@@ -198,6 +198,8 @@ typedef struct BackendThreadStart
 	Latch	   *postmaster_latch;
 } BackendThreadStart;
 
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThreadStart = NULL;
+
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 BackendType child_type,
 											 int child_slot,
@@ -205,6 +207,9 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 size_t startup_data_len,
 											 const ClientSocket *client_sock);
 static void backend_thread_reject_entry(void *arg);
+pg_noreturn static void backend_thread_exit(int code);
+pg_noreturn static void backend_thread_finish(int code);
+static int	backend_thread_exitstatus(int code);
 static void report_thread_startup_blocked_to_client(ClientSocket *client_sock);
 
 const char *
@@ -279,7 +284,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	errno = ENOSYS;
 	return false;
 #else
-	InitializePgThreadRuntime(NULL);
+	InitializePgThreadRuntime(backend_thread_exit);
 
 	thread_start = malloc(sizeof(BackendThreadStart));
 	if (thread_start == NULL)
@@ -325,6 +330,7 @@ backend_thread_reject_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
+	CurrentBackendThreadStart = thread_start;
 	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
 									 thread_start->child_type, NULL, NULL);
 
@@ -347,10 +353,47 @@ backend_thread_reject_entry(void *arg)
 		 */
 	}
 
-	PostmasterChildMarkThreadExited(thread_start->pmchild, 0,
+	backend_thread_finish(0);
+}
+
+static void
+backend_thread_exit(int code)
+{
+	if (CurrentBackendThreadStart == NULL)
+		pg_thread_exit();
+
+	backend_thread_finish(code);
+}
+
+static void
+backend_thread_finish(int code)
+{
+	BackendThreadStart *thread_start = CurrentBackendThreadStart;
+	int			exitstatus;
+
+	Assert(thread_start != NULL);
+
+	exitstatus = backend_thread_exitstatus(code);
+	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
 									thread_start->postmaster_latch);
 	MyClientSocket = NULL;
+	CurrentBackendThreadStart = NULL;
 	free(thread_start);
+
+	pg_thread_exit();
+}
+
+static int
+backend_thread_exitstatus(int code)
+{
+	if (code == 0)
+		return 0;
+
+#ifdef WIN32
+	return code;
+#else
+	return code << 8;
+#endif
 }
 
 static void
