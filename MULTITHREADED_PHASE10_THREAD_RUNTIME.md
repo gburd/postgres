@@ -564,6 +564,27 @@ The bridge is deliberately narrow: it proves the role identity boundary while
 leaving full per-session GUC state adoption as a Phase 10 blocker before
 arbitrary SQL can run.
 
+## Database Identity Boundary Slice
+
+The twenty-seventh slice moves threaded startup through database identity and
+storage-path setup:
+
+- after role identity, threaded startup now runs the regular reserved-slot and
+  replication privilege checks;
+- the carrier looks up and locks the target database, rechecks that it still
+  exists, sets `MyDatabaseId`, records it in `MyProc->databaseId`, and
+  invalidates the startup catalog snapshot;
+- the carrier validates the database directory and `PG_VERSION`, installs the
+  database path, runs relcache phase 3, and initializes the ACL framework;
+- the guarded FATAL now fires immediately before `CheckMyDatabase()`.
+
+The next blocker is deliberately explicit. `CheckMyDatabase()` both applies
+database-specific GUC state and calls `pg_perm_setlocale(LC_CTYPE, ...)`.
+That is not a safe threaded-backend operation as-is, because it can mutate
+process-global locale state shared with the postmaster and sibling carriers.
+The next Phase 10 slice needs a thread-safe database GUC/locale policy before
+startup settings and arbitrary SQL can run.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -836,3 +857,17 @@ arbitrary SQL can run.
   validation with the guarded "threaded backend database initialization is not
   implemented yet" FATAL, kept the postmaster running between connections, and
   completed normal fast shutdown.
+- after the database identity boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the database identity boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the database identity boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the database identity
+  boundary slice read real libpq startup packets for two client connections,
+  completed authentication and role identity, crossed database lookup/lock,
+  database path validation, relcache phase 3, and ACL setup, rejected both
+  before `CheckMyDatabase()` with the guarded "threaded backend database
+  initialization is not implemented yet" FATAL, kept the postmaster running
+  between connections, and completed normal fast shutdown.

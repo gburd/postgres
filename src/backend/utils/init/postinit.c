@@ -986,14 +986,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		pgstat_bestart_security();
 	}
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Authentication and role identity completed with "
-						   "thread-local GUC lookup state, but database "
-						   "validation and post-startup session lifetime still "
-						   "need thread-safe lifecycle handling.")));
-
 	/*
 	 * Binary upgrades only allowed super-user connections
 	 */
@@ -1260,6 +1252,15 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	/* set up ACL framework (so CheckMyDatabase can check permissions) */
 	initialize_acl();
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Database identity, storage path, relcache, and "
+						   "ACL setup completed, but database-specific GUC "
+						   "state, locale validation, startup settings, and "
+						   "post-startup session lifetime still need "
+						   "thread-safe lifecycle handling.")));
 
 	/*
 	 * Re-read the pg_database row for our database, check permissions and set
