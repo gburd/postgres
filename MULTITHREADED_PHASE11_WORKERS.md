@@ -168,6 +168,39 @@ logical backend, reloads config to exercise the SIGHUP path, then sets
 the postmaster OS child-process count stays unchanged across the summarizer
 exit, proving the summarizer was a thread carrier rather than a forked child.
 
+## WAL Receiver Thread Slice
+
+The WAL receiver is now opted into the thread carrier path in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_WAL_RECEIVER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts WAL receiver launches without
+  client startup data;
+- `WalReceiverMain()` skips process-wide signal handler and signal-mask
+  changes when running as a thread carrier;
+- `WalRcvData.threaded` records whether the active receiver is thread-backed.
+  Startup-process shutdown uses that flag to wake the WAL receiver proc latch
+  and let it observe `WALRCV_STOPPING`, instead of sending `SIGTERM` to the
+  process PID shared by the postmaster runtime;
+- WAL receiver wait loops drain logical backend interrupts with
+  `PgCurrentBackendApplyInterrupts()` before `CHECK_FOR_INTERRUPTS()` and also
+  exit when shared WAL receiver state reaches `WALRCV_STOPPING`;
+- thread-backed WAL receiver config reloads observe the postmaster's shared
+  GUC reload result instead of running `ProcessConfigFile()` concurrently;
+- `libpqwalreceiver` is marked as compatible with the thread-per-session
+  backend model so the in-tree receiver transport can be loaded by the
+  thread-backed worker;
+- thread-backed WAL receiver exit is reaped by the postmaster thread-exit
+  path, clearing `WalReceiverPMChild` while preserving the existing process
+  behavior that treats normal exit and FATAL exit as non-crash exits.
+
+The live smoke for this slice starts a process-backed primary and a
+threaded-mode standby, waits until hot standby accepts connections, verifies
+that `pg_stat_activity` reports one `walreceiver` logical backend, verifies no
+postmaster OS child process is titled as a WAL receiver, writes a row on the
+primary, waits for standby replay to catch up, and reads the replicated row
+from the standby.
+
 ## WAL Writer Thread Slice
 
 The WAL writer is now opted into the thread carrier path in threaded mode:
@@ -222,7 +255,6 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
-- WAL receiver;
 - startup-time AIO method workers;
 - logical replication launcher, apply, table sync, slot sync, sync utility,
   and parallel apply workers;
@@ -306,6 +338,18 @@ Additional validation for the WAL writer thread slice:
   `walwriters=1`, `walwriters_after_work=1`, `children_with_walwriter=4`,
   and `children_after_work=4` after `pg_reload_conf()`, a small WAL-writing
   workload, `CHECKPOINT`, and clean fast shutdown.
+
+Additional validation for the WAL receiver thread slice:
+
+- touched-object builds passed for `backend_runtime.o`, `launch_backend.o`,
+  `postmaster.o`, `walreceiver.o`, `walreceiverfuncs.o`, and
+  `libpqwalreceiver`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- direct threaded primary/standby smoke passed after patching the known macOS
+  temp-install `libpq` references. The smoke observed `walreceiver_count=1`,
+  `walreceiver_children=0`, `replayed=t`, and `standby_count=1`, then stopped
+  both servers cleanly.
 
 Additional validation for the archiver thread slice:
 

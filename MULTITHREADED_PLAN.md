@@ -541,8 +541,8 @@ Exit gate:
 
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, late AIO worker, generic
-background-worker compatibility, WAL summarizer, WAL writer, and archiver
-slices, plus remaining worker families.
+background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
+and archiver slices, plus remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -575,7 +575,7 @@ Likely changes:
   - checkpointer, background writer, and syslogger; WAL writer and archiver
     have initial thread-carrier slices;
   - startup/recovery worker paths that are part of normal server operation;
-  - WAL receiver; WAL summarizer has an initial thread-carrier slice;
+  - WAL receiver and WAL summarizer have initial thread-carrier slices;
   - startup-time AIO method workers; late AIO method workers have an initial
     thread-carrier slice;
   - logical replication launcher, apply, table sync, slot sync, sync utility,

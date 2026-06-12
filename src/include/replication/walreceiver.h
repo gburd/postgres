@@ -68,6 +68,7 @@ typedef struct
 	 */
 	ProcNumber	procno;
 	pid_t		pid;
+	bool		threaded;
 
 	/* Its current state */
 	WalRcvState walRcvState;

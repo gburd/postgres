@@ -325,6 +325,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		child_type != B_AUTOVAC_LAUNCHER &&
 		child_type != B_AUTOVAC_WORKER &&
 		child_type != B_IO_WORKER &&
+		child_type != B_WAL_RECEIVER &&
 		child_type != B_WAL_WRITER &&
 		child_type != B_WAL_SUMMARIZER)
 	{
@@ -343,6 +344,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		 child_type == B_AUTOVAC_LAUNCHER ||
 		 child_type == B_AUTOVAC_WORKER ||
 		 child_type == B_IO_WORKER ||
+		 child_type == B_WAL_RECEIVER ||
 		 child_type == B_WAL_WRITER ||
 		 child_type == B_WAL_SUMMARIZER) &&
 		(client_sock != NULL || startup_data != NULL || startup_data_len != 0))

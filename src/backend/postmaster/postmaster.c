@@ -437,6 +437,8 @@ static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
 static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
+static bool cleanup_wal_receiver_child(PMChild *child, int exitstatus,
+									   int crash_pid);
 static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
 static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
@@ -2478,11 +2480,8 @@ process_pm_child_exit(void)
 		 */
 		if (WalReceiverPMChild && pid == WalReceiverPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(WalReceiverPMChild);
-			WalReceiverPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("WAL receiver process"));
+			(void) cleanup_wal_receiver_child(WalReceiverPMChild, exitstatus,
+											  pid);
 			continue;
 		}
 
@@ -2656,6 +2655,12 @@ process_pm_thread_exit(void)
 		if (pmchild->bkend_type == B_WAL_WRITER)
 		{
 			(void) cleanup_wal_writer_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_WAL_RECEIVER)
+		{
+			(void) cleanup_wal_receiver_child(pmchild, exitstatus, 0);
 			reaped = true;
 			continue;
 		}
@@ -3655,6 +3660,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			}
 			if (pmchild->bkend_type == B_WAL_WRITER)
 				return false;
+			if (pmchild->bkend_type == B_WAL_RECEIVER)
+				return false;
 			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
 				return false;
 			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
@@ -3675,6 +3682,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			if (pmchild->bkend_type == B_WAL_WRITER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_WAL_RECEIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 				return true;
 			}
 			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
@@ -4679,6 +4691,21 @@ cleanup_wal_writer_child(PMChild *child, int exitstatus)
 	WalWriterPMChild = NULL;
 	if (!EXIT_STATUS_0(exitstatus))
 		HandleChildCrash(0, exitstatus, _("WAL writer process"));
+
+	return true;
+}
+
+static bool
+cleanup_wal_receiver_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == WalReceiverPMChild);
+	Assert(child->bkend_type == B_WAL_RECEIVER);
+
+	ReleasePostmasterChildSlot(WalReceiverPMChild);
+	WalReceiverPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus, _("WAL receiver process"));
 
 	return true;
 }
