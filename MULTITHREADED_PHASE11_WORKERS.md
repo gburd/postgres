@@ -1,8 +1,9 @@
 # Phase 11 Auxiliary Worker Thread Runtime Notes
 
-Phase 11 is in progress. The goal is to make normal threaded server mode fully
-threaded for in-tree server-owned worker families, so the runtime does not fork
-subprocesses for ordinary server operation.
+Phase 11 is complete for the current thread-per-session worker-runtime stage.
+The goal was to make normal threaded server mode fully threaded for in-tree
+server-owned worker families, so the runtime does not fork subprocesses for
+ordinary server operation.
 
 ## Autovacuum Worker Thread Slice
 
@@ -1343,6 +1344,12 @@ Additional Gate E hardening validation:
 - after patching the build-tree frontend binaries copied into recreated temp
   installs, `gmake -C src/test/modules/test_extensions check` passed normally,
   including recreating `tmp_install` and rerunning the same four SQL tests.
+- after the build-tree install-name patch, literal `gmake check-world` passed
+  in this checkout. Recursive TAP targets were skipped because the checkout is
+  not configured with `--enable-tap-tests`, so direct TAP remains the threaded
+  runtime evidence for this phase;
+- a fresh direct `prove` over both `test_backend_runtime` threaded TAP files
+  after the successful `check-world` passed all 46 tests again.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

@@ -540,16 +540,16 @@ Exit gate:
 
 ## Phase 11: Auxiliary Worker Thread Runtime
 
-Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
-completed autovacuum launcher/worker, AIO worker startup handoff and late
-launch, generic background-worker compatibility and explicit backend-model
-metadata, WAL receiver, WAL summarizer, WAL writer, archiver,
-checkpointer/background writer handoff, syslogger handoff, slot sync worker,
-and logical replication launcher slices, plus initial logical replication
-apply/table-sync, sequence-sync, and parallel apply slices, plus core
-parallel worker thread carriers, online data-checksum launcher/workers, and
-the remaining audited in-tree server-owned worker families. Remaining work is
-Phase 11 hardening and Gate E validation.
+Status: complete for the current thread-per-session worker-runtime stage. See
+`MULTITHREADED_PHASE11_WORKERS.md` for the completed autovacuum
+launcher/worker, AIO worker startup handoff and late launch, generic
+background-worker compatibility and explicit backend-model metadata, WAL
+receiver, WAL summarizer, WAL writer, archiver, checkpointer/background
+writer handoff, syslogger handoff, slot sync worker, and logical replication
+launcher slices, plus logical replication apply/table-sync, sequence-sync,
+and parallel apply slices, core parallel worker thread carriers, online
+data-checksum launcher/workers, the remaining audited in-tree server-owned
+worker families, and Gate E validation.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
