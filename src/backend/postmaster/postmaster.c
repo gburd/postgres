@@ -447,6 +447,8 @@ static bool cleanup_checkpointer_child(PMChild *child, int exitstatus,
 static bool cleanup_io_worker_child(PMChild *child);
 static bool cleanup_slot_sync_worker_child(PMChild *child, int exitstatus,
 										   int crash_pid);
+static bool cleanup_startup_child(PMChild *child, int exitstatus,
+								  int crash_pid);
 static bool cleanup_wal_receiver_child(PMChild *child, int exitstatus,
 									   int crash_pid);
 static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
@@ -2328,94 +2330,7 @@ process_pm_child_exit(void)
 		 */
 		if (StartupPMChild && pid == StartupPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(StartupPMChild);
-			StartupPMChild = NULL;
-
-			/*
-			 * Startup process exited in response to a shutdown request (or it
-			 * completed normally regardless of the shutdown request).
-			 */
-			if (Shutdown > NoShutdown &&
-				(EXIT_STATUS_0(exitstatus) || EXIT_STATUS_1(exitstatus)))
-			{
-				StartupStatus = STARTUP_NOT_RUNNING;
-				UpdatePMState(PM_WAIT_BACKENDS);
-				/* PostmasterStateMachine logic does the rest */
-				continue;
-			}
-
-			if (EXIT_STATUS_3(exitstatus))
-			{
-				ereport(LOG,
-						(errmsg("shutdown at recovery target")));
-				StartupStatus = STARTUP_NOT_RUNNING;
-				Shutdown = Max(Shutdown, SmartShutdown);
-				TerminateChildren(SIGTERM);
-				UpdatePMState(PM_WAIT_BACKENDS);
-				/* PostmasterStateMachine logic does the rest */
-				continue;
-			}
-
-			/*
-			 * Any unexpected exit (including FATAL exit) of the startup
-			 * process is catastrophic, so kill other children, and set
-			 * StartupStatus so we don't try to reinitialize after they're
-			 * gone.  Exception: if StartupStatus is STARTUP_SIGNALED, then we
-			 * previously sent the startup process a SIGQUIT; so that's
-			 * probably the reason it died, and we do want to try to restart
-			 * in that case.
-			 *
-			 * This stanza also handles the case where we sent a SIGQUIT
-			 * during PM_STARTUP due to some dead-end child crashing: in that
-			 * situation, if the startup process dies on the SIGQUIT, we need
-			 * to transition to PM_WAIT_BACKENDS state which will allow
-			 * PostmasterStateMachine to restart the startup process.  (On the
-			 * other hand, the startup process might complete normally, if we
-			 * were too late with the SIGQUIT.  In that case we'll fall
-			 * through and commence normal operations.)
-			 */
-			if (!EXIT_STATUS_0(exitstatus))
-			{
-				if (StartupStatus == STARTUP_SIGNALED)
-				{
-					StartupStatus = STARTUP_NOT_RUNNING;
-					if (pmState == PM_STARTUP)
-						UpdatePMState(PM_WAIT_BACKENDS);
-				}
-				else
-					StartupStatus = STARTUP_CRASHED;
-				HandleChildCrash(pid, exitstatus,
-								 _("startup process"));
-				continue;
-			}
-
-			/*
-			 * Startup succeeded, commence normal operations
-			 */
-			StartupStatus = STARTUP_NOT_RUNNING;
-			FatalError = false;
-			AbortStartTime = 0;
-			ReachedNormalRunning = true;
-			UpdatePMState(PM_RUN);
-			connsAllowed = true;
-
-			/*
-			 * At the next iteration of the postmaster's main loop, we will
-			 * crank up the background tasks like the autovacuum launcher and
-			 * background workers that were not started earlier already.
-			 */
-			StartWorkerNeeded = true;
-
-			/* at this point we are really open for business */
-			ereport(LOG,
-					(errmsg("database system is ready to accept connections")));
-
-			/* Report status */
-			AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_READY);
-#ifdef USE_SYSTEMD
-			sd_notify(0, "READY=1");
-#endif
-
+			(void) cleanup_startup_child(StartupPMChild, exitstatus, pid);
 			continue;
 		}
 
@@ -2615,6 +2530,12 @@ process_pm_thread_exit(void)
 			continue;
 
 		(void) pg_thread_join(&pmchild->thread);
+		if (pmchild->bkend_type == B_STARTUP)
+		{
+			(void) cleanup_startup_child(pmchild, exitstatus, 0);
+			reaped = true;
+			continue;
+		}
 		if (pmchild->bkend_type == B_ARCHIVER)
 		{
 			(void) cleanup_archiver_child(pmchild, exitstatus);
@@ -3997,7 +3918,7 @@ ExitPostmaster(int status)
 	 * This message uses LOG level, because an unclean shutdown at this point
 	 * would usually not look much different from a clean shutdown.
 	 */
-	if (pthread_is_threaded_np() != 0)
+	if (!multithreaded && pthread_is_threaded_np() != 0)
 		ereport(LOG,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("postmaster became multithreaded"),
@@ -4849,6 +4770,89 @@ cleanup_slot_sync_worker_child(PMChild *child, int exitstatus, int crash_pid)
 	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
 		HandleChildCrash(crash_pid, exitstatus,
 						 _("slot sync worker process"));
+
+	return true;
+}
+
+static bool
+cleanup_startup_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == StartupPMChild);
+	Assert(child->bkend_type == B_STARTUP);
+
+	ReleasePostmasterChildSlot(StartupPMChild);
+	StartupPMChild = NULL;
+
+	/*
+	 * Startup exited in response to a shutdown request, or completed normally
+	 * regardless of the shutdown request.
+	 */
+	if (Shutdown > NoShutdown &&
+		(EXIT_STATUS_0(exitstatus) || EXIT_STATUS_1(exitstatus)))
+	{
+		StartupStatus = STARTUP_NOT_RUNNING;
+		UpdatePMState(PM_WAIT_BACKENDS);
+		return true;
+	}
+
+	if (EXIT_STATUS_3(exitstatus))
+	{
+		ereport(LOG,
+				(errmsg("shutdown at recovery target")));
+		StartupStatus = STARTUP_NOT_RUNNING;
+		Shutdown = Max(Shutdown, SmartShutdown);
+		TerminateChildren(SIGTERM);
+		UpdatePMState(PM_WAIT_BACKENDS);
+		return true;
+	}
+
+	/*
+	 * Any unexpected exit, including FATAL, of startup is catastrophic.  One
+	 * exception is a prior SIGQUIT: that means we may need to restart crash
+	 * recovery rather than treating startup itself as permanently failed.
+	 */
+	if (!EXIT_STATUS_0(exitstatus))
+	{
+		if (StartupStatus == STARTUP_SIGNALED)
+		{
+			StartupStatus = STARTUP_NOT_RUNNING;
+			if (pmState == PM_STARTUP)
+				UpdatePMState(PM_WAIT_BACKENDS);
+		}
+		else
+			StartupStatus = STARTUP_CRASHED;
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("startup process"));
+		return true;
+	}
+
+	/*
+	 * Startup succeeded, commence normal operations.
+	 */
+	StartupStatus = STARTUP_NOT_RUNNING;
+	FatalError = false;
+	AbortStartTime = 0;
+	ReachedNormalRunning = true;
+	UpdatePMState(PM_RUN);
+	connsAllowed = true;
+
+	/*
+	 * At the next iteration of the postmaster's main loop, we will crank up
+	 * the background tasks like the autovacuum launcher and background workers
+	 * that were not started earlier already.
+	 */
+	StartWorkerNeeded = true;
+
+	/* at this point we are really open for business */
+	ereport(LOG,
+			(errmsg("database system is ready to accept connections")));
+
+	/* Report status */
+	AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_READY);
+#ifdef USE_SYSTEMD
+	sd_notify(0, "READY=1");
+#endif
 
 	return true;
 }

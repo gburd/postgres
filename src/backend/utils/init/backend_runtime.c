@@ -253,6 +253,7 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 		backend_type == B_BG_WRITER ||
 		backend_type == B_CHECKPOINTER ||
 		backend_type == B_LOGGER ||
+		backend_type == B_STARTUP ||
 		backend_type == B_WAL_RECEIVER ||
 		backend_type == B_SLOTSYNC_WORKER ||
 		backend_type == B_WAL_WRITER ||

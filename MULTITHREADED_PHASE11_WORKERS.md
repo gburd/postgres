@@ -600,6 +600,32 @@ separate conversion step that must account for recovery crash handling and the
 process-backed startup-era children that are currently launched before normal
 threaded operation.
 
+## Startup/Recovery Thread Slice
+
+Startup/recovery now has an initial thread-carrier slice in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_STARTUP` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts startup launches without client
+  or background-worker startup data;
+- `StartupProcessMain()` uses logical timeouts instead of installing a
+  process-wide `SIGALRM` handler when running as a thread carrier;
+- startup skips process-wide signal handler and signal-mask changes in thread
+  mode, relying on the logical interrupt mappings added by the boundary-prep
+  slice;
+- startup config reload avoids a second shared-address-space
+  `ProcessConfigFile()` call in thread mode and still compares the recovery
+  connection settings to request a WAL receiver restart when needed;
+- startup child cleanup is now shared by process and thread reaping paths, so
+  successful recovery, recovery-target shutdown, shutdown-request exits, and
+  startup failure/crash escalation update postmaster state through one helper;
+- the exit-time macOS `pthread_is_threaded_np()` diagnostic no longer warns in
+  explicit threaded mode, where postmaster-owned threads are expected.
+
+This is still an initial carrier slice. Hot-standby recovery, promotion, and
+crash/restart recovery paths need explicit stress validation before Phase 11's
+startup/recovery work should be considered hardened.
+
 ## Archiver Thread Slice
 
 The WAL archiver is now opted into the thread carrier path in threaded mode:
@@ -806,7 +832,10 @@ completes `pg_ctl -m fast stop` cleanly.
 
 ## Remaining Worker Families
 
-- startup/recovery worker paths that are part of normal server operation;
+No remaining in-tree server-owned worker family currently lacks an initial
+thread-carrier path in threaded mode. The remaining Phase 11 work is hardening
+and validation, especially hot-standby startup/recovery, promotion, crash
+restart, worker shutdown/restart, and Gate E coverage.
 
 The in-tree generic background-worker registration audit is complete for the
 current tree. A source scan of `RegisterBackgroundWorker()`,
@@ -881,6 +910,24 @@ Validation for the startup/recovery interrupt-boundary prep:
   temp-install `libpq` references: `multithreaded=on`, startup, `select
   current_setting('multithreaded'), 1` returned `on|1`, fast shutdown
   completed, and the server log contained no `ERROR`, `FATAL`, or `PANIC`.
+
+Validation for the startup/recovery thread slice:
+
+- touched-object builds passed for `startup.o`, `launch_backend.o`,
+  `postmaster.o`, and `backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `git diff --check` passed;
+- a direct threaded temp-cluster smoke passed after patching the known macOS
+  temp-install `libpq` references: `multithreaded=on`, `autovacuum=off`,
+  startup, `select current_setting('multithreaded'), 1` returned `on|1`, fast
+  shutdown completed, the startup recovery log line used the postmaster PID,
+  the obsolete `postmaster became multithreaded` exit warning was absent, and
+  the server log contained no `WARNING`, `ERROR`, or `PANIC`;
+- a direct process-mode control smoke passed with `autovacuum=off`: startup,
+  `select 1`, and fast shutdown completed, the startup recovery log line used
+  a separate startup child PID, and the server log contained no `WARNING`,
+  `ERROR`, `PANIC`, or `postmaster became multithreaded`.
 
 Additional validation for the logical replication sequence-sync slice:
 

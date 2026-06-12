@@ -582,7 +582,7 @@ Likely changes:
     initial thread-carrier slices;
   - syslogger startup is process-backed until `PM_RUN`, then handed off to a
     thread carrier;
-  - startup/recovery worker paths that are part of normal server operation;
+  - startup/recovery has an initial thread-carrier slice in threaded mode;
   - WAL receiver, WAL summarizer, and slot sync worker have initial
     thread-carrier slices;
   - startup-time AIO method workers are handed off after `PM_RUN`, and late

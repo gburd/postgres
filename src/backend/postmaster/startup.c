@@ -173,11 +173,15 @@ StartupRereadConfig(void)
 	char	   *conninfo = pstrdup(PrimaryConnInfo);
 	char	   *slotname = pstrdup(PrimarySlotName);
 	bool		tempSlot = wal_receiver_create_temp_slot;
+	bool		threaded_worker;
 	bool		conninfoChanged;
 	bool		slotnameChanged;
 	bool		tempSlotChanged = false;
 
-	ProcessConfigFile(PGC_SIGHUP);
+	threaded_worker = (CurrentPgRuntime != NULL &&
+					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	if (!threaded_worker)
+		ProcessConfigFile(PGC_SIGHUP);
 
 	conninfoChanged = strcmp(conninfo, PrimaryConnInfo) != 0;
 	slotnameChanged = strcmp(slotname, PrimarySlotName) != 0;
@@ -263,9 +267,13 @@ StartupProcExit(int code, Datum arg)
 void
 StartupProcessMain(const void *startup_data, size_t startup_data_len)
 {
+	bool		threaded_worker;
+
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = (CurrentPgRuntime != NULL &&
+					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/* Arrange to clean up at startup process exit */
 	on_shmem_exit(StartupProcExit, 0);
@@ -273,19 +281,25 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Properly accept or ignore signals the postmaster might send us.
 	 */
-	pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
-	pqsignal(SIGINT, PG_SIG_IGN);	/* ignore query cancel */
-	pqsignal(SIGTERM, StartupProcShutdownHandler);	/* request shutdown */
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	InitializeTimeouts();		/* establishes SIGALRM handler */
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, StartupProcTriggerHandler);
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+	{
+		pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
+		pqsignal(SIGINT, PG_SIG_IGN);	/* ignore query cancel */
+		pqsignal(SIGTERM, StartupProcShutdownHandler);	/* request shutdown */
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, StartupProcTriggerHandler);
+	}
 
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/*
 	 * Register timeouts needed for standby mode
@@ -297,7 +311,8 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Do what we came for.
