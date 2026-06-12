@@ -23,3 +23,9 @@ SELECT test_backend_thread_create_join();
  t
 (1 row)
 
+SELECT test_backend_thread_runtime_state();
+ test_backend_thread_runtime_state 
+-----------------------------------
+ t
+(1 row)
+

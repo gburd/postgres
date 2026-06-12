@@ -192,6 +192,7 @@ typedef struct BackendThreadStart
 	PMChild    *pmchild;
 	BackendType child_type;
 	int			child_slot;
+	PgThreadBackendRuntimeState runtime_state;
 	BackendStartupData startup_data;
 	ClientSocket client_sock;
 	Latch	   *postmaster_latch;
@@ -278,6 +279,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	errno = ENOSYS;
 	return false;
 #else
+	InitializePgThreadRuntime(NULL);
+
 	thread_start = malloc(sizeof(BackendThreadStart));
 	if (thread_start == NULL)
 	{
@@ -321,6 +324,9 @@ static void
 backend_thread_reject_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
+
+	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
+									 thread_start->child_type, NULL, NULL);
 
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;

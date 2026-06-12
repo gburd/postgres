@@ -31,12 +31,14 @@ typedef int (*PgSuspendCallback) (void *callback_arg);
 
 typedef enum PgRuntimeKind
 {
-	PG_RUNTIME_PROCESS
+	PG_RUNTIME_PROCESS,
+	PG_RUNTIME_THREAD_PER_SESSION
 } PgRuntimeKind;
 
 typedef enum PgCarrierKind
 {
-	PG_CARRIER_PROCESS
+	PG_CARRIER_PROCESS,
+	PG_CARRIER_THREAD
 } PgCarrierKind;
 
 typedef enum PgBackendLaunchModel
@@ -202,6 +204,15 @@ struct PgExecution
 	PgCarrier  *carrier;
 };
 
+typedef struct PgThreadBackendRuntimeState
+{
+	PgCarrier	carrier;
+	PgBackend	backend;
+	PgSession	session;
+	PgConnection connection;
+	PgExecution execution;
+} PgThreadBackendRuntimeState;
+
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
@@ -210,6 +221,11 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConn
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern void InitializePgProcessRuntime(void);
+extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
+extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
+											 BackendType backend_type,
+											 struct Port *port,
+											 struct Latch *interrupt_latch);
 extern void PgProcessRuntimeAttachSession(Session *session);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);

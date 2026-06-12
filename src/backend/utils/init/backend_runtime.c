@@ -34,6 +34,8 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
 
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
+static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
+static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
@@ -96,6 +98,74 @@ InitializePgProcessRuntime(void)
 	CurrentPgSession = &process_session;
 	CurrentPgConnection = &process_connection;
 	CurrentPgExecution = &process_execution;
+}
+
+void
+InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
+{
+	if (!thread_runtime_initialized)
+	{
+		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
+
+		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+		thread_runtime.extension_backend_model =
+			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		thread_runtime_initialized = true;
+	}
+
+	thread_runtime.exit_backend = exit_backend;
+	CurrentPgRuntime = &thread_runtime;
+}
+
+void
+InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
+								 BackendType backend_type,
+								 struct Port *port,
+								 struct Latch *interrupt_latch)
+{
+	Assert(state != NULL);
+	Assert(thread_runtime_initialized);
+
+	MemSet(state, 0, sizeof(*state));
+
+	state->carrier.kind = PG_CARRIER_THREAD;
+	state->carrier.runtime = &thread_runtime;
+	state->carrier.current_backend = &state->backend;
+	state->carrier.current_session = &state->session;
+	state->carrier.current_execution = &state->execution;
+
+	state->backend.runtime = &thread_runtime;
+	state->backend.carrier = &state->carrier;
+	state->backend.session = &state->session;
+	state->backend.connection = &state->connection;
+	state->backend.execution = &state->execution;
+	state->backend.backend_type = backend_type;
+	PgBackendInitializeInterrupts(&state->backend);
+	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
+	dlist_init(&state->backend.dsm_segment_list);
+	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
+	PgBackendInitializeExitState(&state->backend.exit_state);
+
+	state->session.backend = &state->backend;
+	state->session.connection = &state->connection;
+	state->session.execution = &state->execution;
+
+	state->connection.backend = &state->backend;
+	state->connection.session = &state->session;
+	state->connection.port = port;
+
+	state->execution.backend = &state->backend;
+	state->execution.session = &state->session;
+	state->execution.carrier = &state->carrier;
+
+	CurrentPgCarrier = &state->carrier;
+	CurrentPgBackend = &state->backend;
+	CurrentPgSession = &state->session;
+	CurrentPgConnection = &state->connection;
+	CurrentPgExecution = &state->execution;
+
+	proc_exit_inprogress = false;
+	shmem_exit_inprogress = false;
 }
 
 void

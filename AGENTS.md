@@ -285,6 +285,11 @@ Important current files:
   and let `pg_regress` run a fresh `initdb`. A missing template fails before
   SQL starts with a `cp ... initdb-template: No such file or directory` error.
 
+  On macOS, Unix-domain socket paths are limited. Live smokes from this long
+  checkout path can fail before SQL starts with `Unix-domain socket path ... is
+  too long (maximum 103 bytes)`. Use a short `mktemp -d /tmp/...` directory for
+  ad hoc temp clusters that need Unix sockets.
+
   Many individual regression tests assume fixture objects created by earlier
   `parallel_schedule` groups. If a direct focused run fails with missing tables
   such as `onek` or `tenk1`, rerun with the schedule prefix that builds the

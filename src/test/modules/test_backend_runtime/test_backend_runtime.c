@@ -171,6 +171,74 @@ test_backend_thread_create_join(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_thread_runtime_state);
+Datum
+test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	PgThreadBackendRuntimeState state;
+	Latch		fake_latch;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+
+	InitLatch(&fake_latch);
+
+	PG_TRY();
+	{
+		InitializePgThreadRuntime(NULL);
+		InitializePgThreadBackendRuntime(&state, B_BACKEND, NULL,
+										 &fake_latch);
+
+		ok = ok && CurrentPgRuntime != NULL;
+		ok = ok && CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+		ok = ok && CurrentPgRuntime->extension_backend_model ==
+			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		ok = ok && CurrentPgCarrier == &state.carrier;
+		ok = ok && CurrentPgBackend == &state.backend;
+		ok = ok && CurrentPgSession == &state.session;
+		ok = ok && CurrentPgConnection == &state.connection;
+		ok = ok && CurrentPgExecution == &state.execution;
+		ok = ok && state.carrier.kind == PG_CARRIER_THREAD;
+		ok = ok && state.backend.backend_type == B_BACKEND;
+		ok = ok && state.backend.interrupt_latch == &fake_latch;
+		ok = ok && dlist_is_empty(&state.backend.dsm_segment_list);
+
+		CurrentPgRuntime = saved_runtime;
+		CurrentPgCarrier = saved_carrier;
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+		CurrentPgConnection = saved_connection;
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgRuntime = saved_runtime;
+		CurrentPgCarrier = saved_carrier;
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+		CurrentPgConnection = saved_connection;
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "thread backend runtime state was not initialized");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

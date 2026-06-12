@@ -168,6 +168,31 @@ first real `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)` path must
 move client-socket ownership into backend-local lifetime before the start
 payload can be released.
 
+## Thread Runtime State Slice
+
+The tenth slice gives the carrier thread an explicit runtime/backend object
+frame before it touches backend-local compatibility globals:
+
+- `PG_RUNTIME_THREAD_PER_SESSION` and `PG_CARRIER_THREAD` distinguish the
+  first threaded runtime from process mode;
+- `InitializePgThreadRuntime()` initializes the shared thread-per-session
+  runtime object and marks its extension backend model as
+  `PG_BACKEND_MODEL_THREAD_PER_SESSION`;
+- `PgThreadBackendRuntimeState` owns one carrier/backend/session/connection/
+  execution object set for a carrier thread;
+- `InitializePgThreadBackendRuntime()` installs TLS current pointers, a fresh
+  backend-local exit state, interrupt mailbox, DSM mapping list, wait state,
+  and optional interrupt latch for the carrier thread;
+- the temporary rejecting backend carrier now initializes this runtime state
+  before setting `MyBackendType`, `MyPMChildSlot`, and `MyClientSocket`;
+- `test_backend_runtime` verifies the thread runtime state initializer without
+  leaving the real process backend in threaded mode.
+
+The threaded runtime still does not install a non-returning `exit_backend`
+continuation. Replacing the reject stub with real backend startup therefore
+still requires the next slice to add a thread-exit primitive and a carrier
+exit continuation that reports PMChild exit without calling process `exit()`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -211,3 +236,15 @@ payload can be released.
   identity slice rejected two client connections with "threaded backend startup
   is not implemented yet"; `pg_ctl status` reported the postmaster still
   running, and normal fast shutdown completed.
+- after the thread runtime state slice,
+  `gmake -C src/backend/utils/init backend_runtime.o` and
+  `gmake -C src/backend/postmaster launch_backend.o` passed;
+- after the thread runtime state slice, full `gmake -C src/backend -j8`
+  passed;
+- after the thread runtime state slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed, including the
+  thread runtime state initializer check;
+- a temp install smoke with `multithreaded=on` after the thread runtime state
+  slice rejected two client connections with "threaded backend startup is not
+  implemented yet"; `pg_ctl status` reported the postmaster still running, and
+  normal fast shutdown completed.
