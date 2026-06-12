@@ -32,7 +32,7 @@
  * items.
  * ----------
  */
-static PLpgSQL_nsitem *ns_top = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_nsitem *ns_top = NULL;
 
 
 /* ----------

@@ -984,7 +984,54 @@ Validation for this slice:
 This still does not complete Phase 10. Logical cancel, terminate, and timeout
 delivery now work for regular threaded sessions, but PL/pgSQL execution,
 extension rejection/acceptance behavior in a live threaded session, broader
-session cleanup stress, and Gate D remain to be proved.
+session cleanup stress, and Gate D remained to be proved at this point.
+
+## PL/pgSQL Thread-Per-Session Slice
+
+The forty-third slice enables PL/pgSQL in the live thread-per-session runtime:
+
+- PL/pgSQL's mutable module-scope session and backend state is now bridged
+  through `PG_THREAD_LOCAL PG_GLOBAL_SESSION` storage for the
+  thread-per-session runtime;
+- `plpgsql` advertises `PG_BACKEND_MODEL_THREAD_PER_SESSION` in its module
+  magic, so the extension backend-model gate can load it in threaded sessions;
+- PL/pgSQL module initialization is now idempotent per backend thread, because
+  `_PG_init()` runs only when the dynamic library is loaded into the process,
+  while later backend threads still need their own custom GUC records,
+  transaction callbacks, and rendezvous pointer;
+- `InitializeThreadedSessionGUCOptions()` now initializes
+  `dynamic_library_path`, because C-language function validation loads
+  `plpgsql` through the dynamic loader before the wider per-session GUC bridge
+  is complete;
+- the extension backend-model regression now expects PL/pgSQL to load under
+  the `thread-per-session` runtime model while default process-only test
+  modules remain rejected.
+
+Validation for this slice:
+
+- full `gmake -j8` and `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- threaded `multithreaded=on` PL/pgSQL smoke created and executed a PL/pgSQL
+  function and `DO` block, verified `dynamic_library_path = '$libdir'`, and
+  verified `plpgsql.variable_conflict = error` in both the first loading
+  backend thread and a later backend thread after the library was already
+  loaded process-wide;
+- threaded `multithreaded=on` concurrent PL/pgSQL smoke ran five sibling
+  backend sessions through the same PL/pgSQL function and returned the
+  expected `11`, `22`, `33`, `44`, and `55` results;
+- threaded `multithreaded=on` live extension-model smoke loaded
+  `test_ext_threaded`, `test_ext_backend_model`, and `plpgsql`, rejected the
+  default process-only `test_ext` module with the expected backend-model
+  mismatch, and returned `select 42` afterward;
+- process-mode `gmake -C src/pl/plpgsql/src check` passed;
+- the direct process-mode `pg_regress` run for `test_extensions`,
+  `test_extdepend`, `test_ext_backend_model`, and
+  `test_ext_backend_model_pooled` passed after patching the recreated macOS
+  temp-install binaries;
+- `gmake -C src/test/modules/test_backend_runtime check` passed.
+
+This still does not complete Phase 10. PL/pgSQL and live extension-model
+behavior now work in regular threaded sessions, but broader session cleanup
+stress and Gate D remain to be proved before Phase 10 can close.
 
 ## Validation
 

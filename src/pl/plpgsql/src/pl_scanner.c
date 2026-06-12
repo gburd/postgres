@@ -23,7 +23,7 @@
 
 
 /* Klugy flag to tell scanner how to look up identifiers */
-IdentifierLookup plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION IdentifierLookup plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
 
 /*
  * A word about keywords:

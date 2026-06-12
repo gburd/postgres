@@ -22,6 +22,7 @@
 #include "executor/spi.h"
 #include "utils/expandedrecord.h"
 #include "utils/funccache.h"
+#include "utils/global_lifetime.h"
 #include "utils/typcache.h"
 
 
@@ -1182,13 +1183,13 @@ typedef enum
 	IDENTIFIER_LOOKUP_EXPR,		/* In SQL expression --- special case */
 } IdentifierLookup;
 
-extern IdentifierLookup plpgsql_IdentifierLookup;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION IdentifierLookup plpgsql_IdentifierLookup;
 
-extern int	plpgsql_variable_conflict;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_variable_conflict;
 
-extern bool plpgsql_print_strict_params;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_print_strict_params;
 
-extern bool plpgsql_check_asserts;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_asserts;
 
 /* extra compile-time and run-time checks */
 #define PLPGSQL_XCHECK_NONE						0
@@ -1197,21 +1198,21 @@ extern bool plpgsql_check_asserts;
 #define PLPGSQL_XCHECK_STRICTMULTIASSIGNMENT	(1 << 3)
 #define PLPGSQL_XCHECK_ALL						((int) ~0)
 
-extern int	plpgsql_extra_warnings;
-extern int	plpgsql_extra_errors;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_warnings;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_errors;
 
-extern bool plpgsql_check_syntax;
-extern bool plpgsql_DumpExecTree;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_syntax;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_DumpExecTree;
 
-extern int	plpgsql_nDatums;
-extern PLpgSQL_datum **plpgsql_Datums;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_nDatums;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_datum **plpgsql_Datums;
 
-extern char *plpgsql_error_funcname;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_error_funcname;
 
-extern PLpgSQL_function *plpgsql_curr_compile;
-extern MemoryContext plpgsql_compile_tmp_cxt;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_function *plpgsql_curr_compile;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext plpgsql_compile_tmp_cxt;
 
-extern PLpgSQL_plugin **plpgsql_plugin_ptr;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_plugin **plpgsql_plugin_ptr;
 
 /**********************************************************************
  * Function declarations

@@ -207,6 +207,12 @@ Important current files:
   annotations in this checkout, use object compile coverage where reachable,
   static lifetime scan coverage, and a full non-injection build/install.
 
+- For manual temp-cluster smokes, especially threaded-mode smokes launched from
+  this deep checkout path, use a short Unix socket directory under `/tmp` with
+  `pg_ctl -o "-k /tmp/..."` or an explicit `unix_socket_directories` setting.
+  Nested workspace paths can exceed the platform Unix socket path length before
+  SQL starts.
+
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
   still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
   before running direct `pg_regress` commands:

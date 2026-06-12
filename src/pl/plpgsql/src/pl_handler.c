@@ -30,10 +30,12 @@
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
 static void plpgsql_extra_errors_assign_hook(const char *newvalue, void *extra);
+static void plpgsql_session_init(void);
 
 PG_MODULE_MAGIC_EXT(
 					.name = "plpgsql",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 /* Custom GUC variable */
@@ -44,19 +46,21 @@ static const struct config_enum_entry variable_conflict_options[] = {
 	{NULL, 0, false}
 };
 
-int			plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
 
-bool		plpgsql_print_strict_params = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_print_strict_params = false;
 
-bool		plpgsql_check_asserts = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_asserts = true;
 
-static char *plpgsql_extra_warnings_string = NULL;
-static char *plpgsql_extra_errors_string = NULL;
-int			plpgsql_extra_warnings;
-int			plpgsql_extra_errors;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_extra_warnings_string = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_extra_errors_string = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_warnings;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_errors;
 
 /* Hook for plugins */
-PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
+
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_session_inited = false;
 
 
 static bool
@@ -147,10 +151,14 @@ plpgsql_extra_errors_assign_hook(const char *newvalue, void *extra)
 void
 _PG_init(void)
 {
-	/* Be sure we do initialization only once (should be redundant now) */
-	static bool inited = false;
+	plpgsql_session_init();
+}
 
-	if (inited)
+static void
+plpgsql_session_init(void)
+{
+	/* Be sure we do initialization only once (should be redundant now) */
+	if (plpgsql_session_inited)
 		return;
 
 	pg_bindtextdomain(TEXTDOMAIN);
@@ -208,7 +216,7 @@ _PG_init(void)
 	/* Set up a rendezvous point with optional instrumentation plugin */
 	plpgsql_plugin_ptr = (PLpgSQL_plugin **) find_rendezvous_variable("PLpgSQL_plugin");
 
-	inited = true;
+	plpgsql_session_inited = true;
 }
 
 /* ----------
@@ -229,6 +237,8 @@ plpgsql_call_handler(PG_FUNCTION_ARGS)
 	ResourceOwner procedure_resowner;
 	volatile Datum retval = (Datum) 0;
 	int			rc;
+
+	plpgsql_session_init();
 
 	nonatomic = fcinfo->context &&
 		IsA(fcinfo->context, CallContext) &&
@@ -323,6 +333,8 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	ResourceOwner simple_eval_resowner;
 	Datum		retval;
 	int			rc;
+
+	plpgsql_session_init();
 
 	/*
 	 * Connect to SPI manager
@@ -452,6 +464,8 @@ plpgsql_validator(PG_FUNCTION_ARGS)
 	bool		is_dml_trigger = false;
 	bool		is_event_trigger = false;
 	int			i;
+
+	plpgsql_session_init();
 
 	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
 		PG_RETURN_VOID();

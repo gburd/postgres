@@ -99,12 +99,13 @@ The regression test verifies:
   with the requested model;
 - already-loaded modules are still rechecked on later load paths and
   handle-based symbol lookup;
-- PL/pgSQL remains rejected in thread-per-session mode until its mutable
-  session state has been moved.
+- PL/pgSQL loads in thread-per-session mode after the Phase 10
+  thread-local bridge migration, while default process-only modules remain
+  rejected.
 
 ## PL/pgSQL Audit Result
 
-PL/pgSQL is not marked thread-per-session safe in Phase 7.
+PL/pgSQL was not marked thread-per-session safe in Phase 7.
 
 The current implementation has mutable module-scope state that is described in
 comments as session-wide but is process-wide in a multithreaded address space:
@@ -133,6 +134,15 @@ The migration route is:
   gate before marking PL/pgSQL with
   `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`.
 
+Phase 10 implemented the first thread-per-session bridge for this route:
+the mutable PL/pgSQL state above is thread-local, PL/pgSQL performs
+per-backend-thread session initialization even after the dynamic library is
+already loaded process-wide, and the module now declares
+`PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`.  This is sufficient for
+the thread-per-session runtime target.  A future pooled scheduler still needs
+the explicit `PgSession`-owned state objects described above rather than
+thread-local storage.
+
 ## In-Tree Allowlist Route
 
 The Phase 7 allowlist is intentionally small: only the dedicated policy test
@@ -141,7 +151,7 @@ modules opt into threaded models.
 The first real threaded-regression allowlist should be created when the
 thread-per-session runtime exists and should include only audited modules:
 
-- PL/pgSQL, after the migration above;
+- PL/pgSQL, now enabled for the thread-per-session runtime by Phase 10;
 - required encoding conversion modules under
   `src/backend/utils/mb/conversion_procs`, if selected tests load them;
 - regression helper modules such as `src/test/regress/regress.c` and selected
