@@ -431,6 +431,10 @@ Exit gate:
 
 ## Phase 9: Thread-Compatible Wait/Wakeup Boundary
 
+Status: complete for the thread-per-session prerequisite. See
+`MULTITHREADED_PHASE9_WAIT_BOUNDARY.md` for the wait-family inventory,
+target-backend wake path, and validation record.
+
 Goal: make long waits visible, targetable, and wakeable before threaded backend
 launch. This is not the pooled scheduler yet; waits may still block the current
 OS thread in process mode and thread-per-session mode.

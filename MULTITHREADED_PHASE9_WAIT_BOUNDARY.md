@@ -1,7 +1,9 @@
 # Phase 9 Wait/Wakeup Boundary Notes
 
-Phase 9 is in progress. The goal is to make blocking waits visible and
-targetable before regular backends can run as threads.
+Phase 9 is complete for the thread-per-session prerequisite. Blocking waits
+that can hide a regular backend from cancellation, termination, or timeout
+delivery now cross a visible wait boundary and logical interrupt delivery can
+wake the target backend's recorded latch.
 
 ## First Slice
 
@@ -52,7 +54,48 @@ test that creates a fake non-current backend, gives it a local latch, raises a
 logical cancel interrupt against it, and verifies both that the target mailbox
 is visible when that backend becomes current and that the target latch was set.
 
-## Validation So Far
+## Wait Family Inventory
+
+The Phase 9 inventory checked the major long-wait families that can hide a
+backend from cancellation or termination:
+
+- frontend command reads and output flushes use `secure_read()` and
+  `secure_write()` in `src/backend/libpq/be-secure.c`; both wait through
+  `WaitEventSetWait(FeBeWaitSet, ...)` with `WAIT_EVENT_CLIENT_READ` or
+  `WAIT_EVENT_CLIENT_WRITE`;
+- connection liveness probes use `pq_check_connection()`, which polls
+  `FeBeWaitSet` through `WaitEventSetWait()`;
+- latch waits and socket/latch waits use `WaitLatch()` or
+  `WaitLatchOrSocket()`, which route through `WaitEventSetWait()`;
+- heavyweight lock waits use `ProcSleep()`, which blocks through
+  `WaitLatch()`;
+- condition-variable waits use `ConditionVariableTimedSleep()`, which blocks
+  through `WaitLatch()`;
+- shared memory queue waits use `WaitLatch()`;
+- walsender waits use `WaitEventSetWait(FeBeWaitSet, ...)`;
+- async append waits use `WaitEventSetWait()`.
+
+Those paths now publish `PgBackendWaitState` on the current `PgBackend` before
+entering the blocking wait body. The current session and execution are
+reachable through the same `PgBackend`, which is sufficient for Phase 9's
+thread-per-session target. Scheduler-aware phases may later copy richer
+session, execution, connection, and file-descriptor details into `PgWaitSpec`
+when a wait must suspend a logical task instead of blocking the current
+carrier.
+
+The remaining direct `pg_usleep()` users found in this pass are bounded polling
+or deliberate short-delay sites such as vacuum cost delay, standby recovery
+polling, short procarray/dropdb polling, spinlock backoff, and file-descriptor
+retry loops. They do not need new Phase 9 routing before thread-per-session
+launch because they do not represent unbounded hidden waits. They remain
+candidates for explicit scheduler yield points in Phases 13-15.
+
+Frontend command reads and output flushes do not need a separate connection
+wait kind before Phase 10. `wait_event_info` already distinguishes client read
+and write waits, `CurrentPgConnection` identifies the connection in the
+thread-per-session runtime, and the Phase 10 carrier is allowed to block.
+
+## Validation
 
 - focused object rebuilds for `waiteventset.o` and `backend_runtime.o`;
 - full incremental `gmake -j8`;
@@ -75,12 +118,10 @@ is visible when that backend becomes current and that the target latch was set.
 - direct isolation `timeouts` passed against the fresh temp install;
 - live temp-cluster cancel/terminate smoke passed again after the target-wake
   slice.
-
-## Remaining Phase 9 Work
-
-- inventory and route other long wait families through the explicit boundary
-  when they do not already use `WaitEventSetWait()`;
-- validate idle timeout, transaction timeout, cancellation, termination,
-  config reload, LISTEN/NOTIFY, and disconnect/FATAL behavior;
-- decide whether frontend command reads and output flushes need a more
-  connection-specific suspend kind before Phase 10.
+- live Phase 9 behavior smoke passed for transaction timeout during
+  `pg_sleep()`, idle-in-transaction timeout, idle-session timeout,
+  `LISTEN`/`NOTIFY` delivery to an idle backend, config reload while another
+  backend was waiting, blocked-backend cancellation after reload, and
+  client-disconnect detection with `client_connection_check_interval`;
+- core process-mode regression passed with `gmake -C src/test/regress check`
+  after the target-wake slice.
