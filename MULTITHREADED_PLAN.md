@@ -528,9 +528,9 @@ Exit gate:
   The in-tree `test_backend_runtime` TAP smoke is part of the Phase 10
   regression surface and should cover the compact concurrent-client,
   cancel/terminate, SQL `ERROR`, PL/pgSQL, incompatible module rejection, and
-  abandoned-client cleanup smoke.
-  It is not a substitute for the broader repeated-connect/disconnect stress or
-  full process-mode test suite.
+  abandoned-client cleanup smoke, plus transaction-abort cleanup and repeated
+  connect/disconnect coverage. It is not a substitute for the broader
+  killed-client stress or full process-mode test suite.
   Verify that normal threaded server mode does not fork late server-owned
   worker subprocesses after backend thread carriers exist. Until Phase 11,
   document any worker family that is explicitly deferred or disabled in

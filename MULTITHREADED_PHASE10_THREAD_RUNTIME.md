@@ -1094,7 +1094,8 @@ thread-per-session runtime under `src/test/modules/test_backend_runtime`:
   client sessions with distinct SQL-visible backend ids, active query
   cancellation, idle backend termination, SQL error recovery, PL/pgSQL
   execution, live process-only module rejection, abandoned idle-client
-  advisory-lock cleanup, final connection health, and the expected temporary
+  advisory-lock cleanup, transaction-abort cleanup, repeated
+  connect/disconnect, final connection health, and the expected temporary
   autovacuum-worker deferral log;
 - the test also rejects common crash/corruption log signatures after the
   threaded smoke.
@@ -1125,7 +1126,11 @@ The next slice broadened the TAP smoke's Gate D coverage:
   verifies both the backend-model mismatch and subsequent server health;
 - abandoned idle-client cleanup now uses `BackgroundPsql` to hold an advisory
   lock while idle in transaction, then kills the client and verifies that the
-  lock is released.
+  lock is released;
+- transaction-abort cleanup verifies a transaction-scoped advisory lock is
+  released after an error aborts the transaction;
+- repeated connect/disconnect opens 30 fresh threaded client sessions and
+  verifies each one can execute SQL.
 
 Validation for this broader TAP slice:
 
@@ -1134,7 +1139,7 @@ Validation for this broader TAP slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP in this checkout because it is not configured
   with `--enable-tap-tests`;
-- direct TAP run passed with 19 tests.
+- direct TAP run passed with 23 tests.
 
 ## Validation
 

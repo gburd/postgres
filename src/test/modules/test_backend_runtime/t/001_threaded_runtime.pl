@@ -115,6 +115,18 @@ like($error_stderr, qr/division by zero/,
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after SQL ERROR');
 
+my ($abort_ret, $abort_stdout, $abort_stderr) = $node->psql(
+	'postgres',
+	'BEGIN; SELECT pg_advisory_xact_lock(987655); SELECT 1 / 0;',
+	on_error_stop => 1);
+isnt($abort_ret, 0, 'threaded transaction abort fixture failed as expected');
+like($abort_stderr, qr/division by zero/,
+	'threaded transaction abort fixture reported SQL ERROR');
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted;"),
+	'0', 'threaded transaction abort released advisory locks');
+
 $node->safe_psql(
 	'postgres',
 	q{
@@ -162,6 +174,23 @@ is($node->safe_psql(
 		'postgres',
 		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted;"),
 	'0', 'abandoned threaded backend released advisory lock');
+
+my $reconnect_ok = 1;
+for my $i (1 .. 30)
+{
+	my $result = eval {
+		$node->safe_psql('postgres', "SELECT $i;");
+	};
+
+	if (!defined $result || $result ne "$i")
+	{
+		diag("reconnect iteration $i returned "
+		  . (defined $result ? qq{"$result"} : 'undef'));
+		$reconnect_ok = 0;
+		last;
+	}
+}
+ok($reconnect_ok, 'repeated threaded connect/disconnect loop completed');
 
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after Gate D smoke');
