@@ -86,14 +86,14 @@ typedef struct pgsa_stash_name
 #include "lib/simplehash.h"
 
 /* Shared memory pointers */
-extern pgsa_shared_state *pgsa_state;
-extern dsa_area *pgsa_dsa_area;
-extern dshash_table *pgsa_stash_dshash;
-extern dshash_table *pgsa_entry_dshash;
+extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND pgsa_shared_state *pgsa_state;
+extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *pgsa_dsa_area;
+extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_stash_dshash;
+extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_entry_dshash;
 
 /* GUC variables */
-extern bool pg_stash_advice_persist;
-extern int	pg_stash_advice_persist_interval;
+extern PG_GLOBAL_RUNTIME bool pg_stash_advice_persist;
+extern PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval;
 
 /* Function prototypes */
 extern void pgsa_attach(void);

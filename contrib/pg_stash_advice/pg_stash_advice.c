@@ -19,13 +19,18 @@
 #include "pg_stash_advice.h"
 #include "postmaster/bgworker.h"
 #include "storage/dsm_registry.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "pg_stash_advice",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 /* Shared memory hash table parameters */
-static dshash_parameters pgsa_stash_dshash_parameters = {
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_parameters pgsa_stash_dshash_parameters = {
 	NAMEDATALEN,
 	sizeof(pgsa_stash),
 	dshash_strcmp,
@@ -34,7 +39,7 @@ static dshash_parameters pgsa_stash_dshash_parameters = {
 	LWTRANCHE_INVALID			/* gets set at runtime */
 };
 
-static dshash_parameters pgsa_entry_dshash_parameters = {
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_parameters pgsa_entry_dshash_parameters = {
 	sizeof(pgsa_entry_key),
 	sizeof(pgsa_entry),
 	dshash_memcmp,
@@ -44,18 +49,18 @@ static dshash_parameters pgsa_entry_dshash_parameters = {
 };
 
 /* GUC variables */
-static char *pg_stash_advice_stash_name = "";
-bool		pg_stash_advice_persist = true;
-int			pg_stash_advice_persist_interval = 30;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *pg_stash_advice_stash_name = "";
+PG_GLOBAL_RUNTIME bool pg_stash_advice_persist = true;
+PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval = 30;
 
 /* Shared memory pointers */
-pgsa_shared_state *pgsa_state;
-dsa_area   *pgsa_dsa_area;
-dshash_table *pgsa_stash_dshash;
-dshash_table *pgsa_entry_dshash;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND pgsa_shared_state *pgsa_state;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *pgsa_dsa_area;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_stash_dshash;
+PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_entry_dshash;
 
 /* Other global variables */
-static MemoryContext pg_stash_advice_mcxt;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pg_stash_advice_mcxt;
 
 /* Function prototypes */
 static char *pgsa_advisor(PlannerGlobal *glob,
@@ -731,6 +736,7 @@ pgsa_start_worker(void)
 	pid_t		pid;
 
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_DEFAULT_RESTART_INTERVAL;
 	strcpy(worker.bgw_library_name, "pg_stash_advice");
@@ -758,7 +764,7 @@ pgsa_start_worker(void)
 	 * complete. (If we do happen to be in single-user mode, this will error
 	 * out, which is fine.)
 	 */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),

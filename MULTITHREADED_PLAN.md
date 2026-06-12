@@ -602,15 +602,20 @@ Likely changes:
     metadata;
   - the bundled `pg_prewarm` autoprewarm leader and per-database workers have
     an initial thread-carrier slice through explicit background-worker
-    backend-model metadata.
+    backend-model metadata;
+  - the bundled `pg_stash_advice` persistence worker has an initial
+    thread-carrier slice through explicit background-worker backend-model
+    metadata, with its `pg_plan_advice` dependency marked for the same
+    backend model.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing
   third-party workers are rejected in threaded mode when a thread carrier is
   required.
 - Audit additional in-tree generic background workers, tests, and examples
-  before opting them into the explicit worker backend model. `test_shm_mq` and
-  `worker_spi` have initial audited thread-carrier slices.
+  before opting them into the explicit worker backend model. `test_shm_mq`,
+  `worker_spi`, and `pg_stash_advice` have initial audited thread-carrier
+  slices.
 - Define worker exit semantics separately from user-session exit semantics:
   normal worker exit must clean up one worker, while `PANIC`, postmaster death,
   and unrecoverable runtime corruption still terminate the process or runtime.

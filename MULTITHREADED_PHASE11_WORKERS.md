@@ -255,6 +255,55 @@ both workers, no postmaster child process matching `worker_spi`, no log
 with the same static preload worker observed a postmaster child process for
 `worker_spi`, no log `ERROR`/`FATAL`/`PANIC`, and clean fast shutdown.
 
+## pg_stash_advice Thread Slice
+
+The bundled `pg_stash_advice` persistence worker is now opted into the
+thread-carrier path in threaded mode. Because `pg_stash_advice` registers an
+advisor with `pg_plan_advice`, the dependency module also declares
+thread-per-session compatibility:
+
+- `pg_plan_advice` and `pg_stash_advice` use `PG_MODULE_MAGIC_EXT()` with
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`;
+- obvious `pg_plan_advice` session GUC backing variables are backend/session
+  TLS, and the exported planner-generation counter is execution TLS. The
+  planner/advisor hook lists remain runtime-global because they are installed
+  at module load and then read by all sessions;
+- `pg_stash_advice` session-local stash-name state, DSM/DSA/dshash attachment
+  pointers, dshash parameter copies, and module memory context are backend TLS;
+- the persistence worker sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`, uses
+  `PgCurrentBackendSignalPid()` for dynamic worker startup notification and
+  shared worker identity, and avoids process-wide signal handler changes when
+  running as a thread carrier;
+- the worker loop drains logical interrupts explicitly but does not use
+  `ProcessMainLoopInterrupts()`, because `pg_stash_advice` must perform a
+  final dump after a shutdown request instead of exiting immediately.
+
+This is an initial worker-runtime slice, not the final Phase 16 contrib GUC
+story. The threaded GUC bridge still initializes only a narrow set of core
+records, so broader custom-GUC session isolation for contrib modules remains a
+later hardening task.
+
+The first threaded smoke found a stale-object failure after the header changed
+the DSM attachment pointers to TLS: `stashfuncs.o` still saw the old plain
+global declaration and skipped `pgsa_attach()`, while `pgsa_check_lockout()`
+used the new TLS `pgsa_state` and crashed. A clean rebuild of both
+`pg_stash_advice` and `pg_plan_advice` fixed the mismatch.
+
+Direct validation covered both carrier models. A threaded temp-cluster smoke
+with `multithreaded=on`,
+`shared_preload_libraries='pg_plan_advice, pg_stash_advice'`,
+`pg_stash_advice.persist=true`, and `pg_stash_advice.persist_interval=0`
+created a stash, stored one advice entry, observed a logical
+`pg_stash_advice worker`, found no postmaster child process matching
+`pg_stash_advice`, saw the thread-carrier start log, completed clean fast
+shutdown, and verified the final `pg_stash_advice.tsv` dump. A process-mode
+control smoke with the same persistence path observed a postmaster child
+process for the worker, completed clean fast shutdown, and verified the dump
+file. Process-mode SQL regression checks passed for both
+`contrib/pg_plan_advice` and `contrib/pg_stash_advice`; the latter skipped TAP
+because this checkout is not configured with TAP tests.
+
 ## WAL Summarizer Thread Slice
 
 The WAL summarizer is now opted into the thread carrier path in threaded mode:
@@ -735,8 +784,9 @@ completes `pg_ctl -m fast stop` cleanly.
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
   in-core REPACK decoding worker, `pg_prewarm`, `test_backend_runtime`,
-  `test_shm_mq`, and `worker_spi` sets. These can opt into the explicit
-  background-worker backend model only after a per-entrypoint audit.
+  `test_shm_mq`, `worker_spi`, and `pg_stash_advice` sets. These can opt into
+  the explicit background-worker backend model only after a per-entrypoint
+  audit.
 
 ## Validation
 

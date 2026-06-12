@@ -160,6 +160,13 @@ Important current files:
   `auto_explain`, `tablefunc`, and several `src/test/modules` tests. Clean and
   reinstall any of those modules before testing them after PRNG TLS changes.
 
+- After changing a contrib/test module header to expose `PG_THREAD_LOCAL`
+  declarations, clean and rebuild every object in that module before running a
+  threaded smoke. Stale objects can still see the old plain-global symbol while
+  freshly compiled objects use TLS, producing crashes that look like missing
+  initialization. This was observed in `pg_stash_advice` after changing its
+  DSM attachment pointers in `pg_stash_advice.h`.
+
 - If an installed header changes a global from plain storage to
   `PG_THREAD_LOCAL`, do not trust a purely incremental backend build. Stale
   backend objects can still compile and link but then crash during `initdb`

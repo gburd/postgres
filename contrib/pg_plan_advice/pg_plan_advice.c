@@ -28,14 +28,18 @@
 #include "storage/dsm_registry.h"
 #include "utils/guc.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "pg_plan_advice",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 /* GUC variables */
-char	   *pg_plan_advice_advice = NULL;
-bool		pg_plan_advice_always_store_advice_details = false;
-static bool pg_plan_advice_always_explain_supplied_advice = true;
-bool		pg_plan_advice_feedback_warnings = false;
-bool		pg_plan_advice_trace_mask = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION char *pg_plan_advice_advice = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_always_store_advice_details = false;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_always_explain_supplied_advice = true;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_feedback_warnings = false;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_trace_mask = false;
 
 /* Saved hook value */
 static explain_per_plan_hook_type prev_explain_per_plan = NULL;
