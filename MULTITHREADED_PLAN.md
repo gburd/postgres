@@ -543,7 +543,7 @@ Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, AIO worker startup handoff and late
 launch, generic
 background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
-archiver, checkpointer/background writer handoff, slot sync worker, and
+archiver, checkpointer/background writer handoff, syslogger handoff, slot sync worker, and
 logical replication launcher slices, plus initial logical replication
 apply/table-sync, sequence-sync, and parallel apply slices, plus remaining
 worker families.
@@ -577,7 +577,9 @@ Likely changes:
   mode:
   - autovacuum launcher and workers have initial thread-carrier slices;
   - checkpointer/background writer handoff, WAL writer, and archiver have
-    initial thread-carrier slices; syslogger remains;
+    initial thread-carrier slices;
+  - syslogger startup is process-backed until `PM_RUN`, then handed off to a
+    thread carrier;
   - startup/recovery worker paths that are part of normal server operation;
   - WAL receiver, WAL summarizer, and slot sync worker have initial
     thread-carrier slices;

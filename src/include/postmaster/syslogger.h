@@ -14,6 +14,7 @@
 
 #include <limits.h>				/* for PIPE_BUF */
 
+#include "postmaster/postmaster.h"
 #include "utils/global_lifetime.h"
 
 
@@ -88,7 +89,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME HANDLE syslogPipe[2];
 #endif
 
 
-extern int	SysLogger_Start(int child_slot);
+extern bool SysLogger_Start(PMChild *pmchild);
 
 extern void write_syslogger_file(const char *buffer, int count, int destination);
 

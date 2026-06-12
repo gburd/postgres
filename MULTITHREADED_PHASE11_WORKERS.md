@@ -453,9 +453,48 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - thread-backed archiver exit is reaped by the postmaster thread-exit path,
   clearing `PgArchPMChild` and preserving existing normal/FATAL/crash handling.
 
+## Syslogger Thread Handoff Slice
+
+The syslogger now moves to a thread carrier after normal threaded operation
+begins:
+
+- `PgRuntimeShouldThreadBackend()` selects thread carriers for `B_LOGGER` once
+  the logger is eligible to relaunch;
+- `postmaster_child_launch_carrier()` preserves the startup-time process
+  launch for `B_LOGGER` while no thread carrier has been created, because the
+  syslogger is started before the startup process and must not make later
+  startup-era `fork()` calls unsafe;
+- after `PM_RUN` and after another thread carrier exists, the postmaster asks
+  the startup-era process syslogger to exit with `SIGUSR2`. The process
+  logger flushes any buffered pipe input and exits normally; the postmaster
+  child-exit path then relaunches the logger through the carrier-aware path,
+  which selects a thread carrier;
+- `SysLoggerMain()` avoids process-wide signal handler installation and
+  signal-mask changes when running as a thread carrier, keeps
+  `PostmasterContext` owned by the runtime, and does not redirect process
+  stdout/stderr to `/dev/null`;
+- thread-backed syslogger reload and rotation requests are delivered through
+  logical backend interrupts. A dedicated
+  `PG_BACKEND_INTERRUPT_LOG_ROTATE` interrupt preserves `SIGUSR1` rotation
+  semantics for the thread carrier;
+- thread-backed syslogger config reloads observe the postmaster-owned shared
+  GUC reload result instead of running `ProcessConfigFile()` concurrently in
+  the shared address space;
+- when a logger is thread-backed, the postmaster leaves the shared `FILE`
+  objects open because the logger thread owns them in the same address space.
+  Process-backed loggers keep the historical behavior where the postmaster
+  closes its copies after fork or exec;
+- thread-backed syslogger exit is reaped by the postmaster thread-exit path,
+  clearing `SysLoggerPMChild` and restarting the logger when
+  `logging_collector` remains enabled.
+
+This slice is a handoff rather than startup-time thread launch for the same
+reason as the checkpointer/background writer slice: recovery startup still
+depends on safe startup-era process creation. Startup/recovery conversion can
+remove the temporary process logger later.
+
 ## Remaining Worker Families
 
-- syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
@@ -699,6 +738,24 @@ Additional validation for the archiver thread slice:
   `children_with_archiver=4`, and `children_after_archive=4` after
   `pg_reload_conf()`, a WAL-writing workload, `pg_switch_wal()`, and clean
   fast shutdown.
+
+Additional validation for the syslogger handoff slice:
+
+- touched-object builds passed for `syslogger.o`, `postmaster.o`,
+  `launch_backend.o`, and `backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `logging_collector=on`, explicit `pg_rotate_logfile()`, and a warning
+  emitted after rotation. The smoke observed `current_setting('multithreaded')
+  = 'on'`, no postmaster child process matching the syslogger after handoff,
+  the warning marker in `pg_log`, no log `ERROR`/`FATAL`/`PANIC`, and clean
+  fast shutdown;
+- direct process-mode control smoke passed with `logging_collector=on`,
+  explicit `pg_rotate_logfile()`, and a warning emitted after rotation. The
+  smoke observed one postmaster syslogger child process, verified the process
+  logger still ignores `SIGUSR2`, found the warning marker in `pg_log`, saw no
+  log `ERROR`/`FATAL`/`PANIC`, and completed a clean fast shutdown.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

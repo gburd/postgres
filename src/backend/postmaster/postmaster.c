@@ -416,6 +416,7 @@ static PG_GLOBAL_RUNTIME TimestampTz io_worker_launch_next_time = 0;
 static PG_GLOBAL_RUNTIME int io_worker_count = 0;
 static PG_GLOBAL_RUNTIME PMChild *io_worker_children[MAX_IO_WORKERS];
 static PG_GLOBAL_RUNTIME bool io_worker_thread_handoff_pending[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME bool syslogger_thread_handoff_pending = false;
 static PG_GLOBAL_RUNTIME bool bgwriter_thread_handoff_pending = false;
 static PG_GLOBAL_RUNTIME bool checkpointer_thread_handoff_pending = false;
 
@@ -470,6 +471,7 @@ static int	CountChildren(BackendTypeMask targetMask);
 static void LaunchMissingBackgroundProcesses(void);
 static void maybe_start_bgworkers(void);
 static bool maybe_reap_io_worker(int pid);
+static void maybe_handoff_syslogger(void);
 static void maybe_handoff_io_workers(void);
 static void maybe_start_io_workers(void);
 static TimestampTz maybe_start_io_workers_scheduled_at(void);
@@ -2516,6 +2518,7 @@ process_pm_child_exit(void)
 		/* Was it the system logger?  If so, try to start a new one */
 		if (SysLoggerPMChild && pid == SysLoggerPMChild->pid)
 		{
+			syslogger_thread_handoff_pending = false;
 			ReleasePostmasterChildSlot(SysLoggerPMChild);
 			SysLoggerPMChild = NULL;
 
@@ -2639,6 +2642,22 @@ process_pm_thread_exit(void)
 		if (pmchild->bkend_type == B_IO_WORKER)
 		{
 			(void) cleanup_io_worker_child(pmchild);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_LOGGER)
+		{
+			syslogger_thread_handoff_pending = false;
+			ReleasePostmasterChildSlot(pmchild);
+			SysLoggerPMChild = NULL;
+
+			/* for safety's sake, launch new logger *first* */
+			if (Logging_collector)
+				StartSysLogger();
+
+			if (!EXIT_STATUS_0(exitstatus))
+				LogChildExit(LOG, _("system logger process"),
+							 0, exitstatus);
 			reaped = true;
 			continue;
 		}
@@ -3423,6 +3442,7 @@ LaunchMissingBackgroundProcesses(void)
 	/* Syslogger is active in all states */
 	if (SysLoggerPMChild == NULL && Logging_collector)
 		StartSysLogger();
+	maybe_handoff_syslogger();
 
 	/*
 	 * The number of configured workers might have changed, or a prior start
@@ -3662,8 +3682,17 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 
 	switch (signal)
 	{
+		case SIGUSR1:
+			if (pmchild->bkend_type == B_LOGGER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_LOG_ROTATE;
+				return true;
+			}
+			return false;
 		case SIGINT:
 			if (pmchild->bkend_type == B_ARCHIVER)
+				return false;
+			if (pmchild->bkend_type == B_LOGGER)
 				return false;
 			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 			{
@@ -3696,6 +3725,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
 			}
+			if (pmchild->bkend_type == B_LOGGER)
+				return false;
 			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
@@ -3750,6 +3781,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
 			}
+			if (pmchild->bkend_type == B_LOGGER)
+				return false;
 			return false;
 		case SIGQUIT:
 		case SIGKILL:
@@ -4299,22 +4332,17 @@ StartChildProcess(BackendType type)
 void
 StartSysLogger(void)
 {
-	pid_t		syslogger_pid;
-
 	Assert(SysLoggerPMChild == NULL);
 
 	SysLoggerPMChild = AssignPostmasterChildSlot(B_LOGGER);
 	if (!SysLoggerPMChild)
 		elog(PANIC, "no postmaster child slot available for syslogger");
-	syslogger_pid = SysLogger_Start(SysLoggerPMChild->child_slot);
 
-	if (syslogger_pid == 0)
+	if (!SysLogger_Start(SysLoggerPMChild))
 	{
 		ReleasePostmasterChildSlot(SysLoggerPMChild);
 		SysLoggerPMChild = NULL;
 	}
-	else
-		PostmasterChildSetProcess(SysLoggerPMChild, syslogger_pid);
 }
 
 /*
@@ -4846,6 +4874,29 @@ cleanup_wal_summarizer_child(PMChild *child, int exitstatus)
 		HandleChildCrash(0, exitstatus, _("WAL summarizer process"));
 
 	return true;
+}
+
+/*
+ * The startup syslogger must be process-backed because it is started before
+ * the startup process and other startup-era children are forked.  In threaded
+ * mode, once a normal thread carrier exists, ask that process logger to exit.
+ * The child-exit path will launch the replacement through the carrier-aware
+ * path, which selects a thread carrier after runtime startup.
+ */
+static void
+maybe_handoff_syslogger(void)
+{
+	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
+		!PostmasterThreadCarriersStarted())
+		return;
+
+	if (SysLoggerPMChild != NULL &&
+		PostmasterChildIsProcess(SysLoggerPMChild) &&
+		!syslogger_thread_handoff_pending)
+	{
+		syslogger_thread_handoff_pending = true;
+		signal_child(SysLoggerPMChild, SIGUSR2);
+	}
 }
 
 /*

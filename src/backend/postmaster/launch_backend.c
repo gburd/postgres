@@ -286,15 +286,16 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	}
 
 	/*
-	 * Checkpointer and background writer are needed before the startup
-	 * process is forked, so their initial startup carriers must remain
-	 * processes.  After normal running begins and another thread carrier has
-	 * made fork-without-exec unsafe, the postmaster hands them off and
-	 * relaunches them through the runtime-selected thread carrier path.
+	 * The logger, checkpointer, and background writer are needed before the
+	 * startup process is forked, so their initial startup carriers must
+	 * remain processes.  After normal running begins and another thread
+	 * carrier has made fork-without-exec unsafe, the postmaster hands them off
+	 * and relaunches them through the runtime-selected thread carrier path.
 	 */
 	if (multithreaded &&
 		!postmaster_thread_carriers_started &&
-		(child_type == B_CHECKPOINTER || child_type == B_BG_WRITER))
+		(child_type == B_LOGGER ||
+		 child_type == B_CHECKPOINTER || child_type == B_BG_WRITER))
 		launch_model = PG_BACKEND_LAUNCH_PROCESS;
 	else
 		launch_model = PgRuntimeGetBackendLaunchModel(child_type);
@@ -353,6 +354,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		child_type != B_BG_WORKER &&
 		child_type != B_CHECKPOINTER &&
 		child_type != B_IO_WORKER &&
+		child_type != B_LOGGER &&
 		child_type != B_SLOTSYNC_WORKER &&
 		child_type != B_WAL_RECEIVER &&
 		child_type != B_WAL_WRITER &&
@@ -376,6 +378,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		 child_type == B_BG_WORKER ||
 		 child_type == B_CHECKPOINTER ||
 		 child_type == B_IO_WORKER ||
+		 child_type == B_LOGGER ||
 		 child_type == B_SLOTSYNC_WORKER ||
 		 child_type == B_WAL_RECEIVER ||
 		 child_type == B_WAL_WRITER ||
@@ -530,12 +533,14 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 							 PostmasterChildName(thread_start->child_type))));
 
 	/*
-	 * AIO workers must be able to start while a regular backend is still in
-	 * the temporary serialized startup section, because backend startup can
-	 * itself need worker-backed catalog reads before releasing that gate.
-	 * They do not perform catalog/session startup of their own.
+	 * AIO workers and the syslogger must be able to start while a regular
+	 * backend is still in the temporary serialized startup section.  Backend
+	 * startup can need worker-backed catalog reads before releasing that gate,
+	 * and the syslogger must remain available to drain redirected stderr. They
+	 * do not perform catalog/session startup of their own.
 	 */
-	if (thread_start->child_type != B_IO_WORKER)
+	if (thread_start->child_type != B_IO_WORKER &&
+		thread_start->child_type != B_LOGGER)
 		backend_thread_enter_startup_gate(thread_start);
 
 	if (thread_start->child_type == B_BG_WORKER)
