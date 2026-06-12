@@ -1332,6 +1332,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			pgstat_bestart_final_status();
 			if (application_name)
 				pgstat_report_appname(application_name);
+			if (pgstat_tracks_backend_bktype(MyBackendType))
+				pgstat_create_backend(MyProcNumber);
 		}
 		else
 			pgstat_bestart_final();
@@ -1341,10 +1343,9 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		ereport(FATAL,
 				(errmsg("threaded backend database initialization is not implemented yet"),
 				 errdetail("Final backend status startup and application_name "
-						   "reporting completed, but backend statistics "
-						   "publication, startup transaction commit, and "
-						   "post-startup session lifetime still need "
-						   "thread-safe lifecycle handling.")));
+						   "reporting completed, but startup transaction "
+						   "commit and post-startup session lifetime still "
+						   "need thread-safe lifecycle handling.")));
 
 	/* close the transaction we started above */
 	if (!bootstrap)

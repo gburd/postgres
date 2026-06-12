@@ -740,6 +740,36 @@ This narrows the previous pgstat blocker further: appname reporting into
 `PgBackendStatus` is stable in the sequential two-client smoke, while backend
 stats entry lifecycle remains the next concrete boundary.
 
+## Backend Stats Entry And Startup Serialization Slice
+
+The thirty-fifth slice lets threaded startup create the per-backend statistics
+entry while adding an explicit temporary guard around concurrent threaded
+startup:
+
+- after final backend-status and `application_name` publication, threaded
+  startup now calls `pgstat_create_backend(MyProcNumber)` for backend types
+  that track backend statistics;
+- the guarded FATAL now fires after backend stats entry creation and before
+  startup transaction commit, connection warnings, normal-processing startup,
+  and the query loop;
+- the backend carrier holds a runtime-wide startup/session gate while it runs
+  `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)`;
+- that gate is deliberately temporary: a 20-client concurrent startup smoke
+  without it produced catalog/cache failures such as
+  `could not find tuple for opclass 112`, showing that the current path can
+  reach cache-heavy initialization before those backend-local caches have been
+  isolated for same-address-space concurrency;
+- `backend_thread_finish()` releases the gate before exiting the carrier
+  thread, so the postmaster-owned join/reap path still controls PMChild slot
+  release.
+
+This is not the final thread-per-session concurrency model.  It is a safety
+floor that makes the current threaded prototype deterministic while later
+Phase 10 work moves catalog/cache, transaction commit, interrupt, and session
+lifetime state onto thread-safe backend/session owners.  The gate must be
+removed or narrowed before normal concurrent SQL execution can be considered
+complete.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1133,3 +1163,26 @@ stats entry lifecycle remains the next concrete boundary.
   guarded "threaded backend database initialization is not implemented yet"
   FATAL, kept the postmaster running after a one-second delay, and completed
   normal fast shutdown.
+- before adding the threaded startup/session gate, a 20-client concurrent
+  startup smoke with backend stats entry creation enabled produced
+  `could not find tuple for opclass 112` failures and left a carrier stuck
+  during shutdown, proving that same-address-space concurrent startup is not
+  safe yet.
+- after the backend stats entry and startup serialization slice,
+  `gmake -C src/backend/postmaster launch_backend.o`,
+  `gmake -C src/backend/utils/init postinit.o`, full
+  `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- after the backend stats entry and startup serialization slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.
+- a temp install smoke with `multithreaded=on` ran five sequential clients
+  with explicit startup-packet `application_name` values, completed backend
+  stats entry creation for each, rejected each before startup transaction
+  commit with the guarded FATAL, found no `unsupported byval length`,
+  opclass, segmentation, trap, or panic failures in the server log, kept the
+  postmaster running, and completed normal fast shutdown.
+- a temp install smoke with `multithreaded=on` ran 20 concurrent clients.
+  The temporary startup/session gate serialized the unsafe threaded startup
+  path; every client reached the guarded FATAL after backend stats entry
+  creation, the server log contained no byval/opclass/crash failures, the
+  postmaster stayed running, and normal fast shutdown completed.

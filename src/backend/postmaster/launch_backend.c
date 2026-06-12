@@ -47,6 +47,9 @@
 #include "postmaster/syslogger.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
+#ifndef WIN32
+#include "port/pg_pthread.h"
+#endif
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
 #include "storage/dsm.h"
@@ -200,9 +203,20 @@ typedef struct BackendThreadStart
 	Latch	   *postmaster_latch;
 	pg_tz	   *session_timezone;
 	pg_tz	   *log_timezone;
+	bool		startup_gate_held;
 } BackendThreadStart;
 
 static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThreadStart = NULL;
+
+#ifndef WIN32
+/*
+ * Temporary Phase 10 guard: the startup path now reaches catalog/cache-heavy
+ * initialization, but those backend-local caches are not yet safe for
+ * concurrent carriers in the same address space.  Serialize the threaded
+ * session path until the cache/global migration work can remove this gate.
+ */
+static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendStartupMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 BackendType child_type,
@@ -211,6 +225,8 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 size_t startup_data_len,
 											 const ClientSocket *client_sock);
 static void backend_thread_entry(void *arg);
+static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
+static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 static int	backend_thread_exitstatus(int code);
@@ -304,6 +320,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->postmaster_latch = MyLatch;
 	thread_start->session_timezone = session_timezone;
 	thread_start->log_timezone = log_timezone;
+	thread_start->startup_gate_held = false;
 
 	if (thread_start->client_sock.sock < 0)
 	{
@@ -358,10 +375,54 @@ backend_thread_entry(void *arg)
 	conn_timing.fork_start = thread_start->startup_data.fork_started;
 	conn_timing.fork_end = GetCurrentTimestamp();
 
+	backend_thread_enter_startup_gate(thread_start);
+
 	BackendMainWithStartupData(&thread_start->startup_data,
 							   &thread_start->client_sock,
 							   BACKEND_STARTUP_THREAD);
 	pg_unreachable();
+}
+
+static void
+backend_thread_enter_startup_gate(BackendThreadStart *thread_start)
+{
+#ifndef WIN32
+	int			rc;
+
+	Assert(thread_start != NULL);
+	Assert(!thread_start->startup_gate_held);
+
+	rc = pthread_mutex_lock(&ThreadedBackendStartupMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter threaded backend startup gate: %m")));
+	}
+
+	thread_start->startup_gate_held = true;
+#endif
+}
+
+static void
+backend_thread_leave_startup_gate(BackendThreadStart *thread_start)
+{
+#ifndef WIN32
+	int			rc;
+
+	Assert(thread_start != NULL);
+
+	if (!thread_start->startup_gate_held)
+		return;
+
+	thread_start->startup_gate_held = false;
+	rc = pthread_mutex_unlock(&ThreadedBackendStartupMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(LOG, "could not leave threaded backend startup gate: %m");
+	}
+#endif
 }
 
 static void
@@ -385,6 +446,7 @@ backend_thread_finish(int code)
 	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
 									thread_start->postmaster_latch);
 	MyClientSocket = NULL;
+	backend_thread_leave_startup_gate(thread_start);
 
 	if (TopMemoryContext != NULL)
 	{
