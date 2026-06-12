@@ -1324,16 +1324,22 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	if ((flags & INIT_PG_LOAD_SESSION_LIBS) != 0)
 		process_session_preload_libraries();
 
+	/* fill in the remainder of this entry in the PgBackendStatus array */
+	if (!bootstrap)
+	{
+		if (threaded_backend)
+			pgstat_bestart_final_status();
+		else
+			pgstat_bestart_final();
+	}
+
 	if (threaded_backend)
 		ereport(FATAL,
 				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Session preload libraries completed, but final "
-						   "pgstat startup and post-startup session lifetime "
-						   "still need thread-safe lifecycle handling.")));
-
-	/* fill in the remainder of this entry in the PgBackendStatus array */
-	if (!bootstrap)
-		pgstat_bestart_final();
+				 errdetail("Final backend status startup completed, but "
+						   "backend statistics publication and post-startup "
+						   "session lifetime still need thread-safe "
+						   "lifecycle handling.")));
 
 	/* close the transaction we started above */
 	if (!bootstrap)

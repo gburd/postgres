@@ -429,7 +429,7 @@ pgstat_bestart_security(void)
  * ----------
  */
 void
-pgstat_bestart_final(void)
+pgstat_bestart_final_status(void)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 	Oid			userid;
@@ -457,6 +457,12 @@ pgstat_bestart_final(void)
 	beentry->st_state = STATE_UNDEFINED;
 
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
+}
+
+void
+pgstat_bestart_final(void)
+{
+	pgstat_bestart_final_status();
 
 	/* Create the backend statistics entry */
 	if (pgstat_tracks_backend_bktype(MyBackendType))

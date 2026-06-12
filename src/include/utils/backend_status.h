@@ -308,6 +308,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *MyBEEntry;
 extern void pgstat_beinit(void);
 extern void pgstat_bestart_initial(void);
 extern void pgstat_bestart_security(void);
+extern void pgstat_bestart_final_status(void);
 extern void pgstat_bestart_final(void);
 
 extern void pgstat_clear_backend_activity_snapshot(void);

@@ -690,12 +690,35 @@ processing:
   transaction commit, connection warnings, normal-processing startup, and the
   query loop.
 
-An attempted boundary after `pgstat_bestart_final()` was intentionally backed
-out. A fast two-connection smoke could produce `unsupported byval length: 0`,
-and a debugger-assisted run later saw an autovacuum worker segfault followed
-by recovery waiting on a ProcSignalBarrier. That makes final pgstat
-publication and the associated shared backend-status/procsignal interaction
-the next concrete Phase 10 blocker before crossing startup transaction commit.
+An attempted boundary after the full `pgstat_bestart_final()` was intentionally
+backed out. A fast two-connection smoke could produce
+`unsupported byval length: 0`, and a debugger-assisted run later saw an
+autovacuum worker segfault followed by recovery waiting on a ProcSignalBarrier.
+That made it necessary to split backend-status finalization from backend stats
+entry/appname publication before crossing startup transaction commit.
+
+## Final Backend Status Boundary Slice
+
+The thirty-third slice splits final backend-status publication from backend
+stats entry creation:
+
+- `pgstat_bestart_final_status()` now finalizes the shared
+  `PgBackendStatus` row by publishing the database id, user id, and
+  non-starting backend state;
+- the existing `pgstat_bestart_final()` keeps process-mode behavior by calling
+  the status helper and then creating the backend stats entry and reporting
+  `application_name`;
+- threaded startup calls only the status helper and then stops at the guarded
+  FATAL;
+- the guarded FATAL now fires before backend stats entry creation,
+  `application_name` reporting, startup transaction commit, connection
+  warnings, normal-processing startup, and the query loop.
+
+This keeps the visible backend-status row transition separate from the
+unstable stats/appname path exposed by the failed full-finalization attempt.
+The next boundary is to make backend stats entry lifecycle and appname
+publication safe for thread-backed backends whose carrier can overlap with
+process workers and sibling backend carriers.
 
 ## Validation
 
@@ -1062,4 +1085,20 @@ the next concrete Phase 10 blocker before crossing startup transaction commit.
   not kept: one non-debug smoke returned `unsupported byval length: 0` on the
   second immediate threaded client, and a debugger-assisted run later saw an
   autovacuum worker segfault followed by recovery waiting on a
-  ProcSignalBarrier. Final pgstat publication remains the next blocker.
+  ProcSignalBarrier. Backend stats entry creation and appname publication
+  remain the next blocker.
+- after the final backend status boundary slice,
+  `gmake -C src/backend/utils/activity backend_status.o` and
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the final backend status boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the final backend status boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke created `ALTER DATABASE postgres SET application_name`
+  in process mode, restarted with `multithreaded=on`, completed final
+  backend-status row publication for two immediate threaded client attempts,
+  rejected both before backend stats entry creation with the guarded
+  "threaded backend database initialization is not implemented yet" FATAL,
+  kept the postmaster running after a one-second delay, and completed normal
+  fast shutdown.
