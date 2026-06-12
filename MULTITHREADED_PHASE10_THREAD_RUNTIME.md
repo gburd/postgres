@@ -716,9 +716,29 @@ stats entry creation:
 
 This keeps the visible backend-status row transition separate from the
 unstable stats/appname path exposed by the failed full-finalization attempt.
-The next boundary is to make backend stats entry lifecycle and appname
-publication safe for thread-backed backends whose carrier can overlap with
-process workers and sibling backend carriers.
+The next boundary is to make backend stats entry lifecycle safe for
+thread-backed backends whose carrier can overlap with process workers and
+sibling backend carriers.
+
+## Application Name Status Boundary Slice
+
+The thirty-fourth slice lets threaded startup report `application_name` into
+the finalized backend-status row:
+
+- the threaded path now calls `pgstat_report_appname(application_name)` after
+  `pgstat_bestart_final_status()`;
+- explicit startup-packet `application_name` values therefore cross the
+  backend-status publication path in a carrier thread;
+- backend stats entry creation remains guarded, so the unstable
+  `pgstat_create_backend()` lifecycle is still not reached by threaded
+  startup;
+- the guarded FATAL now fires before backend stats entry creation, startup
+  transaction commit, connection warnings, normal-processing startup, and the
+  query loop.
+
+This narrows the previous pgstat blocker further: appname reporting into
+`PgBackendStatus` is stable in the sequential two-client smoke, while backend
+stats entry lifecycle remains the next concrete boundary.
 
 ## Validation
 
@@ -1102,3 +1122,14 @@ process workers and sibling backend carriers.
   "threaded backend database initialization is not implemented yet" FATAL,
   kept the postmaster running after a one-second delay, and completed normal
   fast shutdown.
+- after the application name status boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the application name status boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke started with `multithreaded=on`, used two immediate
+  clients with explicit startup-packet `application_name` values, completed
+  final backend-status row publication and `application_name` reporting for
+  both attempts, rejected both before backend stats entry creation with the
+  guarded "threaded backend database initialization is not implemented yet"
+  FATAL, kept the postmaster running after a one-second delay, and completed
+  normal fast shutdown.
