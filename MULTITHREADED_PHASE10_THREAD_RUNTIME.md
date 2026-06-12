@@ -674,6 +674,29 @@ prove that the syscache callback registry used by `InitializeSearchPath()` is
 ready for concurrent threaded SQL execution; that remains part of the broader
 thread-safety floor before arbitrary SQL can run.
 
+## Session Preload Boundary Slice
+
+The thirty-second slice lets threaded startup reach session preload library
+processing:
+
+- threaded startup now runs `process_session_preload_libraries()` after
+  default session state initialization;
+- empty `session_preload_libraries` and `local_preload_libraries` lists cross
+  the regular backend-start path in a carrier thread;
+- nonempty preload lists still use the Phase 7 extension backend-model gate
+  in `load_file()`/`dfmgr.c`, so process-only modules should be rejected in
+  threaded mode unless they opt into a compatible backend model;
+- the guarded FATAL now fires before `pgstat_bestart_final()`, startup
+  transaction commit, connection warnings, normal-processing startup, and the
+  query loop.
+
+An attempted boundary after `pgstat_bestart_final()` was intentionally backed
+out. A fast two-connection smoke could produce `unsupported byval length: 0`,
+and a debugger-assisted run later saw an autovacuum worker segfault followed
+by recovery waiting on a ProcSignalBarrier. That makes final pgstat
+publication and the associated shared backend-status/procsignal interaction
+the next concrete Phase 10 blocker before crossing startup transaction commit.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1020,3 +1043,23 @@ thread-safety floor before arbitrary SQL can run.
   preload libraries with the guarded "threaded backend database initialization
   is not implemented yet" FATAL, kept the postmaster running between
   connections, and completed normal fast shutdown.
+- after the session preload boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the session preload boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the session preload boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke created `ALTER DATABASE postgres SET application_name`
+  in process mode, restarted with `multithreaded=on`, completed
+  startup-packet GUC option processing, `pg_db_role_setting` application,
+  default session state, and session-preload processing for two immediate
+  threaded client attempts, rejected both before final pgstat startup with the
+  guarded "threaded backend database initialization is not implemented yet"
+  FATAL, kept the postmaster running after a one-second delay, and completed
+  normal fast shutdown.
+- diagnostic attempts to move the guard after `pgstat_bestart_final()` were
+  not kept: one non-debug smoke returned `unsupported byval length: 0` on the
+  second immediate threaded client, and a debugger-assisted run later saw an
+  autovacuum worker segfault followed by recovery waiting on a
+  ProcSignalBarrier. Final pgstat publication remains the next blocker.

@@ -1314,14 +1314,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	InitializeSession();
 	PgProcessRuntimeAttachSession(CurrentSession);
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Default session state completed, but session "
-						   "preload libraries and post-startup session "
-						   "lifetime still need thread-safe lifecycle "
-						   "handling.")));
-
 	/*
 	 * If this is an interactive session, load any libraries that should be
 	 * preloaded at backend start.  Since those are determined by GUCs, this
@@ -1331,6 +1323,13 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	if ((flags & INIT_PG_LOAD_SESSION_LIBS) != 0)
 		process_session_preload_libraries();
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Session preload libraries completed, but final "
+						   "pgstat startup and post-startup session lifetime "
+						   "still need thread-safe lifecycle handling.")));
 
 	/* fill in the remainder of this entry in the PgBackendStatus array */
 	if (!bootstrap)
