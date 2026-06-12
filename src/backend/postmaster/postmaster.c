@@ -435,6 +435,7 @@ static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
+static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
 static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
 static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
@@ -2032,6 +2033,16 @@ PostmasterSignalPMSignal(void)
 		SetLatch(postmaster_pmsignal_latch);
 }
 
+bool
+PostmasterSignalAutoVacLauncher(void)
+{
+	if (AutoVacLauncherPMChild == NULL)
+		return false;
+
+	signal_child(AutoVacLauncherPMChild, SIGUSR2);
+	return true;
+}
+
 /*
  * pg_ctl uses SIGHUP to request a reload of the configuration files.
  */
@@ -2627,6 +2638,12 @@ process_pm_thread_exit(void)
 		if (pmchild->bkend_type == B_ARCHIVER)
 		{
 			(void) cleanup_archiver_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+		{
+			(void) cleanup_autovac_launcher_child(pmchild, exitstatus);
 			reaped = true;
 			continue;
 		}
@@ -3626,6 +3643,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 		case SIGINT:
 			if (pmchild->bkend_type == B_ARCHIVER)
 				return false;
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+				return true;
+			}
 			if (pmchild->bkend_type == B_IO_WORKER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
@@ -3639,6 +3661,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			return true;
 		case SIGTERM:
 			if (pmchild->bkend_type == B_ARCHIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
@@ -3661,6 +3688,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 			if (pmchild->bkend_type == B_ARCHIVER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_WAKEUP_STOP;
+				return true;
+			}
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_AUTOVAC_LAUNCHER;
 				return true;
 			}
 			if (pmchild->bkend_type == B_IO_WORKER)
@@ -4600,6 +4632,21 @@ cleanup_archiver_child(PMChild *child, int exitstatus)
 	PgArchPMChild = NULL;
 	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
 		HandleChildCrash(0, exitstatus, _("archiver process"));
+
+	return true;
+}
+
+static bool
+cleanup_autovac_launcher_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == AutoVacLauncherPMChild);
+	Assert(child->bkend_type == B_AUTOVAC_LAUNCHER);
+
+	ReleasePostmasterChildSlot(AutoVacLauncherPMChild);
+	AutoVacLauncherPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("autovacuum launcher process"));
 
 	return true;
 }

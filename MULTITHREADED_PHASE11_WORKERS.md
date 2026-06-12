@@ -17,30 +17,67 @@ deferral into thread carriers:
 - thread runtime state initialization is split from TLS installation, allowing
   the postmaster-owned `PMChild` entry to keep a pointer to the logical
   `PgBackend` for a thread-backed child;
+- thread carriers now initialize their own narrow TLS GUC table with
+  `InitializeThreadedSessionGUCOptions()` before entering backend or worker
+  main code. The initialized set includes the early `InitPostgres()` GUCs and
+  the worker-local autovacuum override GUCs exercised by this slice;
 - `signal_child()` can route postmaster `SIGINT`, `SIGTERM`, `SIGQUIT`,
   `SIGKILL`, `SIGABRT`, and `SIGHUP` requests to thread-backed children as
   logical backend interrupts instead of assuming every `PMChild` has a PID;
 - `AutoVacWorkerMain()` avoids process-global signal handler installation in
   threaded mode, initializes logical timeouts, keeps the postmaster memory
-  context owned by the runtime, checks for a valid autovacuum worker entry
-  before touching worker-local GUC state, and releases the temporary threaded
-  startup gate after `InitPostgres()` completes;
+  context owned by the runtime, checks for a valid autovacuum worker entry,
+  applies worker-local GUC overrides after `InitPostgres()` when running as a
+  thread carrier, and releases the temporary threaded startup gate after
+  `InitPostgres()` completes;
 - same-process `SendPostmasterSignal()` calls now mark the postmaster PMSignal
   flag and wake the postmaster latch directly instead of sending `SIGUSR1` to
   the containing threaded process;
-- the Phase 10 threaded TAP smoke now uses a thread-safe test helper module to
-  request an autovacuum worker deterministically, with ordinary autovacuum
-  scheduling disabled so the fixture proves the explicit carrier path rather
-  than launcher heuristics.
+- the Phase 10 threaded TAP smoke uses a thread-safe test helper module to
+  request an autovacuum worker deterministically, so the fixture proves the
+  explicit carrier path rather than launcher scheduling heuristics.
 
-This slice deliberately does not convert the autovacuum launcher. In threaded
-mode it remains a startup-time process carrier for now, while its late workers
-are thread-backed. The remaining Phase 11 work must convert the launcher and
-the other in-tree server-owned worker families before normal threaded server
-mode can claim to be no-fork for ordinary operation. A real scheduled
-autovacuum worker with a valid worker entry is also still pending; the current
-deterministic proof covers carrier launch and worker-main entry, not useful
-vacuum/analyze work.
+A real scheduled autovacuum worker smoke now covers the launcher-created worker
+entry and database connection path. Useful vacuum/analyze work should still get
+broader coverage once Phase 11 worker families are closer to complete.
+
+## Autovacuum Launcher Thread Slice
+
+The autovacuum launcher is now opted into the thread carrier path in threaded
+mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_AUTOVAC_LAUNCHER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts launcher starts without client
+  startup data;
+- `AutoVacLauncherMain()` skips process-wide signal handlers and signal-mask
+  changes when running as a thread carrier, initializes logical timeouts, and
+  preserves the postmaster-owned memory context;
+- thread-backed launcher startup releases the temporary threaded startup gate
+  after local initialization and before entering the scheduling loop;
+- launcher-only defensive `SetConfigOption()` overrides remain process-mode
+  only for now, because the launcher does not call `InitPostgres()` and does
+  not yet have a private backend GUC option hash in threaded mode;
+- `ProcessAutoVacLauncherInterrupts()` drains logical backend interrupts and
+  converts the launcher-specific wakeup interrupt into the existing
+  `SIGUSR2`/`got_SIGUSR2` path;
+- thread-backed launcher config reloads observe the postmaster's shared GUC
+  reload result instead of running `ProcessConfigFile()` concurrently in a
+  worker thread;
+- autovacuum workers notify a threaded launcher through
+  `PostmasterSignalAutoVacLauncher()` instead of sending `SIGUSR2` to the
+  containing process PID;
+- thread-backed launcher exit is reaped by the postmaster thread-exit path,
+  clearing `AutoVacLauncherPMChild` and preserving crash escalation for
+  abnormal exits.
+
+The threaded runtime TAP smoke now enables autovacuum with a long nap time,
+waits for one logical `autovacuum launcher` backend, verifies that no
+postmaster child process is titled as an autovacuum launcher, and still runs
+the deterministic autovacuum-worker entry test. The deterministic worker is a
+no-entry launch-path smoke; stable `pg_stat_activity` accounting across
+launcher-created useful workers remains part of the broader real autovacuum
+coverage still needed in Phase 11.
 
 ## Late AIO Worker Thread Slice
 
@@ -183,7 +220,6 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 
 ## Remaining Worker Families
 
-- autovacuum launcher;
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - WAL receiver;

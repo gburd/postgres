@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <unistd.h>
 
+#include "access/xact.h"
 #include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
@@ -61,6 +62,7 @@
 #include "storage/shmem_internal.h"
 #include "tcop/backend_startup.h"
 #include "utils/backend_runtime.h"
+#include "utils/guc.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -320,6 +322,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 
 	if (child_type != B_ARCHIVER &&
 		child_type != B_BACKEND &&
+		child_type != B_AUTOVAC_LAUNCHER &&
 		child_type != B_AUTOVAC_WORKER &&
 		child_type != B_IO_WORKER &&
 		child_type != B_WAL_WRITER &&
@@ -337,6 +340,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		return false;
 	}
 	if ((child_type == B_ARCHIVER ||
+		 child_type == B_AUTOVAC_LAUNCHER ||
 		 child_type == B_AUTOVAC_WORKER ||
 		 child_type == B_IO_WORKER ||
 		 child_type == B_WAL_WRITER ||
@@ -433,6 +437,9 @@ backend_thread_entry(void *arg)
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
 	MemoryContextInit();
+	InitializeTransactionState();
+	if (thread_start->child_type != B_BACKEND)
+		InitializeThreadedSessionGUCOptions();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);

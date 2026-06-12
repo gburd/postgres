@@ -248,6 +248,7 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 	 */
 	return backend_type == B_BACKEND ||
 		backend_type == B_ARCHIVER ||
+		backend_type == B_AUTOVAC_LAUNCHER ||
 		backend_type == B_AUTOVAC_WORKER ||
 		backend_type == B_WAL_WRITER ||
 		backend_type == B_WAL_SUMMARIZER;
@@ -531,6 +532,9 @@ PgCurrentBackendApplyInterrupts(void)
 
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_WAKEUP_STOP))
 		WakeupStopPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_AUTOVAC_LAUNCHER))
+		AutoVacLauncherPending = true;
 }
 
 int

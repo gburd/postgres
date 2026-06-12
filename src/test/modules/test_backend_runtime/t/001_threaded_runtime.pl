@@ -57,11 +57,35 @@ sub postmaster_child_count
 	return $count;
 }
 
+sub postmaster_child_command_count
+{
+	my ($pattern) = @_;
+	my $postmaster_pid = slurp_file($node->data_dir . '/postmaster.pid');
+	$postmaster_pid =~ s/\n.*//s;
+
+	my $stdout = '';
+	my $stderr = '';
+	my $result = IPC::Run::run [ 'ps', '-Ao', 'ppid=,command=' ], '>',
+	  \$stdout, '2>', \$stderr;
+	die "could not inspect postmaster children: $stderr" unless $result;
+
+	my $count = 0;
+	foreach my $line (split /\n/, $stdout)
+	{
+		$line =~ s/^\s+//;
+		my ($ppid, $command) = split /\s+/, $line, 2;
+		next unless defined $command;
+		$count++ if $ppid eq $postmaster_pid && $command =~ $pattern;
+	}
+	return $count;
+}
+
 $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
-autovacuum = off
+autovacuum = on
+autovacuum_naptime = '1h'
 io_method = worker
 io_min_workers = 1
 io_max_workers = 4
@@ -104,8 +128,19 @@ like(slurp_file($node->logfile),
 
 SKIP:
 {
-	skip 'postmaster child counting smoke is Unix-specific', 3
+	skip 'postmaster child counting smoke is Unix-specific', 5
 	  if $^O eq 'MSWin32';
+
+	$node->poll_query_until(
+		'postgres',
+		q{SELECT count(*) = 1 FROM pg_stat_activity WHERE backend_type = 'autovacuum launcher';},
+		't') || die "timed out waiting for autovacuum launcher";
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'autovacuum launcher';}),
+		'1', 'autovacuum launcher is visible as a logical threaded backend');
+	is(postmaster_child_command_count(qr/autovacuum launcher/), 0,
+		'autovacuum launcher did not fork a postmaster child process');
 
 	my $io_workers_before = $node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});

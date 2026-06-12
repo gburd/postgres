@@ -1521,6 +1521,31 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("wal_consistency_checking", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("zero_damaged_pages", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("statement_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("transaction_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("lock_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("idle_in_transaction_session_timeout", false, false,
+						PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("default_transaction_isolation", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("synchronous_commit", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*

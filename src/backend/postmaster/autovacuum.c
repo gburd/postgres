@@ -382,6 +382,7 @@ static int	db_comparator(const void *a, const void *b);
 static void autovac_recalculate_workers_for_balance(void);
 
 static void do_autovacuum(void);
+static void autovacuum_force_worker_gucs(void);
 static void FreeWorkerInfo(int code, Datum arg);
 
 static autovac_table *table_recheck_autovac(Oid relid, HTAB *table_toast_map,
@@ -419,11 +420,14 @@ void
 AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
+	bool		threaded_launcher;
 
 	Assert(startup_data_len == 0);
 
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	threaded_launcher = (CurrentPgRuntime != NULL &&
+						 CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	if (PostmasterContext && !threaded_launcher)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -444,18 +448,23 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
+	if (!threaded_launcher)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, StatementCancelHandler);
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, avl_sigusr2_handler);
-	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, avl_sigusr2_handler);
+		pqsignal(SIGFPE, FloatExceptionHandler);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
+	else
+		InitializeLogicalTimeouts();
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -559,44 +568,50 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	PG_exception_stack = &local_sigjmp_buf;
 
 	/* must unblock signals before calling rebuild_database_list */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_launcher)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
-	/*
-	 * Set always-secure search path.  Launcher doesn't connect to a database,
-	 * so this has no effect.
-	 */
-	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
+	if (!threaded_launcher)
+	{
+		/*
+		 * Set always-secure search path.  Launcher doesn't connect to a
+		 * database, so this has no effect.
+		 */
+		SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force zero_damaged_pages OFF in the autovac process, even if it is set
-	 * in postgresql.conf.  We don't really want such a dangerous option being
-	 * applied non-interactively.
-	 */
-	SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force zero_damaged_pages OFF in the autovac process, even if it is
+		 * set in postgresql.conf.  We don't really want such a dangerous
+		 * option being applied non-interactively.
+		 */
+		SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force settable timeouts off to avoid letting these settings prevent
-	 * regular maintenance from being executed.
-	 */
-	SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("idle_in_transaction_session_timeout", "0",
-					PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force settable timeouts off to avoid letting these settings prevent
+		 * regular maintenance from being executed.
+		 */
+		SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("idle_in_transaction_session_timeout", "0",
+						PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force default_transaction_isolation to READ COMMITTED.  We don't want
-	 * to pay the overhead of serializable mode, nor add any risk of causing
-	 * deadlocks or delaying other transactions.
-	 */
-	SetConfigOption("default_transaction_isolation", "read committed",
-					PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force default_transaction_isolation to READ COMMITTED.  We don't
+		 * want to pay the overhead of serializable mode, nor add any risk of
+		 * causing deadlocks or delaying other transactions.
+		 */
+		SetConfigOption("default_transaction_isolation", "read committed",
+						PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
-	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Even when system is configured to use a different fetch consistency,
+		 * for autovac we always want fresh stats.
+		 */
+		SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
+	}
+
+	ThreadedBackendStartupComplete();
 
 	/*
 	 * In emergency mode, just start a worker (unless shutdown was requested)
@@ -797,6 +812,14 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 static void
 ProcessAutoVacLauncherInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
+	if (AutoVacLauncherPending)
+	{
+		AutoVacLauncherPending = false;
+		got_SIGUSR2 = true;
+	}
+
 	/* the normal shutdown case */
 	if (ShutdownRequestPending)
 		AutoVacLauncherShutdown();
@@ -806,7 +829,9 @@ ProcessAutoVacLauncherInterrupts(void)
 		int			autovacuum_max_workers_prev = autovacuum_max_workers;
 
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 
 		/* shutdown requested in config file? */
 		if (!AutoVacuumingActive())
@@ -1559,7 +1584,13 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 
 		/* wake up the launcher */
 		if (AutoVacuumShmem->av_launcherpid != 0)
-			kill(AutoVacuumShmem->av_launcherpid, SIGUSR2);
+		{
+			if (CurrentPgRuntime != NULL &&
+				CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+				(void) PostmasterSignalAutoVacLauncher();
+			else
+				kill(AutoVacuumShmem->av_launcherpid, SIGUSR2);
+		}
 	}
 	else
 	{
@@ -1569,57 +1600,8 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		LWLockRelease(AutovacuumLock);
 	}
 
-	if (OidIsValid(dbid))
-	{
-		/*
-		 * Set always-secure search path, so malicious users can't redirect
-		 * user code (e.g. pg_index.indexprs).  (That code runs in a
-		 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not
-		 * take control of the entire autovacuum worker in any case.)
-		 */
-		SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
-
-		/*
-		 * Force zero_damaged_pages OFF in the autovac process, even if it is
-		 * set in postgresql.conf.  We don't really want such a dangerous
-		 * option being applied non-interactively.
-		 */
-		SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
-
-		/*
-		 * Force settable timeouts off to avoid letting these settings prevent
-		 * regular maintenance from being executed.
-		 */
-		SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-		SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-		SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-		SetConfigOption("idle_in_transaction_session_timeout", "0",
-						PGC_SUSET, PGC_S_OVERRIDE);
-
-		/*
-		 * Force default_transaction_isolation to READ COMMITTED.  We don't
-		 * want to pay the overhead of serializable mode, nor add any risk of
-		 * causing deadlocks or delaying other transactions.
-		 */
-		SetConfigOption("default_transaction_isolation", "read committed",
-						PGC_SUSET, PGC_S_OVERRIDE);
-
-		/*
-		 * Force synchronous replication off to allow regular maintenance even
-		 * if we are waiting for standbys to connect. This is important to
-		 * ensure we aren't blocked from performing anti-wraparound tasks.
-		 */
-		if (synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
-			SetConfigOption("synchronous_commit", "local",
-							PGC_SUSET, PGC_S_OVERRIDE);
-
-		/*
-		 * Even when system is configured to use a different fetch consistency,
-		 * for autovac we always want fresh stats.
-		 */
-		SetConfigOption("stats_fetch_consistency", "none",
-						PGC_SUSET, PGC_S_OVERRIDE);
-	}
+	if (OidIsValid(dbid) && !threaded_worker)
+		autovacuum_force_worker_gucs();
 
 	if (OidIsValid(dbid))
 	{
@@ -1646,6 +1628,8 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		InitPostgres(NULL, dbid, NULL, InvalidOid,
 					 INIT_PG_OVERRIDE_ALLOW_CONNS,
 					 dbname);
+		if (threaded_worker)
+			autovacuum_force_worker_gucs();
 		SetProcessingMode(NormalProcessing);
 		ThreadedBackendStartupComplete();
 		set_ps_display(dbname);
@@ -1663,6 +1647,59 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 
 	/* All done, go away */
 	proc_exit(0);
+}
+
+static void
+autovacuum_force_worker_gucs(void)
+{
+	/*
+	 * Set always-secure search path, so malicious users can't redirect user
+	 * code (e.g. pg_index.indexprs).  (That code runs in a
+	 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not take
+	 * control of the entire autovacuum worker in any case.)
+	 */
+	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
+	 * Force zero_damaged_pages OFF in the autovac process, even if it is set
+	 * in postgresql.conf.  We don't really want such a dangerous option being
+	 * applied non-interactively.
+	 */
+	SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
+	 * Force settable timeouts off to avoid letting these settings prevent
+	 * regular maintenance from being executed.
+	 */
+	SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+	SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+	SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+	SetConfigOption("idle_in_transaction_session_timeout", "0",
+					PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
+	 * Force default_transaction_isolation to READ COMMITTED.  We don't want
+	 * to pay the overhead of serializable mode, nor add any risk of causing
+	 * deadlocks or delaying other transactions.
+	 */
+	SetConfigOption("default_transaction_isolation", "read committed",
+					PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
+	 * Force synchronous replication off to allow regular maintenance even if
+	 * we are waiting for standbys to connect. This is important to ensure we
+	 * aren't blocked from performing anti-wraparound tasks.
+	 */
+	if (synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
+		SetConfigOption("synchronous_commit", "local",
+						PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
+	 * Even when system is configured to use a different fetch consistency, for
+	 * autovac we always want fresh stats.
+	 */
+	SetConfigOption("stats_fetch_consistency", "none",
+					PGC_SUSET, PGC_S_OVERRIDE);
 }
 
 /*

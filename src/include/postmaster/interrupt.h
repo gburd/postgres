@@ -26,6 +26,7 @@
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ConfigReloadPending;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ShutdownRequestPending;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t WakeupStopPending;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t AutoVacLauncherPending;
 
 extern void ProcessMainLoopInterrupts(void);
 extern void SignalHandlerForConfigReload(SIGNAL_ARGS);
