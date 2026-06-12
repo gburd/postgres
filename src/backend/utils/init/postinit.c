@@ -619,8 +619,18 @@ BaseInit(void)
 {
 	Assert(MyProc != NULL);
 
-	InitializePgProcessRuntime();
+	if (CurrentPgRuntime == NULL ||
+		CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+		InitializePgProcessRuntime();
 	InitializeTransactionState();
+
+	if (CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+		ereport(FATAL,
+				(errmsg("threaded backend base initialization is not implemented yet"),
+				 errdetail("Transaction state initialization now preserves thread runtime state, "
+						   "but pgstat shared-memory attachment and later BaseInit subsystems "
+						   "still need thread-safe lifecycle handling.")));
 
 	/*
 	 * Initialize our input/output/debugging file descriptors.

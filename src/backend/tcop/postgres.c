@@ -4994,10 +4994,14 @@ PgSessionRun(PgSession *session)
 static PgSession *
 PgSessionBootstrap(const char *dbname, const char *username)
 {
+	bool		threaded_backend;
+
 	Assert(dbname != NULL);
 	Assert(username != NULL);
 
 	Assert(GetProcessingMode() == InitProcessing);
+	threaded_backend = (CurrentPgRuntime != NULL &&
+						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/*
 	 * Set up signal handlers.  (InitPostmasterChild or InitStandaloneProcess
@@ -5014,7 +5018,16 @@ PgSessionBootstrap(const char *dbname, const char *username)
 	 * an issue for signals that are locally generated, such as SIGALRM and
 	 * SIGPIPE.)
 	 */
-	if (am_walsender)
+	if (threaded_backend)
+	{
+		/*
+		 * Signal handlers are process-global and cannot be installed by a
+		 * carrier thread without changing the postmaster and sibling
+		 * backends.  Threaded interrupt delivery will be routed through
+		 * logical backend state before this path can proceed further.
+		 */
+	}
+	else if (am_walsender)
 		WalSndSignals();
 	else
 	{
@@ -5057,6 +5070,14 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 	/* Early initialization */
 	BaseInit();
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("BaseInit now preserves thread runtime state, but "
+						   "InitPostgres, authentication, procsignal, and "
+						   "post-startup session lifetime still need "
+						   "thread-safe lifecycle handling.")));
 
 	/* We need to allow SIGINT, etc during the initial transaction */
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);

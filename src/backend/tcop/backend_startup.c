@@ -139,13 +139,6 @@ BackendMainWithStartupData(const BackendStartupData *bsdata,
 	 */
 	InitProcess();
 
-	if (startup_mode == BACKEND_STARTUP_THREAD)
-		ereport(FATAL,
-				(errmsg("threaded backend session execution is not implemented yet"),
-				 errdetail("PGPROC registration now completes, but PostgresMain, "
-						   "authentication, procsignal, and post-startup session "
-						   "lifetime still need thread-safe lifecycle handling.")));
-
 	/*
 	 * Make sure we aren't in PostmasterContext anymore.  (We can't delete it
 	 * just yet, though, because InitPostgres will need the HBA data.)

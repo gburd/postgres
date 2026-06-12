@@ -394,6 +394,33 @@ and clean up a backend, but true concurrent threaded sessions still need the
 remaining PID-to-logical-backend migrations before normal SQL execution can be
 enabled.
 
+## Session Bootstrap BaseInit Slice
+
+The twentieth slice moves threaded startup into the unwrapped
+`PgSessionBootstrap()` path and stops at the first `BaseInit()` subsystem that
+is not yet thread-safe:
+
+- `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)` now enters
+  `PostgresMain()` after `InitProcess()` instead of stopping immediately after
+  PGPROC registration;
+- `PgSessionBootstrap()` detects thread-per-session runtime state and skips
+  backend signal handler installation, because `pqsignal()` changes
+  process-global handlers shared with the postmaster and sibling backend
+  threads;
+- `BaseInit()` preserves existing thread runtime state instead of replacing it
+  with process runtime state, while still initializing transaction state;
+- the guarded FATAL now fires before `pgstat_initialize()` and later
+  `BaseInit()` subsystems;
+- an lldb smoke showed that entering `pgstat_attach_shmem()` without this
+  guard dereferenced missing per-thread pgstat attachment state and crashed
+  the postmaster process, so pgstat attachment is the next concrete subsystem
+  to adapt.
+
+This keeps the main-loop unwinding direction: startup now reaches the session
+bootstrap function used by the stepped session runner, but still avoids
+installing process-global signal state or entering pgstat/shared-cache
+subsystems that have not been made backend-local.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -561,3 +588,20 @@ enabled.
   the guarded "threaded backend session execution is not implemented yet"
   FATAL, kept the postmaster running between connections, and completed normal
   fast shutdown.
+- after the session bootstrap BaseInit slice,
+  `gmake -C src/backend/utils/init postinit.o` and
+  `gmake -C src/backend/tcop backend_startup.o postgres.o` passed;
+- after the session bootstrap BaseInit slice, full `gmake -C src/backend -j8`
+  passed and `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- an lldb smoke without the pre-pgstat guard stopped in
+  `pgstat_attach_shmem()` on the backend carrier thread, confirming pgstat
+  shared-memory attachment as the next boundary;
+- after adding the pre-pgstat guard,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the session bootstrap
+  BaseInit slice read real libpq startup packets for two client connections,
+  entered `PostgresMain()`/`PgSessionBootstrap()`, preserved thread runtime
+  state through transaction-state initialization, rejected both before pgstat
+  initialization with the guarded "threaded backend base initialization is not
+  implemented yet" FATAL, kept the postmaster running between connections, and
+  completed normal fast shutdown.
