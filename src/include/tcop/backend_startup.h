@@ -42,6 +42,20 @@ typedef enum CAC_state
 	CAC_TOOMANY,
 } CAC_state;
 
+/*
+ * Physical startup environment for a client backend.
+ *
+ * Process mode keeps the historical SIGTERM/startup-timeout handling that can
+ * safely call _exit() before shared memory has been touched. Threaded startup
+ * must route those events through logical backend exit instead, and is wired
+ * in a later Phase 10 slice.
+ */
+typedef enum BackendStartupMode
+{
+	BACKEND_STARTUP_PROCESS,
+	BACKEND_STARTUP_THREAD
+} BackendStartupMode;
+
 /* Information passed from postmaster to backend process in 'startup_data' */
 typedef struct BackendStartupData
 {
@@ -120,5 +134,8 @@ typedef struct ConnectionTiming
 } ConnectionTiming;
 
 pg_noreturn extern void BackendMain(const void *startup_data, size_t startup_data_len);
+pg_noreturn extern void BackendMainWithStartupData(const BackendStartupData *startup_data,
+												  struct ClientSocket *client_sock,
+												  BackendStartupMode startup_mode);
 
 #endif							/* BACKEND_STARTUP_H */

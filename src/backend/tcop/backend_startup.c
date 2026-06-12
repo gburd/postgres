@@ -58,7 +58,8 @@ PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ConnectionTiming
 conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 
-static void BackendInitialize(ClientSocket *client_sock, CAC_state cac);
+static void BackendInitialize(ClientSocket *client_sock, CAC_state cac,
+							  BackendStartupMode startup_mode);
 static int	ProcessSSLStartup(Port *port);
 static int	ProcessStartupPacket(Port *port);
 static void ProcessCancelRequestPacket(Port *port, void *pkt, int pktlen);
@@ -80,6 +81,26 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 
 	Assert(startup_data_len == sizeof(BackendStartupData));
 	Assert(MyClientSocket != NULL);
+
+	BackendMainWithStartupData(bsdata, MyClientSocket,
+							   BACKEND_STARTUP_PROCESS);
+}
+
+/*
+ * Entry point for a backend with explicit startup data and client socket.
+ *
+ * BackendMain() remains the process-mode adapter that uses MyClientSocket,
+ * which is inherited or reconstructed by the launch path.  Threaded launch
+ * can call this entrypoint with a per-thread socket copy before installing
+ * the broader backend carrier state.
+ */
+void
+BackendMainWithStartupData(const BackendStartupData *bsdata,
+						   ClientSocket *client_sock,
+						   BackendStartupMode startup_mode)
+{
+	Assert(bsdata != NULL);
+	Assert(client_sock != NULL);
 
 #ifdef EXEC_BACKEND
 
@@ -108,7 +129,8 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 #endif
 
 	/* Perform additional initialization and collect startup packet */
-	BackendInitialize(MyClientSocket, bsdata->canAcceptConnections);
+	BackendInitialize(client_sock, bsdata->canAcceptConnections,
+					  startup_mode);
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -139,7 +161,8 @@ BackendMain(const void *startup_data, size_t startup_data_len)
  * but have not yet set up most of our local pointers to shmem structures.
  */
 static void
-BackendInitialize(ClientSocket *client_sock, CAC_state cac)
+BackendInitialize(ClientSocket *client_sock, CAC_state cac,
+				  BackendStartupMode startup_mode)
 {
 	int			status;
 	int			ret;
@@ -194,10 +217,20 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * shared memory; therefore no outside-the-process state needs to get
 	 * cleaned up.
 	 */
-	pqsignal(SIGTERM, process_startup_packet_die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	InitializeTimeouts();		/* establishes SIGALRM handler */
-	sigprocmask(SIG_SETMASK, &StartupBlockSig, NULL);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		pqsignal(SIGTERM, process_startup_packet_die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
+		sigprocmask(SIG_SETMASK, &StartupBlockSig, NULL);
+	}
+	else
+	{
+		ereport(FATAL,
+				(errmsg("threaded backend startup is not implemented yet"),
+				 errdetail("The startup packet timeout and termination paths "
+						   "still use process-level signal handling.")));
+	}
 
 	/*
 	 * Get the remote host name and port for logging and status display.

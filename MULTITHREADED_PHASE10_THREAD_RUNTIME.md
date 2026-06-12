@@ -44,12 +44,32 @@ threads can actually run.
 The Windows implementation is a best-effort `_beginthreadex()` wrapper and has
 not been validated in this macOS checkout.
 
+## Explicit Backend Startup Mode Slice
+
+The third slice starts separating backend startup from process inheritance:
+
+- `BackendMain()` remains the existing postmaster-child process entrypoint;
+- `BackendMainWithStartupData()` now takes explicit startup data, an explicit
+  client socket, and a `BackendStartupMode`;
+- process mode uses `BACKEND_STARTUP_PROCESS`, preserving the historical
+  `SIGTERM`, `SIGALRM`, startup-packet timeout, and `_exit()` behavior before
+  shared memory is touched;
+- `BACKEND_STARTUP_THREAD` is named but still fails explicitly because startup
+  timeout and termination still need to be routed through logical backend
+  exit before it can safely run inside the postmaster address space.
+
+This is intentionally not the thread launcher yet. It creates the call shape
+the launcher needs and makes the remaining process-only startup semantics
+visible.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
 - `gmake -C src/backend/utils/init backend_runtime.o globals.o` passed;
 - `gmake -C src/backend/utils/misc guc_tables.o` passed after regenerating
   `guc_tables.inc.c`;
+- `gmake -C src/backend/tcop backend_startup.o` passed after the explicit
+  startup-mode slice;
 - full `gmake -C src/backend -j8` passed;
 - `gmake -C src/test/modules/test_backend_runtime check` passed, including the
   `pg_thread_create()`/`pg_thread_join()` smoke;
