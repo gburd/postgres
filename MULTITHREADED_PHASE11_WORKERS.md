@@ -687,9 +687,16 @@ cleanly. The same cluster was restarted with `multithreaded = on` and
 starts for both `autoprewarm leader` and `autoprewarm worker`,
 `autoprewarm successfully prewarmed`, no `ERROR`, `FATAL`, or `PANIC`, and no
 postmaster child process matching `autoprewarm`. The smoke then verified the
-table still contained the expected 5,000 rows. Cleanup used a forced kill
-because a plain threaded temp cluster still hangs on fast stop in this
-checkout, independent of `pg_prewarm`.
+table still contained the expected 5,000 rows. This first run used bounded
+cleanup because plain threaded fast shutdown later proved to be blocked by the
+thread-backed logical replication launcher, independent of `pg_prewarm`.
+
+Follow-up shutdown validation showed the hang was caused by the launcher loop
+applying logical interrupts but not routing `ShutdownRequestPending` through
+the common main-loop interrupt handler. `ApplyLauncherMain()` now uses
+`ProcessMainLoopInterrupts()` in its loop and latch wake path. A direct plain
+`multithreaded=on` temp-cluster smoke now starts, executes `select 1`, and
+completes `pg_ctl -m fast stop` cleanly.
 
 ## Remaining Worker Families
 

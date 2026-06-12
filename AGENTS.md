@@ -439,12 +439,11 @@ Important current files:
   `CHECKPOINT`, and clean fast shutdown. In process-mode compatibility smokes,
   the same workers should still appear as OS child processes.
 
-- During the current Phase 11 work, a plain `multithreaded=on` temp cluster
-  can hang on `pg_ctl -m fast stop`. If a focused worker smoke only needs to
-  prove live thread-carrier launch and data integrity, use a bounded live
-  check, record the shutdown caveat in the phase doc, and force-kill the temp
-  postmaster during cleanup. Do not treat this as proof that threaded shutdown
-  is healthy; it remains a separate Phase 11 lifecycle issue.
+- Plain `multithreaded=on` temp clusters should complete
+  `pg_ctl -m fast stop` cleanly. If a Phase 11 worker smoke hangs during fast
+  stop, sample the postmaster before cleanup; a previous blocker was a
+  thread-backed worker that consumed logical interrupts without routing
+  shutdown requests through `ProcessMainLoopInterrupts()`.
 
 - PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
   Perl on this macOS checkout may not have it, in which case direct `prove`

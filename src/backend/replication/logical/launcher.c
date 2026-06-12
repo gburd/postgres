@@ -1311,7 +1311,7 @@ ApplyLauncherMain(Datum main_arg)
 		bool		retain_dead_tuples = false;
 		TransactionId xmin = InvalidTransactionId;
 
-		PgCurrentBackendApplyInterrupts();
+		ProcessMainLoopInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		/* Use temporary context to avoid leaking memory across cycles. */
@@ -1497,7 +1497,7 @@ ApplyLauncherMain(Datum main_arg)
 		if (rc & WL_LATCH_SET)
 		{
 			ResetLatch(MyLatch);
-			PgCurrentBackendApplyInterrupts();
+			ProcessMainLoopInterrupts();
 			CHECK_FOR_INTERRUPTS();
 		}
 
