@@ -1295,14 +1295,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/* Process pg_db_role_setting options */
 	process_settings(MyDatabaseId, GetSessionUserId());
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Startup packet options and pg_db_role_setting "
-						   "state completed, but default session state and "
-						   "post-startup session lifetime still need "
-						   "thread-safe lifecycle handling.")));
-
 	/* Apply PostAuthDelay as soon as we've read all options */
 	if (PostAuthDelay > 0)
 		pg_usleep(PostAuthDelay * 1000000L);
@@ -1321,6 +1313,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/* Initialize this backend's session state. */
 	InitializeSession();
 	PgProcessRuntimeAttachSession(CurrentSession);
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Default session state completed, but session "
+						   "preload libraries and post-startup session "
+						   "lifetime still need thread-safe lifecycle "
+						   "handling.")));
 
 	/*
 	 * If this is an interactive session, load any libraries that should be

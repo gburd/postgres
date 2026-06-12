@@ -652,6 +652,28 @@ bits and consulted the uninitialized thread-local WAL consistency array. The
 bridge is still intentionally narrow: it initializes only the GUC records that
 the current threaded startup path can reach before the guard.
 
+## Default Session State Boundary Slice
+
+The thirty-first slice lets threaded startup initialize default session state:
+
+- `PostAuthDelay`, if configured, is now reached after all startup and
+  catalog-backed GUC settings are applied;
+- `InitializeSearchPath()` runs for threaded backend carriers, installing the
+  default namespace/search-path invalidation state;
+- `InitializeClientEncoding()` completes backend-local client/server encoding
+  conversion setup;
+- `InitializeSession()` creates the legacy `CurrentSession` object, and
+  `PgProcessRuntimeAttachSession()` attaches it to the current runtime session
+  object;
+- the guarded FATAL now fires before session-preload libraries, final pgstat
+  publication, startup transaction commit, connection warnings, and normal
+  session lifetime.
+
+This proves the sequential default-session startup boundary. It does not yet
+prove that the syscache callback registry used by `InitializeSearchPath()` is
+ready for concurrent threaded SQL execution; that remains part of the broader
+thread-safety floor before arbitrary SQL can run.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -983,3 +1005,18 @@ the current threaded startup path can reach before the guard.
   the guarded "threaded backend database initialization is not implemented
   yet" FATAL, kept the postmaster running between connections, and completed
   normal fast shutdown.
+- after the default session state boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the default session state boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the default session state boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke created `ALTER DATABASE postgres SET application_name`
+  in process mode, restarted with `multithreaded=on`, completed
+  startup-packet GUC option processing, `pg_db_role_setting` application,
+  default search-path/client-encoding initialization, and legacy session
+  allocation for two threaded client attempts, rejected both before session
+  preload libraries with the guarded "threaded backend database initialization
+  is not implemented yet" FATAL, kept the postmaster running between
+  connections, and completed normal fast shutdown.
